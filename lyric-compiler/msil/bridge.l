@@ -171,6 +171,14 @@ pub func compileToMsilWithVersion(
     allMonoFuncs.add(stdlibUnionCtors[smui])
     smui = smui + 1
   }
+  // Inference-only `mapGet` intrinsic stub, appended LAST for the same
+  // first-wins reason (#6377 fix; see `pipeAddInferenceOnlyIntrinsicFuncs`).
+  val stdlibInferenceOnlyFuncs = collectStdlibInferenceOnlyGenericFuncs(stdlibPkgs)
+  var smif = 0
+  while smif < stdlibInferenceOnlyFuncs.count {
+    allMonoFuncs.add(stdlibInferenceOnlyFuncs[smif])
+    smif = smif + 1
+  }
   val stdlibIfaces = collectStdlibInterfaceDecls(stdlibPkgs)
   val stdlibRecs = collectStdlibRecordDecls(stdlibPkgs)
   val noDeriveImports: List[Item] = newList()
@@ -271,9 +279,13 @@ pub func compileToMsilWithVersion(
   // Empty `packageVersion` falls back to "0.0.0" so ad-hoc compiles
   // without a manifest behave like the legacy path; callers threading
   // a manifest version (#1364) pass the declared semver verbatim and
-  // it ends up in the embedded contract.
+  // it ends up in the embedded contract.  `file0` is the PRE-mono file
+  // (straight out of `pipeExpandAndRewrite`) — `withGenericFuncsForContract`
+  // re-attaches its pub generic `IFunc` items (mono strips them from
+  // `liftedFile` unconditionally) so the contract carries them, body
+  // included (#6363, #6364, #6365).
   val resourceVersion = if packageVersion.length == 0 { "0.0.0" } else { packageVersion }
-  embedLyricContract(cctx.lctx, liftedFile, "Lyric.Contract", resourceVersion)
+  embedLyricContract(cctx.lctx, withGenericFuncsForContract(file0, liftedFile), "Lyric.Contract", resourceVersion)
 
   // Lower the package IR to raw PE bytes using the pre-seeded context.
   val bytes = lowerMPackageWithCtx(pkg, cctx.lctx, entryToken)
@@ -645,6 +657,21 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     allImportedGenFuncs.add(restoredUnionCtors[agfw])
     agfw = agfw + 1
   }
+  // Inference-only `mapGet` intrinsic stub, appended LAST for the same
+  // first-wins reason as the union-ctor stubs above.  A stdlib self-build
+  // (`stdlibPkgs` and `parsedPkgs` covering the same files, #1435's
+  // `baseNames` guard) also collects `Std.Collections.mapGet`'s REAL body
+  // via `inBundleGenFuncs` above; that real copy must win the monomorphizer's
+  // first-wins merge over this stub, or `mapGet` never gets a specialised
+  // copy in the stdlib's own in-bundle call sites and codegen falls back to
+  // its inline intrinsic, which crashed at runtime (#6377 investigation —
+  // `Std.HttpServer.appendExtraHeaders`'s `InvalidProgramException`).
+  val stdlibInferenceOnlyFuncs = collectStdlibInferenceOnlyGenericFuncs(stdlibPkgs)
+  var agfx = 0
+  while agfx < stdlibInferenceOnlyFuncs.count {
+    allImportedGenFuncs.add(stdlibInferenceOnlyFuncs[agfx])
+    agfx = agfx + 1
+  }
   // Interface decls (in-bundle + stdlib + restored), fed to the monomorphizer
   // for method-call return inference on interface-typed receivers (#3813).
   val allImportedIfaceDecls: List[InterfaceDecl] = newList()
@@ -874,9 +901,18 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     // surface them per-package (matching the F# bundled-DLL layout).
     // `packageVersion` carries the manifest's `[package].version` for
     // the bundle; per-package versioning is out of scope for #1364 and
-    // tracked separately.
+    // tracked separately.  `parsedPkgs[li].file` is this package's
+    // PRE-mono file — `withGenericFuncsForContract` re-attaches its pub
+    // generic `IFunc` items (mono strips them from `lifted`
+    // unconditionally) so the contract carries them, body included
+    // (#6363, #6364, #6365).
     val bundleVer = if packageVersion.length == 0 { "0.0.0" } else { packageVersion }
-    embedLyricContract(cctx.lctx, lifted, "Lyric.Contract." + perPkgNames[li], bundleVer)
+    embedLyricContract(
+      cctx.lctx,
+      withGenericFuncsForContract(parsedPkgs[li].file, lifted),
+      "Lyric.Contract." + perPkgNames[li],
+      bundleVer
+    )
     liftedFiles.add(lifted)
     li = li + 1
   }
@@ -1283,6 +1319,24 @@ pub func collectStdlibGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl]
   genFuncs
 }
 
+// Companion of `collectStdlibGenericFuncs`: collects ONLY the
+// `Std.Collections.mapGet` inference-only stub (`pipeAddInferenceOnlyIntrinsicFuncs`).
+// Callers MUST append this list's output LAST in their merged mono-feed list
+// (after every real generic-func collector, including `collectInBundleGenericFuncs`) —
+// see `Lyric.Pipeline.pipeAddInferenceOnlyIntrinsicFuncs` for why appending it
+// early caused #6377 (a stdlib self-build's real, specialisable `mapGet` losing
+// the monomorphizer's first-wins merge to this stub).
+pub func collectStdlibInferenceOnlyGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl] {
+  val genFuncs: List[FunctionDecl] = newList()
+  var pi = 0
+  while pi < pkgs.count {
+    val pkg: StdlibPkg = pkgs[pi]
+    pipeAddInferenceOnlyIntrinsicFuncs(pkg.items, pkg.name, genFuncs)
+    pi = pi + 1
+  }
+  genFuncs
+}
+
 // Collect every generic `pub func` with a block body from all parsed in-bundle
 // user packages so that cross-package same-bundle generic calls (e.g.
 // `Validation.toResult(42, [])` from a test package calling a generic in the
@@ -1520,6 +1574,73 @@ func bundleNameMatches(bundleNames: in List[String], name: in String): Bool {
 // Join path segments with "." — e.g. ["My", "Package"] → "My.Package".
 func segmentsToString(segments: in List[String]): String {
   modulePathJoin(segments)
+}
+
+// `Lyric.Mono` unconditionally strips every originally-generic `IFunc` item
+// out of the file it returns (generic functions have no callable MSIL body —
+// only their call-site specialisations survive), so by the time a package's
+// post-mono/woven/lifted file reaches `embedLyricContract`, its generic pub
+// functions are gone and never make it into the contract at all — not even
+// bodyless.  A restored consumer can then never resolve, let alone
+// specialise, a call to that generic function (#6363, #6364, #6365: the
+// exact shape of `Std.Core.unwrapOr`/`isSome`, `Std.Collections.mapKeys`/
+// `mapValues` disappearing from `Lyric.Stdlib.dll`'s embedded contract).
+// Re-attach the PRE-mono file's pub generic `IFunc` items (their real bodies
+// intact) onto the post-mono item list before building the contract.
+//
+// One exception mono does NOT strip: a generic `@externTarget` extern whose
+// target type carries a CLR arity suffix (`` List`1``) survives Phase 2
+// verbatim (`annsKeepGenericExternMono`, `Lyric.Mono` ~4175) because some of
+// its call sites — a zero-arg ctor extern invoked from a module-level `val`
+// initializer — are never walked by the monomorphizer and would resolve to
+// nothing if the generic definition were dropped.  `newList`/`newMap`/
+// `newSet`/`dictGetKeys`/`dictGetValues` are exactly this shape, so they are
+// ALREADY present in `postMono.items` by the time this runs.  Re-adding them
+// unconditionally from `preMono` produced a duplicate `pub func` decl in the
+// embedded contract (#6384) — a restored consumer's synthesised preamble
+// then declared the same generic twice.  Dedupe by name against what
+// `postMono` already carries so this only ever ADDS the functions mono
+// actually removed.
+func withGenericFuncsForContract(preMono: in SourceFile, postMono: in SourceFile): SourceFile {
+  val items: List[Item] = newList()
+  val postFuncNames: Map[String, Bool] = newMap()
+  var pi = 0
+  while pi < postMono.items.count {
+    val it = postMono.items[pi]
+    match it.kind {
+      case IFunc(decl) -> {
+        if not postFuncNames.containsKey(decl.name) {
+          postFuncNames.add(decl.name, true)
+        }
+      }
+      case _ -> ()
+    }
+    items.add(it)
+    pi = pi + 1
+  }
+  var gi = 0
+  while gi < preMono.items.count {
+    val it = preMono.items[gi]
+    match it.kind {
+      case IFunc(decl) -> {
+        val isPub = match it.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+        val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+        if isPub and isGeneric and not postFuncNames.containsKey(decl.name) {
+          items.add(it)
+        }
+      }
+      case _ -> ()
+    }
+    gi = gi + 1
+  }
+  SourceFile(
+    moduleDoc = postMono.moduleDoc,
+    fileAnnotations = postMono.fileAnnotations,
+    packageDecl = postMono.packageDecl,
+    imports = postMono.imports,
+    items = items,
+    span = postMono.span
+  )
 }
 
 // Return the MethodDef token of `main` if it was registered, or 0 for libraries.

@@ -19,6 +19,24 @@
 //! (docs/59 §3 F1): a cross-package `callvirt` whose signature mentions a
 //! user record must encode the record concretely, not erased to `object`.
 //!
+//! Also covers CALLING a restored *generic function* (#6363, #6364, #6365):
+//! a Lyric-level `[T]` function never gets a real cross-assembly MemberRef
+//! in the compiled DLL (no MVAR generic-method support in either backend),
+//! so the only way to call one from a restored consumer is for
+//! `Lyric.Mono.monoFileWithImports` to specialise a concrete copy from its
+//! ORIGINAL BODY.  Prior to this fix, `Lyric.ContractMeta.reprForFunc`
+//! never carried a generic function's body into the contract metadata (only
+//! `@inline_template` aspects carried a body), so a restored generic
+//! function's re-synthesised declaration was always bodyless — invisible to
+//! `pipeAddGenericFuncs`'s `hasBody` gate, so mono could never specialise a
+//! call to it.  The un-specialised call then fell through to codegen's
+//! unresolved cross-assembly-generic-function fallback and produced
+//! unbalanced/degraded IL: a dropped call whose arguments leaked onto the
+//! stack (`InvalidProgramException`), or a value silently reinterpreted as
+//! the wrong type (`InvalidCastException`) — exactly what
+//! `Std.Core.unwrapOr`/`isSome` and `Std.Collections.mapKeys`/`mapValues`
+//! did when called against the restored, pre-compiled `Lyric.Stdlib.dll`.
+//!
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1 (required because
 //! the test imports `Lyric.Emitter`, a compiler package):
 //!   LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/cross_package_generics_self_test.l
@@ -356,4 +374,140 @@ test "cross-package restored interface method with record param and return" {
   assertEqual(lines[0], "S/apple:2", "cpgen_iface_rec: interface-dispatch describe(record)")
   assertEqual(lines[1], "3", "cpgen_iface_rec: record-returning bump(record) round-trips")
   assertEqual(lines[2], "M/apple:3", "cpgen_iface_rec: concrete-record-dispatch describe(record)")
+}
+
+// Calling a restored GENERIC FUNCTION whose result is composed directly
+// into another restored generic function's argument (#6363's exact shape:
+// `Std.Core.unwrapOr(Std.Char.hexDigitValue('a'), 0)` — nesting one
+// restored-stdlib call's `Option[T]` result as the generic argument of
+// another restored-stdlib generic function).  Before the fix, NEITHER
+// `makeFull` nor `unwrapOrBox` had a body in the producer's contract
+// metadata, so mono could not specialise either call site; the
+// un-specialised calls degraded to unbalanced IL and crashed with
+// `InvalidProgramException` at runtime.
+test "cross-package generic function calls compose (#6363)" {
+  val tmpDir = freshTempDir("cpgen-fn-compose")
+  val producerSrc = "package CpGen.OptFuncLib\n" + "\n" + "pub union Box[T] {\n" + "  case Full(value: T)\n" +
+    "  case Empty\n" +
+    "}\n" +
+    "\n" +
+    "pub func makeFull[T](v: in T): Box[T] {\n" +
+    "  Full(value = v)\n" +
+    "}\n" +
+    "\n" +
+    "pub func unwrapOrBox[T](b: in Box[T], default: in T): T {\n" +
+    "  match b {\n" +
+    "    case Full(v) -> v\n" +
+    "    case Empty -> default\n" +
+    "  }\n" +
+    "}\n"
+  val producerDll = buildDll(tmpDir, "CpGen.OptFuncLib", producerSrc, "CpGen.OptFuncLib")
+  val consumerSrc = "package CpGen.OptFuncApp\n" + "\n" + "import CpGen.OptFuncLib\n" + "\n" + "func main(): Unit {\n" +
+    "  println(unwrapOrBox(makeFull(42), 0))\n" +
+    "}\n"
+  val captured = buildAndRunConsumer(
+    tmpDir,
+    "CpGen.OptFuncApp",
+    consumerSrc,
+    "CpGen.OptFuncApp",
+    "CpGen.OptFuncLib",
+    producerDll
+  )
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cpgen_fn_compose: exit 0 (stderr=" + captured.stderr + ")")
+  assertEqual(Str.trim(captured.stdout), "42", "cpgen_fn_compose: unwrapOrBox(makeFull(42), 0) = 42")
+}
+
+// A restored generic PREDICATE function (mirrors `Std.Core.isSome`) called
+// on a value whose type parameter is a record defined in the CONSUMER
+// package — the record is unknown to the producer at the producer's own
+// build time (#6365's shape: `Std.Core.isSome` called on an
+// `Option[Widget]` where `Widget` is defined in a different consumer
+// package than the one that produced the Option value).
+test "cross-package generic predicate over a consumer-defined type (#6365)" {
+  val tmpDir = freshTempDir("cpgen-fn-predicate")
+  val producerSrc = "package CpGen.PredLib\n" + "\n" + "pub union Box[T] {\n" + "  case Full(value: T)\n" +
+    "  case Empty\n" +
+    "}\n" +
+    "\n" +
+    "pub func makeFull2[T](v: in T): Box[T] {\n" +
+    "  Full(value = v)\n" +
+    "}\n" +
+    "\n" +
+    "pub func isFullBox[T](b: in Box[T]): Bool {\n" +
+    "  match b {\n" +
+    "    case Full(v) -> true\n" +
+    "    case Empty -> false\n" +
+    "  }\n" +
+    "}\n"
+  val producerDll = buildDll(tmpDir, "CpGen.PredLib", producerSrc, "CpGen.PredLib")
+  val consumerSrc = "package CpGen.PredApp\n" + "\n" + "import CpGen.PredLib\n" + "\n" +
+    "record Widget { name: String }\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  val full: Box[Widget] = makeFull2(Widget(name = \"gizmo\"))\n" +
+    "  println(isFullBox(full).toString())\n" +
+    "  val empty: Box[Widget] = Empty\n" +
+    "  println(isFullBox(empty).toString())\n" +
+    "}\n"
+  val captured = buildAndRunConsumer(
+    tmpDir,
+    "CpGen.PredApp",
+    consumerSrc,
+    "CpGen.PredApp",
+    "CpGen.PredLib",
+    producerDll
+  )
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cpgen_fn_predicate: exit 0 (stderr=" + captured.stderr + ")")
+  val lines = Str.split(Str.trim(captured.stdout), "\n")
+  assertEqualInt(lines.count, 2, "cpgen_fn_predicate: two output lines")
+  assertEqual(lines[0], "true", "cpgen_fn_predicate: isFullBox(Full(Widget)) = true")
+  assertEqual(lines[1], "false", "cpgen_fn_predicate: isFullBox(Empty) = false")
+}
+
+// A restored generic function returning `List[V]` where `V` is a record
+// defined in the CONSUMER package (#6364's shape: `Std.Collections.mapValues`
+// on a `Map[String, Widget]` threw `InvalidCastException` casting the
+// `Dictionary` itself to `IList` because the un-specialised call degraded
+// to an identity pass-through instead of a real call).
+test "cross-package generic function over List[consumer-defined type] (#6364)" {
+  val tmpDir = freshTempDir("cpgen-fn-list")
+  val producerSrc = "package CpGen.ListFuncLib\n" + "\n" + "import Std.Collections\n" + "\n" +
+    "pub func firstOrDefault[T](xs: in List[T], default: in T): T {\n" +
+    "  if xs.count > 0 {\n" +
+    "    xs[0]\n" +
+    "  } else {\n" +
+    "    default\n" +
+    "  }\n" +
+    "}\n"
+  val producerDll = buildDll(tmpDir, "CpGen.ListFuncLib", producerSrc, "CpGen.ListFuncLib")
+  val consumerSrc = "package CpGen.ListFuncApp\n" + "\n" + "import Std.Collections\n" + "\n" +
+    "import CpGen.ListFuncLib\n" +
+    "\n" +
+    "record Widget { name: String }\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  val xs: List[Widget] = newList()\n" +
+    "  xs.add(Widget(name = \"gizmo\"))\n" +
+    "  val w = firstOrDefault(xs, Widget(name = \"none\"))\n" +
+    "  println(w.name)\n" +
+    "  val ys: List[Widget] = newList()\n" +
+    "  val d = firstOrDefault(ys, Widget(name = \"fallback\"))\n" +
+    "  println(d.name)\n" +
+    "}\n"
+  val captured = buildAndRunConsumer(
+    tmpDir,
+    "CpGen.ListFuncApp",
+    consumerSrc,
+    "CpGen.ListFuncApp",
+    "CpGen.ListFuncLib",
+    producerDll
+  )
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cpgen_fn_list: exit 0 (stderr=" + captured.stderr + ")")
+  val lines = Str.split(Str.trim(captured.stdout), "\n")
+  assertEqualInt(lines.count, 2, "cpgen_fn_list: two output lines")
+  assertEqual(lines[0], "gizmo", "cpgen_fn_list: firstOrDefault(non-empty) = first element")
+  assertEqual(lines[1], "fallback", "cpgen_fn_list: firstOrDefault(empty) = default")
 }

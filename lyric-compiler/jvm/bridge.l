@@ -335,6 +335,17 @@ func collectStdlibGenericFuncsJvm(files: in List[SourceFile]): List[FunctionDecl
     pipeAddGenericFuncs(f.items, dottedPath(f.packageDecl.path), false, true, genFuncs)
     fi = fi + 1
   }
+  // `mapGet`'s inference-only stub (`Lyric.Pipeline.pipeAddInferenceOnlyIntrinsicFuncs`),
+  // appended LAST.  This JVM path has no separate in-bundle collector of
+  // `Std.Collections`'s real `mapGet` to lose the first-wins merge to
+  // (unlike the MSIL bridge's stdlib self-build, #6377), so ordering here is
+  // purely for consistency with `Msil.Bridge.collectStdlibGenericFuncs`.
+  var sfi = 0
+  while sfi < files.count {
+    val sf = files[sfi]
+    pipeAddInferenceOnlyIntrinsicFuncs(sf.items, dottedPath(sf.packageDecl.path), genFuncs)
+    sfi = sfi + 1
+  }
   genFuncs
 }
 

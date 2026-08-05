@@ -22892,3 +22892,335 @@ sweep after `make lyric`: `typechecker_self_test.l` 298/298 (2 new for
 
 **Related:** #6383, #6382, #6362, D-progress-730, D-progress-729, T0100,
 T0102, docs/59 §5.1 A5, `lyric-compiler/lyric/type_checker/typechecker_exprs.l`.
+
+---
+
+### D-progress-732 — Restored generic stdlib functions had no callable body at all: `Std.Core.unwrapOr`/`isSome`, `Std.Collections.mapKeys`/`mapValues` degraded to broken IL across a restored-package boundary (#6363, #6364, #6365, #6368)
+
+**Status:** #6363 and #6365 fixed and verified end-to-end against a
+release-shaped, relocated-outside-the-workspace `Lyric.Stdlib.dll` +
+`bin/lyric`. #6368 verified fixed (root cause was already resolved on
+`main` independently of this work — see its own section). #6364 is
+**substantially, not fully, fixed**: the reported `mapKeys`/`mapValues`
+crash is fixed for every case tested except the ONE narrow shape where
+`Std.Collections.mapGet(...)` is used directly as a `match` scrutinee
+(not first bound to a `val`) with a `case Some(w) -> "literal" + w.field`
+arm — see "Residual #6364 gap" below. A follow-up issue must be filed for
+that residual before closing #6364.
+
+**Root cause (shared by #6363, #6364, #6365).** A Lyric-level generic
+`pub func` (`unwrapOr[T]`, `isSome[T]`, `mapKeys[K,V]`, `mapValues[K,V]`,
+…) never gets a real, callable MSIL method in the compiled DLL — neither
+backend supports a genuine generic-method (MVAR) body (docs/59's FFI
+capability matrix; confirmed by disassembling the shipped
+`Lyric.Stdlib.dll`: `Std.Core.Program` and `Std.Collections.Program`
+contain only their non-generic functions). The ONLY way to call one is for
+`Lyric.Mono.monoFileWithImports` to specialise a concrete copy from the
+generic's ORIGINAL BODY into the calling assembly (`#1498`,
+`Msil.Bridge.collectRestoredGenericFuncs` / `collectStdlibGenericFuncs`
+already existed and were already wired for exactly this — the mechanism
+was built but never actually worked). Two independent bugs made every
+restored generic call take the unresolved-call fallback instead, which
+drops the call and lets whatever was already on the stack (or the wrong
+argument) survive to the result position — an `InvalidProgramException`
+(unbalanced stack, #6363) or an `InvalidCastException` (wrong runtime
+value at the return position, #6364/#6365), never a clean diagnostic.
+
+**Bug 1 — the body never reached the contract at all.**
+`Lyric.ContractMeta.reprForFunc` emits a func's SIGNATURE only (by
+design, so a bodyless `@axiom`-style declaration round-trips through
+synthesis/re-typecheck); nothing populated `ContractDecl.body` for a
+`kind = "func"` decl (that field was wired for `@inline_template` aspect
+templates only, D047/D050). So even when a package's generic function
+DID survive to the embedded contract, a restored consumer's re-synthesised
+declaration was bodyless — invisible to `Lyric.Pipeline.pipeAddGenericFuncs`'s
+`hasBody` gate, so mono had nothing to specialise from and left the call
+untouched. Fix: `Lyric.ContractMeta.funcBodyText` renders a generic
+function's real body to source text (mirroring `aspectBodyText`'s
+statement-by-statement `Lyric.Fmt.stmtInline`/`exprInline` approach) and
+`funcDecl` attaches it to `ContractDecl.body` for GENERIC functions only
+(non-generic functions compile to a real cross-assembly MemberRef and
+never need reconstructing). `Lyric.RestoredPackages.renderDecl` splices
+the body back onto the bodyless `repr` head for `kind = "func"` decls that
+carry one. An `@externTarget` generic (`newList`/`newMap`/`newSet`/
+`dictGetKeys`/`dictGetValues` — the kernel collection-primitive family)
+keeps `body = None` even though it syntactically has one (`= ()`):
+`hasExternTargetAnnotation` excludes it, because that `()` body is a
+required-but-fake placeholder whose real semantics are the named BCL
+member (or, for these five, a compiler-recognised codegen intrinsic keyed
+on the bare function name) — feeding it to mono as real source would
+specialise a copy that actually computes and returns `()`, a genuine
+Unit-vs-real-type mismatch baked into working IL.
+
+**Bug 2 — a whole generic function was invisible EVEN as an
+already-compiled-into-the-DLL contract, because it was already gone from
+the file mono saw.** `Lyric.Mono.monoFileWithImportsAndTypeDecls`
+unconditionally strips every originally-generic `IFunc` item from the
+file it returns (§ algorithm step 5: "generic IFunc items removed"). Both
+`Msil.Bridge`'s per-package contract embedding (`embedLyricContract`) call
+sites passed the POST-mono file (`liftedFile` / `lifted`), so by the time
+`Lyric.ContractMeta.buildContractFromFile` walked `file.items`, every
+generic function — Bug 1's fix included — had already been deleted. Fix:
+a new `Msil.Bridge.withGenericFuncsForContract(preMono, postMono)` helper
+re-attaches the PRE-mono file's pub generic `IFunc` items (their real
+bodies intact) onto the post-mono item list purely for the contract build
+— every other decl kind is untouched by mono, so this can only ADD the
+missing generic functions back, never duplicate or shadow anything mono
+kept. Both `embedLyricContract` call sites (single-file:
+`file0`/`liftedFile`; per-package bundle: `parsedPkgs[li].file`/`lifted`)
+now build the contract from the merged file. `jvm/bridge.l` has no
+equivalent `Lyric.Contract` embedding at all (JVM bundles bytecode
+directly, a structurally different consumption model), so it is
+unaffected by, and does not need, this fix.
+
+**#6364's third bug — `Std.Collections.mapGet` (the ONE
+`pipeAddGenericFuncs` intrinsic exclusion) was invisible for TYPE
+INFERENCE, not just specialisation.** `mapGet` is deliberately excluded
+from `genDecls` (mono must never rewrite its call site — mono's mangled
+name wouldn't match the `funcName == "mapGet"` codegen intrinsic that
+inlines it as `ContainsKey` + `get_Item`), but the pre-existing exclusion
+dropped it from the collector's output ENTIRELY, so it was also invisible
+to `funcDecls` (mono's type-INFERENCE table). A binding
+`val g = Std.Collections.mapGet(m, "a")` (or a bare, unannotated `val`)
+therefore had no way to learn `g`'s real `Option[Widget]` type; a later
+`isSome(g)` had zero type evidence and defaulted its own `T` to `Object`
+(`inferReturnFromName`'s "importedFill" `#5604` Object-defaulting
+fallback — correct when nothing else applies, but SILENT: it does not
+distinguish "the callee is a real generic with unresolvable args" from
+"the callee's return type WAS visible, just never fed to inference"),
+producing `isSome__Object` — a specialisation for an instantiation the
+runtime value never had, panicking with "match not exhaustive". Fix:
+`pipeAddGenericFuncs` now emits an INFERENCE-ONLY copy of `mapGet`
+(`pipeInferenceOnlyFuncDecl`, tagged with a new `__lyric_inference_only`
+marker `Lyric.Mono.annsInferenceOnlyMono` recognises alongside the
+pre-existing `__lyric_union_ctor_infer` union-ctor-synth marker) instead
+of omitting it outright: the monomorphizer's import-merge logic already
+adds a marked decl to `funcDecls` but never to `genDecls` (exactly the
+union-ctor-synth precedent), so `mapGet`'s specialisation exclusion is
+unchanged while its return type becomes real, useful inference evidence.
+Shared `Lyric.Pipeline` code, so this also benefits the JVM bridge
+(`collectStdlibGenericFuncsJvm` calls the same function) with no change
+to JVM's own `mapGet` dispatch (unaffected — the `genDecls` exclusion, the
+only thing JVM's call-site handling could depend on, is untouched).
+
+**A fourth, DIFFERENT bug this work surfaced and also fixed: a zero-arg
+generic-constructor call corrupted a variable's tracked type for EVERY
+later inference, not just the one binding.** `Lyric.Mono.bindingEnvTE`'s
+`directCallEnvTE` helper trusts a binding initializer's OWN call-derived
+type over its annotation (#5604's `andThenResult`-style rationale: the
+runtime value can carry the callee's own Object-defaulted instantiation,
+not the annotation). For `val m: Map[String, Widget] = newMap()`,
+`newMap()` has NO arguments to pin `K`/`V` from, so 100% of its
+substitution comes from Object-defaulting — `directCallEnvTE` returned
+`Map[Object, Object]`, overriding the CORRECT annotation, and `m`'s
+tracked env type stayed wrong for the rest of the function. Worse:
+`newMap`/`newList`/`newSet` are never actually monomorphised (they are
+codegen intrinsics using the surrounding CONTEXT HINT — i.e. the
+annotation — to build the real concrete `Dictionary<K,V>`/`List<T>`/
+`HashSet<T>`), so the "trust the call, it might carry a real Object-erased
+instantiation" rationale this function exists for is doubly inapplicable:
+there is no real instantiation to trust, and the runtime value's true
+instantiation IS the annotation. A subsequent `mapValues(m)` would then
+unify against the wrong `Map[Object, Object]` and mis-specialise. Fix:
+`directCallEnvTE` now falls through to the annotation (returns `None`)
+specifically when the call has zero arguments AND the callee is generic —
+scoped this narrowly (not "any zero-arg call") after an initial
+too-broad version regressed `mono_self_test.l`'s two `#5631`
+if/match-initializer-agreement tests (`leftInt()`/`rightInt()` are
+zero-arg but NON-generic calls whose concrete `Int` return legitimately
+should, and after the narrowing does, override a stale annotation).
+
+**Residual #6364 gap (not fixed here — needs a follow-up issue).** The
+literal #6364 repro (`match Std.Collections.mapGet(m, "a") { case
+Some(w) -> println("mapGet ok: " + w.name); case None -> ... }` followed
+by `Std.Collections.mapValues(m)`) still throws the reported
+`InvalidCastException`. Isolated via a dozen minimal variants: matching
+`mapGet(...)` DIRECTLY (not first bound to a `val`) with a `Some(w)`
+binding arm that projects `w.field` AND concatenates it as
+`"literal" + w.field` (that exact operand order — `w.field + "literal"`
+does NOT reproduce it) breaks `mapValues`'s SUBSEQUENT specialisation;
+removing any ONE of those ingredients (bind to a `val` first; use `_`
+instead of `w`; use `w.field` alone with no concat; swap the concat
+operand order; reorder the two statements) makes the exact same program
+work. This is clearly a distinct, narrower, pre-existing `Lyric.Mono`
+defect (confirmed unrelated to the restored-package boundary: it
+reproduces identically compiling from real in-workspace source, no
+restored dependency involved at all) whose precise mechanism was not
+found within this pass's budget — every code path this investigation
+could identify (`directCallEnvTE`, `rewriteMatchArms`, `inferMemberTE`,
+`rewriteCallArgs`) appears, by direct reading, not to explain the
+asymmetry. Filed as a follow-up with the full set of minimal repros
+rather than shipped as a silent gap.
+
+**#6368 (unqualified `isSome`/`unwrapOption` unresolved building
+lyric-jsonrpc outside the workspace).** Verified FIXED on current `main`
+independently of this session's changes: the release-installed 0.5.0
+toolchain's `Lyric.Stdlib.dll` contract was a stale format-2 artifact
+that OMITTED every generic function's decl (not just its body — the decl
+itself), built by a compiler generation that predates the current
+`Lyric.ContractMeta.buildContractFromFile`, which adds every `pub` func
+regardless of genericity unconditionally. Rebuilding `lyric-jsonrpc` from
+outside the workspace with a freshly built, current-`main` toolchain
+(before any of this entry's own changes) already resolved `isSome`/
+`unwrapOption` correctly; the full `lyric-jsonrpc` test suite (44
+assertions across `JsonRpc.Json`/`JsonRpc`/`JsonRpc.Stdio`) passes
+end-to-end against the FINAL toolchain built here, confirming no
+regression. Root cause and fix predate this entry; recorded here only
+because #6368 was in scope for this investigation and needed positive
+re-verification, not a fix.
+
+**Regression sweep:** `mono` 54/54 (2 pre-existing failures introduced by
+an over-broad first cut of the zero-arg fix, then fixed by narrowing it to
+generic callees only — see above), `contract_meta` 43/43 (4 new cases:
+generic func carries body, expr-body form, non-generic has no body,
+`@externTarget` generic has no body), `restored_packages` 20/20 (2 new
+cases: func body splices onto the bodyless repr head, a bodyless func
+decl stays bodyless), `cross_package_generics` 10/10 (3 new end-to-end
+producer/consumer cases: composed restored generic function calls
+mirroring #6363, a restored generic predicate over a consumer-defined
+record type mirroring #6365, a restored generic function over
+`List[consumer-defined type]` mirroring #6364's general shape),
+`typechecker` 283/283, `cli_build` 77/77, `generic_specialization` 8/8,
+`nested_generic` 8/8, `stdlib_generic_mono` 7/7 — all unchanged green.
+
+**Related:** #6363, #6364, #6365, #6368, #1498, #2932, #5604, #5631,
+docs/41, docs/44, docs/45, docs/59.
+
+---
+
+### D-progress-733 — Companion regression from D-progress-732's own fix: the stdlib self-build stopped specialising `Std.Collections.mapGet` at all, crashing `Std.HttpServer` at runtime (#6377 investigation)
+
+**Status:** Shipped.
+
+**The bug.** D-progress-732 fixed #6364 (a zero-arg generic call's
+all-`Object` inference guess overriding a real annotation) by making
+`Lyric.Pipeline.pipeAddGenericFuncs`'s `mapGet` intrinsic-exclusion branch
+contribute an inference-only stub (`pipeInferenceOnlyFuncDecl`,
+`__lyric_inference_only` marker) instead of nothing. That fix was correct
+for the *consumer* scenario it targeted, but it broke the stdlib's own
+in-bundle self-build: `examples/rest_service.l` (a real, pre-existing
+example) crashed with `System.InvalidProgramException` at
+`Std.HttpServer.Program.appendExtraHeaders` when built against this
+branch's stdlib, but ran correctly on unmodified `main`.
+
+**Root cause.** `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`
+(the path that builds `lyric-stdlib`'s own multi-package project) collects
+generic functions from TWO sources over the same package list: 
+`collectStdlibGenericFuncs` (stdlib-collector semantics, `excludeIntrinsics
+= true`) and `collectInBundleGenericFuncs` (in-bundle/project semantics, no
+intrinsic exclusion). Both get merged into one `allImportedGenFuncs` list,
+with the stdlib collector's output added FIRST. `Lyric.Mono`'s import merge
+is first-wins-by-name (`if not funcDecls.containsKey(idecl.name) { ... }`):
+the inference-only `mapGet` stub (from the stdlib collector, no body) won
+the "mapGet" slot before the real, body-having `mapGet` (from the in-bundle
+collector) was ever processed — so the real copy was silently dropped from
+`genDecls` (the specialisation worklist) entirely. `mapGet__String__String`
+and its siblings stopped being emitted anywhere in the stdlib's own compiled
+IL (confirmed via disassembly: 6 occurrences on `main`, 0 on this branch
+before the fix), forcing every stdlib-internal `mapGet` call site through
+codegen's inline intrinsic fallback in `lowerBuiltinOrStaticCallMsil` — the
+actual path that crashes at runtime.
+
+The existing code already had a documented precedent for this exact hazard:
+inference-only union-case-ctor stubs are deliberately collected into a
+SEPARATE list and appended LAST in `allImportedGenFuncs`, specifically "so
+real functions win the monomorphizer's first-wins name merge" (#5604). The
+`mapGet` stub added by D-progress-732 was mixed into `collectStdlibGenericFuncs`'s
+early-position output instead of following that same append-last discipline.
+
+**The fix.** Split `pipeAddGenericFuncs`'s intrinsic-stub behaviour into a
+new function, `pipeAddInferenceOnlyIntrinsicFuncs`, and reverted
+`pipeAddGenericFuncs` itself to contribute nothing for the intrinsic case
+(matching its pre-D-progress-732 behaviour). Every caller
+(`Msil.Bridge.collectStdlibGenericFuncs`'s new `collectStdlibInferenceOnlyGenericFuncs`
+companion, both the single-file and multi-package project paths in
+`Msil.Bridge`, and `Jvm.Bridge.collectStdlibGenericFuncsJvm`) now appends the
+inference-only stub list LAST — after every real generic-func collector,
+including `collectInBundleGenericFuncs` — mirroring the union-ctor-stub
+append-last pattern exactly. This preserves #6364's inference fix (the stub
+still contributes `mapGet`'s `Option[V]` return type to `funcDecls` for
+downstream inference) while letting a real, in-bundle `mapGet` always win
+the first-wins merge when one exists.
+
+**Verification.** Disassembled `Lyric.Stdlib.dll` after the fix: 6
+`mapGet__String__String`-style occurrences (matching `main`), and
+`Std.HttpServer.Program::appendExtraHeaders`'s IL is byte-for-byte
+equivalent in shape to `main`'s (a direct `call` to the specialised
+function, not the inline intrinsic pattern). Ran the real
+`examples/rest_service.l` end to end: `dotnet` no longer throws
+`InvalidProgramException`; `GET /` returns `200 OK` with headers correctly
+appended via `appendExtraHeaders`. Full regression sweep after `make lyric`:
+`mono_self_test.l` 54/54, `weaver_self_test.l` 46/46, `typechecker_self_test.l`
+283/283, `modechecker_self_test.l` 92/92, `parser_self_test.l` 126/126,
+`contract_elaborator_self_test.l` 36/36, `alias_rewriter_self_test.l` 37/37,
+`cross_package_generics_self_test.l` 10/10 (the D-progress-732 regression
+tests for #6363/#6364/#6365, unaffected by this reordering fix).
+
+**Also investigated, found pre-existing and separately tracked.** `ilverify`
+against the fixed `Lyric.Stdlib.dll` surfaces `StackUnexpected` errors in
+`Std.Http`'s `sendWithTimeoutAsync`/`getWithTimeoutAsync`/`postWithTimeoutAsync`.
+These are NOT a new regression from this fix or from D-progress-732: the
+functions' own doc comments (`lyric-stdlib/std/http.l`) already document an
+unconditional `InvalidProgramException` at runtime, root-caused and tracked
+as #6367, with the functions already downgraded from `@stable` to
+`@experimental` and callers pointed at `getWithCancelAsync`/`sendWithCancelAsync`
+as the working alternative. Confirmed out of scope for this entry.
+
+**Related:** #6377, #6363, #6364, #6365, #6368, D-progress-732, #5604,
+#6367, `lyric-compiler/lyric/pipeline/pipeline.l`, `lyric-compiler/msil/bridge.l`,
+`lyric-compiler/jvm/bridge.l`.
+
+---
+
+### D-progress-734 — Second companion regression from D-progress-732's own fix, found in review (#6384): `withGenericFuncsForContract` duplicated `@externTarget`-kept generic funcs in the embedded contract
+
+**Status:** Shipped.
+
+**The bug.** D-progress-732's `withGenericFuncsForContract` (the helper
+that re-attaches the pre-mono file's pub generic `IFunc` items onto the
+post-mono file before building the `Lyric.Contract` resource, so a generic
+function's real body isn't lost from the contract) unconditionally
+appended every pub generic `IFunc` from the pre-mono file, with no check
+for whether `Lyric.Mono`'s Phase 2 rewrite had already kept that same decl
+in the post-mono file for an unrelated reason. `Lyric.Mono.annsKeepGenericExternMono`
+keeps a generic `@externTarget` extern un-specialised (with its original
+body, unrewritten) when its target type carries a CLR arity suffix
+(`` List`1``, `` Dictionary`2``) — `newList`/`newMap`/`newSet`/
+`dictGetKeys`/`dictGetValues`, the stdlib's collection-kernel externs, are
+exactly this shape, so they already survive into `postMono.items`.
+`withGenericFuncsForContract` then re-added every one of them a second
+time from `preMono`, producing a duplicate `pub func newList[T](): List[T]`
+(and its four siblings) in the embedded contract's rendered function list.
+
+**Why this mattered.** A restored consumer's contract-driven preamble
+synthesis (`Lyric.RestoredPackages`) has no dedup step, so a duplicate
+contract entry becomes a duplicate synthesised `pub func` declaration in
+the consumer's own type-checked source — a `T0001` "duplicate name" error
+on re-typecheck. `newList()`/`newMap()` are the exact bare-name idiom
+exercised directly from consumer code (this PR's own
+`cross_package_generics_self_test.l` cases), so this was not a narrow
+corner case.
+
+**The fix.** `withGenericFuncsForContract` now builds a `Map[String, Bool]`
+of every generic `IFunc` name already present in `postMono.items` while
+copying it into the result, then skips any pre-mono candidate whose name
+is already in that set. This only ever ADDS the generic functions mono
+actually stripped (the D-progress-732 fix's original purpose), never a
+decl mono chose to keep for its own reason.
+
+**Verification.** Dumped the `Lyric.Contract` resource embedded in the
+rebuilt `Lyric.Stdlib.dll` (via a small reflection-based reader) and
+confirmed exactly one `func newList[T](): List[T]` / `func newMap[K, V]():
+Map[K, V]` entry each (previously two). Full regression sweep after
+`make lyric`: `contract_meta_self_test.l` 43/43, `restored_packages_self_test.l`
+22/22, `cross_package_generics_self_test.l` 10/10, `mono_self_test.l` 54/54.
+Re-verified the `examples/rest_service.l` end-to-end repro (D-progress-733's
+`appendExtraHeaders` fix) is unaffected — `mapGet__String__String` still
+appears 6× in the rebuilt stdlib IL and the server responds `200 OK`.
+
+**Also, in the same review pass:** hoisted `directCallEnvTE`'s two separate
+`mapGet(state.funcDecls, callFnName)` lookups (`lyric-compiler/lyric/mono.l`)
+into one shared `calleeDecl` binding — a SUGGESTION, no behavior change.
+
+**Related:** #6384, #6377, D-progress-732, `lyric-compiler/msil/bridge.l`,
+`lyric-compiler/lyric/mono.l`.

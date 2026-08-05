@@ -103,6 +103,22 @@ func mkDecl(kind: in String, name: in String, repr: in String): Meta.ContractDec
   )
 }
 
+func mkDeclWithBody(kind: in String, name: in String, repr: in String, body: in String): Meta.ContractDecl {
+  Meta.ContractDecl(
+    kind = kind,
+    name = name,
+    repr = repr,
+    visibility = "pub",
+    isPure = false,
+    stability = "",
+    requiresClauses = newList(),
+    ensuresClauses = newList(),
+    body = Some(value = body),
+    params = newList(),
+    bmode = false
+  )
+}
+
 // Empty contract produces a one-line `package X` header.
 func testSynthesiseEmptyContract(): Unit {
   val c = mkContract("MyApp.Empty", emptyDecls())
@@ -158,6 +174,44 @@ func testSynthesiseInterfaceFullBodyNoDoubleBrace(): Unit {
     not Str.contains(src, "} {}"),
     "synth_interface_body: no double-brace `} {}` appended to a body-bearing repr"
   )
+}
+
+// A GENERIC function's contract decl carries its real body
+// (`Lyric.ContractMeta.funcDecl`/`funcBodyText`) so `renderDecl` splices
+// it back onto the bodyless `repr` head — without this, `Lyric.Mono`'s
+// cross-package specialiser has nothing to copy into a restored
+// consumer's call site, and the call degrades to unbalanced IL at
+// runtime (#6363, #6364, #6365).
+func testSynthesiseFuncWithBodySplicesIn(): Unit {
+  val decls: List[Meta.ContractDecl] = newList()
+  decls.add(
+    mkDeclWithBody(
+      "func",
+      "unwrapOrBox",
+      "pub func unwrapOrBox[T](b: in Box[T], default: in T): T",
+      "{ match b { case Full(v) -> v; case Empty -> default } }"
+    )
+  )
+  val c = mkContract("MyApp.Box", decls)
+  val src = synthesiseSource(c, emptyDecls())
+  assertTrue(
+    Str.contains(
+      src,
+      "pub func unwrapOrBox[T](b: in Box[T], default: in T): T { match b { case Full(v) -> v; case Empty -> default } }"
+    ),
+    "synth_func_body: body spliced onto the bodyless repr head"
+  )
+}
+
+// A generic function with NO body in its contract decl (an `@axiom`
+// signature, or a not-yet-rebuilt v2-era library) still renders as a
+// bodyless head — `renderDecl` must not require a body to be present.
+func testSynthesiseFuncWithoutBodyStaysBodyless(): Unit {
+  val decls: List[Meta.ContractDecl] = newList()
+  decls.add(mkDecl("func", "axiomLike", "pub func axiomLike[T](x: in T): T"))
+  val c = mkContract("MyApp.Axiom", decls)
+  val src = synthesiseSource(c, emptyDecls())
+  assertTrue(Str.contains(src, "pub func axiomLike[T](x: in T): T\n"), "synth_func_no_body: bodyless head unchanged")
 }
 
 // Records / unions / enums / distincts / aliases / opaques pass through
@@ -469,6 +523,14 @@ test "synthesise empty contract" {
 
 test "synthesise func" {
   testSynthesiseFunc()
+}
+
+test "synthesise func with body splices in" {
+  testSynthesiseFuncWithBodySplicesIn()
+}
+
+test "synthesise func without body stays bodyless" {
+  testSynthesiseFuncWithoutBodyStaysBodyless()
 }
 
 test "synthesise interface appends braces" {

@@ -367,6 +367,21 @@ pub func pipeAnnsBlockSpecialization(anns: in List[Annotation]): Bool {
 /// monomorphized copy would rename the call, bypass the intrinsic, and
 /// copy a body that calls the un-lowerable generic kernel extern
 /// `tryGetValue`.  `pkgName` is only consulted for that exclusion.
+///
+/// The intrinsic contributes NOTHING to `dest` here — see
+/// `pipeAddInferenceOnlyIntrinsicFuncs` for its separate, appended-last
+/// inference-only stub.  A stdlib self-build (where `Std.Collections`'s
+/// real, body-having `mapGet` also arrives via an in-bundle collector —
+/// `Msil.Bridge.collectInBundleGenericFuncs` — over the SAME package
+/// list) merges every collector's output into one first-wins-by-name
+/// table (`Lyric.Mono`'s `funcDecls`/`genDecls`).  Adding the stub to
+/// `dest` right here put it in the SAME early position as every other
+/// stdlib entry, so on a stdlib self-build it was merged BEFORE the real
+/// `mapGet` and won the first-wins slot, silently dropping the real,
+/// specialisable `mapGet` from `genDecls` — no `mapGet__String__String`
+/// was ever emitted for the stdlib's own in-bundle call sites (e.g.
+/// `Std.HttpServer.appendExtraHeaders`), which then crashed at runtime
+/// hitting codegen's inline intrinsic fallback (#6377 investigation).
 pub func pipeAddGenericFuncs(
   items: in List[Item],
   pkgName: in String,
@@ -385,7 +400,7 @@ pub func pipeAddGenericFuncs(
         val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
         val hasBody = match decl.body { case Some(_) -> true; case None -> false }
         val isIntrinsic = excludeIntrinsics and decl.name == "mapGet" and pkgName == "Std.Collections"
-        if pubOk and isGeneric and hasBody and not pipeAnnsBlockSpecialization(decl.annotations) and not isIntrinsic {
+        if not isIntrinsic and pubOk and isGeneric and hasBody and not pipeAnnsBlockSpecialization(decl.annotations) {
           dest.add(decl)
         }
       }
@@ -393,6 +408,79 @@ pub func pipeAddGenericFuncs(
     }
     i = i + 1
   }
+}
+
+/// Companion of `pipeAddGenericFuncs`: collects ONLY the codegen-intrinsic
+/// `mapGet` as an inference-only stub (`pipeInferenceOnlyFuncDecl`,
+/// `Lyric.Mono.annsInferenceOnlyMono`'s `__lyric_inference_only` marker) so
+/// `mapGet`'s return type (`Option[V]`) stays visible to the monomorphizer's
+/// inference tables without ever competing for the first-wins specialisation
+/// slot a real `mapGet` (from an in-bundle collector, on a stdlib self-build)
+/// needs to win.  Callers must append this list's output LAST — after every
+/// real generic-func collector — exactly like the existing
+/// stdlib/in-bundle/restored union-ctor stub lists (#5604), so a real
+/// `mapGet` always wins the merge (#6364's fix without #6377's regression).
+///
+/// Checks `pub` and a real body explicitly, mirroring `pipeAddGenericFuncs`'s
+/// own gates, rather than assuming them from the `mapGet`-name/package match
+/// alone — so a future rename or visibility change of `Std.Collections.mapGet`
+/// fails this filter cleanly instead of silently stubbing a decl that isn't
+/// actually the intrinsic this function exists to shadow.
+pub func pipeAddInferenceOnlyIntrinsicFuncs(items: in List[Item], pkgName: in String, dest: in List[FunctionDecl]): Unit {
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IFunc(decl) -> {
+        val isPub = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+        val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+        val hasBody = match decl.body { case Some(_) -> true; case None -> false }
+        val isIntrinsic = decl.name == "mapGet" and pkgName == "Std.Collections"
+        if isIntrinsic and isPub and isGeneric and hasBody and not pipeAnnsBlockSpecialization(decl.annotations) {
+          dest.add(pipeInferenceOnlyFuncDecl(decl))
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
+/// Copy `decl` tagged with the `__lyric_inference_only` marker annotation
+/// `Lyric.Mono.annsInferenceOnlyMono` recognises (alongside the pre-existing
+/// `__lyric_union_ctor_infer` union-ctor-synth marker): the monomorphizer's
+/// import merge adds a marked decl to its inference table (`funcDecls`) but
+/// never to its specialisation candidates (`genDecls`), exactly like a
+/// union-ctor synth.  `body` is dropped (`None`) — a codegen intrinsic's
+/// declaration is never specialised, so there is no body to specialise
+/// FROM, and keeping a body around risks a future accidental consumer
+/// treating this as a real, callable definition.
+func pipeInferenceOnlyFuncDecl(decl: in FunctionDecl): FunctionDecl {
+  val marker: List[Annotation] = newList()
+  var ai = 0
+  while ai < decl.annotations.count {
+    marker.add(decl.annotations[ai])
+    ai = ai + 1
+  }
+  val markerSegs: List[String] = newList()
+  markerSegs.add("__lyric_inference_only")
+  val markerArgs: List[AnnotationArg] = newList()
+  marker.add(
+    Annotation(name = ModulePath(segments = markerSegs, span = decl.span), args = markerArgs, span = decl.span)
+  )
+  FunctionDecl(
+    docComments = decl.docComments,
+    annotations = marker,
+    visibility = decl.visibility,
+    isAsync = decl.isAsync,
+    name = decl.name,
+    generics = decl.generics,
+    params = decl.params,
+    ret = decl.ret,
+    whereClause = decl.whereClause,
+    contracts = decl.contracts,
+    body = None,
+    span = decl.span
+  )
 }
 
 /// Append every non-generic block-bodied `pub func` in `items` to `dest`.

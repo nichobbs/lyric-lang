@@ -710,6 +710,87 @@ func testBuildVersionThreaded(): Unit {
   assertEqual(c.version, "2.3.4", "buildContractFromFile: version argument carried through")
 }
 
+// `buildContractFromFile` embeds a GENERIC pub function's real body
+// (`funcDecl`/`funcBodyText`) — a generic Lyric function never gets a
+// callable cross-assembly MemberRef in the compiled DLL, so a restored
+// consumer's `Lyric.Mono.monoFileWithImports` needs the body to specialise
+// a concrete copy at the call site (#6363, #6364, #6365).
+func testBuildGenericFuncCarriesBody(): Unit {
+  val src = "package P\n\npub func unwrapOr[T](o: in Option[T], default: in T): T {\n" + "  match o {\n" +
+    "    case Some(v) -> v\n" +
+    "    case None -> default\n" +
+    "  }\n" +
+    "}\n"
+  val pr = parse(src)
+  val c = buildContractFromFile(pr.file, "1.0.0")
+  val d = unwrapDeclOrFail(findDeclByKind(c.decls, "func", "unwrapOr"), "buildContractFromFile: func unwrapOr missing")
+  assertTrue(not Str.contains(d.repr, "match"), "generic_func_body: repr stays bodyless (got " + d.repr + ")")
+  match d.body {
+    case None -> panic("generic_func_body: expected Some(body), got None")
+    case Some(b) -> {
+      assertTrue(Str.contains(b, "match o"), "generic_func_body: body carries the match expression (got " + b + ")")
+      assertTrue(Str.contains(b, "Some(v)"), "generic_func_body: body carries the Some arm")
+      assertTrue(Str.contains(b, "default"), "generic_func_body: body carries the None arm")
+      // The spliced-in body must re-parse cleanly onto the bodyless repr head.
+      val rt = parse("package P\n\n" + d.repr + " " + b + "\n")
+      assertEqualInt(rt.diagnostics.count, 0, "generic_func_body: repr + body re-parses (got " + b + ")")
+    }
+  }
+}
+
+// An expression-bodied generic function (`= expr`) carries its body in
+// the `= expr` form, not the block form.
+func testBuildGenericFuncExprBodyCarriesBody(): Unit {
+  val src = "package P\n\npub func identity[T](x: in T): T = x\n"
+  val pr = parse(src)
+  val c = buildContractFromFile(pr.file, "1.0.0")
+  val d = unwrapDeclOrFail(findDeclByKind(c.decls, "func", "identity"), "buildContractFromFile: func identity missing")
+  match d.body {
+    case None -> panic("generic_func_expr_body: expected Some(body), got None")
+    case Some(b) -> {
+      assertTrue(Str.startsWith(b, "="), "generic_func_expr_body: expr body starts with '=' (got " + b + ")")
+      assertTrue(Str.contains(b, "x"), "generic_func_expr_body: body carries the expression")
+      val rt = parse("package P\n\n" + d.repr + " " + b + "\n")
+      assertEqualInt(rt.diagnostics.count, 0, "generic_func_expr_body: repr + body re-parses (got " + b + ")")
+    }
+  }
+}
+
+// An `@externTarget` generic function's `= ()` body is a required-but-fake
+// placeholder — the named BCL/JDK member (or, for a handful of kernel
+// collection primitives, a compiler-recognised intrinsic keyed on the
+// function's bare name) is its real implementation.  It must keep
+// `body = None`: feeding the placeholder into `Lyric.Mono` as if it were
+// real Lyric source would specialise a copy that actually computes and
+// returns `()`, silently discarding the FFI dispatch and baking a genuine
+// return-type mismatch into working IL.
+func testBuildExternTargetGenericFuncHasNoBody(): Unit {
+  val src = "package P\n\nextern type List[T] = \"System.Collections.Generic.List`1\"\n\n" +
+    "@externTarget(\"System.Collections.Generic.List`1..ctor\")\n" +
+    "pub func newList[T](): List[T] = ()\n"
+  val pr = parse(src)
+  val c = buildContractFromFile(pr.file, "1.0.0")
+  val d = unwrapDeclOrFail(findDeclByKind(c.decls, "func", "newList"), "buildContractFromFile: func newList missing")
+  match d.body {
+    case None -> ()
+    case Some(_) -> panic("extern_target_func_no_body: expected None, got Some")
+  }
+}
+
+// A NON-generic pub function keeps `body = None` — it compiles to a real
+// cross-assembly MemberRef, so a restored consumer calls it directly and
+// never needs to reconstruct its implementation from source.
+func testBuildNonGenericFuncHasNoBody(): Unit {
+  val src = "package P\n\npub func addOne(x: in Int): Int {\n  x + 1\n}\n"
+  val pr = parse(src)
+  val c = buildContractFromFile(pr.file, "1.0.0")
+  val d = unwrapDeclOrFail(findDeclByKind(c.decls, "func", "addOne"), "buildContractFromFile: func addOne missing")
+  match d.body {
+    case None -> ()
+    case Some(_) -> panic("non_generic_func_no_body: expected None, got Some")
+  }
+}
+
 // `buildContractFromFile` embeds the `around` body of an `@inline_template`
 // aspect (D047/D050) so a consuming package can later resolve a
 // `from`-instance against a restored dependency (#3543 defect 4).  The
@@ -1020,6 +1101,22 @@ test "buildContractFromFile array type arg" {
 
 test "buildContractFromFile version threaded" {
   testBuildVersionThreaded()
+}
+
+test "buildContractFromFile generic func carries body" {
+  testBuildGenericFuncCarriesBody()
+}
+
+test "buildContractFromFile generic func expr body carries body" {
+  testBuildGenericFuncExprBodyCarriesBody()
+}
+
+test "buildContractFromFile non-generic func has no body" {
+  testBuildNonGenericFuncHasNoBody()
+}
+
+test "buildContractFromFile externTarget generic func has no body" {
+  testBuildExternTargetGenericFuncHasNoBody()
 }
 
 test "buildContractFromFile filters non-pub" {
