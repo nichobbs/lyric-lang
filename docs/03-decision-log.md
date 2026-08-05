@@ -23088,11 +23088,11 @@ docs/41, docs/44, docs/45, docs/59.
 
 ---
 
-### D-progress-731 — Companion regression from D-progress-729's own fix: the stdlib self-build stopped specialising `Std.Collections.mapGet` at all, crashing `Std.HttpServer` at runtime (#6377 investigation)
+### D-progress-733 — Companion regression from D-progress-732's own fix: the stdlib self-build stopped specialising `Std.Collections.mapGet` at all, crashing `Std.HttpServer` at runtime (#6377 investigation)
 
 **Status:** Shipped.
 
-**The bug.** D-progress-729 fixed #6364 (a zero-arg generic call's
+**The bug.** D-progress-732 fixed #6364 (a zero-arg generic call's
 all-`Object` inference guess overriding a real annotation) by making
 `Lyric.Pipeline.pipeAddGenericFuncs`'s `mapGet` intrinsic-exclusion branch
 contribute an inference-only stub (`pipeInferenceOnlyFuncDecl`,
@@ -23125,13 +23125,13 @@ The existing code already had a documented precedent for this exact hazard:
 inference-only union-case-ctor stubs are deliberately collected into a
 SEPARATE list and appended LAST in `allImportedGenFuncs`, specifically "so
 real functions win the monomorphizer's first-wins name merge" (#5604). The
-`mapGet` stub added by D-progress-729 was mixed into `collectStdlibGenericFuncs`'s
+`mapGet` stub added by D-progress-732 was mixed into `collectStdlibGenericFuncs`'s
 early-position output instead of following that same append-last discipline.
 
 **The fix.** Split `pipeAddGenericFuncs`'s intrinsic-stub behaviour into a
 new function, `pipeAddInferenceOnlyIntrinsicFuncs`, and reverted
 `pipeAddGenericFuncs` itself to contribute nothing for the intrinsic case
-(matching its pre-D-progress-729 behaviour). Every caller
+(matching its pre-D-progress-732 behaviour). Every caller
 (`Msil.Bridge.collectStdlibGenericFuncs`'s new `collectStdlibInferenceOnlyGenericFuncs`
 companion, both the single-file and multi-package project paths in
 `Msil.Bridge`, and `Jvm.Bridge.collectStdlibGenericFuncsJvm`) now appends the
@@ -23153,30 +23153,30 @@ appended via `appendExtraHeaders`. Full regression sweep after `make lyric`:
 `mono_self_test.l` 54/54, `weaver_self_test.l` 46/46, `typechecker_self_test.l`
 283/283, `modechecker_self_test.l` 92/92, `parser_self_test.l` 126/126,
 `contract_elaborator_self_test.l` 36/36, `alias_rewriter_self_test.l` 37/37,
-`cross_package_generics_self_test.l` 10/10 (the D-progress-729 regression
+`cross_package_generics_self_test.l` 10/10 (the D-progress-732 regression
 tests for #6363/#6364/#6365, unaffected by this reordering fix).
 
 **Also investigated, found pre-existing and separately tracked.** `ilverify`
 against the fixed `Lyric.Stdlib.dll` surfaces `StackUnexpected` errors in
 `Std.Http`'s `sendWithTimeoutAsync`/`getWithTimeoutAsync`/`postWithTimeoutAsync`.
-These are NOT a new regression from this fix or from D-progress-729: the
+These are NOT a new regression from this fix or from D-progress-732: the
 functions' own doc comments (`lyric-stdlib/std/http.l`) already document an
 unconditional `InvalidProgramException` at runtime, root-caused and tracked
 as #6367, with the functions already downgraded from `@stable` to
 `@experimental` and callers pointed at `getWithCancelAsync`/`sendWithCancelAsync`
 as the working alternative. Confirmed out of scope for this entry.
 
-**Related:** #6377, #6363, #6364, #6365, #6368, D-progress-729, #5604,
+**Related:** #6377, #6363, #6364, #6365, #6368, D-progress-732, #5604,
 #6367, `lyric-compiler/lyric/pipeline/pipeline.l`, `lyric-compiler/msil/bridge.l`,
 `lyric-compiler/jvm/bridge.l`.
 
 ---
 
-### D-progress-732 — Second companion regression from D-progress-729's own fix, found in review (#6384): `withGenericFuncsForContract` duplicated `@externTarget`-kept generic funcs in the embedded contract
+### D-progress-734 — Second companion regression from D-progress-732's own fix, found in review (#6384): `withGenericFuncsForContract` duplicated `@externTarget`-kept generic funcs in the embedded contract
 
 **Status:** Shipped.
 
-**The bug.** D-progress-729's `withGenericFuncsForContract` (the helper
+**The bug.** D-progress-732's `withGenericFuncsForContract` (the helper
 that re-attaches the pre-mono file's pub generic `IFunc` items onto the
 post-mono file before building the `Lyric.Contract` resource, so a generic
 function's real body isn't lost from the contract) unconditionally
@@ -23205,7 +23205,7 @@ corner case.
 of every generic `IFunc` name already present in `postMono.items` while
 copying it into the result, then skips any pre-mono candidate whose name
 is already in that set. This only ever ADDS the generic functions mono
-actually stripped (the D-progress-729 fix's original purpose), never a
+actually stripped (the D-progress-732 fix's original purpose), never a
 decl mono chose to keep for its own reason.
 
 **Verification.** Dumped the `Lyric.Contract` resource embedded in the
@@ -23214,7 +23214,7 @@ confirmed exactly one `func newList[T](): List[T]` / `func newMap[K, V]():
 Map[K, V]` entry each (previously two). Full regression sweep after
 `make lyric`: `contract_meta_self_test.l` 43/43, `restored_packages_self_test.l`
 22/22, `cross_package_generics_self_test.l` 10/10, `mono_self_test.l` 54/54.
-Re-verified the `examples/rest_service.l` end-to-end repro (D-progress-731's
+Re-verified the `examples/rest_service.l` end-to-end repro (D-progress-733's
 `appendExtraHeaders` fix) is unaffected — `mapGet__String__String` still
 appears 6× in the rebuilt stdlib IL and the server responds `200 OK`.
 
@@ -23222,5 +23222,5 @@ appears 6× in the rebuilt stdlib IL and the server responds `200 OK`.
 `mapGet(state.funcDecls, callFnName)` lookups (`lyric-compiler/lyric/mono.l`)
 into one shared `calleeDecl` binding — a SUGGESTION, no behavior change.
 
-**Related:** #6384, #6377, D-progress-729, `lyric-compiler/msil/bridge.l`,
+**Related:** #6384, #6377, D-progress-732, `lyric-compiler/msil/bridge.l`,
 `lyric-compiler/lyric/mono.l`.
