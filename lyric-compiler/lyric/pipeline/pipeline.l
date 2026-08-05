@@ -420,14 +420,22 @@ pub func pipeAddGenericFuncs(
 /// real generic-func collector — exactly like the existing
 /// stdlib/in-bundle/restored union-ctor stub lists (#5604), so a real
 /// `mapGet` always wins the merge (#6364's fix without #6377's regression).
+///
+/// Checks `pub` and a real body explicitly, mirroring `pipeAddGenericFuncs`'s
+/// own gates, rather than assuming them from the `mapGet`-name/package match
+/// alone — so a future rename or visibility change of `Std.Collections.mapGet`
+/// fails this filter cleanly instead of silently stubbing a decl that isn't
+/// actually the intrinsic this function exists to shadow.
 pub func pipeAddInferenceOnlyIntrinsicFuncs(items: in List[Item], pkgName: in String, dest: in List[FunctionDecl]): Unit {
   var i = 0
   while i < items.count {
     match items[i].kind {
       case IFunc(decl) -> {
+        val isPub = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
         val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+        val hasBody = match decl.body { case Some(_) -> true; case None -> false }
         val isIntrinsic = decl.name == "mapGet" and pkgName == "Std.Collections"
-        if isIntrinsic and isGeneric and not pipeAnnsBlockSpecialization(decl.annotations) {
+        if isIntrinsic and isPub and isGeneric and hasBody and not pipeAnnsBlockSpecialization(decl.annotations) {
           dest.add(pipeInferenceOnlyFuncDecl(decl))
         }
       }
