@@ -154,3 +154,39 @@ func applyAndAddOne(h: in Handler, x: in Int): Int {
 test "alias-typed function parameter, arithmetic on the call result (#5366)" {
   assertEqualInt(applyAndAddOne(double, 10), 21, "double(10) + 1 == 21 via alias-typed param")
 }
+
+// #6389 addendum: `collectBareFuncValueRefsExpr`'s `EMatch` case never walked
+// `MatchArm.guard`, so a bare top-level function referenced ONLY inside a
+// match guard never got a synthesized thunk — reproducing #5362's
+// `NullReferenceException` at the guard's `EPath` value read.
+func classifyByGuard(n: in Int): Int {
+  match n {
+    case x if apply(double, x) > 5 -> 42
+    case _ -> 0
+  }
+}
+
+test "bare top-level function referenced only inside a match guard (#6389 addendum)" {
+  assertEqualInt(classifyByGuard(5), 42, "apply(double, 5) == 10 > 5, guard selects the first arm")
+}
+
+// #6389 addendum: `allReferencedNamesMsil`'s `IRecord` case never walked
+// `RMField(field).dflt`, so a bare top-level function referenced ONLY as a
+// record field's default value never got a synthesized thunk either.  Reads
+// the defaulted field into a local before invoking (mirroring
+// `storeInRecordThenCall` above) rather than chain-calling it directly
+// (`holder.h(10)`) — that dot-call-chain shape hits a separate, pre-existing
+// method-dispatch gap unrelated to this addendum's thunk-synthesis fix.
+record GuardHolder {
+  h: Handler = double
+}
+
+func callViaDefaultedField(): Int {
+  val holder = GuardHolder()
+  val f = holder.h
+  f(10)
+}
+
+test "bare top-level function referenced only as a record field default (#6389 addendum)" {
+  assertEqualInt(callViaDefaultedField(), 20, "GuardHolder().h defaults to double; double(10) == 20")
+}

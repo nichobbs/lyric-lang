@@ -68,8 +68,17 @@ lands.
 
 Register handlers with `Lambda.Direct` — a small (usually zero-field)
 record implementing the matching handler interface, not a bare function or
-closure (a bare function/closure crashes at runtime the first time it's
-invoked: `docs/03-decision-log.md`'s "Decision 4" entry, #5362/#5363).
+closure. Each factory's parameter type is the interface itself (e.g.
+`SqsHandler`), so a bare function can't be passed there at all — Lyric
+interfaces are nominal (`impl`-only), not structurally satisfied by a
+function value. The interface shape exists because invoking a closure
+across the two or more packages this registration path spans (consumer
+handler -> `Lambda.Direct`'s factory -> the kernel's dispatch) remains
+unreliable on the self-hosted MSIL backend (#5363, still open on both
+targets): `docs/03-decision-log.md`'s "Decision 4" entry. The other bug
+that originally motivated this design, #5362 (a bare same-package named
+function used directly as a function-typed value crashing at runtime), is
+now fixed on `--target dotnet`; it remains broken on `--target jvm`.
 
 ```lyric
 import Lambda
@@ -197,14 +206,19 @@ Same caveat as event handlers above — prefer `Lambda.Direct.tokenAuthorizerHan
 
 Each factory takes an instance of the matching interface (`Lambda.SqsHandler`,
 `Lambda.TokenAuthorizerHandler`, ...) implemented by a small record — not a
-bare function or closure. A bare named function used as a function-typed
-value crashes the first time it's invoked (#5362), and closures invoked
-across the three packages this registration path necessarily spans
-(consumer handler -> `Lambda.Direct`'s factory -> the kernel's dispatch)
-are unreliable on the current self-hosted MSIL backend (#5363) — see
-`docs/03-decision-log.md`'s "Decision 4" entry, which fixed the identical
-problem for `Web.Handler`/`Web.Middleware`. This is also required (not
-just AOT-recommended) for anything to dispatch at all today.
+bare function or closure (the parameter type is the interface itself, so a
+bare function is a compile-time type mismatch, not merely discouraged).
+Closures invoked across the three packages this registration path
+necessarily spans (consumer handler -> `Lambda.Direct`'s factory -> the
+kernel's dispatch) are unreliable on the current self-hosted MSIL backend
+(#5363, still open on both targets) — see `docs/03-decision-log.md`'s
+"Decision 4" entry, which fixed the identical problem for
+`Web.Handler`/`Web.Middleware`. The entry's other motivating bug, #5362 (a
+bare same-package named function crashing when used directly as a
+function-typed value), is now fixed on `--target dotnet` and remains open
+on `--target jvm`; it doesn't change the interface requirement here since
+#5363 alone still blocks a function-typed alternative. This is also
+required (not just AOT-recommended) for anything to dispatch at all today.
 
 ## Event types
 

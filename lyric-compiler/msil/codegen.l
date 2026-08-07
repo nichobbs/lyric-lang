@@ -26533,6 +26533,11 @@ func collectRefNamesExpr(e: in Expr, acc: in List[String]): Unit {
       collectRefNamesExpr(scr, acc)
       var ai = 0
       while ai < arms.count {
+        match arms[ai].guard {
+          case Some(guardExpr) -> collectRefNamesExpr(guardExpr, acc)
+          case None -> {
+          }
+        }
         collectRefNamesOrdBlock(arms[ai].body, acc)
         ai = ai + 1
       }
@@ -27168,6 +27173,11 @@ func collectBareFuncValueRefsExpr(e: in Expr, acc: in List[String]): Unit {
       collectBareFuncValueRefsExpr(scr, acc)
       var ai = 0
       while ai < arms.count {
+        match arms[ai].guard {
+          case Some(guardExpr) -> collectBareFuncValueRefsExpr(guardExpr, acc)
+          case None -> {
+          }
+        }
         collectBareFuncValueRefsOrdBlock(arms[ai].body, acc)
         ai = ai + 1
       }
@@ -27362,6 +27372,13 @@ func allReferencedNamesMsil(file: in SourceFile): List[String] {
         while mi < decl.members.count {
           match decl.members[mi] {
             case RMFunc(fn) -> collectRefNamesFuncBodyMsil(fn.body, acc)
+            case RMField(field) -> {
+              match field.dflt {
+                case Some(dfltExpr) -> collectBareFuncValueRefsExpr(dfltExpr, acc)
+                case None -> {
+                }
+              }
+            }
             case _ -> {
             }
           }

@@ -4162,6 +4162,24 @@ func findDirectSig(
         return None
       }
       val name = path.segments[path.segments.count - 1]
+      // #5792: a single-segment call-position identifier that is ALSO bound as
+      // a local (val/var/param) in the current scope must resolve to the
+      // local — consistent with a bare (non-call) reference to the same name,
+      // which already resolves via `resolveExprPath`'s scope-first lookup
+      // (`match scopeTryFind(sc, name) { ... }` before it ever consults
+      // `sigs`).  Returning `None` here defers to the `ECall` arm's general
+      // `fnT` resolution (itself scope-first), so a non-function-typed local
+      // now produces a proper T0044 "called value of non-function type"
+      // diagnostic instead of silently dispatching to an unrelated same-name
+      // same-package function, and a function-typed local is invoked as
+      // itself rather than the shadowed top-level function.
+      if path.segments.count == 1 {
+        match scopeTryFind(sc, name) {
+          case Some(_) -> return None
+          case None -> {
+          }
+        }
+      }
       val arityKey = name + "/" + toString(arity)
       // Qualified call (e.g. the alias-rewritten `Std.RegexSafe.tryCompile`):
       // the leading segments name the declaring package.  Prefer the same-arity
