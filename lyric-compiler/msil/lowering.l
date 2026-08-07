@@ -709,10 +709,21 @@ pub union MInsn {
   // stdlib union case classes (e.g. `Option_Some<Keyword>`) where the type arg
   // is a TypeDef that isn't in the table during codegen Phase 3.
   case MCastclassGeneric(className: String, typeArgs: List[MsilType])
-  // ldfld on a field of a generic type instantiation.  TypeSpec and TypeSpec-
-  // parented MemberRef are built at lowering time (Phase 5) so all TypeDefs are
-  // available.  `fieldSig` is the FIELD signature blob (e.g. `FIELD VAR(0)`).
-  case MLdfldGeneric(baseClassName: String, typeArgs: List[MsilType], fieldName: String, fieldSig: List[Byte])
+  // ldfld on a field of a generic type instantiation.  TypeSpec, TypeSpec-
+  // parented MemberRef, AND the FIELD signature blob itself are all built at
+  // lowering time (Phase 5) so all TypeDefs are available.  `fieldMsilType`
+  // is the field's OPEN declared type (e.g. `MTypeVar(0)` for a bare
+  // parameter field, or `MGenericInstByName("Box`1", [MTypeVar(0)])` for a
+  // field whose type is a generic instantiation over the enclosing type's
+  // own parameter) — encoded via the context-aware `buildFieldSigWithCtx` at
+  // this point rather than passed as a pre-built blob.  A blob built earlier
+  // (codegen Phase 3, before this bundle's own TypeDefs necessarily exist)
+  // could only encode a nested in-bundle generic head as ELEMENT_TYPE_OBJECT
+  // (the context-free `buildFieldSig` has no TypeDef table to resolve
+  // against), producing a FieldSig that didn't byte-match the FieldDef
+  // declaration and faulted with MissingFieldException / ClassCastException
+  // at runtime (#4870, #6231).
+  case MLdfldGeneric(baseClassName: String, typeArgs: List[MsilType], fieldName: String, fieldMsilType: MsilType)
   // newobj for a generic union case constructor.  TypeSpec and TypeSpec-parented
   // MemberRef are built at Phase 5 (lowering) so TypeDefs for in-bundle type
   // arguments (e.g. Lyric.Lexer.Keyword) are fully allocated before the
@@ -2254,11 +2265,16 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
       }
       emitCastclass(mb, tok)
     }
-    case MLdfldGeneric(baseName, typeArgs, fieldName, fieldSig) -> {
+    case MLdfldGeneric(baseName, typeArgs, fieldName, fieldMsilType) -> {
       // Build a closed GENERICINST TypeSpec and a TypeSpec-parented MemberRef,
       // then emit `ldfld MemberRef`.  Deferred to Phase 5 so all TypeDefs are
       // present and the type arg can be encoded as CLASS TypeDef[N] rather than
-      // falling back to ELEMENT_TYPE_OBJECT.
+      // falling back to ELEMENT_TYPE_OBJECT.  The FIELD signature blob is ALSO
+      // built here (not at codegen Phase 3) for the same reason — a nested
+      // in-bundle generic head in `fieldMsilType` (e.g. `Box`1<!0>` for a
+      // `left: Box[T]` case field) needs a resolvable TypeDef row too
+      // (#4870/#6231).
+      val fieldSig = buildFieldSigWithCtx(fieldMsilType, ctx)
       var taKey = ""
       var tai = 0
       while tai < typeArgs.count {

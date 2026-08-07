@@ -137,17 +137,20 @@ test "#6233: Box[Rect6233] record-pattern match extracts a user-record-typed gen
   }
 }
 
-// #6231 (partial): a generic record's field type may itself be ANOTHER generic
+// #6231: a generic record's field type may itself be ANOTHER generic
 // instantiation over the SAME enclosing type parameters (`res: Result[T, E]`
 // on `Holder[T, E]`), not just a bare parameter (`value: T`). Reading such a
 // field previously returned the OPEN generic form (`Result<T,E>`, with
 // dangling type-var references) as its static codegen type instead of
 // substituting the instantiation's concrete `typeArgs` — downstream generic
 // dispatch (e.g. `isOk`) then specialised against the wrong (unsubstituted)
-// shape. Fixed for plain field access (`h.res`); `match h.res { ... }`
-// directly on such a field still crashes (`InvalidProgramException` /
-// `MissingFieldException` depending on shape) — a deeper, separate gap in the
-// same family as #4870, not yet fixed here.
+// shape.  `match h.res { ... }` directly on such a field crashed the same way
+// (`InvalidProgramException` / `MissingFieldException` depending on shape) —
+// both plain field access AND match are covered here; the match crash was the
+// deeper half of the same #4870 family (registration never carried the
+// nested `MTypeVar` through to `fieldMsilTypes`, so both the field-read
+// substitution and the match scrutinee's isinst/pattern-bind TypeSpec
+// inherited the same corrupt open shape).
 record Holder6231[T, E] {
   res: Result[T, E]
 }
@@ -161,6 +164,61 @@ test "#6231: generic record field typed by a nested Result[T,E] substitutes conc
   val h = makeHolder6231()
   val r = h.res
   assertTrue(isOk(r), "isOk(h.res) after substitution")
+}
+
+test "#6231: match on a generic record field typed by a nested Result[T,E]" {
+  val h = makeHolder6231()
+  val v = match h.res { case Ok(value) -> value; case Err(_) -> -1 }
+  assertEqualInt(v, 42, "match h.res { Ok(value) -> value }")
+}
+
+// #4870: a UNION CASE's field type may itself be a USER GENERIC RECORD
+// instantiated over the union's OWN type parameter (`left: Box[T]`,
+// `right: Box[T]` on `Tree4870[T]`), not just a bare parameter
+// (`value: T`, exercised by `Maybe`/`Either` above) or a STDLIB generic
+// (`Result[T, E]`, exercised by `Holder6231` above).  Registering such a
+// field's type via the generics-blind `typeExprToMsilCtx` resolved the
+// nested `T` as an unrecognised same-package identifier (`MClass("Pkg.T")`)
+// instead of `MTypeVar` — corrupting both the case class's own FieldDef
+// signature (MSIL: MissingFieldException) and the type-argument INFERENCE at
+// the case's construction site (which could never pin `T` from a `Box[T]`-
+// typed argument, defaulting the enclosing generic to Object and mismatching
+// the reified value the CLR actually holds — InvalidProgramException).  This
+// also exercises the shape through a SAME-PACKAGE monomorphized generic
+// function (`rightItem[T]`), the exact #4870 repro.
+union Tree4870[T] {
+  case Leaf4870(value: T)
+  case Branch4870(left: Box[T], right: Box[T])
+}
+
+func rightItem4870[T](t: in Tree4870[T], d: in T): T {
+  match t {
+    case Leaf4870(v) -> v
+    case Branch4870(_, r) -> r.value
+  }
+}
+
+test "#4870: union case field typed by a nested Box[T] constructs" {
+  val t = Branch4870(left = Box(value = 10), right = Box(value = 20))
+  match t {
+    case Leaf4870(_) -> assertTrue(false, "unreachable")
+    case Branch4870(l, r) -> {
+      assertEqualInt(l.value, 10, "Branch4870.left.value")
+      assertEqualInt(r.value, 20, "Branch4870.right.value")
+    }
+  }
+}
+
+test "#4870: union case field typed by a nested Box[T] flows through a monomorphized generic function" {
+  val t = Branch4870(left = Box(value = 10), right = Box(value = 20))
+  val v = rightItem4870(t, 0)
+  assertEqualInt(v, 20, "rightItem4870(Branch4870(Box(10), Box(20)), 0)")
+}
+
+test "#4870: Leaf4870 (bare-T case) still matches alongside the Box[T] case" {
+  val t: Tree4870[Int] = Leaf4870(value = 7)
+  val v = rightItem4870(t, 0)
+  assertEqualInt(v, 7, "rightItem4870(Leaf4870(7), 0)")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
