@@ -23224,3 +23224,73 @@ into one shared `calleeDecl` binding — a SUGGESTION, no behavior change.
 
 **Related:** #6384, #6377, D-progress-732, `lyric-compiler/msil/bridge.l`,
 `lyric-compiler/lyric/mono.l`.
+
+### D-progress-735 — A package reading its own literal `pub val` through its own qualified name silently read 0 on MSIL (#6296)
+
+**Status:** Shipped.
+
+**The bug.** Inside package `Mcp`, `println(Mcp.someConstant)` and
+`println(someConstant)` must read the same `pub val someConstant: Int = 42`.
+On `--target dotnet` the unqualified read correctly inlined `42`, but the
+self-qualified read read `0` (the maintainer's original 2026-07-29 repro).
+By the time this session picked the issue up, the #6133 fail-loudly guard
+(`diagnoseUnresolvedQualifiedValueMsil`, a general safety net added for a
+different qualified-reference gap) already intercepted this exact shape and
+turned the silent `0` into an uncaught `T0115` panic instead — so the
+symptom had already shifted from "wrong value" to "hard crash with a full
+.NET stack trace," but the underlying resolution gap was still there.
+
+**Root cause.** `Msil.Codegen.codegenMPackage`'s literal-`IConst`/`IVal`
+registration (`lyric-compiler/msil/codegen.l`, the two blocks handling
+`isLiteralI4ExprMsil(decl.init)` for `IConst` and the single-`MLdcI4`
+inline-fold for `IVal`) only ever added two keys to `cctx.constValues`: the
+bare name (`someConstant`, the cross-package unqualified fallback) and a
+SLASH-joined key (`Mcp/someConstant`) — but that slash key exists for an
+unrelated purpose, the bare-name `EPath` lookup's own-package-wins
+disambiguation (`fctx.pkgName + "/" + name`, #2627), consulted only when
+the SOURCE reference has no package qualifier at all. The actual qualified-
+reference lookup, `tryQualifiedConstValueMsil`, flattens `Pkg.name` into
+segments and joins them with `.` (`joinSegsMsil(segs, ".")`), so it probed
+`cctx.constValues` for `"Mcp.someConstant"` — a key that was never
+registered for an IN-BUNDLE literal val/const, self-package or not. The
+non-literal sibling path (`staticValTokens`) already registered the correct
+dot-joined key (`cctx.staticValTokens.add(pkgName + "." + decl.name, ...)`,
+#5258), and the RESTORED-artifact literal path also already registered a
+dot-joined `constValues` key (`art.packageName + "." + name`, #6133) — only
+the in-bundle literal-const/val path was missing it, an inconsistency
+between three near-identical registration sites.
+
+**The fix.** Added a third registration in both the `IConst` and `IVal`
+literal-inline blocks: `cctx.constValues.add(pkgName + "." + name, v)`
+(guarded by `containsKey`, matching the existing first-wins convention).
+This mirrors the restored-artifact dot-key convention exactly and makes
+`tryQualifiedConstValueMsil` resolve `Pkg.name` for an in-bundle literal
+val/const from ANY referencing context — self-package (this issue's repro)
+or a different in-bundle package reading another package's qualified
+literal — where before it fell through to the T0115 fail-loud panic (or,
+pre-#6133, a silent `0`/`null`).
+
+**JVM was checked and found unaffected/unrelated.** The identical repro on
+`--target jvm` already panics at compile time with a DIFFERENT diagnostic
+(`Jvm.Codegen: reference 'Mcp' resolves to no local, parameter, receiver
+field, wire binding, union case, or module-level val`) — the JVM backend
+has no qualified-module-val resolution path at all yet (bare names only,
+via `ctx.moduleVals` / `funcSigs["val:"+name]`), so EVERY qualified val
+reference on JVM fails loudly today, not just the self-package case. That
+satisfies this issue's acceptance criteria's fallback branch ("rejected
+with a compile-time diagnostic") independently of this fix, so the JVM gap
+is out of scope here and confirmed unchanged before/after.
+
+**Verification.** `./bin/lyric run --target dotnet` on the issue's exact
+repro now prints `42` / `42` (previously `0` / `42`, later a `T0115`
+crash). `--target jvm` on the same repro is confirmed unchanged (still a
+clean compile-time panic, not a crash format regression). Added "self-
+qualified literal pub val read resolves correctly" to
+`msil_project_bridge_self_test.l` (dotnet-only, multi-package in-process
+harness) — 35/35 passing after `make lyric`. Regression sweep:
+`module_val_deps_self_test.l` 7/7 on both `--target dotnet` and
+`--target jvm`; `typechecker_self_test.l` 298/298; `nested_constructor_pattern_self_test.l`
+6/6 on both targets; `bitwise_self_test.l` 10/10 on both targets.
+
+**Related:** #6296, #6133, #5258, #2627, `lyric-compiler/msil/codegen.l`,
+`lyric-compiler/lyric/msil_project_bridge_self_test.l`.

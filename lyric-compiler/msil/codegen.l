@@ -29763,6 +29763,19 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
           if not cctx.constValues.containsKey(decl.name) {
             cctx.constValues.add(decl.name, constVal)
           }
+          // Dot-qualified key (`Pkg.name`) so an explicitly QUALIFIED reference
+          // to this in-bundle literal const resolves — including a
+          // self-qualified read from inside `pkgName` itself (#6296).
+          // `tryQualifiedConstValueMsil` looks this key up via
+          // `joinSegsMsil(segs, ".")`; only the slash-separated key above
+          // (used by the bare-name `EPath` disambiguation path) and the
+          // unqualified bare key were registered before, so `Pkg.name` fell
+          // through to the generic fallback and silently read 0. Mirrors the
+          // restored-artifact dot-key convention (#6133) below.
+          val dotConstKey = pkgName + "." + decl.name
+          if not cctx.constValues.containsKey(dotConstKey) {
+            cctx.constValues.add(dotConstKey, constVal)
+          }
         } else {
           // Non-Int constant (Float, String, …): initialise in .cctor.
           staticFields.add(
@@ -29838,6 +29851,18 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
               if not cctx.constValues.containsKey(fieldName) {
                 cctx.constValues.add(fieldName, v)
                 sfInitInsns = newList()
+              }
+              // Dot-qualified key (`Pkg.name`) — see the matching IConst
+              // comment above (#6296): without this, a QUALIFIED reference to
+              // this in-bundle literal val (self-qualified or from another
+              // in-bundle package) never resolved even though the bare
+              // unqualified form already inlined correctly — either a silent
+              // 0/null read (before the T0115 fail-loud guard existed) or a
+              // T0115 compile-time abort (after it), instead of the correct
+              // inlined value.
+              val dotValKey = pkgName + "." + fieldName
+              if not cctx.constValues.containsKey(dotValKey) {
+                cctx.constValues.add(dotValKey, v)
               }
             }
             case MLdNull -> {
