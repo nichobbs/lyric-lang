@@ -13,6 +13,12 @@
 #   The self-test runner compiles a single *_self_test.l against the freshly
 #   built stage-1 DLLs in ~seconds — no AOT binary needed.
 #
+#   WARNING (#6331): `stage1-fast` does NOT rebuild the CLI bundle
+#   (Lyric.Lyric.Cli.dll + deps) or ./bin/lyric.  After a `stage1-fast` build,
+#   ./bin/lyric still runs the OLD compiler for backend/codegen changes —
+#   verify with `make self-test NAME=...`, never with `./bin/lyric` directly,
+#   until you've run `make lyric`.
+#
 #   END-TO-END LOOP (CLI behaviour, `lyric build/test/...`, ecosystem repros)
 #     make lyric              # stage1 + AOT entry-point -> ./bin/lyric symlink
 #     ./bin/lyric test --manifest lyric-session/lyric.toml
@@ -43,6 +49,7 @@ BUILD_CONFIG ?= Release
 AOT_BIN := bootstrap/src/Lyric.Cli.Aot/bin/$(BUILD_CONFIG)/net10.0/lyric
 
 .PHONY: help stage1 stage1-fast aot lyric selfhosted-compiler \
+        check-lyric-stale \
         native-rt test-native-rt test-native \
         stage2 stage3 run-stage2 \
         ilverify selfhost-check \
@@ -70,13 +77,30 @@ stage1: ## Build the full self-hosted compiler + CLI bundle (.bootstrap/stage1)
 	./scripts/bootstrap.sh --stage 1
 	@touch .bootstrap/stage1.stamp
 
-stage1-fast: ## Stage 1 without the CLI bundle — fastest loop for a single compiler package
+stage1-fast: ## Stage 1 without the CLI bundle -- fastest loop for one package; leaves ./bin/lyric on the OLD compiler (#6331, see WARNING above)
 	SKIP_CLI_BUNDLE=1 ./scripts/bootstrap.sh --stage 1
+	@echo "WARNING: stage1-fast skipped the CLI bundle -- ./bin/lyric (if built) still runs the OLD compiler."
+	@echo "         Verify with 'make self-test NAME=...'; run 'make lyric' before trusting ./bin/lyric directly."
+	@$(MAKE) check-lyric-stale
 	# Intentionally NOT touching stage1.stamp here: SKIP_CLI_BUNDLE=1 skips the
 	# CLI bundle (which rebuilds the self-hosted compiler DLLs), so the stamp
 	# would be stale from the previous full build.  A subsequent `make lyric`
 	# must see the stamp as older than any edited .l source so stage1 runs in
 	# full (#3583).  Use `make stage1` + `make aot` if you need make lyric too.
+
+# Compares the newest .bootstrap/stage1/*.dll mtime against ./bin/lyric: if a
+# stage-1 DLL is newer, some stage-1 rebuild (e.g. `stage1-fast`) has happened
+# since ./bin/lyric was last built, and ./bin/lyric may be running stale
+# codegen (#6331).  Warning only -- never fails the build.  No-ops when either
+# artifact is missing (nothing built yet, or `make clean` was run).
+check-lyric-stale: ## Warn if .bootstrap/stage1 DLLs are newer than ./bin/lyric (stale AOT binary, #6331)
+	@if [ -d .bootstrap/stage1 ] && [ -x bin/lyric ]; then \
+	  newest="$$(ls -t .bootstrap/stage1/*.dll 2>/dev/null | head -n1)"; \
+	  if [ -n "$$newest" ] && [ "$$newest" -nt bin/lyric ]; then \
+	    echo "WARNING: $$newest is newer than ./bin/lyric -- ./bin/lyric may still be running the OLD compiler."; \
+	    echo "         Run 'make lyric' to refresh it, or use 'make self-test NAME=...' for the fast loop instead."; \
+	  fi; \
+	fi
 
 # `aot` depends on the stage-1 stamp so a direct `make aot` with no prior
 # stage 1 builds stage 1 first (via the stamp rule below) instead of failing
@@ -121,6 +145,11 @@ else
 	@echo "staging self-hosted compiler DLLs for native lyric test (#3086) ..."
 	@bash scripts/stage-selfhosted-compiler.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
 endif
+	# The staging steps above rebuild DLLs into .bootstrap/stage1 AFTER the
+	# AOT binary is built, using that very binary — freshen its mtime so
+	# `check-lyric-stale` (#6331) doesn't false-positive after every full
+	# `make lyric`.
+	@touch "$(AOT_BIN)"
 
 # Re-stage only the self-hosted compiler DLLs (after `make lyric
 # SKIP_SELFHOSTED_COMPILER=1`, or to refresh them without a full rebuild).
@@ -184,7 +213,7 @@ selfhost-check: ## Classify a repro: real self-hosted bug vs artifact (FILE=repr
 #
 # Note: On a fresh checkout, running 'make test' or any target that executes
 # './bin/lyric' requires building it first; test-emitter now depends on the 'lyric' target.
-self-test: ## Run one self-hosted self-test, e.g. `make self-test NAME=parser`
+self-test: check-lyric-stale ## Run one self-hosted self-test, e.g. `make self-test NAME=parser`
 	@if [ -z "$(NAME)" ]; then echo "usage: make self-test NAME=parser"; exit 2; fi
 	@test -x bin/lyric || { echo "no ./bin/lyric; run 'make lyric' first"; exit 2; }
 	./bin/lyric test lyric-compiler/lyric/$(NAME)_self_test.l
