@@ -23973,3 +23973,353 @@ post-`make lyric`. `lyric fmt --write` clean on every changed `.l` file.
 `lyric-compiler/lyric/bare_func_ref_self_test.l`,
 `lyric-compiler/lyric/msil_project_bridge_self_test.l`,
 `lyric-lambda/README.md`.
+
+### D-progress-740 — Chaining a call directly onto another call's result (`f()()`) dropped the callee entirely on both targets (#6392)
+
+**Status:** shipped, both targets.
+
+**The bug.** `makeGreeter()()` — invoking the closure returned by a call
+directly, without first binding it to an intermediate local (`val reader =
+makeGreeter(); reader()`) — compiled with no diagnostic and crashed at
+runtime. On `--target dotnet`: `InvalidProgramException`; `ilverify`
+confirmed genuinely invalid IL (`StackUnderflow` at `main`'s offset 0 — the
+entire `makeGreeter()()` sub-expression, including the outer call, produced
+zero corresponding bytecode). On `--target jvm`: the identical shape hit the
+identical defect class, `VerifyError: Operand stack underflow`. Filed as
+#6392 while building #5527's regression test (D-progress-739); this entry
+fixes it.
+
+**Root cause (both targets, same shape).** `lowerCallMsil`
+(`lyric-compiler/msil/codegen.l`) and `lowerCall`
+(`lyric-compiler/jvm/codegen/04_calls.l`) both dispatch on the callee
+expression's `ExprKind`, with explicit arms for `EPath` (a named
+function/local), `ETypeApp` (generic call, recurse past the type args), and
+`EMember` (method call) — and a catch-all `case _ ->` for everything else.
+For `makeGreeter()()`, the OUTER call's callee (`fn`) is itself an `ECall`
+(`makeGreeter()`), which falls into that catch-all arm. Both catch-all arms
+evaluated the call's ARGUMENTS (none, in the exact repro) but never lowered
+`fn` itself and never emitted any invoke instruction — they just returned an
+erased placeholder type (`MObject` / `JRef("java/lang/Object")`) with zero
+corresponding codegen for the entire callee sub-expression. No existing
+self-test anywhere in the suite calls a call-expression's result directly
+(every closure-invocation test stores to a local first — the shape
+`bare_func_ref_self_test.l`'s header itself calls out as the reason the gap
+went unnoticed), so this had no coverage on either target.
+
+**The fix.** Generalized both catch-all arms to actually lower `fn` in
+place and then invoke the resulting function value through the exact same
+mechanism a named function-typed local already uses:
+
+- **MSIL:** push `fn`'s value via `lowerExprMsil`, `castclass` to the
+  interned `Func<N>` `TypeSpec` (`internFuncNTypeSpec`), lower and box each
+  argument (`funcAbiArgBoxTypeMsil` + `boxIfNeededMsil`), `callvirt Invoke`
+  (`buildFuncNInvokeTok`) — the identical sequence the pre-existing
+  `Some(slot)` arm above it already builds for a bare-`EPath` local/param
+  holding a closure (#1877's uniform boxed `Func` ABI), just parameterized
+  over "how do I get the callee value onto the stack" instead of assuming
+  it's always a named slot. The invoke's boxed `object` result is
+  unboxed/materialized to the real return type when `fn` is a call to a
+  known same-package top-level function whose OWN declared return type is
+  itself function-shaped: `recordFieldFuncKeyMsil` (the #5774/#5790
+  machinery `func_val_local_rettype_self_test.l` already covers) resolves
+  the matching `cctx.fieldFuncRetTypes` key from the inner `ECall`
+  directly — no named local required, since that registry was always keyed
+  by the call expression's shape, not by a binding site. Any other callee
+  shape falls back to the boxed `object` placeholder, mirroring the
+  pre-existing `case None -> MObject` fallback the `Some(slot)` arm uses
+  when a tracked slot's return type isn't known — not a regression, since
+  that fallback already existed for the named-local path.
+- **JVM:** push `fn`'s value via `lowerExpr`, `checkcast` to the package's
+  shared functional interface (`lambdaIfaceName`), pack the (boxed)
+  arguments into an `Object[]`, `invokeinterface invoke(...)` — the
+  identical sequence `lowerLambdaInvoke` already builds for a named lambda
+  local. Returns raw `Object` unconditionally, exactly like
+  `lowerLambdaInvoke` (#5796's D-progress-684 addendum already established
+  this convention: JVM has no per-local return-type registry analogous to
+  MSIL's `funcValRetTypes`/`fieldFuncRetTypes` — every consumer of a
+  lambda-invoke result already coerces it to its required static type via
+  `coerceArgTo`, so the chained-call path needs no additional return-type
+  tracking to match).
+
+Both `lowerCallMsil` and `lowerCall` also gained an explicit `EParen(inner)`
+arm that recurses past the parens (mirroring the existing `ETypeApp` recurse
+arm) — without it, `(makeReader())()` would still fall into the (now-fixed)
+generic catch-all instead of directly reusing the `ECall`-callee path, and
+`recordFieldFuncKeyMsil`'s `ECall`-shape match (used for MSIL return-type
+recovery) would never fire through the paren wrapper.
+
+**Scope note: a separate, pre-existing JVM defect found while verifying.**
+`println(makeAdder()(41))` (numeric chain) and even the already-working
+named-local baseline `println(reader())` (`reader: () -> String`) both hit
+an UNRELATED `VerifyError: Bad type on operand stack` on `--target jvm` —
+`printArgType` (`lyric-compiler/jvm/codegen/04_calls.l`) assumes any
+non-primitive `JvmType` argument to `println`/`print` is statically
+`java/lang/String` and selects the `println(String)` overload accordingly,
+but a lambda-invoke result (chained or via a named local — `lowerLambdaInvoke`
+returns raw `Object`, per the #5796 convention above) is verifier-tracked as
+`java/lang/Object`, which is not assignable to `String`. This reproduces
+identically with or without this entry's fix (confirmed against the
+unmodified `lowerLambdaInvoke` path, which this entry does not touch),
+confirming it predates #6392 and is architecturally distinct — `println`'s
+own arg-type inference, not the callee-lowering gap this entry closes. Not
+fixed here (out of scope: distinct root cause, distinct code path); flagged
+for a follow-up issue. Verified the chained-call invoke mechanism itself
+(not `println`) is correct on JVM via a non-`println` repro exercising
+arithmetic/comparison on the chained result (`makeAdder()(41) == 42`),
+which passes cleanly — isolating this scope note from the actual fix.
+
+**Regression coverage.** Six new cases in
+`lyric-compiler/lyric/func_val_local_rettype_self_test.l` (dual-target,
+imports only `Std.*`, no `LYRIC_LOAD_COMPILER=1` needed — chosen over
+`bare_func_ref_self_test.l` since that file is dotnet-only by design and
+this defect is dual-target): the exact repro chained with an argument
+(`makeAdder(5)(10)`), a zero-arg/String-returning chain
+(`makeGreeter("world")()`), a multi-argument chain
+(`makeMultiParam(2)(3, 4)`), a parenthesized-callee chain
+(`(makeAdder(5))(10)`, exercising the new `EParen` arm), arithmetic on a
+chained result as an unboxing proof (`makeAdder(5)(10) + 1 == 16`), and a
+two-deep chain with no intermediate binding at all
+(`makeMakerAdder(5)()(10)`, a new `() -> (Int) -> Int`-returning function
+added to the test module).
+
+**Verification.** New/extended self-tests: `func_val_local_rettype_self_test.l`
+13/13 (dotnet AND jvm, 6 new + 7 pre-existing). Full regression battery, all
+green: `bare_func_ref_self_test.l` 9/9 (dotnet), `closure_zero_overhead_self_test.l`
+18/18 (dotnet AND jvm), `typechecker_self_test.l` 298/298 (dotnet),
+`msil_project_bridge_self_test.l` 37/37 (dotnet), `inbundle_generics_self_test.l`
+28/28 (dotnet), `bitwise_self_test.l` 10/10 (dotnet AND jvm),
+`nested_constructor_pattern_self_test.l` 6/6 (dotnet AND jvm). Manual repros
+(`makeGreeter()()`, `(makeReader())()`, arithmetic chain, two-deep chain) built
+and run correctly on both targets post-`make lyric`. `ilverify` (via
+`dotnet-ilverify` against the shared-framework + self-hosted
+`Lyric.Stdlib.dll` reference set) reports every emitted MSIL repro assembly
+fully verified — zero `StackUnderflow`/`StackUnexpected` findings.
+`lyric fmt --write` clean (no refusals) on all three changed `.l` files.
+
+**Related:** #6392, D-progress-739 (where this was filed),
+D-progress-738/#5362/#5366 (the `Some(slot)`/`funcValRetTypes` machinery
+this reuses), D-progress-684/#5796 (JVM's raw-`Object` lambda-invoke
+convention this JVM fix follows), `lyric-compiler/msil/codegen.l`,
+`lyric-compiler/jvm/codegen/04_calls.l`,
+`lyric-compiler/lyric/func_val_local_rettype_self_test.l`.
+
+### D-progress-741 — JVM: `println`/`print` of a lambda-invoke result hit `VerifyError: Bad type on operand stack` (#6394)
+
+**Status:** shipped, JVM only (MSIL was never affected).
+
+**The bug.** `println(reader())`, where `reader: () -> String` is a
+function-typed local, crashed at class-load time on `--target jvm`:
+
+```
+java.lang.VerifyError: Bad type on operand stack
+Reason:
+  Type 'java/lang/Object' (current frame, stack[1]) is not assignable to 'java/lang/String'
+```
+
+This is the exact defect flagged as a scope note in D-progress-740/#6392
+(filed there as #6394, unaffected by that entry's fix): reproduces
+identically against the unmodified `lowerLambdaInvoke` path (a named-local
+invoke, not just #6392's new chained-call path), confirming it predates
+#6392 and is architecturally distinct — `println`'s own argument-type
+inference, not the callee-lowering gap #6392 closed. `println(makeAdder(5)(10))`
+(an `Int`-returning chained call, exercising #6392's `lowerCallOnExprResult`
+path with a non-String runtime type) hit the identical `VerifyError`,
+confirming the defect is not String-specific — any lambda-invoke or
+chained-call result flowing into `println`/`print` was affected regardless
+of its real static Lyric type. `--target dotnet` was never affected for
+either repro (MSIL's `funcValRetTypes`/`fieldFuncRetTypes` registry
+recovers and unboxes the real return type per D-progress-738/739/740, so
+the value reaching `println` is already correctly typed).
+
+**Root cause.** `printArgType` (`lyric-compiler/jvm/codegen/04_calls.l`,
+the `println`/`print` argument-descriptor selector shared by
+`lowerBuiltinOrStaticCall`'s `println`/`print` arms) matched any
+non-primitive `JvmType` — every `JRef(_)` regardless of `className` — to
+`java/lang/String` and selected the `PrintStream.println(String)` overload
+accordingly. `lowerLambdaInvoke` and `lowerCallOnExprResult` (#5796/#6392)
+both deliberately return raw `JRef("java/lang/Object")` for ANY invoke
+result, whatever the real static Lyric return type is — the doc comment on
+`lowerCallOnExprResult` spells out the convention: "every consumer already
+coerces a lambda-invoke result to its required static type via
+`coerceArgTo`". `println`'s lowering was the one consumer that didn't:
+it read `argTy` straight from `lowerCallArg`'s return without ever calling
+`coerceArgTo`, so `printArgType` saw `JRef("java/lang/Object")` and picked
+`println(String)` — a descriptor mismatch the verifier catches at
+class-load, since the value on the stack is genuinely tracked as `Object`
+with no `checkcast` ever emitted.
+
+**The fix.** `printArgType` now special-cases the erasure marker itself:
+when the `JRef`'s `className` is exactly `"java/lang/Object"` (the
+lambda-invoke/chained-call convention), route through
+`PrintStream.println(Object)`/`.print(Object)` instead of guessing
+`println(String)`. `println(Object)` is itself `String.valueOf`-backed, so
+it renders correctly whatever the erased value's real runtime type is —
+`String`, a boxed `Integer`, etc. — with no need to know the original
+static Lyric type at this point in codegen (which, per the erasure
+convention, is unrecoverable without a per-invoke return-type registry
+JVM's design deliberately omits, per D-progress-684/#5796). A genuinely
+non-Object-className `JRef` (in practice, a correctly-tracked
+`java/lang/String`) is unaffected — the catch-all still routes to
+`println(String)`, unchanged. Considered and rejected: `checkcast
+java/lang/String` unconditionally — wrong for `println(makeAdder(5)(10))`,
+where the erased Object is a boxed `Integer`, not a `String`, and would
+itself `ClassCastException` at runtime. The `println(Object)` overload
+handles both shapes uniformly with no type-recovery needed, matching
+`coerceArgTo`'s own `JRef(fromCls) -> ... toCls == "java/lang/Object"`
+no-op idiom (never checkcast INTO Object) mirrored the other direction —
+here the source, not the target, is the Object-erased value.
+
+**Regression coverage.** Two new cases in
+`lyric-compiler/lyric/func_val_local_rettype_self_test.l` (dual-target,
+imports only `Std.*`), added as the promised follow-up to D-progress-740's
+scope note: `println` on a named-local lambda-invoke result
+(`println(reader())`, String-returning — the exact #6394 repro) and
+`println` on a direct chained call's `Int` result
+(`println(makeAdder(5)(10))` — proves the fix isn't String-specific, since
+the erased Object here is a boxed `Integer`). Both previously crashed with
+`VerifyError` on `--target jvm` pre-fix (confirmed against the unmodified
+`printArgType`); both pass on dotnet AND jvm post-fix. File total:
+15/15 both targets (13 pre-existing + 2 new).
+
+**Verification.** `func_val_local_rettype_self_test.l` 15/15 (dotnet AND
+jvm). Full regression battery, all green:
+`closure_zero_overhead_self_test.l` 18/18 (dotnet AND jvm),
+`bitwise_self_test.l` 10/10 (dotnet AND jvm),
+`nested_constructor_pattern_self_test.l` 6/6 (dotnet AND jvm),
+`block_shadow_self_test.l` 20/20 (dotnet AND jvm),
+`bare_func_ref_self_test.l` 9/9 (dotnet), `typechecker_self_test.l` 298/298
+(dotnet), `bool_tostring_self_test.l` 4/4 (jvm), `jvm_trio_self_test.l` 9/9
+(jvm), `jvm_trio_positive_self_test.l` 3/3 (jvm). Manual repros
+(`println(reader())`, `println(makeAdder(5)(10))`) built and run correctly
+on `--target jvm` post-`make lyric`, printing `hello` and `15` respectively
+with no `VerifyError`. `lyric fmt --write` clean (no refusals) on both
+changed `.l` files.
+
+**Related:** #6394, D-progress-740 (where this was filed as a scope note),
+D-progress-684/#5796 (JVM's raw-`Object` lambda-invoke convention this fix
+routes around rather than reverses),
+`lyric-compiler/jvm/codegen/04_calls.l`,
+`lyric-compiler/lyric/func_val_local_rettype_self_test.l`.
+
+### D-progress-742 — JVM: qualified reads of module-level `pub val`s (`Pkg.someConstant`) had no resolution path at all (#6386, MSIL parity)
+
+**Status:** shipped, in-bundle only (restored-dependency reads are a
+separate, larger missing layer — see "Scope boundary" below).
+
+**The bug.** `Mcp.someConstant` — a package-qualified read of package
+`Mcp`'s own `pub val someConstant`, self-qualified or from another
+in-bundle package — panicked at compile time on `--target jvm`:
+
+```
+Jvm.Codegen: reference 'Mcp' resolves to no local, parameter, receiver
+field, wire binding, union case, or module-level val. ...
+```
+
+The unqualified bare read (`someConstant`) worked fine; only the qualified
+spelling was unreachable. `Jvm.Codegen`'s `EMember` lowering
+(`lyric-compiler/jvm/codegen/02_exprs.l`) had a fallback chain for
+config-block fields, enum-case values (`tryQualifiedEnumClassJvm`), and
+nullary union-case values (`tryQualifiedUnionCaseValueJvm`) — each
+resolving a package-qualified reference by flattening the `EMember` chain
+via `flattenPathExprSegsJvm` and probing a registry — but no equivalent
+entry for a qualified module-level `val`. The reference fell all the way
+through to the generic record-field-access fallback, which evaluates the
+receiver as a value expression; since `Mcp` names no local, parameter,
+receiver field, wire binding, union case, or enum, the receiver itself hit
+the `EPath` arm's fail-loud panic (added for a prior "silent null" fix).
+On MSIL the equivalent construct was already fixed by D-progress-740's
+predecessor (#6296, self-qualified) and #5258/#6133 (cross-package
+in-bundle and restored, via dot-joined `constValues`/`staticValTokens`
+keys); the JVM backend never had any qualified-module-val path to begin
+with.
+
+**The fix.** Added `tryQualifiedModuleValJvm` (new,
+`lyric-compiler/jvm/codegen/01_types.l`, next to
+`tryQualifiedEnumClassJvm`/`tryQualifiedUnionCaseValueJvm`, whose shape it
+mirrors exactly): flattens the `EMember` receiver chain via the existing
+`flattenPathExprSegsJvm`, bails if the first segment names a real local
+(same guard the enum/union-case helpers use), then tries two registries in
+order:
+
+- **Self-qualified** (the flattened, slash-joined prefix equals
+  `ctx.pkgName`): resolved through `ctx.moduleVals`, which
+  `prelowerModuleVals` has already populated with the REAL emitted field
+  type for every val in this package — literal or computed alike, since
+  `moduleVals` is filled by fully lowering each initializer in this
+  package's own context before any consumer codegen runs. This is why the
+  self-qualified path needs no MSIL-style literal/non-literal split: both
+  `Mcp.someConstant` (literal) and a qualified read of a computed val
+  resolve identically.
+- **Cross-package in-bundle**: resolved through the `<owner>/val:<name>`
+  key `collectFileSigsSeeded`'s `IVal` arm already registers in
+  `ctx.funcSigs` (same registry the unqualified bare-name cross-package
+  read consults via the bare `val:<name>` key) — restricted, same as that
+  existing bare-name path, to vals whose static-field type is knowable
+  without lowering the initializer (an explicit annotation or a literal
+  init).
+
+Wired into `EMember` lowering
+(`lyric-compiler/jvm/codegen/02_exprs.l`) at the same fallthrough position
+as the enum/union-case checks — tried before the generic record-field
+fallback so a real qualified val read never reaches it, emitting
+`getstatic <owner>.<name>` (with the existing byte-mask-on-read
+convention) against whichever type the registry returned. The JVM backend
+has no MSIL-style `constValues` literal-inlining tier — a module-val read
+always lowers to `getstatic` — so unlike the MSIL fix there was only one
+emission shape to add, not two.
+
+The pre-existing "resolves to no local..." panic remains the fail-loud
+backstop for genuinely unresolvable references (e.g. a restored-dependency
+val, see below, or a typo); it was not touched.
+
+**Scope boundary — restored dependencies.** MSIL has a full
+contract-metadata-based restored-package layer
+(`lyric-compiler/lyric/restored_packages.l`,
+`Lyric.RestoredPackages.loadRestoredPackage`) that the MSIL bridge
+consults for a restored (cross-DLL) package's module vals — this is what
+#6133 extended to the qualified-read case. The JVM backend has **no**
+restored-package module-val resolution at all, qualified or unqualified:
+`grep`ing `lyric-compiler/jvm/` for `RestoredArtifact`/`RestoredPackages`
+finds nothing. Building qualified restored-dependency resolution on the
+JVM side would mean building the unqualified layer first — a separate,
+substantially larger piece of work (JVM's own contract-metadata reader
+and cross-JAR val registry), not a small addition to this fix. Left
+explicitly out of scope per this task's instructions rather than
+half-built; tracked as a follow-up gap, not filed as a new issue here.
+
+**Regression coverage.** Extended
+`lyric-compiler/lyric/module_val_deps_self_test.l` (dual-target, imports
+only `Std.*`) with two new cases: a self-qualified literal val read
+(`Lyric.ModuleValDepsSelfTest.baseInt`) and a self-qualified computed val
+read (`Lyric.ModuleValDepsSelfTest.derivedInt`), each asserted equal to
+its unqualified counterpart. `lyric test`'s single-file synthesis has no
+multi-package entry point, so the cross-package-in-bundle shape isn't
+exercised by this file — the closest existing coverage for that shape is
+MSIL-only, in `msil_project_bridge_self_test.l`'s multi-package
+`compileAndRun` harness (its own "self-qualified literal pub val read"
+test is the #6296 precedent this fix's self-qualified branch mirrors).
+
+**Verification.** Full `make lyric` (not `stage1-fast`, per #6331). Issue
+repro (`Mcp.someConstant` / `someConstant`) built and run on both targets:
+prints `42`/`42` on `--target jvm` (previously a compile-time panic) and
+`--target dotnet` (unaffected, confirms no regression). Full regression
+battery, all green: `module_val_deps_self_test.l` 9/9 (dotnet AND jvm, 7
+pre-existing + 2 new), `qualified_enum_case_self_test.l` 11/11 (dotnet AND
+jvm), `qualified_union_case_self_test.l` 8/8 (dotnet AND jvm),
+`bitwise_self_test.l` 10/10 (dotnet AND jvm),
+`nested_constructor_pattern_self_test.l` 6/6 (dotnet AND jvm),
+`block_shadow_self_test.l` 20/20 (dotnet AND jvm),
+`func_val_local_rettype_self_test.l` 15/15 (dotnet AND jvm),
+`typechecker_self_test.l` 298/298 (dotnet), `msil_project_bridge_self_test.l`
+37/37 (dotnet). `lyric fmt --write` clean (no refusals) on all three
+changed files (two `.l` codegen files, one self-test file) — no
+reformatting was needed.
+
+**Related:** #6386, #6296/D-progress-740's predecessor, #6133, #5258 (the
+MSIL analogs this mirrors), `lyric-compiler/jvm/codegen/01_types.l`
+(`tryQualifiedModuleValJvm`, `tryQualifiedEnumClassJvm`,
+`tryQualifiedUnionCaseValueJvm`, `flattenPathExprSegsJvm`),
+`lyric-compiler/jvm/codegen/02_exprs.l` (`EMember` wiring),
+`lyric-compiler/lyric/module_val_deps_self_test.l`,
+`lyric-compiler/lyric/restored_packages.l` (the MSIL-only layer noted as
+out of scope above).

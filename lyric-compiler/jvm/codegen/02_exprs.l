@@ -1187,6 +1187,25 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         }
         case None -> ()
       }
+      // Package-qualified module-level `pub val` reference (`Mcp.
+      // someConstant`, self-qualified or cross-package in-bundle, #6386):
+      // resolve to `getstatic <owner>.<name>` on the declaring package's
+      // host class, mirroring the MSIL `staticValTokens`/`constValues`
+      // qualified-read fix (#6296/#5258). Same fallthrough position as the
+      // enum/union-case checks above — tried before the generic
+      // record-field access fallback so a real qualified val read never
+      // falls to it (or to the "resolves to no local..." panic below).
+      match tryQualifiedModuleValJvm(ctx, expr) {
+        case Some(vsig) -> {
+          insns.add(LGetstatic(owner = vsig.owner, name = memberName, t = vsig.ret))
+          match vsig.ret {
+            case JByte -> maskByteUnsigned(insns)
+            case _ -> ()
+          }
+          return vsig.ret
+        }
+        case None -> ()
+      }
       val recvTy = lowerExpr(ctx, insns, recv)
       match recvTy {
         case JRef(cls) -> {

@@ -50,6 +50,37 @@
 //! this defect class — all 7 cases here (including the #5790 arity-overload
 //! regression) already pass against `--target jvm` with no JVM-side code
 //! change. See D-progress-684's `#5796` addendum in `docs/03-decision-log.md`.
+//!
+//! #6392 addendum: chaining a call directly onto another call's RESULT
+//! (`makeGreeter()()`, invoking the closure without first binding it to an
+//! intermediate local) fell into `lowerCallMsil`'s default arm, which
+//! evaluated the call's arguments but never lowered the callee expression
+//! itself (nor emitted any invoke instruction) — `ilverify` confirmed
+//! genuinely invalid IL (`StackUnderflow`). JVM's `lowerCall` had the exact
+//! same gap (`VerifyError: Operand stack underflow`). Fixed on both targets
+//! by generalizing the default arm to lower the callee expression in place
+//! and invoke it through the same uniform boxed-`Func`/functional-interface
+//! ABI a named function-typed local already uses (MSIL: the `Some(slot)` arm
+//! in `lowerCallMsil`; JVM: `lowerLambdaInvoke`) — on MSIL, the real nested
+//! return type is recovered via `recordFieldFuncKeyMsil`/
+//! `cctx.fieldFuncRetTypes` (the same #5774 registry above) so the result is
+//! unboxed, not just left as `object`.
+//!
+//! #6394 addendum: the #6392 regression cases above deliberately asserted via
+//! arithmetic/comparison rather than `println` on JVM, because `println`ing a
+//! lambda-invoke result directly hit a SEPARATE, pre-existing JVM-only defect:
+//! `printArgType` (`lyric-compiler/jvm/codegen/04_calls.l`) assumed any
+//! non-primitive `println` argument was statically `java/lang/String`, but
+//! `lowerLambdaInvoke`/`lowerCallOnExprResult` track an invoke result as raw
+//! `java/lang/Object` per their #5796/#6392 convention — `println(reader())`
+//! then emitted `invokevirtual println(String)` against an `Object` on the
+//! verifier's tracked stack, a `VerifyError: Bad type on operand stack`. Fixed
+//! by routing `JRef("java/lang/Object")` println/print arguments through the
+//! `PrintStream.println(Object)`/`.print(Object)` overload (itself
+//! `String.valueOf`-backed, so it renders correctly whatever the erased
+//! value's real runtime type is — String, boxed Integer, etc.) instead of
+//! guessing `println(String)`. The two `println`-on-invoke-result cases below
+//! are the regression proof this addendum promised.
 @test_module
 package Lyric.FuncValLocalRetTypeSelfTest
 
@@ -122,4 +153,58 @@ test "overloaded HOF-returning functions at different arities resolve independen
   assertEqualInt(f(10), 15, "makeOp(5)(10) == 15 (1-arity overload)")
   val g = makeOp(7, "n=")
   assertEqual(g(), "n=7", "makeOp(7, \"n=\")() == \"n=7\" (2-arity overload)")
+}
+
+// #6392: the callee of the chained call is itself an `ECall`, not a bare
+// `EPath` naming a slot — the exact shape that was silently dropped.
+test "direct chained call, no intermediate local (#6392 exact repro)" {
+  assertEqualInt(makeAdder(5)(10), 15, "makeAdder(5)(10) == 15")
+}
+
+test "direct chained call, zero-arg / String-returning (#6392)" {
+  assertEqual(makeGreeter("world")(), "hello, world", "makeGreeter(\"world\")() == \"hello, world\"")
+}
+
+test "direct chained call with multiple arguments (#6392)" {
+  assertEqualInt(makeMultiParam(2)(3, 4), 14, "makeMultiParam(2)(3, 4) == 14")
+}
+
+// The callee is `EParen(ECall(...))` rather than a bare `ECall` — exercises
+// the `lowerCallMsil`/`lowerCall` `EParen` unwrap arm added alongside the fix.
+test "parenthesized chained call (#6392)" {
+  assertEqualInt((makeAdder(5))(10), 15, "(makeAdder(5))(10) == 15")
+}
+
+// Arithmetic on the chained call's result proves the returned value is
+// actually unboxed to `Int`, not left as a boxed `object` on the stack.
+test "chained call result used directly in arithmetic, unboxing proof (#6392)" {
+  assertEqualInt(makeAdder(5)(10) + 1, 16, "makeAdder(5)(10) + 1 == 16")
+}
+
+// Two-deep chain: `makeMakerAdder(5)` returns a closure that itself returns
+// a closure, invoked twice in a row with no intermediate binding at all.
+func makeMakerAdder(x: in Int): () -> (Int) -> Int {
+  { -> { y: Int -> x + y } }
+}
+
+test "two-deep chained call (#6392)" {
+  assertEqualInt(makeMakerAdder(5)()(10), 15, "makeMakerAdder(5)()(10) == 15")
+}
+
+// #6394: `println` of a lambda-invoke result, String-returning. On JVM this
+// hit `printArgType`'s Object/String mismatch (VerifyError); on MSIL it
+// always worked. Passing means both targets compiled and ran this without
+// crashing; the `assertEqual` line proves the underlying value itself.
+test "println on a named-local lambda-invoke result, String-returning (#6394)" {
+  val reader = makeGreeter("world")
+  println(reader())
+  assertEqual(reader(), "hello, world", "makeGreeter(\"world\")() == \"hello, world\"")
+}
+
+// #6394: `println` of a direct chained call's Int result — the erased
+// `Object` stack value is a boxed Integer here, not a String, exercising the
+// `PrintStream.println(Object)` fix path with a non-String runtime type.
+test "println on a direct chained call's Int result (#6394)" {
+  println(makeAdder(5)(10))
+  assertEqualInt(makeAdder(5)(10), 15, "makeAdder(5)(10) == 15")
 }

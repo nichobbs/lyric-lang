@@ -12408,13 +12408,48 @@ pub func lowerCallMsil(
     case EMember(recv, memberName) -> {
       lowerMethodCallMsil(cctx, fctx, insns, recv, memberName, args)
     }
+    case EParen(inner) -> {
+      lowerCallMsil(cctx, fctx, insns, inner, args)
+    }
     case _ -> {
+      // Chained call: the callee is itself an arbitrary expression (most
+      // commonly another `ECall`, e.g. `makeGreeter()()`) that evaluates to
+      // a function value at runtime rather than a bare name naming a slot.
+      // Lower it exactly like any other function-typed VALUE: push it, then
+      // invoke through the uniform boxed `Func` ABI (#1877) — the same
+      // sequence the bare-`EPath`/`Some(slot)` arm above uses — except the
+      // callee value comes from evaluating `fn` in place instead of loading
+      // a local/param slot (#6392). Without this, the callee was silently
+      // never lowered at all — the entire sub-expression's codegen was
+      // dropped, producing `ilverify`-confirmed invalid IL (StackUnderflow).
+      lowerExprMsil(cctx, fctx, insns, fn)
+      insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, args.count)))
       var i = 0
       while i < args.count {
-        lowerCallArgMsil(cctx, fctx, insns, args[i])
+        val argTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+        boxIfNeededMsil(cctx, insns, funcAbiArgBoxTypeMsil(argTy))
         i = i + 1
       }
-      MObject
+      insns.add(MCallvirt(methodToken = buildFuncNInvokeTok(cctx, args.count)))
+      // When `fn` is a call to a known same-package top-level function whose
+      // OWN return type is itself function-shaped, `recordFieldFuncKeyMsil`
+      // (#5774/#5790) resolves the real nested return type via
+      // `cctx.fieldFuncRetTypes` — use it to unbox/materialize the invoke's
+      // boxed `object` result exactly as a named local bound from the same
+      // call expression would. Any other callee shape (an index expression,
+      // a member-returning-a-function, ...) falls back to the boxed `object`
+      // placeholder, matching the pre-existing `case None -> MObject`
+      // fallback the `Some(slot)` arm above uses when a tracked slot's
+      // function-value return type is unknown.
+      val fieldKey = recordFieldFuncKeyMsil(cctx, fctx, fn)
+      if fieldKey.length > 0 {
+        match mapGet(cctx.fieldFuncRetTypes, fieldKey) {
+          case Some(rt) -> match rt { case MVoid -> { insns.add(MPop); MVoid }; case _ -> { materializeBoxedElemMsil(cctx, insns, rt); rt } }
+          case None -> MObject
+        }
+      } else {
+        MObject
+      }
     }
   }
 }
