@@ -5045,6 +5045,18 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/jvm_trio_self_test.l
 
+      # Nested-constructor-pattern self-test on JVM (#4623) — the JVM half of
+      # the dotnet-job step of the same name.  Pins `patternIsRefutableJvm`/
+      # `testCaseFieldJvm` (`03_match.l`, landed for #6122): the `PConstructor`
+      # TEST phase must recurse into refutable positional field sub-patterns,
+      # not just isinst-test the outer case, or `case Ok(None) ->` silently
+      # swallows every `Ok(Some(..))` value ahead of a later, more specific
+      # arm. Covers single- and two-level nesting.
+      - name: Nested-constructor-pattern self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/nested_constructor_pattern_self_test.l
+
       # JVM-trio positive-path self-test (#6124) — JVM-only by design (see the
       # file's own header): confirms a file that DOES import `Std.String`
       # still gets `.indexOf`/`.lastIndexOf` routed through the `Option[Int]`
