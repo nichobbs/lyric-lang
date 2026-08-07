@@ -2791,12 +2791,19 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               // record's parameters lowers to the VAR form (MTypeVar); `ftyG`
               // exactly mirrors what `lowerMRecord` records as the field type and
               // the `.ctor` parameter, so the construction MemberRef signature
-              // byte-matches the TypeDef ctor.  Concrete fields keep their
-              // ctx-aware MSIL type for accurate (cross-package) field-read typing.
+              // byte-matches the TypeDef ctor.  Also used directly as the
+              // registered field type for concrete AND nested-generic fields
+              // (`typeExprToMsilG` delegates to the identical `typeExprToMsilCtx`
+              // result whenever nothing in the field's type references
+              // `recGenerics` — #4870/#6231: recomputing via `typeExprToMsilCtx`
+              // here instead of reusing `ftyG` discarded the `MTypeVar`
+              // substitution `typeExprToMsilGApp` performs for a field type that
+              // is a generic instantiation OVER the record's own parameters,
+              // e.g. `res: Result[T, E]`).
               val ftyG = typeExprToMsilG(cctx, f.ty, pkgName, recGenerics)
               val gIdx = match ftyG { case MTypeVar(ix) -> ix; case _ -> -1 }
               recCtorParams.add(ftyG)
-              val fty = if gIdx >= 0 { ftyG } else { typeExprToMsilCtx(cctx, f.ty, pkgName) }
+              val fty = ftyG
               if not cctx.fieldMsilTypes.containsKey(className + "/" + f.name) {
                 cctx.fieldMsilTypes.add(className + "/" + f.name, fty)
               }
@@ -3061,10 +3068,19 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 if not cctx.fieldTokens.containsKey(caseName + "/field" + toString(fi)) {
                   cctx.fieldTokens.add(caseName + "/field" + toString(fi), 0x04000000 + fieldDefRow)
                 }
+                // Registered field type is `ftyG` unconditionally, not
+                // recomputed via the generics-blind `typeExprToMsilCtx` —
+                // mirrors the record-field registration fix above.  A field
+                // whose type nests the union's own parameter inside another
+                // generic instantiation (`left: Box[T]` on `Tree[T]`) needs
+                // `ftyG`'s `MTypeVar`-carrying shape here too, or the
+                // registered `fieldMsilTypes`/`fieldSigBytes` entries fall
+                // back to the buggy unresolved-identifier `MClass("Pkg.T")`
+                // form (#4870).
                 val ftyG = typeExprToMsilG(cctx, ufTy, pkgName, uGenerics)
                 val gIdx = match ftyG { case MTypeVar(ix) -> ix; case _ -> -1 }
                 caseCtorParams.add(ftyG)
-                val ufTyMsil = if gIdx >= 0 { ftyG } else { typeExprToMsilCtx(cctx, ufTy, pkgName) }
+                val ufTyMsil = ftyG
                 if not cctx.fieldMsilTypes.containsKey(caseName + "/" + name) {
                   cctx.fieldMsilTypes.add(caseName + "/" + name, ufTyMsil)
                 }
@@ -3092,7 +3108,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 val ftyGp = typeExprToMsilG(cctx, ufPosTy, pkgName, uGenerics)
                 val gIdxP = match ftyGp { case MTypeVar(ix) -> ix; case _ -> -1 }
                 caseCtorParams.add(ftyGp)
-                val ufPosTyMsil = if gIdxP >= 0 { ftyGp } else { typeExprToMsilCtx(cctx, ufPosTy, pkgName) }
+                val ufPosTyMsil = ftyGp
                 if not cctx.fieldMsilTypes.containsKey(caseName + "/field" + toString(fi)) {
                   cctx.fieldMsilTypes.add(caseName + "/field" + toString(fi), ufPosTyMsil)
                 }
@@ -7640,16 +7656,21 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               val hasFld = cctx.fieldVarIndices.containsKey(key) or cctx.fieldSigBytes.containsKey(key) or
                 cctx.fieldTokens.containsKey(key)
               if hasFld {
-                val fSig = if vi >= 0 {
-                  buildGenericParamFieldSig(vi)
+                // The field's OPEN declared type (not the substituted concrete
+                // type) — the FieldSig blob must byte-match the FieldDef's own
+                // declaration, which is always in terms of the enclosing
+                // type's VAR(n) parameters (#4870/#6231).  Built at Phase 5 by
+                // MLdfldGeneric's lowering, not here (#4870 deferred-FieldSig).
+                val fMTy: MsilType = if vi >= 0 {
+                  MTypeVar(index = vi)
                 } else {
-                  match mapGet(cctx.fieldSigBytes, key) {
-                    case Some(s) -> s
-                    case None -> buildFieldSig(MObject)
+                  match mapGet(cctx.fieldMsilTypes, key) {
+                    case Some(t) -> t
+                    case None -> MObject
                   }
                 }
                 insns.add(MCastclassGeneric(className = headFqn, typeArgs = typeArgs))
-                insns.add(MLdfldGeneric(baseClassName = headFqn, typeArgs = typeArgs, fieldName = memberName, fieldSig = fSig))
+                insns.add(MLdfldGeneric(baseClassName = headFqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy))
                 if vi >= 0 {
                   if vi < typeArgs.count {
                     typeArgs[vi]
@@ -7684,12 +7705,22 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // arity-suffixed `fqn` so it resolves against the suffixed TypeDef.
               val key = stripGenericArity(fqn) + "/" + memberName
               val vi = match mapGet(cctx.fieldVarIndices, key) { case Some(v) -> v; case None -> -1 }
-              val fSig = match mapGet(cctx.fieldSigBytes, key) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
+              // The field's OPEN declared type — see the matching MGenericInst
+              // comment above; the FieldSig blob is built at Phase 5 from this,
+              // not pre-baked here (#4870 deferred-FieldSig).
+              val fMTy: MsilType = if vi >= 0 {
+                MTypeVar(index = vi)
+              } else {
+                match mapGet(cctx.fieldMsilTypes, key) {
+                  case Some(t) -> t
+                  case None -> MObject
+                }
+              }
               if cctx.fieldSigBytes.containsKey(key) {
                 // The receiver slot is `object` in IL; narrow it to the closed
                 // GENERICINST TypeSpec (in-bundle TypeDef) so `ldfld` verifies.
                 insns.add(MCastclassGeneric(className = fqn, typeArgs = typeArgs))
-                insns.add(MLdfldGeneric(baseClassName = fqn, typeArgs = typeArgs, fieldName = memberName, fieldSig = fSig))
+                insns.add(MLdfldGeneric(baseClassName = fqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy))
                 if vi >= 0 {
                   if vi < typeArgs.count {
                     typeArgs[vi]
@@ -10712,13 +10743,13 @@ func testCaseFieldMsil(
   val fldKey = caseClass + "/field" + toString(fi)
   val fTok = match mapGet(cctx.fieldTokens, fldKey) { case Some(t) -> t; case None -> 0 }
   if fTok > 0 {
-    val fSig = match mapGet(cctx.fieldSigBytes, fldKey) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
+    val fMTy = openFieldMsilType(cctx, fldKey)
     val actualFieldName = match mapGet(cctx.fieldDeclaredNames, fldKey) {
       case Some(n) -> n
       case None -> "field" + toString(fi)
     }
     val fieldTy = resolveConcreteMsilFieldTy(cctx, castTy, fldKey)
-    emitCaseFieldLoad(insns, castTy, castSlot, fctx.paramCount, caseClass, caseClassBt, fTok, fSig, actualFieldName)
+    emitCaseFieldLoad(insns, castTy, castSlot, fctx.paramCount, caseClass, caseClassBt, fTok, fMTy, actualFieldName)
     val fldSlot = allocSlotMsil(fctx, "__ftest_" + toString(fi) + "_" + toString(fctx.slotTicker.count), fieldTy)
     emitStoreSlot(insns, fldSlot, fctx.paramCount)
     lowerPatternTestMsil(cctx, fctx, insns, fieldPat, fldSlot, fieldTy, failLabel)
@@ -11279,9 +11310,9 @@ func lowerPatternTestMsil(
             val rkey = plainRecClass + "/" + fname
             match mapGet(cctx.fieldTokens, rkey) {
               case Some(fTok) -> {
-                val fSig = match mapGet(cctx.fieldSigBytes, rkey) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
+                val fMTy = openFieldMsilType(cctx, rkey)
                 val fty = resolveConcreteMsilFieldTy(cctx, scrutTy, rkey)
-                emitCaseFieldLoad(insns, scrutTy, scrutSlot, fctx.paramCount, plainRecClass, recClassBt, fTok, fSig, fname)
+                emitCaseFieldLoad(insns, scrutTy, scrutSlot, fctx.paramCount, plainRecClass, recClassBt, fTok, fMTy, fname)
                 val tSlot = allocSlotMsil(fctx, "__rtest_" + fname + "_" + toString(fctx.slotTicker.count), fty)
                 emitStoreSlot(insns, tSlot, fctx.paramCount)
                 lowerPatternTestMsil(cctx, fctx, insns, subPat, tSlot, fty, failLabel)
@@ -11332,6 +11363,24 @@ func lowerPatternTestMsil(
       insns.add(MLabel(id = succeedL))
     }
     case PError -> {
+    }
+  }
+}
+
+// The field's OPEN declared type — VAR(n) at its own nesting position,
+// never substituted with a scrutinee's concrete type arguments.  Used as the
+// `fieldMsilType` payload for `MLdfldGeneric`: the FieldSig blob (built at
+// Phase 5, once all TypeDefs exist) must byte-match the FieldDef's own
+// declaration, which is always phrased in terms of the declaring type's own
+// VAR(n) parameters, not the reader's concrete instantiation (#4870/#6231).
+func openFieldMsilType(cctx: in CodegenCtx, key: in String): MsilType {
+  val vi = match mapGet(cctx.fieldVarIndices, key) { case Some(v) -> v; case None -> -1 }
+  if vi >= 0 {
+    MTypeVar(index = vi)
+  } else {
+    match mapGet(cctx.fieldMsilTypes, key) {
+      case Some(t) -> t
+      case None -> MObject
     }
   }
 }
@@ -11429,6 +11478,101 @@ func substituteTypeVarListMsil(tys: in List[MsilType], typeArgs: in List[MsilTyp
   result
 }
 
+// True when `t` mentions an `MTypeVar` anywhere in its shape (possibly
+// nested inside a generic instantiation).  Used to reject a construction-
+// site HINT that is still phrased in terms of an OUTER type's own
+// (not-yet-resolved) generic parameter — #4870: inferring `Tree_Branch`'s
+// `T` from its `left: Box[T]` argument means `left`'s own construction
+// (`Box(item = 10)`) must NOT be hinted with the field's OPEN declared type
+// (`Box`1<!0>`, `!0` referring to BRANCH's own still-unknown slot 0) — that
+// dangling type var is not a real, resolvable type in the enclosing
+// (non-generic) call site, and hinting the nested `Box(...)` construction
+// with it produced a malformed instantiation (ilverify: `StackUnexpected`,
+// `found Int32 expected ref 'object'`, in `Box`'s own ctor codegen).  The
+// nested construction instead falls back to inferring its OWN type argument
+// from its own literal arguments — the ordinary unhinted path.
+func msilTypeHasDanglingTypeVarMsil(t: in MsilType): Bool {
+  match t {
+    case MTypeVar(_) -> true
+    case MArray(e) -> msilTypeHasDanglingTypeVarMsil(e)
+    case MByRef(e) -> msilTypeHasDanglingTypeVarMsil(e)
+    case MGenericInst(_, _, tas) -> msilTypeListHasDanglingTypeVarMsil(tas)
+    case MValueTypeGenericInst(_, _, tas) -> msilTypeListHasDanglingTypeVarMsil(tas)
+    case MGenericInstByName(_, tas) -> msilTypeListHasDanglingTypeVarMsil(tas)
+    case MConcreteList(e) -> msilTypeHasDanglingTypeVarMsil(e)
+    case MConcreteMap(k, v) -> msilTypeHasDanglingTypeVarMsil(k) or msilTypeHasDanglingTypeVarMsil(v)
+    case MListOf(e) -> msilTypeHasDanglingTypeVarMsil(e)
+    case MMapOf(k, v) -> msilTypeHasDanglingTypeVarMsil(k) or msilTypeHasDanglingTypeVarMsil(v)
+    case MSetOf(e) -> msilTypeHasDanglingTypeVarMsil(e)
+    case MIAsyncEnumerable(e) -> msilTypeHasDanglingTypeVarMsil(e)
+    case MExternEnumerable(e) -> msilTypeHasDanglingTypeVarMsil(e)
+    case MTuple(elems) -> msilTypeListHasDanglingTypeVarMsil(elems)
+    case _ -> false
+  }
+}
+
+func msilTypeListHasDanglingTypeVarMsil(tys: in List[MsilType]): Bool {
+  var i = 0
+  while i < tys.count {
+    if msilTypeHasDanglingTypeVarMsil(tys[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Inverse of `substituteTypeVarsMsil`: given a ctor parameter's OPEN declared
+// shape (`pattern`, e.g. `Box`1<!0>` for a `left: Box[T]` case field) and the
+// CONCRETE type actually passed at a construction call site (`concrete`, e.g.
+// `Box`1<Int>` for `Box(item = 10)`), recursively walk both shapes in
+// lock-step to find the concrete type standing in for the enclosing type's
+// generic parameter `slot`.  Needed for the type-argument INFERENCE that
+// picks a generic union case's/record's closed instantiation at its
+// construction site: `buildInBundleGenericCtorTok`'s per-slot scan only
+// matched a ctor parameter that WAS itself a bare `MTypeVar` — a field type
+// that is a generic instantiation OVER the case's own parameter (`Box[T]`,
+// as opposed to a bare `T`) never matched, so building `Branch(left = Box(10),
+// right = Box(20))` could never infer `T = Int` and constructed an open
+// `Tree_Branch<object>` (or a mismatched FieldDef/`newobj` signature),
+// faulting with `InvalidProgramException` at JIT (#4870).
+// Returns `MObject` when `slot` doesn't appear anywhere in `pattern`, mirroring
+// the "not found" sentinel the existing per-slot scan already uses.
+func findNestedTypeVarArgMsil(pattern: in MsilType, concrete: in MsilType, slot: in Int): MsilType {
+  match pattern {
+    case MTypeVar(ix) -> if ix == slot { concrete } else { MObject }
+    case MArray(pe) -> match concrete { case MArray(ce) -> findNestedTypeVarArgMsil(pe, ce, slot); case _ -> MObject }
+    case MByRef(pinner) -> match concrete { case MByRef(cinner) -> findNestedTypeVarArgMsil(pinner, cinner, slot); case _ -> MObject }
+    case MGenericInst(_, _, pargs) -> match concrete { case MGenericInst(_, _, cargs) -> findNestedTypeVarArgListMsil(pargs, cargs, slot); case _ -> MObject }
+    case MValueTypeGenericInst(_, _, pargs) -> match concrete { case MValueTypeGenericInst(_, _, cargs) -> findNestedTypeVarArgListMsil(pargs, cargs, slot); case _ -> MObject }
+    case MGenericInstByName(_, pargs) -> match concrete { case MGenericInstByName(_, cargs) -> findNestedTypeVarArgListMsil(pargs, cargs, slot); case _ -> MObject }
+    case MConcreteList(pe) -> match concrete { case MConcreteList(ce) -> findNestedTypeVarArgMsil(pe, ce, slot); case _ -> MObject }
+    case MConcreteMap(pk, pv) -> match concrete { case MConcreteMap(ck, cv) -> { val kFound = findNestedTypeVarArgMsil(pk, ck, slot); match kFound { case MObject -> findNestedTypeVarArgMsil(pv, cv, slot); case _ -> kFound } }; case _ -> MObject }
+    case MListOf(pe) -> match concrete { case MListOf(ce) -> findNestedTypeVarArgMsil(pe, ce, slot); case _ -> MObject }
+    case MMapOf(pk, pv) -> match concrete { case MMapOf(ck, cv) -> { val kFound2 = findNestedTypeVarArgMsil(pk, ck, slot); match kFound2 { case MObject -> findNestedTypeVarArgMsil(pv, cv, slot); case _ -> kFound2 } }; case _ -> MObject }
+    case MSetOf(pe) -> match concrete { case MSetOf(ce) -> findNestedTypeVarArgMsil(pe, ce, slot); case _ -> MObject }
+    case MIAsyncEnumerable(pe) -> match concrete { case MIAsyncEnumerable(ce) -> findNestedTypeVarArgMsil(pe, ce, slot); case _ -> MObject }
+    case MExternEnumerable(pe) -> match concrete { case MExternEnumerable(ce) -> findNestedTypeVarArgMsil(pe, ce, slot); case _ -> MObject }
+    case MTuple(pelems) -> match concrete { case MTuple(celems) -> findNestedTypeVarArgListMsil(pelems, celems, slot); case _ -> MObject }
+    case _ -> MObject
+  }
+}
+
+func findNestedTypeVarArgListMsil(pargs: in List[MsilType], cargs: in List[MsilType], slot: in Int): MsilType {
+  var i = 0
+  while i < pargs.count {
+    if i < cargs.count {
+      val found = findNestedTypeVarArgMsil(pargs[i], cargs[i], slot)
+      match found {
+        case MObject -> ()
+        case _ -> return found
+      }
+    }
+    i = i + 1
+  }
+  MObject
+}
+
 // Emit the MSIL instructions to load one field of a union case from
 // `castSlot`, using the appropriate generic or non-generic ldfld form.
 // For non-generic types the emitter must first narrowcast to the concrete
@@ -11441,13 +11585,13 @@ func emitCaseFieldLoad(
   caseClass: in String,
   caseClassBt: in String,
   fieldToken: in Int,
-  fieldSig: in List[Byte],
+  fieldMsilType: in MsilType,
   fieldName: in String,
 ): Unit {
   emitLoadSlot(insns, castSlot, paramCount)
   match castTy {
-    case MGenericInst(_, _, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClass, typeArgs = typeArgs, fieldName = fieldName, fieldSig = fieldSig))
-    case MGenericInstByName(_, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClassBt, typeArgs = typeArgs, fieldName = fieldName, fieldSig = fieldSig))
+    case MGenericInst(_, _, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClass, typeArgs = typeArgs, fieldName = fieldName, fieldMsilType = fieldMsilType))
+    case MGenericInstByName(_, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClassBt, typeArgs = typeArgs, fieldName = fieldName, fieldMsilType = fieldMsilType))
     case _ -> {
       // castSlot is typed as `object` in LocalVarSig, so castclass narrows to
       // the concrete case class before ldfld (#1442).
@@ -11505,10 +11649,10 @@ func bindNamedFieldMsil(
       val sigLookupKey = caseClass + "/field" + toString(fi)
       val fTok = match mapGet(cctx.fieldTokens, sigLookupKey) { case Some(t) -> t; case None -> 0 }
       if fTok > 0 {
-        val fSig = match mapGet(cctx.fieldSigBytes, sigLookupKey) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
+        val fMTy = openFieldMsilType(cctx, sigLookupKey)
         val actualFieldName = match mapGet(cctx.fieldDeclaredNames, sigLookupKey) { case Some(n) -> n; case None -> fname }
         val concreteFieldTy = resolveConcreteMsilFieldTy(cctx, castTy, sigLookupKey)
-        emitCaseFieldLoad(insns, castTy, castSlot, fctx.paramCount, caseClass, caseClassBt, fTok, fSig, actualFieldName)
+        emitCaseFieldLoad(insns, castTy, castSlot, fctx.paramCount, caseClass, caseClassBt, fTok, fMTy, actualFieldName)
         val fSlot = allocSlotMsil(fctx, fname, concreteFieldTy)
         emitStoreSlot(insns, fSlot, fctx.paramCount)
         match innerOpt {
@@ -11539,13 +11683,13 @@ func bindPositionalFieldMsil(
   val fldKey = caseClass + "/field" + toString(fi)
   val fTok = match mapGet(cctx.fieldTokens, fldKey) { case Some(t) -> t; case None -> 0 }
   if fTok > 0 {
-    val fSig = match mapGet(cctx.fieldSigBytes, fldKey) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
+    val fMTy = openFieldMsilType(cctx, fldKey)
     val actualFieldName = match mapGet(cctx.fieldDeclaredNames, fldKey) {
       case Some(n) -> n
       case None -> "field" + toString(fi)
     }
     val fieldTy = resolveConcreteMsilFieldTy(cctx, castTy, fldKey)
-    emitCaseFieldLoad(insns, castTy, castSlot, fctx.paramCount, caseClass, caseClassBt, fTok, fSig, actualFieldName)
+    emitCaseFieldLoad(insns, castTy, castSlot, fctx.paramCount, caseClass, caseClassBt, fTok, fMTy, actualFieldName)
     val fldSlot = allocSlotMsil(fctx, slotNamePrefix + toString(fi) + "_" + toString(fctx.slotTicker.count), fieldTy)
     emitStoreSlot(insns, fldSlot, fctx.paramCount)
     lowerPatternBindMsil(cctx, fctx, insns, fieldPat, fldSlot, fieldTy)
@@ -11804,16 +11948,16 @@ func lowerPatternBindMsil(
             val rkey = plainRecClass + "/" + fname
             match mapGet(cctx.fieldTokens, rkey) {
               case Some(fTok) -> {
-                val fSig = match mapGet(cctx.fieldSigBytes, rkey) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
+                val fMTy = openFieldMsilType(cctx, rkey)
                 val fty = resolveConcreteMsilFieldTy(cctx, scrutTy, rkey)
                 match subPat.kind {
                   case PBinding(bname, _) -> {
-                    emitCaseFieldLoad(insns, scrutTy, rCastSlot, fctx.paramCount, plainRecClass, recClassBt, fTok, fSig, fname)
+                    emitCaseFieldLoad(insns, scrutTy, rCastSlot, fctx.paramCount, plainRecClass, recClassBt, fTok, fMTy, fname)
                     val bSlot = allocSlotMsil(fctx, bname, fty)
                     emitStoreSlot(insns, bSlot, fctx.paramCount)
                   }
                   case _ -> {
-                    emitCaseFieldLoad(insns, scrutTy, rCastSlot, fctx.paramCount, plainRecClass, recClassBt, fTok, fSig, fname)
+                    emitCaseFieldLoad(insns, scrutTy, rCastSlot, fctx.paramCount, plainRecClass, recClassBt, fTok, fMTy, fname)
                     val tSlot = allocSlotMsil(fctx, "__rfld_" + fname + "_" + toString(fctx.slotTicker.count), fty)
                     emitStoreSlot(insns, tSlot, fctx.paramCount)
                     lowerPatternBindMsil(cctx, fctx, insns, subPat, tSlot, fty)
@@ -11828,9 +11972,9 @@ func lowerPatternBindMsil(
             val rkey = plainRecClass + "/" + fname
             match mapGet(cctx.fieldTokens, rkey) {
               case Some(fTok) -> {
-                val fSig = match mapGet(cctx.fieldSigBytes, rkey) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
+                val fMTy = openFieldMsilType(cctx, rkey)
                 val fty = resolveConcreteMsilFieldTy(cctx, scrutTy, rkey)
-                emitCaseFieldLoad(insns, scrutTy, rCastSlot, fctx.paramCount, plainRecClass, recClassBt, fTok, fSig, fname)
+                emitCaseFieldLoad(insns, scrutTy, rCastSlot, fctx.paramCount, plainRecClass, recClassBt, fTok, fMTy, fname)
                 val bSlot = allocSlotMsil(fctx, fname, fty)
                 emitStoreSlot(insns, bSlot, fctx.paramCount)
               }
@@ -12926,7 +13070,7 @@ func lowerBuiltinOrStaticCallMsil(
           // args rather than erasing to `object` — otherwise the stored nullary
           // case is `Option<object>` and a later `match` on the field fails
           // "match not exhaustive" (#1731 / the #1730 session blocker).
-          val innerHint: MsilType = if viH >= 0 and viH < outerCtxTyArgs.count {
+          val innerHintRaw: MsilType = if viH >= 0 and viH < outerCtxTyArgs.count {
             outerCtxTyArgs[viH]
           } else {
             match mapGet(cctx.fieldDeclaredNames, fldKeyH) {
@@ -12935,6 +13079,14 @@ func lowerBuiltinOrStaticCallMsil(
               case None -> match mapGet(cctx.fieldMsilTypes, fldKeyH) { case Some(fty) -> fty; case None -> MObject }
             }
           }
+          // A field whose declared type nests the ENCLOSING case's own generic
+          // parameter (`left: Box[T]` on `Branch[T]`) registers the OPEN shape
+          // (`Box`1<!0>`) in `fieldMsilTypes` — never a usable construction
+          // hint for the argument expression, since `!0` isn't resolvable at
+          // this call site (inferring it IS what this argument's own
+          // construction is for).  Discard it rather than hint the nested
+          // `Box(...)` construction with a dangling type var (#4870).
+          val innerHint: MsilType = if msilTypeHasDanglingTypeVarMsil(innerHintRaw) { MObject } else { innerHintRaw }
           // Use genericArgsOfMsil (not a direct MGenericInst pattern match) so a
           // field's declared type coming back as MGenericInstByName — the
           // representation an already-compiled sibling package's field type
@@ -23438,6 +23590,12 @@ func genericIndexOf(generics: in List[String], name: in String): Int {
 // ELEMENT_TYPE_VAR (`MTypeVar(index)`); everything else delegates to
 // `typeExprToMsilCtx`.  Used for the fields of an in-bundle generic record/union so
 // `value: T` encodes `FIELD VAR(0)` (`06 13 00`), byte-matching the F# emitter.
+//
+// `TGenericApp` is handled by `typeExprToMsilGApp` (#4870/#6231) so a field
+// whose type is itself a generic instantiation OVER one of `generics` (e.g.
+// `left: Box[T]` on `Tree[T]`, `res: Result[T, E]` on `Holder[T, E]`) carries
+// `MTypeVar` at the NESTED argument position, not just when the field type
+// IS literally the bare parameter.
 func typeExprToMsilG(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, generics: in List[String]): MsilType {
   match te.kind {
     case TRef(path) -> {
@@ -23450,7 +23608,132 @@ func typeExprToMsilG(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, g
       }
     }
     case TParen(inner) -> typeExprToMsilG(cctx, inner, pkgName, generics)
+    case TGenericApp(head, args) -> typeExprToMsilGApp(cctx, head, args, pkgName, generics)
     case _ -> typeExprToMsilCtx(cctx, te, pkgName)
+  }
+}
+
+// Like `sliceElemMsilCtx` but recurses through `typeExprToMsilG` so a
+// collection element that is itself one of the enclosing generic type's
+// parameters reifies to `MTypeVar` instead of falling to the generics-blind
+// `typeExprToMsilCtx` (#4870/#6231 companion for `List[T]`/`Map[K,V]`/`Set[T]`
+// fields on a generic record/union case).
+func sliceElemMsilG(cctx: in CodegenCtx, elem: in TypeExpr, pkgName: in String, generics: in List[String]): MsilType {
+  match elem.kind {
+    case TRef(path) -> if lastSegmentMsil(path) == "Byte" { MByte } else { typeExprToMsilG(cctx, elem, pkgName, generics) }
+    case _ -> typeExprToMsilG(cctx, elem, pkgName, generics)
+  }
+}
+
+// TGenericApp arm of `typeExprToMsilG` (#4870/#6231).  Mirrors
+// `typeExprToMsilCtx`'s own TGenericApp handling exactly — same special
+// cases for `List`/`Map`/`Set`/`MapKeyCollection`/`MapValueCollection`, same
+// in-bundle-vs-cross-assembly generic-head resolution — but recurses every
+// type ARGUMENT (and collection element) through `typeExprToMsilG` instead of
+// `typeExprToMsilCtx`, so a nested reference to one of the enclosing type's
+// OWN parameters reifies to `MTypeVar` rather than resolving as an
+// unrecognised user-type identifier (`MClass(pkgName + "." + "T")`) — the
+// root cause of the #4870 union-case MissingFieldException/ClassCastException
+// and the #6231 match-on-nested-generic-field crash.
+func typeExprToMsilGApp(
+  cctx: in CodegenCtx,
+  head: in ModulePath,
+  args: in List[TypeArg],
+  pkgName: in String,
+  generics: in List[String],
+): MsilType {
+  val headSeg = lastSegmentMsil(head)
+  if headSeg == "List" and args.count == 1 {
+    match args[0] {
+      case TAType(elemTe) -> {
+        val elemTy = sliceElemMsilG(cctx, elemTe, pkgName, generics)
+        if collElemConcrete(elemTy) {
+          MConcreteList(elemTy = elemTy)
+        } else if isValueType(elemTy) {
+          MListOf(elemTy = elemTy)
+        } else {
+          MObject
+        }
+      }
+      case TAValue(_) -> MObject
+    }
+  } else if headSeg == "Map" and args.count == 2 {
+    val keyTy = match args[0] {
+      case TAType(kte) -> sliceElemMsilG(cctx, kte, pkgName, generics)
+      case TAValue(_) -> MObject
+    }
+    val valTyRaw = match args[1] {
+      case TAType(vte) -> sliceElemMsilG(cctx, vte, pkgName, generics)
+      case TAValue(_) -> MObject
+    }
+    if collElemConcrete(keyTy) and collElemConcrete(valTyRaw) {
+      MConcreteMap(keyTy = keyTy, valTy = valTyRaw)
+    } else {
+      val mapValTy = if isValueType(valTyRaw) { valTyRaw } else { MObject }
+      MMapOf(keyTy = MObject, valTy = mapValTy)
+    }
+  } else if headSeg == "Map" {
+    MMapOf(keyTy = MObject, valTy = MObject)
+  } else if headSeg == "Set" and args.count == 1 {
+    val setElemTyRaw = match args[0] {
+      case TAType(ete) -> sliceElemMsilG(cctx, ete, pkgName, generics)
+      case TAValue(_) -> MObject
+    }
+    val setElemTy = if isValueType(setElemTyRaw) { setElemTyRaw } else { MObject }
+    MSetOf(elemTy = setElemTy)
+  } else if headSeg == "MapKeyCollection" and args.count == 2 {
+    val keyTy2 = match args[0] {
+      case TAType(te2) -> typeExprToMsilG(cctx, te2, pkgName, generics)
+      case TAValue(_) -> MObject
+    }
+    MExternEnumerable(elemTy = keyTy2)
+  } else if headSeg == "MapValueCollection" and args.count == 2 {
+    val valTy2 = match args[1] {
+      case TAType(te2) -> typeExprToMsilG(cctx, te2, pkgName, generics)
+      case TAValue(_) -> MObject
+    }
+    MExternEnumerable(elemTy = valTy2)
+  } else {
+    val headFqn = resolveTypeFqn(cctx, pkgName, headSeg)
+    match mapGet(cctx.genericTypeArity, headFqn) {
+      case Some(arity) -> {
+        val inBundleArgs: List[MsilType] = newList()
+        var iai = 0
+        while iai < args.count {
+          match args[iai] {
+            case TAType(te2) -> inBundleArgs.add(typeExprToMsilG(cctx, te2, pkgName, generics))
+            case TAValue(_) -> inBundleArgs.add(MObject)
+          }
+          iai = iai + 1
+        }
+        MGenericInstByName(headFqn = genericBacktickFqn(headFqn, arity), typeArgs = inBundleArgs)
+      }
+      case None -> {
+        val dotIdx = headFqn.lastIndexOf(".")
+        if dotIdx < 0 {
+          MObject
+        } else {
+          val headPkg = headFqn.substring(0, dotIdx)
+          val typeRefKey = headPkg + "/" + headFqn
+          match mapGet(cctx.ffiTypeRefs, typeRefKey) {
+            case None -> MObject
+            case Some(row) -> {
+              val codedIdx: Int = tdrTypeRef(row)
+              val resolvedArgs: List[MsilType] = newList()
+              var ai = 0
+              while ai < args.count {
+                match args[ai] {
+                  case TAType(te2) -> resolvedArgs.add(typeExprToMsilG(cctx, te2, pkgName, generics))
+                  case TAValue(_) -> resolvedArgs.add(MObject)
+                }
+                ai = ai + 1
+              }
+              MGenericInst(typeRefCode = codedIdx, headFqn = headFqn, typeArgs = resolvedArgs)
+            }
+          }
+        }
+      }
+    }
   }
 }
 
@@ -31665,13 +31948,18 @@ func buildInBundleGenericCtorTok(
     var argFoundTy: MsilType = MObject
     var i = 0
     while i < ctorParams.count {
-      match ctorParams[i] {
-        case MTypeVar(ix) -> {
-          if ix == slot and i < argTypes.count {
-            argFoundTy = argTypes[i]
+      // A ctor param that IS the bare parameter (`value: T`) matches
+      // directly; one whose type is a generic instantiation OVER the
+      // parameter (`left: Box[T]`) needs the recursive structural match —
+      // #4870: without it, `Branch(left = Box(10), …)` could never infer
+      // `T = Int` from the `Box[T]`-typed `left` parameter.
+      if i < argTypes.count {
+        val found = findNestedTypeVarArgMsil(ctorParams[i], argTypes[i], slot)
+        match found {
+          case MObject -> ()
+          case _ -> {
+            argFoundTy = found
           }
-        }
-        case _ -> {
         }
       }
       i = i + 1

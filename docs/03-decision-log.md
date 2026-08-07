@@ -23294,3 +23294,254 @@ harness) — 35/35 passing after `make lyric`. Regression sweep:
 
 **Related:** #6296, #6133, #5258, #2627, `lyric-compiler/msil/codegen.l`,
 `lyric-compiler/lyric/msil_project_bridge_self_test.l`.
+
+### D-progress-736 — Nested-generic-instantiation-as-field-type miscompile family: #4870 fixed on MSIL (three coupled defects), #6231's match half closed; JVM confirmed a distinct, larger, pre-existing gap
+
+**Status:** Shipped (MSIL). JVM explicitly out of scope — see below.
+
+**The bugs.** A generic union case whose field type is ANOTHER generic
+instantiation over the union's own type parameter (`case Branch(left:
+Box[T], right: Box[T])` on `union Tree[T]`, `Box` a plain user record)
+crashed on `--target dotnet` with `MissingFieldException`/
+`InvalidProgramException` depending on the exact call shape, and on
+`--target jvm` with a `ClassCastException` at runtime (#4870). A generic
+RECORD field typed the same way (`res: Result[T, E]` on `record Holder[T,
+E]`) had its plain field READ fixed in PR #6329 (`substituteTypeVarsMsil`),
+but `match h.res { ... }` on that same field still crashed
+(`InvalidProgramException`/`MissingFieldException`) — #6231's remaining
+half. Bare-`T` case fields (`case One(a: T)`) and stdlib-only nesting
+(`Result[Option[Int], String]`) both already worked; the failing shape was
+specifically a USER generic type nested inside another generic
+instantiation as a case/record field type.
+
+**PR #6329's attempt.** That PR (merged, on `main`) fixed #6322 (an
+unrelated `slice[record]` LocalVarSig bug), #6233 (record-pattern match on
+a generic record), and the PLAIN-FIELD-READ half of #6231 via
+`substituteTypeVarsMsil` — a recursive MsilType type-variable substitution
+applied in `resolveConcreteMsilFieldTy` and the `EMember` field-read arms.
+It explicitly left #4870 and #6231's match half open, flagging them as "a
+deeper, separate gap in the same family" needing "further TypeSpec-
+substitution work in the match-lowering path itself." This session found
+that framing was half right: the match-lowering path was indeed broken,
+but the root cause traced further back — to TYPE REGISTRATION, not
+TypeSpec substitution at the match site.
+
+**Root cause 1 (registration): `typeExprToMsilG` never recursed into
+`TGenericApp`.** `lyric-compiler/msil/codegen.l`'s `typeExprToMsilG`
+(the generics-aware field/parameter-type lowering used for every in-bundle
+generic record/union field) special-cased only a BARE type-variable
+reference (`case TRef(path) -> ... MTypeVar(idx) ...`); every other
+`TypeExpr` shape — including `TGenericApp` (`Box[T]`, `Result[T, E]`) —
+fell through to `case _ -> typeExprToMsilCtx(cctx, te, pkgName)`, a
+completely generics-BLIND resolver. For a field type like `Box[T]` on
+`Tree[T]`, `typeExprToMsilCtx`'s own `TRef` arm resolved the nested `T`
+as an unrecognised same-package type name, producing `MClass("Pkg.T")` —
+a reference to a nonexistent CLR type — nested inside the outer
+`MGenericInstByName("Box`1", [MClass("Pkg.T")])`. This corrupted value
+flowed into THREE separate registration maps that all keyed off the same
+computation:
+- `cctx.fieldMsilTypes` (consumed by `EMember` field reads AND by match's
+  scrutinee-type derivation, since a match scrutinee is lowered via the
+  ordinary `lowerExprMsil` `EMember` path) — `substituteTypeVarsMsil`
+  (#6329) only replaces `MTypeVar` nodes; it is a no-op on `MClass`, so the
+  bogus type survived substitution unchanged and downstream `isinst`/
+  pattern-bind TypeSpecs were built from `MClass("Pkg.T")`, which
+  `bufMsilType`/`bufMsilTypeWithCtx` degrade to `ELEMENT_TYPE_OBJECT` —
+  exactly matching #6231's residual "match not exhaustive" panic
+  (`scr=GStd.Core.Result<LMain.T;,LMain.E;,>`, verified via a debug
+  `msilTypeKey` dump before the fix).
+- `cctx.fieldSigBytes` (the case class's FieldDef-adjacent FIELD signature
+  blob, baked via the context-FREE `buildFieldSig`, which cannot resolve
+  an in-bundle TypeDef row at all — see root cause 2) — corrupted the same
+  way, producing #4870's `MissingFieldException`.
+- The record/union-case field registration sites additionally IGNORED the
+  correctly-computed `ftyG` for the non-bare-var case and RECOMPUTED via
+  `typeExprToMsilCtx` again (`val fty = if gIdx >= 0 { ftyG } else {
+  typeExprToMsilCtx(...) }`), so even a partial fix to `typeExprToMsilG`
+  alone would not have reached these maps.
+
+**The fix (registration).** Added `typeExprToMsilGApp` — a new
+`TGenericApp` arm for `typeExprToMsilG`, mirroring `typeExprToMsilCtx`'s
+own `TGenericApp` handling structurally (same `List`/`Map`/`Set`/
+`MapKeyCollection`/`MapValueCollection` special cases, same in-bundle-vs-
+cross-assembly generic-head resolution) but recursing every type ARGUMENT
+through `typeExprToMsilG` instead of `typeExprToMsilCtx`, so a nested
+reference to the enclosing type's own parameter reifies to `MTypeVar`
+rather than an unresolved-identifier `MClass`. Added the companion
+`sliceElemMsilG` for `List[T]`/`Map[K,V]`/`Set[T]` element resolution.
+Then simplified the THREE registration call sites (record fields, union
+`UFNamed` fields, union `UFPos` fields in `addPackageTokens`) to use `ftyG`
+unconditionally instead of discarding it for the non-bare-var case —
+`typeExprToMsilG` already falls back to `typeExprToMsilCtx`-identical
+behaviour for any type that doesn't mention the enclosing generics, so
+this is a pure simplification with no behaviour change for concrete
+fields, and the correct fix for nested-generic ones.
+
+**Root cause 2 (deferred FieldSig): `buildFieldSig` is context-free and
+cannot encode an in-bundle GENERICINST at all.** Even with root cause 1
+fixed, `cctx.fieldSigBytes` was still baked via the context-free
+`buildFieldSig(ufTyMsil)` at Phase 3 (codegen/registration) — before this
+bundle's own TypeDef rows are added to the table (that happens later, at
+Phase 5 lowering). `bufMsilType`'s `MGenericInstByName` arm has no
+`LoweringCtx` to resolve a TypeDef row with, so it unconditionally
+degrades to `ELEMENT_TYPE_OBJECT` regardless of registration order —
+this is not really an ordering bug, it is a "wrong builder for this slot"
+bug. Meanwhile `MLdfldGeneric`'s Phase 5 lowering (`lyric-compiler/msil/
+lowering.l`) already deferred its `MCastclassGeneric`-adjacent TypeSpec
+construction to lowering time (documented precedent, same file, unrelated
+to #6380) but still took the PRE-BAKED, wrong `fieldSig: List[Byte]` as a
+literal payload — so even a correct registration-time `MsilType` had
+nowhere deferred to flow into a correct FieldSig blob.
+
+**The fix (deferred FieldSig).** Changed `MLdfldGeneric`'s payload from
+`fieldSig: List[Byte]` to `fieldMsilType: MsilType` (the field's OPEN
+declared type — VAR(n) at its own nesting position, never substituted
+with the reader's concrete type args, since the FieldSig blob must byte-
+match the FieldDef's own declaration). Its Phase 5 lowering now builds the
+blob via `buildFieldSigWithCtx(fieldMsilType, ctx)` — context-aware, run
+after all TypeDefs exist, so a nested in-bundle generic head resolves
+correctly. Added `openFieldMsilType` (`lyric-compiler/msil/codegen.l`) to
+derive that open type uniformly at all 7 call sites that previously did
+`mapGet(cctx.fieldSigBytes, key)`, and updated all 5 `MLdfldGeneric`
+construction sites and the shared `emitCaseFieldLoad` helper to match.
+
+**Root cause 3 (construction-site type-argument inference): the
+per-slot scan only matched a BARE `MTypeVar` ctor parameter.**
+`buildInBundleGenericCtorTok` (used at every in-bundle generic
+construction call site) infers each type-parameter slot by scanning the
+callee's registered `ctorParams` for a bare `MTypeVar(ix)` entry and
+pairing it with the corresponding lowered argument's type. A ctor
+parameter whose type is a generic instantiation OVER the slot (`left:
+Box[T]`, now correctly `MGenericInstByName("Box`1", [MTypeVar(0)])` after
+root cause 1's fix) never matched that bare-`MTypeVar` check, so `T` could
+never be inferred from a `Box[T]`-typed argument. Constructing `Branch(left
+= Box(item = 10), right = Box(item = 20))` alone (isolated from any match)
+already faulted at this point: `T` fell back to `Object`, `Tree_Branch`
+was built as `Tree_Branch<Object>` while its `left`/`right` fields
+individually held correctly-inferred `Box<Int32>` instances — the
+FieldDef declares `GENERICINST CLASS Box VAR(0)` (bound to `Object` at
+this instantiation) but the pushed value is an unboxed `Box<Int32>`
+reference, which ilverify flagged as `StackUnexpected`/type mismatch.
+
+**The fix (construction-site inference).** Added
+`findNestedTypeVarArgMsil`/`findNestedTypeVarArgListMsil` — the structural
+inverse of `substituteTypeVarsMsil` (#6329): given a ctor parameter's OPEN
+pattern shape and the CONCRETE type actually pushed at the call site,
+recurse both in lock-step to find the concrete type standing in for a
+given slot, wherever it's nested. Wired into `buildInBundleGenericCtorTok`'s
+per-slot scan, replacing the bare-`MTypeVar`-only match.
+
+**A fourth, narrower bug surfaced during root cause 3's verification**:
+the SAME construction call's argument-lowering loop computes a "hint"
+type for a NESTED constructor-call argument (`Box(item = 10)` as the
+`left` argument to `Branch(...)`) from the field's registered OPEN
+declared type. Once root cause 1 made that OPEN type correctly carry
+`MTypeVar(0)` (referring to BRANCH's own still-unresolved slot, not
+BOX's), propagating it as a hint into `Box(item = 10)`'s own construction
+made `Box`'s inference pick that dangling type var over its own literal
+argument's inferred `Int` — the same erasure-to-mismatch failure as root
+cause 3, one level down. Fixed with `msilTypeHasDanglingTypeVarMsil`: the
+hint is discarded (falls back to the ordinary unhinted inference path)
+whenever it still mentions an unresolved `MTypeVar` anywhere in its shape.
+
+**A fifth bug, in `Lyric.Mono` (shared middle end, not MSIL-specific):
+generic RECORD constructor calls never participated in the monomorphizer's
+argument-based type-inference.** With all four MSIL defects fixed,
+`#4870`'s literal repro (`rightItem[T](t: Tree[T], d: T): T` called with a
+freshly-constructed `Branch(...)`) STILL crashed — `ilverify` showed the
+CALL SITE itself passed a reified `Tree`1<int32>` into a parameter typed
+`Tree`1<object>`: `Lyric.Mono` had specialised `rightItem` as
+`rightItem__Object` (an erased fallback) instead of `rightItem__Int`. Its
+`unionCtorInferenceDecls` machinery synthesises an inference-only
+`FunctionDecl` per union CASE (`func Branch[T](left: Box[T], right:
+Box[T]): Tree[T]`) specifically so `ctorSynthOfArg`/`partialUnifyCtorArg`
+can recognise a NESTED constructor-call argument and pin the outer type
+parameter from the inner constructor's own field types — but this
+synthesis only ever covered `IUnion`, never `IRecord`/`IExposedRec`. So
+`Box(item = 10)` (a plain record, not a union case) was invisible to
+`ctorSynthOfArg`, `Branch`'s own inference for `T` fell through to the
+unpinned-slot `Object` default (`fillsUnpinned`, #5604), `val t =
+Branch(...)` was tracked as `Tree[Object]` in mono's local-binding
+environment, and `rightItem(t, 0)` specialised against that (wrong)
+tracked type — even though CODEGEN correctly reified `t` as `Tree<Int32>`
+per the four MSIL fixes above. Confirmed via a same-package-only
+isolation: a bare-`T`-fields version of the identical `Tree`/`rightItem`
+shape (no nested `Box`) monomorphized to `rightItem__Int` and ran
+correctly — the SAME call-site pattern, differing only in whether the
+case field type was a plain type param or a generic instantiation over it.
+
+**The fix (mono).** Extended `unionCtorInferenceDecls`
+(`lyric-compiler/lyric/mono.l`) to ALSO synthesize one inference-only
+`FunctionDecl` per GENERIC record/exposed-record (`recordCtorInferenceDecl`,
+skipped for non-generic records — nothing to pin), reusing the identical
+`__lyric_union_ctor_infer` marker so the synthesized entries join
+`state.funcDecls` (the inference surface) but never `state.genDecls` (so
+they are never rewrite-targeted — records have no body to specialise,
+exactly like the existing union-case entries). This is a single,
+minimally-invasive extension point: all four existing callers
+(`mono_self_test.l`, and `lyric-compiler/msil/bridge.l`'s three same-
+package/in-bundle-sibling/restored-package collectors) pick it up with no
+wiring changes.
+
+**JVM: confirmed a distinct, larger, PRE-EXISTING defect — explicitly out
+of scope for this fix.** `#4870`'s exact repro on `--target jvm` fails at
+COMPILE TIME (`Jvm.Codegen: member 'item' cannot be resolved on an erased
+(statically Object) receiver`), not the runtime `ClassCastException`
+originally filed against #4870 — `Lyric.Mono`'s fix above changed the
+JVM failure mode too (same shared middle end), turning a silent runtime
+miscompile into a loud compile-time diagnostic, which is already a real
+improvement, but the underlying JVM gap remains. Isolation reduced this to
+the SIMPLEST possible case — a plain, non-generic-context `val b: Box[Int]
+= Box(item = 10); b.item` — which ALSO fails identically, proving the
+defect has nothing to do with unions, case fields, or match at all.
+Root cause: `typeExprToJvm`'s `TGenericApp` arm
+(`lyric-compiler/jvm/codegen/01_types.l`) maps EVERY user-defined generic
+type reference to bare `java/lang/Object` unconditionally (only the
+built-in `List`/`Map` heads get their real erased class) — it never
+resolves a same-package generic head to its own erased class
+(`JRef(pkgName + "/" + head)`), so `typeExprToJvmErased`/
+`typeExprToJvmErasedExtern` (used for case/record field-type registration)
+inherit the same blanket erasure. This is not a narrow, mechanically
+isolated defect like the four MSIL ones above — it is JVM's foundational
+generics-erasure type mapper losing the receiver's class identity for
+EVERY nested same-package generic reference, already catalogued as a
+known, tracked gap in `docs/44-jvm-production-readiness-plan.md` (J4,
+"erased-generics codegen", epic #2663) and confirmed via
+`lyric-compiler/jvm/generic_jvm_self_test.l`'s own scope note (only bare-
+`T`-field shapes are tested there; a nested-generic-as-field-type shape
+is absent). Properly fixing it needs `typeExprToJvm` to resolve a same-
+package generic head class name while auditing every downstream consumer
+that currently treats "non-List/Map generic ⇒ Object" as an invariant —
+a substantially larger, higher-regression-risk change than the four MSIL
+fixes, and explicitly left unattempted per this task's own guidance to
+ship a complete smaller slice over a risky broad one.
+
+**Verification.** `#4870`'s exact repro and the isolated `Holder6231`
+match-on-nested-`Result[T,E]` repro (#6231's remaining half) both now
+print `ok` on `--target dotnet` (previously `InvalidProgramException`).
+`--target jvm` for both confirmed unchanged in FAILURE CLASS (compile-time
+diagnostic before and after this session for `Holder6231`'s shape; a
+runtime `ClassCastException` was replaced by a compile-time diagnostic
+for #4870's shape specifically, an incidental improvement from the shared
+mono fix, not a claim of resolution). Added six regression cases to
+`inbundle_generics_self_test.l` (dotnet-only, matching how the file is
+already wired in CI): the `Tree4870`/`Box[T]` case-field construct, match
+through a monomorphized generic function, and a sibling bare-`T` case
+still matching correctly; plus a `match h.res { ... }` case appended to
+the existing `#6231`/`Holder6231` test. Suite now 28/28 (was 26/26).
+Full regression battery, all green: `inbundle_generics_self_test.l`
+28/28 (dotnet); `nested_constructor_pattern_self_test.l` 6/6 (both
+targets); `bitwise_self_test.l` 10/10 (both targets);
+`result_generic_specialization_self_test.l` 4/4 (both targets); `mono`
+self-test 54/54; `msil_project_bridge_self_test.l` 35/35 (dotnet);
+`generic_jvm_self_test.l` 20/20 (jvm, confirms the mono fix didn't
+regress JVM's existing erased-generics coverage).
+
+**Related:** #4870, #6231, #6322, #6233, #6329, #6380 (deferred-TypeSpec
+precedent studied, not directly reused — its `MCastclassGeneric`/
+`MIsinstGeneric` deferral is the actual precedent this fix's `MLdfldGeneric`
+change mirrors), #5604, #3502, docs/43-in-bundle-generics-plan.md,
+docs/44-jvm-production-readiness-plan.md (JVM J4 tracking),
+`lyric-compiler/msil/codegen.l`, `lyric-compiler/msil/lowering.l`,
+`lyric-compiler/lyric/mono.l`,
+`lyric-compiler/lyric/inbundle_generics_self_test.l`.

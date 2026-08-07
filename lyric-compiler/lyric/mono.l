@@ -2526,21 +2526,95 @@ func annsInferenceOnlyMono(anns: in List[Annotation]): Bool {
   false
 }
 
-/// Synthesize one inference-only constructor FunctionDecl per union case in
-/// `items` (`case Some(value: T)` of `union Option[T]` →
-/// `func Some[T](value: T): Option[T]`, body-less, tagged with the reserved
-/// `__lyric_union_ctor_infer` annotation).  Feed the result into the
-/// monomorphizer's imported-generics list so a generic call whose only
-/// type-argument source is a union-case constructor argument
+// Append one inference-only constructor FunctionDecl for `decl` to
+// `ctorDecls` when `decl` is generic — see `unionCtorInferenceDecls`'s
+// docstring (the record half of #4870/#5604's synthesis).  Skipped for
+// non-generic records: there is no type parameter to pin.
+func recordCtorInferenceDecl(decl: in RecordDecl, ctorDecls: in List[FunctionDecl]): Unit {
+  val typeParamNames = extractTypeParamNames(decl.generics)
+  if typeParamNames.count == 0 {
+    return
+  }
+  val retArgs: List[TypeArg] = newList()
+  var gi = 0
+  while gi < typeParamNames.count {
+    retArgs.add(TAType(ty = TypeExpr(kind = TRef(path = singleSegPath(typeParamNames[gi])), span = decl.span)))
+    gi = gi + 1
+  }
+  val retTe = TypeExpr(kind = TGenericApp(head = singleSegPath(decl.name), args = retArgs), span = decl.span)
+  val marker: List[Annotation] = newList()
+  val markerArgs: List[AnnotationArg] = newList()
+  marker.add(Annotation(name = singleSegPath("__lyric_union_ctor_infer"), args = markerArgs, span = decl.span))
+  val ctorParams: List[Param] = newList()
+  var fi = 0
+  while fi < decl.members.count {
+    match decl.members[fi] {
+      case RMField(f) -> {
+        val pAnns: List[Annotation] = newList()
+        ctorParams.add(
+          Param(mode = PMIn, modeExplicit = false, name = f.name, ty = f.ty, dflt = None, annotations = pAnns, span = f.span)
+        )
+      }
+      case _ -> {
+      }
+    }
+    fi = fi + 1
+  }
+  val noDocs: List[DocComment] = newList()
+  val noContracts: List[ContractClause] = newList()
+  ctorDecls.add(
+    FunctionDecl(
+      docComments = noDocs,
+      annotations = marker,
+      visibility = None,
+      isAsync = false,
+      name = decl.name,
+      generics = decl.generics,
+      params = ctorParams,
+      ret = Some(value = retTe),
+      whereClause = None,
+      contracts = noContracts,
+      body = None,
+      span = decl.span
+    )
+  )
+}
+
+/// Synthesize one inference-only constructor FunctionDecl per union case
+/// AND per generic record/exposed-record in `items` (`case Some(value: T)`
+/// of `union Option[T]` -> `func Some[T](value: T): Option[T]`; `record
+/// Box[T] { item: T }` -> `func Box[T](item: T): Box[T]`; both body-less,
+/// tagged with the reserved `__lyric_union_ctor_infer` annotation).  Feed
+/// the result into the monomorphizer's imported-generics list so a generic
+/// call whose only type-argument source is a constructor-call argument
 /// (`isSome(Some(value = 1))`) can bind its type parameters instead of
 /// silently staying generic (#5604).  Positional case fields synthesize
 /// `field<i>` parameter names; inference unifies positionally, so the names
 /// only need to be distinct.
+///
+/// The record half (#4870) closes a companion gap: `ctorSynthOfArg` /
+/// `partialUnifyCtorArg` recognise a NESTED constructor-call argument
+/// (`Branch(left = Box(item = 10), …)`) and pin the outer type parameter
+/// from the inner constructor's own inferred field types — but only when
+/// the inner constructor has an entry in `state.funcDecls` (checked by
+/// bare name).  Before this, only union cases got such an entry, so a
+/// GENERIC RECORD used as a case-field type (`left: Box[T]` on `Tree[T]`)
+/// never pinned `T` from `Box(item = 10)`'s own `10` argument — `T` fell
+/// through to the `fillsUnpinned` Object default, so a same-package generic
+/// function receiving the value (`rightItem(t, 0)`) specialised against the
+/// wrong (Object-erased) instantiation while codegen's REIFIED in-bundle
+/// generics (docs/43) constructed the real `Tree<Int32>` — a mismatch the
+/// CLR verifier rejects (`StackUnexpected`, `Tree`1<int32>` vs
+/// `Tree`1<object>`) and the JIT faults as `InvalidProgramException`.
+/// Non-generic records are skipped — they have no type parameter for this
+/// mechanism to pin.
 pub func unionCtorInferenceDecls(items: in List[Item]): List[FunctionDecl] {
   val ctorDecls: List[FunctionDecl] = newList()
   var i = 0
   while i < items.count {
     match items[i].kind {
+      case IRecord(decl) -> recordCtorInferenceDecl(decl, ctorDecls)
+      case IExposedRec(decl) -> recordCtorInferenceDecl(decl, ctorDecls)
       case IUnion(decl) -> {
         val typeParamNames = extractTypeParamNames(decl.generics)
         val retTe = if typeParamNames.count > 0 {
