@@ -693,6 +693,64 @@ func wHeap(buf: in ByteWriter, v: in Int, wide: in Bool): Unit {
   }
 }
 
+// Emit a table-row index (simple or coded): 4 bytes when `width` is 4, else 2.
+// `width` is precomputed per §II.24.2.6 by `codedIdxWidth`/`simpleIdxWidth`
+// below so a column's physical size always matches
+// `Msil.MetadataReader.computeLayout`'s reading of the same column — the two
+// must never disagree, or every table after the mismatched one reads at a
+// corrupted offset (#6390).
+func wIdx(buf: in ByteWriter, v: in Int, width: in Int): Unit {
+  if width == 4 {
+    w4(buf, v)
+  } else {
+    w2(buf, v)
+  }
+}
+
+// Largest of a fixed set of row counts — the input to a coded-index width
+// decision.  Mirrors `Msil.MetadataReader.maxRowsOf`, but over row counts the
+// writer already has in hand (it never resolves table ids through a header).
+func maxOfCounts(vals: in slice[Int]): Int {
+  var m = 0
+  var i = 0
+  while i < vals.length {
+    if vals[i] > m {
+      m = vals[i]
+    }
+    i = i + 1
+  }
+  m
+}
+
+// A coded index is 2 bytes when the largest referenced table's row count fits
+// in (16 - tagBits) bits, else 4 bytes (ECMA-335 §II.24.2.6).  Byte-for-byte
+// mirror of `Msil.MetadataReader.codedWidth` — the writer must pick the exact
+// same width the reader will independently derive from the row counts it
+// reads back out of this same stream's header.
+func codedIdxWidth(maxRows: in Int, tagBits: in Int): Int {
+  var limit = 1
+  var k = 0
+  while k < 16 - tagBits {
+    limit = limit * 2
+    k = k + 1
+  }
+  if maxRows < limit {
+    2
+  } else {
+    4
+  }
+}
+
+// A simple (single-table) index is 2 bytes when the table has fewer than
+// 2^16 rows, else 4.  Mirrors `Msil.MetadataReader.simpleWidth`.
+func simpleIdxWidth(rowCount: in Int): Int {
+  if rowCount < 65536 {
+    2
+  } else {
+    4
+  }
+}
+
 // Write the #~ stream body for `t` into `buf`.
 // `heapSizes` is a 3-bit flags byte:
 //   bit 0: Strings heap uses 4-byte indices (set if > 0xFFFF bytes)
@@ -709,12 +767,74 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
 
   // Heap-index widths derived from the heapSizes flags byte (bit 0 = #Strings,
   // bit 1 = #GUID, bit 2 = #Blob).  Heap-reference columns below are written
-  // through `wHeap` with these widths; simple/coded table indices stay 2 bytes
-  // (their width depends on target table row counts, not heap byte sizes, and
-  // per-package DLLs stay well under 64 K rows per table).
+  // through `wHeap` with these widths.
   val wideStr: Bool = (heapSizes % 2) == 1
   val wideGuid: Bool = ((heapSizes / 2) % 2) == 1
   val wideBlob: Bool = ((heapSizes / 4) % 2) == 1
+
+  // Simple/coded table-index widths (ECMA-335 §II.24.2.6): each depends on
+  // the row count of the table(s) it can reference, NOT on heap byte sizes.
+  // A large multi-package bundle (e.g. the self-hosted compiler's ~80-package
+  // `Lyric.Compiler.dll`) can push MethodDef/TypeDef/etc. row counts past a
+  // coded-index family's threshold well before any heap crosses 64 KB; if
+  // this writer kept emitting such a column at a fixed 2 bytes while the
+  // reader (correctly, per spec) switched to 4, the mismatch would corrupt
+  // the byte offset of every table that follows — including ManifestResource,
+  // which is exactly what made embedded-resource reads silently return zero
+  // rows on a grown bundle (#6390).
+  //
+  // Simple (single-table) indices:
+  val fieldIdxW = simpleIdxWidth(t.fields.count)
+  val methodIdxW = simpleIdxWidth(t.methodDefs.count)
+  val paramIdxW = simpleIdxWidth(t.params_.count)
+  val typeDefIdxW = simpleIdxWidth(t.typeDefs.count)
+
+  // Coded indices, by tag family (ECMA-335 §II.24.2.6 tag tables):
+  val rsW = codedIdxWidth(maxOfCounts([t.modules.count, 0, t.assemblyRefs.count, t.typeRefs.count]), 2)
+  // ResolutionScope: Module, ModuleRef(unused), AssemblyRef, TypeRef
+  val tdrW = codedIdxWidth(maxOfCounts([t.typeDefs.count, t.typeRefs.count, t.typeSpecs.count]), 2)
+  // TypeDefOrRef: TypeDef, TypeRef, TypeSpec
+  val hasConstW = codedIdxWidth(maxOfCounts([t.fields.count, t.params_.count, 0]), 2)
+  // HasConstant: Field, Param, Property(unused)
+  val hasCAW = codedIdxWidth(
+    maxOfCounts(
+      [
+        t.methodDefs.count,
+        t.fields.count,
+        t.typeRefs.count,
+        t.typeDefs.count,
+        t.params_.count,
+        t.interfaceImpls.count,
+        t.memberRefs.count,
+        t.modules.count,
+        t.standAloneSigs.count,
+        t.typeSpecs.count,
+        t.assemblies.count,
+        t.assemblyRefs.count,
+        t.manifestResources.count,
+        t.genericParams.count,
+        t.methodSpecs.count
+      ]
+    ),
+    5
+  )
+  // HasCustomAttribute: every table that can carry an attribute (the
+  // remaining family members — DeclSecurity/Property/Event/ModuleRef/File/
+  // ExportedType/GenericParamConstraint — are never populated by this
+  // writer, so they contribute 0 and are omitted).
+  val memberRefParentW = codedIdxWidth(
+    maxOfCounts([t.typeDefs.count, t.typeRefs.count, 0, t.methodDefs.count, t.typeSpecs.count]),
+    3
+  )
+  // MemberRefParent: TypeDef, TypeRef, ModuleRef(unused), MethodDef, TypeSpec
+  val custAttrTypeW = codedIdxWidth(maxOfCounts([t.methodDefs.count, t.memberRefs.count]), 3)
+  // CustomAttributeType: MethodDef, MemberRef
+  val implementationW = codedIdxWidth(maxOfCounts([0, t.assemblyRefs.count, 0]), 2)
+  // Implementation: File(unused), AssemblyRef, ExportedType(unused)
+  val methodDefOrRefW = codedIdxWidth(maxOfCounts([t.methodDefs.count, t.memberRefs.count]), 1)
+  // MethodDefOrRef: MethodDef, MemberRef
+  val typeOrMethodDefW = codedIdxWidth(maxOfCounts([t.typeDefs.count, t.methodDefs.count]), 1)
+  // TypeOrMethodDef: TypeDef, MethodDef
 
   // Valid bitmask
   var valid: Long = 0i64
@@ -868,7 +988,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   var tri = 0
   while tri < t.typeRefs.count {
     val r = t.typeRefs[tri]
-    w2(buf, r.resolutionScope)
+    wIdx(buf, r.resolutionScope, rsW)
     wHeap(buf, r.typeName, wideStr)
     wHeap(buf, r.typeNamespace, wideStr)
     tri = tri + 1
@@ -881,9 +1001,9 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     w4(buf, r.flags)
     wHeap(buf, r.typeName, wideStr)
     wHeap(buf, r.typeNamespace, wideStr)
-    w2(buf, r.extends)
-    w2(buf, r.fieldList)
-    w2(buf, r.methodList)
+    wIdx(buf, r.extends, tdrW)
+    wIdx(buf, r.fieldList, fieldIdxW)
+    wIdx(buf, r.methodList, methodIdxW)
     tdi = tdi + 1
   }
 
@@ -906,7 +1026,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     w2(buf, r.flags)
     wHeap(buf, r.name, wideStr)
     wHeap(buf, r.signature, wideBlob)
-    w2(buf, r.paramList)
+    wIdx(buf, r.paramList, paramIdxW)
     mdi = mdi + 1
   }
 
@@ -943,8 +1063,8 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   var ifii = 0
   while ifii < sortedIfaceImpl.count {
     val r = sortedIfaceImpl[ifii]
-    w2(buf, r.class_)
-    w2(buf, r.interface_)
+    wIdx(buf, r.class_, typeDefIdxW)
+    wIdx(buf, r.interface_, tdrW)
     ifii = ifii + 1
   }
 
@@ -952,7 +1072,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   var mri = 0
   while mri < t.memberRefs.count {
     val r = t.memberRefs[mri]
-    w2(buf, r.class)
+    wIdx(buf, r.class, memberRefParentW)
     wHeap(buf, r.name, wideStr)
     wHeap(buf, r.signature, wideBlob)
     mri = mri + 1
@@ -964,7 +1084,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     val r = t.constants[coni]
     bufU1(buf, r.type_)
     bufU1(buf, 0)           // padding byte (always 0)
-    w2(buf, r.parent)
+    wIdx(buf, r.parent, hasConstW)
     wHeap(buf, r.value, wideBlob)
     coni = coni + 1
   }
@@ -973,8 +1093,8 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   var cai = 0
   while cai < t.customAttrs.count {
     val r = t.customAttrs[cai]
-    w2(buf, r.parent)
-    w2(buf, r.type_)
+    wIdx(buf, r.parent, hasCAW)
+    wIdx(buf, r.type_, custAttrTypeW)
     wHeap(buf, r.value, wideBlob)
     cai = cai + 1
   }
@@ -991,9 +1111,9 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   var impi = 0
   while impi < t.methodImpls.count {
     val r = t.methodImpls[impi]
-    w2(buf, r.class_)
-    w2(buf, r.methodBody)
-    w2(buf, r.methodDeclaration)
+    wIdx(buf, r.class_, typeDefIdxW)
+    wIdx(buf, r.methodBody, methodDefOrRefW)
+    wIdx(buf, r.methodDeclaration, methodDefOrRefW)
     impi = impi + 1
   }
 
@@ -1038,19 +1158,16 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   }
 
   // ManifestResource rows (table 0x28).  Wire format per ECMA-335
-  // §II.22.24: u4 offset, u4 flags, u2 name (Strings), u2
-  // implementation (coded Implementation: 0 = embedded in this
-  // assembly).  The 2-byte Strings index here shares the 64-KB heap-
-  // size limitation documented near the top of this function — the
-  // serializer will need widening to u4 alongside the other heap
-  // indices when the assembly's Strings heap exceeds 65 535 bytes.
+  // §II.22.24: u4 offset, u4 flags, name (Strings, `wideStr`-dependent), then
+  // implementation (coded Implementation, `implementationW`-dependent; 0 =
+  // embedded in this assembly).
   var mri = 0
   while mri < t.manifestResources.count {
     val r = t.manifestResources[mri]
     w4(buf, r.offset)
     w4(buf, r.flags)
     wHeap(buf, r.name, wideStr)
-    w2(buf, r.implementation)
+    wIdx(buf, r.implementation, implementationW)
     mri = mri + 1
   }
 
@@ -1082,17 +1199,18 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     val r = sortedGp[gpi]
     w2(buf, r.number)
     w2(buf, r.flags)
-    w2(buf, r.owner)
+    wIdx(buf, r.owner, typeOrMethodDefW)
     wHeap(buf, r.name, wideStr)
     gpi = gpi + 1
   }
 
   // MethodSpec rows (table 0x2B).  Wire format per ECMA-335 §II.22.29:
-  // u2 method (coded MethodDefOrRef), u2 instantiation (#Blob).
+  // method (coded MethodDefOrRef, `methodDefOrRefW`-dependent), instantiation
+  // (#Blob).
   var msi = 0
   while msi < t.methodSpecs.count {
     val r = t.methodSpecs[msi]
-    w2(buf, r.method)
+    wIdx(buf, r.method, methodDefOrRefW)
     wHeap(buf, r.instantiation, wideBlob)
     msi = msi + 1
   }

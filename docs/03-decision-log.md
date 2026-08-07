@@ -24323,3 +24323,169 @@ MSIL analogs this mirrors), `lyric-compiler/jvm/codegen/01_types.l`
 `lyric-compiler/lyric/module_val_deps_self_test.l`,
 `lyric-compiler/lyric/restored_packages.l` (the MSIL-only layer noted as
 out of scope above).
+
+### D-progress-743 — self-hosted metadata reader returned ZERO resources for a large assembly: `Msil.Tables`' writer hardcoded every simple/coded table-row index to 2 bytes, ignoring ECMA-335's row-count-driven width thresholds `Msil.MetadataReader` correctly implements (#6390)
+
+**Status:** Shipped (MSIL writer). Collateral discovery from #5362/#5366
+(D-progress-738), tracked as its own issue there specifically so a future
+large-assembly-triggered `NoContractResource` failure wouldn't be
+re-diagnosed from scratch.
+
+**The bug.** ECMA-335 §II.24.2.6 requires a metadata table's simple
+(single-table) and coded (tagged multi-table) row-index columns to widen
+from 2 bytes to 4 bytes once the row count of the table(s) they can
+reference crosses a threshold derived from the tag width (`2^(16-tagBits)`
+for a coded index; `2^16` for a simple index — e.g. `MemberRefParent`'s
+3-bit tag family gives an 8192-row threshold). `Msil.MetadataReader.
+computeLayout` (`lyric-compiler/msil/metadata_reader.l:640-750`) already
+implemented this correctly via `codedWidth`/`simpleWidth`
+(`metadata_reader.l:576-597`), computing each column's width dynamically
+from the row counts read out of the `#~` stream header. The writer,
+`Msil.Tables.serializeTablesStream` (`lyric-compiler/msil/tables.l`), did
+not: every simple/coded index column (`TypeRef.resolutionScope`,
+`TypeDef.extends/fieldList/methodList`, `MethodDef.paramList`,
+`InterfaceImpl.class_/interface_`, `MemberRef.class`, `Constant.parent`,
+`CustomAttribute.parent/type_`, `MethodImpl.class_/methodBody/
+methodDeclaration`, `ManifestResource.implementation`, `GenericParam.
+owner`, `MethodSpec.method`) was written via a hardcoded `w2(buf, …)`, with
+an explicit (and, it turned out, wrong) comment claiming "their width
+depends on target table row counts, not heap byte sizes, and per-package
+DLLs stay well under 64 K rows per table" (the old
+`tables.l:712-714`/`851-853`).
+
+Once any such column's backing table(s) crossed its threshold, the reader
+(spec-compliant) computed a 4-byte width for that column while the actual
+bytes on disk were 2 bytes wide. `Msil.MetadataReader.computeLayout`
+accumulates each table's `dataStart` as a running sum of
+`rowCountOf(tid) * rowSize[tid]` in ascending table-number order
+(`metadata_reader.l:752-764`), so a single mis-sized row shifts the
+computed byte offset of every table numerically after it — in the
+self-compiled `Lyric.Compiler.dll` bundle's table set (Module, TypeRef,
+TypeDef, Field, MethodDef, Param, MemberRef, StandAloneSig, TypeSpec,
+Assembly, AssemblyRef, ManifestResource, in that table-number order), the
+first vulnerable column is `MemberRef.class` (`MemberRefParent`, tag bits
+3, threshold 8192 rows, family = TypeDef/TypeRef/ModuleRef/MethodDef/
+TypeSpec) — MethodDef is by far the largest table in a multi-package
+compiler bundle and was already at 6954/6958 rows (well within 15% of the
+threshold) before the triggering PR's collector over-approximation pushed
+it past 8192. The corrupted `dataStart` shift landed exactly on
+`ManifestResource` (table 0x28, last in the writer's table-number order),
+so `resourceNamesIn`/`tryReadResourceIn` read garbage rows there and
+`Lyric.ContractMeta.readAllContractsFromFile` silently returned zero
+contract entries.
+
+**Byte-level evidence.** Confirmed empirically, not just by code reading.
+Padding `lyric-compiler/lyric/cli/` with 1400 extra trivial functions and
+re-staging the compiler bundle (`scripts/stage-selfhosted-compiler.sh`)
+pushed `MethodDef` from 6958 to 8358 rows (raw table-header row counts
+read with an independent Python PE/CLI-metadata parser, unaffected by the
+bug since header row counts are always correct — only row *data* offsets
+were corrupted). Against that grown bundle: with the pre-fix writer
+(`git stash` on `tables.l` alone, full `make lyric` rebuild),
+`Lyric.ContractMeta.readAllContractsFromFile` returned **0** resource
+entries; with the fix restored and the exact same grown bundle rebuilt,
+it returned all **75** entries (`Lyric.Contract.Lyric.Version` through
+`Lyric.Contract.Lyric.Cli`), matching the un-grown baseline's own 75. The
+`#~` stream's `heapSizes` flags byte (`0x5`: `#Strings`/`#Blob` wide,
+`#GUID` narrow) was byte-identical before and after in both the buggy and
+fixed builds — this bug is a table-row coded-index-width defect (issue
+hypothesis #2), not a heap-index-width defect (hypothesis #1); hypotheses
+#3 (ManifestResource offset/length arithmetic) and #4 (valid/sorted
+bitmask parsing) were ruled out by inspection (both already correct, and
+neither depends on row counts).
+
+**The fix.** `lyric-compiler/msil/tables.l`: added `codedIdxWidth(maxRows,
+tagBits)` and `simpleIdxWidth(rowCount)` — byte-for-byte mirrors of
+`Msil.MetadataReader`'s `codedWidth`/`simpleWidth` — plus `maxOfCounts`
+(mirrors `maxRowsOf`) and a new `wIdx(buf, v, width)` writer primitive
+(the coded/simple-index analog of the existing heap-index `wHeap`).
+`serializeTablesStream` now computes every family's width up front from
+`t`'s actual row counts (`fieldIdxW`/`methodIdxW`/`paramIdxW`/
+`typeDefIdxW` for the simple indices; `rsW`/`tdrW`/`hasConstW`/`hasCAW`/
+`memberRefParentW`/`custAttrTypeW`/`implementationW`/`methodDefOrRefW`/
+`typeOrMethodDefW` for the coded families — every family actually
+referenced by a column this writer emits, including the two
+`CustomAttribute` columns even though that table is currently never
+populated by any caller, since the row-writing code path exists and must
+not carry the same latent defect) and threads them through `wIdx` at
+every previously-hardcoded `w2(buf, r.<indexField>)` call site. This is a
+**writer-side** change: emitted bytes for any assembly whose relevant
+table(s) stay under the widening thresholds are byte-identical to before
+(both `w2`/`wHeap` at width 2 and `wIdx` at width 2 emit the same two
+bytes), so it does not disturb the stage-2/stage-3 bootstrap byte-compare
+for any currently-built assembly (verified: `Lyric.Stdlib.dll` — 178
+TypeDefs/1188 MethodDefs at seed size, orders of magnitude under every
+threshold — round-trips 73 contract resources unchanged both before and
+after). A future assembly whose row counts cross a threshold now emits
+genuinely different (correct, spec-compliant) bytes instead of corrupt
+ones; this is intentional and is the entire point of the fix. Stage-2
+byte-compare re-verification of the *changed* emission shape (i.e.
+actually building something past a threshold through the full 3-stage
+bootstrap) was not run in this session — flagged below as the one
+unverified item.
+
+**Reader-side:** unchanged. `Msil.MetadataReader.computeLayout` was
+already correct; the fix makes the writer agree with it, per the file's
+requirement that a reader fix must keep reading every existing
+seed-emitted assembly correctly. Confirmed against `.bootstrap/stage0/
+lib/Lyric.Stdlib.dll` (F#-seed-adjacent lineage), `.bootstrap/stage1/
+Lyric.Stdlib.dll`, and `bootstrap/src/Lyric.Cli.Aot/bin/Release/net10.0/
+Lyric.Stdlib.dll` — all three read 73 contract entries via
+`readAllContractsFromFile`, both before and after this change (unaffected,
+since none of their table row counts approach any threshold).
+
+**Regression coverage.** New test in
+`lyric-compiler/lyric/msil_project_bridge_self_test.l`: "large
+single-package MSIL bundle (MethodDef row count > 8192) still reads its
+embedded Lyric.Contract resource (#6390)". Synthesizes a single package
+of 8200 trivial `pub func`s (pushing `MethodDef` to 8200, past the
+`MemberRefParent` 8192-row threshold — the cheapest reachable trigger
+among the families this writer's currently-populated tables can hit; the
+`HasCustomAttribute` family has a lower nominal threshold, 2048 rows, but
+is unreachable today because no caller ever populates `CustomAttribute`
+rows) plus one `Std.Console.print` call (to force at least one
+`MemberRef` row so the affected column is actually read), compiles it
+in-process via `Msil.Bridge.compileProjectToMsil`, then asserts
+`Msil.MetadataReader.resourceNamesIn` finds at least one embedded
+resource. Verified as a genuine (non-tautological) regression guard by
+re-reverting `tables.l` alone, rebuilding, and re-running: the new case
+fails (`... got 0`) against the pre-fix writer and passes against the
+fix, with all other 37 pre-existing cases in the file unaffected either
+way. The synthesized-package compile is the dominant cost of this test
+(~70-90s observed for the in-process 8200-function build+read, vs.
+single-digit seconds for the file's other 37 cases) — accepted as the
+practical cost of exercising a real 8192-row ECMA-335 threshold rather
+than mocking it.
+
+**Verification.** Full `make lyric` (three full rebuilds across this
+session: fix, pre-fix-with-padding negative-control, and final
+fix-restored). All temporary padding (`lyric-compiler/lyric/cli/
+cli_bloat_temp.l`, 1400 throwaway functions used only to grow the bundle
+for manual repro) deleted before the final build; `git status` clean
+except the two files listed under Changes. Full regression battery, all
+green: `typechecker_self_test.l` 298/298, `msil_project_bridge_self_test.l`
+38/38 (37 pre-existing + the new #6390 case), `inbundle_generics_self_test.l`
+28/28, `metadata_reader_self_test.l` 20/20, `contract_meta_self_test.l`
+43/43 (exercises `readAllContractsFromFile`/`readFromFile`/
+`parseFromJson` directly), `bitwise_self_test.l` 10/10 (dotnet AND jvm),
+`nested_constructor_pattern_self_test.l` 6/6 (dotnet AND jvm). `lyric fmt
+--write` clean (no refusals) on both changed files.
+
+**Unverified / follow-up.** Stage-2 (self-hosted² byte-compare) was NOT
+re-run in this session against an assembly whose emission shape actually
+changed (i.e., one crossing a width threshold) — only against unchanged-
+shape assemblies (implicitly, via `make lyric`'s own stage-1 build
+succeeding and the existing `Lyric.Stdlib.dll`/`Lyric.Compiler.dll`
+artifacts reading correctly). Since the writer change is a pure function
+of each assembly's own already-deterministic row counts, stage-2/stage-3
+determinism is expected to hold, but this is asserted from code review,
+not from a fresh bootstrap run comparing bytes — left as the orchestrator's
+follow-up per the task's own division of labor.
+
+**Related:** #6390, D-progress-738 (where this was first discovered as a
+collateral effect and scoped out), `lyric-compiler/msil/tables.l`
+(`wIdx`, `codedIdxWidth`, `simpleIdxWidth`, `maxOfCounts`,
+`serializeTablesStream`), `lyric-compiler/msil/metadata_reader.l`
+(`codedWidth`, `simpleWidth`, `maxRowsOf`, `computeLayout`),
+`lyric-compiler/lyric/contract_meta.l` (`readAllContractsFromFile`),
+`docs/42-extern-metadata-resolution.md` (reader design context).
