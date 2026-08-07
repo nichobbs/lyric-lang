@@ -800,7 +800,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      # Five `-ignore` patterns suppress known-benign findings rather than
+      # Three `-ignore` patterns suppress known-benign findings rather than
       # failing on them forever silently; each is tracked in #5638 with the
       # condition under which it should be revisited:
       #   1/2. `background:`/`wait-all:` are official GitHub Actions step
@@ -814,21 +814,13 @@ jobs:
       #      with" because actionlint doesn't recognize it as a valid step
       #      body (in place of `run:`/`uses:`). Same root cause; not a bug;
       #      revisit when actionlint's schema catches up.
-      #   3. gemini-teammate.yaml's `on:` trigger is deliberately commented
-      #      out (integration disabled) -- revisit if/when it's restored.
-      #   4. publish.yml's `matrix.authenticode` is only defined on the
+      #   3. publish.yml's `matrix.authenticode` is only defined on the
       #      commented-out win-x64 matrix entry (#3941) -- revisit once
       #      win-x64 is re-enabled.
-      #   5. bench.yml's job-level `env:` references `${{ env.BUILD_CONFIG }}`
-      #      (a workflow-level env var) from within another job-level `env:`
-      #      key -- the `env` context isn't available there per GitHub's own
-      #      context-availability table, a genuine pre-existing bug. Fixing
-      #      it correctly needs the `LYRIC_BIN` computation moved to step
-      #      level (or every step's `run:` switched to shell-expand
-      #      `$BUILD_CONFIG` directly) and a real bench run to confirm the
-      #      fix doesn't change the resolved binary path -- deferred so as
-      #      not to risk breaking the benchmark workflow blind; tracked
-      #      in #5638.
+      # Two former patterns were removed once their causes were fixed:
+      # gemini-teammate.yaml's commented-out `on:` block (file deleted,
+      # #6248) and bench.yml's job-level `env:` referencing the `env`
+      # context (computation moved to step level, #6247).
       # `-shellcheck=` (empty) disables actionlint's embedded shellcheck pass:
       # this is the first time actionlint has run over this repo's ~6000
       # lines of workflow `run:` scripts, and shellcheck alone surfaces
@@ -840,7 +832,7 @@ jobs:
       - name: Run actionlint
         uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667  # 1.7.12
         with:
-          args: -color -shellcheck= -ignore "unexpected key .(background|wait-all).|step must run script with|.on. section is missing in workflow|property .authenticode. is not defined in object type|context .env. is not allowed here"
+          args: -color -shellcheck= -ignore "unexpected key .(background|wait-all).|step must run script with|property .authenticode. is not defined in object type"
 
   # The bundled Maven resolver (resolver/pom.xml) that `lyric restore
   # --target jvm` shells out to for `[maven]` dependency resolution
@@ -6940,10 +6932,10 @@ jobs:
         # LYRIC_CLI_PATH is computed here (step level, shell-expanding the
         # real $BUILD_CONFIG env var) rather than in a job-level `env:` —
         # the `env` context is not available when *defining* another
-        # `env:` key at the job level (actionlint's own -ignore list
-        # documents this exact pre-existing pitfall for bench.yml's
-        # LYRIC_BIN, #5638 item 5). Written to $GITHUB_ENV so every later
-        # step in this job sees it as a real environment variable.
+        # `env:` key at the job level (the same pitfall that once made
+        # bench.yml fail validation with zero jobs dispatched, #6247).
+        # Written to $GITHUB_ENV so every later step in this job sees it
+        # as a real environment variable.
         run: |
           echo "LYRIC_CLI_PATH=bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" >> "$GITHUB_ENV"
           chmod +x "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
