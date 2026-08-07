@@ -84,6 +84,29 @@ pub val independentOne = 100
 
 pub val independentTwo = 200
 
+// 7. Self-qualified reads of THIS package's own module-level vals (#6386 —
+//    JVM parity for MSIL's self-qualified fix, #6296). Covers both a
+//    literal-initialised val (`baseInt`) and a computed one (`derivedInt`,
+//    whose real field type is only known after `derivedInt`'s initializer is
+//    lowered) — on JVM both resolve through `tryQualifiedModuleValJvm`'s
+//    self-qualified branch, which reads the already-prelowered
+//    `ctx.moduleVals` entry regardless of literal-vs-computed. This file's
+//    single-file scope can't also exercise the cross-package-in-bundle shape
+//    (`Other.Pkg.name` from a second package) — that shape is covered on
+//    MSIL by `msil_project_bridge_self_test.l`'s multi-package
+//    `compileAndRun` harness; `lyric test`'s single-file synthesis has no
+//    equivalent multi-package entry point, so a JVM cross-package-in-bundle
+//    regression test is a tracked gap, not exercised here.
+test "self-qualified literal module val read (#6386)" {
+  assertEqualInt(Lyric.ModuleValDepsSelfTest.baseInt, 40, "qualified baseInt")
+  assertEqualInt(Lyric.ModuleValDepsSelfTest.baseInt, baseInt, "qualified == unqualified baseInt")
+}
+
+test "self-qualified computed module val read (#6386)" {
+  assertEqualInt(Lyric.ModuleValDepsSelfTest.derivedInt, 42, "qualified derivedInt")
+  assertEqualInt(Lyric.ModuleValDepsSelfTest.derivedInt, derivedInt, "qualified == unqualified derivedInt")
+}
+
 test "base+derived Int module val chain (#5955 repro)" {
   assertEqualInt(baseInt, 40, "baseInt")
   assertEqualInt(derivedInt, 42, "derivedInt")

@@ -24200,3 +24200,126 @@ D-progress-684/#5796 (JVM's raw-`Object` lambda-invoke convention this fix
 routes around rather than reverses),
 `lyric-compiler/jvm/codegen/04_calls.l`,
 `lyric-compiler/lyric/func_val_local_rettype_self_test.l`.
+
+### D-progress-742 — JVM: qualified reads of module-level `pub val`s (`Pkg.someConstant`) had no resolution path at all (#6386, MSIL parity)
+
+**Status:** shipped, in-bundle only (restored-dependency reads are a
+separate, larger missing layer — see "Scope boundary" below).
+
+**The bug.** `Mcp.someConstant` — a package-qualified read of package
+`Mcp`'s own `pub val someConstant`, self-qualified or from another
+in-bundle package — panicked at compile time on `--target jvm`:
+
+```
+Jvm.Codegen: reference 'Mcp' resolves to no local, parameter, receiver
+field, wire binding, union case, or module-level val. ...
+```
+
+The unqualified bare read (`someConstant`) worked fine; only the qualified
+spelling was unreachable. `Jvm.Codegen`'s `EMember` lowering
+(`lyric-compiler/jvm/codegen/02_exprs.l`) had a fallback chain for
+config-block fields, enum-case values (`tryQualifiedEnumClassJvm`), and
+nullary union-case values (`tryQualifiedUnionCaseValueJvm`) — each
+resolving a package-qualified reference by flattening the `EMember` chain
+via `flattenPathExprSegsJvm` and probing a registry — but no equivalent
+entry for a qualified module-level `val`. The reference fell all the way
+through to the generic record-field-access fallback, which evaluates the
+receiver as a value expression; since `Mcp` names no local, parameter,
+receiver field, wire binding, union case, or enum, the receiver itself hit
+the `EPath` arm's fail-loud panic (added for a prior "silent null" fix).
+On MSIL the equivalent construct was already fixed by D-progress-740's
+predecessor (#6296, self-qualified) and #5258/#6133 (cross-package
+in-bundle and restored, via dot-joined `constValues`/`staticValTokens`
+keys); the JVM backend never had any qualified-module-val path to begin
+with.
+
+**The fix.** Added `tryQualifiedModuleValJvm` (new,
+`lyric-compiler/jvm/codegen/01_types.l`, next to
+`tryQualifiedEnumClassJvm`/`tryQualifiedUnionCaseValueJvm`, whose shape it
+mirrors exactly): flattens the `EMember` receiver chain via the existing
+`flattenPathExprSegsJvm`, bails if the first segment names a real local
+(same guard the enum/union-case helpers use), then tries two registries in
+order:
+
+- **Self-qualified** (the flattened, slash-joined prefix equals
+  `ctx.pkgName`): resolved through `ctx.moduleVals`, which
+  `prelowerModuleVals` has already populated with the REAL emitted field
+  type for every val in this package — literal or computed alike, since
+  `moduleVals` is filled by fully lowering each initializer in this
+  package's own context before any consumer codegen runs. This is why the
+  self-qualified path needs no MSIL-style literal/non-literal split: both
+  `Mcp.someConstant` (literal) and a qualified read of a computed val
+  resolve identically.
+- **Cross-package in-bundle**: resolved through the `<owner>/val:<name>`
+  key `collectFileSigsSeeded`'s `IVal` arm already registers in
+  `ctx.funcSigs` (same registry the unqualified bare-name cross-package
+  read consults via the bare `val:<name>` key) — restricted, same as that
+  existing bare-name path, to vals whose static-field type is knowable
+  without lowering the initializer (an explicit annotation or a literal
+  init).
+
+Wired into `EMember` lowering
+(`lyric-compiler/jvm/codegen/02_exprs.l`) at the same fallthrough position
+as the enum/union-case checks — tried before the generic record-field
+fallback so a real qualified val read never reaches it, emitting
+`getstatic <owner>.<name>` (with the existing byte-mask-on-read
+convention) against whichever type the registry returned. The JVM backend
+has no MSIL-style `constValues` literal-inlining tier — a module-val read
+always lowers to `getstatic` — so unlike the MSIL fix there was only one
+emission shape to add, not two.
+
+The pre-existing "resolves to no local..." panic remains the fail-loud
+backstop for genuinely unresolvable references (e.g. a restored-dependency
+val, see below, or a typo); it was not touched.
+
+**Scope boundary — restored dependencies.** MSIL has a full
+contract-metadata-based restored-package layer
+(`lyric-compiler/lyric/restored_packages.l`,
+`Lyric.RestoredPackages.loadRestoredPackage`) that the MSIL bridge
+consults for a restored (cross-DLL) package's module vals — this is what
+#6133 extended to the qualified-read case. The JVM backend has **no**
+restored-package module-val resolution at all, qualified or unqualified:
+`grep`ing `lyric-compiler/jvm/` for `RestoredArtifact`/`RestoredPackages`
+finds nothing. Building qualified restored-dependency resolution on the
+JVM side would mean building the unqualified layer first — a separate,
+substantially larger piece of work (JVM's own contract-metadata reader
+and cross-JAR val registry), not a small addition to this fix. Left
+explicitly out of scope per this task's instructions rather than
+half-built; tracked as a follow-up gap, not filed as a new issue here.
+
+**Regression coverage.** Extended
+`lyric-compiler/lyric/module_val_deps_self_test.l` (dual-target, imports
+only `Std.*`) with two new cases: a self-qualified literal val read
+(`Lyric.ModuleValDepsSelfTest.baseInt`) and a self-qualified computed val
+read (`Lyric.ModuleValDepsSelfTest.derivedInt`), each asserted equal to
+its unqualified counterpart. `lyric test`'s single-file synthesis has no
+multi-package entry point, so the cross-package-in-bundle shape isn't
+exercised by this file — the closest existing coverage for that shape is
+MSIL-only, in `msil_project_bridge_self_test.l`'s multi-package
+`compileAndRun` harness (its own "self-qualified literal pub val read"
+test is the #6296 precedent this fix's self-qualified branch mirrors).
+
+**Verification.** Full `make lyric` (not `stage1-fast`, per #6331). Issue
+repro (`Mcp.someConstant` / `someConstant`) built and run on both targets:
+prints `42`/`42` on `--target jvm` (previously a compile-time panic) and
+`--target dotnet` (unaffected, confirms no regression). Full regression
+battery, all green: `module_val_deps_self_test.l` 9/9 (dotnet AND jvm, 7
+pre-existing + 2 new), `qualified_enum_case_self_test.l` 11/11 (dotnet AND
+jvm), `qualified_union_case_self_test.l` 8/8 (dotnet AND jvm),
+`bitwise_self_test.l` 10/10 (dotnet AND jvm),
+`nested_constructor_pattern_self_test.l` 6/6 (dotnet AND jvm),
+`block_shadow_self_test.l` 20/20 (dotnet AND jvm),
+`func_val_local_rettype_self_test.l` 15/15 (dotnet AND jvm),
+`typechecker_self_test.l` 298/298 (dotnet), `msil_project_bridge_self_test.l`
+37/37 (dotnet). `lyric fmt --write` clean (no refusals) on all three
+changed files (two `.l` codegen files, one self-test file) — no
+reformatting was needed.
+
+**Related:** #6386, #6296/D-progress-740's predecessor, #6133, #5258 (the
+MSIL analogs this mirrors), `lyric-compiler/jvm/codegen/01_types.l`
+(`tryQualifiedModuleValJvm`, `tryQualifiedEnumClassJvm`,
+`tryQualifiedUnionCaseValueJvm`, `flattenPathExprSegsJvm`),
+`lyric-compiler/jvm/codegen/02_exprs.l` (`EMember` wiring),
+`lyric-compiler/lyric/module_val_deps_self_test.l`,
+`lyric-compiler/lyric/restored_packages.l` (the MSIL-only layer noted as
+out of scope above).

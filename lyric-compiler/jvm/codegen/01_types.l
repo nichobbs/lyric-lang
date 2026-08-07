@@ -1400,6 +1400,69 @@ pub func tryQualifiedUnionCaseValueJvm(ctx: in FuncCtx, expr: in Expr): Option[S
   }
 }
 
+// Resolve a package-qualified reference to a module-level `pub val`
+// (`Mcp.someConstant`, self-qualified or cross-package in-bundle) to the
+// static field it reads, or `None` when `expr` isn't such a reference
+// (#6386 — JVM parity for MSIL's `tryQualifiedStaticValNameMsil`/
+// `tryQualifiedConstValueMsil`, #6296/#5258). A receiver whose first segment
+// names a local is a real value member-access chain, not a package
+// qualifier, and is left to the normal `EMember` lowering (same guard as
+// `tryQualifiedEnumClassJvm`/`tryQualifiedUnionCaseValueJvm`).
+//
+// Two cases, mirroring the two registries the unqualified bare-name read
+// already consults (see the `EPath` arm's module-val fallback chain):
+//   - Self-qualified (the flattened prefix names THIS file's own package):
+//     resolved through `ctx.moduleVals`, which `prelowerModuleVals` has
+//     already populated with the REAL emitted field type for every val in
+//     this package — literal or computed, since the initialiser has
+//     already been lowered in the declaring package's own context.
+//   - Cross-package in-bundle: resolved through the `<owner>/val:<name>`
+//     key `collectFileSigsSeeded`'s `IVal` arm registers — only for vals
+//     whose static-field type is knowable without lowering the
+//     initialiser (an explicit annotation, or a literal init; same
+//     restriction the unqualified bare-name cross-package read already
+//     has, docs/59 §4.4).
+//
+// The JVM backend has no MSIL-style `constValues` literal-inlining tier: a
+// module-val read always lowers to `getstatic`, so unlike the MSIL fix
+// there is only one registry to check per case, not two.
+pub func tryQualifiedModuleValJvm(ctx: in FuncCtx, expr: in Expr): Option[JvmFuncSig] {
+  match expr.kind {
+    case EMember(recv, memberName) -> {
+      val segs = flattenPathExprSegsJvm(recv)
+      if segs.count == 0 {
+        return None
+      }
+      match lookupSlot(ctx, segs[0]) {
+        case Some(_) -> return None
+        case None -> ()
+      }
+      val joined = joinSegments(segs, "/")
+      if joined == ctx.pkgName {
+        match mapGet(ctx.moduleVals, memberName) {
+          case Some(vty) -> {
+            return Some(
+              value = JvmFuncSig(
+                owner = ctx.pkgName,
+                params = newList(),
+                ret = vty,
+                paramNames = newList(),
+                paramDefaults = newList(),
+                paramModes = newList(),
+                isIface = false,
+                retGenericArgs = newList()
+              )
+            )
+          }
+          case None -> ()
+        }
+      }
+      mapGet(ctx.funcSigs, joined + "/val:" + memberName)
+    }
+    case _ -> None
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §4d. Declared slice/List element types (docs/59 §4.3 #5439 class).
 // ─────────────────────────────────────────────────────────────────────────────
