@@ -863,6 +863,80 @@ test "local shadowing a package name reads its own field, not the qualified stat
   )
 }
 
+// ─── Regression: an ESCAPING closure over a local shadowing a SINGLE-SEGMENT
+// package name reads the local, not the package's qualified val (#5527) ────
+// Follow-up to #5265/#5274 above: those fixes covered a local shadowing the
+// FIRST SEGMENT of a two-segment package name (`ShadowVal.Lib`).  #5527's
+// distinct repro uses a genuinely single-segment package (`Utils`) AND
+// requires the shadowing local to be captured by a lambda that ESCAPES its
+// enclosing function (returned, not called inline) — the non-escaping
+// variants (a captured param, a captured val, read bare rather than through
+// a nested field) already resolved correctly.  The returned closure is
+// stored in a local before invoking (`val reader = makeReader(); reader()`)
+// rather than called inline (`makeReader()()`) — chaining a call directly
+// onto another call's result is a separate, pre-existing MSIL codegen gap
+// (`lowerCallMsil`'s non-EPath-callee fallback drops the callee entirely,
+// #6392) unrelated to #5527's shadowing defect; using the same
+// store-then-call shape the rest of this file's closure tests already use
+// keeps this test isolated to the shadowing resolution under test.
+test "escaping closure over a local shadowing a single-segment package name reads the local (#5527)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("Utils", "package Utils\n" + "\n" + "pub val secret: String = \"from-package\"\n"))
+  packages.add(
+    mkPkg(
+      "ShadowUtils.App",
+      "package ShadowUtils.App\n" + "\n" + "import Utils\n" + "\n" + "record Inner { secret: String }\n" + "\n" +
+        "func makeReader(): () -> String {\n" +
+        "  val Utils = Inner(secret = \"local-not-static\")\n" +
+        "  return { -> Utils.secret }\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val reader = makeReader()\n" +
+        "  println(reader())\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("shadowutils", packages, "ShadowUtils")
+  assertEqualInt(result.exitCode, 0, "escaping_closure_shadows_pkg_name: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "local-not-static",
+    "escaping_closure_shadows_pkg_name: closure reads the local, not Utils.secret (#5527)"
+  )
+}
+
+// Companion baseline for the test above: with NO shadowing local in scope,
+// the same escaping closure over the single-segment package's qualified
+// `pub val` must still read the real package value — proving the package
+// linking and qualified-val plumbing above genuinely exercises
+// `Utils.secret` (rather than the previous test passing only because the
+// import silently failed to link).
+test "escaping closure over an unshadowed single-segment package qualifier reads the package val (baseline)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("Utils", "package Utils\n" + "\n" + "pub val secret: String = \"from-package\"\n"))
+  packages.add(
+    mkPkg(
+      "UnshadowedUtils.App",
+      "package UnshadowedUtils.App\n" + "\n" + "import Utils\n" + "\n" + "func makeReader(): () -> String {\n" +
+        "  return { -> Utils.secret }\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val reader = makeReader()\n" +
+        "  println(reader())\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("unshadowedutils", packages, "UnshadowedUtils")
+  assertEqualInt(result.exitCode, 0, "unshadowed_pkg_qualifier: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "from-package",
+    "unshadowed_pkg_qualifier: closure reads the real package val when nothing shadows it (baseline)"
+  )
+}
+
 // ─── Regression: UFCS chained member read through `self` (#3353) ────────────
 // `func Outer.rd(self: in Outer)` with body `self.inner.value` used to
 // produce invalid IL because ESelf returned MClass(pkgName) instead of

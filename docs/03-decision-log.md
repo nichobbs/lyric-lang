@@ -23529,6 +23529,10 @@ already wired in CI): the `Tree4870`/`Box[T]` case-field construct, match
 through a monomorphized generic function, and a sibling bare-`T` case
 still matching correctly; plus a `match h.res { ... }` case appended to
 the existing `#6231`/`Holder6231` test. Suite now 28/28 (was 26/26).
+Note the test cases reuse the file's pre-existing `Box[T] { value: T }`
+record, so they spell the field `value` where the issue's repro (quoted
+throughout this entry) spells it `item` — same shape, different field
+name.
 Full regression battery, all green: `inbundle_generics_self_test.l`
 28/28 (dotnet); `nested_constructor_pattern_self_test.l` 6/6 (both
 targets); `bitwise_self_test.l` 10/10 (both targets);
@@ -23630,3 +23634,342 @@ test 12).
 generic cases have no singleton), docs/43-in-bundle-generics-plan.md,
 `lyric-compiler/msil/codegen.l`,
 `lyric-compiler/lyric/qualified_union_case_self_test.l`.
+
+### D-progress-738 — MSIL first-class function values: a bare named function crashed with `NullReferenceException` (#5362), an un-annotated/alias-typed function-value binding silently stayed boxed (#5366)
+
+**Status:** Shipped (MSIL). JVM confirmed NOT to share either defect — both
+remain broken there in materially different, larger ways; out of scope.
+
+**#5362 — the bug.** Passing a bare top-level named function directly where a
+`(A,...) -> R`-typed value was expected (`apply(double, 21)`, no wrapping
+closure literal) crashed at runtime with `NullReferenceException` on first
+invocation, whether passed straight through or stored in a record field
+first. Wrapping the identical reference in a trivial closure literal
+(`{ x -> double(x) }`) already worked. A prior attempt (investigated in #5367,
+see #5362's history) tried a compile-time diagnostic at the same fallback site
+but reverted it before merge: it false-positived on `examples/product-
+catalog`'s `map(rows, rowToProduct)`, a bare function reference to a generic
+higher-order call that `Lyric.Mono` monomorphizes away at that call site
+without ever materialising a delegate.
+
+**#5362 root cause.** `lowerExprMsil`'s `EPath` value-read fallback
+(`lyric-compiler/msil/codegen.l`) — reached only once local/capture/field/
+const/enum-case/union-case/static-val resolution has all failed, i.e. the
+name is definitively a bare top-level function reference — had no MethodDef
+whose PHYSICAL signature matched the uniform boxed `Func<object,...,object>`
+ABI (#1877) to `ldftn` against: a real function's own MethodDef carries its
+genuine unboxed parameter/return types, not `object`. It pushed `ldnull`
+instead of a delegate.
+
+**#5362 the fix.** `synthesizeBareFuncRefThunksMsil` (new,
+`lyric-compiler/msil/codegen.l`), a pre-codegen AST pass run in `bridge.l`
+immediately before `liftLambdasMsil` (both the single-file and the
+multi-package/bundle MSIL compile paths): for every same-package,
+non-generic, non-async, non-`@externTarget`, all-`in`-mode-params top-level
+function referenced anywhere in the file as a bare (non-call-callee) name, it
+synthesizes one small forwarding-thunk `IFunc` — shaped exactly like the
+equivalent hand-written closure literal (`{ x -> double(x) }`) and named
+`__lambda_fnref_<fn>` so it inherits the SAME `startsWith(decl.name,
+"__lambda_")` boxed-ABI signature-forcing every real lambda literal already
+gets, with zero new codegen. The `lowerExprMsil` EPath fallback looks the
+thunk's token up by the deterministic key and builds the delegate exactly
+like a non-capturing lambda literal (ldnull target, ldftn, newobj).
+Deliberately over-approximates which names get a thunk (any name used
+anywhere as a value — including one occurrence that turns out to be locally
+shadowed elsewhere) rather than doing a shadowing-aware scope walk, because
+the actual "does THIS occurrence need it" decision is already made correctly
+at the untouched, pre-existing EPath resolution cascade. Verified against
+`examples/product-catalog`'s exact `map(rows, rowToProduct)` shape — still
+builds clean (constructing an occasionally-unused delegate there is safe,
+just slightly more IL, never a regression).
+
+**#5366 — the bug.** A function/closure value bound WITHOUT a literal
+`(T) -> U` type annotation — including a fully-inferred `val f =
+someFunc(...)` where `someFunc`'s declared return type is a type ALIAS
+(`alias Handler = (Int) -> Int`) rather than a literal `TFunction`, and a
+`val f: Handler = ...` explicitly alias-annotated — silently stayed boxed:
+invoking `f` left the delegate's boxed `object` Invoke result un-unboxed, so
+arithmetic on the result (`f(10) + 1`) silently corrupted with no exception
+(`Object.ToString()` alone "worked" by virtual-dispatch accident, masking the
+bug). #5774 (D-progress-684) had already fixed the literal-`TFunction`-return
+case; the alias-typed shape was untouched.
+
+**#5366 root cause.** Every `funcValRetTypes`/`funcValParamTypes` (and the
+`fieldFuncRetTypes`/`fieldFuncParamTypes` field/call-inference mirror)
+registration site in `lyric-compiler/msil/codegen.l` matched `te.kind`
+directly against `TFunction(...)`, with a bare `case _ -> ()` fallthrough —
+an alias annotation's `te.kind` is `TRef(["Handler"])`, never a literal
+`TFunction`, so it always fell through unregistered.
+
+**#5366 the fix.** New helper `resolveFuncTypeExprMsil(cctx, te):
+Option[TypeExpr]` (`lyric-compiler/msil/codegen.l`, beside
+`registerTypeAliasMsil`) follows a `TRef` through `cctx.aliasTargets` — the
+same alias table `typeExprToMsilCtx` already walks — down to an underlying
+literal `TFunction` shape (or `None`). Swapped in at every registration site
+that previously matched `te.kind`/`p.ty.kind`/`f.ty.kind` directly against
+`TFunction`: `LBLet`/`LBVar`/`lowerLocalPatBindMsil`'s `PBinding` arm (local
+bindings), the per-function-parameter registration loop in `lowerFuncMsil`,
+`registerParamsMsil` (record/impl method parameters), the record-field
+registration site (#5511), and the #5774 same-package-call return-type
+inference site. Also closed one more residual gap discovered while writing
+the regression test: `val f = double` (a bare EPath init naming an already-
+#5362-working top-level function reference, not a record-field-read or a
+call — the one shape `registerFieldFuncValTypesMsil`'s existing fallback
+didn't cover) — extended that function to propagate an already-tracked
+local/capture's `funcValRetTypes` entry, or else the referenced top-level
+function's own `funcRetTypes`/`funcParamTypes`, whichever applies.
+
+**Collateral: a latent self-hosted metadata-reader size-threshold bug,
+avoided by narrowing scope.** The first working version of
+`synthesizeBareFuncRefThunksMsil` collected candidate names via the existing
+`collectRefNamesExpr`/`collectRefNamesBlock` (capture-analysis walker), which
+treats a name's use as a genuine call callee (`double(x)`) the same as a
+value use. Running the self-compilation staging step
+(`scripts/stage-selfhosted-compiler.sh`, which compiles the ~80-package
+`Lyric.Cli` transitive closure — including this very code — into one
+`selfhosted/Lyric.Compiler.dll` bundle for `lyric test`'s restored-dep
+resolution) with that version grew the bundle by ~330 KB and made
+`Lyric.ContractMeta.readAllContractsFromFile` (the pure-byte
+`Msil.MetadataReader`-based PE/CLI-metadata reader, #1229/#3201) return ZERO
+resources for the whole file — even though the resources were verifiably
+present and well-formed (confirmed via `strings` and an independent
+`System.Reflection.Metadata` probe) — breaking every `lyric test` self-test
+that resolves compiler-package imports via that bundle (`typechecker_self_test.l`
+298/298 → hard `NoContractResource` failure). This is a genuine, pre-existing
+boundary bug somewhere in the self-hosted metadata writer/reader pairing
+(`Msil.Tables`/`Msil.Heaps`/`Msil.MetadataReader`) that the size growth newly
+tripped — not a defect in this fix's logic, and out of scope to chase down
+here. Fixed by narrowing `synthesizeBareFuncRefThunksMsil`'s candidate
+collection to a dedicated value-position-only walker
+(`collectBareFuncValueRefsExpr`/`Block`/`Stmt`/`OrdBlock`, mirroring
+`collectRefNamesExpr`'s case structure but skipping an `ECall`'s own callee)
+so a name used only as a direct call (the overwhelming majority of bare-name
+references across the compiler's own ~80-package source) never gets a
+spurious, unused thunk. This shrank the bundle back to within ~16 KB of the
+unmodified baseline and the metadata-reader failure disappeared. The
+underlying reader/writer boundary bug is still latent and un-investigated;
+tracked as #6390 and flagged here so a future large-assembly-triggered
+`NoContractResource` failure isn't re-diagnosed from scratch.
+
+**Regression coverage.** New `lyric-compiler/lyric/bare_func_ref_self_test.l`
+(`@test_module`, dotnet-only — both defects manifest completely differently,
+and separately, on JVM; see the file's header for the exact JVM error
+messages), 7 cases: bare function passed as a call argument (both issues'
+functions, guarding against thunk-key mixups), a named function stored in a
+local then invoked through the variable, a bare function stored in a record
+field then invoked (#5362's record-field repro variant), an unannotated
+local bound from an alias-returning HOF call with arithmetic on the result,
+the same with an explicit alias-typed annotation, and an alias-typed function
+PARAMETER with arithmetic on the call result (#5366 via `registerParamsMsil`,
+not just locals). Wired into `ci.yml`'s existing "Compiler self-tests (native
+lyric test)" dotnet batch step, alongside `func_val_local_rettype_self_test.l`.
+
+**Verification.** Both original issue repros re-verified fixed on
+`--target dotnet` (`apply(double, 21)` → 42; the #5366 repro → 16, was
+non-deterministic garbage). `bare_func_ref_self_test.l` 7/7.
+`func_val_local_rettype_self_test.l` 7/7 (dotnet AND jvm — literal-
+`TFunction` parity control, unaffected). `closure_zero_overhead_self_test.l`
+18/18 (dotnet AND jvm). `typechecker_self_test.l` 298/298.
+`async_sm_self_test.l` 65/65. `msil_project_bridge_self_test.l` 35/35.
+`inbundle_generics_self_test.l` 28/28. `qualified_union_case_self_test.l`
+8/8. `bitwise_self_test.l` and `nested_constructor_pattern_self_test.l`
+10/10 and 6/6 respectively on both dotnet and jvm.
+`examples/product-catalog` (the exact false-positive case from #5362's
+history) still builds clean. `lyric fmt --write` clean on both changed `.l`
+files and the new self-test file.
+
+**Related:** #5362, #5366, #1877 (uniform boxed `Func` ABI), #5774/
+D-progress-684 (literal-`TFunction` inferred-binding predecessor fix),
+docs/52/53 (strongly-typed lambda ABI), `lyric-compiler/msil/codegen.l`,
+`lyric-compiler/msil/bridge.l`,
+`lyric-compiler/lyric/bare_func_ref_self_test.l`.
+
+### D-progress-739 — Name-shadowing resolution family: a non-function local shadowing a same-package function crashed instead of erroring (#5792), #6389's bare-value walkers had a match-guard/field-default gap, and #5527 was confirmed already fixed
+
+**Status:** #5792 shipped (type checker, both targets). #6389 walker-coverage
+addendum shipped (MSIL). #5527 verified already fixed by prior infrastructure
+work on this branch — no code change required, regression coverage added.
+New, unrelated defect discovered while building #5527's regression test;
+documented and filed as #6392, not fixed here (out of scope).
+
+**#5792 — the bug.** `val triple: Int = 999; triple(5)` inside a function
+that also has a same-package top-level `func triple(x: Int): Int` —a local
+of a non-callable type shadowing a same-name function — type-checked with no
+diagnostic and crashed at runtime with `NullReferenceException` on MSIL. On
+JVM the identical program compiled and ran to completion, silently calling
+the top-level function and discarding the local entirely (`useIt(): 15`) —
+a different, quieter failure mode of the same underlying gap. A bare
+(non-call) reference to the same shadowing local (`val triple: Int = 999;
+triple`) already resolved correctly to the local, proving the type checker's
+scope-first resolution was already correct everywhere EXCEPT call position.
+
+**#5792 root cause.** `findDirectSig` (`lyric-compiler/lyric/type_checker/
+typechecker_exprs.l`), which the `ECall` arm consults to resolve a
+single-segment callee identifier to a top-level function signature,
+unconditionally looked the name up in `sigs` (the function-signature map)
+with no scope check at all — despite already taking an unused `sc: Scope`
+parameter. This diverged from `resolveExprPath` (the plain, non-call `EPath`
+value-read path), which correctly checks `scopeTryFind(sc, name)` BEFORE
+ever consulting `sigs`. A same-name local in scope was therefore invisible
+to call-position resolution while being fully visible to bare-reference
+resolution — the exact asymmetry the issue's own investigation identified.
+
+**#5792 the fix.** `findDirectSig` now checks `scopeTryFind(sc, name)` first
+for a single-segment path and returns `None` immediately on a hit, deferring
+to the `ECall` arm's general `fnT` resolution (itself scope-first via
+`resolveExprPath`). This makes call-position resolution agree with bare-
+reference resolution everywhere: a non-function-typed local shadowing a
+function name now falls through to the existing generic non-function-callee
+diagnostic, `T0044 "called value of non-function type ..."` — no new
+diagnostic code needed, since T0044 already exists and is exactly the right
+shape (mirrors the same diagnostic already used for e.g. calling an `Int`
+local unrelated to any shadowing). A FUNCTION-typed local shadowing a
+same-arity function (the issue's `makeAdder` follow-up case) now correctly
+invokes the local closure instead of mis-resolving to the top-level
+function's unrelated return type (previously a confusing downstream
+`T0070`). Verified: `PkgShadow4.useIt()` (the issue's exact repro) now
+reports `T0044` at the call site on BOTH `--target dotnet` and `--target
+jvm` (the checker is shared) instead of crashing/silently misdispatching;
+the `makeAdder` shadowing-closure repro now correctly returns `300` (the
+local closure's `z * 100`, not the top-level function's `x + y`) on both
+targets.
+
+**#5792 blast radius, checked against PR #6389's
+`synthesizeBareFuncRefThunksMsil`.** The fix is scoped to `ECall`'s callee
+position only, and only fires when the single-segment name is ALSO bound as
+a local/param in scope — it does not touch: UFCS/method calls (`EMember`
+calls, a separate code path), a function-typed local called by a name that
+does NOT collide with any top-level function (the overwhelmingly common
+case, e.g. `val f = double; f(20)`), or a bare function VALUE reference
+passed as an argument (`apply(double, 21)` — `double` there is an argument
+expression, not `fn`'s own `ECall` callee, so `findDirectSig` never sees
+it). `bare_func_ref_self_test.l` stayed 9/9 (7 pre-existing + 2 new, see
+below) confirming no interaction with #6389's thunk synthesis.
+
+**Addendum — two coverage gaps in #6389's value-position walkers, found in
+review.** `synthesizeBareFuncRefThunksMsil`'s dedicated bare-value walker
+(`collectBareFuncValueRefsExpr`, `lyric-compiler/msil/codegen.l`) never
+visited `MatchArm.guard`, so a bare top-level function referenced ONLY
+inside a match guard (`case n if apply(double, n) > 0 -> ...`) never got a
+synthesized thunk, reproducing #5362's `ldnull`/`NullReferenceException`
+class at the guard's own `EPath` value read. `allReferencedNamesMsil`'s
+`IRecord` case also never visited `RMField(field).dflt`, so a bare function
+referenced ONLY as a record field's default value (`record Holder { h:
+Handler = double }`) had the identical gap. Both fixed by adding the missing
+traversal (mirroring `collectInLambdaNamesExpr`'s `EMatch` arm, which
+already visited the guard correctly — proving the pattern was established
+elsewhere and simply not applied to these two walkers). `collectRefNamesExpr`
+(the SEPARATE capture-analysis walker behind `lambdaCaptureNamesMsil`) had
+the identical `EMatch`-guard gap; checked its only consumer
+(`lambdaCaptureNamesMsil`, MSIL closure-capture-field synthesis) and
+confirmed it matters — a `var` referenced only inside a lambda's match guard
+would silently fail to be hoisted/captured, a distinct latent miscompile —
+so fixed it too, for consistency with the now-guard-aware sibling walkers.
+`collectInLambdaNamesExpr` itself needed no change; it already visits the
+guard.
+
+**Addendum regression coverage.** Two new cases in
+`lyric-compiler/lyric/bare_func_ref_self_test.l` (dotnet, matching the
+file's existing scope): a bare function referenced only inside a match
+guard via `apply(double, x)`, and a bare function referenced only as a
+record field default, read into a local before invoking (matching the
+file's existing `storeInRecordThenCall` pattern — chain-calling the
+defaulted field directly, `holder.h(10)`, hits the unrelated pre-existing
+method-dispatch gap #6392 documents, not this addendum's target).
+
+**#5527 — investigation, not a fix.** The issue's exact repro (a lambda
+that escapes its enclosing function, capturing a local named `Utils` that
+shadows the single-segment package `Utils`'s own `pub val secret`, read via
+a nested `Utils.secret` field chain) was re-verified using the
+`msil_project_bridge_self_test.l` in-process multi-package harness (the
+issue's own two-package shape needs real cross-package linking that a
+single-file self-test can't exercise — `block_shadow_self_test.l`, suggested
+as a possible home, only imports `Std.*` and can't reproduce this). Traced
+`alias_rewriter.l`'s `rewriteExpr` `EMember` arm (which collapses
+`Alias.member` to a qualified `EPath` for a KNOWN alias) against
+`rewriteFunctionDecl`'s `#6311` scope-aware filtering
+(`collectFunctionBodyLocalNames` + `filterAliasesExcludingLocals`): a local
+declared ANYWHERE in the enclosing function body — including `makeReader`'s
+own `val Utils = ...`, one level above the escaping lambda literal — already
+strips the colliding alias entry from the `aliases` list threaded into the
+ENTIRE function body rewrite, lambda included, before `rewriteExpr` ever
+runs on it. Built and ran the exact repro (with the closure invoked via
+`val reader = makeReader(); reader()` rather than the issue's own
+`makeReader()()` — see the #6392 finding below for why): it now correctly
+prints `local-not-static`, not `from-package`. A companion baseline test
+(same shape, no shadowing local) confirms the qualified path is genuinely
+exercised and reads the real package value (`from-package`) when nothing
+shadows it, ruling out a false-positive from the import silently failing to
+link. #5527 is therefore already fixed on this branch — most plausibly as a
+side effect of the #6311/#6312/#6313 scope-aware alias-filtering
+infrastructure (which postdates the issue) rather than any single targeted
+fix — and needed only regression coverage, not a code change.
+
+**#5527 regression coverage.** Two new tests in
+`lyric-compiler/lyric/msil_project_bridge_self_test.l` (dotnet, multi-
+package — MSIL-only per the issue's own title): the shadowed-local case
+(reads `local-not-static`) and the unshadowed baseline (reads
+`from-package`).
+
+**New finding, filed not fixed: #6392 — chaining a call directly onto
+another call's result drops the callee.** While building #5527's
+regression test with the issue's OWN `main` shape (`println(makeReader()
+())`), hit a genuinely separate, more fundamental MSIL codegen gap:
+`lowerCallMsil`'s default `case _ ->` arm (reached whenever the callee
+expression is anything other than a bare `EPath`/`ETypeApp`/`EMember` — in
+particular, another `ECall`, as in `f()()`) evaluates the call's ARGUMENTS
+but never lowers the callee itself and never emits an invoke instruction,
+silently producing `MObject` with zero corresponding codegen.
+`ilverify` confirms genuinely invalid IL (`StackUnderflow` at `main`'s
+offset 0 — disassembly shows the entire argument-evaluating sub-expression
+compiled to nothing). No existing self-test anywhere in the suite calls a
+call-expression's result directly (every existing closure-invocation test
+stores to a local first), which is presumably why this has gone unnoticed.
+Filed as #6392 with a root-cause pointer (`lowerCallMsil`,
+`lyric-compiler/msil/codegen.l:12397-12420`) and a suggested fix direction
+(generalize the default arm to lower `fn` and emit the same uniform
+`Func<N>` invoke sequence the bare-slot case already builds); NOT fixed
+here — unrelated to #5527's actual shadowing defect and a larger, separate
+scope. #5527's own regression test route around it by storing the closure
+in a local before invoking, isolating the shadowing-resolution behavior
+under test from this unrelated gap.
+
+**lyric-lambda README update.** `lyric-lambda/README.md` (two passages, near
+the "Event-driven handlers" section and "AOT-safe handler registration")
+cited #5362 as a live reason `Lambda.Direct`'s handler factories require an
+interface instance rather than a bare function. Verified post-#6389 that
+#5362 (bare same-package function crashing when used as a function-typed
+value) is now fixed on `--target dotnet`. It does not change the
+recommendation, for two independent reasons: `Lambda.Direct`'s factories are
+typed to their interface (e.g. `h: in SqsHandler`), so a bare function is a
+compile-time type mismatch there regardless — Lyric interfaces are nominal,
+never structurally satisfied by a function value — and #5363 (closures
+unreliable across two or more packages, which this three-package
+registration path always spans) remains open on both targets and is alone
+sufficient to require the interface shape. Updated both passages to state
+plainly that #5362 is fixed on dotnet (and still broken on jvm), while
+#5363 — not #5362 — is the operative, still-blocking reason interfaces
+remain required.
+
+**Regression coverage summary.** `lyric-compiler/lyric/typechecker_exprs.l`
+(#5792), `lyric-compiler/msil/codegen.l` (addendum walkers), extended
+`lyric-compiler/lyric/bare_func_ref_self_test.l` (+2, addendum) and
+`lyric-compiler/lyric/msil_project_bridge_self_test.l` (+2, #5527).
+
+**Verification.** `typechecker_self_test.l` 298/298 (dotnet).
+`block_shadow_self_test.l` 20/20 (dotnet AND jvm).
+`closure_zero_overhead_self_test.l` 18/18 (dotnet AND jvm).
+`bare_func_ref_self_test.l` 9/9 (dotnet). `func_val_local_rettype_self_test.l`
+7/7 (dotnet AND jvm). `msil_project_bridge_self_test.l` 37/37 (dotnet).
+`inbundle_generics_self_test.l` 28/28 (dotnet). `bitwise_self_test.l` 10/10
+(dotnet AND jvm). `nested_constructor_pattern_self_test.l` 6/6 (dotnet AND
+jvm). #5792's exact repro (`PkgShadow4`) and the `makeAdder`-shadowing
+follow-up both re-verified via `bin/lyric build`/`run` on both targets
+post-`make lyric`. `lyric fmt --write` clean on every changed `.l` file.
+
+**Related:** #5792, #5527, #6389, #6392 (new), #5362, #5363,
+`lyric-compiler/lyric/type_checker/typechecker_exprs.l`,
+`lyric-compiler/msil/codegen.l`,
+`lyric-compiler/lyric/bare_func_ref_self_test.l`,
+`lyric-compiler/lyric/msil_project_bridge_self_test.l`,
+`lyric-lambda/README.md`.

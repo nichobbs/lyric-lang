@@ -30134,7 +30134,13 @@ real delegate, so no bug is present there. The diagnostic couldn't
 distinguish that safe case from the genuinely buggy one without more
 work than this slice allows, so it was reverted before merge; #5362
 is left exactly as documented (open, runtime `NullReferenceException`
-on invocation).
+on invocation).  _[Update: the MSIL half shipped later via the
+call-site-desugaring route this paragraph anticipated —
+`synthesizeBareFuncRefThunksMsil` forwarding thunks, PR #6389 /
+D-progress-738; #5362 stays open only for its separate JVM gap. The
+`product-catalog` false-positive shape is handled by scoping the
+collector to value positions (a direct call callee is not a bare
+value use), so no diagnostic is involved.]_
 
 #5359/#5360 confirmed still correctly scoped as documented follow-ups
 (one stale doc line in `Web.OpenApi` fixed). Verifying #5363's fix
@@ -30145,6 +30151,10 @@ never gets its return type registered for unboxing, so arithmetic on
 its call result silently corrupts — filed as **#5366**, not fixed here
 (root-caused with a proposed fix sketch; the fix itself needs
 alias-resolution machinery `codegen.l` doesn't currently have).
+_[Update: the MSIL half shipped later — `resolveFuncTypeExprMsil`
+supplies exactly that alias-resolution machinery at every
+function-type registration site, PR #6389 / D-progress-738; #5366
+stays open only for its separate JVM alias-resolution gap.]_
 
 **Related:** `docs/03-decision-log.md` D-progress-624 (full account),
 D-progress-622 (the entry these four bugs were originally filed

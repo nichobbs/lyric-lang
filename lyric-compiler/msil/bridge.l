@@ -248,9 +248,14 @@ pub func compileToMsilWithVersion(
   Weaver.collectAspectTemplates(file.items, pkgName, singleFileTemplates)
   val weavedFile = match pipeWeave(file, singleFileTemplates, "") { case Some(f) -> f; case None -> return false }
 
+  // #5362: synthesize a forwarding thunk for every bare top-level-function
+  // value reference before lambda-lifting, so it flows through the same
+  // token-counting/lowering machinery as a real lambda literal.
+  val fnRefFile = synthesizeBareFuncRefThunksMsil(weavedFile)
+
   // Lambda-lifting: extract ELambda nodes into synthetic __lambda_<i> IFunc items
   // so that addPackageTokens assigns them stable MethodDef tokens before codegen.
-  val liftedFile = liftLambdasMsil(weavedFile)
+  val liftedFile = liftLambdasMsil(fnRefFile)
 
   // Pre-scan the AST to assign deterministic MethodDef / FieldDef tokens for
   // same-package types and functions.
@@ -894,7 +899,9 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     // collected above (#3414), and aborts on weave-time errors
     // (A0042 / A0043 / A0044).
     val weaved = match pipeWeave(perPkgFiles[li], allTemplates, "") { case Some(f) -> f; case None -> return false }
-    val lifted = liftLambdasMsil(weaved)
+    // #5362: see the matching single-file comment above.
+    val fnRefPkgFile = synthesizeBareFuncRefThunksMsil(weaved)
+    val lifted = liftLambdasMsil(fnRefPkgFile)
     addPackageTokens(cctx, lifted, perPkgNames[li])
     // Project-as-DLL embedding: each package's contract goes in its
     // own `Lyric.Contract.<Pkg>` resource so the in-process loader can
