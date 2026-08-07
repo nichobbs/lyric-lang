@@ -50,6 +50,21 @@
 //! this defect class — all 7 cases here (including the #5790 arity-overload
 //! regression) already pass against `--target jvm` with no JVM-side code
 //! change. See D-progress-684's `#5796` addendum in `docs/03-decision-log.md`.
+//!
+//! #6392 addendum: chaining a call directly onto another call's RESULT
+//! (`makeGreeter()()`, invoking the closure without first binding it to an
+//! intermediate local) fell into `lowerCallMsil`'s default arm, which
+//! evaluated the call's arguments but never lowered the callee expression
+//! itself (nor emitted any invoke instruction) — `ilverify` confirmed
+//! genuinely invalid IL (`StackUnderflow`). JVM's `lowerCall` had the exact
+//! same gap (`VerifyError: Operand stack underflow`). Fixed on both targets
+//! by generalizing the default arm to lower the callee expression in place
+//! and invoke it through the same uniform boxed-`Func`/functional-interface
+//! ABI a named function-typed local already uses (MSIL: the `Some(slot)` arm
+//! in `lowerCallMsil`; JVM: `lowerLambdaInvoke`) — on MSIL, the real nested
+//! return type is recovered via `recordFieldFuncKeyMsil`/
+//! `cctx.fieldFuncRetTypes` (the same #5774 registry above) so the result is
+//! unboxed, not just left as `object`.
 @test_module
 package Lyric.FuncValLocalRetTypeSelfTest
 
@@ -122,4 +137,40 @@ test "overloaded HOF-returning functions at different arities resolve independen
   assertEqualInt(f(10), 15, "makeOp(5)(10) == 15 (1-arity overload)")
   val g = makeOp(7, "n=")
   assertEqual(g(), "n=7", "makeOp(7, \"n=\")() == \"n=7\" (2-arity overload)")
+}
+
+// #6392: the callee of the chained call is itself an `ECall`, not a bare
+// `EPath` naming a slot — the exact shape that was silently dropped.
+test "direct chained call, no intermediate local (#6392 exact repro)" {
+  assertEqualInt(makeAdder(5)(10), 15, "makeAdder(5)(10) == 15")
+}
+
+test "direct chained call, zero-arg / String-returning (#6392)" {
+  assertEqual(makeGreeter("world")(), "hello, world", "makeGreeter(\"world\")() == \"hello, world\"")
+}
+
+test "direct chained call with multiple arguments (#6392)" {
+  assertEqualInt(makeMultiParam(2)(3, 4), 14, "makeMultiParam(2)(3, 4) == 14")
+}
+
+// The callee is `EParen(ECall(...))` rather than a bare `ECall` — exercises
+// the `lowerCallMsil`/`lowerCall` `EParen` unwrap arm added alongside the fix.
+test "parenthesized chained call (#6392)" {
+  assertEqualInt((makeAdder(5))(10), 15, "(makeAdder(5))(10) == 15")
+}
+
+// Arithmetic on the chained call's result proves the returned value is
+// actually unboxed to `Int`, not left as a boxed `object` on the stack.
+test "chained call result used directly in arithmetic, unboxing proof (#6392)" {
+  assertEqualInt(makeAdder(5)(10) + 1, 16, "makeAdder(5)(10) + 1 == 16")
+}
+
+// Two-deep chain: `makeMakerAdder(5)` returns a closure that itself returns
+// a closure, invoked twice in a row with no intermediate binding at all.
+func makeMakerAdder(x: in Int): () -> (Int) -> Int {
+  { -> { y: Int -> x + y } }
+}
+
+test "two-deep chained call (#6392)" {
+  assertEqualInt(makeMakerAdder(5)()(10), 15, "makeMakerAdder(5)()(10) == 15")
 }

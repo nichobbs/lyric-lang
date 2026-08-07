@@ -23973,3 +23973,132 @@ post-`make lyric`. `lyric fmt --write` clean on every changed `.l` file.
 `lyric-compiler/lyric/bare_func_ref_self_test.l`,
 `lyric-compiler/lyric/msil_project_bridge_self_test.l`,
 `lyric-lambda/README.md`.
+
+### D-progress-740 — Chaining a call directly onto another call's result (`f()()`) dropped the callee entirely on both targets (#6392)
+
+**Status:** shipped, both targets.
+
+**The bug.** `makeGreeter()()` — invoking the closure returned by a call
+directly, without first binding it to an intermediate local (`val reader =
+makeGreeter(); reader()`) — compiled with no diagnostic and crashed at
+runtime. On `--target dotnet`: `InvalidProgramException`; `ilverify`
+confirmed genuinely invalid IL (`StackUnderflow` at `main`'s offset 0 — the
+entire `makeGreeter()()` sub-expression, including the outer call, produced
+zero corresponding bytecode). On `--target jvm`: the identical shape hit the
+identical defect class, `VerifyError: Operand stack underflow`. Filed as
+#6392 while building #5527's regression test (D-progress-739); this entry
+fixes it.
+
+**Root cause (both targets, same shape).** `lowerCallMsil`
+(`lyric-compiler/msil/codegen.l`) and `lowerCall`
+(`lyric-compiler/jvm/codegen/04_calls.l`) both dispatch on the callee
+expression's `ExprKind`, with explicit arms for `EPath` (a named
+function/local), `ETypeApp` (generic call, recurse past the type args), and
+`EMember` (method call) — and a catch-all `case _ ->` for everything else.
+For `makeGreeter()()`, the OUTER call's callee (`fn`) is itself an `ECall`
+(`makeGreeter()`), which falls into that catch-all arm. Both catch-all arms
+evaluated the call's ARGUMENTS (none, in the exact repro) but never lowered
+`fn` itself and never emitted any invoke instruction — they just returned an
+erased placeholder type (`MObject` / `JRef("java/lang/Object")`) with zero
+corresponding codegen for the entire callee sub-expression. No existing
+self-test anywhere in the suite calls a call-expression's result directly
+(every closure-invocation test stores to a local first — the shape
+`bare_func_ref_self_test.l`'s header itself calls out as the reason the gap
+went unnoticed), so this had no coverage on either target.
+
+**The fix.** Generalized both catch-all arms to actually lower `fn` in
+place and then invoke the resulting function value through the exact same
+mechanism a named function-typed local already uses:
+
+- **MSIL:** push `fn`'s value via `lowerExprMsil`, `castclass` to the
+  interned `Func<N>` `TypeSpec` (`internFuncNTypeSpec`), lower and box each
+  argument (`funcAbiArgBoxTypeMsil` + `boxIfNeededMsil`), `callvirt Invoke`
+  (`buildFuncNInvokeTok`) — the identical sequence the pre-existing
+  `Some(slot)` arm above it already builds for a bare-`EPath` local/param
+  holding a closure (#1877's uniform boxed `Func` ABI), just parameterized
+  over "how do I get the callee value onto the stack" instead of assuming
+  it's always a named slot. The invoke's boxed `object` result is
+  unboxed/materialized to the real return type when `fn` is a call to a
+  known same-package top-level function whose OWN declared return type is
+  itself function-shaped: `recordFieldFuncKeyMsil` (the #5774/#5790
+  machinery `func_val_local_rettype_self_test.l` already covers) resolves
+  the matching `cctx.fieldFuncRetTypes` key from the inner `ECall`
+  directly — no named local required, since that registry was always keyed
+  by the call expression's shape, not by a binding site. Any other callee
+  shape falls back to the boxed `object` placeholder, mirroring the
+  pre-existing `case None -> MObject` fallback the `Some(slot)` arm uses
+  when a tracked slot's return type isn't known — not a regression, since
+  that fallback already existed for the named-local path.
+- **JVM:** push `fn`'s value via `lowerExpr`, `checkcast` to the package's
+  shared functional interface (`lambdaIfaceName`), pack the (boxed)
+  arguments into an `Object[]`, `invokeinterface invoke(...)` — the
+  identical sequence `lowerLambdaInvoke` already builds for a named lambda
+  local. Returns raw `Object` unconditionally, exactly like
+  `lowerLambdaInvoke` (#5796's D-progress-684 addendum already established
+  this convention: JVM has no per-local return-type registry analogous to
+  MSIL's `funcValRetTypes`/`fieldFuncRetTypes` — every consumer of a
+  lambda-invoke result already coerces it to its required static type via
+  `coerceArgTo`, so the chained-call path needs no additional return-type
+  tracking to match).
+
+Both `lowerCallMsil` and `lowerCall` also gained an explicit `EParen(inner)`
+arm that recurses past the parens (mirroring the existing `ETypeApp` recurse
+arm) — without it, `(makeReader())()` would still fall into the (now-fixed)
+generic catch-all instead of directly reusing the `ECall`-callee path, and
+`recordFieldFuncKeyMsil`'s `ECall`-shape match (used for MSIL return-type
+recovery) would never fire through the paren wrapper.
+
+**Scope note: a separate, pre-existing JVM defect found while verifying.**
+`println(makeAdder()(41))` (numeric chain) and even the already-working
+named-local baseline `println(reader())` (`reader: () -> String`) both hit
+an UNRELATED `VerifyError: Bad type on operand stack` on `--target jvm` —
+`printArgType` (`lyric-compiler/jvm/codegen/04_calls.l`) assumes any
+non-primitive `JvmType` argument to `println`/`print` is statically
+`java/lang/String` and selects the `println(String)` overload accordingly,
+but a lambda-invoke result (chained or via a named local — `lowerLambdaInvoke`
+returns raw `Object`, per the #5796 convention above) is verifier-tracked as
+`java/lang/Object`, which is not assignable to `String`. This reproduces
+identically with or without this entry's fix (confirmed against the
+unmodified `lowerLambdaInvoke` path, which this entry does not touch),
+confirming it predates #6392 and is architecturally distinct — `println`'s
+own arg-type inference, not the callee-lowering gap this entry closes. Not
+fixed here (out of scope: distinct root cause, distinct code path); flagged
+for a follow-up issue. Verified the chained-call invoke mechanism itself
+(not `println`) is correct on JVM via a non-`println` repro exercising
+arithmetic/comparison on the chained result (`makeAdder()(41) == 42`),
+which passes cleanly — isolating this scope note from the actual fix.
+
+**Regression coverage.** Six new cases in
+`lyric-compiler/lyric/func_val_local_rettype_self_test.l` (dual-target,
+imports only `Std.*`, no `LYRIC_LOAD_COMPILER=1` needed — chosen over
+`bare_func_ref_self_test.l` since that file is dotnet-only by design and
+this defect is dual-target): the exact repro chained with an argument
+(`makeAdder(5)(10)`), a zero-arg/String-returning chain
+(`makeGreeter("world")()`), a multi-argument chain
+(`makeMultiParam(2)(3, 4)`), a parenthesized-callee chain
+(`(makeAdder(5))(10)`, exercising the new `EParen` arm), arithmetic on a
+chained result as an unboxing proof (`makeAdder(5)(10) + 1 == 16`), and a
+two-deep chain with no intermediate binding at all
+(`makeMakerAdder(5)()(10)`, a new `() -> (Int) -> Int`-returning function
+added to the test module).
+
+**Verification.** New/extended self-tests: `func_val_local_rettype_self_test.l`
+13/13 (dotnet AND jvm, 6 new + 7 pre-existing). Full regression battery, all
+green: `bare_func_ref_self_test.l` 9/9 (dotnet), `closure_zero_overhead_self_test.l`
+18/18 (dotnet AND jvm), `typechecker_self_test.l` 298/298 (dotnet),
+`msil_project_bridge_self_test.l` 37/37 (dotnet), `inbundle_generics_self_test.l`
+28/28 (dotnet), `bitwise_self_test.l` 10/10 (dotnet AND jvm),
+`nested_constructor_pattern_self_test.l` 6/6 (dotnet AND jvm). Manual repros
+(`makeGreeter()()`, `(makeReader())()`, arithmetic chain, two-deep chain) built
+and run correctly on both targets post-`make lyric`. `ilverify` (via
+`dotnet-ilverify` against the shared-framework + self-hosted
+`Lyric.Stdlib.dll` reference set) reports every emitted MSIL repro assembly
+fully verified — zero `StackUnderflow`/`StackUnexpected` findings.
+`lyric fmt --write` clean (no refusals) on all three changed `.l` files.
+
+**Related:** #6392, D-progress-739 (where this was filed),
+D-progress-738/#5362/#5366 (the `Some(slot)`/`funcValRetTypes` machinery
+this reuses), D-progress-684/#5796 (JVM's raw-`Object` lambda-invoke
+convention this JVM fix follows), `lyric-compiler/msil/codegen.l`,
+`lyric-compiler/jvm/codegen/04_calls.l`,
+`lyric-compiler/lyric/func_val_local_rettype_self_test.l`.

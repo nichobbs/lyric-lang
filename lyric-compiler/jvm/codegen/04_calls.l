@@ -426,16 +426,60 @@ func lowerCall(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, args: in Lis
     case EMember(recv, memberName) -> {
       lowerMethodCall(ctx, insns, recv, memberName, args)
     }
+    case EParen(inner) -> {
+      lowerCall(ctx, insns, inner, args)
+    }
     case _ -> {
-      // Unknown callee form — emit args and discard.
-      var i = 0
-      while i < args.count {
-        lowerCallArg(ctx, insns, args[i])
-        i = i + 1
-      }
-      JRef(className = "java/lang/Object")
+      // Chained call: the callee is itself an arbitrary expression (most
+      // commonly another `ECall`, e.g. `makeGreeter()()`) that evaluates to
+      // a function value at runtime rather than a bare name naming a local
+      // slot. Lower it exactly like `lowerLambdaInvoke` invokes a named
+      // lambda local — push the callee value, checkcast to the shared
+      // functional interface, pack the (boxed) args into an `Object[]`, and
+      // `invokeinterface invoke(...)` — except the callee value comes from
+      // evaluating `fn` in place instead of loading a local slot (#6392).
+      // Without this, the callee was never lowered at all — the entire
+      // sub-expression's bytecode was dropped, producing a `VerifyError`
+      // (operand stack underflow).
+      lowerCallOnExprResult(ctx, insns, fn, args)
     }
   }
+}
+
+// Invoke a function value produced by evaluating `fn` (an arbitrary
+// expression, not a named local slot) — the chained-call counterpart of
+// `lowerLambdaInvoke` below (#6392). Same functional-interface `invoke`
+// sequence; the callee is pushed by lowering `fn` instead of `LAload`ing a
+// tracked slot. Returns raw `Object`, exactly like `lowerLambdaInvoke`
+// (#5563 item 2) — every consumer already coerces a lambda-invoke result
+// to its required static type via `coerceArgTo`.
+func lowerCallOnExprResult(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, args: in List[CallArg]): JvmType {
+  val ifaceName = lambdaIfaceName(ctx.pkgName)
+  lowerExpr(ctx, insns, fn)
+  insns.add(LCheckcast(className = ifaceName))
+  insns.add(LIconst(v = args.count))
+  insns.add(LAnewarray(className = "java/lang/Object"))
+  var i = 0
+  while i < args.count {
+    insns.add(LDup)
+    insns.add(LIconst(v = i))
+    val aTy = lowerCallArg(ctx, insns, args[i])
+    boxIfNeeded(insns, aTy)
+    insns.add(LAastore)
+    i = i + 1
+  }
+  val invPs: List[JvmType] = newList()
+  invPs.add(JArray(elem = JRef(className = "java/lang/Object")))
+  insns.add(
+    LInvokeinterface(
+      owner = ifaceName,
+      name = lambdaIfaceMethod(),
+      params = invPs,
+      ret = JRef(className = "java/lang/Object"),
+      argCount = 2
+    )
+  )
+  JRef(className = "java/lang/Object")
 }
 
 // Emit `<execLocal>.close()` for the `scope { }` close intrinsic (D119 S4 /
