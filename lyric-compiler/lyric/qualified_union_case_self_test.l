@@ -27,6 +27,20 @@
 //! `<scrutinee's own class>$Internal` first.  This file now runs on BOTH
 //! `--target dotnet` and `--target jvm` in CI (the JVM step lives in the
 //! `compiler-self-tests-jvm` job).
+//!
+//! Tests 6-7 (#6298) cover a QUALIFIED reference to a GENERIC nullary union
+//! case in value position — `Option.None`, distinct from the plain
+//! (non-generic) `StoreError.Internal` case above.  A generic nullary case
+//! has no singleton instance (Q-GEN-001, docs/43) and must be constructed
+//! via the TypeSpec-closing machinery (`buildGenericCaseCtorTok` for the
+//! cross-assembly stdlib case, `buildInBundleGenericCtorTok` for an
+//! in-bundle one); before the fix, the qualified EMember value-position arm
+//! instead emitted a bare `newobj` against the case's OPEN generic
+//! MemberRef, which crashed on `--target dotnet` with
+//! `TypeLoadException: Could not load type 'Std.Core.Option_None`1'` —
+//! sought in the CONSUMER assembly rather than the stdlib one.  The bare
+//! (unqualified) `None` form already worked correctly and is unaffected by
+//! this fix.
 @test_module
 package Lyric.QualifiedUnionCaseSelfTest
 
@@ -61,6 +75,20 @@ func netMessage(e: NetError): String {
   }
 }
 
+// In-bundle generic union with a nullary case, for contrast with the
+// cross-assembly stdlib `Option[T]` case in the #6298 tests below.
+union Maybe6298[T] {
+  case Just6298(value: T)
+  case Nothing6298
+}
+
+func maybeMessage6298(m: Maybe6298[Int]): String {
+  match m {
+    case Just6298(v) -> "just " + toString(v)
+    case Nothing6298 -> "nothing"
+  }
+}
+
 test "qualified union-case construction with named payload" {
   val e = StoreError.UserNotFound(id = 7i64)
   assertTrue(storeMessage(e) == "user 7", "StoreError.UserNotFound(id = 7)")
@@ -86,4 +114,21 @@ test "qualifier disambiguates same-named cases across unions" {
 test "qualified case construction with named payload disambiguates" {
   val n = NetError.Timeout(ms = 250)
   assertTrue(netMessage(n) == "timeout 250", "NetError.Timeout(ms = 250)")
+}
+
+test "#6298: qualified stdlib Option.None (cross-assembly generic nullary case)" {
+  val n: Option[Int] = Option.None
+  val msg = match n { case Some(v) -> "some " + toString(v); case None -> "none" }
+  assertTrue(msg == "none", "Option.None")
+}
+
+test "#6298: qualified stdlib Option.Some still constructs alongside None" {
+  val n: Option[Int] = Option.Some(value = 42)
+  val msg = match n { case Some(v) -> "some " + toString(v); case None -> "none" }
+  assertTrue(msg == "some 42", "Option.Some(value = 42)")
+}
+
+test "#6298: qualified in-bundle generic nullary case (Maybe6298.Nothing6298)" {
+  val m: Maybe6298[Int] = Maybe6298.Nothing6298
+  assertTrue(maybeMessage6298(m) == "nothing", "Maybe6298.Nothing6298")
 }

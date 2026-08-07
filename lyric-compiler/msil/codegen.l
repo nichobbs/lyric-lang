@@ -7043,6 +7043,97 @@ func emitDictRemove(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in MsilT
   }
 }
 
+// Construct (or load) a nullary union-case VALUE once its ctor MemberRef
+// token (`ctorTok`) has already been resolved via `recordCtorTokens[ctorKey]`.
+// Shared by the bare-path (`val n = None`) and qualified-path
+// (`val n = Option.None`) value lowerings so a GENERIC nullary case (no
+// singleton — Q-GEN-001, docs/43) always goes through the same
+// TypeSpec-closing construction machinery — `buildGenericCaseCtorTok` for a
+// cross-assembly/stdlib case, `buildInBundleGenericCtorTok` for an in-bundle
+// one — instead of a bare `newobj` against the case's OPEN generic MemberRef
+// registered by `registerStdlibTypeItemMembers`/`registerRestoredUnionCase`
+// (correct only as the TypeSpec base, never as a direct construction token).
+// Before this helper existed, the qualified path used that open-generic
+// MemberRef directly via plain `newobj`, which is invalid IL for a generic
+// type and crashed at run time with `TypeLoadException: Could not load type
+// 'Std.Core.Option_None`1'` — sought in the CONSUMER assembly rather than
+// the stdlib one — for any qualified reference to a generic stdlib nullary
+// case such as `Option.None` (#6298).  Non-generic cases are unaffected:
+// both `buildGenericCaseCtorTok` and `buildInBundleGenericCtorTok` return 0
+// immediately when `ctorKey` carries no type-parameter-count registration,
+// falling through to the pre-existing singleton/plain-`newobj` behavior.
+func lowerNullaryCaseValueMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  ctorKey: in String,
+  ctorTok: in Int,
+): MsilType {
+  // Infer T from the innermost context hint (local variable type annotation,
+  // e.g. `var x: Option[Int] = None` → T=Int), falling back to the
+  // function's declared return type (e.g. `return None` in a function
+  // returning Option[Long] → T=Long).
+  val nullCtxTyArgs: List[MsilType] = newList()
+  if fctx.contextHintTyArgs.count > 0 {
+    var hi = 0
+    while hi < fctx.contextHintTyArgs.count {
+      nullCtxTyArgs.add(fctx.contextHintTyArgs[hi])
+      hi = hi + 1
+    }
+  } else {
+    match fctx.declaredRetTy {
+      case MGenericInst(_, _, retArgTys) -> {
+        var rti = 0
+        while rti < retArgTys.count {
+          nullCtxTyArgs.add(retArgTys[rti])
+          rti = rti + 1
+        }
+      }
+      case MGenericInstByName(_, retArgTys) -> {
+        var rti = 0
+        while rti < retArgTys.count {
+          nullCtxTyArgs.add(retArgTys[rti])
+          rti = rti + 1
+        }
+      }
+      case _ -> {
+      }
+    }
+  }
+  val nullArgTypes: List[MsilType] = newList()
+  val nullOutPTy: List[MsilType] = newList()
+  val nullGenTok = buildGenericCaseCtorTok(cctx, ctorKey, nullArgTypes, nullCtxTyArgs, nullOutPTy, insns)
+  if nullGenTok > 0 {
+    // MNewobjGenericCase already emitted to insns by buildGenericCaseCtorTok.
+    if nullOutPTy.count > 0 {
+      nullOutPTy[0]
+    } else {
+      MObject
+    }
+  } else {
+    // In-bundle generic nullary case (e.g. a bare `Nothing` for `Maybe[Int]`):
+    // construct via newobj on the closed TypeSpec (#2362).  A generic
+    // nullary case has no singleton — see lowerMUnion / Q-GEN-001.
+    val nullInb: List[MsilType] = newList()
+    val nullInbTok = buildInBundleGenericCtorTok(cctx, ctorKey, nullArgTypes, nullCtxTyArgs, nullInb, insns)
+    if nullInbTok > 0 {
+      nullInb[0]
+    } else {
+      match mapGet(cctx.singletonFieldTokens, ctorKey) {
+        case Some(fldTok) -> {
+          insns.add(MLdsfld(fieldToken = fldTok))
+          insns.add(MCastclassByName(className = caseParentFqnMsil(cctx, ctorKey)))
+          MClass(className = caseParentFqnMsil(cctx, ctorKey))
+        }
+        case None -> {
+          insns.add(MNewobj(ctorToken = ctorTok))
+          MClass(className = caseParentFqnMsil(cctx, ctorKey))
+        }
+      }
+    }
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Expression lowering.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -7351,73 +7442,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 }
               }
               match mapGet(cctx.recordCtorTokens, ctorKey) {
-                case Some(ctorTok) -> {
-                  // For nullary generic stdlib cases (e.g. None), infer T from the
-                  // innermost context hint (local variable type annotation, e.g.
-                  // `var x: Option[Int] = None` → T=Int), falling back to the
-                  // function's declared return type (e.g. `return None` in a
-                  // function returning Option[Long] → T=Long).
-                  val nullCtxTyArgs: List[MsilType] = newList()
-                  if fctx.contextHintTyArgs.count > 0 {
-                    var hi = 0
-                    while hi < fctx.contextHintTyArgs.count {
-                      nullCtxTyArgs.add(fctx.contextHintTyArgs[hi])
-                      hi = hi + 1
-                    }
-                  } else {
-                    match fctx.declaredRetTy {
-                      case MGenericInst(_, _, retArgTys) -> {
-                        var rti = 0
-                        while rti < retArgTys.count {
-                          nullCtxTyArgs.add(retArgTys[rti])
-                          rti = rti + 1
-                        }
-                      }
-                      case MGenericInstByName(_, retArgTys) -> {
-                        var rti = 0
-                        while rti < retArgTys.count {
-                          nullCtxTyArgs.add(retArgTys[rti])
-                          rti = rti + 1
-                        }
-                      }
-                      case _ -> {
-                      }
-                    }
-                  }
-                  val nullArgTypes: List[MsilType] = newList()
-                  val nullOutPTy: List[MsilType] = newList()
-                  val nullGenTok = buildGenericCaseCtorTok(cctx, ctorKey, nullArgTypes, nullCtxTyArgs, nullOutPTy, insns)
-                  if nullGenTok > 0 {
-                    // MNewobjGenericCase already emitted to insns by buildGenericCaseCtorTok.
-                    if nullOutPTy.count > 0 {
-                      nullOutPTy[0]
-                    } else {
-                      MObject
-                    }
-                  } else {
-                    // In-bundle generic nullary case (e.g. a bare `Nothing` for
-                    // `Maybe[Int]`): construct via newobj on the closed TypeSpec
-                    // (#2362).  A generic nullary case has no singleton — see
-                    // lowerMUnion / Q-GEN-001.
-                    val nullInb: List[MsilType] = newList()
-                    val nullInbTok = buildInBundleGenericCtorTok(cctx, ctorKey, nullArgTypes, nullCtxTyArgs, nullInb, insns)
-                    if nullInbTok > 0 {
-                      nullInb[0]
-                    } else {
-                      match mapGet(cctx.singletonFieldTokens, ctorKey) {
-                        case Some(fldTok) -> {
-                          insns.add(MLdsfld(fieldToken = fldTok))
-                          insns.add(MCastclassByName(className = caseParentFqnMsil(cctx, ctorKey)))
-                          MClass(className = caseParentFqnMsil(cctx, ctorKey))
-                        }
-                        case None -> {
-                          insns.add(MNewobj(ctorToken = ctorTok))
-                          MClass(className = caseParentFqnMsil(cctx, ctorKey))
-                        }
-                      }
-                    }
-                  }
-                }
+                case Some(ctorTok) -> lowerNullaryCaseValueMsil(cctx, fctx, insns, ctorKey, ctorTok)
                 case None -> {
                   // Module-level val: load from the static field emitted for this IVal.
                   match mapGet(cctx.staticValTokens, name) {
@@ -7556,11 +7581,13 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           insns.add(MCastclassByName(className = caseParentFqnMsil(cctx, nmCaseFqn)))
           MClass(className = caseParentFqnMsil(cctx, nmCaseFqn))
         } else {
+          // A GENERIC nullary case (e.g. `Option.None`) has no singleton and
+          // must be constructed via `lowerNullaryCaseValueMsil`'s
+          // TypeSpec-closing machinery, not a bare `newobj` against the case's
+          // open generic MemberRef (#6298) — mirrors the bare-`None` EPath arm
+          // above, which already routes through the same helper.
           match mapGet(cctx.recordCtorTokens, nmCaseFqn) {
-            case Some(ctorTok) -> {
-              insns.add(MNewobj(ctorToken = ctorTok))
-              MClass(className = caseParentFqnMsil(cctx, nmCaseFqn))
-            }
+            case Some(ctorTok) -> lowerNullaryCaseValueMsil(cctx, fctx, insns, nmCaseFqn, ctorTok)
             case None -> {
               MObject
             }
@@ -23626,15 +23653,21 @@ func sliceElemMsilG(cctx: in CodegenCtx, elem: in TypeExpr, pkgName: in String, 
 }
 
 // TGenericApp arm of `typeExprToMsilG` (#4870/#6231).  Mirrors
-// `typeExprToMsilCtx`'s own TGenericApp handling exactly — same special
-// cases for `List`/`Map`/`Set`/`MapKeyCollection`/`MapValueCollection`, same
+// `typeExprToMsilCtx`'s own TGenericApp handling — same special cases for
+// `List`/`Map`/`Set`/`MapKeyCollection`/`MapValueCollection`, same
 // in-bundle-vs-cross-assembly generic-head resolution — but recurses every
 // type ARGUMENT (and collection element) through `typeExprToMsilG` instead of
 // `typeExprToMsilCtx`, so a nested reference to one of the enclosing type's
 // OWN parameters reifies to `MTypeVar` rather than resolving as an
 // unrecognised user-type identifier (`MClass(pkgName + "." + "T")`) — the
 // root cause of the #4870 union-case MissingFieldException/ClassCastException
-// and the #6231 match-on-nested-generic-field crash.
+// and the #6231 match-on-nested-generic-field crash.  Not an exact mirror,
+// though: the `List[T]` arm deliberately adds an `isValueType(elemTy) ->
+// MListOf(elemTy)` branch `typeExprToMsilCtx`'s own List arm lacks, following
+// `typeExprToMsilGenBody`'s precedent (~line 23818) so a non-concrete
+// value-typed element (e.g. a bare type-variable element erased to a
+// value-typed context, or a nested generic-parameter struct) still gets an
+// unboxed-element `List<T>` rather than falling all the way to `List<object>`.
 func typeExprToMsilGApp(
   cctx: in CodegenCtx,
   head: in ModulePath,

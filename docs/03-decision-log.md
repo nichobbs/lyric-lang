@@ -23545,3 +23545,88 @@ docs/44-jvm-production-readiness-plan.md (JVM J4 tracking),
 `lyric-compiler/msil/codegen.l`, `lyric-compiler/msil/lowering.l`,
 `lyric-compiler/lyric/mono.l`,
 `lyric-compiler/lyric/inbundle_generics_self_test.l`.
+
+### D-progress-737 — A package-qualified reference to a generic stdlib nullary union case (`Option.None`) crashed with a wrong-assembly `TypeLoadException` on MSIL (#6298, narrowed scope)
+
+**Status:** Shipped (MSIL). JVM confirmed unaffected.
+
+**The bug.** `#6298` originally reported two deterministic MSIL
+`TypeLoadException`s in the generic-`Option`/monomorphization area;
+`Option[List[Int]]` was closed as a side effect of the #6388 nested-generic-
+instantiation fix family, narrowing this issue to its other repro: a
+PACKAGE-QUALIFIED reference to a generic stdlib nullary union case in value
+position —
+
+```lyric
+import Std.Core
+val n: Option[Int] = Option.None
+```
+
+— crashed every run with `System.TypeLoadException: Could not load type
+'Std.Core.Option_None`1' from assembly 'Repro, …'`. The telling detail: the
+runtime sought the type in the CONSUMER assembly (`Repro`) rather than
+`Lyric.Stdlib.dll`. The bare (unqualified) `None` form — `val n: Option[Int]
+= None` after `import Std.Core` — already worked correctly.
+
+**Root cause.** `Msil.Codegen.lowerExprMsil`'s `EMember` value-position arm
+(`lyric-compiler/msil/codegen.l`, the `Option.None`-shaped qualified nullary-
+case branch guarded by `nmCaseFqn.length > 0`) resolved the case's ctor
+MemberRef token from `cctx.recordCtorTokens[nmCaseFqn]` and emitted it
+directly via a bare `MNewobj(ctorToken = ctorTok)`. That token is the
+MemberRef `registerStdlibTypeItemMembers`/`registerRestoredUnionCase`
+register against the case's arity-suffixed TypeRef (`Option_None`1`) — a
+correctly-scoped reference to the stdlib assembly, but an OPEN (unbound)
+generic type. A plain `newobj` against an unbound generic type's `.ctor` is
+invalid IL for the CLR to construct; the `EMember` arm never routed through
+the TypeSpec-closing construction machinery that already existed for exactly
+this shape. The BARE `None` path (`EPath` arm, same function) already called
+`buildGenericCaseCtorTok` (cross-assembly/stdlib generics) with
+`buildInBundleGenericCtorTok` as its in-bundle fallback — building a closed
+TypeSpec instantiation (`Option_None`1<!0>`) via `MNewobjGenericByName`
+before falling back to a singleton load or the plain `newobj` — but the
+qualified `EMember` arm was a separate, never-updated code path that
+bypassed all of it. Non-generic qualified nullary cases (e.g.
+`StoreError.Internal`) were unaffected: `singletonFieldTokens` already
+short-circuits them to a static-field load before the broken `newobj`
+branch is ever reached.
+
+**The fix.** Extracted the bare-path's existing generic-nullary-case
+construction logic (`lyric-compiler/msil/codegen.l`, previously inlined in
+the `EPath` arm) into a shared helper, `lowerNullaryCaseValueMsil(cctx,
+fctx, insns, ctorKey, ctorTok)`: infer the case's type argument(s) from the
+innermost context hint or the function's declared return type, then try
+`buildGenericCaseCtorTok` (cross-assembly), then `buildInBundleGenericCtorTok`
+(in-bundle), then the pre-existing singleton-field / plain-`newobj`
+fallback for the genuinely non-generic case. Both the bare `None` (`EPath`)
+arm and the qualified `Option.None` (`EMember`) arm now call this one
+helper once `recordCtorTokens` resolves a ctor token, so a generic nullary
+case is always constructed via the closed TypeSpec regardless of spelling.
+No new diagnostic was needed — this is a resolution-machinery fix, not an
+unresolvable-reference case (the fail-loudly principle for a genuinely
+unresolvable spelling is already covered by `diagnoseUnresolvedQualifiedValueMsil`,
+untouched here).
+
+**JVM was checked and confirmed unaffected.** The identical repro on
+`--target jvm` already ran correctly before and after this fix (prints
+`none`) — the JVM backend's qualified nullary-case value lowering does not
+share this defect.
+
+**Verification.** `./bin/lyric run --target dotnet` on the issue's exact
+repro now prints `none` (previously a `TypeLoadException` crash, exit 134);
+`--target jvm` unchanged (`none`). Extended
+`qualified_union_case_self_test.l` with three cases — qualified
+`Option.None` (the repro), qualified `Option.Some(value = …)` alongside it
+(construction unaffected), and a qualified nullary case of an in-bundle
+generic union (`Maybe6298.Nothing6298`) for contrast — now 8/8 on both
+`--target dotnet` and `--target jvm`. Regression sweep after `make lyric`:
+`inbundle_generics_self_test.l` 28/28 (dotnet); `qualified_enum_case_self_test.l`
+11/11 (dotnet and jvm); `nested_constructor_pattern_self_test.l` 6/6 (dotnet
+and jvm); `bitwise_self_test.l` 10/10 (dotnet and jvm); `typechecker_self_test.l`
+298/298 (dotnet); `msil_project_bridge_self_test.l` 35/35 (dotnet, including
+its "cross-package generic union nullary case constructs and matches" case,
+test 12).
+
+**Related:** #6298, #6388, #6329, #4870, #6231, #2362 (Q-GEN-001, nullary
+generic cases have no singleton), docs/43-in-bundle-generics-plan.md,
+`lyric-compiler/msil/codegen.l`,
+`lyric-compiler/lyric/qualified_union_case_self_test.l`.
