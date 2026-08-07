@@ -23748,8 +23748,8 @@ references across the compiler's own ~80-package source) never gets a
 spurious, unused thunk. This shrank the bundle back to within ~16 KB of the
 unmodified baseline and the metadata-reader failure disappeared. The
 underlying reader/writer boundary bug is still latent and un-investigated;
-flagged here so a future large-assembly-triggered `NoContractResource`
-failure isn't re-diagnosed from scratch.
+tracked as #6390 and flagged here so a future large-assembly-triggered
+`NoContractResource` failure isn't re-diagnosed from scratch.
 
 **Regression coverage.** New `lyric-compiler/lyric/bare_func_ref_self_test.l`
 (`@test_module`, dotnet-only — both defects manifest completely differently,
