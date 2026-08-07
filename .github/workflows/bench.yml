@@ -43,13 +43,23 @@ jobs:
     env:
       RUNS:      ${{ github.event.inputs.runs   || '15' }}
       WARMUP:    ${{ github.event.inputs.warmup || '5'  }}
-      # Single source of truth for the AOT binary path — was duplicated
-      # verbatim across the staging step and every bench step (#4757).
-      LYRIC_BIN: bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      # Single source of truth for the AOT binary path — was duplicated
+      # verbatim across the staging step and every bench step (#4757).
+      # Computed at step level (shell-expanding the real $BUILD_CONFIG env
+      # var) rather than in the job-level `env:` block: the `env` context is
+      # not available when defining another job-level `env:` key, and the
+      # previous `${{ env.BUILD_CONFIG }}` reference there was a
+      # workflow-level validation error that made every run fail with zero
+      # jobs dispatched (#6247, #5638 item 5). Written to $GITHUB_ENV so
+      # every later step sees it as a real environment variable — same
+      # pattern as ci.yml's LYRIC_CLI_PATH.
+      - name: Resolve AOT binary path
+        run: echo "LYRIC_BIN=bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" >> "$GITHUB_ENV"
 
       - name: Set up .NET
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0

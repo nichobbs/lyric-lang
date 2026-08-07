@@ -797,6 +797,38 @@ test "multi-segment qualified static val resolves correctly" {
   assertEqual(Str.trim(result.stdout), "hi\n2\nHI", "multi_segment_qualified_static_val: stdout matches expected")
 }
 
+// ─── Regression: self-qualified read of a package's OWN literal pub val
+// (#6296) ──────────────────────────────────────────────────────────────────
+// Code inside package `Pkg` reading its own module-level `pub val` through
+// its own package name (`Pkg.name`, as opposed to the bare `name`) used to
+// silently read 0/null: `tryQualifiedConstValueMsil` looks up the DOT-joined
+// qualified name (`Pkg.name`) in `cctx.constValues`, but the in-bundle
+// literal-`val`/`const` registration only ever added a SLASH-joined key
+// (`Pkg/name`, used by the unrelated bare-name cross-package-shadowing
+// disambiguation at the `EPath` site) plus the bare unqualified key — never
+// the dot-joined key `tryQualifiedConstValueMsil` actually probes. The exact
+// repro from the issue: `Mcp.someConstant` read from inside package `Mcp`
+// must equal the unqualified `someConstant` read, not silently diverge.
+test "self-qualified literal pub val read resolves correctly" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "SelfQual.Mcp",
+      "package SelfQual.Mcp\n" + "\n" + "pub val someConstant: Int = 42\n" + "\n" + "func main(): Unit {\n" +
+        "  println(SelfQual.Mcp.someConstant)\n" +
+        "  println(someConstant)\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("selfqual", packages, "SelfQual")
+  assertEqualInt(result.exitCode, 0, "self_qualified_literal_val: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "42\n42",
+    "self_qualified_literal_val: qualified and unqualified reads agree (#6296)"
+  )
+}
+
 // ─── Regression: local shadowing a package name is not mistaken for a
 // qualified static val (#5265) ────────────────────────────────────────────
 // `tryQualifiedStaticValNameMsil`'s first-segment-local guard (mirroring

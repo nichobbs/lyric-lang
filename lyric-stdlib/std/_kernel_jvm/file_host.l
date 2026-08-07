@@ -247,7 +247,14 @@ pub func hostDeleteFile(path: in String): Unit {
 
 pub func hostDeleteDirectory(path: in String): Unit {
   val f = JFile.new(path)
-  f.delete()
+  // `java.io.File.delete()` reports failure via a `false` return instead of
+  // throwing like the .NET twin's `Directory.Delete` — without this check a
+  // non-empty directory silently "succeeds" and `Std.Directory.delete`
+  // reports Ok (#5113).  Panicking routes the failure through the same
+  // `catch Bug` → `Err(IoError)` seam the .NET exception takes.
+  if not f.delete() {
+    panic("the directory could not be deleted (it may not be empty)")
+  }
 }
 
 pub func hostDeleteDirectoryRecursive(path: in String, recursive: in Bool): Unit {
