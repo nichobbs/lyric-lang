@@ -3786,6 +3786,23 @@ func printArgType(ty: in JvmType): JvmType {
     case JBoolean -> JBoolean
     case JChar -> JChar
     case JVoid -> JRef(className = "java/lang/String")
+    case JRef(cls) -> {
+      // The Object-invoke convention (`lowerLambdaInvoke` / `lowerCallOnExprResult`,
+      // #5796 / #6392) tracks any lambda-invoke or chained-call result as raw
+      // `java/lang/Object`, whatever its real static Lyric type — there is no
+      // compile-time String-ness to checkcast against for `println(reader())`.
+      // Dispatch those through `PrintStream.println(Object)` (which itself
+      // calls `String.valueOf`, matching any actual runtime type — String,
+      // boxed Integer, etc.) instead of guessing `println(String)`, which
+      // fails bytecode verification whenever the erased value isn't actually
+      // a String (#6394). Genuinely-tracked reference types (e.g. String)
+      // still route through `println(String)`.
+      if cls == "java/lang/Object" {
+        JRef(className = "java/lang/Object")
+      } else {
+        JRef(className = "java/lang/String")
+      }
+    }
     case _ -> JRef(className = "java/lang/String")
   }
 }

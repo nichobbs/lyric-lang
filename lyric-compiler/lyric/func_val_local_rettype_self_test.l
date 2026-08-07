@@ -65,6 +65,22 @@
 //! return type is recovered via `recordFieldFuncKeyMsil`/
 //! `cctx.fieldFuncRetTypes` (the same #5774 registry above) so the result is
 //! unboxed, not just left as `object`.
+//!
+//! #6394 addendum: the #6392 regression cases above deliberately asserted via
+//! arithmetic/comparison rather than `println` on JVM, because `println`ing a
+//! lambda-invoke result directly hit a SEPARATE, pre-existing JVM-only defect:
+//! `printArgType` (`lyric-compiler/jvm/codegen/04_calls.l`) assumed any
+//! non-primitive `println` argument was statically `java/lang/String`, but
+//! `lowerLambdaInvoke`/`lowerCallOnExprResult` track an invoke result as raw
+//! `java/lang/Object` per their #5796/#6392 convention — `println(reader())`
+//! then emitted `invokevirtual println(String)` against an `Object` on the
+//! verifier's tracked stack, a `VerifyError: Bad type on operand stack`. Fixed
+//! by routing `JRef("java/lang/Object")` println/print arguments through the
+//! `PrintStream.println(Object)`/`.print(Object)` overload (itself
+//! `String.valueOf`-backed, so it renders correctly whatever the erased
+//! value's real runtime type is — String, boxed Integer, etc.) instead of
+//! guessing `println(String)`. The two `println`-on-invoke-result cases below
+//! are the regression proof this addendum promised.
 @test_module
 package Lyric.FuncValLocalRetTypeSelfTest
 
@@ -173,4 +189,22 @@ func makeMakerAdder(x: in Int): () -> (Int) -> Int {
 
 test "two-deep chained call (#6392)" {
   assertEqualInt(makeMakerAdder(5)()(10), 15, "makeMakerAdder(5)()(10) == 15")
+}
+
+// #6394: `println` of a lambda-invoke result, String-returning. On JVM this
+// hit `printArgType`'s Object/String mismatch (VerifyError); on MSIL it
+// always worked. Passing means both targets compiled and ran this without
+// crashing; the `assertEqual` line proves the underlying value itself.
+test "println on a named-local lambda-invoke result, String-returning (#6394)" {
+  val reader = makeGreeter("world")
+  println(reader())
+  assertEqual(reader(), "hello, world", "makeGreeter(\"world\")() == \"hello, world\"")
+}
+
+// #6394: `println` of a direct chained call's Int result — the erased
+// `Object` stack value is a boxed Integer here, not a String, exercising the
+// `PrintStream.println(Object)` fix path with a non-String runtime type.
+test "println on a direct chained call's Int result (#6394)" {
+  println(makeAdder(5)(10))
+  assertEqualInt(makeAdder(5)(10), 15, "makeAdder(5)(10) == 15")
 }

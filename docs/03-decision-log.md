@@ -24102,3 +24102,101 @@ this reuses), D-progress-684/#5796 (JVM's raw-`Object` lambda-invoke
 convention this JVM fix follows), `lyric-compiler/msil/codegen.l`,
 `lyric-compiler/jvm/codegen/04_calls.l`,
 `lyric-compiler/lyric/func_val_local_rettype_self_test.l`.
+
+### D-progress-741 — JVM: `println`/`print` of a lambda-invoke result hit `VerifyError: Bad type on operand stack` (#6394)
+
+**Status:** shipped, JVM only (MSIL was never affected).
+
+**The bug.** `println(reader())`, where `reader: () -> String` is a
+function-typed local, crashed at class-load time on `--target jvm`:
+
+```
+java.lang.VerifyError: Bad type on operand stack
+Reason:
+  Type 'java/lang/Object' (current frame, stack[1]) is not assignable to 'java/lang/String'
+```
+
+This is the exact defect flagged as a scope note in D-progress-740/#6392
+(filed there as #6394, unaffected by that entry's fix): reproduces
+identically against the unmodified `lowerLambdaInvoke` path (a named-local
+invoke, not just #6392's new chained-call path), confirming it predates
+#6392 and is architecturally distinct — `println`'s own argument-type
+inference, not the callee-lowering gap #6392 closed. `println(makeAdder(5)(10))`
+(an `Int`-returning chained call, exercising #6392's `lowerCallOnExprResult`
+path with a non-String runtime type) hit the identical `VerifyError`,
+confirming the defect is not String-specific — any lambda-invoke or
+chained-call result flowing into `println`/`print` was affected regardless
+of its real static Lyric type. `--target dotnet` was never affected for
+either repro (MSIL's `funcValRetTypes`/`fieldFuncRetTypes` registry
+recovers and unboxes the real return type per D-progress-738/739/740, so
+the value reaching `println` is already correctly typed).
+
+**Root cause.** `printArgType` (`lyric-compiler/jvm/codegen/04_calls.l`,
+the `println`/`print` argument-descriptor selector shared by
+`lowerBuiltinOrStaticCall`'s `println`/`print` arms) matched any
+non-primitive `JvmType` — every `JRef(_)` regardless of `className` — to
+`java/lang/String` and selected the `PrintStream.println(String)` overload
+accordingly. `lowerLambdaInvoke` and `lowerCallOnExprResult` (#5796/#6392)
+both deliberately return raw `JRef("java/lang/Object")` for ANY invoke
+result, whatever the real static Lyric return type is — the doc comment on
+`lowerCallOnExprResult` spells out the convention: "every consumer already
+coerces a lambda-invoke result to its required static type via
+`coerceArgTo`". `println`'s lowering was the one consumer that didn't:
+it read `argTy` straight from `lowerCallArg`'s return without ever calling
+`coerceArgTo`, so `printArgType` saw `JRef("java/lang/Object")` and picked
+`println(String)` — a descriptor mismatch the verifier catches at
+class-load, since the value on the stack is genuinely tracked as `Object`
+with no `checkcast` ever emitted.
+
+**The fix.** `printArgType` now special-cases the erasure marker itself:
+when the `JRef`'s `className` is exactly `"java/lang/Object"` (the
+lambda-invoke/chained-call convention), route through
+`PrintStream.println(Object)`/`.print(Object)` instead of guessing
+`println(String)`. `println(Object)` is itself `String.valueOf`-backed, so
+it renders correctly whatever the erased value's real runtime type is —
+`String`, a boxed `Integer`, etc. — with no need to know the original
+static Lyric type at this point in codegen (which, per the erasure
+convention, is unrecoverable without a per-invoke return-type registry
+JVM's design deliberately omits, per D-progress-684/#5796). A genuinely
+non-Object-className `JRef` (in practice, a correctly-tracked
+`java/lang/String`) is unaffected — the catch-all still routes to
+`println(String)`, unchanged. Considered and rejected: `checkcast
+java/lang/String` unconditionally — wrong for `println(makeAdder(5)(10))`,
+where the erased Object is a boxed `Integer`, not a `String`, and would
+itself `ClassCastException` at runtime. The `println(Object)` overload
+handles both shapes uniformly with no type-recovery needed, matching
+`coerceArgTo`'s own `JRef(fromCls) -> ... toCls == "java/lang/Object"`
+no-op idiom (never checkcast INTO Object) mirrored the other direction —
+here the source, not the target, is the Object-erased value.
+
+**Regression coverage.** Two new cases in
+`lyric-compiler/lyric/func_val_local_rettype_self_test.l` (dual-target,
+imports only `Std.*`), added as the promised follow-up to D-progress-740's
+scope note: `println` on a named-local lambda-invoke result
+(`println(reader())`, String-returning — the exact #6394 repro) and
+`println` on a direct chained call's `Int` result
+(`println(makeAdder(5)(10))` — proves the fix isn't String-specific, since
+the erased Object here is a boxed `Integer`). Both previously crashed with
+`VerifyError` on `--target jvm` pre-fix (confirmed against the unmodified
+`printArgType`); both pass on dotnet AND jvm post-fix. File total:
+15/15 both targets (13 pre-existing + 2 new).
+
+**Verification.** `func_val_local_rettype_self_test.l` 15/15 (dotnet AND
+jvm). Full regression battery, all green:
+`closure_zero_overhead_self_test.l` 18/18 (dotnet AND jvm),
+`bitwise_self_test.l` 10/10 (dotnet AND jvm),
+`nested_constructor_pattern_self_test.l` 6/6 (dotnet AND jvm),
+`block_shadow_self_test.l` 20/20 (dotnet AND jvm),
+`bare_func_ref_self_test.l` 9/9 (dotnet), `typechecker_self_test.l` 298/298
+(dotnet), `bool_tostring_self_test.l` 4/4 (jvm), `jvm_trio_self_test.l` 9/9
+(jvm), `jvm_trio_positive_self_test.l` 3/3 (jvm). Manual repros
+(`println(reader())`, `println(makeAdder(5)(10))`) built and run correctly
+on `--target jvm` post-`make lyric`, printing `hello` and `15` respectively
+with no `VerifyError`. `lyric fmt --write` clean (no refusals) on both
+changed `.l` files.
+
+**Related:** #6394, D-progress-740 (where this was filed as a scope note),
+D-progress-684/#5796 (JVM's raw-`Object` lambda-invoke convention this fix
+routes around rather than reverses),
+`lyric-compiler/jvm/codegen/04_calls.l`,
+`lyric-compiler/lyric/func_val_local_rettype_self_test.l`.
