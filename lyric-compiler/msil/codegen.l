@@ -2183,6 +2183,34 @@ pub func registerTypeAliasMsil(cctx: in CodegenCtx, pkgName: in String, decl: in
   }
 }
 
+// Follow a `TFunction` OR a chain of `alias X = ...` (`cctx.aliasTargets`,
+// registered by `registerTypeAliasMsil` above) down to an underlying literal
+// `TFunction` shape (params, return).  Used at every site that tracks a
+// function-typed annotation/return's real param/return types
+// (`funcValRetTypes`/`funcValParamTypes`, `fieldFuncRetTypes`/
+// `fieldFuncParamTypes`) so an ALIASED function type
+// (`alias Handler = (Int) -> Int`) registers exactly like a literal
+// `(Int) -> Int` annotation already does (#5366).  Without this, `te.kind`
+// for an alias annotation is `TRef(["Handler"])`, never `TFunction`, so
+// every one of those registration sites silently no-oped — the bound
+// local's call result was never unboxed, corrupting any arithmetic
+// performed on it with no exception.  Returns `None` for any other shape,
+// or for an alias chain that never bottoms out in `TFunction` (the type
+// checker already rejects cyclic aliases, so this always terminates).
+func resolveFuncTypeExprMsil(cctx: in CodegenCtx, te: in TypeExpr): Option[TypeExpr] {
+  match te.kind {
+    case TFunction(_, _) -> Some(value = te)
+    case TRef(path) -> {
+      val seg = lastSegmentMsil(path)
+      match mapGet(cctx.aliasTargets, seg) {
+        case Some(rhs) -> resolveFuncTypeExprMsil(cctx, rhs)
+        case None -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
 // An in-body method's `decl.params[0]` is the injected `self: in Type`
 // (`injectSelfIfNeeded`, parser_items.l) — the receiver, mapping to the
 // CLR's implicit `this`.  Everywhere a real-argument count/type/mode is
@@ -2818,20 +2846,28 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               // still register `funcValRetTypes`/`funcValParamTypes` for
               // `fld` via `recordFieldFuncKeyMsil`, even though the binding
               // itself carries no literal `(A,...) -> R` annotation.
-              match f.ty.kind {
-                case TFunction(fParamTes, fRetTe) -> {
-                  if not cctx.fieldFuncRetTypes.containsKey(className + "/" + f.name) {
-                    cctx.fieldFuncRetTypes.add(className + "/" + f.name, typeExprToMsilCtx(cctx, fRetTe, pkgName))
-                    val fParamMsilTys: List[MsilType] = newList()
-                    var ffpi = 0
-                    while ffpi < fParamTes.count {
-                      fParamMsilTys.add(typeExprToMsilCtx(cctx, fParamTes[ffpi], pkgName))
-                      ffpi = ffpi + 1
+              // #5366: resolve through a type alias (`h: Handler`) too, not
+              // just a literal `(A,...) -> R` field annotation — see
+              // `resolveFuncTypeExprMsil`.
+              match resolveFuncTypeExprMsil(cctx, f.ty) {
+                case Some(funcTe) -> {
+                  match funcTe.kind {
+                    case TFunction(fParamTes, fRetTe) -> {
+                      if not cctx.fieldFuncRetTypes.containsKey(className + "/" + f.name) {
+                        cctx.fieldFuncRetTypes.add(className + "/" + f.name, typeExprToMsilCtx(cctx, fRetTe, pkgName))
+                        val fParamMsilTys: List[MsilType] = newList()
+                        var ffpi = 0
+                        while ffpi < fParamTes.count {
+                          fParamMsilTys.add(typeExprToMsilCtx(cctx, fParamTes[ffpi], pkgName))
+                          ffpi = ffpi + 1
+                        }
+                        cctx.fieldFuncParamTypes.add(className + "/" + f.name, fParamMsilTys)
+                      }
                     }
-                    cctx.fieldFuncParamTypes.add(className + "/" + f.name, fParamMsilTys)
+                    case _ -> ()
                   }
                 }
-                case _ -> ()
+                case None -> ()
               }
               if recGenerics.count > 0 {
                 // For a generic record, EMember reads a field through a closed
@@ -3864,31 +3900,39 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         if not isGen and not isSm and declGenerics.count == 0 {
           match decl.ret {
             case Some(te) -> {
-              match te.kind {
-                case TFunction(fParamTes, fRetTe) -> {
-                  val funcValRetTy = typeExprToMsilCtx(cctx, fRetTe, pkgName)
-                  val fParamMsilTys: List[MsilType] = newList()
-                  var fvpi = 0
-                  while fvpi < fParamTes.count {
-                    fParamMsilTys.add(typeExprToMsilCtx(cctx, fParamTes[fvpi], pkgName))
-                    fvpi = fvpi + 1
-                  }
-                  val funcValArityKey = "func:" + fqn + "/" + toString(decl.params.count)
-                  if not cctx.fieldFuncRetTypes.containsKey(funcValArityKey) {
-                    cctx.fieldFuncRetTypes.add(funcValArityKey, funcValRetTy)
-                    cctx.fieldFuncParamTypes.add(funcValArityKey, fParamMsilTys)
-                  }
-                  val funcValBareKey = "func:" + fqn
-                  if not cctx.fieldFuncRetTypes.containsKey(funcValBareKey) {
-                    cctx.fieldFuncRetTypes.add(funcValBareKey, funcValRetTy)
-                    cctx.fieldFuncParamTypes.add(funcValBareKey, fParamMsilTys)
-                    // #5795: record which overload's arity claimed the bare
-                    // key, so a later call-site lookup can refuse to trust it
-                    // for a DIFFERENT arity's (non-function-returning) overload.
-                    cctx.fieldFuncBareKeyArity.add(funcValBareKey, decl.params.count)
+              // #5366: resolve through a type alias (`func adder(n: in Int):
+              // Handler`) too, not just a literal `(A,...) -> R` return
+              // annotation — see `resolveFuncTypeExprMsil`.
+              match resolveFuncTypeExprMsil(cctx, te) {
+                case Some(funcTe) -> {
+                  match funcTe.kind {
+                    case TFunction(fParamTes, fRetTe) -> {
+                      val funcValRetTy = typeExprToMsilCtx(cctx, fRetTe, pkgName)
+                      val fParamMsilTys: List[MsilType] = newList()
+                      var fvpi = 0
+                      while fvpi < fParamTes.count {
+                        fParamMsilTys.add(typeExprToMsilCtx(cctx, fParamTes[fvpi], pkgName))
+                        fvpi = fvpi + 1
+                      }
+                      val funcValArityKey = "func:" + fqn + "/" + toString(decl.params.count)
+                      if not cctx.fieldFuncRetTypes.containsKey(funcValArityKey) {
+                        cctx.fieldFuncRetTypes.add(funcValArityKey, funcValRetTy)
+                        cctx.fieldFuncParamTypes.add(funcValArityKey, fParamMsilTys)
+                      }
+                      val funcValBareKey = "func:" + fqn
+                      if not cctx.fieldFuncRetTypes.containsKey(funcValBareKey) {
+                        cctx.fieldFuncRetTypes.add(funcValBareKey, funcValRetTy)
+                        cctx.fieldFuncParamTypes.add(funcValBareKey, fParamMsilTys)
+                        // #5795: record which overload's arity claimed the bare
+                        // key, so a later call-site lookup can refuse to trust it
+                        // for a DIFFERENT arity's (non-function-returning) overload.
+                        cctx.fieldFuncBareKeyArity.add(funcValBareKey, decl.params.count)
+                      }
+                    }
+                    case _ -> ()
                   }
                 }
-                case _ -> ()
+                case None -> ()
               }
             }
             case None -> ()
@@ -7470,29 +7514,59 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                         return match mapGet(cctx.fieldMsilTypes, selfFieldKey) { case Some(fty) -> fty; case None -> MObject }
                       }
                       // #5362: a bare top-level `func` used directly as a
-                      // value (e.g. `apply(double, 21)`) has no codegen path
-                      // that turns it into the uniform boxed
-                      // `Func<object,…,object>` ABI, so this falls through to
-                      // `ldnull` and crashes with `NullReferenceException` on
-                      // first invocation if the *delegate* is ever actually
-                      // constructed and called.
+                      // value (e.g. `apply(double, 21)`) has no MethodDef
+                      // whose PHYSICAL signature matches the uniform boxed
+                      // `Func<object,…,object>` ABI to `ldftn` against — the
+                      // real function's own MethodDef uses its genuine
+                      // (unboxed) parameter/return types, not `object`, so it
+                      // can't be `ldftn`'d directly into a `Func<object,…>`
+                      // delegate.  `synthesizeBareFuncRefThunksMsil` (run
+                      // before lambda-lifting, see `bridge.l`) pre-synthesizes
+                      // a small forwarding thunk — named `__lambda_fnref_<fn>`
+                      // so it picks up the SAME `startsWith(decl.name,
+                      // "__lambda_")` boxed-ABI signature forcing every real
+                      // lambda literal gets — for every top-level function
+                      // name that appears anywhere in the file as a bare
+                      // (non-call-callee) reference, shaped exactly like the
+                      // equivalent hand-written closure literal
+                      // (`{ x -> double(x) }`) that already worked.  Look its
+                      // token up and build the delegate exactly like a
+                      // non-capturing lambda literal (ldnull target, ldftn,
+                      // newobj — see the ELambda arm above).
                       //
-                      // An earlier version of this fix panicked here whenever
-                      // `name` resolved to a known top-level function — but
-                      // that fires unconditionally on *every* EPath reference
-                      // to a function name reaching this fallback, including
-                      // call sites the monomorphizer (`Lyric.Mono`) specialises
-                      // away entirely (e.g. `map(rows, rowToProduct)` passed
-                      // to a generic HOF that gets inlined against the
-                      // concrete function — no delegate is ever constructed,
-                      // so the pattern is safe there).  That false-positived
-                      // on real, working code (`examples/product-catalog`)
-                      // and was reverted; see #5362 for the correct fix, which
-                      // needs to distinguish "delegate must be materialised"
-                      // call sites from monomorphized ones rather than firing
-                      // on every unresolved bare function name.
-                      insns.add(MLdNull)
-                      MObject
+                      // That pre-pass deliberately OVER-approximates (it also
+                      // synthesizes a thunk for a name only ever used as a
+                      // genuine call callee, e.g. `double(x)` — harmless dead
+                      // code, never `ldftn`'d, since a real call resolves via
+                      // `funcTokens` directly) so it needs no shadowing-aware
+                      // scope walk of its own: whether THIS occurrence
+                      // actually needs the thunk is decided right here, at a
+                      // point already proven — by exhausting every local/
+                      // capture/field/const/enum-case/union-case/static-val
+                      // resolution above — to be a genuine top-level function
+                      // reference, never a monomorphized-away call site
+                      // (Lyric.Mono rewrites those call sites' callee, not
+                      // this argument-position value read) or a locally-
+                      // shadowed name.  A name outside the pre-pass's scope
+                      // (generic/async/`@externTarget` function, or a name
+                      // the checker rejected before reaching codegen) has no
+                      // synthesized thunk and keeps the pre-existing `ldnull`
+                      // fallback (unchanged, not a regression).
+                      val fnRefThunkKey = fctx.pkgName + ".__lambda_fnref_" + name
+                      match mapGet(cctx.funcTokens, fnRefThunkKey) {
+                        case Some(thunkTok) -> {
+                          val nparams = match mapGet(cctx.funcParamTypes, fnRefThunkKey) { case Some(pts) -> pts.count; case None -> 0 }
+                          val ctorTok = buildFuncNCtorTok(cctx, nparams)
+                          insns.add(MLdNull)
+                          insns.add(MLdftn(methodToken = thunkTok))
+                          insns.add(MNewobj(ctorToken = ctorTok))
+                          MObject
+                        }
+                        case None -> {
+                          insns.add(MLdNull)
+                          MObject
+                        }
+                      }
                     }
                   }
                 }
@@ -15518,6 +15592,52 @@ func registerFieldFuncValTypesMsil(cctx: in CodegenCtx, fctx: in FuncCtx, name: 
         }
         case None -> ()
       }
+    } else {
+      // #5362/#5366: `val f = double` (a bare EPath init naming a known
+      // same-package top-level function — #5362's newly-working
+      // bare-function-value path) or `val g = f` (aliasing an already
+      // function-value-tracked local/capture).  Neither shape is a
+      // record-field-read or a call, so `recordFieldFuncKeyMsil` above
+      // returns "" for both; without this, invoking the newly-bound name
+      // later leaves its call result boxed and un-unboxed — #5366's exact
+      // defect class.
+      match init.kind {
+        case EPath(path) -> {
+          if path.segments.count == 1 {
+            val nm = path.segments[0]
+            match mapGet(fctx.funcValRetTypes, nm) {
+              case Some(rt) -> {
+                fctx.funcValRetTypes.add(name, rt)
+                match mapGet(fctx.funcValParamTypes, nm) {
+                  case Some(pts) -> fctx.funcValParamTypes.add(name, pts)
+                  case None -> ()
+                }
+              }
+              case None -> {
+                // Only a genuine top-level function reference — a same-named
+                // local/parameter/capture always shadows it, exactly as the
+                // `lowerExprMsil` EPath read cascade resolves at the actual
+                // use site (locals/captures are tried before the top-level
+                // function fallback there too).
+                if not fctx.slots.containsKey(nm) and not fctx.captureNameToIndex.containsKey(nm) {
+                  val fqn = fctx.pkgName + "." + nm
+                  match mapGet(cctx.funcRetTypes, fqn) {
+                    case Some(rt) -> {
+                      fctx.funcValRetTypes.add(name, rt)
+                      match mapGet(cctx.funcParamTypes, fqn) {
+                        case Some(pts) -> fctx.funcValParamTypes.add(name, pts)
+                        case None -> ()
+                      }
+                    }
+                    case None -> ()
+                  }
+                }
+              }
+            }
+          }
+        }
+        case _ -> ()
+      }
     }
   }
 }
@@ -15599,28 +15719,37 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // InvalidCastException footgun (#1951).
           match tyOpt {
             case Some(te) -> {
-              match te.kind {
-                case TFunction(paramTes, retTe) -> {
-                  if not fctx.funcValRetTypes.containsKey(name) {
-                    fctx.funcValRetTypes.add(name, typeExprToMsilCtx(cctx, retTe, fctx.pkgName))
-                    // Also track parameter types for typed invoke ABI (#1877 Phase 3)
-                    val paramMsilTys: List[MsilType] = newList()
-                    var pi = 0
-                    while pi < paramTes.count {
-                      paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pi], fctx.pkgName))
-                      pi = pi + 1
+              // #5366: resolve through a type alias (`val f: Handler = ...`)
+              // too, not just a literal `(A,...) -> R` annotation — see
+              // `resolveFuncTypeExprMsil`.
+              match resolveFuncTypeExprMsil(cctx, te) {
+                case Some(funcTe) -> {
+                  match funcTe.kind {
+                    case TFunction(paramTes, retTe) -> {
+                      if not fctx.funcValRetTypes.containsKey(name) {
+                        fctx.funcValRetTypes.add(name, typeExprToMsilCtx(cctx, retTe, fctx.pkgName))
+                        // Also track parameter types for typed invoke ABI (#1877 Phase 3)
+                        val paramMsilTys: List[MsilType] = newList()
+                        var pi = 0
+                        while pi < paramTes.count {
+                          paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pi], fctx.pkgName))
+                          pi = pi + 1
+                        }
+                        fctx.funcValParamTypes.add(name, paramMsilTys)
+                      }
                     }
-                    fctx.funcValParamTypes.add(name, paramMsilTys)
+                    case _ -> ()
                   }
                 }
-                case _ -> ()
+                case None -> ()
               }
             }
             case None -> ()
           }
           // #5511 fallback: no literal annotation registered a function-value
-          // type above (or `tyOpt` was `None`/non-`TFunction`) — try a
-          // record-field-read source instead (`val fld = h.f`).
+          // type above (or `tyOpt` was `None`/non-`TFunction`, alias-resolved
+          // or not) — try a record-field-read or same-package call source
+          // instead (`val fld = h.f`, `val f = adder(5)`, #5366/#5774).
           registerFieldFuncValTypesMsil(cctx, fctx, name, init)
           // Phase B.1 promoted-local: hoist val-binding to SM field so the value
           // survives suspension.  emitPhaseBAwait reloads all registered locals at
@@ -15632,20 +15761,27 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         case LBVar(name, tyOpt, initOpt) -> {
           match tyOpt {
             case Some(te) -> {
-              match te.kind {
-                case TFunction(paramTes, retTe) -> {
-                  if not fctx.funcValRetTypes.containsKey(name) {
-                    fctx.funcValRetTypes.add(name, typeExprToMsilCtx(cctx, retTe, fctx.pkgName))
-                    val paramMsilTys: List[MsilType] = newList()
-                    var pi = 0
-                    while pi < paramTes.count {
-                      paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pi], fctx.pkgName))
-                      pi = pi + 1
+              // #5366: resolve through a type alias too — see
+              // `resolveFuncTypeExprMsil`.
+              match resolveFuncTypeExprMsil(cctx, te) {
+                case Some(funcTe) -> {
+                  match funcTe.kind {
+                    case TFunction(paramTes, retTe) -> {
+                      if not fctx.funcValRetTypes.containsKey(name) {
+                        fctx.funcValRetTypes.add(name, typeExprToMsilCtx(cctx, retTe, fctx.pkgName))
+                        val paramMsilTys: List[MsilType] = newList()
+                        var pi = 0
+                        while pi < paramTes.count {
+                          paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pi], fctx.pkgName))
+                          pi = pi + 1
+                        }
+                        fctx.funcValParamTypes.add(name, paramMsilTys)
+                      }
                     }
-                    fctx.funcValParamTypes.add(name, paramMsilTys)
+                    case _ -> ()
                   }
                 }
-                case _ -> ()
+                case None -> ()
               }
             }
             case None -> ()
@@ -15986,20 +16122,27 @@ func lowerLocalPatBindMsil(
           emitStoreSlot(insns, slot, fctx.paramCount)
           match tyOpt {
             case Some(te) -> {
-              match te.kind {
-                case TFunction(paramTes, retTe) -> {
-                  if not fctx.funcValRetTypes.containsKey(name) {
-                    fctx.funcValRetTypes.add(name, typeExprToMsilCtx(cctx, retTe, fctx.pkgName))
-                    val paramMsilTys: List[MsilType] = newList()
-                    var pi = 0
-                    while pi < paramTes.count {
-                      paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pi], fctx.pkgName))
-                      pi = pi + 1
+              // #5366: resolve through a type alias too — see
+              // `resolveFuncTypeExprMsil`.
+              match resolveFuncTypeExprMsil(cctx, te) {
+                case Some(funcTe) -> {
+                  match funcTe.kind {
+                    case TFunction(paramTes, retTe) -> {
+                      if not fctx.funcValRetTypes.containsKey(name) {
+                        fctx.funcValRetTypes.add(name, typeExprToMsilCtx(cctx, retTe, fctx.pkgName))
+                        val paramMsilTys: List[MsilType] = newList()
+                        var pi = 0
+                        while pi < paramTes.count {
+                          paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pi], fctx.pkgName))
+                          pi = pi + 1
+                        }
+                        fctx.funcValParamTypes.add(name, paramMsilTys)
+                      }
                     }
-                    fctx.funcValParamTypes.add(name, paramMsilTys)
+                    case _ -> ()
                   }
                 }
-                case _ -> ()
+                case None -> ()
               }
             }
             case None -> ()
@@ -23094,11 +23237,19 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
     // of annotated parameters (#1939, #4101).
     // Record the declared return type of a function-typed param (a `(A,...) -> R`
     // value) so invoking it (`f()`) yields R rather than a bare object (#1877).
-    match p.ty.kind {
-      case TFunction(_, retTe) -> {
-        fctx.funcValRetTypes.add(p.name, typeExprToMsilCtx(cctx, retTe, pkgName))
+    // #5366: resolve through a type alias (`h: in Handler`) too — see
+    // `resolveFuncTypeExprMsil`.
+    match resolveFuncTypeExprMsil(cctx, p.ty) {
+      case Some(funcTe) -> {
+        match funcTe.kind {
+          case TFunction(_, retTe) -> {
+            fctx.funcValRetTypes.add(p.name, typeExprToMsilCtx(cctx, retTe, pkgName))
+          }
+          case _ -> {
+          }
+        }
       }
-      case _ -> {
+      case None -> {
       }
     }
     fctx.slotTicker.add(0)
@@ -23318,18 +23469,25 @@ func registerParamsMsil(cctx: in CodegenCtx, fctx: in FuncCtx, params: in List[P
     if isByrefMode(p.mode) {
       fctx.byrefSlotTypes.add(slot, paramTy)
     }
-    match p.ty.kind {
-      case TFunction(paramTes, retTe) -> {
-        fctx.funcValRetTypes.add(p.name, typeExprToMsilCtx(cctx, retTe, pkgName))
-        val paramMsilTys: List[MsilType] = newList()
-        var pjj = 0
-        while pjj < paramTes.count {
-          paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pjj], pkgName))
-          pjj = pjj + 1
+    // #5366: resolve through a type alias too — see `resolveFuncTypeExprMsil`.
+    match resolveFuncTypeExprMsil(cctx, p.ty) {
+      case Some(funcTe) -> {
+        match funcTe.kind {
+          case TFunction(paramTes, retTe) -> {
+            fctx.funcValRetTypes.add(p.name, typeExprToMsilCtx(cctx, retTe, pkgName))
+            val paramMsilTys: List[MsilType] = newList()
+            var pjj = 0
+            while pjj < paramTes.count {
+              paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pjj], pkgName))
+              pjj = pjj + 1
+            }
+            fctx.funcValParamTypes.add(p.name, paramMsilTys)
+          }
+          case _ -> {
+          }
         }
-        fctx.funcValParamTypes.add(p.name, paramMsilTys)
       }
-      case _ -> {
+      case None -> {
       }
     }
     fctx.slotTicker.add(0)
@@ -26869,6 +27027,507 @@ pub func lambdaCaptureNamesMsil(fctx: in FuncCtx, lparams: in List[LambdaParam],
     i = i + 1
   }
   caps
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #5362: bare top-level function reference used as a first-class function
+// value.
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `apply(double, 21)` — passing a bare named function where a `(T) -> U`
+// value is expected — crashed at runtime with a `NullReferenceException`:
+// the `lowerExprMsil` EPath value-read fallback had no MethodDef whose
+// PHYSICAL signature matched the uniform boxed `Func<object,…,object>` ABI
+// to `ldftn` against (`double`'s own MethodDef uses its genuine `(int32):
+// int32` signature, not `object`), so it pushed `ldnull` instead.  Wrapping
+// the same reference in a trivial closure literal (`{ x -> double(x) }`)
+// already worked, because every lambda literal is compiled AS a boxed-ABI
+// forwarding thunk by construction (the Uniform Func ABI, #1877).
+//
+// The fix: synthesize that exact forwarding-closure shape ourselves, once
+// per distinct top-level function name that appears anywhere in the file as
+// a bare (non-call-callee) reference, and feed it through the SAME,
+// already-correct lambda machinery — see `synthesizeBareFuncRefThunksMsil`
+// below (run in `bridge.l` immediately before `liftLambdasMsil`) and the
+// matching lookup at the `lowerExprMsil` EPath fallback (search #5362
+// there).
+// Whether every parameter of `params` is plain `in`-mode — the only shape a
+// forwarding-closure thunk (a normal `Func<...>` invocation) can represent;
+// an `out`/`inout` parameter has no meaning as an ordinary delegate argument.
+func allParamsInModeMsil(params: in List[Param]): Bool {
+  var i = 0
+  while i < params.count {
+    match params[i].mode {
+      case PMIn -> {
+      }
+      case _ -> return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+// Same-package top-level functions eligible to receive a synthesized
+// forwarding-thunk (see module doc above): has a body, non-generic,
+// non-async, not `@externTarget`-annotated (that path bridges to a real BCL
+// delegate signature by other means — docs/50/D122 — and mixing the two
+// would be wrong), every param `in`-mode.  First-registration wins on a
+// same-name overload, mirroring `funcTokens`'/`fieldFuncRetTypes`' bare-key
+// convention elsewhere — the same ambiguity a hand-written `{ x -> name(x)
+// }` workaround would face.  A function outside this scope keeps the
+// pre-existing `ldnull` fallback when referenced bare (unchanged, not a
+// regression).
+func eligibleFuncRefTargetsMsil(file: in SourceFile): Map[String, FunctionDecl] {
+  val eligible: Map[String, FunctionDecl] = newMap()
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(decl) -> {
+        val hasBody = match decl.body { case Some(_) -> true; case None -> false }
+        val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+        if hasBody and not isGeneric and not decl.isAsync and not hasExternTargetMsil(decl.annotations) and allParamsInModeMsil(decl.params) and not eligible.containsKey(decl.name) {
+          eligible.add(decl.name, decl)
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  eligible
+}
+
+// A `collectRefNamesExpr`-shaped walk (same case structure) that collects a
+// bare single-segment name ONLY where it is used as a VALUE — specifically,
+// it does NOT record an `ECall`'s own callee (`double(x)`'s `double` is a
+// direct call, never a delegate construction; `lowerCallMsil` resolves it via
+// `funcTokens` directly, an entirely separate code path from the EPath
+// value-read fallback this thunk exists for).  Args are still walked as value
+// positions.  Precision matters here: `synthesizeBareFuncRefThunksMsil` runs
+// on every MSIL compile, including the compiler's own multi-package
+// self-compilation into the `selfhosted/Lyric.Compiler.dll` bundle
+// (`stage-selfhosted-compiler.sh`) — treating every bare call callee as a
+// candidate value use synthesizes a thunk (and its MethodDef) for nearly
+// every called function across that ~80-package closure, most of them never
+// actually consumed, materially bloating the bundle for no behavioral gain.
+func collectBareFuncValueRefsExpr(e: in Expr, acc: in List[String]): Unit {
+  match e.kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        addNameOnce(acc, path.segments[0])
+      }
+    }
+    case ECall(fn, args) -> {
+      // Deliberately skip `fn` itself when it's a bare EPath (a direct call,
+      // not a value use); a non-EPath callee (rare — e.g. a parenthesized
+      // expression) is still walked so any value use nested inside it is
+      // still found.
+      match fn.kind {
+        case EPath(_) -> {
+        }
+        case _ -> collectBareFuncValueRefsExpr(fn, acc)
+      }
+      var ai = 0
+      while ai < args.count {
+        match args[ai] {
+          case CAPositional(ex) -> collectBareFuncValueRefsExpr(ex, acc)
+          case CANamed(_, ex, _) -> collectBareFuncValueRefsExpr(ex, acc)
+        }
+        ai = ai + 1
+      }
+    }
+    case EBinop(_, lhs, rhs) -> {
+      collectBareFuncValueRefsExpr(lhs, acc)
+      collectBareFuncValueRefsExpr(rhs, acc)
+    }
+    case EPrefix(_, operand) -> {
+      collectBareFuncValueRefsExpr(operand, acc)
+    }
+    case EParen(inner) -> {
+      collectBareFuncValueRefsExpr(inner, acc)
+    }
+    case EMember(recv, _) -> {
+      collectBareFuncValueRefsExpr(recv, acc)
+    }
+    case EIf(cond, thenB, elseOpt, _) -> {
+      collectBareFuncValueRefsExpr(cond, acc)
+      collectBareFuncValueRefsOrdBlock(thenB, acc)
+      match elseOpt {
+        case Some(eb) -> collectBareFuncValueRefsOrdBlock(eb, acc)
+        case None -> {
+        }
+      }
+    }
+    case EBlock(block) -> {
+      collectBareFuncValueRefsBlock(block, acc)
+    }
+    case EUnsafe(block) -> {
+      collectBareFuncValueRefsBlock(block, acc)
+    }
+    case EMatch(scr, arms) -> {
+      collectBareFuncValueRefsExpr(scr, acc)
+      var ai = 0
+      while ai < arms.count {
+        collectBareFuncValueRefsOrdBlock(arms[ai].body, acc)
+        ai = ai + 1
+      }
+    }
+    case EList(exprs) -> {
+      var ei = 0
+      while ei < exprs.count {
+        collectBareFuncValueRefsExpr(exprs[ei], acc)
+        ei = ei + 1
+      }
+    }
+    case ETuple(exprs) -> {
+      var ei = 0
+      while ei < exprs.count {
+        collectBareFuncValueRefsExpr(exprs[ei], acc)
+        ei = ei + 1
+      }
+    }
+    case EIndex(recv, indices) -> {
+      collectBareFuncValueRefsExpr(recv, acc)
+      var ii = 0
+      while ii < indices.count {
+        collectBareFuncValueRefsExpr(indices[ii], acc)
+        ii = ii + 1
+      }
+    }
+    case EAwait(inner) -> {
+      collectBareFuncValueRefsExpr(inner, acc)
+    }
+    case EYield(inner) -> {
+      collectBareFuncValueRefsExpr(inner, acc)
+    }
+    case ESpawn(inner) -> {
+      collectBareFuncValueRefsExpr(inner, acc)
+    }
+    case ETry(inner) -> {
+      collectBareFuncValueRefsExpr(inner, acc)
+    }
+    case EPropagate(inner) -> {
+      collectBareFuncValueRefsExpr(inner, acc)
+    }
+    case EAssign(target, _, v) -> {
+      collectBareFuncValueRefsExpr(target, acc)
+      collectBareFuncValueRefsExpr(v, acc)
+    }
+    case EInterpolated(segs) -> {
+      var si = 0
+      while si < segs.count {
+        match segs[si] {
+          case ISExpr(ex) -> collectBareFuncValueRefsExpr(ex, acc)
+          case _ -> {
+          }
+        }
+        si = si + 1
+      }
+    }
+    case ETypeApp(fn, _) -> {
+      collectBareFuncValueRefsExpr(fn, acc)
+    }
+    case ELambda(lparams, body) -> {
+      val nestedRefs: List[String] = newList()
+      collectBareFuncValueRefsBlock(body, nestedRefs)
+      var nri = 0
+      while nri < nestedRefs.count {
+        val ref = nestedRefs[nri]
+        var isNestedParam = false
+        var npi = 0
+        while npi < lparams.count {
+          if lparams[npi].name == ref {
+            isNestedParam = true
+          }
+          npi = npi + 1
+        }
+        if not isNestedParam {
+          acc.add(ref)
+        }
+        nri = nri + 1
+      }
+    }
+    case _ -> {
+    }
+  }
+}
+
+func collectBareFuncValueRefsOrdBlock(ob: in ExprOrBlock, acc: in List[String]): Unit {
+  match ob {
+    case EOBExpr(ex) -> collectBareFuncValueRefsExpr(ex, acc)
+    case EOBBlock(blk) -> collectBareFuncValueRefsBlock(blk, acc)
+  }
+}
+
+func collectBareFuncValueRefsBlock(b: in Block, acc: in List[String]): Unit {
+  var i = 0
+  while i < b.statements.count {
+    collectBareFuncValueRefsStmt(b.statements[i], acc)
+    i = i + 1
+  }
+}
+
+func collectBareFuncValueRefsStmt(s: in Statement, acc: in List[String]): Unit {
+  match s.kind {
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> collectBareFuncValueRefsExpr(init, acc)
+        case LBLet(_, _, init) -> collectBareFuncValueRefsExpr(init, acc)
+        case LBVar(_, _, initOpt) -> {
+          match initOpt {
+            case Some(init) -> collectBareFuncValueRefsExpr(init, acc)
+            case None -> {
+            }
+          }
+        }
+      }
+    }
+    case SAssign(target, _, v) -> {
+      collectBareFuncValueRefsExpr(target, acc)
+      collectBareFuncValueRefsExpr(v, acc)
+    }
+    case SReturn(valOpt) -> {
+      match valOpt {
+        case Some(e) -> collectBareFuncValueRefsExpr(e, acc)
+        case None -> {
+        }
+      }
+    }
+    case SExpr(e) -> {
+      collectBareFuncValueRefsExpr(e, acc)
+    }
+    case SThrow(e) -> {
+      collectBareFuncValueRefsExpr(e, acc)
+    }
+    case SWhile(_, cond, body) -> {
+      collectBareFuncValueRefsExpr(cond, acc)
+      collectBareFuncValueRefsBlock(body, acc)
+    }
+    case SFor(_, _, iter, body) -> {
+      collectBareFuncValueRefsExpr(iter, acc)
+      collectBareFuncValueRefsBlock(body, acc)
+    }
+    case SLoop(_, body) -> {
+      collectBareFuncValueRefsBlock(body, acc)
+    }
+    case SScope(_, body) -> {
+      collectBareFuncValueRefsBlock(body, acc)
+    }
+    case SDefer(body) -> {
+      collectBareFuncValueRefsBlock(body, acc)
+    }
+    case STry(body, catches, finally_) -> {
+      collectBareFuncValueRefsBlock(body, acc)
+      var ci = 0
+      while ci < catches.count {
+        collectBareFuncValueRefsBlock(catches[ci].body, acc)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> collectBareFuncValueRefsBlock(fb, acc)
+        case None -> {
+        }
+      }
+    }
+    case SInvariant(e) -> {
+      collectBareFuncValueRefsExpr(e, acc)
+    }
+    case SRule(lhs, rhs) -> {
+      collectBareFuncValueRefsExpr(lhs, acc)
+      collectBareFuncValueRefsExpr(rhs, acc)
+    }
+    case _ -> {
+    }
+  }
+}
+
+// Run the value-position-only walk above over every top-level item body in
+// the file, accumulating every bare single-segment name referenced as a
+// VALUE anywhere.  Still over-approximates in one narrow way (deliberately,
+// to avoid a shadowing-aware scope walk here — see the module doc above): a
+// name shadowed by a local/parameter at its actual use site still gets a
+// synthesized thunk, which then simply goes unused, since the real
+// `lowerExprMsil` EPath fallback that would consult it is only ever reached
+// once every local/capture/field resolution has already failed.
+func allReferencedNamesMsil(file: in SourceFile): List[String] {
+  val acc: List[String] = newList()
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(decl) -> collectRefNamesFuncBodyMsil(decl.body, acc)
+      case IVal(decl) -> collectBareFuncValueRefsExpr(decl.init, acc)
+      case IConst(decl) -> collectBareFuncValueRefsExpr(decl.init, acc)
+      case IRecord(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case RMFunc(fn) -> collectRefNamesFuncBodyMsil(fn.body, acc)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case IImpl(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMplFunc(fn) -> collectRefNamesFuncBodyMsil(fn.body, acc)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case IProtected(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case PMFunc(fn) -> collectRefNamesFuncBodyMsil(fn.body, acc)
+            case PMEntry(entryDecl) -> {
+              match entryDecl.body {
+                case FBBlock(block) -> collectBareFuncValueRefsBlock(block, acc)
+                case FBExpr(e) -> collectBareFuncValueRefsExpr(e, acc)
+              }
+            }
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  acc
+}
+
+func collectRefNamesFuncBodyMsil(bodyOpt: in Option[FunctionBody], acc: in List[String]): Unit {
+  match bodyOpt {
+    case Some(body) -> {
+      match body {
+        case FBBlock(block) -> collectBareFuncValueRefsBlock(block, acc)
+        case FBExpr(e) -> collectBareFuncValueRefsExpr(e, acc)
+      }
+    }
+    case None -> {
+    }
+  }
+}
+
+// Build the synthetic forwarding-thunk `Item` for target function `f` —
+// shaped exactly like the hand-written closure literal `{ p0, p1, ... ->
+// f(p0, p1, ...) }` (params/body), named `__lambda_fnref_<f.name>` so
+// `addPackageTokens`/`lowerFuncMsil`'s `startsWith(decl.name, "__lambda_")`
+// special-casing forces its PHYSICAL signature to the boxed `object` ABI —
+// the same forcing every real lambda literal already gets — even though its
+// params carry `f`'s genuine declared types (used for unboxing on read,
+// exactly as `lambdaParamToParam` documents for a real lambda literal).
+func buildBareFuncRefThunkItemMsil(f: in FunctionDecl): Item {
+  val thunkParams: List[Param] = newList()
+  val paramNames: List[String] = newList()
+  var pi = 0
+  while pi < f.params.count {
+    val op = f.params[pi]
+    thunkParams.add(
+      Param(
+        mode = PMIn,
+        modeExplicit = true,
+        name = op.name,
+        ty = op.ty,
+        dflt = None,
+        annotations = newList(),
+        span = syntheticSpan()
+      )
+    )
+    paramNames.add(op.name)
+    pi = pi + 1
+  }
+  val retSeg: List[String] = newList()
+  retSeg.add("Object")
+  val retTy: Option[TypeExpr] = Some(
+    TypeExpr(
+      kind = TRef(path = ModulePath(segments = retSeg, span = syntheticSpan())),
+      span = syntheticSpan()
+    )
+  )
+  val stmts: List[Statement] = newList()
+  stmts.add(Statement(kind = SExpr(expr = proceedSubstitutionMsil(f.name, paramNames)), span = syntheticSpan()))
+  val block = Block(statements = stmts, span = syntheticSpan())
+  val thunkDecl = FunctionDecl(
+    docComments = newList(),
+    annotations = newList(),
+    visibility = None,
+    isAsync = false,
+    name = "__lambda_fnref_" + f.name,
+    generics = None,
+    params = thunkParams,
+    ret = retTy,
+    whereClause = None,
+    contracts = newList(),
+    body = Some(FBBlock(block = block)),
+    span = syntheticSpan()
+  )
+  Item(
+    docComments = newList(),
+    annotations = newList(),
+    visibility = None,
+    kind = IFunc(decl = thunkDecl),
+    span = syntheticSpan()
+  )
+}
+
+// Driver: append one forwarding thunk per distinct eligible top-level
+// function name referenced anywhere in `file` as a bare name.  Run in
+// `bridge.l` BEFORE `liftLambdasMsil` so `addPackageTokens`'s Pass 1/2
+// MethodDef row counting sees these synthetic items exactly like any other
+// top-level function (mirrors how `liftLambdasMsil` itself pre-lifts real
+// lambda literals for the same token-counting reason).
+pub func synthesizeBareFuncRefThunksMsil(file: in SourceFile): SourceFile {
+  val eligible = eligibleFuncRefTargetsMsil(file)
+  if mapIsEmpty(eligible) {
+    return file
+  }
+  val referenced = allReferencedNamesMsil(file)
+  val seen: Map[String, Bool] = newMap()
+  val newFuncItems: List[Item] = newList()
+  var ri = 0
+  while ri < referenced.count {
+    val nm = referenced[ri]
+    if not seen.containsKey(nm) {
+      seen.add(nm, true)
+      match mapGet(eligible, nm) {
+        case Some(f) -> newFuncItems.add(buildBareFuncRefThunkItemMsil(f))
+        case None -> {
+        }
+      }
+    }
+    ri = ri + 1
+  }
+  if newFuncItems.count == 0 {
+    return file
+  }
+  val newItems: List[Item] = newList()
+  var j = 0
+  while j < file.items.count {
+    newItems.add(file.items[j])
+    j = j + 1
+  }
+  var k = 0
+  while k < newFuncItems.count {
+    newItems.add(newFuncItems[k])
+    k = k + 1
+  }
+  SourceFile(
+    moduleDoc = file.moduleDoc,
+    fileAnnotations = file.fileAnnotations,
+    packageDecl = file.packageDecl,
+    imports = file.imports,
+    items = newItems,
+    span = file.span
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

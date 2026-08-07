@@ -23529,6 +23529,10 @@ already wired in CI): the `Tree4870`/`Box[T]` case-field construct, match
 through a monomorphized generic function, and a sibling bare-`T` case
 still matching correctly; plus a `match h.res { ... }` case appended to
 the existing `#6231`/`Holder6231` test. Suite now 28/28 (was 26/26).
+Note the test cases reuse the file's pre-existing `Box[T] { value: T }`
+record, so they spell the field `value` where the issue's repro (quoted
+throughout this entry) spells it `item` — same shape, different field
+name.
 Full regression battery, all green: `inbundle_generics_self_test.l`
 28/28 (dotnet); `nested_constructor_pattern_self_test.l` 6/6 (both
 targets); `bitwise_self_test.l` 10/10 (both targets);
@@ -23630,3 +23634,152 @@ test 12).
 generic cases have no singleton), docs/43-in-bundle-generics-plan.md,
 `lyric-compiler/msil/codegen.l`,
 `lyric-compiler/lyric/qualified_union_case_self_test.l`.
+
+### D-progress-738 — MSIL first-class function values: a bare named function crashed with `NullReferenceException` (#5362), an un-annotated/alias-typed function-value binding silently stayed boxed (#5366)
+
+**Status:** Shipped (MSIL). JVM confirmed NOT to share either defect — both
+remain broken there in materially different, larger ways; out of scope.
+
+**#5362 — the bug.** Passing a bare top-level named function directly where a
+`(A,...) -> R`-typed value was expected (`apply(double, 21)`, no wrapping
+closure literal) crashed at runtime with `NullReferenceException` on first
+invocation, whether passed straight through or stored in a record field
+first. Wrapping the identical reference in a trivial closure literal
+(`{ x -> double(x) }`) already worked. A prior attempt (investigated in #5367,
+see #5362's history) tried a compile-time diagnostic at the same fallback site
+but reverted it before merge: it false-positived on `examples/product-
+catalog`'s `map(rows, rowToProduct)`, a bare function reference to a generic
+higher-order call that `Lyric.Mono` monomorphizes away at that call site
+without ever materialising a delegate.
+
+**#5362 root cause.** `lowerExprMsil`'s `EPath` value-read fallback
+(`lyric-compiler/msil/codegen.l`) — reached only once local/capture/field/
+const/enum-case/union-case/static-val resolution has all failed, i.e. the
+name is definitively a bare top-level function reference — had no MethodDef
+whose PHYSICAL signature matched the uniform boxed `Func<object,...,object>`
+ABI (#1877) to `ldftn` against: a real function's own MethodDef carries its
+genuine unboxed parameter/return types, not `object`. It pushed `ldnull`
+instead of a delegate.
+
+**#5362 the fix.** `synthesizeBareFuncRefThunksMsil` (new,
+`lyric-compiler/msil/codegen.l`), a pre-codegen AST pass run in `bridge.l`
+immediately before `liftLambdasMsil` (both the single-file and the
+multi-package/bundle MSIL compile paths): for every same-package,
+non-generic, non-async, non-`@externTarget`, all-`in`-mode-params top-level
+function referenced anywhere in the file as a bare (non-call-callee) name, it
+synthesizes one small forwarding-thunk `IFunc` — shaped exactly like the
+equivalent hand-written closure literal (`{ x -> double(x) }`) and named
+`__lambda_fnref_<fn>` so it inherits the SAME `startsWith(decl.name,
+"__lambda_")` boxed-ABI signature-forcing every real lambda literal already
+gets, with zero new codegen. The `lowerExprMsil` EPath fallback looks the
+thunk's token up by the deterministic key and builds the delegate exactly
+like a non-capturing lambda literal (ldnull target, ldftn, newobj).
+Deliberately over-approximates which names get a thunk (any name used
+anywhere as a value — including one occurrence that turns out to be locally
+shadowed elsewhere) rather than doing a shadowing-aware scope walk, because
+the actual "does THIS occurrence need it" decision is already made correctly
+at the untouched, pre-existing EPath resolution cascade. Verified against
+`examples/product-catalog`'s exact `map(rows, rowToProduct)` shape — still
+builds clean (constructing an occasionally-unused delegate there is safe,
+just slightly more IL, never a regression).
+
+**#5366 — the bug.** A function/closure value bound WITHOUT a literal
+`(T) -> U` type annotation — including a fully-inferred `val f =
+someFunc(...)` where `someFunc`'s declared return type is a type ALIAS
+(`alias Handler = (Int) -> Int`) rather than a literal `TFunction`, and a
+`val f: Handler = ...` explicitly alias-annotated — silently stayed boxed:
+invoking `f` left the delegate's boxed `object` Invoke result un-unboxed, so
+arithmetic on the result (`f(10) + 1`) silently corrupted with no exception
+(`Object.ToString()` alone "worked" by virtual-dispatch accident, masking the
+bug). #5774 (D-progress-684) had already fixed the literal-`TFunction`-return
+case; the alias-typed shape was untouched.
+
+**#5366 root cause.** Every `funcValRetTypes`/`funcValParamTypes` (and the
+`fieldFuncRetTypes`/`fieldFuncParamTypes` field/call-inference mirror)
+registration site in `lyric-compiler/msil/codegen.l` matched `te.kind`
+directly against `TFunction(...)`, with a bare `case _ -> ()` fallthrough —
+an alias annotation's `te.kind` is `TRef(["Handler"])`, never a literal
+`TFunction`, so it always fell through unregistered.
+
+**#5366 the fix.** New helper `resolveFuncTypeExprMsil(cctx, te):
+Option[TypeExpr]` (`lyric-compiler/msil/codegen.l`, beside
+`registerTypeAliasMsil`) follows a `TRef` through `cctx.aliasTargets` — the
+same alias table `typeExprToMsilCtx` already walks — down to an underlying
+literal `TFunction` shape (or `None`). Swapped in at every registration site
+that previously matched `te.kind`/`p.ty.kind`/`f.ty.kind` directly against
+`TFunction`: `LBLet`/`LBVar`/`lowerLocalPatBindMsil`'s `PBinding` arm (local
+bindings), the per-function-parameter registration loop in `lowerFuncMsil`,
+`registerParamsMsil` (record/impl method parameters), the record-field
+registration site (#5511), and the #5774 same-package-call return-type
+inference site. Also closed one more residual gap discovered while writing
+the regression test: `val f = double` (a bare EPath init naming an already-
+#5362-working top-level function reference, not a record-field-read or a
+call — the one shape `registerFieldFuncValTypesMsil`'s existing fallback
+didn't cover) — extended that function to propagate an already-tracked
+local/capture's `funcValRetTypes` entry, or else the referenced top-level
+function's own `funcRetTypes`/`funcParamTypes`, whichever applies.
+
+**Collateral: a latent self-hosted metadata-reader size-threshold bug,
+avoided by narrowing scope.** The first working version of
+`synthesizeBareFuncRefThunksMsil` collected candidate names via the existing
+`collectRefNamesExpr`/`collectRefNamesBlock` (capture-analysis walker), which
+treats a name's use as a genuine call callee (`double(x)`) the same as a
+value use. Running the self-compilation staging step
+(`scripts/stage-selfhosted-compiler.sh`, which compiles the ~80-package
+`Lyric.Cli` transitive closure — including this very code — into one
+`selfhosted/Lyric.Compiler.dll` bundle for `lyric test`'s restored-dep
+resolution) with that version grew the bundle by ~330 KB and made
+`Lyric.ContractMeta.readAllContractsFromFile` (the pure-byte
+`Msil.MetadataReader`-based PE/CLI-metadata reader, #1229/#3201) return ZERO
+resources for the whole file — even though the resources were verifiably
+present and well-formed (confirmed via `strings` and an independent
+`System.Reflection.Metadata` probe) — breaking every `lyric test` self-test
+that resolves compiler-package imports via that bundle (`typechecker_self_test.l`
+298/298 → hard `NoContractResource` failure). This is a genuine, pre-existing
+boundary bug somewhere in the self-hosted metadata writer/reader pairing
+(`Msil.Tables`/`Msil.Heaps`/`Msil.MetadataReader`) that the size growth newly
+tripped — not a defect in this fix's logic, and out of scope to chase down
+here. Fixed by narrowing `synthesizeBareFuncRefThunksMsil`'s candidate
+collection to a dedicated value-position-only walker
+(`collectBareFuncValueRefsExpr`/`Block`/`Stmt`/`OrdBlock`, mirroring
+`collectRefNamesExpr`'s case structure but skipping an `ECall`'s own callee)
+so a name used only as a direct call (the overwhelming majority of bare-name
+references across the compiler's own ~80-package source) never gets a
+spurious, unused thunk. This shrank the bundle back to within ~16 KB of the
+unmodified baseline and the metadata-reader failure disappeared. The
+underlying reader/writer boundary bug is still latent and un-investigated;
+flagged here so a future large-assembly-triggered `NoContractResource`
+failure isn't re-diagnosed from scratch.
+
+**Regression coverage.** New `lyric-compiler/lyric/bare_func_ref_self_test.l`
+(`@test_module`, dotnet-only — both defects manifest completely differently,
+and separately, on JVM; see the file's header for the exact JVM error
+messages), 7 cases: bare function passed as a call argument (both issues'
+functions, guarding against thunk-key mixups), a named function stored in a
+local then invoked through the variable, a bare function stored in a record
+field then invoked (#5362's record-field repro variant), an unannotated
+local bound from an alias-returning HOF call with arithmetic on the result,
+the same with an explicit alias-typed annotation, and an alias-typed function
+PARAMETER with arithmetic on the call result (#5366 via `registerParamsMsil`,
+not just locals). Wired into `ci.yml`'s existing "Compiler self-tests (native
+lyric test)" dotnet batch step, alongside `func_val_local_rettype_self_test.l`.
+
+**Verification.** Both original issue repros re-verified fixed on
+`--target dotnet` (`apply(double, 21)` → 42; the #5366 repro → 16, was
+non-deterministic garbage). `bare_func_ref_self_test.l` 7/7.
+`func_val_local_rettype_self_test.l` 7/7 (dotnet AND jvm — literal-
+`TFunction` parity control, unaffected). `closure_zero_overhead_self_test.l`
+18/18 (dotnet AND jvm). `typechecker_self_test.l` 298/298.
+`async_sm_self_test.l` 65/65. `msil_project_bridge_self_test.l` 35/35.
+`inbundle_generics_self_test.l` 28/28. `qualified_union_case_self_test.l`
+8/8. `bitwise_self_test.l` and `nested_constructor_pattern_self_test.l`
+10/10 and 6/6 respectively on both dotnet and jvm.
+`examples/product-catalog` (the exact false-positive case from #5362's
+history) still builds clean. `lyric fmt --write` clean on both changed `.l`
+files and the new self-test file.
+
+**Related:** #5362, #5366, #1877 (uniform boxed `Func` ABI), #5774/
+D-progress-684 (literal-`TFunction` inferred-binding predecessor fix),
+docs/52/53 (strongly-typed lambda ABI), `lyric-compiler/msil/codegen.l`,
+`lyric-compiler/msil/bridge.l`,
+`lyric-compiler/lyric/bare_func_ref_self_test.l`.
