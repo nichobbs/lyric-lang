@@ -79,7 +79,9 @@ stage1: ## Build the full self-hosted compiler + CLI bundle (.bootstrap/stage1)
 
 stage1-fast: ## Stage 1 without the CLI bundle -- fastest loop for one package; leaves ./bin/lyric on the OLD compiler (#6331, see WARNING above)
 	SKIP_CLI_BUNDLE=1 ./scripts/bootstrap.sh --stage 1
-	@echo "WARNING: stage1-fast skipped the CLI bundle -- ./bin/lyric (if built) still runs the OLD compiler."
+	@echo "WARNING: stage1-fast skipped the CLI bundle -- ./bin/lyric (if built) still runs the OLD compiler,"
+	@echo "         and <libdir>/selfhosted/ compiler DLLs (used by 'lyric test' for compiler-package imports)"
+	@echo "         are stale too ('make selfhosted-compiler' refreshes just those)."
 	@echo "         Verify with 'make self-test NAME=...'; run 'make lyric' before trusting ./bin/lyric directly."
 	@$(MAKE) check-lyric-stale
 	# Intentionally NOT touching stage1.stamp here: SKIP_CLI_BUNDLE=1 skips the

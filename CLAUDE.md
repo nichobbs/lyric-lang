@@ -1197,7 +1197,10 @@ A full `lyric` binary rebuild is **stage-1 (self-hosted DLLs + CLI bundle) → A
   **WARNING (#6331):** `stage1-fast` never rebuilds the CLI bundle or
   `./bin/lyric`.  After it, `./bin/lyric` still runs the OLD compiler —
   verify with `make self-test`, never `./bin/lyric` directly, until
-  `make lyric` has run.  `make self-test` and `make stage1-fast` both
+  `make lyric` has run.  It also leaves the `<libdir>/selfhosted/`
+  compiler DLLs stale (`lyric test` prefers those for compiler-package
+  imports like `Msil.Bridge`; `make selfhosted-compiler` refreshes just
+  them).  `make self-test` and `make stage1-fast` both
   print a staleness warning (`make check-lyric-stale`) when a stage-1
   DLL is newer than `./bin/lyric`, but that warning is best-effort, not
   a substitute for rebuilding before trusting `./bin/lyric`.
