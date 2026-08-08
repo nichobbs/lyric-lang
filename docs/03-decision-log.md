@@ -24489,3 +24489,115 @@ collateral effect and scoped out), `lyric-compiler/msil/tables.l`
 (`codedWidth`, `simpleWidth`, `maxRowsOf`, `computeLayout`),
 `lyric-compiler/lyric/contract_meta.l` (`readAllContractsFromFile`),
 `docs/42-extern-metadata-resolution.md` (reader design context).
+
+## D-progress-744 — Factored the duplicated function-value invoke sequence into a shared per-backend helper (#6396)
+
+**Status:** shipped, both targets. Pure refactor, zero behavior change.
+
+**Motivation.** D-progress-740/#6392 fixed a chained-call callee-lowering
+gap independently on MSIL and JVM, each landing a near-identical
+"castclass/checkcast → box/lower args → invoke → materialize" sequence
+beside the pre-existing named-local invoke arm it duplicated. #6396
+(raised in #6395's review, twice) named this duplication class as the
+root enabler of #6392 in the first place: two independent catch-alls,
+un-synced with the working named-local path beside each, both silently
+dropping the callee. Left alone, the next boxed-ABI change lands in one
+arm and not the other again. This entry extracts the shared tail per
+backend so both arms — and any future third arm — invoke through one
+place.
+
+**Shape chosen.** A stack-precondition helper, not a closure/thunk
+parameter: each backend's helper ASSUMES the callee delegate/closure is
+already pushed on top of the operand stack, and callers push it their own
+way (a slot load vs. lowering an arbitrary expression) before calling in.
+This matches the two arms' actual divergence — how the callee gets onto
+the stack — without inventing a first-class callback abstraction neither
+codegen module otherwise uses.
+
+- **MSIL** (`lyric-compiler/msil/codegen.l`): new
+  `lowerFuncValueInvokeMsil(cctx, fctx, insns, args, retType: Option[MsilType])`
+  performs `castclass Func<N>` → box/lower each arg
+  (`lowerCallArgMsil`/`funcAbiArgBoxTypeMsil`/`boxIfNeededMsil`) →
+  `callvirt Invoke` (`buildFuncNInvokeTok`) → materialize: `retType`'s
+  `MVoid` pops the boxed placeholder, any other type unboxes/casts via
+  `materializeBoxedElemMsil`, and `None` (return type unresolved at this
+  call site) leaves the boxed `object` placeholder — the pre-existing
+  fallback both arms already used. `lowerCallMsil`'s catch-all
+  (chained-call) arm now pushes via `lowerExprMsil` then resolves
+  `retType` from `recordFieldFuncKeyMsil` + `cctx.fieldFuncRetTypes`
+  exactly as before; the `Some(slot)` named-local arm pushes via
+  `emitLoadSlot` then resolves `retType` from
+  `mapGet(fctx.funcValRetTypes, funcName)` exactly as before. Both call
+  the same helper for the tail.
+- **JVM** (`lyric-compiler/jvm/codegen/04_calls.l`): new
+  `lowerLambdaInvokeTail(ctx, insns, args)` performs `checkcast` to the
+  package's shared lambda iface (`lambdaIfaceName`) → pack boxed args into
+  an `Object[]` → `invokeinterface invoke([Ljava/lang/Object;)Ljava/lang/Object;`
+  (`argCount = 2`, unchanged receiver+array convention). `lowerCallOnExprResult`
+  (chained-call) pushes via `lowerExpr` then calls the tail;
+  `lowerLambdaInvoke` (named-local) loads the slot via `LAload` then calls
+  the tail.
+
+**Dead code removed as a consequence, not scope creep.** The MSIL
+named-local arm carried an entire unreachable "Phase 3 typed invoke"
+branch gated on `val useTypedInvoke = false` — a hardcoded local literal
+with no external toggle, so every `if useTypedInvoke { … }` arm was
+provably unreachable for any input. Deduplicating the arm's live (`else`)
+path into the shared helper required collapsing this dead scaffold;
+since `useTypedInvoke` can never be `true`, removing it changes zero
+emitted IL for any program. `buildFuncNInvokeTokWithTypes` (the Phase-3
+typed-invoke token builder) lost its only call site as a result and was
+deleted; `buildFuncNTypedTypeSpec`/`funcNTypedKeySuffix`/
+`funcNTypedGenericInstBlob` were kept and their doc comments corrected
+because they remain live (used by `buildFuncNTypedCtorTok`, the #3923
+FFI-boundary typed delegate ctor path — an unrelated, still-shipping
+feature).
+
+**Third-copy audit.** Grepped both files for other `Func<N>`
+castclass+callvirt (MSIL) and lambda-iface checkcast+invokeinterface
+(JVM) sequences. Two found and deliberately left alone as NOT the same
+sequence: MSIL's `buildFuncNTypedCtorTok`/`buildFuncNTypedTypeSpec` path
+(constructs a *closed, typed* `Func<T1,...,TReturn>` delegate for an
+`@externTarget` parameter — a ctor-token builder, not a call-site invoke
+sequence). JVM's `ensureSamAdapterClass`
+(`lyric-compiler/jvm/codegen/04_calls.l`) synthesizes a SAM-adapter
+class body that packs a JDK functional interface's own SAM-method
+parameters (fixed arity, loaded from typed local slots with long/double
+2-slot handling) into the `Object[]`/`invokeinterface` shape — same
+target iface, but the argument source is a JVM method signature's slots,
+not a `List[CallArg]` AST lowering, so folding it into
+`lowerLambdaInvokeTail` would require threading two incompatible
+arg-loading strategies through one helper for no behavioral gain.
+
+**Verification.** Full `make lyric`, twice: once with the refactor,
+once reverted (`git stash`) to confirm a baseline finding below is
+pre-existing, then restored and rebuilt for the final state. All green,
+matching #6396's stated targets: `func_val_local_rettype_self_test.l`
+15/15 (dotnet AND jvm), `bare_func_ref_self_test.l` 9/9 (dotnet),
+`closure_zero_overhead_self_test.l` 18/18 (dotnet AND jvm),
+`typechecker_self_test.l` 298/298, `msil_project_bridge_self_test.l`
+38/38, `inbundle_generics_self_test.l` 28/28 (dotnet), `bitwise_self_test.l`
+10/10 (dotnet AND jvm), `nested_constructor_pattern_self_test.l` 6/6
+(dotnet AND jvm). A hand-written chained-call repro exercising both
+arms (named-local invoke, direct/parenthesized/multi-arg/zero-arg
+chained calls, arithmetic on a chained result) compiled clean and ran
+correctly via `scripts/selfhost-check.sh`; `dotnet-ilverify` reports the
+emitted assembly fully verified, zero `StackUnderflow`/`StackUnexpected`
+findings. `lyric fmt --write` clean (no refusals) on both changed files.
+
+**Found, pre-existing, out of scope.** While building a broader manual
+repro than the committed self-tests cover, `makeAdder(1)(2) +
+makeAdder(3)(4)` (summing two independent JVM chained-call results, both
+erased to `Object` per the #6392/#5563 convention) evaluates the `+` as
+string concatenation ("37" instead of integer 10) and then
+`ClassCastException`s on the resulting `==` comparison. Reproduces
+byte-identically against the unmodified pre-#6396 `lowerCallOnExprResult`
+(confirmed via the `git stash` A/B above), so this is a distinct,
+pre-existing JVM binop-lowering gap — arithmetic on two Object-erased
+operands, not this entry's invoke-tail extraction — and is not touched
+here. Not filed as a new issue by this session (out of scope for a
+pure-refactor task); flagged for the orchestrator to triage/file.
+
+**Related:** #6396, D-progress-740/#6392 (the duplication this entry
+retires), D-progress-738/739/#5362/#5366 (the `Some(slot)`/
+`funcValRetTypes` machinery both backends' invoke tails still rely on).

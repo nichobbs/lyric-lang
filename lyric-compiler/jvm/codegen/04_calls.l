@@ -446,16 +446,17 @@ func lowerCall(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, args: in Lis
   }
 }
 
-// Invoke a function value produced by evaluating `fn` (an arbitrary
-// expression, not a named local slot) — the chained-call counterpart of
-// `lowerLambdaInvoke` below (#6392). Same functional-interface `invoke`
-// sequence; the callee is pushed by lowering `fn` instead of `LAload`ing a
-// tracked slot. Returns raw `Object`, exactly like `lowerLambdaInvoke`
-// (#5563 item 2) — every consumer already coerces a lambda-invoke result
-// to its required static type via `coerceArgTo`.
-func lowerCallOnExprResult(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, args: in List[CallArg]): JvmType {
+// Shared invoke tail (#6396): ASSUMES a lambda/closure value implementing the
+// package's shared functional interface has already been pushed onto the
+// operand stack (a named local's `LAload`, or an arbitrary expression's
+// `lowerExpr` — the only difference between `lowerLambdaInvoke` and
+// `lowerCallOnExprResult` below). Checkcasts to the iface, packs the (boxed)
+// args into an `Object[]`, and `invokeinterface`s `invoke([Ljava/lang/Object;)
+// Ljava/lang/Object;`. Returns raw `Object` (#5563 item 2) — every consumer
+// already coerces a lambda-invoke result to its required static type via
+// `coerceArgTo`.
+func lowerLambdaInvokeTail(ctx: in FuncCtx, insns: in List[LInsn], args: in List[CallArg]): JvmType {
   val ifaceName = lambdaIfaceName(ctx.pkgName)
-  lowerExpr(ctx, insns, fn)
   insns.add(LCheckcast(className = ifaceName))
   insns.add(LIconst(v = args.count))
   insns.add(LAnewarray(className = "java/lang/Object"))
@@ -470,6 +471,7 @@ func lowerCallOnExprResult(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, 
   }
   val invPs: List[JvmType] = newList()
   invPs.add(JArray(elem = JRef(className = "java/lang/Object")))
+  // invokeinterface arg-count = receiver(1) + the Object[](1) = 2.
   insns.add(
     LInvokeinterface(
       owner = ifaceName,
@@ -480,6 +482,16 @@ func lowerCallOnExprResult(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, 
     )
   )
   JRef(className = "java/lang/Object")
+}
+
+// Invoke a function value produced by evaluating `fn` (an arbitrary
+// expression, not a named local slot) — the chained-call counterpart of
+// `lowerLambdaInvoke` below (#6392). Same functional-interface `invoke`
+// sequence (`lowerLambdaInvokeTail`); the callee is pushed by lowering `fn`
+// instead of `LAload`ing a tracked slot.
+func lowerCallOnExprResult(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, args: in List[CallArg]): JvmType {
+  lowerExpr(ctx, insns, fn)
+  lowerLambdaInvokeTail(ctx, insns, args)
 }
 
 // Emit `<execLocal>.close()` for the `scope { }` close intrinsic (D119 S4 /
@@ -549,44 +561,21 @@ func jvmArgSlotCount(params: in List[JvmType]): Int {
   n
 }
 
-// Invoke a lambda value held in local `name`: load the closure, checkcast to the
-// shared functional interface, pack the (boxed) args into an `Object[]`, and
-// `invokeinterface invoke([Ljava/lang/Object;)Ljava/lang/Object;`.  The result
-// is `Object`; the caller context narrows / unboxes it via the usual paths.
+// Invoke a lambda value held in local `name`: load the closure, then the
+// shared `lowerLambdaInvokeTail` (#6396) checkcasts to the functional
+// interface, packs the (boxed) args into an `Object[]`, and
+// `invokeinterface invoke([Ljava/lang/Object;)Ljava/lang/Object;`.  The
+// result is `Object`; the caller context narrows / unboxes it via the usual
+// paths.
 func lowerLambdaInvoke(ctx: in FuncCtx, insns: in List[LInsn], name: in String, args: in List[CallArg]): JvmType {
-  val ifaceName = lambdaIfaceName(ctx.pkgName)
   val slot = match lookupSlot(ctx, name) {
     case Some(s) -> s
     case None -> panic("lowerLambdaInvoke: unresolved lambda slot for '" + name + "'")
   }
-  // Load the closure reference and ensure its static type is the iface.
+  // Load the closure reference; `lowerLambdaInvokeTail` ensures its static
+  // type is the iface via `checkcast`.
   insns.add(LAload(slot = slot))
-  insns.add(LCheckcast(className = ifaceName))
-  // Build the Object[] of boxed args.
-  insns.add(LIconst(v = args.count))
-  insns.add(LAnewarray(className = "java/lang/Object"))
-  var i = 0
-  while i < args.count {
-    insns.add(LDup)
-    insns.add(LIconst(v = i))
-    val aTy = lowerCallArg(ctx, insns, args[i])
-    boxIfNeeded(insns, aTy)
-    insns.add(LAastore)
-    i = i + 1
-  }
-  val invPs: List[JvmType] = newList()
-  invPs.add(JArray(elem = JRef(className = "java/lang/Object")))
-  // invokeinterface arg-count = receiver(1) + the Object[](1) = 2.
-  insns.add(
-    LInvokeinterface(
-      owner = ifaceName,
-      name = lambdaIfaceMethod(),
-      params = invPs,
-      ret = JRef(className = "java/lang/Object"),
-      argCount = 2
-    )
-  )
-  JRef(className = "java/lang/Object")
+  lowerLambdaInvokeTail(ctx, insns, args)
 }
 
 // Lower a single call argument.
