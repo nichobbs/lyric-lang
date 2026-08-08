@@ -452,10 +452,24 @@ func lowerCall(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, args: in Lis
 // `lowerExpr` — the only difference between `lowerLambdaInvoke` and
 // `lowerCallOnExprResult` below). Checkcasts to the iface, packs the (boxed)
 // args into an `Object[]`, and `invokeinterface`s `invoke([Ljava/lang/Object;)
-// Ljava/lang/Object;`. Returns raw `Object` (#5563 item 2) — every consumer
-// already coerces a lambda-invoke result to its required static type via
-// `coerceArgTo`.
-func lowerLambdaInvokeTail(ctx: in FuncCtx, insns: in List[LInsn], args: in List[CallArg]): JvmType {
+// Ljava/lang/Object;`, which always leaves a raw `Object` on the stack
+// (#5563 item 2).
+//
+// `retType` is the closure's real STATIC return type when the caller could
+// recover one (`closureInvokeRetType`, #6398) — e.g. `Int` for a call chain
+// rooted at `func makeAdder(x: Int): (Int) -> Int`. When `Some`, the invoke
+// result is coerced to it here (mirroring `coerceArgTo`'s existing unboxing
+// idiom) so the RETURNED JvmType is the real primitive/reference type, not
+// `Object` — every downstream consumer (arithmetic, comparison, further
+// calls) then sees a properly-typed value instead of two indistinguishable
+// erased `Object`s, which previously mis-dispatched `+` on two such chained
+// invokes to string concatenation (#6398). `None` preserves the pre-existing
+// behaviour: return raw `Object` and let the surrounding expression narrow it
+// (still correct whenever at least one OTHER operand anchors the numeric
+// type, e.g. `makeAdder(5)(10) + 1`).
+func lowerLambdaInvokeTail(
+  ctx: in FuncCtx, insns: in List[LInsn], args: in List[CallArg], retType: in Option[JvmType]
+): JvmType {
   val ifaceName = lambdaIfaceName(ctx.pkgName)
   insns.add(LCheckcast(className = ifaceName))
   insns.add(LIconst(v = args.count))
@@ -481,17 +495,79 @@ func lowerLambdaInvokeTail(ctx: in FuncCtx, insns: in List[LInsn], args: in List
       argCount = 2
     )
   )
-  JRef(className = "java/lang/Object")
+  match retType {
+    case Some(rt) -> {
+      match rt {
+        // A Unit-returning closure still pushes SOME boxed placeholder Object
+        // per the uniform invoke ABI; `coerceArgTo` has no JVoid target arm
+        // (it is a no-op there), so an explicit pop is needed to keep the
+        // caller's declared-Unit expectation stack-balanced.
+        case JVoid -> {
+          insns.add(LPop)
+          JVoid
+        }
+        case _ -> {
+          coerceArgTo(insns, JRef(className = "java/lang/Object"), rt)
+          rt
+        }
+      }
+    }
+    case None -> JRef(className = "java/lang/Object")
+  }
 }
 
 // Invoke a function value produced by evaluating `fn` (an arbitrary
 // expression, not a named local slot) — the chained-call counterpart of
 // `lowerLambdaInvoke` below (#6392). Same functional-interface `invoke`
 // sequence (`lowerLambdaInvokeTail`); the callee is pushed by lowering `fn`
-// instead of `LAload`ing a tracked slot.
+// instead of `LAload`ing a tracked slot. `closureInvokeRetType` (#6398)
+// recovers the real return type when `fn` is a call chain rooted at a
+// known same-package top-level function, so the invoke result is unboxed
+// here rather than left ambiguous for the consuming expression to guess at.
 func lowerCallOnExprResult(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, args: in List[CallArg]): JvmType {
   lowerExpr(ctx, insns, fn)
-  lowerLambdaInvokeTail(ctx, insns, args)
+  lowerLambdaInvokeTail(ctx, insns, args, closureInvokeRetType(ctx, fn))
+}
+
+// Recover the real STATIC return type of invoking the function value that
+// `fn` evaluates to (#6398), when `fn` is itself a call to a known
+// same-package top-level function whose OWN declared return type is
+// function-shaped (`func makeAdder(x: Int): (Int) -> Int`) — the shape a
+// chained call (`makeAdder(1)(2)`) produces as the outer call's callee.
+// Mirrors `funcSigRetType`'s arity-then-bare key lookup precedence (#5790's
+// overload-safety discipline: an arity-qualified key is tried first so a
+// same-name overload at a different arity can't steal this call site's
+// registration). Returns `None` for any other callee shape (an index
+// expression, a member-returning-a-function, a multi-segment path, a callee
+// that isn't a known function, or a return type that isn't function-shaped)
+// — callers fall back to the pre-existing raw-`Object` behaviour.
+func closureInvokeRetType(ctx: in FuncCtx, fn: in Expr): Option[JvmType] {
+  match fn.kind {
+    case EParen(inner) -> closureInvokeRetType(ctx, inner)
+    case ECall(callee, callArgs) -> {
+      match callee.kind {
+        case EPath(p) -> {
+          if p.segments.count == 1 {
+            val name = p.segments[0]
+            val arityKey = name + "@" + toString(callArgs.count)
+            match mapGet(ctx.funcSigs, arityKey) {
+              case Some(sig) -> sig.closureRetTy
+              case None -> {
+                match mapGet(ctx.funcSigs, name) {
+                  case Some(sig2) -> sig2.closureRetTy
+                  case None -> None
+                }
+              }
+            }
+          } else {
+            None
+          }
+        }
+        case _ -> None
+      }
+    }
+    case _ -> None
+  }
 }
 
 // Emit `<execLocal>.close()` for the `scope { }` close intrinsic (D119 S4 /
@@ -573,9 +649,16 @@ func lowerLambdaInvoke(ctx: in FuncCtx, insns: in List[LInsn], name: in String, 
     case None -> panic("lowerLambdaInvoke: unresolved lambda slot for '" + name + "'")
   }
   // Load the closure reference; `lowerLambdaInvokeTail` ensures its static
-  // type is the iface via `checkcast`.
+  // type is the iface via `checkcast`.  `ctx.funcValRetTypes` (populated at
+  // the binding site by `recordFuncValRetType`, #6398) recovers the real
+  // return type for a NAMED local bound from a closure-returning call (`val
+  // f = makeAdder(1)`), mirroring `closureInvokeRetType`'s direct-chained-
+  // call case — without it, two such named-local invokes summed together
+  // reached `BAdd`/`reconcileCmpOperands` with no anchor and either
+  // mis-dispatched to string concatenation or, after the #6398 fail-loud
+  // guard, panicked instead of computing the correct value.
   insns.add(LAload(slot = slot))
-  lowerLambdaInvokeTail(ctx, insns, args)
+  lowerLambdaInvokeTail(ctx, insns, args, mapGet(ctx.funcValRetTypes, name))
 }
 
 // Lower a single call argument.

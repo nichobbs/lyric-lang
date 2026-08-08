@@ -65,6 +65,14 @@ pub record JvmFuncSig {
   // current MSIL emitter (InvalidProgramException in `collectDeriveFreeSigs`),
   // so every construction site passes it explicitly.
   retGenericArgs: List[TypeExpr]
+  // When the DECLARED return type is itself function-shaped (`(Int) -> Int`),
+  // the erased JvmType of the INNER return — what invoking the produced
+  // closure yields (#6398).  `closureRetTypeOf` computes this; `None` for a
+  // non-function-shaped return or a sig kind where recovering it isn't
+  // meaningful (a field/enum/wire/view accessor is never invoked through the
+  // `ECall(EPath(name), …)` call-chain shape `closureInvokeRetType` peeks).
+  // No default, same rationale as `isIface`/`retGenericArgs` above.
+  closureRetTy: Option[JvmType]
 }
 
 // One field of a union case class, in declaration order.  A match binding
@@ -525,6 +533,19 @@ pub record FuncCtx {
   // no-defaulted-field rule (see `JvmFuncSig.retGenericArgs`, D-progress-554);
   // initialised `newMap()` at every `FuncCtx` construction site.
   varGenericArgs: Map[String, List[TypeExpr]]
+  // Local name → the REAL return type invoking the closure it was bound to
+  // yields, when recoverable (`val f = makeAdder(1)` records `f → Int` from
+  // `makeAdder`'s own declared `(Int) -> Int` return, #6398). Populated at
+  // `let`/`var` bindings via `recordFuncValRetType` (same call sites as
+  // `varGenericArgs`) whenever `closureInvokeRetType` resolves the
+  // initialiser; consulted by `lowerLambdaInvoke` so a NAMED closure local's
+  // invoke result is unboxed at the call site instead of staying `Object`
+  // all the way to a consuming arithmetic/comparison op (mirrors MSIL's
+  // `fctx.funcValRetTypes`, #5774). Empty for a binding with no recoverable
+  // closure return type. No default per the JVM-codegen no-defaulted-field
+  // rule (see `varGenericArgs` above); initialised `newMap()` at every
+  // `FuncCtx` construction site.
+  funcValRetTypes: Map[String, JvmType]
   // Wire-binding resolution (#5013): when lowering a `wire { }` block binding's
   // init expression, `wireClassName` is the wire's JVM class name (e.g.
   // "Pkg/WidgetWire") and `wireBindingTypes` maps every already-declared
@@ -898,6 +919,41 @@ pub func typeExprToJvmErasedExtern(
     }
     case TParen(inner) -> typeExprToJvmErasedExtern(inner, pkgName, typeParams, externTypes)
     case _ -> typeExprToJvmExtern(te, pkgName, externTypes)
+  }
+}
+
+// A function's declared return type may itself be function-shaped
+// (`func makeAdder(x: Int): (Int) -> Int { ... }`). Peel one layer of
+// `TFunction`/`TParen` to recover the INNER return type invoking the
+// produced closure yields — e.g. `Int` for `(Int) -> Int` — so a call-chain
+// invocation of the closure (`makeAdder(1)(2)`) can unbox the uniform
+// `Object`-erased invoke ABI (#5563/#6392) back to its real static type
+// instead of leaving it `Object` all the way through arithmetic/comparison
+// lowering, which previously mis-dispatched two such doubly-erased operands
+// to string concatenation (#6398). `None` when the declared return type is
+// not function-shaped (nothing to recover) or absent.
+pub func closureRetTypeOf(
+  retOpt: in Option[TypeExpr],
+  owner: in String,
+  typeParams: in List[String],
+  externTypes: in Map[String, String],
+): Option[JvmType] {
+  match retOpt {
+    case Some(te) -> closureRetTypeOfTe(te, owner, typeParams, externTypes)
+    case None -> None
+  }
+}
+
+func closureRetTypeOfTe(
+  te: in TypeExpr,
+  owner: in String,
+  typeParams: in List[String],
+  externTypes: in Map[String, String],
+): Option[JvmType] {
+  match te.kind {
+    case TParen(inner) -> closureRetTypeOfTe(inner, owner, typeParams, externTypes)
+    case TFunction(_, innerRet) -> Some(value = typeExprToJvmErasedExtern(innerRet, owner, typeParams, externTypes))
+    case _ -> None
   }
 }
 
@@ -1450,7 +1506,8 @@ pub func tryQualifiedModuleValJvm(ctx: in FuncCtx, expr: in Expr): Option[JvmFun
                 paramDefaults = newList(),
                 paramModes = newList(),
                 isIface = false,
-                retGenericArgs = newList()
+                retGenericArgs = newList(),
+                closureRetTy = None
               )
             )
           }
