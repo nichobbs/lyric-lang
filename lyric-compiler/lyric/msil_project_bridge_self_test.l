@@ -34,6 +34,7 @@ import Std.Uuid
 import Std.Environment as Environment
 import Lyric.Parser
 import Msil.Bridge
+import Msil.MetadataReader as Mdr
 import Lyric.Emitter as Emitter
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -1356,4 +1357,64 @@ test "instance call on a value-type generic-declaring extern panics at build tim
     Str.contains(panicMsg, "INSTANCE call on a value-type generic-declaring type"),
     "value-type instance-call extern: panic message names the unsupported shape (got: " + panicMsg + ")"
   )
+}
+
+// #6390 regression: a MemberRefParent coded-index column (used by
+// MemberRef.class, ECMA-335 §II.24.2.6 tag table 3) switches from a 2-byte
+// to a 4-byte wire width the moment the largest table in its tag family
+// (TypeDef/TypeRef/ModuleRef/MethodDef/TypeSpec) reaches 2^13 = 8192 rows.
+// `Msil.MetadataReader` derives that width dynamically per the row counts it
+// reads back out of the `#~` header (spec-correct); before this fix
+// `Msil.Tables.serializeTablesStream` always wrote every simple/coded table
+// index at a fixed 2 bytes, so once MethodDef crossed 8192 the two sides
+// disagreed on the MemberRef row size, corrupting the computed byte offset
+// of every table that follows it (StandAloneSig, TypeSpec, Assembly,
+// AssemblyRef, and ManifestResource) — the embedded `Lyric.Contract`
+// resource became unreadable even though it was written correctly.  This
+// synthesizes 8200 trivial functions (MethodDef row count 8200 > 8192) in
+// one package, plus one call into `Std.Console` (at least one MemberRef
+// row so the corrupted column is actually read), and asserts the embedded
+// resource still round-trips.
+func buildManyTrivialFunctionsSource(count: Int): String {
+  val lines: List[String] = newList()
+  lines.add("package ResourceWidthRepro6390")
+  lines.add("import Std.Console")
+  lines.add("")
+  lines.add("func useStd(): Unit { Console.print(\"x\") }")
+  lines.add("")
+  var i = 0
+  while i < count {
+    lines.add("pub func __repro6390_fn_" + i.toString() + "(): Int { " + i.toString() + " }")
+    i = i + 1
+  }
+  Str.joinList("\n", lines) + "\n"
+}
+
+test "large single-package MSIL bundle (MethodDef row count > 8192) still reads its embedded Lyric.Contract resource (#6390)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("ResourceWidthRepro6390", buildManyTrivialFunctionsSource(8200)))
+  val dir = freshTempDir("resource-width-6390")
+  val dllPath = Path.join(dir, "ResourceWidthRepro6390.dll")
+  val stdlibSources: List[String] = newList()
+  val ok = compileProjectToMsil(packages, "ResourceWidthRepro6390", dllPath, stdlibSources)
+  if not ok {
+    cleanup(dir)
+    panic("large-bundle #6390 repro: compileProjectToMsil returned false")
+  }
+  match Mdr.openResourceImage(dllPath) {
+    case None -> {
+      cleanup(dir)
+      assertTrue(false, "large-bundle #6390 repro: openResourceImage failed to parse the compiled DLL")
+    }
+    case Some(ri) -> {
+      val names = Mdr.resourceNamesIn(ri)
+      cleanup(dir)
+      assertTrue(
+        names.count >= 1,
+        "large-bundle #6390 repro: expected >=1 embedded resource once MethodDef crosses the " +
+          "memberRefParentIdx 8192-row coded-index-width threshold, got " +
+          names.count.toString()
+      )
+    }
+  }
 }

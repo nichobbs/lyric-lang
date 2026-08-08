@@ -12394,6 +12394,38 @@ func fillPositionalFuncDefaults(cctx: in CodegenCtx, tokKey: in String, args: in
 }
 
 // Lower a function call expression.
+// Invoke a function value through the uniform boxed `Func`(N)` ABI (#1877),
+// ASSUMING the callee delegate is already pushed on top of the operand
+// stack (a named slot's `emitLoadSlot`, or an arbitrary expression's
+// `lowerExprMsil` — the only difference between the two call sites this
+// factors together, #6396). Casts to `Func`(N)`, lowers and boxes each
+// argument, `callvirt`s Invoke, then materializes the boxed `object`
+// result: `retType`'s `MVoid` pops the placeholder, any other type
+// unboxes/casts via `materializeBoxedElemMsil`, and `None` (the return
+// type wasn't resolvable at this call site) leaves the boxed `object`
+// placeholder untouched, matching the pre-existing untracked-return-type
+// fallback both call sites used.
+func lowerFuncValueInvokeMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  args: in List[CallArg],
+  retType: in Option[MsilType],
+): MsilType {
+  insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, args.count)))
+  var i = 0
+  while i < args.count {
+    val argTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+    boxIfNeededMsil(cctx, insns, funcAbiArgBoxTypeMsil(argTy))
+    i = i + 1
+  }
+  insns.add(MCallvirt(methodToken = buildFuncNInvokeTok(cctx, args.count)))
+  match retType {
+    case Some(rt) -> match rt { case MVoid -> { insns.add(MPop); MVoid }; case _ -> { materializeBoxedElemMsil(cctx, insns, rt); rt } }
+    case None -> MObject
+  }
+}
+
 pub func lowerCallMsil(
   cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], fn: in Expr, args: in List[CallArg]
 ): MsilType {
@@ -12416,21 +12448,14 @@ pub func lowerCallMsil(
       // commonly another `ECall`, e.g. `makeGreeter()()`) that evaluates to
       // a function value at runtime rather than a bare name naming a slot.
       // Lower it exactly like any other function-typed VALUE: push it, then
-      // invoke through the uniform boxed `Func` ABI (#1877) — the same
-      // sequence the bare-`EPath`/`Some(slot)` arm above uses — except the
-      // callee value comes from evaluating `fn` in place instead of loading
-      // a local/param slot (#6392). Without this, the callee was silently
-      // never lowered at all — the entire sub-expression's codegen was
-      // dropped, producing `ilverify`-confirmed invalid IL (StackUnderflow).
+      // invoke through the uniform boxed `Func` ABI (#1877) via the shared
+      // `lowerFuncValueInvokeMsil` tail (#6396) — the same sequence the
+      // bare-`EPath`/`Some(slot)` arm above uses — except the callee value
+      // comes from evaluating `fn` in place instead of loading a local/param
+      // slot (#6392). Without this, the callee was silently never lowered at
+      // all — the entire sub-expression's codegen was dropped, producing
+      // `ilverify`-confirmed invalid IL (StackUnderflow).
       lowerExprMsil(cctx, fctx, insns, fn)
-      insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, args.count)))
-      var i = 0
-      while i < args.count {
-        val argTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
-        boxIfNeededMsil(cctx, insns, funcAbiArgBoxTypeMsil(argTy))
-        i = i + 1
-      }
-      insns.add(MCallvirt(methodToken = buildFuncNInvokeTok(cctx, args.count)))
       // When `fn` is a call to a known same-package top-level function whose
       // OWN return type is itself function-shaped, `recordFieldFuncKeyMsil`
       // (#5774/#5790) resolves the real nested return type via
@@ -12442,14 +12467,8 @@ pub func lowerCallMsil(
       // fallback the `Some(slot)` arm above uses when a tracked slot's
       // function-value return type is unknown.
       val fieldKey = recordFieldFuncKeyMsil(cctx, fctx, fn)
-      if fieldKey.length > 0 {
-        match mapGet(cctx.fieldFuncRetTypes, fieldKey) {
-          case Some(rt) -> match rt { case MVoid -> { insns.add(MPop); MVoid }; case _ -> { materializeBoxedElemMsil(cctx, insns, rt); rt } }
-          case None -> MObject
-        }
-      } else {
-        MObject
-      }
+      val retType = if fieldKey.length > 0 { mapGet(cctx.fieldFuncRetTypes, fieldKey) } else { None }
+      lowerFuncValueInvokeMsil(cctx, fctx, insns, args, retType)
     }
   }
 }
@@ -13328,89 +13347,14 @@ func lowerBuiltinOrStaticCallMsil(
           case Some(slot) -> {
             // `emitLoadSlot` selects `ldarg` for a parameter and `ldloc` for a
             // local — a function-typed *parameter* was previously loaded with
-            // `ldloc(slot - paramCount)`, which is invalid IL (#1877).
+            // `ldloc(slot - paramCount)`, which is invalid IL (#1877). The
+            // delegate's declared return type (tracked for function-typed
+            // params/locals) drives the shared `lowerFuncValueInvokeMsil`
+            // tail's (#6396) result materialisation: a void delegate discards
+            // the boxed `object`; otherwise it is unboxed/cast to R; an
+            // untracked return type leaves the boxed `object` placeholder.
             emitLoadSlot(insns, slot, fctx.paramCount)
-
-            // Phase 3 (#1877): Check if we have tracked parameter types for this function
-            // to enable strongly-typed invoke (no boxing of arguments).
-            val trackedParamTypes = mapGet(fctx.funcValParamTypes, funcName)
-            val trackedRetType = mapGet(fctx.funcValRetTypes, funcName)
-            val useTypedInvoke = false
-
-            // Emit castclass BEFORE lowering arguments (while funcRef is on top of stack)
-            if useTypedInvoke {
-              match trackedParamTypes {
-                case Some(pts) -> {
-                  match trackedRetType {
-                    case Some(rt) -> {
-                      val typeSpec = buildFuncNTypedTypeSpec(cctx, args.count, pts, rt)
-                      insns.add(MCastclass(typeToken = 0x1B000000 + typeSpec))
-                    }
-                    case None -> {
-                      insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, args.count)))
-                    }
-                  }
-                }
-                case None -> {
-                }
-              }
-            } else {
-              insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, args.count)))
-            }
-
-            val needBoxing = if useTypedInvoke { match trackedRetType { case Some(_) -> false; case None -> true } } else { true }
-
-            // Collect argument types as we lower them
-            val argTypes: List[MsilType] = newList()
-            var i = 0
-            while i < args.count {
-              val argTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
-              if needBoxing {
-                boxIfNeededMsil(cctx, insns, funcAbiArgBoxTypeMsil(argTy))
-              }
-              argTypes.add(argTy)
-              i = i + 1
-            }
-
-            // Emit callvirt with appropriate typing
-            if useTypedInvoke {
-              // Phase 3: Strongly-typed invoke path — no boxing of arguments.
-              match trackedParamTypes {
-                case Some(pts) -> {
-                  match trackedRetType {
-                    case Some(rt) -> {
-                      val invokeToken = buildFuncNInvokeTokWithTypes(cctx, args.count, pts, rt)
-                      insns.add(MCallvirt(methodToken = invokeToken))
-                      // Handle return type: void delegates pop the result, others materialize it
-                      match rt {
-                        case MVoid -> {
-                          insns.add(MPop)
-                          MVoid
-                        }
-                        case _ -> {
-                          rt
-                        }
-                      }
-                    }
-                    case None -> {
-                      insns.add(MCallvirt(methodToken = buildFuncNInvokeTok(cctx, args.count)))
-                      MObject
-                    }
-                  }
-                }
-                case None -> MObject
-              }
-            } else {
-              // Phase 1 fallback: Object-based uniform ABI.
-              insns.add(MCallvirt(methodToken = buildFuncNInvokeTok(cctx, args.count)))
-              // The delegate's declared return type (tracked for function-typed
-              // params/locals) drives result materialisation: a void delegate
-              // discards the `object`; otherwise it is unboxed/cast to R.
-              match mapGet(fctx.funcValRetTypes, funcName) {
-                case Some(rt) -> match rt { case MVoid -> { insns.add(MPop); MVoid }; case _ -> { materializeBoxedElemMsil(cctx, insns, rt); rt } }
-                case None -> MObject
-              }
-            }
+            lowerFuncValueInvokeMsil(cctx, fctx, insns, args, mapGet(fctx.funcValRetTypes, funcName))
           }
           case None -> {
             // Static call resolution.  Functions are registered FQN-keyed
@@ -17017,9 +16961,10 @@ func buildFuncNInvokeTok(cctx: in CodegenCtx, nparams: in Int): Int {
 // Returns tuple of (typeKeySuffix, actualArgs) for use by typed delegate operations.
 // Returns the TypeSpec row index for use in castclass / newobj instructions.
 // (#1877 Phase 3 — Strongly-typed invoke ABI)
-// Shared by buildFuncNTypedTypeSpec / buildFuncNInvokeTokWithTypes: the
-// `_`-joined cache-key suffix identifying a closed `Func<T1,...,Tn,TReturn>`
-// instantiation by its concrete param/return types.
+// Used by buildFuncNTypedTypeSpec (via buildFuncNTypedCtorTok, the FFI-
+// boundary typed delegate ctor, #3923): the `_`-joined cache-key suffix
+// identifying a closed `Func<T1,...,Tn,TReturn>` instantiation by its
+// concrete param/return types.
 func funcNTypedKeySuffix(paramTypes: in List[MsilType], nparams: in Int, retType: in MsilType): String {
   var typeKeySuffix = ""
   var ti = 0
@@ -17030,11 +16975,8 @@ func funcNTypedKeySuffix(paramTypes: in List[MsilType], nparams: in Int, retType
   typeKeySuffix + "_" + msilTypeKeyStr(retType)
 }
 
-// Shared by buildFuncNTypedTypeSpec / buildFuncNInvokeTokWithTypes: the
-// GENERICINST blob for `Func<T1,...,Tn,TReturn>` (ECMA-335 TypeSpec body).
-// Callers keep distinct `specKey` namespaces ("FuncSpec_typed_" vs.
-// "FuncSpec_invoke_typed_") so a TypeSpec-only cast site and an Invoke
-// MemberRef site never collide in the TypeSpec cache.
+// Used by buildFuncNTypedTypeSpec: the GENERICINST blob for
+// `Func<T1,...,Tn,TReturn>` (ECMA-335 TypeSpec body).
 func funcNTypedGenericInstBlob(
   cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType], retType: in MsilType
 ): List[Byte] {
@@ -17309,41 +17251,6 @@ func resolveFuncRetTypeMsil(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in St
     case Some(rt) -> rt
     case None -> typeExprToMsilCtx(cctx, te, pkgName)
   }
-}
-
-// Build a callvirt token for a strongly-typed System.Func<T1,...,Tn,TReturn>::Invoke(T1,...,Tn): TReturn.
-// This is the Phase 3 variant that emits typed parameters and return type instead of object-based.
-// Used for lambda invocation when parameter and return types are known at the call site.
-// (#1877 Phase 3 — Strongly-typed invoke ABI)
-func buildFuncNInvokeTokWithTypes(
-  cctx: in CodegenCtx,
-  nparams: in Int,
-  paramTypes: in List[MsilType],
-  retType: in MsilType,
-): Int {
-  // If we have fewer actual types than expected params, fall back to the object-based version
-  if paramTypes.count < nparams {
-    return buildFuncNInvokeTok(cctx, nparams)
-  }
-  val gblob = funcNTypedGenericInstBlob(cctx, nparams, paramTypes, retType)
-  val typeKeySuffix = funcNTypedKeySuffix(paramTypes, nparams, retType)
-  val specKey = "FuncSpec_invoke_typed_" + toString(nparams) + typeKeySuffix
-  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
-  val invokePs: List[MsilType] = newList()
-  var pi = 0
-  while pi < nparams {
-    invokePs.add(MTypeVar(index = pi))
-    pi = pi + 1
-  }
-  val invokeSig = buildInstanceMethodSig(invokePs, MTypeVar(index = nparams))
-  val mrRow = ctxAddMemberRefForTypeSpec(
-    cctx.lctx,
-    tsRow,
-    "Invoke",
-    "func_invoke_typed_" + toString(nparams) + typeKeySuffix,
-    invokeSig
-  )
-  0x0A000000 + mrRow
 }
 
 // Build the MSIL body for a `@externTarget`-bearing function.

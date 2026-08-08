@@ -24323,3 +24323,281 @@ MSIL analogs this mirrors), `lyric-compiler/jvm/codegen/01_types.l`
 `lyric-compiler/lyric/module_val_deps_self_test.l`,
 `lyric-compiler/lyric/restored_packages.l` (the MSIL-only layer noted as
 out of scope above).
+
+### D-progress-743 — self-hosted metadata reader returned ZERO resources for a large assembly: `Msil.Tables`' writer hardcoded every simple/coded table-row index to 2 bytes, ignoring ECMA-335's row-count-driven width thresholds `Msil.MetadataReader` correctly implements (#6390)
+
+**Status:** Shipped (MSIL writer). Collateral discovery from #5362/#5366
+(D-progress-738), tracked as its own issue there specifically so a future
+large-assembly-triggered `NoContractResource` failure wouldn't be
+re-diagnosed from scratch.
+
+**The bug.** ECMA-335 §II.24.2.6 requires a metadata table's simple
+(single-table) and coded (tagged multi-table) row-index columns to widen
+from 2 bytes to 4 bytes once the row count of the table(s) they can
+reference crosses a threshold derived from the tag width (`2^(16-tagBits)`
+for a coded index; `2^16` for a simple index — e.g. `MemberRefParent`'s
+3-bit tag family gives an 8192-row threshold). `Msil.MetadataReader.
+computeLayout` (`lyric-compiler/msil/metadata_reader.l:640-750`) already
+implemented this correctly via `codedWidth`/`simpleWidth`
+(`metadata_reader.l:576-597`), computing each column's width dynamically
+from the row counts read out of the `#~` stream header. The writer,
+`Msil.Tables.serializeTablesStream` (`lyric-compiler/msil/tables.l`), did
+not: every simple/coded index column (`TypeRef.resolutionScope`,
+`TypeDef.extends/fieldList/methodList`, `MethodDef.paramList`,
+`InterfaceImpl.class_/interface_`, `MemberRef.class`, `Constant.parent`,
+`CustomAttribute.parent/type_`, `MethodImpl.class_/methodBody/
+methodDeclaration`, `ManifestResource.implementation`, `GenericParam.
+owner`, `MethodSpec.method`) was written via a hardcoded `w2(buf, …)`, with
+an explicit (and, it turned out, wrong) comment claiming "their width
+depends on target table row counts, not heap byte sizes, and per-package
+DLLs stay well under 64 K rows per table" (the old
+`tables.l:712-714`/`851-853`).
+
+Once any such column's backing table(s) crossed its threshold, the reader
+(spec-compliant) computed a 4-byte width for that column while the actual
+bytes on disk were 2 bytes wide. `Msil.MetadataReader.computeLayout`
+accumulates each table's `dataStart` as a running sum of
+`rowCountOf(tid) * rowSize[tid]` in ascending table-number order
+(`metadata_reader.l:752-764`), so a single mis-sized row shifts the
+computed byte offset of every table numerically after it — in the
+self-compiled `Lyric.Compiler.dll` bundle's table set (Module, TypeRef,
+TypeDef, Field, MethodDef, Param, MemberRef, StandAloneSig, TypeSpec,
+Assembly, AssemblyRef, ManifestResource, in that table-number order), the
+first vulnerable column is `MemberRef.class` (`MemberRefParent`, tag bits
+3, threshold 8192 rows, family = TypeDef/TypeRef/ModuleRef/MethodDef/
+TypeSpec) — MethodDef is by far the largest table in a multi-package
+compiler bundle and was already at 6954/6958 rows (well within 15% of the
+threshold) before the triggering PR's collector over-approximation pushed
+it past 8192. The corrupted `dataStart` shift landed exactly on
+`ManifestResource` (table 0x28, last in the writer's table-number order),
+so `resourceNamesIn`/`tryReadResourceIn` read garbage rows there and
+`Lyric.ContractMeta.readAllContractsFromFile` silently returned zero
+contract entries.
+
+**Byte-level evidence.** Confirmed empirically, not just by code reading.
+Padding `lyric-compiler/lyric/cli/` with 1400 extra trivial functions and
+re-staging the compiler bundle (`scripts/stage-selfhosted-compiler.sh`)
+pushed `MethodDef` from 6958 to 8358 rows (raw table-header row counts
+read with an independent Python PE/CLI-metadata parser, unaffected by the
+bug since header row counts are always correct — only row *data* offsets
+were corrupted). Against that grown bundle: with the pre-fix writer
+(`git stash` on `tables.l` alone, full `make lyric` rebuild),
+`Lyric.ContractMeta.readAllContractsFromFile` returned **0** resource
+entries; with the fix restored and the exact same grown bundle rebuilt,
+it returned all **75** entries (`Lyric.Contract.Lyric.Version` through
+`Lyric.Contract.Lyric.Cli`), matching the un-grown baseline's own 75. The
+`#~` stream's `heapSizes` flags byte (`0x5`: `#Strings`/`#Blob` wide,
+`#GUID` narrow) was byte-identical before and after in both the buggy and
+fixed builds — this bug is a table-row coded-index-width defect (issue
+hypothesis #2), not a heap-index-width defect (hypothesis #1); hypotheses
+#3 (ManifestResource offset/length arithmetic) and #4 (valid/sorted
+bitmask parsing) were ruled out by inspection (both already correct, and
+neither depends on row counts).
+
+**The fix.** `lyric-compiler/msil/tables.l`: added `codedIdxWidth(maxRows,
+tagBits)` and `simpleIdxWidth(rowCount)` — byte-for-byte mirrors of
+`Msil.MetadataReader`'s `codedWidth`/`simpleWidth` — plus `maxOfCounts`
+(mirrors `maxRowsOf`) and a new `wIdx(buf, v, width)` writer primitive
+(the coded/simple-index analog of the existing heap-index `wHeap`).
+`serializeTablesStream` now computes every family's width up front from
+`t`'s actual row counts (`fieldIdxW`/`methodIdxW`/`paramIdxW`/
+`typeDefIdxW` for the simple indices; `rsW`/`tdrW`/`hasConstW`/`hasCAW`/
+`memberRefParentW`/`custAttrTypeW`/`implementationW`/`methodDefOrRefW`/
+`typeOrMethodDefW` for the coded families — every family actually
+referenced by a column this writer emits, including the two
+`CustomAttribute` columns even though that table is currently never
+populated by any caller, since the row-writing code path exists and must
+not carry the same latent defect) and threads them through `wIdx` at
+every previously-hardcoded `w2(buf, r.<indexField>)` call site. This is a
+**writer-side** change: emitted bytes for any assembly whose relevant
+table(s) stay under the widening thresholds are byte-identical to before
+(both `w2`/`wHeap` at width 2 and `wIdx` at width 2 emit the same two
+bytes), so it does not disturb the stage-2/stage-3 bootstrap byte-compare
+for any currently-built assembly (verified: `Lyric.Stdlib.dll` — 178
+TypeDefs/1188 MethodDefs at seed size, orders of magnitude under every
+threshold — round-trips 73 contract resources unchanged both before and
+after). A future assembly whose row counts cross a threshold now emits
+genuinely different (correct, spec-compliant) bytes instead of corrupt
+ones; this is intentional and is the entire point of the fix. Stage-2
+byte-compare re-verification of the *changed* emission shape (i.e.
+actually building something past a threshold through the full 3-stage
+bootstrap) was not run in this session — flagged below as the one
+unverified item.
+
+**Reader-side:** unchanged. `Msil.MetadataReader.computeLayout` was
+already correct; the fix makes the writer agree with it, per the file's
+requirement that a reader fix must keep reading every existing
+seed-emitted assembly correctly. Confirmed against `.bootstrap/stage0/
+lib/Lyric.Stdlib.dll` (F#-seed-adjacent lineage), `.bootstrap/stage1/
+Lyric.Stdlib.dll`, and `bootstrap/src/Lyric.Cli.Aot/bin/Release/net10.0/
+Lyric.Stdlib.dll` — all three read 73 contract entries via
+`readAllContractsFromFile`, both before and after this change (unaffected,
+since none of their table row counts approach any threshold).
+
+**Regression coverage.** New test in
+`lyric-compiler/lyric/msil_project_bridge_self_test.l`: "large
+single-package MSIL bundle (MethodDef row count > 8192) still reads its
+embedded Lyric.Contract resource (#6390)". Synthesizes a single package
+of 8200 trivial `pub func`s (pushing `MethodDef` to 8200, past the
+`MemberRefParent` 8192-row threshold — the cheapest reachable trigger
+among the families this writer's currently-populated tables can hit; the
+`HasCustomAttribute` family has a lower nominal threshold, 2048 rows, but
+is unreachable today because no caller ever populates `CustomAttribute`
+rows) plus one `Std.Console.print` call (to force at least one
+`MemberRef` row so the affected column is actually read), compiles it
+in-process via `Msil.Bridge.compileProjectToMsil`, then asserts
+`Msil.MetadataReader.resourceNamesIn` finds at least one embedded
+resource. Verified as a genuine (non-tautological) regression guard by
+re-reverting `tables.l` alone, rebuilding, and re-running: the new case
+fails (`... got 0`) against the pre-fix writer and passes against the
+fix, with all other 37 pre-existing cases in the file unaffected either
+way. The synthesized-package compile is the dominant cost of this test
+(~70-90s observed for the in-process 8200-function build+read, vs.
+single-digit seconds for the file's other 37 cases) — accepted as the
+practical cost of exercising a real 8192-row ECMA-335 threshold rather
+than mocking it.
+
+**Verification.** Full `make lyric` (three full rebuilds across this
+session: fix, pre-fix-with-padding negative-control, and final
+fix-restored). All temporary padding (`lyric-compiler/lyric/cli/
+cli_bloat_temp.l`, 1400 throwaway functions used only to grow the bundle
+for manual repro) deleted before the final build; `git status` clean
+except the two files listed under Changes. Full regression battery, all
+green: `typechecker_self_test.l` 298/298, `msil_project_bridge_self_test.l`
+38/38 (37 pre-existing + the new #6390 case), `inbundle_generics_self_test.l`
+28/28, `metadata_reader_self_test.l` 20/20, `contract_meta_self_test.l`
+43/43 (exercises `readAllContractsFromFile`/`readFromFile`/
+`parseFromJson` directly), `bitwise_self_test.l` 10/10 (dotnet AND jvm),
+`nested_constructor_pattern_self_test.l` 6/6 (dotnet AND jvm). `lyric fmt
+--write` clean (no refusals) on both changed files.
+
+**Unverified / follow-up.** Stage-2 (self-hosted² byte-compare) was NOT
+re-run in this session against an assembly whose emission shape actually
+changed (i.e., one crossing a width threshold) — only against unchanged-
+shape assemblies (implicitly, via `make lyric`'s own stage-1 build
+succeeding and the existing `Lyric.Stdlib.dll`/`Lyric.Compiler.dll`
+artifacts reading correctly). Since the writer change is a pure function
+of each assembly's own already-deterministic row counts, stage-2/stage-3
+determinism is expected to hold, but this is asserted from code review,
+not from a fresh bootstrap run comparing bytes — left as the orchestrator's
+follow-up per the task's own division of labor.
+
+**Related:** #6390, D-progress-738 (where this was first discovered as a
+collateral effect and scoped out), `lyric-compiler/msil/tables.l`
+(`wIdx`, `codedIdxWidth`, `simpleIdxWidth`, `maxOfCounts`,
+`serializeTablesStream`), `lyric-compiler/msil/metadata_reader.l`
+(`codedWidth`, `simpleWidth`, `maxRowsOf`, `computeLayout`),
+`lyric-compiler/lyric/contract_meta.l` (`readAllContractsFromFile`),
+`docs/42-extern-metadata-resolution.md` (reader design context).
+
+## D-progress-744 — Factored the duplicated function-value invoke sequence into a shared per-backend helper (#6396)
+
+**Status:** shipped, both targets. Pure refactor, zero behavior change.
+
+**Motivation.** D-progress-740/#6392 fixed a chained-call callee-lowering
+gap independently on MSIL and JVM, each landing a near-identical
+"castclass/checkcast → box/lower args → invoke → materialize" sequence
+beside the pre-existing named-local invoke arm it duplicated. #6396
+(raised in #6395's review, twice) named this duplication class as the
+root enabler of #6392 in the first place: two independent catch-alls,
+un-synced with the working named-local path beside each, both silently
+dropping the callee. Left alone, the next boxed-ABI change lands in one
+arm and not the other again. This entry extracts the shared tail per
+backend so both arms — and any future third arm — invoke through one
+place.
+
+**Shape chosen.** A stack-precondition helper, not a closure/thunk
+parameter: each backend's helper ASSUMES the callee delegate/closure is
+already pushed on top of the operand stack, and callers push it their own
+way (a slot load vs. lowering an arbitrary expression) before calling in.
+This matches the two arms' actual divergence — how the callee gets onto
+the stack — without inventing a first-class callback abstraction neither
+codegen module otherwise uses.
+
+- **MSIL** (`lyric-compiler/msil/codegen.l`): new
+  `lowerFuncValueInvokeMsil(cctx, fctx, insns, args, retType: Option[MsilType])`
+  performs `castclass Func<N>` → box/lower each arg
+  (`lowerCallArgMsil`/`funcAbiArgBoxTypeMsil`/`boxIfNeededMsil`) →
+  `callvirt Invoke` (`buildFuncNInvokeTok`) → materialize: `retType`'s
+  `MVoid` pops the boxed placeholder, any other type unboxes/casts via
+  `materializeBoxedElemMsil`, and `None` (return type unresolved at this
+  call site) leaves the boxed `object` placeholder — the pre-existing
+  fallback both arms already used. `lowerCallMsil`'s catch-all
+  (chained-call) arm now pushes via `lowerExprMsil` then resolves
+  `retType` from `recordFieldFuncKeyMsil` + `cctx.fieldFuncRetTypes`
+  exactly as before; the `Some(slot)` named-local arm pushes via
+  `emitLoadSlot` then resolves `retType` from
+  `mapGet(fctx.funcValRetTypes, funcName)` exactly as before. Both call
+  the same helper for the tail.
+- **JVM** (`lyric-compiler/jvm/codegen/04_calls.l`): new
+  `lowerLambdaInvokeTail(ctx, insns, args)` performs `checkcast` to the
+  package's shared lambda iface (`lambdaIfaceName`) → pack boxed args into
+  an `Object[]` → `invokeinterface invoke([Ljava/lang/Object;)Ljava/lang/Object;`
+  (`argCount = 2`, unchanged receiver+array convention). `lowerCallOnExprResult`
+  (chained-call) pushes via `lowerExpr` then calls the tail;
+  `lowerLambdaInvoke` (named-local) loads the slot via `LAload` then calls
+  the tail.
+
+**Dead code removed as a consequence, not scope creep.** The MSIL
+named-local arm carried an entire unreachable "Phase 3 typed invoke"
+branch gated on `val useTypedInvoke = false` — a hardcoded local literal
+with no external toggle, so every `if useTypedInvoke { … }` arm was
+provably unreachable for any input. Deduplicating the arm's live (`else`)
+path into the shared helper required collapsing this dead scaffold;
+since `useTypedInvoke` can never be `true`, removing it changes zero
+emitted IL for any program. `buildFuncNInvokeTokWithTypes` (the Phase-3
+typed-invoke token builder) lost its only call site as a result and was
+deleted; `buildFuncNTypedTypeSpec`/`funcNTypedKeySuffix`/
+`funcNTypedGenericInstBlob` were kept and their doc comments corrected
+because they remain live (used by `buildFuncNTypedCtorTok`, the #3923
+FFI-boundary typed delegate ctor path — an unrelated, still-shipping
+feature).
+
+**Third-copy audit.** Grepped both files for other `Func<N>`
+castclass+callvirt (MSIL) and lambda-iface checkcast+invokeinterface
+(JVM) sequences. Two found and deliberately left alone as NOT the same
+sequence: MSIL's `buildFuncNTypedCtorTok`/`buildFuncNTypedTypeSpec` path
+(constructs a *closed, typed* `Func<T1,...,TReturn>` delegate for an
+`@externTarget` parameter — a ctor-token builder, not a call-site invoke
+sequence). JVM's `ensureSamAdapterClass`
+(`lyric-compiler/jvm/codegen/04_calls.l`) synthesizes a SAM-adapter
+class body that packs a JDK functional interface's own SAM-method
+parameters (fixed arity, loaded from typed local slots with long/double
+2-slot handling) into the `Object[]`/`invokeinterface` shape — same
+target iface, but the argument source is a JVM method signature's slots,
+not a `List[CallArg]` AST lowering, so folding it into
+`lowerLambdaInvokeTail` would require threading two incompatible
+arg-loading strategies through one helper for no behavioral gain.
+
+**Verification.** Full `make lyric`, twice: once with the refactor,
+once reverted (`git stash`) to confirm a baseline finding below is
+pre-existing, then restored and rebuilt for the final state. All green,
+matching #6396's stated targets: `func_val_local_rettype_self_test.l`
+15/15 (dotnet AND jvm), `bare_func_ref_self_test.l` 9/9 (dotnet),
+`closure_zero_overhead_self_test.l` 18/18 (dotnet AND jvm),
+`typechecker_self_test.l` 298/298, `msil_project_bridge_self_test.l`
+38/38, `inbundle_generics_self_test.l` 28/28 (dotnet), `bitwise_self_test.l`
+10/10 (dotnet AND jvm), `nested_constructor_pattern_self_test.l` 6/6
+(dotnet AND jvm). A hand-written chained-call repro exercising both
+arms (named-local invoke, direct/parenthesized/multi-arg/zero-arg
+chained calls, arithmetic on a chained result) compiled clean and ran
+correctly via `scripts/selfhost-check.sh`; `dotnet-ilverify` reports the
+emitted assembly fully verified, zero `StackUnderflow`/`StackUnexpected`
+findings. `lyric fmt --write` clean (no refusals) on both changed files.
+
+**Found, pre-existing, out of scope.** While building a broader manual
+repro than the committed self-tests cover, `makeAdder(1)(2) +
+makeAdder(3)(4)` (summing two independent JVM chained-call results, both
+erased to `Object` per the #6392/#5563 convention) evaluates the `+` as
+string concatenation ("37" instead of integer 10) and then
+`ClassCastException`s on the resulting `==` comparison. Reproduces
+byte-identically against the unmodified pre-#6396 `lowerCallOnExprResult`
+(confirmed via the `git stash` A/B above), so this is a distinct,
+pre-existing JVM binop-lowering gap — arithmetic on two Object-erased
+operands, not this entry's invoke-tail extraction — and is not touched
+here. Not filed as a new issue by this session (out of scope for a
+pure-refactor task); flagged for the orchestrator to triage/file.
+
+**Related:** #6396, D-progress-740/#6392 (the duplication this entry
+retires), D-progress-738/739/#5362/#5366 (the `Some(slot)`/
+`funcValRetTypes` machinery both backends' invoke tails still rely on).
