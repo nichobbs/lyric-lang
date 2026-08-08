@@ -728,12 +728,41 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                 // StringBuilder path below.
                 val rhsTy = lowerExpr(ctx, insns, rhs)
                 match rhsTy {
-                  case JRef(_) -> {
-                    // Both operands are references (e.g. an erased `Object`
-                    // list element concatenated with a String, as in
-                    // `Std.String.joinList`'s `xs[0] + sep`): `+` on
-                    // references is string concatenation — mirror the MSIL
-                    // backend's String.Concat lowering instead of panicking.
+                  case JRef(rcls) -> {
+                    if rcls == "java/lang/Object" {
+                      // Both operands are erased all the way to `Object` with
+                      // NO recoverable static type on either side (#6398): the
+                      // lhs guard above already ruled out a concretely-known
+                      // `String`, and rhs is exactly `Object` too — e.g. two
+                      // closure-invoke results whose declared return type
+                      // could not be traced back to a concrete primitive
+                      // (`closureInvokeRetType`/`Part A` covers the traceable
+                      // shapes before this point is ever reached; a NAMED
+                      // local bound from such a call, or a fully-generic
+                      // erased value with no recoverable instantiation, are
+                      // the residual gap). Guessing string-concat here
+                      // silently produced a WRONG VALUE for a genuinely
+                      // numeric `+` (`makeAdder(1)(2) + makeAdder(3)(4)`
+                      // yielded `"37"` instead of `10`, #6398) — per the
+                      // fail-loudly principle, a genuinely undecidable case
+                      // must be a compile-time diagnostic, never a silent
+                      // guess.
+                      val addPos = lhs.span.startPos
+                      panic(
+                        "Jvm.Codegen: " + toString(addPos.line) + ":" + toString(addPos.column) + ": '+' on two operands " +
+                          "whose runtime type is fully erased to Object could not be resolved to either numeric " +
+                          "addition or string concatenation. This typically happens when both sides come from a " +
+                          "named local bound from a closure-returning call, or from an unresolvable generic " +
+                          "instantiation. Add an explicit type annotation to at least one operand's binding so its " +
+                          "static type is known at the point of the addition."
+                      )
+                    }
+                    // Otherwise: lhs is erased `Object` and rhs is a
+                    // CONCRETELY-known reference type (most commonly `String`,
+                    // e.g. an erased `Object` list element concatenated with a
+                    // String, as in `Std.String.joinList`'s `xs[0] + sep`) —
+                    // `+` on references is string concatenation, mirroring the
+                    // MSIL backend's String.Concat lowering.
                     val rSlot = allocSlot(ctx, "__cat_rhs_" + freshLabel(ctx), rhsTy)
                     emitStore(insns, rSlot, rhsTy)
                     coerceToStringForConcat(ctx, insns, lhsTy)
@@ -1811,7 +1840,36 @@ func isByteJvm(ty: in JvmType): Bool {
   }
 }
 
+// True for the fully-erased "no recoverable static type" reference shape
+// (`java/lang/Object` exactly) — as opposed to a concretely-known reference
+// class such as `java/lang/String` or a record, which the callers below
+// already dispatch correctly (String comparison/concat, record equality, …).
+func isFullyErasedObjectJvm(ty: in JvmType): Bool {
+  match ty {
+    case JRef(cls) -> cls == "java/lang/Object"
+    case _ -> false
+  }
+}
+
 func reconcileCmpOperands(ctx: in FuncCtx, insns: in List[LInsn], lhsTy: in JvmType, rhsTy: in JvmType): JvmType {
+  if isFullyErasedObjectJvm(lhsTy) and isFullyErasedObjectJvm(rhsTy) {
+    // Both operands are erased all the way to `Object` with NO recoverable
+    // static type on either side (#2862/#6398) — e.g. two closure-invoke
+    // results, or two generic-payload values whose instantiation could not
+    // be traced.  The pre-fix fallback silently returned `lhsTy` unchanged:
+    // for arithmetic (BSub/BMul/BDiv/BMod) that emitted a primitive
+    // instruction directly on two references (`isub` etc.), a VerifyError at
+    // class load; for comparisons, an Object-identity/`.equals()` dispatch
+    // that is not guaranteed to match the operands' real Lyric semantics.
+    // Per the fail-loudly principle, a genuinely undecidable case must be a
+    // compile-time diagnostic, not a guess the caller can't tell is wrong.
+    panic(
+      "Jvm.Codegen: arithmetic/comparison on two operands whose runtime type is fully erased to Object could not " +
+        "be resolved to a concrete numeric or comparable type. This typically happens when both sides come from a " +
+        "named local bound from a closure-returning call, or from an unresolvable generic instantiation. Add an " +
+        "explicit type annotation to at least one operand's binding so its static type is known at this point."
+    )
+  }
   val lhsPrim = numericPrimTy(lhsTy)
   val rhsPrim = numericPrimTy(rhsTy)
   if isByteJvm(lhsTy) and isByteJvm(rhsTy) {
@@ -1851,13 +1909,12 @@ func reconcileCmpOperands(ctx: in FuncCtx, insns: in List[LInsn], lhsTy: in JvmT
     emitLoad(insns, rhsSlotL, JLong)
     JLong
   } else {
-    // Both operands have the same primitive type (or both are Object-erased
-    // references).  For the primitive case the caller emits the arithmetic
-    // instruction directly against lhsTy.  The both-erased Object+Object case
-    // (e.g. `case Ok(x) -> case Ok(y) -> x + y` on nested generic match arms)
-    // is a known gap: both sides need to be unboxed to a primitive before the
-    // arithmetic instruction, but no tested code path currently triggers it
-    // (#2862).  Track the gap there; fix when a real reproducer is confirmed.
+    // Both operands have the same primitive type, or the same concretely-
+    // known reference type (e.g. two `String`s — the caller's own
+    // `JRef(cls)` dispatch, such as `lowerCmpFail`'s `cls == "java/lang/
+    // String"` arm, handles those correctly).  The genuinely-ambiguous
+    // both-erased-Object case is caught above, before this branch is ever
+    // reached (#2862/#6398).
     lhsTy
   }
 }
@@ -3325,6 +3382,18 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
       }
     }
   }
+  // Same propagation for a captured named closure local's real invoke return
+  // type (#6398) — otherwise `val f = makeAdder(1)` captured into a nested
+  // lambda body loses the recovered `Int` and `f(x)` inside the lambda falls
+  // back to raw `Object`.
+  for fvk in mapKeys(ctx.funcValRetTypes) {
+    if not closureParamNames.containsKey(fvk) {
+      match mapGet(ctx.funcValRetTypes, fvk) {
+        case Some(frt) -> bodyCtx.funcValRetTypes.add(fvk, frt)
+        case None -> ()
+      }
+    }
+  }
   // Reserve slot 0 (this) and slot 1 (Object[] args).
   allocSlot(bodyCtx, "__closure_this", JRef(className = closureClass))
   val argsSlot = allocSlot(bodyCtx, "__closure_args", JArray(elem = JRef(className = "java/lang/Object")))
@@ -3671,6 +3740,14 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
   for vk in mapKeys(ctx.varGenericArgs) {
     match mapGet(ctx.varGenericArgs, vk) {
       case Some(vargs) -> bodyCtx.varGenericArgs.add(vk, vargs)
+      case None -> ()
+    }
+  }
+  // Same propagation for a captured named closure local's real invoke return
+  // type (#6398).
+  for fvk in mapKeys(ctx.funcValRetTypes) {
+    match mapGet(ctx.funcValRetTypes, fvk) {
+      case Some(frt) -> bodyCtx.funcValRetTypes.add(fvk, frt)
       case None -> ()
     }
   }

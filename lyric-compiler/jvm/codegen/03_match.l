@@ -218,6 +218,24 @@ func recordVarGenericArgs(ctx: in FuncCtx, name: in String, init: in Expr, tyOpt
   }
 }
 
+// Record `name`'s real closure-invoke return type when `init` is a call
+// chain rooted at a known same-package top-level function whose OWN
+// declared return type is function-shaped (#6398) — e.g. `val f =
+// makeAdder(1)` records `f → Int` from `makeAdder`'s `(Int) -> Int` return,
+// so a later `f(2)` unboxes at the invoke site instead of leaving `Object`.
+// Same call sites and remove-then-add discipline as `recordVarGenericArgs`
+// (a shadowing inner binding must not inherit an outer binding's stale
+// entry). `closureInvokeRetType` already handles the `EParen` unwrap.
+func recordFuncValRetType(ctx: in FuncCtx, name: in String, init: in Expr): Unit {
+  if ctx.funcValRetTypes.containsKey(name) {
+    ctx.funcValRetTypes.remove(name)
+  }
+  match closureInvokeRetType(ctx, init) {
+    case Some(rt) -> ctx.funcValRetTypes.add(name, rt)
+    case None -> ()
+  }
+}
+
 func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, arms: in List[MatchArm]): JvmType {
   val scrutTy = lowerExpr(ctx, insns, scrutinee)
   val scrutSlot = allocSlot(ctx, "__scrut_" + toString(ctx.slotTicker.count), scrutTy)

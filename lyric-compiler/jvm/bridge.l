@@ -783,7 +783,10 @@ func collectDeriveFreeSigs(
             paramDefaults = newList(),
             paramModes = newList(),
             isIface = false,
-            retGenericArgs = returnTypeGenericArgs(decl.ret)
+            retGenericArgs = returnTypeGenericArgs(decl.ret),
+            // Derive-synthesized free functions (`Point.equals`, `Color.show`)
+            // never return a closure by construction — nothing to recover.
+            closureRetTy = None
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -838,7 +841,11 @@ func collectWovenSigsMatching(
             paramDefaults = newList(),
             paramModes = newList(),
             isIface = false,
-            retGenericArgs = returnTypeGenericArgs(decl.ret)
+            retGenericArgs = returnTypeGenericArgs(decl.ret),
+            // No `externTypes` available in this shared woven-sig path (aspect
+            // target/wrapper and B'-mode specialisations); a closure-returning
+            // woven function keeps the pre-fix Object-erased invoke result.
+            closureRetTy = None
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -949,7 +956,10 @@ func collectMonoSpecializedSigs(
             paramDefaults = newList(),
             paramModes = newList(),
             isIface = false,
-            retGenericArgs = returnTypeGenericArgs(decl.ret)
+            retGenericArgs = returnTypeGenericArgs(decl.ret),
+            // Mono specialisations are fully concrete post-monomorphization,
+            // so no type params remain to erase.
+            closureRetTy = closureRetTypeOf(decl.ret, owner, newList(), externTypes)
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {

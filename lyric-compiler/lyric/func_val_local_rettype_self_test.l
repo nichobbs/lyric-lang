@@ -81,6 +81,27 @@
 //! value's real runtime type is — String, boxed Integer, etc.) instead of
 //! guessing `println(String)`. The two `println`-on-invoke-result cases below
 //! are the regression proof this addendum promised.
+//!
+//! #6398 addendum: unlike #6392's arithmetic case (`makeAdder(5)(10) + 1`,
+//! where the literal `1` anchors the JVM `reconcileCmpOperands` fallback to a
+//! numeric type), summing/comparing TWO Object-erased chained-call results
+//! with no other anchor (`makeAdder(1)(2) + makeAdder(3)(4)`) previously fell
+//! through the JVM `BAdd` lowering's blind "both operands are references ->
+//! string concatenation" branch, silently computing `"3" + "7"` = `"37"`
+//! instead of `10` — a wrong-VALUE miscompile, not a crash. Fixed on the JVM
+//! backend by recovering the closure's real static return type at the
+//! invoke site: `closureInvokeRetType`/`JvmFuncSig.closureRetTy` for a direct
+//! chained call, and `ctx.funcValRetTypes`/`recordFuncValRetType` (mirroring
+//! this file's own #5774 MSIL registry) for a NAMED local bound from such a
+//! call — both unbox the invoke's `Object` result to its real primitive type
+//! before it ever reaches an arithmetic/comparison op. A residual
+//! genuinely-unresolvable case (e.g. two un-annotated LAMBDA-LITERAL locals
+//! summed, as opposed to two calls to a known top-level function) now fails
+//! loudly at compile time (`Jvm.Codegen: '+' on two operands whose runtime
+//! type is fully erased to Object could not be resolved…`) instead of
+//! silently guessing, per the fail-loudly principle — see
+//! `reconcileCmpOperands`'s `isFullyErasedObjectJvm` guard and the matching
+//! `BAdd` guard in `lyric-compiler/jvm/codegen/02_exprs.l`.
 @test_module
 package Lyric.FuncValLocalRetTypeSelfTest
 
@@ -207,4 +228,52 @@ test "println on a named-local lambda-invoke result, String-returning (#6394)" {
 test "println on a direct chained call's Int result (#6394)" {
   println(makeAdder(5)(10))
   assertEqualInt(makeAdder(5)(10), 15, "makeAdder(5)(10) == 15")
+}
+
+// #6398: `+` (and comparison) on TWO Object-erased chained-call results — the
+// gap #6392's arithmetic case above didn't cover, because ONE operand there
+// was always a primitive literal (`makeAdder(5)(10) + 1`), which anchored the
+// numeric type for the JVM backend's `reconcileCmpOperands` fallback. With
+// BOTH operands erased to `java/lang/Object` (two closure invokes, neither
+// side a literal), the pre-fix JVM `BAdd` lowering saw two references and
+// unconditionally dispatched to string concatenation — `makeAdder(1)(2) +
+// makeAdder(3)(4)` silently computed `"3" + "7"` = `"37"` instead of `10`,
+// then a following `==` against the literal `10` threw `ClassCastException`
+// (MSIL was unaffected — see the module docstring; unrelated to this file's
+// F#-era #5774/#6392 fix). Fixed by recovering the closure's real static
+// return type at the invoke site (`closureInvokeRetType`/`funcValRetTypes`)
+// so the JVM backend unboxes to `Int` before either operand reaches an
+// arithmetic/comparison op, mirroring this file's #5774/#6392 registries.
+test "sum of two direct chained-call results, both Object-erased (#6398 exact repro)" {
+  assertEqualInt(makeAdder(1)(2) + makeAdder(3)(4), 10, "makeAdder(1)(2) + makeAdder(3)(4) == 10")
+}
+
+// Same defect on two NAMED locals bound from closure-returning calls, no
+// direct chaining — the `funcValRetTypes`/`recordFuncValRetType` half of the
+// #6398 fix (`closureInvokeRetType` alone only covers the direct-chain shape
+// above).
+test "sum of two named-local closure invokes, both Object-erased (#6398)" {
+  val f = makeAdder(1)
+  val g = makeAdder(3)
+  assertEqualInt(f(2) + g(4), 10, "f(2) + g(4) == 10 where f/g are un-annotated closure locals")
+}
+
+// Subtraction / multiplication on two Object-erased operands: BSub/BMul share
+// `reconcileCmpOperands` with the comparison ops (not BAdd's separate
+// string-concat-guessing path), where the pre-fix both-erased fallback was a
+// documented-but-unreproduced gap (#2862) that emitted a primitive
+// instruction directly on two references (a JVM `VerifyError` at class load,
+// not a silent wrong value) — closed by the same closure-invoke-site fix.
+test "subtraction and multiplication of two direct chained-call results (#6398)" {
+  assertEqualInt(makeAdder(10)(0) - makeAdder(3)(0), 7, "10 - 3 == 7, both operands erased")
+  assertEqualInt(makeMultiParam(1)(3, 0) * makeMultiParam(1)(2, 0), 6, "3 * 2 == 6, both operands erased")
+}
+
+// Comparison (`==`) of two direct chained-call results with NO arithmetic in
+// between — proves the fix covers `lowerCmpExpr`/`reconcileCmpOperands`
+// directly, not just as a downstream effect of a corrected `BAdd`.
+test "comparison of two direct chained-call results, both Object-erased (#6398)" {
+  assertTrue(makeAdder(1)(2) == makeAdder(3)(0), "makeAdder(1)(2) == makeAdder(3)(0), both == 3")
+  assertTrue(makeAdder(1)(2) < makeAdder(9)(9), "3 < 18")
+  assertTrue(makeAdder(9)(9) > makeAdder(1)(2), "18 > 3")
 }
