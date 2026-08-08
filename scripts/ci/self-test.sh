@@ -6,6 +6,14 @@
 #
 #   bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/bitwise_self_test.l
 #
+# An optional leading `--summary "<text>"` appends <text> as a line to
+# $GITHUB_STEP_SUMMARY, but only after the test run succeeds (matching the
+# inline `... && echo "..." >> "$GITHUB_STEP_SUMMARY"` idiom these steps used
+# to spell out by hand):
+#
+#   bash scripts/ci/self-test.sh --summary "Std.Tls test ran: tls_tests.l (--target jvm)" \
+#     --target jvm lyric-stdlib/tests/tls_tests.l
+#
 # ## Why this exists
 #
 # Roughly 60 CI steps repeated the same eleven-line preamble — assert the
@@ -31,6 +39,12 @@ cd "$REPO_ROOT"
 
 BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
 
+SUMMARY=""
+if [[ "${1:-}" == "--summary" ]]; then
+  SUMMARY="${2:-}"
+  shift 2
+fi
+
 if [[ $# -eq 0 ]]; then
   echo "::error::self-test.sh: no arguments; expected the argv for 'lyric test'" >&2
   exit 2
@@ -47,4 +61,9 @@ if [ ! -x "$lyric_bin" ]; then
   exit 1
 fi
 
-exec "$lyric_bin" test "$@"
+if [[ -n "$SUMMARY" ]]; then
+  "$lyric_bin" test "$@"
+  echo "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+else
+  exec "$lyric_bin" test "$@"
+fi

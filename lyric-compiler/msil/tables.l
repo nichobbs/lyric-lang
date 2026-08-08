@@ -790,6 +790,15 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   val typeDefIdxW = simpleIdxWidth(t.typeDefs.count)
 
   // Coded indices, by tag family (ECMA-335 §II.24.2.6 tag tables):
+  // DRIFT GUARD (#6390): every `0` below stands for a tag-family member
+  // table that MetadataTables does not carry today (DeclSecurity,
+  // Property, Event, ModuleRef, File, ExportedType,
+  // GenericParamConstraint, ...).  If such a table is ever ADDED to
+  // MetadataTables and populated, its row count MUST replace the `0` in
+  // every family list that includes it, and the reader's matching family
+  // list (Msil.MetadataReader.computeLayout) must stay byte-for-byte in
+  // agreement — a one-sided edit reintroduces the silent
+  // zero-resources-read failure this pass exists to prevent.
   val rsW = codedIdxWidth(maxOfCounts([t.modules.count, 0, t.assemblyRefs.count, t.typeRefs.count]), 2)
   // ResolutionScope: Module, ModuleRef(unused), AssemblyRef, TypeRef
   val tdrW = codedIdxWidth(maxOfCounts([t.typeDefs.count, t.typeRefs.count, t.typeSpecs.count]), 2)
