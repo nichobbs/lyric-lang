@@ -277,3 +277,21 @@ test "comparison of two direct chained-call results, both Object-erased (#6398)"
   assertTrue(makeAdder(1)(2) < makeAdder(9)(9), "3 < 18")
   assertTrue(makeAdder(9)(9) > makeAdder(1)(2), "18 > 3")
 }
+
+// Value equality on two operands that stay fully erased to Object even after
+// the #6398 unboxing (a generic record's field read has no closure-invoke
+// site to recover the type at).  `==`/`!=` on two erased references must keep
+// dispatching through the null-safe `Objects.equals` value-equality path —
+// round 14's first fail-loud guard wrongly panicked here (#6401); the guard
+// is now scoped to the arithmetic call sites only.
+record BoxEq6401[T] {
+  value: T
+}
+
+test "equality on two fully-erased generic-field reads still works (#6401)" {
+  val a = BoxEq6401(value = 5)
+  val b = BoxEq6401(value = 5)
+  val c = BoxEq6401(value = 7)
+  assertTrue(a.value == b.value, "boxed 5 == boxed 5 via Objects.equals")
+  assertTrue(a.value != c.value, "boxed 5 != boxed 7 via Objects.equals")
+}

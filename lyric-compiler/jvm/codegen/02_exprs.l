@@ -806,7 +806,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                   }
                   case _ -> ()
                 }
-                val numTy = reconcileCmpOperands(ctx, insns, lhsTy, rhsTy)
+                val numTy = reconcileCmpOperands(ctx, insns, lhsTy, rhsTy, true)
                 match numTy {
                   case JRef(_) -> {
                     panic("BAdd: reference operand could not be reconciled to a numeric type")
@@ -913,7 +913,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case BSub -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
           match lhsTy {
             case JLong -> {
               insns.add(LLsub)
@@ -936,7 +936,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case BMul -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
           match lhsTy {
             case JLong -> {
               insns.add(LLmul)
@@ -959,7 +959,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case BDiv -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
           match lhsTy {
             case JLong -> {
               insns.add(LLdiv)
@@ -993,7 +993,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case BMod -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
           match lhsTy {
             case JLong -> {
               insns.add(LLrem)
@@ -1851,21 +1851,30 @@ func isFullyErasedObjectJvm(ty: in JvmType): Bool {
   }
 }
 
-func reconcileCmpOperands(ctx: in FuncCtx, insns: in List[LInsn], lhsTy: in JvmType, rhsTy: in JvmType): JvmType {
-  if isFullyErasedObjectJvm(lhsTy) and isFullyErasedObjectJvm(rhsTy) {
+func reconcileCmpOperands(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  lhsTy: in JvmType,
+  rhsTy: in JvmType,
+  panicOnErased: in Bool,
+): JvmType {
+  if panicOnErased and isFullyErasedObjectJvm(lhsTy) and isFullyErasedObjectJvm(rhsTy) {
     // Both operands are erased all the way to `Object` with NO recoverable
     // static type on either side (#2862/#6398) — e.g. two closure-invoke
     // results, or two generic-payload values whose instantiation could not
-    // be traced.  The pre-fix fallback silently returned `lhsTy` unchanged:
-    // for arithmetic (BSub/BMul/BDiv/BMod) that emitted a primitive
-    // instruction directly on two references (`isub` etc.), a VerifyError at
-    // class load; for comparisons, an Object-identity/`.equals()` dispatch
-    // that is not guaranteed to match the operands' real Lyric semantics.
-    // Per the fail-loudly principle, a genuinely undecidable case must be a
-    // compile-time diagnostic, not a guess the caller can't tell is wrong.
+    // be traced.  The pre-fix fallback silently returned `lhsTy` unchanged,
+    // and for ARITHMETIC (BAdd numeric path, BSub/BMul/BDiv/BMod) that
+    // emitted a primitive instruction directly on two references (`isub`
+    // etc.), a VerifyError at class load.  Per the fail-loudly principle,
+    // that undecidable case must be a compile-time diagnostic, not a guess.
+    // COMPARISONS pass panicOnErased = false (#6401): `==`/`!=` on two
+    // erased references correctly dispatches through the null-safe
+    // `Objects.equals` value-equality path in lowerCmp (Lyric `==` is value
+    // equality on every reference type), and the relational operators
+    // already raise lowerCmp's own descriptive reference-comparison panic.
     panic(
-      "Jvm.Codegen: arithmetic/comparison on two operands whose runtime type is fully erased to Object could not " +
-        "be resolved to a concrete numeric or comparable type. This typically happens when both sides come from a " +
+      "Jvm.Codegen: arithmetic on two operands whose runtime type is fully erased to Object could not " +
+        "be resolved to a concrete numeric type. This typically happens when both sides come from a " +
         "named local bound from a closure-returning call, or from an unresolvable generic instantiation. Add an " +
         "explicit type annotation to at least one operand's binding so its static type is known at this point."
     )
@@ -1922,7 +1931,7 @@ func reconcileCmpOperands(ctx: in FuncCtx, insns: in List[LInsn], lhsTy: in JvmT
 func lowerCmpExpr(ctx: in FuncCtx, insns: in List[LInsn], op: in BinOp, lhs: in Expr, rhs: in Expr): JvmType {
   val rawLhsTy = lowerExpr(ctx, insns, lhs)
   val rhsTy = lowerExpr(ctx, insns, rhs)
-  val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+  val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
   val trueL = freshLabel(ctx)
   val afterL = freshLabel(ctx)
   // Materialise the 0/1 boolean through a result local so the operand stack is
@@ -2079,37 +2088,37 @@ func lowerBoolCond(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, failLa
         case BEq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmpFail(insns, BEq, lhsTy, failLabel)
         }
         case BNeq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmpFail(insns, BNeq, lhsTy, failLabel)
         }
         case BLt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmpFail(insns, BLt, lhsTy, failLabel)
         }
         case BLte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmpFail(insns, BLte, lhsTy, failLabel)
         }
         case BGt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmpFail(insns, BGt, lhsTy, failLabel)
         }
         case BGte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmpFail(insns, BGte, lhsTy, failLabel)
         }
         case _ -> {
@@ -2168,37 +2177,37 @@ func lowerBoolCondTrue(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, su
         case BEq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmp(ctx, insns, BEq, lhsTy, succeedLabel, "")
         }
         case BNeq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmp(ctx, insns, BNeq, lhsTy, succeedLabel, "")
         }
         case BLt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmp(ctx, insns, BLt, lhsTy, succeedLabel, "")
         }
         case BLte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmp(ctx, insns, BLte, lhsTy, succeedLabel, "")
         }
         case BGt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmp(ctx, insns, BGt, lhsTy, succeedLabel, "")
         }
         case BGte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmp(ctx, insns, BGte, lhsTy, succeedLabel, "")
         }
         case _ -> {

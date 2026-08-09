@@ -226,6 +226,11 @@ func recordVarGenericArgs(ctx: in FuncCtx, name: in String, init: in Expr, tyOpt
 // Same call sites and remove-then-add discipline as `recordVarGenericArgs`
 // (a shadowing inner binding must not inherit an outer binding's stale
 // entry). `closureInvokeRetType` already handles the `EParen` unwrap.
+// KNOWN LIMIT (mirrors varGenericArgs, accepted): entries are recorded at
+// binding sites only, never invalidated at `SAssign` — a `var` closure
+// local reassigned to a differently-returning closure keeps the original
+// binding's recovered type, and the invoke-site checkcast would then throw
+// ClassCastException at runtime rather than mis-narrow silently.
 func recordFuncValRetType(ctx: in FuncCtx, name: in String, init: in Expr): Unit {
   if ctx.funcValRetTypes.containsKey(name) {
     ctx.funcValRetTypes.remove(name)

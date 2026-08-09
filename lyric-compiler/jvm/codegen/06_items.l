@@ -2867,7 +2867,11 @@ pub func collectFileSigsSeeded(
         // from the SAME source `ret` was derived from, or a generator
         // factory declared `(...) -> R` would wrongly register R as its own
         // invoke-result type.
-        val sigClosureRetTy = if decl.isAsync and funcBodyContainsYield(decl) {
+        // Explicitly annotated: an un-annotated if/else with a bare `None`
+        // arm degrades to Option<object> under the self-hosted MSIL
+        // emitter's context-free lowering (#4965 family) — caught by the
+        // ilverify gate as a stack-type mismatch in this very function.
+        val sigClosureRetTy: Option[JvmType] = if decl.isAsync and funcBodyContainsYield(decl) {
           None
         } else {
           closureRetTypeOf(decl.ret, owner, sigTps, externTypes)
