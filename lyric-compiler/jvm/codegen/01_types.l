@@ -73,6 +73,20 @@ pub record JvmFuncSig {
   // `ECall(EPath(name), …)` call-chain shape `closureInvokeRetType` peeks).
   // No default, same rationale as `isIface`/`retGenericArgs` above.
   closureRetTy: Option[JvmType]
+  // The precise, same-FILE raw JVM class of the DECLARED return type when it
+  // instantiates a LOCAL generic record (`func makeBox(n: Int): Box[Int]`
+  // registers `Some("<owner>/Box")`) — `ret` itself stays the erased
+  // `java/lang/Object` descriptor (must match the callee's actually emitted
+  // method descriptor for linking, docs/44 J4 M-1), so this is a SEPARATE
+  // side-channel a call site narrows the RESULT to via `checkcast` right
+  // after invoking (#6399). Scoped to record types declared in the SAME file
+  // as the function: a cross-package generic type (`Std.Core.Option` used
+  // from another package) cannot be resolved to a raw class here without
+  // risking a wrong-package guess, so it stays `None` — see
+  // `recordRetClassOf`. `None` for every non-generic-record return and every
+  // `JvmFuncSig` construction site other than the top-level free-function
+  // registration, same discipline as `closureRetTy`.
+  recordRetClass: Option[String]
 }
 
 // One field of a union case class, in declaration order.  A match binding
@@ -957,6 +971,51 @@ func closureRetTypeOfTe(
   }
 }
 
+// Same-file generic-record return-class recovery (#6399): resolve `retOpt`
+// to `Some("<owner>/<RecordName>")` when it is a bare `TGenericApp` naming a
+// record declared in THIS file (`localRecordNames`), so a direct field read
+// on a plain function's call result (`func makeBox(n: Int): Box[Int]`
+// followed by `makeBox(5).value`) need not fall through the erased-Object
+// field-read fallback's bundle-wide `field:<name>` registry — a lookup that
+// can silently collide with an unrelated type's same-named field (the exact
+// `NoClassDefFoundError: Std/Http/Url` shape #6399 reports, since `Std.Http.
+// Url` happens to be the first-registered opaque type with a `value` field
+// anywhere in the stdlib import closure). `List`/`Map` never appear in
+// `localRecordNames` (they are not user records) so need no separate
+// exclusion. Anything not locally declared — including a cross-package
+// generic type such as `Std.Core.Option`/`Result` — returns `None`:
+// resolving those would require knowing their DECLARING package, which this
+// per-file pass does not have, and guessing wrong would silently corrupt an
+// otherwise-working cross-package call. `None` is the safe pre-existing
+// erasure-to-`Object` fallback (#3044) for every such case.
+pub func recordRetClassOf(
+  retOpt: in Option[TypeExpr], owner: in String, localRecordNames: in Map[String, Bool]
+): Option[String] {
+  match retOpt {
+    case Some(te) -> recordRetClassOfTe(te, owner, localRecordNames)
+    case None -> None
+  }
+}
+
+func recordRetClassOfTe(te: in TypeExpr, owner: in String, localRecordNames: in Map[String, Bool]): Option[String] {
+  match te.kind {
+    case TParen(inner) -> recordRetClassOfTe(inner, owner, localRecordNames)
+    case TGenericApp(head, _) -> {
+      if head.segments.count == 1 {
+        val seg = head.segments[0]
+        if localRecordNames.containsKey(seg) {
+          Some(value = owner + "/" + seg)
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    }
+    case _ -> None
+  }
+}
+
 // Drop a CLR-convention arity suffix (`` `N ``) from a host type name: the
 // parser canonicalises a GENERIC `extern type` alias's host name to
 // `Name`<arity>` for the MSIL backend's TypeRef encoding, but a JVM binary
@@ -1507,7 +1566,8 @@ pub func tryQualifiedModuleValJvm(ctx: in FuncCtx, expr: in Expr): Option[JvmFun
                 paramModes = newList(),
                 isIface = false,
                 retGenericArgs = newList(),
-                closureRetTy = None
+                closureRetTy = None,
+                recordRetClass = None
               )
             )
           }

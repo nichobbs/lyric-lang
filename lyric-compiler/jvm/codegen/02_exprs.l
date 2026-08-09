@@ -1869,9 +1869,12 @@ func reconcileCmpOperands(
     // that undecidable case must be a compile-time diagnostic, not a guess.
     // COMPARISONS pass panicOnErased = false (#6401): `==`/`!=` on two
     // erased references correctly dispatches through the null-safe
-    // `Objects.equals` value-equality path in lowerCmp (Lyric `==` is value
-    // equality on every reference type), and the relational operators
-    // already raise lowerCmp's own descriptive reference-comparison panic.
+    // `Objects.equals` value-equality path (Lyric `==` is value equality on
+    // every reference type), and the relational operators now raise a
+    // descriptive reference-comparison panic from BOTH twins that consume
+    // this function's result — `lowerCmp` (value-producing `x < y`) and
+    // `lowerCmpFail` (the `lowerBoolCond` if/while-condition path, #6399
+    // addendum; it used to silently `LNop` instead of panicking).
     panic(
       "Jvm.Codegen: arithmetic on two operands whose runtime type is fully erased to Object could not " +
         "be resolved to a concrete numeric type. This typically happens when both sides come from a " +
@@ -2051,7 +2054,15 @@ func lowerCmpFail(insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLa
             emitObjectsEquals(insns)
             insns.add(LIfne(label = failLabel))
           }
-          case _ -> insns.add(LNop)
+          // A relational operator on a non-String reference has no lowering
+          // (only String supports `<`/`<=`/`>`/`>=`) — the old `LNop` left
+          // both operand values sitting unconsumed on the stack instead of
+          // the balanced-stack comparison every OTHER arm here emits, an
+          // if-condition-only shape (`lowerBoolCond`'s BLt/BLte/BGt/BGte
+          // arms, reached only via THIS function, never `lowerCmp`) that the
+          // `lowerCmp` twin above already panics on but this one silently
+          // let through. Same descriptive message as that twin.
+          case _ -> panic("Jvm.Codegen: unsupported reference comparison op: a relational operator (<, <=, >, >=) on operands of reference type '" + cls + "' — only String supports relational comparison; check whether an operand's declared type is a reference (e.g. Option[Int] from Std.String.indexOf) being compared like a number")
         }
       }
     }

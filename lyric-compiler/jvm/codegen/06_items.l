@@ -2825,6 +2825,20 @@ pub func collectFileSigsSeeded(
   // (#3334).  The emitted method descriptor in `lowerFunc` resolves the same
   // way, so the registered sig and the method stay in lockstep.
   val externTypes = ownAwareExternTypes(file, externSeed)
+  // Same-file record names for `recordRetClassOf` (#6399): a bare pre-scan of
+  // every `record` item declared in this file lets the return-type
+  // computation below recover a LOCAL generic record's own raw class
+  // (`Box[Int]` -> `Some("<owner>/Box")`) regardless of declaration order —
+  // a function may be declared before the record it returns.
+  val localRecordNames: Map[String, Bool] = newMap()
+  var ri = 0
+  while ri < file.items.count {
+    match file.items[ri].kind {
+      case IRecord(rd) -> localRecordNames.add(rd.name, true)
+      case _ -> ()
+    }
+    ri = ri + 1
+  }
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -2876,6 +2890,14 @@ pub func collectFileSigsSeeded(
         } else {
           closureRetTypeOf(decl.ret, owner, sigTps, externTypes)
         }
+        // Same generator exclusion as `sigClosureRetTy` above: the actual
+        // runtime return is the synthesised generator object, not `decl.ret`,
+        // so recovering a record class from `decl.ret` would be wrong there.
+        val sigRecordRetClass: Option[String] = if decl.isAsync and funcBodyContainsYield(decl) {
+          None
+        } else {
+          recordRetClassOf(decl.ret, owner, localRecordNames)
+        }
         val sig = JvmFuncSig(
           owner = owner,
           params = params,
@@ -2889,7 +2911,8 @@ pub func collectFileSigsSeeded(
             owner,
             externTypes
           ),
-          closureRetTy = sigClosureRetTy
+          closureRetTy = sigClosureRetTy,
+          recordRetClass = sigRecordRetClass
         )
         // Qualified key (`Std/Testing/assertEqualInt`) is unique across the
         // bundle, so two packages exporting the same short name (e.g.
@@ -3045,7 +3068,8 @@ pub func collectFileSigsSeeded(
                       paramModes = newList(),
                       isIface = false,
                       retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(Some(f.ty), opqTps), owner, externTypes),
-                      closureRetTy = None
+                      closureRetTy = None,
+                      recordRetClass = None
                     )
                   )
                 }
@@ -3128,7 +3152,8 @@ pub func collectFileSigsSeeded(
                   paramModes = newList(),
                   isIface = false,
                   retGenericArgs = newList(),
-                  closureRetTy = None
+                  closureRetTy = None,
+                  recordRetClass = None
                 )
                 val vqkey = owner + "/val:" + vname
                 if not into.containsKey(vqkey) {
@@ -3177,7 +3202,8 @@ pub func collectFileSigsSeeded(
             paramModes = newList(),
             isIface = false,
             retGenericArgs = newList(),
-            closureRetTy = None
+            closureRetTy = None,
+            recordRetClass = None
           )
           val etkey = "enum:" + decl.name + "." + ecn
           if not into.containsKey(etkey) {
@@ -3312,7 +3338,8 @@ func registerInstanceSigErased(
         paramModes = modes,
         isIface = false,
         retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, typeParams), owner, externTypes),
-        closureRetTy = closureRetTypeOf(retOpt, owner, typeParams, externTypes)
+        closureRetTy = closureRetTypeOf(retOpt, owner, typeParams, externTypes),
+        recordRetClass = None
       )
     )
   }
@@ -3396,7 +3423,8 @@ func registerFieldElemSig(
       paramModes = noModes,
       isIface = false,
       retGenericArgs = noRga,
-      closureRetTy = None
+      closureRetTy = None,
+      recordRetClass = None
     )
   )
 }
@@ -3452,7 +3480,8 @@ func registerIfaceSig(
         // filtered against the interface's OWN generic params first so a bare
         // `T` isn't mistaken for a resolved type (mirrors the `mapGet` guard).
         retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, typeParams), owner, externTypes),
-        closureRetTy = closureRetTypeOf(retOpt, owner, typeParams, externTypes)
+        closureRetTy = closureRetTypeOf(retOpt, owner, typeParams, externTypes),
+        recordRetClass = None
       )
     )
   }
@@ -3481,7 +3510,8 @@ func registerStaticWireSig(
         paramModes = newList(),
         isIface = false,
         retGenericArgs = newList(),
-        closureRetTy = None
+        closureRetTy = None,
+        recordRetClass = None
       )
     )
   }
@@ -4123,7 +4153,8 @@ pub func registerProjectableViews(
                 paramModes = newList(),
                 isIface = false,
                 retGenericArgs = newList(),
-                closureRetTy = None
+                closureRetTy = None,
+                recordRetClass = None
               )
             )
           }
@@ -4142,7 +4173,8 @@ pub func registerProjectableViews(
                   paramModes = newList(),
                   isIface = false,
                   retGenericArgs = newList(),
-                  closureRetTy = None
+                  closureRetTy = None,
+                  recordRetClass = None
                 )
               )
             }

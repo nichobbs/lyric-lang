@@ -2121,6 +2121,30 @@ func orderCtorArgsPadded(fields: in List[JvmCaseField], args: in List[CallArg]):
   result
 }
 
+// A free-function call's invoke descriptor must use `sig.ret` verbatim (it
+// has to match the callee's actually emitted method descriptor for JVM
+// linking, docs/44 J4 M-1 — `sig.ret` for a generic-record return is the
+// erased `java/lang/Object`, same as the emitted method). `sig.recordRetClass`
+// (#6399) is a separate side-channel: when set, the CALL RESULT'S value is
+// narrowed with a `checkcast` right after the invoke (a no-op at runtime —
+// the value already IS that class — but it re-anchors the JVM verifier's
+// tracked type for the pushed value, and the tracked JvmType this function
+// returns, from `Object` to the real record class). Mirrors the established
+// "narrow at the call/bind site" idiom used for `closureRetTy` (D-progress-
+// 745) and generic match-bind unboxing (#4877) rather than leaving every
+// downstream consumer — here, a direct field read — to fall through the
+// erased-Object fallback's bundle-wide `field:<name>` lookup, which can
+// silently collide with an unrelated type's same-named field.
+func narrowStaticCallResult(insns: in List[LInsn], sig: in JvmFuncSig): JvmType {
+  match sig.recordRetClass {
+    case Some(cls) -> {
+      insns.add(LCheckcast(className = cls))
+      JRef(className = cls)
+    }
+    case None -> sig.ret
+  }
+}
+
 // Lower a record / union-case construction to `new`/`invokespecial`.  Arguments
 // are reordered to field-declaration order and coerced to each field's declared
 // type.  A record yields its own class type; a union case yields the union's
@@ -2539,7 +2563,7 @@ func lowerStaticCallWithHolders(
     writeBackHolderArg(ctx, insns, hTempSlot[ri], hElemTy[ri], hBackName[ri], hRecvSlot[ri], hRecvCls[ri])
     ri = ri + 1
   }
-  sig.ret
+  narrowStaticCallResult(insns, sig)
 }
 
 // True when any declared parameter is a reference array — the erased Lyric
@@ -2913,7 +2937,7 @@ func lowerGeneralStaticCall(
           li = li + 1
         }
         insns.add(LInvokestatic(owner = sig.owner, name = funcName, params = sig.params, ret = sig.ret))
-        return sig.ret
+        return narrowStaticCallResult(insns, sig)
       }
       var ai = 0
       while ai < callArgs.count {
@@ -2934,7 +2958,7 @@ func lowerGeneralStaticCall(
         ai = ai + 1
       }
       insns.add(LInvokestatic(owner = sig.owner, name = funcName, params = sig.params, ret = sig.ret))
-      return sig.ret
+      return narrowStaticCallResult(insns, sig)
     }
     case None -> ()
   }

@@ -295,3 +295,18 @@ test "equality on two fully-erased generic-field reads still works (#6401)" {
   assertTrue(a.value == b.value, "boxed 5 == boxed 5 via Objects.equals")
   assertTrue(a.value != c.value, "boxed 5 != boxed 7 via Objects.equals")
 }
+
+// #6399 addendum: `lowerLambdaInvokeTail`'s JVoid arm (round 14, JVM-only —
+// a Unit-returning closure invoked through a chain still pushes SOME boxed
+// placeholder per the uniform invoke ABI, so the arm pops it explicitly
+// since `coerceArgTo` has no JVoid target arm) had no test coverage. Without
+// that pop, the boxed placeholder stays on the operand stack after the
+// chained invoke and corrupts everything lowered afterward.
+func makeSideEffect6399(): () -> Unit {
+  { -> println("makeSideEffect6399 ran") }
+}
+
+test "chained call to a Unit-returning closure factory leaves the stack balanced (#6399 addendum)" {
+  makeSideEffect6399()()
+  assertEqualInt(1 + 1, 2, "computation after a chained Unit-closure invoke is unaffected")
+}

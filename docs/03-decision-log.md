@@ -24770,3 +24770,181 @@ MSIL `funcValRetTypes` registry this entry's JVM `funcValRetTypes` mirrors),
 #4877 (the match-bind-site unboxing precedent this fix's "unbox at the
 producing site" strategy follows), #2862 (the `reconcileCmpOperands`
 both-erased gap this entry closes with a diagnostic).
+
+## D-progress-746 — JVM: a plain function's instantiated-generic-record return read a field through an UNRELATED type's same-named accessor, `NoClassDefFoundError: Std/Http/Url` (#6399); `lowerCmpFail` relational-on-reference silent `LNop`; Unit-closure chained-invoke test gap
+
+**Status:** shipped, JVM only (MSIL unaffected — reifies generics, never hits
+this erasure path).
+
+**Root cause.** `func makeBox(n: Int): Box[Int] { Box(value = n) }` /
+`val b = makeBox(5); b.value` threw `NoClassDefFoundError: Std/Http/Url` at
+the field read on `--target jvm` — flagged as pre-existing, unrelated,
+out-of-scope by D-progress-745 while isolating a different repro. Traced to
+two compounding facts:
+
+1. `typeExprToJvm`'s `TGenericApp` arm (`jvm/codegen/01_types.l`) erased
+   EVERY non-`List`/`Map` generic-applied type — including a concrete
+   user-record instantiation like `Box[Int]`, not just a bare unresolved
+   type PARAMETER — all the way to `java/lang/Object`. Consumed by
+   `collectFileSigsSeeded`'s `IFunc` registration, this meant `makeBox`'s
+   registered `JvmFuncSig.ret` (and the call site's tracked result type) was
+   `Object`, throwing away the fact that the value is actually a real
+   `<pkg>/Box` instance (`Box(value = n)` constructs the real class via
+   `lowerConstruction`; only the record's OWN generic-param FIELDS are
+   Object-erased, not the record's class identity — this is what J4 M-1
+   (D-progress-473) actually specced, docs/44 line 174, but the return-type
+   mapping over-applied it to the whole type).
+2. With `b`'s tracked type reduced to `java/lang/Object`, `EMember`'s
+   field-read lowering (`02_exprs.l`) fell into the `#3044` erased-Object
+   fallback, which resolves a field NAME through a single BUNDLE-WIDE
+   `field:<name>` registry populated **only from opaque types** (deliberately
+   first-registration-wins across the WHOLE stdlib import closure, not
+   scoped to the receiver's actual type — `06_items.l`'s `IOpaque` arm
+   comment already says so). `Std.Http.Url` is `pub opaque type Url { value:
+   String }` (`lyric-stdlib/std/http.l`) and happens to be the first opaque
+   type anywhere in this program's transitive stdlib closure with a field
+   also named `value` — so the fallback `checkcast`ed `b` to `Std/Http/Url`
+   and called its `$value()` accessor. `Std.Http.Url`'s class was never
+   actually emitted into THIS program's bundled JAR (nothing in the
+   repro imports `Std.Http`), so the `checkcast` target class failed to
+   link at runtime: `NoClassDefFoundError: Std/Http/Url`, not the
+   same-shape `ClassCastException` a locally-present wrong class would have
+   produced.
+
+Not a stale/misindexed-registry bug in the sense of corrupted data — the
+`field:` registry is exactly as documented (first-opaque-type-wins,
+intentionally unscoped) — the actual defect is further upstream: the call
+result should never have been reduced to a bare, class-less `Object` in the
+first place.
+
+**Fix — narrowly scoped, not full J4 reified generics.** Confirmed this is
+separable from the J4 foundational gap (docs/44, #2667): the fix only
+recovers the SAME-FILE case, leaving the deliberate cross-package
+`Object` erasure (and the `field:` fallback it feeds) untouched for
+everything else — including stdlib `Option`/`Result`, which are used from
+dozens of OTHER packages and would corrupt to the wrong class entirely if
+`typeExprToJvm`'s `TGenericApp` arm were changed to resolve every generic
+head unconditionally (verified this reasoning by hand: `owner` at every
+`JvmFuncSig` registration site is the DECLARING file's own package, so a
+`Result[T, E]`-returning function declared OUTSIDE `Std.Core` would
+register a nonexistent `<callerPkg>/Result` class — not attempted).
+
+1. **New side-channel, not a `typeExprToJvm` policy change.** `JvmFuncSig`
+   gains `recordRetClass: Option[String]` (`01_types.l`) — populated ONLY at
+   the top-level free-function `IFunc` registration site
+   (`collectFileSigsSeeded`, `06_items.l`) when the declared return type is a
+   bare `TGenericApp` naming a RECORD declared in the SAME file (a new
+   `recordRetClassOf`/pre-scan `localRecordNames` pass over `file.items`, so
+   declaration order doesn't matter). `sig.ret` itself is UNCHANGED (stays
+   the erased `Object` — it is the actual emitted method descriptor's return
+   type and must match for JVM linking); `recordRetClass` is a separate
+   "narrow the RESULT after invoking" hint, mirroring the established
+   "unbox/narrow at the call/bind site" idiom `closureRetTy` (D-progress-745)
+   and match-bind unboxing (#4877) already use for this defect class. `None`
+   at every other `JvmFuncSig` construction site (11 in `codegen/06_items.l`
+   + `01_types.l`, 3 more in `bridge.l`'s derive/woven/mono-specialised
+   paths) — same explicit-everywhere discipline as `closureRetTy` (a
+   defaulted field there miscompiles the self-hosted MSIL emitter,
+   `InvalidProgramException` in `collectDeriveFreeSigs` — hit and fixed
+   during this session when the three `bridge.l` sites were initially
+   missed).
+2. **Consumption: `narrowStaticCallResult`** (`04_calls.l`) — a small helper
+   the three free-function call-result sites (`lowerGeneralStaticCall`'s two
+   arms, `lowerStaticCallWithHolders`) now return through instead of bare
+   `sig.ret`: when `recordRetClass` is `Some(cls)`, emits `checkcast cls`
+   right after the `invokestatic` (a runtime no-op — the value already IS
+   that class — but re-anchors the JVM verifier's tracked type, and the
+   `JvmType` this function returns to its caller) before returning
+   `JRef(cls)`; otherwise passes `sig.ret` through unchanged. This makes
+   `makeBox(5)`'s tracked result type the real `<pkg>/Box`, so
+   `recordFieldType(ctx, "<pkg>/Box", "value")` finds the field directly —
+   the `#3044` erased-Object/`field:` fallback is never reached for this
+   shape, closing off the collision entirely rather than just changing which
+   type it collides with.
+3. **Scoped to top-level free functions returning a LOCAL record** — matches
+   the issue title exactly ("a plain function's ... return"). Deliberately
+   NOT extended to: instance methods (`registerInstanceSigErased`/
+   `registerIfaceSig`, still `None`) — no report of this shape there and it
+   would touch more call sites for no repro coverage; unions — a union
+   payload has no direct `.field` access outside `match` in Lyric, so the
+   receiver-class-narrowing this fix provides has no consumer for unions;
+   cross-package records — see the "not attempted" reasoning above.
+
+**Fix — addendum (folded in from PR #6400 review, same files this round
+already owns).**
+
+4. **`lowerCmpFail`'s relational-on-non-String-reference arm silently
+   `LNop`'d** (`02_exprs.l` `JRef`-else branch) instead of panicking, unlike
+   its twin `lowerCmp` (the value-producing `x < y` form, which already
+   panics with a descriptive message). `lowerCmpFail` backs `lowerBoolCond`
+   — the if/while-CONDITION path (`if a.value < b.value { … }`) — a
+   COMPLETELY SEPARATE code path from `lowerCmp` that the `reconcileCmpOperands`
+   comment's "the relational operators already raise lowerCmp's own
+   descriptive panic" overstated (true only for the value-producing form).
+   The `LNop` left both operand reference values sitting unconsumed on the
+   stack instead of the balanced-stack comparison every other arm here
+   emits. Verified reachable: `#6398`'s own `closureInvokeRetType`/
+   `funcValRetTypes` recovery already unboxes MOST erased-call-result
+   comparisons before they'd hit this arm (confirmed by hand — `if
+   makeAdder(1)(2) < makeAdder(3)(4) { }` does NOT reach it, both operands
+   are already `Int` by the time `lowerCmpFail` runs), but a GENERIC-FIELD
+   read has no closure-invoke site to recover a type at (same "no anchor"
+   case #6401 already covers for `==`), so `if a.value < b.value { }` on two
+   `BoxG[Int]`-typed locals DID reach the silent `LNop` — confirmed by hand
+   before the fix (ran without error, i.e. silently miscompiled/produced
+   whatever the JVM verifier tolerated) and confirmed after the fix (panics
+   with the descriptive compile-time message, verified via a throwaway
+   repro). Fixed by making that arm panic with the SAME message as
+   `lowerCmp`'s twin; the `reconcileCmpOperands` comment corrected to say
+   both twins now panic, not just one.
+5. **Test-coverage gap for `lowerLambdaInvokeTail`'s `JVoid` arm**
+   (`04_calls.l`, added in D-progress-745/#6398 round 14 — pops the boxed
+   placeholder a chained invoke of a `Unit`-returning closure still pushes,
+   since `coerceArgTo` has no `JVoid` target arm) — no test exercised it.
+   Added `makeSideEffect6399(): () -> Unit { { -> println(...) } }` +
+   `makeSideEffect6399()()` (a chained call, so `closureInvokeRetType`
+   resolves `Some(JVoid)` and this exact arm fires) to
+   `func_val_local_rettype_self_test.l`, asserting a subsequent computation
+   still runs correctly (the observable proof an unpopped placeholder would
+   have broken via stack corruption).
+
+**Verification.** Full `make lyric` three times across the session (once
+after the `06_items.l`/`01_types.l`/`04_calls.l` core fix — crashed with
+`InvalidProgramException` in `Jvm.Bridge.Program.collectDeriveFreeSigs`
+because the three `bridge.l` `JvmFuncSig` construction sites were missed;
+once after adding `recordRetClass = None` there too — clean; once more after
+`lyric fmt --write` reformatted the addendum-4 comment/panic in
+`02_exprs.l`). Issue's exact repro (`record Box[T]` / `makeBox(5).value`)
+prints `5` on `--target jvm` (previously `NoClassDefFoundError:
+Std/Http/Url`) and stays `5` on `--target dotnet`. Addendum-4's repro
+(`BoxG[Int]` locals compared with `<` inside an `if`) panics with the
+descriptive compile-time message on `--target jvm` post-fix (confirmed
+silent pre-fix). Four new cases in `generic_jvm_self_test.l`
+(`--target jvm`; `Box[Int]`/`Box[String]` plain-function returns, a
+second-function-removed variant, and a no-intermediate-local direct
+`makeBoxInt6399(3).value` read) plus one new case in
+`func_val_local_rettype_self_test.l` (both targets, addendum-5) — full
+regression battery, all green: `generic_jvm_self_test.l` 24/24 (jvm, and
+incidentally dotnet too — not CI-wired there but confirmed portable),
+`func_val_local_rettype_self_test.l` 21/21 (dotnet AND jvm),
+`stdlib_generic_mono_self_test.l` 7/7 (dotnet AND jvm),
+`erased_generic_arith_jvm_self_test.l` 23/23 (dotnet AND jvm),
+`inbundle_generics_self_test.l` 28/28 (dotnet), `bitwise_self_test.l` 10/10
+(dotnet AND jvm), `nested_constructor_pattern_self_test.l` 6/6 (dotnet AND
+jvm), `block_shadow_self_test.l` 20/20 (dotnet AND jvm),
+`typechecker_self_test.l` 298/298 (dotnet). `lyric fmt --write` clean (no
+refusals) on all seven changed `.l` files after the reformat pass settled
+(`bridge.l`, the four `codegen/*.l` files, `generic_jvm_self_test.l`,
+`func_val_local_rettype_self_test.l`).
+
+**Related:** #6399, D-progress-745/#6398 (this entry's "Found, pre-existing,
+out of scope" note is where #6399 was first flagged; `closureRetTy`/
+`funcValRetTypes` are the direct precedent this entry's `recordRetClass`/
+`narrowStaticCallResult` mirror), D-progress-473 (J4 M-1, the generics-erase-
+to-`Object` model this entry corrects an over-application of, not reverts),
+#3044 (the `field:` erased-Object fallback this entry routes around for the
+now-recoverable shape, left otherwise unchanged), #4877 (the match-bind
+"unbox at the producing site" precedent), #2862/#6401 (`reconcileCmpOperands`
+history the addendum-4 fix continues), docs/44 §5 J4 (erased-generics model;
+this entry's fix stays within it — no `Signature` attrs, no reified
+generics, no cross-package type resolution added).

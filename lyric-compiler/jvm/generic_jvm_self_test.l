@@ -228,3 +228,53 @@ test "nested Some(Some(5)) double-nesting" {
   val v = match o { case Some(inner) -> match inner { case Some(x) -> x; case None -> -1 }; case None -> -2 }
   assertEqualInt(v, 5, "Some(Some(5)) -> 5")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6399: a PLAIN (non-generic) function's declared return type instantiating
+// a generic record, with the field read DIRECTLY on the call result — not
+// through a `match` (covered above) and not through a direct construction
+// bound to the local (the `Box(value = 7)` cases above already tracked the
+// real class from `lowerConstruction` itself, so they never hit this gap).
+// Before the fix, the call's return type erased all the way to
+// `java/lang/Object`, so the field read fell through to the bundle-wide
+// `field:<name>` erased-Object fallback (#3044) — a registry that is
+// deliberately first-registration-wins ACROSS THE WHOLE STDLIB IMPORT
+// CLOSURE, not scoped to `Box`. It picked up `Std.Http.Url`'s unrelated
+// `value` field (the first-registered opaque type with that field name
+// anywhere in the closure) and `checkcast`ed to `Std/Http/Url` — a class
+// this test module's own bundle never emits, so the runtime failure was
+// `NoClassDefFoundError: Std/Http/Url`, not a same-shape `ClassCastException`.
+// ─────────────────────────────────────────────────────────────────────────────
+func makeBoxInt6399(n: in Int): Box[Int] {
+  Box(value = n)
+}
+
+func makeBoxString6399(s: in String): Box[String] {
+  Box(value = s)
+}
+
+// A second function's return flows into the first — the field read still
+// resolves against a plain function's return, one call removed from the
+// construction site.
+func wrapBoxInt6399(n: in Int): Box[Int] {
+  makeBoxInt6399(n)
+}
+
+test "plain function returning Box[Int], field read on the call result (#6399 exact repro)" {
+  val b = makeBoxInt6399(5)
+  assertEqualInt(b.value, 5, "makeBoxInt6399(5).value -> 5")
+}
+
+test "plain function returning Box[String], field read on the call result (#6399)" {
+  val b = makeBoxString6399("lyric")
+  assertEqual(b.value, "lyric", "makeBoxString6399(lyric).value -> lyric")
+}
+
+test "field read via a second function's return (#6399)" {
+  val b = wrapBoxInt6399(9)
+  assertEqualInt(b.value, 9, "wrapBoxInt6399(9).value -> 9")
+}
+
+test "field read directly on the call result, no intermediate local (#6399)" {
+  assertEqualInt(makeBoxInt6399(3).value, 3, "makeBoxInt6399(3).value -> 3, no intermediate binding")
+}
