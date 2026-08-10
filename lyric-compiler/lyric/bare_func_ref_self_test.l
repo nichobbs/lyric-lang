@@ -205,3 +205,79 @@ test "union case field typed via a function-type alias round-trips (#6406)" {
     case Empty -> assertTrue(false, "wrong arm")
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6404: `typeExprToJvm`'s `TRef` fallback treats ANY unrecognized name as
+// "user-defined type in the same package" — before this fix, that included
+// NON-function alias targets (`alias Meters = Long`), not just the
+// function-shaped ones #6393/#6406 above cover, and every alias reference in
+// an instance-method-shaped signature (record method params/return here;
+// `impl`-for-`interface` methods and `protected type` entries also hit the
+// same class of bug, but both independently panic/crash on THIS SELF-HOSTED
+// COMPILER even with a plain, non-aliased `Long` param — see
+// docs/03-decision-log.md D-progress-748 — so they can't be exercised in a
+// dual-target regression test here without failing for an unrelated,
+// pre-existing reason; tracked separately).
+//
+// Fixed by `Lyric.TypeAliasResolve` (`lyric-compiler/lyric/
+// type_alias_resolve.l`): a whole-file AST pre-pass, run once before any JVM
+// codegen function sees the file, that resolves EVERY `alias X = ...`
+// reference (not just function-shaped ones) to its underlying `TypeExpr` —
+// see that module's doc comment for the full design.
+alias Meters = Long
+
+func addOneMeter(m: in Meters): Meters {
+  m + 1i64
+}
+
+test "non-function alias as a top-level function's param AND return type (#6404)" {
+  assertEqualLong(addOneMeter(41i64), 42i64, "addOneMeter(41) == 42 via non-function alias Meters")
+}
+
+func localAliasAnnotated(): Long {
+  val d: Meters = 42i64
+  d
+}
+
+test "non-function alias as a local `val` annotation (#6404)" {
+  assertEqualLong(localAliasAnnotated(), 42i64, "val d: Meters = 42 round-trips as a plain Long")
+}
+
+record Distance {
+  d: Meters
+}
+
+func readAliasedField(): Long {
+  val box = Distance(d = 9i64)
+  box.d
+}
+
+test "non-function alias as a record field type (#6404)" {
+  assertEqualLong(readAliasedField(), 9i64, "Distance(d = 9).d round-trips as a plain Long")
+}
+
+record Scaler {
+  base: Meters
+
+  func scaled(self: in Scaler, factor: Meters): Meters {
+    self.base * factor
+  }
+}
+
+test "non-function alias as a record instance method's param, return, AND self field (#6404)" {
+  val s = Scaler(base = 10i64)
+  assertEqualLong(s.scaled(3i64), 30i64, "Scaler(base = 10).scaled(3) == 30 via non-function alias")
+}
+
+record Applier {
+  seed: Int
+
+  func run(self: in Applier, f: Handler): Int {
+    f(self.seed) + self.seed
+  }
+}
+
+test "function-type alias as a record instance method's parameter (#6404)" {
+  val a = Applier(seed = 4)
+  assertEqualInt(a.run(double), 12, "Applier(seed = 4).run(double) == double(4) + 4 == 12")
+}

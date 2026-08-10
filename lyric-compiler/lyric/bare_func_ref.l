@@ -111,6 +111,9 @@ pub func eligibleBareFuncRefTargets(file: in SourceFile): Map[String, FunctionDe
 }
 
 func lastSegmentOfPath(path: in ModulePath): String {
+  if path.segments.count == 0 {
+    return ""
+  }
   path.segments[path.segments.count - 1]
 }
 
@@ -165,20 +168,47 @@ pub func hasFuncAliasTargets(file: in SourceFile): Bool {
   false
 }
 
-pub func collectFuncAliasTargets(file: in SourceFile): Map[String, TypeExpr] {
-  val aliasTargets: Map[String, TypeExpr] = newMap()
+// Fold `file`'s own `alias X = ...` declarations into `into` (first-wins —
+// an existing entry, whether from an earlier file of the same package or an
+// earlier item of this file, is never overwritten). Shared by
+// `collectFuncAliasTargets` (single file) and `collectAliasTargetsForFiles`
+// (whole package, #6404 axis 3) so the self-reference guard and first-wins
+// policy live in exactly one place.
+func addFileAliasTargetsInto(file: in SourceFile, into: in Map[String, TypeExpr]): Unit {
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case ITypeAlias(decl) -> {
         val rhsSelfNamed = match decl.rhs.kind { case TRef(path) -> lastSegmentOfPath(path) == decl.name; case _ -> false }
-        if not rhsSelfNamed and not aliasTargets.containsKey(decl.name) {
-          aliasTargets.add(decl.name, decl.rhs)
+        if not rhsSelfNamed and not into.containsKey(decl.name) {
+          into.add(decl.name, decl.rhs)
         }
       }
       case _ -> {
       }
     }
+    i = i + 1
+  }
+}
+
+pub func collectFuncAliasTargets(file: in SourceFile): Map[String, TypeExpr] {
+  val aliasTargets: Map[String, TypeExpr] = newMap()
+  addFileAliasTargetsInto(file, aliasTargets)
+  aliasTargets
+}
+
+/// As `collectFuncAliasTargets`, but folds `alias X = ...` declarations from
+/// EVERY file in `files` into one shared map (first-wins across files, in
+/// list order) — the multi-file-package visibility axis of #6404 (docs/19):
+/// a same-package alias declared in a sibling file of a multi-file package
+/// is now visible, not just aliases in the file currently being lowered.
+/// Cross-PACKAGE aliases stay out of scope (`files` is expected to be one
+/// package's own files).
+pub func collectAliasTargetsForFiles(files: in List[SourceFile]): Map[String, TypeExpr] {
+  val aliasTargets: Map[String, TypeExpr] = newMap()
+  var i = 0
+  while i < files.count {
+    addFileAliasTargetsInto(files[i], aliasTargets)
     i = i + 1
   }
   aliasTargets

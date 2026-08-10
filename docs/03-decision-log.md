@@ -25151,3 +25151,181 @@ result and crashed the compiler at runtime with the #5422/#5970
 Object-fallback bad cast, a live in-house demonstration of that open
 hazard.  Regression: a `Wrapped(h: Handler)` union-payload round-trip
 case in `bare_func_ref_self_test.l` (10/10 both targets).
+
+## D-progress-748 — JVM: unified alias resolution at the `typeExprToJvm` layer, closing all three tracked axes of #6404 in one AST pre-pass
+
+**Status:** shipped, JVM-only (MSIL is unaffected and unchanged — verified
+by its own full battery, see below).
+
+**Motivation.** D-progress-747/#6393/#6405 fixed `typeExprToJvm`'s `TRef`
+fallback ("any unrecognized name is a same-package user type,
+`JRef(pkg/<name>)`") for FUNCTION-shaped aliases only. Issue #6404 tracked
+three remaining axes of the same root gap:
+
+1. **Non-function alias targets** — `alias Meters = Long` used as a local/
+   param/record-field/return annotation still hit the bogus fallback
+   (confirmed: `NoClassDefFoundError: <Pkg>/Meters` at class load, for
+   every one of those four positions).
+2. **Instance-method-shaped signature descriptors** — `registerInstanceSig`/
+   `registerInstanceSigErased`/`registerFieldElemSig` and
+   `lowerProtectedMethod`/`lowerRecordMethod`/`lowerImplMethod`
+   (`jvm/codegen/06_items.l`) never received `aliasTargets` at all, so a
+   function-type alias on a record/impl/interface method's param or return
+   still produced the same class of bug D-progress-747 fixed for free
+   functions and record/union fields.
+3. **Visibility** — `FuncCtx.aliasTargets` was collected per `SourceFile`,
+   so a same-package alias declared in a different file of a multi-file
+   package (docs/19) was invisible to the codegen paths consulting it.
+
+**Design decision: an AST pre-pass, not parameter-threading.** The issue
+offered two options: (a) add an `aliasTargets` parameter to the
+`typeExprToJvm`/`typeExprToJvmExtern`/`typeExprToJvmErasedExtern` family and
+thread it through every one of their ~80 call sites plus every intermediate
+signature-collection/lowering function that calls them (mechanical, but the
+call graph fans out across all six `jvm/codegen/*.l` files and most of
+`06_items.l`'s ~90 functions); or (b) resolve `alias` references once,
+structurally, in the AST before codegen ever runs. **(b) was chosen.** A
+full audit of the call graph for (a) showed it would touch dramatically
+more surface than (b): each of `registerInstanceSig`, `registerFieldElemSig`,
+`lowerProtectedMethod`, `lowerRecordMethod`, `lowerImplMethod`,
+`holderAwareParamTypes`, `resolveParamsFuncAlias`, and their own callers all
+the way up to `codegenPackageWithSigsSeeded` would need a new parameter,
+whereas (b) needs exactly one new self-contained module
+(`Lyric.TypeAliasResolve`, `lyric-compiler/lyric/type_alias_resolve.l`) plus
+a two-line call at the point the JVM bridge first gets a parsed file — every
+downstream consumer (the whole `typeExprToJvm` family, `fileNeedsLambdaIface`,
+the signature/case/ctor registries, everything) is fixed by construction
+because the alias name is simply gone from the AST by the time any of them
+run it. This also directly closes axis 2 without touching `06_items.l` at
+all: `registerInstanceSig`/`lowerProtectedMethod`/etc. now receive an
+already-resolved `FunctionDecl`/`ProtectedTypeDecl`/etc., so there is
+nothing left in their param/return `TypeExpr`s for an alias-aware
+consultation to do.
+
+This mirrors the repo's established pre-codegen AST-transform precedent
+(`Lyric.Cfg.applyCfgErasure`, `Lyric.Stubbable.stubbableRewriteFile`) and,
+closest in shape, `Lyric.AliasRewriter` — which already walks every `Item`/
+`Expr`/`TypeExpr`/`Pattern` in a file for a DIFFERENT alias mechanism
+(`import X as A`). `Lyric.AliasRewriter` was deliberately NOT extended with
+a second threaded parameter for THIS mechanism: its traversal carries
+extensive local-variable-shadowing bookkeeping
+(`filterAliasesExcludingLocals`, `collect*LocalNames`) that only matters for
+VALUE-level import aliases — types and values are different namespaces, so
+a local variable can never shadow a TYPE alias — and grafting an unrelated
+resolution concern onto that already-dense traversal risked subtle
+interaction bugs for no shared benefit. `Lyric.TypeAliasResolve` is
+therefore a smaller, self-contained walk: no local-shadowing tracking, but
+it DOES track in-scope generic type-parameter names (record/union/
+protected/opaque/interface/impl/function `generics`) so a `TRef` naming a
+generic parameter is never mistaken for an outer alias of the same name —
+the type param shadows it, matching what a `typeParams`-first check in
+codegen itself would do.
+
+This pass is **JVM-only**, wired into `Jvm.Bridge` alone. MSIL does not
+need it: `Msil.Codegen.typeExprToMsilCtx` already consults
+`cctx.aliasTargets` universally at codegen time (#3673), which is itself
+effectively an option-(b)-shaped design already, just implemented inline
+in the codegen function rather than as a separate AST pass (MSIL's single
+shared `CodegenCtx` threaded through the whole build makes that
+consultation free at every call site, a luxury the JVM backend's looser,
+per-function-signature parameter style doesn't have).
+
+**Placement in the pipeline — the actual round-trip that mattered.** The
+straightforward-looking placement (resolve right before `codegenPackage`/
+`codegenPackageWithSigsSeeded`, i.e. as late as possible, immediately before
+the functions whose bug this is) turned out to be TOO LATE:
+`compileProjectToJarBundledWithFeatures` pre-registers the user package's
+own signatures/cases/constructors into BUNDLE-WIDE, first-wins registries
+(`collectFileSigsSeeded`/`collectFileCasesExtern`/`collectFileCtors` on
+`userFile`, well before its own `runMiddleEnd` call) — resolving only later
+left those registries holding the STALE, unresolved alias name, which then
+won over the correctly-resolved entry codegen would have produced for the
+package's own class (confirmed via `javap`: a `Box(d: Meters)` record's own
+class file kept emitting `Ljava/lang/Object;`-shaped... no — kept emitting
+the literal nonexistent `LRepro/Meters;` field/constructor descriptor even
+though the record's `IRecord` item itself was, in isolation, correctly
+resolved). The fix: resolve as EARLY as possible instead — right after
+parse + `docs/58` wire-expand + `Lyric.AliasRewriter`'s import-alias
+rewrite, before type-check ever sees the file (`resolveTypeAliases`, called
+from both `compileToJar`'s and `compileProjectToJarBundledWithFeatures`'s
+per-file pipelines). This is harmless to type-check diagnostics: `alias` is
+fully transparent per the language reference, so the type checker already
+treats an alias and its target as the same type — resolving early can only
+change diagnostic WORDING (`Meters` vs `Long`), never a build's pass/fail
+outcome. Stdlib files bundled via the transitive import closure
+(`stdlibByPkg`/`toBundle`) are deliberately NOT resolved by this pass — out
+of scope for #6404, which is about user code; if the stdlib itself uses a
+non-function alias on a public field, that is a separate, undiscovered
+problem left for a follow-up.
+
+**Axis 3 (visibility) — closed by an existing repo invariant, not by new
+plumbing.** `docs/19-multi-file-packages.md` documents that a directory-
+shaped multi-file package's `.l` files are concatenated (in deterministic
+file-name order) into ONE source string BEFORE parsing. Every `Jvm.Bridge`
+entry point this fix touches (`compileToJar`, `compileProjectToJarBundled-
+WithFeatures`'s `pkgSrcs`) therefore already receives one already-merged
+`SourceFile` per package — `Lyric.BareFuncRef.collectFuncAliasTargets`
+(single-file, unmodified) is consequently ALREADY package-wide-correct for
+every entry point exercised here, no separate collection pass needed.
+`Lyric.BareFuncRef.collectAliasTargetsForFiles` (a new, first-wins-across-
+files variant, added alongside the `addFileAliasTargetsInto` helper both it
+and `collectFuncAliasTargets` now share) is added as documented
+infrastructure for a genuine multi-`SourceFile`-per-package scenario, but no
+such scenario was found reachable from any traced `Jvm.Bridge` entry point
+in the time available — it is unused pending a caller that actually needs
+it. This is a narrower claim than the original ask ("collect the alias map
+package-wide") but an honest one: the visibility gap the original
+`FuncCtx.aliasTargets` doc comment flagged is closed for the ACTUAL
+multi-file mechanism this repo implements, not via new plumbing this entry
+built but never got to exercise.
+
+**Also fixed (tiny, folded in from PR #6405's final review): `Lyric.
+BareFuncRef.lastSegmentOfPath`** dropped MSIL's zero-segments guard
+(`if n == 0 { return "" }` in `lastSegmentMsil`) — restored for exact
+parity, defensive against a malformed zero-segment `ModulePath` reaching
+this helper.
+
+**Two pre-existing, unrelated bugs discovered while building repros for
+this entry (both independent of alias resolution — confirmed with plain
+`Long`, no `alias` involved at all — and out of scope here, filed as
+#6407 (protected entries, both targets) and #6408 (impl-for-interface,
+MSIL only)):**
+
+- A `protected type`'s `entry` method (`entry add(self: in Counter, m:
+  Long): Long { ... }`) crashes on BOTH targets — JVM:
+  `NoSuchMethodError` (the emitted descriptor includes an explicit leading
+  receiver param in addition to the implicit `this`, i.e. `stripLeading-
+  SelfParam` isn't applied consistently between the entry's OWN emitted
+  descriptor and its `invokevirtual` call-site expectation); MSIL:
+  `InvalidProgramException`. This blocked exercising the "protected entry"
+  half of axis 2's originally-requested regression coverage.
+- An `impl X for Y` block that also declares a matching `interface X`
+  crashes on MSIL with `InvalidProgramException` (JVM is unaffected — the
+  same construct round-trips correctly there). This blocked exercising
+  "impl method" as a DUAL-TARGET regression case; `record` instance
+  methods (which don't hit either pre-existing bug) cover axis 2's method-
+  signature claim on both targets instead.
+
+**Verification.** Repros for all three tracked axes confirmed fixed on
+`--target jvm` (`Meters`-typed local/param/record-field/return; a record
+instance method's param/return/self-field; a record instance method's
+function-typed parameter) and unaffected on `--target dotnet`. Regression
+cases added to `bare_func_ref_self_test.l` (15/15 both targets, up from
+10/10). Full battery green on both targets unless noted:
+`func_val_local_rettype_self_test.l` 21/21, `closure_zero_overhead_self_test.l`
+18/18, `generic_jvm_self_test.l` 24/24, `bitwise_self_test.l` 10/10,
+`nested_constructor_pattern_self_test.l` 6/6, `block_shadow_self_test.l`
+20/20, `erased_generic_arith_jvm_self_test.l` 23/23 (JVM only — no dotnet
+twin exists), `typechecker_self_test.l` 298/298 (dotnet only —
+target-independent checker), `msil_project_bridge_self_test.l` 38/38
+(dotnet only, proving MSIL is untouched), `weaver_self_test.l` 46/46
+(dotnet only) and `aspect_weave_self_test.l` 7/7 (both targets) as a
+middle-end-interaction guard for the chosen AST-pre-pass design. `lyric fmt
+--write` clean (no refusals) on every changed/new `.l` file.
+
+**Related:** #6404, D-progress-747/#6393/#6405 (the function-alias-only fix
+this entry generalizes), #3673 (MSIL's `typeExprToMsilCtx`, the reference
+design this entry's JVM-side pre-pass achieves parity with by a different
+mechanism), docs/19-multi-file-packages.md (the pre-concatenation invariant
+axis 3 relies on), docs/26-aspects.md / D047 (the weave ordering the
+early-in-pipeline placement had to respect).
