@@ -63,7 +63,9 @@ fi
 
 if [[ -n "$SUMMARY" ]]; then
   "$lyric_bin" test "$@"
-  echo "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+  # Default to /dev/null so --summary also works in local runs, where
+  # GITHUB_STEP_SUMMARY is never set (this script runs under set -u).
+  echo "$SUMMARY" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 else
   exec "$lyric_bin" test "$@"
 fi

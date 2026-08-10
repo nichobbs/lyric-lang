@@ -24601,3 +24601,350 @@ pure-refactor task); flagged for the orchestrator to triage/file.
 **Related:** #6396, D-progress-740/#6392 (the duplication this entry
 retires), D-progress-738/739/#5362/#5366 (the `Some(slot)`/
 `funcValRetTypes` machinery both backends' invoke tails still rely on).
+
+## D-progress-745 — JVM: `+`/`-`/`*`/`==`/etc. on two doubly-Object-erased operands silently string-concatenated or crashed instead of computing the real value (#6398)
+
+**Status:** shipped, JVM only (MSIL unaffected — see below).
+
+**Motivation.** D-progress-744/#6396 flagged this as a found-but-out-of-scope
+gap while extracting the shared invoke-tail helper: `makeAdder(1)(2) +
+makeAdder(3)(4)` on `--target jvm` evaluated `+` as string concatenation
+(`"3" + "7"` = `"37"`) instead of integer addition (`10`), then threw
+`ClassCastException` on the following `== 10` comparison. Filed as #6398.
+Root cause: both chained-call results are verifier-tracked as
+`java/lang/Object` per the #6392/#5563 uniform boxed-invoke-ABI convention,
+and the JVM binop lowering (`lyric-compiler/jvm/codegen/02_exprs.l`'s `BAdd`
+arm, and `reconcileCmpOperands` shared by `BSub`/`BMul`/`BDiv`/`BMod`/every
+comparison operator) had no way to tell "two erased references, secretly
+both `Int`" apart from "two erased references, secretly both `String`" —
+`BAdd` unconditionally guessed string-concat; the other operators fell
+through to `reconcileCmpOperands`'s documented-but-unreproduced #2862 gap
+(silently returning `lhsTy` unchanged, then emitting a primitive instruction
+directly on two references — a `VerifyError` at class load, not a wrong
+value). MSIL was unaffected: its own chained-call invoke tail
+(`lowerFuncValueInvokeMsil`, from the same D-progress-744 refactor) already
+recovers and unboxes to the real return type via `recordFieldFuncKeyMsil`/
+`cctx.fieldFuncRetTypes`, so MSIL never carries two ambiguous `object`s into
+`lowerBinopMsil` for this shape in the first place.
+
+**Fix — two parts.**
+
+1. **Root cause (unbox at the closure-invoke site, not the consuming
+   binop)**, mirroring both MSIL's own strategy for this exact defect class
+   and the codebase's #4877 precedent (unbox a generic-payload match binding
+   at the bind site, not downstream at every consumer):
+   - `JvmFuncSig` (`01_types.l`) gains `closureRetTy: Option[JvmType]` — when
+     a function's declared return type is itself function-shaped
+     (`(Int) -> Int`), this is the erased JvmType of the INNER return (`Int`),
+     computed by a new `closureRetTypeOf`/`closureRetTypeOfTe` pair that
+     peels one layer of `TFunction`/`TParen`. Populated with a real value at
+     the two IFunc-signature-registration sites that matter
+     (`collectFileSigsSeeded`'s main pass, `registerInstanceSigErased`,
+     `registerIfaceSig`, and `collectMonoSpecializedSigs`); `None` at every
+     other `JvmFuncSig` construction site (field/enum/wire/view-accessor
+     sigs, derive-synthesized functions, aspect/B'-mode-woven functions) —
+     documented per-site as either "never function-shaped by construction"
+     or "no `externTypes` available in this shared path," not silently
+     defaulted.
+   - `lowerLambdaInvokeTail` (`04_calls.l`) takes a new
+     `retType: Option[JvmType]` parameter: when `Some(rt)`, the invoke's raw
+     `Object` result is coerced to `rt` right after the `invokeinterface`
+     (reusing `coerceArgTo`'s existing unbox/checkcast idiom; `JVoid` pops
+     the boxed placeholder explicitly since `coerceArgTo` has no `JVoid`
+     target arm) and `rt` — not `Object` — is returned as the tracked type.
+     `None` preserves the exact pre-fix behavior.
+   - `lowerCallOnExprResult` (the direct-chained-call arm, `makeAdder(1)(2)`)
+     resolves `retType` via a new `closureInvokeRetType(ctx, fn)`: when `fn`
+     is `ECall(EPath(name), args)` naming a known same-package top-level
+     function, look up `sig.closureRetTy` — arity-qualified key first, then
+     bare-name fallback, mirroring `funcSigRetType`'s and #5790's own
+     overload-safety precedence.
+   - `lowerLambdaInvoke` (the NAMED-local-invoke arm, `val f = makeAdder(1);
+     f(2)`) resolves `retType` via a new `FuncCtx.funcValRetTypes: Map[String,
+     JvmType]` registry (mirrors MSIL's own `fctx.funcValRetTypes`, D-progress-
+     738/739), populated by a new `recordFuncValRetType` at the same three
+     `SLocal` binding sites `recordVarGenericArgs` already instruments
+     (`LBVal`/`LBLet`/`LBVar`), and propagated into closure-body `FuncCtx`s
+     at the same two sites `varGenericArgs` already propagates into (so a
+     captured named closure local still resolves one lambda scope deep,
+     mirroring #4945).
+
+2. **Fail-loudly guard for the residual undecidable case** (two erased
+   `Object`s neither side of this recovery can trace back to a known
+   function — e.g. two un-annotated LAMBDA-LITERAL locals summed, or a
+   fully-generic unresolvable instantiation): `BAdd`'s "both operands are
+   references" branch now only takes the string-concat path when the RHS is
+   a concretely-known reference class (`String`, a record, …); when it is
+   exactly `java/lang/Object` too, it `panic`s with a clear compile-time
+   diagnostic (span-anchored) instead of guessing. `reconcileCmpOperands`
+   gets the same guard as a new `isFullyErasedObjectJvm(lhsTy) and
+   isFullyErasedObjectJvm(rhsTy)` check at its top, converting the #2862 gap
+   (silent-fallthrough into a `VerifyError`-producing arithmetic instruction
+   on two references, or an Object-identity comparison of dubious semantic
+   validity) into the same loud diagnostic for `BSub`/`BMul`/`BDiv`/`BMod`
+   and every comparison operator. This never fires for the fixed shapes
+   above (part 1 eliminates them before they'd reach here) and does not
+   regress the pre-existing legitimate "erased-Object `+` concrete-String"
+   concat path (`Std.String.joinList`'s `xs[0] + sep`, verified below) —
+   only the previously-silent both-fully-erased case changes behavior, from
+   wrong-value/VerifyError to a diagnostic.
+
+**Operator/type coverage.** `+ - * / %` and `== != < <= > >=` on
+`Int`/`Long`/`Float`/`Double`/`Byte`; the pre-existing "one erased operand,
+one primitive/literal" shape (`makeAdder(5)(10) + 1`) is unchanged and still
+passes; `String + String` concat (including erased-Object-vs-concrete-String)
+still concatenates.
+
+**Other Object-erased producers checked (per the task's own framing).**
+- **Match-pattern-bound values** (`case Ok(v) -> v`): NOT affected — #4877
+  already unboxes these at the bind site (`lowerPatternBind`/
+  `bindCaseField`/`scrutineeGenericArgs`) before a consuming `+` ever sees
+  them; both `erased_generic_arith_jvm_self_test.l`'s existing coverage and a
+  new manual two-separate-match-extractions-summed repro pass unmodified.
+- **Erased generic call results / stdlib-generic mono fallbacks**: NOT
+  affected for the shapes `stdlib_generic_mono_self_test.l` and
+  `erased_generic_arith_jvm_self_test.l` exercise (7/7 and 23/23 respectively,
+  both targets) — these route through the same #4877 bind-site unboxing.
+- **Record field reads of generic fields** (`b1.value` where `value: T`,
+  NOT via `match`): CONFIRMED part of the same defect family and NOT fixed
+  by this change — direct (non-match) field access on a generic record
+  field has no existing unboxing mechanism (only `slice[Elem]`/`List[Elem]`
+  element-narrowing, #5570, and match-bind unboxing, #4877, exist today);
+  summing two such fields previously fell into `BAdd`'s same "both JRef"
+  branch and silently string-concatenated. After this fix it correctly
+  fails loudly via the new guard (`panic`) instead of returning a wrong
+  value — a genuine improvement, but not a full value-level fix. Tracked
+  here as a follow-up, not filed as a separate issue by this session; the
+  same is true for two un-annotated LAMBDA-LITERAL (not named-function-call)
+  locals summed together (`closureInvokeRetType`/`funcValRetTypes` only
+  recover a real return type when the initializer traces back to a call of a
+  known top-level function).
+
+**Verification.** Full `make lyric` multiple times across the session: with
+the fix, reverted (`git stash`) to confirm an unrelated finding below is
+pre-existing, restored, and once more after a mid-session branch restart
+(PR #6396/#6390/#6387 merged as #6397 and the working branch was rebuilt
+from the new `main`; the working-tree diff below carried through unchanged).
+Issue repro (annotated inner
+lambda param — see note below) prints `ok` / exits 0 on `--target jvm` and
+stays correct on `--target dotnet`; named-local, subtraction/multiplication,
+and comparison-only variants of the same shape all verified by hand before
+being folded into the committed suite. `func_val_local_rettype_self_test.l`
+gained four new `#6398` cases (direct-chain sum, named-local sum,
+sub/mul, comparison-only) — 19/19 on BOTH targets. Full regression battery,
+all green on the targets shown: `func_val_local_rettype_self_test.l` 19/19
+(dotnet AND jvm), `erased_generic_arith_jvm_self_test.l` 23/23 (dotnet AND
+jvm), `closure_zero_overhead_self_test.l` 18/18 (dotnet AND jvm),
+`bitwise_self_test.l` 10/10 (dotnet AND jvm), `byte_arithmetic_self_test.l`
+11/11 (dotnet AND jvm), `compound_string_assign_self_test.l` 4/4 (jvm),
+`bool_tostring_self_test.l` 4/4 (jvm), `jvm_trio_self_test.l` 9/9 (jvm),
+`jvm_trio_positive_self_test.l` 3/3 (jvm), `block_shadow_self_test.l` 20/20
+(dotnet AND jvm), `nested_constructor_pattern_self_test.l` 6/6 (dotnet AND
+jvm), `typechecker_self_test.l` 298/298 (dotnet), `stdlib_generic_mono_self_
+test.l` 7/7 (dotnet AND jvm). `lyric fmt --write` clean (no refusals) on all
+eight changed `.l` files (`bridge.l` and the six `codegen/*.l` files plus
+`func_val_local_rettype_self_test.l`).
+
+**Issue repro note.** #6398's filed repro (`{ y -> x + y }`, no annotation on
+`y`) does not compile on `--target dotnet` at all — a separate, pre-existing,
+unrelated gap (#1939: "a lambda that uses an un-annotated parameter outside a
+direct higher-order-function call is not yet supported on --target dotnet").
+The semantically-identical annotated form (`{ y: Int -> x + y }`, matching
+this file's own pre-existing `makeAdder`) compiles and passes on both
+targets and is what the committed test cases use.
+
+**Found, pre-existing, out of scope.** While isolating a "generic record
+field arithmetic" repro variant, a plain top-level function whose return
+type is an INSTANTIATED generic record (`func makeBox(n: Int): Box[Int]`)
+throws `NoClassDefFoundError: Std/Http/Url` at runtime on `--target jvm`
+the moment its result's field is read (`b1.value`) — reproduces even for a
+bare `println(b1.value)` with no arithmetic at all, and reproduces
+byte-identically against the unmodified pre-fix binary (confirmed via the
+`git stash` A/B above), so this is unrelated to this entry's fix. Not filed
+as a new issue by this session; flagged for the orchestrator to triage/file.
+
+**Related:** #6398, D-progress-744/#6396 (where this was first found and
+scoped out), D-progress-740/#6392 (`closureInvokeRetType` extends the same
+chained-call callee-lowering machinery), D-progress-738/739/#5362/#5366 (the
+MSIL `funcValRetTypes` registry this entry's JVM `funcValRetTypes` mirrors),
+#4877 (the match-bind-site unboxing precedent this fix's "unbox at the
+producing site" strategy follows), #2862 (the `reconcileCmpOperands`
+both-erased gap this entry closes with a diagnostic).
+
+## D-progress-746 — JVM: a plain function's instantiated-generic-record return read a field through an UNRELATED type's same-named accessor, `NoClassDefFoundError: Std/Http/Url` (#6399); `lowerCmpFail` relational-on-reference silent `LNop`; Unit-closure chained-invoke test gap
+
+**Status:** shipped, JVM only (MSIL unaffected — reifies generics, never hits
+this erasure path).
+
+**Root cause.** `func makeBox(n: Int): Box[Int] { Box(value = n) }` /
+`val b = makeBox(5); b.value` threw `NoClassDefFoundError: Std/Http/Url` at
+the field read on `--target jvm` — flagged as pre-existing, unrelated,
+out-of-scope by D-progress-745 while isolating a different repro. Traced to
+two compounding facts:
+
+1. `typeExprToJvm`'s `TGenericApp` arm (`jvm/codegen/01_types.l`) erased
+   EVERY non-`List`/`Map` generic-applied type — including a concrete
+   user-record instantiation like `Box[Int]`, not just a bare unresolved
+   type PARAMETER — all the way to `java/lang/Object`. Consumed by
+   `collectFileSigsSeeded`'s `IFunc` registration, this meant `makeBox`'s
+   registered `JvmFuncSig.ret` (and the call site's tracked result type) was
+   `Object`, throwing away the fact that the value is actually a real
+   `<pkg>/Box` instance (`Box(value = n)` constructs the real class via
+   `lowerConstruction`; only the record's OWN generic-param FIELDS are
+   Object-erased, not the record's class identity — this is what J4 M-1
+   (D-progress-473) actually specced, docs/44 line 174, but the return-type
+   mapping over-applied it to the whole type).
+2. With `b`'s tracked type reduced to `java/lang/Object`, `EMember`'s
+   field-read lowering (`02_exprs.l`) fell into the `#3044` erased-Object
+   fallback, which resolves a field NAME through a single BUNDLE-WIDE
+   `field:<name>` registry populated **only from opaque types** (deliberately
+   first-registration-wins across the WHOLE stdlib import closure, not
+   scoped to the receiver's actual type — `06_items.l`'s `IOpaque` arm
+   comment already says so). `Std.Http.Url` is `pub opaque type Url { value:
+   String }` (`lyric-stdlib/std/http.l`) and happens to be the first opaque
+   type anywhere in this program's transitive stdlib closure with a field
+   also named `value` — so the fallback `checkcast`ed `b` to `Std/Http/Url`
+   and called its `$value()` accessor. `Std.Http.Url`'s class was never
+   actually emitted into THIS program's bundled JAR (nothing in the
+   repro imports `Std.Http`), so the `checkcast` target class failed to
+   link at runtime: `NoClassDefFoundError: Std/Http/Url`, not the
+   same-shape `ClassCastException` a locally-present wrong class would have
+   produced.
+
+Not a stale/misindexed-registry bug in the sense of corrupted data — the
+`field:` registry is exactly as documented (first-opaque-type-wins,
+intentionally unscoped) — the actual defect is further upstream: the call
+result should never have been reduced to a bare, class-less `Object` in the
+first place.
+
+**Fix — narrowly scoped, not full J4 reified generics.** Confirmed this is
+separable from the J4 foundational gap (docs/44, #2667): the fix only
+recovers the SAME-FILE case, leaving the deliberate cross-package
+`Object` erasure (and the `field:` fallback it feeds) untouched for
+everything else — including stdlib `Option`/`Result`, which are used from
+dozens of OTHER packages and would corrupt to the wrong class entirely if
+`typeExprToJvm`'s `TGenericApp` arm were changed to resolve every generic
+head unconditionally (verified this reasoning by hand: `owner` at every
+`JvmFuncSig` registration site is the DECLARING file's own package, so a
+`Result[T, E]`-returning function declared OUTSIDE `Std.Core` would
+register a nonexistent `<callerPkg>/Result` class — not attempted).
+
+1. **New side-channel, not a `typeExprToJvm` policy change.** `JvmFuncSig`
+   gains `recordRetClass: Option[String]` (`01_types.l`) — populated ONLY at
+   the top-level free-function `IFunc` registration site
+   (`collectFileSigsSeeded`, `06_items.l`) when the declared return type is a
+   bare `TGenericApp` naming a RECORD declared in the SAME file (a new
+   `recordRetClassOf`/pre-scan `localRecordNames` pass over `file.items`, so
+   declaration order doesn't matter). `sig.ret` itself is UNCHANGED (stays
+   the erased `Object` — it is the actual emitted method descriptor's return
+   type and must match for JVM linking); `recordRetClass` is a separate
+   "narrow the RESULT after invoking" hint, mirroring the established
+   "unbox/narrow at the call/bind site" idiom `closureRetTy` (D-progress-745)
+   and match-bind unboxing (#4877) already use for this defect class. `None`
+   at every other `JvmFuncSig` construction site (11 in `codegen/06_items.l`
+   + `01_types.l`, 3 more in `bridge.l`'s derive/woven/mono-specialised
+   paths) — same explicit-everywhere discipline as `closureRetTy` (a
+   defaulted field there miscompiles the self-hosted MSIL emitter,
+   `InvalidProgramException` in `collectDeriveFreeSigs` — hit and fixed
+   during this session when the three `bridge.l` sites were initially
+   missed).
+2. **Consumption: `narrowStaticCallResult`** (`04_calls.l`) — a small helper
+   the three free-function call-result sites (`lowerGeneralStaticCall`'s two
+   arms, `lowerStaticCallWithHolders`) now return through instead of bare
+   `sig.ret`: when `recordRetClass` is `Some(cls)`, emits `checkcast cls`
+   right after the `invokestatic` (a runtime no-op — the value already IS
+   that class — but re-anchors the JVM verifier's tracked type, and the
+   `JvmType` this function returns to its caller) before returning
+   `JRef(cls)`; otherwise passes `sig.ret` through unchanged. This makes
+   `makeBox(5)`'s tracked result type the real `<pkg>/Box`, so
+   `recordFieldType(ctx, "<pkg>/Box", "value")` finds the field directly —
+   the `#3044` erased-Object/`field:` fallback is never reached for this
+   shape, closing off the collision entirely rather than just changing which
+   type it collides with.
+3. **Scoped to top-level free functions returning a LOCAL record** — matches
+   the issue title exactly ("a plain function's ... return"). Deliberately
+   NOT extended to: instance methods (`registerInstanceSigErased`/
+   `registerIfaceSig`, still `None`) — no report of this shape there and it
+   would touch more call sites for no repro coverage; unions — a union
+   payload has no direct `.field` access outside `match` in Lyric, so the
+   receiver-class-narrowing this fix provides has no consumer for unions;
+   cross-package records — see the "not attempted" reasoning above.
+
+**Fix — addendum (folded in from PR #6400 review, same files this round
+already owns).**
+
+4. **`lowerCmpFail`'s relational-on-non-String-reference arm silently
+   `LNop`'d** (`02_exprs.l` `JRef`-else branch) instead of panicking, unlike
+   its twin `lowerCmp` (the value-producing `x < y` form, which already
+   panics with a descriptive message). `lowerCmpFail` backs `lowerBoolCond`
+   — the if/while-CONDITION path (`if a.value < b.value { … }`) — a
+   COMPLETELY SEPARATE code path from `lowerCmp` that the `reconcileCmpOperands`
+   comment's "the relational operators already raise lowerCmp's own
+   descriptive panic" overstated (true only for the value-producing form).
+   The `LNop` left both operand reference values sitting unconsumed on the
+   stack instead of the balanced-stack comparison every other arm here
+   emits. Verified reachable: `#6398`'s own `closureInvokeRetType`/
+   `funcValRetTypes` recovery already unboxes MOST erased-call-result
+   comparisons before they'd hit this arm (confirmed by hand — `if
+   makeAdder(1)(2) < makeAdder(3)(4) { }` does NOT reach it, both operands
+   are already `Int` by the time `lowerCmpFail` runs), but a GENERIC-FIELD
+   read has no closure-invoke site to recover a type at (same "no anchor"
+   case #6401 already covers for `==`), so `if a.value < b.value { }` on two
+   `BoxG[Int]`-typed locals DID reach the silent `LNop` — confirmed by hand
+   before the fix (ran without error, i.e. silently miscompiled/produced
+   whatever the JVM verifier tolerated) and confirmed after the fix (panics
+   with the descriptive compile-time message, verified via a throwaway
+   repro). Fixed by making that arm panic with the SAME message as
+   `lowerCmp`'s twin; the `reconcileCmpOperands` comment corrected to say
+   both twins now panic, not just one.
+5. **Test-coverage gap for `lowerLambdaInvokeTail`'s `JVoid` arm**
+   (`04_calls.l`, added in D-progress-745/#6398 round 14 — pops the boxed
+   placeholder a chained invoke of a `Unit`-returning closure still pushes,
+   since `coerceArgTo` has no `JVoid` target arm) — no test exercised it.
+   Added `makeSideEffect6399(): () -> Unit { { -> println(...) } }` +
+   `makeSideEffect6399()()` (a chained call, so `closureInvokeRetType`
+   resolves `Some(JVoid)` and this exact arm fires) to
+   `func_val_local_rettype_self_test.l`, asserting a subsequent computation
+   still runs correctly (the observable proof an unpopped placeholder would
+   have broken via stack corruption).
+
+**Verification.** Full `make lyric` three times across the session (once
+after the `06_items.l`/`01_types.l`/`04_calls.l` core fix — crashed with
+`InvalidProgramException` in `Jvm.Bridge.Program.collectDeriveFreeSigs`
+because the three `bridge.l` `JvmFuncSig` construction sites were missed;
+once after adding `recordRetClass = None` there too — clean; once more after
+`lyric fmt --write` reformatted the addendum-4 comment/panic in
+`02_exprs.l`). Issue's exact repro (`record Box[T]` / `makeBox(5).value`)
+prints `5` on `--target jvm` (previously `NoClassDefFoundError:
+Std/Http/Url`) and stays `5` on `--target dotnet`. Addendum-4's repro
+(`BoxG[Int]` locals compared with `<` inside an `if`) panics with the
+descriptive compile-time message on `--target jvm` post-fix (confirmed
+silent pre-fix). Four new cases in `generic_jvm_self_test.l`
+(`--target jvm`; `Box[Int]`/`Box[String]` plain-function returns, a
+second-function-removed variant, and a no-intermediate-local direct
+`makeBoxInt6399(3).value` read) plus one new case in
+`func_val_local_rettype_self_test.l` (both targets, addendum-5) — full
+regression battery, all green: `generic_jvm_self_test.l` 24/24 (jvm, and
+incidentally dotnet too — not CI-wired there but confirmed portable),
+`func_val_local_rettype_self_test.l` 21/21 (dotnet AND jvm),
+`stdlib_generic_mono_self_test.l` 7/7 (dotnet AND jvm),
+`erased_generic_arith_jvm_self_test.l` 23/23 (dotnet AND jvm),
+`inbundle_generics_self_test.l` 28/28 (dotnet), `bitwise_self_test.l` 10/10
+(dotnet AND jvm), `nested_constructor_pattern_self_test.l` 6/6 (dotnet AND
+jvm), `block_shadow_self_test.l` 20/20 (dotnet AND jvm),
+`typechecker_self_test.l` 298/298 (dotnet). `lyric fmt --write` clean (no
+refusals) on all seven changed `.l` files after the reformat pass settled
+(`bridge.l`, the four `codegen/*.l` files, `generic_jvm_self_test.l`,
+`func_val_local_rettype_self_test.l`).
+
+**Related:** #6399, D-progress-745/#6398 (this entry's "Found, pre-existing,
+out of scope" note is where #6399 was first flagged; `closureRetTy`/
+`funcValRetTypes` are the direct precedent this entry's `recordRetClass`/
+`narrowStaticCallResult` mirror), D-progress-473 (J4 M-1, the generics-erase-
+to-`Object` model this entry corrects an over-application of, not reverts),
+#3044 (the `field:` erased-Object fallback this entry routes around for the
+now-recoverable shape, left otherwise unchanged), #4877 (the match-bind
+"unbox at the producing site" precedent), #2862/#6401 (`reconcileCmpOperands`
+history the addendum-4 fix continues), docs/44 §5 J4 (erased-generics model;
+this entry's fix stays within it — no `Signature` attrs, no reified
+generics, no cross-package type resolution added).

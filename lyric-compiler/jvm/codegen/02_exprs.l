@@ -728,12 +728,41 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                 // StringBuilder path below.
                 val rhsTy = lowerExpr(ctx, insns, rhs)
                 match rhsTy {
-                  case JRef(_) -> {
-                    // Both operands are references (e.g. an erased `Object`
-                    // list element concatenated with a String, as in
-                    // `Std.String.joinList`'s `xs[0] + sep`): `+` on
-                    // references is string concatenation — mirror the MSIL
-                    // backend's String.Concat lowering instead of panicking.
+                  case JRef(rcls) -> {
+                    if rcls == "java/lang/Object" {
+                      // Both operands are erased all the way to `Object` with
+                      // NO recoverable static type on either side (#6398): the
+                      // lhs guard above already ruled out a concretely-known
+                      // `String`, and rhs is exactly `Object` too — e.g. two
+                      // closure-invoke results whose declared return type
+                      // could not be traced back to a concrete primitive
+                      // (`closureInvokeRetType`/`Part A` covers the traceable
+                      // shapes before this point is ever reached; a NAMED
+                      // local bound from such a call, or a fully-generic
+                      // erased value with no recoverable instantiation, are
+                      // the residual gap). Guessing string-concat here
+                      // silently produced a WRONG VALUE for a genuinely
+                      // numeric `+` (`makeAdder(1)(2) + makeAdder(3)(4)`
+                      // yielded `"37"` instead of `10`, #6398) — per the
+                      // fail-loudly principle, a genuinely undecidable case
+                      // must be a compile-time diagnostic, never a silent
+                      // guess.
+                      val addPos = lhs.span.startPos
+                      panic(
+                        "Jvm.Codegen: " + toString(addPos.line) + ":" + toString(addPos.column) + ": '+' on two operands " +
+                          "whose runtime type is fully erased to Object could not be resolved to either numeric " +
+                          "addition or string concatenation. This typically happens when both sides come from a " +
+                          "named local bound from a closure-returning call, or from an unresolvable generic " +
+                          "instantiation. Add an explicit type annotation to at least one operand's binding so its " +
+                          "static type is known at the point of the addition."
+                      )
+                    }
+                    // Otherwise: lhs is erased `Object` and rhs is a
+                    // CONCRETELY-known reference type (most commonly `String`,
+                    // e.g. an erased `Object` list element concatenated with a
+                    // String, as in `Std.String.joinList`'s `xs[0] + sep`) —
+                    // `+` on references is string concatenation, mirroring the
+                    // MSIL backend's String.Concat lowering.
                     val rSlot = allocSlot(ctx, "__cat_rhs_" + freshLabel(ctx), rhsTy)
                     emitStore(insns, rSlot, rhsTy)
                     coerceToStringForConcat(ctx, insns, lhsTy)
@@ -777,7 +806,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                   }
                   case _ -> ()
                 }
-                val numTy = reconcileCmpOperands(ctx, insns, lhsTy, rhsTy)
+                val numTy = reconcileCmpOperands(ctx, insns, lhsTy, rhsTy, true)
                 match numTy {
                   case JRef(_) -> {
                     panic("BAdd: reference operand could not be reconciled to a numeric type")
@@ -884,7 +913,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case BSub -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
           match lhsTy {
             case JLong -> {
               insns.add(LLsub)
@@ -907,7 +936,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case BMul -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
           match lhsTy {
             case JLong -> {
               insns.add(LLmul)
@@ -930,7 +959,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case BDiv -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
           match lhsTy {
             case JLong -> {
               insns.add(LLdiv)
@@ -964,7 +993,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case BMod -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
           match lhsTy {
             case JLong -> {
               insns.add(LLrem)
@@ -1811,7 +1840,48 @@ func isByteJvm(ty: in JvmType): Bool {
   }
 }
 
-func reconcileCmpOperands(ctx: in FuncCtx, insns: in List[LInsn], lhsTy: in JvmType, rhsTy: in JvmType): JvmType {
+// True for the fully-erased "no recoverable static type" reference shape
+// (`java/lang/Object` exactly) — as opposed to a concretely-known reference
+// class such as `java/lang/String` or a record, which the callers below
+// already dispatch correctly (String comparison/concat, record equality, …).
+func isFullyErasedObjectJvm(ty: in JvmType): Bool {
+  match ty {
+    case JRef(cls) -> cls == "java/lang/Object"
+    case _ -> false
+  }
+}
+
+func reconcileCmpOperands(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  lhsTy: in JvmType,
+  rhsTy: in JvmType,
+  panicOnErased: in Bool,
+): JvmType {
+  if panicOnErased and isFullyErasedObjectJvm(lhsTy) and isFullyErasedObjectJvm(rhsTy) {
+    // Both operands are erased all the way to `Object` with NO recoverable
+    // static type on either side (#2862/#6398) — e.g. two closure-invoke
+    // results, or two generic-payload values whose instantiation could not
+    // be traced.  The pre-fix fallback silently returned `lhsTy` unchanged,
+    // and for ARITHMETIC (BAdd numeric path, BSub/BMul/BDiv/BMod) that
+    // emitted a primitive instruction directly on two references (`isub`
+    // etc.), a VerifyError at class load.  Per the fail-loudly principle,
+    // that undecidable case must be a compile-time diagnostic, not a guess.
+    // COMPARISONS pass panicOnErased = false (#6401): `==`/`!=` on two
+    // erased references correctly dispatches through the null-safe
+    // `Objects.equals` value-equality path (Lyric `==` is value equality on
+    // every reference type), and the relational operators now raise a
+    // descriptive reference-comparison panic from BOTH twins that consume
+    // this function's result — `lowerCmp` (value-producing `x < y`) and
+    // `lowerCmpFail` (the `lowerBoolCond` if/while-condition path, #6399
+    // addendum; it used to silently `LNop` instead of panicking).
+    panic(
+      "Jvm.Codegen: arithmetic on two operands whose runtime type is fully erased to Object could not " +
+        "be resolved to a concrete numeric type. This typically happens when both sides come from a " +
+        "named local bound from a closure-returning call, or from an unresolvable generic instantiation. Add an " +
+        "explicit type annotation to at least one operand's binding so its static type is known at this point."
+    )
+  }
   val lhsPrim = numericPrimTy(lhsTy)
   val rhsPrim = numericPrimTy(rhsTy)
   if isByteJvm(lhsTy) and isByteJvm(rhsTy) {
@@ -1851,13 +1921,12 @@ func reconcileCmpOperands(ctx: in FuncCtx, insns: in List[LInsn], lhsTy: in JvmT
     emitLoad(insns, rhsSlotL, JLong)
     JLong
   } else {
-    // Both operands have the same primitive type (or both are Object-erased
-    // references).  For the primitive case the caller emits the arithmetic
-    // instruction directly against lhsTy.  The both-erased Object+Object case
-    // (e.g. `case Ok(x) -> case Ok(y) -> x + y` on nested generic match arms)
-    // is a known gap: both sides need to be unboxed to a primitive before the
-    // arithmetic instruction, but no tested code path currently triggers it
-    // (#2862).  Track the gap there; fix when a real reproducer is confirmed.
+    // Both operands have the same primitive type, or the same concretely-
+    // known reference type (e.g. two `String`s — the caller's own
+    // `JRef(cls)` dispatch, such as `lowerCmpFail`'s `cls == "java/lang/
+    // String"` arm, handles those correctly).  The genuinely-ambiguous
+    // both-erased-Object case is caught above, before this branch is ever
+    // reached (#2862/#6398).
     lhsTy
   }
 }
@@ -1865,7 +1934,7 @@ func reconcileCmpOperands(ctx: in FuncCtx, insns: in List[LInsn], lhsTy: in JvmT
 func lowerCmpExpr(ctx: in FuncCtx, insns: in List[LInsn], op: in BinOp, lhs: in Expr, rhs: in Expr): JvmType {
   val rawLhsTy = lowerExpr(ctx, insns, lhs)
   val rhsTy = lowerExpr(ctx, insns, rhs)
-  val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+  val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
   val trueL = freshLabel(ctx)
   val afterL = freshLabel(ctx)
   // Materialise the 0/1 boolean through a result local so the operand stack is
@@ -1985,7 +2054,15 @@ func lowerCmpFail(insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLa
             emitObjectsEquals(insns)
             insns.add(LIfne(label = failLabel))
           }
-          case _ -> insns.add(LNop)
+          // A relational operator on a non-String reference has no lowering
+          // (only String supports `<`/`<=`/`>`/`>=`) — the old `LNop` left
+          // both operand values sitting unconsumed on the stack instead of
+          // the balanced-stack comparison every OTHER arm here emits, an
+          // if-condition-only shape (`lowerBoolCond`'s BLt/BLte/BGt/BGte
+          // arms, reached only via THIS function, never `lowerCmp`) that the
+          // `lowerCmp` twin above already panics on but this one silently
+          // let through. Same descriptive message as that twin.
+          case _ -> panic("Jvm.Codegen: unsupported reference comparison op: a relational operator (<, <=, >, >=) on operands of reference type '" + cls + "' — only String supports relational comparison; check whether an operand's declared type is a reference (e.g. Option[Int] from Std.String.indexOf) being compared like a number")
         }
       }
     }
@@ -2022,37 +2099,37 @@ func lowerBoolCond(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, failLa
         case BEq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmpFail(insns, BEq, lhsTy, failLabel)
         }
         case BNeq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmpFail(insns, BNeq, lhsTy, failLabel)
         }
         case BLt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmpFail(insns, BLt, lhsTy, failLabel)
         }
         case BLte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmpFail(insns, BLte, lhsTy, failLabel)
         }
         case BGt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmpFail(insns, BGt, lhsTy, failLabel)
         }
         case BGte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmpFail(insns, BGte, lhsTy, failLabel)
         }
         case _ -> {
@@ -2111,37 +2188,37 @@ func lowerBoolCondTrue(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, su
         case BEq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmp(ctx, insns, BEq, lhsTy, succeedLabel, "")
         }
         case BNeq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmp(ctx, insns, BNeq, lhsTy, succeedLabel, "")
         }
         case BLt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmp(ctx, insns, BLt, lhsTy, succeedLabel, "")
         }
         case BLte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmp(ctx, insns, BLte, lhsTy, succeedLabel, "")
         }
         case BGt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmp(ctx, insns, BGt, lhsTy, succeedLabel, "")
         }
         case BGte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy)
+          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
           lowerCmp(ctx, insns, BGte, lhsTy, succeedLabel, "")
         }
         case _ -> {
@@ -3325,6 +3402,18 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
       }
     }
   }
+  // Same propagation for a captured named closure local's real invoke return
+  // type (#6398) — otherwise `val f = makeAdder(1)` captured into a nested
+  // lambda body loses the recovered `Int` and `f(x)` inside the lambda falls
+  // back to raw `Object`.
+  for fvk in mapKeys(ctx.funcValRetTypes) {
+    if not closureParamNames.containsKey(fvk) {
+      match mapGet(ctx.funcValRetTypes, fvk) {
+        case Some(frt) -> bodyCtx.funcValRetTypes.add(fvk, frt)
+        case None -> ()
+      }
+    }
+  }
   // Reserve slot 0 (this) and slot 1 (Object[] args).
   allocSlot(bodyCtx, "__closure_this", JRef(className = closureClass))
   val argsSlot = allocSlot(bodyCtx, "__closure_args", JArray(elem = JRef(className = "java/lang/Object")))
@@ -3671,6 +3760,14 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
   for vk in mapKeys(ctx.varGenericArgs) {
     match mapGet(ctx.varGenericArgs, vk) {
       case Some(vargs) -> bodyCtx.varGenericArgs.add(vk, vargs)
+      case None -> ()
+    }
+  }
+  // Same propagation for a captured named closure local's real invoke return
+  // type (#6398).
+  for fvk in mapKeys(ctx.funcValRetTypes) {
+    match mapGet(ctx.funcValRetTypes, fvk) {
+      case Some(frt) -> bodyCtx.funcValRetTypes.add(fvk, frt)
       case None -> ()
     }
   }

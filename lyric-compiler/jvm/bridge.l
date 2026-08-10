@@ -783,7 +783,11 @@ func collectDeriveFreeSigs(
             paramDefaults = newList(),
             paramModes = newList(),
             isIface = false,
-            retGenericArgs = returnTypeGenericArgs(decl.ret)
+            retGenericArgs = returnTypeGenericArgs(decl.ret),
+            // Derive-synthesized free functions (`Point.equals`, `Color.show`)
+            // never return a closure by construction — nothing to recover.
+            closureRetTy = None,
+            recordRetClass = None
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -838,7 +842,12 @@ func collectWovenSigsMatching(
             paramDefaults = newList(),
             paramModes = newList(),
             isIface = false,
-            retGenericArgs = returnTypeGenericArgs(decl.ret)
+            retGenericArgs = returnTypeGenericArgs(decl.ret),
+            // No `externTypes` available in this shared woven-sig path (aspect
+            // target/wrapper and B'-mode specialisations); a closure-returning
+            // woven function keeps the pre-fix Object-erased invoke result.
+            closureRetTy = None,
+            recordRetClass = None
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -949,7 +958,16 @@ func collectMonoSpecializedSigs(
             paramDefaults = newList(),
             paramModes = newList(),
             isIface = false,
-            retGenericArgs = returnTypeGenericArgs(decl.ret)
+            retGenericArgs = returnTypeGenericArgs(decl.ret),
+            // Mono specialisations are fully concrete post-monomorphization,
+            // so no type params remain to erase.
+            closureRetTy = closureRetTypeOf(decl.ret, owner, newList(), externTypes),
+            // Same "no local-record scan available here" rationale as the
+            // woven-sig path above (#6399): a mono-specialised function
+            // returning a generic record keeps the pre-fix Object-erased
+            // call-result type rather than risk resolving against the wrong
+            // file's record set.
+            recordRetClass = None
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
