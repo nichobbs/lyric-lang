@@ -25949,3 +25949,180 @@ front-end over-rejection on the `Self` spelling. The non-receiver
 `Self`-parameter MSIL field-resolution soundness bug and its JVM
 counterpart (both documented above, with minimal repros) are NOT fixed
 by this entry and remain open — filed as a follow-up.
+
+## D-progress-752 — #6413 audit: the pre-`Lyric.TypeAliasResolve` per-site alias machinery on both backends is KEPT, not retired — it resolves shapes the shared pre-pass structurally cannot reach
+
+**Status:** ACCEPTED (audit; no code deletion — see rationale)
+
+**Task.** #6413 asked whether the older, narrower per-site alias-resolution
+machinery each backend carried BEFORE `Lyric.TypeAliasResolve` (#6404/
+D-progress-748) existed — MSIL's `cctx.aliasTargets`/`registerTypeAliasMsil`/
+`resolveFuncTypeExprMsil`; JVM's `FuncCtx.aliasTargets`/
+`Lyric.BareFuncRef.collectFuncAliasTargets` call sites threaded through
+`jvm/codegen/{01_types,06_items}.l` and consulted from `02_exprs.l`/
+`05_stmts.l` — is now a pure no-op layer that could be deleted now that both
+bridges run the shared whole-file AST pre-pass. The instructions were
+explicit: audit every candidate site against the ACTUAL pipeline order (not
+the "with the pre-pass on both bridges, it's redundant" assumption in the
+issue's own framing) before deleting anything, bucket each site as
+provably-dead / still-load-bearing / uncertain, and prefer keeping over
+risky deletion since this is meant to be a behavior-neutral cleanup.
+
+**Finding: neither mechanism is provably dead.** `Lyric.TypeAliasResolve`
+is a whole-*file* AST pre-pass — it only ever walks ONE already-parsed
+`SourceFile` at a time, run once per user-owned package before that
+package's own middle-end/codegen. Both backends have a real, currently-
+reachable code path that hands an UN-resolved (by that pass) `TypeExpr` to
+the exact same codegen functions the pre-pass was supposed to make
+alias-blind:
+
+1. **MSIL cross-package (same-bundle) aliases — verified LIVE, not
+   hypothetical.** `cctx.aliasTargets` is one `Map` on the single
+   `CodegenCtx` shared across an entire
+   `compileProjectToMsilWithRestoredAndVersion` build. Phase 3's
+   `addPackageTokens` loop (`msil/bridge.l`) runs `scanExternTypesMsil` →
+   `registerTypeAliasMsil` for EVERY in-bundle package before Phase 4
+   codegens ANY of them, so by the time package B's function bodies are
+   lowered, package A's `pub alias` is already registered under both its
+   simple name and its `pkg.name`-qualified form (`typeExprToMsilCtx`'s
+   `TRef` arm keys by `lastSegmentMsil`, so a bare OR qualified reference
+   both resolve). `Lyric.TypeAliasResolve`'s MSIL wiring
+   (`resolveTypeAliasesMsil`) has no equivalent: it runs PER PACKAGE, in
+   isolation, in Phase 1a — before any sibling package's file exists in
+   memory. This is not a theoretical gap: `msil_project_bridge_self_test.l`'s
+   pre-existing "two packages each defining their own lambda index 0..."
+   test already exercises it (`val g: XPkgLambda0.A.Handler = ...` in
+   package B, referencing package A's function-type `pub alias`), and it
+   only passes because `cctx.aliasTargets` resolves it — the pre-pass
+   never gets the chance. A NEW, more isolated regression
+   (`"cross-package non-function pub alias resolves via cctx.aliasTargets
+   (#6413)"`, `msil_project_bridge_self_test.l`) was added to pin this
+   independently of the lambda-capture concerns the pre-existing test also
+   covers: package `XPkgAlias.Kernel` declares `pub alias Meters = Long`;
+   package `XPkgAlias.App` references the BARE name `Meters` (via `import
+   XPkgAlias.Kernel`, no qualification) as both a local annotation and a
+   function return type, and does arithmetic on a value outside `Int32`'s
+   range (`1000000000000 + 1`) so a silent fallback to a bogus in-package
+   `MClass("...Meters")` guess would fail the BUILD, not merely compute a
+   wrong answer. Confirmed passing both BEFORE this audit (baseline, no
+   code touched — the mechanism already existed) and AFTER (unchanged;
+   nothing was deleted). Deleting `cctx.aliasTargets`/`registerTypeAliasMsil`
+   would break both tests.
+2. **MSIL cross-ASSEMBLY (restored-dependency) aliases.** A separate
+   `registerTypeAliasMsil` call site in `registerRestoredArtifactTokens`
+   (`msil/codegen.l`) feeds `cctx.aliasTargets` from a restored (already-
+   compiled) dependency DLL's contract metadata, for a `pub alias` declared
+   in a package that was never re-parsed as Lyric source at all in this
+   build. There is no `SourceFile` for `Lyric.TypeAliasResolve` to walk;
+   this path is categorically outside the pre-pass's reach, not merely
+   unexercised by it.
+3. **JVM stdlib-bundled files.** `Jvm.Bridge.compileToJarBundledWithFeatures`
+   builds a runnable JAR from the user's own package (alias-resolved by
+   `resolveTypeAliases`, per that function's own doc comment) PLUS the
+   transitive closure of imported stdlib packages (`toBundle`/
+   `stdlibFiles`, populated straight from `parse(...)`, never routed
+   through the pre-pass — `Lyric.TypeAliasResolve`'s own module doc
+   documents this stdlib exclusion as deliberate, out of scope for #6404).
+   Those bundled stdlib files reach the IDENTICAL codegen entry points as
+   the user's own file — `codegenPackageWithSigsSeeded`,
+   `collectFileSigsSeeded`, `lowerFunc`, `makeFuncCtx` — so
+   `FuncCtx.aliasTargets`/`BareFuncRef.collectFuncAliasTargets` remain the
+   ONLY mechanism that would resolve a function-type `pub alias` declared
+   and consumed within a single stdlib file. `grep -rnE "^pub alias
+   .*\(.*\).*->" lyric-stdlib/std/*.l` confirms no stdlib file exercises
+   this today, so the gap is currently dormant — but it is real and
+   reachable (traced through `Jvm.Bridge`'s actual bundling loop, not
+   inferred), not a hypothetical one manufactured to justify keeping code.
+   Per the task's own instruction ("prefer keeping over risky deletion"),
+   a currently-dormant-but-reachable gap is not grounds for deletion.
+
+**Bucketing.** Every candidate site named in the issue (JVM:
+`FuncCtx.aliasTargets` field + threading in `makeFuncCtx`/`lowerFunc`/
+`codegenPackageWithSigsSeeded`, `collectFuncAliasTargets` calls at
+`jvm/codegen/06_items.l` ~2925/~4929 (line numbers shifted slightly by this
+audit's own comment insertions), `resolveFuncTypeAliasOrSelf`/
+`resolveParamsFuncAlias` call sites in `06_items.l`/`01_types.l`/
+`05_stmts.l`; MSIL: `cctx.aliasTargets` field, `registerTypeAliasMsil`'s
+three call sites (in-bundle `scanExternTypesMsil`, restored-artifact
+`registerRestoredArtifactTokens`, a third stdlib-adjacent site),
+`resolveFuncTypeExprMsil`'s ~8 call sites, `typeExprToMsilCtx`'s alias
+branch) sorts into exactly ONE bucket:
+
+- **(a) provably dead → delete: NONE.** No site was found where an
+  unresolved alias can no longer reach it.
+- **(b) still load-bearing → keep, with a precise comment: ALL of them.**
+  Every JVM site is load-bearing for the stdlib-bundling gap (finding 3);
+  every MSIL site is load-bearing for the cross-package/cross-assembly gap
+  (findings 1–2). Two exceptions worth naming explicitly, both PRE-EXISTING
+  and unrelated to this retirement question (left untouched): the two
+  `aliasTargets = newMap()` construction sites in `jvm/codegen/06_items.l`
+  (`makeFuncCtxForGenerator`, `makeFuncCtxInstance`) never had ANY alias
+  resolution — they are a separate, already-documented "out of scope for
+  now" gap (instance-method/generator bodies), not something #6404's
+  pre-pass or this audit changes.
+- **(c) uncertain: none remaining** — every site was traced to a concrete
+  reachable-or-not verdict rather than left as a guess.
+
+**What changed.** No behavior change; this is a documentation-and-audit
+PR, refs #6413. `git diff --stat` for the non-test files touched:
+`lyric-compiler/lyric/type_alias_resolve.l` (module doc: corrected the
+"redundant no-op layer" framing for MSIL's `cctx.aliasTargets` to specify
+SAME-FILE shapes only, and added the "Retirement audit (#6413)" section
+above in-source), `lyric-compiler/lyric/bare_func_ref.l` (module doc §2:
+same correction), `lyric-compiler/jvm/bridge.l` (`resolveTypeAliases`'s doc
+comment corrected a STALE claim that the pass was "JVM-only… MSIL already
+resolves universally at codegen time, #3673" — wrong since D-progress-748's
+review round wired the identical pass into `Msil.Bridge` too),
+`lyric-compiler/jvm/codegen/01_types.l` (`FuncCtx.aliasTargets`'s doc
+comment: the "KNOWN LIMIT… tracked with #6404" note was stale — #6404 is
+closed; replaced with the accurate stdlib-bundling-gap rationale),
+`lyric-compiler/jvm/codegen/06_items.l` (three call-site comments — the
+`collectFuncAliasTargets` calls in `collectFileSigsSeeded`/
+`codegenPackageWithSigsSeeded`, and `lowerFunc`'s `aliasTargets` param —
+each now note the #6413 audit verdict and point at the stdlib-bundling
+rationale), `lyric-compiler/msil/codegen.l` (`registerTypeAliasMsil`'s doc
+comment: added the full audit rationale, including the two findings above).
+Test files: `lyric-compiler/lyric/msil_project_bridge_self_test.l` gained
+the new cross-package non-function-alias regression (finding 1, 38→39
+cases); `lyric-compiler/lyric/bare_func_ref_self_test.l` gained one
+UNRELATED case folded into the same PR per the task brief (below).
+
+**Folded in (unrelated, small): dual-target `Self`-receiver impl
+regression.** PR #6423's review (on D-progress-751/#6417) noted
+`impl_method_self_test.l` is dotnet-only, so the newly-legal `impl`
+method spelled `func tag(self: in Self): Int` (mirroring the interface's
+own `Self` receiver verbatim) had no automated JVM signal. Added ONE
+minimal case to `bare_func_ref_self_test.l` (already dual-target CI-wired):
+`interface Tagger6417 { func tag(self: in Self): Int }` / `impl
+Tagger6417 for Applier6417`, invoked through an interface-typed binding —
+mirrors `impl_method_self_test.l`'s existing case 15 exactly, just placed
+somewhere JVM already runs it. 20→21 cases, 21/21 both targets.
+
+**Verification — full battery, all green, both targets where wired**
+(rebuilt via `make lyric` after every source edit; `./bin/lyric fmt
+--write` clean on every changed `.l` file — one file reformatted,
+`msil_project_bridge_self_test.l`, whitespace/line-wrap only, re-verified
+green after):
+
+- `bare_func_ref_self_test.l`: 21/21 dotnet, 21/21 jvm (up from 20/20).
+- `type_alias_resolve_self_test.l`: 6/6.
+- `impl_method_self_test.l`: 18/18 (dotnet only, per its own scope).
+- `synthesized_method_self_test.l`: 10/10 dotnet, 10/10 jvm.
+- `typechecker_self_test.l`: 302/302 (dotnet only, target-independent
+  checker).
+- `msil_project_bridge_self_test.l`: 39/39 dotnet (up from 38/38 — the new
+  cross-package alias regression).
+- `func_val_local_rettype_self_test.l`: 21/21 dotnet, 21/21 jvm.
+- `closure_zero_overhead_self_test.l`: 18/18 dotnet, 18/18 jvm.
+- `aspect_weave_self_test.l`: 7/7 dotnet, 7/7 jvm.
+- `weaver_self_test.l`: 46/46 (dotnet only).
+- `bitwise_self_test.l`: 10/10 dotnet, 10/10 jvm.
+- `scripts/ilverify-selfhosted.sh`: 119/119 DLLs, 0 IL-validity errors
+  (3 pre-existing extern-FFI resolution infos on 2 DLLs, unrelated to this
+  change — `Lyric.Jvm.Kernel.dll`, `Lyric.Stdlib.CollectionsHost.dll`).
+
+**Related:** #6413 (this audit), #6404/D-progress-748 (the shared pre-pass
+this audit was asked to retire the older machinery in favor of), #3673
+(MSIL's original `cctx.aliasTargets` design), #6393/D-progress-747 (JVM's
+original per-site machinery), #6417/D-progress-751/#6423 (the Self-receiver
+fix whose review produced the folded-in dual-target test).

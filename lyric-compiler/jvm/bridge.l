@@ -337,8 +337,11 @@ func runMiddleEnd(
 // so the type checker already treats an alias and its target as the same
 // type — this can only change diagnostic WORDING (`Meters` vs `Long`), never
 // pass/fail. See `Lyric.TypeAliasResolve`'s module doc for the full design
-// rationale, including why this pass is JVM-only (MSIL already resolves
-// universally at codegen time, #3673).
+// rationale. STALE CLAIM CORRECTED (#6413): this pass was originally JVM-only
+// on the belief MSIL's `cctx.aliasTargets` (#3673) covered MSIL universally —
+// the #6410/#6411 review round found a shape it didn't (`alias L = List`
+// used as a generic-application head) and wired this SAME pass into
+// `Msil.Bridge` too (D-progress-748). Both bridges now run it.
 func resolveTypeAliases(file: in SourceFile): SourceFile {
   TAR.resolveAliasesInFile(BFR.collectFuncAliasTargets(file), file)
 }

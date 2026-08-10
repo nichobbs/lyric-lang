@@ -847,6 +847,7 @@ pub func lowerFunc(
   importsStdString: in Bool,
   // #6393: same-file `alias X = ...` table — see `Lyric.BareFuncRef`'s
   // module doc §2 and `codegenPackageWithSigsSeeded`'s `aliasTargets`.
+  // #6413 audit: kept for the stdlib-bundled-file gap, D-progress-752.
   aliasTargets: in Map[String, TypeExpr],
 ): LFunc {
   val resolvedRet = match decl.ret {
@@ -2929,6 +2930,15 @@ pub func collectFileSigsSeeded(
   // to the "user type in the same package" guess (`JRef("<owner>/Handler")`
   // — a nonexistent class, `NoClassDefFoundError` at link time).  See
   // `Lyric.BareFuncRef`'s module doc §2.
+  //
+  // #6413 audit: for a user file this is now redundant with
+  // `Lyric.TypeAliasResolve` (#6404), which already substituted the alias
+  // reference before this file ever reached codegen. KEPT anyway: this
+  // function is ALSO called on raw, un-resolved STDLIB source files
+  // (`Jvm.Bridge`'s `collectFileSigsSeeded(stdlibFiles[ri], ...)` in the
+  // bundled-JAR build), which are deliberately never run through the
+  // pre-pass — see `Lyric.TypeAliasResolve`'s module doc and
+  // `docs/03-decision-log.md` D-progress-752.
   val aliasTargets = BareFuncRef.collectFuncAliasTargets(file)
   // Same-file record names for `recordRetClassOf` (#6399): a bare pre-scan of
   // every `record` item declared in this file lets the return-type
@@ -4928,7 +4938,9 @@ pub func codegenPackageWithSigsSeeded(
 
   // #6393: same-file `alias X = ...` table, threaded through every function /
   // module-val FuncCtx below (mirrors `externTypes`'s own threading a few
-  // lines up) — see `Lyric.BareFuncRef`'s module doc §2.
+  // lines up) — see `Lyric.BareFuncRef`'s module doc §2. #6413 audit: kept
+  // for the stdlib-bundled-file gap — see `collectFileSigsSeeded`'s
+  // matching comment above and D-progress-752.
   val aliasTargets = BareFuncRef.collectFuncAliasTargets(file)
 
   // m-2: collect the module-level `val NAME` declarations up front (name → JVM
