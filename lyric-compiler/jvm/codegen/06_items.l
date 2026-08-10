@@ -1468,8 +1468,16 @@ func lowerProtectedMethod(
   )
   val insns: List[LInsn] = newList()
   val noTps: List[String] = newList()
-  val paramTypes = holderAwareParamTypes(params, pkgName, true, noTps, externTypes)
-  setupInstanceParamSlotsAndHolders(ctxSelf, insns, params, pkgName, noTps, externTypes)
+  // An explicit `self: in <ProtectedType>` receiver param (D037 spelling)
+  // maps to the implicit `this` at slot 0 — it must not consume a real JVM
+  // parameter slot or appear in the method descriptor, mirroring
+  // `lowerRecordMethod` / `lowerImplMethod` above.  Without this strip, the
+  // registered call-site descriptor (`registerInstanceSigErased`, which
+  // already strips) diverges from the emitted method's descriptor, and the
+  // JVM rejects the call with `NoSuchMethodError` (#6407).
+  val realParams = stripLeadingSelfParam(params)
+  val paramTypes = holderAwareParamTypes(realParams, pkgName, true, noTps, externTypes)
+  setupInstanceParamSlotsAndHolders(ctxSelf, insns, realParams, pkgName, noTps, externTypes)
   lowerInstanceMethodBody(ctxSelf, insns, body, retTy)
   LFunc(flags = flags, name = name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
 }
