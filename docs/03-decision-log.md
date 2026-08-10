@@ -25398,3 +25398,135 @@ rounds closed the remaining unresolved DECLARATION positions:
   signatures). The deferred aspect-body scope and the theoretical
   depth-bound residual through const-generic value expressions are now
   tracked in #6416 rather than living only in the doc comment.
+
+---
+
+## D-progress-749 — protected-type `entry`/`func` with an explicit `self` receiver param double-counted the receiver on both targets (#6407)
+
+**Status:** ACCEPTED
+
+**Root cause.** `protected type` members (`entry` and helper `func`) always
+have an IMPLICIT receiver: bare field references inside the body desugar to
+`EMember(ESelf, name)` (`desugarProtectedFuncBody`/`desugarProtectedFuncDecl`,
+MSIL; the JVM `FuncCtx.selfClass` field-read path does the same), and `ESelf`
+always resolves to the instance regardless of whether a `self` param was
+declared. This is different from record/impl methods, where D037 makes an
+explicit `self: in Type` receiver the ONLY spelling (see `docs/49`). Nothing
+in the grammar (`EntryDecl = 'entry' IDENT '(' [ ParamList ] ')' ...`,
+`docs/grammar.ebnf` §3.8) forbids ALSO writing a `self`-named param on a
+protected-type member — `ParamList` accepts any identifier — so a user
+reasonably reaching for the D037 convention (`entry add(self: in Counter, m:
+Long): Long { ... }`) compiles without any diagnostic. The canonical,
+documented form (no `self` param at all — see `docs/01-language-reference.md`
+§7.5's `BoundedQueue` example and `examples/token_bucket_proof.l`'s `Bucket`)
+was verified unaffected and already worked correctly on both targets before
+this fix; the bug is isolated to the undocumented self-param spelling.
+
+Protected-type entries/funcs are never added to the type checker's
+method-signature space (`symTableAddMethodSig`) — `checkProtectedDeclTypes`
+only resolves each param/return `TypeExpr` for well-formedness, never
+records an arity. Call sites (`c.add(m)`) therefore type-check the callee as
+`TyError` and never validate the argument count against the declaration;
+argument-count enforcement happens implicitly at codegen, where each
+backend's call-site lowering pushes exactly the call expression's own
+explicit arguments. That leaves each backend's REGISTERED/EMITTED method
+descriptor as the only thing that must agree with "however many explicit
+arguments the call site supplies" — and before this fix, declaring a leading
+`self` param broke that agreement differently on each target:
+
+- **JVM** (`jvm/codegen/06_items.l`): call-site descriptor registration
+  (`registerInstanceSig`/`registerInstanceSigErased`, invoked from
+  `addPackageTokens`'s `IProtected` arm for both `PMEntry` and `PMFunc`)
+  ALREADY called `stripLeadingSelfParam` before registering — so the
+  call-site `invokevirtual` correctly expected a 1-param descriptor `(J)J`
+  for `add(self, m)`. But `lowerProtectedMethod` (used by BOTH `PMEntry` and
+  `PMFunc`'s actual lowering, via `buildProtected`) built `paramTypes` from
+  the RAW, un-stripped `params` list, so the real emitted method carried
+  descriptor `(LPkg/Counter;J)J` — 2 declared params, in addition to the
+  implicit `this`. The registered (stripped) descriptor and the emitted
+  (unstripped) descriptor disagreed, so the `invokevirtual (J)J` call site
+  found no matching method: `NoSuchMethodError: 'long Repro.Counter.add(long)'`.
+- **MSIL** (`msil/codegen.l`): NEITHER side stripped `self` — `addPackageTokens`'s
+  `IProtected` arm registered `ed.params`/`fn.params` raw via
+  `registerMethodParamTypes`, and `lowerProtectedMsil`'s `PMEntry` case built
+  `pTypes`/`paramCount`/param slots from the same raw, unstripped list (its
+  `PMFunc` case routes through `lowerImplMethodMsil`, which already strips
+  self correctly — so only `PMEntry`'s own inline lowering was affected).
+  Registration and emission agreed with EACH OTHER (both wrongly counted 2
+  params), but neither agreed with the call site: the call-site codegen
+  pushes exactly the call expression's explicit arguments (1: `5i64`) onto
+  the stack before `callvirt`ing a method the metadata says takes 2 declared
+  params (`self`, `m`) plus the implicit receiver. Too few arguments pushed
+  for the callee's arity produced a malformed `callvirt` and the CLR rejected
+  the assembly at load time: `System.InvalidProgramException: Common
+  Language Runtime detected an invalid program.`
+
+**Fix.** Route protected-type entry/func lowering AND signature registration
+through each backend's EXISTING self-stripping helper — the same one D037's
+record/impl-method paths already use — so every place that reads a protected
+member's params agrees:
+
+- JVM `lowerProtectedMethod` (`jvm/codegen/06_items.l`) now calls
+  `stripLeadingSelfParam(params)` before building `paramTypes` and before
+  `setupInstanceParamSlotsAndHolders`, mirroring `lowerRecordMethod` /
+  `lowerImplMethod` in the same file. Single fix point — `PMEntry` and
+  `PMFunc` both route through this function via `buildProtected`.
+- MSIL `addPackageTokens`'s `IProtected` arm (`msil/codegen.l`) now strips
+  via `stripExplicitSelfParamMsil(ed.params)` / `(fn.params)` before calling
+  `registerMethodParamTypes`/`registerMethodParamModes`, for both `PMEntry`
+  and `PMFunc` — matching the pattern every other instance-method
+  registration site in this function already followed (record methods, impl
+  methods, interface methods all built a `*RealParams` local first; only the
+  `IProtected` arm was the odd one out).
+- MSIL `lowerProtectedMsil`'s `PMEntry` case (`msil/codegen.l`) now strips
+  via `stripExplicitSelfParamMsil(ed.params)` once at the top and uses the
+  stripped `edParams` for `pTypes`, `entryFctx`'s `paramCount`, and the
+  param-slot assignment loop. `PMFunc` needed no change (already correct via
+  `lowerImplMethodMsil`).
+
+No type-checker or grammar change: this is a pure backend lowering-
+consistency fix, not a front-end rejection of the `self`-param spelling.
+Both spellings — implicit (canonical, documented) and explicit `self` (D037-
+style, previously silently broken) — now work correctly and identically on
+both targets, since `self` was always resolvable inside the body regardless.
+
+**Verification** (`./bin/lyric`, full `make lyric` rebuild after each
+source change):
+- Original #6407 repro (`entry add(self: in Counter, m: Long): Long`),
+  both targets: exit 0, correct value, on both `--target dotnet` and
+  `--target jvm` (previously `InvalidProgramException` / `NoSuchMethodError`
+  respectively).
+- Canonical form (no `self` param, bare field access) confirmed unaffected —
+  passed both before and after this fix on both targets.
+- `lyric-compiler/lyric/synthesized_method_self_test.l` (extended with a new
+  §6 — explicit-self entry+param+return, state mutation across two calls,
+  multiple entries + a no-param entry/func): 10/10 both targets (was 7/7).
+  Already wired into `.github/workflows/ci.yml` for both targets (no new CI
+  wiring needed — this file was already dual-target-wired for #1499/#1507).
+- `bare_func_ref_self_test.l`: 18/18 both targets (17→18 — added the
+  alias-typed-param-and-return-through-a-protected-entry case (`MeterTally`),
+  the last #6404-axis-2 position with no runtime coverage, unblocked by this
+  fix).
+- `block_shadow_self_test.l`: 20/20 both targets (unchanged).
+- `typechecker_self_test.l` (`LYRIC_LOAD_COMPILER=1`, dotnet): 298/298
+  (unchanged).
+- `msil_project_bridge_self_test.l` (`LYRIC_LOAD_COMPILER=1`, dotnet): 38/38
+  (unchanged).
+- `aspect_weave_self_test.l`: 7/7 both targets (unchanged) — the fix sits
+  adjacent to the Monitor-wrapper/instance-method lowering path the weaver
+  also touches.
+- `out_inout_instance_jvm_self_test.l` (`--target jvm`, JVM-only file):
+  9/9, including "protected-type entry with out param drains value to
+  caller" — confirms the fix doesn't disturb holder-param handling.
+- `record_method_jvm_self_test.l` (`--target jvm`, JVM-only file): 12/12
+  (unchanged).
+- `impl_method_self_test.l`: 10/10 (unchanged).
+- `bash scripts/ilverify-selfhosted.sh`: clean — 119 DLLs verified, 0
+  IL-validity errors (3 pre-existing extern-FFI resolution-only infos,
+  unrelated).
+- `examples/token_bucket_proof.l` (the canonical no-self-param protected-type
+  worked example): still builds cleanly with `--target dotnet`.
+
+Refs #6407. Cross-referenced from `bare_func_ref_self_test.l`'s #6404
+deferred-coverage note (which flagged this as blocking dual-target coverage
+of `protected type` entries through an alias-typed param).

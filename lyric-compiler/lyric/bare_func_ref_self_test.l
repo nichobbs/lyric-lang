@@ -213,11 +213,15 @@ test "union case field typed via a function-type alias round-trips (#6406)" {
 // function-shaped ones #6393/#6406 above cover, and every alias reference in
 // an instance-method-shaped signature (record method params/return here;
 // `impl`-for-`interface` methods and `protected type` entries also hit the
-// same class of bug, but both independently panic/crash on THIS SELF-HOSTED
-// COMPILER even with a plain, non-aliased `Long` param — see
-// docs/03-decision-log.md D-progress-748 — so they can't be exercised in a
+// same class of bug, but both independently panicked/crashed on THIS
+// SELF-HOSTED COMPILER even with a plain, non-aliased `Long` param — see
+// docs/03-decision-log.md D-progress-748 — so they couldn't be exercised in a
 // dual-target regression test here without failing for an unrelated,
-// pre-existing reason; tracked in #6407/#6408.  The `impl` HEADER positions
+// pre-existing reason; tracked in #6407/#6408.  `protected type` entries'
+// crash (#6407, an unrelated `self`-param receiver-arity bug, NOT an alias
+// bug) is now fixed — see D-progress-749 and the new §6 in
+// `synthesized_method_self_test.l` — and the alias-typed-param-through-a-
+// protected-entry case is covered below (`MeterTally`).  The `impl` HEADER positions
 // (`target`/`iface` through an alias, #6414) are covered at the unit level
 // in `type_alias_resolve_self_test.l` instead; runtime impl-block coverage
 // unblocks when #6408 is fixed).
@@ -240,6 +244,23 @@ test "non-function alias as a top-level function's param AND return type (#6404)
 func localAliasAnnotated(): Long {
   val d: Meters = 42i64
   d
+}
+
+// The last #6404-axis-2 position with no runtime coverage: an alias-typed
+// param AND return routed through a `protected type` entry (canonical
+// implicit-receiver spelling), unblocked by #6407's fix (D-progress-749).
+protected type MeterTally {
+  var total: Meters = 0i64
+  entry addMeters(m: Meters): Meters {
+    total = total + m
+    total
+  }
+}
+
+test "non-function alias as a protected-type entry's param and return type (#6404/#6407)" {
+  val t = MeterTally()
+  assertEqualLong(t.addMeters(30i64), 30i64, "first addMeters(30) == 30 via alias Meters")
+  assertEqualLong(t.addMeters(12i64), 42i64, "second addMeters(12) accumulates to 42")
 }
 
 test "non-function alias as a local `val` annotation (#6404)" {

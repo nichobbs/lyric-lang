@@ -1,5 +1,5 @@
 //! synthesized_method_self_test.l — regression tests for compiler-synthesized
-//! named method dispatch (#1499, #1507).
+//! named method dispatch (#1499, #1507, #6407).
 //!
 //! Two classes of methods previously failed with "unsupported method" at the
 //! call site even though the MethodDef was correctly emitted:
@@ -28,6 +28,20 @@
 //!     (JVMS §4.2.2 forbids `.` in unqualified names), so `Point.equals` is
 //!     emitted as method name `equals`; the call site already dispatches on the
 //!     plain member name, so both sides agree.
+//!
+//! §6 covers a third class, #6407 — a protected-type `entry`/`func` that
+//! ALSO declares an explicit `self: in <ProtectedType>` receiver param (never
+//! required — protected-type members have an implicit receiver, unlike
+//! record/impl methods, D037 — but nothing in the grammar forbids it). Both
+//! backends double-counted the receiver, emitting a method descriptor with an
+//! extra real parameter that no call site ever supplied an argument for:
+//!   — JVM: `lowerProtectedMethod` (`jvm/codegen/06_items.l`) now strips a
+//!     leading `self` param, matching what `registerInstanceSigErased`
+//!     already registers for the call site (`NoSuchMethodError` before).
+//!   — MSIL: `addPackageTokens`'s `IProtected` arm and `lowerProtectedMsil`'s
+//!     `PMEntry` case (`msil/codegen.l`) now both strip a leading `self` param
+//!     before registering/emitting (`InvalidProgramException` before).
+//! See docs/03-decision-log.md D-progress-749 for the full root cause.
 //!
 //! Compile and run via native `lyric test` (both targets):
 //!   lyric test lyric-compiler/lyric/synthesized_method_self_test.l
@@ -140,4 +154,68 @@ test "derive Equals: == agrees with .equals()" {
   val r = Point(x = 1, y = 2)
   assertTrue(p.equals(q), "equals: same values agrees with ==")
   assertFalse(p.equals(r), "equals: different values agrees with !=")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §6. Protected-type entry/func with an explicit `self` receiver param (#6407)
+// ─────────────────────────────────────────────────────────────────────────────
+// `entry`/`func` bodies inside a `protected type` always have an IMPLICIT
+// receiver — bare field names desugar to `EMember(ESelf, name)` and `ESelf`
+// always resolves to the instance, regardless of whether an explicit `self`
+// param was declared (unlike record/impl methods, D037, where an explicit
+// `self: in Type` receiver IS the convention — see docs/49). Nothing in the
+// grammar forbids ALSO writing one on a protected-type member (`ParamList`
+// accepts any name), so before this fix, declaring `self: in <ProtectedType>`
+// as a member's leading param caused both backends to double-count the
+// receiver: the emitted method descriptor carried an extra real parameter for
+// `self` that no call site (`c.add(m)`) ever supplied an argument for.
+//   • JVM: `registerInstanceSig`/`registerInstanceSigErased` already stripped
+//     the leading `self` param when registering the call-site descriptor, but
+//     `lowerProtectedMethod` (`jvm/codegen/06_items.l`) did not strip it when
+//     emitting the actual method — descriptor mismatch, `NoSuchMethodError`.
+//   • MSIL: neither the call-site registration (`addPackageTokens`'s
+//     `IProtected` arm) nor `lowerProtectedMsil`'s `PMEntry` case stripped
+//     `self`, so the declared method arity (2: `self`, `m`) never matched
+//     what the call site's explicit argument list actually pushed (1: `m`
+//     alone) — malformed IL, `InvalidProgramException`.
+// See docs/03-decision-log.md D-progress-749 for the full root cause.
+protected type SelfParamCounter {
+  var total: Long = 0i64
+  entry add(self: in SelfParamCounter, m: Long): Long {
+    total = total + m
+    total
+  }
+  entry addTwo(self: in SelfParamCounter, a: Long, b: Long): Long {
+    total = total + a + b
+    total
+  }
+  entry reset(self: in SelfParamCounter): Unit {
+    total = 0i64
+  }
+  func peek(self: in SelfParamCounter): Long {
+    total
+  }
+}
+
+test "protected entry with explicit self param + Long param + return (#6407)" {
+  val c = SelfParamCounter(total = 0i64)
+  val r = c.add(5i64)
+  assertEqualLong(r, 5i64, "add(5) -> 5")
+}
+
+test "protected entry with explicit self param mutates state across two calls (#6407)" {
+  val c = SelfParamCounter(total = 0i64)
+  val r1 = c.add(3i64)
+  val r2 = c.add(4i64)
+  assertEqualLong(r1, 3i64, "first add(3) -> 3")
+  assertEqualLong(r2, 7i64, "second add(4) -> 7 (state persists across calls)")
+}
+
+test "protected type with multiple explicit-self entries + a no-param entry and func (#6407)" {
+  val c = SelfParamCounter(total = 0i64)
+  val sum = c.addTwo(1i64, 2i64)
+  assertEqualLong(sum, 3i64, "addTwo(1, 2) -> 3")
+  assertEqualLong(c.peek(), 3i64, "peek() after addTwo(1, 2) -> 3")
+  c.reset()
+  assertEqualLong(c.peek(), 0i64, "reset() then peek() -> 0")
 }

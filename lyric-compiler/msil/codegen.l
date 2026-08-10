@@ -3518,8 +3518,13 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               if not cctx.methodTokens.containsKey(pmKey) {
                 cctx.methodTokens.add(pmKey, 0x06000000 + methodDefRow)
                 registerMethodRetTy(cctx, pmKey, ed.ret, pkgName)
-                registerMethodParamTypes(cctx, pmKey, ed.params, pkgName)
-                registerMethodParamModes(cctx, pmKey, ed.params)
+                // Strip an explicit `self` receiver param (D037 spelling) so the
+                // registered call-site descriptor matches what `lowerProtectedMsil`
+                // actually emits — self maps to the implicit `this`, not a real
+                // parameter slot (#6407).
+                val edRealParams = stripExplicitSelfParamMsil(ed.params)
+                registerMethodParamTypes(cctx, pmKey, edRealParams, pkgName)
+                registerMethodParamModes(cctx, pmKey, edRealParams)
               }
               methodDefRow = methodDefRow + 1
             }
@@ -3528,8 +3533,11 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               if not cctx.methodTokens.containsKey(pmKey) {
                 cctx.methodTokens.add(pmKey, 0x06000000 + methodDefRow)
                 registerMethodRetTy(cctx, pmKey, fn.ret, pkgName)
-                registerMethodParamTypes(cctx, pmKey, fn.params, pkgName)
-                registerMethodParamModes(cctx, pmKey, fn.params)
+                // Same strip as PMEntry above — PMFunc lowers via
+                // `lowerImplMethodMsil`, which already strips a leading `self`.
+                val fnRealParams = stripExplicitSelfParamMsil(fn.params)
+                registerMethodParamTypes(cctx, pmKey, fnRealParams, pkgName)
+                registerMethodParamModes(cctx, pmKey, fnRealParams)
               }
               methodDefRow = methodDefRow + 1
             }
@@ -25209,20 +25217,28 @@ func lowerProtectedMsil(
         // Entry method: acquires Monitor(this) before the body and releases it in
         // a finally handler so the lock is released on any exit path.
         // Note: `entry` is a Lyric reserved keyword so we bind to `ed` here.
+        // An explicit `self: in <ProtectedType>` receiver param (D037 spelling)
+        // maps to the implicit `this` at slot 0 — it must not consume a real IL
+        // parameter slot or appear in the method signature, mirroring
+        // `lowerImplMethodMsil`.  Without this strip the emitted descriptor
+        // diverges from the registered call-site descriptor (`addPackageTokens`
+        // IProtected arm, which already strips) and the caller's `callvirt`
+        // pushes too few arguments for the declared arity (#6407).
+        val edParams = stripExplicitSelfParamMsil(ed.params)
         val pTypes: List[MsilType] = newList()
         var pi = 0
-        while pi < ed.params.count {
-          pTypes.add(typeExprToMsilCtx(cctx, ed.params[pi].ty, pkgName))
+        while pi < edParams.count {
+          pTypes.add(typeExprToMsilCtx(cctx, edParams[pi].ty, pkgName))
           pi = pi + 1
         }
         val retTy = match ed.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
         // paramCount = 1 (this) + declared params, matching lowerImplMethodMsil.
-        val entryFctx = makeFuncCtxMsil(pkgName, typeFqn, ed.name, 1 + ed.params.count, retTy)
+        val entryFctx = makeFuncCtxMsil(pkgName, typeFqn, ed.name, 1 + edParams.count, retTy)
         // Reserve slot 0 for the implicit `this` receiver (no name binding).
         entryFctx.slotTicker.add(0)
         var epi = 0
-        while epi < ed.params.count {
-          val p = ed.params[epi]
+        while epi < edParams.count {
+          val p = edParams[epi]
           // Body tracking is CTX-aware so a collection param is operated on
           // concretely (same fix as `lowerImplMethodMsil` — a non-ctx `List[Int]`
           // tracked as `MObject` emits `List<object>` ops on a real `List<int32>`
