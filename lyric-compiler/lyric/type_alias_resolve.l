@@ -34,30 +34,42 @@
 //! not TYPE-level aliases (types and values are different namespaces, so a
 //! local variable can never shadow a type alias) — grafting an unrelated
 //! resolution concern onto that already-dense traversal risked subtle
-//! interaction bugs for no shared benefit, and MSIL doesn't need this pass
-//! at all (`Msil.Codegen.typeExprToMsilCtx` already consults
-//! `cctx.aliasTargets` universally, #3673) so this module is JVM-only,
-//! wired into `Jvm.Bridge` alone.
+//! interaction bugs for no shared benefit. The pass is wired into BOTH
+//! backends (`Jvm.Bridge` and `Msil.Bridge`, each at both their single-file
+//! and per-package pipelines, immediately after `pipeExpandAndRewrite`):
+//! MSIL's own `cctx.aliasTargets` consultation in `typeExprToMsilCtx`
+//! (#3673) is retained as a redundant no-op layer for the shapes this pass
+//! already resolves, but is NOT sufficient on its own — positions that
+//! bypass `typeExprToMsilCtx` entirely (a generic-application HEAD such as
+//! `alias L = List` used as `L[Int]`, and `implTargetNameMsil`'s direct
+//! `decl.target` pattern-match) miscompiled silently on MSIL until this
+//! pass resolved them structurally (#6411, #6414).
 //!
 //! Scope (matches #6404's three axes; language reference: `alias` is fully
 //! transparent, so every annotation position must behave identically to
 //! writing the underlying type inline):
 //!   - Resolved: function params/returns/bodies (top-level, record/impl/
 //!     interface/protected methods, protected entries), record/union/
-//!     opaque/protected fields, interface method signatures, wire member
-//!     types + inits, config field types, local `val`/`var`/`let`
-//!     annotations, lambda param annotations, `match`/`as`-style type-test
-//!     patterns (`PTypeTest`), explicit type-application args (`ETypeApp`).
-//!   - NOT resolved (by design): the `alias X = ...` / `type X = ...`
-//!     declarations themselves (`ITypeAlias.rhs`, `DistinctTypeDecl.
-//!     underlying` stay exactly as written — a distinct type is nominal,
-//!     never resolved away); a generic type parameter's own name, even if
-//!     it happens to collide with an outer alias name (the type param
+//!     opaque/protected fields, interface method signatures, `impl` header
+//!     `target`/`iface` (#6414), a distinct type's UNDERLYING representation
+//!     (`DistinctTypeDecl.underlying`, #6412 — the distinct type's own NAME
+//!     stays nominal), wire member types + inits, config field types, local
+//!     `val`/`var`/`let` annotations, lambda param annotations,
+//!     `match`/`as`-style type-test patterns (`PTypeTest`), explicit
+//!     type-application args (`ETypeApp`).
+//!   - NOT resolved (by design): the `alias X = ...` declarations
+//!     themselves (`ITypeAlias.rhs` stays exactly as written — the alias
+//!     table is derived from it); a generic type parameter's own name, even
+//!     if it happens to collide with an outer alias name (the type param
 //!     shadows the alias in that scope, exactly as a JVM-codegen `typeParams`
 //!     check would if it ran instead); `extern`/`extern type`/`extern func`
 //!     boundaries (a different, host-FQN-keyed resolution mechanism);
+//!     `where`-clause bounds and a const-generic value param's
+//!     `GPValue.constraint` (type-checker-only surfaces — checked against
+//!     declarations before codegen, never lowered into emitted signatures);
 //!     `aspect` bodies (deferred — complex `call`/`proceed` body shape,
-//!     no evidence they hit this bug). Contract clauses ARE resolved
+//!     no evidence they hit this bug; tracked with the depth-bound residual
+//!     in #6416). Contract clauses ARE resolved
 //!     (`resolveContracts`): they lower into real runtime asserts in
 //!     `@runtime_checked` modules, so they are compiled like any other
 //!     code (#6410 review).
@@ -881,6 +893,43 @@ func resolveInterfaceDecl(aliasTargets: in Map[String, TypeExpr], d: in Interfac
   InterfaceDecl(name = d.name, generics = d.generics, whereClause = d.whereClause, members = ms, span = d.span)
 }
 
+// Resolve a `ConstraintRef` (an interface reference: `impl <iface> for ...`,
+// where-clause bounds). Its `head` is a bare `ModulePath`, not a `TypeExpr`,
+// so — exactly like `TGenericApp`'s head substitution — a single-segment
+// alias head substitutes only when the alias chain bottoms out in a plain
+// `TRef`; any other resolved shape can't be expressed as a `ModulePath` and
+// is left unresolved. Type/value args resolve like any other `TypeArg`.
+func resolveConstraintRef(
+  aliasTargets: in Map[String, TypeExpr], genericNames: in List[String], c: in ConstraintRef
+): ConstraintRef {
+  val args2: List[TypeArg] = newList()
+  var i = 0
+  while i < c.args.count {
+    args2.add(resolveTypeArg(aliasTargets, genericNames, c.args[i]))
+    i = i + 1
+  }
+  val head2 = if c.head.segments.count == 1 and not listContainsStr(genericNames, c.head.segments[0]) {
+    match mapGet(aliasTargets, c.head.segments[0]) {
+      case Some(rhs) -> {
+        match resolveTypeExpr(aliasTargets, genericNames, rhs).kind {
+          case TRef(rp) -> rp
+          case _ -> c.head
+        }
+      }
+      case None -> c.head
+    }
+  } else {
+    c.head
+  }
+  ConstraintRef(head = head2, args = args2, span = c.span)
+}
+
+// `ImplDecl.target` (the concrete type an `impl <iface> for <target>` block
+// implements for) and `ImplDecl.iface` both reach backend naming directly
+// WITHOUT the MSIL `cctx.aliasTargets` layer (`implTargetNameMsil` and JVM's
+// `typeExprToJvmClass` pattern-match the raw AST), so an alias in either
+// header position must resolve here or it miscompiles on both targets
+// (#6414: silent wrong-name emission on MSIL, `NoClassDefFoundError` on JVM).
 func resolveImplDecl(aliasTargets: in Map[String, TypeExpr], d: in ImplDecl): ImplDecl {
   val ownGenerics = genericParamNamesOf(d.generics)
   val ms: List[ImplMember] = newList()
@@ -896,8 +945,8 @@ func resolveImplDecl(aliasTargets: in Map[String, TypeExpr], d: in ImplDecl): Im
   }
   ImplDecl(
     generics = d.generics,
-    iface = d.iface,
-    target = d.target,
+    iface = resolveConstraintRef(aliasTargets, ownGenerics, d.iface),
+    target = resolveTypeExpr(aliasTargets, ownGenerics, d.target),
     whereClause = d.whereClause,
     members = ms,
     span = d.span

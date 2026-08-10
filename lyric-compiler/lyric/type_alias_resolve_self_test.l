@@ -71,6 +71,46 @@ test "a generic type-parameter name shadows an alias of the same name" {
   assertEqual(trefName(resolved), "T", "in-scope type param wins over the alias")
 }
 
+test "impl header target and iface resolve through aliases (#6414)" {
+  val at: Map[String, TypeExpr] = newMap()
+  at.add("Handler2", tref("Applier"))
+  at.add("AliasIface", tref("SomeIface"))
+  val ifaceSegs: List[String] = newList()
+  ifaceSegs.add("AliasIface")
+  val noArgs: List[TypeArg] = newList()
+  val noMembers: List[ImplMember] = newList()
+  val decl = ImplDecl(
+    generics = None,
+    iface = ConstraintRef(
+      head = ModulePath(segments = ifaceSegs, span = syntheticSpan()),
+      args = noArgs,
+      span = syntheticSpan()
+    ),
+    target = tref("Handler2"),
+    whereClause = None,
+    members = noMembers,
+    span = syntheticSpan()
+  )
+  val noDocs: List[DocComment] = newList()
+  val noAnns: List[Annotation] = newList()
+  val item = Item(
+    docComments = noDocs,
+    annotations = noAnns,
+    visibility = None,
+    kind = IImpl(decl = decl),
+    span = syntheticSpan()
+  )
+  val resolved = resolveItem(at, item)
+  match resolved.kind {
+    case IImpl(d2) -> {
+      assertEqual(trefName(d2.target), "Applier", "impl target resolves through the alias")
+      val ifaceHead = if d2.iface.head.segments.count == 1 { d2.iface.head.segments[0] } else { "<multi>" }
+      assertEqual(ifaceHead, "SomeIface", "impl iface head resolves through the alias")
+    }
+    case _ -> assertTrue(false, "resolved item must still be an IImpl")
+  }
+}
+
 test "non-alias names pass through untouched" {
   val at: Map[String, TypeExpr] = newMap()
   at.add("A", tref("Long"))

@@ -168,14 +168,13 @@ pub func hasFuncAliasTargets(file: in SourceFile): Bool {
   false
 }
 
-// Fold `file`'s own `alias X = ...` declarations into `into` (first-wins —
-// an existing entry, whether from an earlier file of the same package or an
-// earlier item of this file, is never overwritten). Shared by
-// The single shared registration walk backing `collectFuncAliasTargets`,
-// so the self-reference/parameterized guards and first-wins policy live in
-// exactly one place. (A package-wide multi-file variant was prototyped for
-// #6404 axis 3 and dropped as dead code — docs/19's pre-parse file
-// concatenation already gives the pass whole-package visibility.)
+// The single shared registration walk backing `collectFuncAliasTargets`:
+// fold `file`'s own `alias X = ...` declarations into `into` (first-wins —
+// an existing entry from an earlier item is never overwritten), so the
+// self-reference/parameterized guards and first-wins policy live in exactly
+// one place. (A package-wide multi-file variant was prototyped for #6404
+// axis 3 and dropped as dead code — docs/19's pre-parse file concatenation
+// already gives the pass whole-package visibility.)
 func addFileAliasTargetsInto(file: in SourceFile, into: in Map[String, TypeExpr]): Unit {
   var i = 0
   while i < file.items.count {

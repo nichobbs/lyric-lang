@@ -25364,3 +25364,37 @@ then UNIFIED the pass:
 Regression: `bare_func_ref_self_test.l` 15→16 (generic-head + contract
 case), 16/16 both targets; full battery re-verified green on both
 targets after each rebuild.
+
+**Review addendum 2 (#6412, #6414, #6415, same PR).** Two later review
+rounds closed the remaining unresolved DECLARATION positions:
+
+- Distinct-type underlying (#6412): `resolveItem`'s `IDistinctType` arm
+  passed the whole declaration through, but a distinct type's UNDERLYING
+  representation (`type Distance = Meters` where `Meters` is an alias)
+  must resolve like any other annotation — pre-fix, merely declaring it
+  crashed `--target jvm` at build time. The distinct type's own NAME and
+  `rangeClause` stay nominal; only `underlying` resolves. Added a
+  dedicated unit self-test (`type_alias_resolve_self_test.l`, wired into
+  CI) exercising the resolver against hand-built ASTs — most importantly
+  the #6410 cycle guard, which cannot be a runtime test.
+- `impl` header (#6414): `resolveImplDecl` resolved member bodies but
+  copied `target`/`iface` verbatim, and BOTH backends name the impl class
+  from the raw header without any alias layer (`implTargetNameMsil`
+  pattern-matches `decl.target` directly — it never goes through
+  `typeExprToMsilCtx`, so #3673 does not save MSIL here; JVM's
+  `typeExprToJvmClass` likewise). A new `resolveConstraintRef` resolves
+  the iface head (plain-`TRef`-bottoming single-segment aliases only,
+  mirroring the `TGenericApp` head rule) and its type args; `target`
+  resolves via `resolveTypeExpr`. Unit-tested via `resolveItem` on a
+  hand-built `IImpl`; runtime impl-block coverage stays blocked by the
+  pre-existing #6408 crash and unblocks with it.
+- Module doc (#6415): the in-source design doc still claimed the pass
+  was JVM-only, contradicting the same PR's `Msil.Bridge` wiring —
+  rewritten to state the both-target wiring, that #3673 is retained as
+  a redundant layer but is NOT sufficient alone, and to correct the
+  stale `DistinctTypeDecl.underlying` scope claim. Where-clause bounds
+  and const-generic `GPValue.constraint` are documented as deliberately
+  unresolved (type-checker-only surfaces, never lowered into emitted
+  signatures). The deferred aspect-body scope and the theoretical
+  depth-bound residual through const-generic value expressions are now
+  tracked in #6416 rather than living only in the doc comment.

@@ -217,7 +217,10 @@ test "union case field typed via a function-type alias round-trips (#6406)" {
 // COMPILER even with a plain, non-aliased `Long` param — see
 // docs/03-decision-log.md D-progress-748 — so they can't be exercised in a
 // dual-target regression test here without failing for an unrelated,
-// pre-existing reason; tracked separately).
+// pre-existing reason; tracked in #6407/#6408.  The `impl` HEADER positions
+// (`target`/`iface` through an alias, #6414) are covered at the unit level
+// in `type_alias_resolve_self_test.l` instead; runtime impl-block coverage
+// unblocks when #6408 is fixed).
 //
 // Fixed by `Lyric.TypeAliasResolve` (`lyric-compiler/lyric/
 // type_alias_resolve.l`): a whole-file AST pre-pass, run once before any JVM
