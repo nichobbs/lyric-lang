@@ -26254,9 +26254,16 @@ was out of this task's scope (#6357/#6347 describe the broader
 erased-receiver refusal family JVM already implements) and nothing in
 `jvm/codegen/` changed.
 
-**Test coverage.** `lyric-compiler/lyric/impl_method_self_test.l`: 3 new
-runtime cases (18 -> 21, `--target dotnet`, per the file's own MSIL-only
-scope) replacing the prior "deliberately NOT covered" comment:
+**Test coverage.** `lyric-compiler/lyric/impl_method_self_test.l`: 4 new
+runtime cases (18 -> 22, `--target dotnet`, per the file's own MSIL-only
+scope) replacing the prior "deliberately NOT covered" comment. The fix
+also incidentally repairs the WRITE side (#6425 review finding): before
+it, `other.<field> = v` through a plain non-byref `in Self` param hit
+`lowerAssignExprMsil`'s `case _` fallback, which pops the value and
+receiver and stores NOTHING — silent data loss, arguably worse than the
+read side's `InvalidCastException`. The `Cell6425` case pins that
+repaired path (store lands + caller observes it via reference
+semantics). Cases:
 - "non-receiver Self-typed param field access, single record (#6421)" — a
   single record (`Solo6421`, `base: Int`) implementing a fresh interface
   (`Combiner6421`) whose method takes a non-receiver `other: in Self` param
@@ -26277,9 +26284,10 @@ scope) replacing the prior "deliberately NOT covered" comment:
 **Verification — full battery, all green** (rebuilt via `make lyric` after
 the source change AND again after `./bin/lyric fmt --write`, since the
 formatter reflowed `registerParamsMsil`'s multi-line signature):
-- `impl_method_self_test.l`: 21/21 dotnet (was 18/18; the third new case
-  is the `Bumper6421` inout/byref field read+mutation case added per the
-  #6425 review).
+- `impl_method_self_test.l`: 22/22 dotnet (was 18/18; the third and
+  fourth new cases — `Bumper6421` inout/byref read+mutation and
+  `Cell6425` non-byref write-not-a-silent-no-op — were added per the
+  #6425 review rounds).
 - `typechecker_self_test.l`: 302/302 (unchanged, dotnet-only front-end).
 - `bare_func_ref_self_test.l`: 21/21 dotnet, 21/21 jvm (unchanged).
 - `msil_project_bridge_self_test.l`: 39/39 dotnet (unchanged).

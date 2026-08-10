@@ -490,6 +490,34 @@ test "non-receiver inout Self-typed param field read AND mutation (#6421/#6425 r
   assertEqualInt(y.base, 42, "the mutation is visible through the caller's var after return")
 }
 
+// Write through a PLAIN (non-byref) `in Self` param (#6425 review): before
+// the #6421 fix this was a SILENT NO-OP, not a crash — the erased-MObject
+// receiver fell into `lowerAssignExprMsil`'s `case _` fallback, which pops
+// the value and receiver and stores nothing.  With the param tracked as
+// `MClass(target)` the write resolves through `cctx.fieldTokens` and
+// actually lands; records are reference types, so the caller observes it.
+record Cell6425 {
+  var base: Int
+}
+
+interface Setter6425 {
+  func put(self: in Self, other: in Self, v: Int): Int
+}
+
+impl Setter6425 for Cell6425 {
+  func put(self: in Self, other: in Self, v: Int): Int {
+    other.base = v
+    other.base
+  }
+}
+
+test "field WRITE through a plain in-mode Self param is not a silent no-op (#6425 review)" {
+  val x = Cell6425(base = 1)
+  val y = Cell6425(base = 2)
+  assertEqualInt(x.put(y, 42), 42, "the store lands and reads back through the fixed type-directed path")
+  assertEqualInt(y.base, 42, "the caller observes the mutation (reference semantics), not the pre-fix silent no-op")
+}
+
 // ── `Self` as the RETURN type (#6417) ────────────────────────────────────
 // Mirrors the language reference's `Cloneable`-style `func clone(): Self`
 // shape (docs/01 uses `Self` as a return type in interface examples), now
