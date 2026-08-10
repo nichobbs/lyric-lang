@@ -1282,35 +1282,57 @@ static void test_process_sync_timeout_setsid_escapee(void) {
      * keeps producing — the 2 s budget must end the drain (it dies of
      * SIGPIPE at the force-close).  setsid(1) is util-linux; on
      * platforms without it (macOS) this scenario cannot be built from
-     * a shell one-liner, so the test self-skips. */
+     * a shell one-liner, so the test self-skips.
+     *
+     * The scenario is racy to CONSTRUCT on a loaded runner: if the
+     * setsid'd writer hasn't started by the time the 300 ms timeout
+     * kills the process group, nothing holds the pipe, the drain sees
+     * immediate EOF, and the sub-budget elapsed time is CORRECT
+     * behavior for what actually ran — not a drain-budget failure.
+     * The escapee is the only writer, so a non-empty stdout is the
+     * exact witness that it was alive past spawn; assert the budget
+     * bounds only on a run where the scenario materialized, retrying
+     * a few times so coverage is near-certain (observed flaking in CI
+     * on PR #6420). */
     if (access("/usr/bin/setsid", X_OK) != 0 && access("/bin/setsid", X_OK) != 0) {
         return;
     }
-    LyricList* argv = lyric_list_new(1);
-    LyricString* dash_c = lyric_string_from_literal((const uint8_t*)"-c", 2);
-    lyric_list_push(argv, (int64_t)(intptr_t)dash_c);
-    lyric_release(dash_c);
     const char* cmd = "setsid sh -c 'while :; do echo g; sleep 0.05; done' & sleep 30";
-    LyricString* script = lyric_string_from_literal((const uint8_t*)cmd, (int64_t)strlen(cmd));
-    lyric_list_push(argv, (int64_t)(intptr_t)script);
-    lyric_release(script);
-    int32_t code = -1;
-    LyricString* out = NULL;
-    LyricString* err = NULL;
-    int32_t timed_out = -1;
-    int64_t t0 = lyric_monotonic_nanos();
-    CHECK(lyric_process_run("/bin/sh", argv, NULL, 300, &code, &out, &err, &timed_out) == 0);
-    int64_t elapsed_ms = (lyric_monotonic_nanos() - t0) / 1000000;
-    CHECK(timed_out == 1);
-    CHECK(code == 128 + SIGKILL);
-    /* The escapee kept the pipe alive past the kill, so the drain ran
-     * to its budget: at least ~2 s elapsed, but nowhere near the 30 s
-     * the writer would otherwise pin the loop for. */
-    CHECK(elapsed_ms >= 1500);
-    CHECK(elapsed_ms < 10000);
-    lyric_release(argv);
-    lyric_release(out);
-    lyric_release(err);
+    for (int attempt = 0; attempt < 3; attempt++) {
+        LyricList* argv = lyric_list_new(1);
+        LyricString* dash_c = lyric_string_from_literal((const uint8_t*)"-c", 2);
+        lyric_list_push(argv, (int64_t)(intptr_t)dash_c);
+        lyric_release(dash_c);
+        LyricString* script = lyric_string_from_literal((const uint8_t*)cmd, (int64_t)strlen(cmd));
+        lyric_list_push(argv, (int64_t)(intptr_t)script);
+        lyric_release(script);
+        int32_t code = -1;
+        LyricString* out = NULL;
+        LyricString* err = NULL;
+        int32_t timed_out = -1;
+        int64_t t0 = lyric_monotonic_nanos();
+        CHECK(lyric_process_run("/bin/sh", argv, NULL, 300, &code, &out, &err, &timed_out) == 0);
+        int64_t elapsed_ms = (lyric_monotonic_nanos() - t0) / 1000000;
+        CHECK(timed_out == 1);
+        CHECK(code == 128 + SIGKILL);
+        int escapee_ran = out != NULL && lyric_string_len(out) > 0;
+        lyric_release(argv);
+        lyric_release(out);
+        lyric_release(err);
+        if (escapee_ran) {
+            /* The escapee kept the pipe alive past the kill, so the
+             * drain ran to its budget: at least ~2 s elapsed, but
+             * nowhere near the 30 s the writer would otherwise pin
+             * the loop for. */
+            CHECK(elapsed_ms >= 1500);
+            CHECK(elapsed_ms < 10000);
+            return;
+        }
+    }
+    fprintf(stderr,
+            "note: setsid escapee never started within the timeout window "
+            "in 3 attempts (heavily loaded runner?); drain-budget bounds "
+            "not exercised this run\n");
 }
 
 static void test_process_op_stdin(void) {
