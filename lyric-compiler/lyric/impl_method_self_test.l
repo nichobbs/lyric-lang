@@ -463,6 +463,33 @@ test "non-receiver Self-typed param field access, two same-package records shari
   assertEqualInt(p.combine(q), 9, "TwinB.combine reads TwinB's own base field, not Accum6408's or TwinA's")
 }
 
+// The BYREF twin of the case above (#6425 review): `registerParamsMsil`
+// threads the concrete `MClass` type into `fctx.byrefSlotTypes` for an
+// `inout`-mode `Self` param too — field READ and WRITE through the byref
+// slot must resolve against the impl target's own fields despite the
+// same-package `base` name collisions above.
+record Bumped6421 {
+  var base: Int
+}
+
+interface Bumper6421 {
+  func bump(self: in Self, other: inout Self): Int
+}
+
+impl Bumper6421 for Bumped6421 {
+  func bump(self: in Self, other: inout Self): Int {
+    other.base = other.base + self.base
+    other.base
+  }
+}
+
+test "non-receiver inout Self-typed param field read AND mutation (#6421/#6425 review)" {
+  val x = Bumped6421(base = 20)
+  var y = Bumped6421(base = 22)
+  assertEqualInt(x.bump(y), 42, "field mutation through the byref Self slot resolves Bumped6421's own base")
+  assertEqualInt(y.base, 42, "the mutation is visible through the caller's var after return")
+}
+
 // ── `Self` as the RETURN type (#6417) ────────────────────────────────────
 // Mirrors the language reference's `Cloneable`-style `func clone(): Self`
 // shape (docs/01 uses `Self` as a return type in interface examples), now

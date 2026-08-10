@@ -26224,14 +26224,25 @@ no separate local-declaration fix needed — verified by inspection of
 type checker currently permits; a bare local re-declared `: Self` from a
 non-`Self`-typed source is not something the type checker accepts).
 
-**Non-receiver `Self` params now work end-to-end on MSIL.** Before this fix
-they type-checked (since #6417) but silently miscompiled the moment a
+**Non-receiver `Self` params now work end-to-end on MSIL — scoped to
+impl/record methods on CONCRETE target types.** Before this fix they
+type-checked (since #6417) but silently miscompiled the moment a
 second same-package record shared a field name; after this fix they resolve
-correctly regardless of field-name collisions. The RECEIVER position
+correctly regardless of field-name collisions, in both `in`-mode and
+`inout`-mode (the byref slot type threads through
+`fctx.byrefSlotTypes` identically; read AND mutation verified — the
+`Bumper6421` case). The RECEIVER position
 (stripped, dispatches via implicit `this`) and RETURN position (call-site
 substitution against the receiver's own known static type) were already
 sound per D-progress-751's own investigation and are unaffected by this
-change.
+change. Default interface method (DIM) bodies are NOT covered by the
+claim: `lowerImplMethodMsil` is reused for DIM bodies with the
+INTERFACE's own FQN as `selfTypeName`, and an interface owns no fields,
+so a `self`/`other` field access inside a DIM body still falls into the
+pre-existing `case None -> { MPop; MObject }` miss path — exactly as it
+already did for the `self` receiver via `fctx.className` before this fix
+(#6425 review; pre-existing behavior, extended consistently, not newly
+broken).
 
 **JVM — unchanged, not touched by this fix.** JVM's erased-receiver field
 read still correctly REJECTS at compile time (`Jvm.Codegen`'s "member ...
