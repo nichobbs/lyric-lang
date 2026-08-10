@@ -2747,10 +2747,21 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               implImplTargets.add(targetName)
               implImplNames.add(fn.name)
               implImplRetTys.add(match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid })
+              // Real-param list excludes an explicit `self` receiver (D037;
+              // same fix as interface registration above, #6408) — an impl
+              // method may spell its receiver explicitly
+              // (`self: in <Target>`), and `lowerImplMethodMsil` always
+              // strips it before emitting the real MethodDef.  Registering
+              // the RAW (unstripped) params here desynced this
+              // concrete-receiver dispatch key from the emitted signature:
+              // call sites resolving through the record's own type (not
+              // interface dispatch) read `self`'s type at arg index 0
+              // instead of the first real argument's, producing invalid IL.
+              val implRealParams = stripExplicitSelfParamMsil(fn.params)
               // Param types for the concrete-receiver dispatch key (#1784).
-              registerMethodParamTypes(cctx, targetName + "/" + fn.name, fn.params, pkgName)
+              registerMethodParamTypes(cctx, targetName + "/" + fn.name, implRealParams, pkgName)
               // Param modes so a byref argument is passed by address (#1955).
-              registerMethodParamModes(cctx, targetName + "/" + fn.name, fn.params)
+              registerMethodParamModes(cctx, targetName + "/" + fn.name, implRealParams)
             }
             case IMplAssoc(_) -> {
             }

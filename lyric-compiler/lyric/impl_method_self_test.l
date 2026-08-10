@@ -260,3 +260,62 @@ test "bare self-field read + write in a record in-body method (#6173)" {
   assertEqualInt(t.add(5), 105, "in-body method bare field write persists")
   assertEqualInt(t.add(0 - 3), 102, "in-body method bare field write handles negative RHS")
 }
+
+// ── impl method with an EXPLICIT `self` receiver + a same-file matching
+//    interface (#6408) ─────────────────────────────────────────────────────
+// D037 allows an impl method to spell its receiver explicitly
+// (`self: in <Target>`, or `self: in Self` on the interface side — #6417).
+// `addPackageTokens`' IImpl pre-pass registered the CONCRETE-receiver
+// dispatch key (`"<Target>/<method>"`, consulted by `lowerMethodCallMsil`
+// for a call resolved directly against the record's own type, e.g.
+// `y.method(...)` where `y`'s static type IS the record) from the impl
+// method's RAW, unstripped `params` list — `self` at index 0 followed by
+// the real params — while `lowerImplMethodMsil` (the actual MethodDef
+// emission) always strips the explicit `self` before building the real
+// signature. The registered per-index expected types (`registerMethod-
+// ParamTypes`/`Modes`) were therefore shifted by one against the real
+// emitted parameter list, so a direct call pushed its explicit arguments
+// against the WRONG per-index expectation (arg 0 checked against `self`'s
+// registered type instead of the first real parameter's) and produced
+// invalid IL (`InvalidProgramException`). Calls through an INTERFACE-typed
+// binding/parameter were unaffected — those resolve through a SEPARATE
+// registration (`"<Interface>/<method>"`) that already stripped `self`
+// (#5566) — so only the direct-on-record-value dispatch axis crashed.
+interface Adder6408 {
+  func add(self: in Self, n: Int, extra: Bool): Int
+}
+
+record Accum6408 {
+  base: Int
+}
+
+impl Adder6408 for Accum6408 {
+  func add(self: in Accum6408, n: Int, extra: Bool): Int {
+    if extra {
+      self.base + n + 1
+    } else {
+      self.base + n
+    }
+  }
+}
+
+test "direct call on the record value with an explicit `self` receiver (#6408)" {
+  val a = Accum6408(base = 10)
+  assertEqualInt(a.add(5, false), 15, "direct dispatch: 10 + 5")
+  assertEqualInt(a.add(5, true), 16, "direct dispatch, second arg path: 10 + 5 + 1")
+}
+
+test "interface-typed local binding dispatch with an explicit `self` receiver (#6408)" {
+  val a: Adder6408 = Accum6408(base = 10)
+  assertEqualInt(a.add(5, false), 15, "interface-typed binding dispatch still correct")
+  assertEqualInt(a.add(5, true), 16, "interface-typed binding dispatch, second arg path")
+}
+
+func useAdder6408(a: in Adder6408, n: Int): Int {
+  a.add(n, false)
+}
+
+test "interface-typed function parameter dispatch with an explicit `self` receiver (#6408)" {
+  val a = Accum6408(base = 10)
+  assertEqualInt(useAdder6408(a, 7), 17, "interface-typed parameter dispatch still correct")
+}

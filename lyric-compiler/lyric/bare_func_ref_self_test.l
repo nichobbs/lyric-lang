@@ -224,7 +224,11 @@ test "union case field typed via a function-type alias round-trips (#6406)" {
 // protected-entry case is covered below (`MeterTally`).  The `impl` HEADER positions
 // (`target`/`iface` through an alias, #6414) are covered at the unit level
 // in `type_alias_resolve_self_test.l` instead; runtime impl-block coverage
-// unblocks when #6408 is fixed).
+// (#6408, D-progress-750) is covered below (`MeterCalc6408`/`MeterAccum6408`)
+// — an alias-typed param/return/self-field through an `impl`-for-`interface`
+// method with an EXPLICIT `self` receiver, dispatched BOTH directly on the
+// record value (the axis that actually crashed on MSIL pre-#6408-fix) and
+// through the interface type (which was unaffected, both before and after).
 //
 // Fixed by `Lyric.TypeAliasResolve` (`lyric-compiler/lyric/
 // type_alias_resolve.l`): a whole-file AST pre-pass, run once before any JVM
@@ -304,6 +308,40 @@ record Applier {
 test "function-type alias as a record instance method's parameter (#6404)" {
   val a = Applier(seed = 4)
   assertEqualInt(a.run(double), 12, "Applier(seed = 4).run(double) == double(4) + 4 == 12")
+}
+
+// #6408: an `impl`-for-`interface` method with an alias-typed param/return
+// AND an explicit `self` receiver (D037 `self: in Self` / `self: in
+// <Target>`).  MSIL's `addPackageTokens` IImpl pre-pass registered the
+// direct-record-dispatch key (`"<Target>/<method>"`, consulted when a call
+// resolves against the record's OWN type rather than the interface) from the
+// impl method's raw, unstripped param list, so the registered per-index
+// parameter types disagreed with the real (self-stripped) emitted MethodDef
+// — `InvalidProgramException` on the direct-dispatch axis only; interface-
+// typed dispatch used a separately-registered, already-correctly-stripped
+// key and was unaffected. See D-progress-750.
+interface MeterCalc6408 {
+  func addMeters(self: in Self, m: Meters): Meters
+}
+
+record MeterAccum6408 {
+  base: Meters
+}
+
+impl MeterCalc6408 for MeterAccum6408 {
+  func addMeters(self: in MeterAccum6408, m: Meters): Meters {
+    self.base + m
+  }
+}
+
+test "alias-typed impl method param/return/self-field, direct record dispatch (#6404/#6408)" {
+  val a = MeterAccum6408(base = 10i64)
+  assertEqualLong(a.addMeters(5i64), 15i64, "direct dispatch: 10 + 5 via alias Meters, explicit self")
+}
+
+test "alias-typed impl method param/return/self-field, interface-typed dispatch (#6404/#6408)" {
+  val a: MeterCalc6408 = MeterAccum6408(base = 10i64)
+  assertEqualLong(a.addMeters(5i64), 15i64, "interface dispatch: 10 + 5 via alias Meters, explicit self")
 }
 
 // #6410 review round: an alias used as a bare GENERIC-APPLICATION HEAD

@@ -25530,3 +25530,149 @@ source change):
 Refs #6407. Cross-referenced from `bare_func_ref_self_test.l`'s #6404
 deferred-coverage note (which flagged this as blocking dual-target coverage
 of `protected type` entries through an alias-typed param).
+
+## D-progress-750 — MSIL: an `impl X for Y` method with an explicit `self` receiver, alongside a matching same-file `interface X`, double-registered the receiver on the CONCRETE-record dispatch key only (#6408)
+
+**Status:** ACCEPTED
+
+**Root cause.** `msil/codegen.l`'s `addPackageTokens`, `IImpl` pre-pass
+(`lyric-compiler/msil/codegen.l:2741`, the `case IMplFunc(fn) ->` arm)
+registered the impl method's **concrete-receiver dispatch key**
+(`"<Target>/<method>"`, no arity suffix — consulted by `lowerMethodCallMsil`
+when a call site's receiver expression's STATIC type is the record itself,
+e.g. `y.method(...)` where `y: Y`, as opposed to an interface-typed
+receiver) from the impl method's **raw, unstripped** `fn.params`:
+
+```
+registerMethodParamTypes(cctx, targetName + "/" + fn.name, fn.params, pkgName)   // line 2751 (pre-fix)
+registerMethodParamModes(cctx, targetName + "/" + fn.name, fn.params)            // line 2753 (pre-fix)
+```
+
+D037 lets an impl method spell its receiver explicitly
+(`self: in <Target>` — or `self: in Self` on the interface side, substituted
+to the impl's own concrete type at signature-conformance check time; #6417
+tracks a separate, narrower bug in that substitution and does not block this
+one). When a method IS written with an explicit `self` param, `fn.params`
+is `[self, ...real params]` — but `lowerImplMethodMsil`
+(`lyric-compiler/msil/codegen.l:23466`,
+`val implRealParams = stripExplicitSelfParamMsil(decl.params)`) — the
+function that actually LOWERS the method body and emits its real MethodDef
+— always strips the leading `self` before building the real IL signature.
+`registerMethodParamTypes`/`registerMethodParamModes` record each
+parameter's expected `MsilType`/mode **per positional index**
+(`"<key>#<idx>"`, `msil/codegen.l:2059-2081`); with `self` left in at index
+0, the registered per-index table was shifted by one against the real
+emitted parameter list. A direct call site (`y.method(a, b)`) pushes
+exactly its own explicit arguments and looks up the boxing/byref
+expectation for argument 0 as `"<Target>/<method>#0"` — which, pre-fix,
+held `self`'s own type (`MClass <Target>`, a reference type) instead of the
+first real parameter's type. For a value-type first parameter (e.g. `Int`)
+this produced a value pushed with the WRONG (reference-type) boxing
+decision against a callee whose real, stripped signature expects the
+value directly, unboxed — invalid IL, rejected by the CLR at load time:
+`System.InvalidProgramException: Common Language Runtime detected an
+invalid program.` This is the same fault *class* as D-progress-749
+(#6407): a registration site and an emission site disagreeing about
+whether a leading explicit `self` counts as a real IL parameter — but a
+different registration site (the concrete-record dispatch key,
+`"<Target>/<method>"`, not the protected-type-entry path #6407 fixed) and
+a different backend-internal consumer (`lowerMethodCallMsil`'s per-index
+argument-expectation lookup, not `paramCount`/param-slot assignment).
+
+**Why only the direct-dispatch axis crashed.** The SAME file's `IInterface`
+handling (`msil/codegen.l:3203`, both the `IMSig` and `IMFunc` arms) already
+strips a leading explicit `self` before registering
+(`val imsRealParams = stripExplicitSelfParamMsil(sig.params)` /
+`val imfRealParams = stripExplicitSelfParamMsil(fn.params)`, referencing
+`#5566` — an earlier fix for the SAME desync in the interface-typed
+dispatch key). That registration lives under a completely separate key
+namespace (`"<Interface>/<method>"`, e.g. `"Calc/run"`, vs. the impl
+pre-pass's `"<Target>/<method>"`, e.g. `"CalcImpl/run"`) and was never
+touched by this bug. So a call through an interface-typed local
+(`val x: Calc = CalcImpl(); x.run(...)`) or an interface-typed function
+parameter dispatches through the correctly-stripped `"Calc/run"` key and
+was unaffected both before and after this fix — confirming the issue's own
+note that JVM (whose `06_items.l` `lowerImplMethod`/`registerInstanceSig`
+already used `stripLeadingSelfParam` consistently on this axis, per the
+`#5566`-equivalent JVM history) was never affected either. Repro matrix
+built before the fix (`interface X { func m(self: in Self, ...) }` +
+`record Y { ... }` + `impl X for Y { func m(self: in Y, ...) { ... } }`,
+`--target dotnet`):
+
+| call shape | pre-fix | post-fix |
+|---|---|---|
+| direct on record value (`y.m(...)`, `y: Y`) | **`InvalidProgramException`** | correct |
+| interface-typed local binding (`val x: X = y; x.m(...)`) | correct | correct |
+| interface-typed function parameter (`func f(x: X) { x.m(...) }`) | correct | correct |
+| same shapes, `--target jvm` | correct (all three) | correct (all three) |
+| impl method with NO explicit `self` param (canonical/implicit spelling) | correct (all shapes, both targets) | correct (unchanged) |
+
+**Fix.** `msil/codegen.l:2741`'s `IMplFunc` arm now strips a leading
+explicit `self` before registering, mirroring the `IInterface` arm three
+match cases below it and `IRecord`'s `RMFunc` arm above it in the same
+function:
+
+```
+val implRealParams = stripExplicitSelfParamMsil(fn.params)
+registerMethodParamTypes(cctx, targetName + "/" + fn.name, implRealParams, pkgName)
+registerMethodParamModes(cctx, targetName + "/" + fn.name, implRealParams)
+```
+
+`stripExplicitSelfParamMsil` (`msil/codegen.l:2235`) is a no-op when no
+leading `self` param is present, so the canonical implicit-self spelling
+(already correct pre-fix) is untouched. No type-checker, grammar, or JVM
+change — this is a pure MSIL backend registration-consistency fix, the
+mirror image of D-progress-749's `PMEntry` fix but for the impl-method
+concrete-dispatch key instead of the protected-entry emission/registration
+pair.
+
+**Verification** (`./bin/lyric`, full `make lyric` rebuild after the source
+change):
+- Original #6408 repro shape (explicit-`self` impl method + matching
+  interface, direct/interface-local/interface-param call sites, both a
+  single `Int` param and a 3-param mix of `Int`/`Bool`/`String`): exit 0,
+  correct values, on `--target dotnet` (previously
+  `InvalidProgramException` on the direct-dispatch axis only) and
+  `--target jvm` (unaffected throughout, confirming JVM parity is
+  preserved, not just restored).
+- `lyric-compiler/lyric/impl_method_self_test.l` (`--target dotnet`,
+  MSIL-only per its header, epic #1470 defers JVM for this file as a
+  whole): 13/13 (was 10/10) — three new cases added: direct call on the
+  record value, interface-typed local binding dispatch, and interface-
+  typed function parameter dispatch, all with an explicit `self` receiver
+  and a matching same-file interface.
+- `lyric-compiler/lyric/bare_func_ref_self_test.l`: 20/20 both targets (was
+  18/18) — added the alias-typed impl-block regression case this file's
+  #6404 comment block had flagged as blocked pending this fix
+  (`MeterCalc6408`/`MeterAccum6408`: `alias Meters = Long` used as an impl
+  method's param/return AND self-field type, with an explicit `self`
+  receiver, dispatched both directly on the record value — the axis that
+  actually crashed pre-fix — and through the interface type), closing the
+  last piece of #6404's originally-requested "runtime impl-block coverage"
+  note.
+- `lyric-compiler/lyric/synthesized_method_self_test.l`: 10/10 both targets
+  (unchanged).
+- `lyric-compiler/lyric/iface_slice_arg_self_test.l`: 6/6 both targets
+  (unchanged).
+- `lyric-compiler/lyric/stdlib_generic_iface_self_test.l`: 20/20 both
+  targets (unchanged).
+- `lyric-compiler/lyric/typechecker_self_test.l` (`LYRIC_LOAD_COMPILER=1`,
+  dotnet): 298/298 (unchanged — confirms this is a pure backend fix, no
+  front-end/checker interaction).
+- `lyric-compiler/lyric/msil_project_bridge_self_test.l`
+  (`LYRIC_LOAD_COMPILER=1`, dotnet): 38/38 (unchanged).
+- `bash scripts/ilverify-selfhosted.sh`: clean — 119 DLLs verified, 0
+  IL-validity errors (3 pre-existing extern-FFI resolution-only infos,
+  unrelated: `Lyric.Jvm.Kernel.dll`, `Lyric.Stdlib.CollectionsHost.dll`).
+- `./bin/lyric fmt --write` on both changed/extended `.l` files
+  (`impl_method_self_test.l`, `bare_func_ref_self_test.l`): no diff, no
+  refusal.
+
+Refs #6408. `docs/49-methods-in-types.md` (D037, the explicit-`self`-
+receiver spelling this bug's trigger condition depends on) and #6417
+(a narrower, independent type-checker ergonomics bug in the SAME
+explicit-`self`-plus-interface shape — `self: in Self` on the impl side
+is rejected even when it should conform; using the concrete type
+(`self: in <Target>`) works and is what this entry's regression coverage
+uses, matching the issue's own workaround note) are unaffected by this
+fix and remain open/tracked separately.
