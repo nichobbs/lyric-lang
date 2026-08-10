@@ -26126,3 +26126,174 @@ this audit was asked to retire the older machinery in favor of), #3673
 (MSIL's original `cctx.aliasTargets` design), #6393/D-progress-747 (JVM's
 original per-site machinery), #6417/D-progress-751/#6423 (the Self-receiver
 fix whose review produced the folded-in dual-target test).
+
+## D-progress-753 — MSIL: `fieldTokensByName`'s package-wide, name-only fallback silently guessed the wrong record's field token for a non-receiver `Self`-typed impl-method parameter; fixed with type-directed local static-type tracking (#6421)
+
+**Status:** ACCEPTED
+
+**Root cause.** `msil/codegen.l`'s field-read lowering (the `EMember`
+arm around `msil/codegen.l:8017` at the time of this fix) branches on the
+RECEIVER expression's tracked `MsilType`. When the receiver's static type is
+a known in-package record (`MClass(cls)`), it resolves the field
+unambiguously through `cctx.fieldTokens`, keyed `"<ClassName>/<field>"`
+(`msil/codegen.l:7753` region) — this path was always sound. When the
+receiver's tracked type is the generic erased `MObject` (the `case _`
+fallback), it instead consults `cctx.fieldTokensByName`
+(`msil/codegen.l:147`), keyed `"<package>/<field name>"` ONLY — package and
+field name, no owning-type disambiguation — and populated first-writer-wins
+(e.g. `msil/codegen.l:2844`: `if not
+cctx.fieldTokensByName.containsKey(...)`). A non-receiver parameter declared
+`Self` (e.g. `other: in Self` inside `impl Iface for Target { func m(self:
+in Self, other: in Self): ... }`) erases to `object` in the real emitted IL
+signature — same as the interface slot requires — and
+`registerParamsMsil` (the shared param-registration loop used by both
+`lowerImplMethodMsil` and `lowerRecordMethodMsil`) recorded that same erased
+`MObject` as the parameter's LOCAL codegen-internal static type too, via a
+blanket `typeExprToMsilCtx`, whose `TSelf` arm
+(`msil/codegen.l:6233` at the time) unconditionally returns `MObject` — it
+has no notion of "which impl this appears in" (mirroring the type checker's
+own `resolveType`'s `TSelf` -> `TySelf` symbolic value,
+D-progress-751). So `other.<field>` always fell into the erased `MObject`
+fallback and consulted the package-wide name table — which silently kept
+resolving to whichever same-package record registered that field name
+FIRST, regardless of which record `other` actually was at runtime. Confirmed
+with D-progress-751's own minimal repro (`Accum6408`/`Accum6417`-shaped: two
+same-package records both declaring `base: Int`): reading `other.base` on
+the record that was NOT first-registered threw
+`System.InvalidCastException` from the `MCastclassByName` this fallback
+emits before `ldfld`, casting the real receiver to the wrong record's class.
+
+**Why this was invisible before #6417.** A non-receiver `Self`-typed
+parameter never type-checked at all before D-progress-751 fixed
+`checkImplConformance`'s C11 substitution (`T0106` always rejected it), so
+this codegen path was unreachable in any program that could actually
+compile — D-progress-751 investigated end-to-end and found this pre-existing
+gap newly reachable, then explicitly deferred the codegen fix as
+out-of-scope (filed as #6421) rather than attempt a broad codegen change
+inside a front-end-scoped task.
+
+**Fix — type-directed field resolution for the Self-in-impl shape
+(outcome 1 of two acceptable outcomes; the stronger of the two).**
+`registerParamsMsil` (`msil/codegen.l`) now takes an additional
+`selfTypeName: String` parameter — the impl/record method's own concrete
+target FQN (`"<pkg>.<RecordName>"`, exactly matching `cctx.fieldTokens`'
+key format; see `implTargetNameMsil` / the `IRecord` arm's `className`
+construction, both already `pkgName + "." + decl.name`). For each parameter
+whose declared type IS (or parenthesis-wraps) the bare `Self` type
+expression — detected by a new small helper, `isSelfTypeExprMsil` — the
+parameter's entry in `fctx.types` (and `fctx.byrefSlotTypes`, for a byref
+`Self` param) is now `MClass(selfTypeName)` instead of the erased
+`MObject`. This is sound because the type checker (D-progress-751's
+`substitutesSelf` fix) only accepts a `Self`-typed argument at a call
+through this parameter when it resolves to EXACTLY the impl's own target
+type — so a value bound to `other` inside `impl Iface for Target`'s own
+method body is guaranteed to be an instance of `Target`. Recording that
+concrete type makes a later `other.<field>` read hit the ALREADY-EXISTING
+type-directed `case MClass(cls)` lookup instead of ever falling through to
+the name-only table — no new lookup mechanism, no new field-registration
+code, just correcting which static type the erased-in-signature parameter
+carries for CODEGEN-INTERNAL bookkeeping. Both call sites
+(`lowerImplMethodMsil`, `lowerRecordMethodMsil`) already had the target's
+FQN in scope (`targetTypeName`) and now thread it through.
+
+Critically, this changes NOTHING about the actual emitted method
+signature — the erased `object` parameter type used to build the real
+`MFunc.params` (computed separately, by a second, untouched
+`typeExprToMsilCtx` call in each of the two lowering functions) is
+byte-identical to before. This is why the fix cannot repeat the earlier,
+REVERTED `Lyric.TypeAliasResolve` AST-substitution attempt's failure mode
+(D-progress-751): that attempt substituted `Self` -> the concrete target
+INTO THE SIGNATURE ITSELF on the impl side only, desyncing it from the
+interface slot's still-erased `object` and producing a CLR-load-time
+`TypeLoadException`. This fix never touches the signature — only a
+`Map[String, MsilType]` used purely by this compilation's own codegen
+decisions.
+
+A useful side effect of the fix landing in `fctx.types`, not a special-cased
+field-access branch: a LOCAL variable inferred from a `Self`-typed
+parameter (e.g. `val x = other`, or `val x: Self = other` — `LBVal`'s
+`annoTy` for an explicit `Self` annotation is itself still the erased
+`MObject`, per `typeExprToMsilBodyCtx`/`typeExprToMsilCtx`'s unchanged
+`TSelf` arm, but `lowerStmtMsil`'s `val effectiveTy = if annoTy != MObject {
+annoTy } else { initTy }` falls back to the INITIALIZER's tracked type when
+the annotation itself is erased) automatically inherits the concrete
+`MClass(selfTypeName)` type through ordinary type-inference plumbing, with
+no separate local-declaration fix needed — verified by inspection of
+`lowerStmtMsil`'s `LBVal` arm, not exercised by a dedicated test in this PR
+(the parameter shape covers the reachable non-receiver-`Self` surface the
+type checker currently permits; a bare local re-declared `: Self` from a
+non-`Self`-typed source is not something the type checker accepts).
+
+**Non-receiver `Self` params now work end-to-end on MSIL.** Before this fix
+they type-checked (since #6417) but silently miscompiled the moment a
+second same-package record shared a field name; after this fix they resolve
+correctly regardless of field-name collisions. The RECEIVER position
+(stripped, dispatches via implicit `this`) and RETURN position (call-site
+substitution against the receiver's own known static type) were already
+sound per D-progress-751's own investigation and are unaffected by this
+change.
+
+**JVM — unchanged, not touched by this fix.** JVM's erased-receiver field
+read still correctly REJECTS at compile time (`Jvm.Codegen`'s "member ...
+cannot be resolved on an erased (statically Object) receiver" guard,
+currently an unhandled exception rather than a structured CLI diagnostic —
+that rough edge is #6422, tracked separately) rather than guessing. This is
+the intentionally safer failure mode D-progress-751 already documented; JVM
+was out of this task's scope (#6357/#6347 describe the broader
+erased-receiver refusal family JVM already implements) and nothing in
+`jvm/codegen/` changed.
+
+**Test coverage.** `lyric-compiler/lyric/impl_method_self_test.l`: 2 new
+runtime cases (18 -> 20, `--target dotnet`, per the file's own MSIL-only
+scope) replacing the prior "deliberately NOT covered" comment:
+- "non-receiver Self-typed param field access, single record (#6421)" — a
+  single record (`Solo6421`, `base: Int`) implementing a fresh interface
+  (`Combiner6421`) whose method takes a non-receiver `other: in Self` param
+  and reads `self.base + other.base`. Note this is NOT actually isolated
+  within the file — `Accum6408` (defined earlier, same file) already
+  declares a same-named `base` field and registers first, so this case
+  already exercises the same-name collision the D-progress-751 repro
+  needed; it pins the "simple-looking" shape that appeared to work in
+  isolation per that entry's own finding.
+- "non-receiver Self-typed param field access, two same-package records
+  sharing a field name (#6421)" — the literal D-progress-751 minimal repro,
+  two records (`TwinA6421`, `TwinB6421`), both `base: Int`, each with its
+  own `impl Combiner6421`, asserting BOTH records' `combine` reads their
+  OWN field, not `Accum6408`'s (first-registered) or each other's. This
+  test would have thrown `System.InvalidCastException` before this fix, on
+  ilverify-clean IL that ran and crashed at the `castclass`.
+
+**Verification — full battery, all green** (rebuilt via `make lyric` after
+the source change AND again after `./bin/lyric fmt --write`, since the
+formatter reflowed `registerParamsMsil`'s multi-line signature):
+- `impl_method_self_test.l`: 20/20 dotnet (was 18/18).
+- `typechecker_self_test.l`: 302/302 (unchanged, dotnet-only front-end).
+- `bare_func_ref_self_test.l`: 21/21 dotnet, 21/21 jvm (unchanged).
+- `msil_project_bridge_self_test.l`: 39/39 dotnet (unchanged).
+- `synthesized_method_self_test.l`: 10/10 dotnet, 10/10 jvm (unchanged).
+- `iface_slice_arg_self_test.l`: 6/6 (unchanged).
+- `stdlib_generic_iface_self_test.l`: 20/20 dotnet, 20/20 jvm (unchanged).
+- `closure_zero_overhead_self_test.l`: 18/18 dotnet, 18/18 jvm (unchanged).
+- `scripts/ilverify-selfhosted.sh`: 119/119 DLLs, 0 IL-validity errors,
+  same 3 pre-existing resolution-only infos as the D-progress-751/752
+  baseline (`Lyric.Jvm.Kernel.dll`, `Lyric.Stdlib.CollectionsHost.dll`),
+  re-run after the `fmt --write` rebuild too.
+- `./bin/lyric fmt --write` on both changed files
+  (`msil/codegen.l`, `impl_method_self_test.l`): both formatted cleanly, no
+  refusal; a second `fmt --write` pass produced no further diff
+  (idempotent).
+
+**Build-loop note.** Followed CLAUDE.md's #6331 guidance throughout: every
+`stage1-fast` iteration was verified with `make self-test` only, never
+trusted against `./bin/lyric` directly; the battery above ran only after a
+full `make lyric` (twice — once for the codegen fix, once more after
+`fmt --write` reflowed the function signature) so `./bin/lyric` and the
+staged `<libdir>/selfhosted/` bundle both reflect the source change.
+
+Refs #6421. Related: #6422 (JVM's same-shape refusal is an unhandled
+exception, not a structured diagnostic — untouched here), #6357/#6347 (the
+JVM erased-receiver refusal family this MSIL fix does not extend to),
+D-progress-751 (root-caused this bug, reverted an unsound
+`Lyric.TypeAliasResolve` fix attempt, and deferred the codegen fix as
+this issue), #6417/#6408 (the front-end and receiver-position bugs in the
+same `Self`-in-impl surface).

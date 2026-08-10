@@ -23430,6 +23430,19 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
 //
 // The `MFunc.params` list excludes `this`; the signature builder
 // (`buildInstanceMethodSigWithCtx` in `lowerMRecord`) prepends the HASTHIS bit.
+// Unwrap parens to see whether a param's declared type is (or wraps) the
+// bare `Self` type expression — used by `registerParamsMsil` to give a
+// non-receiver `Self`-typed parameter a concrete LOCAL static type inside an
+// impl/record method body (#6421) instead of the signature's erased
+// `object` (see that function's own comment for why this is sound).
+func isSelfTypeExprMsil(te: in TypeExpr): Bool {
+  match te.kind {
+    case TSelf -> true
+    case TParen(inner) -> isSelfTypeExprMsil(inner)
+    case _ -> false
+  }
+}
+
 // Shared parameter-registration loop for `lowerImplMethodMsil` and
 // `lowerRecordMethodMsil` (#4963): binds each param's slot index, tracks its
 // MSIL type CTX-AWARE (a param's concrete instantiation — e.g. `List<int32>`
@@ -23438,11 +23451,43 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
 // `TFunction`-typed param's parameter/return types for the typed-invoke ABI
 // (#1877 Phase 3).  Assumes `fctx.slotTicker` already reserved slot 0 for the
 // receiver (`this`/`self`); assigns slots 1..N in declaration order.
-func registerParamsMsil(cctx: in CodegenCtx, fctx: in FuncCtx, params: in List[Param], pkgName: in String): Unit {
+//
+// `selfTypeName` is the impl/record method's own concrete target FQN (e.g.
+// "Pkg.Accum6417", matching `cctx.fieldTokens`' `"<ClassName>/<field>"` key
+// format — see `implTargetNameMsil` / the `IRecord` arm's `className`).  A
+// non-receiver parameter declared `Self` (e.g. `other: in Self`) is still
+// erased to `object` in the REAL emitted signature (unchanged — computed
+// separately by the caller so it keeps matching the interface slot), but a
+// value bound to it is guaranteed by the type checker (D-progress-751/#6417,
+// `checkImplConformance`'s C11 `substitutesSelf`) to be an instance of
+// EXACTLY this impl's own target type. Recording `MClass(selfTypeName)`
+// instead of the erased `MObject` in `fctx.types`/`fctx.byrefSlotTypes`
+// makes a later `other.<field>` read resolve through the existing
+// type-directed `case MClass(cls)` field lookup (`cls + "/" + memberName`
+// against `cctx.fieldTokens`) instead of falling through to the
+// package-wide, field-NAME-only `fieldTokensByName` fallback — which
+// silently guesses the FIRST same-package record ever registered under that
+// field name when two records share a field name, a wrong-type
+// `InvalidCastException`-class miscompile (#6421). This changes only
+// CODEGEN-INTERNAL static-type bookkeeping, never the emitted IL signature,
+// so it cannot desync from the interface slot the way the earlier, reverted
+// `Lyric.TypeAliasResolve` AST-substitution attempt did (see D-progress-751).
+func registerParamsMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  params: in List[Param],
+  pkgName: in String,
+  selfTypeName: in String,
+): Unit {
   var pi = 0
   while pi < params.count {
     val p = params[pi]
-    val paramTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
+    val erasedParamTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
+    val paramTy = if selfTypeName.length > 0 and isSelfTypeExprMsil(p.ty) {
+      MClass(className = selfTypeName)
+    } else {
+      erasedParamTy
+    }
     val slot = fctx.slotTicker.count
     fctx.slots.add(p.name, slot)
     fctx.types.add(p.name, paramTy)
@@ -23514,7 +23559,7 @@ pub func lowerImplMethodMsil(
   // run time, so the body's `log.add(99)` must emit `List<int32>::Add(int32)`,
   // not the legacy `List<object>::Add(object)` — the latter, called on a
   // `List<int32>`, corrupts memory (different backing layout) and segfaults.
-  registerParamsMsil(cctx, fctx, implRealParams, pkgName)
+  registerParamsMsil(cctx, fctx, implRealParams, pkgName, targetTypeName)
 
   // Reserve the epilogue label so a `return` inside a protected region can
   // `leave` to it (see SReturn / #1477).
@@ -23638,7 +23683,7 @@ pub func lowerRecordMethodMsil(
 
   val insns: List[MInsn] = newList()
 
-  registerParamsMsil(cctx, fctx, realParams, pkgName)
+  registerParamsMsil(cctx, fctx, realParams, pkgName, targetTypeName)
 
   fctx.epilogueLabel = freshLabelMsil(fctx)
 
