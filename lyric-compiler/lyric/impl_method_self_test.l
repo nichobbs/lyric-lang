@@ -319,3 +319,109 @@ test "interface-typed function parameter dispatch with an explicit `self` receiv
   val a = Accum6408(base = 10)
   assertEqualInt(useAdder6408(a, 7), 17, "interface-typed parameter dispatch still correct")
 }
+
+// ── impl method whose receiver is spelled `self: in Self`, MIRRORING the
+//    interface's own `Self` receiver verbatim (#6417) ─────────────────────
+// Before the fix, `checkImplConformance` (T0106/C11) substituted `Self` ->
+// the impl's concrete target on the INTERFACE side of the comparison only;
+// the impl side's own literal `Self` stayed unsubstituted `TySelf`, so it
+// could never equal the substituted concrete type and every impl mirroring
+// the interface's `Self` spelling verbatim was rejected at compile time
+// (`self: in <Target>`, as `Accum6408` above uses, was the only accepted
+// spelling). The fix substitutes `Self` on BOTH sides. Codegen needed no
+// change for the receiver position: an explicit `self` param — spelled
+// either way — is always stripped before signature lowering and dispatches
+// through the implicit `this` slot (`ESelf` -> `ldarg.0`), so the receiver
+// position was already correct end-to-end even before this fix; #6417 was
+// purely a front-end over-rejection.
+interface Tagger6417 {
+  func tag(self: in Self): Int
+}
+
+record Applier6417 {
+  seed: Int
+}
+
+impl Tagger6417 for Applier6417 {
+  func tag(self: in Self): Int {
+    self.seed
+  }
+}
+
+test "direct call on the record value with a Self receiver matching the interface (#6417)" {
+  val a = Applier6417(seed = 42)
+  assertEqualInt(a.tag(), 42, "direct dispatch: Self-receiver impl reads seed")
+}
+
+test "interface-typed local binding dispatch with a Self receiver matching the interface (#6417)" {
+  val a: Tagger6417 = Applier6417(seed = 7)
+  assertEqualInt(a.tag(), 7, "interface-typed binding dispatch: Self-receiver impl")
+}
+
+func useTagger6417(t: in Tagger6417): Int {
+  t.tag()
+}
+
+test "interface-typed function parameter dispatch with a Self receiver matching the interface (#6417)" {
+  val a = Applier6417(seed = 99)
+  assertEqualInt(useTagger6417(a), 99, "interface-typed parameter dispatch: Self-receiver impl")
+}
+
+// NOTE (#6417): `Self` in a NON-receiver parameter position (e.g.
+// `func combine(self: in Self, other: in Self): Int`) now TYPE-CHECKS after
+// this fix, but is deliberately NOT covered by a runtime test here — it
+// exposed a separate, pre-existing MSIL codegen soundness bug in
+// `msil/codegen.l`'s `fieldTokensByName` map (keyed by `"<package>/<field
+// name>"`, first-registration-wins, no owning-type disambiguation): field
+// access on a non-receiver `Self`-typed parameter (erased to `Object` in the
+// real IL signature, same as the interface slot) falls back to this
+// package-wide, field-NAME-only table to find which record's field to read.
+// When a SECOND record in the same package declares a field with the SAME
+// name, the fallback silently keeps resolving to the FIRST record ever
+// registered under that name — reading `other.<field>` on a genuinely
+// different record throws `System.InvalidCastException` (confirmed with a
+// minimal two-record repro: `Accum6408`/`Accum6417`, both with a `base:
+// Int` field, in the same package). This was unreachable before #6417
+// because a non-receiver `Self` param never type-checked at all (T0106
+// always rejected it); the fix newly exposes it. The RECEIVER position
+// (`self`, always stripped and dispatched via the implicit `this` slot) and
+// the RETURN position (call-site `Self` substitution using the receiver's
+// own static type, no field-name-keyed lookup involved) do not share this
+// mechanism and are unaffected — both are covered above/below. Tracked in
+// #6421 (MSIL unsoundness; JVM's structured-refusal rough edge is #6422);
+// not attempted here (real fix needs type-directed field resolution for
+// erased-Self locals, not a field-name index).
+// ── `Self` as the RETURN type (#6417) ────────────────────────────────────
+// Mirrors the language reference's `Cloneable`-style `func clone(): Self`
+// shape (docs/01 uses `Self` as a return type in interface examples), now
+// exercised on an impl whose own method also spells the return `Self`.
+// MSIL already lowers this correctly end-to-end with no code change.
+interface Cloner6417 {
+  func dup(self: in Self): Self
+}
+
+record Box6417 {
+  v: Int
+}
+
+impl Cloner6417 for Box6417 {
+  func dup(self: in Self): Self {
+    Box6417(v = self.v + 1)
+  }
+}
+
+func dupValue6417(c: in Box6417): Int {
+  val d = c.dup()
+  d.v
+}
+
+test "direct call with a Self return type (#6417)" {
+  val a = Box6417(v = 41)
+  val b = a.dup()
+  assertEqualInt(b.v, 42, "direct dispatch: Self-return impl reads incremented v")
+}
+
+test "interface-typed function parameter/return dispatch with a Self return type (#6417)" {
+  val a = Box6417(v = 9)
+  assertEqualInt(dupValue6417(a), 10, "Self-returning impl method call through a concrete-typed local")
+}

@@ -1295,7 +1295,7 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                   var pi = 0
                   while pi < sig.params.count {
                     val ifacePTy = substitutesSelf(resolveType(tbl, ictx, diag, sig.params[pi].ty), selfTy)
-                    val implPTy = resolveType(tbl, ictx, diag, fn.params[pi].ty)
+                    val implPTy = substitutesSelf(resolveType(tbl, ictx, diag, fn.params[pi].ty), selfTy)
                     if not argSatisfiesParam(tbl, ifacePTy, implPTy) {
                       diag.add(
                         errorDiagnostic(
@@ -1317,7 +1317,10 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                     },
                     selfTy
                   )
-                  val implRetTy = match fn.ret { case None -> TyPrim(pt = PtUnit); case Some(te) -> resolveType(tbl, ictx, diag, te) }
+                  val implRetTy = substitutesSelf(
+                    match fn.ret { case None -> TyPrim(pt = PtUnit); case Some(te) -> resolveType(tbl, ictx, diag, te) },
+                    selfTy
+                  )
                   if not argSatisfiesParam(tbl, ifaceRetTy, implRetTy) {
                     diag.add(
                       errorDiagnostic(

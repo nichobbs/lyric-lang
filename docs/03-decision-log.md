@@ -25676,3 +25676,276 @@ is rejected even when it should conform; using the concrete type
 (`self: in <Target>`) works and is what this entry's regression coverage
 uses, matching the issue's own workaround note) are unaffected by this
 fix and remain open/tracked separately.
+
+## D-progress-751 — type checker: `checkImplConformance` (T0106/T0107, C11) substituted `Self` on the INTERFACE side of the comparison only, rejecting an impl method that mirrors the interface's own `self: in Self` spelling verbatim (#6417)
+
+**Status:** ACCEPTED
+
+**Root cause.** `checkImplConformance`
+(`lyric-compiler/lyric/type_checker/typechecker_checker.l:1263`) checks
+each impl method's parameter and return types against the interface's
+declared signature, substituting `Self` -> the impl's resolved concrete
+target (`selfTy`) so a signature written as `func method(other: Self):
+Bool` on the interface matches an impl spelled `func method(other:
+MyType): Bool`. `substitutesSelf` (line 1181) was applied to the
+INTERFACE-side resolved type (`ifacePTy`/`ifaceRetTy`) but NOT to the
+IMPL-side resolved type (`implPTy`/`implRetTy`): the impl side was fed
+straight from `resolveType(tbl, ictx, diag, fn.params[pi].ty)` (and the
+return-type equivalent) with no substitution step. `resolveType`'s own
+`TSelf` case (`typechecker_resolver.l:16`) always resolves the literal
+`Self` type expression to the symbolic `TySelf` value — it has no notion
+of "which impl this appears in" and cannot itself know the concrete
+target. So whenever an impl method's OWN parameter or return annotation
+was spelled `Self` (mirroring the interface's own `Self` spelling, e.g.
+D037's canonical receiver form `self: in Self`), the impl side stayed
+`TySelf` while the interface side correctly substituted to the concrete
+target type (`TyUser` for the target record) — `argSatisfiesParam`'s
+`typeEquiv` check compares `TySelf` against `TyUser(..., "R", ...)`,
+which are never equal, and the impl was rejected with `T0106`/`T0107`
+even though it conforms exactly. The repro from the issue:
+
+```
+interface SomeIface {
+  func tag(self: in Self): Int
+}
+impl SomeIface for Applier {
+  func tag(self: in Self): Int { self.seed }
+}
+```
+
+produced `error[T0106] ... impl method 'tag' parameter 'self' has type
+Self but interface expects Applier` — even though the impl method's
+signature is byte-for-byte identical to the interface's. Writing the
+impl side as the concrete type (`self: in Applier`) always worked; that
+was the only accepted spelling before this fix, and is what
+`impl_method_self_test.l`'s pre-existing `#6408` coverage (`Accum6408`)
+deliberately used, per that entry's own note flagging this bug.
+
+**Spec-conformance finding (checked before changing behavior, per this
+task's own instructions).** `docs/01-language-reference.md` §2.12
+("Interfaces") does not show an explicit-`self` example at all — every
+interface method signature in that section (`findById`, `save`) uses
+the implicit-receiver form, and `impl` blocks mirror the interface
+signature exactly. The explicit-`self` spelling comes from a DIFFERENT
+doc, `docs/49-methods-in-types.md` (D037): "methods inside type bodies
+desugar to UFCS-style free functions with explicit receiver (`self: in
+Type`)" — its own examples use a concrete record type
+(`func length(self: in Point): Int`), not `Self`, because that doc is
+about RECORD in-body methods, which have no interface to mirror. Neither
+doc says an IMPL method's receiver must be spelled with the concrete
+type rather than `Self`. `docs/grammar.ebnf:680` explicitly documents
+`Self` as legal "inside an interface or impl" (both, not interface-only)
+— the grammar treats `impl` as a first-class position for `Self`, same
+as the interface. D-progress-750 (the immediately preceding entry, same
+`self: in Self`-on-impl shape, different bug) independently reached the
+same conclusion in its own cross-reference: "a narrower, independent
+type-checker ergonomics bug... `self: in Self` on the impl side is
+rejected even when it should conform." Given the grammar's explicit
+"interface or impl" and the absence of any spec text requiring the
+concrete spelling, an impl that mirrors the interface's `Self` signature
+verbatim is a legitimate program the language reference does not forbid
+— this is a genuine over-rejection bug, not a diagnostics-wording issue,
+and the symmetric-substitution fix is the correct response.
+
+**Fix.** `substitutesSelf` is now applied to BOTH sides of the C11
+comparison — every parameter, and the return type — mirroring the
+interface-side substitution already in place:
+
+```
+val ifacePTy = substitutesSelf(resolveType(tbl, ictx, diag, sig.params[pi].ty), selfTy)
+val implPTy = substitutesSelf(resolveType(tbl, ictx, diag, fn.params[pi].ty), selfTy)
+...
+val ifaceRetTy = substitutesSelf(..., selfTy)
+val implRetTy = substitutesSelf(..., selfTy)
+```
+
+`substitutesSelf` already recursed through every wrapper shape
+(`TyNullable`, `TySlice`, `TyArray`, `TyTuple`, `TyFunction`, and nested
+`TyUser` type arguments) from its original (interface-side-only) use, so
+no change to that function was needed — only the two impl-side call
+sites needed the same wrapping already applied to the interface side.
+The impl's own `Self` therefore now means exactly what it means on the
+interface: the impl's concrete target type, in receiver position, any
+non-receiver parameter position, and return position alike.
+
+**Codegen investigation — end-to-end runtime verification on both
+targets, all three `Self` positions (receiver / non-receiver param /
+return), all three #6408-matrix dispatch shapes (direct-on-record,
+interface-typed local, interface-typed function parameter).** A
+type-checker-only fix that lets an unsound program past the front end
+would be worse than the bug it fixes, so every position was verified to
+actually run correctly (or its failure precisely characterized) before
+this was considered done:
+
+- **Receiver position** (`self: in Self`, the issue's literal repro):
+  correct end-to-end on BOTH targets, no codegen change needed. An
+  explicit `self` receiver — spelled either `Self` or the concrete
+  type — is always stripped from the real IL/bytecode signature before
+  lowering (`stripExplicitSelfParamMsil` on MSIL,
+  `stripLeadingSelfParam` on JVM) and dispatches through the implicit
+  receiver slot (`ESelf` -> `ldarg.0`/`aload_0`), so the DECLARED type
+  annotation on `self` was never consulted for signature purposes in
+  the first place — D-progress-750 already established this for the
+  concrete-type spelling, and it holds identically for the `Self`
+  spelling. Verified with a 3-dispatch-shape repro on `--target dotnet`
+  and `--target jvm`: all six runs produced correct values.
+- **Return position** (`func dup(self: in Self): Self`): correct
+  end-to-end on `--target dotnet`, no codegen change needed. Unlike a
+  parameter, a method's return type at a CALL SITE is substituted using
+  the RECEIVER's own static type (known at the call site, not inside
+  the callee's declaration) — `val d = c.dup()` where `c: Box6417`
+  infers `d`'s type as the concrete `Box6417`, never an erased
+  placeholder — so there is no ambiguous-erasure step to get wrong.
+  Verified with a repro exercising direct-on-record and
+  interface-typed-parameter dispatch shapes on `--target dotnet`;
+  both produced correct values. JVM was not separately verified for
+  this position (see below).
+- **Non-receiver parameter position** (`func combine(self: in Self,
+  other: in Self): Int` — `other` is a genuinely different codegen axis
+  from the receiver, since it cannot be stripped from the real
+  signature): this is where the investigation found a REAL, PRE-EXISTING
+  backend gap on each target, now reachable for the first time because
+  `T0106` unconditionally rejected this shape before this fix (so this
+  combination never reached codegen in any real program before):
+  - **MSIL**: unsound, NOT shipped as tested/working. In isolation
+    (single interface/impl pair in a file) a non-receiver `Self`
+    parameter's field access (`other.base`) appeared to resolve
+    correctly. Adding it to `impl_method_self_test.l` (which already
+    has an UNRELATED record, `Accum6408` from the D-progress-750
+    section, with its own `base: Int` field) immediately crashed with
+    `System.InvalidCastException: Unable to cast object of type
+    'Accum6417' to type 'Accum6408'` on a completely unrelated call.
+    Root cause: `msil/codegen.l`'s `fieldTokensByName: Map[String,
+    Int]` (`msil/codegen.l:147`) is keyed by `"<package>/<field
+    name>"` — package-and-name only, no owning-record disambiguation —
+    and registration is first-writer-wins
+    (`if not cctx.fieldTokensByName.containsKey(...)`, e.g.
+    `msil/codegen.l:2820`). A non-receiver `Self`-typed parameter is
+    erased to `Object` in the real IL signature (same as the interface
+    slot: `typeExprToMsilCtx`'s `TSelf -> MObject` fallback,
+    `msil/codegen.l:6209`), so field access on it falls back to this
+    package-wide name-keyed table instead of a type-directed lookup —
+    and when a SECOND record in the same package declares a
+    same-named field, the table silently keeps resolving to whichever
+    record registered that name FIRST, producing a wrong-type cast
+    (or, with compatible layouts, a silent wrong-value read) on the
+    OTHER record. Confirmed with a minimal two-record repro
+    (`Accum6408`/`Accum6417`, both `{ base: Int }`, same package) that
+    reproduces independently of this fix's other changes. This is a
+    genuine silent-miscompile-class bug — exactly what
+    `CLAUDE.md`'s "no silent miscompiles" standard forbids shipping as
+    "working" — so the corresponding runtime test was NOT added to
+    `impl_method_self_test.l`; a code comment there documents the
+    finding precisely instead. Not fixed here: the real fix needs
+    type-directed field resolution for an erased-`Self` local inside an
+    impl body (the impl already statically knows its own target type;
+    that knowledge needs to reach field-access lowering instead of the
+    package-wide name index), which is a distinct, non-trivial codegen
+    change — filed as follow-up #6421 rather than attempted in this
+    (front-end) fix's scope, per this task's own "stop and report
+    rather than attempt a broad codegen change" instruction.
+  - **JVM**: correctly REJECTS at compile time (the safer failure mode)
+    rather than silently miscompiling: `Jvm.Codegen: ... member 'base'
+    cannot be resolved on an erased (statically Object) receiver — the
+    receiver's concrete type is unknown at this site, so the read would
+    silently yield the receiver itself. Bind the value with an explicit
+    type, or match on the concrete constructor first.` This is a
+    pre-existing, deliberately-authored guard (currently surfaced as an
+    unhandled `System.Exception` / stack trace rather than a structured
+    CLI diagnostic — a separate, smaller rough edge, filed as #6422) that refuses the
+    construct outright instead of guessing; JVM has no equivalent of
+    whatever narrow mechanism let MSIL's single-record case appear to
+    work. Also not fixed here, for the same reason.
+  - An earlier attempt at fixing this (an AST pre-pass,
+    `Lyric.TypeAliasResolve`, substituting `Self` -> the impl's
+    concrete target for signature/registration purposes on the impl
+    side only, mirroring the existing `alias` resolution pass) was
+    tried and REVERTED: it made the receiver case's soundness
+    irrelevant (already correct) but actively made the non-receiver
+    case WORSE — it broke the interface slot's and the impl's own
+    method's signature AGREEMENT (the interface slot stays
+    Object-erased since it cannot know any specific implementor's
+    target type, while the substituted impl slot became concretely
+    typed), which produced a `TypeLoadException: ... does not have an
+    implementation` at CLR load time (a stricter, EARLIER-firing
+    failure than the field-name-collision bug above, but still wrong).
+    This confirms the sound fix for non-receiver `Self` requires
+    KEEPING both sides erased consistently (as they already are without
+    any TypeAliasResolve involvement) and fixing the FIELD-ACCESS
+    resolution mechanism instead of the SIGNATURE substitution — again,
+    out of this fix's scope.
+
+**Test coverage.**
+- `lyric-compiler/lyric/typechecker_self_test.l`: 4 new cases (298 ->
+  302) — `self: in Self` receiver conforms (no T0106), `Self` in a
+  non-receiver param conforms (no T0106), `Self` return type conforms
+  (no T0107), and a regression guard that a Self receiver conforming
+  does not weaken the check for a genuinely wrong second parameter
+  (String vs Int still fires T0106). The pre-existing negative case
+  ("impl param type mismatch rejected", concrete-vs-concrete mismatch)
+  was already present and continues to pass unchanged.
+- `lyric-compiler/lyric/impl_method_self_test.l`: 5 new runtime cases
+  (13 -> 18, `--target dotnet`) — the Self-receiver shape (matching
+  #6417's literal repro) through all three #6408-matrix dispatch
+  shapes (direct-on-record, interface-typed local, interface-typed
+  function parameter), plus the Self-return shape through direct and
+  parameter/return dispatch. The non-receiver-param shape is
+  deliberately NOT covered by a runtime test (see codegen findings
+  above) — a code comment documents why in place of a test.
+
+**Verification** (`./bin/lyric`, full `make lyric` rebuild after the
+source change):
+- `lyric-compiler/lyric/typechecker_self_test.l` (native `lyric test`,
+  which links the already-staged self-hosted compiler DLLs — no
+  `LYRIC_LOAD_COMPILER` needed; that flag is retired for `lyric test`
+  per #2364 Stage 5, `cli_test.l:328`): 302/302 (was 298/298).
+- `lyric-compiler/lyric/impl_method_self_test.l` (`--target dotnet`):
+  18/18 (was 13/13).
+- `lyric-compiler/lyric/bare_func_ref_self_test.l`: 20/20 both targets
+  (unchanged).
+- `lyric-compiler/lyric/synthesized_method_self_test.l`: 10/10 both
+  targets (unchanged).
+- `lyric-compiler/lyric/iface_slice_arg_self_test.l`: 6/6 (unchanged).
+- `lyric-compiler/lyric/stdlib_generic_iface_self_test.l`: 20/20 both
+  targets (unchanged).
+- `lyric-compiler/lyric/msil_project_bridge_self_test.l`
+  (`LYRIC_LOAD_COMPILER=1`, dotnet): 38/38 (unchanged).
+- `bash scripts/ilverify-selfhosted.sh`: clean — 119 DLLs verified, 0
+  IL-validity errors (3 pre-existing extern-FFI resolution-only infos,
+  unrelated: `Lyric.Jvm.Kernel.dll`, `Lyric.Stdlib.CollectionsHost.dll`
+  — same baseline as D-progress-750).
+- `examples/`: no example under `examples/` declares an `interface`
+  (`grep -rl '^interface ' examples/*.l` is empty), so there is nothing
+  in that directory this change could regress.
+- `./bin/lyric fmt --write` on both changed `.l` files
+  (`typechecker_checker.l`, `typechecker_self_test.l`,
+  `impl_method_self_test.l`): `typechecker_checker.l` had no diff (the
+  fix is two one-line call-site changes, already formatted);
+  `typechecker_self_test.l` and `impl_method_self_test.l` reformatted
+  the newly-added test cases cleanly, no refusal.
+
+**Build-loop note for future sessions.** `LYRIC_LOAD_COMPILER=1` alone
+does NOT make `./bin/lyric test <file that imports Lyric.* compiler
+packages>` pick up an in-tree `lyric-compiler/**` source edit — that
+env var's fallback path is retired for `lyric test` (`cli_test.l:328`
+onward): `lyric test` always links the already-staged single-bundle
+`<lib-dir>/selfhosted/Lyric.Compiler.dll` for compiler-package imports,
+staged by `make selfhosted-compiler` /
+`scripts/stage-selfhosted-compiler.sh`. A `stage1-fast` rebuild alone
+leaves that staged bundle stale; `make selfhosted-compiler` (fast,
+~15s) or a full `make lyric` (which stages it as its last step) is
+required before `lyric test` on a `@test_module` that imports
+`Lyric.TypeChecker`/`Lyric.Parser`/etc. reflects a front-end source
+change. This cost real time in this task's own iteration (several
+rounds of "fix looks right but the test still fails" before finding the
+staleness) and is recorded here so the next session doesn't repeat it.
+
+Refs #6417. `docs/49-methods-in-types.md` (D037) and D-progress-750
+(#6408, the sibling MSIL bug in the same explicit-`self`-plus-interface
+shape, whose own cross-reference first flagged this issue) are related
+but independent — D-progress-750 was an MSIL-only signature-registration
+bug on the CONCRETE-type spelling; this entry is a target-independent
+front-end over-rejection on the `Self` spelling. The non-receiver
+`Self`-parameter MSIL field-resolution soundness bug and its JVM
+counterpart (both documented above, with minimal repros) are NOT fixed
+by this entry and remain open — filed as a follow-up.
