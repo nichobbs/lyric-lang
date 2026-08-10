@@ -1,10 +1,11 @@
-//! bare_func_ref_self_test.l — dotnet-only regression test for #5362 and #5366.
+//! bare_func_ref_self_test.l — dual-target regression test for #5362/#5366
+//! (MSIL) and their JVM counterpart, #6393.
 //!
-//! Both issues are the same subsystem: how the self-hosted MSIL backend
+//! All three issues are the same subsystem: how each self-hosted backend
 //! materializes and types a function-typed VALUE outside the strongly-typed-
 //! lambda happy path (the closure-class ABI, docs/52/53, Epic #1877/D113).
 //!
-//!   • #5362 — a bare top-level named function used directly as a
+//!   • #5362 (MSIL) — a bare top-level named function used directly as a
 //!     `(A,...) -> R`-typed value (`apply(double, 21)`, no wrapping closure
 //!     literal) crashed at runtime with `NullReferenceException`: the
 //!     `lowerExprMsil` EPath value-read fallback had no MethodDef whose
@@ -15,7 +16,7 @@
 //!     anywhere in the file, shaped exactly like the equivalent hand-written
 //!     closure literal (`{ x -> double(x) }`) so it flows through the
 //!     existing, already-correct lambda-lifting/closure codegen unchanged.
-//!   • #5366 — a function/closure value bound WITHOUT a literal
+//!   • #5366 (MSIL) — a function/closure value bound WITHOUT a literal
 //!     `(T) -> U` type annotation at its declaration site silently stayed
 //!     boxed, corrupting arithmetic performed on its call result with no
 //!     exception — including the alias-annotated case (`val f: Handler =
@@ -29,35 +30,31 @@
 //!     fields, and the same-package-call return-type inference `#5774`
 //!     added) — exactly like a literal `(Int) -> Int` annotation already
 //!     registered.
+//!   • #6393 (JVM) — the same two gaps, JVM-shaped: (1) a bare top-level
+//!     function reference had NO codegen path at all (a compile-time panic,
+//!     "reference 'name' resolves to no local, ..."), fixed by synthesizing
+//!     the equivalent forwarding closure INLINE at the point of use
+//!     (`lowerBareFuncRefValue`, `jvm/codegen/02_exprs.l`) — no separate
+//!     pre-codegen pass is needed on this target, since a JVM closure is a
+//!     synthesised inner class built entirely at the point of use, with no
+//!     MethodDef pre-scan to stabilise ahead of codegen; (2) an alias-typed
+//!     function annotation (param/return/record-field/local) loaded the
+//!     alias name itself as a nonexistent class
+//!     (`NoClassDefFoundError: <Pkg>/<AliasName>`), fixed by the same
+//!     alias-chain-to-`TFunction` resolution MSIL's `resolveFuncTypeExprMsil`
+//!     performs, threaded through `FuncCtx.aliasTargets` to every erasure
+//!     site (`jvm/codegen/06_items.l`, `05_stmts.l`).  The eligibility
+//!     predicate (#6393's gap 1) and the alias-chain resolver (#6393's gap 2)
+//!     are shared between both backends via `Lyric.BareFuncRef`
+//!     (`lyric-compiler/lyric/bare_func_ref.l`); the codegen STRATEGY that
+//!     consumes them stays backend-specific (a pre-codegen `IFunc`-synthesis
+//!     pass on MSIL, an inline `lowerLambda` call on JVM) because the two
+//!     targets' closure-construction models are structurally different.
 //!
-//! ## Why dotnet-only
-//!
-//! Both fixes live entirely in `msil/codegen.l` / `msil/bridge.l`. JVM does
-//! NOT share either defect in a form this fix addresses:
-//!
-//!   • #5362's bare-function-reference shape does not compile at all on
-//!     `--target jvm` today — a *different*, earlier failure
-//!     (`Jvm.Codegen: reference 'name' resolves to no local, parameter,
-//!     receiver field, ...`), a compile-time hard crash rather than the MSIL
-//!     runtime `NullReferenceException`. This is a materially larger,
-//!     separate JVM front-end gap (the JVM backend has no code path for a
-//!     bare function-value reference at all), out of scope here — see #5362
-//!     for JVM tracking.
-//!   • #5366's alias-typed function-return/annotation shape ALSO fails on
-//!     `--target jvm` today, but with yet another different failure
-//!     (`java.lang.NoClassDefFoundError: <Pkg>/<AliasName>` — the JVM
-//!     backend tries to load the alias name itself as a class), for BOTH the
-//!     alias-annotated and the fully-inferred variant. This is a distinct,
-//!     JVM-only alias-to-function-type resolution bug, not the MSIL
-//!     "boxed-and-never-unboxed" defect this test pins — out of scope here.
-//!
-//! JVM's LITERAL (non-aliased) `(T) -> U`-annotated / same-package-call-
-//! inferred cases are already covered dual-target by
-//! `func_val_local_rettype_self_test.l` (#5774/#5796) and remain unaffected.
-//!
-//! Run via native `lyric test --target dotnet` (wired in `ci.yml`):
+//! Run via native `lyric test` on both targets (wired in `ci.yml`):
 //!
 //!   lyric test --target dotnet lyric-compiler/lyric/bare_func_ref_self_test.l
+//!   lyric test --target jvm lyric-compiler/lyric/bare_func_ref_self_test.l
 @test_module
 package Lyric.BareFuncRefSelfTest
 

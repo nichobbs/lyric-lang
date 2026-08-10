@@ -13,6 +13,7 @@ import Lyric.Parser
 // span helpers, and an unqualified import would let a future name defined in
 // both resolve by registration order with no ambiguity diagnostic (#6286).
 import Lyric.Lexer as Lex
+import Lyric.BareFuncRef as BareFuncRef
 import Jvm.Classfile
 import Jvm.Lowering
 import Jvm.AutoFfi
@@ -924,7 +925,12 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           }
         }
         case LBLet(name, tyOpt, init) -> {
-          val annTy = match tyOpt { case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes); case None -> JVoid }
+          // #6393: resolve through a same-file function-type alias too — see
+          // `FuncCtx.aliasTargets`.
+          val annTy = match tyOpt {
+            case Some(te) -> typeExprToJvmExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(ctx.aliasTargets, te), ctx.pkgName, ctx.externTypes)
+            case None -> JVoid
+          }
           if isDefaultCall(init) and pushPrimitiveZero(insns, annTy) {
             val slot0 = allocSlot(ctx, name, annTy)
             emitStore(insns, slot0, annTy)
@@ -952,7 +958,12 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             case Some(init) -> {
               // An un-annotated `var x = e` takes its slot type from the
               // initialiser; an annotated `var x: T = e` coerces `e` to `T`.
-              val annTy = match tyOpt { case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes); case None -> JVoid }
+              // #6393: resolve through a same-file function-type alias too —
+              // see `FuncCtx.aliasTargets`.
+              val annTy = match tyOpt {
+                case Some(te) -> typeExprToJvmExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(ctx.aliasTargets, te), ctx.pkgName, ctx.externTypes)
+                case None -> JVoid
+              }
               var ty = annTy
               if isDefaultCall(init) and pushPrimitiveZero(insns, annTy) {
                 ()
@@ -1003,7 +1014,12 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             case None -> {
               // No initialiser: an annotation is required to know the slot type;
               // default to JInt only as a last resort (matches prior behaviour).
-              val ty = match tyOpt { case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes); case None -> JInt }
+              // #6393: resolve through a same-file function-type alias too —
+              // see `FuncCtx.aliasTargets`.
+              val ty = match tyOpt {
+                case Some(te) -> typeExprToJvmExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(ctx.aliasTargets, te), ctx.pkgName, ctx.externTypes)
+                case None -> JInt
+              }
               match tyOpt {
                 case Some(te2) -> recordDeclaredElemType(ctx, name, te2, newList())
                 case None -> ()
@@ -1425,7 +1441,13 @@ func lowerLocalPatBind(
 ): Unit {
   match pat.kind {
     case PBinding(name, _) -> {
-      val ty = match tyOpt { case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes); case None -> initTy }
+      // #6393: resolve through a same-file function-type alias
+      // (`val f: Handler = ...`) too, not just a literal `(A,...) -> R`
+      // annotation — see `FuncCtx.aliasTargets`.
+      val ty = match tyOpt {
+        case Some(te) -> typeExprToJvmExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(ctx.aliasTargets, te), ctx.pkgName, ctx.externTypes)
+        case None -> initTy
+      }
       // `coerceValueTo` boxes a primitive array into an annotated `slice[T]`
       // val's erased slot type (#5572).
       coerceValueTo(ctx, insns, initTy, ty)

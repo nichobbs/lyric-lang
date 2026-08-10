@@ -534,13 +534,15 @@ func lowerCallOnExprResult(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, 
 // same-package top-level function whose OWN declared return type is
 // function-shaped (`func makeAdder(x: Int): (Int) -> Int`) — the shape a
 // chained call (`makeAdder(1)(2)`) produces as the outer call's callee.
-// Mirrors `funcSigRetType`'s arity-then-bare key lookup precedence (#5790's
-// overload-safety discipline: an arity-qualified key is tried first so a
-// same-name overload at a different arity can't steal this call site's
-// registration). Returns `None` for any other callee shape (an index
-// expression, a member-returning-a-function, a multi-segment path, a callee
-// that isn't a known function, or a return type that isn't function-shaped)
-// — callers fall back to the pre-existing raw-`Object` behaviour.
+// Mirrors `lowerMethodCall`'s `qualArgcKey`-then-bare-key lookup precedence
+// (04_calls.l; #5790's overload-safety discipline: an arity-qualified key —
+// registered by `collectFileSigsSeeded`'s `akey`/`bkey` pair, 06_items.l —
+// is tried first so a same-name overload at a different arity can't steal
+// this call site's registration). Returns `None` for any other callee shape
+// (an index expression, a member-returning-a-function, a multi-segment
+// path, a callee that isn't a known function, or a return type that isn't
+// function-shaped) — callers fall back to the pre-existing raw-`Object`
+// behaviour.
 func closureInvokeRetType(ctx: in FuncCtx, fn: in Expr): Option[JvmType] {
   match fn.kind {
     case EParen(inner) -> closureInvokeRetType(ctx, inner)

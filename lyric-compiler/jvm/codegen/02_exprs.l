@@ -10,6 +10,11 @@ import Std.Collections
 import Std.Console as Console
 import Std.String
 import Lyric.Parser
+// Aliased rather than plain: `Lyric.Lexer` and `Lyric.Parser` both export
+// span helpers, and an unqualified import would let a future name defined in
+// both resolve by registration order with no ambiguity diagnostic (#6286;
+// mirrors `05_stmts.l`'s identical import).
+import Lyric.Lexer as Lex
 import Jvm.Classfile
 import Jvm.Lowering
 import Jvm.AutoFfi
@@ -621,18 +626,43 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                                   JRef(className = ecls)
                                 }
                                 case None -> {
-                                  // A genuinely unresolvable reference previously
-                                  // lowered to `aconst_null` — a silent wrong value
-                                  // in every downstream use (docs/59 §4.4).  Fail
-                                  // loud at compile time instead (the m-23
-                                  // precedent for the store side).
-                                  val pos = path.span.startPos
-                                  panic(
-                                    "Jvm.Codegen: " + toString(pos.line) + ":" + toString(pos.column) + ": reference '" + name +
-                                      "' resolves to no local, parameter, receiver field, wire binding, union case, or module-level val. " +
-                                      "If this names an imported package's `pub val` with a non-literal initialiser and no type annotation, " +
-                                      "add an explicit type annotation to that val so its cross-package field type is known."
-                                  )
+                                  // #6393: a bare top-level function reference used
+                                  // as a first-class value (`apply(double, 21)`) has
+                                  // no local/param/field/wire/union-case/module-val
+                                  // binding.  `collectFileSigsSeeded` marks every
+                                  // eligible same-package function (same-package,
+                                  // non-generic, non-async, non-`@externTarget`,
+                                  // all-`in`-mode params — the shared
+                                  // `Lyric.BareFuncRef.isEligibleBareFuncRefTarget`
+                                  // predicate, mirroring the MSIL scope) with a
+                                  // "bareref:"-prefixed `funcSigs` key; when `name`
+                                  // has one, synthesize an inline forwarding closure
+                                  // `{ p0, ... -> name(p0, ...) }` and lower it
+                                  // exactly like a hand-written lambda literal (the
+                                  // shape that already worked) — no separate
+                                  // pre-codegen thunk pass is needed here, unlike
+                                  // MSIL: a JVM closure needs no MethodDef pre-scan,
+                                  // so there is nothing to stabilise ahead of
+                                  // codegen (see `lowerBareFuncRefValue`).  A name
+                                  // outside that scope keeps the pre-existing panic
+                                  // (unchanged, not a regression).
+                                  match mapGet(ctx.funcSigs, "bareref:" + name) {
+                                    case Some(sig) -> lowerBareFuncRefValue(ctx, insns, name, sig.params.count)
+                                    case None -> {
+                                      // A genuinely unresolvable reference previously
+                                      // lowered to `aconst_null` — a silent wrong value
+                                      // in every downstream use (docs/59 §4.4).  Fail
+                                      // loud at compile time instead (the m-23
+                                      // precedent for the store side).
+                                      val pos = path.span.startPos
+                                      panic(
+                                        "Jvm.Codegen: " + toString(pos.line) + ":" + toString(pos.column) + ": reference '" + name +
+                                          "' resolves to no local, parameter, receiver field, wire binding, union case, or module-level val. " +
+                                          "If this names an imported package's `pub val` with a non-literal initialiser and no type annotation, " +
+                                          "add an explicit type annotation to that val so its cross-package field type is known."
+                                      )
+                                    }
+                                  }
                                 }
                               }
                             }
@@ -729,7 +759,15 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                 val rhsTy = lowerExpr(ctx, insns, rhs)
                 match rhsTy {
                   case JRef(rcls) -> {
-                    if rcls == "java/lang/Object" {
+                    // Both sides must be checked: the outer `JRef(cls)` match
+                    // only ruled out lhs being concretely `String`, not that
+                    // it is fully erased — a concretely-known non-String
+                    // reference type on the lhs (e.g. a record) paired with
+                    // an erased `Object` rhs is the STRING-CONCAT case below,
+                    // not this "two operands, no recoverable static type on
+                    // EITHER side" one, and the panic message below promises
+                    // exactly that.
+                    if rcls == "java/lang/Object" and isFullyErasedObjectJvm(lhsTy) {
                       // Both operands are erased all the way to `Object` with
                       // NO recoverable static type on either side (#6398): the
                       // lhs guard above already ruled out a concretely-known
@@ -3377,7 +3415,8 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     ctx.opaqueTypes,
     ctx.closureAcc,
     ctx.usesLyricCount,
-    ctx.importsStdString
+    ctx.importsStdString,
+    ctx.aliasTargets
   )
   // Propagate the enclosing scope's recorded generic instantiations into the
   // closure body so a captured var-bound `match`/`?` scrutinee still unboxes its
@@ -3524,6 +3563,73 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
   }
   insns.add(LInvokespecial(owner = closureClass, name = "<init>", params = ctorPs, ret = JVoid))
   JRef(className = ifaceName)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6393: bare top-level function reference used as a first-class function
+// value.
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `apply(double, 21)` — passing a bare named function where a `(T) -> U`
+// value is expected — had no codegen path at all (a compile-time panic,
+// "reference 'double' resolves to no local, ..."), unlike a hand-written
+// closure literal wrapping the same reference (`{ x -> double(x) }`), which
+// already worked: every lambda literal already lowers through `lowerLambda`
+// into a synthesised inner class implementing the package's shared
+// `Lyric$Lambda` functional interface.
+//
+// The fix: synthesize that exact forwarding-closure shape inline, the first
+// time a given eligible name is actually read as a bare value, and feed it
+// through the SAME, already-correct `lowerLambda`.  Unlike the MSIL fix
+// (`synthesizeBareFuncRefThunksMsil`, msil/codegen.l), this needs no
+// separate pre-codegen AST pass or synthesized top-level `IFunc`: MSIL's
+// uniform boxed-ABI delegate construction (`ldftn`/`newobj`) needs a
+// MethodDef whose PHYSICAL signature matches the boxed ABI to target, which
+// only a pre-scanned synthetic thunk function provides; a JVM closure is a
+// synthesised inner CLASS built entirely at the point of use (no MethodDef
+// pre-scan of any kind), so there is nothing to stabilise ahead of codegen.
+// Building the closure right here, exactly once per bare-reference
+// occurrence, is the direct JVM analogue.
+//
+// Eligibility (same-package, non-generic, non-async, non-`@externTarget`,
+// all-`in`-mode params) is decided once per file by the shared
+// `Lyric.BareFuncRef.isEligibleBareFuncRefTarget` predicate, at
+// `collectFileSigsSeeded` — see the "bareref:"-prefixed `funcSigs` key this
+// reads back.  Building the args from `arity` alone (not the target's
+// declared param TYPES) is deliberate and safe: an UNANNOTATED lambda
+// parameter (`ty = None`) already erases to `Object`, exactly like the
+// hand-written `{ x -> double(x) }` closure that already worked — and the
+// normal call-argument lowering at `name(p0, ...)` below (the same path
+// every other call site uses) already unboxes an `Object`-erased argument
+// down to the callee's real declared parameter type generically, so no
+// separate function-value metadata registration is needed here either.
+func lowerBareFuncRefValue(ctx: in FuncCtx, insns: in List[LInsn], name: in String, arity: in Int): JvmType {
+  val lparams: List[LambdaParam] = newList()
+  val callArgs: List[CallArg] = newList()
+  var pi = 0
+  while pi < arity {
+    val pnm = "__bfr_p" + toString(pi)
+    lparams.add(LambdaParam(name = pnm, ty = None, span = bareFuncRefSpan()))
+    callArgs.add(CAPositional(expr = bareFuncRefPathExpr(pnm)))
+    pi = pi + 1
+  }
+  val callExpr = Expr(kind = ECall(fn = bareFuncRefPathExpr(name), args = callArgs), span = bareFuncRefSpan())
+  val stmts: List[Statement] = newList()
+  stmts.add(Statement(kind = SExpr(expr = callExpr), span = bareFuncRefSpan()))
+  val body = Block(statements = stmts, span = bareFuncRefSpan())
+  lowerLambda(ctx, insns, lparams, body)
+}
+
+// A zero-span position for the synthetic AST nodes `lowerBareFuncRefValue`
+// builds.
+func bareFuncRefSpan(): Span {
+  Lex.makeSpan(Lex.initialPosition(), Lex.initialPosition())
+}
+
+func bareFuncRefPathExpr(nm: in String): Expr {
+  val seg: List[String] = newList()
+  seg.add(nm)
+  Expr(kind = EPath(path = ModulePath(segments = seg, span = bareFuncRefSpan())), span = bareFuncRefSpan())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3753,7 +3859,8 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
     ctx.opaqueTypes,
     ctx.closureAcc,
     ctx.usesLyricCount,
-    ctx.importsStdString
+    ctx.importsStdString,
+    ctx.aliasTargets
   )
   // Carry the enclosing scope's recorded generic instantiations so a captured
   // var-bound `match`/`?` scrutinee still unboxes its erased payload (#4945).

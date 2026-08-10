@@ -24948,3 +24948,181 @@ now-recoverable shape, left otherwise unchanged), #4877 (the match-bind
 history the addendum-4 fix continues), docs/44 §5 J4 (erased-generics model;
 this entry's fix stays within it — no `Signature` attrs, no reified
 generics, no cross-package type resolution added).
+
+## D-progress-747 — JVM first-class function values: a bare named function had no codegen path at all, an alias-typed function annotation loaded the alias name as a nonexistent class (#6393, JVM counterpart of D-progress-738/#5362/#5366)
+
+**Status:** shipped, both targets touched (a shared predicate/resolver moved
+out of MSIL's `msil/codegen.l` into a new target-independent package; MSIL's
+own behavior is unchanged — verified by its full battery, see below).
+
+**Motivation.** D-progress-738 (PR #6389) fixed the MSIL halves of #5362 (a
+bare top-level function referenced as a value) and #5366 (a function value
+bound through a type alias stayed boxed), and left both issues open for
+their separate, differently-shaped JVM gaps — tracked as #6393. This entry
+closes #6393.
+
+**Gap 1 — bare function reference, no codegen path at all.**
+`apply(double, 21)` (passing the bare top-level function `double` where a
+`(Int) -> Int` value is expected) panicked at compile time:
+`Jvm.Codegen: reference 'double' resolves to no local, parameter, receiver
+field, wire binding, union case, or module-level val.` Unlike MSIL (which
+had a *broken* `ldnull` path to fix), the JVM `lowerExpr` EPath value-read
+fallback (`jvm/codegen/02_exprs.l`) had no arm for this shape whatsoever.
+
+*Root cause.* JVM lambda literals lower to a synthesised inner class
+implementing the package's shared `Lyric$Lambda` functional interface,
+built entirely at the point of use by `lowerLambda` — there is no
+MethodDef-pre-scan analogue to MSIL's uniform boxed-ABI `Func<object,…>`
+delegate construction (`ldftn`/`newobj`) that would need a stable,
+pre-registered thunk MethodDef to target. A hand-written closure literal
+wrapping the same reference (`{ x -> double(x) }`) already worked for
+exactly this reason.
+
+*Fix — mirrored, not shared, at the pass-structure level.* MSIL's fix
+(`synthesizeBareFuncRefThunksMsil`) is a pre-codegen AST pass: it
+synthesizes one top-level forwarding-thunk `IFunc` per eligible name
+referenced bare anywhere in the file, run before lambda-lifting so the
+token pre-scan sees it. JVM needs no such pass — a closure is synthesized
+inline, on demand. `lowerBareFuncRefValue` (`02_exprs.l`) builds a
+synthetic `ELambda`-shaped AST fragment (`{ __bfr_p0, … -> name(__bfr_p0,
+…) }`, untyped params — an unannotated lambda param already erases to
+`Object`, exactly like the hand-written closure that already worked) and
+lowers it through the existing `lowerLambda`, the first time an eligible
+bare reference is actually read as a value. Eligibility (same-package,
+non-generic, non-async, not `@externTarget`, all-`in`-mode params — the
+exact MSIL scope) is decided once per file by `collectFileSigsSeeded`
+(`06_items.l`), which stamps a `"bareref:" + name` key into the shared
+`funcSigs` registry for every eligible function; the EPath fallback just
+checks for that key before falling through to the pre-existing panic.
+Reusing normal call-argument lowering (`name(p0, …)` is an ordinary call)
+means no function-value metadata (`funcValRetTypes`) needs separate
+tracking here — the callee's real declared param types are recovered
+generically at the call site, the same as any other Object-erased argument.
+
+**Gap 2 — alias-typed function annotation loads the alias name as a class.**
+`alias Handler = (Int) -> Int; func adder(n: in Int): Handler { … }` /
+`val f: Handler = adder(5)` produced `java.lang.NoClassDefFoundError:
+Repro/Handler` at class load — `Handler` used as a parameter, return,
+record-field, or local-binding type annotation.
+
+*Root cause* (`jvm/codegen/01_types.l` `typeExprToJvm`'s `TRef` arm,
+consumed at `collectFileSigsSeeded`'s func-return/param registration,
+`setupStaticParamSlotsAndHolders`'s param-slot allocation, `lowerRecord`'s
+field-descriptor emission, `collectFileCasesExtern`'s field-read type
+registration, and `LBVal`/`LBLet`/`LBVar`'s local-binding type resolution in
+`05_stmts.l`): unlike MSIL's `typeExprToMsilCtx`, which already follows
+`cctx.aliasTargets` generically (an EARLIER, separate fix, #3673), JVM had
+**no alias-following at all** in its type-erasure path — `TRef(["Handler"])`
+fell straight to "user-defined type in the same package"
+(`JRef(pkgName + "/Handler")`), embedding a class reference the emitted JAR
+never defines.
+
+*Fix.* Not a general `aliasTargets`-threading retrofit of the 80+ call
+sites of `typeExprToJvm`/`typeExprToJvmExtern` (far outside this issue's
+scope and risk-disproportionate to it) — instead, `FuncCtx` gained one new
+field, `aliasTargets: Map[String, TypeExpr]` (a same-file `alias X = ...`
+table, `Lyric.BareFuncRef.collectFuncAliasTargets`), threaded through the
+`makeFuncCtx`/`withWireBinding` factory pair (the two paths that actually
+reach a top-level function or module-val body) and consulted only at the
+handful of sites this issue's repros exercise: `lowerFunc`'s own
+`retTy`/param erasure, `LBVal`/`LBLet`/`LBVar`'s local-binding type
+resolution, `lowerRecord`'s field descriptor, `collectFileCasesExtern`'s
+field-read registration, and `collectFileSigsSeeded`'s
+return/param/`closureRetTy` registration. Contexts with no reachable
+file-scoped alias table at their construction site (wire-binding inits,
+generator bodies, protected-entry/record-method/impl-method instance
+bodies) pass an empty map — an explicit, documented out-of-scope gap, not a
+silent omission (follow-up: alias-typed function values inside those
+bodies). `resolveFuncTypeAlias`/`resolveFuncTypeAliasOrSelf` follow a
+`TRef` through the alias chain down to the underlying `TFunction`, exactly
+mirroring MSIL's `resolveFuncTypeExprMsil` (now itself a one-line delegate
+to the shared resolver, see below) — `None` for anything that doesn't
+bottom out in a function type, so a NON-function-typed alias (`alias Meters
+= Long`) is deliberately left untouched by this fix (that is a separate,
+broader, pre-existing JVM alias-erasure gap this entry does not attempt —
+tracked as a documented follow-up, not silently ignored).
+
+**Share-vs-mirror decision.** New package `Lyric.BareFuncRef`
+(`lyric-compiler/lyric/bare_func_ref.l`, target-independent — imports only
+`Lyric.Parser`) hoists exactly the two pieces of PURE, backend-agnostic
+logic both fixes needed:
+
+  - `isEligibleBareFuncRefTarget` / `eligibleBareFuncRefTargets` — the
+    bare-func-ref eligibility predicate (has body, non-generic, non-async,
+    non-`@externTarget`, all-`in`-mode params). MSIL's own
+    `eligibleFuncRefTargetsMsil` is now a one-line delegate to the shared
+    version; its private `allParamsInModeMsil` helper (used nowhere else)
+    was deleted rather than left as dead duplicate code.
+  - `resolveFuncTypeAlias` / `resolveFuncTypeAliasOrSelf` /
+    `collectFuncAliasTargets` — the alias-chain-to-`TFunction` resolver and
+    same-file `alias` table builder. MSIL's `resolveFuncTypeExprMsil` is now
+    a one-line delegate (`BareFuncRef.resolveFuncTypeAlias(cctx.aliasTargets,
+    te)`); MSIL's own `cctx.aliasTargets` construction/registration
+    (`registerTypeAliasMsil`) is untouched — only the recursive
+    chain-resolution logic was shared, not the alias-table-building
+    machinery, since MSIL's is genuinely richer (cross-package, incrementally
+    built into a whole-compile-shared `CodegenCtx`) than JVM's per-file scan
+    needs to be.
+
+What was **deliberately NOT shared**, and mirrored instead: the actual
+codegen STRATEGY each backend uses once eligibility/alias-resolution is
+known. MSIL's `synthesizeBareFuncRefThunksMsil` (a pre-codegen AST-rewrite
+pass producing new top-level `IFunc` items, needed for MSIL's MethodDef
+pre-scan) and JVM's `lowerBareFuncRefValue` (an inline `lowerLambda` call at
+the point of use, needed because JVM closures have no pre-scan to satisfy)
+solve the identical PROBLEM with fundamentally different MECHANISMS driven
+by each target's own closure-construction model — forcing them through one
+shared abstraction would have been a false generalization, not a
+simplification. Likewise gap 2's per-site `aliasTargets` threading through
+`FuncCtx`/`lowerFunc`/`lowerRecord`/etc. is pure JVM plumbing with no MSIL
+analogue (MSIL's `cctx` already carries `aliasTargets` everywhere by
+construction) — nothing to hoist there either.
+
+**Verification.** Full `make lyric` (two iterations — the first caught two
+uses of the reserved keyword `out` as a local binding name, in the new
+`Lyric.BareFuncRef.collectFuncAliasTargets` and JVM's
+`resolveParamsFuncAlias`, both renamed). The exact #5362/#5366 issue repros
+(`issue5362_repro.l`, `issue5362_record_repro.l`, `issue5366_repro.l`,
+`issue5366_alias_annotated_repro.l`) run correctly with `--target jvm`
+(exit codes 42/42, stdout `16`/`16` — matching expectations) and stay
+correct with `--target dotnet` (unchanged, confirming the MSIL refactor is
+behavior-preserving). `bare_func_ref_self_test.l` — previously dotnet-only
+by design, now wired for both targets (`ci.yml`'s
+`compiler-self-tests-jvm` job, JVM-batch-1-split post-barrier sub-batch,
+13/~14-step cap after the addition) — 9/9 on both `--target dotnet` and
+`--target jvm`, including the record-field-default case (exercises both
+gap 1's inline-closure codegen AND gap 2's `lowerRecord` field-descriptor
+fix together). Full battery green on both targets unless noted:
+`func_val_local_rettype_self_test.l` 21/21, `closure_zero_overhead_self_test.l`
+18/18, `generic_jvm_self_test.l` 24/24, `bitwise_self_test.l` 10/10,
+`nested_constructor_pattern_self_test.l` 6/6, `block_shadow_self_test.l`
+20/20, `erased_generic_arith_jvm_self_test.l` 23/23,
+`typechecker_self_test.l` 298/298 (dotnet only — target-independent
+checker), `msil_project_bridge_self_test.l` 38/38 (dotnet only, proving the
+shared-predicate MSIL refactor didn't regress MSIL). `lyric fmt --write`
+clean (no refusals) on every changed `.l` file.
+
+Also folded in two cosmetic review nits from PR #6400 (unrelated to
+#6393's own scope, low-risk, bundled per reviewer request): `BAdd`'s
+fully-erased-operand guard (`02_exprs.l`) checked only the RHS for
+`java/lang/Object` while its panic message says "two operands" — added the
+matching `isFullyErasedObjectJvm(lhsTy)` check (this also fixes a real, if
+narrow, behavioral edge case: a concretely-known non-`String` reference lhs
+paired with a fully-erased `Object` rhs now correctly falls through to the
+string-concatenation path instead of spuriously panicking); and
+`closureInvokeRetType`'s doc comment (`04_calls.l`) cited `funcSigRetType`
+as its arity-then-bare-key lookup precedent, but that function does a
+plain bare lookup with no arity tier — corrected to cite the real
+precedent, `lowerMethodCall`'s `qualArgcKey`-then-bare-key pattern
+(`04_calls.l`) and its `collectFileSigsSeeded`-registered keys
+(`06_items.l`).
+
+**Related:** #5362, #5366, D-progress-738 (the MSIL halves this entry
+completes JVM parity for), #6389 (PR that shipped D-progress-738), #3673
+(MSIL's `typeExprToMsilCtx` alias-following — the earlier, separate fix
+this entry's gap-2 root-cause analysis distinguishes from #5366's own,
+narrower `resolveFuncTypeExprMsil` fix), docs/44 (JVM production-readiness,
+bands J1/J4), docs/52-53 (the strongly-typed lambda ABI both targets
+share), D-progress-745/#6398 and D-progress-746/#6399 (the
+`closureRetTy`/`funcValRetTypes`/`recordRetClass` machinery this entry
+composes with rather than duplicates, per those entries' own precedent).

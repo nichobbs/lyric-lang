@@ -30140,7 +30140,11 @@ call-site-desugaring route this paragraph anticipated —
 D-progress-738; #5362 stays open only for its separate JVM gap. The
 `product-catalog` false-positive shape is handled by scoping the
 collector to value positions (a direct call callee is not a bare
-value use), so no diagnostic is involved.]_
+value use), so no diagnostic is involved. The JVM gap shipped too —
+`lowerBareFuncRefValue` synthesizes the equivalent forwarding closure
+inline at the point of use (no pre-codegen thunk pass needed on this
+target), PR (#6393) / D-progress-747; #5362 is now closed on both
+targets.]_
 
 #5359/#5360 confirmed still correctly scoped as documented follow-ups
 (one stale doc line in `Web.OpenApi` fixed). Verifying #5363's fix
@@ -30154,7 +30158,12 @@ alias-resolution machinery `codegen.l` doesn't currently have).
 _[Update: the MSIL half shipped later — `resolveFuncTypeExprMsil`
 supplies exactly that alias-resolution machinery at every
 function-type registration site, PR #6389 / D-progress-738; #5366
-stays open only for its separate JVM alias-resolution gap.]_
+stays open only for its separate JVM alias-resolution gap. The JVM gap
+shipped too — `FuncCtx.aliasTargets` threads the same alias-chain-to-
+`TFunction` resolution (now shared with MSIL via
+`Lyric.BareFuncRef.resolveFuncTypeAlias`) through every JVM erasure
+site that needed it, PR (#6393) / D-progress-747; #5366 is now closed
+on both targets.]_
 
 **Related:** `docs/03-decision-log.md` D-progress-624 (full account),
 D-progress-622 (the entry these four bugs were originally filed

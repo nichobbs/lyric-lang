@@ -628,6 +628,17 @@ pub record FuncCtx {
   // JVM-codegen no-defaulted-field rule; initialised `newList()` at every
   // construction site.
   ctorExpectStack: List[String]
+  // #6393: same-file `alias X = ...` table (simple name -> RHS `TypeExpr`),
+  // consulted by local-binding type-annotation resolution (`LBVal`/`LBLet`/
+  // `LBVar` in `05_stmts.l`) so a function-type alias annotation
+  // (`val f: Handler = ...`) registers exactly like the literal
+  // `(Int) -> Int` form already does — see `Lyric.BareFuncRef`'s module doc
+  // §2.  Threaded from the enclosing function's own `aliasTargets` at every
+  // top-level-function/module-val construction site; a context with no
+  // reachable file (wire-binding inits, generator bodies, instance-method
+  // bodies — out of scope for #6393, tracked as a follow-up) passes an empty
+  // map, the same as before this field existed.
+  aliasTargets: Map[String, TypeExpr]
 }
 
 // A saved lexical scope (general shadowing fix, #5191).  A `{ … }` block is a

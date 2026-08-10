@@ -35,6 +35,7 @@ import Lyric.Parser
 import Lyric.Lexer
 import Lyric.RestoredPackages
 import Lyric.Weaver as Weaver
+import Lyric.BareFuncRef as BareFuncRef
 import Msil.Lowering
 import Msil.Tables
 import Msil.Ffi
@@ -2197,18 +2198,12 @@ pub func registerTypeAliasMsil(cctx: in CodegenCtx, pkgName: in String, decl: in
 // performed on it with no exception.  Returns `None` for any other shape,
 // or for an alias chain that never bottoms out in `TFunction` (the type
 // checker already rejects cyclic aliases, so this always terminates).
+//
+// Thin wrapper over the shared `Lyric.BareFuncRef.resolveFuncTypeAlias`
+// (#6393): the recursive alias-chain-to-`TFunction` logic is identical to
+// the JVM backend's own need, factored out so neither carries a second copy.
 func resolveFuncTypeExprMsil(cctx: in CodegenCtx, te: in TypeExpr): Option[TypeExpr] {
-  match te.kind {
-    case TFunction(_, _) -> Some(value = te)
-    case TRef(path) -> {
-      val seg = lastSegmentMsil(path)
-      match mapGet(cctx.aliasTargets, seg) {
-        case Some(rhs) -> resolveFuncTypeExprMsil(cctx, rhs)
-        case None -> None
-      }
-    }
-    case _ -> None
-  }
+  BareFuncRef.resolveFuncTypeAlias(cctx.aliasTargets, te)
 }
 
 // An in-body method's `decl.params[0]` is the injected `self: in Type`
@@ -26998,22 +26993,6 @@ pub func lambdaCaptureNamesMsil(fctx: in FuncCtx, lparams: in List[LambdaParam],
 // below (run in `bridge.l` immediately before `liftLambdasMsil`) and the
 // matching lookup at the `lowerExprMsil` EPath fallback (search #5362
 // there).
-// Whether every parameter of `params` is plain `in`-mode — the only shape a
-// forwarding-closure thunk (a normal `Func<...>` invocation) can represent;
-// an `out`/`inout` parameter has no meaning as an ordinary delegate argument.
-func allParamsInModeMsil(params: in List[Param]): Bool {
-  var i = 0
-  while i < params.count {
-    match params[i].mode {
-      case PMIn -> {
-      }
-      case _ -> return false
-    }
-    i = i + 1
-  }
-  true
-}
-
 // Same-package top-level functions eligible to receive a synthesized
 // forwarding-thunk (see module doc above): has a body, non-generic,
 // non-async, not `@externTarget`-annotated (that path bridges to a real BCL
@@ -27024,24 +27003,13 @@ func allParamsInModeMsil(params: in List[Param]): Bool {
 // }` workaround would face.  A function outside this scope keeps the
 // pre-existing `ldnull` fallback when referenced bare (unchanged, not a
 // regression).
+//
+// Thin wrapper over the shared `Lyric.BareFuncRef.eligibleBareFuncRefTargets`
+// (#6393): the eligibility predicate is identical to what the JVM backend
+// needs for its own (structurally different) bare-func-ref codegen, so it is
+// factored out rather than duplicated.
 func eligibleFuncRefTargetsMsil(file: in SourceFile): Map[String, FunctionDecl] {
-  val eligible: Map[String, FunctionDecl] = newMap()
-  var i = 0
-  while i < file.items.count {
-    match file.items[i].kind {
-      case IFunc(decl) -> {
-        val hasBody = match decl.body { case Some(_) -> true; case None -> false }
-        val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
-        if hasBody and not isGeneric and not decl.isAsync and not hasExternTargetMsil(decl.annotations) and allParamsInModeMsil(decl.params) and not eligible.containsKey(decl.name) {
-          eligible.add(decl.name, decl)
-        }
-      }
-      case _ -> {
-      }
-    }
-    i = i + 1
-  }
-  eligible
+  BareFuncRef.eligibleBareFuncRefTargets(file)
 }
 
 // A `collectRefNamesExpr`-shaped walk (same case structure) that collects a
