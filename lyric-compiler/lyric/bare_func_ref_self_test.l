@@ -307,3 +307,19 @@ test "alias as generic-application head and in a contract clause (#6410)" {
   xs.add(22)
   assertEqualInt(sum6410(xs), 42, "L6410[Int] head resolves; requires: compiles")
 }
+
+// #6412: a DISTINCT type whose underlying representation names an alias
+// (`type Distance6412 = Meters6412`) must resolve the underlying before
+// codegen — pre-fix, merely DECLARING this crashed `--target jvm` at build
+// time with NoClassDefFoundError on the alias name (the distinct type's own
+// name stays nominal; only its representation resolves).
+alias Meters6412 = Long
+
+type Distance6412 = Meters6412
+
+test "distinct type over a non-function alias compiles on both targets (#6412)" {
+  // The declaration above IS the regression: pre-fix the file failed to
+  // build on jvm before any test ran.  Assert something trivial so the
+  // case registers.
+  assertTrue(true, "Distance6412 declaration lowered without crashing")
+}

@@ -1026,10 +1026,14 @@ func resolveFixtureDecl(aliasTargets: in Map[String, TypeExpr], d: in FixtureDec
   )
 }
 
-// Resolve one `Item`. `ITypeAlias`/`IDistinctType` (the alias/distinct-type
-// declarations themselves), `extern`-boundary items (`IExtern`/
-// `IExternType`/`IExternFunc`), and `IAspect` bodies pass through unchanged
-// — see the module doc's scope note.
+// Resolve one `Item`. `ITypeAlias` declarations pass through unchanged (the
+// alias table is derived from them; rewriting their rhs is pointless churn),
+// as do `extern`-boundary items (`IExtern`/`IExternType`/`IExternFunc`) and
+// `IAspect` bodies — see the module doc's scope note. `IDistinctType` keeps
+// its own NAME nominal (a distinct type is never resolved away) but its
+// UNDERLYING representation type must resolve like any other annotation —
+// `type Distance = Meters` where `Meters` is an alias otherwise reaches
+// codegen unresolved and emits a nonexistent class on JVM (#6412).
 pub func resolveItem(aliasTargets: in Map[String, TypeExpr], it: in Item): Item {
   val noGenerics: List[String] = newList()
   val k = match it.kind {
@@ -1037,7 +1041,7 @@ pub func resolveItem(aliasTargets: in Map[String, TypeExpr], it: in Item): Item 
     case IVal(decl) -> IVal(decl = ValDecl(pattern = resolvePattern(aliasTargets, noGenerics, decl.pattern), ty = resolveOptType(aliasTargets, noGenerics, decl.ty), init = resolveExpr(aliasTargets, noGenerics, decl.init), span = decl.span))
     case IFunc(decl) -> IFunc(decl = resolveFunctionDecl(aliasTargets, noGenerics, decl))
     case ITypeAlias(decl) -> ITypeAlias(decl = decl)
-    case IDistinctType(decl) -> IDistinctType(decl = decl)
+    case IDistinctType(decl) -> IDistinctType(decl = DistinctTypeDecl(name = decl.name, generics = decl.generics, underlying = resolveTypeExpr(aliasTargets, genericParamNamesOf(decl.generics), decl.underlying), rangeClause = decl.rangeClause, derives = decl.derives, span = decl.span))
     case IRecord(decl) -> IRecord(decl = resolveRecordDecl(aliasTargets, decl))
     case IExposedRec(decl) -> IExposedRec(decl = resolveRecordDecl(aliasTargets, decl))
     case IUnion(decl) -> IUnion(decl = resolveUnionDecl(aliasTargets, decl))
