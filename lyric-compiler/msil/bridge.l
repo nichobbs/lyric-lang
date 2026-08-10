@@ -105,11 +105,10 @@ pub func compileToMsilWithVersion(
   // no `[features]` table).
   val noCfgFeatures: List[String] = newList()
   val decodedDefines = BD.decodeDefines(defines)
-  val cfgFile0 = match pipeParseAndErase(source, "dotnet", noCfgFeatures, noCfgFeatures, decodedDefines) {
+  val cfgFile = match pipeParseAndErase(source, "dotnet", noCfgFeatures, noCfgFeatures, decodedDefines) {
     case Some(f) -> f
     case None -> return false
   }
-  val cfgFile = resolveTypeAliasesMsil(cfgFile0)
 
   // ── Middle-end (Band 1 + Band 6 of docs/41 §9) ─────────────────────────
   // Run the self-hosted type checker with stdlib imports, mode checker, and
@@ -153,10 +152,15 @@ pub func compileToMsilWithVersion(
     weWires,
     weConfigs
   )
-  val file0 = match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, true, true, false) {
+  val file0pre = match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, true, true, false) {
     case Some(f) -> f
     case None -> return false
   }
+  // Alias resolution runs AFTER template expansion (matching the JVM
+  // bridge's placement) so alias references introduced by a docs/58
+  // wire/config-template splice resolve too, and before any registry or
+  // the checker sees the file.
+  val file0 = resolveTypeAliasesMsil(file0pre)
 
   // Middle end through mono (`Lyric.Pipeline` owns the order).  Type
   // errors in a single-file build are fatal, matching the project path.
@@ -526,11 +530,10 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   var pi = 0
   while pi < packages.count {
     val pkg = packages[pi]
-    val erased0 = match pipeParseAndErase(pkg.source, "dotnet", activeFeatures, declaredFeatures, projDefines) {
+    val erased = match pipeParseAndErase(pkg.source, "dotnet", activeFeatures, declaredFeatures, projDefines) {
       case Some(f) -> f
       case None -> return false
     }
-    val erased = resolveTypeAliasesMsil(erased0)
     parsedPkgs.add(ParsedUserPkg(name = pkg.name, file = erased))
     pi = pi + 1
   }
@@ -562,10 +565,13 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   var wei = 0
   while wei < parsedPkgs.count {
     val wep: ParsedUserPkg = parsedPkgs[wei]
-    val rewritten = match pipeExpandAndRewrite(wep.file, weWires, weConfigs, true, true, false) {
+    val rewritten0 = match pipeExpandAndRewrite(wep.file, weWires, weConfigs, true, true, false) {
       case Some(f) -> f
       case None -> return false
     }
+    // After template expansion, matching the JVM bridge — see the
+    // single-file pipeline's placement comment.
+    val rewritten = resolveTypeAliasesMsil(rewritten0)
     parsedPkgs[wei] = ParsedUserPkg(name = wep.name, file = rewritten)
     wei = wei + 1
   }

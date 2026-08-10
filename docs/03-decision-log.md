@@ -25152,10 +25152,15 @@ Object-fallback bad cast, a live in-house demonstration of that open
 hazard.  Regression: a `Wrapped(h: Handler)` union-payload round-trip
 case in `bare_func_ref_self_test.l` (10/10 both targets).
 
-## D-progress-748 — JVM: unified alias resolution at the `typeExprToJvm` layer, closing all three tracked axes of #6404 in one AST pre-pass
+## D-progress-748 — Unified alias resolution as a shared AST pre-pass, closing all three tracked axes of #6404 — and, after the review round, wired into BOTH targets
 
-**Status:** shipped, JVM-only (MSIL is unaffected and unchanged — verified
-by its own full battery, see below).
+**Status:** shipped on both targets. (This entry was first drafted when the
+pass was JVM-only; the #6410 review round then made the
+alias-as-generic-head regression case dual-target, which EXPOSED a
+pre-existing MSIL silent miscompile of the same shape — fixed by wiring
+the identical pass into `Msil.Bridge`. See the review addendum at the end
+of this entry; prose below describing the JVM investigation is the
+original record.)
 
 **Motivation.** D-progress-747/#6393/#6405 fixed `typeExprToJvm`'s `TRef`
 fallback ("any unrecognized name is a same-package user type,
@@ -25221,9 +25226,9 @@ generic parameter is never mistaken for an outer alias of the same name —
 the type param shadows it, matching what a `typeParams`-first check in
 codegen itself would do.
 
-This pass is **JVM-only**, wired into `Jvm.Bridge` alone. MSIL does not
-need it: `Msil.Codegen.typeExprToMsilCtx` already consults
-`cctx.aliasTargets` universally at codegen time (#3673), which is itself
+This pass was INITIALLY JVM-only, wired into `Jvm.Bridge` alone, on the
+belief MSIL did not need it: `Msil.Codegen.typeExprToMsilCtx` already
+consults `cctx.aliasTargets` universally at codegen time (#3673), which is itself
 effectively an option-(b)-shaped design already, just implemented inline
 in the codegen function rather than as a separate AST pass (MSIL's single
 shared `CodegenCtx` threaded through the whole build makes that
@@ -25329,3 +25334,33 @@ design this entry's JVM-side pre-pass achieves parity with by a different
 mechanism), docs/19-multi-file-packages.md (the pre-concatenation invariant
 axis 3 relies on), docs/26-aspects.md / D047 (the weave ordering the
 early-in-pipeline placement had to respect).
+
+**Review addendum (#6410/#6411, same PR).** The review round hardened and
+then UNIFIED the pass:
+
+- Cycle guard (#6410): the pass runs before the type checker, so a cyclic
+  alias (`alias A = B; alias B = A`, nested `alias A = List[A]`) hung
+  instead of reaching T0017. The type-family recursion now threads a
+  depth bound (Lyric.Propagate precedent); past it the node is returned
+  unresolved so T0017 fires downstream — verified with clean T0017
+  diagnostics on both targets.
+- Contract clauses and `EForall`/`EExists` binders now resolve (the
+  original "verifier-only" scoping claim was wrong for
+  `@runtime_checked` modules); parameterized aliases are never
+  registered (dangling-type-var hazard); generic-application HEADS
+  resolve when a non-generic alias bottoms out in a plain `TRef`.
+- Making the generic-head case dual-target exposed that MSIL silently
+  miscompiled `alias L = List; L[Int]` (garbage value — the one shape
+  #3673's `cctx.aliasTargets` fallback never covered). Fixed by wiring
+  the SAME pass into both `Msil.Bridge` pipelines, placed after
+  `pipeExpandAndRewrite` exactly like the JVM bridge (so template-spliced
+  alias references resolve too). MSIL's #3673 machinery remains as a
+  harmless no-op layer on the already-resolved AST. This entry's
+  original "MSIL is unaffected" framing was corrected accordingly
+  (#6411).
+- The unused package-wide collector (`collectAliasTargetsForFiles`) was
+  dropped; axis 3 is carried by docs/19's pre-parse concatenation.
+
+Regression: `bare_func_ref_self_test.l` 15→16 (generic-head + contract
+case), 16/16 both targets; full battery re-verified green on both
+targets after each rebuild.

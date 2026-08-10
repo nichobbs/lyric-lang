@@ -57,13 +57,16 @@
 //!     check would if it ran instead); `extern`/`extern type`/`extern func`
 //!     boundaries (a different, host-FQN-keyed resolution mechanism);
 //!     `aspect` bodies (deferred — complex `call`/`proceed` body shape,
-//!     no evidence they hit this bug); contract clauses / `where` bounds
-//!     (verifier-only, never reach `typeExprToJvm`).
-//!   - Axis 3 (visibility): `Lyric.BareFuncRef.collectAliasTargetsForFiles`
-//!     collects `alias` declarations across every file of the package being
-//!     compiled (docs/19 multi-file packages), not just the current file.
-//!     A cross-PACKAGE alias (a different package's `pub alias`) stays out
-//!     of scope, same as MSIL's own cross-package limit.
+//!     no evidence they hit this bug). Contract clauses ARE resolved
+//!     (`resolveContracts`): they lower into real runtime asserts in
+//!     `@runtime_checked` modules, so they are compiled like any other
+//!     code (#6410 review).
+//!   - Axis 3 (visibility): docs/19 multi-file packages are concatenated
+//!     into one `SourceFile` BEFORE parsing, so the per-file
+//!     `Lyric.BareFuncRef.collectFuncAliasTargets` already sees every
+//!     alias of the package being compiled. A cross-PACKAGE alias (a
+//!     different package's `pub alias`) stays out of scope, same as
+//!     MSIL's historical cross-package limit.
 package Lyric.TypeAliasResolve
 
 import Std.Core
@@ -1062,8 +1065,9 @@ pub func resolveItem(aliasTargets: in Map[String, TypeExpr], it: in Item): Item 
 // §6. Public entry points.
 // ─────────────────────────────────────────────────────────────────────────────
 // Resolve every `alias` reference in `file` against `aliasTargets` (built by
-// `Lyric.BareFuncRef.collectAliasTargetsForFiles`, typically over every file
-// of the package being compiled — axis 3 of #6404).
+// `Lyric.BareFuncRef.collectFuncAliasTargets` — which sees the whole package,
+// since docs/19 multi-file packages are concatenated before parsing; axis 3
+// of #6404).
 pub func resolveAliasesInFile(aliasTargets: in Map[String, TypeExpr], file: in SourceFile): SourceFile {
   val items: List[Item] = newList()
   var i = 0
