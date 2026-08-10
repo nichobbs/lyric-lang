@@ -26254,8 +26254,8 @@ was out of this task's scope (#6357/#6347 describe the broader
 erased-receiver refusal family JVM already implements) and nothing in
 `jvm/codegen/` changed.
 
-**Test coverage.** `lyric-compiler/lyric/impl_method_self_test.l`: 2 new
-runtime cases (18 -> 20, `--target dotnet`, per the file's own MSIL-only
+**Test coverage.** `lyric-compiler/lyric/impl_method_self_test.l`: 3 new
+runtime cases (18 -> 21, `--target dotnet`, per the file's own MSIL-only
 scope) replacing the prior "deliberately NOT covered" comment:
 - "non-receiver Self-typed param field access, single record (#6421)" — a
   single record (`Solo6421`, `base: Int`) implementing a fresh interface
@@ -26277,7 +26277,9 @@ scope) replacing the prior "deliberately NOT covered" comment:
 **Verification — full battery, all green** (rebuilt via `make lyric` after
 the source change AND again after `./bin/lyric fmt --write`, since the
 formatter reflowed `registerParamsMsil`'s multi-line signature):
-- `impl_method_self_test.l`: 20/20 dotnet (was 18/18).
+- `impl_method_self_test.l`: 21/21 dotnet (was 18/18; the third new case
+  is the `Bumper6421` inout/byref field read+mutation case added per the
+  #6425 review).
 - `typechecker_self_test.l`: 302/302 (unchanged, dotnet-only front-end).
 - `bare_func_ref_self_test.l`: 21/21 dotnet, 21/21 jvm (unchanged).
 - `msil_project_bridge_self_test.l`: 39/39 dotnet (unchanged).
