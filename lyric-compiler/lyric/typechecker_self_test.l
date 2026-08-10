@@ -1891,6 +1891,44 @@ test "impl param and return match ok" {
   assertTrue(not hasDiagCode(cr, "T0107"), "impl return type match: no T0107")
 }
 
+// #6417: an impl method that mirrors the interface's `self: in Self` spelling
+// verbatim must conform — `substitutesSelf` previously ran on the
+// INTERFACE side of the C11 comparison only, so an impl-side literal `Self`
+// (unsubstituted `TySelf`) could never equal the substituted concrete
+// target type, and the impl was rejected even though it matches the
+// interface exactly.
+test "impl method with Self receiver (matching interface) conforms, no T0106" {
+  val src = "package P\n" + "interface Tagger { func tag(self: in Self): Int }\n" + "record R { seed: Int }\n" +
+    "impl Tagger for R { func tag(self: in Self): Int { self.seed } }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0106"), "impl Self receiver matching interface Self receiver: no T0106")
+}
+
+test "impl method with Self in a non-receiver param conforms, no T0106" {
+  val src = "package P\n" + "interface Combiner { func combine(self: in Self, other: in Self): Int }\n" +
+    "record R { v: Int }\n" +
+    "impl Combiner for R { func combine(self: in Self, other: in Self): Int { self.v + other.v } }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0106"), "impl Self non-receiver param matching interface Self param: no T0106")
+}
+
+test "impl method with Self return type conforms, no T0107" {
+  val src = "package P\n" + "interface Cloner { func dup(self: in Self): Self }\n" + "record R { v: Int }\n" +
+    "impl Cloner for R { func dup(self: in Self): Self { R(v = self.v) } }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0107"), "impl Self return matching interface Self return: no T0107")
+}
+
+test "impl Self receiver still rejects a genuinely wrong param type, T0106" {
+  // Self in the receiver conforms, but a mismatched second parameter must
+  // still be rejected — the fix substitutes Self on both sides, it does not
+  // weaken the underlying comparison.
+  val src = "package P\n" + "interface Adder2 { func add(self: in Self, x: in Int): Int }\n" + "record R { v: Int }\n" +
+    "impl Adder2 for R { func add(self: in Self, x: in String): Int { self.v } }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0106"), "impl Self receiver ok, but String-vs-Int second param still: T0106")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Front-end soundness: where T: Marker bound satisfaction (H15).
 // ─────────────────────────────────────────────────────────────────────────────
