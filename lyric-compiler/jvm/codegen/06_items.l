@@ -9,6 +9,7 @@ import Std.Core
 import Std.Collections
 import Std.String
 import Lyric.Parser
+import Lyric.BareFuncRef as BareFuncRef
 import Jvm.Classfile
 import Jvm.Lowering
 import Jvm.AutoFfi
@@ -43,6 +44,8 @@ func makeFuncCtx(
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
   importsStdString: in Bool,
+  // #6393: see `FuncCtx.aliasTargets`.
+  aliasTargets: in Map[String, TypeExpr],
 ): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
@@ -92,7 +95,8 @@ func makeFuncCtx(
     spawnResultTypes = newMap(),
     scopeBase = 0,
     scopeUndo = newList(),
-    ctorExpectStack = newList()
+    ctorExpectStack = newList(),
+    aliasTargets = aliasTargets
   )
 }
 
@@ -141,7 +145,8 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     spawnResultTypes = ctx.spawnResultTypes,
     scopeBase = ctx.scopeBase,
     scopeUndo = ctx.scopeUndo,
-    ctorExpectStack = ctx.ctorExpectStack
+    ctorExpectStack = ctx.ctorExpectStack,
+    aliasTargets = ctx.aliasTargets
   )
 }
 
@@ -211,7 +216,10 @@ func makeFuncCtxForGenerator(
     spawnResultTypes = newMap(),
     scopeBase = 0,
     scopeUndo = newList(),
-    ctorExpectStack = newList()
+    ctorExpectStack = newList(),
+    // #6393: a generator body has no reachable file-scoped alias table at
+    // this call site — out of scope for now (see `FuncCtx.aliasTargets`).
+    aliasTargets = newMap()
   )
 }
 
@@ -283,7 +291,11 @@ func makeFuncCtxInstance(
     spawnResultTypes = newMap(),
     scopeBase = 0,
     scopeUndo = newList(),
-    ctorExpectStack = newList()
+    ctorExpectStack = newList(),
+    // #6393: an instance-method body (protected-type entry / record method /
+    // impl method) has no reachable file-scoped alias table at this call
+    // site — out of scope for now (see `FuncCtx.aliasTargets`).
+    aliasTargets = newMap()
   )
 }
 
@@ -490,6 +502,31 @@ pub func holderAwareParamTypes(
     i = i + 1
   }
   acc
+}
+
+// #6393: rebuild `params` with each param's declared type resolved through a
+// function-type alias (`h: in Handler` -> `h: in (Int) -> Int`) — see
+// `Lyric.BareFuncRef.resolveFuncTypeAliasOrSelf`.  A no-op copy for every
+// param whose type is not (through an alias chain) function-shaped.
+func resolveParamsFuncAlias(aliasTargets: in Map[String, TypeExpr], params: in List[Param]): List[Param] {
+  val resolved: List[Param] = newList()
+  var i = 0
+  while i < params.count {
+    val p = params[i]
+    resolved.add(
+      Param(
+        mode = p.mode,
+        modeExplicit = p.modeExplicit,
+        name = p.name,
+        ty = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, p.ty),
+        dflt = p.dflt,
+        annotations = p.annotations,
+        span = p.span
+      )
+    )
+    i = i + 1
+  }
+  resolved
 }
 
 // Allocate JVM local slots for a static (free) function's parameters, set up
@@ -808,8 +845,16 @@ pub func lowerFunc(
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
   importsStdString: in Bool,
+  // #6393: same-file `alias X = ...` table — see `Lyric.BareFuncRef`'s
+  // module doc §2 and `codegenPackageWithSigsSeeded`'s `aliasTargets`.
+  aliasTargets: in Map[String, TypeExpr],
 ): LFunc {
-  val retTy = match decl.ret { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
+  val resolvedRet = match decl.ret {
+    case Some(te) -> Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, te))
+    case None -> None
+  }
+  val retTy = match resolvedRet { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
+  val resolvedParams = resolveParamsFuncAlias(aliasTargets, decl.params)
 
   val ctx = makeFuncCtx(
     pkgName,
@@ -825,7 +870,8 @@ pub func lowerFunc(
     opaqueTypes,
     closureAcc,
     usesLyricCount,
-    importsStdString
+    importsStdString,
+    aliasTargets
   )
 
   // Hoisting pre-pass: detect `var` bindings referenced inside lambdas.
@@ -850,14 +896,17 @@ pub func lowerFunc(
 
   // Allocate slots for parameters and set up any `out`/`inout` holder bindings;
   // the holder unwrap-prologue (if any) is emitted into `insns` first (#1763).
-  setupStaticParamSlotsAndHolders(ctx, insns, decl.params, pkgName, externTypes)
+  // `resolvedParams` (not `decl.params`) so a function-type alias param
+  // (`h: in Handler`) allocates its slot as `Object`, exactly like the
+  // literal `(Int) -> Int` annotation already does (#6393).
+  setupStaticParamSlotsAndHolders(ctx, insns, resolvedParams, pkgName, externTypes)
   // Record each parameter's declared slice/List element type so an indexed
   // element read narrows to its concrete class (docs/59 §4.3 #5439 class);
   // the function's own type parameters are filtered — they erase to Object.
   val fnElemTps = genericParamNames(decl.generics)
   var rdi = 0
-  while rdi < decl.params.count {
-    recordDeclaredElemType(ctx, decl.params[rdi].name, decl.params[rdi].ty, fnElemTps)
+  while rdi < resolvedParams.count {
+    recordDeclaredElemType(ctx, resolvedParams[rdi].name, resolvedParams[rdi].ty, fnElemTps)
     rdi = rdi + 1
   }
 
@@ -948,8 +997,10 @@ pub func lowerFunc(
 
   // Determine param types for the LFunc descriptor.  An `out`/`inout`
   // parameter is declared as a single-element holder array (#1763).
+  // `resolvedParams` so the emitted descriptor matches the registered
+  // `JvmFuncSig.params` in `collectFileSigsSeeded` exactly (#6393).
   val noTypeParams: List[String] = newList()
-  val paramTypes = holderAwareParamTypes(decl.params, pkgName, false, noTypeParams, externTypes)
+  val paramTypes = holderAwareParamTypes(resolvedParams, pkgName, false, noTypeParams, externTypes)
 
   // Synthesised @derive names like "Point.equals" carry a "TypeName." prefix
   // that JVMS §4.2.2 forbids in unqualified method names.  Strip everything up
@@ -1155,6 +1206,13 @@ pub func lowerRecord(
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
   importsStdString: in Bool,
+  // #6393: same-file `alias X = ...` table — see `Lyric.BareFuncRef`'s
+  // module doc §2.  A function-type-aliased field (`record Holder { h:
+  // Handler }`) must erase its FIELD DESCRIPTOR to `Object` exactly like a
+  // literal `(Int) -> Int` field already does, not to the nonexistent
+  // in-package class `<pkgName>/Handler` (`NoClassDefFoundError` at link
+  // time).
+  aliasTargets: in Map[String, TypeExpr],
 ): LRecord {
   val className = pkgName + "/" + decl.name
   // Generic type params erase to `Object` (docs/44 M-1 / Q-J001) so a `T`-typed
@@ -1171,7 +1229,12 @@ pub func lowerRecord(
             flags = 0x0001,
             // public
             name = f.name,
-            fieldType = typeExprToJvmErasedExtern(f.ty, pkgName, tps, externTypes)
+            fieldType = typeExprToJvmErasedExtern(
+              BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty),
+              pkgName,
+              tps,
+              externTypes
+            )
           )
         )
       }
@@ -1242,7 +1305,12 @@ pub func lowerRecord(
 // ─────────────────────────────────────────────────────────────────────────────
 // §10. Union lowering.
 // ─────────────────────────────────────────────────────────────────────────────
-pub func lowerUnion(decl: in UnionDecl, pkgName: in String, externTypes: in Map[String, String]): LSealedUnion {
+pub func lowerUnion(
+  decl: in UnionDecl,
+  pkgName: in String,
+  externTypes: in Map[String, String],
+  aliasTargets: in Map[String, TypeExpr],
+): LSealedUnion {
   val baseName = pkgName + "/" + decl.name
   // Generic type params erase to `Object` (no reified generics on the JVM —
   // docs/44 M-1 / Q-J001), so a `T`-typed payload field is declared `Object`.
@@ -1255,10 +1323,22 @@ pub func lowerUnion(decl: in UnionDecl, pkgName: in String, externTypes: in Map[
     val caseFields: List[LField] = newList()
     var fi = 0
     while fi < c.fields.count {
+      // Alias-typed function fields must resolve to the underlying
+      // TFunction before erasure, exactly like record fields (#6406) —
+      // otherwise the descriptor embeds the nonexistent alias class.
       match c.fields[fi] {
         case UFNamed(name, ty, _) -> {
           caseFields.add(
-            LField(flags = 0x0001, name = name, fieldType = typeExprToJvmErasedExtern(ty, pkgName, tps, externTypes))
+            LField(
+              flags = 0x0001,
+              name = name,
+              fieldType = typeExprToJvmErasedExtern(
+                BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty),
+                pkgName,
+                tps,
+                externTypes
+              )
+            )
           )
         }
         case UFPos(ty, _) -> {
@@ -1266,7 +1346,12 @@ pub func lowerUnion(decl: in UnionDecl, pkgName: in String, externTypes: in Map[
             LField(
               flags = 0x0001,
               name = "field" + toString(fi),
-              fieldType = typeExprToJvmErasedExtern(ty, pkgName, tps, externTypes)
+              fieldType = typeExprToJvmErasedExtern(
+                BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty),
+                pkgName,
+                tps,
+                externTypes
+              )
             )
           )
         }
@@ -2192,6 +2277,9 @@ func lowerWireBindingInit(
     // A lambda in a wire-binding initialiser registers its synthesised closure
     // inner class into the package-shared accumulator (#2864), so it emits
     // `<pkg>$Lambda$<n>` into the package output and works end-to-end.
+    // #6393: a wire-binding init has no reachable file-scoped alias table at
+    // this call site — out of scope for now (see `FuncCtx.aliasTargets`).
+    val noAliasTargets: Map[String, TypeExpr] = newMap()
     val ctx0 = makeFuncCtx(
       pkgName,
       className,
@@ -2206,7 +2294,8 @@ func lowerWireBindingInit(
       opaqueTypes,
       closureAcc,
       usesLyricCount,
-      importsStdString
+      importsStdString,
+      noAliasTargets
     )
     // #5013: an earlier binding referenced from a *nested* expression position
     // (e.g. `contents = widget` as a named constructor argument, not the bare
@@ -2825,6 +2914,14 @@ pub func collectFileSigsSeeded(
   // (#3334).  The emitted method descriptor in `lowerFunc` resolves the same
   // way, so the registered sig and the method stay in lockstep.
   val externTypes = ownAwareExternTypes(file, externSeed)
+  // #6393: same-file `alias X = ...` table so a function-typed alias
+  // annotation (`func adder(n: in Int): Handler`, `Handler = (Int) -> Int`)
+  // registers its return/param types exactly like the literal
+  // `(Int) -> Int` form already does, instead of the erasure below falling
+  // to the "user type in the same package" guess (`JRef("<owner>/Handler")`
+  // — a nonexistent class, `NoClassDefFoundError` at link time).  See
+  // `Lyric.BareFuncRef`'s module doc §2.
+  val aliasTargets = BareFuncRef.collectFuncAliasTargets(file)
   // Same-file record names for `recordRetClassOf` (#6399): a bare pre-scan of
   // every `record` item declared in this file lets the return-type
   // computation below recover a LOCAL generic record's own raw class
@@ -2852,7 +2949,10 @@ pub func collectFileSigsSeeded(
         // referenced the phantom `Std/Core/T` (NoClassDefFoundError at
         // link time; hit by `unwrapOr` in parse_tests).
         val sigTps = genericParamNames(decl.generics)
-        val params = holderAwareParamTypes(decl.params, owner, false, sigTps, externTypes)
+        // #6393: resolve each param's declared type through a function-type
+        // alias before erasure — see the `aliasTargets` comment above.
+        val resolvedParams = resolveParamsFuncAlias(aliasTargets, decl.params)
+        val params = holderAwareParamTypes(resolvedParams, owner, false, sigTps, externTypes)
         val paramNames: List[String] = newList()
         val paramDefaults: List[Option[Expr]] = newList()
         val paramModes: List[ParamMode] = newList()
@@ -2863,6 +2963,17 @@ pub func collectFileSigsSeeded(
           paramModes.add(decl.params[pi].mode)
           pi = pi + 1
         }
+        // #6393: resolve the declared return type through a function-type
+        // alias too, feeding `ret`/`sigClosureRetTy` below — see the
+        // `aliasTargets` comment above.  `retGenericArgs`/`recordRetClass`
+        // stay on the ORIGINAL `decl.ret`: neither ever matches a bare
+        // `TRef` naming a function-type alias (no generic args, no known
+        // record name), so resolving through the alias there would be a
+        // no-op at best.
+        val resolvedRet = match decl.ret {
+          case Some(te) -> Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, te))
+          case None -> None
+        }
         // An async generator's *factory* returns the synthesised generator
         // object (an Iterable), not its declared element type — so the call
         // site must store/use a reference, not `decl.ret` (e.g. the `Int`
@@ -2871,7 +2982,7 @@ pub func collectFileSigsSeeded(
         val ret = if decl.isAsync and funcBodyContainsYield(decl) {
           JRef(className = "java/lang/Object")
         } else {
-          match decl.ret {
+          match resolvedRet {
             case Some(te) -> typeExprToJvmErasedExtern(te, owner, sigTps, externTypes)
             case None -> JVoid
           }
@@ -2888,7 +2999,7 @@ pub func collectFileSigsSeeded(
         val sigClosureRetTy: Option[JvmType] = if decl.isAsync and funcBodyContainsYield(decl) {
           None
         } else {
-          closureRetTypeOf(decl.ret, owner, sigTps, externTypes)
+          closureRetTypeOf(resolvedRet, owner, sigTps, externTypes)
         }
         // Same generator exclusion as `sigClosureRetTy` above: the actual
         // runtime return is the synthesised generator object, not `decl.ret`,
@@ -2942,6 +3053,15 @@ pub func collectFileSigsSeeded(
         val bkey = decl.name + "@" + toString(decl.params.count)
         if not into.containsKey(bkey) {
           into.add(bkey, sig)
+        }
+        // #6393: a "bareref:"-prefixed key marks `decl.name` as eligible to
+        // be referenced bare as a first-class function value (`apply(double,
+        // 21)`) — see `Lyric.BareFuncRef.isEligibleBareFuncRefTarget` and the
+        // matching lookup at the `lowerExpr` EPath fallback
+        // (`jvm/codegen/02_exprs.l`).  Reuses `sig` as-is: only its
+        // `params.count` (the forwarding closure's arity) is read back.
+        if BareFuncRef.isEligibleBareFuncRefTarget(decl) and not into.containsKey("bareref:" + decl.name) {
+          into.add("bareref:" + decl.name, sig)
         }
       }
       case IProtected(decl) -> {
@@ -3552,6 +3672,13 @@ pub func collectFileCasesExtern(
   externTypes: in Map[String, String],
 ): Unit {
   val owner = segmentsToJvmPath(file.packageDecl.path.segments)
+  // #6393: same-file `alias X = ...` table so a function-type-aliased field
+  // (`record Holder { h: Handler }`) registers its binding-site field type
+  // as `Object` exactly like a literal `(Int) -> Int` field already does —
+  // see `Lyric.BareFuncRef`'s module doc §2.  `f.ty`'s registered type here
+  // must agree with the FIELD DESCRIPTOR `lowerRecord` actually emits, or a
+  // field read (`holder.h`) recovers the wrong static type.
+  val aliasTargets = BareFuncRef.collectFuncAliasTargets(file)
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -3569,8 +3696,8 @@ pub func collectFileCasesExtern(
             var fi = 0
             while fi < c.fields.count {
               match c.fields[fi] {
-                case UFNamed(name, ty, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmErasedExtern(ty, owner, tps, externTypes), paramIdx = typeParamIndexOf(ty, tps), dflt = None))
-                case UFPos(ty, _) -> flds.add(JvmCaseField(name = "field" + toString(fi), ty = typeExprToJvmErasedExtern(ty, owner, tps, externTypes), paramIdx = typeParamIndexOf(ty, tps), dflt = None))
+                case UFNamed(name, ty, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmErasedExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty), owner, tps, externTypes), paramIdx = typeParamIndexOf(ty, tps), dflt = None))
+                case UFPos(ty, _) -> flds.add(JvmCaseField(name = "field" + toString(fi), ty = typeExprToJvmErasedExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty), owner, tps, externTypes), paramIdx = typeParamIndexOf(ty, tps), dflt = None))
               }
               fi = fi + 1
             }
@@ -3587,7 +3714,7 @@ pub func collectFileCasesExtern(
           var mi = 0
           while mi < decl.members.count {
             match decl.members[mi] {
-              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(f.ty, owner, tps, externTypes), paramIdx = typeParamIndexOf(f.ty, tps), dflt = f.dflt))
+              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty), owner, tps, externTypes), paramIdx = typeParamIndexOf(f.ty, tps), dflt = f.dflt))
               case _ -> {
               }
             }
@@ -4436,6 +4563,15 @@ func configFieldsNeedLambdaIface(fields: in List[ConfigField]): Bool {
 // falling through a wildcard, which is exactly how #6349 and #6350 (missed
 // `IUnion`, then missed `IImpl`/`IProtected`) slipped through twice.
 func fileNeedsLambdaIface(file: in SourceFile): Bool {
+  // A function-type alias makes any annotation a potential lambda carrier
+  // WITHOUT literally mentioning a TFunction — the per-arm scans below see
+  // only the unresolved TRef, so an alias-typed field/param would get an
+  // iface-referencing descriptor with no iface emitted (#6406).
+  // Over-approximate: any file declaring a function-type alias gets the
+  // iface (an unused alias costs one small unused interface class).
+  if BareFuncRef.hasFuncAliasTargets(file) {
+    return true
+  }
   var i = 0
   while i < file.items.count {
     val item = file.items[i]
@@ -4782,6 +4918,11 @@ pub func codegenPackageWithSigsSeeded(
   // Collect extern-type declarations: alias → Java FQN.
   val externTypes = ownAwareExternTypes(file, externSeed)
 
+  // #6393: same-file `alias X = ...` table, threaded through every function /
+  // module-val FuncCtx below (mirrors `externTypes`'s own threading a few
+  // lines up) — see `Lyric.BareFuncRef`'s module doc §2.
+  val aliasTargets = BareFuncRef.collectFuncAliasTargets(file)
+
   // m-2: collect the module-level `val NAME` declarations up front (name → JVM
   // type) so a bare reference to one resolves to `getstatic <hostClass>.<name>`
   // in every function of this package.
@@ -4831,7 +4972,8 @@ pub func codegenPackageWithSigsSeeded(
     opaqueTypes,
     closureAcc,
     usesLyricCount,
-    importsStdString
+    importsStdString,
+    aliasTargets
   )
   // #2853: lower every module-level `val` once, now, and overwrite `moduleVals`
   // with the real field type before any function (or the `<clinit>` itself) is
@@ -4967,7 +5109,8 @@ pub func codegenPackageWithSigsSeeded(
               opaqueTypes,
               closureAcc,
               usesLyricCount,
-              importsStdString
+              importsStdString,
+              aliasTargets
             )
           )
           if isMainFunc(decl) {
@@ -5010,7 +5153,8 @@ pub func codegenPackageWithSigsSeeded(
           opaqueTypes,
           closureAcc,
           usesLyricCount,
-          importsStdString
+          importsStdString,
+          aliasTargets
         )
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
@@ -5067,7 +5211,8 @@ pub func codegenPackageWithSigsSeeded(
           opaqueTypes,
           closureAcc,
           usesLyricCount,
-          importsStdString
+          importsStdString,
+          aliasTargets
         )
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
@@ -5089,7 +5234,7 @@ pub func codegenPackageWithSigsSeeded(
         )
       }
       case IUnion(decl) -> {
-        items.add(LPSealedUnion(su = lowerUnion(decl, pkgName, externTypes)))
+        items.add(LPSealedUnion(su = lowerUnion(decl, pkgName, externTypes, aliasTargets)))
       }
       case IConst(_) -> {
       }

@@ -4358,6 +4358,22 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"map-key self-test ran: map_key_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/map_key_self_test.l"
 
+      # Bare-function-value self-test on JVM (#6393) — the JVM half of the
+      # dotnet-job step of the same name (compiler-self-tests).  Was
+      # dotnet-only (#5362/#5366's MSIL fix, D-progress-738) because the JVM
+      # backend failed differently on each case: a bare top-level function
+      # reference had no codegen path at all (compile-time panic), and an
+      # alias-typed function annotation loaded the alias name as a
+      # nonexistent class (`NoClassDefFoundError`).  Both gaps closed by
+      # #6393 (inline forwarding-closure synthesis, `FuncCtx.aliasTargets`
+      # alias-chain resolution) — now runs identically on both targets.
+      # Placed in this (post-barrier) sub-batch, not the pre-split batch
+      # above, per the same ~14-concurrent-step cap reasoning (#5913).
+      - name: Bare-function-value self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci/self-test.sh --summary \"bare-func-ref self-test ran: bare_func_ref_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/bare_func_ref_self_test.l"
+
       # Extra barrier (JVM batch 1a-split): the sub-batch between the
       # "JVM batch 1-split" and "JVM batch 1" barriers had grown to ~19
       # concurrent in-process JVM compilations — over the ~14-step cap
