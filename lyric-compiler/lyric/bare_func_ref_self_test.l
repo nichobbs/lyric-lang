@@ -281,3 +281,29 @@ test "function-type alias as a record instance method's parameter (#6404)" {
   val a = Applier(seed = 4)
   assertEqualInt(a.run(double), 12, "Applier(seed = 4).run(double) == double(4) + 4 == 12")
 }
+
+// #6410 review round: an alias used as a bare GENERIC-APPLICATION HEAD
+// (`alias L6410 = List` then `L6410[Int]`) substitutes the head path when the
+// alias bottoms out in a plain TRef; and an alias inside a CONTRACT clause
+// resolves too (contract clauses lower into real runtime asserts in
+// @runtime_checked modules, so they are JVM-compiled like any other code).
+alias L6410 = List
+
+func sum6410(xs: L6410[Int]): Int
+  requires: xs.count >= 0
+{
+  var t = 0
+  var i = 0
+  while i < xs.count {
+    t = t + xs[i]
+    i = i + 1
+  }
+  t
+}
+
+test "alias as generic-application head and in a contract clause (#6410)" {
+  val xs: L6410[Int] = newList()
+  xs.add(20)
+  xs.add(22)
+  assertEqualInt(sum6410(xs), 42, "L6410[Int] head resolves; requires: compiles")
+}

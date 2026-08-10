@@ -18,6 +18,8 @@ import Lyric.ModeChecker
 import Lyric.ContractElaborator
 import Lyric.Propagate
 import Lyric.Mono
+import Lyric.BareFuncRef as BFR2
+import Lyric.TypeAliasResolve as TAR2
 import Lyric.Derives
 import Lyric.RestoredPackages
 import Lyric.ContractMeta as Meta
@@ -29,6 +31,18 @@ import Msil.Lowering
 import Msil.Codegen
 import Msil.Tables
 import Msil.Heaps
+
+// Resolve `alias X = ...` references to their underlying types before any
+// registry or checker sees the file — the same whole-file pre-pass the JVM
+// bridge runs (#6404/#6410), giving both targets ONE alias-resolution
+// mechanism. MSIL's own `cctx.aliasTargets` machinery (#3673) remains as a
+// harmless no-op layer on the already-resolved AST; the pass additionally
+// covers shapes that machinery never did (an alias as a bare
+// generic-application head, `alias L = List` then `L[Int]`, previously a
+// SILENT miscompile on this target).
+func resolveTypeAliasesMsil(file: in SourceFile): SourceFile {
+  TAR2.resolveAliasesInFile(BFR2.collectFuncAliasTargets(file), file)
+}
 
 /// Compile `source` to a .NET PE DLL at `outputPath` using the self-hosted
 /// MSIL pipeline.
@@ -91,10 +105,11 @@ pub func compileToMsilWithVersion(
   // no `[features]` table).
   val noCfgFeatures: List[String] = newList()
   val decodedDefines = BD.decodeDefines(defines)
-  val cfgFile = match pipeParseAndErase(source, "dotnet", noCfgFeatures, noCfgFeatures, decodedDefines) {
+  val cfgFile0 = match pipeParseAndErase(source, "dotnet", noCfgFeatures, noCfgFeatures, decodedDefines) {
     case Some(f) -> f
     case None -> return false
   }
+  val cfgFile = resolveTypeAliasesMsil(cfgFile0)
 
   // ── Middle-end (Band 1 + Band 6 of docs/41 §9) ─────────────────────────
   // Run the self-hosted type checker with stdlib imports, mode checker, and
@@ -511,10 +526,11 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   var pi = 0
   while pi < packages.count {
     val pkg = packages[pi]
-    val erased = match pipeParseAndErase(pkg.source, "dotnet", activeFeatures, declaredFeatures, projDefines) {
+    val erased0 = match pipeParseAndErase(pkg.source, "dotnet", activeFeatures, declaredFeatures, projDefines) {
       case Some(f) -> f
       case None -> return false
     }
+    val erased = resolveTypeAliasesMsil(erased0)
     parsedPkgs.add(ParsedUserPkg(name = pkg.name, file = erased))
     pi = pi + 1
   }

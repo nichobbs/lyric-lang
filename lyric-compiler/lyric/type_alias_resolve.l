@@ -129,18 +129,40 @@ func genericParamNamesOf(generics: in Option[GenericParams]): List[String] {
 // NESTED inside the resolved target (`alias Ints = List[Meters]`) both fully
 // bottom out. `genericNames` are the type parameter names in scope at this
 // point in the AST — a `TRef` naming one is left untouched (the type param
-// shadows any outer alias of the same name; the type checker already
-// rejects cyclic `alias` chains, so this always terminates). The ORIGINAL
-// reference site's span is kept on the resolved node so diagnostics still
-// point at the use site, not the `alias` declaration.
+// shadows any outer alias of the same name). CYCLE GUARD (#6410): this pass
+// runs BEFORE the type checker on the JVM pipeline, so a cyclic alias
+// (`alias A = B; alias B = A`, or nested self-reference `alias A = List[A]`)
+// reaches it before T0017 can reject it — the whole type-family recursion
+// therefore threads a depth bound (same rationale as
+// `Lyric.Propagate.classifyRetType`'s bound); past it the node is returned
+// UNRESOLVED so the type checker's own cycle diagnostic fires downstream
+// instead of a hang/stack overflow. (Known theoretical residual, accepted:
+// a cycle routed through a const-generic VALUE expression's own type
+// annotation re-enters the expr walker, which does not thread depth — that
+// shape requires an alias whose rhs embeds a typed lambda naming the alias
+// inside an array-size expression.) The ORIGINAL reference site's span is
+// kept on the resolved node so diagnostics still point at the use site,
+// not the `alias` declaration.
 pub func resolveTypeExpr(
   aliasTargets: in Map[String, TypeExpr], genericNames: in List[String], te: in TypeExpr
 ): TypeExpr {
+  resolveTypeExprAt(aliasTargets, genericNames, te, 0)
+}
+
+func resolveTypeExprAt(
+  aliasTargets: in Map[String, TypeExpr],
+  genericNames: in List[String],
+  te: in TypeExpr,
+  depth: in Int,
+): TypeExpr {
+  if depth > 64 {
+    return te
+  }
   val kind = match te.kind {
     case TRef(path) -> {
       if path.segments.count == 1 and not listContainsStr(genericNames, path.segments[0]) {
         match mapGet(aliasTargets, path.segments[0]) {
-          case Some(rhs) -> resolveTypeExpr(aliasTargets, genericNames, rhs).kind
+          case Some(rhs) -> resolveTypeExprAt(aliasTargets, genericNames, rhs, depth + 1).kind
           case None -> TRef(path = path)
         }
       } else {
@@ -151,13 +173,31 @@ pub func resolveTypeExpr(
       val args2: List[TypeArg] = newList()
       var i = 0
       while i < args.count {
-        args2.add(resolveTypeArg(aliasTargets, genericNames, args[i]))
+        args2.add(resolveTypeArgAt(aliasTargets, genericNames, args[i], depth + 1))
         i = i + 1
       }
-      TGenericApp(head = head, args = args2)
+      // A single-segment alias in HEAD position (`alias M = SomeMap` used as
+      // `M[K, V]`) substitutes only when the alias bottoms out in a plain
+      // `TRef` — any other resolved shape can't be expressed as a
+      // `ModulePath` head and is left unresolved (parameterized aliases are
+      // never registered at all; see the collector's guard).
+      val head2 = if head.segments.count == 1 and not listContainsStr(genericNames, head.segments[0]) {
+        match mapGet(aliasTargets, head.segments[0]) {
+          case Some(rhs) -> {
+            match resolveTypeExprAt(aliasTargets, genericNames, rhs, depth + 1).kind {
+              case TRef(rp) -> rp
+              case _ -> head
+            }
+          }
+          case None -> head
+        }
+      } else {
+        head
+      }
+      TGenericApp(head = head2, args = args2)
     }
-    case TArray(size, element) -> TArray(size = resolveTypeArg(aliasTargets, genericNames, size), element = resolveTypeExpr(aliasTargets, genericNames, element))
-    case TSlice(element) -> TSlice(element = resolveTypeExpr(aliasTargets, genericNames, element))
+    case TArray(size, element) -> TArray(size = resolveTypeArgAt(aliasTargets, genericNames, size, depth + 1), element = resolveTypeExprAt(aliasTargets, genericNames, element, depth + 1))
+    case TSlice(element) -> TSlice(element = resolveTypeExprAt(aliasTargets, genericNames, element, depth + 1))
     // `TRefined.underlying` is a bare `ModulePath`, not a `TypeExpr` — it
     // can only be replaced in place when the fully-resolved alias target is
     // itself a plain `TRef` (e.g. `alias Meters = Long; type Age = Meters
@@ -168,7 +208,7 @@ pub func resolveTypeExpr(
       if underlying.segments.count == 1 and not listContainsStr(genericNames, underlying.segments[0]) {
         match mapGet(aliasTargets, underlying.segments[0]) {
           case Some(rhs) -> {
-            val resolved = resolveTypeExpr(aliasTargets, genericNames, rhs)
+            val resolved = resolveTypeExprAt(aliasTargets, genericNames, rhs, depth + 1)
             match resolved.kind {
               case TRef(rp) -> TRefined(underlying = rp, range = range)
               case _ -> TRefined(underlying = underlying, range = range)
@@ -184,28 +224,60 @@ pub func resolveTypeExpr(
       val xs: List[TypeExpr] = newList()
       var i = 0
       while i < types.count {
-        xs.add(resolveTypeExpr(aliasTargets, genericNames, types[i]))
+        xs.add(resolveTypeExprAt(aliasTargets, genericNames, types[i], depth + 1))
         i = i + 1
       }
       TTuple(types = xs)
     }
-    case TNullable(inner) -> TNullable(inner = resolveTypeExpr(aliasTargets, genericNames, inner))
+    case TNullable(inner) -> TNullable(inner = resolveTypeExprAt(aliasTargets, genericNames, inner, depth + 1))
     case TFunction(parameters, retTy) -> {
       val ps: List[TypeExpr] = newList()
       var i = 0
       while i < parameters.count {
-        ps.add(resolveTypeExpr(aliasTargets, genericNames, parameters[i]))
+        ps.add(resolveTypeExprAt(aliasTargets, genericNames, parameters[i], depth + 1))
         i = i + 1
       }
-      TFunction(parameters = ps, retTy = resolveTypeExpr(aliasTargets, genericNames, retTy))
+      TFunction(parameters = ps, retTy = resolveTypeExprAt(aliasTargets, genericNames, retTy, depth + 1))
     }
-    case TParen(inner) -> TParen(inner = resolveTypeExpr(aliasTargets, genericNames, inner))
+    case TParen(inner) -> TParen(inner = resolveTypeExprAt(aliasTargets, genericNames, inner, depth + 1))
     case TUnit -> TUnit
     case TSelf -> TSelf
     case TNever -> TNever
     case TError -> TError
   }
   TypeExpr(kind = kind, span = te.span)
+}
+
+// Contract clauses are lowered into REAL runtime asserts by
+// `Lyric.ContractElaborator` in `@runtime_checked` modules, so their
+// expressions get JVM-compiled like any other code — an alias inside a
+// clause (a type-test pattern, an explicit generic instantiation, a
+// quantifier binder annotation) must resolve like everywhere else.
+func resolveContracts(
+  aliasTargets: in Map[String, TypeExpr], genericNames: in List[String], cs: in List[ContractClause]
+): List[ContractClause] {
+  val out2: List[ContractClause] = newList()
+  var i = 0
+  while i < cs.count {
+    val resolved = match cs[i] {
+      case CCRequires(e, sp) -> CCRequires(expr = resolveExpr(aliasTargets, genericNames, e), span = sp)
+      case CCEnsures(e, sp) -> CCEnsures(expr = resolveExpr(aliasTargets, genericNames, e), span = sp)
+      case CCWhen(e, sp) -> CCWhen(expr = resolveExpr(aliasTargets, genericNames, e), span = sp)
+      case CCDecreases(e, sp) -> CCDecreases(expr = resolveExpr(aliasTargets, genericNames, e), span = sp)
+      case CCRaises(types, sp) -> {
+        val ts: List[TypeExpr] = newList()
+        var ti = 0
+        while ti < types.count {
+          ts.add(resolveTypeExpr(aliasTargets, genericNames, types[ti]))
+          ti = ti + 1
+        }
+        CCRaises(types = ts, span = sp)
+      }
+    }
+    out2.add(resolved)
+    i = i + 1
+  }
+  out2
 }
 
 func resolveOptType(
@@ -218,8 +290,17 @@ func resolveOptType(
 }
 
 func resolveTypeArg(aliasTargets: in Map[String, TypeExpr], genericNames: in List[String], a: in TypeArg): TypeArg {
+  resolveTypeArgAt(aliasTargets, genericNames, a, 0)
+}
+
+func resolveTypeArgAt(
+  aliasTargets: in Map[String, TypeExpr],
+  genericNames: in List[String],
+  a: in TypeArg,
+  depth: in Int,
+): TypeArg {
   match a {
-    case TAType(ty) -> TAType(ty = resolveTypeExpr(aliasTargets, genericNames, ty))
+    case TAType(ty) -> TAType(ty = resolveTypeExprAt(aliasTargets, genericNames, ty, depth))
     case TAValue(e) -> TAValue(expr = resolveExpr(aliasTargets, genericNames, e))
   }
 }
@@ -507,6 +588,44 @@ func resolveExpr(aliasTargets: in Map[String, TypeExpr], genericNames: in List[S
     }
     // Remaining ExprKind variants (ELiteral, EPath, ESelf, EResult, ...)
     // carry no TypeExpr and no nested Block/Expr — pass through unchanged.
+    case EForall(binders, whereExpr, body) -> {
+      val bs: List[PropertyBinder] = newList()
+      var bi = 0
+      while bi < binders.count {
+        bs.add(
+          PropertyBinder(
+            name = binders[bi].name,
+            ty = resolveTypeExpr(aliasTargets, genericNames, binders[bi].ty),
+            span = binders[bi].span
+          )
+        )
+        bi = bi + 1
+      }
+      val w2 = match whereExpr {
+        case Some(w) -> Some(value = resolveExpr(aliasTargets, genericNames, w))
+        case None -> None
+      }
+      EForall(binders = bs, whereExpr = w2, body = resolveExpr(aliasTargets, genericNames, body))
+    }
+    case EExists(binders, whereExpr, body) -> {
+      val bs: List[PropertyBinder] = newList()
+      var bi = 0
+      while bi < binders.count {
+        bs.add(
+          PropertyBinder(
+            name = binders[bi].name,
+            ty = resolveTypeExpr(aliasTargets, genericNames, binders[bi].ty),
+            span = binders[bi].span
+          )
+        )
+        bi = bi + 1
+      }
+      val w2 = match whereExpr {
+        case Some(w) -> Some(value = resolveExpr(aliasTargets, genericNames, w))
+        case None -> None
+      }
+      EExists(binders = bs, whereExpr = w2, body = resolveExpr(aliasTargets, genericNames, body))
+    }
     case _ -> expr.kind
   }
   Expr(kind = k, span = expr.span)
@@ -587,7 +706,7 @@ func resolveFunctionDecl(
     params = resolveParams(aliasTargets, fnScope, fn.params),
     ret = ret,
     whereClause = fn.whereClause,
-    contracts = fn.contracts,
+    contracts = resolveContracts(aliasTargets, fnScope, fn.contracts),
     body = body,
     span = fn.span
   )
@@ -603,7 +722,7 @@ func resolveEntryDecl(
     name = ed.name,
     params = resolveParams(aliasTargets, outerGenerics, ed.params),
     ret = resolveOptType(aliasTargets, outerGenerics, ed.ret),
-    contracts = ed.contracts,
+    contracts = resolveContracts(aliasTargets, outerGenerics, ed.contracts),
     body = resolveFunctionBody(aliasTargets, outerGenerics, ed.body),
     span = ed.span
   )
@@ -621,7 +740,7 @@ func resolveFunctionSig(
     params = resolveParams(aliasTargets, sigScope, sig.params),
     ret = resolveOptType(aliasTargets, sigScope, sig.ret),
     whereClause = sig.whereClause,
-    contracts = sig.contracts,
+    contracts = resolveContracts(aliasTargets, sigScope, sig.contracts),
     span = sig.span
   )
 }

@@ -171,16 +171,24 @@ pub func hasFuncAliasTargets(file: in SourceFile): Bool {
 // Fold `file`'s own `alias X = ...` declarations into `into` (first-wins —
 // an existing entry, whether from an earlier file of the same package or an
 // earlier item of this file, is never overwritten). Shared by
-// `collectFuncAliasTargets` (single file) and `collectAliasTargetsForFiles`
-// (whole package, #6404 axis 3) so the self-reference guard and first-wins
-// policy live in exactly one place.
+// The single shared registration walk backing `collectFuncAliasTargets`,
+// so the self-reference/parameterized guards and first-wins policy live in
+// exactly one place. (A package-wide multi-file variant was prototyped for
+// #6404 axis 3 and dropped as dead code — docs/19's pre-parse file
+// concatenation already gives the pass whole-package visibility.)
 func addFileAliasTargetsInto(file: in SourceFile, into: in Map[String, TypeExpr]): Unit {
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case ITypeAlias(decl) -> {
         val rhsSelfNamed = match decl.rhs.kind { case TRef(path) -> lastSegmentOfPath(path) == decl.name; case _ -> false }
-        if not rhsSelfNamed and not into.containsKey(decl.name) {
+        // A PARAMETERIZED alias (`alias MyList[T] = List[T]`) is never
+        // registered: substituting its rhs without type-argument
+        // substitution would leave dangling type-var references (#6410
+        // review). Its uses stay unresolved for the type checker to
+        // handle, exactly as before alias resolution existed.
+        val isParameterized = match decl.generics { case Some(_) -> true; case None -> false }
+        if not rhsSelfNamed and not isParameterized and not into.containsKey(decl.name) {
           into.add(decl.name, decl.rhs)
         }
       }
@@ -194,23 +202,6 @@ func addFileAliasTargetsInto(file: in SourceFile, into: in Map[String, TypeExpr]
 pub func collectFuncAliasTargets(file: in SourceFile): Map[String, TypeExpr] {
   val aliasTargets: Map[String, TypeExpr] = newMap()
   addFileAliasTargetsInto(file, aliasTargets)
-  aliasTargets
-}
-
-/// As `collectFuncAliasTargets`, but folds `alias X = ...` declarations from
-/// EVERY file in `files` into one shared map (first-wins across files, in
-/// list order) — the multi-file-package visibility axis of #6404 (docs/19):
-/// a same-package alias declared in a sibling file of a multi-file package
-/// is now visible, not just aliases in the file currently being lowered.
-/// Cross-PACKAGE aliases stay out of scope (`files` is expected to be one
-/// package's own files).
-pub func collectAliasTargetsForFiles(files: in List[SourceFile]): Map[String, TypeExpr] {
-  val aliasTargets: Map[String, TypeExpr] = newMap()
-  var i = 0
-  while i < files.count {
-    addFileAliasTargetsInto(files[i], aliasTargets)
-    i = i + 1
-  }
   aliasTargets
 }
 
