@@ -45,6 +45,23 @@
 //!      packages too, purely as a side effect of one `CodegenCtx` being
 //!      reused across a whole project build — JVM's per-file callers below
 //!      don't have an equivalent shared context to piggyback on).
+//!
+//!      `Lyric.TypeAliasResolve` (#6404/D-progress-748) now resolves this
+//!      SAME same-file scope structurally, upfront, for every user-owned
+//!      file on both targets — the JVM per-file callers below
+//!      (`collectFuncAliasTargets`/`resolveFuncTypeAliasOrSelf`/
+//!      `FuncCtx.aliasTargets`) and MSIL's `cctx.aliasTargets` consultation
+//!      are a no-op for a plain user file today. Both are still
+//!      load-bearing for shapes that pre-pass structurally cannot reach
+//!      (JVM: stdlib files bundled via the transitive import closure, never
+//!      passed through the pre-pass; MSIL: cross-package same-bundle
+//!      aliases and cross-assembly restored-dependency aliases, neither
+//!      expressible as one file's own `SourceFile` walk) — #6413 audited
+//!      every site and kept all of them; see `Lyric.TypeAliasResolve`'s
+//!      module doc and `docs/03-decision-log.md` D-progress-752 for the
+//!      full accounting. `eligibleBareFuncRefTargets`/
+//!      `isEligibleBareFuncRefTarget`/`hasFuncAliasTargets` (§1 above) are
+//!      a separate, still-necessary concern untouched by any of this.
 package Lyric.BareFuncRef
 
 import Std.Core

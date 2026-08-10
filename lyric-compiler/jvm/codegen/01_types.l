@@ -637,11 +637,21 @@ pub record FuncCtx {
   // top-level-function/module-val construction site; a context with no
   // reachable file (wire-binding inits, generator bodies, instance-method
   // bodies — out of scope for #6393, tracked as a follow-up) passes an empty
-  // map, the same as before this field existed.  KNOWN LIMIT: the map is
-  // collected per SourceFile, so a same-package alias declared in a
-  // DIFFERENT file of a multi-file package (docs/19) is invisible here —
-  // as is any cross-package alias (MSIL sees sibling packages only as a
-  // side effect of its one shared CodegenCtx).  Both tracked with #6404.
+  // map, the same as before this field existed.
+  //
+  // #6404/D-progress-748 CLOSED the multi-file-same-package visibility gap
+  // this comment used to flag here: `Lyric.TypeAliasResolve` now resolves
+  // every same-file (docs/19-concatenated) alias reference structurally,
+  // upfront, for every user-owned file — so THIS field is a no-op for a
+  // plain user file today. #6413 audited whether it could be deleted as a
+  // result and found it still load-bearing for one reachable, un-resolved
+  // path: `Jvm.Bridge`'s bundled-JAR build feeds STDLIB files (the
+  // transitive import closure) through the exact same `makeFuncCtx`/
+  // `lowerFunc` this field is threaded through, and those files are
+  // deliberately never run through `Lyric.TypeAliasResolve` (see that
+  // module's doc). Cross-package aliases stay out of scope on JVM (no
+  // shared cross-package context exists here, unlike MSIL's `CodegenCtx`)
+  // — see `Lyric.BareFuncRef`'s module doc and D-progress-752.
   aliasTargets: Map[String, TypeExpr]
 }
 

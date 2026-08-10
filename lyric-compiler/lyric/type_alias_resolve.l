@@ -38,12 +38,57 @@
 //! backends (`Jvm.Bridge` and `Msil.Bridge`, each at both their single-file
 //! and per-package pipelines, immediately after `pipeExpandAndRewrite`):
 //! MSIL's own `cctx.aliasTargets` consultation in `typeExprToMsilCtx`
-//! (#3673) is retained as a redundant no-op layer for the shapes this pass
+//! (#3673) is retained as a no-op layer for the SAME-FILE shapes this pass
 //! already resolves, but is NOT sufficient on its own — positions that
 //! bypass `typeExprToMsilCtx` entirely (a generic-application HEAD such as
 //! `alias L = List` used as `L[Int]`, and `implTargetNameMsil`'s direct
 //! `decl.target` pattern-match) miscompiled silently on MSIL until this
 //! pass resolved them structurally (#6411, #6414).
+//!
+//! Retirement audit (#6413): with this pass covering both targets, #6413
+//! asked whether the OLDER, narrower per-site alias machinery each backend
+//! carried before this pass existed (MSIL's `cctx.aliasTargets`/
+//! `registerTypeAliasMsil`/`resolveFuncTypeExprMsil`; JVM's
+//! `FuncCtx.aliasTargets`/`Lyric.BareFuncRef.collectFuncAliasTargets`
+//! call sites in `jvm/codegen/*.l`) is now fully redundant and could be
+//! deleted. It is NOT — both mechanisms cover real shapes this file-scoped
+//! AST pass structurally cannot reach, because it only ever sees ONE
+//! already-parsed `SourceFile` at a time:
+//!   - MSIL cross-package (same-bundle) aliases: `cctx.aliasTargets` is
+//!     shared across a WHOLE project build (one `CodegenCtx`, `Msil.Bridge`
+//!     Phase 3's `addPackageTokens` loop runs for every package before
+//!     Phase 4 codegen runs for any of them), so `typeExprToMsilCtx`
+//!     resolves a sibling package's `pub alias` referenced either bare
+//!     (`Handler`, via `import Pkg`) or fully qualified (`Pkg.Handler`) —
+//!     `lastSegmentMsil` always keys by simple name. This pass has no such
+//!     shared state: `resolveTypeAliasesMsil` runs per-package, in
+//!     isolation, before any other package's file even exists in memory.
+//!     Verified live in `msil_project_bridge_self_test.l`'s "two packages
+//!     each defining their own lambda index 0..." case, which references
+//!     `XPkgLambda0.A.Handler` (a cross-package function-type alias) from
+//!     package B and depends on `cctx.aliasTargets` to resolve it — deleting
+//!     the MSIL layer breaks that test.
+//!   - MSIL cross-ASSEMBLY (restored-dependency) aliases: a `pub alias`
+//!     from a separately-compiled, already-built DLL reaches
+//!     `registerTypeAliasMsil` via `registerRestoredArtifactTokens`'s
+//!     `ITypeAlias` arm, fed from contract metadata, not from re-parsed
+//!     Lyric source at all — there is no `SourceFile` for this pass to walk.
+//!   - JVM stdlib-bundled files: `Jvm.Bridge.compileToJarBundledWithFeatures`
+//!     compiles the user's own file(s) (alias-resolved by this pass, per
+//!     `resolveTypeAliases` above) PLUS the transitive closure of imported
+//!     stdlib packages (`toBundle`/`stdlibFiles`), which — per this doc's own
+//!     scope note above — this pass deliberately does NOT touch. Those files
+//!     still flow through the SAME codegen entry points as user files
+//!     (`codegenPackageWithSigsSeeded`, `collectFileSigsSeeded`, `lowerFunc`,
+//!     `makeFuncCtx`), so `FuncCtx.aliasTargets` / `collectFuncAliasTargets`
+//!     remain the only mechanism that would resolve a function-type `pub
+//!     alias` declared and used within one stdlib file. No stdlib `.l` file
+//!     declares such an alias today (verified by grep), so this is currently
+//!     dormant rather than exercised — but it is a real, reachable gap this
+//!     pass does not close, not a hypothetical one, so the JVM per-site
+//!     machinery stays.
+//! Both older mechanisms are therefore KEPT, not retired — see
+//! `docs/03-decision-log.md` D-progress-752 for the full per-site audit.
 //!
 //! Scope (matches #6404's three axes; language reference: `alias` is fully
 //! transparent, so every annotation position must behave identically to

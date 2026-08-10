@@ -385,3 +385,28 @@ test "distinct type over a non-function alias compiles on both targets (#6412)" 
   // case registers.
   assertTrue(true, "Distance6412 declaration lowered without crashing")
 }
+
+// #6417/#6423: an interface method whose receiver is spelled `self: in Self`
+// (rather than `self: in <ConcreteTarget>`), implemented verbatim on a
+// record, invoked through an interface-typed binding.  This file already
+// runs dual-target in CI (unlike `impl_method_self_test.l`'s dotnet-only
+// coverage of the same #6417 fix), so this case gives the Self-receiver
+// impl shape automated JVM signal too.
+interface Tagger6417 {
+  func tag(self: in Self): Int
+}
+
+record Applier6417 {
+  seed: Int
+}
+
+impl Tagger6417 for Applier6417 {
+  func tag(self: in Self): Int {
+    self.seed
+  }
+}
+
+test "interface-typed binding dispatch on a Self-receiver impl (#6417, dual-target)" {
+  val a: Tagger6417 = Applier6417(seed = 42)
+  assertEqualInt(a.tag(), 42, "Self-receiver impl dispatches through interface-typed binding")
+}

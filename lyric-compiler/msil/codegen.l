@@ -2165,6 +2165,30 @@ pub func registerEnumDeclMsil(cctx: in CodegenCtx, pkgName: in String, decl: in 
 // to its target type.  Both the simple name and the pkg-qualified form are
 // keyed (first-wins, like the other simple-name indices), so a cross-package
 // alias referenced by its qualified name (`Session.SessionId`) resolves too.
+//
+// #6413 audit: `Lyric.TypeAliasResolve` (#6404/D-progress-748) resolves a
+// SAME-FILE alias reference structurally before this ever runs, so for a
+// single in-bundle file's own aliases this whole mechanism (this function,
+// `cctx.aliasTargets`, `resolveFuncTypeExprMsil`, `typeExprToMsilCtx`'s
+// alias branch) is redundant. It is NOT redundant overall — KEEP — because
+// it is also fed from two sources that pre-pass can never see, since that
+// pass only ever walks one already-parsed `SourceFile`:
+//   1. Sibling packages in the SAME bundle: `cctx` is one `CodegenCtx`
+//      shared across the whole `compileProjectToMsilWithRestoredAndVersion`
+//      build, and Phase 3's `addPackageTokens` loop (which calls this
+//      function via `scanExternTypesMsil`) runs for EVERY package before
+//      Phase 4 codegens ANY of them — so a package B referencing package
+//      A's `pub alias` (bare or qualified, `typeExprToMsilCtx` keys by
+//      simple name) resolves here. Live-verified by
+//      `msil_project_bridge_self_test.l`'s "two packages each defining
+//      their own lambda index 0..." test (`XPkgLambda0.A.Handler`
+//      referenced from package B).
+//   2. Restored (cross-assembly) dependencies: `registerRestoredArtifactTokens`
+//      calls this from contract metadata for an already-compiled DLL's
+//      `pub alias` — there is no Lyric source for the AST pre-pass to walk
+//      at all.
+// See `docs/03-decision-log.md` D-progress-752 for the full site-by-site
+// audit.
 pub func registerTypeAliasMsil(cctx: in CodegenCtx, pkgName: in String, decl: in TypeAliasDecl): Unit {
   // Skip a re-export whose RHS names a type with the same simple name (the
   // stdlib's `pub alias Random = <extern Random>` pattern).  Registering it

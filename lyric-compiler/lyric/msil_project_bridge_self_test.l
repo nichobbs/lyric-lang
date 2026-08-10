@@ -1098,6 +1098,57 @@ test "function returning non-generic alias over Result matches correctly downstr
   assertEqual(lines[1], "err:neg", "alias_result: Err branch matches correctly")
 }
 
+// ─── Regression: cross-package `pub alias` still resolves after #6404/#6413
+// retired the file-scoped `Lyric.TypeAliasResolve` pre-pass's older,
+// narrower per-site cousin (D-progress-748/D-progress-752) ────────────────
+// `Lyric.TypeAliasResolve` resolves `alias` references structurally, but it
+// only ever walks ONE already-parsed `SourceFile` — `resolveTypeAliasesMsil`
+// runs per-package, in isolation, before any sibling package's file exists
+// in memory (Phase 1a of `compileProjectToMsilWithRestoredAndVersion`). A
+// package B referencing package A's `pub alias` (bare, via `import A`, OR
+// fully qualified `A.Alias`) can therefore ONLY resolve through MSIL's
+// OLDER `cctx.aliasTargets` mechanism (`registerTypeAliasMsil`, populated
+// by Phase 3's `addPackageTokens` loop running for EVERY package before
+// Phase 4 codegens ANY of them) — #6413 audited this and kept it rather
+// than deleting it as "redundant" with the pre-pass. This test pins BOTH
+// the bare-name AND the return-type-flow shapes for a NON-function alias
+// (`pub alias Meters = Long`, package Kernel) referenced from a sibling
+// package (App): a bare local annotation, a bare function return type, and
+// arithmetic on a value bigger than Int32's range (proving `Meters` erased
+// to the real 64-bit `Long` representation rather than falling through to a
+// bogus in-package `MClass("...Meters")` guess, which would fail to BUILD,
+// not merely miscompute).
+test "cross-package non-function `pub alias` resolves via cctx.aliasTargets (#6413)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "XPkgAlias.Kernel",
+      "package XPkgAlias.Kernel\n" + "\n" + "pub alias Meters = Long\n" + "\n" +
+        "pub func addOneMeter(m: in Meters): Meters { m + 1 }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XPkgAlias.App",
+      "package XPkgAlias.App\n" + "import XPkgAlias.Kernel\n" + "\n" + "func scaleLocal(): Meters {\n" +
+        "  val base: Meters = 1000000000000\n" +
+        "  addOneMeter(base)\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  println(scaleLocal().toString())\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xpkgalias", packages, "XPkgAlias")
+  assertEqualInt(result.exitCode, 0, "xpkgalias: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "1000000000001",
+    "xpkgalias: cross-package bare `Meters` alias erases to Long (64-bit arithmetic, not truncated/garbage)"
+  )
+}
+
 // ─── Regression: cross-package recursive union field resolution (#4726) ────
 // A consumer package pattern-matching a recursive union case (whose field
 // type references the union itself, e.g. `YSequence(items: List[YamlValue])`)
