@@ -25126,3 +25126,28 @@ bands J1/J4), docs/52-53 (the strongly-typed lambda ABI both targets
 share), D-progress-745/#6398 and D-progress-746/#6399 (the
 `closureRetTy`/`funcValRetTypes`/`recordRetClass` machinery this entry
 composes with rather than duplicates, per those entries' own precedent).
+
+**Review addendum (#6406, fixed in the same PR).** The first cut of this
+entry's alias fix covered record fields but not UNION case fields — a
+union case with an alias-typed function field still embedded the
+nonexistent alias class in its case-field descriptor (the exact
+`NoClassDefFoundError` this entry set out to fix, on a union payload
+instead of a record field), a JVM/MSIL parity gap since MSIL's
+`cctx.aliasTargets` threading is generic across all its erasure call
+sites (#3673).  Fixed by threading `aliasTargets` into `lowerUnion` and
+`collectFileCasesExtern`'s `IUnion` branch, mirroring the `IRecord`
+twin.  The same review pass surfaced a subtler latent hole: an
+alias-typed function field never trips `fileNeedsLambdaIface`'s
+per-arm `typeExprMentionsFunctionType` scans (they see only the
+unresolved `TRef`), so the field's iface-referencing descriptor could
+be emitted with no iface class in the bundle — closed with a
+`hasFuncAliasTargets` over-approximation guard at the scan's top (any
+file declaring a function-shaped alias gets the iface; an unused alias
+costs one small unused interface class).  `hasFuncAliasTargets` is a
+dedicated Bool helper in `Lyric.BareFuncRef` precisely so the guard
+does not pass a concrete `Map[String, TypeExpr]` into a generic stdlib
+function — the first attempt used `mapKeys(...)` on the direct call
+result and crashed the compiler at runtime with the #5422/#5970
+Object-fallback bad cast, a live in-house demonstration of that open
+hazard.  Regression: a `Wrapped(h: Handler)` union-payload round-trip
+case in `bare_func_ref_self_test.l` (10/10 both targets).

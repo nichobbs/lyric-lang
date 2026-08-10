@@ -187,3 +187,21 @@ func callViaDefaultedField(): Int {
 test "bare top-level function referenced only as a record field default (#6389 addendum)" {
   assertEqualInt(callViaDefaultedField(), 20, "GuardHolder().h defaults to double; double(10) == 20")
 }
+
+// #6406: a UNION case field typed via a function-type alias must resolve to
+// the underlying TFunction before descriptor erasure, exactly like the record
+// field twin above — pre-fix, `lowerUnion`/`collectFileCasesExtern`'s IUnion
+// branch embedded the nonexistent alias class in the case-field descriptor
+// (NoClassDefFoundError on --target jvm).
+union Carrier6406 {
+  case Wrapped(h: Handler)
+  case Empty
+}
+
+test "union case field typed via a function-type alias round-trips (#6406)" {
+  val c = Wrapped(h = double)
+  match c {
+    case Wrapped(h) -> assertEqualInt(h(21), 42, "alias-typed union payload invokes: double(21) == 42")
+    case Empty -> assertTrue(false, "wrong arm")
+  }
+}

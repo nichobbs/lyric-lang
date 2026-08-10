@@ -1305,7 +1305,12 @@ pub func lowerRecord(
 // ─────────────────────────────────────────────────────────────────────────────
 // §10. Union lowering.
 // ─────────────────────────────────────────────────────────────────────────────
-pub func lowerUnion(decl: in UnionDecl, pkgName: in String, externTypes: in Map[String, String]): LSealedUnion {
+pub func lowerUnion(
+  decl: in UnionDecl,
+  pkgName: in String,
+  externTypes: in Map[String, String],
+  aliasTargets: in Map[String, TypeExpr],
+): LSealedUnion {
   val baseName = pkgName + "/" + decl.name
   // Generic type params erase to `Object` (no reified generics on the JVM —
   // docs/44 M-1 / Q-J001), so a `T`-typed payload field is declared `Object`.
@@ -1318,10 +1323,22 @@ pub func lowerUnion(decl: in UnionDecl, pkgName: in String, externTypes: in Map[
     val caseFields: List[LField] = newList()
     var fi = 0
     while fi < c.fields.count {
+      // Alias-typed function fields must resolve to the underlying
+      // TFunction before erasure, exactly like record fields (#6406) —
+      // otherwise the descriptor embeds the nonexistent alias class.
       match c.fields[fi] {
         case UFNamed(name, ty, _) -> {
           caseFields.add(
-            LField(flags = 0x0001, name = name, fieldType = typeExprToJvmErasedExtern(ty, pkgName, tps, externTypes))
+            LField(
+              flags = 0x0001,
+              name = name,
+              fieldType = typeExprToJvmErasedExtern(
+                BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty),
+                pkgName,
+                tps,
+                externTypes
+              )
+            )
           )
         }
         case UFPos(ty, _) -> {
@@ -1329,7 +1346,12 @@ pub func lowerUnion(decl: in UnionDecl, pkgName: in String, externTypes: in Map[
             LField(
               flags = 0x0001,
               name = "field" + toString(fi),
-              fieldType = typeExprToJvmErasedExtern(ty, pkgName, tps, externTypes)
+              fieldType = typeExprToJvmErasedExtern(
+                BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty),
+                pkgName,
+                tps,
+                externTypes
+              )
             )
           )
         }
@@ -3674,8 +3696,8 @@ pub func collectFileCasesExtern(
             var fi = 0
             while fi < c.fields.count {
               match c.fields[fi] {
-                case UFNamed(name, ty, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmErasedExtern(ty, owner, tps, externTypes), paramIdx = typeParamIndexOf(ty, tps), dflt = None))
-                case UFPos(ty, _) -> flds.add(JvmCaseField(name = "field" + toString(fi), ty = typeExprToJvmErasedExtern(ty, owner, tps, externTypes), paramIdx = typeParamIndexOf(ty, tps), dflt = None))
+                case UFNamed(name, ty, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmErasedExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty), owner, tps, externTypes), paramIdx = typeParamIndexOf(ty, tps), dflt = None))
+                case UFPos(ty, _) -> flds.add(JvmCaseField(name = "field" + toString(fi), ty = typeExprToJvmErasedExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty), owner, tps, externTypes), paramIdx = typeParamIndexOf(ty, tps), dflt = None))
               }
               fi = fi + 1
             }
@@ -4541,6 +4563,15 @@ func configFieldsNeedLambdaIface(fields: in List[ConfigField]): Bool {
 // falling through a wildcard, which is exactly how #6349 and #6350 (missed
 // `IUnion`, then missed `IImpl`/`IProtected`) slipped through twice.
 func fileNeedsLambdaIface(file: in SourceFile): Bool {
+  // A function-type alias makes any annotation a potential lambda carrier
+  // WITHOUT literally mentioning a TFunction — the per-arm scans below see
+  // only the unresolved TRef, so an alias-typed field/param would get an
+  // iface-referencing descriptor with no iface emitted (#6406).
+  // Over-approximate: any file declaring a function-type alias gets the
+  // iface (an unused alias costs one small unused interface class).
+  if BareFuncRef.hasFuncAliasTargets(file) {
+    return true
+  }
   var i = 0
   while i < file.items.count {
     val item = file.items[i]
@@ -5203,7 +5234,7 @@ pub func codegenPackageWithSigsSeeded(
         )
       }
       case IUnion(decl) -> {
-        items.add(LPSealedUnion(su = lowerUnion(decl, pkgName, externTypes)))
+        items.add(LPSealedUnion(su = lowerUnion(decl, pkgName, externTypes, aliasTargets)))
       }
       case IConst(_) -> {
       }

@@ -637,7 +637,11 @@ pub record FuncCtx {
   // top-level-function/module-val construction site; a context with no
   // reachable file (wire-binding inits, generator bodies, instance-method
   // bodies — out of scope for #6393, tracked as a follow-up) passes an empty
-  // map, the same as before this field existed.
+  // map, the same as before this field existed.  KNOWN LIMIT: the map is
+  // collected per SourceFile, so a same-package alias declared in a
+  // DIFFERENT file of a multi-file package (docs/19) is invisible here —
+  // as is any cross-package alias (MSIL sees sibling packages only as a
+  // side effect of its one shared CodegenCtx).  Both tracked with #6404.
   aliasTargets: Map[String, TypeExpr]
 }
 

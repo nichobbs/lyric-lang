@@ -139,6 +139,32 @@ pub func resolveFuncTypeAlias(aliasTargets: in Map[String, TypeExpr], te: in Typ
 /// existed. Mirrors `Msil.Codegen.registerTypeAliasMsil`'s self-reference
 /// guard, minus its cross-package qualified-name registration (see module
 /// doc §2 for why that half is out of scope here).
+/// Whether this file declares at least one alias whose chain bottoms out in
+/// a literal `TFunction` (directly or through other aliases). A dedicated
+/// Bool helper (rather than the caller probing the collected map with
+/// `mapKeys(...)`) so consumers don't pass a concrete
+/// `Map[String, TypeExpr]` straight into a generic stdlib function — the
+/// direct-call-argument shape lands on mono's Object-fallback
+/// specialisation and crashes with a bad cast at compiler runtime
+/// (#5422/#5970).
+pub func hasFuncAliasTargets(file: in SourceFile): Bool {
+  val at = collectFuncAliasTargets(file)
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case ITypeAlias(decl) -> {
+        match resolveFuncTypeAlias(at, decl.rhs) {
+          case Some(_) -> return true
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
 pub func collectFuncAliasTargets(file: in SourceFile): Map[String, TypeExpr] {
   val aliasTargets: Map[String, TypeExpr] = newMap()
   var i = 0
