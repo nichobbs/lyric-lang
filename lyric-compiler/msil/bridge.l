@@ -18,6 +18,8 @@ import Lyric.ModeChecker
 import Lyric.ContractElaborator
 import Lyric.Propagate
 import Lyric.Mono
+import Lyric.BareFuncRef as BFR2
+import Lyric.TypeAliasResolve as TAR2
 import Lyric.Derives
 import Lyric.RestoredPackages
 import Lyric.ContractMeta as Meta
@@ -29,6 +31,18 @@ import Msil.Lowering
 import Msil.Codegen
 import Msil.Tables
 import Msil.Heaps
+
+// Resolve `alias X = ...` references to their underlying types before any
+// registry or checker sees the file — the same whole-file pre-pass the JVM
+// bridge runs (#6404/#6410), giving both targets ONE alias-resolution
+// mechanism. MSIL's own `cctx.aliasTargets` machinery (#3673) remains as a
+// harmless no-op layer on the already-resolved AST; the pass additionally
+// covers shapes that machinery never did (an alias as a bare
+// generic-application head, `alias L = List` then `L[Int]`, previously a
+// SILENT miscompile on this target).
+func resolveTypeAliasesMsil(file: in SourceFile): SourceFile {
+  TAR2.resolveAliasesInFile(BFR2.collectFuncAliasTargets(file), file)
+}
 
 /// Compile `source` to a .NET PE DLL at `outputPath` using the self-hosted
 /// MSIL pipeline.
@@ -138,10 +152,15 @@ pub func compileToMsilWithVersion(
     weWires,
     weConfigs
   )
-  val file0 = match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, true, true, false) {
+  val file0pre = match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, true, true, false) {
     case Some(f) -> f
     case None -> return false
   }
+  // Alias resolution runs AFTER template expansion (matching the JVM
+  // bridge's placement) so alias references introduced by a docs/58
+  // wire/config-template splice resolve too, and before any registry or
+  // the checker sees the file.
+  val file0 = resolveTypeAliasesMsil(file0pre)
 
   // Middle end through mono (`Lyric.Pipeline` owns the order).  Type
   // errors in a single-file build are fatal, matching the project path.
@@ -546,10 +565,13 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   var wei = 0
   while wei < parsedPkgs.count {
     val wep: ParsedUserPkg = parsedPkgs[wei]
-    val rewritten = match pipeExpandAndRewrite(wep.file, weWires, weConfigs, true, true, false) {
+    val rewritten0 = match pipeExpandAndRewrite(wep.file, weWires, weConfigs, true, true, false) {
       case Some(f) -> f
       case None -> return false
     }
+    // After template expansion, matching the JVM bridge — see the
+    // single-file pipeline's placement comment.
+    val rewritten = resolveTypeAliasesMsil(rewritten0)
     parsedPkgs[wei] = ParsedUserPkg(name = wep.name, file = rewritten)
     wei = wei + 1
   }

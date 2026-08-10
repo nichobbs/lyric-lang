@@ -111,6 +111,9 @@ pub func eligibleBareFuncRefTargets(file: in SourceFile): Map[String, FunctionDe
 }
 
 func lastSegmentOfPath(path: in ModulePath): String {
+  if path.segments.count == 0 {
+    return ""
+  }
   path.segments[path.segments.count - 1]
 }
 
@@ -165,15 +168,27 @@ pub func hasFuncAliasTargets(file: in SourceFile): Bool {
   false
 }
 
-pub func collectFuncAliasTargets(file: in SourceFile): Map[String, TypeExpr] {
-  val aliasTargets: Map[String, TypeExpr] = newMap()
+// The single shared registration walk backing `collectFuncAliasTargets`:
+// fold `file`'s own `alias X = ...` declarations into `into` (first-wins —
+// an existing entry from an earlier item is never overwritten), so the
+// self-reference/parameterized guards and first-wins policy live in exactly
+// one place. (A package-wide multi-file variant was prototyped for #6404
+// axis 3 and dropped as dead code — docs/19's pre-parse file concatenation
+// already gives the pass whole-package visibility.)
+func addFileAliasTargetsInto(file: in SourceFile, into: in Map[String, TypeExpr]): Unit {
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case ITypeAlias(decl) -> {
         val rhsSelfNamed = match decl.rhs.kind { case TRef(path) -> lastSegmentOfPath(path) == decl.name; case _ -> false }
-        if not rhsSelfNamed and not aliasTargets.containsKey(decl.name) {
-          aliasTargets.add(decl.name, decl.rhs)
+        // A PARAMETERIZED alias (`alias MyList[T] = List[T]`) is never
+        // registered: substituting its rhs without type-argument
+        // substitution would leave dangling type-var references (#6410
+        // review). Its uses stay unresolved for the type checker to
+        // handle, exactly as before alias resolution existed.
+        val isParameterized = match decl.generics { case Some(_) -> true; case None -> false }
+        if not rhsSelfNamed and not isParameterized and not into.containsKey(decl.name) {
+          into.add(decl.name, decl.rhs)
         }
       }
       case _ -> {
@@ -181,6 +196,11 @@ pub func collectFuncAliasTargets(file: in SourceFile): Map[String, TypeExpr] {
     }
     i = i + 1
   }
+}
+
+pub func collectFuncAliasTargets(file: in SourceFile): Map[String, TypeExpr] {
+  val aliasTargets: Map[String, TypeExpr] = newMap()
+  addFileAliasTargetsInto(file, aliasTargets)
   aliasTargets
 }
 

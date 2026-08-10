@@ -17,6 +17,8 @@ import Lyric.ModeChecker
 import Lyric.ContractElaborator
 import Lyric.Propagate
 import Lyric.AliasRewriter as Aliases
+import Lyric.BareFuncRef as BFR
+import Lyric.TypeAliasResolve as TAR
 import Lyric.Weaver as Weaver
 import Lyric.WireExpand as WireExpand
 import Lyric.DiagnosticUtil as DiagUtil
@@ -163,10 +165,12 @@ pub func compileToJar(
   val weWires: Map[String, CollectedWireTemplate] = newMap()
   val weConfigs: Map[String, CollectedConfigTemplate] = newMap()
   WireExpand.collectWireTemplates(cfgFile.items, dottedPath(cfgFile.packageDecl.path), weWires, weConfigs)
-  val file0 = match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, true, true, true) {
-    case Some(f) -> f
-    case None -> return false
-  }
+  val file0 = resolveTypeAliases(
+    match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, true, true, true) {
+      case Some(f) -> f
+      case None -> return false
+    }
+  )
 
   // Middle end.  Type-check errors on the user's own file gate fatally,
   // matching the MSIL bridge — a build that prints error[T00xx] and still
@@ -318,6 +322,27 @@ func runMiddleEnd(
   )
 }
 
+// #6404: resolve `alias X = ...` references in `file` to their underlying
+// `TypeExpr`, structurally, once. Must run BEFORE ANY signature/case/ctor
+// registration reads the file — `compileProjectToJarBundledWithFeatures`
+// pre-registers the user package's own signatures/cases/ctors (bundle-wide,
+// first-wins registries) from the raw parsed file, well before its own
+// `runMiddleEnd` call, so resolving any later (post-middle-end, or only
+// inside `codegenPackageInto`) is too late: those registries would already
+// have cached the unresolved alias name and every consumer — including the
+// package's OWN later, correctly-resolved codegen — loses to the stale
+// first-wins entry. Resolving here, right after parse + wire-expand +
+// import-alias-rewrite and before type-check, is also harmless to
+// type-check diagnostics: `alias` is fully transparent (language reference),
+// so the type checker already treats an alias and its target as the same
+// type — this can only change diagnostic WORDING (`Meters` vs `Long`), never
+// pass/fail. See `Lyric.TypeAliasResolve`'s module doc for the full design
+// rationale, including why this pass is JVM-only (MSIL already resolves
+// universally at codegen time, #3673).
+func resolveTypeAliases(file: in SourceFile): SourceFile {
+  TAR.resolveAliasesInFile(BFR.collectFuncAliasTargets(file), file)
+}
+
 // Collect every pure-Lyric generic `pub func` from the parsed stdlib source
 // files so the monomorphizer can specialise cross-package generic call sites —
 // e.g. `mapGet(m, "k")` -> a concrete `mapGet__String__String` copy emitted
@@ -450,6 +475,9 @@ func codegenPackageInto(
   acc: in List[BuiltClass],
   externSeed: in Map[String, String],
 ): Unit {
+  // `file` here already has its `alias X = ...` references resolved — see
+  // `runMiddleEnd`'s #6404 comment; every caller of `codegenPackageInto`
+  // passes `runMiddleEnd`'s result straight through.
   val pkg = codegenPackageWithSigsSeeded(
     file,
     importAwareRegistry(file, registry),
@@ -1154,7 +1182,10 @@ pub func compileProjectToJarBundledWithFeatures(
       case Some(f) -> f
       case None -> return false
     }
-    userFiles[wei] = rewritten
+    // #6404: resolve every project package's `alias X = ...` references
+    // before ANYTHING (type-check, signature/case/ctor registration below,
+    // codegen) reads the file — see `resolveTypeAliases`'s comment.
+    userFiles[wei] = resolveTypeAliases(rewritten)
     wei = wei + 1
   }
   val userFile = userFiles[mainIdx]

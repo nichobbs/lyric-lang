@@ -1210,6 +1210,16 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/weaver_self_test.l
 
+      # Unit-level self-test for the shared type-alias resolution pre-pass
+      # (#6404/#6410/#6412): pure-function coverage for the cyclic-alias
+      # depth-bound guard (which can never be a runtime test) plus chain,
+      # shadowing, and passthrough cases. Resolves Lyric.* imports via the
+      # stage-1 bundle DLLs like the weaver step above.
+      - name: TypeAliasResolve self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/type_alias_resolve_self_test.l
+
       # Self-hosted compiler self-tests (native lyric test) — replaces the
       # deleted F# `SelfHosted*Tests.fs` Expecto wrappers (#2364).  Each
       # `@test_module` imports its `Lyric.*` compiler package(s), resolved by
