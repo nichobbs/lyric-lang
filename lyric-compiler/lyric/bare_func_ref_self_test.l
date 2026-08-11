@@ -465,3 +465,25 @@ test "non-receiver Self-typed param field WRITE, reference semantics observed by
   assertEqualInt(p.put(q, 42), 42, "the store lands and reads back through the checkcast-narrowed param")
   assertEqualInt(q.base, 42, "the caller observes the mutation (reference semantics), not a silent no-op")
 }
+
+// The lowerRecordMethod call site of emitSelfParamChecksJvm (#6432 review):
+// a method declared directly in the record BODY (D037, no impl block) with a
+// non-receiver `Self` param exercises the second of the two wiring points
+// (lowerImplMethod covers the impl cases above).  The interface-DEFAULT-
+// method path lowerImplMethod also serves is NOT pinned here: default-method
+// inheritance without an override crashes at runtime on both targets today
+// (pre-existing, #6433), so no checker-legal program can reach a Self param
+// inside an inherited default body yet.
+record Pair6432 {
+  base: Int
+
+  func plus(self: in Pair6432, other: in Self): Int {
+    self.base + other.base
+  }
+}
+
+test "non-receiver Self-typed param on a record BODY method, no impl block (#6432 review, dual-target)" {
+  val a = Pair6432(base = 40)
+  val b = Pair6432(base = 2)
+  assertEqualInt(a.plus(b), 42, "lowerRecordMethod's Self-param checkcast wiring resolves the field correctly")
+}

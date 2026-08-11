@@ -26736,8 +26736,13 @@ after fixing a doc-comment ordering bug the first `Edit` introduced — and
 - `inout Self` repro (`Bumped`/`Bumper`): both targets exit 0.
 - J007-still-fires repro (`Box[T]` generic-union payload): still refused
   under `error[J007]` on `--target jvm`, unchanged.
-- `bare_func_ref_self_test.l`: 23/23 dotnet (up from 21/21), 23/23 jvm (up
-  from 21/21).
+- `bare_func_ref_self_test.l`: 24/24 dotnet (up from 21/21), 24/24 jvm (up
+  from 21/21; the third new case, per the PR review, pins the
+  `lowerRecordMethod` wiring point — a record BODY method with a
+  non-receiver `Self` param, no impl block. The interface-DEFAULT-method
+  path is deliberately unpinned: default-method inheritance without an
+  override crashes at runtime on both targets today, pre-existing,
+  filed as #6433 while probing this review suggestion).
 - `jvm_trycatch_bridge_self_test.l`: 3/3 (repro rewritten, still green).
 - `emitter_project_self_test.l`: 24/24 (repro rewritten, still green).
 - `jvm_impl_extern_class_self_test.l`: 3/3.
