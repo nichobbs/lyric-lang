@@ -367,30 +367,157 @@ test "interface-typed function parameter dispatch with a Self receiver matching 
   assertEqualInt(useTagger6417(a), 99, "interface-typed parameter dispatch: Self-receiver impl")
 }
 
-// NOTE (#6417): `Self` in a NON-receiver parameter position (e.g.
-// `func combine(self: in Self, other: in Self): Int`) now TYPE-CHECKS after
-// this fix, but is deliberately NOT covered by a runtime test here — it
-// exposed a separate, pre-existing MSIL codegen soundness bug in
-// `msil/codegen.l`'s `fieldTokensByName` map (keyed by `"<package>/<field
-// name>"`, first-registration-wins, no owning-type disambiguation): field
-// access on a non-receiver `Self`-typed parameter (erased to `Object` in the
-// real IL signature, same as the interface slot) falls back to this
-// package-wide, field-NAME-only table to find which record's field to read.
-// When a SECOND record in the same package declares a field with the SAME
-// name, the fallback silently keeps resolving to the FIRST record ever
-// registered under that name — reading `other.<field>` on a genuinely
-// different record throws `System.InvalidCastException` (confirmed with a
-// minimal two-record repro: `Accum6408`/`Accum6417`, both with a `base:
-// Int` field, in the same package). This was unreachable before #6417
-// because a non-receiver `Self` param never type-checked at all (T0106
-// always rejected it); the fix newly exposes it. The RECEIVER position
-// (`self`, always stripped and dispatched via the implicit `this` slot) and
-// the RETURN position (call-site `Self` substitution using the receiver's
-// own static type, no field-name-keyed lookup involved) do not share this
-// mechanism and are unaffected — both are covered above/below. Tracked in
-// #6421 (MSIL unsoundness; JVM's structured-refusal rough edge is #6422);
-// not attempted here (real fix needs type-directed field resolution for
-// erased-Self locals, not a field-name index).
+// ── `Self` in a NON-receiver parameter position (#6421) ────────────────────
+// `Self` in a non-receiver parameter position (e.g. `func combine(self: in
+// Self, other: in Self): Int`) TYPE-CHECKS since #6417 (`checkImplConformance`
+// substitutes `Self` on both sides), but the codegen was NOT sound: a
+// non-receiver `Self`-typed parameter erases to `Object` in the real IL
+// signature (same as the interface slot), so `other.<field>` fell back to
+// `msil/codegen.l`'s `fieldTokensByName` map — keyed by `"<package>/<field
+// name>"` only, first-registration-wins, no owning-type disambiguation. When a
+// SECOND record in the same package declared a field with the SAME name (this
+// file's own `Accum6408` above already does, with `base: Int`), the fallback
+// silently kept resolving to whichever record registered that name FIRST,
+// producing a wrong-type `System.InvalidCastException` reading `other.<field>`
+// on any other record — the exact bug this test file's own comment used to
+// document as "deliberately NOT covered".
+//
+// Fixed by making `registerParamsMsil` (`msil/codegen.l`) track a
+// non-receiver `Self`-typed parameter's LOCAL static type as the impl's own
+// concrete target class (`MClass(selfTypeName)`) instead of the erased
+// `MObject` fallback — the impl already knows its own target type; recording
+// it makes `other.<field>` resolve through the pre-existing type-directed
+// `case MClass(cls)` field lookup (keyed `"<ClassName>/<field>"`, unambiguous)
+// instead of ever reaching the package-wide name-only table. The REAL emitted
+// IL signature is unchanged (still erased to `Object`, still matching the
+// interface slot) — only codegen-internal static-type bookkeeping changed, so
+// this cannot desync interface-slot/impl-signature agreement the way the
+// earlier, reverted `Lyric.TypeAliasResolve` AST-substitution attempt did
+// (see D-progress-751). The RECEIVER position (`self`, always stripped and
+// dispatched via the implicit `this` slot) and the RETURN position (call-site
+// `Self` substitution using the receiver's own static type, no field-name-
+// keyed lookup involved) never shared this mechanism and were already
+// unaffected — both are covered above/below. Refs #6421 (JVM's structured
+// refusal for the same erased-receiver shape is a separate, still-open rough
+// edge, #6422/#6357/#6347 — JVM correctly REJECTS at compile time instead of
+// guessing, and is unchanged by this MSIL-only fix).
+interface Combiner6421 {
+  func combine(self: in Self, other: in Self): Int
+}
+
+// Single-record shape (the one that "appeared to work" in isolation per
+// D-progress-751 — pinned here as a regression guard). This record's own
+// `base` field is NOT actually isolated within this file: `Accum6408` above
+// already declares a same-named `base` field and is registered first, so
+// this case exercises the exact same-name collision as the two-record case
+// below, just through one impl instead of two.
+record Solo6421 {
+  base: Int
+}
+
+impl Combiner6421 for Solo6421 {
+  func combine(self: in Self, other: in Self): Int {
+    self.base + other.base
+  }
+}
+
+test "non-receiver Self-typed param field access, single record (#6421)" {
+  val a = Solo6421(base = 10)
+  val b = Solo6421(base = 5)
+  assertEqualInt(a.combine(b), 15, "self.base + other.base resolves this record's own field token")
+}
+
+// Two-record shape: the D-progress-751 minimal repro. Both records declare a
+// field named `base` (matching `Accum6408`'s field name too), each with its
+// own `impl Combiner6421`. Before the fix, `other.base` on EITHER record
+// silently resolved through the package-wide `fieldTokensByName` fallback to
+// whichever record registered `base` FIRST (`Accum6408`, defined earlier in
+// this file) and threw `System.InvalidCastException` casting the real
+// receiver to that unrelated record type.
+record TwinA6421 {
+  base: Int
+}
+
+record TwinB6421 {
+  base: Int
+}
+
+impl Combiner6421 for TwinA6421 {
+  func combine(self: in Self, other: in Self): Int {
+    self.base + other.base
+  }
+}
+
+impl Combiner6421 for TwinB6421 {
+  func combine(self: in Self, other: in Self): Int {
+    self.base + other.base
+  }
+}
+
+test "non-receiver Self-typed param field access, two same-package records sharing a field name (#6421)" {
+  val x = TwinA6421(base = 100)
+  val y = TwinA6421(base = 3)
+  assertEqualInt(x.combine(y), 103, "TwinA.combine reads TwinA's own base field, not Accum6408's or TwinB's")
+  val p = TwinB6421(base = 7)
+  val q = TwinB6421(base = 2)
+  assertEqualInt(p.combine(q), 9, "TwinB.combine reads TwinB's own base field, not Accum6408's or TwinA's")
+}
+
+// The BYREF twin of the case above (#6425 review): `registerParamsMsil`
+// threads the concrete `MClass` type into `fctx.byrefSlotTypes` for an
+// `inout`-mode `Self` param too — field READ and WRITE through the byref
+// slot must resolve against the impl target's own fields despite the
+// same-package `base` name collisions above.
+record Bumped6421 {
+  var base: Int
+}
+
+interface Bumper6421 {
+  func bump(self: in Self, other: inout Self): Int
+}
+
+impl Bumper6421 for Bumped6421 {
+  func bump(self: in Self, other: inout Self): Int {
+    other.base = other.base + self.base
+    other.base
+  }
+}
+
+test "non-receiver inout Self-typed param field read AND mutation (#6421/#6425 review)" {
+  val x = Bumped6421(base = 20)
+  var y = Bumped6421(base = 22)
+  assertEqualInt(x.bump(y), 42, "field mutation through the byref Self slot resolves Bumped6421's own base")
+  assertEqualInt(y.base, 42, "the mutation is visible through the caller's var after return")
+}
+
+// Write through a PLAIN (non-byref) `in Self` param (#6425 review): before
+// the #6421 fix this was a SILENT NO-OP, not a crash — the erased-MObject
+// receiver fell into `lowerAssignExprMsil`'s `case _` fallback, which pops
+// the value and receiver and stores nothing.  With the param tracked as
+// `MClass(target)` the write resolves through `cctx.fieldTokens` and
+// actually lands; records are reference types, so the caller observes it.
+record Cell6425 {
+  var base: Int
+}
+
+interface Setter6425 {
+  func put(self: in Self, other: in Self, v: Int): Int
+}
+
+impl Setter6425 for Cell6425 {
+  func put(self: in Self, other: in Self, v: Int): Int {
+    other.base = v
+    other.base
+  }
+}
+
+test "field WRITE through a plain in-mode Self param is not a silent no-op (#6425 review)" {
+  val x = Cell6425(base = 1)
+  val y = Cell6425(base = 2)
+  assertEqualInt(x.put(y, 42), 42, "the store lands and reads back through the fixed type-directed path")
+  assertEqualInt(y.base, 42, "the caller observes the mutation (reference semantics), not the pre-fix silent no-op")
+}
+
 // ── `Self` as the RETURN type (#6417) ────────────────────────────────────
 // Mirrors the language reference's `Cloneable`-style `func clone(): Self`
 // shape (docs/01 uses `Self` as a return type in interface examples), now
