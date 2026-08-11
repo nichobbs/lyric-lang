@@ -1405,10 +1405,20 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                         // The RECEIVER itself used to become the "field value"
                         // here — the exact silent-wrong-value shape the `.count`
                         // comment above records having caused once (docs/59
-                        // §4.4).  Fail loud at compile time instead.
+                        // §4.4).  Fail loud at compile time instead, with an
+                        // `error[J006]:`-prefixed message (#6422): the codegen
+                        // tree returns `JvmType`, not a diagnostic-collecting
+                        // Result, so this still goes through `panic`/`Bug`, but
+                        // self-tagging with the code — same convention as J004
+                        // (`05_stmts.l`) / J005 (`04_calls.l`) — lets
+                        // `Jvm.Bridge`'s `startsWith("error[J0")` passthrough
+                        // re-emit it verbatim as a structured diagnostic instead
+                        // of a bare unhandled-exception stack trace.
                         val posEm = recv.span.startPos
+                        val dottedPkgEm = ctx.pkgName.replace("/", ".")
                         panic(
-                          "Jvm.Codegen: " + toString(posEm.line) + ":" + toString(posEm.column) + ": member '" + memberName +
+                          "error[J006]: " + dottedPkgEm + ":" + toString(posEm.line) + ":" + toString(posEm.column) + ": member '" +
+                            memberName +
                             "' cannot be resolved on an erased (statically Object) receiver — the receiver's concrete type " +
                             "is unknown at this site, so the read would silently yield the receiver itself. " +
                             "Bind the value with an explicit type, or match on the concrete constructor first."

@@ -26318,3 +26318,240 @@ D-progress-751 (root-caused this bug, reverted an unsound
 `Lyric.TypeAliasResolve` fix attempt, and deferred the codegen fix as
 this issue), #6417/#6408 (the front-end and receiver-position bugs in the
 same `Self`-in-impl surface).
+
+## D-progress-754 — JVM: the erased-receiver codegen refusal escaped as an unhandled `Bug`/host stack trace instead of a structured build diagnostic, and could abort the whole `lyric test` run (#6422, surfacing half of #6347/#6357)
+
+**Status:** ACCEPTED
+
+**Panic site.** `jvm/codegen/02_exprs.l`'s `EMember` field-read lowering
+(the `case JRef(cls) -> ... case None -> ...` arm, ~line 1360 at the time
+of this fix) deliberately REFUSES at compile time rather than silently
+mis-lowering when a member access's receiver has erased to
+`java/lang/Object` and no registered `field:<name>` opaque-accessor or
+`.count`/`.length` intrinsic matches (docs/59 §4.4 — the historical
+alternative was letting the receiver itself become the "field value", a
+silent-wrong-value miscompile). The refusal is a `panic(...)` call
+(`lyric-compiler/jvm/codegen/02_exprs.l:1410` before this fix), which is
+the language's `Bug`-exception mechanism — sound as a REFUSAL, but
+`panic`/`Bug` unwinds as a raw host exception. Since `Jvm.Bridge`'s own
+codegen call for the program's ENTRY package (`jvm/bridge.l`, the
+`match runMiddleEnd(userFile, …) { case Some(f) -> { …
+codegenPackageInto(…) } }` block inside `compileProjectToJarBundledWithFeatures`)
+had no `try`/`catch` around it — unlike the loop just below it that
+bundles the transitive stdlib/sibling-package closure, which already
+catches `Bug` and reports `error[J002]:` — the panic propagated
+UNCAUGHT through `Lyric.Emitter.emitJvmInProcess`/`emitProjectJvmInProcess`,
+the `Lyric.Cli` dispatcher, and out of the AOT entry point as an
+unhandled .NET exception with a full CLR stack trace. Because
+`Lyric.Emitter.emit`/`emitProject` normally return a value-typed
+`EmitResult` (diagnostics list, no throw) that `cli_test.l`'s per-file
+loop already tolerates without aborting, an exception escaping that
+contract instead killed the whole `lyric` process — for `lyric test`
+specifically, this meant every test file after the failing one in a
+multi-file manifest run never compiled or ran (#6357/#6347's second,
+independently-filed concern; #6422's own report). Confirmed with the
+GitHub issue text for #6347/#6357: both are the SAME panic site
+(`"member 'name' cannot be resolved on an erased (statically Object)
+receiver"`), triggered by a DIFFERENT root cause than #6422's repro — a
+generic-collection element read in `lyric-mcp/tests/mcp_serialization_tests.l`
+whose JVM type genuinely erased through generics, vs. #6422's non-receiver
+`Self`-typed impl param (checker-accepted since #6417/D-progress-751).
+Both issues explicitly split the report into "(1) the underlying
+erasure-resolution gap" and "(2) the delivery mechanism (uncaught
+exception vs. structured diagnostic, whole-process abort vs. per-file
+failure)" — this entry fixes (2) for all three issues' shared panic
+family; (1) is NOT touched for #6347/#6357's generic-collection-element
+trigger (a different, unexplored codegen gap) and those issues stay open
+against that root cause.
+
+**What shipped — the surfacing fix (bridge-boundary catch + a dedicated
+diagnostic code for the exact #6422 panic).** Two changes:
+
+1. `lyric-compiler/jvm/codegen/02_exprs.l`: the specific panic #6422
+   quotes (Object-erased receiver, no registered field/count/length
+   fallback) now self-tags its message with `error[J006]: <dottedPkg>:
+   <line>:<col>: …` — the same convention `05_stmts.l`'s J004 and
+   `04_calls.l`'s J005 already established (the codegen tree returns a
+   bare `JvmType`, not a diagnostics-collecting `Result`, so the
+   `panic`/`Bug` mechanism is still how a mid-lowering-tree failure
+   escapes; self-tagging with a stable code is what makes it a
+   diagnostic rather than an ICE). `ctx.pkgName` (JVM slash-form) is
+   dotted the same way `05_stmts.l` does. The OTHER panic in the same
+   `case None ->` arm (a precisely-known class with no known field —
+   `"receiver of type '<cls>' has no known field or member"`, a
+   different, narrower scenario than an erased-Object receiver) is left
+   unprefixed; it, and every other uncoded codegen panic, are now
+   covered generically by (2) below.
+2. `lyric-compiler/jvm/bridge.l`: the entry-package `codegenPackageInto`
+   call inside `compileProjectToJarBundledWithFeatures` (which backs
+   both `compileToJarBundledWithFeatures`/single-file builds and
+   `compileProjectToJarBundledWithFeatures`/manifest project builds — the
+   only two paths `Lyric.Emitter` calls for `--target jvm`) is now
+   wrapped in `try { … } catch Bug as b { … }`, mirroring the existing
+   referenced-package catch immediately below it in the same function. A
+   panic already carrying an `error[J0`-prefixed code (J004, J005, J006,
+   …) is echoed verbatim; anything else — including line 1426's
+   sibling panic, the `JArray`/primitive-receiver panics further down
+   the same function, and any panic anywhere else in codegen reachable
+   from the entry package — is wrapped as `error[J007]: JVM codegen
+   failed for entry package '<pkg>': <message>` (a new code, distinct
+   from J002's "referenced package" wording, since this catch is always
+   fatal — the entry package is never a silent J003 skip). Either way
+   `Console.error` prints the message and the function returns `false`,
+   which `Lyric.Emitter` turns into a normal `EmitResult` failure
+   diagnostic — the SAME contract a T00xx type error already produces,
+   so every existing caller (`cli_build.l`, `cli_run.l`, `cli_test.l`'s
+   both single-file and manifest loops) handles it for free with no
+   caller-side changes.
+
+**Verification — before/after on the exact #6422 repro** (`combine`
+reading a non-receiver `other: in Self` field, two records sharing the
+`base` field name — the D-progress-751 shape):
+```
+$ ./bin/lyric build --target jvm repro6422.l   # AFTER
+error[J006]: Repro:15:17: member 'base' cannot be resolved on an erased (statically Object) receiver — the receiver's concrete type is unknown at this site, so the read would silently yield the receiver itself. Bind the value with an explicit type, or match on the concrete constructor first.
+B0001 error [1:1]: JVM compilation failed (see stderr)
+repro6422.l: build failed
+$ echo $?
+1
+```
+No stack trace, stable code, source span, non-zero exit — matches the
+BEFORE state this issue and D-progress-751/753 already documented as
+"an unhandled exception rather than a structured CLI diagnostic."
+`lyric run --target jvm` shows the same output (same `Lyric.Emitter.emit`
+path).
+
+**Verification — `lyric test --target jvm` containment (#6357's specific
+complaint).** A two-test-file manifest (`bad_test.l` reproducing the
+#6422 shape, `good_test.l` a trivial passing assertion) run via
+`lyric test --manifest lyric.toml --target jvm`:
+```
+== Testproj.BadTest (tests/bad_test.l)
+error[J006]: Testproj.BadTest:16:17: member 'base' cannot be resolved on an erased (statically Object) receiver — …
+B0001 error [1:1]: JVM compilation failed (see stderr)
+./tests/bad_test.l: test build failed
+== Testproj.GoodTest (tests/good_test.l)
+1..1
+ok 1 - trivially passes
+# tests 1
+# pass  1
+# fail  0
+# skip  0
+== summary: 1 passed, 1 failed
+$ echo $?
+1
+```
+`good_test.l` compiles and RUNS after `bad_test.l` fails — the process
+does not abort. Containment mechanism: `cli_test.l`'s manifest test loop
+(`while ti < proj.tests.count { … Emitter.emitProject(projReq) …
+if hadBuildError { totalFailed += 1; ti += 1; continue } … }`) already
+tolerated a normal `EmitResult` failure per file without touching this
+task; the only defect was the codegen panic bypassing that contract by
+throwing instead of returning. No `cli_test.l` change was needed — the
+containment was already correct, it just never got exercised because the
+exception never reached it as a value.
+
+**JVM Self-param analog fix (docs/03's own #6421 companion) — investigated,
+NOT shipped; structurally harder than MSIL, not bookkeeping-only.**
+D-progress-753's MSIL fix makes a non-receiver `Self`-typed impl param
+(`other: in Self`) resolve its field reads through the concrete impl
+target type by recording `MClass(targetTypeName)` — instead of the erased
+`MObject` — as the param's LOCAL codegen-internal static type in
+`fctx.types`, while leaving the REAL emitted IL parameter descriptor
+untouched (still `object`, matching the interface slot). Critically, the
+MSIL field-read lowering (`ldfld` on that `MClass`-tracked local) emits NO
+`castclass` before the `ldfld` — sound only because .NET's runtime JIT
+does not enforce ECMA CIL's strict "receiver type verifier-assignable to
+field's declaring type" rule at load time for ordinary trusted assemblies
+(peverify/full CIL verification is not a load-time gate on modern .NET);
+type safety is guaranteed instead at the SOURCE level, by
+`checkImplConformance` only ever binding `other` to a genuine instance of
+the impl's own target type. Traced the exact JVM analog
+(`registerInstanceSigErased`'s `IImpl` case already has `tgtClass` —
+`typeExprToJvmClass(decl.target, owner)` — in scope at registration time;
+`typeExprToJvm`'s `case TSelf -> JRef(className = "java/lang/Object")`
+(`jvm/codegen/01_types.l:1172`) is the exact JVM counterpart of MSIL's
+`TSelf -> MObject`, and `setupInstanceParamSlotsAndHolders`'s
+`allocSlot(ctx, p.name, elemTy)` is where the param's local JVM type gets
+fixed for the method body). The JVM analog is NOT bookkeeping-only,
+though, because the JVM's class-file verifier (unlike the CLR) IS a
+mandatory, strict load-time gate: a `getfield`/`invokevirtual` on a local
+whose ACTUAL slot descriptor is `Ljava/lang/Object;` (the real parameter
+descriptor, matching the interface's erased `Self` slot) fails
+`java.lang.VerifyError: Bad type on operand stack` unless preceded by an
+explicit `checkcast <tgtClass>`. Mirroring MSIL's "trust the internal
+type, emit no cast" approach would therefore either (a) produce
+classfiles that fail JVM verification at class-load time — worse than
+today's compile-time refusal, a silent build-succeeds/run-fails
+regression — or (b) require actually emitting a NEW `checkcast`
+instruction at every access point through a `Self`-typed param (field
+read, field write, method-call receiver, and the inout/byref mutation
+case D-progress-753's `Bumper6421`/`Cell6425` cases cover on MSIL), which
+is real bytecode-emission surface, not internal bookkeeping, and needs
+the same care MSIL's fix took across all of read/write/byref to avoid a
+partial, silently-still-broken implementation. Given CLAUDE.md's
+production bar ("prefer landing less scope at production quality over
+landing more scope at bootstrap quality") and this task's own escape
+hatch ("if it's structurally harder on JVM, skip it and report why"),
+this fix is DEFERRED to a tracked follow-up rather than shipped
+partially; the surfacing fix above still fully satisfies #6422 (JVM
+correctly and cleanly REFUSES the shape at compile time — it does not
+need to also make the shape RUN for #6422 to close, per that issue's own
+"OR" framing). `impl_method_self_test.l`'s existing comment (line ~402)
+already documents JVM's current REJECT behaviour for this shape and is
+unchanged by this entry.
+
+**Test coverage.** No new self-test file added: the task's own guidance
+(§3) notes `typechecker_self_test.l`-style in-process assertion doesn't
+apply to a codegen-level diagnostic (there is no existing harness for
+asserting `error[J0xx]:` build output the way `typechecker_self_test.l`
+asserts T00xx in-process), and inventing one is out of scope for this
+fix per CLAUDE.md's smallest-viable-diff guidance. Verification is the
+manual before/after CLI transcripts above (repro6422.l build/run, and the
+two-file manifest `lyric test` containment run), plus the full existing
+battery (below) confirming no regression to the surrounding codegen/
+bridge code the catch now wraps.
+
+**Verification — full battery, all green** (rebuilt via `make lyric`
+after the source change AND again after `./bin/lyric fmt --write`, which
+reflowed `jvm/bridge.l`'s new `try`/`catch` block onto the formatter's
+canonical layout — `02_exprs.l` needed no reflow):
+- `bare_func_ref_self_test.l`: 21/21 dotnet, 21/21 jvm (unchanged).
+- `impl_method_self_test.l`: 22/22 dotnet (unchanged).
+- `typechecker_self_test.l`: 302/302 dotnet-only (unchanged).
+- `msil_project_bridge_self_test.l`: 39/39 dotnet (unchanged).
+- `synthesized_method_self_test.l`: 10/10 dotnet, 10/10 jvm (unchanged).
+- `stdlib_generic_iface_self_test.l`: 20/20 dotnet, 20/20 jvm (unchanged).
+- `aspect_weave_self_test.l`: 7/7 dotnet, 7/7 jvm (unchanged).
+- `bitwise_self_test.l`: 10/10 dotnet, 10/10 jvm (unchanged).
+- `scripts/ilverify-selfhosted.sh`: 119/119 DLLs, 0 IL-validity errors,
+  the same 3 pre-existing resolution-only infos as the
+  D-progress-751/752/753 baseline (`Lyric.Jvm.Kernel.dll`,
+  `Lyric.Stdlib.CollectionsHost.dll`).
+- `./bin/lyric fmt --write` on both changed files
+  (`jvm/bridge.l`, `jvm/codegen/02_exprs.l`): `jvm/bridge.l` formatted
+  cleanly (reflowed the new try/catch); `jvm/codegen/02_exprs.l` needed
+  no changes; a second `fmt --write` pass on both produced no further
+  diff (idempotent).
+
+**Build-loop note.** Followed CLAUDE.md's #6331 guidance: iterated with
+`stage1-fast` is not applicable here since JVM bridge/codegen changes
+were verified directly against a full `make lyric` rebuild each time (two
+full rebuilds — once for the source change, once more after `fmt
+--write` reflowed `jvm/bridge.l` — so `./bin/lyric` and the staged
+`<libdir>/selfhosted/` bundle both reflect the source change before any
+`./bin/lyric test`/`./bin/lyric build` run was trusted).
+
+Refs #6422 (fixed — the repro now produces a structured, spanned,
+non-throwing diagnostic). Partially addresses the surfacing/containment
+half of #6347 and #6357 (their uncaught-exception / whole-process-abort
+complaint is fixed by the same bridge-boundary catch, verified with an
+independent two-file repro of the same panic family); NEITHER #6347 NOR
+#6357 is closed — their root-cause half (a JVM generics-erasure gap in
+member access on a generic-collection element, distinct from #6422's
+Self-param trigger and not investigated here) remains open. Related:
+D-progress-751 (root-caused the #6417/checker half of the `Self`-in-impl
+surface and first named this JVM gap as #6422), D-progress-753 (the MSIL
+sibling fix this entry's "analog fix" section traces and explains why the
+JVM port is not a mechanical port), #6421/#6417/#6408 (the same
+`Self`-in-impl surface on the front end and MSIL backend).
