@@ -3127,7 +3127,10 @@ pub func collectFileSigsSeeded(
             externTypes
           ),
           closureRetTy = sigClosureRetTy,
-          recordRetClass = sigRecordRetClass
+          recordRetClass = sigRecordRetClass,
+          // A free function's return type is never `Self` (only legal on an
+          // interface/impl/record method signature) — always false here.
+          retIsSelf = false
         )
         // Qualified key (`Std/Testing/assertEqualInt`) is unique across the
         // bundle, so two packages exporting the same short name (e.g.
@@ -3293,7 +3296,9 @@ pub func collectFileSigsSeeded(
                       isIface = false,
                       retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(Some(f.ty), opqTps), owner, externTypes),
                       closureRetTy = None,
-                      recordRetClass = None
+                      recordRetClass = None,
+                      // An opaque field accessor's declared type is never `Self`.
+                      retIsSelf = false
                     )
                   )
                 }
@@ -3377,7 +3382,9 @@ pub func collectFileSigsSeeded(
                   isIface = false,
                   retGenericArgs = newList(),
                   closureRetTy = None,
-                  recordRetClass = None
+                  recordRetClass = None,
+                  // A module-level `val`'s type is never `Self`.
+                  retIsSelf = false
                 )
                 val vqkey = owner + "/val:" + vname
                 if not into.containsKey(vqkey) {
@@ -3427,7 +3434,9 @@ pub func collectFileSigsSeeded(
             isIface = false,
             retGenericArgs = newList(),
             closureRetTy = None,
-            recordRetClass = None
+            recordRetClass = None,
+            // An enum case value's type is never `Self`.
+            retIsSelf = false
           )
           val etkey = "enum:" + decl.name + "." + ecn
           if not into.containsKey(etkey) {
@@ -3549,6 +3558,14 @@ func registerInstanceSigErased(
     modes.add(filteredParams[pi].mode)
     pi = pi + 1
   }
+  // Declared return is (or paren-wraps) bare `Self` — mirrors
+  // `isSelfTypeExprJvm`'s param usage below, applied to the return slot
+  // (#6431). `retOpt`/`retIsSelf` are computed from the RAW (unstripped)
+  // signature, matching how `retGenericArgs`/`closureRetTy` are derived
+  // above; a call site substitutes this against the receiver's own known
+  // concrete class rather than the erased `ret` (which stays `Object`,
+  // matching the interface slot's descriptor).
+  val retIsSelf = match retOpt { case Some(te) -> isSelfTypeExprJvm(te); case None -> false }
   val key = className + "#" + methodName
   if not into.containsKey(key) {
     into.add(
@@ -3563,7 +3580,8 @@ func registerInstanceSigErased(
         isIface = false,
         retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, typeParams), owner, externTypes),
         closureRetTy = closureRetTypeOf(retOpt, owner, typeParams, externTypes),
-        recordRetClass = None
+        recordRetClass = None,
+        retIsSelf = retIsSelf
       )
     )
   }
@@ -3648,7 +3666,9 @@ func registerFieldElemSig(
       isIface = false,
       retGenericArgs = noRga,
       closureRetTy = None,
-      recordRetClass = None
+      recordRetClass = None,
+      // A field's declared element type is never `Self`.
+      retIsSelf = false
     )
   )
 }
@@ -3687,6 +3707,11 @@ func registerIfaceSig(
     pModes.add(realParams[pi].mode)
     pi = pi + 1
   }
+  // Recorded for symmetry with `registerInstanceSigErased`, even though an
+  // interface-typed receiver's call-site codegen never consults it (an
+  // interface method's `Self` return stays erased — `sig.isIface = true`
+  // gates the call site's checkcast substitution off, #6431).
+  val retIsSelf = match retOpt { case Some(te) -> isSelfTypeExprJvm(te); case None -> false }
   val key = ifClass + "#" + methodName
   if not into.containsKey(key) {
     into.add(
@@ -3705,7 +3730,8 @@ func registerIfaceSig(
         // `T` isn't mistaken for a resolved type (mirrors the `mapGet` guard).
         retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, typeParams), owner, externTypes),
         closureRetTy = closureRetTypeOf(retOpt, owner, typeParams, externTypes),
-        recordRetClass = None
+        recordRetClass = None,
+        retIsSelf = retIsSelf
       )
     )
   }
@@ -3735,7 +3761,9 @@ func registerStaticWireSig(
         isIface = false,
         retGenericArgs = newList(),
         closureRetTy = None,
-        recordRetClass = None
+        recordRetClass = None,
+        // A wire's static factory/accessor return is never `Self`.
+        retIsSelf = false
       )
     )
   }
@@ -4385,7 +4413,10 @@ pub func registerProjectableViews(
                 isIface = false,
                 retGenericArgs = newList(),
                 closureRetTy = None,
-                recordRetClass = None
+                recordRetClass = None,
+                // A synthesised `toView()` accessor's return is the view
+                // class itself, never `Self`.
+                retIsSelf = false
               )
             )
           }
@@ -4405,7 +4436,10 @@ pub func registerProjectableViews(
                   isIface = false,
                   retGenericArgs = newList(),
                   closureRetTy = None,
-                  recordRetClass = None
+                  recordRetClass = None,
+                  // A synthesised `tryInto()` accessor's return is
+                  // `Std.Core.Result`, never `Self`.
+                  retIsSelf = false
                 )
               )
             }

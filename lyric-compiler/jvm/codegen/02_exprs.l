@@ -1432,9 +1432,16 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                   // fallback) silently miscompiles — e.g. any instance-field
                   // read on an extern JDK object (JVM auto-FFI resolves only
                   // static fields).  Fail loud at compile time (docs/59 §4.4).
+                  // `error[J009]:`-prefixed (#6427), the sibling panic of J007's
+                  // erased-receiver case — same self-tagging convention, so
+                  // `Jvm.Bridge`/`Lyric.Emitter`'s `startsWith("error[J0")`
+                  // passthrough re-emits it verbatim as a structured diagnostic.
                   val posEm2 = recv.span.startPos
+                  val dottedPkgEm2 = ctx.pkgName.replace("/", ".")
                   panic(
-                    "Jvm.Codegen: " + toString(posEm2.line) + ":" + toString(posEm2.column) + ": receiver of type '" + cls +
+                    "error[J009]: " + dottedPkgEm2 + ":" + toString(posEm2.line) + ":" + toString(posEm2.column) +
+                      ": receiver of type '" +
+                      cls +
                       "' has no known field or member '" +
                       memberName +
                       "'"
@@ -1459,10 +1466,13 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             // The old fallback reported JVoid while leaving the receiver on
             // the stack — an operand-stack imbalance that either fails
             // verification or silently corrupts the enclosing expression
-            // (docs/59 §4.4).  Fail loud at compile time.
+            // (docs/59 §4.4).  Fail loud at compile time.  `error[J010]:`-
+            // prefixed (#6427), same self-tagging convention as J007/J009.
             val posArr = recv.span.startPos
+            val dottedPkgArr = ctx.pkgName.replace("/", ".")
             panic(
-              "Jvm.Codegen: " + toString(posArr.line) + ":" + toString(posArr.column) + ": member '" + memberName +
+              "error[J010]: " + dottedPkgArr + ":" + toString(posArr.line) + ":" + toString(posArr.column) + ": member '" +
+                memberName +
                 "' is not defined on an array/slice receiver (only `.length`/`.count`)"
             )
           }
@@ -1470,9 +1480,13 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case _ -> {
           // Member access on a primitive receiver has no lowering; the old
           // JVoid fallback silently produced no value (docs/59 §4.4).
+          // `error[J011]:`-prefixed (#6427), same self-tagging convention as
+          // J007/J009/J010.
           val posPrim = recv.span.startPos
+          val dottedPkgPrim = ctx.pkgName.replace("/", ".")
           panic(
-            "Jvm.Codegen: " + toString(posPrim.line) + ":" + toString(posPrim.column) + ": member '" + memberName +
+            "error[J011]: " + dottedPkgPrim + ":" + toString(posPrim.line) + ":" + toString(posPrim.column) + ": member '" +
+              memberName +
               "' cannot be read from a primitive-typed receiver"
           )
         }
