@@ -26762,3 +26762,312 @@ after fixing a doc-comment ordering bug the first `Edit` introduced — and
 
 Refs #6426, #6421, #6422, D-progress-753, D-progress-754, #6417/D-progress-751
 (the soundness argument this fix relies on).
+
+## D-progress-756 — JVM: `Self`-typed method RETURN call-site substitution (#6431), and dedicated J-codes for the three remaining unprefixed `EMember` panics (#6427)
+
+**Status:** ACCEPTED
+
+**Part 1 — #6431: return-position `Self` now resolves via call-site
+substitution, keyed to the receiver's own class.** Mechanism (`jvm/codegen/
+04_calls.l:2149-2176` `narrowSelfCallResult`, called from `lowerMethodCall`'s
+`case MClass(cls) ->`/`mapGet(ctx.funcSigs, cls + "#" + memberName)` dispatch
+arm at `04_calls.l:3789-3792`): a new `retIsSelf: Bool` field on `JvmFuncSig`
+(`jvm/codegen/01_types.l:90-107`) records whether the callee's DECLARED
+return is (or paren-wraps) bare `Self` — computed in
+`registerInstanceSigErased` (`jvm/codegen/06_items.l`, the single function
+covering protected-entry, record-method, and impl-method registration) via
+`isSelfTypeExprJvm(te)` on the raw, unstripped `retOpt`, and threaded
+(mostly `false`) through every other `JvmFuncSig` construction site — 14
+total across `01_types.l`/`06_items.l`/`bridge.l`, all audited: free
+functions, module vals, opaque-field accessors, enum cases, wire factories,
+projectable-view accessors, and every derive/aspect-woven/mono-specialised
+synthesized-sig path can never declare a `Self` return, so they hard-code
+`false`; `registerIfaceSig` also computes it (for symmetry/future use) even
+though the call site never consults it for an interface dispatch. At the
+call site, when `sig.retIsSelf` is set and dispatch is non-interface
+(`LInvokevirtual`, not `LInvokeinterface`), `narrowSelfCallResult` emits
+`checkcast <cls>` right after the invoke and reports the tracked JvmType as
+`JRef(cls)` instead of the erased `sig.ret` — `cls` is the SAME receiver
+class the call site already resolved (`case MClass(cls) ->`), not something
+looked up separately, so unlike `recordRetClass` (#6399's fixed-at-
+registration-time narrowing side channel this mirrors), no new per-callee
+state needs to encode WHICH class to cast to. `sig.ret` itself, and the real
+emitted MethodDef/interface-slot descriptor, stay untouched — still the
+erased `Ljava/lang/Object;`, matching the interface slot (mirroring
+MSIL/#6426's "signature untouched, bookkeeping/bytecode only" property).
+The interface-dispatch branch (`sig.isIface`) is left exactly as before —
+no cast, `sig.ret` unmodified — matching what the type checker already
+enforces (below).
+
+**Soundness — same argument as #6421/#6426's param fix, applied to the
+return side.** `checkImplConformance` (D-progress-751/#6417) only accepts a
+`Self`-declared return position as EXACTLY the impl/record's own target
+type, so `checkcast <cls>` can never throw for a checker-accepted program
+where `cls` is the call site's own resolved receiver class.
+
+**Interface-typed-receiver decision, with the MSIL comparison the task
+asked for: UNREACHABLE past the type checker, not merely "left refused."**
+Investigated directly rather than assumed. A `Cloner`-typed (interface)
+local calling `.dup()` and then reading a field on the result
+(`val c2 = c.dup(); c2.n`) is rejected on BOTH targets, identically, by the
+FRONT END — `error[T0113] 19:3: no member 'n' on type 'Cloner'` — before
+codegen ever runs, confirmed with matching `--target jvm` and `--target
+dotnet` repros. The type checker's `Self` resolution
+(`typechecker_exprs.l`) binds `Self` to the receiver's own STATIC type at
+the call site; for an interface-typed receiver that static type is the
+interface itself, so `c.dup()`'s inferred type is `Cloner`, and `Cloner` has
+no field `n`. This means codegen's `sig.isIface` branch staying erased is
+not a deliberate "refuse, don't substitute" design choice this fix makes —
+it is simply DEAD CODE for any checker-legal program that reaches a member
+access on the result; `sig.retIsSelf` is still computed for an interface
+sig (for symmetry with the impl/record path and any future consumer) but
+the call site's `not sig.isIface` gate is provably never exercised by valid
+source. No codegen change was needed or made for this case.
+
+**New discovery — MSIL's "already sound" return-position handling
+(D-progress-753's own claim) is NOT a genuine call-site substitution
+mechanism; it is fragile in two independent, previously-undocumented ways.**
+The task's background briefing (citing D-progress-753's investigation notes
+and `impl_method_self_test.l`'s passing MSIL cases) assumed MSIL's return
+position already worked soundly, contrasting it with the param position
+D-progress-753 had to fix. Directly investigating `grep -n "TSelf"
+msil/codegen.l` (exactly two sites: the unconditional `TSelf -> MObject`
+erasure arm, and `isSelfTypeExprMsil`'s own definition, used ONLY for the
+param fix) found no return-position `Self`-substitution code exists on MSIL
+at all — `registerMethodRetTyMsil`/`registerMethodRetTy` register a
+`Self`-declared return's tracked type as the same erased `MObject` a
+`Self`-declared PARAM used to get before D-progress-753's fix. Built two
+repros to check whether this erased tracking is silently compensated for
+elsewhere (it is not):
+1. **Field-name collision (mirrors D-progress-751's own minimal repro,
+   applied to the RETURN side instead of the param side):** two
+   same-package records (`TwinA`/`TwinB`) both declaring a field `base`,
+   each implementing `Cloner.dup(): Self` with a DIFFERENT increment. `val
+   b = TwinB(base = 41); val b2 = b.dup(); println(b2.base)` throws
+   `System.InvalidCastException: Unable to cast object of type
+   'Mini5Collision.TwinB' to type 'Mini5Collision.TwinA'` on `--target
+   dotnet`. Root cause: `b2`'s tracked type is the erased `MObject` (per
+   the above), so `b2.base` falls through to `fieldTokensByName`'s
+   package-wide, field-NAME-only fallback — the EXACT bug D-progress-753
+   fixed for the param case — which resolves to whichever record registered
+   the field name FIRST (`TwinA`, declared first in the file) regardless of
+   `b2`'s real runtime type, then emits a `castclass` to that wrong class
+   before the `ldfld`. `impl_method_self_test.l`'s existing MSIL Self-return
+   cases never caught this because they use only ONE record (`Box6417`,
+   the only declarer of field `v` in that file) — no collision, no crash,
+   hence the "already sound" appearance.
+2. **Chained calls, no collision needed:** a SINGLE record (`Box { n: Int
+   }`, one impl) with `val b3 = b.dup().dup()` fails EVEN WITHOUT any
+   field-name collision: `Unhandled exception. System.Exception: unsupported
+   method 'dup' on the receiver type at this call site (no matching user
+   method, extern binding, or built-in intrinsic)` at RUNTIME (not even a
+   build-time diagnostic — the first `.dup()`'s erased `MObject` result has
+   no class-directed dispatch entry for a second `.dup()` call at all,
+   since `lowerMethodCallMsil`'s instance-dispatch path requires a known
+   `MClass(cls)` receiver to look up `cctx.methodTokens[cls + "/" +
+   memberName]`). This is a DIFFERENT failure mode than #1 — not a
+   fallback returning the wrong answer, but no dispatch mechanism at all —
+   and confirms the task's request to "add chained calls to the tests"
+   would have failed on MSIL even in the collision-free single-record
+   shape `impl_method_self_test.l` already uses.
+
+Both are real, reproducible, previously-undocumented MSIL bugs, confirmed
+against the CURRENT `main` (this PR never touches `msil/codegen.l`). They
+are explicitly OUT OF SCOPE for this JVM-only task (#6431/#6427 name JVM
+only) and are NOT fixed here — flagging for the user to file as tracked
+follow-up issues, per this task's own "new discoveries (I will file)"
+instruction. This also explains why the JVM fix in this entry is NOT a
+port of any existing MSIL mechanism (there isn't one to port): it is a
+new, from-scratch call-site-cls-keyed substitution, independently verified
+sound against BOTH of the above shapes on `--target jvm` (see verification
+below) — genuinely stronger than what MSIL does today, not merely at parity
+with it.
+
+**Test-placement consequence.** Because a dual-target Self-return/chained/
+field-collision regression case would fail on `--target dotnet` (the two
+MSIL bugs above, not a regression from anything in this PR), the new
+regression coverage is JVM-ONLY (`lyric-compiler/jvm/
+self_return_call_site_jvm_self_test.l`, 4 cases: val-bound direct call,
+field-name-collision-defended direct call, chained `b.dup().dup()`, and a
+single-record baseline) rather than added to the dual-target
+`bare_func_ref_self_test.l` the task suggested as the natural home — an
+attempt to add it there was made first, confirmed the two MSIL failures
+above via the CI-style dual-target harness itself (25/26 dotnet, 26/26
+jvm), then reverted (`git diff` against the file is empty) once the root
+cause was traced to pre-existing MSIL gaps rather than anything touched by
+this PR. Wired into `ci.yml` as `--target jvm` only, alongside the sibling
+`record_method_jvm_self_test.l` step.
+
+---
+
+**Part 2 — #6427: J009/J010/J011 for the three remaining unprefixed
+`EMember` panics.** `grep -n "error\[J0" lyric-compiler/` confirmed J001-J008
+all taken (J001 `jvm/bridge.l` general failures, J002 referenced-package
+codegen failure, J003 skip-diagnostic, J004 `05_stmts.l` try-catch
+value/Unit mismatch, J005 `04_calls.l` abstract-class construction, J006
+`06_items.l` impl-on-non-interface, J007 `02_exprs.l` erased-Object-receiver
+refusal, J008 `emitter.l` catch-all wrapper) — J009/J010/J011 are the next
+free codes, matching the task's own numbering. Minted in `02_exprs.l`'s
+`EMember` block, following J007's exact self-tagging convention
+(`"error[J0NN]: " + dottedPkg + ":" + line + ":" + col + ": " + message`,
+`ctx.pkgName.replace("/", ".")` for `dottedPkg`), keeping each panic's
+existing explanatory text verbatim:
+- **J009** (`02_exprs.l:1429-1449`, was line ~1436): known-class-but-no-such-
+  field — `recordFieldType` misses on a precisely-known, non-`Object`
+  receiver class (e.g. an `extern type`'s JDK class, which is never in
+  `ctx.caseFields`).
+- **J010** (`02_exprs.l:~1464-1478`, was line ~1464): array/slice receiver
+  — any member other than `.length`/`.count` on a `JArray`.
+- **J011** (`02_exprs.l:~1479-1492`, was line ~1473): primitive receiver —
+  any member access on a receiver that erased to a JVM primitive.
+
+**Reachability — all three ARE reachable from checker-legal source (not
+merely defensive), traced to the same leniency gap for different reasons.**
+`inferMember`/`maybeUnknownMemberDiag` (`typechecker_exprs.l`) only add a
+`T0113` diagnostic for a `TyUser` receiver whose `TypeId` is registered in
+`SymbolTable.memberCompleteTypes` — populated ONLY by a
+`DKRecord`/`DKExposedRec`/`DKInterface` declared IN THE FILE BEING CHECKED
+and NOT imported (`symTableAdd`'s `if not sym.isImported` guard,
+`typechecker_symbols.l:357-380`). This means:
+  - **J009** is reachable via any `extern type` receiver: `DKExternType` is
+    never added to `memberCompleteTypes` at all (only the three kinds
+    above are), so `symTableIsMemberComplete` returns false and
+    `maybeUnknownMemberDiag` returns early — no diagnostic for ANY member
+    name on an extern-typed value. Confirmed with `extern type JStringBuilder
+    = "java.lang.StringBuilder"; val sb = JStringBuilder.new("hi");
+    sb.bogusInstanceField` — type-checks cleanly, then codegen's
+    `recordFieldType(ctx, "java/lang/StringBuilder", "bogusInstanceField")`
+    misses (no Lyric caseFields entry for a JDK class) and hits J009. (A
+    cross-package Lyric record would ALSO reach J009 the same way, per the
+    same `not sym.isImported` guard — not exercised in the harness case
+    below to keep it a single-file repro, but the mechanism is identical.)
+  - **J010/J011** are reachable via ANY receiver whose inferred type is not
+    `TyUser` at all (`slice[T]`, a primitive `Int`/`Bool`/etc.): `inferMember`'s
+    fallback match on `recv` (after `inferMemberBase` returns `TyError`) is
+    `case TyUser(...) -> { ...; maybeUnknownMemberDiag(...); TyError }` /
+    `case _ -> TyError` — the NON-`TyUser` branch returns `TyError`
+    UNCONDITIONALLY, with NO diagnostic call at all. `val s: slice[Int] =
+    [1,2,3]; s.bogusArrayMember` and `val n: Int = 5;
+    n.bogusPrimitiveMember` both type-check silently (leniently `TyError`,
+    no T0113) and reach codegen's `JArray(_)`/`case _ ->` arms respectively.
+
+**Verification — before/after CLI output, all three:**
+```
+$ ./bin/lyric build --target jvm j009.l   # AFTER (extern type . field)
+error[J009]: J009Repro:7:11: receiver of type 'java/lang/StringBuilder' has no known field or member 'bogusInstanceField'
+B0001 error [1:1]: JVM compilation failed (see stderr)
+$ ./bin/lyric build --target jvm j010.l   # AFTER (slice[Int] . bogus member)
+error[J010]: J010Repro:5:11: member 'bogusArrayMember' is not defined on an array/slice receiver (only `.length`/`.count`)
+B0001 error [1:1]: JVM compilation failed (see stderr)
+$ ./bin/lyric build --target jvm j011.l   # AFTER (Int . bogus member)
+error[J011]: J011Repro:5:11: member 'bogusPrimitiveMember' cannot be read from a primitive-typed receiver
+B0001 error [1:1]: JVM compilation failed (see stderr)
+```
+BEFORE (pre-fix, confirmed against the unmodified panic text mid-task before
+the source edit landed in a trusted `./bin/lyric` build): all three
+appeared identically as `error[J008]: JVM codegen failed: Jvm.Codegen:
+<line>:<col>: <same message>` — contained (no raw stack trace, since #6422's
+fix), but sharing the generic catch-all code rather than their own.
+
+**Test coverage.** `jvm_trycatch_bridge_self_test.l` gains one new case (3
+-> 4) for J009 (the reachable, harness-worthy one per the task's own scope
+— "a case for the known-class-no-field code if reachable from checker-legal
+source"), following the file's established `compileToJarBundled` + caught
+`Bug` pattern exactly (code + package-qualified span + explanatory-text
+assertions). J010/J011 are reachability-documented above (both genuinely
+reachable, confirmed via standalone CLI repros) but were not added as
+dedicated in-process harness cases — the task scoped the harness addition
+to "the known-class-no-field code" specifically; J010/J011's CLI
+before/after transcripts above stand as their verification.
+
+**Build-loop hazard hit and worked around (worth recording): a stale
+`.bootstrap/stage1.stamp` silently no-op'd a `make lyric` re-run mid-task.**
+The Part 2 source edits (`02_exprs.l`) landed WHILE a backgrounded `make
+lyric` from Part 1 was already mid-flight; `make`'s dependency check
+(`.bootstrap/stage1.stamp: $(STAGE1_SRCS)`) evaluates staleness once at
+invocation time, so a SECOND `make lyric` invoked after that build finished
+saw the (now-fresher-than-the-late-edit) stamp and considered stage1
+up-to-date, skipping the actual `bootstrap.sh` recompile entirely (the
+`aot` target's `dotnet build --no-incremental` still ran, in ~1.5s, just
+re-linking the STALE stage-1 DLLs) — `./bin/lyric build --target jvm`
+against the J009/J010/J011 repros kept printing the OLD unprefixed
+`Jvm.Codegen: ...` messages under the generic J008 wrapper even after this
+"successful" second build. Diagnosed via `date -r
+.bootstrap/stage1.stamp` vs `date -r lyric-compiler/jvm/codegen/02_exprs.l`
+(stamp newer than the edit) and confirmed by DLL mtimes not advancing.
+Fixed by `rm -f .bootstrap/stage1.stamp` before the THIRD `make lyric`,
+forcing a genuine full stage1 rebuild. Not a CLAUDE.md #6331 case (that
+warns about `stage1-fast` never touching `./bin/lyric`); this is a
+DIFFERENT stamp-staleness trap specific to editing source WHILE a `make
+lyric` background job is already running — worth flagging for anyone
+following this task's "long commands: poll in bounded foreground loops"
+guidance with a source edit landing mid-poll.
+
+**Verification — full battery, all green** (final numbers, after the
+stamp-forced rebuild):
+- Repro (#6431, issue's own shape): `--target jvm` exits 0. Chained
+  (`b.dup().dup()`): exits 0. Interface-typed-receiver: `error[T0113]` on
+  BOTH targets identically (front-end refusal, not a codegen concern).
+  Field-name-collision defense (`TwinA`/`TwinB`-shaped, JVM): exits 0 with
+  the CORRECT value — confirms the JVM mechanism is genuinely sound, unlike
+  MSIL's fragile name-fallback (which throws `InvalidCastException` on the
+  identical shape, unfixed, out of scope).
+- `self_return_call_site_jvm_self_test.l` (NEW): 4/4 jvm (JVM-only, wired
+  into `ci.yml` alongside `record_method_jvm_self_test.l`).
+- `bare_func_ref_self_test.l`: 24/24 dotnet, 24/24 jvm (UNCHANGED — the
+  attempted dual-target addition was reverted; `git diff` on this file is
+  empty).
+- `jvm_trycatch_bridge_self_test.l`: 4/4 (3 -> 4, gains the J009 case).
+- `jvm_impl_extern_class_self_test.l`: 3/3.
+- `jvm_auto_ffi_bridge_self_test.l`: 6/6.
+- `emitter_project_self_test.l`: 24/24.
+- `impl_method_self_test.l`: 22/22 dotnet-only (unchanged).
+- `typechecker_self_test.l`: 302/302.
+- `msil_project_bridge_self_test.l`: 39/39.
+- `synthesized_method_self_test.l`: 10/10 dotnet, 10/10 jvm.
+- `stdlib_generic_iface_self_test.l`: 20/20 dotnet, 20/20 jvm.
+- `generic_jvm_self_test.l`: 24/24 jvm.
+- `aspect_weave_self_test.l`: 7/7 dotnet, 7/7 jvm.
+- `bitwise_self_test.l`: 10/10 dotnet, 10/10 jvm.
+- `scripts/ilverify-selfhosted.sh`: 119/119 DLLs, 0 IL-validity errors, same
+  3 pre-existing resolution-only infos as the D-progress-751-755 baseline
+  (`Lyric.Jvm.Kernel.dll`, `Lyric.Stdlib.CollectionsHost.dll`).
+- `./bin/lyric fmt --write` on every changed `.l` file (`jvm/codegen/
+  {01_types,02_exprs,04_calls,06_items}.l`, `jvm/bridge.l`,
+  `jvm/self_return_call_site_jvm_self_test.l` (new),
+  `lyric/jvm_trycatch_bridge_self_test.l`): all formatted cleanly or
+  needed no changes; a second `fmt --write` pass on every file produced no
+  further diff (idempotent). `lyric/bare_func_ref_self_test.l` was reverted
+  to its pre-task state, not left formatted-only-changed.
+
+Refs #6431, #6427, D-progress-753, D-progress-754, D-progress-755 (all three
+directly investigated and extended/corrected here).
+
+**Review addendum (#6437, same PR).** The first draft wired
+`narrowSelfCallResult` into only ONE of the three reachable instance-call
+dispatch paths (the explicit-receiver, non-holder, non-interface branch of
+`lowerMethodCall`). Review traced two more that still returned the raw
+erased `sig.ret`:
+
+- `lowerVirtualCallWithHolders` — reached whenever the callee has any
+  `out`/`inout` param, INCLUDING via an explicit-receiver call
+  (`lowerMethodCall` returns through it before the narrowing branch is
+  reached). Fixed by narrowing in its non-interface arm; the checkcast is
+  placed immediately after the `invokevirtual`, while the return value is
+  top-of-stack, BEFORE the holder write-backs run (they push/pop their own
+  operands above it). Pinned by the `Tagged6437` case (Self return + inout
+  param; asserts both the narrowed field read and the write-back landing).
+- `lowerGeneralStaticCall`'s bare intra-impl sibling-call branch (#1722)
+  — `dup()` without a `self.` prefix inside a sibling method of the same
+  impl. Fixed by narrowing against `selfCls` (the enclosing method's own
+  class — for a non-interface `selfCls` this IS the concrete receiver; the
+  `isIface` arm, a default-method sibling call, stays erased as before).
+  Pinned by the `Pair6437` case. Its holder-mode sub-path routes through
+  `lowerVirtualCallWithHolders` and is covered by the first fix.
+
+`self_return_call_site_jvm_self_test.l` 4 -> 6. The review's suggestion to
+give J010/J011 the same in-process harness coverage as J009 was also
+taken: `jvm_trycatch_bridge_self_test.l` 4 -> 6 (slice-receiver bogus
+member -> J010; primitive-receiver member read -> J011, both asserting
+code + package-qualified span + explanatory text). docs/44's m-95 row
+qualified accordingly.

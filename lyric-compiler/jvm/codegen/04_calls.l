@@ -2147,6 +2147,36 @@ func narrowStaticCallResult(insns: in List[LInsn], sig: in JvmFuncSig): JvmType 
   }
 }
 
+// A `Self`-declared return substituted against the CALL SITE's own known
+// concrete receiver class (#6431, the JVM analog of MSIL's D-progress-753/755
+// non-receiver-`Self`-param fix, applied to the RETURN position instead).
+// `sig.ret` stays the erased `java/lang/Object` (matching the interface
+// slot's own descriptor, required for the `invokevirtual` to link); when
+// `sig.retIsSelf` is set, the call result is narrowed with a `checkcast
+// <cls>` right after the invoke — a no-op at runtime (the value already IS
+// that class) that re-anchors the JVM verifier's tracked type, and the
+// tracked JvmType this function returns, from `Object` to the receiver's own
+// concrete class. Sound because `checkImplConformance` guarantees an
+// impl/record method declared to return `Self` returns exactly its own
+// target type, so the checkcast can never throw for a checker-accepted
+// program. Mirrors `narrowStaticCallResult` (#6399) above, but keyed to the
+// CALL SITE's receiver class (`cls`) rather than a class name fixed at
+// signature-registration time — the concrete class a `Self` return actually
+// yields is whichever class the receiver itself is, not something knowable
+// when the sig was registered. Callers pass this ONLY for a non-interface
+// dispatch (`not sig.isIface`, `LInvokevirtual`); an interface-typed
+// receiver's `Self` return stays erased — unreachable in practice, since the
+// type checker already types such a call's result as the INTERFACE itself
+// (T0113) before it reaches codegen.
+func narrowSelfCallResult(insns: in List[LInsn], sig: in JvmFuncSig, cls: in String): JvmType {
+  if sig.retIsSelf {
+    insns.add(LCheckcast(className = cls))
+    JRef(className = cls)
+  } else {
+    sig.ret
+  }
+}
+
 // Lower a record / union-case construction to `new`/`invokespecial`.  Arguments
 // are reordered to field-declaration order and coerced to each field's declared
 // type.  A record yields its own class type; a union case yields the union's
@@ -2672,7 +2702,11 @@ func lowerVirtualCallWithHolders(
     }
     ai = ai + 1
   }
-  if sig.isIface {
+  // A `Self` return narrows against the dispatch class exactly as the
+  // non-holder path does (#6431/#6437) — the checkcast must land right
+  // after the invoke, while the return value is top-of-stack, BEFORE the
+  // holder write-backs run (they push/pop their own operands above it).
+  val retNarrowed = if sig.isIface {
     insns.add(
       LInvokeinterface(
         owner = owner,
@@ -2682,15 +2716,17 @@ func lowerVirtualCallWithHolders(
         argCount = 1 + jvmArgSlotCount(sig.params)
       )
     )
+    sig.ret
   } else {
     insns.add(LInvokevirtual(owner = owner, name = methodName, params = sig.params, ret = sig.ret))
+    narrowSelfCallResult(insns, sig, owner)
   }
   var ri = 0
   while ri < hArgIdx.count {
     writeBackHolderArg(ctx, insns, hTempSlot[ri], hElemTy[ri], hBackName[ri], hRecvSlot[ri], hRecvCls[ri])
     ri = ri + 1
   }
-  sig.ret
+  retNarrowed
 }
 
 // Resolve a general (non-construction, non-self) call's `JvmFuncSig` from the
@@ -2822,10 +2858,13 @@ func lowerGeneralStaticCall(
                 argCount = 1 + jvmArgSlotCount(sig.params)
               )
             )
-          } else {
-            insns.add(LInvokevirtual(owner = selfCls, name = funcName, params = sig.params, ret = sig.ret))
+            return sig.ret
           }
-          return sig.ret
+          insns.add(LInvokevirtual(owner = selfCls, name = funcName, params = sig.params, ret = sig.ret))
+          // A bare sibling call to a `Self`-returning method narrows against
+          // the enclosing method's own class (#6431/#6437) — for a
+          // non-interface `selfCls` this IS the concrete receiver.
+          return narrowSelfCallResult(insns, sig, selfCls)
         }
         case None -> ()
       }
@@ -3776,7 +3815,9 @@ func lowerMethodCall(
           if sig.isIface {
             // An interface-typed receiver dispatches via `invokeinterface`;
             // `invokevirtual` against an interface owner fails class-load
-            // verification (#3687).
+            // verification (#3687). A `Self` return stays erased here — see
+            // `narrowSelfCallResult`'s doc comment for why that's sound and
+            // unreachable-in-practice, not merely unfixed.
             insns.add(
               LInvokeinterface(
                 owner = cls,
@@ -3786,10 +3827,11 @@ func lowerMethodCall(
                 argCount = 1 + jvmArgSlotCount(sig.params)
               )
             )
+            return sig.ret
           } else {
             insns.add(LInvokevirtual(owner = cls, name = memberName, params = sig.params, ret = sig.ret))
+            return narrowSelfCallResult(insns, sig, cls)
           }
-          return sig.ret
         }
         case None -> ()
       }

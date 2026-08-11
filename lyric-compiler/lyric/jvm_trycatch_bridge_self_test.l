@@ -209,3 +209,111 @@ test "erased-receiver member access aborts codegen under error[J007] with a pack
     "diagnostic keeps its explanatory text (got: " + caughtMessage + ")"
   )
 }
+
+// #6427: the sibling "known-class-but-no-such-field" `EMember` panic (`02_
+// exprs.l`'s `case None ->` arm when the receiver's class IS precisely
+// known — unlike J007's genuinely-erased-Object case above) now self-tags
+// `error[J009]: <pkg>:<line>:<col>: ...`, the same convention as J007.
+// Reachable from checker-legal source via an `extern type` receiver: the
+// type checker's `symTableIsMemberComplete` gate (`typechecker_exprs.l`)
+// only adds a `DKRecord`/`DKExposedRec`/`DKInterface` declared IN THE
+// CHECKING FILE to `memberCompleteTypes` — a `DKExternType` is never added,
+// so `maybeUnknownMemberDiag` leniently skips T0113 for ANY member name on
+// an extern-typed receiver. The front end never rejects a bogus field name
+// on an extern JDK object; only codegen's `recordFieldType` lookup (which
+// never has a caseFields entry for a non-Lyric class) catches it.
+test "known-class-no-field member access on an extern JDK receiver aborts codegen under error[J009] (#6427)" {
+  val dir = freshTempDir("known-class-no-field-j009")
+  val outPath = Path.join(dir, "KnownClassNoField.jar")
+  val source = "package KnownClassNoField.App\n" + "\n" + "extern type JStringBuilder = \"java.lang.StringBuilder\"\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  val sb = JStringBuilder.new(\"hi\")\n" +
+    "  println(sb.bogusInstanceField)\n" +
+    "}\n"
+  val noStdlib: List[String] = newList()
+  var panicked = false
+  var caughtMessage = ""
+  try {
+    compileToJarBundled(source, outPath, "KnownClassNoField", noStdlib, "")
+  } catch Bug as b {
+    panicked = true
+    caughtMessage = b.message
+  }
+  cleanup(dir)
+  assertTrue(
+    panicked,
+    "a member access naming no known field on a precisely-known (extern) receiver class must abort JVM codegen"
+  )
+  assertTrue(
+    Str.contains(caughtMessage, "error[J009]: KnownClassNoField.App:"),
+    "diagnostic carries the J009 code and the owning package (dotted) ahead of line:col (got: " + caughtMessage + ")"
+  )
+  assertTrue(
+    Str.contains(caughtMessage, "has no known field or member"),
+    "diagnostic keeps its explanatory text (got: " + caughtMessage + ")"
+  )
+}
+
+// #6427 (#6436 review): the array/slice-receiver sibling of J009 — any
+// member other than `.length`/`.count` on a slice receiver has no lowering
+// and must abort under its own code, not a stack-imbalancing JVoid fallback.
+test "non-length member access on a slice receiver aborts codegen under error[J010] (#6427)" {
+  val dir = freshTempDir("slice-member-j010")
+  val outPath = Path.join(dir, "SliceMember.jar")
+  val source = "package SliceMember.App\n" + "\n" + "func first(xs: slice[Int]): Int {\n" + "  xs.bogus\n" + "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  val a: slice[Int] = [1, 2, 3]\n" +
+    "  println(first(a))\n" +
+    "}\n"
+  val noStdlib: List[String] = newList()
+  var panicked = false
+  var caughtMessage = ""
+  try {
+    compileToJarBundled(source, outPath, "SliceMember", noStdlib, "")
+  } catch Bug as b {
+    panicked = true
+    caughtMessage = b.message
+  }
+  cleanup(dir)
+  assertTrue(panicked, "a non-length member on a slice receiver must abort JVM codegen")
+  assertTrue(
+    Str.contains(caughtMessage, "error[J010]: SliceMember.App:"),
+    "diagnostic carries the J010 code and the owning package (dotted) ahead of line:col (got: " + caughtMessage + ")"
+  )
+  assertTrue(
+    Str.contains(caughtMessage, "is not defined on an array/slice receiver"),
+    "diagnostic keeps its explanatory text (got: " + caughtMessage + ")"
+  )
+}
+
+// #6427 (#6436 review): the primitive-receiver sibling — a member read off a
+// primitive-typed receiver has no lowering and must abort under its own code.
+test "member access on a primitive receiver aborts codegen under error[J011] (#6427)" {
+  val dir = freshTempDir("prim-member-j011")
+  val outPath = Path.join(dir, "PrimMember.jar")
+  val source = "package PrimMember.App\n" + "\n" + "func peek(n: Int): Int {\n" + "  n.bogus\n" + "}\n" + "\n" +
+    "func main(): Unit {\n" +
+    "  println(peek(1))\n" +
+    "}\n"
+  val noStdlib: List[String] = newList()
+  var panicked = false
+  var caughtMessage = ""
+  try {
+    compileToJarBundled(source, outPath, "PrimMember", noStdlib, "")
+  } catch Bug as b {
+    panicked = true
+    caughtMessage = b.message
+  }
+  cleanup(dir)
+  assertTrue(panicked, "a member read off a primitive receiver must abort JVM codegen")
+  assertTrue(
+    Str.contains(caughtMessage, "error[J011]: PrimMember.App:"),
+    "diagnostic carries the J011 code and the owning package (dotted) ahead of line:col (got: " + caughtMessage + ")"
+  )
+  assertTrue(
+    Str.contains(caughtMessage, "cannot be read from a primitive-typed receiver"),
+    "diagnostic keeps its explanatory text (got: " + caughtMessage + ")"
+  )
+}

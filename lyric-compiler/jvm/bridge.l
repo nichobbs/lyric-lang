@@ -818,7 +818,9 @@ func collectDeriveFreeSigs(
             // Derive-synthesized free functions (`Point.equals`, `Color.show`)
             // never return a closure by construction — nothing to recover.
             closureRetTy = None,
-            recordRetClass = None
+            recordRetClass = None,
+            // Derive-synthesized free functions never return `Self`.
+            retIsSelf = false
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -878,7 +880,13 @@ func collectWovenSigsMatching(
             // target/wrapper and B'-mode specialisations); a closure-returning
             // woven function keeps the pre-fix Object-erased invoke result.
             closureRetTy = None,
-            recordRetClass = None
+            recordRetClass = None,
+            // Aspect/B'-mode-woven free functions: no Self-return
+            // substitution support in this synthesized-sig path (#6431 scopes
+            // the checkcast narrowing to `registerInstanceSigErased`'s
+            // impl/record/protected methods only) — conservative `false`
+            // leaves any such call erased, same as before this fix.
+            retIsSelf = false
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -998,7 +1006,11 @@ func collectMonoSpecializedSigs(
             // returning a generic record keeps the pre-fix Object-erased
             // call-result type rather than risk resolving against the wrong
             // file's record set.
-            recordRetClass = None
+            recordRetClass = None,
+            // Mono-specialised functions are free functions (monomorphized
+            // from a generic `func`), never impl/record methods — no `Self`
+            // return possible.
+            retIsSelf = false
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {

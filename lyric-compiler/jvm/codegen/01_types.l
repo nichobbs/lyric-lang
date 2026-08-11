@@ -87,6 +87,26 @@ pub record JvmFuncSig {
   // `JvmFuncSig` construction site other than the top-level free-function
   // registration, same discipline as `closureRetTy`.
   recordRetClass: Option[String]
+  // True when the DECLARED return type is (or paren-wraps) the bare `Self`
+  // type expression on an interface/impl/record method signature (#6431,
+  // the JVM analog of MSIL's D-progress-753/755 non-receiver-param fix).
+  // `ret` itself stays the erased `java/lang/Object` (`typeExprToJvm`'s
+  // `TSelf` arm, matching the interface slot's own erased descriptor) — this
+  // is a SEPARATE side-channel a call site consults to narrow the CALL
+  // RESULT with a `checkcast` to the receiver's own known concrete class
+  // right after `invokevirtual`/`invokeinterface`, mirroring how
+  // `recordRetClass` narrows a local-generic-record return, but keyed to the
+  // CALL SITE's receiver class rather than a class name fixed at
+  // registration time — the concrete class a `Self` return actually yields
+  // is whichever class the receiver itself is (`checkImplConformance`
+  // guarantees the impl/record method returns exactly its own target type).
+  // Only consulted when the call site's receiver has a known concrete class
+  // (`not sig.isIface`); an interface-typed receiver leaves the return
+  // erased — unreachable in practice, since the type checker already types
+  // such a call's result as the INTERFACE itself (T0113) before it reaches
+  // codegen. No default, same "no defaulted record field survives the F#
+  // stage-0 seed" constraint `isIface`/`recordRetClass` document above.
+  retIsSelf: Bool
 }
 
 // One field of a union case class, in declaration order.  A match binding
@@ -1592,7 +1612,8 @@ pub func tryQualifiedModuleValJvm(ctx: in FuncCtx, expr: in Expr): Option[JvmFun
                 isIface = false,
                 retGenericArgs = newList(),
                 closureRetTy = None,
-                recordRetClass = None
+                recordRetClass = None,
+                retIsSelf = false
               )
             )
           }
