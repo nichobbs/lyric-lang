@@ -27165,3 +27165,37 @@ both repros independently re-verified by the orchestrating session too):
 JVM twin and the investigation that found these), #6421/D-progress-753
 (the param-side mechanism this mirrors), #6437 (the enumerate-all-paths
 review lesson applied here up front).
+
+**Review addendum (#6439, same PR).** Review found the dispatch-path
+enumeration missed the RESTORED-dependency registration functions:
+`registerRestoredRecordMethod` and `registerRestoredIfaceMethod` add to
+`cctx.methodRetTypes` without populating `methodRetIsSelf`, and a
+restored decl's `Self` return genuinely round-trips through contract
+metadata as `TSelf` (`contract_meta.l` serializes the literal "Self").
+Both functions now populate the marker exactly as the same-assembly
+`registerMethodRetTy` does (the iface variant narrows an
+interface-typed receiver to the interface's own FQN — the same type the
+checker assigns per T0113, and interfaces expose no fields for the
+field-token path to mis-resolve). The review's suggestion to document
+why the MSIL narrow needs no `isIface` guard (unlike the JVM twin) was
+also taken as a comment on `narrowSelfCallResultMsil`: MSIL's `cls` IS
+the receiver's tracked static type FQN, whereas JVM's is the dispatch
+owner, which the verifier rejects in a checkcast for `invokeinterface`.
+
+END-TO-END CAVEAT, found while building the requested restored-path
+regression test: restored record-method dispatch is broken ENTIRELY
+today — a plain `Int`-returning method on a record from a
+`[dependencies] path` restore fails at runtime with "unsupported
+method 'peek' on the receiver type" before return types are ever
+consulted (verified with a real two-project build against the fixed
+compiler; same failure with and without this PR's changes). The marker
+fix is therefore verified at the registration level (mirrors the
+same-assembly code exactly) but CANNOT be exercised end-to-end until
+the dispatch gap is fixed — filed as #6440 with the repro and a note
+that this PR's marker population makes Self-returns work as soon as
+dispatch does. The bundled-assembly test harness
+(`msil_project_bridge_self_test.l`) never reaches the restored
+registration functions (its packages share one assembly via
+`addPackageTokens`), so no automated regression is possible in this PR
+without first building a true two-assembly harness — that lands with
+#6440's fix.

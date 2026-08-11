@@ -14096,6 +14096,16 @@ func lowerSliceSliceMsil(
 // `case MClass(cls) ->` arms in the `EMember` lowering), so no cast is needed
 // here either — this function only fixes which METHOD-DISPATCH/FIELD lookup
 // TABLE a later use of the call result consults, not the bytecode.
+// Unlike the JVM twin (`narrowSelfCallResult`, jvm/codegen/04_calls.l),
+// there is deliberately NO interface guard here (#6438 review): MSIL's
+// dispatch key IS the receiver's tracked static type's FQN, so an
+// interface-typed receiver narrows to `MClass(<iface FQN>)` — exactly the
+// type the checker itself assigns a Self-returning call through an
+// interface (T0113) — and interfaces expose no fields, so the field-token
+// path this narrowing exists to protect cannot mis-resolve through it.
+// The JVM twin needs its guard only because its `cls` is the DISPATCH
+// owner, which for `invokeinterface` is not a class the verifier will
+// accept in a checkcast against a class-typed slot.
 func narrowSelfCallResultMsil(cctx: in CodegenCtx, key: in String, cls: in String): MsilType {
   val isSelf = match mapGet(cctx.methodRetIsSelf, key) { case Some(b) -> b; case None -> false }
   if isSelf {
@@ -32152,6 +32162,16 @@ func registerRestoredRecordMethod(
   cctx.methodTokens.add(key, 0x0A000000 + memberRow)
   if not cctx.methodRetTypes.containsKey(key) {
     cctx.methodRetTypes.add(key, sigRetType)
+    // A restored decl's `Self` return round-trips through contract metadata
+    // as a literal `TSelf` (`contract_meta.l` serializes/re-parses "Self"),
+    // so the narrowing marker must be populated here exactly as the
+    // same-assembly `registerMethodRetTy` does — otherwise a Self-returning
+    // method from a restored/NuGet dependency reproduces #6434/#6435 at its
+    // consumers' call sites (#6439 review of PR #6438).
+    val retIsSelfRestored = match ret { case Some(te) -> isSelfTypeExprMsil(te); case None -> false }
+    if retIsSelfRestored and not cctx.methodRetIsSelf.containsKey(key) {
+      cctx.methodRetIsSelf.add(key, true)
+    }
   }
   // Also cache the param types/modes the call site needs, exactly as the
   // local-interface / same-assembly path does.  Without these
@@ -32258,6 +32278,16 @@ func registerRestoredIfaceMethod(
   // not Task<T>, so this stays correct for the callvirt/match paths.
   if not cctx.methodRetTypes.containsKey(key) {
     cctx.methodRetTypes.add(key, sigRetType)
+    // Mirror registerRestoredRecordMethod's marker population (#6439): a
+    // restored interface's `Self` return also round-trips as `TSelf`.  A
+    // consumer calling through an interface-typed receiver narrows to the
+    // interface's own FQN — the same type the checker assigns the result
+    // (T0113), so this is consistent, and interfaces expose no fields for
+    // the field-token path to mis-resolve.
+    val retIsSelfIface = match ret { case Some(te) -> isSelfTypeExprMsil(te); case None -> false }
+    if retIsSelfIface and not cctx.methodRetIsSelf.containsKey(key) {
+      cctx.methodRetIsSelf.add(key, true)
+    }
   }
   // Cache the param types/modes the call site needs, exactly as the
   // local-interface (same-assembly) pre-scan does.  Without these,
