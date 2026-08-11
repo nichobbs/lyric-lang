@@ -26519,6 +26519,16 @@ bridge code the catch now wraps.
 after the source change AND again after `./bin/lyric fmt --write`, which
 reflowed `jvm/bridge.l`'s new `try`/`catch` block onto the formatter's
 canonical layout — `02_exprs.l` needed no reflow):
+- `jvm_trycatch_bridge_self_test.l`: 3/3 dotnet (2 -> 3 — gains the
+  dedicated J007 erased-receiver case; the two pre-existing J004
+  throw-contract cases pass unchanged).
+- `jvm_impl_extern_class_self_test.l`: 3/3 dotnet (unchanged — the
+  J006 throw contract this PR's first draft would have broken, #6429).
+- `jvm_auto_ffi_bridge_self_test.l`: 6/6 dotnet (unchanged — same
+  throw-contract family).
+- `emitter_project_self_test.l`: gains the emitter-boundary containment
+  case (`emit(target = Jvm)` on the erased-receiver repro returns an
+  `EmitResult` failure with a diagnostic, no thrown exception).
 - `bare_func_ref_self_test.l`: 21/21 dotnet, 21/21 jvm (unchanged).
 - `impl_method_self_test.l`: 22/22 dotnet (unchanged).
 - `typechecker_self_test.l`: 302/302 dotnet-only (unchanged).
