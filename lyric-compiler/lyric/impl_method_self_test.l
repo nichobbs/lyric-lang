@@ -397,10 +397,13 @@ test "interface-typed function parameter dispatch with a Self receiver matching 
 // dispatched via the implicit `this` slot) and the RETURN position (call-site
 // `Self` substitution using the receiver's own static type, no field-name-
 // keyed lookup involved) never shared this mechanism and were already
-// unaffected — both are covered above/below. Refs #6421 (JVM's structured
-// refusal for the same erased-receiver shape is a separate, still-open rough
-// edge, #6422/#6357/#6347 — JVM correctly REJECTS at compile time instead of
-// guessing, and is unchanged by this MSIL-only fix).
+// unaffected — both are covered above/below. Refs #6421 (at the time of this
+// MSIL-only fix, JVM structurally REFUSED the same erased-receiver shape at
+// compile time under `error[J007]` rather than guessing — #6422/#6357/#6347;
+// #6426/D-progress-755 later shipped the JVM analog via real `checkcast`
+// emission, so the shape now WORKS end-to-end on `--target jvm` too — see
+// `bare_func_ref_self_test.l`'s dual-target `#6426` case for that coverage,
+// this file's own scope stays dotnet-only).
 interface Combiner6421 {
   func combine(self: in Self, other: in Self): Int
 }

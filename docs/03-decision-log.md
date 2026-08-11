@@ -26591,3 +26591,174 @@ case (the #6422 erased-receiver repro compiled in-process, asserting the
 code + package-qualified span + explanatory text) per the review's
 suggestion — the "no harness exists" claim in the first draft was wrong,
 that harness is exactly what these three files are.
+
+## D-progress-755 — JVM: non-receiver `Self`-typed impl params now work end-to-end via real `checkcast` emission, the JVM analog of MSIL's D-progress-753 fix (#6426)
+
+**Status:** ACCEPTED
+
+**Mechanism — entry-prologue `checkcast`, same slot, real bytecode (option
+(a) from the issue's own sketch; no viable alternative was needed).**
+D-progress-753's MSIL fix retypes a non-receiver `Self`-typed impl-method
+parameter's CODEGEN-INTERNAL static type only (`fctx.types`), leaving the
+real IL signature erased — sound on MSIL because the CLR JIT never enforces
+CIL type-safety verification at load time. D-progress-754 traced why that
+approach cannot port to JVM as-is: the JVM classfile verifier IS a
+mandatory, strict load-time gate, so a `getfield`/`invokevirtual` against a
+local whose REAL slot descriptor is `Ljava/lang/Object;` (the signature
+stays erased to match the interface slot, unchanged by this fix) fails
+`VerifyError` unless the local is narrowed by an actual `checkcast`
+instruction first.
+
+The fix adds `isSelfTypeExprJvm`/`emitSelfParamChecksJvm`
+(`jvm/codegen/06_items.l`), threaded into both `lowerImplMethod` (passing
+`targetClass`) and `lowerRecordMethod` (passing `className` — MSIL's
+`registerParamsMsil` covers both call sites too, D-progress-753). For each
+parameter whose declared type is (or paren-wraps) bare `Self`, it emits ONE
+entry-prologue sequence — `aload <slot>; checkcast <selfTypeName>` then
+`emitStore(insns, slot, JRef(selfTypeName))`, which lowers to `astore` via
+the existing `LAstoreAs` instruction (`01_types.l`'s `emitStore`, the SAME
+mechanism the if/match/try result-local and pattern-bind cast sites already
+use, #3307) — REUSING the parameter's existing slot number rather than
+allocating a fresh one. Reusing the slot (instead of mirroring
+`03_match.l`'s pattern-bind `allocSlot`-a-new-slot idiom) keeps an
+`inout`-mode param's holder write-through bookkeeping
+(`ctx.holderArraySlot`/`ctx.holderElemType`, both keyed by SLOT NUMBER, not
+name) valid with no further changes — a fresh slot would have orphaned
+those entries. `ctx.types[p.name]` is then retyped to the concrete
+`JRef(selfTypeName)` so every later read (field access, method-call
+receiver, byref reassignment) resolves through the pre-existing
+type-directed lookups instead of ever reaching the erased-`Object` fallback
+(`02_exprs.l`'s `error[J007]` refusal, D-progress-754). The emitted METHOD
+DESCRIPTOR is untouched — still `Ljava/lang/Object;`, still matching the
+interface slot — mirroring MSIL's "signature untouched, bookkeeping only"
+property even though the JVM side additionally needs real bytecode.
+
+**Soundness.** `checkImplConformance` (D-progress-751/#6417) only accepts a
+`Self`-typed argument at a `Self`-declared parameter position when it
+resolves to EXACTLY the impl/record's own target type, so the `checkcast`
+can never throw for a checker-accepted program — the same argument
+D-progress-753 and the issue's own sketch made for MSIL/JVM respectively.
+
+**Verifier interaction — confirmed with a real `java` run and `javap -v`,
+not just successful emission.** The entry-prologue cast is straight-line
+code before any branch, so there is no cross-basic-block frame-consistency
+question; `javap -v` on a built two-record repro
+(`Repro.TwinB.combine(Ljava/lang/Object;)I`) shows the descriptor stays
+`(Ljava/lang/Object;)I`, the body opens `aload_1; checkcast Repro/TwinB;
+astore_1`, both subsequent `getfield`s resolve against `Repro/TwinB`, and
+the method needs no `StackMapTable` at all (no branches to need one) —
+`java -jar` on the repro exits 0 with the correct arithmetic (`20 + 22 =
+42`). A separate `inout Self` repro (holder-array unwrap + re-cast into the
+SAME value slot) and a plain `in Self` field-WRITE repro (`other.base = v`,
+observed by the caller through reference semantics) both also build, verify,
+and run correctly under `java`.
+
+**`inout Self`: SHIPPED**, not deferred — the same entry-cast mechanism
+covers it because `setupInstanceParamSlotsAndHolders` already unwraps a
+holder param into a plain value slot before `emitSelfParamChecksJvm` runs;
+casting that value slot in place (same slot number) needed no special-casing
+for the holder path.
+
+**Scope boundary found while verifying — Self as a RETURN type is a
+SEPARATE, pre-existing, untouched JVM gap.** The task's own verification
+list included "Self-return dispatch"; `grep -n "TSelf"
+jvm/codegen/*.l` shows exactly two sites both BEFORE this fix and after —
+`typeExprToJvm`'s always-erased `TSelf -> JRef("java/lang/Object")` and this
+fix's own `isSelfTypeExprJvm` — confirming JVM has NO call-site
+substitution for a `func dup(self: in Self): Self`-shaped method's return
+value (MSIL has a separate, pre-existing mechanism for this per
+D-progress-753's own text: "the RETURN position … never shared this
+mechanism"). A `Box { func dup(self: in Self): Self }` repro
+(`b.dup().v`) still fails `error[J007]` on `--target jvm` after this fix,
+unchanged from before — out of #6426's stated scope (non-receiver PARAMS
+only; the issue's acceptance criteria never mention return dispatch) and
+NOT fixed here. `impl_method_self_test.l`'s existing Self-return coverage
+stays dotnet-only, unaffected. Filed as a follow-up (see issue tracker).
+
+**J007 still fires for a genuinely-unknown erased receiver — confirmed with
+a fresh repro.** A user-defined generic union's case payload
+(`union Box[T] { case Full(value: T); case Empty }`, `match b { case
+Full(w) -> w.n }` where `b: Box[Widget]`) still refuses under `error[J007]`:
+`scrutineeGenericArgs` (`03_match.l`) only recovers a bare-name scrutinee's
+concrete instantiation from `ctx.varGenericArgs`, which
+`recordDeclaredElemType` (`01_types.l`) populates ONLY for a `TSlice` or a
+bare `List[Elem]` parameter — an arbitrary user generic type (`Box[T]`) is
+never recorded, so the case-payload bind stays boxed `Object`. This is the
+same panic FAMILY #6347/#6357 report against a real generic-collection-element
+read; that root cause stays open, untouched by this fix, exactly as
+D-progress-754 documented.
+
+**Test-repro rewrites (both were pinning the EXACT shape this fix now
+makes work, so both had to change to keep pinning J007 rather than start
+passing).** `jvm_trycatch_bridge_self_test.l`'s J007 case and
+`emitter_project_self_test.l`'s containment case both previously used the
+`TwinA`/`Combiner`/non-receiver-`Self`-param repro (`other: in Self`,
+`other.base`) — that repro now compiles and runs cleanly under this fix, so
+both were rewritten to the `Box[T]`/generic-union-payload repro above
+(no stdlib import needed, matching these files' existing bare-language
+repro style; an earlier draft tried a `Map[String, Widget]` bracket-index
+repro instead, which also stays genuinely erased per
+`erased_element_checkcast_jvm_self_test.l`'s documented Map-value gap, but
+needed `import Std.Collections` inside the embedded source string and
+`Jvm.Bridge.compileToJarBundled`'s bundling model does not resolve a
+stdlib import for an in-process-compiled source string the way a full
+`lyric build` does — the union repro avoids that entirely). Both message
+assertions (code, package-qualified span, explanatory text) are unchanged;
+only the triggering program changed.
+
+**Regression coverage.** `bare_func_ref_self_test.l` (dual-target, CI-wired
+on both targets) gains two new cases: a field-READ case (two same-package
+records sharing a field name `base`, the D-progress-751-shaped collision
+regression guard) and a field-WRITE case (`other.base = v`, asserting the
+caller observes the mutation through reference semantics, not a silent
+no-op) — both green on `--target dotnet` AND `--target jvm`. `inout Self`
+is exercised only by the ad hoc verification repro above, not added to the
+CI-wired battery (the existing dotnet-only `impl_method_self_test.l`
+already carries the `inout Self` case on MSIL; a JVM-side CI case is a
+reasonable low-cost follow-up but was not required by the issue's
+acceptance criteria and is left for a future PR to keep this diff scoped).
+`impl_method_self_test.l`'s own `#6421`-era comment (documenting JVM's
+then-current REJECT behaviour for this shape) is corrected to note #6426
+shipped the JVM analog, without adding new dotnet-only cases (its own scope
+stays MSIL-only; the dual-target case lives in `bare_func_ref_self_test.l`).
+
+**Verification — full battery, all green, both targets where wired**
+(rebuilt via `make lyric` twice — once for the source change, once more
+after fixing a doc-comment ordering bug the first `Edit` introduced — and
+`./bin/lyric fmt --write` clean/idempotent on every changed `.l` file):
+
+- Repro (issue's own `TwinB`/`combine` shape): `--target jvm` exits 0 with
+  the correct value (`42`); `javap -v` confirms the erased descriptor +
+  real `checkcast` + no `StackMapTable` needed. `--target dotnet` parity:
+  exits 0.
+- Field-WRITE repro (`Cell`/`Setter`, `var base: Int`): both targets exit 0,
+  caller observes the mutation.
+- `inout Self` repro (`Bumped`/`Bumper`): both targets exit 0.
+- J007-still-fires repro (`Box[T]` generic-union payload): still refused
+  under `error[J007]` on `--target jvm`, unchanged.
+- `bare_func_ref_self_test.l`: 24/24 dotnet (up from 21/21), 24/24 jvm (up
+  from 21/21; the third new case, per the PR review, pins the
+  `lowerRecordMethod` wiring point — a record BODY method with a
+  non-receiver `Self` param, no impl block. The interface-DEFAULT-method
+  path is deliberately unpinned: default-method inheritance without an
+  override crashes at runtime on both targets today, pre-existing,
+  filed as #6433 while probing this review suggestion).
+- `jvm_trycatch_bridge_self_test.l`: 3/3 (repro rewritten, still green).
+- `emitter_project_self_test.l`: 24/24 (repro rewritten, still green).
+- `jvm_impl_extern_class_self_test.l`: 3/3.
+- `jvm_auto_ffi_bridge_self_test.l`: 6/6.
+- `impl_method_self_test.l`: 22/22 dotnet-only (unchanged; comment-only
+  edit).
+- `typechecker_self_test.l`: 302/302.
+- `msil_project_bridge_self_test.l`: 39/39.
+- `synthesized_method_self_test.l`: 10/10 dotnet, 10/10 jvm.
+- `stdlib_generic_iface_self_test.l`: 20/20 dotnet, 20/20 jvm.
+- `aspect_weave_self_test.l`: 7/7 dotnet, 7/7 jvm.
+- `bitwise_self_test.l`: 10/10 dotnet, 10/10 jvm.
+- `generic_jvm_self_test.l`: 24/24 jvm.
+- `scripts/ilverify-selfhosted.sh`: 119/119 DLLs, 0 IL-validity errors
+  (same pre-existing extern-FFI resolution infos as the D-progress-751–754
+  baseline).
+
+Refs #6426, #6421, #6422, D-progress-753, D-progress-754, #6417/D-progress-751
+(the soundness argument this fix relies on).
