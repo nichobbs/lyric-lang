@@ -1548,20 +1548,6 @@ pub func compileProjectToJarBundledWithFeatures(
 
   // User package first (its codegen failing is always fatal).  Its type-check
   // errors gate fatally (they are about the program the user actually wrote).
-  //
-  // The codegen call itself is wrapped in `try`/`catch Bug` (#6422): before
-  // this, a codegen-level refusal (e.g. the "member cannot be resolved on an
-  // erased receiver" guard in `codegen/02_exprs.l`) escaped as an unhandled
-  // `panic`/`Bug` all the way through `Lyric.Emitter`/the CLI dispatcher —
-  // an exception with a raw host stack trace instead of a build diagnostic,
-  // and (via `lyric test`'s per-file loop, which only tolerates an `EmitResult`
-  // carrying diagnostics, not a thrown exception) it aborted the WHOLE `lyric
-  // test` process rather than failing just the one file (#6357/#6347 name the
-  // same underlying panic family).  Mirrors the referenced-package catch
-  // below: a panic that already carries its own `error[J00N]:` code (J004,
-  // J005, J006, …) is passed through untouched; anything else is wrapped
-  // under J007 here (distinct from J002's "referenced package" wording — this
-  // IS the entry package, always fatal, never a silent J003 skip).
   match runMiddleEnd(userFile, importedPkgs, stdlibGenFuncs, allTemplates, true, "") {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
@@ -1602,31 +1588,16 @@ pub func compileProjectToJarBundledWithFeatures(
       // call site, producing a NoSuchMethodError for a phantom static method
       // (#4600).  `collectFileCtors` first-wins-guards the same way.
       collectFileCtors(f, ctorReg)
-      val userOk = try {
-        codegenPackageInto(
-          f,
-          registry,
-          caseReg,
-          ctorReg,
-          autoFfi,
-          allProjFqns,
-          allClasses,
-          externSeedForFile(f, extPkgNames, extPkgMaps)
-        )
-        true
-      } catch Bug as b {
-        if b.message.startsWith("error[J0") {
-          Console.error(b.message)
-        } else {
-          Console.error(
-            "error[J007]: JVM codegen failed for entry package '" + dottedPath(userFile.packageDecl.path) + "': " + b.message
-          )
-        }
-        false
-      }
-      if not userOk {
-        return false
-      }
+      codegenPackageInto(
+        f,
+        registry,
+        caseReg,
+        ctorReg,
+        autoFfi,
+        allProjFqns,
+        allClasses,
+        externSeedForFile(f, extPkgNames, extPkgMaps)
+      )
     }
     case None -> return false
   }

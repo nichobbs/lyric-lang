@@ -26369,7 +26369,7 @@ diagnostic code for the exact #6422 panic).** Two changes:
 
 1. `lyric-compiler/jvm/codegen/02_exprs.l`: the specific panic #6422
    quotes (Object-erased receiver, no registered field/count/length
-   fallback) now self-tags its message with `error[J006]: <dottedPkg>:
+   fallback) now self-tags its message with `error[J007]: <dottedPkg>:
    <line>:<col>: …` — the same convention `05_stmts.l`'s J004 and
    `04_calls.l`'s J005 already established (the codegen tree returns a
    bare `JvmType`, not a diagnostics-collecting `Result`, so the
@@ -26382,34 +26382,37 @@ diagnostic code for the exact #6422 panic).** Two changes:
    different, narrower scenario than an erased-Object receiver) is left
    unprefixed; it, and every other uncoded codegen panic, are now
    covered generically by (2) below.
-2. `lyric-compiler/jvm/bridge.l`: the entry-package `codegenPackageInto`
-   call inside `compileProjectToJarBundledWithFeatures` (which backs
-   both `compileToJarBundledWithFeatures`/single-file builds and
-   `compileProjectToJarBundledWithFeatures`/manifest project builds — the
-   only two paths `Lyric.Emitter` calls for `--target jvm`) is now
-   wrapped in `try { … } catch Bug as b { … }`, mirroring the existing
-   referenced-package catch immediately below it in the same function. A
-   panic already carrying an `error[J0`-prefixed code (J004, J005, J006,
-   …) is echoed verbatim; anything else — including line 1426's
-   sibling panic, the `JArray`/primitive-receiver panics further down
-   the same function, and any panic anywhere else in codegen reachable
-   from the entry package — is wrapped as `error[J007]: JVM codegen
-   failed for entry package '<pkg>': <message>` (a new code, distinct
-   from J002's "referenced package" wording, since this catch is always
-   fatal — the entry package is never a silent J003 skip). Either way
-   `Console.error` prints the message and the function returns `false`,
-   which `Lyric.Emitter` turns into a normal `EmitResult` failure
-   diagnostic — the SAME contract a T00xx type error already produces,
-   so every existing caller (`cli_build.l`, `cli_run.l`, `cli_test.l`'s
-   both single-file and manifest loops) handles it for free with no
-   caller-side changes.
+2. `lyric-compiler/lyric/emitter.l`: all three `JvmBridge` call sites
+   (`emitProjectJvmInProcess`'s multi-package and single-package paths,
+   and the single-file `emit` path — the only paths the CLI reaches for
+   `--target jvm`) are wrapped in `try { … } catch Bug as b {
+   jvmBridgePanicToStderr(b) }`. A panic already carrying an
+   `error[J0`-prefixed code (J004, J005, J007, …) is echoed verbatim;
+   anything else — the sibling unprefixed `EMember` panics, and any
+   panic anywhere in codegen — is wrapped as `error[J008]: JVM codegen
+   failed: <message>` (J006 was NOT reusable: `06_items.l` already
+   emits `error[J006]` for `impl <Class> for` on a non-interface —
+   found in review, #6430). The catch arm yields `false`, which routes
+   into the existing `failResult("JVM compilation failed (see
+   stderr)")` paths — the SAME contract a T00xx type error already
+   produces, so `cli_build.l`/`cli_run.l`/`cli_test.l` (single-file and
+   manifest loops) handle it with no caller-side changes. Containment
+   deliberately does NOT live inside `Jvm.Bridge` itself: the bridge's
+   throw-on-refusal behavior is a load-bearing library contract that
+   the in-process diagnostic self-tests
+   (`jvm_trycatch_bridge_self_test.l`, `jvm_impl_extern_class_self_test.l`,
+   `jvm_auto_ffi_bridge_self_test.l`, the first two CI-wired) assert on
+   directly (`try { compileToJarBundled(…) } catch Bug as b { … }` +
+   message-content checks) — an earlier draft of this fix caught at the
+   bridge's entry-package codegen call and broke all three (found in
+   review, #6429).
 
 **Verification — before/after on the exact #6422 repro** (`combine`
 reading a non-receiver `other: in Self` field, two records sharing the
 `base` field name — the D-progress-751 shape):
 ```
 $ ./bin/lyric build --target jvm repro6422.l   # AFTER
-error[J006]: Repro:15:17: member 'base' cannot be resolved on an erased (statically Object) receiver — the receiver's concrete type is unknown at this site, so the read would silently yield the receiver itself. Bind the value with an explicit type, or match on the concrete constructor first.
+error[J007]: Repro:15:17: member 'base' cannot be resolved on an erased (statically Object) receiver — the receiver's concrete type is unknown at this site, so the read would silently yield the receiver itself. Bind the value with an explicit type, or match on the concrete constructor first.
 B0001 error [1:1]: JVM compilation failed (see stderr)
 repro6422.l: build failed
 $ echo $?
@@ -26427,7 +26430,7 @@ complaint).** A two-test-file manifest (`bad_test.l` reproducing the
 `lyric test --manifest lyric.toml --target jvm`:
 ```
 == Testproj.BadTest (tests/bad_test.l)
-error[J006]: Testproj.BadTest:16:17: member 'base' cannot be resolved on an erased (statically Object) receiver — …
+error[J007]: Testproj.BadTest:16:17: member 'base' cannot be resolved on an erased (statically Object) receiver — …
 B0001 error [1:1]: JVM compilation failed (see stderr)
 ./tests/bad_test.l: test build failed
 == Testproj.GoodTest (tests/good_test.l)
@@ -26555,3 +26558,26 @@ surface and first named this JVM gap as #6422), D-progress-753 (the MSIL
 sibling fix this entry's "analog fix" section traces and explains why the
 JVM port is not a mechanical port), #6421/#6417/#6408 (the same
 `Self`-in-impl surface on the front end and MSIL backend).
+
+**Review addendum (#6429/#6430, same PR).** The first draft of this fix
+placed the catch inside `Jvm.Bridge.compileProjectToJarBundledWithFeatures`
+(around the entry-package `codegenPackageInto` call) and minted the
+erased-receiver code as J006 / the catch-all as J007. Review found both
+choices wrong: (a) the bridge-level catch swallowed the `Bug` that three
+CI-gated in-process diagnostic self-tests
+(`jvm_trycatch_bridge_self_test.l`, `jvm_impl_extern_class_self_test.l`,
+`jvm_auto_ffi_bridge_self_test.l`) deliberately provoke and assert
+message content on — the throw IS the bridge's library contract (#6429);
+(b) `error[J006]` was already taken by `06_items.l`'s `impl <Class> for`
+non-interface refusal (#6430). Final design (reflected in the corrected
+prose above): the erased-receiver refusal is `error[J007]`, the
+uncoded-panic wrapper is `error[J008]`, and containment lives at the
+`Lyric.Emitter` boundary (`jvmBridgePanicToStderr`, wrapping all three
+`JvmBridge` call sites), so the bridge keeps throwing for library
+callers while the CLI still gets structured output and per-file `lyric
+test` containment. The three previously-broken self-tests pass
+unchanged, and `jvm_trycatch_bridge_self_test.l` gains a dedicated J007
+case (the #6422 erased-receiver repro compiled in-process, asserting the
+code + package-qualified span + explanatory text) per the review's
+suggestion — the "no harness exists" claim in the first draft was wrong,
+that harness is exactly what these three files are.

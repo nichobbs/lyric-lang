@@ -143,3 +143,51 @@ test "generic fn: try/catch where every arm yields the type param still compiles
   assertTrue(not panicked, "a value-yielding catch arm must not raise J004 (message: " + caughtMessage + ")")
   assertTrue(ok, "try-catch expression with matching-type arms compiles successfully")
 }
+
+// #6422: the erased-receiver member-access refusal (`jvm/codegen/02_exprs.l`)
+// must raise a Bug whose message is self-tagged `error[J007]: <pkg>:<line>:
+// <col>: ...` — the code at the very front so `Jvm.Bridge`/`Lyric.Emitter`'s
+// `startsWith("error[J0")` passthrough re-emits it verbatim as a structured
+// diagnostic (no J008 double-wrap, no raw stack trace).  The repro is a
+// checker-legal (#6417) non-receiver `Self`-typed impl param whose field is
+// read — the receiver is statically Object on JVM until #6426 ships real
+// checkcast emission.
+test "erased-receiver member access aborts codegen under error[J007] with a package-qualified span (#6422)" {
+  val dir = freshTempDir("erased-receiver-j007")
+  val outPath = Path.join(dir, "ErasedRecv.jar")
+  val source = "package ErasedRecv.App\n" + "\n" + "record TwinA {\n" + "  base: Int\n" + "}\n" + "\n" +
+    "interface Combiner {\n" +
+    "  func combine(self: in Self, other: in Self): Int\n" +
+    "}\n" +
+    "\n" +
+    "impl Combiner for TwinA {\n" +
+    "  func combine(self: in TwinA, other: in Self): Int {\n" +
+    "    self.base + other.base\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  val x = TwinA(base = 40)\n" +
+    "  val y = TwinA(base = 2)\n" +
+    "  println(x.combine(y))\n" +
+    "}\n"
+  val noStdlib: List[String] = newList()
+  var panicked = false
+  var caughtMessage = ""
+  try {
+    compileToJarBundled(source, outPath, "ErasedRecv", noStdlib, "")
+  } catch Bug as b {
+    panicked = true
+    caughtMessage = b.message
+  }
+  cleanup(dir)
+  assertTrue(panicked, "field access through an erased (statically Object) receiver must abort JVM codegen")
+  assertTrue(
+    Str.contains(caughtMessage, "error[J007]: ErasedRecv.App:"),
+    "diagnostic carries the J007 code and the owning package (dotted) ahead of line:col (got: " + caughtMessage + ")"
+  )
+  assertTrue(
+    Str.contains(caughtMessage, "cannot be resolved on an erased (statically Object) receiver"),
+    "diagnostic keeps its explanatory text (got: " + caughtMessage + ")"
+  )
+}

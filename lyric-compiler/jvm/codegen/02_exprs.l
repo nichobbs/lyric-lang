@@ -1406,7 +1406,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                         // here — the exact silent-wrong-value shape the `.count`
                         // comment above records having caused once (docs/59
                         // §4.4).  Fail loud at compile time instead, with an
-                        // `error[J006]:`-prefixed message (#6422): the codegen
+                        // `error[J007]:`-prefixed message (#6422): the codegen
                         // tree returns `JvmType`, not a diagnostic-collecting
                         // Result, so this still goes through `panic`/`Bug`, but
                         // self-tagging with the code — same convention as J004
@@ -1417,7 +1417,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                         val posEm = recv.span.startPos
                         val dottedPkgEm = ctx.pkgName.replace("/", ".")
                         panic(
-                          "error[J006]: " + dottedPkgEm + ":" + toString(posEm.line) + ":" + toString(posEm.column) + ": member '" +
+                          "error[J007]: " + dottedPkgEm + ":" + toString(posEm.line) + ":" + toString(posEm.column) + ": member '" +
                             memberName +
                             "' cannot be resolved on an erased (statically Object) receiver — the receiver's concrete type " +
                             "is unknown at this site, so the read would silently yield the receiver itself. " +
