@@ -429,6 +429,17 @@ pub record CodegenCtx {
   // `MObject`, so union pattern tests/binds mis-extracted the payload and the
   // wrong arm fired (#1602).  Mirrors `funcRetTypes` for direct static calls.
   methodRetTypes: Map[String, MsilType]
+  // Whether the DECLARED (pre-erasure) return of this instance/interface
+  // method is (or paren-wraps) bare `Self`, keyed identically to
+  // `methodRetTypes` (#6434/#6435, the MSIL analog of JVM's `retIsSelf` on
+  // `JvmFuncSig`, D-progress-756).  `methodRetTypes[key]` itself stays the
+  // erased `MObject` for a `Self` return (matching `typeExprToMsilCtx`'s
+  // unconditional `TSelf -> MObject`, needed so the registered type still
+  // matches the real emitted signature); this side table lets a call site
+  // that already knows its own receiver's concrete `MClass(cls)` narrow the
+  // CALL RESULT's tracked type to that same `cls` instead of leaving it
+  // erased.  See `narrowSelfCallResultMsil` for the call-site mechanism.
+  methodRetIsSelf: Map[String, Bool]
   // Declared MSIL parameter type per instance/interface/impl method parameter,
   // keyed `<FQClassName>/<methodName>#<paramIndex>` (0-based, excluding the
   // implicit `this`).  `lowerMethodCallMsil` consults it so a value-type
@@ -1941,6 +1952,7 @@ pub func newCodegenCtx(
     lambdaTicker = newList(),
     methodTokens = newMap(),
     methodRetTypes = newMap(),
+    methodRetIsSelf = newMap(),
     methodParamTypes = newMap(),
     methodParamModes = newMap(),
     implEntries = newList(),
@@ -2049,10 +2061,17 @@ pub func newCodegenCtx(
 // ("FQClassName/methodName").  A body-less signature (`None` ret) maps to
 // MVoid.  First registration wins so a concrete impl method does not clobber an
 // already-recorded entry.  Consumed by `lowerMethodCallMsil` (#1602).
+// Also records, under the same key and the same first-registration-wins gate,
+// whether the RAW (pre-erasure) `ret` is (or paren-wraps) bare `Self`
+// (#6434/#6435) — `isSelfTypeExprMsil` is checked against `te` directly, so
+// this is decided BEFORE `typeExprToMsilCtx` erases a `Self` return to
+// `MObject` above.
 func registerMethodRetTy(cctx: in CodegenCtx, key: in String, ret: in Option[TypeExpr], pkgName: in String): Unit {
   if not cctx.methodRetTypes.containsKey(key) {
     val mty = match ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
     cctx.methodRetTypes.add(key, mty)
+    val isSelf = match ret { case Some(te) -> isSelfTypeExprMsil(te); case None -> false }
+    cctx.methodRetIsSelf.add(key, isSelf)
   }
 }
 
@@ -2081,9 +2100,15 @@ func registerMethodParamModes(cctx: in CodegenCtx, key: in String, params: in Li
 }
 
 // MsilType-direct variant of `registerMethodRetTy`; first registration wins.
-func registerMethodRetTyMsil(cctx: in CodegenCtx, key: in String, mty: in MsilType): Unit {
+// `isSelf` is the impl method's own RAW (pre-erasure) `Self`-return check —
+// callers that already erased `ret` to an `MsilType` (impl-method
+// registration, which needs `implImplRetTys` computed up front for the row
+// budget, #878) pass it in explicitly since this function has no `TypeExpr`
+// of its own to check (#6434/#6435).
+func registerMethodRetTyMsil(cctx: in CodegenCtx, key: in String, mty: in MsilType, isSelf: in Bool): Unit {
   if not cctx.methodRetTypes.containsKey(key) {
     cctx.methodRetTypes.add(key, mty)
+    cctx.methodRetIsSelf.add(key, isSelf)
   }
 }
 
@@ -2759,6 +2784,11 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
   // the methodRetTypes registration below reports a real type to call sites
   // that dispatch on the concrete receiver (e.g. `self.save(updated)`) (#1602).
   val implImplRetTys: List[MsilType] = newList()
+  // Parallel to implImplNames: whether the impl method's RAW (pre-erasure)
+  // declared return is (or paren-wraps) bare `Self` (#6434/#6435) — computed
+  // here, alongside `implImplRetTys`, because `registerMethodRetTyMsil` below
+  // only sees the already-erased `MsilType` for this call site.
+  val implImplRetIsSelf: List[Bool] = newList()
   var ipi = 0
   while ipi < file.items.count {
     match file.items[ipi].kind {
@@ -2771,6 +2801,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               implImplTargets.add(targetName)
               implImplNames.add(fn.name)
               implImplRetTys.add(match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid })
+              implImplRetIsSelf.add(match fn.ret { case Some(te) -> isSelfTypeExprMsil(te); case None -> false })
               // Real-param list excludes an explicit `self` receiver (D037;
               // same fix as interface registration above, #6408) — an impl
               // method may spell its receiver explicitly
@@ -2987,7 +3018,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         while ni < implImplTargets.count {
           if implImplTargets[ni] == className {
             cctx.methodTokens.add(className + "/" + implImplNames[ni], 0x06000000 + methodDefRow)
-            registerMethodRetTyMsil(cctx, className + "/" + implImplNames[ni], implImplRetTys[ni])
+            registerMethodRetTyMsil(cctx, className + "/" + implImplNames[ni], implImplRetTys[ni], implImplRetIsSelf[ni])
             methodDefRow = methodDefRow + 1
           }
           ni = ni + 1
@@ -3074,7 +3105,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         while ni < implImplTargets.count {
           if implImplTargets[ni] == className {
             cctx.methodTokens.add(className + "/" + implImplNames[ni], 0x06000000 + methodDefRow)
-            registerMethodRetTyMsil(cctx, className + "/" + implImplNames[ni], implImplRetTys[ni])
+            registerMethodRetTyMsil(cctx, className + "/" + implImplNames[ni], implImplRetTys[ni], implImplRetIsSelf[ni])
             methodDefRow = methodDefRow + 1
           }
           ni = ni + 1
@@ -13694,10 +13725,14 @@ func lowerBuiltinOrStaticCallMsil(
                 si = si + 1
               }
               insns.add(MCallvirt(methodToken = sibTok))
-              match mapGet(cctx.methodRetTypes, sibKey) {
-                case Some(rty) -> rty
-                case None -> MObject
-              }
+              // A bare sibling call to a `Self`-returning method narrows
+              // against the enclosing method's own class (#6434/#6435,
+              // mirroring JVM's #6431/#6437 bare-sibling narrowing) — for a
+              // non-interface `fctx.className` this IS the concrete
+              // receiver; for an interface DIM body it is the interface
+              // itself, still a sound (if less precise) narrowing since MSIL
+              // dispatches both through the same `callvirt`.
+              narrowSelfCallResultMsil(cctx, sibKey, fctx.className)
             } else {
               // Cross-package call without a registered token: walk args for
               // side effects and yield MObject as a defensive default.  In
@@ -14030,6 +14065,45 @@ func lowerSliceSliceMsil(
       emitSliceCopyLoopMsil(cctx, fctx, insns, recvSlot, recvTy, startSlot, cntSlot, newSlot, None, MObject, zeroSlot)
       emitLoadSlot(insns, newSlot, fctx.paramCount)
       MObject
+    }
+  }
+}
+
+// A `Self`-declared return substituted against the CALL SITE's own known
+// concrete receiver class (#6434/#6435, the MSIL analog of JVM's
+// `narrowSelfCallResult`, #6431/D-progress-756).  `cctx.methodRetTypes[key]`
+// stays the erased `MObject` (matching the interface slot's own descriptor,
+// needed so the registered type still matches the real emitted signature —
+// the actual method-call IL is unaffected, see below); when
+// `cctx.methodRetIsSelf[key]` is set, the CODEGEN-INTERNAL tracked type this
+// function returns is narrowed from the erased fallback to `MClass(cls)` —
+// `cls` is the call site's OWN resolved receiver class, not something looked
+// up separately, mirroring `registerParamsMsil`'s non-receiver-`Self`-param
+// fix (#6421/D-progress-753) applied to the RETURN position instead.
+//
+// NO IL is emitted here (unlike JVM's `checkcast`-emitting counterpart): the
+// CLR JIT does not enforce CIL type-safety verification at load time for
+// ordinary trusted assemblies (D-progress-753's own finding), so a `callvirt`
+// against a virtual method resolved from a LATER, correctly-narrowed
+// `MClass(cls)` dispatch key dispatches through the object's REAL runtime
+// vtable regardless of the erased-`object` static descriptor the CALL that
+// produced the receiver used — the callee genuinely IS an instance of `cls`
+// whenever `sig`'s `Self` return type-checked (`checkImplConformance` only
+// ever accepts a `Self`-declared return as EXACTLY the impl/record's own
+// target type), so this narrowing can never desync from the real runtime
+// type. A subsequent field read through the narrowed receiver already emits
+// its own `MCastclassByName` at the FIELD-READ site (the pre-existing
+// `case MClass(cls) ->` arms in the `EMember` lowering), so no cast is needed
+// here either — this function only fixes which METHOD-DISPATCH/FIELD lookup
+// TABLE a later use of the call result consults, not the bytecode.
+func narrowSelfCallResultMsil(cctx: in CodegenCtx, key: in String, cls: in String): MsilType {
+  val isSelf = match mapGet(cctx.methodRetIsSelf, key) { case Some(b) -> b; case None -> false }
+  if isSelf {
+    MClass(className = cls)
+  } else {
+    match mapGet(cctx.methodRetTypes, key) {
+      case Some(rty) -> rty
+      case None -> MObject
     }
   }
 }
@@ -14423,7 +14497,11 @@ func lowerMethodCallMsil(
           // type rather than `object`.  Tracking `object` made union pattern
           // tests/binds mis-extract the payload (the wrong arm fired) (#1602).
           // Falls back to MObject when the return type was not pre-registered.
-          return match mapGet(cctx.methodRetTypes, dispatchKey) { case Some(rty) -> rty; case None -> MObject }
+          // A `Self`-declared return additionally narrows against `cls` — this
+          // call site's own resolved receiver class — instead of staying
+          // erased (#6434/#6435); see `narrowSelfCallResultMsil`'s doc comment
+          // for the soundness argument and why no `castclass` is emitted here.
+          return narrowSelfCallResultMsil(cctx, dispatchKey, cls)
         }
         case None -> {
           // Synthesized free functions callable as instance methods (#1507):

@@ -487,3 +487,163 @@ test "non-receiver Self-typed param on a record BODY method, no impl block (#643
   val b = Pair6432(base = 2)
   assertEqualInt(a.plus(b), 42, "lowerRecordMethod's Self-param checkcast wiring resolves the field correctly")
 }
+
+// #6434/#6435 (D-progress-757): `Self`-typed method RETURN call-site
+// substitution on MSIL — the PARAM-position twin of #6426/#6432 just above,
+// applied to the RETURN position instead. Before this fix MSIL had NO
+// return-position `Self` handling at all: `typeExprToMsilCtx`'s
+// `TSelf -> MObject` erasure was unconditional, and the erased type is what
+// `registerMethodRetTy`/`registerMethodRetTyMsil` recorded, so a member
+// access through a `dup(): Self` call result fell into the package-wide,
+// field-NAME-only `fieldTokensByName` fallback (#6434,
+// `System.InvalidCastException` when two same-package records share a field
+// name — the RETURN-side analog of D-progress-753's PARAM-side bug) and a
+// SECOND method call chained off the result had no class-directed dispatch
+// entry at all (#6435, an unhandled runtime `unsupported method` exception,
+// not even a diagnostic). Originally pinned JVM-only
+// (`self_return_call_site_jvm_self_test.l`, #6431/#6437) because JVM's
+// call-site-substitution mechanism (`narrowSelfCallResult`,
+// `jvm/codegen/04_calls.l`) had no MSIL counterpart; ported here (and the
+// JVM-only file deleted) now that `narrowSelfCallResultMsil`
+// (`msil/codegen.l`) closes the same gap on this target, using a
+// `methodRetIsSelf` side table (paralleling `methodRetTypes`) consulted at
+// each of MSIL's two reachable instance-call-with-tracked-receiver dispatch
+// sites (the explicit-receiver `MClass(cls)` branch of `lowerMethodCallMsil`,
+// and the bare intra-impl sibling-call branch of `lowerGeneralStaticCall`) —
+// MSIL needs no THIRD, holder-path-specific site the way JVM's
+// `lowerVirtualCallWithHolders` did: an MSIL `out`/`inout` argument is
+// handled INLINE in the same `MClass(cls)` dispatch block, not a separate
+// function, so the `Tagged6435`/`dupTagged` case below already exercises the
+// fixed path without any additional wiring. Unlike JVM's `checkcast`, no IL
+// is emitted at these call sites at all — the CLR JIT does not enforce CIL
+// type-safety verification at load time for ordinary trusted assemblies
+// (D-progress-753), so narrowing the CODEGEN-INTERNAL tracked type to
+// `MClass(cls)` is sufficient; a later field read through the narrowed
+// receiver already emits its own `MCastclassByName` at the existing
+// `case MClass(cls) ->` field-lowering arms.
+record TwinC6434 {
+  n: Int
+}
+
+record TwinD6434 {
+  n: Int
+}
+
+interface Cloner6434 {
+  func dup(self: in Self): Self
+}
+
+impl Cloner6434 for TwinC6434 {
+  func dup(self: in Self): Self {
+    TwinC6434(n = self.n + 1000)
+  }
+}
+
+impl Cloner6434 for TwinD6434 {
+  func dup(self: in Self): Self {
+    TwinD6434(n = self.n + 1)
+  }
+}
+
+test "direct call with a Self return type, val-bound (#6434/#6435, dual-target)" {
+  val b = TwinD6434(n = 41)
+  val b2 = b.dup()
+  assertEqualInt(b2.n, 42, "val-bound b2.n resolves TwinD6434's own field via the narrowed call result")
+}
+
+test "Self-return call-site substitution, two same-package records sharing a field name (#6434, dual-target)" {
+  val d = TwinD6434(n = 41)
+  val d2 = d.dup()
+  assertEqualInt(d2.n, 42, "d2.n resolves TwinD6434's own field, not TwinC6434's (guards against a name-only fallback)")
+}
+
+test "chained Self-returning calls narrow the receiver class at each call site (#6435, dual-target)" {
+  val d = TwinD6434(n = 40)
+  val d3 = d.dup().dup()
+  assertEqualInt(
+    d3.n,
+    42,
+    "each .dup() call re-narrows the result to TwinD6434 so the second call's field read resolves"
+  )
+}
+
+// A single-record shape (no field-name collision) as an additional guard:
+// the collision cases above already imply this passes, but pinning it
+// separately documents the simplest possible repro alongside the harder one.
+record Box6434 {
+  n: Int
+}
+
+interface SimpleCloner6434 {
+  func dup(self: in Self): Self
+}
+
+impl SimpleCloner6434 for Box6434 {
+  func dup(self: in Self): Self {
+    Box6434(n = self.n + 1)
+  }
+}
+
+test "direct call with a Self return type, single record, no field-name collision (#6434, dual-target)" {
+  val b = Box6434(n = 41)
+  val b2 = b.dup()
+  assertEqualInt(b2.n, 42, "single-record baseline: the narrowed call result resolves n correctly")
+}
+
+// A Self-returning method that ALSO carries an `inout` (holder) param — on
+// JVM this pinned a THIRD, separately-wired dispatch path
+// (`lowerVirtualCallWithHolders`, #6437); on MSIL the same `case MClass(cls)`
+// dispatch block already handles `out`/`inout` args inline, so this case is
+// a regression guard confirming that inline handling composes with the
+// return-narrowing fix rather than a sign a second MSIL fix was needed.
+record Tagged6435 {
+  n: Int
+}
+
+interface TagCloner6435 {
+  func dupTagged(self: in Self, tag: inout Int): Self
+}
+
+impl TagCloner6435 for Tagged6435 {
+  func dupTagged(self: in Tagged6435, tag: inout Int): Self {
+    tag = tag + 1
+    Tagged6435(n = self.n + 1)
+  }
+}
+
+test "Self return through the holder (inout-param) call path (#6435, dual-target)" {
+  val b = Tagged6435(n = 41)
+  var t = 7
+  val b2 = b.dupTagged(t)
+  assertEqualInt(b2.n, 42, "holder-path call result narrows to the receiver class and resolves n")
+  assertEqualInt(t, 8, "the inout write-back still lands after the narrowing")
+}
+
+// The bare intra-impl sibling call (`lowerGeneralStaticCall`'s
+// `ctx.selfClass` branch on MSIL, `#1722`'s dispatch site reused here):
+// `dup()` without a `self.` prefix inside a sibling method of the SAME impl
+// dispatches on the implicit receiver; the result narrows against the
+// enclosing method's own class.
+interface Duo6435 {
+  func dup(self: in Self): Self
+  func bumpViaSibling(self: in Self): Int
+}
+
+record Pair6435 {
+  n: Int
+}
+
+impl Duo6435 for Pair6435 {
+  func dup(self: in Pair6435): Self {
+    Pair6435(n = self.n + 1)
+  }
+  func bumpViaSibling(self: in Pair6435): Int {
+    val d = dup()
+    d.n
+  }
+}
+
+test "Self return through a bare sibling call inside the same impl (#6435, dual-target)" {
+  val p = Pair6435(n = 41)
+  assertEqualInt(p.bumpViaSibling(), 42, "bare dup() narrows against the enclosing impl's own class")
+}

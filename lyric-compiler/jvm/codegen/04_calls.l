@@ -2163,12 +2163,20 @@ func narrowStaticCallResult(insns: in List[LInsn], sig: in JvmFuncSig): JvmType 
 // CALL SITE's receiver class (`cls`) rather than a class name fixed at
 // signature-registration time — the concrete class a `Self` return actually
 // yields is whichever class the receiver itself is, not something knowable
-// when the sig was registered. Callers pass this ONLY for a non-interface
-// dispatch (`not sig.isIface`, `LInvokevirtual`); an interface-typed
-// receiver's `Self` return stays erased — unreachable in practice, since the
-// type checker already types such a call's result as the INTERFACE itself
-// (T0113) before it reaches codegen.
+// when the sig was registered. Callers should pass this only for a
+// non-interface dispatch (`not sig.isIface`, `LInvokevirtual`) — an
+// interface-typed receiver's `Self` return stays erased, unreachable in
+// practice since the type checker already types such a call's result as the
+// INTERFACE itself (T0113) before it reaches codegen — but the function is
+// self-enforcing via the `sig.isIface` early-out below, so a caller that
+// forgets the guard (or a future dispatch path added without noticing this
+// convention) degrades to the pre-fix erased-`sig.ret` behaviour instead of
+// emitting an unsound `checkcast` against an interface-typed value (#6436
+// review disposition).
 func narrowSelfCallResult(insns: in List[LInsn], sig: in JvmFuncSig, cls: in String): JvmType {
+  if sig.isIface {
+    return sig.ret
+  }
   if sig.retIsSelf {
     insns.add(LCheckcast(className = cls))
     JRef(className = cls)

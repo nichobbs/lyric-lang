@@ -27071,3 +27071,97 @@ taken: `jvm_trycatch_bridge_self_test.l` 4 -> 6 (slice-receiver bogus
 member -> J010; primitive-receiver member read -> J011, both asserting
 code + package-qualified span + explanatory text). docs/44's m-95 row
 qualified accordingly.
+
+---
+
+## D-progress-757 — MSIL: `Self`-typed method RETURN call-site narrowing (#6434 field-token collision, #6435 chained-call dispatch), completing dual-target `Self`-position soundness
+
+**Status:** ACCEPTED
+
+**Root cause (confirmed as D-progress-756's investigation found).** MSIL had
+no return-position `Self` handling at all: `typeExprToMsilCtx`'s
+`TSelf -> MObject` arm erased the tracked return unconditionally, and the
+per-method return-type registration (`registerMethodRetTy` /
+`registerMethodRetTyMsil`) stored that erased type. Two consequences,
+both confirmed against pre-fix `main`: (a) a member access through the
+call result fell to the package-wide, field-NAME-only `fieldTokensByName`
+fallback — the wrong record's field token on a same-package field-name
+collision, `InvalidCastException` at runtime (#6434, the return-side twin
+of the D-progress-753 param bug; the single-record cases
+`impl_method_self_test.l` pinned passed only by first-writer-wins
+accident); (b) a chained second call (`b.dup().dup()`) dispatched against
+an untracked `MObject` receiver with no fallback — unhandled
+`System.Exception: unsupported method 'dup' ...` at runtime (#6435).
+
+**Fix — the MSIL analog of JVM's `narrowSelfCallResult`
+(D-progress-756), bookkeeping-only per the D-progress-753 precedent.**
+`CodegenCtx` gains `methodRetIsSelf: Map[String, Bool]`, keyed
+identically to `methodRetTypes` and populated centrally:
+`registerMethodRetTy` computes `isSelfTypeExprMsil` on the RAW declared
+return (covering record-body methods, exposed-record methods, interface
+methods, and protected entries/funcs through the one shared function),
+and `registerMethodRetTyMsil` gains an `isSelf` parameter (impl-method
+registration pre-erases the return before calling it), threaded from a
+parallel `implImplRetIsSelf` list at both call sites. A new
+`narrowSelfCallResultMsil(cctx, key, cls)` returns `MClass(cls)` — the
+call site's own resolved receiver class — instead of the erased
+registered type when the marker is set. NO IL is emitted (the CLR does
+not verify CIL type-safety at load; downstream field reads already emit
+their own `MCastclassByName` in the `case MClass(cls)` lowering arms).
+
+**Dispatch-path enumeration (the #6437 lesson, applied up front).** Every
+`mapGet(cctx.methodRetTypes, ...)` consultation was traced:
+1. `lowerMethodCallMsil`'s explicit-receiver `case MClass(cls)` branch —
+   wired.
+2. `lowerGeneralStaticCall`'s bare intra-impl sibling-call branch —
+   wired (narrows against `fctx.className`).
+3. NO third holder-path site exists on MSIL, unlike JVM: `out`/`inout`
+   argument handling is inlined in the same `MClass(cls)` dispatch block,
+   so site 1 covers it — confirmed by the promoted holder-path test case.
+4. The synthesized-`@derive` free-function dispatch is never
+   Self-returning — no change.
+Field-read sites needed no changes: they are already type-directed via
+`cctx.fieldTokens` keyed on `MClass(cls)` and now simply receive the
+narrowed type.
+
+**Riders.**
+- JVM `narrowSelfCallResult` gained the defensive
+  `if sig.isIface { return sig.ret }` early-out promised in PR #6436's
+  review disposition — the non-interface precondition is now
+  self-enforcing rather than caller-enforced.
+- The 6 JVM-only regression cases were PROMOTED to dual-target:
+  `bare_func_ref_self_test.l` 24 -> 30 (val-bound, field-collision,
+  chained, single-record baseline, holder/inout-path, bare-sibling —
+  renamed to 6434/6435 suffixes);
+  `lyric-compiler/jvm/self_return_call_site_jvm_self_test.l` and its
+  ci.yml step are DELETED, exactly the promotion path D-progress-756
+  said would follow #6434. docs/44's m-95 row updated to describe the
+  MSIL fix instead of listing the two bugs as open.
+
+**Verification — full battery, all green** (full `make lyric` rebuild;
+both repros independently re-verified by the orchestrating session too):
+- #6434 repro (collision + field read) and #6435 repro (chained):
+  exit 0, correct values, BOTH targets (dotnet was
+  `InvalidCastException` / `unsupported method` pre-fix; JVM stays
+  green).
+- `bare_func_ref_self_test.l`: 30/30 dotnet, 30/30 jvm (24 -> 30).
+- `impl_method_self_test.l` 22/22; `typechecker_self_test.l` 302/302;
+  `msil_project_bridge_self_test.l` 39/39;
+  `jvm_trycatch_bridge_self_test.l` 6/6;
+  `jvm_impl_extern_class_self_test.l` 3/3;
+  `jvm_auto_ffi_bridge_self_test.l` 6/6;
+  `emitter_project_self_test.l` 24/24;
+  `synthesized_method_self_test.l` 10/10 both;
+  `stdlib_generic_iface_self_test.l` 20/20 both;
+  `generic_jvm_self_test.l` 24/24; `aspect_weave_self_test.l` 7/7 both;
+  `bitwise_self_test.l` 10/10 both;
+  `closure_zero_overhead_self_test.l` 18/18 both.
+- `scripts/ilverify-selfhosted.sh`: 119/119 DLLs, 0 IL-validity errors.
+- `scripts/ci/check-workflow-size.sh`: 450173 bytes, under the ceiling
+  (the deleted test step shrank ci.yml).
+- `./bin/lyric fmt --write` clean on every changed `.l` file.
+
+**Related:** #6434, #6435 (closed by this), #6431/D-progress-756 (the
+JVM twin and the investigation that found these), #6421/D-progress-753
+(the param-side mechanism this mirrors), #6437 (the enumerate-all-paths
+review lesson applied here up front).

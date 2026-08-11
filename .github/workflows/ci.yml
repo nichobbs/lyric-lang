@@ -4840,18 +4840,6 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/record_method_jvm_self_test.l
 
-      # `Self`-typed impl/record-method RETURN call-site substitution on JVM
-      # (#6431, D-progress-756 — the return-position analog of #6426's
-      # non-receiver Self-PARAM fix). JVM-only: MSIL's pre-existing
-      # return-position handling turns out unsound (a field-name-collision
-      # InvalidCastException and a runtime-only chained-call failure, both
-      # pre-existing and out of scope here), so this coverage stays JVM-only
-      # rather than living in the dual-target `bare_func_ref_self_test.l`.
-      - name: Self-return call-site substitution self-test on JVM (native lyric test --target jvm)
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/self_return_call_site_jvm_self_test.l
-
       # Std.Http TLS client configuration test coverage on JVM (docs/61
       # §3.2 + §4, D128; phase 1.2, #5877) — the JVM half of the
       # dotnet-job step of the same name (stdlib-builds). Deterministic —
