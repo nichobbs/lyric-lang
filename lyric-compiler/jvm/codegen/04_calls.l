@@ -2702,7 +2702,11 @@ func lowerVirtualCallWithHolders(
     }
     ai = ai + 1
   }
-  if sig.isIface {
+  // A `Self` return narrows against the dispatch class exactly as the
+  // non-holder path does (#6431/#6437) — the checkcast must land right
+  // after the invoke, while the return value is top-of-stack, BEFORE the
+  // holder write-backs run (they push/pop their own operands above it).
+  val retNarrowed = if sig.isIface {
     insns.add(
       LInvokeinterface(
         owner = owner,
@@ -2712,15 +2716,17 @@ func lowerVirtualCallWithHolders(
         argCount = 1 + jvmArgSlotCount(sig.params)
       )
     )
+    sig.ret
   } else {
     insns.add(LInvokevirtual(owner = owner, name = methodName, params = sig.params, ret = sig.ret))
+    narrowSelfCallResult(insns, sig, owner)
   }
   var ri = 0
   while ri < hArgIdx.count {
     writeBackHolderArg(ctx, insns, hTempSlot[ri], hElemTy[ri], hBackName[ri], hRecvSlot[ri], hRecvCls[ri])
     ri = ri + 1
   }
-  sig.ret
+  retNarrowed
 }
 
 // Resolve a general (non-construction, non-self) call's `JvmFuncSig` from the
@@ -2852,10 +2858,13 @@ func lowerGeneralStaticCall(
                 argCount = 1 + jvmArgSlotCount(sig.params)
               )
             )
-          } else {
-            insns.add(LInvokevirtual(owner = selfCls, name = funcName, params = sig.params, ret = sig.ret))
+            return sig.ret
           }
-          return sig.ret
+          insns.add(LInvokevirtual(owner = selfCls, name = funcName, params = sig.params, ret = sig.ret))
+          // A bare sibling call to a `Self`-returning method narrows against
+          // the enclosing method's own class (#6431/#6437) — for a
+          // non-interface `selfCls` this IS the concrete receiver.
+          return narrowSelfCallResult(insns, sig, selfCls)
         }
         case None -> ()
       }

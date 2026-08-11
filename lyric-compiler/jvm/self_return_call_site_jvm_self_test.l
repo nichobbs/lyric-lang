@@ -138,3 +138,63 @@ test "direct call with a Self return type, single record, no field-name collisio
   val b2 = b.dup()
   assertEqualInt(b2.n, 42, "single-record baseline: the checkcast-narrowed call result resolves n correctly")
 }
+
+// #6437 (review of the first #6431 draft): the narrowing was wired into only
+// one of the three reachable instance-call dispatch paths. These two cases
+// pin the other two.
+//
+// Path 2 — `lowerVirtualCallWithHolders`: a Self-returning method that ALSO
+// carries an `inout` (holder) param routes through the holder call path
+// BEFORE the non-holder branch's narrowing is ever reached; the checkcast
+// must land right after the invoke, while the return value is top-of-stack,
+// ahead of the holder write-backs.
+record Tagged6437 {
+  n: Int
+}
+
+interface TagCloner6437 {
+  func dupTagged(self: in Self, tag: inout Int): Self
+}
+
+impl TagCloner6437 for Tagged6437 {
+  func dupTagged(self: in Tagged6437, tag: inout Int): Self {
+    tag = tag + 1
+    Tagged6437(n = self.n + 1)
+  }
+}
+
+test "Self return through the holder (inout-param) call path (#6437)" {
+  val b = Tagged6437(n = 41)
+  var t = 7
+  val b2 = b.dupTagged(t)
+  assertEqualInt(b2.n, 42, "holder-path call result narrows to the receiver class and resolves n")
+  assertEqualInt(t, 8, "the inout write-back still lands after the narrowing checkcast")
+}
+
+// Path 3 — the bare intra-impl sibling call (`lowerGeneralStaticCall`'s
+// `ctx.selfClass` branch, #1722): `dup()` without a `self.` prefix inside a
+// sibling method of the SAME impl dispatches on the implicit receiver; the
+// result narrows against the enclosing method's own class.
+interface Duo6437 {
+  func dup(self: in Self): Self
+  func bumpViaSibling(self: in Self): Int
+}
+
+record Pair6437 {
+  n: Int
+}
+
+impl Duo6437 for Pair6437 {
+  func dup(self: in Pair6437): Self {
+    Pair6437(n = self.n + 1)
+  }
+  func bumpViaSibling(self: in Pair6437): Int {
+    val d = dup()
+    d.n
+  }
+}
+
+test "Self return through a bare sibling call inside the same impl (#6437)" {
+  val p = Pair6437(n = 41)
+  assertEqualInt(p.bumpViaSibling(), 42, "bare dup() narrows against the enclosing impl's own class")
+}

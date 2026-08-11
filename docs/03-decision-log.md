@@ -27042,3 +27042,32 @@ stamp-forced rebuild):
 
 Refs #6431, #6427, D-progress-753, D-progress-754, D-progress-755 (all three
 directly investigated and extended/corrected here).
+
+**Review addendum (#6437, same PR).** The first draft wired
+`narrowSelfCallResult` into only ONE of the three reachable instance-call
+dispatch paths (the explicit-receiver, non-holder, non-interface branch of
+`lowerMethodCall`). Review traced two more that still returned the raw
+erased `sig.ret`:
+
+- `lowerVirtualCallWithHolders` — reached whenever the callee has any
+  `out`/`inout` param, INCLUDING via an explicit-receiver call
+  (`lowerMethodCall` returns through it before the narrowing branch is
+  reached). Fixed by narrowing in its non-interface arm; the checkcast is
+  placed immediately after the `invokevirtual`, while the return value is
+  top-of-stack, BEFORE the holder write-backs run (they push/pop their own
+  operands above it). Pinned by the `Tagged6437` case (Self return + inout
+  param; asserts both the narrowed field read and the write-back landing).
+- `lowerGeneralStaticCall`'s bare intra-impl sibling-call branch (#1722)
+  — `dup()` without a `self.` prefix inside a sibling method of the same
+  impl. Fixed by narrowing against `selfCls` (the enclosing method's own
+  class — for a non-interface `selfCls` this IS the concrete receiver; the
+  `isIface` arm, a default-method sibling call, stays erased as before).
+  Pinned by the `Pair6437` case. Its holder-mode sub-path routes through
+  `lowerVirtualCallWithHolders` and is covered by the first fix.
+
+`self_return_call_site_jvm_self_test.l` 4 -> 6. The review's suggestion to
+give J010/J011 the same in-process harness coverage as J009 was also
+taken: `jvm_trycatch_bridge_self_test.l` 4 -> 6 (slice-receiver bogus
+member -> J010; primitive-receiver member read -> J011, both asserting
+code + package-qualified span + explanatory text). docs/44's m-95 row
+qualified accordingly.

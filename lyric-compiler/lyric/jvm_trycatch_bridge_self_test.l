@@ -254,3 +254,66 @@ test "known-class-no-field member access on an extern JDK receiver aborts codege
     "diagnostic keeps its explanatory text (got: " + caughtMessage + ")"
   )
 }
+
+// #6427 (#6436 review): the array/slice-receiver sibling of J009 — any
+// member other than `.length`/`.count` on a slice receiver has no lowering
+// and must abort under its own code, not a stack-imbalancing JVoid fallback.
+test "non-length member access on a slice receiver aborts codegen under error[J010] (#6427)" {
+  val dir = freshTempDir("slice-member-j010")
+  val outPath = Path.join(dir, "SliceMember.jar")
+  val source = "package SliceMember.App\n" + "\n" + "func first(xs: slice[Int]): Int {\n" + "  xs.bogus\n" + "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  val a: slice[Int] = [1, 2, 3]\n" +
+    "  println(first(a))\n" +
+    "}\n"
+  val noStdlib: List[String] = newList()
+  var panicked = false
+  var caughtMessage = ""
+  try {
+    compileToJarBundled(source, outPath, "SliceMember", noStdlib, "")
+  } catch Bug as b {
+    panicked = true
+    caughtMessage = b.message
+  }
+  cleanup(dir)
+  assertTrue(panicked, "a non-length member on a slice receiver must abort JVM codegen")
+  assertTrue(
+    Str.contains(caughtMessage, "error[J010]: SliceMember.App:"),
+    "diagnostic carries the J010 code and the owning package (dotted) ahead of line:col (got: " + caughtMessage + ")"
+  )
+  assertTrue(
+    Str.contains(caughtMessage, "is not defined on an array/slice receiver"),
+    "diagnostic keeps its explanatory text (got: " + caughtMessage + ")"
+  )
+}
+
+// #6427 (#6436 review): the primitive-receiver sibling — a member read off a
+// primitive-typed receiver has no lowering and must abort under its own code.
+test "member access on a primitive receiver aborts codegen under error[J011] (#6427)" {
+  val dir = freshTempDir("prim-member-j011")
+  val outPath = Path.join(dir, "PrimMember.jar")
+  val source = "package PrimMember.App\n" + "\n" + "func peek(n: Int): Int {\n" + "  n.bogus\n" + "}\n" + "\n" +
+    "func main(): Unit {\n" +
+    "  println(peek(1))\n" +
+    "}\n"
+  val noStdlib: List[String] = newList()
+  var panicked = false
+  var caughtMessage = ""
+  try {
+    compileToJarBundled(source, outPath, "PrimMember", noStdlib, "")
+  } catch Bug as b {
+    panicked = true
+    caughtMessage = b.message
+  }
+  cleanup(dir)
+  assertTrue(panicked, "a member read off a primitive receiver must abort JVM codegen")
+  assertTrue(
+    Str.contains(caughtMessage, "error[J011]: PrimMember.App:"),
+    "diagnostic carries the J011 code and the owning package (dotted) ahead of line:col (got: " + caughtMessage + ")"
+  )
+  assertTrue(
+    Str.contains(caughtMessage, "cannot be read from a primitive-typed receiver"),
+    "diagnostic keeps its explanatory text (got: " + caughtMessage + ")"
+  )
+}
