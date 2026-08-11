@@ -781,3 +781,61 @@ test "emitProject cross-package impl of an imported interface (qualified)" {
   assertEqualInt(result.exitCode, 0, "emit_project_cross_package_impl_qualified: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "7", "emit_project_cross_package_impl_qualified: stdout matches expected")
 }
+
+// #6422/#6428 review: the containment mechanism itself — `Lyric.Emitter`'s
+// `try`/`catch` around its `JvmBridge` call sites (`jvmBridgePanicToStderr`)
+// — must convert a JVM codegen-refusal `Bug` (here the `error[J007]`
+// erased-receiver guard, provoked via a checker-legal non-receiver
+// `Self`-typed impl param, #6417/#6426) into a normal `EmitResult` failure:
+// NO exception escapes `emit`, `outputPath` is `None`, and a diagnostic is
+// carried.  This is what keeps `lyric test`'s per-file loop from aborting
+// the whole process on one file's codegen refusal (#6357).  The bridge-side
+// message/code contract is covered separately by
+// `jvm_trycatch_bridge_self_test.l`, which calls `Jvm.Bridge` directly and
+// asserts the THROW — the two tests pin the two halves of the design
+// (bridge throws; emitter contains).
+test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure, not a thrown exception (#6422)" {
+  val dir = freshTempDir("jvm-contain-j007")
+  val source = "package ContainJ007.App\n" + "\n" + "record TwinA {\n" + "  base: Int\n" + "}\n" + "\n" +
+    "interface Combiner {\n" +
+    "  func combine(self: in Self, other: in Self): Int\n" +
+    "}\n" +
+    "\n" +
+    "impl Combiner for TwinA {\n" +
+    "  func combine(self: in TwinA, other: in Self): Int {\n" +
+    "    self.base + other.base\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  val x = TwinA(base = 40)\n" +
+    "  val y = TwinA(base = 2)\n" +
+    "  println(x.combine(y))\n" +
+    "}\n"
+  val noDefines: List[String] = newList()
+  val req = Emitter.EmitRequest(
+    source = source,
+    assemblyName = "ContainJ007",
+    outputPath = Path.join(dir, "ContainJ007.jar"),
+    target = Emitter.Jvm,
+    packageVersion = "",
+    defines = noDefines
+  )
+  var threw = false
+  val result = try {
+    Emitter.emit(req)
+  } catch Bug as b {
+    threw = true
+    Emitter.EmitResult(outputPath = None, diagnostics = newList())
+  }
+  match File.deleteDirRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  assertFalse(threw, "the codegen-refusal Bug must be contained inside emit, never thrown to the caller")
+  match result.outputPath {
+    case None -> assertTrue(true, "no output artifact on a contained failure")
+    case Some(p) -> assertTrue(false, "emit must fail (got outputPath " + p + ")")
+  }
+  assertTrue(result.diagnostics.count > 0, "the contained failure carries a diagnostic for the CLI to render")
+}

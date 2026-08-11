@@ -2201,6 +2201,29 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
 
 // In-process single-package JVM project emit — direct call into `Jvm.Bridge.compileToJarBundledWithFeatures`
 // to avoid shelling out and creating infinite loops.
+// #6422: a JVM codegen-level refusal (e.g. the erased-receiver guard,
+// `error[J007]` in `jvm/codegen/02_exprs.l`) is raised as a `panic`/`Bug`
+// inside the bridge — that throw IS the bridge's library contract, which the
+// in-process diagnostic self-tests (`jvm_trycatch_bridge_self_test.l`,
+// `jvm_impl_extern_class_self_test.l`, `jvm_auto_ffi_bridge_self_test.l`)
+// assert on directly, so the bridge itself must NOT swallow it.  This CLI/
+// emitter boundary is where the throw becomes a structured build failure
+// instead of an unhandled host stack trace: a message already carrying its
+// own `error[J0..]:` code prints verbatim; anything else wraps under J008
+// (J001–J007 are taken — J006 is `impl <Class> for` on a non-interface in
+// `06_items.l`, J007 the erased-receiver guard).  Returning `false` routes
+// into the existing `failResult("JVM compilation failed (see stderr)")`
+// paths, which also keeps `lyric test`'s per-file loop containment working
+// (#6357: one file's codegen refusal no longer aborts the whole process).
+func jvmBridgePanicToStderr(message: in String): Bool {
+  if message.startsWith("error[J0") {
+    Console.error(message)
+  } else {
+    Console.error("error[J008]: JVM codegen failed: " + message)
+  }
+  false
+}
+
 func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
   if req.packages.count == 0 {
     return failResult("no packages specified in project build")
@@ -2242,17 +2265,21 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
     // `--define`s (req.defines) are merged beneath it, an explicit
     // `--define version=…` winning (#5852 phase C).
     val projDefinesJvm = BD.withWellKnownDefines(req.packageVersion, req.defines)
-    val okP = JvmBridge.compileProjectToJarBundledWithFeatures(
-      pkgSrcs,
-      req.outputPath,
-      req.packages[0].name,
-      stdlibSources,
-      req.activeFeatures,
-      req.declaredFeatures,
-      depTemplateNames,
-      projDefinesJvm,
-      req.packageVersion
-    )
+    val okP = try {
+      JvmBridge.compileProjectToJarBundledWithFeatures(
+        pkgSrcs,
+        req.outputPath,
+        req.packages[0].name,
+        stdlibSources,
+        req.activeFeatures,
+        req.declaredFeatures,
+        depTemplateNames,
+        projDefinesJvm,
+        req.packageVersion
+      )
+    } catch Bug as b {
+      jvmBridgePanicToStderr(b.message)
+    }
     if okP {
       return EmitResult(outputPath = Some(value = req.outputPath), diagnostics = diags)
     }
@@ -2267,17 +2294,21 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
   // so `BuildInfo.version` populates on a single-package JVM project build. User
   // `--define`s (req.defines) are merged beneath it (#5852 phase C).
   val projDefinesJvm1 = BD.withWellKnownDefines(req.packageVersion, req.defines)
-  val ok = JvmBridge.compileToJarBundledWithFeatures(
-    source,
-    req.outputPath,
-    pkgName,
-    stdlibSources,
-    req.activeFeatures,
-    req.declaredFeatures,
-    depTemplateNames,
-    projDefinesJvm1,
-    req.packageVersion
-  )
+  val ok = try {
+    JvmBridge.compileToJarBundledWithFeatures(
+      source,
+      req.outputPath,
+      pkgName,
+      stdlibSources,
+      req.activeFeatures,
+      req.declaredFeatures,
+      depTemplateNames,
+      projDefinesJvm1,
+      req.packageVersion
+    )
+  } catch Bug as b {
+    jvmBridgePanicToStderr(b.message)
+  }
 
   if ok {
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = diags)
@@ -2375,17 +2406,21 @@ func emitJvmInProcess(req: in EmitRequest): EmitResult {
   val noDepTemplateSrcsJvm: List[String] = newList()
   // Single-file JVM threads `--define` (docs/60 §5, #5852) — parity with the
   // single-file MSIL `compileToMsilWithVersion(..., req.defines)` path.
-  val ok = JvmBridge.compileToJarBundledWithFeatures(
-    req.source,
-    req.outputPath,
-    name,
-    stdlibSources,
-    noFeatures,
-    noFeatures,
-    noDepTemplateSrcsJvm,
-    req.defines,
-    req.packageVersion
-  )
+  val ok = try {
+    JvmBridge.compileToJarBundledWithFeatures(
+      req.source,
+      req.outputPath,
+      name,
+      stdlibSources,
+      noFeatures,
+      noFeatures,
+      noDepTemplateSrcsJvm,
+      req.defines,
+      req.packageVersion
+    )
+  } catch Bug as b {
+    jvmBridgePanicToStderr(b.message)
+  }
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
