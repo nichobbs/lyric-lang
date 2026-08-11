@@ -785,32 +785,38 @@ test "emitProject cross-package impl of an imported interface (qualified)" {
 // #6422/#6428 review: the containment mechanism itself — `Lyric.Emitter`'s
 // `try`/`catch` around its `JvmBridge` call sites (`jvmBridgePanicToStderr`)
 // — must convert a JVM codegen-refusal `Bug` (here the `error[J007]`
-// erased-receiver guard, provoked via a checker-legal non-receiver
-// `Self`-typed impl param, #6417/#6426) into a normal `EmitResult` failure:
-// NO exception escapes `emit`, `outputPath` is `None`, and a diagnostic is
-// carried.  This is what keeps `lyric test`'s per-file loop from aborting
-// the whole process on one file's codegen refusal (#6357).  The bridge-side
-// message/code contract is covered separately by
-// `jvm_trycatch_bridge_self_test.l`, which calls `Jvm.Bridge` directly and
-// asserts the THROW — the two tests pin the two halves of the design
-// (bridge throws; emitter contains).
+// erased-receiver guard) into a normal `EmitResult` failure: NO exception
+// escapes `emit`, `outputPath` is `None`, and a diagnostic is carried. This
+// is what keeps `lyric test`'s per-file loop from aborting the whole process
+// on one file's codegen refusal (#6357).  The bridge-side message/code
+// contract is covered separately by `jvm_trycatch_bridge_self_test.l`, which
+// calls `Jvm.Bridge` directly and asserts the THROW — the two tests pin the
+// two halves of the design (bridge throws; emitter contains).
+//
+// This test's repro USED TO BE a checker-legal (#6417) non-receiver
+// `Self`-typed impl param (`other: in Self`) whose field was read — #6426
+// shipped real `checkcast` emission for that shape, so it stopped panicking
+// and this repro was replaced (D-progress-755) with a match binding on a
+// user-defined generic union's payload, a shape `scrutineeGenericArgs`
+// still leaves erased (see `jvm_trycatch_bridge_self_test.l`'s matching
+// update for the full rationale).
 test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure, not a thrown exception (#6422)" {
   val dir = freshTempDir("jvm-contain-j007")
-  val source = "package ContainJ007.App\n" + "\n" + "record TwinA {\n" + "  base: Int\n" + "}\n" + "\n" +
-    "interface Combiner {\n" +
-    "  func combine(self: in Self, other: in Self): Int\n" +
+  val source = "package ContainJ007.App\n" + "\n" + "record Widget {\n" + "  n: Int\n" + "}\n" + "\n" +
+    "union Box[T] {\n" +
+    "  case Full(value: T)\n" +
+    "  case Empty\n" +
     "}\n" +
     "\n" +
-    "impl Combiner for TwinA {\n" +
-    "  func combine(self: in TwinA, other: in Self): Int {\n" +
-    "    self.base + other.base\n" +
+    "func unwrap(b: Box[Widget]): Int {\n" +
+    "  match b {\n" +
+    "    case Full(w) -> w.n\n" +
+    "    case Empty -> 0\n" +
     "  }\n" +
     "}\n" +
     "\n" +
     "func main(): Unit {\n" +
-    "  val x = TwinA(base = 40)\n" +
-    "  val y = TwinA(base = 2)\n" +
-    "  println(x.combine(y))\n" +
+    "  println(unwrap(Full(value = Widget(n = 40))))\n" +
     "}\n"
   val noDefines: List[String] = newList()
   val req = Emitter.EmitRequest(

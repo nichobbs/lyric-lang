@@ -410,3 +410,58 @@ test "interface-typed binding dispatch on a Self-receiver impl (#6417, dual-targ
   val a: Tagger6417 = Applier6417(seed = 42)
   assertEqualInt(a.tag(), 42, "Self-receiver impl dispatches through interface-typed binding")
 }
+
+// #6426: a non-receiver `Self`-typed impl-method parameter (`other: in
+// Self`) now resolves field READ and WRITE correctly on `--target jvm`, via
+// a real `checkcast` emitted at method entry (`emitSelfParamChecksJvm`,
+// `jvm/codegen/06_items.l`) — the JVM analog of MSIL's D-progress-753 fix
+// (#6421), which was bookkeeping-only (sound on MSIL because the CLR JIT
+// never verifies CIL type-safety at load time) and could not port as-is: the
+// JVM classfile verifier IS a mandatory load-time gate, so the erased
+// `Object`-descriptor parameter needs a REAL cast, not just internal
+// static-type bookkeeping.  Two same-package records share the field name
+// `base` (mirroring D-progress-751's own minimal repro and this file's own
+// pre-existing `Scaler`/`MeterAccum6408` `base` fields above), so a
+// wrong-type guess through the package-wide name-only fallback this fix
+// bypasses would misresolve to the wrong record's field token.
+record TwinA6426 {
+  base: Int
+}
+
+record TwinB6426 {
+  var base: Int
+}
+
+interface Combiner6426 {
+  func combine(self: in Self, other: in Self): Int
+}
+
+impl Combiner6426 for TwinA6426 {
+  func combine(self: in TwinA6426, other: in Self): Int {
+    self.base + other.base
+  }
+}
+
+interface Setter6426 {
+  func put(self: in Self, other: in Self, v: Int): Int
+}
+
+impl Setter6426 for TwinB6426 {
+  func put(self: in Self, other: in Self, v: Int): Int {
+    other.base = v
+    other.base
+  }
+}
+
+test "non-receiver Self-typed param field READ, two same-package records sharing a field name (#6426, dual-target)" {
+  val x = TwinA6426(base = 20)
+  val y = TwinA6426(base = 22)
+  assertEqualInt(x.combine(y), 42, "self.base + other.base resolves TwinA6426's own field, not any other record's")
+}
+
+test "non-receiver Self-typed param field WRITE, reference semantics observed by the caller (#6426, dual-target)" {
+  val p = TwinB6426(base = 1)
+  val q = TwinB6426(base = 2)
+  assertEqualInt(p.put(q, 42), 42, "the store lands and reads back through the checkcast-narrowed param")
+  assertEqualInt(q.base, 42, "the caller observes the mutation (reference semantics), not a silent no-op")
+}

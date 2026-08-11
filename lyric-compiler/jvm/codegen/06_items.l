@@ -1556,8 +1556,88 @@ func lowerRecordMethod(
   val filteredParams = stripLeadingSelfParam(fn.params)
   val paramTypes = holderAwareParamTypes(filteredParams, pkgName, true, typeParams, externTypes)
   setupInstanceParamSlotsAndHolders(ctxSelf, insns, filteredParams, pkgName, typeParams, externTypes)
+  // #6426: a non-receiver `Self`-typed parameter (`other: in Self`) refers to
+  // THIS record's own type — narrow it with a real `checkcast` so field/method
+  // access through it resolves instead of hitting the erased-`Object`
+  // fallback.
+  emitSelfParamChecksJvm(ctxSelf, insns, filteredParams, className)
   lowerInstanceMethodBody(ctxSelf, insns, body, retTy)
   LFunc(flags = 0x0001, name = fn.name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
+}
+
+// Unwrap parens to see whether a param's declared type is (or wraps) the
+// bare `Self` type expression — mirrors MSIL's `isSelfTypeExprMsil`
+// (`msil/codegen.l`).  Used by `emitSelfParamChecksJvm` to find every
+// non-receiver `Self`-typed parameter of an impl/record method.
+func isSelfTypeExprJvm(te: in TypeExpr): Bool {
+  match te.kind {
+    case TSelf -> true
+    case TParen(inner) -> isSelfTypeExprJvm(inner)
+    case _ -> false
+  }
+}
+
+// JVM analog of MSIL's `registerParamsMsil` Self-narrowing (D-progress-753,
+// #6421) — but where MSIL's fix is bookkeeping-only (the CLR JIT never
+// verifies CIL type-safety at load time, so recording a concrete
+// `MClass(selfTypeName)` as a parameter's internal static type is sound with
+// no bytecode change), the JVM's classfile verifier IS a mandatory load-time
+// gate: a `getfield`/`invokevirtual`/`putfield` against a local whose REAL
+// slot descriptor is `Ljava/lang/Object;` (the signature stays erased to
+// match the interface slot) fails `VerifyError` unless the local is narrowed
+// by a real `checkcast` first (#6426).
+//
+// For each parameter in `params` whose declared type is (or paren-wraps)
+// bare `Self`, this emits ONE entry-prologue `aload <slot>; checkcast
+// <selfTypeName>; astore <slot>` (via `emitStore`, which emits `LAstoreAs`
+// for a `JRef` — the SAME instruction the if/match/try result-local and
+// pattern-bind cast sites already use so the StackMapTable frames the slot
+// with its real class rather than `Object`, #3307) — REUSING the parameter's
+// existing slot number so an `inout`-mode param's holder write-through
+// bookkeeping (`ctx.holderArraySlot`/`ctx.holderElemType`, keyed by slot
+// number) stays valid — then retypes `ctx.types[p.name]` to the concrete
+// `JRef(selfTypeName)` so every later read of the parameter (field access,
+// method-call receiver, byref reassignment) resolves through the existing
+// type-directed lookups instead of ever falling into the erased-`Object`
+// fallback (`02_exprs.l`'s `error[J007]` refusal).  Must run AFTER
+// `setupInstanceParamSlotsAndHolders` has already allocated the parameter's
+// slot (and, for a holder param, already appended its unwrap-into-value-slot
+// instructions to `insns` — the cast instructions appended here run
+// immediately after, re-narrowing that same already-unwrapped slot).
+//
+// Sound because `checkImplConformance` (D-progress-751/#6417) only accepts a
+// `Self`-typed argument at this parameter position when it resolves to
+// EXACTLY this impl/record's own target type, so the `checkcast` can never
+// throw for a checker-accepted program. The emitted METHOD DESCRIPTOR is
+// untouched — still erased `Ljava/lang/Object;`, still matching the
+// interface slot; only the slot's post-prologue verifier type (and this
+// function's own `ctx.types` bookkeeping) changes, mirroring MSIL's
+// "signature untouched, internal bookkeeping only" property even though the
+// JVM side additionally needs real bytecode. `selfTypeName` is the enclosing
+// impl/record method's own concrete target class (`<pkg>/<Name>`, matching
+// `ctx.caseFields`'/`ctx.ctors`' key format) — always non-empty at both call
+// sites (`lowerImplMethod`, `lowerRecordMethod`).
+func emitSelfParamChecksJvm(
+  ctx: in FuncCtx, insns: in List[LInsn], params: in List[Param], selfTypeName: in String
+): Unit {
+  var pi = 0
+  while pi < params.count {
+    val p = params[pi]
+    if isSelfTypeExprJvm(p.ty) {
+      match lookupSlot(ctx, p.name) {
+        case Some(slot) -> {
+          insns.add(LAload(slot = slot))
+          insns.add(LCheckcast(className = selfTypeName))
+          emitStore(insns, slot, JRef(className = selfTypeName))
+          ctx.types.remove(p.name)
+          ctx.types.add(p.name, JRef(className = selfTypeName))
+        }
+        case None -> {
+        }
+      }
+    }
+    pi = pi + 1
+  }
 }
 
 // Build an `impl T for X` interface method as a true non-static instance method
@@ -1616,6 +1696,12 @@ func lowerImplMethod(
   val implRealParams = stripLeadingSelfParam(fn.params)
   val paramTypes = holderAwareParamTypes(implRealParams, pkgName, true, noTpsImpl, externTypes)
   setupInstanceParamSlotsAndHolders(ctxSelf, insns, implRealParams, pkgName, noTpsImpl, externTypes)
+  // #6426: a non-receiver `Self`-typed parameter (`other: in Self`) is
+  // guaranteed by the type checker (D-progress-751/#6417) to be exactly
+  // `targetClass` — narrow it with a real `checkcast` so field/method access
+  // through it resolves instead of hitting the erased-`Object` fallback
+  // (`error[J007]`).
+  emitSelfParamChecksJvm(ctxSelf, insns, implRealParams, targetClass)
   lowerInstanceMethodBody(ctxSelf, insns, body, retTy)
   LFunc(flags = 0x0001, name = fn.name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
 }

@@ -144,32 +144,47 @@ test "generic fn: try/catch where every arm yields the type param still compiles
   assertTrue(ok, "try-catch expression with matching-type arms compiles successfully")
 }
 
-// #6422: the erased-receiver member-access refusal (`jvm/codegen/02_exprs.l`)
-// must raise a Bug whose message is self-tagged `error[J007]: <pkg>:<line>:
-// <col>: ...` — the code at the very front so `Jvm.Bridge`/`Lyric.Emitter`'s
-// `startsWith("error[J0")` passthrough re-emits it verbatim as a structured
-// diagnostic (no J008 double-wrap, no raw stack trace).  The repro is a
-// checker-legal (#6417) non-receiver `Self`-typed impl param whose field is
-// read — the receiver is statically Object on JVM until #6426 ships real
-// checkcast emission.
-test "erased-receiver member access aborts codegen under error[J007] with a package-qualified span (#6422)" {
+// #6422/#6426: the erased-receiver member-access refusal
+// (`jvm/codegen/02_exprs.l`) must raise a Bug whose message is self-tagged
+// `error[J007]: <pkg>:<line>:<col>: ...` — the code at the very front so
+// `Jvm.Bridge`/`Lyric.Emitter`'s `startsWith("error[J0")` passthrough
+// re-emits it verbatim as a structured diagnostic (no J008 double-wrap, no
+// raw stack trace).
+//
+// This test's repro USED TO BE a checker-legal (#6417) non-receiver
+// `Self`-typed impl param (`other: in Self`) whose field was read — but
+// #6426 shipped real `checkcast` emission for exactly that shape
+// (`emitSelfParamChecksJvm`, `jvm/codegen/06_items.l`), so it no longer
+// panics and had to be replaced (documented in D-progress-755) with a
+// repro that stays GENUINELY erased: a match binding on a user-defined
+// GENERIC UNION's payload (`Box[T]`'s `Full(value: T)` case).
+// `scrutineeGenericArgs` (`jvm/codegen/03_match.l`) only recovers a bare-name
+// scrutinee's concrete instantiation from `ctx.varGenericArgs`, which
+// `recordDeclaredElemType` (`01_types.l`) populates ONLY for a `TSlice` or a
+// bare `List[Elem]` parameter — a user's own generic union type (`Box[T]`,
+// arbitrary head name) is never recorded, so the case-payload bind stays
+// boxed `Object` and `.n` on it hits the same refusal.  This is the same
+// panic FAMILY #6347/#6357 report against a real generic-collection-element
+// read; the underlying non-List/slice generic-payload gap stays open
+// (untouched by this file).
+test "erased-receiver member access aborts codegen under error[J007] with a package-qualified span (#6422/#6426)" {
   val dir = freshTempDir("erased-receiver-j007")
   val outPath = Path.join(dir, "ErasedRecv.jar")
-  val source = "package ErasedRecv.App\n" + "\n" + "record TwinA {\n" + "  base: Int\n" + "}\n" + "\n" +
-    "interface Combiner {\n" +
-    "  func combine(self: in Self, other: in Self): Int\n" +
+  val source = "package ErasedRecv.App\n" + "\n" + "record Widget {\n" + "  n: Int\n" + "}\n" + "\n" +
+    "union Box[T] {\n" +
+    "  case Full(value: T)\n" +
+    "  case Empty\n" +
     "}\n" +
     "\n" +
-    "impl Combiner for TwinA {\n" +
-    "  func combine(self: in TwinA, other: in Self): Int {\n" +
-    "    self.base + other.base\n" +
+    "func unwrap(b: Box[Widget]): Int {\n" +
+    "  match b {\n" +
+    "    case Full(w) -> w.n\n" +
+    "    case Empty -> 0\n" +
     "  }\n" +
     "}\n" +
     "\n" +
     "func main(): Unit {\n" +
-    "  val x = TwinA(base = 40)\n" +
-    "  val y = TwinA(base = 2)\n" +
-    "  println(x.combine(y))\n" +
+    "  println(unwrap(Full(value = Widget(n = 40))))\n" +
     "}\n"
   val noStdlib: List[String] = newList()
   var panicked = false
@@ -181,7 +196,10 @@ test "erased-receiver member access aborts codegen under error[J007] with a pack
     caughtMessage = b.message
   }
   cleanup(dir)
-  assertTrue(panicked, "field access through an erased (statically Object) receiver must abort JVM codegen")
+  assertTrue(
+    panicked,
+    "field access through an erased (statically Object) generic-union-payload receiver must abort JVM codegen"
+  )
   assertTrue(
     Str.contains(caughtMessage, "error[J007]: ErasedRecv.App:"),
     "diagnostic carries the J007 code and the owning package (dotted) ahead of line:col (got: " + caughtMessage + ")"
