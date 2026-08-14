@@ -27555,3 +27555,17 @@ to the receiver's own closed instantiation — the generic analog of
 `Pack[T].combine`/`combine(v)`; `Self`-return chained case
 `Acc[T].withValue(...).withValue(...)`), all green with the full
 battery re-run.
+
+**Review addendum 2 (#6443 final round).** Two suggestions actioned:
+(1) the in-bundle registration + dispatch path gained its own CI signal —
+`inbundle_generics_self_test.l` 28 -> 31 (`Satchel[T]`: value-type and
+reference-type inherent-method dispatch, plus a chained `Self`-returning
+case), previously only the restored-path twin was committed; (2) the
+concern that the new `MGenericInstByName` dispatch arm could intercept
+impl-block methods registered with erased bogus types was checked
+empirically and is UNREACHABLE from checker-legal source — `impl <Iface>
+for Box[T]` is rejected at type-check (T0010, unknown type name 'T';
+impl targets cannot be generic today), so the bare/arity keys under a
+generic record's FQN can only originate from the record-body
+registration path. No guard needed; if generic impl targets ever become
+checker-legal, the dispatch-arm interaction needs revisiting then.
