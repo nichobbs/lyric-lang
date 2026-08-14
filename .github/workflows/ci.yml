@@ -3259,6 +3259,18 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/emitter_project_self_test.l
 
+      # MSIL restored-dependency bridge self-test (#6440) — the two-assembly
+      # harness `msil_project_bridge_self_test.l` never had: compiles a
+      # producer package to its own DLL, reloads it through
+      # `Lyric.RestoredPackages` (the exact `[dependencies] path` restore
+      # round-trip), and compiles+runs a consumer against it via
+      # `Msil.Bridge.compileProjectToMsilWithRestored`.  Pins restored
+      # record-body method dispatch (plain and chained `Self`-returning,
+      # with a field-name collision present) end to end.
+      - name: MSIL restored bridge self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/msil_restored_bridge_self_test.l
+
       # Value-type-generic instance-extern build-panic self-test (#5825).
       # Same in-process `Lyric.Emitter.emitProject` surface as
       # `emitter_project_self_test.l` above (not `msil_project_bridge_self_test.l`'s

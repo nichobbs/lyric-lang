@@ -866,6 +866,30 @@ func renderGenerics(g: in Option[GenericParams]): String {
   }
 }
 
+// Render one record-body method (`func peek(self: in Counter): Int { … }`)
+// as a bodyless head — mirrors `reprForFunc`'s "bodies are omitted from the
+// repr itself" convention.  Record-body methods never take a `pub`
+// modifier (the record's own `pub` covers the whole surface).  A restored
+// consumer only needs the signature to build a MemberRef against the
+// producer DLL's real compiled method (`Msil.Codegen.registerRestoredRecordMethod`);
+// re-typechecking the synthesised source never reaches `checkFunctionBody`
+// for `RMFunc` members (that pass only walks top-level `IFunc` items), so a
+// bodyless render round-trips cleanly with no T0114 risk.
+func reprForRecordMethod(fn: in FunctionDecl): String {
+  var params = ""
+  var i = 0
+  while i < fn.params.count {
+    if i > 0 {
+      params = params + ", "
+    }
+    params = params + renderParam(fn.params[i])
+    i = i + 1
+  }
+  val retStr = match fn.ret { case Some(t) -> ": " + renderTypeExpr(t); case None -> "" }
+  val asyncPrefix = if fn.isAsync { "async " } else { "" }
+  asyncPrefix + "func " + fn.name + renderGenerics(fn.generics) + "(" + params + ")" + retStr
+}
+
 // Build the `pub record Name[T] { field1: T1, field2: T2 }` repr for
 // a record decl.  Records with no fields emit `pub record Name {}`.
 //
@@ -881,6 +905,15 @@ func renderGenerics(g: in Option[GenericParams]): String {
 // the field at its JVM-default value (#5908).  Mirrors
 // `reprForConfigField`'s identical `Fmt.exprInline` use for `config { }`
 // field defaults.
+//
+// Record-body methods (`RMFunc`) are appended after the fields, one per
+// line, as bodyless heads (`reprForRecordMethod`).  Before this, a plain
+// method declared directly in a record's body (as opposed to a separate
+// `impl I for R {}` binding) was DROPPED from the repr entirely — the
+// restored-package round-trip carried no trace of it, so a consumer's call
+// to it failed at runtime with "unsupported method" regardless of return
+// type (#6440).  Omitted when there are no methods so the no-method repr
+// stays byte-identical to the pre-fix form.
 func reprForRecord(decl: in RecordDecl): String {
   var fields = ""
   var i = 0
@@ -899,7 +932,23 @@ func reprForRecord(decl: in RecordDecl): String {
     }
     i = i + 1
   }
-  "pub record " + decl.name + renderGenerics(decl.generics) + " { " + fields + " }"
+  var methods = ""
+  var mi = 0
+  while mi < decl.members.count {
+    match decl.members[mi] {
+      case RMFunc(fn) -> {
+        methods = methods + "\n  " + reprForRecordMethod(fn)
+      }
+      case _ -> ()
+    }
+    mi = mi + 1
+  }
+  val head = "pub record " + decl.name + renderGenerics(decl.generics) + " { " + fields
+  if methods == "" {
+    head + " }"
+  } else {
+    head + methods + "\n}"
+  }
 }
 
 // Build the `pub func name(p1: T1, p2: T2): Ret` repr for a function.

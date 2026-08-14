@@ -27199,3 +27199,152 @@ registration functions (its packages share one assembly via
 `addPackageTokens`), so no automated regression is possible in this PR
 without first building a true two-assembly harness — that lands with
 #6440's fix.
+
+## D-progress-758 — MSIL: restored-dependency instance methods declared directly in a record body (no `impl` block) were never registered — dropped by the metadata EMITTER, not just the registration walk (#6440; completes #6439's end-to-end verification)
+
+**Status:** ACCEPTED
+
+**Root cause — TWO independent links, both broken, either one alone sufficient
+to explain the repro.** Traced `lyric-compiler/lyric/CLAUDE.md`'s three
+candidate mechanisms in order:
+
+1. **Metadata EMITTER (the actual root cause).**
+   `Lyric.ContractMeta.reprForRecord` (`lyric-compiler/lyric/contract_meta.l:884`,
+   pre-fix) walked `RecordDecl.members` and rendered ONLY `RMField` — the
+   `case _ -> ()` catch-all silently dropped every `RMFunc` (a method
+   declared directly in the record body, as opposed to a separate `impl I
+   for R {}` binding). Since `Lyric.RestoredPackages.synthesiseSource`
+   reconstructs a restored consumer's view of the producer package purely
+   from each decl's `repr` string (re-parsed via `Lyric.Parser.parse`), a
+   record's own methods were **completely invisible** to any restored
+   consumer — not degraded, not erased-to-`Object`, just absent from the
+   re-parsed `RecordDecl.members` list entirely. This is the same class of
+   bug as docs/45's "methods missing from contract metadata" candidate,
+   confirmed by direct inspection rather than DLL-string grepping.
+2. **Restored REGISTRATION walk (independently broken, same symptom).**
+   Even had (1) not existed, `Msil.Codegen.registerRestoredMembers`'s
+   `IRecord` case (`codegen.l`, pre-fix) called only
+   `registerRestoredRecordCtor` and `registerRestoredRecordFields` — never
+   walked `decl.members` for `RMFunc`. The only path that ever populated
+   `cctx.methodTokens` under a restored record's dispatch key
+   (`<pkg>.<Record>/<method>`) was `registerRestoredImpl` →
+   `registerRestoredRecordMethod`, gated on a same-artifact `impl I for R
+   {}` binding whose interface `I` supplies the method signatures. A
+   record with no such `impl` — the ordinary case, and the repro's shape
+   — had **zero** registration for its own methods regardless of return
+   type, so every call fell through `lowerMethodCallMsil`'s `MClass(cls)`
+   dispatch to the generic "unsupported method '<name>' on the receiver
+   type" runtime throw (`codegen.l:15022`, unchanged) — never reaching the
+   return-type / `methodRetIsSelf` check the #6439 review addendum fixed.
+3. **Key/FQN and receiver-tracking mechanisms (both fine).** The
+   ctor-key path (`<pkg>.<Record>` for `recordCtorTokens`) and the
+   dispatch key (`<pkg>.<Record>/<method>` for `methodTokens`) already
+   agree in shape with the in-bundle convention; a constructed restored
+   record's local IS tracked as `MClass("<pkg>.<Record>")` (construction
+   and field access already worked per #6440's repro) — confirmed by
+   inspection, no changes needed here.
+
+**Fix — two independent, minimal additions, one per broken link.**
+- `contract_meta.l`: new `reprForRecordMethod(fn)` renders a record-body
+  method as a **bodyless head** (`func peek(self: in Counter): Int`,
+  no `pub`, mirroring `reprForFunc`'s "bodies are omitted from the repr
+  itself" convention), appended one per line inside `reprForRecord`'s
+  record body after the fields. Bodyless is safe here specifically
+  because `Lyric.TypeChecker.checkWithImportedPackagesCore`'s T5 pass
+  (which raises `T0114` for a missing body on a non-`Unit`-returning
+  function) walks only top-level `IFunc` items — `RMFunc` members are
+  never routed through `checkFunctionBody` at all, in either `check` or
+  the reduced `checkContractSurface` the restored-package round-trip
+  uses — so no `@axiom` marker or real body is needed for the
+  round-trip to type-check cleanly. The no-method case renders
+  byte-identical to the pre-fix form (verified against
+  `contract_meta_self_test.l`'s exact-string assertions), so this is a
+  pure addition with zero blast radius on existing records.
+- `codegen.l`: new `registerRestoredRecordBodyMethods(cctx, packageName,
+  decl)` walks a restored `RecordDecl`'s own `RMFunc` members and calls
+  the existing `registerRestoredRecordMethod` for each (the same
+  function `registerRestoredImpl` already uses for interface-derived
+  methods — same signature encoding, same return-type registration,
+  same `methodRetIsSelf` marker population from #6439, so a restored
+  record-body method's `Self` return gets the D-progress-757 narrowing
+  fix "for free"). Wired into `registerRestoredMembers`'s `IRecord` case
+  alongside the existing ctor/field registration calls.
+
+**JVM: no equivalent gap — `[dependencies] path` uses a structurally
+different mechanism there.** `cli_build.l:2322-2341` (pre-existing,
+unchanged by this PR): "the JVM backend never reads `restoredDllPaths`
+(the .NET restored-DLL symbol-resolution path has no JVM analog)" — a
+JVM build of a `path`-dependency consumer re-compiles the dependency's
+own SOURCE into the SAME bundled compile (`depTemplatePkgsList` folded
+into `pkgs`) rather than linking against a separately-compiled producer
+DLL through contract metadata. A record's `RMFunc` methods therefore go
+through the ordinary in-bundle codegen path identically to any
+same-assembly method — there is no restored/cross-assembly registration
+step for JVM to have a gap in. Verified directly: the two-project repro
+(`lib`/`app` from #6440, both targets) built and ran clean with
+`--target jvm` both **before and after** this PR's changes (this PR
+touches only MSIL-specific code — `msil/codegen.l` and the
+target-independent `lyric/contract_meta.l`, whose `reprForRecord`
+change is dormant for JVM since the JVM path never calls
+`synthesiseSource`/`synthesiseArtifact` for a `path` dependency). No
+JVM change needed or made.
+
+**Harness — a genuine two-assembly restored-dependency test, the class
+`msil_project_bridge_self_test.l` structurally cannot provide.** New
+`lyric-compiler/lyric/msil_restored_bridge_self_test.l` (`@test_module`,
+2 cases): compiles a producer package to its OWN standalone DLL via
+`Msil.Bridge.compileToMsil`, reloads it through
+`Lyric.RestoredPackages.loadRestoredPackage` + `synthesiseArtifact` (the
+exact round-trip the CLI's restore step performs), threads the resulting
+`SynthesisedArtifact` into a consumer compile via
+`Msil.Bridge.compileProjectToMsilWithRestored`, copies the producer DLL
+beside the consumer's output DLL (so `dotnet exec`'s default same-directory
+assembly probing resolves the cross-assembly `AssemblyRef`), and asserts
+runtime stdout/exit code. Case 1 pins a plain (`Int`-returning) record-body
+method; case 2 pins the `Self`-returning CHAINED case (`c.bump().bump()`)
+with a `base`-field-name collision against a sibling `Decoy` record present
+in the same producer package — the exact #6434/#6435/#6439 scenario, now
+exercised through a real two-assembly restored build for the first time.
+The in-process route worked end-to-end (no AOT-only blocker encountered):
+`compileToMsil`/`loadRestoredPackage`/`synthesiseArtifact`/
+`compileProjectToMsilWithRestored` are all ordinary `pub func`s callable
+from a `@test_module`, and the physical producer DLL persists on disk
+across the whole flow (needed because `registerRestoredMembers` reads it
+directly via `Msil.MetadataReader` for nullary-instance-field and
+Task-returning-method detection). Wired into `ci.yml` as a new step
+mirroring the `msil_project_bridge_self_test.l` / `emitter_project_self_test.l`
+placement (after "Wait for parallel tests before heavy project self-tests",
+non-background — same in-process multi-DLL-build memory-exclusivity
+reasoning as its neighbors).
+
+**Verification — full battery, all green** (full `make lyric` rebuild):
+- #6440 repro (two real `lyric.toml` projects, `lib` built then `app`
+  built+run via `lyric build`/`lyric run --manifest`): exit 0 on
+  `--target dotnet` (was "unsupported method 'peek' on the receiver
+  type" pre-fix) AND on `--target jvm` (was already exit 0 — see the
+  JVM finding above; re-verified unaffected). The dotnet run covers
+  `c.peek() == 42`, then `c.bump().bump()` (chained `Self` return) with
+  `Decoy` sharing the `base` field name, asserting `.base == 42` and
+  `.peek() == 44` on the chained result.
+- `msil_restored_bridge_self_test.l` (new): 2/2.
+- `bare_func_ref_self_test.l`: 30/30 dotnet, 30/30 jvm.
+- `msil_project_bridge_self_test.l`: 39/39.
+- `impl_method_self_test.l`: 22/22.
+- `typechecker_self_test.l`: 302/302.
+- `restored_packages_self_test.l`: 22/22.
+- `emitter_project_self_test.l`: 24/24.
+- `synthesized_method_self_test.l`: 10/10 dotnet, 10/10 jvm.
+- `stdlib_generic_iface_self_test.l`: 20/20 dotnet, 20/20 jvm.
+- `scripts/ilverify-selfhosted.sh`: 119/119 DLLs, 0 IL-validity errors.
+- `scripts/ci/check-workflow-size.sh`: 450,972 bytes, under the ceiling.
+- `./bin/lyric fmt --write` clean on every changed `.l` file (no
+  refusals).
+
+**Related:** #6440 (closed by this), #6439/D-progress-757 (whose review
+addendum discovered and filed this gap, and whose `methodRetIsSelf`
+marker population this fix now exercises end-to-end for the first
+time), #6434/#6435 (the field-collision and chained-dispatch scenarios
+this fix's harness pins for the restored path specifically), D-progress-750
+(the registration-vs-emission fault-class precedent this bug belongs to
+— here the fault was in the EMITTER, one level upstream of every prior
+entry in this family, which were all registration-side).

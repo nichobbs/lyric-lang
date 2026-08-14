@@ -32006,6 +32006,7 @@ func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact): 
       case IRecord(decl) -> {
         registerRestoredRecordCtor(cctx, art.packageName, decl)
         registerRestoredRecordFields(cctx, art.packageName, decl)
+        registerRestoredRecordBodyMethods(cctx, art.packageName, decl)
       }
       case IFunc(decl) -> {
         registerRestoredFunc(cctx, art.packageName, decl, taskFuncs)
@@ -32122,6 +32123,35 @@ func registerRestoredImpl(
   }
 }
 
+// Register a restored record's OWN body methods (`func peek(self: in R): T { … }`
+// declared directly inside the `record` block, as opposed to a separate
+// `impl I for R {}` binding — see `registerRestoredImpl` for that path).
+// Before this, `registerRestoredMembers`'s `IRecord` case only registered the
+// ctor and fields; a plain record-body method had no entry in
+// `cctx.methodTokens` under ANY key, so every call to it from a consumer —
+// regardless of return type — fell through `lowerMethodCallMsil`'s
+// `MClass(cls)` dispatch straight to the generic "unsupported method" runtime
+// throw (#6440; the D-progress-757 review addendum's Self-return marker fix
+// could not be exercised end-to-end because dispatch itself never reached the
+// return-type check for this shape).  Reuses `registerRestoredRecordMethod`
+// so the signature encoding, return-type registration, and Self-return
+// marker population (#6439) are identical to the impl-derived path.
+func registerRestoredRecordBodyMethods(cctx: in CodegenCtx, packageName: in String, decl: in RecordDecl): Unit {
+  val recordFqn = packageName + "." + decl.name
+  val recordTypeRefRow = lookupRestoredTypeRefRow(cctx, packageName, decl.name)
+  if recordTypeRefRow == 0 {
+    return
+  }
+  var mi = 0
+  while mi < decl.members.count {
+    match decl.members[mi] {
+      case RMFunc(fn) -> registerRestoredRecordMethod(cctx, recordFqn, recordTypeRefRow, packageName, fn.name, fn.params, fn.ret)
+      case _ -> ()
+    }
+    mi = mi + 1
+  }
+}
+
 // Allocate the MemberRef for one restored record instance method (the concrete
 // implementation of an interface method) and record its token + return type.
 // Mirrors `registerRestoredIfaceMethod` but parents the MemberRef on the
@@ -32131,6 +32161,8 @@ func registerRestoredImpl(
 // or concrete-collection param/return is encoded as
 // CLASS/GENERICINST — an erased `object` MemberRef would fail to bind with
 // MissingMethodException at the consumer's callvirt (docs/59 §3 F1).
+// Also used by `registerRestoredRecordBodyMethods` for a record's own
+// directly-declared methods (#6440).
 func registerRestoredRecordMethod(
   cctx: in CodegenCtx,
   recordFqn: in String,
