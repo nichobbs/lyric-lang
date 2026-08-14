@@ -724,6 +724,19 @@ pub union MInsn {
   // declaration and faulted with MissingFieldException / ClassCastException
   // at runtime (#4870, #6231).
   case MLdfldGeneric(baseClassName: String, typeArgs: List[MsilType], fieldName: String, fieldMsilType: MsilType)
+  // callvirt on an instance method of a generic type instantiation (#6442).
+  // Mirrors `MLdfldGeneric`'s TypeSpec/MemberRef construction exactly, but
+  // for a method instead of a field: ECMA-335 §III.4.21 forbids a bare
+  // MethodDef token when the receiver is a specific closed instantiation of
+  // a generic TypeDef — the call must go through a TypeSpec-parented
+  // MemberRef.  `paramTypes`/`retType` are the method's OPEN declared
+  // signature (e.g. `MTypeVar(0)` for a `v: T` parameter or a `T`-typed
+  // return) — the same VAR-form the record's own MethodDef declares — NOT
+  // the caller's substituted concrete types; the caller narrows the
+  // returned value to the concrete type itself once the callvirt result is
+  // on the stack (the CLR resolves the exact per-instantiation
+  // representation from `typeArgs` at JIT time).
+  case MCallvirtGeneric(baseClassName: String, typeArgs: List[MsilType], methodName: String, paramTypes: List[MsilType], retType: MsilType)
   // newobj for a generic union case constructor.  TypeSpec and TypeSpec-parented
   // MemberRef are built at Phase 5 (lowering) so TypeDefs for in-bundle type
   // arguments (e.g. Lyric.Lexer.Keyword) are fully allocated before the
@@ -2313,6 +2326,51 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         }
       }
       emitLdfld(mb, tok)
+    }
+    case MCallvirtGeneric(baseName, typeArgs, methodName, paramTypes, retType) -> {
+      // Build a closed GENERICINST TypeSpec and a TypeSpec-parented MemberRef,
+      // then emit `callvirt MemberRef` — the method-call analog of
+      // `MLdfldGeneric` (#6442).  The method signature is built here (not at
+      // codegen Phase 3) for the same reason: a nested in-bundle generic head
+      // in `paramTypes`/`retType` needs a resolvable TypeDef row.
+      val methodSig = buildInstanceMethodSigWithCtx(paramTypes, retType, ctx)
+      var taKeyM = ""
+      var taiM = 0
+      while taiM < typeArgs.count {
+        taKeyM = taKeyM + msilTypeKey(typeArgs[taiM])
+        taKeyM = taKeyM + ","
+        taiM = taiM + 1
+      }
+      val defRowM = findTypeDefRowByName(ctx, baseName)
+      val tokM = if defRowM > 0 {
+        val codedIdxM = tdrTypeDef(defRowM)
+        val tsKeyM = "typespec_callvirt_def_" + baseName + "_" + taKeyM
+        val blobM = buildGenericInstBlobWithCtx(ctx, codedIdxM, typeArgs)
+        val tsRowM = ctxAddTypeSpec(ctx, tsKeyM, blobM)
+        val mrKeyM = "mr_callvirt_def_" + baseName + "_" + taKeyM + "_" + methodName
+        val mrRowM = ctxAddMemberRefForTypeSpec(ctx, tsRowM, methodName, mrKeyM, methodSig)
+        0x0A000000 + mrRowM
+      } else {
+        val refRowM = findTypeRefRowByName(ctx, baseName)
+        if refRowM > 0 {
+          val codedIdxM = tdrTypeRef(refRowM)
+          val tsKeyM = "typespec_callvirt_ref_" + baseName + "_" + taKeyM
+          val blobM = buildGenericInstBlobWithCtx(ctx, codedIdxM, typeArgs)
+          val tsRowM = ctxAddTypeSpec(ctx, tsKeyM, blobM)
+          val mrKeyM = "mr_callvirt_ref_" + baseName + "_" + taKeyM + "_" + methodName
+          val mrRowM = ctxAddMemberRefForTypeSpec(ctx, tsRowM, methodName, mrKeyM, methodSig)
+          0x0A000000 + mrRowM
+        } else {
+          // Same rationale as `MLdfldGeneric`'s panic arm: emitting no
+          // instruction here would leave the receiver on the stack, an
+          // InvalidProgramException far from the actual cause.
+          panic(
+            "Msil.Lowering: MCallvirtGeneric could not resolve TypeDef/TypeRef for '" + baseName + "' (method '" + methodName +
+              "') — check for a missing restored-package registration"
+          )
+        }
+      }
+      emitCallvirt(mb, tokM)
     }
     case MNewobjGenericCase(typeRefRow, typeArgs, ctorParams) -> {
       // Build a closed GENERICINST TypeSpec and a TypeSpec-parented .ctor

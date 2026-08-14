@@ -183,6 +183,14 @@ func compileAndRunAgainstRestored(
 // path, now for a restored record.
 val libSource: String = "package RestoredMethodLib\n" + "\n" + "pub record Decoy {\n" + "  base: Int\n" + "}\n" + "\n" + "pub record Counter {\n" + "  base: Int\n" + "\n" + "  func peek(self: in Counter): Int {\n" + "    self.base + 2\n" + "  }\n" + "\n" + "  func bump(self: in Counter): Self {\n" + "    Counter(base = self.base + 1)\n" + "  }\n" + "}\n"
 
+// `Box[T]` — a generic record with two inherent (record-body) methods: one
+// whose RETURN mentions `T` (`get`), one whose PARAM mentions `T` (`set`).
+// Pins #6442: `registerRestoredRecordBodyMethods`/`registerRestoredRecordMethod`
+// did not thread the record's own generic-parameter names through
+// `typeExprToMsilCtx`'s generics-aware VAR-form path the way
+// `registerRestoredRecordCtor`/`registerRestoredRecordFields` already do.
+val genericLibSource: String = "package RestoredGenericLib\n" + "\n" + "pub record Box[T] {\n" + "  value: T\n" + "\n" + "  func get(self: in Box[T]): T {\n" + "    self.value\n" + "  }\n" + "\n" + "  func set(self: in Box[T], v: T): T {\n" + "    v\n" + "  }\n" + "}\n"
+
 // ─── Tests ─────────────────────────────────────────────────────────────────
 // A plain (non-`Self`-returning) record-body method on a restored record
 // dispatches correctly.  Before #6440 this failed at runtime with
@@ -219,4 +227,35 @@ test "restored record-body method (Self return, chained) dispatches correctly wi
   val result = compileAndRunAgainstRestored("chained", consumerSrc, "RestoredMethodChainApp", art)
   assertEqualInt(result.exitCode, 0, "restored_chained_self_method: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "42\n44", "restored_chained_self_method: stdout matches expected")
+}
+
+// A restored generic record's inherent methods dispatch correctly for a
+// VALUE-TYPE instantiation (`Box[Int]`) — both the T-returning method
+// (`get`) and the T-parameter method (`set`) (#6442).
+test "restored generic record-body methods dispatch correctly for a value-type instantiation" {
+  val art = buildRestoredArtifact("genint", genericLibSource, "RestoredGenericLib")
+  val consumerSrc = "package RestoredGenericAppInt\n" + "\n" + "import RestoredGenericLib\n" + "\n" +
+    "func main(): Unit {\n" +
+    "  val b = Box(value = 42)\n" +
+    "  println(b.get())\n" +
+    "  println(b.set(99))\n" +
+    "}\n"
+  val result = compileAndRunAgainstRestored("genint", consumerSrc, "RestoredGenericAppInt", art)
+  assertEqualInt(result.exitCode, 0, "restored_generic_value_type: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42\n99", "restored_generic_value_type: stdout matches expected")
+}
+
+// A restored generic record's inherent methods dispatch correctly for a
+// REFERENCE-TYPE instantiation (`Box[String]`) — same two methods (#6442).
+test "restored generic record-body methods dispatch correctly for a reference-type instantiation" {
+  val art = buildRestoredArtifact("genstr", genericLibSource, "RestoredGenericLib")
+  val consumerSrc = "package RestoredGenericAppStr\n" + "\n" + "import RestoredGenericLib\n" + "\n" +
+    "func main(): Unit {\n" +
+    "  val b = Box(value = \"hello\")\n" +
+    "  println(b.get())\n" +
+    "  println(b.set(\"world\"))\n" +
+    "}\n"
+  val result = compileAndRunAgainstRestored("genstr", consumerSrc, "RestoredGenericAppStr", art)
+  assertEqualInt(result.exitCode, 0, "restored_generic_reference_type: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "hello\nworld", "restored_generic_reference_type: stdout matches expected")
 }
