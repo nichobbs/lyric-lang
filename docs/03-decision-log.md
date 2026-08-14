@@ -27530,3 +27530,28 @@ instance-method `callvirt` on a generic receiver was exactly the unaudited
 site this open question flagged; this entry closes that gap for records),
 #2362 (the `selfTsRow` ctor precedent this entry's self-field-access fix and
 `MCallvirtGeneric`'s TypeSpec-parented-MemberRef design both mirror).
+
+**Review addendum (#6444, same PR).** Review found the new
+`MCallvirtGeneric` MemberRef cache key omitted arity —
+`ctxAddMemberRefForTypeSpec` is string-keyed memoization that silently
+discards a differently-shaped signature on key match, so two same-name
+overloads called on the SAME closed instantiation would reuse the first
+overload's token. Both cache keys (TypeDef and TypeRef arms) now carry
+`@<argc>`, matching the signature registries' exact-arity convention.
+Building the regression case exposed the NEXT layer: the restored
+registration's bare-key first-wins guard silently DROPPED every
+same-name overload after the first, so the consumer's arity-first
+dispatch fell back to the first overload's registered types and built a
+mismatched MemberRef (`MissingMethodException` at runtime).
+`registerRestoredRecordMethod` now registers the arity key for every
+overload plus the bare key first-overload-wins — the exact pattern the
+same-assembly RMFunc registration already used. The review's
+`Self`-return suggestion was also implemented rather than deferred: the
+`MGenericInstByName` dispatch arm consults `methodRetIsSelf` (which
+`registerMethodRetTyG` already populated) and narrows a `Self` return
+to the receiver's own closed instantiation — the generic analog of
+`narrowSelfCallResultMsil` — so chained builder-style calls work.
+`msil_restored_bridge_self_test.l` 4 -> 6 (overload case
+`Pack[T].combine`/`combine(v)`; `Self`-return chained case
+`Acc[T].withValue(...).withValue(...)`), all green with the full
+battery re-run.

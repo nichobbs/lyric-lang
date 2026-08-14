@@ -2347,7 +2347,14 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         val tsKeyM = "typespec_callvirt_def_" + baseName + "_" + taKeyM
         val blobM = buildGenericInstBlobWithCtx(ctx, codedIdxM, typeArgs)
         val tsRowM = ctxAddTypeSpec(ctx, tsKeyM, blobM)
-        val mrKeyM = "mr_callvirt_def_" + baseName + "_" + taKeyM + "_" + methodName
+        // Arity-keyed (#6444 review of #6443): `ctxAddMemberRefForTypeSpec`
+        // is a string-keyed memoization cache that silently discards a
+        // differently-shaped `methodSig` on key match — without the arity
+        // component, two same-name overloads called on the SAME
+        // instantiation would reuse the first overload's MemberRef token.
+        // `@<argc>` mirrors the exact-arity key convention the signature
+        // registries already use.
+        val mrKeyM = "mr_callvirt_def_" + baseName + "_" + taKeyM + "_" + methodName + "@" + toString(paramTypes.count)
         val mrRowM = ctxAddMemberRefForTypeSpec(ctx, tsRowM, methodName, mrKeyM, methodSig)
         0x0A000000 + mrRowM
       } else {
@@ -2357,7 +2364,9 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
           val tsKeyM = "typespec_callvirt_ref_" + baseName + "_" + taKeyM
           val blobM = buildGenericInstBlobWithCtx(ctx, codedIdxM, typeArgs)
           val tsRowM = ctxAddTypeSpec(ctx, tsKeyM, blobM)
-          val mrKeyM = "mr_callvirt_ref_" + baseName + "_" + taKeyM + "_" + methodName
+          // Arity-keyed for the same overload-collision reason as the
+          // TypeDef arm above (#6444).
+          val mrKeyM = "mr_callvirt_ref_" + baseName + "_" + taKeyM + "_" + methodName + "@" + toString(paramTypes.count)
           val mrRowM = ctxAddMemberRefForTypeSpec(ctx, tsRowM, methodName, mrKeyM, methodSig)
           0x0A000000 + mrRowM
         } else {

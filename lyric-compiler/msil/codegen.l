@@ -14650,6 +14650,18 @@ func lowerMethodCallMsil(
             retType = openRetTy
           )
         )
+        // A `Self`-declared return narrows to the receiver's own CLOSED
+        // instantiation (#6443 review): `func withV(self: in Box[T], v: T):
+        // Self` called on a `Box[Int]` yields a `Box[Int]` — the generic
+        // analog of `narrowSelfCallResultMsil`'s `MClass(cls)` narrowing,
+        // keyed off the same `methodRetIsSelf` marker
+        // (`registerMethodRetTyG` populates it for record-body methods).
+        // Without this, the result tracked the erased `MObject` and a
+        // chained call / member access re-hit the unsupported-method throw.
+        val gRetIsSelf = match mapGet(cctx.methodRetIsSelf, gDispatchKey) { case Some(b) -> b; case None -> false }
+        if gRetIsSelf {
+          return MGenericInstByName(headFqn = fqn, typeArgs = typeArgs)
+        }
         // Narrow the reported result type to THIS call's concrete
         // instantiation — a bare `MTypeVar(idx)` substitutes directly from
         // `typeArgs`, a nested generic return (e.g. `Result[T, E]`)
@@ -32354,15 +32366,23 @@ func registerRestoredRecordMethod(
   ret: in Option[TypeExpr],
   generics: in List[String],
 ): Unit {
-  val key = recordFqn + "/" + methodName
-  if cctx.methodTokens.containsKey(key) {
-    return
-  }
-
   // The producer's method MethodDef never encodes the receiver (`self` maps
   // to the implicit `this` — `realMethodParamsOf` / #5566); mirror that here
   // when the restored decl still carries an explicit `self` param.
   val realParams = stripExplicitSelfParamMsil(params)
+  // Arity-keyed alongside the bare key, mirroring the same-assembly RMFunc
+  // registration (#6444 review of #6443): the bare key's first-wins guard
+  // alone silently DROPPED every same-name overload after the first — the
+  // consumer's arity-first dispatch (`garityKey`) then fell back to the
+  // first overload's types and built a mismatched MemberRef
+  // (MissingMethodException at runtime).  The arity key registers every
+  // overload; the bare key keeps first-overload-wins for call sites that
+  // don't arity-disambiguate.
+  val arityKey = recordFqn + "/" + methodName + "/" + toString(realParams.count)
+  val key = recordFqn + "/" + methodName
+  if cctx.methodTokens.containsKey(arityKey) {
+    return
+  }
   // Thread the owning record's type-parameter names through the VAR-form
   // path, matching `registerRestoredRecordCtor`/`registerRestoredRecordFields`
   // (#6442) — a bare `T` param/return otherwise resolves via the erasing
@@ -32385,9 +32405,19 @@ func registerRestoredRecordMethod(
     case None -> MVoid
   }
   val sig = buildInstanceMethodSigWithCtx(sigParamTypes, sigRetType, cctx.lctx)
-  val sigKey = "restored_recmethod_" + key
+  val sigKey = "restored_recmethod_" + arityKey
   val memberRow = ctxAddMemberRef(cctx.lctx, recordTypeRefRow, methodName, sigKey, sig)
-  cctx.methodTokens.add(key, 0x0A000000 + memberRow)
+  cctx.methodTokens.add(arityKey, 0x0A000000 + memberRow)
+  if not cctx.methodTokens.containsKey(key) {
+    cctx.methodTokens.add(key, 0x0A000000 + memberRow)
+  }
+  if not cctx.methodRetTypes.containsKey(arityKey) {
+    cctx.methodRetTypes.add(arityKey, sigRetType)
+    val retIsSelfRestoredA = match ret { case Some(te) -> isSelfTypeExprMsil(te); case None -> false }
+    if retIsSelfRestoredA and not cctx.methodRetIsSelf.containsKey(arityKey) {
+      cctx.methodRetIsSelf.add(arityKey, true)
+    }
+  }
   if not cctx.methodRetTypes.containsKey(key) {
     cctx.methodRetTypes.add(key, sigRetType)
     // A restored decl's `Self` return round-trips through contract metadata
@@ -32410,6 +32440,8 @@ func registerRestoredRecordMethod(
   // InvalidProgramException (the DeadLetter aspect's `consumer.nack(id, false)`
   // shape, #5503).  Idempotent; safe for the reference-arg-only methods that
   // previously worked by luck.
+  registerMethodParamTypesG(cctx, arityKey, realParams, packageName, generics)
+  registerMethodParamModes(cctx, arityKey, realParams)
   registerMethodParamTypesG(cctx, key, realParams, packageName, generics)
   registerMethodParamModes(cctx, key, realParams)
 }

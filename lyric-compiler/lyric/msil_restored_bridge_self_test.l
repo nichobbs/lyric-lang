@@ -259,3 +259,49 @@ test "restored generic record-body methods dispatch correctly for a reference-ty
   assertEqualInt(result.exitCode, 0, "restored_generic_reference_type: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "hello\nworld", "restored_generic_reference_type: stdout matches expected")
 }
+
+// #6444 (#6443 review): two same-name overloads of a generic record's
+// inherent method, called on the SAME closed instantiation, must not share
+// one TypeSpec-parented MemberRef — `ctxAddMemberRefForTypeSpec`'s
+// string-keyed memoization silently discards a differently-shaped signature
+// on key match, so without the `@<argc>` arity component in the cache key
+// the second overload's callvirt reused the first's token (arity/stack
+// mismatch).
+val overloadLibSource: String = "package RestoredOverloadLib\n" + "\n" + "pub record Pack[T] {\n" + "  value: T\n" + "\n" + "  func combine(self: in Pack[T]): T {\n" + "    self.value\n" + "  }\n" + "\n" + "  func combine(self: in Pack[T], v: T): T {\n" + "    v\n" + "  }\n" + "}\n"
+
+test "same-name overloads on one generic instantiation get distinct MemberRefs (#6444)" {
+  val art = buildRestoredArtifact("ovl", overloadLibSource, "RestoredOverloadLib")
+  val consumerSrc = "package RestoredOverloadApp\n" + "\n" + "import RestoredOverloadLib\n" + "\n" +
+    "func main(): Unit {\n" +
+    "  val p = Pack(value = 40)\n" +
+    "  println(p.combine())\n" +
+    "  println(p.combine(2))\n" +
+    "}\n"
+  val result = compileAndRunAgainstRestored("ovl", consumerSrc, "RestoredOverloadApp", art)
+  assertEqualInt(result.exitCode, 0, "restored_overload: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "40\n2", "restored_overload: each overload dispatches through its own MemberRef")
+}
+
+// #6443 review suggestion: a `Self`-returning inherent method on a generic
+// record narrows to the receiver's own CLOSED instantiation (the generic
+// analog of `narrowSelfCallResultMsil`), so a chained call and a member
+// access through the result both work.
+val selfGenLibSource: String = "package RestoredSelfGenLib\n" + "\n" + "pub record Acc[T] {\n" + "  value: T\n" + "  count: Int\n" + "\n" + "  func withValue(self: in Acc[T], v: T): Self {\n" + "    Acc(value = v, count = self.count + 1)\n" + "  }\n" + "\n" + "  func tally(self: in Acc[T]): Int {\n" + "    self.count\n" + "  }\n" + "}\n"
+
+test "Self-returning inherent method on a generic record narrows to the closed instantiation (#6443 review)" {
+  val art = buildRestoredArtifact("selfgen", selfGenLibSource, "RestoredSelfGenLib")
+  val consumerSrc = "package RestoredSelfGenApp\n" + "\n" + "import RestoredSelfGenLib\n" + "\n" +
+    "func main(): Unit {\n" +
+    "  val a = Acc(value = 1, count = 0)\n" +
+    "  val a2 = a.withValue(5).withValue(9)\n" +
+    "  println(a2.tally())\n" +
+    "  println(a2.value)\n" +
+    "}\n"
+  val result = compileAndRunAgainstRestored("selfgen", consumerSrc, "RestoredSelfGenApp", art)
+  assertEqualInt(result.exitCode, 0, "restored_self_generic: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "2\n9",
+    "restored_self_generic: chained Self narrows to Acc[Int], member access works"
+  )
+}
