@@ -333,3 +333,48 @@ test "#2587: Pairish[Int,String] Neither still matches the nullary case" {
   val p: Pairish[Int, String] = Neither
   assertEqualInt(match p { case Both(n, _) -> n; case Neither -> -9 }, -9, "Pairish[Int,String] Neither")
 }
+
+// ── In-bundle generic INHERENT-METHOD dispatch (#6442/#6443 review) ─────────
+// The same-assembly half of #6442's fix: a record-body method on a generic
+// record registers via `addPackageTokens`'s RMFunc arm (arity + bare keys,
+// VAR-form types via `registerMethodRetTyG`/`registerMethodParamTypesG`) and
+// dispatches through `lowerMethodCallMsil`'s `MGenericInstByName` arm →
+// `MCallvirtGeneric` (TypeSpec-parented MemberRef).  The restored-path twin
+// lives in `msil_restored_bridge_self_test.l`; this pins the IN-BUNDLE
+// registration + dispatch, which that harness's consumer never exercises.
+// A separate record (not the file's wire-format `Box[T]`) so the original
+// byte-shape cases stay untouched.
+record Satchel[T] {
+  item: T
+  tag: Int
+
+  func peek(self: in Satchel[T]): T {
+    self.item
+  }
+
+  func swap(self: in Satchel[T], v: T): T {
+    v
+  }
+
+  func relabel(self: in Satchel[T], t: Int): Self {
+    Satchel(item = self.item, tag = t)
+  }
+}
+
+test "in-bundle generic inherent methods dispatch for a value-type instantiation (#6442)" {
+  val s = Satchel(item = 40, tag = 1)
+  assertEqualInt(s.peek() + s.swap(2), 42, "peek + swap on Satchel[Int] through MCallvirtGeneric")
+}
+
+test "in-bundle generic inherent methods dispatch for a reference-type instantiation (#6442)" {
+  val s = Satchel(item = "hi", tag = 1)
+  assertEqual(s.peek(), "hi", "peek on Satchel[String]")
+  assertEqual(s.swap("yo"), "yo", "swap on Satchel[String]")
+}
+
+test "in-bundle generic Self-returning inherent method narrows and chains (#6443 review)" {
+  val s = Satchel(item = 7, tag = 1)
+  val s2 = s.relabel(2).relabel(3)
+  assertEqualInt(s2.tag, 3, "chained Self return narrows to Satchel[Int]")
+  assertEqualInt(s2.peek(), 7, "member access through the narrowed chained result")
+}

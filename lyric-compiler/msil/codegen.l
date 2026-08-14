@@ -2099,6 +2099,55 @@ func registerMethodParamModes(cctx: in CodegenCtx, key: in String, params: in Li
   }
 }
 
+// Generics-aware variant of `registerMethodRetTy` for a generic record's own
+// body method: a bare `T` return resolves to the VAR-form `MTypeVar` via
+// `typeExprToMsilG` instead of the erasing `typeExprToMsilCtx` fallback,
+// which would otherwise treat `T` as a bogus in-package type reference
+// (`MClass("<pkg>.T")`) — #6442.  `generics` is the OWNING record's own
+// type-parameter names (empty for a non-generic record, in which case this
+// is identical to `registerMethodRetTy`).
+func registerMethodRetTyG(
+  cctx: in CodegenCtx,
+  key: in String,
+  ret: in Option[TypeExpr],
+  pkgName: in String,
+  generics: in List[String],
+): Unit {
+  if not cctx.methodRetTypes.containsKey(key) {
+    val mty = match ret {
+      case Some(te) -> if generics.count > 0 { typeExprToMsilG(cctx, te, pkgName, generics) } else { typeExprToMsilCtx(cctx, te, pkgName) }
+      case None -> MVoid
+    }
+    cctx.methodRetTypes.add(key, mty)
+    val isSelf = match ret { case Some(te) -> isSelfTypeExprMsil(te); case None -> false }
+    cctx.methodRetIsSelf.add(key, isSelf)
+  }
+}
+
+// Generics-aware variant of `registerMethodParamTypes`; see
+// `registerMethodRetTyG` (#6442).
+func registerMethodParamTypesG(
+  cctx: in CodegenCtx,
+  keyBase: in String,
+  params: in List[Param],
+  pkgName: in String,
+  generics: in List[String],
+): Unit {
+  var i = 0
+  while i < params.count {
+    val pk = keyBase + "#" + toString(i)
+    if not cctx.methodParamTypes.containsKey(pk) {
+      val pty = if generics.count > 0 {
+        typeExprToMsilG(cctx, params[i].ty, pkgName, generics)
+      } else {
+        typeExprToMsilCtx(cctx, params[i].ty, pkgName)
+      }
+      cctx.methodParamTypes.add(pk, pty)
+    }
+    i = i + 1
+  }
+}
+
 // MsilType-direct variant of `registerMethodRetTy`; first registration wins.
 // `isSelf` is the impl method's own RAW (pre-erasure) `Self`-return check —
 // callers that already erased `ret` to an `MsilType` (impl-method
@@ -2995,14 +3044,14 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               val rmKey = className + "/" + fn.name
               if not cctx.methodTokens.containsKey(rmArityKey) {
                 cctx.methodTokens.add(rmArityKey, 0x06000000 + methodDefRow)
-                registerMethodRetTy(cctx, rmArityKey, fn.ret, pkgName)
-                registerMethodParamTypes(cctx, rmArityKey, rmRealParams, pkgName)
+                registerMethodRetTyG(cctx, rmArityKey, fn.ret, pkgName, recGenerics)
+                registerMethodParamTypesG(cctx, rmArityKey, rmRealParams, pkgName, recGenerics)
                 registerMethodParamModes(cctx, rmArityKey, rmRealParams)
                 // Bare name: first overload wins so existing unqualified call sites work.
                 if not cctx.methodTokens.containsKey(rmKey) {
                   cctx.methodTokens.add(rmKey, 0x06000000 + methodDefRow)
-                  registerMethodRetTy(cctx, rmKey, fn.ret, pkgName)
-                  registerMethodParamTypes(cctx, rmKey, rmRealParams, pkgName)
+                  registerMethodRetTyG(cctx, rmKey, fn.ret, pkgName, recGenerics)
+                  registerMethodParamTypesG(cctx, rmKey, rmRealParams, pkgName, recGenerics)
                   registerMethodParamModes(cctx, rmKey, rmRealParams)
                 }
               }
@@ -14544,6 +14593,86 @@ func lowerMethodCallMsil(
         }
       }  // fall through to BCL-name dispatch
     }
+    case MGenericInstByName(fqn, typeArgs) -> {
+      // Instance-method dispatch on a generic record instantiation (in-bundle
+      // OR restored — both share this receiver shape via `genericTypeArity`),
+      // e.g. `b.get()` / `b.set(v)` where `b: Box[Int]` (#6442).  Before this
+      // arm, a generic record's receiver never matched the `MClass(cls)` case
+      // above, so dispatch fell straight through to the generic "unsupported
+      // method" runtime throw — regardless of whether the method itself was
+      // registered.  A bare MethodDef/MemberRef token is invalid IL for a
+      // member of a generic TypeDef reached through a specific closed
+      // instantiation (ECMA-335 §III.4.21; the same rule
+      // `buildInBundleGenericCtorTok`'s doc comment cites for construction),
+      // so the call routes through `MCallvirtGeneric`, which builds a
+      // TypeSpec-parented MemberRef at lowering (mirroring `MLdfldGeneric`'s
+      // field-read pattern) instead of reusing the plain `methodTokens` row.
+      val plainFqn = stripGenericArity(fqn)
+      val garityKey = plainFqn + "/" + memberName + "/" + toString(args.count)
+      val gbareKey = plainFqn + "/" + memberName
+      val gDispatchKey = if cctx.methodRetTypes.containsKey(garityKey) { garityKey } else { gbareKey }
+      if cctx.methodRetTypes.containsKey(gDispatchKey) {
+        val openRetTy = match mapGet(cctx.methodRetTypes, gDispatchKey) { case Some(t) -> t; case None -> MObject }
+        val openParamTypes: List[MsilType] = newList()
+        val methodModesG = match mapGet(cctx.methodParamModes, gDispatchKey) { case Some(ms) -> ms; case None -> newList() }
+        var gi = 0
+        while gi < args.count {
+          val openParamTy = match mapGet(cctx.methodParamTypes, gDispatchKey + "#" + toString(gi)) {
+            case Some(pt) -> pt
+            case None -> MObject
+          }
+          openParamTypes.add(openParamTy)
+          val isByrefArgG = if gi < methodModesG.count { isByrefMode(methodModesG[gi]) } else { false }
+          if isByrefArgG {
+            emitByrefArgMsil(cctx, fctx, insns, callArgExpr(args[gi]))
+          } else {
+            pushCollExpect(fctx, openParamTy)
+            val aTyG = lowerCallArgMsil(cctx, fctx, insns, args[gi])
+            popCollExpect(fctx)
+            // A VAR-form parameter's runtime representation (boxed vs.
+            // unboxed) depends entirely on THIS call's instantiation, exactly
+            // like a generic ctor's field arguments (`buildInBundleGenericCtorTok`
+            // callers never box VAR-form ctor params either) — never box here
+            // regardless of the argument's own value/reference-type shape.
+            val paramIsTypeVarG = match openParamTy { case MTypeVar(_) -> true; case _ -> false }
+            if not isValueType(openParamTy) and not paramIsTypeVarG {
+              boxIfNeededMsil(cctx, insns, aTyG)
+            }
+          }
+          gi = gi + 1
+        }
+        insns.add(
+          MCallvirtGeneric(
+            baseClassName = fqn,
+            typeArgs = typeArgs,
+            methodName = memberName,
+            paramTypes = openParamTypes,
+            retType = openRetTy
+          )
+        )
+        // A `Self`-declared return narrows to the receiver's own CLOSED
+        // instantiation (#6443 review): `func withV(self: in Box[T], v: T):
+        // Self` called on a `Box[Int]` yields a `Box[Int]` — the generic
+        // analog of `narrowSelfCallResultMsil`'s `MClass(cls)` narrowing,
+        // keyed off the same `methodRetIsSelf` marker
+        // (`registerMethodRetTyG` populates it for record-body methods).
+        // Without this, the result tracked the erased `MObject` and a
+        // chained call / member access re-hit the unsupported-method throw.
+        val gRetIsSelf = match mapGet(cctx.methodRetIsSelf, gDispatchKey) { case Some(b) -> b; case None -> false }
+        if gRetIsSelf {
+          return MGenericInstByName(headFqn = fqn, typeArgs = typeArgs)
+        }
+        // Narrow the reported result type to THIS call's concrete
+        // instantiation — a bare `MTypeVar(idx)` substitutes directly from
+        // `typeArgs`, a nested generic return (e.g. `Result[T, E]`)
+        // substitutes recursively, mirroring the `MGenericInstByName`
+        // field-read arm above.
+        return match openRetTy {
+          case MTypeVar(idx) -> if idx < typeArgs.count { typeArgs[idx] } else { MObject }
+          case _ -> substituteTypeVarsMsil(openRetTy, typeArgs)
+        }
+      }
+    }
     case _ -> {
     }
   }
@@ -16820,6 +16949,7 @@ func insnStackDelta(insn: in MInsn): Int {
     case MListOp(op, _) -> listOpStackDelta(op)
     case MDictOp(op, _, _) -> dictOpStackDelta(op)
     case MLdfldGeneric(_, _, _, _) -> 0
+    case MCallvirtGeneric(_, _, _, _, _) -> 1
     case MNewobjGenericCase(_, _, _) -> 1
     case MNewobjGenericByName(_, _, _) -> 1
     case MBox(_) -> 0
@@ -23566,11 +23696,20 @@ func registerParamsMsil(
   params: in List[Param],
   pkgName: in String,
   selfTypeName: in String,
+  generics: in List[String],
 ): Unit {
   var pi = 0
   while pi < params.count {
     val p = params[pi]
-    val erasedParamTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
+    // A generic record's own body method binds a `T`-typed parameter (e.g.
+    // `v: T` on `func set(self: in Box[T], v: T): T`) to the VAR-form
+    // `MTypeVar` rather than the erasing `typeExprToMsilCtx` fallback
+    // (`MClass("<pkg>.T")`, a bogus reference to a non-existent type) — #6442.
+    val erasedParamTy = if generics.count > 0 {
+      typeExprToMsilG(cctx, p.ty, pkgName, generics)
+    } else {
+      typeExprToMsilCtx(cctx, p.ty, pkgName)
+    }
     val paramTy = if selfTypeName.length > 0 and isSelfTypeExprMsil(p.ty) {
       MClass(className = selfTypeName)
     } else {
@@ -23647,7 +23786,8 @@ pub func lowerImplMethodMsil(
   // run time, so the body's `log.add(99)` must emit `List<int32>::Add(int32)`,
   // not the legacy `List<object>::Add(object)` — the latter, called on a
   // `List<int32>`, corrupts memory (different backing layout) and segfaults.
-  registerParamsMsil(cctx, fctx, implRealParams, pkgName, targetTypeName)
+  val noGenericsImpl: List[String] = newList()
+  registerParamsMsil(cctx, fctx, implRealParams, pkgName, targetTypeName, noGenericsImpl)
 
   // Reserve the epilogue label so a `return` inside a protected region can
   // `leave` to it (see SReturn / #1477).
@@ -23759,19 +23899,54 @@ func lowerMethodBodyTailMsil(
 // prior code did) desyncs every MethodDef token computed afterwards,
 // including `main`'s, corrupting the assembly's `EntryPointToken`.
 pub func lowerRecordMethodMsil(
-  cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String, targetTypeName: in String
+  cctx: in CodegenCtx,
+  decl: in FunctionDecl,
+  pkgName: in String,
+  targetTypeName: in String,
+  generics: in List[String],
 ): MFunc {
   // Unlike `lowerImplMethodMsil`, an in-body method satisfies no interface
   // slot, so there is no erased-vs-ctx-aware distinction to make: one
   // ctx-aware return type serves both the emitted signature and body inference.
-  val retTy = match decl.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
+  // A generic record's own method must thread `generics` through the
+  // VAR-form-aware `typeExprToMsilG` — the plain `typeExprToMsilCtx` has no
+  // way to recognise a bare `T` return/param as the record's own type
+  // parameter and instead resolves it as a bogus in-package type reference
+  // (`MClass("<pkg>.T")`), which faults at MethodDef-signature build time
+  // and, even where it didn't, would byte-mismatch the VAR(n) form every
+  // caller's MemberRef must encode against (#6442).
+  val retTy = match decl.ret {
+    case Some(te) -> if generics.count > 0 { typeExprToMsilG(cctx, te, pkgName, generics) } else { typeExprToMsilCtx(cctx, te, pkgName) }
+    case None -> MVoid
+  }
   val realParams: List[Param] = realMethodParamsOf(decl.params)
   val fctx = makeFuncCtxMsil(pkgName, targetTypeName, decl.name, decl.params.count, retTy)
   fctx.slotTicker.add(0)  // slot 0 = self ("this"), no name binding — ESelf reads ldarg.0 directly
 
+  if generics.count > 0 {
+    // Bind `self`'s type to the OPEN self-instantiation (`Box`1<!0>`) rather
+    // than the default bare `MClass(targetTypeName)` fallback `ESelf` uses
+    // when `fctx.types["self"]` is unset.  Field reads on `self` inside the
+    // method body then flow through the existing `MGenericInstByName` arm of
+    // the field-access dispatcher, which already builds the TypeSpec-parented
+    // `MLdfldGeneric` a generic record's own field access needs (mirroring
+    // `lowerMRecord`'s ctor `selfTsRow` — a bare FieldDef token on a
+    // value-type instantiation reads/writes the wrong offset, #2362) — #6442.
+    val selfOpenArgs: List[MsilType] = newList()
+    var sgi = 0
+    while sgi < generics.count {
+      selfOpenArgs.add(MTypeVar(index = sgi))
+      sgi = sgi + 1
+    }
+    fctx.types.add(
+      "self",
+      MGenericInstByName(headFqn = genericBacktickFqn(targetTypeName, generics.count), typeArgs = selfOpenArgs)
+    )
+  }
+
   val insns: List[MInsn] = newList()
 
-  registerParamsMsil(cctx, fctx, realParams, pkgName, targetTypeName)
+  registerParamsMsil(cctx, fctx, realParams, pkgName, targetTypeName, generics)
 
   fctx.epilogueLabel = freshLabelMsil(fctx)
 
@@ -23787,7 +23962,12 @@ pub func lowerRecordMethodMsil(
   val paramTypes: List[MsilType] = newList()
   var pi2 = 0
   while pi2 < realParams.count {
-    paramTypes.add(typeExprToMsilCtx(cctx, realParams[pi2].ty, pkgName))
+    val pty = if generics.count > 0 {
+      typeExprToMsilG(cctx, realParams[pi2].ty, pkgName, generics)
+    } else {
+      typeExprToMsilCtx(cctx, realParams[pi2].ty, pkgName)
+    }
+    paramTypes.add(pty)
     pi2 = pi2 + 1
   }
 
@@ -24410,7 +24590,7 @@ pub func lowerRecordMsil(cctx: in CodegenCtx, decl: in RecordDecl, pkgName: in S
       case RMFunc(fn) -> {
         // D037 in-body method — emit exactly one MethodDef per member here,
         // in member order, matching `addPackageTokens`' row budget (#4947).
-        methods.add(lowerRecordMethodMsil(cctx, fn, pkgName, className))
+        methods.add(lowerRecordMethodMsil(cctx, fn, pkgName, className, generics))
       }
       case _ -> {
       }
@@ -32095,6 +32275,11 @@ func registerRestoredImpl(
   if recordTypeRefRow == 0 {
     return
   }
+  // Impl-block methods on a generic record are out of scope for #6442 (which
+  // covers a record's own directly-declared body methods); an empty list
+  // here is behaviourally identical to the prior `typeExprToMsilCtx`-only
+  // encoding.
+  val noImplGenerics: List[String] = newList()
 
   // The interface name the impl satisfies (last segment of the constraint head).
   val ifaceSimple = lastSegmentMsil(idecl.iface.head)
@@ -32109,8 +32294,8 @@ func registerRestoredImpl(
           var mi = 0
           while mi < ix.members.count {
             match ix.members[mi] {
-              case IMSig(sig) -> registerRestoredRecordMethod(cctx, targetName, recordTypeRefRow, art.packageName, sig.name, sig.params, sig.ret)
-              case IMFunc(fn) -> registerRestoredRecordMethod(cctx, targetName, recordTypeRefRow, art.packageName, fn.name, fn.params, fn.ret)
+              case IMSig(sig) -> registerRestoredRecordMethod(cctx, targetName, recordTypeRefRow, art.packageName, sig.name, sig.params, sig.ret, noImplGenerics)
+              case IMFunc(fn) -> registerRestoredRecordMethod(cctx, targetName, recordTypeRefRow, art.packageName, fn.name, fn.params, fn.ret, noImplGenerics)
               case IMAssoc(_) -> ()
             }
             mi = mi + 1
@@ -32142,10 +32327,18 @@ func registerRestoredRecordBodyMethods(cctx: in CodegenCtx, packageName: in Stri
   if recordTypeRefRow == 0 {
     return
   }
+  // A restored generic record's own body method (`func get(self: in Box[T]):
+  // T`) must thread the record's type-parameter names through the
+  // VAR-form-aware `typeExprToMsilG` path, exactly as
+  // `registerRestoredRecordCtor`/`registerRestoredRecordFields` already do
+  // for the ctor and fields (#6442) — otherwise a bare `T` param/return
+  // resolves via the erasing `typeExprToMsilCtx` as a bogus in-package type
+  // reference (`MClass("<pkg>.T")`) rather than `MTypeVar`.
+  val recGenerics = genericNamesOf(decl.generics)
   var mi = 0
   while mi < decl.members.count {
     match decl.members[mi] {
-      case RMFunc(fn) -> registerRestoredRecordMethod(cctx, recordFqn, recordTypeRefRow, packageName, fn.name, fn.params, fn.ret)
+      case RMFunc(fn) -> registerRestoredRecordMethod(cctx, recordFqn, recordTypeRefRow, packageName, fn.name, fn.params, fn.ret, recGenerics)
       case _ -> ()
     }
     mi = mi + 1
@@ -32171,27 +32364,60 @@ func registerRestoredRecordMethod(
   methodName: in String,
   params: in List[Param],
   ret: in Option[TypeExpr],
+  generics: in List[String],
 ): Unit {
-  val key = recordFqn + "/" + methodName
-  if cctx.methodTokens.containsKey(key) {
-    return
-  }
-
   // The producer's method MethodDef never encodes the receiver (`self` maps
   // to the implicit `this` — `realMethodParamsOf` / #5566); mirror that here
   // when the restored decl still carries an explicit `self` param.
   val realParams = stripExplicitSelfParamMsil(params)
+  // Arity-keyed alongside the bare key, mirroring the same-assembly RMFunc
+  // registration (#6444 review of #6443): the bare key's first-wins guard
+  // alone silently DROPPED every same-name overload after the first — the
+  // consumer's arity-first dispatch (`garityKey`) then fell back to the
+  // first overload's types and built a mismatched MemberRef
+  // (MissingMethodException at runtime).  The arity key registers every
+  // overload; the bare key keeps first-overload-wins for call sites that
+  // don't arity-disambiguate.
+  val arityKey = recordFqn + "/" + methodName + "/" + toString(realParams.count)
+  val key = recordFqn + "/" + methodName
+  if cctx.methodTokens.containsKey(arityKey) {
+    return
+  }
+  // Thread the owning record's type-parameter names through the VAR-form
+  // path, matching `registerRestoredRecordCtor`/`registerRestoredRecordFields`
+  // (#6442) — a bare `T` param/return otherwise resolves via the erasing
+  // `typeExprToMsilCtx` as a bogus in-package type reference rather than
+  // `MTypeVar`.  `generics` is empty for a non-generic record, in which case
+  // this is byte-identical to the prior `typeExprToMsilCtx`-only encoding.
   val sigParamTypes: List[MsilType] = newList()
   var spi = 0
   while spi < realParams.count {
-    sigParamTypes.add(typeExprToMsilCtx(cctx, realParams[spi].ty, packageName))
+    val spty = if generics.count > 0 {
+      typeExprToMsilG(cctx, realParams[spi].ty, packageName, generics)
+    } else {
+      typeExprToMsilCtx(cctx, realParams[spi].ty, packageName)
+    }
+    sigParamTypes.add(spty)
     spi = spi + 1
   }
-  val sigRetType = match ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
+  val sigRetType = match ret {
+    case Some(te) -> if generics.count > 0 { typeExprToMsilG(cctx, te, packageName, generics) } else { typeExprToMsilCtx(cctx, te, packageName) }
+    case None -> MVoid
+  }
   val sig = buildInstanceMethodSigWithCtx(sigParamTypes, sigRetType, cctx.lctx)
-  val sigKey = "restored_recmethod_" + key
+  val sigKey = "restored_recmethod_" + arityKey
   val memberRow = ctxAddMemberRef(cctx.lctx, recordTypeRefRow, methodName, sigKey, sig)
-  cctx.methodTokens.add(key, 0x0A000000 + memberRow)
+  cctx.methodTokens.add(arityKey, 0x0A000000 + memberRow)
+  if not cctx.methodTokens.containsKey(key) {
+    cctx.methodTokens.add(key, 0x0A000000 + memberRow)
+  }
+  if not cctx.methodRetTypes.containsKey(arityKey) {
+    cctx.methodRetTypes.add(arityKey, sigRetType)
+    val retIsSelfRestoredA = match ret { case Some(te) -> isSelfTypeExprMsil(te); case None -> false }
+    if retIsSelfRestoredA and not cctx.methodRetIsSelf.containsKey(arityKey) {
+      cctx.methodRetIsSelf.add(arityKey, true)
+    }
+  }
   if not cctx.methodRetTypes.containsKey(key) {
     cctx.methodRetTypes.add(key, sigRetType)
     // A restored decl's `Self` return round-trips through contract metadata
@@ -32214,7 +32440,9 @@ func registerRestoredRecordMethod(
   // InvalidProgramException (the DeadLetter aspect's `consumer.nack(id, false)`
   // shape, #5503).  Idempotent; safe for the reference-arg-only methods that
   // previously worked by luck.
-  registerMethodParamTypes(cctx, key, realParams, packageName)
+  registerMethodParamTypesG(cctx, arityKey, realParams, packageName, generics)
+  registerMethodParamModes(cctx, arityKey, realParams)
+  registerMethodParamTypesG(cctx, key, realParams, packageName, generics)
   registerMethodParamModes(cctx, key, realParams)
 }
 

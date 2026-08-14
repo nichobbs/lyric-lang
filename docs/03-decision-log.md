@@ -27348,3 +27348,224 @@ this fix's harness pins for the restored path specifically), D-progress-750
 (the registration-vs-emission fault-class precedent this bug belongs to
 — here the fault was in the EMITTER, one level upstream of every prior
 entry in this family, which were all registration-side).
+
+## D-progress-759 — MSIL: generic restored records' inherent (record-body) methods panicked with "unsupported method" at every call site — a DISPATCH gap identical for in-bundle generic records, one level upstream of the `recGenerics` signature-encoding gap the issue named (#6442; D-progress-758's generics follow-up)
+
+**Status:** ACCEPTED
+
+**Pre-fix failure mode — NOT a `MissingMethodException`/`InvalidProgramException`
+signature mismatch; dispatch never reached the registered token at all.**
+Reproduced first through the `msil_restored_bridge_self_test.l` harness
+(`Box[T]` with `func get(self: in Box[T]): T` and `func set(self: in Box[T],
+v: T): T`), then independently through a plain single-package `lyric build`
+(no restore) to isolate which half was broken:
+
+- Both `Box[Int]` (value-type instantiation) and `Box[String]`
+  (reference-type instantiation) failed identically, at both call sites
+  (`b.get()` and `b.set(v)`), with:
+  `System.Exception: unsupported method 'get' on the receiver type at this
+  call site (no matching user method, extern binding, or built-in
+  intrinsic)` — the generic runtime-throw stub `lowerMethodCallMsil` emits
+  when NO registered method token is found for the receiver at all
+  (`codegen.l` ~15022, unchanged by this PR).
+- **The identical failure reproduces for an IN-BUNDLE generic record**
+  (single package, no restore, no cross-assembly anything) — ruling out a
+  restored-consumer-only cause and pointing at a receiver-dispatch gap that
+  predates and is independent of any restore-path registration.
+- Root cause: `lowerMethodCallMsil`'s user-defined instance-dispatch `match
+  recvTy { case MClass(cls) -> …; case _ -> {} }` (the sole place that reads
+  `cctx.methodTokens`) had **no arm for `MGenericInstByName`** — the receiver
+  type EVERY generic-record-typed local resolves to (`typeExprToMsilCtx`'s
+  `TGenericApp` arm checks `cctx.genericTypeArity`, a map both the in-bundle
+  registration pass AND `registerRestoredRecordCtor` populate identically —
+  docs/43's `MGenericInstByName` representation is shared by in-bundle and
+  restored generic records alike, so this is ONE gap, not two). A generic
+  record's receiver therefore NEVER matched `MClass(cls)` and fell straight
+  through to the `case _ -> {}` no-op, regardless of whether the method was
+  registered or what its signature encoded — the exact reason #6440/D-progress-758
+  never surfaced this: that fix's harness (`Counter`, a non-generic record)
+  never exercised a `MGenericInstByName` receiver.
+- A second, independent bug sits one level downstream, confirmed by direct
+  inspection of both registration sites: neither the in-bundle RMFunc
+  pre-pass (`addPackageTokens`'s `IRecord` case, via `registerMethodRetTy`/
+  `registerMethodParamTypes`) nor the restored path
+  (`registerRestoredRecordMethod`) threaded the record's own
+  `recGenerics` into signature encoding — both called the
+  generics-blind `typeExprToMsilCtx` for a bare `T` param/return, which
+  resolves it as a bogus in-package type reference (`MClass("<pkg>.T")`)
+  rather than `MTypeVar`. This is the literal gap #6442 named. Either bug
+  alone is sufficient to explain the repro (the dispatch gap makes the
+  registered token unreachable regardless of its correctness; the
+  signature-encoding gap makes the token wrong even if reached) — both
+  needed fixing for the repro to pass end-to-end.
+- Also confirmed: a generic record's own body method reading `self.<field>`
+  (e.g. `get`'s `self.value`) bound `self`'s codegen type to the bare
+  `MClass(targetTypeName)` fallback (`ESelf`'s `fctx.types["self"]` was
+  never seeded for a record-body method), NOT the TypeSpec-aware
+  `MGenericInstByName` form field access needs. Per `lowerMRecord`'s own
+  ctor comment (`selfTsRow`, #2362), a bare FieldDef token from within a
+  generic TypeDef's own method reads/writes the WRONG offset for a
+  value-type instantiation (`Box[Int]`) — the CLR's canonical-vs-exact
+  generic code-sharing distinguishes value-type instantiations even for
+  same-type field access. Left unfixed, `Box[Int].get()` would dispatch
+  correctly post-fix but return a value read through the wrong (canonical,
+  reference-sized) field layout.
+
+**Fix — three coordinated pieces, all MSIL-backend-only, no metadata-format
+change (contract-metadata re-parsing already round-trips a record's own
+`[T]` header and its body methods' `T`-mentioning signatures correctly;
+D-progress-758's `reprForRecordMethod` needed no changes here).**
+
+1. **New dispatch primitive.** `lowering.l`: `MInsn` variant
+   `MCallvirtGeneric(baseClassName, typeArgs, methodName, paramTypes,
+   retType)` — the method-call analog of the existing `MLdfldGeneric`.
+   Phase 5 (lowering) builds a closed GENERICINST TypeSpec for
+   `baseClassName<typeArgs>` and a TypeSpec-parented MemberRef for
+   `methodName` (signature from the method's OPEN, VAR-form
+   `paramTypes`/`retType`), then emits `callvirt` against it — required per
+   ECMA-335 §III.4.21 (a bare MethodDef/TypeRef-parented MemberRef token is
+   invalid IL when the receiver is a specific closed instantiation of a
+   generic TypeDef; the same rule `buildInBundleGenericCtorTok`'s comment
+   already cites for construction). `insnStackDelta` gained a matching `+1`
+   arm (mirroring `MCallvirt`).
+2. **Dispatch arm.** `codegen.l`: `lowerMethodCallMsil` gained a
+   `case MGenericInstByName(fqn, typeArgs) -> { … }` arm (one shared arm
+   covers BOTH in-bundle and restored generic records, per the shared
+   `MGenericInstByName` representation above). Looks up the method's OPEN
+   return/param types via the existing `methodRetTypes`/`methodParamTypes`
+   maps (arity-key-first, same convention as the `MClass(cls)` arm), pushes
+   arguments with a VAR-form-aware boxing rule (a `MTypeVar`-typed parameter
+   is NEVER boxed regardless of the argument's own value/reference shape —
+   mirroring how generic-record CONSTRUCTION already never boxes VAR-form
+   ctor params; boxing decisions belong to the concrete instantiation, which
+   the CLR resolves transparently at the `MCallvirtGeneric` boundary, not to
+   codegen), emits `MCallvirtGeneric`, then narrows the reported result type
+   by substituting `typeArgs` into the OPEN return type (`MTypeVar(idx) ->
+   typeArgs[idx]`, else `substituteTypeVarsMsil`) — mirroring the existing
+   `MGenericInstByName` field-read arm's narrowing.
+3. **Signature-encoding + self-field-access threading (the literal #6442
+   ask).** `codegen.l`:
+   - `lowerRecordMethodMsil` (producer) gained a `generics: List[String]`
+     parameter; param/return types resolve via the generics-aware
+     `typeExprToMsilG` instead of `typeExprToMsilCtx` when `generics.count >
+     0`. It also now seeds `fctx.types["self"]` to the OPEN self-instantiation
+     `MGenericInstByName(headFqn = Box`1, typeArgs = [MTypeVar(0), …])` for a
+     generic record, so `self.<field>` reads inside the method body route
+     through the EXISTING (unmodified) `MGenericInstByName` field-access arm
+     — reusing its TypeSpec-parented `MLdfldGeneric`, exactly matching the
+     ctor's `selfTsRow` precedent — instead of the value-type-layout-unsafe
+     bare-FieldDef `MClass` path.
+   - `registerParamsMsil` gained the same `generics` parameter (threaded from
+     `lowerRecordMethodMsil`; the other caller, `lowerImplMethodMsil`, passes
+     an empty list — impl-block methods on generic records are out of scope
+     here, see the iface finding below).
+   - Two new small helpers, `registerMethodRetTyG`/`registerMethodParamTypesG`
+     (generics-aware siblings of the existing `registerMethodRetTy`/
+     `registerMethodParamTypes`, used only by the in-bundle RMFunc
+     registration site) — added instead of retrofitting the 25 existing call
+     sites of the plain helpers (impls, interfaces, protected types, unions),
+     which are unrelated to record-body generics and would have been pure
+     scope creep.
+   - `registerRestoredRecordBodyMethods` computes `recGenerics =
+     genericNamesOf(decl.generics)` and threads it into
+     `registerRestoredRecordMethod`, which gained a matching `generics`
+     parameter used the same way as the producer side (`registerRestoredImpl`'s
+     two call sites pass an empty list — same impl-block scoping as above).
+
+**Iface finding — `registerRestoredIfaceMethod` left UNCHANGED; generic
+interfaces are not reified on the MSIL backend AT ALL, so there is no
+VAR-form producer signature for a restored-side fix to match.** Direct
+inspection of the producer (`codegen.l`'s `IInterface` handling that builds
+`MInterface`/`MIAbstract`) confirms it never reads `decl.generics` and
+always encodes params/return via the generics-blind `typeExprToMsilCtx` —
+no `GenericParam` rows, no VAR-form method signatures, and interfaces are
+never added to `cctx.genericTypeArity` (only records and unions are, per
+docs/43). Two consequences: (1) an interface-typed receiver never resolves
+to `MGenericInstByName` regardless of the interface's own generics — it
+stays `MClass(ifaceFqn)`, so the NEW dispatch arm added here is moot for
+interfaces and the existing `MClass(cls)` arm is what would fire; (2)
+threading `recGenerics` into `registerRestoredIfaceMethod`'s signature
+encoding alone, with no producer-side change, would only ever produce a
+MemberRef whose VAR-form bytes mismatch the producer's actual (still bogus
+`MClass("<pkg>.T")`) MethodDef signature — worse than the current
+consistent-but-wrong erasure, not better. Generic-interface reification
+(GenericParam rows on interface TypeDefs, VAR-form interface method
+signatures, and the `genericTypeArity` + dispatch wiring this entry adds for
+records) is a separate, larger, deferred feature — no code changed for
+interfaces in this PR.
+
+**Verification — full battery, all green** (full `make lyric` rebuild,
+`rm -f .bootstrap/stage1.stamp && make lyric`):
+
+- Pre-fix repro (both the restored-bridge harness and a standalone
+  single-package `lyric build`): `System.Exception: unsupported method
+  'get' on the receiver type…` for both `Box[Int]` and `Box[String]`.
+  Post-fix: both instantiations, both the T-returning (`get`) and
+  T-parameter (`set`) methods, work correctly through a genuine two-assembly
+  restore AND through a same-assembly (in-bundle) build — `println(b.get());
+  println(b.set(99))` on `Box[Int]` prints `42`/`99`; the `String`
+  instantiation prints `hello`/`world`.
+- `msil_restored_bridge_self_test.l`: 2 → 4 cases, all green (the two
+  original #6440 cases unchanged; two new cases —
+  `Box[Int]`/value-type and `Box[String]`/reference-type, each exercising
+  both `get` and `set`).
+- `msil_project_bridge_self_test.l`: 39/39.
+- `bare_func_ref_self_test.l`: 30/30 dotnet, 30/30 jvm.
+- `typechecker_self_test.l`: 302/302.
+- `impl_method_self_test.l`: 22/22.
+- `emitter_project_self_test.l`: 24/24.
+- `stdlib_generic_iface_self_test.l`: 20/20 dotnet, 20/20 jvm.
+- `scripts/ilverify-selfhosted.sh`: 119/119 DLLs, 0 IL-validity errors.
+- `scripts/ci/check-workflow-size.sh`: 450,972 bytes, under the ceiling
+  (unchanged — no `ci.yml` edits in this PR).
+- `./bin/lyric fmt --write` clean on every changed `.l` file (no refusals).
+
+**Related:** #6442 (closed by this), D-progress-758 (the record-body-method
+registration-walk fix this is the generics follow-up to — its harness
+`Counter` was non-generic, which is why it never hit the
+`MGenericInstByName` dispatch gap), docs/43 Q-GEN-005 ("audit that all
+read/store sites for generic-typed locals emit the narrowing cast, so no
+`object`-typed slot reaches a generic-member callvirt unverified" —
+instance-method `callvirt` on a generic receiver was exactly the unaudited
+site this open question flagged; this entry closes that gap for records),
+#2362 (the `selfTsRow` ctor precedent this entry's self-field-access fix and
+`MCallvirtGeneric`'s TypeSpec-parented-MemberRef design both mirror).
+
+**Review addendum (#6444, same PR).** Review found the new
+`MCallvirtGeneric` MemberRef cache key omitted arity —
+`ctxAddMemberRefForTypeSpec` is string-keyed memoization that silently
+discards a differently-shaped signature on key match, so two same-name
+overloads called on the SAME closed instantiation would reuse the first
+overload's token. Both cache keys (TypeDef and TypeRef arms) now carry
+`@<argc>`, matching the signature registries' exact-arity convention.
+Building the regression case exposed the NEXT layer: the restored
+registration's bare-key first-wins guard silently DROPPED every
+same-name overload after the first, so the consumer's arity-first
+dispatch fell back to the first overload's registered types and built a
+mismatched MemberRef (`MissingMethodException` at runtime).
+`registerRestoredRecordMethod` now registers the arity key for every
+overload plus the bare key first-overload-wins — the exact pattern the
+same-assembly RMFunc registration already used. The review's
+`Self`-return suggestion was also implemented rather than deferred: the
+`MGenericInstByName` dispatch arm consults `methodRetIsSelf` (which
+`registerMethodRetTyG` already populated) and narrows a `Self` return
+to the receiver's own closed instantiation — the generic analog of
+`narrowSelfCallResultMsil` — so chained builder-style calls work.
+`msil_restored_bridge_self_test.l` 4 -> 6 (overload case
+`Pack[T].combine`/`combine(v)`; `Self`-return chained case
+`Acc[T].withValue(...).withValue(...)`), all green with the full
+battery re-run.
+
+**Review addendum 2 (#6443 final round).** Two suggestions actioned:
+(1) the in-bundle registration + dispatch path gained its own CI signal —
+`inbundle_generics_self_test.l` 28 -> 31 (`Satchel[T]`: value-type and
+reference-type inherent-method dispatch, plus a chained `Self`-returning
+case), previously only the restored-path twin was committed; (2) the
+concern that the new `MGenericInstByName` dispatch arm could intercept
+impl-block methods registered with erased bogus types was checked
+empirically and is UNREACHABLE from checker-legal source — `impl <Iface>
+for Box[T]` is rejected at type-check (T0010, unknown type name 'T';
+impl targets cannot be generic today), so the bare/arity keys under a
+generic record's FQN can only originate from the record-body
+registration path. No guard needed; if generic impl targets ever become
+checker-legal, the dispatch-arm interaction needs revisiting then.
