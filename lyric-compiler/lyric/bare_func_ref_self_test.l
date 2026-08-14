@@ -647,3 +647,121 @@ test "Self return through a bare sibling call inside the same impl (#6435, dual-
   val p = Pair6435(n = 41)
   assertEqualInt(p.bumpViaSibling(), 42, "bare dup() narrows against the enclosing impl's own class")
 }
+
+// #6433: an interface default method (`IMFunc` — a body-carrying interface
+// member, `docs/grammar.ebnf`'s `InterfaceMember (* default method *)`) that
+// an `impl` omits used to type-check and then crash at runtime on BOTH
+// targets (JVM `NoSuchMethodError`, MSIL "unsupported method"): the impl had
+// no method of that name at all once compiled. `Lyric.ImplDefaults`
+// (`lyric-compiler/lyric/impl_defaults.l`) now inherits the default's body
+// into the impl as a real member before typecheck, exactly as if the user
+// had written it verbatim — no new backend codegen, just the existing
+// per-impl `Self` resolution machinery applied to a synthesized member.
+interface Comparer6433 {
+  func same(self: in Self, other: in Self): Bool {
+    true
+  }
+}
+
+record Thing6433 {
+  base: Int
+}
+
+impl Comparer6433 for Thing6433 {
+}
+
+test "inherited default method dispatches through the concrete record value (#6433)" {
+  val a = Thing6433(base = 1)
+  val b = Thing6433(base = 2)
+  assertTrue(a.same(b), "the interface default's body executed via the synthesized impl member")
+}
+
+test "inherited default method dispatches through an interface-typed binding too (#6433)" {
+  val a: Comparer6433 = Thing6433(base = 1)
+  assertTrue(a.same(Thing6433(base = 2)), "interface-typed DIM dispatch still resolves the same default")
+}
+
+// An impl that DOES override a default must win outright — no
+// double-registration of the interface's own body alongside the override.
+interface Greeter6433 {
+  func greet(self: in Self): Int {
+    0
+  }
+}
+
+record Loud6433 {
+  n: Int
+}
+
+impl Greeter6433 for Loud6433 {
+  func greet(self: in Self): Int {
+    100
+  }
+}
+
+test "an impl override wins outright over the inherited default (#6433)" {
+  val g = Loud6433(n = 1)
+  assertEqualInt(g.greet(), 100, "the impl's own greet() runs, not the interface default")
+}
+
+// A default method calling another (abstract) interface method: the copied
+// body's `self.score()` call must dispatch to the impl's own `score`, the
+// same as any hand-written impl method calling a sibling would.
+interface Ranker6433 {
+  func score(self: in Self): Int
+  func doubled(self: in Self): Int {
+    self.score() * 2
+  }
+}
+
+record Item6433 {
+  v: Int
+}
+
+impl Ranker6433 for Item6433 {
+  func score(self: in Self): Int {
+    self.v
+  }
+}
+
+test "a default method calling another interface method resolves through the impl (#6433)" {
+  val it = Item6433(v = 21)
+  assertEqualInt(it.doubled(), 42, "doubled()'s inherited body calls score(), dispatching to Item6433's own impl")
+}
+
+// A non-receiver `Self`-typed parameter USED inside an inherited default
+// body, via a METHOD call rather than a field access. (A field access
+// directly in an interface default body — e.g. `other.base` — hits a
+// separate, pre-existing, orthogonal JVM gap: JVM always additionally
+// lowers a body-bearing interface member onto the INTERFACE's own class
+// file too, so interface-typed dispatch works [D-progress-676]; that
+// lowering narrows `Self` to the INTERFACE type, which owns no fields, so
+// `self`/`other` field access fails to compile there even with an explicit
+// non-inherited override — confirmed independent of this fix and reported
+// as a new discovery, not fixed here.)
+interface Merger6433 {
+  func score(self: in Self): Int
+  func combinedScore(self: in Self, other: in Self): Int {
+    self.score() + other.score()
+  }
+}
+
+record Weighted6433 {
+  w: Int
+}
+
+impl Merger6433 for Weighted6433 {
+  func score(self: in Self): Int {
+    self.w
+  }
+}
+
+test "a default method's non-receiver Self param dispatches a method call, inherited (#6433)" {
+  val a = Weighted6433(w = 15)
+  val b = Weighted6433(w = 27)
+  assertEqualInt(
+    a.combinedScore(b),
+    42,
+    "other.score() dispatches to Weighted6433's own impl through the inherited default"
+  )
+}

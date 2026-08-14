@@ -1256,7 +1256,11 @@ func findImplMethod(decl: in ImplDecl, name: in String): Option[FunctionDecl] {
 //   T0107 — return type mismatch (C11).
 // `Self` in the interface is substituted with the resolved impl target type so
 // that `func method(other: Self): Bool` matches `func method(other: MyType): Bool`.
-// Default methods (`IMFunc`) are optional; they are skipped here.
+// Default methods (`IMFunc`) are optional to OVERRIDE; they are skipped here
+// (no arity/type re-validation of a matching override) because an impl that
+// omits one gets it for free — `Lyric.ImplDefaults.inheritDefaultsFile`
+// (#6433) copies the interface's own body into the impl as a real member
+// before this check runs, same-file interfaces only.
 // Cross-package interfaces not found in the local symbol table are silently
 // skipped — cross-package conformance is enforced by the restoring package's
 // own type-check pass.
