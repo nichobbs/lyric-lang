@@ -168,7 +168,11 @@ pub func pipeExpandAndRewrite(
   if runStubbable {
     f = Stubbable.stubbableRewriteFile(f)
   }
-  f = ImplDefaults.inheritDefaultsFile(f)
+  val idRes = ImplDefaults.inheritDefaultsFile(f)
+  if gate("", idRes.diagnostics) {
+    return None
+  }
+  f = idRes.file
   if injectWeave {
     f = Weaver.injectWeaveImports(f)
   }

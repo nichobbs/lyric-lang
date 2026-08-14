@@ -27798,9 +27798,14 @@ construct-naming diagnostic.
   README + `08-work-items.md` marked shipped.
 
 Deferred (tracked): generic interfaces / generic impl methods, default methods
-(`IMFunc`), associated types, `Self`-returning methods, multiple inheritance,
-async interface methods (Phase 2), `impl` for non-record targets, and direct
-impl-method calls on a concrete (non-interface-typed) receiver.
+(`IMFunc`) through interface-typed vtable dispatch, associated types,
+`Self`-returning methods, multiple inheritance, async interface methods
+(Phase 2), `impl` for non-record targets, and direct impl-method calls on a
+concrete (non-interface-typed) receiver. (Since D-progress-760, an impl that
+OMITS a same-file interface's default method inherits it for concrete-record
+dispatch on native too — the `Lyric.ImplDefaults` pre-typecheck synthesis
+runs before every backend, so the copy is an ordinary impl member; only the
+vtable-dispatch half of default methods remains deferred here.)
 
 **Related:** D-N-016, D-progress-540/545/562 (native backend),
 `native/plan/08-work-items.md` §N3.2.

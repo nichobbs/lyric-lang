@@ -27640,3 +27640,31 @@ records (D-progress-759), per PR #6443's review disposition.
 **Related:** #6433, #6445 (filed), D-progress-751/753/755 (the `Self`
 machinery the synthesis leans on), D-progress-676 (JVM DIM lowering),
 docs/01 §2.12, docs/49/D037.
+
+**Review addendum (#6447, same PR).** Review found the synthesis processed
+each `impl` block in isolation, so a target implementing TWO same-file
+interfaces that each default the same name (neither overridden) would get
+two same-named `IMplFunc` members silently synthesized — a duplicate-member
+backend crash instead of the spec's own promised resolution ("diamond
+conflicts are resolved by requiring explicit override", docs/01 §2.12,
+the very sentence this feature's justification quotes). The pass now
+pre-scans the whole file into a TARGET-level method namespace
+(`collectTargetNamespace`): a hand-written member in ANY impl block for a
+target claims the name for the whole namespace (the explicit-override
+resolution — no copy is synthesized for it from any interface); a name
+that two or more different interfaces would default onto one target with
+no override anywhere emits the new `T0117` diagnostic (once per
+target/name, pointing at the second impl's span) and synthesizes nothing,
+so the backends never see the duplicate. `inheritDefaultsFile` now
+returns `ImplDefaultsResult { file, diagnostics }` and the pipeline gates
+it fatally like wire-expansion. Verified: the unresolved-diamond repro
+fails with the same T0117 on BOTH targets; the override-resolved twin
+runs the override (exit 0, both targets); the original #6433 repro is
+unaffected. The review's generic-interface suggestion was also taken:
+`findLocalInterface` now skips generic interfaces (Stubbable's own
+guard), with the module-doc scope note. Regression:
+`bare_func_ref_self_test.l` 35 -> 36 (override-resolved diamond, dual
+target); `emitter_project_self_test.l` 24 -> 25 (unresolved diamond
+rejected as an `EmitResult` failure under T0117, no throw). Battery
+re-verified: typechecker 302/302, impl_method 22/22,
+msil_project_bridge 39/39.

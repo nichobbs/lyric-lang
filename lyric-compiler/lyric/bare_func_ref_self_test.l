@@ -765,3 +765,40 @@ test "a default method's non-receiver Self param dispatches a method call, inher
     "other.score() dispatches to Weighted6433's own impl through the inherited default"
   )
 }
+
+// #6447 (#6446 review): the spec's diamond RESOLUTION — two same-file
+// interfaces each defaulting the same name for one target, with the user
+// overriding it explicitly in ONE impl block — must run that override (the
+// unresolved twin, with NO override anywhere, is rejected at compile time
+// under T0117 and is pinned by `emitter_project_self_test.l`'s
+// build-diagnostic case, since a rejected program can't live in a runtime
+// test module).
+interface Alpha6447 {
+  func label(self: in Self): Int {
+    1
+  }
+}
+
+interface Beta6447 {
+  func label(self: in Self): Int {
+    2
+  }
+}
+
+record Gem6447 {
+  n: Int
+}
+
+impl Alpha6447 for Gem6447 {
+  func label(self: in Gem6447): Int {
+    42
+  }
+}
+
+impl Beta6447 for Gem6447 {
+}
+
+test "diamond default conflict resolved by explicit override runs the override (#6447)" {
+  val g = Gem6447(n = 0)
+  assertEqualInt(g.label(), 42, "the explicit override claims the name for the whole target namespace")
+}
