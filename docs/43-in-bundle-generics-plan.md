@@ -389,6 +389,12 @@ Iterate steps 1–2 with `make stage1-fast` + a focused `*_self_test.l` (~second
   to `object` (0x1C) in LocalVarSig, relying on `castclass` (via `MCastclassGeneric`) at
   every use site. Audit that all read/store sites for generic-typed locals emit the
   narrowing cast, so no `object`-typed slot reaches a generic-member callvirt unverified.
+  **Resolved for RECORDS by D-progress-759**: the unaudited site was an
+  instance-method `callvirt` on a generic receiver (`MGenericInstByName` had no
+  arm in `lowerMethodCallMsil`'s dispatch match, so record-body methods on a
+  generic record panicked "unsupported method" at every call site, in-bundle
+  and restored alike) — records-only; the same audit for unions and other
+  generic-member call sites is still open.
 
 ## Key file:line references
 

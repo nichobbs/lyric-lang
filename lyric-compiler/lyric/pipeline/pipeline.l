@@ -7,8 +7,9 @@
 //! J2 / #2665, D-progress-642).  This package is the single authority for:
 //!
 //!   * the pass ORDER — parse → cfg erasure → wire-expand → alias rewrite →
-//!     @stubbable synthesis → typecheck → modecheck → contract elaboration →
-//!     `?`-propagation → derive → mono → weave → await-hoist — with the
+//!     @stubbable synthesis → interface-default-method inheritance (#6433) →
+//!     typecheck → modecheck → contract elaboration → `?`-propagation →
+//!     derive → mono → weave → await-hoist — with the
 //!     cfg-erasure placement D-progress-642 established (erasure directly
 //!     after parse, before anything indexes the items, on every path
 //!     including single-file builds), and the await-hoist LAST (#5606: it
@@ -59,6 +60,7 @@ import Lyric.BuildDefines as BD
 import Lyric.AwaitHoist as AwaitHoist
 import Lyric.AliasRewriter as Aliases
 import Lyric.Stubbable as Stubbable
+import Lyric.ImplDefaults as ImplDefaults
 import Lyric.WireExpand as WireExpand
 import Lyric.Mono
 import Lyric.Derives
@@ -139,9 +141,13 @@ pub func pipeParseAndErase(
 /// qualified access is consumed by the expander, not collapsed by the
 /// import-alias rewriter when the alias name matches an imported package's
 /// last segment), then the import-alias rewrite, then `@stubbable` stub
-/// synthesis, then (JVM only) `Weaver.injectWeaveImports`.  Wire-expansion
-/// diagnostics gate fatally.  `weWires` / `weConfigs` carry the templates
-/// collected across the compilation (own file only for single-file builds).
+/// synthesis, then same-file interface-default-method inheritance (#6433 —
+/// runs AFTER `@stubbable` so a synthesized `<Iface>Stub` impl also
+/// inherits any default methods, and unconditionally on every target: it is
+/// a pure language-semantics fix, not a target-specific feature toggle),
+/// then (JVM only) `Weaver.injectWeaveImports`.  Wire-expansion diagnostics
+/// gate fatally.  `weWires` / `weConfigs` carry the templates collected
+/// across the compilation (own file only for single-file builds).
 pub func pipeExpandAndRewrite(
   file: in SourceFile,
   weWires: in Map[String, CollectedWireTemplate],
@@ -162,6 +168,11 @@ pub func pipeExpandAndRewrite(
   if runStubbable {
     f = Stubbable.stubbableRewriteFile(f)
   }
+  val idRes = ImplDefaults.inheritDefaultsFile(f)
+  if gate("", idRes.diagnostics) {
+    return None
+  }
+  f = idRes.file
   if injectWeave {
     f = Weaver.injectWeaveImports(f)
   }

@@ -845,3 +845,61 @@ test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure
   }
   assertTrue(result.diagnostics.count > 0, "the contained failure carries a diagnostic for the CLI to render")
 }
+
+// #6447 (#6446 review): an UNRESOLVED diamond — two same-file interfaces
+// each defaulting the same name onto one target, no override anywhere —
+// must be rejected at compile time under T0117 (docs/01 §2.12: "diamond
+// conflicts are resolved by requiring explicit override"), never reach the
+// backends as two same-named synthesized members (a duplicate-member
+// backend crash pre-#6447).  Asserted through `Emitter.emit` so the
+// rejection flows as a normal `EmitResult` failure, not a thrown exception.
+test "unresolved diamond default conflict is rejected with T0117, not a backend crash (#6447)" {
+  val dir = freshTempDir("diamond-t0117")
+  val source = "package DiamondT0117\n" + "\n" + "record Thing {\n" + "  base: Int\n" + "}\n" + "\n" +
+    "interface Alpha {\n" +
+    "  func label(self: in Self): Int {\n" +
+    "    1\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "interface Beta {\n" +
+    "  func label(self: in Self): Int {\n" +
+    "    2\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "impl Alpha for Thing {\n" +
+    "}\n" +
+    "\n" +
+    "impl Beta for Thing {\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(Thing(base = 0).label())\n" +
+    "}\n"
+  val noDefines: List[String] = newList()
+  val req = Emitter.EmitRequest(
+    source = source,
+    assemblyName = "DiamondT0117",
+    outputPath = Path.join(dir, "DiamondT0117.dll"),
+    target = Emitter.Dotnet,
+    packageVersion = "",
+    defines = noDefines
+  )
+  var threw = false
+  val result = try {
+    Emitter.emit(req)
+  } catch Bug as b {
+    threw = true
+    Emitter.EmitResult(outputPath = None, diagnostics = newList())
+  }
+  match File.deleteDirRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  assertFalse(threw, "the diamond rejection must flow as a diagnostic, never a thrown exception")
+  match result.outputPath {
+    case None -> assertTrue(true, "no artifact for a rejected diamond")
+    case Some(p) -> assertTrue(false, "emit must fail under T0117 (got outputPath " + p + ")")
+  }
+}

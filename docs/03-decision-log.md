@@ -27569,3 +27569,102 @@ impl targets cannot be generic today), so the bare/arity keys under a
 generic record's FQN can only originate from the record-body
 registration path. No guard needed; if generic impl targets ever become
 checker-legal, the dispatch-arm interaction needs revisiting then.
+
+---
+
+## D-progress-760 — interface default methods are inherited by impls: `Lyric.ImplDefaults` pre-typecheck synthesis (#6433)
+
+**Status:** ACCEPTED
+
+**Spec finding (the decider).** `docs/01-language-reference.md` §2.12
+states plainly "Interfaces support default methods" and "Multiple
+inheritance of interfaces is permitted; diamond conflicts are resolved by
+requiring explicit override" — text that only makes sense if a default
+method's body is actually INHERITED by a conforming `impl` that doesn't
+re-declare it. `docs/grammar.ebnf`'s `InterfaceMember` production tags the
+bodied form explicitly as `(* default method *)`. Option (a) — implement
+inheritance — was therefore mandated; rejecting the omission (option b)
+would have contradicted the spec.
+
+**Pre-fix behavior (#6433).** An `impl` omitting a bodied interface member
+type-checked (`checkImplConformance` only requires abstract `IMSig`
+members) but had no method for the omitted name once compiled: calling it
+through the concrete record crashed at runtime on BOTH targets (JVM
+`NoSuchMethodError`, MSIL "unsupported method").
+
+**Mechanism.** `lyric-compiler/lyric/impl_defaults.l`
+(`Lyric.ImplDefaults`), a pre-typecheck `SourceFile -> SourceFile` AST
+rewrite mirroring `Lyric.Stubbable`'s shape: for every `impl Iface for
+Target`, every `IMFunc` member of a same-file `Iface` the impl does not
+already provide is appended as a verbatim `IMplFunc` copy. NO `Self`
+substitution happens in the synthesis: the copied member becomes a real
+impl member, so the existing per-impl `Self` machinery
+(D-progress-751/753/755) narrows `Self` to the impl's own target exactly
+as for a hand-written method — zero new backend codegen, automatic
+dual-target correctness. An impl that overrides wins outright
+(name-checked, no double registration). Wired into
+`Lyric.Pipeline.pipeExpandAndRewrite` after `Lyric.Stubbable` (so
+synthesized `<Iface>Stub` impls inherit defaults too) and before
+`Weaver.injectWeaveImports`; the pass-order doc in `pipeline.l` updated.
+`checkImplConformance`'s comment updated to state WHY skipping `IMFunc` is
+sound now (the omission is filled before the check runs).
+
+**Scope.** Same-file interfaces only, matching `Lyric.Stubbable`'s
+accepted limitation: an impl of a default-bearing interface imported from
+another package still relies on the interface-typed DIM dispatch path;
+the cross-package inheritance crash for concrete-receiver calls is
+pre-existing and unchanged (follow-up territory, not a regression).
+
+**Discovery filed as #6445.** A field access (`self.base`) written in a
+default-method BODY fails on `--target jvm` (J009) and silently
+mis-lowers on MSIL — because both backends ALSO lower bodied interface
+members onto the interface's own class for interface-typed dispatch
+(D-progress-676 JVM; D-progress-753's MSIL DIM caveat), where `Self`
+narrows to the interface, which owns no fields. Independent of this fix
+(reproduces with an explicit override present); the inherited concrete
+copies this pass synthesizes handle the same body correctly.
+
+**Verification (all green).** Repro runs correctly on both targets
+(was: runtime crash). `bare_func_ref_self_test.l` 30 -> 35 both targets
+(5 new #6433 cases: inherited default via record value, via
+interface-typed binding, override wins, default calling another interface
+member, `Self`-param default). `typechecker_self_test.l` 302/302;
+`impl_method_self_test.l` 22/22; `msil_restored_bridge_self_test.l` 6/6;
+`msil_project_bridge_self_test.l` 39/39; `inbundle_generics_self_test.l`
+31/31; `stdlib_generic_iface_self_test.l` 20/20 both;
+`iface_slice_arg_self_test.l` 6/6; `synthesized_method_self_test.l`
+10/10 both; `aspect_weave_self_test.l` 7/7 both; ilverify 119 DLLs
+clean. Rider: docs/43's Open Questions note Q-GEN-005 resolved for
+records (D-progress-759), per PR #6443's review disposition.
+
+**Related:** #6433, #6445 (filed), D-progress-751/753/755 (the `Self`
+machinery the synthesis leans on), D-progress-676 (JVM DIM lowering),
+docs/01 §2.12, docs/49/D037.
+
+**Review addendum (#6447, same PR).** Review found the synthesis processed
+each `impl` block in isolation, so a target implementing TWO same-file
+interfaces that each default the same name (neither overridden) would get
+two same-named `IMplFunc` members silently synthesized — a duplicate-member
+backend crash instead of the spec's own promised resolution ("diamond
+conflicts are resolved by requiring explicit override", docs/01 §2.12,
+the very sentence this feature's justification quotes). The pass now
+pre-scans the whole file into a TARGET-level method namespace
+(`collectTargetNamespace`): a hand-written member in ANY impl block for a
+target claims the name for the whole namespace (the explicit-override
+resolution — no copy is synthesized for it from any interface); a name
+that two or more different interfaces would default onto one target with
+no override anywhere emits the new `T0117` diagnostic (once per
+target/name, pointing at the second impl's span) and synthesizes nothing,
+so the backends never see the duplicate. `inheritDefaultsFile` now
+returns `ImplDefaultsResult { file, diagnostics }` and the pipeline gates
+it fatally like wire-expansion. Verified: the unresolved-diamond repro
+fails with the same T0117 on BOTH targets; the override-resolved twin
+runs the override (exit 0, both targets); the original #6433 repro is
+unaffected. The review's generic-interface suggestion was also taken:
+`findLocalInterface` now skips generic interfaces (Stubbable's own
+guard), with the module-doc scope note. Regression:
+`bare_func_ref_self_test.l` 35 -> 36 (override-resolved diamond, dual
+target); `emitter_project_self_test.l` 24 -> 25 (unresolved diamond
+rejected as an `EmitResult` failure under T0117, no throw). Battery
+re-verified: typechecker 302/302, impl_method 22/22,
+msil_project_bridge 39/39.
