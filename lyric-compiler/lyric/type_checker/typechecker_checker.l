@@ -1436,12 +1436,292 @@ func checkUnionDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: i
   }
 }
 
+// #6445: a default method's (`IMFunc`) `Self` is the interface itself, and
+// an interface never owns fields.  Both backends additionally lower a
+// body-bearing interface member onto the interface's OWN class so
+// interface-typed dispatch works (JVM `lowerImplMethod` on `ifClassName`,
+// D-progress-676; MSIL's `lowerImplMethodMsil` DIM reuse, D-progress-753's
+// caveat) — narrowing `Self` there to the interface, which has no fields to
+// resolve.  Before this check, a default body's statements were never
+// type-checked at all (`checkInterfaceDeclTypes` validated only the member
+// SIGNATURE's type references), so `self.<name>` for a name that isn't an
+// interface member panicked on JVM (J009) and silently mis-lowered on MSIL
+// (the pre-existing `case None -> { MPop; MObject }` fallback). This is a
+// purely NAME-based structural check — the checker already knows the
+// interface's complete member list, so no type resolution is needed: reject
+// any `<selfLike>.<name>` where `<selfLike>` is the `self` keyword OR
+// another parameter explicitly typed `Self` (e.g. `other: in Self` — the
+// same DIM-lowering gap applies to it, not just the literal receiver) and
+// `<name>` doesn't match an interface member, leaving
+// `self.<memberName>()` / bare `<memberName>()` calls to another interface
+// member fully legal (the whole point of a default method).
+func interfaceMemberNames(decl: in InterfaceDecl): List[String] {
+  val names: List[String] = newList()
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case IMSig(sig) -> names.add(sig.name)
+      case IMFunc(fn) -> names.add(fn.name)
+      case IMAssoc(_) -> {
+      }
+    }
+    i = i + 1
+  }
+  names
+}
+
+// Names of every parameter (other than the `self` receiver, which is
+// recognised via the dedicated `ESelf` AST node regardless of spelling)
+// explicitly typed `Self` — e.g. `other: in Self`.
+func selfTypedParamNames(fn: in FunctionDecl): List[String] {
+  val names: List[String] = newList()
+  var i = 0
+  while i < fn.params.count {
+    val p = fn.params[i]
+    if p.name != "self" {
+      match p.ty.kind {
+        case TSelf -> names.add(p.name)
+        case _ -> {
+        }
+      }
+    }
+    i = i + 1
+  }
+  names
+}
+
+// Bundles the read-only context threaded through the recursive walk below.
+pub record DefaultBodyCtx {
+  ifaceName: String
+  memberNames: List[String]
+  selfNames: List[String]
+}
+
+// True when `e` denotes a value statically typed `Self` inside a default
+// method body: the `self` keyword itself, or a bare reference to another
+// `Self`-typed parameter.
+func isSelfLikeExpr(e: in Expr, ctx: in DefaultBodyCtx): Bool {
+  match e.kind {
+    case ESelf -> true
+    case EPath(path) -> path.segments.count == 1 and listContains(ctx.selfNames, path.segments[0])
+    case _ -> false
+  }
+}
+
+func checkDefaultBodySelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyCtx, fn: in FunctionDecl): Unit {
+  match fn.body {
+    case None -> {
+    }
+    case Some(body) -> match body { case FBExpr(e) -> checkExprSelfMembers(diag, ctx, e); case FBBlock(b) -> checkBlockSelfMembers(diag, ctx, b) }
+  }
+}
+
+func checkExprSelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyCtx, e: in Expr): Unit {
+  match e.kind {
+    case EMember(recv, name) -> {
+      if isSelfLikeExpr(recv, ctx) {
+        if not listContains(ctx.memberNames, name) {
+          diag.add(
+            errorDiagnostic(
+              "T0118",
+              "'" + name + "' is not a member of interface '" + ctx.ifaceName +
+                "': a default method body may only reference interface members through a Self-typed value; field access requires overriding the method in an impl",
+              e.span
+            )
+          )
+        }
+      }
+      checkExprSelfMembers(diag, ctx, recv)
+    }
+    case ELiteral(_) -> {
+    }
+    case EPath(_) -> {
+    }
+    case ESelf -> {
+    }
+    case EResult -> {
+    }
+    case EError -> {
+    }
+    case EParen(inner) -> checkExprSelfMembers(diag, ctx, inner)
+    case EAwait(inner) -> checkExprSelfMembers(diag, ctx, inner)
+    case EYield(inner) -> checkExprSelfMembers(diag, ctx, inner)
+    case ESpawn(inner) -> checkExprSelfMembers(diag, ctx, inner)
+    case EOld(inner) -> checkExprSelfMembers(diag, ctx, inner)
+    case EPropagate(inner) -> checkExprSelfMembers(diag, ctx, inner)
+    case ETry(inner) -> checkExprSelfMembers(diag, ctx, inner)
+    case EPrefix(_, inner) -> checkExprSelfMembers(diag, ctx, inner)
+    case ETuple(elems) -> checkExprListSelfMembers(diag, ctx, elems)
+    case EList(elems) -> checkExprListSelfMembers(diag, ctx, elems)
+    case EInterpolated(segs) -> {
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISExpr(se) -> checkExprSelfMembers(diag, ctx, se)
+          case ISText(_) -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case EBinop(_, l, r) -> {
+      checkExprSelfMembers(diag, ctx, l)
+      checkExprSelfMembers(diag, ctx, r)
+    }
+    case EAssign(t, _, v) -> {
+      checkExprSelfMembers(diag, ctx, t)
+      checkExprSelfMembers(diag, ctx, v)
+    }
+    case ETypeApp(f, _) -> checkExprSelfMembers(diag, ctx, f)
+    case EIndex(recv, idxs) -> {
+      checkExprSelfMembers(diag, ctx, recv)
+      checkExprListSelfMembers(diag, ctx, idxs)
+    }
+    case ECall(f, args) -> {
+      checkExprSelfMembers(diag, ctx, f)
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CAPositional(v) -> checkExprSelfMembers(diag, ctx, v)
+          case CANamed(_, v, _) -> checkExprSelfMembers(diag, ctx, v)
+        }
+        i = i + 1
+      }
+    }
+    case ERange(rb) -> match rb { case RBClosed(a, b) -> { checkExprSelfMembers(diag, ctx, a); checkExprSelfMembers(diag, ctx, b) }; case RBHalfOpen(a, b) -> { checkExprSelfMembers(diag, ctx, a); checkExprSelfMembers(diag, ctx, b) }; case RBLowerOpen(a) -> checkExprSelfMembers(diag, ctx, a); case RBUpperOpen(a) -> checkExprSelfMembers(diag, ctx, a) }
+    case EIf(c, t, eOpt, _) -> {
+      checkExprSelfMembers(diag, ctx, c)
+      checkExprOrBlockSelfMembers(diag, ctx, t)
+      match eOpt {
+        case None -> {
+        }
+        case Some(b) -> checkExprOrBlockSelfMembers(diag, ctx, b)
+      }
+    }
+    case EMatch(subj, arms) -> {
+      checkExprSelfMembers(diag, ctx, subj)
+      var i = 0
+      while i < arms.count {
+        val arm = arms[i]
+        match arm.guard {
+          case None -> {
+          }
+          case Some(g) -> checkExprSelfMembers(diag, ctx, g)
+        }
+        checkExprOrBlockSelfMembers(diag, ctx, arm.body)
+        i = i + 1
+      }
+    }
+    case EBlock(blk) -> checkBlockSelfMembers(diag, ctx, blk)
+    case EUnsafe(blk) -> checkBlockSelfMembers(diag, ctx, blk)
+    case EForall(_, w, body) -> {
+      match w {
+        case None -> {
+        }
+        case Some(we) -> checkExprSelfMembers(diag, ctx, we)
+      }
+      checkExprSelfMembers(diag, ctx, body)
+    }
+    case EExists(_, w, body) -> {
+      match w {
+        case None -> {
+        }
+        case Some(we) -> checkExprSelfMembers(diag, ctx, we)
+      }
+      checkExprSelfMembers(diag, ctx, body)
+    }
+    // A nested lambda still captures the enclosing default method's `self`,
+    // so a `self.<name>` inside it is the exact same problem — unlike the
+    // yield-tracking `exprContainsYield` (whose "yield" scoping rules
+    // differ per lambda), descend into the lambda body here.
+    case ELambda(_, body) -> checkBlockSelfMembers(diag, ctx, body)
+  }
+}
+
+func checkExprListSelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyCtx, es: in List[Expr]): Unit {
+  var i = 0
+  while i < es.count {
+    checkExprSelfMembers(diag, ctx, es[i])
+    i = i + 1
+  }
+}
+
+func checkExprOrBlockSelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyCtx, eob: in ExprOrBlock): Unit {
+  match eob {
+    case EOBExpr(e) -> checkExprSelfMembers(diag, ctx, e)
+    case EOBBlock(b) -> checkBlockSelfMembers(diag, ctx, b)
+  }
+}
+
+func checkBlockSelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyCtx, blk: in Block): Unit {
+  var i = 0
+  while i < blk.statements.count {
+    checkStmtSelfMembers(diag, ctx, blk.statements[i])
+    i = i + 1
+  }
+}
+
+func checkStmtSelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyCtx, stmt: in Statement): Unit {
+  match stmt.kind {
+    case SExpr(e) -> checkExprSelfMembers(diag, ctx, e)
+    case SThrow(e) -> checkExprSelfMembers(diag, ctx, e)
+    case SReturn(None) -> {
+    }
+    case SReturn(Some(e)) -> checkExprSelfMembers(diag, ctx, e)
+    case SBreak(_) -> {
+    }
+    case SContinue(_) -> {
+    }
+    case SInvariant(e) -> checkExprSelfMembers(diag, ctx, e)
+    case SItem(_) -> {
+    }
+    case SAssign(t, _, v) -> {
+      checkExprSelfMembers(diag, ctx, t)
+      checkExprSelfMembers(diag, ctx, v)
+    }
+    case SLocal(binding) -> match binding { case LBVal(_, _, e) -> checkExprSelfMembers(diag, ctx, e); case LBLet(_, _, e) -> checkExprSelfMembers(diag, ctx, e); case LBVar(_, _, Some(e)) -> checkExprSelfMembers(diag, ctx, e); case LBVar(_, _, None) -> {  } }
+    case STry(body, catches, finally_) -> {
+      checkBlockSelfMembers(diag, ctx, body)
+      var i = 0
+      while i < catches.count {
+        checkBlockSelfMembers(diag, ctx, catches[i].body)
+        i = i + 1
+      }
+      match finally_ {
+        case None -> {
+        }
+        case Some(fb) -> checkBlockSelfMembers(diag, ctx, fb)
+      }
+    }
+    case SDefer(b) -> checkBlockSelfMembers(diag, ctx, b)
+    case SScope(_, b) -> checkBlockSelfMembers(diag, ctx, b)
+    case SLoop(_, b) -> checkBlockSelfMembers(diag, ctx, b)
+    case SFor(_, _, iter, body) -> {
+      checkExprSelfMembers(diag, ctx, iter)
+      checkBlockSelfMembers(diag, ctx, body)
+    }
+    case SWhile(_, cond, body) -> {
+      checkExprSelfMembers(diag, ctx, cond)
+      checkBlockSelfMembers(diag, ctx, body)
+    }
+    case SRule(l, r) -> {
+      checkExprSelfMembers(diag, ctx, l)
+      checkExprSelfMembers(diag, ctx, r)
+    }
+  }
+}
+
 func checkInterfaceDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in InterfaceDecl): Unit {
+  val memberNames = interfaceMemberNames(decl)
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
       case IMSig(sig) -> checkMemberSigTypes(tbl, diag, decl.generics, sig.generics, sig.params, sig.ret)
-      case IMFunc(fn) -> checkMemberSigTypes(tbl, diag, decl.generics, fn.generics, fn.params, fn.ret)
+      case IMFunc(fn) -> {
+        checkMemberSigTypes(tbl, diag, decl.generics, fn.generics, fn.params, fn.ret)
+        val ctx = DefaultBodyCtx(ifaceName = decl.name, memberNames = memberNames, selfNames = selfTypedParamNames(fn))
+        checkDefaultBodySelfMembers(diag, ctx, fn)
+      }
       case IMAssoc(_) -> {
       }
     }

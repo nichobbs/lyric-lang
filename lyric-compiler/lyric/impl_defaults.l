@@ -227,9 +227,20 @@ func collectTargetNamespace(
     }
     i = i + 1
   }
-  // Second pass: count distinct default-supplying interfaces per
-  // un-overridden target/name; a second supplier is a diamond conflict.
-  val defaultFrom: Map[String, String] = newMap()
+  // Second pass: for every un-overridden target/name, accumulate the FULL
+  // ordered list of distinct default-supplying interfaces (not just the
+  // first two) — a 3+-way diamond needs every supplier's name known before
+  // the diagnostic is composed, so "and N more" (#6445 rider) can count the
+  // suppliers beyond the two named explicitly.  `conflictOrder` remembers
+  // each key the first time it becomes conflicted (its second supplier),
+  // preserving the diagnostic's discovery-order position; the diagnostic
+  // itself is only ever composed once, after the full scan, from the final
+  // supplier list.
+  val suppliers: Map[String, List[String]] = newMap()
+  val conflictOrder: List[String] = newList()
+  val conflictSpans: Map[String, Span] = newMap()
+  val conflictTargets: Map[String, String] = newMap()
+  val conflictMethods: Map[String, String] = newMap()
   i = 0
   while i < items.count {
     match items[i].kind {
@@ -243,27 +254,23 @@ func collectTargetNamespace(
                 case IMFunc(fn) -> {
                   val k = tn + "/" + fn.name
                   if not overridden.containsKey(k) {
-                    match mapGet(defaultFrom, k) {
-                      case Some(firstIface) -> {
-                        if firstIface != ifaceDecl.name and not conflicted.containsKey(k) {
-                          conflicted.add(k, true)
-                          diags.add(
-                            errorDiagnostic(
-                              "T0117",
-                              "diamond conflict: interfaces '" + firstIface + "' and '" + ifaceDecl.name +
-                                "' both provide a default method '" +
-                                fn.name +
-                                "' for '" +
-                                tn +
-                                "'; resolve by overriding '" +
-                                fn.name +
-                                "' explicitly in an impl block",
-                              items[i].span
-                            )
-                          )
-                        }
+                    val supplierList = match mapGet(suppliers, k) {
+                      case Some(l) -> l
+                      case None -> {
+                        val nl: List[String] = newList()
+                        suppliers.add(k, nl)
+                        nl
                       }
-                      case None -> defaultFrom.add(k, ifaceDecl.name)
+                    }
+                    if not listContains(supplierList, ifaceDecl.name) {
+                      supplierList.add(ifaceDecl.name)
+                      if supplierList.count == 2 {
+                        conflicted.add(k, true)
+                        conflictOrder.add(k)
+                        conflictSpans.add(k, items[i].span)
+                        conflictTargets.add(k, tn)
+                        conflictMethods.add(k, fn.name)
+                      }
                     }
                   }
                 }
@@ -282,6 +289,32 @@ func collectTargetNamespace(
     }
     i = i + 1
   }
+  // Emit one T0117 per conflicted key, now that every supplier is known.
+  var ci = 0
+  while ci < conflictOrder.count {
+    val k = conflictOrder[ci]
+    val names: List[String] = match mapGet(suppliers, k) { case Some(l) -> l; case None -> newList() }
+    val tn = match mapGet(conflictTargets, k) { case Some(v) -> v; case None -> "" }
+    val mname = match mapGet(conflictMethods, k) { case Some(v) -> v; case None -> "" }
+    val span = match mapGet(conflictSpans, k) { case Some(s) -> s; case None -> items[0].span }
+    val extraCount = names.count - 2
+    val suffix = if extraCount > 0 { " and " + toString(extraCount) + " more" } else { "" }
+    diags.add(
+      errorDiagnostic(
+        "T0117",
+        "diamond conflict: interfaces '" + names[0] + "' and '" + names[1] + "'" + suffix +
+          " both provide a default method '" +
+          mname +
+          "' for '" +
+          tn +
+          "'; resolve by overriding '" +
+          mname +
+          "' explicitly in an impl block",
+        span
+      )
+    )
+    ci = ci + 1
+  }
 }
 
 // Rewrite every `IImpl` item in `items`, inheriting default methods from a
@@ -289,9 +322,7 @@ func collectTargetNamespace(
 // `IImpl`, or whose interface isn't declared in this file (cross-package —
 // see the module doc's scope note), pass through unchanged.
 func synthesiseItems(
-  items: in List[Item],
-  overridden: in Map[String, Bool],
-  conflicted: in Map[String, Bool],
+  items: in List[Item], overridden: in Map[String, Bool], conflicted: in Map[String, Bool]
 ): List[Item] {
   val result: List[Item] = newList()
   var i = 0

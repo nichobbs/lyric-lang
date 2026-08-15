@@ -1173,6 +1173,65 @@ test "impl default method optional" {
   assertTrue(not hasDiagCode(cr, "T0098"), "default interface method not required: no T0098")
 }
 
+// #6445: a default method's `Self` is the interface itself, which owns no
+// fields — but both backends ALSO lower a body-bearing interface member onto
+// the interface's own class for interface-typed dispatch (JVM D-progress-676,
+// MSIL D-progress-753's DIM caveat), where `self.<field>` cannot resolve.
+// Before this test, that body went entirely unchecked and panicked (JVM
+// J009) or silently mis-lowered (MSIL). `self.<name>` for a name that is not
+// an interface member is now rejected at check time under T0118.
+test "default method body field access on self is rejected (#6445)" {
+  val src = "package P\n" + "interface Peeker {\n" + "  func peekBase(self: in Self): Int {\n" + "    self.base\n" +
+    "  }\n" +
+    "}\n" +
+    "record Thing { base: Int }\n" +
+    "impl Peeker for Thing {}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0118"), "self.base in a default body: T0118")
+}
+
+// The same shape via a non-receiver `Self`-typed parameter (`other: in
+// Self`) hits the identical DIM-lowering gap — `Self` narrows to the
+// interface there too, so it owns no fields either.
+test "default method body field access on a Self-typed param is rejected (#6445)" {
+  val src = "package P\n" + "interface Merger {\n" + "  func score(self: in Self): Int\n" +
+    "  func combined(self: in Self, other: in Self): Int {\n" +
+    "    other.base\n" +
+    "  }\n" +
+    "}\n" +
+    "record Weighted { base: Int }\n" +
+    "impl Merger for Weighted { func score(self: in Self): Int { self.base } }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0118"), "other.base in a default body: T0118")
+}
+
+// A default body calling ANOTHER interface member — via `self.<name>()` or a
+// bare `<name>()` — is the whole point of a default method and must stay
+// legal; T0118 must not fire for it.
+test "default method body calling another interface member via self is accepted (#6445)" {
+  val src = "package P\n" + "interface Ranker {\n" + "  func score(self: in Self): Int\n" +
+    "  func doubled(self: in Self): Int {\n" +
+    "    self.score() * 2\n" +
+    "  }\n" +
+    "}\n" +
+    "record Item { v: Int }\n" +
+    "impl Ranker for Item { func score(self: in Self): Int { self.v } }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0118"), "self.score() calling another interface member: no T0118")
+}
+
+test "default method body calling another interface member bare is accepted (#6445)" {
+  val src = "package P\n" + "interface Ranker2 {\n" + "  func score(self: in Self): Int\n" +
+    "  func doubled(self: in Self): Int {\n" +
+    "    score() * 2\n" +
+    "  }\n" +
+    "}\n" +
+    "record Item2 { v: Int }\n" +
+    "impl Ranker2 for Item2 { func score(self: in Self): Int { self.v } }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0118"), "bare score() calling another interface member: no T0118")
+}
+
 // #1487 (§5.2): `in` parameters (and `val`/`let`) are immutable and cannot be
 // reassigned (T0087); `var` locals and `out`/`inout` params are mutable.
 test "in param no rebind" {
