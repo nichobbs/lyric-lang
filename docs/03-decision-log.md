@@ -27668,3 +27668,73 @@ target); `emitter_project_self_test.l` 24 -> 25 (unresolved diamond
 rejected as an `EmitResult` failure under T0117, no throw). Battery
 re-verified: typechecker 302/302, impl_method 22/22,
 msil_project_bridge 39/39.
+
+## D-progress-761 — default-method bodies may only reference interface members through `Self`: T0118 check-time rejection (#6445)
+
+**Problem.** Filed from D-progress-760's discovery: a field access
+(`self.base`) written in an interface default-method BODY crashed at
+runtime on `--target jvm` (J009 known-class-no-field panic) and silently
+mis-lowered on MSIL (the pre-existing `case None -> { MPop; MObject }`
+member fallback — wrong value, no diagnostic). Root cause is structural,
+not a backend bug: both backends lower a bodied interface member onto
+the interface's OWN class so interface-typed dispatch works
+(D-progress-676 JVM; D-progress-753's MSIL DIM caveat), and there `Self`
+IS the interface — which owns no fields. The body was also never
+type-checked at all: `checkInterfaceDeclTypes` validated only member
+SIGNATURES' type references, so nothing caught the unresolvable access
+at check time on either target.
+
+**Decision — reject at check time (option (c)).** The alternatives were
+(a) synthesizing per-impl field-reading copies only (breaking
+interface-typed dispatch for the same method — a dispatch-dependent
+answer), or (b) teaching both DIM lowerings a field-accessor protocol
+(a de-facto properties feature, far beyond the issue). Rejection
+matches the language's semantics as specced: a default method's `Self`
+is the interface, so its body may only reference interface members.
+A body that needs a field overrides the method in the `impl` block,
+where `Self` narrows to the concrete target.
+
+**Implementation.** New `T0118` in
+`lyric-compiler/lyric/type_checker/typechecker_checker.l`: a purely
+NAME-based structural walk (no type resolution needed — the checker
+already knows the interface's complete member list) over every
+default-method body, rejecting `<selfLike>.<name>` where `<selfLike>`
+is the `self` receiver (`ESelf`) OR any other parameter explicitly
+typed `Self` (`other: in Self` hits the identical DIM gap) and `<name>`
+is not an interface member. `self.<member>()` and bare `<member>()`
+calls to other interface members stay fully legal (the point of a
+default method). Nested lambdas are descended into — a lambda captures
+the enclosing `self`, so `self.<field>` inside one is the same problem.
+Message shape: `'base' is not a member of interface 'Peeker': a default
+method body may only reference interface members through a Self-typed
+value; field access requires overriding the method in an impl`.
+
+**Riders (PR #6446 review dispositions).** (1) The T0117
+diamond-conflict rejection now has a `--target jvm` twin in
+`emitter_project_self_test.l` — the check runs in the
+target-independent middle end, and the test pins that both bridges
+reject identically. (2) A THREE-plus-interface diamond folds every
+supplier beyond the two named into "and N more" instead of silently
+dropping them: `collectTargetNamespace` (`impl_defaults.l`) now
+accumulates the full ordered supplier list per un-overridden
+target/name and composes each T0117 once after the full scan
+(discovery-order spans, dedupe unchanged), pinned by a
+direct-`inheritDefaultsFile` message test.
+
+**Verification (all green, `./bin/lyric` rebuilt via `make lyric`).**
+The #6445 repro now fails at compile time with the identical T0118
+diagnostic on BOTH targets (was: J009 panic on JVM, silent wrong value
+on MSIL); the original #6433 member-only default repro still runs on
+both targets. `typechecker_self_test.l` 302 -> 306 (self-field
+rejected, Self-param-field rejected, member call via self accepted,
+bare member call accepted); `emitter_project_self_test.l` 25 -> 27
+(JVM diamond rejection, three-way "and 1 more" message);
+`bare_func_ref_self_test.l` 36/36 both targets; `impl_method` 22/22;
+`msil_project_bridge` 39/39; `msil_restored_bridge` 6/6;
+`inbundle_generics` 31/31; `stdlib_generic_iface` 20/20 both;
+`synthesized_method` 10/10 both; `aspect_weave` 7/7 both; ilverify
+clean. docs/01 §2 gains the member-only default-body paragraph.
+
+**Related:** #6445, D-progress-760 (the discovery + `Lyric.ImplDefaults`),
+D-progress-676 (JVM DIM lowering), D-progress-753 (MSIL DIM caveat),
+docs/01 §2.12.

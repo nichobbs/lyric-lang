@@ -33,6 +33,8 @@ import Std.Testing
 import Std.Uuid
 import Std.Environment as Environment
 import Lyric.Emitter as Emitter
+import Lyric.Parser as Parser
+import Lyric.ImplDefaults as ImplDefaults
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 func tempBase(): String {
@@ -902,4 +904,121 @@ test "unresolved diamond default conflict is rejected with T0117, not a backend 
     case None -> assertTrue(true, "no artifact for a rejected diamond")
     case Some(p) -> assertTrue(false, "emit must fail under T0117 (got outputPath " + p + ")")
   }
+}
+
+// #6445 rider (PR #6446 review disposition): the JVM counterpart of the
+// dotnet diamond-conflict case above. `Lyric.ImplDefaults`'s diamond check
+// runs in the target-independent middle end (`Lyric.Pipeline.pipeExpandAndRewrite`,
+// before either backend bridge), so the same unresolved diamond must be
+// rejected identically under `--target jvm`.
+test "unresolved diamond default conflict is rejected with T0117 on JVM too (#6445)" {
+  val dir = freshTempDir("diamond-t0117-jvm")
+  val source = "package DiamondT0117Jvm\n" + "\n" + "record Thing {\n" + "  base: Int\n" + "}\n" + "\n" +
+    "interface Alpha {\n" +
+    "  func label(self: in Self): Int {\n" +
+    "    1\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "interface Beta {\n" +
+    "  func label(self: in Self): Int {\n" +
+    "    2\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "impl Alpha for Thing {\n" +
+    "}\n" +
+    "\n" +
+    "impl Beta for Thing {\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(Thing(base = 0).label())\n" +
+    "}\n"
+  val noDefines: List[String] = newList()
+  val req = Emitter.EmitRequest(
+    source = source,
+    assemblyName = "DiamondT0117Jvm",
+    outputPath = Path.join(dir, "DiamondT0117Jvm.jar"),
+    target = Emitter.Jvm,
+    packageVersion = "",
+    defines = noDefines
+  )
+  var threw = false
+  val result = try {
+    Emitter.emit(req)
+  } catch Bug as b {
+    threw = true
+    Emitter.EmitResult(outputPath = None, diagnostics = newList())
+  }
+  match File.deleteDirRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  assertFalse(threw, "the diamond rejection must flow as a diagnostic, never a thrown exception (JVM)")
+  match result.outputPath {
+    case None -> assertTrue(true, "no artifact for a rejected diamond (JVM)")
+    case Some(p) -> assertTrue(false, "emit must fail under T0117 on JVM (got outputPath " + p + ")")
+  }
+}
+
+// #6445 rider (PR #6446 review): a THREE-interface diamond conflict is still
+// rejected exactly once (the per-target/name dedupe is unchanged), but the
+// message now folds every supplier beyond the first two into "and N more"
+// instead of silently dropping the third (and beyond). `Lyric.Pipeline`
+// only ever PRINTS `Lyric.ImplDefaults`'s diagnostics to stderr via `gate`
+// (`DiagnosticUtil.diagReportAndAbort`) before returning `None` — they never
+// flow back through `Emitter.emit`'s `EmitResult.diagnostics` — so the
+// message text is pinned by calling `ImplDefaults.inheritDefaultsFile`
+// directly on the parsed source, the same way `typechecker_self_test.l`
+// pins checker diagnostics via `parseCheck`.
+test "three-interface diamond conflict folds the extra supplier into 'and N more' (#6445)" {
+  val source = "package DiamondT0117Triple\n" + "\n" + "record Thing {\n" + "  base: Int\n" + "}\n" + "\n" +
+    "interface Alpha {\n" +
+    "  func label(self: in Self): Int {\n" +
+    "    1\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "interface Beta {\n" +
+    "  func label(self: in Self): Int {\n" +
+    "    2\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "interface Gamma {\n" +
+    "  func label(self: in Self): Int {\n" +
+    "    3\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "impl Alpha for Thing {\n" +
+    "}\n" +
+    "\n" +
+    "impl Beta for Thing {\n" +
+    "}\n" +
+    "\n" +
+    "impl Gamma for Thing {\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(Thing(base = 0).label())\n" +
+    "}\n"
+  val pr = Parser.parse(source)
+  assertEqualInt(pr.diagnostics.count, 0, "3-way diamond fixture parses cleanly")
+  val idRes = ImplDefaults.inheritDefaultsFile(pr.file)
+  var foundExtra = false
+  var t0117Count = 0
+  var di = 0
+  while di < idRes.diagnostics.count {
+    if idRes.diagnostics[di].code == "T0117" {
+      t0117Count = t0117Count + 1
+      if Str.contains(idRes.diagnostics[di].message, "and 1 more") {
+        foundExtra = true
+      }
+    }
+    di = di + 1
+  }
+  assertTrue(foundExtra, "T0117 message folds the third supplier into 'and 1 more'")
+  assertEqualInt(t0117Count, 1, "still exactly one T0117 diagnostic for the 3-way conflict (dedupe unchanged)")
 }
