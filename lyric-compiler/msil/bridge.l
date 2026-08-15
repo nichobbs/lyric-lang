@@ -9,7 +9,6 @@ package Msil.Bridge
 
 import Std.Core
 import Std.Collections
-import Std.Console as Console
 import Std.File
 import Lyric.Lexer
 import Lyric.Parser
@@ -91,22 +90,6 @@ func seedResultTypeRefs(cctx: in CodegenCtx): Unit {
 /// `parseSemverMajorMinor` (patch / pre-release segments ignored; the
 /// full string is preserved verbatim in the contract resource).  See
 /// #1364 for the threading plan.
-func reportCodegenPanicMsil(
-  // #6449: shared codegen-panic-to-diagnostic reporter for the `catch Bug`
-  // boundaries around `codegenMPackage`.  A panic that already carries its own
-  // `error[T0NNN]:` code (e.g. T0119) prints verbatim; anything else wraps in
-  // the generic T0120 fallback so every codegen failure surfaces as SOME
-  // diagnostic, never an uncaught .NET exception with a raw stack trace.
-  pkgName: in String,
-  message: in String,
-): Unit {
-  if message.startsWith("error[T0") {
-    Console.error(message)
-  } else {
-    Console.error("error[T0120]: MSIL codegen failed for package '" + pkgName + "': " + message)
-  }
-}
-
 pub func compileToMsilWithVersion(
   source: in String,
   outputPath: in String,
@@ -297,19 +280,15 @@ pub func compileToMsilWithVersion(
   // same-package types and functions.
   addPackageTokens(cctx, liftedFile, pkgName)
 
-  // Walk the AST and produce the MSIL package IR.  #6449: codegen panics on
-  // an unresolvable construct (a genuine user error, not always caught
-  // earlier by the type checker — extern-member typos, unsupported FFI
-  // shapes, …) are caught here and printed as a clean diagnostic instead of
-  // reaching the CLI as an uncaught .NET exception with a raw stack trace —
-  // mirroring the JVM bridge's existing `catch Bug as b` codegen-panic
-  // boundary (`Jvm.Bridge`'s per-package compile loop).
-  val pkg = try {
-    codegenMPackage(liftedFile, cctx)
-  } catch Bug as b {
-    reportCodegenPanicMsil(pkgName, b.message)
-    return false
-  }
+  // Walk the AST and produce the MSIL package IR.  #6449/#6459: a codegen
+  // panic on an unresolvable construct (extern-member typos, unsupported FFI
+  // shapes, …) deliberately ESCAPES this bridge — that throw is the
+  // bridge's library contract, which `msil_project_bridge_self_test.l`
+  // asserts exact messages on directly (the `Jvm.Bridge` convention).
+  // Containment into a printed T0119/T0120 diagnostic + structured
+  // `EmitResult.diagnostics` entry happens one layer up, in
+  // `Lyric.Emitter`'s `msilBridgePanicDiagnostic` boundary.
+  val pkg = codegenMPackage(liftedFile, cctx)
 
   // Append any closure-class records synthesized while lowering this
   // package's lambdas (#5177) — a single-file compile has exactly one
@@ -975,17 +954,12 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   }
 
   // Phase 4: codegen each package into an MPackage against the same cctx.
-  // #6449: same codegen-panic-to-diagnostic boundary as the single-file path
-  // above — see that call site's comment.
+  // #6449/#6459: codegen panics escape (the bridge's library contract) —
+  // see the single-file call site's comment above.
   val mpkgs: List[MPackage] = newList()
   var ci = 0
   while ci < liftedFiles.count {
-    val mpkg = try {
-      codegenMPackage(liftedFiles[ci], cctx)
-    } catch Bug as b {
-      reportCodegenPanicMsil(perPkgNames[ci], b.message)
-      return false
-    }
+    val mpkg = codegenMPackage(liftedFiles[ci], cctx)
     mpkgs.add(mpkg)
     ci = ci + 1
   }

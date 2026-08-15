@@ -201,15 +201,13 @@ test "qualified reference to a restored literal-foldable pub val inlines correct
 // `pub val` must fail to compile with the T0115 diagnostic, not silently
 // compile to a null/0 read.
 //
-// #6449 (D-progress-762): `Msil.Bridge` now contains every codegen panic as
-// a printed diagnostic plus a failed build, so the T0115 refusal no longer
-// escapes `emitProject` as a catchable `Bug` — this asserts the
-// CONTAINED-failure contract (no throw, no output artifact), like
-// `msil_project_bridge_self_test.l` / `generic_extern_valuetype_instance_
-// self_test.l`.  The former assertions on the T0115 code and the qualified
-// name in the panic MESSAGE cannot be kept without the stderr-capture seam
-// (#6455) — the diagnostic still prints (visible in the test run's stderr),
-// and the layer question itself is tracked in #6459.
+// #6449/#6459/#6462 (D-progress-762): `Lyric.Emitter`'s
+// `msilBridgePanicDiagnostic` boundary contains the codegen panic (the
+// `Jvm.Bridge` layering convention) as a printed diagnostic, a failed
+// build, AND a structured entry in `EmitResult.diagnostics` — so this
+// asserts the contained-failure contract (no throw, no artifact) plus the
+// exact T0115 code and symbol from the result, the same specificity the
+// old escaping-panic assertions had.
 test "qualified reference to a restored non-literal pub val fails the build cleanly under T0115, not a silent null read" {
   val tmpDir = freshTempDir("qual-nonliteral")
   val producerDll = buildDll(tmpDir, "MsilQVal.NlLib", producerSource("MsilQVal.NlLib"), "MsilQVal.NlLib")
@@ -218,6 +216,7 @@ test "qualified reference to a restored non-literal pub val fails the build clea
     "}\n"
   var threw = false
   var produced = false
+  var diagText = ""
   try {
     val res = buildConsumerResult(tmpDir, "MsilQVal.NlApp", consumerSrc, "MsilQVal.NlApp", "MsilQVal.NlLib", producerDll)
     match res.outputPath {
@@ -225,6 +224,11 @@ test "qualified reference to a restored non-literal pub val fails the build clea
         produced = true
       }
       case None -> ()
+    }
+    var di = 0
+    while di < res.diagnostics.count {
+      diagText = diagText + res.diagnostics[di].code + ": " + res.diagnostics[di].message + "\n"
+      di = di + 1
     }
   } catch Bug as b {
     threw = true
@@ -237,6 +241,18 @@ test "qualified reference to a restored non-literal pub val fails the build clea
   assertFalse(
     produced,
     "qual-nonliteral: compilation must fail (no output artifact) instead of silently compiling a null/0 read (#6133/#5275)"
+  )
+  // #6462: the contained refusal keeps its own code — the emitter boundary
+  // passes `error[T0NNN]`-prefixed panics through verbatim into
+  // `EmitResult.diagnostics`, restoring the exact-message specificity the
+  // old escaping-panic assertions had.
+  assertTrue(
+    Str.contains(diagText, "T0115"),
+    "qual-nonliteral: EmitResult.diagnostics carries the T0115 code (got: " + diagText + ")"
+  )
+  assertTrue(
+    Str.contains(diagText, "MsilQVal.NlLib.nonLiteralAnswer"),
+    "qual-nonliteral: the diagnostic names the unresolved qualified reference (got: " + diagText + ")"
   )
 }
 

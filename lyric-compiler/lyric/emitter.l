@@ -1884,6 +1884,20 @@ func failResult(msg: in String): EmitResult {
   EmitResult(outputPath = None, diagnostics = diags)
 }
 
+// #6462: `failResult` plus any structured diagnostics the bridge boundary
+// contained (e.g. a T0119/T0120 codegen-panic diagnostic), so emit callers
+// can assert the concrete diagnostic code from the result instead of only
+// the generic B0001 wrapper.
+func failResultWith(msg: in String, extra: in List[Diagnostic]): EmitResult {
+  val res = failResult(msg)
+  var i = 0
+  while i < extra.count {
+    res.diagnostics.add(extra[i])
+    i = i + 1
+  }
+  res
+}
+
 /// Compile a multi-package project to a single bundled DLL or JAR.
 ///
 /// `--target dotnet` runs IN-PROCESS via
@@ -2178,24 +2192,30 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
     dtpi = dtpi + 1
   }
 
-  val ok = MsilBridge.compileProjectToMsilWithRestoredAndVersion(
-    payloads,
-    req.assemblyName,
-    req.outputPath,
-    stdlibSources,
-    req.activeFeatures,
-    req.declaredFeatures,
-    restoredArtifacts,
-    req.nugetAssemblyPaths,
-    req.packageVersion,
-    depTemplatePkgs,
-    req.defines
-  )
+  val panicDiags: List[Diagnostic] = newList()
+  val ok = try {
+    MsilBridge.compileProjectToMsilWithRestoredAndVersion(
+      payloads,
+      req.assemblyName,
+      req.outputPath,
+      stdlibSources,
+      req.activeFeatures,
+      req.declaredFeatures,
+      restoredArtifacts,
+      req.nugetAssemblyPaths,
+      req.packageVersion,
+      depTemplatePkgs,
+      req.defines
+    )
+  } catch Bug as b {
+    panicDiags.add(msilBridgePanicDiagnostic(b.message))
+    false
+  }
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
   } else {
-    failResult("project build failed (see stderr)")
+    failResultWith("project build failed (see stderr)", panicDiags)
   }
 }
 
@@ -2215,13 +2235,49 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
 // into the existing `failResult("JVM compilation failed (see stderr)")`
 // paths, which also keeps `lyric test`'s per-file loop containment working
 // (#6357: one file's codegen refusal no longer aborts the whole process).
-func jvmBridgePanicToStderr(message: in String): Bool {
+// #6462: like the MSIL twin below, this now ALSO produces a structured
+// `Diagnostic` for `EmitResult.diagnostics`, so emit callers can assert the
+// contained J-code from the result (the previous Bool-returning
+// `jvmBridgePanicToStderr` only printed).
+func jvmBridgePanicDiagnostic(message: in String): Diagnostic {
   if message.startsWith("error[J0") {
     Console.error(message)
+    val code = match Str.indexOf(message, "]") {
+      case Some(closeIdx) -> if closeIdx > 6 { Str.substring(message, 6, closeIdx - 6) } else { "J008" }
+      case None -> "J008"
+    }
+    errorDiagnostic(code, message, pointSpan(initialPosition()))
   } else {
-    Console.error("error[J008]: JVM codegen failed: " + message)
+    val text = "error[J008]: JVM codegen failed: " + message
+    Console.error(text)
+    errorDiagnostic("J008", text, pointSpan(initialPosition()))
   }
-  false
+}
+
+// #6449/#6459/#6462: the MSIL twin of `jvmBridgePanicDiagnostic`, adopting the
+// JVM layering convention: `Msil.Bridge` keeps its throw-on-refusal library
+// contract (its self-tests assert exact panic messages directly), and THIS
+// emitter boundary turns the throw into a printed diagnostic AND a
+// structured `Diagnostic` for `EmitResult.diagnostics`, so `emitProject`
+// callers can assert the diagnostic's code and content without a
+// stderr-capture seam.  A message already carrying its own `error[T0NNN]`
+// code (e.g. T0119, or a codegen-time T0115) prints verbatim and keeps its
+// code; anything else wraps under the generic T0120 fallback.  The span is
+// synthetic — codegen panic messages embed their own `line:col` where one
+// exists (e.g. T0119).
+func msilBridgePanicDiagnostic(message: in String): Diagnostic {
+  if message.startsWith("error[T0") {
+    Console.error(message)
+    val code = match Str.indexOf(message, "]") {
+      case Some(closeIdx) -> if closeIdx > 6 { Str.substring(message, 6, closeIdx - 6) } else { "T0120" }
+      case None -> "T0120"
+    }
+    errorDiagnostic(code, message, pointSpan(initialPosition()))
+  } else {
+    val text = "error[T0120]: MSIL codegen failed: " + message
+    Console.error(text)
+    errorDiagnostic("T0120", text, pointSpan(initialPosition()))
+  }
 }
 
 func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
@@ -2278,12 +2334,13 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
         req.packageVersion
       )
     } catch Bug as b {
-      jvmBridgePanicToStderr(b.message)
+      diags.add(jvmBridgePanicDiagnostic(b.message))
+      false
     }
     if okP {
       return EmitResult(outputPath = Some(value = req.outputPath), diagnostics = diags)
     }
-    return failResult("JVM compilation failed (see stderr)")
+    return failResultWith("JVM compilation failed (see stderr)", diags)
   }
 
   val pkg = req.packages[0]
@@ -2307,13 +2364,14 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
       req.packageVersion
     )
   } catch Bug as b {
-    jvmBridgePanicToStderr(b.message)
+    diags.add(jvmBridgePanicDiagnostic(b.message))
+    false
   }
 
   if ok {
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = diags)
   } else {
-    failResult("JVM compilation failed (see stderr)")
+    failResultWith("JVM compilation failed (see stderr)", diags)
   }
 }
 
@@ -2406,6 +2464,7 @@ func emitJvmInProcess(req: in EmitRequest): EmitResult {
   val noDepTemplateSrcsJvm: List[String] = newList()
   // Single-file JVM threads `--define` (docs/60 §5, #5852) — parity with the
   // single-file MSIL `compileToMsilWithVersion(..., req.defines)` path.
+  val jvmPanicDiags: List[Diagnostic] = newList()
   val ok = try {
     JvmBridge.compileToJarBundledWithFeatures(
       req.source,
@@ -2419,13 +2478,14 @@ func emitJvmInProcess(req: in EmitRequest): EmitResult {
       req.packageVersion
     )
   } catch Bug as b {
-    jvmBridgePanicToStderr(b.message)
+    jvmPanicDiags.add(jvmBridgePanicDiagnostic(b.message))
+    false
   }
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
   } else {
-    failResult("JVM compilation failed (see stderr)")
+    failResultWith("JVM compilation failed (see stderr)", jvmPanicDiags)
   }
 }
 
@@ -2484,40 +2544,46 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
         val noArtifacts: List[SynthesisedArtifact] = newList()
         val noDepTemplatePkgsPerPkg: List[ProjectPackagePayload] = newList()
         val emptyNugetPaths: List[String] = newList()
-        val ok = MsilBridge.compileProjectToMsilWithRestoredAndVersion(
-          allPayloads,
-          req.assemblyName,
-          req.outputPath,
-          stdlibSources,
-          noFeatures,
-          noFeatures,
-          noArtifacts,
-          emptyNugetPaths,
-          req.packageVersion,
-          noDepTemplatePkgsPerPkg,
-          req.defines
-        )
+        val panicDiagsP: List[Diagnostic] = newList()
+        val ok = try {
+          MsilBridge.compileProjectToMsilWithRestoredAndVersion(
+            allPayloads,
+            req.assemblyName,
+            req.outputPath,
+            stdlibSources,
+            noFeatures,
+            noFeatures,
+            noArtifacts,
+            emptyNugetPaths,
+            req.packageVersion,
+            noDepTemplatePkgsPerPkg,
+            req.defines
+          )
+        } catch Bug as b {
+          panicDiagsP.add(msilBridgePanicDiagnostic(b.message))
+          false
+        }
         if ok {
           val okDiags: List[Diagnostic] = newList()
           return EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
         } else {
-          return failResult("MSIL compilation failed (see stderr)")
+          return failResultWith("MSIL compilation failed (see stderr)", panicDiagsP)
         }
       }
     }
   }
-  val ok = MsilBridge.compileToMsilWithVersion(
-    req.source,
-    req.outputPath,
-    stdlibSources,
-    req.packageVersion,
-    req.defines
-  )
+  val panicDiags: List[Diagnostic] = newList()
+  val ok = try {
+    MsilBridge.compileToMsilWithVersion(req.source, req.outputPath, stdlibSources, req.packageVersion, req.defines)
+  } catch Bug as b {
+    panicDiags.add(msilBridgePanicDiagnostic(b.message))
+    false
+  }
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
   } else {
-    failResult("MSIL compilation failed (see stderr)")
+    failResultWith("MSIL compilation failed (see stderr)", panicDiags)
   }
 }
 

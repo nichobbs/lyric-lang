@@ -736,6 +736,11 @@ func phNeedsHoistStmt(s: in Statement): Bool {
       }
     }
     case SItem(item) -> phItemNeedsHoist(item)
+    // #6453 review: `phHasPropStmt` covers these two, so the qualification
+    // walk must too — a `?` in operand position INSIDE an invariant or rule
+    // expression (`invariant: xs.contains(f()?)`) is the same crash class.
+    case SInvariant(e) -> phNeedsHoist(e)
+    case SRule(lhs, rhs) -> phNeedsHoist(lhs) or phNeedsHoist(rhs)
     case _ -> false
   }
 }
@@ -1222,6 +1227,19 @@ func phStmt(s: in Statement, dest: in List[Statement], st: in PropHoistState): U
       dest.add(mkStmt(STry(body = phBlock(body, st), catches = newCatches, finally_ = newFinally), s.span))
     }
     case SItem(item) -> dest.add(mkStmt(SItem(item = phRewriteItem(item, st)), s.span))
+    // #6453 review: hoist nested hazards out of invariant / rule expressions
+    // (the qualification walk now covers them); the hoisted bindings land
+    // immediately before the statement, re-evaluated per iteration when the
+    // invariant sits inside a loop body.
+    case SInvariant(e) -> {
+      val e2 = if phNeedsHoist(e) { phHoistTop(e, dest, st) } else { e }
+      dest.add(mkStmt(SInvariant(expr = e2), s.span))
+    }
+    case SRule(lhs, rhs) -> {
+      val lhs2 = if phNeedsHoist(lhs) { phHoistTop(lhs, dest, st) } else { lhs }
+      val rhs2 = if phNeedsHoist(rhs) { phHoistTop(rhs, dest, st) } else { rhs }
+      dest.add(mkStmt(SRule(lhs = lhs2, rhs = rhs2), s.span))
+    }
     case _ -> dest.add(s)
   }
 }
@@ -1951,6 +1969,14 @@ func rewriteItem(it: in Item, st: in PropState): Item {
       )
     }
 
+    // #6463: record-BODY methods (D037 `RMFunc`) were never rewritten — a
+    // `?` inside one reached codegen as a raw `EPropagate`, which MSIL
+    // lowers as an identity pass-through (no Err/None check at all, a
+    // silent miscompile), while the §2b hoist side already descended into
+    // records (`phRewriteRecord`).
+    case IRecord(decl) -> IRecord(decl = rewriteRecordDecl(decl, st))
+    case IExposedRec(decl) -> IExposedRec(decl = rewriteRecordDecl(decl, st))
+
     case _ -> it.kind
   }
   Item(
@@ -1959,6 +1985,26 @@ func rewriteItem(it: in Item, st: in PropState): Item {
     visibility = it.visibility,
     kind = newKind,
     span = it.span
+  )
+}
+
+func rewriteRecordDecl(decl: in RecordDecl, st: in PropState): RecordDecl {
+  val newMembers: List[RecordMember] = newList()
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case RMFunc(fn) -> newMembers.add(RMFunc(fn = rewriteFunction(fn, st)))
+      case RMField(f) -> newMembers.add(RMField(field = f))
+      case RMInvariant(inv) -> newMembers.add(RMInvariant(inv = inv))
+    }
+    i = i + 1
+  }
+  RecordDecl(
+    name = decl.name,
+    generics = decl.generics,
+    whereClause = decl.whereClause,
+    members = newMembers,
+    span = decl.span
   )
 }
 

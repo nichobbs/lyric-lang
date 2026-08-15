@@ -18,14 +18,14 @@
 //! `Lyric.Emitter.emitProject` (mirroring `emitter_project_self_test.l`'s
 //! `runEmitProject*` helpers) from inside a `test { }` body.
 //!
-//! #6449 (D-progress-762): `Msil.Bridge`'s `codegenMPackage` call sites now
-//! contain every codegen panic as a printed `T0119`/`T0120` diagnostic plus
-//! a failed build, so the refusal no longer escapes `emitProject` as a
-//! catchable `Bug` — this test asserts the CONTAINED-failure contract
-//! (no throw, no output artifact), the same shape as
-//! `msil_project_bridge_self_test.l`'s updated twin. The refusal message
-//! itself still reaches stderr through the T0120 wrapper; asserting on its
-//! text from here needs the stderr-capture seam tracked in #6455.
+//! #6449/#6459/#6462 (D-progress-762): `Lyric.Emitter`'s
+//! `msilBridgePanicDiagnostic` boundary (the `Jvm.Bridge` layering
+//! convention — the bridge itself keeps its throw-on-refusal library
+//! contract) contains the codegen panic as a printed `T0119`/`T0120`
+//! diagnostic, a failed build, AND a structured entry in
+//! `EmitResult.diagnostics` — this test asserts the contained-failure
+//! contract (no throw, no output artifact) plus the T0120 code and the
+//! refusal text from the result.
 //!
 //! Pulls in `Lyric.Emitter`, so `LYRIC_LOAD_COMPILER=1` is needed for
 //! `lyric test` to resolve it:
@@ -33,7 +33,7 @@
 //!   LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/generic_extern_valuetype_instance_self_test.l
 //!
 //! `msil_project_bridge_self_test.l` ("instance call on a value-type
-//! generic-declaring extern fails the build cleanly, no thrown Bug")
+//! generic-declaring extern panics at build time, not silently")
 //! already covers #5809/#5825, but through a deliberately different
 //! surface: it calls `Msil.Bridge.compileProjectToMsil` directly against a
 //! CONCRETE extern type (`ValueTaskOfObj`, the CLR instantiation baked into
@@ -51,6 +51,7 @@ import Std.Core
 import Std.Collections
 import Std.File as File
 import Std.Path as Path
+import Std.String as Str
 import Std.Testing
 import Std.Uuid
 import Std.Environment as Env
@@ -118,6 +119,7 @@ test "instance-method extern on a value-type generic-declaring type fails the bu
   )
   var threw = false
   var produced = false
+  var diagText = ""
   try {
     val res = Emitter.emitProject(req)
     match res.outputPath {
@@ -125,6 +127,11 @@ test "instance-method extern on a value-type generic-declaring type fails the bu
         produced = true
       }
       case None -> ()
+    }
+    var di = 0
+    while di < res.diagnostics.count {
+      diagText = diagText + res.diagnostics[di].code + ": " + res.diagnostics[di].message + "\n"
+      di = di + 1
     }
   } catch Bug as b {
     threw = true
@@ -136,5 +143,18 @@ test "instance-method extern on a value-type generic-declaring type fails the bu
   assertFalse(
     produced,
     "value-type generic instance extern: emitProject reports build failure (no output artifact), not success"
+  )
+  // #6462: the contained refusal is a structured T0120 diagnostic in
+  // `EmitResult.diagnostics` (the emitter boundary's generic wrapper — this
+  // refusal carries no `T0NNN` code of its own), naming the unsupported
+  // shape verbatim — the exact-message specificity the old escaping-panic
+  // assertion had, restored through the result instead of a stderr seam.
+  assertTrue(
+    Str.contains(diagText, "T0120"),
+    "value-type generic instance extern: EmitResult.diagnostics carries the T0120 wrapper (got: " + diagText + ")"
+  )
+  assertTrue(
+    Str.contains(diagText, "INSTANCE call on a value-type generic-declaring type"),
+    "value-type generic instance extern: the diagnostic names the unsupported shape (got: " + diagText + ")"
   )
 }

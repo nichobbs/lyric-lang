@@ -1371,16 +1371,15 @@ test "stdlib types reconstruct from compiled bundle contract metadata" {
 // `castclass` against a VALUETYPE-tagged TypeSpec that would compile clean
 // and only fault at runtime/verification.
 //
-// #6449 (D-progress-762): `Msil.Bridge`'s `codegenMPackage` call sites now
-// catch every codegen panic and report it as a normal build failure —
-// `false` from `compileProjectToMsil`, a `T0119`/`T0120`-coded diagnostic
-// on stderr — instead of letting it escape as an uncaught `Bug`, mirroring
-// `Jvm.Bridge`'s existing containment (see `emitter_project_self_test.l`'s
-// "emit(target = Jvm) contains a codegen-refusal Bug..." test, #6422). This
-// test now asserts the CONTAINED-failure contract instead of the panic
-// once escaping uncaught; `assertFalse(threw, ...)` guards against a future
-// regression re-opening that hole.
-test "instance call on a value-type generic-declaring extern fails the build cleanly, no thrown Bug" {
+// #6449/#6459 (D-progress-762): `Msil.Bridge` keeps its throw-on-refusal
+// LIBRARY contract — the panic deliberately escapes `compileProjectToMsil`
+// so this test can assert the exact refusal message (the `Jvm.Bridge`
+// convention; the jvm_* bridge suites do the same for J-codes).
+// Containment into a T0119/T0120 diagnostic happens one layer up, in
+// `Lyric.Emitter`'s `msilBridgePanicDiagnostic` boundary — asserted by
+// `generic_extern_valuetype_instance_self_test.l` (this exact refusal,
+// through `emitProject`, from `EmitResult.diagnostics`).
+test "instance call on a value-type generic-declaring extern panics at build time, not silently" {
   val packages: List[ProjectPackagePayload] = newList()
   packages.add(
     mkPkg(
@@ -1398,19 +1397,58 @@ test "instance call on a value-type generic-declaring extern fails the build cle
   val dir = freshTempDir("valuetype_instance_call")
   val dllPath = Path.join(dir, "ValueTypeInstanceCall.dll")
   val stdlibSources: List[String] = newList()
-  var threw = false
-  var ok = false
+  var panicked = false
+  var panicMsg = ""
   try {
-    ok = compileProjectToMsil(packages, "ValueTypeInstanceCall", dllPath, stdlibSources)
+    compileProjectToMsil(packages, "ValueTypeInstanceCall", dllPath, stdlibSources)
   } catch Bug as b {
-    threw = true
+    panicked = true
+    panicMsg = b.message
   }
   cleanup(dir)
-  assertFalse(
-    threw,
-    "value-type instance-call extern: the codegen panic must be contained inside compileProjectToMsil, never thrown to the caller"
+  assertTrue(panicked, "value-type instance-call extern: compileProjectToMsil panics instead of returning")
+  assertTrue(
+    Str.contains(panicMsg, "INSTANCE call on a value-type generic-declaring type"),
+    "value-type instance-call extern: panic message names the unsupported shape (got: " + panicMsg + ")"
   )
-  assertFalse(ok, "value-type instance-call extern: compileProjectToMsil reports build failure (false), not success")
+}
+
+// #6462: end-to-end identity pin for T0119 — the extern static-member
+// resolution refusal (`List.empty`-style typo, #6449) escapes the bridge
+// carrying its `error[T0119] line:col:` code and the unresolved member's
+// FQN in the panic message, which `Lyric.Emitter`'s boundary later turns
+// into the structured T0119 diagnostic verbatim.
+test "unresolvable extern static member access panics with the spanned T0119 code (#6449)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "ExternMemberTypo.Bad",
+      "package ExternMemberTypo.Bad\n" + "extern type MathX = \"System.Math\"\n" + "func main(): Unit {\n" +
+        "  println(MathX.PIE)\n" +
+        "}\n"
+    )
+  )
+  val dir = freshTempDir("extern_member_typo")
+  val dllPath = Path.join(dir, "ExternMemberTypo.dll")
+  val stdlibSources: List[String] = newList()
+  var panicked = false
+  var panicMsg = ""
+  try {
+    compileProjectToMsil(packages, "ExternMemberTypo", dllPath, stdlibSources)
+  } catch Bug as b {
+    panicked = true
+    panicMsg = b.message
+  }
+  cleanup(dir)
+  assertTrue(panicked, "extern-member typo: compileProjectToMsil panics with the coded refusal")
+  assertTrue(
+    Str.contains(panicMsg, "error[T0119]"),
+    "extern-member typo: the panic carries the T0119 code (got: " + panicMsg + ")"
+  )
+  assertTrue(
+    Str.contains(panicMsg, "System.Math.PIE"),
+    "extern-member typo: the panic names the unresolved member (got: " + panicMsg + ")"
+  )
 }
 
 // #6390 regression: a MemberRefParent coded-index column (used by

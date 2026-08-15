@@ -480,3 +480,81 @@ test "callee-expression call ?: Ok and Err paths both behave" {
     "the propagated Err surfaces from a callee-expression call argument"
   )
 }
+
+// ── #6463: ? inside a record-BODY (D037) method ──────────────────────────────
+// rewriteItem previously had no IRecord case, so a ? inside a record-body
+// method reached codegen as a raw EPropagate — an identity pass-through on
+// MSIL with no Err/None check at all (silent miscompile; worst on the Err
+// path, where the raw Err value flowed on as if unwrapped).
+record IdParser {
+  scale: Int
+
+  func parseScaled(self: in IdParser, s: in String): Result[Int, String] {
+    val v = parseId(s)?
+    Ok(v * self.scale)
+  }
+
+  func collectScaled(self: in IdParser, s: in String): Result[List[Int], String] {
+    val acc: List[Int] = newList()
+    acc.add(parseId(s)? * self.scale)
+    Ok(acc)
+  }
+}
+
+test "record-body method ?: Ok path unwraps, Err path propagates (#6463)" {
+  val p = IdParser(scale = 3)
+  assertEqualInt(
+    (match p.parseScaled("7") { case Ok(v) -> v; case Err(_) -> -1 }),
+    21,
+    "7 * 3 through the record-method val-init ?"
+  )
+  assertEqual(
+    (match p.parseScaled("x") { case Ok(_) -> "OK"; case Err(e) -> e }),
+    "bad id: x",
+    "the Err propagates out of a record-body method (was: silent identity pass-through)"
+  )
+}
+
+test "record-body method ?: operand-position hoist applies inside the method too (#6463)" {
+  val p = IdParser(scale = 2)
+  val r = p.collectScaled("7")
+  match r {
+    case Ok(xs) -> assertEqualInt(xs[0], 14, "7 * 2 lands through the hoisted method-call arg")
+    case Err(_) -> assertTrue(false, "expected Ok")
+  }
+  assertEqual(
+    (match p.collectScaled("x") { case Ok(_) -> "OK"; case Err(e) -> e }),
+    "bad id: x",
+    "the Err propagates from a hoisted arg inside a record-body method"
+  )
+}
+
+// ── ? in operand position inside a loop invariant expression ─────────────────
+// phHasPropStmt covered SInvariant but phNeedsHoistStmt didn't, so a ? in
+// operand position inside an invariant: expression was detected as present
+// but never hoisted — the same crash class in one narrow shape. checkLimit
+// returns Result so the ? is real; the invariant compares against the
+// unwrapped value each iteration.
+func checkLimit(cap: in Int): Result[Int, String] {
+  Ok(cap)
+}
+
+func sumWithPropInvariant(n: in Int): Result[Int, String] {
+  var i = 0
+  var sum = 0
+  while i < n
+    invariant: sum <= checkLimit(100)?
+  {
+    sum = sum + i
+    i = i + 1
+  }
+  Ok(sum)
+}
+
+test "? in operand position inside a loop invariant expression hoists" {
+  assertEqualInt(
+    (match sumWithPropInvariant(5) { case Ok(v) -> v; case Err(_) -> -1 }),
+    10,
+    "0+1+2+3+4 = 10 with the ?-bearing invariant checked per iteration"
+  )
+}

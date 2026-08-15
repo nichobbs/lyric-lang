@@ -1349,6 +1349,15 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/await_hoist_self_test.l
+      # `?`-operand-position hoist (#6448/#6456/#6460, D-progress-762): the
+      # `Lyric.Propagate` §2b ANF hoist — method-call args, non-first free
+      # args, lambda-value/callee-expression calls, binop RHS, member/index
+      # assignment values, while conditions — with per-shape evaluation-order
+      # log assertions.  Imports only `Std.*`.
+      - name: Propagate-hoist self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/propagate_hoist_self_test.l
       # Bool stringification cross-target parity (#5552): toString(Bool),
       # Bool.toString(), string concatenation, and string interpolation all
       # render lowercase "true"/"false" on both targets — the BCL's
@@ -3937,6 +3946,14 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/await_hoist_self_test.l
+
+      # `?`-operand-position hoist on JVM (#6448, D-progress-762) — the
+      # stackmap-frame VerifyError half of the dual-target crash class; the
+      # dotnet half runs in the compiler-self-tests-dotnet-a job.
+      - name: Propagate-hoist self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/propagate_hoist_self_test.l
 
       # config-block self-test on JVM (#3228, wired in #6198) — the
       # load-bearing half: JVM `config { }` emission (static fields + a

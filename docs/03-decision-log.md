@@ -27764,10 +27764,12 @@ so the subsequent match/early-return rewrite lands as a statement-level
 initializer, the shape both backends already compile correctly (the
 hand-hoisted workaround). Qualifying: method-call args always (the
 receiver is stacked); free-call args unless the `?`-bearing arg is the
-first evaluated operand; constructor args, list elements, index
-expressions, interpolation segments per AwaitHoist's catalogue; a `while`
-condition gets the loop rewrite so hoisted bindings re-evaluate per
-iteration. Non-qualifying statements are byte-identical. Unlike the await
+first evaluated operand [SUPERSEDED by Review addendum 2 below — the
+first-free-arg exemption was dropped entirely under #6460; ANY
+`?`-bearing call argument now qualifies]; constructor args, list
+elements, index expressions, interpolation segments per AwaitHoist's
+catalogue; a `while` condition gets the loop rewrite so hoisted bindings
+re-evaluate per iteration. Non-qualifying statements are byte-identical. Unlike the await
 hoist, this runs for EVERY function body (`?` applies in plain functions),
 and name-like receivers (package/type qualifiers) are never bound to
 locals. `ELambda`/`ESpawn` bodies are deferred computations — not
@@ -27835,10 +27837,8 @@ restore those exact-message assertions) is tracked in #6459.
 repros print correct values on dotnet and JVM (method-arg, second-free-
 arg); #6449 repro exits nonzero with the spanned T0119 on dotnet and the
 existing J-coded diagnostic on JVM, no stack traces. New
-`propagate_hoist_self_test.l` 13/13 both targets (method-arg Ok+Err,
-second-free-arg, nested `?`, binop RHS, constructor arg, interpolation,
-while-condition, and the still-working val-init/first-free-arg shapes
-pinned). `propagate_self_test` 17/17; typechecker 306/306; await_hoist
+`propagate_hoist_self_test.l` 13/13 both targets at this round (grown by
+the review addenda below — see each addendum for its cases and count). `propagate_self_test` 17/17; typechecker 306/306; await_hoist
 4/4; async_spawn 26/26 both; bare_func_ref 36/36 both; emitter_project
 27/27; msil_project_bridge 39/39; msil_restored_bridge 6/6;
 inbundle_generics 31/31; aspect_weave 7/7 both; ilverify clean.
@@ -27905,3 +27905,47 @@ both at once, or structurally via #6454's shared engine).
 `propagate_hoist_self_test.l` 18 -> 21 (lambda-value callee Ok/Err,
 callee-expression call Ok+Err; the first-free-arg pin re-purposed to pin
 the now-hoisted form's behavior).
+
+**Review addendum 3 (#6461, #6462, #6463 + layer relocation, same PR).**
+The next re-review raised three REQUIRED findings, all valid:
+
+*#6461 — the suite ran nowhere.* `propagate_hoist_self_test.l` was never
+wired into `.github/workflows/ci.yml` (`scripts/ci/self-test.sh` has no
+discovery — every suite needs an explicit step). Wired on both targets
+(dotnet in compiler-self-tests-dotnet-a beside the await-hoist step; JVM
+in the jvm job), workflow size re-checked under the soft ceiling.
+
+*#6463 — `?` in record-BODY methods silently miscompiled.* §4's
+`rewriteItem` handled `IFunc`/`IImpl`/`IInterface`/`IProtected` but not
+`IRecord`/`IExposedRec`, so a `?` inside a D037 record-body method
+reached codegen as a raw `EPropagate` — which MSIL lowers as an
+identity pass-through (no Err/None check at all). Pre-existing (the
+§2b hoist side already descended into records, making that path dead),
+now closed with `rewriteRecordDecl` mirroring the other item kinds; the
+docs/01 §4.5 operand-position claim is re-scoped to name the two
+remaining tracked gaps (`try`-expression reachability #6458, quantifier
+bodies #6457) instead of claiming "ANY position". Also took the
+review's `SInvariant`/`SRule` observation: `phHasPropStmt` covered both
+while `phNeedsHoistStmt` didn't, so a `?` in operand position inside a
+loop `invariant:` (or wire rule) expression was detected but never
+hoisted — both walks now agree and the statement driver hoists their
+nested hazards.
+
+*#6462 + the #6459 layer decision — diagnostic identity now tested via
+`EmitResult.diagnostics`.* Rather than a stderr-capture seam, the
+containment moved to the layer #6459 proposed: `Msil.Bridge` reverts to
+its throw-on-refusal library contract (the `Jvm.Bridge` convention),
+and `Lyric.Emitter`'s new `msilBridgePanicDiagnostic` boundary prints
+the T0119/T0120 diagnostic AND carries it as a structured entry in
+`EmitResult.diagnostics` (`failResultWith`). The JVM arm gains the same
+result-population (`jvmBridgePanicDiagnostic` replacing the
+print-only `jvmBridgePanicToStderr`). Test specificity is thereby
+RESTORED, not worked around: `msil_project_bridge_self_test.l` re-pins
+the exact escaping value-type-extern panic message and gains an
+end-to-end T0119 pin (the `List.empty` typo through the bridge);
+`generic_extern_valuetype_instance_self_test.l` asserts the T0120 code
++ refusal text from the result; `msil_restored_qualified_val_self_test.l`
+asserts the T0115 code + symbol from the result; the #6422 JVM
+containment test asserts its J007 code from the result. This closes
+#6459 (decision: emitter-layer containment + result diagnostics, both
+targets) and moots #6455's stderr-capture motivation for these tests.
