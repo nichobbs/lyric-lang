@@ -790,6 +790,8 @@ async func handleTransfer(req: TransferRequest): HttpResponse {
 
 `?` works on `Result[T, E]` and `Option[T]` (and `T?` nullable, which lowers to `Option`). For `Result`, `e?` evaluates `e`: on `Ok(v)` it yields `v` and execution continues; on `Err(x)` the enclosing function immediately returns `Err(x)`. For `Option`, `e?` yields `v` on `Some(v)` and returns `None` from the enclosing function on `None`. The signature must declare a compatible return type, or the compiler rejects the use with `F0020` (the enclosing function returns neither `Result` nor `Option`). See `docs/03-decision-log.md` D027 for the resolved nullable rule.
 
+`?` is well-defined in ANY operand position, not just a whole statement's initializer — a method-call argument (`items.add(decodeItem(s)?)`), a non-first argument of a free call (`addOne(41, parseNum(s)?)`), a binop operand, an index expression, a constructor argument, a string-interpolation segment, or a `while` condition. `Lyric.Propagate`'s statement-level hoist (#6448, mirroring `Lyric.AwaitHoist`'s #5606 design for `await`) rewrites every such shape into hoisted `val` bindings before lowering the `?` into its `match`/early-return form, so the early return always lands as a safe statement-level initializer on both `--target dotnet` and `--target jvm`, regardless of what else is evaluated around it. Evaluation order is preserved left-to-right; nested `?` (`f(g()?)?`) and a `?` inside a re-evaluated `while` condition both work.
+
 The `??` operator is null-coalescing:
 ```
 val name = user.nickname ?? user.email

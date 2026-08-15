@@ -9,6 +9,7 @@ package Msil.Bridge
 
 import Std.Core
 import Std.Collections
+import Std.Console as Console
 import Std.File
 import Lyric.Lexer
 import Lyric.Parser
@@ -280,8 +281,26 @@ pub func compileToMsilWithVersion(
   // same-package types and functions.
   addPackageTokens(cctx, liftedFile, pkgName)
 
-  // Walk the AST and produce the MSIL package IR.
-  val pkg = codegenMPackage(liftedFile, cctx)
+  // Walk the AST and produce the MSIL package IR.  #6449: codegen panics on
+  // an unresolvable construct (a genuine user error, not always caught
+  // earlier by the type checker — extern-member typos, unsupported FFI
+  // shapes, …) are caught here and printed as a clean diagnostic instead of
+  // reaching the CLI as an uncaught .NET exception with a raw stack trace —
+  // mirroring the JVM bridge's existing `catch Bug as b` codegen-panic
+  // boundary (`Jvm.Bridge`'s per-package compile loop).  A panic that
+  // already carries its own `error[T0NNN]:` code (e.g. T0119) is printed
+  // verbatim; anything else gets wrapped in the generic T0120 fallback so
+  // every codegen failure surfaces as SOME diagnostic, never a crash.
+  val pkg = try {
+    codegenMPackage(liftedFile, cctx)
+  } catch Bug as b {
+    if b.message.startsWith("error[T0") {
+      Console.error(b.message)
+    } else {
+      Console.error("error[T0120]: MSIL codegen failed for package '" + pkgName + "': " + b.message)
+    }
+    return false
+  }
 
   // Append any closure-class records synthesized while lowering this
   // package's lambdas (#5177) — a single-file compile has exactly one
@@ -947,10 +966,21 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   }
 
   // Phase 4: codegen each package into an MPackage against the same cctx.
+  // #6449: same codegen-panic-to-diagnostic boundary as the single-file path
+  // above — see that call site's comment.
   val mpkgs: List[MPackage] = newList()
   var ci = 0
   while ci < liftedFiles.count {
-    val mpkg = codegenMPackage(liftedFiles[ci], cctx)
+    val mpkg = try {
+      codegenMPackage(liftedFiles[ci], cctx)
+    } catch Bug as b {
+      if b.message.startsWith("error[T0") {
+        Console.error(b.message)
+      } else {
+        Console.error("error[T0120]: MSIL codegen failed for package '" + perPkgNames[ci] + "': " + b.message)
+      }
+      return false
+    }
     mpkgs.add(mpkg)
     ci = ci + 1
   }

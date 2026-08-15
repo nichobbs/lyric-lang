@@ -1369,14 +1369,18 @@ test "stdlib types reconstruct from compiled bundle contract metadata" {
 // extern receiver (e.g. `ValueTask`1.get_IsCompletedSuccessfully()`) with
 // an explicit build-time `panic`, rather than emitting an invalid
 // `castclass` against a VALUETYPE-tagged TypeSpec that would compile clean
-// and only fault at runtime/verification. `compileProjectToMsil` runs
-// in-process in the same call stack as this test, so the panic surfaces
-// as a normal catchable `Bug` here — asserting BOTH that the build fails
-// AND that it fails with this specific diagnostic guards against a future
-// `emitGenericExternMember` refactor silently reordering the `isValType`/
-// `isInstance` check past the point where invalid IL would already have
-// been emitted.
-test "instance call on a value-type generic-declaring extern panics at build time, not silently" {
+// and only fault at runtime/verification.
+//
+// #6449 (D-progress-762): `Msil.Bridge`'s `codegenMPackage` call sites now
+// catch every codegen panic and report it as a normal build failure —
+// `false` from `compileProjectToMsil`, a `T0119`/`T0120`-coded diagnostic
+// on stderr — instead of letting it escape as an uncaught `Bug`, mirroring
+// `Jvm.Bridge`'s existing containment (see `emitter_project_self_test.l`'s
+// "emit(target = Jvm) contains a codegen-refusal Bug..." test, #6422). This
+// test now asserts the CONTAINED-failure contract instead of the panic
+// once escaping uncaught; `assertFalse(threw, ...)` guards against a future
+// regression re-opening that hole.
+test "instance call on a value-type generic-declaring extern fails the build cleanly, no thrown Bug" {
   val packages: List[ProjectPackagePayload] = newList()
   packages.add(
     mkPkg(
@@ -1394,20 +1398,19 @@ test "instance call on a value-type generic-declaring extern panics at build tim
   val dir = freshTempDir("valuetype_instance_call")
   val dllPath = Path.join(dir, "ValueTypeInstanceCall.dll")
   val stdlibSources: List[String] = newList()
-  var panicked = false
-  var panicMsg = ""
+  var threw = false
+  var ok = false
   try {
-    compileProjectToMsil(packages, "ValueTypeInstanceCall", dllPath, stdlibSources)
+    ok = compileProjectToMsil(packages, "ValueTypeInstanceCall", dllPath, stdlibSources)
   } catch Bug as b {
-    panicked = true
-    panicMsg = b.message
+    threw = true
   }
   cleanup(dir)
-  assertTrue(panicked, "value-type instance-call extern: compileProjectToMsil panics instead of returning")
-  assertTrue(
-    Str.contains(panicMsg, "INSTANCE call on a value-type generic-declaring type"),
-    "value-type instance-call extern: panic message names the unsupported shape (got: " + panicMsg + ")"
+  assertFalse(
+    threw,
+    "value-type instance-call extern: the codegen panic must be contained inside compileProjectToMsil, never thrown to the caller"
   )
+  assertFalse(ok, "value-type instance-call extern: compileProjectToMsil reports build failure (false), not success")
 }
 
 // #6390 regression: a MemberRefParent coded-index column (used by
