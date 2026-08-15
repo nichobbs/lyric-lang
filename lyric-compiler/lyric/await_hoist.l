@@ -43,9 +43,14 @@
 //!     has no suspension, so their operand stacks are never at risk).
 //!   * Only statements containing a QUALIFYING await are rewritten; shapes
 //!     that already compile correctly — `await t` as a whole statement /
-//!     initializer, first-argument awaits of free calls, plain binop
-//!     operands (the spill path), `if`/`match` with awaits in arms bound to
-//!     a `val` — are left byte-identical.
+//!     initializer, plain binop operands (the spill path), `if`/`match` with
+//!     awaits in arms bound to a `val` — are left byte-identical.  ANY
+//!     await-bearing call argument qualifies regardless of callee shape
+//!     (#6457, porting `Lyric.Propagate`'s #6460 fix) — a bare-name callee
+//!     is syntactically indistinguishable from a local/module-level lambda
+//!     value, and a callee-expression call (`getF()(await e)`) has the same
+//!     stacked-callee hazard, so there is no "first-free-arg is safe"
+//!     exemption.
 //!   * Awaits under `ELambda` and `ESpawn` bodies are deferred computations,
 //!     not operands of the enclosing expression; the pass never descends
 //!     into them.  `ETry` cannot contain an await in an async function
@@ -55,12 +60,26 @@
 //!     equivalent `loop { <hoisted>; if cond { body } else { break } }` so
 //!     the hoisted bindings re-evaluate on every iteration; `continue`
 //!     re-enters at the loop head, preserving `while` semantics.
+//!   * #6457 (porting `Lyric.Propagate`'s #6456 fix): an assignment to a
+//!     MEMBER or INDEX target (`b.field = await e`, `arr[i] = await e`,
+//!     compound forms included) stacks the receiver — and any index
+//!     operands — before the value evaluates on MSIL (`lowerAssignExprMsil`
+//!     pushes them with no spill), so ANY await in the value qualifies, even
+//!     a bare `val x = await t`-shaped one; the target's receiver/index
+//!     operands are rebound to temps in evaluation order and the whole
+//!     value is bound out (`ahBindAssignTarget`).  A bare-name target is a
+//!     plain local store with nothing stacked and stays byte-identical.
 //!
 //! Known non-goals (unchanged behaviour, still resolved by later emission
 //! machinery or currently-rejected shapes): awaits in the RHS of the
 //! short-circuit operators `and` / `or` / `??` are left in place inside a
-//! bound temp (the branchy lowering evaluates them on an empty stack), and
-//! `for`-iterable ranges keep their existing lowering.
+//! bound temp (the branchy lowering evaluates them on an empty stack),
+//! `for`-iterable ranges keep their existing lowering, and an await inside a
+//! `forall`/`exists` quantifier body or `old(...)` is detected by the
+//! presence/qualification walks (#6457, walk-consistency with
+//! `Lyric.Propagate`) but not rewritten by the hoist spine — low severity,
+//! since quantifiers never lower to real bytecode and `EOld` at codegen is
+//! already an ICE.
 //!
 //! Public surface:
 //!
@@ -142,6 +161,25 @@ func ahIsNameLike(e: in Expr): Bool {
     case ELiteral(_) -> true
     case EMember(recv, _) -> ahIsNameLike(recv)
     case EParen(inner) -> ahIsNameLike(inner)
+    case _ -> false
+  }
+}
+
+// #6457 (porting `Lyric.Propagate`'s #6456 fix): an assignment whose target
+// is a member or index write stacks its receiver (and index operands) on
+// MSIL BEFORE the value evaluates — `lowerAssignExprMsil`'s `EMember`/
+// `EIndex` cases push them with no spill-and-reload — so a top-level
+// `await` in the value is a stacking hazard even when nothing about the
+// value's own shape would otherwise qualify it (`b.value = await fetchNum()`
+// is exactly `val x = await t`, the shape this pass otherwise treats as
+// already safe).  A bare-name target is a plain local store with nothing
+// stacked.  (JVM is unaffected: its member/index assignment lowering
+// already spills receiver/index/value to locals, #5936.)
+func ahAssignTargetStacks(target: in Expr): Bool {
+  match target.kind {
+    case EParen(inner) -> ahAssignTargetStacks(inner)
+    case EMember(_, _) -> true
+    case EIndex(_, _) -> true
     case _ -> false
   }
 }
@@ -230,6 +268,23 @@ func ahHasAwait(e: in Expr): Bool {
         i = i + 1
       }
       false
+    }
+    // #6457: walk-consistency with `Lyric.Propagate`'s analogous fix — these
+    // were opaque (`case _ -> false`) even though the contract elaborator
+    // can splice a `requires:`/`ensures:` quantifier or `old(...)` verbatim
+    // into a body as a runtime assert argument.  Low severity (quantifiers
+    // never lower to real bytecode and `EOld` at codegen is already an ICE),
+    // so only the PRESENCE/QUALIFICATION walks descend here — no hoist-spine
+    // support is added; an `await` reachable only through one of these stays
+    // undetected by the hoist's REWRITE side, same as `Lyric.Propagate`.
+    case EOld(inner) -> ahHasAwait(inner)
+    case EForall(_, whereOpt, body) -> {
+      val w = match whereOpt { case Some(we) -> ahHasAwait(we); case None -> false }
+      w or ahHasAwait(body)
+    }
+    case EExists(_, whereOpt, body) -> {
+      val w = match whereOpt { case Some(we) -> ahHasAwait(we); case None -> false }
+      w or ahHasAwait(body)
     }
     case _ -> false
   }
@@ -339,14 +394,19 @@ func ahNeedsHoist(e: in Expr): Bool {
     case EAwait(inner) -> ahHasAwait(inner) or ahNeedsHoist(inner)
     case ECall(fn, args) -> {
       val last = ahLastAwaitArgIdx(args)
-      val memberCallee = match fn.kind { case EMember(_, _) -> true; case _ -> false }
-      // Method calls stack the receiver before any argument, so ANY
-      // await-bearing argument qualifies; free calls only stack earlier
-      // arguments, so a first-and-only-await argument is already safe.
-      if memberCallee and last >= 0 {
-        return true
-      }
-      if last > 0 {
+      // #6457 (porting `Lyric.Propagate`'s #6460 fix): ANY await-bearing
+      // argument qualifies, regardless of callee shape.  The old rule
+      // exempted a first-and-only-await argument of a bare-name (`EPath`)
+      // callee as a direct static call with an empty stack — but a LOCAL
+      // LAMBDA value (`val f: (Int) -> Int = ...; f(await e)`) parses to the
+      // identical `ECall(EPath, args)` shape and its invocation pushes the
+      // delegate/closure reference before arguments evaluate (both
+      // targets), and a module-level lambda-typed `pub val` makes even a
+      // multi-segment path callee unprovable as a direct call.  A
+      // callee-expression call (`getF()(await e)`) had the same hole.  The
+      // syntactic walk cannot distinguish these from genuine free
+      // functions, so the exemption is dropped entirely.
+      if last >= 0 {
         return true
       }
       if ahNeedsHoist(fn) {
@@ -409,8 +469,10 @@ func ahNeedsHoist(e: in Expr): Bool {
     // The target's own receiver/indices (`arr[await f()]`, `(await g()).field`)
     // are evaluated too, and can carry an await needing the same hoist
     // treatment as any other read context — `ahNeedsHoist` already handles
-    // that generically for `EIndex`/`EMember` (#5628).
-    case EAssign(target, _, value) -> ahNeedsHoist(target) or ahNeedsHoist(value)
+    // that generically for `EIndex`/`EMember` (#5628).  #6457: a member/index
+    // target additionally qualifies whenever the VALUE contains an await at
+    // all — see `ahAssignTargetStacks`.
+    case EAssign(target, _, value) -> ahNeedsHoist(target) or ahNeedsHoist(value) or (ahAssignTargetStacks(target) and ahHasAwait(value))
     case EIf(cond, thenB, elseO, _) -> {
       if ahNeedsHoist(cond) or ahNeedsHoistEob(thenB) {
         true
@@ -443,6 +505,19 @@ func ahNeedsHoist(e: in Expr): Bool {
         case RBLowerOpen(hi) -> ahNeedsHoist(hi)
         case RBUpperOpen(lo) -> ahNeedsHoist(lo)
       }
+    }
+    // #6457: walk-consistency only (see `ahHasAwait`'s identical note) — no
+    // hoist-spine support for these, so a qualifying await found only here
+    // is detected but the enclosing statement's OTHER hazards (if any) still
+    // get hoisted through the generic rules.
+    case EOld(inner) -> ahNeedsHoist(inner)
+    case EForall(_, whereOpt, body) -> {
+      val w = match whereOpt { case Some(we) -> ahNeedsHoist(we); case None -> false }
+      w or ahNeedsHoist(body)
+    }
+    case EExists(_, whereOpt, body) -> {
+      val w = match whereOpt { case Some(we) -> ahNeedsHoist(we); case None -> false }
+      w or ahNeedsHoist(body)
     }
     case _ -> false
   }
@@ -491,7 +566,9 @@ func ahNeedsHoistStmt(s: in Statement): Bool {
         }
       }
     }
-    case SAssign(target, _, value) -> ahNeedsHoist(target) or ahNeedsHoist(value)
+    // #6457: a member/index target additionally qualifies whenever the
+    // VALUE contains an await at all — see `ahAssignTargetStacks`.
+    case SAssign(target, _, value) -> ahNeedsHoist(target) or ahNeedsHoist(value) or (ahAssignTargetStacks(target) and ahHasAwait(value))
     case SReturn(valOpt) -> {
       match valOpt {
         case Some(e) -> ahNeedsHoist(e)
@@ -522,6 +599,16 @@ func ahNeedsHoistStmt(s: in Statement): Bool {
       }
     }
     case SItem(item) -> ahItemNeedsHoist(item)
+    // #6457 (porting `Lyric.Propagate`'s #6463 review fix): `ahHasAwaitStmt`
+    // already covers these two, so the qualification walk must too — an
+    // await in operand position inside an invariant/rule expression is the
+    // same undetected-hazard gap.  (Both statement kinds are runtime no-ops
+    // at codegen on both backends today — `case SInvariant(_) -> {}` in
+    // `msil/codegen.l`, `LNop` in `jvm/codegen/05_stmts.l` — so this is
+    // walk-consistency for when loop-invariant runtime checking lands, not
+    // an observable crash fix.)
+    case SInvariant(e) -> ahNeedsHoist(e)
+    case SRule(lhs, rhs) -> ahNeedsHoist(lhs) or ahNeedsHoist(rhs)
     case _ -> false
   }
 }
@@ -686,8 +773,18 @@ func ahHoistSpine(e: in Expr, acc: in List[Statement], st: in HoistState): Expr 
     case EAssign(target, op, value) -> {
       // Mirrors the `SAssign` statement rewrite: the target evaluates first,
       // so its own await (`arr[await f()] = v`) is spilled before the value's.
-      val target2 = if ahNeedsHoist(target) { ahHoistSpine(target, acc, st) } else { target }
-      mkExpr(EAssign(target = target2, op = op, value = ahHoistSpine(value, acc, st)), e.span)
+      // #6457: a member/index target with an await-bearing value additionally
+      // needs the target's receiver/index operands rebound to temps (in
+      // evaluation order) and the whole value bound out, so the resume never
+      // lands with the receiver/index already stacked.
+      if ahAssignTargetStacks(target) and ahHasAwait(value) {
+        val target2 = ahBindAssignTarget(target, acc, st)
+        val value2 = ahBind(ahHoistTop(value, acc, st), acc, st)
+        mkExpr(EAssign(target = target2, op = op, value = value2), e.span)
+      } else {
+        val target2 = if ahNeedsHoist(target) { ahHoistSpine(target, acc, st) } else { target }
+        mkExpr(EAssign(target = target2, op = op, value = ahHoistSpine(value, acc, st)), e.span)
+      }
     }
     case EIf(cond, thenB, elseO, thenForm) -> {
       // Arms are conditionally evaluated; rewrite them internally and bind
@@ -802,6 +899,38 @@ func ahHoistArm(eob: in ExprOrBlock, st: in HoistState): ExprOrBlock {
   }
 }
 
+// #6457 (porting `Lyric.Propagate`'s `phBindAssignTarget`): rebind a
+// member/index assignment target's receiver and index operands to fresh
+// locals, in evaluation order, so an await-bearing value can be hoisted
+// AFTER them without reordering side effects; the write then goes through
+// the temps.  Receivers with their own hazards are spine-hoisted first.
+// Literals stay in place (`ahBind` returns them unchanged); every other
+// operand — including a bare-name receiver — is bound, because the value
+// expression may mutate a `var` local the target read (the original order
+// reads the target operands before the value runs).
+func ahBindAssignTarget(target: in Expr, dest: in List[Statement], st: in HoistState): Expr {
+  match target.kind {
+    case EParen(inner) -> mkExpr(EParen(inner = ahBindAssignTarget(inner, dest, st)), target.span)
+    case EMember(receiver, memberName) -> {
+      val r0 = if ahNeedsHoist(receiver) { ahHoistSpine(receiver, dest, st) } else { receiver }
+      mkExpr(EMember(receiver = ahBind(r0, dest, st), memberName = memberName), target.span)
+    }
+    case EIndex(receiver, indices) -> {
+      val r0 = if ahNeedsHoist(receiver) { ahHoistSpine(receiver, dest, st) } else { receiver }
+      val r2 = ahBind(r0, dest, st)
+      val idx2: List[Expr] = newList()
+      var i = 0
+      while i < indices.count {
+        val e0 = if ahNeedsHoist(indices[i]) { ahHoistSpine(indices[i], dest, st) } else { indices[i] }
+        idx2.add(ahBind(e0, dest, st))
+        i = i + 1
+      }
+      mkExpr(EIndex(receiver = r2, indices = idx2), target.span)
+    }
+    case _ -> target
+  }
+}
+
 // Statement-position hoist: control-flow expressions that ARE the statement
 // keep their shape (arms rewritten in place, no binding); everything else
 // takes the spine hoist.
@@ -873,14 +1002,30 @@ func ahStmt(s: in Statement, dest: in List[Statement], st: in HoistState): Unit 
       // a target needing hoisting (e.g. `arr[await f()] = v`) is spilled via
       // the same `EIndex`/`EMember` spine logic any other read context uses,
       // BEFORE the value is hoisted (#5628).
+      // #6457: a member/index target with an await-bearing value needs the
+      // target's receiver/index operands rebound to temps (in evaluation
+      // order — receiver, indices, THEN value) and the whole value bound
+      // out, so the resume never lands with the receiver/index already
+      // stacked on MSIL.  Records/collections are reference types in both
+      // backends' ABIs, so the write through the rebound receiver hits the
+      // same object; rebinding also preserves the original
+      // read-before-value order if the value expression mutates a `var`
+      // the target reads.
+      val stacked = ahAssignTargetStacks(target) and ahHasAwait(value)
       val targetNeedsHoist = ahNeedsHoist(target)
       val valueNeedsHoist = ahNeedsHoist(value)
-      if targetNeedsHoist or valueNeedsHoist {
-        val target2 = if targetNeedsHoist { ahHoistSpine(target, dest, st) } else { target }
-        val value2 = if valueNeedsHoist { ahHoistTop(value, dest, st) } else { value }
+      if stacked {
+        val target2 = ahBindAssignTarget(target, dest, st)
+        val value2 = ahBind(ahHoistTop(value, dest, st), dest, st)
         dest.add(mkStmt(SAssign(target = target2, op = op, value = value2), s.span))
       } else {
-        dest.add(s)
+        if targetNeedsHoist or valueNeedsHoist {
+          val target2 = if targetNeedsHoist { ahHoistSpine(target, dest, st) } else { target }
+          val value2 = if valueNeedsHoist { ahHoistTop(value, dest, st) } else { value }
+          dest.add(mkStmt(SAssign(target = target2, op = op, value = value2), s.span))
+        } else {
+          dest.add(s)
+        }
       }
     }
     case SReturn(valOpt) -> {
@@ -955,6 +1100,20 @@ func ahStmt(s: in Statement, dest: in List[Statement], st: in HoistState): Unit 
       dest.add(mkStmt(STry(body = ahBlock(body, st), catches = newCatches, finally_ = newFinally), s.span))
     }
     case SItem(item) -> dest.add(mkStmt(SItem(item = ahRewriteItem(item, st)), s.span))
+    // #6457: hoist nested hazards out of invariant/rule expressions (the
+    // qualification walk now covers them, mirroring `Lyric.Propagate`'s
+    // #6463 review fix); the hoisted bindings land immediately before the
+    // statement, re-evaluated per iteration when the invariant sits inside
+    // a loop body.
+    case SInvariant(e) -> {
+      val e2 = if ahNeedsHoist(e) { ahHoistTop(e, dest, st) } else { e }
+      dest.add(mkStmt(SInvariant(expr = e2), s.span))
+    }
+    case SRule(lhs, rhs) -> {
+      val lhs2 = if ahNeedsHoist(lhs) { ahHoistTop(lhs, dest, st) } else { lhs }
+      val rhs2 = if ahNeedsHoist(rhs) { ahHoistTop(rhs, dest, st) } else { rhs }
+      dest.add(mkStmt(SRule(lhs = lhs2, rhs = rhs2), s.span))
+    }
     case _ -> dest.add(s)
   }
 }

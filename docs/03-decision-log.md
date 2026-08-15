@@ -27949,3 +27949,74 @@ asserts the T0115 code + symbol from the result; the #6422 JVM
 containment test asserts its J007 code from the result. This closes
 #6459 (decision: emitter-layer containment + result diagnostics, both
 targets) and moots #6455's stderr-capture motivation for these tests.
+
+## D-progress-763 — AwaitHoist gains the propagate-side stacking fixes (#6457); bridge-panic diagnostics carry real spans + `+=` member-target pin (#6464)
+
+**Problem (#6457).** `Lyric.AwaitHoist` had the same three qualification
+gaps `Lyric.Propagate`'s §2b hoist closed across PR #6453's review
+rounds, for `await` in `async func` bodies on MSIL (a suspension point
+must run with an empty CLR eval stack — anything stacked is lost across
+the resume). Verified broken before fixing, each by a runtime repro
+(`InvalidProgramException` in the state machine → correct value after):
+member-target assign with a bare await value (`b.value = await
+fetchNum()` → `got: 42`); member-target assign with a two-await binop
+value (`got: 30`); index-target assign (`got: 41`); a call through a
+local lambda VALUE (`f(await e)` → `got: 410`); a callee-EXPRESSION
+call (`getF()(await e)` → `got: 410`). JVM was unaffected throughout
+(#5936 spills — verified pre-fix).
+
+**Fix.** Direct port of the propagate-side machinery:
+`ahAssignTargetStacks` + `ahBindAssignTarget` (member/index targets
+qualify on any await in the value; receiver/index operands rebound to
+temps in evaluation order), and the first-free-arg exemption dropped
+from `ahNeedsHoist`'s `ECall` (any await-bearing call argument
+qualifies — a bare-name callee is syntactically indistinguishable from
+a lambda value). Safe by construction for the async-SM field pre-scan:
+the hoist runs before codegen, so `countSmFieldsMsil` and emission see
+the same rewritten tree (verified by `async_sm_self_test.l` 65/65 and
+`async_spawn_self_test.l` 26/26 both targets).
+
+**Walk-consistency (both passes).** `EOld`/`EForall`/`EExists` now
+descend in BOTH passes' presence/qualification walks
+(`phHasProp`/`phNeedsHoist`, `ahHasAwait`/`ahNeedsHoist`) — the
+contract elaborator can splice a quantifier or `old(...)` verbatim into
+a body as an assert argument. No hoist-SPINE support added (quantifiers
+never lower to real bytecode; `EOld` at codegen is already an ICE) —
+the module docs record the boundary. `SInvariant`/`SRule` qualification
+was also ported into `ahNeedsHoistStmt` (its presence walk already
+covered them): NOT a V0012-unreachable case (V0012 only blocks await in
+try/catch/finally; loop `invariant:` is freely reachable in async
+functions), but also not an observable crash — both backends compile
+the statements to runtime no-ops (`case SInvariant(_) -> {}` on MSIL,
+`LNop` on JVM), so this is walk-consistency matching the propagate
+side's identical (equally inert) fix.
+
+**#6464.** `Emitter.parsePanicSpan(message): Option[Span]` (pub, for
+direct unit coverage): a linear scan for the first
+non-digit-preceded `<digits>:<digits>:` run, built into
+`Position(offset = 0, line, col)` — handling both observed shapes
+uniformly (MSIL's `error[T0119] <line>:<col>: …` and JVM's
+`error[J007]: <Pkg.File>:<line>:<col>: …`) without per-code special
+cases; messages with no location (T0115, generic T0120/J008 wraps)
+fall back to the synthetic point span. Wired into both
+`msilBridgePanicDiagnostic` and `jvmBridgePanicDiagnostic`. Asserted
+end-to-end by a real span check (line 14, col 21) on
+`emitter_project_self_test.l`'s J007 containment case plus three
+direct `parsePanicSpan` unit tests (T0119 shape, J-code shape, T0115
+no-location → None). The `+=`-operator member-target `?` case
+(`c.value += parseId(s)?`, Ok + Err) pins the op-independence of the
+#6456 guard with the real compound token.
+
+**Verification (all green).** `await_hoist_self_test.l` 4 -> 11 both
+targets; `propagate_hoist_self_test.l` 24 -> 26 both;
+`async_sm_self_test.l` 65/65; `async_spawn_self_test.l` 26/26 both;
+`propagate` 17/17; `typechecker` 306/306; `emitter_project` 27 -> 30
+(J007 span pin folded into the containment case + parsePanicSpan units); `msil_restored_qualified_val`
+4/4; `generic_extern_valuetype` 1/1; `msil_project_bridge` 40/40;
+`bare_func_ref` 36/36 both; `aspect_weave` 7/7 both; all five #6457
+repros correct on both targets; ilverify clean.
+
+**Related:** #6457, #6464, D-progress-762 (the propagate-side fixes
+this ports), #5606 (AwaitHoist), #5936 (the JVM spills that kept JVM
+safe), #6454 (the shared-engine unification that would fold these
+twin implementations).
