@@ -310,8 +310,10 @@ test "val-init ?: unchanged shape still works" {
   )
 }
 
-// First (and only) argument of a FREE call — already safe (no operand
-// stacked ahead of it), must stay byte-identical (no hoist).
+// First (and only) argument of a FREE call.  Since #6460 this shape IS
+// hoisted (a bare-name callee can't be syntactically distinguished from a
+// lambda value, so the first-arg exemption was dropped) — this pins that the
+// hoisted form behaves identically to the old direct form.
 func firstFreeArgOnly(id: in Int): Int {
   0 - id
 }
@@ -423,4 +425,58 @@ test "member-target assign ?: receiver still evaluates before the hoisted value"
   val r = receiverOrderProp(log)
   assertEqualInt((match r { case Ok(v) -> v; case Err(_) -> -1 }), 99, "assignment completes")
   assertEqual(joinLog(log), "recv,value", "receiver, then value — original order preserved by the temps")
+}
+
+// ── #6460: call through a lambda VALUE — callee reference is stacked ─────────
+// `val f: (Int) -> Int = { x: Int -> ... }; f(parseId(s)?)` parses to the
+// same ECall(EPath, args) shape as a free call, but invoking it pushes the
+// delegate/closure reference before arguments evaluate on both targets, so
+// even a first-and-only ? argument is a stacking hazard. The first-arg
+// exemption was dropped entirely (any ?-bearing call argument hoists).
+func lambdaCalleeProp(s: in String): Result[Int, String] {
+  val f: (Int) -> Int = { x: Int -> x * 10 }
+  val r = f(parseId(s)?)
+  Ok(r)
+}
+
+test "lambda-value callee ?: Ok path invokes with the unwrapped value" {
+  assertEqualInt(
+    (match lambdaCalleeProp("7") { case Ok(v) -> v; case Err(_) -> -1 }),
+    70,
+    "7 * 10 through the lambda-value call"
+  )
+}
+
+test "lambda-value callee ?: Err path early-returns without invoking" {
+  assertEqual(
+    (match lambdaCalleeProp("x") { case Ok(_) -> "OK"; case Err(e) -> e }),
+    "bad id: x",
+    "the propagated Err surfaces from a lambda-value call argument"
+  )
+}
+
+// The same hazard one level up: the callee is itself a call expression
+// (`pickDoubler()(parseId(s)?)`) — the invoked value lands on the stack
+// before the argument evaluates, and the old qualification missed this
+// shape for the same reason.
+func pickDoubler(): (Int) -> Int {
+  { x: Int -> x * 2 }
+}
+
+func calleeExprProp(s: in String): Result[Int, String] {
+  val r = pickDoubler()(parseId(s)?)
+  Ok(r)
+}
+
+test "callee-expression call ?: Ok and Err paths both behave" {
+  assertEqualInt(
+    (match calleeExprProp("7") { case Ok(v) -> v; case Err(_) -> -1 }),
+    14,
+    "7 * 2 through the callee-expression call"
+  )
+  assertEqual(
+    (match calleeExprProp("x") { case Ok(_) -> "OK"; case Err(e) -> e }),
+    "bad id: x",
+    "the propagated Err surfaces from a callee-expression call argument"
+  )
 }

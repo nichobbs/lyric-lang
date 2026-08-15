@@ -192,11 +192,15 @@ func buildOptionMatch(inner: in Expr, sp: in Span, st: in PropState): Expr {
 // whose failure arm does an early `return`.  When that expression sits in a
 // position with operands already pushed on the evaluation stack — a
 // method-call RECEIVER counts as a stacked operand, as do earlier arguments
-// of a free call — the early return fires with a non-empty stack: invalid IL
-// on MSIL (`InvalidProgramException`), inconsistent stackmap frames on JVM.
-// `val x = e?` as a whole statement, and `?` as the FIRST argument of a free
-// (static) call, are already safe (no operand precedes them) and are left
-// byte-identical.
+// of a free call, and the delegate/closure reference of a call through a
+// lambda VALUE (#6460) — the early return fires with a non-empty stack:
+// invalid IL on MSIL (`InvalidProgramException`), inconsistent stackmap
+// frames on JVM.  `val x = e?` as a whole statement is already safe (no
+// operand precedes it) and is left byte-identical; every `?`-bearing call
+// ARGUMENT is hoisted regardless of callee shape, because a bare-name
+// callee cannot be syntactically distinguished from a local (or
+// module-level) lambda value whose invocation pushes the callee reference
+// first (#6460 — see the `phNeedsHoist` `ECall` comment).
 //
 //     recv.m(a, e?, b)   ⇒   val __lyric_phoist_0 = a
 //                            val __lyric_phoist_1 = e?
@@ -213,10 +217,11 @@ func buildOptionMatch(inner: in Expr, sp: in Span, st: in PropState): Expr {
 // Unlike `await`, `?` is legal in PLAIN functions too (not just `async
 // func`), so this pass runs unconditionally over every function body — there
 // is no `isAsync` gate.  There is also no "nested-target" special case: a
-// bare `?` used safely (e.g. `val x = e?`, or the sole first argument of a
-// free call) never needs hoisting on its own; hoisting is driven entirely by
-// the OPERAND POSITION a `?` is found in, detected by the same call/index/
-// list/interpolation/binop cases `Lyric.AwaitHoist` catalogues.  (`await`'s
+// bare `?` used safely (e.g. `val x = e?`) never needs hoisting on its own;
+// hoisting is driven entirely by the OPERAND POSITION a `?` is found in,
+// detected by the same call/index/list/interpolation/binop cases
+// `Lyric.AwaitHoist` catalogues (minus its first-free-arg exemption — see
+// the #6460 note above).  (`await`'s
 // own nested-await rule exists only to keep its MSIL async-SM field
 // pre-scan in sync with emission — a concern specific to state-machine
 // field counting that has no analog for a plain `match` rewrite.)
@@ -520,14 +525,21 @@ func phNeedsHoist(e: in Expr): Bool {
     case EAwait(inner) -> phNeedsHoist(inner)
     case ECall(fn, args) -> {
       val last = phLastPropArgIdx(args)
-      val memberCallee = match fn.kind { case EMember(_, _) -> true; case _ -> false }
-      // Method calls stack the receiver before any argument, so ANY
-      // `?`-bearing argument qualifies; free calls only stack earlier
-      // arguments, so a first-and-only-`?` argument is already safe.
-      if memberCallee and last >= 0 {
-        return true
-      }
-      if last > 0 {
+      // #6460: ANY `?`-bearing argument qualifies, regardless of callee
+      // shape.  The original rule exempted a first-and-only-`?` argument of
+      // a bare-name (`EPath`) callee as a direct static call with an empty
+      // stack — but a LOCAL LAMBDA value (`val f: (Int) -> Int = ...;
+      // f(e?)`) parses to the identical `ECall(EPath, args)` shape and its
+      // invocation pushes the delegate/closure reference before arguments
+      // evaluate (both targets), and a module-level lambda-typed `pub val`
+      // makes even a multi-segment path callee unprovable as a direct call.
+      // A callee-expression call (`getF()(e?)`) had the same hole.  The
+      // syntactic walk cannot distinguish these from genuine free
+      // functions, and hoisting is always semantics-preserving, so the
+      // exemption is dropped entirely (a deliberate divergence from
+      // `Lyric.AwaitHoist`, whose own copy of this gap is tracked in
+      // #6457/#6460).
+      if last >= 0 {
         return true
       }
       if phNeedsHoist(fn) {

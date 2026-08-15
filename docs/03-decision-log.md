@@ -27875,3 +27875,33 @@ compound member form, and a receiver-before-value ordering pin), both
 targets. The sibling gap in `Lyric.AwaitHoist`'s own `EAssign`/`SAssign`
 qualification (`b.value = await e` in an async function, same stacked-
 receiver reasoning) is tracked separately in #6457.
+
+**Review addendum 2 (#6460, same PR).** The next re-review traced a
+second surviving instance of the crash class: the hoist's first-free-arg
+exemption assumed a bare-name (`EPath`) callee is a direct static call
+with an empty stack — but a LOCAL LAMBDA value (`val f: (Int) -> Int =
+{ x: Int -> ... }; f(parseId(s)?)`) parses to the identical
+`ECall(EPath, args)` shape and its invocation pushes the
+delegate/closure reference before arguments evaluate. Verified at
+runtime on BOTH targets before fixing (`InvalidProgramException` on
+MSIL, `VerifyError` on JVM — the review's MSIL-only framing was
+conservative). Two further reasons the exemption is unsound: a
+module-level lambda-typed `pub val` makes even a multi-segment path
+callee unprovable as a direct call, and a callee-EXPRESSION call
+(`pickDoubler()(parseId(s)?)`) slipped through the same qualification
+hole. Since the syntactic walk cannot distinguish any of these from
+genuine free functions and hoisting is always semantics-preserving, the
+exemption was dropped entirely: ANY `?`-bearing call argument now
+qualifies (`phNeedsHoist` `ECall`; the rewrite side needed no change —
+its `i == last` spine-hoist already binds a bare `?` out via the
+`phBind`-inside-`EPropagate` rule). This is a second deliberate
+divergence from `Lyric.AwaitHoist`, which keeps its own copy of the
+exemption — `f(await e)` through a lambda value is the same latent bug
+there, folded into #6457's AwaitHoist-gaps follow-up alongside the
+review's quantifier-descent note (`EOld`/`EForall`/`EExists` are opaque
+to BOTH passes' walks; low severity — quantifiers never lower to real
+bytecode and `EOld` at codegen is already an ICE — and best fixed in
+both at once, or structurally via #6454's shared engine).
+`propagate_hoist_self_test.l` 18 -> 21 (lambda-value callee Ok/Err,
+callee-expression call Ok+Err; the first-free-arg pin re-purposed to pin
+the now-hoisted form's behavior).
