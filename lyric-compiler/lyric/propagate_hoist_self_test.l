@@ -328,3 +328,99 @@ test "first argument of a free call ?: unchanged shape still works" {
     "first-free-arg ? still propagates"
   )
 }
+
+// ── #6456: assignment to a member/index target with a ?-bearing value ────────
+// `b.value = parseId(s)?` — MSIL's lowerAssignExprMsil pushes the receiver
+// (and index operands) BEFORE the value evaluates, with no spill, so the
+// early return fired with a non-empty stack (InvalidProgramException). The
+// hoist rebinds the target's receiver/index operands to temps in evaluation
+// order, then binds the value out (phBindAssignTarget). JVM was never
+// broken here (its assignment lowering already spills, #5936) but runs the
+// same cases for parity.
+record Cell {
+  var value: Int
+}
+
+func memberAssignProp(log: in List[String], s: in String): Result[Int, String] {
+  val c = Cell(value = 0)
+  c.value = markOk(log, "value", 0)? + parseId(s)?
+  Ok(c.value)
+}
+
+test "member-target assign ?: Ok path stores the unwrapped value" {
+  val log: List[String] = newList()
+  val r = memberAssignProp(log, "7")
+  assertEqualInt((match r { case Ok(v) -> v; case Err(_) -> -1 }), 7, "0 + 7 stored through the member write")
+  assertEqual(joinLog(log), "value", "the value expression ran exactly once")
+}
+
+test "member-target assign ?: Err path early-returns without storing" {
+  val log: List[String] = newList()
+  val r = memberAssignProp(log, "x")
+  assertEqual(
+    (match r { case Ok(_) -> "OK"; case Err(e) -> e }),
+    "bad id: x",
+    "the propagated Err surfaces from a member-assign value"
+  )
+}
+
+func indexAssignProp(s: in String): Result[Int, String] {
+  val arr: List[Int] = newList()
+  arr.add(0)
+  arr[0] = parseId(s)?
+  Ok(arr[0])
+}
+
+test "index-target assign ?: Ok path stores, Err path propagates" {
+  assertEqualInt(
+    (match indexAssignProp("7") { case Ok(v) -> v; case Err(_) -> -1 }),
+    7,
+    "the unwrapped value lands through the index write"
+  )
+  assertEqual(
+    (match indexAssignProp("x") { case Ok(_) -> "OK"; case Err(e) -> e }),
+    "bad id: x",
+    "the propagated Err surfaces from an index-assign value"
+  )
+}
+
+// Compound assignment through a member target: the receiver is stacked for
+// both the read and the write, so the same hoist applies.
+func memberCompoundProp(s: in String): Result[Int, String] {
+  val c = Cell(value = 10)
+  c.value = c.value + parseId(s)?
+  Ok(c.value)
+}
+
+test "member-target compound-shaped assign ?: reads then adds through the temp" {
+  assertEqualInt(
+    (match memberCompoundProp("7") { case Ok(v) -> v; case Err(_) -> -1 }),
+    17,
+    "10 + 7 through the member read/write"
+  )
+  assertEqual(
+    (match memberCompoundProp("x") { case Ok(_) -> "OK"; case Err(e) -> e }),
+    "bad id: x",
+    "the propagated Err surfaces from a compound member assign"
+  )
+}
+
+// Evaluation-order pin: the target's receiver expression must still run
+// BEFORE the hoisted value (the original member-assign order), so a
+// side-effecting receiver observes the pre-value state.
+func markCell(log: in List[String], tag: in String): Cell {
+  log.add(tag)
+  Cell(value = 0)
+}
+
+func receiverOrderProp(log: in List[String]): Result[Int, String] {
+  markCell(log, "recv").value = markOk(log, "value", 3)?
+  Ok(99)
+}
+
+test "member-target assign ?: receiver still evaluates before the hoisted value" {
+  val log: List[String] = newList()
+  val r = receiverOrderProp(log)
+  assertEqualInt((match r { case Ok(v) -> v; case Err(_) -> -1 }), 99, "assignment completes")
+  assertEqual(joinLog(log), "recv,value", "receiver, then value — original order preserved by the temps")
+}

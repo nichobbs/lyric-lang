@@ -91,6 +91,22 @@ func seedResultTypeRefs(cctx: in CodegenCtx): Unit {
 /// `parseSemverMajorMinor` (patch / pre-release segments ignored; the
 /// full string is preserved verbatim in the contract resource).  See
 /// #1364 for the threading plan.
+func reportCodegenPanicMsil(
+  // #6449: shared codegen-panic-to-diagnostic reporter for the `catch Bug`
+  // boundaries around `codegenMPackage`.  A panic that already carries its own
+  // `error[T0NNN]:` code (e.g. T0119) prints verbatim; anything else wraps in
+  // the generic T0120 fallback so every codegen failure surfaces as SOME
+  // diagnostic, never an uncaught .NET exception with a raw stack trace.
+  pkgName: in String,
+  message: in String,
+): Unit {
+  if message.startsWith("error[T0") {
+    Console.error(message)
+  } else {
+    Console.error("error[T0120]: MSIL codegen failed for package '" + pkgName + "': " + message)
+  }
+}
+
 pub func compileToMsilWithVersion(
   source: in String,
   outputPath: in String,
@@ -287,18 +303,11 @@ pub func compileToMsilWithVersion(
   // shapes, …) are caught here and printed as a clean diagnostic instead of
   // reaching the CLI as an uncaught .NET exception with a raw stack trace —
   // mirroring the JVM bridge's existing `catch Bug as b` codegen-panic
-  // boundary (`Jvm.Bridge`'s per-package compile loop).  A panic that
-  // already carries its own `error[T0NNN]:` code (e.g. T0119) is printed
-  // verbatim; anything else gets wrapped in the generic T0120 fallback so
-  // every codegen failure surfaces as SOME diagnostic, never a crash.
+  // boundary (`Jvm.Bridge`'s per-package compile loop).
   val pkg = try {
     codegenMPackage(liftedFile, cctx)
   } catch Bug as b {
-    if b.message.startsWith("error[T0") {
-      Console.error(b.message)
-    } else {
-      Console.error("error[T0120]: MSIL codegen failed for package '" + pkgName + "': " + b.message)
-    }
+    reportCodegenPanicMsil(pkgName, b.message)
     return false
   }
 
@@ -974,11 +983,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     val mpkg = try {
       codegenMPackage(liftedFiles[ci], cctx)
     } catch Bug as b {
-      if b.message.startsWith("error[T0") {
-        Console.error(b.message)
-      } else {
-        Console.error("error[T0120]: MSIL codegen failed for package '" + perPkgNames[ci] + "': " + b.message)
-      }
+      reportCodegenPanicMsil(perPkgNames[ci], b.message)
       return false
     }
     mpkgs.add(mpkg)

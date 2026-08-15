@@ -251,6 +251,14 @@ func buildOptionMatch(inner: in Expr, sp: in Span, st: in PropState): Expr {
 //     `SWhile` handling in §4 just rewrites the condition expression in
 //     place — it has no loop-restructuring of its own, so this hoist is the
 //     only place that need worry about per-iteration re-evaluation.)
+//   * #6456: an assignment to a MEMBER or INDEX target (`b.field = e?`,
+//     `arr[i] = e?`, compound forms included) stacks the receiver — and any
+//     index operands — before the value evaluates on MSIL
+//     (`lowerAssignExprMsil` pushes them with no spill), so any `?` in the
+//     value qualifies; the target's receiver/index operands are rebound to
+//     temps in evaluation order and the whole value is bound out
+//     (`phBindAssignTarget`).  A bare-name target is a plain local store
+//     with nothing stacked and stays byte-identical.
 // ─────────────────────────────────────────────────────────────────────────────
 record PropHoistState {
   counter: List[Int]
@@ -304,6 +312,23 @@ func phBind(e: in Expr, acc: in List[Statement], st: in PropHoistState): Expr {
       acc.add(mkStmt(SLocal(binding = LBVal(pat = pat, ty = noTy, init = e)), e.span))
       pathExpr(name, e.span)
     }
+  }
+}
+
+// #6456: an assignment whose target is a member or index write stacks its
+// receiver (and index operands) on MSIL BEFORE the value evaluates —
+// `lowerAssignExprMsil`'s `EMember`/`EIndex` cases push them with no
+// spill-and-reload — so ANY `?` in the value is a stacking hazard, not just
+// a nested one (the same reasoning as the regular-binop RHS rule).  A
+// bare-name target is a plain local store with nothing stacked.  (JVM is
+// unaffected: its member/index assignment lowering already spills
+// receiver/index/value to locals, #5936.)
+func phAssignTargetStacks(target: in Expr): Bool {
+  match target.kind {
+    case EParen(inner) -> phAssignTargetStacks(inner)
+    case EMember(_, _) -> true
+    case EIndex(_, _) -> true
+    case _ -> false
   }
 }
 
@@ -587,7 +612,7 @@ func phNeedsHoist(e: in Expr): Bool {
     case EMember(receiver, _) -> phNeedsHoist(receiver)
     case EYield(inner) -> phNeedsHoist(inner)
     case ETypeApp(fn, _) -> phNeedsHoist(fn)
-    case EAssign(target, _, value) -> phNeedsHoist(target) or phNeedsHoist(value)
+    case EAssign(target, _, value) -> phNeedsHoist(target) or phNeedsHoist(value) or (phAssignTargetStacks(target) and phHasProp(value))
     case EIf(cond, thenB, elseO, _) -> {
       if phNeedsHoist(cond) or phNeedsHoistEob(thenB) {
         true
@@ -668,7 +693,7 @@ func phNeedsHoistStmt(s: in Statement): Bool {
         }
       }
     }
-    case SAssign(target, _, value) -> phNeedsHoist(target) or phNeedsHoist(value)
+    case SAssign(target, _, value) -> phNeedsHoist(target) or phNeedsHoist(value) or (phAssignTargetStacks(target) and phHasProp(value))
     case SReturn(valOpt) -> {
       match valOpt {
         case Some(e) -> phNeedsHoist(e)
@@ -863,8 +888,18 @@ func phHoistSpine(e: in Expr, acc: in List[Statement], st: in PropHoistState): E
     case EAssign(target, op, value) -> {
       // Mirrors the `SAssign` statement rewrite: the target evaluates first,
       // so its own `?` (`arr[f()?] = v`) is spilled before the value's.
-      val target2 = if phNeedsHoist(target) { phHoistSpine(target, acc, st) } else { target }
-      mkExpr(EAssign(target = target2, op = op, value = phHoistSpine(value, acc, st)), e.span)
+      // #6456: a member/index target with a `?`-bearing value additionally
+      // needs the target's receiver/index operands rebound to temps (in
+      // evaluation order) and the whole value bound out, so the early
+      // return never fires with the receiver/index already stacked.
+      if phAssignTargetStacks(target) and phHasProp(value) {
+        val target2 = phBindAssignTarget(target, acc, st)
+        val value2 = phBind(phHoistTop(value, acc, st), acc, st)
+        mkExpr(EAssign(target = target2, op = op, value = value2), e.span)
+      } else {
+        val target2 = if phNeedsHoist(target) { phHoistSpine(target, acc, st) } else { target }
+        mkExpr(EAssign(target = target2, op = op, value = phHoistSpine(value, acc, st)), e.span)
+      }
     }
     case EIf(cond, thenB, elseO, thenForm) -> {
       // Arms are conditionally evaluated; rewrite them internally and bind
@@ -982,6 +1017,37 @@ func phHoistArm(eob: in ExprOrBlock, st: in PropHoistState): ExprOrBlock {
 // Statement-position hoist: control-flow expressions that ARE the statement
 // keep their shape (arms rewritten in place, no binding); everything else
 // takes the spine hoist.
+// #6456: rebind a member/index assignment target's receiver and index
+// operands to fresh locals, in evaluation order, so a `?`-bearing value can
+// be hoisted AFTER them without reordering side effects; the write then goes
+// through the temps.  Receivers with their own hazards are spine-hoisted
+// first.  Literals stay in place (`phBind` returns them unchanged); every
+// other operand — including a bare-name receiver — is bound, because the
+// value expression may mutate a `var` local the target read (the original
+// order reads the target operands before the value runs).
+func phBindAssignTarget(target: in Expr, dest: in List[Statement], st: in PropHoistState): Expr {
+  match target.kind {
+    case EParen(inner) -> mkExpr(EParen(inner = phBindAssignTarget(inner, dest, st)), target.span)
+    case EMember(receiver, memberName) -> {
+      val r0 = if phNeedsHoist(receiver) { phHoistSpine(receiver, dest, st) } else { receiver }
+      mkExpr(EMember(receiver = phBind(r0, dest, st), memberName = memberName), target.span)
+    }
+    case EIndex(receiver, indices) -> {
+      val r0 = if phNeedsHoist(receiver) { phHoistSpine(receiver, dest, st) } else { receiver }
+      val r2 = phBind(r0, dest, st)
+      val idx2: List[Expr] = newList()
+      var i = 0
+      while i < indices.count {
+        val e0 = if phNeedsHoist(indices[i]) { phHoistSpine(indices[i], dest, st) } else { indices[i] }
+        idx2.add(phBind(e0, dest, st))
+        i = i + 1
+      }
+      mkExpr(EIndex(receiver = r2, indices = idx2), target.span)
+    }
+    case _ -> target
+  }
+}
+
 func phHoistTop(e: in Expr, acc: in List[Statement], st: in PropHoistState): Expr {
   match e.kind {
     case EIf(cond, thenB, elseO, thenForm) -> {
@@ -1046,14 +1112,30 @@ func phStmt(s: in Statement, dest: in List[Statement], st: in PropHoistState): U
       }
     }
     case SAssign(target, op, value) -> {
+      // #6456: a member/index target with a `?`-bearing value needs the
+      // target's receiver/index operands rebound to temps (in evaluation
+      // order — receiver, indices, THEN value) and the whole value bound
+      // out, so the early return never fires with the receiver/index
+      // already stacked on MSIL.  Records/collections are reference types
+      // in both backends' ABIs, so the write through the rebound receiver
+      // hits the same object; rebinding also preserves the original
+      // read-before-value order if the value expression mutates a `var`
+      // the target reads.
+      val stacked = phAssignTargetStacks(target) and phHasProp(value)
       val targetNeedsHoist = phNeedsHoist(target)
       val valueNeedsHoist = phNeedsHoist(value)
-      if targetNeedsHoist or valueNeedsHoist {
-        val target2 = if targetNeedsHoist { phHoistSpine(target, dest, st) } else { target }
-        val value2 = if valueNeedsHoist { phHoistTop(value, dest, st) } else { value }
+      if stacked {
+        val target2 = phBindAssignTarget(target, dest, st)
+        val value2 = phBind(phHoistTop(value, dest, st), dest, st)
         dest.add(mkStmt(SAssign(target = target2, op = op, value = value2), s.span))
       } else {
-        dest.add(s)
+        if targetNeedsHoist or valueNeedsHoist {
+          val target2 = if targetNeedsHoist { phHoistSpine(target, dest, st) } else { target }
+          val value2 = if valueNeedsHoist { phHoistTop(value, dest, st) } else { value }
+          dest.add(mkStmt(SAssign(target = target2, op = op, value = value2), s.span))
+        } else {
+          dest.add(s)
+        }
       }
     }
     case SReturn(valOpt) -> {

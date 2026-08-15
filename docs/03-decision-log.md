@@ -27844,3 +27844,30 @@ table gains T0119/T0120.
 **Related:** #6448, #6449, #5606 / `Lyric.AwaitHoist` (the design this
 mirrors), D-progress-676 / #6422 (JVM containment precedent), T0115/
 T0116 (codegen-time spanned-diagnostic precedent).
+
+**Review addendum (#6456, same PR).** PR #6453's re-review traced a
+surviving instance of the exact #6448 crash class: an assignment whose
+TARGET is a member or index write (`b.value = parse(s)?`,
+`arr[i] = parse(s)?`) was not hoisted — the `EAssign`/`SAssign`
+qualification only escalated on NESTED hazards in the value, unlike the
+binop-RHS rule this same entry records. MSIL's `lowerAssignExprMsil`
+pushes the receiver (and index operands) before the value evaluates,
+with no spill, so a top-level `?` in the value still fired its early
+return with a non-empty stack (`InvalidProgramException`; reproduced
+before fixing). JVM was never affected — its member/index assignment
+lowering already spills receiver/index/value to locals (#5936). Fix:
+`phAssignTargetStacks` qualifies any member/index-target assignment
+whose value contains a `?`; the rewrite rebinds the target's
+receiver/index operands to temps in evaluation order
+(`phBindAssignTarget` — preserving receiver-before-value side-effect
+order; records/collections are reference types in both ABIs, so the
+write through the rebound receiver hits the same object) and binds the
+whole value out. Bare-name targets are plain local stores and stay
+byte-identical. Also took the review's dedup suggestion: the two
+identical `catch Bug` blocks in `Msil.Bridge` now share
+`reportCodegenPanicMsil`. `propagate_hoist_self_test.l` 13 -> 18
+(member-assign Ok/Err with once-only evaluation pinned, index-assign,
+compound member form, and a receiver-before-value ordering pin), both
+targets. The sibling gap in `Lyric.AwaitHoist`'s own `EAssign`/`SAssign`
+qualification (`b.value = await e` in an async function, same stacked-
+receiver reasoning) is tracked separately in #6457.
