@@ -859,6 +859,72 @@ test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure
     Str.contains(diagText, "J007"),
     "the contained refusal carries its J007 code in EmitResult.diagnostics (got: " + diagText + ")"
   )
+  // #6464: the diagnostic's span carries the REAL `line:col` the panic
+  // message embeds (`ContainJ007.App:14:21` — the `w` receiver of `w.n` in
+  // `case Full(w) -> w.n`), not the synthetic file-start point span every
+  // contained panic used to get.
+  var j007Idx = -1
+  var sdi = 0
+  while sdi < result.diagnostics.count {
+    if result.diagnostics[sdi].code == "J007" {
+      j007Idx = sdi
+    }
+    sdi = sdi + 1
+  }
+  assertTrue(j007Idx >= 0, "a J007 diagnostic is present in the result")
+  if j007Idx >= 0 {
+    val sp = result.diagnostics[j007Idx].span
+    assertEqualInt(
+      sp.startPos.line,
+      14,
+      "J007 span points at the real source line (got: " + toString(sp.startPos.line) + ")"
+    )
+    assertEqualInt(
+      sp.startPos.column,
+      21,
+      "J007 span points at the real source column (got: " + toString(sp.startPos.column) + ")"
+    )
+  }
+}
+
+// #6464: direct unit coverage for `Emitter.parsePanicSpan` — the T0119
+// message shape (`error[T0119] <line>:<col>: <text>`, no dotted-package
+// prefix ahead of the location, unlike J007's `Pkg.File:line:col:`) has no
+// end-to-end path into `EmitResult.diagnostics` in any existing suite (a
+// typo'd extern static member is the only reachable T0119 site, and its
+// dedicated end-to-end pin in `msil_project_bridge_self_test.l` asserts the
+// raw `Msil.Bridge` panic message, one layer below where the emitter
+// boundary builds the diagnostic's span) — so this pins the parser
+// directly against both message shapes it has to handle, plus the
+// no-location case (T0115) it must fall back cleanly on.
+test "parsePanicSpan parses the T0119 `] line:col:` shape (#6464)" {
+  val msg = "error[T0119] 4:11: extern member access 'System.Math.PIE' does not resolve"
+  match Emitter.parsePanicSpan(msg) {
+    case Some(sp) -> {
+      assertEqualInt(sp.startPos.line, 4, "T0119-shape: line")
+      assertEqualInt(sp.startPos.column, 11, "T0119-shape: column")
+    }
+    case None -> assertTrue(false, "parsePanicSpan should find a location in a T0119-shaped message")
+  }
+}
+
+test "parsePanicSpan parses the J-code `]: Pkg.File:line:col:` shape (#6464)" {
+  val msg = "error[J007]: ContainJ007.App:14:21: member 'n' cannot be resolved on an erased receiver"
+  match Emitter.parsePanicSpan(msg) {
+    case Some(sp) -> {
+      assertEqualInt(sp.startPos.line, 14, "J-code-shape: line")
+      assertEqualInt(sp.startPos.column, 21, "J-code-shape: column")
+    }
+    case None -> assertTrue(false, "parsePanicSpan should find a location in a J-code-shaped message")
+  }
+}
+
+test "parsePanicSpan returns None for a message with no embedded location (#6464)" {
+  val msg = "error[T0115]: cannot resolve qualified reference 'Foo.bar' — it does not name a value, function, type, or member this compilation can verify."
+  match Emitter.parsePanicSpan(msg) {
+    case Some(sp) -> assertTrue(false, "T0115 carries no location; parsePanicSpan must return None, not a spurious match (got line " + toString(sp.startPos.line) + ")")
+    case None -> assertTrue(true, "no location found, as expected")
+  }
 }
 
 // #6447 (#6446 review): an UNRESOLVED diamond — two same-file interfaces

@@ -264,6 +264,11 @@ func buildOptionMatch(inner: in Expr, sp: in Span, st: in PropState): Expr {
 //     temps in evaluation order and the whole value is bound out
 //     (`phBindAssignTarget`).  A bare-name target is a plain local store
 //     with nothing stacked and stays byte-identical.
+//   * #6457: an `?` inside a `forall`/`exists` quantifier body or
+//     `old(...)` is detected by `phHasProp`/`phNeedsHoist` (walk-
+//     consistency, ported to `Lyric.AwaitHoist` in the same round) but not
+//     rewritten by the hoist spine — low severity, quantifiers never lower
+//     to real bytecode and `EOld` at codegen is already an ICE.
 // ─────────────────────────────────────────────────────────────────────────────
 record PropHoistState {
   counter: List[Int]
@@ -418,6 +423,23 @@ func phHasProp(e: in Expr): Bool {
         i = i + 1
       }
       false
+    }
+    // #6457 review: walk-consistency with `Lyric.AwaitHoist`'s identical
+    // fix — these were opaque even though the contract elaborator can
+    // splice a `requires:`/`ensures:` quantifier or `old(...)` verbatim
+    // into a body as a runtime assert argument.  Low severity (quantifiers
+    // never lower to real bytecode and `EOld` at codegen is already an
+    // ICE), so only the PRESENCE/QUALIFICATION walks descend here — no
+    // hoist-spine support is added; a `?` reachable only through one of
+    // these stays undetected by the hoist's REWRITE side.
+    case EOld(inner) -> phHasProp(inner)
+    case EForall(_, whereOpt, body) -> {
+      val w = match whereOpt { case Some(we) -> phHasProp(we); case None -> false }
+      w or phHasProp(body)
+    }
+    case EExists(_, whereOpt, body) -> {
+      val w = match whereOpt { case Some(we) -> phHasProp(we); case None -> false }
+      w or phHasProp(body)
     }
     case _ -> false
   }
@@ -657,6 +679,19 @@ func phNeedsHoist(e: in Expr): Bool {
         case RBLowerOpen(hi) -> phNeedsHoist(hi)
         case RBUpperOpen(lo) -> phNeedsHoist(lo)
       }
+    }
+    // #6457 review: walk-consistency only (see `phHasProp`'s identical
+    // note) — no hoist-spine support for these, so a qualifying `?` found
+    // only here is detected but the enclosing statement's OTHER hazards
+    // (if any) still get hoisted through the generic rules.
+    case EOld(inner) -> phNeedsHoist(inner)
+    case EForall(_, whereOpt, body) -> {
+      val w = match whereOpt { case Some(we) -> phNeedsHoist(we); case None -> false }
+      w or phNeedsHoist(body)
+    }
+    case EExists(_, whereOpt, body) -> {
+      val w = match whereOpt { case Some(we) -> phNeedsHoist(we); case None -> false }
+      w or phNeedsHoist(body)
     }
     case _ -> false
   }

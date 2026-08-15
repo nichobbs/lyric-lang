@@ -38,6 +38,7 @@ package Lyric.Emitter
 
 import Std.Core
 import Std.Collections
+import Std.Char as Char
 import Std.Console as Console
 import Std.Errors
 import Std.File as File
@@ -2219,6 +2220,112 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
   }
 }
 
+// #6464: parses the leading `<line>:<col>:` location a codegen-panic
+// message embeds back into a real `Span`, so the diagnostics
+// `msilBridgePanicDiagnostic`/`jvmBridgePanicDiagnostic` build carry the
+// user's actual source position instead of always pointing at file-start.
+// Two message shapes carry a location today: MSIL's `error[T0119] <line>:
+// <col>: <text>` (a single space after the code bracket, no package
+// prefix — `msil/codegen.l`'s extern-member-access refusal) and JVM's
+// `error[J007]: <Pkg.File>:<line>:<col>: <text>` (a dotted package/file
+// prefix ahead of the location — the erased-receiver guard in
+// `jvm/codegen/02_exprs.l`, shared by its J009/J010 siblings).  Rather than
+// special-case each shape by code prefix, this scans the WHOLE message for
+// the first `<digits>:<digits>:` occurrence — a digit run only starts a
+// candidate match when the previous character is not itself a digit, so a
+// message with no such pattern at all (T0115's "cannot resolve qualified
+// reference" refusal has none; neither does the generic T0120/J008 wrap
+// around an uncoded panic) costs one linear scan and returns `None`, and
+// the caller falls back to the synthetic point span.  `offset` is unknown
+// from a printed message and is set to 0 — the same convention `lsp.l` and
+// `Lyric.Mono` already use for a Position built without a lexer state.
+func charDigitAt(s: in String, idx: in Int): Option[Int] {
+  match Str.charAt(s, idx) {
+    case Some(c) -> Char.digitValue(c)
+    case None -> None
+  }
+}
+
+func charAtIsColon(s: in String, idx: in Int): Bool {
+  match Str.charAt(s, idx) {
+    case Some(c) -> c == ':'
+    case None -> false
+  }
+}
+
+// Index just past the maximal run of ASCII digits starting at `start`
+// (== `start` when `start` is not itself a digit).
+func digitRunEnd(s: in String, start: in Int, len: in Int): Int {
+  var i = start
+  while i < len {
+    match charDigitAt(s, i) {
+      case Some(_) -> {
+        i = i + 1
+      }
+      case None -> return i
+    }
+  }
+  i
+}
+
+func parseDigitRun(s: in String, start: in Int, stop: in Int): Int {
+  var v = 0
+  var i = start
+  while i < stop {
+    match charDigitAt(s, i) {
+      case Some(d) -> {
+        v = v * 10 + d
+      }
+      case None -> ()
+    }
+    i = i + 1
+  }
+  v
+}
+
+pub func parsePanicSpan(message: in String): Option[Span] {
+  val len = Str.length(message)
+  var i = 0
+  while i < len {
+    val isRunStart = match charDigitAt(message, i) {
+      case Some(_) -> {
+        if i == 0 {
+          true
+        } else {
+          match charDigitAt(message, i - 1) {
+            case Some(_) -> false
+            case None -> true
+          }
+        }
+      }
+      case None -> false
+    }
+    if isRunStart {
+      val lineEnd = digitRunEnd(message, i, len)
+      if lineEnd < len and charAtIsColon(message, lineEnd) {
+        val colStart = lineEnd + 1
+        val colEnd = digitRunEnd(message, colStart, len)
+        if colEnd > colStart and colEnd < len and charAtIsColon(message, colEnd) {
+          val line = parseDigitRun(message, i, lineEnd)
+          val col = parseDigitRun(message, colStart, colEnd)
+          if line > 0 and col > 0 {
+            return Some(value = pointSpan(Position(offset = 0, line = line, column = col)))
+          }
+        }
+      }
+    }
+    i = i + 1
+  }
+  None
+}
+
+func spanForPanicMessage(message: in String): Span {
+  match parsePanicSpan(message) {
+    case Some(sp) -> sp
+    case None -> pointSpan(initialPosition())
+  }
+}
+
 // In-process single-package JVM project emit — direct call into `Jvm.Bridge.compileToJarBundledWithFeatures`
 // to avoid shelling out and creating infinite loops.
 // #6422: a JVM codegen-level refusal (e.g. the erased-receiver guard,
@@ -2240,17 +2347,18 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
 // contained J-code from the result (the previous Bool-returning
 // `jvmBridgePanicToStderr` only printed).
 func jvmBridgePanicDiagnostic(message: in String): Diagnostic {
+  val sp = spanForPanicMessage(message)
   if message.startsWith("error[J0") {
     Console.error(message)
     val code = match Str.indexOf(message, "]") {
       case Some(closeIdx) -> if closeIdx > 6 { Str.substring(message, 6, closeIdx - 6) } else { "J008" }
       case None -> "J008"
     }
-    errorDiagnostic(code, message, pointSpan(initialPosition()))
+    errorDiagnostic(code, message, sp)
   } else {
     val text = "error[J008]: JVM codegen failed: " + message
     Console.error(text)
-    errorDiagnostic("J008", text, pointSpan(initialPosition()))
+    errorDiagnostic("J008", text, sp)
   }
 }
 
@@ -2262,21 +2370,24 @@ func jvmBridgePanicDiagnostic(message: in String): Diagnostic {
 // callers can assert the diagnostic's code and content without a
 // stderr-capture seam.  A message already carrying its own `error[T0NNN]`
 // code (e.g. T0119, or a codegen-time T0115) prints verbatim and keeps its
-// code; anything else wraps under the generic T0120 fallback.  The span is
-// synthetic — codegen panic messages embed their own `line:col` where one
-// exists (e.g. T0119).
+// code; anything else wraps under the generic T0120 fallback.  #6464: the
+// span carries the real `line:col` a message like T0119 embeds
+// (`parsePanicSpan`); it falls back to the synthetic point span for a
+// message with no embedded location (e.g. T0115, or an uncoded panic
+// wrapped under T0120).
 func msilBridgePanicDiagnostic(message: in String): Diagnostic {
+  val sp = spanForPanicMessage(message)
   if message.startsWith("error[T0") {
     Console.error(message)
     val code = match Str.indexOf(message, "]") {
       case Some(closeIdx) -> if closeIdx > 6 { Str.substring(message, 6, closeIdx - 6) } else { "T0120" }
       case None -> "T0120"
     }
-    errorDiagnostic(code, message, pointSpan(initialPosition()))
+    errorDiagnostic(code, message, sp)
   } else {
     val text = "error[T0120]: MSIL codegen failed: " + message
     Console.error(text)
-    errorDiagnostic("T0120", text, pointSpan(initialPosition()))
+    errorDiagnostic("T0120", text, sp)
   }
 }
 

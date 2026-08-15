@@ -407,6 +407,32 @@ test "member-target compound-shaped assign ?: reads then adds through the temp" 
   )
 }
 
+// #6464: the REAL `+=` compound-operator form (AssignOp `AssPlus`), not the
+// hand-desugared `c.value = c.value + ...` shape above — `phNeedsHoistStmt`'s
+// `SAssign` case is op-agnostic (it inspects `target`/`value`, never `op`),
+// so `+=` on a member target rides the exact same #6456 stacked-target rule.
+func memberCompoundOperatorProp(s: in String): Result[Int, String] {
+  val c = Cell(value = 10)
+  c.value += parseId(s)?
+  Ok(c.value)
+}
+
+test "member-target += compound operator ?: Ok path adds through the temp" {
+  assertEqualInt(
+    (match memberCompoundOperatorProp("7") { case Ok(v) -> v; case Err(_) -> -1 }),
+    17,
+    "10 += 7 through the real += operator on a member target"
+  )
+}
+
+test "member-target += compound operator ?: Err path early-returns without storing" {
+  assertEqual(
+    (match memberCompoundOperatorProp("x") { case Ok(_) -> "OK"; case Err(e) -> e }),
+    "bad id: x",
+    "the propagated Err surfaces from a += member assign"
+  )
+}
+
 // Evaluation-order pin: the target's receiver expression must still run
 // BEFORE the hoisted value (the original member-assign order), so a
 // side-effecting receiver observes the pre-value state.
