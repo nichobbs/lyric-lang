@@ -27815,17 +27815,21 @@ property-setter panics) are now cleanly contained by T0120 but keep
 their un-coded messages; giving them dedicated spanned codes is
 follow-up work, not blocking.
 
-**Test-contract update.** Two suites asserted the OLD uncaught-panic
+**Test-contract update.** Three suites asserted the OLD uncaught-panic
 behaviour, which the containment legitimately changes (same class of
 user-reachable failure): `msil_project_bridge_self_test.l`'s
-"instance call on a value-type generic-declaring extern" test, and
+"instance call on a value-type generic-declaring extern" test,
 `generic_extern_valuetype_instance_self_test.l` (its Lyric-level-generic
-twin through `Lyric.Emitter.emitProject`, caught by CI — the
-`assertPanicsWith` there could no longer observe the contained refusal).
-Both now assert contained failure (no throw, failed build / no output
-artifact), mirroring the JVM analog in `emitter_project_self_test.l`
-(#6422); asserting on the refusal TEXT from these tests needs the
-stderr-capture seam tracked in #6455.
+twin through `Lyric.Emitter.emitProject`), and
+`msil_restored_qualified_val_self_test.l`'s T0115 non-literal-`pub val`
+case (each caught by CI in turn — raw `try/catch Bug` expectations, so a
+plain `assertPanicsWith` grep missed the latter two).  All three now
+assert contained failure (no throw, failed build / no output artifact),
+mirroring the JVM analog in `emitter_project_self_test.l` (#6422);
+asserting on the refusal TEXT from these tests needs the stderr-capture
+seam tracked in #6455, and the containment-layer symmetry question
+(bridge-internal vs. the JVM's emitter-layer convention, which would
+restore those exact-message assertions) is tracked in #6459.
 
 **Verification (all green, both targets where applicable).** #6448
 repros print correct values on dotnet and JVM (method-arg, second-free-
