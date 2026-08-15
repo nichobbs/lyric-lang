@@ -27738,3 +27738,214 @@ clean. docs/01 §2 gains the member-only default-body paragraph.
 **Related:** #6445, D-progress-760 (the discovery + `Lyric.ImplDefaults`),
 D-progress-676 (JVM DIM lowering), D-progress-753 (MSIL DIM caveat),
 docs/01 §2.12.
+
+## D-progress-762 — `?` in operand position: statement-level ANF hoist in `Lyric.Propagate` (#6448); MSIL codegen panics become diagnostics: T0119 + T0120 bridge containment (#6449)
+
+**Problem 1 (#6448, dual-target).** `receiver.method(fallible()?)` built
+clean and detonated at first call: `InvalidProgramException` on MSIL,
+bytecode-verifier "Inconsistent stackmap frames" on JVM. Triage sharpened
+the issue's boundary claim: `?` in the SECOND argument of a free call is
+broken too — the "free functions work" observation only held for
+first-argument position, where the eval stack is empty. Root cause:
+`Lyric.Propagate` rewrites `e?` into an expression-position `match` whose
+failure arm does an early `return`; when operands are already on the eval
+stack (a method receiver, or any earlier argument), the early return fires
+with a non-empty stack — invalid code on both backends. Dual-target
+failure, so the fix is middle-end.
+
+**Decision — hoist inside the propagate pass, mirroring `Lyric.AwaitHoist`.**
+`Lyric.AwaitHoist` (#5606) solved the identical problem for `await` with a
+statement-level ANF hoist. The `?` hoist (`propagate.l` §2b, `ph*`
+functions) runs BEFORE the `?` -> match rewrite, inside the same pass: any
+statement containing a qualifying `?` in operand position gets the
+`?`-bearing subexpression — and every operand evaluated before it — bound
+to fresh `val __lyric_phoist_<n>` locals (left-to-right order preserved),
+so the subsequent match/early-return rewrite lands as a statement-level
+initializer, the shape both backends already compile correctly (the
+hand-hoisted workaround). Qualifying: method-call args always (the
+receiver is stacked); free-call args unless the `?`-bearing arg is the
+first evaluated operand [SUPERSEDED by Review addendum 2 below — the
+first-free-arg exemption was dropped entirely under #6460; ANY
+`?`-bearing call argument now qualifies]; constructor args, list
+elements, index expressions, interpolation segments per AwaitHoist's
+catalogue; a `while` condition gets the loop rewrite so hoisted bindings
+re-evaluate per iteration. Non-qualifying statements are byte-identical. Unlike the await
+hoist, this runs for EVERY function body (`?` applies in plain functions),
+and name-like receivers (package/type qualifiers) are never bound to
+locals. `ELambda`/`ESpawn` bodies are deferred computations — not
+descended; `ETry` stays opaque (hoisting out would change exception
+scoping).
+
+**Divergence from AwaitHoist worth recording:** AwaitHoist leaves plain
+binop operands to the MSIL emitter's LHS spill (`phaseBSpillToLocal`) —
+but that spill is gated on `exprContainsAwaitMsil(rhs)` only and never
+fires for `?`, so the first build's battery caught `? in a binop RHS`
+still crashing (12/13). The EBinop rule was split: short-circuit ops
+(`and`/`or`/`??`/`implies`) keep "only a nested hazard qualifies" (their
+RHS evaluates on an empty stack after the branch consumes the LHS), but
+regular binops qualify whenever the RHS contains a `?` at all (the LHS is
+unconditionally pushed before the RHS evaluates).
+
+**Problem 2 (#6449).** `List.empty[Item]()` — a plausible-but-wrong
+stdlib guess (`newList()` is the constructor) — crashed the COMPILER: an
+uncaught `System.Exception` from `Msil.Codegen`'s extern static-member
+resolution, with a raw .NET stack trace instead of a diagnostic. (On the
+0.5.0 release it emitted invalid IL; current main had already moved the
+failure to build time, but as a crash.) Parser note: Lyric never
+constructs `ETypeApp` — `Recv.member[X]` parses as `EIndex` — so the
+repro flows through `EIndex`'s receiver-value-read path into the same
+extern-member lowering.
+
+**Decision — spanned T0119 + T0120 bridge containment.** The resolution
+failure is a user-reachable error (typo, or a member shape the auto-FFI
+static-access probes don't cover), so it now panics with the
+`error[T0119] line:col: ...` diagnostic shape (T0115/T0116 precedent:
+raised at MSIL codegen time with the expression's span, suggesting the
+typo check and the `@externTarget` escape hatch). `panic` remains the
+propagation mechanism — threading a diagnostics list through every
+mutually-recursive `lowerExprMsil` call site is out of scope. Both
+`Msil.Bridge` entry points (`compileToMsilWithVersion`,
+`compileProjectToMsilWithRestoredAndVersion`) now wrap
+`codegenMPackage` in `catch Bug`: a message already prefixed
+`error[T0...]` prints verbatim; anything else wraps as the generic
+`error[T0120]: MSIL codegen failed for package '<pkg>': <msg>` — the
+JVM bridge's `error[J002]`/J008 containment pattern, so every MSIL
+codegen failure ends in a printed diagnostic and `false`, never an
+uncaught exception. Sibling `panic` sites in the extern/auto-FFI
+lowering paths (`emitAutoFfiCallMsil`'s three, several instance-member/
+property-setter panics) are now cleanly contained by T0120 but keep
+their un-coded messages; giving them dedicated spanned codes is
+follow-up work, not blocking.
+
+**Test-contract update.** Three suites asserted the OLD uncaught-panic
+behaviour, which the containment legitimately changes (same class of
+user-reachable failure): `msil_project_bridge_self_test.l`'s
+"instance call on a value-type generic-declaring extern" test,
+`generic_extern_valuetype_instance_self_test.l` (its Lyric-level-generic
+twin through `Lyric.Emitter.emitProject`), and
+`msil_restored_qualified_val_self_test.l`'s T0115 non-literal-`pub val`
+case (each caught by CI in turn — raw `try/catch Bug` expectations, so a
+plain `assertPanicsWith` grep missed the latter two).  All three now
+assert contained failure (no throw, failed build / no output artifact),
+mirroring the JVM analog in `emitter_project_self_test.l` (#6422);
+asserting on the refusal TEXT from these tests needs the stderr-capture
+seam tracked in #6455, and the containment-layer symmetry question
+(bridge-internal vs. the JVM's emitter-layer convention, which would
+restore those exact-message assertions) is tracked in #6459.
+
+**Verification (all green, both targets where applicable).** #6448
+repros print correct values on dotnet and JVM (method-arg, second-free-
+arg); #6449 repro exits nonzero with the spanned T0119 on dotnet and the
+existing J-coded diagnostic on JVM, no stack traces. New
+`propagate_hoist_self_test.l` 13/13 both targets at this round (grown by
+the review addenda below — see each addendum for its cases and count). `propagate_self_test` 17/17; typechecker 306/306; await_hoist
+4/4; async_spawn 26/26 both; bare_func_ref 36/36 both; emitter_project
+27/27; msil_project_bridge 39/39; msil_restored_bridge 6/6;
+inbundle_generics 31/31; aspect_weave 7/7 both; ilverify clean.
+docs/01 §4.5 gains the operand-position paragraph; the book's T-series
+table gains T0119/T0120.
+
+**Related:** #6448, #6449, #5606 / `Lyric.AwaitHoist` (the design this
+mirrors), D-progress-676 / #6422 (JVM containment precedent), T0115/
+T0116 (codegen-time spanned-diagnostic precedent).
+
+**Review addendum (#6456, same PR).** PR #6453's re-review traced a
+surviving instance of the exact #6448 crash class: an assignment whose
+TARGET is a member or index write (`b.value = parse(s)?`,
+`arr[i] = parse(s)?`) was not hoisted — the `EAssign`/`SAssign`
+qualification only escalated on NESTED hazards in the value, unlike the
+binop-RHS rule this same entry records. MSIL's `lowerAssignExprMsil`
+pushes the receiver (and index operands) before the value evaluates,
+with no spill, so a top-level `?` in the value still fired its early
+return with a non-empty stack (`InvalidProgramException`; reproduced
+before fixing). JVM was never affected — its member/index assignment
+lowering already spills receiver/index/value to locals (#5936). Fix:
+`phAssignTargetStacks` qualifies any member/index-target assignment
+whose value contains a `?`; the rewrite rebinds the target's
+receiver/index operands to temps in evaluation order
+(`phBindAssignTarget` — preserving receiver-before-value side-effect
+order; records/collections are reference types in both ABIs, so the
+write through the rebound receiver hits the same object) and binds the
+whole value out. Bare-name targets are plain local stores and stay
+byte-identical. Also took the review's dedup suggestion: the two
+identical `catch Bug` blocks in `Msil.Bridge` now share
+`reportCodegenPanicMsil`. `propagate_hoist_self_test.l` 13 -> 18
+(member-assign Ok/Err with once-only evaluation pinned, index-assign,
+compound member form, and a receiver-before-value ordering pin), both
+targets. The sibling gap in `Lyric.AwaitHoist`'s own `EAssign`/`SAssign`
+qualification (`b.value = await e` in an async function, same stacked-
+receiver reasoning) is tracked separately in #6457.
+
+**Review addendum 2 (#6460, same PR).** The next re-review traced a
+second surviving instance of the crash class: the hoist's first-free-arg
+exemption assumed a bare-name (`EPath`) callee is a direct static call
+with an empty stack — but a LOCAL LAMBDA value (`val f: (Int) -> Int =
+{ x: Int -> ... }; f(parseId(s)?)`) parses to the identical
+`ECall(EPath, args)` shape and its invocation pushes the
+delegate/closure reference before arguments evaluate. Verified at
+runtime on BOTH targets before fixing (`InvalidProgramException` on
+MSIL, `VerifyError` on JVM — the review's MSIL-only framing was
+conservative). Two further reasons the exemption is unsound: a
+module-level lambda-typed `pub val` makes even a multi-segment path
+callee unprovable as a direct call, and a callee-EXPRESSION call
+(`pickDoubler()(parseId(s)?)`) slipped through the same qualification
+hole. Since the syntactic walk cannot distinguish any of these from
+genuine free functions and hoisting is always semantics-preserving, the
+exemption was dropped entirely: ANY `?`-bearing call argument now
+qualifies (`phNeedsHoist` `ECall`; the rewrite side needed no change —
+its `i == last` spine-hoist already binds a bare `?` out via the
+`phBind`-inside-`EPropagate` rule). This is a second deliberate
+divergence from `Lyric.AwaitHoist`, which keeps its own copy of the
+exemption — `f(await e)` through a lambda value is the same latent bug
+there, folded into #6457's AwaitHoist-gaps follow-up alongside the
+review's quantifier-descent note (`EOld`/`EForall`/`EExists` are opaque
+to BOTH passes' walks; low severity — quantifiers never lower to real
+bytecode and `EOld` at codegen is already an ICE — and best fixed in
+both at once, or structurally via #6454's shared engine).
+`propagate_hoist_self_test.l` 18 -> 21 (lambda-value callee Ok/Err,
+callee-expression call Ok+Err; the first-free-arg pin re-purposed to pin
+the now-hoisted form's behavior).
+
+**Review addendum 3 (#6461, #6462, #6463 + layer relocation, same PR).**
+The next re-review raised three REQUIRED findings, all valid:
+
+*#6461 — the suite ran nowhere.* `propagate_hoist_self_test.l` was never
+wired into `.github/workflows/ci.yml` (`scripts/ci/self-test.sh` has no
+discovery — every suite needs an explicit step). Wired on both targets
+(dotnet in compiler-self-tests-dotnet-a beside the await-hoist step; JVM
+in the jvm job), workflow size re-checked under the soft ceiling.
+
+*#6463 — `?` in record-BODY methods silently miscompiled.* §4's
+`rewriteItem` handled `IFunc`/`IImpl`/`IInterface`/`IProtected` but not
+`IRecord`/`IExposedRec`, so a `?` inside a D037 record-body method
+reached codegen as a raw `EPropagate` — which MSIL lowers as an
+identity pass-through (no Err/None check at all). Pre-existing (the
+§2b hoist side already descended into records, making that path dead),
+now closed with `rewriteRecordDecl` mirroring the other item kinds; the
+docs/01 §4.5 operand-position claim is re-scoped to name the two
+remaining tracked gaps (`try`-expression reachability #6458, quantifier
+bodies #6457) instead of claiming "ANY position". Also took the
+review's `SInvariant`/`SRule` observation: `phHasPropStmt` covered both
+while `phNeedsHoistStmt` didn't, so a `?` in operand position inside a
+loop `invariant:` (or wire rule) expression was detected but never
+hoisted — both walks now agree and the statement driver hoists their
+nested hazards.
+
+*#6462 + the #6459 layer decision — diagnostic identity now tested via
+`EmitResult.diagnostics`.* Rather than a stderr-capture seam, the
+containment moved to the layer #6459 proposed: `Msil.Bridge` reverts to
+its throw-on-refusal library contract (the `Jvm.Bridge` convention),
+and `Lyric.Emitter`'s new `msilBridgePanicDiagnostic` boundary prints
+the T0119/T0120 diagnostic AND carries it as a structured entry in
+`EmitResult.diagnostics` (`failResultWith`). The JVM arm gains the same
+result-population (`jvmBridgePanicDiagnostic` replacing the
+print-only `jvmBridgePanicToStderr`). Test specificity is thereby
+RESTORED, not worked around: `msil_project_bridge_self_test.l` re-pins
+the exact escaping value-type-extern panic message and gains an
+end-to-end T0119 pin (the `List.empty` typo through the bridge);
+`generic_extern_valuetype_instance_self_test.l` asserts the T0120 code
++ refusal text from the result; `msil_restored_qualified_val_self_test.l`
+asserts the T0115 code + symbol from the result; the #6422 JVM
+containment test asserts its J007 code from the result. This closes
+#6459 (decision: emitter-layer containment + result diagnostics, both
+targets) and moots #6455's stderr-capture motivation for these tests.

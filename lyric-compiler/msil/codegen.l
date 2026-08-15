@@ -7817,7 +7817,20 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     case Some(extFqn) -> {
                       match tryExternStaticMemberReadMsil(cctx, insns, extFqn, memberName) {
                         case Some(extTy) -> return extTy
-                        case None -> panic("Msil.Codegen: extern member access '" + extFqn + "." + memberName + "' does not resolve to a static property getter (get_" + memberName + "), a literal constant, or a static field in .NET reference-assembly " + "metadata.  Instance members need a receiver value; methods need a call.  " + "Declare an @externTarget wrapper if a custom binding is intended.")
+                        // #6449: a user-reachable resolution failure (typo, or a real
+                        // method/overload the auto-FFI static-property/const/field probes
+                        // don't cover), not an internal invariant violation — surface it as
+                        // a proper spanned diagnostic (T0119) instead of a raw compiler
+                        // crash.  `panic` is still the propagation mechanism (threading a
+                        // `Result`/diagnostics list through every mutually-recursive
+                        // `lowerExprMsil` call site is out of scope here), but the message
+                        // now carries the `error[T0119] line:col: ...` shape
+                        // `Lyric.DiagnosticUtil.diagFormat` uses, and the MSIL bridge's
+                        // `compileToMsilWithVersion` / `compileProjectToMsil*` entry points
+                        // catch it (mirroring the JVM bridge's existing `catch Bug as b`
+                        // codegen-panic boundary) and print it cleanly instead of letting it
+                        // reach the CLI as an uncaught .NET exception.
+                        case None -> panic("error[T0119] " + toString(expr.span.startPos.line) + ":" + toString(expr.span.startPos.column) + ": extern member access '" + extFqn + "." + memberName + "' does not resolve to a static property getter (get_" + memberName + "), a literal constant, a static field, or a zero-argument static method in .NET " + "reference-assembly metadata.  Check '" + memberName + "' for a typo, or declare an " + "@externTarget wrapper (`@externTarget(\"" + extFqn + "." + memberName + "\") @externStatic func ...`) if a custom binding is intended.")
                       }
                     }
                     case None -> ()

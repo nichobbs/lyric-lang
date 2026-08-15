@@ -785,7 +785,7 @@ test "emitProject cross-package impl of an imported interface (qualified)" {
 }
 
 // #6422/#6428 review: the containment mechanism itself — `Lyric.Emitter`'s
-// `try`/`catch` around its `JvmBridge` call sites (`jvmBridgePanicToStderr`)
+// `try`/`catch` around its `JvmBridge` call sites (`jvmBridgePanicDiagnostic`)
 // — must convert a JVM codegen-refusal `Bug` (here the `error[J007]`
 // erased-receiver guard) into a normal `EmitResult` failure: NO exception
 // escapes `emit`, `outputPath` is `None`, and a diagnostic is carried. This
@@ -846,6 +846,19 @@ test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure
     case Some(p) -> assertTrue(false, "emit must fail (got outputPath " + p + ")")
   }
   assertTrue(result.diagnostics.count > 0, "the contained failure carries a diagnostic for the CLI to render")
+  // #6462: the contained refusal keeps its J-code in the structured result
+  // (the emitter boundary passes `error[J0..]`-prefixed panics through
+  // verbatim into `EmitResult.diagnostics`).
+  var diagText = ""
+  var cdi = 0
+  while cdi < result.diagnostics.count {
+    diagText = diagText + result.diagnostics[cdi].code + ": " + result.diagnostics[cdi].message + "\n"
+    cdi = cdi + 1
+  }
+  assertTrue(
+    Str.contains(diagText, "J007"),
+    "the contained refusal carries its J007 code in EmitResult.diagnostics (got: " + diagText + ")"
+  )
 }
 
 // #6447 (#6446 review): an UNRESOLVED diamond — two same-file interfaces

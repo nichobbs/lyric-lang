@@ -198,34 +198,61 @@ test "qualified reference to a restored literal-foldable pub val inlines correct
 }
 
 // The stopgap: a QUALIFIED reference to a restored dep's NON-literal
-// `pub val` must fail to compile with the new diagnostic, not silently
+// `pub val` must fail to compile with the T0115 diagnostic, not silently
 // compile to a null/0 read.
-test "qualified reference to a restored non-literal pub val fails to compile with T0115, not a silent null read" {
+//
+// #6449/#6459/#6462 (D-progress-762): `Lyric.Emitter`'s
+// `msilBridgePanicDiagnostic` boundary contains the codegen panic (the
+// `Jvm.Bridge` layering convention) as a printed diagnostic, a failed
+// build, AND a structured entry in `EmitResult.diagnostics` — so this
+// asserts the contained-failure contract (no throw, no artifact) plus the
+// exact T0115 code and symbol from the result, the same specificity the
+// old escaping-panic assertions had.
+test "qualified reference to a restored non-literal pub val fails the build cleanly under T0115, not a silent null read" {
   val tmpDir = freshTempDir("qual-nonliteral")
   val producerDll = buildDll(tmpDir, "MsilQVal.NlLib", producerSource("MsilQVal.NlLib"), "MsilQVal.NlLib")
   val consumerSrc = "package MsilQVal.NlApp\n" + "\n" + "import MsilQVal.NlLib\n" + "\n" + "func main(): Unit {\n" +
     "  println(MsilQVal.NlLib.nonLiteralAnswer)\n" +
     "}\n"
-  var panicked = false
-  var caughtMessage = ""
+  var threw = false
+  var produced = false
+  var diagText = ""
   try {
-    buildConsumerResult(tmpDir, "MsilQVal.NlApp", consumerSrc, "MsilQVal.NlApp", "MsilQVal.NlLib", producerDll)
+    val res = buildConsumerResult(tmpDir, "MsilQVal.NlApp", consumerSrc, "MsilQVal.NlApp", "MsilQVal.NlLib", producerDll)
+    match res.outputPath {
+      case Some(_) -> {
+        produced = true
+      }
+      case None -> ()
+    }
+    var di = 0
+    while di < res.diagnostics.count {
+      diagText = diagText + res.diagnostics[di].code + ": " + res.diagnostics[di].message + "\n"
+      di = di + 1
+    }
   } catch Bug as b {
-    panicked = true
-    caughtMessage = b.message
+    threw = true
   }
   cleanup(tmpDir)
+  assertFalse(
+    threw,
+    "qual-nonliteral: the T0115 refusal must be contained inside emitProject, never thrown to the caller"
+  )
+  assertFalse(
+    produced,
+    "qual-nonliteral: compilation must fail (no output artifact) instead of silently compiling a null/0 read (#6133/#5275)"
+  )
+  // #6462: the contained refusal keeps its own code — the emitter boundary
+  // passes `error[T0NNN]`-prefixed panics through verbatim into
+  // `EmitResult.diagnostics`, restoring the exact-message specificity the
+  // old escaping-panic assertions had.
   assertTrue(
-    panicked,
-    "qual-nonliteral: compilation must abort instead of silently compiling a null/0 read (#6133/#5275)"
+    Str.contains(diagText, "T0115"),
+    "qual-nonliteral: EmitResult.diagnostics carries the T0115 code (got: " + diagText + ")"
   )
   assertTrue(
-    Str.contains(caughtMessage, "T0115"),
-    "qual-nonliteral: diagnostic carries the T0115 code (got: " + caughtMessage + ")"
-  )
-  assertTrue(
-    Str.contains(caughtMessage, "MsilQVal.NlLib.nonLiteralAnswer"),
-    "qual-nonliteral: diagnostic names the unresolved qualified reference (got: " + caughtMessage + ")"
+    Str.contains(diagText, "MsilQVal.NlLib.nonLiteralAnswer"),
+    "qual-nonliteral: the diagnostic names the unresolved qualified reference (got: " + diagText + ")"
   )
 }
 

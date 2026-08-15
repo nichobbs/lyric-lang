@@ -280,7 +280,14 @@ pub func compileToMsilWithVersion(
   // same-package types and functions.
   addPackageTokens(cctx, liftedFile, pkgName)
 
-  // Walk the AST and produce the MSIL package IR.
+  // Walk the AST and produce the MSIL package IR.  #6449/#6459: a codegen
+  // panic on an unresolvable construct (extern-member typos, unsupported FFI
+  // shapes, …) deliberately ESCAPES this bridge — that throw is the
+  // bridge's library contract, which `msil_project_bridge_self_test.l`
+  // asserts exact messages on directly (the `Jvm.Bridge` convention).
+  // Containment into a printed T0119/T0120 diagnostic + structured
+  // `EmitResult.diagnostics` entry happens one layer up, in
+  // `Lyric.Emitter`'s `msilBridgePanicDiagnostic` boundary.
   val pkg = codegenMPackage(liftedFile, cctx)
 
   // Append any closure-class records synthesized while lowering this
@@ -947,6 +954,8 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   }
 
   // Phase 4: codegen each package into an MPackage against the same cctx.
+  // #6449/#6459: codegen panics escape (the bridge's library contract) —
+  // see the single-file call site's comment above.
   val mpkgs: List[MPackage] = newList()
   var ci = 0
   while ci < liftedFiles.count {

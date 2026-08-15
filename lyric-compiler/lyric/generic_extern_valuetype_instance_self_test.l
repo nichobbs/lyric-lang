@@ -12,13 +12,20 @@
 //! generic-declaring externs.
 //!
 //! A bad `@externTarget` like this can't be declared at this file's own
-//! top level: the panic fires during codegen of the *whole test module*,
+//! top level: the refusal fires during codegen of the *whole test module*,
 //! which would abort the entire `lyric test` run rather than fail one
 //! assertion. Instead this compiles a tiny fixture package IN-PROCESS via
 //! `Lyric.Emitter.emitProject` (mirroring `emitter_project_self_test.l`'s
-//! `runEmitProject*` helpers) from inside a `test { }` body, wrapped in
-//! `Std.Testing.assertPanicsWith` so the panic is caught and its message
-//! asserted rather than propagating out of the test process.
+//! `runEmitProject*` helpers) from inside a `test { }` body.
+//!
+//! #6449/#6459/#6462 (D-progress-762): `Lyric.Emitter`'s
+//! `msilBridgePanicDiagnostic` boundary (the `Jvm.Bridge` layering
+//! convention — the bridge itself keeps its throw-on-refusal library
+//! contract) contains the codegen panic as a printed `T0119`/`T0120`
+//! diagnostic, a failed build, AND a structured entry in
+//! `EmitResult.diagnostics` — this test asserts the contained-failure
+//! contract (no throw, no output artifact) plus the T0120 code and the
+//! refusal text from the result.
 //!
 //! Pulls in `Lyric.Emitter`, so `LYRIC_LOAD_COMPILER=1` is needed for
 //! `lyric test` to resolve it:
@@ -26,14 +33,14 @@
 //!   LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/generic_extern_valuetype_instance_self_test.l
 //!
 //! `msil_project_bridge_self_test.l` ("instance call on a value-type
-//! generic-declaring extern panics at build time, not silently") already
-//! covers #5809/#5825, but through a deliberately different surface: it
-//! calls `Msil.Bridge.compileProjectToMsil` directly against a CONCRETE
-//! extern type (`ValueTaskOfObj`, the CLR instantiation baked into the
-//! extern's declared string) with an explicit `@externInstance` hint. This
-//! file instead exercises a Lyric-level GENERIC extern type (`VT[T]`)
+//! generic-declaring extern panics at build time, not silently")
+//! already covers #5809/#5825, but through a deliberately different
+//! surface: it calls `Msil.Bridge.compileProjectToMsil` directly against a
+//! CONCRETE extern type (`ValueTaskOfObj`, the CLR instantiation baked into
+//! the extern's declared string) with an explicit `@externInstance` hint.
+//! This file instead exercises a Lyric-level GENERIC extern type (`VT[T]`)
 //! through the higher-level `Lyric.Emitter.emitProject` entry point, with
-//! no `@externInstance` hint, so the panic is also proven to survive
+//! no `@externInstance` hint, so the refusal is also proven to survive
 //! `Lyric.Mono`'s monomorphization (`vtResult[T]` specializing to a
 //! concrete `vtResult__Int` copy) before codegen ever sees it. Keep both —
 //! they are not redundant.
@@ -44,6 +51,7 @@ import Std.Core
 import Std.Collections
 import Std.File as File
 import Std.Path as Path
+import Std.String as Str
 import Std.Testing
 import Std.Uuid
 import Std.Environment as Env
@@ -86,7 +94,7 @@ func valueTypeInstanceExternSource(): String {
     "}\n"
 }
 
-test "instance-method extern on a value-type generic-declaring type panics at build time" {
+test "instance-method extern on a value-type generic-declaring type fails the build cleanly, no thrown Bug" {
   val dir = freshTempDir("vt-instance")
   defer {
     cleanup(dir)
@@ -109,9 +117,44 @@ test "instance-method extern on a value-type generic-declaring type panics at bu
     nugetAssemblyPaths = newList(),
     defines = newList()
   )
-  assertPanicsWith(
-    "value-type generic instance extern",
-    "INSTANCE call on a value-type generic-declaring type",
-    { -> val _ = Emitter.emitProject(req) }
+  var threw = false
+  var produced = false
+  var diagText = ""
+  try {
+    val res = Emitter.emitProject(req)
+    match res.outputPath {
+      case Some(_) -> {
+        produced = true
+      }
+      case None -> ()
+    }
+    var di = 0
+    while di < res.diagnostics.count {
+      diagText = diagText + res.diagnostics[di].code + ": " + res.diagnostics[di].message + "\n"
+      di = di + 1
+    }
+  } catch Bug as b {
+    threw = true
+  }
+  assertFalse(
+    threw,
+    "value-type generic instance extern: the codegen refusal must be contained inside emitProject, never thrown to the caller"
+  )
+  assertFalse(
+    produced,
+    "value-type generic instance extern: emitProject reports build failure (no output artifact), not success"
+  )
+  // #6462: the contained refusal is a structured T0120 diagnostic in
+  // `EmitResult.diagnostics` (the emitter boundary's generic wrapper — this
+  // refusal carries no `T0NNN` code of its own), naming the unsupported
+  // shape verbatim — the exact-message specificity the old escaping-panic
+  // assertion had, restored through the result instead of a stderr seam.
+  assertTrue(
+    Str.contains(diagText, "T0120"),
+    "value-type generic instance extern: EmitResult.diagnostics carries the T0120 wrapper (got: " + diagText + ")"
+  )
+  assertTrue(
+    Str.contains(diagText, "INSTANCE call on a value-type generic-declaring type"),
+    "value-type generic instance extern: the diagnostic names the unsupported shape (got: " + diagText + ")"
   )
 }
