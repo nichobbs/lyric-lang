@@ -1456,15 +1456,31 @@ func checkUnionDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: i
 // `self.<memberName>()` / bare `<memberName>()` calls to another interface
 // member fully legal (the whole point of a default method).
 //
-// Known boundaries of the name-based design (tracked in #6452, both
-// deliberate): a chained access through a `Self`-RETURNING member
-// (`self.withX().base`) hits the same DIM gap but escapes the check (the
-// `.base` receiver is a call, not a bare `self`/param reference — it still
-// fails at runtime exactly as before T0118 existed, no regression); and a
-// nested block that SHADOWS a `Self`-typed parameter name with an unrelated
-// local is spuriously rejected (the walk has no scope awareness — the
-// literal `self` receiver is immune, recognised via the dedicated `ESelf`
-// node, and `self` cannot be rebound).
+// #6452 closed three boundaries of the name-based design (all still purely
+// name/signature-based — no type inference):
+//
+//   1. A chained access through a `Self`-RETURNING member (`self.withX().base`,
+//      `withX(self: in Self): Self` itself an interface member) hits the same
+//      DIM gap but escaped the original walk (the `.base` receiver is a call,
+//      not a bare `self`/param reference).  `isSelfLikeExpr` now also treats
+//      `ECall(EMember(selfLike, m), _)` and bare `ECall(EPath([m]), _)` as
+//      self-like when `m` is an interface member whose DECLARED return type is
+//      `TSelf` (`ctx.selfReturningMembers`, from `interfaceMemberReturnsSelfNames`)
+//      — recursively, so chains of arbitrary depth resolve.
+//   2. A nested block that SHADOWS a `Self`-typed parameter name with an
+//      unrelated local was spuriously rejected — the walk had no scope
+//      awareness.  `DefaultBodyCtx.shadowed` is a shared, MUTABLE `List[String]`
+//      acting as a stack: every scope-introducing construct (block entry,
+//      `val`/`var`/`let`, match-arm pattern, `for`/lambda/catch binding) pushes
+//      its bound names on entry and truncates back to the depth recorded on
+//      entry when the scope exits (Lyric block scoping is block-scoped, not
+//      function-scoped — see `block_shadow_self_test.l`).  `isSelfLikeExpr`
+//      only treats a `Self`-typed param name as self-like while it is NOT in
+//      `ctx.shadowed`.  The literal `self` receiver is immune — it is
+//      recognised via the dedicated `ESelf` AST node regardless of any local
+//      named `self` shadowing it in source (illegal — `self` cannot be rebound).
+//   3. `isSelfLikeExpr` now unwraps `EParen`, so a parenthesized self-typed
+//      reference (`(other).base`) is caught exactly like the bare form.
 func interfaceMemberNames(decl: in InterfaceDecl): List[String] {
   val names: List[String] = newList()
   var i = 0
@@ -1478,6 +1494,100 @@ func interfaceMemberNames(decl: in InterfaceDecl): List[String] {
     i = i + 1
   }
   names
+}
+
+// Names of every interface member (signature or default-bodied) whose
+// DECLARED return type is `TSelf` — used to recognise a chained
+// `self.<m>().<field>` where `<m>` returns `Self` as itself self-like (#6452
+// boundary 1).  Purely signature-based: the interface's own member list is
+// fully local to the declaration, so no type inference is needed.
+func interfaceMemberReturnsSelfNames(decl: in InterfaceDecl): List[String] {
+  val names: List[String] = newList()
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case IMSig(sig) -> if typeExprOptIsSelf(sig.ret) { names.add(sig.name) }
+      case IMFunc(fn) -> if typeExprOptIsSelf(fn.ret) { names.add(fn.name) }
+      case IMAssoc(_) -> {
+      }
+    }
+    i = i + 1
+  }
+  names
+}
+
+func typeExprOptIsSelf(retOpt: in Option[TypeExpr]): Bool {
+  match retOpt {
+    case None -> false
+    case Some(t) -> match t.kind { case TSelf -> true; case _ -> false }
+  }
+}
+
+// Every bound name in `p`, appended to `acc` — used to push a pattern's
+// bindings onto the shadow stack (match-arm patterns, `for`-loop bindings).
+// Mirrors `Lyric.AliasRewriter.collectPatternLocalNames`'s traversal shape.
+func addPatternShadowNames(acc: in List[String], p: in Pattern): Unit {
+  match p.kind {
+    case PBinding(name, inner) -> {
+      acc.add(name)
+      match inner {
+        case Some(p2) -> addPatternShadowNames(acc, p2)
+        case None -> {
+        }
+      }
+    }
+    case PConstructor(_, args) -> {
+      var i = 0
+      while i < args.count {
+        addPatternShadowNames(acc, args[i])
+        i = i + 1
+      }
+    }
+    case PRecord(_, fields, _) -> {
+      var i = 0
+      while i < fields.count {
+        match fields[i] {
+          case RPFNamed(_, pattern, _) -> addPatternShadowNames(acc, pattern)
+          case RPFShort(name, _) -> acc.add(name)
+        }
+        i = i + 1
+      }
+    }
+    case PTuple(patterns) -> {
+      var i = 0
+      while i < patterns.count {
+        addPatternShadowNames(acc, patterns[i])
+        i = i + 1
+      }
+    }
+    case PParen(inner) -> addPatternShadowNames(acc, inner)
+    case PTypeTest(inner, _) -> addPatternShadowNames(acc, inner)
+    case POr(patterns) -> {
+      var i = 0
+      while i < patterns.count {
+        addPatternShadowNames(acc, patterns[i])
+        i = i + 1
+      }
+    }
+    case PWildcard -> {
+    }
+    case PLiteral(_) -> {
+    }
+    case PRange(_, _, _) -> {
+    }
+    case PConstRef(_) -> {
+    }
+    case PError -> {
+    }
+  }
+}
+
+// Truncates `shadowed` back to `depth` entries — pops every name pushed
+// since the caller recorded `depth` on scope entry.
+func truncateShadowed(shadowed: in List[String], depth: in Int): Unit {
+  while shadowed.count > depth {
+    shadowed.removeAt(shadowed.count - 1)
+  }
 }
 
 // Names of every parameter (other than the `self` receiver, which is
@@ -1500,20 +1610,35 @@ func selfTypedParamNames(fn: in FunctionDecl): List[String] {
   names
 }
 
-// Bundles the read-only context threaded through the recursive walk below.
+// Bundles the context threaded through the recursive walk below.  Mostly
+// read-only (`ifaceName`/`memberNames`/`selfNames`/`selfReturningMembers`
+// are fixed per default-method body), but `shadowed` is a shared MUTABLE
+// `List[String]` the walk pushes onto and truncates as it descends into
+// nested scopes (#6452 boundary 2) — the ctx record itself is still passed
+// around immutably (a fresh copy of the record would share the same `List`
+// reference, since `List` is itself a mutable reference type).
 pub record DefaultBodyCtx {
   ifaceName: String
   memberNames: List[String]
   selfNames: List[String]
+  selfReturningMembers: List[String]
+  shadowed: List[String]
 }
 
 // True when `e` denotes a value statically typed `Self` inside a default
-// method body: the `self` keyword itself, or a bare reference to another
-// `Self`-typed parameter.
+// method body: the `self` keyword itself; a bare reference to another
+// `Self`-typed parameter NOT currently shadowed by a nested local
+// (`ctx.shadowed`, #6452 boundary 2); a parenthesized self-like expression
+// (`(other)`, #6452 boundary 3); or a call to an interface member whose
+// declared return type is `Self`, on a self-like receiver or bare
+// (`self.withX()` / bare `withX()`, #6452 boundary 1) — recursive, so
+// chains of arbitrary depth (`self.withX().withX()`) resolve.
 func isSelfLikeExpr(e: in Expr, ctx: in DefaultBodyCtx): Bool {
   match e.kind {
     case ESelf -> true
-    case EPath(path) -> path.segments.count == 1 and listContains(ctx.selfNames, path.segments[0])
+    case EParen(inner) -> isSelfLikeExpr(inner, ctx)
+    case EPath(path) -> path.segments.count == 1 and listContains(ctx.selfNames, path.segments[0]) and not listContains(ctx.shadowed, path.segments[0])
+    case ECall(f, _) -> match f.kind { case EMember(recv, m) -> isSelfLikeExpr(recv, ctx) and listContains(ctx.selfReturningMembers, m); case EPath(path) -> path.segments.count == 1 and listContains(ctx.selfReturningMembers, path.segments[0]); case _ -> false }
     case _ -> false
   }
 }
@@ -1613,12 +1738,17 @@ func checkExprSelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyCtx, e: 
       var i = 0
       while i < arms.count {
         val arm = arms[i]
+        // Each arm's pattern bindings shadow for the guard and body only —
+        // sibling arms don't see each other's bindings (#6452 boundary 2).
+        val armDepth = ctx.shadowed.count
+        addPatternShadowNames(ctx.shadowed, arm.pattern)
         match arm.guard {
           case None -> {
           }
           case Some(g) -> checkExprSelfMembers(diag, ctx, g)
         }
         checkExprOrBlockSelfMembers(diag, ctx, arm.body)
+        truncateShadowed(ctx.shadowed, armDepth)
         i = i + 1
       }
     }
@@ -1643,8 +1773,18 @@ func checkExprSelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyCtx, e: 
     // A nested lambda still captures the enclosing default method's `self`,
     // so a `self.<name>` inside it is the exact same problem — unlike the
     // yield-tracking `exprContainsYield` (whose "yield" scoping rules
-    // differ per lambda), descend into the lambda body here.
-    case ELambda(_, body) -> checkBlockSelfMembers(diag, ctx, body)
+    // differ per lambda), descend into the lambda body here.  Lambda
+    // parameters shadow like any other binding (#6452 boundary 2).
+    case ELambda(lambdaParams, body) -> {
+      val lambdaDepth = ctx.shadowed.count
+      var i = 0
+      while i < lambdaParams.count {
+        ctx.shadowed.add(lambdaParams[i].name)
+        i = i + 1
+      }
+      checkBlockSelfMembers(diag, ctx, body)
+      truncateShadowed(ctx.shadowed, lambdaDepth)
+    }
   }
 }
 
@@ -1663,12 +1803,21 @@ func checkExprOrBlockSelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyC
   }
 }
 
+// Lyric block scoping is BLOCK-scoped, not function-scoped (see
+// `block_shadow_self_test.l`): every `val`/`var`/`let` a nested block binds
+// stops shadowing once that block exits, even though (2) already lets a
+// nested block push MORE names during its own statements — this function's
+// own recorded depth only ever needs to truncate back to what it was on
+// entry, since every callee already restores its own additions before
+// returning (#6452 boundary 2).
 func checkBlockSelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyCtx, blk: in Block): Unit {
+  val blockDepth = ctx.shadowed.count
   var i = 0
   while i < blk.statements.count {
     checkStmtSelfMembers(diag, ctx, blk.statements[i])
     i = i + 1
   }
+  truncateShadowed(ctx.shadowed, blockDepth)
 }
 
 func checkStmtSelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyCtx, stmt: in Statement): Unit {
@@ -1689,12 +1838,24 @@ func checkStmtSelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyCtx, stm
       checkExprSelfMembers(diag, ctx, t)
       checkExprSelfMembers(diag, ctx, v)
     }
-    case SLocal(binding) -> match binding { case LBVal(_, _, e) -> checkExprSelfMembers(diag, ctx, e); case LBLet(_, _, e) -> checkExprSelfMembers(diag, ctx, e); case LBVar(_, _, Some(e)) -> checkExprSelfMembers(diag, ctx, e); case LBVar(_, _, None) -> {  } }
+    // The initializer is checked BEFORE the new name shadows (it can still
+    // legitimately reference the outer name), then the bound name(s) are
+    // pushed for the rest of the enclosing block (#6452 boundary 2) — popped
+    // by the enclosing `checkBlockSelfMembers`'s own truncation on exit.
+    case SLocal(binding) -> match binding { case LBVal(pat, _, e) -> { checkExprSelfMembers(diag, ctx, e); addPatternShadowNames(ctx.shadowed, pat) }; case LBLet(name, _, e) -> { checkExprSelfMembers(diag, ctx, e); ctx.shadowed.add(name) }; case LBVar(name, _, Some(e)) -> { checkExprSelfMembers(diag, ctx, e); ctx.shadowed.add(name) }; case LBVar(name, _, None) -> ctx.shadowed.add(name) }
     case STry(body, catches, finally_) -> {
       checkBlockSelfMembers(diag, ctx, body)
       var i = 0
       while i < catches.count {
+        // A catch binding shadows for its own handler block only.
+        val catchDepth = ctx.shadowed.count
+        match catches[i].bindName {
+          case Some(n) -> ctx.shadowed.add(n)
+          case None -> {
+          }
+        }
         checkBlockSelfMembers(diag, ctx, catches[i].body)
+        truncateShadowed(ctx.shadowed, catchDepth)
         i = i + 1
       }
       match finally_ {
@@ -1706,9 +1867,14 @@ func checkStmtSelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyCtx, stm
     case SDefer(b) -> checkBlockSelfMembers(diag, ctx, b)
     case SScope(_, b) -> checkBlockSelfMembers(diag, ctx, b)
     case SLoop(_, b) -> checkBlockSelfMembers(diag, ctx, b)
-    case SFor(_, _, iter, body) -> {
+    case SFor(_, pat, iter, body) -> {
+      // The iterable is evaluated in the OUTER scope, before the loop
+      // binding exists; the pattern's names shadow for the loop body only.
       checkExprSelfMembers(diag, ctx, iter)
+      val forDepth = ctx.shadowed.count
+      addPatternShadowNames(ctx.shadowed, pat)
       checkBlockSelfMembers(diag, ctx, body)
+      truncateShadowed(ctx.shadowed, forDepth)
     }
     case SWhile(_, cond, body) -> {
       checkExprSelfMembers(diag, ctx, cond)
@@ -1723,13 +1889,21 @@ func checkStmtSelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyCtx, stm
 
 func checkInterfaceDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in InterfaceDecl): Unit {
   val memberNames = interfaceMemberNames(decl)
+  val selfReturningMembers = interfaceMemberReturnsSelfNames(decl)
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
       case IMSig(sig) -> checkMemberSigTypes(tbl, diag, decl.generics, sig.generics, sig.params, sig.ret)
       case IMFunc(fn) -> {
         checkMemberSigTypes(tbl, diag, decl.generics, fn.generics, fn.params, fn.ret)
-        val ctx = DefaultBodyCtx(ifaceName = decl.name, memberNames = memberNames, selfNames = selfTypedParamNames(fn))
+        val shadowed: List[String] = newList()
+        val ctx = DefaultBodyCtx(
+          ifaceName = decl.name,
+          memberNames = memberNames,
+          selfNames = selfTypedParamNames(fn),
+          selfReturningMembers = selfReturningMembers,
+          shadowed = shadowed
+        )
         checkDefaultBodySelfMembers(diag, ctx, fn)
       }
       case IMAssoc(_) -> {

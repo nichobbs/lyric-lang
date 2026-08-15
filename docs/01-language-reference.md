@@ -472,7 +472,7 @@ Interfaces support default methods. Interfaces may be stable or `@stubbable` (ge
 
 Multiple inheritance of interfaces is permitted; diamond conflicts are resolved by requiring explicit override.
 
-A default method's `Self` is the interface itself, which owns no fields, so a default method body may only reference other interface members (`self.<member>()` or bare `<member>()`) — field access (`self.<field>` or `<otherSelfTypedParam>.<field>`) is rejected at compile time (**T0118**) on both targets; a body that needs a field must be overridden in the implementing `impl` block, where `Self` narrows to the concrete target type.
+A default method's `Self` is the interface itself, which owns no fields, so a default method body may only reference other interface members (`self.<member>()` or bare `<member>()`) — field access (`self.<field>` or `<otherSelfTypedParam>.<field>`) is rejected at compile time (**T0118**) on both targets; a body that needs a field must be overridden in the implementing `impl` block, where `Self` narrows to the concrete target type. The same rejection reaches through a chain of calls to other `Self`-returning interface members (`self.withX().field`, of arbitrary chain depth) and through a parenthesized receiver (`(other).field`), and correctly ignores a local binding that shadows a `Self`-typed parameter name inside a nested block — the shadow is block-scoped, so field access through the same name is rejected again once the shadowing block exits.
 
 ## 3. Visibility
 

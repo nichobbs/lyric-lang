@@ -1232,6 +1232,167 @@ test "default method body calling another interface member bare is accepted (#64
   assertTrue(not hasDiagCode(cr, "T0118"), "bare score() calling another interface member: no T0118")
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// #6452 — three boundaries of the T0118 name-based check (all fixed together;
+// see typechecker_checker.l's T0118 header comment for the design).
+// ─────────────────────────────────────────────────────────────────────────────
+// Boundary 2 (false positive): a nested block that shadows a `Self`-typed
+// parameter name with an unrelated local must NOT trip T0118 — `other`
+// inside the `if` is a plain Int, not the outer Self-typed parameter.
+test "shadowed Self-typed param name inside a nested block is accepted (#6452)" {
+  val src = "package P\n" + "interface Merger {\n" + "  func combined(self: in Self, other: in Self): Int {\n" +
+    "    if true {\n" +
+    "      val other = 5\n" +
+    "      other.toString().length\n" +
+    "    } else {\n" +
+    "      0\n" +
+    "    }\n" +
+    "  }\n" +
+    "}\n" +
+    "record Weighted { base: Int }\n" +
+    "impl Merger for Weighted {}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0118"), "shadowed other.toString(): no T0118")
+}
+
+// The shadow must be BLOCK-scoped: after the shadowing block exits, the name
+// resolves back to the outer Self-typed parameter, so field access is
+// rejected again.
+test "access after the shadowing block exits is still rejected (#6452)" {
+  val src = "package P\n" + "interface Merger2 {\n" + "  func combined(self: in Self, other: in Self): Int {\n" +
+    "    if true {\n" +
+    "      val other = 5\n" +
+    "    }\n" +
+    "    other.base\n" +
+    "  }\n" +
+    "}\n" +
+    "record Weighted2 { base: Int }\n" +
+    "impl Merger2 for Weighted2 {}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0118"), "other.base after the shadowing block exits: T0118")
+}
+
+// A match-arm pattern binding shadows for the arm body only; `.toString()`
+// on the arm-bound `other` (a plain Int payload) must not trip T0118.
+test "match-arm pattern binding shadowing a Self-typed param name is accepted (#6452)" {
+  val src = "package P\n" + "interface Merger3 {\n" + "  func combined(self: in Self, other: in Self): Int {\n" +
+    "    val o: Option[Int] = Some(value = 5)\n" +
+    "    match o {\n" +
+    "      case Some(other) -> other.toString().length\n" +
+    "      case None -> 0\n" +
+    "    }\n" +
+    "  }\n" +
+    "}\n" +
+    "record Weighted3 { base: Int }\n" +
+    "impl Merger3 for Weighted3 {}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0118"), "match-arm-bound other.toString(): no T0118")
+}
+
+// A lambda parameter shadows for the lambda body only.
+test "lambda parameter shadowing a Self-typed param name is accepted (#6452)" {
+  val src = "package P\n" + "interface Merger4 {\n" + "  func combined(self: in Self, other: in Self): Int {\n" +
+    "    val f: (Int) -> Int = { other: Int -> other.toString().length }\n" +
+    "    f(3)\n" +
+    "  }\n" +
+    "}\n" +
+    "record Weighted4 { base: Int }\n" +
+    "impl Merger4 for Weighted4 {}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0118"), "lambda-param other.toString(): no T0118")
+}
+
+// A `for`-loop binding shadows for the loop body only.
+test "for-loop binding shadowing a Self-typed param name is accepted (#6452)" {
+  val src = "package P\n" + "interface Merger5 {\n" + "  func combined(self: in Self, other: in Self): Int {\n" +
+    "    var total = 0\n" +
+    "    for other in 0 ..< 3 {\n" +
+    "      total = total + other.toString().length\n" +
+    "    }\n" +
+    "    total\n" +
+    "  }\n" +
+    "}\n" +
+    "record Weighted5 { base: Int }\n" +
+    "impl Merger5 for Weighted5 {}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0118"), "for-bound other.toString(): no T0118")
+}
+
+// Boundary 1 (false negative), depth 1: a chained access through a
+// `Self`-returning interface member (`self.withX().base`) is rejected —
+// `withX` is itself declared `(self: in Self): Self`.
+test "chained access through a Self-returning member is rejected, depth 1 (#6452)" {
+  val src = "package P\n" + "interface Builder {\n" + "  func withX(self: in Self): Self\n" +
+    "  func peekBase(self: in Self): Int {\n" +
+    "    self.withX().base\n" +
+    "  }\n" +
+    "}\n" +
+    "record Thing { base: Int }\n" +
+    "impl Builder for Thing { func withX(self: in Self): Self { self } }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0118"), "self.withX().base: T0118")
+}
+
+// Depth 2: the chain rule recurses through arbitrarily many Self-returning
+// calls before the final non-member access.
+test "chained access through a Self-returning member is rejected, depth 2 (#6452)" {
+  val src = "package P\n" + "interface Builder2 {\n" + "  func withX(self: in Self): Self\n" +
+    "  func peekBase(self: in Self): Int {\n" +
+    "    self.withX().withX().base\n" +
+    "  }\n" +
+    "}\n" +
+    "record Thing2 { base: Int }\n" +
+    "impl Builder2 for Thing2 { func withX(self: in Self): Self { self } }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0118"), "self.withX().withX().base: T0118")
+}
+
+// A chained call through a member that does NOT return `Self` (e.g. `Int`)
+// must not be treated as self-like — no false positive from the chain rule.
+test "chained call to a non-Self-returning member is accepted (#6452)" {
+  val src = "package P\n" + "interface Counter {\n" + "  func count(self: in Self): Int\n" +
+    "  func doubled(self: in Self): Int {\n" +
+    "    self.count().toString().length\n" +
+    "  }\n" +
+    "}\n" +
+    "record Thing3 { base: Int }\n" +
+    "impl Counter for Thing3 { func count(self: in Self): Int { self.base } }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0118"), "self.count().toString().length: no T0118 from the chain rule")
+}
+
+// Boundary 3 (false negative): a parenthesized Self-typed receiver
+// (`(other).base`) must be rejected exactly like the bare form.
+test "parenthesized Self-typed receiver is rejected (#6452)" {
+  val src = "package P\n" + "interface Merger6 {\n" + "  func combined(self: in Self, other: in Self): Int {\n" +
+    "    (other).base\n" +
+    "  }\n" +
+    "}\n" +
+    "record Weighted6 { base: Int }\n" +
+    "impl Merger6 for Weighted6 {}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0118"), "(other).base: T0118")
+}
+
+// Sequencing check (#6452's comment): the paren unwrap must not widen the
+// shadowing false positive back open — a parenthesized SHADOWED name stays
+// accepted.
+test "parenthesized shadowed Self-typed param name is accepted (#6452)" {
+  val src = "package P\n" + "interface Merger7 {\n" + "  func combined(self: in Self, other: in Self): Int {\n" +
+    "    if true {\n" +
+    "      val other = 5\n" +
+    "      (other).toString().length\n" +
+    "    } else {\n" +
+    "      0\n" +
+    "    }\n" +
+    "  }\n" +
+    "}\n" +
+    "record Weighted7 { base: Int }\n" +
+    "impl Merger7 for Weighted7 {}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0118"), "(other).toString() shadowed: no T0118")
+}
+
 // #1487 (§5.2): `in` parameters (and `val`/`let`) are immutable and cannot be
 // reassigned (T0087); `var` locals and `out`/`inout` params are mutable.
 test "in param no rebind" {

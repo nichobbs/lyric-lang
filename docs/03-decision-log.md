@@ -28020,3 +28020,134 @@ repros correct on both targets; ilverify clean.
 this ports), #5606 (AwaitHoist), #5936 (the JVM spills that kept JVM
 safe), #6454 (the shared-engine unification that would fold these
 twin implementations).
+
+## D-progress-764 — T0118 closes three name-based-check boundaries: chained-`Self` false negative, parenthesized-receiver false negative, block-scoped shadowing false positive (#6452)
+
+**Problem.** D-progress-761 shipped T0118 as a deliberately NAME-based
+structural walk over default-method bodies (`typechecker_checker.l`'s
+`isSelfLikeExpr` / `checkExprSelfMembers` family): it flags
+`<selfLike>.<name>` where `<selfLike>` is `self` or another `Self`-typed
+parameter and `<name>` is not an interface member. PR #6450's review
+(and its own header comment) named three exact boundaries of that
+tradeoff, tracked in #6452:
+
+1. **False negative — chained access through a `Self`-returning
+   member.** `self.withX().base`, where `withX(self: in Self): Self`
+   is itself an interface member, hits the identical DIM-lowering gap
+   T0118 exists to reject — the intermediate value is statically
+   `Self` — but escaped, because the receiver of `.base` is a call
+   expression, not a bare `self`/param reference.
+2. **False positive — nested-block shadowing of a `Self`-typed
+   parameter name.** `other: in Self` shadowed by `val other = 5`
+   inside an `if`, then `other.toString()`, was spuriously rejected —
+   the walk matched on the identifier alone with no scope awareness.
+3. **False negative — parenthesized receiver.** `(other).base` escaped
+   because `isSelfLikeExpr` didn't unwrap `EParen`, even though the
+   bare `other.base` was already caught.
+
+**Pre-fix runtime evidence (repros run against the pre-fix `./bin/lyric`
+before any code changed).** Boundary 2: `other.toString()` after the
+shadowing block built successfully pre-fix and was wrongly rejected
+with T0118 — confirming the false positive as specced. Boundary 1/3
+(the two false negatives): both built successfully on `--target
+dotnet` with no diagnostic (the compile-time gap). Runtime behavior
+differed from the issue's a-priori guess in one respect worth
+recording: a single-record, single-field-name variant of the chained
+case (`self.withX().base` where only one record type in the program
+declares a field named `base`) happened to print the CORRECT value at
+runtime on MSIL — `Msil.Codegen`'s `fieldTokensByName` reverse lookup
+(populated by `addPackageTokens`, used when `EMember`'s static receiver
+type is erased/unknown) resolves the field TOKEN by NAME alone, so an
+unambiguous name still finds the right token. Constructing a
+genuinely AMBIGUOUS case — two records with a same-named field of
+DIFFERENT types (`Wrapper.base: String` vs `Thing.base: Int`), then
+routing the chained call through an INTERFACE-typed parameter (forcing
+dispatch through the interface's own DIM class, not an impl-inherited
+copy) — reproduced the real hazard: the build succeeded silently and
+the program crashed at runtime with `System.NullReferenceException`
+inside `Console.WriteLine`, reading a `String` field token off an
+actual `Thing` (Int-field) object. On `--target jvm`, BOTH the simple
+and the ambiguous chained variants were already caught — not by
+T0118, but by the pre-existing, unrelated J007 diagnostic ("member
+'base' cannot be resolved on an erased (statically Object) receiver"),
+not the J009 panic the issue's write-up guessed at; JVM was
+accidentally safe here already, MSIL was not. Boundary 3 (paren)
+built successfully on both targets with no diagnostic pre-fix, exactly
+as specced, and the un-parenthesized `other.base` sibling was already
+correctly rejected on both, confirming the escape was the parens
+specifically.
+
+**Fix.**
+
+- *Boundary 2 (shadowing) — a shared, mutable shadow stack.*
+  `DefaultBodyCtx` gained a `shadowed: List[String]` field alongside
+  its existing read-only fields. The ctx record is still threaded
+  immutably through the recursive walk (a copy of the record shares
+  the same `List` reference, since `List` is itself mutable), so every
+  scope-introducing construct pushes onto — and truncates back off —
+  the SAME shared list: block entry (`checkBlockSelfMembers` records
+  `ctx.shadowed.count` on entry, truncates to it on exit), `val`/
+  `var`/`let` (`SLocal`, pushed via a new `addPatternShadowNames`
+  pattern-name collector for `LBVal`'s pattern, plain `.add(name)` for
+  `LBLet`/`LBVar`), match-arm patterns (pushed for the arm's guard +
+  body, popped after), `for`-loop bindings (iterable checked in the
+  OUTER scope before the binding exists, then pushed for the body),
+  lambda parameters (pushed for the body), and — beyond the issue's
+  named list, since it's the same code path and free to cover
+  correctly — `catch` bindings (pushed for their handler block only).
+  `isSelfLikeExpr`'s `EPath` case now requires the name be absent from
+  `ctx.shadowed` in addition to present in `ctx.selfNames`. The
+  initializer of a `val`/`var`/`let` is checked BEFORE its own name
+  shadows (it can legitimately reference the outer binding). This
+  matches Lyric's general block-scoped shadowing semantics
+  (`block_shadow_self_test.l`), not function-scoping.
+- *Boundary 1 (chained `Self`-returning member) — propagate
+  "statically `Self`" through call results.* A new
+  `interfaceMemberReturnsSelfNames(decl)` collects every interface
+  member (`IMSig` or `IMFunc`) whose DECLARED return type is `TSelf`
+  — still purely signature-based, since the interface's own member
+  list is fully local to the declaration. `isSelfLikeExpr` gained an
+  `ECall` case: `ECall(EMember(selfLike, m), _)` (`self.withX()`) and
+  bare `ECall(EPath([m]), _)` (`withX()`) both count as self-like when
+  `m` is in that set. The recursive definition (the call's receiver is
+  itself checked via `isSelfLikeExpr`) handles chains of arbitrary
+  depth (`self.withX().withX().base`) for free, and a chained call to
+  a member that does NOT return `Self` (`self.count().toString()`
+  where `count(): Int`) correctly stays unflagged, since `"count"` is
+  absent from `selfReturningMembers`.
+- *Boundary 3 (parenthesized receiver) — one-line unwrap.*
+  `isSelfLikeExpr` gained an `EParen(inner) -> isSelfLikeExpr(inner,
+  ctx)` case. Landed in the SAME change as the shadow fix per the
+  issue's sequencing note: unwrapping parens alone, without scope
+  awareness, would have widened the shadowing false positive to a new
+  spelling (`(other).base` after a shadow) — fixing both together
+  means neither boundary is ever open on its own.
+
+**Verification (`./bin/lyric` rebuilt via `rm -f
+.bootstrap/stage1.stamp && make lyric`, foreground).** All three
+boundaries confirmed fixed by re-running the pre-fix repros against
+the post-fix binary on BOTH targets: boundary 1 (`other.toString()`
+after a shadow) now builds cleanly; boundary 2 (`self.withX().base`,
+including the ambiguous two-record ill-typed-field ldfld-token case)
+and boundary 3 (`(other).base`) both now fail with the same T0118
+diagnostic pre-existing `other.base` gets, on `--target dotnet` AND
+`--target jvm`. The original #6445 member-only default repro
+(`self.score() * 2`) and the D-progress-761 diamond/field-access
+repros stay green. `typechecker_self_test.l` 306 -> 316 (ten new
+cases: shadowed-param accepted, shadow restored after block exit,
+match-arm/lambda-param/for-binding shadows, chained-Self rejection at
+depth 1 and depth 2, a non-`Self`-returning chained call staying
+accepted, parenthesized-receiver rejection, parenthesized-shadowed-name
+acceptance). Full battery re-verified on the final rebuild:
+`bare_func_ref_self_test.l` 36/36 both targets; `emitter_project_self_test.l`
+30/30; `impl_method_self_test.l` 22/22; `stdlib_generic_iface_self_test.l`
+20/20 both; `synthesized_method_self_test.l` 10/10 both;
+`aspect_weave_self_test.l` 7/7 both. docs/01 §2 and the book's T0118
+appendix row gain a parenthetical covering the chain/paren/shadow
+boundary closures — the user-visible CONTRACT is unchanged (field
+access through a `Self`-typed value is still rejected); only the
+DETECTION coverage of that same rule tightened.
+
+**Related:** #6452, PR #6450, D-progress-761 (the original T0118
+check this closes boundaries of), #6445 (the underlying DIM-lowering
+gap both checks guard against).
