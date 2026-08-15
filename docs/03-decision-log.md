@@ -27815,12 +27815,17 @@ property-setter panics) are now cleanly contained by T0120 but keep
 their un-coded messages; giving them dedicated spanned codes is
 follow-up work, not blocking.
 
-**Test-contract update.** `msil_project_bridge_self_test.l`'s
-"instance call on a value-type generic-declaring extern" test asserted
-the OLD uncaught-panic behaviour; the containment legitimately changes
-that contract (same class of user-reachable failure). It now asserts
-contained failure (`assertFalse(threw)` + `assertFalse(ok)`), mirroring
-the JVM analog in `emitter_project_self_test.l` (#6422).
+**Test-contract update.** Two suites asserted the OLD uncaught-panic
+behaviour, which the containment legitimately changes (same class of
+user-reachable failure): `msil_project_bridge_self_test.l`'s
+"instance call on a value-type generic-declaring extern" test, and
+`generic_extern_valuetype_instance_self_test.l` (its Lyric-level-generic
+twin through `Lyric.Emitter.emitProject`, caught by CI — the
+`assertPanicsWith` there could no longer observe the contained refusal).
+Both now assert contained failure (no throw, failed build / no output
+artifact), mirroring the JVM analog in `emitter_project_self_test.l`
+(#6422); asserting on the refusal TEXT from these tests needs the
+stderr-capture seam tracked in #6455.
 
 **Verification (all green, both targets where applicable).** #6448
 repros print correct values on dotnet and JVM (method-arg, second-free-
