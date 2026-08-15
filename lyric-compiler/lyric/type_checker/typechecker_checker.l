@@ -1455,6 +1455,16 @@ func checkUnionDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: i
 // `<name>` doesn't match an interface member, leaving
 // `self.<memberName>()` / bare `<memberName>()` calls to another interface
 // member fully legal (the whole point of a default method).
+//
+// Known boundaries of the name-based design (tracked in #6452, both
+// deliberate): a chained access through a `Self`-RETURNING member
+// (`self.withX().base`) hits the same DIM gap but escapes the check (the
+// `.base` receiver is a call, not a bare `self`/param reference — it still
+// fails at runtime exactly as before T0118 existed, no regression); and a
+// nested block that SHADOWS a `Self`-typed parameter name with an unrelated
+// local is spuriously rejected (the walk has no scope awareness — the
+// literal `self` receiver is immune, recognised via the dedicated `ESelf`
+// node, and `self` cannot be rebound).
 func interfaceMemberNames(decl: in InterfaceDecl): List[String] {
   val names: List[String] = newList()
   var i = 0
