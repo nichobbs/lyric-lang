@@ -158,6 +158,7 @@ pub func checkStatement(
   sigs: in Map[String, ResolvedSignature],
   genericNames: in List[String],
   returnTy: in Type,
+  returnTyExpr: in Option[TypeExpr],
   diag: in List[Diagnostic],
   stmt: in Statement,
 ): Unit {
@@ -198,7 +199,7 @@ pub func checkStatement(
       }
     }
 
-    case SReturn(valueOpt) -> match valueOpt { case None -> { if not typeEquiv(returnTy, TyPrim(pt = PtUnit)) { diag.add(errorDiagnostic("T0064", "return without value but enclosing function returns " + renderType(returnTy), stmt.span)) } }; case Some(e) -> { val t = inferExpr(sc, tbl, sigs, diag, e); val isNever = match t { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isNever and not typeAssignable(tbl, returnTy, t) { diag.add(errorDiagnostic("T0065", "returned value of type " + renderType(t) + " does not match declared return type " + renderType(returnTy), stmt.span)) } } }
+    case SReturn(valueOpt) -> match valueOpt { case None -> { if not typeEquiv(returnTy, TyPrim(pt = PtUnit)) { diag.add(errorDiagnostic("T0064", "return without value but enclosing function returns " + renderOptTypeExpr(returnTyExpr, returnTy), stmt.span)) } }; case Some(e) -> { val t = inferExpr(sc, tbl, sigs, diag, e); val isNever = match t { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isNever and not typeAssignable(tbl, returnTy, t) { diag.add(errorDiagnostic("T0065", "returned value of type " + renderType(t) + " does not match declared return type " + renderOptTypeExpr(returnTyExpr, returnTy), stmt.span)) } } }
 
     case SThrow(e) -> {
       val _ = inferExpr(sc, tbl, sigs, diag, e)
@@ -238,15 +239,15 @@ pub func checkStatement(
     }
 
     case SDefer(body) -> {
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, false)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false)
     }
 
     case SScope(_, body) -> {
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, false)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false)
     }
 
     case SLoop(_, body) -> {
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, false)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false)
     }
 
     case SFor(_, pat, iter, body) -> {
@@ -302,7 +303,7 @@ pub func checkStatement(
       // but not `isNumericType`, so binding it raw would trip false T0030s on
       // arithmetic the where-bounds make valid.
       bindPattern(sc, pat, eraseTyVars(elemType))
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, false)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false)
       scopePop(sc)
     }
 
@@ -311,11 +312,11 @@ pub func checkStatement(
       if not typeEquiv(condT, TyPrim(pt = PtBool)) {
         diag.add(errorDiagnostic("T0066", "while-condition must be Bool (got " + renderType(condT) + ")", stmt.span))
       }
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, false)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false)
     }
 
     case STry(body, catches, finally_) -> {
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, false)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false)
       var i = 0
       while i < catches.count {
         val c = catches[i]
@@ -327,7 +328,7 @@ pub func checkStatement(
             scopeAdd(sc, LocalBinding(name = bname, ty = TyException, isMutable = false))
           }
         }
-        val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, c.body, false)
+        val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, c.body, false)
         scopePop(sc)
         i = i + 1
       }
@@ -335,7 +336,7 @@ pub func checkStatement(
         case None -> {
         }
         case Some(fb) -> {
-          val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, fb, false)
+          val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, fb, false)
         }
       }
     }
@@ -438,6 +439,7 @@ pub func checkBlock(
   sigs: in Map[String, ResolvedSignature],
   genericNames: in List[String],
   returnTy: in Type,
+  returnTyExpr: in Option[TypeExpr],
   diag: in List[Diagnostic],
   blk: in Block,
   valuePos: in Bool,
@@ -457,10 +459,10 @@ pub func checkBlock(
         val isLast = i == blk.statements.count - 1
         match e.kind {
           case EBlock(innerBlk) -> {
-            lastExprType = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, innerBlk, valuePos and isLast)
+            lastExprType = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, innerBlk, valuePos and isLast)
           }
           case EUnsafe(innerBlk) -> {
-            lastExprType = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, innerBlk, valuePos and isLast)
+            lastExprType = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, innerBlk, valuePos and isLast)
           }
           case _ -> {
             lastExprType = inferExpr(sc, tbl, sigs, diag, e)
@@ -473,7 +475,7 @@ pub func checkBlock(
         // position *and* this is the trailing statement; otherwise the value is
         // discarded (#3262).
         val tryValuePos = valuePos and i == blk.statements.count - 1
-        var resultTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body, tryValuePos)
+        var resultTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, tryValuePos)
         var ci = 0
         while ci < catches.count {
           val c = catches[ci]
@@ -485,7 +487,7 @@ pub func checkBlock(
               scopeAdd(sc, LocalBinding(name = bname, ty = TyException, isMutable = false))
             }
           }
-          val hTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, c.body, tryValuePos)
+          val hTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, c.body, tryValuePos)
           scopePop(sc)
           if typeEquiv(resultTy, TyPrim(pt = PtNever)) {
             resultTy = hTy
@@ -504,13 +506,13 @@ pub func checkBlock(
           }
           case Some(fb) -> {
             // The `finally` block's value is always discarded.
-            val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, fb, false)
+            val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, fb, false)
           }
         }
         lastExprType = resultTy
       }
       case _ -> {
-        checkStatement(sc, tbl, sigs, genericNames, returnTy, diag, stmt)
+        checkStatement(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, stmt)
         lastExprType = TyPrim(pt = PtUnit)
       }
     }
@@ -786,7 +788,10 @@ pub func checkFunctionBody(
     return
   }
 
-  val sc = newScopeForFunction(sig.returnTy, sig.generics)
+  // #6467: `fn.ret` also seeds the scope's `returnTyExpr`, so T0064/T0065
+  // (raised deep inside a nested block via `checkStatement`) render the same
+  // alias-aware display as T0070/T0114 below.
+  val sc = newScopeForFunction(sig.returnTy, sig.generics, fn.ret)
   // #6418: `fn.ret` is the ORIGINAL (pre-erasure) return-type annotation —
   // `Lyric.TypeAliasResolve` runs before this checker, so `fn.ret`'s
   // `TypeExpr` (when present) already carries `aliasName` if the user wrote
@@ -835,7 +840,7 @@ pub func checkFunctionBody(
   match fn.body {
     case None -> {
     }
-    case Some(body) -> match body { case FBExpr(e) -> { val bodyType = inferExpr(sc, tbl, sigs, diag, e); val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) { diag.add(errorDiagnostic("T0070", "function body has type " + renderType(bodyType) + " but declared return type is " + declaredReturnTyStr, fn.span)) } }; case FBBlock(blk) -> { val bodyValuePos = not isUnitType(sig.returnTy); val bodyType = checkBlock(sc, tbl, sigs, sig.generics, sig.returnTy, diag, blk, bodyValuePos); val isUnit = match bodyType { case TyPrim(pt) -> match pt { case PtUnit -> true; case _ -> false }; case _ -> false }; val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isUnit and not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) { diag.add(errorDiagnostic("T0070", "function body trailing expression has type " + renderType(bodyType) + " but declared return type is " + declaredReturnTyStr, fn.span)) } } }
+    case Some(body) -> match body { case FBExpr(e) -> { val bodyType = inferExpr(sc, tbl, sigs, diag, e); val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) { diag.add(errorDiagnostic("T0070", "function body has type " + renderType(bodyType) + " but declared return type is " + declaredReturnTyStr, fn.span)) } }; case FBBlock(blk) -> { val bodyValuePos = not isUnitType(sig.returnTy); val bodyType = checkBlock(sc, tbl, sigs, sig.generics, sig.returnTy, fn.ret, diag, blk, bodyValuePos); val isUnit = match bodyType { case TyPrim(pt) -> match pt { case PtUnit -> true; case _ -> false }; case _ -> false }; val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isUnit and not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) { diag.add(errorDiagnostic("T0070", "function body trailing expression has type " + renderType(bodyType) + " but declared return type is " + declaredReturnTyStr, fn.span)) } } }
   }
   checkOutDefiniteAssignment(diag, fn, sig)
 }

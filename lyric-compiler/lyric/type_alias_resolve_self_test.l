@@ -292,3 +292,64 @@ test "aspect argsRow field types resolve aliases (#6469)" {
     case _ -> assertTrue(false, "resolved item must still be an IAspect")
   }
 }
+
+// #6469 follow-up (queued from PR #6468's review): the hand-built
+// `AspectDecl` fixtures above all pass an empty `config` list. Assert
+// `resolveAspectDecl` also resolves an aliased type on an actual
+// `ConfigField`, mirroring the argsRow test's fixture style.
+test "aspect config field type resolves aliases" {
+  val at: Map[String, TypeExpr] = newMap()
+  at.add("Meters", tref("Long"))
+  val noDocComments: List[DocComment] = newList()
+  val noFieldAnns: List[Annotation] = newList()
+  val cfgFields: List[ConfigField] = newList()
+  cfgFields.add(
+    ConfigField(
+      docComments = noDocComments,
+      annotations = noFieldAnns,
+      name = "threshold",
+      ty = tref("Meters"),
+      default = None,
+      span = syntheticSpan()
+    )
+  )
+  val emptyStmts: List[Statement] = newList()
+  val body = Block(statements = emptyStmts, span = syntheticSpan())
+  val noRow: Option[List[ArgsRowField]] = None
+  val around = AspectAround(argsName = "call", retName = None, argsRow = noRow, body = body, span = syntheticSpan())
+  val noMatches: List[AspectMatcher] = newList()
+  val noExcept: List[String] = newList()
+  val noContracts: List[ContractClause] = newList()
+  val noWraps: List[String] = newList()
+  val noInside: List[String] = newList()
+  val decl = AspectDecl(
+    name = "ValidateThreshold",
+    from = None,
+    config = cfgFields,
+    matches = noMatches,
+    exceptNames = noExcept,
+    around = Some(value = around),
+    contracts = noContracts,
+    wraps = noWraps,
+    inside = noInside,
+    span = syntheticSpan()
+  )
+  val noDocs: List[DocComment] = newList()
+  val noAnns: List[Annotation] = newList()
+  val item = Item(
+    docComments = noDocs,
+    annotations = noAnns,
+    visibility = None,
+    kind = IAspect(decl = decl),
+    span = syntheticSpan()
+  )
+  val resolved = resolveItem(at, item)
+  match resolved.kind {
+    case IAspect(d2) -> {
+      assertEqualInt(d2.config.count, 1, "config field survives resolution")
+      assertEqual(trefName(d2.config[0].ty), "Long", "aliased config field type resolves through the alias")
+      assertEqual(d2.config[0].name, "threshold", "config field name untouched")
+    }
+    case _ -> assertTrue(false, "resolved item must still be an IAspect")
+  }
+}

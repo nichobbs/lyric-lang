@@ -28427,3 +28427,225 @@ enumeration missed. Fixed by resolving each row field's `ty` through
 `resolveTypeExpr` like `resolveConfigField`; pinned by a
 `resolveItem`-level unit test (aliased field resolves, non-alias field
 and names untouched). `type_alias_resolve_self_test.l` 8 -> 9.
+
+---
+
+## D-progress-766 — #6467 threads alias-aware display into T0064/T0065/T0043/T0106/T0107; #6458 investigated and resolved as a non-gap
+
+**Status:** ACCEPTED
+
+**Queued-task pin (#6469 follow-up).** `type_alias_resolve_self_test.l`'s
+hand-built `AspectDecl` fixtures all passed an empty `config` list even
+though `resolveAspectDecl` resolves it. Added "aspect config field type
+resolves aliases" (a `ConfigField` with an aliased type, mirroring the
+argsRow test's fixture style). `type_alias_resolve_self_test.l` 9 -> 10.
+
+### #6467 — alias-aware diagnostics for T0064/T0065/T0043/T0106/T0107
+
+D-progress-765 covered T0060/T0061/T0062 (local bindings) and
+T0070/T0114 (function body vs. declared return type). Two families
+remained on the bare underlying-type spelling; both shipped.
+
+**Family 1 — T0064/T0065 (`checkStatement`'s `SReturn` arm).**
+`checkStatement`/`checkBlock` received `returnTy: Type` only, with no
+co-located `TypeExpr` to hand `renderTypeExpr`. Threaded a
+`returnTyExpr: Option[TypeExpr]` parameter alongside `returnTy` through
+both functions and every recursive call site inside
+`typechecker_stmts.l` (`SDefer`/`SScope`/`SLoop`/`SFor`/`SWhile`/`STry`
+bodies and handlers, the `EBlock`/`ETry`-as-trailing-statement arms of
+`checkBlock` itself) — mechanically identical to how `genericNames` is
+already threaded there. `checkFunctionBody` seeds it from `fn.ret` (the
+same `TypeExpr` that already seeds `declaredReturnTyStr` for T0070/
+T0114) at the point it constructs the function's `Scope` via
+`newScopeForFunction`. `Scope` itself gained a matching `returnTyExpr:
+Option[TypeExpr]` field (mirroring its existing `returnTy`/
+`genericNames` fields) so `typechecker_exprs.l`'s three `checkBlock`
+call sites that only have `sc` in hand (`inferExprOrBlock`'s
+`EOBBlock`, and the `EBlock`/`EUnsafe` arms of `inferExpr`) can pass
+`sc.returnTyExpr` straight through, matching the pre-existing pattern
+where those sites already forward `sc.genericNames`/`sc.returnTy`
+explicitly (their own comment notes this as a `checkBlock`-signature
+follow-up, unrelated to this change). The two `newScopeForFunction`
+call sites with no source-level return-type context (an empty scope
+used to type a module-level `val` initializer in isolation) pass
+`None`. A new `renderOptTypeExpr(teOpt, t)` helper next to
+`renderTypeExpr` in `typechecker_types.l` degrades to the bare
+`renderType(t)` when `teOpt` is `None`, so both T0064's "return without
+value" and T0065's "returned value ... does not match declared return
+type" messages render `Meters (aka Long)` through one call site each.
+~20 call sites touched, all mechanically bounded, exactly as scoped.
+
+**Family 2 — T0043 (call-argument mismatch) and T0106/T0107
+(impl-vs-interface signature mismatch).** The issue's own text expected
+T0106/T0107 to need the same `ResolvedParam`/`ResolvedSignature`
+plumbing as T0043; investigation found otherwise once code was actually
+read:
+
+- **T0043** does read through the signature registry
+  (`checkCallArgsAgainstSig`'s `p.ty: Type`, sourced from
+  `ResolvedParam`). Added `tyExpr: Option[TypeExpr] = None` to
+  `ResolvedParam` (a defaulted field, exactly the zero-touch shape
+  `TypeExpr.aliasName` itself used) and populated it at the two
+  construction sites that hold a real source `Param.ty`
+  (`resolveFunctionSig`, `resolveMethodSigParts` — both named in the
+  issue). The third construction site, `substituteMethodSig` (Self/
+  generic-substitution copies for method-call dispatch), threads the
+  original `tyExpr` through unchanged — substitution only ever rewrites
+  a `Self`/owner-generic reference, never an unrelated alias identity,
+  so pairing the pre-substitution `tyExpr` with the post-substitution
+  `ty` for display stays sound. A fourth site, `dropReceiverParam`,
+  copies existing `ResolvedParam` objects verbatim and needed no
+  change. Confirmed via `grep` that `ResolvedParam`/`ResolvedSignature`
+  have zero construction or consumption sites in `contract_meta.l` /
+  `contract_meta_emit.l` / `restored_packages.l` — the exact ripple the
+  issue asked me to check for and stop on — so this stayed a bounded,
+  purely-checker-internal change.
+- **T0106/T0107** turned out to need NO signature-registry plumbing at
+  all: `checkImplConformance` already compares `sig.params[pi].ty` /
+  `fn.params[pi].ty` (`TypeExpr`s straight off the interface/impl AST,
+  pre-`resolveType`) and `sig.ret`/`fn.ret` directly — never through
+  `ResolvedParam`. Swapped the four `renderType` calls for
+  `renderTypeExpr`/`renderOptTypeExpr` paired with the already-computed
+  substituted `Type`s (`implPTy`/`ifacePTy`/`implRetTy`/`ifaceRetTy`);
+  `substitutesSelf` only ever rewrites a `Self` reference, so pairing
+  the original (unsubstituted) `TypeExpr` with the substituted `Type`
+  is sound for the same reason as `substituteMethodSig` above. This is
+  a smaller, `renderType`-call-site-only change than the issue
+  anticipated.
+
+Verified live (`lyric build`, `--target dotnet`):
+```
+alias Meters = Long
+func takesMeters(m: in Meters): Unit { }
+func f(): Unit { takesMeters("oops") }
+```
+→ `T0043 ... argument type String does not match parameter type Meters (aka Long)`
+```
+alias Meters = Long
+interface Sizer { func size(m: in Meters): Int }
+record Box { n: Int }
+impl Sizer for Box { func size(m: in String): Int { 0 } }
+```
+→ `T0106 ... impl method 'size' parameter 'm' has type String but interface expects Meters (aka Long)`
+```
+alias Meters = Long
+interface Namer { func name(): Meters }
+record Box { n: Int }
+impl Namer for Box { func name(): String { "x" } }
+```
+→ `T0107 ... impl method 'name' returns String but interface 'Namer' declares return type Meters (aka Long)`
+
+**Tests.** `typechecker_self_test.l` gains 7 cases: T0065 (alias +
+no-alias control, the alias case nested inside an `if` block to prove
+the thread survives a `checkBlock` recursion, not just the function's
+top-level block), T0064 (alias), T0043 (alias + no-alias control),
+T0106 (alias), T0107 (alias) — all via the existing
+`parseCheckAliasResolved` helper. `typechecker_self_test.l` 321 -> 328.
+
+**Docs.** docs/01-language-reference.md needed no new prose for family
+1/2 (no existing section documents T004x/T006x/T007x message text
+beyond D-progress-765's own addition, which this entry doesn't
+supersede) — the doc touch for this session's docs/01 edit is entirely
+the #6458 tracked-gap sentence below.
+
+### #6458 — the ETry-reachable `?` hoist gap: investigated, resolved as a non-gap
+
+**Verdict: NOT a gap.** `Lyric.Propagate` §2b's module doc claimed a
+qualifying `?` reachable only through a `try` *expression* was left
+unhoisted because `ETry` is opaque to `phHasProp`/`phNeedsHoist`. That
+claim is accurate about the `ETry` union case's own `case ETry(_) ->
+false` arm, but **`ETry` is dead AST** — `grep`-confirmed zero
+construction sites in `lyric-compiler/lyric/parser/`. The parser's
+`KwTry` primary-expression arm (`parser_exprs.l`) desugars
+`try { … } catch … { … }` used as a value into
+`EBlock([STry(body, catches, finally)])` — a block wrapping the try AS
+A STATEMENT, exactly like `if`/`match`/a bare `{ … }` used as a value.
+That shape was never opaque: `phHasProp`'s pre-existing, `?`-agnostic
+`EBlock` -> `phHasPropBlock` -> `STry` walk already descends into the
+try body/catches/finally, and `phHoistSpine`'s generic `EBlock` case —
+unconditionally, for ANY block-valued operand, no `try`-specific rule
+involved — binds the ENTIRE block expression to a fresh `val` before
+the enclosing call, exactly the "hoist the whole protected region" fix
+the issue's option 2 asked for.
+
+**Live verification (`lyric run`, both targets), the load-bearing
+evidence:**
+
+| Repro | `--target dotnet` | `--target jvm` |
+|---|---|---|
+| `xs.add(try { decode(s)? } catch Bug as b { 0 })` inside a `Result`-returning function, `s = "good"` | `ok:1` | `ok:1` |
+| same, `s = "bad"` | `err:bad: bad` | `err:bad: bad` |
+| `xs.add(try { risky() } catch Bug as b { 0 })`, **no `?` anywhere** | `System.InvalidProgramException` | `java.lang.VerifyError: Instruction type does not match stack map` |
+
+The `?`-bearing shape (what #6458 actually tracks) runs correctly
+end-to-end on both targets, unwrapping Ok and propagating Err exactly
+as `Lyric.Propagate`'s design intends — no code change was needed to
+close it, only the doc correction (and a regression test, since the
+correct behaviour was previously unverified and unexercised).
+
+**A separate, `?`-unrelated defect was found and confirmed, out of
+scope for #6458.** A value-position `try` expression with NO `?`
+anywhere still crashes when it sits in a stacked operand position
+(a method-call argument after the receiver is pushed) — on MSIL
+because entering a CLR protected region requires an empty evaluation
+stack per ECMA-335 §I.12.4.2.5 and nothing in the general
+call-argument codegen path (`lowerCallArgMsil` -> `lowerExprMsil`,
+straight-line, no spill) empties it first; on JVM because the
+try body's normal-completion path and the exception-handler path leave
+different operand-stack depths at the merge point (the handler always
+starts with just the thrown exception, discarding whatever was stacked
+before try entry), which the class verifier rejects as inconsistent
+StackMapTable frames. This is entirely independent of `Lyric.Propagate`
+— there is no `?` for that pass to hoist, so it never touches this
+shape. Confirmed live with the table's third row above. NOT embedded as
+a `propagate_hoist_self_test.l` runtime test (deliberately): the crash
+is a method-load-time fault (`InvalidProgramException`/`VerifyError`),
+and embedding it in the shared `@test_module` would crash the WHOLE
+compiled test module on load, not just fail one assertion — the repro
+was verified via a standalone `lyric run` invocation instead (see the
+table). Filing a dedicated tracked issue for this (drafted, not yet
+opened — see the session's final report) is the appropriate next step;
+it is a pre-existing codegen gap that predates and is orthogonal to
+#6458/#6448's `?`-hoist work.
+
+**Tests.** `propagate_hoist_self_test.l` gains 2 cases exercising the
+verified-working shape (Ok path hoists and evaluates the try body
+exactly once; Err path propagates through the hoisted try, catch never
+runs). `propagate_hoist_self_test.l` 26 -> 28 (both targets).
+
+**Docs.**
+- `propagate.l` §2b's module doc bullet rewritten: explains `ETry` is
+  dead AST, why the real `EBlock([STry])` shape was never opaque, cites
+  the live verification, and documents the separate no-`?` defect as
+  explicitly out of `Lyric.Propagate`'s charter. The inline
+  `case ETry(_) -> false` comment in `phHasProp` now notes it is
+  match-exhaustiveness only, unreachable from real source.
+- `propagate_hoist_self_test.l`'s module doc gains a short addendum
+  pointing at the same finding and explaining why the no-`?` shape is
+  not exercised there.
+- docs/01-language-reference.md §4.5: removed `try` expression from the
+  "two narrow positions... not yet supported" sentence (now one
+  position — the `forall`/`exists`/`old(...)` gap, #6457) and added a
+  positive statement that a `?` reachable only through a value-position
+  `try` expression works, with the worked example and `#6458` citation
+  moved to the confirmed-working clause. Appended a new sentence
+  documenting the separate no-`?` limitation so it isn't silently
+  unstated.
+
+**Verification (`rm -f .bootstrap/stage1.stamp && make lyric`,
+foreground, ~9 min; then `lyric fmt --write` over every changed `.l`
+file — all 10 files formatted clean, zero refusals).** Full battery,
+both targets where applicable: `typechecker_self_test.l` 328/328;
+`type_alias_resolve_self_test.l` 10/10; `propagate_hoist_self_test.l`
+28/28 dotnet, 28/28 jvm; `propagate_self_test.l` 17/17;
+`await_hoist_self_test.l` 11/11 dotnet, 11/11 jvm;
+`emitter_project_self_test.l` 30/30; `bare_func_ref_self_test.l` 36/36
+dotnet, 36/36 jvm; `aspect_weave_self_test.l` 8/8 dotnet, 8/8 jvm;
+`weaver_self_test.l` 46/46; `impl_method_self_test.l` 22/22 (family 2
+blast-radius check); `stdlib_generic_iface_self_test.l` 20/20 dotnet,
+20/20 jvm (family 2 blast-radius check).
+
+**Related:** #6467, #6458, #6469, #6418, D-progress-765
+(`renderTypeExpr` original landing, T0070/T0114/T0060/T0061/T0062),
+#6448/D-progress-762 (`Lyric.Propagate` §2b original hoist landing),
+#6453 (PR that queued #6458).

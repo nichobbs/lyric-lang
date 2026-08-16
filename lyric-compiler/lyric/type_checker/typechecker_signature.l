@@ -17,6 +17,14 @@ pub record ResolvedParam {
   mode: ParamMode
   hasDefault: Bool
   span: Span
+  // #6467: the ORIGINAL (pre-erasure) parameter-type annotation `TypeExpr`,
+  // when the caller has one — carries `aliasName` when the user wrote an
+  // alias here (mirrors `Scope.returnTyExpr`).  `None` for a signature built
+  // without source `TypeExpr`s in hand (e.g. a substituted/copied signature
+  // whose params were already `ResolvedParam`s).  Display-only: never
+  // consulted for pass/fail, only by `renderOptTypeExpr` call sites that want
+  // to name the alias the user wrote (T0043).
+  tyExpr: Option[TypeExpr] = None
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Resolved where-clause bound.
   // ─────────────────────────────────────────────────────────────────────────────

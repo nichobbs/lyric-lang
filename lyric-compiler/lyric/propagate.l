@@ -232,15 +232,36 @@ func buildOptionMatch(inner: in Expr, sp: in Span, st: in PropState): Expr {
 //     descends into them (any hoist needed strictly inside such a body is a
 //     separate, currently out-of-scope concern, matching `Lyric.AwaitHoist`'s
 //     own non-goal).
-//   * `ETry` is opaque too, but for a different reason than `await`'s (V0012
-//     forbids `await` inside an async `try`, so there is nothing there to
-//     find): entering a CLR protected region requires an empty evaluation
-//     stack per ECMA-335 §I.12.4.2.5 independent of `?`, so hoisting a `?`
-//     out of a `try` expression would not by itself fix a stack-safety
-//     problem at the `try`'s own boundary, and hoisting through it would
-//     change exception scoping.  A qualifying `?` reachable only through a
-//     `try` expression is left unhoisted — a narrow, documented gap, not
-//     exercised by any of the shapes in `propagate_hoist_self_test.l`.
+//   * #6458 (investigated, resolved as a non-gap): `phHasProp`/`phNeedsHoist`
+//     do carry a `case ETry(_) -> false` arm, which reads as if a `?` inside a
+//     `try` EXPRESSION were opaque to this pass the way `ELambda`/`ESpawn`
+//     bodies genuinely are.  It is not — `ETry` is dead AST.  The parser never
+//     constructs it: `try { … } catch … { … }` in expression position (the
+//     `KwTry` arm of the primary-expression parser) desugars to
+//     `EBlock([STry(body, catches, finally)])`, a block wrapping the try as a
+//     STATEMENT, exactly like `if`/`match`/`{ … }` used as values.  That shape
+//     is not opaque: `phHasProp`'s pre-existing, `?`-agnostic `EBlock` ->
+//     `STry` walk (`phHasPropBlock`/`phHasPropStmt`) already descends into
+//     the try body/catches/finally, and when a qualifying `?` is found
+//     there, `phNeedsHoist`'s `ECall` arm flags the whole argument and
+//     `phHoistSpine`'s generic `EBlock` case — unconditionally, for ANY
+//     block-valued operand, not a `try`-specific rule — binds the ENTIRE
+//     `{ try { … } catch { … } }` to a fresh `val` before the call, exactly
+//     the "hoist the whole protected region" fix #6458 asked for, just
+//     already present as a side effect of `EBlock`'s general handling.
+//     Verified live (`lyric run`, both targets): `xs.add(try { parse(s)? }
+//     catch Bug as b { 0 })` inside a `Result`-returning function propagates
+//     Ok/Err correctly on `--target dotnet` and `--target jvm` alike — see
+//     `propagate_hoist_self_test.l`'s "try-expression call argument" case.
+//     A SEPARATE, `?`-unrelated defect does exist in the same shape: a `try`
+//     expression with NO `?` anywhere still crashes when it sits in a
+//     stacked operand position (`InvalidProgramException` on MSIL,
+//     `VerifyError` on JVM — confirmed live) because nothing else in the
+//     general call-argument codegen path spills a preceding operand before
+//     entering the try's protected region.  That bug is outside
+//     `Lyric.Propagate`'s charter (there is no `?` for this pass to hoist)
+//     and is NOT exercised by any shape in `propagate_hoist_self_test.l`;
+//     it is tracked as its own follow-up, not part of #6458.
 //   * `await`'s own presence is a transparent pass-through in both
 //     directions: `await (e?)` searches `e?` for a qualifying `?` (the
 //     await_hoist pass, which runs later in `pipeWeave`, has not touched
@@ -350,6 +371,10 @@ func phHasProp(e: in Expr): Bool {
     case EPropagate(_) -> true
     case ELambda(_, _) -> false
     case ESpawn(_) -> false
+    // #6458: match-exhaustiveness only — the parser never constructs `ETry`
+    // for real source (a value-position `try` desugars to `EBlock([STry])`,
+    // walked by the `EBlock` case below), so this arm is unreachable from any
+    // parseable program.  See the §2b module doc's #6458 note.
     case ETry(_) -> false
     case EAwait(inner) -> phHasProp(inner)
     case EParen(inner) -> phHasProp(inner)

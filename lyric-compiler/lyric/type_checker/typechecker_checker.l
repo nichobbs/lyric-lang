@@ -859,7 +859,8 @@ func resolveFunctionSig(
         ty = resolvedTy,
         mode = p.mode,
         hasDefault = match p.dflt { case None -> false; case Some(_) -> true },
-        span = p.span
+        span = p.span,
+        tyExpr = Some(value = p.ty)
       )
     )
     i = i + 1
@@ -1087,7 +1088,8 @@ func resolveMethodSigParts(
           ty = resolveType(tbl, ctx, scratch, p.ty),
           mode = p.mode,
           hasDefault = match p.dflt { case None -> false; case Some(_) -> true },
-          span = p.span
+          span = p.span,
+          tyExpr = Some(value = p.ty)
         )
       )
     }
@@ -1304,9 +1306,10 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                       diag.add(
                         errorDiagnostic(
                           "T0106",
-                          "impl method '" + sig.name + "' parameter '" + sig.params[pi].name + "' has type " + renderType(implPTy) +
+                          "impl method '" + sig.name + "' parameter '" + sig.params[pi].name + "' has type " +
+                            renderTypeExpr(fn.params[pi].ty, implPTy) +
                             " but interface expects " +
-                            renderType(ifacePTy),
+                            renderTypeExpr(sig.params[pi].ty, ifacePTy),
                           fn.params[pi].span
                         )
                       )
@@ -1329,9 +1332,9 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                     diag.add(
                       errorDiagnostic(
                         "T0107",
-                        "impl method '" + sig.name + "' returns " + renderType(implRetTy) + " but interface '" + ifaceName +
+                        "impl method '" + sig.name + "' returns " + renderOptTypeExpr(fn.ret, implRetTy) + " but interface '" + ifaceName +
                           "' declares return type " +
-                          renderType(ifaceRetTy),
+                          renderOptTypeExpr(sig.ret, ifaceRetTy),
                         fn.span
                       )
                     )
