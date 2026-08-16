@@ -3868,9 +3868,9 @@ pub func collectFileCasesExtern(
             match decl.members[mi] {
               case PMField(pf) -> {
                 match pf {
-                  case PFVar(name, ty, _, _, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes), paramIdx = -1, dflt = None))
-                  case PFLet(name, ty, _, _, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes), paramIdx = -1, dflt = None))
-                  case PFImmutable(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmExtern(f.ty, owner, externTypes), paramIdx = -1, dflt = None))
+                  case PFVar(name, ty, init, _, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes), paramIdx = -1, dflt = init))
+                  case PFLet(name, ty, init, _, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes), paramIdx = -1, dflt = init))
+                  case PFImmutable(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmExtern(f.ty, owner, externTypes), paramIdx = -1, dflt = f.dflt))
                 }
               }
               case _ -> ()

@@ -370,7 +370,8 @@ func resolveTypePath(
     osi = osi + 1
   }
   val ownerPkg = modulePathJoin(ownerSegs)
-  val defaultPickMatchesOwner = match symTableTryFindOne(tbl, last) {
+  val defaultPick = symTableTryFindOne(tbl, last)
+  val defaultPickMatchesOwner = match defaultPick {
     case Some(pref) -> symbolIsType(pref) and pref.originPackage == ownerPkg
     case None -> false
   }
@@ -384,7 +385,7 @@ func resolveTypePath(
       qi = qi + 1
     }
   }
-  match symTableTryFindOne(tbl, last) {
+  match defaultPick {
     case Some(sym) -> {
       if symbolIsType(sym) {
         return symbolToType(tbl, ctx, diag, sym, args, span)

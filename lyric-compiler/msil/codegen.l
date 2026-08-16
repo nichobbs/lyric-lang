@@ -9703,8 +9703,17 @@ func lowerIfExprMsil(
       // void arm wrongly popped the OTHER branch's live value and downgraded
       // the whole expression's type to MVoid, underflowing the stack at any
       // caller expecting a value.
-      val thenTerm = endsWithReturnMsil(thenInsns)
-      val elseTerm = endsWithReturnMsil(elseInsns)
+      // `or armEndsInLoopJumpMsil(...)` catches a branch whose `return` sits
+      // inside a protected region (a `protected type` entry body): SReturn
+      // there emits `MLeave` to the entry's lock-release epilogue instead of
+      // a bare `MRet` (#1477), which `endsWithReturnMsil` alone doesn't
+      // recognise as terminal — exactly the gap `armEndsInLoopJumpMsil`
+      // already closes for match arms (line ~10592) via the same `or`.
+      // Without it, a diverging branch's `MVoid` "value type" gets treated
+      // as a genuine void fall-through, corrupting the join-point stack
+      // reconciliation below (#6475).
+      val thenTerm = endsWithReturnMsil(thenInsns) or armEndsInLoopJumpMsil(thenInsns)
+      val elseTerm = endsWithReturnMsil(elseInsns) or armEndsInLoopJumpMsil(elseInsns)
 
       // Emit the then block.
       var ti = 0
@@ -25637,12 +25646,23 @@ func lowerProtectedMsil(
           case FBBlock(block) -> {
             if retTy != MVoid {
               // Non-void block body.  Lower the block; if it fell through normally
-              // the result is on the stack — stash it to retvalSlot and leave.
-              // If it ended with an explicit `return` (epilogueUsed > 0), SReturn
-              // already stashed the value and emitted leave(afterL); skip the
-              // fall-through path so we don't try to store a void stack value.
-              val _ = lowerBlockExprMsil(cctx, entryFctx, entryInsns, block)
-              if entryFctx.epilogueUsed.count == 0 {
+              // the trailing value is on the stack — stash it to retvalSlot and
+              // leave.  A NON-TAIL `return` reachable from inside `if`/`match`
+              // does NOT imply the block's own trailing statement also exited: a
+              // conditional `return` in a non-last statement (`if c { return x
+              // }; y`) still falls through to evaluate `y`, whose value still
+              // needs stashing (#6475).  The correct signal is the type
+              // `lowerBlockExprMsil` actually reports for the trailing
+              // statement — `MVoid` iff the trailing statement itself was an
+              // `SReturn`, or an `if`/`match` all of whose arms diverged via
+              // `return`/`throw`/loop-jump (in which case every such arm's own
+              // `SReturn` already stashed its value and `leave`d to `afterL` —
+              // the SAME label reserved above via `entryFctx.epilogueLabel`),
+              // never a raw counter of how many `return`s appeared anywhere in
+              // the body (the old, wrong, `epilogueUsed.count == 0` check).
+              val trailTy = lowerBlockExprMsil(cctx, entryFctx, entryInsns, block)
+              val tailAlreadyExited = match trailTy { case MVoid -> true; case _ -> false }
+              if not tailAlreadyExited {
                 if entryFctx.retvalSlot < 0 {
                   entryFctx.retvalSlot = allocSlotMsil(entryFctx, "__retval", retTy)
                 }
@@ -25672,11 +25692,15 @@ func lowerProtectedMsil(
               }
               entryInsns.add(MRet)
             } else {
-              // Void block body.
+              // Void block body.  A `leave` takes no operand, so — unlike the
+              // non-void arm above — it is always safe to emit unconditionally:
+              // when the tail genuinely falls through, this is the real exit;
+              // when every path already diverged via an inner `return`'s own
+              // `leave` to this SAME `afterL` (#6475), this is a harmless,
+              // unreachable, zero-predecessor duplicate the CLR verifier is
+              // fine with (no stack value implicated either way).
               lowerBlockMsil(cctx, entryFctx, entryInsns, block)
-              if entryFctx.epilogueUsed.count == 0 {
-                entryInsns.add(MLeave(label = afterL))
-              }
+              entryInsns.add(MLeave(label = afterL))
               val finallyStartL = freshLabelMsil(entryFctx)
               val finallyEndL = freshLabelMsil(entryFctx)
               entryInsns.add(MLabel(id = finallyStartL))

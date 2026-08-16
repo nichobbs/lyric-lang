@@ -1177,6 +1177,7 @@ Semantics:
 - Barriers are re-evaluated whenever any operation completes.
 - The compiler emits a `SemaphoreSlim`-based mutual exclusion plus condition signaling for barriers (see `docs/09-msil-emission.md` §17.1–17.3).
 - The invariant is checked after every entry/func returns control to the caller.
+- `return` (including from inside nested `if`/`match`/`while`, not only as the body's literal last statement) and `?` are fully supported inside `entry`/`func` bodies on both the MSIL and JVM backends, routing correctly through the entry's lock-release path (D-progress-771).
 
 ### 7.6 Raw locks
 

@@ -913,17 +913,10 @@ func joinSegments(segs: in List[String], sep: in String): String {
 // alongside the bare short-name key.  `None` for a single-segment (bare,
 // unqualified) path — see `typeExprToJvmExtern` (#6338).
 func qualifiedExternKey(path: in ModulePath): Option[String] {
-  val n = path.segments.count
-  if n < 2 {
+  if path.segments.count < 2 {
     return None
   }
-  val owner: List[String] = newList()
-  var i = 0
-  while i < n - 1 {
-    owner.add(path.segments[i])
-    i = i + 1
-  }
-  Some(value = joinSegments(owner, ".") + "." + path.segments[n - 1])
+  Some(value = dottedPathOfSegments(path.segments))
 }
 
 // Collect the type-parameter names from an optional `GenericParams` list, so a
