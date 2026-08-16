@@ -29570,3 +29570,55 @@ the lock-epilogue bug), plus the new body-checking note.
 **Related:** #6481, #6476/D-progress-771 (the discovery), #6483 (the
 cross-body dispatch gap filed from the survey), D-progress-766 (the
 returnTyExpr thread this reuses), PR #6482.
+
+## D-progress-773 — `self.field` inside protected-type member bodies is type-checked (#6485)
+
+**Problem.** PR #6484's body-checking (D-progress-772) covered the
+bare-name field spelling only. `self` is a parse-level keyword — every
+occurrence parses to the dedicated `ESelf` node, never
+`EPath(["self"])` — so it can never resolve through the ordinary scope
+lookup the bare-name spelling uses; `inferExpr` typed it as the
+placeholder `TySelf`, which `inferMemberBase` cannot resolve to a
+field, silently degrading `self.count = "oops"` to `TyError` with no
+diagnostic. docs/01's V0015 discussion documents `self.field` as an
+equally valid spelling inside protected member bodies, so the "fully
+type-checked" claim was overbroad (PR #6484's review, filed #6485).
+
+**Decision — a `Scope.selfFields` map (the review's option (b)).**
+`Scope` gains `selfFields: Map[String, Type]`, seeded ONLY by
+`checkProtectedMemberBodies` (from the same resolved
+`protectedFieldLocals` information the bare-name spelling uses) and
+empty for every other scope. The member-inference path consults it
+first when the receiver is `ESelf` and the map is non-empty: a hit
+types the field read/write exactly like the bare-name twin; a miss in
+that context is a genuine unknown field (T0020, rendered as
+`self.<name>`). Every other `self`-bearing context — interface
+default-method bodies (T0118 territory, D-progress-761/764) and impl
+methods (where `self` is the concrete target and members already
+resolve) — sees an empty map and falls through unchanged to the
+pre-existing lenient `TySelf` handling; non-interference is pinned by
+the existing T0118 and impl_method suites staying green.
+
+**Writes and mutability.** `self.count = v` flows through the same
+member-write path; the seeded type makes the assignment's target type
+real, so a write-type mismatch rejects with the same code as the
+bare-name twin. A `let`-field write via `self.` stays the mode
+checker's V0015 domain (the type checker does not double-report — the
+dedicated no-double-report test pins one diagnostic, not two).
+
+**Blast radius.** Full `make lyric` (compiler + 73-package stdlib
+bundle) clean — no in-tree `self.`-spelling member body surfaced a
+latent error.
+
+**Verification.** `typechecker_self_test.l` 335 -> 339 (self write-type
+mismatch rejected, unknown `self.<name>` T0020, well-typed `self.`
+write+read control, `self.<letField>` no-double-report);
+`propagate_hoist_self_test.l` 40 -> 42 both targets (a well-typed
+`self.items.add(decode(s)?)` entry runs end-to-end on dotnet and JVM);
+impl_method 22/22 and the T0118 suite cases green (non-interference);
+bare_func_ref 36/36 both; stdlib_generic_iface 20/20 both;
+aspect_weave 8/8 both; emitter_project 34/34; block_shadow 20/20 both;
+ilverify clean. docs/01 §7.5 now states both spellings are checked.
+
+**Related:** #6485, #6481/D-progress-772, D-progress-761/764 (the
+T0118 machinery deliberately untouched), PR #6484.

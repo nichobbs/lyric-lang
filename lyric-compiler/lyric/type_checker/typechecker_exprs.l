@@ -1941,7 +1941,8 @@ func resolveExprPath(
               // Infer against an empty scope to avoid the caller's local bindings
               // shadowing module-level names referenced in vd.init.
               val noRte: Option[TypeExpr] = None
-              val emptyScope = newScopeForFunction(TyError, newList(), noRte)
+              val noSelfFields: Map[String, Type] = newMap()
+              val emptyScope = newScopeForFunction(TyError, newList(), noRte, noSelfFields)
               return inferExpr(emptyScope, tbl, sigs, diag, vd.init)
             }
           }
@@ -3166,7 +3167,8 @@ func checkConstRefPattern(
                   case Some(te) -> resolveType(tbl, ctx, diag, te)
                   case None -> {
                     val noRte: Option[TypeExpr] = None
-                    val emptyScope = newScopeForFunction(TyError, newList(), noRte)
+                    val noSelfFields: Map[String, Type] = newMap()
+                    val emptyScope = newScopeForFunction(TyError, newList(), noRte, noSelfFields)
                     inferExpr(emptyScope, tbl, sigs, diag, vd.init)
                   }
                 }
@@ -3561,6 +3563,36 @@ pub func inferExpr(
     }
 
     case EMember(recv, name) -> {
+      // #6485: `self.field` inside a protected-type entry/func body.  `self`
+      // is a keyword — every occurrence parses to the dedicated `ESelf` node,
+      // never `EPath(["self"])` — so it can never resolve through the
+      // ordinary scope lookup the bare-name spelling uses (#6481's
+      // `extraLocals`/`scopeTryFind`).  Absent this, `inferExpr(recv)` types
+      // `self` as the placeholder `TySelf`, which `inferMemberBase` cannot
+      // resolve to a field and which silently degrades to `TyError` with no
+      // diagnostic. `sc.selfFields` (non-empty only inside a protected
+      // member body, #6485) is consulted first: a hit types the field read
+      // exactly like the bare-name spelling; a miss inside that same context
+      // is a genuine unknown field, reported the same way an unknown bare
+      // name is (T0020). Every other `self`-bearing context reaching this
+      // checker today (`checkFunctionBody`'s only other callers pass empty
+      // `extraLocals`) falls through unchanged to the pre-existing lenient
+      // `TySelf` handling below.
+      match recv.kind {
+        case ESelf -> {
+          if sc.selfFields.count > 0 {
+            match mapGet(sc.selfFields, name) {
+              case Some(t) -> return t
+              case None -> {
+                diag.add(errorDiagnostic("T0020", "unknown name 'self." + name + "'", e.span))
+                return TyError
+              }
+            }
+          }
+        }
+        case _ -> {
+        }
+      }
       // A bare single-segment receiver whose name follows the **module/type
       // naming convention** (UpperCamelCase) and does not resolve is treated as
       // a *module reference* (e.g. `Str.substring(...)` where a `Std.String as

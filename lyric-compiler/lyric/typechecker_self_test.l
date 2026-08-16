@@ -3384,3 +3384,55 @@ test "protected func member body: ill-typed trailing expression rejected with T0
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0070"), "func member body: ill-typed trailing expr rejected with T0070")
 }
+
+// #6485: the `self.`-spelling twin of the #6481 matrix above.  `self` is a
+// keyword — every occurrence parses to the dedicated `ESelf` AST node, never
+// `EPath(["self"])` — so it never went through the `extraLocals`/
+// `scopeTryFind` machinery #6481 seeded for the bare-name spelling: `self.x`
+// typed as the placeholder `TySelf`, which `inferMemberBase` cannot resolve
+// to a field, and silently degraded to `TyError` with no diagnostic at all
+// (the exact bug in #6485 — `entry f(): Unit { self.count = "oops" }`
+// compiled clean). `checkFunctionBody`'s new `selfFields` map (built from the
+// SAME `extraLocals` list #6481 already threads in) closes this for reads,
+// writes, and unknown names.
+//
+// Mutability enforcement for the `self.`-prefixed write spelling is
+// deliberately NOT duplicated here: it is already the mode checker's job
+// (V0015, `checkFieldWriteTarget`'s `ESelf` arm, shipped for protected types
+// by #6203 — see `modechecker_self_test.l`'s "protected-type entry
+// self-field write to a non-var field is V0015 (#6203)"). The type checker's
+// T0087 assignment-target-mutability check only ever matches a bare-name
+// `EPath` target (see `checkFunctionBody`'s header comment and the T0087
+// call sites in `typechecker_exprs.l`/`typechecker_stmts.l`) — it was never
+// extended to `EMember` targets, on purpose, so a `self.<letField> = v`
+// write is rejected by exactly one pass (the control test below proves the
+// type checker stays silent on it, so the two passes never double-report).
+test "protected entry body: self.count write-type mismatch rejected (#6485)" {
+  val src = "package P\nprotected type Bag {\n  var count: Int = 0\n  entry f(): Unit {\n    self.count = \"oops\"\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0063"), "entry body: self.count = \"oops\" write-type mismatch rejected with T0063")
+}
+
+test "protected entry body: unknown self field rejected with T0020 (#6485)" {
+  val src = "package P\nprotected type Bag {\n  var count: Int = 0\n  entry f(): Int {\n    self.nope\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0020"), "entry body: self.nope (unknown field) rejected with T0020")
+}
+
+test "protected entry body: well-typed self.count write and read stay clean (#6485 control)" {
+  val src = "package P\nprotected type Bag {\n  var count: Int = 0\n  entry inc(): Unit {\n    self.count = self.count + 1\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "entry body: well-typed self.count write+read has no diagnostics")
+}
+
+test "protected entry body: self.<letField> write is not double-reported by the type checker (#6485)" {
+  // V0015 (mode checker) already rejects this write; the type checker must
+  // stay silent so the two passes report it exactly once between them.
+  val src = "package P\nprotected type Bag {\n  let capacity: Int = 10\n  entry f(): Unit {\n    self.capacity = 5\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(
+    diagCount(cr),
+    0,
+    "entry body: self.<letField> write has no type-checker diagnostics (V0015 owns mutability)"
+  )
+}

@@ -789,10 +789,23 @@ pub func checkFunctionBody(
     return
   }
 
+  // #6485: `self.field` — the explicit-receiver spelling of the same
+  // bare-name field access #6481 seeded below — never resolves through a
+  // scope lookup (`self` is a keyword; every occurrence parses to the
+  // dedicated `ESelf` AST node, never `EPath(["self"])`), so it needs its
+  // own map keyed by field name rather than reusing `extraLocals` scope
+  // bindings.  Built from the SAME `extraLocals` list `checkProtectedMemberBodies`
+  // passes in, so it is non-empty exactly when the bare-name map is.
+  val selfFields: Map[String, Type] = newMap()
+  var sf = 0
+  while sf < extraLocals.count {
+    selfFields.add(extraLocals[sf].name, extraLocals[sf].ty)
+    sf = sf + 1
+  }
   // #6467: `fn.ret` also seeds the scope's `returnTyExpr`, so T0064/T0065
   // (raised deep inside a nested block via `checkStatement`) render the same
   // alias-aware display as T0070/T0114 below.
-  val sc = newScopeForFunction(sig.returnTy, sig.generics, fn.ret)
+  val sc = newScopeForFunction(sig.returnTy, sig.generics, fn.ret, selfFields)
   // #6481: protected-type entry/func bodies read/write the enclosing type's
   // fields as bare names (no explicit `self` param); the caller seeds those
   // bindings here so a bare `count = count + 1` resolves — and so writing a

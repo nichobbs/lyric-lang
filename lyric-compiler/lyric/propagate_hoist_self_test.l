@@ -865,3 +865,42 @@ test "protected-type var field with a collection-typed default runs its initiali
   basket.addFruit("apple")
   assertEqualInt(basket.fruitCount(), 1, "adding to the initialized collection works")
 }
+
+// ── #6485: the `self.`-spelling twin of `DecodeBag` above — the exact same
+// `?` inside a protected-type entry, stacked operand position, but with the
+// field accessed via the explicit `self.` receiver instead of bare-name.
+// Before #6485's type-checker fix `self.field` bypassed body type-checking
+// entirely (silent `TyError`), but the two spellings were always codegen-
+// equivalent — this is a runtime end-to-end proof that the newly-checked
+// spelling still compiles and runs identically to the bare-name form.
+protected type SelfDecodeBag {
+  var items: List[Int] = newList()
+  entry addDecoded(s: in String): Result[Unit, String] {
+    self.items.add(decodeCount(s)?)
+    Ok(())
+  }
+  entry itemCount(): Int {
+    self.items.count
+  }
+}
+
+test "? inside a protected-type entry via self.field, stacked operand position: Ok path adds and stores (#6485)" {
+  val bag = SelfDecodeBag()
+  val r = bag.addDecoded("good")
+  match r {
+    case Ok(_) -> assertEqualInt(bag.itemCount(), 1, "the unwrapped value flows into the collection field via self.")
+    case Err(_) -> assertTrue(false, "expected Ok")
+  }
+}
+
+test "? inside a protected-type entry via self.field, stacked operand position: Err path early-returns without storing (#6485)" {
+  val bag = SelfDecodeBag()
+  val r = bag.addDecoded("bad")
+  match r {
+    case Ok(_) -> assertTrue(false, "expected Err")
+    case Err(e) -> {
+      assertEqual(e, "bad count: bad", "the propagated Err surfaces from inside the entry")
+      assertEqualInt(bag.itemCount(), 0, "the Err path never reaches items.add")
+    }
+  }
+}

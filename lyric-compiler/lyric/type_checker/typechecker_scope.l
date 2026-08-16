@@ -41,6 +41,16 @@ pub record Scope {
   // A scope with no enclosing-function context — `returnTy` defaults to `TyError`
   // (the universal unifier, so a stray `EResult`/block read stays lenient) and no
   // generic names.  Used by callers that type expressions outside a function body.
+  // #6485: the enclosing protected-type member's own field names, resolved to
+  // their declared `Type`s — lets `self.field` (the `ESelf` receiver spelling)
+  // resolve the same way the bare-name spelling already does via
+  // `checkFunctionBody`'s `extraLocals`.  Empty for every other scope (plain
+  // functions, lambdas outside a protected member, the two "empty scope"
+  // callers below) — `self` is a parse-level keyword reachable from any
+  // expression position, but only a protected entry/func body currently seeds
+  // this map, so an empty map means "no self-field context", not "a
+  // zero-field protected type".
+  selfFields: Map[String, Type]
 }
 
 pub func newScope(): Scope {
@@ -48,12 +58,14 @@ pub func newScope(): Scope {
   val starts: List[Int] = newList()
   starts.add(0)
   val noReturnTyExpr: Option[TypeExpr] = None
+  val noSelfFields: Map[String, Type] = newMap()
   Scope(
     bindings = bindings,
     frameStarts = starts,
     returnTy = TyError,
     genericNames = newList(),
-    returnTyExpr = noReturnTyExpr
+    returnTyExpr = noReturnTyExpr,
+    selfFields = noSelfFields
   )
 }
 
@@ -62,8 +74,15 @@ pub func newScope(): Scope {
 // the body type against the real return context.  `returnTyExpr` is the
 // original declared-return-type `TypeExpr` (`fn.ret`) when the caller has one,
 // so alias-aware diagnostics (T0064/T0065 and friends) can render the alias
-// name the user wrote instead of the bare resolved type (#6467).
-pub func newScopeForFunction(returnTy: in Type, genericNames: in List[String], returnTyExpr: in Option[TypeExpr]): Scope {
+// name the user wrote instead of the bare resolved type (#6467).  `selfFields`
+// is the enclosing protected-type member's field-name-to-type map (#6485,
+// empty for every non-protected-member caller).
+pub func newScopeForFunction(
+  returnTy: in Type,
+  genericNames: in List[String],
+  returnTyExpr: in Option[TypeExpr],
+  selfFields: in Map[String, Type],
+): Scope {
   val bindings: List[LocalBinding] = newList()
   val starts: List[Int] = newList()
   starts.add(0)
@@ -72,7 +91,8 @@ pub func newScopeForFunction(returnTy: in Type, genericNames: in List[String], r
     frameStarts = starts,
     returnTy = returnTy,
     genericNames = genericNames,
-    returnTyExpr = returnTyExpr
+    returnTyExpr = returnTyExpr,
+    selfFields = selfFields
   )
 }
 
