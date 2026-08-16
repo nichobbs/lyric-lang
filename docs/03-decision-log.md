@@ -29020,3 +29020,163 @@ port), D-progress-766/D-progress-767 (the `?`-hoist's most recent fixes,
 now living in the shared engine), #5511/`record_field_closure_self_test.l`
 and #5362/#5366/#6393/`bare_func_ref_self_test.l` (the function-typed-field
 precedent investigated and deliberately NOT used).
+
+## D-progress-769 — triage re-verification sweep (8 pre-#6454 bugs) + `Lyric.HoistEngine` entry-polarity pin
+
+**Status:** SWEEP — no code fix shipped (every STILL-BROKEN finding below
+needs dedicated investigation larger than this sweep's scope; see each
+item's "why not fixed here" note). One test-infra addition shipped: the
+queued `?`-in-protected-type-entry pin from PR #6474's review.
+
+**Context.** Full `make lyric` rebuild first (clean, no F# in the tree).
+This round re-verified eight previously-triaged bugs against `main` as of
+95155ee (`#6454`/`#6474` — the `Lyric.HoistEngine` unification), since
+several rounds of J-code/hoist/Self-position/TypeAliasResolve work landed
+after they were originally filed and might have incidentally fixed them.
+
+### Part 1 — the queued pin (`propagate_hoist_self_test.l` review comment)
+
+The ask: add a `?` inside a `protected type` **entry** body in stacked
+operand position (`items.add(decode(s)?)`) to `propagate_hoist_self_test.l`,
+pinning the `asyncGated = false` polarity that makes
+`Lyric.HoistEngine` visit `EntryDecl` bodies at all (`hzEntryNeedsHoist`/
+`hzRewriteEntry` in `hoist_engine.l`) — a regression that flipped this
+polarity would silently stop hoisting inside entries while every
+plain-`func` case in the existing 35-test file kept passing, since none of
+them touch an `EntryDecl`.
+
+**Finding: `?` inside a protected-type entry cannot run at all today, on
+either target, independent of hoisting.** Isolated with zero involvement
+of propagate/hoist/`?`:
+
+- **MSIL:** a non-tail `return` statement reachable from inside an entry
+  body's `if`/`match`/`while` throws `System.InvalidProgramException` at
+  the call site. `entry f(): Int { if cond { return 1 }; 2 }` crashes
+  identically to `entry f(): Result[Int,String] { val v = r?; v }`. A
+  `return` as the entry's own LITERAL LAST statement
+  (`entry f(): Int { return 1 }`) is fine —
+  `lowerProtectedMsil`'s `entryFctx.epilogueLabel`/`leave` epilogue
+  (`msil/codegen.l` ~line 25630) only handles that one shape; a `return`
+  reachable from inside a nested block bypasses it. Since `e?` always
+  desugars to `-> { return Err(x) }` nested inside a `match`, EVERY use of
+  `?` in an entry hits this, regardless of stacked-operand position.
+  Filed as **#6475**.
+- **JVM:** `?` anywhere in an entry body fails codegen outright with
+  `Jvm.Codegen: match not exhaustive` — again reproducible with a bare
+  `entry f(): Result[Int,String] { val v = r?; v }`, no stacking involved.
+  Filed as **#6476** — a separate root cause from the MSIL one (a
+  match-desugar/exhaustiveness gap in the JVM entry-body codegen path,
+  not a stackmap/frame issue).
+- A closely related JVM finding surfaced during isolation (filed as
+  **#6479**):
+  `protected type` `var` fields with a collection-typed default
+  (`var items: List[Int] = newList()`) never run their initializer on
+  `--target jvm` — `this.items` reads back `null` and any use NPEs. MSIL is
+  unaffected. Confirmed independent of `?`/entries-with-return: a bare
+  `entry addOne(v: Int): Unit { items.add(v) }` with no `return`/`?`
+  anywhere reproduces it identically.
+
+None of these are hoist-polarity regressions — they are pre-existing gaps
+in protected-type entry codegen the hoist engine's own correctness doesn't
+depend on. Given a runtime `test` in `propagate_hoist_self_test.l` is
+provably unreachable today, the pin was written at the AST level instead
+(mirroring how `alias_rewriter_self_test.l` pins rewrite shapes that hit an
+unrelated codegen gap): parse a small source with an entry-bodied `?` in
+stacked operand position, run it through
+`Lyric.Propagate.lowerPropagateFile` (the exact pass the compiler runs on
+every file, hoist included), and assert the entry body gained the hoisted
+`val` and the call argument became a bare path.
+
+That AST-level test could **not** be folded into `propagate_hoist_self_test.l`
+itself, though — a second, unrelated wall: importing `Lyric.Lexer`/
+`Lyric.Parser`/`Lyric.Propagate` resolves fine under `--target dotnet`
+(`Msil.Bridge`'s restored-deps mechanism, #2364) but **not** under
+`--target jvm` — `Jvm.Bridge`'s `compileToJarBundled` only bundles a
+file's transitive `Std.*` import closure, with no mechanism to resolve a
+`Lyric.*` compiler-package import at all (confirmed: `T0020 unknown name
+'parse'`/`'lowerPropagateFile'`, the import silently resolving to nothing
+rather than erroring at the `import` line). `propagate_hoist_self_test.l`
+is wired dual-target in CI (35 tests, both targets); one non-JVM-compilable
+test would have broken the JVM job for all 35 existing cases. This mirrors
+`alias_rewriter_self_test.l`'s own existing constraint (dotnet-only, same
+reason, same `Lyric.Parser`/`Lyric.AliasRewriter` imports).
+
+**Shipped:** a new dedicated file,
+`lyric-compiler/lyric/propagate_hoist_entry_polarity_self_test.l`
+(1 test, `--target dotnet` only), wired into `ci.yml` right after the
+Alias-rewriter self-test step (same dotnet-only pattern). A second, minor
+side effect while building the first (abandoned) attempt: adding
+`Lyric.Parser` to `propagate_hoist_self_test.l`'s imports would have
+collided with that file's own local `record Item { name: String }`
+against `Lyric.Parser`'s `pub record Item` (the AST item-node type),
+surfacing as `error[T0113] no member 'kind' on type 'Item'` — a real
+same-file/imported-type bare-name ambiguity the type checker resolves to
+the WRONG (local) `Item` rather than erroring. Not pursued further since
+the pin moved to its own file and the collision no longer applies;
+recorded here in case it recurs elsewhere (a same-file type happens to
+share a name with an AST node type the file imports for inspection).
+
+**Verification:** `propagate_hoist_self_test.l` unchanged, still 35/35 on
+both `--target dotnet` and `--target jvm`.
+`propagate_hoist_entry_polarity_self_test.l` 1/1 on `--target dotnet`.
+Standard spot battery: `typechecker_self_test.l` 328/328,
+`emitter_project_self_test.l` 30/30, `bare_func_ref_self_test.l` 36/36
+both targets, `aspect_weave_self_test.l` 8/8 both targets.
+
+### Part 2 — eight-issue verdict table
+
+| # | Target | Verdict | Evidence |
+|---|---|---|---|
+| #6357 | JVM | **FIXED** | Multi-file `lyric test --manifest` run with one `@test_module` hitting a J007 erased-receiver refusal (`Box[Widget]` match-bound payload field read) no longer aborts the process. Healthy file's test runs and passes, the J007 file reports a clean per-file "test build failed" with the diagnostic, and the runner prints a final `== summary: 1 passed, 1 failed` with real exit code 1. Fixed by the emitter-containment work referenced directly in `emitter_project_self_test.l`'s own comment: "This is what keeps `lyric test`'s per-file loop from aborting the whole process on one file's codegen refusal (#6357)" (#6422/#6428). |
+| #6347 | JVM | **FIXED** | Single-file `lyric run --target jvm` on the same J007 repro shape now prints a clean `error[J007]: …member 'n' cannot be resolved…` + `B0001 error: build failed`, exit code 1 — no raw stack trace, no uncaught panic escaping the CLI. Same containment mechanism as #6357. Minor unrelated cosmetic residual noted, not blocking: the CLI's second diagnostic-summary line mangles the location as `J007 error [6347:14]` (package name `Repro6347` fused into the bracket) instead of a clean `file:line:col` — cosmetic, not a crash. |
+| #6346 / #6356 | JVM | **STILL-BROKEN** | Built + ran `lyric-mcp`'s full test suite via `lyric test --manifest lyric-mcp/lyric.toml --target jvm`. `Mcp.McpTests` (26 tests, includes `handleInitialize`) fails ALL 26 with the exact reported `java.lang.VerifyError`: "Inconsistent stackmap frames at branch target 153" in `Mcp/Server.handleInitialize(...)  @144: if_icmpgt`, current-frame stack `{String, int, int, int}` vs stackmap-frame stack `{}` at bci 153 — byte-for-byte the same signature as originally filed. Separately, `Mcp.McpSerializationTests` hits an UNRELATED J007 erased-receiver compile error (line 428, a `.name` read) — cleanly contained (not a crash), a distinct pre-existing gap, not part of #6346/#6356's own symptom. Not attempted here: JVM bytecode stackmap-frame miscomputation is the same class of bug the multi-round operand-hoist-engine effort (#6448–#6474) took many dedicated PRs to work through for `?`/`await`; `handleInitialize`'s frame divergence needs the same kind of dedicated bisection against the actual bytecode this sweep didn't have budget for. |
+| #6348 | MSIL | **STILL-BROKEN** | `lyric test lyric-compiler/lyric/jvm_trio_positive_self_test.l` (dotnet target, despite the "jvm" in the suite's name) reproduces verbatim: `System.AccessViolationException: Attempted to read or write protected memory… at System.Runtime.CompilerServices.CastHelpers.IsInstanceOfClass`, process exit 134 (SIGABRT), on the very first test (`String.indexOf WITH Std.String imported still returns Option[Int]`, #6124 positive path). Not attempted here: an `AccessViolationException` inside `CastHelpers.IsInstanceOfClass` indicates memory-layout/IL-encoding corruption (a bad type token, a corrupt vtable/MethodTable reference, or similar) — this class of bug needs careful low-level IL inspection (`ildasm`/metadata dump comparison) to bisect safely; guessing at a fix risks masking real corruption rather than fixing it. |
+| #6304 | JVM | **STILL-BROKEN** (contained, not a raw crash) | Repro: `impl Bumper for Counter { func bump(self: in Counter, xs: List[Int]): List[Int] { val f = { x: Int -> x + self.base }; … } }` — a lambda inside an `impl` method body reading `self.field`. `--target jvm` fails with `error[J007]: …member 'base' cannot be resolved on an erased (statically Object) receiver…` pointing at the lambda's `self.base` reference — the closure's captured `self` environment field is tracked as erased `Object`, not the concrete `Counter` type. Confirms the reported bug persists, but ALSO shows the containment work changed its character: this is now a clean compile-time diagnostic (not, presumably, whatever uncaught crash the issue may have originally reported before #6422/#6428's containment shipped) — noted as CHANGED-in-character alongside STILL-BROKEN-in-substance. Not attempted here: fixing the underlying erased-capture-type tracking is squarely in the J007-series erased-receiver family (closure-capture environment field typing specifically, a JVM codegen subsystem this sweep didn't have budget to safely extend without risking the existing J007–J011 guard rails). |
+| #6338 | JVM | **STILL-BROKEN** | Two-package project (`Helper.Sub` declaring `extern type JList = "java.util.ArrayList"`; `Caller` doing `import Helper.Sub as H` and using `H.JList` as a function param type). A NON-colliding repro (no local `JList` in `Caller`) compiles and runs correctly — `Lyric.AliasRewriter`'s `rewriteTypeExpr`/`rewritePath` do correctly flatten `H.JList` to the 3-segment `Helper.Sub.JList` TRef at the AST level, and `pipeExpandAndRewrite` runs this pass uniformly for both targets. Adding an UNRELATED same-short-name local type to `Caller` (`record JList { tag: String }`) flips the SAME `H.JList` param-type reference to `error[J008]: JVM auto-FFI: class 'Caller.JList' not found in JDK jmods or LYRIC_FFI_JARS` — the auto-FFI FQN resolver built "Caller" (the call site's own package) + the type's bare last segment instead of resolving through the alias to `Helper.Sub`, exactly matching the issue's "resolves to the caller's own package" description. This narrows the trigger condition beyond the issue title: it needs a short-name COLLISION between the qualified reference's target and a same-package local symbol to manifest, not merely "any alias-qualified extern type in a signature" — worth relaying to whoever picks this up, since a non-colliding smoke test would (wrongly) look green. Not attempted here: the discrepancy between the correct AST-level rewrite and the wrong runtime FQN implies a SEPARATE, later-stage symbol-resolution path (likely in `typechecker_resolver.l` or the JVM auto-FFI lookup itself) that re-resolves the short name independently of the alias-rewritten AST and has its own, buggy tie-breaking precedence when a same-package candidate exists — this needs targeted study of that resolution path before a safe fix, more than this sweep's budget allowed. |
+| #6330 | MSIL | **FIXED** | `record Box[T] { value: T }` + `val b = Box(value = 1)` in a bare `func main()`, run via both `lyric run` and `lyric build` (`--target dotnet`, no `--target` flag needed since dotnet is default) — compiles and runs cleanly, prints `1`. Confirmed no `lyric run`/`lyric test` divergence: the identical shape wrapped as an `@test_module` `test` also passes. Several richer variants (dual-instantiation `Box[Int]`+`Box[String]` in one file; a record-typed `T`; a generic helper function consuming the record) also compile and run correctly, with the one expected exception — `unbox[T](b: Box[T])` called with an UNANNOTATED `val b = Box(value = p)` correctly reports the actionable, pre-existing `M0002` "could not infer type argument(s)" diagnostic (not a crash, not this bug — the documented "annotate concrete generic locals" limitation) and resolves cleanly once `b` is annotated `Box[Point]`. Likely fixed by the in-bundle generics work (docs/43, D-progress-453/455 — in-bundle generic records now byte-correct) landing after this issue was filed. |
+
+**Verdict: no code fix shipped this round beyond the pin.** Every
+STILL-BROKEN item's root cause was narrowed (exact signature, exact
+trigger condition, and for #6338/#6304 a specific subsystem/file to start
+from) but none qualified as a small, single-subsystem, safely-testable fix
+within this sweep's scope — each sits in the same family of work
+(JVM bytecode-frame computation, erased-capture-type tracking, or
+cross-package symbol-resolution precedence) that the referenced
+multi-PR efforts (#6448–#6474, the J007–J011 series) needed dedicated,
+focused sessions to land correctly with full regression coverage.
+
+**Recommended next actions per issue:**
+- #6357, #6347, #6330 — **close**, with a comment linking this entry's
+  evidence (exact repro, exact output, verified via fresh `make lyric` +
+  `./bin/lyric`).
+- #6346/#6356 — **keep open**; the VerifyError signature is unchanged and
+  now has an exact byte offset (`bci 153`, `if_icmpgt @144`) and a
+  ready-made `lyric-mcp` repro (`lyric test --manifest lyric-mcp/lyric.toml
+  --target jvm`) for the next session to bisect against.
+- #6348 — **keep open**; flag as needing careful low-level IL
+  archaeology (metadata/IL dump comparison), not a quick patch — the
+  `jvm_trio_positive_self_test.l` repro is a one-command reproduction.
+- #6304 — **keep open**, but note the containment-era change: it no
+  longer crashes uncleanly, it fails a clean `J007` compile diagnostic.
+  Worth re-scoping as "erased-receiver: closure captures of `self` inside
+  an `impl` method" alongside the rest of the J007-series backlog.
+- #6338 — **keep open**, re-scope per the narrowed trigger: title it
+  around the short-name-collision condition specifically (a
+  same-package local symbol shadowing an alias-qualified cross-package
+  extern type in a signature position), since a non-colliding smoke
+  test does not catch it.
+- New findings from Part 1, each filed as its own issue (not folded
+  into #6448/#6454's own scope): (a) **#6475** MSIL — a non-tail
+  `return` statement inside a `protected type` entry body throws
+  `InvalidProgramException`; (b) **#6476** JVM — `?` anywhere in a
+  `protected type` entry body fails codegen with `Jvm.Codegen: match
+  not exhaustive`; (c) **#6479** JVM — a `protected type` `var` field
+  with a collection-typed default (`= newList()`) never runs its
+  initializer, reading back `null`.
+
+**Related:** #6357, #6347, #6346, #6356, #6348, #6304, #6338, #6330,
+#6475, #6476, #6479 (the three new findings filed from this sweep),
+#6454/D-progress-768 (the hoist engine this round's pin targets), #6422/
+#6428 (the emitter-containment work #6357/#6347 verified against),
+docs/43/D-progress-453/D-progress-455 (the in-bundle generics work #6330
+likely rode in on).
