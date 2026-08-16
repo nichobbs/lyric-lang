@@ -32,11 +32,11 @@
 //!     while a `return` as the entry's own LITERAL LAST statement
 //!     (`entry f(): Int { return 1 }`) is fine — `lowerProtectedMsil`'s
 //!     `entryFctx.epilogueLabel`/`leave` epilogue only handles that one
-//!     shape (`msil/codegen.l` ~line 25630). Untracked as of this writing.
+//!     shape (`msil/codegen.l` ~line 25630). Tracked as #6475.
 //!   * JVM: `?` anywhere in an entry body (again with zero hoist/stacking
 //!     involvement — a bare `entry f(): Result[Int, String] { val v = r?; v }`
 //!     reproduces it) fails codegen outright with
-//!     `Jvm.Codegen: match not exhaustive`. Untracked as of this writing.
+//!     `Jvm.Codegen: match not exhaustive`. Tracked as #6476.
 //!
 //! Both are unrelated pre-existing limitations, not a hoist-polarity
 //! regression (see docs/03-decision-log.md D-progress-769 for the full

@@ -29060,15 +29060,15 @@ of propagate/hoist/`?`:
   reachable from inside a nested block bypasses it. Since `e?` always
   desugars to `-> { return Err(x) }` nested inside a `match`, EVERY use of
   `?` in an entry hits this, regardless of stacked-operand position.
-  **Untracked** — no existing issue found for this MSIL entry/`return`
-  bug; filed as a new finding here.
+  Filed as **#6475**.
 - **JVM:** `?` anywhere in an entry body fails codegen outright with
   `Jvm.Codegen: match not exhaustive` — again reproducible with a bare
   `entry f(): Result[Int,String] { val v = r?; v }`, no stacking involved.
-  **Untracked** — likewise a new finding, separate root cause from the
-  MSIL one (a match-desugar/exhaustiveness gap in the JVM entry-body
-  codegen path, not a stackmap/frame issue).
-- A closely related JVM finding surfaced during isolation, also untracked:
+  Filed as **#6476** — a separate root cause from the MSIL one (a
+  match-desugar/exhaustiveness gap in the JVM entry-body codegen path,
+  not a stackmap/frame issue).
+- A closely related JVM finding surfaced during isolation (filed as
+  **#6479**):
   `protected type` `var` fields with a collection-typed default
   (`var items: List[Int] = newList()`) never run their initializer on
   `--target jvm` — `this.items` reads back `null` and any use NPEs. MSIL is
@@ -29165,15 +29165,17 @@ focused sessions to land correctly with full regression coverage.
   same-package local symbol shadowing an alias-qualified cross-package
   extern type in a signature position), since a non-colliding smoke
   test does not catch it.
-- New, untracked findings from Part 1 (worth filing as fresh issues, not
-  folded into #6448/#6454's own scope): (a) MSIL — a non-tail `return`
-  statement inside a `protected type` entry body throws
-  `InvalidProgramException`; (b) JVM — `?` anywhere in a `protected type`
-  entry body fails codegen with `Jvm.Codegen: match not exhaustive`;
-  (c) JVM — a `protected type` `var` field with a collection-typed
-  default (`= newList()`) never runs its initializer, reading back `null`.
+- New findings from Part 1, each filed as its own issue (not folded
+  into #6448/#6454's own scope): (a) **#6475** MSIL — a non-tail
+  `return` statement inside a `protected type` entry body throws
+  `InvalidProgramException`; (b) **#6476** JVM — `?` anywhere in a
+  `protected type` entry body fails codegen with `Jvm.Codegen: match
+  not exhaustive`; (c) **#6479** JVM — a `protected type` `var` field
+  with a collection-typed default (`= newList()`) never runs its
+  initializer, reading back `null`.
 
 **Related:** #6357, #6347, #6346, #6356, #6348, #6304, #6338, #6330,
+#6475, #6476, #6479 (the three new findings filed from this sweep),
 #6454/D-progress-768 (the hoist engine this round's pin targets), #6422/
 #6428 (the emitter-containment work #6357/#6347 verified against),
 docs/43/D-progress-453/D-progress-455 (the in-bundle generics work #6330
