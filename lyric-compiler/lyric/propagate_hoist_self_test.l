@@ -38,6 +38,20 @@
 //! `propagate.l`'s §2b module doc) to report a hazard unconditionally.  The
 //! previously-uncompilable shapes below are now embedded directly in this
 //! shared `@test_module`, since they compile validly post-fix.
+//!
+//! D-progress-771 addendum: `?` inside a `protected type` `entry` body, in
+//! the SAME stacked-operand position (`items.add(decode(s)?)`), was the
+//! ORIGINAL pin queued by PR #6474's review — unwritable until two sibling
+//! bugs found while isolating it were fixed: #6475 (MSIL — a non-tail
+//! `return` reachable from inside an entry body's `if`/`match` threw
+//! `InvalidProgramException`; `?`'s desugared match's Err arm, `return
+//! Err(x)`, is exactly that shape) and #6479 (JVM — a protected-type `var`
+//! field with a collection-typed default never ran its initializer, so
+//! `items.add(...)` NPE'd on a null `items`).  #6476 (JVM `?` in an entry
+//! failing codegen with "match not exhaustive") turned out NOT to reproduce
+//! with well-typed code once isolated from #6475/#6479 — see D-progress-771
+//! for the full writeup.  The entry-body early-return and collection-default
+//! cases each fix unblocked are pinned separately, below.
 @test_module
 package Lyric.PropagateHoistSelfTest
 
@@ -753,4 +767,101 @@ test "member-target assign: no-? try value stores through the temp, both paths (
     -1,
     "the catch handler's value is stored through the member write"
   )
+}
+
+// ── D-progress-771: `?` inside a `protected type` entry, stacked operand
+//    position — the originally-queued PR #6474 pin (#6475/#6479/#6476).
+func decodeCount(s: in String): Result[Int, String] {
+  if s == "good" {
+    Ok(1)
+  } else {
+    Err("bad count: " + s)
+  }
+}
+
+protected type DecodeBag {
+  var items: List[Int] = newList()
+  entry addDecoded(s: in String): Result[Unit, String] {
+    items.add(decodeCount(s)?)
+    Ok(())
+  }
+  entry itemCount(): Int {
+    items.count
+  }
+}
+
+test "? inside a protected-type entry, stacked operand position: Ok path adds and stores (#6475/#6479)" {
+  val bag = DecodeBag()
+  val r = bag.addDecoded("good")
+  match r {
+    case Ok(_) -> assertEqualInt(bag.itemCount(), 1, "the unwrapped value flows into the collection field")
+    case Err(_) -> assertTrue(false, "expected Ok")
+  }
+}
+
+test "? inside a protected-type entry, stacked operand position: Err path early-returns without storing (#6475/#6479)" {
+  val bag = DecodeBag()
+  val r = bag.addDecoded("bad")
+  match r {
+    case Ok(_) -> assertTrue(false, "expected Err")
+    case Err(e) -> {
+      assertEqual(e, "bad count: bad", "the propagated Err surfaces from inside the entry")
+      assertEqualInt(bag.itemCount(), 0, "the Err path never reaches items.add")
+    }
+  }
+}
+
+// ── D-progress-771: entry-body non-tail `return` (#6475) — a `return`
+//    reachable from inside an `if`/`match`, not the entry's own literal last
+//    statement, threw `InvalidProgramException` at first call on MSIL: the
+//    epilogue's fall-through detection used a raw counter of how many
+//    `return`s appeared ANYWHERE in the body instead of whether the TRAILING
+//    statement itself already exited.
+protected type Grader {
+  var total: Int = 0
+  entry grade(score: in Int): Int {
+    if score >= 90 {
+      return 100
+    }
+    score
+  }
+  entry gradeBoth(score: in Int): Int {
+    if score >= 90 {
+      return 100
+    } else {
+      return 0
+    }
+  }
+}
+
+test "entry-body non-tail return: if-without-else falls through to the trailing expression (#6475)" {
+  val g = Grader()
+  assertEqualInt(g.grade(95), 100, "the non-tail return short-circuits")
+  assertEqualInt(g.grade(50), 50, "falling through past the if reaches the trailing expression")
+}
+
+test "entry-body non-tail return: if/else where both branches return (#6475)" {
+  val g = Grader()
+  assertEqualInt(g.gradeBoth(95), 100, "the then-branch return")
+  assertEqualInt(g.gradeBoth(50), 0, "the else-branch return")
+}
+
+// ── D-progress-771: protected-type `var` field with a collection-typed
+//    default (#6479) — on JVM, the field's initializer was never run
+//    (`this.items` read back `null`); MSIL was unaffected.
+protected type Basket {
+  var fruits: List[String] = newList()
+  entry addFruit(name: in String): Unit {
+    fruits.add(name)
+  }
+  entry fruitCount(): Int {
+    fruits.count
+  }
+}
+
+test "protected-type var field with a collection-typed default runs its initializer (#6479)" {
+  val basket = Basket()
+  assertEqualInt(basket.fruitCount(), 0, "the collection default initializes to empty, not null")
+  basket.addFruit("apple")
+  assertEqualInt(basket.fruitCount(), 1, "adding to the initialized collection works")
 }

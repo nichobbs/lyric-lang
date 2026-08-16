@@ -404,6 +404,78 @@ test "emitProject alias-qualified extern type signature non-collision control (J
   )
 }
 
+// GENERIC-extern-type variant of the #6338 collision shape above: the
+// alias-qualified reference `H.JDict[String, String]` parses to `TGenericApp`
+// (`head: ModulePath, args: List[TypeArg]`), not the plain `TRef`/`TPath`
+// `H.JList` parses to.  Pins that the #6338 fix's alias-qualified,
+// collision-aware resolution also covers the `TGenericApp` type-expr shape,
+// not just the non-generic one the three tests above exercise.  Construction
+// goes through `@externTarget` for the zero-arg constructor only (generic
+// constructor shorthand — `.new()` on a generic extern type — is docs/48
+// Q48-001, deferred; a zero-arg ctor has no type-parameter-dependent
+// descriptor, so a concretely-typed `newJDict(): JDict[String, String]`
+// wrapper is safe); `.put`/`.size` go through ordinary auto-FFI method-call
+// resolution (`d.put(...)`) instead of hand-written `@externTarget`
+// wrappers — `@externTarget` requires an EXACT literal descriptor match,
+// and `ConcurrentHashMap<K,V>.put` erases to `Object put(Object, Object)`
+// in real JDK bytecode, so a concretely `String`-typed `@externTarget`
+// wrapper resolves to a nonexistent `(String,String)String` overload
+// (`NoSuchMethodError`) — exactly like the passing `JList`/`ArrayList`
+// tests above already call `.add(...)` via auto-FFI, not a hand-written
+// wrapper, for the identical erasure reason.  `describeExtern`'s parameter
+// still forces the TGenericApp-typed signature to resolve to the real
+// `ConcurrentHashMap`, not the caller's own colliding `JDict` record.
+test "emitProject alias-qualified GENERIC extern type signature collision (JVM, TGenericApp)" {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "Alias6338Generic.Helper",
+      "package Alias6338Generic.Helper\n" + "\n" +
+        "extern type JDict[K, V] = \"java.util.concurrent.ConcurrentHashMap\"\n" +
+        "\n" +
+        "@externTarget(\"java.util.concurrent.ConcurrentHashMap.<init>\")\n" +
+        "func newJDict(): JDict[String, String] = ()\n" +
+        "\n" +
+        "pub func makeDict(): JDict[String, String] {\n" +
+        "  val d = newJDict()\n" +
+        "  d.put(\"a\", \"1\")\n" +
+        "  d.put(\"b\", \"2\")\n" +
+        "  d\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "Alias6338Generic.App",
+      "package Alias6338Generic.App\n" + "\n" + "import Alias6338Generic.Helper as H\n" + "\n" + "record JDict {\n" +
+        "  tag: String\n" +
+        "}\n" +
+        "\n" +
+        "pub func describeExtern(x: H.JDict[String, String]): Int {\n" +
+        "  x.size()\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val e = H.makeDict()\n" +
+        "  val local = JDict(tag = \"local-value\")\n" +
+        "  println(describeExtern(e))\n" +
+        "  println(local.tag)\n" +
+        "}\n"
+    )
+  )
+  val result = runEmitProjectJvmOpts("alias-6338-generic-jvm", pkgs, "Alias6338Generic")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "alias_qualified_generic_extern_signature_collision_jvm: exit 0 (stderr=" + result.stderr + ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    "2\nlocal-value",
+    "alias_qualified_generic_extern_signature_collision_jvm: real ConcurrentHashMap size + local record's own field both correct"
+  )
+}
+
 // Stdlib import resolved by the in-process bridge from LYRIC_STD_PATH /
 // the runtime path, not from `stdlibSources` (#1202).
 test "emitProject in-process stdlib import" {

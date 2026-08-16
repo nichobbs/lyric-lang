@@ -29330,3 +29330,188 @@ matching a freshly-built merge-base baseline exactly, the 5 failures
 pre-existing and local-environment-specific; lyric-web JVM smoke builds
 after manifest restore), and the #6338 collision tests still pass
 (emitter_project 33/33).
+
+## D-progress-771 — protected-type entry-body bug family (#6475, #6476, #6479) + five queued PR #6480 review items
+
+**Status:** #6475 and #6479 FIXED and verified. #6476 does NOT reproduce
+with well-typed code — the original repro (D-progress-769) was itself
+ill-typed, exposing a separate, unfiled type-checker gap documented below
+but not fixed here (out of scope; would balloon this round). All five
+Stream B items from PR #6480's review shipped.
+
+### #6479 (JVM) — protected-type `var` field with a collection-typed default never ran its initializer
+
+**Root cause.** `collectFileCasesExtern`'s `IProtected` arm
+(`lyric-compiler/jvm/codegen/06_items.l`, populating the `JvmCaseField`
+table `lowerConstruction` reads to fill in omitted constructor args, #5908)
+hardcoded `dflt = None` for all three `ProtectedField` shapes (`PFVar`,
+`PFLet`, `PFImmutable`), discarding each field's actual `init: Option[Expr]`
+even though the AST carries it (`ProtectedField.PFVar(name, ty, init, …)`,
+`parser_ast.l`). The sibling `IRecord`/`IOpaque` arms two cases above
+correctly thread `f.dflt`/`f.dflt` through. Since `Bag()` (a no-arg
+protected-type construction) omits every field, `lowerConstruction`
+consulted this table for a default, found `None`, and pushed the JVM
+zero-value (`null` for a reference-typed field like `List[Int]`) instead of
+evaluating `newList()` — `this.items` read back `null`, and any `.add`/
+`.count` on it NPE'd. MSIL was unaffected: its analogous field-collection
+path (`lowerProtectedMsil`) never had the same `None`-hardcoding bug.
+
+**Fix.** Bind each field's `init`/`dflt` and thread it into `dflt =` instead
+of hardcoding `None` (three one-line changes, `06_items.l` ~3871).
+
+### #6475 (MSIL) — non-tail `return` inside a protected-type entry body throws `InvalidProgramException`
+
+**Root cause — two bugs, same underlying gap (a diverging branch not
+recognized as diverging), in two different codegen sites:**
+
+1. **`lowerProtectedMsil`'s epilogue fall-through detection**
+   (`lyric-compiler/msil/codegen.l` ~25630) used
+   `entryFctx.epilogueUsed.count == 0` — a raw counter of how many `return`
+   statements appeared ANYWHERE in the entry body — to decide whether the
+   trailing block value still needed stashing + `leave`ing to the shared
+   epilogue. A `return` INSIDE a non-tail `if`/`match` bumps this counter
+   even when that branch is conditional: `if cond { return X }; y` still
+   falls through to evaluate `y` on the non-`cond` path, and that value was
+   silently dropped (never stashed, never `leave`d) whenever ANY return had
+   fired anywhere else in the body — ilverify confirms the exact defect:
+   `[FallthroughException]`/`[FallthroughIntoHandler]` at the tail of the
+   `try` region (the CLR's structural rule that a protected region's last
+   instruction must be a terminator). Fixed by using the TYPE
+   `lowerBlockExprMsil` reports for the trailing statement instead: `MVoid`
+   iff the trailing statement itself was an `SReturn`, or an `if`/`match`
+   all of whose arms diverged (in which case each arm's own `SReturn`
+   already stashed + `leave`d to the SAME `afterL` epilogue label) — never a
+   counter of returns anywhere in the body. The void-body arm needed no such
+   care: a `leave` takes no operand, so emitting it unconditionally (instead
+   of gating on the same wrong counter) is always safe — a redundant
+   trailing `leave` after an already-diverged body is harmless dead code.
+2. **`lowerIfExprMsil`'s arm-termination detection**
+   (`lyric-compiler/msil/codegen.l` ~9706) computed `thenTerm`/`elseTerm` via
+   `endsWithReturnMsil` alone, which recognizes `MRet`/`MThrow` as terminal
+   but not `MLeave` — the exact instruction `SReturn` emits INSIDE a
+   protected region (entries always are one, for the lock-release
+   `try`/`finally`). An `if`/`match` used as a function's own trailing
+   expression, both of whose branches `return`, wrongly computed a
+   `MVoid`-typed fall-through result with both arms treated as reaching the
+   shared join label — corrupting the stack-depth reconciliation between
+   arms once the whole `if` sat inside a `return`-emits-`leave` context (a
+   protected entry, never a plain function, where `SReturn` emits bare
+   `MRet` and this gap was invisible). Fixed by OR-ing in
+   `armEndsInLoopJumpMsil` (which already recognizes `MLeave`, used for
+   loop `break`/`continue`) — mirroring the identical `or` combinator
+   `lowerMatchExprMsil`'s arm-reconciliation already uses (`codegen.l`
+   ~10592) for the same reason.
+
+Diagnosed via `ilverify` (the `dotnet-ilverify` global tool,
+`scripts/ilverify-selfhosted.sh`'s harness), which pinpointed the exact
+`[FallthroughException]`/`[FallthroughIntoHandler]` EH-structural defect —
+a much sharper signal than the bare `InvalidProgramException` the CLR gives
+at runtime.
+
+**MSIL fix unblocks `?` in entries too**, as D-progress-769 predicted: `e?`
+desugars to a `match` whose `Err` arm is `return Err(x)` — exactly the
+non-tail-return shape bug 1 above fixes, and (when `?` sits in a value
+position feeding an enclosing `if`/`match`) exactly the arm-termination
+shape bug 2 fixes.
+
+### #6476 (JVM) — investigated, NOT a genuine JVM codegen gap
+
+D-progress-769's repro for this issue was
+`entry f(): Result[Int,String] { val v = r?; v }` — but `r?` on a
+`Result[Int, String]` UNWRAPS to `Int`; a bare `v: Int` trailing a function
+DECLARED to return `Result[Int, String]` (missing an `Ok(v)` wrap) is a
+genuine type error. Confirmed: the identical shape in a PLAIN (non-entry)
+function is correctly rejected by the type checker with `T0070` (`function
+body trailing expression has type Int but declared return type is
+Result[Int, String]`) — but the SAME shape inside a `protected type` `entry`
+body compiles with **no diagnostic at all**, on both targets, and produces
+undefined runtime behavior: `NullReferenceException` on MSIL (once #6475's
+fix stopped masking it with `InvalidProgramException`), and JVM's "match not
+exhaustive" panic — but ONLY when the caller later pattern-matches the
+resulting garbage value (`match r { case Ok(v) -> …; case Err(e) -> … }`
+finds neither `isinst` test passes, since `r` is not really an instance of
+either union case). Isolated with a standalone repro that calls the
+malformed entry WITHOUT ever matching its result (`println("before call");
+val r = b.addDecoded("good"); println("after call")`): both prints
+succeed — the entry call itself never panics on JVM. Re-tested every
+`?`-in-entry shape from D-progress-769/#6476 with the type mismatch
+corrected (`Ok(v)` wrapping the unwrapped value): all pass on JVM,
+including the stacked-operand-position shape and both `Ok`/`Err` paths (see
+the runtime pin below). **Conclusion: #6476 as filed does not reproduce
+with well-typed code; the JVM `?`-in-entry codegen path already works
+correctly.** No JVM codegen change was made for #6476.
+
+**New finding (unfiled, out of scope for this round): `protected type`
+`entry` bodies are never type-checked.** `checkProtectedDeclTypes`
+(`lyric-compiler/lyric/type_checker/typechecker_checker.l` ~1952, the only
+`PMEntry` handling anywhere in `typechecker_*.l`) resolves each entry's
+parameter/return TYPE REFERENCES (that the named types exist) but never
+calls `checkFunctionBody`/`checkBlock`/`inferExpr` on `entryDecl.body` — the
+body's statements and expressions are never type-checked at all, unlike
+`PMFunc` methods (which flow through the ordinary function-checking path)
+and unlike bare functions (whose bodies always do, catching this exact
+`T0070` shape). This lets arbitrarily ill-typed entry bodies compile
+silently and manifest as undefined runtime behavior instead of a compile
+error — a distinct, and likely more consequential, defect than #6476's
+JVM-specific framing suggested. Recommend filing a dedicated tracked issue;
+not fixed here (a type-checker change, out of scope for this round's
+MSIL/JVM codegen bugs, and could have its own ripple effects worth isolating
+on its own).
+
+### The unblocked runtime pin
+
+`propagate_hoist_self_test.l` (35 → 40 tests) gained the originally-queued
+PR #6474 pin — `?` inside a `protected type` entry, stacked operand
+position (`items.add(decode(s)?)`), both `Ok` and `Err` paths — plus three
+more cases exercising #6475/#6479 directly: entry-body non-tail `return`
+(`if`-without-else falling through, and `if`/`else` where both branches
+return), and a protected-type `var` field with a collection-typed default.
+All 40 pass on both `--target dotnet` and `--target jvm`.
+
+### Stream B — five queued PR #6480 review items
+
+1. `emitter_project_self_test.l` (33 → 34 tests): a `TGenericApp` collision
+   case — `extern type JDict[K, V] = "java.util.concurrent.ConcurrentHashMap"`
+   referenced alias-qualified (`H.JDict[String, String]`) under the same
+   short-name-collision shape as the existing three `#6338` cases,
+   `--target jvm`. Construction uses `@externTarget` for the (type-param-
+   independent) zero-arg constructor only; `.put`/`.size` go through
+   ordinary auto-FFI method-call resolution — a concretely-`String`-typed
+   `@externTarget` wrapper for `.put` resolves to a nonexistent
+   `(String,String)String` overload (`ConcurrentHashMap<K,V>.put` erases to
+   `Object put(Object,Object)` in real JDK bytecode; `@externTarget`
+   requires an exact descriptor match), exactly like the existing
+   `JList`/`ArrayList` collision tests already call `.add(...)` via auto-FFI
+   rather than a hand-written wrapper for the identical erasure reason.
+2. `lyric-compiler/jvm/codegen/01_types.l` `qualifiedExternKey` (~915):
+   simplified the hand-rolled owner-segments loop + `joinSegments(owner,
+   ".") + "." + last` concatenation to a single
+   `dottedPathOfSegments(path.segments)` call (`06_items.l` ~4006, same
+   `Jvm.Codegen` package — no `pub` needed, confirmed by a clean rebuild
+   cross-file). Behaviorally identical (dotting the owner segments then
+   appending the last segment is the same string as dotting every segment
+   together).
+3. `typechecker_resolver.l` (~373/385): cached the first
+   `symTableTryFindOne(tbl, last)` result into `defaultPick` and reused it
+   at the second call site instead of re-scanning — one linear scan instead
+   of two per multi-segment type resolution.
+
+**Verification.** Full `make lyric` rebuild (clean). `lyric fmt --write` on
+every changed `.l` file (all formatted cleanly, no refusals).
+`propagate_hoist_self_test.l` 40/40 both targets. `emitter_project_self_test.l`
+34/34 (dotnet-hosted harness, per its own header — not run with
+`--target jvm` as the compilation target, only via its internal
+`runEmitProjectJvmOpts` calls). `typechecker_self_test.l` 328/328.
+`bare_func_ref_self_test.l` 36/36 both targets. `auto_ffi_jvm_self_test.l`
+39/39 (jvm). `aspect_weave_self_test.l` 8/8 both targets.
+`block_shadow_self_test.l` 20/20 both targets. `async_spawn_self_test.l`
+26/26 both targets. Every `pin-entry-repro*.l` scratchpad repro re-run on
+both targets pre- and post-fix; every well-typed one now passes on both
+targets (the two ill-typed ones, repro3/repro5, are excluded per the #6476
+finding above — they exercise the newly-found, separately-tracked
+type-checker gap, not #6475/#6476/#6479).
+
+**Related:** #6475, #6476, #6479, D-progress-769 (the sweep that filed all
+three), PR #6474 (the original review that queued the `?`-in-entry pin), PR
+#6480 (Stream B's five review items), #6338/D-progress-770 (the collision
+fix Stream B item 1 extends coverage for).
