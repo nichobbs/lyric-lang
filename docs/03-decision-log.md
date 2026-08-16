@@ -28833,3 +28833,190 @@ statement-level try/catch suites regressed.
 **Related:** #6471, #6458, D-progress-766 (filed this defect),
 #6448/D-progress-762 (`Lyric.Propagate` §2b original hoist landing),
 #5606 (`Lyric.AwaitHoist`, the mirrored design this pass follows).
+
+## D-progress-768 — #6454: `Lyric.Propagate` §2b and `Lyric.AwaitHoist` unified into one parameterized operand-position ANF engine, `Lyric.HoistEngine`
+
+**Status:** ACCEPTED — full unification, both invariants (behavioral +
+self-build) green.
+
+**Problem.** `propagate.l` §2b's `?`-hoist (~1300 lines landed across
+#6448/#6456/#6460/#6463/#6471, D-progress-762) and `await_hoist.l`'s
+`await`-hoist (~1300 lines, #5606, ported the same fixes in #6457,
+D-progress-763) are two independently-maintained copies of the identical
+statement-level ANF algorithm: same name-like-receiver skip
+(`phIsNameLike`/`ahIsNameLike`), same "bind every operand evaluated before
+the last qualifying one" scheme, same `while`-condition loop rewrite, same
+`ELambda`/`ESpawn`/`ETry` scope exclusions, same assign-target rebinding.
+The two-copies risk was not hypothetical: D-progress-762 itself records a
+divergence (`?`'s binop-RHS rule) caught only mid-implementation by the test
+battery, and D-progress-763 is an entire decision-log entry whose sole
+content is porting five fixes from one file to its twin by hand.
+
+**Decision — extract the shared walk into `Lyric.HoistEngine`
+(`lyric-compiler/lyric/hoist_engine.l`), a library both passes call.**
+Confirmed via a mechanical diff (normalize both hoist sections' `ph`/`ah`
+identifier prefixes and `EPropagate`/`EAwait` node names to common tokens,
+then `diff`) that every remaining difference between the two hoist
+implementations reduces to exactly five behavioral axes plus the target
+node kind — no additional undocumented divergence was found. Each became a
+`HoistConfig` field:
+
+- `kind: HoistKind` (`HKPropagate` | `HKAwait`) — which AST node is this
+  instantiation's OWN hazard; the other kind is always a transparent
+  pass-through into its inner expression. Replaces the "function-typed
+  `isHazardExpr` field" shape #6454's own sketch proposed.
+- `freshPrefix: String` — `"__lyric_phoist_"` / `"__lyric_hoist_"`, kept
+  distinct per the async-SM field-naming precondition.
+- `unconditionalTryHazard: Bool` — `true` for `?` (#6471: an `STry`
+  statement is itself a hazard, independent of nested content); `false`
+  for `await` (`Lyric.Propagate` runs first in the pipeline and already
+  extracts any no-hazard try before `Lyric.AwaitHoist` ever sees the tree,
+  D-progress-767's own async-coverage verdict; a try containing an actual
+  await cannot arise at all, V0012 forbids it).
+- `binopRhsHazardUnconditional: Bool` — `true` for `?` (the MSIL emitter's
+  `phaseBSpillToLocal` never fires for `?`, so a bare `?` in a
+  non-short-circuit binop RHS needed catching here, D-progress-762); `false`
+  for `await` (that same spill already covers a bare await in binop RHS).
+- `nestedTargetAlsoQualifies: Bool` — `true` for `await` (a nested
+  `EAwait(EAwait(_))`'s inner completion is an operand of the outer await,
+  and the MSIL async-SM field pre-scan undercounts it unless flagged,
+  #5606); `false` for `?` (the parser never constructs a literal
+  `EPropagate(EPropagate(_))` — `e??` always routes through an intervening
+  `ECall`/`EIndex`/etc. node — so there is no pre-scan to keep in sync).
+- `asyncGated: Bool` — `true` for `await` (only `async func` bodies are
+  rewritten; a blocking await has no suspension to protect); `false` for
+  `?` (legal, and needing this hoist, in plain functions too). This flag
+  also decides whether `protected type` `entry` declarations are visited:
+  `EntryDecl` carries no `isAsync` field (entries can never be declared
+  async), so under `asyncGated = true` they are permanently ineligible —
+  matching `Lyric.AwaitHoist`'s pre-refactor behaviour, which never
+  rewrote `PMEntry` members at all — while `asyncGated = false` visits and
+  rewrites them exactly like a function body, matching
+  `Lyric.Propagate`'s pre-refactor `phEntryNeedsHoist`/`phRewriteEntry`.
+  (This is the one design wrinkle the original issue sketch didn't
+  anticipate: `EntryDecl` and `FunctionDecl` needed one shared boolean, not
+  two independent per-shape checks, because the field simply doesn't exist
+  on the entry side.)
+
+Six knobs total (`kind` plus five booleans) — under the issue's ~8-knob
+sizing threshold, so the refactor proceeded to full unification rather than
+a documented no-go.
+
+**Function-typed record fields vs. enum discriminant — chose the enum.**
+The issue's own sketch proposed `isHazardExpr: (Expr) -> Bool` as a config
+field. Investigated precedent before committing: `record_field_closure_self_test.l`
+covers 0-arg closure-literal fields invoked via `val fld = h.f; fld()`, and
+`bare_func_ref_self_test.l` (36 cases, #5362/#5366/#6393, both targets)
+covers a BARE top-level function name — no closure literal — stored in a
+record field, read into a local, then invoked (`storeInRecordThenCall`,
+`GuardHolder`'s defaulted field). This is a closer match to what
+`HoistConfig(isHazardExpr = phIsHazard, ...)` would need. But that same
+file's own header (line ~175) explicitly documents a live gap: chain-calling
+a function-typed field directly (`holder.h(10)`) "hits a separate,
+pre-existing method-dispatch gap unrelated to this addendum's thunk-synthesis
+fix" — every test in the suite reads the field into a local FIRST
+(`val f = holder.h; f(10)`). `hzHasHazard`/`hzNeedsHoist`/`hzHoistSpine` call
+their per-node predicate at 60+ sites throughout the walk; routing every one
+through a config-field closure would mean either (a) hitting the documented
+chain-call gap repeatedly, or (b) rebinding the field to a local at the top
+of every one of ~15 driver functions as a workaround — real, avoidable ABI
+risk for a refactor whose entire point is "no behavior change." Per the
+issue's own explicit fallback guidance, chose the **two-variant enum
+discriminant** (`HoistKind`) instead: `kind = HKPropagate` / `kind =
+HKAwait`, matched inline at the handful of "which node is my own hazard"
+branch points. Zero ABI risk, and the resulting code reads as clearly as
+the closure form would have (each branch point is a two-armed `match
+cfg.kind`).
+
+**Verification.**
+
+1. *Behavioral invariant — full battery, unchanged counts, both source
+   trees (before and after `lyric fmt --write`).* Every count matches the
+   issue's own pinned numbers exactly:
+   `propagate_hoist_self_test.l` 35/35 dotnet, 35/35 jvm;
+   `await_hoist_self_test.l` 11/11 dotnet, 11/11 jvm;
+   `propagate_self_test.l` 17/17;
+   `async_spawn_self_test.l` 26/26 dotnet, 26/26 jvm;
+   `async_sm_self_test.l` 65/65;
+   `try_catch_expr_self_test.l` 7/7;
+   `return_in_try_self_test.l` 9/9;
+   `try_finally_early_exit_self_test.l` 8/8;
+   `loop_eh_collection_self_test.l` 7/7;
+   `typechecker_self_test.l` 328/328;
+   `emitter_project_self_test.l` 30/30;
+   `bare_func_ref_self_test.l` 36/36 dotnet, 36/36 jvm;
+   `aspect_weave_self_test.l` 8/8 dotnet, 8/8 jvm;
+   `weaver_self_test.l` 46/46.
+2. *"Byte-identical when non-qualifying" property.* Not verified via a
+   literal byte-for-byte pre/post output diff (no harness hook invokes
+   `lowerPropagateFile`/`hoistAwaitsFile` standalone outside the pipeline);
+   verified via the cheaper faithful proxy the issue itself proposed: `rm
+   -f .bootstrap/stage1.stamp && make lyric` — a full stage-1 + AOT
+   self-build, which compiles the ENTIRE self-hosted compiler (including
+   `hoist_engine.l`/`propagate.l`/`await_hoist.l` themselves) through both
+   passes — succeeded cleanly TWICE (once pre-`fmt`, once post-`fmt`,
+   exit 0 both times, `bin/lyric` relinked both times). A mis-hoist
+   anywhere in the shared engine would corrupt the compiler's own
+   self-compile; it didn't. Combined with the full battery re-run against
+   the freshly-built binary (identical counts, both times), this is
+   stronger evidence than a two-file diff would have been — every
+   non-qualifying statement in ~150 compiler source files round-tripped
+   correctly.
+3. *Pipeline position.* `Lyric.HoistEngine` is a plain library — no pass
+   ordering, diagnostics, or pipeline-driver code lives in it.
+   `Lyric.Propagate.lowerPropagateFile` still calls
+   `hoistPropagateFile`/`hoistFile` as its own first step (called from
+   `pipeCheckAndMono`, unchanged); `Lyric.AwaitHoist.hoistAwaitsFile` is
+   still the sole export called from `pipeWeave`'s LAST slot (unchanged).
+   Neither pass's call site in `pipeline.l` needed to change.
+4. *Fresh-name prefixes.* `"__lyric_phoist_"` (`?`) and `"__lyric_hoist_"`
+   (`await`) preserved verbatim as `HoistConfig.freshPrefix` values —
+   confirmed still distinct in the source and exercised by the passing
+   `async_sm_self_test.l` battery (the suite that would catch an SM
+   field-naming collision).
+5. *Undocumented deltas.* None found beyond the `asyncGated`/`EntryDecl`
+   wrinkle described above, which is a faithful generalization of already-
+   documented, intentional behavior (not a new discovery about a bug) —
+   confirmed by tracing both pre-refactor `ahItemNeedsHoist`'s `IProtected`
+   case (no `PMEntry` arm at all) and `ahRewriteItem`'s (passes `PMEntry`
+   through unchanged), versus `phEntryNeedsHoist`/`phRewriteEntry`
+   (unconditional). The engine's `hzEntryNeedsHoist` reproduces both
+   exactly via the single `asyncGated` check.
+
+**New package.** `lyric-compiler/lyric/hoist_engine.l` —
+`Lyric.HoistEngine`, discovered automatically by the existing
+`loadCompilerPayloads` directory scan (reads `package Lyric.HoistEngine`
+from the file content; no manifest or bootstrap-script edit needed, same
+mechanism recently-added compiler files like `impl_defaults.l` rely on).
+Both `propagate.l` and `await_hoist.l` gained `import Lyric.HoistEngine`.
+
+**Line-count delta.** `propagate.l` 2151 → 743 lines, `await_hoist.l` 1393
+→ 149 lines, `hoist_engine.l` (new) 1536 lines. Net: 3544 → 2428 lines
+(−1116, ~31%) despite the engine file carrying a substantially expanded
+module doc (the full design + all five config axes' evidence now lives in
+ONE place instead of being split, and partially duplicated, across two
+module docs).
+
+**Docs.** `propagate.l` and `await_hoist.l`'s own module docs trimmed to
+describe only what's local to each pass (the `?`/`await`-specific
+motivation, scope summary, and that pass's own `HoistConfig` literal),
+pointing at `Lyric.HoistEngine`'s module doc for the shared walk design —
+mirroring how the sketch's "library declares, consumer configures" shape
+reads elsewhere in the codebase (docs/58's wire templates). No language-
+reference or book changes: `docs/01-language-reference.md` §4.5's
+operand-position prose describes observable `?`/`await` behavior, which is
+unchanged by construction. docs/41 and docs/59's existing prose about
+these two passes describes what each pass DOES (still accurate), not an
+internal-duplication claim requiring correction; their line-number
+citations into `propagate.l` were already point-in-time snapshot artifacts
+predating this change and are out of this refactor's scope.
+
+**Verdict: CLOSE #6454.** Full unification shipped — no dual-implementation
+fallback, no partial engine-plus-leftover-walker state.
+
+**Related:** #6454, #6448/D-progress-762 (`Lyric.Propagate` §2b original
+hoist), #5606/D-progress-763 (`Lyric.AwaitHoist` and its propagate-side
+port), D-progress-766/D-progress-767 (the `?`-hoist's most recent fixes,
+now living in the shared engine), #5511/`record_field_closure_self_test.l`
+and #5362/#5366/#6393/`bare_func_ref_self_test.l` (the function-typed-field
+precedent investigated and deliberately NOT used).
