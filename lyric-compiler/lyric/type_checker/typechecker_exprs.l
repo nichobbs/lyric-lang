@@ -1226,7 +1226,7 @@ pub func inferExprOrBlock(
 ): Type {
   match eob {
     case EOBExpr(ex) -> inferExpr(sc, tbl, sigs, diag, ex)
-    case EOBBlock(bl) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, diag, bl, true)
+    case EOBBlock(bl) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, sc.returnTyExpr, diag, bl, true)
   }
 }
 
@@ -1404,7 +1404,13 @@ func substituteMethodSig(entry: in MethodEntry, recv: in Type, targs: in List[Ty
     if doSub {
       ty = substituteTyVars(ty, entry.ownerGenerics, targs)
     }
-    np.add(ResolvedParam(name = p.name, ty = ty, mode = p.mode, hasDefault = p.hasDefault, span = p.span))
+    // #6467: `p.tyExpr` threads through Self/generic substitution unchanged —
+    // substitution only ever rewrites a `Self` or owner-generic reference,
+    // never the alias identity of an unrelated aliased annotation, so pairing
+    // the original `tyExpr` with the substituted `ty` for display stays sound.
+    np.add(
+      ResolvedParam(name = p.name, ty = ty, mode = p.mode, hasDefault = p.hasDefault, span = p.span, tyExpr = p.tyExpr)
+    )
     i = i + 1
   }
   var rty = substitutesSelf(entry.sig.returnTy, recv)
@@ -1934,7 +1940,8 @@ func resolveExprPath(
             case None -> {
               // Infer against an empty scope to avoid the caller's local bindings
               // shadowing module-level names referenced in vd.init.
-              val emptyScope = newScopeForFunction(TyError, newList())
+              val noRte: Option[TypeExpr] = None
+              val emptyScope = newScopeForFunction(TyError, newList(), noRte)
               return inferExpr(emptyScope, tbl, sigs, diag, vd.init)
             }
           }
@@ -3158,7 +3165,8 @@ func checkConstRefPattern(
                 val valTy = match vd.ty {
                   case Some(te) -> resolveType(tbl, ctx, diag, te)
                   case None -> {
-                    val emptyScope = newScopeForFunction(TyError, newList())
+                    val noRte: Option[TypeExpr] = None
+                    val emptyScope = newScopeForFunction(TyError, newList(), noRte)
                     inferExpr(emptyScope, tbl, sigs, diag, vd.init)
                   }
                 }
@@ -3705,11 +3713,12 @@ pub func inferExpr(
     // A value-position brace block / `unsafe { … }` has the type of its trailing
     // expression (or `Unit` if it ends in a statement, or `Never` if it diverges)
     // — `checkBlock` walks the statements (binding locals) and returns that type.
-    // sc.genericNames / sc.returnTy are passed explicitly here because checkBlock
-    // still carries them as standalone parameters (follow-up: remove them once all
-    // branch forms are wired and checkBlock can read them from sc directly).
-    case EBlock(blk) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, diag, blk, true)
-    case EUnsafe(blk) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, diag, blk, true)
+    // sc.genericNames / sc.returnTy / sc.returnTyExpr are passed explicitly here
+    // because checkBlock still carries them as standalone parameters (follow-up:
+    // remove them once all branch forms are wired and checkBlock can read them
+    // from sc directly).
+    case EBlock(blk) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, sc.returnTyExpr, diag, blk, true)
+    case EUnsafe(blk) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, sc.returnTyExpr, diag, blk, true)
     case ETry(_) -> TyError
     // EForall/EExists: quantifier expressions used in contracts.  Bind the
     // quantified variables into a fresh scope, infer the optional `where`
@@ -3827,7 +3836,8 @@ func inferLambda(
     scopeAdd(sc, LocalBinding(name = lp.name, ty = pTy, isMutable = false))
     li = li + 1
   }
-  val bodyTy = checkBlock(sc, tbl, sigs, sc.genericNames, TyError, diag, body, true)
+  val noLambdaRte: Option[TypeExpr] = None
+  val bodyTy = checkBlock(sc, tbl, sigs, sc.genericNames, TyError, noLambdaRte, diag, body, true)
   scopePop(sc)
   TyFunction(params = paramTypes, ret = bodyTy, isAsync = false)
 }
@@ -3940,7 +3950,7 @@ func checkCallArgsAgainstSig(
           diag.add(
             errorDiagnostic(
               "T0043",
-              "argument type " + renderType(argTy) + " does not match parameter type " + renderType(p.ty),
+              "argument type " + renderType(argTy) + " does not match parameter type " + renderOptTypeExpr(p.tyExpr, p.ty),
               span
             )
           )

@@ -3252,3 +3252,74 @@ test "call-style access to the same unrelated local-opaque UFCS function still c
   assertTrue(not hasDiagCode(cr, "T0116"), "call-style c.summary(): no T0116")
   assertEqualInt(diagCount(cr), 0, "call-style c.summary(): no diagnostics at all")
 }
+
+// #6467: T0064/T0065 (early `return` inside a function body) now render the
+// alias the user wrote too, matching T0070/T0114 — `checkStatement` receives
+// `returnTyExpr: Option[TypeExpr]` threaded alongside `returnTy`, seeded from
+// `fn.ret` at `checkFunctionBody`'s `newScopeForFunction` call. The early
+// return sits inside an `if` block so the assertion also proves the thread
+// survives a nested `checkBlock` recursion, not just the function's own
+// top-level block.
+test "T0065 early-return mismatch names the alias the user wrote (#6467)" {
+  val src = "package P\nalias Meters = Long\nfunc f(b: in Bool): Meters {\n  if b {\n    return \"oops\"\n  }\n  return 0i64\n}\n"
+  val cr = parseCheckAliasResolved(src)
+  val m = diagMessageFor(cr, "T0065")
+  assertTrue(Str.contains(m, "Meters (aka Long)"), "T0065 message names the alias: " + m)
+}
+
+// No-alias control: a plain `Long`-returning function's early-return
+// mismatch renders unchanged (bare type name, no "aka").
+test "T0065 early-return mismatch with no alias renders unchanged (#6467)" {
+  val src = "package P\nfunc f(b: in Bool): Long {\n  if b {\n    return \"oops\"\n  }\n  return 0i64\n}\n"
+  val cr = parseCheckAliasResolved(src)
+  val m = diagMessageFor(cr, "T0065")
+  assertTrue(Str.contains(m, "Long") and not Str.contains(m, "aka"), "T0065 message has no alias: " + m)
+}
+
+// T0064 (return-without-value mismatch) shares the same `returnTyExpr`
+// thread as T0065 — cover it too so both SReturn arms are pinned.
+test "T0064 return-without-value mismatch names the alias the user wrote (#6467)" {
+  val src = "package P\nalias Meters = Long\nfunc f(): Meters {\n  return\n}\n"
+  val cr = parseCheckAliasResolved(src)
+  val m = diagMessageFor(cr, "T0064")
+  assertTrue(Str.contains(m, "Meters (aka Long)"), "T0064 message names the alias: " + m)
+}
+
+// #6467 family 2: call-argument-vs-declared-parameter mismatches (T0043) also
+// render the alias — `ResolvedParam` gains a `tyExpr: Option[TypeExpr] = None`
+// field (defaulted, so the three construction sites that don't have a source
+// `TypeExpr` in hand are untouched), populated at `resolveFunctionSig` /
+// `resolveMethodSigParts` from the same alias-resolved `p.ty` that seeds
+// `Scope.returnTyExpr`.  `substituteMethodSig` threads it through unchanged.
+test "T0043 call-argument mismatch names the alias the user wrote (#6467)" {
+  val src = "package P\nalias Meters = Long\nfunc takesMeters(m: in Meters): Unit {\n}\nfunc f(): Unit {\n  takesMeters(\"oops\")\n}\n"
+  val cr = parseCheckAliasResolved(src)
+  val m = diagMessageFor(cr, "T0043")
+  assertTrue(Str.contains(m, "Meters (aka Long)"), "T0043 message names the alias: " + m)
+}
+
+test "T0043 call-argument mismatch with no alias renders unchanged (#6467)" {
+  val src = "package P\nfunc takesLong(m: in Long): Unit {\n}\nfunc f(): Unit {\n  takesLong(\"oops\")\n}\n"
+  val cr = parseCheckAliasResolved(src)
+  val m = diagMessageFor(cr, "T0043")
+  assertTrue(Str.contains(m, "Long") and not Str.contains(m, "aka"), "T0043 message has no alias: " + m)
+}
+
+// #6467 family 2: impl-vs-interface signature mismatches (T0106/T0107) don't
+// need any `ResolvedParam`/`ResolvedSignature` plumbing at all —
+// `checkImplConformance` already compares the raw `sig.params[pi].ty` /
+// `fn.params[pi].ty` (and `sig.ret` / `fn.ret`) `TypeExpr`s directly, so this
+// is a `renderTypeExpr`/`renderOptTypeExpr` call-site swap only.
+test "T0106 impl param type mismatch names the interface's alias (#6467)" {
+  val src = "package P\nalias Meters = Long\ninterface Sizer {\n  func size(m: in Meters): Int\n}\nrecord Box {\n  n: Int\n}\nimpl Sizer for Box {\n  func size(m: in String): Int {\n    0\n  }\n}\n"
+  val cr = parseCheckAliasResolved(src)
+  val m = diagMessageFor(cr, "T0106")
+  assertTrue(Str.contains(m, "Meters (aka Long)"), "T0106 message names the interface's alias: " + m)
+}
+
+test "T0107 impl return type mismatch names the interface's alias (#6467)" {
+  val src = "package P\nalias Meters = Long\ninterface Namer {\n  func name(): Meters\n}\nrecord Box {\n  n: Int\n}\nimpl Namer for Box {\n  func name(): String {\n    \"x\"\n  }\n}\n"
+  val cr = parseCheckAliasResolved(src)
+  val m = diagMessageFor(cr, "T0107")
+  assertTrue(Str.contains(m, "Meters (aka Long)"), "T0107 message names the interface's alias: " + m)
+}

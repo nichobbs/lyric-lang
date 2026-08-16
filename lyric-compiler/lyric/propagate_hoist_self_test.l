@@ -23,6 +23,16 @@
 //! through `Jvm.Bridge` (`compileToJarBundled`) and runs under `java` (the
 //! reported stackmap-frame VerifyError target).  Imports only `Std.*`, so no
 //! `LYRIC_LOAD_COMPILER=1` is needed.
+//!
+//! #6458 addendum: a `?` reachable only through a value-position `try`
+//! expression used as a stacked call argument (`xs.add(try { e? } catch …)`)
+//! is covered too — verified NOT to be a gap (see `propagate.l`'s §2b module
+//! doc). A SEPARATE, `?`-unrelated defect — a `try` expression with NO `?`
+//! anywhere still crashes in the same stacked-operand position on both
+//! targets — is deliberately NOT exercised here: reproducing it live crashes
+//! the whole compiled test module (`InvalidProgramException` / `VerifyError`
+//! at method-load time, confirmed via a standalone `lyric run` repro, not
+//! embedded in this shared `@test_module`).
 @test_module
 package Lyric.PropagateHoistSelfTest
 
@@ -582,5 +592,52 @@ test "? in operand position inside a loop invariant expression hoists" {
     (match sumWithPropInvariant(5) { case Ok(v) -> v; case Err(_) -> -1 }),
     10,
     "0+1+2+3+4 = 10 with the ?-bearing invariant checked per iteration"
+  )
+}
+
+// ── #6458: ? reachable only through a value-position `try` expression, used
+//    as a method-call argument (the reported shape) ──────────────────────────
+// `xs.add(v)` stacks the receiver `xs` before the argument evaluates; the
+// argument here is `try { decodeChecked(s)? } catch Bug as b { -1 }`, a
+// value-producing try/catch (parsed as `EBlock([STry(...)])`, per the §2b
+// module doc's #6458 note — never a bare `ETry`).  The nested `?` makes
+// `phHasProp` flag the argument, so `phHoistSpine`'s generic `EBlock` rule
+// binds the WHOLE try expression to a fresh `val` before the call — entering
+// the try's protected region with an empty stack — exactly the fix #6458
+// asked for.  `decodeChecked` never actually throws (the catch clause is
+// unreachable in this test), so the `log` marker inside the try body proves
+// the try's own evaluation still runs in the right place relative to `mark`.
+func decodeChecked(log: in List[String], s: in String): Result[Int, String] {
+  log.add("decode")
+  if s == "good" {
+    Ok(7)
+  } else {
+    Err("bad checked id: " + s)
+  }
+}
+
+func collectViaTry(log: in List[String], s: in String): Result[List[Int], String] {
+  val xs: List[Int] = newList()
+  xs.add(try { decodeChecked(log, s)? } catch Bug as b { -1 })
+  Ok(xs)
+}
+
+test "try-expression call argument: ? inside the try body hoists (#6458)" {
+  val log: List[String] = newList()
+  val r = collectViaTry(log, "good")
+  match r {
+    case Ok(xs) -> assertEqualInt(xs[0], 7, "unwrapped value flows out of the hoisted try expression")
+    case Err(_) -> assertTrue(false, "expected Ok")
+  }
+  assertEqual(joinLog(log), "decode", "the try body still evaluates exactly once")
+}
+
+test "try-expression call argument: ? inside the try body still propagates Err (#6458)" {
+  val log: List[String] = newList()
+  val r = collectViaTry(log, "bad")
+  assertEqual(
+    (match r { case Ok(_) -> "OK"; case Err(e) -> e }),
+    "bad checked id: bad",
+    "the Err propagates from inside the hoisted try expression, catch clause never runs"
   )
 }

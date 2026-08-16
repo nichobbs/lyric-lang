@@ -290,6 +290,17 @@ pub func renderTypeExpr(te: in TypeExpr, t: in Type): String {
   }
 }
 
+// #6467: `renderTypeExpr`'s `Option[TypeExpr]`-aware counterpart, for call
+// sites (like `checkStatement`'s `returnTyExpr` thread) that carry the
+// originating annotation only optionally — `None` when no source `TypeExpr`
+// is co-located with `t` (e.g. a synthetic scope with no enclosing function).
+pub func renderOptTypeExpr(teOpt: in Option[TypeExpr], t: in Type): String {
+  match teOpt {
+    case Some(te) -> renderTypeExpr(te, t)
+    case None -> renderType(t)
+  }
+}
+
 func joinTypes(ts: in List[Type], sep: in String): String {
   if ts.count == 0 {
     return ""
