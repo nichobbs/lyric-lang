@@ -772,6 +772,7 @@ pub func checkFunctionBody(
   diag: in List[Diagnostic],
   fn: in FunctionDecl,
   sig: in ResolvedSignature,
+  extraLocals: in List[LocalBinding],
 ): Unit {
   if hasExternTargetAnnotation(fn.annotations) {
     // F0002: both @externStatic and @externInstance on one extern.
@@ -792,6 +793,19 @@ pub func checkFunctionBody(
   // (raised deep inside a nested block via `checkStatement`) render the same
   // alias-aware display as T0070/T0114 below.
   val sc = newScopeForFunction(sig.returnTy, sig.generics, fn.ret)
+  // #6481: protected-type entry/func bodies read/write the enclosing type's
+  // fields as bare names (no explicit `self` param); the caller seeds those
+  // bindings here so a bare `count = count + 1` resolves — and so writing a
+  // `let`/immutable field trips the SAME `isMutable`-driven T0087 the ordinary
+  // val/let-reassignment check already gives locals, with no separate
+  // mode-checker rule needed.  Seeded BEFORE params so a param name shadows a
+  // same-named field (last-added wins in `scopeTryFind`), matching ordinary
+  // inner-scope-shadows-outer precedent.  Empty for plain top-level functions.
+  var el = 0
+  while el < extraLocals.count {
+    scopeAdd(sc, extraLocals[el])
+    el = el + 1
+  }
   // #6418: `fn.ret` is the ORIGINAL (pre-erasure) return-type annotation —
   // `Lyric.TypeAliasResolve` runs before this checker, so `fn.ret`'s
   // `TypeExpr` (when present) already carries `aliasName` if the user wrote
