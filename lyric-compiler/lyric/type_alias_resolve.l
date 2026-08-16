@@ -1259,11 +1259,30 @@ func resolveAspectDecl(aliasTargets: in Map[String, TypeExpr], d: in AspectDecl)
   }
   val around2 = match d.around {
     case Some(a) -> {
+      // #6469: the row clause's field types (`where TArgs has { f: T }`,
+      // docs/56) are real `TypeExpr`s the weaver's row-satisfaction check
+      // compares BY NAME against the matched function's already-resolved
+      // parameter types (`bmodeTypeExprKey`) — an unresolved alias here
+      // spuriously key-mismatches (A0047) and drops the field.  Resolve
+      // them like every other aspect surface.
+      val argsRow2: Option[List[ArgsRowField]] = match a.argsRow {
+        case Some(fields) -> {
+          val rf: List[ArgsRowField] = newList()
+          var ri = 0
+          while ri < fields.count {
+            val f = fields[ri]
+            rf.add(ArgsRowField(name = f.name, ty = resolveTypeExpr(aliasTargets, noGenerics, f.ty), span = f.span))
+            ri = ri + 1
+          }
+          Some(value = rf)
+        }
+        case None -> a.argsRow
+      }
       Some(
         value = AspectAround(
           argsName = a.argsName,
           retName = a.retName,
-          argsRow = a.argsRow,
+          argsRow = argsRow2,
           body = resolveBlock(aliasTargets, noGenerics, a.body),
           span = a.span
         )

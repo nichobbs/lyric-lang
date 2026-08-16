@@ -28414,3 +28414,16 @@ both targets; `weaver_self_test.l` 46/46; `bare_func_ref_self_test.l`
 from), D-progress-748 (`Lyric.TypeAliasResolve` original landing),
 D-progress-752 (per-site fallback audit), D-progress-764 (T0118 chain
 rule this session's first pin extends).
+
+**Review addendum (#6469, same PR).** PR #6468's review found a fourth
+`TypeExpr`-bearing aspect surface `resolveAspectDecl` missed: the
+`where TArgs has { field: Type }` row clause (docs/56 B′-mode row-typed
+aspect args). Each `ArgsRowField.ty` is compared BY NAME by the weaver's
+row-satisfaction check (`bmodeTypeExprKey`) against the matched
+function's already-resolved parameter type, so an aliased row-field type
+would spuriously key-mismatch (A0047) and drop the field — the exact
+failure class this entry's slice (a) closes, on a surface the
+enumeration missed. Fixed by resolving each row field's `ty` through
+`resolveTypeExpr` like `resolveConfigField`; pinned by a
+`resolveItem`-level unit test (aliased field resolves, non-alias field
+and names untouched). `type_alias_resolve_self_test.l` 8 -> 9.

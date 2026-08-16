@@ -221,3 +221,74 @@ test "cycle routed through a const-generic value expression's lambda-param annot
     case _ -> assertTrue(false, "expected the array shape to survive (possibly with a nested unresolved residual)")
   }
 }
+
+// #6469 (PR #6468 review): the `where TArgs has { field: Type }` row
+// clause's field types are real TypeExprs the weaver's row-satisfaction
+// check compares BY NAME against the matched function's already-resolved
+// parameter types (`bmodeTypeExprKey`) — an unresolved alias here
+// spuriously key-mismatches (A0047) and drops the field. Assert
+// `resolveAspectDecl` (via `resolveItem`) resolves row-field types like
+// every other aspect surface.
+test "aspect argsRow field types resolve aliases (#6469)" {
+  val at: Map[String, TypeExpr] = newMap()
+  at.add("Meters", tref("Long"))
+  val emptyStmts: List[Statement] = newList()
+  val body = Block(statements = emptyStmts, span = syntheticSpan())
+  val rowFields: List[ArgsRowField] = newList()
+  rowFields.add(ArgsRowField(name = "bonus", ty = tref("Meters"), span = syntheticSpan()))
+  rowFields.add(ArgsRowField(name = "label", ty = tref("String"), span = syntheticSpan()))
+  val around = AspectAround(
+    argsName = "call",
+    retName = None,
+    argsRow = Some(value = rowFields),
+    body = body,
+    span = syntheticSpan()
+  )
+  val noConfig: List[ConfigField] = newList()
+  val noMatches: List[AspectMatcher] = newList()
+  val noExcept: List[String] = newList()
+  val noContracts: List[ContractClause] = newList()
+  val noWraps: List[String] = newList()
+  val noInside: List[String] = newList()
+  val decl = AspectDecl(
+    name = "ValidateBonus",
+    from = None,
+    config = noConfig,
+    matches = noMatches,
+    exceptNames = noExcept,
+    around = Some(value = around),
+    contracts = noContracts,
+    wraps = noWraps,
+    inside = noInside,
+    span = syntheticSpan()
+  )
+  val noDocs: List[DocComment] = newList()
+  val noAnns: List[Annotation] = newList()
+  val item = Item(
+    docComments = noDocs,
+    annotations = noAnns,
+    visibility = None,
+    kind = IAspect(decl = decl),
+    span = syntheticSpan()
+  )
+  val resolved = resolveItem(at, item)
+  match resolved.kind {
+    case IAspect(d2) -> {
+      match d2.around {
+        case Some(a2) -> {
+          match a2.argsRow {
+            case Some(fields2) -> {
+              assertEqualInt(fields2.count, 2, "both row fields survive resolution")
+              assertEqual(trefName(fields2[0].ty), "Long", "aliased row-field type resolves through the alias")
+              assertEqual(fields2[0].name, "bonus", "row-field name untouched")
+              assertEqual(trefName(fields2[1].ty), "String", "non-alias row-field type unchanged")
+            }
+            case None -> assertTrue(false, "argsRow must survive resolution")
+          }
+        }
+        case None -> assertTrue(false, "around must survive resolution")
+      }
+    }
+    case _ -> assertTrue(false, "resolved item must still be an IAspect")
+  }
+}
