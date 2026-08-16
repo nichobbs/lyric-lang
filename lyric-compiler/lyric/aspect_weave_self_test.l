@@ -201,3 +201,33 @@ test "Unit-returning out-variable advice (ret = proceed()) runs cleanly" {
   sink(2)
   assertTrue(true, "ret = proceed() on a Unit target wove without InvalidProgramException")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6416: a same-file `alias` referenced inside an aspect's `around` advice
+// body must resolve exactly like it would in an ordinary function body.
+// Before the fix, `Lyric.TypeAliasResolve.resolveItem` passed `IAspect`
+// through unchanged, so `Meters` below reached the weaver/codegen still
+// spelled as the literal name "Meters" — on `--target jvm` this crashed at
+// class-verification time (`VerifyError: Bad type on operand stack`, since
+// bytecode built for a nonexistent user class "Meters" was emitted where a
+// primitive `long` was expected), verified live against the pre-fix
+// compiler. This test proves the resolved value participates correctly in
+// real arithmetic on both targets (not merely "doesn't crash").
+// ─────────────────────────────────────────────────────────────────────────────
+alias Meters = Long
+
+aspect AddBonus {
+  matches: name in { addBonus }
+  around(call) -> ret {
+    val bonus: Meters = 10i64
+    ret = proceed() + bonus
+  }
+}
+
+func addBonus(): Long {
+  1i64
+}
+
+test "same-file alias inside aspect advice body resolves and participates in arithmetic (#6416)" {
+  assertEqualLong(addBonus(), 11i64, "proceed() + Meters-typed local: 1 + 10 = 11")
+}

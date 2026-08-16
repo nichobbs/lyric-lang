@@ -28151,3 +28151,266 @@ DETECTION coverage of that same rule tightened.
 **Related:** #6452, PR #6450, D-progress-761 (the original T0118
 check this closes boundaries of), #6445 (the underlying DIM-lowering
 gap both checks guard against).
+
+## D-progress-765 — T0118 chain-rule pin via a non-`self` param (#6466 review); `TypeAliasResolve` closes aspect bodies + the const-generic-value depth residual (#6416); alias-aware diagnostic display names (#6418)
+
+**Context.** Three items queued from earlier sessions: a tiny test pin
+left over from PR #6466's review round (T0118's chain rule through a
+non-`self` Self-typed parameter), and the two tracked gaps in #6416
+(`Lyric.TypeAliasResolve` doesn't walk `aspect` bodies; a theoretical
+depth-bound residual through const-generic value expressions), plus
+#6418 (checker diagnostics on an aliased annotation spell the
+resolved underlying type, not the alias the user wrote).
+
+**T0118 explicitness pin (#6466 review).** `isSelfLikeExpr`'s chain
+rule (D-progress-764) is receiver-generic — it walks ANY Self-typed
+binding in scope, not specifically `self` — so it already covered a
+non-`self` Self-typed parameter chained through a Self-returning
+member with no code change. Two tests pin this explicitly:
+`interface Merger8/9 { func withX(self: in Self): Self; func
+score(self: in Self): Int; func combined(self: in Self, other: in
+Self): Int { other.withX().base } }` (T0118) and the `other.withX
+().score()` sibling (no T0118). `typechecker_self_test.l` 316 -> 318
+from this pin alone (321 total after the #6418 additions below).
+
+**#6416 slice (a): aspect advice bodies now alias-resolved.**
+`Lyric.TypeAliasResolve.resolveItem`'s `IAspect` arm passed the
+declaration through unchanged; a new `resolveAspectDecl` walks the
+anonymous `config { }` block (reusing `resolveConfigField`), the
+`around` advice `Block` body (`resolveBlock`), and `requires:`/
+`ensures:` contracts (`resolveContracts`) exactly like any other
+item — `matches:`/`except name in {...}`/`wraps:`/`inside:`/`from`
+carry no `TypeExpr` and pass through untouched. Because each package
+resolves its OWN file's aliases (via `resolveTypeAliases`/
+`resolveTypeAliasesMsil`) BEFORE `Weaver.collectAspectTemplates` reads
+that file for cross-package `from`-instance templates (docs/55), this
+also satisfies "resolve against the declaring package's alias table"
+for library aspect templates with no extra plumbing — the ordering
+already guaranteed it.
+
+*Reachability: confirmed, not theoretical, and severe on JVM.*
+Verified live against the PRE-fix compiler (`git stash` on
+`type_alias_resolve.l` alone, full `make lyric` rebuild, `./bin/lyric
+run`/`run --target jvm`) with the issue's own repro shape
+(`alias Meters = Long; aspect AddBonus { matches: name in { addBonus
+}; around(call) -> ret { val bonus: Meters = 10i64; ret = proceed() +
+bonus } }`):
+- `--target dotnet`: built and ran correctly (exit 0) even PRE-fix —
+  MSIL's older per-site `cctx.aliasTargets` fallback (D-progress-752,
+  retained precisely because it covers gaps `TypeAliasResolve` didn't
+  reach) already resolved this specific same-file local-annotation
+  shape independently, so this particular repro shape was accidentally
+  masked on MSIL.
+- `--target jvm`: PRE-fix, this crashed at class-verification time —
+  `java.lang.VerifyError: Bad type on operand stack` at the woven
+  `ladd` (`Type long_2nd (current frame, stack[1]) is not assignable
+  to long`) — because JVM has no equivalent per-site fallback for
+  aspect bodies; `Meters` reached bytecode emission as a literal
+  unresolved name, producing a bytecode operand-stack type mismatch
+  the JVM verifier rejects at class-load time, not merely a wrong
+  diagnostic. This is the exact failure class #6404 fixed for ordinary
+  (non-aspect) code, now closed for aspect bodies too. POST-fix, both
+  targets build and run correctly, with the aliased local
+  (`bonus: Meters = 10i64`) participating in real arithmetic
+  (`proceed() + bonus` == `1i64 + 10i64` == `11i64`).
+
+Tests: `type_alias_resolve_self_test.l` gains a hand-built-AST check
+covering `resolveItem`'s `IAspect` arm (mirrors the file's existing
+`resolveItem`/`ImplDecl` pattern — a local `val x: Meters` inside a
+synthetic `AspectAround.body` resolves to `Long`).
+`aspect_weave_self_test.l` gains a runtime case (`addBonus`/
+`AddBonus`) run via native `lyric test` on BOTH targets — the JVM run
+is the load-bearing regression guard (MSIL was passing even pre-fix
+for this shape, per the reachability note above).
+`type_alias_resolve_self_test.l` 6 -> 8; `aspect_weave_self_test.l`
+7 -> 8 (both targets).
+
+**#6416 slice (b): the const-generic-value depth-bound residual —
+confirmed reachable, closed by threading depth through the whole
+expr/pattern/stmt/block walker.** The #6410 cycle guard threaded a
+depth bound through the TYPE family (`resolveTypeExprAt`/
+`resolveTypeArgAt`), but `TAValue`'s `expr` re-entered the type family
+through the DEPTH-0 `resolveExpr` wrapper whenever a nested `TypeExpr`
+annotation was reached inside it (a lambda param annotation, most
+commonly) — discarding the bound rather than merely narrowing it.
+
+*Reachability: confirmed, not theoretical — verified live via a stack
+overflow crash, not a hang timeout.* A hand-built repro
+(`alias A = array[0.identity({ (x: A) -> x }), Int]`, `identity`
+declared to accept `f: (A) -> A`) run against the PRE-fix compiler via
+`lyric build` produced an immediate, clean `Stack overflow.` crash
+report (918 repeated frames of
+`resolveTypeExprAt`/`resolveExpr`/`resolveTypeArgAt`/`resolveOptType`)
+— not a multi-second hang, an instant crash, since every cycle
+iteration allocates a fresh, unbounded native stack frame. This
+requires a deliberately pathological, essentially unwritable-by-
+accident source shape (an alias whose own rhs embeds a typed lambda
+naming itself inside a const-generic array-size expression), but it
+IS a real, syntactically valid Lyric program that crashes the
+compiler process outright — a genuinely worse failure than the T0017
+diagnostic the depth bound is supposed to guarantee downstream.
+
+*Fix.* Threaded `depth` through the entire expr-family walker
+(`resolveExprAt`, `resolvePatternAt`, `resolveBlockAt`,
+`resolveStatementAt`, `resolveLocalBindingAt`, `resolveCatchAt`,
+`resolveExprOrBlockAt`, plus a new `resolveOptTypeAt`), mirroring how
+`genericNames` is already threaded unchanged through the same walk:
+pure expr/stmt/block structural recursion passes `depth` through
+UNCHANGED (only the type-family recursion in `resolveTypeExprAt`'s
+`TRef` substitution arm increments it, exactly as before this fix);
+`resolveTypeArgAt`'s `TAValue` case and every `TypeExpr`-touching leaf
+inside the expr walker (`ELambda` param annotations, `EForall`/
+`EExists` binder types, `PTypeTest` patterns) now resolve via the
+`*At` depth-threaded entry points instead of the depth-0 public
+wrappers. The public 3-arg wrappers (`resolveExpr`, `resolvePattern`,
+`resolveBlock`, `resolveLocalBinding`, `resolveCatch`,
+`resolveExprOrBlock`) are UNCHANGED in signature and still start at
+depth 0 — every OTHER call site in the file (item/field/param entry
+points, each a legitimate fresh top-level resolution) needs no edit.
+
+POST-fix, the same repro compiles cleanly (no crash, ~1.2s) via
+`lyric build` — confirmed against the rebuilt binary. Test:
+`type_alias_resolve_self_test.l` gains a hand-built-AST case
+(`alias A`'s rhs embeds `TAValue(ELambda(param ty = tref("A")))`
+inside a `TArray` size position) asserting `resolveTypeExpr` RETURNS
+or with the array shape intact — the point of the test is that it
+returns at all; a regression here crashes the test process, not just
+an assertion.
+
+**#6418: alias-aware diagnostic display names.** Option 1 from the
+issue (a display-name side channel) was chosen and implemented at
+PRODUCTION quality within a deliberately narrow, honestly-scoped
+slice — see "what's covered vs. deferred" below for why the full
+surface isn't threaded.
+
+*Design.* `TypeExpr` (`lyric-compiler/lyric/parser/parser_ast.l`)
+gains one new field: `aliasName: Option[String] = None`. Because
+Lyric records support field defaults at construction ("a field with a
+default is optional" — the same mechanism `CtorField.hasDefault`
+already enforces for user code), the ~250 existing
+`TypeExpr(kind = ..., span = ...)` construction sites across the
+compiler need ZERO changes — only `Lyric.TypeAliasResolve`'s `TRef`
+substitution arm (`resolveTypeExprAt`) ever sets it, to the alias name
+the user wrote AT THIS reference site (the outermost hop of a
+multi-hop chain — `alias A = B; alias B = Long` used as `A` renders
+`"A (aka Long)"`, not `"A (aka B)"`). A nested alias reference inside
+a composite shape (`List[Meters]`) gets its own independently-set
+`aliasName` on its own nested `TypeExpr` node, since the recursive
+resolve calls run this same substitution logic again for each nested
+position.
+
+The single shared rendering helper is
+`Lyric.TypeChecker.renderTypeExpr(te: TypeExpr, t: Type): String`
+(`typechecker_types.l`, next to `renderType`) — every call site that
+wires alias-aware display routes through this ONE function rather
+than hand-building `"X (aka Y)"` per diagnostic, so the format stays
+uniform (`"<alias> (aka <underlying>)"`) wherever it's used. `Type`
+itself (the checker's resolved-type union, used by `renderType` and
+~164 exhaustive `match` sites across the checker) is UNCHANGED — no
+new `Type` variant, no type-system surface added, per the issue's
+explicit constraint. This is why the checker's persisted signature
+registries (`ResolvedParam`/`ResolvedSignature`, populated once at
+symbol-collection time and consulted from many call sites far from
+where the original `TypeExpr` was parsed) could NOT be threaded
+without a much larger change — `Type` alone carries no alias
+identity, and retrofitting one either means a wide `Type`-union
+blast radius (rejected: changes the type system) or threading the
+originating `TypeExpr` through every intermediate signature-carrying
+record (a follow-up-sized change, not free).
+
+*What's covered (production quality, fully wired, tested on both
+diagnostic families):*
+- **T0060/T0061/T0062** (`val`/`var`/`let` binding declared-type
+  mismatch, `typechecker_stmts.l`'s `LBVal`/`LBVar`/`LBLet` arms) —
+  the annotation `TypeExpr` (`te`) and its resolved `Type` (`declT`)
+  are already co-located in the same local scope; swapped
+  `renderType(declT)` for `renderTypeExpr(te, declT)` on the
+  DECLARED side only (the initialiser's actual type keeps
+  `renderType`, since it isn't the annotation position).
+- **T0070/T0114** (function body / trailing-expression return-type
+  mismatch and missing-body-for-non-Unit-return,
+  `checkFunctionBody`) — `fn.ret: Option[TypeExpr]` (the AST) and
+  `sig.returnTy: Type` (the resolved signature) are BOTH parameters
+  of this one function; a single `declaredReturnTyStr` local computed
+  once (`match fn.ret { Some(rte) -> renderTypeExpr(rte, sig.returnTy);
+  None -> renderType(sig.returnTy) }`) is reused by all three
+  diagnostic sites in the function instead of re-deriving it per site.
+
+*What's deferred (concrete, tracked, not silently dropped):* early
+`return expr` statements (T0064/T0065, `checkStatement`) only ever
+receive `returnTy: Type` — reaching the original `fn.ret` `TypeExpr`
+there needs a `returnTyAliasName: Option[String]` parameter threaded
+through `checkStatement`/`checkBlock` and every one of their ~20
+recursive/external call sites (mechanically bounded, but out of scope
+for this slice); call-argument-vs-parameter mismatches (T0043,
+against a `ResolvedParam`) and impl-vs-interface method signature
+mismatches need the signature-registry plumbing described above.
+Filed as a concrete follow-up: **issue text below**, not created in
+this session (no repo-write issue-tracker access from this task) —
+the orchestrator should open it verbatim if useful:
+
+> **Title:** Thread `#6418` alias-aware diagnostics into
+> `return`-statement and call-argument mismatches (T0064/T0065/T0043)
+> **Body:** D-progress-765 covers T0060/T0061/T0062 (local bindings)
+> and T0070/T0114 (function body vs. declared return type) with
+> `Lyric.TypeChecker.renderTypeExpr`. Two families remain on the
+> bare underlying-type spelling: (1) early `return expr;` inside a
+> function body (T0064/T0065) — needs a `returnTyAliasName:
+> Option[String]` (or the originating `Option[TypeExpr]`) threaded
+> through `checkStatement`/`checkBlock` alongside `returnTy: Type`,
+> matching how `genericNames` is already threaded; (2)
+> call-argument-vs-declared-parameter mismatches (T0043) and
+> impl-vs-interface signature mismatches — these compare against a
+> `ResolvedParam`/`ResolvedSignature` read from the symbol table,
+> which persists only `Type`, never the declaring `TypeExpr`, so
+> closing this needs either threading the originating `TypeExpr`
+> through signature collection (`resolveMethodSigParts` and friends)
+> or accepting a lookup-by-span side table. Scope and design should
+> follow `renderTypeExpr`'s existing shape (display-only, no `Type`
+> union change).
+
+Rendering example (verified live, `lyric build`):
+```
+alias Meters = Long
+func f(m: in Meters): Meters { "oops" }
+```
+Before: `function body trailing expression has type String but
+declared return type is Long`
+After: `function body trailing expression has type String but
+declared return type is Meters (aka Long)`
+
+Tests: `typechecker_self_test.l` gains `parseCheckAliasResolved`
+(mirrors the real per-target pipeline's `resolveTypeAliases`/
+`resolveTypeAliasesMsil` step, which plain `parseCheck` skips — the
+checker's OWN independent `DKTypeAlias` symbol-table resolution
+still makes plain `parseCheck` pass/fail-correct for aliased code,
+but it never stamps `aliasName`) plus three tests: T0070 and T0060
+both render `"<Alias> (aka <Underlying>)"` when alias-resolved, and
+T0070 falls back to the bare underlying name (no `"aka"`) when the
+pre-pass didn't run, pinning the safe-degradation behaviour
+explicitly rather than leaving it implicit. `typechecker_self_test.l`
+318 -> 321 (three #6418 cases, on top of the two #6466-review pins
+above).
+
+**Docs.** docs/01-language-reference.md's alias section gains one
+sentence + the example above (diagnostic rendering is now
+user-visible surface). No book appendix entry — no existing appendix
+row documents T004x/T006x/T007x message TEXT (only codes/CLI
+surface), so there is nothing stale to correct.
+
+**Verification (`./bin/lyric` rebuilt via `rm -f
+.bootstrap/stage1.stamp && make lyric`, foreground, ~9 min each of
+three rebuilds — one baseline, one deliberate pre-fix revert for the
+reachability checks above, one final).** Full battery on the final
+rebuild: `typechecker_self_test.l` 321/321;
+`type_alias_resolve_self_test.l` 8/8; `aspect_weave_self_test.l` 8/8
+both targets; `weaver_self_test.l` 46/46; `bare_func_ref_self_test.l`
+36/36 both targets; `emitter_project_self_test.l` 30/30;
+`propagate_self_test.l` 17/17; `mono_self_test.l` 54/54;
+`derives_self_test.l` 49/49; `alias_impl_self_test.l` 2/2;
+`alias_rewriter_self_test.l` 37/37.
+
+**Related:** #6416, #6418, #6466 (review round this pin was queued
+from), D-progress-748 (`Lyric.TypeAliasResolve` original landing),
+D-progress-752 (per-site fallback audit), D-progress-764 (T0118 chain
+rule this session's first pin extends).

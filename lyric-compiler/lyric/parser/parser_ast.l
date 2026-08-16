@@ -97,6 +97,19 @@ pub union TypeArg {
 pub record TypeExpr {
   kind: TypeExprKind
   span: Span
+  /// The `alias` name the user actually wrote at THIS reference site, when
+  /// `kind` is the alias's fully-resolved underlying shape (#6418). Set only
+  /// by `Lyric.TypeAliasResolve.resolveTypeExprAt`'s `TRef` substitution arm
+  /// — every OTHER `TypeExpr` in the compiler (every parser-produced node,
+  /// every other AST-transform pass) carries `None` via this field's
+  /// default, so the ~250 existing `TypeExpr(kind = ..., span = ...)`
+  /// construction sites across the compiler need no change. Display-only:
+  /// no type-system logic (equivalence, resolution, codegen) reads it —
+  /// `Lyric.TypeChecker.renderTypeExpr` is the sole consumer, rendering
+  /// `"<aliasName> (aka <underlying>)"` instead of the bare underlying name
+  /// wherever a checker diagnostic has both the original annotation
+  /// `TypeExpr` and its resolved `Type` in hand.
+  aliasName: Option[String] = None
 }
 
 pub union TypeExprKind {

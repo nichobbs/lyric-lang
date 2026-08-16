@@ -118,3 +118,106 @@ test "non-alias names pass through untouched" {
   val resolved = resolveTypeExpr(at, noGenerics, tref("NotAnAlias"))
   assertEqual(trefName(resolved), "NotAnAlias", "unknown name unchanged")
 }
+
+// #6416 slice (a): `aspect` advice bodies used to pass through `resolveItem`
+// unchanged — an alias reference inside `around(...)`'s body reached the
+// weaver/codegen unresolved. Build a minimal `IAspect` item by hand (a local
+// `val x: Meters = ...` inside the advice body) and assert `resolveItem`
+// now resolves it, exactly like an ordinary function body would.
+test "aspect around-advice body resolves aliases in local annotations (#6416)" {
+  val at: Map[String, TypeExpr] = newMap()
+  at.add("Meters", tref("Long"))
+  val bindPat = Pattern(kind = PBinding(name = "x", inner = None), span = syntheticSpan())
+  val unitInit = Expr(kind = ELiteral(lit = LUnit), span = syntheticSpan())
+  val localStmt = Statement(
+    kind = SLocal(binding = LBVal(pat = bindPat, ty = Some(value = tref("Meters")), init = unitInit)),
+    span = syntheticSpan()
+  )
+  val stmts: List[Statement] = newList()
+  stmts.add(localStmt)
+  val body = Block(statements = stmts, span = syntheticSpan())
+  val noRow: Option[List[ArgsRowField]] = None
+  val around = AspectAround(argsName = "call", retName = None, argsRow = noRow, body = body, span = syntheticSpan())
+  val noConfig: List[ConfigField] = newList()
+  val noMatches: List[AspectMatcher] = newList()
+  val noExcept: List[String] = newList()
+  val noContracts: List[ContractClause] = newList()
+  val noWraps: List[String] = newList()
+  val noInside: List[String] = newList()
+  val decl = AspectDecl(
+    name = "Timed",
+    from = None,
+    config = noConfig,
+    matches = noMatches,
+    exceptNames = noExcept,
+    around = Some(value = around),
+    contracts = noContracts,
+    wraps = noWraps,
+    inside = noInside,
+    span = syntheticSpan()
+  )
+  val noDocs: List[DocComment] = newList()
+  val noAnns: List[Annotation] = newList()
+  val item = Item(
+    docComments = noDocs,
+    annotations = noAnns,
+    visibility = None,
+    kind = IAspect(decl = decl),
+    span = syntheticSpan()
+  )
+  val resolved = resolveItem(at, item)
+  match resolved.kind {
+    case IAspect(d2) -> {
+      match d2.around {
+        case Some(a2) -> {
+          match a2.body.statements[0].kind {
+            case SLocal(b2) -> {
+              match b2 {
+                case LBVal(_, tyOpt, _) -> {
+                  match tyOpt {
+                    case Some(te2) -> assertEqual(trefName(te2), "Long", "aspect body local alias resolves to Long")
+                    case None -> assertTrue(false, "expected a resolved type annotation")
+                  }
+                }
+                case _ -> assertTrue(false, "expected LBVal")
+              }
+            }
+            case _ -> assertTrue(false, "expected SLocal")
+          }
+        }
+        case None -> assertTrue(false, "expected around advice to survive resolveItem")
+      }
+    }
+    case _ -> assertTrue(false, "resolved item must still be an IAspect")
+  }
+}
+
+// #6416 slice (b): a cycle routed through a const-generic VALUE expression
+// (`TAValue`'s `expr` re-entering the expr walker) used to escape the
+// depth-64 cycle guard entirely, because `resolveExpr`'s depth-0 wrapper
+// reset the counter on every re-entry — a hand-built alias whose own rhs
+// embeds a lambda param annotation naming ITSELF, reachable only through
+// the array-size `TAValue`, would recurse unboundedly. The whole point of
+// this test is that it RETURNS at all: before the depth-threading fix, this
+// exact shape crashed the self-hosted compiler with a stack overflow
+// (verified live via `lyric build` against the pre-fix compiler) instead of
+// terminating — a regression here hangs/crashes the test process, not just
+// fails an assertion.
+test "cycle routed through a const-generic value expression's lambda-param annotation terminates (#6416)" {
+  val lambdaParam = LambdaParam(name = "x", ty = Some(value = tref("A")), span = syntheticSpan())
+  val lambdaParams: List[LambdaParam] = newList()
+  lambdaParams.add(lambdaParam)
+  val noStmts: List[Statement] = newList()
+  val lambdaBody = Block(statements = noStmts, span = syntheticSpan())
+  val lambdaExpr = Expr(kind = ELambda(lambdaParams = lambdaParams, body = lambdaBody), span = syntheticSpan())
+  val sizeArg = TAValue(expr = lambdaExpr)
+  val arrRhs = TypeExpr(kind = TArray(size = sizeArg, element = tref("Int")), span = syntheticSpan())
+  val at: Map[String, TypeExpr] = newMap()
+  at.add("A", arrRhs)
+  val noGenerics: List[String] = newList()
+  val resolved = resolveTypeExpr(at, noGenerics, tref("A"))
+  match resolved.kind {
+    case TArray(_, _) -> assertTrue(true, "pathological const-generic-value cycle terminates with an array shape")
+    case _ -> assertTrue(false, "expected the array shape to survive (possibly with a nested unresolved residual)")
+  }
+}
