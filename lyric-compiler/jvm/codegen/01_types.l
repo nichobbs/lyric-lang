@@ -906,6 +906,26 @@ func joinSegments(segs: in List[String], sep: in String): String {
   result
 }
 
+// For a multi-segment `ModulePath` (`Helper.Sub.JList` — the flattened form
+// `Lyric.AliasRewriter` produces for `import X as Y` + `Y.Type`, or a literal
+// dotted reference), the package-qualified extern-type key
+// (`<owningPkgDotted>.<shortName>`) that `Jvm.Bridge.externSeedForFile` seeds
+// alongside the bare short-name key.  `None` for a single-segment (bare,
+// unqualified) path — see `typeExprToJvmExtern` (#6338).
+func qualifiedExternKey(path: in ModulePath): Option[String] {
+  val n = path.segments.count
+  if n < 2 {
+    return None
+  }
+  val owner: List[String] = newList()
+  var i = 0
+  while i < n - 1 {
+    owner.add(path.segments[i])
+    i = i + 1
+  }
+  Some(value = joinSegments(owner, ".") + "." + path.segments[n - 1])
+}
+
 // Collect the type-parameter names from an optional `GenericParams` list, so a
 // declaration's generic params (e.g. `T`, `E` of `Result[T, E]`) can be erased
 // to `java/lang/Object` rather than mis-resolved to a non-existent class.
@@ -1082,6 +1102,22 @@ pub func stripClrAritySuffix(fqn: in String): String {
 pub func typeExprToJvmExtern(te: in TypeExpr, pkgName: in String, externTypes: in Map[String, String]): JvmType {
   match te.kind {
     case TRef(path) -> {
+      // A multi-segment path resolves through its package-qualified key
+      // FIRST, bypassing the bare short-name key entirely: the bare key may
+      // have been shadowed by a same-short-name LOCAL type declared in the
+      // caller's own package (`ownAwareExternTypes`'s #5976 collision
+      // override, correct only for a BARE unqualified reference) — a
+      // qualified reference names its owning package explicitly and can
+      // never legitimately mean a local type (#6338).
+      match qualifiedExternKey(path) {
+        case Some(qk) -> {
+          match mapGet(externTypes, qk) {
+            case Some(javaFqn) -> return JRef(className = stripClrAritySuffix(javaFqn).replace(".", "/"))
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
       match mapGet(externTypes, lastSegment(path)) {
         case Some(javaFqn) -> JRef(className = stripClrAritySuffix(javaFqn).replace(".", "/"))
         case None -> typeExprToJvm(te, pkgName)
@@ -1104,6 +1140,17 @@ pub func typeExprToJvmExtern(te: in TypeExpr, pkgName: in String, externTypes: i
       if isBareBuiltin {
         typeExprToJvm(te, pkgName)
       } else {
+        // Package-qualified alias-extern generic head first — same #6338
+        // rationale as the TRef arm above.
+        match qualifiedExternKey(head) {
+          case Some(qk) -> {
+            match mapGet(externTypes, qk) {
+              case Some(javaFqn) -> return JRef(className = stripClrAritySuffix(javaFqn).replace(".", "/"))
+              case None -> ()
+            }
+          }
+          case None -> ()
+        }
         match mapGet(externTypes, hseg) {
           case Some(javaFqn) -> JRef(className = stripClrAritySuffix(javaFqn).replace(".", "/"))
           case None -> typeExprToJvm(te, pkgName)

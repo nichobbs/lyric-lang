@@ -3350,6 +3350,20 @@ func lowerMethodCall(
         }
         case None -> ()
       }
+      // A multi-segment `path` (the flattened form `Lyric.AliasRewriter`
+      // produces for `import X as Y` + `Y.Type`) resolves through its
+      // package-qualified key FIRST — same #6338 rationale as
+      // `typeExprToJvmExtern`: the bare short-name key may be shadowed by a
+      // same-short-name LOCAL type declared in the caller's own package.
+      match qualifiedExternKey(path) {
+        case Some(qk) -> {
+          match mapGet(ctx.externTypes, qk) {
+            case Some(javaFqn) -> return lowerAutoFfiStaticCall(ctx, insns, javaFqn, memberName, args, recv.span)
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
       match mapGet(ctx.externTypes, lastSegment(path)) {
         case Some(javaFqn) -> return lowerAutoFfiStaticCall(ctx, insns, javaFqn, memberName, args, recv.span)
         case None -> ()
