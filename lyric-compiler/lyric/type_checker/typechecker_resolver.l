@@ -345,14 +345,24 @@ func resolveTypePath(
   val last = path.segments[path.segments.count - 1]
   // A multi-segment path names its owning package EXPLICITLY — either
   // written literally, or flattened by `Lyric.AliasRewriter` from
-  // `import X as Y` + `Y.Type`.  Resolve against a symbol whose
-  // `originPackage` matches that owning package FIRST, bypassing
-  // `symTableTryFindOne`'s scope-priority tie-break below (which prefers
+  // `import X as Y` + `Y.Type`.  When `symTableTryFindOne`'s scope-priority
+  // tie-break below would pick a symbol from a DIFFERENT package (it prefers
   // the CURRENT package's own same-short-name symbol — correct only for a
-  // BARE unqualified reference).  Without this, a qualified reference to
-  // an imported type whose short name collides with a type declared in the
-  // referencing package's OWN package silently resolved to the wrong
-  // (local) type — #6338.
+  // BARE unqualified reference), re-resolve against a candidate whose
+  // `originPackage` matches the written owner instead.  Without this, a
+  // qualified reference to an imported type whose short name collides with
+  // a type declared in the referencing package's OWN package silently
+  // resolved to the wrong (local) type — #6338.
+  //
+  // The override is GATED on the default pick actually mismatching the
+  // owner: when the tie-break already resolves to the owning package, that
+  // exact symbol entry must be used — `symTableTryFindAll`'s candidate
+  // order can hold more than one entry for the same conceptual type
+  // (multi-package builds register cross-package decls per consumer), and
+  // taking a different entry than every bare reference resolves to breaks
+  // nominal type identity (two `Result[Unit, SecretsError]`s that print
+  // identically but compare unequal — the lyric-aws-secrets T0065/
+  // InvalidProgramException regression this gate fixed).
   val ownerSegs: List[String] = newList()
   var osi = 0
   while osi < path.segments.count - 1 {
@@ -360,13 +370,19 @@ func resolveTypePath(
     osi = osi + 1
   }
   val ownerPkg = modulePathJoin(ownerSegs)
-  val qualifiedCands = symTableTryFindAll(tbl, last)
-  var qi = 0
-  while qi < qualifiedCands.count {
-    if qualifiedCands[qi].originPackage == ownerPkg and symbolIsType(qualifiedCands[qi]) {
-      return symbolToType(tbl, ctx, diag, qualifiedCands[qi], args, span)
+  val defaultPickMatchesOwner = match symTableTryFindOne(tbl, last) {
+    case Some(pref) -> symbolIsType(pref) and pref.originPackage == ownerPkg
+    case None -> false
+  }
+  if not defaultPickMatchesOwner {
+    val qualifiedCands = symTableTryFindAll(tbl, last)
+    var qi = 0
+    while qi < qualifiedCands.count {
+      if qualifiedCands[qi].originPackage == ownerPkg and symbolIsType(qualifiedCands[qi]) {
+        return symbolToType(tbl, ctx, diag, qualifiedCands[qi], args, span)
+      }
+      qi = qi + 1
     }
-    qi = qi + 1
   }
   match symTableTryFindOne(tbl, last) {
     case Some(sym) -> {

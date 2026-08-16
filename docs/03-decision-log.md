@@ -29307,3 +29307,26 @@ with the self-hosted `lyric fmt --write` before landing.
 **Related:** #6338, D-progress-769 (the sweep that narrowed the trigger
 and named the suspect resolution path), #5976 (the JVM own-collision
 override this bug's bug 2 half is the mirror image of).
+
+
+**Review addendum (ecosystem regression, same PR).** CI's ecosystem jobs
+caught what the compiler battery could not: the owner-first candidate
+loop ran for EVERY multi-segment type path, and `symTableTryFindAll`'s
+candidate order can hold more than one entry for the same conceptual
+type in multi-package builds (cross-package decls register per
+consumer). Taking a different entry than the scope-priority tie-break
+resolves for bare references split nominal type identity — lyric-aws-
+secrets failed T0065 with two identically-printing
+`Result[Unit, SecretsError]`s (its kernel declares
+`AwsSecrets.SecretsError` qualified while the lib uses it bare), and
+lyric-web's Undertow smoke failed T0043 with arguments shifted one
+position against a differently-resolved signature. Fixed by GATING the
+override on the default pick actually mismatching the owner: when
+`symTableTryFindOne` already resolves to the owning package, that exact
+entry is used (byte-identical to pre-#6338 behavior); the candidate
+search runs only for the genuine collision (#6338's shape). Verified:
+both CI repro sites build clean with the gate (aws-secrets 8/13 —
+matching a freshly-built merge-base baseline exactly, the 5 failures
+pre-existing and local-environment-specific; lyric-web JVM smoke builds
+after manifest restore), and the #6338 collision tests still pass
+(emitter_project 33/33).
