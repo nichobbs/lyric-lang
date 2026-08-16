@@ -255,6 +255,155 @@ test "emitProject aliased cross-package call" {
   assertEqual(Str.trim(result.stdout), "40", "alias_cross_package_call: stdout matches expected")
 }
 
+// ─── Alias-qualified extern type in a function SIGNATURE (#6338) ────────────
+// An `import X as Y` + `Y.ExternType` reference used as a function
+// PARAMETER type: `Lyric.AliasRewriter` flattens it to the fully-qualified
+// 3-segment path (`Helper.JList` here) at the AST level before codegen ever
+// sees it. #6338's narrowed trigger (D-progress-769): the JVM auto-FFI
+// signature resolver mis-fires ONLY when that alias-qualified extern type's
+// SHORT NAME collides with a type declared locally in the CALLER's own
+// package — the resolver preferred the local short name and built the
+// caller's own package + that name as the FQN (`Caller.JList`) instead of
+// resolving through the alias to the real extern (`java.util.ArrayList`),
+// panicking with "class 'Caller.JList' not found". A same-shaped call
+// (`H.JList.new()`) hits the identical bug in the auto-FFI call-site
+// resolver. `describeExtern`'s body forces both the extern-typed PARAMETER
+// (proves the signature resolved to the real `ArrayList`, not a bogus
+// `Caller.JList` class) and the local record (proves the collision doesn't
+// go the other way — the caller's own type stays intact for its own
+// unqualified uses) to be exercised at runtime, not just compiled.
+test "emitProject alias-qualified extern type signature collision (JVM)" {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "Alias6338.Helper",
+      "package Alias6338.Helper\n" + "\n" + "extern type JList = \"java.util.ArrayList\"\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "Alias6338.App",
+      "package Alias6338.App\n" + "\n" + "import Alias6338.Helper as H\n" + "\n" + "record JList {\n" +
+        "  tag: String\n" +
+        "}\n" +
+        "\n" +
+        "pub func describeExtern(x: H.JList): Int {\n" +
+        "  x.size()\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val e = H.JList.new()\n" +
+        "  e.add(\"a\")\n" +
+        "  e.add(\"b\")\n" +
+        "  e.add(\"c\")\n" +
+        "  val local = JList(tag = \"local-value\")\n" +
+        "  println(describeExtern(e))\n" +
+        "  println(local.tag)\n" +
+        "}\n"
+    )
+  )
+  val result = runEmitProjectJvmOpts("alias-6338-jvm", pkgs, "Alias6338")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "alias_qualified_extern_signature_collision_jvm: exit 0 (stderr=" + result.stderr + ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    "3\nlocal-value",
+    "alias_qualified_extern_signature_collision_jvm: real ArrayList size + local record's own field both correct"
+  )
+}
+
+// MSIL counterpart: same alias-qualified-extern-vs-local-collision shape,
+// against a real CLR extern (`System.IO.StringWriter`). D-progress-769 found
+// MSIL already resolves this correctly (`cctx.externTypeNames` is a
+// project-global extern-only table, never biased by a same-package local
+// type the way JVM's `ownAwareExternTypes` collision override is) — this
+// pins that MSIL stays correct alongside the JVM fix above.
+test "emitProject alias-qualified extern type signature collision (MSIL)" {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "Alias6338Msil.Helper",
+      "package Alias6338Msil.Helper\n" + "\n" + "extern type SW = \"System.IO.StringWriter\"\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "Alias6338Msil.App",
+      "package Alias6338Msil.App\n" + "\n" + "import Alias6338Msil.Helper as H\n" + "\n" + "record SW {\n" +
+        "  tag: String\n" +
+        "}\n" +
+        "\n" +
+        "pub func describeExtern(x: H.SW): String {\n" +
+        "  x.Write(\"cross-pkg\")\n" +
+        "  x.ToString()\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val e = H.SW.new()\n" +
+        "  val local = SW(tag = \"local-value\")\n" +
+        "  println(describeExtern(e))\n" +
+        "  println(local.tag)\n" +
+        "}\n"
+    )
+  )
+  val result = runEmitProject("alias-6338-msil", pkgs, "Alias6338Msil")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "alias_qualified_extern_signature_collision_msil: exit 0 (stderr=" + result.stderr + ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    "cross-pkg\nlocal-value",
+    "alias_qualified_extern_signature_collision_msil: real StringWriter output + local record's own field both correct"
+  )
+}
+
+// Control pin: the NON-colliding shape (no local `JList` in the caller) —
+// D-progress-769 found this already resolves correctly even before the
+// #6338 fix (`Lyric.AliasRewriter` flattens the alias correctly; the
+// collision is what made the JVM auto-FFI resolver pick the wrong table
+// entry). Pins that the fix above did not disturb the already-working path.
+test "emitProject alias-qualified extern type signature non-collision control (JVM)" {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "Alias6338NoCollide.Helper",
+      "package Alias6338NoCollide.Helper\n" + "\n" + "extern type JList = \"java.util.ArrayList\"\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "Alias6338NoCollide.App",
+      "package Alias6338NoCollide.App\n" + "\n" + "import Alias6338NoCollide.Helper as H\n" + "\n" +
+        "pub func describeExtern(x: H.JList): Int {\n" +
+        "  x.size()\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val e = H.JList.new()\n" +
+        "  e.add(\"a\")\n" +
+        "  e.add(\"b\")\n" +
+        "  println(describeExtern(e))\n" +
+        "}\n"
+    )
+  )
+  val result = runEmitProjectJvmOpts("alias-6338-nocollide-jvm", pkgs, "Alias6338NoCollide")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "alias_qualified_extern_signature_noncollision_control_jvm: exit 0 (stderr=" + result.stderr + ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    "2",
+    "alias_qualified_extern_signature_noncollision_control_jvm: real ArrayList size correct"
+  )
+}
+
 // Stdlib import resolved by the in-process bridge from LYRIC_STD_PATH /
 // the runtime path, not from `stdlibSources` (#1202).
 test "emitProject in-process stdlib import" {

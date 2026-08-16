@@ -29180,3 +29180,130 @@ focused sessions to land correctly with full regression coverage.
 #6428 (the emitter-containment work #6357/#6347 verified against),
 docs/43/D-progress-453/D-progress-455 (the in-bundle generics work #6330
 likely rode in on).
+
+## D-progress-770 — fix #6338: alias-qualified extern type resolves to the caller's own package on short-name collision
+
+**Status:** FIXED (both root causes; verified on both targets, full `make lyric`
+rebuild, foreground).
+
+**Context.** D-progress-769's sweep narrowed #6338 to: a multi-segment
+alias-qualified extern-type reference (`import Helper.Sub as H` +
+`H.JList` used as a function parameter type) resolves to the CALLER's own
+package on JVM (`Caller.JList`, panicking with "class 'Caller.JList' not
+found") — but only when the extern type's short name (`JList`) collides
+with a type declared locally in the caller's own package. D-progress-769
+suspected a "separate, later-stage symbol-resolution path (likely in
+`typechecker_resolver.l` or the JVM auto-FFI lookup itself)" without
+locating it. This entry does that and fixes both.
+
+**Root cause — two independent bugs, same shape, two different pipeline stages.**
+
+`Lyric.AliasRewriter` correctly flattens `H.JList` to the fully-qualified
+3-segment `ModulePath` (`Helper.Sub.JList`) before either stage below runs
+— that part was never broken. Both bugs below discard that qualification
+and re-resolve by BARE SHORT NAME, which then falls back to a
+scope-priority / collision-biased table that prefers the CALLER's own
+same-named symbol:
+
+1. **Type checker (target-independent, both MSIL and JVM):**
+   `resolveTypePath`'s multi-segment arm (`typechecker_resolver.l`) did
+   `symTableTryFindOne(tbl, path.segments[path.segments.count - 1])` —
+   last-segment-only, discarding the path's owning-package prefix.
+   `symTableTryFindOne` applies scope-priority tie-breaking (current
+   package wins outright, tier 1), which is correct for a BARE
+   unqualified reference but wrong for an already-qualified one: a local
+   `record JList` in the caller's own package won over the imported
+   extern `JList`, so the STATIC TYPE of `x: H.JList` resolved to the
+   caller's own record. This didn't surface in #6338's original narrow
+   repro because that repro's function body never called a method on the
+   parameter — the wrong static type type-checked "by luck" (a body that
+   actually calls `.size()`/`.add()` on the parameter immediately hits
+   `T0113: no method 'size' on type 'JList'`, on MSIL too, proving this
+   half of the bug is NOT JVM-specific).
+2. **JVM codegen (`Jvm.Codegen`, JVM-only):** independently of (1),
+   `typeExprToJvmExtern` (`jvm/codegen/01_types.l`) and the auto-FFI
+   static-call fast path in `lowerMethodCall`
+   (`jvm/codegen/04_calls.l`) both did
+   `mapGet(externTypes, lastSegment(path))` — same last-segment-only
+   lookup. `externTypes` is `ownAwareExternTypes`'s (`06_items.l`, #5976)
+   merged map, which deliberately shadows an imported extern's bare-name
+   entry with the caller's own colliding local type's FQN — correct for a
+   BARE unqualified self-reference (#5976's fix), wrong for a qualified
+   one. This is what produced the observed `error[J008]: class
+   'Caller.JList' not found` panic.
+
+**Was MSIL affected?** No — verified with a real CLR extern
+(`System.IO.StringWriter`) in the identical collision shape (`import
+Helper as H` + local colliding `record SW` + `x: H.SW` calling
+`.Write(...)`/`.ToString()`): MSIL built and ran correctly (`cross-pkg` /
+`local-value` printed) BEFORE bug 2's codegen fix, confirming bug 2 is
+JVM-only. Studied why: MSIL's `cctx.externTypeNames` (`msil/codegen.l`) is
+populated ONLY from `IExternType` items and `import extern` declarations
+across the whole project (`scanExternTypesMsil`) — it never merges a
+package's OWN plain records/unions into that table the way
+`ownAwareExternTypes`'s #5976 collision override does, so there is no
+table for a local type to shadow an extern's entry in on MSIL. Bug 1 (the
+type checker) DOES affect MSIL, symmetrically with JVM — confirmed by the
+`T0113`/`no method 'Write'`/`no method 'ToString'` type errors MSIL raised
+before the type-checker fix landed, on the exact same input.
+
+**Fix.**
+- `typechecker_resolver.l`'s `resolveTypePath` multi-segment arm now
+  computes the path's owning-package dotted name
+  (`join(segments[0..count-2], ".")`) and searches
+  `symTableTryFindAll(tbl, last)` for a type symbol whose
+  `originPackage` matches it FIRST, before falling through to the
+  existing `symTableTryFindOne` scope-priority lookup unchanged. Purely
+  additive: only takes effect when an exact owning-package match exists,
+  so `Std.Collections.List`-style already-working qualified references
+  are unaffected (and, incidentally, resolve slightly more precisely now).
+- `jvm/bridge.l`'s `externSeedForFile` now seeds a package-qualified key
+  (`<owningPkgDotted>.<shortName>`) alongside the existing bare
+  short-name key for every imported package's extern-type entry. Own-type
+  collision overrides (`ownAwareExternTypes`) never touch dotted keys
+  (own-declared short names carry no `.`), so the qualified key survives
+  untouched regardless of collisions.
+- `jvm/codegen/01_types.l`'s `typeExprToJvmExtern` (`TRef` and
+  `TGenericApp` arms) and `jvm/codegen/04_calls.l`'s `lowerMethodCall`
+  auto-FFI static-call fast path now try the qualified key first (via a
+  new `qualifiedExternKey` helper) for any multi-segment path, falling
+  back to the existing bare-short-name lookup unchanged when no qualified
+  entry exists (self-qualified same-package references, ordinary
+  same-package user types).
+
+Both fixes are independently necessary and target different stages: the
+type-checker fix makes the STATIC TYPE (and therefore method-call
+validation) correct on both targets; the JVM codegen fix makes the
+EMITTED BYTECODE target the real extern class instead of a nonexistent
+`Caller.JList`.
+
+**Tests.** `lyric-compiler/lyric/emitter_project_self_test.l` gained three
+cases (multi-package `Emitter.emitProject`-driven, matching the file's
+existing "aliased cross-package call" pattern, since the collision needs
+two real packages — the single-file `auto_ffi_self_test.l` /
+`auto_ffi_jvm_self_test.l` `@test_module`s can't express it):
+- `"emitProject alias-qualified extern type signature collision (JVM)"` —
+  the #6338 shape against `java.util.ArrayList`; asserts the extern
+  parameter's `.size()` after real `.add()` calls AND the colliding local
+  record's own field, both correct.
+- `"emitProject alias-qualified extern type signature collision (MSIL)"` —
+  same shape against `System.IO.StringWriter`, pinning that MSIL stays
+  correct (it needed only the type-checker fix).
+- `"emitProject alias-qualified extern type signature non-collision
+  control (JVM)"` — the non-colliding shape (control pin for the
+  already-working path D-progress-769 found).
+
+**Verification (foreground, fresh `make lyric` builds throughout):**
+original #6338 repro (`extern type JList = "java.util.ArrayList"` +
+colliding local `record JList` + `x: H.JList` param) now builds and runs
+correctly on `--target jvm`, printing `a real java list`. Battery:
+`emitter_project_self_test.l` 33/33, `auto_ffi_self_test.l` (dotnet)
+23/23, `auto_ffi_jvm_self_test.l` (jvm) 39/39, `typechecker_self_test.l`
+328/328, `bare_func_ref_self_test.l` 36/36 both targets,
+`jvm_impl_extern_class_self_test.l` 3/3, `jvm_auto_ffi_bridge_self_test.l`
+6/6, `aspect_weave_self_test.l` 8/8 both targets. All `.l` files formatted
+with the self-hosted `lyric fmt --write` before landing.
+
+**Related:** #6338, D-progress-769 (the sweep that narrowed the trigger
+and named the suspect resolution path), #5976 (the JVM own-collision
+override this bug's bug 2 half is the mirror image of).

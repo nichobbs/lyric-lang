@@ -343,6 +343,31 @@ func resolveTypePath(
   // `Std.Collections.List` resolves to the same entry as `List` when `List`
   // was imported.  Fall through to primitive check, then T0014.
   val last = path.segments[path.segments.count - 1]
+  // A multi-segment path names its owning package EXPLICITLY — either
+  // written literally, or flattened by `Lyric.AliasRewriter` from
+  // `import X as Y` + `Y.Type`.  Resolve against a symbol whose
+  // `originPackage` matches that owning package FIRST, bypassing
+  // `symTableTryFindOne`'s scope-priority tie-break below (which prefers
+  // the CURRENT package's own same-short-name symbol — correct only for a
+  // BARE unqualified reference).  Without this, a qualified reference to
+  // an imported type whose short name collides with a type declared in the
+  // referencing package's OWN package silently resolved to the wrong
+  // (local) type — #6338.
+  val ownerSegs: List[String] = newList()
+  var osi = 0
+  while osi < path.segments.count - 1 {
+    ownerSegs.add(path.segments[osi])
+    osi = osi + 1
+  }
+  val ownerPkg = modulePathJoin(ownerSegs)
+  val qualifiedCands = symTableTryFindAll(tbl, last)
+  var qi = 0
+  while qi < qualifiedCands.count {
+    if qualifiedCands[qi].originPackage == ownerPkg and symbolIsType(qualifiedCands[qi]) {
+      return symbolToType(tbl, ctx, diag, qualifiedCands[qi], args, span)
+    }
+    qi = qi + 1
+  }
   match symTableTryFindOne(tbl, last) {
     case Some(sym) -> {
       if symbolIsType(sym) {

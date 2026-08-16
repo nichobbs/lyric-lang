@@ -408,6 +408,21 @@ func externSeedForFile(
             if not seed.containsKey(k) {
               seed.add(k, v)
             }
+            // ALSO seed a package-qualified key (`<owningPkgDotted>.<shortName>`)
+            // alongside the bare short-name key above.  `ownAwareExternTypes`
+            // (06_items.l) may later shadow the BARE key with the caller's own
+            // colliding local type (#5976 — correct for an unqualified same-file
+            // reference), but a multi-segment `TRef`/`EPath` — the flattened
+            // form `Lyric.AliasRewriter` produces for `import X as Y` + `Y.Type`
+            // — names its owning package explicitly and can never legitimately
+            // mean a local type.  The qualified key is never touched by that
+            // override (own-declared short names carry no "."), so
+            // `typeExprToJvmExtern`/`lowerMethodCall` can resolve a qualified
+            // reference through it directly, bypassing the collision (#6338).
+            val qualKey = extPkgNames[pi] + "." + k
+            if not seed.containsKey(qualKey) {
+              seed.add(qualKey, v)
+            }
           }
           case None -> ()
         }
