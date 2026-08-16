@@ -27,12 +27,17 @@
 //! #6458 addendum: a `?` reachable only through a value-position `try`
 //! expression used as a stacked call argument (`xs.add(try { e? } catch …)`)
 //! is covered too — verified NOT to be a gap (see `propagate.l`'s §2b module
-//! doc). A SEPARATE, `?`-unrelated defect — a `try` expression with NO `?`
-//! anywhere still crashes in the same stacked-operand position on both
-//! targets — is deliberately NOT exercised here: reproducing it live crashes
-//! the whole compiled test module (`InvalidProgramException` / `VerifyError`
-//! at method-load time, confirmed via a standalone `lyric run` repro, not
-//! embedded in this shared `@test_module`).
+//! doc).
+//!
+//! #6471 addendum: a `try` expression with NO `?` anywhere still crashed in
+//! the same stacked-operand position on both targets (confirmed via a
+//! standalone `lyric run` repro — `InvalidProgramException` on MSIL,
+//! `VerifyError` on JVM) because nothing gated the hoist on an `STry`'s mere
+//! PRESENCE, only on a `?` found inside one.  Fixed by broadening
+//! `phHasHazardStmt`'s `STry` case (renamed from `phHasPropStmt`, see
+//! `propagate.l`'s §2b module doc) to report a hazard unconditionally.  The
+//! previously-uncompilable shapes below are now embedded directly in this
+//! shared `@test_module`, since they compile validly post-fix.
 @test_module
 package Lyric.PropagateHoistSelfTest
 
@@ -639,5 +644,113 @@ test "try-expression call argument: ? inside the try body still propagates Err (
     (match r { case Ok(_) -> "OK"; case Err(e) -> e }),
     "bad checked id: bad",
     "the Err propagates from inside the hoisted try expression, catch clause never runs"
+  )
+}
+
+// ── #6471: a value-position `try` expression with NO `?` anywhere, used in a
+//    stacked operand position — the previously-uncompilable shape.  Before
+//    the fix, embedding any of the cases below would crash the whole module
+//    at method-load time (`InvalidProgramException` on MSIL, `VerifyError`
+//    on JVM), so none of them could live in this shared `@test_module`; see
+//    `propagate.l`'s §2b module doc for the standalone `lyric run` evidence
+//    that motivated filing #6471 in the first place.  `phHasHazardStmt`'s
+//    `STry` case now reports presence unconditionally (not gated on a
+//    nested `?`), so the SAME `EBlock`-binds-the-whole-block rewrite #6458
+//    already exercised now also fires here.  `riskyNoProp` never actually
+//    throws when `fail` is `false` (the catch clause is unreachable), so the
+//    `log` marker inside the try body proves it still evaluates exactly
+//    once, in the right place relative to its sibling operands.
+func riskyNoProp(log: in List[String], fail: Bool): Int {
+  log.add("risky")
+  if fail {
+    panic("boom")
+  } else {
+    7
+  }
+}
+
+// The issue's own shape: `xs.add(try { risky() } catch Bug as b { 0 })`.
+func collectViaNoPropTry(log: in List[String], fail: Bool): List[Int] {
+  val xs: List[Int] = newList()
+  xs.add(try { riskyNoProp(log, fail) } catch Bug as b { -1 })
+  xs
+}
+
+test "try-expression call argument, no ? anywhere: Ok path adds the try body's value (#6471)" {
+  val log: List[String] = newList()
+  val xs = collectViaNoPropTry(log, false)
+  assertEqualInt(xs[0], 7, "the try body's own value flows out of the hoisted try expression")
+  assertEqual(joinLog(log), "risky", "the try body still evaluates exactly once")
+}
+
+test "try-expression call argument, no ? anywhere: catch path adds the handler's value (#6471)" {
+  val log: List[String] = newList()
+  val xs = collectViaNoPropTry(log, true)
+  assertEqualInt(xs[0], -1, "the catch handler's value flows out when the try body panics")
+  assertEqual(joinLog(log), "risky", "the try body still runs (and panics) exactly once")
+}
+
+// Second argument of a free call: `a` must still log before the hoisted
+// try's own `log.add("risky")`, exactly like the `?`-bearing case above.
+func secondFreeArgNoPropTry(log: in List[String], fail: Bool): Int {
+  addOne(mark(log, "a", 41), try { riskyNoProp(log, fail) } catch Bug as b { -1 })
+}
+
+test "second argument of a free call: no-? try hoists, siblings keep order (#6471)" {
+  val log: List[String] = newList()
+  val r = secondFreeArgNoPropTry(log, false)
+  assertEqualInt(r, 48, "41 + 7 = 48")
+  assertEqual(joinLog(log), "a,risky", "left-to-right order preserved around the hoisted try")
+}
+
+test "second argument of a free call: no-? try catch path keeps order (#6471)" {
+  val log: List[String] = newList()
+  val r = secondFreeArgNoPropTry(log, true)
+  assertEqualInt(r, 40, "41 + (-1) = 40 using the catch handler's value")
+  assertEqual(joinLog(log), "a,risky", "left-to-right order preserved, catch handler value used")
+}
+
+// Regular (non-short-circuit) binop RHS: the LHS is pushed unconditionally
+// before the RHS evaluates, so a no-? try RHS is a stacking hazard exactly
+// like a ?-bearing RHS.
+func binopNoPropTry(log: in List[String], fail: Bool): Int {
+  mark(log, "lhs", 10) + (try { riskyNoProp(log, fail) } catch Bug as b { -1 })
+}
+
+test "no-? try in a binop RHS operand: Ok path keeps order (#6471)" {
+  val log: List[String] = newList()
+  val r = binopNoPropTry(log, false)
+  assertEqualInt(r, 17, "10 + 7 = 17")
+  assertEqual(joinLog(log), "lhs,risky", "lhs evaluates before the hoisted try rhs")
+}
+
+test "no-? try in a binop RHS operand: catch path keeps order (#6471)" {
+  val log: List[String] = newList()
+  val r = binopNoPropTry(log, true)
+  assertEqualInt(r, 9, "10 + (-1) = 9 using the catch handler's value")
+  assertEqual(joinLog(log), "lhs,risky", "lhs still evaluates before the hoisted try rhs")
+}
+
+// Member-target assign value (#6456's rule, extended by #6471): the
+// receiver is stacked ahead of the value on MSIL, so a no-? try value needs
+// the same rebind-then-hoist treatment as a ?-bearing value.
+func memberAssignNoPropTry(log: in List[String], fail: Bool): Int {
+  val c = Cell(value = 0)
+  c.value = try {
+    riskyNoProp(log, fail)
+  } catch Bug as b {
+    -1
+  }
+  c.value
+}
+
+test "member-target assign: no-? try value stores through the temp, both paths (#6471)" {
+  val okLog: List[String] = newList()
+  assertEqualInt(memberAssignNoPropTry(okLog, false), 7, "the try body's value is stored through the member write")
+  val catchLog: List[String] = newList()
+  assertEqualInt(
+    memberAssignNoPropTry(catchLog, true),
+    -1,
+    "the catch handler's value is stored through the member write"
   )
 }
