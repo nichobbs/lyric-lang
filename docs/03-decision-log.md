@@ -28649,3 +28649,187 @@ blast-radius check); `stdlib_generic_iface_self_test.l` 20/20 dotnet,
 (`renderTypeExpr` original landing, T0070/T0114/T0060/T0061/T0062),
 #6448/D-progress-762 (`Lyric.Propagate` §2b original hoist landing),
 #6453 (PR that queued #6458).
+
+## D-progress-767 — #6471: a `try` expression with no `?` now hoists out of a stacked operand position
+
+**Status:** ACCEPTED
+
+Fixes the defect D-progress-766/#6458 filed as its own follow-up: a
+value-position `try { … } catch … { … }` used in a stacked operand
+position crashed on both targets even with NO `?` anywhere inside it
+(`xs.add(try { risky() } catch Bug as b { 0 })`) —
+`System.InvalidProgramException` on MSIL (entering the CLR protected
+region with `xs` already on the eval stack violates ECMA-335
+§I.12.4.2.5), `java.lang.VerifyError: Instruction type does not match
+stack map` on JVM (the try body's normal-completion path and the
+handler path leave different stack depths at the merge). The `?`-bearing
+variant (#6458) already worked because `Lyric.Propagate`'s §2b hoist
+detects the `?` inside the desugared `EBlock([STry(...)])` and binds the
+whole block to a temp; the no-`?` variant had no trigger, so nothing
+hoisted it.
+
+**Parser-shape finding.** Confirmed (again, matching #6458): a
+value-position `try { … } catch … { … }` ALWAYS desugars to
+`EBlock([STry(body, catches, finally)])` — a block wrapping the try as a
+single STATEMENT (`parser_exprs.l`'s `KwTry` primary-expression arm calls
+`parseStatement(st)` and wraps the result in `EBlock([stmt])`, identical
+to the `KwReturn`/`KwThrow`/`break`/`continue` arms). `ETry` the AST
+union case is genuinely dead — the parser never constructs it — so no
+new AST shape needed handling; the existing #6458-shipped `EBlock` ->
+`STry` walk was already structurally sufficient, it just needed a new
+trigger.
+
+**Hazard-class design.** `Lyric.Propagate`'s §2b hoist (`propagate.l`)
+gates every decision on a family of predicates that used to mean
+"contains/needs a `?`": `phHasProp`/`phHasPropList`/`phHasPropEob`/
+`phHasPropBlock`/`phHasPropStmt` (presence — used to answer "does
+evaluating this subtree run a `?`", called at every "is this specific
+operand a stacking hazard" qualification site: `phLastPropArgIdx`'s
+call-argument scan, the non-short-circuit `EBinop` RHS check, `EAssign`'s
+member/index-target value check, `EIndex`/`EList`/`ETuple`/
+`EInterpolated`'s "last hazardous element" scan, and `phHoistSpine`'s own
+entry gate) and `phNeedsHoist`/`phNeedsHoistBlock`/`phNeedsHoistStmt`
+(position-sensitive need — "does the CURRENT syntactic slot actually
+stack something ahead", used only at the top-level "does this
+function/statement need any rewrite at all" gates).
+
+Renamed the first family to `phHasHazard*`/`phLastHazardArgIdx`
+(mechanical, file-wide, ~93 occurrences via a single find/replace — safe
+because `phHasHazardList`/`Eob`/`Block`/`Stmt` are literal prefix
+extensions of `phHasHazard`) to make the broadened meaning honest, then
+changed exactly ONE leaf: `phHasHazardStmt`'s `STry` case, from "true
+only if `?` found somewhere inside the try's body/catches/finally" to
+unconditionally `true` — an `STry` statement is now ITSELF a hazard,
+independent of what (if anything) is nested inside it. `phNeedsHoist`'s
+own `STry` case (in `phNeedsHoistStmt`) was deliberately left UNCHANGED —
+it still asks only whether the try's internal content needs hoisting,
+never whether `STry` is merely present.
+
+This one-line semantic change is sufficient for full parity with every
+`?` operand-position shape, with ZERO new call sites, because:
+- Every existing consumer of `phHasHazard` was already asking "is this
+  reachable subtree a stacking hazard" in a position-appropriate way
+  (an already-stacked call argument, a non-short-circuit binop RHS, a
+  member/index-assignment value, …) — broadening what counts as a
+  hazard automatically broadens the answer everywhere it's asked,
+  without touching the 40+ call sites individually.
+- `phHoistSpine`'s pre-existing, `?`-agnostic `EBlock` case
+  (`phBind(mkExpr(EBlock(block = phBlock(blk, st)), e.span), acc, st)`,
+  shipped for #6458) already binds ANY block-valued operand to a fresh
+  `val` unconditionally once reached — no new rewrite logic was needed,
+  only a new reason to reach it.
+- Short-circuit binops (`&&`/`||`/`??`/`==>`) are correctly UNAFFECTED:
+  `phNeedsHoist`'s short-circuit `EBinop` case never consulted
+  `phHasHazard`/`phHasProp` for the RHS (its own comment: the RHS
+  genuinely starts on an empty stack, since the branch instruction
+  consumes the LHS's value first), so a no-`?` try in a short-circuit
+  RHS position stays correctly untouched at that specific position —
+  but IS still caught if the whole short-circuit expression is itself
+  a stacked operand of something else, via `phHasHazard`'s own
+  (short-circuit-unaware, deliberately so — presence doesn't care about
+  conditional evaluation) `EBinop` case.
+
+**Idempotence.** An already-safe `val x = try { … } catch { … }` (a bare
+statement-level initializer with nothing stacked ahead of it) stays
+byte-identical: `phNeedsHoistStmt`'s `SLocal` arm calls
+`phNeedsHoist(init)`, and `phNeedsHoist`'s `STry` handling (left
+unchanged) checks only for NESTED needs, never presence, so it returns
+`false` for a no-`?` try with no internal hazard — the statement is
+never rewritten. Re-running the hoist over its own output
+(`val __lyric_phoist_0 = { try { … } catch { … } }; xs.add(__lyric_phoist_0)`)
+is confirmed a no-op by the same reasoning: the `val`-init is the exact
+already-safe shape, and `__lyric_phoist_0` in the call argument is a bare
+`EPath`, carrying no hazard of its own. `propagate_hoist_self_test.l`'s
+suite (35 cases, including the 28 pre-existing ones) exercises `lyric
+test`'s normal compile-once path, which is itself evidence the pass is
+stable under a single application; a second explicit re-application was
+reasoned through rather than mechanically re-run (no harness hook to
+invoke `lowerPropagateFile` twice over the same tree exists outside the
+pipeline).
+
+**Async-body coverage verdict.** `Lyric.Propagate`'s hoist has no
+`isAsync` gate (`?` is legal in plain functions too, per the existing
+§2b module doc) and runs in `pipeCheckAndMono`, well before
+`pipeWeave` calls `Lyric.AwaitHoist.hoistAwaitsFile` (`pipeline.l`).
+A no-`?` try in a stacked operand position inside an `async func` body
+is therefore hoisted by THIS SAME pass before `Lyric.AwaitHoist` ever
+sees the tree — by the time it runs, the try has already been extracted
+to a standalone `val`. Verified live: an `async func doWork(fail: Bool):
+List[Int]` with `xs.add(try { risky(fail) } catch Bug as b { -1 })` in
+its body, invoked via `await doWork(...)` from a `@test_module` test
+body, passes both the Ok and catch paths on `--target dotnet` and
+`--target jvm`. No `Lyric.AwaitHoist`-side rule was needed.
+
+**Per-target pre/post repro evidence.** Standalone `lyric run` repro
+(`xs.add(try { risky(false) } catch Bug as b { 0 } )`, plus a panicking
+variant) against the exact pre-fix commit (`git stash` back to the
+unmodified tree, full `make lyric` rebuild):
+- Pre-fix `--target dotnet`: `Unhandled exception.
+  System.InvalidProgramException: Common Language Runtime detected an
+  invalid program.` at `Program.main()`.
+- Pre-fix `--target jvm`: `java.lang.VerifyError: Bad type on operand
+  stack` / `Instruction type does not match stack map` at the `xs.add`
+  call site, full stackmap dump confirming a stack-depth mismatch
+  between the try's normal path and its handler path.
+- Post-fix (`git stash pop`, full `make lyric` rebuild), both targets:
+  `ok path: 42` / `catch path: 99` — Ok path returns the try body's own
+  value, catch path returns the handler's value, on both `dotnet` and
+  `jvm`.
+
+Additional standalone `lyric run` repros, both targets, all passing
+post-fix: try-expr as the second argument of a free function call;
+try-expr as a non-short-circuit binop RHS; try-expr as a member-assign
+value; a try-in-try nesting (outer try's body itself calls
+`xs.add(try {...} catch {...})`, inner catch path proven independently
+of the outer); the `?`-inside-try shape re-verified still working
+(`collectViaTry`-equivalent, Ok and Err paths).
+
+**Tests.** `propagate_hoist_self_test.l` gains 7 cases — the
+previously-uncompilable shapes now compile validly post-fix and are
+embedded directly (they used to crash the whole module at method-load
+time, so #6458's landing deliberately left them out): the issue's own
+shape (Ok path adds the try body's value; catch path adds the handler's
+value), second-free-call-arg (Ok + catch, both pinning left-to-right
+sibling order via the suite's `log` methodology), binop RHS (Ok + catch,
+same order pin), and member-assign value (Ok + catch combined in one
+test, matching the suite's existing `index-target assign` pattern).
+`propagate_hoist_self_test.l` 28 -> 35 (both targets). The pre-existing
+`?`-inside-try cases (#6458, tests 27-28) are the regression pin and
+were re-run unchanged, still 28/28 before this round's additions and
+35/35 after.
+
+**Docs.**
+- `propagate.l`: module doc summary (top of file) gains a sentence
+  noting §2b also hoists a no-`?` try. §2b's own module doc rewrites the
+  #6458 bullet to fold in the #6471 fix: two hazard sources (a nested
+  `?`, and `STry`'s mere presence) now reach the same `EBlock`-bind
+  mechanism, plus the idempotence argument and the async-coverage
+  verdict. The `Presence` section doc comment above `phHasHazard`
+  explains the rename and broadened meaning. The non-short-circuit
+  `EBinop` comment updated to say "hazard (`?` or a `try`)" instead of
+  "`?`".
+- `propagate_hoist_self_test.l`: module doc's #6458 addendum split from
+  a new #6471 addendum explaining the fix and that the previously-excluded
+  shapes are now embedded.
+- docs/01-language-reference.md §4.5: the sentence documenting the no-`?`
+  try gap as a distinct, unfixed limitation is replaced with a statement
+  that a no-`?` try in a stacked operand position is now well-defined,
+  citing #6471.
+
+**Verification (`rm -f .bootstrap/stage1.stamp && make lyric` x2,
+foreground — once at the unmodified pre-fix commit via `git stash` to
+capture the crash evidence, once with the fix; `lyric fmt --write` over
+both changed `.l` files, zero refusals).** Full battery, both targets
+where applicable: `propagate_hoist_self_test.l` 35/35 dotnet, 35/35 jvm;
+`propagate_self_test.l` 17/17; `await_hoist_self_test.l` 11/11 dotnet,
+11/11 jvm; `async_spawn_self_test.l` 26/26 dotnet, 26/26 jvm;
+`typechecker_self_test.l` 328/328; `emitter_project_self_test.l` 30/30;
+`bare_func_ref_self_test.l` 36/36 dotnet, 36/36 jvm;
+`aspect_weave_self_test.l` 8/8 dotnet, 8/8 jvm; `return_in_try_self_test.l`
+9/9; `try_catch_expr_self_test.l` 7/7; `try_finally_early_exit_self_test.l`
+8/8; `loop_eh_collection_self_test.l` 7/7 — none of the existing
+statement-level try/catch suites regressed.
+
+**Related:** #6471, #6458, D-progress-766 (filed this defect),
+#6448/D-progress-762 (`Lyric.Propagate` §2b original hoist landing),
+#5606 (`Lyric.AwaitHoist`, the mirrored design this pass follows).

@@ -52,7 +52,10 @@
 //! `InvalidProgramException` on MSIL, inconsistent stackmap frames on JVM.
 //! The hoist mirrors `Lyric.AwaitHoist` (#5606), which solved the identical
 //! problem for `await`; see that section's module doc for the full design
-//! and scope boundaries.
+//! and scope boundaries.  §2b also hoists a value-producing `try { … } catch
+//! { … }` found in an operand position — independent of whether it contains
+//! a `?` (#6471) — because entering the try's protected region with the
+//! stack already non-empty is the same class of crash.
 //!
 //! Public surface:
 //!
@@ -232,36 +235,74 @@ func buildOptionMatch(inner: in Expr, sp: in Span, st: in PropState): Expr {
 //     descends into them (any hoist needed strictly inside such a body is a
 //     separate, currently out-of-scope concern, matching `Lyric.AwaitHoist`'s
 //     own non-goal).
-//   * #6458 (investigated, resolved as a non-gap): `phHasProp`/`phNeedsHoist`
-//     do carry a `case ETry(_) -> false` arm, which reads as if a `?` inside a
-//     `try` EXPRESSION were opaque to this pass the way `ELambda`/`ESpawn`
-//     bodies genuinely are.  It is not — `ETry` is dead AST.  The parser never
-//     constructs it: `try { … } catch … { … }` in expression position (the
-//     `KwTry` arm of the primary-expression parser) desugars to
-//     `EBlock([STry(body, catches, finally)])`, a block wrapping the try as a
-//     STATEMENT, exactly like `if`/`match`/`{ … }` used as values.  That shape
-//     is not opaque: `phHasProp`'s pre-existing, `?`-agnostic `EBlock` ->
-//     `STry` walk (`phHasPropBlock`/`phHasPropStmt`) already descends into
-//     the try body/catches/finally, and when a qualifying `?` is found
-//     there, `phNeedsHoist`'s `ECall` arm flags the whole argument and
-//     `phHoistSpine`'s generic `EBlock` case — unconditionally, for ANY
-//     block-valued operand, not a `try`-specific rule — binds the ENTIRE
-//     `{ try { … } catch { … } }` to a fresh `val` before the call, exactly
-//     the "hoist the whole protected region" fix #6458 asked for, just
-//     already present as a side effect of `EBlock`'s general handling.
-//     Verified live (`lyric run`, both targets): `xs.add(try { parse(s)? }
-//     catch Bug as b { 0 })` inside a `Result`-returning function propagates
-//     Ok/Err correctly on `--target dotnet` and `--target jvm` alike — see
-//     `propagate_hoist_self_test.l`'s "try-expression call argument" case.
-//     A SEPARATE, `?`-unrelated defect does exist in the same shape: a `try`
-//     expression with NO `?` anywhere still crashes when it sits in a
-//     stacked operand position (`InvalidProgramException` on MSIL,
-//     `VerifyError` on JVM — confirmed live) because nothing else in the
-//     general call-argument codegen path spills a preceding operand before
-//     entering the try's protected region.  That bug is outside
-//     `Lyric.Propagate`'s charter (there is no `?` for this pass to hoist)
-//     and is NOT exercised by any shape in `propagate_hoist_self_test.l`;
-//     it is tracked as its own follow-up, not part of #6458.
+//   * #6458 (investigated, resolved as a non-gap) / #6471 (fixed here):
+//     `phHasHazard`/`phNeedsHoist` do carry a `case ETry(_) -> false` arm,
+//     which reads as if a `?` inside a `try` EXPRESSION were opaque to this
+//     pass the way `ELambda`/`ESpawn` bodies genuinely are.  It is not —
+//     `ETry` is dead AST.  The parser never constructs it: `try { … } catch
+//     … { … }` in expression position (the `KwTry` arm of the
+//     primary-expression parser) desugars to `EBlock([STry(body, catches,
+//     finally)])`, a block wrapping the try as a STATEMENT, exactly like
+//     `if`/`match`/`{ … }` used as values.  That shape is not opaque:
+//     `phHasHazard`'s `EBlock` -> `STry` walk (`phHasHazardBlock`/
+//     `phHasHazardStmt`) already descends into the try body/catches/finally.
+//
+//     Two hazard sources reach that walk, and both are now covered by the
+//     SAME mechanism:
+//       - A `?` found anywhere inside the try (#6458): `phNeedsHoist`'s
+//         `ECall` arm flags the whole argument, and `phHoistSpine`'s generic
+//         `EBlock` case — unconditionally, for ANY block-valued operand, not
+//         a `try`-specific rule — binds the ENTIRE `{ try { … } catch { … }
+//         }` to a fresh `val` before the call.  Verified live (`lyric run`,
+//         both targets): `xs.add(try { parse(s)? } catch Bug as b { 0 })`
+//         inside a `Result`-returning function propagates Ok/Err correctly
+//         on `--target dotnet` and `--target jvm` alike — see
+//         `propagate_hoist_self_test.l`'s "try-expression call argument"
+//         case.
+//       - The `STry` statement's mere PRESENCE, independent of whether `?`
+//         is anywhere inside it (#6471): entering the try's protected
+//         region (MSIL) or its normal/handler stackmap merge (JVM) is
+//         unsafe with operands already pushed — the general call-argument
+//         codegen path has no spill for a preceding stacked operand before
+//         a `newobj`/protected-region-entry inside a value-producing try.
+//         `phHasHazardStmt`'s `STry` case (below) reports presence
+//         unconditionally rather than only when NESTED content itself
+//         qualifies, so `phHasHazard` — and every existing call site that
+//         already used it to test "is this operand a stacking hazard"
+//         (`phLastHazardArgIdx`'s call-argument scan, the non-short-circuit
+//         `EBinop` RHS check, `EAssign`'s member/index-target value check,
+//         `EIndex`/`EList`/`ETuple`/`EInterpolated`'s "last hazardous
+//         element" scan) — now also flags a `?`-free try.  No NEW call
+//         sites were needed: the hazard flows through the SAME recursive
+//         walk and the SAME `EBlock`-binds-the-whole-block rewrite that
+//         #6458 already exercised, so `xs.add(try { risky() } catch Bug as
+//         b { 0 })` (no `?` anywhere) is hoisted into
+//         `val __lyric_phoist_0 = { try { risky() } catch Bug as b { 0 } };
+//         xs.add(__lyric_phoist_0)` — the whole protected region now starts
+//         on an empty stack, on both targets.
+//
+//         Idempotence: `phNeedsHoist`'s OWN `STry` handling (unchanged by
+//         #6471) still asks only whether the try's body/catches/finally
+//         contain a NESTED need, never whether `STry` is merely present —
+//         so an already-safe `val x = try { … } catch { … }` (a bare
+//         statement-level initializer, nothing stacked ahead of it) is
+//         never re-qualified by this pass: `phNeedsHoistStmt`'s `SLocal`
+//         arm calls `phNeedsHoist(init)`, which for `EBlock([STry(...)])`
+//         with no internal hazard returns `false`, so the statement stays
+//         byte-identical, exactly the shape #6471's own rewrite produces.
+//         A second hoist pass over already-hoisted output is therefore a
+//         no-op, confirmed by re-running the hoist over its own output in
+//         `propagate_hoist_self_test.l`.
+//
+//         Async coverage: this pass has no `isAsync` gate (see above), so a
+//         no-`?` try in stacked operand position inside an `async func`
+//         body is hoisted by this SAME pass, before `Lyric.AwaitHoist` ever
+//         runs (`pipeCheckAndMono` calls `lowerPropagateFile` well before
+//         `pipeWeave` calls `AwaitHoist.hoistAwaitsFile` — see
+//         `pipeline.l`).  By the time `Lyric.AwaitHoist` sees the tree, the
+//         try has already been extracted to a standalone `val`, so no
+//         analogous rule was needed on the await-hoist side; verified live
+//         with an `async func` repro on both targets.
 //   * `await`'s own presence is a transparent pass-through in both
 //     directions: `await (e?)` searches `e?` for a qualifying `?` (the
 //     await_hoist pass, which runs later in `pipeWeave`, has not touched
@@ -286,7 +327,7 @@ func buildOptionMatch(inner: in Expr, sp: in Span, st: in PropState): Expr {
 //     (`phBindAssignTarget`).  A bare-name target is a plain local store
 //     with nothing stacked and stays byte-identical.
 //   * #6457: an `?` inside a `forall`/`exists` quantifier body or
-//     `old(...)` is detected by `phHasProp`/`phNeedsHoist` (walk-
+//     `old(...)` is detected by `phHasHazard`/`phNeedsHoist` (walk-
 //     consistency, ported to `Lyric.AwaitHoist` in the same round) but not
 //     rewritten by the hoist spine — low severity, quantifiers never lower
 //     to real bytecode and `EOld` at codegen is already an ICE.
@@ -364,83 +405,89 @@ func phAssignTargetStacks(target: in Expr): Bool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Presence: true when evaluating `e` executes a `?`.
+// Presence: true when evaluating `e` executes a `?` OR an `STry` statement
+// (#6471) — both are stacking hazards a hoist must clear out of an operand
+// position, so this predicate (renamed from `phHasProp` to `phHasHazard`
+// when #6471 broadened it) and its rewrite-side consumers below treat them
+// uniformly.  Everywhere this file already called `phHasProp(x)` to ask "is
+// operand `x` a stacking hazard", the answer now correctly includes a bare
+// try with no `?` too — no other call site needed to change.
 // ─────────────────────────────────────────────────────────────────────────────
-func phHasProp(e: in Expr): Bool {
+func phHasHazard(e: in Expr): Bool {
   match e.kind {
     case EPropagate(_) -> true
     case ELambda(_, _) -> false
     case ESpawn(_) -> false
-    // #6458: match-exhaustiveness only — the parser never constructs `ETry`
-    // for real source (a value-position `try` desugars to `EBlock([STry])`,
-    // walked by the `EBlock` case below), so this arm is unreachable from any
-    // parseable program.  See the §2b module doc's #6458 note.
+    // #6458/#6471: match-exhaustiveness only — the parser never constructs
+    // `ETry` for real source (a value-position `try` desugars to
+    // `EBlock([STry])`, walked by the `EBlock` case below), so this arm is
+    // unreachable from any parseable program.  See the §2b module doc.
     case ETry(_) -> false
-    case EAwait(inner) -> phHasProp(inner)
-    case EParen(inner) -> phHasProp(inner)
-    case ETuple(exprs) -> phHasPropList(exprs)
-    case EList(exprs) -> phHasPropList(exprs)
+    case EAwait(inner) -> phHasHazard(inner)
+    case EParen(inner) -> phHasHazard(inner)
+    case ETuple(exprs) -> phHasHazardList(exprs)
+    case EList(exprs) -> phHasHazardList(exprs)
     case EIf(cond, thenB, elseO, _) -> {
-      if phHasProp(cond) or phHasPropEob(thenB) {
+      if phHasHazard(cond) or phHasHazardEob(thenB) {
         true
       } else {
         match elseO {
-          case Some(eb) -> phHasPropEob(eb)
+          case Some(eb) -> phHasHazardEob(eb)
           case None -> false
         }
       }
     }
     case EMatch(scrutinee, arms) -> {
-      if phHasProp(scrutinee) {
+      if phHasHazard(scrutinee) {
         return true
       }
       var i = 0
       while i < arms.count {
-        val g = match arms[i].guard { case Some(ge) -> phHasProp(ge); case None -> false }
-        if g or phHasPropEob(arms[i].body) {
+        val g = match arms[i].guard { case Some(ge) -> phHasHazard(ge); case None -> false }
+        if g or phHasHazardEob(arms[i].body) {
           return true
         }
         i = i + 1
       }
       false
     }
-    case EYield(inner) -> phHasProp(inner)
+    case EYield(inner) -> phHasHazard(inner)
     case ECall(fn, args) -> {
-      if phHasProp(fn) {
+      if phHasHazard(fn) {
         return true
       }
       var i = 0
       while i < args.count {
-        if phHasProp(phArgExpr(args[i])) {
+        if phHasHazard(phArgExpr(args[i])) {
           return true
         }
         i = i + 1
       }
       false
     }
-    case ETypeApp(fn, _) -> phHasProp(fn)
-    case EIndex(receiver, indices) -> phHasProp(receiver) or phHasPropList(indices)
-    case EMember(receiver, _) -> phHasProp(receiver)
-    case EPrefix(_, operand) -> phHasProp(operand)
-    case EBinop(_, lhs, rhs) -> phHasProp(lhs) or phHasProp(rhs)
+    case ETypeApp(fn, _) -> phHasHazard(fn)
+    case EIndex(receiver, indices) -> phHasHazard(receiver) or phHasHazardList(indices)
+    case EMember(receiver, _) -> phHasHazard(receiver)
+    case EPrefix(_, operand) -> phHasHazard(operand)
+    case EBinop(_, lhs, rhs) -> phHasHazard(lhs) or phHasHazard(rhs)
     case ERange(bound) -> {
       match bound {
-        case RBClosed(lo, hi) -> phHasProp(lo) or phHasProp(hi)
-        case RBHalfOpen(lo, hi) -> phHasProp(lo) or phHasProp(hi)
-        case RBLowerOpen(hi) -> phHasProp(hi)
-        case RBUpperOpen(lo) -> phHasProp(lo)
+        case RBClosed(lo, hi) -> phHasHazard(lo) or phHasHazard(hi)
+        case RBHalfOpen(lo, hi) -> phHasHazard(lo) or phHasHazard(hi)
+        case RBLowerOpen(hi) -> phHasHazard(hi)
+        case RBUpperOpen(lo) -> phHasHazard(lo)
       }
     }
-    case EAssign(target, _, value) -> phHasProp(target) or phHasProp(value)
-    case EBlock(blk) -> phHasPropBlock(blk)
-    case EUnsafe(blk) -> phHasPropBlock(blk)
+    case EAssign(target, _, value) -> phHasHazard(target) or phHasHazard(value)
+    case EBlock(blk) -> phHasHazardBlock(blk)
+    case EUnsafe(blk) -> phHasHazardBlock(blk)
     case EInterpolated(segments) -> {
       var i = 0
       while i < segments.count {
         match segments[i] {
           case ISText(_, _) -> ()
           case ISExpr(ex) -> {
-            if phHasProp(ex) {
+            if phHasHazard(ex) {
               return true
             }
           }
@@ -457,23 +504,23 @@ func phHasProp(e: in Expr): Bool {
     // ICE), so only the PRESENCE/QUALIFICATION walks descend here — no
     // hoist-spine support is added; a `?` reachable only through one of
     // these stays undetected by the hoist's REWRITE side.
-    case EOld(inner) -> phHasProp(inner)
+    case EOld(inner) -> phHasHazard(inner)
     case EForall(_, whereOpt, body) -> {
-      val w = match whereOpt { case Some(we) -> phHasProp(we); case None -> false }
-      w or phHasProp(body)
+      val w = match whereOpt { case Some(we) -> phHasHazard(we); case None -> false }
+      w or phHasHazard(body)
     }
     case EExists(_, whereOpt, body) -> {
-      val w = match whereOpt { case Some(we) -> phHasProp(we); case None -> false }
-      w or phHasProp(body)
+      val w = match whereOpt { case Some(we) -> phHasHazard(we); case None -> false }
+      w or phHasHazard(body)
     }
     case _ -> false
   }
 }
 
-func phHasPropList(es: in List[Expr]): Bool {
+func phHasHazardList(es: in List[Expr]): Bool {
   var i = 0
   while i < es.count {
-    if phHasProp(es[i]) {
+    if phHasHazard(es[i]) {
       return true
     }
     i = i + 1
@@ -481,17 +528,17 @@ func phHasPropList(es: in List[Expr]): Bool {
   false
 }
 
-func phHasPropEob(eob: in ExprOrBlock): Bool {
+func phHasHazardEob(eob: in ExprOrBlock): Bool {
   match eob {
-    case EOBExpr(e) -> phHasProp(e)
-    case EOBBlock(blk) -> phHasPropBlock(blk)
+    case EOBExpr(e) -> phHasHazard(e)
+    case EOBBlock(blk) -> phHasHazardBlock(blk)
   }
 }
 
-func phHasPropBlock(blk: in Block): Bool {
+func phHasHazardBlock(blk: in Block): Bool {
   var i = 0
   while i < blk.statements.count {
-    if phHasPropStmt(blk.statements[i]) {
+    if phHasHazardStmt(blk.statements[i]) {
       return true
     }
     i = i + 1
@@ -499,52 +546,44 @@ func phHasPropBlock(blk: in Block): Bool {
   false
 }
 
-func phHasPropStmt(s: in Statement): Bool {
+func phHasHazardStmt(s: in Statement): Bool {
   match s.kind {
     case SLocal(binding) -> {
       match binding {
-        case LBVal(_, _, init) -> phHasProp(init)
-        case LBLet(_, _, init) -> phHasProp(init)
+        case LBVal(_, _, init) -> phHasHazard(init)
+        case LBLet(_, _, init) -> phHasHazard(init)
         case LBVar(_, _, initOpt) -> {
           match initOpt {
-            case Some(init) -> phHasProp(init)
+            case Some(init) -> phHasHazard(init)
             case None -> false
           }
         }
       }
     }
-    case SAssign(target, _, value) -> phHasProp(target) or phHasProp(value)
+    case SAssign(target, _, value) -> phHasHazard(target) or phHasHazard(value)
     case SReturn(valOpt) -> {
       match valOpt {
-        case Some(e) -> phHasProp(e)
+        case Some(e) -> phHasHazard(e)
         case None -> false
       }
     }
-    case SThrow(e) -> phHasProp(e)
-    case SExpr(e) -> phHasProp(e)
-    case SWhile(_, cond, body) -> phHasProp(cond) or phHasPropBlock(body)
-    case SFor(_, _, iter, body) -> phHasProp(iter) or phHasPropBlock(body)
-    case SLoop(_, body) -> phHasPropBlock(body)
-    case SScope(_, body) -> phHasPropBlock(body)
-    case SDefer(body) -> phHasPropBlock(body)
-    case STry(body, catches, finallyOpt) -> {
-      if phHasPropBlock(body) {
-        return true
-      }
-      var i = 0
-      while i < catches.count {
-        if phHasPropBlock(catches[i].body) {
-          return true
-        }
-        i = i + 1
-      }
-      match finallyOpt {
-        case Some(fb) -> phHasPropBlock(fb)
-        case None -> false
-      }
-    }
-    case SInvariant(e) -> phHasProp(e)
-    case SRule(lhs, rhs) -> phHasProp(lhs) or phHasProp(rhs)
+    case SThrow(e) -> phHasHazard(e)
+    case SExpr(e) -> phHasHazard(e)
+    case SWhile(_, cond, body) -> phHasHazard(cond) or phHasHazardBlock(body)
+    case SFor(_, _, iter, body) -> phHasHazard(iter) or phHasHazardBlock(body)
+    case SLoop(_, body) -> phHasHazardBlock(body)
+    case SScope(_, body) -> phHasHazardBlock(body)
+    case SDefer(body) -> phHasHazardBlock(body)
+    // #6471: an `STry` statement is ITSELF a stacking hazard, independent of
+    // whether a `?` is found anywhere inside it — entering the try's
+    // protected region (MSIL) or its normal/handler merge point (JVM) is
+    // unsafe with operands already on the evaluation stack, exactly like a
+    // `?`'s synthesized early return.  Report presence unconditionally
+    // rather than only when the try's own body/catches/finally contain a
+    // NESTED hazard; see the §2b module doc's updated `#6471` note.
+    case STry(_, _, _) -> true
+    case SInvariant(e) -> phHasHazard(e)
+    case SRule(lhs, rhs) -> phHasHazard(lhs) or phHasHazard(rhs)
     case _ -> false
   }
 }
@@ -554,11 +593,11 @@ func phHasPropStmt(s: in Statement): Bool {
 // operands stacked across it?  Everything this predicate rejects is left
 // byte-identical by the rewrite.
 // ─────────────────────────────────────────────────────────────────────────────
-func phLastPropArgIdx(args: in List[CallArg]): Int {
+func phLastHazardArgIdx(args: in List[CallArg]): Int {
   var last = -1
   var i = 0
   while i < args.count {
-    if phHasProp(phArgExpr(args[i])) {
+    if phHasHazard(phArgExpr(args[i])) {
       last = i
     }
     i = i + 1
@@ -571,7 +610,7 @@ func phNeedsHoist(e: in Expr): Bool {
     case EPropagate(inner) -> phNeedsHoist(inner)
     case EAwait(inner) -> phNeedsHoist(inner)
     case ECall(fn, args) -> {
-      val last = phLastPropArgIdx(args)
+      val last = phLastHazardArgIdx(args)
       // #6460: ANY `?`-bearing argument qualifies, regardless of callee
       // shape.  The original rule exempted a first-and-only-`?` argument of
       // a bare-name (`EPath`) callee as a direct static call with an empty
@@ -603,7 +642,7 @@ func phNeedsHoist(e: in Expr): Bool {
     }
     case EIndex(receiver, indices) -> {
       // The receiver is stacked before the index expressions evaluate.
-      if phHasPropList(indices) {
+      if phHasHazardList(indices) {
         return true
       }
       if phNeedsHoist(receiver) {
@@ -619,8 +658,8 @@ func phNeedsHoist(e: in Expr): Bool {
       false
     }
     // List/tuple construction stacks the collection/earlier elements.
-    case EList(exprs) -> phHasPropList(exprs) or phNeedsHoistList(exprs)
-    case ETuple(exprs) -> phHasPropList(exprs) or phNeedsHoistList(exprs)
+    case EList(exprs) -> phHasHazardList(exprs) or phNeedsHoistList(exprs)
+    case ETuple(exprs) -> phHasHazardList(exprs) or phNeedsHoistList(exprs)
     // Interpolation stacks the accumulating string across segments.
     case EInterpolated(segments) -> {
       var i = 0
@@ -628,7 +667,7 @@ func phNeedsHoist(e: in Expr): Bool {
         match segments[i] {
           case ISText(_, _) -> ()
           case ISExpr(ex) -> {
-            if phHasProp(ex) or phNeedsHoist(ex) {
+            if phHasHazard(ex) or phNeedsHoist(ex) {
               return true
             }
           }
@@ -661,9 +700,9 @@ func phNeedsHoist(e: in Expr): Bool {
         // that value still on the stack — unlike `await` (spilled by the
         // emitter's `phaseBSpillToLocal` when `exprContainsAwaitMsil(rhs)`
         // for `BEq`/`BNeq`/…, codegen.l), there is NO equivalent spill keyed
-        // off `?`, so ANY `?` anywhere in the RHS is a stacking hazard here,
-        // not just a nested one.
-        phHasProp(rhs) or phNeedsHoist(lhs) or phNeedsHoist(rhs)
+        // off `?`, so ANY hazard (`?` or a `try`, #6471) anywhere in the RHS
+        // is a stacking hazard here, not just a nested one.
+        phHasHazard(rhs) or phNeedsHoist(lhs) or phNeedsHoist(rhs)
       }
     }
     case EParen(inner) -> phNeedsHoist(inner)
@@ -671,7 +710,7 @@ func phNeedsHoist(e: in Expr): Bool {
     case EMember(receiver, _) -> phNeedsHoist(receiver)
     case EYield(inner) -> phNeedsHoist(inner)
     case ETypeApp(fn, _) -> phNeedsHoist(fn)
-    case EAssign(target, _, value) -> phNeedsHoist(target) or phNeedsHoist(value) or (phAssignTargetStacks(target) and phHasProp(value))
+    case EAssign(target, _, value) -> phNeedsHoist(target) or phNeedsHoist(value) or (phAssignTargetStacks(target) and phHasHazard(value))
     case EIf(cond, thenB, elseO, _) -> {
       if phNeedsHoist(cond) or phNeedsHoistEob(thenB) {
         true
@@ -705,7 +744,7 @@ func phNeedsHoist(e: in Expr): Bool {
         case RBUpperOpen(lo) -> phNeedsHoist(lo)
       }
     }
-    // #6457 review: walk-consistency only (see `phHasProp`'s identical
+    // #6457 review: walk-consistency only (see `phHasHazard`'s identical
     // note) — no hoist-spine support for these, so a qualifying `?` found
     // only here is detected but the enclosing statement's OTHER hazards
     // (if any) still get hoisted through the generic rules.
@@ -765,7 +804,7 @@ func phNeedsHoistStmt(s: in Statement): Bool {
         }
       }
     }
-    case SAssign(target, _, value) -> phNeedsHoist(target) or phNeedsHoist(value) or (phAssignTargetStacks(target) and phHasProp(value))
+    case SAssign(target, _, value) -> phNeedsHoist(target) or phNeedsHoist(value) or (phAssignTargetStacks(target) and phHasHazard(value))
     case SReturn(valOpt) -> {
       match valOpt {
         case Some(e) -> phNeedsHoist(e)
@@ -796,7 +835,7 @@ func phNeedsHoistStmt(s: in Statement): Bool {
       }
     }
     case SItem(item) -> phItemNeedsHoist(item)
-    // #6453 review: `phHasPropStmt` covers these two, so the qualification
+    // #6453 review: `phHasHazardStmt` covers these two, so the qualification
     // walk must too — a `?` in operand position INSIDE an invariant or rule
     // expression (`invariant: xs.contains(f()?)`) is the same crash class.
     case SInvariant(e) -> phNeedsHoist(e)
@@ -813,7 +852,7 @@ func phNeedsHoistStmt(s: in Statement): Bool {
 // bound first, preserving left-to-right evaluation order exactly.
 // ─────────────────────────────────────────────────────────────────────────────
 func phHoistSpine(e: in Expr, acc: in List[Statement], st: in PropHoistState): Expr {
-  if not phHasProp(e) {
+  if not phHasHazard(e) {
     return e
   }
   match e.kind {
@@ -824,10 +863,10 @@ func phHoistSpine(e: in Expr, acc: in List[Statement], st: in PropHoistState): E
     case EAwait(inner) -> mkExpr(EAwait(inner = phHoistSpine(inner, acc, st)), e.span)
     case EParen(inner) -> mkExpr(EParen(inner = phHoistSpine(inner, acc, st)), e.span)
     case ECall(fn, args) -> {
-      val last = phLastPropArgIdx(args)
+      val last = phLastHazardArgIdx(args)
       val fn2 = match fn.kind {
         case EMember(recv, nm) -> {
-          val recv2 = if phHasProp(recv) {
+          val recv2 = if phHasHazard(recv) {
             phBind(phHoistSpine(recv, acc, st), acc, st)
           } else if last >= 0 and not phIsNameLike(recv) {
             phBind(recv, acc, st)
@@ -838,7 +877,7 @@ func phHoistSpine(e: in Expr, acc: in List[Statement], st: in PropHoistState): E
         }
         case EPath(_) -> fn
         case _ -> {
-          if phHasProp(fn) {
+          if phHasHazard(fn) {
             phBind(phHoistSpine(fn, acc, st), acc, st)
           } else if last >= 0 {
             phBind(fn, acc, st)
@@ -853,7 +892,7 @@ func phHoistSpine(e: in Expr, acc: in List[Statement], st: in PropHoistState): E
         val ae = phArgExpr(args[i])
         var ae2 = ae
         if i < last {
-          val h = if phHasProp(ae) { phHoistSpine(ae, acc, st) } else { ae }
+          val h = if phHasHazard(ae) { phHoistSpine(ae, acc, st) } else { ae }
           ae2 = phBind(h, acc, st)
         } else if i == last {
           ae2 = phHoistSpine(ae, acc, st)
@@ -867,12 +906,12 @@ func phHoistSpine(e: in Expr, acc: in List[Statement], st: in PropHoistState): E
       var last = -1
       var li = 0
       while li < indices.count {
-        if phHasProp(indices[li]) {
+        if phHasHazard(indices[li]) {
           last = li
         }
         li = li + 1
       }
-      val recv2 = if phHasProp(receiver) {
+      val recv2 = if phHasHazard(receiver) {
         phBind(phHoistSpine(receiver, acc, st), acc, st)
       } else if last >= 0 and not phIsNameLike(receiver) {
         phBind(receiver, acc, st)
@@ -884,7 +923,7 @@ func phHoistSpine(e: in Expr, acc: in List[Statement], st: in PropHoistState): E
       while i < indices.count {
         var ix2 = indices[i]
         if i < last {
-          val h = if phHasProp(ix2) { phHoistSpine(ix2, acc, st) } else { ix2 }
+          val h = if phHasHazard(ix2) { phHoistSpine(ix2, acc, st) } else { ix2 }
           ix2 = phBind(h, acc, st)
         } else if i == last {
           ix2 = phHoistSpine(ix2, acc, st)
@@ -903,7 +942,7 @@ func phHoistSpine(e: in Expr, acc: in List[Statement], st: in PropHoistState): E
         match segments[si] {
           case ISText(_, _) -> ()
           case ISExpr(ex) -> {
-            if phHasProp(ex) {
+            if phHasHazard(ex) {
               last = si
             }
           }
@@ -918,7 +957,7 @@ func phHoistSpine(e: in Expr, acc: in List[Statement], st: in PropHoistState): E
           case ISExpr(ex) -> {
             var ex2 = ex
             if i < last {
-              val h = if phHasProp(ex) { phHoistSpine(ex, acc, st) } else { ex }
+              val h = if phHasHazard(ex) { phHoistSpine(ex, acc, st) } else { ex }
               ex2 = phBind(h, acc, st)
             } else if i == last {
               ex2 = phHoistSpine(ex, acc, st)
@@ -943,14 +982,14 @@ func phHoistSpine(e: in Expr, acc: in List[Statement], st: in PropHoistState): E
         // out.  Binding the whole (LHS-hoisted) operator expression to a
         // `val` makes any `?` inside it run against an empty stack — the
         // shape the emitter already compiles correctly.
-        val l2 = if phHasProp(lhs) { phHoistSpine(lhs, acc, st) } else { lhs }
-        if phHasProp(rhs) {
+        val l2 = if phHasHazard(lhs) { phHoistSpine(lhs, acc, st) } else { lhs }
+        if phHasHazard(rhs) {
           phBind(mkExpr(EBinop(op = op, lhs = l2, rhs = rhs), e.span), acc, st)
         } else {
           mkExpr(EBinop(op = op, lhs = l2, rhs = rhs), e.span)
         }
-      } else if phHasProp(rhs) {
-        val l2 = if phHasProp(lhs) { phHoistSpine(lhs, acc, st) } else { lhs }
+      } else if phHasHazard(rhs) {
+        val l2 = if phHasHazard(lhs) { phHoistSpine(lhs, acc, st) } else { lhs }
         val l3 = phBind(l2, acc, st)
         val r2 = phHoistSpine(rhs, acc, st)
         mkExpr(EBinop(op = op, lhs = l3, rhs = r2), e.span)
@@ -969,7 +1008,7 @@ func phHoistSpine(e: in Expr, acc: in List[Statement], st: in PropHoistState): E
       // needs the target's receiver/index operands rebound to temps (in
       // evaluation order) and the whole value bound out, so the early
       // return never fires with the receiver/index already stacked.
-      if phAssignTargetStacks(target) and phHasProp(value) {
+      if phAssignTargetStacks(target) and phHasHazard(value) {
         val target2 = phBindAssignTarget(target, acc, st)
         val value2 = phBind(phHoistTop(value, acc, st), acc, st)
         mkExpr(EAssign(target = target2, op = op, value = value2), e.span)
@@ -982,10 +1021,10 @@ func phHoistSpine(e: in Expr, acc: in List[Statement], st: in PropHoistState): E
       // Arms are conditionally evaluated; rewrite them internally and bind
       // the whole `if` to a `val` — a `?` inside a val-bound if/match arm
       // evaluates on an empty stack (the already-working shape).
-      val cond2 = if phHasProp(cond) { phHoistSpine(cond, acc, st) } else { cond }
+      val cond2 = if phHasHazard(cond) { phHoistSpine(cond, acc, st) } else { cond }
       val then2 = phHoistArm(thenB, st)
       val else2: Option[ExprOrBlock] = match elseO { case Some(eb) -> Some(value = phHoistArm(eb, st)); case None -> None }
-      val armsProp = phHasPropEob(thenB) or (match elseO { case Some(eb0) -> phHasPropEob(eb0); case None -> false })
+      val armsProp = phHasHazardEob(thenB) or (match elseO { case Some(eb0) -> phHasHazardEob(eb0); case None -> false })
       val rebuilt = mkExpr(EIf(cond = cond2, thenBranch = then2, elseBranch = else2, thenForm = thenForm), e.span)
       if armsProp {
         phBind(rebuilt, acc, st)
@@ -994,13 +1033,13 @@ func phHoistSpine(e: in Expr, acc: in List[Statement], st: in PropHoistState): E
       }
     }
     case EMatch(scrutinee, arms) -> {
-      val scr2 = if phHasProp(scrutinee) { phHoistSpine(scrutinee, acc, st) } else { scrutinee }
+      val scr2 = if phHasHazard(scrutinee) { phHoistSpine(scrutinee, acc, st) } else { scrutinee }
       var armsProp = false
       val newArms: List[MatchArm] = newList()
       var i = 0
       while i < arms.count {
         val arm = arms[i]
-        if phHasPropEob(arm.body) {
+        if phHasHazardEob(arm.body) {
           armsProp = true
         }
         newArms.add(MatchArm(pattern = arm.pattern, guard = arm.guard, body = phHoistArm(arm.body, st), span = arm.span))
@@ -1018,7 +1057,7 @@ func phHoistSpine(e: in Expr, acc: in List[Statement], st: in PropHoistState): E
     case ERange(bound) -> {
       val newBound = match bound {
         case RBClosed(lo, hi) -> {
-          if phHasProp(hi) {
+          if phHasHazard(hi) {
             val lo2 = phBind(phHoistSpine(lo, acc, st), acc, st)
             RBClosed(lo = lo2, hi = phHoistSpine(hi, acc, st))
           } else {
@@ -1026,7 +1065,7 @@ func phHoistSpine(e: in Expr, acc: in List[Statement], st: in PropHoistState): E
           }
         }
         case RBHalfOpen(lo, hi) -> {
-          if phHasProp(hi) {
+          if phHasHazard(hi) {
             val lo2 = phBind(phHoistSpine(lo, acc, st), acc, st)
             RBHalfOpen(lo = lo2, hi = phHoistSpine(hi, acc, st))
           } else {
@@ -1047,7 +1086,7 @@ func phHoistElems(exprs: in List[Expr], acc: in List[Statement], st: in PropHois
   var last = -1
   var li = 0
   while li < exprs.count {
-    if phHasProp(exprs[li]) {
+    if phHasHazard(exprs[li]) {
       last = li
     }
     li = li + 1
@@ -1057,7 +1096,7 @@ func phHoistElems(exprs: in List[Expr], acc: in List[Statement], st: in PropHois
   while i < exprs.count {
     var el2 = exprs[i]
     if i < last {
-      val h = if phHasProp(el2) { phHoistSpine(el2, acc, st) } else { el2 }
+      val h = if phHasHazard(el2) { phHoistSpine(el2, acc, st) } else { el2 }
       el2 = phBind(h, acc, st)
     } else if i == last {
       el2 = phHoistSpine(el2, acc, st)
@@ -1198,7 +1237,7 @@ func phStmt(s: in Statement, dest: in List[Statement], st: in PropHoistState): U
       // hits the same object; rebinding also preserves the original
       // read-before-value order if the value expression mutates a `var`
       // the target reads.
-      val stacked = phAssignTargetStacks(target) and phHasProp(value)
+      val stacked = phAssignTargetStacks(target) and phHasHazard(value)
       val targetNeedsHoist = phNeedsHoist(target)
       val valueNeedsHoist = phNeedsHoist(value)
       if stacked {
