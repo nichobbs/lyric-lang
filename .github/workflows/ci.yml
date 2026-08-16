@@ -3185,6 +3185,18 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/alias_rewriter_self_test.l
 
+      # Propagate-hoist entry-polarity pin — D-progress-769.  AST-level pin
+      # (model: alias_rewriter_self_test.l) for Lyric.HoistEngine's
+      # asyncGated=false axis as applied to protected-type entries: parses a
+      # small source with an entry-bodied `?` in stacked operand position,
+      # runs it through Lyric.Propagate.lowerPropagateFile, and asserts the
+      # entry body gained the hoisted val.  dotnet-only — see the file's
+      # module doc for why a runtime test (and a JVM twin) aren't possible.
+      - name: Propagate-hoist entry-polarity self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/propagate_hoist_entry_polarity_self_test.l
+
       # Ensures self-test — #1871.  `ensures:` contract clauses now compile and
       # run through the self-hosted MSIL path: the contract elaborator's
       # synthesised `let __lyric_result_<n> = …` binding no longer NREs in
