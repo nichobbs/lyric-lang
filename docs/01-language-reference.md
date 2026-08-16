@@ -205,7 +205,7 @@ type UserId = Long             // distinct nominal type
 type OrderId = Long            // also distinct from UserId
 ```
 
-A type alias is fully transparent: `alias Distance = Long` introduces no new type, and `alias` may re-export a type from another module (`alias Random = Std.RandomHost.Random`) so callers need only import the re-exporting module. Alias targets are resolved transitively through chains (`alias B = Foo; alias C = B`); a cyclic alias chain (`alias A = B` with `alias B = A`) does not denote a type and is rejected at compile time (**T0017**).
+A type alias is fully transparent: `alias Distance = Long` introduces no new type, and `alias` may re-export a type from another module (`alias Random = Std.RandomHost.Random`) so callers need only import the re-exporting module. Alias targets are resolved transitively through chains (`alias B = Foo; alias C = B`); a cyclic alias chain (`alias A = B` with `alias B = A`) does not denote a type and is rejected at compile time (**T0017**). Transparency is display-only where diagnostics are concerned: a type-checker diagnostic on a value annotated with an alias names the alias the user wrote alongside its underlying type (e.g. `alias Meters = Long; func f(): Meters { "oops" }` reports `declared return type is Meters (aka Long)`, not the bare `Long`) wherever that rendering has been wired (D-progress-765).
 
 `UserId + OrderId` is a compile error. `UserId.toLong()` and `Long.toUserId(x)` (where the latter exists only if explicitly declared) are the conversion paths. Distinct types from underlying primitives may declare which arithmetic operations are inherited:
 

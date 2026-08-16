@@ -4,6 +4,8 @@ package Lyric.TypeChecker
 
 import Std.Core
 import Std.Collections
+import Lyric.Lexer
+import Lyric.Parser
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Primitive types.
@@ -263,6 +265,28 @@ pub func renderType(t: in Type): String {
         head + "[" + joinTypes(args, ", ") + "]"
       }
     }
+  }
+}
+
+// #6418: the SOLE alias-aware type-name renderer. `alias` is fully
+// transparent to the type system (checked structurally as `Type`, which
+// carries no alias identity at all — see `docs/03-decision-log.md`
+// D-progress-765), so this is display-only: it never affects pass/fail,
+// only how a diagnostic spells a type name. Call sites reach it only where
+// the ORIGINAL annotation `TypeExpr` (post `Lyric.TypeAliasResolve`, so
+// `te.aliasName` is `Some` exactly when the user wrote an alias name here)
+// and its resolved `Type` are already co-located in scope — threading
+// `TypeExpr` provenance through the checker's internal signature registries
+// (`ResolvedParam`/`ResolvedSignature`, which persist only `Type`) to reach
+// every OTHER `renderType` call site (call-argument mismatches against a
+// registered function signature, in particular) is out of scope here; see
+// D-progress-765 for the covered vs. deferred diagnostic list. Every call
+// site funnels through this one function rather than hand-building
+// `"X (aka Y)"` per diagnostic, so the rendering shape stays uniform.
+pub func renderTypeExpr(te: in TypeExpr, t: in Type): String {
+  match te.aliasName {
+    case Some(nm) -> nm + " (aka " + renderType(t) + ")"
+    case None -> renderType(t)
   }
 }
 

@@ -11,6 +11,8 @@ import Lyric.Parser
 import Lyric.TypeChecker
 import Lyric.AliasRewriter
 import Lyric.Pipeline
+import Lyric.TypeAliasResolve as TAR
+import Lyric.BareFuncRef as BFR
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers.
@@ -49,6 +51,21 @@ func diagMessageFor(cr: in CheckResult, code: in String): String {
     i = i + 1
   }
   ""
+}
+
+// #6418: mirrors the real per-target pipeline's alias-resolution step
+// (`Msil.Bridge.resolveTypeAliasesMsil` / `Jvm.Bridge.resolveTypeAliases`,
+// both `Lyric.TypeAliasResolve.resolveAliasesInFile` over
+// `Lyric.BareFuncRef.collectFuncAliasTargets`), so a checker-level test can
+// observe its effect. Plain `parseCheck` alone runs only the checker's OWN
+// independent `DKTypeAlias` symbol-table resolution — correct for pass/fail
+// (the language reference's "alias is fully transparent" guarantee), but it
+// never stamps `TypeExpr.aliasName`, so a display-name assertion needs this
+// wrapper instead.
+func parseCheckAliasResolved(src: in String): CheckResult {
+  val pr = parse(src)
+  val resolved = TAR.resolveAliasesInFile(BFR.collectFuncAliasTargets(pr.file), pr.file)
+  check(resolved)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -459,6 +476,44 @@ test "cyclic type alias rejected" {
   val src = "package P\nalias A = B\nalias B = A\nfunc f(a: in A): Int { 0 }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0017"), "alias-cycle: T0017 emitted")
+}
+
+// #6418: a diagnostic on an aliased annotation must name the alias the user
+// wrote, not just its resolved underlying type. Covers the two "free"
+// (no signature-registry plumbing needed) wiring points: a function's
+// declared return type (T0070, `checkFunctionBody`'s `fn.ret` + `sig.returnTy`
+// co-located) and a local `val` binding's declared type (T0060, `LBVal`'s
+// `te` + `declT` co-located). See `docs/03-decision-log.md` D-progress-765
+// for the diagnostics covered vs. deferred (call-argument mismatches against
+// a registered function signature stay unthreaded — `ResolvedParam` persists
+// only `Type`, not the originating `TypeExpr`).
+test "T0070 return-type mismatch names the alias the user wrote (#6418)" {
+  val src = "package P\nalias Meters = Long\nfunc f(): Meters {\n  \"oops\"\n}\n"
+  val cr = parseCheckAliasResolved(src)
+  val m = diagMessageFor(cr, "T0070")
+  assertTrue(Str.contains(m, "Meters (aka Long)"), "T0070 message names the alias: " + m)
+}
+
+test "T0060 val-binding mismatch names the alias the user wrote (#6418)" {
+  val src = "package P\nalias UserId = Int\nfunc f(): Unit {\n  val u: UserId = \"nope\"\n}\n"
+  val cr = parseCheckAliasResolved(src)
+  val m = diagMessageFor(cr, "T0060")
+  assertTrue(Str.contains(m, "UserId (aka Int)"), "T0060 message names the alias: " + m)
+}
+
+// Without the alias-resolve pre-pass, the checker's own independent
+// `DKTypeAlias` lookup still resolves `Meters` correctly for pass/fail, but
+// `TypeExpr.aliasName` is never stamped — pin that `renderTypeExpr` degrades
+// safely to the bare underlying name (no "aka") instead of rendering
+// inconsistently across code paths that do vs. don't run the pre-pass.
+test "T0070 without the alias-resolve pre-pass falls back to the underlying type name (#6418)" {
+  val src = "package P\nalias Meters = Long\nfunc f(): Meters {\n  \"oops\"\n}\n"
+  val cr = parseCheck(src)
+  val m = diagMessageFor(cr, "T0070")
+  assertTrue(
+    Str.contains(m, "Long") and not Str.contains(m, "aka"),
+    "no pre-pass: bare underlying name, no \"aka\": " + m
+  )
 }
 
 test "multiple items no error" {
@@ -1345,6 +1400,43 @@ test "chained access through a Self-returning member is rejected, depth 2 (#6452
     "impl Builder2 for Thing2 { func withX(self: in Self): Self { self } }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0118"), "self.withX().withX().base: T0118")
+}
+
+// Explicitness pin queued from #6466's review: the chain rule
+// (`isSelfLikeExpr`) is receiver-generic — it walks any Self-typed binding in
+// scope, not just `self` — so it already covers a non-`self` Self-typed
+// param (`other`) chained through a Self-returning member. Pin both the
+// rejection and the accepted counterpart explicitly (T0118).
+test "chained access through a Self-returning member via a non-self param is rejected (T0118)" {
+  val src = "package P\n" + "interface Merger8 {\n" + "  func withX(self: in Self): Self\n" +
+    "  func score(self: in Self): Int\n" +
+    "  func combined(self: in Self, other: in Self): Int {\n" +
+    "    other.withX().base\n" +
+    "  }\n" +
+    "}\n" +
+    "record Weighted8 { base: Int }\n" +
+    "impl Merger8 for Weighted8 {\n" +
+    "  func withX(self: in Self): Self { self }\n" +
+    "  func score(self: in Self): Int { self.base }\n" +
+    "}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0118"), "other.withX().base: T0118")
+}
+
+test "chained call through a non-self param ending in a member call is accepted (T0118)" {
+  val src = "package P\n" + "interface Merger9 {\n" + "  func withX(self: in Self): Self\n" +
+    "  func score(self: in Self): Int\n" +
+    "  func combined(self: in Self, other: in Self): Int {\n" +
+    "    other.withX().score()\n" +
+    "  }\n" +
+    "}\n" +
+    "record Weighted9 { base: Int }\n" +
+    "impl Merger9 for Weighted9 {\n" +
+    "  func withX(self: in Self): Self { self }\n" +
+    "  func score(self: in Self): Int { self.base }\n" +
+    "}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0118"), "other.withX().score(): no T0118")
 }
 
 // A chained call through a member that does NOT return `Self` (e.g. `Int`)

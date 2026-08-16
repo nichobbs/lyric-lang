@@ -167,7 +167,7 @@ pub func checkStatement(
     // with unannotated params (`val f: (Int) -> Bool = { x -> x > 0 }`) types
     // its params from the declaration.  Non-lambda initialisers and
     // unannotated bindings take the plain-inference path exactly as before.
-    case SLocal(binding) -> match binding { case LBVal(pat, tyOpt, init) -> match tyOpt { case None -> bindPattern(sc, pat, inferExpr(sc, tbl, sigs, diag, init)); case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0060", "val binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); bindPattern(sc, pat, declT) } }; case LBVar(name, tyOpt, initOpt) -> match tyOpt { case None -> { val initType = match initOpt { case None -> TyError; case Some(e) -> inferExpr(sc, tbl, sigs, diag, e) }; scopeAdd(sc, LocalBinding(name = name, ty = initType, isMutable = true)) }; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); match initOpt { case Some(initE) -> { val initType = inferExprExpected(sc, tbl, sigs, diag, initE, declT); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0061", "var binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, initE, diag) }; case None -> {  } }; scopeAdd(sc, LocalBinding(name = name, ty = declT, isMutable = true)) } }; case LBLet(name, tyOpt, init) -> match tyOpt { case None -> scopeAdd(sc, LocalBinding(name = name, ty = inferExpr(sc, tbl, sigs, diag, init), isMutable = false)); case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0062", "let binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); scopeAdd(sc, LocalBinding(name = name, ty = declT, isMutable = false)) } } }
+    case SLocal(binding) -> match binding { case LBVal(pat, tyOpt, init) -> match tyOpt { case None -> bindPattern(sc, pat, inferExpr(sc, tbl, sigs, diag, init)); case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0060", "val binding declared as " + renderTypeExpr(te, declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); bindPattern(sc, pat, declT) } }; case LBVar(name, tyOpt, initOpt) -> match tyOpt { case None -> { val initType = match initOpt { case None -> TyError; case Some(e) -> inferExpr(sc, tbl, sigs, diag, e) }; scopeAdd(sc, LocalBinding(name = name, ty = initType, isMutable = true)) }; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); match initOpt { case Some(initE) -> { val initType = inferExprExpected(sc, tbl, sigs, diag, initE, declT); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0061", "var binding declared as " + renderTypeExpr(te, declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, initE, diag) }; case None -> {  } }; scopeAdd(sc, LocalBinding(name = name, ty = declT, isMutable = true)) } }; case LBLet(name, tyOpt, init) -> match tyOpt { case None -> scopeAdd(sc, LocalBinding(name = name, ty = inferExpr(sc, tbl, sigs, diag, init), isMutable = false)); case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0062", "let binding declared as " + renderTypeExpr(te, declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); scopeAdd(sc, LocalBinding(name = name, ty = declT, isMutable = false)) } } }
 
     case SAssign(target, op, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
@@ -787,6 +787,16 @@ pub func checkFunctionBody(
   }
 
   val sc = newScopeForFunction(sig.returnTy, sig.generics)
+  // #6418: `fn.ret` is the ORIGINAL (pre-erasure) return-type annotation —
+  // `Lyric.TypeAliasResolve` runs before this checker, so `fn.ret`'s
+  // `TypeExpr` (when present) already carries `aliasName` if the user wrote
+  // an alias here. `sig.returnTy` is the resolved `Type` this whole function
+  // checks against; render the two together once, reused by every
+  // declared-return-type diagnostic below instead of re-deriving it per site.
+  val declaredReturnTyStr = match fn.ret {
+    case Some(rte) -> renderTypeExpr(rte, sig.returnTy)
+    case None -> renderType(sig.returnTy)
+  }
   var i = 0
   while i < sig.params.count {
     val p = sig.params[i]
@@ -814,7 +824,7 @@ pub func checkFunctionBody(
       diag.add(
         errorDiagnostic(
           "T0114",
-          "function '" + fn.name + "' declares return type " + renderType(sig.returnTy) +
+          "function '" + fn.name + "' declares return type " + declaredReturnTyStr +
             " but has no body that produces a value (only @axiom functions, externs, and interface method signatures may omit the body)",
           fn.span
         )
@@ -825,7 +835,7 @@ pub func checkFunctionBody(
   match fn.body {
     case None -> {
     }
-    case Some(body) -> match body { case FBExpr(e) -> { val bodyType = inferExpr(sc, tbl, sigs, diag, e); val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) { diag.add(errorDiagnostic("T0070", "function body has type " + renderType(bodyType) + " but declared return type is " + renderType(sig.returnTy), fn.span)) } }; case FBBlock(blk) -> { val bodyValuePos = not isUnitType(sig.returnTy); val bodyType = checkBlock(sc, tbl, sigs, sig.generics, sig.returnTy, diag, blk, bodyValuePos); val isUnit = match bodyType { case TyPrim(pt) -> match pt { case PtUnit -> true; case _ -> false }; case _ -> false }; val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isUnit and not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) { diag.add(errorDiagnostic("T0070", "function body trailing expression has type " + renderType(bodyType) + " but declared return type is " + renderType(sig.returnTy), fn.span)) } } }
+    case Some(body) -> match body { case FBExpr(e) -> { val bodyType = inferExpr(sc, tbl, sigs, diag, e); val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) { diag.add(errorDiagnostic("T0070", "function body has type " + renderType(bodyType) + " but declared return type is " + declaredReturnTyStr, fn.span)) } }; case FBBlock(blk) -> { val bodyValuePos = not isUnitType(sig.returnTy); val bodyType = checkBlock(sc, tbl, sigs, sig.generics, sig.returnTy, diag, blk, bodyValuePos); val isUnit = match bodyType { case TyPrim(pt) -> match pt { case PtUnit -> true; case _ -> false }; case _ -> false }; val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isUnit and not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) { diag.add(errorDiagnostic("T0070", "function body trailing expression has type " + renderType(bodyType) + " but declared return type is " + declaredReturnTyStr, fn.span)) } } }
   }
   checkOutDefiniteAssignment(diag, fn, sig)
 }
