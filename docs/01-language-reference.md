@@ -1177,7 +1177,8 @@ Semantics:
 - Barriers are re-evaluated whenever any operation completes.
 - The compiler emits a `SemaphoreSlim`-based mutual exclusion plus condition signaling for barriers (see `docs/09-msil-emission.md` §17.1–17.3).
 - The invariant is checked after every entry/func returns control to the caller.
-- `return` (including from inside nested `if`/`match`/`while`, not only as the body's literal last statement) and `?` are fully supported inside `entry`/`func` bodies on both the MSIL and JVM backends, routing correctly through the entry's lock-release path (D-progress-771).
+- `return` (including from inside nested `if`/`match`/`while`, not only as the body's literal last statement) and `?` are fully supported inside `entry` bodies on both the MSIL and JVM backends, routing correctly through the entry's lock-release path (D-progress-771). Plain `func` members of a protected type were never affected — they lower via the ordinary method path with no lock region.
+- `entry` and `func` member BODIES are fully type-checked like ordinary function bodies (D-progress-772, #6481): the protected type's fields are in scope as locals (a `let`/immutable field rejects writes with T0087; a parameter shadows a same-named field), and ill-typed bodies are rejected at check time (T0070/T0020/T0043) instead of reaching the backends.
 
 ### 7.6 Raw locks
 

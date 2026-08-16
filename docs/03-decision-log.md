@@ -29515,3 +29515,58 @@ type-checker gap, not #6475/#6476/#6479).
 three), PR #6474 (the original review that queued the `?`-in-entry pin), PR
 #6480 (Stream B's five review items), #6338/D-progress-770 (the collision
 fix Stream B item 1 extends coverage for).
+
+## D-progress-772 — protected-type entry and func member BODIES are type-checked (#6481)
+
+**Problem.** Found while resolving #6476 (D-progress-771):
+`checkProtectedDeclTypes` resolved an entry's parameter and return type
+REFERENCES but never type-checked the entry BODY — and `func` members
+had the identical gap (confirmed by direct repro). Ill-typed member
+bodies silently compiled and misbehaved at the backends: #6476's
+ill-typed repro (`val v = r?; v` trailing a `Result`-returning entry)
+flowed to a JVM codegen panic instead of the T0070 the identical shape
+gets in a plain function.
+
+**Design — scope-seeded reuse of `checkFunctionBody`.** A new
+`protectedFieldLocals` helper resolves each `PMField`'s declared type
+(against a scratch diagnostic list, avoiding duplicate
+declaration-position errors) into `LocalBinding`s — `var` fields
+mutable, `let`/immutable fields immutable, so a bare-name write to a
+`let` field rejects with the EXISTING T0087 path, no new mode rule.
+`checkFunctionBody` gained an `extraLocals` parameter seeded BEFORE
+params (a param shadows a same-named field via last-added-wins); its
+two pre-existing call sites pass empty. A new
+`checkProtectedMemberBodies` (T5, new `IProtected` arm) walks
+`PMEntry`/`PMFunc`: entries are lifted into a synthetic `FunctionDecl`
+(entries can never be async — `EntryDecl` has no async surface at all,
+verified in the parser), `func` members check directly; both build
+their `ResolvedSignature` via the existing `resolveMethodSigParts`,
+with generics widened to owner ++ own for correctness (moot today — no
+generic protected types in-tree). The `returnTyExpr` thread
+(D-progress-766) carries through, so entry-body T0070s render aliases
+(`Meters (aka Long)`).
+
+**Blast radius — clean.** A full `make lyric` (recompiling the
+compiler + the 73-package stdlib bundle, exercising every in-tree
+`protected type`: stdlib `StubCounter`/`Scope`, lyric-otel's buffers,
+lyric-resilience's `CircuitBreakerState`, …) exited 0 with no new
+diagnostics. A manual survey of every in-tree protected declaration
+confirmed none calls a sibling member by bare name — the one at-risk
+pattern, since `PMEntry`/`PMFunc` are still not registered for
+cross-body dispatch (a separate pre-existing gap, now failing safe as
+T0020 under body-checking; filed as #6483).
+
+**Tests.** `typechecker_self_test.l` 328 -> 335: the #6476 repro shape
+rejected with T0070; the alias-rendering variant (`Meters (aka Long)`);
+unknown name T0020; well-typed var-field write control; `let`-field
+write rejected T0087; wrong-type call arg T0043; PMFunc ill-typed
+trailing expression T0070. Runtime net: the entry cases in
+`propagate_hoist_self_test.l` (40, both targets) stay green.
+
+**Docs.** docs/01 §7.5: the D-progress-771 sentence re-scoped to
+`entry` bodies only (protected `func` members were never affected by
+the lock-epilogue bug), plus the new body-checking note.
+
+**Related:** #6481, #6476/D-progress-771 (the discovery), #6483 (the
+cross-body dispatch gap filed from the survey), D-progress-766 (the
+returnTyExpr thread this reuses), PR #6482.

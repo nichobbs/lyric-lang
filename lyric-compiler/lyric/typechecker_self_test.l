@@ -3323,3 +3323,64 @@ test "T0107 impl return type mismatch names the interface's alias (#6467)" {
   val m = diagMessageFor(cr, "T0107")
   assertTrue(Str.contains(m, "Meters (aka Long)"), "T0107 message names the interface's alias: " + m)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6481: protected-type entry/func bodies are now type-checked (D-progress-772).
+// `checkProtectedDeclTypes` only ever resolved an entry/func member's
+// param/return TYPE REFERENCES — the body itself silently compiled unchecked
+// until now.  Covers the exact #6476 repro shape (a well-typed-looking `?`
+// unwrap whose trailing value doesn't match the declared `Result` return),
+// the alias-aware T0070 rendering (mirrors the #6467 family above, now also
+// reachable from a protected-type member), an unknown bare name inside an
+// entry body, a well-typed control (a bare-name write to a `var` field must
+// stay clean), an immutable `let` field write (reuses the ordinary
+// `LocalBinding.isMutable` -> T0087 path, no new mode-checker rule), a
+// wrong-type call argument inside an entry body, and the `PMFunc` (protected
+// `func` member) analog — the same gap existed there and is fixed the same
+// way.
+test "protected entry body: #6476 repro shape rejected with T0070" {
+  val src = "package P\nunion Result[T, E] { case Ok(value: T); case Err(error: E) }\n" +
+    "protected type Bag {\n  var count: Int = 0\n  entry f(r: in Result[Int, String]): Result[Int, String] {\n    val v = r?\n    v\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(
+    hasDiagCode(cr, "T0070"),
+    "entry body: #6476 repro shape (Int trailing value vs Result[Int,String] return) rejected with T0070"
+  )
+}
+
+test "protected entry body: T0070 names the alias the user wrote (#6481, mirrors #6467)" {
+  val src = "package P\nalias Meters = Long\nprotected type Bag {\n  var count: Int = 0\n  entry f(): Meters {\n    \"oops\"\n  }\n}\n"
+  val cr = parseCheckAliasResolved(src)
+  val m = diagMessageFor(cr, "T0070")
+  assertTrue(Str.contains(m, "Meters (aka Long)"), "entry body T0070 message names the alias: " + m)
+}
+
+test "protected entry body: unknown name rejected with T0020" {
+  val src = "package P\nprotected type Bag {\n  var count: Int = 0\n  entry f(): Unit {\n    count = unknownName\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0020"), "entry body: unknown bare name rejected with T0020")
+}
+
+test "protected entry body: well-typed write to a var field stays clean (control)" {
+  val src = "package P\nprotected type Bag {\n  var count: Int = 0\n  entry inc(): Unit {\n    count = count + 1\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "entry body: well-typed var-field write has no diagnostics")
+}
+
+test "protected entry body: write to an immutable let field rejected with T0087" {
+  val src = "package P\nprotected type Bag {\n  let capacity: Int = 10\n  entry f(): Unit {\n    capacity = 5\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0087"), "entry body: bare-name write to a `let` field rejected with T0087")
+}
+
+test "protected entry body: wrong-type call argument rejected with T0043" {
+  val src = "package P\nfunc takesInt(n: in Int): Unit {\n}\nprotected type Bag {\n  var count: Int = 0\n  entry f(): Unit {\n    takesInt(\"oops\")\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0043"), "entry body: wrong-type call argument rejected with T0043")
+}
+
+test "protected func member body: ill-typed trailing expression rejected with T0070" {
+  val src = "package P\nprotected type Bag {\n  var count: Int = 0\n  func bad(): Int {\n    val v: String = \"x\"\n    v\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0070"), "func member body: ill-typed trailing expr rejected with T0070")
+}

@@ -1971,6 +1971,148 @@ func checkProtectedDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], dec
   }
 }
 
+// #6481: the protected type's own field names, resolved to `LocalBinding`s so
+// an entry/func body's bare-name field references (`count = count + 1`,
+// `items.add(v)` — there is no explicit `self` receiver, unlike a record
+// method) resolve during body type-checking. `var` fields are mutable;
+// `let`/plain fields are not — reusing `LocalBinding.isMutable` gets the
+// existing T0087 "cannot reassign immutable" check for free on a bare-name
+// write to a `let` field, with no new mode-checker rule required. Diagnostics
+// from re-resolving each field's type go to a scratch list: `checkProtectedDeclTypes`
+// (T4) already reports declaration-position errors for these same type refs.
+func protectedFieldLocals(tbl: in SymbolTable, ctx: in GenericContext, decl: in ProtectedTypeDecl): List[LocalBinding] {
+  val scratch: List[Diagnostic] = newList()
+  val locals: List[LocalBinding] = newList()
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case PMField(field) -> {
+        match field {
+          case PFVar(name, ty, _, _, _, _) -> {
+            locals.add(LocalBinding(name = name, ty = resolveType(tbl, ctx, scratch, ty), isMutable = true))
+          }
+          case PFLet(name, ty, _, _, _, _) -> {
+            locals.add(LocalBinding(name = name, ty = resolveType(tbl, ctx, scratch, ty), isMutable = false))
+          }
+          case PFImmutable(fd) -> {
+            locals.add(LocalBinding(name = fd.name, ty = resolveType(tbl, ctx, scratch, fd.ty), isMutable = fd.isMutable))
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  locals
+}
+
+// #6481: `checkProtectedDeclTypes` (T4, above) only resolves an entry/func
+// member's param/return TYPE REFERENCES — the body itself was never type-
+// checked, so an ill-typed body (mismatched returns, unknown names, bad
+// arguments) compiled silently and reached the backends as a codegen panic
+// or miscompile. Routes every member through the ordinary `checkFunctionBody`
+// machinery, seeded with the protected fields (`protectedFieldLocals`) so
+// bare-name field access resolves.
+//
+// `PMFunc` wraps a real `FunctionDecl`, so it is passed straight through.
+// `PMEntry` wraps the distinct `EntryDecl` AST shape (no `isAsync`/
+// `generics`/`whereClause` — the parser never accepts `async entry` or
+// `entry foo[T](...)`, so an entry body is always synchronous and never
+// separately generic), so it is lifted into a synthetic `FunctionDecl` first.
+// `resolveMethodSigParts` (§7a) already builds the right owner-generics-aware
+// `ResolvedSignature` for a member with no `self` param (protected members
+// never have one, so its `self`-drop is a no-op here) — reused as-is, with
+// `sig.generics` widened to include the OWNER's generic names too (not just
+// the member's own) so a local `val x: T = …` inside the body of a generic
+// protected type's member resolves `T` the same way a local inside the
+// declaring type's other members would.
+func checkProtectedMemberBodies(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  decl: in ProtectedTypeDecl,
+): Unit {
+  val ownerGenerics = extractGenericNames(decl.generics)
+  val ctx = declGenericContext(decl.generics)
+  val fieldLocals = protectedFieldLocals(tbl, ctx, decl)
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case PMEntry(entryDecl) -> {
+        val noGenerics: Option[GenericParams] = None
+        val sig0 = resolveMethodSigParts(
+          tbl,
+          "",
+          ownerGenerics,
+          noGenerics,
+          entryDecl.params,
+          entryDecl.ret,
+          false,
+          entryDecl.span
+        )
+        val sig = ResolvedSignature(
+          generics = ownerGenerics,
+          bounds = sig0.bounds,
+          params = sig0.params,
+          returnTy = sig0.returnTy,
+          isAsync = sig0.isAsync,
+          isHot = sig0.isHot,
+          isGenerator = sig0.isGenerator,
+          originPackage = sig0.originPackage,
+          span = sig0.span
+        )
+        val syntheticBody: Option[FunctionBody] = Some(value = entryDecl.body)
+        val fn = FunctionDecl(
+          docComments = entryDecl.docComments,
+          annotations = entryDecl.annotations,
+          visibility = entryDecl.visibility,
+          isAsync = false,
+          name = entryDecl.name,
+          generics = None,
+          params = entryDecl.params,
+          ret = entryDecl.ret,
+          whereClause = None,
+          contracts = entryDecl.contracts,
+          body = syntheticBody,
+          span = entryDecl.span
+        )
+        checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals)
+      }
+      case PMFunc(fn) -> {
+        val ownFnGenerics = extractGenericNames(fn.generics)
+        val combinedGenerics: List[String] = newList()
+        var g = 0
+        while g < ownerGenerics.count {
+          combinedGenerics.add(ownerGenerics[g])
+          g = g + 1
+        }
+        var g2 = 0
+        while g2 < ownFnGenerics.count {
+          combinedGenerics.add(ownFnGenerics[g2])
+          g2 = g2 + 1
+        }
+        val sig0 = resolveMethodSigParts(tbl, "", ownerGenerics, fn.generics, fn.params, fn.ret, fn.isAsync, fn.span)
+        val sig = ResolvedSignature(
+          generics = combinedGenerics,
+          bounds = sig0.bounds,
+          params = sig0.params,
+          returnTy = sig0.returnTy,
+          isAsync = sig0.isAsync,
+          isHot = sig0.isHot,
+          isGenerator = sig0.isGenerator,
+          originPackage = sig0.originPackage,
+          span = sig0.span
+        )
+        checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals)
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
 func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in List[Item]): Unit {
   val emptyCtx = newGenericContext()
   var i = 0
@@ -2366,13 +2508,15 @@ func checkWithImportedPackagesCore(
   while m < file.items.count {
     match file.items[m].kind {
       case IFunc(decl) -> {
+        val noExtraLocals: List[LocalBinding] = newList()
         val arityKey = decl.name + "/" + toString(decl.params.count)
         match mapGet(sigs, arityKey) {
-          case Some(sig) -> checkFunctionBody(tbl, sigs, diag, decl, sig)
-          case None -> match mapGet(sigs, decl.name) { case Some(sig) -> checkFunctionBody(tbl, sigs, diag, decl, sig); case None -> {  } }
+          case Some(sig) -> checkFunctionBody(tbl, sigs, diag, decl, sig, noExtraLocals)
+          case None -> match mapGet(sigs, decl.name) { case Some(sig) -> checkFunctionBody(tbl, sigs, diag, decl, sig, noExtraLocals); case None -> {  } }
         }
       }
       case IImpl(decl) -> checkImplConformance(tbl, diag, decl)
+      case IProtected(decl) -> checkProtectedMemberBodies(tbl, sigs, diag, decl)
       case IConfig(decl) -> checkConfigBlock(diag, decl)
       case _ -> {
       }
