@@ -164,9 +164,10 @@ test "verifyJwt: ALG_REJECTED is distinct from BAD_SIGNATURE (#1090)" {
 // and always falls through to `ALG_REJECTED` before the kernel is reached.
 // These three tests pin the full trio end to end: alg=none rejected,
 // mismatched alg rejected, and a correctly-signed matching-alg token
-// accepted — confirming there is no live gap on `--target dotnet` even
-// though the Lyric-level `jwtAlg` belt-and-suspenders extraction (auth.l)
-// tracks the still-open MSIL `.indexOf` codegen bug #5625 separately.
+// accepted — confirming there is no live gap on `--target dotnet`.  The
+// Lyric-level `jwtAlg` belt-and-suspenders extraction (auth.l) uses the
+// Option-returning `.indexOf` spelling on both targets since #6348 fixed
+// the #5625 MSIL mis-binding.
 test "verifyJwt: alg=none forged token is rejected as ALG_REJECTED, not accepted (#5636)" {
   // Header: {"alg":"none"} → eyJhbGciOiJub25lIn0 (len=19, rem=3; needs = padding).
   // Classic alg=none forgery drops the signature; the empty final segment

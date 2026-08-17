@@ -18,8 +18,6 @@ func testTrim(): Unit {
 
 func testSearch(): Unit {
   val s = "abcabc"
-  // BCL semantics: Int result, -1 when absent (distinct from the
-  // free-function `indexOf` which returns Option[Int]).
   // With `import Std.String` in scope the method spelling routes to the
   // Option-returning free functions on BOTH backends (#6124/#6348) — the
   // raw-int BCL semantics this file previously asserted rode the #5625

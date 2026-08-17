@@ -293,6 +293,18 @@ func scanJsonString(json: in String, quotePos: in Int): Int {
   -1
 }
 
+// `Std.String.indexOf`/`lastIndexOf` return `Option[Int]` (#6124); with
+// `import Std.String` in scope the method spelling routes there on BOTH
+// backends since #6348 (MSIL previously mis-bound the raw-int BCL intrinsic
+// here).  Collapse to the -1 sentinel the position logic below expects —
+// the same adapter the JVM kernel twin already carries.
+func idxOrNeg(pos: in Option[Int]): Int {
+  match pos {
+    case Some(i) -> i
+    case None -> -1
+  }
+}
+
 // Return true when the JSON payload string contains duplicate `aud` keys.
 // A duplicate occurs when either:
 //   (a) both `"aud":"` (string form) and `"aud":[` (array form) are present, or
@@ -310,18 +322,6 @@ func scanJsonString(json: in String, quotePos: in Int): Int {
 // is an availability-only risk, not a security risk, because the function fails
 // closed on any ambiguity.  A full structural JSON parser would eliminate the
 // false-positive surface; tracked for a future hardening pass (#3165).
-// `Std.String.indexOf`/`lastIndexOf` return `Option[Int]` (#6124); with
-// `import Std.String` in scope the method spelling routes there on BOTH
-// backends since #6348 (MSIL previously mis-bound the raw-int BCL intrinsic
-// here).  Collapse to the -1 sentinel the position logic below expects —
-// the same adapter the JVM kernel twin already carries.
-func idxOrNeg(pos: in Option[Int]): Int {
-  match pos {
-    case Some(i) -> i
-    case None -> -1
-  }
-}
-
 func audHasDuplicates(json: in String): Bool {
   val pfxStr = "\"aud\":\""
   val pfxArr = "\"aud\":["

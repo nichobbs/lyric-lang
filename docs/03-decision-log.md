@@ -30222,6 +30222,19 @@ resulting cross-target divergence for aliased files (JVM's
 `TyError` for this shape) is pre-existing and tracked in #6496 with the
 two candidate resolutions.
 
+**Review addendum (PR #6497).** The review's REQUIRED finding (#6498)
+swept six stale "#5625 / MSIL never routes" comments — including one
+left contradicting new code in the same diff — to the accurate
+post-#6348 state (unaliased routes, aliased divergence in #6496).
+Suggestions landed alongside: a fail-loud fallback when the import is
+in scope but the func token is missing (mirroring `split`, closing a
+residual instance of the same silent Int/Option class), `idxOrNeg`
+repositioned above `audHasDuplicates`'s doc block, and a dedicated
+aliased-exclusion self-test (`indexof_aliased_bcl_self_test.l`,
+dotnet-only CI with a #6496 pointer) pinning the BCL-Int fallback
+directly. The per-call-site alias-map scan stays as-is (a few dozen
+entries; deferred as a micro-optimisation).
+
 **Related:** #6348, #5625 (the mis-binding), #6124 (the JVM half),
-#6496 (the aliased-import divergence follow-up), docs/59 (the
-silent-miscompile audit family).
+#6496 (the aliased-import divergence follow-up), #6498 (the comment
+sweep), docs/59 (the silent-miscompile audit family).

@@ -15131,6 +15131,16 @@ func lowerMethodCallMsil(
         case Some(rt) -> rt
         case None -> match mapGet(cctx.funcRetTypes, idxFnFqn) { case Some(rt) -> rt; case None -> MObject }
       }
+    } else if idxStdStringImported {
+      // The import is in scope but the free function's token is missing —
+      // fail loud like the `split` arm below rather than silently emitting
+      // the raw-Int intrinsic against the caller's Option expectation (the
+      // exact silent Int/Option confusion #6348 exists to eliminate).
+      val idxMissingMsg = idxFnFqn + " unavailable at this call site (Std.String not linked)"
+      insns.add(MLdStr(token = ctxInternUs(cctx.lctx, idxMissingMsg)))
+      insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+      insns.add(MThrow)
+      MObject
     } else {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
       insns.add(
