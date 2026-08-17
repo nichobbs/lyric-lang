@@ -705,8 +705,6 @@ func parseStatus(raw: in String): JobStatus {
   }    // Unknown status → treat as failed.
 }
 
-// Parse a JSON array of job result objects from the kernel into a list.
-// Wire format: [{"jobId":"...","status":"...","output":"...","error":"...",
 // Index of `needle` in `s` at or after `from`, or -1.  The 2-arg BCL
 // `IndexOf(str, from)` overload is not a Lyric surface (#4025) — the former
 // `s.indexOf(needle, from)` spelling lowered to a guaranteed runtime throw
@@ -722,6 +720,8 @@ func indexOfFrom(s: in String, needle: in String, from: in Int): Int {
   from + rel
 }
 
+// Parse a JSON array of job result objects from the kernel into a list.
+// Wire format: [{"jobId":"...","status":"...","output":"...","error":"...",
 //                "startedAt":N,"finishedAt":N},...]
 func parseResults(jobId: in String, json: in String): slice[JobResult] {
   if json == "[]" or json == "" {

@@ -30383,14 +30383,22 @@ contradicting D-progress-018's alias-as-sugar rule.
    absent), the explicit spelling for sentinel-int index arithmetic.
    Pure method-spelling bodies inside `Std.String` itself (which does
    not import itself) bind the host intrinsics on both targets.
-3. **In-tree migration** — all 65 method-spelling sites in
-   aliased-import files (26 files: `msil/codegen.l`'s 27 sites,
-   `release.l` 16, `cli_version.l` 12, `emitter.l` 11, the rest
-   spread across cli/, fmt, metadata_reader, generator, lockfile,
-   jvm/lowering.l, lyric-db's kernel, and stdlib tests) migrated to
-   the explicit `Raw` spellings — a pure one-call rewrite preserving
-   each site's `< 0` int flow, the same shape #6348's 44-IL-error
-   first attempt showed these sites all use.
+3. **In-tree migration** — all 69 method-spelling sites whose
+   compilation unit imports `Std.String` migrated to the explicit
+   `Raw` spellings — a pure one-call rewrite preserving each site's
+   `< 0` int flow, the same shape #6348's 44-IL-error first attempt
+   showed these sites all use.  Per file: `msil/codegen.l` 27,
+   `cli_version.l` 12, `emitter.l` 9, `msil/lowering.l` 4,
+   `cli_upgrade.l` 4 (the ilverify-caught batch below),
+   `cli_shared.l` 3, `restored_packages.l` 3,
+   `restored_packages_self_test.l` 2, and one each in
+   `jvm/lowering.l`, `cli_build.l`, `cli_test.l`,
+   `workspace_builder.l`, and `fmt/fmt_items.l`.  Files whose sites
+   were already the Option-idiom free-function spelling (`release.l`,
+   `cli_restore.l`, `cli_publish.l`, `cfg_gate.l`, `build_defines.l`,
+   `metadata_reader.l`, `generator.l`, `lockfile.l`, `init.l`,
+   `open_api_parser.l`, `fmt_self_test.l`, lyric-db's kernel, and the
+   stdlib tests) needed no change and are untouched.
 4. **Checker strictness** (`typechecker_exprs.l`
    `stringIndexOfMember`): the previously TyError-lenient shape is now
    typed — `(String) -> Option[Int]` with `Std.String` in
