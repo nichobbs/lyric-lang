@@ -1168,6 +1168,23 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
           }
         }
       }
+      // #6483: protected-type `entry`/`func` members register into the same
+      // method-sig space as record/impl/interface members, so a sibling member
+      // called by bare name from another member body resolves through the
+      // ECall member-callee fallback (#1722/#6435), and `self.member(...)`
+      // resolves through the method space.  Both backends already register
+      // and lower these calls (`methodTokens` `<cls>/<name>` on MSIL,
+      // `funcSigs` `<cls>#<name>` + `selfClass` on JVM); only the checker
+      // was missing.  The entry/func lock wrappers are reentrant on both
+      // targets (CLR `Monitor`, JVM object monitors), so a sibling call
+      // through the locked public method is safe.
+      case IProtected(decl) -> {
+        match symTableTryFindOne(tbl, decl.name) {
+          case Some(sym) -> match sym.kind { case DKProtected(tid, _) -> { val protGen = extractGenericNames(decl.generics); val noGenerics: Option[GenericParams] = None; var m = 0; while m < decl.members.count { match decl.members[m] { case PMEntry(ed) -> symTableAddMethodSig(tbl, MethodEntry(owner = tid, ownerName = decl.name, ownerGenerics = protGen, name = ed.name, sig = resolveMethodSigParts(tbl, pkgName, protGen, noGenerics, ed.params, ed.ret, false, ed.span))); case PMFunc(fn) -> symTableAddMethodSig(tbl, MethodEntry(owner = tid, ownerName = decl.name, ownerGenerics = protGen, name = fn.name, sig = resolveMethodSigParts(tbl, pkgName, protGen, fn.generics, fn.params, fn.ret, fn.isAsync, fn.span))); case _ -> {  } }; m = m + 1 } }; case _ -> {  } }
+          case None -> {
+          }
+        }
+      }
       case _ -> {
       }
     }
@@ -2027,6 +2044,17 @@ func protectedFieldLocals(tbl: in SymbolTable, ctx: in GenericContext, decl: in 
 // the member's own) so a local `val x: T = …` inside the body of a generic
 // protected type's member resolves `T` the same way a local inside the
 // declaring type's other members would.
+// The protected-type analog of `recordSelfType`: the concrete receiver type
+// member bodies see for whole-`self` reads and the ECall bare-sibling
+// fallback (#6483).  Same raw-`TyVar` type-argument convention as
+// `recordSelfType` (see its doc comment).
+func protectedSelfType(tbl: in SymbolTable, decl: in ProtectedTypeDecl, ownerGenerics: in List[String]): Type {
+  match symTableTryFindOne(tbl, decl.name) {
+    case Some(sym) -> match symbolTypeIdOpt(sym) { case Some(tid) -> { val targs: List[Type] = newList(); var i = 0; while i < ownerGenerics.count { targs.add(TyVar(name = ownerGenerics[i])); i = i + 1 }; TyUser(id = tid, name = decl.name, args = targs) }; case None -> TyError }
+    case None -> TyError
+  }
+}
+
 func checkProtectedMemberBodies(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
@@ -2036,6 +2064,7 @@ func checkProtectedMemberBodies(
   val ownerGenerics = extractGenericNames(decl.generics)
   val ctx = declGenericContext(decl.generics)
   val fieldLocals = protectedFieldLocals(tbl, ctx, decl)
+  val selfTy = protectedSelfType(tbl, decl, ownerGenerics)
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
@@ -2077,7 +2106,7 @@ func checkProtectedMemberBodies(
           body = syntheticBody,
           span = entryDecl.span
         )
-        checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals, fieldLocals, true, TyError)
+        checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals, fieldLocals, true, selfTy)
       }
       case PMFunc(fn) -> {
         val ownFnGenerics = extractGenericNames(fn.generics)
@@ -2104,7 +2133,7 @@ func checkProtectedMemberBodies(
           originPackage = sig0.originPackage,
           span = sig0.span
         )
-        checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals, fieldLocals, true, TyError)
+        checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals, fieldLocals, true, selfTy)
       }
       case _ -> {
       }

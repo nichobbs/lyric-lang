@@ -3561,6 +3561,22 @@ test "record body method: T0070 names the alias the user wrote (#6487, mirrors #
   assertTrue(Str.contains(m, "Meters (aka Long)"), "record method body T0070 message names the alias: " + m)
 }
 
+// #6483: protected-type `entry`/`func` members register into the method-sig
+// space, so a sibling member called by bare name (or through `self.`) from
+// another member body resolves — and a genuinely-unknown bare name in the
+// same position still gets its T0020.
+test "protected member: bare sibling entry/func calls resolve (#6483)" {
+  val src = "package P\nprotected type Counter {\n  var total: Int = 0\n  entry add(n: in Int): Unit {\n    total = total + n\n  }\n  func doubled(): Int {\n    total * 2\n  }\n  entry bumpAndDouble(n: in Int): Int {\n    add(n)\n    doubled()\n  }\n  entry viaSelf(n: in Int): Int {\n    self.add(n)\n    self.doubled()\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0020"), "protected member body: bare + self. sibling calls resolve (no T0020)")
+}
+
+test "protected member: unknown bare call still rejected with T0020 (#6483)" {
+  val src = "package P\nprotected type Counter {\n  var total: Int = 0\n  entry bump(): Unit {\n    nosuch()\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0020"), "unknown bare call inside a protected member body: T0020 still fires")
+}
+
 // #6488 review: a cross-compile-unit `impl` whose target record arrives as
 // an IMPORTED item (the restored-package preamble shape — a consumer package
 // writing `impl Iface for RestoredRecord`) must resolve `self.field` through

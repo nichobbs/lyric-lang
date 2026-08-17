@@ -219,3 +219,88 @@ test "protected type with multiple explicit-self entries + a no-param entry and 
   c.reset()
   assertEqualLong(c.peek(), 0i64, "reset() then peek() -> 0")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §7. Protected-type sibling member dispatch (#6483)
+// ─────────────────────────────────────────────────────────────────────────────
+// One member body calling a sibling member of the SAME protected type — by
+// bare name and through explicit `self.` — including an entry calling a
+// sibling ENTRY (safe: the Monitor/monitorenter lock wrappers are reentrant
+// on both targets).  Before #6483, protected members were never registered
+// in the method-sig space, so the bare call was rejected with T0020 at
+// check time.
+protected type SiblingCounter {
+  var total: Int = 0
+  entry add(n: in Int): Unit {
+    total = total + n
+  }
+  func doubled(): Int {
+    total * 2
+  }
+  entry bumpAndDouble(n: in Int): Int {
+    add(n)
+    doubled()
+  }
+  entry viaSelfDouble(n: in Int): Int {
+    self.add(n)
+    self.doubled()
+  }
+  entry addTwice(n: in Int): Unit {
+    add(n)
+    add(n)
+  }
+  entry get(): Int {
+    total
+  }
+}
+
+test "protected entry calls sibling func + entry by bare name (#6483)" {
+  val c = SiblingCounter(total = 0)
+  assertEqualInt(c.bumpAndDouble(5), 10, "add(5) then doubled() -> 10")
+}
+
+test "protected entry calls siblings through explicit self (#6483)" {
+  val c = SiblingCounter(total = 3)
+  assertEqualInt(c.viaSelfDouble(2), 10, "self.add(2) on 3 then self.doubled() -> 10")
+}
+
+test "protected entry calls a sibling entry twice: reentrant lock (#6483)" {
+  val c = SiblingCounter(total = 0)
+  c.addTwice(4)
+  assertEqualInt(c.get(), 8, "addTwice(4) -> 8 (entry-from-entry reentrancy)")
+}
+
+// #6489-on-protected (#6491 review): when a free function and a sibling
+// member share a bare name, the sibling member wins inside a protected
+// member body — the same method-wins order records and impls pin in
+// self_method_call_self_test.l, on both targets.
+func report(): Int {
+  1
+}
+
+protected type ShadowedCounter {
+  var total: Int = 0
+  func report(): Int {
+    total + 2
+  }
+  entry viaBareShadowed(): Int {
+    report()
+  }
+  entry viaFree(): Int {
+    freeOnlyReport()
+  }
+}
+
+func freeOnlyReport(): Int {
+  41
+}
+
+test "protected member bare call shadowed by a sibling member resolves the member (#6491)" {
+  val c = ShadowedCounter(total = 5)
+  assertEqualInt(c.viaBareShadowed(), 7, "sibling member wins over the same-named free function")
+}
+
+test "protected member bare call with no same-named sibling resolves the free function (#6491)" {
+  val c = ShadowedCounter(total = 0)
+  assertEqualInt(c.viaFree(), 41, "free-function resolution unaffected when no sibling shadows it")
+}

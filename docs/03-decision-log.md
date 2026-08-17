@@ -29918,3 +29918,67 @@ structurally; `typeEquiv` treats every `TyVar` as universally equivalent).
 **Related:** #6489, #6488/D-progress-774 (the review that surfaced it),
 #1722/#6435 (the bare-sibling dispatch this orders), #5455 (the
 ctor-before-sibling ordering already pinned above the JVM arm).
+
+---
+
+## D-progress-776 — Protected-type sibling member dispatch (#6483)
+
+**Date:** 2026-08-17. **Closes** the gap #6481's blast-radius survey filed
+as #6483: `PMEntry`/`PMFunc` members of a `protected type` were never
+registered in the method-signature table, so one member body calling a
+sibling member by bare name (`entry a() { helperFunc() }`) was rejected
+with T0020 once member bodies became checked (failing safe, but a real
+language gap — record/impl/interface members all support the pattern).
+
+**What shipped.**
+
+1. **Checker registration:** `addMethodSigsFromItems` gains an
+   `IProtected` arm registering each `entry`/`func` member's signature
+   (via the same `resolveMethodSigParts` path the body-checker already
+   uses) against the protected type's `TypeId` — the same space
+   record/impl/interface members occupy.
+2. **Real `selfType` for protected bodies:** `checkProtectedMemberBodies`
+   previously passed `selfType = TyError`; it now builds the concrete
+   receiver type via `protectedSelfType` (the protected analog of
+   `recordSelfType`, same raw-`TyVar` convention). This is what lets the
+   ECall bare-sibling fallback (#1722/#6435) fire — it resolves through
+   `typeIdOfType(sc.selfType)` — and gives whole-`self` reads in
+   protected bodies the concrete type (#6488's `ESelf` rule), instead of
+   the silent `TyError` they briefly had.
+3. **No backend changes needed** — verified, not assumed: MSIL already
+   registers `methodTokens` `<class>/<member>` for `PMEntry`/`PMFunc`
+   (the #6407 descriptor work) and its bare-sibling `callvirt` arm plus
+   the #6489 method-wins gate handle dispatch; JVM already registers
+   `funcSigs` `<class>#<member>` (J3 M-3) and sets `selfClass` in
+   `lowerProtectedMethod`, so its pre-existing sibling arm handles both
+   `m()` and `self.m()`. The three new runtime tests passed on both
+   targets on the first build after the checker-only change.
+
+**Lock discipline.** An entry calling a sibling ENTRY goes through the
+sibling's locked public wrapper — safe because both targets' lock
+primitives are reentrant (CLR `Monitor.Enter(this)`, JVM object
+monitors): the nested acquisition by the holding thread is a no-op.
+No unlocked-internal-body indirection is needed at the current
+semantics level; if `when:` entry barriers ship (deferred per D-N-017 /
+docs/08), barrier evaluation on reentrant calls must be revisited then.
+
+**Pins.** `synthesized_method_self_test.l` (dual-target, 10 → 13): bare
+sibling func+entry call, explicit-`self.` spelling, and entry-from-entry
+reentrancy asserting accumulated state. `typechecker_self_test.l`
+(362 → 364): positive resolve + unknown-bare T0020 negative. docs/01
+§7.5 gains the sibling-dispatch bullet.
+
+**Related:** #6483, #6481/D-progress-772 (the survey that filed it),
+#6488/D-progress-774 (the member-callee fallback this reuses),
+#6489/D-progress-775 (the shadowing order that now also governs
+protected bodies), #6407 (the descriptor work that made the backend
+halves already-correct).
+
+**Review addendum (2026-08-17, PR #6491).** The review's REQUIRED finding
+(#6492): `docs/10-bootstrap-progress.md` still carried the pre-#6483
+"stays open on purpose" note for the protected bare-sibling gap — updated
+to record the close. Its SUGGESTION also landed: the free-function-vs-
+sibling shadowing rule is now pinned for protected bodies too
+(`synthesized_method_self_test.l` 13 → 15, dual-target: sibling member
+wins; free function still resolves when unshadowed), mirroring the
+#6489 record/impl pins.

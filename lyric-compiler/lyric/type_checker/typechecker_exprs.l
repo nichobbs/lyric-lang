@@ -3496,9 +3496,9 @@ pub func inferExpr(
         }
         case EPath(p3) -> {
           // #6487 review (#1722/#6435): a BARE call with no receiver at all
-          // (`dup()`) inside a checked record-body or impl-method body
-          // (never a protected member — #6483's tracked bare-sibling-
-          // dispatch gap is deliberately left as-is) dispatches on the
+          // (`dup()`) inside a checked record-body, impl-method, or
+          // protected-member body (#6483 registered protected `entry`/`func`
+          // sigs and gave those bodies a real `selfType`) dispatches on the
           // implicit `self` when the name is not a local binding but IS a
           // real method of the enclosing type — codegen's `ctx.selfClass`
           // general-static-call fallback (both backends) already resolves
