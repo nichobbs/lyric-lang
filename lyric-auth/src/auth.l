@@ -194,10 +194,9 @@ func jwtAlg(token: in String): String {
 // full explanation.
 @cfg(feature = "jvm")
 func jwtAlg(token: in String): String {
-  // `Std.String.indexOf`/`lastIndexOf` return `Option[Int]` — the raw-int
-  // `-1` idiom the dotnet twin still carries rides the #5625 MSIL
-  // miscompile and cannot compile on the JVM (a relational op on the
-  // Option reference).
+  // `Std.String.indexOf`/`lastIndexOf` return `Option[Int]` on both
+  // targets — the dotnet twin above uses the same Option-matching idiom
+  // since #6348 fixed the #5625 MSIL mis-binding.
   val dot = match token.indexOf(".") { case Some(i) -> i; case None -> return "" }
   val seg = token.substring(0, dot)
   var headerBytes: slice[Byte] = []

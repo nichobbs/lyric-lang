@@ -26,10 +26,9 @@
 //!
 //! Cross-target status: since #6348 the MSIL backend routes `s.indexOf(x)`
 //! to the same Option-returning free functions for UNALIASED
-//! `import Std.String` files (the #5625 mis-binding is fixed); the
-//! remaining divergence is aliased imports only (#6496) — so the two
-//! None-expecting cases below fail on `--target dotnet` until the MSIL side
-//! adopts the same UFCS routing the JVM backend now has.
+//! `import Std.String` files (the #5625 mis-binding is fixed) — this file
+//! imports Std.String unaliased, so its cases now hold on BOTH targets;
+//! the remaining divergence is aliased imports only (#6496).
 @test_module
 package Lyric.StringMethodsJvmSelfTest
 

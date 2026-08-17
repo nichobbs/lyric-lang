@@ -17,7 +17,7 @@ test "aliased import: method spelling keeps BCL Int semantics (#6348/#6496)" {
   val s = "abcabc"
   assertEqualInt(s.indexOf("bc"), 1, "BCL indexOf first occurrence")
   assertEqualInt(s.lastIndexOf("bc"), 4, "BCL lastIndexOf last occurrence")
-  assertEqualInt(s.indexOf("zz"), 0 - 1, "BCL indexOf absent is -1")
+  assertEqualInt(s.indexOf("zz"), -1, "BCL indexOf absent is -1")
 }
 
 test "aliased import: free-function spelling returns Option (#6348)" {
