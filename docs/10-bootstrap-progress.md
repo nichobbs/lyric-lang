@@ -312,9 +312,14 @@ deferred to Phase 3 by design.
   needing substitution before the return-type check (the #6417 shape),
   and a bare call to a sibling method with no receiver at all dispatching
   on the implicit `self` (#1722/#6435). Docs/01 §§2.4/2.12 have the full
-  semantics; the protected-type bare-sibling-call gap (#6483) is
-  unaffected and stays open on purpose — no in-tree protected type
-  exercises that pattern, unlike the impl/record case.
+  semantics. The protected-type bare-sibling-call gap (#6483) closed in
+  D-progress-776: protected `entry`/`func` members now register in the
+  method-sig space and member bodies carry the concrete `selfType`, so
+  sibling calls (bare and `self.`-qualified, including entry-from-entry
+  under the reentrant lock wrappers) resolve and run on both targets —
+  docs/01 §7.5 has the semantics. The free-function-shadowing order is
+  method-wins on both targets across all member kinds (#6489,
+  D-progress-775).
 - CST formatter (`lyric fmt`) — **shipped** (`Lyric.Fmt` self-hosted package, wired via `SelfHostedFmt.fs`): round-trip-faithful printing, full `//` and `/* */` comment preservation at item / member / statement / nested-block boundaries, intentional blank-line preservation (max one per spot, Black-style), width-driven multi-line expression layout at 120-char budget. `--write` and `--check` flags.
 - Linter (`lyric lint`) — **shipped** (`Lint.fs` in `Lyric.Cli`, backed by `Lyric.SelfHostedLint.fs`): five AST-only rules: L001 PascalCase types, L002 camelCase funcs, L003 pub-doc, L004 no TODO/FIXME in docs, L005 pub block-body funcs need contracts. `--error-on-warning` flag. Runs on non-compiling code.
 - Property-based testing (`Std.Testing.Property`) — bootstrap shipped

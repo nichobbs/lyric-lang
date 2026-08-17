@@ -269,3 +269,38 @@ test "protected entry calls a sibling entry twice: reentrant lock (#6483)" {
   c.addTwice(4)
   assertEqualInt(c.get(), 8, "addTwice(4) -> 8 (entry-from-entry reentrancy)")
 }
+
+// #6489-on-protected (#6491 review): when a free function and a sibling
+// member share a bare name, the sibling member wins inside a protected
+// member body — the same method-wins order records and impls pin in
+// self_method_call_self_test.l, on both targets.
+func report(): Int {
+  1
+}
+
+protected type ShadowedCounter {
+  var total: Int = 0
+  func report(): Int {
+    total + 2
+  }
+  entry viaBareShadowed(): Int {
+    report()
+  }
+  entry viaFree(): Int {
+    freeOnlyReport()
+  }
+}
+
+func freeOnlyReport(): Int {
+  41
+}
+
+test "protected member bare call shadowed by a sibling member resolves the member (#6491)" {
+  val c = ShadowedCounter(total = 5)
+  assertEqualInt(c.viaBareShadowed(), 7, "sibling member wins over the same-named free function")
+}
+
+test "protected member bare call with no same-named sibling resolves the free function (#6491)" {
+  val c = ShadowedCounter(total = 0)
+  assertEqualInt(c.viaFree(), 41, "free-function resolution unaffected when no sibling shadows it")
+}

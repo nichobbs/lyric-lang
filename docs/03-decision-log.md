@@ -29973,3 +29973,12 @@ reentrancy asserting accumulated state. `typechecker_self_test.l`
 #6489/D-progress-775 (the shadowing order that now also governs
 protected bodies), #6407 (the descriptor work that made the backend
 halves already-correct).
+
+**Review addendum (2026-08-17, PR #6491).** The review's REQUIRED finding
+(#6492): `docs/10-bootstrap-progress.md` still carried the pre-#6483
+"stays open on purpose" note for the protected bare-sibling gap — updated
+to record the close. Its SUGGESTION also landed: the free-function-vs-
+sibling shadowing rule is now pinned for protected bodies too
+(`synthesized_method_self_test.l` 13 → 15, dual-target: sibling member
+wins; free function still resolves when unshadowed), mirroring the
+#6489 record/impl pins.
