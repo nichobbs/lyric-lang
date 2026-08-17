@@ -17255,9 +17255,12 @@ remaining instance methods that fell through to the unknown-method stub
 **Fix (`lyric-compiler/msil/codegen.l`):** added the BCL `System.String`
 instance-method tokens (`Trim`, `IndexOf`, `LastIndexOf`, `StartsWith`,
 `EndsWith`, `ToLower`, `ToUpper`) and the matching `lowerMethodCallMsil`
-branches.  `indexOf`/`lastIndexOf` return `Int` with BCL semantics
-(`-1` when absent), distinct from the `Std.String` free functions that
-return `Option[Int]`.
+branches.  `indexOf`/`lastIndexOf` returned `Int` with BCL semantics
+(`-1` when absent) at the time of this entry; since D-progress-780
+(#6348) the method spelling routes to the `Option[Int]`-returning
+`Std.String` free functions whenever the calling file has an unaliased
+`import Std.String` — the BCL-Int behaviour survives only without the
+import (or with an aliased one, the #6496 divergence).
 
 **Tests:** `lyric-stdlib/tests/string_methods_tests.l` (auto-discovered by
 the stdlib Lyric test runner) covers the new methods; Emitter suite
