@@ -219,3 +219,53 @@ test "protected type with multiple explicit-self entries + a no-param entry and 
   c.reset()
   assertEqualLong(c.peek(), 0i64, "reset() then peek() -> 0")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §7. Protected-type sibling member dispatch (#6483)
+// ─────────────────────────────────────────────────────────────────────────────
+// One member body calling a sibling member of the SAME protected type — by
+// bare name and through explicit `self.` — including an entry calling a
+// sibling ENTRY (safe: the Monitor/monitorenter lock wrappers are reentrant
+// on both targets).  Before #6483, protected members were never registered
+// in the method-sig space, so the bare call was rejected with T0020 at
+// check time.
+protected type SiblingCounter {
+  var total: Int = 0
+  entry add(n: in Int): Unit {
+    total = total + n
+  }
+  func doubled(): Int {
+    total * 2
+  }
+  entry bumpAndDouble(n: in Int): Int {
+    add(n)
+    doubled()
+  }
+  entry viaSelfDouble(n: in Int): Int {
+    self.add(n)
+    self.doubled()
+  }
+  entry addTwice(n: in Int): Unit {
+    add(n)
+    add(n)
+  }
+  entry get(): Int {
+    total
+  }
+}
+
+test "protected entry calls sibling func + entry by bare name (#6483)" {
+  val c = SiblingCounter(total = 0)
+  assertEqualInt(c.bumpAndDouble(5), 10, "add(5) then doubled() -> 10")
+}
+
+test "protected entry calls siblings through explicit self (#6483)" {
+  val c = SiblingCounter(total = 3)
+  assertEqualInt(c.viaSelfDouble(2), 10, "self.add(2) on 3 then self.doubled() -> 10")
+}
+
+test "protected entry calls a sibling entry twice: reentrant lock (#6483)" {
+  val c = SiblingCounter(total = 0)
+  c.addTwice(4)
+  assertEqualInt(c.get(), 8, "addTwice(4) -> 8 (entry-from-entry reentrancy)")
+}

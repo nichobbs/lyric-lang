@@ -1183,6 +1183,7 @@ Semantics:
 - The invariant is checked after every entry/func returns control to the caller.
 - `return` (including from inside nested `if`/`match`/`while`, not only as the body's literal last statement) and `?` are fully supported inside `entry` bodies on both the MSIL and JVM backends, routing correctly through the entry's lock-release path (D-progress-771). Plain `func` members of a protected type were never affected — they lower via the ordinary method path with no lock region.
 - `entry` and `func` member BODIES are fully type-checked like ordinary function bodies (D-progress-772, #6481): the protected type's fields are in scope as locals (a `let`/immutable field rejects writes with T0087; a parameter shadows a same-named field), and ill-typed bodies are rejected at check time (T0070/T0020/T0043) instead of reaching the backends. Both field spellings are checked — the bare name (`count = v`) and the `self.` receiver form (`self.count = v`, D-progress-773, #6485); an unknown `self.<name>` in a member body is a T0020.
+- A member body may call a SIBLING member of the same protected type — by bare name (`doubled()`) or through `self.` (`self.doubled()`) — including an `entry` calling another `entry`: the lock wrappers are reentrant on both targets (CLR `Monitor`, JVM object monitors), so the nested acquisition is a no-op (D-progress-776, #6483). The same shadowing rule as records and impls applies: a same-named free function loses to the sibling member (#6489).
 
 ### 7.6 Raw locks
 
