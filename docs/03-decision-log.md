@@ -30160,3 +30160,68 @@ rationale.
 (the field-elem registry this extends), #4938/docs/59 §4.3 (the
 variable-keyed half), D-progress-777/778 (the arc), #6494 (the PR whose
 review suggestions ride along).
+
+---
+
+## D-progress-780 — MSIL `.indexOf`/`.lastIndexOf` route to Std.String's Option functions (#6348)
+
+**Date:** 2026-08-17. **Fixes** #6348, the highest-severity MSIL bug
+class on the books: `jvm_trio_positive_self_test.l` crashed the .NET
+runtime with `AccessViolationException` in
+`CastHelpers.IsInstanceOfClass` — memory corruption, not an exception.
+
+**Root cause.** With `import Std.String` in scope, `.indexOf`/
+`.lastIndexOf` are the UFCS spelling of the Std.String free functions
+returning `Option[Int]` — the type the checker assigns and the JVM
+backend emits (#6124). MSIL unconditionally bound the BCL
+`String.IndexOf(string): int32` intrinsic (-1 when absent), so a raw
+int32 flowed into the caller's Option match and `isinst` dereferenced
+it as a pointer. This was the #5625 mis-binding, and lyric-auth's
+dotnet `jwtAlg` twin even carried a comment documenting that it "rides
+the #5625 MSIL miscompile".
+
+**Fix.** The MSIL member-intrinsic arm gates on the calling file's
+imports (`cctx.pkgImports`): with `Std.String` imported the call routes
+to the `Std.String.indexOf/2`-family func token (the same shape the
+`split` arm always used), returning the registered Option type; without
+the import the documented BCL-semantics intrinsic remains.
+
+**Debt surfaced and migrated in the same commit.** Every in-tree rider
+of the old raw-int emission (all silently miscompiling or asserting the
+wrong semantics until now):
+
+- `lyric-auth/src/auth.l` dotnet `jwtAlg` twin → Option matches
+  (mirroring its own JVM twin).
+- `lyric-auth/src/_kernel/net/auth_kernel.l` (8 sites) → the
+  `idxOrNeg` adapter its JVM kernel twin already carried.
+- `lyric-compiler/lyric/verifier/solver.l` `pathBaseName` → match-to-
+  sentinel.
+- `lyric-mq/src/mq.l` `jsonExtractInt`/`jsonExtractRaw` → Option
+  matches (2-arg `indexOf(needle, from)` calls are unaffected — the
+  gate is 1-arg only, matching Std.String's arity).
+- `lyric-stdlib/tests/string_methods_tests.l` → Option assertions
+  (previously asserted the BCL int semantics the miscompile produced).
+
+**CI.** The trio suite gains its dotnet leg (the crash implied it was
+never green anywhere on dotnet); the old "MSIL never adopted this UFCS
+routing (#5625)" comment is gone.
+
+**Verification.** trio 3/3 both targets; lyric-auth 2/2 both targets;
+lyric-mq 2/2; verifier 54/54; stdlib `string_methods_tests` green;
+`string_methods_jvm` 16/16; typechecker 364/364; ecosystem sweep green
+across all 11 manifests; full `make lyric` rebuild clean.
+
+**Gate correction (same commit).** The first attempt gated on the
+import's dotted name alone, which also re-routed files with an ALIASED
+`import Std.String as X` — including `msil/codegen.l`'s own 27
+method-spelling sites written for BCL int semantics — producing 44
+IL-validity errors across 7 compiler DLLs, caught by ilverify before
+anything shipped. The gate now requires the UNALIASED import form; the
+resulting cross-target divergence for aliased files (JVM's
+`fileImportsStdString` deliberately routes them; the checker is lenient
+`TyError` for this shape) is pre-existing and tracked in #6496 with the
+two candidate resolutions.
+
+**Related:** #6348, #5625 (the mis-binding), #6124 (the JVM half),
+#6496 (the aliased-import divergence follow-up), docs/59 (the
+silent-miscompile audit family).

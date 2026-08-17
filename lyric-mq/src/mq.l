@@ -439,10 +439,7 @@ func parseHeadersJson(json: in String): slice[MessageHeader] {
 // Extract an integer field value from a JSON object literal.
 func jsonExtractInt(json: in String, field: in String): Int {
   val needle = "\"" + field + "\":"
-  val start = json.indexOf(needle)
-  if start < 0 {
-    return 0
-  }
+  val start = match json.indexOf(needle) { case Some(i) -> i; case None -> return 0 }
   val afterColon = start + needle.length
   // Skip whitespace.
   var i: Int = afterColon
@@ -463,10 +460,7 @@ func jsonExtractInt(json: in String, field: in String): Int {
 // Extract the raw JSON value for a field (for nested objects/arrays).
 func jsonExtractRaw(json: in String, field: in String): String {
   val needle = "\"" + field + "\":"
-  val start = json.indexOf(needle)
-  if start < 0 {
-    return "[]"
-  }
+  val start = match json.indexOf(needle) { case Some(i) -> i; case None -> return "[]" }
   val afterColon = start + needle.length
   val q1 = json.indexOf("[", afterColon)
   if q1 < 0 {

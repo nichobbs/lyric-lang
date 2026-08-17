@@ -20,10 +20,26 @@ func testSearch(): Unit {
   val s = "abcabc"
   // BCL semantics: Int result, -1 when absent (distinct from the
   // free-function `indexOf` which returns Option[Int]).
-  assertEqualInt(s.indexOf("bc"), 1, "indexOf first")
-  assertEqualInt(s.lastIndexOf("bc"), 4, "lastIndexOf last")
-  assertEqualInt(s.indexOf("zz"), -1, "indexOf absent is -1")
-  assertEqualInt(s.lastIndexOf("zz"), -1, "lastIndexOf absent is -1")
+  // With `import Std.String` in scope the method spelling routes to the
+  // Option-returning free functions on BOTH backends (#6124/#6348) — the
+  // raw-int BCL semantics this file previously asserted rode the #5625
+  // MSIL mis-binding.
+  match s.indexOf("bc") {
+    case Some(i) -> assertEqualInt(i, 1, "indexOf first")
+    case None -> assertTrue(false, "indexOf: expected Some(1)")
+  }
+  match s.lastIndexOf("bc") {
+    case Some(i) -> assertEqualInt(i, 4, "lastIndexOf last")
+    case None -> assertTrue(false, "lastIndexOf: expected Some(4)")
+  }
+  match s.indexOf("zz") {
+    case Some(_) -> assertTrue(false, "indexOf absent must be None")
+    case None -> ()
+  }
+  match s.lastIndexOf("zz") {
+    case Some(_) -> assertTrue(false, "lastIndexOf absent must be None")
+    case None -> ()
+  }
   assertTrue(s.contains("cab"), "contains present")
   assertTrue(not s.contains("zzz"), "contains absent")
   assertTrue(s.startsWith("abc"), "startsWith")
