@@ -13534,7 +13534,22 @@ func lowerBuiltinOrStaticCallMsil(
               case Some(imps) -> findImportedFqnWithHint(cctx, imps, funcName, args.count, importRetHint)
               case None -> ""
             }
-            val resolvedFqn = if qualifiedFqn.length > 0 and cctx.funcTokens.containsKey(qualifiedFqn) {
+            // A BARE (single-segment) call inside an instance method body
+            // prefers a same-named sibling method over any free function —
+            // matching the JVM backend's `ctx.selfClass` arm (which is
+            // explicitly ordered "to override any static function of the
+            // same bare name") and the type checker's ECall member-callee
+            // fallback (#1722/#6435).  Before this gate MSIL resolved the
+            // free function first, a silent cross-backend divergence: the
+            // same program returned the free function's value on dotnet and
+            // the sibling method's on jvm (#6489).  A qualified call
+            // (`Pkg.f()`) never reaches the sibling arm — `path.segments`
+            // keeps it out of this gate and `qualifiedFqn` resolves it below.
+            val bareSiblingHit = path.segments.count == 1 and fctx.className.length > 0 and
+              cctx.methodTokens.containsKey(fctx.className + "/" + funcName)
+            val resolvedFqn = if bareSiblingHit {
+              ""
+            } else if qualifiedFqn.length > 0 and cctx.funcTokens.containsKey(qualifiedFqn) {
               qualifiedFqn
             } else if cctx.funcTokens.containsKey(localFqn) {
               localFqn

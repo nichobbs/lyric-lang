@@ -29853,3 +29853,68 @@ record-with-bodyless-method-heads round-trip test in
 `restored_packages_self_test.l`; and checker-level bare-sibling-call
 pins (positive resolve + unknown-bare T0020) landed in
 `typechecker_self_test.l`.
+
+---
+
+## D-progress-775 — Bare-call shadowing: MSIL aligned to method-wins (#6489)
+
+**Date:** 2026-08-17. **Origin:** PR #6488's review SUGGESTION "test gap:
+bare-call name shadowing between a free function and a same-named method" —
+writing the suggested test immediately exposed a real silent cross-backend
+divergence, filed as #6489.
+
+**The divergence.** A bare (single-segment) call inside an instance method
+body where BOTH a same-named free function and a sibling method exist:
+
+```lyric
+func probe(): Int { 1 }
+record Holder {
+  n: Int
+  func probe(): Int { 2 }
+  func viaBare(): Int { probe() }
+}
+```
+
+`h.viaBare()` returned **1** on `--target dotnet` (free function) and **2**
+on `--target jvm` (sibling method) — verified by direct run on main at
+`d381cc2`. Three components implement this resolution; they disagreed 2-1:
+
+- **JVM backend** (`lowerGeneralStaticCall`, `04_calls.l`): the
+  `ctx.selfClass` sibling arm runs BEFORE the general `funcSigs` lookup,
+  with an explicit comment that it must "override any static function of
+  the same bare name visible at the call site" — deliberate method-wins.
+- **Type checker** (`ECall` member-callee pre-pass, #1722/#6435, added in
+  #6488): dispatches to the sibling method whenever the bare name is not a
+  scope-local and matches a method on `sc.selfType` — method-wins.
+- **MSIL backend** (`codegen.l` static-call resolution): the sibling arm
+  was an `else if` AFTER the free-function `resolvedFqn` resolution
+  (qualified → local-package → imported), so a registered free function
+  shadowed the sibling method — free-function-wins, the odd one out.
+
+**Decision: method-wins, on both targets.** This matches mainstream
+instance-method scoping (C#/Java/Kotlin: the class scope is inner to the
+package scope), the JVM backend's documented intent, and the checker that
+now front-runs both backends. The MSIL fix gates `resolvedFqn` resolution
+on the call NOT being a bare single-segment name with a registered sibling
+(`bareSiblingHit`), routing it into the existing sibling arm. Qualified
+calls (`Pkg.f()`) have `path.segments.count >= 2` and never enter the gate,
+so cross-package targeting is unaffected; a bare call with NO same-named
+sibling resolves the free function exactly as before.
+
+**Pins.** `self_method_call_self_test.l` (dotnet, 6 → 8) and
+`self_method_call_jvm_self_test.l` (jvm, 8 → 10) each gain the shadowed
+case (method wins) and a no-sibling control (free function still
+resolves). docs/01 §2.4/§2.12 now state the order.
+
+**Also in this round (the remaining #6488 review suggestions):**
+`typechecker_self_test.l` gains imported-record impl coverage — an `impl`
+whose target record arrives as an imported item (the restored-package
+preamble shape) resolves `self.field` through
+`implTargetFieldLocals`/`findRecordDeclByTypeId` and still rejects an
+unknown field (T0020) — and `recordSelfType` carries the raw-`TyVar`
+rationale comment (the `ctx`-scoped representation never needs to agree
+structurally; `typeEquiv` treats every `TyVar` as universally equivalent).
+
+**Related:** #6489, #6488/D-progress-774 (the review that surfaced it),
+#1722/#6435 (the bare-sibling dispatch this orders), #5455 (the
+ctor-before-sibling ordering already pinned above the JVM arm).
