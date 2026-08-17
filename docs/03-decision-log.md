@@ -30119,3 +30119,44 @@ rebuild clean.
 remaining blocker), #2864 (bare-field capture, the fallback this
 receiver case is distinguished from), #5936/#6300 (the erased-receiver
 family), docs/53 (closure ABI).
+
+---
+
+## D-progress-779 — Chained generic-field element access on JVM (#6493)
+
+**Date:** 2026-08-17. **Fixes** #6493, the last lyric-mcp JVM blocker
+(narrowed out of #6356 after D-progress-777/778): a chained
+generic-field element access (`infos[0].arguments[0].name`,
+`mcp_serialization_tests.l`) failed with J007 because the inner list's
+receiver is an EXPRESSION (an indexed element's field), not a variable —
+docs/59 §4.3's element typing keys on VARIABLE names (`varGenericArgs`,
+#4938), and the #5444 field-receiver path (`elem:<class>#<field>`
+registry via `staticBaseClass`) could not type an INDEXED base.
+
+**Fix: one arm.** `staticBaseClass` gains an `EIndex` case that resolves
+the indexed base's element class through `indexedElemTypeOverride` — the
+same override machinery the index lowering itself uses — making the
+`elem:` registry reachable link by link for arbitrarily deep
+`a[i].b[j].c[k]` chains (mutually recursive; terminates on expression
+depth). No new registry, no new plumbing.
+
+**Outcome.** `lyric test --manifest lyric-mcp/lyric.toml --target jvm
+--features jvm` is **fully green for the first time** (3/3 suites: 26
+mcp_tests + 5 stdio + serialization), completing the three-fix arc:
+D-progress-777 (stackmap simulation) → D-progress-778 (typed `self`
+capture) → this. Pinned by `chained_elem_jvm_self_test.l` (2 cases incl.
+a three-link chain through a record field; green on both targets) with a
+CI step.
+
+**Also in this commit (PR #6494 review suggestions):** duplicate-offset
+co-located frame labels now merge element-wise via `mergeVerifierType`
+and panic on depth mismatch (never emit-and-hope); the stackmap
+expression-branch suite gains a dotnet CI step (the shapes are portable
+MSIL coverage); the simulation fixpoint bound is the named
+`simMaxFixpointPasses` constant with the monotone-merge convergence
+rationale.
+
+**Related:** #6493, #6356 (parent symptom, closed by the arc), #5444
+(the field-elem registry this extends), #4938/docs/59 §4.3 (the
+variable-keyed half), D-progress-777/778 (the arc), #6494 (the PR whose
+review suggestions ride along).

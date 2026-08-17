@@ -1766,9 +1766,17 @@ func simulateLabelStacks(
   site: in String,
 ): Map[String, List[VerifierType]] {
   val labelStates: Map[String, List[VerifierType]] = newMap()
+  // Fixpoint bound: codegen emits loop heads at statement boundaries (empty
+  // stacks), so back-edge merges are no-ops and one pass converges in
+  // practice; a second pass confirms.  The bound only exists so a simulation
+  // bug oscillating between merge states fails with the loud
+  // non-convergence panic below instead of hanging the build; the
+  // Object-generalising merge is monotone, so genuine convergence within a
+  // handful of passes is guaranteed.
+  val simMaxFixpointPasses = 8
   var pass = 0
   var changed = true
-  while changed and pass < 8 {
+  while changed and pass < simMaxFixpointPasses {
     changed = false
     var cur: List[VerifierType] = newList()
     var reachable = true
@@ -2414,9 +2422,26 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
                     frameEx[idx] = ex
                   } else {
                     // Same offset, same program point: co-located labels must
-                    // agree; prefer a recorded non-empty simulated stack.
-                    if frameStacks[idx].count == 0 and lblStack.count > 0 {
+                    // agree.  An empty recorded stack against a non-empty
+                    // incoming one means the empty label was only reachable as
+                    // dead code (never simulated) — take the live state.  Two
+                    // non-empty states merge element-wise (mergeVerifierType
+                    // panics on a primitive-shape mismatch); a depth mismatch
+                    // is a simulation bug and panics loudly rather than
+                    // emitting an unverifiable frame (#6494 review).
+                    if frameStacks[idx].count == 0 {
                       frameStacks[idx] = lblStack
+                    } else if lblStack.count > 0 {
+                      if frameStacks[idx].count != lblStack.count {
+                        panic("Jvm.Lowering: co-located frame labels disagree on stack depth at offset " + toString(off) + " in " + f.name)
+                      }
+                      val mergedStack: List[VerifierType] = newList()
+                      var mvi = 0
+                      while mvi < lblStack.count {
+                        mergedStack.add(mergeVerifierType(frameStacks[idx][mvi], lblStack[mvi], f.name + "@" + toString(off)))
+                        mvi = mvi + 1
+                      }
+                      frameStacks[idx] = mergedStack
                     }
                   }
                 }
