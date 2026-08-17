@@ -157,8 +157,29 @@ try_bootstrap_from_release() {
       info "  Using unauthenticated GitHub API (GITHUB_TOKEN not set, limited to 60 req/hr)"
     fi
 
-    # Fetch API response and save to variable for debugging
-    api_response=$(curl -sSL ${curl_opts[@]+"${curl_opts[@]}"} "$api_url" 2>&1)
+    # Fetch API response and save to variable for debugging.  Retry up to 3
+    # times with a short backoff, and fall back to an UNAUTHENTICATED fetch
+    # when the authenticated response is an empty array — observed 2026-08-17
+    # (PR #6497): the Actions GITHUB_TOKEN intermittently received `[]` from
+    # /releases for ~40 minutes while the same endpoint listed releases for
+    # every other caller, failing stage 0 on three consecutive attempts.
+    local fetch_attempt
+    api_response=""
+    for fetch_attempt in 1 2 3; do
+      api_response=$(curl -sSL ${curl_opts[@]+"${curl_opts[@]}"} "$api_url" 2>&1)
+      if [[ -n "$api_response" ]] && ! printf '%s' "$api_response" | tr -d '[:space:]' | grep -qx '\[\]'; then
+        break
+      fi
+      info "  API returned empty response/array (attempt ${fetch_attempt}/3)"
+      if [[ ${#curl_opts[@]} -gt 0 ]]; then
+        info "  Retrying without authentication..."
+        api_response=$(curl -sSL "$api_url" 2>&1)
+        if [[ -n "$api_response" ]] && ! printf '%s' "$api_response" | tr -d '[:space:]' | grep -qx '\[\]'; then
+          break
+        fi
+      fi
+      sleep 10
+    done
 
     # Log the response (first 200 chars for debugging)
     if [[ -n "$api_response" ]]; then
