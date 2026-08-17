@@ -157,8 +157,29 @@ try_bootstrap_from_release() {
       info "  Using unauthenticated GitHub API (GITHUB_TOKEN not set, limited to 60 req/hr)"
     fi
 
-    # Fetch API response and save to variable for debugging
-    api_response=$(curl -sSL ${curl_opts[@]+"${curl_opts[@]}"} "$api_url" 2>&1)
+    # Fetch API response and save to variable for debugging.  Retry up to 3
+    # times with a short backoff, and fall back to an UNAUTHENTICATED fetch
+    # when the authenticated response is an empty array — observed 2026-08-17
+    # (PR #6497): the Actions GITHUB_TOKEN intermittently received `[]` from
+    # /releases for ~40 minutes while the same endpoint listed releases for
+    # every other caller, failing stage 0 on three consecutive attempts.
+    local fetch_attempt
+    api_response=""
+    for fetch_attempt in 1 2 3; do
+      api_response=$(curl -sSL ${curl_opts[@]+"${curl_opts[@]}"} "$api_url" 2>&1)
+      if [[ -n "$api_response" ]] && ! printf '%s' "$api_response" | tr -d '[:space:]' | grep -qx '\[\]'; then
+        break
+      fi
+      info "  API returned empty response/array (attempt ${fetch_attempt}/3)"
+      if [[ ${#curl_opts[@]} -gt 0 ]]; then
+        info "  Retrying without authentication..."
+        api_response=$(curl -sSL "$api_url" 2>&1)
+        if [[ -n "$api_response" ]] && ! printf '%s' "$api_response" | tr -d '[:space:]' | grep -qx '\[\]'; then
+          break
+        fi
+      fi
+      sleep 10
+    done
 
     # Log the response (first 200 chars for debugging)
     if [[ -n "$api_response" ]]; then
@@ -210,7 +231,19 @@ try_bootstrap_from_release() {
     if [[ -z "$latest_release" ]]; then
       info "  Failed to extract release version from GitHub API response"
       info "  Full API response: $api_response"
-      return 1
+      # Last-resort pinned fallback (2026-08-17, PR #6497): during a GitHub
+      # API incident the /releases listing returned a bare empty array to
+      # Actions runners for 40+ minutes — authenticated AND unauthenticated,
+      # across all retries — while the release assets themselves (served
+      # from github.com/releases/download, a different service) stayed
+      # reachable.  Rather than fail the whole build on the LISTING being
+      # down, fall back to a known-good seed version.  The seed only needs
+      # to be recent enough to compile current sources; if it ever grows
+      # too old, stage 1 fails loudly and this pin gets bumped alongside
+      # the next release.  Override per-run with LYRIC_BOOTSTRAP_VERSION.
+      local fallback_version="${LYRIC_BOOTSTRAP_FALLBACK_VERSION:-0.5.1}"
+      info "  Falling back to pinned seed version v${fallback_version}"
+      latest_release="$fallback_version"
     fi
 
     latest_release="${latest_release#v}"  # Strip 'v' prefix if present

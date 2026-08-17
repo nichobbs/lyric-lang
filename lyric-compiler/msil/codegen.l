@@ -15082,16 +15082,72 @@ func lowerMethodCallMsil(
     // String.TrimEnd(): string  — trims trailing whitespace.
     insns.add(MCallvirt(methodToken = cctx.tokStringTrimEnd))
     MString
-  } else if memberName == "indexOf" and args.count == 1 {
-    // String.IndexOf(string): int32 — BCL semantics (-1 when absent),
-    // distinct from the Std.String free function returning Option[Int].
-    lowerCallArgMsil(cctx, fctx, insns, args[0])
-    insns.add(MCallvirt(methodToken = cctx.tokStringIndexOf))
-    MInt
-  } else if memberName == "lastIndexOf" and args.count == 1 {
-    lowerCallArgMsil(cctx, fctx, insns, args[0])
-    insns.add(MCallvirt(methodToken = cctx.tokStringLastIndexOf))
-    MInt
+  } else if (memberName == "indexOf" or memberName == "lastIndexOf") and args.count == 1 {
+    // With `import Std.String` in the calling file, `.indexOf`/`.lastIndexOf`
+    // are the UFCS spelling of the Std.String free functions returning
+    // Option[Int] — the type the checker assigns and the JVM backend emits
+    // (#6124).  Before this gate MSIL unconditionally bound the BCL
+    // String.IndexOf(string): int32 intrinsic (-1 when absent), so the raw
+    // int flowed into the caller's Option match and `isinst` dereferenced it
+    // as a pointer: AccessViolationException in CastHelpers, the #6348
+    // memory-corruption class.  Without the import the intrinsic remains the
+    // documented BCL-semantics binding.
+    val idxFileImports = match mapGet(cctx.pkgImports, fctx.pkgName) { case Some(imps) -> imps; case None -> newList() }
+    // UNALIASED import only: an `import Std.String as Str` file signals
+    // free-function usage through the alias, and every in-tree aliased file
+    // (the MSIL/JVM codegen sources themselves among them) uses the method
+    // spelling with the documented BCL int semantics — routing those to
+    // Option produced 44 IL-validity errors across 7 compiler DLLs on the
+    // first attempt.  The JVM backend routes for aliased imports too (its
+    // `fileImportsStdString`); that cross-target divergence for ALIASED
+    // files is pre-existing (the checker is lenient TyError here) and
+    // tracked in #6496.
+    val idxAliasPrefix = fctx.pkgName + "/"
+    var idxAliased = false
+    val idxAliasEntries = mapEntries(cctx.pkgImportAliases)
+    var idxAi = 0
+    while idxAi < idxAliasEntries.count {
+      if idxAliasEntries[idxAi].value == "Std.String" and startsWith(idxAliasEntries[idxAi].key, idxAliasPrefix) {
+        idxAliased = true
+      }
+      idxAi = idxAi + 1
+    }
+    val idxStdStringImported = listContains(idxFileImports, "Std.String") and not idxAliased
+    val idxFnFqn = "Std.String." + memberName
+    val idxOptTok = if idxStdStringImported {
+      match mapGet(cctx.funcTokens, idxFnFqn + "/2") {
+        case Some(t) -> t
+        case None -> match mapGet(cctx.funcTokens, idxFnFqn) { case Some(t) -> t; case None -> 0 }
+      }
+    } else {
+      0
+    }
+    if idxOptTok > 0 {
+      // Receiver is already on the stack as the first argument (same shape
+      // as the `split` routing below).
+      lowerCallArgMsil(cctx, fctx, insns, args[0])
+      insns.add(MCall(methodToken = idxOptTok))
+      match mapGet(cctx.funcRetTypes, idxFnFqn + "/2") {
+        case Some(rt) -> rt
+        case None -> match mapGet(cctx.funcRetTypes, idxFnFqn) { case Some(rt) -> rt; case None -> MObject }
+      }
+    } else if idxStdStringImported {
+      // The import is in scope but the free function's token is missing —
+      // fail loud like the `split` arm below rather than silently emitting
+      // the raw-Int intrinsic against the caller's Option expectation (the
+      // exact silent Int/Option confusion #6348 exists to eliminate).
+      val idxMissingMsg = idxFnFqn + " unavailable at this call site (Std.String not linked)"
+      insns.add(MLdStr(token = ctxInternUs(cctx.lctx, idxMissingMsg)))
+      insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+      insns.add(MThrow)
+      MObject
+    } else {
+      lowerCallArgMsil(cctx, fctx, insns, args[0])
+      insns.add(
+        MCallvirt(methodToken = if memberName == "indexOf" { cctx.tokStringIndexOf } else { cctx.tokStringLastIndexOf })
+      )
+      MInt
+    }
   } else if memberName == "startsWith" and args.count == 1 {
     lowerCallArgMsil(cctx, fctx, insns, args[0])
     insns.add(MCallvirt(methodToken = cctx.tokStringStartsWith))

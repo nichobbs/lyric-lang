@@ -12,16 +12,13 @@
 //! deliberate no-direct-import setup for its negative cases, hence a separate
 //! file.
 //!
-//! JVM-only, by design: the MSIL backend has never adopted this UFCS
-//! routing at all (it always lowers `.indexOf`/`.lastIndexOf` to the raw
-//! BCL `Int`-returning intrinsic regardless of imports — tracked
-//! separately as #5625) — so this file's `Option[Int]`-returning
-//! `findColonOpt` crashes on `--target dotnet` with an
-//! `AccessViolationException` (the BCL `int` gets reinterpreted as an
-//! `Option[Int]` reference). That is a pre-existing, unrelated MSIL gap,
-//! not a regression from this PR (which touches only
-//! `lyric-compiler/jvm/codegen/`) — confirmed by `--target dotnet` failing
-//! identically before and after these commits. Run via native `lyric test`:
+//! Dual-target since #6348: the MSIL backend now routes the method spelling
+//! to the same `Option[Int]`-returning Std.String free functions when the
+//! file has an UNALIASED `import Std.String` (it previously always lowered
+//! to the raw BCL `Int` intrinsic — the #5625 mis-binding — which made this
+//! file crash `--target dotnet` with an `AccessViolationException`).  The
+//! remaining cross-target divergence is aliased imports only (#6496).
+//! Run via native `lyric test`:
 //!   lyric test --target jvm lyric-compiler/lyric/jvm_trio_positive_self_test.l
 //! Imports only `Std.*` (no `LYRIC_LOAD_COMPILER=1`).
 @test_module

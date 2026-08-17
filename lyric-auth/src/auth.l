@@ -140,10 +140,11 @@ func indexOfCharAfter(s: in String, ch: in Char, pos: in Int): Int {
 @cfg(feature = "dotnet")
 func jwtAlg(token: in String): String {
   // JWT format: base64url(header).base64url(payload).signature
-  val dot = token.indexOf(".")
-  if dot < 0 {
-    return ""
-  }
+  // `Std.String.indexOf`/`lastIndexOf` return `Option[Int]` (#6124); with
+  // `import Std.String` in scope the method spelling routes there on BOTH
+  // backends since #6348 (MSIL previously mis-bound the raw-int BCL
+  // intrinsic here — the #5625 ride this twin used to carry).
+  val dot = match token.indexOf(".") { case Some(i) -> i; case None -> return "" }
   // Convert base64url to standard base64: - → + and _ → /
   val seg = token.substring(0, dot)
   val std64 = seg.replace("-", "+").replace("_", "/")
@@ -167,10 +168,7 @@ func jwtAlg(token: in String): String {
           // many JWT libraries use the last value).  This prevents a crafted first
           // alg=RS256 from masking a final alg=none in the same header.
           val pfx = "\"alg\":\""
-          val pfxPos = header.lastIndexOf(pfx)
-          if pfxPos < 0 {
-            return ""
-          }
+          val pfxPos = match header.lastIndexOf(pfx) { case Some(i) -> i; case None -> return "" }
           val vs = pfxPos + pfx.length
           val ve = indexOfCharAfter(header, '"', vs)
           if ve < 0 {
@@ -196,10 +194,9 @@ func jwtAlg(token: in String): String {
 // full explanation.
 @cfg(feature = "jvm")
 func jwtAlg(token: in String): String {
-  // `Std.String.indexOf`/`lastIndexOf` return `Option[Int]` — the raw-int
-  // `-1` idiom the dotnet twin still carries rides the #5625 MSIL
-  // miscompile and cannot compile on the JVM (a relational op on the
-  // Option reference).
+  // `Std.String.indexOf`/`lastIndexOf` return `Option[Int]` on both
+  // targets — the dotnet twin above uses the same Option-matching idiom
+  // since #6348 fixed the #5625 MSIL mis-binding.
   val dot = match token.indexOf(".") { case Some(i) -> i; case None -> return "" }
   val seg = token.substring(0, dot)
   var headerBytes: slice[Byte] = []

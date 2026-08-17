@@ -3608,8 +3608,10 @@ func lowerMethodCall(
     //
     // The JDK intrinsic stays as the fallback for a file that does not
     // import `Std.String`.
-    // The MSIL backend still lowers this to the raw BCL intrinsic and has not
-    // adopted this UFCS routing, so `--target dotnet` still diverges (#5625).
+    // The MSIL backend adopted the same routing for UNALIASED
+    // `import Std.String` files in #6348 (the #5625 mis-binding); the
+    // remaining cross-target divergence is aliased imports only — this
+    // backend routes them, MSIL keeps the BCL intrinsic — tracked in #6496.
     // ...except inside `Std.String` itself: its wrapper body
     // (`val i = s.indexOf(substring); if i < 0 ...`) is the one legitimate
     // raw-JDK call site — routing it through its own registered sig would be

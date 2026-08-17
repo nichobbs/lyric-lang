@@ -4079,17 +4079,33 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/jvm_trio_self_test.l
 
-      # JVM-trio positive-path self-test (#6124) — JVM-only by design (see the
-      # file's own header): confirms a file that DOES import `Std.String`
+      # JVM-trio positive-path self-test (#6124) — confirms a file that DOES
+      # import `Std.String` (unaliased)
       # still gets `.indexOf`/`.lastIndexOf` routed through the `Option[Int]`
       # UFCS form, i.e. `FuncCtx.importsStdString`'s file-scoped gate did not
       # regress the working case alongside fixing the cross-file corruption.
-      # `--target dotnet` is not run here: MSIL never adopted this UFCS
-      # routing at all (#5625, pre-existing and unrelated to this PR).
       - name: JVM-trio positive-path self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/jvm_trio_positive_self_test.l
+      # #6348: MSIL now routes `.indexOf`/`.lastIndexOf` to the Std.String
+      # Option-returning free functions when the file imports Std.String
+      # (matching the checker and the JVM's #6124 semantics) — before that
+      # fix this suite crashed the .NET runtime with an
+      # AccessViolationException (raw int32 flowing into an Option match's
+      # isinst).  The dotnet leg pins it.
+      - name: JVM-trio positive-path self-test on dotnet (native lyric test --target dotnet)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/jvm_trio_positive_self_test.l
+      # Aliased-import exclusion pin (#6348 review): `import Std.String as
+      # Str` keeps BCL Int semantics for the method spelling on dotnet.
+      # dotnet-only: the JVM backend routes aliased files to Option — the
+      # #6496 divergence this file documents.
+      - name: Aliased-import indexOf BCL self-test on dotnet (native lyric test --target dotnet)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/indexof_aliased_bcl_self_test.l
 
       # Try/finally early-exit self-test on JVM (#5765) — the JVM half of the
       # dotnet-job step of the same name, and the load-bearing target for this

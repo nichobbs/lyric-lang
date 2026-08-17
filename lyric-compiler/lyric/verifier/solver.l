@@ -463,9 +463,10 @@ func pathJoin(dir: in String, file: in String): String {
 }
 
 func pathBaseName(path: in String): String {
-  // BCL lastIndexOf returns int (-1 if not found), use directly.
-  val sep1 = path.lastIndexOf("/")
-  val sep2 = path.lastIndexOf("\\")
+  // `Std.String.lastIndexOf` returns Option[Int] (#6124/#6348); collapse to
+  // the -1 sentinel the max/branch logic below expects.
+  val sep1 = match path.lastIndexOf("/") { case Some(i) -> i; case None -> -1 }
+  val sep2 = match path.lastIndexOf("\\") { case Some(i) -> i; case None -> -1 }
   val pos = if sep1 > sep2 { sep1 } else { sep2 }
   if pos < 0 {
     path
