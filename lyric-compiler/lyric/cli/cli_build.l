@@ -1921,7 +1921,7 @@ func buildReleaseProject(
       var rdi = 0
       while rdi < resolved.restoredDlls.count {
         val entry = resolved.restoredDlls[rdi]
-        val tabPos = entry.indexOf("\t")
+        val tabPos = Str.indexOfRaw(entry, "\t")
         val dllPath = if tabPos >= 0 { entry.substring(tabPos + 1, entry.length - tabPos - 1) } else { entry }
         refs.add(dllPath)
         rdi += 1

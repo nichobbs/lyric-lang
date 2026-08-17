@@ -926,7 +926,7 @@ func fileIsCfgErasedByFeatures(source: in String, activeFeatures: in List[String
     val prefix = "@cfg(feature=\""
     if Str.startsWith(compact, prefix) {
       val rest = compact.substring(prefix.length, compact.length - prefix.length)
-      val quotePos = rest.indexOf("\"")
+      val quotePos = Str.indexOfRaw(rest, "\"")
       if quotePos >= 0 {
         val featName = rest.substring(0, quotePos)
         if not listContainsStr(activeFeatures, featName) {
@@ -1986,31 +1986,31 @@ func isTypeDeclKind(kind: in String): Bool {
 // a `case `-split fragment (e.g. "Header; case Cookie }" -> "Header").
 func leadingIdent(s: in String): String {
   var cut = Str.length(s)
-  val i0 = s.indexOf("(")
+  val i0 = Str.indexOfRaw(s, "(")
   if i0 >= 0 and i0 < cut {
     cut = i0
   }
-  val i1 = s.indexOf(" ")
+  val i1 = Str.indexOfRaw(s, " ")
   if i1 >= 0 and i1 < cut {
     cut = i1
   }
-  val i2 = s.indexOf(";")
+  val i2 = Str.indexOfRaw(s, ";")
   if i2 >= 0 and i2 < cut {
     cut = i2
   }
-  val i3 = s.indexOf(",")
+  val i3 = Str.indexOfRaw(s, ",")
   if i3 >= 0 and i3 < cut {
     cut = i3
   }
-  val i4 = s.indexOf("}")
+  val i4 = Str.indexOfRaw(s, "}")
   if i4 >= 0 and i4 < cut {
     cut = i4
   }
-  val i5 = s.indexOf("\n")
+  val i5 = Str.indexOfRaw(s, "\n")
   if i5 >= 0 and i5 < cut {
     cut = i5
   }
-  val i6 = s.indexOf("\t")
+  val i6 = Str.indexOfRaw(s, "\t")
   if i6 >= 0 and i6 < cut {
     cut = i6
   }
@@ -2146,7 +2146,7 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
   var ri = 0
   while ri < req.restoredDllPaths.count {
     val depEntry = req.restoredDllPaths[ri]
-    val tabPos = depEntry.indexOf("\t")
+    val tabPos = Str.indexOfRaw(depEntry, "\t")
     val dllPath = if tabPos >= 0 { depEntry.substring(tabPos + 1, depEntry.length - tabPos - 1) } else { depEntry }
     match RP.loadRestoredPackage(dllPath) {
       case Err(e) -> return failResult("restored dep '" + dllPath + "' failed to load: " + RP.errorMessage(e))

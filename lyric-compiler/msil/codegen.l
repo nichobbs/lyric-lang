@@ -5985,7 +5985,7 @@ func externValueTypeMsil(cctx: in CodegenCtx, seg: in String): Option[MsilType] 
 // falls through to the flat `internFfiTypeRef`.  Nested rows are cached under a
 // "nested:" + FQN key so repeated references reuse one TypeRef row.
 func internFfiTypeRefNested(cctx: in CodegenCtx, clrFqn: in String): Int {
-  val plusIdx = clrFqn.lastIndexOf("+")
+  val plusIdx = String.lastIndexOfRaw(clrFqn, "+")
   if plusIdx < 0 {
     ensureMetadataIndex(cctx)
     val asm = assemblyForTypeMsil(cctx, clrFqn)
@@ -6217,7 +6217,7 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
             MGenericInstByName(headFqn = genericBacktickFqn(headFqn, arity), typeArgs = inBundleArgs)
           }
           case None -> {
-            val dotIdx = headFqn.lastIndexOf(".")
+            val dotIdx = String.lastIndexOfRaw(headFqn, ".")
             if dotIdx < 0 {
               MObject
             } else {
@@ -7047,7 +7047,7 @@ func caseParentFqnMsil(cctx: in CodegenCtx, ctorKey: in String): String {
       // it is INHERENTLY AMBIGUOUS when the union or case name contains `_`
       // (e.g. `Pkg.My_Union_Case` → `Pkg.My_Union` is wrong) and must never be
       // the live path — if it ever fires, a registration site was missed.
-      val us = ctorKey.lastIndexOf("_")
+      val us = String.lastIndexOfRaw(ctorKey, "_")
       if us >= 0 {
         ctorKey.substring(0, us)
       } else {
@@ -10855,7 +10855,7 @@ func pickCaseFqnByQualifier(
     while i < candidates.count {
       match mapGet(cctx.caseParentUnion, candidates[i]) {
         case Some(parentFqn) -> {
-          val dotIdx = parentFqn.lastIndexOf(".")
+          val dotIdx = String.lastIndexOfRaw(parentFqn, ".")
           val parentSimple = if dotIdx >= 0 {
             parentFqn.substring(dotIdx + 1, parentFqn.length - dotIdx - 1)
           } else {
@@ -11423,7 +11423,7 @@ func lowerPatternTestMsil(
           }
           val castTy = match scrutTy {
             case MGenericInst(_, _, typeArgs) -> {
-              val dotIdx = caseClass.lastIndexOf(".")
+              val dotIdx = String.lastIndexOfRaw(caseClass, ".")
               val caseKey = if dotIdx < 0 { "" } else { caseClass.substring(0, dotIdx) + "/" + caseClass }
               match mapGet(cctx.ffiTypeRefs, caseKey) {
                 case Some(refRow) -> MGenericInst(typeRefCode = tdrTypeRef(refRow), headFqn = caseClass, typeArgs = typeArgs)
@@ -11431,7 +11431,7 @@ func lowerPatternTestMsil(
               }
             }
             case MValueTypeGenericInst(_, _, typeArgs) -> {
-              val dotIdx = caseClass.lastIndexOf(".")
+              val dotIdx = String.lastIndexOfRaw(caseClass, ".")
               val caseKey = if dotIdx < 0 { "" } else { caseClass.substring(0, dotIdx) + "/" + caseClass }
               match mapGet(cctx.ffiTypeRefs, caseKey) {
                 case Some(refRow) -> MGenericInst(typeRefCode = tdrTypeRef(refRow), headFqn = caseClass, typeArgs = typeArgs)
@@ -12060,7 +12060,7 @@ func lowerPatternBindMsil(
         // open-generic types in LocalVarSig with TypeLoadException.
         val castTy = match scrutTy {
           case MGenericInst(_, _, typeArgs) -> {
-            val dotIdx = caseClass.lastIndexOf(".")
+            val dotIdx = String.lastIndexOfRaw(caseClass, ".")
             val caseKey = if dotIdx < 0 { "" } else { caseClass.substring(0, dotIdx) + "/" + caseClass }
             match mapGet(cctx.ffiTypeRefs, caseKey) {
               case Some(refRow) -> MGenericInst(typeRefCode = tdrTypeRef(refRow), headFqn = caseClass, typeArgs = typeArgs)
@@ -14477,7 +14477,7 @@ func lowerMethodCallMsil(
           while qci < qualCandidates.count and not foundQualMatch {
             match mapGet(cctx.caseParentUnion, qualCandidates[qci]) {
               case Some(parentFqn) -> {
-                val dotIdx2 = parentFqn.lastIndexOf(".")
+                val dotIdx2 = String.lastIndexOfRaw(parentFqn, ".")
                 val parentSimple = if dotIdx2 >= 0 {
                   parentFqn.substring(dotIdx2 + 1, parentFqn.length - dotIdx2 - 1)
                 } else {
@@ -15148,26 +15148,16 @@ func lowerMethodCallMsil(
     // memory-corruption class.  Without the import the intrinsic remains the
     // documented BCL-semantics binding.
     val idxFileImports = match mapGet(cctx.pkgImports, fctx.pkgName) { case Some(imps) -> imps; case None -> newList() }
-    // UNALIASED import only: an `import Std.String as Str` file signals
-    // free-function usage through the alias, and every in-tree aliased file
-    // (the MSIL/JVM codegen sources themselves among them) uses the method
-    // spelling with the documented BCL int semantics — routing those to
-    // Option produced 44 IL-validity errors across 7 compiler DLLs on the
-    // first attempt.  The JVM backend routes for aliased imports too (its
-    // `fileImportsStdString`); that cross-target divergence for ALIASED
-    // files is pre-existing (the checker is lenient TyError here) and
-    // tracked in #6496.
-    val idxAliasPrefix = fctx.pkgName + "/"
-    var idxAliased = false
-    val idxAliasEntries = mapEntries(cctx.pkgImportAliases)
-    var idxAi = 0
-    while idxAi < idxAliasEntries.count {
-      if idxAliasEntries[idxAi].value == "Std.String" and startsWith(idxAliasEntries[idxAi].key, idxAliasPrefix) {
-        idxAliased = true
-      }
-      idxAi = idxAi + 1
-    }
-    val idxStdStringImported = listContains(idxFileImports, "Std.String") and not idxAliased
+    // EITHER import form (#6496): `import Std.String` and `import Std.String
+    // as X` both put the Option-returning free functions in scope, so the
+    // method spelling routes to them under both — matching the JVM backend's
+    // `fileImportsStdString` and eliminating the cross-target semantic fork
+    // (and, with it, the package-vs-file gate-scoping distinction: mixed
+    // import forms inside one package now agree).  Callers that want the
+    // raw -1-sentinel int call `Std.String.indexOfRaw`/`lastIndexOfRaw`
+    // explicitly — every former in-tree method-spelling site in an aliased
+    // file was migrated to those in the same change.
+    val idxStdStringImported = listContains(idxFileImports, "Std.String")
     val idxFnFqn = "Std.String." + memberName
     val idxOptTok = if idxStdStringImported {
       match mapGet(cctx.funcTokens, idxFnFqn + "/2") {
@@ -17840,7 +17830,7 @@ func decimalDigitValue(c: in Char): Int {
 }
 
 func genericArityOfName(simpleName: in String): Int {
-  val bt = simpleName.lastIndexOf("`")
+  val bt = String.lastIndexOfRaw(simpleName, "`")
   if bt < 0 {
     return 0
   }
@@ -17879,7 +17869,7 @@ func genericArityOfName(simpleName: in String): Int {
 // keeping the arity-suffixed open-generic name: `Task`1[System.String]` ->
 // `Task`1`.  Names without a `[` pass through unchanged.
 func stripBracketSuffix(name: in String): String {
-  val br = name.indexOf("[")
+  val br = String.indexOfRaw(name, "[")
   if br < 0 {
     name
   } else {
@@ -17895,11 +17885,11 @@ func stripBracketSuffix(name: in String): String {
 // rather than split apart at its own internal comma.
 pub func parseBracketArgFqns(name: in String): List[String] {
   val acc: List[String] = newList()
-  val br = name.indexOf("[")
+  val br = String.indexOfRaw(name, "[")
   if br < 0 {
     return acc
   }
-  val close = name.lastIndexOf("]")
+  val close = String.lastIndexOfRaw(name, "]")
   if close <= br {
     return acc
   }
@@ -24188,11 +24178,11 @@ func genericBacktickFqn(plainFqn: in String, arity: in Int): String {
 // plain FQN used as the codegen map key (`Pkg.Box`1` → `Pkg.Box`).  Returns the
 // input unchanged when there is no suffix.
 func stripGenericArity(fqn: in String): String {
-  val bt = fqn.lastIndexOf("`")
+  val bt = String.lastIndexOfRaw(fqn, "`")
   if bt >= 0 {
     return fqn.substring(0, bt)
   }
-  val sq = fqn.lastIndexOf("'")
+  val sq = String.lastIndexOfRaw(fqn, "'")
   if sq >= 0 {
     return fqn.substring(0, sq)
   }
@@ -24341,7 +24331,7 @@ func typeExprToMsilGApp(
         MGenericInstByName(headFqn = genericBacktickFqn(headFqn, arity), typeArgs = inBundleArgs)
       }
       case None -> {
-        val dotIdx = headFqn.lastIndexOf(".")
+        val dotIdx = String.lastIndexOfRaw(headFqn, ".")
         if dotIdx < 0 {
           MObject
         } else {
@@ -24499,7 +24489,7 @@ func typeExprToMsilGenBody(
             MGenericInstByName(headFqn = genericBacktickFqn(headFqn, arity), typeArgs = inBundleArgs)
           }
           case None -> {
-            val dotIdx = headFqn.lastIndexOf(".")
+            val dotIdx = String.lastIndexOfRaw(headFqn, ".")
             if dotIdx < 0 {
               MObject
             } else {
@@ -24609,7 +24599,7 @@ func typeExprToMsilGenSig(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Stri
             MGenericInstByName(headFqn = genericBacktickFqn(headFqn, arity), typeArgs = inBundleArgs)
           }
           case None -> {
-            val dotIdx = headFqn.lastIndexOf(".")
+            val dotIdx = String.lastIndexOfRaw(headFqn, ".")
             if dotIdx < 0 {
               MObject
             } else {
@@ -31657,15 +31647,15 @@ func assemblySimpleNameFromDll(dllPath: in String, fallback: in String): String 
     return fallback
   }
   var base = dllPath
-  val slashIdx = base.lastIndexOf("/")
+  val slashIdx = String.lastIndexOfRaw(base, "/")
   if slashIdx >= 0 {
     base = base.substring(slashIdx + 1, base.length - slashIdx - 1)
   }
-  val bslashIdx = base.lastIndexOf("\\")
+  val bslashIdx = String.lastIndexOfRaw(base, "\\")
   if bslashIdx >= 0 {
     base = base.substring(bslashIdx + 1, base.length - bslashIdx - 1)
   }
-  val dotIdx = base.lastIndexOf(".")
+  val dotIdx = String.lastIndexOfRaw(base, ".")
   if dotIdx >= 0 {
     base = base.substring(0, dotIdx)
   }
@@ -31747,7 +31737,7 @@ func registerUnionCases(cctx: in CodegenCtx, packageName: in String, unionName: 
   // codebase deliberately keeps string handling free of per-backend BCL
   // overloads so MSIL and JVM emit identical code (cf. `Std.String.split`).
   while true {
-    val rel = repr.substring(idx, repr.length - idx).indexOf(needle)
+    val rel = String.indexOfRaw(repr.substring(idx, repr.length - idx), needle)
     if rel < 0 {
       return
     }
@@ -33142,13 +33132,13 @@ func ctorParentHeadFqn(cctx: in CodegenCtx, ctorKey: in String): String {
   match mapGet(cctx.caseParentUnion, ctorKey) {
     case Some(p) -> p
     case None -> {
-      val di = ctorKey.lastIndexOf(".")
+      val di = String.lastIndexOfRaw(ctorKey, ".")
       if di < 0 {
         ctorKey
       } else {
         val pkg = ctorKey.substring(0, di)
         val loc = ctorKey.substring(di + 1, ctorKey.length - di - 1)
-        val ui = loc.lastIndexOf("_")
+        val ui = String.lastIndexOfRaw(loc, "_")
         if ui > 0 {
           pkg + "." + loc.substring(0, ui)
         } else {
@@ -33256,7 +33246,7 @@ func buildGenericCaseCtorTok(
 ): Int {
   val nTypeParams = match mapGet(cctx.caseTypeParamCount, ctorKey) { case Some(n) -> n; case None -> return 0 }
   // Locate case-class TypeRef row.
-  val dotIdx0 = ctorKey.lastIndexOf(".")
+  val dotIdx0 = String.lastIndexOfRaw(ctorKey, ".")
   if dotIdx0 < 0 {
     return 0
   }
@@ -33316,7 +33306,7 @@ func buildGenericCaseCtorTok(
   // Derive parent union type for outParentTy.
   // ctorKey = "Pkg.UnionName_CaseName"; strip "_CaseName" to get "Pkg.UnionName".
   val caseLocal = ctorKey.substring(dotIdx0 + 1, ctorKey.length - dotIdx0 - 1)
-  val undIdx = caseLocal.lastIndexOf("_")
+  val undIdx = String.lastIndexOfRaw(caseLocal, "_")
   if undIdx > 0 {
     val unionLocal = caseLocal.substring(0, undIdx)
     val parentFqn = pkgPart + "." + unionLocal
@@ -33924,11 +33914,11 @@ func stdlibAssemblyName(packageName: in String): String {
 func splitDottedName(name: in String): List[String] {
   val segs: List[String] = newList()
   var rest = name
-  var idx = rest.indexOf(".")
+  var idx = String.indexOfRaw(rest, ".")
   while idx >= 0 {
     segs.add(rest.substring(0, idx))
     rest = rest.substring(idx + 1, rest.length - idx - 1)
-    idx = rest.indexOf(".")
+    idx = String.indexOfRaw(rest, ".")
   }
   if rest.length > 0 {
     segs.add(rest)

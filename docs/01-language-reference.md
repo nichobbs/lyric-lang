@@ -1792,15 +1792,16 @@ API surface and stability guarantees: governed by `@stable(since="1.0")` / `@exp
 `String` supports a set of built-in method-syntax (UFCS) operations that lower
 directly to host `String` instance methods (`System.String` on .NET,
 `java.lang.String` on the JVM). `s.indexOf(x)` / `s.lastIndexOf(x)` are the
-one import-sensitive pair: with an **unaliased** `import Std.String` in the
-calling file (the common case), the method spelling is UFCS sugar for the
+one import-sensitive pair: with `import Std.String` in scope of the
+compilation unit (the file, or the merged source of a multi-file package) —
+**either form**, plain or `import Std.String as X` (#6496: the import form is
+never a semantic switch) — the method spelling is UFCS sugar for the
 `Option[Int]`-returning `Std.String.indexOf`/`lastIndexOf` free functions on
-BOTH targets (#6124 on the JVM, #6348 on MSIL). Without a `Std.String`
-import the method spelling keeps the host convention (`Int`, `-1` when
-absent). An *aliased* `import Std.String as X` currently diverges across
-targets (MSIL keeps host semantics, the JVM routes to `Option[Int]`) —
-tracked in #6496; avoid the method spelling in aliased-import files until
-that is settled.
+BOTH targets (#6124 on the JVM, #6348/#6496 on MSIL), and the type checker
+types it so. Without a `Std.String` import the method spelling keeps the
+host convention (`Int`, `-1` when absent). Callers that want the sentinel-int
+form with the import in scope call the explicit
+`Std.String.indexOfRaw`/`lastIndexOfRaw` free functions.
 
 | Form | Result | Notes |
 |---|---|---|
@@ -1810,8 +1811,8 @@ that is settled.
 | `s.substring(start, count)` | `String` | `count` units from `start` |
 | `s.trim()` | `String` | leading/trailing whitespace removed |
 | `s.replace(old, new)` | `String` | all occurrences |
-| `s.indexOf(sub)` | `Option[Int]` with unaliased `import Std.String`; else `Int` | first index; `None` / `-1` if absent |
-| `s.lastIndexOf(sub)` | `Option[Int]` with unaliased `import Std.String`; else `Int` | last index; `None` / `-1` if absent |
+| `s.indexOf(sub)` | `Option[Int]` with `import Std.String` (either form); else `Int` | first index; `None` / `-1` if absent |
+| `s.lastIndexOf(sub)` | `Option[Int]` with `import Std.String` (either form); else `Int` | last index; `None` / `-1` if absent |
 | `s.contains(sub)` | `Bool` | |
 | `s.startsWith(prefix)` | `Bool` | |
 | `s.endsWith(suffix)` | `Bool` | |

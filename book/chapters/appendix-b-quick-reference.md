@@ -810,7 +810,7 @@ output_assembly = "myapp.dll"
 
 Codegen builtins (no import needed): `println`, `panic`, `expect`, `assert`, `toString(x)`, `format1`/`format2`/`format3`/`format4`/`format5`/`format6`, `default()`.
 
-String method-syntax (UFCS) ops lower to host `String` methods, no import needed: `s.length`, `s[i]`, `s.substring(start[, count])`, `s.trim()`, `s.replace(old, new)`, `s.indexOf(sub)` / `s.lastIndexOf(sub)` (with an unaliased `import Std.String` these return `Option[Int]` — UFCS sugar for the `Std.String` free functions on both targets; without the import they return `Int`, `-1` if absent), `s.contains/startsWith/endsWith(sub)` (`Bool`), `s.toLower()` / `s.toUpper()`. String `==`/`!=` compare by value. See language reference §12.1.
+String method-syntax (UFCS) ops lower to host `String` methods, no import needed: `s.length`, `s[i]`, `s.substring(start[, count])`, `s.trim()`, `s.replace(old, new)`, `s.indexOf(sub)` / `s.lastIndexOf(sub)` (with `import Std.String` in scope — plain or aliased, the import form is never a semantic switch — these return `Option[Int]` on both targets, UFCS sugar for the `Std.String` free functions; without the import they return `Int`, `-1` if absent; `Std.String.indexOfRaw`/`lastIndexOfRaw` are the explicit sentinel-int spellings), `s.contains/startsWith/endsWith(sub)` (`Bool`), `s.toLower()` / `s.toUpper()`. String `==`/`!=` compare by value. See language reference §12.1.
 
 ### Service libraries (early-preview; separate packages, not in stdlib)
 

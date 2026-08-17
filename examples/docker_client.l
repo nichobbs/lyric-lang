@@ -12,7 +12,6 @@
 //! Prerequisites:
 //!   - Docker daemon running and accessible at /var/run/docker.sock
 //!   - User has permission to access the socket (docker group or sudo)
-
 @runtime_checked
 package Examples.Docker
 
@@ -59,11 +58,7 @@ async func dockerClientDemo(): Int {
     case Ok(info) -> {
       println("✓ System information retrieved:")
       // Pretty-print first 200 chars of JSON response
-      val displayInfo = if info.length > 200 {
-        info.substring(0, 200) + "..."
-      } else {
-        info
-      }
+      val displayInfo = if info.length > 200 { info.substring(0, 200) + "..." } else { info }
       println("  " + displayInfo)
       println("")
     }
@@ -113,8 +108,8 @@ func countJsonArrayElements(jsonArray: in String): Int {
     return 0
   }
 
-  val startIdx = jsonArray.indexOf('[')
-  val endIdx = jsonArray.lastIndexOf(']')
+  val startIdx = jsonArray.indexOf("[")
+  val endIdx = jsonArray.lastIndexOf("]")
 
   if startIdx < 0 or endIdx < 0 or startIdx >= endIdx {
     return 0

@@ -1446,7 +1446,7 @@ pub func parseSemverMajorMinor(version: in String): List[Int] {
     parts.add(0)
     return parts
   }
-  val firstDot = version.indexOf(".")
+  val firstDot = Str.indexOfRaw(version, ".")
   if firstDot < 0 {
     parts.add(parseIntOr0(version))
     parts.add(0)
@@ -1454,7 +1454,7 @@ pub func parseSemverMajorMinor(version: in String): List[Int] {
   }
   val majStr = version.substring(0, firstDot)
   val rest = version.substring(firstDot + 1, version.length - firstDot - 1)
-  val secondDot = rest.indexOf(".")
+  val secondDot = Str.indexOfRaw(rest, ".")
   val minStr = if secondDot < 0 { rest } else { rest.substring(0, secondDot) }
   parts.add(parseIntOr0(majStr))
   parts.add(parseIntOr0(minStr))
@@ -1939,7 +1939,7 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
       // the suffix in typeDefRowByFqn). If not found, strip the suffix and try again
       // (fallback for cross-package generic types resolved via arity-suffix logic).
       var defRow = resolveSigTypeDefRow(ctx, headFqn)
-      val backtickPos = headFqn.lastIndexOf("`")
+      val backtickPos = Str.lastIndexOfRaw(headFqn, "`")
       val plainFqn = if backtickPos < 0 { headFqn } else { headFqn.substring(0, backtickPos) }
       if defRow == 0 and plainFqn != headFqn {
         defRow = resolveSigTypeDefRow(ctx, plainFqn)
@@ -2418,7 +2418,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
       // in-bundle generics, but degrade gracefully if a cross-package path or a
       // registration-order change ever produces an unsuffixed name.
       var defRow = resolveSigTypeDefRow(ctx, headFqn)
-      val backtickPos = headFqn.lastIndexOf("`")
+      val backtickPos = Str.lastIndexOfRaw(headFqn, "`")
       val plainFqn = if backtickPos < 0 { headFqn } else { headFqn.substring(0, backtickPos) }
       if defRow == 0 and plainFqn != headFqn {
         defRow = resolveSigTypeDefRow(ctx, plainFqn)
