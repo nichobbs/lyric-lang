@@ -3020,6 +3020,30 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/self_method_call_self_test.l
+      # #6348: MSIL now routes `.indexOf`/`.lastIndexOf` to the Std.String
+      # Option-returning free functions when the file imports Std.String
+      # (matching the checker and the JVM's #6124 semantics) — before that
+      # fix this suite crashed the .NET runtime with an
+      # AccessViolationException (raw int32 flowing into an Option match's
+      # isinst).  The dotnet leg pins it.
+      - name: JVM-trio positive-path self-test on dotnet (native lyric test --target dotnet)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/jvm_trio_positive_self_test.l
+      # Aliased-import exclusion pin (#6348 review): `import Std.String as
+      # Str` keeps BCL Int semantics for the method spelling on dotnet.
+      # dotnet-only: the JVM backend routes aliased files to Option — the
+      # #6496 divergence this file documents.
+      - name: Aliased-import indexOf BCL self-test on dotnet (native lyric test --target dotnet)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/indexof_aliased_bcl_self_test.l
+      # The same shapes are target-portable and meaningful MSIL coverage
+      # (#6494 review) — run them on dotnet too.
+      - name: Expression-branch stackmap self-test on dotnet (native lyric test --target dotnet)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/jvm/stackmap_expr_branch_jvm_self_test.l
 
       # Extra barrier (dotnet-b batch 1a-split, #5933 pattern): the sibling
       # dotnet-a job's exit-135 random-step kills (SIGBUS-class, memory
@@ -4088,24 +4112,6 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/jvm_trio_positive_self_test.l
-      # #6348: MSIL now routes `.indexOf`/`.lastIndexOf` to the Std.String
-      # Option-returning free functions when the file imports Std.String
-      # (matching the checker and the JVM's #6124 semantics) — before that
-      # fix this suite crashed the .NET runtime with an
-      # AccessViolationException (raw int32 flowing into an Option match's
-      # isinst).  The dotnet leg pins it.
-      - name: JVM-trio positive-path self-test on dotnet (native lyric test --target dotnet)
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/jvm_trio_positive_self_test.l
-      # Aliased-import exclusion pin (#6348 review): `import Std.String as
-      # Str` keeps BCL Int semantics for the method spelling on dotnet.
-      # dotnet-only: the JVM backend routes aliased files to Option — the
-      # #6496 divergence this file documents.
-      - name: Aliased-import indexOf BCL self-test on dotnet (native lyric test --target dotnet)
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/indexof_aliased_bcl_self_test.l
 
       # Try/finally early-exit self-test on JVM (#5765) — the JVM half of the
       # dotnet-job step of the same name, and the load-bearing target for this
@@ -5156,12 +5162,6 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/stackmap_expr_branch_jvm_self_test.l
-      # The same shapes are target-portable and meaningful MSIL coverage
-      # (#6494 review) — run them on dotnet too.
-      - name: Expression-branch stackmap self-test on dotnet (native lyric test --target dotnet)
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/jvm/stackmap_expr_branch_jvm_self_test.l
       # Chained generic-field element access on JVM (#6493) —
       # `infos[0].arguments[0].name` resolving through staticBaseClass's
       # EIndex arm + the elem:<class>#<field> registry.
