@@ -30439,3 +30439,32 @@ DLLs / 0 errors) — see the PR.
 **Related:** #6496, #6348/D-progress-780 (unaliased routing + the
 migration precedent), #6124 (JVM routing), D-progress-018 (alias
 sugar), #5625 (original mis-binding).
+
+## D-progress-784 — Bootstrap seed fallback: local-tag tier + release-cut pin assertion (#6501)
+
+**Date:** 2026-08-18. **Resolves** #6501 (keeping the PR #6497
+last-resort pinned seed version current) with two mechanisms instead
+of trusting manual bumps:
+
+1. **Fallback tier 1 — newest local release tag.**  When the GitHub
+   `/releases` listing API yields nothing across every retry (the
+   2026-08-17 incident class), `scripts/bootstrap.sh` now consults
+   `git tag --list 'v[0-9]*' | sort -V | tail -1` before the pin: a
+   full checkout already knows every published version with no API
+   round-trip, and is never stale the way a hardcoded literal is.
+   Shallow checkouts without tags skip the tier.
+2. **Release-cut assertion.**  `publish.yml`'s `create-release` job
+   fails the cut when the `LYRIC_BOOTSTRAP_FALLBACK_VERSION` default
+   has drifted from the newest published release, with the exact
+   one-line fix in the error message.  This keeps the pin at most one
+   release behind, with an explicit bump commit per release.
+
+An auto-bump PR from the publish workflow was considered and rejected:
+`GITHUB_TOKEN`-created PRs do not trigger CI (GitHub's
+recursive-workflow guard), so required checks would never run and the
+PR would hang un-mergeable; a direct push to `main` is blocked by
+branch protection.  The assertion moves the maintenance to the one
+moment a human (or agent) is already cutting a release.
+
+**Related:** #6501, PR #6497 (the incident hardening + original pin),
+D-progress-781 (same incident's session).

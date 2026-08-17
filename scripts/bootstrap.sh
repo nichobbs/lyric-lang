@@ -231,16 +231,31 @@ try_bootstrap_from_release() {
     if [[ -z "$latest_release" ]]; then
       info "  Failed to extract release version from GitHub API response"
       info "  Full API response: $api_response"
-      # Last-resort pinned fallback (2026-08-17, PR #6497): during a GitHub
-      # API incident the /releases listing returned a bare empty array to
-      # Actions runners for 40+ minutes — authenticated AND unauthenticated,
-      # across all retries — while the release assets themselves (served
-      # from github.com/releases/download, a different service) stayed
-      # reachable.  Rather than fail the whole build on the LISTING being
-      # down, fall back to a known-good seed version.  The seed only needs
-      # to be recent enough to compile current sources; if it ever grows
-      # too old, stage 1 fails loudly and this pin gets bumped alongside
-      # the next release.  Override per-run with LYRIC_BOOTSTRAP_VERSION.
+      # Fallback tier 1 (#6501): the newest local release tag.  A full
+      # checkout already knows every published version via its `v*` tags —
+      # no API round-trip, and never stale the way a hardcoded pin is.
+      # Shallow checkouts (fetch-depth 1, no tags) skip this tier.
+      local newest_tag
+      newest_tag="$(git -C "$REPO_ROOT" tag --list 'v[0-9]*' 2>/dev/null | sort -V | tail -1)"
+      if [[ -n "$newest_tag" ]]; then
+        info "  Falling back to newest local release tag ${newest_tag}"
+        latest_release="$newest_tag"
+      fi
+    fi
+
+    if [[ -z "$latest_release" ]]; then
+      # Fallback tier 2 — last-resort pinned version (2026-08-17, PR #6497):
+      # during a GitHub API incident the /releases listing returned a bare
+      # empty array to Actions runners for 40+ minutes — authenticated AND
+      # unauthenticated, across all retries — while the release assets
+      # themselves (served from github.com/releases/download, a different
+      # service) stayed reachable.  Rather than fail the whole build on the
+      # LISTING being down, fall back to a known-good seed version.  The
+      # seed only needs to be recent enough to compile current sources; if
+      # it ever grows too old, stage 1 fails loudly.  The publish workflow
+      # asserts this pin matches the newest published release at every
+      # release cut (#6501), so it cannot silently drift more than one
+      # release behind.  Override per-run with LYRIC_BOOTSTRAP_VERSION.
       local fallback_version="${LYRIC_BOOTSTRAP_FALLBACK_VERSION:-0.5.1}"
       info "  Falling back to pinned seed version v${fallback_version}"
       latest_release="$fallback_version"
