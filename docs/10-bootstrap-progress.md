@@ -17258,9 +17258,12 @@ instance-method tokens (`Trim`, `IndexOf`, `LastIndexOf`, `StartsWith`,
 branches.  `indexOf`/`lastIndexOf` returned `Int` with BCL semantics
 (`-1` when absent) at the time of this entry; since D-progress-780
 (#6348) the method spelling routes to the `Option[Int]`-returning
-`Std.String` free functions whenever the calling file has an unaliased
-`import Std.String` — the BCL-Int behaviour survives only without the
-import (or with an aliased one, the #6496 divergence).
+`Std.String` free functions whenever the compilation unit imports
+`Std.String` — under EITHER import form, plain or aliased, since
+D-progress-783 resolved the #6496 divergence (the import form is never
+a semantic switch).  The BCL-Int behaviour survives only without the
+import; `Std.String.indexOfRaw`/`lastIndexOfRaw` are the explicit
+sentinel-int spellings with it.
 
 **Tests:** `lyric-stdlib/tests/string_methods_tests.l` (auto-discovered by
 the stdlib Lyric test runner) covers the new methods; Emitter suite
