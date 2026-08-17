@@ -872,8 +872,9 @@ func renderGenerics(g: in Option[GenericParams]): String {
 // modifier (the record's own `pub` covers the whole surface).  A restored
 // consumer only needs the signature to build a MemberRef against the
 // producer DLL's real compiled method (`Msil.Codegen.registerRestoredRecordMethod`);
-// re-typechecking the synthesised source never reaches `checkFunctionBody`
-// for `RMFunc` members (that pass only walks top-level `IFunc` items), so a
+// record-body methods ARE re-typechecked since #6487 (`checkRecordMemberBodies`
+// walks `RMFunc` members), but `checkFunctionBody` skips a member whose body
+// is `None` — the same rule that exempts interface/extern signatures — so a
 // bodyless render round-trips cleanly with no T0114 risk.
 func reprForRecordMethod(fn: in FunctionDecl): String {
   var params = ""

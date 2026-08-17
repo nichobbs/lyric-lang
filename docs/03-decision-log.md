@@ -29806,3 +29806,50 @@ precedent this reused), #6173 (bare-name field fallback, latent bug 1),
 #6417/#6435/#1722 (Self-return and bare-sibling-call shapes, latent bugs
 2-3), #6483 (protected-type bare-sibling-dispatch gap, deliberately left
 open).
+
+**Review addendum (2026-08-17, PR #6488 CI round).** The first CI run
+surfaced two more latent-false-positive shapes plus one true positive
+in previously-unchecked bodies; all three are resolved on the PR:
+
+1. **`self` in call-argument position (T0043 false positive).** A member
+   body passing whole-`self` to a sibling UFCS function
+   (`evictKey(self, key)` in `lyric-cache`, `handleInitialize(self, params)`
+   in `lyric-mcp`, `resolveLocalPath(self, key)` in `lyric-storage` —
+   the shape recurs across six ecosystem libraries) inferred the raw
+   opaque `TySelf`, which T0043 rejected against the concrete parameter
+   type. Fix: `inferExpr`'s `ESelf` arm returns the scope's concrete
+   `selfType` when `selfChecked` is set (the three checked-member-body
+   callers), preserving `TySelf` for interface default-method bodies and
+   every other lenient context. Pinned by record-body and impl-body
+   self-as-argument cases in `typechecker_self_test.l`.
+
+2. **`out` param forwarded through a call (T0086 false positive).** A
+   member body that satisfies its `out` param by forwarding it to a
+   callee that assigns it (`writeVia(dst: out Int) { writeRaw(dst) }`,
+   `out_inout_instance_jvm_self_test.l`) tripped T0086 — the syntax-only
+   never-assigned collector had no notion of call-argument assignment.
+   The gap is pre-existing (a free-function forward reproduces it) but
+   unreachable until member bodies became checked. Fix: the collector's
+   `ECall` arm credits bare-variable call arguments as potential
+   assignments — the same deliberate false-negative trade-off as its
+   documented `ELambda` carve-out (no symbol table at that layer to
+   resolve callee parameter modes); an out param never mentioned at all
+   still fires. Pinned by three new T0086 cases.
+
+3. **Slice `+` in `lyric-mq` (T0030 TRUE positive).**
+   `InProcessDeadLetterStore.append` concatenated slices with `+`
+   (`self.entries + [dlEntry]`) — not a defined slice operation (§2.7:
+   `.append`/`.concat`/`.slice` only), and MSIL's `BAdd` default arm
+   would have lowered it as integer `add` on object references — a
+   silent miscompile in the never-exercised capacity-eviction path,
+   shipped only because impl bodies were unchecked. Fixed in
+   `lyric-mq/src/mq.l` with `.append(...)`.
+
+Also folded in from the PR review's queued suggestions:
+`reprForRecordMethod`'s stale "never reaches `checkFunctionBody`" doc
+comment now states the true post-#6487 exemption (a `None` body is
+skipped, same as interface signatures), pinned by a new
+record-with-bodyless-method-heads round-trip test in
+`restored_packages_self_test.l`; and checker-level bare-sibling-call
+pins (positive resolve + unknown-bare T0020) landed in
+`typechecker_self_test.l`.

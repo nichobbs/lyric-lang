@@ -3560,3 +3560,56 @@ test "record body method: T0070 names the alias the user wrote (#6487, mirrors #
   val m = diagMessageFor(cr, "T0070")
   assertTrue(Str.contains(m, "Meters (aka Long)"), "record method body T0070 message names the alias: " + m)
 }
+
+// #6488 review: checker-level pins for the ECall bare-sibling fallback
+// (#1722/#6435): a bare call to a sibling method of the enclosing type
+// resolves through the implicit `self`, while a genuinely-unknown bare
+// name in the same position still gets its T0020.
+test "record method: bare sibling-method call resolves through implicit self (#6488)" {
+  val src = "package P\nrecord Counter {\n  n: Int\n  func base(): Int {\n    self.n\n  }\n  func viaBare(): Int {\n    base()\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0020"), "bare sibling-method call inside a record method body: no T0020")
+}
+
+test "record method: unknown bare call still rejected with T0020 (#6488)" {
+  val src = "package P\nrecord Counter {\n  n: Int\n  func viaBare(): Int {\n    nosuch()\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0020"), "unknown bare call inside a record method body: T0020 still fires")
+}
+
+// #6488 review: inside a checked member body a whole-`self` read has the
+// concrete receiver type — a record method passing `self` to a sibling UFCS
+// function (the lyric-cache `evictKey(self, key)` shape) must not T0043.
+test "record method: self as call argument matches the concrete receiver type (#6488)" {
+  val src = "package P\nrecord Store {\n  n: Int\n  func poke(): Int {\n    sibling(self)\n  }\n}\nfunc sibling(s: in Store): Int {\n  s.n\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0043"), "self as call argument: no T0043 against the concrete parameter type")
+}
+
+test "impl method: self as call argument matches the concrete receiver type (#6488)" {
+  val src = "package P\ninterface Poker {\n  func poke(): Int\n}\nrecord Store {\n  n: Int\n}\nimpl Poker for Store {\n  func poke(): Int {\n    sibling(self)\n  }\n}\nfunc sibling(s: in Store): Int {\n  s.n\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(
+    not hasDiagCode(cr, "T0043"),
+    "impl-body self as call argument: no T0043 against the concrete parameter type"
+  )
+}
+
+// #6488 review: forwarding an `out` param through a call that assigns it
+// (`writeVia(dst: out Int) { writeRaw(dst) }`) must not T0086 — the
+// syntax-only collector credits bare-variable call arguments (deliberate
+// false-negative trade-off, same as the ELambda carve-out).
+test "out param forwarded through a call: no T0086 (#6488)" {
+  val src = "package P\nfunc writeRaw(dst: out Int): Unit { dst = 7 }\nfunc writeVia(dst: out Int): Unit { writeRaw(dst) }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0086"), "out param forwarded via call argument: no T0086")
+}
+
+test "impl method out param forwarded via bare sibling call: no T0086 (#6488)" {
+  val src = "package P\ninterface W {\n  func writeRaw(dst: out Int): Unit\n  func writeVia(dst: out Int): Unit\n}\nrecord S {\n  v: Int\n}\nimpl W for S {\n  func writeRaw(dst: out Int): Unit {\n    dst = self.v\n  }\n  func writeVia(dst: out Int): Unit {\n    writeRaw(dst)\n  }\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0086"), "impl-body out param forwarded via bare sibling call: no T0086")
+}
+
+test "out param never mentioned still fires T0086 after the call-argument credit (#6488)" {
+  val src = "package P\nfunc helper(v: in Int): Unit { val _ = v }\nfunc f(x: out Int): Unit { helper(1) }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0086"), "out param never mentioned anywhere: T0086 still fires")
+}

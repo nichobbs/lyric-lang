@@ -496,6 +496,59 @@ func testSynthesiseArtifactAsyncFuncRoundTripsIsAsyncFlag(): Unit {
   }
 }
 
+// #6488 review: a record WITH in-body methods must round-trip through the
+// real restored-package pipeline (`buildContractFromFile` -> repr with
+// bodyless method heads per `reprForRecordMethod` -> `synthesiseArtifact`'s
+// re-parse + re-typecheck).  Since #6487 the re-typecheck walks `RMFunc`
+// member bodies, so this pins that a bodyless synthesised method head is
+// exempt from body diagnostics (T0114/T0086) the way interface signatures
+// are — the exact claim `reprForRecordMethod`'s doc comment makes.
+func testSynthesiseArtifactRecordWithMethodsRoundTrips(): Unit {
+  val src = "package MyApp.RecLib\n\npub record Counter {\n  n: Int\n  func peek(): Int {\n    self.n\n  }\n  func bump(delta: in Int): Int {\n    self.n + delta\n  }\n}\n"
+  val pr = parse(src)
+  val contract = Meta.buildContractFromFile(pr.file, "1.0.0")
+  assertEqualInt(contract.decls.count, 1, "record_methods_roundtrip: exactly one pub decl in the contract")
+  assertTrue(
+    Str.contains(contract.decls[0].repr, "func peek(self: in Self): Int"),
+    "record_methods_roundtrip: repr carries the bodyless method head with the explicit self receiver (got " +
+      contract.decls[0].repr +
+      ")"
+  )
+  val art = mkArtifact("MyApp.RecLib", contract.decls)
+  match synthesiseArtifact(art, emptyDecls()) {
+    case Err(e) -> panic("record_methods_roundtrip: unexpected error (bodyless method heads must re-typecheck cleanly): " + errorMessage(e))
+    case Ok(sa) -> {
+      assertEqual(sa.packageName, "MyApp.RecLib", "record_methods_roundtrip: round-tripped")
+      var foundRecord = false
+      var i = 0
+      while i < sa.source.items.count {
+        match sa.source.items[i].kind {
+          case IRecord(rd) -> {
+            foundRecord = true
+            var methodCount = 0
+            var m = 0
+            while m < rd.members.count {
+              match rd.members[m] {
+                case RMFunc(_) -> {
+                  methodCount = methodCount + 1
+                }
+                case _ -> {
+                }
+              }
+              m = m + 1
+            }
+            assertEqualInt(methodCount, 2, "record_methods_roundtrip: both method heads survive the re-parse")
+          }
+          case _ -> {
+          }
+        }
+        i = i + 1
+      }
+      assertTrue(foundRecord, "record_methods_roundtrip: the record item survives the re-parse")
+    }
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Test items
 // ─────────────────────────────────────────────────────────────────────────────
@@ -591,4 +644,8 @@ test "build contract from file: async func repr carries 'async' keyword (#6372)"
 
 test "synthesise artifact: async func isAsync flag round-trips through repr (#6372)" {
   testSynthesiseArtifactAsyncFuncRoundTripsIsAsyncFlag()
+}
+
+test "synthesise artifact: record with bodyless method heads round-trips (#6488)" {
+  testSynthesiseArtifactRecordWithMethodsRoundTrips()
 }

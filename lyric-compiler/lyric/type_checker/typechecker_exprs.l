@@ -3649,7 +3649,13 @@ pub func inferExpr(
     case ESpawn(inner) -> inferExpr(sc, tbl, sigs, diag, inner)
     case EOld(inner) -> inferExpr(sc, tbl, sigs, diag, inner)
 
-    case ESelf -> TySelf
+    // Inside a checked member body (`sc.selfChecked`, #6487) a whole-`self`
+    // read has the concrete receiver type — a record-body method passing
+    // `self` to a sibling UFCS function (`evictKey(self, key)`) must match
+    // that function's concrete parameter type, not an opaque `Self` that
+    // T0043 rejects.  Interface default-method bodies and other lenient
+    // contexts keep the pre-existing `TySelf`.
+    case ESelf -> if sc.selfChecked { sc.selfType } else { TySelf }
     // `result` in an `ensures:` clause has the enclosing function's declared
     // return type, carried on the scope (D081).
     // `result` is a contextual keyword (codegen.l:2833 agrees): a user-declared

@@ -620,8 +620,21 @@ func collectAssignedExpr(e: in Expr, acc: in List[String]): Unit {
       var i = 0
       while i < args.count {
         match args[i] {
-          case CAPositional(ae) -> collectAssignedExpr(ae, acc)
-          case CANamed(_, ae, _) -> collectAssignedExpr(ae, acc)
+          case CAPositional(ae) -> {
+            // A bare variable passed as a call argument may bind an `out`/`inout`
+            // parameter of the callee (`writeVia(dst: out Int) { writeRaw(dst) }`),
+            // which assigns it.  This syntax-only walker has no symbol table to
+            // resolve the callee's parameter modes, so credit the argument as a
+            // potential assignment — same deliberate false-negative trade-off as
+            // the ELambda carve-out below; a truly never-mentioned out param is
+            // still flagged.
+            addAssignedTarget(ae, acc)
+            collectAssignedExpr(ae, acc)
+          }
+          case CANamed(_, ae, _) -> {
+            addAssignedTarget(ae, acc)
+            collectAssignedExpr(ae, acc)
+          }
         }
         i = i + 1
       }
