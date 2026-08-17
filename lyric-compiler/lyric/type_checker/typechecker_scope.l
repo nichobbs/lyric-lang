@@ -41,16 +41,32 @@ pub record Scope {
   // A scope with no enclosing-function context — `returnTy` defaults to `TyError`
   // (the universal unifier, so a stray `EResult`/block read stays lenient) and no
   // generic names.  Used by callers that type expressions outside a function body.
-  // #6485: the enclosing protected-type member's own field names, resolved to
-  // their declared `Type`s — lets `self.field` (the `ESelf` receiver spelling)
-  // resolve the same way the bare-name spelling already does via
-  // `checkFunctionBody`'s `extraLocals`.  Empty for every other scope (plain
-  // functions, lambdas outside a protected member, the two "empty scope"
-  // callers below) — `self` is a parse-level keyword reachable from any
-  // expression position, but only a protected entry/func body currently seeds
-  // this map, so an empty map means "no self-field context", not "a
-  // zero-field protected type".
+  // #6485: the enclosing member's own field names, resolved to their declared
+  // `Type`s — lets `self.field` (the `ESelf` receiver spelling) resolve the
+  // same way the bare-name spelling already does via `checkFunctionBody`'s
+  // `extraLocals` (protected members only; record/impl methods have no
+  // bare-name spelling — `self.field` is their only spelling, #6487). Empty
+  // for every non-member scope.
   selfFields: Map[String, Type]
+  // #6487: true exactly when this scope belongs to a checked MEMBER body
+  // (protected entry/func, record-body method, impl method) — independent of
+  // `selfFields.count`, so a zero-field member's `self.x` still resolves
+  // through the "is this a checked member context" branch and reports a
+  // genuine T0020 instead of silently falling through to the lenient `TySelf`
+  // handling that non-member `self`-bearing contexts (interface default
+  // methods, a `Self`-typed ordinary parameter) still get. `false` for every
+  // scope outside these three member-body callers.
+  selfChecked: Bool
+  // #6487 review: the enclosing member's own nominal type — `TyError` unless
+  // this scope belongs to a record-body or impl method whose self type is a
+  // real record (never seeded for protected members, matching the #6483
+  // bare-sibling-dispatch gap those deliberately still carry). Lets a BARE
+  // sibling-method call with no receiver at all (`dup()` inside another
+  // method of the same record/impl, #1722/#6435 — codegen's `ctx.selfClass`
+  // general-static-call fallback on both backends) resolve against this
+  // type's method-signature space instead of raising a false T0020, exactly
+  // as an explicit `self.dup()` call already would.
+  selfType: Type
 }
 
 pub func newScope(): Scope {
@@ -65,7 +81,9 @@ pub func newScope(): Scope {
     returnTy = TyError,
     genericNames = newList(),
     returnTyExpr = noReturnTyExpr,
-    selfFields = noSelfFields
+    selfFields = noSelfFields,
+    selfChecked = false,
+    selfType = TyError
   )
 }
 
@@ -75,13 +93,17 @@ pub func newScope(): Scope {
 // original declared-return-type `TypeExpr` (`fn.ret`) when the caller has one,
 // so alias-aware diagnostics (T0064/T0065 and friends) can render the alias
 // name the user wrote instead of the bare resolved type (#6467).  `selfFields`
-// is the enclosing protected-type member's field-name-to-type map (#6485,
-// empty for every non-protected-member caller).
+// is the enclosing member's field-name-to-type map (#6485/#6487, empty for
+// every non-member caller); `selfChecked` (#6487) is set independently of
+// `selfFields.count` so a zero-field member still gets strict `self.<name>`
+// resolution.
 pub func newScopeForFunction(
   returnTy: in Type,
   genericNames: in List[String],
   returnTyExpr: in Option[TypeExpr],
   selfFields: in Map[String, Type],
+  selfChecked: in Bool,
+  selfType: in Type,
 ): Scope {
   val bindings: List[LocalBinding] = newList()
   val starts: List[Int] = newList()
@@ -92,7 +114,9 @@ pub func newScopeForFunction(
     returnTy = returnTy,
     genericNames = genericNames,
     returnTyExpr = returnTyExpr,
-    selfFields = selfFields
+    selfFields = selfFields,
+    selfChecked = selfChecked,
+    selfType = selfType
   )
 }
 

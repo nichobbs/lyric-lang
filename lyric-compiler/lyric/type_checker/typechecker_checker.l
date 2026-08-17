@@ -2077,7 +2077,7 @@ func checkProtectedMemberBodies(
           body = syntheticBody,
           span = entryDecl.span
         )
-        checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals)
+        checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals, fieldLocals, true, TyError)
       }
       case PMFunc(fn) -> {
         val ownFnGenerics = extractGenericNames(fn.generics)
@@ -2104,7 +2104,253 @@ func checkProtectedMemberBodies(
           originPackage = sig0.originPackage,
           span = sig0.span
         )
-        checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals)
+        checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals, fieldLocals, true, TyError)
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+// #6487: the record-body counterpart of `protectedFieldLocals` — resolves
+// every `RMField`'s declared type against the record's OWN generic context
+// (so a `Box[T]` field `v: T` stays `TyVar("T")`, matching `sig.generics`
+// below rather than erasing to `TyError`) into `LocalBinding`s. Unlike
+// `protectedFieldLocals`, this list is used ONLY to seed `sc.selfFields`
+// (the `self.field` map) — record-body methods have no bare-name field
+// spelling (D037 requires the explicit `self` receiver; codegen never
+// desugars a bare identifier to `EMember(ESelf, name)` for `RMFunc`, only for
+// protected `entry`/`func` members), so it must never also be threaded
+// through `checkFunctionBody`'s bare-name `extraLocals` slot.
+func recordFieldLocals(tbl: in SymbolTable, ctx: in GenericContext, decl: in RecordDecl): List[LocalBinding] {
+  val scratch: List[Diagnostic] = newList()
+  val locals: List[LocalBinding] = newList()
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case RMField(field) -> {
+        locals.add(
+          LocalBinding(name = field.name, ty = resolveType(tbl, ctx, scratch, field.ty), isMutable = field.isMutable)
+        )
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  locals
+}
+
+// #6487: `RMFunc` (record-body method) bodies were never routed through
+// `checkFunctionBody` at all — not even the ordinary arg/return-type checks
+// every plain function gets, let alone `self.field` resolution — so an
+// ill-typed body (`func doubled(self: in Thing): Int { "oops" }`) compiled
+// with zero diagnostics. `self`'s type annotation is irrelevant here (D037's
+// `injectSelfIfNeeded` guarantees `fn.params[0]` is always named `self`,
+// explicit or synthesized as `Self`; `resolveMethodSigParts` already drops
+// it from `sig.params` on that name alone) — the receiver is always exactly
+// this record, so `recordFieldLocals` seeds `self.field` regardless of what
+// (if anything) the user wrote as `self`'s type.
+// #6487 review: a record's own `Self` — the type used to substitute a
+// literal `Self` return-type annotation (`func dup(): Self { … }`, the
+// `docs/01` `Cloneable`-style shape) into the concrete record type before
+// the T0070 return-type check runs. Without this, `resolveType` leaves an
+// unsubstituted `Self` annotation as the `TySelf` placeholder, which
+// `typeAssignable` never accepts from a concrete `TyUser` body value
+// (`case _ -> false` for any non-`TyUser` expected type) — a false-positive
+// T0070 on a body that was always well-typed (found via the #6417 case in
+// `impl_method_self_test.l`'s battery run, same root cause as the impl-side
+// fix below).
+func recordSelfType(tbl: in SymbolTable, decl: in RecordDecl, ownerGenerics: in List[String]): Type {
+  match symTableTryFindOne(tbl, decl.name) {
+    case Some(sym) -> match symbolTypeIdOpt(sym) { case Some(tid) -> { val targs: List[Type] = newList(); var i = 0; while i < ownerGenerics.count { targs.add(TyVar(name = ownerGenerics[i])); i = i + 1 }; TyUser(id = tid, name = decl.name, args = targs) }; case None -> TyError }
+    case None -> TyError
+  }
+}
+
+func checkRecordMemberBodies(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  decl: in RecordDecl,
+): Unit {
+  val ownerGenerics = recordDeclGenericNames(decl)
+  val ctx = declGenericContext(decl.generics)
+  val fieldLocals = recordFieldLocals(tbl, ctx, decl)
+  val selfTy = recordSelfType(tbl, decl, ownerGenerics)
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case RMFunc(fn) -> {
+        val ownFnGenerics = extractGenericNames(fn.generics)
+        val combinedGenerics: List[String] = newList()
+        var g = 0
+        while g < ownerGenerics.count {
+          combinedGenerics.add(ownerGenerics[g])
+          g = g + 1
+        }
+        var g2 = 0
+        while g2 < ownFnGenerics.count {
+          combinedGenerics.add(ownFnGenerics[g2])
+          g2 = g2 + 1
+        }
+        val sig0 = resolveMethodSigParts(tbl, "", ownerGenerics, fn.generics, fn.params, fn.ret, fn.isAsync, fn.span)
+        val sig = ResolvedSignature(
+          generics = combinedGenerics,
+          bounds = sig0.bounds,
+          params = sig0.params,
+          returnTy = substitutesSelf(sig0.returnTy, selfTy),
+          isAsync = sig0.isAsync,
+          isHot = sig0.isHot,
+          isGenerator = sig0.isGenerator,
+          originPackage = sig0.originPackage,
+          span = sig0.span
+        )
+        // #6173: a bare field reference/assignment inside a record in-body
+        // method (no `self.` prefix) IS a valid, shipped spelling —
+        // `x = x + n` means `self.x = self.x + n` — codegen's EPath lowering
+        // falls back to `self.<name>` on both backends when the name isn't a
+        // local/param (`fctx.className`-keyed `fieldTokens` lookup on MSIL,
+        // the JVM `selfFieldType` fallback). `fieldLocals` seeds this exactly
+        // like `protectedFieldLocals` does for protected members — found via
+        // the #6173 regression battery (`impl_method_self_test.l`) failing
+        // T0020 on a previously-clean bare-name field read/write once body-
+        // checking turned on without this.
+        checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals, fieldLocals, true, selfTy)
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+// #6487: find the `RecordDecl` backing a resolved record/exposed-record
+// `TypeId`, reusing the same symbol-table walk `fieldsOfRecord` (exprs.l)
+// does — needed here (rather than `fieldsOfRecord`'s already-`Type`-resolved
+// output) because `implTargetFieldLocals` must re-resolve each field through
+// `recordFieldLocals` to get `LocalBinding.isMutable`, which `FieldEntry`
+// does not carry.
+func findRecordDeclByTypeId(tbl: in SymbolTable, tid: in TypeId): Option[RecordDecl] {
+  var i = 0
+  while i < tbl.symbols.count {
+    match tbl.symbols[i].kind {
+      case DKRecord(did, rd) -> {
+        if typeIdEq(did, tid) {
+          return Some(value = rd)
+        }
+      }
+      case DKExposedRec(did, rd) -> {
+        if typeIdEq(did, tid) {
+          return Some(value = rd)
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  None
+}
+
+// #6487: an impl method's `self` is the impl's TARGET type, not the impl
+// block itself — resolve the target's own fields (via
+// `findRecordDeclByTypeId` + `recordFieldLocals`, in the target record's OWN
+// generic-parameter names) and substitute those names for `selfTy`'s actual
+// type arguments (`substituteTyVars`, the same mechanism
+// `substituteMethodSig` uses for a call-site method signature) so `impl
+// Container[T] for Box[T] { func get(self: in Self): T { self.v } }` types
+// `self.v` as the IMPL's own `T`, not the record's. Non-record targets
+// (opaque types, unions, …) have no field-enumeration path the checker
+// tracks (`fieldsOfRecord`/`inferMemberBase` are record-only too, #6487
+// audit found zero in-tree `impl … for <opaque type>` — opaque internals are
+// accessed through the `_kernel_host` extern boundary, never `self.field`)
+// so they yield an empty list — `self.<anything>` in such a body correctly
+// reports T0020 rather than silently degrading, matching `sc.selfChecked`'s
+// zero-field-guard fix.
+func implTargetFieldLocals(tbl: in SymbolTable, selfTy: in Type): List[LocalBinding] {
+  val none: List[LocalBinding] = newList()
+  match typeIdOfType(selfTy) {
+    case None -> none
+    case Some(tid) -> match findRecordDeclByTypeId(tbl, tid) { case None -> none; case Some(rd) -> { val ownCtx = declGenericContext(rd.generics); val raw = recordFieldLocals(tbl, ownCtx, rd); val gnames = recordDeclGenericNames(rd); val targs = match unrefine(selfTy) { case TyUser(_, _, args) -> args; case _ -> newList() }; val substituted: List[LocalBinding] = newList(); var i = 0; while i < raw.count { substituted.add(LocalBinding(name = raw[i].name, ty = substituteTyVars(raw[i].ty, gnames, targs), isMutable = raw[i].isMutable)); i = i + 1 }; substituted } }
+  }
+}
+
+// #6487: `IMplFunc` (impl-block method) bodies were never routed through
+// `checkFunctionBody` — `checkImplConformance` (above) only validates the
+// SIGNATURE against the interface, never the body — so an ill-typed impl
+// method body compiled with zero diagnostics, the larger sibling of the
+// `RMFunc` gap above (impl/record methods are everywhere: stdlib, every
+// ecosystem library, the compiler itself). `self` is never a real entry in
+// `fn.params` for an impl method (the parser's `injectSelfIfNeeded` is
+// deliberately NOT applied to `parseImplMemberOpt` — an explicit `self: in
+// Self` param, when the user writes one, is the only case index 0 is
+// literally named `self`; `resolveMethodSigParts`'s existing drop-by-name
+// check handles both spellings identically), so `sig.params` from
+// `resolveMethodSigParts` already excludes it correctly either way.
+//
+// #6173 (found via the battery run): a bare field reference/assignment
+// inside an impl method body (no `self.` prefix) IS a valid, shipped
+// spelling too — codegen's EPath lowering falls back to `self.<name>` on
+// both backends (the same `fctx.className`-keyed fallback
+// `checkRecordMemberBodies` documents) — so `fieldLocals` seeds bare-name
+// scope resolution here as well, not only the `self.field` map.
+//
+// #6417 (found via the same battery run): an impl method's declared return
+// type may literally be `Self` (`func dup(self: in Self): Self { … }`,
+// mirroring `docs/01`'s `Cloneable` example) — `resolveMethodSigParts`
+// leaves that as the unsubstituted `TySelf` placeholder, which
+// `typeAssignable` never accepts from a concrete `TyUser` body value, so the
+// return type is substituted through `selfTy` (`substitutesSelf`, the same
+// helper `checkImplConformance` already uses for the interface-conformance
+// check) before the T0070 check runs.
+func checkImplMemberBodies(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  decl: in ImplDecl,
+): Unit {
+  val implGenerics = extractGenericNames(decl.generics)
+  val ctx = newGenericContext()
+  if implGenerics.count > 0 {
+    gctxPush(ctx, implGenerics)
+  }
+  // The impl target's own declaration-position validation is
+  // `checkImplConformance`'s job (against the shared `diag`); re-resolving it
+  // here goes to a scratch list to avoid a duplicate diagnostic.
+  val scratch: List[Diagnostic] = newList()
+  val selfTy = resolveType(tbl, ctx, scratch, decl.target)
+  val fieldLocals = implTargetFieldLocals(tbl, selfTy)
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case IMplFunc(fn) -> {
+        val ownFnGenerics = extractGenericNames(fn.generics)
+        val combinedGenerics: List[String] = newList()
+        var g = 0
+        while g < implGenerics.count {
+          combinedGenerics.add(implGenerics[g])
+          g = g + 1
+        }
+        var g2 = 0
+        while g2 < ownFnGenerics.count {
+          combinedGenerics.add(ownFnGenerics[g2])
+          g2 = g2 + 1
+        }
+        val sig0 = resolveMethodSigParts(tbl, "", implGenerics, fn.generics, fn.params, fn.ret, fn.isAsync, fn.span)
+        val sig = ResolvedSignature(
+          generics = combinedGenerics,
+          bounds = sig0.bounds,
+          params = sig0.params,
+          returnTy = substitutesSelf(sig0.returnTy, selfTy),
+          isAsync = sig0.isAsync,
+          isHot = sig0.isHot,
+          isGenerator = sig0.isGenerator,
+          originPackage = sig0.originPackage,
+          span = sig0.span
+        )
+        checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals, fieldLocals, true, selfTy)
       }
       case _ -> {
       }
@@ -2511,12 +2757,17 @@ func checkWithImportedPackagesCore(
         val noExtraLocals: List[LocalBinding] = newList()
         val arityKey = decl.name + "/" + toString(decl.params.count)
         match mapGet(sigs, arityKey) {
-          case Some(sig) -> checkFunctionBody(tbl, sigs, diag, decl, sig, noExtraLocals)
-          case None -> match mapGet(sigs, decl.name) { case Some(sig) -> checkFunctionBody(tbl, sigs, diag, decl, sig, noExtraLocals); case None -> {  } }
+          case Some(sig) -> checkFunctionBody(tbl, sigs, diag, decl, sig, noExtraLocals, noExtraLocals, false, TyError)
+          case None -> match mapGet(sigs, decl.name) { case Some(sig) -> checkFunctionBody(tbl, sigs, diag, decl, sig, noExtraLocals, noExtraLocals, false, TyError); case None -> {  } }
         }
       }
-      case IImpl(decl) -> checkImplConformance(tbl, diag, decl)
+      case IImpl(decl) -> {
+        checkImplConformance(tbl, diag, decl)
+        checkImplMemberBodies(tbl, sigs, diag, decl)
+      }
       case IProtected(decl) -> checkProtectedMemberBodies(tbl, sigs, diag, decl)
+      case IRecord(decl) -> checkRecordMemberBodies(tbl, sigs, diag, decl)
+      case IExposedRec(decl) -> checkRecordMemberBodies(tbl, sigs, diag, decl)
       case IConfig(decl) -> checkConfigBlock(diag, decl)
       case _ -> {
       }

@@ -284,6 +284,37 @@ deferred to Phase 3 by design.
   instead of deadlocks.  Ada's infinite-wait semantics require an
   open issue + implementation pass before the gap can close;
   production behaviour is bounded-wait until then.
+  A 2026-08 arc (#6475/#6476/#6479/#6481/#6485) closed the remaining
+  entry-body correctness and body-checking gaps: `return`/`?` inside an
+  `entry` body now routes correctly through the lock-release path on
+  BOTH backends (MSIL non-tail-position entry returns, #6475/D-progress-770;
+  JVM entry-field default-value codegen, #6479/D-progress-769; the
+  underlying `EntryDecl`-body-vs-lock-epilogue disconnect diagnosed in
+  #6476/D-progress-771). On top of that, `entry`/`func` member BODIES —
+  previously only their param/return TYPE REFERENCES were validated, never
+  the body itself — are now fully type-checked like ordinary function
+  bodies (D-progress-772/#6481), for both the bare-name field spelling
+  (`count = v`) and the `self.`-prefixed spelling (`self.count = v`,
+  D-progress-773/#6485); an unknown name/field in either spelling is T0020,
+  a write to an immutable field is T0087, and an ill-typed body is T0070/
+  T0043 instead of reaching the backends as a codegen panic or silent
+  miscompile. §7.5 below has the full semantics.
+  The arc's largest remaining slice closed the same round: `impl`-block
+  method (`IMplFunc`) and record-body method (`RMFunc`) bodies — the
+  larger sibling of the entry/func gap above, since these two member
+  kinds are everywhere (stdlib, all 26 ecosystem libraries, the compiler
+  itself) — are now ALSO fully type-checked, both field-access spellings
+  and bare intra-type sibling-method calls included (D-progress-774,
+  #6487). Three latent gaps in the fix itself (not in any in-tree code —
+  a clean `make lyric` rebuild surfaced nothing) were found and closed by
+  the runtime-net battery before landing: bare-name field access without
+  a `self.` prefix (#6173), a literal `Self` return-type annotation
+  needing substitution before the return-type check (the #6417 shape),
+  and a bare call to a sibling method with no receiver at all dispatching
+  on the implicit `self` (#1722/#6435). Docs/01 §§2.4/2.12 have the full
+  semantics; the protected-type bare-sibling-call gap (#6483) is
+  unaffected and stays open on purpose — no in-tree protected type
+  exercises that pattern, unlike the impl/record case.
 - CST formatter (`lyric fmt`) — **shipped** (`Lyric.Fmt` self-hosted package, wired via `SelfHostedFmt.fs`): round-trip-faithful printing, full `//` and `/* */` comment preservation at item / member / statement / nested-block boundaries, intentional blank-line preservation (max one per spot, Black-style), width-driven multi-line expression layout at 120-char budget. `--write` and `--check` flags.
 - Linter (`lyric lint`) — **shipped** (`Lint.fs` in `Lyric.Cli`, backed by `Lyric.SelfHostedLint.fs`): five AST-only rules: L001 PascalCase types, L002 camelCase funcs, L003 pub-doc, L004 no TODO/FIXME in docs, L005 pub block-body funcs need contracts. `--error-on-warning` flag. Runs on non-compiling code.
 - Property-based testing (`Std.Testing.Property`) — bootstrap shipped
