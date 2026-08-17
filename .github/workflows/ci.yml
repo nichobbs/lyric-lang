@@ -5140,6 +5140,19 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/stackmap_expr_branch_jvm_self_test.l
+      # The same shapes are target-portable and meaningful MSIL coverage
+      # (#6494 review) — run them on dotnet too.
+      - name: Expression-branch stackmap self-test on dotnet (native lyric test --target dotnet)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/jvm/stackmap_expr_branch_jvm_self_test.l
+      # Chained generic-field element access on JVM (#6493) —
+      # `infos[0].arguments[0].name` resolving through staticBaseClass's
+      # EIndex arm + the elem:<class>#<field> registry.
+      - name: Chained-element self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/chained_elem_jvm_self_test.l
       # Intra-impl dispatch self-tests on JVM (#1722) — `self.m(...)` and bare
       # `m(...)` sibling calls inside impl/record method bodies.
       - name: Intra-impl dispatch self-tests on JVM (native lyric test --target jvm)

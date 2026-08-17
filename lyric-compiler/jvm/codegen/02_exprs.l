@@ -353,6 +353,26 @@ func staticBaseClass(ctx: in FuncCtx, base: in Expr): Option[String] {
       }
     }
     case EParen(inner) -> staticBaseClass(ctx, inner)
+    // #6493: an INDEXED base (`infos[0].arguments[0]` — the chained
+    // generic-field element-access shape, the last lyric-mcp JVM blocker):
+    // the element class of `infos[0]` comes from the same override machinery
+    // the index lowering itself uses (`varGenericArgs` for a variable
+    // receiver, the `elem:` registry for a field receiver), which makes the
+    // `elem:<class>#<field>` lookup for the OUTER index's field receiver
+    // resolvable.  Mutually recursive with `indexedElemTypeOverride`, so an
+    // arbitrarily deep `a[i].b[j].c[k]` chain resolves link by link.
+    case EIndex(recvE, _) -> {
+      match indexedElemTypeOverride(ctx, recvE) {
+        case JRef(cls) -> {
+          if cls == "java/lang/Object" {
+            None
+          } else {
+            Some(value = cls)
+          }
+        }
+        case _ -> None
+      }
+    }
     case _ -> None
   }
 }
