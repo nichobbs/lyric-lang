@@ -1569,7 +1569,14 @@ pub func compileProjectToJarBundledWithFeatures(
   var dti = 0
   while dti < depTemplateSrcs.count {
     val dtPr = parse(depTemplateSrcs[dti])
-    Weaver.collectAspectTemplates(dtPr.file.items, dottedPath(dtPr.file.packageDecl.path), allTemplates)
+    // #6351/#6504: collapse import aliases (explicit `as` and implicit
+    // tail-segment) to full package FQNs before collecting, so template
+    // bodies spliced into consumer packages resolve without the
+    // dependency's own imports — parity with the MSIL bridge's
+    // depTemplatePkgs loop and with every in-bundle file (rewritten via
+    // `pipeExpandAndRewrite` before collection).
+    val dtRewritten = Aliases.rewriteFile(dtPr.file)
+    Weaver.collectAspectTemplates(dtRewritten.items, dottedPath(dtRewritten.packageDecl.path), allTemplates)
     dti = dti + 1
   }
 

@@ -7681,8 +7681,50 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                           MObject
                         }
                         case None -> {
-                          insns.add(MLdNull)
-                          MObject
+                          // A TYPE name in value position — the receiver of a
+                          // D037 type-scoped UFCS call (`IOError.message(e)`)
+                          // or member-call qualifier.  The member/call layer
+                          // above owns the real resolution; the value-position
+                          // lowering's historical `ldnull` placeholder is
+                          // discarded by that layer, so it is harmless here —
+                          // keep it rather than false-firing T0115 (caught by
+                          // the in-tree sweep: `IOError.message(e)` across
+                          // app_host.l and the self-tests).
+                          if cctx.typeFqnCandidates.containsKey(name) or cctx.typeFqnByName.containsKey(name) {
+                            insns.add(MLdNull)
+                            return MObject
+                          }
+                          // Module references (an import alias like
+                          // `import Web as WebPkg`, or a tail-segment
+                          // qualifier like `Console` under
+                          // `import Std.Console`) never legitimately reach
+                          // this tail: `Lyric.AliasRewriter.rewriteFile`
+                          // collapses both forms to full package FQNs in
+                          // every compiled file AND in dependency template
+                          // sources before aspect-template collection
+                          // (#6504), so a module-shaped name arriving here
+                          // is a genuine resolution failure, not a
+                          // placeholder-receiver false positive.
+                          // #6351: the resolution chain is EXHAUSTED — every
+                          // legitimate shape (slot, capture, hoisted cell,
+                          // Unit binding, module val, const, extern alias,
+                          // union/enum case, config field, same-package or
+                          // imported function value, #5362 fnref thunk) has
+                          // already been tried above.  Historically this
+                          // emitted a bare `ldnull` (the #6133/#5275
+                          // silent-wrong-value class); the
+                          // `diagnoseUnresolvedQualifiedValueMsil` pre-check
+                          // catches most QUALIFIED spellings with a precise
+                          // message first, and this backstop makes the
+                          // remaining under-enumerated shapes fail loudly at
+                          // the exact point the silent null would have been
+                          // born — correct by construction, no allow-list.
+                          panic(
+                            "error[T0115]: cannot resolve name '" + name + "' to a value here (in " + fctx.pkgName + "." + fctx.funcName +
+                              ") — it does not name a local, capture, module val, const, extern type, union/enum case, config field, or function this compilation can verify. " +
+                              "If it is a typo, check the spelling. If it names a non-literal `pub val`/`pub const` in a restored dependency, only literal-foldable initializers round-trip across the assembly boundary today (docs/45); " +
+                              "wrap the value in a `pub func` in the producing package and call that instead."
+                          )
                         }
                       }
                     }
@@ -8159,6 +8201,19 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     }
                   }
                   case None -> {
+                    // KNOWN-SILENT tail (#6351 follow-up): an `MObject`-receiver
+                    // member read that resolved to nothing yields the receiver
+                    // itself — the MSIL analog of the JVM's J007 erased-receiver
+                    // class.  Converting this to a loud error (attempted in the
+                    // #6351 round) immediately caught a real latent miscompile
+                    // in `examples/docker_client.l` (`e.statusCode` on a
+                    // restored-dependency match payload), but the error's own
+                    // prescribed workaround — bind the value with an explicit
+                    // type — is blocked for restored types (`val err:
+                    // Docker.DockerError = e` fails T0014: restored type names
+                    // are not resolvable in consumer annotations), so the loud
+                    // conversion is deferred until that resolution gap closes.
+                    // Tracked with the docker_client repro in #6503.
                     MObject
                   }
                 }

@@ -30238,3 +30238,93 @@ entries; deferred as a micro-optimisation).
 **Related:** #6348, #5625 (the mis-binding), #6124 (the JVM half),
 #6496 (the aliased-import divergence follow-up), #6498 (the comment
 sweep), docs/59 (the silent-miscompile audit family).
+
+---
+
+## D-progress-781 — T0115 fires at the ldnull point (#6351)
+
+**Date:** 2026-08-17. **Resolves** #6351's core risk: the T0115
+unresolved-qualified-reference check was purely enumeration-based — a
+pre-check (`diagnoseUnresolvedQualifiedValueMsil`) that had to
+preemptively allow-list every legitimate qualified-reference shape, with
+under-enumeration silently degrading to the historical `ldnull`
+wrong-value read (#6133/#5275) rather than any diagnostic.
+
+**What shipped.** The EPath value-position lowering's EXHAUSTED tail —
+the exact point the silent `ldnull` was born, after every legitimate
+tier (slot, capture, hoisted cell, Unit binding, module val, const,
+extern alias, union/enum case, config field, function value, #5362
+fnref thunk) has been tried — now fires a loud T0115 instead. This is
+correct by construction: an under-enumerated pre-check no longer means a
+silent null, it means a loud (if less precisely worded) error at the
+tail. The precise pre-check stays as the message-quality fast path for
+qualified spellings.
+
+One legitimate tier surfaced by the in-tree sweep and exempted: a TYPE
+name in value position — the receiver of a D037 type-scoped UFCS call
+(`IOError.message(e)`, ubiquitous across `app_host.l` and the
+self-tests) — where the member/call layer above owns the real
+resolution and the value-position `ldnull` placeholder is discarded.
+The tail keeps `ldnull` for names in `typeFqnCandidates`/`typeFqnByName`
+and fires for everything else. The panic message names the enclosing
+`<package>.<function>` so a failure in woven or synthesized code is
+locatable without a source span.
+
+**The backstop caught a second real miscompile class: un-rewritten
+dependency aspect templates.** The manifest examples
+(`examples/rbac`, `ledger`, `jobqueue`, `product-catalog`) failed the
+new T0115 on `WebPkg` / `Console` — names from *dependency library*
+aspect bodies (`lyric-web/src/aspects.l` writes
+`WebPkg.unauthorized(...)` under `import Web as WebPkg`;
+`lyric-grpc/src/aspects.l` writes `Console.error(...)` under
+`import Std.Console`). Both bridges' dependency-template collection
+loops (`depTemplatePkgs` on MSIL, `depTemplateSrcs` on JVM — the #3498
+path-dependency path) parsed the dependency source RAW and collected
+aspect templates from the un-rewritten AST, while every in-bundle file
+gets `Lyric.AliasRewriter.rewriteFile` (which collapses both explicit
+`as` aliases and implicit tail-segment qualifiers to full package
+FQNs) via `pipeExpandAndRewrite` before collection. A template body
+spliced into a consumer package that doesn't share the library's
+imports therefore carried unresolvable qualifiers, and every such
+woven advice reference lowered to the historical `ldnull` +
+"unsupported method" runtime-throw stub — a silent miscompile of
+every cross-package aspect error path (a woven `RequiresAuth` would
+throw instead of returning 401 the first time an unauthorized request
+arrived). The fix runs `Aliases.rewriteFile` over the parsed
+dependency template source in both bridges before
+`collectAspectTemplates`, matching in-bundle files; the tail needs no
+module-name exemption because module qualifiers now never survive to
+it. The parallel wire-template dependency collection sites
+(`collectWireTemplates` over raw-parsed dep sources) have the same
+latent shape but a deliberate expansion-before-rewrite ordering
+constraint (docs/58), so they are left unchanged and tracked
+separately.
+
+**The second tail stayed silent — deliberately, tracked in #6503.** The
+EMember `MObject`-receiver exhausted tail (the JVM J007 analog: the
+read silently yields the RECEIVER) was also converted to a loud error
+during this round, and immediately caught a real latent miscompile in
+`examples/docker_client.l` (`e.statusCode` on a restored-dependency
+match payload — the example needs a live Docker daemon and is only
+build-verified, so the miscompile never surfaced). But the error's own
+prescribed workaround — bind the payload with an explicit type — is
+itself blocked for restored types (`val err: Docker.DockerError = e`
+fails T0014: restored type names are not resolvable in consumer
+annotations). Converting that tail before the annotation gap closes
+would break shipped code with no in-language fix, so it reverted to the
+documented silent behavior with the full story and fix order in #6503
+(annotatable restored types → fix the example → loud conversion).
+
+**Verification.** Full `make lyric` rebuild clean (the whole compiler +
+stdlib through the new backstop); all single-file `examples/*.l` build
+and all four manifest examples (`rbac`, `ledger`, `jobqueue`,
+`product-catalog` — the dependency-aspect-template consumers) pass
+`lyric test --manifest`; `emitter_project_self_test` 34/34 and
+`msil_restored_qualified_val` 4/4 (the T0115-pinning suites);
+typechecker 364/364; all 11 ecosystem manifests green; the typo
+negative (`NoSuchPkg.nope`) still fires the precise pre-check message.
+
+**Related:** #6351, #6133/#5275 (the silent-null class), #5362 (the
+revert history that made the tail's exemption discipline necessary),
+#6503 (the EMember half + restored-type annotation gap), docs/45/#2580
+(metadata-direct resolution that would subsume the enumeration).
