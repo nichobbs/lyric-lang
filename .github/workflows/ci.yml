@@ -5130,6 +5130,16 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/string_methods_jvm_self_test.l
+      # Expression-position branch stackmap self-test on JVM (#6346/#6356) —
+      # comparisons / and-or / if-expressions evaluated while an enclosing
+      # expression holds operands on the stack (call args, ctor args,
+      # arithmetic operands, list/tuple elements, string concat); pins the
+      # frame-pass operand-stack simulation (lowering.l B5c) and the
+      # ArrayList receiver-slot typing.
+      - name: Expression-branch stackmap self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/stackmap_expr_branch_jvm_self_test.l
       # Intra-impl dispatch self-tests on JVM (#1722) — `self.m(...)` and bare
       # `m(...)` sibling calls inside impl/record method bodies.
       - name: Intra-impl dispatch self-tests on JVM (native lyric test --target jvm)

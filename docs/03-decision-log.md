@@ -29982,3 +29982,140 @@ sibling shadowing rule is now pinned for protected bodies too
 (`synthesized_method_self_test.l` 13 → 15, dual-target: sibling member
 wins; free function still resolves when unshadowed), mirroring the
 #6489 record/impl pins.
+
+---
+
+## D-progress-777 — JVM StackMapTable operand-stack simulation (#6346/#6356)
+
+**Date:** 2026-08-17. **Fixes** the "VerifyError: Inconsistent stackmap
+frames at branch target" class that made `lyric-mcp`'s JVM build fail all
+26 `mcp_tests.l` cases at class-load time (`Mcp.Server.handleInitialize`),
+tracked as #6346/#6356.
+
+**Root cause.** The frame pass in `Jvm.Lowering.lowerFuncImpl` emitted
+every branch-target StackMapTable frame with an EMPTY operand stack — an
+invariant codegen upheld for branch-lowered RESULTS (`lowerCmpExpr` /
+`BAnd`/`BOr` / if-expression slot materialisation, #3044 lineage) and for
+constructor arguments (spilled before `new; dup`, #5003) — but NOT for a
+branch-lowered SUBexpression evaluated while an ENCLOSING expression holds
+operands on the stack. `encodeInitializeResult(negotiated,
+hasAnyTools(server), server.resources.count > 0, …)` lowers the
+`count > 0` comparison with the two earlier arguments already stacked, so
+its `if_icmpgt` branches with `{String, int, …}` on the stack against a
+declared empty frame. The same hole covered branchy arithmetic operands,
+list/tuple elements, and String-concat operands — at least the third
+hardening round against this frame model.
+
+**Decision: simulate the stack, keep the merged-locals model.** Rather
+than spilling at every multi-operand site (fragile: each missed site is a
+latent VerifyError), the frame pass now runs a fixpoint simulation of the
+operand stack over the LInsn stream (`simulateLabelStacks` +
+`simStackEffect`, the B5c block in `lowering.l`) and emits each
+branch-target frame with the simulated stack:
+
+- Stack-effect rules cover every LInsn variant; `LAload` pushes the same
+  slot type the verifier itself derives from the merged
+  `frameLocals`/`storeTypes` view, so simulation and verifier dataflow
+  agree by construction.
+- Exception-handler labels keep the `[exception]` override (JVM handler
+  entry discards the stack); dead code keeps the empty stack the old pass
+  emitted; control-flow merges join reference types to `Object` and panic
+  loudly on primitive-shape or depth mismatches (a codegen bug, never an
+  emit-and-hope frame).
+- Constructor-argument spilling (#5003) means `new`/`dup` never cross a
+  frame point, so `uninitialized_variable_info` entries are never needed —
+  the two designs compose.
+- Locals stay the single merged `frameLocals` list (unchanged model).
+
+**Receiver-slot typing follow-on.** With frames now legal mid-expression,
+`EList`/`ETuple`'s ArrayList receiver slots surfaced a locals-precision
+break: raw `LAstore` records `Object` in `storeTypes`, so an `ArrayList`
+receiver reloaded across a branchy element's new frame point failed
+verification ("Type Object … not assignable to ArrayList"). Both sites
+now use `LAstoreAs(…, "java/util/ArrayList")` — the exact mechanism
+`emitStore` already applies to every typed ref store (#3307). The
+remaining six raw `LAstore` sites are genuinely `Object`-typed temps.
+
+**Outcome.** `lyric-mcp --target jvm --features jvm`: the VerifyError
+class is gone; `mcp_tests.l` (26 cases) and `mcp_stdio_process_tests.l`
+pass; the one remaining failure is the pre-existing, separately-tracked
+erased-receiver J007 (#6304) — exactly #6346's stated acceptance
+boundary. New dual-target regression suite
+`stackmap_expr_branch_jvm_self_test.l` (9 cases: call-arg / ctor-arg /
+and-or / if-expr / arithmetic-operand / list-element / tuple-element /
+concat-operand / nested-call shapes), wired into CI's JVM self-test
+battery.
+
+**Verification.** Full JVM battery green: bitwise 10, aspect_weave 8,
+block_shadow 20, propagate_hoist 42, bare_func_ref 36, async_spawn 26,
+synthesized_method 15, self_method_call 10, out_inout 9, string_methods
+16, ffi_iface_impl 2, auto_ffi_jvm 39; jsonrpc JVM manifest 3/3;
+typechecker 364/364 (dotnet); new suite 9/9 on both targets; full
+`make lyric` rebuild clean.
+
+**Related:** #6346, #6356, #6304 (the remaining lyric-mcp blocker),
+#3044 (the first empty-stack hardening), #5003 (ctor-arg spilling),
+#3307 (`LAstoreAs` slot typing), docs/44 (JVM production-readiness
+audit this closes an item of).
+
+---
+
+## D-progress-778 — JVM lambdas capture `self` as a typed closure field (#6304)
+
+**Date:** 2026-08-17. **Fixes** #6304: a lambda inside an `impl`/record
+method body that references `self` failed JVM compilation with J007
+("member cannot be resolved on an erased receiver") — the MSIL side was
+fixed in PR #6303 (#6119); this is the JVM analog, with a different root
+cause.
+
+**Root cause — three coupled gaps in the JVM closure path:**
+`collectRefNamesExpr` had no `ESelf` arm, so `self` was never collected
+as a free name and never became a capture; had it been captured, the
+capture-type resolution would have degraded it to `Object` (no `self`
+slot exists — instance methods strip the explicit `self` param to
+`this`); and inside the closure body, `ESelf` lowered through
+`ctx.selfClass` — which for a closure body ctx names the CLOSURE class
+itself — loading the wrong object entirely.
+
+**What shipped.** `self` is now a first-class typed capture:
+
+1. `collectRefNamesExpr` collects `ESelf` as the free name `self`.
+2. `lambdaCaptureNamesJvm` admits it as a capture whenever the enclosing
+   ctx has a receiver (`selfClass` set).
+3. Capture typing (both the `lowerLambda` and spawn-`Callable` paths)
+   types `self` as the enclosing receiver class — preferring an
+   already-typed `self` LOCAL when present, which is exactly the nested-
+   lambda case (the inner lambda's "enclosing ctx" is the outer closure
+   body, whose `selfClass` names the outer CLOSURE; the outer body's
+   unpacked capture local carries the real receiver type).
+4. Closure construction loads the `self` capture as the enclosing `this`
+   (`aload_0`) instead of the `getfield selfCls.<name>` field-capture
+   fallback (#2864's shape, wrong for the receiver itself).
+5. `ESelf` lowering prefers a local slot named `self` (the unpacked
+   capture) over `selfClass`. Ordinary instance methods register no such
+   slot, so they take the pre-existing branches unchanged; top-level UFCS
+   functions with an explicit `self` param load the same slot 0 either
+   way.
+
+**Not fixed here (narrowed to #6493):** `mcp_serialization_tests.l`'s
+J007 is a THIRD erased-receiver shape — chained generic-field element
+access (`infos[0].arguments[0].name`), where the inner list's receiver is
+an expression, not a variable, so docs/59 §4.3's variable-keyed element
+typing cannot apply. That is now the single remaining lyric-mcp JVM
+blocker.
+
+**Pins.** `self_method_call_jvm_self_test.l` (10 → 12): the #6304 repro
+shape (`applyFn({ -> self.x + 1 })` inside an impl method) and the
+nested-lambda re-capture. The issue's dotnet parity note is satisfied by
+`impl_method_self_test.l`'s existing #6119 case (22/22).
+
+**Verification.** JVM battery green (aspect_weave 8, async_spawn 26 —
+covering the patched spawn-`Callable` capture path — bare_func_ref 36,
+synthesized_method 15, block_shadow 20, self_method_call 12);
+typechecker 364/364 and impl_method 22/22 on dotnet; full `make lyric`
+rebuild clean.
+
+**Related:** #6304, #6303/#6119 (the MSIL half), #6493 (the narrowed
+remaining blocker), #2864 (bare-field capture, the fallback this
+receiver case is distinguished from), #5936/#6300 (the erased-receiver
+family), docs/53 (closure ABI).
