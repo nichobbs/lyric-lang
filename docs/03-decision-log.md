@@ -30057,3 +30057,65 @@ typechecker 364/364 (dotnet); new suite 9/9 on both targets; full
 #3044 (the first empty-stack hardening), #5003 (ctor-arg spilling),
 #3307 (`LAstoreAs` slot typing), docs/44 (JVM production-readiness
 audit this closes an item of).
+
+---
+
+## D-progress-778 — JVM lambdas capture `self` as a typed closure field (#6304)
+
+**Date:** 2026-08-17. **Fixes** #6304: a lambda inside an `impl`/record
+method body that references `self` failed JVM compilation with J007
+("member cannot be resolved on an erased receiver") — the MSIL side was
+fixed in PR #6303 (#6119); this is the JVM analog, with a different root
+cause.
+
+**Root cause — three coupled gaps in the JVM closure path:**
+`collectRefNamesExpr` had no `ESelf` arm, so `self` was never collected
+as a free name and never became a capture; had it been captured, the
+capture-type resolution would have degraded it to `Object` (no `self`
+slot exists — instance methods strip the explicit `self` param to
+`this`); and inside the closure body, `ESelf` lowered through
+`ctx.selfClass` — which for a closure body ctx names the CLOSURE class
+itself — loading the wrong object entirely.
+
+**What shipped.** `self` is now a first-class typed capture:
+
+1. `collectRefNamesExpr` collects `ESelf` as the free name `self`.
+2. `lambdaCaptureNamesJvm` admits it as a capture whenever the enclosing
+   ctx has a receiver (`selfClass` set).
+3. Capture typing (both the `lowerLambda` and spawn-`Callable` paths)
+   types `self` as the enclosing receiver class — preferring an
+   already-typed `self` LOCAL when present, which is exactly the nested-
+   lambda case (the inner lambda's "enclosing ctx" is the outer closure
+   body, whose `selfClass` names the outer CLOSURE; the outer body's
+   unpacked capture local carries the real receiver type).
+4. Closure construction loads the `self` capture as the enclosing `this`
+   (`aload_0`) instead of the `getfield selfCls.<name>` field-capture
+   fallback (#2864's shape, wrong for the receiver itself).
+5. `ESelf` lowering prefers a local slot named `self` (the unpacked
+   capture) over `selfClass`. Ordinary instance methods register no such
+   slot, so they take the pre-existing branches unchanged; top-level UFCS
+   functions with an explicit `self` param load the same slot 0 either
+   way.
+
+**Not fixed here (narrowed to #6493):** `mcp_serialization_tests.l`'s
+J007 is a THIRD erased-receiver shape — chained generic-field element
+access (`infos[0].arguments[0].name`), where the inner list's receiver is
+an expression, not a variable, so docs/59 §4.3's variable-keyed element
+typing cannot apply. That is now the single remaining lyric-mcp JVM
+blocker.
+
+**Pins.** `self_method_call_jvm_self_test.l` (10 → 12): the #6304 repro
+shape (`applyFn({ -> self.x + 1 })` inside an impl method) and the
+nested-lambda re-capture. The issue's dotnet parity note is satisfied by
+`impl_method_self_test.l`'s existing #6119 case (22/22).
+
+**Verification.** JVM battery green (aspect_weave 8, async_spawn 26 —
+covering the patched spawn-`Callable` capture path — bare_func_ref 36,
+synthesized_method 15, block_shadow 20, self_method_call 12);
+typechecker 364/364 and impl_method 22/22 on dotnet; full `make lyric`
+rebuild clean.
+
+**Related:** #6304, #6303/#6119 (the MSIL half), #6493 (the narrowed
+remaining blocker), #2864 (bare-field capture, the fallback this
+receiver case is distinguished from), #5936/#6300 (the erased-receiver
+family), docs/53 (closure ABI).

@@ -1669,6 +1669,21 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       panic("Jvm.Codegen: EOld not supported in JVM codegen")
     }
     case ESelf -> {
+      // #6304: inside a lifted lambda body the enclosing receiver arrives as a
+      // capture local named `self` (typed with the real receiver class by
+      // `lowerLambda`), while `ctx.selfClass` names the CLOSURE class — so a
+      // `self` slot, when present, must win.  Ordinary instance methods strip
+      // the explicit `self` param to `this` and register no such slot, so they
+      // fall through to the pre-existing branches unchanged.
+      match lookupSlot(ctx, "self") {
+        case Some(sslot) -> {
+          val sty = match lookupType(ctx, "self") { case Some(t) -> t; case None -> JRef(className = "java/lang/Object") }
+          emitLoad(insns, sslot, sty)
+          return sty
+        }
+        case None -> {
+        }
+      }
       insns.add(LAload(slot = 0))
       // Type `self` to the enclosing instance class when known so `self.field`
       // member access resolves the field's precise descriptor.  For a true
@@ -2835,6 +2850,15 @@ func collectRefNamesExpr(e: in Expr, acc: in List[String]): Unit {
       }
     }
     case EMember(recv, _) -> collectRefNamesExpr(recv, acc)
+    // #6304: `self` inside a lambda body is a real capture of the enclosing
+    // receiver — collect it so `lambdaCaptureNamesJvm` can snapshot it into a
+    // typed closure field instead of the body erroneously reading the
+    // closure's own `this` (J007 "erased receiver").
+    case ESelf -> {
+      if not nameInList(acc, "self") {
+        acc.add("self")
+      }
+    }
     case EIndex(recv, idxs) -> {
       collectRefNamesExpr(recv, acc)
       var i = 0
@@ -3352,6 +3376,9 @@ func lambdaCaptureNamesJvm(ctx: in FuncCtx, lparams: in List[LambdaParam], body:
       } else if ctx.hoistedCellSlot.containsKey(nm) {
         // Hoisted var: re-capture the cell reference for multi-level nesting.
         addNameOnceJvm(caps, nm)
+      } else if nm == "self" and (match ctx.selfClass { case Some(_) -> true; case None -> false }) {
+        // #6304: the enclosing receiver itself, captured by value.
+        addNameOnceJvm(caps, nm)
       } else {
         match selfFieldType(ctx, nm) {
           case Some(_) -> addNameOnceJvm(caps, nm)
@@ -3417,9 +3444,20 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
       }
       case None -> {
         // Normal capture: get the enclosing-scope type
-        val cty = match lookupType(ctx, cn) {
-          case Some(t) -> t
-          case None -> match selfFieldType(ctx, cn) { case Some(ft) -> ft; case None -> JRef(className = "java/lang/Object") }
+        val cty = if cn == "self" {
+          // #6304: the receiver capture carries the enclosing class, not
+          // Object.  A NESTED lambda's enclosing ctx is the outer closure
+          // body, where `self` is an already-typed capture local and
+          // `selfClass` names the outer CLOSURE — so the local's type wins.
+          match lookupType(ctx, "self") {
+            case Some(t) -> t
+            case None -> match ctx.selfClass { case Some(cls) -> JRef(className = cls); case None -> JRef(className = "java/lang/Object") }
+          }
+        } else {
+          match lookupType(ctx, cn) {
+            case Some(t) -> t
+            case None -> match selfFieldType(ctx, cn) { case Some(ft) -> ft; case None -> JRef(className = "java/lang/Object") }
+          }
         }
         captures.add(LClosureCapture(captureName = cn, captureType = cty))
       }
@@ -3576,9 +3614,14 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
       match lookupSlot(ctx, cap.captureName) {
         case Some(s) -> emitLoad(insns, s, cap.captureType)
         case None -> {
-          val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
-          insns.add(LAload(slot = 0))
-          insns.add(LGetfield(owner = selfCls, name = cap.captureName, t = cap.captureType))
+          if cap.captureName == "self" {
+            // #6304: the receiver capture is the enclosing `this` itself.
+            insns.add(LAload(slot = 0))
+          } else {
+            val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
+            insns.add(LAload(slot = 0))
+            insns.add(LGetfield(owner = selfCls, name = cap.captureName, t = cap.captureType))
+          }
         }
       }
     }
@@ -3863,9 +3906,18 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
         captures.add(LClosureCapture(captureName = cn, captureType = JArray(elem = elemTy)))
       }
       case None -> {
-        val cty = match lookupType(ctx, cn) {
-          case Some(t) -> t
-          case None -> match selfFieldType(ctx, cn) { case Some(ft) -> ft; case None -> objTy }
+        val cty = if cn == "self" {
+          // #6304: same receiver-capture typing as lowerLambda (local wins
+          // for the nested-closure case).
+          match lookupType(ctx, "self") {
+            case Some(t) -> t
+            case None -> match ctx.selfClass { case Some(cls) -> JRef(className = cls); case None -> objTy }
+          }
+        } else {
+          match lookupType(ctx, cn) {
+            case Some(t) -> t
+            case None -> match selfFieldType(ctx, cn) { case Some(ft) -> ft; case None -> objTy }
+          }
         }
         captures.add(LClosureCapture(captureName = cn, captureType = cty))
       }
@@ -3962,9 +4014,14 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
       match lookupSlot(ctx, cap.captureName) {
         case Some(s) -> emitLoad(insns, s, cap.captureType)
         case None -> {
-          val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
-          insns.add(LAload(slot = 0))
-          insns.add(LGetfield(owner = selfCls, name = cap.captureName, t = cap.captureType))
+          if cap.captureName == "self" {
+            // #6304: the receiver capture is the enclosing `this` itself.
+            insns.add(LAload(slot = 0))
+          } else {
+            val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
+            insns.add(LAload(slot = 0))
+            insns.add(LGetfield(owner = selfCls, name = cap.captureName, t = cap.captureType))
+          }
         }
       }
     }

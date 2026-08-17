@@ -165,3 +165,41 @@ test "bare call with no same-named sibling still resolves the free function (#64
   val h = ShadowHolder(n = 0)
   assertEqualInt(h.viaBareFree(), 41, "free function resolution unaffected when no sibling shadows it")
 }
+
+// #6304: a lambda inside an impl/record method body captures `self` as a
+// typed closure field (collected by the free-name walker, typed with the
+// real receiver class, loaded as the enclosing `this` at construction), so
+// `self.field` inside the lambda resolves instead of failing J007 on an
+// erased receiver.  The nested case pins the inner lambda re-capturing the
+// outer closure's typed `self` local.
+func applyFn(g: in () -> Int): Int {
+  g()
+}
+
+interface SelfCap {
+  func viaLambda(): Int
+  func viaNested(): Int
+}
+
+record CapRec {
+  x: Int
+}
+
+impl SelfCap for CapRec {
+  func viaLambda(): Int {
+    applyFn({ -> self.x + 1 })
+  }
+  func viaNested(): Int {
+    applyFn({ -> applyFn({ -> self.x + 2 }) })
+  }
+}
+
+test "lambda inside impl method captures typed self (#6304)" {
+  val r = CapRec(x = 10)
+  assertEqualInt(r.viaLambda(), 11, "self.x read through the lambda's typed self capture")
+}
+
+test "nested lambda re-captures typed self (#6304)" {
+  val r = CapRec(x = 10)
+  assertEqualInt(r.viaNested(), 12, "inner lambda re-captures the outer closure's self local")
+}
