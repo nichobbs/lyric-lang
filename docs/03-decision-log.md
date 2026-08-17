@@ -30328,3 +30328,33 @@ negative (`NoSuchPkg.nope`) still fires the precise pre-check message.
 revert history that made the tail's exemption discipline necessary),
 #6503 (the EMember half + restored-type annotation gap), docs/45/#2580
 (metadata-direct resolution that would subsume the enumeration).
+
+## D-progress-782 — T0115 backstop pinned by a dedicated negative-compile e2e (#6504 review follow-up)
+
+**Date:** 2026-08-17. PR #6504's review (APPROVED) suggested a targeted
+test for the D-progress-781 exhausted-tail T0115 itself — the existing
+suites (`emitter_project_self_test.l`, `msil_restored_qualified_val_
+self_test.l`) pin the pre-check fast path, and the manifest examples
+only regression-lock the dependency-aspect-template fix incidentally.
+
+**What shipped.** A "T0115 exhausted-tail backstop e2e" step in CI's
+`e2e-cli-tests` job (binary-driven — both negatives are expected
+COMPILE failures, which a `lyric test` `@test_module` cannot host):
+
+- **(a) tail tier:** a path-dependency aspect template whose advice
+  body references an undefined qualifier (`Nonexistent.unauthorized`),
+  woven into a consumer — the one legitimate route that bypasses the
+  type checker.  Asserts the build fails, the message names
+  `'Nonexistent'`, and it names the woven specialization function
+  (`__lyric_bmode_...`) — the locatability property.
+- **(b) pre-check tier:** a plain qualified typo (`NoSuchPkg.nope`)
+  fires the precise `cannot resolve qualified reference` message.
+- **(c) positive control:** an identically-shaped dep-template weave
+  with a valid reference builds AND runs to exit 0 through the woven
+  `Err`-fallback arm — so a regression that silently stops weaving
+  (which would make (a) pass vacuously) fails here instead, and the
+  dep-template alias-rewrite fix gets a minimal runtime lock beyond
+  the manifest examples.
+
+**Related:** D-progress-781, #6351, #6504, #6505 (wire-template
+analog, still open).
