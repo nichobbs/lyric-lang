@@ -26,6 +26,7 @@ import Lyric.ContractMeta as Meta
 import Std.Encoding as Encoding
 import Lyric.Weaver as Weaver
 import Lyric.WireExpand as WireExpand
+import Lyric.AliasRewriter as Aliases
 import Lyric.Pipeline
 import Msil.Lowering
 import Msil.Codegen
@@ -914,7 +915,20 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   while dti < depTemplatePkgs.count {
     val dtPkg = depTemplatePkgs[dti]
     val dtParseRes = parse(dtPkg.source)
-    Weaver.collectAspectTemplates(dtParseRes.file.items, dtPkg.name, allTemplates)
+    // #6351/#6504: the import-alias rewrite must run over a dependency's
+    // template source before collection, exactly as it runs over every
+    // in-bundle file (via `pipeExpandAndRewrite`).  A template body is
+    // spliced into CONSUMER packages that don't share the dependency's
+    // imports, so an alias-qualified (`WebPkg.unauthorized(...)` under
+    // `import Web as WebPkg`) or tail-segment-qualified
+    // (`Console.error(...)` under `import Std.Console`) reference only
+    // resolves post-splice if it was collapsed to the full package FQN
+    // here first.  Before this, such woven advice lowered to an
+    // "unsupported method" runtime-throw stub — a silent miscompile of
+    // every cross-package aspect error path (caught when the T0115
+    // ldnull backstop made the class loud).
+    val dtRewritten = Aliases.rewriteFile(dtParseRes.file)
+    Weaver.collectAspectTemplates(dtRewritten.items, dtPkg.name, allTemplates)
     dti = dti + 1
   }
 

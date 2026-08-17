@@ -7694,6 +7694,17 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                             insns.add(MLdNull)
                             return MObject
                           }
+                          // Module references (an import alias like
+                          // `import Web as WebPkg`, or a tail-segment
+                          // qualifier like `Console` under
+                          // `import Std.Console`) never legitimately reach
+                          // this tail: `Lyric.AliasRewriter.rewriteFile`
+                          // collapses both forms to full package FQNs in
+                          // every compiled file AND in dependency template
+                          // sources before aspect-template collection
+                          // (#6504), so a module-shaped name arriving here
+                          // is a genuine resolution failure, not a
+                          // placeholder-receiver false positive.
                           // #6351: the resolution chain is EXHAUSTED — every
                           // legitimate shape (slot, capture, hoisted cell,
                           // Unit binding, module val, const, extern alias,
@@ -7709,8 +7720,8 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                           // the exact point the silent null would have been
                           // born — correct by construction, no allow-list.
                           panic(
-                            "error[T0115]: cannot resolve name '" + name +
-                              "' to a value here — it does not name a local, capture, module val, const, extern type, union/enum case, config field, or function this compilation can verify. " +
+                            "error[T0115]: cannot resolve name '" + name + "' to a value here (in " + fctx.pkgName + "." + fctx.funcName +
+                              ") — it does not name a local, capture, module val, const, extern type, union/enum case, config field, or function this compilation can verify. " +
                               "If it is a typo, check the spelling. If it names a non-literal `pub val`/`pub const` in a restored dependency, only literal-foldable initializers round-trip across the assembly boundary today (docs/45); " +
                               "wrap the value in a `pub func` in the producing package and call that instead."
                           )

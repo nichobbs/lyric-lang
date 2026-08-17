@@ -30266,7 +30266,39 @@ name in value position — the receiver of a D037 type-scoped UFCS call
 self-tests) — where the member/call layer above owns the real
 resolution and the value-position `ldnull` placeholder is discarded.
 The tail keeps `ldnull` for names in `typeFqnCandidates`/`typeFqnByName`
-and fires for everything else.
+and fires for everything else. The panic message names the enclosing
+`<package>.<function>` so a failure in woven or synthesized code is
+locatable without a source span.
+
+**The backstop caught a second real miscompile class: un-rewritten
+dependency aspect templates.** The manifest examples
+(`examples/rbac`, `ledger`, `jobqueue`, `product-catalog`) failed the
+new T0115 on `WebPkg` / `Console` — names from *dependency library*
+aspect bodies (`lyric-web/src/aspects.l` writes
+`WebPkg.unauthorized(...)` under `import Web as WebPkg`;
+`lyric-grpc/src/aspects.l` writes `Console.error(...)` under
+`import Std.Console`). Both bridges' dependency-template collection
+loops (`depTemplatePkgs` on MSIL, `depTemplateSrcs` on JVM — the #3498
+path-dependency path) parsed the dependency source RAW and collected
+aspect templates from the un-rewritten AST, while every in-bundle file
+gets `Lyric.AliasRewriter.rewriteFile` (which collapses both explicit
+`as` aliases and implicit tail-segment qualifiers to full package
+FQNs) via `pipeExpandAndRewrite` before collection. A template body
+spliced into a consumer package that doesn't share the library's
+imports therefore carried unresolvable qualifiers, and every such
+woven advice reference lowered to the historical `ldnull` +
+"unsupported method" runtime-throw stub — a silent miscompile of
+every cross-package aspect error path (a woven `RequiresAuth` would
+throw instead of returning 401 the first time an unauthorized request
+arrived). The fix runs `Aliases.rewriteFile` over the parsed
+dependency template source in both bridges before
+`collectAspectTemplates`, matching in-bundle files; the tail needs no
+module-name exemption because module qualifiers now never survive to
+it. The parallel wire-template dependency collection sites
+(`collectWireTemplates` over raw-parsed dep sources) have the same
+latent shape but a deliberate expansion-before-rewrite ordering
+constraint (docs/58), so they are left unchanged and tracked
+separately.
 
 **The second tail stayed silent — deliberately, tracked in #6503.** The
 EMember `MObject`-receiver exhausted tail (the JVM J007 analog: the
@@ -30284,10 +30316,13 @@ documented silent behavior with the full story and fix order in #6503
 (annotatable restored types → fix the example → loud conversion).
 
 **Verification.** Full `make lyric` rebuild clean (the whole compiler +
-stdlib through the new backstop); all `examples/` build;
-`emitter_project_self_test` 34/34 and `msil_restored_qualified_val`
-4/4 (the T0115-pinning suites); typechecker 364/364; all 11 ecosystem
-manifests green.
+stdlib through the new backstop); all single-file `examples/*.l` build
+and all four manifest examples (`rbac`, `ledger`, `jobqueue`,
+`product-catalog` — the dependency-aspect-template consumers) pass
+`lyric test --manifest`; `emitter_project_self_test` 34/34 and
+`msil_restored_qualified_val` 4/4 (the T0115-pinning suites);
+typechecker 364/364; all 11 ecosystem manifests green; the typo
+negative (`NoSuchPkg.nope`) still fires the precise pre-check message.
 
 **Related:** #6351, #6133/#5275 (the silent-null class), #5362 (the
 revert history that made the tail's exemption discipline necessary),
