@@ -3436,3 +3436,180 @@ test "protected entry body: self.<letField> write is not double-reported by the 
     "entry body: self.<letField> write has no type-checker diagnostics (V0015 owns mutability)"
   )
 }
+
+// #6486 review: the read-case unknown-field test above (#6485) has no
+// WRITE-side twin — `self.nope = 5` reaches the exact same `EMember(ESelf,
+// name)` branch via `SAssign`'s target-type inference (`checkStatement`
+// infers `target` with the general `inferExpr`, so there is only one
+// resolution path for both reads and writes), so this closes the matrix
+// without any production-code change.
+test "protected entry body: self.nope write (unknown field) rejected with T0020 (#6486 review)" {
+  val src = "package P\nprotected type Bag {\n  var count: Int = 0\n  entry f(): Unit {\n    self.nope = 5\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0020"), "entry body: self.nope = 5 (unknown field write) rejected with T0020")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6487: `RMFunc` (record-body method) and `IMplFunc` (impl-block method)
+// bodies are now type-checked (D-progress-774) — the larger sibling of
+// #6481/#6485's protected-member body-checking above. Neither member kind
+// was ever routed through `checkFunctionBody` at all (not even ordinary
+// arg/return-type checks), so `func doubled(self: in Thing): Int { "oops" }`
+// and `impl Scorer for Thing { func score(self: in Self): Int { "oops" } }`
+// both compiled with zero diagnostics — the exact issue repro. `self.field`
+// resolves via the SAME `sc.selfFields`/`sc.selfChecked` machinery #6485
+// built, seeded from the record's own fields (record methods) or the impl
+// target's fields substituted through the impl's own generics (impl
+// methods, `implTargetFieldLocals`) — but WITHOUT the bare-name spelling
+// protected members get (`self.field` is the only spelling either member
+// kind supports; codegen never desugars a bare identifier for `RMFunc`/
+// `IMplFunc`, only for protected `entry`/`func`).
+test "record body method: String body for Int method rejected with T0070 (#6487 repro)" {
+  val src = "package P\nrecord Thing {\n  n: Int\n  func doubled(self: in Thing): Int {\n    \"oops-record-method\"\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(
+    hasDiagCode(cr, "T0070"),
+    "record method body: String trailing expr vs declared Int return rejected with T0070"
+  )
+}
+
+test "impl method: String body for Int method rejected with T0070 (#6487 repro)" {
+  val src = "package P\ninterface Scorer {\n  func score(self: in Self): Int\n}\nrecord Thing {\n  n: Int\n}\nimpl Scorer for Thing {\n  func score(self: in Self): Int {\n    \"oops-impl-method\"\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(
+    hasDiagCode(cr, "T0070"),
+    "impl method body: String trailing expr vs declared Int return rejected with T0070"
+  )
+}
+
+test "record body method: unknown name in body rejected with T0020 (#6487)" {
+  val src = "package P\nrecord Thing {\n  n: Int\n  func bad(): Int {\n    unknownName\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0020"), "record method body: unresolved bare name rejected with T0020")
+}
+
+test "impl method: unknown name in body rejected with T0020 (#6487)" {
+  val src = "package P\ninterface Scorer {\n  func score(): Int\n}\nrecord Thing {\n  n: Int\n}\nimpl Scorer for Thing {\n  func score(): Int {\n    unknownName\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0020"), "impl method body: unresolved bare name rejected with T0020")
+}
+
+test "record body method: self.field read+write well-typed stays clean (#6487 control)" {
+  val src = "package P\nrecord Box {\n  n: Int\n  func setN(v: in Int): Unit {\n    self.n = v\n  }\n  func getN(): Int {\n    self.n\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "record method body: well-typed self.n write+read has no diagnostics")
+}
+
+test "record body method: self.field write-type mismatch rejected with T0063 (#6487)" {
+  val src = "package P\nrecord Box {\n  n: Int\n  func bad(): Unit {\n    self.n = \"oops\"\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0063"), "record method body: self.n = \"oops\" write-type mismatch rejected with T0063")
+}
+
+test "record body method: unknown self field rejected with T0020 (#6487)" {
+  val src = "package P\nrecord Box {\n  n: Int\n  func bad(): Int {\n    self.nope\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0020"), "record method body: self.nope (unknown field) rejected with T0020")
+}
+
+test "impl method: self.field read well-typed stays clean (#6487 control)" {
+  val src = "package P\ninterface Scorer {\n  func score(): Int\n}\nrecord Thing {\n  n: Int\n}\nimpl Scorer for Thing {\n  func score(): Int {\n    self.n\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "impl method body: well-typed self.n read has no diagnostics")
+}
+
+test "impl method: self.field write-type mismatch rejected with T0063 (#6487)" {
+  val src = "package P\ninterface Setter {\n  func setN(v: in Int): Unit\n}\nrecord Thing {\n  n: Int\n}\nimpl Setter for Thing {\n  func setN(v: in Int): Unit {\n    self.n = \"oops\"\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0063"), "impl method body: self.n = \"oops\" write-type mismatch rejected with T0063")
+}
+
+test "impl method: unknown self field rejected with T0020 (#6487)" {
+  val src = "package P\ninterface Scorer {\n  func score(): Int\n}\nrecord Thing {\n  n: Int\n}\nimpl Scorer for Thing {\n  func score(): Int {\n    self.nope\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0020"), "impl method body: self.nope (unknown field) rejected with T0020")
+}
+
+test "generic record method body: self.field types as the owner's own type param, no diagnostics (#6487)" {
+  val src = "package P\nrecord Box[T] {\n  v: T\n  func get(): T {\n    self.v\n  }\n}\nfunc consume(b: in Box[Int]): Int {\n  b.get()\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "generic record method body: well-typed self.v: T has no diagnostics")
+}
+
+// Deliberately NOT a "self.v (T) vs a concrete declared return is T0070"
+// case: `typeEquiv` (typechecker_types.l) treats an unconstrained `TyVar`
+// as universally equivalent to anything on either side (the same wildcard
+// leniency `TyError` gets), a pre-existing rule that predates #6487 and
+// applies to every generic-bodied function, not just record/impl methods —
+// so `self.v: T` never conflicts with a concrete declared return inside the
+// owning generic method itself (the CALL SITE is where a closed `Box[Int]`
+// substitutes `T` and a real mismatch becomes T0070, already covered by the
+// docs/59 A4 test above, "generic record method call: owner generics
+// substituted from receiver"). This test instead proves the generic-owner
+// case doesn't accidentally widen `selfFields` lookup into leniency too — an
+// unknown field on a generic record's own method body still rejects.
+test "generic record method body: unknown self field still rejected with T0020 (#6487)" {
+  val src = "package P\nrecord Box[T] {\n  v: T\n  func bad(): T {\n    self.nope\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0020"), "generic record method body: self.nope (unknown field) rejected with T0020")
+}
+
+test "record body method: T0070 names the alias the user wrote (#6487, mirrors #6481/#6467)" {
+  val src = "package P\nalias Meters = Long\nrecord Box {\n  n: Int\n  func bad(): Meters {\n    \"oops\"\n  }\n}\n"
+  val cr = parseCheckAliasResolved(src)
+  val m = diagMessageFor(cr, "T0070")
+  assertTrue(Str.contains(m, "Meters (aka Long)"), "record method body T0070 message names the alias: " + m)
+}
+
+// #6488 review: checker-level pins for the ECall bare-sibling fallback
+// (#1722/#6435): a bare call to a sibling method of the enclosing type
+// resolves through the implicit `self`, while a genuinely-unknown bare
+// name in the same position still gets its T0020.
+test "record method: bare sibling-method call resolves through implicit self (#6488)" {
+  val src = "package P\nrecord Counter {\n  n: Int\n  func base(): Int {\n    self.n\n  }\n  func viaBare(): Int {\n    base()\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0020"), "bare sibling-method call inside a record method body: no T0020")
+}
+
+test "record method: unknown bare call still rejected with T0020 (#6488)" {
+  val src = "package P\nrecord Counter {\n  n: Int\n  func viaBare(): Int {\n    nosuch()\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0020"), "unknown bare call inside a record method body: T0020 still fires")
+}
+
+// #6488 review: inside a checked member body a whole-`self` read has the
+// concrete receiver type — a record method passing `self` to a sibling UFCS
+// function (the lyric-cache `evictKey(self, key)` shape) must not T0043.
+test "record method: self as call argument matches the concrete receiver type (#6488)" {
+  val src = "package P\nrecord Store {\n  n: Int\n  func poke(): Int {\n    sibling(self)\n  }\n}\nfunc sibling(s: in Store): Int {\n  s.n\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0043"), "self as call argument: no T0043 against the concrete parameter type")
+}
+
+test "impl method: self as call argument matches the concrete receiver type (#6488)" {
+  val src = "package P\ninterface Poker {\n  func poke(): Int\n}\nrecord Store {\n  n: Int\n}\nimpl Poker for Store {\n  func poke(): Int {\n    sibling(self)\n  }\n}\nfunc sibling(s: in Store): Int {\n  s.n\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(
+    not hasDiagCode(cr, "T0043"),
+    "impl-body self as call argument: no T0043 against the concrete parameter type"
+  )
+}
+
+// #6488 review: forwarding an `out` param through a call that assigns it
+// (`writeVia(dst: out Int) { writeRaw(dst) }`) must not T0086 — the
+// syntax-only collector credits bare-variable call arguments (deliberate
+// false-negative trade-off, same as the ELambda carve-out).
+test "out param forwarded through a call: no T0086 (#6488)" {
+  val src = "package P\nfunc writeRaw(dst: out Int): Unit { dst = 7 }\nfunc writeVia(dst: out Int): Unit { writeRaw(dst) }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0086"), "out param forwarded via call argument: no T0086")
+}
+
+test "impl method out param forwarded via bare sibling call: no T0086 (#6488)" {
+  val src = "package P\ninterface W {\n  func writeRaw(dst: out Int): Unit\n  func writeVia(dst: out Int): Unit\n}\nrecord S {\n  v: Int\n}\nimpl W for S {\n  func writeRaw(dst: out Int): Unit {\n    dst = self.v\n  }\n  func writeVia(dst: out Int): Unit {\n    writeRaw(dst)\n  }\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0086"), "impl-body out param forwarded via bare sibling call: no T0086")
+}
+
+test "out param never mentioned still fires T0086 after the call-argument credit (#6488)" {
+  val src = "package P\nfunc helper(v: in Int): Unit { val _ = v }\nfunc f(x: out Int): Unit { helper(1) }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0086"), "out param never mentioned anywhere: T0086 still fires")
+}

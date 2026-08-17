@@ -29622,3 +29622,234 @@ ilverify clean. docs/01 §7.5 now states both spellings are checked.
 
 **Related:** #6485, #6481/D-progress-772, D-progress-761/764 (the
 T0118 machinery deliberately untouched), PR #6484.
+
+## D-progress-774 — `impl`- and record-body-method BODIES are type-checked (#6487)
+
+**Problem.** The larger sibling of #6481/D-progress-772: `IMplFunc`
+(impl-block method) and `RMFunc` (record-body method) bodies were never
+routed through `checkFunctionBody` at all — only `checkImplConformance`'s
+SIGNATURE check ran for impl methods, and record-body methods had no
+check whatsoever. Both member kinds are everywhere (stdlib, all 26
+ecosystem libraries, the compiler itself), so this was the largest
+remaining silent-miscompile-class gap: `record Thing { func doubled(self:
+in Thing): Int { "oops-record-method" } }` and `impl Scorer for Thing {
+func score(self: in Self): Int { "oops-impl-method" } }` both compiled
+with zero diagnostics (the issue's verified repro).
+
+**Design — single round, both slices, one context signal.** Both member
+kinds landed together (the blast radius stayed small enough that slicing
+into two rounds wasn't needed — see "Blast radius" below). Two new T5
+walkers, `checkRecordMemberBodies` (IRecord/IExposedRec) and
+`checkImplMemberBodies` (IImpl), each build a `fieldLocals: List[LocalBinding]`
+from the member's own type — `recordFieldLocals` resolves each `RMField`
+against the record's OWN generic context (so a `Box[T]` field `v: T` stays
+`TyVar("T")`, not erased); `implTargetFieldLocals` resolves the impl
+TARGET's fields the same way and then substitutes the target's own
+generic names for the impl's actual type arguments (`substituteTyVars`,
+mirroring `substituteMethodSig`'s call-site substitution) — then calls
+the existing `checkFunctionBody` (§6481) machinery per member, reusing
+`resolveMethodSigParts` (owner ++ own generics) for the `ResolvedSignature`
+exactly as `checkProtectedMemberBodies`/PMFunc already does.
+
+**The context-signal fix (review item from #6485/D-progress-773).**
+`checkFunctionBody` gained two new parameters — `selfFieldLocals` (decoupled
+from the existing bare-name `extraLocals`, since record/impl bodies turned
+out to need bare-name field resolution too, see #6173 below) and an explicit
+`selfType: Type` (see the bare-sibling-call fix below) — and `Scope` gained
+`selfChecked: Bool` alongside the existing `selfFields: Map[String, Type]`.
+`sc.selfFields.count > 0` was the #6485 signal for "is `self.<name>` in a
+checked-member context"; that conflated with "does this member have any
+fields at all", so a ZERO-FIELD member's `self.x` fell through to the
+lenient `TySelf` handling instead of a real T0020. `selfChecked` is now set
+independently by all three checked-member-body callers (protected
+entry/func, record method, impl method) and consulted first in the
+`EMember(ESelf, name)` branch (`typechecker_exprs.l`); every other
+self-bearing context (interface default-method bodies, a `Self`-typed
+ordinary parameter) still has `selfChecked = false` and keeps the
+pre-existing lenient behavior, pinned by the full battery below staying
+green. This also retroactively fixes the same zero-field gap for protected
+types, though no in-tree zero-field protected type exercises it.
+
+**Latent bugs surfaced and fixed — all found via the runtime-net battery,
+none via the 73-package stdlib build.** The full `make lyric` blast-radius
+rebuild (stdlib + compiler + everything the self-hosted source loader
+reaches) came back CLEAN on the first attempt with zero new diagnostics —
+the entire in-tree stdlib apparently never relied on any of the three
+shapes below. They surfaced only once the wider `impl_method_self_test.l`/
+`bare_func_ref_self_test.l` runtime nets (which exist specifically to
+regression-lock these three shapes against the backends) were run against
+a real `make lyric` build instead of the stale `<libdir>/selfhosted/` DLLs
+`make self-test`'s fast loop links:
+
+1. **Bare intra-type field access has no `self.` prefix requirement either
+   (#6173).** The initial design assumed record/impl methods have ONLY the
+   `self.field` spelling (unlike protected members' bare-name-or-`self.`
+   dual spelling) — wrong. Issue #6173 already shipped a bare-name fallback
+   on BOTH backends: MSIL's general `EPath` field-read/write lowering and
+   JVM's `selfFieldType` fallback both resolve an unresolved bare
+   identifier against the enclosing type's own fields (`fctx.className`-keyed
+   `fieldTokens`) when it isn't a local/param. `impl_method_self_test.l`'s
+   `CounterImpl.bumpBy` (`x = x + n; x`) and `Tally.add` (`total = total +
+   n; total`) both went from clean to `T0020: unknown name 'x'/'total'`
+   under body-checking. **Fix:** `checkRecordMemberBodies`/
+   `checkImplMemberBodies` now pass `fieldLocals` as BOTH `checkFunctionBody`
+   arguments (`extraLocals` for bare-name scope binding AND
+   `selfFieldLocals` for the `self.` map) — exactly like
+   `checkProtectedMemberBodies` already does.
+2. **A literal `Self` return-type annotation needs `Self`-substitution
+   before the T0070 check (#6417's shape).** `impl_method_self_test.l`'s
+   `Cloner6417.dup(self: in Self): Self { Box6417(v = self.v + 1) }` (the
+   `docs/01` `Cloneable` idiom) went from clean to a false-positive T0070
+   ("has type Box6417 but declared return type is Self") — `resolveType`
+   leaves an un-substituted `Self` annotation as the `TySelf` placeholder,
+   and `typeAssignable` never accepts a concrete `TyUser` body value against
+   a non-`TyUser` expected type. **Fix:** both walkers now substitute
+   `sig0.returnTy` through `substitutesSelf(sig0.returnTy, selfTy)` — the
+   SAME helper `checkImplConformance` already uses for the
+   interface-conformance check — before building the final `ResolvedSignature`.
+   Only the return type is substituted (not param types): a `Self`-typed
+   PARAM (`other: in Self`) already stays lenient via the pre-existing
+   `TySelf` fallback in ordinary member access, and widening substitution
+   to params was unnecessary to fix the actual regression and out of scope.
+3. **A bare CALL with no receiver at all dispatches on the implicit `self`
+   too (#1722/#6435's shape) — a checker bug, fixed, not gated.** Distinct
+   from (1) (field access, not a call): `bare_func_ref_self_test.l`'s
+   `Duo6435.bumpViaSibling` calls a SIBLING method by bare name (`dup()`,
+   no `self.` prefix) — codegen's `ctx.selfClass` general-static-call
+   fallback (both backends) already resolves this at runtime. Under
+   body-checking this surfaced as `T0020: unknown name 'dup'` — worse, the
+   diagnostic fired during the EAGER `fnT = inferExpr(sc, tbl, sigs, diag,
+   fn)` pre-pass (`ECall`'s bare-callee branch), before the call-resolution
+   fallback chain (`methodPick`/`resolveMethodCallPick`) ever got a chance
+   to run, so simply extending that fallback chain wasn't enough — the
+   premature diagnostic had already landed. **Fix:** `Scope` gained
+   `selfType: Type` (`TyError` outside a record/impl method body — protected
+   members deliberately still get `TyError` here too, see below); `ECall`'s
+   member-callee PRE-PASS (`typechecker_exprs.l`, before `fnT` is computed)
+   gained an `EPath` arm alongside the existing `EMember` one: a
+   single-segment bare call whose name is NOT a scope-local, inside a
+   `sc.selfChecked` context, IS a real method on `sc.selfType`
+   (`symTableMethodSigs(tbl, selfTid, name).count > 0`, so a genuinely
+   unknown name still gets its ordinary T0020) is treated exactly like an
+   explicit `self.<name>(...)` call — `isMemberCallee = true`, `memberRecvTy
+   = Some(sc.selfType)` — reusing every downstream mechanism
+   (`resolveMethodCallPick`, arity/bounds checking, generic-return
+   instantiation) unchanged.
+
+**Protected types deliberately excluded from fix #3 — #6483 stays open, on
+purpose.** `checkProtectedMemberBodies` still passes `TyError` for the new
+`selfType` parameter, so a bare sibling-method call inside a protected
+`entry`/`func` still reports T0020, unchanged from D-progress-772's
+already-documented, already-verified-safe gap (#6483: "a manual survey of
+every in-tree protected declaration confirmed none calls a sibling member
+by bare name"). Record/impl methods needed the fix because an in-tree,
+shipped, passing TEST exercised the pattern (a real regression to avoid);
+protected types have no such in-tree user, so widening the fix there was
+unnecessary scope. #6483 is unaffected by this entry and stays open for a
+future protected-types-specific pass.
+
+**Blast radius — clean, on every rebuild.** THREE full `make lyric`
+rebuilds (recompiling the compiler + the 73-package stdlib bundle, plus a
+final one after `lyric fmt`) all exited 0 with zero new diagnostics — no
+in-tree record-body or impl method anywhere in the stdlib hit any of the
+three shapes above, or any other latent bug. The three latent bugs above
+were found exclusively by the wider runtime-net battery (which exists
+precisely to regression-lock backend behavior the stdlib build alone
+doesn't exercise), not by the stdlib rebuild itself.
+
+**Tests.** `typechecker_self_test.l` 339 (340 after the queued #6486
+`self.nope = 5` write case) -> 353: both #6487 repro shapes rejected with
+T0070 (record-method and impl-method String-for-Int); unknown bare name
+in each body (T0020); `self.field` read+write well-typed controls and
+mismatch rejections (T0063) for both member kinds; unknown `self.<name>`
+(T0020) for both; a generic-record method case (well-typed `self.v: T`
+stays clean, and — since `typeEquiv` treats every `TyVar` as universally
+equivalent, a pre-existing rule predating this change — an unknown
+`self.nope` inside the SAME generic method still correctly rejects,
+proving the generic-owner case doesn't accidentally widen `selfFields`
+lookup into leniency too); alias-aware T0070 rendering in a record method
+(`Meters (aka Long)`). Runtime nets, ALL green on a real `make lyric`
+build (not the stale-DLL fast loop): `impl_method_self_test.l` 22/22 (the
+source of latent bugs 1 and 2 above), `bare_func_ref_self_test.l` 36/36
+both targets (the source of latent bug 3), `propagate_hoist_self_test.l`
+42/42 both, `stdlib_generic_iface_self_test.l` 20/20 both,
+`synthesized_method_self_test.l` 10/10 both, `aspect_weave_self_test.l`
+8/8 both, `block_shadow_self_test.l` 20/20 both, `modechecker_self_test.l`
+92/92, `emitter_project_self_test.l` 34/34. Ecosystem spot-checks (both
+lean heavily on impl/record methods): `lyric-auth` 35/35 + 4/4 aspect
+tests, `lyric-validation` 73/73 + 9/9 aspect tests — all green, no latent
+errors surfaced.
+
+**Async/generics verdicts.** Async: no special-casing needed —
+`resolveMethodSigParts` already threads `fn.isAsync` into the
+`ResolvedSignature`, and `checkFunctionBody` treats async/sync bodies
+uniformly (no return-type wrapping at the type-checker level), matching
+how ordinary top-level async `IFunc` bodies were already checked before
+this change. Generics: owner ++ own generics widening (mirroring
+`checkProtectedMemberBodies`/PMFunc) verified against BOTH an in-tree
+generic record method (`Box[T].get(): T { self.v }`, docs/59 A4's existing
+call-site test) and the new generic-record self-test above; no generic
+`impl` block exists in-tree to exercise the impl side of the same
+mechanism (a structural gap in COVERAGE, not in the mechanism itself,
+which reuses the identical, already-exercised `resolveMethodSigParts`
+owner-generics path — moot today, same "moot" verdict D-progress-772 gave
+generic protected types).
+
+**Docs.** docs/01 §2.4 (records) and §2.12 (interfaces) each gained a
+paragraph stating member bodies are now type-checked, mirroring §7.5's
+protected-type wording. docs/10 records the whole 2026-08 arc
+(#6475/#6476/#6479/#6481/#6485/#6487) under "Protected types" /
+"methods-in-types", cross-referencing this entry.
+
+**Related:** #6487, #6481/D-progress-772, #6485/D-progress-773 (the
+precedent this reused), #6173 (bare-name field fallback, latent bug 1),
+#6417/#6435/#1722 (Self-return and bare-sibling-call shapes, latent bugs
+2-3), #6483 (protected-type bare-sibling-dispatch gap, deliberately left
+open).
+
+**Review addendum (2026-08-17, PR #6488 CI round).** The first CI run
+surfaced two more latent-false-positive shapes plus one true positive
+in previously-unchecked bodies; all three are resolved on the PR:
+
+1. **`self` in call-argument position (T0043 false positive).** A member
+   body passing whole-`self` to a sibling UFCS function
+   (`evictKey(self, key)` in `lyric-cache`, `handleInitialize(self, params)`
+   in `lyric-mcp`, `resolveLocalPath(self, key)` in `lyric-storage` —
+   the shape recurs across six ecosystem libraries) inferred the raw
+   opaque `TySelf`, which T0043 rejected against the concrete parameter
+   type. Fix: `inferExpr`'s `ESelf` arm returns the scope's concrete
+   `selfType` when `selfChecked` is set (the three checked-member-body
+   callers), preserving `TySelf` for interface default-method bodies and
+   every other lenient context. Pinned by record-body and impl-body
+   self-as-argument cases in `typechecker_self_test.l`.
+
+2. **`out` param forwarded through a call (T0086 false positive).** A
+   member body that satisfies its `out` param by forwarding it to a
+   callee that assigns it (`writeVia(dst: out Int) { writeRaw(dst) }`,
+   `out_inout_instance_jvm_self_test.l`) tripped T0086 — the syntax-only
+   never-assigned collector had no notion of call-argument assignment.
+   The gap is pre-existing (a free-function forward reproduces it) but
+   unreachable until member bodies became checked. Fix: the collector's
+   `ECall` arm credits bare-variable call arguments as potential
+   assignments — the same deliberate false-negative trade-off as its
+   documented `ELambda` carve-out (no symbol table at that layer to
+   resolve callee parameter modes); an out param never mentioned at all
+   still fires. Pinned by three new T0086 cases.
+
+3. **Slice `+` in `lyric-mq` (T0030 TRUE positive).**
+   `InProcessDeadLetterStore.append` concatenated slices with `+`
+   (`self.entries + [dlEntry]`) — not a defined slice operation (§2.7:
+   `.append`/`.concat`/`.slice` only), and MSIL's `BAdd` default arm
+   would have lowered it as integer `add` on object references — a
+   silent miscompile in the never-exercised capacity-eviction path,
+   shipped only because impl bodies were unchecked. Fixed in
+   `lyric-mq/src/mq.l` with `.append(...)`.
+
+Also folded in from the PR review's queued suggestions:
+`reprForRecordMethod`'s stale "never reaches `checkFunctionBody`" doc
+comment now states the true post-#6487 exemption (a `None` body is
+skipped, same as interface signatures), pinned by a new
+record-with-bodyless-method-heads round-trip test in
+`restored_packages_self_test.l`; and checker-level bare-sibling-call
+pins (positive resolve + unknown-bare T0020) landed in
+`typechecker_self_test.l`.

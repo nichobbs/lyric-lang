@@ -1942,7 +1942,7 @@ func resolveExprPath(
               // shadowing module-level names referenced in vd.init.
               val noRte: Option[TypeExpr] = None
               val noSelfFields: Map[String, Type] = newMap()
-              val emptyScope = newScopeForFunction(TyError, newList(), noRte, noSelfFields)
+              val emptyScope = newScopeForFunction(TyError, newList(), noRte, noSelfFields, false, TyError)
               return inferExpr(emptyScope, tbl, sigs, diag, vd.init)
             }
           }
@@ -3168,7 +3168,7 @@ func checkConstRefPattern(
                   case None -> {
                     val noRte: Option[TypeExpr] = None
                     val noSelfFields: Map[String, Type] = newMap()
-                    val emptyScope = newScopeForFunction(TyError, newList(), noRte, noSelfFields)
+                    val emptyScope = newScopeForFunction(TyError, newList(), noRte, noSelfFields, false, TyError)
                     inferExpr(emptyScope, tbl, sigs, diag, vd.init)
                   }
                 }
@@ -3494,6 +3494,27 @@ pub func inferExpr(
             }
           }
         }
+        case EPath(p3) -> {
+          // #6487 review (#1722/#6435): a BARE call with no receiver at all
+          // (`dup()`) inside a checked record-body or impl-method body
+          // (never a protected member — #6483's tracked bare-sibling-
+          // dispatch gap is deliberately left as-is) dispatches on the
+          // implicit `self` when the name is not a local binding but IS a
+          // real method of the enclosing type — codegen's `ctx.selfClass`
+          // general-static-call fallback (both backends) already resolves
+          // this at runtime, so turning on body-checking (#6487) must not
+          // regress it into a false T0020. Gated on an ACTUAL method match
+          // (`symTableMethodSigs`) so a genuinely-unknown bare name still
+          // falls through to its ordinary T0020 via the `fnT`/`inferExpr`
+          // path below, unchanged.
+          if p3.segments.count == 1 and sc.selfChecked {
+            match scopeTryFind(sc, p3.segments[0]) {
+              case Some(_) -> {
+              }
+              case None -> match typeIdOfType(sc.selfType) { case Some(selfTid) -> { if symTableMethodSigs(tbl, selfTid, p3.segments[0]).count > 0 { isMemberCallee = true; memberName = p3.segments[0]; memberRecvTy = Some(value = sc.selfType) } }; case None -> {  } }
+            }
+          }
+        }
         case _ -> {
         }
       }
@@ -3563,24 +3584,28 @@ pub func inferExpr(
     }
 
     case EMember(recv, name) -> {
-      // #6485: `self.field` inside a protected-type entry/func body.  `self`
-      // is a keyword — every occurrence parses to the dedicated `ESelf` node,
-      // never `EPath(["self"])` — so it can never resolve through the
-      // ordinary scope lookup the bare-name spelling uses (#6481's
-      // `extraLocals`/`scopeTryFind`).  Absent this, `inferExpr(recv)` types
-      // `self` as the placeholder `TySelf`, which `inferMemberBase` cannot
-      // resolve to a field and which silently degrades to `TyError` with no
-      // diagnostic. `sc.selfFields` (non-empty only inside a protected
-      // member body, #6485) is consulted first: a hit types the field read
-      // exactly like the bare-name spelling; a miss inside that same context
-      // is a genuine unknown field, reported the same way an unknown bare
-      // name is (T0020). Every other `self`-bearing context reaching this
-      // checker today (`checkFunctionBody`'s only other callers pass empty
-      // `extraLocals`) falls through unchanged to the pre-existing lenient
-      // `TySelf` handling below.
+      // #6485/#6487: `self.field` inside a protected-type entry/func body,
+      // a record-body method, or an impl method.  `self` is a keyword —
+      // every occurrence parses to the dedicated `ESelf` node, never
+      // `EPath(["self"])` — so it can never resolve through the ordinary
+      // scope lookup the bare-name spelling uses (#6481's
+      // `extraLocals`/`scopeTryFind`, which only protected members have
+      // anyway). Absent this, `inferExpr(recv)` types `self` as the
+      // placeholder `TySelf`, which `inferMemberBase` cannot resolve to a
+      // field and which silently degrades to `TyError` with no diagnostic.
+      // `sc.selfChecked` (set by all three checked-member-body callers,
+      // independent of `sc.selfFields.count` so a zero-field member still
+      // gets strict resolution, #6487) gates this branch: a hit in
+      // `sc.selfFields` types the field read exactly like the bare-name
+      // spelling; a miss inside that same context is a genuine unknown
+      // field, reported the same way an unknown bare name is (T0020).
+      // Every other `self`-bearing context reaching this checker today
+      // (interface default-method bodies, a `Self`-typed ordinary
+      // parameter) has `selfChecked = false` and falls through unchanged to
+      // the pre-existing lenient `TySelf` handling below.
       match recv.kind {
         case ESelf -> {
-          if sc.selfFields.count > 0 {
+          if sc.selfChecked {
             match mapGet(sc.selfFields, name) {
               case Some(t) -> return t
               case None -> {
@@ -3624,7 +3649,13 @@ pub func inferExpr(
     case ESpawn(inner) -> inferExpr(sc, tbl, sigs, diag, inner)
     case EOld(inner) -> inferExpr(sc, tbl, sigs, diag, inner)
 
-    case ESelf -> TySelf
+    // Inside a checked member body (`sc.selfChecked`, #6487) a whole-`self`
+    // read has the concrete receiver type — a record-body method passing
+    // `self` to a sibling UFCS function (`evictKey(self, key)`) must match
+    // that function's concrete parameter type, not an opaque `Self` that
+    // T0043 rejects.  Interface default-method bodies and other lenient
+    // contexts keep the pre-existing `TySelf`.
+    case ESelf -> if sc.selfChecked { sc.selfType } else { TySelf }
     // `result` in an `ensures:` clause has the enclosing function's declared
     // return type, carried on the scope (D081).
     // `result` is a contextual keyword (codegen.l:2833 agrees): a user-declared

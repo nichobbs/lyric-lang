@@ -620,8 +620,21 @@ func collectAssignedExpr(e: in Expr, acc: in List[String]): Unit {
       var i = 0
       while i < args.count {
         match args[i] {
-          case CAPositional(ae) -> collectAssignedExpr(ae, acc)
-          case CANamed(_, ae, _) -> collectAssignedExpr(ae, acc)
+          case CAPositional(ae) -> {
+            // A bare variable passed as a call argument may bind an `out`/`inout`
+            // parameter of the callee (`writeVia(dst: out Int) { writeRaw(dst) }`),
+            // which assigns it.  This syntax-only walker has no symbol table to
+            // resolve the callee's parameter modes, so credit the argument as a
+            // potential assignment — same deliberate false-negative trade-off as
+            // the ELambda carve-out below; a truly never-mentioned out param is
+            // still flagged.
+            addAssignedTarget(ae, acc)
+            collectAssignedExpr(ae, acc)
+          }
+          case CANamed(_, ae, _) -> {
+            addAssignedTarget(ae, acc)
+            collectAssignedExpr(ae, acc)
+          }
         }
         i = i + 1
       }
@@ -773,6 +786,9 @@ pub func checkFunctionBody(
   fn: in FunctionDecl,
   sig: in ResolvedSignature,
   extraLocals: in List[LocalBinding],
+  selfFieldLocals: in List[LocalBinding],
+  selfChecked: in Bool,
+  selfType: in Type,
 ): Unit {
   if hasExternTargetAnnotation(fn.annotations) {
     // F0002: both @externStatic and @externInstance on one extern.
@@ -789,31 +805,36 @@ pub func checkFunctionBody(
     return
   }
 
-  // #6485: `self.field` — the explicit-receiver spelling of the same
+  // #6485/#6487: `self.field` — the explicit-receiver spelling of the same
   // bare-name field access #6481 seeded below — never resolves through a
   // scope lookup (`self` is a keyword; every occurrence parses to the
-  // dedicated `ESelf` AST node, never `EPath(["self"])`), so it needs its
-  // own map keyed by field name rather than reusing `extraLocals` scope
-  // bindings.  Built from the SAME `extraLocals` list `checkProtectedMemberBodies`
-  // passes in, so it is non-empty exactly when the bare-name map is.
+  // dedicated `ESelf` AST node, never `EPath(["self"])`), so it needs its own
+  // map keyed by field name.  Built from `selfFieldLocals`, a list decoupled
+  // from `extraLocals` so a caller can seed the `self.`-map independently of
+  // (or identically to, as every current caller does — #6487's review found
+  // record/impl bodies need bare-name field access too, #6173) the bare-name
+  // scope bindings below.
   val selfFields: Map[String, Type] = newMap()
   var sf = 0
-  while sf < extraLocals.count {
-    selfFields.add(extraLocals[sf].name, extraLocals[sf].ty)
+  while sf < selfFieldLocals.count {
+    selfFields.add(selfFieldLocals[sf].name, selfFieldLocals[sf].ty)
     sf = sf + 1
   }
   // #6467: `fn.ret` also seeds the scope's `returnTyExpr`, so T0064/T0065
   // (raised deep inside a nested block via `checkStatement`) render the same
   // alias-aware display as T0070/T0114 below.
-  val sc = newScopeForFunction(sig.returnTy, sig.generics, fn.ret, selfFields)
-  // #6481: protected-type entry/func bodies read/write the enclosing type's
-  // fields as bare names (no explicit `self` param); the caller seeds those
-  // bindings here so a bare `count = count + 1` resolves — and so writing a
-  // `let`/immutable field trips the SAME `isMutable`-driven T0087 the ordinary
-  // val/let-reassignment check already gives locals, with no separate
-  // mode-checker rule needed.  Seeded BEFORE params so a param name shadows a
-  // same-named field (last-added wins in `scopeTryFind`), matching ordinary
-  // inner-scope-shadows-outer precedent.  Empty for plain top-level functions.
+  val sc = newScopeForFunction(sig.returnTy, sig.generics, fn.ret, selfFields, selfChecked, selfType)
+  // #6481/#6487: a member body (protected `entry`/`func`, a record-body
+  // method, or an impl method — #6173) reads/writes the enclosing type's
+  // fields as bare names (the implicit-`self` idiom every one of these
+  // supports, regardless of whether the member kind ALSO carries an
+  // explicit `self` param); the caller seeds those bindings here so a bare
+  // `count = count + 1` resolves — and so writing a `let`/immutable field
+  // trips the SAME `isMutable`-driven T0087 the ordinary val/let-reassignment
+  // check already gives locals, with no separate mode-checker rule needed.
+  // Seeded BEFORE params so a param name shadows a same-named field
+  // (last-added wins in `scopeTryFind`), matching ordinary inner-scope-
+  // shadows-outer precedent.  Empty for plain top-level functions.
   var el = 0
   while el < extraLocals.count {
     scopeAdd(sc, extraLocals[el])

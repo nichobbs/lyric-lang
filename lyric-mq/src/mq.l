@@ -173,15 +173,15 @@ pub record InProcessDeadLetterStore {
 impl DeadLetterStore for InProcessDeadLetterStore {
   func append(dlEntry: in DeadLetterEntry): Unit {
     if self.entries.length < self.maxEntries {
-      self.entries = self.entries + [dlEntry]
+      self.entries = self.entries.append(dlEntry)
     } else {
       var trimmed: slice[DeadLetterEntry] = []
       var i: Int = 1
       while i < self.entries.length {
-        trimmed = trimmed + [self.entries[i]]
+        trimmed = trimmed.append(self.entries[i])
         i = i + 1
       }
-      self.entries = trimmed + [dlEntry]
+      self.entries = trimmed.append(dlEntry)
     }
   }
 
