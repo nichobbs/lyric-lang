@@ -2162,6 +2162,12 @@ func recordFieldLocals(tbl: in SymbolTable, ctx: in GenericContext, decl: in Rec
 // T0070 on a body that was always well-typed (found via the #6417 case in
 // `impl_method_self_test.l`'s battery run, same root cause as the impl-side
 // fix below).
+// The type-argument list is built with raw `TyVar(name = ...)` rather than
+// the `ctx`/`gctxPush`-scoped resolution `recordFieldLocals` uses for the
+// same generic names: this type only feeds `substitutesSelf` and
+// equivalence checks, and `typeEquiv` treats every `TyVar` as universally
+// equivalent, so the two representations never need to agree structurally
+// (#6488 review nit).
 func recordSelfType(tbl: in SymbolTable, decl: in RecordDecl, ownerGenerics: in List[String]): Type {
   match symTableTryFindOne(tbl, decl.name) {
     case Some(sym) -> match symbolTypeIdOpt(sym) { case Some(tid) -> { val targs: List[Type] = newList(); var i = 0; while i < ownerGenerics.count { targs.add(TyVar(name = ownerGenerics[i])); i = i + 1 }; TyUser(id = tid, name = decl.name, args = targs) }; case None -> TyError }

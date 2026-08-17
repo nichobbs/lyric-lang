@@ -3561,6 +3561,26 @@ test "record body method: T0070 names the alias the user wrote (#6487, mirrors #
   assertTrue(Str.contains(m, "Meters (aka Long)"), "record method body T0070 message names the alias: " + m)
 }
 
+// #6488 review: a cross-compile-unit `impl` whose target record arrives as
+// an IMPORTED item (the restored-package preamble shape — a consumer package
+// writing `impl Iface for RestoredRecord`) must resolve `self.field` through
+// `implTargetFieldLocals`/`findRecordDeclByTypeId` exactly like a same-file
+// impl, and still reject an unknown field.
+test "impl over an imported record: self.field resolves (#6488)" {
+  val libPr = parse("package Lib\npub record Counter {\n  n: Int\n}\npub interface Scorer {\n  func score(): Int\n}\n")
+  val pr = parse("package App\nimpl Scorer for Counter {\n  func score(): Int {\n    self.n\n  }\n}\n")
+  val cr = checkWithImports(pr.file, libPr.file.items)
+  assertTrue(not hasDiagCode(cr, "T0020"), "imported-record impl body: self.n resolves (no T0020)")
+  assertTrue(not hasDiagCode(cr, "T0070"), "imported-record impl body: Int field matches Int return (no T0070)")
+}
+
+test "impl over an imported record: unknown self field still rejected (#6488)" {
+  val libPr = parse("package Lib\npub record Counter {\n  n: Int\n}\npub interface Scorer {\n  func score(): Int\n}\n")
+  val pr = parse("package App\nimpl Scorer for Counter {\n  func score(): Int {\n    self.nope\n  }\n}\n")
+  val cr = checkWithImports(pr.file, libPr.file.items)
+  assertTrue(hasDiagCode(cr, "T0020"), "imported-record impl body: self.nope rejected with T0020")
+}
+
 // #6488 review: checker-level pins for the ECall bare-sibling fallback
 // (#1722/#6435): a bare call to a sibling method of the enclosing type
 // resolves through the implicit `self`, while a genuinely-unknown bare

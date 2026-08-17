@@ -129,3 +129,39 @@ test "self.m(String arg) dispatches correctly via lowerMethodCall (#3563)" {
 test "self.m(Int arg) dispatches correctly via lowerMethodCall (#3563)" {
   assertEqualInt(mk().viaSelfIntArg(7), 14, "self.twice(7)")
 }
+
+// #6489: a BARE call inside an instance method body where BOTH a same-named
+// free function and a sibling method exist must resolve the sibling method
+// (method-wins) — this backend's `ctx.selfClass` arm is deliberately ordered
+// before the general funcSigs lookup; the MSIL backend was aligned to the
+// same order in #6489.  Pinned on both targets.
+func probe(): Int {
+  1
+}
+
+func freeOnly(): Int {
+  41
+}
+
+record ShadowHolder {
+  n: Int
+  func probe(): Int {
+    2
+  }
+  func viaBareShadowed(): Int {
+    probe()
+  }
+  func viaBareFree(): Int {
+    freeOnly()
+  }
+}
+
+test "bare call shadowed by a sibling method resolves the method (#6489)" {
+  val h = ShadowHolder(n = 0)
+  assertEqualInt(h.viaBareShadowed(), 2, "method wins over the same-named free function")
+}
+
+test "bare call with no same-named sibling still resolves the free function (#6489)" {
+  val h = ShadowHolder(n = 0)
+  assertEqualInt(h.viaBareFree(), 41, "free function resolution unaffected when no sibling shadows it")
+}

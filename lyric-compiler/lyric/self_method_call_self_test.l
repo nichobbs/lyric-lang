@@ -102,3 +102,39 @@ test "self.save() returns the constructed Result, matches Ok" {
 test "bare save() returns the constructed Result, matches Ok" {
   assertEqualInt(classify(mk().putBare()), 1, "bare save() -> Ok")
 }
+
+// #6489: a BARE call inside an instance method body where BOTH a same-named
+// free function and a sibling method exist must resolve the sibling method
+// (method-wins) — the JVM backend and the type checker's member-callee
+// fallback (#1722/#6435) always did; MSIL resolved the free function until
+// #6489 gated its `resolvedFqn` resolution on the bare-sibling hit.
+func probe(): Int {
+  1
+}
+
+func freeOnly(): Int {
+  41
+}
+
+record ShadowHolder {
+  n: Int
+  func probe(): Int {
+    2
+  }
+  func viaBareShadowed(): Int {
+    probe()
+  }
+  func viaBareFree(): Int {
+    freeOnly()
+  }
+}
+
+test "bare call shadowed by a sibling method resolves the method (#6489)" {
+  val h = ShadowHolder(n = 0)
+  assertEqualInt(h.viaBareShadowed(), 2, "method wins over the same-named free function")
+}
+
+test "bare call with no same-named sibling still resolves the free function (#6489)" {
+  val h = ShadowHolder(n = 0)
+  assertEqualInt(h.viaBareFree(), 41, "free function resolution unaffected when no sibling shadows it")
+}
