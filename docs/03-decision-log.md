@@ -29982,3 +29982,78 @@ sibling shadowing rule is now pinned for protected bodies too
 (`synthesized_method_self_test.l` 13 → 15, dual-target: sibling member
 wins; free function still resolves when unshadowed), mirroring the
 #6489 record/impl pins.
+
+---
+
+## D-progress-777 — JVM StackMapTable operand-stack simulation (#6346/#6356)
+
+**Date:** 2026-08-17. **Fixes** the "VerifyError: Inconsistent stackmap
+frames at branch target" class that made `lyric-mcp`'s JVM build fail all
+26 `mcp_tests.l` cases at class-load time (`Mcp.Server.handleInitialize`),
+tracked as #6346/#6356.
+
+**Root cause.** The frame pass in `Jvm.Lowering.lowerFuncImpl` emitted
+every branch-target StackMapTable frame with an EMPTY operand stack — an
+invariant codegen upheld for branch-lowered RESULTS (`lowerCmpExpr` /
+`BAnd`/`BOr` / if-expression slot materialisation, #3044 lineage) and for
+constructor arguments (spilled before `new; dup`, #5003) — but NOT for a
+branch-lowered SUBexpression evaluated while an ENCLOSING expression holds
+operands on the stack. `encodeInitializeResult(negotiated,
+hasAnyTools(server), server.resources.count > 0, …)` lowers the
+`count > 0` comparison with the two earlier arguments already stacked, so
+its `if_icmpgt` branches with `{String, int, …}` on the stack against a
+declared empty frame. The same hole covered branchy arithmetic operands,
+list/tuple elements, and String-concat operands — at least the third
+hardening round against this frame model.
+
+**Decision: simulate the stack, keep the merged-locals model.** Rather
+than spilling at every multi-operand site (fragile: each missed site is a
+latent VerifyError), the frame pass now runs a fixpoint simulation of the
+operand stack over the LInsn stream (`simulateLabelStacks` +
+`simStackEffect`, the B5c block in `lowering.l`) and emits each
+branch-target frame with the simulated stack:
+
+- Stack-effect rules cover every LInsn variant; `LAload` pushes the same
+  slot type the verifier itself derives from the merged
+  `frameLocals`/`storeTypes` view, so simulation and verifier dataflow
+  agree by construction.
+- Exception-handler labels keep the `[exception]` override (JVM handler
+  entry discards the stack); dead code keeps the empty stack the old pass
+  emitted; control-flow merges join reference types to `Object` and panic
+  loudly on primitive-shape or depth mismatches (a codegen bug, never an
+  emit-and-hope frame).
+- Constructor-argument spilling (#5003) means `new`/`dup` never cross a
+  frame point, so `uninitialized_variable_info` entries are never needed —
+  the two designs compose.
+- Locals stay the single merged `frameLocals` list (unchanged model).
+
+**Receiver-slot typing follow-on.** With frames now legal mid-expression,
+`EList`/`ETuple`'s ArrayList receiver slots surfaced a locals-precision
+break: raw `LAstore` records `Object` in `storeTypes`, so an `ArrayList`
+receiver reloaded across a branchy element's new frame point failed
+verification ("Type Object … not assignable to ArrayList"). Both sites
+now use `LAstoreAs(…, "java/util/ArrayList")` — the exact mechanism
+`emitStore` already applies to every typed ref store (#3307). The
+remaining six raw `LAstore` sites are genuinely `Object`-typed temps.
+
+**Outcome.** `lyric-mcp --target jvm --features jvm`: the VerifyError
+class is gone; `mcp_tests.l` (26 cases) and `mcp_stdio_process_tests.l`
+pass; the one remaining failure is the pre-existing, separately-tracked
+erased-receiver J007 (#6304) — exactly #6346's stated acceptance
+boundary. New dual-target regression suite
+`stackmap_expr_branch_jvm_self_test.l` (9 cases: call-arg / ctor-arg /
+and-or / if-expr / arithmetic-operand / list-element / tuple-element /
+concat-operand / nested-call shapes), wired into CI's JVM self-test
+battery.
+
+**Verification.** Full JVM battery green: bitwise 10, aspect_weave 8,
+block_shadow 20, propagate_hoist 42, bare_func_ref 36, async_spawn 26,
+synthesized_method 15, self_method_call 10, out_inout 9, string_methods
+16, ffi_iface_impl 2, auto_ffi_jvm 39; jsonrpc JVM manifest 3/3;
+typechecker 364/364 (dotnet); new suite 9/9 on both targets; full
+`make lyric` rebuild clean.
+
+**Related:** #6346, #6356, #6304 (the remaining lyric-mcp blocker),
+#3044 (the first empty-stack hardening), #5003 (ctor-arg spilling),
+#3307 (`LAstoreAs` slot typing), docs/44 (JVM production-readiness
+audit this closes an item of).

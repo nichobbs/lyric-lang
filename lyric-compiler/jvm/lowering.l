@@ -11,6 +11,7 @@ package Jvm.Lowering
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Std.File as File
 import Std.Environment as Env
 import Std.ProcessCapture as ProcessCapture
@@ -1113,6 +1114,915 @@ func collectBranchTargets(insns: in List[LInsn]): Map[String, Bool] {
   targets
 }
 
+// ── B5c (#6346): label operand-stack simulation ──────────────────────────────
+//
+// The frame pass historically assumed an EMPTY operand stack at every branch
+// target — an invariant codegen upheld for branch-lowered RESULTS
+// (`lowerCmpExpr`/`BAnd`/`BOr`/if-expr slot materialisation) and for
+// constructor arguments (spilled before `new; dup`, #5003).  But a
+// branch-lowered SUBexpression evaluated while an ENCLOSING expression holds
+// operands on the stack — a comparison in call-argument position
+// (`take3("x", n > 2, …)`, the lyric-mcp `handleInitialize` class,
+// #6346/#6356), a branchy arithmetic operand, a branchy list-literal element,
+// a branchy String-concat operand — branches with those outer operands still
+// stacked, and the empty-stack frame is a VerifyError ("Inconsistent
+// stackmap frames").  Instead of spilling at every such site, the frame pass
+// simulates the operand stack over the LInsn stream and emits each
+// branch-target frame with the simulated stack.
+//
+// Model notes:
+//   • Locals stay the single merged `frameLocals` list (unchanged model);
+//     `LAload` pushes the same slot type the verifier itself derives from
+//     that merged list (`initialLocals` + first-store `storeTypes`), so the
+//     simulated stack is exactly what the verifier's own dataflow computes.
+//   • `new`/`dup` never cross a frame point (ctor args are spilled, #5003),
+//     so uninitialized_variable_info entries are never needed; `LNew`
+//     simulates as the initialized class type.
+//   • Exception-handler labels always take `[exception]` (JVM semantics
+//     discard the operand stack on handler entry) — same override as before.
+//   • Dead code (unreached labels / block starts) keeps the empty stack the
+//     old pass emitted.
+//   • Runs to a fixpoint (bounded passes): loop back-edges merge into an
+//     already-recorded head state; codegen emits statement-boundary loop
+//     heads (empty stacks), so convergence is immediate in practice.
+func simInsertAt(st: in List[VerifierType], idx: in Int, v: in VerifierType): Unit {
+  st.add(v)
+  var i = st.count - 1
+  while i > idx {
+    st[i] = st[i - 1]
+    i = i - 1
+  }
+  st[idx] = v
+}
+
+func vtIsCat2(t: in VerifierType): Bool {
+  match t {
+    case VLong -> true
+    case VDouble -> true
+    case _ -> false
+  }
+}
+
+// Join two verifier types at a control-flow merge.  Reference types
+// generalise to Object; a primitive-shape mismatch is a codegen bug and
+// panics loudly rather than emitting an unverifiable frame.
+func mergeVerifierType(a: in VerifierType, b: in VerifierType, site: in String): VerifierType {
+  match a {
+    case VNull -> match b { case VNull -> VNull; case VObject(c) -> VObject(className = c); case _ -> panic("Jvm.Lowering: stackmap merge null-vs-primitive at " + site) }
+    case VObject(x) -> match b { case VNull -> VObject(className = x); case VObject(y) -> if x == y { VObject(className = x) } else { VObject(className = "java/lang/Object") }; case _ -> panic("Jvm.Lowering: stackmap merge ref-vs-primitive at " + site) }
+    case VInteger -> match b { case VInteger -> VInteger; case _ -> panic("Jvm.Lowering: stackmap merge int-vs-other at " + site) }
+    case VLong -> match b { case VLong -> VLong; case _ -> panic("Jvm.Lowering: stackmap merge long-vs-other at " + site) }
+    case VFloat -> match b { case VFloat -> VFloat; case _ -> panic("Jvm.Lowering: stackmap merge float-vs-other at " + site) }
+    case VDouble -> match b { case VDouble -> VDouble; case _ -> panic("Jvm.Lowering: stackmap merge double-vs-other at " + site) }
+    case VTop -> VTop
+  }
+}
+
+func simCopyStack(src: in List[VerifierType]): List[VerifierType] {
+  val copied: List[VerifierType] = newList()
+  var i = 0
+  while i < src.count {
+    copied.add(src[i])
+    i = i + 1
+  }
+  copied
+}
+
+func simStacksEqual(a: in List[VerifierType], b: in List[VerifierType]): Bool {
+  if a.count != b.count {
+    return false
+  }
+  var i = 0
+  while i < a.count {
+    val same = match a[i] {
+      case VNull -> match b[i] { case VNull -> true; case _ -> false }
+      case VObject(x) -> match b[i] { case VObject(y) -> x == y; case _ -> false }
+      case VInteger -> match b[i] { case VInteger -> true; case _ -> false }
+      case VLong -> match b[i] { case VLong -> true; case _ -> false }
+      case VFloat -> match b[i] { case VFloat -> true; case _ -> false }
+      case VDouble -> match b[i] { case VDouble -> true; case _ -> false }
+      case VTop -> match b[i] { case VTop -> true; case _ -> false }
+    }
+    if not same {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+func simPop(st: in List[VerifierType], n: in Int, site: in String): Unit {
+  var i = 0
+  while i < n {
+    if st.count == 0 {
+      panic("Jvm.Lowering: stackmap simulation underflow at " + site)
+    }
+    st.removeAt(st.count - 1)
+    i = i + 1
+  }
+}
+
+// Element type of an array reference popped by aaload.
+func simAaloadElem(arr: in VerifierType): VerifierType {
+  match arr {
+    case VObject(desc) -> {
+      if Str.startsWith(desc, "[") {
+        val inner = Str.substring(desc, 1)
+        if Str.startsWith(inner, "L") and Str.endsWith(inner, ";") {
+          VObject(className = Str.substring(inner, 1, inner.length - 2))
+        } else {
+          if Str.startsWith(inner, "[") {
+            VObject(className = inner)
+          } else {
+            VObject(className = "java/lang/Object")
+          }
+        }
+      } else {
+        VObject(className = "java/lang/Object")
+      }
+    }
+    case _ -> VObject(className = "java/lang/Object")
+  }
+}
+
+// Mutate `st` with the operand-stack effect of one instruction.  Branch,
+// label, and pseudo instructions are handled by the caller (`simulateLabelStacks`).
+func simStackEffect(
+  st: in List[VerifierType], insn: in LInsn, slotTypes: in Map[Int, VerifierType], site: in String
+): Unit {
+  match insn {
+    case LNop -> ()
+    case LIinc(_, _) -> ()
+    case LIconst(_) -> st.add(VInteger)
+    case LLconst(_) -> st.add(VLong)
+    case LFconst(_) -> st.add(VFloat)
+    case LDconst(_) -> st.add(VDouble)
+    case LPushString(_) -> st.add(VObject(className = "java/lang/String"))
+    case LAconstNull -> st.add(VNull)
+    case LIload(_) -> st.add(VInteger)
+    case LLload(_) -> st.add(VLong)
+    case LFload(_) -> st.add(VFloat)
+    case LDload(_) -> st.add(VDouble)
+    case LAload(s) -> {
+      match mapGet(slotTypes, s) {
+        case Some(vt) -> match vt { case VObject(c) -> st.add(VObject(className = c)); case VNull -> st.add(VNull); case _ -> st.add(VObject(className = "java/lang/Object")) }
+        case None -> st.add(VObject(className = "java/lang/Object"))
+      }
+    }
+    case LIstore(_) -> simPop(st, 1, site)
+    case LLstore(_) -> simPop(st, 1, site)
+    case LFstore(_) -> simPop(st, 1, site)
+    case LDstore(_) -> simPop(st, 1, site)
+    case LAstore(_) -> simPop(st, 1, site)
+    case LAstoreAs(_, _) -> simPop(st, 1, site)
+    case LPop -> simPop(st, 1, site)
+    case LPop2 -> {
+      if st.count > 0 and vtIsCat2(st[st.count - 1]) {
+        simPop(st, 1, site)
+      } else {
+        simPop(st, 2, site)
+      }
+    }
+    case LDup -> {
+      if st.count == 0 {
+        panic("Jvm.Lowering: dup on empty simulated stack at " + site)
+      }
+      st.add(st[st.count - 1])
+    }
+    case LDup_x1 -> {
+      if st.count < 2 {
+        panic("Jvm.Lowering: dup_x1 on short simulated stack at " + site)
+      }
+      simInsertAt(st, st.count - 2, st[st.count - 1])
+    }
+    case LDup_x2 -> {
+      if st.count < 2 {
+        panic("Jvm.Lowering: dup_x2 on short simulated stack at " + site)
+      }
+      if vtIsCat2(st[st.count - 2]) {
+        simInsertAt(st, st.count - 2, st[st.count - 1])
+      } else {
+        if st.count < 3 {
+          panic("Jvm.Lowering: dup_x2 form-1 on short simulated stack at " + site)
+        }
+        simInsertAt(st, st.count - 3, st[st.count - 1])
+      }
+    }
+    case LIadd -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LIsub -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LImul -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LIdiv -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LIrem -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LIand -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LIor -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LIxor -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LIshl -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LIshr -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LIushr -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LIneg -> ()
+    case LLadd -> {
+      simPop(st, 2, site)
+      st.add(VLong)
+    }
+    case LLsub -> {
+      simPop(st, 2, site)
+      st.add(VLong)
+    }
+    case LLmul -> {
+      simPop(st, 2, site)
+      st.add(VLong)
+    }
+    case LLdiv -> {
+      simPop(st, 2, site)
+      st.add(VLong)
+    }
+    case LLrem -> {
+      simPop(st, 2, site)
+      st.add(VLong)
+    }
+    case LLand -> {
+      simPop(st, 2, site)
+      st.add(VLong)
+    }
+    case LLor -> {
+      simPop(st, 2, site)
+      st.add(VLong)
+    }
+    case LLxor -> {
+      simPop(st, 2, site)
+      st.add(VLong)
+    }
+    case LLshl -> {
+      simPop(st, 2, site)
+      st.add(VLong)
+    }
+    case LLshr -> {
+      simPop(st, 2, site)
+      st.add(VLong)
+    }
+    case LLushr -> {
+      simPop(st, 2, site)
+      st.add(VLong)
+    }
+    case LLneg -> ()
+    case LFadd -> {
+      simPop(st, 2, site)
+      st.add(VFloat)
+    }
+    case LFsub -> {
+      simPop(st, 2, site)
+      st.add(VFloat)
+    }
+    case LFmul -> {
+      simPop(st, 2, site)
+      st.add(VFloat)
+    }
+    case LFdiv -> {
+      simPop(st, 2, site)
+      st.add(VFloat)
+    }
+    case LFrem -> {
+      simPop(st, 2, site)
+      st.add(VFloat)
+    }
+    case LFneg -> ()
+    case LDadd -> {
+      simPop(st, 2, site)
+      st.add(VDouble)
+    }
+    case LDsub -> {
+      simPop(st, 2, site)
+      st.add(VDouble)
+    }
+    case LDmul -> {
+      simPop(st, 2, site)
+      st.add(VDouble)
+    }
+    case LDdiv -> {
+      simPop(st, 2, site)
+      st.add(VDouble)
+    }
+    case LDrem -> {
+      simPop(st, 2, site)
+      st.add(VDouble)
+    }
+    case LDneg -> ()
+    case LLcmp -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LFcmpl -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LFcmpg -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LDcmpl -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LDcmpg -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LI2l -> {
+      simPop(st, 1, site)
+      st.add(VLong)
+    }
+    case LI2d -> {
+      simPop(st, 1, site)
+      st.add(VDouble)
+    }
+    case LI2f -> {
+      simPop(st, 1, site)
+      st.add(VFloat)
+    }
+    case LI2b -> ()
+    case LI2c -> ()
+    case LI2s -> ()
+    case LL2i -> {
+      simPop(st, 1, site)
+      st.add(VInteger)
+    }
+    case LL2f -> {
+      simPop(st, 1, site)
+      st.add(VFloat)
+    }
+    case LL2d -> {
+      simPop(st, 1, site)
+      st.add(VDouble)
+    }
+    case LF2i -> {
+      simPop(st, 1, site)
+      st.add(VInteger)
+    }
+    case LF2l -> {
+      simPop(st, 1, site)
+      st.add(VLong)
+    }
+    case LF2d -> {
+      simPop(st, 1, site)
+      st.add(VDouble)
+    }
+    case LD2i -> {
+      simPop(st, 1, site)
+      st.add(VInteger)
+    }
+    case LD2l -> {
+      simPop(st, 1, site)
+      st.add(VLong)
+    }
+    case LD2f -> {
+      simPop(st, 1, site)
+      st.add(VFloat)
+    }
+    case LGetfield(_, _, t) -> {
+      simPop(st, 1, site)
+      st.add(jvmToVerifier(t))
+    }
+    case LPutfield(_, _, _) -> simPop(st, 2, site)
+    case LGetstatic(_, _, t) -> st.add(jvmToVerifier(t))
+    case LPutstatic(_, _, _) -> simPop(st, 1, site)
+    case LInvokevirtual(_, _, params, ret) -> {
+      simPop(st, params.count + 1, site)
+      match ret {
+        case JVoid -> ()
+        case _ -> st.add(jvmToVerifier(ret))
+      }
+    }
+    case LInvokespecial(_, _, params, ret) -> {
+      simPop(st, params.count + 1, site)
+      match ret {
+        case JVoid -> ()
+        case _ -> st.add(jvmToVerifier(ret))
+      }
+    }
+    case LInvokeinterface(_, _, params, ret, _) -> {
+      simPop(st, params.count + 1, site)
+      match ret {
+        case JVoid -> ()
+        case _ -> st.add(jvmToVerifier(ret))
+      }
+    }
+    case LInvokestatic(_, _, params, ret) -> {
+      simPop(st, params.count, site)
+      match ret {
+        case JVoid -> ()
+        case _ -> st.add(jvmToVerifier(ret))
+      }
+    }
+    case LInvokestaticIface(_, _, params, ret) -> {
+      simPop(st, params.count, site)
+      match ret {
+        case JVoid -> ()
+        case _ -> st.add(jvmToVerifier(ret))
+      }
+    }
+    case LNew(cls) -> st.add(VObject(className = cls))
+    case LCheckcast(cls) -> {
+      simPop(st, 1, site)
+      st.add(VObject(className = cls))
+    }
+    case LInstanceof(_) -> {
+      simPop(st, 1, site)
+      st.add(VInteger)
+    }
+    case LAnewarray(cls) -> {
+      simPop(st, 1, site)
+      if Str.startsWith(cls, "[") {
+        st.add(VObject(className = "[" + cls))
+      } else {
+        st.add(VObject(className = "[L" + cls + ";"))
+      }
+    }
+    case LNewarray(code) -> {
+      simPop(st, 1, site)
+      val desc = if code == 4 {
+        "[Z"
+      } else {
+        if code == 5 {
+          "[C"
+        } else {
+          if code == 6 {
+            "[F"
+          } else {
+            if code == 7 {
+              "[D"
+            } else {
+              if code == 8 {
+                "[B"
+              } else {
+                if code == 9 {
+                  "[S"
+                } else {
+                  if code == 10 {
+                    "[I"
+                  } else {
+                    "[J"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      st.add(VObject(className = desc))
+    }
+    case LArraylength -> {
+      simPop(st, 1, site)
+      st.add(VInteger)
+    }
+    case LIaload -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LBaload -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LCaload -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LSaload -> {
+      simPop(st, 2, site)
+      st.add(VInteger)
+    }
+    case LLaload -> {
+      simPop(st, 2, site)
+      st.add(VLong)
+    }
+    case LFaload -> {
+      simPop(st, 2, site)
+      st.add(VFloat)
+    }
+    case LDaload -> {
+      simPop(st, 2, site)
+      st.add(VDouble)
+    }
+    case LAaload -> {
+      simPop(st, 1, site)
+      val arr = if st.count > 0 { st[st.count - 1] } else { VObject(className = "java/lang/Object") }
+      simPop(st, 1, site)
+      st.add(simAaloadElem(arr))
+    }
+    case LIastore -> simPop(st, 3, site)
+    case LLastore -> simPop(st, 3, site)
+    case LFastore -> simPop(st, 3, site)
+    case LDastore -> simPop(st, 3, site)
+    case LAastore -> simPop(st, 3, site)
+    case LBastore -> simPop(st, 3, site)
+    case LCastore -> simPop(st, 3, site)
+    case LSastore -> simPop(st, 3, site)
+    case LBoxInt -> {
+      simPop(st, 1, site)
+      st.add(VObject(className = "java/lang/Integer"))
+    }
+    case LBoxLong -> {
+      simPop(st, 1, site)
+      st.add(VObject(className = "java/lang/Long"))
+    }
+    case LBoxFloat -> {
+      simPop(st, 1, site)
+      st.add(VObject(className = "java/lang/Float"))
+    }
+    case LBoxDouble -> {
+      simPop(st, 1, site)
+      st.add(VObject(className = "java/lang/Double"))
+    }
+    case LBoxBool -> {
+      simPop(st, 1, site)
+      st.add(VObject(className = "java/lang/Boolean"))
+    }
+    case LBoxByte -> {
+      simPop(st, 1, site)
+      st.add(VObject(className = "java/lang/Byte"))
+    }
+    case LBoxChar -> {
+      simPop(st, 1, site)
+      st.add(VObject(className = "java/lang/Character"))
+    }
+    case LBoxShort -> {
+      simPop(st, 1, site)
+      st.add(VObject(className = "java/lang/Short"))
+    }
+    case LUnboxInt -> {
+      simPop(st, 1, site)
+      st.add(VInteger)
+    }
+    case LUnboxBool -> {
+      simPop(st, 1, site)
+      st.add(VInteger)
+    }
+    case LUnboxByte -> {
+      simPop(st, 1, site)
+      st.add(VInteger)
+    }
+    case LUnboxChar -> {
+      simPop(st, 1, site)
+      st.add(VInteger)
+    }
+    case LUnboxShort -> {
+      simPop(st, 1, site)
+      st.add(VInteger)
+    }
+    case LUnboxLong -> {
+      simPop(st, 1, site)
+      st.add(VLong)
+    }
+    case LUnboxFloat -> {
+      simPop(st, 1, site)
+      st.add(VFloat)
+    }
+    case LUnboxDouble -> {
+      simPop(st, 1, site)
+      st.add(VDouble)
+    }
+    case _ -> ()
+  }
+}
+
+// Record `state` as the entry stack for `label`, merging with any prior
+// recording.  Returns true when the recorded state changed.
+func simRecordLabelState(
+  labelStates: in Map[String, List[VerifierType]],
+  label: in String,
+  state: in List[VerifierType],
+  site: in String,
+): Bool {
+  match mapGet(labelStates, label) {
+    case None -> {
+      labelStates.add(label, simCopyStack(state))
+      true
+    }
+    case Some(prev) -> {
+      if prev.count != state.count {
+        panic(
+          "Jvm.Lowering: stackmap simulation depth mismatch at label '" + label + "' in " + site + " (" + toString(prev.count) +
+            " vs " +
+            toString(state.count) +
+            ")"
+        )
+      }
+      var changed = false
+      val merged: List[VerifierType] = newList()
+      var i = 0
+      while i < prev.count {
+        val m = mergeVerifierType(prev[i], state[i], site + ":" + label)
+        merged.add(m)
+        i = i + 1
+      }
+      if not simStacksEqual(merged, prev) {
+        labelStates.add(label, merged)
+        changed = true
+      }
+      changed
+    }
+  }
+}
+
+// Simulate the operand stack over `insns`, producing the entry stack for
+// every label.  `handlerTargets` maps handler labels to their catch class
+// ("" = catch-all -> Throwable); handler entries always take [exception].
+func simulateLabelStacks(
+  insns: in List[LInsn],
+  handlerTargets: in Map[String, String],
+  slotTypes: in Map[Int, VerifierType],
+  site: in String,
+): Map[String, List[VerifierType]] {
+  val labelStates: Map[String, List[VerifierType]] = newMap()
+  var pass = 0
+  var changed = true
+  while changed and pass < 8 {
+    changed = false
+    var cur: List[VerifierType] = newList()
+    var reachable = true
+    var i = 0
+    while i < insns.count {
+      match insns[i] {
+        case LLabel(l) -> {
+          match mapGet(handlerTargets, l) {
+            case Some(cc) -> {
+              val ex = if cc == "" { "java/lang/Throwable" } else { cc }
+              cur = newList()
+              cur.add(VObject(className = ex))
+              if simRecordLabelState(labelStates, l, cur, site) {
+                changed = true
+              }
+              reachable = true
+            }
+            case None -> {
+              if reachable {
+                if simRecordLabelState(labelStates, l, cur, site) {
+                  changed = true
+                }
+                cur = simCopyStack(match mapGet(labelStates, l) { case Some(s2) -> s2; case None -> cur })
+              } else {
+                match mapGet(labelStates, l) {
+                  case Some(s2) -> {
+                    cur = simCopyStack(s2)
+                  }
+                  case None -> {
+                    cur = newList()
+                    if simRecordLabelState(labelStates, l, cur, site) {
+                      changed = true
+                    }
+                  }
+                }
+                reachable = true
+              }
+            }
+          }
+        }
+        case LLineMarker(_, _) -> ()
+        case LTryCatch(_, _, _, _) -> ()
+        case LGoto(l) -> {
+          if reachable {
+            if simRecordLabelState(labelStates, l, cur, site) {
+              changed = true
+            }
+            reachable = false
+          }
+        }
+        case LIfeq(l) -> {
+          if reachable {
+            simPop(cur, 1, site)
+            if simRecordLabelState(labelStates, l, cur, site) {
+              changed = true
+            }
+          }
+        }
+        case LIfne(l) -> {
+          if reachable {
+            simPop(cur, 1, site)
+            if simRecordLabelState(labelStates, l, cur, site) {
+              changed = true
+            }
+          }
+        }
+        case LIflt(l) -> {
+          if reachable {
+            simPop(cur, 1, site)
+            if simRecordLabelState(labelStates, l, cur, site) {
+              changed = true
+            }
+          }
+        }
+        case LIfge(l) -> {
+          if reachable {
+            simPop(cur, 1, site)
+            if simRecordLabelState(labelStates, l, cur, site) {
+              changed = true
+            }
+          }
+        }
+        case LIfgt(l) -> {
+          if reachable {
+            simPop(cur, 1, site)
+            if simRecordLabelState(labelStates, l, cur, site) {
+              changed = true
+            }
+          }
+        }
+        case LIfle(l) -> {
+          if reachable {
+            simPop(cur, 1, site)
+            if simRecordLabelState(labelStates, l, cur, site) {
+              changed = true
+            }
+          }
+        }
+        case LIfnull(l) -> {
+          if reachable {
+            simPop(cur, 1, site)
+            if simRecordLabelState(labelStates, l, cur, site) {
+              changed = true
+            }
+          }
+        }
+        case LIfnonnull(l) -> {
+          if reachable {
+            simPop(cur, 1, site)
+            if simRecordLabelState(labelStates, l, cur, site) {
+              changed = true
+            }
+          }
+        }
+        case LIfIcmpeq(l) -> {
+          if reachable {
+            simPop(cur, 2, site)
+            if simRecordLabelState(labelStates, l, cur, site) {
+              changed = true
+            }
+          }
+        }
+        case LIfIcmpne(l) -> {
+          if reachable {
+            simPop(cur, 2, site)
+            if simRecordLabelState(labelStates, l, cur, site) {
+              changed = true
+            }
+          }
+        }
+        case LIfIcmplt(l) -> {
+          if reachable {
+            simPop(cur, 2, site)
+            if simRecordLabelState(labelStates, l, cur, site) {
+              changed = true
+            }
+          }
+        }
+        case LIfIcmpge(l) -> {
+          if reachable {
+            simPop(cur, 2, site)
+            if simRecordLabelState(labelStates, l, cur, site) {
+              changed = true
+            }
+          }
+        }
+        case LIfIcmpgt(l) -> {
+          if reachable {
+            simPop(cur, 2, site)
+            if simRecordLabelState(labelStates, l, cur, site) {
+              changed = true
+            }
+          }
+        }
+        case LIfIcmple(l) -> {
+          if reachable {
+            simPop(cur, 2, site)
+            if simRecordLabelState(labelStates, l, cur, site) {
+              changed = true
+            }
+          }
+        }
+        case LIfAcmpeq(l) -> {
+          if reachable {
+            simPop(cur, 2, site)
+            if simRecordLabelState(labelStates, l, cur, site) {
+              changed = true
+            }
+          }
+        }
+        case LIfAcmpne(l) -> {
+          if reachable {
+            simPop(cur, 2, site)
+            if simRecordLabelState(labelStates, l, cur, site) {
+              changed = true
+            }
+          }
+        }
+        case LTableswitch(_, _, dl, caseLabels) -> {
+          if reachable {
+            simPop(cur, 1, site)
+            if simRecordLabelState(labelStates, dl, cur, site) {
+              changed = true
+            }
+            var ci = 0
+            while ci < caseLabels.count {
+              if simRecordLabelState(labelStates, caseLabels[ci], cur, site) {
+                changed = true
+              }
+              ci = ci + 1
+            }
+            reachable = false
+          }
+        }
+        case LLookupswitch(dl, pairs) -> {
+          if reachable {
+            simPop(cur, 1, site)
+            if simRecordLabelState(labelStates, dl, cur, site) {
+              changed = true
+            }
+            var ci = 0
+            while ci < pairs.count {
+              if simRecordLabelState(labelStates, pairs[ci].label, cur, site) {
+                changed = true
+              }
+              ci = ci + 1
+            }
+            reachable = false
+          }
+        }
+        case LReturn -> {
+          reachable = false
+          cur = newList()
+        }
+        case LIreturn -> {
+          reachable = false
+          cur = newList()
+        }
+        case LLreturn -> {
+          reachable = false
+          cur = newList()
+        }
+        case LFreturn -> {
+          reachable = false
+          cur = newList()
+        }
+        case LDreturn -> {
+          reachable = false
+          cur = newList()
+        }
+        case LAreturn -> {
+          reachable = false
+          cur = newList()
+        }
+        case LAthrow -> {
+          reachable = false
+          cur = newList()
+        }
+        case _ -> {
+          if reachable {
+            simStackEffect(cur, insns[i], slotTypes, site)
+          }
+        }
+      }
+      i = i + 1
+    }
+    pass = pass + 1
+  }
+  if changed {
+    panic("Jvm.Lowering: stackmap simulation failed to converge in " + site)
+  }
+  labelStates
+}
+
 // ── Lowering ──────────────────────────────────────────────────────────────────
 // Infer the minimum maxLocals needed by scanning the instruction list for the
 // highest slot index used by any load/store instruction.
@@ -1411,6 +2321,40 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
     }
   }
 
+  // #6346: simulate the operand stack over the LInsn stream so each
+  // branch-target frame below carries the true stack (historically assumed
+  // empty; see the B5c simulation block above for the model).  `slotTypes`
+  // mirrors the merged `frameLocals` view per slot so `LAload` pushes what
+  // the verifier itself derives from the locals.
+  val slotTypes: Map[Int, VerifierType] = newMap()
+  var stSlot = 0
+  var stIdx = 0
+  while stIdx < initialLocals.count {
+    slotTypes.add(stSlot, initialLocals[stIdx])
+    match initialLocals[stIdx] {
+      case VLong -> {
+        stSlot = stSlot + 2
+      }
+      case VDouble -> {
+        stSlot = stSlot + 2
+      }
+      case _ -> {
+        stSlot = stSlot + 1
+      }
+    }
+    stIdx = stIdx + 1
+  }
+  val stEntries = mapEntries(storeTypes)
+  var stEi = 0
+  while stEi < stEntries.count {
+    match mapGet(slotTypes, stEntries[stEi].key) {
+      case None -> slotTypes.add(stEntries[stEi].key, stEntries[stEi].value)
+      case Some(_) -> ()
+    }
+    stEi = stEi + 1
+  }
+  val labelStacks = simulateLabelStacks(f.insns, handlerTargets, slotTypes, f.name)
+
   // Walk the LInsn list in order; for each LLabel that is a branch target,
   // emit a full_frame (255) StackMapTable entry.
   val branchTargets = collectBranchTargets(f.insns)
@@ -1439,7 +2383,9 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
   val frameOffs: List[Int] = newList()
   // distinct offsets, ascending
   val frameEx: List[String] = newList()
-  // "" = empty stack; else exception class
+  // "" = simulated stack (frameStacks); else exception class
+  val frameStacks: List[List[VerifierType]] = newList()
+  // per-offset simulated operand stack (#6346); ignored when frameEx != ""
   val seenOff: Map[Int, Int] = newMap()
   // offset -> index into frameOffs
 
@@ -1454,16 +2400,24 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
                 case Some(cc) -> if cc == "" { "java/lang/Throwable" } else { cc }
                 case None -> ""
               }
+              val lblStack = match mapGet(labelStacks, l) { case Some(s2) -> simCopyStack(s2); case None -> newList() }
               match mapGet(seenOff, off) {
                 case None -> {
                   seenOff.add(off, frameOffs.count)
                   frameOffs.add(off)
                   frameEx.add(ex)
+                  frameStacks.add(lblStack)
                 }
                 case Some(idx) -> {
                   // Duplicate offset: a handler (non-empty stack) frame wins.
                   if ex != "" {
                     frameEx[idx] = ex
+                  } else {
+                    // Same offset, same program point: co-located labels must
+                    // agree; prefer a recorded non-empty simulated stack.
+                    if frameStacks[idx].count == 0 and lblStack.count > 0 {
+                      frameStacks[idx] = lblStack
+                    }
                   }
                 }
               }
@@ -1487,6 +2441,8 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
       seenOff.add(bso, frameOffs.count)
       frameOffs.add(bso)
       frameEx.add("")
+      val emptyStack: List[VerifierType] = newList()
+      frameStacks.add(emptyStack)
     }
     bsi = bsi + 1
   }
@@ -1498,14 +2454,17 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
   while a < frameOffs.count {
     val ko = frameOffs[a]
     val ke = frameEx[a]
+    val ks = frameStacks[a]
     var b = a - 1
     while b >= 0 and frameOffs[b] > ko {
       frameOffs[b + 1] = frameOffs[b]
       frameEx[b + 1] = frameEx[b]
+      frameStacks[b + 1] = frameStacks[b]
       b = b - 1
     }
     frameOffs[b + 1] = ko
     frameEx[b + 1] = ke
+    frameStacks[b + 1] = ks
     a = a + 1
   }
 
@@ -1530,8 +2489,16 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
       // 1 stack item: the caught exception
       emitVerifierTypeBc(VObject(className = frameEx[fi2]), pool, smBuf)
     } else {
-      writerU2(smBuf, 0)
-      // empty stack
+      // #6346: the simulated operand stack at this frame point (empty for
+      // statement-boundary targets — the historical common case — non-empty
+      // when a branch-lowered subexpression ran under enclosing operands).
+      val fst = frameStacks[fi2]
+      writerU2(smBuf, fst.count)
+      var fsi = 0
+      while fsi < fst.count {
+        emitVerifierTypeBc(fst[fsi], pool, smBuf)
+        fsi = fsi + 1
+      }
     }
     smCount = smCount + 1
     prevOffset = off

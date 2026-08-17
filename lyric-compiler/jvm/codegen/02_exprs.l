@@ -1526,7 +1526,11 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       val tInitPs: List[JvmType] = newList()
       insns.add(LInvokespecial(owner = "java/util/ArrayList", name = "<init>", params = tInitPs, ret = JVoid))
       val tupSlot = allocSlot(ctx, "__tuple_" + freshLabel(ctx), JRef(className = "java/util/ArrayList"))
-      insns.add(LAstore(slot = tupSlot))
+      // LAstoreAs (not LAstore) so the frame pass types this slot ArrayList,
+      // not Object — a branchy element expression now puts a StackMapTable
+      // frame between the reload and `ArrayList.add` (#6346), and an
+      // Object-framed receiver fails verification there.
+      insns.add(LAstoreAs(slot = tupSlot, className = "java/util/ArrayList"))
       var ti = 0
       while ti < exprs.count {
         insns.add(LAload(slot = tupSlot))
@@ -1550,7 +1554,8 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       val alInitPs: List[JvmType] = newList()
       insns.add(LInvokespecial(owner = "java/util/ArrayList", name = "<init>", params = alInitPs, ret = JVoid))
       val listSlot = allocSlot(ctx, "__list_" + freshLabel(ctx), JRef(className = "java/util/ArrayList"))
-      insns.add(LAstore(slot = listSlot))
+      // Same #6346 rationale as the tuple slot above.
+      insns.add(LAstoreAs(slot = listSlot, className = "java/util/ArrayList"))
       var i = 0
       while i < exprs.count {
         insns.add(LAload(slot = listSlot))
