@@ -30832,3 +30832,84 @@ battery green.
 **Related:** #6505 (closed by this), #6504/D-progress-781 (the aspect
 analog), #6316 (the include-alias exclusion that makes this sound),
 docs/58 (D121), #5289/#5284 (include semantics the exclusion protects).
+
+## D-progress-791 — Single-file builds resolve workspace-member imports against already-built member DLLs (#6503 step 1)
+
+**Date:** 2026-08-18.  **Status:** shipped.
+
+**Problem.**  A single file inside the workspace importing a member
+library (`examples/docker_client.l` → `import Lyric.Docker`) compiled
+with NO dependency contribution at all: `findNearestManifest`
+deliberately walks past the virtual `[workspace]`-only root (no
+`[package]` section), the D123 single-file leg fell back to the
+no-contribution path, the checker typed every `Docker.*` reference
+leniently, and codegen emitted unresolved-call fallbacks — a
+"successful" build that crashes `InvalidProgramException` at runtime.
+This is the context behind #6503's step 1: restored TYPE names were
+"not annotatable" only because nothing was restored at all (a real
+path-dependency project resolves both values and type annotations
+correctly — verified).
+
+**What shipped.**
+
+- `Lyric.Cli.resolveWorkspaceImportDeps` (cli/workspace_builder.l):
+  matches a single-file build's imports against workspace members —
+  exact member-NAME match first (so `import Lyric.Docker` resolves
+  even though `Lyric.*` is the reserved compiler head; ecosystem
+  members legitimately use it), then a member-`[project.packages]`-key
+  index for non-bundle-resolved heads (so `import Mq` finds the member
+  named `Lyric.Mq`; the index is built at most once per call).
+  `Std.*` / `Lyric.*` / `Msil.*` / `Jvm.*` heads without an exact
+  member match never fall through to the index — they resolve through
+  the compiler/stdlib bundles.
+- Matched members restore their already-built DLL (plus transitive dep
+  DLLs and template sources, the same machinery `{ workspace = true }`
+  deps use).  An UNBUILT matched member fails the build loudly with
+  the exact `lyric build --manifest …` command — D123's "single-file
+  mode never triggers an implicit restore" contract is preserved, and
+  the silent runtime-invalid output is replaced by an actionable
+  error.
+- Wired into the MANIFESTLESS single-file leg only
+  (`emitSingleFileWithWorkspaceMembers`, for sources whose nearest
+  manifest is the virtual workspace root).  The manifest leg keeps the
+  explicit model — dependencies come from the manifest's
+  `[dependencies]` and own packages compile from source — after the
+  #6520 review (and a CI failure on lyric-web's in-tree test runners,
+  whose `import Web` matched their own enclosing member) showed
+  implicit member resolution there would weaken the manifest as the
+  single source of truth.  JVM parity matches the manifest leg's
+  convention: member packages ride the bundled compile (#6136),
+  restored DLLs on MSIL.
+- The workspace root's `[workspace] exclude` gains `lyric-compiler`:
+  the compiler tree's lyric.toml exists for the CLI-bundle build, and
+  left discoverable the "Lyric.Cli" member hijacked compiler-package
+  imports in self-tests into restoring a stale CLI bundle DLL.
+- CI's examples sweep builds `lyric-docker` before the sweep, so
+  `examples/docker_client.l` is now genuinely type-checked against the
+  real library (its `e.statusCode` / `e.details` reads — #6503's
+  motivating miscompile — verify clean with no source changes).
+
+**Verification.**  Four new `cli_build_self_test.l` unit cases against
+a synthetic mini-workspace (package-key fallback, exact reserved-head
+member match, unbuilt-member loud failure + bundle-head skip,
+alreadySeen dedup) — 81/81.  End to end: the #6503 annotation repro
+(`val e: Docker.DockerError = …`) builds, runs rc=0, and the consumer
+DLL's reads ilverify clean; the unbuilt-member probe prints the loud
+error.  One residual finding filed as #6519 (restored-record ctor
+signatures type `Option[T]` fields as the bare payload — pre-existing,
+newly reachable).
+
+**Follow-ups.**  #6503 step 3 (the loud EMember-tail conversion) is
+now unblocked.  `lyric test`'s single-file leg keeps its existing
+behavior (#5341 tracks its dep resolution).  A bare `[workspace]`
+header with no keys is not recognized as a workspace root
+(`assembleWorkspace` keys off section entries) — latent UX quirk noted
+in the self-test.  The #6518 review's JVM-mirror suggestion for the
+wire-template tests is intentionally deferred: the collection fix is
+shared front-end machinery and the MSIL project-bridge test pins it;
+a JVM multi-package harness case can follow with the jvm-bridge test
+infrastructure.
+
+**Related:** #6503 (step 1 closed by this; steps 2–3 follow-ups),
+#6519 (new), D123 (the single-file contribution gate), D073/docs/38
+(workspace model), #6136 (JVM dep bundling parity), #5341, docs/45.

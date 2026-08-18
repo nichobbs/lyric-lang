@@ -361,6 +361,14 @@ jobs:
           # Lyric.Stdlib bundle deployed above, so the per-package userlib/ stdlib
           # staging is no longer needed (and would shadow the bundle via
           # copyRuntimeDepsBeside) — removed.
+          # #6503: single-file builds inside the workspace now resolve
+          # imports of workspace members against ALREADY-BUILT member DLLs
+          # (and fail loudly on unbuilt ones).  examples/docker_client.l
+          # imports Lyric.Docker, so build that member first — this also
+          # upgrades the example from leniently-compiled (runtime-invalid,
+          # the pre-#6503 state) to genuinely type-checked against the
+          # real library.
+          "$lyric_bin" build --manifest lyric-docker/lyric.toml
           for ex in examples/*.l; do
             # `@proof_required` files are verifier-only — they have no
             # `func main` so `lyric build` doesn't apply.  The AOT

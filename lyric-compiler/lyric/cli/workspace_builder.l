@@ -869,3 +869,166 @@ pub func restoreMavenClasspath(saved: in Option[String]): Unit {
     case None -> ()
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §5. Workspace-member import resolution for single-file builds (#6503).
+// ─────────────────────────────────────────────────────────────────────────────
+/// Result of `resolveWorkspaceImportDeps` — the workspace members a
+/// single-file build's imports name, resolved to already-built DLLs.
+pub record WorkspaceImportDeps {
+  /// "memberName\tdllPath" entries (same shape as
+  /// `ResolvedManifestDeps.restoredDlls`).
+  restoredDlls: List[String]
+  /// The matched members' source packages, for cross-package aspect/wire
+  /// template collection (same shape as `ResolvedManifestDeps.depTemplateSrcs`).
+  depTemplateSrcs: List[ProjectPackage]
+  /// True when an import matched a workspace member whose DLL is not built —
+  /// the build must fail loudly (with the member named in stderr) rather than
+  /// compile the import leniently into runtime-invalid code.
+  hadUnbuiltMember: Bool
+}
+
+func emptyWorkspaceImportDeps(): WorkspaceImportDeps {
+  WorkspaceImportDeps(restoredDlls = newList(), depTemplateSrcs = newList(), hadUnbuiltMember = false)
+}
+
+/// True for package heads that resolve through the compiler / stdlib
+/// bundles, never through workspace members — skipped by the
+/// package-key fallback below.  (An EXACT member-name match still wins for
+/// `Lyric.*` ecosystem members like `Lyric.Docker` / `Lyric.Web`.)
+func isBundleResolvedHead(name: in String): Bool {
+  name == "Std" or Str.startsWith(name, "Std.") or name == "Lyric" or Str.startsWith(name, "Lyric.") or name == "Msil" or
+    Str.startsWith(name, "Msil.") or
+    name == "Jvm" or
+    Str.startsWith(name, "Jvm.")
+}
+
+/// Build the package-name → member index for the fallback matching: each
+/// member manifest's `[project.packages]` keys, read ONCE per resolution
+/// call (a per-import scan would re-read every member manifest per
+/// unresolvable import).  Entries are "packageName\tmemberIndex".
+func buildMemberPackageIndex(ctx: in Ws.WorkspaceContext): Map[String, Int] {
+  val index: Map[String, Int] = newMap()
+  var mi = 0
+  while mi < ctx.members.count {
+    val member = ctx.members[mi]
+    val mToml = Path.join(member.dir, "lyric.toml")
+    match File.readText(mToml) {
+      case Err(_) -> ()
+      case Ok(mText) -> {
+        match Mf.parseManifest(mText, mToml) {
+          case Err(_) -> ()
+          case Ok(mMf) -> {
+            match mMf.project {
+              case None -> ()
+              case Some(proj) -> {
+                var pi = 0
+                while pi < proj.packages.count {
+                  if not index.containsKey(proj.packages[pi].name) {
+                    index.add(proj.packages[pi].name, mi)
+                  }
+                  pi += 1
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    mi += 1
+  }
+  index
+}
+
+/// #6503: resolve a single-file build's imports against the enclosing
+/// workspace's MEMBERS, using already-built member DLLs only.
+///
+/// Before this, a single file inside the workspace importing a member
+/// library (`examples/docker_client.l` → `import Lyric.Docker`) compiled
+/// with NO dependency contribution at all: the checker typed every
+/// `Docker.*` reference leniently, codegen emitted unresolved-call
+/// fallbacks, and the "successful" build crashed with
+/// `InvalidProgramException` at runtime — the silent-miscompile class
+/// #6503 documents.  Matching imports to members makes such builds
+/// compile against the real restored types (annotations included).
+///
+/// Deliberately does NOT build members implicitly: D123's single-file
+/// contract ("single-file mode never triggers an implicit restore") is
+/// preserved by requiring the member DLL to already exist — an unbuilt
+/// matched member fails the build loudly with the exact command to run,
+/// which is strictly better than the silent runtime-invalid output it
+/// replaces.  `alreadySeen` carries dep names the nearby manifest already
+/// resolved so a declared dependency is never double-restored.
+pub func resolveWorkspaceImportDeps(
+  sourceText: in String, sourceDir: in String, alreadySeen: in List[String]
+): WorkspaceImportDeps {
+  val ctx = match Ws.findWorkspaceRoot(sourceDir) { case None -> return emptyWorkspaceImportDeps(); case Some(c) -> c }
+  val restored: List[String] = newList()
+  val templates: List[ProjectPackage] = newList()
+  var hadUnbuilt = false
+  val seen: List[String] = newList()
+  var ai = 0
+  while ai < alreadySeen.count {
+    seen.add(alreadySeen[ai])
+    ai += 1
+  }
+  val importNames = importedPackageNames(sourceText)
+  // Lazily built on the first fallback-eligible import: exact member-name
+  // matches never need it, and most single-file builds import nothing that
+  // reaches the fallback.
+  var pkgIndexBuilt = false
+  var pkgIndex: Map[String, Int] = newMap()
+  var ii = 0
+  while ii < importNames.count {
+    val name = importNames[ii]
+    if not (name == "Std" or Str.startsWith(name, "Std.")) {
+      var memberOpt: Option[Ws.WorkspaceMember] = Ws.findMember(ctx.members, name)
+      match memberOpt {
+        case Some(_) -> ()
+        case None -> {
+          if not isBundleResolvedHead(name) {
+            if not pkgIndexBuilt {
+              pkgIndex = buildMemberPackageIndex(ctx)
+              pkgIndexBuilt = true
+            }
+            match mapGet(pkgIndex, name) {
+              case Some(midx) -> {
+                memberOpt = Some(value = ctx.members[midx])
+              }
+              case None -> ()
+            }
+          }
+        }
+      }
+      match memberOpt {
+        case None -> ()
+        case Some(member) -> {
+          if not stringListContains(seen, member.name) {
+            val mToml = Path.join(member.dir, "lyric.toml")
+            val dllName = match File.readText(mToml) {
+              case Err(_) -> member.name + ".dll"
+              case Ok(mText) -> match Mf.parseManifest(mText, mToml) { case Err(_) -> member.name + ".dll"; case Ok(mMf) -> match mMf.project { case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }; case None -> mMf.packageSection.name + ".dll" } }
+            }
+            val dllPath = Path.join(Path.join(member.dir, "bin"), dllName)
+            if File.fileExists(dllPath) {
+              restored.add(member.name + "\t" + dllPath)
+              seen.add(member.name)
+              collectTransitiveDepDlls(member.dir, Some(value = ctx), seen, restored)
+              collectDepTemplateSources(member.dir, member.name, templates)
+            } else {
+              printErr(
+                "build: import '" + name + "' names workspace member '" + member.name + "' but its DLL is not built (" + dllPath +
+                  "). Run `lyric build --manifest " +
+                  mToml +
+                  "` first — single-file builds never build members implicitly (D123)."
+              )
+              hadUnbuilt = true
+            }
+          }
+        }
+      }
+    }
+    ii += 1
+  }
+  WorkspaceImportDeps(restoredDlls = restored, depTemplateSrcs = templates, hadUnbuiltMember = hadUnbuilt)
+}

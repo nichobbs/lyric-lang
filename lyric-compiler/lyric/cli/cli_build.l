@@ -639,7 +639,18 @@ func emitSingleFileOrProject(
     case Err(msg) -> return failedEmitOutcome(msg)
     case Ok(opt) -> opt
   }
-  val lm = match loaded { case None -> return noContributionOutcome(req); case Some(l) -> l }
+  val lm = match loaded {
+    case None -> {
+      // #6503: no usable manifest above the source — the workspace ROOT is a
+      // virtual [workspace]-only manifest `findNearestManifest` deliberately
+      // walks past (no [package] section) — but the file can still import
+      // WORKSPACE MEMBERS.  Resolve its imports against already-built member
+      // DLLs; when nothing matches, fall back to the historical
+      // no-contribution path byte-for-byte unchanged.
+      return emitSingleFileWithWorkspaceMembers(req, sourcePath)
+    }
+    case Some(l) -> l
+  }
 
   val (activeFeatures, declaredFeatures) = resolveManifestFeatures(
     lm.mfText,
@@ -660,6 +671,7 @@ func emitSingleFileOrProject(
       sourcePath + ": build failed (unresolved dependency declared in " + lm.mfPath + "; see above)"
     )
   }
+
 
   val pkgNameRaw = Release.packageNameOf(req.source)
   val pkgName = if pkgNameRaw.length > 0 { pkgNameRaw } else { req.assemblyName }
@@ -750,6 +762,69 @@ func emitSingleFileOrProject(
     restoredDlls = resolvedDeps.restoredDlls,
     nugetThirdPartyPaths = resolvedDeps.nugetThirdPartyPaths,
     nativeAssetPaths = resolvedDeps.nativeAssetPaths
+  )
+}
+
+// #6503: the manifestless single-file leg of `emitSingleFileOrProject` —
+// resolve the source's imports against the enclosing workspace's members
+// (already-built DLLs only, see `resolveWorkspaceImportDeps`) and, when any
+// match, synthesize the same project-shaped request the manifest leg builds:
+// restored member DLLs on MSIL, bundled member sources on JVM (#6136
+// parity).  No manifest means no features / own-packages / NuGet / Maven
+// contribution — those axes stay empty.
+func emitSingleFileWithWorkspaceMembers(req: in EmitRequest, sourcePath: in String): NonNativeEmitOutcome {
+  val absSource = if Path.isAbsolute(sourcePath) {
+    sourcePath
+  } else {
+    Path.join(Environment.currentDirectory(), sourcePath)
+  }
+  val noSeen: List[String] = newList()
+  val wsDeps = resolveWorkspaceImportDeps(req.source, Path.dirname(absSource), noSeen)
+  if wsDeps.hadUnbuiltMember {
+    return failedEmitOutcome(sourcePath + ": build failed (an import names an unbuilt workspace member; see above)")
+  }
+  if wsDeps.restoredDlls.count == 0 {
+    return noContributionOutcome(req)
+  }
+  val pkgNameRaw = Release.packageNameOf(req.source)
+  val pkgName = if pkgNameRaw.length > 0 { pkgNameRaw } else { req.assemblyName }
+  val srcs: List[String] = newList()
+  srcs.add(req.source)
+  val pkgs: List[ProjectPackage] = newList()
+  pkgs.add(ProjectPackage(name = pkgName, sources = srcs))
+  // JVM parity with the manifest leg: member packages ride the bundled
+  // compile — the JVM backend never reads `restoredDllPaths` (#6136).
+  match req.target {
+    case Jvm -> {
+      var wj = 0
+      while wj < wsDeps.depTemplateSrcs.count {
+        pkgs.add(wsDeps.depTemplateSrcs[wj])
+        wj += 1
+      }
+    }
+    case _ -> ()
+  }
+  val noFeatures: List[String] = newList()
+  val noNuget: List[String] = newList()
+  val projReq = EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = req.assemblyName,
+    outputPath = req.outputPath,
+    target = req.target,
+    restoredDllPaths = wsDeps.restoredDlls,
+    activeFeatures = noFeatures,
+    declaredFeatures = noFeatures,
+    packageVersion = req.packageVersion,
+    depTemplateSrcs = wsDeps.depTemplateSrcs,
+    nugetAssemblyPaths = noNuget,
+    defines = req.defines
+  )
+  val emitResult = Emitter.emitProject(projReq)
+  NonNativeEmitOutcome(
+    emitResult = emitResult,
+    restoredDlls = wsDeps.restoredDlls,
+    nugetThirdPartyPaths = newList(),
+    nativeAssetPaths = newList()
   )
 }
 
