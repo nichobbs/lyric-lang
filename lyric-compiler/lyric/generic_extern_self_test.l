@@ -28,6 +28,7 @@ extern type Tup[A, B] = "System.Tuple`2"
 
 // Unquoted generic type declarations (omitting backtick and arity suffix)
 extern type UnquotedCD[K, V] = System.Collections.Concurrent.ConcurrentDictionary
+
 extern type UnquotedTup[A, B] = System.Tuple
 
 @externTarget("System.Collections.Concurrent.ConcurrentDictionary`2..ctor")
@@ -53,7 +54,6 @@ func newUnquotedTup[A, B](a: in A, b: in B): UnquotedTup[A, B] = ()
 
 @externTarget("System.Tuple`2.ToString")
 func unquotedTupToString[A, B](t: in UnquotedTup[A, B]): String = ()
-
 
 record Counter {
   var n: Int = 0
@@ -118,3 +118,36 @@ test "Unquoted generic Tuple constructs and round-trips correctly" {
   assertEqual(unquotedTupToString(t), "(2, hello)", "UnquotedTuple(2, \"hello\").ToString()")
 }
 
+// #6127: an UNANNOTATED local key (`val handle = handleCounter.next`) gives
+// the monomorphizer nothing to infer K from, so the kept wrapper's key param
+// falls back to `object` — the call site must box the raw int32 heading into
+// it.  Before the fix the int32 was passed unboxed (InvalidProgramException
+// at JIT time in any function calling the wrapper).
+record Handles {
+  var next: Int = 0
+}
+
+val handleCounter: Handles = Handles()
+
+val registry: CD[Int, Counter] = newCD()
+
+func registerCounter(n: in Int): Int {
+  handleCounter.next = handleCounter.next + 1
+  val handle = handleCounter.next
+  val c = Counter(n = n)
+  val _ = cdAdd(registry, handle, c)
+  handle
+}
+
+test "unannotated Int local key boxes into the Object-fallback wrapper (#6127)" {
+  val h1 = registerCounter(11)
+  val h2 = registerCounter(22)
+  assertEqualInt(h2, h1 + 1, "handles increment")
+  var got: Counter = default()
+  val found = cdGet(registry, h1, got)
+  assertTrue(found, "handle key found via unannotated Int local")
+  assertEqualInt(got.n, 11, "first registered value round-trips")
+  var got2: Counter = default()
+  assertTrue(cdGet(registry, h2, got2), "second handle found")
+  assertEqualInt(got2.n, 22, "second registered value round-trips")
+}

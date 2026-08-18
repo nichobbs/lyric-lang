@@ -13911,6 +13911,28 @@ func lowerBuiltinOrStaticCallMsil(
                           // #2455: unbox a boxed (object) argument — e.g. a bound
                           // tuple element — to a value-type parameter.
                           coerceCallArgMsil(cctx, insns, aTy, pTy)
+                          // #6127: box a raw scalar heading into an in-bundle
+                          // callee's genuine `object` parameter — most sharply a
+                          // monomorphized generic-extern wrapper whose type var
+                          // fell back to Object (an unannotated local gives the
+                          // monomorphizer nothing to infer from), leaving e.g. an
+                          // int32 on the stack where the wrapper's `object` key
+                          // param expects a reference (InvalidProgramException).
+                          // Gated to MethodDef callees (0x06 tag): in-bundle
+                          // registrations record param types precisely, so their
+                          // MObject is genuinely `object`.  MemberRef callees
+                          // (restored deps) are excluded — their scalar params
+                          // are deliberately recorded as MObject stand-ins
+                          // (collHintParamType, #3920), and the raw scalar is
+                          // exactly what the physical int32/... param expects.
+                          // `MValueTypeRef` is excluded here because
+                          // coerceCallArgMsil already boxed it (#5196).
+                          if tok / 0x01000000 == 0x06 {
+                            match pTy {
+                              case MObject -> match aTy { case MValueTypeRef(_, _) -> (); case _ -> boxIfNeededMsil(cctx, insns, aTy) }
+                              case _ -> ()
+                            }
+                          }
                         }
                       }
                       i = i + 1
