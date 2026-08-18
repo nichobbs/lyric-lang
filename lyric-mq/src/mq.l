@@ -53,6 +53,7 @@ import Std.Json
 import Std.Iter
 import Std.Parse
 import Std.Environment as Env
+import Mq.Kernel.Net as KernelNet
 
 // ─── Wire types ───────────────────────────────────────────────────────────────
 /// A single message metadata pair.
@@ -280,6 +281,13 @@ impl QueueConsumer for NativeQueue {
 pub func connect(): Result[NativeQueue, String] {
   val url = Env.getVarOrDefault("LYRIC_CONFIG_MQ_CONNECTION_URL", "")
   val queueName = Env.getVarOrDefault("LYRIC_CONFIG_MQ_CONNECTION_QUEUENAME", "")
+  return connectTo(url, queueName)
+}
+
+/// Open a broker connection to an explicit URL and queue name, bypassing the
+/// `LYRIC_CONFIG_MQ_CONNECTION_*` environment lookup `connect()` performs.
+@stable(since = "0.1")
+pub func connectTo(url: in String, queueName: in String): Result[NativeQueue, String] {
   match mqKernelConnect(url, queueName) {
     case Ok(queueId) -> Ok(NativeQueue(queueId = queueId))
     case Err(msg) -> Err(msg)
@@ -354,27 +362,73 @@ pub func nack(consumer: in QueueConsumer, messageId: in String, requeue: in Bool
 }
 
 // ─── Platform dispatch helpers (private) ─────────────────────────────────────
-// These are axiom-backed unconditional functions that dispatch to the active
-// broker kernel at runtime. Feature selection happens at kernel initialization.
-@axiom("broker kernel dispatch — forwards to the active broker driver at runtime")
-func mqKernelConnect(url: in String, queueName: in String): Result[Int, String] = Err("no broker configured")
+// Target-gated dispatchers into the active broker kernel (the lyric-jobs
+// `nowMs()` pattern).  `Mq.Kernel.Net` is `@cfg(target = "dotnet")`-gated at
+// the file level, so on dotnet these forward to the real in-memory kernel and
+// on jvm both the kernel and the dotnet dispatcher erase — the jvm variants
+// return a clear error until a JVM in-memory kernel ships (#3385).
+@cfg(target = "dotnet")
+func mqKernelConnect(url: in String, queueName: in String): Result[Int, String] {
+  return KernelNet.connect(url, queueName)
+}
 
-@axiom("broker kernel dispatch — forwards to the active broker driver at runtime")
+@cfg(target = "jvm")
+func mqKernelConnect(url: in String, queueName: in String): Result[Int, String] {
+  return Err("lyric-mq: no broker kernel on target jvm (in-memory kernel is dotnet-only, #3385)")
+}
+
+@cfg(target = "dotnet")
 func mqKernelPublish(
   queueId: in Int, messageId: in String, body: in String, headersJson: in String
-): Result[Unit, String] = Ok(())
+): Result[Unit, String] {
+  return KernelNet.publish(queueId, messageId, body, headersJson)
+}
 
-@axiom("broker kernel dispatch — forwards to the active broker driver at runtime")
-func mqKernelConsume(queueId: in Int, timeoutMs: in Int): Result[String, String] = Ok("")
+@cfg(target = "jvm")
+func mqKernelPublish(
+  queueId: in Int, messageId: in String, body: in String, headersJson: in String
+): Result[Unit, String] {
+  return Err("lyric-mq: no broker kernel on target jvm (in-memory kernel is dotnet-only, #3385)")
+}
 
-@axiom("broker kernel dispatch — forwards to the active broker driver at runtime")
-func mqKernelAck(queueId: in Int, deliveryTag: in String): Result[Unit, String] = Ok(())
+@cfg(target = "dotnet")
+func mqKernelConsume(queueId: in Int, timeoutMs: in Int): Result[String, String] {
+  return KernelNet.consume(queueId, timeoutMs)
+}
 
-@axiom("broker kernel dispatch — forwards to the active broker driver at runtime")
-func mqKernelNack(queueId: in Int, deliveryTag: in String, requeue: in Bool): Result[Unit, String] = Ok(())
+@cfg(target = "jvm")
+func mqKernelConsume(queueId: in Int, timeoutMs: in Int): Result[String, String] {
+  return Err("lyric-mq: no broker kernel on target jvm (in-memory kernel is dotnet-only, #3385)")
+}
 
-@axiom("broker kernel dispatch — forwards to the active broker driver at runtime")
-func mqKernelClose(queueId: in Int): Unit = ()
+@cfg(target = "dotnet")
+func mqKernelAck(queueId: in Int, deliveryTag: in String): Result[Unit, String] {
+  return KernelNet.ack(queueId, deliveryTag)
+}
+
+@cfg(target = "jvm")
+func mqKernelAck(queueId: in Int, deliveryTag: in String): Result[Unit, String] {
+  return Err("lyric-mq: no broker kernel on target jvm (in-memory kernel is dotnet-only, #3385)")
+}
+
+@cfg(target = "dotnet")
+func mqKernelNack(queueId: in Int, deliveryTag: in String, requeue: in Bool): Result[Unit, String] {
+  return KernelNet.nack(queueId, deliveryTag, requeue)
+}
+
+@cfg(target = "jvm")
+func mqKernelNack(queueId: in Int, deliveryTag: in String, requeue: in Bool): Result[Unit, String] {
+  return Err("lyric-mq: no broker kernel on target jvm (in-memory kernel is dotnet-only, #3385)")
+}
+
+@cfg(target = "dotnet")
+func mqKernelClose(queueId: in Int): Unit {
+  KernelNet.close(queueId)
+}
+
+@cfg(target = "jvm")
+func mqKernelClose(queueId: in Int): Unit {
+}
 
 // ─── JSON serialisation helpers (private) ────────────────────────────────────
 // Serialise a list of MessageHeader to a compact JSON array.
@@ -477,7 +531,11 @@ func jsonExtractRaw(json: in String, field: in String): String {
     } else if ch == ']' {
       depth = depth - 1
       if depth == 0 {
-        return json.substring(q1, i + 1)
+        // substring is (start, LENGTH) — passing `i + 1` as an end index
+        // overran the string whenever q1 > 0 (ArgumentOutOfRange at the
+        // first consume of a message with headers; dead code until the
+        // #6511 dispatch wiring made this path reachable).
+        return json.substring(q1, i + 1 - q1)
       }
     }
     i = i + 1

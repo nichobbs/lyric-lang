@@ -153,7 +153,7 @@ pub func publish(queueId: in Int, messageId: in String, body: in String, headers
 
 @cfg(feature = "inmemory")
 pub func consume(queueId: in Int, timeoutMs: in Int): Result[String, String]
-  requires: timeoutMs > 0
+  requires: timeoutMs >= 0
 {
   var q: InMemoryQueue = default()
   if not cdTryGetValue(queueRegistry, queueId, q) {
@@ -162,6 +162,14 @@ pub func consume(queueId: in Int, timeoutMs: in Int): Result[String, String]
   var remaining = timeoutMs
   var found = false
   var msg: Message = default()
+  // One unconditional dequeue attempt so `timeoutMs = 0` is a genuine
+  // non-blocking poll (the public `Mq.consume` documents "pass 0 to poll
+  // without blocking" and requires only `>= 0`; the previous `> 0` requires
+  // + wait-only loop rejected 0 outright and would have skipped the dequeue
+  // entirely — unreachable dead code until the #6511 dispatch wiring).
+  if cqTryDequeue(q.pending, msg) {
+    found = true
+  }
   while not found and remaining > 0 {
     if cqTryDequeue(q.pending, msg) {
       found = true

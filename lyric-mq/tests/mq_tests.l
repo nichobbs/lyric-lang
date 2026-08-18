@@ -68,3 +68,58 @@ test "AckMode.Manual can be matched" {
     case Mq.AckMode.Manual -> assertTrue(true, "matched Manual")
   }
 }
+
+// ─── In-memory broker round-trip (#6511) ─────────────────────────────────────
+// End-to-end through the PUBLIC surface: connectTo → publish (with a header) →
+// consume → ack → close, against the default in-memory kernel.  Before #6511
+// the dispatch stubs never reached any kernel, so `Mq.connect()` returned
+// `Err` on every backend and none of this was reachable.  dotnet-only: the
+// jvm target has no in-memory kernel (#3385), so these tests erase there.
+@cfg(target = "dotnet")
+test "in-memory broker round-trips a published message (#6511)" {
+  match Mq.connectTo("inmemory://local", "roundtrip-q") {
+    case Err(e) -> assertTrue(false, "connectTo failed: " + e)
+    case Ok(queue) -> {
+      val h = Mq.MessageHeader(key = "content-type", value = "application/json")
+      val msg = Mq.Message(id = "rt-001", body = "{\"n\":42}", headers = [h], deliveryCount = 0)
+      match Mq.publish(queue, msg) {
+        case Err(e2) -> assertTrue(false, "publish failed: " + e2)
+        case Ok(_) -> ()
+      }
+      var gotId = ""
+      var gotBody = ""
+      var gotHeaderCount = 0
+      val consumed = Mq.consume(
+        queue,
+        0,
+        { m -> gotId = m.id; gotBody = m.body; gotHeaderCount = m.headers.length; Ok(()) }
+      )
+      match consumed {
+        case Err(e3) -> assertTrue(false, "consume failed: " + e3)
+        case Ok(_) -> ()
+      }
+      assertEqual(gotId, "rt-001", "consumed message id")
+      assertEqual(gotBody, "{\"n\":42}", "consumed message body")
+      assertEqualInt(gotHeaderCount, 1, "consumed header count")
+      match Mq.ack(queue, "rt-001") {
+        case Err(e4) -> assertTrue(false, "ack failed: " + e4)
+        case Ok(_) -> ()
+      }
+      queue.close()
+    }
+  }
+}
+
+@cfg(target = "dotnet")
+test "consume on an empty queue reports timeout (#6511)" {
+  match Mq.connectTo("inmemory://local", "empty-q") {
+    case Err(e) -> assertTrue(false, "connectTo failed: " + e)
+    case Ok(queue) -> {
+      match Mq.consume(queue, 0, { m -> Ok(()) }) {
+        case Ok(_) -> assertTrue(false, "expected timeout on empty queue")
+        case Err(e2) -> assertEqual(e2, "timeout", "empty poll reports timeout")
+      }
+      queue.close()
+    }
+  }
+}
