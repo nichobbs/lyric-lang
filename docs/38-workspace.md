@@ -70,6 +70,20 @@ workspace   = false
 The workspace does not require members to be listed explicitly. The exclusion
 list is the only maintenance burden.
 
+### 2.2.1 Single-file builds and member imports (#6503, D-progress-791)
+
+A single-file `lyric build` whose source sits inside a workspace resolves
+its `import`s against the member index: an import that names a member
+exactly (`import Lyric.Docker`), or that names a package a member's
+`[project.packages]` table declares (`import Mq` → member `Lyric.Mq`),
+restores that member's **already-built** DLL (with transitive dep DLLs and
+template sources) into the compile. `Std.*` / `Lyric.*` / `Msil.*` /
+`Jvm.*` imports without an exact member-name match resolve through the
+stdlib/compiler bundles and never match members. An import matching an
+UNBUILT member fails the build loudly with the exact
+`lyric build --manifest <member>/lyric.toml` command — single-file mode
+never builds or restores members implicitly (the D123 contract).
+
 ### 2.3 Member index
 
 After discovery the toolchain builds an in-memory index:

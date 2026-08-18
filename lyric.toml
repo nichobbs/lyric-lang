@@ -21,4 +21,12 @@ exclude = [
   # dependency declaration -- so it doesn't fit the workspace-member model
   # ordinary ecosystem libraries use and is excluded from auto-discovery.
   "lyric-stdlib",
+  # The self-hosted compiler tree is likewise not an ordinary member: its
+  # lyric.toml exists for the CLI-bundle build (`make lyric`), and every
+  # `import Lyric.*` compiler-package reference resolves through the staged
+  # stage-1 / selfhosted bundle DLLs, never through workspace-member
+  # restoration.  Left discoverable, the "Lyric.Cli" member hijacked
+  # single-file workspace-import resolution (#6503) into restoring a stale
+  # CLI bundle DLL as a dependency of compiler self-tests.
+  "lyric-compiler",
 ]

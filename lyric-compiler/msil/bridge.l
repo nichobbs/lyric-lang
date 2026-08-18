@@ -555,7 +555,11 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // (`Core.router`) is consumed by the expander rather than collapsed by
   // the import-alias rewriter when the alias name matches an imported
   // package's last segment.
-  // #6505: collect from ALIAS-REWRITTEN copies (the docs/58 analog of the
+  // #6505: collect from ALIAS-REWRITTEN copies — collection-only (the
+  // rewritten file is discarded; pipeExpandAndRewrite later re-rewrites the
+  // originals): a deliberate, correctness-neutral duplicate pass; revisit
+  // only if template-heavy builds surface in compile-time profiling.
+  // (The docs/58 analog of the
   // D-progress-781 aspect-template fix) so a template body's references
   // through the SOURCE file's import aliases (`WebPkg.foo` under
   // `import Web as WebPkg`, tail-segment `Console.error` under

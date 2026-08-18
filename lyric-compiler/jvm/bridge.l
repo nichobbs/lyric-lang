@@ -1193,7 +1193,8 @@ pub func compileProjectToJarBundledWithFeatures(
   // consumed by the expander rather than collapsed by the import-alias
   // rewriter when the alias name matches an imported package's last
   // segment; the standard rewrite chain is applied to the expanded file.
-  // #6505: collect from ALIAS-REWRITTEN copies so template bodies'
+  // #6505: collect from ALIAS-REWRITTEN copies (collection-only; the
+  // rewritten file is discarded — see the MSIL bridge's note) so template bodies'
   // references through the SOURCE file's import aliases splice into
   // consumers fully qualified — see the MSIL bridge's matching comment
   // (rewriteWireDecl's #6316 include-alias exclusion makes this safe

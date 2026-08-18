@@ -1361,3 +1361,92 @@ test "stagedMavenClasspath: splits colon-separated entries and drops blanks" {
   assertEqual(result[1], "/m2/gson.jar", "entry 1")
   cleanup(dir)
 }
+
+// ─── #6503: workspace-member import resolution for single-file builds ────────
+// Unit tests for `resolveWorkspaceImportDeps` against a synthetic
+// mini-workspace: a virtual [workspace]-only root plus one member whose
+// manifest name ("Lyric.LibX") differs from its source package ("LibX"),
+// mirroring the ecosystem convention (member Lyric.Mq declares package Mq).
+// The member's bin DLL is a placeholder file — resolution only checks
+// existence (single-file builds never build members implicitly, D123).
+func mkMiniWorkspace(label: in String): String {
+  val root = freshTempDir(label)
+  // `assembleWorkspace` keys off section ENTRIES, so a bare `[workspace]`
+  // header with no keys is not recognized as a workspace root — write an
+  // explicit empty exclude list (the real repo root also carries one).
+  match File.writeText(Path.join(root, "lyric.toml"), "[workspace]\nexclude = []\n") {
+    case Ok(_) -> ()
+    case Err(e) -> panic("write root toml: " + IOError.message(e))
+  }
+  val libDir = Path.join(root, "libx")
+  val _ = File.createDir(libDir)
+  val _ = File.createDir(Path.join(libDir, "src"))
+  val _ = File.createDir(Path.join(libDir, "bin"))
+  val libToml = "[package]\n" + "name    = \"Lyric.LibX\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+    "name            = \"Lyric.LibX\"\n" +
+    "output          = \"single\"\n" +
+    "output_assembly = \"LibX.dll\"\n" +
+    "\n" +
+    "[project.packages]\n" +
+    "\"LibX\" = \"src/libx.l\"\n"
+  match File.writeText(Path.join(libDir, "lyric.toml"), libToml) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("write member toml: " + IOError.message(e))
+  }
+  match File.writeText(Path.join(Path.join(libDir, "src"), "libx.l"), "package LibX\n\npub func answer(): Int {\n  42\n}\n") {
+    case Ok(_) -> ()
+    case Err(e) -> panic("write member src: " + IOError.message(e))
+  }
+  match File.writeText(Path.join(Path.join(libDir, "bin"), "LibX.dll"), "placeholder") {
+    case Ok(_) -> ()
+    case Err(e) -> panic("write member dll: " + IOError.message(e))
+  }
+  root
+}
+
+test "resolveWorkspaceImportDeps: package-key fallback maps import to member (#6503)" {
+  val root = mkMiniWorkspace("wsimp-fallback")
+  val noSeen: List[String] = newList()
+  val deps = Cli.resolveWorkspaceImportDeps("package T\n\nimport LibX\n", root, noSeen)
+  assertEqualInt(deps.restoredDlls.count, 1, "one member resolved via [project.packages] key")
+  assertTrue(Str.startsWith(deps.restoredDlls[0], "Lyric.LibX\t"), "entry carries the member name")
+  assertTrue(Str.endsWith(deps.restoredDlls[0], "LibX.dll"), "entry carries the member DLL path")
+  assertEqualInt(deps.depTemplateSrcs.count, 1, "member sources collected for template resolution")
+  assertFalse(deps.hadUnbuiltMember, "built member is not flagged unbuilt")
+  cleanup(root)
+}
+
+test "resolveWorkspaceImportDeps: exact member-name match works for reserved-head members (#6503)" {
+  val root = mkMiniWorkspace("wsimp-exact")
+  val noSeen: List[String] = newList()
+  val deps = Cli.resolveWorkspaceImportDeps("package T\n\nimport Lyric.LibX\n", root, noSeen)
+  assertEqualInt(deps.restoredDlls.count, 1, "exact member-name match resolves despite the Lyric.* head")
+  cleanup(root)
+}
+
+test "resolveWorkspaceImportDeps: unbuilt member fails loudly, compiler/stdlib heads skip (#6503)" {
+  val root = mkMiniWorkspace("wsimp-unbuilt")
+  val _ = File.deleteFile(Path.join(Path.join(Path.join(root, "libx"), "bin"), "LibX.dll"))
+  val noSeen: List[String] = newList()
+  val deps = Cli.resolveWorkspaceImportDeps("package T\n\nimport LibX\n", root, noSeen)
+  assertEqualInt(deps.restoredDlls.count, 0, "unbuilt member restores nothing")
+  assertTrue(deps.hadUnbuiltMember, "unbuilt member is flagged for the loud failure")
+  val deps2 = Cli.resolveWorkspaceImportDeps(
+    "package T\n\nimport Std.Json\nimport Lyric.Parser\nimport Msil.Bridge\n",
+    root,
+    noSeen
+  )
+  assertEqualInt(deps2.restoredDlls.count, 0, "bundle-resolved heads never match members")
+  assertFalse(deps2.hadUnbuiltMember, "bundle-resolved heads are not flagged")
+  cleanup(root)
+}
+
+test "resolveWorkspaceImportDeps: alreadySeen dep names are not double-restored (#6503)" {
+  val root = mkMiniWorkspace("wsimp-seen")
+  val seen: List[String] = newList()
+  seen.add("Lyric.LibX")
+  val deps = Cli.resolveWorkspaceImportDeps("package T\n\nimport LibX\n", root, seen)
+  assertEqualInt(deps.restoredDlls.count, 0, "a manifest-resolved dep is not restored again")
+  assertFalse(deps.hadUnbuiltMember, "no unbuilt flag for an alreadySeen dep")
+  cleanup(root)
+}
