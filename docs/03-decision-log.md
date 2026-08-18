@@ -30643,3 +30643,71 @@ promotion + its vacuous matrix), D-progress-660 (`Lyric.AwaitHoist`),
 D-progress-685 (the adjacent pre-scan/emission mismatch fix), #5519
 (the sibling value-corruption class), #4259 (the generator-path
 precedent).
+
+
+## D-progress-788 — Call sites box raw scalars into an in-bundle callee's genuine `object` parameter (#6127)
+
+**Date:** 2026-08-18.  **Status:** shipped.
+
+**Problem.** An unannotated local read from a mutable record field
+(`val handle = counter.next`) passed as the key to a generic
+`ConcurrentDictionary` extern wrapper produced invalid IL
+(`InvalidProgramException` at JIT time in any function calling the
+wrapper) — issue #6127, and the confirmed cause of the still-blocking
+`Mq.Kernel.Net.Program.connect` crash in #6511's mq wiring.
+
+**Root cause — two interacting behaviours, neither wrong alone.**
+
+1. The monomorphizer infers a generic wrapper's type arguments from
+   literals and explicitly-annotated variables only. An unannotated
+   local gives it nothing, so the type var falls back to `Object`:
+   `cdTryAdd[K, V]` became `cdTryAdd__Object__Payload(object, object,
+   Payload)` — a *kept, correct* wrapper whose key parameter is
+   genuinely `object`.
+2. The direct-call lowering (`lowerCallMsil`'s resolved-token path)
+   never boxed a primitive argument heading into an `MObject`
+   parameter: `coerceCallArgMsil` deliberately has no
+   primitive→`object` box direction because restored-dependency
+   callees record scalar params as `MObject` *stand-ins* for physical
+   `int32`/... params (`collHintParamType`, #3920) — boxing there
+   would break every restored call with an Int/Bool argument. The
+   raw `int32` therefore hit the stack where the wrapper's `object`
+   param expected a reference.
+
+**Decision.** Disambiguate by callee token tag at the call site, not
+by loosening `coerceCallArgMsil`: after the existing coercion, when
+the callee is a **MethodDef** (`0x06` tag — in-bundle, param types
+recorded precisely, so `MObject` is genuinely `object`) and the
+declared param is `MObject`, box the argument via `boxIfNeededMsil`.
+MemberRef callees (`0x0A` — restored deps and per-package stdlib
+links) are excluded, preserving the #3920 stand-in convention.
+`MValueTypeRef` args are excluded from the new box because
+`coerceCallArgMsil` already boxed them (#5196); `boxIfNeededMsil` is
+a no-op for reference types, so no double-box path exists.
+
+**JVM parity.** The same program shape on `--target jvm` fails
+*loudly at compile time* (`M0002`: could not infer `K`, `V`) — the
+JVM extern path has no Object fallback, so there was no silent JVM
+miscompile to fix. Cross-target behaviour is now: JVM rejects with a
+clear diagnostic, MSIL compiles correctly via the Object-fallback
+wrapper.
+
+**Verification.** The #6127 minimal repro builds, ilverifies clean,
+and runs rc=0 (the call site now emits `box int32` before the
+wrapper call, confirmed in IL). New regression case in
+`generic_extern_self_test.l` (CI-wired, 7/7): the exact
+unannotated-Int-local-key shape. Acceptance per #6511's cross-link:
+`Mq.Kernel.Net.Program::connect` no longer appears in `ilverify
+Mq.dll` — remaining findings there are the known
+`InProcessDeadLetterStore::append` slice/List family (6), plus two
+newly catalogued dead-code findings recorded on #6511:
+`Mq.Program::mqKernelClose` ReturnVoid (`ldnull; ret` from a
+`Unit`-returning `@axiom` stub) and duplicate `InterfaceImpl`
+metadata rows for `InProcessDeadLetterStore`/`NativeQueue`.
+
+**Related:** #6127 (fixed), #6511 (mq wiring acceptance; `append`
+still blocking), #3920 (the restored-dep `MObject` stand-in
+convention this fix routes around), #5196
+(`coerceCallArgMsil`'s struct box direction), #3392 (the generic
+extern wrapper machinery), D-progress-786 (the funcval half of the
+#6511 nest).

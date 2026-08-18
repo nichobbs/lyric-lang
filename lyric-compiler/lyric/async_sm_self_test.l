@@ -1035,3 +1035,39 @@ test "tuple-destructuring val survives real suspensions (#6249/#6514)" {
   val got = await tupleValSurvivesSuspension()
   assertEqualInt(got, 42, "tuple-bound vals must survive across real suspensions")
 }
+
+// ── #6514 review follow-up: PRecord / PConstructor binds under real suspension ─
+// The promotion walk handles every LBVal pattern arm; the merged tests covered
+// PBinding and PTuple.  These close out the remaining destructuring arms — a
+// record-pattern bind (RPFShort fields) and a single-case-union constructor
+// bind — each held across a genuine `Std.Task.delay` suspension.
+record SmPoint {
+  px: Int
+  py: Int
+}
+
+union SmWrapper {
+  case SmBoxed(value: Int)
+}
+
+async func recordPatternBindSurvives(): Int {
+  val SmPoint { px, py } = SmPoint(px = 40, py = 2)
+  await suspendA()
+  px + py
+}
+
+async func ctorPatternBindSurvives(): Int {
+  val SmBoxed(v) = SmBoxed(value = 21)
+  await suspendA()
+  v * 2
+}
+
+test "record-pattern val binds survive a real suspension (#6514)" {
+  val got = await recordPatternBindSurvives()
+  assertEqualInt(got, 42, "PRecord-bound fields must survive suspension")
+}
+
+test "constructor-pattern val bind survives a real suspension (#6514)" {
+  val got = await ctorPatternBindSurvives()
+  assertEqualInt(got, 42, "PConstructor-bound payload must survive suspension")
+}
