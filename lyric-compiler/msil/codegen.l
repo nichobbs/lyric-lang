@@ -14172,7 +14172,11 @@ func lowerSliceAppendMsil(
     }
     case None -> {
       insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
-      val newSlot = allocSlotMsil(fctx, "__sliceapp_new_" + toString(fctx.slotTicker.count), MObject)
+      val newSlot = allocSlotMsil(
+        fctx,
+        "__sliceapp_new_" + toString(fctx.slotTicker.count),
+        MConcreteList(elemTy = MObject)
+      )
       emitStoreSlot(insns, newSlot, fctx.paramCount)
       emitSliceCopyLoopMsil(cctx, fctx, insns, recvSlot, recvTy, zeroSlot, cntSlot, newSlot, None, MObject, zeroSlot)
       emitLoadSlot(insns, newSlot, fctx.paramCount)
@@ -14230,7 +14234,11 @@ func lowerSliceConcatMsil(
     }
     case None -> {
       insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
-      val newSlot = allocSlotMsil(fctx, "__sliceccat_new_" + toString(fctx.slotTicker.count), MObject)
+      val newSlot = allocSlotMsil(
+        fctx,
+        "__sliceccat_new_" + toString(fctx.slotTicker.count),
+        MConcreteList(elemTy = MObject)
+      )
       emitStoreSlot(insns, newSlot, fctx.paramCount)
       emitSliceCopyLoopMsil(cctx, fctx, insns, recvSlot, recvTy, zeroSlot, cntSlot, newSlot, None, MObject, zeroSlot)
       emitSliceCopyLoopMsil(cctx, fctx, insns, otherSlot, otherTy, zeroSlot, otherCntSlot, newSlot, None, MObject, zeroSlot)
@@ -14316,7 +14324,11 @@ func lowerSliceSliceMsil(
     }
     case None -> {
       insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
-      val newSlot = allocSlotMsil(fctx, "__slicesub_new_" + toString(fctx.slotTicker.count), MObject)
+      val newSlot = allocSlotMsil(
+        fctx,
+        "__slicesub_new_" + toString(fctx.slotTicker.count),
+        MConcreteList(elemTy = MObject)
+      )
       emitStoreSlot(insns, newSlot, fctx.paramCount)
       emitSliceCopyLoopMsil(cctx, fctx, insns, recvSlot, recvTy, startSlot, cntSlot, newSlot, None, MObject, zeroSlot)
       emitLoadSlot(insns, newSlot, fctx.paramCount)
@@ -23957,6 +23969,15 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
             if exprTailTy == MVoid and retTy != MVoid {
               pushDefaultValueMsil(cctx, fctx, insns, retTy)
             }
+            // The inverse direction (#6511's `mqKernelClose` ReturnVoid): a
+            // `Unit`-returning EXPRESSION body whose trailing expression still
+            // pushed a value — `func f(): Unit = ()` lowers `()` to
+            // `ldnull`/MObject (LUnit's value representation) — must pop it
+            // before the void `ret`, exactly as SExpr statement lowering pops
+            // any non-void expression result.
+            if retTy == MVoid and exprTailTy != MVoid {
+              insns.add(MPop)
+            }
             insns.add(MRet)
           }
         }
@@ -24297,6 +24318,12 @@ func lowerMethodBodyTailMsil(
       popCollExpect(fctx)
       if exprTailTy == MVoid and retTy != MVoid {
         pushDefaultValueMsil(cctx, fctx, insns, retTy)
+      }
+      // Mirror of lowerFuncMsil's FBExpr arm (#6511 ReturnVoid): a `Unit`-
+      // returning expression body whose trailing expression pushed a value
+      // (`= ()` lowers to `ldnull`/MObject) must pop it before the void `ret`.
+      if retTy == MVoid and exprTailTy != MVoid {
+        insns.add(MPop)
       }
       insns.add(MRet)
     }
@@ -31381,6 +31408,13 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   // queues an `MPImpl(MImplData)` item per entry, processed after all
   // TypeDefs are emitted so `lowerMImpl` can resolve TypeDef rows and
   // MethodDef tokens by name.
+  // #6511: `cctx.implEntries` is bundle-global (one cctx serves every package
+  // of a multi-package build), so remember where THIS package's entries begin
+  // — the MPImpl queue loop below must emit only the entries this call
+  // collects.  Starting from 0 re-queued every earlier package's impls once
+  // per later package, emitting duplicate InterfaceImpl metadata rows (one
+  // extra per subsequent package; 4-package lyric-mq carried each impl 4×).
+  val implEntriesStart = cctx.implEntries.count
   collectImplEntriesMsil(cctx, weavedFile, pkgName)
 
   // ── D105 Phase 2: external-interface impl conformance validation ──────────
@@ -31815,7 +31849,10 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   // queue one `MPImpl(MImplData)` per pre-pass entry so the lowering layer
   // emits the InterfaceImpl row after all TypeDefs are in the table.  The row
   // numbers are resolved by name in `lowerMImpl` (`findTypeDefRowByName`).
-  var ie = 0
+  // Starts at `implEntriesStart` — only the entries THIS package's pre-pass
+  // collected; earlier packages already queued their own (#6511 duplicate-
+  // InterfaceImpl fix, see the pre-pass comment above).
+  var ie = implEntriesStart
   while ie < cctx.implEntries.count {
     val implEntry = cctx.implEntries[ie]
     // For non-generic impls, the slot's `ifaceMethodToken` stays 0 and the CLR
