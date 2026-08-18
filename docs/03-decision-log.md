@@ -30566,3 +30566,80 @@ and then crashed `InvalidCastException`; it now runs rc=0).
 `InProcessDeadLetterStore::append`'s slice/List family), #6396/#4424
 (the untracked-invoke-return-type thread), #1939/#5334 (param
 propagation and its generics guard), D111 (Unit-as-object).
+
+## D-progress-787 — LBVal bindings are promoted to async-SM fields; the promoted-local matrix now actually suspends (#6249)
+
+**Date:** 2026-08-18. **Fixes #6249**, the silent-data-loss bug where a
+`val` bound before an `await` read back the type's default after a
+later suspension (the suspected root of cloud-agents' production
+`AccessViolationException`/`Unbox` crash — same shape, multi-await
+async functions binding vals between awaits).
+
+**Root cause — two stacked holes.**
+
+1. `val x = ...` parses as **`LBVal`** (a PATTERN binding — `val`
+   always produces one), NOT `LBLet`.  The MSIL Phase B.1
+   promoted-local machinery (D088/D089) registered `LBLet` and `LBVar`
+   bindings with `phaseBRegisterAndSyncLocal` but the `LBVal` lowering
+   arm never did — so every ordinary `val` in an `async func` lived
+   only in a MoveNext local slot, which the CLR reinitializes on
+   re-entry after `AwaitUnsafeOnCompleted`.  The emitted SM (verified
+   by IL dump) had NO `__local_*` field for the val at all.
+2. **The D088/D089 test matrix never suspends.**  Every
+   "promoted locals: val survives N awaits" case awaits
+   `asyncAddOne`, whose body contains no awaits — it completes
+   synchronously, every `await` takes the `IsCompleted` fast path,
+   MoveNext never re-enters, and locals trivially survive.  The
+   matrix passed vacuously for years while the promotion it claims to
+   verify was absent for the most common binding form.
+
+**What shipped.**
+
+- `phaseBPromotePatBindsMsil` — walks an `LBVal` pattern
+  (`PBinding`/`PTuple`/`PParen`/`PTypeTest`/`PConstructor`/`PRecord`)
+  and registers every bound name's slot + tracked type as a promoted
+  SM field; called from the `LBVal` lowering arm when a Phase B
+  context is active, exactly like the `LBLet`/`LBVar` arms.
+- `countPatBindNamesMsil` — the names-only twin wired into
+  `countPromotedLocalsStmt`'s `LBVal` arm so `addPackageTokens`'s
+  SM-field-row budget matches the fields the lowering now creates.
+- `async_sm_self_test.l` gains two **real-suspension** cases
+  (`Std.Task.delay`-backed helper callees, the #6249 repro shape:
+  a `String` val across two different-callee suspensions, and
+  `String`+`Int` vals bound before and between suspensions) — 67/67.
+  The issue's "different-callee" narrowing was a red herring: the
+  discriminator is real suspension vs the fast path.
+
+The JVM target is unaffected (virtual-thread async, no state machine
+— locals live on the carrier stack).
+
+**Verification:** the #6249 minimal repro now prints
+`expected=[hello] actual=[hello]` (was `actual=[]`); async_sm 67/67;
+full battery + ilverify green (see the PR).
+
+**Revision (same PR) — #6515: reserve-then-fill reconciliation for the
+SM FieldDef budget.**  The review on PR #6514 found that
+`countPatBindNamesMsil` over-counts: a Unit-typed `val u = <void expr>`
+binds no slot and no SM field at lowering (#4886), but the syntactic
+pre-scan counts its name — inflating Pass 1's `fieldDefRow` running
+counter and shifting the FieldDef tokens of every type declared after
+the async func (reproduced: `MissingFieldException: Invalid FieldDef
+record`).  Rather than teaching the pre-scan emission-grade typing (it
+lacks the local-type environment, so a receiver-typed Unit method call
+could never be classified reliably), the fix makes the contract
+explicit: Pass 1's count is a deliberate syntactic **upper bound**,
+recorded per SM function in `cctx.smFieldCountPredictions` (keyed
+"pkg.func/arity"), and `synthesizeAsyncSmPhaseBMsil` reconciles at the
+end of synthesis — padding the SM class with dead `object` `__pad_<i>`
+fields up to the prediction (restoring token alignment) and panicking
+loudly when the real count EXCEEDS it (the unfixable direction; the
+async-SM analog of the generator path's #4259 cross-check, which this
+path previously lacked).  Two new self-test cases: the Unit-val +
+record-declared-after shape (#6515) and a tuple-destructuring `val`
+under real suspension (exercising the non-`PBinding` promotion walk).
+
+**Related:** #6249, #6515 (the review finding), D088/D089 (the original
+promotion + its vacuous matrix), D-progress-660 (`Lyric.AwaitHoist`),
+D-progress-685 (the adjacent pre-scan/emission mismatch fix), #5519
+(the sibling value-corruption class), #4259 (the generator-path
+precedent).

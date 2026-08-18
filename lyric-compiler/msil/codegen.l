@@ -651,6 +651,17 @@ pub record CodegenCtx {
   // build failure instead of a silently-corrupted FieldDef token for every
   // type declared after the generator.
   genFieldCountPredictions: List[Int]
+  // #6515: Pass-1 SM FieldDef-row predictions keyed "pkg.func/arity".  The
+  // async-SM counterpart of genFieldCountPredictions, with a different
+  // resolution contract: countSmFieldsMsil's promoted-local pre-scan is a
+  // deliberately SYNTACTIC upper bound (it counts every LBVal-bound name,
+  // but the lowering allocates no slot — and so no SM field — for a
+  // Unit-typed `val`, #4886), so `synthesizeAsyncSmPhaseBMsil` PADS the SM
+  // class with dead `object` fields up to the prediction when the real
+  // count lands short (keeping every later type's FieldDef tokens aligned)
+  // and panics only when the real count EXCEEDS the prediction — the
+  // unfixable-after-the-fact direction the generator path also panics on.
+  smFieldCountPredictions: Map[String, Int]
   // Non-generic IEnumerable / IEnumerator — used by the MExternEnumerable
   // for-loop protocol to iterate extern types that implement IEnumerable
   // but not IList (e.g. MapKeyCollection[K,V], MapValueCollection[K,V]).
@@ -2002,6 +2013,7 @@ pub func newCodegenCtx(
     trTcs1 = trTcs1,
     genTicker = newList(),
     genFieldCountPredictions = newList(),
+    smFieldCountPredictions = newMap(),
     trIEnumerable = trIEnumerable,
     trIEnumerator = trIEnumerator,
     tokIEnumerableGetEnumerator = tokIEnumerableGetEnumerator,
@@ -3780,7 +3792,15 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         val isGenP1 = decl.isAsync and funcBodyContainsYieldMsil(decl)
         val isSmP1 = decl.isAsync and not isGenP1 and not hasExternTargetMsil(decl.annotations)
         if isSmP1 {
-          fieldDefRow = fieldDefRow + countSmFieldsMsil(cctx, pkgName, decl)
+          val predictedSmFields = countSmFieldsMsil(cctx, pkgName, decl)
+          fieldDefRow = fieldDefRow + predictedSmFields
+          // #6515: record the prediction so synthesizeAsyncSmPhaseBMsil can
+          // pad the SM class up to it (or panic if it lands over) — see
+          // smFieldCountPredictions' doc comment for the contract.
+          val smPredKey = pkgName + "." + decl.name + "/" + toString(decl.params.count)
+          if not cctx.smFieldCountPredictions.containsKey(smPredKey) {
+            cctx.smFieldCountPredictions.add(smPredKey, predictedSmFields)
+          }
           // SM class emits .ctor (no-arg), MoveNext, SetStateMachine.
           methodDefRow = methodDefRow + 3
         } else if isGenP1 {
@@ -16139,6 +16159,13 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             case PBinding(bindName, None) -> registerFieldFuncValTypesMsil(cctx, fctx, bindName, init)
             case _ -> ()
           }
+          // Phase B.1 promoted-local (#6249): `val x = ...` is LBVal, and its
+          // bindings need SM-field promotion exactly like `LBLet`/`LBVar`
+          // below — without this the value silently reverts to the type's
+          // default after any suspension.
+          if fctx.phaseBCtx.count > 0 {
+            phaseBPromotePatBindsMsil(fctx.phaseBCtx[0], fctx, insns, pat)
+          }
         }
         case LBLet(name, tyOpt, init) -> {
           val annoTy = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MObject }
@@ -21082,6 +21109,53 @@ func countPromotedLocalsBlock(
   }
 }
 
+// Names-only twin of `phaseBPromotePatBindsMsil` for the SM-field-row
+// pre-scan (#6249): collect every simple name an LBVal pattern binds.
+func countPatBindNamesMsil(pat: in Pattern, seen: in List[String]): Unit {
+  match pat.kind {
+    case PBinding(name, inner) -> {
+      if not nameListContains(seen, name) {
+        seen.add(name)
+      }
+      match inner {
+        case Some(ip) -> countPatBindNamesMsil(ip, seen)
+        case None -> ()
+      }
+    }
+    case PTuple(patterns) -> {
+      var i = 0
+      while i < patterns.count {
+        countPatBindNamesMsil(patterns[i], seen)
+        i = i + 1
+      }
+    }
+    case PParen(inner) -> countPatBindNamesMsil(inner, seen)
+    case PTypeTest(inner, _) -> countPatBindNamesMsil(inner, seen)
+    case PConstructor(_, args) -> {
+      var i = 0
+      while i < args.count {
+        countPatBindNamesMsil(args[i], seen)
+        i = i + 1
+      }
+    }
+    case PRecord(_, fields, _) -> {
+      var i = 0
+      while i < fields.count {
+        match fields[i] {
+          case RPFNamed(_, fp, _) -> countPatBindNamesMsil(fp, seen)
+          case RPFShort(nm, _) -> {
+            if not nameListContains(seen, nm) {
+              seen.add(nm)
+            }
+          }
+        }
+        i = i + 1
+      }
+    }
+    case _ -> ()
+  }
+}
+
 func countPromotedLocalsStmt(
   cctx: in CodegenCtx,
   pkgName: in String,
@@ -21126,7 +21200,13 @@ func countPromotedLocalsStmt(
             }
           }
         }
-        case LBVal(_, _, init) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, init, seen)
+        case LBVal(cplPat, _, init) -> {
+          // #6249: LBVal bindings are promoted at lowering (see the LBVal
+          // arm's phaseBPromotePatBindsMsil call), so the field-row budget
+          // must count them here exactly like LBLet/LBVar.
+          countPatBindNamesMsil(cplPat, seen)
+          countPromotedLocalsExpr(cctx, pkgName, hoistedNms, init, seen)
+        }
       }
     }
     case SExpr(e) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, e, seen)
@@ -21556,6 +21636,68 @@ func countSmFieldsMsil(cctx: in CodegenCtx, pkgName: in String, decl: in Functio
     case None -> 0
   }
   base + awCount + seen.count + spillCount
+}
+
+// Promote every simple name bound by an `LBVal` PATTERN to an SM field
+// (#6249).  `val id = "hello"` parses as `LBVal(PBinding(id), ...)` — NOT
+// `LBLet` — and the LBVal lowering arm historically never registered its
+// bindings with the Phase B promoted-local machinery, so the value lived
+// only in a MoveNext local slot and silently reverted to the type's
+// default after any suspension (a val bound before one await, read after
+// a later await, read back "" / null / 0).  Walks the pattern the same
+// way `lowerLocalPatBindMsil` binds it and registers each bound name's
+// already-allocated slot and tracked type.
+func phaseBPromotePatBindsMsil(pbc: in PhaseBCtx, fctx: in FuncCtx, insns: in List[MInsn], pat: in Pattern): Unit {
+  match pat.kind {
+    case PBinding(name, inner) -> {
+      match mapGet(fctx.slots, name) {
+        case Some(slot) -> {
+          val ty = match mapGet(fctx.types, name) { case Some(t) -> t; case None -> MObject }
+          phaseBRegisterAndSyncLocal(pbc, insns, name, ty, slot - fctx.paramCount)
+        }
+        case None -> ()
+      }
+      match inner {
+        case Some(ip) -> phaseBPromotePatBindsMsil(pbc, fctx, insns, ip)
+        case None -> ()
+      }
+    }
+    case PTuple(patterns) -> {
+      var i = 0
+      while i < patterns.count {
+        phaseBPromotePatBindsMsil(pbc, fctx, insns, patterns[i])
+        i = i + 1
+      }
+    }
+    case PParen(inner) -> phaseBPromotePatBindsMsil(pbc, fctx, insns, inner)
+    case PTypeTest(inner, _) -> phaseBPromotePatBindsMsil(pbc, fctx, insns, inner)
+    case PConstructor(_, args) -> {
+      var i = 0
+      while i < args.count {
+        phaseBPromotePatBindsMsil(pbc, fctx, insns, args[i])
+        i = i + 1
+      }
+    }
+    case PRecord(_, fields, _) -> {
+      var i = 0
+      while i < fields.count {
+        match fields[i] {
+          case RPFNamed(_, fp, _) -> phaseBPromotePatBindsMsil(pbc, fctx, insns, fp)
+          case RPFShort(nm, _) -> {
+            match mapGet(fctx.slots, nm) {
+              case Some(slot2) -> {
+                val ty2 = match mapGet(fctx.types, nm) { case Some(t2) -> t2; case None -> MObject }
+                phaseBRegisterAndSyncLocal(pbc, insns, nm, ty2, slot2 - fctx.paramCount)
+              }
+              case None -> ()
+            }
+          }
+        }
+        i = i + 1
+      }
+    }
+    case _ -> ()
+  }
 }
 
 // Register a local as a promoted SM field (first time only) and emit a store
@@ -22691,6 +22833,40 @@ func synthesizeAsyncSmPhaseBMsil(
       locals = kfLocals2
     )
   )
+
+  // #6515: reconcile the real SM field count against Pass 1's prediction
+  // (recorded in addPackageTokens under "pkg.func/arity").  The promoted-
+  // local pre-scan (countPromotedLocalsBlock / countPatBindNamesMsil) is a
+  // syntactic UPPER bound: a Unit-typed `val u = <void expr>` is counted by
+  // name but allocates no slot at lowering (#4886), so
+  // phaseBPromotePatBindsMsil registers no field for it.  Pad with dead
+  // `object` fields up to the prediction so every FieldDef token assigned to
+  // types declared after this SM stays aligned; panic when the real count
+  // EXCEEDS the prediction — that direction shifted tokens are already
+  // baked into Pass 1 and cannot be repaired here (the #4259 bug class).
+  val smPredKey2 = pkgName + "." + decl.name + "/" + toString(decl.params.count)
+  match mapGet(cctx.smFieldCountPredictions, smPredKey2) {
+    case Some(predictedSm) -> {
+      if smFields.count > predictedSm {
+        panic(
+          "synthesizeAsyncSmPhaseBMsil: field-count prediction mismatch for '" + smFqn + "' — " +
+            "Pass 1 (countSmFieldsMsil) predicted " +
+            toString(predictedSm) +
+            " FieldDef rows but real synthesis produced " +
+            toString(smFields.count) +
+            ". countSmFieldsMsil's pre-scan missed a field-registering construct in this " +
+            "async function's body — every FieldDef/MethodDef token predicted for any type " +
+            "declared after it would otherwise be silently wrong (#6515)."
+        )
+      }
+      var smPadIdx = smFields.count
+      while smPadIdx < predictedSm {
+        smFields.add(MField(flags = FDA_PUBLIC, name = "__pad_" + toString(smPadIdx), fieldType = MObject))
+        smPadIdx = smPadIdx + 1
+      }
+    }
+    case None -> ()
+  }
 }
 
 // ── Phase 5: IAsyncEnumerable<T> generator synthesis (Epic #2070) ─────────────
