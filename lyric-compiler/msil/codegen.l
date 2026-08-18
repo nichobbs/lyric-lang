@@ -5282,7 +5282,12 @@ func materializeBoxedElemMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy
     // lowering time, same as the match-dispatch isinst site.
     case MClass(fqn) -> insns.add(MCastclassByName(className = fqn))
     case MGenericInst(_, headFqn, typeArgs) -> insns.add(MCastclassGeneric(className = headFqn, typeArgs = normalizeCastTyArgsMsil(typeArgs)))
-    case MGenericInstByName(headFqn, typeArgs) -> insns.add(MCastclassGeneric(className = genericBacktickFqn(headFqn, typeArgs.count), typeArgs = normalizeCastTyArgsMsil(typeArgs)))
+    // MGenericInstByName.headFqn already carries the `` `N `` arity suffix at
+    // every construction site (#6513 — adding it again double-suffixed the
+    // name, failed lowering-time resolution with a misleading W0003, and
+    // silently degraded to a no-op `castclass System.Object` for in-bundle
+    // generic returns); use it as-is like every other cast-target consumer.
+    case MGenericInstByName(headFqn, typeArgs) -> insns.add(MCastclassGeneric(className = headFqn, typeArgs = normalizeCastTyArgsMsil(typeArgs)))
     case _ -> {
       if isValueType(elemTy) {
         insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, elemTy)))

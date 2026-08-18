@@ -59,11 +59,50 @@ test "lambda Err carries its payload through the same path" {
   }
 }
 
-test "string-returning callback materializes through the invoke" {
+test "zero-branch Ok callback flows through unchanged" {
   val r = NativeRunner(id = 3)
   val res = runIt(r, 5, { b: Box -> Ok(()) })
   match res {
     case Ok(_) -> assertTrue(true, "trivial Ok callback")
     case Err(_) -> assertTrue(false, "unexpected Err")
+  }
+}
+
+// The IN-BUNDLE generic-union return shape (#6513): the declared callback
+// return `Wrap[Int]` is a same-package generic union, so its MsilType is the
+// by-name form whose head already carries the arity suffix — the downcast
+// target must use it as-is (double-suffixing degraded to a no-op
+// `castclass object`, reproducing the original invalid-IL bug for exactly
+// this shape while the cross-package `Result` cases above passed).
+pub union Wrap[T] {
+  case Full(item: T)
+  case Empty
+}
+
+pub interface WrapRunner {
+  func run(x: in Int, handler: (Box) -> Wrap[Int]): Wrap[Int]
+}
+
+pub record NativeWrapRunner {
+  id: Int
+}
+
+impl WrapRunner for NativeWrapRunner {
+  func run(x: in Int, handler: (Box) -> Wrap[Int]): Wrap[Int] {
+    val b = Box(tag = "w" + toString(x))
+    return handler(b)
+  }
+}
+
+pub func runWrap(r: in WrapRunner, x: in Int, handler: (Box) -> Wrap[Int]): Wrap[Int] {
+  return r.run(x, handler)
+}
+
+test "in-bundle generic union return flows through impl-method return" {
+  val r = NativeWrapRunner(id = 9)
+  val res = runWrap(r, 4, { b: Box -> if b.tag == "w4" { Wrap.Full(item = 42) } else { Wrap.Empty } })
+  match res {
+    case Full(v) -> assertEqualInt(v, 42, "Full payload survives the downcast path")
+    case Empty -> assertTrue(false, "expected Full")
   }
 }
