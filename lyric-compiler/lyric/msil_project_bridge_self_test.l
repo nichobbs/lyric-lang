@@ -1510,3 +1510,182 @@ test "large single-package MSIL bundle (MethodDef row count > 8192) still reads 
     }
   }
 }
+
+// ─── #6505: wire templates collected from ALIAS-REWRITTEN sources ────────────
+// A `pub wire` template whose member inits reference the DECLARING file's
+// import alias (`StrAlias.toUpper` under `import Std.String as StrAlias`)
+// and a tail-segment package qualifier (`Parse.parseOptInt` under
+// `import Std.Parse`) must splice into a consumer package that has NEITHER
+// import fully qualified.  Before the fix, collection took the raw parsed
+// AST and the spliced qualifiers were rewritten against the CONSUMER's
+// import table (which cannot resolve them) — the docs/58 analog of the
+// D-progress-781 aspect-template fix.
+test "wire template body's import-alias and tail-segment refs splice fully qualified (#6505)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "WireAliasLib",
+      "package WireAliasLib\n" + "\n" + "import Std.Core\n" + "import Std.String as StrAlias\n" + "import Std.Parse\n" +
+        "\n" +
+        "pub wire Base {\n" +
+        "  singleton up: String = StrAlias.toUpper(\"wire\")\n" +
+        "  singleton num: Int = match Parse.parseOptInt(\"41\") { case Some(n) -> n + 1; case None -> 0 }\n" +
+        "  expose up\n" +
+        "  expose num\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "WireAliasApp",
+      "package WireAliasApp\n" + "\n" + "import WireAliasLib\n" + "\n" + "wire Main {\n" +
+        "  include WireAliasLib.Base\n" +
+        "  expose up\n" +
+        "  expose num\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  Main.bootstrap()\n" +
+        "  println(Main.up() + \"-\" + toString(Main.num()))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRunWithStdlib("wire-alias-6505", packages, "WireAlias6505")
+  assertEqualInt(result.exitCode, 0, "wire-alias splice: exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "WIRE-42", "template refs resolved through the library's own imports")
+}
+
+// ─── #6511 item 3: one InterfaceImpl row per (class, interface) pair ─────────
+// `codegenMPackage` used to queue an MPImpl for EVERY entry in the
+// bundle-global `cctx.implEntries` on every per-package call, so each later
+// package re-emitted every earlier package's impls — duplicate InterfaceImpl
+// metadata rows (loader-tolerated, ilverify [MD] errors; 4-package lyric-mq
+// carried each impl 4x).  Asserted directly against the emitted metadata via
+// Msil.MetadataReader: table 0x09 must hold exactly ONE row for the single
+// impl in this two-package bundle.
+test "multi-package bundle emits exactly one InterfaceImpl row per impl (#6511)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "ImplDedupLib",
+      "package ImplDedupLib\n" + "\n" + "pub interface Greeter {\n" + "  func greet(): String\n" + "}\n" + "\n" +
+        "pub record Eng {\n" +
+        "  tag: String\n" +
+        "}\n" +
+        "\n" +
+        "impl Greeter for Eng {\n" +
+        "  func greet(): String {\n" +
+        "    \"hi-\" + self.tag\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "pub func makeEng(tag: in String): Eng {\n" +
+        "  Eng(tag = tag)\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "ImplDedupApp",
+      "package ImplDedupApp\n" + "\n" + "import ImplDedupLib\n" + "\n" + "func main(): Unit {\n" +
+        "  val g = ImplDedupLib.makeEng(\"a\")\n" +
+        "  println(g.greet())\n" +
+        "}\n"
+    )
+  )
+  val dir = freshTempDir("impl-dedup-6511")
+  val dllPath = Path.join(dir, "ImplDedup6511.dll")
+  val stdlibSources: List[String] = newList()
+  val ok = compileProjectToMsil(packages, "ImplDedup6511", dllPath, stdlibSources)
+  if not ok {
+    cleanup(dir)
+    panic("impl-dedup #6511: compileProjectToMsil returned false")
+  }
+  val bytes = File.readBytesOrPanic(dllPath)
+  cleanup(dir)
+  match Mdr.readPe(bytes) {
+    case Err(e) -> assertTrue(false, "impl-dedup #6511: readPe failed: " + e)
+    case Ok(img) -> {
+      match Mdr.readMetadataRoot(img) {
+        case Err(e2) -> assertTrue(false, "impl-dedup #6511: readMetadataRoot failed: " + e2)
+        case Ok(root) -> {
+          match Mdr.readTablesHeader(img, root) {
+            case Err(e3) -> assertTrue(false, "impl-dedup #6511: readTablesHeader failed: " + e3)
+            case Ok(th) -> {
+              val implRows = Mdr.rowCountOf(th, 0x09)
+              assertEqualInt(implRows, 1, "exactly one InterfaceImpl row for the bundle's single impl")
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// ─── #6511 items 1–2: slice-field append via self + Unit `= ()` body ─────────
+// Runtime pins for the two other emitter invalid-IL fixes from the #6511
+// nest.  Like `slice_array_abi_self_test.l`, the runtime values here were
+// (mostly) tolerated by the lenient tier-0 JIT even when the IL was invalid
+// — `ilverify` over the emitted DLL (the battery's ilverify sweep, or a
+// direct run) is what actually catches a regression:
+//   - a record's `slice[T]` field appended through `self` used to route the
+//     new backing `List`1<object>` through an `object`-declared local
+//     (StackUnexpected at every `Add`);
+//   - `pub func ping(): Unit = ()` used to leave the `()` value (`ldnull`)
+//     on the stack at a void `ret` (ReturnVoid).
+test "slice-field append through self and Unit expression body run correctly (#6511)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "SliceFieldLib",
+      "package SliceFieldLib\n" + "\n" + "pub record Entry {\n" + "  name: String\n" + "}\n" + "\n" +
+        "pub interface Store {\n" +
+        "  func add(e: in Entry): Unit\n" +
+        "  func size(): Int\n" +
+        "}\n" +
+        "\n" +
+        "pub record InStore {\n" +
+        "  var entries: slice[Entry]\n" +
+        "  maxEntries: Int\n" +
+        "}\n" +
+        "\n" +
+        "impl Store for InStore {\n" +
+        "  func add(e: in Entry): Unit {\n" +
+        "    if self.entries.length < self.maxEntries {\n" +
+        "      self.entries = self.entries.append(e)\n" +
+        "    } else {\n" +
+        "      var trimmed: slice[Entry] = []\n" +
+        "      var i: Int = 1\n" +
+        "      while i < self.entries.length {\n" +
+        "        trimmed = trimmed.append(self.entries[i])\n" +
+        "        i = i + 1\n" +
+        "      }\n" +
+        "      self.entries = trimmed.append(e)\n" +
+        "    }\n" +
+        "  }\n" +
+        "\n" +
+        "  func size(): Int {\n" +
+        "    return self.entries.length\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "pub func ping(): Unit = ()\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "SliceFieldApp",
+      "package SliceFieldApp\n" + "\n" + "import SliceFieldLib\n" + "\n" + "func main(): Unit {\n" +
+        "  SliceFieldLib.ping()\n" +
+        "  val s = SliceFieldLib.InStore(entries = [], maxEntries = 2)\n" +
+        "  s.add(SliceFieldLib.Entry(name = \"a\"))\n" +
+        "  s.add(SliceFieldLib.Entry(name = \"b\"))\n" +
+        "  s.add(SliceFieldLib.Entry(name = \"c\"))\n" +
+        "  println(s.size())\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("slice-field-6511", packages, "SliceField6511")
+  assertEqualInt(result.exitCode, 0, "slice-field/unit-body: exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2", "capped append through self keeps the last two entries")
+}

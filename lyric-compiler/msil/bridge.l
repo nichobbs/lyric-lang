@@ -555,19 +555,33 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // (`Core.router`) is consumed by the expander rather than collapsed by
   // the import-alias rewriter when the alias name matches an imported
   // package's last segment.
+  // #6505: collect from ALIAS-REWRITTEN copies (the docs/58 analog of the
+  // D-progress-781 aspect-template fix) so a template body's references
+  // through the SOURCE file's import aliases (`WebPkg.foo` under
+  // `import Web as WebPkg`, tail-segment `Console.error` under
+  // `import Std.Console`) splice into consumers fully qualified — the
+  // consumer's own later alias rewrite runs with the CONSUMER's import
+  // table and cannot resolve the library's aliases.  Safe against the
+  // ordering concern the expansion-first pipeline comment documents:
+  // `rewriteWireDecl` (#6316) already excludes every `WMInclude`
+  // alias/binding name from the table and never rewrites the include
+  // path itself, so include-alias qualified accesses inside template
+  // bodies are preserved for the expander.  The files EXPANDED below stay
+  // the un-rewritten originals — only the collected template decls are
+  // taken from the rewritten copies.
   val weWires: Map[String, CollectedWireTemplate] = newMap()
   val weConfigs: Map[String, CollectedConfigTemplate] = newMap()
   var wti = 0
   while wti < parsedPkgs.count {
     val wpp: ParsedUserPkg = parsedPkgs[wti]
-    WireExpand.collectWireTemplates(wpp.file.items, wpp.name, weWires, weConfigs)
+    WireExpand.collectWireTemplates(Aliases.rewriteFile(wpp.file).items, wpp.name, weWires, weConfigs)
     wti = wti + 1
   }
   var wtd = 0
   while wtd < depTemplatePkgs.count {
     val wdtPkg = depTemplatePkgs[wtd]
     val wdtParseRes = parse(wdtPkg.source)
-    WireExpand.collectWireTemplates(wdtParseRes.file.items, wdtPkg.name, weWires, weConfigs)
+    WireExpand.collectWireTemplates(Aliases.rewriteFile(wdtParseRes.file).items, wdtPkg.name, weWires, weConfigs)
     wtd = wtd + 1
   }
   var wei = 0

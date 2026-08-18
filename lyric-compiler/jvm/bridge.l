@@ -1193,17 +1193,33 @@ pub func compileProjectToJarBundledWithFeatures(
   // consumed by the expander rather than collapsed by the import-alias
   // rewriter when the alias name matches an imported package's last
   // segment; the standard rewrite chain is applied to the expanded file.
+  // #6505: collect from ALIAS-REWRITTEN copies so template bodies'
+  // references through the SOURCE file's import aliases splice into
+  // consumers fully qualified — see the MSIL bridge's matching comment
+  // (rewriteWireDecl's #6316 include-alias exclusion makes this safe
+  // against the expansion-first ordering concern).  The files EXPANDED
+  // below stay the un-rewritten originals.
   val weWires: Map[String, CollectedWireTemplate] = newMap()
   val weConfigs: Map[String, CollectedConfigTemplate] = newMap()
   var wti = 0
   while wti < userFiles.count {
-    WireExpand.collectWireTemplates(userFiles[wti].items, dottedPath(userFiles[wti].packageDecl.path), weWires, weConfigs)
+    WireExpand.collectWireTemplates(
+      Aliases.rewriteFile(userFiles[wti]).items,
+      dottedPath(userFiles[wti].packageDecl.path),
+      weWires,
+      weConfigs
+    )
     wti = wti + 1
   }
   var wtd = 0
   while wtd < depTemplateSrcs.count {
     val wdtPr = parse(depTemplateSrcs[wtd])
-    WireExpand.collectWireTemplates(wdtPr.file.items, dottedPath(wdtPr.file.packageDecl.path), weWires, weConfigs)
+    WireExpand.collectWireTemplates(
+      Aliases.rewriteFile(wdtPr.file).items,
+      dottedPath(wdtPr.file.packageDecl.path),
+      weWires,
+      weConfigs
+    )
     wtd = wtd + 1
   }
   var wei = 0
