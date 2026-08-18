@@ -452,6 +452,24 @@ func symTableScopeAllows(tbl: in SymbolTable, pkg: in String): Bool {
   false
 }
 
+/// Resolve `name` to a symbol declared by EXACTLY the package `pkg`
+/// (dotted origin-package name), newest-first.  The package-qualified
+/// counterpart of `symTableTryFindOne`: a qualified reference must never
+/// fall back to a same-named symbol from a different package (#6287 —
+/// last-registered-wins silently resolved `PkgA.Ping(...)` to a colliding
+/// case from PkgB, despite the explicit qualifier).
+pub func symTableTryFindInPackage(tbl: in SymbolTable, pkg: in String, name: in String): Option[Symbol] {
+  var i = tbl.symbols.count - 1
+  while i >= 0 {
+    val s = tbl.symbols[i]
+    if s.name == name and s.originPackage == pkg {
+      return Some(value = s)
+    }
+    i = i - 1
+  }
+  None
+}
+
 pub func symTableTryFindAll(tbl: in SymbolTable, name: in String): List[Symbol] {
   val result: List[Symbol] = newList()
   var i = 0

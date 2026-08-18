@@ -2785,12 +2785,143 @@ func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
 // arguments*: `Some(value: String)` -> `Option[String]`.  A case with no fields
 // (`None`) or an uninferable generic position yields `TyError` type-args (kept
 // lenient — `None` is `Option[?]` for any `?`).
-// The union-case symbol for a constructor reference `fn` (last path segment).
-func unionCaseSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
-  match fn.kind {
-    case EPath(p) -> if p.segments.count >= 1 { match symTableTryFindOne(tbl, p.segments[p.segments.count - 1]) { case Some(sym) -> match sym.kind { case DKUnionCase(_, _) -> Some(value = sym); case _ -> None }; case None -> None } } else { None }
-    case _ -> None
+// The union-case symbol for a constructor reference `fn`.
+//
+// A QUALIFIED constructor honours its qualifier (#6287): before this,
+// `PkgA.Ping(...)` resolved the bare last segment last-registered-wins, so a
+// colliding case name in another imported package silently won over the
+// explicitly named one (surfacing as a baffling `T0043 Signal vs Signal`).
+// Two legal qualifier shapes are tried, most-specific first:
+//   (a) a package path — `PkgA.Ping(...)`, `A.B.Ping(...)`;
+//   (b) the parent union's simple name, optionally itself
+//       package-qualified — `Signal.Ping(...)`, `PkgA.Signal.Ping(...)`.
+// When the qualifier matches neither, fall through to the historical bare
+// lookup so import-relative or synthesized spellings keep resolving.
+// Flatten a pure dotted-path callee into its segments: a flat `EPath`
+// (`PkgA.Ping`) or a nested `EMember` chain over an `EPath` head
+// (`PkgA.Signal.Ping` parses this way — the parser builds postfix members
+// left-to-right).  Returns false (dest untouched semantics-wise) for any
+// non-path shape (real receivers, calls, indexing).
+func flattenCalleePathSegs(e: in Expr, dest: in List[String]): Bool {
+  match e.kind {
+    case EPath(p) -> {
+      var i = 0
+      while i < p.segments.count {
+        dest.add(p.segments[i])
+        i = i + 1
+      }
+      true
+    }
+    case EMember(recv, memberName) -> {
+      if flattenCalleePathSegs(recv, dest) {
+        dest.add(memberName)
+        true
+      } else {
+        false
+      }
+    }
+    case EParen(inner) -> flattenCalleePathSegs(inner, dest)
+    case _ -> false
   }
+}
+
+func unionCaseSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
+  val flatSegs: List[String] = newList()
+  if not flattenCalleePathSegs(fn, flatSegs) or flatSegs.count == 0 {
+    return None
+  }
+  // An `EMember` chain is only *treated* as a path when a qualifier tier
+  // below actually matches — its bare-name fallback stays reserved for the
+  // shapes the pre-#6287 code handled (a flat `EPath` callee).  Without
+  // this, a method call on a value receiver (`x.Ping(...)`) whose member
+  // name collides with some union case would mis-route to constructor
+  // typing instead of falling through to method resolution.
+  val fnWasFlatPath = match fn.kind { case EPath(_) -> true; case _ -> false }
+  val p = ModulePath(segments = flatSegs, span = fn.span)
+  val caseName = p.segments[p.segments.count - 1]
+  if p.segments.count >= 2 {
+    val quals: List[String] = newList()
+    var qi = 0
+    while qi < p.segments.count - 1 {
+      quals.add(p.segments[qi])
+      qi = qi + 1
+    }
+    // (a) whole qualifier as the declaring package.
+    val fullQual = modulePathJoin(quals)
+    match symTableTryFindInPackage(tbl, fullQual, caseName) {
+      case Some(pkgSym) -> match pkgSym.kind { case DKUnionCase(_, _) -> return Some(value = pkgSym); case _ -> () }
+      case None -> ()
+    }
+    // (b) last qualifier segment as the parent union's simple name,
+    // any leading segments as its declaring package.
+    val unionName = quals[quals.count - 1]
+    val pkgSegs: List[String] = newList()
+    var pj = 0
+    while pj < quals.count - 1 {
+      pkgSegs.add(quals[pj])
+      pj = pj + 1
+    }
+    val pkgPrefix = modulePathJoin(pkgSegs)
+    val candidates = symTableTryFindAll(tbl, caseName)
+    var ci = candidates.count - 1
+    while ci >= 0 {
+      val cand = candidates[ci]
+      match cand.kind {
+        case DKUnionCase(parentId, _) -> {
+          val parentMatches = match parentUnionDeclOf(tbl, parentId) {
+            case Some(pu) -> pu.name == unionName
+            case None -> false
+          }
+          if parentMatches and (pkgPrefix.length == 0 or cand.originPackage == pkgPrefix) {
+            return Some(value = cand)
+          }
+        }
+        case _ -> ()
+      }
+      ci = ci - 1
+    }
+  }
+  if not fnWasFlatPath {
+    return None
+  }
+  match symTableTryFindOne(tbl, caseName) {
+    case Some(sym) -> match sym.kind { case DKUnionCase(_, _) -> Some(value = sym); case _ -> None }
+    case None -> None
+  }
+}
+
+// The union-case symbol for a PATTERN head, preferring the case declared by
+// the SCRUTINEE's own union (#6287): with two imported unions sharing a case
+// name, the bare pattern `case Ping(c)` must bind the fields of the union
+// being matched, not whichever colliding case was registered last.  Falls
+// back to the name-based lookup when the scrutinee is not a known union
+// (TyError-lenient scrutinees keep the historical behaviour).
+func unionCaseSymbolForScrutinee(tbl: in SymbolTable, fn: in Expr, scrutineeTy: in Type): Option[Symbol] {
+  match unrefine(scrutineeTy) {
+    case TyUser(sid, _, _) -> {
+      val scrCaseName = match fn.kind {
+        case EPath(sp) -> if sp.segments.count >= 1 { sp.segments[sp.segments.count - 1] } else { "" }
+        case _ -> ""
+      }
+      if scrCaseName.length > 0 {
+        val scrCands = symTableTryFindAll(tbl, scrCaseName)
+        var sci = scrCands.count - 1
+        while sci >= 0 {
+          match scrCands[sci].kind {
+            case DKUnionCase(scrParent, _) -> {
+              if typeIdEq(scrParent, sid) {
+                return Some(value = scrCands[sci])
+              }
+            }
+            case _ -> ()
+          }
+          sci = sci - 1
+        }
+      }
+    }
+    case _ -> ()
+  }
+  unionCaseSymbolOf(tbl, fn)
 }
 
 func parentUnionDeclOf(tbl: in SymbolTable, parentId: in TypeId): Option[UnionDecl] {
@@ -3259,7 +3390,7 @@ func checkConstRefPattern(
       checkConstRefPattern(tbl, sigs, diag, inner, testTy)
     }
     case PConstructor(head, args) -> {
-      val ftypes = match unionCaseSymbolOf(tbl, pat2fnExpr(head, pat.span)) {
+      val ftypes = match unionCaseSymbolForScrutinee(tbl, pat2fnExpr(head, pat.span), scrutineeTy) {
         case Some(caseSym) -> caseFieldTypesInstantiated(tbl, diag, caseSym, scrutineeTy)
         case None -> newList()
       }
@@ -3358,7 +3489,7 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
     case PLiteral(_) -> {
     }
     case PConstructor(head, args) -> {
-      val ftypes = match unionCaseSymbolOf(tbl, pat2fnExpr(head, pat.span)) {
+      val ftypes = match unionCaseSymbolForScrutinee(tbl, pat2fnExpr(head, pat.span), ty) {
         case Some(caseSym) -> caseFieldTypesInstantiated(tbl, diag, caseSym, ty)
         case None -> newList()
       }

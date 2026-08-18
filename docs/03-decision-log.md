@@ -30439,3 +30439,84 @@ DLLs / 0 errors) — see the PR.
 **Related:** #6496, #6348/D-progress-780 (unaliased routing + the
 migration precedent), #6124 (JVM routing), D-progress-018 (alias
 sugar), #5625 (original mis-binding).
+
+## D-progress-784 — Bootstrap seed fallback: local-tag tier + release-cut pin assertion (#6501)
+
+**Date:** 2026-08-18. **Resolves** #6501 (keeping the PR #6497
+last-resort pinned seed version current) with two mechanisms instead
+of trusting manual bumps:
+
+1. **Fallback tier 1 — newest local release tag.**  When the GitHub
+   `/releases` listing API yields nothing across every retry (the
+   2026-08-17 incident class), `scripts/bootstrap.sh` now consults
+   `git tag --list 'v[0-9]*' | sort -V | tail -1` before the pin: a
+   full checkout already knows every published version with no API
+   round-trip, and is never stale the way a hardcoded literal is.
+   Shallow checkouts without tags skip the tier.
+2. **Release-cut assertion.**  `publish.yml`'s `create-release` job
+   fails the cut when the `LYRIC_BOOTSTRAP_FALLBACK_VERSION` default
+   has drifted from the newest published release, with the exact
+   one-line fix in the error message.  This keeps the pin at most one
+   release behind, with an explicit bump commit per release.
+
+An auto-bump PR from the publish workflow was considered and rejected:
+`GITHUB_TOKEN`-created PRs do not trigger CI (GitHub's
+recursive-workflow guard), so required checks would never run and the
+PR would hang un-mergeable; a direct push to `main` is blocked by
+branch protection.  The assertion moves the maintenance to the one
+moment a human (or agent) is already cutting a release.
+
+**Related:** #6501, PR #6497 (the incident hardening + original pin),
+D-progress-781 (same incident's session).
+
+## D-progress-785 — Qualified union-case references honour their qualifier; patterns bind against the scrutinee's union (#6287 phase A)
+
+**Date:** 2026-08-18. **Addresses the sharpest finding in #6287** (the
+#6337 investigation): with two imported packages each exporting a
+same-named union case, even a PACKAGE-QUALIFIED constructor reference
+(`PkgA.Ping(...)`) resolved to whichever colliding case was registered
+last — the explicit qualifier was ignored (`unionCaseSymbolOf` looked
+up only the bare last path segment through `symTableTryFindOne`'s
+last-registered-wins scan), surfacing as a baffling
+`T0043 Signal vs Signal`.  Bare patterns had the same hole from the
+other side: `case Ping(c)` bound the fields of the last-registered
+`Ping`, not the scrutinee's.
+
+**What shipped (type checker).**
+
+1. `symTableTryFindInPackage(tbl, pkg, name)` — the package-qualified
+   counterpart of `symTableTryFindOne`: resolves only against symbols
+   whose `originPackage` is exactly `pkg`.
+2. `unionCaseSymbolOf` now flattens the callee (flat `EPath` AND the
+   nested `EMember`-chain shape the parser produces for dotted
+   references) and, for multi-segment references, honours the
+   qualifier — most-specific first: (a) the whole qualifier as the
+   declaring package (`PkgA.Ping`), then (b) the last qualifier
+   segment as the parent union's simple name, optionally itself
+   package-qualified (`Signal.Ping`, `PkgA.Signal.Ping`).  The
+   historical bare-name fallback stays reserved for the shapes the
+   pre-fix code handled (flat `EPath` callees) so a method call on a
+   value receiver whose member name collides with some union case
+   cannot mis-route to constructor typing.
+3. `unionCaseSymbolForScrutinee` — pattern heads now resolve the case
+   WITHIN the scrutinee's own union first (by `parentId`), falling back
+   to the name-based lookup only when the scrutinee is not a known
+   union (TyError-lenient scrutinees keep the historical behaviour).
+   Wired into both pattern-typing sites (`bindPatternTyped`,
+   `checkConstRefPattern`).
+
+**Verified by** a new `typechecker_self_test.l` case (5 assertions:
+qualified-to-PkgA ctor accepted, its Int field binds into an Int val;
+qualified-to-PkgB ctor's String field rejected by an Int val, T0060;
+the `PkgA.Signal.Ping` parent-union shape) — 365/365.
+
+**Still open in #6287 (phase B):** the bare-name ambiguity diagnostic
+(error on an unqualified reference matching `pub` symbols in more than
+one imported package) and the reject-unimported-resolution rule, plus
+the in-tree collision audit both require.  This entry fixes qualified
+references being WRONG; bare references remain silently
+last-registered-wins.
+
+**Related:** #6287, #6286/#6285 (the original instance), #6337 (the
+investigation that found the qualified repro), D-progress-428 (the
+scoped-resolution tiers this builds on).

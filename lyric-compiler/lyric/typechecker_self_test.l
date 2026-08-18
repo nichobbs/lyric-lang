@@ -627,6 +627,52 @@ test "interface subtyping cross package sound" {
   )
 }
 
+// #6287: a PACKAGE-QUALIFIED union-case constructor honours its qualifier.
+// PkgA and PkgB both export `union Signal` with a colliding case name `Ping`
+// (different field shapes).  Before the fix, `PkgA.Ping(...)` resolved the
+// bare last segment last-registered-wins — PkgB's case won despite the
+// explicit qualifier, surfacing as a baffling `T0043 Signal vs Signal`.
+test "qualified union case constructor honours package qualifier" {
+  val pkgA = parse(
+    "package PkgA\npub union Signal {\n  case Ping(code: Int)\n  case Halt\n}\npub func wantA(s: in Signal): Int { 0 }\n"
+  )
+  val pkgB = parse("package PkgB\npub union Signal {\n  case Ping(label: String)\n  case Halt\n}\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
+  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  // Qualified to PkgA — must construct PkgA's Signal and satisfy wantA.
+  val okSrc = "package App\nimport PkgA\nimport PkgB\nfunc f(): Int {\n  wantA(PkgA.Ping(code = 7))\n}\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(okSrc).file, packages)),
+    0,
+    "qualified ctor: PkgA.Ping resolves to PkgA's case despite PkgB's collision (registered later)"
+  )
+  // Qualified to PkgB — the constructed value's cases carry PkgB's field
+  // types: binding Ping's String `label` into an Int-typed val must be
+  // rejected.  (Not routed through `wantA`'s signature — the flat test
+  // shim resolves sig param types leniently, so a cross-union arg check is
+  // not enforceable here; the field type IS.)
+  val errSrc = "package App\nimport PkgA\nimport PkgB\nfunc f(): Int {\n  match PkgB.Ping(label = \"x\") {\n    case Ping(c) -> {\n      val x: Int = c\n      x\n    }\n    case Halt -> 0\n  }\n}\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(parse(errSrc).file, packages), "T0060"),
+    "qualified ctor: PkgB.Ping constructs PkgB's Signal — its Ping binds a String, rejected by an Int val"
+  )
+  // And the same shape through PkgA stays clean (`code` is Int).
+  val okSrc3 = "package App\nimport PkgA\nimport PkgB\nfunc f(): Int {\n  match PkgA.Ping(code = 1) {\n    case Ping(c) -> {\n      val x: Int = c\n      x\n    }\n    case Halt -> 0\n  }\n}\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(okSrc3).file, packages)),
+    0,
+    "qualified ctor: PkgA.Ping's Int field binds cleanly into an Int val"
+  )
+  // Union-name-qualified with a leading package — `PkgA.Signal.Ping(...)`.
+  val okSrc2 = "package App\nimport PkgA\nimport PkgB\nfunc f(): Int {\n  wantA(PkgA.Signal.Ping(code = 7))\n}\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(okSrc2).file, packages)),
+    0,
+    "qualified ctor: PkgA.Signal.Ping resolves through the package-qualified parent union"
+  )
+}
+
 // #1488 category D: two imported packages can export the same simple type name
 // (`Std.Regex.RegexError` {TimedOut, InvalidPattern} vs `Std.RegexSafe.RegexError`
 // {TimedOut, RegexBug}).  Through the flat `checkWithImports` shim, every
