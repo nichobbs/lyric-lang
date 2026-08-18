@@ -30785,3 +30785,50 @@ now genuinely reaches the in-memory kernel on dotnet).
 docs/59 §slice/List family, #3385 (kernel target-gating), #733/#779
 (broker backends, still placeholders), #4025 (the 2-arg indexOf
 convention `jsonExtractRaw` works around).
+
+## D-progress-790 — Wire/config templates are collected from alias-rewritten sources (#6505)
+
+**Date:** 2026-08-18.  **Status:** shipped.
+
+**Problem.** The docs/58 wire/config-template collection loops (both
+bridges, in-bundle and path-dependency alike) took templates from the
+raw parsed AST.  A `pub wire` template whose member inits reference the
+DECLARING file's import alias (`StrAlias.toUpper` under
+`import Std.String as StrAlias`) or a tail-segment package qualifier
+(`Parse.parseOptInt` under `import Std.Parse`) spliced those qualifiers
+verbatim into consumer packages; the consumer's own later alias rewrite
+runs with the CONSUMER's import table, cannot resolve the library's
+aliases, and the build fails (or, pre-#6496, silently degraded) — the
+docs/58 analog of the D-progress-781 aspect-template fix.
+
+**The ordering concern that kept this out of #6504, resolved.**  The
+pipeline deliberately runs wire EXPANSION before the alias rewrite so an
+include alias's qualified access is consumed by the expander, and #6505
+worried a blind pre-collection rewrite would collapse those.  But
+`rewriteWireDecl` (#6316) is already include-alias-safe: every
+`WMInclude` alias/binding name joins the excluded-locals set before
+member bodies are rewritten, and `WMInclude.path` itself is never
+rewritten (resolved against collected template FQNs).  So collecting
+from an `Aliases.rewriteFile` COPY is sound — template bodies get the
+library's import qualifiers fully qualified while include-alias accesses
+survive intact.  The files EXPANDED stay the un-rewritten originals, so
+consumer-side ordering is untouched.
+
+**What shipped.**  All four multi-package collection sites (msil bridge
+in-bundle + dep loops, jvm bridge in-bundle + dep loops) collect from
+`Aliases.rewriteFile(...)` copies.  The single-file paths need no change
+(the consumer IS the declaring file and shares its imports).  This fixes
+the in-bundle cross-package case as well as the issue's path-dependency
+case — same mechanism, same splice.
+
+**Verification.**  New `msil_project_bridge_self_test.l` case: a
+two-package bundle where the template package's `pub wire` references
+both an import alias and a tail-segment qualifier the consumer package
+does not import; runtime output asserts both resolved through the
+library's own imports.  Confirmed NON-vacuous: the test fails against
+the pre-fix bridge (negative probe) and passes with the fix.  Full
+battery green.
+
+**Related:** #6505 (closed by this), #6504/D-progress-781 (the aspect
+analog), #6316 (the include-alias exclusion that makes this sound),
+docs/58 (D121), #5289/#5284 (include semantics the exclusion protects).
