@@ -30468,3 +30468,55 @@ moment a human (or agent) is already cutting a release.
 
 **Related:** #6501, PR #6497 (the incident hardening + original pin),
 D-progress-781 (same incident's session).
+
+## D-progress-785 — Qualified union-case references honour their qualifier; patterns bind against the scrutinee's union (#6287 phase A)
+
+**Date:** 2026-08-18. **Addresses the sharpest finding in #6287** (the
+#6337 investigation): with two imported packages each exporting a
+same-named union case, even a PACKAGE-QUALIFIED constructor reference
+(`PkgA.Ping(...)`) resolved to whichever colliding case was registered
+last — the explicit qualifier was ignored (`unionCaseSymbolOf` looked
+up only the bare last path segment through `symTableTryFindOne`'s
+last-registered-wins scan), surfacing as a baffling
+`T0043 Signal vs Signal`.  Bare patterns had the same hole from the
+other side: `case Ping(c)` bound the fields of the last-registered
+`Ping`, not the scrutinee's.
+
+**What shipped (type checker).**
+
+1. `symTableTryFindInPackage(tbl, pkg, name)` — the package-qualified
+   counterpart of `symTableTryFindOne`: resolves only against symbols
+   whose `originPackage` is exactly `pkg`.
+2. `unionCaseSymbolOf` now flattens the callee (flat `EPath` AND the
+   nested `EMember`-chain shape the parser produces for dotted
+   references) and, for multi-segment references, honours the
+   qualifier — most-specific first: (a) the whole qualifier as the
+   declaring package (`PkgA.Ping`), then (b) the last qualifier
+   segment as the parent union's simple name, optionally itself
+   package-qualified (`Signal.Ping`, `PkgA.Signal.Ping`).  The
+   historical bare-name fallback stays reserved for the shapes the
+   pre-fix code handled (flat `EPath` callees) so a method call on a
+   value receiver whose member name collides with some union case
+   cannot mis-route to constructor typing.
+3. `unionCaseSymbolForScrutinee` — pattern heads now resolve the case
+   WITHIN the scrutinee's own union first (by `parentId`), falling back
+   to the name-based lookup only when the scrutinee is not a known
+   union (TyError-lenient scrutinees keep the historical behaviour).
+   Wired into both pattern-typing sites (`bindPatternTyped`,
+   `checkConstRefPattern`).
+
+**Verified by** a new `typechecker_self_test.l` case (5 assertions:
+qualified-to-PkgA ctor accepted, its Int field binds into an Int val;
+qualified-to-PkgB ctor's String field rejected by an Int val, T0060;
+the `PkgA.Signal.Ping` parent-union shape) — 365/365.
+
+**Still open in #6287 (phase B):** the bare-name ambiguity diagnostic
+(error on an unqualified reference matching `pub` symbols in more than
+one imported package) and the reject-unimported-resolution rule, plus
+the in-tree collision audit both require.  This entry fixes qualified
+references being WRONG; bare references remain silently
+last-registered-wins.
+
+**Related:** #6287, #6286/#6285 (the original instance), #6337 (the
+investigation that found the qualified repro), D-progress-428 (the
+scoped-resolution tiers this builds on).
