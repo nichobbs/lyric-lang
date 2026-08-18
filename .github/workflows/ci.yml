@@ -3039,6 +3039,15 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/indexof_aliased_bcl_self_test.l
+      # Funcval-invoke materialization pin (#6511): a function-typed param's
+      # invoke result is downcast to its declared reference-class return, and
+      # a directly-passed lambda inherits the param's declared return type for
+      # union-case construction inference.  The impl-method indirection is the
+      # exact NativeQueue::consume shape that produced invalid IL.
+      - name: Funcval return materialization self-test on dotnet (native lyric test --target dotnet)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/funcval_ret_materialize_self_test.l
       # The same shapes are target-portable and meaningful MSIL coverage
       # (#6494 review) — run them on dotnet too.
       - name: Expression-branch stackmap self-test on dotnet (native lyric test --target dotnet)
@@ -3973,6 +3982,14 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/indexof_aliased_bcl_self_test.l
+
+      # Funcval-invoke materialization, JVM leg (#6511): the MSIL-side fix's
+      # shapes are target-portable; this pins that the JVM backend (which was
+      # already correct here) stays in parity.
+      - name: Funcval return materialization self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/funcval_ret_materialize_self_test.l
 
       # Interface slice-arg self-test on JVM (#6369) — JVM lowers every list
       # literal to a uniform `ArrayList`, so it never had the MSIL

@@ -30520,3 +30520,49 @@ last-registered-wins.
 **Related:** #6287, #6286/#6285 (the original instance), #6337 (the
 investigation that found the qualified repro), D-progress-428 (the
 scoped-resolution tiers this builds on).
+
+## D-progress-786 — Funcval-invoke results are downcast; direct lambdas inherit the param's declared return type (#6511, first half)
+
+**Date:** 2026-08-18. **Fixes the emitter half of #6511's findings**
+(surfaced by wiring lyric-mq's dead public API to its kernel — the
+wiring itself remains parked behind the two remaining miscompiles
+listed in the issue).
+
+1. **`materializeBoxedElemMsil` downcasts reference classes.**  The
+   uniform boxed-ABI invoke result is verifier-typed `object`; the
+   materialization claimed the declared class type without emitting a
+   cast, so any concretely-typed consumer — most sharply a `ret` in an
+   impl method returning `handler(x)` directly — produced invalid IL
+   (`StackUnexpected`, the `Mq.NativeQueue::consume` shape).  Now
+   `MClass` → `MCastclassByName`, `MGenericInst`/`MGenericInstByName`
+   → `MCastclassGeneric`, with `MVoid` generic args normalized to
+   `MObject` in cast targets (a `Unit` generic argument is `object`
+   end-to-end per D111; a GENERICINST blob carrying
+   `ELEMENT_TYPE_VOID` is rejected by the JIT even where ilverify
+   tolerates it).
+2. **`lambdaRetTypes`** — a lambda passed directly to a
+   function-typed parameter inherits that parameter's declared RETURN
+   type as its logical return (class shapes only; the physical
+   signature stays the uniform boxed `object`, primitive-return boxing
+   untouched).  Populated at the HOF call site from
+   `funcParamFnRetType`, which is now also recorded for
+   non-`@externTarget` functions when the declaring function is
+   non-generic (the #5334 pollution guard was about bare generic type
+   variables, impossible in a non-generic signature).  This seeds
+   union-case construction inference so `Ok(())` in a
+   `(X) -> Result[Unit, String]` callback instantiates
+   `Result_Ok<object,string>` instead of the fully-erased
+   `<object,object>` form — which the new downcast (or any concrete
+   consumer) could never accept at runtime.
+
+**Verified by** `funcval_ret_materialize_self_test.l` (3 cases, BOTH
+targets — the interface-impl `return handler(x)` shape end to end),
+run in CI on both targets, plus the full battery (ilverify 121 DLLs /
+0 errors — the minimal #6511 repro previously built with invalid IL
+and then crashed `InvalidCastException`; it now runs rc=0).
+
+**Related:** #6511 (two miscompiles still open there: the mq kernel
+`connect` defer/monitor/contract shape, and
+`InProcessDeadLetterStore::append`'s slice/List family), #6396/#4424
+(the untracked-invoke-return-type thread), #1939/#5334 (param
+propagation and its generics guard), D111 (Unit-as-object).
