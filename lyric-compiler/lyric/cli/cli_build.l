@@ -672,40 +672,6 @@ func emitSingleFileOrProject(
     )
   }
 
-  // #6503: resolve the source's imports against the enclosing workspace's
-  // MEMBERS (already-built DLLs only — see resolveWorkspaceImportDeps).
-  // Before this, `lyric build examples/docker_client.l` found the root
-  // workspace manifest (which declares no [dependencies]), contributed
-  // nothing, and the lenient fallback compiled every `Docker.*` reference
-  // into runtime-invalid code.  Names the manifest already resolved are
-  // passed through so a declared dependency is never double-restored.
-  val wsSeenDepNames: List[String] = newList()
-  var wsdi = 0
-  while wsdi < resolvedDeps.restoredDlls.count {
-    val wsEntry = resolvedDeps.restoredDlls[wsdi]
-    val wsTabIdx = Str.indexOfRaw(wsEntry, "\t")
-    wsSeenDepNames.add(if wsTabIdx >= 0 { wsEntry.substring(0, wsTabIdx) } else { wsEntry })
-    wsdi += 1
-  }
-  val wsAbsSource = if Path.isAbsolute(sourcePath) {
-    sourcePath
-  } else {
-    Path.join(Environment.currentDirectory(), sourcePath)
-  }
-  val wsImportDeps = resolveWorkspaceImportDeps(req.source, Path.dirname(wsAbsSource), wsSeenDepNames)
-  if wsImportDeps.hadUnbuiltMember {
-    return failedEmitOutcome(sourcePath + ": build failed (an import names an unbuilt workspace member; see above)")
-  }
-  var wsai = 0
-  while wsai < wsImportDeps.restoredDlls.count {
-    resolvedDeps.restoredDlls.add(wsImportDeps.restoredDlls[wsai])
-    wsai += 1
-  }
-  var wsti = 0
-  while wsti < wsImportDeps.depTemplateSrcs.count {
-    resolvedDeps.depTemplateSrcs.add(wsImportDeps.depTemplateSrcs[wsti])
-    wsti += 1
-  }
 
   val pkgNameRaw = Release.packageNameOf(req.source)
   val pkgName = if pkgNameRaw.length > 0 { pkgNameRaw } else { req.assemblyName }

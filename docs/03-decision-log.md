@@ -30869,12 +30869,17 @@ correctly — verified).
   mode never triggers an implicit restore" contract is preserved, and
   the silent runtime-invalid output is replaced by an actionable
   error.
-- Wired into BOTH single-file legs of `emitSingleFileOrProject`: the
-  manifest leg (deduped against manifest-declared deps) and a new
-  manifestless leg (`emitSingleFileWithWorkspaceMembers`) for sources
-  whose nearest manifest is the virtual workspace root.  JVM parity
-  matches the manifest leg: member packages ride the bundled compile
-  (#6136), restored DLLs on MSIL.
+- Wired into the MANIFESTLESS single-file leg only
+  (`emitSingleFileWithWorkspaceMembers`, for sources whose nearest
+  manifest is the virtual workspace root).  The manifest leg keeps the
+  explicit model — dependencies come from the manifest's
+  `[dependencies]` and own packages compile from source — after the
+  #6520 review (and a CI failure on lyric-web's in-tree test runners,
+  whose `import Web` matched their own enclosing member) showed
+  implicit member resolution there would weaken the manifest as the
+  single source of truth.  JVM parity matches the manifest leg's
+  convention: member packages ride the bundled compile (#6136),
+  restored DLLs on MSIL.
 - The workspace root's `[workspace] exclude` gains `lyric-compiler`:
   the compiler tree's lyric.toml exists for the CLI-bundle build, and
   left discoverable the "Lyric.Cli" member hijacked compiler-package
