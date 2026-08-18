@@ -165,7 +165,7 @@ pub func loadRestoredPackage(dllPath: in String): Result[List[RestoredArtifact],
 // would be more robust if a future repr extension puts braces in the
 // head — tracked alongside other contract-metadata refactors.
 func renderDecl(d: in Meta.ContractDecl): String {
-  if d.kind == "interface" and d.repr.indexOf("{") < 0 {
+  if d.kind == "interface" and Str.indexOfRaw(d.repr, "{") < 0 {
     d.repr + " {}\n"
   } else if d.kind == "func" {
     // A GENERIC function's `repr` is a bodyless head (see
@@ -202,7 +202,7 @@ func renderDecl(d: in Meta.ContractDecl): String {
 // owning package keeps its full cases via `renderDecl` on `contract.decls`.
 func renderPreambleDecl(d: in Meta.ContractDecl): String {
   if d.kind == "enum" or d.kind == "union" {
-    val braceIdx = d.repr.indexOf("{")
+    val braceIdx = Str.indexOfRaw(d.repr, "{")
     if braceIdx >= 0 {
       return Str.substring(d.repr, 0, braceIdx) + "{}\n"
     }
@@ -304,7 +304,7 @@ func isWhitelistedStdlibType(name: in String): Bool {
 // expected positions.  Couples to the diagnostic-message format from
 // `Lyric.TypeChecker.Resolver`.
 func extractT0010Name(msg: in String): String {
-  val openQ = msg.indexOf("'")
+  val openQ = Str.indexOfRaw(msg, "'")
   if openQ < 0 {
     return ""
   }

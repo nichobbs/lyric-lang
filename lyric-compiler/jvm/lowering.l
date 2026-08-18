@@ -5682,7 +5682,7 @@ func javaVersionArgs(): List[String] {
 // Returns 21 when the marker is absent or unparseable.
 func parseJavaFeatureVersion(text: in String): Int {
   val marker = "JAVA_VERSION=\""
-  val idx = text.indexOf(marker)
+  val idx = Str.indexOfRaw(text, marker)
   if idx < 0 {
     return 21
   }

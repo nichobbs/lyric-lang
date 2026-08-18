@@ -99,6 +99,25 @@ pub func lastIndexOf(s: in String, substring: in String): Option[Int] {
   return Some(value = i)
 }
 
+// Find the index of a substring, or -1 if not found (raw host semantics).
+// The explicit spelling for callers that want the sentinel-int form —
+// with `import Std.String` in scope the method spelling `.indexOf` is the
+// UFCS form of the Option-returning `indexOf` above on both targets
+// (#6496), so index arithmetic written against -1 should call this.
+@pure
+@stable(since = "1.0")
+pub func indexOfRaw(s: in String, substring: in String): Int {
+  s.indexOf(substring)
+}
+
+// Find the final index of a substring, or -1 if not found (raw host
+// semantics).  See `indexOfRaw`.
+@pure
+@stable(since = "1.0")
+pub func lastIndexOfRaw(s: in String, substring: in String): Int {
+  s.lastIndexOf(substring)
+}
+
 // Return the suffix beginning at start.
 @pure
 @stable(since = "1.0")

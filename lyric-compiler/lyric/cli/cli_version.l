@@ -16,7 +16,6 @@ import Lyric.Discovery as Disc
 // ─────────────────────────────────────────────────────────────────────────────
 // §14. lyric version — print and update package versions
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Return true when `s` is a non-negative decimal integer with no leading zeros
 // (or "0" itself).
 func isNonNegativeInt(s: in String): Bool {
@@ -40,12 +39,12 @@ pub func validateSemver(v: in String): String {
   if v.length == 0 {
     return "version cannot be empty"
   }
-  val first = v.indexOf(".")
+  val first = Str.indexOfRaw(v, ".")
   if first <= 0 {
     return "invalid semver '" + v + "': expected MAJOR.MINOR.PATCH"
   }
   val suffix = v.substring(first + 1)
-  val relSecond = suffix.indexOf(".")
+  val relSecond = Str.indexOfRaw(suffix, ".")
   if relSecond < 0 {
     return "invalid semver '" + v + "': expected MAJOR.MINOR.PATCH"
   }
@@ -58,8 +57,8 @@ pub func validateSemver(v: in String): String {
   // PATCH ends at the first '+' or '-' (pre-release / build metadata) or EOL.
   val patchStart = second + 1
   val patchRaw = v.substring(patchStart, v.length - patchStart)
-  val plusPos = patchRaw.indexOf("+")
-  val dashPos = patchRaw.indexOf("-")
+  val plusPos = Str.indexOfRaw(patchRaw, "+")
+  val dashPos = Str.indexOfRaw(patchRaw, "-")
   val patch = if plusPos >= 0 and (dashPos < 0 or plusPos < dashPos) {
     patchRaw.substring(0, plusPos)
   } else if dashPos >= 0 {
@@ -88,7 +87,7 @@ func indexOfVersionLine(lines: in slice[String]): Int {
   while i < lines.length {
     val t = Str.trim(lines[i])
     if not Str.startsWith(t, "#") and not Str.startsWith(t, "[") {
-      val eq = t.indexOf("=")
+      val eq = Str.indexOfRaw(t, "=")
       if eq > 0 and Str.trim(t.substring(0, eq)) == "version" {
         return i
       }
@@ -107,13 +106,9 @@ func indexOfVersionLine(lines: in slice[String]): Int {
 // rather than matching a fixed-spacing literal, so indentation and any
 // trailing inline comment on that line are preserved untouched.
 // Returns the updated text or an error string.
-pub func replaceVersionInToml(
-  text: in String,
-  oldVersion: in String,
-  newVersion: in String,
-): Result[String, String] {
+pub func replaceVersionInToml(text: in String, oldVersion: in String, newVersion: in String): Result[String, String] {
   val pkgHeader = "[package]"
-  val pkgStart = text.indexOf(pkgHeader)
+  val pkgStart = Str.indexOfRaw(text, pkgHeader)
   if pkgStart < 0 {
     return Err("[package] section not found in lyric.toml")
   }
@@ -124,13 +119,9 @@ pub func replaceVersionInToml(
   // search the tail substring and re-offset the result instead of passing
   // a start position directly.
   val afterHeaderTail = text.substring(afterHeader, text.length - afterHeader)
-  val nextSectionRel = afterHeaderTail.indexOf("\n[")
+  val nextSectionRel = Str.indexOfRaw(afterHeaderTail, "\n[")
   val nextSection = if nextSectionRel < 0 { -1 } else { nextSectionRel + afterHeader }
-  val sectionLen = if nextSection < 0 {
-    text.length - afterHeader
-  } else {
-    nextSection - afterHeader
-  }
+  val sectionLen = if nextSection < 0 { text.length - afterHeader } else { nextSection - afterHeader }
   val sectionBody = text.substring(afterHeader, sectionLen)
 
   val lines = Str.split(sectionBody, "\n")
@@ -140,15 +131,15 @@ pub func replaceVersionInToml(
   }
   val line = lines[lineIdx]
 
-  val eqPos = line.indexOf("=")
+  val eqPos = Str.indexOfRaw(line, "=")
   val afterEq = line.substring(eqPos + 1)
-  val relOpen = afterEq.indexOf("\"")
+  val relOpen = Str.indexOfRaw(afterEq, "\"")
   if relOpen < 0 {
     return Err("version value in [package] section is not a quoted string")
   }
   val quoteOpen = eqPos + 1 + relOpen
   val afterOpen = line.substring(quoteOpen + 1)
-  val relClose = afterOpen.indexOf("\"")
+  val relClose = Str.indexOfRaw(afterOpen, "\"")
   if relClose < 0 {
     return Err("version value in [package] section is not a properly closed quoted string")
   }
@@ -156,8 +147,7 @@ pub func replaceVersionInToml(
   val actualOld = line.substring(quoteOpen + 1, quoteClose - quoteOpen - 1)
   if actualOld != oldVersion {
     return Err(
-      "could not find version = \"" + oldVersion + "\" in [package] section (found \"" + actualOld +
-        "\" instead)"
+      "could not find version = \"" + oldVersion + "\" in [package] section (found \"" + actualOld + "\" instead)"
     )
   }
 
@@ -249,11 +239,8 @@ func cmdVersionWorkspace(newVersion: in String, startDir: in String): Int {
     }
     // Also update the workspace root manifest if it carries a [package] section
     // (non-virtual workspaces only).
-    val rootText = match File.readText(wsCtx.rootFile) {
-      case Err(_) -> ""
-      case Ok(t) -> t
-    }
-    if rootText.indexOf("[package]") >= 0 {
+    val rootText = match File.readText(wsCtx.rootFile) { case Err(_) -> ""; case Ok(t) -> t }
+    if Str.indexOfRaw(rootText, "[package]") >= 0 {
       val code = updateVersionInFile(wsCtx.rootFile, newVersion)
       if code != 0 {
         exitCode = code
@@ -273,10 +260,7 @@ func cmdVersionWorkspace(newVersion: in String, startDir: in String): Int {
     }
     val ver = match File.readText(mfPath) {
       case Err(_) -> "(read error)"
-      case Ok(t) -> match Mf.parseManifest(t, mfPath) {
-        case Err(_) -> "(parse error)"
-        case Ok(m) -> m.packageSection.version
-      }
+      case Ok(t) -> match Mf.parseManifest(t, mfPath) { case Err(_) -> "(parse error)"; case Ok(m) -> m.packageSection.version }
     }
     Console.println("  " + member.name + " " + ver)
     if firstVersion.length == 0 {
@@ -289,11 +273,8 @@ func cmdVersionWorkspace(newVersion: in String, startDir: in String): Int {
   // above: a non-virtual root (one that carries its own [package] section)
   // is printed and included in the alignment check too, so `--set` never
   // silently touches a file the print path didn't already report on (#3978).
-  val rootText = match File.readText(wsCtx.rootFile) {
-    case Err(_) -> ""
-    case Ok(t) -> t
-  }
-  if rootText.indexOf("[package]") >= 0 {
+  val rootText = match File.readText(wsCtx.rootFile) { case Err(_) -> ""; case Ok(t) -> t }
+  if Str.indexOfRaw(rootText, "[package]") >= 0 {
     val rootVer = match Mf.parseManifest(rootText, wsCtx.rootFile) {
       case Err(_) -> "(parse error)"
       case Ok(m) -> m.packageSection.version
@@ -352,10 +333,7 @@ pub func cmdVersion(argv: in slice[String]): Int {
     }
   }
 
-  val startDir = match manifestPath {
-    case Some(p) -> Path.dirname(p)
-    case None -> Environment.currentDirectory()
-  }
+  val startDir = match manifestPath { case Some(p) -> Path.dirname(p); case None -> Environment.currentDirectory() }
 
   if workspace {
     return cmdVersionWorkspace(newVersion, startDir)

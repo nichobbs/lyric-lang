@@ -946,7 +946,7 @@ func cmdTestManifest(
   while wi < wsDepDlls.count {
     val wsEntry = wsDepDlls[wi]
     restoredDlls.add(wsEntry)
-    val wsTab = wsEntry.indexOf("\t")
+    val wsTab = Str.indexOfRaw(wsEntry, "\t")
     val wsName = if wsTab >= 0 { wsEntry.substring(0, wsTab) } else { wsEntry }
     seenDeps.add(wsName)
     wi += 1

@@ -705,6 +705,21 @@ func parseStatus(raw: in String): JobStatus {
   }    // Unknown status → treat as failed.
 }
 
+// Index of `needle` in `s` at or after `from`, or -1.  The 2-arg BCL
+// `IndexOf(str, from)` overload is not a Lyric surface (#4025) — the former
+// `s.indexOf(needle, from)` spelling lowered to a guaranteed runtime throw
+// and became a compile error when #6496 made the checker strict.
+func indexOfFrom(s: in String, needle: in String, from: in Int): Int {
+  if from >= s.length {
+    return -1
+  }
+  val rel = s.substring(from, s.length - from).indexOf(needle)
+  if rel < 0 {
+    return -1
+  }
+  from + rel
+}
+
 // Parse a JSON array of job result objects from the kernel into a list.
 // Wire format: [{"jobId":"...","status":"...","output":"...","error":"...",
 //                "startedAt":N,"finishedAt":N},...]
@@ -715,7 +730,7 @@ func parseResults(jobId: in String, json: in String): slice[JobResult] {
   var results: slice[JobResult] = []
   var pos: Int = 0
   while pos < json.length {
-    val objStart = json.indexOf("{", pos)
+    val objStart = indexOfFrom(json, "{", pos)
     if objStart < 0 {
       pos = json.length
     } else {
@@ -800,11 +815,11 @@ func jsonExtractString(json: in String, field: in String): String {
     return ""
   }
   val afterColon = start + needle.length
-  val q1 = json.indexOf("\"", afterColon)
+  val q1 = indexOfFrom(json, "\"", afterColon)
   if q1 < 0 {
     return ""
   }
-  val q2 = json.indexOf("\"", q1 + 1)
+  val q2 = indexOfFrom(json, "\"", q1 + 1)
   if q2 < 0 {
     return ""
   }

@@ -2,6 +2,7 @@ package Lyric.Cli
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Std.Console as Console
 import Std.File as File
 import Std.Path as Path
@@ -113,7 +114,7 @@ pub func cmdUpgrade(argv: in slice[String]): Int {
 }
 
 func containsSubstr(s: in String, needle: in String): Bool {
-  s.indexOf(needle) >= 0
+  s.contains(needle)
 }
 
 func printUpgradeUsage(): Unit {
@@ -187,20 +188,20 @@ pub func extractTagNameFromReleaseJson(json: in String): Option[String] {
   var searchFrom = 0
   while searchFrom < json.length {
     val tail = json.substring(searchFrom)
-    val relPos = tail.indexOf(key)
+    val relPos = Str.indexOfRaw(tail, key)
     if relPos < 0 {
       return None
     }
     val keyPos = searchFrom + relPos
     val afterKey = json.substring(keyPos + key.length)
-    val colonRel = afterKey.indexOf(":")
+    val colonRel = Str.indexOfRaw(afterKey, ":")
     val isGenuineKey = colonRel >= 0 and afterKey.substring(0, colonRel).trim().length == 0
     if isGenuineKey {
       val afterColon = afterKey.substring(colonRel + 1)
-      val openRel = afterColon.indexOf("\"")
+      val openRel = Str.indexOfRaw(afterColon, "\"")
       if openRel >= 0 {
         val afterOpen = afterColon.substring(openRel + 1)
-        val closeRel = afterOpen.indexOf("\"")
+        val closeRel = Str.indexOfRaw(afterOpen, "\"")
         if closeRel >= 0 {
           val tag = afterOpen.substring(0, closeRel)
           if tag.length > 0 {

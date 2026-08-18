@@ -30358,3 +30358,84 @@ COMPILE failures, which a `lyric test` `@test_module` cannot host):
 
 **Related:** D-progress-781, #6351, #6504, #6505 (wire-template
 analog, still open).
+
+## D-progress-783 — Aliased `import Std.String` routes `.indexOf` to Option too; the import form is never a semantic switch (#6496)
+
+**Date:** 2026-08-17. **Resolves** #6496 with its option 1 (the honest
+end state): method-spelling `.indexOf`/`.lastIndexOf` with
+`import Std.String` in the calling file — under EITHER form, plain or
+`import Std.String as X` — is the UFCS spelling of the
+`Option[Int]`-returning `Std.String` free functions on BOTH targets.
+The rejected alternative (pinning "aliased import ⇒ host `Int`
+semantics") would have enshrined the import form as a semantic switch,
+contradicting D-progress-018's alias-as-sugar rule.
+
+**What shipped.**
+
+1. **MSIL gate** (`msil/codegen.l`): the `#6348` routing arm drops its
+   aliased-import exclusion — `listContains(imports, "Std.String")`
+   alone gates the Option routing, matching the JVM backend's
+   `fileImportsStdString`.  This also dissolves the package-vs-file
+   gate-scoping gap flagged in #6496's comment (mixed import forms in
+   one package now agree, so there is nothing to scope).
+2. **`Std.String.indexOfRaw` / `lastIndexOfRaw`** — new `@stable`
+   free functions with the raw host semantics (`Int`, `-1` when
+   absent), the explicit spelling for sentinel-int index arithmetic.
+   Pure method-spelling bodies inside `Std.String` itself (which does
+   not import itself) bind the host intrinsics on both targets.
+3. **In-tree migration** — all 69 method-spelling sites whose
+   compilation unit imports `Std.String` migrated to the explicit
+   `Raw` spellings — a pure one-call rewrite preserving each site's
+   `< 0` int flow, the same shape #6348's 44-IL-error first attempt
+   showed these sites all use.  Per file: `msil/codegen.l` 27,
+   `cli_version.l` 12, `emitter.l` 9, `msil/lowering.l` 4,
+   `cli_upgrade.l` 4 (the ilverify-caught batch below),
+   `cli_shared.l` 3, `restored_packages.l` 3,
+   `restored_packages_self_test.l` 2, and one each in
+   `jvm/lowering.l`, `cli_build.l`, `cli_test.l`,
+   `workspace_builder.l`, and `fmt/fmt_items.l`.  Files whose sites
+   were already the Option-idiom free-function spelling (`release.l`,
+   `cli_restore.l`, `cli_publish.l`, `cfg_gate.l`, `build_defines.l`,
+   `metadata_reader.l`, `generator.l`, `lockfile.l`, `init.l`,
+   `open_api_parser.l`, `fmt_self_test.l`, lyric-db's kernel, and the
+   stdlib tests) needed no change and are untouched.
+4. **Checker strictness** (`typechecker_exprs.l`
+   `stringIndexOfMember`): the previously TyError-lenient shape is now
+   typed — `(String) -> Option[Int]` with `Std.String` in
+   `scopeImports` (either import form; `collectImportNames` records
+   the dotted path regardless of alias), `(String) -> Int` without.
+   Leniency is retained only when `Option` itself is not resolvable
+   from the item pool (partial contract-surface checks).
+5. **`indexof_aliased_bcl_self_test.l`** inverted: it now pins
+   aliased-import Option routing on both targets (a JVM CI leg was
+   added — the file was dotnet-only when it pinned the divergence) and
+   pins the `Raw` forms' `-1` sentinel.
+6. Language reference §12.1 and the book's appendix-B string table
+   updated; the "aliased currently diverges, avoid it" caveat is gone.
+
+**Latent bugs the strict checker caught immediately** (all fixed in the
+same change): `cli_upgrade.l`'s `containsSubstr` compared the
+now-Option method spelling to `Int` inside the merged `Lyric.Cli` unit
+(rewritten to `s.contains`); `lyric-mq`'s `jsonExtractRaw` and
+`lyric-jobs`' JSON helpers called the 2-arg `indexOf(needle, from)`
+overload, which is not a Lyric surface (#4025) and lowered to a
+guaranteed runtime throw on every execution (rewritten to
+tail-substring scans); `examples/docker_client.l` passed `Char`
+arguments (rewritten to `String`).  `cli_upgrade.l`'s
+`extractTagNameFromReleaseJson` sites evaded the checker (their
+receivers come from 1-arg `substring` and type as `TyError`, the
+docs/59 leniency class) but were caught by the ilverify gate as
+`StackUnexpected` — the defense stack for this change is checker
+(typed receivers) + ilverify (TyError receivers).  Note the semantic
+scope is the COMPILATION UNIT (the file, or the merged source of a
+multi-file package): `cli_upgrade.l` has no own `Std.String` import
+but is merged into `Lyric.Cli`, whose union of imports includes it —
+both backends and the checker agree on that merged view.
+
+**Verification:** full rebuild + the standard battery (typechecker,
+manifest examples, ecosystem manifests incl. mq/jobs, ilverify 121
+DLLs / 0 errors) — see the PR.
+
+**Related:** #6496, #6348/D-progress-780 (unaliased routing + the
+migration precedent), #6124 (JVM routing), D-progress-018 (alias
+sugar), #5625 (original mis-binding).

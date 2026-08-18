@@ -462,10 +462,12 @@ func jsonExtractRaw(json: in String, field: in String): String {
   val needle = "\"" + field + "\":"
   val start = match json.indexOf(needle) { case Some(i) -> i; case None -> return "[]" }
   val afterColon = start + needle.length
-  val q1 = json.indexOf("[", afterColon)
-  if q1 < 0 {
-    return "[]"
-  }
+  // Search the tail from afterColon: the 2-arg BCL `IndexOf(str, from)`
+  // overload is not a Lyric surface (#4025) — the previous spelling
+  // `json.indexOf("[", afterColon)` lowered to a guaranteed runtime throw
+  // and was caught at compile time when #6496 made the checker strict.
+  val searchTail = json.substring(afterColon, json.length - afterColon)
+  val q1 = match searchTail.indexOf("[") { case Some(i) -> afterColon + i; case None -> return "[]" }
   var depth: Int = 0
   var i: Int = q1
   while i < json.length {

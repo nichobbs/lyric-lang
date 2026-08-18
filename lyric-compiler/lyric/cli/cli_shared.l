@@ -1005,7 +1005,7 @@ func copyRestoredDepDlls(outPath: in String, restoredDlls: in List[String]): Uni
   while i < restoredDlls.count {
     val depEntry = restoredDlls[i]
     i = i + 1
-    val tabPos = depEntry.indexOf("\t")
+    val tabPos = Str.indexOfRaw(depEntry, "\t")
     val dllPath = if tabPos >= 0 { depEntry.substring(tabPos + 1, depEntry.length - tabPos - 1) } else { depEntry }
     copyDllBeside(outPath, dllPath)
   }
@@ -1329,7 +1329,7 @@ func extractDllPathsFromYaml(root: in Yaml.YamlValue, pkgsDir: in String): List[
                       val pkgPair = packages[pIdx]
                       // Extract the Package/Version key
                       val pkgKey = pkgPair.key
-                      val slashPos = pkgKey.indexOf("/")
+                      val slashPos = Str.indexOfRaw(pkgKey, "/")
                       if slashPos > 0 and slashPos < pkgKey.length - 1 {
                         match pkgPair.value {
                           case Yaml.YMapping(pkgFields) -> {
@@ -1438,7 +1438,7 @@ func extractNativeAssetPathsFromYaml(root: in Yaml.YamlValue, pkgsDir: in String
                     while pIdx < packages.count {
                       val pkgPair = packages[pIdx]
                       val pkgKey = pkgPair.key
-                      val slashPos = pkgKey.indexOf("/")
+                      val slashPos = Str.indexOfRaw(pkgKey, "/")
                       if slashPos > 0 and slashPos < pkgKey.length - 1 {
                         match pkgPair.value {
                           case Yaml.YMapping(pkgFields) -> {

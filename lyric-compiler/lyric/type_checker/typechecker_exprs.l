@@ -1346,6 +1346,35 @@ func unifyBranchTypes(a: in Type, b: in Type, span: in Span, diag: in List[Diagn
   }
 }
 
+// #6496: strict typing for method-spelling `.indexOf`/`.lastIndexOf` on a
+// String receiver.  With `import Std.String` in the file's scope (either
+// import form — `collectImportNames` records the dotted path regardless of
+// an `as` alias), the method spelling is the UFCS form of the
+// Option[Int]-returning Std.String free functions on both targets, so it
+// types as `(String) -> Option[Int]`.  Without the import it is the
+// documented raw host binding, `(String) -> Int` (-1 sentinel).  Typed as a
+// real `TyFunction` (the slice-method precedent above) so the `ECall` arm's
+// arg validation runs.  Previously this shape was TyError-lenient, which is
+// how the backends' Int/Option semantics could diverge silently.
+func stringIndexOfMember(tbl: in SymbolTable, name: in String): Option[Type] {
+  if name != "indexOf" and name != "lastIndexOf" {
+    return None
+  }
+  val ps: List[Type] = newList()
+  ps.add(TyPrim(pt = PtString))
+  if listContainsStr(tbl.scopeImports, "Std.String") {
+    match symTableTryFindOne(tbl, "Option") {
+      case Some(sym) -> match symbolTypeIdOpt(sym) { case Some(tid) -> { val targs: List[Type] = newList(); targs.add(TyPrim(pt = PtInt)); return Some(value = TyFunction(params = ps, ret = TyUser(id = tid, name = "Option", args = targs), isAsync = false)) }; case None -> () }
+      case None -> ()
+    }
+    // Std.String is imported but `Option` is not resolvable from the item
+    // pool (a contract-surface or otherwise partial check) — keep the
+    // historical leniency rather than fabricate a TypeId.
+    return None
+  }
+  Some(value = TyFunction(params = ps, ret = TyPrim(pt = PtInt), isAsync = false))
+}
+
 // Field / builtin member typing only — no method-space consultation and no
 // unknown-member diagnostics.  The `ECall` arm uses this directly for a
 // member callee (methods are resolved arity-aware there); the plain `EMember`
@@ -1372,6 +1401,13 @@ func inferMemberBase(tbl: in SymbolTable, recvRaw: in Type, name: in String): Ty
     }
     case TyError -> TyError
     case _ -> {
+      // Strict String `.indexOf`/`.lastIndexOf` typing (#6496) — consulted
+      // before the generic builtin table because the result depends on the
+      // file's imports, which `builtinMember` does not see.
+      match recv {
+        case TyPrim(mbPt) -> match mbPt { case PtString -> match stringIndexOfMember(tbl, name) { case Some(sit) -> return sit; case None -> () }; case _ -> () }
+        case _ -> ()
+      }
       match builtinMember(recv, name) {
         case Some(t) -> t
         case None -> TyError

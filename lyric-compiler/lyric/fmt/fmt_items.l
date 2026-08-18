@@ -1203,7 +1203,7 @@ func externTypeDoc(visStr: in String, et: in ExternTypeDecl): List[String] {
     // `parseExternTypeBody`) that never appeared in the source — a bare
     // dotted identifier path cannot contain a backtick — so strip it back
     // off to reproduce the original unquoted spelling (#5472).
-    val bt = et.clrName.lastIndexOf("`")
+    val bt = Str.lastIndexOfRaw(et.clrName, "`")
     val displayName = if bt >= 0 { et.clrName.substring(0, bt) } else { et.clrName }
     singleLineDoc(visStr + "extern type " + et.name + genParamsStr(et.generics) + " = " + displayName)
   }
