@@ -88,7 +88,6 @@ Broker features (see "Platform parity" above — only `inmemory` is real today):
 pub interface MessageQueue {
   func publish(message: in Message): Result[Unit, String]
   func publishBatch(messages: in slice[Message]): Result[Unit, String]
-  func close(): Unit
 }
 ```
 

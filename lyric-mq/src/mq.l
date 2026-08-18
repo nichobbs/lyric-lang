@@ -30,7 +30,7 @@
 //!     headers      = [MessageHeader(key = "content-type", value = "application/json")],
 //!     deliveryCount = 0))?
 //!
-//!   Mq.consume(queue, 5000, func(msg: in Message): Result[Unit, String] {
+//!   Mq.consume(queue, 5000, { msg ->
 //!     println("received: " + msg.id)
 //!     Ok(())
 //!   })?
