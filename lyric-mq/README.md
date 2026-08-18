@@ -5,6 +5,10 @@ Transport-agnostic message queue with pluggable broker backends.
 ## Platform parity
 
 **Only the `inmemory` backend is production-ready, and only on `dotnet`.**
+The public API (`Mq.connect()` / `Mq.connectTo()`, `publish`, `consume`,
+`ack`, `nack`, `close`) dispatches into the in-memory kernel on `dotnet`
+(wired in #6511 — before that the dispatch stubs never reached any kernel
+and every `connect()` returned `Err("no broker configured")`).
 `rabbitmq`, `azureservicebus`, `sqs`, and `kafka` all compile and
 type-check (feature-gated `connect()` overloads exist for each), but:
 
@@ -33,24 +37,21 @@ See `docs/57-stdlib-ecosystem-library-review.md` §3.
 ```lyric
 import Mq
 
-val queue = Mq.connect("amqp://localhost", "events")
+val queue = Mq.connectTo("amqp://localhost", "events")?
 
 // Publish a message
-Mq.publish(queue, Mq.Message {
-  id: "msg-1",
-  body: "hello world",
-  headers: [("content-type", "text/plain")]
-})
+Mq.publish(queue, Mq.Message(
+  id            = "msg-1",
+  body          = "hello world",
+  headers       = [Mq.MessageHeader(key = "content-type", value = "text/plain")],
+  deliveryCount = 0))?
 
-// Subscribe and consume
-val consumer = Mq.subscribe(queue, "my-consumer-group")
-match Mq.receive(consumer) {
-  case Some(msg) -> {
-    println(msg.body)
-    Mq.ack(consumer, msg.id)
-  }
-  case None -> println("no messages")
-}
+// Consume one message (NativeQueue implements QueueConsumer too)
+Mq.consume(queue, 5000, { msg ->
+  println(msg.body)
+  Ok(())
+})?
+Mq.ack(queue, "msg-1")?
 ```
 
 ## Supported platforms and brokers
@@ -85,8 +86,8 @@ Broker features (see "Platform parity" above — only `inmemory` is real today):
 
 ```lyric
 pub interface MessageQueue {
-  func publish(message: in Message): Result[Unit, QueueError]
-  func publishBatch(messages: in slice[Message]): Result[Unit, QueueError]
+  func publish(message: in Message): Result[Unit, String]
+  func publishBatch(messages: in slice[Message]): Result[Unit, String]
   func close(): Unit
 }
 ```
@@ -95,9 +96,10 @@ pub interface MessageQueue {
 
 ```lyric
 pub interface QueueConsumer {
-  func receive(): Option[Message]
-  func ack(messageId: in String): Result[Unit, QueueError]
-  func nack(messageId: in String, requeue: in Bool): Result[Unit, QueueError]
+  func consume(timeoutMs: in Int, handler: (Message) -> Result[Unit, String]): Result[Unit, String]
+  func ack(messageId: in String): Result[Unit, String]
+  func nack(messageId: in String, requeue: in Bool): Result[Unit, String]
+  func close(): Unit
 }
 ```
 
@@ -107,8 +109,7 @@ pub interface QueueConsumer {
 pub record Message {
   id: String
   body: String
-  headers: slice[Tuple[String, String]]
-  timestamp: Instant
+  headers: slice[MessageHeader]
   deliveryCount: Int
 }
 ```
@@ -116,23 +117,23 @@ pub record Message {
 ### Factory functions
 
 ```lyric
-Mq.connect(brokerUrl: in String, queueName: in String)
-  -> Result[MessageQueue, QueueError]
+Mq.connect()                      // URL/queue from LYRIC_CONFIG_MQ_CONNECTION_*
+  -> Result[NativeQueue, String]
 
-Mq.subscribe(queue: in MessageQueue, consumerGroup: in String)
-  -> Result[QueueConsumer, QueueError]
+Mq.connectTo(url: in String, queueName: in String)
+  -> Result[NativeQueue, String]
 
 Mq.publish(queue: in MessageQueue, message: in Message)
-  -> Result[Unit, QueueError]
+  -> Result[Unit, String]
 
 Mq.publishBatch(queue: in MessageQueue, messages: in slice[Message])
-  -> Result[Unit, QueueError]
+  -> Result[Unit, String]
 
 Mq.ack(consumer: in QueueConsumer, messageId: in String)
-  -> Result[Unit, QueueError]
+  -> Result[Unit, String]
 
 Mq.nack(consumer: in QueueConsumer, messageId: in String, requeue: in Bool)
-  -> Result[Unit, QueueError]
+  -> Result[Unit, String]
 ```
 
 ## Runtime configuration

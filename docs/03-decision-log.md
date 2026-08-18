@@ -30711,3 +30711,77 @@ convention this fix routes around), #5196
 (`coerceCallArgMsil`'s struct box direction), #3392 (the generic
 extern wrapper machinery), D-progress-786 (the funcval half of the
 #6511 nest).
+
+## D-progress-789 — lyric-mq's public API is wired to its kernel; three emitter fixes and two latent mq bugs found on the way (#6511)
+
+**Date:** 2026-08-18.  **Status:** shipped.
+
+**Context.** #6511 found that `Mq.connect/publish/consume/ack/nack/close`
+never reached any kernel — the "platform dispatch helpers" were
+unconditional `@axiom` stubs, so the fully-implemented in-memory kernel
+(`Mq.Kernel.Net`, `@cfg(target = "dotnet")`) was dead code and every
+`connect()` returned `Err("no broker configured")` on every target.
+Wiring it surfaced a nest of miscompiles and latent bugs in the
+newly-live code, fixed across D-progress-786 (funcval materialization),
+D-progress-788 (#6127 scalar boxing), and this entry.
+
+**Emitter fixes (all previously catalogued on #6511):**
+
+1. **Slice-op fallback temps are now typed `MConcreteList(MObject)`**
+   instead of `MObject` (`lowerSliceAppendMsil` / `lowerSliceConcatMsil`
+   / slice-sub `case None` arms).  The slot held the freshly-`newobj`ed
+   `List`1<object>` but was declared `object` in `.locals`, so every
+   `ldloc` used as an `Add` receiver was verifier-typed `object` —
+   the six `InProcessDeadLetterStore::append` `StackUnexpected`s (the
+   docs/59 slice/List family; ran under the lenient tier-0 JIT but was
+   invalid IL).  The literal/tuple list paths were already safe (they
+   keep the list on-stack via `MDup`).
+2. **`Unit`-returning expression bodies pop their trailing value**:
+   `func f(): Unit = ()` lowered `()` to `ldnull` (LUnit's value
+   representation, `MObject`) and emitted `ret` without a pop —
+   `ReturnVoid` invalid IL in any `= <expr>` `Unit` function (the
+   `mqKernelClose` finding; not `@axiom`-specific).  Both the
+   `lowerFuncMsil` and `lowerMethodBodyTailMsil` FBExpr arms now pop a
+   non-void trailing value when the declared return is void, mirroring
+   SExpr statement lowering.
+3. **`MPImpl` queueing is per-package**: `codegenMPackage` queued an
+   `MPImpl` for every entry in the bundle-global `cctx.implEntries` on
+   every per-package call, so each later package re-emitted every
+   earlier package's impls — duplicate `InterfaceImpl` metadata rows
+   (4-package lyric-mq carried each impl 4×).  The queue loop now
+   starts at the pre-collect count.
+
+**The wiring** replaces the six stubs with `@cfg(target = "dotnet")`
+dispatchers into `Mq.Kernel.Net` (the lyric-jobs `nowMs()` pattern)
+plus `@cfg(target = "jvm")` variants returning a clear error (no JVM
+in-memory kernel, #3385), adds the `import Mq.Kernel.Net as KernelNet`,
+and adds a `pub func connectTo(url, queueName)` factory (`connect()`
+now delegates to it after its env-var lookup) so tests — and consumers
+without env plumbing — can connect explicitly.
+
+**Latent mq bugs the round-trip test then found (dead code until now):**
+
+1. The kernel's `consume` required `timeoutMs > 0` while the public
+   API documents "pass 0 to poll without blocking" and requires
+   `>= 0`; worse, the wait-only loop never attempted a dequeue when
+   `timeoutMs = 0`.  The kernel now requires `>= 0` and makes one
+   unconditional dequeue attempt before the timed loop.
+2. `jsonExtractRaw`'s bracket-depth return passed `i + 1` as
+   `substring`'s second argument — an END INDEX, but `substring` is
+   `(start, LENGTH)` — an `ArgumentOutOfRange` throw on the first
+   consume of any message with headers.
+
+**Verification.**  `ilverify Mq.dll`: 16 errors → 0.  The mq suite
+runs a real end-to-end round-trip through the public surface
+(`connectTo` → `publish` with a header → `consume` → `ack` → `close`,
+plus an empty-queue timeout poll): 10/10 + 5/5 aspect-weaving, both
+`@cfg(target = "dotnet")`-gated (erased on jvm, which has no kernel).
+`--target jvm` build of the manifest stays green.  The minimal repros
+for all three emitter fixes build, run rc=0, and ilverify clean.
+README and CLAUDE.md platform-parity claims corrected (the public API
+now genuinely reaches the in-memory kernel on dotnet).
+
+**Related:** #6511 (closed by this), #6127/D-progress-788, D-progress-786,
+docs/59 §slice/List family, #3385 (kernel target-gating), #733/#779
+(broker backends, still placeholders), #4025 (the 2-arg indexOf
+convention `jsonExtractRaw` works around).
