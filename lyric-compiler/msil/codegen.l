@@ -651,6 +651,17 @@ pub record CodegenCtx {
   // build failure instead of a silently-corrupted FieldDef token for every
   // type declared after the generator.
   genFieldCountPredictions: List[Int]
+  // #6515: Pass-1 SM FieldDef-row predictions keyed "pkg.func/arity".  The
+  // async-SM counterpart of genFieldCountPredictions, with a different
+  // resolution contract: countSmFieldsMsil's promoted-local pre-scan is a
+  // deliberately SYNTACTIC upper bound (it counts every LBVal-bound name,
+  // but the lowering allocates no slot — and so no SM field — for a
+  // Unit-typed `val`, #4886), so `synthesizeAsyncSmPhaseBMsil` PADS the SM
+  // class with dead `object` fields up to the prediction when the real
+  // count lands short (keeping every later type's FieldDef tokens aligned)
+  // and panics only when the real count EXCEEDS the prediction — the
+  // unfixable-after-the-fact direction the generator path also panics on.
+  smFieldCountPredictions: Map[String, Int]
   // Non-generic IEnumerable / IEnumerator — used by the MExternEnumerable
   // for-loop protocol to iterate extern types that implement IEnumerable
   // but not IList (e.g. MapKeyCollection[K,V], MapValueCollection[K,V]).
@@ -2002,6 +2013,7 @@ pub func newCodegenCtx(
     trTcs1 = trTcs1,
     genTicker = newList(),
     genFieldCountPredictions = newList(),
+    smFieldCountPredictions = newMap(),
     trIEnumerable = trIEnumerable,
     trIEnumerator = trIEnumerator,
     tokIEnumerableGetEnumerator = tokIEnumerableGetEnumerator,
@@ -3780,7 +3792,15 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         val isGenP1 = decl.isAsync and funcBodyContainsYieldMsil(decl)
         val isSmP1 = decl.isAsync and not isGenP1 and not hasExternTargetMsil(decl.annotations)
         if isSmP1 {
-          fieldDefRow = fieldDefRow + countSmFieldsMsil(cctx, pkgName, decl)
+          val predictedSmFields = countSmFieldsMsil(cctx, pkgName, decl)
+          fieldDefRow = fieldDefRow + predictedSmFields
+          // #6515: record the prediction so synthesizeAsyncSmPhaseBMsil can
+          // pad the SM class up to it (or panic if it lands over) — see
+          // smFieldCountPredictions' doc comment for the contract.
+          val smPredKey = pkgName + "." + decl.name + "/" + toString(decl.params.count)
+          if not cctx.smFieldCountPredictions.containsKey(smPredKey) {
+            cctx.smFieldCountPredictions.add(smPredKey, predictedSmFields)
+          }
           // SM class emits .ctor (no-arg), MoveNext, SetStateMachine.
           methodDefRow = methodDefRow + 3
         } else if isGenP1 {
@@ -22813,6 +22833,40 @@ func synthesizeAsyncSmPhaseBMsil(
       locals = kfLocals2
     )
   )
+
+  // #6515: reconcile the real SM field count against Pass 1's prediction
+  // (recorded in addPackageTokens under "pkg.func/arity").  The promoted-
+  // local pre-scan (countPromotedLocalsBlock / countPatBindNamesMsil) is a
+  // syntactic UPPER bound: a Unit-typed `val u = <void expr>` is counted by
+  // name but allocates no slot at lowering (#4886), so
+  // phaseBPromotePatBindsMsil registers no field for it.  Pad with dead
+  // `object` fields up to the prediction so every FieldDef token assigned to
+  // types declared after this SM stays aligned; panic when the real count
+  // EXCEEDS the prediction — that direction shifted tokens are already
+  // baked into Pass 1 and cannot be repaired here (the #4259 bug class).
+  val smPredKey2 = pkgName + "." + decl.name + "/" + toString(decl.params.count)
+  match mapGet(cctx.smFieldCountPredictions, smPredKey2) {
+    case Some(predictedSm) -> {
+      if smFields.count > predictedSm {
+        panic(
+          "synthesizeAsyncSmPhaseBMsil: field-count prediction mismatch for '" + smFqn + "' — " +
+            "Pass 1 (countSmFieldsMsil) predicted " +
+            toString(predictedSm) +
+            " FieldDef rows but real synthesis produced " +
+            toString(smFields.count) +
+            ". countSmFieldsMsil's pre-scan missed a field-registering construct in this " +
+            "async function's body — every FieldDef/MethodDef token predicted for any type " +
+            "declared after it would otherwise be silently wrong (#6515)."
+        )
+      }
+      var smPadIdx = smFields.count
+      while smPadIdx < predictedSm {
+        smFields.add(MField(flags = FDA_PUBLIC, name = "__pad_" + toString(smPadIdx), fieldType = MObject))
+        smPadIdx = smPadIdx + 1
+      }
+    }
+    case None -> ()
+  }
 }
 
 // ── Phase 5: IAsyncEnumerable<T> generator synthesis (Epic #2070) ─────────────

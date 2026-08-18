@@ -985,3 +985,53 @@ test "promoted locals: vals before and between real suspensions survive (#6249)"
   val got = await valStringAndIntSurvive()
   assertEqualInt(got, 42, "String and Int vals must survive across two real suspensions")
 }
+
+// ── #6515: Unit-typed vals must not inflate the SM FieldDef budget ────────────
+// A `val u = <Unit-typed expr>` binds no slot and no SM field (#4886), but the
+// Pass-1 promoted-local pre-scan counts it by name (it is deliberately
+// syntactic).  Before the reserve-then-fill reconciliation, the over-count
+// shifted the FieldDef tokens of every type declared AFTER the async func —
+// `AfterSmRecord` below reproduced `MissingFieldException: Invalid FieldDef
+// record` at runtime.  The record MUST stay declared after the async funcs.
+func doUnitWork(): Unit {
+  ()
+}
+
+async func unitValThenSuspend(): Int {
+  val u = doUnitWork()
+  await suspendA()
+  val tail = 41
+  tail + 1
+}
+
+// #6514 review suggestion: a DESTRUCTURING val (PTuple pattern) bound before
+// a real suspension, exercising phaseBPromotePatBindsMsil's non-PBinding
+// walk (the promoted-field registration for tuple element binds).
+async func tupleValSurvivesSuspension(): Int {
+  val (lhs, tag) = (40, "y")
+  await suspendA()
+  val rhs = 2
+  await suspendB()
+  if tag == "y" {
+    lhs + rhs
+  } else {
+    0
+  }
+}
+
+record AfterSmRecord {
+  x: Int
+  label: String
+}
+
+test "Unit-typed val does not shift FieldDef tokens of later types (#6515)" {
+  val r = await unitValThenSuspend()
+  val f = AfterSmRecord(x = r, label = "ok")
+  assertEqualInt(f.x, 42, "record declared after the SM func reads back correctly")
+  assertEqual(f.label, "ok", "second field token also aligned")
+}
+
+test "tuple-destructuring val survives real suspensions (#6249/#6514)" {
+  val got = await tupleValSurvivesSuspension()
+  assertEqualInt(got, 42, "tuple-bound vals must survive across real suspensions")
+}
