@@ -312,6 +312,13 @@ pub record CodegenCtx {
   // the lambda arg is lowered; consumed by lowerFuncMsil's `__lambda_*` path to
   // seed boxedParamTypes for un-annotated params.  #1939.
   lambdaParamTypes: Map[String, List[MsilType]]
+  // Propagated declared RETURN MsilType for a lifted lambda (same
+  // "<pkg>.__lambda_<idx>" keys as lambdaParamTypes; from funcParamFnRetType).
+  // Consumed by lowerFuncMsil's `__lambda_*` path to seed the lambda body's
+  // logical return type (class shapes only) so union-case constructions in the
+  // body instantiate against the declared `Result[T, E]`-style type instead of
+  // the fully-erased `<object,object>` form (#6511).
+  lambdaRetTypes: Map[String, MsilType]
   // Real (non-erased) parameter/return MsilTypes for a lambda passed directly
   // to an `@externTarget` function's function-typed parameter (see
   // funcParamIsExternTargetDelegate).  Keyed by lambda name ("__lambda_<idx>").
@@ -1897,6 +1904,7 @@ pub func newCodegenCtx(
     funcParamFnRetType = newMap(),
     funcParamIsExternTargetDelegate = newMap(),
     lambdaParamTypes = newMap(),
+    lambdaRetTypes = newMap(),
     lambdaExternDelegateParamTypes = newMap(),
     lambdaExternDelegateRetType = newMap(),
     lambdaCaptureNames = newMap(),
@@ -4179,6 +4187,27 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 if not cctx.funcParamIsExternTargetDelegate.containsKey(fKey) {
                   cctx.funcParamIsExternTargetDelegate.add(fKey, true)
                 }
+              } else {
+                // Ordinary (non-FFI) HOF: record the callback's declared return
+                // type too, but ONLY for a non-generic declaring function —
+                // the #5334 pollution the gate above guards against is
+                // `typeExprToMsilCtx` on a bare generic type variable, which a
+                // non-generic function's signature cannot contain.  Consumed
+                // by the ELambda call-site (#6511) to seed the lambda body's
+                // logical return type so union-case constructions in the body
+                // instantiate against the declared `Result[T, E]`/class shape
+                // instead of the fully-erased `<object,object>` form — which
+                // an enclosing concretely-typed `ret` then cannot satisfy.
+                val declIsGenericFn = match decl.generics { case Some(_) -> true; case None -> false }
+                if not declIsGenericFn {
+                  val plainFnRetMsil = typeExprToMsilCtx(cctx, fnRetTe, pkgName)
+                  if not cctx.funcParamFnRetType.containsKey(aKey) {
+                    cctx.funcParamFnRetType.add(aKey, plainFnRetMsil)
+                  }
+                  if not cctx.funcParamFnRetType.containsKey(fKey) {
+                    cctx.funcParamFnRetType.add(fKey, plainFnRetMsil)
+                  }
+                }
               }
             }
             case _ -> {
@@ -5221,11 +5250,39 @@ func assignOpArithInsnMsil(op: in AssignOp): Option[MInsn] {
 // string returns itself) to retype the stack slot from object to string without
 // needing a dedicated String TypeSpec for `castclass`; a value-type element
 // unboxes; an already-`object` element is left untouched.
+// Generic-inst cast targets must never encode VOID: a `Unit`/`Never` generic
+// argument is `object` end-to-end at runtime (D111), and a GENERICINST blob
+// carrying ELEMENT_TYPE_VOID is rejected by the JIT as an invalid program
+// even when ilverify tolerates it (#6511).
+func normalizeCastTyArgsMsil(typeArgs: in List[MsilType]): List[MsilType] {
+  val normalized: List[MsilType] = newList()
+  var ni = 0
+  while ni < typeArgs.count {
+    match typeArgs[ni] {
+      case MVoid -> normalized.add(MObject)
+      case _ -> normalized.add(typeArgs[ni])
+    }
+    ni = ni + 1
+  }
+  normalized
+}
+
 func materializeBoxedElemMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy: in MsilType): Unit {
   match elemTy {
     case MString -> insns.add(MCallvirt(methodToken = cctx.tokObjToString))
     case MObject -> {
     }
+    // A concrete reference class must be DOWNCAST, not just claimed (#6511):
+    // the boxed-ABI value on the stack is verifier-typed `object`, and
+    // returning it (or storing it into a concretely-typed slot/field) where
+    // the declared type is the class produces invalid IL — the exact
+    // `NativeQueue::consume` StackUnexpected: a function-typed param's
+    // invoke result flowed to a `Result`-declared `ret` uncast.  The
+    // by-name/generic deferred cast instructions resolve the token at
+    // lowering time, same as the match-dispatch isinst site.
+    case MClass(fqn) -> insns.add(MCastclassByName(className = fqn))
+    case MGenericInst(_, headFqn, typeArgs) -> insns.add(MCastclassGeneric(className = headFqn, typeArgs = normalizeCastTyArgsMsil(typeArgs)))
+    case MGenericInstByName(headFqn, typeArgs) -> insns.add(MCastclassGeneric(className = genericBacktickFqn(headFqn, typeArgs.count), typeArgs = normalizeCastTyArgsMsil(typeArgs)))
     case _ -> {
       if isValueType(elemTy) {
         insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, elemTy)))
@@ -13649,6 +13706,17 @@ func lowerBuiltinOrStaticCallMsil(
                             val qualifiedPredName = fctx.pkgName + "." + predName
                             if inner.count > 0 and not cctx.lambdaParamTypes.containsKey(qualifiedPredName) {
                               cctx.lambdaParamTypes.add(qualifiedPredName, inner)
+                            }
+                            // Declared return type of the function-typed param
+                            // (#6511) — unconditionally (a zero-arg lambda
+                            // returning a class still needs it).
+                            match mapGet(cctx.funcParamFnRetType, fnInnerKey) {
+                              case Some(fnDeclRet) -> {
+                                if not cctx.lambdaRetTypes.containsKey(qualifiedPredName) {
+                                  cctx.lambdaRetTypes.add(qualifiedPredName, fnDeclRet)
+                                }
+                              }
+                              case None -> ()
                             }
                             // FFI delegate-bridging trigger (Epic #1877/#3923 FFI-boundary
                             // slice): only when this parameter belongs to an `@externTarget`
@@ -23464,7 +23532,21 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   }
   val hasCaps = lambdaCaps.count > 0
   val effectiveParamCount = if hasCaps { decl.params.count + 1 } else { decl.params.count }
-  val fctx = makeFuncCtxMsil(pkgName, className, decl.name, effectiveParamCount, retTy)
+  // #6511: a lifted lambda passed directly to a function-typed parameter
+  // inherits that parameter's declared RETURN type as its logical return
+  // (class shapes only — the physical signature stays the uniform boxed
+  // `object`, and primitive returns keep the MVoid default so the trailing
+  // boxing behaviour is untouched).  This seeds union-case construction
+  // inference inside the body: `Ok(())` in a `(X) -> Result[Unit, String]`
+  // callback instantiates `Result_Ok<object,string>` instead of the fully
+  // erased `<object,object>` form, which an enclosing concretely-typed
+  // `ret` (e.g. an impl method returning the callback's result) cannot
+  // satisfy at runtime.
+  val lambdaLogicalRetTy = match mapGet(cctx.lambdaRetTypes, qualifiedLambdaName) {
+    case Some(lrt) -> match lrt { case MClass(_) -> lrt; case MGenericInst(_, _, _) -> lrt; case MGenericInstByName(_, _) -> lrt; case _ -> retTy }
+    case None -> retTy
+  }
+  val fctx = makeFuncCtxMsil(pkgName, className, decl.name, effectiveParamCount, lambdaLogicalRetTy)
   fctx.generics = fnGenerics
   val insns: List[MInsn] = newList()
 
