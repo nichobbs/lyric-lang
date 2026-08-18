@@ -23,6 +23,7 @@ package Lyric.AsyncSmSelfTest
 
 import Std.Core
 import Std.Rest
+import Std.Task
 import Std.Testing
 
 // ── Phase B.0: no awaits in body ─────────────────────────────────────────────
@@ -932,4 +933,55 @@ test "#5606: awaited stdlib async method on a declared-param receiver compiles" 
 
 test "#5606: awaited stdlib async method on a match-bound receiver compiles" {
   assertEqualInt(await restViaMatchBoundRecv(true, false), 3, "match-bound client typed; the await compiled")
+}
+
+// ── #6249: promoted locals under REAL suspension ──────────────────────────────
+// The promoted-local matrix above awaits `asyncAddOne`, which contains no
+// awaits of its own — every `await asyncAddOne(...)` completes synchronously
+// and takes the IsCompleted fast path, so MoveNext locals trivially survive
+// and the matrix never exercised suspension at all.  These cases force real
+// suspensions via `Std.Task.delay`, pinning the LBVal promotion fix: `val`
+// bindings are PATTERN bindings (LBVal, not LBLet), and the LBVal lowering
+// arm historically never registered them with the Phase B promoted-local
+// machinery — the value silently reverted to the type's default after any
+// real suspension (#6249's exact silent-data-loss repro, two different
+// awaited callees each doing a real delay).
+async func suspendA(): Unit {
+  await Std.Task.delay(10);
+  ()
+}
+
+async func suspendB(): Unit {
+  await Std.Task.delay(10);
+  ()
+}
+
+async func valSurvivesRealSuspensions(): String {
+  val id = "hello"
+  await suspendA()
+  await suspendB()
+  id
+}
+
+async func valStringAndIntSurvive(): Int {
+  val tag = "x"
+  val base = 40
+  await suspendA()
+  val mid = base + 1
+  await suspendB()
+  if tag == "x" {
+    mid + 1
+  } else {
+    0
+  }
+}
+
+test "promoted locals: val survives two real suspensions (#6249)" {
+  val got = await valSurvivesRealSuspensions()
+  assertEqual(got, "hello", "val bound before real suspensions must survive both")
+}
+
+test "promoted locals: vals before and between real suspensions survive (#6249)" {
+  val got = await valStringAndIntSurvive()
+  assertEqualInt(got, 42, "String and Int vals must survive across two real suspensions")
 }
