@@ -49,6 +49,13 @@ test "Byte compound assignments on list elements" {
 
 record ByteRecord {
   var value: Byte
+
+  // #6525 review: exercises the SELF-FIELD compound-write codegen arm
+  // (`lowerAssignExprMsil`'s `selfAssignFieldKey` path) distinctly from
+  // the general `recv.value += v` arm the tests above cover.
+  func bump(v: in Byte): Unit {
+    self.value += v
+  }
 }
 
 test "Byte compound assignments on record fields" {
@@ -61,6 +68,30 @@ test "Byte compound assignments on record fields" {
   r.value = 200.toByte()
   r.value %= y
   assertEqualInt(r.value.toInt(), 2, "r.value %= 3 gives 2")
+}
+
+// #5520: `/=`/`%=` above never leave the 0..255 range, so they never
+// exercised the field's actual MSIL storage type — only `+=`/`*=` overflow
+// it.  The field's MSIL storage stayed int32-backed and never re-narrowed a
+// compound-store result (`h.value += 100.toByte()` on 200 kept 300 instead
+// of wrapping to 44), diverging from the JVM's real byte field.  Fixed via
+// `CodegenCtx.byteFields` (mirrors `FuncCtx.byteSlots` for locals).
+test "Byte compound assignments on record fields wrap on overflow (#5520)" {
+  val r = ByteRecord(value = 200.toByte())
+  r.value += 100.toByte()
+  assertEqualInt(r.value.toInt(), 44, "r.value += 100 on 200 wraps unsigned to 44, not 300")
+
+  val r2 = ByteRecord(value = 100.toByte())
+  r2.value *= 3.toByte()
+  assertEqualInt(r2.value.toInt(), 44, "r2.value *= 3 on 100 wraps unsigned to 44, not 300")
+
+  val r3 = ByteRecord(value = 10.toByte())
+  r3.value -= 20.toByte()
+  assertEqualInt(r3.value.toInt(), 246, "r3.value -= 20 on 10 wraps unsigned to 246, not -10")
+
+  val r4 = ByteRecord(value = 200.toByte())
+  r4.bump(100.toByte())
+  assertEqualInt(r4.value.toInt(), 44, "self.value += v inside a record method wraps unsigned to 44, not 300")
 }
 
 test "Byte compound assignments on hoisted closure variables" {
