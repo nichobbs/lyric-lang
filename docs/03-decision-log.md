@@ -30950,3 +30950,38 @@ failures.
 **Related:** #6503 (closed by this — step 3 was the issue's remaining
 item), #6351 (the EPath half + the original attempt), #6493 (the JVM
 chained-element analog), docs/59 §4.3, D-progress-791.
+
+**Revision (2026-08-19, PR #6521 review, issue #6522).**  The
+`claude-review` pass raised a REQUIRED finding: the new panic (a) fell
+through to the generic T0120 backstop instead of self-tagging its own
+code, losing the caller-side ability to grep/assert on it specifically,
+and (b) embedded no `line:col`, so `Emitter.parsePanicSpan` recovered no
+real source span for the diagnostic.  Fixed both: the panic now reads
+`error[T0121] <line>:<col>: member '<name>' (in <pkg>.<func>) could not
+be resolved on its receiver — …`, using `recv.span.startPos` as the
+embedded position (T0121 is the next free code after T0100–T0120, all
+of which are already claimed — enumerated exhaustively against
+`typechecker_exprs.l`'s `errorDiagnostic` call sites and the sibling
+inline-embedded codegen backstops T0115/T0117/T0119/T0120).
+
+The finding's third ask — a dedicated negative-path test — could not be
+satisfied with a genuine end-to-end trigger: five independently-motivated
+candidate erasure shapes were tried (same-package generic-union
+match-arm binding; the cross-assembly restored-dependency version of the
+same shape; the in-bundle multi-package version; a `Result[T, _]?`
+unwrap into a field read; a lambda-callback parameter under the boxed
+uniform ABI) and every one resolved the receiver's real type through an
+existing, more specific codegen path — MSIL's in-bundle generics
+reification (docs/43) and #1939's lambda-param unboxing both track
+concrete instantiations end-to-end where the JVM backend's older
+erased-to-Object path (J007's own trigger) does not.  The one
+historically-real hit, `examples/docker_client.l`'s `e.statusCode`, no
+longer reaches the tail post-#6503/#6520 (re-verified: ilverifies
+clean).  Added direct unit coverage instead: a
+`Emitter.parsePanicSpan` test in `emitter_project_self_test.l` pinning
+the `error[T0121] <line>:<col>:` message shape the panic must keep
+producing, following the same file's existing #6464 precedent for the
+sibling T0119/J007/T0115 shapes — so a future message-format
+regression fails loudly here even though no known live trigger exists
+to catch it end-to-end.
+

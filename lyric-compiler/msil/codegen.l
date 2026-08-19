@@ -8301,8 +8301,23 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     // restore member types too (D-progress-791), so the
                     // workaround genuinely works.  Fail the build instead of
                     // deferring a guaranteed-wrong read to the call site.
+                    // Self-tagged `error[T0121] <line>:<col>:` (the free code
+                    // after T0100-T0120; T0115/T0119/T0120 are the sibling
+                    // inline-embedded MSIL codegen backstops, T0116-T0118
+                    // typechecker-registered) so `Emitter.parsePanicSpan`
+                    // (#6464) recovers the real source position instead of
+                    // wrapping under the generic T0120 fallback — the #6521
+                    // review's REQUIRED finding (#6522): a self-hosted
+                    // "backstop" diagnostic loses assertable specificity and
+                    // its real span without this, unlike the sibling T0119
+                    // extern-member-access refusal and the JVM's J007.
                     panic(
-                      "Msil.Codegen: member '" + memberName + "' (in " + fctx.pkgName + "." + fctx.funcName +
+                      "error[T0121] " + toString(recv.span.startPos.line) + ":" + toString(recv.span.startPos.column) + ": member '" +
+                        memberName +
+                        "' (in " +
+                        fctx.pkgName +
+                        "." +
+                        fctx.funcName +
                         ") could not be resolved on its receiver — the receiver's static type was erased " +
                         "to `object` before codegen, so this compilation cannot verify the member exists. " +
                         "Annotate the receiver with an explicit type (e.g. `val x: Pkg.Type = ...`) so the " +
