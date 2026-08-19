@@ -3220,6 +3220,28 @@ pub func collectFileSigsSeeded(
           mi = mi + 1
         }
       }
+      // #6526: `IExposedRec` carries the identical `RecordDecl` shape as
+      // `IRecord` — same registration.  Missing this arm left every
+      // `exposed record`'s instance methods/fields unregistered, so a
+      // method call or compound-assignment on one resolved to the
+      // `()Object` guess instead of the real descriptor.
+      case IExposedRec(decl) -> {
+        val recClass = owner + "/" + decl.name
+        val recTps = genericParamNames(decl.generics)
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case RMFunc(fn) -> {
+              registerInstanceSigErased(into, recClass, fn.name, fn.params, fn.ret, owner, recTps, externTypes)
+            }
+            case RMField(f) -> {
+              registerFieldElemSig(into, recClass, f.name, f.ty, owner, recTps, externTypes)
+            }
+            case _ -> ()
+          }
+          mi = mi + 1
+        }
+      }
       case IImpl(decl) -> {
         // Register each impl method under `<targetClass>#<methodName>` so that
         // call sites (`lowerMethodCall` J3 M-3 path) emit a precisely-typed
@@ -3855,6 +3877,29 @@ pub func collectFileCasesExtern(
           into.add(recClass, flds)
         }
       }
+      // #6526: `IExposedRec` carries the identical `RecordDecl` shape as
+      // `IRecord` — same field-collection.  Missing this arm left
+      // `recordFieldType` returning `None` for every `exposed record`
+      // field, erasing reads/writes to `java.lang.Object` and panicking
+      // on compound-assignment (`emitCompoundCombineJvm`'s erased-target
+      // guard).
+      case IExposedRec(decl) -> {
+        val recClass = owner + "/" + decl.name
+        val tps = genericParamNames(decl.generics)
+        if not into.containsKey(recClass) {
+          val flds: List[JvmCaseField] = newList()
+          var mi = 0
+          while mi < decl.members.count {
+            match decl.members[mi] {
+              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty), owner, tps, externTypes), paramIdx = typeParamIndexOf(f.ty, tps), dflt = f.dflt))
+              case _ -> {
+              }
+            }
+            mi = mi + 1
+          }
+          into.add(recClass, flds)
+        }
+      }
       case IProtected(decl) -> {
         // J3 M-3: a protected type lowers to a record-shaped class (field-args
         // ctor + instance methods), so register its data fields here too —
@@ -3952,6 +3997,18 @@ pub func collectFileDeclaredTypeFqns(file: in SourceFile, into: in Map[String, S
           case Some(_) -> ()
         }
       }
+      // #6526: `IExposedRec` carries the identical `RecordDecl` shape as
+      // `IRecord` — same FQN registration.
+      case IExposedRec(decl) -> {
+        match decl.generics {
+          case None -> {
+            if not into.containsKey(decl.name) {
+              into.add(decl.name, pkgDotted + "." + decl.name)
+            }
+          }
+          case Some(_) -> ()
+        }
+      }
       case IProtected(decl) -> {
         match decl.generics {
           case None -> {
@@ -4022,6 +4079,14 @@ pub func collectFileCtors(file: in SourceFile, into: in Map[String, String]): Un
   while i < file.items.count {
     match file.items[i].kind {
       case IRecord(decl) -> {
+        addCtorKeys(into, owner, decl.name, owner + "/" + decl.name)
+      }
+      // #6526: `IExposedRec` carries the identical `RecordDecl` shape as
+      // `IRecord` — same ctor registration.  Missing this arm left every
+      // `exposed record`'s constructor unregistered, so `Holder(value =
+      // ...)` resolved to the bogus `()Object`-guess descriptor instead of
+      // the real `<init>` — `NoSuchMethodError` at runtime.
+      case IExposedRec(decl) -> {
         addCtorKeys(into, owner, decl.name, owner + "/" + decl.name)
       }
       case IUnion(decl) -> {
