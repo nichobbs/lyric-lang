@@ -3036,6 +3036,10 @@ pub func collectFileSigsSeeded(
   while ri < file.items.count {
     match file.items[ri].kind {
       case IRecord(rd) -> localRecordNames.add(rd.name, true)
+      // #6528: `IExposedRec` carries the identical `RecordDecl` shape as
+      // `IRecord` — same pre-scan, so a same-file generic `exposed record`
+      // returned by a function declared earlier in the file also resolves.
+      case IExposedRec(rd) -> localRecordNames.add(rd.name, true)
       case _ -> ()
     }
     ri = ri + 1
