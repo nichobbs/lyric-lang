@@ -673,6 +673,34 @@ test "qualified union case constructor honours package qualifier" {
   )
 }
 
+// #6519: a PACKAGE-QUALIFIED record constructor call validates its field
+// argument types.  Before the fix, `constructorSymbolOf` only matched a
+// single-segment `EPath` callee (`Type(...)`) — a qualified callee
+// (`Pkg.Type(...)`, or the nested-`EMember` `Pkg.Sub.Type(...)` form)
+// returned `None` unconditionally, so `inferConstruction` never found the
+// record symbol and skipped its per-field T0104 check entirely, silently
+// accepting a wrong-typed field argument for ANY qualified construction.
+test "qualified record constructor validates field argument types" {
+  val pkgR = parse("package PkgR\npub record Widget {\n  pub name: String\n  pub count: Int\n}\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgR", items = pkgR.file.items, imports = collectImportNames(pkgR.file.imports)))
+  // Wrong-typed `name` field (Int where String is declared) through a
+  // qualified constructor call must be rejected with T0104 — pre-fix this
+  // fell through to the lenient generic call-type path and type-checked clean.
+  val badSrc = "package App\nimport PkgR\nfunc f(): Unit {\n  val w = PkgR.Widget(name = 7, count = 1)\n}\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(parse(badSrc).file, packages), "T0104"),
+    "qualified ctor: PkgR.Widget(name = 7, ...) rejects an Int argument for the String field 'name'"
+  )
+  // Correctly-typed qualified construction stays clean.
+  val okSrc = "package App\nimport PkgR\nfunc f(): Unit {\n  val w = PkgR.Widget(name = \"ok\", count = 1)\n}\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(okSrc).file, packages)),
+    0,
+    "qualified ctor: PkgR.Widget(name = \"ok\", ...) with correctly-typed fields is clean"
+  )
+}
+
 // #1488 category D: two imported packages can export the same simple type name
 // (`Std.Regex.RegexError` {TimedOut, InvalidPattern} vs `Std.RegexSafe.RegexError`
 // {TimedOut, RegexBug}).  Through the flat `checkWithImports` shim, every
