@@ -30913,3 +30913,40 @@ infrastructure.
 **Related:** #6503 (step 1 closed by this; steps 2–3 follow-ups),
 #6519 (new), D123 (the single-file contribution gate), D073/docs/38
 (workspace model), #6136 (JVM dep bundling parity), #5341, docs/45.
+
+## D-progress-792 — The MSIL erased-receiver member-read tail fails loudly (#6503 step 3)
+
+**Date:** 2026-08-19.  **Status:** shipped.
+
+**Problem.**  The MSIL EMember lowering's exhausted tail — an
+`MObject`-typed receiver whose member resolves through neither the
+typed arms nor the same-package `fieldTokensByName` registry — silently
+yielded the RECEIVER itself as the "value": the MSIL analog of the
+JVM's loud J007 erased-receiver diagnostic, and a silent miscompile at
+every hit (`examples/docker_client.l`'s `e.statusCode` was the
+proven-live case, #6503).  The loud conversion was attempted in the
+#6351 round and deferred because its own prescribed workaround — bind
+the receiver with an explicit type annotation — was blocked for
+restored types (T0014).
+
+**Decision.**  The deferral reason is gone: path/project builds always
+resolved restored type annotations (verified in D-progress-791's
+investigation), and single-file workspace builds now restore member
+types for the manifestless leg (D-progress-791, as narrowed by its
+revision after the #6520 review).  The tail now panics with a
+T0115-family message naming the member, the enclosing function, the
+cause (receiver type erased before codegen), and the fix (annotate the
+receiver or check the spelling).
+
+**Verification.**  Full battery green with ZERO hits across the tree —
+stdlib, all ecosystem manifests, manifest examples, the single-file
+examples sweep, and every CI-wired self-test compile without reaching
+the tail (including `examples/docker_client.l`, built against a
+freshly-built `lyric-docker`, and `lyric-web/tests/serve_failure_tests.l`,
+both re-checked directly) — so the conversion changes no working
+program and only converts silent wrong-value reads into loud build
+failures.
+
+**Related:** #6503 (closed by this — step 3 was the issue's remaining
+item), #6351 (the EPath half + the original attempt), #6493 (the JVM
+chained-element analog), docs/59 §4.3, D-progress-791.
