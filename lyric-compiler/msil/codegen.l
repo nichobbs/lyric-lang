@@ -217,9 +217,10 @@ pub record CodegenCtx {
   // `Byte` (docs/59 §3.2 F7; #5520).  A Byte field's MSIL storage stays int32
   // (`fieldMsilTypes` erases it to MInt), so a compound store (`h.value +=
   // 100.toByte()`) never re-narrowed the arithmetic result — mirrors
-  // `FuncCtx.byteSlots`, but keyed like `fieldMsilTypes` ("FQClassName/fieldName"
-  // and "pkgName/fieldName") since fields have no per-call-frame slot.  Keyed
-  // presence only (values are always `true`); populated by addPackageTokens.
+  // `FuncCtx.byteSlots`, but keyed "FQClassName/fieldName" (the exact key
+  // format the compound-write sites in `lowerAssignExprMsil` look up) since
+  // fields have no per-call-frame slot.  Keyed presence only (values are
+  // always `true`); populated by addPackageTokens.
   byteFields: Map[String, Bool]
   // Declared return/param MsilTypes of a function-typed record field ("a
   // `f: (A,...) -> R` field"), keyed "FQClassName/fieldName" — the field
@@ -2987,9 +2988,6 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 if not cctx.byteFields.containsKey(className + "/" + f.name) {
                   cctx.byteFields.add(className + "/" + f.name, true)
                 }
-                if not cctx.byteFields.containsKey(pkgName + "/" + f.name) {
-                  cctx.byteFields.add(pkgName + "/" + f.name, true)
-                }
               }
               // Function-typed field (#5511): record the real return/param
               // types so a LATER inferred local binding (`val fld = h.f`) can
@@ -3157,9 +3155,6 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               if isByteAnnotationMsil(Some(f.ty)) {
                 if not cctx.byteFields.containsKey(className + "/" + f.name) {
                   cctx.byteFields.add(className + "/" + f.name, true)
-                }
-                if not cctx.byteFields.containsKey(pkgName + "/" + f.name) {
-                  cctx.byteFields.add(pkgName + "/" + f.name, true)
                 }
               }
               fieldDefRow = fieldDefRow + 1
