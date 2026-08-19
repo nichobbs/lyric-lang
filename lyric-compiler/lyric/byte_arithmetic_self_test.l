@@ -77,6 +77,10 @@ test "Byte compound assignments on record fields wrap on overflow (#5520)" {
   val r2 = ByteRecord(value = 100.toByte())
   r2.value *= 3.toByte()
   assertEqualInt(r2.value.toInt(), 44, "r2.value *= 3 on 100 wraps unsigned to 44, not 300")
+
+  val r3 = ByteRecord(value = 10.toByte())
+  r3.value -= 20.toByte()
+  assertEqualInt(r3.value.toInt(), 246, "r3.value -= 20 on 10 wraps unsigned to 246, not -10")
 }
 
 test "Byte compound assignments on hoisted closure variables" {
