@@ -4893,6 +4893,19 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/generic_jvm_self_test.l
+
+      # Generic `exposed record` return-type resolution self-test on JVM
+      # (#6528).  A same-file function returning a generic `exposed record`
+      # declared LATER in the file needs `collectFileSigsSeeded`'s
+      # `localRecordNames` pre-scan to register `IExposedRec`, not just
+      # `IRecord`.  JVM-only: the identical repro hits a separate,
+      # unrelated MSIL bug (#6529), so this is not a dual-target
+      # `*_self_test.l`.
+      - name: Exposed-record generic return-type self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/exposed_record_generic_ret_jvm_self_test.l
+
       # Erased-generic-payload arithmetic self-test on JVM (J4, #4877).  An
       # unannotated `val` bound to an erased generic payload (`match`/`?` on a
       # `Result`/`Option`) was tracked as `java/lang/Object`, so `x + y`

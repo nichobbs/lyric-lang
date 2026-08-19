@@ -31157,3 +31157,54 @@ does not touch.
 Byte record-field fix that led to discovering this while investigating
 `exposed record` test coverage for that PR's review).
 
+## D-progress-796 — JVM generic `exposed record` return-type resolution missing from `localRecordNames` (#6528)
+
+**Date:** 2026-08-19.  **Status:** shipped.
+
+**Problem.**  Found while adding regression coverage for D-progress-795's
+JVM `exposed record` fix (a `claude-review` suggestion on #6527): a
+SEPARATE, narrower gap in the SAME file — `collectFileSigsSeeded`'s
+`localRecordNames` pre-scan (`lyric-compiler/jvm/codegen/06_items.l`)
+only matched `IRecord`, not `IExposedRec`.  A same-file function whose
+return type is a GENERIC `exposed record` declared later in the file
+(`func makeBox(): Box[Int]` where `Box` is `exposed record Box[T] {
+... }`) couldn't have its raw class recovered by `recordRetClassOf`,
+regardless of declaration order — that pre-scan exists specifically to
+let a function be declared BEFORE the record it returns.  Confirmed the
+failure mode empirically: the repro threw `NoClassDefFoundError:
+Std/Http/Url` (an unrelated, wrong-class fallback) rather than
+resolving `Box`.
+
+**Decision.**  Added an `IExposedRec(rd) -> localRecordNames.add(rd.name,
+true)` arm alongside the existing `IRecord` arm, mirroring
+D-progress-795's fix pattern (duplicate the `IRecord` arm body
+verbatim, per the file's own established precedent for this exact
+situation).
+
+**Verification.**  The exact repro from the issue (`makeBox(): Box[Int]`
+declared before `exposed record Box[T]`) now resolves correctly on
+`--target jvm` (returns `7` for `makeBox(7).value`, was
+`NoClassDefFoundError`).  Confirmed against a clean baseline build
+without this fix that the failure reproduces identically first.  A
+dual-target automated regression test in `exposed_record_field_self_test.l`
+was attempted but reverted: the identical repro shape hits a SEPARATE,
+pre-existing, unrelated MSIL bug — generic `exposed record` fails to
+*load* at runtime on `--target dotnet` (`System.TypeLoadException`) —
+filed as #6529.  Landed instead as a JVM-only self-test,
+`exposed_record_generic_ret_jvm_self_test.l`, following the codebase's
+established `*_jvm_self_test.l` convention (e.g. `generic_jvm_self_test.l`,
+`record_method_jvm_self_test.l` — CI-wired `--target jvm` only, never
+`--target dotnet`) rather than the dual-target `*_self_test.l`
+convention — `claude-review`'s REQUIRED finding on the first version of
+this PR correctly identified that this precedent existed and the
+"manual-only" gap wasn't warranted.  Full battery (typechecker,
+ilverify 121 DLLs / 0 errors, dependency libraries, manifest examples,
+ecosystem manifests, single-file examples sweep) green;
+`exposed_record_field_self_test.l`'s existing 4 tests unaffected (4/4
+on both targets).
+
+**Related:** #6528 (closed by this), #6527 / D-progress-795 (the parent
+JVM exposed-record fix this was found while reviewing), #6529 (the
+separate MSIL generic-exposed-record loading bug this surfaced,
+un-fixed).
+
