@@ -31095,3 +31095,65 @@ hoisted-cell half re-opened as #6524), #5611 (mtime-based build
 staleness — investigated and ruled out as the cause of the hoisted-cell
 regression).
 
+## D-progress-795 — `exposed record` construction, field access, and compound-assignment were non-functional on JVM (#6526)
+
+**Date:** 2026-08-19.  **Status:** shipped.
+
+**Problem.**  Discovered while investigating whether #5520's MSIL Byte
+record-field fix (D-progress-794) could be tested against an `exposed
+record` variant on `--target jvm`: `exposed record` construction fails
+at runtime with `NoSuchMethodError` (`'java.lang.Object
+Holder(int)'` — a bogus `()Object`-guess descriptor instead of the
+real `<init>`), and any numeric field's compound-assignment
+(`h.value += v`) panics at compile time with `error[J008]: … compound
+assignment on a reference-typed target ('java/lang/Object') …`.  Root
+cause: `IExposedRec` was entirely missing from the `match` in four of
+the JVM backend's core item "collect" pre-passes in
+`lyric-compiler/jvm/codegen/06_items.l` —
+`collectFileSigsSeeded` (instance method/field signatures),
+`collectFileCasesExtern` (the `ctx.caseFields` map `recordFieldType`
+reads), `collectFileDeclaredTypeFqns` (cross-package FQN seeding), and
+`collectFileCtors` (constructor-key registration) — even though the
+actual class EMISSION (`lowerRecord`, handled correctly by the existing
+`IExposedRec` arms at two other sites in the same file) already
+produced a correct class.  The class was right; nothing that
+constructs or reads/writes it could find its registered shape, so
+every lookup silently fell back to `java.lang.Object` erasure.  MSIL
+was unaffected — `exposed record` worked correctly there throughout
+(confirmed empirically before investigating JVM).
+
+**Decision.**  Added an `IExposedRec(decl) -> { <identical body> }`
+arm to each of the four functions, duplicating the neighboring
+`IRecord` arm's body verbatim (mirroring the project's own established
+precedent for this exact situation — the two existing `IExposedRec`
+arms in the same file already carry a comment noting "`IExposedRec`
+carries the identical `RecordDecl` shape as `IRecord` — same scan").
+No shared-helper refactor: matches the file's existing style of
+duplicating small match arms over introducing new abstraction.
+
+**Verification.**  Manually confirmed all three previously-broken
+behaviours now work on `--target jvm`: construction + field read
+(`Holder(value = 42).value` → `42`, was `NoSuchMethodError`), `Int`
+field compound-assignment (`5 += 3 → 8`, `8 *= 2 → 16`, `16 -= 20 →
+-4`, was a `J008` panic), and the original Byte-overflow-wrap shape
+from #6526 (`200 += 100 → 44`, combining this fix with D-progress-794's
+MSIL fix — both targets now agree).  New
+`exposed_record_field_self_test.l` (4 tests) passes on both
+`--target dotnet` (control — unaffected) and `--target jvm` (the fix),
+wired into CI (`ci.yml`, mirroring `byte_arithmetic_self_test.l`'s
+dual-target step pair).  Full battery green (typechecker, ilverify 121
+DLLs / 0 errors, dependency libraries, manifest examples, ecosystem
+manifests, single-file examples sweep — both `--target dotnet` and a
+`--target jvm` sweep of the same single-file examples).  Cross-checked
+every JVM-only failure surfaced during investigation (3 single-file
+examples: `docker_client.l`, `ffi_bcl.l`, `ffi_datetime.l`; 4
+ecosystem-manifest JVM test suites: `lyric-testing`, `lyric-mail`,
+`lyric-feature-flags`, `lyric-validation`) against a clean baseline
+build without this fix — identical failure counts and messages on
+both, confirming they are pre-existing, unrelated gaps this change
+does not touch.
+
+**Related:** #6526 (closed by this), #5520 / D-progress-794 (the MSIL
+Byte record-field fix that led to discovering this while investigating
+`exposed record` test coverage for that PR's review).
+
