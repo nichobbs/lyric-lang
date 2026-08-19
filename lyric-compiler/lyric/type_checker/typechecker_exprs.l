@@ -2768,10 +2768,50 @@ func inferConstruction(
   resultTy
 }
 
+// A QUALIFIED constructor call (`Pkg.Type(...)` or `Pkg.Sub.Type(...)`, the
+// latter a nested `EMember` chain over an `EPath` head) previously returned
+// `None` here unconditionally — the single-segment-only match below is the
+// ONLY arm that ever matched.  `inferConstruction`'s per-field T0104 argument
+// validation (and #1485's opaque-construction T0100 check) therefore never
+// ran for ANY qualified constructor call: the caller falls through to the
+// generic function-call type path instead, which type-checks leniently and
+// silently accepts a wrong-typed field argument (a restored/imported
+// record's `Docker.DockerError(details = Some("d"))` against a plain
+// `String` field compiled to invalid IL at the MSIL boundary — codegen
+// correctly used the record's real field type; the checker just never
+// looked, #6519).  Mirrors `unionCaseSymbolOf`'s #6287 qualifier-tier fix:
+// flatten the callee path, then try (a) the whole qualifier as the
+// constructor's declaring package, falling back to (b) the historical bare
+// last-segment lookup for an unqualified `EPath` callee (guarded by
+// `fnWasFlatPath`, same EMember-chain-misrouting hazard `unionCaseSymbolOf`
+// documents — a value-receiver method chain like `x.Foo(...)` must not
+// mis-route into constructor typing via the bare-name fallback).
 func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
-  match fn.kind {
-    case EPath(p) -> if p.segments.count == 1 { match symTableTryFindOne(tbl, p.segments[0]) { case Some(sym) -> match sym.kind { case DKRecord(_, _) -> Some(value = sym); case DKExposedRec(_, _) -> Some(value = sym); case DKOpaque(_, _) -> Some(value = sym); case _ -> None }; case None -> None } } else { None }
-    case _ -> None
+  val flatSegs: List[String] = newList()
+  if not flattenCalleePathSegs(fn, flatSegs) or flatSegs.count == 0 {
+    return None
+  }
+  val fnWasFlatPath = match fn.kind { case EPath(_) -> true; case _ -> false }
+  val ctorName = flatSegs[flatSegs.count - 1]
+  if flatSegs.count >= 2 {
+    val quals: List[String] = newList()
+    var qi = 0
+    while qi < flatSegs.count - 1 {
+      quals.add(flatSegs[qi])
+      qi = qi + 1
+    }
+    val fullQual = modulePathJoin(quals)
+    match symTableTryFindInPackage(tbl, fullQual, ctorName) {
+      case Some(pkgSym) -> match pkgSym.kind { case DKRecord(_, _) -> return Some(value = pkgSym); case DKExposedRec(_, _) -> return Some(value = pkgSym); case DKOpaque(_, _) -> return Some(value = pkgSym); case _ -> () }
+      case None -> ()
+    }
+  }
+  if not fnWasFlatPath {
+    return None
+  }
+  match symTableTryFindOne(tbl, ctorName) {
+    case Some(sym) -> match sym.kind { case DKRecord(_, _) -> Some(value = sym); case DKExposedRec(_, _) -> Some(value = sym); case DKOpaque(_, _) -> Some(value = sym); case _ -> None }
+    case None -> None
   }
 }
 

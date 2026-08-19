@@ -30985,3 +30985,52 @@ sibling T0119/J007/T0115 shapes — so a future message-format
 regression fails loudly here even though no known live trigger exists
 to catch it end-to-end.
 
+## D-progress-793 — Qualified constructor calls never validated field-argument types (#6519)
+
+**Date:** 2026-08-19.  **Status:** shipped.
+
+**Problem.**  `constructorSymbolOf` — the resolver that
+`inferConstruction` uses to find the record/exposed-record/opaque symbol
+being constructed, so it can run per-field T0104 type validation (and
+#1485's opaque-construction T0100 check) — only ever matched a
+single-segment `EPath` callee (`Type(...)`).  A QUALIFIED constructor
+call (`Pkg.Type(...)`, or `Pkg.Sub.Type(...)` via a nested `EMember`
+chain over an `EPath` head) fell through to `None` unconditionally, so
+the caller dropped into the generic function-call type path instead —
+which type-checks leniently and silently accepts a wrong-typed field
+argument.  Concretely: `Docker.DockerError(details = Some("d"))`
+against the real declaration's plain `details: String` field
+type-checked with no diagnostic and compiled to invalid IL at the MSIL
+boundary (codegen used the record's real field type; the checker had
+just never looked).  Confirmed the gap was qualified-call-specific, not
+universal, by running the identical wrong-typed construction against an
+in-bundle (unqualified) record — that one correctly raised T0104.
+
+**Decision.**  Rewrote `constructorSymbolOf` to mirror
+`unionCaseSymbolOf`'s established qualifier-tier pattern (#6287):
+flatten the callee into path segments via `flattenCalleePathSegs`, then
+try (a) the qualifier (all segments but the last) as the constructor's
+declaring package via `symTableTryFindInPackage`, falling back to (b)
+the historical bare-last-segment lookup via `symTableTryFindOne` — but
+only when the callee was a flat `EPath` (`fnWasFlatPath`), guarded
+exactly as `unionCaseSymbolOf` guards it, so a value-receiver method
+chain (`x.Foo(...)`) can't mis-route into constructor typing through the
+bare-name fallback.
+
+**Verification.**  Manually confirmed both directions against a fresh
+`make lyric` build: the wrong-typed repro
+(`Docker.DockerError(statusCode = Some(42), message = "m", details =
+Some("d"))`) now correctly fails with `error[T0104] 7:88: argument for
+field 'details' has type Option[String] but field expects String`; the
+corrected repro (`details = "d"`) still builds and runs (`rc=0`,
+prints `m`).  Full battery (typechecker self-test, ilverify across all
+built DLLs, dependency libraries, manifest examples, ecosystem
+manifests, single-file examples sweep) green alongside D-progress-792's
+revision.
+
+**Related:** #6519 (filed against a mistaken repro — the actual
+`lyric-docker` `DockerError.details` field is plain `String`, not
+`Option[String]`; the real bug this surfaced was the qualified-call
+validation gap, not a restored-record signature/synthesis bug), #6287
+(the `unionCaseSymbolOf` qualifier-tier precedent this mirrors).
+
