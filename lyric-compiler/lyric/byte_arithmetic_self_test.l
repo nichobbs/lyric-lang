@@ -49,6 +49,13 @@ test "Byte compound assignments on list elements" {
 
 record ByteRecord {
   var value: Byte
+
+  // #6525 review: exercises the SELF-FIELD compound-write codegen arm
+  // (`lowerAssignExprMsil`'s `selfAssignFieldKey` path) distinctly from
+  // the general `recv.value += v` arm the tests above cover.
+  func bump(v: in Byte): Unit {
+    self.value += v
+  }
 }
 
 test "Byte compound assignments on record fields" {
@@ -81,6 +88,10 @@ test "Byte compound assignments on record fields wrap on overflow (#5520)" {
   val r3 = ByteRecord(value = 10.toByte())
   r3.value -= 20.toByte()
   assertEqualInt(r3.value.toInt(), 246, "r3.value -= 20 on 10 wraps unsigned to 246, not -10")
+
+  val r4 = ByteRecord(value = 200.toByte())
+  r4.bump(100.toByte())
+  assertEqualInt(r4.value.toInt(), 44, "self.value += v inside a record method wraps unsigned to 44, not 300")
 }
 
 test "Byte compound assignments on hoisted closure variables" {
