@@ -31034,3 +31034,64 @@ revision.
 validation gap, not a restored-record signature/synthesis bug), #6287
 (the `unionCaseSymbolOf` qualifier-tier precedent this mirrors).
 
+## D-progress-794 — MSIL Byte record fields wrap unsigned on compound-assignment overflow (#5520, record-field half only)
+
+**Date:** 2026-08-19.  **Status:** shipped (partial — see scope note).
+
+**Problem.**  #5520 documented two storage classes where a `Byte`-declared
+value's MSIL storage stayed int32-backed and never re-narrowed a
+compound-assignment result: record/exposed-record fields and hoisted
+(closure-captured) `var` cells.  `h.value += 100.toByte()` on 200 kept
+300 instead of wrapping to the canonical unsigned 44, diverging from
+the JVM's real byte field and from MSIL's own already-fixed plain-local
+case (`FuncCtx.byteSlots`, shipped earlier).
+
+**Decision.**  Fixed the record-field half.  Added
+`CodegenCtx.byteFields: Map[String, Bool]`, populated at
+`addPackageTokens`' `IRecord`/`IExposedRec` field-registration sites
+whenever a field's declared type is literally `Byte` (mirrors
+`isByteAnnotationMsil`, the existing local-variable detector).  The two
+compound-assignment codegen sites in `lowerAssignExprMsil`
+(self-field `self.value += …` and general `recv.value += …`) now pass
+`MByte` instead of the field's erased `MInt` into
+`emitCompoundCombineMsil` when the field is byte-marked, so the
+existing unsigned-div/rem selection and `conv.u1` re-narrowing (already
+correct for locals) also fire for fields.
+
+**Scope cut — hoisted cells NOT included.**  The hoisted-cell half
+looked like a strictly *better* fix was available (the array/cell
+machinery — `arrayElemTokenOpt`/`canUseTypedArrayLoad`/
+`finishHoistedCellMsil` — already fully supports `MByte` as a genuine
+typed `byte[]` array; only the `LBVar` declaration site needed to stop
+erasing to `MInt` for a `Byte`-annotated hoisted `var`).  That fix
+verified correct in isolation (the escaping-closure repro from #5520
+prints the correct `44`), but reproducibly and deterministically broke
+an unrelated test — `lyric-mq`'s `"in-memory broker round-trips a
+published message"` (#6511), which captures three non-`Byte` locals in
+an escaping closure — with a `NullReferenceException`, even after a
+fully clean bootstrap rebuild (ruling out #5611's mtime-staleness) and
+confirming the override is a logical no-op for that test's own
+(non-`Byte`) locals.  Root cause not found within this session's
+budget: merely having the changed code present in `lowerStmtMsil`'s
+`LBVar` handling is sufficient to reproduce the corruption, regardless
+of whether the `Byte` branch is ever taken.  Per the "split the work,
+ship the slice you can finish properly" standard, the hoisted-cell half
+is deferred to #6524 rather than landed with an unexplained regression
+risk.  The self-test additions below match this scope: they cover
+record-field overflow only; the escaping-closure hoisted-cell case
+tried during investigation was removed rather than shipped failing.
+
+**Verification.**  New `byte_arithmetic_self_test.l` test ("Byte
+compound assignments on record fields wrap on overflow") covers `+=`
+and `*=` overflow on a record field, passing on both `--target dotnet`
+and `--target jvm`.  Manually verified both `record` and `exposed
+record` Byte fields wrap correctly (`200 += 100` → `44`).  Full battery
+green, including `lyric-mq`'s full test suite (3 consecutive clean
+runs) — the exact regression this fix's investigation surfaced is
+confirmed absent from the shipped (record-field-only) diff.
+
+**Related:** #5520 (parent issue, record-field half closed by this;
+hoisted-cell half re-opened as #6524), #5611 (mtime-based build
+staleness — investigated and ruled out as the cause of the hoisted-cell
+regression).
+

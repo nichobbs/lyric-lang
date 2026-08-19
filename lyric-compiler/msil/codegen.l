@@ -213,6 +213,14 @@ pub record CodegenCtx {
   // MInt, etc.) rather than always MObject — prevents StackUnexpected / IPE when
   // value-type fields are compared with ceq vs. Object.Equals (#1442).
   fieldMsilTypes: Map[String, MsilType]
+  // Marks a record/exposed-record field whose DECLARED Lyric type is literally
+  // `Byte` (docs/59 §3.2 F7; #5520).  A Byte field's MSIL storage stays int32
+  // (`fieldMsilTypes` erases it to MInt), so a compound store (`h.value +=
+  // 100.toByte()`) never re-narrowed the arithmetic result — mirrors
+  // `FuncCtx.byteSlots`, but keyed like `fieldMsilTypes` ("FQClassName/fieldName"
+  // and "pkgName/fieldName") since fields have no per-call-frame slot.  Keyed
+  // presence only (values are always `true`); populated by addPackageTokens.
+  byteFields: Map[String, Bool]
   // Declared return/param MsilTypes of a function-typed record field ("a
   // `f: (A,...) -> R` field"), keyed "FQClassName/fieldName" — the field
   // counterpart of `funcValRetTypes`/`funcValParamTypes` (#5511). Consulted by
@@ -1896,6 +1904,7 @@ pub func newCodegenCtx(
     ctorDefaultExprs = newMap(),
     fieldVarIndices = newMap(),
     fieldMsilTypes = newMap(),
+    byteFields = newMap(),
     fieldFuncRetTypes = newMap(),
     fieldFuncParamTypes = newMap(),
     fieldFuncBareKeyArity = newMap(),
@@ -2971,6 +2980,17 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               if not cctx.fieldMsilTypes.containsKey(pkgName + "/" + f.name) {
                 cctx.fieldMsilTypes.add(pkgName + "/" + f.name, fty)
               }
+              // #5520: a field DECLARED `Byte` (not a generic type-param
+              // substitution) needs its compound-store re-narrowing tracked —
+              // see `CodegenCtx.byteFields`.
+              if isByteAnnotationMsil(Some(f.ty)) {
+                if not cctx.byteFields.containsKey(className + "/" + f.name) {
+                  cctx.byteFields.add(className + "/" + f.name, true)
+                }
+                if not cctx.byteFields.containsKey(pkgName + "/" + f.name) {
+                  cctx.byteFields.add(pkgName + "/" + f.name, true)
+                }
+              }
               // Function-typed field (#5511): record the real return/param
               // types so a LATER inferred local binding (`val fld = h.f`) can
               // still register `funcValRetTypes`/`funcValParamTypes` for
@@ -3132,6 +3152,15 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               }
               if not cctx.fieldMsilTypes.containsKey(pkgName + "/" + f.name) {
                 cctx.fieldMsilTypes.add(pkgName + "/" + f.name, fty)
+              }
+              // #5520: see the IRecord field-registration site above.
+              if isByteAnnotationMsil(Some(f.ty)) {
+                if not cctx.byteFields.containsKey(className + "/" + f.name) {
+                  cctx.byteFields.add(className + "/" + f.name, true)
+                }
+                if not cctx.byteFields.containsKey(pkgName + "/" + f.name) {
+                  cctx.byteFields.add(pkgName + "/" + f.name, true)
+                }
               }
               fieldDefRow = fieldDefRow + 1
             }
@@ -10345,10 +10374,15 @@ func lowerAssignExprMsil(
                 insns.add(MStfld(fieldToken = fldTok))
               }
               case _ -> {
+                // #5520: a Byte-declared field's storage stays int32
+                // (`fldTy` erases to MInt) — pass MByte so the combine
+                // selects unsigned div/rem and re-narrows with `conv.u1`
+                // (see CodegenCtx.byteFields, mirroring FuncCtx.byteSlots).
+                val combineTy = if cctx.byteFields.containsKey(selfAssignFieldKey) { MByte } else { fldTy }
                 insns.add(MLdarg(slot = 0))
                 insns.add(MDup)
                 insns.add(MLdfld(fieldToken = fldTok))
-                emitCompoundCombineMsil(cctx, fctx, insns, op, fldTy, value)
+                emitCompoundCombineMsil(cctx, fctx, insns, op, combineTy, value)
                 insns.add(MStfld(fieldToken = fldTok))
               }
             }
@@ -10440,9 +10474,11 @@ func lowerAssignExprMsil(
                 }
                 case _ -> {
                   val fldTy = match mapGet(cctx.fieldMsilTypes, key) { case Some(t) -> t; case None -> MObject }
+                  // #5520: see the self-field compound-write arm above.
+                  val combineTy = if cctx.byteFields.containsKey(key) { MByte } else { fldTy }
                   insns.add(MDup)  // recv, recv
                   insns.add(MLdfld(fieldToken = tok))  // recv, current
-                  emitCompoundCombineMsil(cctx, fctx, insns, op, fldTy, value)
+                  emitCompoundCombineMsil(cctx, fctx, insns, op, combineTy, value)
                   insns.add(MStfld(fieldToken = tok))  // recv, newval -> stored
                 }
               }
