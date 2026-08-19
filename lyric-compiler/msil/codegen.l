@@ -8283,20 +8283,46 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     }
                   }
                   case None -> {
-                    // KNOWN-SILENT tail (#6351 follow-up): an `MObject`-receiver
-                    // member read that resolved to nothing yields the receiver
-                    // itself — the MSIL analog of the JVM's J007 erased-receiver
-                    // class.  Converting this to a loud error (attempted in the
-                    // #6351 round) immediately caught a real latent miscompile
-                    // in `examples/docker_client.l` (`e.statusCode` on a
-                    // restored-dependency match payload), but the error's own
-                    // prescribed workaround — bind the value with an explicit
-                    // type — is blocked for restored types (`val err:
-                    // Docker.DockerError = e` fails T0014: restored type names
-                    // are not resolvable in consumer annotations), so the loud
-                    // conversion is deferred until that resolution gap closes.
-                    // Tracked with the docker_client repro in #6503.
-                    MObject
+                    // #6503 step 3: an `MObject`-receiver member read that
+                    // resolves through neither a typed arm above nor the
+                    // same-package `fieldTokensByName` registry has no
+                    // legitimate meaning — the MSIL analog of the JVM's loud
+                    // J007 erased-receiver diagnostic.  This tail used to
+                    // silently yield the RECEIVER itself as the "value" (a
+                    // guaranteed-wrong read at every hit; `.statusCode` on a
+                    // restored-dependency match payload in
+                    // examples/docker_client.l was the proven-live case).
+                    // The #6351-round attempt at this same conversion was
+                    // deferred because its own prescribed workaround — bind
+                    // the receiver with an explicit type annotation — was
+                    // blocked for restored types (T0014).  That gap is
+                    // closed: path/project builds always resolved restored
+                    // type annotations, and single-file workspace builds now
+                    // restore member types too (D-progress-791), so the
+                    // workaround genuinely works.  Fail the build instead of
+                    // deferring a guaranteed-wrong read to the call site.
+                    // Self-tagged `error[T0121] <line>:<col>:` (the free code
+                    // after T0100-T0120; T0115/T0119/T0120 are the sibling
+                    // inline-embedded MSIL codegen backstops, T0116-T0118
+                    // typechecker-registered) so `Emitter.parsePanicSpan`
+                    // (#6464) recovers the real source position instead of
+                    // wrapping under the generic T0120 fallback — the #6521
+                    // review's REQUIRED finding (#6522): a self-hosted
+                    // "backstop" diagnostic loses assertable specificity and
+                    // its real span without this, unlike the sibling T0119
+                    // extern-member-access refusal and the JVM's J007.
+                    panic(
+                      "error[T0121] " + toString(recv.span.startPos.line) + ":" + toString(recv.span.startPos.column) + ": member '" +
+                        memberName +
+                        "' (in " +
+                        fctx.pkgName +
+                        "." +
+                        fctx.funcName +
+                        ") could not be resolved on its receiver — the receiver's static type was erased " +
+                        "to `object` before codegen, so this compilation cannot verify the member exists. " +
+                        "Annotate the receiver with an explicit type (e.g. `val x: Pkg.Type = ...`) so the " +
+                        "checker can bind the member, or check the spelling if this is a typo."
+                    )
                   }
                 }
               }

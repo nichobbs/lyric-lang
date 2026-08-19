@@ -1148,6 +1148,37 @@ test "parsePanicSpan returns None for a message with no embedded location (#6464
   }
 }
 
+// #6521 review (#6522): direct unit coverage for the MSIL erased-receiver
+// backstop's `error[T0121] <line>:<col>:` message shape — the T0119-family
+// format `codegen.l`'s EMember exhausted tail now self-tags with (see that
+// panic's own comment).  No end-to-end path into `EmitResult.diagnostics`
+// exists in this suite for the SAME reason `msil_project_bridge_self_test.l`
+// records for its analogous MPImpl-dedup test: five independently-motivated
+// candidate erasure shapes (same-package match-arm binding, cross-assembly
+// restored generic-union payload, in-bundle cross-package generic-union
+// payload, `Result[Widget, _]?` unwrap, and a boxed-ABI lambda-callback
+// parameter) were tried and every one resolves the receiver's real type
+// through an existing, more specific codegen path — MSIL's in-bundle
+// generics reification (docs/43) and #1939's lambda-param unboxing both
+// track concrete instantiations end-to-end where the JVM backend's older
+// erased-to-Object path (J007's own trigger, `scrutineeGenericArgs`) does
+// not.  Even the one historically-real hit, `examples/docker_client.l`'s
+// `e.statusCode`, no longer reaches the tail post-#6503/#6520 (verified:
+// ilverifies clean).  This pins the SHAPE the message must keep producing —
+// digit-scan span recovery working for this exact code — so a future
+// message-format regression fails loudly here rather than silently losing
+// span precision the next time (if ever) a real trigger surfaces.
+test "parsePanicSpan parses the T0121 erased-receiver `] line:col:` shape (#6521/#6522)" {
+  val msg = "error[T0121] 7:10: member 'statusCode' (in Pkg.func) could not be resolved on its receiver"
+  match Emitter.parsePanicSpan(msg) {
+    case Some(sp) -> {
+      assertEqualInt(sp.startPos.line, 7, "T0121-shape: line")
+      assertEqualInt(sp.startPos.column, 10, "T0121-shape: column")
+    }
+    case None -> assertTrue(false, "parsePanicSpan should find a location in a T0121-shaped message")
+  }
+}
+
 // #6447 (#6446 review): an UNRESOLVED diamond — two same-file interfaces
 // each defaulting the same name onto one target, no override anywhere —
 // must be rejected at compile time under T0117 (docs/01 §2.12: "diamond

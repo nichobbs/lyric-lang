@@ -30913,3 +30913,75 @@ infrastructure.
 **Related:** #6503 (step 1 closed by this; steps 2–3 follow-ups),
 #6519 (new), D123 (the single-file contribution gate), D073/docs/38
 (workspace model), #6136 (JVM dep bundling parity), #5341, docs/45.
+
+## D-progress-792 — The MSIL erased-receiver member-read tail fails loudly (#6503 step 3)
+
+**Date:** 2026-08-19.  **Status:** shipped.
+
+**Problem.**  The MSIL EMember lowering's exhausted tail — an
+`MObject`-typed receiver whose member resolves through neither the
+typed arms nor the same-package `fieldTokensByName` registry — silently
+yielded the RECEIVER itself as the "value": the MSIL analog of the
+JVM's loud J007 erased-receiver diagnostic, and a silent miscompile at
+every hit (`examples/docker_client.l`'s `e.statusCode` was the
+proven-live case, #6503).  The loud conversion was attempted in the
+#6351 round and deferred because its own prescribed workaround — bind
+the receiver with an explicit type annotation — was blocked for
+restored types (T0014).
+
+**Decision.**  The deferral reason is gone: path/project builds always
+resolved restored type annotations (verified in D-progress-791's
+investigation), and single-file workspace builds now restore member
+types for the manifestless leg (D-progress-791, as narrowed by its
+revision after the #6520 review).  The tail now panics with a
+T0115-family message naming the member, the enclosing function, the
+cause (receiver type erased before codegen), and the fix (annotate the
+receiver or check the spelling).
+
+**Verification.**  Full battery green with ZERO hits across the tree —
+stdlib, all ecosystem manifests, manifest examples, the single-file
+examples sweep, and every CI-wired self-test compile without reaching
+the tail (including `examples/docker_client.l`, built against a
+freshly-built `lyric-docker`, and `lyric-web/tests/serve_failure_tests.l`,
+both re-checked directly) — so the conversion changes no working
+program and only converts silent wrong-value reads into loud build
+failures.
+
+**Related:** #6503 (closed by this — step 3 was the issue's remaining
+item), #6351 (the EPath half + the original attempt), #6493 (the JVM
+chained-element analog), docs/59 §4.3, D-progress-791.
+
+**Revision (2026-08-19, PR #6521 review, issue #6522).**  The
+`claude-review` pass raised a REQUIRED finding: the new panic (a) fell
+through to the generic T0120 backstop instead of self-tagging its own
+code, losing the caller-side ability to grep/assert on it specifically,
+and (b) embedded no `line:col`, so `Emitter.parsePanicSpan` recovered no
+real source span for the diagnostic.  Fixed both: the panic now reads
+`error[T0121] <line>:<col>: member '<name>' (in <pkg>.<func>) could not
+be resolved on its receiver — …`, using `recv.span.startPos` as the
+embedded position (T0121 is the next free code after T0100–T0120, all
+of which are already claimed — enumerated exhaustively against
+`typechecker_exprs.l`'s `errorDiagnostic` call sites and the sibling
+inline-embedded codegen backstops T0115/T0117/T0119/T0120).
+
+The finding's third ask — a dedicated negative-path test — could not be
+satisfied with a genuine end-to-end trigger: five independently-motivated
+candidate erasure shapes were tried (same-package generic-union
+match-arm binding; the cross-assembly restored-dependency version of the
+same shape; the in-bundle multi-package version; a `Result[T, _]?`
+unwrap into a field read; a lambda-callback parameter under the boxed
+uniform ABI) and every one resolved the receiver's real type through an
+existing, more specific codegen path — MSIL's in-bundle generics
+reification (docs/43) and #1939's lambda-param unboxing both track
+concrete instantiations end-to-end where the JVM backend's older
+erased-to-Object path (J007's own trigger) does not.  The one
+historically-real hit, `examples/docker_client.l`'s `e.statusCode`, no
+longer reaches the tail post-#6503/#6520 (re-verified: ilverifies
+clean).  Added direct unit coverage instead: a
+`Emitter.parsePanicSpan` test in `emitter_project_self_test.l` pinning
+the `error[T0121] <line>:<col>:` message shape the panic must keep
+producing, following the same file's existing #6464 precedent for the
+sibling T0119/J007/T0115 shapes — so a future message-format
+regression fails loudly here even though no known live trigger exists
+to catch it end-to-end.
+
