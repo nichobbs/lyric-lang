@@ -1521,6 +1521,16 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/exposed_record_field_self_test.l
 
+      # #6529: dotnet-only — a generic `exposed record`'s constructor/field-read
+      # in-bundle generic registration was MSIL-specific (addPackageTokens'
+      # IExposedRec arm never populated genericTypeArity/genericCtorParams/
+      # fieldVarIndices/fieldSigBytes); JVM never had this bug (its #6526/#6528
+      # gaps were separate, already-fixed registration sites).
+      - name: Exposed-record generic constructor self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/exposed_record_generic_ctor_self_test.l
+
       # Typed FFI delegate bridging (Epic #1877/#3923 FFI-boundary slice):
       # dotnet-only — the feature is MSIL-specific (SocketsHttpHandler is a
       # BCL type; the fix lives entirely in Msil.Codegen), no JVM analog.

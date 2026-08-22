@@ -3131,10 +3131,24 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         }
       }
       case IExposedRec(decl) -> {
-        // Same layout as IRecord.
+        // #6529: identical layout to IRecord, INCLUDING the in-bundle generic
+        // registration (genericTypeArity / genericCtorParams / fieldVarIndices /
+        // fieldSigBytes / the *G-suffixed method registrars).  A prior version of
+        // this arm only mirrored IRecord's non-generic bookkeeping, so a generic
+        // `exposed record`'s TypeDef was written with a GenericParam row
+        // (`lowerRecordMsil` sets `MRecord.generics` identically for both kinds)
+        // but every constructor/field-read site fell back to the plain
+        // (non-generic) path — `buildInBundleGenericCtorTok` bails to 0 when
+        // `genericTypeArity`/`genericCtorParams` lack the className key — so
+        // callers referenced the open generic TypeDef directly instead of a
+        // closed GENERICINST TypeSpec, and the CLR loader rejected it with
+        // TypeLoadException.  See docs/43 for the in-bundle generics design.
         val className = pkgName + "." + decl.name
         registerTypeFqnCandidate(cctx, decl.name, className)
+        val recGenerics = genericNamesOf(decl.generics)
+        val recCtorParams: List[MsilType] = newList()
         var fi = 0
+        var fpos = 0
         while fi < decl.members.count {
           match decl.members[fi] {
             case RMField(f) -> {
@@ -3144,7 +3158,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 cctx.fieldTokensByName.add(pkgName + "/" + f.name, tok)
                 cctx.fieldDeclaringClassByName.add(pkgName + "/" + f.name, className)
               }
-              val fty = typeExprToMsilCtx(cctx, f.ty, pkgName)
+              val ftyG = typeExprToMsilG(cctx, f.ty, pkgName, recGenerics)
+              val gIdx = match ftyG { case MTypeVar(ix) -> ix; case _ -> -1 }
+              recCtorParams.add(ftyG)
+              val fty = ftyG
               if not cctx.fieldMsilTypes.containsKey(className + "/" + f.name) {
                 cctx.fieldMsilTypes.add(className + "/" + f.name, fty)
               }
@@ -3157,12 +3174,61 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                   cctx.byteFields.add(className + "/" + f.name, true)
                 }
               }
+              match resolveFuncTypeExprMsil(cctx, f.ty) {
+                case Some(funcTe) -> {
+                  match funcTe.kind {
+                    case TFunction(fParamTes, fRetTe) -> {
+                      if not cctx.fieldFuncRetTypes.containsKey(className + "/" + f.name) {
+                        cctx.fieldFuncRetTypes.add(className + "/" + f.name, typeExprToMsilCtx(cctx, fRetTe, pkgName))
+                        val fParamMsilTys: List[MsilType] = newList()
+                        var ffpi = 0
+                        while ffpi < fParamTes.count {
+                          fParamMsilTys.add(typeExprToMsilCtx(cctx, fParamTes[ffpi], pkgName))
+                          ffpi = ffpi + 1
+                        }
+                        cctx.fieldFuncParamTypes.add(className + "/" + f.name, fParamMsilTys)
+                      }
+                    }
+                    case _ -> ()
+                  }
+                }
+                case None -> ()
+              }
+              if recGenerics.count > 0 {
+                val fSig = if gIdx >= 0 { buildGenericParamFieldSig(gIdx) } else { buildFieldSig(fty) }
+                cctx.fieldVarIndices.add(className + "/" + f.name, gIdx)
+                cctx.fieldSigBytes.add(className + "/" + f.name, fSig)
+                val byPosVarKey = className + "/field" + toString(fpos)
+                cctx.fieldVarIndices.add(byPosVarKey, gIdx)
+                cctx.fieldSigBytes.add(byPosVarKey, fSig)
+              }
+              val byPosKey = className + "/field" + toString(fpos)
+              if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
+                cctx.fieldDeclaredNames.add(byPosKey, f.name)
+              }
+              match f.dflt {
+                case Some(dfltExpr) -> {
+                  if not cctx.ctorDefaultExprs.containsKey(byPosKey) {
+                    cctx.ctorDefaultExprs.add(byPosKey, dfltExpr)
+                  }
+                }
+                case None -> ()
+              }
+              fpos = fpos + 1
               fieldDefRow = fieldDefRow + 1
             }
             case _ -> {
             }
           }
           fi = fi + 1
+        }
+        if recGenerics.count > 0 {
+          if not cctx.genericTypeArity.containsKey(className) {
+            cctx.genericTypeArity.add(className, recGenerics.count)
+          }
+          if not cctx.genericCtorParams.containsKey(className) {
+            cctx.genericCtorParams.add(className, recCtorParams)
+          }
         }
         cctx.recordCtorTokens.add(className, 0x06000000 + methodDefRow)
         methodDefRow = methodDefRow + 1
@@ -3177,13 +3243,13 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               val xrmKey = className + "/" + fn.name
               if not cctx.methodTokens.containsKey(xrmArityKey) {
                 cctx.methodTokens.add(xrmArityKey, 0x06000000 + methodDefRow)
-                registerMethodRetTy(cctx, xrmArityKey, fn.ret, pkgName)
-                registerMethodParamTypes(cctx, xrmArityKey, xrmRealParams, pkgName)
+                registerMethodRetTyG(cctx, xrmArityKey, fn.ret, pkgName, recGenerics)
+                registerMethodParamTypesG(cctx, xrmArityKey, xrmRealParams, pkgName, recGenerics)
                 registerMethodParamModes(cctx, xrmArityKey, xrmRealParams)
                 if not cctx.methodTokens.containsKey(xrmKey) {
                   cctx.methodTokens.add(xrmKey, 0x06000000 + methodDefRow)
-                  registerMethodRetTy(cctx, xrmKey, fn.ret, pkgName)
-                  registerMethodParamTypes(cctx, xrmKey, xrmRealParams, pkgName)
+                  registerMethodRetTyG(cctx, xrmKey, fn.ret, pkgName, recGenerics)
+                  registerMethodParamTypesG(cctx, xrmKey, xrmRealParams, pkgName, recGenerics)
                   registerMethodParamModes(cctx, xrmKey, xrmRealParams)
                 }
               }
