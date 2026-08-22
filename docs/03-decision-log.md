@@ -31208,3 +31208,85 @@ JVM exposed-record fix this was found while reviewing), #6529 (the
 separate MSIL generic-exposed-record loading bug this surfaced,
 un-fixed).
 
+## D-progress-797 — MSIL generic `exposed record` fails to load at runtime (#6529)
+
+**Date:** 2026-08-22.  **Status:** shipped.
+
+**Problem.**  Follow-up to #6529 (found while adding regression coverage
+for D-progress-796's JVM fix).  A generic `exposed record` failed to
+*load* at runtime on `--target dotnet` with `System.TypeLoadException:
+Could not load type 'Pkg.Box`1' from assembly...`, regardless of
+declaration order:
+
+```lyric
+func makeBox(v: Int): Box[Int] { Box(value = v) }
+exposed record Box[T] { value: T }
+func main(): Int { makeBox(7).value }
+```
+
+A control test confirmed the identical shape with a PLAIN (non-exposed)
+`record Box[T]` works correctly — this was specific to `exposed record`,
+not a general in-bundle-generics regression.
+
+**Root cause.**  `addPackageTokens`'s `IExposedRec` arm in
+`lyric-compiler/msil/codegen.l` (the token-registration pre-pass, distinct
+from the actual TypeDef-emitting `lowerRecordMsil`, which already treats
+`IRecord`/`IExposedRec` identically and was never the problem) never
+populated `cctx.genericTypeArity` / `cctx.genericCtorParams` /
+`cctx.fieldVarIndices` / `cctx.fieldSigBytes` for a generic exposed record
+— unlike the parallel `IRecord` arm, which registers all four via the
+`*G`-suffixed helpers (`typeExprToMsilG`, `registerMethodRetTyG`,
+`registerMethodParamTypesG`) and `recGenerics`/`recCtorParams`.
+`buildInBundleGenericCtorTok` (the function that emits a closed
+`GENERICINST` TypeSpec-parented `.ctor` MemberRef for an in-bundle generic
+type) bails to 0 — falling back to a PLAIN, non-generic construction path
+— whenever `genericTypeArity`/`genericCtorParams` lack the class's key.
+Since `lowerRecordMsil` unconditionally writes the TypeDef's GenericParam
+row from `decl.generics` regardless of which registration ran, the TypeDef
+itself was a genuine open generic type, but every construction/field-read
+call site referenced it as if non-generic (a bare TypeDef token, not a
+closed TypeSpec instantiation) — invalid per ECMA-335 §III.4.21, which the
+CLR loader rejects as `TypeLoadException` the moment anything tries to
+load the type.
+
+**Decision.**  Mirrored the `IRecord` arm's full generic-registration body
+into the `IExposedRec` arm verbatim (same pattern as D-progress-795/-796),
+adding `recGenerics`/`recCtorParams` computation, the `*G`-suffixed
+field/method-return/method-param registrars, and the
+`genericTypeArity`/`genericCtorParams`/`fieldVarIndices`/`fieldSigBytes`
+population that was missing.  Left the pre-existing `#5520` `byteFields`
+registration (from D-progress-794) in place alongside it.
+
+Also noted but NOT fixed in this change (separate, narrower, cross-package
+gap): `registerRestoredMembers` in the same file handles `IRecord` for a
+RESTORED (cross-package/NuGet-linked) artifact's records but has no
+`IExposedRec` arm at all — a restored dependency's generic (or even
+non-generic) exposed record's ctor/fields never register for a downstream
+consumer. Same root issue as this fix and D-progress-795/-796, but for the
+cross-package path rather than in-bundle; no reproducing test exists yet,
+so it's left as a known gap rather than spec-fixed blind.
+
+**Verification.**  The exact repro above now returns `7` on `--target
+dotnet` (was `TypeLoadException`).  Confirmed against a clean pre-fix
+build that the failure reproduces identically first.  New regression test
+`exposed_record_generic_ctor_self_test.l` (dotnet-only — JVM never had
+this bug; its own #6528 gap was separate and already fixed) wired into CI.
+Full battery green: the new self-test; `exposed_record_field_self_test.l`
+(4/4, both targets, unaffected); `byte_arithmetic_self_test.l` (12/12,
+both targets — the merged `byteFields` registration from D-progress-794
+still works correctly alongside this fix); the generics/records/closures
+battery (`typechecker_self_test.l`, `block_shadow_self_test.l`,
+`closure_zero_overhead_self_test.l`, `func_val_local_rettype_self_test.l`,
+`inbundle_generics_self_test.l`, `bitwise_self_test.l`,
+`nested_constructor_pattern_self_test.l`, `msil_project_bridge_self_test.l`,
+`bare_func_ref_self_test.l`, both targets where applicable) — 0 failures
+across all; 8 dependency-library builds; 11 ecosystem manifests; 4
+`examples/` manifest programs; ilverify across 121 self-hosted-emitted
+DLLs (0 IL-validity errors).
+
+**Related:** #6529 (closed by this), #6526 / D-progress-795, #6528 /
+D-progress-796 (the sibling JVM registration-gap fixes this pattern
+follows), #5520 / D-progress-794 (the prior fix to this exact
+`addPackageTokens` `IExposedRec` arm, whose `byteFields` registration
+this change preserves alongside the new generic registration).
+
