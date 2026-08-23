@@ -328,6 +328,12 @@ typedef int (*ossl_alpn_cb)(ossl_ssl*, const unsigned char**, unsigned char*,
 #define OSSL_SSL_CTRL_SET_TLSEXT_HOSTNAME 55
 #define OSSL_TLSEXT_NAMETYPE_host_name 0
 #define OSSL_SSL_CTRL_SET_MIN_PROTO_VERSION 123
+/* SSL_CTX_add1_chain_cert(ctx,x509) is a macro (SSL_CTX_ctrl(ctx,
+ * SSL_CTRL_CHAIN_CERT,1,x509)) in OpenSSL's ssl.h, not a real exported
+ * dynamic symbol — dlsym("SSL_CTX_add1_chain_cert") always fails.  Call
+ * through SSL_CTX_ctrl directly, matching OSSL_SSL_CTRL_SET_MIN_PROTO_VERSION
+ * above (#6125). */
+#define OSSL_SSL_CTRL_CHAIN_CERT 89
 #define OSSL_SSL_VERIFY_NONE 0x00
 #define OSSL_SSL_VERIFY_PEER 0x01
 #define OSSL_SSL_VERIFY_FAIL_IF_NO_PEER_CERT 0x02
@@ -567,14 +573,38 @@ static int build_alpn_wire(const char* csv, unsigned char** out, unsigned int* o
 }
 
 /* Load the FIRST certificate from a PEM block (the leaf); returns NULL on
- * failure.  Intermediate-chain certs beyond the leaf are a documented
- * follow-on (N-TLS server-chain item). */
+ * failure.  Used only where a single leaf is all that's needed (standalone
+ * PEM validation below) — chain-aware call sites use `read_cert_chain`. */
 static ossl_x509* read_cert(const char* pem) {
     ossl_bio* bio = O.BIO_new_mem_buf(pem, -1);
     if (!bio) return NULL;
     ossl_x509* x = O.PEM_read_bio_X509(bio, NULL, NULL, NULL);
     O.BIO_free(bio);
     return x;
+}
+
+/* A PEM block may concatenate a leaf certificate with one or more
+ * intermediate/CA certificates (a chain bundle, or a multi-anchor CA
+ * bundle) — #6125. Max chain depth is bounded to guard against unbounded
+ * allocation on malformed/adversarial input; real-world chains are 2-4
+ * certs deep. */
+#define TLS_MAX_CHAIN_CERTS 16
+
+/* Read every certificate from a PEM block into `out` (caller-owned,
+ * `max`-sized array of X509*), in file order.  Returns the count read (0 on
+ * failure to read even the first certificate).  Each returned X509* is a
+ * fresh reference the caller must eventually X509_free. */
+static int read_cert_chain(const char* pem, ossl_x509** out, int max) {
+    ossl_bio* bio = O.BIO_new_mem_buf(pem, -1);
+    if (!bio) return 0;
+    int n = 0;
+    while (n < max) {
+        ossl_x509* x = O.PEM_read_bio_X509(bio, NULL, NULL, NULL);
+        if (!x) break;
+        out[n++] = x;
+    }
+    O.BIO_free(bio);
+    return n;
 }
 
 static ossl_evp_pkey* read_key(const char* pem) {
@@ -585,36 +615,58 @@ static ossl_evp_pkey* read_key(const char* pem) {
     return k;
 }
 
-/* Add a PEM CA (its first cert) to a context's trust store.  0 / -1. */
+/* Add every CA in a PEM bundle to a context's trust store (#6125: a
+ * multi-anchor CA bundle previously had all but the first anchor silently
+ * dropped).  0 / -1. */
 static int add_ca(ossl_ssl_ctx* ctx, const char* ca_pem) {
-    ossl_x509* ca = read_cert(ca_pem);
-    if (!ca) {
+    ossl_x509* chain[TLS_MAX_CHAIN_CERTS];
+    int n = read_cert_chain(ca_pem, chain, TLS_MAX_CHAIN_CERTS);
+    if (n == 0) {
         set_ossl_err("parse CA certificate");
         return -1;
     }
     ossl_x509_store* store = O.SSL_CTX_get_cert_store(ctx);
-    int rc = O.X509_STORE_add_cert(store, ca);
-    O.X509_free(ca); /* store took its own ref */
-    if (rc != 1) {
+    int failed = 0;
+    int i;
+    for (i = 0; i < n; i++) {
+        int rc = O.X509_STORE_add_cert(store, chain[i]);
+        O.X509_free(chain[i]); /* store took its own ref */
+        if (rc != 1) failed = 1;
+    }
+    if (failed) {
         set_ossl_err("add CA certificate to trust store");
         return -1;
     }
     return 0;
 }
 
-/* Install cert_pem (leaf) + key_pem (PKCS#8) on a context and verify they
- * match.  0 / -1. */
+/* Install cert_pem (leaf, optionally followed by intermediate chain certs —
+ * #6125) + key_pem (PKCS#8) on a context and verify they match.  0 / -1. */
 static int use_identity(ossl_ssl_ctx* ctx, const char* cert_pem, const char* key_pem) {
-    ossl_x509* cert = read_cert(cert_pem);
-    if (!cert) {
+    ossl_x509* chain[TLS_MAX_CHAIN_CERTS];
+    int n = read_cert_chain(cert_pem, chain, TLS_MAX_CHAIN_CERTS);
+    if (n == 0) {
         set_ossl_err("parse certificate");
         return -1;
     }
-    int rc = O.SSL_CTX_use_certificate(ctx, cert);
-    O.X509_free(cert);
+    int rc = O.SSL_CTX_use_certificate(ctx, chain[0]);
+    O.X509_free(chain[0]);
     if (rc != 1) {
+        int fi;
+        for (fi = 1; fi < n; fi++) O.X509_free(chain[fi]);
         set_ossl_err("use certificate");
         return -1;
+    }
+    int ci;
+    for (ci = 1; ci < n; ci++) {
+        long arc = O.SSL_CTX_ctrl(ctx, OSSL_SSL_CTRL_CHAIN_CERT, 1, chain[ci]);
+        O.X509_free(chain[ci]); /* add1 took its own ref */
+        if (arc != 1) {
+            int fj;
+            for (fj = ci + 1; fj < n; fj++) O.X509_free(chain[fj]);
+            set_ossl_err("add intermediate certificate to chain");
+            return -1;
+        }
     }
     ossl_evp_pkey* key = read_key(key_pem);
     if (!key) {

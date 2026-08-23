@@ -98,6 +98,85 @@ static const char CLIENT_KEY[] =
     "uDLkF+iQ4V4UcZqow5QFHvSNU3H/l+GiwUZPDj6Vtb1QfjW57CDrb5ob\n"
     "-----END PRIVATE KEY-----\n";
 
+/* ── 3-level PKI for chain-building coverage (#6125) ──────────────────────
+ * root -> intermediate -> leaf, generated offline with `openssl` (see the
+ * PR). `CHAIN_LEAF_PLUS_INTER_CRT` and `CHAIN_ROOT2_PLUS_ROOT_CRT` are
+ * concatenated PEM blocks (adjacent C string literals), matching the
+ * multi-certificate bundle shape a real deployment presents. */
+
+static const char CHAIN_ROOT_CRT[] =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIBfjCCASSgAwIBAgIBATAKBggqhkjOPQQDAjAdMRswGQYDVQQDDBJMeXJpYyBU\n"
+    "ZXN0IFJvb3QgQ0EwIBcNMjYwODIzMDMyNDUzWhgPMjEyNjA3MzAwMzI0NTNaMB0x\n"
+    "GzAZBgNVBAMMEkx5cmljIFRlc3QgUm9vdCBDQTBZMBMGByqGSM49AgEGCCqGSM49\n"
+    "AwEHA0IABE4eHBIsFSs3QMar6ngrpTMsxrZGvZEhfM9gnrgFg9iZxzNDZJmCwKwe\n"
+    "c7WhPH88H836pkyGkWg2RpDNV2vdetmjUzBRMB0GA1UdDgQWBBSPE59MoEGS7K3C\n"
+    "+gQYtqnfAAIlrTAfBgNVHSMEGDAWgBSPE59MoEGS7K3C+gQYtqnfAAIlrTAPBgNV\n"
+    "HRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIEe0TTQXeCxh/mFd5WbhXs2e\n"
+    "n+aate/R8jguhu+2z4oEAiEAo4bc6pOLDVDqawC4YvHkQ0iROE9Fl51sYcil423p\n"
+    "mts=\n"
+    "-----END CERTIFICATE-----\n";
+
+static const char CHAIN_LEAF_PLUS_INTER_CRT[] =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIBwTCCAWagAwIBAgIUZ4WRtav17qGlHwQdkpTihqRRrNAwCgYIKoZIzj0EAwIw\n"
+    "JTEjMCEGA1UEAwwaTHlyaWMgVGVzdCBJbnRlcm1lZGlhdGUgQ0EwIBcNMjYwODIz\n"
+    "MDMyNDUzWhgPMjEyNjA3MzAwMzI0NTNaMBsxGTAXBgNVBAMMEGx5cmljLWNoYWlu\n"
+    "LWxlYWYwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATOg0BLB3ZhRaG4qWc6y7zZ\n"
+    "KFPTsiC16UsjjSD7rEk0AfHqN8J7qJmj9cCjD1ctmpbWyk07H0/wEKGqdxdB7WGT\n"
+    "o3wwejAMBgNVHRMBAf8EAjAAMA4GA1UdDwEB/wQEAwIHgDAaBgNVHREEEzARggls\n"
+    "b2NhbGhvc3SHBH8AAAEwHQYDVR0OBBYEFJ714E3LTstI6/RTRfwlyduimr/PMB8G\n"
+    "A1UdIwQYMBaAFONsXNCnuaFCJNPjH1ABbQEb0PjEMAoGCCqGSM49BAMCA0kAMEYC\n"
+    "IQDOS8YdfIdjqf1digwHPW5S1sB7LyG9FHKlYDIUONDgvwIhAJaWIHC5zmX4hoKD\n"
+    "+SMEwlOayNYQPXY+N8b8X5PPDDVn\n"
+    "-----END CERTIFICATE-----\n"
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIBrTCCAVKgAwIBAgIULpQQwbqNoX2BWmu0sXAEy2aLS1IwCgYIKoZIzj0EAwIw\n"
+    "HTEbMBkGA1UEAwwSTHlyaWMgVGVzdCBSb290IENBMCAXDTI2MDgyMzAzMjQ1M1oY\n"
+    "DzIxMjYwNzMwMDMyNDUzWjAlMSMwIQYDVQQDDBpMeXJpYyBUZXN0IEludGVybWVk\n"
+    "aWF0ZSBDQTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABKRApG9ffe7I2UTlXKMK\n"
+    "K481UliUlpYw4xj30pypYIDokCp3G7saI3uSTCOV081Y06fNj4y0ziKnDYywRTdP\n"
+    "skqjZjBkMBIGA1UdEwEB/wQIMAYBAf8CAQAwDgYDVR0PAQH/BAQDAgEGMB0GA1Ud\n"
+    "DgQWBBTjbFzQp7mhQiTT4x9QAW0BG9D4xDAfBgNVHSMEGDAWgBSPE59MoEGS7K3C\n"
+    "+gQYtqnfAAIlrTAKBggqhkjOPQQDAgNJADBGAiEAq3hgEzrZwtNcVC28OkZ8fGZh\n"
+    "czOuJRjflNpPcA6jy3kCIQCQZF2KK+PiorlwM/gs88NY2H4+pOHJdZwn+mvB8dPu\n"
+    "GQ==\n"
+    "-----END CERTIFICATE-----\n";
+
+static const char CHAIN_LEAF_KEY[] =
+    "-----BEGIN PRIVATE KEY-----\n"
+    "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgVrRtWkwa0D5KJbzq\n"
+    "Uj/OtMRGd31IbRZHy0dtCyu3bnChRANCAATOg0BLB3ZhRaG4qWc6y7zZKFPTsiC1\n"
+    "6UsjjSD7rEk0AfHqN8J7qJmj9cCjD1ctmpbWyk07H0/wEKGqdxdB7WGT\n"
+    "-----END PRIVATE KEY-----\n";
+
+/* A second, unrelated root — used first in a two-anchor CA bundle so the
+ * test proves the SECOND anchor (the real root, which actually signs the
+ * presented chain) is still trusted, not just the first. */
+static const char CHAIN_ROOT2_PLUS_ROOT_CRT[] =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIBoDCCAUagAwIBAgIBATAKBggqhkjOPQQDAjAuMSwwKgYDVQQDDCNMeXJpYyBU\n"
+    "ZXN0IFJvb3QyIENBICh1bnVzZWQgYW5jaG9yKTAgFw0yNjA4MjMwMzI0NTlaGA8y\n"
+    "MTI2MDczMDAzMjQ1OVowLjEsMCoGA1UEAwwjTHlyaWMgVGVzdCBSb290MiBDQSAo\n"
+    "dW51c2VkIGFuY2hvcikwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARJg4EMqOZf\n"
+    "6QBwF4fYclLZxTmyOQbJDkGUKt71WXP/FBFjM2h54Odh4tGHtARz4QK2NcqIuqiM\n"
+    "ucMCsMxga2Wdo1MwUTAdBgNVHQ4EFgQUVGpcrquF4YDvBTNa2sksFDKQgNkwHwYD\n"
+    "VR0jBBgwFoAUVGpcrquF4YDvBTNa2sksFDKQgNkwDwYDVR0TAQH/BAUwAwEB/zAK\n"
+    "BggqhkjOPQQDAgNIADBFAiBq/TkNo9l2mjgZmj7XQceU0vRxPOIoWR2y0cr11fZL\n"
+    "SgIhAKw9Q1VemSc2rA/TUusUKOT4YzSLYk5ucwWmojWFkMnU\n"
+    "-----END CERTIFICATE-----\n"
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIBfjCCASSgAwIBAgIBATAKBggqhkjOPQQDAjAdMRswGQYDVQQDDBJMeXJpYyBU\n"
+    "ZXN0IFJvb3QgQ0EwIBcNMjYwODIzMDMyNDUzWhgPMjEyNjA3MzAwMzI0NTNaMB0x\n"
+    "GzAZBgNVBAMMEkx5cmljIFRlc3QgUm9vdCBDQTBZMBMGByqGSM49AgEGCCqGSM49\n"
+    "AwEHA0IABE4eHBIsFSs3QMar6ngrpTMsxrZGvZEhfM9gnrgFg9iZxzNDZJmCwKwe\n"
+    "c7WhPH88H836pkyGkWg2RpDNV2vdetmjUzBRMB0GA1UdDgQWBBSPE59MoEGS7K3C\n"
+    "+gQYtqnfAAIlrTAfBgNVHSMEGDAWgBSPE59MoEGS7K3C+gQYtqnfAAIlrTAPBgNV\n"
+    "HRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIEe0TTQXeCxh/mFd5WbhXs2e\n"
+    "n+aate/R8jguhu+2z4oEAiEAo4bc6pOLDVDqawC4YvHkQ0iROE9Fl51sYcil423p\n"
+    "mts=\n"
+    "-----END CERTIFICATE-----\n";
+
 static const char REQUEST[] = "PING from lyric client";
 static const char RESPONSE[] = "PONG from lyric server";
 
@@ -243,6 +322,56 @@ static void test_tls_server_auth(void) {
         CHECK(srv.echoed == 1);
         CHECK(strcmp(calpn, "http/1.1") == 0);       /* client-side negotiated */
         CHECK(strcmp(srv.alpn, "http/1.1") == 0);    /* server-side negotiated */
+    }
+    lyric_tls_ctx_free(server);
+    lyric_tls_ctx_free(client);
+}
+
+/* #6125: server presents a leaf + intermediate chain (`use_identity`); the
+ * client trusts ONLY the root, not the intermediate.  Before the fix,
+ * `use_identity` sent only the leaf (the intermediate was silently
+ * dropped), so a client that hadn't cached the intermediate separately
+ * failed chain validation.  With the fix, `SSL_CTX_add1_chain_cert`
+ * installs the intermediate too, and the handshake succeeds. */
+static void test_tls_server_chain(void) {
+    void* server = lyric_tls_server_new(CHAIN_LEAF_PLUS_INTER_CRT, CHAIN_LEAF_KEY, 12, "", 0, "http/1.1");
+    CHECK(server != NULL);
+    void* client = lyric_tls_client_new(CHAIN_ROOT_CRT, 12, 0);
+    CHECK(client != NULL);
+    if (server && client) {
+        char calpn[32];
+        int rt = 0;
+        tls_server_arg srv;
+        int ok = run_tls_scenario(server, client, "localhost", "http/1.1", calpn, &rt, &srv);
+        CHECK(ok == 1);
+        CHECK(rt == 1);
+        CHECK(srv.accept_ok == 1);
+        CHECK(srv.echoed == 1);
+    }
+    lyric_tls_ctx_free(server);
+    lyric_tls_ctx_free(client);
+}
+
+/* #6125: client's CA bundle carries TWO anchors — an unrelated root2 first,
+ * then the real root second.  The server's chain is rooted at the real
+ * root, not root2.  Before the fix, `add_ca` registered only the first
+ * anchor (root2), so the second (real) anchor was silently dropped and
+ * validation failed even though a valid anchor was present in the bundle.
+ * With the fix, both anchors are registered and the handshake succeeds. */
+static void test_multi_anchor_ca_bundle(void) {
+    void* server = lyric_tls_server_new(CHAIN_LEAF_PLUS_INTER_CRT, CHAIN_LEAF_KEY, 12, "", 0, "http/1.1");
+    CHECK(server != NULL);
+    void* client = lyric_tls_client_new(CHAIN_ROOT2_PLUS_ROOT_CRT, 12, 0);
+    CHECK(client != NULL);
+    if (server && client) {
+        char calpn[32];
+        int rt = 0;
+        tls_server_arg srv;
+        int ok = run_tls_scenario(server, client, "localhost", "http/1.1", calpn, &rt, &srv);
+        CHECK(ok == 1);
+        CHECK(rt == 1);
+        CHECK(srv.accept_ok == 1);
+        CHECK(srv.echoed == 1);
     }
     lyric_tls_ctx_free(server);
     lyric_tls_ctx_free(client);
@@ -688,6 +817,8 @@ int main(void) {
     }
 
     test_tls_server_auth();
+    test_tls_server_chain();
+    test_multi_anchor_ca_bundle();
     test_tls_tls13_floor();
     test_mtls_accept();
     test_mtls_reject_no_client_cert();
