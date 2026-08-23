@@ -31290,3 +31290,77 @@ follows), #5520 / D-progress-794 (the prior fix to this exact
 `addPackageTokens` `IExposedRec` arm, whose `byteFields` registration
 this change preserves alongside the new generic registration).
 
+## D-progress-798 — `lyric_tls.c` `read_cert`/`add_ca` no longer truncate multi-certificate PEM blocks (#6125)
+
+**Date:** 2026-08-23.  **Status:** shipped.
+
+**Problem.**  A `claude-review` SUGGESTION finding from PR #6108 (issue
+#6125): `read_cert(pem)` called `PEM_read_bio_X509` exactly once and
+returned only the first certificate in a PEM block.  Two call sites
+depended on this being the FULL chain/bundle:
+
+- `use_identity` (backing `lyric_tls_server_new`'s `cert_pem` and
+  `lyric_tls_client_set_identity`'s `cert_pem`) installed only the
+  leaf via `SSL_CTX_use_certificate`, silently dropping any
+  intermediate CA concatenated into the same PEM (the common
+  leaf+intermediate chain-bundle shape, e.g. Let's Encrypt).  A peer
+  that hadn't independently cached the intermediate would fail chain
+  validation.
+- `add_ca` (backing `lyric_tls_client_new`'s `ca_pem` and
+  `lyric_tls_server_new`'s `client_ca_pem`) added only the first
+  certificate from a CA PEM to the trust store, silently dropping all
+  but the first anchor in a multi-anchor CA bundle (a common private-PKI
+  pattern) — connections that should validate against the 2nd+ anchor
+  were quietly rejected with no diagnostic pointing at the cause.
+
+**Decision.**  Added `read_cert_chain(pem, out, max)` alongside the
+existing (unchanged) single-cert `read_cert` — loops
+`PEM_read_bio_X509` until it returns NULL or a
+`TLS_MAX_CHAIN_CERTS`-deep bound is hit (16; real-world chains are 2-4
+deep, the cap guards against unbounded allocation on adversarial
+input).  `add_ca` now loops `X509_STORE_add_cert` over every certificate
+in the bundle.  `use_identity` installs the first (leaf) certificate via
+the existing `SSL_CTX_use_certificate`, then every subsequent
+certificate via `SSL_CTX_ctrl(ctx, SSL_CTRL_CHAIN_CERT, 1, x509)` (ctrl
+code 89) — `SSL_CTX_add1_chain_cert(ctx, x509)` is a macro around
+exactly that `SSL_CTX_ctrl` call in OpenSSL's `ssl.h`, not a real
+exported dynamic symbol, so `dlsym("SSL_CTX_add1_chain_cert")` always
+fails; this codebase already had the identical pattern for
+`SSL_CTX_set_min_proto_version` (`OSSL_SSL_CTRL_SET_MIN_PROTO_VERSION
+123`), so `OSSL_SSL_CTRL_CHAIN_CERT 89` follows the same precedent.
+`read_cert` itself is untouched and still used as-is by the standalone
+single-leaf PEM validation path (`lyric_tls_validate_cert_pem`), which
+only needs to confirm "does this parse", not chain-aware behavior.
+
+Every chain certificate is a fresh `X509*` reference from
+`PEM_read_bio_X509`; ownership is threaded through explicitly
+(`X509_STORE_add_cert`/`SSL_CTX_ctrl`'s add1 semantics both take their
+own internal reference, so the caller's reference is `X509_free`d
+immediately after each call, including on the partial-failure paths
+that free the remaining un-consumed certs in the array before
+returning `-1`).
+
+**Verification.**  Generated a genuine 3-level PKI (root CA →
+intermediate CA → leaf, EC/prime256v1, unencrypted PKCS#8 — matching
+the existing embedded test fixtures' style) offline with `openssl req`/
+`openssl x509 -req`, verified with `openssl verify`.  Two new
+real-loopback-socket tests in `lyric-rt/test/lyric_tls_test.c`:
+`test_tls_server_chain` (server presents leaf+intermediate, client
+trusts only the root — fails pre-fix, since only the leaf reached the
+peer) and `test_multi_anchor_ca_bundle` (client's CA bundle carries an
+unrelated root first, then the real root second — fails pre-fix, since
+only the first anchor registered).  Confirmed both fail identically
+against a clean pre-fix baseline (`git stash` the fix, rebuild, rerun —
+8 `CHECK` failures across the two new tests) before restoring the fix
+and reconfirming all tests pass.  `make -C lyric-rt test` (regular) and
+`make -C lyric-rt test-asan` (`-fsanitize=address`) both green — no
+leaks/use-after-free in the new chain-read/free paths, including the
+partial-failure early-free branches.  Full `lyric-rt` C test suite
+(`lyric_rt_test` + `lyric_tls_test`, both variants) green; build under
+`-Wall -Wextra -Werror` clean.
+
+**Related:** #6125 (closed by this), #6108 (the PR whose review
+surfaced this finding), `OSSL_SSL_CTRL_SET_MIN_PROTO_VERSION` (the
+existing precedent for calling an OpenSSL ctrl-macro-only API through
+`SSL_CTX_ctrl` directly).
+
