@@ -1689,3 +1689,101 @@ test "slice-field append through self and Unit expression body run correctly (#6
   assertEqualInt(result.exitCode, 0, "slice-field/unit-body: exit 0 expected (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "2", "capped append through self keeps the last two entries")
 }
+
+// #6041: an `extern type` alias declared in one package must never hijack a
+// same-named Lyric record's field access in an UNRELATED package that
+// doesn't even import the aliasing package.  Before the fix, `externTypeNames`
+// was bundle-global — populated from every `extern type` item across the
+// whole multi-package build — so PkgA's `extern type FieldInfo = "System.
+// Reflection.FieldInfo"` hijacked PkgB's completely unrelated `record
+// FieldInfo { name: String }`, and `f.name` on a `PkgB.FieldInfo` value
+// mis-resolved as an auto-FFI member read on `System.Reflection.FieldInfo`,
+// crashing with "does not match any instance property getter (get_name)".
+// Exact repro from the issue.
+test "extern type alias in one package does not hijack a same-named Lyric record in another (#6041)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "PkgA6041",
+      "package PkgA6041\n" + "\n" + "extern type FieldInfo = \"System.Reflection.FieldInfo\"\n" + "\n" +
+        "pub func fieldName(f: in FieldInfo): String {\n" +
+        "  f.Name\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "PkgB6041",
+      "package PkgB6041\n" + "\n" + "pub record FieldInfo {\n" + "  name: String\n" + "}\n" + "\n" +
+        "pub func internField(name: in String): FieldInfo {\n" +
+        "  FieldInfo(name = name)\n" +
+        "}\n" +
+        "\n" +
+        "pub func fieldNameB(f: in FieldInfo): String {\n" +
+        "  f.name\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "Main6041",
+      "package Main6041\n" + "\n" + "import PkgB6041\n" + "\n" + "func main(): Unit {\n" +
+        "  val fi = PkgB6041.internField(\"hello\")\n" +
+        "  println(PkgB6041.fieldNameB(fi))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("extern-alias-scope-6041", packages, "ExternAliasScope6041")
+  assertEqualInt(result.exitCode, 0, "extern_alias_scope: exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "hello",
+    "unrelated package's extern alias did not hijack the Lyric record field"
+  )
+}
+
+// #6041 (found during investigation): the same bundle-global scoping bug
+// hijacked cross-package UNION CASE reference resolution too, in the
+// opposite direction from the field-read case above — an extern-type
+// qualifier exclusion (added to fix the `RegexOptions.None` collision)
+// incorrectly suppressed a genuine Lyric union whose bare name happens to
+// match an unrelated package's extern alias.
+test "extern type alias in one package does not hijack a same-named Lyric union's case reference in another (#6041)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "PkgC6041",
+      "package PkgC6041\n" + "\n" + "extern type Status = \"System.Net.HttpStatusCode\"\n" + "\n" +
+        "pub func codeOf(s: in Status): Int {\n" +
+        "  s.GetHashCode()\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "PkgD6041",
+      "package PkgD6041\n" + "\n" + "pub union Status {\n" + "  case Ok\n" + "  case Failed\n" + "}\n" + "\n" +
+        "pub func describe(s: in Status): String {\n" +
+        "  match s {\n" +
+        "    case Ok -> \"ok\"\n" +
+        "    case Failed -> \"failed\"\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "Main6041B",
+      "package Main6041B\n" + "\n" + "import PkgD6041\n" + "\n" + "func main(): Unit {\n" + "  val s = PkgD6041.Ok\n" +
+        "  println(PkgD6041.describe(s))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("extern-alias-scope-union-6041", packages, "ExternAliasScopeUnion6041")
+  assertEqualInt(result.exitCode, 0, "extern_alias_scope_union: exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "ok",
+    "unrelated package's extern alias did not hijack the Lyric union's case reference"
+  )
+}
