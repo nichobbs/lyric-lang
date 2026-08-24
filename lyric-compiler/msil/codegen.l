@@ -6081,6 +6081,50 @@ func resolveTypeFqn(cctx: in CodegenCtx, pkgName: in String, seg: in String): St
   }
 }
 
+// True iff `pkgName` has a Lyric-declared type candidate named `seg`
+// genuinely IN SCOPE — its own declaration, or one imported from another
+// package — using the identical scope tiers `resolveTypeFqn` walks (#6041).
+//
+// `cctx.externTypeNames` (populated by `scanExternTypesMsil` from every
+// `extern type` item across the WHOLE multi-package build) is bundle-global,
+// not package-scoped: an `extern type Foo = "..."` declared in package A
+// previously hijacked every bare reference to a same-named Lyric
+// record/union/interface `Foo` in EVERY other package sharing the codegen
+// pass, since every `externTypeNames` consultation ran unconditionally
+// before (or instead of) the package-scoped `resolveTypeFqn`. Call sites
+// that treat a bare name as a possible extern-type qualifier now check this
+// FIRST and skip the extern-type path when a genuine Lyric candidate is in
+// scope for the referencing package — a Lyric declaration always wins over
+// an unrelated package's unimported extern alias of the same short name.
+func hasLyricTypeCandidateInScope(cctx: in CodegenCtx, pkgName: in String, seg: in String): Bool {
+  match mapGet(cctx.typeFqnCandidates, seg) {
+    case Some(cands) -> {
+      val ownFqn = pkgName + "." + seg
+      if cands.contains(ownFqn) {
+        return true
+      }
+      match mapGet(cctx.pkgImports, pkgName) {
+        case Some(imports) -> {
+          var i = 0
+          while i < cands.count {
+            val fqn = cands[i]
+            if fqn.length > seg.length + 1 {
+              val pkgPart = fqn.substring(0, fqn.length - seg.length - 1)
+              if imports.contains(pkgPart) {
+                return true
+              }
+            }
+            i = i + 1
+          }
+          false
+        }
+        case None -> false
+      }
+    }
+    case None -> false
+  }
+}
+
 // Map a `slice[T]` element type to its MSIL element type.  `Byte` lowers to
 // `MByte` (U1) rather than the scalar `MInt` so a `slice[Byte]` serialises as
 // `byte[]` (U1[]), matching the F#-compiled stdlib (`Std.Encoding.tryDecodeBase64
@@ -6248,7 +6292,20 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         // externs (e.g. `extern type SB = "System.Text.StringBuilder"`)
         // similarly must carry their identity so field/method signatures
         // encode CLASS + TypeRef rather than degrading to `object` (#1576).
-        // Ordinary user types fall through to MClass.
+        // Ordinary user types fall through to MClass.  #6041: a Lyric type
+        // actually in scope for THIS package always wins over an unrelated
+        // package's extern-type alias of the same BARE (unqualified) name —
+        // skip both extern-type consultations entirely when one is.  Gated
+        // on `path.segments.count == 1`: a QUALIFIED reference (`H.SW`,
+        // already flattened by `Lyric.AliasRewriter` to the aliased
+        // package's full FQN by the time this runs) explicitly names the
+        // OTHER package's type and must never be redirected to a same-named
+        // local type just because the bare tail segment happens to match
+        // (the `emitProject alias-qualified extern type signature collision
+        // (MSIL)` self-test pins this).
+        if path.segments.count == 1 and hasLyricTypeCandidateInScope(cctx, pkgName, seg) {
+          return MClass(className = resolveTypeFqn(cctx, pkgName, seg))
+        }
         match externValueTypeMsil(cctx, seg) {
           case Some(vt) -> vt
           case None -> {
@@ -7962,8 +8019,15 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             // this exclusion, `RegexOptions.None` (an extern enum constant)
             // is hijacked by the single-candidate fast path in
             // `pickCaseFqnByQualifier` and mis-binds to `Std.Core.Option_None`
-            // whenever Std.Core is imported.
-            if not fctx.slots.containsKey(qualifier) and not fctx.hoistedCellSlot.containsKey(qualifier) and not fctx.captureNameToIndex.containsKey(qualifier) and not cctx.externTypeNames.containsKey(qualifier) {
+            // whenever Std.Core is imported.  #6041: that exclusion is itself
+            // scoped by `hasLyricTypeCandidateInScope` — an unrelated
+            // package's extern-type alias must never hijack a Lyric union
+            // whose name genuinely IS in scope for the referencing package
+            // (own declaration or import), the same collision class as the
+            // `RegexOptions.None` example above but in the opposite
+            // direction (a real Lyric union incorrectly excluded, not an
+            // extern constant incorrectly included).
+            if not fctx.slots.containsKey(qualifier) and not fctx.hoistedCellSlot.containsKey(qualifier) and not fctx.captureNameToIndex.containsKey(qualifier) and (not cctx.externTypeNames.containsKey(qualifier) or hasLyricTypeCandidateInScope(cctx, fctx.pkgName, qualifier)) {
               match mapGet(cctx.unionCaseCtorByName, memberName) {
                 case Some(nmCands) -> {
                   val nmPicked = pickCaseFqnByQualifier(cctx, fctx, nmCands, qualifier)
@@ -8026,7 +8090,10 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             case EPath(extPath) -> {
               if extPath.segments.count == 1 {
                 val extQual = extPath.segments[0]
-                if not fctx.slots.containsKey(extQual) and not fctx.hoistedCellSlot.containsKey(extQual) and not fctx.captureNameToIndex.containsKey(extQual) {
+                // #6041: a Lyric type/union genuinely in scope for this
+                // package always wins over an unrelated package's extern
+                // alias of the same bare name.
+                if not fctx.slots.containsKey(extQual) and not fctx.hoistedCellSlot.containsKey(extQual) and not fctx.captureNameToIndex.containsKey(extQual) and not hasLyricTypeCandidateInScope(cctx, fctx.pkgName, extQual) {
                   match mapGet(cctx.externTypeNames, extQual) {
                     case Some(extFqn) -> {
                       match tryExternStaticMemberReadMsil(cctx, insns, extFqn, memberName) {
@@ -10497,7 +10564,8 @@ func lowerAssignExprMsil(
         case EPath(extPath) -> {
           if extPath.segments.count == 1 {
             val extQual = extPath.segments[0]
-            if not fctx.slots.containsKey(extQual) and not fctx.hoistedCellSlot.containsKey(extQual) and not fctx.captureNameToIndex.containsKey(extQual) {
+            // #6041: same package-scoping guard as the static-read site above.
+            if not fctx.slots.containsKey(extQual) and not fctx.hoistedCellSlot.containsKey(extQual) and not fctx.captureNameToIndex.containsKey(extQual) and not hasLyricTypeCandidateInScope(cctx, fctx.pkgName, extQual) {
               match mapGet(cctx.externTypeNames, extQual) {
                 case Some(extFqn) -> {
                   emitExternStaticPropertySetMsil(cctx, fctx, insns, extFqn, memberName, op, value)
@@ -14531,11 +14599,18 @@ func lowerMethodCallMsil(
   match recv.kind {
     case EPath(path) -> {
       val recvName = lastSegmentMsil(path)
-      match mapGet(cctx.externTypeNames, recvName) {
-        case Some(clrFqn) -> {
-          return emitAutoFfiCallMsil(cctx, fctx, insns, recv, memberName, args, clrFqn)
-        }
-        case None -> {
+      // #6041: a Lyric type/union genuinely in scope for this package always
+      // wins over an unrelated package's extern alias of the same bare name.
+      // Gated on `path.segments.count == 1` (a genuinely bare, unqualified
+      // reference) so an explicitly qualified receiver is never redirected —
+      // mirrors the same guard in typeExprToMsilCtx's bare-TRef arm.
+      if not (path.segments.count == 1 and hasLyricTypeCandidateInScope(cctx, fctx.pkgName, recvName)) {
+        match mapGet(cctx.externTypeNames, recvName) {
+          case Some(clrFqn) -> {
+            return emitAutoFfiCallMsil(cctx, fctx, insns, recv, memberName, args, clrFqn)
+          }
+          case None -> {
+          }
         }
       }
       // Distinct/range-subtype static factories (#1501): `Type.from(x)` and
@@ -30363,11 +30438,15 @@ func implTargetNameMsil(decl: in ImplDecl, pkgName: in String): String {
 // call at the `IInterface` case of the Pass 1 loop above).
 func implIfaceNameMsil(cctx: in CodegenCtx, decl: in ImplDecl, pkgName: in String): String {
   val segs = decl.iface.head.segments
-  if segs.count == 1 {
+  // #6041: a Lyric interface genuinely in scope for `pkgName` always wins
+  // over an unrelated package's extern alias of the same bare name.
+  if segs.count == 1 and not hasLyricTypeCandidateInScope(cctx, pkgName, segs[0]) {
     match mapGet(cctx.externTypeNames, segs[0]) {
       case Some(clrFqn) -> clrFqn
       case None -> resolveTypeFqn(cctx, pkgName, segs[0])
     }
+  } else if segs.count == 1 {
+    resolveTypeFqn(cctx, pkgName, segs[0])
   } else {
     joinSegsMsil(segs, ".")
   }
@@ -30378,10 +30457,14 @@ func implIfaceNameMsil(cctx: in CodegenCtx, decl: in ImplDecl, pkgName: in Strin
 // targets (in-process Lyric packages re-exposed through `extern`) are NOT
 // external — they fall back to the normal Lyric TypeDef / cross-package
 // TypeRef path, matching how `typeExprToMsilCtx` treats them in
-// `scanExternTypesMsil` (#1602).
-func implIfaceIsExternalClr(cctx: in CodegenCtx, decl: in ImplDecl): Bool {
+// `scanExternTypesMsil` (#1602).  #6041: a Lyric interface genuinely in
+// scope for `pkgName` always wins over an unrelated package's extern alias
+// of the same bare name — mirrors `implIfaceNameMsil`'s guard so the two
+// stay in agreement (a `False` here must never pair with an extern FQN
+// there, and vice versa).
+func implIfaceIsExternalClr(cctx: in CodegenCtx, decl: in ImplDecl, pkgName: in String): Bool {
   val segs = decl.iface.head.segments
-  if segs.count != 1 {
+  if segs.count != 1 or hasLyricTypeCandidateInScope(cctx, pkgName, segs[0]) {
     return false
   }
   match mapGet(cctx.externTypeNames, segs[0]) {
@@ -30654,7 +30737,7 @@ pub func collectImplEntriesMsil(cctx: in CodegenCtx, file: in SourceFile, pkgNam
       case IImpl(decl) -> {
         val targetName = implTargetNameMsil(decl, pkgName)
         val ifaceName = implIfaceNameMsil(cctx, decl, pkgName)
-        val isExternal = implIfaceIsExternalClr(cctx, decl)
+        val isExternal = implIfaceIsExternalClr(cctx, decl, pkgName)
         if isExternal {
           val _ = internFfiTypeRefNested(cctx, ifaceName)
         }
@@ -31222,7 +31305,7 @@ pub func validateExternImplConformanceMsil(cctx: in CodegenCtx, file: in SourceF
   while i < file.items.count {
     match file.items[i].kind {
       case IImpl(decl) -> {
-        if implIfaceIsExternalClr(cctx, decl) {
+        if implIfaceIsExternalClr(cctx, decl, pkgName) {
           val ifaceFqn = implIfaceNameMsil(cctx, decl, pkgName)
           validateOneExternImplMsil(cctx, decl, pkgName, ifaceFqn)
         }

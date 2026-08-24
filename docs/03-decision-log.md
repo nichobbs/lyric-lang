@@ -31364,3 +31364,100 @@ surfaced this finding), `OSSL_SSL_CTRL_SET_MIN_PROTO_VERSION` (the
 existing precedent for calling an OpenSSL ctrl-macro-only API through
 `SSL_CTX_ctrl` directly).
 
+## D-progress-799 — MSIL: `extern type` alias resolution scoped to the referencing package, not bundle-global (#6041)
+
+**Date:** 2026-08-23.  **Status:** shipped.
+
+**Problem.**  `cctx.externTypeNames: Map[String, String]` (`lyric-compiler
+/msil/codegen.l`), populated by `scanExternTypesMsil` from every `extern
+type` item across a WHOLE multi-package build, was consulted at every
+bare-name type/member-resolution site before (or instead of) the
+package-scoped `resolveTypeFqn`.  An `extern type Foo = "..."` declared in
+package A hijacked every BARE reference to a same-named Lyric
+record/union/interface `Foo` in every OTHER package sharing the codegen
+pass — including packages that never imported A and have no relationship
+to it.  Confirmed with the issue's exact repro (`extern type FieldInfo`
+in one package, unrelated `record FieldInfo { name: String }` in
+another, both compiled in one `[project.packages]` bundle): `f.name` on
+the Lyric record crashed with "auto-FFI member read 'name' on extern
+receiver 'System.Reflection.FieldInfo' does not match any instance
+property getter."
+
+**Investigation found a second site of the same bug** beyond the
+originally-reported field-read path: the union-case-qualifier exclusion
+at the `EMember` receiver-is-a-case-qualifier site (added originally to
+fix a DIFFERENT collision — `RegexOptions.None`, an extern enum constant,
+being wrongly hijacked by the single-candidate fast path in
+`pickCaseFqnByQualifier`) ran in the OPPOSITE direction: it excluded a
+qualifier from union-case resolution whenever ANY package's extern alias
+matched the bare name, even when the qualifier was genuinely a Lyric
+union in scope for the referencing package.  Verified this is a real
+runtime miscompile, not just cosmetic: the pre-fix build produced a
+`System.InvalidProgramException` at runtime for the union-case repro
+(not just a wrong build-time error).
+
+**Decision.**  Added `hasLyricTypeCandidateInScope(cctx, pkgName, seg):
+Bool` — walks the identical scope tiers `resolveTypeFqn` already uses
+(own package's declaration, then an imported package's, mirroring the
+type checker's `symTableTryFindOne`) to answer "does `pkgName` have a
+genuine Lyric type/union/interface named `seg` in scope."  Applied it as
+a guard at every bare-name-as-possible-extern-type consultation site so
+a Lyric declaration always wins over an unrelated package's unimported
+extern alias of the same short name:
+
+- `typeExprToMsilCtx`'s bare-`TRef` fallback (the core site the issue
+  named) — skips both `externValueTypeMsil` and the `externTypeNames`
+  consultation entirely when a Lyric candidate is in scope.
+- The `EMember` receiver-is-union-case-qualifier site — extern exclusion
+  now yields to an in-scope Lyric candidate (fixes the second bug found
+  during investigation).
+- The extern-static-property READ and SET sites (`Alias.Member` /
+  `Alias.Member = v`).
+- `lowerMethodCallMsil`'s auto-FFI dispatch (`Alias.method(...)`).
+- `implIfaceNameMsil` / `implIfaceIsExternalClr` (`impl Iface for R {}`
+  interface-name resolution) — the latter gained a new `pkgName`
+  parameter (both of its 2 call sites already had it in scope) to make
+  the same-package/imported-package check possible; the two functions'
+  guards are kept in lock-step (a `False` from
+  `implIfaceIsExternalClr` must never pair with an extern FQN from
+  `implIfaceNameMsil`, and vice versa) since callers branch on one and
+  then call the other.
+
+**QUALIFIED references are deliberately excluded from the guard** — an
+earlier version of this fix regressed `emitter_project_self_test.l`'s
+`"emitProject alias-qualified extern type signature collision (MSIL)"`
+test: `H.SW` (an explicitly `import ... as H`-qualified reference to the
+EXTERN `SW` in the aliased package) was wrongly redirected to a SAME-BARE
+-NAME local `record SW` declared in the CONSUMER package, because the
+guard operated on `lastSegmentMsil(path)` alone with no regard for
+whether the original reference was qualified.  Fixed by gating the two
+sites that lacked an existing `segments.count == 1` guard
+(`typeExprToMsilCtx`'s bare-`TRef` arm and `lowerMethodCallMsil`'s
+auto-FFI dispatch) on `path.segments.count == 1` — an explicitly
+qualified reference is never redirected, only a genuinely bare
+(unqualified) one.  The other four sites (`EMember` static
+read/set, the union-case qualifier, and the two `impl`-interface
+functions) already carried an equivalent `== 1` guard as part of their
+existing logic, so no change was needed there.
+
+**Verification.**  Two new tests in `msil_project_bridge_self_test.l`
+(the project's existing multi-package-bundle MSIL bridge test suite):
+the exact field-read repro from the issue, and the union-case-qualifier
+repro found during investigation.  Both confirmed to fail identically
+on a clean pre-fix baseline (`git stash` the fix, rebuild, rerun) — the
+field-read case with the issue's exact error message, the union-case
+case with a genuine `System.InvalidProgramException` at runtime — before
+confirming both pass with the fix.  A regression was caught and fixed
+mid-verification: the FIRST version of the fix broke the existing
+`"emitProject alias-qualified extern type signature collision (MSIL)"`
+self-test (`emitter_project_self_test.l`), traced to the missing
+qualified-vs-bare distinction above; re-verified 35/0 pass on the T0115
+suite battery after the fix.  Full battery green: typechecker + key
+self-test suites (all listed batteries 0 failures), 8 dependency-library
+builds, 11 ecosystem manifests, 4 `examples/` manifest programs, ilverify
+across 121 self-hosted-emitted DLLs (0 IL-validity errors), and the full
+45-test `msil_project_bridge_self_test.l` suite (was 43, now 45 with the
+two new tests, all passing).
+
+**Related:** #6041 (closed by this).
+
