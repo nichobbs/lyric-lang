@@ -2936,13 +2936,25 @@ func unionCaseSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
 // being matched, not whichever colliding case was registered last.  Falls
 // back to the name-based lookup when the scrutinee is not a known union
 // (TyError-lenient scrutinees keep the historical behaviour).
-func unionCaseSymbolForScrutinee(tbl: in SymbolTable, fn: in Expr, scrutineeTy: in Type): Option[Symbol] {
+//
+// #6287 Phase B: an EXPLICITLY qualified pattern head (`case PkgB.Ping(c)`)
+// must have its qualifier validated against the scrutinee's OWN union,
+// mirroring `unionCaseSymbolOf`'s qualifier tiers — (a) the whole qualifier
+// as the declaring package, (b) the last qualifier segment as the parent
+// union's simple name (with any leading segments as its declaring package)
+// — rather than silently ignored.  Before this, `PkgB.Ping(c)` matched
+// against a `PkgA`-typed scrutinee bound its fields from whichever `Ping`
+// case happened to be the scrutinee's own, discarding the user's explicit
+// (and here, WRONG) qualifier with no diagnostic.  A qualifier that matches
+// neither tier is now a hard error (T0121) instead of a silent fallback.
+func unionCaseSymbolForScrutinee(
+  tbl: in SymbolTable, diag: in List[Diagnostic], fn: in Expr, scrutineeTy: in Type
+): Option[Symbol] {
   match unrefine(scrutineeTy) {
     case TyUser(sid, _, _) -> {
-      val scrCaseName = match fn.kind {
-        case EPath(sp) -> if sp.segments.count >= 1 { sp.segments[sp.segments.count - 1] } else { "" }
-        case _ -> ""
-      }
+      val flatSegs: List[String] = newList()
+      val hasSegs = flattenCalleePathSegs(fn, flatSegs) and flatSegs.count > 0
+      val scrCaseName = if hasSegs { flatSegs[flatSegs.count - 1] } else { "" }
       if scrCaseName.length > 0 {
         val scrCands = symTableTryFindAll(tbl, scrCaseName)
         var sci = scrCands.count - 1
@@ -2950,6 +2962,41 @@ func unionCaseSymbolForScrutinee(tbl: in SymbolTable, fn: in Expr, scrutineeTy: 
           match scrCands[sci].kind {
             case DKUnionCase(scrParent, _) -> {
               if typeIdEq(scrParent, sid) {
+                if flatSegs.count >= 2 {
+                  val quals: List[String] = newList()
+                  var qi = 0
+                  while qi < flatSegs.count - 1 {
+                    quals.add(flatSegs[qi])
+                    qi = qi + 1
+                  }
+                  val fullQual = modulePathJoin(quals)
+                  val tierA = scrCands[sci].originPackage == fullQual
+                  val unionName = quals[quals.count - 1]
+                  val pkgSegs: List[String] = newList()
+                  var pj = 0
+                  while pj < quals.count - 1 {
+                    pkgSegs.add(quals[pj])
+                    pj = pj + 1
+                  }
+                  val pkgPrefix = modulePathJoin(pkgSegs)
+                  val actualUnionName = match parentUnionDeclOf(tbl, scrParent) { case Some(pu) -> pu.name; case None -> scrCaseName }
+                  val tierB = actualUnionName == unionName and (pkgPrefix.length == 0 or scrCands[sci].originPackage == pkgPrefix)
+                  if not (tierA or tierB) {
+                    diag.add(
+                      errorDiagnostic(
+                        "T0121",
+                        "pattern qualifier '" + fullQual + "' does not match the scrutinee's own union '" + scrCands[sci].originPackage +
+                          "." +
+                          actualUnionName +
+                          "' — this pattern is matched against a value of that union, not '" +
+                          fullQual +
+                          "'",
+                        fn.span
+                      )
+                    )
+                    return None
+                  }
+                }
                 return Some(value = scrCands[sci])
               }
             }
@@ -3430,7 +3477,7 @@ func checkConstRefPattern(
       checkConstRefPattern(tbl, sigs, diag, inner, testTy)
     }
     case PConstructor(head, args) -> {
-      val ftypes = match unionCaseSymbolForScrutinee(tbl, pat2fnExpr(head, pat.span), scrutineeTy) {
+      val ftypes = match unionCaseSymbolForScrutinee(tbl, diag, pat2fnExpr(head, pat.span), scrutineeTy) {
         case Some(caseSym) -> caseFieldTypesInstantiated(tbl, diag, caseSym, scrutineeTy)
         case None -> newList()
       }
@@ -3529,7 +3576,7 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
     case PLiteral(_) -> {
     }
     case PConstructor(head, args) -> {
-      val ftypes = match unionCaseSymbolForScrutinee(tbl, pat2fnExpr(head, pat.span), ty) {
+      val ftypes = match unionCaseSymbolForScrutinee(tbl, diag, pat2fnExpr(head, pat.span), ty) {
         case Some(caseSym) -> caseFieldTypesInstantiated(tbl, diag, caseSym, ty)
         case None -> newList()
       }

@@ -31461,3 +31461,72 @@ two new tests, all passing).
 
 **Related:** #6041 (closed by this).
 
+## D-progress-800 — Qualified union-case PATTERN heads validate their qualifier against the scrutinee's own union (#6287 Phase B)
+
+**Date:** 2026-08-24.  **Status:** shipped (Phase B partial — see scope below).
+
+**Problem.**  #6510 (D-progress-785, Phase A) fixed qualified union-case
+CONSTRUCTOR references (`PkgA.Ping(...)`) to honour their qualifier
+instead of last-registered-wins, and made BARE pattern heads
+(`case Ping(c)`) resolve against the scrutinee's own union via
+`unionCaseSymbolForScrutinee`.  That PR's own review flagged a residual
+gap: `unionCaseSymbolForScrutinee` extracted only the bare last path
+segment (`sp.segments[sp.segments.count - 1]`), so an EXPLICITLY
+qualified pattern head (`case PkgB.Ping(c) -> ...`) matched against a
+`PkgA`-typed scrutinee silently discarded the "PkgB" qualifier and bound
+the scrutinee's own (PkgA) field type instead — the constructor side's
+bug, still present on the pattern side.  Confirmed via a synthetic repro
+(two packages each declaring a colliding `Signal { case Ping(...) }`,
+a third matching a `PkgA.Signal`-typed value with a `PkgB.Ping(c)`
+pattern): pre-fix, this silently type-checked and bound `c` as `Int`
+(PkgA's field type) rather than erroring on the wrong qualifier — the
+mismatch only surfaced as a confusing downstream `T0067`
+branch-type-mismatch when the (silently Int-typed) `c` was used
+somewhere expecting the qualifier's (PkgB, String) field type, pointing
+at the wrong root cause entirely.
+
+**Decision.**  Added qualifier validation to `unionCaseSymbolForScrutinee`
+(`lyric-compiler/lyric/type_checker/typechecker_exprs.l`), mirroring
+`unionCaseSymbolOf`'s existing two-tier qualifier check (same tiers as
+the constructor-side fix): (a) the whole qualifier as the case's
+declaring package, (b) the last qualifier segment as the parent union's
+simple name (any leading segments as its declaring package).  Once the
+scrutinee's own case is found (by `parentId` match, unchanged from
+#6510), an explicit qualifier that satisfies NEITHER tier is now a hard
+error (**T0121**, the next free diagnostic code) naming the mismatch
+directly, instead of a silent fallback.  Bare (unqualified) pattern
+heads are completely unaffected — the qualifier check only runs when
+`flatSegs.count >= 2`.  Added a `diag: in List[Diagnostic]` parameter to
+`unionCaseSymbolForScrutinee` (both of its 2 call sites — the
+const-ref-pattern checker and the main pattern-type-binder — already had
+`diag` in scope) so the new diagnostic can be raised in place.
+
+**Scope — Phase B partial.**  This ships only the qualified-pattern-head
+half of the issue's "Phase B" list.  The bare-name AMBIGUITY diagnostic
+(erroring when an unqualified reference matches `pub` symbols in more
+than one imported package) and the REJECT-UNIMPORTED-RESOLUTION rule
+remain open, unchanged from the issue's own prior triage: both are
+"type-checker-core surgery with real blast radius on every multi-import
+file in the repo," not a contained bugfix, and out of scope for this
+narrowly-targeted follow-up.  Issue #6287 stays open for those two items.
+
+**Verification.**  New self-test in `typechecker_self_test.l` (mirrors
+#6510's own test shape): mismatched qualifier → `T0121`; correctly
+qualified → resolves and binds the real field type cleanly; bare
+(unqualified) → still resolves against the scrutinee's own union,
+unaffected.  Confirmed end-to-end via a real manifest build/run: the
+mismatch case rejected at build time with the new diagnostic (was a
+silent `T0067` red herring pre-fix, confirmed by reverting the fix and
+rebuilding); the correctly-qualified and bare cases both build and run,
+returning the expected field value.  Full battery green: typechecker
+self-test 367/367 (was 366, +1), all other key self-test suites, 8
+dependency-library builds, 11 ecosystem manifests, 4 `examples/`
+manifest programs, ilverify across 121 self-hosted-emitted DLLs (0
+IL-validity errors).
+
+**Related:** #6287 (partially addressed — bare-name ambiguity diagnostic
+and reject-unimported-resolution remain open), #6510 / D-progress-785
+(Phase A, the constructor-side fix this mirrors), #6337 (the
+investigation that first surfaced the sharper qualified-reference
+repro).
+

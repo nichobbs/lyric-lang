@@ -673,6 +673,51 @@ test "qualified union case constructor honours package qualifier" {
   )
 }
 
+// #6287 Phase B: a PACKAGE-QUALIFIED union-case PATTERN HEAD must have its
+// qualifier validated against the SCRUTINEE's own union, not silently
+// ignored.  PkgA and PkgB both export `union Signal` with a colliding case
+// name `Ping` (different field shapes).  Before the fix,
+// `unionCaseSymbolForScrutinee` extracted only the bare last segment
+// ("Ping") and searched for whichever candidate's parent matched the
+// scrutinee's own union — silently discarding an explicit (and here,
+// WRONG) qualifier and binding the scrutinee's own field type, which then
+// surfaced only as a baffling downstream type error at the bind site, not
+// at the actual mis-qualified pattern.
+test "qualified union case pattern head validates against the scrutinee's own union" {
+  val pkgA = parse(
+    "package PkgA\npub union Signal {\n  case Ping(code: Int)\n  case Halt\n}\npub func wantA(s: in Signal): Int { 0 }\n"
+  )
+  val pkgB = parse("package PkgB\npub union Signal {\n  case Ping(label: String)\n  case Halt\n}\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
+  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  // A PkgA-typed scrutinee matched with an explicitly PkgB-qualified
+  // pattern head must be rejected — PkgB never declares the union being
+  // matched.
+  val mismatchSrc = "package App\nimport PkgA\nimport PkgB\nfunc f(s: in PkgA.Signal): Int {\n  match s {\n    case PkgB.Ping(c) -> c\n    case Halt -> 0\n  }\n}\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(parse(mismatchSrc).file, packages), "T0121"),
+    "pattern qualifier mismatch: PkgB.Ping against a PkgA-typed scrutinee is rejected, not silently bound"
+  )
+  // Correctly PkgA-qualified pattern head still resolves and binds the
+  // real (Int) field type.
+  val correctSrc = "package App\nimport PkgA\nimport PkgB\nfunc f(s: in PkgA.Signal): Int {\n  match s {\n    case PkgA.Ping(c) -> c\n    case Halt -> 0\n  }\n}\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(correctSrc).file, packages)),
+    0,
+    "pattern qualifier match: PkgA.Ping against a PkgA-typed scrutinee resolves cleanly"
+  )
+  // A bare (unqualified) pattern head still resolves against the
+  // scrutinee's own union, unaffected by the qualifier-validation guard
+  // (the #6510/D-progress-785 behaviour this test does not change).
+  val bareSrc = "package App\nimport PkgA\nimport PkgB\nfunc f(s: in PkgA.Signal): Int {\n  match s {\n    case Ping(c) -> c\n    case Halt -> 0\n  }\n}\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(bareSrc).file, packages)),
+    0,
+    "pattern qualifier match: a bare Ping(c) still resolves against the scrutinee's own (PkgA) union"
+  )
+}
+
 // #6519: a PACKAGE-QUALIFIED record constructor call validates its field
 // argument types.  Before the fix, `constructorSymbolOf` only matched a
 // single-segment `EPath` callee (`Type(...)`) — a qualified callee
