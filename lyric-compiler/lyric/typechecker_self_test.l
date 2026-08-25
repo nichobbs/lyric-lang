@@ -696,7 +696,7 @@ test "qualified union case pattern head validates against the scrutinee's own un
   // matched.
   val mismatchSrc = "package App\nimport PkgA\nimport PkgB\nfunc f(s: in PkgA.Signal): Int {\n  match s {\n    case PkgB.Ping(c) -> c\n    case Halt -> 0\n  }\n}\n"
   assertTrue(
-    hasDiagCode(checkWithImportedPackages(parse(mismatchSrc).file, packages), "T0121"),
+    hasDiagCode(checkWithImportedPackages(parse(mismatchSrc).file, packages), "T0122"),
     "pattern qualifier mismatch: PkgB.Ping against a PkgA-typed scrutinee is rejected, not silently bound"
   )
   // Correctly PkgA-qualified pattern head still resolves and binds the

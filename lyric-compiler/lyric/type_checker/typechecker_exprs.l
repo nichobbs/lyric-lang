@@ -2946,7 +2946,7 @@ func unionCaseSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
 // against a `PkgA`-typed scrutinee bound its fields from whichever `Ping`
 // case happened to be the scrutinee's own, discarding the user's explicit
 // (and here, WRONG) qualifier with no diagnostic.  A qualifier that matches
-// neither tier is now a hard error (T0121) instead of a silent fallback.
+// neither tier is now a hard error (T0122) instead of a silent fallback.
 func unionCaseSymbolForScrutinee(
   tbl: in SymbolTable, diag: in List[Diagnostic], fn: in Expr, scrutineeTy: in Type
 ): Option[Symbol] {
@@ -2984,7 +2984,7 @@ func unionCaseSymbolForScrutinee(
                   if not (tierA or tierB) {
                     diag.add(
                       errorDiagnostic(
-                        "T0121",
+                        "T0122",
                         "pattern qualifier '" + fullQual + "' does not match the scrutinee's own union '" + scrCands[sci].originPackage +
                           "." +
                           actualUnionName +

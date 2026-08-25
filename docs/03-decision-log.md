@@ -31493,7 +31493,7 @@ declaring package, (b) the last qualifier segment as the parent union's
 simple name (any leading segments as its declaring package).  Once the
 scrutinee's own case is found (by `parentId` match, unchanged from
 #6510), an explicit qualifier that satisfies NEITHER tier is now a hard
-error (**T0121**, the next free diagnostic code) naming the mismatch
+error (**T0122**, the next free diagnostic code) naming the mismatch
 directly, instead of a silent fallback.  Bare (unqualified) pattern
 heads are completely unaffected — the qualifier check only runs when
 `flatSegs.count >= 2`.  Added a `diag: in List[Diagnostic]` parameter to
@@ -31511,7 +31511,7 @@ file in the repo," not a contained bugfix, and out of scope for this
 narrowly-targeted follow-up.  Issue #6287 stays open for those two items.
 
 **Verification.**  New self-test in `typechecker_self_test.l` (mirrors
-#6510's own test shape): mismatched qualifier → `T0121`; correctly
+#6510's own test shape): mismatched qualifier → `T0122`; correctly
 qualified → resolves and binds the real field type cleanly; bare
 (unqualified) → still resolves against the scrutinee's own union,
 unaffected.  Confirmed end-to-end via a real manifest build/run: the
@@ -31529,4 +31529,16 @@ and reject-unimported-resolution remain open), #6510 / D-progress-785
 (Phase A, the constructor-side fix this mirrors), #6337 (the
 investigation that first surfaced the sharper qualified-reference
 repro).
+
+**Revision (2026-08-25, PR #6538 review — #6539):** the first version of
+this fix minted `T0121` for the new diagnostic, believing it the next
+free code after enumerating every `errorDiagnostic("T0...", ...)` call
+site in `lyric-compiler/lyric/type_checker/`.  That enumeration missed a
+DIFFERENT, unrelated `T0121` embedded as a panic-message string literal in
+`lyric-compiler/msil/codegen.l` (shipped in D-progress-792/793, #6521/#6522
+— the "member could not be resolved on its receiver" self-tagged codegen
+backstop).  Caught in review before merge; renamed to `T0122` (verified
+free by grepping the whole `lyric-compiler/` tree, not just one
+subdirectory) in the code, the self-test, and this entry.  See #6539 for
+the collision report.
 
