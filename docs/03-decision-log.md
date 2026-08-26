@@ -31542,3 +31542,26 @@ free by grepping the whole `lyric-compiler/` tree, not just one
 subdirectory) in the code, the self-test, and this entry.  See #6539 for
 the collision report.
 
+**Revision 2 (2026-08-25, PR #6538 review — #6540):** the SAME review
+round caught a second, independent bug: `T0122` fired TWICE per
+mismatched pattern.  `EMatch`'s arm-checking loop calls both
+`bindPatternTyped` and `checkConstRefPattern` unconditionally on the
+same arm pattern (two separate recursive walks serving different
+purposes — actual scope-binding vs. const-ref-pattern validation), and
+both independently call `unionCaseSymbolForScrutinee` for a
+`PConstructor` pattern to obtain the case's field types for recursion.
+Since the qualifier-mismatch diagnostic is a side effect of that same
+call, both walks emitted it, so any mismatched-qualifier pattern
+(including this fix's own repro) produced two identical `T0122`
+diagnostics.  The original self-test didn't catch this because it
+asserted existence (`hasDiagCode`) rather than an exact count.  Fixed by
+making `checkConstRefPattern`'s call site pass a throwaway scratch
+`List[Diagnostic]` instead of the real one — it still needs the SAME
+field-type resolution to recurse into constructor args correctly, but
+only `bindPatternTyped`'s call now owns the diagnostic.  Added
+`countDiagCode` to `typechecker_self_test.l`'s helpers and tightened the
+mismatch assertion from `hasDiagCode` to `countDiagCode(...) == 1`.
+Re-verified end-to-end via the manifest-build repro: the build now
+reports the mismatch exactly once (was printed twice before this
+revision).
+

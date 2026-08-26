@@ -3477,7 +3477,17 @@ func checkConstRefPattern(
       checkConstRefPattern(tbl, sigs, diag, inner, testTy)
     }
     case PConstructor(head, args) -> {
-      val ftypes = match unionCaseSymbolForScrutinee(tbl, diag, pat2fnExpr(head, pat.span), scrutineeTy) {
+      // #6540: EMatch runs `bindPatternTyped` AND `checkConstRefPattern`
+      // unconditionally on the same pattern (see the EMatch arm loop) — both
+      // need `unionCaseSymbolForScrutinee`'s field types to recurse
+      // correctly, but only ONE call should own the qualifier-mismatch
+      // diagnostic it may emit (#6287 Phase B / T0122), or a mismatched
+      // qualifier reports twice.  `bindPatternTyped`'s call is the owner;
+      // this one passes a throwaway scratch list so the SAME resolution
+      // runs (field types are identical either way) without a second
+      // T0122 for the same source span.
+      val scratchDiag: List[Diagnostic] = newList()
+      val ftypes = match unionCaseSymbolForScrutinee(tbl, scratchDiag, pat2fnExpr(head, pat.span), scrutineeTy) {
         case Some(caseSym) -> caseFieldTypesInstantiated(tbl, diag, caseSym, scrutineeTy)
         case None -> newList()
       }

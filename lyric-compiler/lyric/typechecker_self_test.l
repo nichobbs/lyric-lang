@@ -41,6 +41,21 @@ func hasDiagCode(cr: in CheckResult, code: in String): Bool {
   false
 }
 
+// #6540: how many diagnostics carry `code` — used where a fix's whole point
+// is that a diagnostic fires EXACTLY ONCE per site (a redundant emission
+// path duplicating it would still pass a bare `hasDiagCode` check).
+func countDiagCode(cr: in CheckResult, code: in String): Int {
+  var i = 0
+  var n = 0
+  while i < cr.diagnostics.count {
+    if cr.diagnostics[i].code == code {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
 // The message of the first diagnostic with `code`, or "" when absent.
 func diagMessageFor(cr: in CheckResult, code: in String): String {
   var i = 0
@@ -695,9 +710,15 @@ test "qualified union case pattern head validates against the scrutinee's own un
   // pattern head must be rejected — PkgB never declares the union being
   // matched.
   val mismatchSrc = "package App\nimport PkgA\nimport PkgB\nfunc f(s: in PkgA.Signal): Int {\n  match s {\n    case PkgB.Ping(c) -> c\n    case Halt -> 0\n  }\n}\n"
-  assertTrue(
-    hasDiagCode(checkWithImportedPackages(parse(mismatchSrc).file, packages), "T0122"),
-    "pattern qualifier mismatch: PkgB.Ping against a PkgA-typed scrutinee is rejected, not silently bound"
+  // #6540: EMatch runs both bindPatternTyped and checkConstRefPattern over
+  // the same arm pattern; only bindPatternTyped's call should own the
+  // T0122 emission, so it must fire EXACTLY ONCE per mismatched pattern
+  // (a bare hasDiagCode existence check would miss a duplicate-emission
+  // regression like #6540).
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(mismatchSrc).file, packages), "T0122"),
+    1,
+    "pattern qualifier mismatch: PkgB.Ping against a PkgA-typed scrutinee is rejected exactly once, not silently bound (#6540)"
   )
   // Correctly PkgA-qualified pattern head still resolves and binds the
   // real (Int) field type.
