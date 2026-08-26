@@ -463,6 +463,46 @@ func applyIndexedElemOverride(insns: in List[LInsn], overrideTy: in JvmType): Jv
   }
 }
 
+// `for`-loop-only helper (JVM nested-slice/List `for` bug — see the tracking
+// issue): when `recv`'s own recorded generic-arg `TypeExpr` (the SAME
+// resolution `indexedElemTypeOverride` performs) resolves to an array shape
+// (`slice[...]`/`List[...]`), returns that `TypeExpr` so the caller can hand
+// it to `emitNormalizeErasedSlice` (`jvm/codegen/03_match.l`) — which already
+// correctly distinguishes a genuine primitive array (`int[]`) from a boxed
+// reference array at runtime (#5570), unlike a naive unconditional
+// `checkcast [Ljava/lang/Object;`.  Returns `None` for every other case
+// (bare-name/field-based narrowing, a scalar reference type, or no override
+// at all), leaving those to the EXISTING `indexedElemTypeOverride`/
+// `applyIndexedElemOverride` path completely unchanged — this function's
+// entire contribution is detecting the one case `indexedElemTypeOverride`
+// deliberately discards (`case JArray(_) -> return JVoid`, load-bearing for
+// `EIndex`'s own narrowing, see that function), nothing else.  Both of a
+// `for`-loop's two codegen branches (array-outer and `Iterable`-outer) call
+// this SAME resolver and route a `Some` result through the SAME
+// `emitNormalizeErasedSlice` call, so they can no longer diverge on this
+// case the way the array-only first attempt at this fix did.
+func forLoopNestedArrayElemTypeExpr(ctx: in FuncCtx, recv: in Expr): Option[TypeExpr] {
+  val args = scrutineeGenericArgs(ctx, recv)
+  if args.count == 1 {
+    val resolved = sameTypeExprElemFallback(ctx, args[0], resolveConcreteTypeExpr(ctx, args[0]))
+    match resolved {
+      // `args[0]` is `recv`'s OWN element type (`slice[Elem]`/`List[Elem]`'s
+      // `Elem`) — when THAT is itself array-shaped, `args[0]` is a
+      // `slice[Inner]`-shaped `TypeExpr` (e.g. `recv: slice[slice[Inner]]`
+      // or `List[slice[Inner]]`).  `emitNormalizeErasedSlice` narrows to an
+      // array of its ELEMENT type, so it needs `Inner`, not `slice[Inner]`
+      // itself — unwrap one more level via `sliceElemTypeExpr`, exactly as
+      // its own existing caller does (`03_match.l:1429`).
+      case JArray(_) -> return sliceElemTypeExpr(args[0])
+      case _ -> ()
+    }
+  }
+  match recv.kind {
+    case EParen(inner) -> forLoopNestedArrayElemTypeExpr(ctx, inner)
+    case _ -> None
+  }
+}
+
 // Lower a single expression.  Pushes exactly one value onto the operand
 // stack (or nothing for JVoid).  Returns the JvmType of the pushed value.
 pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmType {
