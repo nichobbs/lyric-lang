@@ -1617,6 +1617,16 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/block_shadow_self_test.l
 
+      # Nested-slice for-loop self-test (#6541).  Runtime regression test for
+      # a `for`-in-`for` loop over a nested `slice[slice[T]]` element on the
+      # JVM backend (the array-outer half is dotnet-identical byte-for-byte
+      # here; the actual bug is JVM-only, see the JVM self-tests job below).
+      # Run via native `lyric test` (imports only `Std.*`).
+      - name: Nested-slice for-loop self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/nested_slice_for_jvm_self_test.l
+
       # JVM-trio self-test (#6122/#6123/#6124).  Runtime regression test for
       # three JVM-only silent-miscompiles found building `lyric-jsonrpc`
       # (docs/62): a `while`+`match` with mixed loop-continuing/loop-ending
@@ -4153,6 +4163,16 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/block_shadow_self_test.l
+
+      # Nested-slice for-loop self-test on JVM (#6541) — the load-bearing
+      # target for this fix: a `for`-in-`for` loop over a nested
+      # `slice[slice[T]]` element used to crash with "does not implement
+      # Iterable" (the array element narrowed to erased `Object` instead
+      # of `JArray`, so the inner loop picked the wrong codegen branch).
+      - name: Nested-slice for-loop self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/nested_slice_for_jvm_self_test.l
 
       # JVM-trio self-test on JVM (#6122/#6123/#6124) — the JVM half of the
       # dotnet-job step of the same name, and the load-bearing target for all

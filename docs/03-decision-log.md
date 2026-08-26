@@ -31698,3 +31698,13 @@ targets, `lyric-validation` still 73/73 + 9/9 under `--target jvm`, JVM
 ecosystem/compiler-self-test sweep unchanged, full dotnet-side battery
 unaffected.
 
+**Revision 2 (2026-08-26, PR #6542 review):** the review's remaining
+REQUIRED finding — this repo's CI has no glob-based self-test discovery,
+so a new `*_self_test.l` file is dead weight until it's explicitly named
+in a CI job step — was correct: `nested_slice_for_jvm_self_test.l` was
+added in the prior revision but never wired in. Fixed by adding it
+alongside `bitwise_self_test.l`/`block_shadow_self_test.l` in both the
+dotnet and JVM self-test CI jobs (`.github/workflows/ci.yml`) and the
+`Makefile`'s `TEST_EMITTER_FILES` aggregate list (dotnet-only, per that
+list's own scope).
+
