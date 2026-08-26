@@ -463,6 +463,76 @@ func applyIndexedElemOverride(insns: in List[LInsn], overrideTy: in JvmType): Jv
   }
 }
 
+// `indexedElemTypeOverride`'s for-loop-only sibling (JVM nested-slice/List
+// `for` bug — see the tracking issue): IDENTICAL to `indexedElemTypeOverride`
+// except the nested-array case is PROPAGATED as `JArray(...)` instead of
+// discarded to `JVoid`.  A deliberate duplicate, not a shared refactor:
+// `indexedElemTypeOverride`/`applyIndexedElemOverride`'s existing `JVoid` for
+// a nested array is load-bearing for `EIndex` (`coerceArgTo`'s `JArray(_)`
+// arm has no checkcast fallback for a plain boxed `Object`, only an
+// `ArrayList.toArray()` conversion — see `coerceArgTo`, jvm/codegen/04_calls.l),
+// and this fix must not perturb that path or its other callers at all.  A
+// `for`-loop, unlike `EIndex`, needs to know the boxed element IS an array
+// (to pick the array-iteration codegen branch instead of the `Iterable`
+// branch, which crashes on a real array at runtime) — so this sibling
+// function exists purely to let `05_stmts.l`'s `for`-loop lowering see that
+// fact, via its own dedicated caller below (`applyForLoopElemOverride`),
+// without touching `indexedElemTypeOverride` itself.
+func indexedElemTypeOverrideForLoop(ctx: in FuncCtx, recv: in Expr): JvmType {
+  val args = scrutineeGenericArgs(ctx, recv)
+  if args.count == 1 {
+    val resolved = sameTypeExprElemFallback(ctx, args[0], resolveConcreteTypeExpr(ctx, args[0]))
+    match resolved {
+      case JRef(cls) -> {
+        if cls != "java/lang/Object" {
+          return JRef(className = cls)
+        }
+      }
+      case JArray(elem) -> return JArray(elem = elem)
+      case JVoid -> ()
+      case t -> return t
+    }
+  }
+  match recv.kind {
+    case EPath(p) -> {
+      if p.segments.count == 1 and not ctx.slots.containsKey(p.segments[0]) {
+        match ctx.selfClass {
+          case Some(sc) -> fieldElemOverride(ctx, sc, p.segments[0])
+          case None -> JVoid
+        }
+      } else {
+        JVoid
+      }
+    }
+    case EMember(base, fieldName) -> {
+      match staticBaseClass(ctx, base) {
+        case Some(cls) -> fieldElemOverride(ctx, cls, fieldName)
+        case None -> JVoid
+      }
+    }
+    case EParen(inner) -> indexedElemTypeOverrideForLoop(ctx, inner)
+    case _ -> JVoid
+  }
+}
+
+// `for`-loop counterpart of `applyIndexedElemOverride`: a `JArray` override
+// means the boxed `Object` element on top of the stack is KNOWN (from the
+// Lyric-level element type — a nested `slice[...]`/`List[...]`) to actually
+// be an array at runtime, so a plain `checkcast` to `Object[]` makes it
+// verifier-visibly array-typed (mirroring `emitNormalizeErasedSlice`'s
+// identical non-primitive-element checkcast, `jvm/codegen/03_match.l`) —
+// every other case defers to the existing `applyIndexedElemOverride`
+// unchanged.
+func applyForLoopElemOverride(insns: in List[LInsn], overrideTy: in JvmType): JvmType {
+  match overrideTy {
+    case JArray(elem) -> {
+      insns.add(LCheckcast(className = "[Ljava/lang/Object;"))
+      JArray(elem = elem)
+    }
+    case _ -> applyIndexedElemOverride(insns, overrideTy)
+  }
+}
+
 // Lower a single expression.  Pushes exactly one value onto the operand
 // stack (or nothing for JVoid).  Returns the JvmType of the pushed value.
 pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmType {

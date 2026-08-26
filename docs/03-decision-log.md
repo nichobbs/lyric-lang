@@ -31565,3 +31565,80 @@ Re-verified end-to-end via the manifest-build repro: the build now
 reports the mismatch exactly once (was printed twice before this
 revision).
 
+## D-progress-801 — JVM: `for`-loop over a nested `slice[slice[T]]`/`List[List[T]]` element no longer crashes with "does not implement Iterable" (#6541)
+
+**Bug.** `for x in errors { for e in x { ... } }` over a nested slice
+(`slice[slice[ValidationError]]` in `lyric-validation/src/validation.l`'s
+`all`, and any doubly-nested `slice[...]`/`List[...]` shape generally)
+crashed at runtime on `--target jvm` with `Class [Ljava.lang.Object; does
+not implement the requested interface java.lang.Iterable`. Discovered
+while attempting the `--target jvm` half of #3498 (adding the JVM
+counterpart to `lyric-validation`'s cross-package aspect-weaving runtime
+test): running the EXISTING, unmodified `lyric-validation` test suite
+under `--target jvm` failed 5/73 `Validation.ValidationTests` and 4/9
+`Validation.AspectWeavingTests` cases, every one of them routing through
+`Validation.all`'s nested loop.
+
+**Root cause.** `lyric-compiler/jvm/codegen/05_stmts.l`'s `for`-loop
+lowering picks its codegen strategy from the iterated expression's static
+`JvmType`: `JArray(_)` takes the index-based array path; anything else
+falls back to the `Iterable`/`iterator()` path (correct for a real
+`ArrayList`, wrong for an array). For the OUTER loop
+(`errors: slice[slice[ValidationError]]`), the array's declared element
+type erases to plain `JRef("java/lang/Object")` — nested-slice elements
+aren't tracked precisely — so the narrowing logic at that erasure point
+called `indexedElemTypeOverride`/`applyIndexedElemOverride`
+(`jvm/codegen/02_exprs.l`), the SAME helper pair `EIndex` (`xs[i]`) uses
+to recover a more precise element type from the Lyric-level generic args.
+That function already detects the nested-array shape but DISCARDS it
+(`case JArray(_) -> return JVoid`), by design — its own comment explains
+`coerceArgTo` (`jvm/codegen/04_calls.l`) has no narrowing arm for a boxed
+`Object` flowing into an array-typed target, so returning "no override"
+was the deliberately safe choice for `EIndex`'s narrowing use case
+(leaving the value boxed as plain `Object` there is harmless — nothing
+downstream treats it as array-shaped). Reused verbatim by the `for`-loop
+at the SAME `elemArr == JRef("Object")` branch, that same "safe" `Object`
+fallback is NOT safe: it becomes the INNER loop's bound variable's type,
+so the inner `for e in errs` loop's own `JvmType` match sees plain
+`JRef("Object")` (not `JArray`) and picks the `Iterable` branch — but
+nested slices are ALWAYS real Java arrays at runtime, never
+`ArrayList`/`Iterable`, so `invokeinterface Iterable.iterator()` against
+that value throws exactly the observed exception.
+
+**Fix.** Added two new, deliberately-isolated sibling functions in
+`jvm/codegen/02_exprs.l` — `indexedElemTypeOverrideForLoop` (identical to
+`indexedElemTypeOverride` except its `JArray(_)` arm PROPAGATES the
+resolved array type instead of discarding it to `JVoid`) and
+`applyForLoopElemOverride` (identical to `applyIndexedElemOverride`
+except a `JArray` override emits a plain `checkcast` to `[Ljava/lang/Object;`
+— mirroring the existing, already-shipped `emitNormalizeErasedSlice`'s
+identical non-primitive-element checkcast, `jvm/codegen/03_match.l:1375`,
+used today for match-pattern slice bindings, #5570) — and switched ONLY
+the `for`-loop's element-narrowing call site
+(`jvm/codegen/05_stmts.l`) to the new pair. `indexedElemTypeOverride` /
+`applyIndexedElemOverride` / `coerceArgTo` themselves are UNCHANGED, so
+`EIndex`'s existing behaviour (and every other caller of the shared
+helpers) is untouched — a deliberate choice: those functions have callers
+beyond the `for`-loop whose exact reliance on the current "safe no-op"
+behaviour wasn't exhaustively audited, and changing shared code blind is
+exactly the mistake D-progress-800's session already made once this
+round (see the T0121/T0122 and double-emission fix-ups above) applied to
+a different subsystem. A checkcast is sound here specifically because a
+nested `slice[T]`/`List[T]` element is STRUCTURALLY GUARANTEED to be a
+raw array at runtime (never `ArrayList`), unlike an unconstrained generic
+`T` erased to `Object` (which could legitimately be anything) — the
+narrower fix intentionally only fires when the Lyric-level element type
+resolves to `slice[...]`/`List[...]`.
+
+**Verification.** `lyric-validation`'s full suite under `--target jvm`:
+73/73 `Validation.ValidationTests` (was 68/73) + 9/9
+`Validation.AspectWeavingTests` (was 5/9) — this also closes the
+remaining ask in #3498 (the cross-package `from`-instance aspect template
+runtime test now passes on both targets). JVM sweep across
+`lyric-auth`/`lyric-resilience`/`lyric-storage` manifests plus
+`auto_ffi_jvm_self_test.l`/`aspect_weave_self_test.l` (the established
+dual-target compiler self-tests) — all green, confirming `EIndex`'s
+untouched path has no observable regression. Full dotnet-side battery
+(dep-lib builds, ecosystem manifests, key self-test suites, `ilverify`
+across 121 DLLs) unaffected, as expected for a JVM-only change.
+

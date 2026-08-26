@@ -1199,7 +1199,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           // mis-resolves — e.g. `for name in mapKeys(...)` fed
           // `HttpString.new(name)` the `ByteBuffer` ctor overload instead of
           // `String` (VerifyError at class load).
-          val forElemOverride = indexedElemTypeOverride(ctx, iter)
+          val forElemOverride = indexedElemTypeOverrideForLoop(ctx, iter)
           val iterTy = lowerExpr(ctx, insns, iter)
           match iterTy {
             case JArray(elemArr) -> {
@@ -1225,11 +1225,16 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               emitArrayLoad(insns, elemArr)
               // A slice's erased `Object[]` element narrows to the recorded
               // declared element type, exactly as `EIndex`'s JArray arm does;
-              // a precisely-typed array element keeps its own type.
+              // a precisely-typed array element keeps its own type.  A NESTED
+              // slice/List element (`slice[slice[T]]`) narrows to `JArray` via
+              // `applyForLoopElemOverride` (checkcast to `Object[]`) instead of
+              // staying erased `Object` — an erased-Object inner loop variable
+              // wrongly took the `Iterable` codegen path against a value that's
+              // actually a raw array at runtime (JVM nested-slice `for` bug).
               val elemTyA = match elemArr {
                 case JRef(cA) -> {
                   if cA == "java/lang/Object" {
-                    applyIndexedElemOverride(insns, forElemOverride)
+                    applyForLoopElemOverride(insns, forElemOverride)
                   } else {
                     elemArr
                   }
