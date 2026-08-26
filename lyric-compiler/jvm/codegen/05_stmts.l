@@ -1199,7 +1199,13 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           // mis-resolves — e.g. `for name in mapKeys(...)` fed
           // `HttpString.new(name)` the `ByteBuffer` ctor overload instead of
           // `String` (VerifyError at class load).
-          val forElemOverride = indexedElemTypeOverrideForLoop(ctx, iter)
+          val forElemOverride = indexedElemTypeOverride(ctx, iter)
+          // A nested `slice[...]`/`List[...]` element (`Validation.all`'s
+          // `slice[slice[ValidationError]]`, JVM nested-slice `for` bug —
+          // see the tracking issue): resolved once here and consumed by
+          // BOTH codegen branches below via `emitNormalizeErasedSlice`, so
+          // they can't diverge on this case.
+          val forLoopNestedElemTe = forLoopNestedArrayElemTypeExpr(ctx, iter)
           val iterTy = lowerExpr(ctx, insns, iter)
           match iterTy {
             case JArray(elemArr) -> {
@@ -1226,15 +1232,18 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               // A slice's erased `Object[]` element narrows to the recorded
               // declared element type, exactly as `EIndex`'s JArray arm does;
               // a precisely-typed array element keeps its own type.  A NESTED
-              // slice/List element (`slice[slice[T]]`) narrows to `JArray` via
-              // `applyForLoopElemOverride` (checkcast to `Object[]`) instead of
-              // staying erased `Object` — an erased-Object inner loop variable
-              // wrongly took the `Iterable` codegen path against a value that's
-              // actually a raw array at runtime (JVM nested-slice `for` bug).
+              // slice/List element (`slice[slice[T]]`) narrows via
+              // `emitNormalizeErasedSlice` instead of staying erased `Object`
+              // — an erased-Object inner loop variable wrongly took the
+              // `Iterable` codegen path against a value that's actually a
+              // raw array at runtime (JVM nested-slice `for` bug).
               val elemTyA = match elemArr {
                 case JRef(cA) -> {
                   if cA == "java/lang/Object" {
-                    applyForLoopElemOverride(insns, forElemOverride)
+                    match forLoopNestedElemTe {
+                      case Some(te) -> emitNormalizeErasedSlice(ctx, insns, te)
+                      case None -> applyIndexedElemOverride(insns, forElemOverride)
+                    }
                   } else {
                     elemArr
                   }
@@ -1310,8 +1319,16 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
                 )
               )
               // Narrow the erased `next()` element to the iterable's recorded
-              // declared element type when known (see `forElemOverride` above).
-              val elemTyB = applyIndexedElemOverride(insns, forElemOverride)
+              // declared element type when known (see `forElemOverride`
+              // above) — a nested slice/List element (a `List[slice[T]]`-
+              // shaped outer container reaching this branch) narrows via
+              // `emitNormalizeErasedSlice` for the SAME reason the array
+              // branch above does; the two branches share
+              // `forLoopNestedElemTe` so they can't diverge on this case.
+              val elemTyB = match forLoopNestedElemTe {
+                case Some(te) -> emitNormalizeErasedSlice(ctx, insns, te)
+                case None -> applyIndexedElemOverride(insns, forElemOverride)
+              }
               val elemSlotB = allocSlot(ctx, "__for_elem_" + freshLabel(ctx), elemTyB)
               emitStore(insns, elemSlotB, elemTyB)
               // Loop-variable bind is a per-loop lexical scope — see
