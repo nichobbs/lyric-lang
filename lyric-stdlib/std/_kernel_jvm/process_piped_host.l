@@ -243,6 +243,12 @@ pub func hostSpawnPiped(fileName: in String, arguments: in String): PipedHandle 
 pub func hostPipedReadLineOpt(p: in PipedHandle): Option[String] {
   var done = false
   var result: Option[String] = None
+  // Consecutive no-sleep iterations where `drainAvailableInto` grew the
+  // buffer but no newline appeared yet (see below) — capped so a
+  // pathologically slow-trickling child (bytes keep arriving one at a
+  // time, never completing a line, never leaving `available() == 0` long
+  // enough to hit the sleep branch) can't spin a full CPU core.
+  var growthStreak = 0
   while not done {
     val snapshot: slice[Byte] = p.lineBuf.toByteArray()
     val nl = indexOfNewline(snapshot)
@@ -256,10 +262,16 @@ pub func hostPipedReadLineOpt(p: in PipedHandle): Option[String] {
       val grew: slice[Byte] = p.lineBuf.toByteArray()
       if grew.length > snapshot.length {
         // New bytes arrived — loop straight back to the newline scan
-        // without sleeping.
-        ()
+        // without sleeping, UNLESS this has happened too many times in a
+        // row without ever completing a line (the slow-trickle case).
+        growthStreak = growthStreak + 1
+        if growthStreak >= 64 {
+          JThread.sleep(intToLong(1))
+          growthStreak = 0
+        }
       } else if procIsAlive(p.proc) {
         JThread.sleep(intToLong(1))
+        growthStreak = 0
       } else {
         // Process has exited. One more drain in case bytes were flushed
         // between the `isAlive` check above and here (mirrors
