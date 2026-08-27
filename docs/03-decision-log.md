@@ -32833,3 +32833,33 @@ corpus spot-checked (full `TEST_EMITTER_FILES` sweep run separately).
 #6594 (the two mono.l bugs, fixed here), D-progress-658 (#5604/#5612, the
 meta-defect this closes), D-progress-656 (the loud-failure precedent for
 unresolved auto-FFI).
+
+## D-progress-808 — `Std.Rest.fullUrl` no longer crashes on the opaque `String` receiver of `.charAt` (#5622, part 1 of 2)
+
+**Status:** ACCEPTED (first of two independent bugs #5622 reports; the
+second — `sendRequest`'s async state-machine `match not exhaustive` panic —
+is tracked and fixed separately, see the follow-up entry for that half).
+
+**Root cause.** `fullUrl(client, path)` computed whether to insert or
+strip a `/` at the base/path join point via `base.charAt(lastBase)` and
+`path.charAt(0)`. `.charAt` on `String` is a throw-stub left over from an
+earlier String-representation migration (the opaque-field `String`
+receiver shape `.charAt` was written against no longer matches how a
+`String` is represented) — every call into `fullUrl` with a non-empty
+`path` panicked immediately, making `RestClient.get`/`post`/etc.
+unusable for any request with a URL path.
+
+**Fix.** Switched both computations to bracket indexing
+(`base[lastBase]`, `path[0]`), the same live, correctly-supported
+character-access spelling already used throughout the rest of the
+stdlib (and the form `.charAt` itself was presumably meant to be a
+synonym for, before it bit-rotted into a throw-stub). No change to
+`fullUrl`'s join-logic semantics — only the character-access mechanism.
+
+**Verification.** `lyric-stdlib/tests/rest_tests.l` passes cleanly
+against a stdlib bundle rebuilt from this change (targeted redeploy via
+`scripts/stage-selfhosted-stdlib.sh`, not a full `make lyric`).
+
+**Related:** #5622 (this issue also tracks the `sendRequest` half, fixed
+in a separate commit/entry), D-progress-780 (a similar "MSIL diverged
+from Std.String's real API surface" class of bug, different root cause).
