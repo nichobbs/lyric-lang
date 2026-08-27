@@ -118,6 +118,56 @@ func testHeaderLineNumbersPreserved(): Unit {
   }
 }
 
+// #6687: a comment block (or an extra blank line) BETWEEN two `import`
+// statements — a shape several real `@test_module` files use, e.g.
+// `stdlib_jvm_kernels_self_test.l`'s two import groups split by a
+// multi-line comment.  The #6642 fix above reproduces the header exactly,
+// but the import-copy loop that followed it still stitched each import's
+// own span onto a single synthetic newline, discarding any trivia between
+// two imports — collapsing the comment block (plus its surrounding blank
+// lines) here would have shifted `helper()`'s body up by several lines.
+// Same isolation trick as `headerLineNumbersSource`: the compile error
+// lives in a plain helper `func`, not inside a `test { }` block, so this
+// checks the import-loop rewrite alone.
+func importGapLineNumbersSource(): String {
+  "@test_module\n" + "package ImportGapRepro\n" + "\n" + "import Std.Core\n" + "\n" + "// This is a comment block\n" +
+    "// spanning multiple lines\n" +
+    "// between two import groups.\n" +
+    "\n" +
+    "import Std.Testing\n" +
+    "\n" +
+    "func helper(): Int {\n" +
+    "  totallyUnknownIdentifierABC\n" +
+    "}\n" +
+    "\n" +
+    "test \"trivial\" {\n" +
+    "  assertTrue(true, \"x\")\n" +
+    "}\n"
+}
+
+func testImportGapLineNumbersPreserved(): Unit {
+  match synthesize(importGapLineNumbersSource(), Some(value = "")) {
+    case Synthesised(rewritten, n, sk) -> {
+      assertEqualInt(n, 1, "one test")
+      assertEqualInt(sk, 0, "no skips")
+      val lines = Str.split(rewritten, "\n")
+      // Line 13 (1-indexed) of the ORIGINAL source is
+      // "  totallyUnknownIdentifierABC" — line index 12 in a 0-indexed split.
+      // Before the fix, collapsing the blank line before the first import
+      // plus the blank/comment/blank gap between the two imports (6 lines
+      // total) shifted this content up to index 6 (line 7).
+      assertTrue(lines.length > 12, "rewritten source has fewer than 13 lines:\n" + rewritten)
+      assertTrue(
+        Str.contains(lines[12], "totallyUnknownIdentifierABC"),
+        "expected line 13 (index 12) of the rewritten source to still be the helper() body, got '" + lines[12] +
+          "'\nfull rewritten source:\n" +
+          rewritten
+      )
+    }
+    case _ -> panic("expected Synthesised outcome")
+  }
+}
+
 func testSynthesisesPassingTwoTests(): Unit {
   // Use Some(value = "") rather than None: both mean "no active filter"
   // (empty string is a substring of every title), but Some avoids the
@@ -252,6 +302,10 @@ func testListEntriesEnumerates(): Unit {
 
 test "module //! header line numbers preserved in rewritten source (#6642)" {
   testHeaderLineNumbersPreserved()
+}
+
+test "comment block between imports preserves line numbers (#6687)" {
+  testImportGapLineNumbersPreserved()
 }
 
 test "synthesises passing two tests" {
