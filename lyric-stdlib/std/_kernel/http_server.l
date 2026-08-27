@@ -81,7 +81,11 @@
 //! change. Request bodies are capped at the same `EngineLimits.maxBodyBytes` the
 //! HTTP/1.1 path enforces: a stream whose accumulated DATA would exceed the cap
 //! is answered `413` and never dispatched, and further DATA on it is dropped
-//! (never buffered past the cap), so a hostile client cannot exhaust memory.
+//! (never buffered past the cap), so a hostile client cannot exhaust memory. The
+//! rejection is terminal (`H2ConnState.rejectedStreams`, #6144/#6145) and its
+//! bookkeeping is bounded (`pruneRejectedStreams`, #6566): a client that opens
+//! many streams, gets each `413`-rejected, and then abandons every one (never
+//! closing its own side) cannot grow that bookkeeping without bound.
 //! Received-window credit is returned via `WINDOW_UPDATE` as DATA is consumed, so
 //! a large legal body flows past the initial 64 KiB window. If the response
 //! headers cannot be HPACK-encoded, the stream is reset with `RST_STREAM`
@@ -347,12 +351,18 @@ record H2ConnState {
   // its buffered headers/body), so the accumulator map only ever holds
   // in-progress non-rejected streams (#6145); this marker set is pruned when the
   // stream reaches END_STREAM or is reset. A rejected stream a client abandons
-  // (never END_STREAM/RST) retains only this tiny id marker — but unlike
-  // `H2Connection.streams` (bounded by `pruneClosedStreams`'s retention
-  // window, #6064), nothing here ever prunes an abandoned-and-forgotten
-  // entry, so this map is unbounded for the connection's lifetime on a
-  // pathological client that opens-then-abandons many over-cap streams. A
-  // narrower follow-up than #6064, tracked as #6566.
+  // (never sends END_STREAM or RST_STREAM) keeps only this tiny id marker, but
+  // the underlying stream also stays FSM-active (`H2SHalfClosedLocal` — our own
+  // `413` closed only the server's send side) for as long as the client leaves
+  // it dangling, so it counts against `SETTINGS_MAX_CONCURRENT_STREAMS` the
+  // whole time; growth is soft-bounded by that admission-control ceiling, not
+  // literally unbounded the way `H2Connection.streams` was before #6064. That
+  // coupling to a setting this marker set does not own is fragile, not a
+  // designed bound, so `pruneRejectedStreams` (#6566) still actively reclaims
+  // an old-enough abandoned entry: see its doc comment for the mechanism and
+  // safety argument (id-distance pruning here cannot just drop the marker the
+  // way `pruneClosedStreams` does — the underlying stream can still be
+  // FSM-live — so it forces an RST_STREAM first).
   rejectedStreams: Map[Int, Bool]
 }
 
@@ -841,6 +851,93 @@ func forgetRejectedStream(state: in H2ConnState, streamId: in Int): Unit {
   state.rejectedStreams.remove(streamId)
 }
 
+// How many trailing client stream-id slots (each 2 apart, matching
+// `H2.h2ClosedStreamRetentionWindow`'s id-distance shape) an abandoned
+// rejected-stream marker is tolerated before `pruneRejectedStreams`
+// actively reclaims it. Deliberately smaller than
+// `H2.h2ClosedStreamRetentionWindow()` (200): unlike an `H2SClosed` FSM
+// record, a lingering `rejectedStreams` marker's underlying stream is
+// *never* naturally reclaimed on its own (see the `H2ConnState.rejectedStreams`
+// doc comment) and stays FSM-active the whole time it lingers, so it is
+// already soft-bounded well below this window by
+// `SETTINGS_MAX_CONCURRENT_STREAMS` (128 by default,
+// `h2DefaultServerSettings`) — this window only needs to be comfortably
+// clear of any realistic single-request round trip, not to match #6064's
+// generous "keep the terminal event observable" margin.
+@pure
+@experimental
+pub func h2RejectedStreamRetentionWindow(): Int {
+  64
+}
+
+// Pure id-distance test backing `pruneRejectedStreams`: is `streamId` more
+// than `window` client stream-id slots behind `highWaterMark`? Exposed
+// `pub` purely so the threshold arithmetic is independently unit-testable
+// without a live connection (mirrors `H2Conn`'s own testable query-surface
+// precedent, e.g. `h2ClosedStreamRetentionWindow`) — `pruneRejectedStreams`
+// itself needs a live `H2ConnState` (real socket-backed) and so cannot be
+// unit-tested directly.
+@pure
+@experimental
+pub func h2RejectedStreamIsReclaimable(streamId: in Int, highWaterMark: in Int, window: in Int): Bool {
+  streamId < highWaterMark - window * 2
+}
+
+// Actively reclaim `rejectedStreams` entries that have scrolled
+// `h2RejectedStreamRetentionWindow()` slots behind the connection's current
+// high-water mark (#6566).
+//
+// Safety argument (the equivalent of `pruneClosedStreams`'s "a lookup miss
+// is never silently permitted" invariant, adapted to this layer): a
+// `rejectedStreams[id]` marker, once old enough to be eligible here, always
+// corresponds to a FSM stream still sitting at `H2SHalfClosedLocal` — the
+// client never sent END_STREAM/RST_STREAM to close its own side (if it had,
+// `forgetRejectedStream` would already have removed the marker at that
+// event, well before this id-distance check could ever fire). Unlike a
+// `pruneClosedStreams`-eligible `H2SClosed` record, that stream is NOT
+// already closed at the FSM level, so simply dropping our marker (as
+// `pruneClosedStreams` does for its own, already-dead records) would be
+// unsafe: a later legitimate-looking DATA or trailer HEADERS on that same
+// id would sail past `isRejectedStream`'s now-absent guard and get
+// re-accumulated/dispatched — exactly what #6144/#6145 exist to prevent.
+// So reclaiming here does not just forget the marker: it first issues a
+// real `RST_STREAM` (RFC 9113 section 6.4's administrative-close idiom —
+// the same mechanism `sendH2Reject413`'s own HPACK-encode-failure path
+// already resets a stream with), which `H2.sendRstStream` applies to the
+// FSM's own record, transitioning it to `H2SClosed`. From that point on the
+// FSM itself rejects any further frame on the id before it can ever reach
+// `onH2Data`/`onH2Headers` again — DATA gets a stream-level
+// `reclaimAndStreamFail`, and a HEADERS reusing the id gets a connection
+// `PROTOCOL_ERROR` (RFC 9113 section 5.1.1, #6562) — so forgetting our own
+// marker at the same moment is provably safe, not merely convenient.
+// `H2.sendRstStream` is itself a safe no-op (empty bytes, no mutation) if
+// the FSM has no record for the id at all (already closed and reclaimed by
+// `pruneClosedStreams`, or never existed), so this can never resurrect or
+// mis-close an unrelated stream.
+func pruneRejectedStreams(state: in H2ConnState): Unit {
+  val window = h2RejectedStreamRetentionWindow()
+  // Cheap escape hatch, mirroring `pruneClosedStreams`'s own: nothing to
+  // reclaim until the marker count exceeds the window.
+  if state.rejectedStreams.count <= window {
+    return
+  }
+  val highWaterMark = H2.lastPeerStreamId(state.h2)
+  val ids = mapKeys(state.rejectedStreams).toArray()
+  var i = 0
+  while i < ids.length {
+    val id = ids[i]
+    if h2RejectedStreamIsReclaimable(id, highWaterMark, window) {
+      val rst = H2.sendRstStream(state.h2, id, H2Cancel)
+      if rst.length > 0 {
+        val _ = hostWrite(state.conn, rst);
+        ()
+      }
+      forgetRejectedStream(state, id)
+    }
+    i = i + 1
+  }
+}
+
 // Split an HPACK-decoded request header block into method / path / non-pseudo
 // headers (RFC 9113 §8.3.1). Missing `:method` / `:path` default defensively
 // (mirroring the HTTP/1.1 kernel's `requestMethod`/`requestPath` fallbacks);
@@ -1210,6 +1307,12 @@ func processH2Batch(state: in H2ConnState, bytes: in slice[Byte]): Unit {
   while i < work.count and state.open and not H2.isFailed(state.h2) {
     processH2Event(state, work[i], work)
     i = i + 1
+  }
+  // Once per batch, mirroring `H2.feed`'s own `pruneClosedStreams` cadence
+  // (#6566) — pointless (and `H2.sendRstStream` would no-op anyway) once the
+  // connection is closing or already fatal.
+  if state.open and not H2.isFailed(state.h2) {
+    pruneRejectedStreams(state)
   }
 }
 
