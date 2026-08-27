@@ -122,6 +122,17 @@ record SpecRequest {
 }
 
 record MonoState {
+  /// Same-package module-level `val` declared types, keyed by simple
+  /// name — only entries with an explicit type ANNOTATION (`ValDecl.ty`)
+  /// are populated; an unannotated module-level binding stays uninferable
+  /// here, same "safe degradation" philosophy the rest of this file uses.
+  /// Used by `inferExprTE`'s `EPath` case so a generic call passing a
+  /// module-level value as an argument (`monitorEnter(jobHandleCounter)`)
+  /// can infer its type argument — before this, `env` was seeded only from
+  /// function parameters/locals, so ANY same-package generic call whose
+  /// argument was a module-level `val` silently failed to specialise
+  /// (#6594).
+  moduleValTypes: Map[String, TypeExpr]
   /// Generic functions defined in this package (callable from anywhere
   /// in the file).  Used to look up specialisation candidates.
   genDecls: Map[String, FunctionDecl]
@@ -178,6 +189,7 @@ record MonoState {
 }
 
 func newMonoState(
+  moduleValTypes: in Map[String, TypeExpr],
   genDecls: in Map[String, FunctionDecl],
   funcDecls: in Map[String, FunctionDecl],
   recordDecls: in Map[String, RecordDecl],
@@ -187,6 +199,7 @@ func newMonoState(
   ambiguousFuncOverloads: in Map[String, List[FunctionDecl]],
 ): MonoState {
   MonoState(
+    moduleValTypes = moduleValTypes,
     genDecls = genDecls,
     funcDecls = funcDecls,
     recordDecls = recordDecls,
@@ -1090,7 +1103,13 @@ func inferExprTE(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
     case EParen(inner) -> inferExprTE(state, env, inner)
     case EPath(path) -> {
       if path.segments.count == 1 {
-        mapGet(env, path.segments[0])
+        match mapGet(env, path.segments[0]) {
+          case Some(te) -> Some(value = te)
+          // A param/local shadows a module-level `val` of the same name,
+          // so `env` (params/locals) is consulted first; only fall back to
+          // `moduleValTypes` when no local binding exists (#6594).
+          case None -> mapGet(state.moduleValTypes, path.segments[0])
+        }
       } else {
         None
       }
@@ -2504,6 +2523,33 @@ func annsHaveAxiomMono(anns: in List[Annotation]): Bool {
     i = i + 1
   }
   false
+}
+
+// True iff the annotation list carries `@externTarget(...)` (regardless of
+// whether the target string names a generic declaring type — that finer
+// distinction is `annsKeepGenericExternMono`'s job).
+func annsHaveExternTargetMono(anns: in List[Annotation]): Bool {
+  externTargetStringMono(anns).length > 0
+}
+
+// True iff a generic tagged `@axiom` is a genuinely PROOF-ONLY declaration —
+// no `@externTarget`, so it has no real runtime FFI body for codegen to ever
+// emit and is legitimately exempt from specialisation/M0002 entirely.  A
+// generic carrying BOTH `@axiom` and `@externTarget` (the documented,
+// spec-sanctioned pattern for a real per-function FFI boundary — docs/01
+// §6.5 — as opposed to the more common PACKAGE-level `@axiom` covering a
+// whole `_kernel/*.l` file) is real runtime code and must NOT get this
+// exemption: it needs the same specialisation (and, on inference failure,
+// the same M0002 diagnostic) as any other same-package generic, just like
+// `annsKeepGenericExternMono` already carves out generic-declaring-type
+// externs from the DROP decision for the same reason.  Before this,
+// `@axiom` alone silently suppressed both the diagnostic AND (Phase 2)
+// the specialised replacement for calls mono failed to infer, so a call
+// site was left referencing a declaration codegen had already dropped —
+// the exact #5621/#5516 silent-drop symptom class, for a class of generic
+// this file's own axiom check was never meant to protect (#6594).
+func annsAxiomOnlyMono(anns: in List[Annotation]): Bool {
+  annsHaveAxiomMono(anns) and not annsHaveExternTargetMono(anns)
 }
 
 // Reserved compiler-internal marker (never parseable from source — `__lyric_`
@@ -4002,9 +4048,28 @@ pub func monoFileWithImportsAndTypeDecls(
   // survive Phase 2 and `@axiom` generics are proof-only, so neither is
   // eligible.
   val droppedLocalGenerics: Map[String, Bool] = newMap()
+  // Module-level `val`/`var` declared types (annotated only — see
+  // `MonoState.moduleValTypes`'s doc comment), for `inferExprTE`'s `EPath`
+  // case (#6594).
+  val moduleValTypes: Map[String, TypeExpr] = newMap()
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
+      case IVal(decl) -> {
+        match decl.ty {
+          case Some(te) -> {
+            match decl.pattern.kind {
+              case PBinding(name, None) -> {
+                if not moduleValTypes.containsKey(name) {
+                  moduleValTypes.add(name, te)
+                }
+              }
+              case _ -> ()
+            }
+          }
+          case None -> ()
+        }
+      }
       case IFunc(decl) -> {
         if not funcDecls.containsKey(decl.name) {
           funcDecls.add(decl.name, decl)
@@ -4014,7 +4079,7 @@ pub func monoFileWithImportsAndTypeDecls(
             if not genDecls.containsKey(decl.name) {
               genDecls.add(decl.name, decl)
             }
-            if not annsHaveAxiomMono(decl.annotations) and not annsKeepGenericExternMono(decl.annotations) {
+            if not annsAxiomOnlyMono(decl.annotations) and not annsKeepGenericExternMono(decl.annotations) {
               if not droppedLocalGenerics.containsKey(decl.name) {
                 droppedLocalGenerics.add(decl.name, true)
               }
@@ -4216,6 +4281,7 @@ pub func monoFileWithImportsAndTypeDecls(
   }
 
   val state = newMonoState(
+    moduleValTypes,
     genDecls,
     funcDecls,
     recordDecls,
@@ -4242,9 +4308,14 @@ pub func monoFileWithImportsAndTypeDecls(
             // concrete copy, but call sites the monomorphizer does NOT walk —
             // e.g. a zero-argument ctor extern (`newConcurrentDict()`) invoked
             // from a module-level `val` initializer — keep calling the generic
-            // name, which would resolve to nothing if it were dropped.  `@axiom`
-            // generics stay dropped (proof-only, never emitted as runtime code).
-            if annsKeepGenericExternMono(decl.annotations) and not annsHaveAxiomMono(decl.annotations) {
+            // name, which would resolve to nothing if it were dropped.
+            // Proof-only `@axiom` generics (no `@externTarget`) stay dropped —
+            // never emitted as runtime code — but a generic-declaring-type
+            // extern also carrying `@axiom` (the real, spec-sanctioned
+            // per-function FFI boundary pattern, docs/01 §6.5) is real
+            // runtime code and must still be kept here like any other
+            // `annsKeepGenericExternMono` extern (#6594).
+            if annsKeepGenericExternMono(decl.annotations) and not annsAxiomOnlyMono(decl.annotations) {
               rewrittenItems.add(item)
             }
           }

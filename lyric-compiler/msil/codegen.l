@@ -14447,18 +14447,33 @@ func lowerBuiltinOrStaticCallMsil(
               // dispatches both through the same `callvirt`.
               narrowSelfCallResultMsil(cctx, sibKey, fctx.className)
             } else {
-              // Cross-package call without a registered token: walk args for
-              // side effects and yield MObject as a defensive default.  In
-              // pre-Phase-2 single-package builds this branch fired for
-              // unknown imported funcs (where the call would crash at
-              // runtime); same behaviour preserved here so we don't mask
-              // a missing token with bogus IL.
-              var i = 0
-              while i < args.count {
-                lowerCallArgMsil(cctx, fctx, insns, args[i])
-                i = i + 1
-              }
-              MObject
+              // Cross-package call without a registered token: this used to
+              // walk the args for side effects and yield MObject as a
+              // "defensive default" — lowering NO MCall/MCallvirt at all, so
+              // the last stacked value silently flowed onward as the call's
+              // result (an unbalanced-stack InvalidProgramException far from
+              // the cause, or a wrong value with no diagnostic at all — the
+              // #5621/#5516 silent-drop class, D-progress-658/D-progress-656).
+              // A resolution gap here means the typechecker's symbol table
+              // and this function's `cctx.funcTokens` map disagreed about
+              // whether the callee resolves — always a real compiler bug
+              // (mono not specializing a generic call, cfg-erasure removing
+              // a call's only definition, etc.), never something codegen can
+              // paper over safely. Fail loudly at compile time instead.
+              panic(
+                "error[T0123] " + toString(path.span.startPos.line) + ":" + toString(path.span.startPos.column) +
+                  ": unresolved call to '" +
+                  funcName +
+                  "' (arity " +
+                  toString(args.count) +
+                  ") imported as '" +
+                  modulePathJoin(path.segments) +
+                  "' in package '" +
+                  fctx.pkgName +
+                  "' — no function token could be resolved for this callee. This means the callee legitimately " +
+                  "type-checked but codegen's own resolver disagrees; check for a generic call mono failed to " +
+                  "specialize, or a definition dropped by @cfg erasure."
+              )
             }
           }
         }

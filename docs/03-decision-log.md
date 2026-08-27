@@ -32730,3 +32730,106 @@ anywhere in the tree outside comments/documentation.
 pre-existing JVM slice-element bug found and filed, not fixed, during
 this investigation), `lyric-ws`'s JVM kernel (the `JObjects.isNull` idiom
 this entry reuses).
+
+---
+
+## D-progress-807 — Codegen fails loudly on unresolved calls instead of silently dropping them, on both backends (#5621, #5516)
+
+**Context.** #5621/#5516: when MSIL codegen couldn't find a registered
+function token for a cross-package call, it silently dropped it — the
+call's arguments were lowered for side effects, but no `MCall`/`MCallvirt`
+was ever emitted, leaving the operand stack imbalanced (a far-from-the-cause
+`InvalidProgramException`) or the last stacked value silently flowing
+onward as a bogus result. The JVM backend's equivalent guessed a
+best-effort `invokestatic` against a derived owner with an all-`Object`
+signature — never silent, but not a compile-time diagnostic either, only
+failing later at JVM link/class-load time (`NoSuchMethodError`/
+`NoClassDefFoundError`). D-progress-658 named this the meta-defect behind
+two independently-fixed, long-invisible breakage families (#5604, #5612).
+
+**Change.** MSIL: `lowerBuiltinOrStaticCallMsil`'s cross-package fallback
+(`lyric-compiler/msil/codegen.l`) now `panic`s with a new diagnostic code
+`T0123`, naming the callee, arity, imported path, and package. JVM:
+`lowerGeneralStaticCall`'s equivalent fallback (`lyric-compiler/jvm/codegen/04_calls.l`)
+now panics identically (reusing `T0123` for cross-backend consistency)
+instead of guessing an `invokestatic`, mirroring the already-loud
+non-`JRef`-receiver method-call panic in the same file (docs/59 §4.4). Both
+sites still lower every argument's own side effects onto the stack before
+panicking, matching the established D-progress-656 precedent for turning a
+silent resolution gap into a hard compile-time abort. The method-dispatch
+"unsupported method" runtime-throw stub (#1481 item 4,
+`lowerMethodCallMsil`) was deliberately left as a RUNTIME throw, not
+promoted to compile-time: it's a distinct, already-reasoned design choice
+(a program whose unreachable paths merely MENTION an unresolvable method
+stays compilable; only an executed path fails) rather than the #5621/#5516
+silent-drop bug class.
+
+**Audit — the real work.** Per #5621's own directive ("build the full tree +
+ecosystem with the panic enabled and fix whatever it flags"), ran the new
+diagnostic against the self-hosted compiler's own self-build and all 28
+ecosystem libraries (`./bin/lyric test --manifest <toml>`, matching each
+library's own CI invocation exactly). Found and fixed two real,
+previously-invisible gaps this loud-failure diagnostic newly exposed
+(a third apparent hit, `lyric-aws-secrets`, was confirmed a false positive
+from the sweep's own missing `--features local` flag — CI always passes
+it):
+
+1. **`lyric-grpc`'s `.NET` client/server kernel has never worked at all**
+   (filed as #6592, fixed here as an honest interim stub — not a real
+   implementation). Every function in `Grpc.Kernel.Net`
+   (`_kernel/net/grpc_kernel.l`) was declared inside `extern package { }`
+   blocks — a declaration-only FFI form the self-hosted MSIL backend's item
+   dispatcher has always treated as a pure no-op (`IExtern(_) -> {}`,
+   confirmed via a dedicated investigation agent: no MethodDef/MemberRef
+   ever emitted for it). The type checker allowed calls into it anyway
+   (`registerItem`'s `IExtern` arm never populates `symbols`, on the
+   documented assumption codegen resolves these separately — it doesn't).
+   Rewrote all 10 functions as plain Lyric functions that fail fast/honestly:
+   `Result`-returning functions return a typed `Err` naming #6592;
+   `serve`/`netStartHandle` (no `Result` in their signature, matching a real
+   implementation's "throws on failure" contract, and `netStartHandle`
+   additionally can't fabricate a `GrpcServerHandle` — an `opaque type` with
+   no public constructor outside `Grpc.Types`) `panic`; `checkRateLimit`
+   fails OPEN (`true`) rather than closed, so enabling rate limiting on this
+   target doesn't silently reject all traffic. Confirmed narrow to
+   `lyric-grpc`: every other ecosystem library's `_kernel/net/*.l` (dotnet)
+   kernel already uses the working `@externTarget`/`import extern` pattern;
+   only `lyric-grpc`'s dotnet kernel used the never-codegen'd `extern
+   package` form. Real implementation tracked in #6592, not attempted here.
+
+2. **`Lyric.Mono` two compounding bugs, affecting `monitorEnter[T]`/
+   `monitorExit[T]`-shaped generics independently declared in `lyric-jobs`,
+   `lyric-web` (and its `lyric-lambda` workspace consumer), `lyric-mq`, and
+   `lyric-ws`** (filed and fixed together as #6594): (a) `annsHaveAxiomMono`
+   treated ANY `@axiom`-tagged generic as proof-only and exempt from the
+   normal drop/keep/`M0002`-diagnostic bookkeeping, conflating the common
+   package-level `@axiom` (a whole `_kernel/*.l` file) with the distinct,
+   spec-sanctioned (docs/01 §6.5) per-function `@axiom`+`@externTarget`
+   pattern these lock wrappers use — real runtime code, not a proof-only
+   declaration. (b) `inferExprTE`'s `EPath` case only consulted `env`
+   (function params/locals), never module-level `val`s — `monitorEnter
+   (jobHandleCounter)` passes a module-level `val` as its sole argument, so
+   `T` could never be inferred and specialisation silently failed. Together:
+   an unspecialised call site referenced a declaration Phase 2 had already
+   dropped (non-generic-extern, exempted from the diagnostic by bug (a)) —
+   invisible before this session's diagnostic, a hard failure after.
+   **Fix:** new `annsAxiomOnlyMono` predicate (`@axiom` AND no
+   `@externTarget`) replaces the two `annsHaveAxiomMono` call sites that
+   gate this behaviour; new `MonoState.moduleValTypes` (populated from
+   every module-level `IVal` carrying an explicit type annotation — same
+   safe-degradation philosophy as the rest of the file for the unannotated
+   case) that `inferExprTE`'s `EPath` case falls back to when `env` has no
+   entry.
+
+**Verification.** Self-hosted compiler self-build (stage 1 + AOT) clean
+after each change. Full ecosystem sweep (all 28 `lyric-*/lyric.toml`
+libraries, dotnet target) clean except the two pre-existing/false-positive
+findings named above. `lyric-grpc`'s own test suites (2/2) and all four
+`monitorEnter`-affected libraries' full suites (`lyric-jobs` 17/17,
+`lyric-mq` 5/5, `lyric-ws` 6/6, `lyric-web` 7/7) pass. Compiler self-test
+corpus spot-checked (full `TEST_EMITTER_FILES` sweep run separately).
+
+**Related:** #5621, #5516, #6592 (lyric-grpc real implementation, tracked),
+#6594 (the two mono.l bugs, fixed here), D-progress-658 (#5604/#5612, the
+meta-defect this closes), D-progress-656 (the loud-failure precedent for
+unresolved auto-FFI).

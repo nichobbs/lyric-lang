@@ -3012,34 +3012,37 @@ func lowerGeneralStaticCall(
     case None -> ()
   }
 
-  // Fallback (unregistered name): lower args as-is and derive the owner from a
-  // qualified path when present, else assume the current package.  Return type
-  // is unknown, so use Object.  Reached only for names absent from every
-  // compiled package — i.e. genuinely unresolved references, which fail loudly
-  // at JVM link time.
-  val paramTys: List[JvmType] = newList()
+  // Fallback (unregistered name): previously guessed an owner from a
+  // qualified path (or the current package) and emitted a best-effort
+  // `invokestatic` against it with an all-Object signature — reached
+  // whenever the typechecker's symbol table and this function's own
+  // registered-signature lookup disagree about whether the callee resolves
+  // (a mono/cfg-erasure gap, the same #5621/#5516 silent-drop class fixed
+  // on MSIL in D-progress-807, mirroring the already-loud
+  // non-`JRef`-receiver method-call panic below, docs/59 §4.4). The guessed
+  // call is never actually correct — a real callee it matched would have
+  // been found by the lookup above — so it only ever failed later at JVM
+  // link/class-load time (`NoSuchMethodError`/`NoClassDefFoundError`), far
+  // from the cause and after already having lowered every argument's own
+  // side effects onto the stack. Fail loud at compile time instead.
   var i = 0
   while i < args.count {
-    val aTy = lowerCallArg(ctx, insns, args[i])
-    paramTys.add(aTy)
+    val _ = lowerCallArg(ctx, insns, args[i])
     i = i + 1
   }
-  val owner = if path.segments.count > 1 {
-    val segs: List[String] = newList()
-    var si = 0
-    while si < path.segments.count - 1 {
-      segs.add(path.segments[si])
-      si = si + 1
-    }
-    joinSegments(segs, "/")
-  } else {
-    ctx.className
-  }
-
-  insns.add(
-    LInvokestatic(owner = owner, name = funcName, params = paramTys, ret = JRef(className = "java/lang/Object"))
+  val posGsc = path.span.startPos
+  panic(
+    "Jvm.Codegen: " + toString(posGsc.line) + ":" + toString(posGsc.column) + ": unresolved call to '" + funcName +
+      "' (arity " +
+      toString(args.count) +
+      ") imported as '" +
+      modulePathJoin(path.segments) +
+      "' in package '" +
+      ctx.className +
+      "' — no registered static signature could be resolved for this callee. This means the callee legitimately " +
+      "type-checked but codegen's own resolver disagrees; check for a generic call mono failed to specialize, or " +
+      "a definition dropped by @cfg erasure."
   )
-  JRef(className = "java/lang/Object")
 }
 
 // Lower a method call on a receiver: recv.memberName(args...).
