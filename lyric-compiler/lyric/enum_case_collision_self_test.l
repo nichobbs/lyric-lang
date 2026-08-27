@@ -1,6 +1,20 @@
 //! enum_case_collision_self_test.l — regression test for #5995: cross-package
 //! enum case-name collision silently mis-dispatching enum case construction
-//! and pattern matching on BOTH backends.
+//! and pattern matching on BOTH backends. Also covers two MSIL-only findings
+//! from the #6595/#6607 review pass, in `registerEnumDeclMsil`'s
+//! surrounding code:
+//!   - #6638: `registerEnumDeclMsil`'s `enumCaseOrdinalsByPkgType.add` was
+//!     unguarded, so a package registered twice (e.g. a restored artifact
+//!     resolved twice into `cctx.restoredArtifacts`) crashed the compiler
+//!     with a raw `ArgumentException` instead of no-oping the identical
+//!     re-registration.
+//!   - #6639: the package-qualified pattern-match branch
+//!     (`case Pkg.Case ->`) resolved through a bare `pkgName + "." +
+//!     caseName` key with no enum TYPE name, so two DIFFERENT enums
+//!     declared in the SAME package sharing a case name collided —
+//!     first-registered-wins — even though the scrutinee's own declared
+//!     type (`scrutEnumHint`) was available to disambiguate, exactly like
+//!     it already does for the type-qualified and bare-pattern forms.
 //!
 //! Three independent fixture packages declare enums that collide two
 //! different ways:
@@ -117,6 +131,8 @@ import Std.Uuid
 import Std.Environment as Environment
 import Msil.Bridge
 import Jvm.Bridge
+import Lyric.RestoredPackages
+import Lyric.ContractMeta as Meta
 
 // ─── Shared fixture sources ─────────────────────────────────────────────────
 // `HttpVersion.Http11` is ordinal 1 (Http10 is 0); `ConnState.Http11` is
@@ -387,5 +403,183 @@ test "jvm: bare enum-case construction and pattern match resolve against each en
     Str.trim(resultC.stdout),
     expectedAppCStdout(),
     "enum_case_collision jvm (AppC): bare pattern match against C's own type-name-colliding HttpVersion"
+  )
+}
+
+// ─── #6638: registerEnumDeclMsil unguarded Map.add duplicate-key crash ─────
+// `Msil.Codegen.registerRestoredArtifactTokens`/`registerRestoredMembers`
+// iterate `cctx.restoredArtifacts` with no dedup by package name — a diamond
+// `[dependencies] path` graph the resolver doesn't collapse (two of a
+// project's own packages each independently resolving the SAME shared
+// library) feeds the identical `SynthesisedArtifact` into that list twice.
+// Reproduced directly here by pushing one artifact into the restored list
+// twice, which is exactly the shape `compileProjectToMsilWithRestored`
+// receives regardless of how the duplicate upstream path arose. Before the
+// fix, `registerEnumDeclMsil`'s `cctx.enumCaseOrdinalsByPkgType.add(...)`
+// call was unguarded: the SECOND registration threw a raw
+// `System.ArgumentException` ("An item with the same key has already been
+// added") straight out of the compiler — an unhandled crash, not a graceful
+// build failure — even though the re-visit computes the identical ordinal
+// and should be a pure no-op.
+func dupEnumLibSource(): String {
+  "package DupEnumLib\n" + "\n" + "pub enum Shade {\n" + "  case Light\n" + "  case Dark\n" + "}\n" + "\n" +
+    "pub func labelOf(s: in Shade): String {\n" +
+    "  match s {\n" +
+    "    case Light -> \"Light\"\n" +
+    "    case Dark -> \"Dark\"\n" +
+    "  }\n" +
+    "}\n"
+}
+
+func dupEnumAppSource(): String {
+  "package DupEnumApp\n" + "\n" + "import DupEnumLib\n" + "\n" + "func main(): Int {\n" +
+    "  println(DupEnumLib.labelOf(DupEnumLib.Dark))\n" +
+    "  0\n" +
+    "}\n"
+}
+
+// Compile `source` to a standalone producer DLL and reload it through the
+// exact `Lyric.RestoredPackages` round-trip the CLI's `[dependencies] path`
+// restore uses (mirrors `msil_restored_bridge_self_test.l`'s
+// `buildRestoredArtifact`). The caller owns cleaning up `art.dllPath`'s
+// directory.
+func buildDupRestoredArtifact(label: in String, source: in String, dllName: in String): SynthesisedArtifact {
+  val libDir = freshTempDir(label + "-lib")
+  val libDllPath = Path.join(libDir, dllName + ".dll")
+  val noStdlib: List[String] = newList()
+  val ok = compileToMsil(source, libDllPath, noStdlib)
+  if not ok {
+    cleanup(libDir)
+    panic(label + ": compileToMsil (producer) returned false")
+  }
+  match loadRestoredPackage(libDllPath) {
+    case Err(e) -> {
+      cleanup(libDir)
+      panic(label + ": loadRestoredPackage failed: " + errorMessage(e))
+    }
+    case Ok(artifacts) -> {
+      if artifacts.count != 1 {
+        cleanup(libDir)
+        panic(label + ": expected exactly 1 restored artifact, got " + artifacts.count.toString())
+      }
+      val noPreamble: List[Meta.ContractDecl] = newList()
+      match synthesiseArtifact(artifacts[0], noPreamble) {
+        case Err(e) -> {
+          cleanup(libDir)
+          panic(label + ": synthesiseArtifact failed: " + errorMessage(e))
+        }
+        case Ok(art) -> art
+      }
+    }
+  }
+}
+
+test "dotnet: a restored artifact registered twice does not crash enum registration (#6638)" {
+  val art = buildDupRestoredArtifact("dupenum", dupEnumLibSource(), "DupEnumLib")
+  val appDir = freshTempDir("dupenum-app")
+  val appDllPath = Path.join(appDir, "DupEnumApp.dll")
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("DupEnumApp", dupEnumAppSource()))
+  val noStdlib: List[String] = newList()
+  val noFeatures: List[String] = newList()
+  val artifacts: List[SynthesisedArtifact] = newList()
+  artifacts.add(art)
+  artifacts.add(art) // the same artifact registered twice -- the crash trigger
+  val ok = compileProjectToMsilWithRestored(
+    packages,
+    "DupEnumApp",
+    appDllPath,
+    noStdlib,
+    noFeatures,
+    noFeatures,
+    artifacts
+  )
+  val libDir = Path.dirname(art.dllPath)
+  if not ok {
+    cleanup(appDir)
+    cleanup(libDir)
+    panic("dupenum: compileProjectToMsilWithRestored (consumer) returned false")
+  }
+  copyFileDup(art.dllPath, Path.join(appDir, Path.basename(art.dllPath)))
+  writeRuntimeConfig(appDllPath)
+  val args: List[String] = newList()
+  args.add("exec")
+  args.add(appDllPath)
+  val result = Capture.runCaptureWithDiagnostics("dotnet", args, "")
+  cleanup(appDir)
+  cleanup(libDir)
+  assertEqualInt(result.exitCode, 0, "dupenum: exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "Dark", "dupenum: duplicate-registered enum still resolves the right ordinal")
+}
+
+func copyFileDup(src: in String, dest: in String): Unit {
+  match File.readBytes(src) {
+    case Ok(bs) -> {
+      val _ = File.writeBytes(dest, bs)
+    }
+    case Err(_) -> ()
+  }
+}
+
+// ─── #6639: sibling same-package enums colliding on a package-qualified case ─
+// `Beam` and `Ray`, both declared in package `SiblingEnums`, both declare a
+// case named `On` with DIFFERENT ordinals (`Beam.On` is 1, `Ray.On` is 0) so
+// a misrouted ordinal produces an observably WRONG label instead of a
+// coincidentally-correct one. Each is constructed via its own internal
+// factory function (collision-free), then pattern-matched via the
+// package-qualified `case SiblingEnums.On ->` form — the CONVENTIONAL way
+// Lyric references an enum case (see `registerEnumDeclMsil`'s `qn` comment)
+// — for BOTH cases of BOTH enums, so a misrouted ordinal routes to the WRONG
+// arm within an otherwise-exhaustive match rather than falling off the end.
+// Before the fix, the package-qualified pattern branch resolved through a
+// single package-scoped bare key (`pkgName + "." + caseName`, no type name),
+// so whichever enum registered `On` FIRST silently won every
+// package-qualified pattern test against EITHER enum.
+func siblingEnumsSource(): String {
+  "package SiblingEnums\n" + "\n" + "pub enum Beam {\n" + "  case Off\n" + "  case On\n" + "}\n" + "\n" +
+    "pub enum Ray {\n" +
+    "  case On\n" +
+    "  case Idle\n" +
+    "}\n" +
+    "\n" +
+    "pub func makeBeamOn(): Beam {\n" +
+    "  On\n" +
+    "}\n" +
+    "\n" +
+    "pub func makeRayOn(): Ray {\n" +
+    "  On\n" +
+    "}\n"
+}
+
+func siblingEnumsAppSource(): String {
+  "package SiblingEnumsApp\n" + "\n" + "import SiblingEnums\n" + "\n" + "func main(): Int {\n" +
+    "  val beam: SiblingEnums.Beam = SiblingEnums.makeBeamOn()\n" +
+    "  val ray: SiblingEnums.Ray = SiblingEnums.makeRayOn()\n" +
+    "  match beam {\n" +
+    "    case SiblingEnums.On -> println(\"beam-on\")\n" +
+    "    case SiblingEnums.Off -> println(\"beam-off\")\n" +
+    "  }\n" +
+    "  match ray {\n" +
+    "    case SiblingEnums.On -> println(\"ray-on\")\n" +
+    "    case SiblingEnums.Idle -> println(\"ray-idle\")\n" +
+    "  }\n" +
+    "  0\n" +
+    "}\n"
+}
+
+func expectedSiblingEnumsStdout(): String {
+  "beam-on\nray-on"
+}
+
+test "dotnet: package-qualified pattern match resolves the right ordinal for sibling same-package enums (#6639)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("SiblingEnums", siblingEnumsSource()))
+  packages.add(mkPkg("SiblingEnumsApp", siblingEnumsAppSource()))
+  val result = compileAndRunMsil("siblingenums-dotnet", packages, "SiblingEnumsApp")
+  assertEqualInt(result.exitCode, 0, "sibling_enums dotnet: exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    expectedSiblingEnumsStdout(),
+    "sibling_enums dotnet: package-qualified `On` resolves to each enum's OWN ordinal, not whichever registered first"
   )
 }

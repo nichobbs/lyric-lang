@@ -2351,7 +2351,21 @@ pub func registerEnumDeclMsil(cctx: in CodegenCtx, pkgName: in String, decl: in 
     if not already {
       declarers.add(pkgName)
     }
-    cctx.enumCaseOrdinalsByPkgType.add(pkgName + "::" + tn, ei)
+    // #6638: guard against a re-visit of the SAME (package, enum) pair — e.g.
+    // a restored artifact resolved twice into `cctx.restoredArtifacts` (a
+    // diamond `[dependencies] path` graph the resolver didn't collapse) feeds
+    // `registerRestoredMembers` the identical `SynthesisedArtifact` twice, so
+    // `registerEnumDeclMsil` runs twice for the same `pkgName`/`decl`. `Map.add`
+    // throws `ArgumentException` on a duplicate key, so an unguarded `.add`
+    // here crashed the compiler outright on the SECOND registration instead
+    // of no-oping — the re-visit computes the identical ordinal (same `decl`,
+    // same case index), so first-wins is not just safe but a pure no-op,
+    // exactly like every other write in this function (`already` above,
+    // `enumTypeNames`/`enumCaseOrdinals` guards).
+    val pkgTypeKey = pkgName + "::" + tn
+    if not cctx.enumCaseOrdinalsByPkgType.containsKey(pkgTypeKey) {
+      cctx.enumCaseOrdinalsByPkgType.add(pkgTypeKey, ei)
+    }
     ei = ei + 1
   }
 }
@@ -12411,7 +12425,30 @@ func lowerPatternTestMsil(
           pqi = pqi + 1
         }
         val pkgQualified = joinSegsMsil(pkgSegs, ".")
-        match mapGet(cctx.enumCaseOrdinals, pkgQualified + "." + caseName) {
+        // #6639: the bare `pkgQualified + "." + caseName` key below is
+        // package-scoped only (no enum TYPE name), so it collides —
+        // first-registered-wins — when the SAME package declares two
+        // DIFFERENT enums that share a case name (e.g. `package Foo`
+        // declaring both `enum A { case X }` and `enum B { case X }`):
+        // whichever enum registered `X` first would silently win every
+        // package-qualified `case Foo.X ->` test, regardless of which enum
+        // the scrutinee actually is. When the scrutinee's own declared enum
+        // type is known (`scrutEnumHint`, #5995), prefer the type-scoped
+        // ordinal via `resolveEnumCaseOrdinalByScope` — the SAME
+        // already-correct disambiguation the `enumPenult`-is-a-known-type
+        // branch above and the bare `case X ->` PBinding arm earlier in this
+        // function already use — falling back to the ambiguous bare key
+        // only when the hint is empty or doesn't resolve.
+        val hintedPkgOrd = if scrutEnumHint.length > 0 {
+          resolveEnumCaseOrdinalByScope(cctx, fctx, scrutEnumHint, caseName)
+        } else {
+          None
+        }
+        val pkgOrd = match hintedPkgOrd {
+          case Some(o) -> Some(value = o)
+          case None -> mapGet(cctx.enumCaseOrdinals, pkgQualified + "." + caseName)
+        }
+        match pkgOrd {
           case Some(ordv) -> {
             emitLoadSlot(insns, scrutSlot, fctx.paramCount)
             match scrutTy {
