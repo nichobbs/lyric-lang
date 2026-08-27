@@ -206,6 +206,71 @@ test "single-file dotnet build routed through the project path (nearby [features
   )
 }
 
+// #6643: a project-build package that PARSES cleanly but fails type-check
+// (an unknown-name reference, so the T0020 diagnostic comes from
+// `Lyric.TypeChecker.checkFile` via `pipeCheckAndMono`, not from
+// `pipeParseAndErase`) must still name the real on-disk source path when the
+// package resolves to exactly one file — matching the #6610 parse-phase
+// case above exactly. Before this fix, `ParsedUserPkg` carried the parsed
+// `SourceFile` forward from Phase 1a but dropped the resolved `pkgLabel`
+// (the real path or, for multi-file packages, the package name) on the
+// floor, so the type-check phase's `MiddleEndOptions` fell back to the bare
+// package name (`pp.name`) unconditionally — even when the real path WAS
+// available and the parse phase, moments earlier, had already used it.
+test "single-file dotnet build routed through the project path (nearby [features]-only manifest): a type error still names the real source path" {
+  val dir = freshTempDir("routed-tc")
+  defer {
+    cleanup(dir)
+  }
+  val srcPath = Path.join(dir, "bad_tc.l")
+  // Parses cleanly; `totallyUnknownFunctionName` triggers T0020 from the
+  // type checker, not a parse-phase diagnostic.
+  val src = "package RoutedBadTc\n" + "import Std.Core\n" + "\n" + "func main(): Unit {\n" +
+    "  val x = totallyUnknownFunctionName()\n" +
+    "}\n"
+  match File.writeText(srcPath, src) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write fixture: " + IOError.message(e))
+  }
+  val manifest = "[package]\n" + "name = \"RoutedBadTc\"\n" + "version = \"0.0.1\"\n" + "\n" + "[features]\n" +
+    "demo = []\n"
+  val mfPath = Path.join(dir, "lyric.toml")
+  match File.writeText(mfPath, manifest) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write lyric.toml: " + IOError.message(e))
+  }
+  val outPath = Path.join(dir, "bad_tc.dll")
+  val args: List[String] = newList()
+  args.add("build")
+  args.add(srcPath)
+  args.add("--target")
+  args.add("dotnet")
+  args.add("-o")
+  args.add(outPath)
+  // Deliberately no `--manifest` flag: the manifest must be auto-discovered
+  // from `srcPath`'s own directory, matching #6610's routing shape.
+  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  assertTrue(result.exitCode != 0, "an unknown-name reference must fail the build")
+  assertTrue(
+    Str.contains(result.stderr, "T0020"),
+    "expected a T0020 unknown-name diagnostic (type-check phase, not parse) in stderr, got:\n" + result.stderr
+  )
+  // A bare `Str.contains(result.stderr, srcPath)` is NOT discriminating here:
+  // `cli_build.l` always appends a trailing "<srcPath>: build failed" summary
+  // line regardless of how the inner diagnostic itself was labelled, so that
+  // weaker assertion would pass even against the pre-fix `pp.name` label.
+  // Anchor on the diagnostic's own label prefix (`<label>: error[T0020] …`,
+  // `Lyric.DiagnosticUtil.diagReportAndAbortInPkg`'s format) so this only
+  // passes when the T0020 line ITSELF carries the real path, not just stderr
+  // as a whole.
+  assertTrue(
+    Str.contains(result.stderr, srcPath + ": error[T0020]"),
+    "expected the T0020 diagnostic line itself to be labelled with the real source path '" + srcPath +
+      "' (not the bare package name) for a TYPE-CHECK-phase diagnostic on a project-routed single-file build (#6643), got:\n" +
+      result.stderr
+  )
+}
+
 // #6282 regression coverage: a multi-file [project.packages] entry whose
 // SECOND file carries the error. This asserts the improvement this fix
 // actually ships (parse-phase diagnostics for a project package are now

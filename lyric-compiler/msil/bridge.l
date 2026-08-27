@@ -412,10 +412,17 @@ pub record ProjectPackagePayload {
 /// pre-parse pass.  Holds the post-parse + cfg-erase + alias-rewrite
 /// `SourceFile` alongside the dotted package name so the second-pass
 /// typecheck loop can index the bundle and build per-package imported-item
-/// lists without re-parsing.
+/// lists without re-parsing.  `label` carries the SAME resolved diagnostic
+/// label the parse phase already computed (#6643): the real on-disk source
+/// path when the caller supplied one, else `name` — so the type-check phase
+/// (and any later phase) attributes its diagnostics identically to the parse
+/// phase instead of re-deriving the label from a separate `paths`/`packages`
+/// index lookup (which risks index drift once packages are filtered,
+/// reordered, or expanded).
 record ParsedUserPkg {
   name: String
   file: SourceFile
+  label: String
 }
 
 /// Compile a list of packages into ONE bundled .NET PE DLL using the
@@ -719,7 +726,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       case Some(f) -> f
       case None -> return false
     }
-    parsedPkgs.add(ParsedUserPkg(name = pkg.name, file = erased))
+    parsedPkgs.add(ParsedUserPkg(name = pkg.name, file = erased, label = pkgLabel))
     pi = pi + 1
   }
 
@@ -775,7 +782,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // After template expansion, matching the JVM bridge — see the
     // single-file pipeline's placement comment.
     val rewritten = resolveTypeAliasesMsil(rewritten0)
-    parsedPkgs[wei] = ParsedUserPkg(name = wep.name, file = rewritten)
+    parsedPkgs[wei] = ParsedUserPkg(name = wep.name, file = rewritten, label = wep.label)
     wei = wei + 1
   }
 
@@ -959,9 +966,14 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
 
     // Middle end through mono (`Lyric.Pipeline` owns the order); the
     // weave runs in Phase 3 below, after aspect templates are collected
-    // from every package's post-mono file.  Diagnostics are labelled
-    // with the owning package name.
-    val projOpts = MiddleEndOptions(tcFatal = true, tcReport = false, pkgLabel = pp.name)
+    // from every package's post-mono file.  Diagnostics are labelled with
+    // `pp.label` (#6643) — the SAME real-on-disk-path-or-package-name
+    // label the parse phase above already resolved, carried on
+    // `ParsedUserPkg` rather than re-derived, so a type-checker diagnostic
+    // (e.g. an unknown-name reference) names the real file exactly like a
+    // parse-phase diagnostic for the same single-file project package
+    // does, instead of falling back to the bare package name.
+    val projOpts = MiddleEndOptions(tcFatal = true, tcReport = false, pkgLabel = pp.label)
     val monoFile = match pipeCheckAndMono(pp.file, importedPkgs, flattenImportedItems(importedPkgs), allImportedGenFuncs, allImportedIfaceDecls, allImportedRecordDecls, projOpts) {
       case Some(f) -> f
       case None -> return false
