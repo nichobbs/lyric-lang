@@ -31531,3 +31531,117 @@ assertion used `env -i PATH=/usr/bin:/bin`, and GitHub's runner image ships
 `/usr/bin/java` — so a fallback launcher would have found a JVM and the check
 would have passed vacuously, defeating the one assertion meant to prove
 `--no-fallback` held (caught in review, #6260).
+
+---
+
+### D-progress-784 — `lyric test`'s single-file path gains manifest dependency resolution (#5341, D123 follow-up); `--properties` runs auto-derived Int/Bool/Double property tests for real (#677); CLI-integration regression tests for the broken-manifest warning path (#5860)
+
+**#5341 — shipped.** `lyric test <source.l>`'s single-file build step
+called `Emitter.emit` directly, bypassing the manifest-driven dependency
+resolution `buildOneNative`/`emitSingleFileOrProject` gave `lyric build`/
+`lyric run` in D123 (D-progress-610). A loose `@test_module` file sitting
+next to a `lyric.toml` with real dependencies could not import them.
+`cli_test.l`'s plain (non-compiler-DLL-linked, non-native) emit path now
+routes the already-test-synthesised source through a new
+`emitTestPlainOrProject` helper that calls the same `emitSingleFileOrProject`
+`lyric build` uses — auto-discovering the nearest manifest from the source
+file's own directory, resolving workspace/path/`[nuget]`/`[maven]`
+dependencies and `[features]`, and colocating the resolved dependency DLLs
+beside the compiled test binary on `--target dotnet`. Composes correctly
+with the pre-existing `#2364` compiler-DLL-linking path (`emitTestLinked`,
+used only when the test imports `Lyric.*` compiler packages) and the
+native path (`emitTestNative`), both left untouched since neither has a
+manifest-aware routing concern. An unbuilt/undeclared local dependency
+fails the test run loudly, matching `lyric build`'s conservative
+never-implicitly-restore contract. Verified end-to-end on both
+`--target dotnet` and `--target jvm` (the JVM backend bundles the
+dependency's own source into the compiled JAR rather than reading
+`restoredDllPaths` at all — the pre-existing, tracked-separately #3094 gap
+this issue's cross-reference explicitly scoped out).
+
+**#5860 — shipped.** Neither the bare `lyric` dispatch's
+`FoundBrokenManifest`/`NoManifestFound` arms (`cli_main.l`) nor `cmdTest`'s
+auto-discovery arms of the same shape (`cli_test.l`) had a direct
+regression test — only the lower-level `Disc.findNearestManifestDetailed`
+primitive was tested. Both call sites are hardcoded to
+`Environment.currentDirectory()`, so a test could not previously redirect
+discovery at a fixture directory, and `printErr`/`printUsage` write
+straight to `Std.Console` with no capture facility to assert exact printed
+text against. Rather than leaving this undone, both files gained a small,
+genuinely useful refactor: `resolveBareDispatch(startDir)` /
+`resolveTestAutoDiscovery(startDir)` take the start directory as an
+explicit parameter (mirroring why `buildOneNative` is `pub`, #4127) and
+return a `BareDispatchResult` / `TestAutoDiscoveryResult` record carrying
+the exact `exitCode` and the warning/message text `printErr` was just
+called with — the real print calls still happen (production behavior is
+byte-for-byte unchanged), but the returned value lets a test assert on the
+exact text without a capture facility. Each file's two "no usable
+manifest" arms now share ONE print-and-return implementation
+(`reportNoUsableManifestForBare` / `reportTestAutoDiscoveryFailure`), so a
+future edit cannot silently drop `printUsage()` (`cli_main.l`) or the
+"missing source file" message (`cli_test.l`) from just one of the two arms
+— the exact risk the issue flagged, now closed structurally rather than
+only by a test. 6 new cases added to `cli_shared_self_test.l`, replacing
+the file's prior "investigated, documented as blocked" comment.
+
+**#677 — shipped (v1.x slice).** `Lyric.TestSynth` gained
+`synthesizeWithProperties` (an additive entry point alongside the
+`@stable` `synthesize`, which is unchanged and still unconditionally skips
+every property): when every `forall` binder on a `property` declaration is
+`Int`, `Bool`, or `Double`, `tryBuildPropertyDriver` synthesises a real
+sampling-and-shrinking harness — 100 samples from a per-property-seeded
+`Std.Random`, a `where` guard evaluated fresh per sample (a guard failure
+skips the sample rather than counting as pass/fail), and on the first
+failing sample a greedy per-binder shrink search (holding every other
+binder fixed at its last-known-failing value) converging toward the
+simplest failing input before `panic`-ing with all binders' final shrunk
+values in the failure message. The shrink algorithm is the same
+first-smaller-failure-wins fixed point `shrinkToFixedPoint` /
+`forAllIntPair`'s `shrinkPairLeft`/`shrinkPairRight` already use in
+`testing_property.l`, reimplemented unrolled-per-binder-arity at synthesis
+time since there is no variadic-generic way to call the stdlib's
+single-`T` shrink helpers once for an N-ary property. A property with any
+other binder type (a record, union, opaque type, `String`, …) still
+reports `# skip` naming the unsupported type, exactly as v1 did
+unconditionally — auto-derived generators for non-primitive types,
+`--property-trials`, `--seed`, and `ensures:`-derived properties are
+explicitly NOT part of this slice (tracked as follow-up work; the
+worked-example `SortedSet[Int]` property style in
+`docs/02-worked-examples.md` §3 does not run under `--properties` yet).
+`lyric test --properties` (single-file, project-mode, and the
+`[project.tests]`-fallback scan path) and `lyric test --manifest
+… --properties` thread the flag through; it composes with `--filter`/
+`--fail-fast`/`--features`. Rejected outright on `--target native` (no
+exception unwinding to isolate a failing sample without aborting the whole
+binary — the same reason native has no per-test try/catch isolation,
+D-N-003). `Std.Random`/`Std.Testing.Property` are injected into the
+synthesised source only when at least one property actually gets a real
+driver, and only when the user hasn't already imported the path
+themselves (checked by exact `ModulePath` match, not text sniffing).
+
+**Verification.** `cli_test_self_test.l` (new) drives the real
+`Lyric.Cli.main([...])` entry point end-to-end for both #5341 (dependency
+resolves and runs; an unbuilt dependency fails loud; a manifest-less file
+is unaffected) and #677 (an always-failing property is skipped by default
+and fails under `--properties` with the correct shrunk counterexample in
+the panic message; an always-true property and a mixed Bool/Double
+property pass; a `where false` guard makes the body never run; a
+`forall`-less property still executes once; an unsupported `String`
+binder still skips under `--properties`; `--properties --target native`
+is rejected) — 10/10 passing. `test_synth_self_test.l` (10 cases,
+unchanged) confirms `synthesize`'s stable skip-only behavior is
+byte-for-byte unaffected. `cli_shared_self_test.l` grew from 25 to 31
+cases (the 6 new #5860 cases). `cli_build_self_test.l` (81 cases) and the
+full existing self-test suite pass unchanged. Manual end-to-end
+verification additionally covered a fresh two-package workspace fixture
+on both `--target dotnet` and `--target jvm`.
+
+**Docs:** `docs/01-language-reference.md` §13.2 (single-file dependency
+resolution for `lyric test`, `--properties`, and the now-accurate feature-
+selection note), `docs/24-test-runner-plan.md` §1.2/§5/§6 (Stage 3 marked
+partially shipped, T0904 updated), `book/chapters/15-testing.md` §15.5
+(scoped status note distinguishing the shipped v1.x slice from the
+aspirational rest of the section) and `appendix-b-quick-reference.md`
+(`--properties` flag, corrected `lyric test --manifest` v2 note).
+
+**Related:** D123, D-progress-610, #5341, #5860, #677.

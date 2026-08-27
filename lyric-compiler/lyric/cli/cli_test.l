@@ -45,19 +45,41 @@ func firstPackageNameOf(src: in String): String {
   ""
 }
 
-// Emit a single-file `@test_module` plainly (no compiler-DLL linking).
-func emitTestPlain(rewritten: in String, stem: in String, outPath: in String, targetJvm: in Bool): EmitResult {
+// Emit a single-file `@test_module` (no compiler-DLL linking), routed
+// through the same manifest-aware single-file pipeline `lyric build`/`lyric
+// run` use (D123, #5341): when `sourcePath` sits near a `lyric.toml` that
+// actually contributes dependencies/features/own-packages, `sourcePath`'s
+// enclosing project dependencies become visible to the (already test-
+// synthesised) `rewritten` source via a synthetic one-package
+// `EmitProjectRequest`, exactly like `emitSingleFileOrProject`. Falls back to
+// the historical plain `Emitter.emit` byte-for-byte identical output when
+// there is no contribution (the common case: a loose test file with no
+// nearby manifest, or a manifest that declares nothing dependency-relevant).
+// No explicit `--manifest` override: `cmdTest` routes an explicit
+// `--manifest` to `cmdTestManifest` (the whole-project test-suite runner)
+// before reaching this single-file path at all, so manifest discovery here
+// is always the auto-discovered form (walking up from `sourcePath`).
+func emitTestPlainOrProject(
+  rewritten: in String,
+  sourcePath: in String,
+  stem: in String,
+  outPath: in String,
+  targetJvm: in Bool,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
+): NonNativeEmitOutcome {
   val tgt = if targetJvm { Jvm } else { Dotnet }
-  Emitter.emit(
-    EmitRequest(
-      source = rewritten,
-      assemblyName = stem,
-      outputPath = outPath,
-      target = tgt,
-      packageVersion = "",
-      defines = newList()
-    )
+  val req = EmitRequest(
+    source = rewritten,
+    assemblyName = stem,
+    outputPath = outPath,
+    target = tgt,
+    packageVersion = "",
+    defines = newList()
   )
+  val noManifestOverride: Option[String] = None
+  emitSingleFileOrProject(req, sourcePath, noManifestOverride, cliFeatures, noDefaultFeatures, allFeatures)
 }
 
 // Emit a single-file `@test_module` as a self-contained native (LLVM)
@@ -120,6 +142,57 @@ func emitTestLinked(
   )
 }
 
+// #5860: the result of `cmdTest`'s auto-discovery "no usable manifest"
+// arms (`FoundBrokenManifest`/`NoManifestFound`), returned as data so a
+// test can assert on the exact warning/message text without a
+// stdout/stderr capture facility (`Lyric.Cli` has none). `warningPrinted`
+// and `missingFileMessage` mirror — not replace — the real `printErr`
+// calls `reportTestAutoDiscoveryFailure` makes below.
+pub record TestAutoDiscoveryResult {
+  exitCode: Int
+  warningPrinted: Option[String]
+  missingFileMessage: String
+}
+
+// Shared print-and-exit behavior for `FoundBrokenManifest`/`NoManifestFound`:
+// a single implementation means both arms print the fixed "missing source
+// file" message identically, and the broken-manifest arm additionally
+// prints its warning FIRST — a future edit cannot silently drop either half
+// from just one arm (#5860).
+func reportTestAutoDiscoveryFailure(warning: in Option[String]): TestAutoDiscoveryResult {
+  match warning {
+    case Some(w) -> printErr(w)
+    case None -> ()
+  }
+  val msg = "test: missing source file and no lyric.toml found"
+  printErr(msg)
+  TestAutoDiscoveryResult(exitCode = 1, warningPrinted = warning, missingFileMessage = msg)
+}
+
+pub union TestBareDispatchOutcome {
+  case TestShouldRunManifest(manifestPath: String)
+  case TestReported(outcome: TestAutoDiscoveryResult)
+}
+
+// `cmdTest`'s auto-discovery decision, with `startDir` injectable (rather
+// than hardcoded to `Environment.currentDirectory()`) so a self-test can
+// drive it against a fixture directory in-process (#5860; `pub` for the
+// same reason `buildOneNative` is — see its doc comment, #4127).
+pub func resolveTestAutoDiscovery(startDir: in String): TestBareDispatchOutcome {
+  match Disc.findNearestManifestDetailed(startDir) {
+    case FoundManifest(p) -> TestShouldRunManifest(manifestPath = p)
+    case FoundBrokenManifest(p, error) -> {
+      val warningText = Disc.brokenManifestWarning(p, error)
+      val dispatchResult = reportTestAutoDiscoveryFailure(Some(value = warningText))
+      TestReported(outcome = dispatchResult)
+    }
+    case NoManifestFound -> {
+      val dispatchResult = reportTestAutoDiscoveryFailure(None)
+      TestReported(outcome = dispatchResult)
+    }
+  }
+}
+
 func cmdTest(argv: in slice[String]): Int {
   var filterArg: Option[String] = None
   var manifestArg: Option[String] = None
@@ -127,6 +200,7 @@ func cmdTest(argv: in slice[String]): Int {
   var targetJvm = false
   var targetNative = false
   var failFast = false
+  var runProperties = false
   var noDefaultFeatures = false
   var allFeatures = false
   val cliFeatures: List[String] = newList()
@@ -201,6 +275,9 @@ func cmdTest(argv: in slice[String]): Int {
     } else if arg == "--fail-fast" {
       failFast = true
       i += 1
+    } else if arg == "--properties" {
+      runProperties = true
+      i += 1
     } else {
       positional.add(arg)
       i += 1
@@ -233,10 +310,22 @@ func cmdTest(argv: in slice[String]): Int {
       }
       case None -> ()
     }
+    // #677: native has no exception unwinding (D-N-003), so a failing
+    // sample cannot be isolated without aborting the whole binary — the
+    // per-sample try/catch the sampling-and-shrinking harness relies on
+    // is structurally unavailable.  Reject loudly rather than silently
+    // falling back to "parses but skips" under a flag whose whole point
+    // is to make properties run.
+    if runProperties {
+      printErr(
+        "test: --properties is not supported with --target native (no exception unwinding to isolate a failing sample)"
+      )
+      return 1
+    }
   }
 
   match manifestArg {
-    case Some(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast, cliFeatures, noDefaultFeatures, allFeatures)
+    case Some(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast, runProperties, cliFeatures, noDefaultFeatures, allFeatures)
     case None -> ()
   }
 
@@ -246,17 +335,9 @@ func cmdTest(argv: in slice[String]): Int {
       printErr("test: --target native requires an explicit source file (auto-discovered manifests are not yet supported)")
       return 1
     }
-    match Disc.findNearestManifestDetailed(Environment.currentDirectory()) {
-      case FoundManifest(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast, cliFeatures, noDefaultFeatures, allFeatures)
-      case FoundBrokenManifest(p, error) -> {
-        printErr(Disc.brokenManifestWarning(p, error))
-        printErr("test: missing source file and no lyric.toml found")
-        return 1
-      }
-      case NoManifestFound -> {
-        printErr("test: missing source file and no lyric.toml found")
-        return 1
-      }
+    match resolveTestAutoDiscovery(Environment.currentDirectory()) {
+      case TestShouldRunManifest(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast, runProperties, cliFeatures, noDefaultFeatures, allFeatures)
+      case TestReported(outcome) -> return outcome.exitCode
     }
   }
 
@@ -299,6 +380,8 @@ func cmdTest(argv: in slice[String]): Int {
 
   val synthResult = if targetNative {
     TestSynth.synthesizeNative(source, filterArg)
+  } else if runProperties {
+    TestSynth.synthesizeWithProperties(source, filterArg)
   } else {
     TestSynth.synthesize(source, filterArg)
   }
@@ -340,12 +423,28 @@ func cmdTest(argv: in slice[String]): Int {
       } else {
         Emitter.compilerClosureDllPaths(rewritten, testLibDir)
       }
+      var manifestRestoredDlls: List[String] = newList()
+      var manifestNugetPaths: List[String] = newList()
+      var manifestNativePaths: List[String] = newList()
       val result = if targetNative {
         emitTestNative(rewritten, stem, outPath)
       } else if compilerDlls.count > 0 {
         emitTestLinked(rewritten, stem, outPath, compilerDlls)
       } else {
-        emitTestPlain(rewritten, stem, outPath, targetJvm)
+        val outcome = emitTestPlainOrProject(
+          rewritten,
+          sourcePath,
+          stem,
+          outPath,
+          targetJvm,
+          cliFeatures,
+          noDefaultFeatures,
+          allFeatures
+        )
+        manifestRestoredDlls = outcome.restoredDlls
+        manifestNugetPaths = outcome.nugetThirdPartyPaths
+        manifestNativePaths = outcome.nativeAssetPaths
+        outcome.emitResult
       }
       var hadError = false
       for d in result.diagnostics.toArray() {
@@ -467,6 +566,16 @@ func cmdTest(argv: in slice[String]): Int {
       if compilerDlls.count > 0 {
         copyRestoredDepDlls(outPath, compilerDlls)
       }
+      // #5341: co-locate whatever `emitTestPlainOrProject` resolved from a
+      // nearby manifest (workspace/path-dependency DLLs, third-party NuGet
+      // assemblies, NuGet native runtime assets) — a flat probing path can't
+      // resolve any of these non-NuGet-structured layouts, matching
+      // `buildOneNativeWithFeatures`'s Dotnet colocation for `lyric build`.
+      // No-ops (empty lists) when the single-file test had no manifest
+      // contribution, which is the common case.
+      copyRestoredDepDlls(outPath, manifestRestoredDlls)
+      copyNugetAssembliesBeside(outPath, manifestNugetPaths)
+      copyNugetNativeAssetsBeside(outPath, manifestNativePaths)
       writeRuntimeConfig(outPath)
 
       val execArgs: List[String] = newList()
@@ -528,6 +637,7 @@ func cmdTestManifest(
   filterArg: in Option[String],
   targetJvm: in Bool,
   failFast: in Bool,
+  runProperties: in Bool,
   cliFeatures: in List[String],
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
@@ -635,6 +745,9 @@ func cmdTestManifest(
       if targetJvm {
         testArgv.add("--target")
         testArgv.add("jvm")
+      }
+      if runProperties {
+        testArgv.add("--properties")
       }
       val rc = cmdTest(testArgv.toArray())
       if rc != 0 {
@@ -1175,7 +1288,12 @@ func cmdTestManifest(
 
     var synthFailed = false
     var rewritten = ""
-    match TestSynth.synthesize(testSource, filterArg) {
+    val testSynthResult = if runProperties {
+      TestSynth.synthesizeWithProperties(testSource, filterArg)
+    } else {
+      TestSynth.synthesize(testSource, filterArg)
+    }
+    match testSynthResult {
       case Synthesised(rw, _, _) -> {
         rewritten = rw
       }

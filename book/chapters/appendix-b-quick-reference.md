@@ -1032,12 +1032,23 @@ lyric test <file.l> --target native    # compile via the LLVM backend and run th
                                        # directly (single-file only; no try/catch isolation
                                        # per test — a failing assertion aborts the process,
                                        # D-N-003/D-N-018)
+lyric test <file.l> --properties       # also run `property` declarations (#677): auto-derived
+                                       # sampling + shrinking for Int/Bool/Double forall binders;
+                                       # any other binder type still reports `# skip`. Rejected
+                                       # on --target native (no unwinding to isolate a sample).
+lyric test <file.l>                    # a loose test file next to a lyric.toml also resolves
+                                       # that manifest's dependencies (D123/#5341), exactly like
+                                       # `lyric build`/`lyric run` — an unbuilt dependency fails
+                                       # the run rather than silently compiling without it
 lyric test                             # project mode: run every [project.tests] entry;
                                        # falls back to scanning [project.packages] for
                                        # @test_module files when [project.tests] is empty
 lyric test --fail-fast                 # project mode: stop after first failing test entry
+lyric test --properties                # project mode: also run `property` declarations in
+                                       # every test entry (composes with --fail-fast/--filter)
 lyric test --manifest <lyric.toml>     # project mode: override manifest discovery
-                                       # (v2: --doctests, --update-snapshots, property execution)
+                                       # (v2: --doctests, --update-snapshots, cross-package
+                                       # non-pub access)
 lyric test --features a,b              # project mode: activate manifest [features]
                                        # (same grammar/precedence as lyric build)
 lyric test --no-default-features       # suppress the manifest's default feature set
