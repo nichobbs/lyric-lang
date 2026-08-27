@@ -30,10 +30,20 @@ package Lyric.MsilCodegenDiagSelfTest
 import Std.Core
 import Std.Collections
 import Std.Testing
+import Std.Environment as Environment
 import Msil.Bridge
 
 func mkPkg(name: in String, source: in String): ProjectPackagePayload {
   ProjectPackagePayload(name = name, source = source)
+}
+
+// Mirrors `msil_project_bridge_self_test.l`'s `tempBase()` — honour
+// $TMPDIR/$TEMP/$TMP before falling back to /tmp, per scripts/bootstrap.sh's
+// own convention, so a sandbox with a read-only /tmp doesn't fail these
+// "good" cases on a spurious disk-write error instead of the diagnostic
+// logic under test.
+func tempBase(): String {
+  Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
 }
 
 // Compiles `source` as a single-package project bundle to a throwaway
@@ -49,7 +59,7 @@ func compiles(label: in String, source: in String): Bool {
   compileProjectToMsilWithFeatures(
     pkgs,
     label,
-    "/tmp/lyric-msil-codegen-diag-" + label + ".dll",
+    tempBase() + "/lyric-msil-codegen-diag-" + label + ".dll",
     stdlibSources,
     empty,
     empty
