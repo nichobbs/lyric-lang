@@ -143,7 +143,7 @@ pub func netOpenChannel(address: in String): Result[GrpcChannel, String] {
     val ch = grpcChannelForAddress(address)
     val id = nextChannelHandleId()
     val _ = channelDictTryAdd(channelRegistry, id, ch)
-    Ok(Types.wrapChannelHandle(id))
+    Std.Core.Ok(Types.wrapChannelHandle(id))
   } catch Bug as b {
     Err(b.message)
   }
