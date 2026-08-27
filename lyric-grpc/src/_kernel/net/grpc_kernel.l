@@ -68,9 +68,6 @@ extern type NetGrpcChannelDict = "System.Collections.Concurrent.ConcurrentDictio
 @externTarget("System.Collections.Concurrent.ConcurrentDictionary`2..ctor")
 func newChannelDict(): NetGrpcChannelDict = ()
 
-@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.TryGetValue")
-func channelDictTryGetValue(dict: in NetGrpcChannelDict, key: in Int, value: out NetGrpcChannel): Bool = ()
-
 @externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.TryAdd")
 func channelDictTryAdd(dict: in NetGrpcChannelDict, key: in Int, value: in NetGrpcChannel): Bool = ()
 
@@ -147,13 +144,18 @@ pub func netOpenChannel(address: in String): Result[GrpcChannel, String] {
 /// registry lookup simply misses) rather than a panic — mirrors the
 /// `lyric-mq`/`lyric-ws` handle-registry kernels' behavior for the same
 /// int-keyed-registry idiom.
+///
+/// Pops the entry via `TryRemove` before disposing, rather than
+/// `TryGetValue` then dispose then `TryRemove`: the get-then-dispose-then-
+/// remove order left a window where two threads racing to close the same
+/// handle could both pass the `TryGetValue` check and both call `Dispose`
+/// on the same `NetGrpcChannel`. `TryRemove` atomically claims the entry,
+/// so only one of the two ever proceeds to `Dispose`.
 pub func netCloseChannel(channel: in GrpcChannel): Unit {
   val id = Types.channelHandleId(channel)
   var ch: NetGrpcChannel = default()
-  if channelDictTryGetValue(channelRegistry, id, ch) {
+  if channelDictTryRemove(channelRegistry, id, ch) {
     grpcChannelDispose(ch)
-    var removed: NetGrpcChannel = default()
-    val _ = channelDictTryRemove(channelRegistry, id, removed)
   }
 }
 
