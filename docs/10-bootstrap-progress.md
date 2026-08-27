@@ -32340,3 +32340,56 @@ target, unaffected by this JVM-only change) `list_value_compare_self_test.l`,
 no regressions.
 
 **Related:** `docs/44-jvm-production-readiness-plan.md` m-97.
+
+### D-progress-806 — JVM: restored-dependency pipeline for cross-package generic records/unions (#3094, JVM counterpart of #1496/D097)
+
+`Jvm.Bridge` gains a restored-dependency pipeline: `compileToJarBundledWithRestored`
+/ `compileProjectToJarBundledWithRestored` accept a list of pre-loaded
+`Lyric.RestoredPackages.SynthesisedArtifact`s and register each one's
+records/unions/functions into the same `collectFileSigsSeeded` /
+`collectFileCasesExtern` / `collectFileCtors` / `collectFileProjectables` calls
+a stdlib file gets, without adding it to `stdlibFiles`/`toBundle` (no codegen,
+no bytecode duplication — the classes already exist in the producer JAR).
+The existing `compileToJarBundledWithFeatures` / `compileProjectToJarBundledWithFeatures`
+names keep their old signatures as thin forwarders, so none of the 30+
+existing call sites (self-tests, `Lyric.Emitter`) needed touching.
+
+Two new pieces make the restored artifact loadable at all: `Jvm.Bridge` now
+embeds each compiled package's `Lyric.Contract.<Pkg>` JSON as a plain ZIP
+entry in the output JAR (the JVM analog of the MSIL bridge's `embedLyricContract`,
+which writes a PE ManifestResource row instead); and a new
+`Jvm.ContractMetaJar` package reads that entry back via the ZIP central
+directory (`Jvm.ZipReader`, shared with auto-FFI's JMOD/JAR reading) and
+hands off to `Lyric.RestoredPackages.synthesiseArtifact` — unchanged, and now
+shared between both backends via a new `loadRestoredPackageFromEntries` that
+factors the parse-and-validate core out of the PE-specific `loadRestoredPackage`.
+The producer JAR's path rides the consumer's manifest `Class-Path:` attribute
+(the same mechanism already used for Maven/`LYRIC_FFI_JARS` jars) so `java
+-jar` resolves the producer's classes at runtime. `Lyric.Emitter.emitProjectJvmInProcess`
+loads and synthesises `EmitProjectRequest.restoredDllPaths` before calling
+into the bridge, reusing the MSIL loop's `siblingTypeDecls` preamble helper
+unchanged.
+
+JVM's type-erasure model makes this substantially simpler than the MSIL fix:
+a generic record/union's fields already erase to `Object` uniformly, so none
+of D097's arity-suffixed-TypeRef / VAR-form-metadata-map machinery
+(`genericTypeArity`, `genericCtorParams`, `fieldSigBytes`, `fieldVarIndices`)
+has a JVM analog.
+
+Verified by `lyric-compiler/jvm/cross_package_generics_jvm_self_test.l` (the
+JVM analog of `Lyric.CrossPackageGenericsSelfTest`): generic record `Box[T]`
+(`Int` and `String` payloads), two-type-param `Pair[A, B]`, and generic union
+`Maybe[T]` (`Just`/`Nothing`, `Int` and `String` payloads), each building a
+real producer JAR via `Jvm.Bridge.compileToJarBundled` (through
+`Lyric.Emitter.emitProject`) and a consumer JAR that imports it as a restored
+dep, run under `java -jar`. `generic_jvm_self_test.l` (the in-bundle case)
+re-verified unaffected.
+
+See `docs/44-jvm-production-readiness-plan.md` finding m-100 for the full
+design and the explicitly-out-of-scope follow-up: `resolveManifestDependencies`
+/ `workspace_builder.l` still hardcode `.dll` output-assembly naming for
+path/workspace dependencies, and JVM manifest builds still consume those via
+source-bundling (`depTemplateSrcs`), not `restoredDllPaths` — full `lyric
+build --target jvm` / `lyric.toml` CLI wiring of a genuinely pre-compiled-only
+restored JVM dependency (e.g. a Maven-published lyric-jvm package with no
+local source) needs that target-aware artifact-naming/resolution work first.

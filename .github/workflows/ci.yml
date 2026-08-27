@@ -5417,6 +5417,26 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/record_method_jvm_self_test.l
 
+      # Cross-package generic records/unions self-test on JVM (#3094, the JVM
+      # counterpart of #1496/D097's MSIL fix — see `Lyric.CrossPackageGenericsSelfTest`).
+      # Builds a PRODUCER JAR (generic record / union) in-process via
+      # `Lyric.Emitter.emitProject` with `target = Jvm`, then compiles a
+      # CONSUMER that imports the producer as a restored dep
+      # (`EmitProjectRequest.restoredDllPaths`) and runs it under `java -jar`.
+      # Pins the new `Jvm.Bridge` restored-dependency pipeline: the producer
+      # JAR embeds its own `Lyric.Contract.<Pkg>` JSON as a ZIP entry,
+      # `Jvm.ContractMetaJar` reads it back, and the consumer's cross-package
+      # registries (erased `Object` fields — no MSIL-style arity-suffixed
+      # TypeRef needed) resolve construction/field-read/match against it.
+      # The outer test program itself runs on the default `--target dotnet`
+      # (like `jvm_cross_package_collision_self_test.l`); it builds and runs
+      # its own nested JVM programs via `java -jar`.  Uses `Lyric.Emitter`, so
+      # `LYRIC_LOAD_COMPILER=1` is needed.
+      - name: Cross-package generics self-test on JVM (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/jvm/cross_package_generics_jvm_self_test.l
+
       # Std.Http TLS client configuration test coverage on JVM (docs/61
       # §3.2 + §4, D128; phase 1.2, #5877) — the JVM half of the
       # dotnet-job step of the same name (stdlib-builds). Deterministic —

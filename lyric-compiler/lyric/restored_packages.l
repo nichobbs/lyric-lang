@@ -107,8 +107,26 @@ pub func loadRestoredPackage(dllPath: in String): Result[List[RestoredArtifact],
   }
 
   val entries = Meta.readAllContractsFromFile(dllPath)
+  loadRestoredPackageFromEntries(dllPath, entries)
+}
+
+/// Target-agnostic core of `loadRestoredPackage`: parse an already-obtained
+/// list of `Lyric.ContractMeta.ContractEntry`s (the embedded per-package
+/// contract JSON) into `RestoredArtifact`s.  `loadRestoredPackage` supplies
+/// `entries` via the PE/CLI metadata reader (`Meta.readAllContractsFromFile`,
+/// MSIL-only); a JVM restored dep reads its entries from a JAR's ZIP central
+/// directory instead (`Jvm.ContractMetaJar.readAllContractsFromJar`) and
+/// calls this function directly, so both backends share one parse-and-
+/// validate path instead of duplicating it (#3094).
+///
+/// `path` is carried into every `RestoredArtifact`/error purely as a label —
+/// a DLL path for the MSIL caller, a JAR path for the JVM caller.
+@stable(since = "0.1")
+pub func loadRestoredPackageFromEntries(
+  path: in String, entries: in List[Meta.ContractEntry]
+): Result[List[RestoredArtifact], RestoredLoadError] {
   if entries.count == 0 {
-    return Err(error = NoContractResource(path = dllPath))
+    return Err(error = NoContractResource(path = path))
   }
 
   val artifacts: List[RestoredArtifact] = newList()
@@ -116,7 +134,7 @@ pub func loadRestoredPackage(dllPath: in String): Result[List[RestoredArtifact],
   while i < entries.count {
     val e = entries[i]
     match Meta.parseFromJson(e.json) {
-      case None -> return Err(error = MalformedContract(path = dllPath, pkgKey = e.packageName))
+      case None -> return Err(error = MalformedContract(path = path, pkgKey = e.packageName))
       case Some(c) -> {
         // For the legacy single-package form the resource name's
         // package suffix is "" — recover the canonical package name
@@ -125,7 +143,7 @@ pub func loadRestoredPackage(dllPath: in String): Result[List[RestoredArtifact],
         // the contract's `packageName` should match; prefer the
         // contract's (it's the source of truth).
         val pkgName = if Str.isNotEmpty(c.packageName) { c.packageName } else { e.packageName }
-        artifacts.add(RestoredArtifact(packageName = pkgName, version = c.version, dllPath = dllPath, contract = c))
+        artifacts.add(RestoredArtifact(packageName = pkgName, version = c.version, dllPath = path, contract = c))
       }
     }
     i = i + 1

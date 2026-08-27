@@ -25,6 +25,22 @@ pub record BuildRequest {
   // destination path,   e.g. "/tmp/out/hello.jar"
   classpathJars: List[String] = []
   // absolute Maven/non-JDK JAR paths; see PackageMeta.classpathJars
+  // Embedded `Lyric.Contract.<Pkg>` ZIP entries (#3094), one per compiled
+  // package, so a downstream consumer can restore this JAR's public
+  // surface the same way a restored MSIL DLL's contract metadata is read
+  // back (`Jvm.ContractMetaJar.readAllContractsFromJar`).  Carried as two
+  // PARALLEL `List[String]`s (entry name, JSON text) rather than a
+  // `List[ZipEntry]`: passing a `List[T]` of a package-declared record
+  // type as a cross-package constructor argument hit a self-hosted-
+  // compiler bug (the ctor's compiled parameter type resolved to an
+  // unrelated same-named record from a different package — `Jvm.ZipReader.ZipEntry`
+  // instead of `Jvm.Zip.ZipEntry` — producing a runtime
+  // `MissingMethodException` regardless of how the call site qualified
+  // the type); two `List[String]` sidesteps it entirely, since
+  // `classpathJars` above already proves `List[String]` crosses this
+  // exact boundary correctly.
+  contractEntryNames: List[String] = []
+  contractEntryJson: List[String] = []
   // One compiled class file to include in the JAR.
 }
 
@@ -71,13 +87,21 @@ pub func writeJarFromClassesWithResources(
 
   val mfBytes = stringToUtf8Bytes(makeManifestMf(meta))
 
-  val jarEntries: List[ZipEntry] = newList()
-  jarEntries.add(ZipEntry(name = "META-INF/MANIFEST.MF", data = mfBytes))
+  val jarEntries: List[Jvm.Zip.ZipEntry] = newList()
+  jarEntries.add(Jvm.Zip.ZipEntry(name = "META-INF/MANIFEST.MF", data = mfBytes))
+
+  var ei = 0
+  while ei < req.contractEntryNames.count {
+    jarEntries.add(
+      Jvm.Zip.ZipEntry(name = req.contractEntryNames[ei], data = stringToUtf8Bytes(req.contractEntryJson[ei]))
+    )
+    ei = ei + 1
+  }
 
   var i = 0
   while i < classes.count {
     val bc = classes[i]
-    jarEntries.add(ZipEntry(name = bc.binaryName + ".class", data = bc.bytes))
+    jarEntries.add(Jvm.Zip.ZipEntry(name = bc.binaryName + ".class", data = bc.bytes))
     i = i + 1
   }
 

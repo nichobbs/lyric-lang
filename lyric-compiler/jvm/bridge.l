@@ -27,6 +27,8 @@ import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.Mono
 import Lyric.Derives
 import Lyric.Pipeline
+import Lyric.ContractMeta as Meta
+import Lyric.RestoredPackages
 import Jvm.Kernel
 import Jvm.Classfile
 import Jvm.Lowering
@@ -1249,9 +1251,47 @@ pub func compileToJarBundledWithFeatures(
   defines: in List[String],
   packageVersion: in String,
 ): Bool {
+  val noRestored: List[SynthesisedArtifact] = newList()
+  compileToJarBundledWithRestored(
+    source,
+    outputPath,
+    packageName,
+    stdlibSources,
+    activeFeatures,
+    declaredFeatures,
+    depTemplateSrcs,
+    defines,
+    packageVersion,
+    noRestored
+  )
+}
+
+/// Like `compileToJarBundledWithFeatures` but accepts a list of restored-
+/// dependency `SynthesisedArtifact`s (#3094) — the JVM analog of the MSIL
+/// bridge's `compileProjectToMsilWithRestored`.  Each restored artifact's
+/// re-synthesised source (`Lyric.RestoredPackages.synthesiseArtifact`,
+/// already loaded and preamble-checked by the caller — see
+/// `Lyric.Emitter.emitProjectJvmInProcess`, which reads them from a JAR's
+/// embedded `Lyric.Contract.<Pkg>` ZIP entries via
+/// `Jvm.ContractMetaJar.loadRestoredPackageJvm`) is registered into the
+/// SAME cross-package signature/case/ctor registries a stdlib or sibling
+/// project file feeds — see `compileProjectToJarBundledWithRestored` for
+/// the registration design and why no codegen runs over it.
+pub func compileToJarBundledWithRestored(
+  source: in String,
+  outputPath: in String,
+  packageName: in String,
+  stdlibSources: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  depTemplateSrcs: in List[String],
+  defines: in List[String],
+  packageVersion: in String,
+  restoredArtifacts: in List[SynthesisedArtifact],
+): Bool {
   val one: List[String] = newList()
   one.add(source)
-  compileProjectToJarBundledWithFeatures(
+  compileProjectToJarBundledWithRestored(
     one,
     outputPath,
     packageName,
@@ -1260,7 +1300,8 @@ pub func compileToJarBundledWithFeatures(
     declaredFeatures,
     depTemplateSrcs,
     defines,
-    packageVersion
+    packageVersion,
+    restoredArtifacts
   )
 }
 
@@ -1310,6 +1351,60 @@ pub func compileProjectToJarBundledWithFeatures(
   depTemplateSrcs: in List[String],
   defines: in List[String],
   packageVersion: in String,
+): Bool {
+  val noRestored: List[SynthesisedArtifact] = newList()
+  compileProjectToJarBundledWithRestored(
+    pkgSrcs,
+    outputPath,
+    packageName,
+    stdlibSources,
+    activeFeatures,
+    declaredFeatures,
+    depTemplateSrcs,
+    defines,
+    packageVersion,
+    noRestored
+  )
+}
+
+/// Like `compileProjectToJarBundledWithFeatures` but accepts a list of
+/// restored-dependency `SynthesisedArtifact`s (#3094): the consumer's `import
+/// <RestoredPkg>` resolves generic (and non-generic) records, unions, and
+/// functions declared by a pre-compiled Lyric-JVM producer JAR — the JVM
+/// counterpart of #1496 / D097's MSIL restored-generics fix.
+///
+/// Design (JVM's type-erasure model makes this substantially simpler than
+/// the MSIL side, which needs arity-suffixed TypeRefs and VAR-form generic
+/// metadata maps): each restored artifact's re-synthesised `SourceFile`
+/// (`Lyric.RestoredPackages.synthesiseArtifact`; its record/union/function
+/// declarations are reconstructed, verbatim, from the producer's embedded
+/// contract JSON) is fed through the SAME `collectFileSigsSeeded` /
+/// `collectFileCasesExtern` / `collectFileCtors` / `collectFileProjectables`
+/// registration calls a stdlib or sibling project file gets — a generic
+/// record/union's fields already erase to `Object` uniformly (JVM has no
+/// reified generics to preserve), so no separate arity-suffixed class-name
+/// bookkeeping is needed the way MSIL's `genericTypeArity` /
+/// `genericCtorParams` / `fieldSigBytes` / `fieldVarIndices` maps require.
+///
+/// Critically, a restored artifact's file is registered into `registry` /
+/// `caseReg` / `ctorReg` / `allProjFqns` but is deliberately NEVER added to
+/// `stdlibFiles` / `stdlibByPkg` / `toBundle`: its bytecode already exists in
+/// the producer JAR, so codegen must never re-emit (and thus duplicate) it —
+/// only its call-site SIGNATURES need to be known here.  The producer JAR's
+/// own path is threaded onto the consumer's manifest `Class-Path:` (the same
+/// mechanism `autoFfi.jarPaths` already uses for Maven/non-JDK JARs) so the
+/// JVM classloader can actually find those classes at runtime.
+pub func compileProjectToJarBundledWithRestored(
+  pkgSrcs: in List[String],
+  outputPath: in String,
+  packageName: in String,
+  stdlibSources: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  depTemplateSrcs: in List[String],
+  defines: in List[String],
+  packageVersion: in String,
+  restoredArtifacts: in List[SynthesisedArtifact],
 ): Bool {
   if pkgSrcs.count == 0 {
     Console.error("error[J001]: JVM project build received no packages")
@@ -1565,6 +1660,47 @@ pub func compileProjectToJarBundledWithFeatures(
     collectFileProjectables(stdlibFiles[ri], allProjFqns)
     ri = ri + 1
   }
+
+  // ── Restored-dependency registration (#3094) ──────────────────────────
+  // See `compileProjectToJarBundledWithRestored`'s doc comment for the full
+  // design.  Each restored artifact's synthesised source registers into the
+  // same registries the stdlib loop above just populated, AND joins
+  // `importedPkgs` so the TYPE CHECKER (not just codegen) resolves
+  // `import <RestoredPkg>` — a plain codegen-only registration still left
+  // every restored type/function an "unknown name"/"unknown type name" at
+  // type-check, since `Lyric.TypeChecker.checkFile` resolves imports purely
+  // from `importedPkgs`.  The producer JAR's own path (deduplicated) rides
+  // the manifest `Class-Path:` below alongside `autoFfi.jarPaths`, since the
+  // restored classes are never re-emitted into THIS jar's bytecode.
+  val restoredJarPathsSeen: Map[String, Bool] = newMap()
+  val restoredJarPaths: List[String] = newList()
+  var rai = 0
+  while rai < restoredArtifacts.count {
+    val synArt = restoredArtifacts[rai]
+    val rf = synArt.source
+    val rNoExtern: Map[String, String] = newMap()
+    collectFileSigsSeeded(rf, registry, rNoExtern)
+    collectFileCasesExtern(rf, caseReg, rNoExtern)
+    collectFileCtors(rf, ctorReg)
+    collectFileProjectables(rf, allProjFqns)
+    val rPkgItems: List[Item] = newList()
+    var rii = 0
+    while rii < rf.items.count {
+      if pipeIsCrossPackageItem(rf.items[rii]) {
+        rPkgItems.add(rf.items[rii])
+      }
+      rii = rii + 1
+    }
+    importedPkgs.add(
+      ImportedPackage(name = synArt.packageName, items = rPkgItems, imports = collectImportNames(rf.imports))
+    )
+    if not restoredJarPathsSeen.containsKey(synArt.dllPath) {
+      restoredJarPathsSeen.add(synArt.dllPath, true)
+      restoredJarPaths.add(synArt.dllPath)
+    }
+    rai = rai + 1
+  }
+
   // View-twin registration must run after the pre-scan is complete (the
   // substituted view field types depend on the full projectable set).
   registerProjectableViews(userFile, allProjFqns, caseReg, registry)
@@ -1981,14 +2117,38 @@ pub func compileProjectToJarBundledWithFeatures(
   // `lyric run --target jvm` and `lyric test --target jvm`, neither of
   // which passes `-cp` — can actually load Maven dependency classes at
   // runtime instead of throwing NoClassDefFoundError the moment a `[maven]`
-  // dependency (e.g. Quartz) is actually used.
+  // dependency (e.g. Quartz) is actually used.  Restored Lyric-package JARs
+  // (#3094) ride the same `Class-Path:` mechanism, appended after the Maven
+  // entries, for the identical reason: their classes are registered above
+  // but never re-emitted into THIS jar.
   // (`jarVersion` was hoisted above the codegen loops — see its declaration.)
+  val mergedClasspathJars: List[String] = newList()
+  var mcpi = 0
+  while mcpi < autoFfi.jarPaths.count {
+    mergedClasspathJars.add(autoFfi.jarPaths[mcpi])
+    mcpi = mcpi + 1
+  }
+  var mrji = 0
+  while mrji < restoredJarPaths.count {
+    mergedClasspathJars.add(restoredJarPaths[mrji])
+    mrji = mrji + 1
+  }
+
+  // This build's own package(s) are already embedded as `Lyric.Contract.<Pkg>`
+  // ZIP entries by the `contractZipEntry` calls above (#4994), so a
+  // DOWNSTREAM consumer can later restore THIS jar as a dependency
+  // (`Jvm.ContractMetaJar.readAllContractsFromJar` / `loadRestoredPackageJvm`,
+  // #3094) — no separate contract-collection pass is needed here; that
+  // hoisted `contractEntryNames`/`contractEntryDatas` pair (built from the
+  // POST-middle-end `userFile`/`toBundle` pairs, reconciled via
+  // `withGenericFuncsForContract` for generic-function-body fidelity) is
+  // passed straight through to `writeJarFromClassesWithResources` below.
   val req = BuildRequest(
     packageName = packageName,
     mainClass = mainClassName,
     version = jarVersion,
     outPath = outputPath,
-    classpathJars = autoFfi.jarPaths
+    classpathJars = mergedClasspathJars
   )
   writeJarFromClassesWithResources(req, allClasses, contractEntryNames, contractEntryDatas)
 }

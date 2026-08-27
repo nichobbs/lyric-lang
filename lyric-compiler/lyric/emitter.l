@@ -10,14 +10,13 @@
 //! manifest-threaded `[package].version` all flow through the same
 //! in-process path.
 //!
-//! `--target jvm` still shells out to `lyric --internal-build` (single)
-//! or `lyric --internal-project-build` (project) because the
-//! self-hosted JVM bridge does not yet have a multi-package entry
-//! point.  The F# CLI handlers in `bootstrap/src/Lyric.Cli/Program.fs`
-//! are kept alive solely for this path; the `--target dotnet` arms of
-//! those handlers are unreachable from this file's `emit` /
-//! `emitProject` after the slice 3+ retirements.  They survive until
-//! the JVM in-process bridge lands.
+//! `--target jvm` also runs IN-PROCESS, via `Jvm.Bridge.compileToJarBundledWithRestored` /
+//! `compileProjectToJarBundledWithRestored`.  Restored-dependency JARs
+//! (`req.restoredDllPaths`, #3094 — the JVM counterpart of the MSIL
+//! restored-generics fix, #1496/D097) are loaded and synthesised here via
+//! `Jvm.ContractMetaJar.loadRestoredPackageJvm` + `Lyric.RestoredPackages.synthesiseArtifact`,
+//! mirroring the MSIL restored-dep loop below almost exactly — only the
+//! JAR-vs-DLL contract-metadata READ step differs between the two targets.
 //!
 //! Environment variables:
 //!   LYRIC_BIN              — path to the dotnet (or lyric) executable.
@@ -54,6 +53,7 @@ import Lyric.ContractMeta as Meta
 import Lyric.RestoredPackages as RP
 import Msil.Bridge as MsilBridge
 import Jvm.Bridge as JvmBridge
+import Jvm.ContractMetaJar as JvmCMJ
 import Lyric.LlvmBridge as LlvmBridge
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2525,6 +2525,45 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
     diags.add(warningDiagnostic("W0006", msg, sp))
   }
 
+  // Load + synthesise every restored-dependency JAR (#3094) — the JVM
+  // analog of the MSIL restored-dep loop above `emitProjectInProcess`.
+  // Each `req.restoredDllPaths` entry is "<depName>\t<jarPath>"; only the
+  // jarPath matters here.  A JVM restored dep is a Lyric-JVM producer JAR
+  // carrying embedded `Lyric.Contract.<Pkg>` ZIP entries (written by
+  // `Jvm.Bridge`'s contract-embedding step) rather than a .NET PE resource,
+  // so the load step goes through `Jvm.ContractMetaJar` instead of
+  // `Msil.MetadataReader`; everything downstream (`synthesiseArtifact`,
+  // `siblingTypeDecls`) is shared with the MSIL path unchanged.
+  val allArtsJvm: List[RestoredArtifact] = newList()
+  var jri = 0
+  while jri < req.restoredDllPaths.count {
+    val jDepEntry = req.restoredDllPaths[jri]
+    val jTabPos = Str.indexOfRaw(jDepEntry, "\t")
+    val jJarPath = if jTabPos >= 0 { jDepEntry.substring(jTabPos + 1, jDepEntry.length - jTabPos - 1) } else { jDepEntry }
+    match JvmCMJ.loadRestoredPackageJvm(jJarPath) {
+      case Err(e) -> return failResult("restored JVM dep '" + jJarPath + "' failed to load: " + RP.errorMessage(e))
+      case Ok(arts) -> {
+        var jai = 0
+        while jai < arts.count {
+          allArtsJvm.add(arts[jai])
+          jai = jai + 1
+        }
+      }
+    }
+    jri = jri + 1
+  }
+  val restoredArtifactsJvm: List[SynthesisedArtifact] = newList()
+  var jsi = 0
+  while jsi < allArtsJvm.count {
+    val jArt = allArtsJvm[jsi]
+    val jPreamble = siblingTypeDecls(allArtsJvm, jArt.packageName)
+    match RP.synthesiseArtifact(jArt, jPreamble) {
+      case Err(e) -> return failResult("restored JVM dep '" + jArt.dllPath + "' failed to synthesise: " + RP.errorMessage(e))
+      case Ok(syn) -> restoredArtifactsJvm.add(syn)
+    }
+    jsi = jsi + 1
+  }
+
   if req.packages.count > 1 {
     // Multi-package project: every package rides the in-process bundled
     // compile (`compileProjectToJarBundledWithFeatures`) — the entry
@@ -2544,7 +2583,7 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
     // `--define version=…` winning (#5852 phase C).
     val projDefinesJvm = BD.withWellKnownDefines(req.packageVersion, req.defines)
     val okP = try {
-      JvmBridge.compileProjectToJarBundledWithFeatures(
+      JvmBridge.compileProjectToJarBundledWithRestored(
         pkgSrcs,
         req.outputPath,
         req.packages[0].name,
@@ -2553,7 +2592,8 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
         req.declaredFeatures,
         depTemplateNames,
         projDefinesJvm,
-        req.packageVersion
+        req.packageVersion,
+        restoredArtifactsJvm
       )
     } catch Bug as b {
       diags.add(jvmBridgePanicDiagnostic(b.message))
@@ -2574,7 +2614,7 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
   // `--define`s (req.defines) are merged beneath it (#5852 phase C).
   val projDefinesJvm1 = BD.withWellKnownDefines(req.packageVersion, req.defines)
   val ok = try {
-    JvmBridge.compileToJarBundledWithFeatures(
+    JvmBridge.compileToJarBundledWithRestored(
       source,
       req.outputPath,
       pkgName,
@@ -2583,7 +2623,8 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
       req.declaredFeatures,
       depTemplateNames,
       projDefinesJvm1,
-      req.packageVersion
+      req.packageVersion,
+      restoredArtifactsJvm
     )
   } catch Bug as b {
     diags.add(jvmBridgePanicDiagnostic(b.message))
