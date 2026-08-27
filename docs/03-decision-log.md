@@ -32393,3 +32393,48 @@ B), D-progress-543 (the sandbox-seeding technique this session reused),
 issue #6103 (N9.2's parent), issue #6105 (N9.4, `Std.Http`'s native
 client — the scope this entry deliberately does not preempt).
 
+---
+
+## D-progress-802 — MSIL: `lowerMConfig` registers its synthesized static class's TypeDef row, fixing config-block + closure codegen aborts (#6096)
+
+**Context.** #6096: a package containing both a module-level `config { … }`
+block and a capturing closure aborted MSIL lowering with `Msil.Lowering:
+MNewobjByName could not resolve .ctor for type '.__Closure_0'`. Either
+construct alone compiled fine. `lyric-web`'s TLS phase-3.4 test suite
+(D-progress-701, #5885) hit this and worked around it by splitting the
+config block and the closures into separate files rather than fixing the
+root cause.
+
+**Root cause.** `lowerMConfig` (`lyric-compiler/msil/lowering.l`) called
+`addTypeDef` for the config block's synthesized static class but — unlike
+every other type-lowering function (`lowerMRecord`, `lowerMUnion`,
+`lowerMDistinctType`, `lowerMRangeType`, `lowerMEnum`, `lowerMInterface`,
+`lowerMOpaque`, the host class) — never called `recordUserTypeDefRow`
+afterward. That call populates the positionally-indexed `typeDefRowFqns`
+list that `findMethodDefRowOfType`/`findFieldDefRowOfType`'s reverse-lookup
+fallback depends on to translate a forward-referenced TypeDef row back to
+its FQN. Skipping it desynced every type registered afterward in the same
+package — including closure classes (`__Closure_N`), which are drained and
+appended only after the rest of the package's items are lowered — so
+`__Closure_0`'s `.ctor` resolved against the wrong FQN. Identical bug class
+to #5361 (`lowerMEnum`, fixed in D-progress-624).
+
+**Change.** `lowerMConfig` now captures `addTypeDef`'s return value and
+calls `recordUserTypeDefRow(ctx, ns, typeName, cfgTypeDefRow)` immediately
+after, mirroring every sibling type-lowering function exactly.
+
+**Verification.** New regression test
+`lyric-compiler/lyric/config_closure_self_test.l` (`@test_module`,
+`--target dotnet` — MSIL-only bug, JVM's `IConfig` lowering is unaffected)
+combines a module-level `config { }` block and a capturing closure in one
+package; both pass. Wired into CI as its own step (mirroring
+`config_block_self_test.l`'s pattern) and into the Makefile's
+`TEST_EMITTER_FILES` aggregate (no special env vars needed, unlike
+`config_block_self_test.l`).
+
+**Boundary.** `lyric-web`'s D-progress-701 workaround (splitting
+`serve_tls_tests.l`'s closures from `webtls_config_tests.l`'s config-block
+env-override test) is left in place — reverting it is a `lyric-web`-scoped
+follow-up, out of scope for this compiler-only fix.
+
+**Related:** #6096, #5361, D-progress-624, D-progress-701, #5885.

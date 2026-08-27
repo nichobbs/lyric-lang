@@ -5679,7 +5679,7 @@ func lowerMConfig(
 
   val sName = internString(sh, typeName)
   val sNs = internString(sh, ns)
-  val _ = addTypeDef(
+  val cfgTypeDefRow = addTypeDef(
     t,
     TypeDefRow(
       flags = TDF_PUBLIC + TDF_SEALED + TDF_BEFORE_FIELD_INIT,
@@ -5690,7 +5690,17 @@ func lowerMConfig(
       methodList = firstMethod
     )
   )
-  t.typeDefs.count
+  // Every other type-lowering function (record, union, distinct type, enum,
+  // interface, opaque) registers its TypeDef row here so `typeDefRowFqns`
+  // (a positional list consumed by `findMethodDefRowOfType` /
+  // `findFieldDefRowOfType`'s `row - 2` reverse-lookup fallback) stays in
+  // lock-step with the real TypeDef row numbering. `lowerMConfig` omitting
+  // this call desynced that list for every type lowered after a config
+  // block in the same package — including closure classes drained after
+  // the package's own items — causing "could not resolve .ctor" panics
+  // for e.g. `__Closure_0` (#6096, same bug class as #5361 / lowerMEnum).
+  recordUserTypeDefRow(ctx, ns, typeName, cfgTypeDefRow)
+  cfgTypeDefRow
 }
 
 // Lower one `MPackageItem` into `ctx`'s metadata tables.  Single dispatch

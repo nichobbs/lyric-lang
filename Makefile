@@ -287,6 +287,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/cli_workspace_builder_self_test.l \
 	lyric-compiler/lyric/closure_correctness_self_test.l \
 	lyric-compiler/lyric/closure_zero_overhead_self_test.l \
+	lyric-compiler/lyric/config_closure_self_test.l \
 	lyric-compiler/lyric/config_templates_self_test.l \
 	lyric-compiler/lyric/const_pattern_self_test.l \
 	lyric-compiler/lyric/contract_elaborator_self_test.l \

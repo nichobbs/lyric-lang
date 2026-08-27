@@ -1607,6 +1607,15 @@ jobs:
           LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_EMPTYOVERRIDE_HOST: ""
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"config-block self-test ran: config_block_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/config_block_self_test.l"
 
+      # Config-block + closure interaction self-test (#6096, MSIL-only —
+      # `lowerMConfig` skipped `recordUserTypeDefRow`, desyncing the
+      # positional TypeDef-row list every closure class registered after
+      # it in the same package relied on; see config_closure_self_test.l).
+      - name: config-block + closure self-test (native lyric test, dotnet)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"config-closure self-test ran: config_closure_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/config_closure_self_test.l"
+
       # Slice-ops self-test (#5244).  `slice[T].append`/`.concat`/`.slice` —
       # the compiler's own documented canonical `slice[T]` example
       # (docs/agent/reference.md) — threw "unsupported method" at runtime on
