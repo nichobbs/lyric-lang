@@ -17,6 +17,16 @@
 //! and `--target jvm` (#6577 review follow-up) — the cross-target claim
 //! above is verified, not just structural.
 //!
+//! Every function here is `@experimental`, not `@stable`, despite that
+//! CI verification: this module is brand new (#684) and the scope note
+//! below documents two genuine, previously-unknown self-hosted MSIL
+//! generic-codegen bugs (#6568, #6569) found in adjacent code while
+//! building it, with no other working precedent for this shape anywhere
+//! in the codebase.  `@stable` is earned by real-world usage accruing
+//! confidence beyond a fresh test suite, matching the convention already
+//! used for `Std.Collections.mapSize`/`mapIsEmpty` (`@experimental`
+//! pending JVM parity validation, #3577).
+//!
 //! Representation: rather than a bespoke `PersistentList[T]` nominal
 //! type, the persistent value IS a `slice[T]` — `slice[T]` is already
 //! immutable at the language level (`docs/01-language-reference.md`
@@ -65,19 +75,19 @@ import Std.Collections
 
 // ─── PersistentList[T] operations (slice[T]) ─────────────────────────────
 // The empty list is `[]` — `val e: slice[Int] = []`.
-@stable(since = "1.0")
+@experimental
 pub func plistIsEmpty[T](lst: in slice[T]): Bool {
   lst.length == 0
 }
 
 /// Number of elements.  O(1).
-@stable(since = "1.0")
+@experimental
 pub func plistLength[T](lst: in slice[T]): Int {
   lst.length
 }
 
 /// The first element, or `None` for the empty list.  O(1).
-@stable(since = "1.0")
+@experimental
 pub func plistHead[T](lst: in slice[T]): Option[T] {
   if lst.length == 0 {
     None
@@ -88,7 +98,7 @@ pub func plistHead[T](lst: in slice[T]): Option[T] {
 
 /// Every element after the first, or `None` for the empty list.  O(n):
 /// rebuilds a fresh slice for the remainder.
-@stable(since = "1.0")
+@experimental
 pub func plistTail[T](lst: in slice[T]): Option[slice[T]] {
   if lst.length == 0 {
     None
@@ -106,7 +116,7 @@ pub func plistTail[T](lst: in slice[T]): Option[slice[T]] {
 /// Prepend `x` to `lst`, returning a new list.  `lst` itself is left
 /// untouched — any other value that referenced it before the call still
 /// sees the original list.  O(n): rebuilds the slice.
-@stable(since = "1.0")
+@experimental
 pub func plistCons[T](x: in T, lst: in slice[T]): slice[T] {
   val acc: List[T] = newList()
   acc.add(x)
@@ -119,7 +129,7 @@ pub func plistCons[T](x: in T, lst: in slice[T]): slice[T] {
 }
 
 /// The element at `index` (0-based), or `None` if out of range.  O(1).
-@stable(since = "1.0")
+@experimental
 pub func plistLookup[T](lst: in slice[T], index: in Int): Option[T] {
   if index < 0 or index >= lst.length {
     None
@@ -131,7 +141,7 @@ pub func plistLookup[T](lst: in slice[T], index: in Int): Option[T] {
 /// Insert `x` before position `index`, returning a new list.  `index <= 0`
 /// inserts at the front; `index >=` the current length appends at the
 /// end.  O(n): rebuilds the slice.
-@stable(since = "1.0")
+@experimental
 pub func plistInsert[T](lst: in slice[T], index: in Int, x: in T): slice[T] {
   val n = lst.length
   val clamped = if index < 0 { 0 } else if index > n { n } else { index }
@@ -152,7 +162,7 @@ pub func plistInsert[T](lst: in slice[T], index: in Int, x: in T): slice[T] {
 /// Remove the element at `index`, returning a new list.  Out-of-range
 /// `index` (negative, or `>=` the current length) returns `lst`
 /// unchanged.  O(n): rebuilds the slice.
-@stable(since = "1.0")
+@experimental
 pub func plistDelete[T](lst: in slice[T], index: in Int): slice[T] {
   if index < 0 or index >= lst.length {
     lst
@@ -170,7 +180,7 @@ pub func plistDelete[T](lst: in slice[T], index: in Int): slice[T] {
 }
 
 /// Snapshot into a fresh mutable `Std.Collections.List[T]`, front-to-back.
-@stable(since = "1.0")
+@experimental
 pub func plistToList[T](lst: in slice[T]): List[T] {
   val acc: List[T] = newList()
   var i = 0
@@ -183,7 +193,7 @@ pub func plistToList[T](lst: in slice[T]): List[T] {
 
 /// Build a persistent list from `xs`, preserving order (`xs[0]` becomes
 /// the head).
-@stable(since = "1.0")
+@experimental
 pub func plistFromList[T](xs: in List[T]): slice[T] {
   xs.toArray()
 }
