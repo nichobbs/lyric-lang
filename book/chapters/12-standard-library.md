@@ -146,8 +146,29 @@ match m.get("age") {
 `List[T]` also has `remove(index)`, `get(index)` (returns `Option[T]`), and `toSlice()` for converting to an immutable slice. If you need to remove by value rather than by index, use `Std.Iter` to filter and rebuild.
 
 ::: sidebar
-**Why not immutable collections by default?** The decision log entry D038 frames the stdlib as evolving toward native Lyric implementations with verifiable invariants. Immutable persistent data structures are on that roadmap. For now, `List[T]` and `Map[K, V]` are the mutable BCL-backed forms, which are the right default for most application code. Immutable persistent variants are planned; they are not yet `@stable`.
+**Why not immutable collections by default?** The decision log entry D038 frames the stdlib as evolving toward native Lyric implementations with verifiable invariants. `List[T]` and `Map[K, V]` are the mutable BCL-backed forms, which are the right default for most application code. `Std.Collections.Persistent` (below) ships the immutable, non-mutating variant for code that wants persistence.
 :::
+
+### `Std.Collections.Persistent`
+
+`Std.Collections.Persistent` provides persistent (immutable, non-mutating) list operations: every "modifying" function (`plistCons`, `plistInsert`, `plistDelete`, ...) builds and returns a brand-new value, leaving its input completely untouched. The persistent value itself is a bare `slice[T]` — `slice[T]` is already immutable at the language level (no in-place mutation exists for it, §5.2), so no wrapper type is needed to keep the "never mutates" contract, the same way `Std.Sort.sort[T]` operates on bare `slice[T]` rather than inventing a `SortedSlice[T]` type:
+
+```lyric
+import Std.Collections.Persistent
+
+val empty: slice[Int] = []
+val a = plistCons(3, plistCons(2, plistCons(1, empty)))   // [3, 2, 1]
+val b = plistCons(0, a)                                    // [0, 3, 2, 1]
+// `a` is unchanged — deriving `b` never mutates it.
+println(toString(plistLength(a)))                          // 3
+println(toString(plistLength(b)))                          // 4
+```
+
+`plistHead`/`plistLookup` are O(1); `plistCons`/`plistTail`/`plistInsert`/`plistDelete` rebuild the backing slice, O(n). `plistToList`/`plistFromList` convert to and from `Std.Collections.List[T]`.
+
+Pure Lyric, no BCL/JDK extern boundary, so it works identically on every target and contracts/proofs apply throughout, per D038.
+
+A persistent `Map` (and, as a stretch goal, a `Set`) were also planned for this module. Building them surfaced reproducible self-hosted MSIL backend bugs with no working precedent anywhere in this codebase — a classic cons-list/BST node shape (a case field typed as the enclosing generic type's own open instantiation) corrupts field reads at runtime (issue #6568), and a generic function that invokes a closure parameter inside a loop over a `slice[UserGenericRecord[K, V]]` parameter (the natural shape for a comparator/equality-keyed map) monomorphizes with a corrupted first-parameter signature (issue #6569). Both are deferred to a tracked follow-up (#6570) rather than shipped broken or stubbed; see the module's header doc comment (`lyric-stdlib/std/collections_persistent.l`) for the full detail.
 
 ## §12.5 `Std.Time`
 
