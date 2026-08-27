@@ -1,7 +1,11 @@
 //! Grpc — gRPC client and server API.
-//! Stability: @experimental — the API compiles and proto-encoding has
-//! unit-level tests, but the end-to-end client + server pair has not been
-//! exercised against a real gRPC service in CI.
+//! Stability: @experimental. Real and tested today: channel lifecycle
+//! (openChannel/closeChannel, backed by Grpc.Net.Client.GrpcChannel) and
+//! checkRateLimit's sliding-window limiter. callUnary/openServerStream/
+//! start/startHandle remain unimplemented `extern package` stubs blocked
+//! on #6581 (a self-hosted-compiler generic-BCL-API gap) and have not
+//! been exercised against a real gRPC service in CI — see README.md's
+//! platform-parity table for the precise real-vs-blocked split.
 //!
 //! Client (outbound calls):
 //!   val ch = Grpc.openChannel("https://host:4317").unwrap()

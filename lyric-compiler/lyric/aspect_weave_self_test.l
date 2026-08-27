@@ -231,3 +231,156 @@ func addBonus(): Long {
 test "same-file alias inside aspect advice body resolves and participates in arithmetic (#6416)" {
   assertEqualLong(addBonus(), 11i64, "proceed() + Meters-typed local: 1 + 10 = 11")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #5182: a statement AFTER a BARE, non-capturing `proceed(args)` (as opposed
+// to #3402's `ret = proceed()` capturing form) produced `InvalidProgramException`
+// when the matched target's return type is not `Unit` — exactly the shape
+// `examples/agent/config-and-aspects.l`'s `RequestLogging`/`Auth` aspects use
+// (`Std.Log.info(...); proceed(args); Std.Log.info(...)`).  Before the fix, the
+// weaver's naive statement splice left `proceed(args)`'s call result discarded
+// (bare `SExpr`, non-tail position) and the elaborated wrapper body's actual
+// trailing statement was the println AFTER it — `Unit`-typed — while the
+// wrapper is declared to return the target's real type, so it fell off a
+// non-void method with no return value.  The fix auto-lifts EVERY bare
+// (non-capturing) `proceed(args)` statement — trailing or not, at any
+// nesting depth — into `ret = proceed(args)` whenever the target returns a
+// real value, so the synthesised `var ret; ...; return ret` wrapping
+// (#3402) kicks in exactly as it does for the explicit `ret =
+// proceed(args)` form.  (A first version of this fix gated the lift on
+// "not the last statement of its immediate enclosing block," which a
+// review round (#6624) found still missed a bare `proceed(args)` in tail
+// position of a NESTED `if`/`while`/`try` body one level deeper than the
+// advice's own top-level statement list — the lift is unconditional now,
+// including the "expression-style advice" case a few tests above, which
+// still returns the identical value via the `var ret`/`return ret` route
+// instead of implicit fall-through.)  Bisected in the issue as independent
+// of the `matches:` wildcard vs. exact pattern; reproduces identically on
+// `--target dotnet` and `--target jvm` (this same file runs on both,
+// mirroring every other case above), so both are fixed by the one
+// weaver-level change.
+// ─────────────────────────────────────────────────────────────────────────────
+aspect RequestLoggingLike {
+  matches: name in { handleGreet }
+  around(args) -> ret {
+    println("enter")
+    proceed(args)
+    println("exit")
+  }
+}
+
+func handleGreet(name: in String): String {
+  "hello, " + name
+}
+
+test "statement after non-capturing proceed(args) on a non-Unit target runs cleanly (#5182)" {
+  assertTrue(
+    handleGreet("world") == "hello, world",
+    "handleGreet(\"world\") threads proceed(args)'s result through a trailing statement without InvalidProgramException"
+  )
+}
+
+// A second matched function proves the auto-lift isn't a one-shot / single-
+// call-site fluke — both `handleGreet` and `handleFarewell` route through the
+// SAME advice body, each getting its own woven wrapper.
+func handleFarewell(name: in String): String {
+  "farewell, " + name
+}
+
+aspect RequestLoggingLike2 {
+  matches: name in { handleFarewell }
+  around(args) -> ret {
+    println("enter")
+    proceed(args)
+    println("exit")
+  }
+}
+
+test "statement after non-capturing proceed(args), second matched function (#5182)" {
+  assertTrue(handleFarewell("world") == "farewell, world", "handleFarewell(\"world\") via the same advice shape")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6624 (review finding on the first #5182 fix): a bare, non-capturing
+// `proceed(args)` in TAIL POSITION OF A NESTED `if`-branch — but NOT the
+// advice body's own top-level last statement — reproduced the identical
+// InvalidProgramException the flat-statement cases above already cover.
+// The first fix version gated the auto-lift on "not last in this
+// statement's IMMEDIATE enclosing block", computed independently per
+// nested `rewriteBlock` call — so `proceed(args)` being the if-branch's
+// own last statement read as `isLast == true` there, even though the
+// if-statement itself is NOT the advice body's last statement (a
+// `println` follows it). The fix is now unconditional: every bare
+// `proceed(args)`, regardless of nesting, lifts into `ret = proceed(args)`.
+// Both branches of the guard are exercised so both control-flow paths
+// (proceeds vs. skips) are proven to still return the correct value.
+// ─────────────────────────────────────────────────────────────────────────────
+aspect NestedIfProceed {
+  matches: name in { annotate }
+  around(args) -> ret {
+    if true {
+      proceed(args)
+    }
+    println("after nested if")
+  }
+}
+
+func annotate(x: in Int): Int {
+  x * 3
+}
+
+test "bare proceed(args) as the tail statement of a NESTED if-branch, followed by more advice statements (#6624)" {
+  assertTrue(
+    annotate(7) == 21,
+    "annotate(7): nested-if proceed(args) result threads through the advice's own trailing statement"
+  )
+}
+
+// The unconditional fix recurses through `rewriteBlock` uniformly for every
+// block-bearing statement kind, so the `if`-branch case above is not
+// special — but per review on PR #6621, verified rather than inferred for
+// `while` and `try` too (the same generic recursion, exercised concretely).
+aspect NestedWhileProceed {
+  matches: name in { annotateWhile }
+  around(args) -> ret {
+    var i = 0
+    while i < 1 {
+      i = i + 1
+      proceed(args)
+    }
+    println("after nested while")
+  }
+}
+
+func annotateWhile(x: in Int): Int {
+  x * 5
+}
+
+test "bare proceed(args) as the tail statement of a NESTED while-loop body, followed by more advice statements (#6624)" {
+  assertTrue(
+    annotateWhile(4) == 20,
+    "annotateWhile(4): nested-while proceed(args) result threads through the advice's own trailing statement"
+  )
+}
+
+aspect NestedTryProceed {
+  matches: name in { annotateTry }
+  around(args) -> ret {
+    try {
+      proceed(args)
+    } catch Bug {
+    }
+    println("after nested try")
+  }
+}
+
+func annotateTry(x: in Int): Int {
+  x * 7
+}
+
+test "bare proceed(args) as the tail statement of a NESTED try-block, followed by more advice statements (#6624)" {
+  assertTrue(
+    annotateTry(3) == 21,
+    "annotateTry(3): nested-try proceed(args) result threads through the advice's own trailing statement"
+  )
+}

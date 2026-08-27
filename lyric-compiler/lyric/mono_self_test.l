@@ -1511,6 +1511,20 @@ test "where bound on user type accepts silently" {
   assertTrue(hasFunc(res.file, "subAll__Plain"), "specialisation still proceeds for user types")
 }
 
+// #5549 / D-progress-807: `Copyable` was speced (D034) but never
+// implemented — it is not in `isKnownMarker`, so mono treats it exactly
+// like an unrecognised name (silent acceptance, same as a user interface):
+// the type checker's T0051 rejects the where-clause outright at
+// declaration time, well before mono ever runs, so mono itself must never
+// raise M0001 for it regardless of the concrete type argument.
+test "Copyable where-bound is not a known marker, mono accepts silently" {
+  val src = "package P\n" + "func idAll[T](a: in T, b: in T): T where T: Copyable { a }\n" +
+    "func callerI(): Int { idAll(1, 2) }\n" +
+    "func callerB(): Bool { idAll(true, false) }\n"
+  val res = runMono(src)
+  assertEqualInt(diagCountCode(res.diagnostics, "M0001"), 0, "Copyable is unknown to mono -- never M0001, on any type")
+}
+
 // B2: a call to a same-package generic whose type arguments cannot be
 // inferred must raise M0002 — the generic decl is erased from the output,
 // so the surviving call site would be a dangling reference at codegen

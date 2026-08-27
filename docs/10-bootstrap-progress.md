@@ -31706,3 +31706,86 @@ CI job's existing "lyric-web Undertow smoke on JVM" step.
 
 **Related:** `docs/03-decision-log.md` D-progress-805; #6017, #5881,
 #5874, D-progress-698 (the phase-2.2 shipment this extends).
+
+### D-progress-808 — Four compiler-contracts/aspects bugs fixed: `Result`/`Option` direct accessors, `proceed(args)` trailing-statement weave bug, where-bound marker vocabulary settled, `depTemplatePkgs` integration test (#5183, #5182, #5549, #3650)
+
+**`result.isOk implies result.value ...` (#5183).** `.isOk`/`.isErr`/
+`.value`/`.error` on `Result[T, E]` and `.isSome`/`.isNone`/`.value` on
+`Option[T]` — the direct field-style accessors docs/01/docs/02/docs/08's
+contract examples have always used — were never actually resolved anywhere
+in the self-hosted pipeline: both are unions, so `inferMemberBase` never
+finds a matching field and there's no dot-named function under those names
+either, so the type checker silently typed the access as `TyError` with no
+diagnostic (unions are excluded from the member-complete gate). Codegen then
+independently mis-resolved the same bare `EMember`: it looked up a field
+token under the RECEIVER's own class name (`Std.Core.Result/value`), but
+case fields are registered under the CASE class name
+(`Std.Core.Result_Ok/value`), so the lookup always missed and the generic
+unregistered-field fallback popped the receiver without pushing a
+replacement — a corrupted evaluation stack, `InvalidProgramException` at the
+first call on MSIL (a loud `error[J009]` compile-time refusal on JVM,
+docs/59 §4.4's stack-safety hardening already caught it there). Reproduces
+identically for a trivial `E` as for a payload-carrying one. Fixed by adding
+real support for the six accessors: `typechecker_exprs.l`'s `builtinMember`
+now types them against `Result`/`Option`'s resolved type arguments, and both
+backends (`lyric-compiler/msil/codegen.l`,
+`lyric-compiler/jvm/codegen/02_exprs.l`) lower `.isOk`/`.isErr`/`.isSome`/
+`.isNone` to an `isinst`/`instanceof` boolean test against the matching case
+class (MSIL needs the generic-instantiation-aware `MIsinstGeneric` form,
+since `Result`/`Option`'s case classes are themselves generic — a bare
+open-TypeRef `isinst` against a 2-arity case class throws `TypeLoadException`
+at load), and `.value`/`.error` to a cast + field read on that case. New
+dual-target self-test: `result_ensures_accessor_self_test.l`.
+
+**`around(args) -> ret { *; proceed(args); + }` (#5182).** A BARE
+(non-capturing) `proceed(args)` statement followed by more statements, in
+`around` advice whose matched target returns a non-`Unit` type, produced
+`InvalidProgramException` — exactly the shape
+`examples/agent/config-and-aspects.l`'s `RequestLogging`/`Auth` aspects use.
+The weaver's naive statement splice left the bare `proceed(args)`'s call
+result discarded (non-tail `SExpr`), so the wrapper's actual trailing
+statement became whatever came after it — typically `Unit`-typed — while the
+wrapper is declared to return the target's real type, falling off a
+non-void method with no return value. Closed #3402 fixed only the explicit
+`ret = proceed()` capturing form; this is the args-forwarding,
+non-capturing form with a trailing statement. Fixed in
+`lyric-compiler/lyric/weaver/weaver.l`: `rewriteStmt`/`rewriteBlock` now
+thread per-statement tail-position awareness, and a bare, NON-TRAILING
+`proceed(args)` statement is auto-lifted into `ret = proceed(args)`
+whenever the target returns a real value — routing it through the same
+`var ret; ...; return ret` synthesis #3402 already built for the explicit
+form. A trailing bare `proceed(args)` (the well-tested "expression-style
+advice" case) is deliberately left untouched, still returning via ordinary
+implicit-return fall-through, so existing AST-shape self-tests that depend
+on the wrapper body's exact statement ordering are unaffected. Verified
+identically reproducing (and identically fixed) on `--target jvm`. New
+cases in `aspect_weave_self_test.l`, run on both targets. Confirmed the
+example file's fictional-type/unrelated-`G0009` breakage predates and is
+independent of this fix (still doesn't build standalone; not attempted
+here — out of scope for the weaver bug).
+
+**Where-bound marker vocabulary (#5549).** Full decision recorded as
+D-progress-807 in `docs/03-decision-log.md`: `Copyable` dropped from the
+practically-usable marker set (speced in D034, never implemented in the
+self-hosted checker or `mono.l` — a correct implementation needs the MSIL
+backend's own per-type struct-vs-class lowering decision, not front-end
+information); the T0051 (declaration)/T0111 (call-site) split confirmed as
+two independent, both-fire-together diagnostics rather than alternative
+severities for one situation; `hasDerive` (`typechecker_exprs.l`) gained a
+`TyPrim` capability-table arm mirroring `mono.l`'s
+`primitiveSatisfiesMarker`, so e.g. `Int` against `where T: Add` no longer
+wrongly raises T0108. `docs/01-language-reference.md` §generics rewritten to
+match. New cases in `typechecker_self_test.l` and `mono_self_test.l`.
+
+**`depTemplatePkgs` integration test (#3650).** PR #3633 added the
+`depTemplatePkgs` loop in `Msil.Bridge`'s
+`compileProjectToMsilWithRestoredAndVersion` (parse a dep-package's aspect
+template source, `Weaver.collectAspectTemplates`, resolve `from`-instances
+against it), but every existing test passed an empty `depTemplateSrcs`, so
+the loop never actually ran in CI. New test in `emitter_project_self_test.l`
+exercises it for real through `Lyric.Emitter.emitProject`: a template aspect
+declared in a package that is only ever passed via `depTemplateSrcs` (never
+part of the main `packages` list — the point of the mechanism is the
+template's own package need not be compiled into the bundle), a
+`from`-instance in the main package, asserting zero A0045 diagnostics AND
+the woven output's actual runtime value (not just "compiles").

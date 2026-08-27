@@ -257,6 +257,16 @@ record RewriteCtx {
   ///             function does not provide a field the template's
   ///             `where TArgs has { ... }` clause declares (docs/56 / D115).
   weaveDiags: List[WeaveDiagEntry]
+  /// The advice's declared out-variable name (`around(...) -> ret`'s
+  /// `ret`), when one exists.  Threaded into the rewriter (rather than
+  /// only consulted after the fact via `blockAssignsToName`, as it was
+  /// pre-#5182) so a BARE, non-capturing `proceed(args)` statement — not
+  /// just an explicit `ret = proceed(args)` — can be auto-lifted into an
+  /// assignment at rewrite time (see `rewriteStmt`'s `SExpr` arm).  `None`
+  /// for `around(...) { ... }` advice with no `-> ret` binding at all, and
+  /// for the contract-clause-only rewrite (`rewriteContractClauseArgs`),
+  /// neither of which has an out-variable to capture into.
+  retVarOpt: Option[String]
 }
 
 /// Discriminator + payload for a weave-time diagnostic.  Three kinds
@@ -290,6 +300,7 @@ func newRewriteCtx(
   aspectName: in String,
   funcName: in String,
   weaveDiags: in List[WeaveDiagEntry],
+  retVarOpt: in Option[String],
 ): RewriteCtx {
   RewriteCtx(
     targetName = targetName,
@@ -302,7 +313,8 @@ func newRewriteCtx(
     argsRowFields = argsRowFields,
     aspectName = aspectName,
     funcName = funcName,
-    weaveDiags = weaveDiags
+    weaveDiags = weaveDiags,
+    retVarOpt = retVarOpt
   )
 }
 
@@ -819,7 +831,8 @@ func rewriteContractClauseArgs(
     emptyFields,
     aspectName,
     funcName,
-    weaveDiags
+    weaveDiags,
+    None
   )
   match cc {
     case CCRequires(e, s) -> CCRequires(expr = rewriteExpr(ctx, e), span = s)
@@ -902,7 +915,54 @@ func elaborateWrapperBodyForAspectContracts(
 func rewriteStmt(ctx: in RewriteCtx, stmt: in Statement): Statement {
   val s = stmt.span
   match stmt.kind {
-    case SExpr(e) -> Statement(kind = SExpr(expr = rewriteExpr(ctx, e)), span = s)
+    case SExpr(e) -> {
+      // #5182 (and #6624, a review round on the first fix): a BARE,
+      // non-capturing `proceed(args)` statement (as opposed to the
+      // explicit `ret = proceed(args)` form #3402 already handles) is
+      // auto-lifted into an assignment into the declared out-variable
+      // whenever the target returns a real value — UNCONDITIONALLY,
+      // regardless of where it sits in the advice body. Without this, a
+      // `proceed(args)` that is not the advice body's very last statement
+      // relies on nothing to carry its result forward: the wrapper is
+      // declared to return the target's type (`ret = originalFn.ret`),
+      // but the elaborated body's actual trailing statement becomes
+      // whatever comes after it — e.g. a logging call returning `Unit` —
+      // so the synthesised function falls off its non-void end with no
+      // return value, producing `InvalidProgramException` at the first
+      // call.
+      //
+      // #6624: an EARLIER version of this fix gated the lift on
+      // `not isLast`, computed per ENCLOSING BLOCK — so a bare
+      // `proceed(args)` that was the last statement of a NESTED `if`/
+      // `while`/`try` body (but not of the advice's own top-level body)
+      // was still missed, reproducing the identical bug one level of
+      // nesting deeper than the originally-reported flat case. Composing
+      // genuine function-tail-position awareness across every nested
+      // block shape is real complexity for no upside: `ret =
+      // proceed(args)` already routes correctly through the existing
+      // `var ret; ...; return ret` synthesis (#3402) whether or not the
+      // statement is in tail position, so unconditional lifting is
+      // simply the correct general fix, not a narrower special case of
+      // it. The one-time cost is that three pre-existing AST-shape
+      // self-tests in `weaver_self_test.l` (config-prelude-ordering
+      // checks) had fixtures using a TRAILING bare `proceed(args)` and
+      // asserted the config prelude landed at statement index 0 — updated
+      // to use the already-dominant `ret = proceed(args)` spelling in
+      // this file instead, since those tests are about prelude ordering,
+      // not about which `proceed` spelling triggers the lift. Scoped to a
+      // bare `SExpr` so a `proceed(args)` nested inside a larger
+      // expression (a call argument, a condition) is untouched — only a
+      // proceed call used AS a statement, whose result would otherwise be
+      // silently discarded, is eligible for auto-capture.
+      if not ctx.targetReturnsUnit and isProceedCall(e) {
+        match ctx.retVarOpt {
+          case Some(rv) -> return Statement(kind = SAssign(target = singleSegPathExpr(rv), op = AssEq, value = rewriteExpr(ctx, e)), span = s)
+          case None -> {
+          }
+        }
+      }
+      Statement(kind = SExpr(expr = rewriteExpr(ctx, e)), span = s)
+    }
     case SReturn(opt) -> {
       val newOpt = match opt { case None -> None; case Some(e) -> Some(value = rewriteExpr(ctx, e)) }
       Statement(kind = SReturn(value = newOpt), span = s)
@@ -1011,8 +1071,16 @@ func mkVarStmtNoInit(name: in String, ty: in Option[TypeExpr]): Statement {
 /// `name = <expr>` statement.  Drives the `around(...) -> ret`
 /// out-variable lowering: when the advice body writes the named return
 /// value, the wrapper must declare it as a local and return it (#3402).
-/// Expression-style bodies (e.g. trailing `proceed(args)`) never assign
-/// `ret`, so they are left untouched.
+/// Since #5182/#6624, `rewriteStmt`'s `SExpr` arm auto-lifts EVERY bare
+/// (non-capturing) `proceed(args)` statement — trailing or not, at any
+/// nesting depth — into `ret = proceed(args)` before this ever runs (when
+/// the target returns a real value), so a body whose ONLY proceed call is
+/// the unadorned expression-style form now also assigns `ret` and reaches
+/// this function's `true` branch, including the former "expression-style
+/// advice" bodies (a trailing bare `proceed(args)` used to rely on
+/// implicit-return fall-through instead; #6624 found that trailing-only
+/// gating still missed a bare `proceed(args)` in tail position of a
+/// NESTED block, so the lift is unconditional now).
 func blockAssignsToName(blk: in Block, name: in String): Bool {
   var i = 0
   while i < blk.statements.count {
@@ -1688,7 +1756,8 @@ func buildWrapper(
     noArgsRowFields,
     aspect.name,
     originalFn.name,
-    site.weaveDiags
+    site.weaveDiags,
+    around.retName
   )
 
   val rewiredBody = rewriteBlock(ctx, around.body)
@@ -3626,7 +3695,8 @@ func buildBModeSpecializedFunction(
     argsRowFieldsMap,
     aspect.name,
     specName,
-    emptyDiags
+    emptyDiags,
+    around.retName
   )
 
   val rewiredBody = rewriteBlock(ctx, around.body)

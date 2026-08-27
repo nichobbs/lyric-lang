@@ -4572,6 +4572,54 @@ func lowerCollectionMethodCall(
         registerTemp(ctx, outV)
         return Some(value = outV)
       }
+      // `.slice(start, stop)` / `.concat(other)` / `.append(x)` (#6104):
+      // `List[T]`/`slice[T]` never-mutating combinators — each returns a
+      // FRESH list (element pointers retained by the new list, source
+      // untouched), backing `Std.HttpEngine`'s buffer bookkeeping on
+      // every target. Bounds/panic contract matches the MSIL twin
+      // (`Msil.Codegen.lowerSliceSliceMsil`).
+      if name == "slice" and args.count == 2 {
+        val startV = lowerCallArgExpecting(ctx, insns, args, 0, NI64)
+        val stopV = lowerCallArgExpecting(ctx, insns, args, 1, NI64)
+        val raw = freshTmp(ctx)
+        val cArgs: List[NArg] = newList()
+        cArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+        cArgs.add(NArg(ty = NI64, value = startV.value))
+        cArgs.add(NArg(ty = NI64, value = stopV.value))
+        insns.add(NCall(dest = raw, retTy = NPtr(pointee = NI8), fn = NGlobal(name = "lyric_list_slice"), args = cArgs))
+        val cast = freshTmp(ctx)
+        insns.add(NBitcast(dest = cast, fromTy = NPtr(pointee = NI8), value = NLocal(name = raw), toTy = recv.ty))
+        val outV = NVal(ty = recv.ty, value = NLocal(name = cast))
+        registerTemp(ctx, outV)
+        return Some(value = outV)
+      }
+      if name == "concat" and args.count == 1 {
+        val otherV = lowerCallArgExpecting(ctx, insns, args, 0, recv.ty)
+        val otherP = collectionAsI8(ctx, insns, otherV)
+        val raw = freshTmp(ctx)
+        val cArgs: List[NArg] = newList()
+        cArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+        cArgs.add(NArg(ty = NPtr(pointee = NI8), value = otherP))
+        insns.add(NCall(dest = raw, retTy = NPtr(pointee = NI8), fn = NGlobal(name = "lyric_list_concat"), args = cArgs))
+        val cast = freshTmp(ctx)
+        insns.add(NBitcast(dest = cast, fromTy = NPtr(pointee = NI8), value = NLocal(name = raw), toTy = recv.ty))
+        val outV = NVal(ty = recv.ty, value = NLocal(name = cast))
+        registerTemp(ctx, outV)
+        return Some(value = outV)
+      }
+      if name == "append" and args.count == 1 {
+        val v = lowerCallArgExpecting(ctx, insns, args, 0, elem)
+        val raw = freshTmp(ctx)
+        val cArgs: List[NArg] = newList()
+        cArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+        cArgs.add(NArg(ty = NI64, value = slotOfVal(ctx, insns, v)))
+        insns.add(NCall(dest = raw, retTy = NPtr(pointee = NI8), fn = NGlobal(name = "lyric_list_append"), args = cArgs))
+        val cast = freshTmp(ctx)
+        insns.add(NBitcast(dest = cast, fromTy = NPtr(pointee = NI8), value = NLocal(name = raw), toTy = recv.ty))
+        val outV = NVal(ty = recv.ty, value = NLocal(name = cast))
+        registerTemp(ctx, outV)
+        return Some(value = outV)
+      }
       return None
     }
     case None -> {
@@ -8501,6 +8549,9 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl1("lyric_list_len", NI64, p8))
   decls.add(mkDecl1("lyric_list_clear", NVoid, p8))
   decls.add(mkDecl1("lyric_list_copy", p8, p8))
+  decls.add(mkDecl3("lyric_list_slice", p8, p8, NI64, NI64))
+  decls.add(mkDecl2("lyric_list_concat", p8, p8, p8))
+  decls.add(mkDecl2("lyric_list_append", p8, p8, NI64))
   decls.add(mkDecl2("lyric_args_set", NVoid, NI32, NPtr(pointee = p8)))
   decls.add(mkDecl2("lyric_map_new", p8, NI32, NI32))
   decls.add(mkDecl3("lyric_map_set", NVoid, p8, NI64, NI64))

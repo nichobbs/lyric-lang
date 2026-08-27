@@ -1385,6 +1385,29 @@ connection, each pumping `hostRead` bytes through its own
 the `_kernel/http_server.l` .NET-specific concurrency (Task.Run /
 ConcurrentQueue / SemaphoreSlim) with the native thread model. Gated on N9.2.
 
+**Prerequisites SHIPPED (D-progress-802):** `lyric_sem_*` (a counting
+semaphore — native had no blocking wait/signal primitive at all) and
+`List[T]`/`slice[T]` `.slice`/`.concat`/`.append` (`Std.HttpEngine.feed`'s
+buffer bookkeeping needs both on nearly every parse step).
+
+**BLOCKED, not yet shippable.** With both prerequisites in place, drafting
+the `_kernel_native/http_server.l` kernel (the same 12-function surface as
+the dotnet/JVM twins + `startListenerTls`, over a real
+`pthread_create`-per-connection accept loop, using a
+self-unregistering-closure pattern keyed by fd to solve the detached
+thread's userdata lifetime problem — see D-progress-802 for the design)
+surfaced two further, architectural native-backend gaps independent of
+this item's own scope: native `String` has no
+`.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith`
+(#6588), and a bare cross-package enum-case value reference (`val v:
+HttpVersion = Http1_1`, used throughout `Std.HttpEngine`) fails to resolve
+(#6589). Both block `Std.HttpEngine`/`Std.String` from compiling for
+`--target native` at all — the draft kernel could not be made to compile,
+so it was **not committed**; neither `_kernel_native/http_server.l` nor a
+self-test for it exist anywhere in the repository. A future contributor
+picking up #6104/N9.3 starts from zero on the kernel itself once #6588 and
+#6589 are resolved. N9.3 remains open pending #6588/#6589.
+
 ### N9.4 — `Std.Http` native client — follow-on (#6105)
 
 The `_kernel_native/http_host.l` client twin on the seam (client TLS connect

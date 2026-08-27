@@ -32128,4 +32128,248 @@ above for the original decision), #6578 (the JVM tuple-destructuring
 package compiler follow-up), D-progress-543 (sandbox exception: no
 `./bin/lyric` buildable from source here, hence no compiler-level fix for
 either #6564's or #6578's root cause).
+## D-progress-802 — Native prerequisites for N9.3 (`Std.HttpServer` native twin, #6104): `lyric_sem_*` counting semaphore + `slice[T]` `.slice`/`.concat`/`.append`
+
+**Context.** Issue #6104 (native/plan/08-work-items.md N9.3, docs/61 §7 item 5)
+needs a thread-per-connection native `Std.HttpServer` twin driving
+`Std.HttpEngine`. Two prerequisites were missing entirely: native had no
+blocking wait/signal primitive (only `lyric_mutex_*`, mutual exclusion with
+no wakeup — needed for the server's pull queue and per-request completion
+signal), and `slice[T]` had no `.slice`/`.concat`/`.append`
+(`Std.HttpEngine.feed`'s buffer bookkeeping calls `.slice`/`.concat` on
+nearly every parse step, so without this `Std.HttpEngine` cannot compile
+for `--target native` at all — confirmed by direct repro). The new runtime
+kernels (below) operate on the shared `LyricList` representation that
+backs both `List[T]` and `slice[T]` on native, but the type checker
+(`typechecker_exprs.l`'s `builtinMember`) only exposes `.slice`/`.concat`/
+`.append` on `TySlice` receivers — `List[T]` does not gain these methods
+at the language level.
+
+**Shipped.**
+
+- **`lyric_sem_*` counting semaphore** (`lyric-rt/src/lyric_posix.c`,
+  `include/lyric_rt.h`): `lyric_sem_size/_init/_wait/_post/_destroy`,
+  mutex+condvar backed rather than POSIX `sem_init` (not implemented on
+  macOS). Verified by a same-thread round-trip and a real forked
+  cross-thread test: a second pthread blocks in `lyric_sem_wait`, confirmed
+  still blocked after 50ms, then wakes correctly when the main thread posts.
+- **`slice[T]` `.slice(start, stop)` / `.concat(other)` /
+  `.append(x)`**: `lyric_list_slice`/`_concat`/`_append` runtime kernels
+  (`lyric-rt/src/lyric_collections.c`, half-open `[start, stop)` slice
+  bounds and panic message matching the MSIL/JVM twins for cross-target
+  parity) plus the native LLVM codegen call-site wiring
+  (`Lyric.LlvmCodegen.lowerCollectionMethodCall`,
+  `lyric-compiler/lyric/llvm_codegen.l`). All three are never-mutating
+  combinators — each returns a FRESH list, ref-typed elements retained by
+  the new list via the existing `lyric_list_push` retain path, source list
+  untouched.
+
+**Verification.**
+
+- `lyric-rt/test/lyric_rt_test.c`: new cases for the semaphore
+  (same-thread and real cross-thread blocking/wake) and for
+  `.slice`/`.concat`/`.append` (ref-element retain/release across all
+  three ops on a `String`-element list under ASan; an OOB-panic fork test
+  for `.slice` matching the MSIL twin's exact panic message). `make -C
+  lyric-rt test` and `make -C lyric-rt test-asan CC=gcc`: all pass.
+- `lyric-compiler/lyric/llvm_collections_self_test.l`: three new
+  ASan-compiled cases exercising the actual `Lyric.LlvmCodegen` call-site
+  wiring through the real `codegenNativePackage`/`lowerNativePackage`
+  pipeline (parse → codegen → clang → run) — the C-level tests above prove
+  the runtime kernels are correct in isolation, these prove the codegen
+  dispatch (`NArg`/`NBitcast`/`slotOfVal` wiring) is too: `.slice` returns
+  a correctly-bounded fresh sublist with the source list's own `.count`
+  unchanged; `.concat` returns a correctly-ordered fresh merge with both
+  sources' `.count` unchanged; `.append` returns a correctly-extended fresh
+  list with the source's `.count` unchanged. Expected values were derived
+  from `lyric_list_slice`/`_concat`/`_append`'s actual C source (read
+  directly, not assumed) before being written, to avoid an
+  assumed-semantics round-trip. **Could not be run in the authoring
+  sandbox** — see the caveat below — so these cases are unverified locally;
+  CI's `native-backend-self-tests` job (which already lists
+  `llvm_collections_self_test.l`) is this change's actual verification
+  oracle, run against a from-source `make lyric` build the sandbox cannot
+  perform. Watch that job on this PR before treating this entry's codegen
+  claims as confirmed.
+
+**Sandbox caveat (extends D-progress-543).** D-progress-543 documents a
+substitute verification path (the published NuGet `lyric` tool) for
+changes that don't touch the compiler itself. A change to
+`lyric-compiler/lyric/*.l` has no such substitute: the NuGet tool ships
+precompiled compiler DLLs with no knowledge of this checkout's
+`lyric-compiler/lyric/` source tree, so `import Lyric.LlvmCodegen` (or any
+other `Lyric.*` compiler package) cannot resolve from local source through
+it — confirmed by direct repro, not assumed: neither `LYRIC_LOAD_COMPILER=1
+lyric test` (that env var is vestigial — `cli_test.l`'s own comment calls
+it "the retired `LYRIC_LOAD_COMPILER` path", superseded by linking
+precompiled DLLs per #2364 Stage 5) nor `LYRIC_STDLIB_BIN=<nonexistent>
+lyric test`/`lyric build` (which was hypothesized to force a "no DLLs
+found → resolve from source" fallback, by analogy with `Std.*`'s built-in-
+head source resolution) actually recompiles `Lyric.*` packages from source
+through the NuGet tool — both fail with `T0020: unknown name` on any
+symbol the edited source doesn't yet have compiled into the NuGet tool's
+bundled DLLs. `bash scripts/bootstrap.sh --stage 1` itself fails at Stage 0
+(`GitHub access is not enabled for this session`), confirming there is
+currently no path in this sandbox to build `./bin/lyric` from source or
+otherwise verify a compiler-source change end to end locally. This is a
+sharper version of D-progress-543's exception, not a new one: CI (which
+does perform a real `make lyric` from-source build) is this class of
+change's only verification path from this environment.
+
+**Follow-up (#6104, not shipped by this entry).** Drafting the
+`Std.HttpServer` native twin itself (`_kernel_native/http_server.l`) on
+top of these two prerequisites hit two further, architectural
+native-backend gaps: native `String` has no `.trim`/`.toLower`/`.indexOf`/
+`.startsWith`/`.contains`/`.endsWith` (only `.toString()`/`.substring()`),
+and a bare cross-package enum-case value reference (`val v: HttpVersion =
+Http1_1`) fails to resolve at the point codegen tries to disambiguate it,
+because enums erase to a bare `NI32` with no distinguishing type by then.
+Both block `Std.HttpEngine`/`Std.String` from compiling for `--target
+native` at all, independent of this entry's two fixes. Neither is
+scopeable around; both are tracked as follow-up issues (linked from
+native/plan/08-work-items.md's N9.3 entry). The draft kernel could not be
+made to compile against these gaps and was **not committed** — neither
+`_kernel_native/http_server.l` nor a self-test for it exist anywhere in
+this repository (not in this PR, not on `main`); a future contributor
+picking up #6104/N9.3 starts from zero on the kernel itself once #6588
+and #6589 are resolved.
+
+**Related:** #6104, `native/plan/08-work-items.md` N9.3, docs/61 §7 item 5,
+D-progress-543 (the sandbox-exception precedent this sharpens).
+
+---
+
+## D-progress-807 — Where-bound marker vocabulary and diagnostic-level divergences settled: `Copyable` dropped, T0051/T0111 two-tier contract confirmed as designed, `hasDerive` aligned to `mono.l` on primitives (#5549)
+
+**Status:** Shipped.
+
+**Context.** Surfaced by #5549 while making `satisfiesMarker` real in
+PR #5544 (D-progress-642). Three related divergences in the where-bound
+marker story, all touching the closed marker set D034 fixed:
+
+1. `docs/01-language-reference.md` §generics listed the closed marker
+   set as D034's ten names, including `Copyable` — but the checker's
+   `isKnownDeriveMarker` (`typechecker_checker.l`) was, and always had
+   been since the self-hosted rewrite, the NINE-marker set without
+   `Copyable` (`Add,Sub,Mul,Div,Mod,Compare,Hash,Equals,Default`), so
+   `where T: Copyable` unconditionally hit T0051 ("unknown constraint").
+2. The spec described unknown `where`-constraints as always getting a
+   T0111 *warning*; the checker instead ERRORS with T0051 at the
+   `where` clause's own declaration site for a genuinely-unknown name,
+   and only falls back to the lenient T0111 warning from
+   `checkBoundsSatisfied` (`typechecker_exprs.l`) at a call site that
+   cannot re-resolve a name the constrained function's own
+   declaration already validated.
+3. The checker's `hasDerive` (`typechecker_exprs.l`) matches only
+   `TyUser`-shaped symbols (`DKDistinctType`/`DKRecord`/`DKExposedRec`/
+   `DKUnion`) and returns `false` for `TyPrim`, so a primitive type
+   argument reaching T0108 (`checkBoundsSatisfied`) with a capability
+   marker bound (e.g. `Int` against `where T: Add`) was wrongly
+   rejected — while `mono.l`'s `satisfiesMarker`/`primitiveSatisfiesMarker`
+   (added by D-progress-642 specifically to make monomorphization's own
+   marker check real) already accepts primitives correctly: arithmetic
+   markers on numerics (`Add` also on `String`, whose `+` is
+   concatenation), `Equals`/`Hash`/`Compare`/`Default` on every
+   primitive.
+
+**Decision — three independent resolutions, one per divergence:**
+
+1. **`Copyable` is dropped from the practically-usable marker
+   vocabulary** (spec, checker, and `mono.l` all agree it does not
+   exist as a usable `where`/`derives` name). D034's `Copyable` row
+   speced it as "the type lowers to a CLR value type (per
+   `09-msil-emission.md` §5)" — a genuinely *structural*, backend-
+   computed property, not a `derives`-opted-into capability the way
+   the other nine are. Tracing `09-msil-emission.md` §9.4 confirms
+   `Copyable` DID work in the retired F# bootstrap emitter
+   (`Codegen.fs`'s `satisfiesMarker`: "any value type (CLR struct)
+   satisfies Copyable"), where the checker/emitter were one and the
+   same program with direct access to the struct-vs-class lowering
+   decision. In the self-hosted split, that decision is NOT simple to
+   reproduce in the front end: §5.3's own struct-vs-class heuristic
+   for records is itself non-trivial (a field-count/derives-shaped
+   rule plus an explicit `@valueType` opt-in), and it runs inside the
+   MSIL backend (`lyric-compiler/msil/codegen.l`), a phase that runs
+   AFTER the type checker in the pipeline (`Lyric.Pipeline`'s
+   `pipeCheckAndMono` precedes backend codegen) and that `mono.l` also
+   has no visibility into. A `Copyable` implementation that only
+   covered "primitives and distinct types" (the two structurally
+   obvious cases) while silently getting every struct-eligible record
+   wrong would be worse than no implementation — a plausible-looking
+   but incorrect answer, exactly what the production-readiness
+   standard's "no shortcuts" rule exists to block. Reintroducing
+   `Copyable` for real is future work, gated on exposing the backend's
+   struct-vs-class decision (or an equivalent front-end-computable
+   rule) to `typechecker_exprs.l`/`mono.l` — tracked as a follow-up,
+   not attempted here. This SUPERSEDES D034's `Copyable` row for the
+   self-hosted compiler (D034 itself is left unedited per this repo's
+   append-only decision-log convention); the other nine markers in
+   D034's table are unaffected and remain the closed set.
+2. **The T0051/T0111 split is confirmed as the intended design, not a
+   bug** — the spec is what was wrong, not the checker, but the spec's
+   error was mischaracterizing the split as "unknown constraints
+   always warn" rather than describing what the checker actually
+   does. T0051 (`checkWhereClause`) fires exactly once, at the
+   `where` clause's own DECLARATION site, whenever the name is
+   neither a known marker nor a visible interface — unconditionally,
+   independent of whether the generic function is ever called.
+   T0111 (`checkBoundsSatisfied`) fires separately, once at EACH CALL
+   site that instantiates the generic against concrete type
+   arguments, whenever that same name still can't be resolved from
+   the call site's own symbol-table view; the bound is treated as
+   satisfied there rather than compounding the single declaration-
+   time error into a hard failure at every call site too. Verified
+   directly against the existing `typechecker_self_test.l` fixture
+   for #2954 (`func f[T](x: in T): T where T: Addd { x }` +
+   `func g(): Int { f(42) }`, entirely single-package): BOTH T0051
+   and T0111 fire together for this one malformed declaration once it
+   is called — they are not alternative severities for the same
+   situation, and T0051 does not suppress or replace T0111 (an
+   earlier draft of this entry incorrectly assumed same-package
+   resolution made T0111 unreachable there; that assumption did not
+   hold up against the shipped test). Fixed by rewriting
+   `docs/01-language-reference.md` §generics to describe this
+   two-diagnostics-together contract accurately instead of the
+   flatter "unknown constraints always warn" claim it had before.
+3. **`hasDerive` gets a `TyPrim` arm mirroring `mono.l`'s
+   `primitiveSatisfiesMarker`** — the checker aligns to mono's
+   already-correct behavior (post-D-progress-642), not the reverse, as
+   the issue itself concluded. A shared helper is not used because
+   `hasDerive` receives a resolved `Type`/`TyPrim` (post name
+   resolution) while `mono.l`'s `satisfiesMarker` receives an
+   unresolved `TypeExpr`/`TRef` (pre-resolution, call-site-inference
+   context) — the two type representations don't share a common
+   primitive-name predicate without a larger refactor of one side's
+   representation, out of scope for a marker-vocabulary alignment
+   fix. The primitive capability table itself (which marker each
+   `TyPrim` variant satisfies) is duplicated verbatim in intent
+   between the two functions and MUST be kept in sync by hand if
+   either changes — flagged in both functions' doc comments.
+
+**Verification.** `mono_self_test.l`'s M0001 cases extended: a
+`Copyable` where-bound now behaves exactly like any other unrecognized
+constraint name (T0051 at declaration, matching every other unknown
+name — no special-casing survives). `typechecker_self_test.l` extended
+with: (a) `Copyable` in a `where` clause raises T0051 at the
+declaration site (confirms the drop from (1) took effect, not a silent
+accept); (b) a primitive type argument (`Int`) against a capability
+marker bound (`where T: Add`) type-checks with zero diagnostics
+end-to-end through a real generic function call (confirms `hasDerive`'s
+new `TyPrim` arm from (3) — this call previously raised a spurious
+T0108); (c) the T0051/T0111 split itself: an unknown `where`-clause
+constraint name raises T0051 once at the declaration alone (no call
+needed), and calling that same generic function additionally raises
+T0111 at the call site — both codes present together for one malformed
+declaration, confirming they are two independent diagnostics rather
+than alternative severities for the same situation. Full regression
+sweep after `make lyric`: `typechecker_self_test.l`, `mono_self_test.l`,
+and `contract_elaborator_self_test.l` (unaffected — this fix never
+touches contract elaboration) all green.
+
+**Related:** #5549, D034, D-progress-642, D-progress-730 (the T0116
+sibling fix this entry's verification fixture style mirrors),
+`docs/01-language-reference.md` §generics, `docs/09-msil-emission.md`
+§9.4, `typechecker_checker.l` (`isKnownDeriveMarker`),
+`typechecker_exprs.l` (`hasDerive`, `checkBoundsSatisfied`), `mono.l`
+(`isKnownMarker`, `satisfiesMarker`, `primitiveSatisfiesMarker`).
 

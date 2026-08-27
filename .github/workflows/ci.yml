@@ -564,9 +564,24 @@ jobs:
             echo "::warning::AOT binary not found; skipping example tests"
             exit 0
           fi
-          # Build dependency libraries
+          # Build dependency libraries. lyric-grpc's dotnet kernel (Grpc.Net.Client,
+          # Grpc.AspNetCore, System.Threading.RateLimiting) and lyric-db's
+          # (Npgsql, Microsoft.Data.Sqlite) both have mandatory NuGet deps
+          # whose extern types/ctors resolve from package metadata at compile
+          # time -- restore first, like the dedicated "Run tests (grpc)" /
+          # "Run tests (db)" ecosystem-tests steps do. Reproduced empirically:
+          # a `lyric build` against a clean (no obj/) checkout of either
+          # throws the same "cannot be resolved to any indexed reference
+          # assembly" FFI exception without restore first (#6582).
+          nuget_libs="lyric-db lyric-grpc"
           libs="lyric-logging lyric-auth lyric-resilience lyric-otel lyric-db lyric-web lyric-health lyric-grpc"
           for lib in $libs; do
+            case " $nuget_libs " in
+              *" $lib "*)
+                echo "=== restore dependency $lib ==="
+                "$lyric_bin" restore --manifest "$lib/lyric.toml" > /tmp/"$lib".restore.log 2>&1 || { tail -20 /tmp/"$lib".restore.log; exit 1; }
+                ;;
+            esac
             echo "=== build dependency $lib ==="
             "$lyric_bin" build --manifest "$lib/lyric.toml" > /tmp/"$lib".log 2>&1 || { tail -20 /tmp/"$lib".log; exit 1; }
           done
@@ -1817,6 +1832,19 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"aspect-weave self-test ran: aspect_weave_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/aspect_weave_self_test.l"
+
+      # `result.isOk implies result.value ...` / `.isErr`/`.error` /
+      # `.isSome`/`.isNone` direct accessor self-test (#5183).  Pins that
+      # `Result[T, E]`/`Option[T]`'s builtin field-style accessors actually
+      # compile AND run correctly (not just AST-shape), for both a
+      # payload-carrying `E` (the issue's exact repro) and the Option twin.
+      # This (`dotnet`) job runs the MSIL half via in-process `Msil.Bridge`;
+      # the `--target jvm` half runs in the `compiler-self-tests-jvm` job
+      # below. Imports only `Std.*`.
+      - name: Result/Option accessor self-test (native lyric test, --target dotnet)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"result/option accessor self-test ran: result_ensures_accessor_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/result_ensures_accessor_self_test.l"
 
       # B'-mode aspect runtime self-test (#4600) — pins that a shape-keyed
       # B'-mode aspect specialisation actually RUNS and produces correct values
@@ -4578,6 +4606,17 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"aspect-weave self-test ran: aspect_weave_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/aspect_weave_self_test.l"
 
+      # Result/Option accessor self-test on JVM (#5183) — the JVM half of the
+      # dotnet-job step above.  Pins the JVM `.isOk`/`.isErr`/`.value`/
+      # `.error`/`.isSome`/`.isNone` lowering (`lyric-compiler/jvm/codegen/02_exprs.l`),
+      # which previously hit the loud `error[J009]` unknown-member guard
+      # rather than MSIL's silent stack corruption, but was equally
+      # unsupported.  Needs JDK 21 (this job).  Imports only `Std.*`.
+      - name: Result/Option accessor self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci/self-test.sh --summary \"result/option accessor self-test ran: result_ensures_accessor_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/result_ensures_accessor_self_test.l"
+
       # B'-mode runtime self-test on JVM (#4600) — the load-bearing half: pins
       # the JVM bridge post-weave re-scan fix (B'-mode's synthesised
       # `__lyric_bmode_*` functions + `__LyricBModeCallContext`/`__LyricBModeCfg_*`/
@@ -6763,8 +6802,22 @@ jobs:
           fi
           # Build the dependency libraries bottom-up so each example's
           # restored path deps resolve to an existing bin/<assembly>.dll.
+          # lyric-otel/lyric-db/lyric-web's plain `build` auto-resolves their
+          # own NuGet deps here (their manifests hit `lyric build`'s
+          # lyric.lock-missing auto-restore path). lyric-grpc's does not --
+          # confirmed on a real run (#6582) that its build fails here the
+          # same way it does everywhere else without an explicit restore
+          # first, so give it the same treatment as the "Test multi-package
+          # examples" / dedicated "Run tests (grpc)" steps.
           libs=(lyric-logging lyric-auth lyric-resilience lyric-otel lyric-db lyric-web lyric-health lyric-grpc)
           for lib in "${libs[@]}"; do
+            if [ "$lib" = "lyric-grpc" ]; then
+              echo "=== restore dependency $lib ==="
+              if ! "$lyric_bin" restore --manifest "$lib/lyric.toml"; then
+                echo "::error::failed to restore $lib NuGet dependencies"
+                exit 1
+              fi
+            fi
             echo "=== build dependency $lib ==="
             if ! "$lyric_bin" build --manifest "$lib/lyric.toml"; then
               echo "::error::failed to build example dependency $lib"
