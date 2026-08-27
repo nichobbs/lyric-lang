@@ -4002,12 +4002,33 @@ func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding:
   }
 }
 
+// A `val` binding SHADOWS any earlier binding of the same name in this
+// scope (Lyric allows `val r = ...; val r = ...` — each `val` introduces a
+// fresh binding, not a rebind of the first).  `Map.add` throws on a
+// duplicate key, so a stale entry from an earlier same-named `val` must be
+// evicted before recording this one's type — mirroring the remove-then-add
+// pattern `rewriteBinding`'s `LBVar`/`LBLet` arms already use.  Before this
+// fix the guard was "only add if absent," which SILENTLY KEPT the first
+// binding's type for every later use of the name (#6121): a file that
+// calls a generic helper (`isSome`/`unwrapOption`/a user-defined generic)
+// through several `val`s sharing one name but binding DIFFERENT concrete
+// `Option[T]` instantiations had every call after the first specialise
+// against the FIRST val's type instead of its own — producing a
+// specialisation whose parameter type doesn't match the runtime value's
+// real (reified) generic instantiation, which panics "match not
+// exhaustive" at the mismatched `isinst` (the same failure family as
+// #1442/#1602/#1731/#2592/#3332/#6231). Removing and re-adding here makes
+// each shadowing `val` correctly override the tracked type for every
+// reference after it, so the SAME name reused across several concrete
+// instantiations in one scope specialises each call against its own real
+// argument type instead of an earlier shadowed binding's.
 func trackPatternEnv(env: in Map[String, TypeExpr], pat: in Pattern, te: in TypeExpr): Unit {
   match pat.kind {
     case PBinding(name, _) -> {
-      if not env.containsKey(name) {
-        env.add(name, te)
+      if env.containsKey(name) {
+        env.remove(name)
       }
+      env.add(name, te)
     }
     case _ -> ()
   }

@@ -1691,3 +1691,33 @@ test "bare nullary-case match arm does not pollute env with a bogus binding" {
   assertTrue(hasFunc(res.file, "unboxScalar__Int"), "the SomeLike(x) arm still infers correctly")
   assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics from the bare NoneLike arm")
 }
+
+// #6121: a nested-block `val` that SHADOWS an outer binding of the same name
+// with a DIFFERENT concrete type must specialise the generic call made from
+// inside that inner scope against the SHADOW's type, not the outer binding's.
+// `trackPatternEnv` used to guard its `env.add` with "only if this name isn't
+// already tracked" (to dodge `Map.add`'s throw-on-duplicate-key), which meant
+// the inner `val r: String` was silently NOT recorded and `env["r"]` stayed
+// `Int` from the outer `val r: Int` for the rest of the inner scope. A generic
+// helper called on the shadowed `r` inside the block then inferred `T = Int`
+// from the stale entry and reused/collided with the OUTER call's
+// specialisation instead of getting its own `T = String` one — exactly the
+// "several concrete instantiations sharing one compilation unit collide"
+// failure class reported in #6121 (would manifest at runtime as a
+// `match not exhaustive` panic: the wrongly-specialised function's parameter
+// is typed for the outer instantiation, but the real argument is the
+// shadow's, a different closed generic instantiation of `Option`/etc.).
+test "generic call on a shadowed val specialises against the shadow's own type, not the outer binding's (#6121)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" + "func caller(): Int {\n" + "  val r: Int = 1\n" +
+    "  if true {\n" +
+    "    val r: String = \"hi\"\n" +
+    "    like(r)\n" +
+    "  }\n" +
+    "  like(r)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "like__Int"), "like__Int specialised for the outer (shadowed) r")
+  assertTrue(hasFunc(res.file, "like__String"), "like__String specialised for the inner shadow r")
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
