@@ -61,6 +61,7 @@ output_assembly = "Lyric.Grpc.dll"
 "Grpc.GrpcTypesTests" = "tests/grpc_types_tests.l"
 "Grpc.SecurityAspectWeavingTests" = "tests/security_aspect_weaving_tests.l"
 "Grpc.RateLimitTests" = "tests/rate_limit_tests.l"
+"Grpc.ChannelLifecycleTests" = "tests/channel_lifecycle_tests.l"
 
 [dependencies]
 "Lyric.Auth"       = { workspace = true }
