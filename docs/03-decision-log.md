@@ -12347,38 +12347,40 @@ handle-based alternative entry point.
   targets without any kernel, so this is a genuinely separate, optional
   entry point, not a redesign of the primary public API.
 
-**Two new JVM/MSIL compiler bugs found and worked around at the time (not
-fixed here, filed separately — since fixed, see the "Fixed" notes below):**
+**Two new JVM/MSIL compiler bugs found and worked around (not fixed
+here, filed separately):**
 
-- **#5422 — Fixed in D-progress-812.** `Std.Collections.mapKeys()` called
-  directly on a `match`-pattern-bound `Map` value throws a runtime cast
-  exception on BOTH `--target dotnet` and `--target jvm` (`Dictionary`/
-  `HashMap` cannot be cast to `IList`/`List`). Reproduces with a two-line
-  minimal repro; does NOT reproduce for a plain `val`-bound (non-`match`)
-  Map, regardless of nesting depth. Worked around at the time by re-binding
-  the match-bound value to an explicitly-typed local before calling
-  `mapKeys` — used three times in the new kernel files, each commented; the
-  root cause (`Lyric.Mono` never tracked a `match`-arm pattern binding's
-  type into its call-site inference `env`) is now fixed, so the workaround
-  is no longer required, though it is left in place as harmless defensive
-  code — see D-progress-812's comment updates in the kernel test file.
-- **#5423 — Investigated, no reproducible defect found; see
-  D-progress-812.** Calling a native `String` method (e.g. `.contains`) on
-  a `String` value bound inside a `match { case Ok(x) -> ... }` arm was
-  suspected to crash `--target jvm` compilation entirely (the JVM
-  backend's type tracking losing the value's `String` type inside the arm
-  and falling through to the auto-FFI instance-call resolver, which then
-  fails to find `.contains` on the erased `java.lang.Object`). `--target
-  dotnet` compiled the identical code with no issue at the time. Worked
-  around the same way as #5422 — re-bind to an explicitly-typed local
-  first — used twice in `tests/i18n_kernel_tests.l`, each commented.
-  D-progress-812's investigation could not reproduce this against several
-  faithful repro shapes: the JVM backend's `bindCaseField`/
-  `scrutineeGenericArgs` machinery already resolves a match-bound
-  payload's concrete JVM type correctly, so no targeted fix was needed;
-  shipped as a standing regression test instead
-  (`match_bound_pattern_type_self_test.l`, now wired into CI on both
-  targets per D-progress-812).
+- **#5422** — `Std.Collections.mapKeys()` called directly on a
+  `match`-pattern-bound `Map` value throws a runtime cast exception on
+  BOTH `--target dotnet` and `--target jvm` (`Dictionary`/`HashMap`
+  cannot be cast to `IList`/`List`). Reproduces with a two-line minimal
+  repro; does NOT reproduce for a plain `val`-bound (non-`match`) Map,
+  regardless of nesting depth. Worked around by re-binding the
+  match-bound value to an explicitly-typed local before calling
+  `mapKeys` — used three times in the new kernel files, each commented.
+- **#5423** — calling a native `String` method (e.g. `.contains`) on a
+  `String` value bound inside a `match { case Ok(x) -> ... }` arm can
+  crash `--target jvm` compilation entirely: the JVM backend's type
+  tracking loses the value's `String` type inside the arm and falls
+  through to the auto-FFI instance-call resolver, which then fails to
+  find `.contains` on the erased `java.lang.Object`. `--target dotnet`
+  compiles the identical code with no issue. Worked around the same way
+  as #5422 — re-bind to an explicitly-typed local first — used twice in
+  `tests/i18n_kernel_tests.l`, each commented. Possibly the same root
+  cause as #5422 (match-bound pattern types losing precision before a
+  subsequent call).
+
+**Revisions (D-progress-812).** #5422 is fixed: `Lyric.Mono` now tracks a
+`match`-arm pattern binding's type into its call-site inference `env`
+(the root cause), so the re-bind-to-explicit-local workaround above is no
+longer required, though it is left in place as harmless defensive code.
+#5423 was investigated alongside #5422 but could not be reproduced against
+several faithful repro shapes — the JVM backend's `bindCaseField`/
+`scrutineeGenericArgs` machinery already resolves a match-bound payload's
+concrete JVM type correctly, so no targeted fix was needed; shipped as a
+standing regression test instead (`match_bound_pattern_type_self_test.l`,
+wired into CI on both targets). See D-progress-812 for the fix, the
+investigation, and the kernel test comment updates.
 
 **Verification.** `./bin/lyric test --manifest lyric-i18n/lyric.toml`
 on both `--target dotnet` and `--target jvm --features jvm`: the
@@ -35890,7 +35892,7 @@ branch), `lyric-compiler/lyric/generic_extern_jvm_self_test.l` (new),
 **Related:** #3432, #3392, #3413 (the MSIL fix this issue tracked JVM parity
 against), #5458, D-progress-588, D-progress-663, docs/44 m-25/m-97.
 
-### D-progress-804 — JVM: a panic inside a closure invoked through a cross-package function-typed parameter corrupted the caught `Bug.message` (#5388, #5251)
+## D-progress-804 — JVM: a panic inside a closure invoked through a cross-package function-typed parameter corrupted the caught `Bug.message` (#5388, #5251)
 
 **Status:** Shipped.
 
@@ -36172,10 +36174,11 @@ findings, addressed in this same pass rather than as a follow-up:
 self_test.l` 6/6 on both `--target dotnet` and `--target jvm`, now wired
 into CI on both targets.
 
-**Docs.** `docs/03-decision-log.md` D-progress-628's "#5422/#5423 ... not
-fixed here, filed separately" language and the `lyric-i18n` kernel test
-comments describing the re-bind-to-local workarounds are updated to point
-at this entry.
+**Docs.** D-progress-628's original "#5422/#5423 ... not fixed here, filed
+separately" text is left as written (append-only) with a new "Revisions"
+paragraph added pointing at this entry; the `lyric-i18n` kernel test
+comments describing the re-bind-to-local workarounds are updated to note
+the workaround is no longer required.
 
 **Related:** #5422, #5423, #6632, #6633, #6121 (the `snapshotEnv`/
 `restoreEnv` scope-isolation machinery this fix's `rewriteMatchArms`
@@ -36273,3 +36276,186 @@ regressions from the `isPrimitiveTypeKeyword` change.
 reservation this fix reuses rather than duplicates), `lyric-compiler/jvm/
 codegen/01_types.l`, `lyric-compiler/jvm/codegen/03_match.l`,
 `lyric-compiler/lyric/stdlib_generic_mono_self_test.l`, PR #6631.
+## D-progress-803 — JVM: track element type through unannotated list literals so indexed reads no longer erase to `Object` (#5686, JVM parity for MSIL's #5620)
+
+**Status:** Shipped.
+
+**Context.** `Jvm.Codegen`'s `case EList` (`codegen/02_exprs.l`) always
+built a plain `ArrayList` with every element boxed to `Object` and no
+element-type tracking, unlike MSIL's #5620 fix (a homogeneous unannotated
+literal builds a genuine `T[]`). An indexed read (`xs[0]`) on
+`val xs = [3, 5, 8]` therefore stayed statically `Object`, and a following
+relational/arithmetic use (`xs[0] < xs[1]`) panicked loudly at codegen time
+("unsupported reference comparison op … on operands of reference type
+'java/lang/Object'") — not the MSIL flavor's silent garbage, but still a
+real usability gap: an unannotated homogeneous list literal could not be
+indexed-and-used on JVM the way it could on MSIL after #5620.
+
+**Design.** Rather than adding a new `JvmType` "typed list" variant (which
+would need threading through the ~700 existing match arms that dispatch on
+a list/collection receiver's static type), this extends the backend's
+existing `ctx.varGenericArgs` registry — already populated at `val`/`var`
+binding sites for a declared `List[Elem]`/`slice[Elem]` annotation and
+consulted by `indexedElemTypeOverride`/`applyIndexedElemOverride` — to also
+cover the unannotated-literal case, so the two forms resolve through the
+exact same pipeline and can never disagree. Three new pure peek helpers in
+`codegen/02_exprs.l` (`listLiteralElemTypeJvm`, `isSimpleListElemJvm`/
+`jvmSimpleTypeEq`, `inferHomogeneousListElemTypeJvm`, all mirroring their
+MSIL namesakes) determine whether every element of a list literal shares
+one simple type; `scrutineeGenericArgs`'s new `EList` arm
+(`codegen/03_match.l`) synthesises a `TypeExpr` for that type and records it
+into `ctx.varGenericArgs` with zero new call sites. The `ArrayList` runtime
+representation is untouched — only the compiler's own type tracking gained
+the extra inference.
+
+**Tests.** `lyric-compiler/lyric/list_literal_index_self_test.l` (shared
+with the #5620 MSIL fix, previously dotnet-only): 6 cases now pass on
+`--target jvm` too, wired into `compiler-self-tests-jvm`. Regression-checked
+against 15 other list/slice/generic/collection JVM self-tests spanning the
+same machinery (`indexedElemTypeOverride`/`scrutineeGenericArgs`/
+`fieldElemOverride`) — all pass, no regressions.
+
+**Related:** #5686, #5620, docs/44-jvm-production-readiness-plan.md m-98,
+`docs/10-bootstrap-progress.md` (mirrored under this same number).
+
+---
+
+## D-progress-811 — JVM: restored-dependency pipeline for cross-package generic records/unions (#3094, JVM counterpart of #1496/D097)
+
+**Status:** Shipped.
+
+**Context.** JVM had no way to consume a pre-compiled producer JAR at all —
+`compileToJarBundledWithFeatures` only ever bundled stdlib plus the user's
+own source, so a generic record/union declared in one package and
+instantiated in another (across a restored-dependency boundary) had no JVM
+path, unlike MSIL's #1496/D097.
+
+**Fix.** `Jvm.Bridge` gains a restored-dependency pipeline:
+`compileToJarBundledWithRestored`/`compileProjectToJarBundledWithRestored`
+accept a list of pre-loaded `Lyric.RestoredPackages.SynthesisedArtifact`s
+and register each one's records/unions/functions into the same
+`collectFileSigsSeeded`/`collectFileCasesExtern`/`collectFileCtors`/
+`collectFileProjectables` calls a stdlib file gets, without adding it to
+`stdlibFiles`/`toBundle` (no codegen, no bytecode duplication — the classes
+already exist in the producer JAR). The existing
+`compileToJarBundledWithFeatures`/`compileProjectToJarBundledWithFeatures`
+names keep their old signatures as thin forwarders, so none of the 30+
+existing call sites needed touching. `Jvm.Bridge` now embeds each compiled
+package's `Lyric.Contract.<Pkg>` JSON as a plain ZIP entry in the output JAR
+(the JVM analog of the MSIL bridge's `embedLyricContract`); a new
+`Jvm.ContractMetaJar` reads that entry back via the ZIP central directory
+and hands off to `Lyric.RestoredPackages.synthesiseArtifact` unchanged. The
+producer JAR's path rides the consumer's manifest `Class-Path:` attribute
+(the same mechanism already used for Maven/`LYRIC_FFI_JARS` jars) so
+`java -jar` resolves the producer's classes at runtime.
+
+JVM's type-erasure model makes this substantially simpler than the MSIL
+fix: a generic record/union's fields already erase to `Object` uniformly,
+so none of D097's arity-suffixed-TypeRef/VAR-form-metadata-map machinery
+has a JVM analog.
+
+**Tests.** `lyric-compiler/jvm/cross_package_generics_jvm_self_test.l` (the
+JVM analog of `Lyric.CrossPackageGenericsSelfTest`): generic record `Box[T]`
+(`Int` and `String` payloads), two-type-param `Pair[A, B]`, and generic
+union `Maybe[T]` (`Just`/`Nothing`, `Int` and `String` payloads), each
+building a real producer JAR via `Jvm.Bridge.compileToJarBundled` and a
+consumer JAR that imports it as a restored dep, run under `java -jar`.
+`generic_jvm_self_test.l` (the in-bundle case) re-verified unaffected.
+
+**Scope.** Explicitly out of scope, tracked as a follow-up:
+`resolveManifestDependencies`/`workspace_builder.l` still hardcode `.dll`
+output-assembly naming for path/workspace dependencies, and JVM manifest
+builds still consume those via source-bundling (`depTemplateSrcs`), not
+`restoredDllPaths` — full `lyric build --target jvm`/`lyric.toml` CLI wiring
+of a genuinely pre-compiled-only restored JVM dependency needs that
+target-aware artifact-naming/resolution work first.
+
+**Related:** #3094, #1496, D097, docs/44-jvm-production-readiness-plan.md
+m-100, `docs/10-bootstrap-progress.md` (mirrored under this same number).
+
+---
+
+## D-progress-815 — JVM: distinct/range-subtype `Type.from`/`Type.tryFrom` static factories (#5956, closes the historical #2997 JVM gap)
+
+**Status:** Shipped.
+
+**Context.** The JVM backend never emitted the distinct/range-subtype
+construction API (`Type.from`/`Type.tryFrom`, and the `.toInt()`/
+`.toLong()`/`.toDouble()`/`.toByte()` inherent projection) that MSIL has
+had since #1501: `Age.from(x)`/`Age.tryFrom(x)` failed to compile under
+`--target jvm` with "reference 'Age' resolves to no local, parameter, ...",
+and range bounds were silently dropped by `Jvm.Lowering.LDistinctType`.
+JVM parity for this was tracked as the historical issue #2997.
+
+**Fix.** `LDistinctType` gains the same range-bound fields as MSIL's
+`MDistinctType` (`hasRange`/`rangeIsFloat`/`minI`/`maxI`/`minF`/`maxF`/
+`upperExclusive`); `lowerDistinctType` now also emits a static `from(x): T`
+(bounds-checked, throwing `java.lang.RuntimeException` on violation —
+byte-identical message shape to MSIL's `ArgumentOutOfRangeException`) and a
+static `tryFrom(x): Std.Core.Result` (`Ok`/`Err(message)`, no generic-args
+gate needed since JVM erases generics), plus the `toX` conversion method
+alongside the legacy `$value()` accessor. `from`/`tryFrom` register into
+the existing bundle-wide `funcSigs` map under the `"<TypeName>.<member>"`
+dot-key `lowerMethodCall`'s pre-existing dot-named-static-call arm already
+dispatches through, so no new call-site special-casing was needed.
+
+Two further, previously-unreachable JVM erasure gaps surfaced and were
+fixed in the same slice: direct `emitXxx` bytecode.l calls never populated
+`asm.peakStack` (only the `LInsn`/`lowerInsn` path did), so the first
+`from`/`tryFrom` wrote `max_stack = 0` and the verifier rejected the first
+push; and a function/method parameter's own generic-instantiation type
+annotation was never registered against `FuncCtx.varGenericArgs` (only a
+`let`/`var` re-binding was), so `match r { case Ok(a) -> a.toInt() }` left
+`a` erased to `java.lang.Object` even once `tryFrom`'s own `retGenericArgs`
+were correct — fixed by the new `recordParamGenericArgs`
+(`codegen/03_match.l`).
+
+**Tests.** `range_subtype_self_test.l` (previously MSIL-only, #1501) now
+runs unmodified on both targets (10/10 each) and gained a JVM CI step.
+
+**Related:** #5956, #1501, #2997 (the historical JVM-parity tracking issue
+this closes), docs/44-jvm-production-readiness-plan.md m-101,
+`docs/01-language-reference.md`'s range-subtype construction section,
+`docs/10-bootstrap-progress.md` (mirrored under this same number).
+
+---
+
+## D-progress-816 — JVM: `Double` stringification now matches .NET for `|value| >= 1e7` and very small magnitudes (#5660, docs/44 m-21 residual)
+
+**Status:** Shipped.
+
+**Context.** `emitNormalizeDoubleString` (D-progress-664) only stripped
+`Double.toString()`'s trailing `.0` — it never touched Java's own
+scientific-notation threshold (`|value| >= 1e7` or `< 1e-3`), which is
+narrower than .NET's default `Double.ToString()` threshold (`|value| >=
+1e17` or `< 1e-4`). A value in the gap (e.g. `20000000.0`) rendered as
+`"2.0E7"` on `--target jvm` instead of .NET's `"20000000"`, and a value
+beyond .NET's own threshold (e.g. `1e20`) rendered in Java's spelling
+(`"1.0E20"`) instead of .NET's (`"1E+20"`). This was the tracked residual
+gap in docs/44 finding m-21.
+
+**Fix.** `emitNormalizeDoubleString` now detects Java's `"E"` marker at
+runtime (real JVM bytecode branches — the decision depends on the value
+being stringified, not something knowable at compile time) and, when
+present, parses the `"[-]D.DDD"` mantissa + exponent and re-derives
+whichever of .NET's two notations actually applies to the magnitude: plain
+decimal when within .NET's wider fixed-point range, or .NET's own
+`"D[.DDD]E[+-]NN"` scientific spelling (no forced `.0` mantissa suffix,
+explicit sign, exponent zero-padded to >= 2 digits) when beyond it.
+Verified against .NET's actual behavior (a real dotnet 10 script) across
+this magnitude range before implementing, rather than assuming a
+threshold. The original function was also split into smaller bytecode-
+construction helpers (`emitLiteralSlot`, `emitConcatSlots`,
+`emitStrLen`/`SubstringFrom`/`SubstringRange`, `emitApplyNegPrefix`,
+`emitStripTrailingDotZero`) alongside the rewrite.
+
+**Tests.** `lyric-compiler/jvm/silent_miscompile_guard_jvm_self_test.l`: 8
+new regression cases (values >= 1e7 within .NET's fixed range, at/above
+.NET's own 1e17 threshold, very small magnitudes, exponent zero-padding,
+and a within-Java's-sci-range-but-still-.NET-fixed case) — 38/38 pass.
+Manual repro confirmed exact .NET parity for `20000000.0`, `1e20`, `1e-10`,
+`9999999.0`, `1500.5`, `-20000000.0`, `0.0001`, `0.00001`.
+
+**Related:** #5660, #4688, #4551, D-progress-664 (the earlier
+trailing-`.0` fix this extends), docs/44-jvm-production-readiness-plan.md
+m-21.

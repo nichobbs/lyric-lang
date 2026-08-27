@@ -23941,7 +23941,7 @@ The contract elaborator inserts `let __old_N = expr` snapshot bindings before an
 Replaced the no-op `lowerProtectedMsil` stub with production `Monitor.Enter`/`Monitor.Exit` wrapping. Uses `this` as the CLR sync-block object. Each `PMEntry` body is wrapped in a try/finally EH region: Enter before the try, Exit in the finally. Non-void entries stash the return value before `leave` and reload after the merge label. 3/3 protected-type emitter tests pass.
 
 **Range-subtype construction validation** (`lowering.l`):
-`lowerMRangeType` now emits a bounds-checking `.ctor(value)` that throws `System.ArgumentOutOfRangeException` with a descriptive message when the value is outside `[minVal, maxVal]`. `MInt` inner types use `ldc.i4`; other types use `ldc.i8`. 15/15 range-type emitter tests pass. **JVM parity not yet implemented; tracked in #2997.**
+`lowerMRangeType` now emits a bounds-checking `.ctor(value)` that throws `System.ArgumentOutOfRangeException` with a descriptive message when the value is outside `[minVal, maxVal]`. `MInt` inner types use `ldc.i4`; other types use `ldc.i8`. 15/15 range-type emitter tests pass. **JVM parity was tracked in #2997 — closed, see #5956 / D-progress-815.**
 
 **`@generate(Pkg.Name)` source-generator pre-processing wired** (`cli.l`):
 `buildProject` now calls `Generator.preprocess` before type-checking on both single-file and directory-scan code paths.
@@ -24183,7 +24183,7 @@ gap in the `lyric-stdlib/tests/*_tests.l` suite.
 covering closed/half-open boundary semantics, `Int` and `Long` ranges, the
 in-range `from` round-trip, and a plain (rangeless) distinct type. Run under
 native `lyric test --target dotnet`; added to the compiler self-test CI loop.
-**JVM parity landed in #5956** (see that entry below) — the same test file now
+**JVM parity landed in #5956** (D-progress-815, below) — the same test file now
 also runs under `--target jvm`, both in CI.
 
 **Scope notes:** `Double`-bound ranges are rejected upstream by the type checker
@@ -32533,3 +32533,67 @@ literal-lowering change.
 `lyric-compiler/lyric/range_subtype_unsigned_jvm_self_test.l` (new),
 `lyric-compiler/lyric/jvm_cross_package_collision_self_test.l`,
 `.github/workflows/ci.yml`.
+### D-progress-815 — JVM: distinct/range-subtype `Type.from`/`Type.tryFrom` static factories (#5956, closes the historical #2997 JVM gap)
+
+The JVM backend never emitted the distinct/range-subtype construction API
+(`Type.from`/`Type.tryFrom`, and the `.toInt()`/`.toLong()`/`.toDouble()`/
+`.toByte()` inherent projection) that MSIL has had since #1501:
+`Age.from(x)`/`Age.tryFrom(x)` failed to compile under `--target jvm` with
+"reference 'Age' resolves to no local, parameter, ...", and range bounds
+were silently dropped by `Jvm.Lowering.LDistinctType`.
+
+`LDistinctType` gains the same range-bound fields as MSIL's
+`MDistinctType` (`hasRange`/`rangeIsFloat`/`minI`/`maxI`/`minF`/`maxF`/
+`upperExclusive`); `lowerDistinctType` now also emits a static `from(x): T`
+(bounds-checked, throwing `java.lang.RuntimeException` on violation —
+byte-identical message shape to MSIL's `ArgumentOutOfRangeException`) and a
+static `tryFrom(x): Std.Core.Result` (`Ok`/`Err(message)`, no generic-args
+gate needed since JVM erases generics), plus the `toX` conversion method
+alongside the legacy `$value()` accessor. `Jvm.Codegen`'s new
+`mkJvmDistinctTypeIR`/`foldRangeBoundJvm` (`codegen/06_items.l`) mirror
+`Msil.Codegen`'s fold exactly; `from`/`tryFrom` register into the existing
+bundle-wide `funcSigs` map under the `"<TypeName>.<member>"` dot-key
+`lowerMethodCall`'s pre-existing dot-named-static-call arm already
+dispatches through, so no new call-site special-casing was needed. Two
+further, previously-unreachable JVM erasure gaps surfaced and were fixed in
+the same slice: direct `emitXxx` bytecode.l calls never populated
+`asm.peakStack` (only the `LInsn`/`lowerInsn` path did), so the first
+`from`/`tryFrom` wrote `max_stack = 0` and the verifier rejected the first
+push; and a function/method parameter's own generic-instantiation type
+annotation was never registered against `FuncCtx.varGenericArgs` (only a
+`let`/`var` re-binding was), so `match r { case Ok(a) -> a.toInt() }` left
+`a` erased to `java.lang.Object` even once `tryFrom`'s own `retGenericArgs`
+were correct — fixed by the new `recordParamGenericArgs`
+(`codegen/03_match.l`).
+
+`range_subtype_self_test.l` (previously MSIL-only, #1501) now runs
+unmodified on both targets (10/10 each) and gained a JVM CI step. See
+`docs/44-jvm-production-readiness-plan.md` finding m-101 for the full
+design writeup.
+
+**Related:** #5956, #1501, #2997 (the historical JVM-parity tracking issue
+this closes), docs/44 m-101, docs/01-language-reference.md's range-subtype
+construction section.
+
+### D-progress-816 — JVM: `Double` stringification now matches .NET for `|value| >= 1e7` and very small magnitudes (#5660, docs/44 m-21 residual)
+
+`emitNormalizeDoubleString` (D-progress-664) only stripped
+`Double.toString()`'s trailing `.0` — it never touched Java's own
+scientific-notation threshold (`|value| >= 1e7` or `< 1e-3`), narrower than
+.NET's default `Double.ToString()` threshold (`|value| >= 1e17` or
+`< 1e-4`). A value in the gap (e.g. `20000000.0`) rendered as `"2.0E7"` on
+`--target jvm` instead of .NET's `"20000000"`.
+
+`emitNormalizeDoubleString` now detects Java's `"E"` marker at runtime and,
+when present, parses the mantissa + exponent and re-derives whichever of
+.NET's two notations applies to the magnitude: plain decimal within .NET's
+wider fixed-point range, or .NET's own `"D[.DDD]E[+-]NN"` scientific
+spelling beyond it. Verified against real dotnet 10 output before
+implementing, rather than assuming a threshold.
+
+`lyric-compiler/jvm/silent_miscompile_guard_jvm_self_test.l`: 8 new
+regression cases, 38/38 pass. Manual repro confirmed exact .NET parity for
+`20000000.0`, `1e20`, `1e-10`, `9999999.0`, `1500.5`, `-20000000.0`,
+`0.0001`, `0.00001`.
+
+**Related:** #5660, #4688, #4551, D-progress-664, docs/44 m-21.
