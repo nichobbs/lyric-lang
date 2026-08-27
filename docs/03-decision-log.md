@@ -31980,4 +31980,103 @@ above for the original decision), #6578 (the JVM tuple-destructuring
 package compiler follow-up), D-progress-543 (sandbox exception: no
 `./bin/lyric` buildable from source here, hence no compiler-level fix for
 either #6564's or #6578's root cause).
+## D-progress-802 — Native prerequisites for N9.3 (`Std.HttpServer` native twin, #6104): `lyric_sem_*` counting semaphore + `List[T]`/`slice[T]` `.slice`/`.concat`/`.append`
+
+**Context.** Issue #6104 (native/plan/08-work-items.md N9.3, docs/61 §7 item 5)
+needs a thread-per-connection native `Std.HttpServer` twin driving
+`Std.HttpEngine`. Two prerequisites were missing entirely: native had no
+blocking wait/signal primitive (only `lyric_mutex_*`, mutual exclusion with
+no wakeup — needed for the server's pull queue and per-request completion
+signal), and `List[T]`/`slice[T]` had no `.slice`/`.concat`/`.append`
+(`Std.HttpEngine.feed`'s buffer bookkeeping calls `.slice`/`.concat` on
+nearly every parse step, so without this `Std.HttpEngine` cannot compile
+for `--target native` at all — confirmed by direct repro).
+
+**Shipped.**
+
+- **`lyric_sem_*` counting semaphore** (`lyric-rt/src/lyric_posix.c`,
+  `include/lyric_rt.h`): `lyric_sem_size/_init/_wait/_post/_destroy`,
+  mutex+condvar backed rather than POSIX `sem_init` (not implemented on
+  macOS). Verified by a same-thread round-trip and a real forked
+  cross-thread test: a second pthread blocks in `lyric_sem_wait`, confirmed
+  still blocked after 50ms, then wakes correctly when the main thread posts.
+- **`List[T]`/`slice[T]` `.slice(start, stop)` / `.concat(other)` /
+  `.append(x)`**: `lyric_list_slice`/`_concat`/`_append` runtime kernels
+  (`lyric-rt/src/lyric_collections.c`, half-open `[start, stop)` slice
+  bounds and panic message matching the MSIL/JVM twins for cross-target
+  parity) plus the native LLVM codegen call-site wiring
+  (`Lyric.LlvmCodegen.lowerCollectionMethodCall`,
+  `lyric-compiler/lyric/llvm_codegen.l`). All three are never-mutating
+  combinators — each returns a FRESH list, ref-typed elements retained by
+  the new list via the existing `lyric_list_push` retain path, source list
+  untouched.
+
+**Verification.**
+
+- `lyric-rt/test/lyric_rt_test.c`: new cases for the semaphore
+  (same-thread and real cross-thread blocking/wake) and for
+  `.slice`/`.concat`/`.append` (ref-element retain/release across all
+  three ops on a `String`-element list under ASan; an OOB-panic fork test
+  for `.slice` matching the MSIL twin's exact panic message). `make -C
+  lyric-rt test` and `make -C lyric-rt test-asan CC=gcc`: all pass.
+- `lyric-compiler/lyric/llvm_collections_self_test.l`: three new
+  ASan-compiled cases exercising the actual `Lyric.LlvmCodegen` call-site
+  wiring through the real `codegenNativePackage`/`lowerNativePackage`
+  pipeline (parse → codegen → clang → run) — the C-level tests above prove
+  the runtime kernels are correct in isolation, these prove the codegen
+  dispatch (`NArg`/`NBitcast`/`slotOfVal` wiring) is too: `.slice` returns
+  a correctly-bounded fresh sublist with the source list's own `.count`
+  unchanged; `.concat` returns a correctly-ordered fresh merge with both
+  sources' `.count` unchanged; `.append` returns a correctly-extended fresh
+  list with the source's `.count` unchanged. Expected values were derived
+  from `lyric_list_slice`/`_concat`/`_append`'s actual C source (read
+  directly, not assumed) before being written, to avoid an
+  assumed-semantics round-trip. **Could not be run in the authoring
+  sandbox** — see the caveat below — so these cases are unverified locally;
+  CI's `native-backend-self-tests` job (which already lists
+  `llvm_collections_self_test.l`) is this change's actual verification
+  oracle, run against a from-source `make lyric` build the sandbox cannot
+  perform. Watch that job on this PR before treating this entry's codegen
+  claims as confirmed.
+
+**Sandbox caveat (extends D-progress-543).** D-progress-543 documents a
+substitute verification path (the published NuGet `lyric` tool) for
+changes that don't touch the compiler itself. A change to
+`lyric-compiler/lyric/*.l` has no such substitute: the NuGet tool ships
+precompiled compiler DLLs with no knowledge of this checkout's
+`lyric-compiler/lyric/` source tree, so `import Lyric.LlvmCodegen` (or any
+other `Lyric.*` compiler package) cannot resolve from local source through
+it — confirmed by direct repro, not assumed: neither `LYRIC_LOAD_COMPILER=1
+lyric test` (that env var is vestigial — `cli_test.l`'s own comment calls
+it "the retired `LYRIC_LOAD_COMPILER` path", superseded by linking
+precompiled DLLs per #2364 Stage 5) nor `LYRIC_STDLIB_BIN=<nonexistent>
+lyric test`/`lyric build` (which was hypothesized to force a "no DLLs
+found → resolve from source" fallback, by analogy with `Std.*`'s built-in-
+head source resolution) actually recompiles `Lyric.*` packages from source
+through the NuGet tool — both fail with `T0020: unknown name` on any
+symbol the edited source doesn't yet have compiled into the NuGet tool's
+bundled DLLs. `bash scripts/bootstrap.sh --stage 1` itself fails at Stage 0
+(`GitHub access is not enabled for this session`), confirming there is
+currently no path in this sandbox to build `./bin/lyric` from source or
+otherwise verify a compiler-source change end to end locally. This is a
+sharper version of D-progress-543's exception, not a new one: CI (which
+does perform a real `make lyric` from-source build) is this class of
+change's only verification path from this environment.
+
+**Follow-up (#6104, not shipped by this entry).** The `Std.HttpServer`
+native twin itself (`_kernel_native/http_server.l`) hit two further,
+architectural native-backend gaps while being built on top of these two
+prerequisites: native `String` has no `.trim`/`.toLower`/`.indexOf`/
+`.startsWith`/`.contains`/`.endsWith` (only `.toString()`/`.substring()`),
+and a bare cross-package enum-case value reference (`val v: HttpVersion =
+Http1_1`) fails to resolve at the point codegen tries to disambiguate it,
+because enums erase to a bare `NI32` with no distinguishing type by then.
+Both block `Std.HttpEngine`/`Std.String` from compiling for `--target
+native` at all, independent of this entry's two fixes. Neither is
+scopeable around; both are tracked as follow-up issues (linked from
+native/plan/08-work-items.md's N9.3 entry) rather than shipped here or
+worked around with a stub.
+
+**Related:** #6104, `native/plan/08-work-items.md` N9.3, docs/61 §7 item 5,
+D-progress-543 (the sandbox-exception precedent this sharpens).
 

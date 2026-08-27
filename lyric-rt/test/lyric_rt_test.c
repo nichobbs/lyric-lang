@@ -19,6 +19,7 @@
 #include <time.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <pthread.h>
 
 static int failures = 0;
 
@@ -340,6 +341,87 @@ static void test_list_copy(void) {
     CHECK(empty != NULL);
     CHECK(lyric_list_len(empty) == 0);
     lyric_release(empty);
+}
+
+static void test_list_slice_concat_append(void) {
+    /* `.slice(start, stop)`: a fresh half-open sub-copy. Ref elements are
+     * retained by the new list; the source is untouched. */
+    LyricList* src = lyric_list_new(1);
+    LyricString* a = lyric_string_from_literal((const uint8_t*)"a", 1);
+    LyricString* b = lyric_string_from_literal((const uint8_t*)"b", 1);
+    LyricString* c = lyric_string_from_literal((const uint8_t*)"c", 1);
+    lyric_list_push(src, (int64_t)(intptr_t)a);
+    lyric_list_push(src, (int64_t)(intptr_t)b);
+    lyric_list_push(src, (int64_t)(intptr_t)c);
+    lyric_release(a);
+    lyric_release(b);
+    lyric_release(c);
+
+    LyricList* mid = lyric_list_slice(src, 1, 2);
+    CHECK(lyric_list_len(mid) == 1);
+    CHECK((LyricString*)(intptr_t)lyric_list_get(mid, 0) == b);
+    CHECK(atomic_load(&b->rc) == 2); /* held by src and mid */
+    lyric_release(mid);
+    CHECK(atomic_load(&b->rc) == 1);
+
+    LyricList* empty_slice = lyric_list_slice(src, 1, 1);
+    CHECK(lyric_list_len(empty_slice) == 0);
+    lyric_release(empty_slice);
+
+    LyricList* whole = lyric_list_slice(src, 0, 3);
+    CHECK(lyric_list_len(whole) == 3);
+    lyric_release(whole);
+
+    /* `.concat(other)`: a fresh list holding every element of both,
+     * neither input mutated. */
+    LyricList* nums1 = lyric_list_new(0);
+    lyric_list_push(nums1, 1);
+    lyric_list_push(nums1, 2);
+    LyricList* nums2 = lyric_list_new(0);
+    lyric_list_push(nums2, 3);
+    LyricList* joined = lyric_list_concat(nums1, nums2);
+    CHECK(lyric_list_len(joined) == 3);
+    CHECK(lyric_list_get(joined, 0) == 1);
+    CHECK(lyric_list_get(joined, 1) == 2);
+    CHECK(lyric_list_get(joined, 2) == 3);
+    CHECK(lyric_list_len(nums1) == 2); /* inputs untouched */
+    CHECK(lyric_list_len(nums2) == 1);
+    lyric_release(joined);
+    lyric_release(nums1);
+    lyric_release(nums2);
+
+    /* `.append(x)`: a fresh copy of `src` with `x` on the end, `src`
+     * itself untouched (unlike `.add`/`lyric_list_push`). */
+    LyricList* appendSrc = lyric_list_new(0);
+    lyric_list_push(appendSrc, 10);
+    LyricList* appended = lyric_list_append(appendSrc, 20);
+    CHECK(lyric_list_len(appended) == 2);
+    CHECK(lyric_list_get(appended, 0) == 10);
+    CHECK(lyric_list_get(appended, 1) == 20);
+    CHECK(lyric_list_len(appendSrc) == 1); /* source untouched */
+    lyric_release(appended);
+    lyric_release(appendSrc);
+
+    lyric_release(src);
+}
+
+/* `.slice` out-of-bounds must panic (matching the MSIL/JVM twins'
+ * "slice(start, end) requires 0 <= start <= end <= length" contract),
+ * forked so the abort leaves no residue in the parent. */
+static void test_list_slice_oob_aborts(void) {
+    pid_t pid = fork();
+    CHECK(pid >= 0);
+    if (pid == 0) {
+        if (!freopen("/dev/null", "w", stderr)) _exit(9);
+        LyricList* xs = lyric_list_new(0);
+        lyric_list_push(xs, 1);
+        LyricList* bad = lyric_list_slice(xs, 0, 5); /* stop > len */
+        (void)bad;
+        _exit(0); /* not reached */
+    }
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
 }
 
 static void test_read_bytes(void) {
@@ -685,6 +767,57 @@ static void test_posix(void) {
     CHECK(!all_zero);
 
     CHECK(lyric_file_size("/nonexistent-lyric-rt-test-path") == -1);
+}
+
+/* Argument/result for the cross-thread semaphore round-trip below. */
+typedef struct {
+    void* sem;
+    volatile int posted; /* 1 once the waiter thread has woken and observed the post */
+} sem_thread_ctx_t;
+
+static void* sem_wait_thread(void* arg) {
+    sem_thread_ctx_t* ctx = (sem_thread_ctx_t*)arg;
+    lyric_sem_wait(ctx->sem); /* blocks until test_semaphore's post below */
+    ctx->posted = 1;
+    return NULL;
+}
+
+static void test_semaphore(void) {
+    CHECK(lyric_sem_size() > 0);
+
+    char sem_buf[256];
+    CHECK(lyric_sem_size() <= (int32_t)sizeof(sem_buf));
+
+    /* Non-blocking case: an already-available permit is taken immediately. */
+    lyric_sem_init(sem_buf, 1);
+    lyric_sem_wait(sem_buf);
+    lyric_sem_post(sem_buf);
+    lyric_sem_post(sem_buf);
+    lyric_sem_wait(sem_buf);
+    lyric_sem_wait(sem_buf);
+    lyric_sem_destroy(sem_buf);
+
+    /* Blocking case: a real second thread blocks in lyric_sem_wait until
+     * this thread posts — proves the condvar wakeup actually works, not
+     * just the count bookkeeping (the shape of the request-queue /
+     * per-request `done` signal _kernel_native/http_server.l needs, #6104). */
+    char sem_buf2[256];
+    CHECK(lyric_sem_size() <= (int32_t)sizeof(sem_buf2));
+    lyric_sem_init(sem_buf2, 0);
+    sem_thread_ctx_t ctx;
+    ctx.sem = sem_buf2;
+    ctx.posted = 0;
+    pthread_t tid;
+    CHECK(pthread_create(&tid, NULL, sem_wait_thread, &ctx) == 0);
+
+    struct timespec ts = {0, 50 * 1000 * 1000}; /* 50ms: give the thread time to block */
+    nanosleep(&ts, NULL);
+    CHECK(ctx.posted == 0); /* still blocked: no post yet */
+
+    lyric_sem_post(sem_buf2);
+    CHECK(pthread_join(tid, NULL) == 0);
+    CHECK(ctx.posted == 1);
+    lyric_sem_destroy(sem_buf2);
 }
 
 static void test_uuid_v4(void) {
@@ -1666,6 +1799,8 @@ int main(void) {
     test_map_tombstone_churn();
     test_map_string_keys();
     test_list_copy();
+    test_list_slice_concat_append();
+    test_list_slice_oob_aborts();
     test_read_bytes();
     test_write_bytes();
     test_dir_list2();
@@ -1674,6 +1809,7 @@ int main(void) {
     test_args();
     test_map_keys_values();
     test_posix();
+    test_semaphore();
     test_ok_variants();
     test_uuid_v4();
     test_file_io();
