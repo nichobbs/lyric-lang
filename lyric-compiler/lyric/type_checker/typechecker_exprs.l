@@ -2407,6 +2407,13 @@ func resolveExprPath(
     case None -> {
     }
   }
+  // #6287: a bare non-function name (union case / const / val — plain
+  // function names resolve above via `sigs` before this point) ambiguous
+  // across two-or-more imported packages must be qualified, not silently
+  // resolved to whichever package's symbol was registered last.
+  if checkBareNameAmbiguity(tbl, diag, name, span) {
+    return TyError
+  }
   match symTableTryFindOne(tbl, name) {
     case Some(sym) -> {
       checkImportedVisibility(sym, span, diag)
@@ -3247,6 +3254,13 @@ func inferConstruction(
 // `fnWasFlatPath`, same EMember-chain-misrouting hazard `unionCaseSymbolOf`
 // documents — a value-receiver method chain like `x.Foo(...)` must not
 // mis-route into constructor typing via the bare-name fallback).
+// A bare (unqualified) `ctorName` reaching the final fallback below is
+// resolved leniently (no ambiguity check here): the ECall caller already
+// invoked `resolveExprPath` on this same flat-`EPath` callee to type `fnT`
+// (#6287's `checkBareNameAmbiguity` gate lives there, the single
+// authoritative site for a bare callee name — adding a second check here
+// would double-emit T0123 for one source reference, the exact hazard #6539
+// fixed for the pattern-head path).
 func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
   val flatSegs: List[String] = newList()
   if not flattenCalleePathSegs(fn, flatSegs) or flatSegs.count == 0 {
@@ -3478,6 +3492,23 @@ func unionCaseSymbolForScrutinee(
       }
     }
     case _ -> ()
+  }
+  // #6287: the scrutinee's own union didn't resolve the case name (unknown/
+  // `TyError` scrutinee, or no case of the scrutinee's own union matches) —
+  // falling through to a pure name-based lookup is ambiguous when two or
+  // more imported packages export a case with this name.  Gated on a flat
+  // `EPath` head the same way `unionCaseSymbolOf`'s own bare fallback is,
+  // so a qualified head (already handled above, or an `EMember` receiver
+  // chain) never reaches this check.
+  val fnWasFlatPath = match fn.kind { case EPath(_) -> true; case _ -> false }
+  if fnWasFlatPath {
+    val flatSegs2: List[String] = newList()
+    if flattenCalleePathSegs(fn, flatSegs2) and flatSegs2.count > 0 {
+      val bareName = flatSegs2[flatSegs2.count - 1]
+      if checkBareNameAmbiguity(tbl, diag, bareName, fn.span) {
+        return None
+      }
+    }
   }
   unionCaseSymbolOf(tbl, fn)
 }
@@ -3894,6 +3925,12 @@ func checkConstRefPattern(
 ): Unit {
   match pat.kind {
     case PConstRef(name) -> {
+      // #6287: a const pattern `@Ident` ambiguous across imported packages
+      // must be qualified rather than silently binding to whichever
+      // same-named const/val was registered last.
+      if checkBareNameAmbiguity(tbl, diag, name, pat.span) {
+        return
+      }
       match symTableTryFindOne(tbl, name) {
         case None -> {
           diag.add(errorDiagnostic("T0072", "'" + name + "' is not defined; use a val or const for a const pattern", pat.span))
@@ -4109,8 +4146,23 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
           )
         )
       }
-      if name != "_" and not isConstructorPatternName(tbl, name) {
-        scopeAdd(sc, LocalBinding(name = name, ty = eraseTyVars(ty), isMutable = false))
+      if name != "_" {
+        if isConstructorPatternName(tbl, name) {
+          // #6287: a bare nullary-case pattern (`case Halt ->`, no parens)
+          // ambiguous across imported packages must be qualified — UNLESS
+          // the scrutinee is a known concrete type (`TyUser`).  Matching
+          // against a resolved union/enum type already gives the reader
+          // (and the rest of the type checker) the disambiguating context a
+          // `PConstructor` pattern gets from `unionCaseSymbolForScrutinee`;
+          // only an unresolved (`TyError`) scrutinee leaves a bare nullary
+          // name genuinely ambiguous.
+          val scrutineeIsKnown = match unrefine(ty) { case TyUser(_, _, _) -> true; case _ -> false }
+          if not scrutineeIsKnown {
+            val _ = checkBareNameAmbiguity(tbl, diag, name, pat.span)
+          }
+        } else {
+          scopeAdd(sc, LocalBinding(name = name, ty = eraseTyVars(ty), isMutable = false))
+        }
       }
       match inner {
         case None -> {

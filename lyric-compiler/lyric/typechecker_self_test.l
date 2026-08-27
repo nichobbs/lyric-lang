@@ -4001,3 +4001,138 @@ test "an ordinary identifier binding pattern does not fire T0073 (#4775)" {
   val src = "package P\nfunc f(x: in Int): Int {\n  match x {\n    case n -> n\n  }\n}\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0073"), "ordinary binding pattern: no T0073")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6287 Phase B: bare-name cross-package ambiguity (T0123) and
+// reject-unimported-resolution.
+// ─────────────────────────────────────────────────────────────────────────────
+// A bare (unqualified) `pub val` name declared by TWO imported packages is
+// genuinely ambiguous — before this fix `symTableTryFindOne` silently picked
+// whichever was registered last, with no diagnostic at all.
+test "bare val name ambiguous across two imported packages is T0123" {
+  val pkgA = parse("package PkgA\npub val GREETING: String = \"hi from A\"\n")
+  val pkgB = parse("package PkgB\npub val GREETING: String = \"hi from B\"\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
+  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  val src = "package App\nimport PkgA\nimport PkgB\nfunc f(): String { GREETING }\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, packages), "T0123"),
+    1,
+    "bare GREETING ambiguous between PkgA and PkgB: T0123 fires exactly once"
+  )
+}
+
+// Same ambiguity, but through a bare (unqualified) union-case CONSTRUCTOR
+// CALL — the shape the issue's own `Ping`/`Signal` example was framed around.
+// Reuses the PkgA/PkgB `Signal { case Ping }` collision fixture the qualified-
+// reference tests above already establish, but this time calls `Ping(...)`
+// with NO qualifier at all.
+test "bare union case constructor call ambiguous across two imported packages is T0123" {
+  val pkgA = parse("package PkgA\npub union Signal {\n  case Ping(code: Int)\n  case Halt\n}\n")
+  val pkgB = parse("package PkgB\npub union Signal {\n  case Ping(label: String)\n  case Halt\n}\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
+  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  val src = "package App\nimport PkgA\nimport PkgB\nfunc f(): Int {\n  val s = Ping(code = 1)\n  0\n}\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, packages), "T0123"),
+    1,
+    "bare Ping(...) ambiguous between PkgA's and PkgB's Signal: T0123 fires exactly once"
+  )
+}
+
+// Importing a colliding name from only ONE of the two packages is NOT
+// ambiguous — this is the ordinary single-import case the fix must leave
+// alone (no false positives).
+test "bare val name imported from only one package is not ambiguous" {
+  val pkgA = parse("package PkgA\npub val GREETING: String = \"hi from A\"\n")
+  val pkgB = parse("package PkgB\npub val GREETING: String = \"hi from B\"\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
+  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  val src = "package App\nimport PkgA\nfunc f(): String { GREETING }\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(src).file, packages)),
+    0,
+    "GREETING imported only via PkgA (App does not import PkgB): resolves cleanly, no T0123"
+  )
+}
+
+// A same-package (same-file) declaration always wins outright over any
+// import-level collision — declaring the SAME name locally must not trip
+// the ambiguity check even when two OTHER imported packages also collide
+// on it (tier 1 always wins, per `symTableAmbiguousImportPackages`'s guard).
+test "local declaration shadows an ambiguous import collision, no T0123" {
+  val pkgA = parse("package PkgA\npub val GREETING: String = \"hi from A\"\n")
+  val pkgB = parse("package PkgB\npub val GREETING: String = \"hi from B\"\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
+  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  val src = "package App\nimport PkgA\nimport PkgB\nval GREETING: String = \"local\"\nfunc f(): String { GREETING }\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(src).file, packages)),
+    0,
+    "App's own GREETING wins outright over the PkgA/PkgB collision: no T0123"
+  )
+}
+
+// #6287's "reject unimported resolution" item (a name from a package never
+// imported, even transitively, must not silently resolve) was ATTEMPTED as a
+// tier-3 restriction on `symTableTryFindOne` but reverted: a full audit build
+// of `lyric-stdlib/lyric.full.toml` and every ecosystem `lyric.toml` surfaced
+// `Option`/`Result` (`Std.Core`) referenced across wide swaths of the stdlib
+// with no `import Std.Core` at all — an implicit-prelude reliance far
+// broader than the kernel/host re-export idiom below, and not a bounded
+// change for this issue (see `symTableTryFindOne`'s doc comment for the full
+// writeup).  This test pins the CURRENT (unchanged) behaviour: a name from a
+// package that is part of the same multi-file build, but not on any import
+// path from the consumer, still resolves via last-registered-wins — a
+// deliberate scope decision, not an oversight; it is the tracked residual
+// gap from this issue.
+test "bare name from an unrelated sibling package still resolves (residual #6287 scope decision)" {
+  val pkgX = parse("package PkgX\npub func siblingHelper(): Int { 1 }\n")
+  val pkgY = parse("package PkgY\npub func fromY(): Int { 2 }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgX", items = pkgX.file.items, imports = collectImportNames(pkgX.file.imports)))
+  packages.add(ImportedPackage(name = "PkgY", items = pkgY.file.items, imports = collectImportNames(pkgY.file.imports)))
+  val src = "package App\nimport PkgY\nfunc f(): Int { siblingHelper() }\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(src).file, packages)),
+    0,
+    "siblingHelper (PkgX, never imported by App or PkgY) still resolves — tracked residual gap, not a regression"
+  )
+  // Control: a name PkgY directly imports resolves cleanly too.
+  val okSrc = "package App\nimport PkgY\nfunc f(): Int { fromY() }\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(okSrc).file, packages)),
+    0,
+    "fromY (PkgY, directly imported by App): resolves cleanly"
+  )
+}
+
+// The kernel/host re-export idiom used throughout `lyric-stdlib/std/_kernel/`
+// (e.g. `Std.Collections` importing `Std.CollectionsHost`, which declares
+// `List`/`Map`) depends on TRANSITIVE reachability: a consumer that only
+// imports the wrapper package (`PkgWrap`) must still resolve a name declared
+// by the wrapper's own import (`PkgHost`), even though the consumer never
+// names `PkgHost` in its own `import` list.  Reject-unimported-resolution
+// must not break this — only a package with NO import path at all (see the
+// test above) is out of scope.
+test "bare name reachable only via a transitive import still resolves (kernel/host idiom)" {
+  val pkgHost = parse("package PkgHost\npub func hostFn(): Int { 42 }\n")
+  val pkgWrap = parse("package PkgWrap\nimport PkgHost\npub func wrapFn(): Int { hostFn() }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(name = "PkgHost", items = pkgHost.file.items, imports = collectImportNames(pkgHost.file.imports))
+  )
+  packages.add(
+    ImportedPackage(name = "PkgWrap", items = pkgWrap.file.items, imports = collectImportNames(pkgWrap.file.imports))
+  )
+  val src = "package App\nimport PkgWrap\nfunc f(): Int { hostFn() }\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(src).file, packages)),
+    0,
+    "hostFn (PkgHost) resolves transitively through PkgWrap's own import of PkgHost, even though App never imports PkgHost directly"
+  )
+}
