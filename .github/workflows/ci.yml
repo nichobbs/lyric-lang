@@ -564,9 +564,17 @@ jobs:
             echo "::warning::AOT binary not found; skipping example tests"
             exit 0
           fi
-          # Build dependency libraries
+          # Build dependency libraries. lyric-grpc's dotnet kernel has
+          # mandatory NuGet deps (Grpc.Net.Client, Grpc.AspNetCore,
+          # System.Threading.RateLimiting) whose extern types/ctors resolve
+          # from package metadata at compile time -- restore first, like the
+          # dedicated "Run tests (grpc)" ecosystem-tests step does.
           libs="lyric-logging lyric-auth lyric-resilience lyric-otel lyric-db lyric-web lyric-health lyric-grpc"
           for lib in $libs; do
+            if [ "$lib" = "lyric-grpc" ]; then
+              echo "=== restore dependency $lib ==="
+              "$lyric_bin" restore --manifest "$lib/lyric.toml" > /tmp/"$lib".restore.log 2>&1 || { tail -20 /tmp/"$lib".restore.log; exit 1; }
+            fi
             echo "=== build dependency $lib ==="
             "$lyric_bin" build --manifest "$lib/lyric.toml" > /tmp/"$lib".log 2>&1 || { tail -20 /tmp/"$lib".log; exit 1; }
           done
