@@ -2,14 +2,28 @@
 //! enum case-name collision silently mis-dispatching enum case construction
 //! and pattern matching on BOTH backends.
 //!
-//! Two independent fixture packages each declare their own enum with a case
-//! literally named `Http11` — `EnumCollA.HttpVersion` (cases `Http10`,
-//! `Http11`) and `EnumCollB.ConnState` (cases `Http11`, `Closed`), with
-//! DIFFERENT ordinals for `Http11` in each (1 in `HttpVersion`, 0 in
-//! `ConnState`) so a misrouted ordinal produces an observably WRONG label
-//! rather than a coincidentally-correct one.  A third package (`EnumCollApp`)
-//! imports both and exercises the two independently-triggerable halves of
-//! the bug against each enum:
+//! Three independent fixture packages declare enums that collide two
+//! different ways:
+//!   - `EnumCollA.HttpVersion` (cases `Http10`, `Http11`) and
+//!     `EnumCollB.ConnState` (cases `Http11`, `Closed`) collide on CASE name
+//!     only (`Http11` in both, DIFFERENT ordinals — 1 vs 0 — so a misrouted
+//!     ordinal produces an observably WRONG label rather than a
+//!     coincidentally-correct one).
+//!   - `EnumCollC.HttpVersion` (cases `Http11`, `Closed`) collides with
+//!     `EnumCollA.HttpVersion` on the bare TYPE name itself (`HttpVersion` in
+//!     both, different declaring packages, and — again — a different
+//!     `Http11` ordinal: 0 in C's `HttpVersion` vs 1 in A's) — the
+//!     second-layer defect this test was added (#6607) to actually exercise:
+//!     the type-scoped `<EnumType>.<Case>` codegen key
+//!     (`resolveEnumCaseOrdinalByScope`) is itself keyed by the enum's bare
+//!     simple TYPE name, so two different packages' same-named types
+//!     collided on THAT key even after the case-name-only collision (#5995)
+//!     was fixed. `EnumCollA` vs `EnumCollB` alone never exercises this path
+//!     — `HttpVersion` and `ConnState` are distinct type names, so the
+//!     type-scoped key never collides between them.
+//!
+//! A fourth package (`EnumCollApp`) imports all three and exercises the
+//! independently-triggerable halves of the bug against each enum:
 //!
 //!   1. Cross-package-QUALIFIED case CONSTRUCTION as a call argument
 //!      (`EnumCollA.Http11`/`EnumCollB.Http11`) — `EnumCollA.labelOf`'s own
@@ -28,13 +42,43 @@
 //!      — or, in the wild, a user enum sharing a name with a stdlib one
 //!      such as `Std.Http.HttpVersion`, always linked into every build
 //!      regardless of import — collided on THAT key too).
-//!   2. Bare PATTERN MATCH (`case Http11 -> ...`) against a locally-annotated
-//!      variable, built via each package's OWN (collision-free) internal
-//!      constructor. The scrutinee's declared type is unambiguous at the
-//!      type-checker level (no cross-import name lookup involved), so a
-//!      bare arm pattern is legal here — this exercises the codegen
-//!      scrutinee-hint path (#5995) directly, isolated from the
-//!      construction fix above.
+//!   2. PATTERN MATCH against a locally-annotated variable, built via each
+//!      package's OWN (collision-free) internal constructor. A's and B's
+//!      declared types are unambiguous at the type-checker level (distinct
+//!      simple type names, no cross-import name lookup involved), so a bare
+//!      arm pattern (`case Http11 -> ...`) is legal and exercises the codegen
+//!      scrutinee-hint path (#5995) directly, isolated from the construction
+//!      fix above.
+//!
+//! `EnumCollC.HttpVersion`, sharing its bare type name with
+//! `EnumCollA.HttpVersion`, is exercised the same way for construction (1)
+//! from `EnumCollApp`, so a revert of the package-scoping fix this test
+//! guards — either the `resolveEnumCaseOrdinalByScope`/
+//! `enumTypeCaseDeclarers` mechanism, or its `EPath` qualifier-preference
+//! companion fix in `lowerExprMsil` (#6607: a package-qualified reference
+//! reaches codegen as a flattened multi-segment `EPath`, not `EMember` —
+//! `Lyric.AliasRewriter` collapses every `Pkg.member` chain, aliased or
+//! bare, so the qualifier segment was being discarded in favour of the
+//! ambiguous construction-context `enumHint`) — fails this test instead of
+//! shipping silently.
+//!
+//! C's PATTERN-MATCH half (2) is exercised from a SEPARATE, fifth package
+//! (`EnumCollAppC`) that imports ONLY `EnumCollC` — not from `EnumCollApp`
+//! alongside A and B.  A bare arm's scrutinee hint is only the simple type
+//! name (`HttpVersion`), and `resolveEnumCaseOrdinalByScope` disambiguates a
+//! same-named-type collision by asking "which of this bare hint's several
+//! declaring packages does the CURRENT FUNCTION'S OWN package import" — a
+//! per-FUNCTION, not per-variable, resolution.  From `EnumCollApp` (which
+//! imports both A's and C's same-named `HttpVersion`) that question is
+//! ambiguous for a locally-bound `HttpVersion` var regardless of which one
+//! it actually holds — a separate, narrower, pre-existing gap in the
+//! scrutinee-hint mechanism (not the type-scoped-key defect this test
+//! targets) that this test does not attempt to close.  From `EnumCollAppC`
+//! (importing only C) the same bare arm is unambiguous — `HttpVersion` has
+//! exactly one reachable declarer — so it still exercises the identical
+//! #6607 type-name-collision-vs-case-name-collision class the construction
+//! half establishes, just from a consumer whose own import list already
+//! disambiguates it.
 //!
 //! Before the fix, every one of these references (construction OR pattern)
 //! resolved through a single bundle-wide first-registered-wins table keyed
@@ -45,10 +89,11 @@
 //! `Http11` first silently won every reference in the whole bundle, with no
 //! compile error.
 //!
-//! Compiles each of the three packages above via the in-process self-hosted
-//! project bridges (`Msil.Bridge.compileProjectToMsil` for `--target dotnet`,
+//! Compiles two separate projects per target — `[A, B, C, App]` and
+//! `[C, AppC]` — via the in-process self-hosted project bridges
+//! (`Msil.Bridge.compileProjectToMsil` for `--target dotnet`,
 //! `Jvm.Bridge.compileProjectToJarBundledWithFeatures` for `--target jvm`),
-//! runs the produced binary, and asserts on stdout — mirroring
+//! runs each produced binary, and asserts on stdout — mirroring
 //! `msil_project_bridge_self_test.l` / `jvm_cross_package_collision_self_test.l`,
 //! the precedent for genuine cross-package collision regression tests that
 //! can't be reproduced within a single `@test_module` package (a source file
@@ -105,8 +150,29 @@ func pkgBSource(): String {
     "}\n"
 }
 
+// #6607: a SECOND enum also named `HttpVersion`, declared in a different
+// package (`EnumCollC`), with a DIFFERENT `Http11` ordinal (0 here; 1 in
+// `EnumCollA.HttpVersion`) so a type-name collision on the codegen-level
+// type-scoped key produces an observably WRONG label rather than a
+// coincidentally-correct one.
+func pkgCSource(): String {
+  "package EnumCollC\n" + "\n" + "pub enum HttpVersion {\n" + "  case Http11\n" + "  case Closed\n" + "}\n" + "\n" +
+    "pub func labelOf(v: in HttpVersion): String {\n" +
+    "  match v {\n" +
+    "    case Http11 -> \"C:Http11\"\n" +
+    "    case Closed -> \"C:Closed\"\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "pub func make11(): HttpVersion {\n" +
+    "  Http11\n" +
+    "}\n"
+}
+
 func appSource(): String {
-  "package EnumCollApp\n" + "\n" + "import EnumCollA as A\n" + "import EnumCollB as B\n" + "\n" + "func main(): Int {\n" +
+  "package EnumCollApp\n" + "\n" + "import EnumCollA as A\n" + "import EnumCollB as B\n" + "import EnumCollC as C\n" +
+    "\n" +
+    "func main(): Int {\n" +
     "  // (1) Cross-package-QUALIFIED case CONSTRUCTION as a call argument:\n" +
     "  // each callee's own declared parameter type must select its OWN\n" +
     "  // enum's Http11 case. Both packages are imported unqualified here, so\n" +
@@ -116,14 +182,20 @@ func appSource(): String {
     "  // unreachable for two SIMULTANEOUSLY-imported same-case-name enums.\n" +
     "  // The remaining, still-live risk this test targets is the codegen-level\n" +
     "  // one: does the QUALIFIED reference resolve to the RIGHT enum's ordinal?\n" +
+    "  // #6607: EnumCollC.HttpVersion shares its bare TYPE name with\n" +
+    "  // EnumCollA.HttpVersion (a different declaring package, different\n" +
+    "  // ordinal for Http11) -- this is the type-name-collision half of the\n" +
+    "  // codegen-level risk, distinct from A vs B's case-name-only collision.\n" +
     "  println(A.labelOf(EnumCollA.Http11))\n" +
     "  println(B.labelOf(EnumCollB.Http11))\n" +
+    "  println(C.labelOf(EnumCollC.Http11))\n" +
     "\n" +
     "  // (2) PATTERN MATCH against a locally-annotated variable, built via\n" +
-    "  // each package's own (collision-free) constructor. The scrutinee's\n" +
-    "  // declared type is unambiguous, so a bare arm pattern is legal here\n" +
-    "  // (no cross-import ambiguity at the type-checker level) -- this is\n" +
-    "  // the codegen scrutinee-hint path (#5995) exercised directly.\n" +
+    "  // each package's own (collision-free) constructor. A and B's declared\n" +
+    "  // types are unambiguous (distinct type names), so a bare arm pattern\n" +
+    "  // is legal here and exercises the codegen scrutinee-hint path (#5995)\n" +
+    "  // directly. C's own bare-match exercise lives in the separate\n" +
+    "  // EnumCollAppC package below (see the module doc comment for why).\n" +
     "  val a3: A.HttpVersion = A.make11()\n" +
     "  val b3: B.ConnState = B.make11()\n" +
     "  match a3 {\n" +
@@ -139,7 +211,27 @@ func appSource(): String {
 }
 
 func expectedStdout(): String {
-  "A:Http11\n" + "B:Http11\n" + "match-A:Http11\n" + "match-B:Http11"
+  "A:Http11\n" + "B:Http11\n" + "C:Http11\n" + "match-A:Http11\n" + "match-B:Http11"
+}
+
+// A fifth package, consuming ONLY `EnumCollC` (see module doc comment for
+// why this is separate from `EnumCollApp`): exercises C's bare-arm PATTERN
+// MATCH (the case-2 exercise A and B get inside `appSource` above) from a
+// consumer whose own import list unambiguously resolves `HttpVersion` to
+// `EnumCollC` alone.
+func appCSource(): String {
+  "package EnumCollAppC\n" + "\n" + "import EnumCollC as C\n" + "\n" + "func main(): Int {\n" +
+    "  val c3: C.HttpVersion = C.make11()\n" +
+    "  match c3 {\n" +
+    "    case Http11 -> println(\"match-C:Http11\")\n" +
+    "    case Closed -> println(\"match-C:Closed\")\n" +
+    "  }\n" +
+    "  0\n" +
+    "}\n"
+}
+
+func expectedAppCStdout(): String {
+  "match-C:Http11"
 }
 
 // ─── Shared temp-dir helpers ─────────────────────────────────────────────────
@@ -246,13 +338,29 @@ test "dotnet: bare enum-case construction and pattern match resolve against each
   val packages: List[ProjectPackagePayload] = newList()
   packages.add(mkPkg("EnumCollA", pkgASource()))
   packages.add(mkPkg("EnumCollB", pkgBSource()))
+  packages.add(mkPkg("EnumCollC", pkgCSource()))
   packages.add(mkPkg("EnumCollApp", appSource()))
   val result = compileAndRunMsil("enumcoll-dotnet", packages, "EnumCollApp")
   assertEqualInt(result.exitCode, 0, "enum_case_collision dotnet: exit 0 expected (stderr=" + result.stderr + ")")
   assertEqual(
     Str.trim(result.stdout),
     expectedStdout(),
-    "enum_case_collision dotnet: bare Http11 construction/match dispatch to the RIGHT enum in both packages"
+    "enum_case_collision dotnet: bare Http11 construction/match dispatch to the RIGHT enum in every package"
+  )
+
+  val packagesC: List[ProjectPackagePayload] = newList()
+  packagesC.add(mkPkg("EnumCollC", pkgCSource()))
+  packagesC.add(mkPkg("EnumCollAppC", appCSource()))
+  val resultC = compileAndRunMsil("enumcoll-dotnet-appc", packagesC, "EnumCollAppC")
+  assertEqualInt(
+    resultC.exitCode,
+    0,
+    "enum_case_collision dotnet (AppC): exit 0 expected (stderr=" + resultC.stderr + ")"
+  )
+  assertEqual(
+    Str.trim(resultC.stdout),
+    expectedAppCStdout(),
+    "enum_case_collision dotnet (AppC): bare pattern match against C's own type-name-colliding HttpVersion"
   )
 }
 
@@ -260,12 +368,24 @@ test "jvm: bare enum-case construction and pattern match resolve against each en
   val pkgSrcs: List[String] = newList()
   pkgSrcs.add(pkgASource())
   pkgSrcs.add(pkgBSource())
+  pkgSrcs.add(pkgCSource())
   pkgSrcs.add(appSource())
   val result = compileAndRunJvm("enumcoll-jvm", pkgSrcs, "EnumCollApp")
   assertEqualInt(result.exitCode, 0, "enum_case_collision jvm: exit 0 expected (stderr=" + result.stderr + ")")
   assertEqual(
     Str.trim(result.stdout),
     expectedStdout(),
-    "enum_case_collision jvm: bare Http11 construction/match dispatch to the RIGHT enum in both packages"
+    "enum_case_collision jvm: bare Http11 construction/match dispatch to the RIGHT enum in every package"
+  )
+
+  val pkgSrcsC: List[String] = newList()
+  pkgSrcsC.add(pkgCSource())
+  pkgSrcsC.add(appCSource())
+  val resultC = compileAndRunJvm("enumcoll-jvm-appc", pkgSrcsC, "EnumCollAppC")
+  assertEqualInt(resultC.exitCode, 0, "enum_case_collision jvm (AppC): exit 0 expected (stderr=" + resultC.stderr + ")")
+  assertEqual(
+    Str.trim(resultC.stdout),
+    expectedAppCStdout(),
+    "enum_case_collision jvm (AppC): bare pattern match against C's own type-name-colliding HttpVersion"
   )
 }

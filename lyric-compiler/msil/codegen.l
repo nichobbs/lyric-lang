@@ -5118,10 +5118,25 @@ pub record FuncCtx {
 // back: inner slots stay declared in the LocalVarSig (dead after the block, always
 // valid IL), which composes with the discard-relower
 // (`rollbackFuncCtxSlotsSinceMsil`) and async-SM promoted-local tracking.
+// `kind` discriminates two independent per-name undo events that can be
+// pushed at different points (and in different relative order — see
+// `registerVarEnumTypeMsil`) for the same binding:
+//   "binding" — the slot/type rebind `allocSlotMsil` already tracked;
+//               `priorSlot`/`priorType` carry the restore values, `priorEnumTy`
+//               is unused (`None`).
+//   "enumty"  — a `fctx.varEnumTypes` rebind (#5191/#6595 follow-up: this map
+//               was never wired into the scope-undo log, so an inner block's
+//               enum-typed shadow of an outer name permanently overwrote the
+//               outer enum-type mapping past the inner block's exit);
+//               `priorEnumTy` carries the restore value (`None` = the name had
+//               no enum-type mapping before this block), `priorSlot`/`priorType`
+//               are unused.
 pub record ScopeUndoMsil {
   name: String
+  kind: String
   priorSlot: Option[Int]
   priorType: Option[MsilType]
+  priorEnumTy: Option[String]
 }
 
 pub record BlockScopeMsil {
@@ -5177,7 +5192,37 @@ pub func enterBlockScopeMsil(fctx: in FuncCtx): BlockScopeMsil {
 pub func recordScopeUndoMsil(fctx: in FuncCtx, name: in String): Unit {
   val priorSlot: Option[Int] = mapGet(fctx.slots, name)
   val priorType: Option[MsilType] = mapGet(fctx.types, name)
-  fctx.scopeUndoMsil.add(ScopeUndoMsil(name = name, priorSlot = priorSlot, priorType = priorType))
+  fctx.scopeUndoMsil.add(
+    ScopeUndoMsil(name = name, kind = "binding", priorSlot = priorSlot, priorType = priorType, priorEnumTy = None)
+  )
+}
+
+// Record `name`'s current `varEnumTypes` mapping (if any) on the scope undo log
+// BEFORE `registerVarEnumTypeMsil` rebinds it, so `exitBlockScopeMsil` can
+// restore the enclosing enum-type mapping an inner block's same-named
+// enum-typed binding shadowed (#6595).  A standalone entry (rather than piggy-
+// backing on `recordScopeUndoMsil`'s "binding" entry) because call sites vary
+// in whether the `varEnumTypes` write happens before or after the matching
+// `allocSlotMsil` call (e.g. `LBVar` writes it first); capturing independently
+// at the exact write site keeps the "prior value" correct regardless of order.
+func recordEnumTypeUndoMsil(fctx: in FuncCtx, name: in String): Unit {
+  val priorEnumTy: Option[String] = mapGet(fctx.varEnumTypes, name)
+  fctx.scopeUndoMsil.add(
+    ScopeUndoMsil(name = name, kind = "enumty", priorSlot = None, priorType = None, priorEnumTy = priorEnumTy)
+  )
+}
+
+// Record (or clear) `name`'s declared enum type in `fctx.varEnumTypes` —
+// remove-then-add so a rebind of an already-tracked name (legal shadowing,
+// #5191) never throws `Map.add`'s duplicate-key `ArgumentException` (#6595),
+// and scope-undo-logged so an inner block's shadow is un-done on block exit
+// instead of permanently clobbering the outer binding's enum type.
+pub func registerVarEnumTypeMsil(fctx: in FuncCtx, name: in String, enumName: in String): Unit {
+  recordEnumTypeUndoMsil(fctx, name)
+  if fctx.varEnumTypes.containsKey(name) {
+    fctx.varEnumTypes.remove(name)
+  }
+  fctx.varEnumTypes.add(name, enumName)
 }
 
 // Exit a nested lexical scope: replay the undo log back to the block's entry mark
@@ -5186,19 +5231,32 @@ pub func exitBlockScopeMsil(fctx: in FuncCtx, bs: in BlockScopeMsil): Unit {
   while fctx.scopeUndoMsil.count > bs.undoMark {
     val u = fctx.scopeUndoMsil[fctx.scopeUndoMsil.count - 1]
     fctx.scopeUndoMsil.removeAt(fctx.scopeUndoMsil.count - 1)
-    if fctx.slots.containsKey(u.name) {
-      fctx.slots.remove(u.name)
-    }
-    match u.priorSlot {
-      case Some(s) -> fctx.slots.add(u.name, s)
-      case None -> ()
-    }
-    if fctx.types.containsKey(u.name) {
-      fctx.types.remove(u.name)
-    }
-    match u.priorType {
-      case Some(t) -> fctx.types.add(u.name, t)
-      case None -> ()
+    match u.kind {
+      case "enumty" -> {
+        if fctx.varEnumTypes.containsKey(u.name) {
+          fctx.varEnumTypes.remove(u.name)
+        }
+        match u.priorEnumTy {
+          case Some(e) -> fctx.varEnumTypes.add(u.name, e)
+          case None -> ()
+        }
+      }
+      case _ -> {
+        if fctx.slots.containsKey(u.name) {
+          fctx.slots.remove(u.name)
+        }
+        match u.priorSlot {
+          case Some(s) -> fctx.slots.add(u.name, s)
+          case None -> ()
+        }
+        if fctx.types.containsKey(u.name) {
+          fctx.types.remove(u.name)
+        }
+        match u.priorType {
+          case Some(t) -> fctx.types.add(u.name, t)
+          case None -> ()
+        }
+      }
     }
   }
   fctx.scopeBaseMsil = bs.prevBase
@@ -8352,6 +8410,29 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             case None -> {
               // Enum case reference (`val l = Debug`): emit the ordinal
               // directly — enum values are I4 at the IL level (#3196).
+              // #6607: a package-qualified reference (`EnumCollC.Http11`)
+              // reaches this `EPath` arm as a flattened multi-segment path —
+              // `Lyric.AliasRewriter` collapses EVERY `Pkg.member` chain to a
+              // flat `EPath` (aliased imports self-map their own literal
+              // package name too, #6294), so this is NOT limited to alias
+              // use.  The penultimate segment is then the EXPLICIT, literal,
+              // always-unambiguous declaring package — prefer a direct
+              // `enumCaseOrdinals["<pkg>.<case>"]` lookup (the same `qn` key
+              // `registerEnumDeclMsil` always populates per-package,
+              // unambiguous by construction) over the construction-context
+              // `enumHint` below, which carries only a bare, possibly
+              // colliding TYPE name and cannot tell apart two SIMULTANEOUSLY
+              // in-scope same-named enum types (`resolveEnumCaseOrdinalByScope`'s
+              // `fctx.pkgName`-plus-import-order heuristic picks the same
+              // package for every bare-hinted reference in the function,
+              // regardless of which one this specific expression's own
+              // qualifier names).
+              val pathQualifierPkg = if path.segments.count >= 2 { path.segments[path.segments.count - 2] } else { "" }
+              val qualifiedOrdHit = if pathQualifierPkg.length > 0 {
+                mapGet(cctx.enumCaseOrdinals, pathQualifierPkg + "." + name)
+              } else {
+                None
+              }
               // #5995: two in-bundle enums may share a bare case name
               // (`Http11` in both `Std.Http.HttpVersion` and an unrelated
               // enum); the bare `enumCaseOrdinals` key is first-registered-
@@ -8370,7 +8451,10 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               } else {
                 None
               }
-              val ordHit = match hintedOrd { case Some(o) -> Some(value = o); case None -> mapGet(cctx.enumCaseOrdinals, name) }
+              val ordHit = match qualifiedOrdHit {
+                case Some(o) -> Some(value = o)
+                case None -> match hintedOrd { case Some(o) -> Some(value = o); case None -> mapGet(cctx.enumCaseOrdinals, name) }
+              }
               match ordHit {
                 case Some(ordv) -> {
                   insns.add(MLdcI4(v = ordv))
@@ -17322,7 +17406,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // #5995: remember this local's declared enum type so a later
               // bare `match bindName { case Http11 -> }` scopes correctly.
               if annoEnumName.length > 0 {
-                fctx.varEnumTypes.add(bindName, annoEnumName)
+                registerVarEnumTypeMsil(fctx, bindName, annoEnumName)
               }
             }
             case _ -> ()
@@ -17355,7 +17439,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           val ty = if annoTy != MObject { annoTy } else { initTy }
           val slot = allocSlotMsil(fctx, name, ty)
           if annoEnumName.length > 0 {
-            fctx.varEnumTypes.add(name, annoEnumName)
+            registerVarEnumTypeMsil(fctx, name, annoEnumName)
           }
           markByteSlotMsil(fctx, slot, isByteAnnotationMsil(tyOpt))
           emitByteSlotNarrowMsil(fctx, insns, slot)
@@ -17440,7 +17524,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // #5995: see the matching LBVal comment above.
           val annoEnumName = match tyOpt { case Some(te) -> enumSimpleNameOfTypeExprMsil(cctx, te); case None -> "" }
           if annoEnumName.length > 0 {
-            fctx.varEnumTypes.add(name, annoEnumName)
+            registerVarEnumTypeMsil(fctx, name, annoEnumName)
           }
           match initOpt {
             case Some(init) -> {
@@ -25078,7 +25162,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
     // matching comment in registerParamsMsil.
     val paramEnumName = enumSimpleNameOfTypeExprMsil(cctx, p.ty)
     if paramEnumName.length > 0 {
-      fctx.varEnumTypes.add(p.name, paramEnumName)
+      registerVarEnumTypeMsil(fctx, p.name, paramEnumName)
     }
     // For lambda parameters with a logical type (annotated or propagated), record
     // the slot's logical type in boxedParamTypes. The load-side code at codegen.l:5080
@@ -25404,7 +25488,7 @@ func registerParamsMsil(
     // of colliding with another in-bundle enum's same-named case.
     val paramEnumName = enumSimpleNameOfTypeExprMsil(cctx, p.ty)
     if paramEnumName.length > 0 {
-      fctx.varEnumTypes.add(p.name, paramEnumName)
+      registerVarEnumTypeMsil(fctx, p.name, paramEnumName)
     }
     // #5366: resolve through a type alias too — see `resolveFuncTypeExprMsil`.
     match resolveFuncTypeExprMsil(cctx, p.ty) {
