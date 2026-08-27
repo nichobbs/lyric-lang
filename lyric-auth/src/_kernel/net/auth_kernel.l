@@ -135,13 +135,13 @@ func appendCodepoint(acc: in String, cp: in Int): String {
     return acc + "�"
   }
   if cp <= 65535 {
-    return acc + ("" + fromInt(cp))
+    return acc + ("" + Std.Char.fromInt(cp))
   }
   // Astral plane: encode as UTF-16 surrogate pair.
   val cp1 = cp - 65536
   val high = 55296 + cp1 / 1024
   val low = 56320 + cp1 % 1024
-  acc + ("" + fromInt(high)) + ("" + fromInt(low))
+  acc + ("" + Std.Char.fromInt(high)) + ("" + Std.Char.fromInt(low))
 }
 
 // Decode JSON string escape sequences in `s` (RFC 8259 §7).
