@@ -74,6 +74,7 @@ import Std.Console as Console
 import Std.Tls
 import Std.Http
 import Web
+import Web.TlsTestFixtures as TlsFixtures
 
 record HelloHandler {
 }
@@ -108,60 +109,6 @@ impl Web.Handler for EchoBodyHandler {
 
 extern type JThread = "java.lang.Thread"
 
-// Self-signed RSA-2048 cert with subjectAltName IP:127.0.0.1 + DNS:localhost,
-// so the in-process Std.Http client's hostname verification passes when it
-// connects to https://127.0.0.1:8100. Matching unencrypted PKCS8 key below.
-// Fixtures are test-only and carry no secret value.
-val httpsCertPem = """-----BEGIN CERTIFICATE-----
-MIIDNTCCAh2gAwIBAgIUb4NMb9lelfz9FhkutEWaItQgtmgwDQYJKoZIhvcNAQEL
-BQAwHDEaMBgGA1UEAwwRbHlyaWMtdGVzdC1zZXJ2ZXIwHhcNMjYwNzE4MDczMDA2
-WhcNMzYwNzE1MDczMDA2WjAcMRowGAYDVQQDDBFseXJpYy10ZXN0LXNlcnZlcjCC
-ASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALlQ6kMPMzH5HawqSRL83fUc
-8bIbxmEnu9Mr4sUYq7QZhizddj7slYwXoOsLkU/LFbGD39uwpNrpqsAZmvTs9BBa
-NAQQNxJAMOIPAxI7HULQXrb+z2FDKkwhXR3Rp9YoHjgaNpwaCuzbI2LxtnJAiVcp
-AJ5moTcz5ALgZyyQ2D/Z/IvJPQZnEAF0GnVM+JG/yg+3dqN+9Blu9JaZWgK6IfG3
-7pEVvmYPpdNkc+1pWCDRG26MqNezo3JviJHlyfnnGhkeJLIxt3N4eUoYwf/KA8jV
-2I9zCgcQGGPljAJuKe1cWEgSaH7XZAq+5eEQumx7DaYvdNtXz4NTnVxfvGXJ6fMC
-AwEAAaNvMG0wHQYDVR0OBBYEFL9/OZMVlv9mWuYIUpF4icpjcSB1MB8GA1UdIwQY
-MBaAFL9/OZMVlv9mWuYIUpF4icpjcSB1MA8GA1UdEwEB/wQFMAMBAf8wGgYDVR0R
-BBMwEYcEfwAAAYIJbG9jYWxob3N0MA0GCSqGSIb3DQEBCwUAA4IBAQA/1GMpM+17
-ITrUjDRYRWFMvpSNMDzrKifG2pZbwRWpjmVMQlJf3OVif/Qlvb8mPsxWArlQGRrH
-OsHdwa9JUzpRoptNVQf63d8SFz4VHcMIF3h/9Iq88LjXMV1MyiObVZLLOAiiSW+j
-piF0DjxFPTuCe5WB5VKUUwOtEEN9xIg5W1LNgWK0dvKwAScUiqG1qVPk9WD6IlYW
-lbcCkesNrKyWmR4OYe2Cg3ZuXo6Tbd54/kfOFF5/LTRpYZVt7w2pzGX23y4/grrd
-glYQptAz1EEgWcpiSkgIVZEBjIntcMrlPE6XDiRDkZovezHMBno47l0w3CgcYXSK
-9pV5q75Q4+gt
------END CERTIFICATE-----"""
-
-val httpsKeyPem = """-----BEGIN PRIVATE KEY-----
-MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC5UOpDDzMx+R2s
-KkkS/N31HPGyG8ZhJ7vTK+LFGKu0GYYs3XY+7JWMF6DrC5FPyxWxg9/bsKTa6arA
-GZr07PQQWjQEEDcSQDDiDwMSOx1C0F62/s9hQypMIV0d0afWKB44GjacGgrs2yNi
-8bZyQIlXKQCeZqE3M+QC4GcskNg/2fyLyT0GZxABdBp1TPiRv8oPt3ajfvQZbvSW
-mVoCuiHxt+6RFb5mD6XTZHPtaVgg0RtujKjXs6Nyb4iR5cn55xoZHiSyMbdzeHlK
-GMH/ygPI1diPcwoHEBhj5YwCbintXFhIEmh+12QKvuXhELpsew2mL3TbV8+DU51c
-X7xlyenzAgMBAAECggEAB3+6uxP2YmNOTBU598a7xJtzPF3bXTsaYqU3+/nPmO4f
-e9lKW6l/M7gRDvHc43m4WwKXIHC5exJRkox2tMqR5ceAq1lsoRRv5fXtjeNOf9Gm
-w4j0I19warw+5GIDhKsC7gpBg3eaUZNcjzhwxZbO9/P0znQgufcjluo1wpvp5EuA
-Q+oQBGjIEpaeMeYE7E/iZbddWHh5g4ESa31CMmDMjWkEEnZC4SaSLs/kKAQ+P36N
-JgEpqoxhsOnoSEtsU8r3oPbC1+mBZXWNF+DJFvN/h9V0rVnnPjoPFpmyrGUNFeRB
-rOUkzoIEVyqbPGjmUzsxs23Eg82sBo77sYEy7aTroQKBgQDjQQO7jSNgOqzk0/5V
-GAU/uZF5je3zk+dlwD00BKhHNdm1P+F1O82m/x4BPgYwo933ZmwCjLS5q2ybkI2P
-m49sfSx8UZCQuUMUiCX989UKDp1UBqzw0WquF9Uyse1g457go7VOly3FoGGO4iWY
-RM5u61vu3o1OdLDVdhszl0XThQKBgQDQwdvoVIFrflA1MbJfSu4E+CZ3HX/SMFUt
-GAgyYiw2zd1O/ZOHY0OasI01TOMg8wbFYLZ/UoVC2M/Xjk7mp8YqVXBTLBU/igty
-IkxAykJYx0D2jlELrsNn6q9PEr/3eZYf4Xw2gv9zDi7F6IKds7DHBQNofYuVHQSj
-jogQcqIVFwKBgQCfkg1O6oHGlizE2N6jXaSB5Ilzsuc8u8QlvGC9X+/RYMyn6l0j
-doSnGEg3UxgBm27Gw1JgT/Cu1uICMfRUvERvR02vVY6PMKcbiaYztb0HvM9YKv/Q
-cRvZdr6rRCiMeggbcJhkwN7RABbAv6bqTpYtaHI7PmY2itWIbdAX38aWCQKBgQC3
-3shO7n+/qlYDRG6TuG/FOLzIldcLzz52pYAywH2pF9IhzP+wdCILkg4OMFatouEH
-4JNdudVed5E5j0K3rnbAuthgqadde71xHfyD5KJjh70UbW29GIVMdk1LHHyxAQrV
-scmySdeuA4P3FUBWnvrJkQTbeBkFkbWQSe5WbmGMqQKBgBkqMpYI7ee8fxtyZk9S
-3K4yzZ3/tw97kXSwTbFm61LXWm1BhOCBawKZ5Cz3uUdLHFgZHxlp40DmooELd8pt
-hYdhFWFd5WL7G9O4auVFYU6cSdrQ57iEjyhk9iT/xuPgFC5YIMiJY7pBvyBOBcU1
-4A8NKn86cmQezL3EpOkMqP2Q
------END PRIVATE KEY-----"""
-
 // A second router for the TLS listener (same greet handler as the plaintext
 // one; a fresh Router keeps the two servers independent).
 func httpsRouter(): Web.Router {
@@ -193,7 +140,7 @@ func startHttpsServer(tls: in Std.Tls.TlsServerConfig): Unit {
 // serveTls returns this immediately — it rejects mTLS before binding — so
 // this runs on the main thread with no port actually opened.
 func runMtlsRejectionCheck(): Unit {
-  val id = match Identity.fromPem(httpsCertPem, httpsKeyPem) {
+  val id = match Identity.fromPem(TlsFixtures.certPem, TlsFixtures.keyPem) {
     case Ok(i) -> i
     case Err(e) -> {
       Console.println("MTLS-REJECT-SELFCHECK: FAIL identity load: " + TlsError.message(e))
@@ -226,7 +173,7 @@ func runMtlsRejectionCheck(): Unit {
 // tolerated.  The FIRST successful response (Ok) is evaluated and ends the
 // loop — a wrong status / non-h2 / wrong body is reported as FAIL, not retried.
 func runHttpsH2SelfCheck(): Unit {
-  val id = match Identity.fromPem(httpsCertPem, httpsKeyPem) {
+  val id = match Identity.fromPem(TlsFixtures.certPem, TlsFixtures.keyPem) {
     case Ok(i) -> i
     case Err(e) -> {
       Console.println("HTTPS-H2-SELFCHECK: FAIL identity load: " + TlsError.message(e))
@@ -236,7 +183,7 @@ func runHttpsH2SelfCheck(): Unit {
   val tls = TlsServerConfig(identity = id, minVersion = Tls12, clientCa = None, requireClientCert = false)
   startHttpsServer(tls)
 
-  val caCert = match Certificate.fromPem(httpsCertPem) {
+  val caCert = match Certificate.fromPem(TlsFixtures.certPem) {
     case Ok(c) -> c
     case Err(e) -> {
       Console.println("HTTPS-H2-SELFCHECK: FAIL ca load: " + TlsError.message(e))
