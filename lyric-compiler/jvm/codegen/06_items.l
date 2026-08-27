@@ -97,6 +97,7 @@ func makeFuncCtx(
     scopeBase = 0,
     scopeUndo = newList(),
     ctorExpectStack = newList(),
+    ctorExpectClassStack = newList(),
     aliasTargets = aliasTargets,
     unsignedVars = newMap(),
     unsignedUndo = newList(),
@@ -150,6 +151,7 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     scopeBase = ctx.scopeBase,
     scopeUndo = ctx.scopeUndo,
     ctorExpectStack = ctx.ctorExpectStack,
+    ctorExpectClassStack = ctx.ctorExpectClassStack,
     aliasTargets = ctx.aliasTargets,
     unsignedVars = ctx.unsignedVars,
     unsignedUndo = ctx.unsignedUndo,
@@ -224,6 +226,7 @@ func makeFuncCtxForGenerator(
     scopeBase = 0,
     scopeUndo = newList(),
     ctorExpectStack = newList(),
+    ctorExpectClassStack = newList(),
     // #6393: a generator body has no reachable file-scoped alias table at
     // this call site — out of scope for now (see `FuncCtx.aliasTargets`).
     aliasTargets = newMap(),
@@ -302,6 +305,7 @@ func makeFuncCtxInstance(
     scopeBase = 0,
     scopeUndo = newList(),
     ctorExpectStack = newList(),
+    ctorExpectClassStack = newList(),
     // #6393: an instance-method body (protected-type entry / record method /
     // impl method) has no reachable file-scoped alias table at this call
     // site — out of scope for now (see `FuncCtx.aliasTargets`).
@@ -1716,7 +1720,9 @@ func lowerImplMethod(
 ): LFunc {
   val body = match fn.body {
     case Some(b) -> b
-    case None -> panic("lowerImplMethod: impl method has no body — interface-only declaration reached codegen")
+    case None -> panic(
+      "lowerImplMethod: impl method has no body — interface-only declaration reached codegen"
+    )
   }
   // extern-resolving: an `impl <ExternInterface> for X` method returning an
   // extern-typed value (e.g. `Bool` from a JDK interface method, or another
@@ -1790,9 +1796,27 @@ func buildProtected(
     match decl.members[mi] {
       case PMField(pf) -> {
         match pf {
-          case PFVar(name, ty, _, _, _, _) -> fields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvmExtern(ty, pkgName, externTypes)))
-          case PFLet(name, ty, _, _, _, _) -> fields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvmExtern(ty, pkgName, externTypes)))
-          case PFImmutable(f) -> fields.add(LField(flags = 0x0001, name = f.name, fieldType = typeExprToJvmExtern(f.ty, pkgName, externTypes)))
+          case PFVar(name, ty, _, _, _, _) -> fields.add(
+            LField(
+              flags = 0x0001,
+              name = name,
+              fieldType = typeExprToJvmExtern(ty, pkgName, externTypes)
+            )
+          )
+          case PFLet(name, ty, _, _, _, _) -> fields.add(
+            LField(
+              flags = 0x0001,
+              name = name,
+              fieldType = typeExprToJvmExtern(ty, pkgName, externTypes)
+            )
+          )
+          case PFImmutable(f) -> fields.add(
+            LField(
+              flags = 0x0001,
+              name = f.name,
+              fieldType = typeExprToJvmExtern(f.ty, pkgName, externTypes)
+            )
+          )
         }
       }
       case PMEntry(ed) -> {
@@ -1963,7 +1987,10 @@ func wireStmtDepsJvm(s: in Statement, knownNames: in Map[String, Bool], acc: in 
       match binding {
         case LBVal(_, _, init) -> wireExprDepsJvm(init, knownNames, acc)
         case LBLet(_, _, init) -> wireExprDepsJvm(init, knownNames, acc)
-        case LBVar(_, _, initOpt) -> match initOpt { case Some(init) -> wireExprDepsJvm(init, knownNames, acc); case None -> () }
+        case LBVar(_, _, initOpt) -> match initOpt {
+          case Some(init) -> wireExprDepsJvm(init, knownNames, acc)
+          case None -> ()
+        }
       }
     }
     case SAssign(target, _, value) -> {
@@ -2840,7 +2867,12 @@ func typeExprToJvmClass(te: in TypeExpr, pkgName: in String): String {
         segmentsToJvmPath(path.segments)
       }
     }
-    case _ -> panic("Jvm.Codegen: `impl Y for X` target is not a TRef (path) — got an " + "unsupported TypeExpr shape; refusing to emit an unbindable JVM " + "class name.  Add a TypeExpr arm to typeExprToJvmClass if a new " + "impl-target shape is intended.")
+    case _ -> panic(
+      "Jvm.Codegen: `impl Y for X` target is not a TRef (path) — got an " +
+        "unsupported TypeExpr shape; refusing to emit an unbindable JVM " +
+        "class name.  Add a TypeExpr arm to typeExprToJvmClass if a new " +
+        "impl-target shape is intended."
+    )
   }
 }
 
@@ -3661,9 +3693,34 @@ pub func collectFileSigsSeeded(
           if not into.containsKey(etkey) {
             into.add(etkey, esig)
           }
+          // #6640: the package-scoped key below is (package, case) only —
+          // it omits the enum's own TYPE name — so two DIFFERENT enums
+          // declared in the SAME package sharing a case name (e.g. `enum
+          // Status { case Ok }` and `enum Health { case Ok }`) collide on
+          // it, and the `not containsKey` guard silently kept whichever
+          // enum registered first. Register the genuinely unambiguous
+          // (package, TYPE, case)-scoped key first — always safe, since
+          // `enumCls` bakes in the exact declaring class, so it can never
+          // collide with another enum's entry — then guard the
+          // (package, case)-only key: if it already names a DIFFERENT
+          // enum, poison it (`enumVariantClassByPkg` refuses a poisoned
+          // key) instead of leaving it pointed at whichever enum
+          // registered first.
+          val efkey = "enum:" + dottedPkg + "." + decl.name + "." + ecn
+          if not into.containsKey(efkey) {
+            into.add(efkey, esig)
+          }
           val epkey = "enum:" + dottedPkg + "." + ecn
-          if not into.containsKey(epkey) {
-            into.add(epkey, esig)
+          match mapGet(into, epkey) {
+            case Some(existingSig) -> {
+              if existingSig.owner != enumCls {
+                val ambigKey = "enumpkgambig:" + dottedPkg + "." + ecn
+                if not into.containsKey(ambigKey) {
+                  into.add(ambigKey, esig)
+                }
+              }
+            }
+            case None -> into.add(epkey, esig)
           }
           val ebkey = "enumcase:" + ecn
           if not into.containsKey(ebkey) {
@@ -4073,8 +4130,32 @@ pub func collectFileCasesExtern(
             var fi = 0
             while fi < c.fields.count {
               match c.fields[fi] {
-                case UFNamed(name, ty, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmErasedExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty), owner, tps, externTypes), paramIdx = typeParamIndexOf(ty, tps), dflt = None))
-                case UFPos(ty, _) -> flds.add(JvmCaseField(name = "field" + toString(fi), ty = typeExprToJvmErasedExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty), owner, tps, externTypes), paramIdx = typeParamIndexOf(ty, tps), dflt = None))
+                case UFNamed(name, ty, _) -> flds.add(
+                  JvmCaseField(
+                    name = name,
+                    ty = typeExprToJvmErasedExtern(
+                      BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty),
+                      owner,
+                      tps,
+                      externTypes
+                    ),
+                    paramIdx = typeParamIndexOf(ty, tps),
+                    dflt = None
+                  )
+                )
+                case UFPos(ty, _) -> flds.add(
+                  JvmCaseField(
+                    name = "field" + toString(fi),
+                    ty = typeExprToJvmErasedExtern(
+                      BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty),
+                      owner,
+                      tps,
+                      externTypes
+                    ),
+                    paramIdx = typeParamIndexOf(ty, tps),
+                    dflt = None
+                  )
+                )
               }
               fi = fi + 1
             }
@@ -4091,7 +4172,19 @@ pub func collectFileCasesExtern(
           var mi = 0
           while mi < decl.members.count {
             match decl.members[mi] {
-              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty), owner, tps, externTypes), paramIdx = typeParamIndexOf(f.ty, tps), dflt = f.dflt))
+              case RMField(f) -> flds.add(
+                JvmCaseField(
+                  name = f.name,
+                  ty = typeExprToJvmErasedExtern(
+                    BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty),
+                    owner,
+                    tps,
+                    externTypes
+                  ),
+                  paramIdx = typeParamIndexOf(f.ty, tps),
+                  dflt = f.dflt
+                )
+              )
               case _ -> {
               }
             }
@@ -4114,7 +4207,19 @@ pub func collectFileCasesExtern(
           var mi = 0
           while mi < decl.members.count {
             match decl.members[mi] {
-              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty), owner, tps, externTypes), paramIdx = typeParamIndexOf(f.ty, tps), dflt = f.dflt))
+              case RMField(f) -> flds.add(
+                JvmCaseField(
+                  name = f.name,
+                  ty = typeExprToJvmErasedExtern(
+                    BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty),
+                    owner,
+                    tps,
+                    externTypes
+                  ),
+                  paramIdx = typeParamIndexOf(f.ty, tps),
+                  dflt = f.dflt
+                )
+              )
               case _ -> {
               }
             }
@@ -4136,9 +4241,30 @@ pub func collectFileCasesExtern(
             match decl.members[mi] {
               case PMField(pf) -> {
                 match pf {
-                  case PFVar(name, ty, init, _, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes), paramIdx = -1, dflt = init))
-                  case PFLet(name, ty, init, _, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes), paramIdx = -1, dflt = init))
-                  case PFImmutable(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmExtern(f.ty, owner, externTypes), paramIdx = -1, dflt = f.dflt))
+                  case PFVar(name, ty, init, _, _, _) -> flds.add(
+                    JvmCaseField(
+                      name = name,
+                      ty = typeExprToJvmExtern(ty, owner, externTypes),
+                      paramIdx = -1,
+                      dflt = init
+                    )
+                  )
+                  case PFLet(name, ty, init, _, _, _) -> flds.add(
+                    JvmCaseField(
+                      name = name,
+                      ty = typeExprToJvmExtern(ty, owner, externTypes),
+                      paramIdx = -1,
+                      dflt = init
+                    )
+                  )
+                  case PFImmutable(f) -> flds.add(
+                    JvmCaseField(
+                      name = f.name,
+                      ty = typeExprToJvmExtern(f.ty, owner, externTypes),
+                      paramIdx = -1,
+                      dflt = f.dflt
+                    )
+                  )
                 }
               }
               case _ -> ()
@@ -4165,7 +4291,14 @@ pub func collectFileCasesExtern(
                 // registers as a nonexistent `<pkg>/<Alias>` class, and every
                 // construction site checkcasts to it — NoClassDefFoundError at
                 // first call (the Std.Regex-on-JVM failure shape).
-                case OMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(f.ty, owner, genericParamNames(decl.generics), externTypes), paramIdx = -1, dflt = f.dflt))
+                case OMField(f) -> flds.add(
+                  JvmCaseField(
+                    name = f.name,
+                    ty = typeExprToJvmErasedExtern(f.ty, owner, genericParamNames(decl.generics), externTypes),
+                    paramIdx = -1,
+                    dflt = f.dflt
+                  )
+                )
                 case OMInvariant(_) -> ()
               }
               mi = mi + 1
@@ -5890,7 +6023,17 @@ pub func codegenPackageWithSigsSeeded(
                 // Extern-alias + generic-erasure aware so the emitted field /
                 // `$<name>()` accessor descriptor names the real JVM class
                 // (matches the `collectFileCasesExtern` opaque arm).
-                case OMField(f) -> oFields.add(LOpaqueField(name = f.name, fieldType = typeExprToJvmErasedExtern(f.ty, pkgName, genericParamNames(decl.generics), externTypes)))
+                case OMField(f) -> oFields.add(
+                  LOpaqueField(
+                    name = f.name,
+                    fieldType = typeExprToJvmErasedExtern(
+                      f.ty,
+                      pkgName,
+                      genericParamNames(decl.generics),
+                      externTypes
+                    )
+                  )
+                )
                 case OMInvariant(_) -> ()
               }
               ofi = ofi + 1
@@ -6079,7 +6222,18 @@ pub func codegenPackageWithSigsSeeded(
                 case Some(defExpr) -> {
                   val lowered = match defExpr.kind {
                     case ELiteral(lit) -> emitConfigDefaultLiteralJvm(fTy, lit, false, defaultInsnsList)
-                    case EPrefix(op, inner) -> match op { case PreNeg -> match inner.kind { case ELiteral(lit2) -> emitConfigDefaultLiteralJvm(fTy, lit2, true, defaultInsnsList); case _ -> false }; case _ -> false }
+                    case EPrefix(op, inner) -> match op {
+                      case PreNeg -> match inner.kind {
+                        case ELiteral(lit2) -> emitConfigDefaultLiteralJvm(
+                          fTy,
+                          lit2,
+                          true,
+                          defaultInsnsList
+                        )
+                        case _ -> false
+                      }
+                      case _ -> false
+                    }
                     case _ -> false
                   }
                   if not lowered {
@@ -6145,8 +6299,12 @@ pub func codegenPackageWithSigsSeeded(
     // panics rather than J001.  See follow-up to widen
     // mainReturns2SlotType to the resolved slot type.
     match mainRet {
-      case JLong -> panic("Jvm.Codegen: `func main(): Long` is not supported on the JVM target — wrap the result in `Int` or `Unit`")
-      case JDouble -> panic("Jvm.Codegen: `func main(): Double` is not supported on the JVM target — wrap the result in `Int` or `Unit`")
+      case JLong -> panic(
+        "Jvm.Codegen: `func main(): Long` is not supported on the JVM target — wrap the result in `Int` or `Unit`"
+      )
+      case JDouble -> panic(
+        "Jvm.Codegen: `func main(): Double` is not supported on the JVM target — wrap the result in `Int` or `Unit`"
+      )
       case _ -> ()
     }
     val jvmMainParams: List[JvmType] = newList()

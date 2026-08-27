@@ -114,6 +114,25 @@
 //! is one package's worth of declarations, so the colliding enums cannot
 //! live in the test file itself).
 //!
+//! A fourth fixture package (`EnumCollD`, JVM-only) covers a distinct
+//! collision shape #6607's fix left unguarded (#6640): two DIFFERENT enums
+//! declared in the SAME package sharing a case name (`Status.Ok` /
+//! `Health.Ok`, unlike A/B's cross-package case-name collision or C's
+//! cross-package type-name collision). On the JVM, `enumCaseClassForExpecting`
+//! (bare case CONSTRUCTION) and `enumPatternClass` (bare PATTERN-MATCH arm
+//! resolution) both consulted `enumVariantClassByPkg`, whose
+//! `"enum:" + dottedPkg + "." + case` key is scoped by (package, case) only —
+//! omitting the enum's own TYPE name — so `Status.Ok` and `Health.Ok`
+//! collided on it: whichever enum registered first silently won every bare
+//! reference in the package, including inside the OTHER enum's own
+//! construction/match sites. `Status.Ok` is ordinal 0 and `Health.Ok` is
+//! ordinal 1 (`Bad` is 0), so a misrouted reference prints the WRONG label
+//! or fails an identity-based pattern test at runtime rather than
+//! coincidentally matching. `EnumCollD` is self-contained (the collision is
+//! intra-package, unlike A/B/C) and JVM-only per the issue: MSIL enums erase
+//! to a bare Int ordinal and resolve bare references through the differently-
+//! shaped `varEnumTypes`/`enumHint` mechanism (#5995/#6595), not touched here.
+//!
 //! Run in CI via:
 //!   lyric test lyric-compiler/lyric/enum_case_collision_self_test.l
 @test_module
@@ -248,6 +267,60 @@ func appCSource(): String {
 
 func expectedAppCStdout(): String {
   "match-C:Http11"
+}
+
+// #6640: two DIFFERENT enums declared in the SAME package sharing a case
+// name (`Ok` in both `Status` and `Health`) — the intra-package collision
+// shape distinct from A/B's cross-package case-name collision and C's
+// cross-package type-name collision.  `Status.Ok` is ordinal 0; `Health.Ok`
+// is ordinal 1 (`Bad` is 0) — deliberately different so a misrouted
+// reference prints the WRONG label instead of coincidentally matching.
+// `statusLabel(Ok)`/`healthLabel(Ok)` exercise bare-case CONSTRUCTION as a
+// call argument (`enumCaseClassForExpecting`'s expected-type-scoped tier
+// must select the callee's OWN parameter type, not whichever of the two
+// same-package enums registered `Ok` first); the two annotated locals plus
+// their bare-arm `match` exercise PATTERN MATCH (`enumPatternClass`'s
+// scrutinee-type-scoped tier).
+func pkgDSource(): String {
+  "package EnumCollD\n" + "\n" + "pub enum Status {\n" + "  case Ok\n" + "  case Fail\n" + "}\n" + "\n" +
+    "pub enum Health {\n" +
+    "  case Bad\n" +
+    "  case Ok\n" +
+    "}\n" +
+    "\n" +
+    "pub func statusLabel(v: in Status): String {\n" +
+    "  match v {\n" +
+    "    case Ok -> \"D:Status:Ok\"\n" +
+    "    case Fail -> \"D:Status:Fail\"\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "pub func healthLabel(h: in Health): String {\n" +
+    "  match h {\n" +
+    "    case Bad -> \"D:Health:Bad\"\n" +
+    "    case Ok -> \"D:Health:Ok\"\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Int {\n" +
+    "  println(statusLabel(Ok))\n" +
+    "  println(healthLabel(Ok))\n" +
+    "  val s: Status = Ok\n" +
+    "  val h: Health = Ok\n" +
+    "  match s {\n" +
+    "    case Ok -> println(\"match-D:Status:Ok\")\n" +
+    "    case Fail -> println(\"match-D:Status:Fail\")\n" +
+    "  }\n" +
+    "  match h {\n" +
+    "    case Bad -> println(\"match-D:Health:Bad\")\n" +
+    "    case Ok -> println(\"match-D:Health:Ok\")\n" +
+    "  }\n" +
+    "  0\n" +
+    "}\n"
+}
+
+func expectedDStdout(): String {
+  "D:Status:Ok\n" + "D:Health:Ok\n" + "match-D:Status:Ok\n" + "match-D:Health:Ok"
 }
 
 // ─── Shared temp-dir helpers ─────────────────────────────────────────────────
@@ -581,5 +654,19 @@ test "dotnet: package-qualified pattern match resolves the right ordinal for sib
     Str.trim(result.stdout),
     expectedSiblingEnumsStdout(),
     "sibling_enums dotnet: package-qualified `On` resolves to each enum's OWN ordinal, not whichever registered first"
+  )
+}
+
+// #6640: JVM-only — see `pkgDSource`'s doc comment. Single-package (the
+// collision is intra-package), so no separate consumer package is needed.
+test "jvm: same-package two-enum case-name collision resolves bare construction and pattern match (#6640)" {
+  val pkgSrcsD: List[String] = newList()
+  pkgSrcsD.add(pkgDSource())
+  val resultD = compileAndRunJvm("enumcoll-jvm-d", pkgSrcsD, "EnumCollD")
+  assertEqualInt(resultD.exitCode, 0, "enum_case_collision jvm (D): exit 0 expected (stderr=" + resultD.stderr + ")")
+  assertEqual(
+    Str.trim(resultD.stdout),
+    expectedDStdout(),
+    "enum_case_collision jvm (D): bare Ok construction/match resolves against the RIGHT same-package enum"
   )
 }

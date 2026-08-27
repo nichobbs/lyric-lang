@@ -421,7 +421,10 @@ func eagerlyResolveGenericArg(te: in TypeExpr, pkgName: in String, externTypes: 
       // #5570) must not re-guess `Elem` against the CALLER's package context.
       TypeExpr(kind = TSlice(element = eagerlyResolveGenericArg(elem, pkgName, externTypes)), span = te.span)
     }
-    case TParen(inner) -> TypeExpr(kind = TParen(inner = eagerlyResolveGenericArg(inner, pkgName, externTypes)), span = te.span)
+    case TParen(inner) -> TypeExpr(
+      kind = TParen(inner = eagerlyResolveGenericArg(inner, pkgName, externTypes)),
+      span = te.span
+    )
     case _ -> te
   }
 }
@@ -730,6 +733,20 @@ pub record FuncCtx {
   // JVM-codegen no-defaulted-field rule; initialised `newList()` at every
   // construction site.
   ctorExpectStack: List[String]
+  // #6640: as `ctorExpectStack`, but carries the FULL expected JVM class
+  // name (slash form, e.g. "Std/RegexSafe") instead of just its owning
+  // package — pushed/popped in lockstep with `ctorExpectStack` by the same
+  // `pushCtorExpect`/`popCtorExpect` pair.  `ctorExpectStack`'s package-only
+  // hint is enough to disambiguate a bare CTOR reference (a package can
+  // declare only one ctor/record per simple name), but a bare ENUM CASE
+  // reference needs the expected type's own name too — two different enums
+  // declared in the SAME package can share a case name (`enum Status {
+  // case Ok }` / `enum Health { case Ok }`), so `enumCaseClassForExpecting`
+  // consults this stack to resolve the genuinely unambiguous
+  // (package, TYPE, case)-scoped key instead of the (package, case)-only
+  // one. No default per the JVM-codegen no-defaulted-field rule;
+  // initialised `newList()` at every construction site.
+  ctorExpectClassStack: List[String]
   // #6393: same-file `alias X = ...` table (simple name -> RHS `TypeExpr`),
   // consulted by local-binding type-annotation resolution (`LBVal`/`LBLet`/
   // `LBVar` in `05_stmts.l`) so a function-type alias annotation
@@ -1813,16 +1830,47 @@ pub func ctorClassForExpecting(ctx: in FuncCtx, name: in String): Option[String]
   mapGet(ctx.ctors, name)
 }
 
-// Cross-package enum case-name collision fix (#5995).  As `ctorClassForExpecting`
-// but for a bare enum-case reference (`enumcase:` keys instead of `ctors`):
-// consults `ctx.ctorExpectStack`'s top entry (the declaring package of a
-// directly-enclosing call's expected parameter type — pushed at every call
-// argument via `pushCtorExpect`/`popCtorExpect`, #5976) BEFORE the
-// bundle-global first-registered bare-name fallback, so a bare-case argument
-// (`serializeResponseHead(Http11, ...)`) resolves against the SAME package
-// the callee's parameter actually declares, not whichever same-named-case
-// enum happened to register first.
+// Cross-package enum case-name collision fix (#5995), extended for the
+// same-package two-enum collision (#6640).  As `ctorClassForExpecting` but
+// for a bare enum-case reference (`enumcase:`/`enum:` keys instead of
+// `ctors`), in three tiers:
+//
+//   1. The CURRENT package's own declaration (mirrors `ctorClassForExpecting`
+//      trying `ctx.pkgName + "::" + name` first) — via the poison-aware
+//      `enumVariantClassByPkg`, so this tier silently declines (falls
+//      through to tier 2) rather than guessing when the current package
+//      itself declares two colliding enums.
+//   2. The directly-enclosing call/return/annotation's expected TYPE
+//      (`ctx.ctorExpectClassStack`'s top entry, pushed alongside
+//      `ctorExpectStack` by `pushCtorExpect`) via the genuinely
+//      (package, TYPE, case)-scoped `enumVariantClassByFullClass` — this is
+//      what disambiguates two same-package enums sharing a case name, since
+//      unlike tier 1 it knows exactly WHICH enum the reference must resolve
+//      to, not just which package.
+//   3. The expected type's owning PACKAGE alone
+//      (`ctx.ctorExpectStack`'s top entry) via `enumVariantClassByPkg`, for
+//      parity with the pre-#6640 behaviour when only a package (not a full
+//      class) hint is available.
+//
+// Falls back to the bundle-global first-registered bare-name entry
+// (`enumCaseClassBare`) only when every scoped tier above misses, so a
+// bare-case argument (`serializeResponseHead(Http11, ...)`) resolves
+// against the SAME enum the callee's parameter actually declares, not
+// whichever same-named-case enum happened to register first.
 pub func enumCaseClassForExpecting(ctx: in FuncCtx, caseName: in String): Option[String] {
+  match enumVariantClassByPkg(ctx, ctx.pkgName.replace("/", "."), caseName) {
+    case Some(cls) -> return Some(value = cls)
+    case None -> ()
+  }
+  if ctx.ctorExpectClassStack.count > 0 {
+    val expectedClass = ctx.ctorExpectClassStack[ctx.ctorExpectClassStack.count - 1]
+    if expectedClass.length > 0 {
+      match enumVariantClassByFullClass(ctx, expectedClass.replace("/", "."), caseName) {
+        case Some(cls) -> return Some(value = cls)
+        case None -> ()
+      }
+    }
+  }
   if ctx.ctorExpectStack.count > 0 {
     val expectedOwner = ctx.ctorExpectStack[ctx.ctorExpectStack.count - 1]
     if expectedOwner.length > 0 {
@@ -1845,17 +1893,23 @@ pub func jvmClassOwnerPkg(cls: in String): String {
   }
 }
 
-// Push an expected-constructor-owner hint (see `FuncCtx.ctorExpectStack`)
-// derived from `paramTy`: the owning package of a `JRef` parameter type, or
-// "" (a no-op hint) for any other shape.  Always pair with `popCtorExpect`.
+// Push an expected-constructor-owner hint (see `FuncCtx.ctorExpectStack` /
+// `FuncCtx.ctorExpectClassStack`) derived from `paramTy`: the owning package
+// AND the full class of a `JRef` parameter type, or "" (a no-op hint) for
+// any other shape.  Always pair with `popCtorExpect`.
 pub func pushCtorExpect(ctx: in FuncCtx, paramTy: in JvmType): Unit {
   val owner = match paramTy { case JRef(cls) -> jvmClassOwnerPkg(cls); case _ -> "" }
+  val fullCls = match paramTy { case JRef(cls) -> cls; case _ -> "" }
   ctx.ctorExpectStack.add(owner)
+  ctx.ctorExpectClassStack.add(fullCls)
 }
 
 pub func popCtorExpect(ctx: in FuncCtx): Unit {
   if ctx.ctorExpectStack.count > 0 {
     ctx.ctorExpectStack.removeAt(ctx.ctorExpectStack.count - 1)
+  }
+  if ctx.ctorExpectClassStack.count > 0 {
+    ctx.ctorExpectClassStack.removeAt(ctx.ctorExpectClassStack.count - 1)
   }
 }
 
@@ -1905,9 +1959,42 @@ pub func enumCaseClassBare(ctx: in FuncCtx, caseName: in String): Option[String]
 // unrelated `HttpVersion` enums, the issue's literal repro shape), this keys
 // on the DECLARING PACKAGE, which is unambiguous across packages regardless
 // of whether their enum type names happen to match too.
+//
+// Same-package two-enum collision fix (#6640): the (package, case) key is
+// itself ambiguous when the SAME package declares two DIFFERENT enums that
+// share a case name (`enum Status { case Ok }` / `enum Health { case Ok }`
+// in one package) — `collectFileSigsSeeded`'s `IEnum` branch detects that
+// case at registration time and poisons the key (`enumpkgambig:<pkg>.
+// <case>`) instead of silently keeping whichever enum registered first.
+// Refuse to resolve a poisoned key so every caller falls through to a more
+// specific tier (the (package, TYPE, case)-scoped
+// `enumVariantClassByFullClass`, or the type-name-scoped `enumVariantClass`)
+// instead of guessing.
 pub func enumVariantClassByPkg(ctx: in FuncCtx, dottedPkg: in String, caseName: in String): Option[String] {
   if dottedPkg.length > 0 {
-    enumSigOwner(mapGet(ctx.funcSigs, "enum:" + dottedPkg + "." + caseName))
+    if ctx.funcSigs.containsKey("enumpkgambig:" + dottedPkg + "." + caseName) {
+      None
+    } else {
+      enumSigOwner(mapGet(ctx.funcSigs, "enum:" + dottedPkg + "." + caseName))
+    }
+  } else {
+    None
+  }
+}
+
+// Same-package two-enum collision fix (#6640).  The declaring enum's JVM
+// class for a fully (package, TYPE, case)-scoped reference — the
+// `"enum:" + dottedPkg + "." + <EnumType> + "." + case` key
+// `collectFileSigsSeeded`'s `IEnum` branch always registers unconditionally
+// (it bakes in the exact declaring class, so it can never collide with any
+// other enum's entry, unlike the package-only `enumVariantClassByPkg` key
+// above). `fullClassDotted` is the expected type's full class name with `/`
+// replaced by `.` (e.g. "EnumCollD.Status"). Always correct when the caller
+// knows the exact expected class — the only tier that can disambiguate two
+// same-package enums sharing a case name.
+pub func enumVariantClassByFullClass(ctx: in FuncCtx, fullClassDotted: in String, caseName: in String): Option[String] {
+  if fullClassDotted.length > 0 {
+    enumSigOwner(mapGet(ctx.funcSigs, "enum:" + fullClassDotted + "." + caseName))
   } else {
     None
   }

@@ -513,15 +513,24 @@ func jvmSimpleName(cls: in String): String {
 
 // Resolve the enum class to test a `case <Name> ->` pattern against, given the
 // scrutinee's static JVM type (docs/59 §4.4, cross-package collision fix
-// #5995): a scrutinee whose class names a registered enum resolves PACKAGE-
-// scoped first (`enumVariantClassByPkg`, keyed on the scrutinee class's own
-// declaring package) — unambiguous even when two DIFFERENT packages each
-// declare an enum with the SAME type name (the issue's literal repro: two
-// `HttpVersion` enums, each with an `Http11` case), which the enum-simple-
-// -name-scoped `enumVariantClass` fallback below cannot tell apart on its
-// own. The registered sig's owner is authoritative even when the static class
-// is an imported enum's in-package guess.  An erased `Object` scrutinee falls
-// back to the bare variant key (mirrors MSIL's unbox-then-ordinal-compare on a
+// #5995, same-package two-enum collision fix #6640): a scrutinee whose class
+// names a registered enum resolves FULLY (package, TYPE, case)-scoped first
+// (`enumVariantClassByFullClass`, keyed on the scrutinee class's OWN full
+// class name) — always correct when `caseName` genuinely belongs to that
+// exact class, and the only tier that disambiguates two DIFFERENT enums
+// declared in the SAME package sharing a case name (`enum Status { case Ok
+// }` / `enum Health { case Ok }`), since the package-only tier below cannot
+// tell them apart (#6640). Falls back to PACKAGE-scoped
+// (`enumVariantClassByPkg`, keyed on the scrutinee class's own declaring
+// package) — unambiguous even when two DIFFERENT packages each declare an
+// enum with the SAME type name (the #5995 issue's literal repro: two
+// `HttpVersion` enums, each with an `Http11` case) — for the case where the
+// scrutinee's static class is an approximate in-package guess rather than
+// the exact declaring class, which the enum-simple-name-scoped
+// `enumVariantClass` fallback below cannot tell apart on its own. The
+// registered sig's owner is authoritative even when the static class is an
+// imported enum's in-package guess.  An erased `Object` scrutinee falls back
+// to the bare variant key (mirrors MSIL's unbox-then-ordinal-compare on a
 // boxed scrutinee).  A scrutinee of any OTHER known class (String, a record)
 // is never an enum test, so a variable binding that happens to share a name
 // with some enum's case keeps binding.
@@ -531,9 +540,12 @@ func enumPatternClass(ctx: in FuncCtx, scrutTy: in JvmType, caseName: in String)
       if cls == "java/lang/Object" {
         enumCaseClassBare(ctx, caseName)
       } else {
-        match enumVariantClassByPkg(ctx, jvmClassOwnerPkg(cls).replace("/", "."), caseName) {
-          case Some(pcls) -> Some(value = pcls)
-          case None -> enumVariantClass(ctx, jvmSimpleName(cls), caseName)
+        match enumVariantClassByFullClass(ctx, cls.replace("/", "."), caseName) {
+          case Some(fcls) -> Some(value = fcls)
+          case None -> match enumVariantClassByPkg(ctx, jvmClassOwnerPkg(cls).replace("/", "."), caseName) {
+            case Some(pcls) -> Some(value = pcls)
+            case None -> enumVariantClass(ctx, jvmSimpleName(cls), caseName)
+          }
         }
       }
     }
@@ -1273,7 +1285,10 @@ func lowerPatternTest(
       val constOwner = match importedSig { case Some(s) -> s.owner; case None -> ctx.pkgName }
       val vtyOpt: Option[JvmType] = match ownVty {
         case Some(t) -> Some(value = t)
-        case None -> match importedSig { case Some(s) -> Some(value = s.ret); case None -> None }
+        case None -> match importedSig {
+          case Some(s) -> Some(value = s.ret)
+          case None -> None
+        }
       }
       match vtyOpt {
         case Some(vty) -> {
@@ -1362,7 +1377,9 @@ func lowerPatternTest(
             }
           }
         }
-        case None -> panic("lowerPatternTest (JVM): PConstRef name not found in moduleVals (type checker should have validated)")
+        case None -> panic(
+          "lowerPatternTest (JVM): PConstRef name not found in moduleVals (type checker should have validated)"
+        )
       }
     }
     case PError -> insns.add(LNop)
@@ -1879,7 +1896,17 @@ func lowerPatternBind(
               case None -> ()
             }
             match fields[fi] {
-              case RPFNamed(_, subPat, _) -> bindCaseField(ctx, insns, castSlot, recClass, fieldName, fty, concreteTy, concreteTypeExprOpt, subPat)
+              case RPFNamed(_, subPat, _) -> bindCaseField(
+                ctx,
+                insns,
+                castSlot,
+                recClass,
+                fieldName,
+                fty,
+                concreteTy,
+                concreteTypeExprOpt,
+                subPat
+              )
               case RPFShort(_, _) -> {
                 // `Point{x}` binds local `x` to field `x` — reuse `bindCaseField`'s
                 // `PBinding` leaf (unboxing/slice-normalizing against `concreteTy`)
