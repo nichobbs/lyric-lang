@@ -31708,3 +31708,60 @@ dotnet and JVM self-test CI jobs (`.github/workflows/ci.yml`) and the
 `Makefile`'s `TEST_EMITTER_FILES` aggregate list (dotnet-only, per that
 list's own scope).
 
+## D-progress-802 — `compiler-self-tests-dotnet-a`/`-b`: further split `background: true` batches to ~4-6 concurrent steps; corrected the "RAM disk" mitigation comment (#4975)
+
+**Bug.** `compiler-self-tests-dotnet-a`/`-b` occasionally SIGBUS (exit
+135) on standard `ubuntu-latest` (2-core/7GB) runners under concurrent-
+step load. #4810 split an original ~38-step single batch into ~18-step
+batches; a later pass split those further to a ~14-step "empirically
+reliable cap." #4975 documented that the cap was insufficient — real
+incidents recurred at the ~14-step size (`cross_package_generics_self_test`,
+`cross_package_nat_self_test`, `restored_async_self_test`, `map_
+enhancements_self_test`, `defer_self_test`, each on an unrelated PR,
+confirming resource pressure rather than a product regression) — and that
+the mitigation step's name and comment ("prevent SIGBUS RAM disk
+exhaustion") misdescribed the mechanism: on a standard `ubuntu-latest`
+runner, `/tmp` and `runner.temp` both sit on the same persistent disk, not
+tmpfs (the actual tmpfs mounts there are `/dev/shm`, `/run`, `/run/lock`,
+`/sys/fs/cgroup`).
+
+**Fix.** Every `wait-all: true`-bounded batch in `compiler-self-tests-
+dotnet-a` and `compiler-self-tests-dotnet-b` (`.github/workflows/ci.yml`)
+that ran more than ~6 concurrent `background: true` steps was split
+further via additional `wait-all: true` barriers, bringing every batch in
+both jobs down to at most 6 concurrent steps (`compiler-self-tests-
+dotnet-a`: 10 batches → 19; `compiler-self-tests-dotnet-b`: 5 batches → 9;
+109 background steps total, unchanged, just spread across more, smaller
+barriers). No steps were removed, reordered across barriers, or made
+sequential — the split preserves the existing `#4486`/`#4841` concurrency
+model, just at a materially smaller per-barrier fan-out. The three
+"Redirect temporary directory to prevent SIGBUS RAM disk exhaustion"
+steps (`compiler-self-tests-dotnet-a`, `compiler-self-tests-dotnet-b`,
+`native-backend-self-tests`) were renamed and their comments corrected to
+attribute the pressure to disk I/O and memory contention among concurrent
+`dotnet`-hosted self-hosted-compiler invocations, not RAM-disk exhaustion
+— the `TMPDIR=${{ runner.temp }}` redirect itself is unchanged (still
+needed so per-step scratch files land under one well-known path rather
+than the bare `/tmp` some external tools default to). Audited every
+`background: true` step in both jobs plus `native-backend-self-tests` for
+hardcoded `/tmp` usage bypassing the `TMPDIR` redirect: none found beyond
+the `asan_preflight` case #4976 already fixed.
+
+Not attempted: requesting a larger GitHub-hosted runner
+(`ubuntu-latest-4-cores`/`-8-cores`) for these two jobs. #4975 lists it as
+an untried, likely-more-durable fix; it was left alone here because it
+changes the jobs' billing/quota profile, which is a decision for a human
+to make explicitly rather than a CI-hygiene session to make unilaterally.
+If the further split above does not fully resolve the recurrence, a
+larger runner is the next lever to pull.
+
+**Verification.** `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"`
+parses cleanly; `actionlint 1.7.12` (the version pinned in the `actionlint`
+CI job) reports only the two pre-existing, permanently-suppressed finding
+categories (`unexpected key "background"`/`"wait-all"` and `step must run
+script with`) and nothing new; `scripts/ci/check-workflow-size.sh` passes
+(470,762 / 500,000 bytes). No live CI run was triggered from this session
+(CI-only YAML change, not pushed) — the actual SIGBUS-recurrence rate
+under the new split can only be confirmed by observing `main` over
+subsequent PRs, per #4975's own evidence-gathering pattern.
+
