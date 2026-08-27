@@ -1753,3 +1753,142 @@ test "sibling match arms sharing a name specialise independently and don't leak 
   assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
   assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
 }
+
+// #6665: `STry`'s body, each `catch` clause's body, and `finally` were never
+// wrapped in the #6121 scope-isolation snapshot/restore — unlike an
+// `if`/`match` branch or a loop body, so a `val` bound inside any of them
+// leaked past the WHOLE `try` statement (nothing ever restored `env` back to
+// its pre-`try` state). Each clause here shadows the SAME outer name `r`
+// with a DIFFERENT type; without the fix, whichever clause runs LAST
+// (`finally`) leaves its binding (`r: Bool`) sitting in `env` for the final
+// `like(r)` call after the `try`, so `like__Int` — the correct
+// specialisation for the real outer `r: Int` — is never produced.
+test "generic calls inside try/catch/finally clause bodies are scope-isolated from each other and from the enclosing scope (#6665)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" + "func caller(): Int {\n" + "  val r: Int = 1\n" +
+    "  try {\n" +
+    "    val r: String = \"hi\"\n" +
+    "    like(r)\n" +
+    "  } catch Bug as e1 {\n" +
+    "    val r: Float = 1.5\n" +
+    "    like(r)\n" +
+    "  } finally {\n" +
+    "    val r: Bool = true\n" +
+    "    like(r)\n" +
+    "  }\n" +
+    "  like(r)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "like__String"), "like__String specialised for the val bound inside the try body")
+  assertTrue(hasFunc(res.file, "like__Float"), "like__Float specialised for the val bound inside the catch body")
+  assertTrue(hasFunc(res.file, "like__Bool"), "like__Bool specialised for the val bound inside the finally body")
+  assertTrue(
+    hasFunc(res.file, "like__Int"),
+    "like__Int specialised for the outer r after the whole try/catch/finally -- must not still see the finally body's leaked shadow"
+  )
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
+// #6666: a `catch T as e` binding was never tracked into `env` at all, so a
+// generic call inside the handler that referenced the bound exception by
+// name (`e`) saw whatever type an OUTER binding of the same name already
+// had — here the outer `val e: Int` — instead of the caught exception's own
+// declared type. The binding must also be evicted once the catch body ends,
+// so a reference to the same name AFTER the whole `try` (and inside the try
+// body itself, a SIBLING scope) still resolves to the outer binding.
+test "catch binding shadowing an outer name specialises the handler's generic call against the caught exception's own type, then is evicted (#6666)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" + "func caller(): Int {\n" + "  val e: Int = 1\n" +
+    "  try {\n" +
+    "    like(e)\n" +
+    "  } catch Bug as e {\n" +
+    "    like(e)\n" +
+    "  }\n" +
+    "  like(e)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(
+    hasFunc(res.file, "like__Bug"),
+    "like__Bug specialised for the catch binding's own (caught exception) type"
+  )
+  assertTrue(
+    hasFunc(res.file, "like__Int"),
+    "like__Int specialised for the outer e, both inside the try body (a sibling scope) and after the whole try -- must not see the catch binding's shadow"
+  )
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
+// #6666: an explicitly-typed lambda parameter was never tracked into `env`
+// at all, so a generic call inside the lambda body that referenced the
+// parameter by name saw whatever type an OUTER binding of the same name
+// already had, instead of the parameter's own declared type. The tracked
+// binding must also be evicted once the lambda body ends.
+test "lambda parameter shadowing an outer binding specialises the body's generic call against the parameter's own type, then is evicted (#6666)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" + "func caller(): Int {\n" + "  val r: Int = 1\n" +
+    "  val f = { r: String -> like(r) }\n" +
+    "  like(r)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "like__String"), "like__String specialised for the lambda parameter's own shadow of r")
+  assertTrue(
+    hasFunc(res.file, "like__Int"),
+    "like__Int specialised for the outer r after the lambda literal -- must not still see the parameter's leaked shadow"
+  )
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
+// #6666: a `for` loop's pattern variable was never tracked into `env` at
+// all, so a generic call inside the loop body that referenced the pattern
+// variable by name saw whatever type an OUTER binding of the same name
+// already had, instead of the iterable's own element type. The tracked
+// binding must also be evicted once the loop body ends.
+test "for-loop pattern variable shadowing an outer binding specialises the body's generic call against the element's own type, then is evicted (#6666)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" + "func caller(items: in List[String]): Int {\n" +
+    "  val r: Int = 1\n" +
+    "  for r in items {\n" +
+    "    like(r)\n" +
+    "  }\n" +
+    "  like(r)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "like__String"), "like__String specialised for the for-loop pattern's own element type")
+  assertTrue(
+    hasFunc(res.file, "like__Int"),
+    "like__Int specialised for the outer r after the loop -- must not still see the loop pattern's leaked shadow"
+  )
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
+// #6669: `bindPatternEnvMono`'s `PConstructor` arm used to resolve a match
+// pattern's case via a bare-name lookup into `funcDecls`, which keeps only a
+// FIRST-WINS representative per name — so when two DIFFERENT non-generic
+// unions declare a case with the same simple name (`Tag`), matching on the
+// SECOND union's value still resolved to the FIRST union's ctor synth and
+// bound its (wrong) field type into `env`. Here `A.Tag` is declared first
+// (`x: Int`) and `B.Tag` second (`x: String`); matching a `B`-typed
+// scrutinee must specialise against `B.Tag`'s real `String` field, not
+// `A.Tag`'s `Int` — the miscompile this finding describes (the runtime
+// value really is a `String`; a `like__Int` specialisation would crash
+// against it).
+test "PConstructor field binding verifies the resolved case's owner against the scrutinee before trusting its field type (#6669)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" + "union A { case Tag(x: Int) }\n" +
+    "union B { case Tag(x: String) }\n" +
+    "func caller(b: in B): String {\n" +
+    "  match b {\n" +
+    "    case Tag(x) -> like(x)\n" +
+    "  }\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(
+    hasFunc(res.file, "like__String"),
+    "like specialises against B.Tag's real field type once the resolved case's owner is verified against the scrutinee"
+  )
+  assertTrue(
+    not hasFunc(res.file, "like__Int"),
+    "must not bind A.Tag's field type just because it won the first-seen funcDecls slot for the bare name 'Tag'"
+  )
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}

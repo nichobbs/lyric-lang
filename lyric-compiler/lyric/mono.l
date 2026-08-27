@@ -183,6 +183,18 @@ record MonoState {
   /// genuinely irresolvable (e.g. an untyped argument).  See
   /// `resolveAmbiguousOverload`.
   ambiguousFuncOverloads: Map[String, List[FunctionDecl]]
+  /// Every union-case (and generic-record) inference-only constructor synth
+  /// visible to the file, keyed by bare case name, WITHOUT the first-wins
+  /// collapse `funcDecls` applies (#6669). `funcDecls`/`genDecls` only ever
+  /// keep one representative per bare name, so a same-named case belonging
+  /// to a DIFFERENT union than the one actually being matched could
+  /// silently win the bare-name lookup and donate its (wrong) field types
+  /// into `env`. `bindPatternEnvMono`'s `PConstructor` arm consults this
+  /// table instead, filters candidates down to the ones whose declared
+  /// owning type actually matches the scrutinee (or the pattern's own
+  /// qualifier), and only binds fields when exactly one candidate survives
+  /// — never guessing among an unresolved tie. See `addCtorCandidateMono`.
+  ctorCandidates: Map[String, List[FunctionDecl]]
   seenSpecs: Map[String, Bool]
   allSpecs: List[SpecRequest]
   diags: List[Diagnostic]
@@ -197,6 +209,7 @@ func newMonoState(
   distinctDecls: in Map[String, DistinctTypeDecl],
   droppedLocalGenerics: in Map[String, Bool],
   ambiguousFuncOverloads: in Map[String, List[FunctionDecl]],
+  ctorCandidates: in Map[String, List[FunctionDecl]],
 ): MonoState {
   MonoState(
     moduleValTypes = moduleValTypes,
@@ -207,10 +220,39 @@ func newMonoState(
     distinctDecls = distinctDecls,
     droppedLocalGenerics = droppedLocalGenerics,
     ambiguousFuncOverloads = ambiguousFuncOverloads,
+    ctorCandidates = ctorCandidates,
     seenSpecs = newMap(),
     allSpecs = newList(),
     diags = newList()
   )
+}
+
+// Append `decl` to `table[decl.name]`'s candidate list (#6669), deduping
+// against any existing candidate with the same structural signature so the
+// same synth re-collected from two merge passes (e.g. a local union's ctor
+// AND that same package re-imported) doesn't accumulate duplicate entries.
+func addCtorCandidateMono(table: in Map[String, List[FunctionDecl]], decl: in FunctionDecl): Unit {
+  val sigKey = funcSigKeyMono(decl)
+  match mapGet(table, decl.name) {
+    case None -> {
+      val lst: List[FunctionDecl] = newList()
+      lst.add(decl)
+      table.add(decl.name, lst)
+    }
+    case Some(lst) -> {
+      var isDup = false
+      var i = 0
+      while i < lst.count {
+        if funcSigKeyMono(lst[i]) == sigKey {
+          isDup = true
+        }
+        i = i + 1
+      }
+      if not isDup {
+        lst.add(decl)
+      }
+    }
+  }
 }
 
 // #349: collect generic IFunc methods nested inside `interface I { … }`
@@ -330,6 +372,23 @@ func pathSegsKey(segs: in List[String]): String {
     i = i + 1
   }
   acc
+}
+
+// The bare (last-segment) name of a TypeExpr's head, when it has one —
+// `MyUnion` for `TRef(MyUnion)` / `TGenericApp(MyUnion, […])`, unwrapping
+// `TParen`/`TNullable` transparently.  Used by `bindPatternEnvMono`'s
+// `PConstructor` arm (#6669) to verify a case-registry lookup's resolved
+// owner actually matches the type being pattern-matched, rather than
+// trusting a first-wins bare-name hit.  `None` for any other TypeExpr shape
+// (tuple, slice, function, …) — those never name a union/record owner.
+func typeExprHeadNameMono(te: in TypeExpr): Option[String] {
+  match te.kind {
+    case TRef(path) -> if path.segments.count > 0 { Some(value = path.segments[path.segments.count - 1]) } else { None }
+    case TGenericApp(h, _) -> if h.segments.count > 0 { Some(value = h.segments[h.segments.count - 1]) } else { None }
+    case TParen(inner) -> typeExprHeadNameMono(inner)
+    case TNullable(inner) -> typeExprHeadNameMono(inner)
+    case _ -> None
+  }
 }
 
 func typeArgListKey(args: in List[TypeArg]): String {
@@ -3089,28 +3148,72 @@ func bindPatternEnvMono(
         case None -> ()
         case Some(te) -> {
           val caseName = head.segments[head.segments.count - 1]
-          match mapGet(state.funcDecls, caseName) {
+          // #6669: `state.ctorCandidates` holds EVERY case in scope named
+          // `caseName`, not just a first-wins representative — a qualified
+          // pattern (`Shape.Circle(r)`) names its owner directly via the
+          // segment before the case name; an unqualified one (`Circle(r)`)
+          // falls back to the scrutinee's own inferred type. Filter the
+          // candidate list down to whichever ones' declared return type
+          // actually matches that owner: exactly one match is trustworthy,
+          // zero or several is an unresolved/ambiguous hit — skip binding
+          // rather than guess a possibly-wrong field type into `env` (the
+          // same conservative degradation this file uses whenever inference
+          // can't be trusted, e.g. `substIsComplete` below).
+          val expectedOwner: Option[String] = if head.segments.count > 1 {
+            Some(value = head.segments[head.segments.count - 2])
+          } else {
+            typeExprHeadNameMono(te)
+          }
+          val candidates: List[FunctionDecl] = match mapGet(state.ctorCandidates, caseName) {
+            case Some(lst) -> lst
+            case None -> newList()
+          }
+          var matched: Option[FunctionDecl] = None
+          var matchCount = 0
+          match expectedOwner {
             case None -> ()
-            case Some(ctorDecl) -> {
-              val typeParamNames = extractTypeParamNames(ctorDecl.generics)
-              val subst: Map[String, TypeExpr] = newMap()
-              match ctorDecl.ret {
-                case Some(retTe) -> unifyTE(typeParamNames, retTe, te, subst)
-                case None -> ()
+            case Some(exp) -> {
+              var ci = 0
+              while ci < candidates.count {
+                val cand = candidates[ci]
+                val ownerName = match cand.ret { case Some(retTe) -> typeExprHeadNameMono(retTe); case None -> None }
+                match ownerName {
+                  case Some(actual) -> {
+                    if actual == exp {
+                      matched = Some(value = cand)
+                      matchCount = matchCount + 1
+                    }
+                  }
+                  case None -> ()
+                }
+                ci = ci + 1
               }
-              // Only bind fields when EVERY generic parameter resolved: a
-              // partial/failed unification (arity mismatch, an unrelated
-              // same-named function occupying the `funcDecls` slot, or a
-              // scrutinee type shape that doesn't structurally match) would
-              // otherwise substitute a dangling bare type-var name (`T`) into
-              // `env` instead of a real type — worse than tracking nothing.
-              if substIsComplete(typeParamNames, subst) {
-                val emptyValueSubst: Map[String, Expr] = newMap()
-                var fi = 0
-                while fi < args.count and fi < ctorDecl.params.count {
-                  val fieldTe = substTypeExpr(subst, emptyValueSubst, ctorDecl.params[fi].ty)
-                  bindPatternEnvMono(state, env, args[fi], Some(value = fieldTe))
-                  fi = fi + 1
+            }
+          }
+          if matchCount == 1 {
+            match matched {
+              case None -> ()
+              case Some(ctorDecl) -> {
+                val typeParamNames = extractTypeParamNames(ctorDecl.generics)
+                val subst: Map[String, TypeExpr] = newMap()
+                match ctorDecl.ret {
+                  case Some(retTe) -> unifyTE(typeParamNames, retTe, te, subst)
+                  case None -> ()
+                }
+                // Only bind fields when EVERY generic parameter resolved: a
+                // partial/failed unification (arity mismatch or a scrutinee
+                // type shape that doesn't structurally match) would
+                // otherwise substitute a dangling bare type-var name (`T`)
+                // into `env` instead of a real type — worse than tracking
+                // nothing.
+                if substIsComplete(typeParamNames, subst) {
+                  val emptyValueSubst: Map[String, Expr] = newMap()
+                  var fi = 0
+                  while fi < args.count and fi < ctorDecl.params.count {
+                    val fieldTe = substTypeExpr(subst, emptyValueSubst, ctorDecl.params[fi].ty)
+                    bindPatternEnvMono(state, env, args[fi], Some(value = fieldTe))
+                    fi = fi + 1
+                  }
                 }
               }
             }
@@ -3681,7 +3784,33 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
 
     case EInterpolated(segs) -> Expr(kind = EInterpolated(segments = rewriteInterpolSegs(state, env, segs)), span = s)
 
-    case ELambda(lparams, body) -> Expr(kind = ELambda(lambdaParams = lparams, body = rewriteBlockScoped(state, env, body)), span = s)
+    case ELambda(lparams, body) -> {
+      // #6666: an explicitly-typed lambda parameter shadowing an outer
+      // binding of the same name must be tracked into `env` for the
+      // duration of the lambda body — otherwise a generic call inside the
+      // body that references the parameter by name still sees the OUTER
+      // binding's (possibly different) type.  Scope-isolated by the same
+      // snapshot/restore pair `rewriteBlockScoped` uses, so the shadow is
+      // correctly evicted (or the outer binding restored) once the lambda
+      // body ends.  Untyped params (`ty = None`) carry nothing to track —
+      // the pre-existing degradation for that shape is unchanged.
+      val snap = snapshotEnv(env)
+      var pi = 0
+      while pi < lparams.count {
+        val lp = lparams[pi]
+        match lp.ty {
+          case None -> ()
+          case Some(pty) -> {
+            val bindPat = Pattern(kind = PBinding(name = lp.name, inner = None), span = lp.span)
+            trackPatternEnv(env, bindPat, pty)
+          }
+        }
+        pi = pi + 1
+      }
+      val newBody = rewriteBlock(state, env, body)
+      restoreEnv(env, snap)
+      Expr(kind = ELambda(lambdaParams = lparams, body = newBody), span = s)
+    }
 
     case ETypeApp(fn, targs) -> Expr(kind = ETypeApp(fn = rewriteExpr(state, env, fn), args = targs), span = s)
 
@@ -3739,7 +3868,22 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
 
     case SWhile(lbl, cond, body) -> Statement(kind = SWhile(label = lbl, cond = rewriteExpr(state, env, cond), body = rewriteBlockScoped(state, env, body)), span = s)
 
-    case SFor(lbl, pat, iter, body) -> Statement(kind = SFor(label = lbl, pat = pat, iter = rewriteExpr(state, env, iter), body = rewriteBlockScoped(state, env, body)), span = s)
+    case SFor(lbl, pat, iter, body) -> {
+      // #6666: a `for` loop's pattern variable shadowing an outer binding of
+      // the same name must be tracked into `env` (typed from the iterable's
+      // own element type, mirroring `EMatch`'s scrutinee-type inference)
+      // for the duration of the loop body, then evicted/restored once it
+      // ends — same scope-isolation contract as a `val`/match-arm binding.
+      // Infer off the ORIGINAL (pre-rewrite) `iter` expression, then rewrite
+      // it separately, matching `EMatch`'s own infer-before-rewrite order.
+      val elemTe = inferIndexTE(state, env, iter)
+      val newIter = rewriteExpr(state, env, iter)
+      val snap = snapshotEnv(env)
+      bindPatternEnvMono(state, env, pat, elemTe)
+      val newBody = rewriteBlock(state, env, body)
+      restoreEnv(env, snap)
+      Statement(kind = SFor(label = lbl, pat = pat, iter = newIter, body = newBody), span = s)
+    }
 
     case SLoop(lbl, body) -> Statement(kind = SLoop(label = lbl, body = rewriteBlockScoped(state, env, body)), span = s)
 
@@ -3752,19 +3896,36 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
     case SRule(lhs, rhs) -> Statement(kind = SRule(lhs = rewriteExpr(state, env, lhs), rhs = rewriteExpr(state, env, rhs)), span = s)
 
     case STry(body, catches, finally_) -> {
-      val newBody = rewriteBlock(state, env, body)
+      // #6665: the `try` body, each `catch` body, and `finally` are each
+      // their own nested scope, exactly like a loop/`scope`/`defer` body —
+      // a `val`/pattern binding inside any of them must not leak into a
+      // sibling clause or survive past the whole `try` statement.  Every
+      // clause gets its own snapshot/restore pair (not one shared around
+      // the whole statement) so a name bound in `body` doesn't leak into
+      // `catches`/`finally_` either, matching how sibling `match` arms are
+      // isolated from each other in `rewriteMatchArms`.
+      val newBody = rewriteBlockScoped(state, env, body)
       val newCatches: List[CatchClause] = newList()
       var i = 0
       while i < catches.count {
         val cc = catches[i]
-        newCatches.add(
-          CatchClause(
-            typeName = cc.typeName,
-            bindName = cc.bindName,
-            body = rewriteBlock(state, env, cc.body),
-            span = cc.span
-          )
-        )
+        // #6666: a `catch T as e` binding shadows any outer `e` for the
+        // duration of the catch body — track its (exception) type into
+        // `env` before rewriting the body, scope-isolated by the same
+        // snapshot/restore pair so the binding (and anything it shadowed)
+        // is correctly evicted/restored once the catch body ends.
+        val catchSnap = snapshotEnv(env)
+        match cc.bindName {
+          case None -> ()
+          case Some(bn) -> {
+            val excTe = TypeExpr(kind = TRef(path = singleSegPath(cc.typeName)), span = cc.span)
+            val bindPat = Pattern(kind = PBinding(name = bn, inner = None), span = cc.span)
+            trackPatternEnv(env, bindPat, excTe)
+          }
+        }
+        val newCatchBody = rewriteBlock(state, env, cc.body)
+        restoreEnv(env, catchSnap)
+        newCatches.add(CatchClause(typeName = cc.typeName, bindName = cc.bindName, body = newCatchBody, span = cc.span))
         i = i + 1
       }
       // Typed `var` + assignment, not a two-arm match — see the `EIf` note
@@ -3775,7 +3936,7 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
         case None -> {
         }
         case Some(fb) -> {
-          newFinally = Some(value = rewriteBlock(state, env, fb))
+          newFinally = Some(value = rewriteBlockScoped(state, env, fb))
         }
       }
       Statement(kind = STry(body = newBody, catches = newCatches, finally_ = newFinally), span = s)
@@ -4425,6 +4586,12 @@ pub func monoFileWithImportsAndTypeDecls(
   val importedFuncSigKeys: Map[String, String] = newMap()
   val ambiguousImportedFuncNames: Map[String, Bool] = newMap()
   val ambiguousFuncOverloads: Map[String, List[FunctionDecl]] = newMap()
+  // #6669: every union-case ctor synth in scope, keyed by bare case name,
+  // WITHOUT the first-wins collapse `funcDecls` applies below — lets
+  // `bindPatternEnvMono`'s `PConstructor` arm verify a match pattern's case
+  // actually belongs to the type being matched instead of trusting whichever
+  // same-named case happened to win the `funcDecls` slot.
+  val ctorCandidates: Map[String, List[FunctionDecl]] = newMap()
   // Snapshot the names Phase 1 already registered from the SAME package
   // before any imported decl is merged (#5961): a same-package local always
   // shadows every import ("same-package wins on name collision"), so an
@@ -4444,6 +4611,9 @@ pub func monoFileWithImportsAndTypeDecls(
   var ig = 0
   while ig < importedGenDecls.count {
     val idecl = importedGenDecls[ig]
+    if annsInferenceOnlyMono(idecl.annotations) {
+      addCtorCandidateMono(ctorCandidates, idecl)
+    }
     if not annsInferenceOnlyMono(idecl.annotations) {
       val sigKey = funcSigKeyMono(idecl)
       match mapGet(importedFuncSigKeys, idecl.name) {
@@ -4506,6 +4676,7 @@ pub func monoFileWithImportsAndTypeDecls(
     if not funcDecls.containsKey(ldecl.name) {
       funcDecls.add(ldecl.name, ldecl)
     }
+    addCtorCandidateMono(ctorCandidates, ldecl)
     lu = lu + 1
   }
 
@@ -4524,7 +4695,8 @@ pub func monoFileWithImportsAndTypeDecls(
     ifaceDecls,
     distinctDecls,
     droppedLocalGenerics,
-    ambiguousFuncOverloads
+    ambiguousFuncOverloads,
+    ctorCandidates
   )
 
   // ── Phase 2: rewrite non-generic items ──────────────────────────────────
