@@ -3027,6 +3027,32 @@ test "scope return stays clean" {
   assertEqualInt(diagCount(parseCheck(src)), 0, "scope { return g() }: no spurious T0070")
 }
 
+// #6681: `scope { }` is a `Unit`-typed construct at runtime — its own
+// non-diverging trailing-expression value must never leak into the
+// enclosing block's checked type. Before the fix, `checkBlock`'s `SScope`
+// arm assigned `lastExprType` to the scope body's checked value type
+// unconditionally, so `scope { 42 }` inside an `Int`-returning function
+// passed `typeAssignable(Int, Int)` with zero diagnostics even though
+// codegen never materializes a value for `scope { }` (msil `lowerBlockMsil`,
+// jvm `05_stmts.l`) — an unverifiable-IL / garbage-return silent miscompile.
+test "trailing scope leaking its value type is rejected with T0070 (#6681)" {
+  val src = "package P\nfunc f(): Int {\n  scope {\n    42\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(
+    hasDiagCode(cr, "T0070"),
+    "scope { 42 } in an Int-returning function: T0070 (scope discards its value, is Unit)"
+  )
+}
+
+// Companion to #6681: a `Unit`-returning function with a trailing
+// `scope { 42 }` must still compile clean — once the fix correctly
+// discards the scope's leaked value type, only the enclosing `Unit`
+// return type is checked against the (now-Unit) scope type.
+test "trailing scope in a Unit function stays clean (#6681)" {
+  val src = "package P\nfunc f(): Unit {\n  scope {\n    42\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "scope { 42 } in a Unit-returning function: no spurious T0070")
+}
+
 // #6604: `inferLambda` threads the lambda's expected return type the same way
 // `checkFunctionBody` threads `bodyValuePos` — a `Unit`-expected lambda whose
 // trailing statement is a discarded mixed-type `if` must stay clean, not

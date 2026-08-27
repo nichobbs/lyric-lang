@@ -933,7 +933,9 @@ pub func checkBlock(
       // lets a trailing `scope` correctly propagate divergence to the
       // enclosing block instead of defaulting to `Unit`.
       case SScope(_, body) -> {
-        lastExprType = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false)
+        val bodyTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false)
+        val isNever = match bodyTy { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }
+        lastExprType = if isNever { bodyTy } else { TyPrim(pt = PtUnit) }
       }
       case _ -> {
         checkStatement(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, stmt)
