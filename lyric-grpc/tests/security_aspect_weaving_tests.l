@@ -26,7 +26,7 @@ aspect AuthGuard from Grpc.Aspects.RequiresGrpcAuth {
 }
 
 pub func authGuardedHandler(authToken: in String): Result[String, GrpcStatus] {
-  return Ok("authorized")
+  return Std.Core.Ok("authorized")
 }
 
 test "RequiresGrpcAuth: an empty token returns UNAUTHENTICATED without crashing (was a panic)" {
@@ -53,7 +53,7 @@ aspect RoleGuard from Grpc.Aspects.RequiresGrpcRole {
 }
 
 pub func roleGuardedHandler(authToken: in String): Result[String, GrpcStatus] {
-  return Ok("authorized")
+  return Std.Core.Ok("authorized")
 }
 
 test "RequiresGrpcRole: an empty token returns UNAUTHENTICATED without crashing (was a panic)" {

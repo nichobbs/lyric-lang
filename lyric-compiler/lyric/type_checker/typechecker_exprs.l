@@ -3436,7 +3436,7 @@ func unionCaseSymbolForScrutinee(
   tbl: in SymbolTable, diag: in List[Diagnostic], fn: in Expr, scrutineeTy: in Type
 ): Option[Symbol] {
   match unrefine(scrutineeTy) {
-    case TyUser(sid, _, _) -> {
+    case TyUser(sid, sname, _) -> {
       val flatSegs: List[String] = newList()
       val hasSegs = flattenCalleePathSegs(fn, flatSegs) and flatSegs.count > 0
       val scrCaseName = if hasSegs { flatSegs[flatSegs.count - 1] } else { "" }
@@ -3474,6 +3474,58 @@ func unionCaseSymbolForScrutinee(
                           "." +
                           actualUnionName +
                           "' — this pattern is matched against a value of that union, not '" +
+                          fullQual +
+                          "'",
+                        fn.span
+                      )
+                    )
+                    return None
+                  }
+                }
+                return Some(value = scrCands[sci])
+              }
+            }
+            // Enum-case analog of the DKUnionCase branch above (#6608): a
+            // qualified nullary-case pattern matched against a known enum
+            // scrutinee (`case GrpcStatusCode.Ok -> ...`) must resolve
+            // against the SCRUTINEE's own enum, not fall through to the
+            // bare-name ambiguity check below — `pat2fnExpr` always wraps
+            // the pattern head as a flat `EPath` regardless of how many
+            // segments it has, so an unguarded fallthrough treats an
+            // explicitly-qualified enum-case name as if it were bare and
+            // spuriously fires T0123 when some other package happens to
+            // export a same-named case (e.g. `Std.Core.Ok`).  There is no
+            // `enumDeclIndex` mirroring `unionDeclIndex`, so tier B reuses
+            // the scrutinee's own `TyUser` name (`sname`) instead of a
+            // separate enum-decl lookup.
+            case DKEnumCase(scrParent, _) -> {
+              if typeIdEq(scrParent, sid) {
+                if flatSegs.count >= 2 {
+                  val quals: List[String] = newList()
+                  var qi = 0
+                  while qi < flatSegs.count - 1 {
+                    quals.add(flatSegs[qi])
+                    qi = qi + 1
+                  }
+                  val fullQual = modulePathJoin(quals)
+                  val tierA = scrCands[sci].originPackage == fullQual
+                  val enumName = quals[quals.count - 1]
+                  val pkgSegs: List[String] = newList()
+                  var pj = 0
+                  while pj < quals.count - 1 {
+                    pkgSegs.add(quals[pj])
+                    pj = pj + 1
+                  }
+                  val pkgPrefix = modulePathJoin(pkgSegs)
+                  val tierB = sname == enumName and (pkgPrefix.length == 0 or scrCands[sci].originPackage == pkgPrefix)
+                  if not (tierA or tierB) {
+                    diag.add(
+                      errorDiagnostic(
+                        "T0122",
+                        "pattern qualifier '" + fullQual + "' does not match the scrutinee's own enum '" + scrCands[sci].originPackage +
+                          "." +
+                          sname +
+                          "' — this pattern is matched against a value of that enum, not '" +
                           fullQual +
                           "'",
                         fn.span
