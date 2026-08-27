@@ -29,7 +29,7 @@ func testLogToStderr(): Unit {
   debug("kernel_bcl_tests: debug line")
   info("kernel_bcl_tests: info line")
   warn("kernel_bcl_tests: warn line")
-  error("kernel_bcl_tests: error line")
+  Std.Log.error("kernel_bcl_tests: error line")
 }
 
 func testVerifierEnvMissing(): Unit {
