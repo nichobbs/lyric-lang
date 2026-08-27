@@ -63,6 +63,14 @@ authors     = ["Lyric authors"]
 license     = "Apache-2.0"
 
 [features]
+# `local` is the default: it is the only feature with no external NuGet/Maven
+# dependency (env vars are its only source), so a plain `lyric build`/`lyric
+# test` with no explicit `--features` — e.g. a generic ecosystem sanity-build
+# sweep — resolves `AwsSecrets.Kernel.Net.initFromAnnotations` instead of
+# leaving the kernel's @cfg-gated file entirely unselected, which used to
+# silently miscompile (T0123's #5621/#5516 loud-failure fix now catches this
+# for real).
+default = ["local"]
 # AWS SDK backend (production, .NET).
 aws   = []
 # Local no-op backend: init() is a no-op; env var overrides are the only source.

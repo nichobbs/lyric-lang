@@ -33057,3 +33057,71 @@ lyric-compiler/lyric/multi_impl_iface_result_self_test.l` (9/9).
 
 **Related:** #5133, docs/57 §5.3/§7 item 7 (updated), the 2026-07-29 issue
 triage comment (partial prior verification this entry builds on).
+
+## D-progress-811 — CI post-merge fallout from D-progress-807's T0123 loud-failure diagnostic: JVM free-function `hashCode(x)` builtin unhandled; `lyric-aws-secrets` had no safe default feature set
+
+**Context.** #5629/#5516's T0123 loud-failure diagnostic (D-progress-807)
+turned every previously-silent unresolved-call gap into a hard compile-time
+panic. D-progress-807's own audit swept the self-hosted compiler build and
+all 28 ecosystem library manifests, but PR #6629 (this ticket batch's PR)
+still surfaced two further gaps once real CI ran the full self-test suite
+and the generic "stdlib-builds" ecosystem sanity-build step — both are
+genuine, previously-silent bugs the loud-failure diagnostic correctly
+caught; neither is a regression in this PR's own logic.
+
+**Bug 1 — JVM `hashCode(x)` free-function builtin.** `Lyric.Derives`'
+`hashBodyForFields` synthesizes a free-function call `hashCode(x)` for every
+`@derive(Hash)` field (mirroring MSIL's own `funcName == "hashCode"`
+builtin arm in `msil/codegen.l`). The JVM backend
+(`lyric-compiler/jvm/codegen/04_calls.l`,
+`lowerBuiltinOrStaticCall`) had no matching arm — this call fell through to
+the general call resolver, which the T0123 fix turned from a silent
+best-effort guess into a hard panic, surfacing via
+`map_key_self_test.l --target jvm` (a compiler self-test, not an ecosystem
+library — outside the scope of D-progress-807's own ecosystem-manifest
+sweep). Fixed by adding a `hashCode` arm mirroring MSIL's: box the argument
+if needed, then dispatch `Object.hashCode()` virtually so it resolves to
+the real type's own override (`Integer.hashCode()`, a derived record's own
+`hashCode()`, etc.) either way.
+
+**Bug 2 — `lyric-aws-secrets` had no safe default feature set.**
+`lyric-aws-secrets/lyric.toml`'s `[features]` table (`aws`/`local`/`jvm`)
+declared no `default`, so CI's `stdlib-builds` job's ecosystem sanity-build
+loop (`lyric build --manifest lyric-aws-secrets/lyric.toml`, no
+`--features` flag — this loop deliberately passes none, unlike the
+library's own dedicated `--features local` test job) activated NONE of the
+three, leaving `AwsSecrets.Kernel.Net`'s `@cfg`-gated kernel file entirely
+unselected. The main package's `initFromAnnotations` call therefore had no
+resolvable target — previously silently miscompiled (dropped call, #5621's
+own bug class), now a T0123 panic. D-progress-807 itself flagged this exact
+build failure during its own audit and dismissed it as "a false positive
+from the sweep's own missing `--features local` flag" — too hasty a
+dismissal: it is a real, reachable CI path (the generic ecosystem-build
+step), just not one D-progress-807's own targeted sweep script happened to
+exercise. Fixed by adding `default = ["local"]` — the only feature with no
+external NuGet/Maven dependency (mirrors `lyric-mq`'s `default =
+["inmemory"]` and `lyric-jobs`'s `default = ["dotnet", "inprocess"]`
+established convention of defaulting to the dependency-free backend; unlike
+`lyric-session`'s deliberate no-default choice, whose *every* feature needs
+an external package). No CI job currently builds this library with
+`--features aws`/`jvm` without also expecting `--no-default-features`
+(mirroring `lyric-jobs`'s own documented `--target jvm
+--no-default-features --features jvm,quartz` pattern), so this introduces
+no new default/explicit-feature collision. Verified: plain
+`lyric build --manifest lyric-aws-secrets/lyric.toml` (no flags) now
+succeeds; `lyric test --manifest lyric-aws-secrets/lyric.toml --features
+local` still 13/13; `lyric-lambda`'s equivalent plain (no-`--features`)
+build was checked and does NOT share this gap (unaffected).
+
+**Verification.** `map_key_self_test.l --target jvm` 8/8. `restored_async_
+self_test.l --target dotnet` 4/4 in isolation (CI's own two same-run
+failures on this file were the pre-existing, already-tracked-and-closed
+#5933 infra flake — a random concurrent self-test process killed by the CI
+runner's OS-level memory pressure, exit 135/SIGBUS-class, no diagnostic
+output, victim differs every run; not a code issue, confirmed by this
+file's own clean local pass and by #5933's own closed remediation PRs
+already limiting (not eliminating) the flake's frequency).
+
+**Related:** #5621, #5516, D-progress-807 (the diagnostic that surfaced
+both gaps), #5933 (the separately-tracked, closed CI infra flake hit in the
+same CI run, not fixed here since it needs no fix — a re-run is sufficient).

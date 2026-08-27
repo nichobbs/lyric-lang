@@ -854,6 +854,28 @@ func lowerBuiltinOrStaticCall(
       insns.add(LPushString(s = ""))
     }
     JRef(className = "java/lang/String")
+  } else if funcName == "hashCode" {
+    // Free-function `hashCode(x)` form, synthesized by `Lyric.Derives`'
+    // `hashBodyForFields` for every `@derive(Hash)` field — mirrors MSIL's
+    // `funcName == "hashCode"` arm (`msil/codegen.l`): box a primitive, then
+    // dispatch `Object.hashCode()` virtually so it resolves to the real
+    // type's own override (`Integer.hashCode()`, the derived record's own
+    // `hashCode()`, etc.) either way. Was previously unhandled here — this
+    // builtin call fell through to the general call resolver, which used to
+    // silently guess a best-effort signature; #5621/#5516's loud-failure
+    // fix turned that into a hard compile-time panic instead of masking the
+    // gap, surfacing it via `map_key_self_test.l --target jvm` (#6096-
+    // adjacent audit gap: this self-test wasn't part of the ecosystem sweep
+    // that fix's own audit ran).
+    if args.count > 0 {
+      val argTy = lowerCallArg(ctx, insns, args[0])
+      boxIfNeeded(insns, argTy)
+      val hcPs: List[JvmType] = newList()
+      insns.add(LInvokevirtual(owner = "java/lang/Object", name = "hashCode", params = hcPs, ret = JInt))
+    } else {
+      insns.add(LIconst(v = 0))
+    }
+    JInt
   } else if funcName == "assert" {
     if args.count > 0 {
       val afterAssertL = freshLabel(ctx)
