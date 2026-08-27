@@ -1561,3 +1561,22 @@ test "a late WINDOW_UPDATE against a pruned (very old) closed stream is a safe n
   assertFalse(hasConnError(r.events), "a late WINDOW_UPDATE on a pruned stream is not a PROTOCOL_ERROR")
   assertFalse(hasWindowUpdated(r.events, prunedId), "no H2WindowUpdated: there is no send-flow window left to update")
 }
+
+test "a duplicate HEADERS frame against a pruned (very old) stream id is a connection PROTOCOL_ERROR, unlike RST_STREAM/WINDOW_UPDATE (#6064)" {
+  // Unlike WINDOW_UPDATE/RST_STREAM/DATA, whose no-op-vs-error classification
+  // is pruning-invariant (see the module header's 4th bounded-characteristic
+  // bullet), a duplicate HEADERS on a pruned id is escalated to a connection
+  // error by beginNewStreamHeaders' monotonic stream-id check, whereas the
+  // identical frame against a still-retained closed stream is only a
+  // per-stream error via beginTrailerHeaders. This pins that documented
+  // pruning-introduced divergence.
+  val window = H2.h2ClosedStreamRetentionWindow()
+  val total = window + 60
+  var conn = setupDefault()
+  var c = runCompletions(conn, 1, total)
+  val prunedId = 1
+  val block = encodeBlock(requestHeaders())
+  val r = H2.feed(c, headersFrame(prunedId, block, true, true))
+  expectConnError(r.events, H2ProtocolError, "duplicate HEADERS against a pruned stream id")
+  assertTrue(H2.isFailed(r.conn), "connection poisoned (monotonic stream-id violation, RFC 9113 section 5.1.1)")
+}

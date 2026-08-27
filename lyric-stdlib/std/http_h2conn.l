@@ -118,6 +118,25 @@
 //!     through `H2Frame.FrameError`, so the FSM cannot target a `RST_STREAM`;
 //!     it sends a `GOAWAY` instead. RFC 9113 §5.4 permits treating a stream
 //!     error more severely, and `PRIORITY` is ignored/deprecated regardless.
+//!   - **A duplicate/late HEADERS frame is a per-stream error while its
+//!     stream record is retained, but a connection `PROTOCOL_ERROR` once
+//!     pruned.** Unlike WINDOW_UPDATE/RST_STREAM/DATA (whose no-op-vs-error
+//!     classification is pruning-invariant, see above), `handleHeaders`
+//!     dispatches purely on whether `findStream` still holds a record: a
+//!     retained closed/half-closed-remote stream routes through
+//!     `beginTrailerHeaders`, which rejects just that stream (`streamFail`,
+//!     RFC 9113 §5.1) and the connection survives; once pruned, the same
+//!     frame instead misses `findStream` and falls into
+//!     `beginNewStreamHeaders`'s `streamId <= lastPeerStreamId` monotonic-id
+//!     check, which is a connection-level `PROTOCOL_ERROR` (§5.1.1). This is
+//!     arguably the more spec-faithful response either way — a HEADERS frame
+//!     attempting to reuse an already-used stream id is a monotonicity
+//!     violation, not a flow-control/reset timing race — so it is documented
+//!     as intended pruning-introduced divergence, not fixed to match the
+//!     retained-stream behaviour. Never misclassifies a lookup miss as an
+//!     *idle* (never-opened) stream either way; only the stream-vs-connection
+//!     error severity differs. See `http_h2conn_tests.l`'s "duplicate HEADERS
+//!     against a pruned stream id" case.
 @runtime_checked
 package Std.HttpEngine.H2Conn
 

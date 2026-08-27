@@ -725,7 +725,7 @@ items marked ∥ are independent and can proceed in parallel.
     (`REFUSED_STREAM`); `PING` auto-ACK; `GOAWAY` (received + `sendGoAway`); and
     the §5.4 connection-vs-stream error classification (`GOAWAY` vs
     `RST_STREAM`). No server push (`PUSH_PROMISE` → `PROTOCOL_ERROR`); no
-    priority tree (`PRIORITY` accepted + ignored). 62-case `@test_module`
+    priority tree (`PRIORITY` accepted + ignored). 70-case `@test_module`
     (`http_h2conn_tests.l`) drives the FSM end to end through the real
     `H2Frame` + `Hpack` calls, green on dotnet + jvm and wired into CI beside
     the #5886/#5887 steps. One remaining tracked bounded characteristic
