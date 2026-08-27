@@ -434,7 +434,7 @@ pub func compileToNativeWithFlags(
   val noImportedGenFuncs: List[FunctionDecl] = newList()
   val noDeriveImports: List[Item] = newList()
   val noTemplates: Map[String, CollectedTemplate] = newMap()
-  val opts = MiddleEndOptions(tcFatal = false, tcReport = true, pkgLabel = "")
+  val opts = MiddleEndOptions(tcFatal = false, tcReport = true, pkgLabel = path)
   val userFile = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts) {
     case Some(f) -> f
     case None -> return false

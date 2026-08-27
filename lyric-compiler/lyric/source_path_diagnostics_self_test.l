@@ -120,6 +120,58 @@ test "single-file jvm build: a parse error names the real source path" {
   )
 }
 
+// #6678: `compileProjectToJarBundledWithFeatures`'s user-package
+// `runMiddleEnd` call hardcoded an empty `pkgLabel` even though the real
+// on-disk path was already resolved into `pkgPathByName` a few lines above
+// (the same map `Jvm.Bridge` already consults for the `SourceFile`
+// attribute). A file that PARSES cleanly but fails type-check (an
+// unknown-name reference, so T0020 comes from `Lyric.TypeChecker.checkFile`
+// via `pipeCheckAndMono`, not from `pipeParseAndErase`) therefore printed
+// with no file attribution at all on `--target jvm`, even though
+// `--target dotnet` on the identical file already names the real path
+// (#6643). Unlike the dotnet #6643 regression below, no `lyric.toml`
+// routing trick is needed: `emitJvmInProcess` already threads a plain
+// single-file build straight into `compileProjectToJarBundledWithFeatures`
+// (the same bundled multi-package-capable path a manifest build uses), and
+// the JVM bridge's user-package type-check is unconditionally fatal
+// (`tcFatalUserPkg = true`), unlike native's advisory type-check below.
+test "single-file jvm build: a type error names the real source path" {
+  val dir = freshTempDir("jvm-tc")
+  defer {
+    cleanup(dir)
+  }
+  val srcPath = Path.join(dir, "bad_tc.l")
+  // Parses cleanly; `totallyUnknownFunctionName` triggers T0020 from the
+  // type checker, not a parse-phase diagnostic.
+  val src = "package JvmBadTc\n" + "import Std.Core\n" + "\n" + "func main(): Unit {\n" +
+    "  val x = totallyUnknownFunctionName()\n" +
+    "}\n"
+  match File.writeText(srcPath, src) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write fixture: " + IOError.message(e))
+  }
+  val outPath = Path.join(dir, "bad_tc.jar")
+  val args: List[String] = newList()
+  args.add("build")
+  args.add(srcPath)
+  args.add("--target")
+  args.add("jvm")
+  args.add("-o")
+  args.add(outPath)
+  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  assertTrue(result.exitCode != 0, "an unknown-name reference must fail the build")
+  assertTrue(
+    Str.contains(result.stderr, "T0020"),
+    "expected a T0020 unknown-name diagnostic (type-check phase, not parse) in stderr, got:\n" + result.stderr
+  )
+  assertTrue(
+    Str.contains(result.stderr, srcPath + ": error[T0020]"),
+    "expected the T0020 diagnostic line itself to be labelled with the real source path '" + srcPath +
+      "' (not an empty label) for a TYPE-CHECK-phase diagnostic on a single-file JVM build (#6678), got:\n" +
+      result.stderr
+  )
+}
+
 // #6611: `cli_build.l` threads `path = sourcePath` onto the native
 // `EmitRequest`, but `Lyric.LlvmBridge.compileToNativeWithFlags` used to
 // drop it on the floor — `pipeParseAndErase(..., "")` hardcoded an empty
@@ -152,6 +204,61 @@ test "single-file native build: a parse error names the real source path" {
   assertTrue(
     Str.contains(result.stderr, srcPath),
     "expected the real source path '" + srcPath + "' in stderr, got:\n" + result.stderr
+  )
+}
+
+// #6677: `compileToNativeWithFlags` threads the real `path` parameter into
+// the PARSE phase (`pipeParseAndErase`, see the native parse-error test
+// above) but hardcoded an empty `pkgLabel` for the middle-end
+// `MiddleEndOptions`, even though `path` was already a live parameter in
+// scope a few lines up. Native's own TYPE CHECK is advisory
+// (`Lyric.LlvmBridge.compileToNativeWithFlags` passes `tcFatal = false` —
+// "the self-hosted checker lacks full builtin coverage"), so a bare T0020
+// unknown-name reference alone does not GATE the native build the way it
+// does on `--target dotnet`/`--target jvm` — it only gets echoed via the
+// unlabelled `Lyric.DiagnosticUtil.diagReport` path. But the MODE CHECKER
+// gate a few lines below the type check inside `Lyric.Pipeline.
+// pipeCheckAndMono` IS unconditional (`gate(opts.pkgLabel, mcRes.
+// diagnostics)`, not guarded by `tcFatal`) and consumes the exact same
+// `pkgLabel` this fix repairs, so a genuine middle-end (non-parse)
+// diagnostic that fails through THAT gate — V0010, a package declaring
+// conflicting `@runtime_checked`/`@proof_required` verification-level
+// annotations — is the fixture that actually exercises native's half of
+// this bug.
+test "single-file native build: a middle-end (mode-check) error names the real source path" {
+  val dir = freshTempDir("native-tc")
+  defer {
+    cleanup(dir)
+  }
+  val srcPath = Path.join(dir, "bad_tc.l")
+  // Parses cleanly; conflicting file-level verification-level annotations
+  // trigger V0010 from the mode checker, not a parse-phase diagnostic.
+  val src = "@runtime_checked\n" + "@proof_required\n" + "package NativeBadTc\n" + "import Std.Core\n" + "\n" +
+    "func main(): Unit {\n" +
+    "}\n"
+  match File.writeText(srcPath, src) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write fixture: " + IOError.message(e))
+  }
+  val outPath = Path.join(dir, "bad_tc")
+  val args: List[String] = newList()
+  args.add("build")
+  args.add(srcPath)
+  args.add("--target")
+  args.add("native")
+  args.add("-o")
+  args.add(outPath)
+  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  assertTrue(result.exitCode != 0, "conflicting verification-level annotations must fail the build")
+  assertTrue(
+    Str.contains(result.stderr, "V0010"),
+    "expected a V0010 diagnostic (middle-end mode-check phase, not parse) in stderr, got:\n" + result.stderr
+  )
+  assertTrue(
+    Str.contains(result.stderr, srcPath + ": error[V0010]"),
+    "expected the V0010 diagnostic line itself to be labelled with the real source path '" + srcPath +
+      "' (not an empty label) for a MIDDLE-END-phase diagnostic on a native build (#6677), got:\n" +
+      result.stderr
   )
 }
 

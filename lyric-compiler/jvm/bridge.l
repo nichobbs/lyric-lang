@@ -816,7 +816,10 @@ func resolveCallKey(fn: in Expr, registry: in Map[String, JvmFuncSig]): String {
     }
     case EMember(recv, memberName) -> {
       match recv.kind {
-        case EPath(rpath) -> registryKeyOf(registry, ownerOfSegments(rpath.segments, rpath.segments.count) + "/" + memberName)
+        case EPath(rpath) -> registryKeyOf(
+          registry,
+          ownerOfSegments(rpath.segments, rpath.segments.count) + "/" + memberName
+        )
         case _ -> ""
       }
     }
@@ -2112,7 +2115,16 @@ pub func compileProjectToJarBundledWithRestored(
 
   // User package first (its codegen failing is always fatal).  Its type-check
   // errors gate fatally (they are about the program the user actually wrote).
-  match runMiddleEnd(userFile, importedPkgs, stdlibGenFuncs, allTemplates, true, "") {
+  // #6678: label the gate with the real on-disk path when known (the SAME
+  // `pkgPathByName` lookup `userFileName` below already performs for the
+  // `SourceFile` attribute), falling back to the package name otherwise —
+  // parity with `Msil.Bridge`'s `pp.label` (#6643). Before this fix the
+  // label was hardcoded `""` unconditionally, so a type-check-phase error
+  // on the user package (e.g. T0020) printed with no file attribution at
+  // all, even though `--target dotnet` on the identical file already named
+  // the real path.
+  val userPkgLabel = match mapGet(pkgPathByName, userEntryPkgName) { case Some(p) -> p; case None -> userEntryPkgName }
+  match runMiddleEnd(userFile, importedPkgs, stdlibGenFuncs, allTemplates, true, userPkgLabel) {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -2211,8 +2223,14 @@ pub func compileProjectToJarBundledWithRestored(
       caseRegBefore = snapshotKeySet(caseReg)
       ctorRegBefore = snapshotKeySet(ctorReg)
     }
+    // #6678: prefer the real on-disk path over the bare package name for
+    // this sibling project package's diagnostics gate too — the same
+    // `pkgPathByName` lookup `bundledFileName` below already performs for
+    // the `SourceFile` attribute, and the same "path when known, else
+    // name" fallback `Msil.Bridge` uses (#6610/#6643).
+    val siblingPkgLabel = match mapGet(pkgPathByName, pkgName) { case Some(p) -> p; case None -> pkgName }
     val ok = try {
-      match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, allTemplates, isProjectPkg, pkgName) {
+      match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, allTemplates, isProjectPkg, siblingPkgLabel) {
         case Some(ff) -> {
           collectAspectWovenSigs(ff, registry)
           collectBModeWovenSigs(ff, registry)
