@@ -1580,3 +1580,21 @@ test "a duplicate HEADERS frame against a pruned (very old) stream id is a conne
   expectConnError(r.events, H2ProtocolError, "duplicate HEADERS against a pruned stream id")
   assertTrue(H2.isFailed(r.conn), "connection poisoned (monotonic stream-id violation, RFC 9113 section 5.1.1)")
 }
+
+test "streamState reports H2SIdle for a pruned stream, indistinguishable from never-seen (#6572)" {
+  // Pins the documented caveat on streamState's doc comment and the module
+  // header's 5th bounded-characteristic bullet: a pruned closed stream and a
+  // truly never-opened stream both report H2SIdle at this public query
+  // surface, even though a *retained* closed stream correctly reports
+  // H2SClosed. Not fixed here — tracked as #6572.
+  val window = H2.h2ClosedStreamRetentionWindow()
+  val total = window + 60
+  var conn = setupDefault()
+  var c = runCompletions(conn, 1, total)
+  val prunedId = 1
+  val recentId = 1 + 2 * (total - 1)
+  val neverSeenId = 999999
+  assertTrue(stateIs(H2.streamState(c, prunedId), "idle"), "pruned stream misreported as idle (#6572)")
+  assertTrue(stateIs(H2.streamState(c, neverSeenId), "idle"), "a truly never-opened stream is idle")
+  assertTrue(stateIs(H2.streamState(c, recentId), "closed"), "a retained closed stream still reports closed correctly")
+}

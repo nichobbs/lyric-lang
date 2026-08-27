@@ -139,6 +139,12 @@
 //!     against a pruned stream id" case. Whether the *retained*-stream path's
 //!     leniency is itself correct against RFC 9113 §5.1.1's connection-scoped
 //!     monotonicity rule is an open compliance question, tracked as #6562.
+//!   - **`streamState`'s `H2SIdle` result is ambiguous between "never seen"
+//!     and "closed and pruned."** Unlike the internal frame-dispatch path
+//!     (which distinguishes the two via `isIdleStreamId`), the public query
+//!     function reports `H2SIdle` for both a genuinely never-opened stream id
+//!     and one that was opened, closed, and later reclaimed by
+//!     `pruneClosedStreams`. See `streamState`'s own doc comment and #6572.
 @runtime_checked
 package Std.HttpEngine.H2Conn
 
@@ -1568,7 +1574,16 @@ pub func connectionReceiveWindow(conn: in H2Connection): Int {
   conn.connRecvWindow
 }
 
-/// The current state of `streamId` (`H2SIdle` if never seen).
+/// The current state of `streamId` (`H2SIdle` if never seen). Caveat: once a
+/// closed stream's record has been reclaimed by `pruneClosedStreams` (#6064),
+/// it is indistinguishable at this query surface from a truly never-opened
+/// id — both report `H2SIdle` — even though the internal frame-dispatch path
+/// (`isIdleStreamId`) correctly tells the two apart for its own no-op-vs-error
+/// decisions. A caller using `streamState` as an observability/diagnostic
+/// check ("was this stream properly closed?") on a long-lived connection can
+/// therefore get a false "never seen" for a stream that really was opened and
+/// cleanly closed, once it ages out of the retention window. Tracked as
+/// #6572.
 @pure
 @experimental
 pub func streamState(conn: in H2Connection, streamId: in Int): H2StreamState {

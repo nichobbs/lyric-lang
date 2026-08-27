@@ -31559,7 +31559,7 @@ disturbed. A cheap escape hatch (`state.streams.count <=
 h2ClosedStreamRetentionWindow()`) skips the scan entirely on the common case
 of a connection that never approaches the window.
 
-Three new cases in `lyric-stdlib/tests/http_h2conn_tests.l` drive a
+Five new cases in `lyric-stdlib/tests/http_h2conn_tests.l` drive a
 connection through 260 real open+complete request/response cycles (well past
 the 200-stream window) via the existing `runCompletions` helper, then assert:
 a late `RST_STREAM` against the first (now-pruned) stream is a true no-op —
@@ -31567,9 +31567,20 @@ connection healthy, no `H2ConnError`, no `H2PeerReset` surfaced (the record is
 gone); a late `RST_STREAM` against the most-recently-closed (still-retained)
 stream is unchanged from pre-#6064 behaviour — connection healthy, no error,
 and `H2PeerReset` still surfaces; a late `WINDOW_UPDATE` against the pruned
-stream is likewise a safe no-op, never a `PROTOCOL_ERROR`.
+stream is likewise a safe no-op, never a `PROTOCOL_ERROR`; a duplicate HEADERS
+frame against a pruned stream id *does* escalate to a connection
+`PROTOCOL_ERROR` — unlike WINDOW_UPDATE/RST_STREAM/DATA, HEADERS dispatch is
+not pruning-invariant (`beginTrailerHeaders` for a retained record vs.
+`beginNewStreamHeaders`'s monotonic-id check for a pruned one), documented as
+intended and tracked as #6562 pending an RFC 9113 §5.1.1 compliance
+investigation; and `streamState(conn, streamId)` reports `H2SIdle` for a
+pruned stream indistinguishable from a truly never-opened one, a real gap in
+this PR's own public query surface disclosed in `streamState`'s doc comment
+and tracked as #6572. The `rejectedStreams` marker map in
+`_kernel/http_server.l` has the identical unbounded-growth shape #6064 fixed
+for `H2Connection.streams`, not yet applied there — tracked as #6566.
 
-**Related:** #6064, `docs/61-https-tls-http-versions.md` §6.4 (D128).
+**Related:** #6064, #6562, #6566, #6572, `docs/61-https-tls-http-versions.md` §6.4 (D128).
 
 ### D-progress-632 — `Web.json` restored to raw JSON passthrough; `Web.jsonString` added for wrapping a raw string value (#5813)
 

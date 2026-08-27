@@ -276,6 +276,19 @@ func utf8Encode(s: in String): slice[Byte] {
   return Enc.encodeUtf8(s)
 }
 
+/// Shared constructor for the `application/json; charset=utf-8` responses
+/// `json`/`jsonString` build — they differ only in how `bodyBytes` is
+/// produced (raw passthrough vs. quote-escaped).
+func jsonResponse(status: in Int, bodyBytes: in slice[Byte]): Response {
+  val empty: Map[String, String] = newMap()
+  return Response(
+    status = status,
+    contentType = "application/json; charset=utf-8",
+    bodyBytes = bodyBytes,
+    headers = empty
+  )
+}
+
 /// A `application/json; charset=utf-8` response with the given raw JSON body,
 /// sent exactly as given — no parsing, no re-escaping, no cost beyond a UTF-8
 /// encode. `body` must already be a complete, valid JSON document (build it
@@ -287,13 +300,7 @@ func utf8Encode(s: in String): slice[Byte] {
 /// `jsonString` instead.
 @stable(since = "0.2")
 pub func json(status: in Int, body: in String): Response {
-  val empty: Map[String, String] = newMap()
-  return Response(
-    status = status,
-    contentType = "application/json; charset=utf-8",
-    bodyBytes = utf8Encode(body),
-    headers = empty
-  )
+  return jsonResponse(status, utf8Encode(body))
 }
 
 /// A `application/json; charset=utf-8` response whose body is `value` quoted
@@ -302,13 +309,7 @@ pub func json(status: in Int, body: in String): Response {
 /// instead when `body` is already a complete JSON document.
 @stable(since = "0.2")
 pub func jsonString(status: in Int, value: in String): Response {
-  val empty: Map[String, String] = newMap()
-  return Response(
-    status = status,
-    contentType = "application/json; charset=utf-8",
-    bodyBytes = utf8Encode(encodeString(value)),
-    headers = empty
-  )
+  return jsonResponse(status, utf8Encode(encodeString(value)))
 }
 
 /// A `text/plain; charset=utf-8` response.
