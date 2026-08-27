@@ -2442,6 +2442,18 @@ jobs:
       - name: Restore executable permissions
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
+      # source_path_diagnostics_self_test.l and jvm_sourcefile_attr_self_test.l
+      # (below) spawn `./bin/lyric` as a subprocess, resolved relative to CWD
+      # (repo root) -- the same `./bin/lyric` symlink `make lyric` creates for
+      # local dev (Makefile's `lyric` target: `ln -sf "../$(AOT_BIN)" bin/lyric`).
+      # This job downloads only the AOT binary's own nested path
+      # (bootstrap/src/Lyric.Cli.Aot/bin/...), never runs `make lyric`, and has
+      # no other step creating bin/lyric, so recreate the same symlink here.
+      - name: Create ./bin/lyric symlink for subprocess-spawning self-tests
+        run: |
+          mkdir -p bin
+          ln -sf "../bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric" bin/lyric
+
       # MSIL backend self-tests M2a-M2d (native lyric test, D-progress-474 / #66)
       # — replaces the deleted F# MsilSelfTestM2{a,b,c,d}.fs Expecto wrappers.
       # M2a pins the #3085 fix (short-name collision `Msil.Kernel.ByteWriter`
