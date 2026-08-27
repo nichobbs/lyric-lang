@@ -448,11 +448,27 @@ func typeIdOfType(t: in Type): Option[TypeId] {
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Range subtype validation (T2.5).
 // ─────────────────────────────────────────────────────────────────────────────
+// `Short`/`UShort`/`UByte` are DELIBERATELY excluded (#6661 residual,
+// D-progress-817): none of the three has a real `PrimType` case
+// (`typechecker_types.l`'s `PrimType` union has no `PtShort`/`PtUShort`/
+// `PtUByte` variant) or appears in docs/01-language-reference.md §2.1's
+// 13-primitive table — they are not Lyric surface types at all (see also
+// docs/10-bootstrap-progress.md D-progress-571: "`Short` is not a surface
+// Lyric type"). Before this fix, this name-based T0091 gate wrongly
+// admitted them: `type Age = UShort range 0 ..= 100` type-checked cleanly
+// (no T0091 — the ONLY validation `IDistinctType`'s underlying `TypeExpr`
+// ever receives; distinct-type underlyings are never independently
+// resolved via `resolveTypePath`), then reached JVM codegen, where
+// `Jvm.Codegen.typeExprToJvm` has no `UShort` arm either and erased it to
+// "user type in the same package" (`JRef(pkgName + "/UShort")`) — a
+// non-numeric `JvmType` that `Jvm.Lowering.jvmVerifierTypeOfUnderlying`'s
+// defense-in-depth `case _ -> panic(...)` then hit while building the
+// ranged `from`/`tryFrom`'s StackMapTable, crashing the compiler on
+// source the checker had just accepted as valid. Rejecting all three here
+// makes `type X = UShort/UByte/Short range …` a clean T0091 diagnostic
+// instead of ever reaching a backend panic.
 func isNumericPrimitiveName(name: in String): Bool {
-  name == "Int" or name == "Long" or name == "Short" or name == "Byte" or name == "UInt" or name == "ULong" or
-    name == "UShort" or
-    name == "UByte" or
-    name == "Float" or
+  name == "Int" or name == "Long" or name == "Byte" or name == "UInt" or name == "ULong" or name == "Float" or
     name == "Double" or
     // `Nat` is a full numeric primitive (`PtNat`, `typechecker_types.l`) and
     // docs/02's worked examples declare `Nat range A..=B` distinct types

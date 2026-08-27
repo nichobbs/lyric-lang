@@ -300,6 +300,16 @@ test "Float-backed range subtype: from() constructs in-range (#6661)" {
   assertTrue(true, "Weight.from(...) did not panic for in-range values")
 }
 
+// No `.toFloat()`/`.toDouble()` projection assertion here (same reasoning as
+// `SmallByte` above): a `Float`-backed distinct type's conversion-method NAME
+// is per-backend (`Jvm.Lowering.jvmDistinctConvName` -> `"toFloat"` on JVM,
+// since `JFloat` is its own JVM representation; MSIL erases `Float` to
+// `MDouble` in scalar position, so `Msil.Lowering.distinctConvName` names it
+// `"toDouble"` there) — no single method name is portable across both
+// targets this file runs on. The JVM-only `.toFloat()` round-trip (the
+// #6661-followup gap where `jvmDistinctConvName` had no `JFloat` case at all,
+// so a constructed `Weight` could never be read back on JVM) lives in
+// `range_subtype_unsigned_jvm_self_test.l`.
 // `UInt`/`ULong`-backed range subtypes are JVM-ONLY today: MSIL's
 // `typeExprToMsilCtx` has no `UInt`/`ULong` arm at all (unlike `Float`,
 // which erases to `MDouble` there) — a `UInt`/`ULong`-backed distinct type

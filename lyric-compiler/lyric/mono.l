@@ -1124,13 +1124,26 @@ func specFuncName(
 func inferLitTE(lit: in Literal, span: in Span): Option[TypeExpr] {
   match lit {
     case LInt(_, suffix, _) -> {
+      // `I16`/`U16` name their surrogate `TypeExpr` "Int"/"UInt", NOT
+      // "Short"/"UShort" (#6661 residual, D-progress-817): the suffix only
+      // constrains the literal's VALUE range at parse time — the
+      // type-checker's own literal typing (`typechecker_exprs.l`'s `LInt`
+      // arm) widens every sub-32-bit suffix to its 32-bit primitive
+      // (`I16 -> PtInt`, `U16 -> PtUInt`), because `Short`/`UShort` are not
+      // Lyric surface types at all (no `PrimType` case; excluded from
+      // docs/01 §2.1's primitive table). This inference helper must mirror
+      // that widening exactly — before this fix it invented a phantom
+      // "Short"/"UShort" `TRef` that never matched the type checker's real
+      // `UInt`/`Int` typing, corrupting call-site type inference (mono
+      // overload disambiguation, generic-arg specialization) for any
+      // `i16`/`u16`-suffixed literal argument.
       val name = match suffix {
         case I8 -> "Byte"
-        case I16 -> "Short"
+        case I16 -> "Int"
         case I32 -> "Int"
         case I64 -> "Long"
         case U8 -> "Byte"
-        case U16 -> "UShort"
+        case U16 -> "UInt"
         case U32 -> "UInt"
         case U64 -> "ULong"
         case NoIntSuffix -> "Int"
@@ -2975,11 +2988,13 @@ func primitiveSatisfiesMarker(name: in String, marker: in String): Bool {
   isNumericPrimitiveName(name)
 }
 
+// `Short`/`UShort`/`UByte` deliberately excluded — not real Lyric surface
+// types (no `PrimType` backing; see `Lyric.TypeChecker.isNumericPrimitiveName`
+// for the full rationale, #6661 residual, D-progress-817). `inferLitTE`
+// above is the only producer of a numeric-suffix `TypeExpr` name and never
+// emits these three, so this list matching them was always dead.
 func isNumericPrimitiveName(name: in String): Bool {
-  name == "Int" or name == "Long" or name == "Short" or name == "Byte" or name == "UInt" or name == "ULong" or
-    name == "UShort" or
-    name == "UByte" or
-    name == "Float" or
+  name == "Int" or name == "Long" or name == "Byte" or name == "UInt" or name == "ULong" or name == "Float" or
     name == "Double"
 }
 

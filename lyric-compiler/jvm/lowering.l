@@ -3859,14 +3859,30 @@ func lowerDistinctTryFrom(d: in LDistinctType, pool: in Pool): MethodInfo {
 }
 
 // Inherent conversion-method name for a distinct type's underlying JVM type
-// (#5956) — mirrors `Msil.Lowering.distinctConvName` exactly (same four
-// convertible underlying types, same empty-string "no conversion" sentinel
-// for everything else).
+// (#5956) — mirrors `Msil.Lowering.distinctConvName`'s four convertible
+// underlying types plus a `JFloat` arm MSIL has no counterpart for (#6661):
+// MSIL erases every `Float`-backed distinct/range subtype to `MDouble` (no
+// distinct MSIL representation), so `distinctConvName` never sees an
+// `MFloat` case to mirror — but the JVM backend DOES give `Float` its own
+// `JFloat` representation (`typeExprToJvm`), so a `Float`-backed distinct
+// type built via `Type.from`/`Type.tryFrom` needs its OWN projection method
+// to read the wrapped value back out. Before this arm, `Float` fell to the
+// `case _ -> ""` sentinel: `lowerDistinctType` (below) skips emitting ANY
+// conversion method when this returns `""`, so a `Type = Float` /
+// `Type = Float range lo ..= hi` value could be constructed but never
+// projected back out — no `.toFloat()` accessor existed, and there was no
+// other way to read the field. Named `toFloat` (not the general numeric
+// `.toFloat()` conversion method the language reference reserves pending
+// backend support, `typechecker_exprs.l`) — this is the distinct type's
+// OWN inherent projection accessor, the same one `toInt`/`toLong`/
+// `toDouble`/`toByte` already are for their respective underlying types,
+// not a general Float-widening conversion on an arbitrary numeric value.
 pub func jvmDistinctConvName(ty: in JvmType): String {
   match ty {
     case JInt -> "toInt"
     case JLong -> "toLong"
     case JDouble -> "toDouble"
+    case JFloat -> "toFloat"
     case JByte -> "toByte"
     case _ -> ""
   }

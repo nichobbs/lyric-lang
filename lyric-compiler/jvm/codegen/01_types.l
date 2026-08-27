@@ -311,13 +311,39 @@ func containsTypeParam(te: in TypeExpr, typeParams: in List[String]): Bool {
 // string (`Lyric/StdlibGenericMonoSelfTest/Object`) where a real value was
 // expected. Leaving `Object` as a bare identifier here routes it back
 // through `typeExprToJvm`'s existing reserved-`Object` arm instead.
+//
+// `UInt`/`ULong` are reserved here too (#6695): the SAME choke-point bug
+// class as the `Object` fix above, but for the two unsigned integer
+// primitives `typeExprToJvm` has mapped to `JInt`/`JLong` since #6661.
+// Before this arm, a generic container instantiated over `UInt`/`ULong`
+// (`List[UInt]`, `Option[ULong]`, …) hit `eagerlyResolveGenericArg`'s
+// `else` branch — the ONLY caller that rewrites a non-primitive bare
+// `TRef` into a same-package marker — and guessed a phantom class
+// (`<pkg>/UInt`), which `resolveConcreteTypeExpr`/`sameTypeExprElemFallback`
+// then propagated into a `checkcast`/type-argument slot expecting the real
+// erased `int`/`long`: `NoClassDefFoundError` at class-load time, the exact
+// #5843/#6660 failure mode this list already exists to close. `Short`/
+// `UShort`/`UByte` are deliberately NOT listed: none has a real `PrimType`
+// (`typechecker_types.l`), so a RANGE subtype over one now fails
+// type-checking with T0091 (`Lyric.TypeChecker.isNumericPrimitiveName`,
+// fixed alongside this entry, #6661 residual, docs/03 D-progress-817) —
+// before that fix the same gate wrongly admitted all three, which is how
+// this bug class was actually discovered: `type Age = UShort range 0 ..=
+// 100` type-checked cleanly and then panicked THIS backend
+// (`Jvm.Lowering.jvmVerifierTypeOfUnderlying`'s non-numeric-underlying
+// defense-in-depth panic), not the generic-arg path this predicate gates.
+// `Never` is likewise omitted: it parses directly to the structurally
+// distinct `TNever` variant (never a `TRef` segment), so it can never
+// reach this string-keyed predicate from real source.
 pub func isPrimitiveTypeKeyword(seg: in String): Bool {
   seg == "Int" or seg == "Long" or seg == "Double" or seg == "Float" or seg == "Bool" or seg == "String" or
     seg == "Char" or
     seg == "Byte" or
     seg == "Nat" or
     seg == "Unit" or
-    seg == "Object"
+    seg == "Object" or
+    seg == "UInt" or
+    seg == "ULong"
 }
 
 // Rewrite a single `retGenericArgs` `TypeExpr`'s bare, non-primitive `TRef`

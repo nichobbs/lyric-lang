@@ -1602,6 +1602,27 @@ test "local named result specialises correctly through a generic call (#5754)" {
   assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
 }
 
+// #6661 residual (D-progress-817): `inferLitTE` used to name an
+// `i16`-suffixed literal's surrogate `TypeExpr` "Short" and a
+// `u16`-suffixed literal's "UShort" — phantom names the type checker never
+// produces (`typechecker_exprs.l` widens both to their 32-bit primitive:
+// `I16 -> PtInt`, `U16 -> PtUInt`, since `Short`/`UShort` are not real
+// Lyric types). A direct literal call argument specialises against
+// whatever `inferLitTE` names, so the mismatch produced a specialisation
+// keyed "Short"/"UShort" that no downstream backend (JVM's
+// `isPrimitiveTypeKeyword`, MSIL's `typeExprToMsilCtx`) could erase
+// correctly. Pins the corrected widening: `id(5i16)`/`id(5u16)` specialise
+// to `id__Int`/`id__UInt`, matching the type checker's own literal typing.
+test "i16/u16-suffixed literal call args specialise against their widened 32-bit primitive, not a phantom Short/UShort (#6661)" {
+  val src = "package P\n" + "func id[T](x: in T): T { x }\n" + "func caller(): Unit {\n  id(5i16)\n  id(5u16)\n}\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "id__Int"), "id(5i16) specialises to id__Int, not id__Short")
+  assertTrue(hasFunc(res.file, "id__UInt"), "id(5u16) specialises to id__UInt, not id__UShort")
+  assertTrue(not hasFunc(res.file, "id__Short"), "no phantom id__Short specialisation emitted")
+  assertTrue(not hasFunc(res.file, "id__UShort"), "no phantom id__UShort specialisation emitted")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
 // #5422: a `match`-pattern-bound name carried NO entry in `env` before this
 // fix, so a generic call argument sourced from it (`unboxIt(x)` where `x` is
 // `case SomeLike(x) -> …` on `OptLike[Box[Int]]`) could not unify its type

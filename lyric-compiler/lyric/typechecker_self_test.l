@@ -436,6 +436,32 @@ test "range subtype empty bounds" {
   assertTrue(hasDiagCode(cr, "T0090"), "range-empty: T0090 emitted")
 }
 
+// #6661 residual (D-progress-817): `Short`/`UShort`/`UByte` are not real
+// Lyric surface types (no `PrimType` case, absent from docs/01 §2.1's
+// primitive table) — `isNumericPrimitiveName` used to wrongly admit them,
+// so a range subtype declared over one type-checked cleanly and then
+// crashed the JVM backend (`Jvm.Lowering.jvmVerifierTypeOfUnderlying`'s
+// defense-in-depth panic) instead of failing at compile time. These three
+// must now be rejected with T0091, exactly like any other non-numeric
+// underlying type.
+test "range subtype over UShort rejected (#6661)" {
+  val src = "package P\ntype Small = UShort range 0 ..= 100\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0091"), "range-ushort: T0091 emitted, not silently accepted")
+}
+
+test "range subtype over UByte rejected (#6661)" {
+  val src = "package P\ntype Small = UByte range 0 ..= 100\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0091"), "range-ubyte: T0091 emitted, not silently accepted")
+}
+
+test "range subtype over Short rejected (#6661)" {
+  val src = "package P\ntype Small = Short range 0 ..= 100\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0091"), "range-short: T0091 emitted, not silently accepted")
+}
+
 test "where clause unknown param" {
   val src = "package P\nfunc f[T](x: in T): T where Z: Add { x }\n"
   val cr = parseCheck(src)

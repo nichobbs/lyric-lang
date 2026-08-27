@@ -4412,6 +4412,17 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/range_subtype_unsigned_jvm_self_test.l
 
+      # `UInt`/`ULong` generic-container erasure self-test — JVM-ONLY (#6695):
+      # `isPrimitiveTypeKeyword` (`Jvm.Codegen`) had no `UInt`/`ULong` case, so
+      # `List[UInt]`/`Option[UInt]` (and the `ULong` counterparts) resolved a
+      # phantom same-package class through `eagerlyResolveGenericArg` instead
+      # of the real erased `JInt`/`JLong` representation. `UInt`/`ULong` have
+      # no MSIL representation at all, so this file is JVM-only.
+      - name: UInt/ULong generic-container erasure self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/generic_uint_erasure_jvm_self_test.l
+
       # Await-hoist self-test on JVM (#5606/#5628, #5630) — JVM already
       # compiled every hoist shape correctly before the rewrite (the rewrite
       # is semantics-preserving there), so this pins that the shared rewrite

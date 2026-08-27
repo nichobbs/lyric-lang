@@ -1,6 +1,8 @@
 //! range_subtype_unsigned_jvm_self_test.l — JVM-only executable regression
 //! test for `UInt`/`ULong`-backed distinct/range subtype construction
-//! (#6661).
+//! (#6661), plus the `Float`-backed `.toFloat()` read-back this file also
+//! hosts (JVM-only for the same reason: the conversion-method name is
+//! per-backend, see the header comment on that test below).
 //!
 //! Split out of `range_subtype_self_test.l` (which runs on BOTH
 //! `--target dotnet` and `--target jvm`) because `UInt`/`ULong` have NO MSIL
@@ -95,4 +97,24 @@ test "ULong-backed range subtype: construction and bounds (#6661)" {
   assertTrue(bigIdIsOk(BigId.tryFrom(123456789012345u64)), "a large in-range value")
   assertTrue(bigIdIsOk(BigId.tryFrom(9000000000000000000u64)), "9000000000000000000 upper bound inclusive")
   assertEqualLong(BigId.from(42u64).toLong(), 42i64, "from(42).toLong() round-trips")
+}
+
+// `Float`-backed distinct/range subtype `.toFloat()` read-back — a followup
+// gap in #6661's own fix: `Jvm.Lowering.jvmDistinctConvName` gained a real
+// bytecode-level bounds check for `JFloat` (`emitJvmDistinctBoundsToFail`)
+// but had NO `JFloat` case of its own, so `lowerDistinctType` never emitted
+// (or registered, `collectFileSigsSeeded`'s `IDistinctType` arm) any
+// projection method for a `Float`-backed distinct type at all — `Weight`
+// (`range_subtype_self_test.l`) could be CONSTRUCTED via `from`/`tryFrom` but
+// never READ BACK. JVM-only (unlike `SmallByte`'s `.toInt()`/no-assertion
+// split above): MSIL erases `Float` to `MDouble` in scalar position
+// (`Msil.Lowering.distinctConvName` names its accessor `"toDouble"`), so
+// `.toFloat()` does not exist as a call there.
+type Ratio = Float range 0.0 ..= 1.0
+
+test "Float-backed range subtype: toFloat() projects the wrapped value back (jvmDistinctConvName)" {
+  assertTrue(Ratio.from(0.25f32).toFloat() > 0.2499f32, "from(0.25).toFloat() round-trips (lower)")
+  assertTrue(Ratio.from(0.25f32).toFloat() < 0.2501f32, "from(0.25).toFloat() round-trips (upper)")
+  assertTrue(Ratio.from(0.0f32).toFloat() == 0.0f32, "lower bound round-trips exactly")
+  assertTrue(Ratio.from(1.0f32).toFloat() == 1.0f32, "upper bound round-trips exactly")
 }

@@ -36538,3 +36538,135 @@ confirming the fix does not regress the intended restored-dep path.
 verified green.
 
 **Related:** #6697, D-progress-811, #3094, #6264, #6136, #6503.
+
+---
+
+## D-progress-818 — Two #6631 review findings: `Short`/`UShort`/`UByte` range subtypes actually DID crash the JVM backend (#6661 residual), plus `Float` distinct-type read-back and `UInt`/`ULong` generic-container erasure (#6695)
+
+**Status:** Shipped.
+
+**Context.** PR review against #6631 (JVM `Type.from`/`Type.tryFrom`
+static factories, D-progress-815) raised two residual findings.
+
+**#6661 residual — `Short`/`UShort`/`UByte` were reachable, and DID
+panic.** D-progress-814's writeup claimed `type X = UShort range 0 ..=
+100` "fails type-checking before reaching any backend" because none of
+`Short`/`UShort`/`UByte` has a `PrimType` case — but never verified that
+claim against the actual code path, and it was wrong. A distinct type's
+`underlying: TypeExpr` is NEVER independently resolved via
+`resolveTypePath` (unlike every other type position); `checkDistinctType`
+(`typechecker_checker.l`)'s name-based `isNumericPrimitiveName` gate for
+diagnostic T0091 is the ONLY validation it ever receives — and that
+function's own list *included* `"Short"`, `"UShort"`, `"UByte"` (a
+pre-existing bug, unrelated to and older than #6631). So the declaration
+type-checked with zero diagnostics, then reached JVM codegen:
+`Jvm.Codegen.typeExprToJvm` has no arm for any of the three either, so it
+fell through to "user type in the same package" (`JRef(pkgName +
+"/UShort")`) — a non-numeric erasure — which
+`Jvm.Lowering.jvmVerifierTypeOfUnderlying`'s defense-in-depth `case _ ->
+panic(...)` then hit while building the ranged `from`/`tryFrom`'s
+StackMapTable, crashing the compiler on source the checker had just
+accepted as valid. Confirmed by direct trace of `checkDistinctType` →
+`typeExprToJvm` → `jvmVerifierTypeOfUnderlying`, not by re-running the
+old assumption.
+
+None of `Short`/`UShort`/`UByte` is a genuine Lyric surface type — all
+three are absent from docs/01-language-reference.md §2.1's 13-primitive
+table and have no `PrimType` case in `typechecker_types.l`'s `PrimType`
+union (docs/10 D-progress-571 already established this for `Short`
+specifically: "not a surface Lyric type"). Adding real `UShort`/`UByte`
+support (a new `PtUShort`/`PtUByte` `PrimType` variant threaded through
+literal typing, arithmetic widening, and both backends' codegen — the
+scope `UInt`/`ULong` needed, D-progress-814) is a materially larger
+change than this residual review finding calls for and was rejected as
+out of scope — mirroring `UInt`/`ULong`'s treatment would require
+inventing language surface that was never speced. The correct,
+production-quality fix is to make the type checker's existing gate
+actually gate: `isNumericPrimitiveName` (`typechecker_checker.l`) no
+longer admits `"Short"`/`"UShort"`/`"UByte"`, so `type X = UShort range …`
+now fails cleanly with T0091 ("requires a numeric underlying type")
+instead of ever reaching a backend panic.
+
+While tracing the admission gate, a second, independent instance of the
+identical name-vs-`PrimType` mismatch surfaced in `Lyric.Mono`'s call-site
+literal-type inference: `inferLitTE` named an `i16`-suffixed literal's
+surrogate `TypeExpr` `"Short"` and a `u16`-suffixed literal's `"UShort"` —
+but the type checker's own literal typing (`typechecker_exprs.l`'s `LInt`
+arm) widens both to their 32-bit primitive (`I16 -> PtInt`, `U16 ->
+PtUInt`), since neither `Short` nor `UShort` is real. Before this fix, a
+generic call like `id(5u16)` inferred mono's argument type as `"UShort"`
+while the type checker itself typed the same literal `UInt` — a
+mismatch that could corrupt overload disambiguation or leak a phantom
+`"UShort"`/`"Short"` name into a specialisation. Fixed to mirror the
+checker's real widening (`I16 -> "Int"`, `U16 -> "UInt"`). `Lyric.Mono`'s
+OWN (separate) `isNumericPrimitiveName` — used only for `@generate`
+marker satisfaction (`Add`/`Sub`/…) — carried the identical three dead
+entries; removed for consistency now that `inferLitTE` never produces
+them and the type checker never admits them, so they were unreachable
+either way.
+
+**#6661 residual — `Float` distinct-type value could be constructed but
+never read back.** `Jvm.Lowering.jvmDistinctConvName` names a distinct
+type's inherent projection accessor (`Age.toInt()`, mirroring
+`Msil.Lowering.distinctConvName`) by matching on the underlying
+`JvmType`. `JFloat` had no case (fell to the `case _ -> ""` "no
+conversion" sentinel, so `lowerDistinctType` skipped emitting ANY
+accessor) even though the JVM backend gives `Float` its own genuine
+`JFloat` representation (unlike MSIL, which erases `Float` to `MDouble`
+in scalar position and so never needs this arm) — so `Type = Float`/
+`Type = Float range lo ..= hi` values built via `Type.from`/`.tryFrom`
+had no way to read the wrapped value back out on JVM. Fixed by adding
+`case JFloat -> "toFloat"`.
+
+**#6695 — `UInt`/`ULong` missing from `isPrimitiveTypeKeyword`.**
+Same choke-point bug class as #5843/#6660 (fixed for the bare `Object`
+marker, D-progress-813): `Jvm.Codegen.isPrimitiveTypeKeyword` gates
+`eagerlyResolveGenericArg`'s bare-`TRef`-to-marker rewrite — the ONLY
+caller that turns a non-primitive bare `TRef` into a same-package
+class-name guess. `UInt`/`ULong` were missing from this list even though
+`typeExprToJvm` has correctly erased both to `JInt`/`JLong` since #6661,
+so a generic container instantiated over either (`List[UInt]`,
+`Option[ULong]`, a function's `retGenericArgs`) took the guess branch and
+resolved a phantom same-package class, producing
+`NoClassDefFoundError`/`checkcast` failures at JVM class-load time. Fixed
+by adding `"UInt"`/`"ULong"` to the list. Audited the remaining entries
+against docs/01 §2.1's 13-primitive table and `docs/grammar.ebnf`'s
+`IntSuffix`/primitive productions: the list now covers exactly `Int`,
+`Long`, `Double`, `Float`, `Bool`, `String`, `Char`, `Byte`, `Nat`,
+`Unit`, `UInt`, `ULong` (all 12 real primitives) plus the `Object`
+reserved marker (D-progress-658/813) — `Never` is correctly excluded
+(the grammar routes it to the structurally distinct `TNever` AST variant,
+never a `TRef` segment, so it can never reach this string-keyed
+predicate from real source) and `Short`/`UShort`/`UByte` are correctly
+excluded per the #6661-residual finding above (not real types; a bare
+reference to one already fails T0091 before any generic-arg resolution
+runs).
+
+**Tests.** `typechecker_self_test.l`: three new cases pin T0091 firing
+for `Short`/`UShort`/`UByte`-based range subtypes. `mono_self_test.l`:
+one new case pins `id(5i16)`/`id(5u16)` specialising to
+`id__Int`/`id__UInt` (not a phantom `id__Short`/`id__UShort`).
+`range_subtype_unsigned_jvm_self_test.l`: new `Ratio = Float range 0.0
+..= 1.0` case pins `.toFloat()` round-tripping the wrapped value on JVM.
+New `lyric-compiler/jvm/generic_uint_erasure_jvm_self_test.l` (JVM-only,
+new CI step): `List[UInt]`/`List[ULong]` add/index/count round-trip
+without a phantom class, including values above 2^31; `Option[UInt]`/
+`Option[ULong]` `Some`/`None` round-trip through `match` (the two-sided
+`retGenericArgs` registration + call-site `resolveConcreteTypeExpr`
+round trip #6695 breaks). `bitwise_self_test.l` and
+`erased_generic_arith_jvm_self_test.l` re-verified unaffected.
+
+**Files:** `lyric-compiler/lyric/type_checker/typechecker_checker.l`,
+`lyric-compiler/lyric/mono.l`, `lyric-compiler/jvm/lowering.l`,
+`lyric-compiler/jvm/codegen/01_types.l`,
+`lyric-compiler/lyric/typechecker_self_test.l`,
+`lyric-compiler/lyric/mono_self_test.l`,
+`lyric-compiler/lyric/range_subtype_self_test.l`,
+`lyric-compiler/lyric/range_subtype_unsigned_jvm_self_test.l`,
+`lyric-compiler/jvm/generic_uint_erasure_jvm_self_test.l` (new),
+`.github/workflows/ci.yml`.
+
+**Related:** #6661, #6695, #6631, D-progress-814 (the entry this
+corrects), D-progress-815, D-progress-813 (the `Object`-marker fix this
+mirrors), D-progress-571 (established `Short` is not a surface type),
+docs/01-language-reference.md §2.1.

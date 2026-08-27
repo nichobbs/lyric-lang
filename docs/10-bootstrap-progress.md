@@ -32533,6 +32533,17 @@ literal-lowering change.
 `lyric-compiler/lyric/range_subtype_unsigned_jvm_self_test.l` (new),
 `lyric-compiler/lyric/jvm_cross_package_collision_self_test.l`,
 `.github/workflows/ci.yml`.
+
+**Correction (D-progress-817):** the claim above that `Short`/`UShort`/
+`UByte` "fail type-checking before reaching any backend" was never
+verified against the actual code path and turned out to be wrong —
+`isNumericPrimitiveName` (the T0091 gate, `typechecker_checker.l`) is the
+ONLY validation a distinct type's underlying `TypeExpr` ever receives
+(there is no separate `resolveTypePath` call for it), and at the time
+this entry was written that same function's own list *included* `Short`/
+`UShort`/`UByte` — so `type X = UShort range 0 ..= 100` type-checked
+cleanly and crashed the JVM backend instead. See D-progress-817 for the
+real fix (#6661 residual) and #6695.
 ### D-progress-815 — JVM: distinct/range-subtype `Type.from`/`Type.tryFrom` static factories (#5956, closes the historical #2997 JVM gap)
 
 The JVM backend never emitted the distinct/range-subtype construction API
@@ -32631,3 +32642,63 @@ restored-JAR pipeline is unaffected), `cli_shared_self_test.l` (25/25),
 `cli_build_self_test.l` (81/81).
 
 **Related:** #6697, D-progress-811, #3094, #6264, #6136, #6503.
+
+### D-progress-818 — Two #6631 review findings: `Short`/`UShort`/`UByte` range subtypes actually DID crash the JVM backend (#6661 residual), plus `Float` distinct-type read-back and `UInt`/`ULong` generic-container erasure (#6695)
+
+PR review against #6631 raised two residual findings. **#6661 residual:**
+D-progress-814's claim that `Short`/`UShort`/`UByte` "fail type-checking
+before reaching any backend" was never verified and was wrong — a
+distinct type's underlying `TypeExpr` is only ever validated by
+`isNumericPrimitiveName`'s name-based T0091 gate (`typechecker_checker.l`),
+and that gate's own list included all three, so `type X = UShort range 0
+..= 100` type-checked cleanly, then crashed JVM codegen:
+`typeExprToJvm` erases `UShort` to a same-package `JRef` (no arm for it),
+and `Jvm.Lowering.jvmVerifierTypeOfUnderlying`'s defense-in-depth
+`panic(...)` fired building the ranged `from`/`tryFrom`'s StackMapTable.
+None of the three is a real Lyric type (absent from docs/01 §2.1's
+primitive table, no `PrimType` case) — adding genuine support is a much
+larger change than this finding calls for, so the fix removes them from
+`isNumericPrimitiveName` instead, making the declaration a clean T0091
+diagnostic. The identical name-vs-`PrimType` mismatch also existed in
+`Lyric.Mono.inferLitTE` (an `i16`/`u16`-suffixed literal's call-site type
+inference named itself `"Short"`/`"UShort"` instead of the checker's real
+`"Int"`/`"UInt"` widening) — fixed to match, and the dead entries removed
+from `Lyric.Mono`'s own marker-satisfaction `isNumericPrimitiveName` too.
+
+Also fixed: `jvmDistinctConvName` had no `JFloat` case, so a `Float`-backed
+distinct/range-subtype value built via `Type.from`/`.tryFrom` could never
+be read back on JVM (added `case JFloat -> "toFloat"`).
+
+**#6695:** `UInt`/`ULong` were missing from `isPrimitiveTypeKeyword`
+(same choke-point class as the `Object`-marker fix, D-progress-813), so a
+generic container instantiated over either (`List[UInt]`, `Option[ULong]`)
+resolved a phantom same-package class via `eagerlyResolveGenericArg`'s
+guess branch — `NoClassDefFoundError`/`checkcast` failures at JVM
+class-load time, even though `typeExprToJvm` already erases both
+correctly. Fixed by adding both; audited the full list against docs/01
+§2.1 and `docs/grammar.ebnf` — it now covers all 12 real primitives plus
+the `Object` marker, with `Never` and `Short`/`UShort`/`UByte` correctly
+excluded (the former never reaches this predicate as a `TRef`; the latter
+now fail T0091 before any generic-arg resolution runs).
+
+**Tests:** `typechecker_self_test.l` (3 new T0091 cases), `mono_self_test.l`
+(1 new case pinning `id__Int`/`id__UInt`, not phantom `id__Short`/
+`id__UShort`), `range_subtype_unsigned_jvm_self_test.l` (new `Ratio =
+Float range 0.0 ..= 1.0` `.toFloat()` round-trip case), new
+`lyric-compiler/jvm/generic_uint_erasure_jvm_self_test.l` (JVM-only, new
+CI step — `List`/`Option` over `UInt`/`ULong` round-trip without a
+phantom class). `bitwise_self_test.l` and
+`erased_generic_arith_jvm_self_test.l` re-verified unaffected.
+
+**Files:** `lyric-compiler/lyric/type_checker/typechecker_checker.l`,
+`lyric-compiler/lyric/mono.l`, `lyric-compiler/jvm/lowering.l`,
+`lyric-compiler/jvm/codegen/01_types.l`,
+`lyric-compiler/lyric/typechecker_self_test.l`,
+`lyric-compiler/lyric/mono_self_test.l`,
+`lyric-compiler/lyric/range_subtype_self_test.l`,
+`lyric-compiler/lyric/range_subtype_unsigned_jvm_self_test.l`,
+`lyric-compiler/jvm/generic_uint_erasure_jvm_self_test.l` (new),
+`.github/workflows/ci.yml`.
+
+**Related:** #6661, #6695, #6631, D-progress-814 (corrected), D-progress-815,
+D-progress-813, D-progress-571.
