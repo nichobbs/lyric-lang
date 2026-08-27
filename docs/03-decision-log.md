@@ -33886,3 +33886,149 @@ already limiting (not eliminating) the flake's frequency).
 **Related:** #5621, #5516, D-progress-815 (the diagnostic that surfaced
 both gaps), #5933 (the separately-tracked, closed CI infra flake hit in the
 same CI run, not fixed here since it needs no fix — a re-run is sufficient).
+
+## D-progress-816 — MSIL backend: self-referential/container-of-own-parameter generic fields fixed (#6568), #6569 re-verified as already fixed, `Std.Collections.Persistent.PersistentMap[K, V]` shipped dotnet-only (#6570), new JVM generics-erasure gap filed (#6708)
+
+**Context.** #6568 and #6569 were both filed against the published NuGet
+`lyric` 0.5.1 global tool (a sandbox that could not build `./bin/lyric`
+from source at the time) and explicitly asked for re-verification against
+a real `main` build before triage. This session built `./bin/lyric` from
+source (working around the sandboxed `api.github.com` block by pinning
+`LYRIC_BOOTSTRAP_VERSION=0.5.1` for stage 0 — the release ASSET download
+from `github.com/.../releases/download/...` is reachable even though the
+release-LISTING API call is not) and re-ran both issues' exact repros.
+
+**#6569 (closure parameter erased inside a loop over a generic
+container): already fixed on `main`**, no longer reproduces. The minimal
+repro and a fuller multi-call/overwrite variant both ran correctly
+against the fresh build with no code changes. No root cause investigated
+(nothing to fix); pinned with a new regression test,
+`lyric-compiler/lyric/generic_closure_container_self_test.l` (3 cases),
+so any future regression is caught immediately.
+
+**#6568: genuinely reproduced, in two of its three shapes.** Repro 1
+(self-referential UNION case field, `PCons(head: T, tail: PList[T])`) was
+already fixed on `main` — `Lyric.Cli`'s union registration already seeds
+`cctx.genericTypeArity` for the union's OWN arity *before* processing its
+case fields (`lyric-compiler/msil/codegen.l`'s `IUnion` arm). Repro 2
+(self-referential RECORD field nested inside another generic,
+`tail: Option[PLNode[T]]`) and repro 3 (a record field that's a
+CONTAINER — `slice[T]`/`List[T]` — of the record's own type parameter,
+not a self-reference) both still crashed.
+
+**Root causes (two, independent).**
+
+1. **Record self-reference ordering bug.** Unlike the union arm above,
+   both `IRecord` and `IExposedRec` arms in `addPackageTokens` registered
+   `cctx.genericTypeArity[className]` only AFTER the field-processing
+   loop that needs it to resolve a field referencing the record's OWN
+   type. A field typed `Option[PLNode[T]]` on `PLNode[T]` calls
+   `typeExprToMsilG` → `typeExprToMsilGApp`, which resolves the NESTED
+   `PLNode[T]` head via `mapGet(cctx.genericTypeArity, "Pkg.PLNode")` —
+   not yet present at that point — so it fell to the `None` arm and
+   erased the type argument to `MObject`. The ctor's registered VAR-form
+   parameter type came out wrong, and construction faulted with
+   `MissingMethodException` (the emitted `.ctor` signature didn't match
+   what the TypeDef actually declares). Fixed by moving the
+   `genericTypeArity` registration to before the field loop in both
+   `IRecord` and `IExposedRec`, mirroring the union arm's already-correct
+   order.
+
+2. **Container-of-own-parameter field erasure.** `typeExprToMsilG` (the
+   VAR-form-aware field-type lowering used for generic record/union
+   fields) had no `TSlice` case at all — a `slice[T]` field fell through
+   to the generics-blind `typeExprToMsilCtx`, which resolves `T` via
+   `cctx.pbGenerics` to plain `MObject`, producing `MArray(MObject)`
+   instead of `MArray(MTypeVar(n))`. The TypeDef's real field slot ends
+   up declared `object[]`; storing a real `int32[]` into it and reading
+   it back corrupts the value (CLR array element-size mismatch, no
+   verification failure — silently wrong values, matching the issue's
+   observed garbage-int symptom). Separately, `typeExprToMsilGApp`'s
+   `List[T]`/`Map[K,V]` branches erased a bare `MTypeVar` element/key/
+   value to `MObject` too (`collElemConcrete` didn't recognise
+   `MTypeVar` as "concrete enough" to pick the `MConcreteList`/
+   `MConcreteMap` representation). Fixed by (a) adding a `TSlice` arm to
+   `typeExprToMsilG` that recurses the element through the existing
+   `sliceElemMsilG` helper, and (b) widening a NEW `collElemConcreteG`
+   helper (used only by `typeExprToMsilGApp`, not the shared
+   `collElemConcrete`) to treat `MTypeVar` as concrete, so `List[T]`/
+   `Map[K,V]` container fields get `MConcreteList`/`MConcreteMap` +
+   `MTypeVar` instead of erasing. Both fixes lean on machinery that
+   ALREADY existed for this exact shape: `bufMsilTypeWithCtx`'s
+   `MArray`/`MConcreteList`/`MConcreteMap` arms already encode an
+   `MTypeVar` element/key/value correctly (no new byte-level encoding
+   needed), and `substituteTypeVarsMsil` (the read-site type-resolution
+   helper) already recurses into `MArray`/`MConcreteList`/`MConcreteMap`
+   to substitute the caller's concrete type args — this was purely a
+   matter of no longer discarding the `MTypeVar` before it reached that
+   machinery.
+
+**New regression coverage.** `lyric-compiler/lyric/
+inbundle_generics_self_test.l` gained 6 new `test` blocks (#6568 repros
+1–3 plus a `List[T]`-field variant and a bare-`T`-field control) —
+36/36 passing. `mono_self_test.l` (55/55) and the full pre-existing
+`inbundle_generics_self_test.l` suite were re-run clean, confirming no
+regression in the shared `typeExprToMsilG`/`typeExprToMsilGApp` path
+(`Result[T,E]`/`Box[T]`-nested-in-unrelated-generic cases from #6231/
+#4870 stay correct — this fix only widens what previously erased to
+`MObject`, never narrows an existing working path).
+
+**`Std.Collections.Persistent.PersistentMap[K, V]` (#6570).** With both
+#6568 shapes it needs (a `slice[MapEntry[K, V]]` container parameter,
+and invoking a closure over that container in a loop — the #6569 shape,
+already fixed) genuinely working, implemented `pmapIsEmpty`/`pmapSize`/
+`pmapLookup`/`pmapContainsKey`/`pmapInsert`/`pmapDelete`/`pmapToList`/
+`pmapFromList` in `lyric-stdlib/std/collections_persistent.l`, following
+the same bare-`slice`-of-record representation the shipped
+`PersistentList[T]` already uses (an association list keyed by a
+caller-supplied equality predicate — Lyric has no generic `Eq`/`Ord`
+interface — naive-but-correct v1 per the original #684 scope, not a
+balanced BST). All `@experimental`, matching `plistXXX`'s convention.
+
+Building `PersistentMap` surfaced a THIRD, separate, still-open
+generic-codegen gap — this one in the self-hosted **JVM** backend, not
+MSIL: reading a field off an element indexed out of a `List[T]`/
+`slice[T]` returned from (or parameter to) a generic function, where `T`
+is itself a nested generic-record instantiation over the enclosing
+function's own type parameters, fails to compile
+(`error[J007]: member '<field>' cannot be resolved on an erased
+(statically Object) receiver`) — reproducible even with an explicit
+local-variable type annotation on the indexed element (the diagnostic's
+own suggested workaround does not actually help). Filed as #6708, with a
+minimal standalone repro. `PersistentMap` therefore ships dotnet-only:
+its tests live in a NEW file, `lyric-stdlib/tests/
+collections_persistent_map_tests.l` (7 cases, `--target dotnet`), kept
+separate from the pre-existing `collections_persistent_tests.l` (List
+ops only) so that file's existing both-targets CI coverage is untouched
+— `--target jvm` on the unchanged List-only test file still passes
+(JVM codegen is call-reachability-based; the mere presence of the new
+`pmapXXX` functions in the imported module doesn't affect a program that
+never calls them). `PersistentSet[T]` remains an unshipped stretch goal
+(not attempted — Map already used the full scope for this change).
+
+**Docs updated:** `lyric-stdlib/std/collections_persistent.l`'s own
+header doc comment (the authoritative detail), `docs/10-stdlib-plan.md`'s
+`Std.Collections.Persistent` entry, and `book/chapters/
+12-standard-library.md` §12.4's `Std.Collections.Persistent` section —
+all replacing the prior "deferred, blocked on #6568/#6569" note with the
+shipped-dotnet-only state and the new #6708 pointer.
+
+**Verification.** `make lyric` full build from source (stage 0 pinned to
+avoid the sandboxed API block, stages 1+2 unmodified). Self-tests:
+`inbundle_generics_self_test.l` 36/36, `generic_closure_container_
+self_test.l` 3/3, `mono_self_test.l` 55/55, `weaver_self_test.l` 46/46,
+`aspect_weave_self_test.l` 13/13, `bitwise_self_test.l` 10/10,
+`result_generic_specialization_self_test.l` 4/4. Stdlib runtime suites
+(`lyric run`): `collections_persistent_tests.l` (List ops) ok on BOTH
+`--target dotnet` and `--target jvm`; `collections_persistent_map_tests.l`
+(Map ops) ok on `--target dotnet`; `collections_tests.l`/`set_tests.l`/
+`sort_tests.l`/`core_tests.l`/`iter_tests.l` all still ok (no regression
+in the shared generic-collection codegen paths this change touches).
+
+**Related:** #6568 (fixed), #6569 (re-verified already fixed), #6570
+(`PersistentMap` shipped), #684 (the original persistent-collections
+ask), #6708 (new, filed — JVM generics-erasure gap blocking
+`PersistentMap` on `--target jvm`), docs/43-in-bundle-generics-plan.md
+(the generic-codegen design this extends), docs/44-jvm-production-
+readiness-plan.md ("generics erased" — #6708 is a concrete instance of
+that already-catalogued JVM-backend gap class).
