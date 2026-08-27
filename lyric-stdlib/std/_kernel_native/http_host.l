@@ -356,6 +356,16 @@ func parseNonNegativeInt(s: in String): Option[Int] {
     match digitOf(s.substring(i, 1)) {
       case None -> return None
       case Some(d) -> {
+        // Reject rather than silently wrap past Int32 (#6636: an
+        // attacker-supplied Content-Length/chunk-size digit string long
+        // enough to overflow could otherwise wrap to a small or negative
+        // value and bypass the size caps this parses into). The guard
+        // trips well before the real Int32 boundary (2_147_483_647) —
+        // no legitimate status code, port, or Content-Length this client
+        // needs to parse is anywhere near it.
+        if n > 200000000 {
+          return None
+        }
         n = n * 10 + d
       }
     }
@@ -413,6 +423,14 @@ func parseHexInt(s: in String): Option[Int] {
     match hexDigitOf(s.substring(i, 1)) {
       case None -> return None
       case Some(d) -> {
+        // Same overflow guard as `parseNonNegativeInt`, for the same
+        // reason (#6636): an attacker-supplied chunk-size hex digit
+        // string long enough to overflow `Int32` could otherwise wrap to
+        // a small value and bypass `readChunkedBody`'s cumulative
+        // `maxResponseBodyBytes` cap.
+        if n > 200000000 {
+          return None
+        }
         n = n * 16 + d
       }
     }
@@ -523,6 +541,34 @@ func findHeaderValue(names: in List[String], values: in List[String], name: in S
 // =====================================================================
 // Byte-level buffer scanning (module header item 4: no `.slice()`).
 // =====================================================================
+/// Response size limits (#6636: a malicious/compromised server this
+/// client connects to must not be able to force unbounded client-process
+/// memory growth via an oversized or never-terminated header block, a
+/// huge declared `Content-Length`, or an unbounded run of chunked-body
+/// data). Mirrors `Std.HttpEngine`'s server-side `EngineLimits` defaults
+/// (`maxHeaderCount = 100` * `maxHeaderLineLength = 8192` for the header
+/// total; `maxBodyBytes = 10485760` for the body) so client and server
+/// share the same resource-exhaustion budget, even though this kernel has
+/// no `EngineLimits`-shaped config surface of its own to thread through
+/// yet (a v1 hardcoded default, not a configurable option).
+val maxResponseHeaderBytes: Int = 819200
+
+val maxResponseBodyBytes: Int = 10485760
+
+/// A single chunk-size or trailer line (chunked transfer-encoding) is
+/// bounded independently of the overall body cap — reuses
+/// `Std.HttpEngine`'s own per-line `maxHeaderLineLength` budget, since a
+/// chunk-size/trailer line is grammatically a header-shaped line.
+val maxChunkLineBytes: Int = 8192
+
+/// Caps the number of chunked-transfer trailer lines: each line is
+/// individually bounded by `maxChunkLineBytes` but discarded rather than
+/// accumulated, so an unbounded COUNT of small lines is the residual
+/// memory-growth vector `maxChunkLineBytes` alone doesn't close. Mirrors
+/// `Std.HttpEngine`'s own `maxHeaderCount` default (100), which its trailer
+/// path reuses for the identical reason.
+val maxTrailerLines: Int = 100
+
 func crlfBytes(): slice[Byte] {
   [13u8, 10u8]
 }
@@ -574,13 +620,19 @@ func copyRange(buf: in List[Byte], start: in Int, count: in Int): slice[Byte] {
 /// index where `pattern` starts. Rescans only from just before the
 /// previous read's end (`pattern.length - 1` bytes of backtrack) rather
 /// than from 0 every time, since a match cannot start any earlier than
-/// that in newly-arrived bytes.
+/// that in newly-arrived bytes. Fails with `Err` once more than
+/// `maxBytes` bytes have accumulated since `from` without finding
+/// `pattern` (#6636: bounds a header block, or a single chunk-size/
+/// trailer line, that never terminates).
 func readUntilPatternFrom(
-  conn: in Tcp.Conn, buf: in List[Byte], from: in Int, pattern: in slice[Byte]
+  conn: in Tcp.Conn, buf: in List[Byte], from: in Int, pattern: in slice[Byte], maxBytes: in Int
 ): Result[Int, String] {
   var searchFrom = from
   var found = findPattern(buf, searchFrom, pattern)
   while found < 0 {
+    if buf.count - from > maxBytes {
+      return Err(error = "response exceeds the maximum allowed size while searching for expected data")
+    }
     val priorCount = buf.count
     match Tcp.hostRead(conn, 8192) {
       case Err(e) -> return Err(error = Tcp.TcpError.message(e))
@@ -626,9 +678,15 @@ func readAtLeast(conn: in Tcp.Conn, buf: in List[Byte], total: in Int): Result[U
 /// Read from `conn` into `buf` until the peer closes (EOF) — the
 /// close-delimited body framing for a response with neither
 /// `Content-Length` nor `Transfer-Encoding: chunked` (RFC 9112 §6.3).
-func readUntilEof(conn: in Tcp.Conn, buf: in List[Byte]): Result[Unit, String] {
+/// Fails with `Err` once the body (from `bodyStart` on) exceeds
+/// `maxResponseBodyBytes` rather than reading an unbounded close-delimited
+/// stream to completion (#6636).
+func readUntilEof(conn: in Tcp.Conn, buf: in List[Byte], bodyStart: in Int): Result[Unit, String] {
   var reading = true
   while reading {
+    if buf.count - bodyStart > maxResponseBodyBytes {
+      return Err(error = "response body exceeds the maximum allowed size")
+    }
     match Tcp.hostRead(conn, 8192) {
       case Err(e) -> return Err(error = Tcp.TcpError.message(e))
       case Ok(chunk) -> {
@@ -661,7 +719,7 @@ func readChunkedBody(conn: in Tcp.Conn, buf: in List[Byte], startPos: in Int): R
   var pos = startPos
   var done = false
   while not done {
-    val lineEnd = match readUntilPatternFrom(conn, buf, pos, crlfBytes()) {
+    val lineEnd = match readUntilPatternFrom(conn, buf, pos, crlfBytes(), maxChunkLineBytes) {
       case Ok(idx) -> idx
       case Err(e) -> return Err(error = e)
     }
@@ -672,6 +730,9 @@ func readChunkedBody(conn: in Tcp.Conn, buf: in List[Byte], startPos: in Int): R
     val size = match parseHexInt(trimChunkExt(sizeLine)) {
       case Some(n) -> n
       case None -> return Err(error = "malformed chunk size: " + sizeLine)
+    }
+    if acc.count + size > maxResponseBodyBytes {
+      return Err(error = "chunked response body exceeds the maximum allowed size")
     }
     val dataStart = lineEnd + 2
     if size == 0 {
@@ -685,8 +746,12 @@ func readChunkedBody(conn: in Tcp.Conn, buf: in List[Byte], startPos: in Int): R
       // blank line that ends the section.
       var trailerPos = dataStart
       var trailerDone = false
+      var trailerCount = 0
       while not trailerDone {
-        val trailerLineEnd = match readUntilPatternFrom(conn, buf, trailerPos, crlfBytes()) {
+        if trailerCount > maxTrailerLines {
+          return Err(error = "chunked response trailer section exceeds the maximum allowed number of lines")
+        }
+        val trailerLineEnd = match readUntilPatternFrom(conn, buf, trailerPos, crlfBytes(), maxChunkLineBytes) {
           case Ok(idx) -> idx
           case Err(e) -> return Err(error = e)
         }
@@ -694,6 +759,7 @@ func readChunkedBody(conn: in Tcp.Conn, buf: in List[Byte], startPos: in Int): R
           trailerDone = true
         } else {
           trailerPos = trailerLineEnd + 2
+          trailerCount = trailerCount + 1
         }
       }
       done = true
@@ -969,6 +1035,76 @@ pub func hostWithStringBody(request: in HttpRequestMessage, contentType: in Stri
 // =====================================================================
 // Send path (internal).
 // =====================================================================
+/// `true` if `s` contains an embedded CR or LF — the guard against HTTP
+/// request splitting/smuggling (#6635) via a value spliced verbatim into
+/// the request text below by plain `+` concatenation. The dotnet/JVM
+/// kernels this file mirrors get this rejection for free from their
+/// platform HTTP stack (`SocketsHttpHandler`/`java.net.http.HttpClient`
+/// both reject an embedded CR/LF in a header value, method, or target at
+/// send time); this hand-rolled wire protocol has no platform stack to
+/// inherit it from, so `buildRequestBytes` checks explicitly before
+/// writing anything to the wire.
+func hasForbiddenWireChar(s: in String): Bool {
+  findSubstring(s, "\r", 0) >= 0 or findSubstring(s, "\n", 0) >= 0
+}
+
+/// Validate every caller-controlled value `buildRequestBytes` splices into
+/// the request text (method, target, host, header names/values, and
+/// `Content-Type` when a body is present) for an embedded CR/LF before any
+/// of it reaches the socket (#6635).
+func validateRequestForWire(request: in HttpRequestMessage, parsed: in ParsedUrl): Result[Unit, String] {
+  var err = ""
+  if hasForbiddenWireChar(request.method) {
+    err = "invalid request method: contains CR or LF"
+  } else if hasForbiddenWireChar(parsed.target) {
+    err = "invalid request target: contains CR or LF"
+  } else if hasForbiddenWireChar(parsed.host) {
+    err = "invalid request host: contains CR or LF"
+  } else if request.hasBody and hasForbiddenWireChar(request.contentType) {
+    err = "invalid Content-Type: contains CR or LF"
+  } else {
+    var i = 0
+    while i < request.headerNames.count and err == "" {
+      if hasForbiddenWireChar(request.headerNames[i]) {
+        err = "invalid header name: contains CR or LF"
+      } else if hasForbiddenWireChar(request.headerValues[i]) {
+        err = "invalid header value: contains CR or LF"
+      }
+      i = i + 1
+    }
+  }
+  if err == "" {
+    Ok(value = ())
+  } else {
+    Err(error = err)
+  }
+}
+
+/// `buildRequestBytes`'s return value: NOT `Result[slice[Byte], String]` —
+/// a genuine, narrowly-isolated native-codegen bug (found while writing
+/// this fix, #6637). Changing `buildRequestBytes`'s signature from
+/// returning `slice[Byte]` directly to `Result[slice[Byte], String]`
+/// (with its one call site in `doSendOnce` reading it via a `match` whose
+/// `Err` arm runs `Tcp.hostClose(conn)` before `return Err(...)`) corrupts
+/// the heap in a way that only surfaces later, as a SEGV inside
+/// `lyric_release` on an unrelated `String` release deep inside a LATER,
+/// otherwise-unrelated `parseUrl` call. Confirmed by bisection down to
+/// exactly this one signature change (reverting only the `Result`-wrapping
+/// — even leaving `validateRequestForWire` itself defined-but-uncalled —
+/// makes the crash disappear). This is NOT a blanket "`Result[slice[Byte],
+/// E]` is broken" bug: `readChunkedBody` below has that exact return type
+/// and works correctly, so whatever triggers this is specific to this
+/// particular call site/shape, not the type alone — see #6637 for the
+/// open question of the precise minimal trigger. This record sidesteps it
+/// by using a plain record instead, mirroring the same "wrap the
+/// problematic shape in a plain record" idiom module header item 4
+/// already documents for `slice[Byte]`'s missing `.slice()`/`.concat()`.
+record BuiltRequestBytes {
+  ok: Bool
+  bytes: slice[Byte]
+  errorMessage: String
+}
+
 /// Serialize `request` into wire bytes against the already-parsed target
 /// URL. Builds the head as one `String` (`+`-concatenated — cheap and
 /// simple; header counts are small) and encodes it once via `encodeUtf8`,
@@ -976,7 +1112,12 @@ pub func hostWithStringBody(request: in HttpRequestMessage, contentType: in Stri
 /// concatenation only ever applies to the text head, never to raw bytes,
 /// so a binary body is never subjected to UTF-8 (re-)encoding here (module
 /// header item 4: no `slice[Byte].concat`).
-func buildRequestBytes(request: in HttpRequestMessage, parsed: in ParsedUrl): slice[Byte] {
+func buildRequestBytes(request: in HttpRequestMessage, parsed: in ParsedUrl): BuiltRequestBytes {
+  match validateRequestForWire(request, parsed) {
+    case Err(e) -> return BuiltRequestBytes(ok = false, bytes = [], errorMessage = e)
+    case Ok(_) -> {
+    }
+  }
   var text = request.method + " " + parsed.target + " HTTP/1.1\r\n"
   text = text + "Host: " + hostHeaderValue(parsed) + "\r\n"
   text = text + "Connection: close\r\n"
@@ -1004,7 +1145,7 @@ func buildRequestBytes(request: in HttpRequestMessage, parsed: in ParsedUrl): sl
     acc.add(bodyBytes[bi])
     bi = bi + 1
   }
-  acc.toArray()
+  BuiltRequestBytes(ok = true, bytes = acc.toArray(), errorMessage = "")
 }
 
 func connectForUrl(client: in HttpClientHandle, parsed: in ParsedUrl): Result[Tcp.Conn, String] {
@@ -1081,13 +1222,13 @@ func readBody(
         Err(error = "unsupported Transfer-Encoding: " + te)
       }
     }
-    case None -> match findHeaderValue(headers.names, headers.values, "Content-Length") { case Some(clStr) -> match parseNonNegativeInt(trimSpaces(clStr)) { case None -> Err(error = "invalid Content-Length: " + clStr); case Some(len) -> { val total = bodyStart + len; match readAtLeast(conn, buf, total) { case Ok(_) -> Ok(value = copyRange(buf, bodyStart, len)); case Err(e) -> Err(error = e) } } }; case None -> match readUntilEof(conn, buf) { case Ok(_) -> Ok(value = copyRange(buf, bodyStart, buf.count - bodyStart)); case Err(e) -> Err(error = e) } }
+    case None -> match findHeaderValue(headers.names, headers.values, "Content-Length") { case Some(clStr) -> match parseNonNegativeInt(trimSpaces(clStr)) { case None -> Err(error = "invalid Content-Length: " + clStr); case Some(len) -> { if len > maxResponseBodyBytes { Err(error = "response Content-Length exceeds the maximum allowed size") } else { val total = bodyStart + len; match readAtLeast(conn, buf, total) { case Ok(_) -> Ok(value = copyRange(buf, bodyStart, len)); case Err(e) -> Err(error = e) } } } }; case None -> match readUntilEof(conn, buf, bodyStart) { case Ok(_) -> Ok(value = copyRange(buf, bodyStart, buf.count - bodyStart)); case Err(e) -> Err(error = e) } }
   }
 }
 
 func readResponse(conn: in Tcp.Conn): Result[HttpResponseMessage, String] {
   val buf: List[Byte] = newList()
-  val headerEndIdx = match readUntilPatternFrom(conn, buf, 0, crlfcrlfBytes()) {
+  val headerEndIdx = match readUntilPatternFrom(conn, buf, 0, crlfcrlfBytes(), maxResponseHeaderBytes) {
     case Ok(idx) -> idx
     case Err(e) -> return Err(error = e)
   }
@@ -1114,7 +1255,12 @@ func readResponse(conn: in Tcp.Conn): Result[HttpResponseMessage, String] {
 func doSendOnce(client: in HttpClientHandle, request: in HttpRequestMessage): Result[HttpResponseMessage, String] {
   val parsed = match parseUrl(request.url) { case Ok(p) -> p; case Err(e) -> return Err(error = e) }
   val conn = match connectForUrl(client, parsed) { case Ok(c) -> c; case Err(e) -> return Err(error = e) }
-  val bytes = buildRequestBytes(request, parsed)
+  val built = buildRequestBytes(request, parsed)
+  if not built.ok {
+    Tcp.hostClose(conn)
+    return Err(error = built.errorMessage)
+  }
+  val bytes = built.bytes
   match Tcp.hostWrite(conn, bytes) {
     case Err(e) -> {
       Tcp.hostClose(conn)

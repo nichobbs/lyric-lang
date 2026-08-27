@@ -34879,3 +34879,126 @@ still passes unaffected; restored the fix and re-ran clean (2/2, exit 0).
 D-progress-804 (the original native `Std.Http` client twin entry, whose
 N3.2 gap this fix's "not yet live-exploitable" reasoning depends on).
 
+## D-progress-809 — `_kernel_native/http_host.l`: CRLF/header-injection guard (#6635) + response size limits (#6636), and a genuine native-codegen bug found along the way (#6637/#6645)
+
+**Context.** A second `claude-review` pass on PR #6623 (D-progress-804's
+native `Std.Http` client twin, already extended once by D-progress-808's
+redirect-header-stripping fix) found two REQUIRED findings, both reachable
+today through `Std.Http`'s free functions (`sendAsync`/`getAsync`/
+`postAsync`), independent of the separate N3.2 `HttpClient`-interface
+async-dispatch gap:
+
+- **#6635 — no CRLF/header-injection guard.** `hostWithHeader` stored
+  caller-supplied header names/values verbatim with no validation, and
+  `buildRequestBytes` spliced them directly into the request text via
+  plain `+` concatenation — a caller-supplied header value (or the
+  request-line target/host, also unchecked) containing `\r\n` allowed
+  HTTP request splitting/smuggling. The dotnet/JVM kernels get this
+  rejection for free from their platform HTTP stack
+  (`SocketsHttpHandler`/`java.net.http.HttpClient` both reject an embedded
+  CR/LF at send time); this hand-rolled wire protocol had no equivalent.
+- **#6636 — no size limits on response headers/body.** `readUntilPatternFrom`
+  (header-block and chunk-size/trailer-line scanning), `readAtLeast`
+  (`Content-Length`-framed bodies), and `readChunkedBody` (chunked bodies)
+  all grew their buffers without bound, driven by attacker-controlled
+  input (a header block that never terminates, a huge declared
+  `Content-Length`, or an unbounded run of chunk data) — a malicious or
+  compromised server could force unbounded client-process memory growth.
+  `Std.HttpEngine`'s server-side `EngineLimits` (`maxHeaderCount = 100`,
+  `maxHeaderLineLength = 8192`, `maxBodyBytes = 10485760`) already guards
+  the identical class of attack on the server side; this client-side
+  kernel had no analogous limits.
+
+**Shipped.**
+
+- `hasForbiddenWireChar`/`validateRequestForWire`: rejects an embedded CR
+  or LF in the request method, target, host, `Content-Type` (when a body
+  is present), or any header name/value, before any of it reaches the
+  socket. Wired into `buildRequestBytes` (see the codegen-bug workaround
+  below for why this isn't a `Result[slice[Byte], String]` return).
+- `maxResponseHeaderBytes` (819200, mirroring `EngineLimits`'
+  `maxHeaderCount * maxHeaderLineLength` worst case) caps the header-block
+  scan; `maxResponseBodyBytes` (10485760, mirroring `EngineLimits.maxBodyBytes`
+  exactly) caps a `Content-Length`-declared body, a close-delimited
+  (`readUntilEof`) body, and the CUMULATIVE decoded size of a chunked
+  body; `maxChunkLineBytes` (8192) caps each individual chunk-size/trailer
+  line; `maxTrailerLines` (100) caps the trailer section's line COUNT
+  (each trailer line is discarded rather than accumulated, so the byte cap
+  alone doesn't bound an unbounded NUMBER of small lines). All four are
+  hardcoded v1 defaults — this kernel has no `EngineLimits`-shaped config
+  surface of its own yet to thread a caller override through.
+- `parseNonNegativeInt`/`parseHexInt` (used for `Content-Length` and
+  chunk-size parsing respectively) gained an overflow guard
+  (`n > 200000000 -> None`), found while writing item H's self-test: an
+  attacker-supplied digit string long enough to overflow `Int32` would
+  otherwise silently wrap to a small (or negative) value and bypass the
+  size cap entirely — a real bypass of #6636's own fix, not a hypothetical
+  one (caught because the FIRST self-test attempt used a 12-digit
+  Content-Length that happened to overflow, silently defeating the very
+  cap it was meant to exercise, until the test was tightened to assert on
+  the specific error message rather than merely "some `Err` came back").
+
+**A genuine native-codegen bug, found and worked around, not fixed here
+(#6637, tracked as issue #6645).** Implementing #6635's fix the obvious
+way — `buildRequestBytes: (...) -> Result[slice[Byte], String]`, read at
+its one call site via `match ... { case Ok(b) -> b; case Err(e) -> {
+Tcp.hostClose(conn); return Err(error = e) } }` — compiled with zero
+diagnostics but corrupted the heap at runtime: not inside
+`buildRequestBytes` itself, but LATER, as a SEGV inside `lyric_release`
+on an entirely unrelated `String` release deep inside a subsequent,
+otherwise-unrelated `parseUrl` call (confirmed under both `-O0`, where it
+surfaces as glibc's `malloc(): unaligned tcache chunk detected`, and
+`-fsanitize=address`, where ASan catches the SEGV directly with a full
+stack trace through `doSendOnce`/`doSend`/`hostSendSafe`). Bisected to
+EXACTLY this one signature change: reverting only the `Result`-wrapping —
+even leaving `validateRequestForWire` itself fully defined but
+unreferenced — makes the crash disappear every time, repeatably. This is
+NOT a blanket "`Result[slice[Byte], E]` is broken" bug:
+`readChunkedBody`, in this very file, already has that exact return type
+and works correctly (exercised by the same self-test both before and
+after this change), so whatever the real trigger is, it's narrower than
+the type shape alone — most likely something specific to this one call
+site (three `Result`-returning calls in sequence inside `doSendOnce`, or
+the `Err` arm's extra statement before `return`), not yet root-caused.
+Worked around, not fixed, by having `buildRequestBytes` return a plain
+record instead:
+```
+record BuiltRequestBytes { ok: Bool; bytes: slice[Byte]; errorMessage: String }
+```
+Plain records are used pervasively elsewhere in this file with zero
+issues, so this sidesteps the bug entirely rather than papering over it
+with, e.g., a global mutable or an unsafe cast. Filed as #6645 (issue
+number differs from the internal `#6637` reference in code comments,
+since the review-finding numbering and the follow-up-issue numbering are
+different sequences) with the full bisection writeup, for whoever picks
+up the actual `Lyric.LlvmCodegen` root cause later — this is squarely a
+native-backend ARC-insertion bug, out of `_kernel_native/http_host.l`'s
+own power to fix.
+
+**Verification.** Two new self-test cases added to
+`lyric-compiler/lyric/llvm_http_client_self_test.l` (now 4 cases: E, F,
+G, H): item G sends a request with a header value containing `\r\n` and
+asserts `hostSendSafe` returns `Err` (a listener that never `accept`s is
+enough, since validation runs client-side before any bytes are written —
+mirrors item C's "plain TCP connect completes into the backlog" reasoning
+to avoid needing a real server); item H has a real server declare
+`Content-Length: 99999999` (comfortably over the 10485760 cap, comfortably
+under the new overflow guard's threshold) and close without sending any
+body, asserting the client's error message specifically contains "maximum
+allowed size" — checking the SPECIFIC message, not merely that some `Err`
+came back, was necessary because the pre-existing "connection closed
+before response body was fully received" error is ALSO an `Err` for this
+exact scenario (the server never sends 99999999 bytes either way), so a
+looser assertion would pass even with the cap fix reverted — caught by
+deliberately disabling the cap check locally and confirming the looser
+assertion's false pass before tightening it. Both new tests (and item F
+from D-progress-808) were verified as genuine regression checks by
+disabling each fix in turn and confirming the corresponding test fails,
+then restoring and confirming all 4 pass clean. `lyric fmt --write`
+applied clean (no refusals) to both changed files.
+
+**Related:** #6623 (the PR both fixes and the workaround ship in), #6635,
+#6636 (the two REQUIRED review findings), #6645 (the native-codegen bug
+tracking issue), D-progress-804 (original entry), D-progress-808 (the
+prior review-fix round on this same PR).
+
