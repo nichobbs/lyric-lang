@@ -97,7 +97,7 @@ pub func JsonParseError.message(e: in JsonParseError): String {
 // ── Parser state ───────────────────────────────────────────────────────────
 record JState {
   src: String
-  pos: Int
+  var pos: Int
   maxDepth: Int
 }
 
