@@ -32961,3 +32961,99 @@ invariant the `MGenericInst` arm already upholds).
 D-progress-808), #3920 and #4965 (earlier fixes to the same bare-nullary-
 case construction-hint mechanism for the `MGenericInst`/scrutinee-typed
 cases, which this entry extends to `MGenericInstByName`).
+
+## D-progress-810 — Issue #5133 re-verified: narrow bug fixed and shipped (`MockDbConnection`/`MockDbTransaction`), broad bug not reproduced
+
+**Status:** ACCEPTED (partial resolution — see "Remaining scope" below).
+
+**Context.** #5133 reported two suspected self-hosted MSIL codegen bugs
+found while adding five new `impl Interface for Record` mock types to
+`lyric-testing/src/testing.l` (docs/57 §5.3/§7 item 7): a "narrow" bug
+(an interface-typed value extracted from a `Result`/`Option` returned by
+another cross-package interface method, then dispatched through a
+further interface method call, failed to resolve —
+`MissingMethodException`), and a "broad" bug (adding several `impl`
+blocks to one file allegedly caused widespread `InvalidProgramException`,
+including on pre-existing untouched mock methods, suspected to be a
+scale-sensitive MethodDef/FieldDef "predicted row" bookkeeping drift in
+`lyric-compiler/msil/lowering.l`/`codegen.l`). A 2026-07-29 triage
+comment on the issue had already confirmed the narrow bug fixed and left
+the broad bug unconfirmed/unrefuted, recommending re-verification plus a
+real `lyric-testing` mock re-addition as the next low-risk step.
+
+**Narrow bug: re-verified fixed, now shipped in production code.**
+`MockDbConnection`/`MockDbTransaction` were added to
+`lyric-testing/src/testing.l` (implementing `lyric-db`'s real
+`Db.DbConnection`/`Db.DbTransaction` interfaces) and exercised by five new
+tests in `lyric-testing/tests/testing_tests.l`, including the exact
+`#5133`-shaped case: `match ctx.db.transaction() { case Ok(tx) ->
+tx.commit() ... }`. The full `lyric-testing` suite (44/44, up from 37/37)
+passes cleanly via `./bin/lyric test --manifest lyric-testing/lyric.toml`,
+confirming the fix end-to-end against a real cross-package interface, not
+just a synthetic repro. `TestContext` gained a `db: MockDbConnection`
+field; `newTestContext()` initializes it.
+
+**Broad bug: could not be reproduced.** Built a same-file, same-package
+regression test (`lyric-compiler/lyric/multi_impl_iface_result_self_test.l`)
+deliberately mirroring the original bisection shape as closely as a
+`Std.*`-only self-test allows: five distinct interface/record pairs in
+one file, one pair (`DbLikeConn`/`DbLikeTxn`) returning an interface type
+wrapped in `Result` with a further interface method dispatched on the
+`match`-extracted value (mirroring `DbConnection.transaction()`), one pair
+(`SearchLikeClient`) using `async func` interface methods (mirroring
+`Search.SearchClient` — the point at which the original bisection's
+second failure appeared), and two tests specifically re-exercising the
+first two pairs' methods AFTER all five pairs were declared, to catch the
+"pre-existing, untouched mock method starts failing once file size grows"
+symptom the issue reported. All 9 tests pass; no `InvalidProgramException`
+or token-resolution failure occurred at any point. This corroborates the
+prior triage's own 10-interfaces-×-4-methods scale-up finding — no
+same-file multi-`impl`-block corruption could be produced in two
+independent sessions across three different repro shapes now. The
+suspected root cause (a per-file, not per-type, predicted-row counter
+drifting with `impl`-block count) was also inspected directly: the
+MethodDef-row budget for `impl` methods is computed per-record in
+`msil/codegen.l`'s `addPackageTokens` Pass 1 (the `implImplTargets`/
+`implImplNames` parallel-list scan, mirrored identically for `IRecord`
+and `IExposedRec`), independent of how many other `impl` blocks exist
+elsewhere in the file — no shared/global counter that could drift with
+unrelated `impl` blocks was found in that path.
+
+**Note (incidental, out of scope, not fixed here):** while building the
+broad-bug repro, `isOk(r)`/`isErr(r)` (`Std.Core`'s generic `Result`
+helpers) panicked with `Msil.Codegen: match not exhaustive ... arms=2`
+when `r` was a `val` bound from `await <interfaceValue>.<asyncMethod>(...)`
+(a `Result` produced by awaiting an async interface-dispatched call) —
+the generic specialization degraded to `isOk__Object__Object` instead of
+the concrete `Result[Unit, String]`, so its `case Ok`/`case Err` isinst
+checks against the real instance never matched either arm. Calling
+`isOk`/`isErr` directly on a *non-async* interface-dispatched `Result`
+(no intervening `await`+`val`) worked fine, and `match` against the same
+awaited value always worked — only the generic-helper-on-an-awaited-`val`
+combination triggered it. This is unrelated to #5133's `impl`-block-count
+theory (it's a generic type-argument inference gap for async-dispatched
+results, not an `InvalidProgramException`/`MissingMethodException`), was
+not chased down further to keep this fix scoped, and is not tracked by
+an issue yet — `multi_impl_iface_result_self_test.l` avoids the shape
+(uses `match` throughout, matching the codebase's existing idiom) rather
+than exercising it.
+
+**Remaining scope.** `MockSearchClient` stays unadded: building
+`lyric-search` as a restored path dependency of `lyric-testing` hits a
+separate, already-identified blocker (`lyric-search` restored-DLL
+contract-metadata synthesis fails on `unknown type name 'JsonElement'`),
+noted in #5133's own triage comment as out of scope for this issue.
+`MockJobScheduler`, `MockQueueConsumer`, `MockTranslationStore`, and
+`MockWsHandler`/`MockWsRegistry` (docs/57 §5.3's other named gaps) were
+not attempted this round — no #5133 blocker applies to them, they are
+simply unblocked follow-up work now that #5133 itself is resolved as far
+as this session could take it.
+
+**Verification.** `./bin/lyric test --target dotnet
+lyric-compiler/lyric/multi_impl_iface_result_self_test.l` (9/9).
+`./bin/lyric test --manifest lyric-testing/lyric.toml` (44/44).
+`./bin/lyric test --target dotnet lyric-compiler/lyric/impl_method_self_test.l`
+(22/22, no interface-dispatch regression). Full `make lyric` clean build.
+
+**Related:** #5133, docs/57 §5.3/§7 item 7 (updated), the 2026-07-29 issue
+triage comment (partial prior verification this entry builds on).

@@ -453,24 +453,31 @@ failure-injection hooks (tracked #410). Given how many of the gaps in
 the mocks above would unblock a large fraction of the testing gaps found
 in this review at once.
 
-**Attempted, blocked, tracked (issue #5133):** implementations of
-`MockDbConnection`/`MockDbTransaction`, `MockSearchClient`,
-`MockQueueConsumer`, and `MockWsHandler`/`MockWsRegistry` were written and
-manually verified against each interface's real signature, but adding them
-to `testing.l` triggered a previously-undiscovered self-hosted MSIL codegen
-bug: the resulting test file went from 37/37 passing to widespread
-`InvalidProgramException`/`MissingMethodException` at runtime — including
-on pre-existing, untouched mock code — despite type-checking and building
-cleanly. Bisection narrowed this to (a) a scale-sensitive corruption that
-worsens with the amount of new `impl Interface for Record` code added to
-the file, and (b) a narrower, independently-reproducible bug calling any
-interface method on an interface-typed value extracted from a
-`Result`/`Option` returned by another cross-package interface method
+**Update (issue #5133, D-progress-810):** the narrower of the two bugs
+bisected here — an interface-typed value extracted from a
+`Result`/`Option` returned by another cross-package interface method,
+then dispatched through a further interface method call
 (`Db.DbConnection.transaction(): Result[Db.DbTransaction, Db.DbError]`,
-then `tx.commit()` on the unwrapped value). Reverted out of `testing.l`
-rather than shipped in a state that crashes at runtime; full repro,
-bisection data, and suggested next steps are in issue #5133. `#5133`
-blocks closing this section and rollout item 7 below.
+then `tx.commit()` on the unwrapped value) — is **confirmed fixed**:
+`MockDbConnection`/`MockDbTransaction` have been added to `testing.l` for
+real and are exercised end-to-end against `lyric-db`'s actual
+`DbConnection`/`DbTransaction` interfaces in
+`lyric-testing/tests/testing_tests.l`, with the full 44-test suite green.
+The broader "several new `impl` blocks in one file causes widespread
+`InvalidProgramException`, including on pre-existing untouched code" claim
+could **not be reproduced** in this session, despite a same-file,
+same-package repro deliberately built to mirror the original five-
+interface-pair shape (interface-returning-interface via `Result`/`Option`,
+`async` interface methods, and re-checks of early pairs after later pairs
+were added — see `lyric-compiler/lyric/multi_impl_iface_result_self_test.l`).
+`MockSearchClient`, `MockQueueConsumer`, and `MockWsHandler`/
+`MockWsRegistry` remain unadded — not because of any remaining #5133
+corruption, but because building `lyric-search` as a restored path
+dependency hits the separate, already-identified `lyric-search`
+contract-metadata-synthesis blocker (`unknown type name 'JsonElement'`)
+noted in the issue's own triage comment; `lyric-mq`/`lyric-ws` mocks were
+simply not attempted this round to keep the fix scoped to what could be
+verified end-to-end. See D-progress-810 for full detail.
 
 ---
 
@@ -563,8 +570,13 @@ blocks closing this section and rollout item 7 below.
    need the one-README-sentence-per-library treatment.
 7. Expand `lyric-testing` mocks per §5.3, prioritized by #410
    (failure-injection) since it multiplies the value of every mock added
-   after it. **Blocked on issue #5133** (self-hosted MSIL codegen bug
-   surfaced when attempting this — see §5.3's update).
+   after it. **Partially done:** `MockDbConnection`/`MockDbTransaction`
+   landed (issue #5133 resolved for this pair, D-progress-810).
+   `MockSearchClient` remains blocked on the separate `lyric-search`
+   contract-metadata-synthesis gap; `MockJobScheduler`,
+   `MockQueueConsumer`, `MockTranslationStore`, and
+   `MockWsHandler`/`MockWsRegistry` are still open, unblocked follow-up
+   work.
 
 ---
 

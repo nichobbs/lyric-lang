@@ -1625,6 +1625,17 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"tuple-none-typearg self-test ran: tuple_none_typearg_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/tuple_none_typearg_self_test.l"
 
+      # Multi-impl-block interface self-test (#5133, defensive regression —
+      # the suspected "predicted row" MethodDef/FieldDef bookkeeping drift
+      # scaling with impl-block count could not be reproduced in this
+      # session, but no same-file/multi-impl-block interface-through-Result
+      # + async coverage previously existed; see
+      # multi_impl_iface_result_self_test.l and D-progress-808).
+      - name: multi-impl-block interface self-test (native lyric test, dotnet)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"multi-impl-iface-result self-test ran: multi_impl_iface_result_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/multi_impl_iface_result_self_test.l"
+
       # Slice-ops self-test (#5244).  `slice[T].append`/`.concat`/`.slice` —
       # the compiler's own documented canonical `slice[T]` example
       # (docs/agent/reference.md) — threw "unsupported method" at runtime on
