@@ -2467,34 +2467,51 @@ func checkSpawnConsumption(file: in SourceFile, fileLevel: in VerificationLevel,
 // docs/01-language-reference.md §2.4: a record field is immutable unless
 // declared `var` (`FieldDecl.isMutable`).  The self-hosted parser has carried
 // the flag since the field was added, but nothing consumed it — a write to a
-// non-`var` field silently compiled.  This pass closes that hole for the one
-// shape the mode checker can resolve *without* a symbol table: a single-
-// segment `var` local whose record type is declared in the same file, either
+// non-`var` field silently compiled.  This pass closes that hole for the two
+// shapes the mode checker can resolve *without* a symbol table: a single-
+// segment `var` local whose record type is declared in the same file (either
 // via an explicit type annotation or inferred from an unqualified
-// constructor call (`Foo(...)`) used as its initialiser.
+// constructor call, `Foo(...)`, used as its initialiser), and an `inout`
+// parameter whose declared type is likewise a same-file record (issue #1815
+// part 2, follow-up to D-progress-706's part 1).
 //
-// Deliberately narrow (issue #1815 part 1) to avoid false positives:
-//   * Only `var` locals are tracked as write-capable record bindings — an
-//     `inout` parameter is deliberately NOT tracked (see
-//     `checkFuncForFieldWrite`: a pervasive stdlib idiom threads a
-//     cursor-style state record through a chain of `st: inout StateRecord`
-//     helpers that mutate a non-`var` field directly, e.g. `XmlState.pos` in
-//     Std.Xml — tracking `inout` here flags dozens of legitimate existing
-//     call sites and breaks the stdlib build).  An immutable (`val`/`let`/
+// Deliberately narrow (issue #1815 parts 1 and 2) to avoid false positives:
+//   * `var` locals AND `inout` parameters are tracked as write-capable
+//     record bindings, and the SAME rule applies to a write through either:
+//     a write to a field genuinely marked `var` on the record is allowed; a
+//     write to a NON-`var` field is V0015. Part 1 (D-progress-706) initially
+//     excluded `inout` params entirely, because a naive "any write through
+//     `inout` is suspect" rule collided with a pervasive stdlib idiom: a
+//     cursor-style state record threaded through a chain of
+//     `st: inout StateRecord` helpers that mutate a field directly, e.g.
+//     `XmlState.pos` in Std.Xml (and the analogous compiler-internal
+//     state-threading records — `Lyric.Lexer.LexerState`,
+//     `Lyric.Parser.ParseState`, `Msil.Opcodes.MethodBody`,
+//     `Jvm.Codegen.FuncCtx`, `Std.Yaml.YamlState`, …). That idiom is safe
+//     exactly when the mutated field is `var` — tracking `inout` params
+//     under the same var/non-var rule `checkFieldMutability` already applies
+//     to locals lets the idiom keep compiling (once its mutated fields carry
+//     `var`, see the per-record migration this issue's fix commit made)
+//     while still catching a genuine non-`var`-field write through an
+//     `inout` alias, the actual #1815 bug class. An immutable (`val`/`let`/
 //     `in`) binding is likewise not tracked, so `r.field = x` through one is
 //     simply not flagged here (a pre-existing, separate gap: mutating *any*
 //     field through an immutable binding is unenforced today).
 //   * Only records/exposed records declared in *this* file are indexed;
 //     a field write through a type imported from another file or package is
-//     not flagged (the mode checker has no cross-file symbol table).
+//     not flagged (the mode checker has no cross-file symbol table). An
+//     `inout` parameter whose declared type doesn't resolve to a same-file
+//     record is simply not seeded as a write-capable binding — the same
+//     "skip rather than guess" policy `fieldWriteTrackLocal` already applies
+//     to `var` locals.
 //   * `Rec(field = x)` construction is not a target of `SAssign`/`EAssign`
 //     at all, so it can never trip this check.
 //   * An unresolved field name (typo, or a field the type checker will
 //     already reject) is silently skipped — never guessed at.
 //
-// Part 2 (emitter `initonly`/`ACC_FINAL` enforcement) and widening write-site
-// tracking to `inout` parameters / method receivers are out of scope; see
-// issue #1815.
+// Part 2a (emitter `initonly`/`ACC_FINAL` enforcement) and widening
+// write-site tracking to method receivers under a non-`inout` mode are out
+// of scope; see issue #6155 / #1815.
 // ─────────────────────────────────────────────────────────────────────────────
 record FieldWriteCtx {
   diag: List[Diagnostic]
@@ -3121,24 +3138,54 @@ func walkBlockForFieldWriteEvicting(ctx: in FieldWriteCtx, blk: in Block, evictN
   fieldWriteRestore(ctx, snap)
 }
 
-// Only `var` locals are tracked as write-capable record bindings — NOT
-// `inout` parameters.  A pervasive stdlib idiom (Std.Xml, Std.Yaml,
-// Std.Json, Std.HttpEngine: a cursor-style state record threaded
-// through a call chain of `st: inout StateRecord` helpers, each
-// mutating a field directly) writes non-`var` fields through `inout`
-// params at dozens of call sites; tracking `inout` here would flag all
-// of it and break the stdlib build.  See docs/01-language-reference.md
-// §2.4 — full write-site enforcement (including through `inout`) is
-// future T6+ work; this pass covers the narrower, unambiguous case of
-// a field write through a local the *same* function constructed.
+// Seed `ctx.locals` with each `inout` parameter whose declared type resolves
+// (via `fieldWriteSimpleTypeName`) to a record/exposed-record/protected type
+// declared in this file — extending write-capable-binding tracking from
+// `var` locals (`fieldWriteTrackLocal`) to `inout` params (issue #1815 part
+// 2). An `in`/`out`-mode param, or an `inout` param whose type doesn't
+// resolve to a same-file record, is left untracked: `checkFieldMutability`
+// only ever fires for names present in `ctx.locals`, so no seeding means no
+// diagnostic, mirroring the existing unresolved-type skip for `var` locals.
+func fieldWriteSeedParams(ctx: in FieldWriteCtx, params: in List[Param]): Unit {
+  var i = 0
+  while i < params.count {
+    val p = params[i]
+    match p.mode {
+      case PMInout -> {
+        val tn = fieldWriteSimpleTypeName(p.ty)
+        if tn != "" {
+          match mapGet(ctx.recordFields, tn) {
+            case Some(_) -> ctx.locals.add(p.name, tn)
+            case None -> {
+            }
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+// `var` locals AND `inout` parameters whose type resolves to a same-file
+// record are tracked as write-capable record bindings, under one shared
+// rule: a write to a field marked `var` on the record is allowed through
+// either binding shape; a write to a non-`var` field is V0015 through
+// either. This is deliberately narrower than "every write reachable through
+// any binding" — see the pass header comment above for why `inout` needed a
+// var/non-var-aware rule (not blanket exclusion) to coexist with the
+// stdlib's cursor-style `st: inout StateRecord` idiom.
 func checkFuncBodyForFieldWrite(
   recordFields: in Map[String, Map[String, Bool]],
   diag: in List[Diagnostic],
+  params: in List[Param],
   body: in FunctionBody,
   selfType: in Option[String],
 ): Unit {
   val locals: Map[String, String] = newMap()
   val ctx = FieldWriteCtx(diag = diag, recordFields = recordFields, locals = locals, selfType = selfType)
+  fieldWriteSeedParams(ctx, params)
   match body {
     case FBExpr(e) -> walkExprForFieldWrite(ctx, e)
     case FBBlock(blk) -> walkBlockForFieldWrite(ctx, blk)
@@ -3154,7 +3201,7 @@ func checkFuncForFieldWrite(
   match fn.body {
     case None -> {
     }
-    case Some(body) -> checkFuncBodyForFieldWrite(recordFields, diag, body, selfType)
+    case Some(body) -> checkFuncBodyForFieldWrite(recordFields, diag, fn.params, body, selfType)
   }
 }
 
@@ -3166,7 +3213,7 @@ func checkEntryForFieldWrite(
   entry: in EntryDecl,
   selfType: in Option[String],
 ): Unit {
-  checkFuncBodyForFieldWrite(recordFields, diag, entry.body, selfType)
+  checkFuncBodyForFieldWrite(recordFields, diag, entry.params, entry.body, selfType)
 }
 
 func checkImmutableFieldWrites(file: in SourceFile, diag: in List[Diagnostic]): Unit {
@@ -3225,8 +3272,9 @@ func checkImmutableFieldWrites(file: in SourceFile, diag: in List[Diagnostic]): 
         // The rest of `AspectDecl` (matchers, contracts, `config` fields)
         // carries no executable body.
         val noSelfForAspect: Option[String] = None
+        val noParamsForAspect: List[Param] = newList()
         match decl.around {
-          case Some(around) -> checkFuncBodyForFieldWrite(recordFields, diag, FBBlock(block = around.body), noSelfForAspect)
+          case Some(around) -> checkFuncBodyForFieldWrite(recordFields, diag, noParamsForAspect, FBBlock(block = around.body), noSelfForAspect)
           case None -> ()
         }
       }

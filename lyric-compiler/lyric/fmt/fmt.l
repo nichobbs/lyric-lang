@@ -69,7 +69,7 @@ func harvestedOffset(h: in HarvestedItem): Int {
 /// because nothing emits across multiple source lines.
 pub record FmtCtx {
   items: List[HarvestedItem]
-  cursor: Int
+  var cursor: Int
 }
 
 pub func newFmtCtx(items: in List[HarvestedItem]): FmtCtx {

@@ -64,7 +64,7 @@ pub union YamlValue {
 // ── Parser state ───────────────────────────────────────────────────────────────
 record YamlState {
   src: String
-  pos: Int
+  var pos: Int
   isJson: Bool
 }
 

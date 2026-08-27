@@ -25648,17 +25648,24 @@ pub func lowerRecordMsil(cctx: in CodegenCtx, decl: in RecordDecl, pkgName: in S
   while i < decl.members.count {
     match decl.members[i] {
       case RMField(f) -> {
+        // ECMA-335 §II.23.1.5: 0x0006 = Public, 0x0001 = Private,
+        // 0x0000 = PrivateScope.  Previous code used 0x0001 (Private,
+        // not PrivateScope as an earlier comment claimed); cross-package
+        // ldfld then raised FieldAccessException (#1183 Phase 3, #1199).
+        // Mirrors FDA_PUBLIC re-exported by Msil.Lowering.
+        // A non-`var` field (`FieldDecl.isMutable == false`) additionally gets
+        // `initonly` (issue #1815 part 2a): the CLR then rejects any `stfld`
+        // outside this type's own instance constructor, backstopping the
+        // mode checker's V0015 diagnostic at the IL level for write paths
+        // V0015 cannot statically see (nested-member writes, non-`inout`
+        // aliasing, cross-file access). Safe only because D-progress-706's
+        // follow-up (issue #6155 part 2b) first widened V0015's write-site
+        // tracking to `inout` params and added `var` to every field genuinely
+        // mutated through the `st: inout StateRecord` idiom across the
+        // compiler + stdlib tree — see docs/03-decision-log.md.
+        val recordFieldFlags = if f.isMutable { FDA_PUBLIC } else { FDA_PUBLIC + FDA_INIT_ONLY }
         fields.add(
-          MField(
-            // ECMA-335 §II.23.1.5: 0x0006 = Public, 0x0001 = Private,
-            // 0x0000 = PrivateScope.  Previous code used 0x0001 (Private,
-            // not PrivateScope as an earlier comment claimed); cross-package
-            // ldfld then raised FieldAccessException (#1183 Phase 3, #1199).
-            // Mirrors FDA_PUBLIC re-exported by Msil.Lowering.
-            flags = 0x0006,
-            name = f.name,
-            fieldType = recordFieldMsilType(cctx, f.ty, pkgName, generics)
-          )
+          MField(flags = recordFieldFlags, name = f.name, fieldType = recordFieldMsilType(cctx, f.ty, pkgName, generics))
         )
       }
       case RMFunc(fn) -> {

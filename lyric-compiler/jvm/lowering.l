@@ -2739,10 +2739,14 @@ pub func lowerRecord(r: in LRecord, pool: in Pool): ClassFile {
   }
 
   // ── Build FieldInfo list ───────────────────────────────────────────────────
+  // `fld.flags` (set by `Jvm.Codegen.lowerRecord`'s `RMField` arm) carries
+  // ACC_PUBLIC alone for a `var` field, or ACC_PUBLIC + ACC_FINAL for a
+  // non-`var` one (issue #1815 part 2a) — previously hardcoded to ACC_PUBLIC
+  // here, silently dropping the ACC_FINAL bit codegen had already computed.
   val cfFields: List[FieldInfo] = newList()
   for fld in r.fields.toArray() {
     val fa: List[Attribute] = newList()
-    cfFields.add(makeFieldInfo(ACC_PUBLIC, fld.name, typeDescriptor(fld.fieldType), fa))
+    cfFields.add(makeFieldInfo(fld.flags, fld.name, typeDescriptor(fld.fieldType), fa))
   }
 
   if r.implementsIfaces.count > 0 {

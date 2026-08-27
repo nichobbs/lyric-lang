@@ -720,8 +720,8 @@ pub func encodeDynamicTableSizeUpdate(newSize: in Int): slice[Byte] {
 /// any Dynamic Table Size Update in a block must not exceed.
 @experimental
 pub record HpackDecoder {
-  table: DynamicTable
-  maxProtocolSize: Int
+  var table: DynamicTable
+  var maxProtocolSize: Int
 }
 
 /// A decoder whose dynamic table starts empty at `maxProtocolSize` octets.
@@ -822,10 +822,10 @@ func decodeLiteralField(
 /// size update is queued to be emitted at the head of the next block.
 @experimental
 pub record HpackEncoder {
-  table: DynamicTable
+  var table: DynamicTable
   maxProtocolSize: Int
   huffman: Bool
-  pendingUpdate: Bool
+  var pendingUpdate: Bool
 }
 
 /// An encoder whose dynamic table starts empty at `maxDynamicTableSize`

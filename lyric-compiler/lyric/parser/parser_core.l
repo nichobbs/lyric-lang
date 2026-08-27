@@ -21,7 +21,7 @@ pub record NameAndSpan {
 
 pub record ParseState {
   tokens: List[SpannedToken]
-  pos: Int
+  var pos: Int
   diags: List[Diagnostic]
   /// Concrete-syntax-tree event log — see `parser_cst.l`.  Token
   /// indices in `CeStart` / `CeFinish` reference `tokens` directly,
@@ -46,7 +46,7 @@ pub record ParseState {
   /// primary already captured. `parseDelimitedExpr` is the only sanctioned
   /// way for a plain `parseExpr` call site to touch this field; every
   /// other caller must leave it alone.
-  suppressArrowLambda: Bool
+  var suppressArrowLambda: Bool
   /// True while parsing a `requires:`/`ensures:`/`when:` contract clause's
   /// expression body — the only position where bare `result` legitimately
   /// names the function's return value.  `parseContractClauseOptInner`
@@ -58,7 +58,7 @@ pub record ParseState {
   /// `EResult` node; unconditionally treating bare `result` as `EResult`
   /// broke exactly that case (#5735: a local named `result` could be
   /// declared but never referenced again by name).
-  inContractClauseExpr: Bool
+  var inContractClauseExpr: Bool
 }
 
 pub func makeParseState(tokens: in List[SpannedToken], diags: in List[Diagnostic]): ParseState {

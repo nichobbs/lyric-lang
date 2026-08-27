@@ -1257,10 +1257,19 @@ pub func lowerRecord(
   while i < decl.members.count {
     match decl.members[i] {
       case RMField(f) -> {
+        // A non-`var` field (`FieldDecl.isMutable == false`) additionally gets
+        // ACC_FINAL (0x0010, issue #1815 part 2a): the JVM verifier then
+        // rejects any `putfield` outside this class's own `<init>`,
+        // backstopping the mode checker's V0015 diagnostic at the bytecode
+        // level.  See the MSIL twin (`Msil.Codegen.lowerRecordMsil`'s
+        // `RMField` arm) for the full safety rationale (D-progress-706
+        // part 2b widened V0015 + added `var` to every genuinely-mutated
+        // `inout`-threaded field first).
+        val recordFieldFlags = if f.isMutable { 0x0001 } else { 0x0001 + 0x0010 }
+        // public [+ final]
         fields.add(
           LField(
-            flags = 0x0001,
-            // public
+            flags = recordFieldFlags,
             name = f.name,
             fieldType = typeExprToJvmErasedExtern(
               BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty),

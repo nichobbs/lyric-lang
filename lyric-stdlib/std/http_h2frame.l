@@ -1065,10 +1065,10 @@ pub func defaultMaxFrameSize(): Int {
 /// always rebind to `result.decoder`.
 @experimental
 pub record FrameDecoder {
-  buf: slice[Byte]
+  var buf: slice[Byte]
   maxFrameSize: Int
-  awaitingPreface: Bool
-  fatal: Bool
+  var awaitingPreface: Bool
+  var fatal: Bool
 }
 
 /// A fresh decoder. Set `expectPreface` for a server-side reader (the peer

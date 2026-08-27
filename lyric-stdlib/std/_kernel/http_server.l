@@ -286,7 +286,7 @@ pub record HttpContext {
   method: String
   target: String
   version: HttpVersion
-  headers: List[HeaderField]
+  var headers: List[HeaderField]
   body: slice[Byte]
   keepAlive: Bool
   done: Semaphore
@@ -307,8 +307,8 @@ pub record HttpContext {
 // mutation of the shared hpack encoder / flow windows).
 record H2Exchange {
   streamId: Int
-  status: Int
-  contentType: String
+  var status: Int
+  var contentType: String
   body: List[Byte]
   extra: Map[String, String]
 }
@@ -317,16 +317,16 @@ record H2Exchange {
 // request `headers` and the DATA-frame `body` gathered until END_STREAM, at
 // which point the stream is dispatched as an `HttpContext`.
 record H2ReqAccum {
-  headers: List[HeaderField]
+  var headers: List[HeaderField]
   body: List[Byte]
-  haveHeaders: Bool
+  var haveHeaders: Bool
 }
 
 // The request line + non-pseudo headers extracted from an h2 header block.
 record H2RequestLine {
   method: String
   target: String
-  headers: List[HeaderField]
+  var headers: List[HeaderField]
 }
 
 // Mutable per-connection h2 driver state, threaded (by reference) through the
@@ -335,11 +335,11 @@ record H2RequestLine {
 // the connection's lifetime.
 record H2ConnState {
   conn: Conn
-  h2: H2Connection
+  var h2: H2Connection
   accums: Map[Int, H2ReqAccum]
   queue: ConcurrentQueue[HttpContext]
   available: Semaphore
-  open: Bool
+  var open: Bool
   // The same `EngineLimits` the HTTP/1.1 path enforces (`maxBodyBytes` in
   // particular): an h2 request body is capped identically, at parity.
   limits: EngineLimits
@@ -376,7 +376,7 @@ pub record HttpChunkedStream {
   // to the exchange's buffered body and `endChunkedResponse` flushes it as one
   // h2 response. `None` for HTTP/1.1, where chunks are written to the wire
   // incrementally. (Incremental h2 DATA streaming is the #6107 follow-up.)
-  h2: Option[H2Exchange]
+  var h2: Option[H2Exchange]
 }
 
 // =====================================================================

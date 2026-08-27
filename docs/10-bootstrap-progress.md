@@ -13431,10 +13431,39 @@ implicit-self write (`field = x` with no `self.` prefix) is still not
 tracked — distinguishing it from an ordinary local-variable reassignment
 of the same name needs a full lexical scope of every declared
 local/parameter, not just `var`-record-typed ones, and is left for future
-work. The emitter-side enforcement (`initonly` field flags on MSIL /
-`ACC_FINAL` on JVM) and widening the check beyond tracked locals/`self` to
-`inout` params, cross-file types, and bare implicit-self writes are
-tracked as part 2 in #6155.
+work.
+
+**Part 2 (#6155, D-progress-802) shipped both halves.** Part 2b widened
+`checkImmutableFieldWrites` to also track `inout` parameters whose
+declared type resolves to a same-file record, under the same var/non-var
+rule locals already get: a write to a `var` field through an `inout`
+alias is allowed, a write to a non-`var` field through one is V0015. This
+required first auditing every state-threading record mutated through the
+`st: inout StateRecord` idiom across the compiler (`LexerState`,
+`ParseState`, `Msil.Opcodes.MethodBody`, `Msil.Heaps.GuidHeap`,
+`Jvm.Codegen.FuncCtx`, …) and the stdlib (`Std.Xml.XmlState`,
+`Std.Yaml.YamlState`, `Std.HttpEngine.Connection`,
+`Std.HttpEngine.H2Connection`/`H2Stream`/`H2Settings`/…,
+`Std.HttpEngine.HpackDecoder`/`HpackEncoder`, `Std.HttpEngine.FrameDecoder`,
+the `_kernel/http_server.l` HTTP/2 driver records) and adding `var` to
+every field genuinely mutated that way, so the widened check adds zero
+false positives against the real tree. Part 2a then plumbed
+`FieldDecl.isMutable` through to MSIL `initonly` (`Msil.Codegen.lowerRecordMsil`'s
+`RMField` arm) and JVM `ACC_FINAL` (`Jvm.Codegen.lowerRecord`'s `RMField`
+arm, plus fixing `Jvm.Lowering.lowerRecord`'s `FieldInfo` build site,
+which previously hardcoded `ACC_PUBLIC` and silently discarded
+`fld.flags`), backstopping V0015 at the IL/bytecode level for write paths
+the mode checker's narrow same-file/single-segment-path pass cannot see
+(nested-member writes, non-`inout` aliasing, cross-file access). Verified
+by `scripts/ilverify-selfhosted.sh` against the full self-hosted
+`Lyric.Cli` compiler closure (121 DLLs, 0 IL-validity errors — the only
+findings are the 2 DLLs' pre-existing, unrelated extern-FFI reflection-load
+informational findings) and a full `make lyric` self-host rebuild (stage 1
++ AOT + stdlib bundle + compiler-DLL closure, all through the
+initonly/`ACC_FINAL`-emitting compiler). Cross-file types, and bare
+implicit-self writes remain out of scope for the mode-checker pass (as
+before); method receivers under a non-`inout` mode are likewise out of
+scope for the emitter enforcement.
 
 **Test results:** 792/792 emitter tests pass, 237/237 CLI tests pass.
 

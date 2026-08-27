@@ -57,7 +57,7 @@ pub record XmlDoc {
 
 record XmlState {
   src: String
-  pos: Int
+  var pos: Int
   // ── Low-level character utilities ──────────────────────────────────────────────
 }
 

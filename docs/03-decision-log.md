@@ -39196,3 +39196,129 @@ value-position leniency this fix removes.
 **Related:** issue #3362, #2099 (`TyError`-as-universal-absorber
 rationale), #3262/#3361 (the `try`/`catch` sibling this fix's
 value-position threading mirrors).
+---
+
+## D-progress-803 — #6155 / #1815 part 2: `inout`-param V0015 tracking + `initonly`/`ACC_FINAL` field enforcement
+
+**Date:** 2026-08-27
+**Status:** SHIPPED (both halves — 2b and 2a)
+
+D-progress-706 (#1815 part 1) shipped V0015 for `var`-local and `self`
+field writes but deliberately left `inout` parameters untracked: a naive
+"flag every `inout`-parameter field write" rule collided with a pervasive
+stdlib idiom (a cursor-style state record threaded through a chain of
+`st: inout StateRecord` helpers that mutate a field directly) across
+`Std.Xml`, `Std.Yaml`, `Std.Json`, `Std.HttpEngine`. A prior session's
+attempt at part 2 went straight to emitter enforcement (part 2a:
+`initonly`/`ACC_FINAL` on every non-`var` field) without first fixing that
+gap and had to be reverted: `scripts/ilverify-selfhosted.sh` surfaced 90+
+`[InitOnly]` verification errors across 11+ compiler DLLs, because
+compiler-internal state-threading records (`Lyric.Lexer.LexerState`,
+`Lyric.Parser.ParseState`, `Msil.Opcodes.MethodBody`,
+`Jvm.Codegen.FuncCtx`, …) use the identical `inout`-threaded-cursor idiom
+and mutate fields the parser never required `var` on (nothing consumed
+`isMutable` before D-progress-706, so no such field ever needed `var` to
+compile).
+
+**This entry re-sequences and ships both halves.**
+
+**Part 2b (mode checker).** `fieldWriteSeedParams` seeds `ctx.locals`
+(the same write-capable-binding map `var` locals populate) with each
+`inout` parameter whose declared type resolves to a same-file
+record/protected type — extending `checkFieldMutability`'s existing
+var/non-var rule to `inout` params instead of leaving them untracked
+entirely. This is the key design move: the rule that already governs
+`var`-local writes (a `var`-marked field write is allowed, a non-`var`
+one is V0015) turns out to be *exactly* what's needed for `inout` too —
+the cursor idiom is legitimate precisely because its mutated field is
+`var`, so tracking `inout` under this rule catches the actual #1815 bug
+class (a non-`var`-field write through an alias) without flagging the
+idiom itself, once the idiom's fields are actually marked `var`. `in`-mode
+parameters remain untracked (mirroring `val`/`let` locals — a pre-existing,
+separate gap), as does an `inout` parameter whose type doesn't resolve to
+a same-file record (mirroring the unresolved-type skip `var` locals
+already had).
+
+Landing this required a tree-wide audit for every field mutated through
+the `inout`-cursor idiom, adding `var` where it was missing (verified
+per-field by grepping for an actual `.field =`/`op=` write site, not by
+guessing): compiler-internal — `Lyric.Lexer.LexerState` (`pos`, `line`,
+`column`, `bracketDepth`, `newlinePending`, `prevSuppresses`,
+`prevWasStmtEnd`, `haveAnyToken`, `pendingTrivia`), `Lyric.Parser.ParseState`
+(`pos`, `suppressArrowLambda`, `inContractClauseExpr`),
+`Lyric.Manifest.Cursor` (`pos`, `line`, `col`),
+`Lyric.ContractElaborator.RenameCounter` (`next`), `Lyric.Fmt.FmtCtx`
+(`cursor`), `Msil.Opcodes.MethodBody` (`maxStack`, `localSig`, `nextLbl`
+— mutated directly by `Msil.Lowering.lowerMFunc`/`lowerMRecord`/etc.,
+*cross-package* from `MethodBody`'s own declaring package, the widest
+blast radius found), `Msil.Heaps.GuidHeap` (`count`), `Jvm.Codegen.FuncCtx`
+(`scopeBase`); stdlib — `Std.Xml.XmlState` (`pos`), `Std.Yaml.YamlState`
+(`pos`), `Std.HttpEngine.Connection` (`phase`, `buf`, `keepAlive`,
+`fatal`), `Std.HttpEngine.H2Connection`/`H2Stream`/`H2Settings`/
+`ContinuationState`/`H2ShutdownState` (the full HTTP/2 FSM — `dec`,
+`connSendWindow`, `connRecvWindow`, `cont`, `lastPeerStreamId`,
+`expectClientSettings`, `fatal`, `state`, `sendWindow`, `recvWindow`,
+`contFrames`, `goAwaySent`, `goAwayLastStreamId`, `goAwayReceived`,
+`rapidResetCount`, `serverCompletedCount`, plus every `H2Settings` field —
+mutated only through a *nested* `state.remoteSettings.field =` chain the
+mode-checker's single-segment-path pass can't itself see, but marked `var`
+anyway since they genuinely are mutated),
+`Std.HttpEngine.HpackDecoder`/`HpackEncoder` (`table`, `maxProtocolSize`,
+`pendingUpdate`), `Std.HttpEngine.FrameDecoder` (`buf`, `awaitingPreface`,
+`fatal`), and the `_kernel/http_server.l` HTTP/2 driver records
+(`HttpContext`, `H2Exchange`, `H2ReqAccum`, `H2RequestLine`, `H2ConnState`,
+`HttpChunkedStream`). Verified with `make lyric` (full stdlib + compiler
+rebuild) at zero V0015 regressions, plus five new
+`modechecker_self_test.l` cases: non-`var`-field-through-`inout` fires
+V0015 (direct and compound-assign forms); `var`-field-through-`inout` does
+not; an `in`-mode param's field write is not tracked; an `inout` param of
+an unresolved (not-in-file) type is not tracked. 96/96 mode-checker
+self-tests, 126/126 parser, 56/56 lexer, 131/131 fmt, 36/36 contract
+elaborator, 54/54 manifest.
+
+**Part 2a (emitter).** With 2b's `var` audit establishing that "non-`var`
+field" now genuinely means "never mutated, anywhere the tree currently
+mutates a field, including through `inout`," plumbed `FieldDecl.isMutable`
+through to the two sites issue #6155 named: MSIL `Msil.Codegen.lowerRecordMsil`'s
+`RMField` arm now emits `FDA_PUBLIC + FDA_INIT_ONLY` for a non-`var` field
+(previously hardcoded `0x0006`/`FDA_PUBLIC` alone); JVM
+`Jvm.Codegen.lowerRecord`'s `RMField` arm now emits `0x0001 + 0x0010`
+(public + final) for a non-`var` field, and — the second site #6155
+called out — `Jvm.Lowering.lowerRecord`'s `FieldInfo` build site was found
+to hardcode `ACC_PUBLIC` and silently ignore the `LField.flags` codegen
+had already computed; fixed to pass `fld.flags` through. Both synthesized
+`<init>`/`.ctor` constructors already store every field via a single
+`stfld`/`putfield` pass inside their own declaring type's constructor (no
+change needed there) — exactly the write CLR/JVM `initonly`/`final` verification
+permits.
+
+**Validation (the acceptance bar, per the task brief).**
+`scripts/ilverify-selfhosted.sh` against the full self-hosted `Lyric.Cli`
+compiler closure: **121 DLLs verified, 0 IL-validity errors** (3
+pre-existing, unrelated `ClassLoadGeneral`/`FileLoadErrorGeneric`
+extern-FFI resolution findings on `Lyric.Jvm.Kernel.dll` /
+`Lyric.Stdlib.CollectionsHost.dll` — informational, not IL-validity, and
+untouched by this change). A full `make lyric` (stage 1 + AOT + the
+initonly/`ACC_FINAL`-emitting binary rebuilding the entire stdlib bundle,
+73 packages, + the entire compiler-DLL closure) completes cleanly — the
+compiler builds itself under the new restriction. Two ad hoc JVM smoke
+programs (a record with a mixed `var`/non-`var` field pair; a `Cursor`
+record with a `var pos` mutated through `advance(c: inout Cursor)`, the
+literal cursor-idiom shape) compile AND *run* correctly under
+`--target jvm`, confirming `ACC_FINAL` doesn't break the idiom at
+class-verification time (not just at compile time — a distinction that
+matters since a JVM class's `final`-field-outside-`<init>` violation is a
+class-load-time verifier check, not a javac-analog compile error).
+`ilverify`'s first run (before the `Msil.Opcodes.MethodBody` /
+`Msil.Heaps.GuidHeap` fixes above were added) is the artifact that
+actually *found* those two missed fields — 22 `[InitOnly]` errors across
+`Lyric.Msil.Heaps.dll`/`Lyric.Msil.Lowering.dll`/`Lyric.Msil.Opcodes.dll`,
+all tracing to `MethodBody.maxStack`/`localSig`/`nextLbl` and
+`GuidHeap.count` — confirming the tool catches exactly the class of bug
+the original revert was worried about, and that the fix-and-reverify loop
+closes it.
+
+**Cross-references:** #1815, #6155; D-progress-706 (part 1); docs/01
+§2.4 (updated); docs/10 (updated, corrects the stale "tracked as part 2"
+note).
+

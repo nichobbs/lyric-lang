@@ -565,8 +565,8 @@ pub record MethodAssembler {
   swLookupKeys: List[Int]     // all lookupswitch keys (flat)
   swLookupLabels: List[String]  // all lookupswitch labels (flat)
   swLookupOff: List[Int]     // start index for each lookupswitch in swLookupKeys/Labels
-  curStack: Int           // current stack depth during lowerInsn calls
-  peakStack: Int           // maximum stack depth seen so far
+  var curStack: Int           // current stack depth during lowerInsn calls
+  var peakStack: Int           // maximum stack depth seen so far
   exnHandlers: List[AsmExnHandler]   // exception-table entries accumulated by emitters
   // Exception-handler entry label -> catch class ("" = catch-all), seeded by
   // the caller before a lowering pass so `LLabel`'s stack-reset (see

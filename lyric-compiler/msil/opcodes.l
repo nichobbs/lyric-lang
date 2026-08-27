@@ -834,9 +834,9 @@ pub record EHClause {
 
 pub record MethodBody {
   insns: List[Insn]
-  maxStack: Int
-  localSig: Int
-  nextLbl: Int
+  var maxStack: Int
+  var localSig: Int
+  var nextLbl: Int
   swData: List[Int]
   ehClauses: List[EHClause]
 }

@@ -705,7 +705,7 @@ pub record FuncCtx {
   // function entry (no enclosing block); saved/restored through `BlockScope`.
   // No default per the JVM-codegen no-defaulted-field rule; initialised `0` at
   // every construction site.
-  scopeBase: Int
+  var scopeBase: Int
   // Per-function scope undo log (general shadowing fix, #5191).  `allocSlot`
   // pushes each re-bound name's prior slot/type here via `recordScopeUndo`;
   // `exitBlockScope` replays entries back to the entering block's mark to restore

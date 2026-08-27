@@ -112,7 +112,7 @@ func fileIsProofRequired(file: in SourceFile): Bool {
 //     names live in the same scope.
 // ─────────────────────────────────────────────────────────────────────────────
 pub record RenameCounter {
-  next: Int
+  var next: Int
 }
 
 /// A contract clause's expression together with the span of the clause it

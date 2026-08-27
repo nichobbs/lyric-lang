@@ -606,14 +606,52 @@ test "record construction is not V0015" {
   assertTrue(not (hasDiagCode(result, "V0015")), "construction: no V0015")
 }
 
-test "non-var field write through an inout param is not tracked (deliberately narrow, #1815 part 1)" {
-  // Std.Xml's cursor-state idiom (XmlState.pos mutated via `st: inout XmlState`
-  // helpers) is a pervasive, legitimate pattern in the stdlib today; tracking
-  // `inout` params here would flag it and break the stdlib build, so this
-  // pass only tracks `var` locals (see checkFuncForFieldWrite).
+test "non-var field write through an inout param is V0015 (#1815 part 2 / #6155)" {
+  // Part 1 (D-progress-706) deliberately left `inout` params untracked to
+  // avoid flagging Std.Xml's cursor-state idiom (XmlState.pos mutated via
+  // `st: inout XmlState` helpers). Part 2 widens tracking to `inout` params
+  // under the SAME var/non-var rule locals already get: a genuinely non-`var`
+  // field write through an `inout` alias is exactly the #1815 bug class, and
+  // is now flagged. Making `pos` itself `var` (as Std.Xml's real `XmlState`
+  // now is) is what keeps the legitimate idiom compiling — see the next case.
   val src = "package P\nrecord Cursor {\n  pos: Int\n}\nfunc advance(c: inout Cursor): Unit {\n  c.pos = c.pos + 1\n}\n"
   val result = parseCheck(src)
-  assertTrue(not (hasDiagCode(result, "V0015")), "inout-param-write: no V0015 (out of scope for part 1)")
+  assertTrue(hasDiagCode(result, "V0015"), "inout-param-nonvar-write: V0015 emitted")
+}
+
+test "var field write through an inout param is not V0015 (#1815 part 2 / #6155)" {
+  // The cursor-idiom shape that must keep compiling once `inout` params are
+  // tracked: `pos` is `var`, so the same write through the same `inout` alias
+  // is allowed. Mirrors Std.Xml.XmlState/Std.Yaml.YamlState/
+  // Std.HttpEngine.Connection's real shape after the D-progress-706 follow-up.
+  val src = "package P\nrecord Cursor {\n  var pos: Int\n}\nfunc advance(c: inout Cursor): Unit {\n  c.pos = c.pos + 1\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0015")), "inout-param-var-write: no V0015")
+}
+
+test "non-var field write through an inout param is V0015 through a compound assignment (#6155)" {
+  val src = "package P\nrecord Cursor {\n  pos: Int\n}\nfunc advance(c: inout Cursor): Unit {\n  c.pos += 1\n}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0015"), "inout-param-nonvar-compound-assign: V0015 emitted")
+}
+
+test "an `in`-mode param's field write is not tracked (only `inout` is, #6155)" {
+  // `in` params are never write-capable bindings, regardless of the target
+  // field's mutability — only `var` locals and `inout` params are tracked.
+  val src = "package P\nrecord Cursor {\n  var pos: Int\n}\nfunc peek(c: in Cursor): Unit {\n  c.pos = c.pos + 1\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0015")), "in-param-write: not tracked, no V0015")
+}
+
+test "non-var field write through an inout param of an imported (not same-file) record type is not tracked (#6155)" {
+  // `checkFieldMutability` only ever fires for names resolved into
+  // `ctx.recordFields`, which is built from records declared in *this* file
+  // (`collectRecordFieldsOfFile`) — an `inout` param typed at an unresolved
+  // (here: simply undeclared-in-file) record name is never seeded as a
+  // write-capable binding, mirroring the existing `var`-local behavior.
+  val src = "package P\nfunc advance(c: inout OtherPkgCursor): Unit {\n  c.pos = c.pos + 1\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0015")), "inout-param-unresolved-type: not tracked, no V0015")
 }
 
 test "non-var field write through a val binding is not tracked (pre-existing gap)" {

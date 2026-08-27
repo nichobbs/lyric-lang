@@ -302,9 +302,9 @@ record Entry {
 // Parsing cursor; pos/line/col are mutated via inout parameter passing.
 record Cursor {
   text: String
-  pos: Int
-  line: Int
-  col: Int
+  var pos: Int
+  var line: Int
+  var col: Int
 }
 
 func charToString(c: in Char): String {
