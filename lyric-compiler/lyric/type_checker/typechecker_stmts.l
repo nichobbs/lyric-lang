@@ -1161,7 +1161,10 @@ pub func checkFunctionBody(
           case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }
           case _ -> false
         }
-        if not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) {
+        // #6641 fallout: see the matching FBBlock-case comment below — a
+        // generator's declared return type is its yielded element type,
+        // not what its body's own control flow must produce.
+        if not isNever and not sig.isGenerator and not typeAssignable(tbl, sig.returnTy, bodyType) {
           diag.add(
             errorDiagnostic(
               "T0070",
@@ -1190,7 +1193,22 @@ pub func checkFunctionBody(
         // diagnostics. `typeAssignable` already accepts a genuinely
         // Unit-returning function whose body is Unit, so removing the
         // bypass does not regress that case.
-        if not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) {
+        //
+        // #6641 fallout (found by CI, not filed as a separate issue): an
+        // `async func`'s declared return type is the GENERATOR'S YIELDED
+        // ELEMENT type when `sig.isGenerator` (the body contains a `yield`),
+        // not the type its control-flow body must literally produce —
+        // `async func evens(n: Int): Int { var i = 0; while i < n { yield
+        // i * 2; i = i + 1 } }` never "returns" an `Int` via normal
+        // fall-through at all; each `yield` is separately checked against
+        // the element type by `EYield`'s own handling above. The old
+        // blanket Unit-body bypass this section's #3362 fix removed
+        // happened to also exempt generators (a `while`-loop body infers
+        // `Unit`); removing it without a principled generator exemption
+        // reopened this as a false-positive T0070 on every generator whose
+        // body's own control-flow type isn't the element type — check
+        // `sig.isGenerator` explicitly instead of relying on that accident.
+        if not isNever and not sig.isGenerator and not typeAssignable(tbl, sig.returnTy, bodyType) {
           diag.add(
             errorDiagnostic(
               "T0070",
