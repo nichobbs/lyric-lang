@@ -370,13 +370,215 @@ pub func checkStatement(
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Block checking.
 // ─────────────────────────────────────────────────────────────────────────────
+// Whether `label` (a loop's own label, if any) is targeted by `bl`, a
+// `break`'s label argument (`None` for a bare `break`).
+func breakTargetsLoop(bl: in Option[String], label: in Option[String]): Bool {
+  match bl {
+    case None -> true
+    case Some(l) -> match label { case Some(ll) -> l == ll; case None -> false }
+  }
+}
+
+// Whether `blk` — the body of a loop labelled `label` — can transfer control
+// out of *that* loop via a `break`: a bare `break` reached without first
+// passing through a more-nested loop's own break scope (`nested`), or a
+// labelled `break <label>` matching `label` at any depth.  Never descends
+// into a nested `ELambda` body (a `break` cannot cross a function boundary,
+// mirroring `exprContainsYield`'s treatment of `EYield`).  Used only to
+// decide whether an unconditional loop (`loop { }` / `while true { }`)
+// diverges when it is a block's trailing statement (#6602): the presence of
+// an escaping `break` means the loop can still fall through with `Unit`
+// rather than transferring control via `return`/`throw`/an outer `break`.
+func blockMayEscapeLoop(blk: in Block, label: in Option[String], nested: in Bool): Bool {
+  var i = 0
+  while i < blk.statements.count {
+    if stmtMayEscapeLoop(blk.statements[i], label, nested) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func listAnyExprMayEscapeLoop(es: in List[Expr], label: in Option[String], nested: in Bool): Bool {
+  var i = 0
+  while i < es.count {
+    if exprMayEscapeLoop(es[i], label, nested) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func exprMayEscapeLoop(e: in Expr, label: in Option[String], nested: in Bool): Bool {
+  match e.kind {
+    case ELambda(_, _) -> false
+    case ELiteral(_) -> false
+    case EPath(_) -> false
+    case ESelf -> false
+    case EResult -> false
+    case EError -> false
+    case EParen(inner) -> exprMayEscapeLoop(inner, label, nested)
+    case EAwait(inner) -> exprMayEscapeLoop(inner, label, nested)
+    case ESpawn(inner) -> exprMayEscapeLoop(inner, label, nested)
+    case EOld(inner) -> exprMayEscapeLoop(inner, label, nested)
+    case EPropagate(inner) -> exprMayEscapeLoop(inner, label, nested)
+    case ETry(inner) -> exprMayEscapeLoop(inner, label, nested)
+    case EYield(inner) -> exprMayEscapeLoop(inner, label, nested)
+    case EPrefix(_, inner) -> exprMayEscapeLoop(inner, label, nested)
+    case ETuple(elems) -> listAnyExprMayEscapeLoop(elems, label, nested)
+    case EList(elems) -> listAnyExprMayEscapeLoop(elems, label, nested)
+    case EInterpolated(segs) -> {
+      var found = false
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISExpr(se) -> {
+            if exprMayEscapeLoop(se, label, nested) {
+              found = true
+            }
+          }
+          case ISText(_) -> {
+          }
+        }
+        i = i + 1
+      }
+      found
+    }
+    case EBinop(_, l, r) -> exprMayEscapeLoop(l, label, nested) or exprMayEscapeLoop(r, label, nested)
+    case EAssign(t, _, v) -> exprMayEscapeLoop(t, label, nested) or exprMayEscapeLoop(v, label, nested)
+    case EMember(recv, _) -> exprMayEscapeLoop(recv, label, nested)
+    case ETypeApp(f, _) -> exprMayEscapeLoop(f, label, nested)
+    case EIndex(recv, idxs) -> exprMayEscapeLoop(recv, label, nested) or listAnyExprMayEscapeLoop(idxs, label, nested)
+    case ECall(f, args) -> {
+      if exprMayEscapeLoop(f, label, nested) {
+        return true
+      }
+      var i = 0
+      while i < args.count {
+        val found = match args[i] {
+          case CAPositional(v) -> exprMayEscapeLoop(v, label, nested)
+          case CANamed(_, v, _) -> exprMayEscapeLoop(v, label, nested)
+        }
+        if found {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case ERange(rb) -> match rb { case RBClosed(a, b) -> exprMayEscapeLoop(a, label, nested) or exprMayEscapeLoop(b, label, nested); case RBHalfOpen(a, b) -> exprMayEscapeLoop(a, label, nested) or exprMayEscapeLoop(b, label, nested); case RBLowerOpen(a) -> exprMayEscapeLoop(a, label, nested); case RBUpperOpen(a) -> exprMayEscapeLoop(a, label, nested) }
+    case EIf(c, t, eOpt, _) -> {
+      if exprMayEscapeLoop(c, label, nested) {
+        return true
+      }
+      val inT = match t {
+        case EOBExpr(te) -> exprMayEscapeLoop(te, label, nested)
+        case EOBBlock(tb) -> blockMayEscapeLoop(tb, label, nested)
+      }
+      if inT {
+        return true
+      }
+      match eOpt {
+        case None -> false
+        case Some(b) -> match b { case EOBExpr(ee) -> exprMayEscapeLoop(ee, label, nested); case EOBBlock(eb) -> blockMayEscapeLoop(eb, label, nested) }
+      }
+    }
+    case EMatch(subj, arms) -> {
+      if exprMayEscapeLoop(subj, label, nested) {
+        return true
+      }
+      var i = 0
+      while i < arms.count {
+        val arm = arms[i]
+        val inGuard = match arm.guard { case None -> false; case Some(g) -> exprMayEscapeLoop(g, label, nested) }
+        if inGuard {
+          return true
+        }
+        val inBody = match arm.body {
+          case EOBExpr(ae) -> exprMayEscapeLoop(ae, label, nested)
+          case EOBBlock(ab) -> blockMayEscapeLoop(ab, label, nested)
+        }
+        if inBody {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case EBlock(blk) -> blockMayEscapeLoop(blk, label, nested)
+    case EUnsafe(blk) -> blockMayEscapeLoop(blk, label, nested)
+    case EForall(_, w, body) -> {
+      val inW = match w { case None -> false; case Some(we) -> exprMayEscapeLoop(we, label, nested) }
+      inW or exprMayEscapeLoop(body, label, nested)
+    }
+    case EExists(_, w, body) -> {
+      val inW = match w { case None -> false; case Some(we) -> exprMayEscapeLoop(we, label, nested) }
+      inW or exprMayEscapeLoop(body, label, nested)
+    }
+  }
+}
+
+func stmtMayEscapeLoop(stmt: in Statement, label: in Option[String], nested: in Bool): Bool {
+  match stmt.kind {
+    case SBreak(bl) -> breakTargetsLoop(bl, label)
+    case SContinue(_) -> false
+    case SReturn(_) -> false
+    case SThrow(e) -> exprMayEscapeLoop(e, label, nested)
+    case SInvariant(e) -> exprMayEscapeLoop(e, label, nested)
+    case SItem(_) -> false
+    case SExpr(e) -> exprMayEscapeLoop(e, label, nested)
+    case SAssign(t, _, v) -> exprMayEscapeLoop(t, label, nested) or exprMayEscapeLoop(v, label, nested)
+    case SRule(l, r) -> exprMayEscapeLoop(l, label, nested) or exprMayEscapeLoop(r, label, nested)
+    case SLocal(binding) -> match binding { case LBVal(_, _, e) -> exprMayEscapeLoop(e, label, nested); case LBLet(_, _, e) -> exprMayEscapeLoop(e, label, nested); case LBVar(_, _, Some(e)) -> exprMayEscapeLoop(e, label, nested); case LBVar(_, _, None) -> false }
+    case STry(body, catches, finally_) -> {
+      if blockMayEscapeLoop(body, label, nested) {
+        return true
+      }
+      var i = 0
+      while i < catches.count {
+        if blockMayEscapeLoop(catches[i].body, label, nested) {
+          return true
+        }
+        i = i + 1
+      }
+      match finally_ {
+        case None -> false
+        case Some(fb) -> blockMayEscapeLoop(fb, label, nested)
+      }
+    }
+    case SDefer(b) -> blockMayEscapeLoop(b, label, nested)
+    case SScope(_, b) -> blockMayEscapeLoop(b, label, nested)
+    case SLoop(_, b) -> blockMayEscapeLoop(b, label, true)
+    case SFor(_, _, iter, body) -> exprMayEscapeLoop(iter, label, nested) or blockMayEscapeLoop(body, label, true)
+    case SWhile(_, cond, body) -> exprMayEscapeLoop(cond, label, nested) or blockMayEscapeLoop(body, label, true)
+  }
+}
+
+// Is `cond` the literal `true` (directly, or parenthesised)?  Used to
+// recognise `while true { }` as an unconditional loop for divergence
+// purposes; any other condition — including a `val` bound to `true` — is not
+// statically known here and is left alone (#6602).
+func isStaticallyTrueCond(cond: in Expr): Bool {
+  match cond.kind {
+    case ELiteral(lit) -> match lit { case LBool(v) -> v; case _ -> false }
+    case EParen(inner) -> isStaticallyTrueCond(inner)
+    case _ -> false
+  }
+}
+
 // A statement after which control never falls through to a block value: an
-// explicit `return`/`throw`, or a loop `break`/`continue` (which transfers out
-// of the enclosing loop).  A block whose last statement is one of these has type
-// `Never` (bottom), so it unifies cleanly as a branch — `if c { return x } else
-// { y }` is typed by its `else` branch rather than false-mismatching `Unit` vs
-// the value type.  A trailing `SExpr` of type `Never` (e.g. `panic(...)`) is
-// already captured by `lastExprType`, so it is not listed here.
+// explicit `return`/`throw`, a loop `break`/`continue` (which transfers out
+// of the enclosing loop), or an unconditional loop (`loop { }` / a
+// statically-`true` `while`) whose body has no `break` that could escape it —
+// such a loop only exits via `return`/`throw`/an outer `break`, so it never
+// falls through either (#6602).  A block whose last statement is one of these
+// has type `Never` (bottom), so it unifies cleanly as a branch — `if c {
+// return x } else { y }` is typed by its `else` branch rather than
+// false-mismatching `Unit` vs the value type.  A trailing `SExpr` of type
+// `Never` (e.g. `panic(...)`) is already captured by `lastExprType`, so it is
+// not listed here.
 func statementDiverges(stmt: in Statement): Bool {
   match stmt.kind {
     case SReturn(_) -> true
@@ -399,6 +601,11 @@ func statementDiverges(stmt: in Statement): Bool {
     // ordinary block, so a `scope { ...; return x }` — the shape several
     // `async_spawn_self_test.l` helpers use — now correctly diverges.
     case SScope(_, body) -> body.statements.count > 0 and statementDiverges(body.statements[body.statements.count - 1])
+    // #6602: an unconditional loop (`do { }`) or a statically-true `while`
+    // whose body has no `break` that could escape it only exits via
+    // `return`/`throw`/an outer `break`, so it never falls through either.
+    case SLoop(label, body) -> not blockMayEscapeLoop(body, label, false)
+    case SWhile(label, cond, body) -> isStaticallyTrueCond(cond) and not blockMayEscapeLoop(body, label, false)
     case _ -> false
   }
 }
@@ -557,6 +764,18 @@ pub func checkBlock(
           }
         }
         lastExprType = resultTy
+      }
+      // #6603: `scope { }`'s own value is always discarded (it is a
+      // structured-concurrency grouping construct, not a value-producing
+      // block — mirrors `checkStatement`'s `false` here), but the checked
+      // body type still carries `Never` when every path through it diverges
+      // (e.g. `scope { if c { return x } else { return y } }`).  Capturing
+      // that into `lastExprType` — instead of routing purely through the
+      // syntax-only `statementDiverges` check, which has no `SScope` case —
+      // lets a trailing `scope` correctly propagate divergence to the
+      // enclosing block instead of defaulting to `Unit`.
+      case SScope(_, body) -> {
+        lastExprType = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false)
       }
       case _ -> {
         checkStatement(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, stmt)

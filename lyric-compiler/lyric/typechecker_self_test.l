@@ -2933,6 +2933,91 @@ test "try non-trailing value-position block stays clean" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PR #6547 review findings #6602-#6605: four regressions introduced by the
+// #3362 value-position-aware `unifyBranchTypes` fix, all in the same
+// diverging-trailing-statement / value-position-threading area.  These pin
+// the fixes so a future revert of any one of them is caught by CI.
+// ─────────────────────────────────────────────────────────────────────────────
+// #3362 regression guard: the generalized else-if/braced-block Unit-absorption
+// shape stays diagnostic-free in both its sugared `else if` form and its
+// fully-braced `else { if ... }` twin.
+test "else if braced Unit absorption stays clean" {
+  val sugared = "package P\nfunc consume(n: in Int): Unit {}\nfunc f(c: in Bool, d: in Bool): Unit {\n  if c { consume(1) } else if d { 2 } else { () }\n}\n"
+  assertEqualInt(diagCount(parseCheck(sugared)), 0, "else-if sugar: mixed value/Unit arms absorbed, no diagnostics")
+  val braced = "package P\nfunc consume(n: in Int): Unit {}\nfunc f(c: in Bool, d: in Bool): Unit {\n  if c { consume(1) } else { if d { 2 } else { () } }\n}\n"
+  assertEqualInt(
+    diagCount(parseCheck(braced)),
+    0,
+    "else-if braced twin: mixed value/Unit arms absorbed, no diagnostics"
+  )
+}
+
+// #6602: an unconditional `do { }` loop (the language's unlabelled-`loop`
+// form) that only exits via `return` diverges — its type is `Never`, so it
+// satisfies a non-Unit declared return type instead of false-firing T0070.
+test "unconditional do loop diverges no T0070" {
+  val src = "package P\nfunc c(): Bool { true }\nfunc f(): Int {\n  do {\n    if c() { return 1 }\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "do-loop-only-return trailing statement: no spurious T0070")
+}
+
+// #6602: `while true { }` is the same unconditional-loop shape for divergence.
+test "while true diverges no T0070" {
+  val src = "package P\nfunc c(): Bool { true }\nfunc f(): Int {\n  while true {\n    if c() { return 1 }\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "while-true-only-return trailing statement: no spurious T0070")
+}
+
+// #6602 regression guard: a `do` loop that CAN exit via an escaping `break`
+// is not unconditionally-divergent — it can still fall through with `Unit`.
+// `checkFunctionBody`'s isUnit/isNever leniency absorbs a bare Unit-typed
+// trailing statement either way, so this is pinned through a value-position
+// consumer (a `val` binding) where Unit and Never are NOT interchangeable:
+// wrongly typing the loop as `Never` here would silently swallow a real
+// T0060 mismatch.
+test "do loop with escaping break not divergent" {
+  val src = "package P\nfunc f(c: in Bool): Unit {\n  val x: Int = {\n    do {\n      if c { break }\n    }\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0060"), "do-loop with an escaping break: still Unit-typed, T0060 fires")
+}
+
+// #6603: `scope { }`'s checked body type (`Never`, when every path through it
+// diverges) must propagate to the enclosing block instead of defaulting to
+// `Unit` — the trailing statement here is `SExpr(EIf)`, not `SReturn`, so
+// only capturing `checkBlock`'s actual result (not the syntax-only
+// `statementDiverges`) catches this.
+test "scope trailing if else diverges no T0070" {
+  val src = "package P\nfunc g(): Int { 1 }\nfunc f(c: in Bool): Int {\n  scope {\n    if c { return g() } else { return 0 }\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "scope with fully-diverging if/else body: no spurious T0070")
+}
+
+// #6603: the simpler single-statement `scope { return g() }` shape.
+test "scope return stays clean" {
+  val src = "package P\nfunc g(): Int { 1 }\nfunc f(): Int {\n  scope {\n    return g()\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "scope { return g() }: no spurious T0070")
+}
+
+// #6604: `inferLambda` threads the lambda's expected return type the same way
+// `checkFunctionBody` threads `bodyValuePos` — a `Unit`-expected lambda whose
+// trailing statement is a discarded mixed-type `if` must stay clean, not
+// reintroduce the leniency regression #3362 fixed one layer up.
+test "unit lambda mixed if body stays clean" {
+  val src = "package P\nfunc compute(): Int { 1 }\nfunc each(f: in (Bool) -> Unit): Unit { f(true) }\nfunc g(): Unit {\n  each((c) -> { if c { compute() } else { () } })\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "Unit-returning lambda with discarded mixed-type if: no spurious T0067")
+}
+
+// #6604 regression guard: a stronger pin that actually distinguishes
+// value-position from statement-position inside a lambda body (unlike the
+// mixed-`if` shape above, whose Unit-absorption is already position-blind) —
+// a trailing `try` whose non-Unit body sits beside a Unit handler is only
+// safe to absorb when the lambda's expected return type is `Unit`.  Reverting
+// `inferLambda`'s hardcoded `valuePos = true` reintroduces this exact T0067.
+test "unit lambda try unit handler stays clean" {
+  val src = "package P\nfunc each(f: in (Bool) -> Unit): Unit { f(true) }\nfunc g(): Unit {\n  each((c) -> {\n    try {\n      42\n    } catch Bug as b {\n      ()\n    }\n  })\n}\n"
+  assertTrue(
+    not hasDiagCode(parseCheck(src), "T0067"),
+    "Unit-expected lambda: try body/Unit handler absorbed in statement position, no T0067"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // #3187: a refutable `for` pattern is rejected by the type checker (T0112) —
 // codegen has no failure path for a non-matching element, so accepting it
 // produced a broken binary behind an F0021 println.  Irrefutable tuple

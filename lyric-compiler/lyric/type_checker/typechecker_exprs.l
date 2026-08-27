@@ -4838,7 +4838,10 @@ pub func inferExpr(
     // call-argument and annotated-binding positions route through
     // `inferExprExpected` instead so unannotated params adopt the expected
     // function type's parameter types (docs/59 A2).
-    case ELambda(lambdaParams, body) -> inferLambda(sc, tbl, sigs, diag, lambdaParams, body, newList())
+    case ELambda(lambdaParams, body) -> {
+      val noExpectedRet: Option[Type] = None
+      inferLambda(sc, tbl, sigs, diag, lambdaParams, body, newList(), noExpectedRet)
+    }
     // An `if`/`else` expression takes the unified type of its branches.  An
     // `if` without an `else` produces no value on the false path, so it is
     // `Unit` (the parser desugars a statement-position brace-`if` so a trailing
@@ -4960,6 +4963,17 @@ pub func inferExpr(
 // annotations always win over the expectation.  Leftover generic `TyVar`s in
 // an expected param (a partially-inferred generic callee) are erased to
 // `TyError` so partially-known expectations still type what they can.
+// #6604: `expectedReturn` is the lambda's expected return type when the
+// surrounding context supplies one (a call argument's resolved `TFunction`
+// parameter type, or a binding's declared function type) — `None` when no
+// expectation is available (bare inference).  Mirrors `checkFunctionBody`'s
+// `bodyValuePos = not isUnitType(sig.returnTy)`: a known `Unit` expectation
+// checks the body in statement position (so a discarded mixed-type trailing
+// `if`/`match` is absorbed, not flagged), a known non-`Unit` expectation
+// checks it in value position, and an unknown expectation defaults to
+// statement position — the lenient direction, matching the historical
+// behaviour for lambdas with no contextual return type — rather than
+// defaulting to value position, which would be the unsound direction.
 func inferLambda(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -4968,6 +4982,7 @@ func inferLambda(
   lambdaParams: in List[LambdaParam],
   body: in Block,
   expectedParams: in List[Type],
+  expectedReturn: in Option[Type],
 ): Type {
   val useExpected = expectedParams.count == lambdaParams.count
   val lctx = newGenericContext()
@@ -4984,8 +4999,9 @@ func inferLambda(
     scopeAdd(sc, LocalBinding(name = lp.name, ty = pTy, isMutable = false))
     li = li + 1
   }
+  val bodyValuePos = match expectedReturn { case Some(rt) -> not isUnitType(rt); case None -> false }
   val noLambdaRte: Option[TypeExpr] = None
-  val bodyTy = checkBlock(sc, tbl, sigs, sc.genericNames, TyError, noLambdaRte, diag, body, true)
+  val bodyTy = checkBlock(sc, tbl, sigs, sc.genericNames, TyError, noLambdaRte, diag, body, bodyValuePos)
   scopePop(sc)
   TyFunction(params = paramTypes, ret = bodyTy, isAsync = false)
 }
@@ -5028,7 +5044,7 @@ pub func inferExprExpected(
   match e.kind {
     case EParen(inner) -> inferExprExpected(sc, tbl, sigs, diag, inner, expected)
     case ELambda(ps, body) -> match unrefine(expected) {
-      case TyFunction(eps, _, _) -> inferLambda(sc, tbl, sigs, diag, ps, body, eps)
+      case TyFunction(eps, eret, _) -> inferLambda(sc, tbl, sigs, diag, ps, body, eps, Some(value = eret))
       case _ -> inferExpr(sc, tbl, sigs, diag, e)
     }
     case _ -> inferExpr(sc, tbl, sigs, diag, e)
