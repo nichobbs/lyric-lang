@@ -5037,6 +5037,19 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/auto_ffi_jvm_self_test.l
+      # Generic-declaring-type @externTarget member self-test — the JVM analog
+      # of generic_extern_self_test.l (#3432).  Unlike MSIL's closed-GENERICINST
+      # emitGenericExternMember, JVM erasure means the generic extern-type alias
+      # resolves to its raw host class directly (#5458); this test's real load-
+      # bearing regression coverage is collectMonoSpecializedSigs now threading
+      # holder-array param types + paramModes into the cross-package call
+      # registry, so a monomorphized generic function's `out`/`inout` parameter
+      # (`cdTryGetValue[K, V]`, mirroring Web.Kernel.Jvm's rate limiter) resolves
+      # against its real holder-typed descriptor instead of NoSuchMethodError.
+      - name: Generic-declaring-type extern member self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/generic_extern_jvm_self_test.l
       # Negative test: an ambiguous primitive-array overload must fail loud,
       # not silently guess.  A Lyric slice[T] argument erases to Object[]
       # before the JVM auto-FFI resolver ever sees it, so java.lang.String's

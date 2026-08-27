@@ -1102,12 +1102,26 @@ func collectMonoSpecializedSigs(
     match file.items[i].kind {
       case IFunc(decl) -> {
         if isMonoSpecializedName(decl.name) {
-          val params: List[JvmType] = newList()
+          // Mono specialisations are fully concrete post-monomorphization
+          // (no type params of their own remain to erase), but an `out`/
+          // `inout` parameter still needs the holder-array descriptor
+          // (`Counter` -> `Counter[]`) `holderAwareParamTypes` already gives
+          // every OTHER registration path (`collectFileSigsSeeded` /
+          // `registerFileSigs`, 06_items.l) — this hand-rolled loop skipped
+          // it and always recorded plain (non-array) types plus an EMPTY
+          // `paramModes`, so a call site to a specialised function with an
+          // `out`/`inout` param (`cdTryGetValue[K, V]` and any other generic
+          // helper wrapping an `out` parameter) never wrapped its holder
+          // argument, producing a MemberRef with the wrong (non-array)
+          // descriptor — `NoSuchMethodError` at runtime against the real,
+          // correctly holder-typed specialised method (#3432).
+          val params: List[JvmType] = holderAwareParamTypes(decl.params, owner, false, newList(), externTypes)
           val paramNames: List[String] = newList()
+          val paramModes: List[ParamMode] = newList()
           var pi = 0
           while pi < decl.params.count {
-            params.add(typeExprToJvmExtern(decl.params[pi].ty, owner, externTypes))
             paramNames.add(decl.params[pi].name)
+            paramModes.add(decl.params[pi].mode)
             pi = pi + 1
           }
           val ret = match decl.ret { case Some(te) -> typeExprToJvmExtern(te, owner, externTypes); case None -> JVoid }
@@ -1117,11 +1131,9 @@ func collectMonoSpecializedSigs(
             ret = ret,
             paramNames = paramNames,
             paramDefaults = newList(),
-            paramModes = newList(),
+            paramModes = paramModes,
             isIface = false,
             retGenericArgs = returnTypeGenericArgs(decl.ret),
-            // Mono specialisations are fully concrete post-monomorphization,
-            // so no type params remain to erase.
             closureRetTy = closureRetTypeOf(decl.ret, owner, newList(), externTypes),
             // Same "no local-record scan available here" rationale as the
             // woven-sig path above (#6399): a mono-specialised function

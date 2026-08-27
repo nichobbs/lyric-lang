@@ -318,9 +318,15 @@ pub func serveTls(host: in String, port: in Int, tls: in TlsServerConfig, router
 // sources for the SAME package (`[project.packages]` array form, selected by
 // feature), and a same-named `extern type` alias bound to different host
 // types in each file leaks the non-selected file's binding into the compiled
-// unit on `--target jvm`.  #5458 tracks a second, previously-masked bug this
-// rename exposed: JVM auto-FFI cannot resolve `dict.get(key)` from inside
-// this file's own generic `cdTryGetValue[K, V]`/`cdPut[K, V]` helpers.
+// unit on `--target jvm`.  The rename exposed a second, previously-masked
+// bug (#5458, fixed): JVM auto-FFI could not resolve `dict.get(key)` from
+// inside this file's own generic `cdTryGetValue[K, V]`/`cdPut[K, V]`
+// helpers, because a GENERIC `extern type` alias parses as `TGenericApp` and
+// erased to `Object` instead of its raw host class — `Jvm.Codegen.
+// typeExprToJvmExtern`'s `TGenericApp` arm now resolves it to the erased
+// `ConcurrentHashMap` class directly (the JVM has no reified generics, so no
+// MSIL-style closed-GENERICINST-TypeSpec member emission is needed here;
+// see #3432 / `generic_extern_jvm_self_test.l`).
 extern type JvmConcurrentDict[K, V] = "java.util.concurrent.ConcurrentHashMap"
 
 @externTarget("java.util.concurrent.ConcurrentHashMap.<init>")

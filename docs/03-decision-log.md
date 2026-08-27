@@ -35757,3 +35757,125 @@ now note the native five-script limit and point at #6779, closing the
 gap where the language reference didn't scope any of these methods
 per-target at all.
 
+---
+
+## D-progress-831 — JVM generic-declaring-type `@externTarget` member emission: no MSIL-analog needed, but a real monomorphized-`out`-param bug found and fixed (#3432)
+
+**Investigation.** #3432 asked for a JVM analog of MSIL's
+`Msil.Codegen.emitGenericExternMember` (closed GENERICINST TypeSpec + `!0`/`!1`
+member-signature encoding for a member of a generic BCL type). The design
+turned out to be genuinely different, not merely unported: JVM erasure means
+every instantiation of a generic JDK type (`ConcurrentHashMap<K,V>`) is the
+SAME raw class file at the bytecode level, so `Resilience.Kernel.Jvm`,
+`Ws.Kernel.Jvm`, and `Jobs.Kernel.Jvm` already sidestep the whole problem by
+declaring a RAW (non-generic) `extern type` and dispatching ordinary member
+calls through it — no TypeSpec-construction analog is needed (documented
+in-source at `Resilience.Kernel.Jvm`, shipped D-progress-588). Only
+`Web.Kernel.Jvm`'s rate limiter used the generic-alias form
+(`extern type JvmConcurrentDict[K, V] = "java.util.concurrent.ConcurrentHashMap"`),
+because its ctor (`newConcurrentDict[K, V]`) and helpers (`cdTryGetValue[K, V]`
+/ `cdPut[K, V]`) are themselves plain generic Lyric functions monomorphized
+per call site, not `@externTarget` members with generic declaring types in
+the MSIL sense. `typeExprToJvmExtern`'s `TGenericApp` arm already resolves
+that generic alias to its raw erased class (#5458, fixed at D-progress-663).
+
+**The real, previously-undetected bug.** One layer deeper:
+`Jvm.Bridge.collectMonoSpecializedSigs` patches the cross-package call
+registry with a monomorphizer specialization's real signature (the registry
+is built pre-middle-end, so a specialized copy like `cdTryGetValue__String__Counter`
+needs a second registration pass after `runMiddleEnd`/mono runs, m-25). That
+function hand-rolled its own params/modes computation instead of reusing the
+existing `holderAwareParamTypes` helper every OTHER registration site
+(`collectFileSigsSeeded` / `06_items.l`'s `registerFileSigs`-equivalent path)
+already uses — it always recorded `paramModes = newList()` (empty) and a
+plain, non-array param type for every specialized function. An `out`/`inout`
+parameter is declared as a single-element HOLDER ARRAY at the JVM bytecode
+level (`Counter` -> `Counter[]`); the specialized function's OWN definition
+correctly got that treatment (it goes through the normal registration path),
+but any CALL SITE to it resolved through `collectMonoSpecializedSigs`'s
+registry entry instead, saw no holder mode, and passed the bare value —
+producing a MemberRef with the WRONG descriptor. Result: `NoSuchMethodError`
+at runtime, on every call, for ANY monomorphized generic function with an
+`out`/`inout` parameter — `cdTryGetValue[K, V]` (hit by `Web.Kernel.Jvm`'s
+`checkRateLimit`) included, but the bug is general and has nothing to do with
+extern types specifically. Confirmed with a minimal non-extern repro
+(`func setOut[V](x: in V, value: out V): Bool` specialized to a record `V`)
+before narrowing to the exact `cdTryGetValue` shape; `javap` on the compiled
+class confirmed the DEFINITION correctly declared `(..., Counter[])Z` while
+the CALL SITE's own constant-pool MemberRef requested `(..., Counter)Z`.
+
+**Fix.** `collectMonoSpecializedSigs` now calls
+`holderAwareParamTypes(decl.params, owner, false, newList(), externTypes)`
+for `params` and threads `decl.params[pi].mode` into `paramModes`, matching
+every other registration site.
+
+**Secondary fix (issue point 2).** `Jvm.Codegen.lowerExternTargetBody`'s
+`"<init>"` (ctor) branch ran NO metadata verification at all — unlike the
+static/instance branch's F0015-J check — so a mistyped ctor `@externTarget`
+signature silently compiled and only failed at runtime. It now calls
+`verifyExternTargetJvm(ctx.autoFfi, targetFqnDot, "new", allParamDescs, true)`
+(reusing the SAME ctor-aware `findBestConstructor` path `verifyExternTargetJvm`
+already had for the `.new()` constructor-shorthand call site, keyed on the
+`"new"` sentinel) and panics with a ctor-specific F0015-J message on a real
+mismatch. The wrapper's declared RETURN type is never compared against
+`<init>`'s `void` descriptor — it is reconciled by construction, since the
+emitted shape (`new; dup; <args>; invokespecial <init>; areturn`) always
+returns the freshly `new`'d instance, never whatever `<init>` itself returns.
+
+**Tests.** New `lyric-compiler/lyric/generic_extern_jvm_self_test.l` — the
+JVM analog of `generic_extern_self_test.l` (5 cases: ctor + put/get
+round-trip, absent-key miss, shared-reference in-place mutation, put
+overwrite, Int-key erased-slot round-trip) — passes under
+`lyric test --target jvm`. A standalone repro reproducing
+`Web.Kernel.Jvm.checkRateLimit`'s exact tumbling-window + burst-budget logic
+over `newConcurrentDict`/`cdTryGetValue`/`cdPut` now produces the correct
+allow/deny counts (7 allowed, 3 denied across 10 calls at 5 req/min + burst
+2) under real `java` — reproduced the `NoSuchMethodError` pre-fix, confirmed
+clean post-fix. `lyric-web`'s actual `Web.RateLimitTests` (5/5) and
+`Web.CorsGuardTests` (16/16) pass under `lyric test --manifest
+lyric-web/lyric.toml --target jvm --no-default-features --features jvm`
+(Maven-resolved via a local `lyric-resolver.jar`). `lyric-resilience`'s full
+JVM suite (`lyric test --manifest lyric-resilience/lyric.toml --target jvm
+--no-default-features --features jvm`) passes 17/17 (circuit breaker +
+backoff), confirming D-progress-588's raw-erased-type fix still holds — it
+never needed this fix, since it never used the generic-alias form.
+
+Five OTHER `lyric-web` JVM suites fail in the same manifest run, all for
+reasons unrelated to generics, monomorphization, or `out`/`inout` params —
+left out of this fix's scope as pre-existing, separately-tracked gaps:
+`Web.SecurityAspectWeavingTests` (`error[T0020]: unknown name
+'__lyric_test_15'`, a test-synth naming issue), `Web.DispatchTests`
+(`error[J008]: Jvm.Lowering: stackmap simulation underflow at utf8Encoding`,
+a JVM codegen bug), `Web.ServeTlsTests` and `Web.ServeCrashIsolationTests`
+(both throw referencing bare `System/Threading/Tasks/Task` /
+`System/Threading/Thread` class names at JVM runtime — a `.NET`-target
+extern leaking into a JVM-target test file, presumably missing an
+`@cfg(feature = "jvm")` gate), and `Web.WebTlsConfigTests` (1/2 — an
+env-var-override test failing on default value, an isolation/ordering issue
+independent of target). None of these five had ever been run under
+`--target jvm` in CI before this investigation (CI's JVM coverage for
+`lyric-web` was limited to `tests/jvm_server_smoke.l`, a narrower endpoint
+smoke test).
+
+Zero regressions confirmed across `out_inout_jvm_self_test.l` (18/18),
+`out_inout_instance_jvm_self_test.l` (9/9),
+`iface_default_method_out_inout_jvm_self_test.l` (4/4),
+`stdlib_generic_mono_self_test.l` (7/7), `map_iteration_jvm_self_test.l`
+(5/5), `auto_ffi_jvm_self_test.l` (39/39), `bitwise_self_test.l` (10/10), and
+`aspect_weave_self_test.l` (8/8).
+
+Corrected a now-stale in-source comment at `Web.Kernel.Jvm`'s
+`JvmConcurrentDict[K, V]` declaration that still described #5458 as an open
+blocker (it was fixed at D-progress-663) and referenced the (not-yet-existing)
+#3432 fix.
+
+**Files:** `lyric-compiler/jvm/bridge.l` (`collectMonoSpecializedSigs`),
+`lyric-compiler/jvm/codegen/04_calls.l` (`lowerExternTargetBody`'s `"<init>"`
+branch), `lyric-compiler/lyric/generic_extern_jvm_self_test.l` (new),
+`lyric-web/src/_kernel/jvm/web_kernel.l` (comment fix),
+`.github/workflows/ci.yml` (new self-test step),
+`docs/44-jvm-production-readiness-plan.md` (row m-97),
+`docs/10-bootstrap-progress.md` (this entry, mirrored).
+
+**Related:** #3432, #3392, #3413 (the MSIL fix this issue tracked JVM parity
+against), #5458, D-progress-588, D-progress-663, docs/44 m-25/m-97.

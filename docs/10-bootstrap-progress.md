@@ -32211,3 +32211,60 @@ depends on.
 **Related:** `docs/03-decision-log.md` D-progress-831 (full account),
 #6588, #6104/N9.3 (#6589, N9.3's other blocker, has since shipped too —
 N9.3 itself remains open pending only its own kernel work).
+
+### D-progress-830: JVM generic-declaring-type `@externTarget` member emission (#3432)
+
+Investigated the MSIL-only `emitGenericExternMember` parity gap (#3432,
+docs/44 m-97). JVM erasure means a closed-GENERICINST-TypeSpec analog is
+unneeded: `Resilience.Kernel.Jvm`/`Ws.Kernel.Jvm`/`Jobs.Kernel.Jvm` already
+sidestep the problem entirely via a RAW (non-generic) `extern type` binding
+(D-progress-588); only `Web.Kernel.Jvm`'s rate limiter uses the generic-alias
+form (`JvmConcurrentDict[K, V]`), whose alias-to-raw-class resolution was
+already fixed (#5458, D-progress-663).
+
+Found and fixed a genuine, broader, previously-undetected bug one layer
+deeper: `Jvm.Bridge.collectMonoSpecializedSigs` (patches the cross-package
+call registry with a monomorphizer specialization's real signature, since
+signatures are collected pre-mono) hand-rolled its own params/modes
+computation instead of reusing `holderAwareParamTypes`, always recording an
+empty `paramModes` and a plain (non-holder-array) param type. Any
+monomorphized generic function with an `out`/`inout` parameter —
+`cdTryGetValue[K, V]` included, generic-extern-typed receiver or not —
+compiled a call site passing the raw value where the specialized method's
+own (correctly holder-array-typed) definition expected a one-element holder
+array: `NoSuchMethodError` at runtime, on every call, never a build-time
+failure. Fixed by calling `holderAwareParamTypes` and threading
+`decl.params[pi].mode` through, matching every other registration site.
+
+Also added ctor-form F0015-J verification to `Jvm.Codegen.lowerExternTargetBody`
+(the `"<init>"` branch previously ran no metadata check at all, unlike the
+static/instance branch), reconciling the wrapper's declared return type with
+`<init>`'s `void` by construction rather than comparison.
+
+**Verified:** the new `generic_extern_jvm_self_test.l` (ctor + put/get +
+overwrite + absent-key + Int-key round-trip over a generic-alias
+`ConcurrentHashMap`, 5 cases) passes under `lyric test --target jvm`; a
+standalone repro of `Web.Kernel.Jvm.checkRateLimit`'s exact tumbling-window +
+burst logic produces the correct allow/deny counts under real `java`;
+`lyric-web`'s `Web.RateLimitTests` (5/5) and `Web.CorsGuardTests` (16/16) pass
+under `--manifest lyric-web/lyric.toml --target jvm --no-default-features
+--features jvm`; `lyric-resilience`'s full JVM suite (17/17, circuit breaker +
+backoff) passes, confirming D-progress-588 still holds. Five *other*
+`lyric-web` JVM suites fail for pre-existing, unrelated reasons (a
+`__lyric_test_15` test-synth name collision, a JVM stackmap-underflow codegen
+bug in `dispatch_tests.l`, `.NET`-target `System.Threading.*` type references
+leaking into two JVM-only test files, and an env-var test-isolation ordering
+issue) — none touch generics, monomorphization, or `out`/`inout` parameters,
+so they are out of this fix's scope and left as separate, already-latent
+gaps. Zero regressions across `out_inout_jvm_self_test.l` (18),
+`out_inout_instance_jvm_self_test.l` (9),
+`iface_default_method_out_inout_jvm_self_test.l` (4),
+`stdlib_generic_mono_self_test.l` (7), `map_iteration_jvm_self_test.l` (5),
+`auto_ffi_jvm_self_test.l` (39), `bitwise_self_test.l` (10), and
+`aspect_weave_self_test.l` (8).
+
+**Files:** `lyric-compiler/jvm/bridge.l` (`collectMonoSpecializedSigs`),
+`lyric-compiler/jvm/codegen/04_calls.l` (`lowerExternTargetBody` ctor F0015-J),
+`lyric-compiler/lyric/generic_extern_jvm_self_test.l` (new),
+`lyric-web/src/_kernel/jvm/web_kernel.l` (stale `#5458` comment corrected),
+`.github/workflows/ci.yml` (new self-test wired in).

@@ -223,6 +223,35 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
           ctorParamTys.add(typeExprToJvmExtern(decl.params[cpI].ty, ctx.pkgName, ctx.externTypes))
           cpI = cpI + 1
         }
+        // F0015-J (ctor form, #3432): verify the declared parameter list
+        // against a real `<init>` overload in JDK class metadata.  The
+        // wrapper's declared RETURN type (the constructed type, e.g.
+        // `List[T]`) is never compared against `<init>`'s own `void`
+        // descriptor — it is reconciled by construction, since the emitted
+        // shape below always returns the freshly `new`'d instance rather
+        // than whatever `<init>` returns.  `verifyExternTargetJvm` passes
+        // silently when the class is absent from the metadata index
+        // (mirrors the static/instance F0015-J check below), so a
+        // non-JDK/non-Maven ctor target is unaffected.
+        if not verifyExternTargetJvm(ctx.autoFfi, targetFqnDot, "new", allParamDescs, true) {
+          var ctorSigStr = "("
+          var csi = 0
+          while csi < ctorParamTys.count {
+            if csi > 0 {
+              ctorSigStr = ctorSigStr + ", "
+            }
+            ctorSigStr = ctorSigStr + jvmTypeToDescStr(ctorParamTys[csi])
+            csi = csi + 1
+          }
+          ctorSigStr = ctorSigStr + ") -> " + javaClass
+          panic(
+            "F0015-J: @externTarget '" + target + "' on '" + decl.name + "': " + "declared constructor signature " + ctorSigStr +
+              " does not match any constructor of '" +
+              targetFqnDot +
+              "' in JDK class metadata. " +
+              "Verify the Lyric parameter types match a real Java constructor overload."
+          )
+        }
         insns.add(LNew(className = javaClass))
         insns.add(LDup)
         // Parameter slots: long/double occupy two local slots.
