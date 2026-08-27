@@ -35892,7 +35892,7 @@ branch), `lyric-compiler/lyric/generic_extern_jvm_self_test.l` (new),
 **Related:** #3432, #3392, #3413 (the MSIL fix this issue tracked JVM parity
 against), #5458, D-progress-588, D-progress-663, docs/44 m-25/m-97.
 
-## D-progress-804 — JVM: a panic inside a closure invoked through a cross-package function-typed parameter corrupted the caught `Bug.message` (#5388, #5251)
+## D-progress-817 — JVM: a panic inside a closure invoked through a cross-package function-typed parameter corrupted the caught `Bug.message` (#5388, #5251)
 
 **Status:** Shipped.
 
@@ -35969,7 +35969,7 @@ dotnet` was already correct and remains correct.
 
 ---
 
-## D-progress-810 — JVM: `Map[K, V]` value-type erasure confusion across sibling instantiations fixed (fixes #5451, root-causes the open half of #6347/#6357)
+## D-progress-818 — JVM: `Map[K, V]` value-type erasure confusion across sibling instantiations fixed (fixes #5451, root-causes the open half of #6347/#6357)
 
 **Status:** ACCEPTED
 
@@ -36091,7 +36091,7 @@ touches), docs/44 m-99.
 
 ---
 
-## D-progress-812 — `Lyric.Mono`: match-arm pattern bindings now tracked into the call-site type environment, and isolated to their own arm's scope (#5422, #5423, #6632, #6633)
+## D-progress-819 — `Lyric.Mono`: match-arm pattern bindings now tracked into the call-site type environment, and isolated to their own arm's scope (#5422, #5423, #6632, #6633)
 
 **Status:** Shipped.
 
@@ -36189,7 +36189,7 @@ match_bound_pattern_type_self_test.l`.
 
 ---
 
-## D-progress-813 — CI regression on PR #6631: `recordParamGenericArgs` (#5956) leaked mono's `Object` erasure marker as a phantom same-package class on JVM (#5843)
+## D-progress-820 — CI regression on PR #6631: `recordParamGenericArgs` (#5956) leaked mono's `Object` erasure marker as a phantom same-package class on JVM (#5843)
 
 **Status:** Shipped.
 
@@ -36271,12 +36271,12 @@ self_test.l` 6/6, `range_subtype_self_test.l` 10/10, `slice_append_
 widening_self_test.l` 2/2, `slice_ops_self_test.l` 13/13 — all pass, no
 regressions from the `isPrimitiveTypeKeyword` change.
 
-**Related:** #5843, #5956 (D-progress-809, the commit that introduced
+**Related:** #5843, #5956 (D-progress-823, the commit that introduced
 `recordParamGenericArgs`), D-progress-658 (the `typeExprToJvm` `Object`
 reservation this fix reuses rather than duplicates), `lyric-compiler/jvm/
 codegen/01_types.l`, `lyric-compiler/jvm/codegen/03_match.l`,
 `lyric-compiler/lyric/stdlib_generic_mono_self_test.l`, PR #6631.
-## D-progress-803 — JVM: track element type through unannotated list literals so indexed reads no longer erase to `Object` (#5686, JVM parity for MSIL's #5620)
+## D-progress-821 — JVM: track element type through unannotated list literals so indexed reads no longer erase to `Object` (#5686, JVM parity for MSIL's #5620)
 
 **Status:** Shipped.
 
@@ -36320,7 +36320,7 @@ same machinery (`indexedElemTypeOverride`/`scrutineeGenericArgs`/
 
 ---
 
-## D-progress-811 — JVM: restored-dependency pipeline for cross-package generic records/unions (#3094, JVM counterpart of #1496/D097)
+## D-progress-822 — JVM: restored-dependency pipeline for cross-package generic records/unions (#3094, JVM counterpart of #1496/D097)
 
 **Status:** Shipped.
 
@@ -36375,7 +36375,7 @@ m-100, `docs/10-bootstrap-progress.md` (mirrored under this same number).
 
 ---
 
-## D-progress-815 — JVM: distinct/range-subtype `Type.from`/`Type.tryFrom` static factories (#5956, closes the historical #2997 JVM gap)
+## D-progress-823 — JVM: distinct/range-subtype `Type.from`/`Type.tryFrom` static factories (#5956, closes the historical #2997 JVM gap)
 
 **Status:** Shipped.
 
@@ -36420,7 +36420,7 @@ this closes), docs/44-jvm-production-readiness-plan.md m-101,
 
 ---
 
-## D-progress-816 — JVM: `Double` stringification now matches .NET for `|value| >= 1e7` and very small magnitudes (#5660, docs/44 m-21 residual)
+## D-progress-824 — JVM: `Double` stringification now matches .NET for `|value| >= 1e7` and very small magnitudes (#5660, docs/44 m-21 residual)
 
 **Status:** Shipped.
 
@@ -36462,15 +36462,15 @@ m-21.
 
 ---
 
-## D-progress-817 — CLI: stop feeding a path/NuGet dependency's MSIL `.dll` into the JVM restored-dep loader (#6697, review CRITICAL on D-progress-811)
+## D-progress-825 — CLI: stop feeding a path/NuGet dependency's MSIL `.dll` into the JVM restored-dep loader (#6697, review CRITICAL on D-progress-822)
 
 **Status:** Shipped.
 
-**Context.** D-progress-811 gave `emitProjectJvmInProcess` a restored-
+**Context.** D-progress-822 gave `emitProjectJvmInProcess` a restored-
 dependency loop over `EmitProjectRequest.restoredDllPaths`, reading each
 entry through `Lyric.RestoredPackages.loadRestoredPackageJvm` (a JAR ZIP-
 central-directory reader) — by design, for a genuinely pre-compiled JVM
-producer JAR. D-progress-811's own "Scope" section already noted that
+producer JAR. D-progress-822's own "Scope" section already noted that
 `resolveManifestDependencies`/`workspace_builder.l` still hardcode `.dll`
 naming for path/workspace/NuGet dependencies and that JVM manifest builds
 consume those via source-bundling (`depTemplateSrcs`), not
@@ -36486,7 +36486,7 @@ ANY consumer of that same dependency fed it straight into
 `restored JVM dep '...' failed to load: restored DLL has no Lyric.Contract
 resource (not a Lyric assembly?)`. This is not a contrived edge case — it
 is the ordinary "build the dependency once, then build a JVM consumer"
-sequence — so a code review of the D-progress-811 PR flagged it CRITICAL
+sequence — so a code review of the D-progress-822 PR flagged it CRITICAL
 (#6697) before merge. The same gap existed in the OTHER caller that
 populates `restoredDllPaths`: `emitSingleFileWithWorkspaceMembers`
 (cli/cli_build.l, #6503's single-file-inside-a-workspace leg), which passed
@@ -36504,7 +36504,7 @@ warning) rather than `restoredDlls`. `emitSingleFileWithWorkspaceMembers`
 (cli/cli_build.l) now passes an empty list for `restoredDllPaths` on Jvm
 instead of `wsDeps.restoredDlls` — the matched member's source already
 rides the bundle via `depTemplateSrcs`/`pkgs`, so nothing is lost. Neither
-change touches the D-progress-811 pipeline itself (`emitProjectJvmInProcess`
+change touches the D-progress-822 pipeline itself (`emitProjectJvmInProcess`
 still reads `restoredDllPaths` and loads a real JAR through
 `loadRestoredPackageJvm` when one is actually supplied — the in-process
 `Emitter.emitProject` API and any future genuinely-pre-compiled-JVM-dep CLI
@@ -36532,21 +36532,21 @@ fabricated `.jar`-shaped `restoredDllPaths` entry would exercise (which
 would not have caught this — the CLI never reaches the point of
 fabricating one). `emitter_project_self_test.l` (36/36) and
 `lyric-compiler/jvm/cross_package_generics_jvm_self_test.l` (7/7, the
-genuine-JAR-restored-dep pipeline D-progress-811 shipped) both stay green,
+genuine-JAR-restored-dep pipeline D-progress-822 shipped) both stay green,
 confirming the fix does not regress the intended restored-dep path.
 `cli_shared_self_test.l` (25/25) and `cli_build_self_test.l` (81/81) also
 verified green.
 
-**Related:** #6697, D-progress-811, #3094, #6264, #6136, #6503.
+**Related:** #6697, D-progress-822, #3094, #6264, #6136, #6503.
 
 ---
 
-## D-progress-818 — Two #6631 review findings: `Short`/`UShort`/`UByte` range subtypes actually DID crash the JVM backend (#6661 residual), plus `Float` distinct-type read-back and `UInt`/`ULong` generic-container erasure (#6695)
+## D-progress-826 — Two #6631 review findings: `Short`/`UShort`/`UByte` range subtypes actually DID crash the JVM backend (#6661 residual), plus `Float` distinct-type read-back and `UInt`/`ULong` generic-container erasure (#6695)
 
 **Status:** Shipped.
 
 **Context.** PR review against #6631 (JVM `Type.from`/`Type.tryFrom`
-static factories, D-progress-815) raised two residual findings.
+static factories, D-progress-823) raised two residual findings.
 
 **#6661 residual — `Short`/`UShort`/`UByte` were reachable, and DID
 panic.** D-progress-814's writeup claimed `type X = UShort range 0 ..=
@@ -36620,7 +36620,7 @@ had no way to read the wrapped value back out on JVM. Fixed by adding
 
 **#6695 — `UInt`/`ULong` missing from `isPrimitiveTypeKeyword`.**
 Same choke-point bug class as #5843/#6660 (fixed for the bare `Object`
-marker, D-progress-813): `Jvm.Codegen.isPrimitiveTypeKeyword` gates
+marker, D-progress-820): `Jvm.Codegen.isPrimitiveTypeKeyword` gates
 `eagerlyResolveGenericArg`'s bare-`TRef`-to-marker rewrite — the ONLY
 caller that turns a non-primitive bare `TRef` into a same-package
 class-name guess. `UInt`/`ULong` were missing from this list even though
@@ -36667,6 +36667,6 @@ round trip #6695 breaks). `bitwise_self_test.l` and
 `.github/workflows/ci.yml`.
 
 **Related:** #6661, #6695, #6631, D-progress-814 (the entry this
-corrects), D-progress-815, D-progress-813 (the `Object`-marker fix this
+corrects), D-progress-823, D-progress-820 (the `Object`-marker fix this
 mirrors), D-progress-571 (established `Short` is not a surface type),
 docs/01-language-reference.md §2.1.

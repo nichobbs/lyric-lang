@@ -469,7 +469,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 // (`indexedElemTypeOverride`, the same resolver the read-path
                 // `EIndex` arm uses), falling back to the prior `vTy`-inferred
                 // behavior when no static override is available.
-                val elemTy = match indexedElemTypeOverride(ctx, recv) {
+                val elemTy = match indexedElemTypeOverride(ctx, recv, true) {
                   case JVoid -> emitUnboxObjectTo(insns, vTy)
                   case overrideTy -> applyIndexedElemOverride(insns, overrideTy)
                 }
@@ -523,7 +523,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 emitListGet(insns)
                 // The list's real declared element type (#5688) — see the
                 // matching HashMap-arm comment above.
-                val elemTy = match indexedElemTypeOverride(ctx, recv) {
+                val elemTy = match indexedElemTypeOverride(ctx, recv, true) {
                   case JVoid -> emitUnboxObjectTo(insns, vTy)
                   case overrideTy -> applyIndexedElemOverride(insns, overrideTy)
                 }

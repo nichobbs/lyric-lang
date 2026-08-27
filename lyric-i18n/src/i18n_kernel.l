@@ -28,7 +28,7 @@
 //! `java.util.HashMap` backing its field) — see issue #5422 for the
 //! standalone repro. #5422's root cause (`Lyric.Mono` never tracking a
 //! `match`-arm pattern binding's type into its call-site inference `env`,
-//! docs/03-decision-log.md D-progress-812) is now fixed, but the flattened
+//! docs/03-decision-log.md D-progress-819) is now fixed, but the flattened
 //! two-table shape is kept as-is: it sidesteps the whole class of bug and
 //! is no less clear, so there is no reason to reintroduce the
 //! record-with-a-Map-field shape now that the underlying compiler bug no

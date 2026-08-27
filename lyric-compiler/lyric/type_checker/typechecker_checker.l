@@ -449,7 +449,7 @@ func typeIdOfType(t: in Type): Option[TypeId] {
 // §5. Range subtype validation (T2.5).
 // ─────────────────────────────────────────────────────────────────────────────
 // `Short`/`UShort`/`UByte` are DELIBERATELY excluded (#6661 residual,
-// D-progress-818): none of the three has a real `PrimType` case
+// D-progress-826): none of the three has a real `PrimType` case
 // (`typechecker_types.l`'s `PrimType` union has no `PtShort`/`PtUShort`/
 // `PtUByte` variant) or appears in docs/01-language-reference.md §2.1's
 // 13-primitive table — they are not Lyric surface types at all (see also

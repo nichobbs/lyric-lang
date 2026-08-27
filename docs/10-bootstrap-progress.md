@@ -23941,7 +23941,7 @@ The contract elaborator inserts `let __old_N = expr` snapshot bindings before an
 Replaced the no-op `lowerProtectedMsil` stub with production `Monitor.Enter`/`Monitor.Exit` wrapping. Uses `this` as the CLR sync-block object. Each `PMEntry` body is wrapped in a try/finally EH region: Enter before the try, Exit in the finally. Non-void entries stash the return value before `leave` and reload after the merge label. 3/3 protected-type emitter tests pass.
 
 **Range-subtype construction validation** (`lowering.l`):
-`lowerMRangeType` now emits a bounds-checking `.ctor(value)` that throws `System.ArgumentOutOfRangeException` with a descriptive message when the value is outside `[minVal, maxVal]`. `MInt` inner types use `ldc.i4`; other types use `ldc.i8`. 15/15 range-type emitter tests pass. **JVM parity was tracked in #2997 — closed, see #5956 / D-progress-815.**
+`lowerMRangeType` now emits a bounds-checking `.ctor(value)` that throws `System.ArgumentOutOfRangeException` with a descriptive message when the value is outside `[minVal, maxVal]`. `MInt` inner types use `ldc.i4`; other types use `ldc.i8`. 15/15 range-type emitter tests pass. **JVM parity was tracked in #2997 — closed, see #5956 / D-progress-823.**
 
 **`@generate(Pkg.Name)` source-generator pre-processing wired** (`cli.l`):
 `buildProject` now calls `Generator.preprocess` before type-checking on both single-file and directory-scan code paths.
@@ -24183,7 +24183,7 @@ gap in the `lyric-stdlib/tests/*_tests.l` suite.
 covering closed/half-open boundary semantics, `Int` and `Long` ranges, the
 in-range `from` round-trip, and a plain (rangeless) distinct type. Run under
 native `lyric test --target dotnet`; added to the compiler self-test CI loop.
-**JVM parity landed in #5956** (D-progress-815, below) — the same test file now
+**JVM parity landed in #5956** (D-progress-823, below) — the same test file now
 also runs under `--target jvm`, both in CI.
 
 **Scope notes:** `Double`-bound ranges are rejected upstream by the type checker
@@ -30275,10 +30275,10 @@ point; `tests/i18n_kernel_tests.l` (10 cases) passes on both
 JVM/MSIL compiler bugs along the way (filed as #5422, #5423 — both
 about match-bound pattern variables losing type precision at a
 subsequent generic/method call site). **Both since resolved** — #5422
-fixed in D-progress-812 (`Lyric.Mono.bindPatternEnvMono`); #5423
+fixed in D-progress-819 (`Lyric.Mono.bindPatternEnvMono`); #5423
 investigated in the same entry but never reproduced against `HEAD`.
 
-**Related:** `docs/03-decision-log.md` D-progress-628, D-progress-812.
+**Related:** `docs/03-decision-log.md` D-progress-628, D-progress-819.
 
 ### D-progress-629 — JVM: fixed `impl <ExternInterface> for Record` resolving against the local package instead of the real JDK FQN; `lyric-web` gets a real Undertow-backed `Web.Kernel.Runtime`, blocked on two newly-found JVM backend bugs
 
@@ -32274,7 +32274,7 @@ gaps. Zero regressions across `out_inout_jvm_self_test.l` (18),
 `lyric-web/src/_kernel/jvm/web_kernel.l` (stale `#5458` comment corrected),
 `.github/workflows/ci.yml` (new self-test wired in).
 
-### D-progress-803 — JVM: track element type through unannotated list literals so indexed reads no longer erase to `Object` (#5686, JVM parity for MSIL's #5620)
+### D-progress-821 — JVM: track element type through unannotated list literals so indexed reads no longer erase to `Object` (#5686, JVM parity for MSIL's #5620)
 
 `Jvm.Codegen`'s `case EList` (`codegen/02_exprs.l`) always built a plain
 `ArrayList` with every element boxed to `Object` and no element-type
@@ -32346,7 +32346,7 @@ no regressions.
 
 **Related:** `docs/44-jvm-production-readiness-plan.md` m-98.
 
-### D-progress-811 — JVM: restored-dependency pipeline for cross-package generic records/unions (#3094, JVM counterpart of #1496/D097)
+### D-progress-822 — JVM: restored-dependency pipeline for cross-package generic records/unions (#3094, JVM counterpart of #1496/D097)
 
 `Jvm.Bridge` gains a restored-dependency pipeline: `compileToJarBundledWithRestored`
 / `compileProjectToJarBundledWithRestored` accept a list of pre-loaded
@@ -32404,9 +32404,9 @@ build --target jvm` / `lyric.toml` CLI wiring of a genuinely pre-compiled-only
 restored JVM dependency (e.g. a Maven-published lyric-jvm package with no
 local source) needs that target-aware artifact-naming/resolution work first.
 
-### D-progress-813: CI regression on PR #6631, `stdlib_generic_mono_self_test.l` test 7 (#5843)
+### D-progress-820: CI regression on PR #6631, `stdlib_generic_mono_self_test.l` test 7 (#5843)
 
-`recordParamGenericArgs` (#5956, D-progress-809) was a new, unfiltered
+`recordParamGenericArgs` (#5956, D-progress-823) was a new, unfiltered
 producer into `ctx.varGenericArgs` on JVM: it fed `Lyric.Mono`'s `Object`
 erasure marker for an unpinned imported-generic type parameter through
 `eagerlyResolveGenericArg`, which had no reserved case for the bare name
@@ -32419,7 +32419,7 @@ through `typeExprToJvm`'s existing D-progress-658 `Object ->
 java/lang/Object` reservation instead of duplicating that mapping.
 `stdlib_generic_mono_self_test.l` 7/7 on both targets; regression sweep
 across the batch's other JVM generic-arg-tracking self-tests unaffected.
-See `docs/03-decision-log.md` D-progress-813.
+See `docs/03-decision-log.md` D-progress-820.
 ### D-progress-814 — JVM range-subtype lowering: `Float`/`UInt`/`ULong` base types, package-qualified `from`/`tryFrom` registration (#6661, #6664)
 
 Two review findings against #5956's distinct/range-subtype construction API
@@ -32544,7 +32544,7 @@ this entry was written that same function's own list *included* `Short`/
 `UShort`/`UByte` — so `type X = UShort range 0 ..= 100` type-checked
 cleanly and crashed the JVM backend instead. See D-progress-818 for the
 real fix (#6661 residual) and #6695.
-### D-progress-815 — JVM: distinct/range-subtype `Type.from`/`Type.tryFrom` static factories (#5956, closes the historical #2997 JVM gap)
+### D-progress-823 — JVM: distinct/range-subtype `Type.from`/`Type.tryFrom` static factories (#5956, closes the historical #2997 JVM gap)
 
 The JVM backend never emitted the distinct/range-subtype construction API
 (`Type.from`/`Type.tryFrom`, and the `.toInt()`/`.toLong()`/`.toDouble()`/
@@ -32586,7 +32586,7 @@ design writeup.
 this closes), docs/44 m-101, docs/01-language-reference.md's range-subtype
 construction section.
 
-### D-progress-816 — JVM: `Double` stringification now matches .NET for `|value| >= 1e7` and very small magnitudes (#5660, docs/44 m-21 residual)
+### D-progress-824 — JVM: `Double` stringification now matches .NET for `|value| >= 1e7` and very small magnitudes (#5660, docs/44 m-21 residual)
 
 `emitNormalizeDoubleString` (D-progress-664) only stripped
 `Double.toString()`'s trailing `.0` — it never touched Java's own
@@ -32609,9 +32609,9 @@ regression cases, 38/38 pass. Manual repro confirmed exact .NET parity for
 
 **Related:** #5660, #4688, #4551, D-progress-664, docs/44 m-21.
 
-### D-progress-817 — CLI: stop feeding a path/NuGet dependency's MSIL `.dll` into the JVM restored-dep loader (#6697, review CRITICAL on D-progress-811)
+### D-progress-825 — CLI: stop feeding a path/NuGet dependency's MSIL `.dll` into the JVM restored-dep loader (#6697, review CRITICAL on D-progress-822)
 
-D-progress-811 gave `emitProjectJvmInProcess` a restored-dependency loop
+D-progress-822 gave `emitProjectJvmInProcess` a restored-dependency loop
 over `EmitProjectRequest.restoredDllPaths`, for a genuinely pre-compiled
 JVM producer JAR. But `resolveManifestDependencies`/`workspace_builder.l`
 (and `emitSingleFileWithWorkspaceMembers`/cli_build.l) still fed an
@@ -32620,7 +32620,7 @@ PE, never a JAR — into that same field regardless of target, so building
 the dependency once for `--target dotnet` and then a *different* consumer
 of it for `--target jvm` crashed the whole build: `restored JVM dep '...'
 failed to load: restored DLL has no Lyric.Contract resource`. A pre-merge
-review of D-progress-811 flagged this CRITICAL (#6697).
+review of D-progress-822 flagged this CRITICAL (#6697).
 
 `resolveManifestDependencies`'s Path branch now gates adding an existing
 `.dll` to `restoredDlls` on the same `dllMatters` flag that already gated
@@ -32641,9 +32641,9 @@ member analog), `emitter_project_self_test.l` (36/36),
 restored-JAR pipeline is unaffected), `cli_shared_self_test.l` (25/25),
 `cli_build_self_test.l` (81/81).
 
-**Related:** #6697, D-progress-811, #3094, #6264, #6136, #6503.
+**Related:** #6697, D-progress-822, #3094, #6264, #6136, #6503.
 
-### D-progress-818 — Two #6631 review findings: `Short`/`UShort`/`UByte` range subtypes actually DID crash the JVM backend (#6661 residual), plus `Float` distinct-type read-back and `UInt`/`ULong` generic-container erasure (#6695)
+### D-progress-826 — Two #6631 review findings: `Short`/`UShort`/`UByte` range subtypes actually DID crash the JVM backend (#6661 residual), plus `Float` distinct-type read-back and `UInt`/`ULong` generic-container erasure (#6695)
 
 PR review against #6631 raised two residual findings. **#6661 residual:**
 D-progress-814's claim that `Short`/`UShort`/`UByte` "fail type-checking
@@ -32670,7 +32670,7 @@ distinct/range-subtype value built via `Type.from`/`.tryFrom` could never
 be read back on JVM (added `case JFloat -> "toFloat"`).
 
 **#6695:** `UInt`/`ULong` were missing from `isPrimitiveTypeKeyword`
-(same choke-point class as the `Object`-marker fix, D-progress-813), so a
+(same choke-point class as the `Object`-marker fix, D-progress-820), so a
 generic container instantiated over either (`List[UInt]`, `Option[ULong]`)
 resolved a phantom same-package class via `eagerlyResolveGenericArg`'s
 guess branch — `NoClassDefFoundError`/`checkcast` failures at JVM
@@ -32700,5 +32700,5 @@ phantom class). `bitwise_self_test.l` and
 `lyric-compiler/jvm/generic_uint_erasure_jvm_self_test.l` (new),
 `.github/workflows/ci.yml`.
 
-**Related:** #6661, #6695, #6631, D-progress-814 (corrected), D-progress-815,
-D-progress-813, D-progress-571.
+**Related:** #6661, #6695, #6631, D-progress-814 (corrected), D-progress-823,
+D-progress-820, D-progress-571.
