@@ -35291,7 +35291,7 @@ endless run of minimal `100 Continue` responses drives unbounded client
 memory growth (`buf` never shrinks across loop iterations), the exact
 "a byte cap doesn't bound an unbounded COUNT of small messages" gap
 `maxTrailerLines` was introduced to close on the chunked-trailer path
-(D-progress-809/#6636), left unaddressed on this newer interim-response
+(D-progress-818/#6636), left unaddressed on this newer interim-response
 path. Reachable today via `Std.Http`'s free functions (`sendAsync`/
 `getAsync`/`postAsync`), independent of the separately-tracked N3.2
 async-interface-dispatch gap.
@@ -35335,6 +35335,6 @@ refusal).
 
 **Related:** #6623 (the PR this fix ships in), #6704 (the REQUIRED
 finding), D-progress-821 (the #6692 fix whose `readResponse` loop this
-entry closes the remaining count-cap gap in), D-progress-809 (the
+entry closes the remaining count-cap gap in), D-progress-818 (the
 `maxTrailerLines` precedent this entry's `maxInterimResponses` mirrors).
 
