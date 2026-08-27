@@ -153,10 +153,11 @@ func buildAndRunConsumer(
 // class, and `value` collides with `Std.Http.Url`'s field of the same name
 // (`opaque type Url { value: String }`), producing a silent miscompile
 // (`checkcast Std/Http/Url` instead of the real record class) reproducible
-// even with zero restored deps. Filed for separate follow-up; this test
-// exercises restored construction + a restored function call instead, with
-// the field read happening in the CONSUMER (already covered working by the
-// Box[String] test below).
+// even with zero restored deps. Filed as #6691 (the parameter-binding
+// sibling of the return-value-binding bug #6399/#6400 already fixed); this
+// test exercises restored construction + a restored function call instead,
+// with the field read happening in the CONSUMER (already covered working by
+// the Box[String] test below).
 test "cross-package generic record Box[Int] construct and read (jvm)" {
   val tmpDir = freshTempDir("cpgen-box-int")
   val producerSrc = "package CpGenJvm.Lib\n" + "\n" + "pub record Box[T] { value: T }\n" + "\n" +
