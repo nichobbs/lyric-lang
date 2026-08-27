@@ -134,6 +134,10 @@ test "hostGetCommandLineArgs resolves to a real getstatic read (issue #5377) rat
   // some length" -- content/length are launcher-dependent and asserted
   // elsewhere.
   val a = hostGetCommandLineArgs()
+  // Smoke check only (the call didn't panic and returned a usable
+  // slice) -- not a content/correctness check, since this harness's
+  // synthesised JVM entry point never forwards real argv. The real
+  // argv-content check lives in `lyric-compiler/jvm/env_args_jvm_main.l`.
   assertTrue(a.count >= 0, "hostGetCommandLineArgs returns a real slice[String] instead of panicking")
 }
 
