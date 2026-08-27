@@ -40,8 +40,8 @@ import Std.Core
 import Std.Testing
 
 record Holder {
-  buf: slice[Byte]
-  count: Int
+  var buf: slice[Byte]
+  var count: Int
 }
 
 func classify(bytes: in slice[Byte]): Result[Int, String] {
