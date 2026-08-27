@@ -374,10 +374,15 @@ func buildServerSslContextCore(identity: in Identity, minVersion: in TlsVersion,
 // to that version alone), then explicitly verifying the resulting
 // context's actual default protocol set never dips below TLS 1.2
 // (`assertProtocolFloor` above) rather than trusting it implicitly. No
-// client-cert trust manager is configured (mTLS is not yet supported on
-// this target — module header); the context trusts no client
+// client-cert trust manager is configured; the context trusts no client
 // certificates, which is inert since nothing requests one without
-// `HttpsParameters.setNeedClientAuth`.
+// `HttpsParameters.setNeedClientAuth`. This function itself never builds
+// client-cert trust — callers that need mTLS use the sibling
+// `buildServerSslContextWithClientCa`/`serverSslContextFromConfigMtls`
+// (#6017) instead. It is `Std.HttpServer.startListenerTls`'s own
+// `HttpsServer`/`HttpsConfigurator` path (below) that still cannot host
+// mTLS at all — blocked on the unrelated #5930 class-subclassing gap, not
+// a limitation of this function or of the JVM target generally.
 func buildServerSslContext(identity: in Identity, minVersion: in TlsVersion): JSSLContext {
   val tmArr = nullOfClass("[Ljavax.net.ssl.TrustManager;")
   buildServerSslContextCore(identity, minVersion, tmArr)

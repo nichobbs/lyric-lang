@@ -31950,12 +31950,34 @@ entry and the 2026-08-11 one, is this entry's own housekeeping action.
 Tracked follow-up for the real fix: teach `buildProjectFromManifest` a
 test-only package marker (or resolve manifest imports for a single-file
 build from `[project.tests]` too), so a shared fixture package becomes
-possible without a whole-project-build leak — no issue filed yet.
+possible without a whole-project-build leak — filed as #6579.
+
+**Addendum: a `claude-review` SUGGESTION on this same round surfaced a
+separate, real JVM codegen bug (#6578).** The re-review's third SUGGESTION
+(combining `serveTls`'s two separate `match tls.clientCa { ... }` blocks
+into one match producing a `(JSSLContext, Option[JSslClientAuthMode])`
+tuple) was implemented, but the resulting `--target jvm` build — while
+compiling cleanly with zero diagnostics — crashed at class-load time with
+`java.lang.VerifyError: Bad type on operand stack` (`serveTls`'s
+`builder.addHttpsListener` call site, `sslContext` typed `Object` instead
+of `SSLContext`). Caught by re-running `jvm_server_smoke.l` end to end
+after the change — the exact discipline this PR's own process section
+insists on ("actually build and run the test to confirm it passes before
+stopping") — rather than trusting a clean compile. Reverted that one
+SUGGESTION back to the original working two-match shape (#6017's own
+code, unchanged) and filed #6578 with the full verifier output and repro
+steps for the JVM backend's tuple-destructuring-from-divergent-match-arms
+codegen gap, rather than either shipping a crashing "fix" or silently
+dropping the SUGGESTION without a trace. The doc-comment and mTLS-floor
+test SUGGESTIONs from the same review round were applied normally (no
+codegen risk — comment-only and additive-test changes respectively).
 
 **Related:** #5997 (D-progress-805 is the sibling, non-mTLS TLS-1.2-floor
 fix this parallels), #6017 (D-progress-805, the PR this batches with),
 #6027 (the reverted fix; see the 2026-08-11 "lyric-web cleanups" entry
-above for the original decision), D-progress-543 (sandbox exception: no
+above for the original decision), #6578 (the JVM tuple-destructuring
+`VerifyError` this entry's addendum discovered), #6579 (the test-only
+package compiler follow-up), D-progress-543 (sandbox exception: no
 `./bin/lyric` buildable from source here, hence no compiler-level fix for
-#6564's root cause).
+either #6564's or #6578's root cause).
 
