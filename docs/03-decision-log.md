@@ -32863,3 +32863,101 @@ against a stdlib bundle rebuilt from this change (targeted redeploy via
 **Related:** #5622 (this issue also tracks the `sendRequest` half, fixed
 in a separate commit/entry), D-progress-780 (a similar "MSIL diverged
 from Std.String's real API surface" class of bug, different root cause).
+
+## D-progress-809 — MSIL call-site construction hint threading covers in-bundle generic parameters (`MGenericInstByName`), fixing `Std.Rest.sendRequest`'s async "match not exhaustive" panic (#5622, part 2 of 2)
+
+**Context.** #5622 part 2: `Std.Rest.sendRequest` (an `async func`) has an
+exhaustive `match body { case None -> …; case Some(json) -> … }` over its
+own `body: in Option[String]` parameter — genuinely exhaustive over
+`Option` in the source. Yet calling it on `--target dotnet` (e.g. via
+`RestClient.get`, which calls `sendRequest(client, GET, path, None, "")`)
+panicked at runtime:
+
+```
+Unhandled exception. System.Exception: Msil.Codegen: match not exhaustive
+in Std.Rest.<sendRequest>__SM_22.MoveNext scr=GNStd.Core.Option`1<S,> arms=2
+```
+
+**Root cause.** `lyric-compiler/msil/codegen.l`'s
+`lowerBuiltinOrStaticCallMsil` (the free-function `ECall` lowering path)
+threads a callee's declared parameter type into `fctx.contextHintTyArgs`
+before lowering each call argument, specifically so a bare nullary case
+literal (`None`, or a bare `Ok(...)`/`Err(...)`) constructs the closed
+generic instantiation the parameter's declared type calls for, rather than
+erasing to `<object>` (see the doc comment directly above the site, and the
+`#3920`/`#4965` history of the same construction-hint mechanism). Before
+this fix that `match pTy { … }` dispatch (around line 14078) had an arm
+for `MGenericInst` — the representation for a **restored, cross-assembly**
+generic type reference (e.g. `Option[T]` as seen from a plain user program
+that imports the already-compiled `Lyric.Stdlib.dll`) — but no arm at all
+for `MGenericInstByName`, the representation `typeExprToMsilCtx` produces
+for an **in-bundle** generic type (docs/43's by-name TypeSpec encoding,
+resolved to the real TypeDef at lowering): any `pTy` shaped that way fell
+into the catch-all `case _`, which only pushes `collExpect` and threads
+**no** `contextHintTyArgs` at all.
+
+`Std.Core.Option` is in-bundle relative to `Std.Rest` whenever the two are
+compiled together in the same compilation unit — which is exactly how the
+real `Lyric.Stdlib.dll` bundle is built (`lyric-stdlib/lyric.toml`
+compiles all 73 stdlib packages as one bundle). So the call site
+`sendRequest(client, GET, path, None, "")` inside `RestClient.get` saw
+`pTy = MGenericInstByName("Std.Core.Option\`1", [MString])` for the `body`
+parameter, hit the gap, and the bare `None` argument built via
+`lowerNullaryCaseValueMsil` fell back to `fctx.declaredRetTy` (RestClient.get's
+own `Result[HttpResponse, RestError]`, not `Option`-shaped, so still no
+usable hint) — constructing an untyped/erased `Option_None<object>`
+instead of the closed `Option_None<String>` `sendRequest`'s SM class field
+declares. The SM field store (a plain `stfld`, no runtime type check) let
+the mismatched value through; `sendRequest`'s own `match body { … }` then
+`isinst`-tested the SM field's value against both `Option_Some<String>`
+and `Option_None<String>` and matched **neither**, since the actual CLR
+object was `Option_None<object>` — hence "match not exhaustive" against a
+scrutinee whose *declared* type looked perfectly closed
+(`scr=GNStd.Core.Option\`1<S,>`decodes to `Option<System.String>`, the
+correct declared type — it's the *runtime value*, not the declared type,
+that was wrong).
+
+This is not async-specific: it is a general call-site argument-construction
+gap for any in-bundle function taking a bare nullary-case argument for a
+generic parameter. It manifests specifically here because `sendRequest` is
+the first in-bundle stdlib function whose Option/Result-typed parameter is
+later `match`ed with a concrete `isinst` test against the exact case —
+most other stdlib call sites either pass the payload-typed case
+(`Some(x)`) or never re-`match` the parameter, so the wrong runtime type
+never got exercised. Confirmed via two standalone repros: a plain
+cross-assembly sync function calling `f(None)` for an `Option[String]`
+parameter (imported `Std.Core` from an already-built `Lyric.Stdlib.dll`,
+so `pTy` is `MGenericInst`) worked correctly before this fix, matching the
+theory that only the missing `MGenericInstByName` arm was broken.
+
+**Fix.** Added an `MGenericInstByName(_, pArgs) ->` arm to the `match pTy`
+dispatch in `lowerBuiltinOrStaticCallMsil`, mirroring the existing
+`MGenericInst` arm instruction-for-instruction: save/clear/replace
+`fctx.contextHintTyArgs` with the parameter's own generic type args around
+the argument's lowering, then restore the saved hints afterward (so an
+enclosing hint for a *different* type never leaks into the argument, same
+invariant the `MGenericInst` arm already upholds).
+
+**Verification.**
+- Standalone repro (`await client.get("/status")` against an unreachable
+  `127.0.0.1:1`, exercising `RestClient.get` → `sendRequest` → the `match
+  body { … }`) no longer panics; it now returns cleanly with the expected
+  `Err` result (connection refused, no server listening).
+- Full `LYRIC_BOOTSTRAP_VERSION=0.5.1 make lyric` rebuild clean.
+- `lyric-compiler/lyric/pattern_lowering_self_test.l` (17/17),
+  `const_pattern_self_test.l` (18/18), and
+  `qualified_union_case_self_test.l` (8/8) all pass unchanged on
+  `--target dotnet` — ordinary match-expression lowering elsewhere is
+  unaffected.
+- `lyric-compiler/lyric/async_sm_self_test.l` (71/71) passes, including
+  two updated regression cases (`restViaParamRecv`/`restViaMatchBoundRecv`,
+  #5606) that previously ran with the real send path gated off
+  (`doSend = false`, `path = ""`) specifically to dodge this bug (and its
+  #5622-part-1 `fullUrl` sibling). Both bugs are now fixed, so the gate is
+  removed: the tests pass `doSend = true` and a non-empty path, exercising
+  the full async send/receive/match round trip end-to-end.
+
+**Related:** #5622 (part 1, `fullUrl`'s `.charAt` crash, fixed in
+D-progress-808), #3920 and #4965 (earlier fixes to the same bare-nullary-
+case construction-hint mechanism for the `MGenericInst`/scrutinee-typed
+cases, which this entry extends to `MGenericInstByName`).

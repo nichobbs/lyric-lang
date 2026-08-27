@@ -886,19 +886,25 @@ test "#1479/async: var cell survives an await between capture and use" {
 // receivers through declared params, `val`/`var` bindings, and stdlib
 // `Ok`/`Err`/`Some` match binds via bundle-stable declared-type registries.
 //
-// The regression here is a BUILD-time crash, so the load-bearing coverage is
-// that these functions COMPILE: the awaited `client.get("")` is fully present
-// in each state machine (counted by the pre-scan, emitted by Phase B).  The
-// actual send is gated behind a runtime-false flag because `Std.Rest`'s MSIL
-// runtime path is broken independently of this fix (pre-existing
-// runtime-throw stubs the release binary carries too: `fullUrl`'s
-// `base.charAt(...)` on an opaque-field receiver plants "unsupported method
-// 'charAt'", and `sendRequest`'s `match body { None / Some }` plants "match
-// not exhaustive ... scr=GNStd.Core.Option`1"); the tests assert the guarded
-// path's value at runtime.
+// The regression here was a BUILD-time crash, so the original load-bearing
+// coverage was only that these functions COMPILE — the real send was gated
+// behind a runtime-false flag because `Std.Rest`'s MSIL runtime path carried
+// two independent bugs (issue #5622): `fullUrl`'s `base.charAt(...)` on an
+// opaque-field receiver planted "unsupported method 'charAt'", and
+// `sendRequest`'s `match body { None / Some }` planted "match not
+// exhaustive ... scr=GNStd.Core.Option`1" (a call-site construction-hint gap
+// for `MGenericInstByName`-typed parameters: a bare `None` argument to an
+// in-bundle function built an untyped `Option_None<object>` instead of the
+// callee's declared `Option_None<String>`, so neither arm's `isinst` test
+// could ever match). Both are now fixed, so the gate is removed and these
+// tests exercise the real send path end-to-end (non-empty `path` so
+// `fullUrl`'s slash-handling and `sendRequest`'s `body` match both execute;
+// there is no server at `127.0.0.1:1`, so the connection itself fails and the
+// result is always `Err`, but reaching that `Err` exercises the full async
+// send/receive/match round trip on both bugs' former failure sites).
 async func restViaParamRecv(client: in RestClient, doSend: in Bool): Int {
   if doSend {
-    val res = await client.get("")
+    val res = await client.get("/status")
     match res {
       case Ok(_) -> 1
       case Err(_) -> 2
@@ -916,7 +922,7 @@ async func restViaMatchBoundRecv(ok: in Bool, doSend: in Bool): Int {
   }
   val client = match made { case Err(_) -> return 0; case Ok(c) -> c }
   if doSend {
-    val res = await client.get("")
+    val res = await client.get("/status")
     match res {
       case Ok(_) -> 1
       case Err(_) -> 2
@@ -926,13 +932,21 @@ async func restViaMatchBoundRecv(ok: in Bool, doSend: in Bool): Int {
   }
 }
 
-test "#5606: awaited stdlib async method on a declared-param receiver compiles" {
+test "#5606/#5622: awaited stdlib async method on a declared-param receiver runs" {
   val client = RestClient.create("http://127.0.0.1:1")
-  assertEqualInt(await restViaParamRecv(client, false), 3, "guarded path runs; the await compiled")
+  assertEqualInt(
+    await restViaParamRecv(client, true),
+    2,
+    "no server listening; connection fails -> Err, but the send/match round trip ran"
+  )
 }
 
-test "#5606: awaited stdlib async method on a match-bound receiver compiles" {
-  assertEqualInt(await restViaMatchBoundRecv(true, false), 3, "match-bound client typed; the await compiled")
+test "#5606/#5622: awaited stdlib async method on a match-bound receiver runs" {
+  assertEqualInt(
+    await restViaMatchBoundRecv(true, true),
+    2,
+    "no server listening; connection fails -> Err, but the send/match round trip ran"
+  )
 }
 
 // ── #6249: promoted locals under REAL suspension ──────────────────────────────

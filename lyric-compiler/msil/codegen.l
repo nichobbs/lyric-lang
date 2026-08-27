@@ -14330,6 +14330,53 @@ func lowerBuiltinOrStaticCallMsil(
                             rh = rh + 1
                           }
                         }
+                        // In-bundle generic parameter (#2362 by-name encoding, e.g. an
+                        // Option[String]/Result[T,E] parameter of a function compiled in
+                        // the SAME bundle as its generic head, as opposed to a restored
+                        // cross-assembly MGenericInst) — mirrors the MGenericInst arm
+                        // above exactly. Without this arm a bare `None`/`Ok(...)`/`Err(...)`
+                        // argument threaded no construction hint at all (fell to the
+                        // catch-all `case _` below, which only pushes `collExpect`), so it
+                        // erased to `Option_None<object>` / etc. instead of the callee's
+                        // declared closed instantiation. The callee's SM/field storage
+                        // then held a value whose real CLR type didn't match the field's
+                        // declared closed generic type, and a later `isinst` test against
+                        // the concrete case (e.g. inside a `match` over the parameter)
+                        // could never succeed for either arm — surfaced as a runtime
+                        // "match not exhaustive" panic in `Std.Rest.sendRequest`'s async
+                        // state machine (issue #5622, part 2): `RestClient.get`/`delete`
+                        // call `sendRequest(client, GET, path, None, "")`, and the bare
+                        // `None` built an untyped `Option_None<object>` that never isinst-
+                        // matched `Option_None<String>`/`Option_Some<String>` inside
+                        // `sendRequest`'s own `match body { case None -> …; case Some(json)
+                        // -> … }`.
+                        case MGenericInstByName(_, pArgs) -> {
+                          val savedHints: List[MsilType] = newList()
+                          var sh = 0
+                          while sh < fctx.contextHintTyArgs.count {
+                            savedHints.add(fctx.contextHintTyArgs[sh])
+                            sh = sh + 1
+                          }
+                          while fctx.contextHintTyArgs.count > 0 {
+                            fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+                          }
+                          var ph = 0
+                          while ph < pArgs.count {
+                            fctx.contextHintTyArgs.add(pArgs[ph])
+                            ph = ph + 1
+                          }
+                          pushCollExpect(fctx, pTy)
+                          val _ = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
+                          popCollExpect(fctx)
+                          while fctx.contextHintTyArgs.count > 0 {
+                            fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+                          }
+                          var rh = 0
+                          while rh < savedHints.count {
+                            fctx.contextHintTyArgs.add(savedHints[rh])
+                            rh = rh + 1
+                          }
+                        }
                         case MConcreteMap(keyTy, valTy) -> {
                           // Thread the map's key and value types into contextHintTyArgs
                           // so a bare `newMap()` argument builds Map[K,V], not the
