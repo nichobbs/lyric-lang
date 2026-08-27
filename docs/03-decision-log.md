@@ -35131,3 +35131,142 @@ here), D-progress-810 (the prior review-fix round's #6647 fix, whose
 single-line overflow guard this entry's bug sits one arithmetic step
 beyond).
 
+## D-progress-812 — `_kernel_native/http_host.l`: HEAD/1xx/204/304 responses read as if they carry a body (#6692) + raw-buffer amplification bypass of the body-size cap (#6693), a fifth review round on this same PR
+
+**Context.** A FIFTH `claude-review` pass on PR #6623 (after two runs that
+completed successfully but, for reasons unrelated to this PR's code —
+see "Review-tooling note" below — never posted their verdict or acted on
+the already-fixed #6656) found two more REQUIRED bugs, both in
+`_kernel_native/http_host.l`'s response-reading path:
+
+1. **#6692 — bodyless responses read as if they had a body.** `readBody`/
+   `readResponse` decided body framing purely from `Transfer-Encoding`/
+   `Content-Length`/EOF, with no access to the request method and no
+   special-casing of the response status. RFC 9112 section 6.3 rule 1
+   requires that a response to a `HEAD` request, and any `1xx`
+   (informational)/`204`/`304` response, is always terminated by the
+   header block's blank line regardless of what `Content-Length`/
+   `Transfer-Encoding` claims — a `HEAD` response's `Content-Length`
+   describes the body the equivalent `GET` would have had and MUST NOT be
+   read from the wire. Reachable today through `Std.Http`'s free-function
+   surface (`request(HEAD, url)` + `sendAsync`), which calls straight into
+   this kernel and is not blocked by the pre-existing N3.2 async-interface-
+   dispatch gap documented elsewhere in this PR. Without the fix,
+   `Http.sendAsync(Http.request(HEAD, url))` against any normal server
+   blocks in `readAtLeast` waiting for body bytes that will never arrive,
+   eventually failing with "connection closed before response body was
+   fully received" instead of succeeding with an empty body; the same
+   applies to a conditional `GET` answered `304` with a `Content-Length`
+   header (explicitly permitted by RFC 9110 section 15.4.5); and a `1xx`
+   interim response (e.g. `100 Continue`) was treated as THE final
+   response by the old single-shot `readResponse` — since it carries no
+   `Content-Length`/`Transfer-Encoding`, its close-delimited
+   `readUntilEof` path swallowed the real final response's raw bytes as
+   if they were the `1xx`'s own body.
+
+2. **#6693 — the raw receive buffer has no cap independent of the decoded
+   body.** D-progress-811 (#6656) correctly bounded the *decoded* chunked
+   body (`acc`) against `maxResponseBodyBytes` (10 MB) with an
+   overflow-safe check. But nothing bounded the *raw* wire bytes `buf`
+   that `readChunkedBody` reads every byte into — RFC 9112 section 7.1.1
+   chunk extensions let a malicious server pad each chunk-size line with
+   up to ~8180 bytes of junk after the hex size (still within the
+   existing per-line `maxChunkLineBytes` cap), so a chunk declaring size 1
+   grows `acc` by only 1 byte while growing `buf` by ~8195 bytes. The
+   `acc`-based cap wouldn't trip until `buf` held roughly 86 GB — the
+   client would be OOM-killed long before the intended 10 MB budget was
+   ever enforced, defeating the #6636 memory-budget fix through a distinct
+   path that fix didn't cover.
+
+**Fix.**
+
+1. Added `isBodylessResponse(method, status): Bool` (HEAD, or status
+   `< 200`/`== 204`/`== 304`) and restructured `readResponse` into a
+   `while true` loop: on each iteration it parses one header block: a
+   `1xx` status advances `searchFrom` to just past that header block's
+   blank line and loops (discarding the interim response and continuing
+   to read the SAME connection for the real final response — `buf`
+   and the underlying `Tcp.Conn` are reused across iterations, not
+   restarted, since bytes already buffered for a discarded interim
+   response's header search may already include the start of the next
+   one); a non-`1xx` status short-circuits to an empty body when
+   `isBodylessResponse` is true, otherwise calls `readBody` as before,
+   and returns. `doSendOnce` now threads `request.method` through to
+   `readResponse`.
+2. Added a raw-buffer cap inside `readChunkedBody`'s `while not done`
+   loop, checked every iteration before attempting to read the next
+   chunk-size line: `if buf.count - startPos > maxResponseBodyBytes {
+   return Err(...) }`. This bounds total raw bytes received for the
+   chunked body independent of how an attacker splits them between
+   chunk-extension padding and real chunk data, alongside (not replacing)
+   the existing `acc`-based decoded-body cap.
+
+**Verification.** Four new self-test cases (items L–O, now 11 total:
+E–O), all `native-backend-self-tests` CI cases compiled through the full
+native bridge pipeline:
+- Item L: a `HEAD` request against a server that sends `Content-Length:
+  1234` but never writes those bytes — asserts the client succeeds with
+  status 200 and a zero-length body rather than erroring.
+- Item M: a plain `GET` answered `204 No Content` with a (per RFC 9110
+  section 15.4.5, legal but ignorable) `Content-Length: 50` and no body
+  bytes sent — same assertion shape as item L, exercising the
+  status-based (not method-based) branch of `isBodylessResponse`.
+- Item N: a `100 Continue` interim response immediately followed by the
+  real `200 OK` response with body `"hello"` on the SAME connection —
+  asserts the client reports status 200 and body `"hello"`, not the
+  interim response's own status/a garbled body.
+- Item O: a server repeating `"1;<8150 bytes of 'A' padding>\r\nX\r\n"`
+  for 1300 iterations (~10.6 MB of raw wire bytes, ~1300 bytes of decoded
+  body) — asserts the client rejects with an error containing "maximum
+  allowed raw size" well before all 1300 iterations are sent, rather than
+  accepting arbitrarily more. The padding string and repeated writes are
+  generated by a small runtime loop inside the compiled test program
+  (not a literal embedded in the meta-test file), keeping the actual
+  transfer fast (loopback, well under a second) without bloating the
+  self-test source.
+
+All four verified as genuine regression checks by reverting
+`_kernel_native/http_host.l` to its pre-D-progress-812 state (via `git
+stash push` on just that file, keeping the new tests) and confirming
+each fails with the EXACT predicted wrong behavior, not a generic
+false-positive: item L and M both fail with "not sendOk" (the old code
+returns `Err` instead of succeeding with an empty body); item N fails
+with "finalStatus != 200" (the old code reports status 100 with the real
+response's bytes swallowed as body); item O fails with "not rejected"
+(the old code eventually fails with a DIFFERENT error — "connection
+closed before expected data arrived", once the test's fixed 1300-chunk
+send loop ends — rather than proactively rejecting once the raw-buffer
+cap is exceeded, exactly the missing-cap bug being fixed). Restored the
+fix and confirmed all 11 tests pass again, both before and after running
+`lyric fmt --write` on both changed files (clean, no unsafe-format
+refusal). One implementation bug was self-caught during this process:
+the first attempt at `readResponse`'s bodyless branch (`val bodyBytes =
+if isBodylessResponse(...) { [] } else { match readBody(...) { ... } }`)
+left the `[]` literal without an expected type on `--target native`,
+failing ALL 11 tests (including E–K, untouched by this fix) with
+`Lyric.LlvmCodegen: an empty list literal '[]' needs an expected type` —
+fixed by annotating the binding (`val bodyBytes: slice[Byte] = ...`), a
+distinct compiler-inference limitation from anything this PR is otherwise
+about, worth naming here so a future reader doesn't mistake it for
+evidence against the fix's substance.
+
+**Review-tooling note (not a code issue).** Between the D-progress-811
+push and this round's actual findings, the `claude-review` job ran twice
+(once automatically, once via a manual re-run) and both times completed
+successfully (28 and 29 turns, `is_error: false`) without posting a
+summary comment, closing the already-resolved #6656, or clearing the
+`review:changes-required` label — each run logged an escalating
+`permission_denials_count` (4, then 27), consistent with the review
+agent repeatedly hitting disallowed tool calls rather than finding any
+new problem. #6656's fix was independently verified correct by reading
+the diff directly, then manually closed with a comment and the stale
+label cleared, rather than waiting further on the review tooling. The
+THIRD re-run (after the label was already clear) completed normally and
+produced the two genuine findings this entry fixes — the tooling
+hiccup did not mask any real issue, it just delayed this round's start.
+
+**Related:** #6623 (the PR this fix ships in), #6692, #6693 (the two
+REQUIRED findings), D-progress-811 (the prior round's #6656 fix, whose
+`acc`-based cap this entry's #6693 fix supplements rather than
+replaces).
+

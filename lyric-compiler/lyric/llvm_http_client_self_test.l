@@ -873,3 +873,389 @@ test "Std.HttpHost native client rejects a chunked body whose cumulative size ov
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "Std.HttpHost native client rejects a cumulative-overflow chunked body")
 }
+
+test "Std.HttpHost native client treats a HEAD response as bodyless despite Content-Length (item L, #6692)" {
+  // RFC 9112 section 6.3 rule 1: a HEAD response's Content-Length describes
+  // the body the equivalent GET would have had and MUST NOT be read from
+  // the wire. The server sends Content-Length: 1234 but never writes those
+  // 1234 bytes (then closes) — the old code would block in `readAtLeast`
+  // until the connection closes, then fail with "connection closed before
+  // response body was fully received" instead of succeeding with an empty
+  // body.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
+    "import Std.HttpHost\n" +
+    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
+    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
+    "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
+    "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  val listener = match hostListen(\"127.0.0.1\", 0) {\n" +
+    "    case Ok(l) -> l\n" +
+    "    case Err(_) -> return 1\n" +
+    "  }\n" +
+    "  val port = hostLocalPort(listener)\n" +
+    "  val worker: () -> NativePtr[Byte] = { ->\n" +
+    "    match hostAccept(listener) {\n" +
+    "      case Err(_) -> toC(\"accept_failed\")\n" +
+    "      case Ok(conn) -> {\n" +
+    "        var reqOk = false\n" +
+    "        match hostRead(conn, 8192) {\n" +
+    "          case Ok(_) -> { reqOk = true }\n" +
+    "          case Err(_) -> ()\n" +
+    "        }\n" +
+    "        val resp = \"HTTP/1.1 200 OK\\r\\nContent-Length: 1234\\r\\nConnection: close\\r\\n\\r\\n\"\n" +
+    "        val _ = hostWrite(conn, encodeUtf8(resp))\n" +
+    "        hostClose(conn)\n" +
+    "        if reqOk { toC(\"ok\") } else { toC(\"leaked\") }\n" +
+    "      }\n" +
+    "    }\n" +
+    "  }\n" +
+    "  var tid: Long = 0\n" +
+    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  if rc != 0 {\n" +
+    "    hostStopListener(listener)\n" +
+    "    return 2\n" +
+    "  }\n" +
+    "  val client = hostDefaultClient()\n" +
+    "  val url = \"http://127.0.0.1:\" + port.toString() + \"/x\"\n" +
+    "  val request = hostMakeRequest(\"HEAD\", url)\n" +
+    "  var finalStatus = 0\n" +
+    "  var bodyLen = -1\n" +
+    "  var sendOk = false\n" +
+    "  match await hostSendSafe(client, request) {\n" +
+    "    case Ok(response) -> {\n" +
+    "      finalStatus = hostStatusCode(response)\n" +
+    "      match await hostReadBodyBytesSafe(response) {\n" +
+    "        case Ok(bytes) -> { bodyLen = bytes.length; sendOk = true }\n" +
+    "        case Err(_) -> ()\n" +
+    "      }\n" +
+    "    }\n" +
+    "    case Err(_) -> ()\n" +
+    "  }\n" +
+    "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
+    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  var serverOk = false\n" +
+    "  if rj == 0 {\n" +
+    "    val n = cStrlen(outp)\n" +
+    "    if n == 2 {\n" +
+    "      serverOk = true\n" +
+    "    }\n" +
+    "    freeC(outp)\n" +
+    "  }\n" +
+    "  hostStopListener(listener)\n" +
+    "  if not serverOk {\n" +
+    "    return 3\n" +
+    "  }\n" +
+    "  if not sendOk {\n" +
+    "    return 4\n" +
+    "  }\n" +
+    "  if finalStatus != 200 {\n" +
+    "    return 5\n" +
+    "  }\n" +
+    "  if bodyLen != 0 {\n" +
+    "    return 6\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpHost native client treats a HEAD response as bodyless")
+}
+
+test "Std.HttpHost native client treats a 204 response as bodyless despite Content-Length (item M, #6692)" {
+  // Same RFC 9112 section 6.3 rule 1 guarantee as item L, triggered by
+  // status code rather than request method: a 204 is always bodyless
+  // regardless of what Content-Length claims, even on a plain GET.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
+    "import Std.HttpHost\n" +
+    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
+    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
+    "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
+    "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  val listener = match hostListen(\"127.0.0.1\", 0) {\n" +
+    "    case Ok(l) -> l\n" +
+    "    case Err(_) -> return 1\n" +
+    "  }\n" +
+    "  val port = hostLocalPort(listener)\n" +
+    "  val worker: () -> NativePtr[Byte] = { ->\n" +
+    "    match hostAccept(listener) {\n" +
+    "      case Err(_) -> toC(\"accept_failed\")\n" +
+    "      case Ok(conn) -> {\n" +
+    "        var reqOk = false\n" +
+    "        match hostRead(conn, 8192) {\n" +
+    "          case Ok(_) -> { reqOk = true }\n" +
+    "          case Err(_) -> ()\n" +
+    "        }\n" +
+    "        val resp = \"HTTP/1.1 204 No Content\\r\\nContent-Length: 50\\r\\nConnection: close\\r\\n\\r\\n\"\n" +
+    "        val _ = hostWrite(conn, encodeUtf8(resp))\n" +
+    "        hostClose(conn)\n" +
+    "        if reqOk { toC(\"ok\") } else { toC(\"leaked\") }\n" +
+    "      }\n" +
+    "    }\n" +
+    "  }\n" +
+    "  var tid: Long = 0\n" +
+    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  if rc != 0 {\n" +
+    "    hostStopListener(listener)\n" +
+    "    return 2\n" +
+    "  }\n" +
+    "  val client = hostDefaultClient()\n" +
+    "  val url = \"http://127.0.0.1:\" + port.toString() + \"/x\"\n" +
+    "  val request = hostMakeRequest(\"GET\", url)\n" +
+    "  var finalStatus = 0\n" +
+    "  var bodyLen = -1\n" +
+    "  var sendOk = false\n" +
+    "  match await hostSendSafe(client, request) {\n" +
+    "    case Ok(response) -> {\n" +
+    "      finalStatus = hostStatusCode(response)\n" +
+    "      match await hostReadBodyBytesSafe(response) {\n" +
+    "        case Ok(bytes) -> { bodyLen = bytes.length; sendOk = true }\n" +
+    "        case Err(_) -> ()\n" +
+    "      }\n" +
+    "    }\n" +
+    "    case Err(_) -> ()\n" +
+    "  }\n" +
+    "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
+    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  var serverOk = false\n" +
+    "  if rj == 0 {\n" +
+    "    val n = cStrlen(outp)\n" +
+    "    if n == 2 {\n" +
+    "      serverOk = true\n" +
+    "    }\n" +
+    "    freeC(outp)\n" +
+    "  }\n" +
+    "  hostStopListener(listener)\n" +
+    "  if not serverOk {\n" +
+    "    return 3\n" +
+    "  }\n" +
+    "  if not sendOk {\n" +
+    "    return 4\n" +
+    "  }\n" +
+    "  if finalStatus != 204 {\n" +
+    "    return 5\n" +
+    "  }\n" +
+    "  if bodyLen != 0 {\n" +
+    "    return 6\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpHost native client treats a 204 response as bodyless")
+}
+
+test "Std.HttpHost native client skips an interim 100-Continue response and reads the real final response (item N, #6692)" {
+  // RFC 9110 section 15.2 / RFC 9112 section 6.3 rule 1: a 1xx response is
+  // always bodyless and interim — the client must discard it and keep
+  // reading for the actual final response on the SAME connection. The old
+  // single-shot `readResponse` treated the 100 Continue's own header block
+  // as THE response (no Content-Length/Transfer-Encoding present, so it
+  // fell into the close-delimited `readUntilEof` path) and swallowed the
+  // real 200 response's raw bytes as if they were the 100's body, reporting
+  // status 100 with a garbled body instead of status 200 with "hello".
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
+    "import Std.HttpHost\n" +
+    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
+    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
+    "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
+    "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  val listener = match hostListen(\"127.0.0.1\", 0) {\n" +
+    "    case Ok(l) -> l\n" +
+    "    case Err(_) -> return 1\n" +
+    "  }\n" +
+    "  val port = hostLocalPort(listener)\n" +
+    "  val worker: () -> NativePtr[Byte] = { ->\n" +
+    "    match hostAccept(listener) {\n" +
+    "      case Err(_) -> toC(\"accept_failed\")\n" +
+    "      case Ok(conn) -> {\n" +
+    "        var reqOk = false\n" +
+    "        match hostRead(conn, 8192) {\n" +
+    "          case Ok(_) -> { reqOk = true }\n" +
+    "          case Err(_) -> ()\n" +
+    "        }\n" +
+    "        val resp = \"HTTP/1.1 100 Continue\\r\\n\\r\\n\" +\n" +
+    "          \"HTTP/1.1 200 OK\\r\\nContent-Length: 5\\r\\nConnection: close\\r\\n\\r\\nhello\"\n" +
+    "        val _ = hostWrite(conn, encodeUtf8(resp))\n" +
+    "        hostClose(conn)\n" +
+    "        if reqOk { toC(\"ok\") } else { toC(\"leaked\") }\n" +
+    "      }\n" +
+    "    }\n" +
+    "  }\n" +
+    "  var tid: Long = 0\n" +
+    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  if rc != 0 {\n" +
+    "    hostStopListener(listener)\n" +
+    "    return 2\n" +
+    "  }\n" +
+    "  val client = hostDefaultClient()\n" +
+    "  val url = \"http://127.0.0.1:\" + port.toString() + \"/x\"\n" +
+    "  val request = hostMakeRequest(\"GET\", url)\n" +
+    "  var finalStatus = 0\n" +
+    "  var finalBody = \"\"\n" +
+    "  var sendOk = false\n" +
+    "  match await hostSendSafe(client, request) {\n" +
+    "    case Ok(response) -> {\n" +
+    "      finalStatus = hostStatusCode(response)\n" +
+    "      match await hostReadBodyTextSafe(response) {\n" +
+    "        case Ok(text) -> { finalBody = text; sendOk = true }\n" +
+    "        case Err(_) -> ()\n" +
+    "      }\n" +
+    "    }\n" +
+    "    case Err(_) -> ()\n" +
+    "  }\n" +
+    "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
+    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  var serverOk = false\n" +
+    "  if rj == 0 {\n" +
+    "    val n = cStrlen(outp)\n" +
+    "    if n == 2 {\n" +
+    "      serverOk = true\n" +
+    "    }\n" +
+    "    freeC(outp)\n" +
+    "  }\n" +
+    "  hostStopListener(listener)\n" +
+    "  if not serverOk {\n" +
+    "    return 3\n" +
+    "  }\n" +
+    "  if not sendOk {\n" +
+    "    return 4\n" +
+    "  }\n" +
+    "  if finalStatus != 200 {\n" +
+    "    return 5\n" +
+    "  }\n" +
+    "  if finalBody != \"hello\" {\n" +
+    "    return 6\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpHost native client skips an interim 100-Continue response")
+}
+
+test "Std.HttpHost native client bounds the raw receive buffer against chunk-extension padding, not just the decoded body (item O, #6693)" {
+  // #6656/D-progress-811 bounded the DECODED chunked body (`acc`) against
+  // `maxResponseBodyBytes` (10 MB). RFC 9112 section 7.1.1 chunk extensions
+  // let a server pad each chunk-size line with bytes that count toward
+  // neither `acc` nor any single-line cap violation: `maxChunkLineBytes`
+  // (8192) bounds one line, but nothing bounded the RAW buffer across many
+  // such lines. A server repeating "1;<~8150 bytes of padding>\r\nX\r\n"
+  // grows the raw buffer by ~8157 bytes per iteration while `acc` grows by
+  // only 1 byte, so the old code would need roughly `acc` to reach 10 MB
+  // (~10.5 million iterations, ~86 GB of raw buffer) before ever rejecting
+  // — the client would exhaust memory long before the intended budget was
+  // enforced. This sends just over 10 MB of such padded chunks (~1300
+  // iterations, well under what the OLD `acc`-only check would tolerate)
+  // and asserts the client rejects the response instead of accepting
+  // arbitrarily more.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
+    "import Std.HttpHost\n" +
+    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
+    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
+    "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
+    "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
+    "func containsAt(s: String, needle: String, start: Int): Bool {\n" +
+    "  if start + needle.length > s.length { false } else { s.substring(start, needle.length) == needle }\n" +
+    "}\n" +
+    "func containsSubstring(s: String, needle: String): Bool {\n" +
+    "  var i = 0\n" +
+    "  var found = false\n" +
+    "  while i <= s.length - needle.length {\n" +
+    "    if containsAt(s, needle, i) { found = true }\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  found\n" +
+    "}\n" +
+    "func repeatChar(c: String, n: Int): String {\n" +
+    "  var acc = \"\"\n" +
+    "  var i = 0\n" +
+    "  while i < n {\n" +
+    "    acc = acc + c\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  acc\n" +
+    "}\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  val listener = match hostListen(\"127.0.0.1\", 0) {\n" +
+    "    case Ok(l) -> l\n" +
+    "    case Err(_) -> return 1\n" +
+    "  }\n" +
+    "  val port = hostLocalPort(listener)\n" +
+    "  val worker: () -> NativePtr[Byte] = { ->\n" +
+    "    match hostAccept(listener) {\n" +
+    "      case Err(_) -> toC(\"accept_failed\")\n" +
+    "      case Ok(conn) -> {\n" +
+    "        var reqOk = false\n" +
+    "        match hostRead(conn, 8192) {\n" +
+    "          case Ok(_) -> { reqOk = true }\n" +
+    "          case Err(_) -> ()\n" +
+    "        }\n" +
+    "        val headResp = \"HTTP/1.1 200 OK\\r\\nTransfer-Encoding: chunked\\r\\nConnection: close\\r\\n\\r\\n\"\n" +
+    "        val _ = hostWrite(conn, encodeUtf8(headResp))\n" +
+    "        val padding = repeatChar(\"A\", 8150)\n" +
+    "        val chunkLine = \"1;\" + padding + \"\\r\\nX\\r\\n\"\n" +
+    "        val chunkBytes = encodeUtf8(chunkLine)\n" +
+    "        var i = 0\n" +
+    "        var writing = true\n" +
+    "        while i < 1300 and writing {\n" +
+    "          match hostWrite(conn, chunkBytes) {\n" +
+    "            case Ok(_) -> {\n" +
+    "            }\n" +
+    "            case Err(_) -> { writing = false }\n" +
+    "          }\n" +
+    "          i = i + 1\n" +
+    "        }\n" +
+    "        hostClose(conn)\n" +
+    "        if reqOk { toC(\"ok\") } else { toC(\"leaked\") }\n" +
+    "      }\n" +
+    "    }\n" +
+    "  }\n" +
+    "  var tid: Long = 0\n" +
+    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  if rc != 0 {\n" +
+    "    hostStopListener(listener)\n" +
+    "    return 2\n" +
+    "  }\n" +
+    "  val client = hostDefaultClient()\n" +
+    "  val url = \"http://127.0.0.1:\" + port.toString() + \"/x\"\n" +
+    "  val request = hostMakeRequest(\"GET\", url)\n" +
+    "  var rejected = false\n" +
+    "  match await hostSendSafe(client, request) {\n" +
+    "    case Err(e) -> { rejected = containsSubstring(e, \"maximum allowed raw size\") }\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "  }\n" +
+    "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
+    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  var serverOk = false\n" +
+    "  if rj == 0 {\n" +
+    "    val n = cStrlen(outp)\n" +
+    "    if n == 2 {\n" +
+    "      serverOk = true\n" +
+    "    }\n" +
+    "    freeC(outp)\n" +
+    "  }\n" +
+    "  hostStopListener(listener)\n" +
+    "  if not serverOk {\n" +
+    "    return 3\n" +
+    "  }\n" +
+    "  if not rejected {\n" +
+    "    return 4\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(
+    r.exitCode,
+    42,
+    "Std.HttpHost native client bounds the raw receive buffer against chunk-extension padding"
+  )
+}

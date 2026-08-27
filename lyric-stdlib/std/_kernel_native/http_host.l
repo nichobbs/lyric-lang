@@ -728,6 +728,19 @@ func readChunkedBody(conn: in Tcp.Conn, buf: in List[Byte], startPos: in Int): R
   var pos = startPos
   var done = false
   while not done {
+    // #6693: `readUntilPatternFrom`'s `maxChunkLineBytes` cap bounds only a
+    // SINGLE chunk-size/trailer line, and the `acc`-based check above bounds
+    // only the DECODED body — neither bounds the raw wire bytes `buf` grows
+    // by every iteration. RFC 9112 section 7.1.1 chunk extensions let a
+    // malicious server pad each chunk-size line with up to ~8180 bytes of
+    // junk after the hex size, so a chunk declaring size 1 can still grow
+    // `buf` by ~8195 bytes while growing `acc` by only 1 byte — the `acc`
+    // cap wouldn't trip until `buf` (accumulated raw bytes since `startPos`)
+    // reached tens of gigabytes. Bound the raw buffer directly, independent
+    // of how the attacker splits bytes between padding and real chunk data.
+    if buf.count - startPos > maxResponseBodyBytes {
+      return Err(error = "chunked response exceeds the maximum allowed raw size")
+    }
     val lineEnd = match readUntilPatternFrom(conn, buf, pos, crlfBytes(), maxChunkLineBytes) {
       case Ok(idx) -> idx
       case Err(e) -> return Err(error = e)
@@ -1231,10 +1244,22 @@ func parseHeadersText(text: in String): Result[ParsedHeaders, String] {
   Ok(value = ParsedHeaders(status = status, names = names, values = values))
 }
 
+/// RFC 9112 section 6.3 rule 1: a response to a `HEAD` request, and any
+/// `1xx` (informational)/`204`/`304` response, is always terminated by the
+/// header block's blank line regardless of `Content-Length`/
+/// `Transfer-Encoding` — such a response's `Content-Length` (if present)
+/// describes the body the equivalent `GET` would have had and MUST NOT be
+/// read from the wire.
+func isBodylessResponse(method: in String, status: in Int): Bool {
+  asciiEqualsCaseInsensitive(method, "HEAD") or status < 200 or status == 204 or status == 304
+}
+
 /// Decide and read the response body per RFC 9112 §6.3's precedence
 /// (`Transfer-Encoding: chunked` first, then `Content-Length`, then
 /// close-delimited) — the client-side counterpart of
-/// `Std.HttpEngine.analyzeFraming`'s server-side framing decision.
+/// `Std.HttpEngine.analyzeFraming`'s server-side framing decision. Callers
+/// must check `isBodylessResponse` first (#6692): this function always
+/// tries to read a body per the framing headers.
 func readBody(
   conn: in Tcp.Conn, buf: in List[Byte], bodyStart: in Int, headers: in ParsedHeaders
 ): Result[slice[Byte], String] {
@@ -1250,30 +1275,47 @@ func readBody(
   }
 }
 
-func readResponse(conn: in Tcp.Conn): Result[HttpResponseMessage, String] {
+/// Reads one final (non-`1xx`) response, discarding any interim `1xx`
+/// responses along the way (RFC 9112 section 6.3 rule 1 / RFC 9110 section
+/// 15.2: an interim response is always bodyless and must be followed by
+/// re-reading a response). `searchFrom` re-uses `buf` across iterations
+/// rather than restarting it, since bytes already read for a discarded
+/// interim response's header block may already include the start of the
+/// next response.
+func readResponse(conn: in Tcp.Conn, method: in String): Result[HttpResponseMessage, String] {
   val buf: List[Byte] = newList()
-  val headerEndIdx = match readUntilPatternFrom(conn, buf, 0, crlfcrlfBytes(), maxResponseHeaderBytes) {
-    case Ok(idx) -> idx
-    case Err(e) -> return Err(error = e)
+  var searchFrom = 0
+  while true {
+    val headerEndIdx = match readUntilPatternFrom(conn, buf, searchFrom, crlfcrlfBytes(), maxResponseHeaderBytes) {
+      case Ok(idx) -> idx
+      case Err(e) -> return Err(error = e)
+    }
+    val headerText = match decodeRange(buf, searchFrom, headerEndIdx - searchFrom) {
+      case Some(t) -> t
+      case None -> return Err(error = "response headers are not valid UTF-8")
+    }
+    val headers = match parseHeadersText(headerText) { case Ok(h) -> h; case Err(e) -> return Err(error = e) }
+    val bodyStart = headerEndIdx + 4
+    if headers.status < 100 or headers.status >= 200 {
+      val bodyBytes: slice[Byte] = if isBodylessResponse(method, headers.status) {
+        []
+      } else {
+        match readBody(conn, buf, bodyStart, headers) {
+          case Ok(b) -> b
+          case Err(e) -> return Err(error = e)
+        }
+      }
+      return Ok(
+        value = HttpResponseMessage(
+          status = headers.status,
+          headerNames = headers.names,
+          headerValues = headers.values,
+          bodyBytes = bodyBytes
+        )
+      )
+    }
+    searchFrom = bodyStart
   }
-  val headerText = match decodeRange(buf, 0, headerEndIdx) {
-    case Some(t) -> t
-    case None -> return Err(error = "response headers are not valid UTF-8")
-  }
-  val headers = match parseHeadersText(headerText) { case Ok(h) -> h; case Err(e) -> return Err(error = e) }
-  val bodyStart = headerEndIdx + 4
-  val bodyBytes = match readBody(conn, buf, bodyStart, headers) {
-    case Ok(b) -> b
-    case Err(e) -> return Err(error = e)
-  }
-  Ok(
-    value = HttpResponseMessage(
-      status = headers.status,
-      headerNames = headers.names,
-      headerValues = headers.values,
-      bodyBytes = bodyBytes
-    )
-  )
 }
 
 func doSendOnce(client: in HttpClientHandle, request: in HttpRequestMessage): Result[HttpResponseMessage, String] {
@@ -1293,7 +1335,7 @@ func doSendOnce(client: in HttpClientHandle, request: in HttpRequestMessage): Re
     case Ok(_) -> {
     }
   }
-  val result = readResponse(conn)
+  val result = readResponse(conn, request.method)
   Tcp.hostClose(conn)
   result
 }
