@@ -5536,33 +5536,59 @@ func emitCompoundCombineMsil(
 
 // Like `emitCompoundCombineMsil`, but the right-hand operand has already been
 // evaluated into a local slot (`rSlot`, typed `rTy`).  Used by the indexed
-// compound-assignment path, which evaluates the rhs up-front to recover the
-// element's arithmetic type (List/Map elements are stored boxed and the
-// receiver erases primitive element types to `object`).  The current value is
-// already on the stack, typed `rTy`.
+// compound-assignment path, which evaluates the rhs up-front (List/Map
+// elements are stored boxed and the receiver erases primitive element types
+// to `object`, so the element's own type has to come from the container,
+// not the read-back boxed value).  The current value is already on the
+// stack, typed `elemTy` — the container's REAL declared element type (from
+// `recvTy`), not necessarily `rTy`: `xs[i] += <non-String>` on a
+// `List[String]` is well-typed since #5688 (mirroring plain-variable `s +=`,
+// #5657), so `elemTy` (String) and `rTy` (the rhs's own type) can genuinely
+// differ. `elemTy` drives the string-vs-arithmetic decision and the Byte
+// wrap/div-rem-unsigned choice (same as `emitCompoundCombineMsil`); `rTy`
+// drives how the loaded `rSlot` value is coerced to a string when it isn't
+// already one (mirroring `emitCompoundCombineMsil`'s Bool/box+ToString
+// handling) — for every op other than a String `AssPlus`, the type checker
+// still requires `rTy == elemTy` (widening is scoped to that one case), so
+// this is a strict generalization, not a behavior change elsewhere.
 func emitCompoundCombineSlotMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
   insns: in List[MInsn],
   op: in AssignOp,
+  elemTy: in MsilType,
   rTy: in MsilType,
   rSlot: in Int,
 ): Unit {
-  val isStringConcat = match op { case AssPlus -> match rTy { case MString -> true; case _ -> false }; case _ -> false }
+  val isStringConcat = match op {
+    case AssPlus -> match elemTy { case MString -> true; case _ -> false }
+    case _ -> false
+  }
   emitLoadSlot(insns, rSlot, fctx.paramCount)
   if isStringConcat {
+    match rTy {
+      case MString -> {
+      }
+      case MBool -> emitBoolToStringMsil(cctx, fctx, insns)
+      case _ -> {
+        if isValueType(rTy) {
+          boxIfNeededMsil(cctx, insns, rTy)
+        }
+        insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+      }
+    }
     insns.add(MCall(methodToken = cctx.tokConcat2))
   } else {
     match assignOpArithInsnMsil(op) {
       case Some(arith) -> {
         val concreteArith = match arith {
-          case MDiv -> match rTy { case MByte -> MDivUn; case _ -> MDiv }
-          case MRem -> match rTy { case MByte -> MRemUn; case _ -> MRem }
+          case MDiv -> match elemTy { case MByte -> MDivUn; case _ -> MDiv }
+          case MRem -> match elemTy { case MByte -> MRemUn; case _ -> MRem }
           case other -> other
         }
         insns.add(concreteArith)
         // Byte compound results wrap unsigned — see emitCompoundCombineMsil.
-        match rTy {
+        match elemTy {
           case MByte -> insns.add(MConvU1)
           case _ -> ()
         }
@@ -10969,13 +10995,17 @@ func lowerAssignExprMsil(
             //
             // List/Map elements are stored boxed and the receiver erases
             // primitive element types to `object` (`List[Int]` → MObject,
-            // `Map[K,V]` → MMapOf(object,object)), so the element's arithmetic
-            // type cannot come from the receiver.  Instead the rhs is evaluated
-            // up-front: for a well-typed compound assignment the element and the
-            // rhs share a type, so the rhs type drives the unbox / combine /
-            // re-box.  The receiver's tracked type still selects the container
-            // shape (Dictionary vs List), mirroring the `AssEq` indexed path.
-            // #1481.
+            // `Map[K,V]` → MMapOf(object,object)), so `recvTy`'s own generic
+            // argument (`MConcreteList`/`MListOf`/`MConcreteMap`/`MMapOf`'s
+            // elemTy/valTy) is the element's REAL type — `containerElemTy`
+            // below — and drives the unbox / combine / re-box.  This used to
+            // be inferred from the rhs's own type instead (`xs[i] += true` on
+            // a `List[String]` would try to unbox the read-back boxed String
+            // element as a Bool and throw `InvalidCastException`); #5688
+            // widened `+=` on a String element to accept any rhs (mirroring
+            // plain-variable `s +=`, #5657), so `containerElemTy` and the
+            // rhs's own type can now legitimately differ and only the real
+            // container type is sound to unbox/re-box against.
             val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
             val isMap = match recvTy { case MMapOf(_, _) -> true; case MConcreteMap(_, _) -> true; case _ -> false }
             // The container ref is stashed in an `object`-typed temp, so the
@@ -11009,10 +11039,20 @@ func lowerAssignExprMsil(
             }
             val kSlot = allocSlotMsil(fctx, "__cidx_k_" + toString(fctx.slotTicker.count), ckTy)
             emitStoreSlot(insns, kSlot, fctx.paramCount)
-            // Right-hand operand up-front — its type is the element type.
+            // Right-hand operand up-front.
             val rTy = lowerExprMsil(cctx, fctx, insns, value)
             val rSlot = allocSlotMsil(fctx, "__cidx_r_" + toString(fctx.slotTicker.count), rTy)
             emitStoreSlot(insns, rSlot, fctx.paramCount)
+            // The container's real declared element type — see the comment
+            // above.  Falls back to `rTy` for a container shape without a
+            // tracked element type (there is none besides the four below).
+            val containerElemTy: MsilType = match recvTy {
+              case MConcreteList(e) -> e
+              case MListOf(e) -> e
+              case MConcreteMap(_, v) -> v
+              case MMapOf(_, v) -> v
+              case _ -> rTy
+            }
             // current = container[key]
             emitLoadSlot(insns, cSlot, fctx.paramCount)
             if isMap {
@@ -11027,11 +11067,11 @@ func lowerAssignExprMsil(
               emitListGetItem(cctx, insns, recvTy)
             }
             if not isConcreteColl {
-              materializeBoxedElemMsil(cctx, insns, rTy)
+              materializeBoxedElemMsil(cctx, insns, containerElemTy)
             }
-            emitCompoundCombineSlotMsil(cctx, fctx, insns, op, rTy, rSlot)
-            collBoxIfNeeded(cctx, insns, rTy, recvTy)
-            val vSlotTy = if isConcreteColl { rTy } else { MObject }
+            emitCompoundCombineSlotMsil(cctx, fctx, insns, op, containerElemTy, rTy, rSlot)
+            collBoxIfNeeded(cctx, insns, containerElemTy, recvTy)
+            val vSlotTy = if isConcreteColl { containerElemTy } else { MObject }
             val vSlot = allocSlotMsil(fctx, "__cidx_v_" + toString(fctx.slotTicker.count), vSlotTy)
             emitStoreSlot(insns, vSlot, fctx.paramCount)
             emitLoadSlot(insns, cSlot, fctx.paramCount)

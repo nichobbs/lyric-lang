@@ -32495,3 +32495,65 @@ context to propagate), matching `EList`'s equivalent fallback.
 
 **Related:** #4965, D-progress-555 (the original, narrower single-call-site
 patch), PR #4955.
+
+---
+
+## D-progress-804 — `+=` String widening extended to field and indexed targets (#5688)
+
+**Context.** #5657 made `s += <any RHS>` type-check when `s` is a `String`
+(mirroring binary `+`'s "any operand + String = String"), but scoped it to
+a plain 1-segment variable target: field (`obj.f += x`) and indexed
+(`xs[i] += x`) String targets' compound-assign codegen inferred the
+element/field type from the RHS rather than the container's own declared
+type — a non-String RHS would have unboxed/cast against the wrong type
+(`InvalidCastException` on MSIL, `ClassCastException` on JVM). `obj.f += "str"`
+/ `xs[i] += "str"` (String RHS) already worked and had to keep working.
+
+**Type checker.** `isStringPlusVarAssign` (`typechecker_exprs.l`) widened
+from `targetIsSimpleVar` (a 1-segment `EPath` only) to also accept
+`EMember`/`EIndex` target shapes. No other change needed: both call sites
+(`SAssign`/`EAssign`) already pass `targetType` computed via `inferExpr` on
+the target itself, which was already correct for field/indexed shapes
+(the container's real field/element type) — the type checker never
+inferred it from the RHS to begin with; only codegen did.
+
+**MSIL.** The field compound-assign path (`EMember`) was already correct —
+`fieldMsilTypes` supplies the real declared field type independent of the
+RHS. The indexed (`EIndex`) path used the RHS's own type (`rTy`) as the
+presumed container element type for `materializeBoxedElemMsil`/
+`emitCompoundCombineSlotMsil`. Fixed by deriving `containerElemTy` from
+`recvTy`'s own generic argument (`MConcreteList`/`MListOf`/`MConcreteMap`/
+`MMapOf` all carry it) and threading it through both functions in place of
+`rTy` for every type-driven decision (string-vs-arithmetic, Byte
+div/rem-unsigned and wrap, the final box/store type) — `rTy` is still
+needed (renamed nowhere; kept as a separate parameter) to know how to
+coerce the loaded RHS slot value to a string when it isn't already one.
+
+**JVM.** Same story — the field path (`EMember`) already threaded the real
+field type through `recordFieldType`. The indexed path's `HashMap`/
+`ArrayList` arms used the RHS's own type (`vTy`) for both unboxing the
+read-back current value and combining. Fixed by resolving the container's
+real declared element/value type via `indexedElemTypeOverride` (the same
+resolver the read-path `EIndex` arm already uses) and applying it via
+`applyIndexedElemOverride` when available, falling back to the prior
+`vTy`-inferred `emitUnboxObjectTo` behavior when no static override exists
+(preserving existing behavior exactly for that case). The `JArray` arm
+needed no change — it already combines against the array's own element
+type (`elem`), never the RHS's.
+
+**Verification.** Extended `compound_string_assign_self_test.l` with
+`Box{s: String}` field cases (Bool/Int/Double widening + a String-RHS
+regression) and `List[String]` indexed cases (Bool/Int/Double/record
+widening + a String-RHS regression) — 8/8 on both `--target dotnet` and
+`--target jvm` (up from 4/4). A record RHS's default `ToString()`/
+`toString()` differs across targets (MSIL: qualified type name; JVM:
+`ClassName@hash`), so that case asserts only that the container's own
+literal prefix survived the combine (`startsWith`), not the record's exact
+stringified suffix. Spot-checked for regressions against
+`bool_tostring_self_test.l`, `match_compound_self_test.l` (an existing
+`Map[String, Int]` indexed compound-assign case), and
+`byte_arithmetic_self_test.l` (indexed Byte compound-assign, the
+div/rem-unsigned and wrap paths this change touches) on both targets — all
+green, no regressions.
+
+**Related:** #5688, #5657 (the plain-variable widening this extends).
