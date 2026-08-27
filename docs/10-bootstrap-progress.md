@@ -31531,3 +31531,69 @@ assertion used `env -i PATH=/usr/bin:/bin`, and GitHub's runner image ships
 `/usr/bin/java` — so a fallback launcher would have found a JVM and the check
 would have passed vacuously, defeating the one assertion meant to prove
 `--no-fallback` held (caught in review, #6260).
+
+## `Std.Rest.RestClient.json` gets a live HTTP round-trip self-test (#1119) (2026-08-27)
+
+Closes the "no unit tests" gap `RestClient.json` has carried since #983:
+`HttpResponse` is `pub opaque` in `Std.Http` with no test-stub constructor,
+so `lyric-stdlib/tests/rest_tests.l` (added earlier against this issue) could
+only pin the `parseJson`/`disposeJson` contract in isolation, not
+`RestClient.json` itself. New self-test
+`lyric-compiler/lyric/rest_json_roundtrip_self_test.l` (`@test_module`, run
+via native `lyric test --target dotnet`, CI-wired alongside the existing
+"Std.Http round-trip self-test" step) closes that: it reuses
+`http_roundtrip_self_test.l`'s child-process `Std.HttpServer` listener
+pattern (an in-process server thread still isn't an option — see that
+file's header) to serve a real JSON body, a malformed non-JSON body, and a
+`/quit` shutdown route, then drives `RestClient.json` against the real
+`HttpResponse` `Std.Http.getAsync` returns. Three cases: the happy path
+(`Ok(doc)`, fields read back via `getProperty`/`getString`/`getInt32`/
+`getBoolean`), a non-JSON body classifying as `Err(Deserialize(...))`, and
+`disposeJson` being a no-op on a second call against a live-fetched doc.
+
+The issue's own proposed option 1 (`Std.Testing.MockHttpServer`) was not
+built — the two prior triage passes on #1119 had already identified that
+`http_roundtrip_self_test.l`'s existing child-process pattern was reusable
+instead of standing up a parallel mocking abstraction, and reusing it
+avoids duplicating a second HTTP-mocking surface.
+
+**Scope boundary, deliberate:** the response is obtained via the free
+`Std.Http.getAsync`, not `RestClient.get`. `RestClient.get`/`.post`/`.put`/
+`.patch`/`.delete` route through `sendRequest` -> `fullUrl`, which throws at
+runtime before sending anything — confirmed two ways while authoring this
+test (both against the published 0.5.1 CLI, the only compiler available in
+a sandbox where the release-download bootstrap step is blocked, per
+D-progress-543's sandbox profile): on `--target dotnet` it's exactly #5622
+(`base.charAt(...)` on a `String` read off an opaque-type field throws
+"unsupported method 'charAt' on the receiver type"); on `--target jvm` the
+same `fullUrl` throws a `StringIndexOutOfBoundsException` out of
+`String.substring`, a related but distinct bug not yet filed. Testing
+`RestClient.json` doesn't need `fullUrl` at all — the function only takes an
+already-fetched `HttpResponse` — so this sidesteps both bugs rather than
+papering over either; the `RestClient.get`-family live round trip stays a
+real, open gap (tracked at #5622 for the MSIL half) until the codegen is
+fixed.
+
+**JVM parity, not shipped, concrete reason:** `Std.Rest`'s own dependencies
+(`Std.Http`, `Std.HttpServer`, `Std.Json`) all have real JVM kernels today
+(the H5 finding in `docs/59-compiler-stdlib-deep-review.md` is stale — this
+was verified directly, not assumed), so `RestClient.json` itself is not a
+JVM gap. The blocker is narrower: this test's child-server harness imports
+`Lyric.Emitter` (a compiler package) to build the server executable
+in-process, and `lyric test --target jvm` cannot resolve
+`Lyric.Emitter.ProjectPackage` the way `--target dotnet` does — reproduced
+directly (`T0014 unknown qualified type 'Lyric.Emitter.ProjectPackage'`)
+rather than assumed from `http_roundtrip_self_test.l`'s own dotnet-only
+scoping (the same class of limitation, not something new to this file). A
+JVM analog is a real follow-up once `Lyric.Emitter`'s compiler-package
+closure resolves under `--target jvm`.
+
+**Sandbox note:** this session's release-download bootstrap step was
+blocked by network policy (no `./bin/lyric` buildable from source), so
+every claim above — including the two `fullUrl` failure modes and all three
+new test cases passing — was verified against the published NuGet `lyric`
+0.5.1 global tool per D-progress-543's sandbox profile, not a from-source
+build. A from-source CI run should re-verify before merge.
+
+**Related:** `docs/03-decision-log.md` D-progress-543; #1119, #5622,
+`docs/59-compiler-stdlib-deep-review.md`.
