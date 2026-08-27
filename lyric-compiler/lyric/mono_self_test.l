@@ -1601,3 +1601,93 @@ test "local named result specialises correctly through a generic call (#5754)" {
   assertTrue(not hasFunc(res.file, "id"), "generic id removed from output")
   assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
 }
+
+// #5422: a `match`-pattern-bound name carried NO entry in `env` before this
+// fix, so a generic call argument sourced from it (`unboxIt(x)` where `x` is
+// `case SomeLike(x) -> …` on `OptLike[Box[Int]]`) could not unify its type
+// parameter. `unboxIt` is an IMPORTED generic — its declaration is erased
+// from the assembly, so every call site MUST specialise (see the
+// `substIsComplete` fallback in `rewriteExpr`'s `EPath` call arm) — and
+// without the argument's real type in `env`, the unbound `V` defaulted to
+// `Object`, producing `unboxIt__Object`. Emitted MSIL/JVM codegen would then
+// pass a real `Box<Int32>` into a specialisation built for `Box<Object>`:
+// `InvalidCastException` at runtime (the standalone repro's `mapKeys`/`Map`
+// shape). This test exercises the exact match-bound-argument mechanism at
+// the `Lyric.Mono` layer, one level below the full stdlib repro.
+test "match-bound union payload feeds imported generic call's type param (#5422)" {
+  val callerSrc = "package Caller\n" + "func caller(): Int {\n" +
+    "  val o: OptLike[Box[Int]] = SomeLike(v = Box(v = 5))\n" +
+    "  match o {\n" +
+    "    case SomeLike(x) -> unboxIt(x)\n" +
+    "    case NoneLike -> 0\n" +
+    "  }\n" +
+    "}\n"
+  val libSrc = "package Lib\n" + "pub record Box[U] { v: U }\n" +
+    "pub union OptLike[T] { case SomeLike(v: T)\n  case NoneLike }\n" +
+    "pub func unboxIt[V](b: in Box[V]): V { b.v }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
+  var names = ""
+  var ni = 0
+  while ni < res.file.items.count {
+    match res.file.items[ni].kind {
+      case IFunc(d) -> {
+        names = names + d.name + "|"
+      }
+      case _ -> {
+      }
+    }
+    ni = ni + 1
+  }
+  assertTrue(
+    hasFunc(res.file, "unboxIt__Int"),
+    "unboxIt specialises to unboxIt__Int from the match-bound SomeLike(x) argument's real Box[Int] type; got: " + names
+  )
+  assertFalse(
+    hasFunc(res.file, "unboxIt__Object"),
+    "must not silently default to the Object/Object erased-ABI fallback"
+  )
+}
+
+// Same mechanism as above with a SCALAR (non-generic) match-bound payload —
+// the shape closest to #5423's `Result[String, String]` (`case Ok(json) ->
+// json.contains(...)`), confirmed at the `Lyric.Mono` layer: a plain `T`
+// payload (not itself a generic instantiation) also binds correctly once
+// tracked through the match arm.
+test "match-bound scalar payload feeds imported generic call's type param (#5422)" {
+  val callerSrc = "package Caller\n" + "func caller(): Bool {\n" + "  val o: OptLike[String] = SomeLike(v = \"hi\")\n" +
+    "  match o {\n" +
+    "    case SomeLike(x) -> checkIt(x)\n" +
+    "    case NoneLike -> false\n" +
+    "  }\n" +
+    "}\n"
+  val libSrc = "package Lib\n" + "pub union OptLike[T] { case SomeLike(v: T)\n  case NoneLike }\n" +
+    "pub func checkIt[V](x: in V): Bool { true }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
+  assertTrue(
+    hasFunc(res.file, "checkIt__String"),
+    "checkIt specialises to checkIt__String from the match-bound argument"
+  )
+  assertFalse(hasFunc(res.file, "checkIt__Object"), "must not silently default to the Object erased-ABI fallback")
+}
+
+// A bare nullary-case arm (`case NoneLike -> …`) must NOT be tracked into
+// `env` as if it were a fresh variable binding named "NoneLike" — regression
+// guard for `bindPatternEnvMono`'s `isKnownConstructorNameMono` exclusion.
+test "bare nullary-case match arm does not pollute env with a bogus binding" {
+  val callerSrc = "package Caller\n" + "func caller(): Int {\n" + "  val o: OptLike[Int] = NoneLike\n" + "  match o {\n" +
+    "    case SomeLike(x) -> unboxScalar(x)\n" +
+    "    case NoneLike -> 0\n" +
+    "  }\n" +
+    "}\n"
+  val libSrc = "package Lib\n" + "pub union OptLike[T] { case SomeLike(v: T)\n  case NoneLike }\n" +
+    "pub func unboxScalar[V](x: in V): V { x }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
+  assertTrue(hasFunc(res.file, "unboxScalar__Int"), "the SomeLike(x) arm still infers correctly")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics from the bare NoneLike arm")
+}

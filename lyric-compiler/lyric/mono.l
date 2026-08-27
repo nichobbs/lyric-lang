@@ -3026,11 +3026,126 @@ func rewriteEOB(state: in MonoState, env: in Map[String, TypeExpr], eob: in Expr
   }
 }
 
-func rewriteMatchArms(state: in MonoState, env: in Map[String, TypeExpr], arms: in List[MatchArm]): List[MatchArm] {
+// True when `name` is a registered union/record constructor SYNTH (see
+// `unionCtorInferenceDecls`/`recordCtorInferenceDecl`) rather than a real
+// function — mirrors the type checker's `isConstructorPatternName`. A bare
+// uppercase pattern like `case None ->` / `case Empty ->` parses as
+// `PBinding`, but names a nullary CASE, not a fresh variable; without this
+// guard `bindPatternEnvMono` would track a bogus `env["None"] = <scrutinee
+// type>` entry instead of correctly binding no variable at all.
+func isKnownConstructorNameMono(state: in MonoState, name: in String): Bool {
+  match mapGet(state.funcDecls, name) {
+    case Some(d) -> annsInferenceOnlyMono(d.annotations)
+    case None -> false
+  }
+}
+
+// Bind a `match` arm pattern's destructured variables into `env`, typed from
+// the scrutinee's own (possibly generic) instantiation — the match-arm
+// counterpart of `rewriteBinding`'s `val`/`var`/`let` tracking (#5422/#5423).
+// Without this, a name bound by `case Some(mm) -> …` / `case Ok(json) -> …`
+// carried NO entry in `env`, so a generic call argument sourced from it
+// (`mapKeys(mm)`) could not unify its type parameters from the argument and
+// either stayed un-specialised or — for an IMPORTED generic whose erased
+// call must always specialise (the "default unbound params to Object"
+// fallback below in the caller) — silently specialised against the WRONG,
+// Object-erased instantiation (`mapKeys__Object__Object` called with a real
+// `Dictionary<string,string>` argument: `InvalidCastException` at runtime,
+// #5422). `scrutTe` is the scrutinee's inferred TypeExpr (`None` when
+// unresolved, in which case nothing is tracked here — the pre-existing
+// degradation, unchanged).
+func bindPatternEnvMono(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  pat: in Pattern,
+  scrutTe: in Option[TypeExpr],
+): Unit {
+  match pat.kind {
+    case PBinding(name, inner) -> {
+      match scrutTe {
+        case Some(te) -> {
+          if not isKnownConstructorNameMono(state, name) {
+            trackPatternEnv(env, pat, te)
+          }
+        }
+        case None -> ()
+      }
+      match inner {
+        case Some(p) -> bindPatternEnvMono(state, env, p, scrutTe)
+        case None -> ()
+      }
+    }
+    case PParen(inner) -> bindPatternEnvMono(state, env, inner, scrutTe)
+    case PTypeTest(inner, tyExpr) -> bindPatternEnvMono(state, env, inner, Some(value = tyExpr))
+    case PConstructor(head, args) -> {
+      match scrutTe {
+        case None -> ()
+        case Some(te) -> {
+          val caseName = head.segments[head.segments.count - 1]
+          match mapGet(state.funcDecls, caseName) {
+            case None -> ()
+            case Some(ctorDecl) -> {
+              val typeParamNames = extractTypeParamNames(ctorDecl.generics)
+              val subst: Map[String, TypeExpr] = newMap()
+              match ctorDecl.ret {
+                case Some(retTe) -> unifyTE(typeParamNames, retTe, te, subst)
+                case None -> ()
+              }
+              // Only bind fields when EVERY generic parameter resolved: a
+              // partial/failed unification (arity mismatch, an unrelated
+              // same-named function occupying the `funcDecls` slot, or a
+              // scrutinee type shape that doesn't structurally match) would
+              // otherwise substitute a dangling bare type-var name (`T`) into
+              // `env` instead of a real type — worse than tracking nothing.
+              if substIsComplete(typeParamNames, subst) {
+                val emptyValueSubst: Map[String, Expr] = newMap()
+                var fi = 0
+                while fi < args.count and fi < ctorDecl.params.count {
+                  val fieldTe = substTypeExpr(subst, emptyValueSubst, ctorDecl.params[fi].ty)
+                  bindPatternEnvMono(state, env, args[fi], Some(value = fieldTe))
+                  fi = fi + 1
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    case PTuple(patterns) -> {
+      val elemTes: List[TypeExpr] = match scrutTe {
+        case Some(te) -> match te.kind { case TTuple(es) -> es; case _ -> newList() }
+        case None -> newList()
+      }
+      var ti = 0
+      while ti < patterns.count {
+        val et: Option[TypeExpr] = if ti < elemTes.count { Some(value = elemTes[ti]) } else { None }
+        bindPatternEnvMono(state, env, patterns[ti], et)
+        ti = ti + 1
+      }
+    }
+    case POr(patterns) -> {
+      // All alternatives bind the same names by language rule (mirrors the
+      // type checker's `bindPatternTyped`); the first is representative.
+      if patterns.count > 0 {
+        bindPatternEnvMono(state, env, patterns[0], scrutTe)
+      }
+    }
+    case _ -> {
+    }
+  }
+}
+
+func rewriteMatchArms(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  arms: in List[MatchArm],
+  scrutTe: in Option[TypeExpr],
+): List[MatchArm] {
   val buf: List[MatchArm] = newList()
   var i = 0
   while i < arms.count {
     val arm = arms[i]
+    bindPatternEnvMono(state, env, arm.pattern, scrutTe)
     // Typed `var` + assignment (not a two-arm `None`/`Some` match): the bootstrap
     // F# emitter widens such a match to `Option<object>`, which then matches
     // neither arm of codegen's instantiation-sensitive `match guard`.
@@ -3492,7 +3607,21 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
       )
     }
 
-    case EMatch(scrut, arms) -> Expr(kind = EMatch(scrutinee = rewriteExpr(state, env, scrut), arms = rewriteMatchArms(state, env, arms)), span = s)
+    case EMatch(scrut, arms) -> {
+      // Infer the scrutinee's type BEFORE rewriting it (mirrors `rewriteBinding`'s
+      // LBVal: infer off the original expr, then rewrite separately) so each arm's
+      // pattern bindings can be tracked into `env` (#5422/#5423) — otherwise a
+      // generic call argument or native-method receiver sourced from a `match`-
+      // pattern-bound name (`case Some(mm) -> mapKeys(mm)`) has no entry in `env`
+      // and either fails to specialise or (for an imported generic whose erased
+      // call MUST specialise, see the "default unbound params to Object" fallback
+      // below) silently specialises against the wrong, Object-erased instantiation.
+      val scrutTe = inferExprTE(state, env, scrut)
+      Expr(
+        kind = EMatch(scrutinee = rewriteExpr(state, env, scrut), arms = rewriteMatchArms(state, env, arms, scrutTe)),
+        span = s
+      )
+    }
 
     case EBlock(blk) -> Expr(kind = EBlock(block = rewriteBlock(state, env, blk)), span = s)
 
