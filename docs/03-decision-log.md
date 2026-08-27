@@ -31980,17 +31980,22 @@ above for the original decision), #6578 (the JVM tuple-destructuring
 package compiler follow-up), D-progress-543 (sandbox exception: no
 `./bin/lyric` buildable from source here, hence no compiler-level fix for
 either #6564's or #6578's root cause).
-## D-progress-802 — Native prerequisites for N9.3 (`Std.HttpServer` native twin, #6104): `lyric_sem_*` counting semaphore + `List[T]`/`slice[T]` `.slice`/`.concat`/`.append`
+## D-progress-802 — Native prerequisites for N9.3 (`Std.HttpServer` native twin, #6104): `lyric_sem_*` counting semaphore + `slice[T]` `.slice`/`.concat`/`.append`
 
 **Context.** Issue #6104 (native/plan/08-work-items.md N9.3, docs/61 §7 item 5)
 needs a thread-per-connection native `Std.HttpServer` twin driving
 `Std.HttpEngine`. Two prerequisites were missing entirely: native had no
 blocking wait/signal primitive (only `lyric_mutex_*`, mutual exclusion with
 no wakeup — needed for the server's pull queue and per-request completion
-signal), and `List[T]`/`slice[T]` had no `.slice`/`.concat`/`.append`
+signal), and `slice[T]` had no `.slice`/`.concat`/`.append`
 (`Std.HttpEngine.feed`'s buffer bookkeeping calls `.slice`/`.concat` on
 nearly every parse step, so without this `Std.HttpEngine` cannot compile
-for `--target native` at all — confirmed by direct repro).
+for `--target native` at all — confirmed by direct repro). The new runtime
+kernels (below) operate on the shared `LyricList` representation that
+backs both `List[T]` and `slice[T]` on native, but the type checker
+(`typechecker_exprs.l`'s `builtinMember`) only exposes `.slice`/`.concat`/
+`.append` on `TySlice` receivers — `List[T]` does not gain these methods
+at the language level.
 
 **Shipped.**
 
@@ -32000,7 +32005,7 @@ for `--target native` at all — confirmed by direct repro).
   macOS). Verified by a same-thread round-trip and a real forked
   cross-thread test: a second pthread blocks in `lyric_sem_wait`, confirmed
   still blocked after 50ms, then wakes correctly when the main thread posts.
-- **`List[T]`/`slice[T]` `.slice(start, stop)` / `.concat(other)` /
+- **`slice[T]` `.slice(start, stop)` / `.concat(other)` /
   `.append(x)`**: `lyric_list_slice`/`_concat`/`_append` runtime kernels
   (`lyric-rt/src/lyric_collections.c`, half-open `[start, stop)` slice
   bounds and panic message matching the MSIL/JVM twins for cross-target
