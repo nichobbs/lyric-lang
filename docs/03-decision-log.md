@@ -32395,7 +32395,7 @@ client — the scope this entry deliberately does not preempt).
 
 ---
 
-## D-progress-802 — MSIL: `lowerMConfig` registers its synthesized static class's TypeDef row, fixing config-block + closure codegen aborts (#6096)
+## D-progress-812 — MSIL: `lowerMConfig` registers its synthesized static class's TypeDef row, fixing config-block + closure codegen aborts (#6096)
 
 **Context.** #6096: a package containing both a module-level `config { … }`
 block and a capturing closure aborted MSIL lowering with `Msil.Lowering:
@@ -32560,7 +32560,7 @@ green, no regressions.
 
 ---
 
-## D-progress-805 — MSIL: scalar `Byte`'s ABI is genuinely U1 end-to-end, fixing hoisted-cell and record-field wrap divergence (#5520)
+## D-progress-813 — MSIL: scalar `Byte`'s ABI is genuinely U1 end-to-end, fixing hoisted-cell and record-field wrap divergence (#5520)
 
 **Context.** #5520: PR #5515's Byte canonicalization made Byte-declared
 LOCALS re-narrow with `conv.u1` on plain and compound stores
@@ -32639,7 +32639,7 @@ docs/59 §3.2 F7 (the scalar Byte ABI decision this entry implements).
 
 ---
 
-## D-progress-806 — Reject `null` in pattern position (T0073); migrate the 3 live `case null` sites off the silent-catch-all bug (#4775)
+## D-progress-814 — Reject `null` in pattern position (T0073); migrate the 3 live `case null` sites off the silent-catch-all bug (#4775)
 
 **Context.** #4775: the language has no `null` literal or null pattern
 (docs/01 §FFI, D107) — the lexer treats `null` as an ordinary identifier,
@@ -32733,7 +32733,7 @@ this entry reuses).
 
 ---
 
-## D-progress-807 — Codegen fails loudly on unresolved calls instead of silently dropping them, on both backends (#5621, #5516)
+## D-progress-815 — Codegen fails loudly on unresolved calls instead of silently dropping them, on both backends (#5621, #5516)
 
 **Context.** #5621/#5516: when MSIL codegen couldn't find a registered
 function token for a cross-package call, it silently dropped it — the
@@ -33058,11 +33058,11 @@ lyric-compiler/lyric/multi_impl_iface_result_self_test.l` (9/9).
 **Related:** #5133, docs/57 §5.3/§7 item 7 (updated), the 2026-07-29 issue
 triage comment (partial prior verification this entry builds on).
 
-## D-progress-811 — CI post-merge fallout from D-progress-807's T0123 loud-failure diagnostic: JVM free-function `hashCode(x)` builtin unhandled; `lyric-aws-secrets` had no safe default feature set
+## D-progress-811 — CI post-merge fallout from D-progress-815's T0123 loud-failure diagnostic: JVM free-function `hashCode(x)` builtin unhandled; `lyric-aws-secrets` had no safe default feature set
 
-**Context.** #5629/#5516's T0123 loud-failure diagnostic (D-progress-807)
+**Context.** #5629/#5516's T0123 loud-failure diagnostic (D-progress-815)
 turned every previously-silent unresolved-call gap into a hard compile-time
-panic. D-progress-807's own audit swept the self-hosted compiler build and
+panic. D-progress-815's own audit swept the self-hosted compiler build and
 all 28 ecosystem library manifests, but PR #6629 (this ticket batch's PR)
 still surfaced two further gaps once real CI ran the full self-test suite
 and the generic "stdlib-builds" ecosystem sanity-build step — both are
@@ -33078,7 +33078,7 @@ builtin arm in `msil/codegen.l`). The JVM backend
 the general call resolver, which the T0123 fix turned from a silent
 best-effort guess into a hard panic, surfacing via
 `map_key_self_test.l --target jvm` (a compiler self-test, not an ecosystem
-library — outside the scope of D-progress-807's own ecosystem-manifest
+library — outside the scope of D-progress-815's own ecosystem-manifest
 sweep). Fixed by adding a `hashCode` arm mirroring MSIL's: box the argument
 if needed, then dispatch `Object.hashCode()` virtually so it resolves to
 the real type's own override (`Integer.hashCode()`, a derived record's own
@@ -33093,11 +33093,11 @@ library's own dedicated `--features local` test job) activated NONE of the
 three, leaving `AwsSecrets.Kernel.Net`'s `@cfg`-gated kernel file entirely
 unselected. The main package's `initFromAnnotations` call therefore had no
 resolvable target — previously silently miscompiled (dropped call, #5621's
-own bug class), now a T0123 panic. D-progress-807 itself flagged this exact
+own bug class), now a T0123 panic. D-progress-815 itself flagged this exact
 build failure during its own audit and dismissed it as "a false positive
 from the sweep's own missing `--features local` flag" — too hasty a
 dismissal: it is a real, reachable CI path (the generic ecosystem-build
-step), just not one D-progress-807's own targeted sweep script happened to
+step), just not one D-progress-815's own targeted sweep script happened to
 exercise. Fixed by adding `default = ["local"]` — the only feature with no
 external NuGet/Maven dependency (mirrors `lyric-mq`'s `default =
 ["inmemory"]` and `lyric-jobs`'s `default = ["dotnet", "inprocess"]`
@@ -33122,6 +33122,6 @@ output, victim differs every run; not a code issue, confirmed by this
 file's own clean local pass and by #5933's own closed remediation PRs
 already limiting (not eliminating) the flake's frequency).
 
-**Related:** #5621, #5516, D-progress-807 (the diagnostic that surfaced
+**Related:** #5621, #5516, D-progress-815 (the diagnostic that surfaced
 both gaps), #5933 (the separately-tracked, closed CI infra flake hit in the
 same CI run, not fixed here since it needs no fix — a re-run is sufficient).
