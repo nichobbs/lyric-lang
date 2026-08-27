@@ -3094,13 +3094,34 @@ func boxIfNeeded(insns: in List[LInsn], ty: in JvmType): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §5j. Lambda / closure lowering (J2b, #2665).
 // ─────────────────────────────────────────────────────────────────────────────
-// The shared functional interface every lambda in a package implements.  A
+// The shared functional interface every lambda in every package implements.  A
 // uniform Object[]-packing ABI (`invoke([Ljava/lang/Object;)Ljava/lang/Object;`)
 // makes construction and invocation agree for any arity, with generics erased to
-// `Object` (J4) — primitives are boxed in and checkcast+unboxed out.  One such
-// interface is emitted per package (see `emitLambdaInterfaceIfNeeded`).
+// `Object` (J4) — primitives are boxed in and checkcast+unboxed out.
+//
+// One SINGLE binary name is shared by the whole bundle (#5388/#5251): before
+// this fix, each package emitted its OWN nominally-distinct `<pkg>/Lyric$Lambda`
+// copy, so a closure literal written in package A and invoked through a
+// function-typed parameter in package B failed its `checkcast` at the call
+// site — `ClassCastException: class A$Lambda$0 cannot be cast to class
+// B.Lyric$Lambda` — because A's closure implements A's own interface, not B's.
+// `Std.Testing.assertPanicsWith`'s lambda-argument form hit this on every call
+// (the test file and `Std.Testing` are always different packages), surfacing
+// as a corrupted `Bug.message` (the CCE's own text, not the real panic
+// message) rather than the more obviously-wrong CCE itself, since `catch Bug`
+// maps broadly to `java/lang/Throwable` and happily caught it.
+//
+// The fixed name keeps a leading `Lyric/` package segment (rather than the
+// unqualified default package) so `Jvm.AutoFfi.isLyricLambdaDesc`'s
+// `.endsWith("/Lyric$Lambda;")` descriptor check — which recognizes a
+// Lyric-closure argument without knowing which package it came from — keeps
+// matching unchanged. `codegenPackageInto` (`bridge.l`) deduplicates the
+// resulting duplicate `LPInterface` entries (every package that needs the
+// interface still decides independently whether to emit one via
+// `fileNeedsLambdaIface`/`closureAcc`, so several packages in one bundle
+// legitimately try to emit the identical class) before writing the JAR.
 pub func lambdaIfaceName(pkgName: in String): String {
-  pkgName + "/Lyric$Lambda"
+  "Lyric/Lyric$Lambda"
 }
 
 pub func lambdaIfaceMethod(): String {

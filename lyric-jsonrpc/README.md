@@ -63,14 +63,23 @@ see the referenced file/function for the in-code repro notes.
    (`ndjsonProductionReceive`, etc. — see the NOTE above `NdjsonTransport`'s
    `impl` block) instead of writing the lambda inline.
 
-3. **A cross-package closure argument crashes at runtime on the JVM
-   backend.** Same root-cause family as [#5329](https://github.com/nichobbs/lyric-lang/issues/5329) (its bug 3). `ClassCastException: <CallerPkg>$Lambda$N cannot be cast to
+3. **FIXED (#5388/#5251).** ~~A cross-package closure argument crashes at
+   runtime on the JVM backend.~~ Same root-cause family as [#5329](https://github.com/nichobbs/lyric-lang/issues/5329) (its bug 3). `ClassCastException: <CallerPkg>$Lambda$N cannot be cast to
    class <CalleePkg>.Lyric$Lambda`. A function-typed parameter (`in () ->
-   Int`, etc.) works fine when the lambda argument is written in the same
+   Int`, etc.) worked fine when the lambda argument was written in the same
    package as the callee, but a lambda passed in from a *different*
-   package gets wrapped in a lambda-adapter class scoped to the *caller's*
-   package, which the *callee's* generated interface type then fails to
-   downcast. `.NET` is unaffected. **Workaround**: `JsonRpc.Stdio`'s
+   package got wrapped in a lambda-adapter class scoped to the *caller's*
+   package, which the *callee's* generated interface type then failed to
+   downcast. `.NET` was unaffected. Root-caused via `Std.Testing.assertPanicsWith`'s
+   lambda-argument form silently swallowing the real panic message (the
+   caught exception was this `ClassCastException`, not the panic — `catch
+   Bug` maps broadly to `java/lang/Throwable`, so it happily caught the
+   wrong exception). Fixed by unifying the functional interface every
+   closure implements into ONE shared binary name (`Lyric/Lyric$Lambda`)
+   across the whole bundle instead of one per package — see
+   `Jvm.Codegen.lambdaIfaceName` and `Jvm.Bridge.codegenPackageInto`'s
+   dedup. The workaround below is no longer required but is left in place
+   since it costs nothing to keep. **Former workaround**: `JsonRpc.Stdio`'s
    sans-IO seams (`CharReader`/`LineReader`/`StringWriter`/`LineWriter`)
    are plain interfaces, not function-typed parameters — cross-package
    `impl` dispatch on an interface does not hit this bug. This mirrors

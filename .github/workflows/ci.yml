@@ -5367,6 +5367,20 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/closure_jvm_self_test.l
+      # Closure-correctness self-test on the JVM target (#5388/#5251). The
+      # dotnet leg (compiler-self-tests-dotnet-*) already ran this module;
+      # this is the JVM half the issues note was missing from CI. Covers the
+      # multi-level nested-capture regressions plus, critically,
+      # `assertPanics`/`assertPanicsWith` invoked with a lambda literal —
+      # `Std.Testing` and this test file are always different packages, so
+      # this is exactly the cross-package closure-invocation shape that used
+      # to `checkcast` against the WRONG package's `Lyric$Lambda` interface
+      # and throw `ClassCastException`, corrupting the caught `Bug.message`
+      # into the exception's own text instead of the real panic message.
+      - name: Closure-correctness self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/closure_correctness_self_test.l
       # Zero-overhead closure self-test RUN on JVM (band J4, #4798/#2667).
       # The no-box gates above only DISASSEMBLE this module; this step runs
       # its 18 cases under java so the two-slot (Long/Double) capture paths —

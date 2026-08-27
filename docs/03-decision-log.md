@@ -35879,3 +35879,78 @@ branch), `lyric-compiler/lyric/generic_extern_jvm_self_test.l` (new),
 
 **Related:** #3432, #3392, #3413 (the MSIL fix this issue tracked JVM parity
 against), #5458, D-progress-588, D-progress-663, docs/44 m-25/m-97.
+
+### D-progress-804 — JVM: a panic inside a closure invoked through a cross-package function-typed parameter corrupted the caught `Bug.message` (#5388, #5251)
+
+**Status:** Shipped.
+
+**The bug.** `Std.Testing.assertPanicsWith(label, expectedSubstring, fn)`
+on `--target jvm` returned the wrong exception message whenever `fn`'s
+panic originated inside a closure literal that crossed a package
+boundary to reach its point of invocation — which is *every* call,
+since `assertPanicsWith`'s own `runAndCapturePanic(fn: in () -> Unit)`
+lives in `Std.Testing` while the closure literal is always written in
+the caller's own test file. `assertPanics` (occurrence-only, no message
+check) was unaffected, which misdirected initial suspicion toward the
+exception-propagation path rather than the call site itself.
+
+Root cause: the self-hosted JVM backend emits one closure-invocation
+functional interface — `<pkg>/Lyric$Lambda`, `invoke([Ljava/lang/Object;)
+Ljava/lang/Object;` — **per package** (`Jvm.Codegen.lambdaIfaceName`).
+A closure literal implements the interface belonging to the package it
+is LEXICALLY WRITTEN in; a function-typed parameter's call site
+`checkcast`s the argument to the interface belonging to the package the
+PARAMETER is declared in (`lowerLambdaInvokeTail`, `04_calls.l`). When
+those two packages differ — any higher-order call across a package
+boundary — the two interfaces are nominally distinct JVM types despite
+being structurally identical, and the `checkcast` throws
+`ClassCastException: class <CallerPkg>$Lambda$N cannot be cast to class
+<CalleePkg>.Lyric$Lambda`. Confirmed via a live repro
+(`assertPanicsWith("...", "custom message here", { -> boom() })` where
+`boom()` panics with that exact string): the real exception reaching
+`runAndCapturePanic`'s `catch Bug as b` was this `ClassCastException`,
+not the panic — `catch Bug` maps broadly onto `java/lang/Throwable`
+(`Jvm.Codegen`'s catch-class mapping, `05_stmts.l`), so it silently
+caught the wrong exception and `b.message` surfaced the CCE's own text.
+This is the same root-cause family already documented (without a fix)
+in `lyric-jsonrpc/README.md`'s former "Known upstream issues" #3 and
+issue #5329 (its bug 3) — a `ClassCastException`, not the class-name-
+shaped `NoClassDefFoundError` string both issue reports guessed at, but
+empirically the same failure either way: `catch Bug as b { b.message }`
+never sees the real panic text.
+
+**The fix.** Unify the closure-invocation interface to ONE shared
+binary name across the entire bundle instead of one per package:
+`Jvm.Codegen.lambdaIfaceName` now always returns the constant
+`"Lyric/Lyric$Lambda"` regardless of which package asks (the retained
+`Lyric/` prefix keeps `Jvm.AutoFfi.isLyricLambdaDesc`'s `.endsWith("/
+Lyric$Lambda;")` descriptor check matching unchanged). Every package
+that needs the interface (`fileNeedsLambdaIface`/`closureAcc`, per
+package, unchanged) now still independently decides to emit it, so
+several packages in one bundle legitimately try to emit the identical
+class; `Jvm.Bridge.codegenPackageInto` — the single per-package
+class-file-append point used by both the single-file
+(`compileToJarBundled`) and multi-package project
+(`compileProjectToJarBundledWithFeatures`) build paths — deduplicates
+by keeping only the first copy of that one shared class name, so the
+JAR never carries duplicate entries for it. A closure literal from any
+package now implements the exact interface every call site checks
+against, closing the cross-package higher-order-function gap in
+general (not just the panic-message symptom).
+
+**Tests.** `lyric-compiler/lyric/closure_correctness_self_test.l`
+(already covered `assertPanicsWith`'s lambda-argument form on dotnet;
+its JVM half was missing from CI per the issues' own observation) —
+wired into `.github/workflows/ci.yml`'s `compiler-self-tests-jvm` job
+alongside `closure_jvm_self_test.l`; both targets pass 8/8.
+`lyric-compiler/lyric/jvm_lambda_iface_bundling_self_test.l` (#6113
+regression coverage) updated for the new shared binary name and
+extended with a new end-to-end test that compiles two real packages
+(one declaring the higher-order function, one supplying the closure
+literal) via `compileProjectToJarBundledWithFeatures` and runs the
+resulting JAR under `java`, proving the cross-package call itself now
+works (not just that one interface class-file entry exists). Verified
+the original `#5388` repro (`assertPanicsWith("...", "custom message
+here", { -> boom() })`) directly via `lyric run --target jvm`: prints
+`ok` post-fix (previously panicked with the wrong message); `--target
+dotnet` was already correct and remains correct.

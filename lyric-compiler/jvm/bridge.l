@@ -603,6 +603,19 @@ func importAwareRegistry(file: in SourceFile, registry: in Map[String, JvmFuncSi
   overlay
 }
 
+// True when `acc` already carries a `BuiltClass` named `name` — used to
+// deduplicate the shared cross-package `Lyric$Lambda` interface (see below).
+func builtClassNameExists(acc: in List[BuiltClass], name: in String): Bool {
+  var i = 0
+  while i < acc.count {
+    if acc[i].binaryName == name {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 // Codegen one (already middle-ended) file against `registry` and append its
 // class files to `out`.  Uses an isolated constant pool per package.
 func codegenPackageInto(
@@ -629,10 +642,23 @@ func codegenPackageInto(
   )
   val pool = poolNew()
   val classFiles = lowerPackage(pkg, pool)
+  // The shared `Lyric/Lyric$Lambda` functional interface (#5388/#5251,
+  // `Jvm.Codegen.lambdaIfaceName`) is the SAME binary name for every package
+  // in the bundle by design — cross-package closure invocation needs one
+  // common interface to `checkcast`/`invokeinterface` against. Each
+  // package's own codegen still decides independently whether it needs the
+  // interface (`fileNeedsLambdaIface`/`closureAcc`), so several packages in
+  // one bundle legitimately try to emit the identical class; keep only the
+  // first copy so the JAR never carries duplicate entries for it.
+  val sharedLambdaIface = lambdaIfaceName("")
   var j = 0
   while j < classFiles.count {
     val cf = classFiles[j]
-    acc.add(BuiltClass(binaryName = cf.thisClass, bytes = serializeClassWithPool(cf, pool)))
+    if cf.thisClass == sharedLambdaIface and builtClassNameExists(acc, cf.thisClass) {
+      ()
+    } else {
+      acc.add(BuiltClass(binaryName = cf.thisClass, bytes = serializeClassWithPool(cf, pool)))
+    }
     j = j + 1
   }
 }

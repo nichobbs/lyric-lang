@@ -549,11 +549,13 @@ func isAssignableRef(ctx: in AutoFfiCtx, fromBin: in String, toBin: in String): 
   false
 }
 
-// True when `desc` is the reference descriptor of a package's synthesized
-// shared lambda interface (`L<pkg>/Lyric$Lambda;` — see
-// `Jvm.Codegen.lambdaIfaceName`).  `$` is not a Lyric identifier character,
-// so no user-declared type can produce this suffix; matching on it lets the
-// scorer recognize a lambda-typed argument without knowing the package name.
+// True when `desc` is the reference descriptor of the shared, bundle-wide
+// closure functional interface (`LLyric/Lyric$Lambda;` — see
+// `Jvm.Codegen.lambdaIfaceName`; unified to one binary name across every
+// package by #5388/#5251, previously `L<pkg>/Lyric$Lambda;` per package).
+// `$` is not a Lyric identifier character, so no user-declared type can
+// produce this suffix; matching on the suffix (rather than the exact fixed
+// name) keeps this check resilient to that naming history.
 func isLyricLambdaDesc(desc: in String): Bool {
   desc.startsWith("L") and desc.endsWith("/Lyric$Lambda;")
 }
