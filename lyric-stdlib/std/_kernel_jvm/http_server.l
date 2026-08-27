@@ -151,6 +151,8 @@ extern type JKeyManagerFactory = "javax.net.ssl.KeyManagerFactory"
 
 extern type JSSLContext = "javax.net.ssl.SSLContext"
 
+extern type JSSLParameters = "javax.net.ssl.SSLParameters"
+
 extern type JSecureRandom = "java.security.SecureRandom"
 
 extern type JClass = "java.lang.Class"
@@ -276,14 +278,75 @@ func protocolNameFor(v: in TlsVersion): String {
   }
 }
 
+// The protocol floor `Std.Tls`'s `TlsVersion` variants guarantee: never
+// below TLS 1.2, regardless of the JDK algorithm name `protocolNameFor`
+// selects. Kept as an explicit literal (not derived from any JDK API) so
+// the guarantee doesn't depend on how a particular provider or JVM vendor
+// happens to compute its "default" set (module header on
+// `assertProtocolFloor` explains why an even stronger, actively-restricting
+// fix isn't reachable yet).
+func minTlsProtocols(): List[String] {
+  val allowed: List[String] = newList()
+  allowed.add("TLSv1.2")
+  allowed.add("TLSv1.3")
+  allowed
+}
+
+// `SSLContext.getInstance(protocolNameFor(minVersion)).init(...)` computes
+// its "default" enabled-protocol set (what `HttpsConfigurator`'s
+// no-override `configure()` below actually applies to every accepted
+// connection) from this JVM's `jdk.tls.disabledAlgorithms` security
+// property AT `init()` TIME — captured once, not implicit magic, but also
+// not something `startListenerTls` controls. If that property has been
+// weakened (a deployment misconfiguration, or a JDK vendor whose "TLS"/
+// "TLSv1.3" algorithm defaults differ from mainline OpenJDK's), the
+// resulting context could silently negotiate down to TLSv1.1/TLSv1.0/SSLv3
+// even though `protocolNameFor` asked for a TLS-1.2-or-newer floor (#5997).
+//
+// The idiomatic JSSE fix is to override `HttpsConfigurator.configure(...)`
+// to call `params.setProtocols(["TLSv1.2", "TLSv1.3"])` explicitly (exactly
+// how `_kernel_jvm/http_host.l`'s `buildClientSslParameters` pins the
+// client side) instead of trusting `getDefaultSSLParameters()`. That fix
+// is not reachable here: it requires subclassing the concrete
+// `HttpsConfigurator` class, which the JVM backend's `impl <ExternType>
+// for Record` does not support (issue #5930 — the same class-subclassing
+// gap the mTLS rejection above names).
+//
+// Until #5930 ships, this assertion is the strongest guarantee actually
+// enforceable: it inspects the SAME `getDefaultSSLParameters()` value
+// `HttpsConfigurator`'s default `configure()` is about to hand every
+// connection, and panics loudly — refusing to start the listener — rather
+// than silently accepting a floor weaker than `minTlsProtocols()`
+// specifies. This turns an implicit, unverified trust in the ambient JDK
+// default into an explicit, checked one: `startListenerTls` never serves a
+// single connection under a misconfigured floor.
+func assertProtocolFloor(actual: in slice[String]): Unit {
+  val allowed = minTlsProtocols()
+  var i = 0
+  while i < actual.length {
+    val p = actual[i]
+    if not listContains(allowed, p) {
+      panic(
+        "Std.HttpServer: this JVM's SSLContext default protocol set includes " + p +
+          ", below the TLS 1.2 floor startListenerTls guarantees -- check this JVM's " +
+          "jdk.tls.disabledAlgorithms security property (docs/61, issue #5997)"
+      )
+    }
+    i = i + 1
+  }
+}
+
 // Build a server-identity SSLContext from `identity`, enforcing
 // `minVersion` by selecting the JDK protocol algorithm name accordingly
 // (`"TLS"` negotiates the JDK's full supported range — TLS 1.2 and 1.3
 // today — matching the `Tls12` floor; `"TLSv1.3"` restricts negotiation
-// to that version alone). No client-cert trust manager is configured
-// (mTLS is not yet supported on this target — module header); the
-// context trusts no client certificates, which is inert since nothing
-// requests one without `HttpsParameters.setNeedClientAuth`.
+// to that version alone), then explicitly verifying the resulting
+// context's actual default protocol set never dips below TLS 1.2
+// (`assertProtocolFloor` above) rather than trusting it implicitly. No
+// client-cert trust manager is configured (mTLS is not yet supported on
+// this target — module header); the context trusts no client
+// certificates, which is inert since nothing requests one without
+// `HttpsParameters.setNeedClientAuth`.
 func buildServerSslContext(identity: in Identity, minVersion: in TlsVersion): JSSLContext {
   val ks = buildIdentityKeyStore(identity)
   val kmf: JKeyManagerFactory = JKeyManagerFactory.getInstance(JKeyManagerFactory.getDefaultAlgorithm())
@@ -294,6 +357,9 @@ func buildServerSslContext(identity: in Identity, minVersion: in TlsVersion): JS
   val ctx: JSSLContext = JSSLContext.getInstance(protocolNameFor(minVersion))
   val random: JSecureRandom = JSecureRandom.new()
   val _ctxInit = invoke3(ctx, "init", kmArr, tmArr, random)
+  val defaultParams: JSSLParameters = ctx.getDefaultSSLParameters()
+  val actualProtocols: slice[String] = defaultParams.getProtocols()
+  assertProtocolFloor(actualProtocols)
   ctx
 }
 

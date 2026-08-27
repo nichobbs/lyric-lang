@@ -28,10 +28,18 @@
 //! header). The tests below cover that rejection instead.
 //!
 //! Every raw JDK reflection helper below (`nullOfClass`/`makeTypedArray1`/
-//! `invoke2`/`invoke3`) mirrors the same bridge `_kernel_jvm/http_server.l`
-//! uses internally to build a client-side trust store without an
-//! `impl X509TrustManager for Record` (see that kernel's module header for
-//! why: a real, verified JVM auto-FFI/codegen gap, not a style choice).
+//! `invoke1`/`invoke2`/`invoke3`/`makeStringArray`) mirrors the same bridge
+//! `_kernel_jvm/http_server.l` (and `_kernel_jvm/http_host.l`'s
+//! `buildClientSslParameters`) uses internally to build a client-side trust
+//! store, and to pin a client socket's own enabled-protocol list, without
+//! an `impl X509TrustManager for Record` (see that kernel's module header
+//! for why: a real, verified JVM auto-FFI/codegen gap, not a style choice).
+//!
+//! The `Tls12`-floor cases below (#5997) prove `startListenerTls` never
+//! negotiates below TLS 1.2: a normal client handshake lands on TLSv1.2 or
+//! TLSv1.3, and a client whose OWN socket is pinned to TLSv1.1 alone
+//! (`setEnabledProtocols`, same reflection idiom as the client-side
+//! `SSLParameters.setProtocols` pinning) fails the handshake outright.
 @test_module
 package Std.HttpServer.TlsJvmTests
 
@@ -53,6 +61,8 @@ extern type JTrustManagerFactory = "javax.net.ssl.TrustManagerFactory"
 extern type JTrustManager = "javax.net.ssl.TrustManager"
 
 extern type JSSLContext = "javax.net.ssl.SSLContext"
+
+extern type JSSLParameters = "javax.net.ssl.SSLParameters"
 
 extern type JSecureRandom = "java.security.SecureRandom"
 
@@ -185,6 +195,27 @@ func makeTypedArray1[T](elemClassName: in String, v: in T): JObject {
   arr
 }
 
+// A genuinely-typed `String[]` holding every element of `values`, in
+// order (mirrors `_kernel_jvm/http_host.l`'s `makeStringArray`).
+func makeStringArray(values: in List[String]): JObject {
+  val elemClass: JClass = JClass.forName("java.lang.String")
+  val arr: JObject = JReflectArray.newInstance(elemClass, values.count)
+  var i = 0
+  while i < values.count {
+    JReflectArray.set(arr, i, values[i])
+    i = i + 1
+  }
+  arr
+}
+
+func invoke1[A, B](target: in A, methodName: in String, arg0: in B): JObject {
+  val cls: JClass = target.getClass()
+  val m = findMethodByNameAndArity(cls, methodName, 1)
+  val argsList: List[JObject] = newList()
+  argsList.add(arg0)
+  m.invoke(target, argsList.toArray())
+}
+
 func invoke2[A, B, C](target: in A, methodName: in String, arg0: in B, arg1: in C): JObject {
   val cls: JClass = target.getClass()
   val m = findMethodByNameAndArity(cls, methodName, 2)
@@ -245,6 +276,27 @@ func clientTls13OnlyContext(): JSSLContext {
   ctx
 }
 
+// Same trust setup again, but restricted to the "TLSv1.1" protocol — used
+// to build a client that only ever OFFERS TLSv1.1, so a rejected handshake
+// against it proves the server's TLS-1.2 floor (#5997), not merely that
+// the client picked something the server happened to like.
+func clientTls11OnlyContext(): JSSLContext {
+  val cf: JCertificateFactory = JCertificateFactory.getInstance("X.509")
+  val certIn = JByteArrayInputStream.new(encodeUtf8(rsaCert))
+  val caCert: JX509Certificate = cf.generateCertificate(certIn)
+  val trustKs: JKeyStore = JKeyStore.getInstance("PKCS12")
+  val _load = invoke2(trustKs, "load", nullOfClass("java.io.InputStream"), emptyCharArrayObj())
+  trustKs.setCertificateEntry("ca", caCert)
+  val tmf: JTrustManagerFactory = JTrustManagerFactory.getInstance(JTrustManagerFactory.getDefaultAlgorithm())
+  tmf.init(trustKs)
+  val trustManagers: slice[JTrustManager] = tmf.getTrustManagers()
+  val tmArr = makeTypedArray1("javax.net.ssl.TrustManager", trustManagers[0])
+  val ctx: JSSLContext = JSSLContext.getInstance("TLSv1.1")
+  val random: JSecureRandom = JSecureRandom.new()
+  val _init = invoke3(ctx, "init", nullOfClass("[Ljavax.net.ssl.KeyManager;"), tmArr, random)
+  ctx
+}
+
 test "startListenerTls builds a real HttpsServer that starts and stops cleanly" {
   val tls = TlsServerConfig(identity = freshIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
   match startListenerTls("127.0.0.1", 8501, tls) {
@@ -287,6 +339,117 @@ test "startListenerTls terminates real TLS and serves a real HTTP response" {
   assertTrue(respStr.contains("HTTP/1.1 200 OK"), "TLS-terminated response carries the 200 status line")
   assertTrue(respStr.contains("hello-tls"), "TLS-terminated response carries the expected body")
 
+  stopListener(listener)
+}
+
+// #5997: `startListenerTls`'s `Tls12`-floor `SSLContext` must never
+// negotiate below TLS 1.2, whatever the actual JDK default happens to be
+// (`_kernel_jvm/http_server.l`'s `assertProtocolFloor`). A real handshake
+// against an unrestricted client proves the NEGOTIATED protocol, not just
+// the requested one, is TLSv1.2 or TLSv1.3.
+test "startListenerTls (Tls12 floor) never negotiates below TLS 1.2" {
+  val tls = TlsServerConfig(identity = freshIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTls("127.0.0.1", 8507, tls) {
+    case Ok(l) -> l
+    case Err(_) -> panic("expected Ok for a non-mTLS TlsServerConfig")
+  }
+
+  val serverThread = JThread.new({ -> val ctx = nextContext(listener); respondText(ctx, 200, "hello-tls12"); () })
+  serverThread.start()
+  JThread.sleep(300i64)
+
+  val clientCtx = clientTrustContext()
+  val sf: JSSLSocketFactory = clientCtx.getSocketFactory()
+  val sock: JSSLSocket = sf.createSocket("127.0.0.1", 8507)
+  sock.startHandshake()
+
+  val session: JSSLSession = sock.getSession()
+  val negotiated = session.getProtocol()
+  assertTrue(
+    negotiated == "TLSv1.2" or negotiated == "TLSv1.3",
+    "Tls12-floor handshake negotiated " + negotiated + ", expected TLSv1.2 or TLSv1.3"
+  )
+
+  // `nextContext` only unblocks once the JDK has parsed a full HTTP
+  // request off the (now-decrypted) TLS stream — a handshake alone never
+  // reaches the handler — so a real request/response round trip is
+  // required here before `serverThread.join()` can return.
+  val outStream: JOutputStream = sock.getOutputStream()
+  val req = encodeUtf8("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+  outStream.write(req)
+  outStream.flush()
+
+  sock.setSoTimeout(5000)
+  val ins: JInputStream = sock.getInputStream()
+  val respBytes = ins.readAllBytes()
+  val respStr = JString.new(respBytes, "UTF-8")
+  sock.close()
+  serverThread.join()
+
+  assertTrue(respStr.contains("HTTP/1.1 200 OK"), "Tls12-floor response carries the 200 status line")
+
+  stopListener(listener)
+}
+
+// #5997: a client that only ever offers TLSv1.1 must fail the handshake
+// against a `Tls12`-floor listener — proving the floor is enforced, not
+// merely documented. The client socket's `SSLParameters` are pinned to
+// TLSv1.1 alone via the public `SSLSocket.getSSLParameters()` /
+// `setSSLParameters(...)` pair (auto-FFI, single-object arguments — no
+// reflection bridge needed there) plus the same `SSLParameters.setProtocols`
+// reflection idiom `_kernel_jvm/http_host.l`'s `buildClientSslParameters`
+// already uses: unlike `SSLSocket` itself (whose runtime class is the
+// JDK-internal, non-exported `sun.security.ssl.SSLSocketImpl` — reflection
+// against IT throws `IllegalAccessException`/module-access errors),
+// `SSLParameters` is a plain public `javax.net.ssl` class the reflection
+// bridge can target directly.
+test "startListenerTls (Tls12 floor) rejects a TLSv1.1-only client handshake" {
+  val tls = TlsServerConfig(identity = freshIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTls("127.0.0.1", 8508, tls) {
+    case Ok(l) -> l
+    case Err(_) -> panic("expected Ok for a non-mTLS TlsServerConfig")
+  }
+
+  // A rejected handshake never reaches `createContext`'s handler, so
+  // `nextContext` below blocks forever on `queue.take()` — this thread is
+  // daemonized so it can't hang the test process at JVM exit.
+  val serverThread = JThread.new({ ->
+    try {
+      val ctx = nextContext(listener)
+      respondText(ctx, 200, "should-not-be-reached")
+      ()
+    } catch Bug as _ {
+      ()
+    }
+  })
+  serverThread.setDaemon(true)
+  serverThread.start()
+  JThread.sleep(300i64)
+
+  val tls11Only: List[String] = newList()
+  tls11Only.add("TLSv1.1")
+  val tls11Arr = makeStringArray(tls11Only)
+
+  val clientCtx = clientTls11OnlyContext()
+  val sf: JSSLSocketFactory = clientCtx.getSocketFactory()
+  val sock: JSSLSocket = sf.createSocket("127.0.0.1", 8508)
+  val params: JSSLParameters = sock.getSSLParameters()
+  val _setProtocols = invoke1(params, "setProtocols", tls11Arr)
+  sock.setSSLParameters(params)
+
+  var handshakeRejected = false
+  try {
+    sock.startHandshake()
+  } catch Bug as _ {
+    handshakeRejected = true
+  }
+  assertTrue(handshakeRejected, "a TLSv1.1-only client handshake must be rejected by a Tls12-floor listener")
+
+  try {
+    sock.close()
+  } catch Bug as _ {
+    ()
+  }
   stopListener(listener)
 }
 
