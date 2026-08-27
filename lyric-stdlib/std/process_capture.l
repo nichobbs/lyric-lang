@@ -62,14 +62,21 @@ pub func buildArgString(args: in List[String]): String {
 
 // Full diagnostic result returned by `runCaptureWithDiagnostics`.
 // `stdout` and `stderr` are the complete captured text from the child
-// process.  `exitCode` is the process exit code (-1 on spawn failure,
-// -2 when the process was killed after the wall-clock timeout).
-// `timedOut` is true when the 10-second cap fired and the process was
-// killed before it could exit normally.
+// process, UTF-8-decoded.  `stdoutBytes` and `stderrBytes` are the exact
+// raw bytes the child wrote, captured directly from the drain buffer
+// before that decode — use these instead of re-encoding `stdout`/`stderr`
+// whenever the caller needs a byte-exact result (e.g. hashing downloaded
+// content), since a decode/re-encode round trip is lossy for output that
+// is not valid UTF-8 (#4753).  `exitCode` is the process exit code (-1 on
+// spawn failure, -2 when the process was killed after the wall-clock
+// timeout).  `timedOut` is true when the 10-second cap fired and the
+// process was killed before it could exit normally.
 @stable(since = "1.0")
 pub record CaptureResult {
   stdout: String
   stderr: String
+  stdoutBytes: slice[Byte]
+  stderrBytes: slice[Byte]
   exitCode: Int
   timedOut: Bool
 }
@@ -103,6 +110,8 @@ pub func runCaptureWithDiagnostics(executable: in String, args: in List[String],
   CaptureResult(
     stdout = pcResultStdout(raw),
     stderr = pcResultStderr(raw),
+    stdoutBytes = pcResultStdoutBytes(raw),
+    stderrBytes = pcResultStderrBytes(raw),
     exitCode = pcResultExitCode(raw),
     timedOut = pcResultTimedOut(raw)
   )
@@ -126,6 +135,8 @@ pub func runCaptureWithDiagnosticsTimeout(
   CaptureResult(
     stdout = pcResultStdout(raw),
     stderr = pcResultStderr(raw),
+    stdoutBytes = pcResultStdoutBytes(raw),
+    stderrBytes = pcResultStderrBytes(raw),
     exitCode = pcResultExitCode(raw),
     timedOut = pcResultTimedOut(raw)
   )

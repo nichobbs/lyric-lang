@@ -441,6 +441,32 @@ test "duplicate aud: array-form before string-form is rejected with AUDIENCE_MIS
   )
 }
 
+// ─── #3165: structural JSON parsing eliminates pattern-scan false positives ──
+// Follow-up to #2714/#3144.  The pre-#3165 `audHasDuplicates` scanned the raw
+// payload text for literal `"aud":"` / `"aud":[` byte sequences rather than
+// building a JSON parse tree, so it could not distinguish a genuine
+// TOP-LEVEL `aud` claim from an unrelated claim whose VALUE happens to be an
+// object/array that itself has a nested key named "aud".  A payload with one
+// genuine top-level `aud` PLUS one nested "aud" (inside `sub`, three levels
+// deep) produced two raw occurrences of `"aud":"`, tripping the duplicate
+// check and rejecting an otherwise perfectly valid token with
+// AUDIENCE_MISMATCH.  The structural parser (#3165) only counts TOP-LEVEL
+// fields, so it correctly sees exactly one `aud` key and accepts the token.
+//
+// Token construction (same Python snippet convention as above):
+//   print(make(b'{"aud":"real-audience","sub":{"aud":"decoy"},"iss":"trusted"}'))
+//   # → eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJyZWFsLWF1ZGllbmNlIiwic3ViIjp7ImF1ZCI6ImRlY295In0sImlzcyI6InRydXN0ZWQifQ.C8tZ_jOHIB7Fiwku1KXTyjkOPe6a7jYzW7PvKbk_l7w
+test "structural parsing: nested \"aud\" inside an unrelated claim's object value does not trigger a false duplicate-aud rejection (#3165)" {
+  val token = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJyZWFsLWF1ZGllbmNlIiwic3ViIjp7ImF1ZCI6ImRlY295In0sImlzcyI6InRydXN0ZWQifQ.C8tZ_jOHIB7Fiwku1KXTyjkOPe6a7jYzW7PvKbk_l7w"
+  val r = Auth.verifyJwt(token, "test-secret", "trusted", "real-audience", "HS256")
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(
+    code,
+    "OK",
+    "genuine top-level aud + unrelated nested \"aud\" (inside sub) must verify — not a duplicate-aud false positive"
+  )
+}
+
 // ─── #1079: JSON escape decoding in claim values ─────────────────────────────
 // extractClaim must decode standard JSON escape sequences in the claim value.
 // Before #1079 a `sub` claim of `"O\"Brien"` was returned as the literal bytes
