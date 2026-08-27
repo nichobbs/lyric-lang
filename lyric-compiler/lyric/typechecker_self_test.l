@@ -4160,6 +4160,27 @@ test "bare union case constructor call ambiguous across two imported packages is
   )
 }
 
+// Same ambiguity again, but through a bare (unqualified) FUNCTION reference —
+// #6652 review: `sigs`'s first-in-wins insertion policy for imported
+// functions (typechecker_checker.l, "Sig-map insertion policy") let a bare
+// function call resolve above the `checkBareNameAmbiguity` gate, silently
+// picking whichever package's `IFunc` was collected first, with no T0123 at
+// all — the exact last/first-registered-wins hazard #6287 was filed to
+// eliminate, just never closed for plain function names.
+test "bare function name ambiguous across two imported packages is T0123" {
+  val pkgA = parse("package PkgA\npub func helper(): Int { 1 }\n")
+  val pkgB = parse("package PkgB\npub func helper(): Int { 2 }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
+  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  val src = "package App\nimport PkgA\nimport PkgB\nfunc f(): Int { helper() }\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, packages), "T0123"),
+    1,
+    "bare helper() ambiguous between PkgA and PkgB: T0123 fires exactly once"
+  )
+}
+
 // Importing a colliding name from only ONE of the two packages is NOT
 // ambiguous — this is the ordinary single-import case the fix must leave
 // alone (no false positives).

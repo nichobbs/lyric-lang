@@ -37,7 +37,8 @@ pub union YamlError {
 pub func YamlError.message(e: in YamlError): String {
   match e {
     case UnexpectedChar(pos, expected) -> "unexpected character at position " + toString(pos) + "; expected " + expected
-    case UnexpectedEof(pos, expected) -> "unexpected end of input at position " + toString(pos) + "; expected " + expected
+    case UnexpectedEof(pos, expected) -> "unexpected end of input at position " + toString(pos) + "; expected " +
+      expected
     case InvalidNumber(pos, raw) -> "invalid number at position " + toString(pos) + ": '" + raw + "'"
     case DuplicateKey(pos, key) -> "duplicate key at position " + toString(pos) + ": '" + key + "'"
     case UnsupportedFeature(pos, feature) -> "unsupported YAML feature at position " + toString(pos) + ": " + feature
@@ -211,7 +212,7 @@ func yParseUnicode4(st: inout YamlState): Result[Char, YamlError] {
     st.pos = st.pos + 1
     i += 1
   }
-  Ok(value = fromInt(value))
+  Ok(value = Std.Char.fromInt(value))
 }
 
 // Parse a JSON/YAML double-quoted string (starting just after the opening '"').
@@ -393,7 +394,10 @@ func yParseNumber(st: inout YamlState): Result[YamlValue, YamlError] {
     // Int64 range is preserved as a float rather than silently wrapping.
     match parseOptLong(raw) {
       case Some(n) -> Ok(value = YInt(value = n))
-      case None -> match parseOptDouble(raw) { case Some(f) -> Ok(value = YFloat(value = f)); case None -> Err(error = InvalidNumber(pos = startPos, raw = raw)) }
+      case None -> match parseOptDouble(raw) {
+        case Some(f) -> Ok(value = YFloat(value = f))
+        case None -> Err(error = InvalidNumber(pos = startPos, raw = raw))
+      }
     }
   }
 }

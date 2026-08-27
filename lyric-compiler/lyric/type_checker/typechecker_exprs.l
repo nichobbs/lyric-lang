@@ -411,7 +411,9 @@ func collectCoveredCases(p: in Pattern, caseNames: in List[String], covered: in 
   match p.kind {
     case PBinding(name, inner) -> match inner {
       case Some(ip) -> collectCoveredCases(ip, caseNames, covered)
-      case None -> if listContainsStr(caseNames, name) and not listContainsStr(covered, name) { covered.add(name) }
+      case None -> if listContainsStr(caseNames, name) and not listContainsStr(covered, name) {
+        covered.add(name)
+      }
     }
     case PConstructor(head, _) -> {
       if head.segments.count > 0 {
@@ -626,7 +628,11 @@ func checkMatchExhaustive(
                 case Some(_) -> {
                 }
                 case None -> match arms[i].pattern.kind {
-                  case PLiteral(lit) -> match lit { case LBool(b) -> if b { sawTrue = true } else { sawFalse = true }; case _ -> {  } }
+                  case PLiteral(lit) -> match lit {
+                    case LBool(b) -> if b { sawTrue = true } else { sawFalse = true }
+                    case _ -> {
+                    }
+                  }
                   case PConstRef(cn) -> match tryResolveConstBool(tbl, cn) {
                     case Some(b) -> if b { sawTrue = true } else { sawFalse = true }
                     case None -> {
@@ -1564,10 +1570,29 @@ pub func inferExprOrBlock(
         elseBranch,
         isValuePosition
       )
-      case EMatch(scrutinee, arms) -> inferMatchExpr(sc, tbl, sigs, diag, ex, scrutinee, arms, isValuePosition)
+      case EMatch(scrutinee, arms) -> inferMatchExpr(
+        sc,
+        tbl,
+        sigs,
+        diag,
+        ex,
+        scrutinee,
+        arms,
+        isValuePosition
+      )
       case _ -> inferExpr(sc, tbl, sigs, diag, ex)
     }
-    case EOBBlock(bl) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, sc.returnTyExpr, diag, bl, isValuePosition)
+    case EOBBlock(bl) -> checkBlock(
+      sc,
+      tbl,
+      sigs,
+      sc.genericNames,
+      sc.returnTy,
+      sc.returnTyExpr,
+      diag,
+      bl,
+      isValuePosition
+    )
   }
 }
 
@@ -1808,7 +1833,10 @@ func inferMemberBase(tbl: in SymbolTable, recvRaw: in Type, name: in String): Ty
       // file's imports, which `builtinMember` does not see.
       match recv {
         case TyPrim(mbPt) -> match mbPt {
-          case PtString -> match stringIndexOfMember(tbl, name) { case Some(sit) -> return sit; case None -> () }
+          case PtString -> match stringIndexOfMember(tbl, name) {
+            case Some(sit) -> return sit
+            case None -> ()
+          }
           case _ -> ()
         }
         case _ -> ()
@@ -2384,6 +2412,18 @@ func resolveExprPath(
   }
   match mapGet(sigs, name) {
     case Some(sig) -> {
+      // #6652: `sigs`'s first-in-wins insertion policy for imported functions
+      // (typechecker_checker.l, "Sig-map insertion policy") means a bare
+      // function name reaching here can silently resolve to whichever
+      // package's `IFunc` was collected first, hiding a genuine cross-package
+      // collision — the same hazard #6287 closed for bare vals/consts/union
+      // cases below. Gate it with the same helper, before consulting `sigs`
+      // for a type, so this stays the single authoritative T0123 site for a
+      // bare callee name (see `constructorSymbolOf`'s comment above, which
+      // depends on that being true).
+      if checkBareNameAmbiguity(tbl, diag, name, span) {
+        return TyError
+      }
       // #1484: a function resolves via `sigs` (no visibility there) — consult
       // the symbol table for the same name to enforce cross-package visibility.
       match symTableTryFindOne(tbl, name) {
@@ -2407,10 +2447,10 @@ func resolveExprPath(
     case None -> {
     }
   }
-  // #6287: a bare non-function name (union case / const / val — plain
-  // function names resolve above via `sigs` before this point) ambiguous
-  // across two-or-more imported packages must be qualified, not silently
-  // resolved to whichever package's symbol was registered last.
+  // #6287: a bare non-function name (union case / const / val — the function
+  // case above is checked separately since `sigs` resolves it earlier)
+  // ambiguous across two-or-more imported packages must be qualified, not
+  // silently resolved to whichever package's symbol was registered last.
   if checkBareNameAmbiguity(tbl, diag, name, span) {
     return TyError
   }
@@ -3721,8 +3761,14 @@ func findGenericInPair(name: in String, paramTy: in Type, argTy: in Type): Optio
       findGenericInPairs(name, pargs, aargs)
     }
     case TySlice(pe) -> match unrefine(argTy) { case TySlice(ae) -> findGenericInPair(name, pe, ae); case _ -> None }
-    case TyArray(_, pe) -> match unrefine(argTy) { case TyArray(_, ae) -> findGenericInPair(name, pe, ae); case _ -> None }
-    case TyNullable(pi) -> match unrefine(argTy) { case TyNullable(ai) -> findGenericInPair(name, pi, ai); case _ -> None }
+    case TyArray(_, pe) -> match unrefine(argTy) {
+      case TyArray(_, ae) -> findGenericInPair(name, pe, ae)
+      case _ -> None
+    }
+    case TyNullable(pi) -> match unrefine(argTy) {
+      case TyNullable(ai) -> findGenericInPair(name, pi, ai)
+      case _ -> None
+    }
     case TyTuple(pes) -> {
       val aes = match unrefine(argTy) { case TyTuple(a) -> a; case _ -> newList() }
       findGenericInPairs(name, pes, aes)
@@ -4320,7 +4366,13 @@ func inferIfExpr(
       }
       case PtNever -> {
       }
-      case _ -> diag.add(errorDiagnostic("T0066", "if-condition must be Bool (got " + renderType(condT) + ")", cond.span))
+      case _ -> diag.add(
+        errorDiagnostic(
+          "T0066",
+          "if-condition must be Bool (got " + renderType(condT) + ")",
+          cond.span
+        )
+      )
     }
     case _ -> diag.add(errorDiagnostic("T0066", "if-condition must be Bool (got " + renderType(condT) + ")", cond.span))
   }
@@ -4375,9 +4427,17 @@ func inferMatchExpr(
             }
             case PtNever -> {
             }
-            case _ -> diag.add(errorDiagnostic("T0066", "match-arm guard must be Bool (got " + renderType(guardT) + ")", g.span))
+            case _ -> diag.add(
+              errorDiagnostic(
+                "T0066",
+                "match-arm guard must be Bool (got " + renderType(guardT) + ")",
+                g.span
+              )
+            )
           }
-          case _ -> diag.add(errorDiagnostic("T0066", "match-arm guard must be Bool (got " + renderType(guardT) + ")", g.span))
+          case _ -> diag.add(
+            errorDiagnostic("T0066", "match-arm guard must be Bool (got " + renderType(guardT) + ")", g.span)
+          )
         }
       }
       case None -> {
@@ -5044,7 +5104,16 @@ pub func inferExprExpected(
   match e.kind {
     case EParen(inner) -> inferExprExpected(sc, tbl, sigs, diag, inner, expected)
     case ELambda(ps, body) -> match unrefine(expected) {
-      case TyFunction(eps, eret, _) -> inferLambda(sc, tbl, sigs, diag, ps, body, eps, Some(value = eret))
+      case TyFunction(eps, eret, _) -> inferLambda(
+        sc,
+        tbl,
+        sigs,
+        diag,
+        ps,
+        body,
+        eps,
+        Some(value = eret)
+      )
       case _ -> inferExpr(sc, tbl, sigs, diag, e)
     }
     case _ -> inferExpr(sc, tbl, sigs, diag, e)

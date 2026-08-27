@@ -574,7 +574,7 @@ func readOneRequest(conn: in Conn, engineConn: inout Connection): ReqOutcome {
     var events: List[HttpEvent] = newList()
     if first {
       first = false
-      val fr0 = feed(engineConn, emptyBytes())
+      val fr0 = Std.HttpEngine.feed(engineConn, emptyBytes())
       engineConn = fr0.conn
       events = fr0.events
     } else {
@@ -584,7 +584,7 @@ func readOneRequest(conn: in Conn, engineConn: inout Connection): ReqOutcome {
           if bytes.length == 0 {
             return RoClose
           }
-          val fr1 = feed(engineConn, bytes)
+          val fr1 = Std.HttpEngine.feed(engineConn, bytes)
           engineConn = fr1.conn
           events = fr1.events
         }
@@ -1296,7 +1296,14 @@ func processH2Event(state: in H2ConnState, ev: in H2Event, work: in List[H2Event
       state.open = false
     }
     case H2RequestHeaders(streamId, headers, endStream) -> onH2Headers(state, streamId, headers, endStream, work)
-    case H2RequestData(streamId, data, endStream, wireLength) -> onH2Data(state, streamId, data, endStream, wireLength, work)
+    case H2RequestData(streamId, data, endStream, wireLength) -> onH2Data(
+      state,
+      streamId,
+      data,
+      endStream,
+      wireLength,
+      work
+    )
   }
 }
 
@@ -1759,7 +1766,10 @@ pub func streamWriteChunk(
       appendBytes(exchange.body, payload)
       Ok(value = ())
     }
-    case None -> match hostWrite(s.conn, serializeChunk(payload)) { case Ok(_) -> Ok(value = ()); case Err(e) -> Err(error = TcpError.message(e)) }
+    case None -> match hostWrite(s.conn, serializeChunk(payload)) {
+      case Ok(_) -> Ok(value = ())
+      case Err(e) -> Err(error = TcpError.message(e))
+    }
   }
 }
 
