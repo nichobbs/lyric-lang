@@ -1602,7 +1602,7 @@ test "local named result specialises correctly through a generic call (#5754)" {
   assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
 }
 
-// #6661 residual (D-progress-817): `inferLitTE` used to name an
+// #6661 residual (D-progress-818): `inferLitTE` used to name an
 // `i16`-suffixed literal's surrogate `TypeExpr` "Short" and a
 // `u16`-suffixed literal's "UShort" — phantom names the type checker never
 // produces (`typechecker_exprs.l` widens both to their 32-bit primitive:

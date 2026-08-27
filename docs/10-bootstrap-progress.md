@@ -32534,7 +32534,7 @@ literal-lowering change.
 `lyric-compiler/lyric/jvm_cross_package_collision_self_test.l`,
 `.github/workflows/ci.yml`.
 
-**Correction (D-progress-817):** the claim above that `Short`/`UShort`/
+**Correction (D-progress-818):** the claim above that `Short`/`UShort`/
 `UByte` "fail type-checking before reaching any backend" was never
 verified against the actual code path and turned out to be wrong —
 `isNumericPrimitiveName` (the T0091 gate, `typechecker_checker.l`) is the
@@ -32542,7 +32542,7 @@ ONLY validation a distinct type's underlying `TypeExpr` ever receives
 (there is no separate `resolveTypePath` call for it), and at the time
 this entry was written that same function's own list *included* `Short`/
 `UShort`/`UByte` — so `type X = UShort range 0 ..= 100` type-checked
-cleanly and crashed the JVM backend instead. See D-progress-817 for the
+cleanly and crashed the JVM backend instead. See D-progress-818 for the
 real fix (#6661 residual) and #6695.
 ### D-progress-815 — JVM: distinct/range-subtype `Type.from`/`Type.tryFrom` static factories (#5956, closes the historical #2997 JVM gap)
 

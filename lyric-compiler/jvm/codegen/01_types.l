@@ -326,7 +326,7 @@ func containsTypeParam(te: in TypeExpr, typeParams: in List[String]): Bool {
 // `UShort`/`UByte` are deliberately NOT listed: none has a real `PrimType`
 // (`typechecker_types.l`), so a RANGE subtype over one now fails
 // type-checking with T0091 (`Lyric.TypeChecker.isNumericPrimitiveName`,
-// fixed alongside this entry, #6661 residual, docs/03 D-progress-817) —
+// fixed alongside this entry, #6661 residual, docs/03 D-progress-818) —
 // before that fix the same gate wrongly admitted all three, which is how
 // this bug class was actually discovered: `type Age = UShort range 0 ..=
 // 100` type-checked cleanly and then panicked THIS backend
