@@ -6381,6 +6381,15 @@ jobs:
       # `--target jvm` — verified locally before wiring this in.  Runs the
       # same `collections_persistent_tests.l` suite already covered on
       # dotnet above, so both targets are exercised for every push.
+      # `lyric run --target jvm` shells out to `java` on PATH; this job has
+      # no other JVM step, so it needs its own setup-java (#6585 — JVM-target
+      # class files require 21, see "class files target major version 65"
+      # elsewhere in this workflow).
+      - name: Set up Java 21 (for the JVM suite below)
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '21'
       - name: Std.Collections.Persistent suite on JVM
         working-directory: ${{ github.workspace }}
         run: |
