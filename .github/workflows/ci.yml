@@ -815,9 +815,9 @@ jobs:
       - name: Check ci.yml workflow-file size (#6387 guardrail)
         run: bash scripts/ci/check-workflow-size.sh
 
-      # Three `-ignore` patterns suppress known-benign findings rather than
-      # failing on them forever silently; each is tracked in #5638 with the
-      # condition under which it should be revisited:
+      # Two remaining known-benign findings are suppressed rather than
+      # failing on them forever silently; both are tracked in #5638 with the
+      # condition under which they should be revisited:
       #   1/2. `background:`/`wait-all:` are official GitHub Actions step
       #      keys (parallel steps, shipped 2026-06-25; see the changelog link
       #      in the "Parallel step execution" comment further down, verified
@@ -828,10 +828,18 @@ jobs:
       #      "unexpected key" for the key itself, and "step must run script
       #      with" because actionlint doesn't recognize it as a valid step
       #      body (in place of `run:`/`uses:`). Same root cause; not a bug;
-      #      revisit when actionlint's schema catches up.
+      #      revisit when actionlint's schema catches up. Suppressed here via
+      #      the global `-ignore` flag (it only ever occurs in ci.yml, but a
+      #      broad message-text match is fine for a permanent suppression).
       #   3. publish.yml's `matrix.authenticode` is only defined on the
       #      commented-out win-x64 matrix entry (#3941) -- revisit once
-      #      win-x64 is re-enabled.
+      #      win-x64 is re-enabled. Unlike #1/2, this is suppressed via the
+      #      path-scoped `ignore:` in `.github/actionlint.yaml` (glob
+      #      `.github/workflows/publish.yml` only), NOT the global `-ignore`
+      #      flag below -- #5638 flagged the earlier global regex as broad
+      #      enough to also mask a genuine future `matrix.<property>` typo on
+      #      ANY workflow file; scoping it to publish.yml closes that gap
+      #      while keeping the exact same suppression for this known case.
       # Two former patterns were removed once their causes were fixed:
       # gemini-teammate.yaml's commented-out `on:` block (file deleted,
       # #6248) and bench.yml's job-level `env:` referencing the `env`
@@ -847,7 +855,7 @@ jobs:
       - name: Run actionlint
         uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667  # 1.7.12
         with:
-          args: -color -shellcheck= -ignore "unexpected key .(background|wait-all).|step must run script with|property .authenticode. is not defined in object type"
+          args: -color -shellcheck= -ignore "unexpected key .(background|wait-all).|step must run script with"
 
   # The bundled Maven resolver (resolver/pom.xml) that `lyric restore
   # --target jvm` shells out to for `[maven]` dependency resolution
@@ -1158,7 +1166,16 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
-      - name: Redirect temporary directory to prevent SIGBUS RAM disk exhaustion
+      # Point TMPDIR at `runner.temp` before the concurrent `background: true`
+      # self-test steps below start. Despite this step's old name, this is NOT
+      # about a "RAM disk" -- on a standard `ubuntu-latest` runner, `/tmp` and
+      # `runner.temp` both sit on the same persistent disk, not tmpfs (the
+      # actual tmpfs mounts there are `/dev/shm`, `/run`, `/run/lock`,
+      # `/sys/fs/cgroup`). The occasional SIGBUS (exit 135) under load that
+      # motivates this redirect (#4975) comes from disk I/O and memory
+      # contention among the dozens of concurrent `dotnet`-hosted self-hosted-
+      # compiler invocations in this job, not RAM-disk exhaustion.
+      - name: Redirect temporary directory (disk-I/O / memory-contention mitigation, #4975)
         run: echo "TMPDIR=${{ runner.temp }}" >> $GITHUB_ENV
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -1208,11 +1225,15 @@ jobs:
       # for unrelated, already-passing steps, reproducible across CI runs) and
       # split it into two ~18-step batches.  Even ~18-28-step batches kept
       # intermittently misreporting a passing step as failed (map_enhancements,
-      # Defer, etc.), so the batches were split further to ~14 steps each — the
-      # empirically reliable cap — via the extra barriers below (and the matching
-      # splits in the dotnet-b, jvm, and crosspackage self-test jobs). If a future
-      # addition pushes a batch back above ~14, split it again rather than
-      # reverting to fully sequential steps.
+      # Defer, etc.), so the batches were split further to ~14 steps each via
+      # the extra barriers below (and the matching splits in the dotnet-b, jvm,
+      # and crosspackage self-test jobs). The ~14-step cap still produced
+      # occasional exit-135 SIGBUS kills under load (#4975 — cross_package_
+      # generics_self_test, restored_async_self_test, and others, each on an
+      # unrelated PR), so every batch here was split again down to ~4-6
+      # concurrent steps. If a future addition pushes a batch back above ~6,
+      # split it again rather than reverting to fully sequential steps or
+      # widening the cap back toward 14.
       - name: Weaver self-test (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
@@ -1344,6 +1365,9 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/bitwise_self_test.l
+
+      - name: Wait for parallel tests (dotnet-a batch 1 split, #4975)
+        wait-all: true
 
       # Interface slice-argument self-test (#6369) — pins that a list-literal
       # argument to an interface/record method with a `slice[T]` parameter is
@@ -1551,6 +1575,9 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/typed_ffi_delegate_self_test.l
 
+      - name: Wait for parallel tests (dotnet-a batch 3a split, #4975)
+        wait-all: true
+
       # docs/58 (D121) self-tests, one step to keep this batch's background
       # concurrency where it was (#4486/#4841 corruption guidance): the
       # wire-expander unit suite (config templates, contributes[T], include
@@ -1638,6 +1665,9 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/nested_slice_for_jvm_self_test.l
+
+      - name: Wait for parallel tests (dotnet-a batch 3b split, #4975)
+        wait-all: true
 
       # JVM-trio self-test (#6122/#6123/#6124).  Runtime regression test for
       # three JVM-only silent-miscompiles found building `lyric-jsonrpc`
@@ -1728,6 +1758,9 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/annotated_binding_unbox_self_test.l
+
+      - name: Wait for parallel tests (dotnet-a batch 4 split, #4975)
+        wait-all: true
 
       # Compound-assign String self-test (#5657).  `s += <rhs>` onto a String
       # plain variable now type-checks for any RHS (mirroring binary `+`), and
@@ -1841,6 +1874,9 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"B'-mode runtime self-test ran: bmode_runtime_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/bmode_runtime_self_test.l"
 
+      - name: Wait for parallel tests (dotnet-a batch 5 split, #4975)
+        wait-all: true
+
       # Async structured-concurrency keyword self-test (D119 S4 / D120,
       # D-progress-602).  Runs real `scope { }` / `spawn e` / `await t`: two
       # spawns joined by early `return` inside a scope, the same by fall-off, a
@@ -1945,6 +1981,9 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/for_loop_slice_self_test.l
 
+      - name: Wait for parallel tests (dotnet-a batch 6 split, #4975)
+        wait-all: true
+
       # For-loop slice self-test stays dotnet-only (#2595): the JVM slice-iteration
       # erased-element path (auto-FFI on the element's method call) is not yet at
       # parity, tracked under the JVM-backend remediation in docs/41.  Range-driven
@@ -2016,6 +2055,9 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/ffi_iface_impl_self_test.l
+
+      - name: Wait for parallel tests (dotnet-a batch 7 split, #4975)
+        wait-all: true
 
       - name: Import extern self-test (D116, native lyric test)
         background: true
@@ -2409,6 +2451,9 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/msil_restored_qualified_val_self_test.l
 
+      - name: Wait for parallel tests (dotnet-a batch 9 split, #4975)
+        wait-all: true
+
       # Restored-dependency List[slice[Byte]] return self-test (#5575
       # residual finding).  PR #6329's #6332 extension already fixed the
       # underlying array-signature degrade; this pins it specifically across
@@ -2502,6 +2547,9 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/defer_self_test.l
+
+      - name: Wait for parallel tests (dotnet-a batch 10 split, #4975)
+        wait-all: true
 
       # try/catch-as-value self-test — pins #1823 (epic #1470, Band 2): a
       # `try { … } catch … { … }` used as a value-producing expression now
@@ -2728,7 +2776,16 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
-      - name: Redirect temporary directory to prevent SIGBUS RAM disk exhaustion
+      # Point TMPDIR at `runner.temp` before the concurrent `background: true`
+      # self-test steps below start. Despite this step's old name, this is NOT
+      # about a "RAM disk" -- on a standard `ubuntu-latest` runner, `/tmp` and
+      # `runner.temp` both sit on the same persistent disk, not tmpfs (the
+      # actual tmpfs mounts there are `/dev/shm`, `/run`, `/run/lock`,
+      # `/sys/fs/cgroup`). The occasional SIGBUS (exit 135) under load that
+      # motivates this redirect (#4975) comes from disk I/O and memory
+      # contention among the dozens of concurrent `dotnet`-hosted self-hosted-
+      # compiler invocations in this job, not RAM-disk exhaustion.
+      - name: Redirect temporary directory (disk-I/O / memory-contention mitigation, #4975)
         run: echo "TMPDIR=${{ runner.temp }}" >> $GITHUB_ENV
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -2948,7 +3005,16 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
     steps:
-      - name: Redirect temporary directory to prevent SIGBUS RAM disk exhaustion
+      # Point TMPDIR at `runner.temp` before the concurrent `background: true`
+      # self-test steps below start. Despite this step's old name, this is NOT
+      # about a "RAM disk" -- on a standard `ubuntu-latest` runner, `/tmp` and
+      # `runner.temp` both sit on the same persistent disk, not tmpfs (the
+      # actual tmpfs mounts there are `/dev/shm`, `/run`, `/run/lock`,
+      # `/sys/fs/cgroup`). The occasional SIGBUS (exit 135) under load that
+      # motivates this redirect (#4975) comes from disk I/O and memory
+      # contention among the dozens of concurrent `dotnet`-hosted self-hosted-
+      # compiler invocations in this job, not RAM-disk exhaustion.
+      - name: Redirect temporary directory (disk-I/O / memory-contention mitigation, #4975)
         run: echo "TMPDIR=${{ runner.temp }}" >> $GITHUB_ENV
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -3069,6 +3135,9 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/self_method_call_self_test.l
+
+      - name: Wait for parallel tests (dotnet-b batch 1 split, #4975)
+        wait-all: true
       # #6348: MSIL now routes `.indexOf`/`.lastIndexOf` to the Std.String
       # Option-returning free functions when the file imports Std.String
       # (matching the checker and the JVM's #6124 semantics) — before that
@@ -3146,6 +3215,9 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/record_option_field_self_test.l
+
+      - name: Wait for parallel tests (dotnet-b batch 2 split, #4975)
+        wait-all: true
 
       # Generic-specialization self-test — pins #1730 / D-progress-360: a *called*
       # same-package generic NRE'd in lowerFuncMsil, and the monomorphizer's
@@ -3291,6 +3363,9 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/ensures_self_test.l
 
+      - name: Wait for parallel tests (dotnet-b batch 4 split, #4975)
+        wait-all: true
+
       # Mono-shadow self-test — #1855.  A user-defined function now shadows an
       # imported generic of the same bare name in the monomorphizer, so calling
       # a local `func tag(o: Option[Int]): Int` (which collides with the stdlib
@@ -3425,6 +3500,9 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/module_val_self_test.l
+
+      - name: Wait for parallel tests (dotnet-b batch 5 split, #4975)
+        wait-all: true
 
       # @stubbable + StubCounter self-test (#1776).  Verifies the full
       # @stubbable → synthesised Stub record + impl path combined with the
@@ -3648,6 +3726,99 @@ jobs:
             exit 1
           fi
           echo "OK: manifest project with a [nuget] dependency built and ran correctly under Native AOT (incl. build_profile=release)." >> "$GITHUB_STEP_SUMMARY"
+
+      # Regression test for #5787: the #5782 fix above only exercised a
+      # third-party NuGet assembly (`nugetThirdPartyPaths`). It never covered
+      # a restored LYRIC package reaching ILC via `resolved.restoredDlls` —
+      # the path a `[nuget]`-declared Lyric package (e.g. Lyric.Web,
+      # Lyric.Docker) and a local `path = "..."` / workspace dependency both
+      # funnel through in `buildReleaseProject`. This builds a separate
+      # dependency package to its own DLL first (never `--release`, since
+      # only the consuming app's ILC pass is under test), then a second
+      # manifest project that depends on it via `[dependencies]` `path = ...`
+      # and builds THAT with `--release --aot`, asserting the produced
+      # native binary can call into the restored dependency correctly.
+      - name: Release Native AOT smoke test — manifest project with local path dependency (#5787)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; native AOT smoke test cannot run"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin"
+            exit 1
+          fi
+          dir="$(mktemp -d)"
+          mkdir -p "$dir/dep/src" "$dir/app/src"
+          cat > "$dir/dep/lyric.toml" <<'TOML'
+          [package]
+          name = "releasepathdep"
+          version = "0.1.0"
+          [project]
+          name = "ReleasePathDep"
+          output_assembly = "Lyric.ReleasePathDep.dll"
+          [project.packages]
+          "ReleasePathDep" = "src"
+          TOML
+          cat > "$dir/dep/src/dep.l" <<'LYRIC'
+          package ReleasePathDep
+          pub func tripleIt(x: Int): Int {
+            x * 3
+          }
+          LYRIC
+          cat > "$dir/app/lyric.toml" <<'TOML'
+          [package]
+          name = "releasepathsmoke"
+          version = "0.1.0"
+          [project]
+          name = "ReleasePathSmoke"
+          output = "single"
+          output_assembly = "ReleasePathSmoke.dll"
+          [project.packages]
+          "ReleasePathSmoke" = "src/app.l"
+          [dependencies]
+          pathdep = { path = "../dep" }
+          TOML
+          # Also asserts build_profile=release on the SAME `buildReleaseProject`
+          # path as the [nuget] step above; this step's load-bearing assertion is
+          # `tripleIt(14) == 42`, which only resolves if the dependency's DLL
+          # (built below, never rebuilt by `resolveManifestDependencies` — see
+          # its doc comment: "Never triggers a restore") is actually threaded
+          # into the app's ILC reference list.
+          cat > "$dir/app/src/app.l" <<'LYRIC'
+          package ReleasePathSmoke
+          import Std.Core
+          import Std.BuildInfo
+          import ReleasePathDep
+          pub func main(): Int {
+            println(tripleIt(14).toString())
+            println("profile=" + buildInfo().profile)
+            0
+          }
+          LYRIC
+          (cd "$dir/dep" && "$OLDPWD/$lyric_bin" build)
+          if [ ! -f "$dir/dep/bin/Lyric.ReleasePathDep.dll" ]; then
+            echo "::error::local path dependency did not produce bin/Lyric.ReleasePathDep.dll"
+            exit 1
+          fi
+          (cd "$dir/app" && "$OLDPWD/$lyric_bin" build --release --aot --rid linux-x64)
+          native_bin="$dir/app/ReleasePathSmoke"
+          if [ ! -x "$native_bin" ]; then
+            echo "::error::native binary not produced at $native_bin"
+            exit 1
+          fi
+          out="$("$native_bin" 2>&1)"
+          echo "native AOT output: $out"
+          expected='42
+          profile=release'
+          if [ "$out" != "$expected" ]; then
+            echo "::error::manifest+path-dependency native AOT smoke test produced unexpected output: '$out'"
+            exit 1
+          fi
+          echo "OK: manifest project with a local path dependency built and ran correctly under Native AOT (resolved.restoredDlls reaches ILC, incl. build_profile=release)." >> "$GITHUB_STEP_SUMMARY"
 
       # Native AOT publish of the `lyric` CLI itself (#1494 / Band 5).
       # `dotnet publish` honours the csproj's `<PublishAot>true</PublishAot>`,

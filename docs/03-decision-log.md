@@ -32153,4 +32153,103 @@ compiles.
 D065 (`Std.Xml`, the parser `Lyric.JacocoCobertura` is built on),
 `docs/44-jvm-production-readiness-plan.md` (the JVM-backend audit this
 sits alongside), `resolver/` (the analogous bundled-JAR precedent).
+## D-progress-804 — `compiler-self-tests-dotnet-a`/`-b`: further split `background: true` batches to ~4-6 concurrent steps; corrected the "RAM disk" mitigation comment (#4975)
+
+**Bug.** `compiler-self-tests-dotnet-a`/`-b` occasionally SIGBUS (exit
+135) on standard `ubuntu-latest` (2-core/7GB) runners under concurrent-
+step load. #4810 split an original ~38-step single batch into ~18-step
+batches; a later pass split those further to a ~14-step "empirically
+reliable cap." #4975 documented that the cap was insufficient — real
+incidents recurred at the ~14-step size (`cross_package_generics_self_test`,
+`cross_package_nat_self_test`, `restored_async_self_test`, `map_
+enhancements_self_test`, `defer_self_test`, each on an unrelated PR,
+confirming resource pressure rather than a product regression) — and that
+the mitigation step's name and comment ("prevent SIGBUS RAM disk
+exhaustion") misdescribed the mechanism: on a standard `ubuntu-latest`
+runner, `/tmp` and `runner.temp` both sit on the same persistent disk, not
+tmpfs (the actual tmpfs mounts there are `/dev/shm`, `/run`, `/run/lock`,
+`/sys/fs/cgroup`).
+
+**Fix.** Every `wait-all: true`-bounded batch in `compiler-self-tests-
+dotnet-a` and `compiler-self-tests-dotnet-b` (`.github/workflows/ci.yml`)
+that ran more than ~6 concurrent `background: true` steps was split
+further via additional `wait-all: true` barriers, bringing every batch in
+both jobs down to at most 6 concurrent steps (`compiler-self-tests-
+dotnet-a`: 10 batches → 19; `compiler-self-tests-dotnet-b`: 5 batches → 9;
+109 background steps total, unchanged, just spread across more, smaller
+barriers). No steps were removed, reordered across barriers, or made
+sequential — the split preserves the existing `#4486`/`#4841` concurrency
+model, just at a materially smaller per-barrier fan-out. The three
+"Redirect temporary directory to prevent SIGBUS RAM disk exhaustion"
+steps (`compiler-self-tests-dotnet-a`, `compiler-self-tests-dotnet-b`,
+`native-backend-self-tests`) were renamed and their comments corrected to
+attribute the pressure to disk I/O and memory contention among concurrent
+`dotnet`-hosted self-hosted-compiler invocations, not RAM-disk exhaustion
+— the `TMPDIR=${{ runner.temp }}` redirect itself is unchanged (still
+needed so per-step scratch files land under one well-known path rather
+than the bare `/tmp` some external tools default to). Audited every
+`background: true` step in both jobs plus `native-backend-self-tests` for
+hardcoded `/tmp` usage bypassing the `TMPDIR` redirect: none found beyond
+the `asan_preflight` case #4976 already fixed.
+
+Not attempted: requesting a larger GitHub-hosted runner
+(`ubuntu-latest-4-cores`/`-8-cores`) for these two jobs. #4975 lists it as
+an untried, likely-more-durable fix; it was left alone here because it
+changes the jobs' billing/quota profile, which is a decision for a human
+to make explicitly rather than a CI-hygiene session to make unilaterally.
+If the further split above does not fully resolve the recurrence, a
+larger runner is the next lever to pull.
+
+**Verification.** `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"`
+parses cleanly; `actionlint 1.7.12` (the version pinned in the `actionlint`
+CI job) reports only the two pre-existing, permanently-suppressed finding
+categories (`unexpected key "background"`/`"wait-all"` and `step must run
+script with`) and nothing new; `scripts/ci/check-workflow-size.sh` passes
+(470,762 / 500,000 bytes). No live CI run was triggered from this session
+(CI-only YAML change, not pushed) — the actual SIGBUS-recurrence rate
+under the new split can only be confirmed by observing `main` over
+subsequent PRs, per #4975's own evidence-gathering pattern.
+
+## D-progress-805 — actionlint: scope the `matrix.authenticode` dead-code suppression to `publish.yml` via a path-scoped `.github/actionlint.yaml`, instead of a global `-ignore` regex (#5638)
+
+**Problem.** The `actionlint` CI job's "Run actionlint" step suppressed
+three finding classes via a single global `-ignore` regex: the permanent
+`background`/`wait-all` schema gap, `gemini-teammate.yaml`'s missing
+`on:` block (already resolved elsewhere — the file was deleted), and
+`publish.yml:322`'s `matrix.authenticode` reference (dead code until
+win-x64, #3941, is re-enabled). #5638 flagged that the `authenticode`
+pattern, as a *global* message-text regex, would also silently mask a
+genuine future `matrix.<property>` typo on any OTHER workflow file — the
+real cost of a broad suppression for a finding that is only ever valid on
+one specific line of one specific file.
+
+**Fix.** `actionlint` (1.7.12, matching the version pinned in
+`.github/workflows/ci.yml`) supports path-scoped suppression via a
+`.github/actionlint.yaml` (or `.yml`) config file's `paths:` map — an
+`ignore:` list under a glob key applies only to matching files, composing
+with (not replacing) the CLI's own `-ignore` flag. Added
+`.github/actionlint.yaml` scoping the `authenticode` message pattern to
+`.github/workflows/publish.yml` only, and removed it from the global
+`-ignore` flag in `ci.yml`'s actionlint step (the `background`/`wait-all`
+pattern stays global — it is a permanent schema-gap suppression, not a
+finding scoped to one file, so a global regex is the correct fit there).
+Verified locally with the exact pinned `actionlint` binary
+(`rhysd/actionlint@sha256:b1934...` / v1.7.12): removing the
+`authenticode` pattern from `-ignore` without the config file reproduces
+the finding at `publish.yml:322:13`; adding `.github/actionlint.yaml`
+back suppresses it with exit code 0, and a full unfiltered run
+(`-shellcheck= `, no `-ignore` at all) shows only the two expected
+permanent categories (`unexpected key "background"`/`"wait-all"`, `step
+must run script with`) plus nothing from `authenticode` or
+`gemini-teammate.yaml` (already deleted, per the 2026-08-07 status update
+on #5638).
+
+Not changed: `gemini-teammate.yaml`'s `-ignore` clause was already
+removed (PR #6385, per #5638's 2026-08-07 comment — the file itself was
+deleted); the `background`/`wait-all` suppression stays a permanent
+global `-ignore`, unchanged; `publish.yml`'s win-x64/`authenticode`
+matrix entry itself stays commented out, gated on #3941 — re-enabling it
+is out of scope here, and once it lands, `.github/actionlint.yaml` should
+be deleted rather than edited (the suppression becomes unnecessary, not
+narrower).
 
