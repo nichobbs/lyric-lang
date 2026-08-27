@@ -161,6 +161,26 @@ pub record HoistConfig {
 // ─────────────────────────────────────────────────────────────────────────────
 record HoistState {
   counter: List[Int]
+  // Names, scoped to the function/entry currently being rewritten, that are
+  // provably mutable there: `out`/`inout` parameters, `var` locals declared
+  // anywhere in the body — including inside a nested `ELambda`/`ESpawn` body,
+  // which shares the same slot by closure capture, not a copy — and any
+  // bare-name assignment target. A `Map[String, Bool]` is used as the
+  // name-set (not `Set[String]`/`HashSet`: the self-hosted emitter does not
+  // reliably resolve a bare `newSet()` unless its defining package is a
+  // direct import, #3943 — `Map` has no such gap and is the established
+  // idiom for this exact shape; see `lsp.l`'s `handleCompletion` dedup set
+  // and `modechecker_check.l`'s `N0100Ctx.varNames`). Rebuilt fresh per
+  // function/entry by `hzBuildMutableNames` before its body is rewritten,
+  // and consulted by `hzNameLikeMutable` to gate the name-like "skip bind"
+  // fast path in `hzHoistSpine` (#5629): re-reading a NAME-LIKE receiver or
+  // index after a hoisted hazard is only safe when that name cannot have
+  // been reassigned by whatever ran while the hazard was in flight — an
+  // immutable `val`/`let`/package-qualified name is safe, but a mutable one
+  // is not, since the hazard's own evaluation (an awaited call reachable
+  // from the same statement, e.g. via an `inout` argument, or a
+  // concurrently spawned task sharing the slot) may have reassigned it.
+  mutableNames: Map[String, Bool]
 }
 
 func hzFresh(cfg: in HoistConfig, st: in HoistState): String {
@@ -222,6 +242,36 @@ func hzIsNameLike(e: in Expr): Bool {
     case EParen(inner) -> hzIsNameLike(inner)
     case _ -> false
   }
+}
+
+// A name-like expression is only safe to leave unbound (re-read AFTER a
+// hoisted hazard, in the residual statement) when its base name cannot have
+// been reassigned while the hazard was in flight. A single-segment `EPath`
+// naming a mutable binding (an `out`/`inout` parameter, or a `var` declared
+// anywhere in the enclosing function/entry — see `hzBuildMutableNames`) does
+// not qualify: the hazard's own evaluation may itself reassign it (e.g. an
+// `await`ed call reachable from the same statement takes it as an `inout`
+// argument, or — under real concurrency — a spawned sibling task shares the
+// slot), so re-reading it afterward risks a stale-vs-mutated read (#5629). A
+// multi-segment path (a package/type qualifier) and `self` are never
+// reassignable bindings and stay unconditionally safe; a literal is already
+// excluded upstream by `hzIsNameLike`'s own callers gating on `hzHasHazard`.
+func hzNameLikeMutable(st: in HoistState, e: in Expr): Bool {
+  match e.kind {
+    case EPath(path) -> path.segments.count == 1 and st.mutableNames.containsKey(path.segments[0])
+    case ESelf -> false
+    case ELiteral(_) -> false
+    case EMember(recv, _) -> hzNameLikeMutable(st, recv)
+    case EParen(inner) -> hzNameLikeMutable(st, inner)
+    case _ -> false
+  }
+}
+
+// `hzIsNameLike(e) and not hzNameLikeMutable(st, e)`: the actual "safe to
+// skip binding" predicate the hoist spine's receiver/index fast paths gate
+// on (#5629).
+func hzIsNameLikeSafe(st: in HoistState, e: in Expr): Bool {
+  hzIsNameLike(e) and not hzNameLikeMutable(st, e)
 }
 
 // An assignment whose target is a member or index write stacks its receiver
@@ -737,7 +787,7 @@ func hzHoistSpine(cfg: in HoistConfig, e: in Expr, acc: in List[Statement], st: 
         case EMember(recv, nm) -> {
           val recv2 = if hzHasHazard(cfg, recv) {
             hzBind(cfg, hzHoistSpine(cfg, recv, acc, st), acc, st)
-          } else if last >= 0 and not hzIsNameLike(recv) {
+          } else if last >= 0 and not hzIsNameLikeSafe(st, recv) {
             hzBind(cfg, recv, acc, st)
           } else {
             recv
@@ -782,7 +832,7 @@ func hzHoistSpine(cfg: in HoistConfig, e: in Expr, acc: in List[Statement], st: 
       }
       val recv2 = if hzHasHazard(cfg, receiver) {
         hzBind(cfg, hzHoistSpine(cfg, receiver, acc, st), acc, st)
-      } else if last >= 0 and not hzIsNameLike(receiver) {
+      } else if last >= 0 and not hzIsNameLikeSafe(st, receiver) {
         hzBind(cfg, receiver, acc, st)
       } else {
         receiver
@@ -1235,6 +1285,259 @@ func hzBlock(cfg: in HoistConfig, blk: in Block, st: in HoistState): Block {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Mutable-name collection (#5629). A pre-walk of a function/entry's OWN
+// params + body, gathering every name that is provably mutable: an
+// `out`/`inout` parameter, a `var` local declared anywhere in the body, or
+// any bare-name assignment target. Descends into `ELambda`/`ESpawn` bodies
+// too — unlike the hazard walk above, which treats them as opaque deferred
+// computations — because a `var` captured by a nested closure shares the
+// SAME slot with the enclosing function (see `async_spawn_self_test.l`'s
+// `panicWithUnfinishedSpawn`, where a spawned lambda both reads and a
+// sibling statement writes the same outer `var go`), so a reassignment
+// reachable only through a closure still makes the outer name unsafe to
+// re-read after a hoisted hazard.
+// ─────────────────────────────────────────────────────────────────────────────
+func hzAddMutableName(m: in Map[String, Bool], name: in String): Unit {
+  if not m.containsKey(name) {
+    m.add(name, true)
+  }
+}
+
+// A bare (single-segment) path assignment target names a mutable binding by
+// construction — the mode/type checker already rejected reassigning a
+// `val`/`let` before this pass ever runs — so any `SAssign`/`EAssign` target
+// of this shape is recorded regardless of whether it was also seen as an
+// `LBVar` (catches a captured OUTER `var` reassigned only via a closure, and
+// is a harmless no-op re-add otherwise).
+func hzRecordAssignTargetName(target: in Expr, m: in Map[String, Bool]): Unit {
+  match target.kind {
+    case EParen(inner) -> hzRecordAssignTargetName(inner, m)
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        hzAddMutableName(m, path.segments[0])
+      }
+    }
+    case _ -> {
+    }
+  }
+}
+
+func hzCollectMutableNamesExprList(es: in List[Expr], m: in Map[String, Bool]): Unit {
+  var i = 0
+  while i < es.count {
+    hzCollectMutableNamesExpr(es[i], m)
+    i = i + 1
+  }
+}
+
+func hzCollectMutableNamesEob(eob: in ExprOrBlock, m: in Map[String, Bool]): Unit {
+  match eob {
+    case EOBExpr(e) -> hzCollectMutableNamesExpr(e, m)
+    case EOBBlock(blk) -> hzCollectMutableNamesBlock(blk, m)
+  }
+}
+
+func hzCollectMutableNamesExpr(e: in Expr, m: in Map[String, Bool]): Unit {
+  match e.kind {
+    case EInterpolated(segments) -> {
+      var i = 0
+      while i < segments.count {
+        match segments[i] {
+          case ISText(_, _) -> {
+          }
+          case ISExpr(ex) -> hzCollectMutableNamesExpr(ex, m)
+        }
+        i = i + 1
+      }
+    }
+    case EParen(inner) -> hzCollectMutableNamesExpr(inner, m)
+    case ETuple(exprs) -> hzCollectMutableNamesExprList(exprs, m)
+    case EList(exprs) -> hzCollectMutableNamesExprList(exprs, m)
+    case EIf(cond, thenB, elseO, _) -> {
+      hzCollectMutableNamesExpr(cond, m)
+      hzCollectMutableNamesEob(thenB, m)
+      match elseO {
+        case Some(eb) -> hzCollectMutableNamesEob(eb, m)
+        case None -> {
+        }
+      }
+    }
+    case EMatch(scrutinee, arms) -> {
+      hzCollectMutableNamesExpr(scrutinee, m)
+      var i = 0
+      while i < arms.count {
+        match arms[i].guard {
+          case Some(ge) -> hzCollectMutableNamesExpr(ge, m)
+          case None -> {
+          }
+        }
+        hzCollectMutableNamesEob(arms[i].body, m)
+        i = i + 1
+      }
+    }
+    case EAwait(inner) -> hzCollectMutableNamesExpr(inner, m)
+    case EYield(inner) -> hzCollectMutableNamesExpr(inner, m)
+    case ESpawn(inner) -> hzCollectMutableNamesExpr(inner, m)
+    case ETry(inner) -> hzCollectMutableNamesExpr(inner, m)
+    case EOld(inner) -> hzCollectMutableNamesExpr(inner, m)
+    case EForall(_, whereOpt, body) -> {
+      match whereOpt {
+        case Some(we) -> hzCollectMutableNamesExpr(we, m)
+        case None -> {
+        }
+      }
+      hzCollectMutableNamesExpr(body, m)
+    }
+    case EExists(_, whereOpt, body) -> {
+      match whereOpt {
+        case Some(we) -> hzCollectMutableNamesExpr(we, m)
+        case None -> {
+        }
+      }
+      hzCollectMutableNamesExpr(body, m)
+    }
+    case ELambda(_, body) -> hzCollectMutableNamesBlock(body, m)
+    case ECall(fn, args) -> {
+      hzCollectMutableNamesExpr(fn, m)
+      var i = 0
+      while i < args.count {
+        hzCollectMutableNamesExpr(hzArgExpr(args[i]), m)
+        i = i + 1
+      }
+    }
+    case ETypeApp(fn, _) -> hzCollectMutableNamesExpr(fn, m)
+    case EIndex(receiver, indices) -> {
+      hzCollectMutableNamesExpr(receiver, m)
+      hzCollectMutableNamesExprList(indices, m)
+    }
+    case EMember(receiver, _) -> hzCollectMutableNamesExpr(receiver, m)
+    case EPrefix(_, operand) -> hzCollectMutableNamesExpr(operand, m)
+    case EBinop(_, lhs, rhs) -> {
+      hzCollectMutableNamesExpr(lhs, m)
+      hzCollectMutableNamesExpr(rhs, m)
+    }
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi) -> {
+          hzCollectMutableNamesExpr(lo, m)
+          hzCollectMutableNamesExpr(hi, m)
+        }
+        case RBHalfOpen(lo, hi) -> {
+          hzCollectMutableNamesExpr(lo, m)
+          hzCollectMutableNamesExpr(hi, m)
+        }
+        case RBLowerOpen(hi) -> hzCollectMutableNamesExpr(hi, m)
+        case RBUpperOpen(lo) -> hzCollectMutableNamesExpr(lo, m)
+      }
+    }
+    case EAssign(target, _, value) -> {
+      hzRecordAssignTargetName(target, m)
+      hzCollectMutableNamesExpr(target, m)
+      hzCollectMutableNamesExpr(value, m)
+    }
+    case EBlock(blk) -> hzCollectMutableNamesBlock(blk, m)
+    case EUnsafe(blk) -> hzCollectMutableNamesBlock(blk, m)
+    case _ -> {
+    }
+  }
+}
+
+func hzCollectMutableNamesStmt(s: in Statement, m: in Map[String, Bool]): Unit {
+  match s.kind {
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> hzCollectMutableNamesExpr(init, m)
+        case LBLet(_, _, init) -> hzCollectMutableNamesExpr(init, m)
+        case LBVar(name, _, initOpt) -> {
+          hzAddMutableName(m, name)
+          match initOpt {
+            case Some(init) -> hzCollectMutableNamesExpr(init, m)
+            case None -> {
+            }
+          }
+        }
+      }
+    }
+    case SAssign(target, _, value) -> {
+      hzRecordAssignTargetName(target, m)
+      hzCollectMutableNamesExpr(target, m)
+      hzCollectMutableNamesExpr(value, m)
+    }
+    case SReturn(valOpt) -> {
+      match valOpt {
+        case Some(e) -> hzCollectMutableNamesExpr(e, m)
+        case None -> {
+        }
+      }
+    }
+    case SThrow(e) -> hzCollectMutableNamesExpr(e, m)
+    case SExpr(e) -> hzCollectMutableNamesExpr(e, m)
+    case SWhile(_, cond, body) -> {
+      hzCollectMutableNamesExpr(cond, m)
+      hzCollectMutableNamesBlock(body, m)
+    }
+    case SFor(_, _, iter, body) -> {
+      hzCollectMutableNamesExpr(iter, m)
+      hzCollectMutableNamesBlock(body, m)
+    }
+    case SLoop(_, body) -> hzCollectMutableNamesBlock(body, m)
+    case SScope(_, body) -> hzCollectMutableNamesBlock(body, m)
+    case SDefer(body) -> hzCollectMutableNamesBlock(body, m)
+    case STry(body, catches, finallyOpt) -> {
+      hzCollectMutableNamesBlock(body, m)
+      var i = 0
+      while i < catches.count {
+        hzCollectMutableNamesBlock(catches[i].body, m)
+        i = i + 1
+      }
+      match finallyOpt {
+        case Some(fb) -> hzCollectMutableNamesBlock(fb, m)
+        case None -> {
+        }
+      }
+    }
+    case SInvariant(e) -> hzCollectMutableNamesExpr(e, m)
+    case SRule(lhs, rhs) -> {
+      hzCollectMutableNamesExpr(lhs, m)
+      hzCollectMutableNamesExpr(rhs, m)
+    }
+    case _ -> {
+    }
+  }
+}
+
+func hzCollectMutableNamesBlock(blk: in Block, m: in Map[String, Bool]): Unit {
+  var i = 0
+  while i < blk.statements.count {
+    hzCollectMutableNamesStmt(blk.statements[i], m)
+    i = i + 1
+  }
+}
+
+func hzCollectMutableNamesParams(params: in List[Param], m: in Map[String, Bool]): Unit {
+  var i = 0
+  while i < params.count {
+    match params[i].mode {
+      case PMOut -> hzAddMutableName(m, params[i].name)
+      case PMInout -> hzAddMutableName(m, params[i].name)
+      case PMIn -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+func hzBuildMutableNames(params: in List[Param], body: in FunctionBody): Map[String, Bool] {
+  val m: Map[String, Bool] = newMap()
+  hzCollectMutableNamesParams(params, m)
+  match body {
+    case FBBlock(blk) -> hzCollectMutableNamesBlock(blk, m)
+    case FBExpr(e) -> hzCollectMutableNamesExpr(e, m)
+  }
+  m
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Function / entry / item drivers. Under `asyncGated = true` only `async
 // func` bodies are visited (a blocking, non-async hazard has no suspension
 // to protect, and `EntryDecl` — no `isAsync` field, entries can never be
@@ -1280,6 +1583,7 @@ func hzRewriteFunction(cfg: in HoistConfig, fn: in FunctionDecl, st: in HoistSta
     return fn
   }
   val body = match fn.body { case Some(b) -> b; case None -> return fn }
+  val fnSt = HoistState(counter = st.counter, mutableNames = hzBuildMutableNames(fn.params, body))
   FunctionDecl(
     docComments = fn.docComments,
     annotations = fn.annotations,
@@ -1291,7 +1595,7 @@ func hzRewriteFunction(cfg: in HoistConfig, fn: in FunctionDecl, st: in HoistSta
     ret = fn.ret,
     whereClause = fn.whereClause,
     contracts = fn.contracts,
-    body = Some(value = hzRewriteBody(cfg, body, st)),
+    body = Some(value = hzRewriteBody(cfg, body, fnSt)),
     span = fn.span
   )
 }
@@ -1310,6 +1614,7 @@ func hzRewriteEntry(cfg: in HoistConfig, ed: in EntryDecl, st: in HoistState): E
   if not hzEntryNeedsHoist(cfg, ed) {
     return ed
   }
+  val edSt = HoistState(counter = st.counter, mutableNames = hzBuildMutableNames(ed.params, ed.body))
   EntryDecl(
     docComments = ed.docComments,
     annotations = ed.annotations,
@@ -1318,7 +1623,7 @@ func hzRewriteEntry(cfg: in HoistConfig, ed: in EntryDecl, st: in HoistState): E
     params = ed.params,
     ret = ed.ret,
     contracts = ed.contracts,
-    body = hzRewriteBody(cfg, ed.body, st),
+    body = hzRewriteBody(cfg, ed.body, edSt),
     span = ed.span
   )
 }
@@ -1518,7 +1823,10 @@ pub func hoistFile(cfg: in HoistConfig, file: in SourceFile): SourceFile {
   if not any {
     return file
   }
-  val st = HoistState(counter = newList())
+  // `mutableNames` here is a placeholder: `hzRewriteFunction`/`hzRewriteEntry`
+  // build their own per-function/entry map (sharing this `counter`) before
+  // ever consulting it, so this file-level state's map is never read.
+  val st = HoistState(counter = newList(), mutableNames = newMap())
   val newItems: List[Item] = newList()
   var j = 0
   while j < file.items.count {

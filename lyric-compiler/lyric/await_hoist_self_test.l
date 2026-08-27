@@ -296,3 +296,84 @@ test "await in operand position inside a loop invariant expression compiles (#64
   val result = await sumWithAwaitInvariant(5)
   assertEqualInt(result, 10, "0+1+2+3+4 = 10 with the await-bearing invariant expression present")
 }
+
+// ── #5629: a MUTABLE receiver/index re-read after a hoisted hazard must ─────
+// keep the value captured BEFORE the hazard ran, not whatever it holds
+// afterward. `AwaitHoist`'s name-like fast path used to leave ANY bare-name
+// receiver/index unbound once its awaited argument was hoisted out, on the
+// (unsound) assumption that re-reading a name after the hoisted hazard is
+// always equivalent to reading it before. That holds for an immutable
+// `val`/`let`/package-qualified name, but not for a `var` that the hazard's
+// OWN evaluation can reassign — here, via an `inout` argument threaded
+// through the awaited call, which reassigns the caller's variable SLOT
+// itself (not merely a field of the object it referenced) to a brand-new
+// value. `out`/`inout` params are supported on both targets (#1761 MSIL,
+// #1763 JVM), so this reproduces identically on `--target dotnet` and
+// `--target jvm`.
+record MutRecvBox {
+  tag: Int
+
+  func describe(self: in MutRecvBox, n: Int): Int {
+    self.tag * 1000 + n
+  }
+}
+
+// Reassigns the CALLER's variable SLOT (via `inout`) to a brand-new box —
+// not a field write on the box `cell` originally referenced. `MutRecvBox`
+// is a reference type, so only a slot reassignment (not a field mutation)
+// can make re-reading the caller's variable NAME after this call
+// observably differ from reading it before the call.
+func mutateBoxSlot(cell: inout MutRecvBox): Int {
+  cell = MutRecvBox(tag = 99)
+  5
+}
+
+async func receiverMutatedDuringAwaitArg(): Int {
+  var x = MutRecvBox(tag = 1)
+  // `x` (the method receiver) must be captured with tag=1 BEFORE the
+  // awaited call reassigns it to tag=99 through its `inout` argument.
+  return x.describe(await mutateBoxSlot(x))
+}
+
+test "#5629: a mutable receiver reassigned by the awaited call keeps its pre-await value" {
+  // Correct: describe(self=tag 1, n=5) = 1*1000+5 = 1005 — the receiver is
+  // captured before `mutateBoxSlot` reassigns `x` to tag=99. Before the
+  // fix, `x` was re-read AFTER the hoisted await, observing tag=99 and
+  // producing 99005 instead.
+  assertEqualInt(
+    await receiverMutatedDuringAwaitArg(),
+    1005,
+    "receiver must be captured before the mutating await, not after"
+  )
+}
+
+func mutateListSlot(cell: inout List[Int]): Int {
+  val fresh: List[Int] = newList()
+  fresh.add(999)
+  cell = fresh
+  0
+}
+
+async func indexMutatedDuringAwaitArg(): Int {
+  var xs: List[Int] = newList()
+  xs.add(11)
+  xs.add(22)
+  xs.add(33)
+  // `xs` (the index receiver) must be captured as the ORIGINAL list before
+  // the awaited call reassigns it to a brand-new list through its `inout`
+  // argument; the index (0) it returns is only meaningful against the
+  // pre-await list.
+  return xs[await mutateListSlot(xs)]
+}
+
+test "#5629: a mutable index receiver reassigned by the awaited call keeps its pre-await value" {
+  // Correct: original xs = [11, 22, 33] indexed at 0 = 11 — captured before
+  // `mutateListSlot` reassigns `xs` to a new [999] list. Before the fix,
+  // `xs` was re-read AFTER the hoisted await, observing the new list and
+  // producing 999 instead.
+  assertEqualInt(
+    await indexMutatedDuringAwaitArg(),
+    11,
+    "index receiver must be captured before the mutating await, not after"
+  )
+}
