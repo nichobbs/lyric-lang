@@ -89,6 +89,19 @@ test "detectEventSource: SNS" {
   }
 }
 
+// AWS's real SNS-to-Lambda event uses "EventSource" (PascalCase), not the
+// lowerCamelCase "eventSource" every other event source uses — regression
+// coverage for the case-insensitive fallback in firstRecordEventSource.
+test "detectEventSource: SNS with the real AWS PascalCase EventSource key" {
+  val payload = "{\"Records\":[{\"EventVersion\":\"1.0\",\"EventSubscriptionArn\":\"arn:aws:sns:us-east-2:123456789012:sns-lambda:21be56ed\"," +
+    "\"EventSource\":\"aws:sns\",\"Sns\":{\"MessageId\":\"95df01b4\",\"TopicArn\":\"arn:aws:sns:us-east-2:123456789012:sns-lambda\"," +
+    "\"Message\":\"Hello from SNS!\"}}]}"
+  match detectEventSource(payload) {
+    case SnsSrc -> ()
+    case _ -> assertTrue(false, "expected SnsSrc for the real PascalCase AWS SNS event shape")
+  }
+}
+
 test "detectEventSource: S3" {
   match detectEventSource("{\"Records\":[{\"eventSource\":\"aws:s3\"}]}") {
     case S3Src -> ()
@@ -245,6 +258,299 @@ test "dispatchInvocation: aws:sqs with no registered handler fails closed with I
   }
 }
 
+// ─── dispatchInvocation: aws:sns ──────────────────────────────────────────────
+record SnsOkHandler {
+}
+
+impl Lambda.SnsHandler for SnsOkHandler {
+  func handle(event: in SnsEvent, ctx: in LambdaContext): Result[Unit, LambdaError] {
+    assertEqualInt(event.records.length, 1, "sns handler sees one record")
+    assertEqual(event.records[0].eventSource, "aws:sns", "eventSource decoded from the real AWS key EventSource")
+    assertEqual(
+      event.records[0].eventSubscriptionArn,
+      "arn:aws:sns:us-east-2:123456789012:sns-lambda:21be56ed-a058-49f5-8c98-aedd2564c486",
+      "eventSubscriptionArn decoded"
+    )
+    assertEqual(event.records[0].sns.messageId, "95df01b4-ee98-5cb9-9903-4c221d41eb5e", "sns.messageId decoded")
+    assertEqual(event.records[0].sns.topicArn, "arn:aws:sns:us-east-2:123456789012:sns-lambda", "sns.topicArn decoded")
+    assertEqual(event.records[0].sns.message, "Hello from SNS!", "sns.message decoded")
+    match event.records[0].sns.subject {
+      case Some(s) -> assertEqual(s, "TestInvoke", "sns.subject decoded")
+      case None -> assertTrue(false, "sns.subject must be Some")
+    }
+    match mapGet(event.records[0].sns.messageAttributes, "Test") {
+      case Some(attr) -> {
+        assertEqual(attr.attributeType, "String", "message attribute Type decoded")
+        assertEqual(attr.value, "TestString", "message attribute Value decoded")
+      }
+      case None -> assertTrue(false, "sns.messageAttributes must contain Test")
+    }
+    return Ok(value = ())
+  }
+}
+
+func snsPayload(): String {
+  return "{\"Records\":[{\"EventVersion\":\"1.0\"," +
+    "\"EventSubscriptionArn\":\"arn:aws:sns:us-east-2:123456789012:sns-lambda:21be56ed-a058-49f5-8c98-aedd2564c486\"," +
+    "\"EventSource\":\"aws:sns\",\"Sns\":{\"SignatureVersion\":\"1\",\"Timestamp\":\"2019-01-02T12:45:07.000Z\"," +
+    "\"Signature\":\"tcc6faL2yUC6dgZdmrwh1Y4cGa\",\"SigningCertUrl\":\"https://sns.us-east-2.amazonaws.com/cert.pem\"," +
+    "\"MessageId\":\"95df01b4-ee98-5cb9-9903-4c221d41eb5e\",\"Message\":\"Hello from SNS!\"," +
+    "\"MessageAttributes\":{\"Test\":{\"Type\":\"String\",\"Value\":\"TestString\"}," +
+    "\"TestBinary\":{\"Type\":\"Binary\",\"Value\":\"TestBinary\"}},\"Type\":\"Notification\"," +
+    "\"UnsubscribeUrl\":\"https://sns.us-east-2.amazonaws.com/unsubscribe\"," +
+    "\"TopicArn\":\"arn:aws:sns:us-east-2:123456789012:sns-lambda\",\"Subject\":\"TestInvoke\"}}]}"
+}
+
+test "dispatchInvocation: aws:sns decodes the real PascalCase AWS event and invokes the registered SnsDirect handler" {
+  val app = Lambda.withDirect(Lambda.newApp(), Lambda.Direct.snsHandler(SnsOkHandler()))
+  match dispatchInvocation(app, snsPayload(), testContext()) {
+    case Ok(body) -> assertEqual(body, "null", "sns handler success response body")
+    case Err(e) -> assertTrue(false, "expected Ok, got Err: " + Lambda.errorMessage(e))
+  }
+}
+
+test "dispatchInvocation: aws:sns with no registered handler fails closed with InternalError" {
+  match dispatchInvocation(Lambda.newApp(), snsPayload(), testContext()) {
+    case Ok(_) -> assertTrue(false, "expected Err when no aws:sns handler is registered")
+    case Err(InternalError(msg)) -> {
+      assertTrue(msg.contains("aws:sns"), "error names the missing event source")
+      assertTrue(msg.contains("snsHandler"), "error names the Lambda.Direct.snsHandler factory")
+    }
+    case Err(other) -> assertTrue(false, "expected InternalError, got: " + Lambda.errorMessage(other))
+  }
+}
+
+// ─── dispatchInvocation: aws:s3 ───────────────────────────────────────────────
+record S3OkHandler {
+}
+
+impl Lambda.S3Handler for S3OkHandler {
+  func handle(event: in S3Event, ctx: in LambdaContext): Result[Unit, LambdaError] {
+    assertEqualInt(event.records.length, 1, "s3 handler sees one record")
+    assertEqual(event.records[0].eventName, "ObjectCreated:Put", "eventName decoded")
+    assertEqual(
+      event.records[0].requestParameters.sourceIpAddress,
+      "205.255.255.255",
+      "sourceIpAddress decoded from the real AWS key sourceIPAddress"
+    )
+    assertEqual(
+      event.records[0].responseElements.xAmzRequestId,
+      "D82B88E5F771F645",
+      "xAmzRequestId decoded from the hyphenated real AWS key x-amz-request-id"
+    )
+    assertEqual(
+      event.records[0].responseElements.xAmzId2,
+      "vlR7PnpV2Ce81l0PRw6jlUpck7Jo5ZsQjryTjKlc5aLWGVHPZLj5NeC6qMa0emYBDXOo6QBU0Wo=",
+      "xAmzId2 decoded from the hyphenated real AWS key x-amz-id-2"
+    )
+    assertEqual(event.records[0].s3.bucket.name, "lambda-artifacts-deafc19498e3f2df", "bucket name decoded")
+    assertEqual(event.records[0].s3.object.key, "b21b84d653bb07b05b1e6b33684dc11b", "object key decoded")
+    assertEqualLong(event.records[0].s3.object.size, 1305107i64, "object size decoded")
+    return Ok(value = ())
+  }
+}
+
+func s3Payload(): String {
+  return "{\"Records\":[{\"eventVersion\":\"2.1\",\"eventSource\":\"aws:s3\",\"awsRegion\":\"us-east-2\"," +
+    "\"eventTime\":\"2019-09-03T19:37:27.192Z\",\"eventName\":\"ObjectCreated:Put\"," +
+    "\"userIdentity\":{\"principalId\":\"AWS:AIDAINPONIXQXHT3IKHL2\"}," +
+    "\"requestParameters\":{\"sourceIPAddress\":\"205.255.255.255\"}," +
+    "\"responseElements\":{\"x-amz-request-id\":\"D82B88E5F771F645\"," +
+    "\"x-amz-id-2\":\"vlR7PnpV2Ce81l0PRw6jlUpck7Jo5ZsQjryTjKlc5aLWGVHPZLj5NeC6qMa0emYBDXOo6QBU0Wo=\"}," +
+    "\"s3\":{\"s3SchemaVersion\":\"1.0\",\"configurationId\":\"828aa6fc-f7b5-4305-8584-487c791949c1\"," +
+    "\"bucket\":{\"name\":\"lambda-artifacts-deafc19498e3f2df\"," +
+    "\"ownerIdentity\":{\"principalId\":\"A3I5XTEXAMAI3E\"}," +
+    "\"arn\":\"arn:aws:s3:::lambda-artifacts-deafc19498e3f2df\"}," +
+    "\"object\":{\"key\":\"b21b84d653bb07b05b1e6b33684dc11b\",\"size\":1305107," +
+    "\"eTag\":\"b21b84d653bb07b05b1e6b33684dc11b\",\"sequencer\":\"0C0F6F405D6ED209E1\"}}}]}"
+}
+
+test "dispatchInvocation: aws:s3 decodes the event (incl. sourceIPAddress/x-amz-* quirks) and invokes the registered S3Direct handler" {
+  val app = Lambda.withDirect(Lambda.newApp(), Lambda.Direct.s3Handler(S3OkHandler()))
+  match dispatchInvocation(app, s3Payload(), testContext()) {
+    case Ok(body) -> assertEqual(body, "null", "s3 handler success response body")
+    case Err(e) -> assertTrue(false, "expected Ok, got Err: " + Lambda.errorMessage(e))
+  }
+}
+
+test "dispatchInvocation: aws:s3 with no registered handler fails closed with InternalError" {
+  match dispatchInvocation(Lambda.newApp(), s3Payload(), testContext()) {
+    case Ok(_) -> assertTrue(false, "expected Err when no aws:s3 handler is registered")
+    case Err(InternalError(msg)) -> {
+      assertTrue(msg.contains("aws:s3"), "error names the missing event source")
+      assertTrue(msg.contains("s3Handler"), "error names the Lambda.Direct.s3Handler factory")
+    }
+    case Err(other) -> assertTrue(false, "expected InternalError, got: " + Lambda.errorMessage(other))
+  }
+}
+
+// ─── dispatchInvocation: aws:dynamodb ─────────────────────────────────────────
+record DynamoDbOkHandler {
+}
+
+impl Lambda.DynamoDbHandler for DynamoDbOkHandler {
+  func handle(event: in DynamoDbEvent, ctx: in LambdaContext): Result[Unit, LambdaError] {
+    assertEqualInt(event.records.length, 1, "dynamodb handler sees one record")
+    assertEqual(event.records[0].eventId, "1", "eventId decoded from the real AWS key eventID")
+    assertEqual(event.records[0].eventName, "INSERT", "eventName decoded")
+    assertEqual(
+      event.records[0].eventSourceArn,
+      "arn:aws:dynamodb:us-east-1:123456789012:table/ExampleTableWithStream/stream/2015-06-27T00:48:05.899",
+      "eventSourceArn decoded from the real AWS key eventSourceARN"
+    )
+    assertEqual(event.records[0].dynamodb.streamViewType, "NEW_AND_OLD_IMAGES", "streamViewType decoded")
+    assertEqualLong(event.records[0].dynamodb.sizeBytes, 26i64, "sizeBytes decoded")
+    match mapGet(event.records[0].dynamodb.keys, "Id") {
+      case Some(attr) -> match attr.n { case Some(v) -> assertEqual(v, "101", "Keys.Id.N decoded from the DynamoDB wire attribute-value shape"); case None -> assertTrue(false, "Keys.Id must have an N field") }
+      case None -> assertTrue(false, "dynamodb.keys must contain Id")
+    }
+    match event.records[0].dynamodb.newImage {
+      case Some(img) -> match mapGet(img, "Message") { case Some(attr) -> match attr.s { case Some(v) -> assertEqual(v, "New item!", "NewImage.Message.S decoded"); case None -> assertTrue(false, "NewImage.Message must have an S field") }; case None -> assertTrue(false, "newImage must contain Message") }
+      case None -> assertTrue(false, "newImage must be Some for a NEW_AND_OLD_IMAGES stream view")
+    }
+    return Ok(value = ())
+  }
+}
+
+func dynamoDbPayload(): String {
+  return "{\"Records\":[{\"eventID\":\"1\",\"eventVersion\":\"1.0\"," +
+    "\"dynamodb\":{\"Keys\":{\"Id\":{\"N\":\"101\"}}," +
+    "\"NewImage\":{\"Message\":{\"S\":\"New item!\"},\"Id\":{\"N\":\"101\"}}," +
+    "\"StreamViewType\":\"NEW_AND_OLD_IMAGES\",\"SequenceNumber\":\"111\",\"SizeBytes\":26}," +
+    "\"awsRegion\":\"us-west-2\",\"eventName\":\"INSERT\"," +
+    "\"eventSourceARN\":\"arn:aws:dynamodb:us-east-1:123456789012:table/ExampleTableWithStream/stream/2015-06-27T00:48:05.899\"," +
+    "\"eventSource\":\"aws:dynamodb\"}]}"
+}
+
+test "dispatchInvocation: aws:dynamodb decodes the DynamoDB wire attribute shape and invokes the registered DynamoDbDirect handler" {
+  val app = Lambda.withDirect(Lambda.newApp(), Lambda.Direct.dynamoDbHandler(DynamoDbOkHandler()))
+  match dispatchInvocation(app, dynamoDbPayload(), testContext()) {
+    case Ok(body) -> assertEqual(body, "null", "dynamodb handler success response body")
+    case Err(e) -> assertTrue(false, "expected Ok, got Err: " + Lambda.errorMessage(e))
+  }
+}
+
+test "dispatchInvocation: aws:dynamodb with no registered handler fails closed with InternalError" {
+  match dispatchInvocation(Lambda.newApp(), dynamoDbPayload(), testContext()) {
+    case Ok(_) -> assertTrue(false, "expected Err when no aws:dynamodb handler is registered")
+    case Err(InternalError(msg)) -> {
+      assertTrue(msg.contains("aws:dynamodb"), "error names the missing event source")
+      assertTrue(msg.contains("dynamoDbHandler"), "error names the Lambda.Direct.dynamoDbHandler factory")
+    }
+    case Err(other) -> assertTrue(false, "expected InternalError, got: " + Lambda.errorMessage(other))
+  }
+}
+
+// ─── dispatchInvocation: aws:kinesis ──────────────────────────────────────────
+record KinesisOkHandler {
+}
+
+impl Lambda.KinesisHandler for KinesisOkHandler {
+  func handle(event: in KinesisEvent, ctx: in LambdaContext): Result[Unit, LambdaError] {
+    assertEqualInt(event.records.length, 1, "kinesis handler sees one record")
+    assertEqual(
+      event.records[0].eventId,
+      "shardId-000000000006:49590338271490256608559692538361571095921575989136588898",
+      "eventId decoded from the real AWS key eventID"
+    )
+    assertEqual(
+      event.records[0].eventSourceArn,
+      "arn:aws:kinesis:us-east-2:123456789012:stream/lambda-stream",
+      "eventSourceArn decoded from the real AWS key eventSourceARN"
+    )
+    assertEqual(event.records[0].kinesis.partitionKey, "1", "kinesis.partitionKey decoded")
+    assertEqual(
+      event.records[0].kinesis.data,
+      "SGVsbG8sIHRoaXMgaXMgYSB0ZXN0Lg==",
+      "kinesis.data decoded as the untouched base64 string"
+    )
+    val ts = event.records[0].kinesis.approximateArrivalTimestamp
+    assertTrue(ts > 1545084650.9 and ts < 1545084651.1, "approximateArrivalTimestamp decoded as a fractional epoch")
+    return Ok(value = ())
+  }
+}
+
+func kinesisPayload(): String {
+  return "{\"Records\":[{\"kinesis\":{\"kinesisSchemaVersion\":\"1.0\",\"partitionKey\":\"1\"," +
+    "\"sequenceNumber\":\"49590338271490256608559692538361571095921575989136588898\"," +
+    "\"data\":\"SGVsbG8sIHRoaXMgaXMgYSB0ZXN0Lg==\",\"approximateArrivalTimestamp\":1545084650.987}," +
+    "\"eventSource\":\"aws:kinesis\",\"eventVersion\":\"1.0\"," +
+    "\"eventID\":\"shardId-000000000006:49590338271490256608559692538361571095921575989136588898\"," +
+    "\"eventName\":\"aws:kinesis:record\",\"invokeIdentityArn\":\"arn:aws:iam::123456789012:role/lambda-role\"," +
+    "\"awsRegion\":\"us-east-2\",\"eventSourceARN\":\"arn:aws:kinesis:us-east-2:123456789012:stream/lambda-stream\"}]}"
+}
+
+test "dispatchInvocation: aws:kinesis decodes the event and invokes the registered KinesisDirect handler" {
+  val app = Lambda.withDirect(Lambda.newApp(), Lambda.Direct.kinesisHandler(KinesisOkHandler()))
+  match dispatchInvocation(app, kinesisPayload(), testContext()) {
+    case Ok(body) -> assertEqual(body, "null", "kinesis handler success response body")
+    case Err(e) -> assertTrue(false, "expected Ok, got Err: " + Lambda.errorMessage(e))
+  }
+}
+
+test "dispatchInvocation: aws:kinesis with no registered handler fails closed with InternalError" {
+  match dispatchInvocation(Lambda.newApp(), kinesisPayload(), testContext()) {
+    case Ok(_) -> assertTrue(false, "expected Err when no aws:kinesis handler is registered")
+    case Err(InternalError(msg)) -> {
+      assertTrue(msg.contains("aws:kinesis"), "error names the missing event source")
+      assertTrue(msg.contains("kinesisHandler"), "error names the Lambda.Direct.kinesisHandler factory")
+    }
+    case Err(other) -> assertTrue(false, "expected InternalError, got: " + Lambda.errorMessage(other))
+  }
+}
+
+// ─── dispatchInvocation: EventBridge ──────────────────────────────────────────
+record EventBridgeOkHandler {
+}
+
+impl Lambda.EventBridgeHandler for EventBridgeOkHandler {
+  func handle(event: in EventBridgeEvent, ctx: in LambdaContext): Result[Unit, LambdaError] {
+    assertEqual(event.source, "aws.ec2", "source decoded")
+    assertEqual(
+      event.detailType,
+      "EC2 Instance State-change Notification",
+      "detailType decoded from the hyphenated real AWS key detail-type"
+    )
+    assertEqual(event.id, "6a7e8feb-b491-4cf7-a9f1-bf3703467718", "id decoded")
+    assertEqual(event.account, "111122223333", "account decoded")
+    assertEqualInt(event.resources.length, 1, "one resource ARN")
+    assertEqual(
+      event.resources[0],
+      "arn:aws:ec2:us-west-1:123456789012:instance/i-1234567890abcdef0",
+      "resources[0] decoded"
+    )
+    assertTrue(event.detail.contains("\"state\":\"terminated\""), "detail kept as raw JSON text")
+    return Ok(value = ())
+  }
+}
+
+func eventBridgePayload(): String {
+  return "{\"version\":\"0\",\"id\":\"6a7e8feb-b491-4cf7-a9f1-bf3703467718\"," +
+    "\"detail-type\":\"EC2 Instance State-change Notification\",\"source\":\"aws.ec2\"," +
+    "\"account\":\"111122223333\",\"time\":\"2017-12-22T18:43:48Z\",\"region\":\"us-west-1\"," +
+    "\"resources\":[\"arn:aws:ec2:us-west-1:123456789012:instance/i-1234567890abcdef0\"]," +
+    "\"detail\":{\"instance-id\":\"i-1234567890abcdef0\",\"state\":\"terminated\"}}"
+}
+
+test "dispatchInvocation: EventBridge decodes the root-level envelope (no Records wrapper) and invokes the registered handler" {
+  val app = Lambda.withDirect(Lambda.newApp(), Lambda.Direct.eventBridgeHandler(EventBridgeOkHandler()))
+  match dispatchInvocation(app, eventBridgePayload(), testContext()) {
+    case Ok(body) -> assertEqual(body, "null", "EventBridge handler success response body")
+    case Err(e) -> assertTrue(false, "expected Ok, got Err: " + Lambda.errorMessage(e))
+  }
+}
+
+test "dispatchInvocation: EventBridge with no registered handler fails closed with InternalError" {
+  match dispatchInvocation(Lambda.newApp(), eventBridgePayload(), testContext()) {
+    case Ok(_) -> assertTrue(false, "expected Err when no EventBridge handler is registered")
+    case Err(InternalError(msg)) -> {
+      assertTrue(msg.contains("EventBridge"), "error names the missing event source")
+      assertTrue(msg.contains("eventBridgeHandler"), "error names the Lambda.Direct.eventBridgeHandler factory")
+    }
+    case Err(other) -> assertTrue(false, "expected InternalError, got: " + Lambda.errorMessage(other))
+  }
+}
+
 // ─── dispatchInvocation: raw ──────────────────────────────────────────────────
 record RawOkHandler {
 }
@@ -336,24 +642,6 @@ test "dispatchInvocation: HTTP API (v2) authorizer decodes the event and encodes
   match dispatchInvocation(app, payload, testContext()) {
     case Ok(body) -> assertEqual(body, "{\"isAuthorized\":true,\"context\":{}}", "HTTP authorizer response JSON")
     case Err(e) -> assertTrue(false, "expected Ok, got Err: " + Lambda.errorMessage(e))
-  }
-}
-
-// ─── dispatchInvocation: not-yet-implemented sources fail loudly ─────────────
-test "dispatchInvocation: aws:sns is detected but dispatch fails closed as not-yet-implemented" {
-  match dispatchInvocation(Lambda.newApp(), "{\"Records\":[{\"eventSource\":\"aws:sns\"}]}", testContext()) {
-    case Ok(_) -> assertTrue(false, "aws:sns dispatch is not implemented; must not silently succeed")
-    case Err(InternalError(msg)) -> assertTrue(msg.contains("aws:sns"), "error names the unimplemented source")
-    case Err(other) -> assertTrue(false, "expected InternalError, got: " + Lambda.errorMessage(other))
-  }
-}
-
-test "dispatchInvocation: EventBridge is detected but dispatch fails closed as not-yet-implemented" {
-  val payload = "{\"source\":\"my.service\",\"detail-type\":\"OrderPlaced\",\"detail\":\"{}\"}"
-  match dispatchInvocation(Lambda.newApp(), payload, testContext()) {
-    case Ok(_) -> assertTrue(false, "EventBridge dispatch is not implemented; must not silently succeed")
-    case Err(InternalError(_)) -> ()
-    case Err(other) -> assertTrue(false, "expected InternalError, got: " + Lambda.errorMessage(other))
   }
 }
 
