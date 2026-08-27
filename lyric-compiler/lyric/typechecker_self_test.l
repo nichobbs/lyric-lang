@@ -348,6 +348,108 @@ test "if unit branch no mismatch" {
   assertEqualInt(diagCount(parseCheck(src)), 0, "if-unit-branch: Int-vs-Unit branches are not a mismatch")
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// #3362: `unifyBranchTypes`'s Unit absorption was position-blind — it
+// collapsed an if/match to `Unit` whenever either branch was Unit-typed,
+// regardless of whether the if/match's own value was actually consumed
+// (value position) or discarded (statement position — the case the test
+// directly above, and #3262/#3361's `try` analog further below, cover).  In
+// value position a lone Unit branch beside a real value is now a genuine
+// T0067 mismatch instead of a silent `Unit` collapse; statement position
+// keeps the original lenient absorption unchanged.
+// ─────────────────────────────────────────────────────────────────────────────
+// Unannotated `val` has no declared type to check the initialiser against, so
+// pre-#3362 this silently bound `x : Unit` with zero diagnostics.
+test "if value position mixed unit rejected: unannotated val (#3362)" {
+  val bad = "package P\nfunc f(c: in Bool): Unit {\n  val x = if c { 1 } else { () }\n}\n"
+  assertTrue(
+    hasDiagCode(parseCheck(bad), "T0067"),
+    "if value-position: unannotated val with Int/Unit if branches now rejected"
+  )
+}
+
+test "match value position mixed unit rejected: unannotated val (#3362)" {
+  val bad = "package P\nfunc f(c: in Bool): Unit {\n  val x = match c { case true -> 1; case false -> () }\n}\n"
+  assertTrue(
+    hasDiagCode(parseCheck(bad), "T0067"),
+    "match value-position: unannotated val with Int/Unit match arms now rejected"
+  )
+}
+
+// The annotated-`val` form (the issue's own literal example) was already
+// accidentally caught before #3362 — not via `unifyBranchTypes`, but via the
+// separate strict `argSatisfiesParam` check (T0060) that ran after the
+// (wrongly Unit-typed) if-expression was bound, since `Unit` doesn't satisfy
+// a declared `Int`.  Post-#3362 the diagnostic source changes: the if itself
+// now raises T0067 directly (value position), yielding `TyError` — which
+// `argSatisfiesParam`'s `typeEquiv` treats as satisfying any declared type,
+// so the old T0060 no longer additionally fires.  Pinned here (asserting the
+// new T0067, and that T0060 does NOT double up) so a future refactor cannot
+// silently regress this back to leniency, and to confirm #3362's fix does
+// not merely re-derive an already-working path under a different code.
+test "if value position mixed unit rejected: annotated val (#3362)" {
+  val bad = "package P\nfunc f(c: in Bool): Unit {\n  val x: Int = if c { 42 } else { () }\n}\n"
+  val cr = parseCheck(bad)
+  assertTrue(
+    hasDiagCode(cr, "T0067"),
+    "if value-position: annotated val with Int/Unit branches rejected by the if itself (T0067)"
+  )
+  assertTrue(
+    not hasDiagCode(cr, "T0060"),
+    "if value-position: T0067 alone — TyError satisfies argSatisfiesParam, no redundant T0060"
+  )
+}
+
+// The sharper #3362 case: a function's trailing-expression return silently
+// skipped its own T0070 check whenever the *inferred* body type happened to
+// be `Unit` — comparing the body against itself instead of against the
+// declared return type.  Fixing `checkFunctionBody`'s guard alone would still
+// leave this uncaught without also fixing `unifyBranchTypes`: the if/match
+// itself must raise a diagnostic before the (now-unconditional) T0070 check
+// ever runs, and a mismatched-branch if/match unifies to the `TyError`
+// universal absorber, which `typeAssignable` accepts against any declared
+// return type (`typeEquiv` treats `TyError` as equivalent to everything,
+// #2099) — so T0067 alone is the diagnostic here, not a redundant T0070.
+test "if trailing return mixed unit rejected (#3362)" {
+  val bad = "package P\nfunc f(c: in Bool): Int {\n  if c { 42 } else { () }\n}\n"
+  val cr = parseCheck(bad)
+  assertTrue(hasDiagCode(cr, "T0067"), "if trailing-return: Int/Unit branches now rejected with T0067")
+  assertTrue(
+    not hasDiagCode(cr, "T0070"),
+    "if trailing-return: T0067 alone — TyError absorbs into the declared Int return, no redundant T0070"
+  )
+}
+
+test "match trailing return mixed unit rejected (#3362)" {
+  val bad = "package P\nfunc f(c: in Bool): Int {\n  match c { case true -> 42; case false -> () }\n}\n"
+  val cr = parseCheck(bad)
+  assertTrue(hasDiagCode(cr, "T0067"), "match trailing-return: Int/Unit arms now rejected with T0067")
+  assertTrue(not hasDiagCode(cr, "T0070"), "match trailing-return: T0067 alone, no redundant T0070")
+}
+
+// Statement-position regression guards: an if/match whose value is discarded
+// must stay exactly as lenient as before #3362, whether both branches are
+// Unit or one branch is a discarded non-Unit value.
+test "if statement position both unit accepted (#3362)" {
+  val ok = "package P\nfunc consume(n: in Int): Unit {}\nfunc f(c: in Bool): Unit {\n  if c { consume(1) } else { consume(2) }\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "if statement-position: both-Unit branches stay clean")
+}
+
+test "match statement position both unit accepted (#3362)" {
+  val ok = "package P\nfunc consume(n: in Int): Unit {}\nfunc f(c: in Bool): Unit {\n  match c { case true -> consume(1); case false -> consume(2) }\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "match statement-position: both-Unit arms stay clean")
+}
+
+test "if statement position unit vs value accepted (#3362)" {
+  val ok = "package P\nfunc f(c: in Bool): Unit {\n  if c { 1 } else { () }\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "if statement-position: Int-vs-Unit branches stay clean when discarded")
+}
+
+test "match statement position unit vs value accepted (#3362)" {
+  val ok = "package P\nfunc f(c: in Bool): Unit {\n  match c { case true -> 1; case false -> () }\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "match statement-position: Int-vs-Unit arms stay clean when discarded")
+}
+
 // #2127/#2129: a bare UpperCamelCase member-call receiver that does not resolve
 // is treated as a module reference (e.g. a `Std.String as Str` alias that
 // survived rewriting), so it does NOT emit T0020 …

@@ -1494,7 +1494,19 @@ func mergeIntWiden(a: in Type, b: in Type): Option[Type] {
   }
 }
 
-func unifyBranchTypes(a: in Type, b: in Type, span: in Span, diag: in List[Diagnostic]): Type {
+// #3362: `isValuePosition` distinguishes an if/match whose result is
+// actually consumed (bound to a `val`/`let`/`var`, returned, passed as an
+// argument, …) from one used purely as a statement (its value discarded).
+// In statement position, two Unit-typed branches (or a Unit branch beside
+// one that never runs) is the routine, sound case — absorb silently, as
+// before. In value position, one branch producing Unit while the other
+// produces a real value is a genuine mismatch (the caller can't use
+// "sometimes nothing" as a value), so it raises the same T0067 the general
+// incompatible-branch-types case raises rather than silently collapsing to
+// `Unit`. Both branches being Unit is never an error, in either position —
+// it's the *lone* Unit branch beside a non-Unit branch that value position
+// must catch.
+func unifyBranchTypes(a: in Type, b: in Type, span: in Span, diag: in List[Diagnostic], isValuePosition: in Bool): Type {
   if isNeverType(a) {
     return b
   }
@@ -1515,9 +1527,23 @@ func unifyBranchTypes(a: in Type, b: in Type, span: in Span, diag: in List[Diagn
     case _ -> {
     }
   }
-  // Position-blind Unit absorption — unsound for value-position if/match; fix tracked in #3362.
-  if isUnitType(a) or isUnitType(b) {
+  val aUnit = isUnitType(a)
+  val bUnit = isUnitType(b)
+  if aUnit and bUnit {
     return TyPrim(pt = PtUnit)
+  }
+  if aUnit or bUnit {
+    if not isValuePosition {
+      return TyPrim(pt = PtUnit)
+    }
+    diag.add(
+      errorDiagnostic(
+        "T0067",
+        "incompatible branch types: one branch has type " + renderType(a) + ", the other " + renderType(b),
+        span
+      )
+    )
+    return TyError
   }
   if typeEquiv(a, b) {
     a
@@ -3906,6 +3932,90 @@ func pat2fnExpr(head: in ModulePath, span: in Span): Expr {
   Expr(kind = EPath(path = head), span = span)
 }
 
+// #3362: extracted from `inferExpr`'s `EIf` case so `checkBlock` can also
+// invoke it directly for a statement-position `if` (`SExpr` case), passing
+// the enclosing block's actual value-position instead of the `inferExpr`
+// dispatch's implicit "always value position" default.
+func inferIfExpr(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  e: in Expr,
+  cond: in Expr,
+  thenBranch: in ExprOrBlock,
+  elseBranch: in Option[ExprOrBlock],
+  isValuePosition: in Bool,
+): Type {
+  val condT = inferExpr(sc, tbl, sigs, diag, cond)
+  match condT {
+    case TyError -> {
+    }
+    case TyPrim(pt) -> match pt { case PtBool -> {  }; case PtNever -> {  }; case _ -> diag.add(errorDiagnostic("T0066", "if-condition must be Bool (got " + renderType(condT) + ")", cond.span)) }
+    case _ -> diag.add(errorDiagnostic("T0066", "if-condition must be Bool (got " + renderType(condT) + ")", cond.span))
+  }
+  val tt = inferExprOrBlock(sc, tbl, sigs, diag, thenBranch)
+  match elseBranch {
+    case None -> TyPrim(pt = PtUnit)
+    case Some(eb) -> {
+      val et = inferExprOrBlock(sc, tbl, sigs, diag, eb)
+      unifyBranchTypes(tt, et, e.span, diag, isValuePosition)
+    }
+  }
+}
+
+// #3362: extracted from `inferExpr`'s `EMatch` case for the same reason as
+// `inferIfExpr` above — `checkBlock` needs to pass the real value-position
+// for a statement-position `match`.
+func inferMatchExpr(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  e: in Expr,
+  scrutinee: in Expr,
+  arms: in List[MatchArm],
+  isValuePosition: in Bool,
+): Type {
+  val st = inferExpr(sc, tbl, sigs, diag, scrutinee)
+  checkMatchExhaustive(tbl, diag, st, arms, e.span)
+  checkOpaquePatternHiding(tbl, diag, st, arms)
+  // Branch-type unification (#2142): a `match` used as a value takes the
+  // unified type of its arm bodies.  Each arm is checked in a fresh scope
+  // with its pattern variables bound to their destructured types
+  // (`bindPatternTyped` — `Some(ns)` on `Option[T]` binds `ns : T`), then the
+  // bodies fold through `unifyBranchTypes` (Never/TyError absorbed;
+  // Unit absorbed only in statement position, #3362; T0067 on a genuine
+  // value mismatch).  Guards are inferred for diagnostics but do not
+  // contribute to the branch type.
+  var acc: Type = TyError
+  var ai = 0
+  while ai < arms.count {
+    scopePush(sc)
+    bindPatternTyped(sc, tbl, diag, arms[ai].pattern, st)
+    checkConstRefPattern(tbl, sigs, diag, arms[ai].pattern, st)
+    match arms[ai].guard {
+      case Some(g) -> {
+        val guardT = inferExpr(sc, tbl, sigs, diag, g)
+        match guardT {
+          case TyError -> {
+          }
+          case TyPrim(pt) -> match pt { case PtBool -> {  }; case PtNever -> {  }; case _ -> diag.add(errorDiagnostic("T0066", "match-arm guard must be Bool (got " + renderType(guardT) + ")", g.span)) }
+          case _ -> diag.add(errorDiagnostic("T0066", "match-arm guard must be Bool (got " + renderType(guardT) + ")", g.span))
+        }
+      }
+      case None -> {
+      }
+    }
+    val bt = inferExprOrBlock(sc, tbl, sigs, diag, arms[ai].body)
+    val armSpan = match arms[ai].body { case EOBExpr(ae) -> ae.span; case EOBBlock(ab) -> ab.span }
+    scopePop(sc)
+    acc = unifyBranchTypes(acc, bt, armSpan, diag, isValuePosition)
+    ai = ai + 1
+  }
+  acc
+}
+
 pub func inferExpr(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -4232,62 +4342,14 @@ pub func inferExpr(
     // `Unit` (the parser desugars a statement-position brace-`if` so a trailing
     // operator does not glue — #1943).  Each branch is an `ExprOrBlock`: a block
     // branch is typed (divergence-aware) by `checkBlock` (D081), so an
-    // early-`return` branch is `Never` and unifies cleanly.
-    case EIf(cond, thenBranch, elseBranch, _) -> {
-      val condT = inferExpr(sc, tbl, sigs, diag, cond)
-      match condT {
-        case TyError -> {
-        }
-        case TyPrim(pt) -> match pt { case PtBool -> {  }; case PtNever -> {  }; case _ -> diag.add(errorDiagnostic("T0066", "if-condition must be Bool (got " + renderType(condT) + ")", cond.span)) }
-        case _ -> diag.add(errorDiagnostic("T0066", "if-condition must be Bool (got " + renderType(condT) + ")", cond.span))
-      }
-      val tt = inferExprOrBlock(sc, tbl, sigs, diag, thenBranch)
-      match elseBranch {
-        case None -> TyPrim(pt = PtUnit)
-        case Some(eb) -> {
-          val et = inferExprOrBlock(sc, tbl, sigs, diag, eb)
-          unifyBranchTypes(tt, et, e.span, diag)
-        }
-      }
-    }
-    case EMatch(scrutinee, arms) -> {
-      val st = inferExpr(sc, tbl, sigs, diag, scrutinee)
-      checkMatchExhaustive(tbl, diag, st, arms, e.span)
-      checkOpaquePatternHiding(tbl, diag, st, arms)
-      // Branch-type unification (#2142): a `match` used as a value takes the
-      // unified type of its arm bodies.  Each arm is checked in a fresh scope
-      // with its pattern variables bound to their destructured types
-      // (`bindPatternTyped` — `Some(ns)` on `Option[T]` binds `ns : T`), then the
-      // bodies fold through `unifyBranchTypes` (Never/TyError/Unit absorbed;
-      // T0067 on a genuine value mismatch).  Guards are inferred for diagnostics but
-      // do not contribute to the branch type.
-      var acc: Type = TyError
-      var ai = 0
-      while ai < arms.count {
-        scopePush(sc)
-        bindPatternTyped(sc, tbl, diag, arms[ai].pattern, st)
-        checkConstRefPattern(tbl, sigs, diag, arms[ai].pattern, st)
-        match arms[ai].guard {
-          case Some(g) -> {
-            val guardT = inferExpr(sc, tbl, sigs, diag, g)
-            match guardT {
-              case TyError -> {
-              }
-              case TyPrim(pt) -> match pt { case PtBool -> {  }; case PtNever -> {  }; case _ -> diag.add(errorDiagnostic("T0066", "match-arm guard must be Bool (got " + renderType(guardT) + ")", g.span)) }
-              case _ -> diag.add(errorDiagnostic("T0066", "match-arm guard must be Bool (got " + renderType(guardT) + ")", g.span))
-            }
-          }
-          case None -> {
-          }
-        }
-        val bt = inferExprOrBlock(sc, tbl, sigs, diag, arms[ai].body)
-        val armSpan = match arms[ai].body { case EOBExpr(ae) -> ae.span; case EOBBlock(ab) -> ab.span }
-        scopePop(sc)
-        acc = unifyBranchTypes(acc, bt, armSpan, diag)
-        ai = ai + 1
-      }
-      acc
-    }
+    // early-`return` branch is `Never` and unifies cleanly.  Reached only via
+    // a plain `inferExpr` dispatch, which always means the result is wanted
+    // as a value (a statement-position `if` is special-cased directly in
+    // `checkBlock`'s `SExpr` arm — #3362) — pass `true` for `isValuePosition`.
+    case EIf(cond, thenBranch, elseBranch, _) -> inferIfExpr(sc, tbl, sigs, diag, e, cond, thenBranch, elseBranch, true)
+    // Reached only via a plain `inferExpr` dispatch (see the `EIf` case
+    // above) — always value position (#3362).
+    case EMatch(scrutinee, arms) -> inferMatchExpr(sc, tbl, sigs, diag, e, scrutinee, arms, true)
     // A value-position brace block / `unsafe { … }` has the type of its trailing
     // expression (or `Unit` if it ends in a statement, or `Never` if it diverges)
     // — `checkBlock` walks the statements (binding locals) and returns that type.

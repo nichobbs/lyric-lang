@@ -39074,3 +39074,125 @@ full-qualified-construction-path class of bug), #6338 (the type checker's
 construction side), docs/41 (self-hosted compiler gap analysis, §9 Band 4
 cross-package resolution).
 
+
+---
+
+## D-progress-802 — `unifyBranchTypes`'s Unit absorption is now position-aware; `checkFunctionBody`'s T0070 skip-guard compared the wrong type (#3362)
+
+**Bug.** `unifyBranchTypes` (`lyric-compiler/lyric/type_checker/typechecker_exprs.l`),
+the function that computes the unified type of an `if`/`match`'s branches,
+unconditionally absorbed the pair to `Unit` whenever either branch was
+`Unit`-typed — regardless of whether the `if`/`match`'s value was actually
+consumed (value position: bound to a `val`, returned, passed as an
+argument) or discarded (statement position). Two concrete, previously
+undiagnosed failure modes: an unannotated `val x = if cond { 42 } else { }`
+silently bound `x : Unit` with zero diagnostics (no declared type to check
+the initialiser against); and, sharper, `checkFunctionBody`
+(`typechecker_stmts.l`) skipped its own `T0070` "function body trailing
+expression has type X but declared return type is Y" check whenever the
+block's *inferred* body type happened to be `Unit` — checking whether the
+body matched itself (trivially true) instead of whether it matched the
+*declared* `sig.returnTy` — so `func f(): Int { if cond { 42 } else { } }`
+compiled cleanly despite one arm never producing the declared `Int`. The
+annotated-`val` form (`val x: Int = if cond { 42 } else { () }`, the
+issue's own literal example) was already accidentally caught before this
+fix — not via `unifyBranchTypes`, but via the separate strict
+`argSatisfiesParam`/`T0060` check that runs after the (wrongly Unit-typed)
+if-expression is bound — so it doesn't by itself demonstrate the bug is
+fixed; the unannotated-`val` and function-body-return cases are the ones
+that prove real progress.
+
+**Fix.** Threaded an `isValuePosition: Bool` parameter through
+`unifyBranchTypes`: in statement position (the existing, sound default)
+a lone `Unit` branch beside anything is still absorbed silently; in value
+position a lone `Unit` branch beside a non-`Unit` branch now raises the
+same `T0067` "incompatible branch types" diagnostic the function already
+raises for a genuine type mismatch, yielding `TyError` (both branches
+`Unit` is never an error, in either position). `EIf`'s and `EMatch`'s
+arm-folding bodies were extracted out of `inferExpr`'s giant match into two
+standalone functions, `inferIfExpr`/`inferMatchExpr`, each taking the same
+`isValuePosition` flag and forwarding it to `unifyBranchTypes` — mirroring
+the precedent `checkTryHandlerType`/`#3262`/`#3361` already established
+for `try`/`catch`. `inferExpr`'s own `EIf`/`EMatch` dispatch (reached from
+every ordinary expression-value context — call arguments, binop operands,
+a `val`/`let`/`var` initialiser, `return`/`throw` values, …) always passes
+`true`: a `plain inferExpr` call always means the caller wants a value.
+The one place an `if`/`match`'s value can be genuinely discarded is
+`checkBlock`'s `SExpr` statement dispatch (mirroring the special-casing
+that dispatch already gives a value-position brace/`unsafe` block, #3262)
+— extended with `EIf`/`EMatch` arms that call `inferIfExpr`/`inferMatchExpr`
+directly with `valuePos and isLast`, the same position expression already
+used for nested blocks.
+
+Separately, `checkFunctionBody`'s `FBBlock` arm's `T0070` guard dropped its
+`not isUnit` bypass entirely — it now compares `bodyType` against the
+declared `sig.returnTy` unconditionally (keeping the existing `isNever`
+bottom-type exception unchanged). `typeAssignable`'s `typeEquiv` already
+treats `TyError` as equivalent to any type (#2099), so a mismatched-branch
+`if`/`match` that now raises `T0067` and yields `TyError` does not also
+trip a redundant `T0070` — confirmed by dedicated self-test assertions
+that `T0070` does NOT additionally fire alongside the `T0067` these cases
+raise.
+
+**Fallout — a second, independent divergence-detection gap this surfaced.**
+Removing `checkFunctionBody`'s blanket Unit bypass exposed a genuinely
+separate, pre-existing bug: `statementDiverges` (the helper `checkBlock`'s
+tail uses to decide whether a block's last statement transfers control
+away, making the whole block's type `Never`) only recognized
+`SReturn`/`SThrow`/`SBreak`/`SContinue` — never `SScope(_, body)`. A
+function whose entire body is `scope { …; return x }` (the shape several
+`async_spawn_self_test.l` helpers use, e.g. `sumDoublesReturn`,
+`parenSpawnSum`, `nestedScopeSpawns`) types the outer block as `Unit`
+today (a `scope { }` is a bare statement, not an `SExpr`, so `checkBlock`'s
+generic catch-all types it as a plain `Unit` statement and never asks
+whether the scope's OWN body unconditionally returns) instead of `Never`.
+Before this fix that misclassification was invisible: the old
+`checkFunctionBody` bypass skipped `T0070` whenever the body type was
+`Unit`, silently accepting the wrong classification along with every
+genuine mismatch this fix targets. Discovered when the unconditional
+`T0070` check false-fired on eight `async_spawn_self_test.l` helpers
+declaring a non-`Unit` return whose body is solely such a scope. Fixed by
+adding an `SScope` case to `statementDiverges` that recurses on the
+scope's own body's trailing statement — mirroring exactly the divergence
+check `checkBlock`'s tail already applies to an ordinary block. This is
+the only call site of `statementDiverges`, so the fix is narrowly scoped.
+
+**Diagnostics.** No new diagnostic codes — reuses the existing `T0067`
+(incompatible branch types) and leaves `T0070`/`T0060` unchanged in
+wording. Only the conditions under which they fire changed.
+
+**Coverage.** `typechecker_self_test.l` gained 12 new cases: unannotated-
+`val` mixed-Unit rejection for both `if` and `match`; the annotated-`val`
+case re-pinned under its NEW diagnostic source (`T0067` from the `if`
+itself, not `T0060` — `TyError` satisfies `argSatisfiesParam` so `T0060`
+no longer additionally fires); function-trailing-return mixed-Unit
+rejection for both `if` and `match` (asserting `T0067` fires and `T0070`
+does NOT redundantly fire); and statement-position regression guards for
+both both-Unit and Unit-vs-value branch pairs, for both `if` and `match`,
+confirming the pre-existing lenient behaviour is unchanged when the value
+is discarded.
+
+**Verification.** `make self-test NAME=typechecker`: 376/376 (was
+375/376 before the annotated-`val` test's diagnostic-source correction).
+`async_spawn_self_test.l`: 26/26 on both `--target dotnet` and
+`--target jvm` (was failing to compile on `dotnet` with 8 spurious
+`T0070`s before the `statementDiverges` fix). Sibling compiler self-tests
+unaffected: `parser` (126/126), `modechecker` (92/92),
+`contract_elaborator` (36/36), `mono` (54/54), `derives` (49/49), `fmt`
+(131/131), `cfg` (12/12), `bitwise` (10/10), `aspect_weave` (8/8),
+`block_shadow` (20/20), `result_generic_specialization` (4/4),
+`stubbable` (9/9) — all still green against a from-scratch `make lyric`
+rebuild. Full ecosystem sweep: all 28 root `lyric-*/lyric.toml` manifests
+(`lyric-auth`, `lyric-aws-secrets`, `lyric-aws-xray`, `lyric-cache`,
+`lyric-db`, `lyric-docker`, `lyric-feature-flags`, `lyric-generator-sdk`,
+`lyric-grpc`, `lyric-health`, `lyric-i18n`, `lyric-jobs`, `lyric-jsonrpc`,
+`lyric-lambda`, `lyric-logging`, `lyric-mail`, `lyric-mcp`, `lyric-mq`,
+`lyric-otel`, `lyric-proto`, `lyric-resilience`, `lyric-search`,
+`lyric-session`, `lyric-storage`, `lyric-testing`, `lyric-validation`,
+`lyric-web`, `lyric-ws`) `lyric build --manifest <lib>/lyric.toml` clean
+— no in-tree code anywhere in the workspace relied on the unsound
+value-position leniency this fix removes.
+
+**Related:** issue #3362, #2099 (`TyError`-as-universal-absorber
+rationale), #3262/#3361 (the `try`/`catch` sibling this fix's
+value-position threading mirrors).

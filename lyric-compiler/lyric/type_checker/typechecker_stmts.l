@@ -383,6 +383,22 @@ func statementDiverges(stmt: in Statement): Bool {
     case SThrow(_) -> true
     case SBreak(_) -> true
     case SContinue(_) -> true
+    // #3362 fallout: `scope { ... }` is a bare statement (not an `SExpr`), so
+    // `checkBlock`'s generic `case _ ->` catch-all types it as a plain `Unit`
+    // statement and never asks whether its OWN body unconditionally returns.
+    // Before #3362 that didn't matter: a function body ending in
+    // `scope { …; return x }` computed `bodyType = Unit`, and
+    // `checkFunctionBody`'s old (buggy) guard skipped T0070 whenever the
+    // *inferred* body type happened to be `Unit` — silently accepting the
+    // Unit misclassification along with every genuine mismatch #3362 fixes.
+    // Removing that blanket bypass exposed this: a function declared to
+    // return e.g. `Int` whose body is just such a scope now (correctly)
+    // needs the block to type as `Never`, not `Unit`, or T0070 false-fires.
+    // Recursing on the scope body's own trailing statement mirrors exactly
+    // the divergence check `checkBlock`'s tail already applies to an
+    // ordinary block, so a `scope { ...; return x }` — the shape several
+    // `async_spawn_self_test.l` helpers use — now correctly diverges.
+    case SScope(_, body) -> body.statements.count > 0 and statementDiverges(body.statements[body.statements.count - 1])
     case _ -> false
   }
 }
@@ -473,8 +489,14 @@ pub func checkBlock(
         // A brace / `unsafe` block used as a statement-expression carries the
         // enclosing block's value-position only at the trailing statement;
         // route it through `checkBlock` directly so a non-trailing block's
-        // value is correctly treated as discarded (#3262).  All other
-        // expression forms type via `inferExpr`.
+        // value is correctly treated as discarded (#3262).  An `if`/`match`
+        // used as a statement-expression needs the same treatment (#3362):
+        // route through `inferIfExpr`/`inferMatchExpr` directly with the
+        // real value-position so a lone Unit-typed branch is absorbed
+        // silently when the value is discarded, matching the pre-#3362
+        // behaviour, but raises T0067 when this statement is actually the
+        // block's trailing (consumed) expression.  All other expression
+        // forms type via `inferExpr` (always value position — #3362).
         val isLast = i == blk.statements.count - 1
         match e.kind {
           case EBlock(innerBlk) -> {
@@ -482,6 +504,12 @@ pub func checkBlock(
           }
           case EUnsafe(innerBlk) -> {
             lastExprType = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, innerBlk, valuePos and isLast)
+          }
+          case EIf(cond, thenBranch, elseBranch, _) -> {
+            lastExprType = inferIfExpr(sc, tbl, sigs, diag, e, cond, thenBranch, elseBranch, valuePos and isLast)
+          }
+          case EMatch(scrutinee, arms) -> {
+            lastExprType = inferMatchExpr(sc, tbl, sigs, diag, e, scrutinee, arms, valuePos and isLast)
           }
           case _ -> {
             lastExprType = inferExpr(sc, tbl, sigs, diag, e)
@@ -907,7 +935,54 @@ pub func checkFunctionBody(
   match fn.body {
     case None -> {
     }
-    case Some(body) -> match body { case FBExpr(e) -> { val bodyType = inferExpr(sc, tbl, sigs, diag, e); val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) { diag.add(errorDiagnostic("T0070", "function body has type " + renderType(bodyType) + " but declared return type is " + declaredReturnTyStr, fn.span)) } }; case FBBlock(blk) -> { val bodyValuePos = not isUnitType(sig.returnTy); val bodyType = checkBlock(sc, tbl, sigs, sig.generics, sig.returnTy, fn.ret, diag, blk, bodyValuePos); val isUnit = match bodyType { case TyPrim(pt) -> match pt { case PtUnit -> true; case _ -> false }; case _ -> false }; val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isUnit and not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) { diag.add(errorDiagnostic("T0070", "function body trailing expression has type " + renderType(bodyType) + " but declared return type is " + declaredReturnTyStr, fn.span)) } } }
+    case Some(body) -> match body {
+      case FBExpr(e) -> {
+        val bodyType = inferExpr(sc, tbl, sigs, diag, e)
+        val isNever = match bodyType {
+          case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }
+          case _ -> false
+        }
+        if not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) {
+          diag.add(
+            errorDiagnostic(
+              "T0070",
+              "function body has type " + renderType(bodyType) + " but declared return type is " + declaredReturnTyStr,
+              fn.span
+            )
+          )
+        }
+      }
+      case FBBlock(blk) -> {
+        val bodyValuePos = not isUnitType(sig.returnTy)
+        val bodyType = checkBlock(sc, tbl, sigs, sig.generics, sig.returnTy, fn.ret, diag, blk, bodyValuePos)
+        val isNever = match bodyType {
+          case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }
+          case _ -> false
+        }
+        // #3362: compare `bodyType` against the DECLARED `sig.returnTy`
+        // unconditionally (modulo the `Never`/bottom-type exception above).
+        // This used to also skip whenever the *inferred* `bodyType` was
+        // Unit — but that checked the wrong type (whether the body matched
+        // itself, trivially true, instead of whether it matched the
+        // declared return type), so a function declared to return a
+        // non-Unit type whose trailing `if`/`match` produced Unit on one
+        // arm (and a real value on the other, itself now flagged by
+        // `unifyBranchTypes`'s value-position check) compiled with zero
+        // diagnostics. `typeAssignable` already accepts a genuinely
+        // Unit-returning function whose body is Unit, so removing the
+        // bypass does not regress that case.
+        if not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) {
+          diag.add(
+            errorDiagnostic(
+              "T0070",
+              "function body trailing expression has type " + renderType(bodyType) + " but declared return type is " +
+                declaredReturnTyStr,
+              fn.span
+            )
+          )
+        }
+      }
+    }
   }
   checkOutDefiniteAssignment(diag, fn, sig)
 }
