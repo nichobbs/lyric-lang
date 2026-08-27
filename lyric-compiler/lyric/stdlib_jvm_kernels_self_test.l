@@ -20,12 +20,15 @@
 //! themselves resolve and behave correctly; the public-wrapper bugs are
 //! each separately tracked and unaffected by this migration.
 //!
-//! `Std.EnvironmentHost.hostExit` / `Std.EnvironmentHost.
-//! hostGetCommandLineArgs` are not exercised here: the former terminates
-//! the JVM process (incompatible with a test harness expecting the process
-//! to complete and report every test), the latter panics deliberately
-//! (tracked as issue #5377) -- both are manually verified in the PR
-//! description instead.
+//! `Std.EnvironmentHost.hostExit` is not exercised here: it terminates the
+//! JVM process, incompatible with a test harness expecting the process to
+//! complete and report every test -- manually verified in the PR
+//! description instead. `hostGetCommandLineArgs` (issue #5377) IS exercised
+//! below: it no longer panics, but `lyric test` never forwards real CLI
+//! args to the compiled test program, so the real end-to-end argv-capture
+//! check lives in `lyric-compiler/jvm/env_args_jvm_main.l` (a `lyric build
+//! --target jvm` + `java -jar ... <args>` CI check, mirroring
+//! `entry_args_jvm_main.l`'s #3303 check) rather than here.
 //!
 //! Also covers the docs/59 F-1a/F-1b/F-1c phantom-kernel remediation wave:
 //! `format_host.l` (rewritten off the phantom `lyric.stdlib.jvm.FormatHost`
@@ -65,8 +68,11 @@ import Std.JvmExceptionHost
 import Std.Regex as Rx
 // Std.RegexSafe's API is typed in terms of the raw Std.RegexHost handle
 // types (`RxKernel.Regex` / `RxKernel.Match`), so consuming it requires the
-// kernel import too — the `Regex` extern alias must be in this file's extern
-// seed for the Ok-payload binding to checkcast to java.util.regex.Pattern.
+// kernel import too — the `Match` extern alias must be in this file's extern
+// seed for the Ok-payload binding to checkcast to java.util.regex.Matcher.
+// (`Regex` is a plain Lyric record on this target as of #1103's
+// daemon-thread timeout shim, not an extern-Pattern alias — see
+// std/_kernel_jvm/regex_host.l's module header.)
 import Std.RegexHost as RxHost
 import Std.RegexSafe as RxSafe
 import Std.Http
@@ -116,29 +122,19 @@ test "hostAppBaseDirectory is the empty-string stub; hostCurrentDirectory return
   assertTrue(cwd.startsWith("/"), "hostCurrentDirectory is a real POSIX absolute path")
 }
 
-test "hostGetCommandLineArgs panics (issue #5377) rather than crashing on the old extern package no-op" {
+test "hostGetCommandLineArgs resolves to a real getstatic read (issue #5377) rather than panicking" {
   // Regression for the JDK-has-no-argv-retrieval gap (issue #5377): this
-  // must fail loud, not the generic "unsupported method" crash the old
-  // extern package no-op produced.  Uses assertPanics (occurrence only),
-  // not assertPanicsWith (message content): a closure-propagated panic's
-  // .message is unreliable on JVM (issue #5388, found while writing this
-  // test), independent of hostGetCommandLineArgs itself -- manually
-  // verified the real panic text separately (see the PR description).
-  //
-  // The trailing `; ()` is required, not stylistic (issue #5393):
-  // `hostGetCommandLineArgs`'s declared return type is `slice[String]`
-  // (its body unconditionally panics, but that's a runtime fact, not a
-  // static one -- the type checker only infers `Never` for a closure body
-  // whose registered return type already says so, e.g. a bare
-  // `{ -> panic(...) }`).  `assertPanics` expects `fn: in () -> Unit`, and
-  // `argSatisfiesParam` has no "declared-Unit-parameter discards any
-  // return type" rule for closure arguments, so `{ -> hostGetCommandLineArgs() }`
-  // alone fails to type-check (T0043).  Appending `; ()` makes the
-  // closure's own inferred return type genuinely `Unit`.
-  assertPanics(
-    "hostGetCommandLineArgs panics rather than returning/crashing silently",
-    { -> hostGetCommandLineArgs(); () }
-  )
+  // call site is intercepted at compile time by `Jvm.Codegen.
+  // lowerBuiltinOrStaticCall` and lowered to `getstatic __LyricJvmRuntime.
+  // commandLineArgs` -- it must resolve and return a real slice, not panic
+  // the way the pre-#5377 fallback body did. `lyric test`'s synthesised
+  // JVM entry point never forwards real CLI args (see
+  // `lyric-compiler/jvm/env_args_jvm_main.l` for the real argv-capture
+  // check), so this only pins "resolves to a non-null slice[String] of
+  // some length" -- content/length are launcher-dependent and asserted
+  // elsewhere.
+  val a = hostGetCommandLineArgs()
+  assertTrue(a.count >= 0, "hostGetCommandLineArgs returns a real slice[String] instead of panicking")
 }
 
 // ── Std.ProcessHost ──────────────────────────────────────────────────────────

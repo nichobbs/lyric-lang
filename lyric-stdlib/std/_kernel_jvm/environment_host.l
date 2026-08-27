@@ -17,13 +17,22 @@
 //!
 //! `hostGetCommandLineArgs` has no extern-bindable host equivalent: unlike
 //! .NET's `System.Environment.GetCommandLineArgs()`, the JDK exposes no
-//! process-wide argv retrieval -- the JVM entry-point wrapper only threads
-//! argv into the user's own `main` parameter (`Jvm.Codegen`'s `hasMain`
-//! synthesis), with no static holder field any other function could read.
-//! Implementing this needs new codegen (a synthesized static field plus an
-//! entry-point store instruction), not an extern binding -- tracked as
-//! issue #5377. Panics with a clear diagnostic rather than the generic
-//! "unsupported method" crash the old extern package no-op produced.
+//! process-wide argv retrieval API. Issue #5377 closed this with new JVM
+//! codegen instead of an extern binding: `Jvm.Codegen`'s `hasMain`
+//! entry-point synthesis (`codegen/06_items.l`) stores the incoming
+//! `String[]` into a package-independent holder class
+//! (`__LyricJvmRuntime.commandLineArgs`, `LPRuntimeArgsHolder` in
+//! `Jvm.Lowering`) before forwarding argv to the Lyric `main` -- so the
+//! value is captured even when `main()` itself declares no `argv`
+//! parameter. Every *call site* naming `hostGetCommandLineArgs` is then
+//! intercepted by `lowerBuiltinOrStaticCall` (`codegen/04_calls.l`,
+//! following the same bare-name compiler-intrinsic convention already
+//! used for `intToLong`/`stringToUtf8Bytes`) and lowered directly to a
+//! `getstatic` read of that field -- the function body below is therefore
+//! never actually invoked at runtime; it exists only so the package
+//! type-checks and to fail loudly (rather than silently) in the
+//! unreachable case where some future refactor removes the call-site
+//! interception without updating this fallback.
 @axiom("java.lang.System operations conform to their documented JVM contracts")
 package Std.EnvironmentHost
 
@@ -93,11 +102,12 @@ pub func hostGetVarOpt(key: in String): Option[String] {
   }
 }
 
-// See the module header: the JDK has no process-wide argv retrieval, and
-// implementing one needs new entry-point codegen, not an extern binding.
+// See the module header: every real call site is intercepted at compile
+// time and lowered directly to a `getstatic __LyricJvmRuntime.
+// commandLineArgs` read (issue #5377) -- this body never actually runs.
 pub func hostGetCommandLineArgs(): slice[String] {
   panic(
-    "Std.Environment.args() is not implemented on --target jvm: the JDK exposes no process-wide argv retrieval, and capturing it needs new entry-point codegen (a synthesized static holder field), not an extern binding. Tracked as issue #5377. Use the `main(args: slice[String])` parameter directly instead."
+    "Std.Environment.args() reached its unreachable JVM fallback body -- the compile-time call-site interception (Jvm.Codegen.lowerBuiltinOrStaticCall, issue #5377) should have replaced this call with a direct getstatic read. This indicates a compiler regression, not a missing feature."
   )
 }
 

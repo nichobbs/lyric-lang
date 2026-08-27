@@ -15,48 +15,44 @@
 //! scoring gap noted in `process_capture_host.l` (`Process.waitFor(long,
 //! TimeUnit)`) does not apply to a field read.
 //!
-//! `BufferedReader.readLine()`'s `null`-at-EOF contract is read directly
-//! via plain auto-FFI (no `@externTarget` needed) — the same pattern
-//! `_kernel_jvm/console_host.l`'s `hostConsoleReadLine` already uses for
-//! `BufferedReader.readLine()` on stdin.
-//!
 //! `Process.waitFor()` has no timeout-friendly overload reachable via
 //! auto-FFI (see above), so `hostPipedWaitExit` polls `isAlive()` with a
 //! 1ms sleep between checks, the same technique
 //! `process_capture_host.l`'s `runImpl` uses.
 //!
-//! **Known gap (JVM only, real and unresolved — not a stub): the read
-//! side of a live bidirectional pipe does not reliably deliver a line
-//! back to the parent.** `spawnPiped`/`pipedWriteLine`/`pipedIsAlive`
-//! all behave correctly (the child spawns, stays alive, and the write
-//! call raises no error), but a subsequent `pipedReadLine` against a
-//! process that is still both alive and has real bytes queued on its
-//! stdout sometimes returns a spurious immediate `None` (as if EOF) and
-//! sometimes blocks past any reasonable deadline — reproduced with the
-//! simplest possible child (`cat`, no arguments, one short line written
-//! then read back) using both `lyric-mcp/tests/mcp_stdio_process_tests.l`
-//! (excluded from the JVM target via `@cfg(target = "dotnet")` — see its
-//! header) and an isolated `Std.Process`-only repro outside this
-//! library. Two specific candidate causes were investigated and ruled
-//! out by direct experiment: (1) the `redirectError(Redirect.INHERIT)`
-//! call above interfering with the stdout redirect — removing it
-//! entirely did not change the symptom; (2) the nested
-//! `JBufferedReader.new(JInputStreamReader.new(i))` / `JPrintWriter.new
-//! (JOutputStreamWriter.new(o), true)` constructor calls — rebinding
-//! each inner `.new()` result to an explicit intermediate `val` (as
-//! `newLineReader`/`newLineWriter` do below, matching every other
-//! kernel's convention) changed the observed failure mode from
-//! "always spurious immediate EOF" to "sometimes blocks," but did not
-//! fix it. `Std.Process.spawnPiped`'s batch counterpart,
-//! `hostRunCapture`'s `available()`-polled `InputStream`/
-//! `ByteArrayOutputStream` drain in `process_capture_host.l`, is known
-//! to work reliably on this exact JDK — a byte-level rewrite of the read
-//! side along those lines (instead of `BufferedReader`) is the most
-//! promising next step, tracked as a follow-up rather than attempted
-//! here. **The `.NET` kernel (`_kernel/process_piped_host.l`) has no such
-//! issue** — `spawnPiped` and `pipedReadLine`/`pipedWriteLine` round-trip
-//! correctly and repeatably, verified by `mcp_stdio_process_tests.l` on
-//! `--target dotnet`.
+//! **Read-side design (issue #6135):** an earlier version of this kernel
+//! read lines via `BufferedReader.readLine()` (mirroring the `.NET` kernel's
+//! blocking `StreamReader.ReadLine()`) and observed it fail unreliably
+//! against a real child process's stdout — sometimes a spurious immediate
+//! `null` (as if EOF) against a process that was still alive with real bytes
+//! queued, sometimes a block past any reasonable deadline. Two specific
+//! candidate causes were investigated and ruled out by direct experiment:
+//! the `redirectError(Redirect.INHERIT)` call interfering with the stdout
+//! redirect, and the nested `new BufferedReader(new InputStreamReader(...))`
+//! constructor chain (rebinding each `.new()` to an explicit intermediate
+//! `val` changed the failure mode but did not fix it).
+//!
+//! The fix routes stdout through the SAME byte-level, `available()`-polled
+//! drain technique `_kernel_jvm/process_capture_host.l`'s `hostRunCapture`
+//! already uses reliably on this exact JDK for batch output capture:
+//! `pipedReadLine` never calls a blocking `Reader`/`InputStream` method at
+//! all. Each call polls `InputStream.available()` and, once bytes are
+//! ready, drains however many are currently available via
+//! `readNBytes(avail)` into a per-handle `ByteArrayOutputStream` line
+//! buffer; a line is recognized the moment a `\n` (0x0A) byte appears in
+//! the accumulated buffer — `\n` can never occur as a UTF-8 continuation
+//! byte (those are always `0x80..0xBF`), so scanning raw bytes for it is
+//! safe regardless of any multi-byte characters in the line. A `\r`
+//! immediately before the `\n` is stripped too, matching
+//! `BufferedReader.readLine()`'s CRLF convention. On process exit with a
+//! non-empty, newline-less remainder, that remainder is returned as the
+//! final line (also matching `BufferedReader.readLine()`), then `None` on
+//! the next call. `Std.Encoding.tryDecodeUtf8` (pure Lyric, cross-target,
+//! already relied on elsewhere) does the actual decode once a complete
+//! line's bytes are known — no hand-rolled UTF-8 state machine here. This
+//! sidesteps whatever `BufferedReader`/`InputStreamReader` interaction
+//! caused the original symptom entirely, rather than attempting to
+//! diagnose it further.
 //!
 //! Internal: only Std.Process should import this.
 @axiom("java.lang.ProcessBuilder + java.lang.Process piped stdin/stdout conform to their documented JVM contracts")
@@ -65,6 +61,7 @@ package Std.ProcessPipedHost
 import Std.Core
 import Std.Collections
 import Std.Math
+import Std.Encoding
 import Std.ProcessCaptureHost
 
 // ── JDK extern types ──────────────────────────────────────────────────────────
@@ -78,11 +75,9 @@ extern type JOutputStream = "java.io.OutputStream"
 
 extern type JInputStream = "java.io.InputStream"
 
-extern type JInputStreamReader = "java.io.InputStreamReader"
-
 extern type JOutputStreamWriter = "java.io.OutputStreamWriter"
 
-extern type JBufferedReader = "java.io.BufferedReader"
+extern type JBAOS = "java.io.ByteArrayOutputStream"
 
 extern type JPrintWriter = "java.io.PrintWriter"
 
@@ -120,22 +115,8 @@ func newLineWriter(o: in JOutputStream): JPrintWriter {
   JPrintWriter.new(osw, true)
 }
 
-func newLineReader(i: in JInputStream): JBufferedReader {
-  val isr: JInputStreamReader = JInputStreamReader.new(i)
-  JBufferedReader.new(isr)
-}
-
 func writerPrintln(w: in JPrintWriter, s: in String): Unit {
   w.println(s)
-}
-
-// Named helper (not `p.reader.readLine()` chained directly off a record
-// field read) — matches every other instance call in this kernel (and
-// `process_capture_host.l`'s convention) of binding the extern-typed
-// receiver through a plain function parameter rather than a field-access
-// chain.
-func readerReadLine(r: in JBufferedReader): String? {
-  r.readLine()
 }
 
 func procIsAlive(p: in JProcess): Bool {
@@ -156,12 +137,88 @@ func procExitValue(p: in JProcess): Int {
   p.exitValue()
 }
 
+// ── Byte-level line buffer (see module header) ────────────────────────────────
+// Drain however many bytes are currently available on `stream` into `acc`
+// without blocking — identical technique to
+// `process_capture_host.l`'s `drainAvailable`, including the same
+// stream-closed-after-kill tolerance.
+func drainAvailableInto(stream: in JInputStream, acc: in JBAOS): Unit {
+  try {
+    val avail = stream.available()
+    if avail > 0 {
+      val chunk = stream.readNBytes(avail)
+      acc.write(chunk)
+    }
+  } catch Bug as _ {
+    ()
+  }
+}
+
+// Index of the first `\n` (0x0A) in `bytes`, or -1 when absent.
+func indexOfNewline(bytes: in slice[Byte]): Int {
+  var i = 0
+  while i < bytes.length {
+    if bytes[i] == 10 {
+      return i
+    }
+    i = i + 1
+  }
+  -1
+}
+
+// Decode `bytes[0, endExclusive)` as UTF-8 text, stripping a trailing `\r`
+// immediately before the cut point (BufferedReader.readLine()'s CRLF
+// convention). Malformed UTF-8 surfaces as a deterministic diagnostic
+// string (byte count) rather than silently dropping the line — a piped
+// peer sending invalid UTF-8 is itself a real (if unusual) condition the
+// caller should be able to observe, not a mysteriously vanished line.
+func decodeLine(bytes: in slice[Byte], endExclusive: in Int): String {
+  var cut = endExclusive
+  if cut > 0 and bytes[cut - 1] == 13 {
+    cut = cut - 1
+  }
+  val acc: List[Byte] = newList()
+  var i = 0
+  while i < cut {
+    acc.add(bytes[i])
+    i = i + 1
+  }
+  val lineBytes: slice[Byte] = acc.toArray()
+  match tryDecodeUtf8(lineBytes) {
+    case Some(s) -> s
+    case None -> "<invalid utf-8 line: " + cut.toString() + " bytes>"
+  }
+}
+
+// Remaining bytes after the consumed line (and its terminator) — rebuilds
+// the leftover tail as a fresh `slice[Byte]` for `resetBufferTo`.
+func remainderAfter(bytes: in slice[Byte], newlineIdx: in Int): slice[Byte] {
+  val acc: List[Byte] = newList()
+  var i = newlineIdx + 1
+  while i < bytes.length {
+    acc.add(bytes[i])
+    i = i + 1
+  }
+  acc.toArray()
+}
+
+// Replace `acc`'s contents with `remaining` in place (no field
+// reassignment needed on the record holding it — `reset()` then `write()`
+// mutate the same `ByteArrayOutputStream` object).
+func resetBufferTo(acc: in JBAOS, remaining: in slice[Byte]): Unit {
+  acc.reset()
+  if remaining.length > 0 {
+    acc.write(remaining)
+  }
+}
+
 // ── Public handle + entry points ───────────────────────────────────────────
 /// Opaque handle to a running child process with piped stdin/stdout.
 pub record PipedHandle {
   proc: JProcess
   writer: JPrintWriter
-  reader: JBufferedReader
+  stdout: JInputStream
+  lineBuf: JBAOS
 }
 
 /// Spawn `fileName` with a pre-formed `arguments` string (see
@@ -174,19 +231,58 @@ pub func hostSpawnPiped(fileName: in String, arguments: in String): PipedHandle 
   val pb = buildProcessBuilder(cmdList)
   val proc = procStart(pb)
   val writer = newLineWriter(procStdin(proc))
-  val reader = newLineReader(procStdout(proc))
-  PipedHandle(proc = proc, writer = writer, reader = reader)
+  val stdout = procStdout(proc)
+  PipedHandle(proc = proc, writer = writer, stdout = stdout, lineBuf = JBAOS.new())
 }
 
 // Option seam avoiding `case null`'s catch-all miscompile (#4775); NUL-marker
-// mirrors `console_host.l`'s `hostReadLineOpt`.
+// mirrors `console_host.l`'s `hostReadLineOpt`. Blocks (polling, never a
+// blocking JDK call — see module header) until a complete line is
+// available, the process exits with a final unterminated remainder, or
+// the process exits with nothing left to read.
 pub func hostPipedReadLineOpt(p: in PipedHandle): Option[String] {
-  val v = readerReadLine(p.reader) ?? "\u{0000}"
-  if v == "\u{0000}" {
-    None
-  } else {
-    Some(value = v)
+  var done = false
+  var result: Option[String] = None
+  while not done {
+    val snapshot: slice[Byte] = p.lineBuf.toByteArray()
+    val nl = indexOfNewline(snapshot)
+    if nl >= 0 {
+      val line = decodeLine(snapshot, nl)
+      resetBufferTo(p.lineBuf, remainderAfter(snapshot, nl))
+      result = Some(value = line)
+      done = true
+    } else {
+      drainAvailableInto(p.stdout, p.lineBuf)
+      val grew: slice[Byte] = p.lineBuf.toByteArray()
+      if grew.length > snapshot.length {
+        // New bytes arrived — loop straight back to the newline scan
+        // without sleeping.
+        ()
+      } else if procIsAlive(p.proc) {
+        JThread.sleep(intToLong(1))
+      } else {
+        // Process has exited. One more drain in case bytes were flushed
+        // between the `isAlive` check above and here (mirrors
+        // `process_capture_host.l`'s post-loop final drain).
+        drainAvailableInto(p.stdout, p.lineBuf)
+        val final_: slice[Byte] = p.lineBuf.toByteArray()
+        val nl2 = indexOfNewline(final_)
+        if nl2 >= 0 {
+          val line = decodeLine(final_, nl2)
+          resetBufferTo(p.lineBuf, remainderAfter(final_, nl2))
+          result = Some(value = line)
+        } else if final_.length > 0 {
+          val line = decodeLine(final_, final_.length)
+          p.lineBuf.reset()
+          result = Some(value = line)
+        } else {
+          result = None
+        }
+        done = true
+      }
+    }
   }
+  result
 }
 
 /// Write one line to the child's stdin (a trailing newline is appended and
@@ -238,8 +334,8 @@ func writerClose(w: in JPrintWriter): Unit {
   w.close()
 }
 
-func readerClose(r: in JBufferedReader): Unit {
-  r.close()
+func streamClose(s: in JInputStream): Unit {
+  s.close()
 }
 
 /// Close only the child's stdin (signals EOF to the child without
@@ -263,7 +359,7 @@ pub func hostPipedClose(p: in PipedHandle): Unit {
     ()
   }
   try {
-    readerClose(p.reader)
+    streamClose(p.stdout)
   } catch Bug as _ {
     ()
   }

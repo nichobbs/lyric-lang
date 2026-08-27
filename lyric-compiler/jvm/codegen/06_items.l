@@ -5777,6 +5777,20 @@ pub func codegenPackageWithSigsSeeded(
     jvmMainParams.add(JArray(elem = JRef(className = "java/lang/String")))
     val jvmMainInsns: List[LInsn] = newList()
     val lyricMainPs: List[JvmType] = newList()
+    // #5377: stash the incoming argv into the package-independent holder
+    // class BEFORE any other program code runs, regardless of whether the
+    // Lyric `main` itself declares an `argv` parameter — `Std.Environment
+    // .args()` must observe the real argv even when `main()` takes none.
+    // See `LPRuntimeArgsHolder`'s doc in `Jvm.Lowering` and the matching
+    // `getstatic` read in `lowerBuiltinOrStaticCall` (`04_calls.l`).
+    jvmMainInsns.add(LAload(slot = 0))
+    jvmMainInsns.add(
+      LPutstatic(
+        owner = "__LyricJvmRuntime",
+        name = "commandLineArgs",
+        t = JArray(elem = JRef(className = "java/lang/String"))
+      )
+    )
     if mainHasArgs {
       // Forward the JVM `String[]` argv to the Lyric main's erased
       // `slice[String]` parameter (`Object[]`) — legal by JVM array
@@ -5809,6 +5823,10 @@ pub func codegenPackageWithSigsSeeded(
       maxLocals = 1
     )
     fns.add(jvmMain)
+    // #5377: exactly one entry point exists per runnable JVM bundle (this
+    // `hasMain` branch), so the holder class is emitted exactly once too —
+    // no cross-package duplicate-class risk.
+    items.add(LPRuntimeArgsHolder(className = "__LyricJvmRuntime", fieldName = "commandLineArgs"))
   }
 
   // `__lyricCount(Object)I` — the erased-receiver `.count`/`.length`

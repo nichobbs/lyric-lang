@@ -31708,3 +31708,151 @@ dotnet and JVM self-test CI jobs (`.github/workflows/ci.yml`) and the
 `Makefile`'s `TEST_EMITTER_FILES` aggregate list (dotnet-only, per that
 list's own scope).
 
+## D-progress-802 — JVM kernel/codegen batch: piped-process reads, `Std.Environment.args()`, regex ReDoS timeout (#6135, #5377, #1103)
+
+**Date:** 2026-08-27
+**Status:** SHIPPED
+
+Three independent, previously-documented JVM-only gaps closed together
+(one PR, one theme: `--target jvm` kernel/codegen parity with `.NET`).
+
+**#6135 — `Std.Process.spawnPiped`'s JVM read side.** The prior
+`BufferedReader.readLine()`-based `hostPipedReadLineOpt`
+(`std/_kernel_jvm/process_piped_host.l`) intermittently returned a
+spurious immediate `None` or blocked past any deadline against a live
+`cat` subprocess, documented at length in that file's own module header
+and in `lyric-mcp/README.md`'s "Known JVM gaps" #1. **Fix:** rewritten
+to the same byte-level, `InputStream.available()`-polled +
+`readNBytes`-into-a-`ByteArrayOutputStream` technique
+`process_capture_host.l`'s `hostRunCapture` already used reliably for
+batch capture — no blocking `Reader`/`InputStream` call anywhere in the
+read path. `PipedHandle` gained a `lineBuf: ByteArrayOutputStream`
+field (reset-and-rewrite in place on each consumed line, so no field
+reassignment is needed); line boundaries are found by scanning raw
+bytes for `0x0A` (always safe — a UTF-8 continuation byte is never
+`0x0A`), with `Std.Encoding.tryDecodeUtf8` doing the actual decode once
+a complete line's byte range is known (a lossy diagnostic-string
+fallback covers the malformed-UTF-8 edge case rather than silently
+dropping the line). Verified against a real `cat` subprocess with the
+same 5-case coverage the `.NET` kernel already has
+(`lyric-compiler/jvm/piped_process_jvm_main.l`, run via `lyric build
+--target jvm` + `java -jar` since a real process-spawning check doesn't
+fit `lyric test`'s harness any better here than `entry_args_jvm_main.l`
+did for argv — 5/5 pass, repeatably). `lyric-mcp/README.md` updated:
+this specific gap is fixed, though `Mcp.Client.connectStdio` itself
+remains unverified on JVM for a separate, unrelated reason (that
+library's whole test suite fails to type-check under `--target jvm` —
+gap #3, out of scope here).
+
+**#5377 — `Std.Environment.args()` on JVM.** The JDK exposes no
+process-wide argv retrieval API (unlike `.NET`'s
+`Environment.GetCommandLineArgs()`); `hostGetCommandLineArgs` previously
+panicked with a clear "not implemented" diagnostic rather than crashing
+opaquely. **Fix — real entry-point codegen, not an extern binding** (the
+gap the panic message itself pointed at): `Jvm.Codegen`'s `hasMain`
+entry-point-wrapper synthesis (`codegen/06_items.l`) now stashes the
+incoming `String[]` into a new package-independent holder class,
+`__LyricJvmRuntime` (`LPRuntimeArgsHolder` in `Jvm.Lowering`, one public
+non-final `[Ljava/lang/String;` field, emitted exactly once per runnable
+JVM bundle — guaranteed unique since there is exactly one entry point
+per bundle) — *before* forwarding argv to the Lyric `main`, so the
+capture is unconditional even when `main()` itself declares no `argv`
+parameter. Every call site naming `hostGetCommandLineArgs` is
+intercepted in `Jvm.Codegen.lowerBuiltinOrStaticCall`
+(`codegen/04_calls.l`) and lowered directly to a `getstatic` read of
+that field, following the same bare-name compiler-intrinsic convention
+already used for `intToLong`/`stringToUtf8Bytes` — the kernel function's
+own body (still a panic, now documented as unreachable) is therefore
+never actually invoked at runtime. Verified end-to-end: a program whose
+`main()` takes *no* argv parameter, calling `Std.Environment.args()`
+directly, built with `lyric build --target jvm` and run as `java -jar
+out.jar four five`, prints `argc=2` / `arg0=four` / `arg1=five`
+(`lyric-compiler/jvm/env_args_jvm_main.l`) — pinning that the capture is
+independent of the Lyric `main`'s own signature. The stale
+`stdlib_jvm_kernels_self_test.l` regression (`assertPanics` on
+`hostGetCommandLineArgs`) was updated to assert the new real behavior
+(a non-null `slice[String]`, content unspecified since `lyric test`'s
+harness doesn't forward real argv — the real content-correctness check
+is the standalone program above).
+
+**#1103 — JVM regex ReDoS timeout (Phase 6 follow-up to #330).**
+`java.util.regex.Pattern` has no timeout mechanism of its own (unlike
+the BCL's 3-arg `Regex(pattern, options, matchTimeout)` constructor);
+`hostCompileWithTimeout` previously accepted and ignored the timeout
+parameter, leaving the JVM regex path with no ReDoS protection at all.
+**Design investigation** (per the issue's own guidance to check prior
+art before reaching for a new mechanism): `Future.get(long, TimeUnit)`
+is unreachable from plain Lyric because the JVM auto-FFI method
+resolver skips enum-typed parameters entirely (the same gap
+`process_capture_host.l`'s module header already documents for
+`Process.waitFor(long, TimeUnit)`); the `scope { }`/`spawn`/`await`
+language keywords compile to real JDK 21 `StructuredTaskScope`, whose
+`close()` blocks until every spawned subtask's *thread* actually
+terminates (`_kernel_jvm/task.l`'s module header independently reached
+the same conclusion for its own use case) — structured concurrency's
+whole "no orphaned threads" guarantee is exactly incompatible with a
+ReDoS timeout's fundamental trade-off (a non-interruptible runaway match
+must be *abandoned*, not waited for). **Fix — the daemon-thread shim the
+issue asked for by name:** `Regex` on this target is no longer a bare
+`extern type` alias for `Pattern`; it is a small record pairing the
+compiled `Pattern` with a `timeoutMs: Long` (the JVM-side equivalent of
+the BCL constructor's embedded deadline). Each match operation
+(`hostIsMatch`/`hostMatchOne`/`hostReplace`) races its work on a fresh
+`java.lang.Thread` (marked daemon, via the JVM backend's existing
+Lyric-closure-to-`Runnable`
+SAM-bridging — `Jvm.Codegen.ensureSamAdapterClass`, already proven for
+arbitrary JDK functional interfaces), while the calling thread blocks on
+`Thread.join(timeoutMs)` — a genuinely *bounded* wait, unlike
+`Future.get()`. On timeout the caller is unblocked with `Err(TimedOut)`
+(message containing the literal substring `"time-out"`, matching
+`Std.Regex.isTimeout`'s classifier) while the abandoned background
+thread may keep running until it finishes naturally or the JVM exits —
+the same documented, standard trade-off every daemon-thread-race
+ReDoS-timeout technique on the JVM accepts (`java.util.regex` observes
+no interrupt checkpoint during backtracking); a fully leak-free fix
+needs an interruptible-`CharSequence` wrapper, out of scope here since
+the issue specifically asked for the daemon-thread shim and this closes
+the actual vulnerability (unbounded blocking).
+
+Two real, general (not regex-specific) JVM codegen bugs were found and
+worked around while building this, both isolated with minimal repros
+independent of `Std.Regex`:
+
+1. A closure body shaped `try { ... } catch Bug as b { <captured var> =
+   ... }` (a captured `var` assigned directly inside a `catch` arm,
+   itself inside a closure) fails class verification with `VerifyError:
+   Operand stack overflow` — a `maxStack` miscalculation specific to
+   that exact combination. Reproduced in complete isolation (no regex,
+   no threads: `{ -> try { println("hi") } catch Bug as b { v = true }
+   }`). Worked around using `Std.Task`'s already-established
+   `runGuardedJvm` idiom — `java.util.concurrent.atomic.AtomicBoolean`/
+   `AtomicReference` mutated via method calls inside the catch arm,
+   never a direct Lyric `var` assignment — rather than fixing the
+   underlying codegen bug, which is out of scope for this track. Filed
+   as #6551.
+2. A closure *value bound to a `val` first* (`val f: () -> Unit = { ->
+   ... }; JThread.new(f)`) does not get the SAM-bridging wrap applied at
+   the constructor call site — the raw `Lyric$Lambda`-implementing
+   object is passed directly into `Thread`'s constructor, producing
+   `IncompatibleClassChangeError: ... does not implement the requested
+   interface java.lang.Runnable` the first time `Thread.run()` actually
+   dispatches. A lambda *literal* passed directly as the argument
+   (`JThread.new({ -> ... })`) does not hit this — `emitFfiCoerce`'s
+   SAM-bridging condition keys off the argument expression's own static
+   type, and a `val`-with-a-function-type-annotation's slot apparently
+   erases differently than a literal `ELambda` expression's. Worked
+   around by inlining the lambda literal directly at the `Thread.new`
+   call site rather than binding it to a `val` first. Filed as #6552.
+
+**Verification.** All three fixes verified end-to-end against the real
+compiled JVM artifacts described above (not just compiled — actually
+executed against `java`), plus `regex_tests.l` unaffected on `--target
+dotnet` (`lyric run`), the regenerated `hostGetCommandLineArgs`
+self-test, and `RxSafe`/`Rx` normal (non-timeout) match/replace paths
+re-verified working after the `Regex` record-vs-alias change.
+
+**Related:** #6135, #5377, #1103, #330, #1100 (locale-stable `isTimeout`
+classifier, still open — unaffected by this entry), #6551 and #6552 (the
+two upstream JVM codegen bugs above, filed as follow-ups, not fixed
+here).
+
