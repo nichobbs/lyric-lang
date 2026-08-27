@@ -2833,6 +2833,16 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/msil_project_bridge_self_test.l
 
+      # MSIL codegen diagnostics self-test (#4898) — pins that the F0020-F0025
+      # external-interface-conformance and try-catch-as-expression codegen
+      # errors are reported as positioned CodegenCtx.diagnostics entries
+      # (gated by Msil.Bridge via Lyric.DiagnosticUtil.diagReportAndAbort)
+      # instead of an escaped panic().  Same in-process Msil.Bridge surface as
+      # msil_project_bridge_self_test.l above.
+      - name: MSIL codegen diagnostics self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/msil_codegen_diag_self_test.l
+
       # Emitter project self-test — exercises the Phase 4 in-process routing in
       # Lyric.Emitter.emitProject (multi-package DOTNET builds).  Covers aliased
       # imports, per-package isolation, @cfg erasure via emitProject, restored-dep
