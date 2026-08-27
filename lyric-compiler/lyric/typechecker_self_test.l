@@ -4228,7 +4228,7 @@ test "local declaration shadows an ambiguous import collision, no T0123" {
 // package that is part of the same multi-file build, but not on any import
 // path from the consumer, still resolves via last-registered-wins — a
 // deliberate scope decision, not an oversight; it is the tracked residual
-// gap from this issue.
+// gap from this issue (#6703).
 test "bare name from an unrelated sibling package still resolves (residual #6287 scope decision)" {
   val pkgX = parse("package PkgX\npub func siblingHelper(): Int { 1 }\n")
   val pkgY = parse("package PkgY\npub func fromY(): Int { 2 }\n")
@@ -4239,7 +4239,7 @@ test "bare name from an unrelated sibling package still resolves (residual #6287
   assertEqualInt(
     diagCount(checkWithImportedPackages(parse(src).file, packages)),
     0,
-    "siblingHelper (PkgX, never imported by App or PkgY) still resolves — tracked residual gap, not a regression"
+    "siblingHelper (PkgX, never imported by App or PkgY) still resolves — tracked residual gap (#6703), not a regression"
   )
   // Control: a name PkgY directly imports resolves cleanly too.
   val okSrc = "package App\nimport PkgY\nfunc f(): Int { fromY() }\n"

@@ -506,8 +506,10 @@ pub func symTableTryFindAll(tbl: in SymbolTable, name: in String): List[Symbol] 
 // Tier 3 stays fully permissive, unchanged; only the bare-name AMBIGUITY
 // diagnostic (`checkBareNameAmbiguity`, scoped to tier-2 imported-package
 // matches only, which does not touch tier 3 at all) ships from this issue's
-// "reject unimported" investigation. See docs/03-decision-log.md for the
-// full writeup.
+// "reject unimported" investigation. Tracked as a follow-up in #6703 (a
+// concrete two-option remediation plan: audit+widen imports tree-wide, or
+// a scoped Std.Core prelude exception). See docs/03-decision-log.md for
+// the full writeup.
 pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol] {
   val curPkg = symTableScopePkg(tbl)
   val hasScope = curPkg.length > 0

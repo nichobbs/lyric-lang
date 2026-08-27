@@ -39679,7 +39679,9 @@ caught).
 
 **Related:** #6287, #2899 (`pickCaseFqnByScope`, the pre-existing
 union-case qualified-resolution analog this diagnostic's scrutinee-typed
-exemption mirrors).
+exemption mirrors), #6703 (the reverted "reject unimported resolution"
+item 2, tracked separately as a deliberate scope decision, not part of
+this entry's shipped item 1).
 
 ---
 

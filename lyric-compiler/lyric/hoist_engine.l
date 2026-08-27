@@ -1668,7 +1668,9 @@ func hzProtectedFieldNames(members: in List[ProtectedMember]): Map[String, Bool]
 // doc comment), quietly returns an empty map — this pass has no cross-file
 // symbol table, unlike the type checker (see `HoistState.selfFieldNames`'s
 // doc comment), and neither residual case is new: both are narrower slices
-// of the gap this fix closes, not gaps it introduces.
+// of the gap this fix closes, not gaps it introduces. Tracked in #6702
+// (concrete plan: thread `pipeline.l`'s already-computed `monoRecordDecls`
+// into `pipeWeave`'s `HoistEngine` invocation).
 func hzImplTargetFieldNames(fileOpt: in Option[SourceFile], target: in TypeExpr): Map[String, Bool] {
   val noNames: Map[String, Bool] = newMap()
   val file = match fileOpt { case Some(f) -> f; case None -> return noNames }
