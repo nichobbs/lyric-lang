@@ -136,7 +136,9 @@
 //!     retained-stream behaviour. Never misclassifies a lookup miss as an
 //!     *idle* (never-opened) stream either way; only the stream-vs-connection
 //!     error severity differs. See `http_h2conn_tests.l`'s "duplicate HEADERS
-//!     against a pruned stream id" case.
+//!     against a pruned stream id" case. Whether the *retained*-stream path's
+//!     leniency is itself correct against RFC 9113 §5.1.1's connection-scoped
+//!     monotonicity rule is an open compliance question, tracked as #6562.
 @runtime_checked
 package Std.HttpEngine.H2Conn
 
@@ -712,7 +714,14 @@ func isClosedState(s: in H2StreamState): Bool {
 func pruneClosedStreams(state: inout H2Connection): Unit {
   // Cheap escape hatch: the total retained-stream count is an upper bound on
   // how many *closed* records could possibly be prunable, so there is
-  // nothing to do until it exceeds the window.
+  // nothing to do until it exceeds the window. This bound is by *count*, not
+  // by id-distance — a client whose HEADERS skip large id ranges (e.g. every
+  // refused/idle id in between is never retained at all) can have a small
+  // `streams.count` while some of those few entries are already past the
+  // id-distance threshold below. That only delays reclaiming them a little
+  // longer, never grows them unboundedly: the next stream this connection
+  // opens pushes `streams.count` up again, and pruning catches up once it
+  // crosses the window. Not a safety concern, just an imprecise trigger.
   if state.streams.count <= h2ClosedStreamRetentionWindow() {
     return
   }

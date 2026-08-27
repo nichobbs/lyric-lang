@@ -352,7 +352,7 @@ record H2ConnState {
   // window, #6064), nothing here ever prunes an abandoned-and-forgotten
   // entry, so this map is unbounded for the connection's lifetime on a
   // pathological client that opens-then-abandons many over-cap streams. A
-  // narrower follow-up than #6064, not yet tracked separately.
+  // narrower follow-up than #6064, tracked as #6566.
   rejectedStreams: Map[Int, Bool]
 }
 
