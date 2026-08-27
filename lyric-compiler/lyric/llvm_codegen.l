@@ -2816,9 +2816,13 @@ func lowerConstructCall(
 }
 
 /// UFCS method-call resolution: `recv.name(args)` calls the function
-/// `name` with the receiver as its first argument.  Resolution tries
-/// the current package, the receiver type's defining package (methods
-/// in type bodies desugar to package functions, D037), then bare names.
+/// `name` with the receiver as its first argument.  Resolution tries,
+/// in order: the current package; the receiver's static struct type name
+/// (package-qualified, then bare) joined with `name` — the key an
+/// extension-method-style declaration (`func Identity.rawHandle(...)`)
+/// registers under; the receiver type's defining PACKAGE alone joined
+/// with `name` (methods in type bodies desugar to bare package functions,
+/// D037); then bare `name` alone.
 func lowerUfcsCall(
   ctx: in Ctx,
   insns: in List[NInsn],
@@ -2864,9 +2868,36 @@ func lowerUfcsCall(
         case NPtr(pointee) -> {
           match pointee {
             case NStruct(tyName, _) -> {
+              // `tyName` is already package-qualified (e.g. "Std.Tls.Identity"
+              // for a record/opaque type's ARC pointee). An extension-method
+              // -style declaration (`func Identity.rawHandle(...)`, as opposed
+              // to a D037 in-type-body method) registers its sig under the
+              // compound "TypeName.methodName" name — try the exact qualified
+              // form first, then the bare "TypeName.methodName" form (no
+              // package prefix; matches the registry's own bare-name key).
+              sigOpt = mapGet(ctx.sigs, tyName + "." + name + "/" + arity)
               val dotIdx = lastDotIndex(tyName)
-              if dotIdx > 0 {
-                sigOpt = mapGet(ctx.sigs, Str.substring(tyName, 0, dotIdx) + "." + name + "/" + arity)
+              match sigOpt {
+                case Some(_) -> {
+                }
+                case None -> {
+                  if dotIdx > 0 {
+                    val bareTyName = Str.substring(tyName, dotIdx + 1, tyName.length - dotIdx - 1)
+                    sigOpt = mapGet(ctx.sigs, bareTyName + "." + name + "/" + arity)
+                  }
+                }
+              }
+              match sigOpt {
+                case Some(_) -> {
+                }
+                case None -> {
+                  // Legacy fallback: a D037 in-type-body method desugars to a
+                  // bare package-level function living in the receiver
+                  // type's DEFINING package (not qualified by the type name).
+                  if dotIdx > 0 {
+                    sigOpt = mapGet(ctx.sigs, Str.substring(tyName, 0, dotIdx) + "." + name + "/" + arity)
+                  }
+                }
               }
             }
             case _ -> {
@@ -2928,7 +2959,12 @@ func lowerUfcsCall(
   }
 }
 
-func lastDotIndex(s: in String): Int {
+/// The index of the last `.` in `s`, or -1 if none. Exported so the
+/// bridge's reachability walk (`llvm_bridge.l`'s `registerFileFns`) can
+/// split an extension-method-style declared name ("Identity.rawHandle")
+/// into its trailing segment, mirroring this file's own `lowerUfcsCall`
+/// resolution.
+pub func lastDotIndex(s: in String): Int {
   var i = s.length - 1
   while i >= 0 {
     if Str.substring(s, i, 1) == "." {
