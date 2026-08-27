@@ -20,16 +20,19 @@ package Std.ProcessCaptureHost
 import Std.Core
 import Std.Collections
 import Std.Time
+import Std.Encoding
 
 // ── Public result record ───────────────────────────────────────────────────
 pub record ProcessCaptureResult {
   stdout: String
   stderr: String
+  stdoutBytes: slice[Byte]
+  stderrBytes: slice[Byte]
   exitCode: Int
   timedOut: Bool
 }
 
-// Field accessors — the same surface the managed twin exports for
+// Field accessors — the same surface the dotnet/JVM twins export for
 // Std.ProcessCapture and Std.Process.
 pub func pcResultStdout(r: in ProcessCaptureResult): String {
   r.stdout
@@ -37,6 +40,25 @@ pub func pcResultStdout(r: in ProcessCaptureResult): String {
 
 pub func pcResultStderr(r: in ProcessCaptureResult): String {
   r.stderr
+}
+
+// Raw captured bytes for stdout/stderr (#4753, #6577).  Unlike the .NET
+// kernel (which snapshots the MemoryStream BEFORE the lossy UTF-8 decode
+// that produces `stdout`) there is no separate decode step to avoid here:
+// `LyricString` on native is already a raw byte buffer end to end
+// (`lyric_process_run`'s `outbuf`/`errbuf` are memcpy'd straight into a
+// `LyricString` with no UTF-8 validation — see `lyric_string_from_literal`
+// in lyric_string.c, and `Std.EncodingHost.hostEncodeUtf8`'s header
+// comment). `Std.Encoding.encodeUtf8` walking `outText`/`errText` byte by
+// byte via `hostCharCodeAt` is therefore a byte-exact copy of the process's
+// raw stdout/stderr, valid UTF-8 or not — never a decode+re-encode round
+// trip that could substitute U+FFFD for invalid sequences.
+pub func pcResultStdoutBytes(r: in ProcessCaptureResult): slice[Byte] {
+  r.stdoutBytes
+}
+
+pub func pcResultStderrBytes(r: in ProcessCaptureResult): slice[Byte] {
+  r.stderrBytes
 }
 
 pub func pcResultExitCode(r: in ProcessCaptureResult): Int {
@@ -81,7 +103,16 @@ pub func hostRunCaptureList(
     // the raw 128+SIGKILL status the reap produced.
     val timedOut = timedOutFlag != 0
     val exitCode = if timedOut { 0 - 2 } else { code }
-    Ok(value = ProcessCaptureResult(stdout = outText, stderr = errText, exitCode = exitCode, timedOut = timedOut))
+    Ok(
+      value = ProcessCaptureResult(
+        stdout = outText,
+        stderr = errText,
+        stdoutBytes = encodeUtf8(outText),
+        stderrBytes = encodeUtf8(errText),
+        exitCode = exitCode,
+        timedOut = timedOut
+      )
+    )
   } else {
     Err(error = "failed to spawn process: " + executable)
   }
@@ -149,5 +180,14 @@ pub async func hostRunCaptureListAsync(
   val outText = rtProcessStdout(op)
   val errText = rtProcessStderr(op)
   rtProcessFree(op)
-  Ok(value = ProcessCaptureResult(stdout = outText, stderr = errText, exitCode = code, timedOut = timedOut))
+  Ok(
+    value = ProcessCaptureResult(
+      stdout = outText,
+      stderr = errText,
+      stdoutBytes = encodeUtf8(outText),
+      stderrBytes = encodeUtf8(errText),
+      exitCode = code,
+      timedOut = timedOut
+    )
+  )
 }

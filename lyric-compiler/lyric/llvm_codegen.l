@@ -2816,9 +2816,13 @@ func lowerConstructCall(
 }
 
 /// UFCS method-call resolution: `recv.name(args)` calls the function
-/// `name` with the receiver as its first argument.  Resolution tries
-/// the current package, the receiver type's defining package (methods
-/// in type bodies desugar to package functions, D037), then bare names.
+/// `name` with the receiver as its first argument.  Resolution tries,
+/// in order: the current package; the receiver's static struct type name
+/// (package-qualified, then bare) joined with `name` — the key an
+/// extension-method-style declaration (`func Identity.rawHandle(...)`)
+/// registers under; the receiver type's defining PACKAGE alone joined
+/// with `name` (methods in type bodies desugar to bare package functions,
+/// D037); then bare `name` alone.
 func lowerUfcsCall(
   ctx: in Ctx,
   insns: in List[NInsn],
@@ -2864,9 +2868,36 @@ func lowerUfcsCall(
         case NPtr(pointee) -> {
           match pointee {
             case NStruct(tyName, _) -> {
+              // `tyName` is already package-qualified (e.g. "Std.Tls.Identity"
+              // for a record/opaque type's ARC pointee). An extension-method
+              // -style declaration (`func Identity.rawHandle(...)`, as opposed
+              // to a D037 in-type-body method) registers its sig under the
+              // compound "TypeName.methodName" name — try the exact qualified
+              // form first, then the bare "TypeName.methodName" form (no
+              // package prefix; matches the registry's own bare-name key).
+              sigOpt = mapGet(ctx.sigs, tyName + "." + name + "/" + arity)
               val dotIdx = lastDotIndex(tyName)
-              if dotIdx > 0 {
-                sigOpt = mapGet(ctx.sigs, Str.substring(tyName, 0, dotIdx) + "." + name + "/" + arity)
+              match sigOpt {
+                case Some(_) -> {
+                }
+                case None -> {
+                  if dotIdx > 0 {
+                    val bareTyName = Str.substring(tyName, dotIdx + 1, tyName.length - dotIdx - 1)
+                    sigOpt = mapGet(ctx.sigs, bareTyName + "." + name + "/" + arity)
+                  }
+                }
+              }
+              match sigOpt {
+                case Some(_) -> {
+                }
+                case None -> {
+                  // Legacy fallback: a D037 in-type-body method desugars to a
+                  // bare package-level function living in the receiver
+                  // type's DEFINING package (not qualified by the type name).
+                  if dotIdx > 0 {
+                    sigOpt = mapGet(ctx.sigs, Str.substring(tyName, 0, dotIdx) + "." + name + "/" + arity)
+                  }
+                }
               }
             }
             case _ -> {
@@ -2928,7 +2959,12 @@ func lowerUfcsCall(
   }
 }
 
-func lastDotIndex(s: in String): Int {
+/// The index of the last `.` in `s`, or -1 if none. Exported so the
+/// bridge's reachability walk (`llvm_bridge.l`'s `registerFileFns`) can
+/// split an extension-method-style declared name ("Identity.rawHandle")
+/// into its trailing segment, mirroring this file's own `lowerUfcsCall`
+/// resolution.
+pub func lastDotIndex(s: in String): Int {
   var i = s.length - 1
   while i >= 0 {
     if Str.substring(s, i, 1) == "." {
@@ -4566,6 +4602,54 @@ func lowerCollectionMethodCall(
         val cArgs: List[NArg] = newList()
         cArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
         insns.add(NCall(dest = raw, retTy = NPtr(pointee = NI8), fn = NGlobal(name = "lyric_list_copy"), args = cArgs))
+        val cast = freshTmp(ctx)
+        insns.add(NBitcast(dest = cast, fromTy = NPtr(pointee = NI8), value = NLocal(name = raw), toTy = recv.ty))
+        val outV = NVal(ty = recv.ty, value = NLocal(name = cast))
+        registerTemp(ctx, outV)
+        return Some(value = outV)
+      }
+      // `.slice(start, stop)` / `.concat(other)` / `.append(x)` (#6104):
+      // `List[T]`/`slice[T]` never-mutating combinators — each returns a
+      // FRESH list (element pointers retained by the new list, source
+      // untouched), backing `Std.HttpEngine`'s buffer bookkeeping on
+      // every target. Bounds/panic contract matches the MSIL twin
+      // (`Msil.Codegen.lowerSliceSliceMsil`).
+      if name == "slice" and args.count == 2 {
+        val startV = lowerCallArgExpecting(ctx, insns, args, 0, NI64)
+        val stopV = lowerCallArgExpecting(ctx, insns, args, 1, NI64)
+        val raw = freshTmp(ctx)
+        val cArgs: List[NArg] = newList()
+        cArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+        cArgs.add(NArg(ty = NI64, value = startV.value))
+        cArgs.add(NArg(ty = NI64, value = stopV.value))
+        insns.add(NCall(dest = raw, retTy = NPtr(pointee = NI8), fn = NGlobal(name = "lyric_list_slice"), args = cArgs))
+        val cast = freshTmp(ctx)
+        insns.add(NBitcast(dest = cast, fromTy = NPtr(pointee = NI8), value = NLocal(name = raw), toTy = recv.ty))
+        val outV = NVal(ty = recv.ty, value = NLocal(name = cast))
+        registerTemp(ctx, outV)
+        return Some(value = outV)
+      }
+      if name == "concat" and args.count == 1 {
+        val otherV = lowerCallArgExpecting(ctx, insns, args, 0, recv.ty)
+        val otherP = collectionAsI8(ctx, insns, otherV)
+        val raw = freshTmp(ctx)
+        val cArgs: List[NArg] = newList()
+        cArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+        cArgs.add(NArg(ty = NPtr(pointee = NI8), value = otherP))
+        insns.add(NCall(dest = raw, retTy = NPtr(pointee = NI8), fn = NGlobal(name = "lyric_list_concat"), args = cArgs))
+        val cast = freshTmp(ctx)
+        insns.add(NBitcast(dest = cast, fromTy = NPtr(pointee = NI8), value = NLocal(name = raw), toTy = recv.ty))
+        val outV = NVal(ty = recv.ty, value = NLocal(name = cast))
+        registerTemp(ctx, outV)
+        return Some(value = outV)
+      }
+      if name == "append" and args.count == 1 {
+        val v = lowerCallArgExpecting(ctx, insns, args, 0, elem)
+        val raw = freshTmp(ctx)
+        val cArgs: List[NArg] = newList()
+        cArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+        cArgs.add(NArg(ty = NI64, value = slotOfVal(ctx, insns, v)))
+        insns.add(NCall(dest = raw, retTy = NPtr(pointee = NI8), fn = NGlobal(name = "lyric_list_append"), args = cArgs))
         val cast = freshTmp(ctx)
         insns.add(NBitcast(dest = cast, fromTy = NPtr(pointee = NI8), value = NLocal(name = raw), toTy = recv.ty))
         val outV = NVal(ty = recv.ty, value = NLocal(name = cast))
@@ -8501,6 +8585,9 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl1("lyric_list_len", NI64, p8))
   decls.add(mkDecl1("lyric_list_clear", NVoid, p8))
   decls.add(mkDecl1("lyric_list_copy", p8, p8))
+  decls.add(mkDecl3("lyric_list_slice", p8, p8, NI64, NI64))
+  decls.add(mkDecl2("lyric_list_concat", p8, p8, p8))
+  decls.add(mkDecl2("lyric_list_append", p8, p8, NI64))
   decls.add(mkDecl2("lyric_args_set", NVoid, NI32, NPtr(pointee = p8)))
   decls.add(mkDecl2("lyric_map_new", p8, NI32, NI32))
   decls.add(mkDecl3("lyric_map_set", NVoid, p8, NI64, NI64))

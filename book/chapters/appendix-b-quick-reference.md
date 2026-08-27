@@ -122,7 +122,7 @@ Option[T]       // case Some(value: T)| case None
 
 `Add` `Sub` `Mul` `Div` `Mod` `Compare` `Ord` `Hash` `Equals` `Default`
 
-`Ord` synthesises `compare(self, other): Int` (negative/zero/positive); valid on records, unions, enums, and distinct types. `Copyable` is structural (asserts CLR value-type lowering); not valid in `derives`.
+`Ord` synthesises `compare(self, other): Int` (negative/zero/positive); valid on records, unions, enums, and distinct types. The same nine names are the closed set usable as `where`-clause constraints (docs/03 D034, narrowed by D-progress-807 — a speced `Copyable` marker was never implemented and is not part of the usable set).
 
 ---
 

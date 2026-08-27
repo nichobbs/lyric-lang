@@ -1335,9 +1335,33 @@ the full root-cause breakdown at the time. **This is now stale**: with
 #6234 part 1 shipped (see the "Compiler-level prerequisite" paragraph
 below), the file's item B was re-added through `Std.Tls`'s real public API,
 with the original kernel-boundary variant kept alongside for defense in
-depth. The originally-planned loopback-handshake case remains a separate,
-not-yet-authored test — no longer blocked on #6234, just not yet written;
-tracked under this item's own remaining work.
+depth. **The originally-planned loopback-handshake case (item D) has since
+shipped too (D-progress-807):** a real client/server TLS handshake, server
+side through `Std.TcpHost.hostAcceptTls` on the main thread, client side on
+a genuine second pthread (the concurrency the deferral note above called
+for — a handshake, unlike a plain-TCP connect, needs both peers actively
+pumping I/O at once). The client thread binds the already-existing
+`lyric_tls_client_*` seam functions directly as test-local `extern func`s
+rather than through a new `Std.TcpHost`/`Std.TlsHost` public API: N9.2's own
+`_kernel_native/tcp_host.l` header is explicit that client TLS is N9.4's
+scope (#6105, `Std.Http`), not N9.2's, so item D deliberately does not add
+a `hostConnectTls`-shaped function that would preempt that boundary. Item D
+was `hostAcceptTls`'s FIRST native invocation ever, and it surfaced two
+previously-latent `Lyric.LlvmCodegen`/`Lyric.LlvmBridge` bugs in resolving
+`buildServerCtx`'s cross-package UFCS call `cfg.identity.rawHandle()` — an
+extension-method-style declaration (`internal func Identity.rawHandle(...)`)
+whose declared name carries its receiver type: (1) `lowerUfcsCall`'s
+struct-receiver signature lookup never tried the receiver's full type name
+joined with the call-site name (only a legacy D037-shaped fallback); (2) the
+bundled-compile reachability walk's `callKeyOf`-based call-edge tracing
+can't see a UFCS call on a value receiver at all, so `Identity.rawHandle`
+was pruned as unreachable before (1) could even matter — fixed with a
+bare-member-name reachability fallback resolved through a NEW multi-valued
+map (not folded into the existing single-valued one, since `Std.Tls` itself
+has two same-named/arity extension methods, `Certificate.rawHandle` and
+`Identity.rawHandle`, that would otherwise silently collide). See
+`llvm_tls_self_test.l`'s module header and D-progress-807 for the full
+reasoning and the four-case test now shipped.
 
 **Prerequisite (SHIPPED alongside):** the `Std.TcpHost` surface takes
 `Std.Tls.TlsServerConfig`, so `Std.Tls` must compile on native first —
@@ -1384,6 +1408,29 @@ connection, each pumping `hostRead` bytes through its own
 `Std.HttpEngine.Connection` and writing serialized responses back. Replaces
 the `_kernel/http_server.l` .NET-specific concurrency (Task.Run /
 ConcurrentQueue / SemaphoreSlim) with the native thread model. Gated on N9.2.
+
+**Prerequisites SHIPPED (D-progress-809):** `lyric_sem_*` (a counting
+semaphore — native had no blocking wait/signal primitive at all) and
+`List[T]`/`slice[T]` `.slice`/`.concat`/`.append` (`Std.HttpEngine.feed`'s
+buffer bookkeeping needs both on nearly every parse step).
+
+**BLOCKED, not yet shippable.** With both prerequisites in place, drafting
+the `_kernel_native/http_server.l` kernel (the same 12-function surface as
+the dotnet/JVM twins + `startListenerTls`, over a real
+`pthread_create`-per-connection accept loop, using a
+self-unregistering-closure pattern keyed by fd to solve the detached
+thread's userdata lifetime problem — see D-progress-809 for the design)
+surfaced two further, architectural native-backend gaps independent of
+this item's own scope: native `String` has no
+`.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith`
+(#6588), and a bare cross-package enum-case value reference (`val v:
+HttpVersion = Http1_1`, used throughout `Std.HttpEngine`) fails to resolve
+(#6589). Both block `Std.HttpEngine`/`Std.String` from compiling for
+`--target native` at all — the draft kernel could not be made to compile,
+so it was **not committed**; neither `_kernel_native/http_server.l` nor a
+self-test for it exist anywhere in the repository. A future contributor
+picking up #6104/N9.3 starts from zero on the kernel itself once #6588 and
+#6589 are resolved. N9.3 remains open pending #6588/#6589.
 
 ### N9.4 — `Std.Http` native client — follow-on (#6105)
 

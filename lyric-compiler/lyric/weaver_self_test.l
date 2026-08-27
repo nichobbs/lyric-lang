@@ -750,13 +750,26 @@ test "no-aspect file is identity-rewritten" {
 // §2. #683 — `config { }` wiring.
 // ─────────────────────────────────────────────────────────────────────────────
 test "config { } prelude is injected at the top of the woven body" {
+  // #6624: the target returns `Unit` deliberately — this test is about
+  // config-prelude STATEMENT ORDERING, and `around(...) -> ret`'s
+  // out-variable lowering (#3402) prepends a synthesised `var ret: <T>`
+  // ahead of the prelude whenever the advice assigns `ret` AND the target
+  // returns a non-Unit value (`buildWrapper`'s `assignsRet and not
+  // targetReturnsUnit` branch) — which would shift `body.statements[0]`
+  // off the prelude for a reason unrelated to what this test checks. That
+  // branch applies equally whether the assignment came from an explicit
+  // `ret = proceed(args)` (#3402) or from the auto-lift of a bare
+  // `proceed(args)` (#5182/#6624), so a non-Unit target can't dodge it by
+  // choosing one `proceed` spelling over the other — only a `Unit`-typed
+  // target keeps the prelude at index 0 (targetReturnsUnit routes through
+  // `stripRetAssignments` instead, adding no synthetic var/return).
   val src = "package P\n" + "aspect Limit {\n" + "  config { maxRetries: Int = 3 }\n" + "  matches: name like \"f*\"\n" +
     "  around(args) -> ret {\n" +
     "    val r = config.maxRetries\n" +
-    "    proceed(args)\n" +
+    "    ret = proceed(args)\n" +
     "  }\n" +
     "}\n" +
-    "func foo(x: in Int): Int { x + 1 }\n"
+    "func foo(x: in Int): Unit { }\n"
   val woven = parseWeave(src)
   // Two IFuncs: `foo` (wrapper) and `foo__aspect_target` (renamed original).
   assertEqualInt(functionCount(woven, "foo"), 1, "one wrapper named 'foo'")
@@ -810,16 +823,19 @@ test "config prelude is omitted when the body never references config.<x>" {
 }
 
 test "config fields without a default are skipped in the prelude" {
+  // #6624: `Unit`-returning target (see the matching note on the "prelude
+  // is injected at the top" test above) — keeps the config prelude at
+  // `body.statements[0]` regardless of `ret`-assignment auto-lifting.
   val src = "package P\n" + "aspect Limit {\n" + "  config {\n" + "    withDefault:    Int = 7\n" +
     "    withoutDefault: Int\n" +
     "  }\n" +
     "  matches: name like \"q\"\n" +
     "  around(args) -> ret {\n" +
     "    val r = config.withDefault\n" +
-    "    proceed(args)\n" +
+    "    ret = proceed(args)\n" +
     "  }\n" +
     "}\n" +
-    "func q(): Int { 0 }\n"
+    "func q(): Unit { }\n"
   val woven = parseWeave(src)
   val wrapper = firstFunction(woven, "q")
   val body = functionBody(wrapper)
@@ -845,13 +861,16 @@ test "config.<no-default> reference emits A0044 weave diagnostic" {
   // the prelude entry with a `panic(...)` stub so downstream
   // codegen sees a resolved reference (compilation halts on the
   // A0044 error before runtime reaches the panic).
+  // #6624: `Unit`-returning target (see the matching note on the "prelude
+  // is injected at the top" test above) — keeps the config prelude at
+  // `body.statements[0]` regardless of `ret`-assignment auto-lifting.
   val src = "package P\n" + "aspect Limit {\n" + "  config { undefaulted: Int }\n" + "  matches: name like \"d\"\n" +
     "  around(args) -> ret {\n" +
     "    val v = config.undefaulted\n" +
-    "    proceed(args)\n" +
+    "    ret = proceed(args)\n" +
     "  }\n" +
     "}\n" +
-    "func d(): Int { 0 }\n"
+    "func d(): Unit { }\n"
   val wr = parseWeaveDiags(src)
   assertTrue(diagsHaveCode(wr.diagnostics, "A0044"), "A0044 emitted for config.<no-default>")
   // Verify the stub is wired so the body type-checks.

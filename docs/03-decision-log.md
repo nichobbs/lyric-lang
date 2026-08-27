@@ -32250,7 +32250,7 @@ script with`) and nothing new; `scripts/ci/check-workflow-size.sh` passes
 under the new split can only be confirmed by observing `main` over
 subsequent PRs, per #4975's own evidence-gathering pattern.
 
-## D-progress-807 — actionlint: scope the `matrix.authenticode` dead-code suppression to `publish.yml` via a path-scoped `.github/actionlint.yaml`, instead of a global `-ignore` regex (#5638)
+## D-progress-810 — actionlint: scope the `matrix.authenticode` dead-code suppression to `publish.yml` via a path-scoped `.github/actionlint.yaml`, instead of a global `-ignore` regex (#5638)
 
 **Problem.** The `actionlint` CI job's "Run actionlint" step suppressed
 three finding classes via a single global `-ignore` regex: the permanent
@@ -32292,6 +32292,155 @@ matrix entry itself stays commented out, gated on #3941 — re-enabling it
 is out of scope here, and once it lands, `.github/actionlint.yaml` should
 be deleted rather than edited (the suppression becomes unnecessary, not
 narrower).
+
+## D-progress-808 — JVM kernel/codegen batch: piped-process reads, `Std.Environment.args()`, regex ReDoS timeout (#6135, #5377, #1103)
+
+**Date:** 2026-08-27
+**Status:** SHIPPED
+
+Three independent, previously-documented JVM-only gaps closed together
+(one PR, one theme: `--target jvm` kernel/codegen parity with `.NET`).
+
+**#6135 — `Std.Process.spawnPiped`'s JVM read side.** The prior
+`BufferedReader.readLine()`-based `hostPipedReadLineOpt`
+(`std/_kernel_jvm/process_piped_host.l`) intermittently returned a
+spurious immediate `None` or blocked past any deadline against a live
+`cat` subprocess, documented at length in that file's own module header
+and in `lyric-mcp/README.md`'s "Known JVM gaps" #1. **Fix:** rewritten
+to the same byte-level, `InputStream.available()`-polled +
+`readNBytes`-into-a-`ByteArrayOutputStream` technique
+`process_capture_host.l`'s `hostRunCapture` already used reliably for
+batch capture — no blocking `Reader`/`InputStream` call anywhere in the
+read path. `PipedHandle` gained a `lineBuf: ByteArrayOutputStream`
+field (reset-and-rewrite in place on each consumed line, so no field
+reassignment is needed); line boundaries are found by scanning raw
+bytes for `0x0A` (always safe — a UTF-8 continuation byte is never
+`0x0A`), with `Std.Encoding.tryDecodeUtf8` doing the actual decode once
+a complete line's byte range is known (a lossy diagnostic-string
+fallback covers the malformed-UTF-8 edge case rather than silently
+dropping the line). Verified against a real `cat` subprocess with the
+same 5-case coverage the `.NET` kernel already has
+(`lyric-compiler/jvm/piped_process_jvm_main.l`, run via `lyric build
+--target jvm` + `java -jar` since a real process-spawning check doesn't
+fit `lyric test`'s harness any better here than `entry_args_jvm_main.l`
+did for argv — 5/5 pass, repeatably). `lyric-mcp/README.md` updated:
+this specific gap is fixed, though `Mcp.Client.connectStdio` itself
+remains unverified on JVM for a separate, unrelated reason (that
+library's whole test suite fails to type-check under `--target jvm` —
+gap #3, out of scope here).
+
+**#5377 — `Std.Environment.args()` on JVM.** The JDK exposes no
+process-wide argv retrieval API (unlike `.NET`'s
+`Environment.GetCommandLineArgs()`); `hostGetCommandLineArgs` previously
+panicked with a clear "not implemented" diagnostic rather than crashing
+opaquely. **Fix — real entry-point codegen, not an extern binding** (the
+gap the panic message itself pointed at): `Jvm.Codegen`'s `hasMain`
+entry-point-wrapper synthesis (`codegen/06_items.l`) now stashes the
+incoming `String[]` into a new package-independent holder class,
+`__LyricJvmRuntime` (`LPRuntimeArgsHolder` in `Jvm.Lowering`, one public
+non-final `[Ljava/lang/String;` field, emitted exactly once per runnable
+JVM bundle — guaranteed unique since there is exactly one entry point
+per bundle) — *before* forwarding argv to the Lyric `main`, so the
+capture is unconditional even when `main()` itself declares no `argv`
+parameter. Every call site naming `hostGetCommandLineArgs` is
+intercepted in `Jvm.Codegen.lowerBuiltinOrStaticCall`
+(`codegen/04_calls.l`) and lowered directly to a `getstatic` read of
+that field, following the same bare-name compiler-intrinsic convention
+already used for `intToLong`/`stringToUtf8Bytes` — the kernel function's
+own body (still a panic, now documented as unreachable) is therefore
+never actually invoked at runtime. Verified end-to-end: a program whose
+`main()` takes *no* argv parameter, calling `Std.Environment.args()`
+directly, built with `lyric build --target jvm` and run as `java -jar
+out.jar four five`, prints `argc=2` / `arg0=four` / `arg1=five`
+(`lyric-compiler/jvm/env_args_jvm_main.l`) — pinning that the capture is
+independent of the Lyric `main`'s own signature. The stale
+`stdlib_jvm_kernels_self_test.l` regression (`assertPanics` on
+`hostGetCommandLineArgs`) was updated to assert the new real behavior
+(a non-null `slice[String]`, content unspecified since `lyric test`'s
+harness doesn't forward real argv — the real content-correctness check
+is the standalone program above).
+
+**#1103 — JVM regex ReDoS timeout (Phase 6 follow-up to #330).**
+`java.util.regex.Pattern` has no timeout mechanism of its own (unlike
+the BCL's 3-arg `Regex(pattern, options, matchTimeout)` constructor);
+`hostCompileWithTimeout` previously accepted and ignored the timeout
+parameter, leaving the JVM regex path with no ReDoS protection at all.
+**Design investigation** (per the issue's own guidance to check prior
+art before reaching for a new mechanism): `Future.get(long, TimeUnit)`
+is unreachable from plain Lyric because the JVM auto-FFI method
+resolver skips enum-typed parameters entirely (the same gap
+`process_capture_host.l`'s module header already documents for
+`Process.waitFor(long, TimeUnit)`); the `scope { }`/`spawn`/`await`
+language keywords compile to real JDK 21 `StructuredTaskScope`, whose
+`close()` blocks until every spawned subtask's *thread* actually
+terminates (`_kernel_jvm/task.l`'s module header independently reached
+the same conclusion for its own use case) — structured concurrency's
+whole "no orphaned threads" guarantee is exactly incompatible with a
+ReDoS timeout's fundamental trade-off (a non-interruptible runaway match
+must be *abandoned*, not waited for). **Fix — the daemon-thread shim the
+issue asked for by name:** `Regex` on this target is no longer a bare
+`extern type` alias for `Pattern`; it is a small record pairing the
+compiled `Pattern` with a `timeoutMs: Long` (the JVM-side equivalent of
+the BCL constructor's embedded deadline). Each match operation
+(`hostIsMatch`/`hostMatchOne`/`hostReplace`) races its work on a fresh
+`java.lang.Thread` (marked daemon, via the JVM backend's existing
+Lyric-closure-to-`Runnable`
+SAM-bridging — `Jvm.Codegen.ensureSamAdapterClass`, already proven for
+arbitrary JDK functional interfaces), while the calling thread blocks on
+`Thread.join(timeoutMs)` — a genuinely *bounded* wait, unlike
+`Future.get()`. On timeout the caller is unblocked with `Err(TimedOut)`
+(message containing the literal substring `"time-out"`, matching
+`Std.Regex.isTimeout`'s classifier) while the abandoned background
+thread may keep running until it finishes naturally or the JVM exits —
+the same documented, standard trade-off every daemon-thread-race
+ReDoS-timeout technique on the JVM accepts (`java.util.regex` observes
+no interrupt checkpoint during backtracking); a fully leak-free fix
+needs an interruptible-`CharSequence` wrapper, out of scope here since
+the issue specifically asked for the daemon-thread shim and this closes
+the actual vulnerability (unbounded blocking).
+
+Two real, general (not regex-specific) JVM codegen bugs were found and
+worked around while building this, both isolated with minimal repros
+independent of `Std.Regex`:
+
+1. A closure body shaped `try { ... } catch Bug as b { <captured var> =
+   ... }` (a captured `var` assigned directly inside a `catch` arm,
+   itself inside a closure) fails class verification with `VerifyError:
+   Operand stack overflow` — a `maxStack` miscalculation specific to
+   that exact combination. Reproduced in complete isolation (no regex,
+   no threads: `{ -> try { println("hi") } catch Bug as b { v = true }
+   }`). Worked around using `Std.Task`'s already-established
+   `runGuardedJvm` idiom — `java.util.concurrent.atomic.AtomicBoolean`/
+   `AtomicReference` mutated via method calls inside the catch arm,
+   never a direct Lyric `var` assignment — rather than fixing the
+   underlying codegen bug, which is out of scope for this track. Filed
+   as #6551.
+2. A closure *value bound to a `val` first* (`val f: () -> Unit = { ->
+   ... }; JThread.new(f)`) does not get the SAM-bridging wrap applied at
+   the constructor call site — the raw `Lyric$Lambda`-implementing
+   object is passed directly into `Thread`'s constructor, producing
+   `IncompatibleClassChangeError: ... does not implement the requested
+   interface java.lang.Runnable` the first time `Thread.run()` actually
+   dispatches. A lambda *literal* passed directly as the argument
+   (`JThread.new({ -> ... })`) does not hit this — `emitFfiCoerce`'s
+   SAM-bridging condition keys off the argument expression's own static
+   type, and a `val`-with-a-function-type-annotation's slot apparently
+   erases differently than a literal `ELambda` expression's. Worked
+   around by inlining the lambda literal directly at the `Thread.new`
+   call site rather than binding it to a `val` first. Filed as #6552.
+
+**Verification.** All three fixes verified end-to-end against the real
+compiled JVM artifacts described above (not just compiled — actually
+executed against `java`), plus `regex_tests.l` unaffected on `--target
+dotnet` (`lyric run`), the regenerated `hostGetCommandLineArgs`
+self-test, and `RxSafe`/`Rx` normal (non-timeout) match/replace paths
+re-verified working after the `Regex` record-vs-alias change.
+
+**Related:** #6135, #5377, #1103, #330, #1100 (locale-stable `isTimeout`
+classifier, still open — unaffected by this entry), #6551 and #6552 (the
+two upstream JVM codegen bugs above, filed as follow-ups, not fixed
+here).
+
 ---
 
 ## D136 — `Web.json` reverts #5797's auto-detect regression, back to its documented raw-passthrough contract; `Web.jsonString` added (#5813)
@@ -32564,4 +32713,416 @@ above for the original decision), #6578 (the JVM tuple-destructuring
 package compiler follow-up), D-progress-543 (sandbox exception: no
 `./bin/lyric` buildable from source here, hence no compiler-level fix for
 either #6564's or #6578's root cause).
+## D-progress-809 — Native prerequisites for N9.3 (`Std.HttpServer` native twin, #6104): `lyric_sem_*` counting semaphore + `slice[T]` `.slice`/`.concat`/`.append`
+
+**Context.** Issue #6104 (native/plan/08-work-items.md N9.3, docs/61 §7 item 5)
+needs a thread-per-connection native `Std.HttpServer` twin driving
+`Std.HttpEngine`. Two prerequisites were missing entirely: native had no
+blocking wait/signal primitive (only `lyric_mutex_*`, mutual exclusion with
+no wakeup — needed for the server's pull queue and per-request completion
+signal), and `slice[T]` had no `.slice`/`.concat`/`.append`
+(`Std.HttpEngine.feed`'s buffer bookkeeping calls `.slice`/`.concat` on
+nearly every parse step, so without this `Std.HttpEngine` cannot compile
+for `--target native` at all — confirmed by direct repro). The new runtime
+kernels (below) operate on the shared `LyricList` representation that
+backs both `List[T]` and `slice[T]` on native, but the type checker
+(`typechecker_exprs.l`'s `builtinMember`) only exposes `.slice`/`.concat`/
+`.append` on `TySlice` receivers — `List[T]` does not gain these methods
+at the language level.
+
+**Shipped.**
+
+- **`lyric_sem_*` counting semaphore** (`lyric-rt/src/lyric_posix.c`,
+  `include/lyric_rt.h`): `lyric_sem_size/_init/_wait/_post/_destroy`,
+  mutex+condvar backed rather than POSIX `sem_init` (not implemented on
+  macOS). Verified by a same-thread round-trip and a real forked
+  cross-thread test: a second pthread blocks in `lyric_sem_wait`, confirmed
+  still blocked after 50ms, then wakes correctly when the main thread posts.
+- **`slice[T]` `.slice(start, stop)` / `.concat(other)` /
+  `.append(x)`**: `lyric_list_slice`/`_concat`/`_append` runtime kernels
+  (`lyric-rt/src/lyric_collections.c`, half-open `[start, stop)` slice
+  bounds and panic message matching the MSIL/JVM twins for cross-target
+  parity) plus the native LLVM codegen call-site wiring
+  (`Lyric.LlvmCodegen.lowerCollectionMethodCall`,
+  `lyric-compiler/lyric/llvm_codegen.l`). All three are never-mutating
+  combinators — each returns a FRESH list, ref-typed elements retained by
+  the new list via the existing `lyric_list_push` retain path, source list
+  untouched.
+
+**Verification.**
+
+- `lyric-rt/test/lyric_rt_test.c`: new cases for the semaphore
+  (same-thread and real cross-thread blocking/wake) and for
+  `.slice`/`.concat`/`.append` (ref-element retain/release across all
+  three ops on a `String`-element list under ASan; an OOB-panic fork test
+  for `.slice` matching the MSIL twin's exact panic message). `make -C
+  lyric-rt test` and `make -C lyric-rt test-asan CC=gcc`: all pass.
+- `lyric-compiler/lyric/llvm_collections_self_test.l`: three new
+  ASan-compiled cases exercising the actual `Lyric.LlvmCodegen` call-site
+  wiring through the real `codegenNativePackage`/`lowerNativePackage`
+  pipeline (parse → codegen → clang → run) — the C-level tests above prove
+  the runtime kernels are correct in isolation, these prove the codegen
+  dispatch (`NArg`/`NBitcast`/`slotOfVal` wiring) is too: `.slice` returns
+  a correctly-bounded fresh sublist with the source list's own `.count`
+  unchanged; `.concat` returns a correctly-ordered fresh merge with both
+  sources' `.count` unchanged; `.append` returns a correctly-extended fresh
+  list with the source's `.count` unchanged. Expected values were derived
+  from `lyric_list_slice`/`_concat`/`_append`'s actual C source (read
+  directly, not assumed) before being written, to avoid an
+  assumed-semantics round-trip. **Could not be run in the authoring
+  sandbox** — see the caveat below — so these cases are unverified locally;
+  CI's `native-backend-self-tests` job (which already lists
+  `llvm_collections_self_test.l`) is this change's actual verification
+  oracle, run against a from-source `make lyric` build the sandbox cannot
+  perform. Watch that job on this PR before treating this entry's codegen
+  claims as confirmed.
+
+**Sandbox caveat (extends D-progress-543).** D-progress-543 documents a
+substitute verification path (the published NuGet `lyric` tool) for
+changes that don't touch the compiler itself. A change to
+`lyric-compiler/lyric/*.l` has no such substitute: the NuGet tool ships
+precompiled compiler DLLs with no knowledge of this checkout's
+`lyric-compiler/lyric/` source tree, so `import Lyric.LlvmCodegen` (or any
+other `Lyric.*` compiler package) cannot resolve from local source through
+it — confirmed by direct repro, not assumed: neither `LYRIC_LOAD_COMPILER=1
+lyric test` (that env var is vestigial — `cli_test.l`'s own comment calls
+it "the retired `LYRIC_LOAD_COMPILER` path", superseded by linking
+precompiled DLLs per #2364 Stage 5) nor `LYRIC_STDLIB_BIN=<nonexistent>
+lyric test`/`lyric build` (which was hypothesized to force a "no DLLs
+found → resolve from source" fallback, by analogy with `Std.*`'s built-in-
+head source resolution) actually recompiles `Lyric.*` packages from source
+through the NuGet tool — both fail with `T0020: unknown name` on any
+symbol the edited source doesn't yet have compiled into the NuGet tool's
+bundled DLLs. `bash scripts/bootstrap.sh --stage 1` itself fails at Stage 0
+(`GitHub access is not enabled for this session`), confirming there is
+currently no path in this sandbox to build `./bin/lyric` from source or
+otherwise verify a compiler-source change end to end locally. This is a
+sharper version of D-progress-543's exception, not a new one: CI (which
+does perform a real `make lyric` from-source build) is this class of
+change's only verification path from this environment.
+
+**Follow-up (#6104, not shipped by this entry).** Drafting the
+`Std.HttpServer` native twin itself (`_kernel_native/http_server.l`) on
+top of these two prerequisites hit two further, architectural
+native-backend gaps: native `String` has no `.trim`/`.toLower`/`.indexOf`/
+`.startsWith`/`.contains`/`.endsWith` (only `.toString()`/`.substring()`),
+and a bare cross-package enum-case value reference (`val v: HttpVersion =
+Http1_1`) fails to resolve at the point codegen tries to disambiguate it,
+because enums erase to a bare `NI32` with no distinguishing type by then.
+Both block `Std.HttpEngine`/`Std.String` from compiling for `--target
+native` at all, independent of this entry's two fixes. Neither is
+scopeable around; both are tracked as follow-up issues (linked from
+native/plan/08-work-items.md's N9.3 entry). The draft kernel could not be
+made to compile against these gaps and was **not committed** — neither
+`_kernel_native/http_server.l` nor a self-test for it exist anywhere in
+this repository (not in this PR, not on `main`); a future contributor
+picking up #6104/N9.3 starts from zero on the kernel itself once #6588
+and #6589 are resolved.
+
+**Related:** #6104, `native/plan/08-work-items.md` N9.3, docs/61 §7 item 5,
+D-progress-543 (the sandbox-exception precedent this sharpens).
+
+---
+
+## D-progress-807 — Where-bound marker vocabulary and diagnostic-level divergences settled: `Copyable` dropped, T0051/T0111 two-tier contract confirmed as designed, `hasDerive` aligned to `mono.l` on primitives (#5549)
+
+**Status:** Shipped.
+
+**Context.** Surfaced by #5549 while making `satisfiesMarker` real in
+PR #5544 (D-progress-642). Three related divergences in the where-bound
+marker story, all touching the closed marker set D034 fixed:
+
+1. `docs/01-language-reference.md` §generics listed the closed marker
+   set as D034's ten names, including `Copyable` — but the checker's
+   `isKnownDeriveMarker` (`typechecker_checker.l`) was, and always had
+   been since the self-hosted rewrite, the NINE-marker set without
+   `Copyable` (`Add,Sub,Mul,Div,Mod,Compare,Hash,Equals,Default`), so
+   `where T: Copyable` unconditionally hit T0051 ("unknown constraint").
+2. The spec described unknown `where`-constraints as always getting a
+   T0111 *warning*; the checker instead ERRORS with T0051 at the
+   `where` clause's own declaration site for a genuinely-unknown name,
+   and only falls back to the lenient T0111 warning from
+   `checkBoundsSatisfied` (`typechecker_exprs.l`) at a call site that
+   cannot re-resolve a name the constrained function's own
+   declaration already validated.
+3. The checker's `hasDerive` (`typechecker_exprs.l`) matches only
+   `TyUser`-shaped symbols (`DKDistinctType`/`DKRecord`/`DKExposedRec`/
+   `DKUnion`) and returns `false` for `TyPrim`, so a primitive type
+   argument reaching T0108 (`checkBoundsSatisfied`) with a capability
+   marker bound (e.g. `Int` against `where T: Add`) was wrongly
+   rejected — while `mono.l`'s `satisfiesMarker`/`primitiveSatisfiesMarker`
+   (added by D-progress-642 specifically to make monomorphization's own
+   marker check real) already accepts primitives correctly: arithmetic
+   markers on numerics (`Add` also on `String`, whose `+` is
+   concatenation), `Equals`/`Hash`/`Compare`/`Default` on every
+   primitive.
+
+**Decision — three independent resolutions, one per divergence:**
+
+1. **`Copyable` is dropped from the practically-usable marker
+   vocabulary** (spec, checker, and `mono.l` all agree it does not
+   exist as a usable `where`/`derives` name). D034's `Copyable` row
+   speced it as "the type lowers to a CLR value type (per
+   `09-msil-emission.md` §5)" — a genuinely *structural*, backend-
+   computed property, not a `derives`-opted-into capability the way
+   the other nine are. Tracing `09-msil-emission.md` §9.4 confirms
+   `Copyable` DID work in the retired F# bootstrap emitter
+   (`Codegen.fs`'s `satisfiesMarker`: "any value type (CLR struct)
+   satisfies Copyable"), where the checker/emitter were one and the
+   same program with direct access to the struct-vs-class lowering
+   decision. In the self-hosted split, that decision is NOT simple to
+   reproduce in the front end: §5.3's own struct-vs-class heuristic
+   for records is itself non-trivial (a field-count/derives-shaped
+   rule plus an explicit `@valueType` opt-in), and it runs inside the
+   MSIL backend (`lyric-compiler/msil/codegen.l`), a phase that runs
+   AFTER the type checker in the pipeline (`Lyric.Pipeline`'s
+   `pipeCheckAndMono` precedes backend codegen) and that `mono.l` also
+   has no visibility into. A `Copyable` implementation that only
+   covered "primitives and distinct types" (the two structurally
+   obvious cases) while silently getting every struct-eligible record
+   wrong would be worse than no implementation — a plausible-looking
+   but incorrect answer, exactly what the production-readiness
+   standard's "no shortcuts" rule exists to block. Reintroducing
+   `Copyable` for real is future work, gated on exposing the backend's
+   struct-vs-class decision (or an equivalent front-end-computable
+   rule) to `typechecker_exprs.l`/`mono.l` — tracked as a follow-up,
+   not attempted here. This SUPERSEDES D034's `Copyable` row for the
+   self-hosted compiler (D034 itself is left unedited per this repo's
+   append-only decision-log convention); the other nine markers in
+   D034's table are unaffected and remain the closed set.
+2. **The T0051/T0111 split is confirmed as the intended design, not a
+   bug** — the spec is what was wrong, not the checker, but the spec's
+   error was mischaracterizing the split as "unknown constraints
+   always warn" rather than describing what the checker actually
+   does. T0051 (`checkWhereClause`) fires exactly once, at the
+   `where` clause's own DECLARATION site, whenever the name is
+   neither a known marker nor a visible interface — unconditionally,
+   independent of whether the generic function is ever called.
+   T0111 (`checkBoundsSatisfied`) fires separately, once at EACH CALL
+   site that instantiates the generic against concrete type
+   arguments, whenever that same name still can't be resolved from
+   the call site's own symbol-table view; the bound is treated as
+   satisfied there rather than compounding the single declaration-
+   time error into a hard failure at every call site too. Verified
+   directly against the existing `typechecker_self_test.l` fixture
+   for #2954 (`func f[T](x: in T): T where T: Addd { x }` +
+   `func g(): Int { f(42) }`, entirely single-package): BOTH T0051
+   and T0111 fire together for this one malformed declaration once it
+   is called — they are not alternative severities for the same
+   situation, and T0051 does not suppress or replace T0111 (an
+   earlier draft of this entry incorrectly assumed same-package
+   resolution made T0111 unreachable there; that assumption did not
+   hold up against the shipped test). Fixed by rewriting
+   `docs/01-language-reference.md` §generics to describe this
+   two-diagnostics-together contract accurately instead of the
+   flatter "unknown constraints always warn" claim it had before.
+3. **`hasDerive` gets a `TyPrim` arm mirroring `mono.l`'s
+   `primitiveSatisfiesMarker`** — the checker aligns to mono's
+   already-correct behavior (post-D-progress-642), not the reverse, as
+   the issue itself concluded. A shared helper is not used because
+   `hasDerive` receives a resolved `Type`/`TyPrim` (post name
+   resolution) while `mono.l`'s `satisfiesMarker` receives an
+   unresolved `TypeExpr`/`TRef` (pre-resolution, call-site-inference
+   context) — the two type representations don't share a common
+   primitive-name predicate without a larger refactor of one side's
+   representation, out of scope for a marker-vocabulary alignment
+   fix. The primitive capability table itself (which marker each
+   `TyPrim` variant satisfies) is duplicated verbatim in intent
+   between the two functions and MUST be kept in sync by hand if
+   either changes — flagged in both functions' doc comments.
+
+**Verification.** `mono_self_test.l`'s M0001 cases extended: a
+`Copyable` where-bound now behaves exactly like any other unrecognized
+constraint name (T0051 at declaration, matching every other unknown
+name — no special-casing survives). `typechecker_self_test.l` extended
+with: (a) `Copyable` in a `where` clause raises T0051 at the
+declaration site (confirms the drop from (1) took effect, not a silent
+accept); (b) a primitive type argument (`Int`) against a capability
+marker bound (`where T: Add`) type-checks with zero diagnostics
+end-to-end through a real generic function call (confirms `hasDerive`'s
+new `TyPrim` arm from (3) — this call previously raised a spurious
+T0108); (c) the T0051/T0111 split itself: an unknown `where`-clause
+constraint name raises T0051 once at the declaration alone (no call
+needed), and calling that same generic function additionally raises
+T0111 at the call site — both codes present together for one malformed
+declaration, confirming they are two independent diagnostics rather
+than alternative severities for the same situation. Full regression
+sweep after `make lyric`: `typechecker_self_test.l`, `mono_self_test.l`,
+and `contract_elaborator_self_test.l` (unaffected — this fix never
+touches contract elaboration) all green.
+
+**Related:** #5549, D034, D-progress-642, D-progress-730 (the T0116
+sibling fix this entry's verification fixture style mirrors),
+`docs/01-language-reference.md` §generics, `docs/09-msil-emission.md`
+§9.4, `typechecker_checker.l` (`isKnownDeriveMarker`),
+`typechecker_exprs.l` (`hasDerive`, `checkBoundsSatisfied`), `mono.l`
+(`isKnownMarker`, `satisfiesMarker`, `primitiveSatisfiesMarker`).
+
+## D-progress-807 — TLS phase 5 (native) N9.2 item D: real loopback TLS handshake through `Std.TcpHost.hostAcceptTls`, plus two latent `Lyric.LlvmCodegen`/`Lyric.LlvmBridge` UFCS bugs it uncovered (issue #6103)
+
+**Context.** D-progress-712 shipped N9.2's `Std.TcpHost`/`Std.TlsHost`/
+`Std.EncodingHost` native twins with `llvm_tls_self_test.l` covering three
+cases (A: `Std.Encoding` round-trip, B: `Std.Tls` PEM loading, C: plain
+non-TLS round-trip); a fourth case — a real loopback TLS handshake through
+`hostAcceptTls` — was deliberately deferred, not because of a compiler
+blocker but because driving a real concurrent client/server handshake is
+separate test-authoring effort (a TLS handshake, unlike a bare TCP
+connect, needs both peers actively pumping handshake I/O at once). This
+entry ships that item D and documents the two real native-codegen bugs it
+surfaced along the way.
+
+**Item D: the test.** `llvm_tls_self_test.l` gains a fourth case: the
+server side runs on the main thread and drives the real N9.2 deliverable,
+`Std.TcpHost.hostAcceptTls`, against a `Tls.TlsServerConfig` built from
+item B's now-working `Identity.fromPem`; the client side runs on a
+genuine second OS thread (spawned with the exact `pthread_create`/
+`pthread_join` FFI pattern `llvm_ffi_self_test.l`'s pthread-trampoline
+case already established) and drives a raw TLS client handshake directly
+against the already-existing `lyric_tls_client_new`/
+`lyric_tls_client_connect`/`lyric_tls_read`/`lyric_tls_write` seam
+functions (`lyric-rt/src/lyric_tls.c`, already exercised end to end by
+`lyric_tls_test.c`'s own `run_tls_scenario` client role). The assertions
+cover both sides completing the handshake, the negotiated ALPN protocol
+(client offers exactly `"h2"` against the server's fixed
+`"h2,http/1.1"` preference, so the negotiated result is unambiguous), and
+a request/response byte round trip over the encrypted channel. The
+self-signed `certPemLines` fixture item B already uses is `Basic
+Constraints: CA:TRUE`, so it doubles as its own client-side trust anchor
+— no separate CA fixture needed.
+
+**Why the client side is test-local FFI, not a new `Std.TcpHost` public
+API.** `_kernel_native/tcp_host.l`'s own module header is explicit that
+N9.2 deliberately ships NO client-TLS surface ("TLS (server-side; N9.2
+has no client-TLS surface — that is Std.Http's job, N9.4/#6105)"). Adding
+a public `hostConnectTls`-shaped function now would reopen and preempt
+that already-recorded scope boundary and collide with whatever shape
+`Std.Http`/#6105 eventually gives client TLS. The client thread instead
+binds the seam's `extern func`s directly in its own generated test
+source — the same test-local-FFI idiom the pthread externs immediately
+above it already use (neither `pthread_create`/`pthread_join` nor
+`lyric_tls_client_*` are part of any planned public `Std` API surface
+yet; both are genuinely-existing runtime-library entry points a test
+drives directly because the corresponding *public* Lyric surface doesn't
+exist). `Std.TcpHost`'s own `_kernel_native/` public surface is unchanged
+by item D.
+
+**Two native-codegen bugs uncovered (both fixed, `lyric-compiler/lyric/`
+only — no `lyric-rt` C changes needed).** Item D is `hostAcceptTls`'s
+FIRST native invocation ever (items A–C never call it), so it was also
+the first native compile to exercise `_kernel_native/tcp_host.l`'s
+`buildServerCtx` calling `cfg.identity.rawHandle()` — a UFCS call, on a
+VALUE receiver, into `internal func Identity.rawHandle(id: in Identity):
+Host.CertHandle` (`std/tls.l`'s kernel-boundary escape hatch, D128 phase
+1.2): an extension-method-style declaration whose declared NAME literally
+carries its receiver type ("Identity.rawHandle", not bare "rawHandle") —
+distinct from D037's in-type-body method sugar, which desugars to a bare
+package-level function name instead. Both bugs were confirmed by reading
+the actual codegen/bridge source (not assumed), each verified fixed
+against a real local build (see Verification):
+
+1. **`Lyric.LlvmCodegen.lowerUfcsCall`'s struct-receiver signature lookup
+   never tried the compound "TypeName.methodName" key.** For a
+   `NPtr(NStruct(tyName, _))` receiver (e.g. `tyName =
+   "Std.Tls.Identity"`), the only non-current-package fallback stripped
+   ONE dot component off `tyName` (assumed to yield the receiver's
+   DEFINING PACKAGE, e.g. "Std.Tls") and joined that with the bare
+   call-site name ("Std.Tls.rawHandle/1") — correct for a D037
+   in-type-body method (whose sig registers under a bare package-level
+   name), but this drops the type-name component an extension-method
+   declaration's OWN registered key needs ("Std.Tls.Identity.rawHandle/1"
+   / bare "Identity.rawHandle/1"). Fixed by trying `tyName + "." + name`
+   (then bare `TypeName.methodName`, stripped of its package prefix)
+   BEFORE falling back to the legacy stripped-package lookup, which is
+   kept unchanged for the D037 shape it actually serves.
+2. **Even with (1) fixed, `Identity.rawHandle` was still missing from the
+   compiled `Std.Tls` codegen unit entirely** — a deeper bug in
+   `Lyric.LlvmBridge`'s function-granularity reachability walk, which
+   decides which bundled-package functions a native codegen unit even
+   includes (`unitOf`'s `reachable.containsKey(id)` gate). The walk
+   traces call edges via `Lyric.LlvmCodegen.callKeyOf`, exported
+   specifically so "the bridge's reachability walk resolves call sites
+   identically to the codegen" — but `callKeyOf`'s `EMember` arm only
+   resolves a receiver that is itself a bare type/package `EPath` (the
+   `Type.method(args)` static-call shape, e.g. `Certificate.fromPem(pem)`
+   — a plain multi-segment path, not a value expression). A UFCS call on
+   a VALUE receiver (`cfg.identity.rawHandle()`, whose `EMember` receiver
+   is itself another `EMember`, `cfg.identity`) returns no key at all, so
+   the call edge from `buildServerCtx` to `Identity.rawHandle` was
+   invisible to the walk — confirmed empirically by instrumenting the
+   walk directly (a temporary debug panic dumping the collected call-site
+   keys for `buildServerCtx`'s body showed `rawHandle/1` correctly
+   collected once `collectCallKeys` gained a bare-name fallback, but the
+   walk still failed to mark `Identity.rawHandle` reachable — the second,
+   independent bug below). Fixed in two parts:
+   - `collectCallKeys`'s `ECall` handling, when `callKeyOf` returns "" for
+     an `EMember` callee, now also emits a bare `memberName + "/" +
+     arity` reachability key (e.g. "rawHandle/1") — the same
+     bare-name-fallback philosophy `lowerUfcsCall`'s own resolution order
+     already relies on for the analogous CODEGEN-side lookup.
+   - Resolving that bare key is NOT safe to fold into the existing
+     single-valued `canonical: Map[String, String]` `registerFileFns`
+     already builds (first-write-wins via `addKey`): `Std.Tls` itself
+     declares TWO extension methods that both trail to the exact same
+     bare key, "rawHandle/1" — `Certificate.rawHandle` (declared first in
+     file order) and `Identity.rawHandle`. A single-valued map would
+     silently resolve the fallback to whichever one happened to register
+     first, permanently shadowing the other under an ambiguous key — this
+     is exactly what was observed empirically: adding a naive single-value
+     bare-key registration made `Certificate.rawHandle` reachable (a
+     false negative masquerading as progress) while `Identity.rawHandle`
+     stayed unreachable. Fixed with a SEPARATE `bareTrailing: Map[String,
+     List[String]]`, threaded alongside `canonical` through
+     `registerFileFns`/`registerBareTrailingSegment`; the walk's
+     resolution step now ALSO looks up `raw` in `bareTrailing` and marks
+     EVERY same-named/arity candidate reachable, independent of whatever
+     the single-valued `canonical` lookup already found. Over-inclusive
+     (a few extra bytes of dead code may compile into the unit), never
+     under-inclusive — the correctness property that matters here, since
+     under-inclusive is a hard compile failure while over-inclusive is
+     silently harmless.
+
+**Scope note.** Both fixes are confined to `lyric-compiler/lyric/
+llvm_codegen.l` (`lowerUfcsCall`, plus making the existing private
+`lastDotIndex` helper `pub` for cross-file reuse) and `lyric-compiler/
+lyric/llvm_bridge.l` (`collectCallKeys`, `registerFileFns`,
+`registerBareTrailingSegment`, the reachability walk's resolution loop).
+No `_kernel_native/` file, no `lyric-rt` C code, and no MSIL/JVM backend
+code changed — `lowerUfcsCall`/`callKeyOf`/the reachability walk are
+native-target-only surfaces.
+
+**Verification.** Unlike D-progress-712's own "could not build the native
+LLVM backend from source in this sandbox" caveat, this session built a
+working `./bin/lyric` from source end to end: the GitHub release-download
+bootstrap step is still network-policy-blocked here, so stage 0 was
+seeded from the published NuGet `lyric` 0.5.1 global tool's own installed
+DLLs (fed into `.bootstrap/stage0-publish/` so `scripts/bootstrap.sh`'s
+cached-seed check accepts them), then stage 1 recompiled the CURRENT
+`lyric-compiler/lyric/**/*.l` source (including every fix in this entry)
+against that seed — the same technique D-progress-543's 2026-07-04
+addendum used. `make -C lyric-rt test` (clang + gcc) and `make -C
+lyric-rt test-asan CC=gcc` pass locally (the C-level seam, unchanged by
+this entry). `LYRIC_LOAD_COMPILER=1 ./bin/lyric test
+lyric-compiler/lyric/llvm_tls_self_test.l` passes 5/5 (all four real
+cases plus the retained kernel-boundary variant of item B), ASan-compiled
+(`-fsanitize=address`, `libclang-rt-18-dev` installed locally to provide
+the runtime archive) — confirmed genuinely exercising the fix, not just
+compiling, by first reproducing both bugs as real failures (`Lyric.
+LlvmCodegen: method '.rawHandle' on this receiver is not yet supported
+for --target native (no matching function 'rawHandle/1' in the bundled
+import closure)`), then re-running after each fix until green. The
+existing native self-test battery (`llvm_ir_self_test.l`,
+`llvm_codegen_self_test.l`, `llvm_heap_self_test.l` — including its
+"ufcs call on record" case — `llvm_ffi_self_test.l`,
+`llvm_collections_self_test.l`, `llvm_stdlib_self_test.l`,
+`llvm_self_test_n3.l`, `llvm_self_test_n34.l`, `llvm_self_test_async.l`,
+`llvm_self_test_defer.l`, `llvm_opaque_self_test.l` — including its own
+"ufcs call on opaque type" case) all still pass unchanged (140+ cases
+total), confirming no regression to the reachability walk or UFCS
+resolution for the shapes they already covered.
+
+**Related:** D-progress-712 (N9.2's original shipment, including its
+three-case self-test and the #6234 opaque-type fix that unblocked item
+B), D-progress-543 (the sandbox-seeding technique this session reused),
+issue #6103 (N9.2's parent), issue #6105 (N9.4, `Std.Http`'s native
+client — the scope this entry deliberately does not preempt).
 

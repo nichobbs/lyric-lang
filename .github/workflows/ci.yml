@@ -564,9 +564,24 @@ jobs:
             echo "::warning::AOT binary not found; skipping example tests"
             exit 0
           fi
-          # Build dependency libraries
+          # Build dependency libraries. lyric-grpc's dotnet kernel (Grpc.Net.Client,
+          # Grpc.AspNetCore, System.Threading.RateLimiting) and lyric-db's
+          # (Npgsql, Microsoft.Data.Sqlite) both have mandatory NuGet deps
+          # whose extern types/ctors resolve from package metadata at compile
+          # time -- restore first, like the dedicated "Run tests (grpc)" /
+          # "Run tests (db)" ecosystem-tests steps do. Reproduced empirically:
+          # a `lyric build` against a clean (no obj/) checkout of either
+          # throws the same "cannot be resolved to any indexed reference
+          # assembly" FFI exception without restore first (#6582).
+          nuget_libs="lyric-db lyric-grpc"
           libs="lyric-logging lyric-auth lyric-resilience lyric-otel lyric-db lyric-web lyric-health lyric-grpc"
           for lib in $libs; do
+            case " $nuget_libs " in
+              *" $lib "*)
+                echo "=== restore dependency $lib ==="
+                "$lyric_bin" restore --manifest "$lib/lyric.toml" > /tmp/"$lib".restore.log 2>&1 || { tail -20 /tmp/"$lib".restore.log; exit 1; }
+                ;;
+            esac
             echo "=== build dependency $lib ==="
             "$lyric_bin" build --manifest "$lib/lyric.toml" > /tmp/"$lib".log 2>&1 || { tail -20 /tmp/"$lib".log; exit 1; }
           done
@@ -1862,6 +1877,19 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"aspect-weave self-test ran: aspect_weave_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/aspect_weave_self_test.l"
+
+      # `result.isOk implies result.value ...` / `.isErr`/`.error` /
+      # `.isSome`/`.isNone` direct accessor self-test (#5183).  Pins that
+      # `Result[T, E]`/`Option[T]`'s builtin field-style accessors actually
+      # compile AND run correctly (not just AST-shape), for both a
+      # payload-carrying `E` (the issue's exact repro) and the Option twin.
+      # This (`dotnet`) job runs the MSIL half via in-process `Msil.Bridge`;
+      # the `--target jvm` half runs in the `compiler-self-tests-jvm` job
+      # below. Imports only `Std.*`.
+      - name: Result/Option accessor self-test (native lyric test, --target dotnet)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"result/option accessor self-test ran: result_ensures_accessor_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/result_ensures_accessor_self_test.l"
 
       # B'-mode aspect runtime self-test (#4600) — pins that a shape-keyed
       # B'-mode aspect specialisation actually RUNS and produces correct values
@@ -4785,6 +4813,17 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"aspect-weave self-test ran: aspect_weave_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/aspect_weave_self_test.l"
 
+      # Result/Option accessor self-test on JVM (#5183) — the JVM half of the
+      # dotnet-job step above.  Pins the JVM `.isOk`/`.isErr`/`.value`/
+      # `.error`/`.isSome`/`.isNone` lowering (`lyric-compiler/jvm/codegen/02_exprs.l`),
+      # which previously hit the loud `error[J009]` unknown-member guard
+      # rather than MSIL's silent stack corruption, but was equally
+      # unsupported.  Needs JDK 21 (this job).  Imports only `Std.*`.
+      - name: Result/Option accessor self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci/self-test.sh --summary \"result/option accessor self-test ran: result_ensures_accessor_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/result_ensures_accessor_self_test.l"
+
       # B'-mode runtime self-test on JVM (#4600) — the load-bearing half: pins
       # the JVM bridge post-weave re-scan fix (B'-mode's synthesised
       # `__lyric_bmode_*` functions + `__LyricBModeCallContext`/`__LyricBModeCfg_*`/
@@ -5853,6 +5892,100 @@ jobs:
           grep -qx "arg1=two" <<< "$out" || { echo "::error::arg1 line missing"; exit 1; }
           grep -qx "arg2=three" <<< "$out" || { echo "::error::arg2 line missing"; exit 1; }
 
+      # Std.Environment.args() check on JVM (#5377) — builds a program whose
+      # `main` declares NO argv parameter, calls Std.Environment.args()
+      # directly, runs it with two arguments, and asserts the printed argv —
+      # pins the __LyricJvmRuntime holder-class capture (Jvm.Codegen's
+      # hasMain synthesis + the hostGetCommandLineArgs call-site intrinsic).
+      - name: Std.Environment.args() check on JVM (lyric build --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Environment.args() JVM check"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          "$lyric_bin" build lyric-compiler/jvm/env_args_jvm_main.l --target jvm -o "$work/envargs.jar"
+          out="$(java -jar "$work/envargs.jar" four five)"
+          echo "$out"
+          grep -qx "argc=2" <<< "$out" || { echo "::error::argc line missing"; exit 1; }
+          grep -qx "arg0=four" <<< "$out" || { echo "::error::arg0 line missing"; exit 1; }
+          grep -qx "arg1=five" <<< "$out" || { echo "::error::arg1 line missing"; exit 1; }
+
+      # Std.Regex ReDoS-timeout enforcement on JVM (#330/#1103) — builds a
+      # program that races a catastrophic-backtracking pattern against
+      # adversarial input through Std.Regex.tryIsMatch and asserts
+      # Err(TimedOut) within the compiled-in deadline, proving the
+      # std/_kernel_jvm/regex_host.l daemon-thread-race shim actually
+      # enforces the timeout it accepts (previously accepted-but-ignored).
+      - name: Std.Regex ReDoS-timeout check on JVM (lyric build --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Regex ReDoS-timeout JVM check"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          "$lyric_bin" build lyric-compiler/jvm/regex_redos_jvm_main.l --target jvm -o "$work/regexredos.jar"
+          # Generous wall-clock cap: the compiled-in deadline is 1.5s: a
+          # 20s timeout catches "shim missing -> hangs" without flaking on
+          # a loaded CI runner. set +e/set -e around the capture: the
+          # program returns non-zero on failure, and a failing command
+          # substitution under `set -e` would abort before the echo/grep
+          # diagnostics below ever ran.
+          set +e
+          out="$(timeout 20 java -jar "$work/regexredos.jar")"
+          code=$?
+          set -e
+          echo "$out"
+          if [ "$code" -ne 0 ]; then
+            echo "::error::regex_redos_jvm_main exited $code (#1103 daemon-thread shim not enforcing the deadline, or a hang past the 20s cap)"
+            exit 1
+          fi
+          grep -q "^ok:" <<< "$out" || { echo "::error::regex_redos_jvm_main did not report ok (#1103 daemon-thread shim not enforcing the deadline)"; exit 1; }
+
+      # Std.Process.spawnPiped/pipedReadLine real-child-process round trip on
+      # JVM (#6135) — builds a program that spawns a real `cat` subprocess
+      # and drives 5 cases (single-line echo, multi-line ordering,
+      # pipedCloseStdin clean exit with final buffered line, nonexistent-
+      # executable rejection, post-EOF None), matching the coverage of
+      # lyric-mcp/tests/mcp_stdio_process_tests.l's dotnet-only suite.
+      # Proves the byte-level available()-polled rewrite of
+      # std/_kernel_jvm/process_piped_host.l's read side actually works —
+      # the previous BufferedReader.readLine()-based version was unreliable.
+      - name: Std.Process piped-spawn real cat round trip on JVM (lyric build --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Process piped-spawn JVM check"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          "$lyric_bin" build lyric-compiler/jvm/piped_process_jvm_main.l --target jvm -o "$work/pipedprocess.jar"
+          # set +e/set -e around the capture: the program returns its
+          # failure count as the exit code, and a failing command
+          # substitution under `set -e` would abort before the echo/grep
+          # diagnostics below ever ran.
+          set +e
+          out="$(timeout 30 java -jar "$work/pipedprocess.jar")"
+          code=$?
+          set -e
+          echo "$out"
+          if [ "$code" -ne 0 ]; then
+            echo "::error::piped_process_jvm_main exited $code (#6135 regression, or a hang past the 30s cap)"
+            exit 1
+          fi
+          grep -qx "failures=0" <<< "$out" || { echo "::error::piped_process_jvm_main reported failures (#6135 regression)"; exit 1; }
+
       - name: Wait for all parallel tests
         wait-all: true
 
@@ -6609,6 +6742,8 @@ jobs:
       # slice[T] cast) was fixed, book_ch12_tests once #5843 (mono
       # cross-package name-collision) was, and book_ch02_tests once #5955
       # (module-val dependent-initializer .cctor InvalidProgramException) was.
+      # collections_persistent_tests (#684, #6575) joined covering the new
+      # Std.Collections.Persistent list ops.
       # Deliberately still excluded (tracked, not silent): metadata_reader_tests
       # (#5624 placeholder Param rows; also needs LYRIC_LOAD_COMPILER=1).  Each
       # suite exits non-zero on any assertion failure or runtime fault.
@@ -6627,13 +6762,39 @@ jobs:
             collections_tests char_tests math_tests hash_tests path_tests \
             errors_tests environment_tests string_tests string_methods_tests \
             regex_tests yaml_tests testing_tests mocking_tests xml_tests \
-            set_tests sort_tests \
+            set_tests sort_tests collections_persistent_tests \
             book_ch01_tests book_ch02_tests book_ch03_tests book_ch04_tests \
             book_ch05_tests book_ch07_tests book_ch12_tests book_ch13_ffi_tests \
             kernel_bcl_tests xml_viability_tests; do
             echo "--- lyric run lyric-stdlib/tests/$suite.l"
             "$lyric_bin" run "lyric-stdlib/tests/$suite.l"
           done
+
+      # Std.Collections.Persistent on JVM (#684, #6577 review follow-up):
+      # the module is pure Lyric with no BCL/JDK extern boundary, so unlike
+      # most of the dotnet-only suites above it runs unmodified under
+      # `--target jvm` — verified locally before wiring this in.  Runs the
+      # same `collections_persistent_tests.l` suite already covered on
+      # dotnet above, so both targets are exercised for every push.
+      # `lyric run --target jvm` shells out to `java` on PATH; this job has
+      # no other JVM step, so it needs its own setup-java (#6585 — JVM-target
+      # class files require 21, see "class files target major version 65"
+      # elsewhere in this workflow).
+      - name: Set up Java 21 (for the JVM suite below)
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Std.Collections.Persistent suite on JVM
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping"
+            exit 1
+          fi
+          "$lyric_bin" run --target jvm lyric-stdlib/tests/collections_persistent_tests.l
 
       # Std.Http async client surface (#5564): interface dispatch through
       # defaultClient() and the free getAsync/sendAsync functions.  Uses
@@ -6890,8 +7051,22 @@ jobs:
           fi
           # Build the dependency libraries bottom-up so each example's
           # restored path deps resolve to an existing bin/<assembly>.dll.
+          # lyric-otel/lyric-db/lyric-web's plain `build` auto-resolves their
+          # own NuGet deps here (their manifests hit `lyric build`'s
+          # lyric.lock-missing auto-restore path). lyric-grpc's does not --
+          # confirmed on a real run (#6582) that its build fails here the
+          # same way it does everywhere else without an explicit restore
+          # first, so give it the same treatment as the "Test multi-package
+          # examples" / dedicated "Run tests (grpc)" steps.
           libs=(lyric-logging lyric-auth lyric-resilience lyric-otel lyric-db lyric-web lyric-health lyric-grpc)
           for lib in "${libs[@]}"; do
+            if [ "$lib" = "lyric-grpc" ]; then
+              echo "=== restore dependency $lib ==="
+              if ! "$lyric_bin" restore --manifest "$lib/lyric.toml"; then
+                echo "::error::failed to restore $lib NuGet dependencies"
+                exit 1
+              fi
+            fi
             echo "=== build dependency $lib ==="
             if ! "$lyric_bin" build --manifest "$lib/lyric.toml"; then
               echo "::error::failed to build example dependency $lib"

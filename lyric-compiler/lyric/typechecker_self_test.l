@@ -2599,6 +2599,65 @@ test "unknown constraint emits T0111 warning" {
   assertTrue(hasDiagCode(cr, "T0111"), "unknown constraint: T0111")
 }
 
+// #5549 / D-progress-807: T0051 (declaration site) and T0111 (call site)
+// are two INDEPENDENT diagnostics that both fire for the same malformed
+// where-clause once it is actually called — not two severities chosen
+// between for one situation.  T0051 alone needs no call at all.
+test "unknown constraint at declaration alone (no call) emits T0051, no T0111" {
+  val src = "package P\nfunc f[T](x: in T): T where T: Addd { x }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0051"), "unknown constraint, uncalled: T0051 at declaration")
+  assertTrue(not hasDiagCode(cr, "T0111"), "unknown constraint, uncalled: no T0111 (no call site to check)")
+}
+
+test "unknown constraint, once called, emits BOTH T0051 and T0111" {
+  val src = "package P\nfunc f[T](x: in T): T where T: Addd { x }\nfunc g(): Int { f(42) }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0051"), "unknown constraint, called: T0051 still fires at declaration")
+  assertTrue(hasDiagCode(cr, "T0111"), "unknown constraint, called: T0111 also fires at the call site")
+}
+
+// #5549 / D-progress-807: `Copyable` was speced (D034) but never
+// implemented in the self-hosted checker — dropped from the practical
+// marker vocabulary (docs/01 §generics).  It now behaves exactly like
+// any other unrecognised where-clause name: T0051 at declaration.
+test "Copyable where-bound is an unknown constraint, T0051" {
+  val src = "package P\nfunc f[T](x: in T): T where T: Copyable { x }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0051"), "Copyable dropped from the marker vocabulary: T0051")
+}
+
+// #5549 / D-progress-807: `hasDerive` gained a `TyPrim` arm mirroring
+// `mono.l`'s `primitiveSatisfiesMarker` — a primitive type argument must
+// satisfy a capability marker bound without any `derives` clause (it has
+// none to opt into).  Previously `hasDerive` returned `false` for every
+// `TyPrim`, so this call wrongly raised T0108.
+test "primitive type argument satisfies a capability marker where-bound, no T0108" {
+  val src = "package P\nfunc add2[T](a: in T, b: in T): T where T: Add { default() }\nfunc f(): Int { add2(1, 2) }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0108"), "Int satisfies where T: Add: no T0108")
+}
+
+test "primitive type argument satisfies Compare/Equals/Hash/Default where-bounds, no T0108" {
+  val src = "package P\nfunc cmp[T](a: in T, b: in T): T where T: Compare + Equals + Hash + Default { a }\nfunc f(): Int { cmp(1, 2) }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0108"), "Int satisfies Compare/Equals/Hash/Default: no T0108")
+}
+
+test "String satisfies Add where-bound via concatenation, no T0108" {
+  val src = "package P\nfunc cat[T](a: in T, b: in T): T where T: Add { default() }\nfunc f(): String { cat(\"a\", \"b\") }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0108"), "String satisfies where T: Add (concatenation): no T0108")
+}
+
+test "primitive type argument still rejects a non-arithmetic capability, T0108" {
+  // Bool has no Add/Sub/Mul/Div/Mod capability -- confirms the TyPrim arm
+  // is a real capability table, not a blanket "primitives always satisfy".
+  val src = "package P\nfunc add2[T](a: in T, b: in T): T where T: Add { default() }\nfunc f(): Bool { add2(true, false) }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0108"), "Bool does not satisfy where T: Add: T0108")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // #2179: inferGenericArgs handles nested generic positions (e.g. Seq[T] fields).
 // Uses a locally-defined generic wrapper so stdlib is not needed during the

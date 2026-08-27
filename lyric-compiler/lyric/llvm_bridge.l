@@ -109,7 +109,24 @@ func collectCallKeys(e: in Expr, acc: in List[String]): Unit {
       // A method-call receiver is an expression too (scalar methods
       // resolve without the registry, so an unresolvable key is fine).
       match fn.kind {
-        case EMember(recv, _) -> collectCallKeys(recv, acc)
+        case EMember(recv, memberName) -> {
+          collectCallKeys(recv, acc)
+          // UFCS on a VALUE receiver (`cfg.identity.rawHandle()`) is
+          // invisible to `callKeyOf` — it only resolves an `EMember` whose
+          // receiver is itself a bare type/package `EPath` (the
+          // `Type.method(args)` static-call shape), and this reachability
+          // walk runs before codegen knows the receiver's static type, so
+          // it can't construct the exact "TypeName.methodName" key an
+          // extension-method-style declaration registers under. Fall back
+          // to a bare member-name-only key: `registerFileFns` indexes such
+          // a declaration's trailing segment too, so this still traces the
+          // edge — over-inclusive (any same-named/arity method anywhere in
+          // the bundle also matches) but never under-inclusive, mirroring
+          // `Lyric.LlvmCodegen.lowerUfcsCall`'s own bare-name fallback.
+          if key.length == 0 {
+            acc.add(memberName + "/" + (args.count + 1).toString())
+          }
+        }
         case _ -> {
         }
       }
@@ -453,10 +470,11 @@ pub func compileToNativeWithFlags(
   // `resolve` mirrors the codegen's two-step lookup (caller-package
   // qualified first, then the key as written).
   val canonical: Map[String, String] = newMap()
-  registerFileFns(userFile, canonical)
+  val bareTrailing: Map[String, List[String]] = newMap()
+  registerFileFns(userFile, canonical, bareTrailing)
   var bi = 0
   while bi < toBundle.count {
-    registerFileFns(toBundle[bi], canonical)
+    registerFileFns(toBundle[bi], canonical, bareTrailing)
     bi = bi + 1
   }
 
@@ -521,6 +539,28 @@ pub func compileToNativeWithFlags(
           if target.length > 0 and not reachable.containsKey(target) {
             reachable.add(target, true)
             fnWorklist.add(target)
+          }
+          // `raw` may ALSO be a bare UFCS trailing-segment key
+          // (`collectCallKeys`'s "cfg.identity.rawHandle()" fallback):
+          // resolve it through the multi-valued `bareTrailing` map
+          // regardless of whether the ordinary single-valued `canonical`
+          // lookup above already matched something (a different type's
+          // same-named/arity method, per `registerBareTrailingSegment`'s
+          // header) — mark EVERY candidate reachable.
+          match mapGet(bareTrailing, raw) {
+            case Some(targets) -> {
+              var ti = 0
+              while ti < targets.count {
+                val bt = targets[ti]
+                ti = ti + 1
+                if not reachable.containsKey(bt) {
+                  reachable.add(bt, true)
+                  fnWorklist.add(bt)
+                }
+              }
+            }
+            case None -> {
+            }
           }
           // The async process leaf (D-N-023): the codegen intercept
           // redirects in-coroutine `Std.Process.runCapture` /
@@ -648,7 +688,9 @@ pub func compileToNativeWithFlags(
   true
 }
 
-func registerFileFns(f: in SourceFile, canonical: in Map[String, String]): Unit {
+func registerFileFns(
+  f: in SourceFile, canonical: in Map[String, String], bareTrailing: in Map[String, List[String]]
+): Unit {
   val pkg = dottedPath(f.packageDecl.path)
   var i = 0
   while i < f.items.count {
@@ -657,6 +699,7 @@ func registerFileFns(f: in SourceFile, canonical: in Map[String, String]): Unit 
         val id = pkg + "." + decl.name + "/" + decl.params.count.toString()
         addKey(canonical, id, id)
         addKey(canonical, decl.name + "/" + decl.params.count.toString(), id)
+        registerBareTrailingSegment(bareTrailing, decl.name, decl.params.count, id)
       }
       case IExternFunc(decl) -> {
         val id = pkg + "." + decl.name + "/" + decl.params.count.toString()
@@ -667,6 +710,45 @@ func registerFileFns(f: in SourceFile, canonical: in Map[String, String]): Unit 
       }
     }
     i = i + 1
+  }
+}
+
+// An extension-method-style declaration (`func Identity.rawHandle(...)`)
+// registers under its full `TypeName.methodName` compound name above, but
+// a UFCS call on a VALUE receiver (`cfg.identity.rawHandle()`) parses as
+// `EMember` whose receiver is itself a value expression, not a bare type
+// path — `callKeyOf` can't construct "Identity.rawHandle" from that shape
+// (the receiver's static type isn't known at this syntax-only reachability
+// stage), so `collectCallKeys` falls back to a bare member-name-only key
+// ("rawHandle/1"). Index that trailing segment here too so the fallback
+// resolves. This is a SEPARATE, multi-valued map from `canonical` (not
+// merged into its single-target `addKey` scheme): two different types in
+// the same bundle can both declare a same-named/same-arity extension
+// method (e.g. `Std.Tls`'s OWN `Certificate.rawHandle`/`Identity.rawHandle`
+// both trail to "rawHandle/1") — `canonical`'s first-write-wins `addKey`
+// would silently pick only ONE of them, permanently shadowing the other
+// under this ambiguous key. A `List[String]` target lets the walker mark
+// EVERY same-named/arity candidate reachable instead: over-inclusive, but
+// never under-inclusive, the same bare-name fallback philosophy
+// `Lyric.LlvmCodegen.lowerUfcsCall`'s own resolution order already relies
+// on for its OWN (unambiguous, single-target) bare-name lookup.
+func registerBareTrailingSegment(
+  bareTrailing: in Map[String, List[String]],
+  name: in String,
+  arity: in Int,
+  id: in String,
+): Unit {
+  val dotIdx = lastDotIndex(name)
+  if dotIdx >= 0 {
+    val trailing = Str.substring(name, dotIdx + 1, name.length - dotIdx - 1) + "/" + arity.toString()
+    match mapGet(bareTrailing, trailing) {
+      case Some(targets) -> targets.add(id)
+      case None -> {
+        val targets: List[String] = newList()
+        targets.add(id)
+        bareTrailing.add(trailing, targets)
+      }
+    }
   }
 }
 

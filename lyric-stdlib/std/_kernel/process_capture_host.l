@@ -165,12 +165,23 @@ func readAllSync(r: in ProcReader): String {
   r.ReadToEnd()
 }
 
+// Snapshot the MemStream's full backing buffer as a genuine byte[] (mapped
+// to `slice[Byte]`) — independent of the StreamReader's read position, so
+// it can be captured alongside (rather than instead of) the decoded String
+// without disturbing `readAllSync` (#4753).  `ToArray()` always copies the
+// whole buffer regardless of `Position`.
+func memStreamToArray(ms: in MemStream): slice[Byte] {
+  ms.ToArray()
+}
+
 // ── Public result record ───────────────────────────────────────────────────
 // Replaces the former opaque `extern type ProcessCaptureResult =
 // "Lyric.Emitter.ProcessCapture+CaptureResult"`.
 pub record ProcessCaptureResult {
   stdout: String
   stderr: String
+  stdoutBytes: slice[Byte]
+  stderrBytes: slice[Byte]
   exitCode: Int
   timedOut: Bool
 }
@@ -183,6 +194,17 @@ pub func pcResultStdout(r: in ProcessCaptureResult): String {
 
 pub func pcResultStderr(r: in ProcessCaptureResult): String {
   r.stderr
+}
+
+// Raw captured bytes for stdout/stderr, sourced directly from the drain
+// MemoryStream before the StreamReader UTF-8 decode — no decode/re-encode
+// round trip (#4753).
+pub func pcResultStdoutBytes(r: in ProcessCaptureResult): slice[Byte] {
+  r.stdoutBytes
+}
+
+pub func pcResultStderrBytes(r: in ProcessCaptureResult): slice[Byte] {
+  r.stderrBytes
 }
 
 pub func pcResultExitCode(r: in ProcessCaptureResult): Int {
@@ -248,24 +270,57 @@ func runImpl(exe: in String, args: in String, stdinContent: in String, timeoutMs
   // with the child's output rate, which would warrant revisiting this
   // rather than silently extending the cap.
   val drainTimeoutMs = 5000
-  val stdout = try {
-    if drainWaitMs(stdoutTask, drainTimeoutMs) {
+  val stdoutWaited = try {
+    drainWaitMs(stdoutTask, drainTimeoutMs)
+  } catch Bug as _ {
+    false
+  }
+  val stderrWaited = try {
+    drainWaitMs(stderrTask, drainTimeoutMs)
+  } catch Bug as _ {
+    false
+  }
+
+  // Snapshot the raw bytes first (position-independent), then decode the
+  // String from the same completed drain — both reads see the identical
+  // buffered content, so `stdoutBytes` is never a re-encode of `stdout`;
+  // it is the source `stdout` was decoded from (#4753).
+  val stdoutBytes: slice[Byte] = if stdoutWaited {
+    try {
+      memStreamToArray(stdoutBuf)
+    } catch Bug as _ {
+      []
+    }
+  } else {
+    []
+  }
+  val stdout = if stdoutWaited {
+    try {
       memStreamResetPos(stdoutBuf, 0i64)
       readAllSync(newProcReaderFrom(stdoutBuf))
-    } else {
+    } catch Bug as _ {
       ""
     }
-  } catch Bug as _ {
+  } else {
     ""
   }
-  val stderr = try {
-    if drainWaitMs(stderrTask, drainTimeoutMs) {
+  val stderrBytes: slice[Byte] = if stderrWaited {
+    try {
+      memStreamToArray(stderrBuf)
+    } catch Bug as _ {
+      []
+    }
+  } else {
+    []
+  }
+  val stderr = if stderrWaited {
+    try {
       memStreamResetPos(stderrBuf, 0i64)
       readAllSync(newProcReaderFrom(stderrBuf))
-    } else {
+    } catch Bug as _ {
       ""
     }
-  } catch Bug as _ {
+  } else {
     ""
   }
   val code = try {
@@ -278,7 +333,14 @@ func runImpl(exe: in String, args: in String, stdinContent: in String, timeoutMs
     }
   }
 
-  ProcessCaptureResult(stdout = stdout, stderr = stderr, exitCode = code, timedOut = timedOut)
+  ProcessCaptureResult(
+    stdout = stdout,
+    stderr = stderr,
+    stdoutBytes = stdoutBytes,
+    stderrBytes = stderrBytes,
+    exitCode = code,
+    timedOut = timedOut
+  )
 }
 
 // ── Public entry points ────────────────────────────────────────────────────
@@ -290,7 +352,7 @@ pub func hostRunCapture(executable: in String, arguments: in String, stdinConten
   try {
     runImpl(executable, arguments, stdinContent, 10000)
   } catch Bug as _ {
-    ProcessCaptureResult(stdout = "", stderr = "", exitCode = -1, timedOut = false)
+    ProcessCaptureResult(stdout = "", stderr = "", stdoutBytes = [], stderrBytes = [], exitCode = -1, timedOut = false)
   }
 }
 
@@ -304,7 +366,7 @@ pub func hostRunCaptureTimeout(
   try {
     runImpl(executable, arguments, stdinContent, timeoutMs)
   } catch Bug as _ {
-    ProcessCaptureResult(stdout = "", stderr = "", exitCode = -1, timedOut = false)
+    ProcessCaptureResult(stdout = "", stderr = "", stdoutBytes = [], stderrBytes = [], exitCode = -1, timedOut = false)
   }
 }
 

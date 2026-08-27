@@ -422,7 +422,10 @@ exchange (`spawnPiped` / `pipedWriteLine` / `pipedReadLine` /
 `Std.Process.spawnPiped`, used by `lyric-mcp`'s stdio client transport
 (docs/62 §5.2).  The JVM twin (`_kernel_jvm/process_piped_host.l`,
 `java.lang.ProcessBuilder` + `java.lang.Process`) carries the analogous
-claim; its read path has a tracked gap (#6135).
+claim; its read path was unreliable (spurious immediate EOF or unbounded
+blocking against a live child) until fixed in #6135 via a byte-level
+`available()`-polled rewrite — verified against a real `cat` subprocess
+(`lyric-compiler/jvm/piped_process_jvm_main.l`).
 
 **Gap**: Long-lived child-process lifecycle and blocking pipe I/O involve
 OS state that cannot be modelled in first-order logic.  Spawn and I/O

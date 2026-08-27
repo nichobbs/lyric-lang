@@ -959,6 +959,23 @@ func lowerBuiltinOrStaticCall(
       insns.add(LAconstNull)
       JRef(className = "java/lang/Object")
     }
+  } else if funcName == "hostGetCommandLineArgs" {
+    // #5377: `Std.EnvironmentHost.hostGetCommandLineArgs`'s real Lyric body
+    // (`_kernel_jvm/environment_host.l`) panics — it is never actually
+    // invoked at runtime because every call site is intercepted here and
+    // lowered directly to a `getstatic` read of the argv holder class the
+    // entry-point wrapper populates (`Jvm.Codegen`'s `hasMain` synthesis in
+    // `06_items.l`, `LPRuntimeArgsHolder` in `Jvm.Lowering`).  Mirrors the
+    // `intToLong`/`stringToUtf8Bytes` bare-name compiler-intrinsic
+    // convention already used in this dispatcher.
+    insns.add(
+      LGetstatic(
+        owner = "__LyricJvmRuntime",
+        name = "commandLineArgs",
+        t = JArray(elem = JRef(className = "java/lang/String"))
+      )
+    )
+    JArray(elem = JRef(className = "java/lang/String"))
   } else if funcName == "default" {
     insns.add(LAconstNull)
     JRef(className = "java/lang/Object")

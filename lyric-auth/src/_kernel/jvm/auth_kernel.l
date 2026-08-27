@@ -409,150 +409,371 @@ func scanJsonString(json: in String, quotePos: in Int): Int {
   -1
 }
 
-// Return true when the JSON payload string contains duplicate `aud` keys.
-// A duplicate occurs when either:
-//   (a) both `"aud":"` (string form) and `"aud":[` (array form) are present, or
-//   (b) the same form appears more than once (first != last occurrence).
-// Used by `validatePayload` to reject duplicate-aud tokens before audience
-// matching (#2714).
+// ─── Structural JSON object parsing (#3165) ──────────────────────────────────
+// A minimal recursive-descent JSON value parser that builds a genuine
+// key→value structure for the JWT header/payload objects, replacing the
+// previous scan for literal byte sequences (`"aud":"` / `"aud":[` etc.),
+// which could false-positive when a claim VALUE happened to embed those
+// exact bytes (e.g. a `sub` claim whose content contains the substring
+// `"aud":"`) and incorrectly reject a valid token (#3144, follow-up to
+// #2714).  Ported verbatim from `Auth.Kernel.Net` — pure Lyric, no
+// BCL/JDK dependency, so both kernels share byte-identical semantics.
 //
-// Parsing-model assumption: this function — like the rest of the file — scans
-// the raw base64url-decoded payload string for the literal byte sequences
-// `"aud":"` and `"aud":[` rather than constructing a full JSON parse tree.
-// The assumption holds when claim *values* do not themselves embed those exact
-// byte patterns (e.g. a string claim whose decoded value contains the substring
-// `"aud":"`).  In the worst case a crafted claim value could trigger a false
-// positive (incorrectly reporting a duplicate and denying a valid token) — this
-// is an availability-only risk, not a security risk, because the function fails
-// closed on any ambiguity.  A full structural JSON parser would eliminate the
-// false-positive surface; tracked for a future hardening pass (#3165).
-// `Std.String.indexOf`/`lastIndexOf` return `Option[Int]`; this kernel's
-// JSON scanners are written against the classic -1 sentinel because
-// positions are compared across forms (`pfxArrPos > pfxStrPos`,
-// `strFirst != strLast`), where an absent match must sort below every
-// real index.  Adapt the Option contract to the sentinel at one seam.
-func idxOrNeg(pos: in Option[Int]): Int {
-  match pos {
-    case Some(i) -> i
-    case None -> -1
+// Deliberately narrow: only what's needed to walk a JWT header/payload
+// object and extract or skip its top-level claims — not a general-purpose
+// JSON library.  Numbers are kept as raw digit text (`JVNumber`) rather
+// than parsed to a numeric type here; `exp`/`nbf` go through the existing
+// `parseLong` afterward, preserving its non-negative-integer +
+// 18-digit-overflow contract (#1078/#1088).
+//
+// Duplicate top-level keys are NOT rejected by the parser itself — RFC
+// 8259 §4 permits them structurally, and rejecting every duplicate key in
+// every claim (not just `aud`) would be a broader behavior change than
+// this fix calls for.  `audHasDuplicates` below applies the JWT-specific
+// duplicate-`aud`-key policy explicitly, against the parsed field list.
+//
+// CI coverage gap (pre-existing, not introduced by #3165): this JVM port
+// has no functional CI test running the parser under `--target jvm`
+// specifically — `auth_security_tests.l` runs on `dotnet` only; the only
+// JVM exercise of this file today is a compile-only build check
+// (ci.yml's compiler-self-tests-jvm gate comment). `docs/59` §4.1
+// documents JVM-specific miscompiles the self-hosted backend has shown
+// for recursive-union code — exactly this file's `JsonValue` shape — so a
+// JVM-specific run is worth adding rather than assuming byte-for-byte
+// behavior parity with `Auth.Kernel.Net`.  Tracked in #6583.
+union JsonValue {
+  case JVString(value: String)
+  case JVNumber(raw: String)
+  case JVBool(value: Bool)
+  case JVNull
+  case JVArray(items: List[JsonValue])
+  case JVObject(fields: List[JsonField])
+}
+
+record JsonField {
+  key: String
+  value: JsonValue
+}
+
+// The result of parsing one value starting at some index: the value, plus
+// the index of the first character after it.
+record JsonParse {
+  value: JsonValue
+  next: Int
+}
+
+func isJsonWs(c: in Char): Bool {
+  c == ' ' or c == '\t' or c == '\n' or c == '\r'
+}
+
+func jsonSkipWs(json: in String, i: in Int): Int {
+  var p = i
+  while p < json.length and isJsonWs(json[p]) {
+    p = p + 1
+  }
+  p
+}
+
+// Parse a JSON string literal starting at `i` (json[i] == '"').  Reuses
+// `scanJsonString` (delimiter scanning honouring backslash escapes) and
+// `decodeJsonEscapes` (escape resolution) so that logic stays in one place.
+func jsonParseString(json: in String, i: in Int): Option[JsonParse] {
+  val close = scanJsonString(json, i)
+  if close < 0 {
+    return None
+  }
+  val raw = substring(json, i + 1, close - i - 1)
+  Some(value = JsonParse(value = JVString(value = decodeJsonEscapes(raw)), next = close + 1))
+}
+
+// Parse a JSON number literal (RFC 8259 §6) starting at `i`.  Kept as raw
+// text — callers needing the numeric value re-parse it via `parseLong`.
+func jsonParseNumber(json: in String, i: in Int): Option[JsonParse] {
+  var p = i
+  if p < json.length and json[p] == '-' {
+    p = p + 1
+  }
+  val intStart = p
+  while p < json.length and isDigit(json[p]) {
+    p = p + 1
+  }
+  if p == intStart {
+    return None
+  }
+  if p < json.length and json[p] == '.' {
+    p = p + 1
+    val fracStart = p
+    while p < json.length and isDigit(json[p]) {
+      p = p + 1
+    }
+    if p == fracStart {
+      return None
+    }
+  }
+  if p < json.length and (json[p] == 'e' or json[p] == 'E') {
+    p = p + 1
+    if p < json.length and (json[p] == '+' or json[p] == '-') {
+      p = p + 1
+    }
+    val expStart = p
+    while p < json.length and isDigit(json[p]) {
+      p = p + 1
+    }
+    if p == expStart {
+      return None
+    }
+  }
+  Some(value = JsonParse(value = JVNumber(raw = substring(json, i, p - i)), next = p))
+}
+
+func jsonParseLiteral(json: in String, i: in Int, lit: in String, value: in JsonValue): Option[JsonParse] {
+  if i + lit.length > json.length {
+    return None
+  }
+  if substring(json, i, lit.length) == lit {
+    Some(value = JsonParse(value = value, next = i + lit.length))
+  } else {
+    None
   }
 }
 
-func audHasDuplicates(json: in String): Bool {
-  val pfxStr = "\"aud\":\""
-  val pfxArr = "\"aud\":["
-  val strFirst = idxOrNeg(json.indexOf(pfxStr))
-  val strLast = idxOrNeg(json.lastIndexOf(pfxStr))
-  val arrFirst = idxOrNeg(json.indexOf(pfxArr))
-  val arrLast = idxOrNeg(json.lastIndexOf(pfxArr))
-  // Both string-form and array-form present simultaneously.
-  if strFirst >= 0 and arrFirst >= 0 {
-    return true
+// Recursion-depth cap for jsonParseValue/jsonParseObject/jsonParseArray
+// (#6573).  A JWT header/payload is a small, flat-ish object in every
+// legitimate use — 32 levels is far beyond any real claim shape.  Without
+// this cap an attacker-controlled token with deeply nested `[[[[...`/
+// `{"a":{"a":{"a":...` runs unbounded recursion BEFORE the HMAC signature
+// is ever checked, which on JVM surfaces as a StackOverflowError — a
+// pre-auth DoS.  Every recursive descent point (object/array entry) fails
+// closed (returns `None`, which callers already treat as
+// MALFORMED_HEADER/MALFORMED_PAYLOAD) once the cap is exceeded, rather
+// than recursing further.
+val jsonMaxDepth = 32
+
+func jsonParseArray(json: in String, i: in Int, depth: in Int): Option[JsonParse] {
+  if depth > jsonMaxDepth {
+    return None
   }
-  // Same form appears more than once.
-  if strFirst >= 0 and strFirst != strLast {
-    return true
+  var p = jsonSkipWs(json, i + 1)
+  val items: List[JsonValue] = newList()
+  if p < json.length and json[p] == ']' {
+    return Some(value = JsonParse(value = JVArray(items = items), next = p + 1))
   }
-  if arrFirst >= 0 and arrFirst != arrLast {
-    return true
+  while true {
+    match jsonParseValue(json, p, depth + 1) {
+      case None -> return None
+      case Some(pv) -> {
+        items.add(pv.value)
+        p = jsonSkipWs(json, pv.next)
+      }
+    }
+    if p >= json.length {
+      return None
+    }
+    if json[p] == ',' {
+      p = jsonSkipWs(json, p + 1)
+    } else if json[p] == ']' {
+      return Some(value = JsonParse(value = JVArray(items = items), next = p + 1))
+    } else {
+      return None
+    }
   }
-  return false
 }
 
-// Check whether `audience` appears in the `aud` claim of `json`, where
+func jsonParseObject(json: in String, i: in Int, depth: in Int): Option[JsonParse] {
+  if depth > jsonMaxDepth {
+    return None
+  }
+  var p = jsonSkipWs(json, i + 1)
+  val fields: List[JsonField] = newList()
+  if p < json.length and json[p] == '}' {
+    return Some(value = JsonParse(value = JVObject(fields = fields), next = p + 1))
+  }
+  while true {
+    if p >= json.length or json[p] != '"' {
+      return None
+    }
+    match jsonParseString(json, p) {
+      case None -> return None
+      case Some(pk) -> {
+        val key = match pk.value {
+          case JVString(v) -> v
+          case _ -> ""  // unreachable: jsonParseString only produces JVString
+        }
+        val afterKey = jsonSkipWs(json, pk.next)
+        if afterKey >= json.length or json[afterKey] != ':' {
+          return None
+        }
+        match jsonParseValue(json, afterKey + 1, depth + 1) {
+          case None -> return None
+          case Some(pv) -> {
+            fields.add(JsonField(key = key, value = pv.value))
+            p = jsonSkipWs(json, pv.next)
+          }
+        }
+      }
+    }
+    if p >= json.length {
+      return None
+    }
+    if json[p] == ',' {
+      p = jsonSkipWs(json, p + 1)
+    } else if json[p] == '}' {
+      return Some(value = JsonParse(value = JVObject(fields = fields), next = p + 1))
+    } else {
+      return None
+    }
+  }
+}
+
+func jsonParseValue(json: in String, i0: in Int, depth: in Int): Option[JsonParse] {
+  val i = jsonSkipWs(json, i0)
+  if i >= json.length {
+    return None
+  }
+  val c = json[i]
+  if c == '"' {
+    jsonParseString(json, i)
+  } else if c == '{' {
+    jsonParseObject(json, i, depth)
+  } else if c == '[' {
+    jsonParseArray(json, i, depth)
+  } else if c == 't' {
+    jsonParseLiteral(json, i, "true", JVBool(value = true))
+  } else if c == 'f' {
+    jsonParseLiteral(json, i, "false", JVBool(value = false))
+  } else if c == 'n' {
+    jsonParseLiteral(json, i, "null", JVNull)
+  } else if c == '-' or isDigit(c) {
+    jsonParseNumber(json, i)
+  } else {
+    None
+  }
+}
+
+// Parse `json` as a top-level JSON object and return its key→value fields.
+// Returns None when the payload is not a well-formed JSON object: leading
+// non-`{`, an unterminated/malformed structure anywhere in the tree,
+// nesting deeper than `jsonMaxDepth` (#6573), or trailing garbage after
+// the closing `}`.
+func parseJsonObjectTopLevel(json: in String): Option[List[JsonField]] {
+  val start = jsonSkipWs(json, 0)
+  if start >= json.length or json[start] != '{' {
+    return None
+  }
+  match jsonParseObject(json, start, 0) {
+    case None -> None
+    case Some(pv) -> {
+      val afterEnd = jsonSkipWs(json, pv.next)
+      if afterEnd != json.length {
+        return None
+      }
+      match pv.value {
+        case JVObject(fields) -> Some(value = fields)
+        case _ -> None  // unreachable: jsonParseObject only produces JVObject
+      }
+    }
+  }
+}
+
+// Find the LAST field with key `key` in `fields`, matching the previous
+// scanner's last-wins duplicate-key semantics (RFC 8259 §4; matches most
+// JWT library parsers).
+func jsonFindLast(fields: in List[JsonField], key: in String): Option[JsonValue] {
+  var result: Option[JsonValue] = None
+  var i = 0
+  while i < fields.count {
+    if fields[i].key == key {
+      result = Some(value = fields[i].value)
+    }
+    i = i + 1
+  }
+  result
+}
+
+// ─── JWT claim extraction (structural, #3165) ────────────────────────────────
+// Return true when `fields` has more than one top-level `aud` entry.  Used
+// by `validatePayload` to reject duplicate-aud tokens before audience
+// matching (#2714).  Structural: counts genuine parsed `aud` KEYS from the
+// field list, not literal `"aud":"` / `"aud":[` byte occurrences anywhere
+// in the raw JSON (including inside an unrelated claim's VALUE, which is
+// exactly the false-positive #3144 reported).
+func audHasDuplicates(fields: in List[JsonField]): Bool {
+  var count = 0
+  var i = 0
+  while i < fields.count {
+    if fields[i].key == "aud" {
+      count = count + 1
+    }
+    i = i + 1
+  }
+  count > 1
+}
+
+// Check whether `audience` appears in the `aud` claim of `fields`, where
 // `aud` may be either a string (RFC 7519 §4.1.3 string form) or a JSON
 // array of strings.  Returns true when the audience matches either form;
 // false when the claim is absent or no element matches.  Used by
 // `validatePayload` so JWT issuers that emit array-form audiences
 // (Keycloak, Auth0, some AWS services) validate correctly (#1089).
 //
-// Both forms apply `decodeJsonEscapes` to the raw string contents before
-// comparison so escape sequences in the issuer's aud match callers'
-// unescaped expected audiences (#1079).
+// String contents are already `decodeJsonEscapes`-resolved by the parser,
+// so no further unescaping is needed here (#1079).
 //
-// Callers must check `audHasDuplicates` before calling this function — tokens
-// with duplicate `aud` keys are rejected before audience matching (#2714).
-func audienceMatches(json: in String, audience: in String): Bool {
+// Callers must check `audHasDuplicates` before calling this function —
+// tokens with duplicate `aud` keys are rejected before audience matching
+// (#2714).
+func audienceMatches(fields: in List[JsonField], audience: in String): Bool {
   if audience.length == 0 {
     return true
   }
-  val pfxStr = "\"aud\":\""
-  val pfxStrPos = idxOrNeg(json.lastIndexOf(pfxStr))
-  val pfxArr = "\"aud\":["
-  val pfxArrPos = idxOrNeg(json.lastIndexOf(pfxArr))
-  // Only the later occurrence is authoritative — earlier `aud` declarations
-  // are shadowed (#1162).  When both forms appear, the one with the larger
-  // byte offset wins; the other is not consulted.
-  val useArr = pfxArrPos > pfxStrPos
-  if useArr {
-    var i = pfxArrPos + pfxArr.length
-    while i < json.length and json[i] != ']' {
-      if json[i] == '"' {
-        val openQuote = i
-        val closeQuote = scanJsonString(json, openQuote)
-        if closeQuote < 0 {
-          return false
+  match jsonFindLast(fields, "aud") {
+    case None -> false
+    case Some(v) -> {
+      match v {
+        case JVString(s) -> s == audience
+        case JVArray(items) -> {
+          var i = 0
+          var found = false
+          while i < items.count and not found {
+            match items[i] {
+              case JVString(s) -> {
+                if s == audience {
+                  found = true
+                }
+              }
+              case _ -> ()
+            }
+            i = i + 1
+          }
+          found
         }
-        val raw = substring(json, openQuote + 1, closeQuote - openQuote - 1)
-        if decodeJsonEscapes(raw) == audience {
-          return true
-        }
-        i = closeQuote + 1
-      } else {
-        i = i + 1
+        case _ -> false
       }
     }
-    return false
   }
-  if pfxStrPos < 0 {
-    return false
-  }
-  val openQuote = pfxStrPos + pfxStr.length - 1
-  val closeQuote = scanJsonString(json, openQuote)
-  if closeQuote <= openQuote {
-    return false
-  }
-  val raw = substring(json, openQuote + 1, closeQuote - openQuote - 1)
-  decodeJsonEscapes(raw) == audience
 }
 
-// Extract a string-valued claim from a JSON object string.
-// Scans for `"key":"VALUE"` using lastIndexOf for last-wins duplicate-key
-// semantics (RFC 8259 §4; matches most JWT library parsers).
-//
-// Honours backslash-escape sequences so `\"` inside the value does not
-// terminate scanning prematurely (#1079).  The result is passed through
-// `decodeJsonEscapes` so callers see the actual character data, not the
-// raw backslash-encoded form (i.e. `"O\"Brien"` returns `O"Brien`,
-// `"line1\nline2"` returns the two lines joined by a literal LF, and
-// `"é"` returns U+00E9).
-//
-// Returns "" when the key is absent or the JSON is malformed.
-func getStringClaimFromJson(json: in String, key: in String): String {
-  val pfx = "\"" + key + "\":\""
-  val pfxPos = idxOrNeg(json.lastIndexOf(pfx))
-  if pfxPos < 0 {
-    return ""
+// Extract a string-valued claim from the parsed top-level fields.
+// Returns "" when the key is absent or its value is not a JSON string
+// (matching the previous scanner's "string form only" contract).
+func getStringClaimFromJson(fields: in List[JsonField], key: in String): String {
+  match jsonFindLast(fields, key) {
+    case Some(JVString(s)) -> s
+    case _ -> ""
   }
-  // Opening quote of the value (the second `"` in `"key":"`).
-  val openQuote = pfxPos + pfx.length - 1
-  val closeQuote = scanJsonString(json, openQuote)
-  if closeQuote < 0 {
-    return ""
-  }
-  val count = closeQuote - openQuote - 1
-  if count == 0 {
-    return ""
-  }
-  decodeJsonEscapes(substring(json, openQuote + 1, count))
 }
 
 // Extract a string claim from a UTF-8-encoded payload byte slice.
-// Returns "" when decoding fails or the claim is absent.
+// Returns "" when decoding, JSON parsing, or the claim lookup fails.
 func getStringClaim(payloadBytes: in slice[Byte], key: in String): String {
   match tryDecodeUtf8(payloadBytes) {
     case None -> ""
-    case Some(json) -> getStringClaimFromJson(json, key)
+    case Some(json) -> {
+      match parseJsonObjectTopLevel(json) {
+        case None -> ""
+        case Some(fields) -> getStringClaimFromJson(fields, key)
+      }
+    }
   }
 }
 
@@ -599,9 +820,7 @@ func parseLong(s: in String): Result[Long, String] {
   Ok(acc)
 }
 
-// Extract a numeric (integer) claim from a JSON object string.
-// Scans for `"key":NUMBER` using lastIndexOf for last-wins duplicate-key
-// semantics.
+// Extract a numeric (integer) claim from the parsed top-level fields.
 //
 // Returns Result[Option[Long], String]:
 //   Ok(None)         — key absent (caller should skip the claim check)
@@ -610,37 +829,26 @@ func parseLong(s: in String): Result[Long, String] {
 //                      reject the token — skipping the check on a present-
 //                      but-unparseable claim would silently bypass exp/nbf
 //                      enforcement, #1078)
-//   Err("parse_error") — key present but value malformed (non-digit, empty)
-func getLongClaimFromJson(json: in String, key: in String): Result[Option[Long], String] {
-  val pfx = "\"" + key + "\":"
-  val pfxPos = idxOrNeg(json.lastIndexOf(pfx))
-  if pfxPos < 0 {
-    return Ok(None)
-  }
-  var vs = pfxPos + pfx.length
-  // Skip any whitespace between ':' and the number.
-  while vs < json.length and json[vs] == ' ' {
-    vs = vs + 1
-  }
-  // Key is present from here on; any parse failure is Err, not Ok(None).
-  if vs >= json.length {
-    return Err("parse_error")
-  }
-  if not isDigit(json[vs]) {
-    return Err("parse_error")
-  }
-  var ve = vs
-  while ve < json.length and isDigit(json[ve]) {
-    ve = ve + 1
-  }
-  val count = ve - vs
-  if count == 0 {
-    return Err("parse_error")
-  }
-  val numStr = substring(json, vs, count)
-  match parseLong(numStr) {
-    case Ok(v) -> Ok(Some(value = v))
-    case Err(e) -> Err(e)
+//   Err("parse_error") — key present but its value is not a plain
+//                        non-negative-integer JSON number (missing, a
+//                        string/bool/array/object, or a number with a
+//                        leading '-' / fractional / exponent part — JWT
+//                        NumericDate values are plain non-negative
+//                        integers, RFC 7519 §2)
+func getLongClaimFromJson(fields: in List[JsonField], key: in String): Result[Option[Long], String] {
+  match jsonFindLast(fields, key) {
+    case None -> Ok(None)
+    case Some(v) -> {
+      match v {
+        case JVNumber(raw) -> {
+          match parseLong(raw) {
+            case Ok(n) -> Ok(Some(value = n))
+            case Err(e) -> Err(e)
+          }
+        }
+        case _ -> Err("parse_error")
+      }
+    }
   }
 }
 
@@ -684,7 +892,12 @@ func jwtAlgFromHeader(headerSeg: in String): String {
   }
   match tryDecodeUtf8(headerBytes) {
     case None -> ""
-    case Some(headerJson) -> getStringClaimFromJson(headerJson, "alg")
+    case Some(headerJson) -> {
+      match parseJsonObjectTopLevel(headerJson) {
+        case None -> ""
+        case Some(fields) -> getStringClaimFromJson(fields, "alg")
+      }
+    }
   }
 }
 
@@ -716,67 +929,77 @@ func validatePayload(
   match tryDecodeUtf8(payloadBytes) {
     case None -> Err("MALFORMED_PAYLOAD")
     case Some(payloadJson) -> {
-      // Capture the current time once for consistent exp/nbf evaluation.
-      val nowSec: Long = nowEpochMillis() / 1000i64
-      val skewLong: Long = clockSkewSeconds.toLong()
-      // Validate iss claim when the caller supplied a non-empty issuer.
-      if issuer.length > 0 {
-        val iss = getStringClaimFromJson(payloadJson, "iss")
-        if iss != issuer {
-          return Err("ISSUER_MISMATCH")
-        }
-      }
-      // Reject tokens with duplicate `aud` keys before audience matching
-      // (#2714).  RFC 8259 §4 says duplicate keys SHOULD NOT appear; in a
-      // security context the ambiguity is exploitable (one system may resolve
-      // the first occurrence, another the last) so we fail closed.
-      if audHasDuplicates(payloadJson) {
-        return Err("AUDIENCE_MISMATCH")
-      }
-      // Validate aud claim when the caller supplied a non-empty audience.
-      // RFC 7519 §4.1.3 permits both string and array forms; see
-      // audienceMatches (#1089).
-      if audience.length > 0 {
-        if not audienceMatches(payloadJson, audience) {
-          return Err("AUDIENCE_MISMATCH")
-        }
-      }
-      // Validate exp with clock-skew leeway (#1081).  A present-but-
-      // malformed exp is fatal (#1078).
-      match getLongClaimFromJson(payloadJson, "exp") {
-        case Err(_) -> {
-          return Err("EXP_OVERFLOW")
-        }
-        case Ok(opt) -> {
-          match opt {
-            case None -> ()
-            case Some(exp) -> {
-              // Reject when nowSec is past exp + skew.
-              if nowSec > exp + skewLong {
-                return Err("EXPIRED")
+      match parseJsonObjectTopLevel(payloadJson) {
+        // A payload that isn't well-formed JSON is malformed, full stop
+        // (#3165) — previously the substring scanners tolerated non-JSON
+        // garbage and best-effort-extracted whatever matched, which could
+        // silently skip exp/nbf enforcement entirely on a garbled-but-signed
+        // payload.
+        case None -> Err("MALFORMED_PAYLOAD")
+        case Some(fields) -> {
+          // Capture the current time once for consistent exp/nbf evaluation.
+          val nowSec: Long = nowEpochMillis() / 1000i64
+          val skewLong: Long = clockSkewSeconds.toLong()
+          // Validate iss claim when the caller supplied a non-empty issuer.
+          if issuer.length > 0 {
+            val iss = getStringClaimFromJson(fields, "iss")
+            if iss != issuer {
+              return Err("ISSUER_MISMATCH")
+            }
+          }
+          // Reject tokens with duplicate `aud` keys before audience matching
+          // (#2714).  RFC 8259 §4 says duplicate keys SHOULD NOT appear; in a
+          // security context the ambiguity is exploitable (one system may resolve
+          // the first occurrence, another the last) so we fail closed.
+          if audHasDuplicates(fields) {
+            return Err("AUDIENCE_MISMATCH")
+          }
+          // Validate aud claim when the caller supplied a non-empty audience.
+          // RFC 7519 §4.1.3 permits both string and array forms; see
+          // audienceMatches (#1089).
+          if audience.length > 0 {
+            if not audienceMatches(fields, audience) {
+              return Err("AUDIENCE_MISMATCH")
+            }
+          }
+          // Validate exp with clock-skew leeway (#1081).  A present-but-
+          // malformed exp is fatal (#1078).
+          match getLongClaimFromJson(fields, "exp") {
+            case Err(_) -> {
+              return Err("EXP_OVERFLOW")
+            }
+            case Ok(opt) -> {
+              match opt {
+                case None -> ()
+                case Some(exp) -> {
+                  // Reject when nowSec is past exp + skew.
+                  if nowSec > exp + skewLong {
+                    return Err("EXPIRED")
+                  }
+                }
               }
             }
           }
-        }
-      }
-      // Validate nbf with clock-skew leeway (#1081).
-      match getLongClaimFromJson(payloadJson, "nbf") {
-        case Err(_) -> {
-          return Err("NBF_OVERFLOW")
-        }
-        case Ok(opt) -> {
-          match opt {
-            case None -> ()
-            case Some(nbf) -> {
-              // Reject when nowSec is earlier than nbf - skew.
-              if nowSec < nbf - skewLong {
-                return Err("NOT_YET_VALID")
+          // Validate nbf with clock-skew leeway (#1081).
+          match getLongClaimFromJson(fields, "nbf") {
+            case Err(_) -> {
+              return Err("NBF_OVERFLOW")
+            }
+            case Ok(opt) -> {
+              match opt {
+                case None -> ()
+                case Some(nbf) -> {
+                  // Reject when nowSec is earlier than nbf - skew.
+                  if nowSec < nbf - skewLong {
+                    return Err("NOT_YET_VALID")
+                  }
+                }
               }
             }
           }
+          Ok(())
         }
       }
-      Ok(())
     }
   }
 }

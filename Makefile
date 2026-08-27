@@ -355,6 +355,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/record_option_field_self_test.l \
 	lyric-compiler/lyric/release_self_test.l \
 	lyric-compiler/lyric/restored_packages_self_test.l \
+	lyric-compiler/lyric/result_ensures_accessor_self_test.l \
 	lyric-compiler/lyric/result_generic_specialization_self_test.l \
 	lyric-compiler/lyric/return_in_try_self_test.l \
 	lyric-compiler/lyric/self_method_call_self_test.l \

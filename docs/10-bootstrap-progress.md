@@ -31324,8 +31324,9 @@ via `hostAcceptTls`, was dropped — see below). **This is now stale**: with
 #6234 part 1 shipped (see the entry below), the PEM-loading case was
 re-added through `Std.Tls`'s real public API, with the kernel-boundary
 variant kept alongside for defense in depth; the loopback-handshake case
-remains a separate, not-yet-authored test, no longer blocked on #6234.
-Every new/changed C function is also covered by new cases in
+has since shipped too (D-progress-807), which also fixed two previously-
+latent `Lyric.LlvmCodegen`/`Lyric.LlvmBridge` UFCS-resolution bugs it
+surfaced. Every new/changed C function is also covered by new cases in
 `lyric-rt/test/lyric_tls_test.c`, green under clang + gcc + the gcc ASan
 run.
 
@@ -31355,12 +31356,12 @@ addendum. **Now resolved for the PEM-loading case**: #6234 part 1 shipped
 (see the entry below), so `Std.Tls`'s public API compiles and constructs
 correctly on native, and the PEM-loading case now also exercises it
 directly (kernel-boundary variant kept alongside). The TLS-handshake case
-remains a separate, not-yet-authored test, no longer blocked on #6234.
+has since shipped too — see D-progress-807.
 
-**Related:** `docs/03-decision-log.md` D-progress-712, D-progress-713;
-docs/61 §7 item 4 / §8 item 15; `native/plan/08-work-items.md` N9.2;
-#6103, #5874; #6234 (native `opaque type` codegen — part 1 shipped, part 2
-custom-destructor still open).
+**Related:** `docs/03-decision-log.md` D-progress-712, D-progress-713,
+D-progress-807; docs/61 §7 item 4 / §8 item 15;
+`native/plan/08-work-items.md` N9.2; #6103, #5874; #6234 (native `opaque
+type` codegen — part 1 shipped, part 2 custom-destructor still open).
 
 ## Native backend: `opaque type` codegen ships — `Llvm.Codegen` `IOpaque` dispatch, #6234 part 1 (2026-07-20)
 
@@ -31434,8 +31435,14 @@ genuinely separate-file, bundled `Std.Tls` package compiled through
 `Lyric.LlvmBridge.compileToNativeWithFlags`, exercising `unitOf`'s
 `IOpaque` arm (the bundled-path half of this fix) rather than just
 `unitOfFile`'s single-file path. A real loopback TLS handshake (item D)
-remains a separate, not-yet-authored test — no longer blocked on #6234,
-just not yet written; tracked under #6103's remaining work.
+has since shipped too (D-progress-807): server via `hostAcceptTls` on the
+main thread, client on a genuine second pthread driving the raw
+`lyric_tls_client_*` seam directly (test-local FFI, not a new
+`Std.TcpHost` public API — client TLS stays N9.4/#6105's scope). Item D
+also surfaced and fixed two previously-latent `Lyric.LlvmCodegen`/
+`Lyric.LlvmBridge` bugs in resolving a cross-package UFCS call on an
+extension-method-style declaration (`Identity.rawHandle`) — see
+D-progress-807 for the full root-cause writeup.
 
 Boundary (honest, matches D-progress-543/D-progress-703): this session
 could not build the self-hosted compiler from source in-sandbox
@@ -31444,10 +31451,10 @@ tool's native backend predates Phase N2/N3 entirely, so no in-sandbox
 compiled-Lyric run of either test was possible; CI's
 `native-backend-self-tests` job is the load-bearing verification.
 
-**Related:** `docs/03-decision-log.md` D-progress-713; #6234 (part 1 resolved,
-part 2 open); #6239 (the `@projectable` finding, resolved here); #6103 (N9.2,
-merged as #6235); #6104–#6106; docs/61 §7 item 4;
-`native/plan/08-work-items.md` Phase N9; D-N-014;
+**Related:** `docs/03-decision-log.md` D-progress-713, D-progress-807;
+#6234 (part 1 resolved, part 2 open); #6239 (the `@projectable` finding,
+resolved here); #6103 (N9.2, merged as #6235); #6104–#6106; docs/61 §7
+item 4; `native/plan/08-work-items.md` Phase N9; D-N-014;
 D-progress-540, D-progress-545, D-progress-703.
 
 ### D-progress-630 — `lyric build --release --target jvm`: GraalVM `native-image` binaries (#1975, #675; D131)
@@ -31877,6 +31884,49 @@ sent unmodified (byte-for-byte, no parse), malformed JSON sent AS-IS (the
 
 **Related:** #5813, #5797 (the change this reverts the auto-detect half of), `docs/03-decision-log.md` D136 (the `@stable`-editing-protocol entry for this change).
 
+### D-progress-808 — JVM kernel/codegen batch: piped-process reads, `Std.Environment.args()`, regex ReDoS timeout (#6135, #5377, #1103)
+
+Three previously-documented JVM-only gaps closed together. `Std.Process
+.spawnPiped`'s JVM read side (`hostPipedReadLineOpt`) is rewritten off
+`BufferedReader.readLine()` (unreliable — spurious immediate `None` or
+unbounded blocking against a live child) onto the same byte-level
+`InputStream.available()`-polled technique `process_capture_host.l`
+already used reliably for batch capture; verified against a real `cat`
+subprocess with 5/5 cases matching the `.NET` kernel's coverage
+(`lyric-compiler/jvm/piped_process_jvm_main.l`). `Std.Environment.args()`
+on JVM (previously a documented panic — the JDK exposes no process-wide
+argv API) now works via real entry-point codegen: `Jvm.Codegen`'s
+`hasMain` synthesis stashes argv into a new package-independent holder
+class (`__LyricJvmRuntime`, `LPRuntimeArgsHolder` in `Jvm.Lowering`)
+unconditionally, and `hostGetCommandLineArgs` call sites are intercepted
+and lowered to a direct `getstatic` read — verified end-to-end with a
+program whose `main()` takes no argv parameter
+(`lyric-compiler/jvm/env_args_jvm_main.l`). The JVM regex ReDoS timeout
+(#330 Phase 6 follow-up) is closed with the daemon-thread shim the issue
+asked for: `Regex` is now a small record pairing the compiled `Pattern`
+with a `timeoutMs`, and each match operation races on a background
+`Thread` (`Thread.join(timeoutMs)` — a genuinely bounded wait) via the
+JVM backend's existing Lyric-closure-to-`Runnable` SAM bridging;
+verified with a real catastrophic-backtracking pattern
+(`((a+)+)+$`, empirically confirmed exponential on this JDK — the more
+commonly cited `(a+)+$` was found to be neutralized by an apparent JDK
+21 `java.util.regex.Pattern` optimization) hitting the compiled-in
+1.5s deadline (`lyric-compiler/jvm/regex_redos_jvm_main.l`).
+
+Two general (not regex-specific) JVM codegen bugs found and worked
+around while building the regex fix, filed as follow-ups (not fixed
+here): #6551 (a closure body shaped `try { ... } catch Bug as b {
+<captured var> = ... }` fails class verification with `VerifyError:
+Operand stack overflow`) and #6552 (a closure bound to a `val` first,
+then passed by name to a JDK-functional-interface-typed parameter,
+skips SAM-bridging and passes the raw `Lyric$Lambda` object directly,
+producing `IncompatibleClassChangeError` at the first interface
+dispatch — a lambda literal inlined directly at the call site does not
+hit this).
+
+**Related:** `docs/03-decision-log.md` D-progress-808 (full account),
+#6135, #5377, #1103, #6551, #6552.
+
 ## lyric-web Undertow mTLS ships on JVM — client-CA `TrustManager` + XNIO `SSL_CLIENT_AUTH_MODE` (2026-08-27)
 
 `Web.serveTls` on `--target jvm` now supports mutual TLS end to end,
@@ -31908,3 +31958,86 @@ CI job's existing "lyric-web Undertow smoke on JVM" step.
 
 **Related:** `docs/03-decision-log.md` D-progress-805; #6017, #5881,
 #5874, D-progress-698 (the phase-2.2 shipment this extends).
+
+### D-progress-808 — Four compiler-contracts/aspects bugs fixed: `Result`/`Option` direct accessors, `proceed(args)` trailing-statement weave bug, where-bound marker vocabulary settled, `depTemplatePkgs` integration test (#5183, #5182, #5549, #3650)
+
+**`result.isOk implies result.value ...` (#5183).** `.isOk`/`.isErr`/
+`.value`/`.error` on `Result[T, E]` and `.isSome`/`.isNone`/`.value` on
+`Option[T]` — the direct field-style accessors docs/01/docs/02/docs/08's
+contract examples have always used — were never actually resolved anywhere
+in the self-hosted pipeline: both are unions, so `inferMemberBase` never
+finds a matching field and there's no dot-named function under those names
+either, so the type checker silently typed the access as `TyError` with no
+diagnostic (unions are excluded from the member-complete gate). Codegen then
+independently mis-resolved the same bare `EMember`: it looked up a field
+token under the RECEIVER's own class name (`Std.Core.Result/value`), but
+case fields are registered under the CASE class name
+(`Std.Core.Result_Ok/value`), so the lookup always missed and the generic
+unregistered-field fallback popped the receiver without pushing a
+replacement — a corrupted evaluation stack, `InvalidProgramException` at the
+first call on MSIL (a loud `error[J009]` compile-time refusal on JVM,
+docs/59 §4.4's stack-safety hardening already caught it there). Reproduces
+identically for a trivial `E` as for a payload-carrying one. Fixed by adding
+real support for the six accessors: `typechecker_exprs.l`'s `builtinMember`
+now types them against `Result`/`Option`'s resolved type arguments, and both
+backends (`lyric-compiler/msil/codegen.l`,
+`lyric-compiler/jvm/codegen/02_exprs.l`) lower `.isOk`/`.isErr`/`.isSome`/
+`.isNone` to an `isinst`/`instanceof` boolean test against the matching case
+class (MSIL needs the generic-instantiation-aware `MIsinstGeneric` form,
+since `Result`/`Option`'s case classes are themselves generic — a bare
+open-TypeRef `isinst` against a 2-arity case class throws `TypeLoadException`
+at load), and `.value`/`.error` to a cast + field read on that case. New
+dual-target self-test: `result_ensures_accessor_self_test.l`.
+
+**`around(args) -> ret { *; proceed(args); + }` (#5182).** A BARE
+(non-capturing) `proceed(args)` statement followed by more statements, in
+`around` advice whose matched target returns a non-`Unit` type, produced
+`InvalidProgramException` — exactly the shape
+`examples/agent/config-and-aspects.l`'s `RequestLogging`/`Auth` aspects use.
+The weaver's naive statement splice left the bare `proceed(args)`'s call
+result discarded (non-tail `SExpr`), so the wrapper's actual trailing
+statement became whatever came after it — typically `Unit`-typed — while the
+wrapper is declared to return the target's real type, falling off a
+non-void method with no return value. Closed #3402 fixed only the explicit
+`ret = proceed()` capturing form; this is the args-forwarding,
+non-capturing form with a trailing statement. Fixed in
+`lyric-compiler/lyric/weaver/weaver.l`: `rewriteStmt`/`rewriteBlock` now
+thread per-statement tail-position awareness, and a bare, NON-TRAILING
+`proceed(args)` statement is auto-lifted into `ret = proceed(args)`
+whenever the target returns a real value — routing it through the same
+`var ret; ...; return ret` synthesis #3402 already built for the explicit
+form. A trailing bare `proceed(args)` (the well-tested "expression-style
+advice" case) is deliberately left untouched, still returning via ordinary
+implicit-return fall-through, so existing AST-shape self-tests that depend
+on the wrapper body's exact statement ordering are unaffected. Verified
+identically reproducing (and identically fixed) on `--target jvm`. New
+cases in `aspect_weave_self_test.l`, run on both targets. Confirmed the
+example file's fictional-type/unrelated-`G0009` breakage predates and is
+independent of this fix (still doesn't build standalone; not attempted
+here — out of scope for the weaver bug).
+
+**Where-bound marker vocabulary (#5549).** Full decision recorded as
+D-progress-807 in `docs/03-decision-log.md`: `Copyable` dropped from the
+practically-usable marker set (speced in D034, never implemented in the
+self-hosted checker or `mono.l` — a correct implementation needs the MSIL
+backend's own per-type struct-vs-class lowering decision, not front-end
+information); the T0051 (declaration)/T0111 (call-site) split confirmed as
+two independent, both-fire-together diagnostics rather than alternative
+severities for one situation; `hasDerive` (`typechecker_exprs.l`) gained a
+`TyPrim` capability-table arm mirroring `mono.l`'s
+`primitiveSatisfiesMarker`, so e.g. `Int` against `where T: Add` no longer
+wrongly raises T0108. `docs/01-language-reference.md` §generics rewritten to
+match. New cases in `typechecker_self_test.l` and `mono_self_test.l`.
+
+**`depTemplatePkgs` integration test (#3650).** PR #3633 added the
+`depTemplatePkgs` loop in `Msil.Bridge`'s
+`compileProjectToMsilWithRestoredAndVersion` (parse a dep-package's aspect
+template source, `Weaver.collectAspectTemplates`, resolve `from`-instances
+against it), but every existing test passed an empty `depTemplateSrcs`, so
+the loop never actually ran in CI. New test in `emitter_project_self_test.l`
+exercises it for real through `Lyric.Emitter.emitProject`: a template aspect
+declared in a package that is only ever passed via `depTemplateSrcs` (never
+part of the main `packages` list — the point of the mechanism is the
+template's own package need not be compiled into the bundle), a
+`from`-instance in the main package, asserting zero A0045 diagnostics AND
+the woven output's actual runtime value (not just "compiles").
