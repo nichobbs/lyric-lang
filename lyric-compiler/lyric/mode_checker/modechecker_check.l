@@ -3239,6 +3239,7 @@ func checkFuncBodyForFieldWrite(
     unsafeFieldNames = unsafeFieldNames,
     funcSigs = funcSigs
   )
+  fieldWriteSeedParams(ctx, params)
   match body {
     case FBExpr(e) -> walkExprForFieldWrite(ctx, e)
     case FBBlock(blk) -> walkBlockForFieldWrite(ctx, blk)
@@ -3256,7 +3257,7 @@ func checkFuncForFieldWrite(
   match fn.body {
     case None -> {
     }
-    case Some(body) -> checkFuncBodyForFieldWrite(recordFields, diag, body, selfType, unsafeFieldNames, funcSigs)
+    case Some(body) -> checkFuncBodyForFieldWrite(recordFields, diag, fn.params, body, selfType, unsafeFieldNames, funcSigs)
   }
 }
 
@@ -3270,7 +3271,7 @@ func checkEntryForFieldWrite(
   unsafeFieldNames: in Map[String, Bool],
   funcSigs: in Map[String, FieldWriteFuncSig],
 ): Unit {
-  checkFuncBodyForFieldWrite(recordFields, diag, entry.body, selfType, unsafeFieldNames, funcSigs)
+  checkFuncBodyForFieldWrite(recordFields, diag, entry.params, entry.body, selfType, unsafeFieldNames, funcSigs)
 }
 
 // Shared item-level traversal for BOTH the per-file V0015 diagnostic pass
@@ -3338,7 +3339,7 @@ func walkFileForFieldWriteChecks(
         val noSelfForAspect: Option[String] = None
         val noParamsForAspect: List[Param] = newList()
         match decl.around {
-          case Some(around) -> checkFuncBodyForFieldWrite(recordFields, diag, FBBlock(block = around.body), noSelfForAspect, unsafeFieldNames, funcSigs)
+          case Some(around) -> checkFuncBodyForFieldWrite(recordFields, diag, noParamsForAspect, FBBlock(block = around.body), noSelfForAspect, unsafeFieldNames, funcSigs)
           case None -> ()
         }
       }
