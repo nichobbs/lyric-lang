@@ -3592,10 +3592,22 @@ func unionCaseSymbolForScrutinee(
   // `EPath` head the same way `unionCaseSymbolOf`'s own bare fallback is,
   // so a qualified head (already handled above, or an `EMember` receiver
   // chain) never reaches this check.
+  //
+  // #6700: `pat2fnExpr` always wraps the pattern head as a flat `EPath`
+  // regardless of how many segments it has (see the `DKEnumCase` comment
+  // above), so `fnWasFlatPath` alone does NOT mean "bare" — a fully
+  // qualified pattern head like `PkgA.Ping` is an `EPath` too.  Without
+  // also checking `flatSegs2.count == 1`, a qualified head whose scrutinee
+  // tiers above failed to resolve (unknown/`TyError` scrutinee) had ONLY
+  // its last segment checked for ambiguity, firing a nonsensical T0123
+  // telling the user to qualify a reference they already qualified.  Only
+  // a genuinely bare (single-segment) head reaches the ambiguity check;
+  // a qualified head falls through to `unionCaseSymbolOf` below unchecked
+  // here, same as before this fix for the count == 1 case.
   val fnWasFlatPath = match fn.kind { case EPath(_) -> true; case _ -> false }
   if fnWasFlatPath {
     val flatSegs2: List[String] = newList()
-    if flattenCalleePathSegs(fn, flatSegs2) and flatSegs2.count > 0 {
+    if flattenCalleePathSegs(fn, flatSegs2) and flatSegs2.count == 1 {
       val bareName = flatSegs2[flatSegs2.count - 1]
       if checkBareNameAmbiguity(tbl, diag, bareName, fn.span) {
         return None

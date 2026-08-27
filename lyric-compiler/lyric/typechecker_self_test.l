@@ -4301,3 +4301,27 @@ test "bare name reachable only via a transitive import still resolves (kernel/ho
     "hostFn (PkgHost) resolves transitively through PkgWrap's own import of PkgHost, even though App never imports PkgHost directly"
   )
 }
+
+// #6700: `unionCaseSymbolForScrutinee`'s fallback (reached when the scrutinee
+// type doesn't resolve — here, an unknown identifier types as `TyError`, so
+// the DKUnionCase/DKEnumCase scrutinee-based tiers above never fire) must NOT
+// treat an already-QUALIFIED pattern head as bare.  `pat2fnExpr` always wraps
+// the pattern head as a flat `EPath` regardless of segment count, so before
+// this fix the fallback took ONLY the last segment of `PkgA.Ping` (discarding
+// the `PkgA` qualifier) and ran it through `checkBareNameAmbiguity`, firing a
+// nonsensical T0123 ("'Ping' is ambiguous … qualify the reference, e.g.
+// 'PkgA.Ping'") even though the pattern was already qualified exactly that
+// way.  A qualified head must fall through unchecked here.
+test "qualified pattern head against an unresolvable scrutinee is not T0123 (#6700)" {
+  val pkgA = parse("package PkgA\npub union Signal {\n  case Ping(code: Int)\n  case Halt\n}\n")
+  val pkgB = parse("package PkgB\npub union Signal {\n  case Ping(label: String)\n  case Halt\n}\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
+  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  val src = "package App\nimport PkgA\nimport PkgB\nfunc f(): Int {\n  match undefinedScrutinee {\n    case PkgA.Ping(n) -> n\n    case _ -> 0\n  }\n}\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, packages), "T0123"),
+    0,
+    "PkgA.Ping is already qualified — falling through to the unresolvable-scrutinee fallback must not fire T0123 for 'Ping'"
+  )
+}
