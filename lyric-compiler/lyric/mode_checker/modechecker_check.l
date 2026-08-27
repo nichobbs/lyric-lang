@@ -2813,6 +2813,17 @@ func checkFieldMutability(
                 span
               )
             )
+            // The lock-safety side effect must NOT depend on whether the
+            // caller intends to surface the V0015 diagnostic:
+            // `computeFieldLockSafetyForBuild` (#6596) passes a throwaway
+            // `discardedDiag` list here (real diagnostics come from the
+            // separate `checkImmutableFieldWrites` pass), but a real,
+            // non-`var` write through a tracked local — a `var`-record local
+            // OR an `inout` parameter, both seeded by `fieldWriteSeedParams`
+            // against the whole-build merged `recordFields` map, so this
+            // fires for cross-file `inout` write-backs too (#6653) — still
+            // means codegen must not lock the field `initonly`/`ACC_FINAL`.
+            markFieldNameUnsafeToLock(ctx.unsafeFieldNames, fieldName)
           }
         }
         case None -> {

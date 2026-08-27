@@ -983,3 +983,32 @@ test "a field written only inside a test block body marks it unsafe to lock (#66
   val unsafeSet = lockSafety(src)
   assertTrue(unsafeSet.containsKey("pos"), "test-block-only write to Cursor.pos: unsafe to lock")
 }
+
+// #6653: the "#6596 scenario 3 proxy" test above spells the cross-file
+// receiver type QUALIFIED (`Other.Cursor`), a 2-segment `TRef` that
+// `fieldWriteSimpleTypeName` rejects outright (returns `""`), so
+// `fieldWriteSeedParams` never adds `c` to `ctx.locals` and the later
+// `c.pos = …` write falls straight into `checkFieldWriteTarget`'s
+// `case None -> markFieldNameUnsafeToLock(...)` catch-all — unsafe by
+// accident, via a route that never exercises `checkFieldMutability` at all.
+// The idiomatic, common spelling is UNQUALIFIED (`inout Cursor`, reached
+// through an ordinary `import Other`): `fieldWriteSimpleTypeName` resolves
+// this to the single segment `"Cursor"`, which — because
+// `computeFieldLockSafetyForBuild` merges `recordFields` across every file
+// in the build BEFORE walking any of them — is found in the whole-build map
+// even though `Cursor` is declared in a different file, so `c` IS seeded
+// into `ctx.locals`. The write then reaches `checkFieldMutability`, whose
+// non-`var` branch previously only appended a (silently discarded, inside
+// this whole-build audit) V0015 diagnostic and never called
+// `markFieldNameUnsafeToLock` — so this exact shape was never marked unsafe
+// and `Cursor.pos` would be locked `initonly`/`ACC_FINAL` despite `bump`
+// legally mutating it through the `inout` cursor.
+test "an unqualified cross-file inout-parameter write marks the field unsafe to lock (#6653)" {
+  val defSrc = "package Other\npub record Cursor {\n  pos: Int\n}\n"
+  val useSrc = "package Consumer\nimport Other\nfunc bump(c: inout Cursor): Unit {\n  c.pos = c.pos + 1\n}\n"
+  val srcs: List[String] = newList()
+  srcs.add(defSrc)
+  srcs.add(useSrc)
+  val unsafeSet = lockSafetyMulti(srcs)
+  assertTrue(unsafeSet.containsKey("pos"), "unqualified cross-file inout write to Cursor.pos: unsafe to lock")
+}
