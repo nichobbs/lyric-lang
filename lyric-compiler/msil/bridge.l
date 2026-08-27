@@ -123,8 +123,21 @@ func seedResultTypeRefs(cctx: in CodegenCtx): Unit {
 // distinctly from `Lyric.DiagnosticUtil.diagReportAndAbort` per that
 // package's own guidance: a bridge that defined a same-named local
 // `reportAndAbort` would shadow the fully-qualified call and recurse.
+//
+// Single-file builds have exactly one package, so the bare (unlabelled)
+// form is unambiguous here.
 func abortOnCodegenDiagnosticsMsil(cctx: in CodegenCtx): Bool {
   DiagUtil.diagReportAndAbort(cctx.diagnostics)
+}
+
+// #6598/#6599: project-path variant of `abortOnCodegenDiagnosticsMsil` that
+// prefixes every reported diagnostic with the owning package name via
+// `DiagUtil.diagReportAndAbortInPkg` — the bare form is ambiguous once a
+// bundle compiles more than one file (`diagReportAndAbortInPkg`'s own doc
+// comment), and several F002x messages carry no type/package name in the
+// message body at all (e.g. F0025).
+func abortOnCodegenDiagnosticsMsilInPkg(cctx: in CodegenCtx, pkgName: in String): Bool {
+  DiagUtil.diagReportAndAbortInPkg(pkgName, cctx.diagnostics)
 }
 
 /// Variant of `compileToMsil` that accepts a `[package].version` string.
@@ -490,6 +503,7 @@ pub func compileProjectToMsilWithRestored(
   // (legacy `0.0.0.0` Assembly row).
   val noDepTemplatePkgs: List[ProjectPackagePayload] = newList()
   val emptyNugetPaths: List[String] = newList()
+  val noSourcePaths: List[String] = newList()
   compileProjectToMsilWithRestoredAndVersion(
     packages,
     assemblyName,
@@ -501,7 +515,8 @@ pub func compileProjectToMsilWithRestored(
     emptyNugetPaths,
     "",
     noDepTemplatePkgs,
-    newList()
+    newList(),
+    noSourcePaths
   )
 }
 
@@ -509,6 +524,17 @@ pub func compileProjectToMsilWithRestored(
 /// string used for the bundled Assembly row and the embedded
 /// `Lyric.Contract.<pkg>` resources.  Empty string → legacy `"0.0.0"`
 /// default (see #1364 for the threading plan).
+///
+/// `paths`, when non-empty, is the on-disk source path for each entry of
+/// `packages`, parallel by index (#6610; mirrors `Jvm.Bridge
+/// .compileProjectToJarBundledWithFeatures`'s `pkgPaths`). "" (or the list
+/// being shorter than `packages`) means unknown for that entry — a
+/// synthetic/ad-hoc source, or a genuinely multi-file package whose merged
+/// blob has no single on-disk path (docs/63 §9.7).  Used to label
+/// parse-phase diagnostics with the real source file instead of the bare
+/// package name whenever the real path is known — this is the gap a
+/// single-file build has when a nearby `lyric.toml` routes it through this
+/// project path instead of `compileToMsilWithVersion`.
 pub func compileProjectToMsilWithRestoredAndVersion(
   packages: in List[ProjectPackagePayload],
   assemblyName: in String,
@@ -521,6 +547,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   packageVersion: in String,
   depTemplatePkgs: in List[ProjectPackagePayload],
   defines: in List[String],
+  paths: in List[String],
 ): Bool {
   if packages.count == 0 {
     return false
@@ -588,7 +615,13 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   var pi = 0
   while pi < packages.count {
     val pkg = packages[pi]
-    val erased = match pipeParseAndErase(pkg.source, "dotnet", activeFeatures, declaredFeatures, projDefines, pkg.name) {
+    // #6610: prefer the real on-disk source path for diagnostic
+    // attribution when the caller supplied one (a single-file build
+    // routed through this project path by a nearby `lyric.toml`, or any
+    // other single-path project package); fall back to the package name
+    // — the previous behaviour — when the path is unknown.
+    val pkgLabel = if pi < paths.count and paths[pi].length > 0 { paths[pi] } else { pkg.name }
+    val erased = match pipeParseAndErase(pkg.source, "dotnet", activeFeatures, declaredFeatures, projDefines, pkgLabel) {
       case Some(f) -> f
       case None -> return false
     }
@@ -1039,16 +1072,24 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // #6449/#6459: codegen panics escape (the bridge's library contract) —
   // see the single-file call site's comment above.  #4898: F0020–F0025
   // diagnostics accumulate on the shared `cctx` across every package in the
-  // bundle, so the gate below runs once after the whole loop.
+  // bundle.  #6598: the gate is checked INSIDE the loop, immediately after
+  // each package's codegen call, so the build aborts on the first package
+  // that produces diagnostics instead of continuing to codegen subsequent
+  // packages against the shared `cctx`'s now-inconsistent TypeRef/MPImpl
+  // state left behind by the bad package (e.g. an invalid `impl` records
+  // F0020 but `validateExternImplConformanceMsil` returns normally and
+  // codegen proceeds to `lowerMImpl` the bad row anyway).  #6599: the
+  // per-package gate labels every reported diagnostic with the owning
+  // package name via `abortOnCodegenDiagnosticsMsilInPkg`.
   val mpkgs: List[MPackage] = newList()
   var ci = 0
   while ci < liftedFiles.count {
     val mpkg = codegenMPackage(liftedFiles[ci], cctx)
     mpkgs.add(mpkg)
+    if abortOnCodegenDiagnosticsMsilInPkg(cctx, perPkgNames[ci]) {
+      return false
+    }
     ci = ci + 1
-  }
-  if abortOnCodegenDiagnosticsMsil(cctx) {
-    return false
   }
 
   // Append every closure-class record synthesized while lowering ANY
@@ -1183,6 +1224,7 @@ pub func compileProjectToMsilWithRestoredEncoded(
   val declaredFeatures: List[String] = newList()
   val noDepTemplatePkgsEncoded: List[ProjectPackagePayload] = newList()
   val emptyNugetPaths: List[String] = newList()
+  val noSourcePathsEncoded: List[String] = newList()
   compileProjectToMsilWithRestoredAndVersion(
     packages,
     assemblyName,
@@ -1194,7 +1236,8 @@ pub func compileProjectToMsilWithRestoredEncoded(
     emptyNugetPaths,
     packageVersion,
     noDepTemplatePkgsEncoded,
-    newList()
+    newList(),
+    noSourcePathsEncoded
   )
 }
 

@@ -363,16 +363,16 @@ else
 fi
 
 # docs/63 band B1 slice 2: every one of the fixture's own classes must carry
-# a real JVMS §4.7.10 `SourceFile` attribute naming the actual on-disk file
-# (`lines.l`, not the absolute `$WORK_DIR/lines.l` path baked into the
-# manifest, since `Jvm.Bridge` records only `Path.basename`-independent
-# absolute paths verbatim as given — the manifest here names it as
-# `"LyricB2Lines" = "lines.l"` relative to `$WORK_DIR`, so the resolved path
-# is `$WORK_DIR/lines.l`).  `javap -l -p` (used for the LineNumberTable
-# checks above) never prints the SourceFile attribute regardless of whether
-# it exists — only `-v` does — so this is a dedicated pass with its own
-# `javap -v` output, not a re-grep of `$DISASM`.
-EXPECT_SOURCEFILE="$WORK_DIR/lines.l"
+# a real JVMS §4.7.10 `SourceFile` attribute naming the bare on-disk file
+# name (`lines.l`), never a directory or the absolute `$WORK_DIR/lines.l`
+# path the manifest resolves to (`"LyricB2Lines" = "lines.l"` relative to
+# `$WORK_DIR`) — JVMS §4.7.10 requires a bare file name, and `Jvm.Bridge`
+# builds the attribute from `Path.basename` of the resolved path (#6608).
+# `javap -l -p` (used for the LineNumberTable checks above) never prints the
+# SourceFile attribute regardless of whether it exists — only `-v` does —
+# so this is a dedicated pass with its own `javap -v` output, not a re-grep
+# of `$DISASM`.
+EXPECT_SOURCEFILE="lines.l"
 sourcefile_fail=0
 sourcefile_checked=0
 while read -r classfile; do

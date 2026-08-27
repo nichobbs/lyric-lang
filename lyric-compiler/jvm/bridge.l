@@ -10,6 +10,7 @@ import Std.Collections
 import Std.String as Str
 import Std.Console as Console
 import Std.Encoding as Encoding
+import Std.Path as Path
 import Lyric.BuildDefines as BD
 import Lyric.ContractMeta as Meta
 import Lyric.Lexer
@@ -662,6 +663,15 @@ func rollbackNewKeys[V](m: in Map[String, V], before: in Map[String, Bool]): Uni
 // "unknown" (synthetic source, or a genuinely multi-file package pre-#6282) —
 // no attribute is emitted rather than guessing, since JVMS permits at most
 // one `SourceFile` per class and a wrong name is worse than none.
+//
+// #6608: JVMS §4.7.10 specifies the SourceFile string must name a bare file
+// (e.g. "hello.l"), never a directory or path — `fileName` here is the
+// resolved (often absolute) on-disk path, so the attribute is built from
+// `Path.basename(fileName)`, not `fileName` verbatim.  Emitting the full
+// path leaked the build machine's filesystem layout into shipped JARs,
+// broke reproducible builds, and broke IDE stack-trace navigation (which
+// resolves SourceFile against configured source roots, never an absolute
+// path).
 func codegenPackageInto(
   file: in SourceFile,
   registry: in Map[String, JvmFuncSig],
@@ -703,7 +713,7 @@ func codegenPackageInto(
       ()
     } else {
       if fileName.length > 0 {
-        cf.attrs.add(makeSourceFileAttr(pool, fileName))
+        cf.attrs.add(makeSourceFileAttr(pool, Path.basename(fileName)))
       }
       acc.add(BuiltClass(binaryName = cf.thisClass, bytes = serializeClassWithPool(cf, pool)))
     }
@@ -957,7 +967,13 @@ func collectStmtNames(s: in Statement, acc: in List[String], registry: in Map[St
     case SItem(it) -> match it.kind {
       // A nested function's body calls count toward the enclosing function for
       // reachability (the JVM lowers them into the same class either way).
-      case IFunc(decl) -> match decl.body { case Some(fb) -> match fb { case FBExpr(ex) -> collectExprNames(ex, acc, registry); case FBBlock(b) -> collectBlockNames(b, acc, registry) }; case None -> () }
+      case IFunc(decl) -> match decl.body {
+        case Some(fb) -> match fb {
+          case FBExpr(ex) -> collectExprNames(ex, acc, registry)
+          case FBBlock(b) -> collectBlockNames(b, acc, registry)
+        }
+        case None -> ()
+      }
       case _ -> ()
     }
     case _ -> ()
@@ -977,7 +993,10 @@ func collectBlockNames(b: in Block, acc: in List[String], registry: in Map[Strin
 func collectFuncCallKeys(decl: in FunctionDecl, registry: in Map[String, JvmFuncSig]): List[String] {
   val acc: List[String] = newList()
   match decl.body {
-    case Some(fb) -> match fb { case FBExpr(ex) -> collectExprNames(ex, acc, registry); case FBBlock(b) -> collectBlockNames(b, acc, registry) }
+    case Some(fb) -> match fb {
+      case FBExpr(ex) -> collectExprNames(ex, acc, registry)
+      case FBBlock(b) -> collectBlockNames(b, acc, registry)
+    }
     case None -> ()
   }
   acc

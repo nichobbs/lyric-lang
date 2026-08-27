@@ -2251,6 +2251,12 @@ func siblingTypeDecls(arts: in List[RestoredArtifact], selfPkg: in String): List
 // land on stderr (same path as `compileToMsil`).
 func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
   val payloads: List[ProjectPackagePayload] = newList()
+  // #6610: parallel on-disk source path per package, matching
+  // `emitProjectJvmInProcess`'s `pkgPaths` — a single-file package's real
+  // path survives `emitProject`'s pre-merge (its `mergedPaths` comment);
+  // a genuinely multi-file package has no single path (see there), so ""
+  // falls through to `Msil.Bridge`'s package-name label fallback.
+  val sourcePaths: List[String] = newList()
   var pi = 0
   while pi < req.packages.count {
     val pkg = req.packages[pi]
@@ -2260,6 +2266,7 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
         source = mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures)
       )
     )
+    sourcePaths.add(if pkg.sources.count == 1 and pkg.paths.count == 1 { pkg.paths[0] } else { "" })
     pi += 1
   }
   // Auto-resolve `lyric-stdlib/std/*.l` at runtime so the in-process bridge
@@ -2348,7 +2355,8 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
       req.nugetAssemblyPaths,
       req.packageVersion,
       depTemplatePkgs,
-      req.defines
+      req.defines,
+      sourcePaths
     )
   } catch Bug as b {
     panicDiags.add(msilBridgePanicDiagnostic(b.message))
@@ -2734,7 +2742,8 @@ func emitNativeInProcess(
     triple,
     optLevel,
     clangFlags,
-    req.defines
+    req.defines,
+    req.path
   )
   if ok {
     val okDiags: List[Diagnostic] = newList()
@@ -2920,6 +2929,16 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
         val noArtifacts: List[SynthesisedArtifact] = newList()
         val noDepTemplatePkgsPerPkg: List[ProjectPackagePayload] = newList()
         val emptyNugetPaths: List[String] = newList()
+        // #6610: parallel path per `allPayloads` entry — "" for the bundled
+        // compiler packages (no single on-disk path in this dev-tooling
+        // path), `req.path` for the user's own file (the last entry).
+        val allPaths: List[String] = newList()
+        var api = 0
+        while api < compilerPayloads.count {
+          allPaths.add("")
+          api = api + 1
+        }
+        allPaths.add(req.path)
         val panicDiagsP: List[Diagnostic] = newList()
         val ok = try {
           MsilBridge.compileProjectToMsilWithRestoredAndVersion(
@@ -2933,7 +2952,8 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
             emptyNugetPaths,
             req.packageVersion,
             noDepTemplatePkgsPerPkg,
-            req.defines
+            req.defines,
+            allPaths
           )
         } catch Bug as b {
           panicDiagsP.add(msilBridgePanicDiagnostic(b.message))

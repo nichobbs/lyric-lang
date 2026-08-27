@@ -1,6 +1,11 @@
 //! source_path_diagnostics_self_test.l — regression coverage for docs/63
 //! §9.7 (issues #6282 / #6284): threading the real on-disk source path
-//! through to diagnostics and the JVM `SourceFile` attribute.
+//! through to diagnostics and the JVM `SourceFile` attribute. Also covers
+//! two PR #6547 review follow-ups in the same "thread the path correctly"
+//! family: #6610 (a single-file MSIL build routed through the project path
+//! by a nearby `lyric.toml` must still label diagnostics with the real
+//! path, not just the package name) and #6611 (the native bridge dropped
+//! the threaded path on the floor entirely).
 //!
 //! Before this fix, `Diagnostic`s printed via `Lyric.Pipeline.gate` carried
 //! no file attribution at all for a single-file build — the finest
@@ -112,6 +117,92 @@ test "single-file jvm build: a parse error names the real source path" {
   assertTrue(
     Str.contains(result.stderr, srcPath),
     "expected the real source path '" + srcPath + "' in stderr, got:\n" + result.stderr
+  )
+}
+
+// #6611: `cli_build.l` threads `path = sourcePath` onto the native
+// `EmitRequest`, but `Lyric.LlvmBridge.compileToNativeWithFlags` used to
+// drop it on the floor — `pipeParseAndErase(..., "")` hardcoded an empty
+// label unconditionally, so a native build's parse diagnostics regressed
+// to the unlabelled `gate("", …)` form even though the real path was
+// available one call up the stack. This never reaches the clang/link
+// stage (the source is deliberately unparseable), so it needs no
+// `LYRIC_RT_PATH` / `lyric-rt` build, unlike a native build that succeeds
+// through codegen.
+test "single-file native build: a parse error names the real source path" {
+  val dir = freshTempDir("native")
+  defer {
+    cleanup(dir)
+  }
+  val srcPath = Path.join(dir, "bad.l")
+  match File.writeText(srcPath, brokenSource()) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write fixture: " + IOError.message(e))
+  }
+  val outPath = Path.join(dir, "bad")
+  val args: List[String] = newList()
+  args.add("build")
+  args.add(srcPath)
+  args.add("--target")
+  args.add("native")
+  args.add("-o")
+  args.add(outPath)
+  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  assertTrue(result.exitCode != 0, "a broken source file must fail the build")
+  assertTrue(
+    Str.contains(result.stderr, srcPath),
+    "expected the real source path '" + srcPath + "' in stderr, got:\n" + result.stderr
+  )
+}
+
+// #6610: `emitSingleFileOrProject` routes a single-file build through the
+// project-shaped `emitProject` path whenever a nearby `lyric.toml`
+// contributes anything (dependencies, features, or additional own
+// packages) — a common real-world layout (an entry file next to a
+// manifest). Before this fix, that path threaded only the package name
+// (`pkg.name`) into `Msil.Bridge`'s diagnostics gate, never the real
+// on-disk path `ProjectPackage.paths` already carries (the JVM bridge's
+// equivalent path already did — `pkgPaths`), so a parse error here
+// regressed to package-name-only attribution instead of naming the real
+// file, unlike the plain single-file test above. A `[features]`-only
+// manifest (no `[project.packages]`) is enough to trigger the routing
+// without pulling in a second package, isolating the single-source-file
+// shape this fix targets.
+test "single-file dotnet build routed through the project path (nearby [features]-only manifest): a parse error still names the real source path" {
+  val dir = freshTempDir("routed")
+  defer {
+    cleanup(dir)
+  }
+  val srcPath = Path.join(dir, "bad.l")
+  match File.writeText(srcPath, brokenSource()) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write fixture: " + IOError.message(e))
+  }
+  val manifest = "[package]\n" + "name = \"RoutedBad\"\n" + "version = \"0.0.1\"\n" + "\n" + "[features]\n" +
+    "demo = []\n"
+  val mfPath = Path.join(dir, "lyric.toml")
+  match File.writeText(mfPath, manifest) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write lyric.toml: " + IOError.message(e))
+  }
+  val outPath = Path.join(dir, "bad.dll")
+  val args: List[String] = newList()
+  args.add("build")
+  args.add(srcPath)
+  args.add("--target")
+  args.add("dotnet")
+  args.add("-o")
+  args.add(outPath)
+  // Deliberately no `--manifest` flag: the manifest must be auto-discovered
+  // from `srcPath`'s own directory, matching the real-world "entry file
+  // next to a lyric.toml" shape.
+  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  assertTrue(result.exitCode != 0, "a broken source file must fail the build")
+  assertTrue(
+    Str.contains(result.stderr, srcPath),
+    "expected the real source path '" + srcPath +
+      "' in stderr (single-file build routed through the project path via a nearby lyric.toml, #6610), got:\n" +
+      result.stderr
   )
 }
 

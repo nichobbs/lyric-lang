@@ -345,11 +345,17 @@ pub func compileToNative(
 ): Bool {
   val noFlags: List[String] = newList()
   val noDefines: List[String] = newList()
-  compileToNativeWithFlags(source, outputPath, stdlibSources, triple, optLevel, noFlags, noDefines)
+  compileToNativeWithFlags(source, outputPath, stdlibSources, triple, optLevel, noFlags, noDefines, "")
 }
 
 /// `compileToNative` with extra clang driver flags (e.g.
 /// `-fsanitize=address` for the sanitizer-checked self-tests).
+///
+/// `path`, when non-empty, is `source`'s on-disk path (#6611): threaded
+/// into `pipeParseAndErase` so parse-phase diagnostics name the real file
+/// instead of unlabelled bare `gate("", …)` output — matching the MSIL and
+/// JVM bridges' single-file diagnostics attribution (docs/63 §9.7 /
+/// #6282/#6284). "" keeps the previous unlabelled behaviour.
 pub func compileToNativeWithFlags(
   source: in String,
   outputPath: in String,
@@ -358,6 +364,7 @@ pub func compileToNativeWithFlags(
   optLevel: in String,
   extraClangFlags: in List[String],
   defines: in List[String],
+  path: in String,
 ): Bool {
   // Parse + `@cfg` erasure with the `target.native` pseudo-feature
   // (D-N-013); `Lyric.Pipeline` owns the placement (erasure directly
@@ -365,7 +372,7 @@ pub func compileToNativeWithFlags(
   val noFeatures: List[String] = newList()
   val nativeFeatures = Cfg.withTargetFeature(noFeatures, "native")
   val nativeDefines = BD.decodeDefines(defines)
-  val cfgFile = match pipeParseAndErase(source, "native", noFeatures, noFeatures, nativeDefines, "") {
+  val cfgFile = match pipeParseAndErase(source, "native", noFeatures, noFeatures, nativeDefines, path) {
     case Some(f) -> f
     case None -> return false
   }

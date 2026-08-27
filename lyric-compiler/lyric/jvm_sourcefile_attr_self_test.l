@@ -130,7 +130,12 @@ test "single-file jvm build: the entry class carries a SourceFile attribute nami
 
   val javapOut = javapVerboseForEntry(jarPath, Path.join(dir, "extracted"), "SfPlain")
   assertTrue(javapOut.length > 0, "javap produced no output — is 'unzip'/'javap' on PATH?")
-  assertEqual(extractSourceFileName(javapOut), srcPath, "SourceFile must name the real absolute source path")
+  // #6608: JVMS §4.7.10 requires a bare file name, never a directory/path.
+  assertEqual(
+    extractSourceFileName(javapOut),
+    Path.basename(srcPath),
+    "SourceFile must name the bare source file name, not the absolute path"
+  )
 }
 
 test "manifest single-package jvm build: the entry class carries a SourceFile attribute naming the real path" {
@@ -170,5 +175,10 @@ test "manifest single-package jvm build: the entry class carries a SourceFile at
 
   val javapOut = javapVerboseForEntry(jarPath, Path.join(dir, "extracted"), "SfProj")
   assertTrue(javapOut.length > 0, "javap produced no output — is 'unzip'/'javap' on PATH?")
-  assertEqual(extractSourceFileName(javapOut), srcPath, "SourceFile must name the real absolute source path")
+  // #6608: JVMS §4.7.10 requires a bare file name, never a directory/path.
+  assertEqual(
+    extractSourceFileName(javapOut),
+    Path.basename(srcPath),
+    "SourceFile must name the bare source file name, not the absolute path"
+  )
 }

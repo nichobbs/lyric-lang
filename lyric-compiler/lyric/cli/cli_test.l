@@ -1604,7 +1604,11 @@ func cmdTestManifest(
     val testSrcs: List[String] = newList()
     testSrcs.add(rewritten)
     val testPaths: List[String] = newList()
-    testPaths.add(testEntry.path)
+    // #6609: use the already-resolved absolute path (`abs`, computed above)
+    // for diagnostic attribution, not the raw `testEntry.path` — which is
+    // manifest-relative whenever the manifest names the test with a
+    // relative path.
+    testPaths.add(abs)
     allPkgs.add(ProjectPackage(name = testEntry.name, sources = testSrcs, paths = testPaths))
     var si = 0
     while si < libPkgs.count {
