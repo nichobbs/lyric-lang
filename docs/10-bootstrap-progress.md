@@ -30275,10 +30275,10 @@ point; `tests/i18n_kernel_tests.l` (10 cases) passes on both
 JVM/MSIL compiler bugs along the way (filed as #5422, #5423 — both
 about match-bound pattern variables losing type precision at a
 subsequent generic/method call site). **Both since resolved** — #5422
-fixed in D-progress-807 (`Lyric.Mono.bindPatternEnvMono`); #5423
+fixed in D-progress-812 (`Lyric.Mono.bindPatternEnvMono`); #5423
 investigated in the same entry but never reproduced against `HEAD`.
 
-**Related:** `docs/03-decision-log.md` D-progress-628, D-progress-807.
+**Related:** `docs/03-decision-log.md` D-progress-628, D-progress-812.
 
 ### D-progress-629 — JVM: fixed `impl <ExternInterface> for Record` resolving against the local package instead of the real JDK FQN; `lyric-web` gets a real Undertow-backed `Web.Kernel.Runtime`, blocked on two newly-found JVM backend bugs
 
@@ -32346,7 +32346,7 @@ no regressions.
 
 **Related:** `docs/44-jvm-production-readiness-plan.md` m-98.
 
-### D-progress-806 — JVM: restored-dependency pipeline for cross-package generic records/unions (#3094, JVM counterpart of #1496/D097)
+### D-progress-811 — JVM: restored-dependency pipeline for cross-package generic records/unions (#3094, JVM counterpart of #1496/D097)
 
 `Jvm.Bridge` gains a restored-dependency pipeline: `compileToJarBundledWithRestored`
 / `compileProjectToJarBundledWithRestored` accept a list of pre-loaded

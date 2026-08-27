@@ -12350,7 +12350,7 @@ handle-based alternative entry point.
 **Two new JVM/MSIL compiler bugs found and worked around at the time (not
 fixed here, filed separately — since fixed, see the "Fixed" notes below):**
 
-- **#5422 — Fixed in D-progress-807.** `Std.Collections.mapKeys()` called
+- **#5422 — Fixed in D-progress-812.** `Std.Collections.mapKeys()` called
   directly on a `match`-pattern-bound `Map` value throws a runtime cast
   exception on BOTH `--target dotnet` and `--target jvm` (`Dictionary`/
   `HashMap` cannot be cast to `IList`/`List`). Reproduces with a two-line
@@ -12361,9 +12361,9 @@ fixed here, filed separately — since fixed, see the "Fixed" notes below):**
   root cause (`Lyric.Mono` never tracked a `match`-arm pattern binding's
   type into its call-site inference `env`) is now fixed, so the workaround
   is no longer required, though it is left in place as harmless defensive
-  code — see D-progress-807's comment updates in the kernel test file.
+  code — see D-progress-812's comment updates in the kernel test file.
 - **#5423 — Investigated, no reproducible defect found; see
-  D-progress-807.** Calling a native `String` method (e.g. `.contains`) on
+  D-progress-812.** Calling a native `String` method (e.g. `.contains`) on
   a `String` value bound inside a `match { case Ok(x) -> ... }` arm was
   suspected to crash `--target jvm` compilation entirely (the JVM
   backend's type tracking losing the value's `String` type inside the arm
@@ -12372,13 +12372,13 @@ fixed here, filed separately — since fixed, see the "Fixed" notes below):**
   dotnet` compiled the identical code with no issue at the time. Worked
   around the same way as #5422 — re-bind to an explicitly-typed local
   first — used twice in `tests/i18n_kernel_tests.l`, each commented.
-  D-progress-807's investigation could not reproduce this against several
+  D-progress-812's investigation could not reproduce this against several
   faithful repro shapes: the JVM backend's `bindCaseField`/
   `scrutineeGenericArgs` machinery already resolves a match-bound
   payload's concrete JVM type correctly, so no targeted fix was needed;
   shipped as a standing regression test instead
   (`match_bound_pattern_type_self_test.l`, now wired into CI on both
-  targets per D-progress-807).
+  targets per D-progress-812).
 
 **Verification.** `./bin/lyric test --manifest lyric-i18n/lyric.toml`
 on both `--target dotnet` and `--target jvm --features jvm`: the
@@ -35967,7 +35967,7 @@ dotnet` was already correct and remains correct.
 
 ---
 
-## D-progress-805 — JVM: `Map[K, V]` value-type erasure confusion across sibling instantiations fixed (fixes #5451, root-causes the open half of #6347/#6357)
+## D-progress-810 — JVM: `Map[K, V]` value-type erasure confusion across sibling instantiations fixed (fixes #5451, root-causes the open half of #6347/#6357)
 
 **Status:** ACCEPTED
 
@@ -36089,7 +36089,7 @@ touches), docs/44 m-99.
 
 ---
 
-## D-progress-807 — `Lyric.Mono`: match-arm pattern bindings now tracked into the call-site type environment, and isolated to their own arm's scope (#5422, #5423, #6632, #6633)
+## D-progress-812 — `Lyric.Mono`: match-arm pattern bindings now tracked into the call-site type environment, and isolated to their own arm's scope (#5422, #5423, #6632, #6633)
 
 **Status:** Shipped.
 
