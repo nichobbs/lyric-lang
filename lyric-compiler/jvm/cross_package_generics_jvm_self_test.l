@@ -17,9 +17,9 @@
 //! The restored dep round-trip:
 //!   1. The producer JAR embeds its own `Lyric.Contract.<Pkg>` JSON as a
 //!      ZIP entry (`Jvm.Bridge`'s contract-embedding step).
-//!   2. `Jvm.ContractMetaJar.loadRestoredPackageJvm` reads it back via the
-//!      ZIP central directory (`Jvm.ZipReader`) instead of a .NET PE
-//!      resource.
+//!   2. `Lyric.RestoredPackages.loadRestoredPackageJvm` reads it back via
+//!      `Lyric.ContractMeta.readAllContractsFromJarFile`'s ZIP central
+//!      directory walk (`Jvm.ZipReader`) instead of a .NET PE resource.
 //!   3. `Lyric.RestoredPackages.synthesiseArtifact` re-parses the
 //!      contract's `repr` strings into a `SourceFile` — shared, unchanged
 //!      code between the MSIL and JVM restored-dep paths.
@@ -307,4 +307,46 @@ test "cross-package generic union Maybe[String] Just reference payload (jvm)" {
   cleanup(tmpDir)
   assertEqualInt(captured.exitCode, 0, "cpgen_maybe_str_jvm: exit 0 (stderr=" + captured.stderr + ")")
   assertEqual(Str.trim(captured.stdout), "world", "cpgen_maybe_str_jvm: stdout = world")
+}
+
+// Regression test for #6668: a CONSUMER-declared function signature naming a
+// restored, NON-generic type as both its parameter and return type — crossing
+// a real call boundary (`main` calls `echoThing`, not just constructing or
+// matching a restored type inline).  Every case above uses a GENERIC restored
+// type (`Box[T]`/`Maybe[T]`), which erases to `Object` and never exercises
+// this path: `Jvm.Bridge`'s `extPkgNames`/`extPkgMaps` owner registry
+// (`collectFileDeclaredTypeFqns`) explicitly skips generic declarations, so a
+// generic restored type's descriptor was never at risk of the wrong-owner bug
+// this test targets. Before the #6668 fix, a restored artifact was never
+// registered into `extPkgNames`/`extPkgMaps`, so `echoThing`'s descriptor
+// resolved `Thing` via the "declared in my own package" fallback guess
+// (`CpGenJvm.SigApp/Thing`, a class that is never compiled — `Thing` is only
+// declared in the producer) instead of the real `CpGenJvm.SigLib/Thing`,
+// producing a `NoClassDefFoundError` at class-load / first invocation.
+test "cross-package non-generic restored type in a consumer function signature (jvm, #6668)" {
+  val tmpDir = freshTempDir("cpgen-sig-owner")
+  val producerSrc = "package CpGenJvm.SigLib\n" + "\n" + "pub record Thing { x: Int }\n" + "\n" +
+    "pub func makeThing(v: in Int): Thing { Thing(x = v) }\n"
+  val producerJar = buildJar(tmpDir, "CpGenJvm.SigLib", producerSrc, "CpGenJvm.SigLib")
+  val consumerSrc = "package CpGenJvm.SigApp\n" + "\n" + "import CpGenJvm.SigLib\n" + "\n" +
+    "func echoThing(t: in Thing): Thing {\n" +
+    "  t\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  val t = makeThing(5)\n" +
+    "  val t2 = echoThing(t)\n" +
+    "  println(t2.x)\n" +
+    "}\n"
+  val captured = buildAndRunConsumer(
+    tmpDir,
+    "CpGenJvm.SigApp",
+    consumerSrc,
+    "CpGenJvm.SigApp",
+    "CpGenJvm.SigLib",
+    producerJar
+  )
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cpgen_sig_owner_jvm: exit 0 (stderr=" + captured.stderr + ")")
+  assertEqual(Str.trim(captured.stdout), "5", "cpgen_sig_owner_jvm: stdout = 5")
 }

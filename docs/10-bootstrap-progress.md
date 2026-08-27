@@ -32362,12 +32362,17 @@ existing call sites (self-tests, `Lyric.Emitter`) needed touching.
 Two new pieces make the restored artifact loadable at all: `Jvm.Bridge` now
 embeds each compiled package's `Lyric.Contract.<Pkg>` JSON as a plain ZIP
 entry in the output JAR (the JVM analog of the MSIL bridge's `embedLyricContract`,
-which writes a PE ManifestResource row instead); and a new
-`Jvm.ContractMetaJar` package reads that entry back via the ZIP central
-directory (`Jvm.ZipReader`, shared with auto-FFI's JMOD/JAR reading) and
-hands off to `Lyric.RestoredPackages.synthesiseArtifact` — unchanged, and now
-shared between both backends via a new `loadRestoredPackageFromEntries` that
-factors the parse-and-validate core out of the PE-specific `loadRestoredPackage`.
+which writes a PE ManifestResource row instead); and
+`Lyric.ContractMeta.readAllContractsFromJarFile` reads that entry back via the
+ZIP central directory (`Jvm.ZipReader`, shared with auto-FFI's JMOD/JAR
+reading), with `Lyric.RestoredPackages.loadRestoredPackageJvm` handing off to
+`Lyric.RestoredPackages.synthesiseArtifact` — unchanged, and shared between
+both backends via `loadRestoredPackageFromEntries`, which factors the
+parse-and-validate core out of the PE-specific `loadRestoredPackage`. (A
+review pass, #6663/#6667/#6668, later deleted a duplicate, worse-behaved JAR
+contract reader the original landing had introduced as a separate
+`jvm/contract_meta_jar.l` package — every caller now goes through the shared
+`Lyric.ContractMeta`/`Lyric.RestoredPackages` readers above.)
 The producer JAR's path rides the consumer's manifest `Class-Path:` attribute
 (the same mechanism already used for Maven/`LYRIC_FFI_JARS` jars) so `java
 -jar` resolves the producer's classes at runtime. `Lyric.Emitter.emitProjectJvmInProcess`

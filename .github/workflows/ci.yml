@@ -5453,7 +5453,7 @@ jobs:
       # (`EmitProjectRequest.restoredDllPaths`) and runs it under `java -jar`.
       # Pins the new `Jvm.Bridge` restored-dependency pipeline: the producer
       # JAR embeds its own `Lyric.Contract.<Pkg>` JSON as a ZIP entry,
-      # `Jvm.ContractMetaJar` reads it back, and the consumer's cross-package
+      # `Lyric.RestoredPackages.loadRestoredPackageJvm` reads it back, and the consumer's cross-package
       # registries (erased `Object` fields — no MSIL-style arity-suffixed
       # TypeRef needed) resolve construction/field-read/match against it.
       # The outer test program itself runs on the default `--target dotnet`

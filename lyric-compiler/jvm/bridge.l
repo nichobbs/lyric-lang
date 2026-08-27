@@ -1273,7 +1273,7 @@ pub func compileToJarBundledWithFeatures(
 /// already loaded and preamble-checked by the caller — see
 /// `Lyric.Emitter.emitProjectJvmInProcess`, which reads them from a JAR's
 /// embedded `Lyric.Contract.<Pkg>` ZIP entries via
-/// `Jvm.ContractMetaJar.loadRestoredPackageJvm`) is registered into the
+/// `Lyric.RestoredPackages.loadRestoredPackageJvm`) is registered into the
 /// SAME cross-package signature/case/ctor registries a stdlib or sibling
 /// project file feeds — see `compileProjectToJarBundledWithRestored` for
 /// the registration design and why no codegen runs over it.
@@ -1627,6 +1627,27 @@ pub func compileProjectToJarBundledWithRestored(
     extPkgMaps.add(xExtMap)
     xi = xi + 1
   }
+  // #6668: a restored dependency (#3094) is a real OWNING package too — its
+  // non-generic declared types (and any extern-type aliases its own kernel
+  // declares) must join the SAME extPkgNames/extPkgMaps pair userFile and
+  // every stdlib file feed above, BEFORE any `externSeedForFile` call runs
+  // below.  Without this, a consumer function signature naming a restored
+  // type (`func consume(x: RestoredPkg.SomeRecord)`) has no way to resolve
+  // `SomeRecord`'s owning package: `externSeedForFile` finds no entry for
+  // it in either the bare or `<pkg>.<name>`-qualified form, so the
+  // descriptor falls back to the "declared in my own package" guess — a
+  // wrong-owner descriptor that mismatches the producer JAR's real class at
+  // the call boundary (`NoSuchMethodError` at runtime, never a build-time
+  // failure).
+  var rpi0 = 0
+  while rpi0 < restoredArtifacts.count {
+    val raFile = restoredArtifacts[rpi0].source
+    extPkgNames.add(restoredArtifacts[rpi0].packageName)
+    val raExtMap = collectExternTypesFromFile(raFile)
+    collectFileDeclaredTypeFqns(raFile, raExtMap)
+    extPkgMaps.add(raExtMap)
+    rpi0 = rpi0 + 1
+  }
 
   // Build the cross-package call registry across the user file and *every*
   // stdlib file (resolution is cheap and harmless for packages we don't bundle).
@@ -1678,9 +1699,13 @@ pub func compileProjectToJarBundledWithRestored(
   while rai < restoredArtifacts.count {
     val synArt = restoredArtifacts[rai]
     val rf = synArt.source
-    val rNoExtern: Map[String, String] = newMap()
-    collectFileSigsSeeded(rf, registry, rNoExtern)
-    collectFileCasesExtern(rf, caseReg, rNoExtern)
+    // #6668: seed through the SAME `extPkgNames`/`extPkgMaps` pair (now
+    // including every restored artifact, registered above) that userFile
+    // and every stdlib file use — an empty seed here left the restored
+    // file's OWN signatures unable to resolve types from sibling restored
+    // packages, extern kernels, or stdlib.
+    collectFileSigsSeeded(rf, registry, externSeedForFile(rf, extPkgNames, extPkgMaps))
+    collectFileCasesExtern(rf, caseReg, ownAwareExternTypes(rf, externSeedForFile(rf, extPkgNames, extPkgMaps)))
     collectFileCtors(rf, ctorReg)
     collectFileProjectables(rf, allProjFqns)
     val rPkgItems: List[Item] = newList()
@@ -2137,8 +2162,9 @@ pub func compileProjectToJarBundledWithRestored(
   // This build's own package(s) are already embedded as `Lyric.Contract.<Pkg>`
   // ZIP entries by the `contractZipEntry` calls above (#4994), so a
   // DOWNSTREAM consumer can later restore THIS jar as a dependency
-  // (`Jvm.ContractMetaJar.readAllContractsFromJar` / `loadRestoredPackageJvm`,
-  // #3094) — no separate contract-collection pass is needed here; that
+  // (`Lyric.ContractMeta.readAllContractsFromJarFile` /
+  // `Lyric.RestoredPackages.loadRestoredPackageJvm`, #3094) — no separate
+  // contract-collection pass is needed here; that
   // hoisted `contractEntryNames`/`contractEntryDatas` pair (built from the
   // POST-middle-end `userFile`/`toBundle` pairs, reconciled via
   // `withGenericFuncsForContract` for generic-function-body fidelity) is

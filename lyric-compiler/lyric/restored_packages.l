@@ -115,8 +115,9 @@ pub func loadRestoredPackage(dllPath: in String): Result[List[RestoredArtifact],
 /// contract JSON) into `RestoredArtifact`s.  `loadRestoredPackage` supplies
 /// `entries` via the PE/CLI metadata reader (`Meta.readAllContractsFromFile`,
 /// MSIL-only); a JVM restored dep reads its entries from a JAR's ZIP central
-/// directory instead (`Jvm.ContractMetaJar.readAllContractsFromJar`) and
-/// calls this function directly, so both backends share one parse-and-
+/// directory instead (`Meta.readAllContractsFromJarFile`, itself backed by
+/// `Jvm.ZipReader`) and calls this function directly (see
+/// `loadRestoredPackageJvm` below), so both backends share one parse-and-
 /// validate path instead of duplicating it (#3094).
 ///
 /// `path` is carried into every `RestoredArtifact`/error purely as a label —
@@ -163,25 +164,7 @@ pub func loadRestoredPackageJvm(jarPath: in String): Result[List[RestoredArtifac
   }
 
   val entries = Meta.readAllContractsFromJarFile(jarPath)
-  if entries.count == 0 {
-    return Err(error = NoContractResource(path = jarPath))
-  }
-
-  val artifacts: List[RestoredArtifact] = newList()
-  var i = 0
-  while i < entries.count {
-    val e = entries[i]
-    match Meta.parseFromJson(e.json) {
-      case None -> return Err(error = MalformedContract(path = jarPath, pkgKey = e.packageName))
-      case Some(c) -> {
-        val pkgName = if Str.isNotEmpty(c.packageName) { c.packageName } else { e.packageName }
-        artifacts.add(RestoredArtifact(packageName = pkgName, version = c.version, dllPath = jarPath, contract = c))
-      }
-    }
-    i = i + 1
-  }
-
-  Ok(value = artifacts)
+  loadRestoredPackageFromEntries(jarPath, entries)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -14,9 +14,11 @@
 //! `compileProjectToJarBundledWithRestored`.  Restored-dependency JARs
 //! (`req.restoredDllPaths`, #3094 — the JVM counterpart of the MSIL
 //! restored-generics fix, #1496/D097) are loaded and synthesised here via
-//! `Jvm.ContractMetaJar.loadRestoredPackageJvm` + `Lyric.RestoredPackages.synthesiseArtifact`,
+//! `Lyric.RestoredPackages.loadRestoredPackageJvm` + `Lyric.RestoredPackages.synthesiseArtifact`,
 //! mirroring the MSIL restored-dep loop below almost exactly — only the
-//! JAR-vs-DLL contract-metadata READ step differs between the two targets.
+//! JAR-vs-DLL contract-metadata READ step differs between the two targets
+//! (`Lyric.ContractMeta.readAllContractsFromJarFile`'s ZIP central-directory
+//! walk vs. `Msil.MetadataReader`'s PE/CLI metadata walk).
 //!
 //! Environment variables:
 //!   LYRIC_BIN              — path to the dotnet (or lyric) executable.
@@ -53,7 +55,6 @@ import Lyric.ContractMeta as Meta
 import Lyric.RestoredPackages as RP
 import Msil.Bridge as MsilBridge
 import Jvm.Bridge as JvmBridge
-import Jvm.ContractMetaJar as JvmCMJ
 import Lyric.LlvmBridge as LlvmBridge
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2531,16 +2532,18 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
   // jarPath matters here.  A JVM restored dep is a Lyric-JVM producer JAR
   // carrying embedded `Lyric.Contract.<Pkg>` ZIP entries (written by
   // `Jvm.Bridge`'s contract-embedding step) rather than a .NET PE resource,
-  // so the load step goes through `Jvm.ContractMetaJar` instead of
-  // `Msil.MetadataReader`; everything downstream (`synthesiseArtifact`,
-  // `siblingTypeDecls`) is shared with the MSIL path unchanged.
+  // so the load step goes through `Lyric.RestoredPackages.loadRestoredPackageJvm`
+  // (itself backed by `Lyric.ContractMeta.readAllContractsFromJarFile`'s
+  // shared ZIP central-directory reader) instead of `Msil.MetadataReader`;
+  // everything downstream (`synthesiseArtifact`, `siblingTypeDecls`) is
+  // shared with the MSIL path unchanged.
   val allArtsJvm: List[RestoredArtifact] = newList()
   var jri = 0
   while jri < req.restoredDllPaths.count {
     val jDepEntry = req.restoredDllPaths[jri]
     val jTabPos = Str.indexOfRaw(jDepEntry, "\t")
     val jJarPath = if jTabPos >= 0 { jDepEntry.substring(jTabPos + 1, jDepEntry.length - jTabPos - 1) } else { jDepEntry }
-    match JvmCMJ.loadRestoredPackageJvm(jJarPath) {
+    match RP.loadRestoredPackageJvm(jJarPath) {
       case Err(e) -> return failResult("restored JVM dep '" + jJarPath + "' failed to load: " + RP.errorMessage(e))
       case Ok(arts) -> {
         var jai = 0
