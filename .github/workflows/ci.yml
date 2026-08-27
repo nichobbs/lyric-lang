@@ -1682,12 +1682,15 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/ffi-f0015-negative-test.sh
 
-      # D105 Phase 2: F0020–F0023 external-interface impl conformance negative
-      # tests.  Phase 1 (PR #3851) wired `impl ExternInterface for Record` end
-      # to end at the codegen layer; this phase adds metadata-direct signature
-      # validation so a mis-shaped impl fails at build time instead of at first
-      # use with `TypeLoadException`.  Each fixture targets one diagnostic.
-      - name: FFI iface impl F0020–F0023 + generic-iface negative tests
+      # D105 Phase 2: F0021–F0023, F0034 external-interface impl conformance
+      # negative tests.  Phase 1 (PR #3851) wired `impl ExternInterface for
+      # Record` end to end at the codegen layer; this phase adds
+      # metadata-direct signature validation so a mis-shaped impl fails at
+      # build time instead of at first use with `TypeLoadException`.  Each
+      # fixture targets one diagnostic.  The "not an interface" check is
+      # F0034, not F0020 — renumbered (#6648) to avoid colliding with
+      # propagate.l's pre-existing F0020 (`?` in a non-Result/Option function).
+      - name: FFI iface impl F0021–F0023, F0034 + generic-iface negative tests
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/ffi-iface-impl-negative-tests.sh
@@ -2833,7 +2836,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/msil_project_bridge_self_test.l
 
-      # MSIL codegen diagnostics self-test (#4898) — pins that the F0020-F0025
+      # MSIL codegen diagnostics self-test (#4898) — pins that the F0021-F0025, F0034
       # external-interface-conformance and try-catch-as-expression codegen
       # errors are reported as positioned CodegenCtx.diagnostics entries
       # (gated by Msil.Bridge via Lyric.DiagnosticUtil.diagReportAndAbort)

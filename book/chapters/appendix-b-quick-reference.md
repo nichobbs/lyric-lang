@@ -1327,6 +1327,26 @@ Warnings emitted by the MSIL emitter for constructs that compile but may not beh
 |---|---|---|
 | `A0001` | warning | `async func` declares an `out` or `inout` parameter; the async state machine stores a value copy, not the byref — the caller's variable is not updated. Return a `Result` or record instead. |
 
+### MSIL codegen diagnostics (F-series)
+
+Compile-time-detectable codegen errors raised by the self-hosted MSIL
+backend (`msil/codegen.l`, #4898): reported as positioned
+`CodegenCtx.diagnostics` entries — the same convention the type-checker /
+mode-checker / cfg-erasure diagnostic lists use — instead of an escaped
+`panic`. The `F`-code prefix is shared with other, unrelated diagnostic
+families (`docs/24-build-features.md`'s cfg-erasure codes, `docs/60-build-
+defines.md`'s build-define codes, `docs/63-build-profiles-and-debugger.md`'s
+profile/shape codes); see those docs for their own F-series ranges.
+
+| Code | Meaning |
+|---|---|
+| `F0021` | External-interface `impl` block: an abstract interface method has no matching impl method. |
+| `F0022` | External-interface `impl` block: an impl method's parameter count, or its Nth parameter type, does not match the interface's declared signature. |
+| `F0023` | External-interface `impl` block: an impl method's return type does not match the interface's declared signature. |
+| `F0024` | External-interface `impl` block: the `extern type` FQN does not resolve to any type in an indexed reference-pack or restored-dependency assembly (typically a typo); silently skipped only when the metadata index itself could not be populated (an SDK-less build). |
+| `F0025` | `try`/`catch` used as an expression, where a catch arm yields `Unit` while the try body (or an earlier catch arm) already established a value-producing result type — the MSIL backend cannot route an absent value through the shared result slot (type-checker gap #2042; the JVM backend rejects the same shape at check time with `J004`). |
+| `F0034` | External-interface `impl` block: the target resolves through `extern type` / `import extern`, but its .NET metadata is not an interface (e.g. `impl Math for Foo` against the class `System.Math`). Numbered `F0034`, not `F0020`, to avoid colliding with `propagate.l`'s pre-existing `F0020` (`?` used in a function returning neither `Result` nor `Option`) — see issue #6648. |
+
 ### Stability (S-series)
 
 | Code | Meaning |

@@ -1,7 +1,7 @@
 //! msil_codegen_diag_self_test.l — regression tests for #4898.
 //!
-//! `msil/codegen.l`'s external-interface conformance validation (F0020–
-//! F0024) and its try-catch-as-expression Unit/value mismatch check
+//! `msil/codegen.l`'s external-interface conformance validation (F0021–
+//! F0024, F0034) and its try-catch-as-expression Unit/value mismatch check
 //! (F0025) used to fail a genuine, compile-time-detectable user error by
 //! calling `panic`, which unwinds as an escaped exception rather than a
 //! clean, positioned build diagnostic.  They now append a positioned
@@ -24,10 +24,10 @@
 //! future change that deleted the `errorDiagnostic("F00xx", …, decl.span)`
 //! call (or fed it an empty/wrong span) could regress silently as long as
 //! *some* failure still resulted. `...Diag` threads `cctx.diagnostics`
-//! (`Msil.Codegen`'s F0020–F0025 accumulator) back through an `outDiagnostics`
+//! (`Msil.Codegen`'s F0021–F0025, F0034 accumulator) back through an `outDiagnostics`
 //! out-list, so each "bad" case asserts the EXACT diagnostic — code AND the
 //! real source position of the offending construct (the `impl` keyword for
-//! F0020/F0024, the mismatching `func` for F0022/F0023, the `catch` keyword
+//! F0034/F0024, the mismatching `func` for F0022/F0023, the `catch` keyword
 //! for F0025) — not merely that the build failed.
 //!
 //! In-process, not a spawned `./bin/lyric build` subprocess (contrast
@@ -41,7 +41,7 @@
 //! compiles `Msil.Codegen` / `Msil.Bridge` / `Lyric.Emitter` as separate
 //! per-package DLLs (cross-assembly), which is confirmed to hit this: a
 //! `lyric build` subprocess on any of this file's "bad" fixtures degrades
-//! the clean `error[F0020] 9:1: …` diagnostic into a generic, position-lost
+//! the clean `error[F0034] 9:1: …` diagnostic into a generic, position-lost
 //! `error[T0120]: MSIL codegen failed: …` panic wrapper instead. `lyric
 //! test` avoids the corruption by resolving this file's own compiler-package
 //! imports (`Msil.Bridge`) from the single merged `Lyric.Compiler.dll`
@@ -139,13 +139,16 @@ func assertDiagAt(diags: in List[Diagnostic], code: in String, line: in Int, col
   )
 }
 
-// ─── F0020: `impl` target resolves but is not a .NET interface ─────────────
-test "F0020: impl block against a non-interface extern type fails cleanly" {
-  val src = "package F0020App\n" + "\n" + "extern type NotIface = \"System.String\"\n" + "\n" + "record R0020 {\n" +
+// ─── F0034: `impl` target resolves but is not a .NET interface ─────────────
+// Numbered F0034, not F0020, to avoid colliding with propagate.l's
+// pre-existing F0020 (`?` used in a function returning neither Result nor
+// Option) — see #6648.
+test "F0034: impl block against a non-interface extern type fails cleanly" {
+  val src = "package F0034App\n" + "\n" + "extern type NotIface = \"System.String\"\n" + "\n" + "record R0034 {\n" +
     "  tag: Int\n" +
     "}\n" +
     "\n" +
-    "impl NotIface for R0020 {\n" +
+    "impl NotIface for R0034 {\n" +
     "  func whatever(): Unit {\n" +
     "  }\n" +
     "}\n" +
@@ -156,9 +159,9 @@ test "F0020: impl block against a non-interface extern type fails cleanly" {
   // `impl` keyword on line 9, column 1 — `decl.span` starts there
   // (`parser_items.l::parseImplBody`'s `startTok`).
   val diags: List[Diagnostic] = newList()
-  val ok = compileDiag("F0020Bad", src, diags)
+  val ok = compileDiag("F0034Bad", src, diags)
   assertTrue(not ok, "impl against System.String (a class) must be rejected, not panic")
-  assertDiagAt(diags, "F0020", 9, 1, "F0020: impl against System.String (a class)")
+  assertDiagAt(diags, "F0034", 9, 1, "F0034: impl against System.String (a class)")
 }
 
 // ─── F0021: `impl` is missing a required interface method ──────────────────

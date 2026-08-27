@@ -1231,6 +1231,15 @@ program is rejected at compile time (**T0067**). Diverging handlers (a body
 of type `Never` — e.g. a re-`throw` or `panic`) are exempt, as are
 statement-position `try` blocks whose value is discarded (`Unit`).
 
+On `--target dotnet`, one shape of this mismatch survives past T0067 to the
+MSIL backend: a catch arm that yields `Unit` while the try body (or an
+earlier, non-diverging catch arm) already established a value-producing
+result type. The backend cannot route an absent value through the shared
+result slot, so it is rejected at codegen time as **F0025** rather than
+silently leaving the slot at its zero-initialised default (a type-checker
+gap, #2042). The JVM backend rejects the same source shape earlier, at
+check time, with **J004**.
+
 ### 8.3 Result and panics
 
 ```
@@ -1705,6 +1714,18 @@ func useExternalClass(): Unit {
   obj.someInstanceMethod()         // invokevirtual via instance auto-FFI
 }
 ```
+
+**Implementing external interfaces.** An `impl <ExternInterface> for Record { … }` block (`docs/51-ffi-interfaces-proposal.md`) implements a .NET interface resolved through `extern type` / `import extern`, emitting an `InterfaceImpl` metadata row against the interface's `TypeRef` (or a closed-generic `TypeSpec`, for `IEquatable<T>`-shaped interfaces). On `--target dotnet` the self-hosted MSIL backend validates the impl against the interface's real reference-assembly metadata at build time and reports a mismatch as one of:
+
+| Code | Condition |
+|---|---|
+| `F0021` | An abstract interface method has no matching impl method. |
+| `F0022` | An impl method's parameter count, or its Nth parameter type, does not match the interface's declared signature. |
+| `F0023` | An impl method's return type does not match the interface's declared signature. |
+| `F0024` | The `extern type` FQN does not resolve to any type in an indexed reference-pack or restored-dependency assembly — typically a typo. Silently skipped, without a diagnostic, when the metadata index itself could not be populated at all (an SDK-less build with no reference pack on disk). |
+| `F0034` | The `impl` block's target resolves through `extern type` / `import extern`, but the resolved .NET metadata is not an interface (e.g. `impl Math for Foo` against the class `System.Math`). Numbered `F0034` rather than `F0020` to avoid colliding with §4.5's pre-existing `F0020` (`?` used in a function returning neither `Result` nor `Option`). |
+
+Validation is otherwise skipped, without a diagnostic, when an interface method's signature mentions a shape the structural comparison cannot yet represent (a method-level generic parameter, a pointer, a function pointer, or an array of rank greater than one) — the CLR still catches a genuine mismatch there at first use, as a `TypeLoadException`.
 
 ### 11.5 AOT compatibility
 

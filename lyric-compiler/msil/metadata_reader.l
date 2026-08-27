@@ -397,7 +397,10 @@ pub func readTablesHeader(img: in PeImage, root: in MetadataRoot): Result[Tables
   val b = img.bytes
   val sh = match findStream(root, "#~") {
     case Some(s) -> s
-    case None -> match findStream(root, "#-") { case Some(s2) -> s2; case None -> return Err(error = "metadata: no '#~' or '#-' table stream") }
+    case None -> match findStream(root, "#-") {
+      case Some(s2) -> s2
+      case None -> return Err(error = "metadata: no '#~' or '#-' table stream")
+    }
   }
   val base = sh.fileOff
   if base + 24 > b.length {
@@ -1168,7 +1171,25 @@ pub func isStaticFieldExternIn(
 pub func isStaticFieldExtern(asmPath: in String, typeFqn: in String, fieldName: in String): Bool {
   match File.readBytes(asmPath) {
     case Err(_) -> false
-    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> false; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> false; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> false; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> false; case Ok(layout) -> isStaticFieldExternIn(img, layout, th, typeFqn, fieldName) } } } }
+    case Ok(raw) -> match readPe(raw.toArray()) {
+      case Err(_) -> false
+      case Ok(img) -> match readMetadataRoot(img) {
+        case Err(_) -> false
+        case Ok(root) -> match readTablesHeader(img, root) {
+          case Err(_) -> false
+          case Ok(th) -> match computeLayout(img, root, th) {
+            case Err(_) -> false
+            case Ok(layout) -> isStaticFieldExternIn(
+              img,
+              layout,
+              th,
+              typeFqn,
+              fieldName
+            )
+          }
+        }
+      }
+    }
   }
 }
 
@@ -1357,7 +1378,25 @@ pub func getLiteralFieldConstIn(
 pub func getLiteralFieldConst(asmPath: in String, typeFqn: in String, fieldName: in String): Option[ExternConstValue] {
   match File.readBytes(asmPath) {
     case Err(_) -> None
-    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> getLiteralFieldConstIn(img, layout, th, typeFqn, fieldName) } } } }
+    case Ok(raw) -> match readPe(raw.toArray()) {
+      case Err(_) -> None
+      case Ok(img) -> match readMetadataRoot(img) {
+        case Err(_) -> None
+        case Ok(root) -> match readTablesHeader(img, root) {
+          case Err(_) -> None
+          case Ok(th) -> match computeLayout(img, root, th) {
+            case Err(_) -> None
+            case Ok(layout) -> getLiteralFieldConstIn(
+              img,
+              layout,
+              th,
+              typeFqn,
+              fieldName
+            )
+          }
+        }
+      }
+    }
   }
 }
 
@@ -1418,7 +1457,25 @@ pub func findFieldExternIn(
 pub func findFieldExtern(asmPath: in String, typeFqn: in String, fieldName: in String): Option[ExternFieldInfo] {
   match File.readBytes(asmPath) {
     case Err(_) -> None
-    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> findFieldExternIn(img, layout, th, typeFqn, fieldName) } } } }
+    case Ok(raw) -> match readPe(raw.toArray()) {
+      case Err(_) -> None
+      case Ok(img) -> match readMetadataRoot(img) {
+        case Err(_) -> None
+        case Ok(root) -> match readTablesHeader(img, root) {
+          case Err(_) -> None
+          case Ok(th) -> match computeLayout(img, root, th) {
+            case Err(_) -> None
+            case Ok(layout) -> findFieldExternIn(
+              img,
+              layout,
+              th,
+              typeFqn,
+              fieldName
+            )
+          }
+        }
+      }
+    }
   }
 }
 
@@ -1442,7 +1499,24 @@ pub func isEnumTypeIn(img: in PeImage, layout: in TableLayout, th: in TablesHead
 pub func isEnumType(asmPath: in String, typeFqn: in String): Bool {
   match File.readBytes(asmPath) {
     case Err(_) -> false
-    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> false; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> false; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> false; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> false; case Ok(layout) -> isEnumTypeIn(img, layout, th, typeFqn) } } } }
+    case Ok(raw) -> match readPe(raw.toArray()) {
+      case Err(_) -> false
+      case Ok(img) -> match readMetadataRoot(img) {
+        case Err(_) -> false
+        case Ok(root) -> match readTablesHeader(img, root) {
+          case Err(_) -> false
+          case Ok(th) -> match computeLayout(img, root, th) {
+            case Err(_) -> false
+            case Ok(layout) -> isEnumTypeIn(
+              img,
+              layout,
+              th,
+              typeFqn
+            )
+          }
+        }
+      }
+    }
   }
 }
 
@@ -1450,7 +1524,25 @@ pub func isEnumType(asmPath: in String, typeFqn: in String): Bool {
 pub func getLiteralFieldInt32(asmPath: in String, typeFqn: in String, fieldName: in String): Option[Int] {
   match File.readBytes(asmPath) {
     case Err(_) -> None
-    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> getLiteralFieldInt32In(img, layout, th, typeFqn, fieldName) } } } }
+    case Ok(raw) -> match readPe(raw.toArray()) {
+      case Err(_) -> None
+      case Ok(img) -> match readMetadataRoot(img) {
+        case Err(_) -> None
+        case Ok(root) -> match readTablesHeader(img, root) {
+          case Err(_) -> None
+          case Ok(th) -> match computeLayout(img, root, th) {
+            case Err(_) -> None
+            case Ok(layout) -> getLiteralFieldInt32In(
+              img,
+              layout,
+              th,
+              typeFqn,
+              fieldName
+            )
+          }
+        }
+      }
+    }
   }
 }
 
@@ -1844,7 +1936,9 @@ pub func mkNamedGenericInstSig(fqn: in String, valueType: in Bool, args: in List
 // FQN/valueType/args of `t` when it is `STNamedGenericInst`, else `None`.
 pub func sigNamedGenericInstParts(t: in SigType): Option[NamedGenericInstParts] {
   match t {
-    case STNamedGenericInst(fqn, vt, args) -> Some(value = NamedGenericInstParts(fqn = fqn, valueType = vt, args = args))
+    case STNamedGenericInst(fqn, vt, args) -> Some(
+      value = NamedGenericInstParts(fqn = fqn, valueType = vt, args = args)
+    )
     case _ -> None
   }
 }
@@ -2241,7 +2335,11 @@ pub func addAssemblyTypes(index: in Map[String, String], asmPath: in String): Un
   match File.readBytes(asmPath) {
     case Err(_) -> {
     }
-    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> {  }; case Some(ri) -> scanPublicTypes(ri, assemblySimpleName(asmPath), index) }
+    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) {
+      case None -> {
+      }
+      case Some(ri) -> scanPublicTypes(ri, assemblySimpleName(asmPath), index)
+    }
   }
 }
 
@@ -2315,7 +2413,18 @@ pub func addAssemblyToIndexesAndValueTypes(
           ") — its types will fall back to the default assembly in auto-FFI resolution"
       )
     }
-    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> { Console.error("W0007: addAssemblyToIndexesAndValueTypes: failed to parse '" + asmPath + "' as a .NET assembly — its types will fall back to the default assembly in auto-FFI resolution") }; case Some(ri) -> { scanPublicTypes(ri, nm, typeIndex); scanValueTypes(ri, vtypeSet) } }
+    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) {
+      case None -> {
+        Console.error(
+          "W0007: addAssemblyToIndexesAndValueTypes: failed to parse '" + asmPath +
+            "' as a .NET assembly — its types will fall back to the default assembly in auto-FFI resolution"
+        )
+      }
+      case Some(ri) -> {
+        scanPublicTypes(ri, nm, typeIndex)
+        scanValueTypes(ri, vtypeSet)
+      }
+    }
   }
 }
 
@@ -2352,7 +2461,11 @@ pub func addAssemblyValueTypes(vtypeSet: in Map[String, Bool], asmPath: in Strin
   match File.readBytes(asmPath) {
     case Err(_) -> {
     }
-    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> {  }; case Some(ri) -> scanValueTypes(ri, vtypeSet) }
+    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) {
+      case None -> {
+      }
+      case Some(ri) -> scanValueTypes(ri, vtypeSet)
+    }
   }
 }
 
@@ -2491,7 +2604,10 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
     }
     case STClass(pt) -> match arg { case STClass(at) -> if at == pt { 2 } else { -1 }; case _ -> -1 }
     case STValueType(pt) -> match arg { case STValueType(at) -> if at == pt { 2 } else { -1 }; case _ -> -1 }
-    case STNamed(pfqn, pvt) -> match arg { case STNamed(afqn, avt) -> if afqn == pfqn and avt == pvt { 2 } else { -1 }; case _ -> -1 }
+    case STNamed(pfqn, pvt) -> match arg {
+      case STNamed(afqn, avt) -> if afqn == pfqn and avt == pvt { 2 } else { -1 }
+      case _ -> -1
+    }
     case STSzArray(pe) -> match arg {
       // CLR arrays with value-type elements are invariant — `int[]` cannot be
       // passed where `long[]` is expected.  Only accept an exact element match
@@ -3030,7 +3146,26 @@ pub func resolveOverload(
 ): Option[ResolvedMethod] {
   match File.readBytes(asmPath) {
     case Err(_) -> None
-    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> resolveOverloadIn(img, layout, th, typeFqn, member, argTypes) } } } }
+    case Ok(raw) -> match readPe(raw.toArray()) {
+      case Err(_) -> None
+      case Ok(img) -> match readMetadataRoot(img) {
+        case Err(_) -> None
+        case Ok(root) -> match readTablesHeader(img, root) {
+          case Err(_) -> None
+          case Ok(th) -> match computeLayout(img, root, th) {
+            case Err(_) -> None
+            case Ok(layout) -> resolveOverloadIn(
+              img,
+              layout,
+              th,
+              typeFqn,
+              member,
+              argTypes
+            )
+          }
+        }
+      }
+    }
   }
 }
 
@@ -3068,7 +3203,25 @@ pub record MdrParsedAssembly {
 pub func loadParsedAssembly(asmPath: in String): Option[MdrParsedAssembly] {
   match File.readBytes(asmPath) {
     case Err(_) -> None
-    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> Some(value = MdrParsedAssembly(img = img, layout = layout, th = th)) } } } }
+    case Ok(raw) -> match readPe(raw.toArray()) {
+      case Err(_) -> None
+      case Ok(img) -> match readMetadataRoot(img) {
+        case Err(_) -> None
+        case Ok(root) -> match readTablesHeader(img, root) {
+          case Err(_) -> None
+          case Ok(th) -> match computeLayout(img, root, th) {
+            case Err(_) -> None
+            case Ok(layout) -> Some(
+              value = MdrParsedAssembly(
+                img = img,
+                layout = layout,
+                th = th
+              )
+            )
+          }
+        }
+      }
+    }
   }
 }
 
@@ -3484,7 +3637,26 @@ pub func resolveExternMethodScored(
 ): Option[DecodedMethodSig] {
   match File.readBytes(asmPath) {
     case Err(_) -> None
-    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> resolveExternMethodScoredIn(img, layout, th, typeFqn, member, fullArgTypes) } } } }
+    case Ok(raw) -> match readPe(raw.toArray()) {
+      case Err(_) -> None
+      case Ok(img) -> match readMetadataRoot(img) {
+        case Err(_) -> None
+        case Ok(root) -> match readTablesHeader(img, root) {
+          case Err(_) -> None
+          case Ok(th) -> match computeLayout(img, root, th) {
+            case Err(_) -> None
+            case Ok(layout) -> resolveExternMethodScoredIn(
+              img,
+              layout,
+              th,
+              typeFqn,
+              member,
+              fullArgTypes
+            )
+          }
+        }
+      }
+    }
   }
 }
 
@@ -3567,7 +3739,7 @@ pub func allMethodSigsOn(
 }
 
 // True iff `typeFqn` resolves to an interface in this assembly.  Returns false
-// when the type is absent — callers (e.g. the F0020 check) treat absence
+// when the type is absent — callers (e.g. the F0034 check) treat absence
 // separately because it usually means the reference pack does not carry the
 // declaring assembly, not that the type is mis-declared.
 pub func typeIsInterface(img: in PeImage, layout: in TableLayout, th: in TablesHeader, typeFqn: in String): Bool {
@@ -3596,7 +3768,32 @@ pub record InterfaceInspection {
 pub func inspectInterfaceTarget(asmPath: in String, typeFqn: in String): Option[InterfaceInspection] {
   match File.readBytes(asmPath) {
     case Err(_) -> None
-    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> match allMethodSigsOn(img, layout, th, typeFqn) { case None -> None; case Some(ms) -> Some(value = InterfaceInspection(isInterface = typeIsInterface(img, layout, th, typeFqn), methods = ms)) } } } } }
+    case Ok(raw) -> match readPe(raw.toArray()) {
+      case Err(_) -> None
+      case Ok(img) -> match readMetadataRoot(img) {
+        case Err(_) -> None
+        case Ok(root) -> match readTablesHeader(img, root) {
+          case Err(_) -> None
+          case Ok(th) -> match computeLayout(img, root, th) {
+            case Err(_) -> None
+            case Ok(layout) -> match allMethodSigsOn(img, layout, th, typeFqn) {
+              case None -> None
+              case Some(ms) -> Some(
+                value = InterfaceInspection(
+                  isInterface = typeIsInterface(
+                    img,
+                    layout,
+                    th,
+                    typeFqn
+                  ),
+                  methods = ms
+                )
+              )
+            }
+          }
+        }
+      }
+    }
   }
 }
 
@@ -3642,7 +3839,37 @@ pub func resolveOverloadOrBase(
 ): OverloadOrBase {
   match File.readBytes(asmPath) {
     case Err(_) -> OverloadOrBase(found = None, baseFqn = "")
-    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> OverloadOrBase(found = None, baseFqn = ""); case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> OverloadOrBase(found = None, baseFqn = ""); case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> OverloadOrBase(found = None, baseFqn = ""); case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> OverloadOrBase(found = None, baseFqn = ""); case Ok(layout) -> { match resolveOverloadInBases(img, layout, th, typeFqn, member, argTypes, argBases) { case Some(m) -> OverloadOrBase(found = Some(value = m), baseFqn = ""); case None -> { val typeRow = findTypeDefByFqn(img, layout, th, typeFqn); if typeRow < 0 { OverloadOrBase(found = None, baseFqn = "") } else { OverloadOrBase(found = None, baseFqn = resolveTypeDefOrRefName(img, layout, th, readTypeDef(img, layout, typeRow).extendsToken)) } } } } } } } }
+    case Ok(raw) -> match readPe(raw.toArray()) {
+      case Err(_) -> OverloadOrBase(found = None, baseFqn = "")
+      case Ok(img) -> match readMetadataRoot(img) {
+        case Err(_) -> OverloadOrBase(found = None, baseFqn = "")
+        case Ok(root) -> match readTablesHeader(img, root) {
+          case Err(_) -> OverloadOrBase(found = None, baseFqn = "")
+          case Ok(th) -> match computeLayout(img, root, th) {
+            case Err(_) -> OverloadOrBase(
+              found = None,
+              baseFqn = ""
+            )
+            case Ok(layout) -> {
+              match resolveOverloadInBases(img, layout, th, typeFqn, member, argTypes, argBases) {
+                case Some(m) -> OverloadOrBase(found = Some(value = m), baseFqn = "")
+                case None -> {
+                  val typeRow = findTypeDefByFqn(img, layout, th, typeFqn)
+                  if typeRow < 0 {
+                    OverloadOrBase(found = None, baseFqn = "")
+                  } else {
+                    OverloadOrBase(
+                      found = None,
+                      baseFqn = resolveTypeDefOrRefName(img, layout, th, readTypeDef(img, layout, typeRow).extendsToken)
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }
 
@@ -3651,7 +3878,17 @@ pub func resolveOverloadOrBase(
 pub func typeBaseFqn(asmPath: in String, typeFqn: in String): String {
   match File.readBytes(asmPath) {
     case Err(_) -> ""
-    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) { case None -> ""; case Some(ri) -> { val typeRow = findTypeDefByFqn(ri.img, ri.layout, ri.th, typeFqn); if typeRow < 0 { "" } else { resolveTypeDefOrRefName(ri.img, ri.layout, ri.th, readTypeDef(ri.img, ri.layout, typeRow).extendsToken) } } }
+    case Ok(raw) -> match parseAssemblyImage(raw.toArray()) {
+      case None -> ""
+      case Some(ri) -> {
+        val typeRow = findTypeDefByFqn(ri.img, ri.layout, ri.th, typeFqn)
+        if typeRow < 0 {
+          ""
+        } else {
+          resolveTypeDefOrRefName(ri.img, ri.layout, ri.th, readTypeDef(ri.img, ri.layout, typeRow).extendsToken)
+        }
+      }
+    }
   }
 }
 
@@ -3669,7 +3906,17 @@ pub func externBaseChain(
   while depth < 16 {
     match assemblyForType(typeIndex, cur) {
       case None -> return acc
-      case Some(asmName) -> match mapGet(pathIndex, asmName) { case None -> return acc; case Some(asmPath) -> { val base = typeBaseFqn(asmPath, cur); if base.length == 0 or base == "System.ValueType" or base == "System.Enum" { return acc }; acc.add(base); cur = base } }
+      case Some(asmName) -> match mapGet(pathIndex, asmName) {
+        case None -> return acc
+        case Some(asmPath) -> {
+          val base = typeBaseFqn(asmPath, cur)
+          if base.length == 0 or base == "System.ValueType" or base == "System.Enum" {
+            return acc
+          }
+          acc.add(base)
+          cur = base
+        }
+      }
     }
     depth = depth + 1
   }
@@ -3747,7 +3994,21 @@ func resolveExternWalk(
   while depth < 16 and curFqn.length > 0 {
     match assemblyForType(typeIndex, curFqn) {
       case None -> return None
-      case Some(asmName) -> match mapGet(pathIndex, asmName) { case None -> return None; case Some(asmPath) -> { val step = resolveOverloadOrBase(asmPath, curFqn, member, argTypes, argBases); match step.found { case Some(m) -> return Some(value = ResolvedExtern(assemblyName = asmName, declaringFqn = curFqn, sig = m)); case None -> { if member == ".ctor" or step.baseFqn.length == 0 or step.baseFqn == "System.ValueType" or step.baseFqn == "System.Enum" { return None }; curFqn = step.baseFqn } } } }
+      case Some(asmName) -> match mapGet(pathIndex, asmName) {
+        case None -> return None
+        case Some(asmPath) -> {
+          val step = resolveOverloadOrBase(asmPath, curFqn, member, argTypes, argBases)
+          match step.found {
+            case Some(m) -> return Some(value = ResolvedExtern(assemblyName = asmName, declaringFqn = curFqn, sig = m))
+            case None -> {
+              if member == ".ctor" or step.baseFqn.length == 0 or step.baseFqn == "System.ValueType" or step.baseFqn == "System.Enum" {
+                return None
+              }
+              curFqn = step.baseFqn
+            }
+          }
+        }
+      }
     }
     depth = depth + 1
   }

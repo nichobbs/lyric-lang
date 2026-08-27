@@ -467,8 +467,8 @@ pub record CodegenCtx {
   // — without spamming the warning once per impl.  See
   // `warnFfiIndexEmptyOnce` in `validateOneExternImplMsil`.
   ffiIndexEmptyWarned: List[Bool]
-  // Compile-time-detectable codegen errors (#4898): F0020–F0025 (external
-  // interface conformance + try-catch-as-expression Unit/value mismatch)
+  // Compile-time-detectable codegen errors (#4898): F0021–F0025 and F0034
+  // (external interface conformance + try-catch-as-expression Unit/value mismatch)
   // append a positioned `Diagnostic` here instead of calling `panic`, so a
   // genuine user-code error becomes a clean, recoverable build diagnostic
   // rather than an escaped exception.  `codegenMPackage`'s caller
@@ -32458,7 +32458,7 @@ func buildExternIfaceMethodRowsMsil(
 //
 // (Removed in #3865.)  The Phase 2 validation pass
 // (`validateExternImplConformanceMsil`) handles every diagnostic that's
-// actually catchable at build time: F0020 (not-an-interface), F0021 (missing
+// actually catchable at build time: F0034 (not-an-interface), F0021 (missing
 // method), F0022 (parameter type / arity mismatch with STVar substitution),
 // F0023 (return type mismatch).  TypeSpec emission + CLR name-matching
 // produces structurally-valid IL for *any* closed instantiation, and the
@@ -32561,10 +32561,13 @@ pub func collectImplEntriesMsil(cctx: in CodegenCtx, file: in SourceFile, pkgNam
 //
 // Walk every IImpl block whose iface resolves to an external CLR type and
 // match it structurally against the interface metadata's MethodDef table.
-// Emits `F0020`–`F0023` diagnostics:
+// Emits `F0021`–`F0023` and `F0034` diagnostics:
 //
-//   F0020 — the named extern type exists but is NOT an interface
+//   F0034 — the named extern type exists but is NOT an interface
 //           (e.g. user wrote `impl Math for Foo` against `System.Math`).
+//           (Numbered F0034, not F0020, to avoid colliding with
+//           propagate.l's pre-existing F0020 — `?` used in a function
+//           returning neither Result nor Option — see #6648.)
 //   F0021 — an abstract interface method has no matching impl method.
 //   F0022 — an impl method's Nth parameter type / arity does not match.
 //   F0023 — an impl method's return type does not match.
@@ -33031,7 +33034,7 @@ func warnFfiIndexEmptyOnceMsil(cctx: in CodegenCtx): Unit {
   cctx.ffiIndexEmptyWarned.add(true)
   Console.error(
     "lyric: warning: external-interface impl validation is silent-skipped because " +
-      "the .NET reference pack was not found on disk (SDK-less build).  F0020–F0024 " +
+      "the .NET reference pack was not found on disk (SDK-less build).  F0021–F0024, F0034 " +
       "build-time diagnostics for external iface impls are disabled for this run; " +
       "the CLR will surface mismatches at first use as TypeLoadException.  " +
       "Install the .NET SDK to enable validation."
@@ -33082,7 +33085,7 @@ func validateOneExternImplMsil(cctx: in CodegenCtx, decl: in ImplDecl, pkgName: 
           if not insp.isInterface {
             cctx.diagnostics.add(
               errorDiagnostic(
-                "F0020",
+                "F0034",
                 "`impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: '" + ifaceFqn +
                   "' resolves through `extern type` / `import extern` but its .NET metadata is " +
                   "not an interface (TypeAttributes.ClassSemanticsMask = 0). " +
@@ -33126,8 +33129,8 @@ func validateOneExternImplMsil(cctx: in CodegenCtx, decl: in ImplDecl, pkgName: 
 }
 
 // Pre-emission validation pass: walks every IImpl block in the file, and for
-// each block whose iface resolves to an external CLR type, runs F0020–F0023
-// checks against reference-assembly metadata.  Must run AFTER
+// each block whose iface resolves to an external CLR type, runs F0021–F0023
+// and F0034 checks against reference-assembly metadata.  Must run AFTER
 // `scanExternTypesMsil` so `externTypeNames` is populated.  Per D105, runs
 // before `lowerMImpl` so a mis-shaped `impl` becomes a build-time error
 // instead of a CLR `TypeLoadException` on first use.
@@ -33462,7 +33465,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
 
   // ── D105 Phase 2: external-interface impl conformance validation ──────────
   // Runs AFTER collectImplEntriesMsil so the TypeRef row is already reserved
-  // (a fixture file fails F0020–F0023 before it can fail at the CLR loader),
+  // (a fixture file fails F0021–F0023 / F0034 before it can fail at the CLR loader),
   // and BEFORE the IRecord lowering loop so the diagnostic surfaces near the
   // user's code, not from deep inside method-body lowering.
   validateExternImplConformanceMsil(cctx, weavedFile, pkgName)
