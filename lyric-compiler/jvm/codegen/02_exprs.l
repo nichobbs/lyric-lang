@@ -3024,37 +3024,128 @@ func stringValueOfParam(ty: in JvmType): JvmType {
   }
 }
 
-// #4688: strip a trailing ".0" from the `String.valueOf(double)` /
-// `Double.toString` result already on the stack, so a whole-valued Double
-// stringifies as "1500" on the JVM target instead of Java's "1500.0" —
-// matching .NET's default `Double.ToString()` ("G" format), which never
-// emits a trailing ".0".  Values with a genuine fractional part (e.g.
-// "1500.5") are left untouched.  Stack in: [String]; stack out: [String].
-//
-// This codegen's StackMapTable frames (`lowering.l`'s per-function
-// `full_frame` emission) declare an EMPTY operand stack at every branch
-// target — every other branchy path in this file stores its result to a
-// local before a `goto`/label and reloads after the merge, never leaving a
-// value on the stack across one.  Both arms below store the (unchanged or
-// stripped) String back into `sSlot` before falling into `endLabel`, then
-// reload it once, after the merge, for the caller.
-func emitNormalizeDoubleString(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared bytecode-construction helpers for the Double normalizer below: every
+// branch stores its result to a slot rather than leaving it on the stack (see
+// the StackMapTable note on `emitNormalizeDoubleString`), so these operate on
+// slot numbers rather than composing on the stack.
+// ─────────────────────────────────────────────────────────────────────────────
+// Push a String literal and store it to a fresh slot; returns the slot.
+func emitLiteralSlot(ctx: in FuncCtx, insns: in List[LInsn], s: in String): Int {
   val strTy = JRef(className = "java/lang/String")
-  val sSlot = allocSlot(ctx, "__dblstr_s_" + freshLabel(ctx), strTy)
-  emitStore(insns, sSlot, strTy)
+  insns.add(LPushString(s = s))
+  val slot = allocSlot(ctx, "__dblstr_lit_" + freshLabel(ctx), strTy)
+  emitStore(insns, slot, strTy)
+  slot
+}
+
+// Join the Strings held in `slots` (in order) via StringBuilder, leaving the
+// joined String on the stack.  Stack in: empty; stack out: [String].
+func emitConcatSlots(ctx: in FuncCtx, insns: in List[LInsn], slots: in List[Int]): Unit {
+  val strTy = JRef(className = "java/lang/String")
+  insns.add(LNew(className = "java/lang/StringBuilder"))
+  insns.add(LDup)
+  val initPs: List[JvmType] = newList()
+  insns.add(LInvokespecial(owner = "java/lang/StringBuilder", name = "<init>", params = initPs, ret = JVoid))
+  val appPs: List[JvmType] = newList()
+  appPs.add(strTy)
+  var i = 0
+  while i < slots.count {
+    emitLoad(insns, slots[i], strTy)
+    insns.add(
+      LInvokevirtual(
+        owner = "java/lang/StringBuilder",
+        name = "append",
+        params = appPs,
+        ret = JRef(className = "java/lang/StringBuilder")
+      )
+    )
+    i = i + 1
+  }
+  val tsPs: List[JvmType] = newList()
+  insns.add(LInvokevirtual(owner = "java/lang/StringBuilder", name = "toString", params = tsPs, ret = strTy))
+}
+
+// `String.length()` on the String already on the stack.  Stack: [String] -> [Int].
+func emitStrLen(insns: in List[LInsn]): Unit {
+  val ps: List[JvmType] = newList()
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "length", params = ps, ret = JInt))
+}
+
+// `String.substring(int)` — receiver + start index already on the stack.
+// Stack: [String, Int] -> [String].
+func emitStrSubstringFrom(insns: in List[LInsn]): Unit {
+  val ps: List[JvmType] = newList()
+  ps.add(JInt)
+  insns.add(
+    LInvokevirtual(
+      owner = "java/lang/String",
+      name = "substring",
+      params = ps,
+      ret = JRef(className = "java/lang/String")
+    )
+  )
+}
+
+// `String.substring(int, int)` — receiver + begin + end already on the stack.
+// Stack: [String, Int, Int] -> [String].
+func emitStrSubstringRange(insns: in List[LInsn]): Unit {
+  val ps: List[JvmType] = newList()
+  ps.add(JInt)
+  ps.add(JInt)
+  insns.add(
+    LInvokevirtual(
+      owner = "java/lang/String",
+      name = "substring",
+      params = ps,
+      ret = JRef(className = "java/lang/String")
+    )
+  )
+}
+
+// If `negSlot` (a JBoolean local) is true, prefix `bodySlot`'s String with
+// "-"; otherwise copy it unchanged.  Result written to `outSlot` (may alias
+// `bodySlot`).  Stack in/out: empty.
+func emitApplyNegPrefix(
+  ctx: in FuncCtx, insns: in List[LInsn], negSlot: in Int, bodySlot: in Int, outSlot: in Int
+): Unit {
+  val strTy = JRef(className = "java/lang/String")
+  emitLoad(insns, negSlot, JBoolean)
+  val posLabel = freshLabel(ctx)
+  val doneLabel = freshLabel(ctx)
+  insns.add(LIfeq(label = posLabel))
+  val dashSlot = emitLiteralSlot(ctx, insns, "-")
+  val pieces: List[Int] = newList()
+  pieces.add(dashSlot)
+  pieces.add(bodySlot)
+  emitConcatSlots(ctx, insns, pieces)
+  emitStore(insns, outSlot, strTy)
+  insns.add(LGoto(label = doneLabel))
+  insns.add(LLabel(name = posLabel))
+  emitLoad(insns, bodySlot, strTy)
+  emitStore(insns, outSlot, strTy)
+  insns.add(LLabel(name = doneLabel))
+}
+
+// #4688: strip a trailing ".0" from the fixed-point Double string held in
+// `sSlot`, so a whole-valued Double stringifies as "1500" instead of Java's
+// "1500.0" — matching .NET's default `Double.ToString()`, which never emits a
+// trailing ".0".  A genuine fractional part (e.g. "1500.5") is left
+// untouched.  Mutates `sSlot`; stack in/out: empty.
+func emitStripTrailingDotZero(ctx: in FuncCtx, insns: in List[LInsn], sSlot: in Int): Unit {
+  val strTy = JRef(className = "java/lang/String")
   emitLoad(insns, sSlot, strTy)
   insns.add(LPushString(s = ".0"))
   val ewPs: List[JvmType] = newList()
   ewPs.add(strTy)
   insns.add(LInvokevirtual(owner = "java/lang/String", name = "endsWith", params = ewPs, ret = JBoolean))
   val skipLabel = freshLabel(ctx)
-  val endLabel = freshLabel(ctx)
+  val doneLabel = freshLabel(ctx)
   insns.add(LIfeq(label = skipLabel))
   // Strip: substring(0, s.length() - 2), then overwrite sSlot so the
   // operand stack is empty again before the `goto` to the merge point.
   emitLoad(insns, sSlot, strTy)
-  val lenPs: List[JvmType] = newList()
-  insns.add(LInvokevirtual(owner = "java/lang/String", name = "length", params = lenPs, ret = JInt))
+  emitStrLen(insns)
   insns.add(LIconst(v = 2))
   insns.add(LIsub)
   val lenSlot = allocSlot(ctx, "__dblstr_len_" + freshLabel(ctx), JInt)
@@ -3062,13 +3153,352 @@ func emitNormalizeDoubleString(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
   emitLoad(insns, sSlot, strTy)
   insns.add(LIconst(v = 0))
   emitLoad(insns, lenSlot, JInt)
-  val subPs: List[JvmType] = newList()
-  subPs.add(JInt)
-  subPs.add(JInt)
-  insns.add(LInvokevirtual(owner = "java/lang/String", name = "substring", params = subPs, ret = strTy))
+  emitStrSubstringRange(insns)
   emitStore(insns, sSlot, strTy)
-  insns.add(LGoto(label = endLabel))
+  insns.add(LGoto(label = doneLabel))
   insns.add(LLabel(name = skipLabel))
+  insns.add(LLabel(name = doneLabel))
+}
+
+// #4688 / #5660: normalize the `String.valueOf(double)` / `Double.toString`
+// result already on the stack onto .NET's default `Double.ToString()`
+// rendering.  Java and .NET agree on the digits (both use a shortest
+// round-trippable decimal expansion) but disagree on (a) whether a whole
+// value keeps a trailing ".0" (#4688) and (b) the magnitude thresholds for
+// switching to scientific ("E") notation (#5660): Java switches at
+// |value| >= 1e7 or < 1e-3, .NET at |value| >= 1e17 or < 1e-4.  So a value
+// can land in three different regimes:
+//   1. Neither target uses scientific notation — Java's fixed-point range is
+//      a strict subset of .NET's, so the #4688 trailing-".0" strip is the
+//      only work needed.
+//   2. Java uses scientific notation but the magnitude is still within
+//      .NET's (wider) fixed-point range (1e-4 <= |value| < 1e17) — Java's
+//      "D.DDDEn" digits are re-laid-out into plain decimal by shifting the
+//      point per the exponent.
+//   3. The magnitude is outside .NET's fixed-point range too — both targets
+//      use scientific notation, but .NET's format differs from Java's (no
+//      forced ".0" mantissa suffix, an explicit "+"/"-" exponent sign, and
+//      the exponent zero-padded to at least 2 digits), so the digits are
+//      re-assembled into .NET's own spelling.
+//
+// Stack in: [String]; stack out: [String].
+//
+// This codegen's StackMapTable frames (`lowering.l`'s per-function
+// `full_frame` emission) declare an EMPTY operand stack at every branch
+// target — every branchy path below stores its result to a slot before a
+// `goto`/label and reloads after the merge, never leaving a value on the
+// stack across one.
+func emitNormalizeDoubleString(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
+  val strTy = JRef(className = "java/lang/String")
+  val objTy = JRef(className = "java/lang/Object")
+
+  val sSlot = allocSlot(ctx, "__dblstr_s_" + freshLabel(ctx), strTy)
+  emitStore(insns, sSlot, strTy)
+
+  // Locate Java's exponent marker 'E' (always uppercase, always present when
+  // Java rendered scientific notation).
+  emitLoad(insns, sSlot, strTy)
+  insns.add(LIconst(v = 69)) // 'E'
+  val idxPs: List[JvmType] = newList()
+  idxPs.add(JInt)
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "indexOf", params = idxPs, ret = JInt))
+  val eIdxSlot = allocSlot(ctx, "__dblstr_eidx_" + freshLabel(ctx), JInt)
+  emitStore(insns, eIdxSlot, JInt)
+
+  val sciSourceLabel = freshLabel(ctx)
+  val endLabel = freshLabel(ctx)
+  emitLoad(insns, eIdxSlot, JInt)
+  insns.add(LIconst(v = 0))
+  insns.add(LIfIcmpge(label = sciSourceLabel))
+
+  // ── Regime 1: Java gave fixed-point notation. ──
+  emitStripTrailingDotZero(ctx, insns, sSlot)
+  insns.add(LGoto(label = endLabel))
+
+  // ── Java gave scientific notation: parse the "[-]D.DDD" mantissa and the
+  // exponent, then re-derive .NET's own rendering from the digits. ──
+  insns.add(LLabel(name = sciSourceLabel))
+
+  // mantissaStr = s.substring(0, eIdx); expStr = s.substring(eIdx + 1)
+  emitLoad(insns, sSlot, strTy)
+  insns.add(LIconst(v = 0))
+  emitLoad(insns, eIdxSlot, JInt)
+  emitStrSubstringRange(insns)
+  val mantissaSlot = allocSlot(ctx, "__dblstr_mant_" + freshLabel(ctx), strTy)
+  emitStore(insns, mantissaSlot, strTy)
+
+  emitLoad(insns, sSlot, strTy)
+  emitLoad(insns, eIdxSlot, JInt)
+  insns.add(LIconst(v = 1))
+  insns.add(LIadd)
+  emitStrSubstringFrom(insns)
+  val expStrSlot = allocSlot(ctx, "__dblstr_expstr_" + freshLabel(ctx), strTy)
+  emitStore(insns, expStrSlot, strTy)
+
+  // exp = Integer.parseInt(expStr)
+  emitLoad(insns, expStrSlot, strTy)
+  val parsePs: List[JvmType] = newList()
+  parsePs.add(strTy)
+  insns.add(LInvokestatic(owner = "java/lang/Integer", name = "parseInt", params = parsePs, ret = JInt))
+  val expSlot = allocSlot(ctx, "__dblstr_exp_" + freshLabel(ctx), JInt)
+  emitStore(insns, expSlot, JInt)
+
+  // isNeg = mantissaStr.startsWith("-")
+  emitLoad(insns, mantissaSlot, strTy)
+  insns.add(LPushString(s = "-"))
+  val swPs: List[JvmType] = newList()
+  swPs.add(strTy)
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "startsWith", params = swPs, ret = JBoolean))
+  val negSlot = allocSlot(ctx, "__dblstr_neg_" + freshLabel(ctx), JBoolean)
+  emitStore(insns, negSlot, JBoolean)
+
+  // digitsMantissa = isNeg ? mantissaStr.substring(1) : mantissaStr
+  val digitsMantissaSlot = allocSlot(ctx, "__dblstr_dm_" + freshLabel(ctx), strTy)
+  emitLoad(insns, negSlot, JBoolean)
+  val notNegLabel = freshLabel(ctx)
+  val dmDoneLabel = freshLabel(ctx)
+  insns.add(LIfeq(label = notNegLabel))
+  emitLoad(insns, mantissaSlot, strTy)
+  insns.add(LIconst(v = 1))
+  emitStrSubstringFrom(insns)
+  emitStore(insns, digitsMantissaSlot, strTy)
+  insns.add(LGoto(label = dmDoneLabel))
+  insns.add(LLabel(name = notNegLabel))
+  emitLoad(insns, mantissaSlot, strTy)
+  emitStore(insns, digitsMantissaSlot, strTy)
+  insns.add(LLabel(name = dmDoneLabel))
+
+  // intDigitStr = digitsMantissa.substring(0, 1); fracPart = digitsMantissa.substring(2)
+  emitLoad(insns, digitsMantissaSlot, strTy)
+  insns.add(LIconst(v = 0))
+  insns.add(LIconst(v = 1))
+  emitStrSubstringRange(insns)
+  val intDigitSlot = allocSlot(ctx, "__dblstr_d0_" + freshLabel(ctx), strTy)
+  emitStore(insns, intDigitSlot, strTy)
+
+  emitLoad(insns, digitsMantissaSlot, strTy)
+  insns.add(LIconst(v = 2))
+  emitStrSubstringFrom(insns)
+  val fracPartSlot = allocSlot(ctx, "__dblstr_frac_" + freshLabel(ctx), strTy)
+  emitStore(insns, fracPartSlot, strTy)
+
+  // sigDigits = fracPart.equals("0") ? intDigitStr : (intDigitStr + fracPart)
+  // (Java's shortest round-trip mantissa never carries a trailing zero
+  // beyond this single mandatory placeholder digit, so no further trimming
+  // of `fracPart` is needed once it is known to be non-"0".)
+  emitLoad(insns, fracPartSlot, strTy)
+  insns.add(LPushString(s = "0"))
+  val eqPs: List[JvmType] = newList()
+  eqPs.add(objTy)
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs, ret = JBoolean))
+  val sigDigitsSlot = allocSlot(ctx, "__dblstr_sig_" + freshLabel(ctx), strTy)
+  val fracNonZeroLabel = freshLabel(ctx)
+  val sigDoneLabel = freshLabel(ctx)
+  insns.add(LIfeq(label = fracNonZeroLabel))
+  emitLoad(insns, intDigitSlot, strTy)
+  emitStore(insns, sigDigitsSlot, strTy)
+  insns.add(LGoto(label = sigDoneLabel))
+  insns.add(LLabel(name = fracNonZeroLabel))
+  val sigPieces: List[Int] = newList()
+  sigPieces.add(intDigitSlot)
+  sigPieces.add(fracPartSlot)
+  emitConcatSlots(ctx, insns, sigPieces)
+  emitStore(insns, sigDigitsSlot, strTy)
+  insns.add(LLabel(name = sigDoneLabel))
+
+  // nSig = sigDigits.length()
+  emitLoad(insns, sigDigitsSlot, strTy)
+  emitStrLen(insns)
+  val nSigSlot = allocSlot(ctx, "__dblstr_nsig_" + freshLabel(ctx), JInt)
+  emitStore(insns, nSigSlot, JInt)
+
+  // .NET's fixed-point range is -4 <= exp <= 16; outside it, .NET also uses
+  // scientific notation (but in its own spelling — see the "sci" arm below).
+  val sciTargetLabel = freshLabel(ctx)
+  emitLoad(insns, expSlot, JInt)
+  insns.add(LIconst(v = -4))
+  insns.add(LIfIcmplt(label = sciTargetLabel))
+  emitLoad(insns, expSlot, JInt)
+  insns.add(LIconst(v = 16))
+  insns.add(LIfIcmpgt(label = sciTargetLabel))
+
+  // ── Regime 2: reformat as plain fixed-point decimal. ──
+  val bodySlot = allocSlot(ctx, "__dblstr_body_" + freshLabel(ctx), strTy)
+  val negExpLabel = freshLabel(ctx)
+  val fixedBodyDoneLabel = freshLabel(ctx)
+  emitLoad(insns, expSlot, JInt)
+  insns.add(LIconst(v = 0))
+  insns.add(LIfIcmplt(label = negExpLabel))
+
+  // exp >= 0: pointPos = exp + 1 digits precede the decimal point.
+  emitLoad(insns, expSlot, JInt)
+  insns.add(LIconst(v = 1))
+  insns.add(LIadd)
+  val pointPosSlot = allocSlot(ctx, "__dblstr_pp_" + freshLabel(ctx), JInt)
+  emitStore(insns, pointPosSlot, JInt)
+
+  val wholeNumLabel = freshLabel(ctx)
+  val posExpDoneLabel = freshLabel(ctx)
+  emitLoad(insns, pointPosSlot, JInt)
+  emitLoad(insns, nSigSlot, JInt)
+  insns.add(LIfIcmpge(label = wholeNumLabel))
+  // pointPos < nSig: a genuine fractional part remains.
+  emitLoad(insns, sigDigitsSlot, strTy)
+  insns.add(LIconst(v = 0))
+  emitLoad(insns, pointPosSlot, JInt)
+  emitStrSubstringRange(insns)
+  val fracHeadSlot = allocSlot(ctx, "__dblstr_p1_" + freshLabel(ctx), strTy)
+  emitStore(insns, fracHeadSlot, strTy)
+  emitLoad(insns, sigDigitsSlot, strTy)
+  emitLoad(insns, pointPosSlot, JInt)
+  emitStrSubstringFrom(insns)
+  val fracTailSlot = allocSlot(ctx, "__dblstr_p2_" + freshLabel(ctx), strTy)
+  emitStore(insns, fracTailSlot, strTy)
+  val dotLitSlot = emitLiteralSlot(ctx, insns, ".")
+  val fracPieces: List[Int] = newList()
+  fracPieces.add(fracHeadSlot)
+  fracPieces.add(dotLitSlot)
+  fracPieces.add(fracTailSlot)
+  emitConcatSlots(ctx, insns, fracPieces)
+  emitStore(insns, bodySlot, strTy)
+  insns.add(LGoto(label = posExpDoneLabel))
+  insns.add(LLabel(name = wholeNumLabel))
+  // pointPos >= nSig: pad with trailing zeros, no decimal point.
+  emitLoad(insns, pointPosSlot, JInt)
+  emitLoad(insns, nSigSlot, JInt)
+  insns.add(LIsub)
+  val zerosNeededSlot = allocSlot(ctx, "__dblstr_zn_" + freshLabel(ctx), JInt)
+  emitStore(insns, zerosNeededSlot, JInt)
+  insns.add(LPushString(s = "0"))
+  emitLoad(insns, zerosNeededSlot, JInt)
+  val repeatPs: List[JvmType] = newList()
+  repeatPs.add(JInt)
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "repeat", params = repeatPs, ret = strTy))
+  val zerosSlot = allocSlot(ctx, "__dblstr_zeros_" + freshLabel(ctx), strTy)
+  emitStore(insns, zerosSlot, strTy)
+  val wholePieces: List[Int] = newList()
+  wholePieces.add(sigDigitsSlot)
+  wholePieces.add(zerosSlot)
+  emitConcatSlots(ctx, insns, wholePieces)
+  emitStore(insns, bodySlot, strTy)
+  insns.add(LLabel(name = posExpDoneLabel))
+  insns.add(LGoto(label = fixedBodyDoneLabel))
+
+  insns.add(LLabel(name = negExpLabel))
+  // exp in [-4, -1]: "0." followed by (-exp - 1) zeros, then the digits.
+  emitLoad(insns, expSlot, JInt)
+  insns.add(LIneg)
+  insns.add(LIconst(v = 1))
+  insns.add(LIsub)
+  val zerosNeeded2Slot = allocSlot(ctx, "__dblstr_zn2_" + freshLabel(ctx), JInt)
+  emitStore(insns, zerosNeeded2Slot, JInt)
+  insns.add(LPushString(s = "0"))
+  emitLoad(insns, zerosNeeded2Slot, JInt)
+  val repeatPs2: List[JvmType] = newList()
+  repeatPs2.add(JInt)
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "repeat", params = repeatPs2, ret = strTy))
+  val zeros2Slot = allocSlot(ctx, "__dblstr_zeros2_" + freshLabel(ctx), strTy)
+  emitStore(insns, zeros2Slot, strTy)
+  val zeroDotSlot = emitLiteralSlot(ctx, insns, "0.")
+  val negExpPieces: List[Int] = newList()
+  negExpPieces.add(zeroDotSlot)
+  negExpPieces.add(zeros2Slot)
+  negExpPieces.add(sigDigitsSlot)
+  emitConcatSlots(ctx, insns, negExpPieces)
+  emitStore(insns, bodySlot, strTy)
+  insns.add(LLabel(name = fixedBodyDoneLabel))
+
+  emitApplyNegPrefix(ctx, insns, negSlot, bodySlot, sSlot)
+  insns.add(LGoto(label = endLabel))
+
+  // ── Regime 3: outside .NET's fixed-point range too — rebuild .NET's own
+  // scientific spelling ("D[.DDD]E[+-]NN", exponent zero-padded to >= 2
+  // digits, no forced ".0" mantissa suffix). ──
+  insns.add(LLabel(name = sciTargetLabel))
+  val mantissaOutSlot = allocSlot(ctx, "__dblstr_mout_" + freshLabel(ctx), strTy)
+  val multiDigitLabel = freshLabel(ctx)
+  val mantissaDoneLabel = freshLabel(ctx)
+  emitLoad(insns, nSigSlot, JInt)
+  insns.add(LIconst(v = 1))
+  insns.add(LIfIcmpgt(label = multiDigitLabel))
+  emitLoad(insns, sigDigitsSlot, strTy)
+  emitStore(insns, mantissaOutSlot, strTy)
+  insns.add(LGoto(label = mantissaDoneLabel))
+  insns.add(LLabel(name = multiDigitLabel))
+  emitLoad(insns, sigDigitsSlot, strTy)
+  insns.add(LIconst(v = 0))
+  insns.add(LIconst(v = 1))
+  emitStrSubstringRange(insns)
+  val firstDigitSlot = allocSlot(ctx, "__dblstr_fd_" + freshLabel(ctx), strTy)
+  emitStore(insns, firstDigitSlot, strTy)
+  emitLoad(insns, sigDigitsSlot, strTy)
+  insns.add(LIconst(v = 1))
+  emitStrSubstringFrom(insns)
+  val restDigitsSlot = allocSlot(ctx, "__dblstr_rest_" + freshLabel(ctx), strTy)
+  emitStore(insns, restDigitsSlot, strTy)
+  val mantDotSlot = emitLiteralSlot(ctx, insns, ".")
+  val mantPieces: List[Int] = newList()
+  mantPieces.add(firstDigitSlot)
+  mantPieces.add(mantDotSlot)
+  mantPieces.add(restDigitsSlot)
+  emitConcatSlots(ctx, insns, mantPieces)
+  emitStore(insns, mantissaOutSlot, strTy)
+  insns.add(LLabel(name = mantissaDoneLabel))
+
+  // expAbs = Math.abs(exp); expDigits = String.valueOf(expAbs), left-padded
+  // with "0" to at least 2 digits.
+  emitLoad(insns, expSlot, JInt)
+  val absPs: List[JvmType] = newList()
+  absPs.add(JInt)
+  insns.add(LInvokestatic(owner = "java/lang/Math", name = "abs", params = absPs, ret = JInt))
+  val expAbsSlot = allocSlot(ctx, "__dblstr_eabs_" + freshLabel(ctx), JInt)
+  emitStore(insns, expAbsSlot, JInt)
+  emitLoad(insns, expAbsSlot, JInt)
+  val voPs: List[JvmType] = newList()
+  voPs.add(JInt)
+  insns.add(LInvokestatic(owner = "java/lang/String", name = "valueOf", params = voPs, ret = strTy))
+  val expDigitsSlot = allocSlot(ctx, "__dblstr_edig_" + freshLabel(ctx), strTy)
+  emitStore(insns, expDigitsSlot, strTy)
+  val noPadLabel = freshLabel(ctx)
+  emitLoad(insns, expDigitsSlot, strTy)
+  emitStrLen(insns)
+  insns.add(LIconst(v = 1))
+  insns.add(LIfIcmpne(label = noPadLabel))
+  val zeroPadSlot = emitLiteralSlot(ctx, insns, "0")
+  val padPieces: List[Int] = newList()
+  padPieces.add(zeroPadSlot)
+  padPieces.add(expDigitsSlot)
+  emitConcatSlots(ctx, insns, padPieces)
+  emitStore(insns, expDigitsSlot, strTy)
+  insns.add(LLabel(name = noPadLabel))
+
+  // sign = exp >= 0 ? "+" : "-"
+  val signSlot = allocSlot(ctx, "__dblstr_sign_" + freshLabel(ctx), strTy)
+  val negSignLabel = freshLabel(ctx)
+  val signDoneLabel = freshLabel(ctx)
+  emitLoad(insns, expSlot, JInt)
+  insns.add(LIconst(v = 0))
+  insns.add(LIfIcmplt(label = negSignLabel))
+  insns.add(LPushString(s = "+"))
+  emitStore(insns, signSlot, strTy)
+  insns.add(LGoto(label = signDoneLabel))
+  insns.add(LLabel(name = negSignLabel))
+  insns.add(LPushString(s = "-"))
+  emitStore(insns, signSlot, strTy)
+  insns.add(LLabel(name = signDoneLabel))
+
+  val eLitSlot = emitLiteralSlot(ctx, insns, "E")
+  val body2Slot = allocSlot(ctx, "__dblstr_body2_" + freshLabel(ctx), strTy)
+  val sciPieces: List[Int] = newList()
+  sciPieces.add(mantissaOutSlot)
+  sciPieces.add(eLitSlot)
+  sciPieces.add(signSlot)
+  sciPieces.add(expDigitsSlot)
+  emitConcatSlots(ctx, insns, sciPieces)
+  emitStore(insns, body2Slot, strTy)
+
+  emitApplyNegPrefix(ctx, insns, negSlot, body2Slot, sSlot)
+
   insns.add(LLabel(name = endLabel))
   emitLoad(insns, sSlot, strTy)
 }

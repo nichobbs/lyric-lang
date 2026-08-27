@@ -36,6 +36,13 @@
 //!       hoisted-holder-cell element type (Float/Long/Int/Byte/Double/Bool/
 //!       Char, plus the default JRef branch via String) gets a real
 //!       regression test; `JShort` has no reachable Lyric surface type.
+//!   15. Double stringification matches .NET at and beyond Java's own
+//!       scientific-notation threshold (#5660): Java's Double.toString()
+//!       switches to "E" notation at |value| >= 1e7 or < 1e-3, .NET's
+//!       default ToString() only at |value| >= 1e17 or < 1e-4 — the gap
+//!       between those two thresholds is re-laid-out into plain decimal,
+//!       and magnitudes beyond .NET's own threshold are re-spelled in
+//!       .NET's "D[.DDD]E[+-]NN" form instead of Java's.
 @test_module
 package Lyric.SilentMiscompileGuardJvmSelfTest
 
@@ -498,4 +505,57 @@ test "zero and negative whole Doubles omit trailing .0" {
   val neg: Double = -5.0
   assertEqual(z.toString(), "0", "0.0.toString() == \"0\"")
   assertEqual(neg.toString(), "-5", "(-5.0).toString() == \"-5\"")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 15. Double stringification matches .NET at and beyond Java's own
+//     scientific-notation threshold (#5660, docs/44 m-21 follow-up).  Java's
+//     `Double.toString()` switches to "D.DDDEn" notation at |value| >= 1e7 or
+//     < 1e-3; .NET's default `ToString()` only does so at |value| >= 1e17 or
+//     < 1e-4.  `emitNormalizeDoubleString` re-derives whichever of .NET's two
+//     notations actually applies to the magnitude from Java's digits.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a whole Double just above Java's 1e7 threshold renders as plain decimal" {
+  val d: Double = 20000000.0
+  assertEqual(d.toString(), "20000000", "20000000.0 stays plain decimal (.NET's threshold is 1e17)")
+}
+
+test "a whole Double just below Java's 1e7 threshold is unaffected" {
+  val d: Double = 9999999.0
+  assertEqual(d.toString(), "9999999", "9999999.0.toString() == \"9999999\"")
+}
+
+test "a negative whole Double above 1e7 renders as plain decimal" {
+  val d: Double = -20000000.0
+  assertEqual(d.toString(), "-20000000", "-20000000.0.toString() == \"-20000000\"")
+}
+
+test "a fractional Double above 1e7 renders as plain decimal" {
+  val d: Double = 123456789.123
+  assertEqual(d.toString(), "123456789.123", "123456789.123 stays plain decimal")
+}
+
+test "a Double at .NET's own 1e17 scientific threshold matches .NET's spelling" {
+  val d: Double = 1e17
+  assertEqual(d.toString(), "1E+17", "1e17 uses .NET's E+NN spelling, not Java's E17")
+}
+
+test "a large multi-digit-mantissa Double matches .NET's scientific spelling" {
+  val d: Double = 1.5e20
+  assertEqual(d.toString(), "1.5E+20", "1.5e20 keeps its mantissa digits under .NET's spelling")
+}
+
+test "a very small Double below .NET's 1e-4 threshold matches .NET's spelling" {
+  val d: Double = 1e-10
+  assertEqual(d.toString(), "1E-10", "1e-10 uses .NET's E-NN spelling")
+}
+
+test "a Double whose exponent needs zero-padding matches .NET's spelling" {
+  val d: Double = 1e-5
+  assertEqual(d.toString(), "1E-05", "1e-5's exponent is zero-padded to 2 digits, matching .NET")
+}
+
+test "a small Double within Java's scientific range but .NET's fixed range stays plain" {
+  val d: Double = 0.0001
+  assertEqual(d.toString(), "0.0001", "1e-4 stays plain decimal under .NET's wider fixed-point range")
 }
