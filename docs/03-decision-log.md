@@ -35309,9 +35309,13 @@ finding.
 **Fix.** Added `maxInterimResponses: Int = 20` (mirroring
 `maxTrailerLines`'s doc-comment rationale) and an `interimCount` counter
 in `readResponse`'s loop, checked at the top of each iteration before
-attempting to read the next header block: `if interimCount >
+attempting to read the next header block: `if interimCount >=
 maxInterimResponses { return Err(...) }`, incremented once per discarded
-interim response. 20 is deliberately generous — real interim responses
+interim response. (The seventh review round found this originally shipped
+as `>` rather than `>=`, off-by-one-permitting 21 interim responses
+rather than the documented 20 before rejecting — harmless, since it made
+the cap more lenient than described rather than less safe, but corrected
+to `>=` so the constant means what it says.) 20 is deliberately generous — real interim responses
 (100 Continue, 103 Early Hints) are sent at most once or twice per
 request in practice — while still bounding worst-case memory to
 `maxInterimResponses * maxResponseHeaderBytes` instead of unbounded.

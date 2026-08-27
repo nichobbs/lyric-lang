@@ -1304,7 +1304,7 @@ func readResponse(conn: in Tcp.Conn, method: in String): Result[HttpResponseMess
   var searchFrom = 0
   var interimCount = 0
   while true {
-    if interimCount > maxInterimResponses {
+    if interimCount >= maxInterimResponses {
       return Err(error = "response exceeds the maximum allowed number of interim (1xx) responses")
     }
     val headerEndIdx = match readUntilPatternFrom(conn, buf, searchFrom, crlfcrlfBytes(), maxResponseHeaderBytes) {
