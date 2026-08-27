@@ -3651,7 +3651,7 @@ pub func collectFileSigsSeeded(
       }
       case IEnum(decl) -> {
         // Enum-case value/pattern resolution (docs/59 §4.4): register each
-        // variant under the type-scoped `enum:<Enum>.<Case>` key and the bare
+        // variant under the type-scoped `enumty:<Enum>.<Case>` key and the bare
         // `enumcase:<Case>` key (plus its `<owner>/`-qualified form so the
         // bridge's import-aware overlay re-points the bare key per file), sig
         // owner = the declaring enum's JVM class.  Mirrors the MSIL
@@ -3659,8 +3659,8 @@ pub func collectFileSigsSeeded(
         // `public static final` singleton field `lowerEnum` emits, read via
         // `getstatic` and pattern-tested by reference identity.
         val enumCls = owner + "/" + decl.name
-        // Package-qualified key (`enum:<dotted package>.<Case>`, e.g.
-        // "enum:Std.Http.GET"), alongside the type-scoped `enum:<Enum>.<Case>`
+        // Package-qualified key (`enumpkg:<dotted package>.<Case>`, e.g.
+        // "enumpkg:Std.Http.GET"), alongside the type-scoped `enumty:<Enum>.<Case>`
         // key above: Lyric enum cases are conventionally referenced through
         // their declaring PACKAGE, not an explicit `<EnumType>.` segment
         // (`Std.Http.GET`, not `Std.Http.HttpMethod.GET`) — mirrors MSIL's
@@ -3689,7 +3689,20 @@ pub func collectFileSigsSeeded(
             // nullary case reference is `EMember`, never `ECall`.
             retIsUnsigned = false
           )
-          val etkey = "enum:" + decl.name + "." + ecn
+          // #6683: each tier below gets its OWN key prefix (`enumty:` /
+          // `enumfull:` / `enumpkg:`) so a type-scoped, package-scoped, or
+          // (package, TYPE)-scoped key can never alias one another just
+          // because `dottedPkg`/`decl.name` are ordinary user-controlled
+          // identifiers whose concatenation happens to collide (e.g.
+          // package `Std.Http` declaring `enum Status { case Ok }` — old
+          // epkey "enum:Std.Http.Ok" — versus package `Std` declaring
+          // `enum Http { case Ok }` — old efkey "enum:Std.Http.Ok" too).
+          // Sharing one flat "enum:" namespace meant the `not containsKey`
+          // guard on one tier could silently skip registering an unrelated
+          // entry in a DIFFERENT tier that happened to produce the same
+          // string, with no poison/ambiguity detection at all (the #6640
+          // poison mechanism only fires on a same-KEY-same-tier conflict).
+          val etkey = "enumty:" + decl.name + "." + ecn
           if not into.containsKey(etkey) {
             into.add(etkey, esig)
           }
@@ -3706,11 +3719,11 @@ pub func collectFileSigsSeeded(
           // enum, poison it (`enumVariantClassByPkg` refuses a poisoned
           // key) instead of leaving it pointed at whichever enum
           // registered first.
-          val efkey = "enum:" + dottedPkg + "." + decl.name + "." + ecn
+          val efkey = "enumfull:" + dottedPkg + "." + decl.name + "." + ecn
           if not into.containsKey(efkey) {
             into.add(efkey, esig)
           }
-          val epkey = "enum:" + dottedPkg + "." + ecn
+          val epkey = "enumpkg:" + dottedPkg + "." + ecn
           match mapGet(into, epkey) {
             case Some(existingSig) -> {
               if existingSig.owner != enumCls {

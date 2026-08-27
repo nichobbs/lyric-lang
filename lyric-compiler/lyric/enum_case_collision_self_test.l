@@ -176,6 +176,8 @@ import Std.Uuid
 import Std.Environment as Environment
 import Msil.Bridge
 import Jvm.Bridge
+import Jvm.Codegen
+import Lyric.Parser
 import Lyric.RestoredPackages
 import Lyric.ContractMeta as Meta
 import Lyric.Emitter as Emitter
@@ -782,6 +784,102 @@ test "dotnet: package-qualified pattern match resolves the right ordinal for sib
   )
 }
 
+// ─── #6639 (residual): package-qualified case CONSTRUCTION (EPath value
+// position), not just pattern match ────────────────────────────────────────
+// The earlier #6639 fix only touched `lowerPatternTestMsil` (the `case
+// Pkg.Case ->` pattern-test arm). `lowerExprMsil`'s `EPath` arm — reached by
+// a package-qualified case reference used as a VALUE (`val x: T =
+// SiblingEnums.On`), not as a pattern — has the identical bug: its
+// `qualifiedOrdHit` lookup (`enumCaseOrdinals["<pkg>.<case>"]`, no enum TYPE
+// name) was given priority over the type-scoped `hintedOrd` a `val`
+// annotation pushes, so it silently resolved `SiblingEnums.On` to whichever
+// of `Beam`/`Ray` registered `On` first regardless of the annotated target
+// type. Reuses the `SiblingEnums` fixture (`Beam.On` = 1, `Ray.On` = 0) so a
+// misrouted construction produces an observably WRONG match arm.
+func siblingEnumsValueAppSource(): String {
+  "package SiblingEnumsValueApp\n" + "\n" + "import SiblingEnums\n" + "\n" + "func main(): Int {\n" +
+    "  val beam: SiblingEnums.Beam = SiblingEnums.On\n" +
+    "  val ray: SiblingEnums.Ray = SiblingEnums.On\n" +
+    "  match beam {\n" +
+    "    case SiblingEnums.On -> println(\"vbeam-on\")\n" +
+    "    case SiblingEnums.Off -> println(\"vbeam-off\")\n" +
+    "  }\n" +
+    "  match ray {\n" +
+    "    case SiblingEnums.On -> println(\"vray-on\")\n" +
+    "    case SiblingEnums.Idle -> println(\"vray-idle\")\n" +
+    "  }\n" +
+    "  0\n" +
+    "}\n"
+}
+
+func expectedSiblingEnumsValueStdout(): String {
+  "vbeam-on\nvray-on"
+}
+
+test "dotnet: package-qualified case CONSTRUCTION (value position) resolves the right ordinal for sibling same-package enums (#6639 residual)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("SiblingEnums", siblingEnumsSource()))
+  packages.add(mkPkg("SiblingEnumsValueApp", siblingEnumsValueAppSource()))
+  val result = compileAndRunMsil("siblingenums-value-dotnet", packages, "SiblingEnumsValueApp")
+  assertEqualInt(result.exitCode, 0, "sibling_enums_value dotnet: exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    expectedSiblingEnumsValueStdout(),
+    "sibling_enums_value dotnet: package-qualified `On` CONSTRUCTION (EPath value position) resolves to the " +
+      "annotated target's OWN ordinal, not whichever enum registered `On` first"
+  )
+}
+
+// ─── #6688: call-argument enum hint resolves against the CALLEE's declaring
+// package, not the CALLER's ─────────────────────────────────────────────────
+// The #5995 call-argument enum-hint mechanism threaded only the callee's
+// parameter type's BARE enum name, discarding which package declared it, so
+// the consumer resolved that bare name preferring the CALLER's own package
+// over the CALLEE's. `CrossHintB.Level` (`Info`, `Debug` — `Debug` is
+// ordinal 1) is the callee's parameter type; `CrossHintA` declares its OWN,
+// differently-ordered `Level` (`Debug`, `Info` — `Debug` is ordinal 0) and
+// calls `B.log(Debug)` with a BARE case argument. Before the fix, the hint
+// carried only "Level", and `resolveEnumCaseOrdinalByScope` preferred
+// `CrossHintA` (the caller, in scope) over `CrossHintB` (the callee, the
+// actually-correct answer) purely because the caller happens to also declare
+// a same-named enum type — silently passing ordinal 0 (A's `Debug`) where
+// B's `log` expects ordinal 1, so `log` reads it back as its OWN ordinal-0
+// case (`Info`) and returns the wrong label.
+func crossHintBSource(): String {
+  "package CrossHintB\n" + "\n" + "pub enum Level {\n" + "  case Info\n" + "  case Debug\n" + "}\n" + "\n" +
+    "pub func log(v: in Level): String {\n" +
+    "  match v {\n" +
+    "    case Info -> \"B:Info\"\n" +
+    "    case Debug -> \"B:Debug\"\n" +
+    "  }\n" +
+    "}\n"
+}
+
+func crossHintASource(): String {
+  "package CrossHintA\n" + "\n" + "import CrossHintB as B\n" + "\n" + "pub enum Level {\n" + "  case Debug\n" +
+    "  case Info\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Int {\n" +
+    "  println(B.log(Debug))\n" +
+    "  0\n" +
+    "}\n"
+}
+
+test "dotnet: call-argument enum hint resolves the bare case against the CALLEE's declaring package (#6688)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("CrossHintB", crossHintBSource()))
+  packages.add(mkPkg("CrossHintA", crossHintASource()))
+  val result = compileAndRunMsil("crosshint-dotnet", packages, "CrossHintA")
+  assertEqualInt(result.exitCode, 0, "cross_hint dotnet: exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "B:Debug",
+    "cross_hint dotnet: a bare call-argument `Debug` resolves against CALLEE CrossHintB's Level " +
+      "(ordinal 1), not CALLER CrossHintA's own same-named, differently-ordered Level (ordinal 0)"
+  )
+}
+
 // #6640: JVM-only — see `pkgDSource`'s doc comment. Single-package (the
 // collision is intra-package), so no separate consumer package is needed.
 test "jvm: same-package two-enum case-name collision resolves bare construction and pattern match (#6640)" {
@@ -816,5 +914,86 @@ test "dotnet: a user enum colliding with a real stdlib enum (Std.Http.HttpVersio
     expectedRealStdout(),
     "enum_case_collision (real stdlib) dotnet: Std.Http.HttpVersion.Http11 and EnumCollReal.HttpVersion.Http11 " +
       "each resolve qualified construction to their OWN enum's ordinal, not whichever registered first"
+  )
+}
+
+// ─── #6683: JVM enum key tiers (type/package/package+type) shared one flat
+// "enum:" namespace and could alias across UNRELATED packages ──────────────
+// `06_items.l`'s three registration tiers — `enumty:<Enum>.<Case>` (type
+// only), `enumfull:<pkg>.<Enum>.<Case>` (package + type), `enumpkg:<pkg>.
+// <Case>` (package only) — used to share one bare `"enum:" + ...` prefix.
+// A package literally named `EnumTierX.Y` declaring `enum Status { case
+// Bad; case Ok }` and a SEPARATE, unrelated package `EnumTierX` declaring
+// `enum Y { case Other; case Ok }` are the exact shape the issue cites
+// (`EnumTierX.Y`'s (package, case) key for its own `Status.Ok` — old key
+// `"enum:EnumTierX.Y.Ok"` — collides with `EnumTierX`'s (package, TYPE,
+// case) key for its own `Y.Ok` — old key `"enum:EnumTierX.Y.Ok"` too).
+// That EXACT shape cannot be exercised as a runnable end-to-end JVM
+// program, though: a package literally named `<P>.<T>` and a SEPARATE
+// package `<P>` declaring a type literally named `<T>` is precisely the
+// combination the JVM classloader itself can never load simultaneously —
+// `<P>/<T>` would have to be BOTH a class (`<P>`'s `<T>` enum) and a
+// package directory (housing `<P>.<T>`'s own classes), a conflict with no
+// resolution regardless of this fix (confirmed empirically: even valid,
+// non-colliding constructions in either package throw `NoSuchFieldError`
+// once both packages are bundled into one JAR together, independent of
+// which package registers first). So this test instead verifies the fix at
+// the level the issue's own fix instruction targets — the registration
+// MAP itself — by calling `Jvm.Codegen.collectFileSigs` directly (the same
+// entry point `Jvm.Bridge` drives per-file during a real compile) and
+// inspecting the resulting `Map[String, JvmFuncSig]`, instead of running a
+// compiled JAR. `EnumTierX.Y` is registered FIRST here so its (package,
+// case) key claims the shared old-format string ahead of `EnumTierX`'s
+// (package, TYPE, case) registration for the SAME string; `EnumTierX`'s
+// tier — unlike the (package, case) tier, which self-poisons on a
+// same-TIER conflict (#6640) — has NO cross-tier guard at all, so it used
+// to be silently dropped with no diagnostic (the exact defect the issue
+// cites). Post-fix, both entries must exist under their own distinct
+// prefixes, each resolving to its OWN correct declaring class, and neither
+// registration should trip the same-tier ambiguity poison (`enumpkgambig:`)
+// meant for a DIFFERENT collision class (#6640) entirely.
+func enumTierXYSource(): String {
+  "package EnumTierX.Y\n" + "\n" + "pub enum Status {\n" + "  case Bad\n" + "  case Ok\n" + "}\n"
+}
+
+func enumTierXSource(): String {
+  "package EnumTierX\n" + "\n" + "pub enum Y {\n" + "  case Other\n" + "  case Ok\n" + "}\n"
+}
+
+test "jvm: distinct key-tier prefixes prevent a package name from aliasing another package's enum-type key (#6683)" {
+  val into: Map[String, JvmFuncSig] = newMap()
+  val fileXY = Parser.parse(enumTierXYSource()).file
+  val fileX = Parser.parse(enumTierXSource()).file
+  // `EnumTierX.Y` FIRST so its (package, case) registration claims the
+  // shared old-format string ahead of `EnumTierX`'s (package, TYPE, case)
+  // registration for the SAME string — see the comment above.
+  collectFileSigs(fileXY, into)
+  collectFileSigs(fileX, into)
+
+  match mapGet(into, "enumfull:EnumTierX.Y.Ok") {
+    case Some(sig) -> assertEqual(
+      sig.owner,
+      "EnumTierX/Y",
+      "enum_case_collision jvm (tier): EnumTierX's own (package, TYPE, case) registration for Y.Ok must resolve " +
+        "to EnumTierX's own class, not EnumTierX.Y's unrelated Status"
+    )
+    case None -> panic(
+      "enum_case_collision jvm (tier): EnumTierX's (package, TYPE, case) key for Y.Ok is MISSING entirely -- " +
+        "silently dropped by EnumTierX.Y's (package, case) registration for the identical old-format string"
+    )
+  }
+  match mapGet(into, "enumpkg:EnumTierX.Y.Ok") {
+    case Some(sig) -> assertEqual(
+      sig.owner,
+      "EnumTierX/Y/Status",
+      "enum_case_collision jvm (tier): EnumTierX.Y's own (package, case) registration for Status.Ok must resolve " +
+        "to EnumTierX.Y's own class"
+    )
+    case None -> panic("enum_case_collision jvm (tier): EnumTierX.Y's (package, case) key for Status.Ok is MISSING")
+  }
+  assertFalse(
+    into.containsKey("enumpkgambig:EnumTierX.Y.Ok"),
+    "enum_case_collision jvm (tier): the (package, case)-tier same-TIER ambiguity poison (#6640) must not fire " +
+      "for a CROSS-tier collision -- EnumTierX and EnumTierX.Y never register the SAME tier twice"
   )
 }

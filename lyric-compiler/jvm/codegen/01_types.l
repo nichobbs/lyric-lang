@@ -1941,7 +1941,7 @@ func enumSigOwner(sigOpt: in Option[JvmFuncSig]): Option[String] {
 // The declaring enum's JVM class for a type-scoped `<EnumName>.<Case>`
 // reference, when registered.
 pub func enumVariantClass(ctx: in FuncCtx, enumName: in String, caseName: in String): Option[String] {
-  enumSigOwner(mapGet(ctx.funcSigs, "enum:" + enumName + "." + caseName))
+  enumSigOwner(mapGet(ctx.funcSigs, "enumty:" + enumName + "." + caseName))
 }
 
 // The declaring enum's JVM class for a bare `<Case>` reference, when registered.
@@ -1951,7 +1951,7 @@ pub func enumCaseClassBare(ctx: in FuncCtx, caseName: in String): Option[String]
 
 // Cross-package enum case-name collision fix (#5995).  The declaring enum's
 // JVM class for a PACKAGE-scoped `<dottedPkg>.<Case>` reference (the
-// `"enum:" + dottedPkg + "." + case` key `collectFileSigsSeeded`'s `IEnum`
+// `"enumpkg:" + dottedPkg + "." + case` key `collectFileSigsSeeded`'s `IEnum`
 // branch registers alongside the enum-simple-name-scoped one), or `None` when
 // `dottedPkg` is empty or unregistered.  Unlike `enumVariantClass` (which
 // keys on the enum's own SIMPLE TYPE NAME and so still collides when two
@@ -1970,12 +1970,27 @@ pub func enumCaseClassBare(ctx: in FuncCtx, caseName: in String): Option[String]
 // specific tier (the (package, TYPE, case)-scoped
 // `enumVariantClassByFullClass`, or the type-name-scoped `enumVariantClass`)
 // instead of guessing.
+//
+// #6683: keyed under the `enumpkg:` prefix — distinct from `enumVariantClass`'s
+// `enumty:` prefix and `enumVariantClassByFullClass`'s `enumfull:` prefix
+// below — so this tier's key can never alias either of the other two tiers'
+// keys just because `dottedPkg` happens to equal some other package's
+// `<package>.<EnumType>` concatenation (or vice versa). Before this, all
+// three tiers shared one flat `"enum:" + ...` namespace: e.g. package
+// `Std.Http` declaring `enum Status { case Ok }` registered this tier's key
+// as `"enum:Std.Http.Ok"`, while package `Std` declaring `enum Http { case
+// Ok }` registered ITS (package, TYPE, case) key as the SAME string
+// `"enum:Std.Http.Ok"` — the `not containsKey` guard on whichever tier
+// registered second silently skipped, so a lookup on one tier could resolve
+// to an entry that was only ever meant for the OTHER tier, with no
+// diagnostic (the `enumpkgambig:` poison above only catches a conflict
+// WITHIN this same tier, not a cross-tier alias).
 pub func enumVariantClassByPkg(ctx: in FuncCtx, dottedPkg: in String, caseName: in String): Option[String] {
   if dottedPkg.length > 0 {
     if ctx.funcSigs.containsKey("enumpkgambig:" + dottedPkg + "." + caseName) {
       None
     } else {
-      enumSigOwner(mapGet(ctx.funcSigs, "enum:" + dottedPkg + "." + caseName))
+      enumSigOwner(mapGet(ctx.funcSigs, "enumpkg:" + dottedPkg + "." + caseName))
     }
   } else {
     None
@@ -1984,17 +1999,19 @@ pub func enumVariantClassByPkg(ctx: in FuncCtx, dottedPkg: in String, caseName: 
 
 // Same-package two-enum collision fix (#6640).  The declaring enum's JVM
 // class for a fully (package, TYPE, case)-scoped reference — the
-// `"enum:" + dottedPkg + "." + <EnumType> + "." + case` key
+// `"enumfull:" + dottedPkg + "." + <EnumType> + "." + case` key
 // `collectFileSigsSeeded`'s `IEnum` branch always registers unconditionally
 // (it bakes in the exact declaring class, so it can never collide with any
 // other enum's entry, unlike the package-only `enumVariantClassByPkg` key
 // above). `fullClassDotted` is the expected type's full class name with `/`
 // replaced by `.` (e.g. "EnumCollD.Status"). Always correct when the caller
 // knows the exact expected class — the only tier that can disambiguate two
-// same-package enums sharing a case name.
+// same-package enums sharing a case name. #6683: keyed under its own
+// `enumfull:` prefix (see `enumVariantClassByPkg`'s doc) so this tier can
+// never alias the other two.
 pub func enumVariantClassByFullClass(ctx: in FuncCtx, fullClassDotted: in String, caseName: in String): Option[String] {
   if fullClassDotted.length > 0 {
-    enumSigOwner(mapGet(ctx.funcSigs, "enum:" + fullClassDotted + "." + caseName))
+    enumSigOwner(mapGet(ctx.funcSigs, "enumfull:" + fullClassDotted + "." + caseName))
   } else {
     None
   }
@@ -2054,8 +2071,12 @@ pub func tryQualifiedEnumClassJvm(ctx: in FuncCtx, expr: in Expr): Option[String
       // Package-qualified case reference (`Std.Http.GET`): Lyric enum cases
       // are conventionally referenced through the declaring PACKAGE, not an
       // explicit `<EnumType>.` segment — `collectFileSigsSeeded` registers
-      // each case under `"enum:" + <dotted package> + "." + <case>` too.
-      enumSigOwner(mapGet(ctx.funcSigs, "enum:" + joinSegments(segs, ".") + "." + memberName))
+      // each case under the `enumpkg:` (package, case)-scoped key too.
+      // #6683: route through `enumVariantClassByPkg` rather than a raw
+      // `mapGet` — this was the one caller building that tier's key inline,
+      // duplicating the `enumpkg:` prefix and (before this fix) missing the
+      // `enumpkgambig:` poison check every other consumer of this tier gets.
+      enumVariantClassByPkg(ctx, joinSegments(segs, "."), memberName)
     }
     case _ -> None
   }

@@ -430,6 +430,17 @@ pub record CodegenCtx {
   // (a package cannot declare the same enum type twice), used by
   // `resolveEnumCaseOrdinalByScope` once it has picked the right package.
   enumCaseOrdinalsByPkgType: Map[String, Int]
+  // `<EnumTypeSimpleName>` → every package that declares a *distinct* enum
+  // type with that SIMPLE name (in registration order) — the TYPE-level
+  // analog of `enumTypeCaseDeclarers` (which is keyed per case name).
+  // `resolveEnumTypeDeclPkg` (#6688) consults this so a call-argument's
+  // enum-type hint can be recorded as the CALLEE's own declaring package
+  // (resolved from the callee's home package/imports at registration time,
+  // when `pkgName` is the callee) instead of the ambiguous bare type name
+  // that a later CALLER-side lookup would otherwise have to re-disambiguate
+  // against the caller's own scope — silently picking the wrong same-named
+  // enum when caller and callee packages each declare one (#6688).
+  enumTypeDeclarers: Map[String, List[String]]
   // User type-alias targets (`alias Sid = String`).  Key = alias simple name and
   // its pkg-qualified form; value = the alias RHS TypeExpr.  `typeExprToMsilCtx`
   // resolves a `TRef` to an alias through this map so an alias-to-primitive
@@ -1996,6 +2007,7 @@ pub func newCodegenCtx(
     enumCaseOrdinals = newMap(),
     enumTypeCaseDeclarers = newMap(),
     enumCaseOrdinalsByPkgType = newMap(),
+    enumTypeDeclarers = newMap(),
     ffiAsmRefs = newMap(),
     ffiTypeRefs = newMap(),
     metadataTypeIndex = newMap(),
@@ -2304,6 +2316,19 @@ pub func registerEnumDeclMsil(cctx: in CodegenCtx, pkgName: in String, decl: in 
   if not cctx.enumTypeNames.containsKey(decl.name) {
     cctx.enumTypeNames.add(decl.name, decl.cases.count)
   }
+  // #6688: type-level declarer list (once per registration, not per case) —
+  // see `enumTypeDeclarers`'s doc and `resolveEnumTypeDeclPkg` below.
+  val typeDeclarers = match mapGet(cctx.enumTypeDeclarers, decl.name) {
+    case Some(existing) -> existing
+    case None -> {
+      val fresh: List[String] = newList()
+      cctx.enumTypeDeclarers.add(decl.name, fresh)
+      fresh
+    }
+  }
+  if not typeDeclarers.contains(pkgName) {
+    typeDeclarers.add(pkgName)
+  }
   var ei = 0
   while ei < decl.cases.count {
     val cn = decl.cases[ei].name
@@ -2410,6 +2435,54 @@ func resolveEnumCaseOrdinalByScope(
           } else {
             mapGet(cctx.enumCaseOrdinalsByPkgType, declarers[0] + "::" + tn)
           }
+        }
+      }
+    }
+  }
+}
+
+// Resolve which package's enum type `typeName` is visible from `fromPkg`
+// (#6688). Same three-tier scope order as `resolveEnumCaseOrdinalByScope`
+// (own declaration, then an imported declarer, then the first-registered
+// declarer as a last resort) but at the TYPE level via `enumTypeDeclarers`,
+// so it can run at FUNCTION-REGISTRATION time — when `fromPkg` is a
+// function's OWN declaring package, not a call site's caller package — to
+// record a call argument's enum-type hint against the CALLEE's declaring
+// package rather than leaving it for a later caller-scoped lookup to
+// re-guess (see the `funcParamEnumTypeNames` call site in `registerParamsMsil`
+// and the `argEnumHint` consumer in `lowerExprMsil`'s call-argument loop).
+// Returns "" when `typeName` was never registered as an enum (never hit in
+// practice — callers only invoke this for a name `enumSimpleNameOfTypeExprMsil`
+// already confirmed is a registered enum).
+func resolveEnumTypeDeclPkg(cctx: in CodegenCtx, fromPkg: in String, typeName: in String): String {
+  match mapGet(cctx.enumTypeDeclarers, typeName) {
+    case None -> ""
+    case Some(declarers) -> {
+      if declarers.count == 0 {
+        ""
+      } else if declarers.count == 1 {
+        declarers[0]
+      } else if listContains(declarers, fromPkg) {
+        fromPkg
+      } else {
+        val viaImport = match mapGet(cctx.pkgImports, fromPkg) {
+          case Some(imps) -> {
+            var ii = 0
+            var found = ""
+            while ii < imps.count and found.length == 0 {
+              if listContains(declarers, imps[ii]) {
+                found = imps[ii]
+              }
+              ii = ii + 1
+            }
+            found
+          }
+          case None -> ""
+        }
+        if viaImport.length > 0 {
+          viaImport
+        } else {
+          declarers[0]
         }
       }
     }
@@ -4354,12 +4427,15 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // so we reuse it here (#2597: no need for a separate declGenericsP).
         val isExternTargetFn = hasExternTargetMsil(decl.annotations)
         val paramTys: List[MsilType] = newList()
-        // #5995: parallel per-position declared enum type name ("" when the
-        // param isn't a resolvable enum) — see `funcParamEnumTypeNames`'s doc.
+        // #5995/#6688: parallel per-position declared enum type name ("" when
+        // the param isn't a resolvable enum), package-qualified via
+        // `paramEnumHintMsil` so the call-argument consumer resolves the
+        // ordinal against THIS function's (the callee's) own declaring
+        // package — see `funcParamEnumTypeNames`'s doc.
         val paramEnumTys: List[String] = newList()
         var ppi = 0
         while ppi < decl.params.count {
-          paramEnumTys.add(enumSimpleNameOfTypeExprMsil(cctx, decl.params[ppi].ty))
+          paramEnumTys.add(paramEnumHintMsil(cctx, pkgName, decl.params[ppi].ty))
           // Whether this parameter is the specific bounded case that needs the
           // real closed System.Func/Action instead of the shared (erasing)
           // typeExprToMsilCtx TFunction default (Epic #1877/#3923 FFI-boundary
@@ -7323,6 +7399,34 @@ func enumSimpleNameOfTypeExprMsil(cctx: in CodegenCtx, te: in TypeExpr): String 
   }
 }
 
+// #6688: a function's declared-parameter enum-type hint, encoded as
+// `<declPkg>::<EnumSimpleName>` when `pkgName` (the DECLARING function's own
+// package — this runs at function-registration time, not at a call site) can
+// resolve which package owns that enum type; falls back to the bare simple
+// name when it can't (never hit in practice, since `enumSimpleNameOfTypeExprMsil`
+// only returns a non-empty name for an already-registered enum type, which
+// `resolveEnumTypeDeclPkg` can therefore always attribute to at least one
+// declarer). Consumed by `lowerExprMsil`'s call-argument loop via
+// `funcParamEnumTypeNames`/`pushEnumHintMsil`, and unpacked by `currentEnumHintMsil`'s
+// EPath-arm consumer so a call-argument's ordinal resolves against the
+// CALLEE's declaring package instead of the caller's own (the #6688 bug:
+// `resolveEnumCaseOrdinalByScope` alone has no way to tell the two apart,
+// since it only ever sees the reading FuncCtx's `fctx.pkgName`, i.e. the
+// CALLER).
+func paramEnumHintMsil(cctx: in CodegenCtx, pkgName: in String, te: in TypeExpr): String {
+  val simple = enumSimpleNameOfTypeExprMsil(cctx, te)
+  if simple.length == 0 {
+    ""
+  } else {
+    val declPkg = resolveEnumTypeDeclPkg(cctx, pkgName, simple)
+    if declPkg.length > 0 {
+      declPkg + "::" + simple
+    } else {
+      simple
+    }
+  }
+}
+
 // The current expected-enum-type-name hint (top of `enumHint`), or "" when
 // no construction position has pushed one.  See `FuncCtx.enumHint`'s doc.
 func currentEnumHintMsil(fctx: in FuncCtx): String {
@@ -8459,25 +8563,26 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // `Lyric.AliasRewriter` collapses EVERY `Pkg.member` chain to a
               // flat `EPath` (aliased imports self-map their own literal
               // package name too, #6294), so this is NOT limited to alias
-              // use.  The penultimate segment is then the EXPLICIT, literal,
-              // always-unambiguous declaring package — prefer a direct
-              // `enumCaseOrdinals["<pkg>.<case>"]` lookup (the same `qn` key
-              // `registerEnumDeclMsil` always populates per-package,
-              // unambiguous by construction) over the construction-context
-              // `enumHint` below, which carries only a bare, possibly
-              // colliding TYPE name and cannot tell apart two SIMULTANEOUSLY
-              // in-scope same-named enum types (`resolveEnumCaseOrdinalByScope`'s
-              // `fctx.pkgName`-plus-import-order heuristic picks the same
-              // package for every bare-hinted reference in the function,
-              // regardless of which one this specific expression's own
-              // qualifier names).
+              // use.  The penultimate segment is the explicit, literal
+              // declaring package the SOURCE wrote — but the key it builds,
+              // `enumCaseOrdinals["<pkg>.<case>"]`, carries no enum TYPE
+              // name, so it is only unambiguous ACROSS packages: two
+              // DIFFERENT enums declared in the SAME package that happen to
+              // share a case name collide first-registered-wins on this key
+              // (#6639).  `hintedOrd` below IS type-scoped (it resolves
+              // `<EnumType>.<Case>` via `resolveEnumCaseOrdinalByScope`), so
+              // it is strictly more precise whenever a construction-context
+              // hint is actually in scope — prefer it, falling back to the
+              // package-qualified key only when no hint is available (an
+              // unannotated bare package-qualified reference with nothing
+              // pushing a type name).
               val pathQualifierPkg = if path.segments.count >= 2 { path.segments[path.segments.count - 2] } else { "" }
               val qualifiedOrdHit = if pathQualifierPkg.length > 0 {
                 mapGet(cctx.enumCaseOrdinals, pathQualifierPkg + "." + name)
               } else {
                 None
               }
-              // #5995: two in-bundle enums may share a bare case name
+              // #5995/#6688: two in-bundle enums may share a bare case name
               // (`Http11` in both `Std.Http.HttpVersion` and an unrelated
               // enum); the bare `enumCaseOrdinals` key is first-registered-
               // wins, so an unqualified reference silently resolved to
@@ -8489,15 +8594,36 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // only falling back to the ambiguous bare key when no hint is
               // in scope (unannotated `val l = Debug`-style references keep
               // their pre-existing, best-effort behaviour).
+              //
+              // A call-argument-sourced hint (`paramEnumHintMsil`, #6688) is
+              // encoded `<declPkg>::<EnumSimpleName>` — the CALLEE's own
+              // declaring package, resolved once at the callee's own
+              // registration time. Unpack that form and resolve DIRECTLY
+              // against `enumCaseOrdinalsByPkgType[declPkg::EnumType.Case]`
+              // rather than through `resolveEnumCaseOrdinalByScope`, which
+              // scopes by `fctx.pkgName` — the CALLER here, not the callee —
+              // and would silently re-guess the wrong same-named enum when
+              // caller and callee packages each declare one. A bare
+              // (un-prefixed) hint — every other `enumHint` producer, all of
+              // which push a name already scoped to `fctx.pkgName` itself —
+              // keeps the existing scope-based resolution.
               val enumHintName = currentEnumHintMsil(fctx)
-              val hintedOrd = if enumHintName.length > 0 {
+              val hintSepIdx = String.indexOfRaw(enumHintName, "::")
+              val hintedOrd = if hintSepIdx >= 0 {
+                val hintDeclPkg = enumHintName.substring(0, hintSepIdx)
+                val hintTypeName = enumHintName.substring(hintSepIdx + 2, enumHintName.length - hintSepIdx - 2)
+                match mapGet(cctx.enumCaseOrdinalsByPkgType, hintDeclPkg + "::" + hintTypeName + "." + name) {
+                  case Some(o) -> Some(value = o)
+                  case None -> resolveEnumCaseOrdinalByScope(cctx, fctx, hintTypeName, name)
+                }
+              } else if enumHintName.length > 0 {
                 resolveEnumCaseOrdinalByScope(cctx, fctx, enumHintName, name)
               } else {
                 None
               }
-              val ordHit = match qualifiedOrdHit {
+              val ordHit = match hintedOrd {
                 case Some(o) -> Some(value = o)
-                case None -> match hintedOrd {
+                case None -> match qualifiedOrdHit {
                   case Some(o) -> Some(value = o)
                   case None -> mapGet(cctx.enumCaseOrdinals, name)
                 }

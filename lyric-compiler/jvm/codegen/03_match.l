@@ -1130,23 +1130,33 @@ func lowerPatternTest(
         // Package-qualified enum-case pattern (`case Std.Http.GET ->`, or an
         // `import X as Y` alias already expanded to the real package by
         // `Lyric.AliasRewriter`): the check above only matches when the
-        // PENULTIMATE segment alone names the enum — true when the
-        // declaring package is a single segment, but `Std.Http.GET`'s
-        // penultimate segment is "Http", not the full package "Std.Http".
-        // `collectFileSigsSeeded` (06_items.l) registers the package-
-        // qualified case ordinal under the FULL dotted-package key
+        // PENULTIMATE segment alone names the enum TYPE — `Std.Http.GET`'s
+        // penultimate segment is "Http", the enum's declaring package, not
+        // its type name. `collectFileSigsSeeded` (06_items.l) registers the
+        // package-qualified case ordinal under the FULL dotted-package key
+        // (the `enumpkg:` tier, resolved via `enumVariantClassByPkg` below)
         // alongside the type-scoped one (#5769's VALUE-position fix); this
         // PATTERN path never consulted it (#5971, JVM parity gap for the
         // multi-segment-package case the #5769 fix's own 2-segment repro
-        // didn't exercise).
+        // didn't exercise). #6683: the check above and this one now query
+        // DISTINCT key tiers (`enumty:` vs `enumpkg:`), so a single-segment
+        // package name can no longer accidentally satisfy the TYPE-scoped
+        // check above via a shared key namespace — this package-scoped
+        // check runs for every segment count, single or multi.
         val pkgSegs: List[String] = newList()
         var pqi = 0
         while pqi < head.segments.count - 1 {
           pkgSegs.add(head.segments[pqi])
           pqi = pqi + 1
         }
+        // #6683: `enumVariantClassByPkg` (the `enumpkg:` tier), not
+        // `enumVariantClass` (the `enumty:` tier) — this branch is testing a
+        // PACKAGE-qualified reference, and the two tiers now carry distinct
+        // key prefixes so they no longer alias into one shared "enum:"
+        // namespace the way a single-segment package used to accidentally
+        // match through the TYPE-scoped lookup above.
         val pkgJoined = joinSegments(pkgSegs, ".")
-        match enumVariantClass(ctx, pkgJoined, lastSegment(head)) {
+        match enumVariantClassByPkg(ctx, pkgJoined, lastSegment(head)) {
           case Some(eqcls) -> {
             emitLoad(insns, scrutSlot, scrutTy)
             insns.add(LGetstatic(owner = eqcls, name = lastSegment(head), t = JRef(className = eqcls)))
@@ -1798,7 +1808,9 @@ func lowerPatternBind(
           bindPkgSegs.add(head.segments[bpqi])
           bpqi = bpqi + 1
         }
-        match enumVariantClass(ctx, joinSegments(bindPkgSegs, "."), lastSegment(head)) {
+        // #6683: `enumVariantClassByPkg` (the `enumpkg:` tier) — see the
+        // matching comment on the TEST-phase fallback above.
+        match enumVariantClassByPkg(ctx, joinSegments(bindPkgSegs, "."), lastSegment(head)) {
           case Some(_) -> {
             insns.add(LNop)
             return
