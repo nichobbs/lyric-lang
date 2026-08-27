@@ -740,7 +740,22 @@ func readChunkedBody(conn: in Tcp.Conn, buf: in List[Byte], startPos: in Int): R
       case Some(n) -> n
       case None -> return Err(error = "malformed chunk size: " + sizeLine)
     }
-    if acc.count + size > maxResponseBodyBytes {
+    // NOT `acc.count + size > maxResponseBodyBytes` (#6656): `size` can be
+    // as large as `Int32.MaxValue` (parseHexInt's own #6647 overflow guard
+    // only bounds a SINGLE chunk-size line's value, not the running sum),
+    // and once a prior chunk has left `acc.count > 0`, adding it to a
+    // near-`Int32.MaxValue` `size` overflows `Int32` and wraps NEGATIVE —
+    // silently passing this check and letting `size` (and the `dataEnd =
+    // dataStart + size` computed from it, below) drive `pos` negative,
+    // an out-of-bounds buffer index on the next read. Comparing via
+    // subtraction instead never overflows: `acc.count` is always in
+    // `[0, maxResponseBodyBytes]` here (this check runs before every
+    // addition to `acc`, so it can never have grown past the cap already),
+    // so `maxResponseBodyBytes - acc.count` is always a small non-negative
+    // number, and `size < 0` cannot pass a `>` comparison against it either
+    // way (defense in depth against a hypothetical future regression in
+    // `parseHexInt`'s own guard, not reachable today).
+    if size < 0 or size > maxResponseBodyBytes - acc.count {
       return Err(error = "chunked response body exceeds the maximum allowed size")
     }
     val dataStart = lineEnd + 2

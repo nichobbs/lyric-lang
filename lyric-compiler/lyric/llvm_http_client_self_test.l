@@ -784,3 +784,92 @@ test "Std.HttpHost native client rejects an overflowing hex chunk-size line rath
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "Std.HttpHost native client rejects an overflowing hex chunk-size line")
 }
+
+test "Std.HttpHost native client rejects a chunked body whose cumulative size overflows Int32 (item K, #6656)" {
+  // A first small chunk leaves `acc.count > 0`, then a second chunk
+  // declares a size near `Int32.MaxValue` — bounded by #6647's own guard
+  // so it parses fine on its own, but `acc.count + size` (the naive sum)
+  // overflows Int32 and wraps NEGATIVE, which would silently bypass
+  // `maxResponseBodyBytes` entirely. The server never needs to send any
+  // of that huge second chunk's data: the fixed check runs on the
+  // DECLARED size, before any attempt to read chunk data.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
+    "import Std.HttpHost\n" +
+    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
+    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
+    "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
+    "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
+    "func containsAt(s: String, needle: String, start: Int): Bool {\n" +
+    "  if start + needle.length > s.length { false } else { s.substring(start, needle.length) == needle }\n" +
+    "}\n" +
+    "func containsSubstring(s: String, needle: String): Bool {\n" +
+    "  var i = 0\n" +
+    "  var found = false\n" +
+    "  while i <= s.length - needle.length {\n" +
+    "    if containsAt(s, needle, i) { found = true }\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  found\n" +
+    "}\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  val listener = match hostListen(\"127.0.0.1\", 0) {\n" +
+    "    case Ok(l) -> l\n" +
+    "    case Err(_) -> return 1\n" +
+    "  }\n" +
+    "  val port = hostLocalPort(listener)\n" +
+    "  val worker: () -> NativePtr[Byte] = { ->\n" +
+    "    match hostAccept(listener) {\n" +
+    "      case Err(_) -> toC(\"accept_failed\")\n" +
+    "      case Ok(conn) -> {\n" +
+    "        var reqOk = false\n" +
+    "        match hostRead(conn, 8192) {\n" +
+    "          case Ok(_) -> { reqOk = true }\n" +
+    "          case Err(_) -> ()\n" +
+    "        }\n" +
+    "        val resp = \"HTTP/1.1 200 OK\\r\\nTransfer-Encoding: chunked\\r\\nConnection: close\\r\\n\\r\\n\" +\n" +
+    "          \"1\\r\\nX\\r\\n\" + \"7FFFFFFF\\r\\n\"\n" +
+    "        val _ = hostWrite(conn, encodeUtf8(resp))\n" +
+    "        hostClose(conn)\n" +
+    "        if reqOk { toC(\"ok\") } else { toC(\"leaked\") }\n" +
+    "      }\n" +
+    "    }\n" +
+    "  }\n" +
+    "  var tid: Long = 0\n" +
+    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  if rc != 0 {\n" +
+    "    hostStopListener(listener)\n" +
+    "    return 2\n" +
+    "  }\n" +
+    "  val client = hostDefaultClient()\n" +
+    "  val url = \"http://127.0.0.1:\" + port.toString() + \"/x\"\n" +
+    "  val request = hostMakeRequest(\"GET\", url)\n" +
+    "  var rejected = false\n" +
+    "  match await hostSendSafe(client, request) {\n" +
+    "    case Err(e) -> { rejected = containsSubstring(e, \"maximum allowed size\") }\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "  }\n" +
+    "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
+    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  var serverOk = false\n" +
+    "  if rj == 0 {\n" +
+    "    val n = cStrlen(outp)\n" +
+    "    if n == 2 {\n" +
+    "      serverOk = true\n" +
+    "    }\n" +
+    "    freeC(outp)\n" +
+    "  }\n" +
+    "  hostStopListener(listener)\n" +
+    "  if not serverOk {\n" +
+    "    return 3\n" +
+    "  }\n" +
+    "  if not rejected {\n" +
+    "    return 4\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpHost native client rejects a cumulative-overflow chunked body")
+}

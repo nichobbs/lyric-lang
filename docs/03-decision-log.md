@@ -35069,3 +35069,65 @@ REQUIRED findings), D-progress-808 (the original, inverted
 `isSameRedirectAuthority`), D-progress-809 (the original, wrong-threshold
 `parseHexInt` guard).
 
+## D-progress-811 — `_kernel_native/http_host.l`: cumulative chunk-size overflow bypasses the body-size cap (#6656), a fourth review round on this same PR
+
+**Context.** A FOURTH `claude-review` pass on PR #6623 confirmed
+D-progress-808/809/810's fixes correct and closed #6646/#6647, but found
+one more REQUIRED bug in the same area: `readChunkedBody`'s cumulative
+cap check, `if acc.count + size > maxResponseBodyBytes`, is itself
+overflow-prone. D-progress-810's #6647 fix bounds a SINGLE chunk-size
+line's own parsed value to `<= Int32.MaxValue`, but does nothing about
+the SUM of `acc.count` (bytes already decoded from prior chunks) plus a
+new chunk's `size` — a server sending a tiny first chunk (so
+`acc.count > 0`) followed by a second chunk declaring a size near
+`Int32.MaxValue` overflows `acc.count + size` to a negative number,
+silently passing the `>` check. The same negative value then flows into
+`dataEnd = dataStart + size` a few lines down, eventually driving `pos`
+negative and reaching an out-of-bounds buffer index (`buf[pos + j]` inside
+`findPattern`/`bytesEqualAt`) on the connection's next read — the
+identical memory-safety crash class D-progress-810 fixed for the
+single-line case, reachable here through a second, distinct arithmetic
+path that fix didn't close.
+
+**Fix.** Replaced the addition-based check with a subtraction-based one
+that cannot overflow: `if size < 0 or size > maxResponseBodyBytes -
+acc.count`. `acc.count` is always in `[0, maxResponseBodyBytes]` at this
+point (the check runs before every addition to `acc`, so it can never
+have already grown past the cap), so `maxResponseBodyBytes - acc.count`
+is always a small non-negative number — comparing `size` against it
+can't overflow regardless of how large `size` is. The `size < 0` half is
+defense in depth (not reachable today, given #6647's guard already
+prevents `parseHexInt` from ever returning a negative value) against a
+hypothetical future regression in that guard.
+
+**Verification.** A new self-test case (item K, now 7 total: E–K): a
+server sends a real 1-byte first chunk, then declares a second chunk of
+size `0x7FFFFFFF` (the C-style hex literal for `Int32.MaxValue`) and
+closes without sending any of that chunk's data — the fixed check runs on
+the DECLARED size before any attempt to read chunk data, so no actual
+2GB transfer is needed to trigger or verify the fix. Asserts the client's
+error message specifically contains "maximum allowed size" (not merely
+that some `Err` came back), following item H/J's established discipline
+against the "any `Err` passes" false-positive trap. Verified as a genuine
+regression check by reverting to the pre-fix `acc.count + size >
+maxResponseBodyBytes` form and confirming the test fails with a SIGABRT
+(exit 134) — a real crash, not merely a wrong result, matching the exact
+severity the finding described — then restoring and confirming all 7
+tests pass clean. `lyric fmt --write` applied clean (no diff) to both
+changed files.
+
+A related, non-blocking SUGGESTION from the same review round —
+`hostWithHeader` doesn't guard against a caller-supplied header name
+colliding with the kernel's own auto-generated framing headers
+(`Host`/`Connection`/`Content-Type`/`Content-Length`) — was filed as its
+own cross-kernel follow-up (#6658) rather than fixed here: it mirrors the
+already-shipped dotnet kernel's identical behavior, so it's a pre-existing
+`Std.Http` API-design gap across all three kernels, not a regression
+introduced by this PR.
+
+**Related:** #6623 (the PR this fix ships in), #6656 (the REQUIRED
+finding), #6658 (the header-collision follow-up, filed but not fixed
+here), D-progress-810 (the prior review-fix round's #6647 fix, whose
+single-line overflow guard this entry's bug sits one arithmetic step
+beyond).
+
