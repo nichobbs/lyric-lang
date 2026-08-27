@@ -376,14 +376,57 @@ func copyOfIntsExplicit(src: in slice[Int], newLen: in Int): slice[Int] {
   return JArrays.copyOf(src, newLen)
 }
 
-// Truncating/same-length copyOf, not growing: a real bug was found (and
-// reported separately, not asserted here) where the TAIL-EXPRESSION return
-// path leaves newly-grown padding slots as `null` instead of boxed zero
-// (`Arrays.toString` prints `[1, 2, 3, null, null]` instead of
-// `[1, 2, 3, 0, 0]`) — the sibling explicit-`return` case below, on the same
-// element type, correctly zero-pads. Sticking to non-growing lengths here
-// keeps this test asserting only the return-side coercion this issue asks
-// for, without depending on the separately-reported padding bug.
+// #5526: a growing `Arrays.copyOf` call used to leave its newly-grown
+// padding slots as `null` instead of boxed zero (`Arrays.toString` printed
+// `[1, 2, 3, null, null]` instead of `[1, 2, 3, 0, 0]`), on BOTH the
+// tail-expression and explicit-`return` forms equally — not a tail-vs-
+// explicit asymmetry. Root cause: every `slice[T]` erases uniformly to
+// `[Ljava/lang/Object;` on the JVM, and `Arrays.copyOf`'s overload set has
+// both `int[] copyOf(int[], int)` and the generic `<T> T[] copyOf(T[], int)`
+// (itself erased to `[Ljava/lang/Object;`) — scoring the argument's erased
+// descriptor against candidate overloads let the generic overload win as an
+// "exact match", so the call silently returned a boxed `Object[]` (whose
+// freshly-grown slots default to `null`, correct behavior for THAT
+// overload) instead of dispatching to the primitive overload
+// `emitFfiCoerce`'s `[Ljava/lang/Object; -> primitive[]` argument
+// conversion was designed to feed. Fixed by scoring auto-FFI overloads
+// against the argument's TRUE declared Lyric element type (from the same
+// `indexedElemTypeOverride` declared-type registry `EIndex` narrowing
+// already consults) when it resolves to a primitive, rather than the
+// argument's erased runtime descriptor alone.
+func growIntsTail(src: in slice[Int], newLen: in Int): slice[Int] {
+  JArrays.copyOf(src, newLen)
+}
+
+func growIntsExplicit(src: in slice[Int], newLen: in Int): slice[Int] {
+  return JArrays.copyOf(src, newLen)
+}
+
+test "Arrays.copyOf(int[],int) GROWN tail-expression return zero-pads new slots" {
+  val src: slice[Int] = [1, 2, 3]
+  val grown = growIntsTail(src, 5)
+  assertEqualInt(grown.count, 5, "copyOf(int[],5) grows to newLen")
+  assertEqualInt(grown[0], 1, "element 0 preserved")
+  assertEqualInt(grown[1], 2, "element 1 preserved")
+  assertEqualInt(grown[2], 3, "element 2 preserved")
+  assertEqualInt(grown[3], 0, "grown element 3 is boxed zero, not null")
+  assertEqualInt(grown[4], 0, "grown element 4 is boxed zero, not null")
+  val s = JArrays.toString(grown)
+  assertEqual(s, "[1, 2, 3, 0, 0]", "copyOf growth round-trips through Arrays.toString(int[])")
+}
+
+test "Arrays.copyOf(int[],int) GROWN explicit return zero-pads new slots" {
+  val src: slice[Int] = [4, 5]
+  val grown = growIntsExplicit(src, 4)
+  assertEqualInt(grown.count, 4, "copyOf(int[],4) grows to newLen")
+  assertEqualInt(grown[2], 0, "grown element 2 is boxed zero, not null")
+  assertEqualInt(grown[3], 0, "grown element 3 is boxed zero, not null")
+  val s = JArrays.toString(grown)
+  assertEqual(s, "[4, 5, 0, 0]", "copyOf growth round-trips through Arrays.toString(int[])")
+}
+
+// Truncating/same-length copyOf, not growing — kept as its own coverage
+// (the return-side coercion, independent of the growth-padding case above).
 test "Arrays.copyOf(int[],int) tail-expression return coerces to slice[Int]" {
   val src: slice[Int] = [1, 2, 3]
   val copied = copyOfIntsTail(src, 2)

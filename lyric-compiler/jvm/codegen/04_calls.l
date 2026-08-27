@@ -1639,6 +1639,36 @@ func emitFfiCoerce(ctx: in FuncCtx, insns: in List[LInsn], fromDesc: in String, 
 // and `methodName` is the Java method.  Resolves the best-matching overload
 // from JDK metadata and emits invokestatic / invokevirtual with the real
 // descriptor.  Falls back to an Object-typed guess when the JDK is unavailable.
+// The overload-SCORING descriptor for auto-FFI argument `arg`, preferring the
+// argument's TRUE declared Lyric element type over its erased runtime
+// descriptor when they disagree (#5526 root cause): every `slice[T]` erases
+// uniformly to `[Ljava/lang/Object;` on the JVM, so an overload set with both
+// a primitive-array member (`int[] copyOf(int[], int)`) and a generic
+// reference-array member (`<T> T[] copyOf(T[], int)`, itself erased to
+// `[Ljava/lang/Object;`) always scores the erased descriptor as an EXACT
+// match against the generic member — `Arrays.copyOf(someSliceIntValue, n)`
+// silently dispatched to the generic overload, returning a boxed `Object[]`
+// that grows with `null`-padded new slots instead of the primitive `0` a
+// real `int[]` grows with, regardless of tail-expression vs. explicit
+// `return` position (`emitFfiCoerce`'s existing `[Ljava/lang/Object; ->
+// primitive[]` per-argument conversion was designed to feed exactly the
+// primitive overload, but never got the chance). `indexedElemTypeOverride`
+// (the same bare-name/field declared-type registry `EIndex` narrowing
+// already consults) supplies the true element type when the argument
+// resolves to a tracked local/param/field; this changes ONLY the descriptor
+// fed into overload scoring — the real erased descriptor (`argDescs`, used
+// for the actual per-argument coercion once an overload is picked) is
+// untouched.
+func ffiScoreDescFor(ctx: in FuncCtx, arg: in Expr, erasedDesc: in String): String {
+  if erasedDesc == "[Ljava/lang/Object;" {
+    val elemTy = indexedElemTypeOverride(ctx, arg)
+    if isJvmPrimitiveElemType(elemTy) {
+      return "[" + typeDescriptor(elemTy)
+    }
+  }
+  erasedDesc
+}
+
 func lowerAutoFfiStaticCall(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -1650,12 +1680,15 @@ func lowerAutoFfiStaticCall(
   // Buffer each arg's lowering so coercions can be inserted per-overload.
   val argBufs: List[List[LInsn]] = newList()
   val argDescs: List[String] = newList()
+  val scoreDescs: List[String] = newList()
   var i = 0
   while i < args.count {
     val buf: List[LInsn] = newList()
     val aTy = lowerCallArg(ctx, buf, args[i])
     argBufs.add(buf)
-    argDescs.add(jvmTypeToDescStr(aTy))
+    val erasedDesc = jvmTypeToDescStr(aTy)
+    argDescs.add(erasedDesc)
+    scoreDescs.add(ffiScoreDescFor(ctx, callArgExpr(args[i]), erasedDesc))
     i = i + 1
   }
 
@@ -1702,7 +1735,7 @@ func lowerAutoFfiStaticCall(
       if methodName == "new" {
         return lowerAutoFfiConstructorCall(ctx, insns, ci, args, callSpan)
       }
-      match findBestMethod(ctx.autoFfi, ci, methodName, argDescs, true) {
+      match findBestMethod(ctx.autoFfi, ci, methodName, scoreDescs, true) {
         case None -> {
           // No static overload matches — compile-time diagnostic.
           var argStr = ""
