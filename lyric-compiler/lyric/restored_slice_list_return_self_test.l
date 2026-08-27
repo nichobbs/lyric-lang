@@ -80,7 +80,9 @@ func cleanup(dir: in String): Unit {
 func mkPkg(name: in String, source: in String): Emitter.ProjectPackage {
   val srcs: List[String] = newList()
   srcs.add(source)
-  Emitter.ProjectPackage(name = name, sources = srcs)
+  val paths: List[String] = newList()
+  paths.add("")
+  Emitter.ProjectPackage(name = name, sources = srcs, paths = paths)
 }
 
 func buildDll(tmpDir: in String, pkgName: in String, source: in String, asmName: in String): String {

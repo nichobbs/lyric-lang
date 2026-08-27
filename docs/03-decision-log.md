@@ -39322,3 +39322,130 @@ closes it.
 §2.4 (updated); docs/10 (updated, corrects the stale "tracked as part 2"
 note).
 
+---
+
+## D-progress-804 — Source-path threading, slices 1–2: diagnostics name the real file; JVM single-file/single-package builds emit a real `SourceFile` attribute (#6284, docs/63 §9.7)
+
+**Context.** Issues #6282 and #6284 share one root cause: no on-disk
+source path ever reached a backend. `Diagnostic` printing
+(`Lyric.Pipeline.gate`) carried no file attribution for a single-file
+build — the finest attribution anywhere was the owning package name,
+and even that was bypassed for parse-phase diagnostics
+(`pipeParseAndErase` hardcoded `gate("", …)` at all three of its call
+sites). On the JVM target, `Jvm.Classfile.makeSourceFileAttr` existed
+with zero call sites — every class in every JAR carried no JVMS
+§4.7.10 `SourceFile` attribute, so `Throwable.printStackTrace` always
+printed `(Unknown Source)`. docs/63 §9.7 surveyed the fix and staged it
+into four slices; this entry ships slices 1 and 2.
+
+**Decision.** Thread the real path as a sibling parameter through the
+pipeline and both backends, per §9.7's "do not add a path to
+`SourceFile`/`parse()`" finding (hundreds of literal-source callers —
+self-tests, the LSP, `doc.l` — would all need updating for no benefit):
+
+- `Lyric.Pipeline.pipeParseAndErase` gained a `label: String` parameter
+  used at all three of its `gate()` calls (previously hardcoded `""`).
+  Single-file builds pass the real absolute path; project builds pass
+  the owning package name (`pkg.name` — already what `pipeCheckAndMono`
+  used for later passes, now applied consistently to the parse phase
+  too, closing that half of the gap for free).
+- `EmitRequest` gained a `path: String` field (no default — the
+  documented cross-package-construction-site risk applies to this
+  record already, so every construction site sets it explicitly, same
+  as `defines`); `ProjectPackage` gained a parallel `paths: List[String]`
+  field alongside `sources`. Both flow from the one place each path is
+  actually known: `cli_build.l`'s `File.readText` call sites and
+  `readProjectPackageSources` (which returns a new `PkgSourceRead`
+  record instead of a bare `List[String]`, carrying `paths` alongside
+  `sources`). ~30 construction sites across `cli_build.l`, `cli_main.l`,
+  `cli_test.l`, `cli_bench.l`, `cli_check.l`, `repl.l`,
+  `workspace_builder.l`, `emitter.l`, and self-tests were updated to set
+  the field explicitly (mechanical; "" for the handful of genuinely
+  synthetic/ad-hoc sources — REPL sessions, in-memory test fixtures).
+- `Msil.Bridge.compileToMsilWithVersion` and the JVM bridge's
+  `compileToJarBundledWithFeatures` / `compileProjectToJarBundledWithFeatures`
+  each gained a trailing path parameter (a `path`/`pkgPaths` sibling,
+  matching the codebase's own `WithX`-suffix idiom so the two back-compat
+  forwarders — `compileToMsil`, `compileToJarBundled` — keep their exact
+  existing signatures and pass `""` through).
+- JVM `SourceFile` emission: `Jvm.Bridge.codegenPackageInto` gained a
+  `fileName: String` parameter; when non-empty, every `ClassFile` it
+  produces gets `cf.attrs.add(makeSourceFileAttr(pool, fileName))`
+  before serialization (`ClassFile.attrs` is a `List[Attribute]`
+  mutated through an `in` binding — zero edits inside `lowering.l`'s 11
+  `ClassFile(` construction sites). The two call sites (user package,
+  bundled-package loop) resolve `fileName` from a `pkgPathByName: Map[String,
+  String]` keyed by package name, built once every project package has
+  parsed far enough to know its own `package` declaration. A package
+  whose path is unknown (multi-file, or genuinely synthetic) resolves to
+  `""` and gets no attribute — emitting nothing beats a wrong guess,
+  since JVMS §4.7.10 permits at most one `SourceFile` per class.
+
+**#6282 (multi-file per-file line numbers) is NOT closed by this
+entry.** §9.7 and §9.5 both recommend replacing `mergePackageSources`'s
+textual concatenation with a per-file parse + `SourceFile`-AST merge —
+correct by construction, and it deletes the scar-carrying
+`stripPackageAndImports`/`extractNonCfgFileLevelAnnotations` helpers.
+That rewrite touches the interface between `emitter.l` and both
+backend bridges (today: one merged source string in, `parse()` called
+internally; the AST-merge shape needs a parsed-`SourceFile`-in entry
+point instead) — genuinely the largest, riskiest piece of this family,
+and per the task's own explicit fallback clause it was intentionally
+descoped rather than risked against the self-hosting build (a mistake
+here can make the compiler unable to build itself, since
+`Lyric.Parser`/`Lyric.TypeChecker`/`Msil.Codegen`/etc. are themselves
+multi-file packages built through this exact path). A multi-file
+project package's parse-phase diagnostics now carry the **package
+name** (the `label` improvement above) but the **line number stays
+blob-relative** to `mergePackageSources`'s concatenated text — verified
+directly: a 2-file `Mf` package with the error on `src/b.l`'s line 5
+reports `Mf: error[...] 50:1: ...` (line 50 in the merged blob), not
+`src/b.l:5`. `docs/63` §9.7's own multi-file-`SourceFile` policy —
+"emit none for genuinely multi-file packages ... revisit when #6282's
+per-file parse lands" — is preserved unchanged: a `ProjectPackage` with
+`sources.count > 1` collapses to a single `paths = [""]` entry once
+merged, so no wrong filename is ever attached to a multi-file
+package's classes either.
+
+**Verification.** `make lyric` (full stage-1 + AOT rebuild, the
+self-hosting risk surface) succeeds end to end. Two new regression
+self-tests, both spawning the just-built `./bin/lyric` as a
+subprocess (the only way to observe `Lyric.Pipeline.gate`'s printed
+stderr, or a compiled JAR's real bytes):
+`source_path_diagnostics_self_test.l` (single-file dotnet, single-file
+jvm, and the 2-file `Mf` project-package case above — the last one
+explicitly documents the remaining blob-relative-line-number gap in
+its own assertion rather than claiming it's fixed) and
+`jvm_sourcefile_attr_self_test.l` (plain single-file jvm build, and the
+common single-package-manifest-project shape — both read the produced
+class back with `javap -v` and assert the `SourceFile` line names the
+real absolute path). `scripts/assert-jvm-line-numbers.sh` — the
+existing B2 line-table oracle — is fixed alongside: its own
+`SourceFile` check previously grepped `javap -l -p` output, which
+**never** prints the `SourceFile` attribute regardless of whether it
+exists (only `-v` does), so the script's long-standing "PENDING,
+SourceFile not emitted yet" state was partly a wrong-flag artifact on
+top of the real gap; it now runs a dedicated `javap -v` pass and
+asserts the real fixture path. All pre-existing self-tests that
+construct `EmitRequest`/`ProjectPackage` (`emitter_project_self_test.l`
+35/35, `jvm_cross_package_collision_self_test.l` 3/3,
+`config_block_missing_required_self_test.l` 2/2, plus
+`cross_package_generics_self_test.l`, `nat_cross_package_self_test.l`,
+`restored_slice_list_return_self_test.l`,
+`msil_restored_qualified_val_self_test.l`, `restored_async_self_test.l`,
+`generic_extern_valuetype_instance_self_test.l`,
+`http_version_self_test.l`, `http_roundtrip_self_test.l`,
+`bitwise_self_test.l`) still pass unchanged — single-file packages are
+provably unaffected in behavior, only in what they now report.
+
+**Coverage gap left open, matching item 4 of docs/63 §9.7's slice
+list.** MSIL's `compileToMsilWithVersion` and the native
+`compileToNativeWithFlags` bridge entry points do not yet consume the
+threaded path for `Document`/`DIFile` emission (B3/B4, explicitly out
+of scope per the assigning task) — but the path DATA now reaches
+`EmitRequest`/`ProjectPackage` on every target, including native, so a
+future B3/B4 slice has it available without re-plumbing.
+
+**Related:** #6282, #6284, `docs/63-build-profiles-and-debugger.md`
+§9.5, §9.7 (the surveys this entry implements slices 1–2 of).
+

@@ -2895,6 +2895,26 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/config_block_missing_required_self_test.l
 
+      # docs/63 §9.7 / #6284: single-file (dotnet + jvm) and manifest-project
+      # diagnostics now carry the real source path; multi-file project-package
+      # parse errors carry the package label (line number stays blob-relative
+      # pending #6282). Spawns the just-built ./bin/lyric as a subprocess per
+      # case (the only way to observe Lyric.Pipeline.gate's printed stderr),
+      # so it needs the same exclusive, non-background placement as the
+      # config-block step above.
+      - name: Source-path diagnostics self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/source_path_diagnostics_self_test.l
+
+      # docs/63 §9.7 / #6284: the JVM backend now emits a real JVMS §4.7.10
+      # SourceFile attribute naming the real path, for both the plain
+      # single-file build and the common single-package-project manifest
+      # shape. Shells out to unzip/javap (already a hard CI dependency for
+      # every JVM self-test that runs its JAR under `java`).
+      - name: JVM SourceFile attribute self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_sourcefile_attr_self_test.l
+
       - name: Init self-test (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}

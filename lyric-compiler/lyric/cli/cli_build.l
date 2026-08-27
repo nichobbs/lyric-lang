@@ -541,11 +541,12 @@ func collectImportedOwnPackages(
       val pkgEntry = proj.packages[pi]
       if stringListContains(needed, pkgEntry.name) and not stringListContains(included, pkgEntry.name) and not isReservedHeadPackage(pkgEntry.name) {
         match readProjectPackageSources(pkgEntry, mfDir, mfPath) {
-          case Some(pkgSources) -> {
+          case Some(pkgRead) -> {
+            val pkgSources = pkgRead.sources
             included.add(pkgEntry.name)
             changed = true
             if pkgSources.count > 0 {
-              result.add(ProjectPackage(name = pkgEntry.name, sources = pkgSources))
+              result.add(ProjectPackage(name = pkgEntry.name, sources = pkgSources, paths = pkgRead.paths))
               var si = 0
               while si < pkgSources.count {
                 val innerNames = importedPackageNames(pkgSources[si])
@@ -703,12 +704,14 @@ func emitSingleFileOrProject(
 
   val srcs: List[String] = newList()
   srcs.add(req.source)
+  val ownPaths: List[String] = newList()
+  ownPaths.add(sourcePath)
   val pkgs: List[ProjectPackage] = newList()
   // The source's own package goes FIRST: the JVM bundled compile takes
   // `packages[0].name` as the bundle's entry package, and the MSIL entry
   // scan is first-wins (#2885) — same ordering convention as `cmdTest`'s
   // test-package-first layout.
-  pkgs.add(ProjectPackage(name = pkgName, sources = srcs))
+  pkgs.add(ProjectPackage(name = pkgName, sources = srcs, paths = ownPaths))
   var opi = 0
   while opi < ownPkgs.count {
     pkgs.add(ownPkgs[opi])
@@ -795,8 +798,10 @@ func emitSingleFileWithWorkspaceMembers(req: in EmitRequest, sourcePath: in Stri
   val pkgName = if pkgNameRaw.length > 0 { pkgNameRaw } else { req.assemblyName }
   val srcs: List[String] = newList()
   srcs.add(req.source)
+  val ownPaths: List[String] = newList()
+  ownPaths.add(sourcePath)
   val pkgs: List[ProjectPackage] = newList()
-  pkgs.add(ProjectPackage(name = pkgName, sources = srcs))
+  pkgs.add(ProjectPackage(name = pkgName, sources = srcs, paths = ownPaths))
   // JVM parity with the manifest leg: member packages ride the bundled
   // compile — the JVM leg below deliberately never forwards `wsDeps.restoredDlls`
   // into `EmitProjectRequest.restoredDllPaths` (#6136, #6697).
@@ -929,7 +934,8 @@ pub func buildOneNativeWithFeatures(
     outputPath = outPath,
     target = target,
     packageVersion = "",
-    defines = cliDefines
+    defines = cliDefines,
+    path = sourcePath
   )
 
   // var-mutation shape (stage-0 value-position-match lowering gap,
@@ -2118,14 +2124,26 @@ func sortFileList(xs: in List[String]): List[String] {
   sorted
 }
 
+/// Sources plus their on-disk paths, parallel by index, as read by
+/// `readProjectPackageSources` (docs/63 §9.7).
+pub record PkgSourceRead {
+  sources: List[String]
+  paths: List[String]
+}
+
 // Read one [project.packages] entry's source texts (single .l file, explicit
 // TOML-array file list, or a directory of .l files collected recursively in
 // sorted order), running the custom-generator pre-processor on each file.
 // Returns None after printing package-labelled errors when anything fails to
 // read or preprocess.  Shared by `buildProject` and
-// `emitSingleFileOrProject`'s own-package inclusion (#5571).
-func readProjectPackageSources(pkgEntry: in Mf.PackageEntry, mfDir: in String, mfPath: in String): Option[List[String]] {
+// `emitSingleFileOrProject`'s own-package inclusion (#5571).  The returned
+// `paths` are parallel to `sources` by index — the real on-disk file each
+// entry was read from, so a single-file package (`sources.count == 1`, the
+// common case per docs/63 §9.7) keeps a real path for diagnostics / JVM
+// `SourceFile` attribution all the way to the backends.
+func readProjectPackageSources(pkgEntry: in Mf.PackageEntry, mfDir: in String, mfPath: in String): Option[PkgSourceRead] {
   val pkgSources: List[String] = newList()
+  val pkgPaths: List[String] = newList()
   var hadFatal = false
   if pkgEntry.paths.count > 0 {
     // Explicit file list (TOML array form): read each named file in order.
@@ -2139,7 +2157,10 @@ func readProjectPackageSources(pkgEntry: in Mf.PackageEntry, mfDir: in String, m
       match File.readText(absFile) {
         case Ok(raw) -> {
           match Generator.preprocess(raw, mfPath, absFile) {
-            case Ok(t) -> pkgSources.add(t)
+            case Ok(t) -> {
+              pkgSources.add(t)
+              pkgPaths.add(absFile)
+            }
             case Err(e) -> {
               printErr("build: package '" + pkgEntry.name + "': generator error in " + absFile + ": " + e)
               hadFatal = true
@@ -2160,7 +2181,10 @@ func readProjectPackageSources(pkgEntry: in Mf.PackageEntry, mfDir: in String, m
       match File.readText(abs) {
         case Ok(raw) -> {
           match Generator.preprocess(raw, mfPath, abs) {
-            case Ok(t) -> pkgSources.add(t)
+            case Ok(t) -> {
+              pkgSources.add(t)
+              pkgPaths.add(abs)
+            }
             case Err(e) -> {
               printErr("build: package '" + pkgEntry.name + "': generator error in " + abs + ": " + e)
               hadFatal = true
@@ -2197,7 +2221,10 @@ func readProjectPackageSources(pkgEntry: in Mf.PackageEntry, mfDir: in String, m
           match File.readText(f) {
             case Ok(raw) -> {
               match Generator.preprocess(raw, mfPath, f) {
-                case Ok(t) -> pkgSources.add(t)
+                case Ok(t) -> {
+                  pkgSources.add(t)
+                  pkgPaths.add(f)
+                }
                 case Err(e) -> {
                   printErr("build: package '" + pkgEntry.name + "': generator error in " + f + ": " + e)
                   hadFatal = true
@@ -2217,10 +2244,10 @@ func readProjectPackageSources(pkgEntry: in Mf.PackageEntry, mfDir: in String, m
     }
   }
   if hadFatal {
-    val noSources: Option[List[String]] = None
+    val noSources: Option[PkgSourceRead] = None
     return noSources
   }
-  Some(value = pkgSources)
+  Some(value = PkgSourceRead(sources = pkgSources, paths = pkgPaths))
 }
 
 // Project-mode build: reads [project.packages] from lyric.toml and
@@ -2387,9 +2414,9 @@ pub func buildProjectFromManifest(
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
     match readProjectPackageSources(pkgEntry, mfDir, mfPath) {
-      case Some(pkgSources) -> {
-        if pkgSources.count > 0 {
-          pkgs.add(ProjectPackage(name = pkgEntry.name, sources = pkgSources))
+      case Some(pkgRead) -> {
+        if pkgRead.sources.count > 0 {
+          pkgs.add(ProjectPackage(name = pkgEntry.name, sources = pkgRead.sources, paths = pkgRead.paths))
         }
       }
       case None -> {

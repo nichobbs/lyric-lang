@@ -205,7 +205,7 @@ pub func compileToJar(
   // off, matching a manifest with no `[features]` table).
   val noFeatures: List[String] = newList()
   val jvmDefines = BD.decodeDefines(newList())
-  val cfgFile = match pipeParseAndErase(source, "jvm", noFeatures, noFeatures, jvmDefines) {
+  val cfgFile = match pipeParseAndErase(source, "jvm", noFeatures, noFeatures, jvmDefines, "") {
     case Some(f) -> f
     case None -> return false
   }
@@ -655,6 +655,13 @@ func rollbackNewKeys[V](m: in Map[String, V], before: in Map[String, Bool]): Uni
 
 // Codegen one (already middle-ended) file against `registry` and append its
 // class files to `out`.  Uses an isolated constant pool per package.
+//
+// `fileName`, when non-empty, is the on-disk path of the source this package
+// was compiled from; every resulting `ClassFile` gets a real JVMS §4.7.10
+// `SourceFile` attribute naming it (docs/63 §9.7 slice 2). Empty means
+// "unknown" (synthetic source, or a genuinely multi-file package pre-#6282) —
+// no attribute is emitted rather than guessing, since JVMS permits at most
+// one `SourceFile` per class and a wrong name is worse than none.
 func codegenPackageInto(
   file: in SourceFile,
   registry: in Map[String, JvmFuncSig],
@@ -664,6 +671,7 @@ func codegenPackageInto(
   allProjFqns: in Map[String, Bool],
   acc: in List[BuiltClass],
   externSeed: in Map[String, String],
+  fileName: in String,
 ): Unit {
   // `file` here already has its `alias X = ...` references resolved — see
   // `runMiddleEnd`'s #6404 comment; every caller of `codegenPackageInto`
@@ -694,6 +702,9 @@ func codegenPackageInto(
     if cf.thisClass == sharedLambdaIface and builtClassNameExists(acc, cf.thisClass) {
       ()
     } else {
+      if fileName.length > 0 {
+        cf.attrs.add(makeSourceFileAttr(pool, fileName))
+      }
       acc.add(BuiltClass(binaryName = cf.thisClass, bytes = serializeClassWithPool(cf, pool)))
     }
     j = j + 1
@@ -1276,7 +1287,8 @@ pub func compileToJarBundled(
     noFeatures,
     noDepTemplateSrcs,
     noDefines,
-    packageVersion
+    packageVersion,
+    ""
   )
 }
 
@@ -1300,6 +1312,7 @@ pub func compileToJarBundledWithFeatures(
   depTemplateSrcs: in List[String],
   defines: in List[String],
   packageVersion: in String,
+  path: in String,
 ): Bool {
   val noRestored: List[SynthesisedArtifact] = newList()
   compileToJarBundledWithRestored(
@@ -1312,7 +1325,8 @@ pub func compileToJarBundledWithFeatures(
     depTemplateSrcs,
     defines,
     packageVersion,
-    noRestored
+    noRestored,
+    path
   )
 }
 
@@ -1338,9 +1352,12 @@ pub func compileToJarBundledWithRestored(
   defines: in List[String],
   packageVersion: in String,
   restoredArtifacts: in List[SynthesisedArtifact],
+  path: in String,
 ): Bool {
   val one: List[String] = newList()
   one.add(source)
+  val onePaths: List[String] = newList()
+  onePaths.add(path)
   compileProjectToJarBundledWithRestored(
     one,
     outputPath,
@@ -1351,7 +1368,8 @@ pub func compileToJarBundledWithRestored(
     depTemplateSrcs,
     defines,
     packageVersion,
-    restoredArtifacts
+    restoredArtifacts,
+    onePaths
   )
 }
 
@@ -1401,6 +1419,13 @@ pub func compileProjectToJarBundledWithFeatures(
   depTemplateSrcs: in List[String],
   defines: in List[String],
   packageVersion: in String,
+  // On-disk source path for each entry of `pkgSrcs`, parallel by index
+  // (docs/63 §9.7). "" means unknown (a synthetic/ad-hoc source, or a
+  // multi-file package pre-#6282's per-file merge). Used to label
+  // parse-phase diagnostics with the real file and to emit a JVM
+  // `SourceFile` attribute for single-file packages (`Jvm.Codegen`
+  // never had a path to attach one with before).
+  pkgPaths: in List[String],
 ): Bool {
   val noRestored: List[SynthesisedArtifact] = newList()
   compileProjectToJarBundledWithRestored(
@@ -1413,7 +1438,8 @@ pub func compileProjectToJarBundledWithFeatures(
     depTemplateSrcs,
     defines,
     packageVersion,
-    noRestored
+    noRestored,
+    pkgPaths
   )
 }
 
@@ -1455,6 +1481,10 @@ pub func compileProjectToJarBundledWithRestored(
   defines: in List[String],
   packageVersion: in String,
   restoredArtifacts: in List[SynthesisedArtifact],
+  // On-disk source path for each entry of `pkgSrcs`, parallel by index
+  // (docs/63 §9.7); see `compileProjectToJarBundledWithFeatures`'s own
+  // `pkgPaths` doc comment.
+  pkgPaths: in List[String],
 ): Bool {
   if pkgSrcs.count == 0 {
     Console.error("error[J001]: JVM project build received no packages")
@@ -1476,15 +1506,27 @@ pub func compileProjectToJarBundledWithRestored(
   // `req.defines` (merged beneath the well-known `version`) into this project
   // path, matching the single-file path (#5852).
   val jvmProjDefines = BD.decodeDefines(defines)
+  // Package name -> on-disk path, keyed once every project package has
+  // parsed far enough to know its own `package` declaration. Empty for a
+  // package whose path is unknown (synthetic source) or that spans more
+  // than one file (#6282's multi-file case is not yet path-attributed).
+  val pkgPathByName: Map[String, String] = newMap()
   var psi = 0
   while psi < pkgSrcs.count {
-    val uf = match pipeParseAndErase(pkgSrcs[psi], "jvm", activeFeatures, declaredFeatures, jvmProjDefines) {
+    val psiPath = if psi < pkgPaths.count { pkgPaths[psi] } else { "" }
+    val uf = match pipeParseAndErase(pkgSrcs[psi], "jvm", activeFeatures, declaredFeatures, jvmProjDefines, psiPath) {
       case Some(f) -> f
       case None -> return false
     }
     if not sawMain and fileHasTopLevelMain(uf) {
       mainIdx = psi
       sawMain = true
+    }
+    if psiPath.length > 0 {
+      val psiPkgName = dottedPath(uf.packageDecl.path)
+      if psiPkgName.length > 0 and not pkgPathByName.containsKey(psiPkgName) {
+        pkgPathByName.add(psiPkgName, psiPath)
+      }
     }
     userFiles.add(uf)
     psi = psi + 1
@@ -2072,6 +2114,7 @@ pub func compileProjectToJarBundledWithRestored(
       val (fContractName, fContractData) = contractZipEntry(userFile, f, dottedPath(f.packageDecl.path), jarVersion)
       contractEntryNames.add(fContractName)
       contractEntryDatas.add(fContractData)
+      val userFileName = match mapGet(pkgPathByName, dottedPath(f.packageDecl.path)) { case Some(p) -> p; case None -> "" }
       codegenPackageInto(
         f,
         registry,
@@ -2080,7 +2123,8 @@ pub func compileProjectToJarBundledWithRestored(
         autoFfi,
         allProjFqns,
         allClasses,
-        externSeedForFile(f, extPkgNames, extPkgMaps)
+        externSeedForFile(f, extPkgNames, extPkgMaps),
+        userFileName
       )
     }
     case None -> return false
@@ -2141,6 +2185,7 @@ pub func compileProjectToJarBundledWithRestored(
             contractEntryNames.add(ffContractName)
             contractEntryDatas.add(ffContractData)
           }
+          val bundledFileName = match mapGet(pkgPathByName, pkgName) { case Some(p) -> p; case None -> "" }
           codegenPackageInto(
             ff,
             registry,
@@ -2149,7 +2194,8 @@ pub func compileProjectToJarBundledWithRestored(
             autoFfi,
             allProjFqns,
             allClasses,
-            externSeedForFile(ff, extPkgNames, extPkgMaps)
+            externSeedForFile(ff, extPkgNames, extPkgMaps),
+            bundledFileName
           )
           true
         }

@@ -60,6 +60,8 @@ func firstPackageNameOf(src: in String): String {
 // `--manifest` to `cmdTestManifest` (the whole-project test-suite runner)
 // before reaching this single-file path at all, so manifest discovery here
 // is always the auto-discovered form (walking up from `sourcePath`).
+// `sourcePath` is also threaded into the `EmitRequest` itself (docs/63 §9.7)
+// so diagnostics/JVM `SourceFile` attribution name the real on-disk path.
 func emitTestPlainOrProject(
   rewritten: in String,
   sourcePath: in String,
@@ -77,7 +79,8 @@ func emitTestPlainOrProject(
     outputPath = outPath,
     target = tgt,
     packageVersion = "",
-    defines = newList()
+    defines = newList(),
+    path = sourcePath
   )
   val noManifestOverride: Option[String] = None
   emitSingleFileOrProject(req, sourcePath, noManifestOverride, cliFeatures, noDefaultFeatures, allFeatures)
@@ -90,7 +93,7 @@ func emitTestPlainOrProject(
 // config to merge — triple/opt/extra_libs use the emitter's own defaults
 // (host triple, `-O2`, none), exactly like `lyric build <file.l> --target
 // native` with no CLI knobs and no manifest.
-func emitTestNative(rewritten: in String, stem: in String, outPath: in String): EmitResult {
+func emitTestNative(rewritten: in String, stem: in String, outPath: in String, sourcePath: in String): EmitResult {
   val noLibs: List[String] = newList()
   Emitter.emitNative(
     EmitRequest(
@@ -99,7 +102,8 @@ func emitTestNative(rewritten: in String, stem: in String, outPath: in String): 
       outputPath = outPath,
       target = Native,
       packageVersion = "",
-      defines = newList()
+      defines = newList(),
+      path = sourcePath
     ),
     "",
     "",
@@ -110,10 +114,16 @@ func emitTestNative(rewritten: in String, stem: in String, outPath: in String): 
 // Emit a single-file `@test_module` that imports `Lyric.*` compiler packages,
 // linking the already-compiled compiler DLLs as restored deps (#2364 Stage 5).
 func emitTestLinked(
-  rewritten: in String, stem: in String, outPath: in String, compilerDlls: in List[String]
+  rewritten: in String,
+  stem: in String,
+  outPath: in String,
+  compilerDlls: in List[String],
+  sourcePath: in String,
 ): EmitResult {
   val testSrcs: List[String] = newList()
   testSrcs.add(rewritten)
+  val testPaths: List[String] = newList()
+  testPaths.add(sourcePath)
   // Guard against a missing `package` declaration: an empty package name would
   // produce a malformed `ProjectPackage`.  A `@test_module` always carries a
   // `package` line, so this falls back to the assembly stem only defensively
@@ -121,7 +131,7 @@ func emitTestLinked(
   val rawPkgName = firstPackageNameOf(rewritten)
   val testPkgName = if rawPkgName.length > 0 { rawPkgName } else { stem }
   val testPkgs: List[ProjectPackage] = newList()
-  testPkgs.add(ProjectPackage(name = testPkgName, sources = testSrcs))
+  testPkgs.add(ProjectPackage(name = testPkgName, sources = testSrcs, paths = testPaths))
   val activeF: List[String] = newList()
   val declaredF: List[String] = newList()
   val noDepTemplateSrcs: List[ProjectPackage] = newList()
@@ -589,9 +599,9 @@ func cmdTest(argv: in slice[String]): Int {
       var manifestNugetPaths: List[String] = newList()
       var manifestNativePaths: List[String] = newList()
       val result = if targetNative {
-        emitTestNative(rewritten, stem, outPath)
+        emitTestNative(rewritten, stem, outPath, sourcePath)
       } else if compilerDlls.count > 0 {
-        emitTestLinked(rewritten, stem, outPath, compilerDlls)
+        emitTestLinked(rewritten, stem, outPath, compilerDlls, sourcePath)
       } else {
         val outcome = emitTestPlainOrProject(
           rewritten,
@@ -1101,7 +1111,16 @@ func cmdTestManifest(
       }
     }  // end else (single-file/directory path)
     if pkgSources.count > 0 {
-      libPkgs.add(ProjectPackage(name = pkgEntry.name, sources = pkgSources))
+      // Compiler-DLL-linked test packages (#2364 Stage 5) don't currently
+      // track per-file paths through this reader; "" (unknown) is correct
+      // and safe — no attribution rather than a guessed one.
+      val libPaths: List[String] = newList()
+      var lpi = 0
+      while lpi < pkgSources.count {
+        libPaths.add("")
+        lpi += 1
+      }
+      libPkgs.add(ProjectPackage(name = pkgEntry.name, sources = pkgSources, paths = libPaths))
     }
     pi += 1
   }
@@ -1348,6 +1367,7 @@ func cmdTestManifest(
                       while pki < depProj.packages.count {
                         val pkgEntry = depProj.packages[pki]
                         val srcList: List[String] = newList()
+                        val srcPathList: List[String] = newList()
                         if pkgEntry.paths.count > 0 {
                           // Explicit file list (TOML array form).
                           var fi = 0
@@ -1358,7 +1378,10 @@ func cmdTestManifest(
                               Path.join(depDir, pkgEntry.paths[fi])
                             }
                             match File.readText(srcPath) {
-                              case Ok(srcText) -> srcList.add(srcText)
+                              case Ok(srcText) -> {
+                                srcList.add(srcText)
+                                srcPathList.add(srcPath)
+                              }
                               case Err(e) -> {
                                 printErr("test: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
                               }
@@ -1368,14 +1391,17 @@ func cmdTestManifest(
                         } else {
                           val srcPath = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(depDir, pkgEntry.path) }
                           match File.readText(srcPath) {
-                            case Ok(srcText) -> srcList.add(srcText)
+                            case Ok(srcText) -> {
+                              srcList.add(srcText)
+                              srcPathList.add(srcPath)
+                            }
                             case Err(e) -> {
                               printErr("test: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
                             }
                           }
                         }
                         if srcList.count > 0 {
-                          depTemplatePkgsList.add(ProjectPackage(name = pkgEntry.name, sources = srcList))
+                          depTemplatePkgsList.add(ProjectPackage(name = pkgEntry.name, sources = srcList, paths = srcPathList))
                         }
                         pki += 1
                       }
@@ -1577,7 +1603,9 @@ func cmdTestManifest(
     val allPkgs: List[ProjectPackage] = newList()
     val testSrcs: List[String] = newList()
     testSrcs.add(rewritten)
-    allPkgs.add(ProjectPackage(name = testEntry.name, sources = testSrcs))
+    val testPaths: List[String] = newList()
+    testPaths.add(testEntry.path)
+    allPkgs.add(ProjectPackage(name = testEntry.name, sources = testSrcs, paths = testPaths))
     var si = 0
     while si < libPkgs.count {
       allPkgs.add(libPkgs[si])

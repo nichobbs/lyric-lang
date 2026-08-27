@@ -873,6 +873,20 @@ argument mode.
    re-derive this plumbing. No user-visible behaviour; verified by call-site
    inspection.
 
+**Status (D-progress-801).** Slices 1 and 2 shipped as surveyed above:
+`pipeParseAndErase` takes the `label` parameter directly (no separate
+`gate("", …)` bypass to fix — the label threads straight through), and
+JVM `SourceFile` is keyed by package name off a `pkgPathByName` map
+built once each project package's own `package` declaration is known,
+exactly the refinement this section called out over the plain
+"sibling parameter" phrasing. Slice 3 (multi-file) is still open — see
+§9.5's "correct by construction" recommendation, not yet attempted;
+slice 4 (MSIL/native path confirmation) is satisfied for MSIL and
+partially for native (`EmitRequest.path` reaches
+`emitNativeInProcess`, but `compileToNativeWithFlags` itself does not
+yet take it — no B3/B4 codegen consumes it either way, so the data is
+available without re-plumbing when that band starts).
+
 ---
 
 ## 10. Two policy questions the design must answer

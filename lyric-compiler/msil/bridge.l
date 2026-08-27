@@ -89,7 +89,7 @@ func resolveTypeAliasesMsil(file: in SourceFile): SourceFile {
 /// `package` declaration in the source.
 pub func compileToMsil(source: in String, outputPath: in String, stdlibSources: in List[String]): Bool {
   val noDefines: List[String] = newList()
-  compileToMsilWithVersion(source, outputPath, stdlibSources, "", noDefines)
+  compileToMsilWithVersion(source, outputPath, stdlibSources, "", noDefines, "")
 }
 
 // Seed lctx.stdCoreResultOk2Row / stdCoreResultErr2Row / stdCoreResultRow from
@@ -140,6 +140,7 @@ pub func compileToMsilWithVersion(
   stdlibSources: in List[String],
   packageVersion: in String,
   defines: in List[String],
+  path: in String,
 ): Bool {
   // Parse + `@cfg` erasure with an empty active set (plus the
   // `target.dotnet` pseudo-feature, D-N-013) — the same semantics a
@@ -149,7 +150,7 @@ pub func compileToMsilWithVersion(
   // no `[features]` table).
   val noCfgFeatures: List[String] = newList()
   val decodedDefines = BD.decodeDefines(defines)
-  val cfgFile = match pipeParseAndErase(source, "dotnet", noCfgFeatures, noCfgFeatures, decodedDefines) {
+  val cfgFile = match pipeParseAndErase(source, "dotnet", noCfgFeatures, noCfgFeatures, decodedDefines, path) {
     case Some(f) -> f
     case None -> return false
   }
@@ -245,7 +246,7 @@ pub func compileToMsilWithVersion(
   val stdlibIfaces = collectStdlibInterfaceDecls(stdlibPkgs)
   val stdlibRecs = collectStdlibRecordDecls(stdlibPkgs)
   val noDeriveImports: List[Item] = newList()
-  val singleFileOpts = MiddleEndOptions(tcFatal = true, tcReport = false, pkgLabel = "")
+  val singleFileOpts = MiddleEndOptions(tcFatal = true, tcReport = false, pkgLabel = path)
   val file = match pipeCheckAndMono(file0, importedPkgs, noDeriveImports, allMonoFuncs, stdlibIfaces, stdlibRecs, singleFileOpts) {
     case Some(f) -> f
     case None -> return false
@@ -587,7 +588,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   var pi = 0
   while pi < packages.count {
     val pkg = packages[pi]
-    val erased = match pipeParseAndErase(pkg.source, "dotnet", activeFeatures, declaredFeatures, projDefines) {
+    val erased = match pipeParseAndErase(pkg.source, "dotnet", activeFeatures, declaredFeatures, projDefines, pkg.name) {
       case Some(f) -> f
       case None -> return false
     }

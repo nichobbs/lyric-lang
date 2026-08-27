@@ -62,7 +62,8 @@ func runBenchOnSource(
         outputPath = outPath,
         target = benchTarget,
         packageVersion = "",
-        defines = newList()
+        defines = newList(),
+        path = sourcePath
       )
       val result = Emitter.emit(req)
       var hadError = false

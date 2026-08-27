@@ -87,6 +87,12 @@ pub record EmitRequest {
   /// IL at the cross-package call site), so every construction site MUST set
   /// this explicitly — pass `newList()` when there are no defines.
   defines: List[String]
+  /// On-disk path of `source` (docs/63 §9.7 B1). "" for a synthetic/ad-hoc
+  /// compile with no real file (REPL, some self-tests). Threaded to the
+  /// backends so diagnostics can name the real file and the JVM backend can
+  /// emit a `SourceFile` attribute. No default for the same cross-package
+  /// construction-site reason as `defines` above.
+  path: String
 }
 
 pub record EmitResult {
@@ -102,6 +108,13 @@ pub record EmitResult {
 pub record ProjectPackage {
   name: String
   sources: List[String]
+  /// On-disk path for each entry of `sources`, parallel by index (docs/63
+  /// §9.7). "" marks an unknown/synthetic source (ad-hoc compiles, tests).
+  /// A `ProjectPackage` with `sources.count > 1` is a genuinely multi-file
+  /// package; until #6282's per-file parse lands, `paths` for those is
+  /// conventionally `[""]` once `mergePackageSources` has collapsed the
+  /// files into one blob — emitting no attribution beats a guessed one.
+  paths: List[String]
 }
 
 pub record EmitProjectRequest {
@@ -1575,7 +1588,9 @@ func emitPerPackagePackage(
   val pkgs: List[ProjectPackage] = newList()
   val srcs: List[String] = newList()
   srcs.add(source)
-  pkgs.add(ProjectPackage(name = name, sources = srcs))
+  val noPaths: List[String] = newList()
+  noPaths.add("")
+  pkgs.add(ProjectPackage(name = name, sources = srcs, paths = noPaths))
   val noFeatures: List[String] = newList()
   val noDepTemplateSrcs: List[ProjectPackage] = newList()
   val emptyNugetPaths: List[String] = newList()
@@ -1805,7 +1820,11 @@ pub func emitCompilerBundle(entrySource: in String, outPath: in String, target: 
   while i < payloads.count {
     val srcs: List[String] = newList()
     srcs.add(payloads[i].source)
-    pkgs.add(ProjectPackage(name = payloads[i].name, sources = srcs))
+    // Each payload is already a merged multi-file compiler package (see the
+    // comment above): no single on-disk path names it, so "" (unknown).
+    val ppaths: List[String] = newList()
+    ppaths.add("")
+    pkgs.add(ProjectPackage(name = payloads[i].name, sources = srcs, paths = ppaths))
     i = i + 1
   }
   val noFeatures: List[String] = newList()
@@ -2044,7 +2063,12 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
     if pkg.sources.count > 1 {
       val merged: List[String] = newList()
       merged.add(mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures))
-      mergedPkgs.add(ProjectPackage(name = pkg.name, sources = merged))
+      // Genuinely multi-file: no single on-disk path names the merged blob
+      // (docs/63 §9.7 policy — emit no attribution rather than a guessed
+      // one, pending #6282's per-file parse).
+      val mergedPaths: List[String] = newList()
+      mergedPaths.add("")
+      mergedPkgs.add(ProjectPackage(name = pkg.name, sources = merged, paths = mergedPaths))
     } else {
       mergedPkgs.add(pkg)
     }
@@ -2580,10 +2604,15 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
     // former subprocess fallback (`--internal-project-build` shellout)
     // was an unbounded process-spawn loop and is deleted.
     val pkgSrcs: List[String] = newList()
+    val pkgPaths: List[String] = newList()
     var mpi = 0
     while mpi < req.packages.count {
       val mp = req.packages[mpi]
       pkgSrcs.add(mergePackageSources(mp.name, mp.sources, req.activeFeatures, req.declaredFeatures))
+      // A single-file package's real path survives the merge (fast path,
+      // #6282's genuinely-multi-file case has no single path — see
+      // `emitProject`'s `mergedPaths` comment).
+      pkgPaths.add(if mp.sources.count == 1 and mp.paths.count == 1 { mp.paths[0] } else { "" })
       mpi = mpi + 1
     }
     // Auto-injected well-known `version` define (docs/60 §9.2) from the
@@ -2602,7 +2631,8 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
         depTemplateNames,
         projDefinesJvm,
         req.packageVersion,
-        restoredArtifactsJvm
+        restoredArtifactsJvm,
+        pkgPaths
       )
     } catch Bug as b {
       diags.add(jvmBridgePanicDiagnostic(b.message))
@@ -2617,6 +2647,7 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
   val pkg = req.packages[0]
   val pkgName = pkg.name
   val source = if pkg.sources.count > 0 { pkg.sources[0] } else { "" }
+  val singlePkgPath = if pkg.sources.count == 1 and pkg.paths.count == 1 { pkg.paths[0] } else { "" }
 
   // Auto-injected well-known `version` define (docs/60 §9.2) from the manifest
   // so `BuildInfo.version` populates on a single-package JVM project build. User
@@ -2633,7 +2664,8 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
       depTemplateNames,
       projDefinesJvm1,
       req.packageVersion,
-      restoredArtifactsJvm
+      restoredArtifactsJvm,
+      singlePkgPath
     )
   } catch Bug as b {
     diags.add(jvmBridgePanicDiagnostic(b.message))
@@ -2818,7 +2850,8 @@ func emitJvmInProcess(req: in EmitRequest): EmitResult {
       noFeatures,
       noDepTemplateSrcsJvm,
       req.defines,
-      req.packageVersion
+      req.packageVersion,
+      req.path
     )
   } catch Bug as b {
     jvmPanicDiags.add(jvmBridgePanicDiagnostic(b.message))
@@ -2917,7 +2950,14 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
   }
   val panicDiags: List[Diagnostic] = newList()
   val ok = try {
-    MsilBridge.compileToMsilWithVersion(req.source, req.outputPath, stdlibSources, req.packageVersion, req.defines)
+    MsilBridge.compileToMsilWithVersion(
+      req.source,
+      req.outputPath,
+      stdlibSources,
+      req.packageVersion,
+      req.defines,
+      req.path
+    )
   } catch Bug as b {
     panicDiags.add(msilBridgePanicDiagnostic(b.message))
     false

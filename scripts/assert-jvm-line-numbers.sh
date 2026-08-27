@@ -362,25 +362,34 @@ else
   echo "[assert-jvm-line-numbers] OK  no rows on the comment-only line 1"
 fi
 
-# Known gap, tracked as the first slice of docs/63 band B1: no `SourceFile`
-# attribute is emitted, because `Jvm.Codegen.codegenPackage` receives a
-# `SourceFile` AST node and that record carries no path — the real path is
-# dropped in `cli_build.l` before the backend ever sees it. `classfile.l` has
-# a `makeSourceFileAttr` builder, but nothing calls it.
-#
-# Consequence: a line number resolves to no file, so `Throwable.printStackTrace`
-# still prints `(Unknown Source)` even though JDWP line breakpoints work off
-# the tables asserted above.
-#
-# This is asserted as a *pending* state rather than ignored: when B1 threads
-# the path through and SourceFile starts being emitted, this check fires and
-# forces the expectation above to be tightened instead of silently going stale.
-if grep -q 'SourceFile:' "$DISASM"; then
-  echo "NOTE: a SourceFile attribute is now emitted — band B1 has landed." >&2
-  echo "      Replace this block with a real assertion on the file name." >&2
+# docs/63 band B1 slice 2: every one of the fixture's own classes must carry
+# a real JVMS §4.7.10 `SourceFile` attribute naming the actual on-disk file
+# (`lines.l`, not the absolute `$WORK_DIR/lines.l` path baked into the
+# manifest, since `Jvm.Bridge` records only `Path.basename`-independent
+# absolute paths verbatim as given — the manifest here names it as
+# `"LyricB2Lines" = "lines.l"` relative to `$WORK_DIR`, so the resolved path
+# is `$WORK_DIR/lines.l`).  `javap -l -p` (used for the LineNumberTable
+# checks above) never prints the SourceFile attribute regardless of whether
+# it exists — only `-v` does — so this is a dedicated pass with its own
+# `javap -v` output, not a re-grep of `$DISASM`.
+EXPECT_SOURCEFILE="$WORK_DIR/lines.l"
+sourcefile_fail=0
+sourcefile_checked=0
+while read -r classfile; do
+  sourcefile_checked=$((sourcefile_checked + 1))
+  got="$("$JAVAP" -v -p "$classfile" 2>/dev/null | grep -m1 '^SourceFile:' | sed -E 's/^SourceFile: *"(.*)"$/\1/')"
+  if [[ "$got" != "$EXPECT_SOURCEFILE" ]]; then
+    echo "FAIL: $classfile SourceFile = '$got', expected '$EXPECT_SOURCEFILE'" >&2
+    sourcefile_fail=1
+  fi
+done < <(find "$EXTRACT_DIR" -path "*LyricB2Lines*" -name "*.class" -type f)
+if [[ "$sourcefile_checked" -eq 0 ]]; then
+  echo "FAIL: no fixture classes found to check for a SourceFile attribute" >&2
+  fail=1
+elif [[ "$sourcefile_fail" -ne 0 ]]; then
   fail=1
 else
-  echo "[assert-jvm-line-numbers] PENDING  SourceFile not emitted yet (band B1)"
+  echo "[assert-jvm-line-numbers] OK  every fixture class carries SourceFile: \"$EXPECT_SOURCEFILE\""
 fi
 
 if [[ "$fail" -ne 0 ]]; then

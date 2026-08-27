@@ -321,6 +321,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/inout_field_self_reassign_self_test.l \
 	lyric-compiler/lyric/jvm_auto_ffi_bridge_self_test.l \
 	lyric-compiler/lyric/jvm_impl_extern_class_self_test.l \
+	lyric-compiler/lyric/jvm_sourcefile_attr_self_test.l \
 	lyric-compiler/lyric/jvm_trycatch_bridge_self_test.l \
 	lyric-compiler/lyric/lexer_self_test.l \
 	lyric-compiler/lyric/list_value_compare_self_test.l \
@@ -365,6 +366,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/slice_array_abi_self_test.l \
 	lyric-compiler/lyric/slice_ops_self_test.l \
 	lyric-compiler/lyric/slice_string_self_test.l \
+	lyric-compiler/lyric/source_path_diagnostics_self_test.l \
 	lyric-compiler/lyric/stdlib_generic_iface_self_test.l \
 	lyric-compiler/lyric/stdlib_generic_mono_self_test.l \
 	lyric-compiler/lyric/stubbable_self_test.l \

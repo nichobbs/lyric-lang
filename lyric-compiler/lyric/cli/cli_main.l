@@ -224,11 +224,15 @@ pub func main(argv: in slice[String]): Int {
               } else {
                 val pkgName = parts[0]
                 val sources: List[String] = newList()
+                val srcPaths: List[String] = newList()
                 var si = 1
                 while si < parts.length {
                   val srcPath = parts[si]
                   match File.readText(srcPath) {
-                    case Ok(srcText) -> sources.add(srcText)
+                    case Ok(srcText) -> {
+                      sources.add(srcText)
+                      srcPaths.add(srcPath)
+                    }
                     case Err(e) -> {
                       printErr("project-build: cannot read source " + srcPath + ": " + IOError.message(e))
                       return 1
@@ -236,7 +240,7 @@ pub func main(argv: in slice[String]): Int {
                   }
                   si += 1
                 }
-                pkgs.add(Emitter.ProjectPackage(name = pkgName, sources = sources))
+                pkgs.add(Emitter.ProjectPackage(name = pkgName, sources = sources, paths = srcPaths))
               }
             }
           }
