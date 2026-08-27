@@ -39290,7 +39290,15 @@ had already computed; fixed to pass `fld.flags` through. Both synthesized
 `<init>`/`.ctor` constructors already store every field via a single
 `stfld`/`putfield` pass inside their own declaring type's constructor (no
 change needed there) — exactly the write CLR/JVM `initonly`/`final` verification
-permits.
+permits. **This initial landing emitted `initonly`/`ACC_FINAL`
+unconditionally for every non-`var` field** — correct for every shape
+V0015 (2b) itself resolves, but 2b's same-file/single-segment-path
+tracking has known blind spots (a nested field-access chain, a write
+through a `val`-bound receiver, an unresolved `out`/`inout` call
+argument) that can genuinely mutate a field the mode checker never
+flagged. See D-progress-815 (#6596) for the whole-build write-safety
+audit gate added immediately after this landing to close that gap before
+it could reach `main`.
 
 **Validation (the acceptance bar, per the task brief).**
 `scripts/ilverify-selfhosted.sh` against the full self-hosted `Lyric.Cli`
@@ -39725,3 +39733,78 @@ enum shadow.
 `msil_project_bridge_self_test.l` all green on both targets.
 
 **Related:** #5995, #6595, #6607, #2899 (`pickCaseFqnByScope`).
+
+---
+
+## D-progress-815 — Whole-build field-lock-safety audit gates MSIL `initonly`/JVM `ACC_FINAL` emission (#6596)
+
+**Date:** 2026-08-27
+**Status:** SHIPPED
+
+**Bug.** D-progress-803's Part 2a shipped MSIL `initonly`/JVM `ACC_FINAL`
+emission for every non-`var` field, gated only by Part 2b's mode-checker
+V0015 pass. That pass resolves three specific write shapes (a `var`-local
+receiver, an `inout`-parameter alias, a `self`/protected-type write) but
+has known, documented blind spots: a nested field-access chain
+(`c.inner.n = …`), a write through a `val`-bound receiver, and the field
+passed as an `out`/`inout` call argument in a call the mode checker can't
+resolve back to the checked `inout`-cursor idiom. A field mutated only
+through one of those unchecked shapes would be locked `initonly`/
+`ACC_FINAL` at the IL/bytecode level while genuinely-executing code still
+writes to it — invalid IL that CoreCLR tolerates silently at runtime
+(a correctness bug that never surfaces as a build or runtime error) but
+that the JVM verifier rejects outright with `IllegalAccessError` at
+class-load time — a silent cross-target divergence the initial Part 2a
+landing did not close.
+
+**Fix.** `Lyric.ModeChecker.computeFieldLockSafetyForBuild`
+(`lyric-compiler/lyric/mode_checker/modechecker_check.l`) runs once
+across every in-build package's source, before any package's codegen,
+and walks every item kind that can carry an executable body
+(`IRecord`/`IImpl`/`IProtected`, and — closing a follow-up gap found by a
+later review pass, see below — `IInterface` default methods and `ITest`
+bodies) looking for a write to a field NAME through any of the three
+unchecked shapes above, keyed by bare field name across the whole build.
+`msil/bridge.l` and `jvm/bridge.l` both call this audit once per build and
+thread its result into codegen as a `Set[String]`
+(`unsafeFieldLockNames`); `Msil.Codegen.lowerRecordMsil`'s `RMField` arm
+and `Jvm.Codegen.lowerRecord`'s `RMField` arm both check the field's bare
+name against that set before emitting `FDA_INIT_ONLY`/`ACC_FINAL` — a
+field the audit cannot prove safe is left unlocked (mutable at the
+IL/bytecode level) rather than risk emitting an invalid store. This is a
+conservative, sound-but-imprecise gate: keyed by bare name rather than
+per-record, so one unsafe write anywhere in the build disables locking
+for every same-named field across every record, trading precision for
+soundness given the audit runs once, whole-build, ahead of any
+per-package codegen decision.
+
+**Follow-up (same PR, #6641).** The initial `walkFileForFieldWriteChecks`
+walker had no arm for `IInterface`/`ITest` (both fell through a bare
+`case _ -> {}`), so a field written only inside an interface default
+method's body or a `@test_module` test block's body was invisible to the
+audit — closed by mirroring the exact pattern this file's own
+`checkSpawnConsumption` walker already used for both item kinds.
+
+**Diagnostics.** No new diagnostic code — this is a silent gate on
+emitter behavior, not a user-facing check (the field is simply left
+mutable at the IL level; no error or warning is produced either way,
+matching the "conservative fallback" framing above).
+
+**Coverage.** `modechecker_self_test.l`'s lock-safety block: a field never
+written anywhere is safe to lock; a field written only through a checked
+`var`-local/`inout`/`self` shape is safe to lock; a nested field-access
+chain write, a `val`-bound-receiver write, an `out`/`inout` call-argument
+write-back, and a plain by-value call argument are each exercised
+individually; a write reaching a record from a different file in the same
+build; a field written only through an interface default method body; an
+interface with only a body-less signature (must NOT mark anything
+unsafe); a field written only inside a test block body.
+
+**Verification.** `scripts/ilverify-selfhosted.sh` against the full
+self-hosted `Lyric.Cli` compiler closure: 121 DLLs, 0 IL-validity errors.
+Full `make lyric` (stage 1 + AOT, rebuilding the entire stdlib bundle and
+compiler-DLL closure under the gated emission) completes cleanly.
+
+**Related:** #1815, #6155, #6641; D-progress-803 (Part 2a, the initial
+unconditional-emission landing this entry gates); docs/01
+§2.4 (documents the gated behavior directly).

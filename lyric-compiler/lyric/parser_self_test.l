@@ -1474,9 +1474,9 @@ test "lambda: guard containing an if-block statement with a nested lambda, plus 
 //     alias-typed cases but not a plain unannotated lambda-literal `val`),
 //     so the later `f(y)` call's boxed `Func<...>.Invoke` result is never
 //     unboxed — silently truthy regardless of the lambda's real body
-//     (confirmed: even `val f = (x) -> false; f(y)` returns `true`). The
-//     explicit annotation here registers `f` correctly and makes `f(y)`
-//     unbox to the real `Bool`.
+//     (confirmed: even `val f = (x) -> false; f(y)` returns `true`).
+//     Tracked in #6690. The explicit annotation here registers `f`
+//     correctly and makes `f(y)` unbox to the real `Bool`.
 // Both are pre-existing MSIL codegen gaps, unrelated to the parser fix;
 // neither is addressed by this change (out of scope — see the PR/task
 // notes). What this shape still fully exercises is the parser fix itself:

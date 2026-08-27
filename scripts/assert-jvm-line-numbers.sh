@@ -377,7 +377,13 @@ sourcefile_fail=0
 sourcefile_checked=0
 while read -r classfile; do
   sourcefile_checked=$((sourcefile_checked + 1))
-  got="$("$JAVAP" -v -p "$classfile" 2>/dev/null | grep -m1 '^SourceFile:' | sed -E 's/^SourceFile: *"(.*)"$/\1/')"
+  # Capture javap's full output into a variable first (not piped straight
+  # into grep) so a class missing SourceFile can't SIGPIPE javap when grep
+  # -m1 closes its read end early, and `|| true` on the extraction keeps a
+  # genuine no-match from tripping `set -e` before the FAIL diagnostic below
+  # can print.
+  javap_out="$("$JAVAP" -v -p "$classfile" 2>/dev/null)"
+  got="$(printf '%s\n' "$javap_out" | grep -m1 '^SourceFile:' | sed -E 's/^SourceFile: *"(.*)"$/\1/')" || true
   if [[ "$got" != "$EXPECT_SOURCEFILE" ]]; then
     echo "FAIL: $classfile SourceFile = '$got', expected '$EXPECT_SOURCEFILE'" >&2
     sourcefile_fail=1

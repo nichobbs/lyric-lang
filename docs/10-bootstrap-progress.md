@@ -13454,16 +13454,24 @@ arm, plus fixing `Jvm.Lowering.lowerRecord`'s `FieldInfo` build site,
 which previously hardcoded `ACC_PUBLIC` and silently discarded
 `fld.flags`), backstopping V0015 at the IL/bytecode level for write paths
 the mode checker's narrow same-file/single-segment-path pass cannot see
-(nested-member writes, non-`inout` aliasing, cross-file access). Verified
-by `scripts/ilverify-selfhosted.sh` against the full self-hosted
+(nested-member writes, non-`inout` aliasing, cross-file access) —
+**but that first landing emitted `initonly`/`ACC_FINAL` unconditionally**
+for every non-`var` field, which is unsound against exactly the write
+shapes it was meant to backstop. Issue #6596 (D-progress-815) closed that
+gap immediately after: `Lyric.ModeChecker.computeFieldLockSafetyForBuild`
+runs a whole-build write-safety audit before any package's codegen, and
+both emitters now check a field's bare name against that audit's result
+before emitting the lock — a field the audit cannot prove safe is left
+mutable at the IL/bytecode level instead of risking an invalid store.
+Verified by `scripts/ilverify-selfhosted.sh` against the full self-hosted
 `Lyric.Cli` compiler closure (121 DLLs, 0 IL-validity errors — the only
 findings are the 2 DLLs' pre-existing, unrelated extern-FFI reflection-load
 informational findings) and a full `make lyric` self-host rebuild (stage 1
 + AOT + stdlib bundle + compiler-DLL closure, all through the
-initonly/`ACC_FINAL`-emitting compiler). Cross-file types, and bare
-implicit-self writes remain out of scope for the mode-checker pass (as
-before); method receivers under a non-`inout` mode are likewise out of
-scope for the emitter enforcement.
+audit-gated compiler). Cross-file types, and bare implicit-self writes
+remain out of scope for the mode-checker pass (as before); method
+receivers under a non-`inout` mode are likewise out of scope for the
+emitter enforcement.
 
 **Test results:** 792/792 emitter tests pass, 237/237 CLI tests pass.
 

@@ -339,6 +339,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/module_val_self_test.l \
 	lyric-compiler/lyric/mono_self_test.l \
 	lyric-compiler/lyric/mono_shadow_self_test.l \
+	lyric-compiler/lyric/msil_codegen_diag_self_test.l \
 	lyric-compiler/lyric/msil_project_bridge_self_test.l \
 	lyric-compiler/lyric/multi_impl_iface_result_self_test.l \
 	lyric-compiler/lyric/named_arg_order_self_test.l \
