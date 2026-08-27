@@ -773,6 +773,86 @@ test "HTTP/2 chunked response body arrives fully" {
   assertTrue(body == "chunk-A;chunk-B;chunk-C", "all chunks arrive concatenated in order: " + body)
 }
 
+// #6566: `rejectedStreams` (the `413`-rejection terminal marker set) is
+// actively pruned once an entry scrolls `h2RejectedStreamRetentionWindow()`
+// slots behind the connection's high-water mark, so a client that opens many
+// streams, gets each `413`-rejected, and abandons every one (never sending
+// END_STREAM/RST_STREAM) cannot grow that bookkeeping without bound —
+// mirroring the #6064 fix already shipped for the underlying FSM's own
+// per-stream table. Genuinely reproducing "rejected AND abandoned" (as
+// opposed to rejected-then-properly-closed, which every real HTTP client
+// does) needs a raw h2 frame client that can withhold END_STREAM/RST_STREAM
+// indefinitely — blocked by the same FFI gaps the #6144 trailer-HEADERS test
+// above documents (`X509Certificate2.CreateFromPem` crashes the emitter;
+// the client-side ALPN `List<SslApplicationProtocol>` setter hits #6029).
+// The two tests below cover what IS reachable without that raw client: the
+// pruning walk's id-distance threshold arithmetic directly (deterministic,
+// no sockets — the risk surface an off-by-one bug would actually live in),
+// and that adding a prune pass to every h2 batch causes no regression under
+// sustained real rejection traffic on one connection.
+test "h2RejectedStreamIsReclaimable id-distance threshold matches the documented window" {
+  val window = h2RejectedStreamRetentionWindow()
+  assertTrue(window > 0, "the retention window is a positive number of stream-id slots")
+  // Exactly at the threshold (`highWaterMark - window * 2`) is NOT yet
+  // reclaimable — mirrors `pruneClosedStreams`'s own strict `<` (not `<=`)
+  // comparison against its threshold.
+  val highWaterMark = 1000
+  val threshold = highWaterMark - window * 2
+  assertFalse(
+    h2RejectedStreamIsReclaimable(threshold, highWaterMark, window),
+    "an id exactly at the threshold is not yet reclaimable"
+  )
+  assertTrue(
+    h2RejectedStreamIsReclaimable(threshold - 2, highWaterMark, window),
+    "the next older client stream id (2 below the threshold) is reclaimable"
+  )
+  assertFalse(
+    h2RejectedStreamIsReclaimable(threshold + 2, highWaterMark, window),
+    "the next newer client stream id (2 above the threshold) is not yet reclaimable"
+  )
+  assertFalse(
+    h2RejectedStreamIsReclaimable(highWaterMark, highWaterMark, window),
+    "the most recently opened stream id is never reclaimable"
+  )
+  assertFalse(h2RejectedStreamIsReclaimable(1, 1, window), "a brand-new connection reclaims nothing")
+}
+
+test "HTTP/2 connection stays healthy after many sequential over-cap rejections on one connection (#6566)" {
+  val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTlsWithLimits("127.0.0.1", 19417, cfg, smallBodyLimits(1024)) {
+    case Ok(l) -> l
+    case Err(e) -> panic("startListenerTlsWithLimits failed: " + TlsListenError.message(e))
+  }
+  // No puller for the rejected requests: each is turned away by the
+  // connection task itself, exactly as the single-rejection #6144 test above.
+  val dispatched: ConcQueue[String] = newConcQueue()
+  val server = taskRun({ -> serveRecording(listener, dispatched, 1) })
+  threadSleep(100)
+  val client = HttpClientBuilder.build(
+    HttpClientBuilder.withExclusiveCaCertificate(HttpClientBuilder.new(), caCertificate())
+  )
+  var i = 0
+  while i < 40 {
+    match await client.post("https://localhost:19417/overcap/" + toString(i), makeBody(4096)) {
+      case Ok(r) -> assertEqualInt(r.statusCode(), 413, "over-cap request " + toString(i) + " rejected with 413")
+      case Err(e) -> panic("over-cap POST " + toString(i) + " should return 413, not a transport error: " + HttpError.message(e))
+    }
+    i = i + 1
+  }
+  // A valid request after 40 rejected-and-properly-closed streams on the same
+  // connection must still succeed: `pruneRejectedStreams` running on every
+  // batch (new with #6566) must not corrupt or stall the connection.
+  val okResp = match await client.get("https://localhost:19417/valid") {
+    case Ok(r) -> r
+    case Err(e) -> panic("post-rejection GET should succeed after 40 rejections: " + HttpError.message(e))
+  }
+  taskWait(server)
+  stopListener(listener)
+  assertEqualInt(okResp.statusCode(), 200, "connection still healthy after many rejections")
+  val handled = drainConcQueue(dispatched)
+  assertTrue(handled.contains("/valid"), "the valid request reached the handler: " + handled)
+}
+
 test "startListenerTls rejects requireClientCert without clientCa" {
   val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = true)
   match startListenerTls("127.0.0.1", 19408, cfg) {
