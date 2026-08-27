@@ -4696,7 +4696,11 @@ func inferUntypedStaticValMsilType(e: in Expr, env: in Map[String, MsilType]): M
       case LFloat(_, _, _) -> MDouble
       case LInt(v, suffix, _) -> match suffix {
         case I64 | U64 -> MLong
-        case _ -> if v >= -2147483648i64 and v <= 2147483647i64 { MInt } else { MLong }
+        case _ -> if v >= -2147483648i64 and v <= 2147483647i64 {
+          MInt
+        } else {
+          MLong
+        }
       }
       case LBool(_) -> MBool
       case LChar(_) -> MChar
@@ -4830,9 +4834,21 @@ func listLiteralElemTypeMsil(fctx: in FuncCtx, e: in Expr): MsilType {
       case LInt(v, suffix, _) -> match suffix {
         case I8 -> MByte
         case U8 -> MByte
-        case NoIntSuffix -> if v >= -2147483648i64 and v <= 2147483647i64 { MInt } else { MObject }
-        case I16 -> if v >= -2147483648i64 and v <= 2147483647i64 { MInt } else { MObject }
-        case I32 -> if v >= -2147483648i64 and v <= 2147483647i64 { MInt } else { MObject }
+        case NoIntSuffix -> if v >= -2147483648i64 and v <= 2147483647i64 {
+          MInt
+        } else {
+          MObject
+        }
+        case I16 -> if v >= -2147483648i64 and v <= 2147483647i64 {
+          MInt
+        } else {
+          MObject
+        }
+        case I32 -> if v >= -2147483648i64 and v <= 2147483647i64 {
+          MInt
+        } else {
+          MObject
+        }
         case I64 -> MLong
         case _ -> MObject
       }
@@ -5999,7 +6015,8 @@ func emitByrefArgMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIns
           match mapGet(cctx.fieldTokens, key) {
             case Some(tok) -> insns.add(MLdflda(fieldToken = tok))
             case None -> panic(
-              "Msil.Codegen: out/inout field argument '" + memberName + "' not found in fieldTokens for class '" + cls +
+              "Msil.Codegen: out/inout field argument '" + memberName + "' not found in fieldTokens for class '" +
+                cls +
                 "'"
             )
           }
@@ -7955,7 +7972,9 @@ func monadReceiverHeadFqnMsil(ty: in MsilType): String {
 func lowerCaseIsinstBoolMsil(insns: in List[MInsn], recvTy: in MsilType, caseClassFqn: in String): Unit {
   match recvTy {
     case MGenericInst(_, _, typeArgs) -> insns.add(MIsinstGeneric(className = caseClassFqn, typeArgs = typeArgs))
-    case MValueTypeGenericInst(_, _, typeArgs) -> insns.add(MIsinstGeneric(className = caseClassFqn, typeArgs = typeArgs))
+    case MValueTypeGenericInst(_, _, typeArgs) -> insns.add(
+      MIsinstGeneric(className = caseClassFqn, typeArgs = typeArgs)
+    )
     case MGenericInstByName(_, typeArgs) -> {
       insns.add(MIsinstGeneric(className = genericBacktickFqn(caseClassFqn, typeArgs.count), typeArgs = typeArgs))
     }
@@ -8478,7 +8497,10 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               }
               val ordHit = match qualifiedOrdHit {
                 case Some(o) -> Some(value = o)
-                case None -> match hintedOrd { case Some(o) -> Some(value = o); case None -> mapGet(cctx.enumCaseOrdinals, name) }
+                case None -> match hintedOrd {
+                  case Some(o) -> Some(value = o)
+                  case None -> mapGet(cctx.enumCaseOrdinals, name)
+                }
               }
               match ordHit {
                 case Some(ordv) -> {
@@ -9894,7 +9916,11 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           val returnsVoid = match mapGet(cctx.lambdaExternDelegateRetType, lambdaKey) {
             case Some(MVoid) -> true
             case Some(_) -> false
-            case None -> match mapGet(cctx.funcRetTypes, lambdaKey) { case Some(MVoid) -> true; case None -> true; case _ -> false }
+            case None -> match mapGet(cctx.funcRetTypes, lambdaKey) {
+              case Some(MVoid) -> true
+              case None -> true
+              case _ -> false
+            }
           }
           // Lambdas default to an all-object delegate TypeSpec so the ctor, castclass,
           // and callvirt Invoke all reference the same TypeSpec row (#4266). The one
@@ -10925,7 +10951,9 @@ func lowerStmtsExprFromMsil(
   restoreHintTyArgs(fctx, savedDeferHint)
   val deferBody = match stmts[deferIdx].kind {
     case SDefer(b) -> b
-    case _ -> panic("Msil.Codegen: lowerStmtsExprFromMsil: deferIdx points at non-SDefer statement (compiler bug)")
+    case _ -> panic(
+      "Msil.Codegen: lowerStmtsExprFromMsil: deferIdx points at non-SDefer statement (compiler bug)"
+    )
   }
   // A trailing `defer` (last statement of the value block — the block then
   // yields `Unit`) has an EMPTY protected region: nothing follows it that
@@ -12869,7 +12897,10 @@ func substituteTypeVarsMsil(ty: in MsilType, typeArgs: in List[MsilType]): MsilT
       valTy = substituteTypeVarsMsil(v, typeArgs)
     )
     case MListOf(e) -> MListOf(elemTy = substituteTypeVarsMsil(e, typeArgs))
-    case MMapOf(k, v) -> MMapOf(keyTy = substituteTypeVarsMsil(k, typeArgs), valTy = substituteTypeVarsMsil(v, typeArgs))
+    case MMapOf(k, v) -> MMapOf(
+      keyTy = substituteTypeVarsMsil(k, typeArgs),
+      valTy = substituteTypeVarsMsil(v, typeArgs)
+    )
     case MSetOf(e) -> MSetOf(elemTy = substituteTypeVarsMsil(e, typeArgs))
     case MIAsyncEnumerable(e) -> MIAsyncEnumerable(elemTy = substituteTypeVarsMsil(e, typeArgs))
     case MExternEnumerable(e) -> MExternEnumerable(elemTy = substituteTypeVarsMsil(e, typeArgs))
@@ -12957,15 +12988,27 @@ func findNestedTypeVarArgMsil(pattern: in MsilType, concrete: in MsilType, slot:
       case _ -> MObject
     }
     case MGenericInst(_, _, pargs) -> match concrete {
-      case MGenericInst(_, _, cargs) -> findNestedTypeVarArgListMsil(pargs, cargs, slot)
+      case MGenericInst(_, _, cargs) -> findNestedTypeVarArgListMsil(
+        pargs,
+        cargs,
+        slot
+      )
       case _ -> MObject
     }
     case MValueTypeGenericInst(_, _, pargs) -> match concrete {
-      case MValueTypeGenericInst(_, _, cargs) -> findNestedTypeVarArgListMsil(pargs, cargs, slot)
+      case MValueTypeGenericInst(_, _, cargs) -> findNestedTypeVarArgListMsil(
+        pargs,
+        cargs,
+        slot
+      )
       case _ -> MObject
     }
     case MGenericInstByName(_, pargs) -> match concrete {
-      case MGenericInstByName(_, cargs) -> findNestedTypeVarArgListMsil(pargs, cargs, slot)
+      case MGenericInstByName(_, cargs) -> findNestedTypeVarArgListMsil(
+        pargs,
+        cargs,
+        slot
+      )
       case _ -> MObject
     }
     case MConcreteList(pe) -> match concrete {
@@ -13274,7 +13317,17 @@ func lowerPatternBindMsil(
         var fi = 0
         while fi < fields.count {
           match fields[fi].kind {
-            case PBinding(_, _) -> bindNamedFieldMsil(cctx, fctx, insns, castTy, castSlot, caseClass, caseClassBt, fi, fields[fi])
+            case PBinding(_, _) -> bindNamedFieldMsil(
+              cctx,
+              fctx,
+              insns,
+              castTy,
+              castSlot,
+              caseClass,
+              caseClassBt,
+              fi,
+              fields[fi]
+            )
             case PTuple(_) -> bindPositionalFieldMsil(
               cctx,
               fctx,
@@ -14420,7 +14473,11 @@ func lowerBuiltinOrStaticCallMsil(
     // `get_Item` yields `object`; fall back to the map's tracked value type.
     val outSlotTyTgv = match mapGet(fctx.types, outNameTgv) {
       case Some(t) -> t
-      case None -> match mArgTyTgv { case MConcreteMap(_, vt) -> vt; case MMapOf(_, vt) -> vt; case _ -> MObject }
+      case None -> match mArgTyTgv {
+        case MConcreteMap(_, vt) -> vt
+        case MMapOf(_, vt) -> vt
+        case _ -> MObject
+      }
     }
     val elseLTgv = freshLabelMsil(fctx)
     val endLTgv = freshLabelMsil(fctx)
@@ -15879,7 +15936,9 @@ func lowerMethodCallMsil(
     case MClassRef(_, fqn) -> match tryInstanceAutoFfiFromMetadata(cctx, fctx, insns, fqn, memberName, args, false) {
       case Some(rt) -> return rt
       case None -> panic(
-        "Msil.Codegen: auto-FFI instance call '" + memberName + "' on extern receiver '" + fqn +
+        "Msil.Codegen: auto-FFI instance call '" + memberName +
+          "' on extern receiver '" +
+          fqn +
           "' does not match any instance method or property getter of that type (or its base types) in " +
           ".NET reference-assembly metadata for the given argument types; check the member name and " +
           "argument types against the BCL overloads.  Declare an @externTarget wrapper " +
@@ -20101,7 +20160,12 @@ func emitExternTargetBody(
       // return stays `object` (assignable from the reference type on `ret`).
       val ffiRetTy = match decl.ret {
         case Some(te) -> match te.kind {
-          case TNullable(inner) -> typeExprToMsilGenBodyOrCtx(cctx, inner, pkgName, declGenerics)
+          case TNullable(inner) -> typeExprToMsilGenBodyOrCtx(
+            cctx,
+            inner,
+            pkgName,
+            declGenerics
+          )
           case _ -> retTy
         }
         case None -> MVoid
@@ -20770,7 +20834,10 @@ func countYieldsInExpr(e: in Expr): Int {
       n = n + match t { case EOBExpr(ex) -> countYieldsInExpr(ex); case EOBBlock(blk) -> countYieldsInBlock(blk) }
       n = n +
         match el {
-          case Some(elB) -> match elB { case EOBExpr(ex) -> countYieldsInExpr(ex); case EOBBlock(blk) -> countYieldsInBlock(blk) }
+          case Some(elB) -> match elB {
+            case EOBExpr(ex) -> countYieldsInExpr(ex)
+            case EOBBlock(blk) -> countYieldsInBlock(blk)
+          }
           case None -> 0
         }
       n
@@ -20909,7 +20976,10 @@ func countYieldsInBlock(block: in Block): Int {
 
 func countYieldsInFuncBody(decl: in FunctionDecl): Int {
   match decl.body {
-    case Some(body) -> match body { case FBBlock(blk) -> countYieldsInBlock(blk); case FBExpr(e) -> countYieldsInExpr(e) }
+    case Some(body) -> match body {
+      case FBBlock(blk) -> countYieldsInBlock(blk)
+      case FBExpr(e) -> countYieldsInExpr(e)
+    }
     case None -> 0
   }
 }
@@ -21196,7 +21266,8 @@ func isFfiTaskTypeRefMsil(cctx: in CodegenCtx, trCode: in Int, simpleName: in St
 // pass the value through without invoking GetAwaiter/GetResult again.
 func isTaskTypeMsil(cctx: in CodegenCtx, ty: in MsilType): Bool {
   match ty {
-    case MGenericInst(trCode, _, _) -> trCode == tdrTypeRef(cctx.trTask1) or isFfiTaskTypeRefMsil(cctx, trCode, "Task`1")
+    case MGenericInst(trCode, _, _) -> trCode == tdrTypeRef(cctx.trTask1) or
+      isFfiTaskTypeRefMsil(cctx, trCode, "Task`1")
     case MClassRef(trCode, _) -> trCode == tdrTypeRef(cctx.trTask) or isFfiTaskTypeRefMsil(cctx, trCode, "Task")
     case _ -> false
   }
@@ -21412,7 +21483,13 @@ func resolveQualifiedFreeCallRetTypePB(
           result = ty2
           done2 = true
         }
-        case None -> match mapGet(cctx.pbFuncRetTypes, c2) { case Some(ty2) -> { result = ty2; done2 = true }; case None -> () }
+        case None -> match mapGet(cctx.pbFuncRetTypes, c2) {
+          case Some(ty2) -> {
+            result = ty2
+            done2 = true
+          }
+          case None -> ()
+        }
       }
       ci2 = ci2 + 1
     }
@@ -21909,8 +21986,26 @@ func collectAwaitTypesExprPB(
       }
       match el {
         case Some(els) -> match els {
-          case EOBBlock(b) -> collectAwaitTypesBlockPB(cctx, pkgName, b, acc, spawnNms, spawnTys, localNms, localTys)
-          case EOBExpr(e3) -> collectAwaitTypesExprPB(cctx, pkgName, e3, acc, spawnNms, spawnTys, localNms, localTys)
+          case EOBBlock(b) -> collectAwaitTypesBlockPB(
+            cctx,
+            pkgName,
+            b,
+            acc,
+            spawnNms,
+            spawnTys,
+            localNms,
+            localTys
+          )
+          case EOBExpr(e3) -> collectAwaitTypesExprPB(
+            cctx,
+            pkgName,
+            e3,
+            acc,
+            spawnNms,
+            spawnTys,
+            localNms,
+            localTys
+          )
         }
         case None -> {
         }
@@ -22103,11 +22198,29 @@ func collectAwaitTypesStmtPB(
     }
     case SExpr(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, acc, spawnNms, spawnTys, localNms, localTys)
     case SReturn(valOpt) -> match valOpt {
-      case Some(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, acc, spawnNms, spawnTys, localNms, localTys)
+      case Some(e) -> collectAwaitTypesExprPB(
+        cctx,
+        pkgName,
+        e,
+        acc,
+        spawnNms,
+        spawnTys,
+        localNms,
+        localTys
+      )
       case None -> {
       }
     }
-    case SAssign(_, _, value) -> collectAwaitTypesExprPB(cctx, pkgName, value, acc, spawnNms, spawnTys, localNms, localTys)
+    case SAssign(_, _, value) -> collectAwaitTypesExprPB(
+      cctx,
+      pkgName,
+      value,
+      acc,
+      spawnNms,
+      spawnTys,
+      localNms,
+      localTys
+    )
     case SThrow(expr) -> collectAwaitTypesExprPB(cctx, pkgName, expr, acc, spawnNms, spawnTys, localNms, localTys)
     case SWhile(_, cond, body) -> {
       collectAwaitTypesExprPB(cctx, pkgName, cond, acc, spawnNms, spawnTys, localNms, localTys)
@@ -22262,8 +22375,24 @@ func collectSpawnBindingsStmtMsil(
     }
     case SScope(_, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys, localNms, localTys)
     case SLoop(_, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys, localNms, localTys)
-    case SWhile(_, _, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys, localNms, localTys)
-    case SFor(_, _, _, body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys, localNms, localTys)
+    case SWhile(_, _, body) -> collectSpawnBindingsBlockMsil(
+      cctx,
+      pkgName,
+      body,
+      spawnNms,
+      spawnTys,
+      localNms,
+      localTys
+    )
+    case SFor(_, _, _, body) -> collectSpawnBindingsBlockMsil(
+      cctx,
+      pkgName,
+      body,
+      spawnNms,
+      spawnTys,
+      localNms,
+      localTys
+    )
     case SDefer(body) -> collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys, localNms, localTys)
     case STry(body, catches, finally_) -> {
       collectSpawnBindingsBlockMsil(cctx, pkgName, body, spawnNms, spawnTys, localNms, localTys)
@@ -22335,7 +22464,15 @@ func collectAwaitTypesPhaseBMsil(cctx: in CodegenCtx, pkgName: in String, decl: 
     case Some(body) -> match body {
       case FBExpr(_) -> {
       }
-      case FBBlock(blk) -> collectSpawnBindingsBlockMsil(cctx, pkgName, blk, spawnNms, spawnTys, localNms, localTys)
+      case FBBlock(blk) -> collectSpawnBindingsBlockMsil(
+        cctx,
+        pkgName,
+        blk,
+        spawnNms,
+        spawnTys,
+        localNms,
+        localTys
+      )
     }
   }
 
@@ -22345,8 +22482,26 @@ func collectAwaitTypesPhaseBMsil(cctx: in CodegenCtx, pkgName: in String, decl: 
     case None -> {
     }
     case Some(body) -> match body {
-      case FBBlock(blk) -> collectAwaitTypesBlockPB(cctx, pkgName, blk, result, spawnNms, spawnTys, localNms, localTys)
-      case FBExpr(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, result, spawnNms, spawnTys, localNms, localTys)
+      case FBBlock(blk) -> collectAwaitTypesBlockPB(
+        cctx,
+        pkgName,
+        blk,
+        result,
+        spawnNms,
+        spawnTys,
+        localNms,
+        localTys
+      )
+      case FBExpr(e) -> collectAwaitTypesExprPB(
+        cctx,
+        pkgName,
+        e,
+        result,
+        spawnNms,
+        spawnTys,
+        localNms,
+        localTys
+      )
     }
   }
   cctx.pbGenerics.clear()
@@ -22881,7 +23036,10 @@ func countGenLocalsExpr(e: in Expr): Int {
       n = n + match t { case EOBBlock(b) -> countGenLocalsBlock(b); case EOBExpr(e2) -> countGenLocalsExpr(e2) }
       n = n +
         match el {
-          case Some(eb) -> match eb { case EOBBlock(b) -> countGenLocalsBlock(b); case EOBExpr(e2) -> countGenLocalsExpr(e2) }
+          case Some(eb) -> match eb {
+            case EOBBlock(b) -> countGenLocalsBlock(b)
+            case EOBExpr(e2) -> countGenLocalsExpr(e2)
+          }
           case None -> 0
         }
       n
@@ -25954,7 +26112,11 @@ func typeExprToMsilG(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, g
 // fields on a generic record/union case).
 func sliceElemMsilG(cctx: in CodegenCtx, elem: in TypeExpr, pkgName: in String, generics: in List[String]): MsilType {
   match elem.kind {
-    case TRef(path) -> if lastSegmentMsil(path) == "Byte" { MByte } else { typeExprToMsilG(cctx, elem, pkgName, generics) }
+    case TRef(path) -> if lastSegmentMsil(path) == "Byte" {
+      MByte
+    } else {
+      typeExprToMsilG(cctx, elem, pkgName, generics)
+    }
     case _ -> typeExprToMsilG(cctx, elem, pkgName, generics)
   }
 }
@@ -26773,7 +26935,10 @@ func rewriteProceedExprMsil(targetFuncName: in String, paramNames: in List[Strin
       }
       Expr(kind = ECall(fn = rewriteProceedExprMsil(targetFuncName, paramNames, f), args = newArgs), span = s)
     }
-    case EParen(inner) -> Expr(kind = EParen(inner = rewriteProceedExprMsil(targetFuncName, paramNames, inner)), span = s)
+    case EParen(inner) -> Expr(
+      kind = EParen(inner = rewriteProceedExprMsil(targetFuncName, paramNames, inner)),
+      span = s
+    )
     case ETuple(xs) -> {
       val newXs: List[Expr] = newList()
       var i = 0
@@ -26792,9 +26957,18 @@ func rewriteProceedExprMsil(targetFuncName: in String, paramNames: in List[Strin
       }
       Expr(kind = EList(exprs = newXs), span = s)
     }
-    case EAwait(inner) -> Expr(kind = EAwait(inner = rewriteProceedExprMsil(targetFuncName, paramNames, inner)), span = s)
-    case EYield(inner) -> Expr(kind = EYield(inner = rewriteProceedExprMsil(targetFuncName, paramNames, inner)), span = s)
-    case ESpawn(inner) -> Expr(kind = ESpawn(inner = rewriteProceedExprMsil(targetFuncName, paramNames, inner)), span = s)
+    case EAwait(inner) -> Expr(
+      kind = EAwait(inner = rewriteProceedExprMsil(targetFuncName, paramNames, inner)),
+      span = s
+    )
+    case EYield(inner) -> Expr(
+      kind = EYield(inner = rewriteProceedExprMsil(targetFuncName, paramNames, inner)),
+      span = s
+    )
+    case ESpawn(inner) -> Expr(
+      kind = ESpawn(inner = rewriteProceedExprMsil(targetFuncName, paramNames, inner)),
+      span = s
+    )
     case ETry(inner) -> Expr(kind = ETry(inner = rewriteProceedExprMsil(targetFuncName, paramNames, inner)), span = s)
     case EOld(inner) -> Expr(kind = EOld(inner = rewriteProceedExprMsil(targetFuncName, paramNames, inner)), span = s)
     case EPropagate(inner) -> Expr(
@@ -26841,7 +27015,10 @@ func rewriteProceedExprMsil(targetFuncName: in String, paramNames: in List[Strin
       Expr(kind = EIndex(receiver = rewriteProceedExprMsil(targetFuncName, paramNames, recv), indices = newIdxs), span = s)
     }
     case ETypeApp(f, targs) -> Expr(
-      kind = ETypeApp(fn = rewriteProceedExprMsil(targetFuncName, paramNames, f), args = targs),
+      kind = ETypeApp(
+        fn = rewriteProceedExprMsil(targetFuncName, paramNames, f),
+        args = targs
+      ),
       span = s
     )
     case EIf(cond, thenB, elseB, form) -> {
@@ -26874,7 +27051,10 @@ func rewriteProceedExprMsil(targetFuncName: in String, paramNames: in List[Strin
       span = s
     )
     case EBlock(blk) -> Expr(kind = EBlock(block = rewriteProceedBlockMsil(targetFuncName, paramNames, blk)), span = s)
-    case EUnsafe(blk) -> Expr(kind = EUnsafe(block = rewriteProceedBlockMsil(targetFuncName, paramNames, blk)), span = s)
+    case EUnsafe(blk) -> Expr(
+      kind = EUnsafe(block = rewriteProceedBlockMsil(targetFuncName, paramNames, blk)),
+      span = s
+    )
     case EInterpolated(segs) -> {
       val newSegs: List[InterpolatedSegment] = newList()
       var i = 0
@@ -26942,7 +27122,11 @@ func rewriteProceedMatchArmsMsil(
 
 func rewriteProceedBindingMsil(targetFuncName: in String, paramNames: in List[String], b: in LocalBinding): LocalBinding {
   match b {
-    case LBVal(pat, ty, init) -> LBVal(pat = pat, ty = ty, init = rewriteProceedExprMsil(targetFuncName, paramNames, init))
+    case LBVal(pat, ty, init) -> LBVal(
+      pat = pat,
+      ty = ty,
+      init = rewriteProceedExprMsil(targetFuncName, paramNames, init)
+    )
     case LBVar(name, ty, optInit) -> {
       val newInit = match optInit {
         case None -> None
@@ -27000,11 +27184,17 @@ func rewriteProceedStmtMsil(targetFuncName: in String, paramNames: in List[Strin
       span = s
     )
     case SLoop(lbl, body) -> Statement(
-      kind = SLoop(label = lbl, body = rewriteProceedBlockMsil(targetFuncName, paramNames, body)),
+      kind = SLoop(
+        label = lbl,
+        body = rewriteProceedBlockMsil(targetFuncName, paramNames, body)
+      ),
       span = s
     )
     case SScope(b, body) -> Statement(
-      kind = SScope(binding = b, body = rewriteProceedBlockMsil(targetFuncName, paramNames, body)),
+      kind = SScope(
+        binding = b,
+        body = rewriteProceedBlockMsil(targetFuncName, paramNames, body)
+      ),
       span = s
     )
     case STry(body, catches, finally_) -> {
@@ -27258,7 +27448,11 @@ func desugarProtectedExpr(fieldNames: in Map[String, Bool], e: in Expr): Expr {
         match args[i] {
           case CAPositional(expr) -> args2.add(CAPositional(expr = desugarProtectedExpr(fieldNames, expr)))
           case CANamed(name, value, span) -> args2.add(
-            CANamed(name = name, value = desugarProtectedExpr(fieldNames, value), span = span)
+            CANamed(
+              name = name,
+              value = desugarProtectedExpr(fieldNames, value),
+              span = span
+            )
           )
         }
         i = i + 1
@@ -29008,7 +29202,13 @@ func collectRefNamesStmt(s: in Statement, acc: in List[String]): Unit {
       case LBLet(_, _, init) -> {
         collectRefNamesExpr(init, acc)
       }
-      case LBVar(_, _, initOpt) -> match initOpt { case Some(init) -> { collectRefNamesExpr(init, acc) }; case None -> {  } }
+      case LBVar(_, _, initOpt) -> match initOpt {
+        case Some(init) -> {
+          collectRefNamesExpr(init, acc)
+        }
+        case None -> {
+        }
+      }
     }
     case SAssign(target, _, v) -> {
       collectRefNamesExpr(target, acc)
@@ -33622,7 +33822,13 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
                     case ELiteral(lit) -> emitConfigDefaultLiteralMsil(cctx, cfTy, lit, false, defaultInsnsList)
                     case EPrefix(op, inner) -> match op {
                       case PreNeg -> match inner.kind {
-                        case ELiteral(lit2) -> emitConfigDefaultLiteralMsil(cctx, cfTy, lit2, true, defaultInsnsList)
+                        case ELiteral(lit2) -> emitConfigDefaultLiteralMsil(
+                          cctx,
+                          cfTy,
+                          lit2,
+                          true,
+                          defaultInsnsList
+                        )
                         case _ -> false
                       }
                       case _ -> false
@@ -34833,7 +35039,15 @@ func registerRestoredInterface(cctx: in CodegenCtx, packageName: in String, decl
   var mi = 0
   while mi < decl.members.count {
     match decl.members[mi] {
-      case IMSig(sig) -> registerRestoredIfaceMethod(cctx, ifaceFqn, typeRefRow, packageName, sig.name, sig.params, sig.ret)
+      case IMSig(sig) -> registerRestoredIfaceMethod(
+        cctx,
+        ifaceFqn,
+        typeRefRow,
+        packageName,
+        sig.name,
+        sig.params,
+        sig.ret
+      )
       case IMFunc(fn) -> registerRestoredIfaceMethod(cctx, ifaceFqn, typeRefRow, packageName, fn.name, fn.params, fn.ret)
       case IMAssoc(_) -> ()
     }
@@ -35527,7 +35741,11 @@ func buildGenericCaseCtorTok(
     val parentKey = pkgPart + "/" + parentFqn
     match mapGet(cctx.ffiTypeRefs, parentKey) {
       case Some(parentRow) -> outParentTy.add(
-        MGenericInst(typeRefCode = tdrTypeRef(parentRow), headFqn = parentFqn, typeArgs = typeArgs)
+        MGenericInst(
+          typeRefCode = tdrTypeRef(parentRow),
+          headFqn = parentFqn,
+          typeArgs = typeArgs
+        )
       )
       case None -> outParentTy.add(MClass(className = parentFqn))
     }
@@ -35738,7 +35956,8 @@ func registerStdlibTypeItemMembers(cctx: in CodegenCtx, packageName: in String, 
         val caseRow = match mapGet(cctx.ffiTypeRefs, caseRefKey) {
           case Some(r) -> r
           case None -> panic(
-            "Msil.Codegen: registerStdlibTypeItemMembers: TypeRef for stdlib union case '" + ctorKey +
+            "Msil.Codegen: registerStdlibTypeItemMembers: TypeRef for stdlib union case '" +
+              ctorKey +
               "' not found — registerStdlibTypeItemRefs should have registered it first"
           )
         }
