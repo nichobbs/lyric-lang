@@ -6931,7 +6931,7 @@ jobs:
       # no other JVM step, so it needs its own setup-java (#6585 — JVM-target
       # class files require 21, see "class files target major version 65"
       # elsewhere in this workflow).
-      - name: Set up Java 21 (for the JVM suite below)
+      - name: Set up Java 21 (for the JVM suites below)
         uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c  # v6.0.0
         with:
           distribution: temurin
@@ -6946,6 +6946,30 @@ jobs:
             exit 1
           fi
           "$lyric_bin" run --target jvm lyric-stdlib/tests/collections_persistent_tests.l
+
+      # Std.RegexSafe cross-package union-case/function collision on JVM
+      # (#5976): `regex_safe_tests.l` imports both `Std.Regex as Re` and
+      # `Std.RegexSafe as Rx`, which each declare a same-simple-name
+      # `RegexError` union and a same-named `errorMessage` function — the
+      # literal repro from #5976 (a `ClassCastException` constructing/
+      # dispatching the wrong package's case/function) — plus
+      # `Std.RegexSafe.tryCompile`'s `Result[Std.RegexHost.Regex, RegexError]`
+      # return, whose `extern type Regex` is only reachable transitively
+      # (`Std.RegexHost` is never imported by this file directly). Only
+      # wired for `dotnet` above (D-progress-670); this is the JVM
+      # counterpart the issue's acceptance criteria calls for. Not folded
+      # into the dotnet loop above because it is the only suite in that
+      # list that needs `--target jvm`. Shares the Java 21 setup step above.
+      - name: Std.RegexSafe cross-package collision on JVM (regex_safe_tests.l, #5976)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping regex_safe_tests JVM run"
+            exit 1
+          fi
+          "$lyric_bin" run --target jvm lyric-stdlib/tests/regex_safe_tests.l
 
       # Std.Http async client surface (#5564): interface dispatch through
       # defaultClient() and the free getAsync/sendAsync functions.  Uses

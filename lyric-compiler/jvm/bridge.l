@@ -508,31 +508,46 @@ func externSeedForFile(
   }
   var pi = 0
   while pi < extPkgNames.count {
-    if wanted.containsKey(extPkgNames[pi]) {
-      for k in mapKeys(extPkgMaps[pi]) {
-        match mapGet(extPkgMaps[pi], k) {
-          case Some(v) -> {
+    val isWanted = wanted.containsKey(extPkgNames[pi])
+    for k in mapKeys(extPkgMaps[pi]) {
+      match mapGet(extPkgMaps[pi], k) {
+        case Some(v) -> {
+          // Bare short-name key: only from packages `file` DIRECTLY imports
+          // (own-package/import shadowing stays scoped to what `file` can
+          // plausibly mean by an unqualified name — `ownAwareExternTypes`
+          // (06_items.l) layers the caller's own colliding local type over
+          // this, #5976).
+          if isWanted {
             if not seed.containsKey(k) {
               seed.add(k, v)
             }
-            // ALSO seed a package-qualified key (`<owningPkgDotted>.<shortName>`)
-            // alongside the bare short-name key above.  `ownAwareExternTypes`
-            // (06_items.l) may later shadow the BARE key with the caller's own
-            // colliding local type (#5976 — correct for an unqualified same-file
-            // reference), but a multi-segment `TRef`/`EPath` — the flattened
-            // form `Lyric.AliasRewriter` produces for `import X as Y` + `Y.Type`
-            // — names its owning package explicitly and can never legitimately
-            // mean a local type.  The qualified key is never touched by that
-            // override (own-declared short names carry no "."), so
-            // `typeExprToJvmExtern`/`lowerMethodCall` can resolve a qualified
-            // reference through it directly, bypassing the collision (#6338).
-            val qualKey = extPkgNames[pi] + "." + k
-            if not seed.containsKey(qualKey) {
-              seed.add(qualKey, v)
-            }
           }
-          case None -> ()
+          // Package-qualified key (`<owningPkgDotted>.<shortName>`) is seeded
+          // BUNDLE-WIDE, regardless of `isWanted`: a multi-segment `TRef`/
+          // `EPath` — the flattened form `Lyric.AliasRewriter` produces for
+          // `import X as Y` + `Y.Type`, or the shape `eagerlyResolveGenericArg`
+          // leaves untouched for a `retGenericArgs` entry whose head already
+          // spells out its owning package — names its owning package
+          // explicitly and can never legitimately mean a local type, so
+          // scoping it to `file`'s own direct imports serves no shadowing
+          // purpose and only creates blind spots. Without this, an extern
+          // type reachable ONLY via an intermediate package's re-exported
+          // function signature (`Std.RegexSafe.tryCompile(): Result[
+          // Std.RegexHost.Regex, RegexError]`, consumed by a file that
+          // imports `Std.RegexSafe` but never `Std.RegexHost` directly)
+          // resolves through neither the bare key (not wanted) nor the
+          // qualified key (also gated on wanted) at the match-bind site
+          // (`resolveConcreteTypeExpr`/`typeExprToJvmExtern`), falling back
+          // to "user type in my own package" — `NoClassDefFoundError` at
+          // class-load (regex_safe_tests.l JVM, #5976 follow-up). Mirrors
+          // `ctx.ctors`'s existing bundle-wide qualified-key registry for
+          // plain declared types; extern types had no equivalent fallback.
+          val qualKey = extPkgNames[pi] + "." + k
+          if not seed.containsKey(qualKey) {
+            seed.add(qualKey, v)
+          }
         }
+        case None -> ()
       }
     }
     pi = pi + 1
