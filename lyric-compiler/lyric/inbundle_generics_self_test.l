@@ -378,3 +378,121 @@ test "in-bundle generic Self-returning inherent method narrows and chains (#6443
   assertEqualInt(s2.tag, 3, "chained Self return narrows to Satchel[Int]")
   assertEqualInt(s2.peek(), 7, "member access through the narrowed chained result")
 }
+
+// ── #6568: a generic type's own field typed as its OWN open instantiation
+// (self-referential, e.g. a cons-list node) or as a CONTAINER
+// (`slice[T]`/`List[T]`) of its own type parameter.  Unlike #4870/#6231
+// above (a field nesting the enclosing type's param inside an UNRELATED
+// generic), these shapes reference the ENCLOSING declaration itself.
+//
+// Repro 1 (union self-reference): `genericTypeArity` for a UNION was
+// already registered before its case-field loop ran, so this shape
+// happened to work pre-fix — kept here as a named regression pin.
+union PList6568[T] {
+  case PNil6568
+  case PCons6568(head: T, tail: PList6568[T])
+}
+
+func plength6568[T](lst: in PList6568[T]): Int {
+  var cur = lst
+  var n = 0
+  var done = false
+  while not done {
+    match cur {
+      case PNil6568 -> {
+        done = true
+      }
+      case PCons6568(_, t) -> {
+        cur = t
+        n = n + 1
+      }
+    }
+  }
+  n
+}
+
+test "#6568 repro 1: self-referential union case field (PCons.tail: PList[T])" {
+  val e: PList6568[Int] = PNil6568
+  val a: PList6568[Int] = PCons6568(head = 1, tail = e)
+  val b: PList6568[Int] = PCons6568(head = 2, tail = a)
+  assertEqualInt(plength6568(b), 2, "plength6568 over a 2-element cons list")
+}
+
+// Repro 2 (record self-reference, `MissingMethodException` before the fix):
+// a RECORD'S OWN generic arity was registered only AFTER its field loop, so
+// a field referencing the enclosing record — directly or nested inside
+// another generic (`Option[PLNode6568[T]]`) — resolved its own type
+// argument as `MObject` instead of the real self-type, corrupting the
+// ctor signature.
+record PLNode6568[T] {
+  head: T
+  tail: Option[PLNode6568[T]]
+}
+
+func plen6568[T](node: in Option[PLNode6568[T]]): Int {
+  match node {
+    case None -> 0
+    case Some(n) -> {
+      val t: Option[PLNode6568[T]] = n.tail
+      1 + plen6568(t)
+    }
+  }
+}
+
+test "#6568 repro 2: record field nesting the enclosing type via Option[PLNode[T]]" {
+  val e: Option[PLNode6568[Int]] = None
+  val a: Option[PLNode6568[Int]] = Some(value = PLNode6568(head = 1, tail = e))
+  val b: Option[PLNode6568[Int]] = Some(value = PLNode6568(head = 2, tail = a))
+  assertEqualInt(plen6568(b), 2, "plen6568 over a 2-node Option-linked chain")
+}
+
+// Repro 3 (record field is a CONTAINER, not a self-reference, of the
+// record's own type parameter): `items: slice[T]` corrupted field reads
+// at runtime (silently wrong values) because `typeExprToMsilG` had no
+// `TSlice` case, so it fell through to the generics-blind
+// `typeExprToMsilCtx`, discarding the VAR-ness of the element type.
+record Box6568Slice[T] {
+  items: slice[T]
+}
+
+func headOfSlice6568[T](b: in Box6568Slice[T]): T {
+  b.items[0]
+}
+
+test "#6568 repro 3: record field typed as slice[T] (container of own param)" {
+  val xs: List[Int] = newList()
+  xs.add(42)
+  xs.add(43)
+  val b: Box6568Slice[Int] = Box6568Slice(items = xs.toArray())
+  assertEqualInt(headOfSlice6568(b), 42, "Box6568Slice[Int].items[0]")
+  assertEqualInt(b.items[1], 43, "Box6568Slice[Int].items[1]")
+}
+
+// Same container-field shape, but `List[T]` instead of `slice[T]` — a
+// SEPARATE codegen path (`typeExprToMsilGApp`'s List/Map branches erasing
+// a bare `MTypeVar` element to `MObject`) that needed its own fix.
+record Box6568List[T] {
+  items: List[T]
+}
+
+test "#6568 repro 3b: record field typed as List[T] (container of own param)" {
+  val xs: List[Int] = newList()
+  xs.add(100)
+  xs.add(200)
+  val b: Box6568List[Int] = Box6568List(items = xs)
+  assertEqualInt(b.items[0], 100, "Box6568List[Int].items[0]")
+  assertEqualInt(b.items[1], 200, "Box6568List[Int].items[1]")
+  assertEqualInt(b.items.count, 2, "Box6568List[Int].items.count")
+}
+
+// A record with a BARE `T` field must keep reading correctly — the bug
+// was specific to a field typed as a container/self-reference of the
+// enclosing generic's own parameter, not generic fields in general.
+record Box6568Bare[T] {
+  value: T
+}
+
+test "#6568: a bare T field (not a container/self-reference) is unaffected" {
+  val b: Box6568Bare[Int] = Box6568Bare(value = 7)
+  assertEqualInt(b.value, 7, "Box6568Bare[Int].value")
+}
