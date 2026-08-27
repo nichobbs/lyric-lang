@@ -402,6 +402,7 @@ test "lyric test: a compile error names the real line despite a multi-line modul
   assertTrue(
     Str.contains(result.stderr, "] 10:"),
     "expected the diagnostic to name line 10 (the 'totallyUnknownIdentifierXYZ' reference in helper()), " +
-      "not a header-shifted line, got:\n" + result.stderr
+      "not a header-shifted line, got:\n" +
+      result.stderr
   )
 }

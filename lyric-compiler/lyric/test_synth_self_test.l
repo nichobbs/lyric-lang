@@ -110,7 +110,8 @@ func testHeaderLineNumbersPreserved(): Unit {
       assertTrue(
         Str.contains(lines[9], "totallyUnknownIdentifierXYZ"),
         "expected line 10 (index 9) of the rewritten source to still be the helper() body, got '" + lines[9] +
-          "'\nfull rewritten source:\n" + rewritten
+          "'\nfull rewritten source:\n" +
+          rewritten
       )
     }
     case _ -> panic("expected Synthesised outcome")
