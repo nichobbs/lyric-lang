@@ -26,8 +26,13 @@
 //! read back out through a `match`-bound local produced a JVM-only
 //! `ClassCastException` (the record itself getting cast as if it were the
 //! `java.util.HashMap` backing its field) — see issue #5422 for the
-//! standalone repro. The flattened two-table shape sidesteps the bug
-//! entirely and is no less clear.
+//! standalone repro. #5422's root cause (`Lyric.Mono` never tracking a
+//! `match`-arm pattern binding's type into its call-site inference `env`,
+//! docs/03-decision-log.md D-progress-807) is now fixed, but the flattened
+//! two-table shape is kept as-is: it sidesteps the whole class of bug and
+//! is no less clear, so there is no reason to reintroduce the
+//! record-with-a-Map-field shape now that the underlying compiler bug no
+//! longer forces the workaround.
 //!
 //! The translation file format is a JSON object whose top-level keys are BCP
 //! 47 language tags (e.g. "en", "en-US", "fr-FR"). The value for each key is

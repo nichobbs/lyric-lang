@@ -1700,6 +1700,16 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/block_shadow_self_test.l
 
+      # Match-bound pattern type self-test (#5422, #5423 / D-progress-807).
+      # Runtime regression test for a `match`-arm pattern-bound variable's
+      # type flowing into a downstream generic call / native method dispatch
+      # (`Lyric.Mono.bindPatternEnvMono`/`rewriteMatchArms`).  Run via native
+      # `lyric test` (imports only `Std.*`), asserting every runtime value.
+      - name: Match-bound pattern type self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/match_bound_pattern_type_self_test.l
+
       # Nested-slice for-loop self-test (#6541).  Runtime regression test for
       # a `for`-in-`for` loop over a nested `slice[slice[T]]` element on the
       # JVM backend (the array-outer half is dotnet-identical byte-for-byte
@@ -4515,6 +4525,14 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/block_shadow_self_test.l
+
+      # Match-bound pattern type self-test on JVM (#5422, #5423 /
+      # D-progress-807) — the JVM half of the dotnet-job step of the same
+      # name.
+      - name: Match-bound pattern type self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/match_bound_pattern_type_self_test.l
 
       # Nested-slice for-loop self-test on JVM (#6541) — the load-bearing
       # target for this fix: a `for`-in-`for` loop over a nested

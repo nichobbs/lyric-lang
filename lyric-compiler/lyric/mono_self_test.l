@@ -1721,3 +1721,35 @@ test "generic call on a shadowed val specialises against the shadow's own type, 
   assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
   assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
 }
+
+// #6633 (review finding on #5422/#5423, folded into the #6121 fix): `env` is
+// one mutable map threaded through the whole rewrite, so TWO SIBLING match
+// arms binding the SAME variable name to DIFFERENT payload types
+// (`case Circle(x) -> …` binds `x: Float`, `case Square(x) -> …` binds
+// `x: Int`) must each specialise their own generic call against their OWN
+// arm's type, and — the part `rewriteMatchArms`' bare `bindPatternEnvMono`
+// call missed before this fix — neither binding may survive past the WHOLE
+// match into the code that follows it. A `val x: String` declared BEFORE
+// the match, then referenced again AFTER it, must still resolve to
+// `String`, not whichever arm's binding was processed last.
+test "sibling match arms sharing a name specialise independently and don't leak past the match (#6633)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" +
+    "union Shape { case Circle(x: Float)\n  case Square(x: Int) }\n" +
+    "func caller(s: in Shape): String {\n" +
+    "  val x: String = \"outer\"\n" +
+    "  match s {\n" +
+    "    case Circle(x) -> like(x)\n" +
+    "    case Square(x) -> like(x)\n" +
+    "  }\n" +
+    "  like(x)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "like__Float"), "like__Float specialised for the Circle arm's own x")
+  assertTrue(hasFunc(res.file, "like__Int"), "like__Int specialised for the Square arm's own x")
+  assertTrue(
+    hasFunc(res.file, "like__String"),
+    "like__String specialised for the outer x after the match -- must not still see a sibling arm's leaked binding"
+  )
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}

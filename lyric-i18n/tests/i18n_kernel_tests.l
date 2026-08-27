@@ -130,9 +130,14 @@ test "parseTranslationsJson produces a flat array of locale/key/value triples" {
   val result = parseTranslationsJson(fixtureJson)
   match result {
     case Ok(json) -> {
-      // Re-bind before calling .contains(): on JVM, calling a String method
-      // directly on a match-bound value can erase to java.lang.Object and
-      // crash JVM auto-FFI resolution (issue #5423).
+      // Historical defensive re-bind for the suspected issue #5423 (JVM
+      // match-bound String auto-FFI erasure); docs/03-decision-log.md's
+      // D-progress-807 investigation could not reproduce #5423 against
+      // HEAD (the JVM backend already resolves a match-bound payload's
+      // concrete type correctly) and #5422's real root cause
+      // (Lyric.Mono never tracking a match-arm pattern binding's type)
+      // is now fixed, so this re-bind is no longer load-bearing — kept
+      // as harmless defensive code.
       val jsonStr: String = json
       assertTrue(jsonStr.contains("\"en\",\"greeting\",\"Hello, {name}!\""), "contains the en greeting triple")
       assertTrue(jsonStr.contains("\"fr\",\"farewell\",\"Au revoir.\""), "contains the fr farewell triple")
@@ -147,7 +152,9 @@ test "loadFromPath reads the raw file contents" {
     { path ->
       match loadFromPath(path) {
         case Ok(text) -> {
-          // See issue #5423 (JVM match-bound String auto-FFI erasure).
+          // Historical defensive re-bind for the suspected issue #5423 —
+          // see docs/03-decision-log.md D-progress-807 (never reproduced
+          // against HEAD; kept as harmless defensive code).
           val textStr: String = text
           assertTrue(textStr.contains("greeting"), "raw file content contains the greeting key")
         }

@@ -3152,6 +3152,15 @@ func rewriteMatchArms(
   var i = 0
   while i < arms.count {
     val arm = arms[i]
+    // #6121: each arm is its own nested scope, same as an `if`/`match`
+    // branch body — `bindPatternEnvMono`'s destructured names (#5422/#5423)
+    // must not leak into a SIBLING arm or survive past this whole `match`
+    // once every arm has been processed. Snapshot BEFORE binding the
+    // pattern (not just around the body, as `rewriteEOB` does on its own)
+    // so the restore below also evicts the pattern bindings themselves —
+    // `rewriteEOB`'s own inner snapshot/restore around `arm.body` is still
+    // correct and left in place, it just has nothing extra left to do here.
+    val snap = snapshotEnv(env)
     bindPatternEnvMono(state, env, arm.pattern, scrutTe)
     // Typed `var` + assignment (not a two-arm `None`/`Some` match): the bootstrap
     // F# emitter widens such a match to `Option<object>`, which then matches
@@ -3164,7 +3173,9 @@ func rewriteMatchArms(
         newGuard = Some(value = rewriteExpr(state, env, g))
       }
     }
-    buf.add(MatchArm(pattern = arm.pattern, guard = newGuard, body = rewriteEOB(state, env, arm.body), span = arm.span))
+    val newBody = rewriteEOB(state, env, arm.body)
+    restoreEnv(env, snap)
+    buf.add(MatchArm(pattern = arm.pattern, guard = newGuard, body = newBody, span = arm.span))
     i = i + 1
   }
   buf

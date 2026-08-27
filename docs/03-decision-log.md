@@ -12347,28 +12347,38 @@ handle-based alternative entry point.
   targets without any kernel, so this is a genuinely separate, optional
   entry point, not a redesign of the primary public API.
 
-**Two new JVM/MSIL compiler bugs found and worked around (not fixed
-here, filed separately):**
+**Two new JVM/MSIL compiler bugs found and worked around at the time (not
+fixed here, filed separately — since fixed, see the "Fixed" notes below):**
 
-- **#5422** — `Std.Collections.mapKeys()` called directly on a
-  `match`-pattern-bound `Map` value throws a runtime cast exception on
-  BOTH `--target dotnet` and `--target jvm` (`Dictionary`/`HashMap`
-  cannot be cast to `IList`/`List`). Reproduces with a two-line minimal
-  repro; does NOT reproduce for a plain `val`-bound (non-`match`) Map,
-  regardless of nesting depth. Worked around by re-binding the
-  match-bound value to an explicitly-typed local before calling
-  `mapKeys` — used three times in the new kernel files, each commented.
-- **#5423** — calling a native `String` method (e.g. `.contains`) on a
-  `String` value bound inside a `match { case Ok(x) -> ... }` arm can
-  crash `--target jvm` compilation entirely: the JVM backend's type
-  tracking loses the value's `String` type inside the arm and falls
-  through to the auto-FFI instance-call resolver, which then fails to
-  find `.contains` on the erased `java.lang.Object`. `--target dotnet`
-  compiles the identical code with no issue. Worked around the same way
-  as #5422 — re-bind to an explicitly-typed local first — used twice in
-  `tests/i18n_kernel_tests.l`, each commented. Possibly the same root
-  cause as #5422 (match-bound pattern types losing precision before a
-  subsequent call).
+- **#5422 — Fixed in D-progress-807.** `Std.Collections.mapKeys()` called
+  directly on a `match`-pattern-bound `Map` value throws a runtime cast
+  exception on BOTH `--target dotnet` and `--target jvm` (`Dictionary`/
+  `HashMap` cannot be cast to `IList`/`List`). Reproduces with a two-line
+  minimal repro; does NOT reproduce for a plain `val`-bound (non-`match`)
+  Map, regardless of nesting depth. Worked around at the time by re-binding
+  the match-bound value to an explicitly-typed local before calling
+  `mapKeys` — used three times in the new kernel files, each commented; the
+  root cause (`Lyric.Mono` never tracked a `match`-arm pattern binding's
+  type into its call-site inference `env`) is now fixed, so the workaround
+  is no longer required, though it is left in place as harmless defensive
+  code — see D-progress-807's comment updates in the kernel test file.
+- **#5423 — Investigated, no reproducible defect found; see
+  D-progress-807.** Calling a native `String` method (e.g. `.contains`) on
+  a `String` value bound inside a `match { case Ok(x) -> ... }` arm was
+  suspected to crash `--target jvm` compilation entirely (the JVM
+  backend's type tracking losing the value's `String` type inside the arm
+  and falling through to the auto-FFI instance-call resolver, which then
+  fails to find `.contains` on the erased `java.lang.Object`). `--target
+  dotnet` compiled the identical code with no issue at the time. Worked
+  around the same way as #5422 — re-bind to an explicitly-typed local
+  first — used twice in `tests/i18n_kernel_tests.l`, each commented.
+  D-progress-807's investigation could not reproduce this against several
+  faithful repro shapes: the JVM backend's `bindCaseField`/
+  `scrutineeGenericArgs` machinery already resolves a match-bound
+  payload's concrete JVM type correctly, so no targeted fix was needed;
+  shipped as a standing regression test instead
+  (`match_bound_pattern_type_self_test.l`, now wired into CI on both
+  targets per D-progress-807).
 
 **Verification.** `./bin/lyric test --manifest lyric-i18n/lyric.toml`
 on both `--target dotnet` and `--target jvm --features jvm`: the
@@ -36075,4 +36085,101 @@ confusion family this entry closes the `Map`-value instance of), #6347,
 their root-cause half — "a JVM generics-erasure gap in member access on a
 generic-collection element" — is this entry's fix), #6493 (the chained-
 index `staticBaseClass` machinery this fix's `allowMapValueArg` threading
-touches), docs/44 m-97.
+touches), docs/44 m-99.
+
+---
+
+## D-progress-807 — `Lyric.Mono`: match-arm pattern bindings now tracked into the call-site type environment, and isolated to their own arm's scope (#5422, #5423, #6632, #6633)
+
+**Status:** Shipped.
+
+**Context.** `Lyric.Mono`'s call-site type-argument inference threads one
+mutable `env: Map[String, TypeExpr]` through the whole rewrite, populated at
+every `val`/`var`/`let` binding (`rewriteBinding` → `trackPatternEnv`) so a
+later generic call argument sourced from that name can specialise against
+its real type. A `match`-arm pattern binding (`case Some(mm) -> …`) never
+populated `env` at all: a generic call argument sourced from a match-bound
+name (`Std.Collections.mapKeys(mm)` on an `Option[Map[K, V]]` destructure)
+had no known type in `env`. Since `mapKeys` is an IMPORTED generic (erased
+from the compiled assembly, so every call site must specialise — the
+"default unbound params to `Object`" fallback in `rewriteExpr`'s `EPath`
+call arm), the unresolved type parameter silently defaulted to `Object`
+instead of the real `Map[K, V]` instantiation, producing a specialisation
+(`mapKeys__Object__Object`) whose body operates on the WRONG generic
+instantiation — `InvalidCastException` at runtime on `--target dotnet`
+(#5422, confirmed via a minimal repro; surfaced in practice inside
+`lyric-i18n`'s kernel work, D-progress-628, which had to hand-apply a
+re-bind-to-explicit-local workaround at three call sites since no fix
+existed yet). #5423 (a suspected JVM-only sibling: calling a native
+`String` method on a `match`-bound `String` payload) was investigated
+alongside #5422 per the issue's own "possibly shared root cause"
+hypothesis, but could not be reproduced against `HEAD` across several
+faithful repro shapes — the JVM backend's own `bindCaseField`/
+`scrutineeGenericArgs` machinery (`lyric-compiler/jvm/codegen/03_match.l`)
+already resolves a match-bound payload's concrete JVM type correctly, so
+#5423 shipped as a standing regression test rather than a targeted fix.
+
+**Fix (mono.l).** New `bindPatternEnvMono` (mirroring `rewriteBinding`'s
+existing `val`/`var`/`let` tracking) types each `match` arm's pattern from
+the scrutinee's own (possibly generic) instantiation, walking `PBinding`/
+`PParen`/`PTypeTest`/`PConstructor`/`PTuple`/`POr` recursively and binding
+destructured constructor-field payloads through the case's own resolved
+`ctorDecl` signature. A bare nullary-case arm (`case None -> …`) is
+excluded via `isKnownConstructorNameMono` (mirroring the type checker's
+`isConstructorPatternName`) so it is never mistracked as a fresh variable
+binding named `"None"`. `rewriteMatchArms` calls `bindPatternEnvMono` for
+each arm before rewriting its guard and body.
+
+**Review findings folded in during this integration pass (#6632, #6633).**
+A subsequent automated review of the shipped fix raised two REQUIRED
+findings, addressed in this same pass rather than as a follow-up:
+
+- **#6632:** `match_bound_pattern_type_self_test.l` (the six end-to-end
+  runtime tests this fix shipped with) was never wired into
+  `.github/workflows/ci.yml` — its own header claimed dual-target CI
+  coverage like `block_shadow_self_test.l`/`bitwise_self_test.l`, but no
+  step existed. Fixed: added the `--target dotnet` and `--target jvm` CI
+  steps, following the existing pattern for those comparable files.
+- **#6633:** `env` is one mutable map threaded through the WHOLE rewrite
+  (function body, not just one `match`), so a variable name reused across
+  TWO SIBLING match arms with different payload types — or a match-bound
+  name that collides with a name used again AFTER the whole match
+  statement — risked either arm-to-arm contamination or the last-processed
+  arm's binding surviving past the match into unrelated later code. This
+  landed in the same integration window as the separate `#6121`
+  monomorphizer-nondeterminism fix, which added `snapshotEnv`/`restoreEnv`
+  scope isolation around every OTHER nested-block recursion (`rewriteEOB`
+  for `if`/`match`-arm bodies, `rewriteBlockScoped` for loop/`scope`/
+  `defer`/lambda bodies) — but `rewriteMatchArms`'s own bare
+  `bindPatternEnvMono` call was not itself wrapped in a snapshot/restore
+  pair, so a pattern binding could still leak past the arm it was bound in
+  (`rewriteEOB`'s inner snapshot, taken AFTER `bindPatternEnvMono` already
+  ran, captured the polluted state as its own "before" baseline and
+  restored right back to it). Fixed by moving the snapshot to the TOP of
+  each loop iteration in `rewriteMatchArms` — before `bindPatternEnvMono`
+  runs — and restoring immediately after the arm's guard and body are both
+  rewritten, so the restore also evicts the arm's own pattern bindings.
+  New regression test in `mono_self_test.l`: two sibling `union` case arms
+  (`Circle(x: Float)`, `Square(x: Int)`) binding the SAME name `x` to
+  DIFFERENT types, each feeding its own `like[T]` call, plus a THIRD
+  `like` call on an unrelated outer `val x: String` declared before and
+  referenced again after the whole match — asserts `like__Float`,
+  `like__Int`, and `like__String` all specialise correctly, which would
+  fail if any arm's binding leaked into a sibling or past the match.
+
+**Tests.** `mono_self_test.l` 59/59 (57 pre-existing + the #6121 shadowed-
+`val` case + the new #6633 sibling-arm case), `match_bound_pattern_type_
+self_test.l` 6/6 on both `--target dotnet` and `--target jvm`, now wired
+into CI on both targets.
+
+**Docs.** `docs/03-decision-log.md` D-progress-628's "#5422/#5423 ... not
+fixed here, filed separately" language and the `lyric-i18n` kernel test
+comments describing the re-bind-to-local workarounds are updated to point
+at this entry.
+
+**Related:** #5422, #5423, #6632, #6633, #6121 (the `snapshotEnv`/
+`restoreEnv` scope-isolation machinery this fix's `rewriteMatchArms`
+change reuses, no decision-log entry of its own yet), D-progress-628 (the
+`lyric-i18n` workarounds this fix obsoletes), `lyric-compiler/lyric/
+mono.l`, `lyric-compiler/lyric/mono_self_test.l`, `lyric-compiler/lyric/
+match_bound_pattern_type_self_test.l`.

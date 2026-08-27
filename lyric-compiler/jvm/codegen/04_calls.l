@@ -1661,7 +1661,10 @@ func emitFfiCoerce(ctx: in FuncCtx, insns: in List[LInsn], fromDesc: in String, 
 // untouched.
 func ffiScoreDescFor(ctx: in FuncCtx, arg: in Expr, erasedDesc: in String): String {
   if erasedDesc == "[Ljava/lang/Object;" {
-    val elemTy = indexedElemTypeOverride(ctx, arg)
+    // `arg` is already known to be array/slice-erased here (the `erasedDesc`
+    // gate above), never a genuine `Map[K, V]` receiver — `allowMapValueArg
+    // = false` mirrors `SFor`'s same conservative default (#5451).
+    val elemTy = indexedElemTypeOverride(ctx, arg, false)
     if isJvmPrimitiveElemType(elemTy) {
       return "[" + typeDescriptor(elemTy)
     }
@@ -3333,8 +3336,10 @@ func lowerSliceAppendJvm(
   val e = sliceElemTypeJvm(recvTy)
   // The receiver's TRUE declared element type when resolvable (a nested-slice
   // override, or "no override", both fall back to the erased `e` — see
-  // `coerceScalarToSliceElem`'s doc comment).
-  val declaredElemTy = indexedElemTypeOverride(ctx, recv)
+  // `coerceScalarToSliceElem`'s doc comment). `recv` is a `slice[T]` receiver
+  // here (`.append` is slice-only), never `Map[K, V]` — `allowMapValueArg =
+  // false` (#5451).
+  val declaredElemTy = indexedElemTypeOverride(ctx, recv, false)
   val recvSlot = allocSlot(ctx, "__sliceapp_recv_" + toString(ctx.slotTicker.count), recvTy)
   emitStore(insns, recvSlot, recvTy)
   emitLoad(insns, recvSlot, recvTy)
