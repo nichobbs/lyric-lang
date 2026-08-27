@@ -39077,7 +39077,7 @@ cross-package resolution).
 
 ---
 
-## D-progress-802 — `unifyBranchTypes`'s Unit absorption is now position-aware; `checkFunctionBody`'s T0070 skip-guard compared the wrong type (#3362)
+## D-progress-808 — `unifyBranchTypes`'s Unit absorption is now position-aware; `checkFunctionBody`'s T0070 skip-guard compared the wrong type (#3362)
 
 **Bug.** `unifyBranchTypes` (`lyric-compiler/lyric/type_checker/typechecker_exprs.l`),
 the function that computes the unified type of an `if`/`match`'s branches,

@@ -873,7 +873,7 @@ argument mode.
    re-derive this plumbing. No user-visible behaviour; verified by call-site
    inspection.
 
-**Status (D-progress-801).** Slices 1 and 2 shipped as surveyed above:
+**Status (D-progress-804).** Slices 1 and 2 shipped as surveyed above:
 `pipeParseAndErase` takes the `label` parameter directly (no separate
 `gate("", …)` bypass to fix — the label threads straight through), and
 JVM `SourceFile` is keyed by package name off a `pkgPathByName` map

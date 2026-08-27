@@ -13433,7 +13433,7 @@ of the same name needs a full lexical scope of every declared
 local/parameter, not just `var`-record-typed ones, and is left for future
 work.
 
-**Part 2 (#6155, D-progress-802) shipped both halves.** Part 2b widened
+**Part 2 (#6155, D-progress-803) shipped both halves.** Part 2b widened
 `checkImmutableFieldWrites` to also track `inout` parameters whose
 declared type resolves to a same-file record, under the same var/non-var
 rule locals already get: a write to a `var` field through an `inout`
