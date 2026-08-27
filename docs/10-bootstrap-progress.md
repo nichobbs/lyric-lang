@@ -31713,3 +31713,66 @@ build. A from-source CI run should re-verify before merge.
 
 **Related:** `docs/03-decision-log.md` D-progress-543; #1119, #5622,
 `docs/59-compiler-stdlib-deep-review.md`.
+
+---
+
+## `lyric test --target jvm --coverage` ships — JaCoCo instrumentation + pure-Lyric Cobertura converter (2026-08-27)
+
+Native-toolchain code coverage story, first slice (#5294, D135). The old
+`coverage` CI job — `dotnet-coverage collect` against five F# Expecto test
+projects deleted when the F# bootstrap compiler was removed — had been
+failing every iteration for months, silently swallowed by
+`|| echo "::warning::…; continuing"`, so it reported green while collecting
+**zero** coverage data. That job is gone outright; this entry is its
+self-hosted, native-toolchain replacement (JVM-target first; MSIL/dotnet is
+a tracked follow-up, see D135's deferred-work note for the concrete
+statement-level-counter-injection direction).
+
+**New CLI flag.** `lyric test <file.l> --target jvm --coverage` — single
+explicit JVM-target test file only for this slice; `--manifest` suites and
+non-JVM targets are loud errors, not a silent skip. Implemented in
+`lyric-compiler/lyric/cli/cli_test.l`: the JVM run path prepends
+`-javaagent:<jacocoagent.jar>=destfile=<exec>,append=false,dumponexit=true`
+to the existing `java -jar <bundled-test.jar>` invocation (zero JVM codegen
+changes — the bundled JAR the JVM bridge already produces is what gets
+instrumented), then runs `jacococli.jar report` and converts the resulting
+JaCoCo XML into Cobertura XML.
+
+**New package: `Lyric.JacocoCobertura`** (`lyric-compiler/lyric/jacoco_cobertura.l`,
+~360 lines). JaCoCo's `--xml` report uses JaCoCo's own schema, not
+Cobertura's — despite both being "a coverage XML report," they're different
+vocabularies — so this is a real from-scratch translator, not a rename: it
+walks the JaCoCo tree via `Std.Xml` and computes package/class/method
+line-rate and branch-rate from JaCoCo's `LINE`/`BRANCH` counters, with
+per-line `hits="1"/"0"` from JaCoCo's per-line covered-instruction count
+(documented fidelity note: JaCoCo has no true per-line execution count to
+report). Verified by `jacoco_cobertura_self_test.l` (9 cases) against a
+byte-for-byte real JaCoCo 0.8.12 report captured from an actual
+`javac`/`java`-instrumented run, not a hand-imagined shape.
+
+**Tooling.** `make jacoco` (new `Makefile` target) downloads the official
+JaCoCo release ZIP (pinned 0.8.12) and stages `jacocoagent.jar` +
+`jacococli.jar` under `.tools/jacoco/lib/` (`.gitignore`d — fetched
+tooling, not vendored source). Jar discovery
+(`findJacocoAgentJar`/`findJacocoCliJar` in `cli_test.l`) mirrors
+`findMavenResolverJar` (`cli_restore.l`) exactly: `LYRIC_JACOCO_AGENT`/
+`LYRIC_JACOCO_CLI` env vars first, then default search paths. This is
+shelling out to existing third-party JVM tooling — the same category as
+the bundled Maven resolver JAR under `resolver/` — not new F#, not a new
+Lyric-side collector, not a host shim.
+
+**CI.** `scripts/ci/coverage-smoke-test.sh` (new) is the check the old job
+never had: it runs `lyric test <file> --target jvm --coverage` and then
+inspects the produced report file itself — exists, non-empty, has a
+`<coverage ...>` root element, `lines-valid` is non-zero — rather than
+just checking the command's exit code. Wired into the JVM self-tests job
+against `bitwise_self_test.l`.
+`jacoco_cobertura_self_test.l` runs alongside `cfg_gate_self_test.l` in the
+compiler self-tests job (same linking shape — a compiler-package import
+resolved via the staged `Lyric.Compiler.dll` bundle, no
+`LYRIC_LOAD_COMPILER=1`).
+
+Full option analysis (IL/bytecode counters built into the self-hosted
+emitters; a source-level statement-coverage AST pass), why JaCoCo was
+chosen as the tractable first slice, and the deferred MSIL/dotnet-coverage
+direction: `docs/03-decision-log.md` D135.

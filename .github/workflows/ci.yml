@@ -1319,6 +1319,18 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/cfg_gate_self_test.l
 
+      # JaCoCo -> Cobertura converter self-test (docs/03-decision-log.md D135,
+      # #5294) — exercises `Lyric.JacocoCobertura` (the pure-Lyric XML
+      # translator backing `lyric test --target jvm --coverage`) via native
+      # `lyric test`.  Same linking shape as CfgGate above (compiler-package
+      # import resolved by linking the stage-1 bundle DLLs; no
+      # `LYRIC_LOAD_COMPILER=1`).  9 cases against a byte-for-byte real
+      # JaCoCo 0.8.12 report captured from an actual instrumented run.
+      - name: JaCoCo/Cobertura converter self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jacoco_cobertura_self_test.l
+
       # Bitwise self-test — first executable regression test for a
       # self-hosted-only *language feature* (the `.and/.or/.xor/.shl/.shr`
       # integer methods, #1610).  Run via native `lyric test`, which
@@ -4010,6 +4022,18 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/bitwise_self_test.l
+
+      # Coverage smoke test (docs/03-decision-log.md D135, #5294) — proves
+      # `lyric test --target jvm --coverage` actually produces a real,
+      # non-empty Cobertura XML report end to end (JaCoCo agent instrumented
+      # run -> jacococli.jar report -> Lyric.JacocoCobertura translation),
+      # not just that the command exits 0. This is the check the deleted
+      # F#-era `coverage` job never had — that job silently collected zero
+      # data for years because nothing verified the report itself.
+      - name: Coverage smoke test (lyric test --target jvm --coverage)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/coverage-smoke-test.sh lyric-compiler/lyric/bitwise_self_test.l
 
       # Aliased-import routing pin, JVM leg (#6496 resolution): both import
       # forms route the method spelling to the Option free functions on both

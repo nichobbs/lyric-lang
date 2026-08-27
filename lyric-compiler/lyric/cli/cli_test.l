@@ -18,6 +18,7 @@ import Lyric.Repl as Repl
 import Lyric.Discovery as Disc
 import Lyric.CfgGate as CfgGate
 import Lyric.Workspace as Ws
+import Lyric.JacocoCobertura as Jc
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §11b. Repl command
@@ -193,6 +194,134 @@ pub func resolveTestAutoDiscovery(startDir: in String): TestBareDispatchOutcome 
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §11c-cov. `lyric test --target jvm --coverage` — JaCoCo instrumentation.
+// ─────────────────────────────────────────────────────────────────────────────
+// JaCoCo (jacocoagent.jar / jacococli.jar) is off-the-shelf, third-party JVM
+// tooling shelled out to via `java`, the same category as the bundled Maven
+// resolver JAR under `resolver/` (docs/03-decision-log.md) — no new F#/host
+// shim, no new Lyric coverage-collector code path. Search order mirrors
+// `findMavenResolverJar` (cli_restore.l):
+//   1. an exact-path env var
+//   2. <appBaseDir>/<fileName>            (installed beside the lyric binary)
+//   3. <appBaseDir>/../<fileName>         (one level up — common dev layout)
+//   4. $HOME/.lyric/tools/<fileName>      (user-local install)
+func findJacocoTool(envVar: in String, fileName: in String): Option[String] {
+  match Environment.getVar(envVar) {
+    case Ok(p) -> {
+      if File.fileExists(p) {
+        return Some(value = p)
+      } else {
+        printErr("test: warning: " + envVar + "=" + p + " does not exist; falling back to default search locations")
+      }
+    }
+    case Err(_) -> ()
+  }
+  val base = Environment.appBaseDirectory()
+  val c1 = Path.join(base, fileName)
+  if File.fileExists(c1) {
+    return Some(value = c1)
+  }
+  val c2 = Path.join(Path.dirname(base), fileName)
+  if File.fileExists(c2) {
+    return Some(value = c2)
+  }
+  val home = Environment.getVarOrDefault("HOME", "")
+  if home.length > 0 {
+    val c3 = Path.join(Path.join(Path.join(home, ".lyric"), "tools"), fileName)
+    if File.fileExists(c3) {
+      return Some(value = c3)
+    }
+  }
+  None
+}
+
+func findJacocoAgentJar(): Option[String] {
+  findJacocoTool("LYRIC_JACOCO_AGENT", "jacocoagent.jar")
+}
+
+func findJacocoCliJar(): Option[String] {
+  findJacocoTool("LYRIC_JACOCO_CLI", "jacococli.jar")
+}
+
+func jacocoToolMissingMessage(fileName: in String, envVar: in String): String {
+  "test: --coverage: " + fileName + " not found; run `make jacoco` to download it, or set " + envVar + "=/path/to/" +
+    fileName
+}
+
+// Runs `jacococli.jar report` against the exec data JaCoCo's agent wrote
+// during the test run, then converts the resulting JaCoCo XML report into
+// Cobertura XML (`Lyric.JacocoCobertura`, a pure-Lyric translator — see that
+// module's header for the schema-mapping fidelity notes). Returns false (and
+// prints a diagnostic) on any failure in the pipeline; coverage was
+// explicitly requested via `--coverage`, so a failure here is a hard error,
+// not a silent skip.
+func generateJvmCoverageReport(
+  jacocoCliJar: in String,
+  execPath: in String,
+  classfilesPath: in String,
+  jacocoXmlPath: in String,
+  coberturaXmlPath: in String,
+): Bool {
+  if not File.fileExists(execPath) {
+    printErr(
+      "test: --coverage: no exec data written to " + execPath + " (the JaCoCo agent did not run or produced no data)"
+    )
+    return false
+  }
+  val reportArgs: List[String] = newList()
+  reportArgs.add("-jar")
+  reportArgs.add(jacocoCliJar)
+  reportArgs.add("report")
+  reportArgs.add(execPath)
+  reportArgs.add("--classfiles")
+  reportArgs.add(classfilesPath)
+  reportArgs.add("--xml")
+  reportArgs.add(jacocoXmlPath)
+  val res = ProcessCapture.runCaptureWithDiagnosticsTimeout("java", reportArgs, "", 120000)
+  if res.stdout.length > 0 {
+    Console.print(res.stdout)
+  }
+  if res.stderr.length > 0 {
+    Console.error(res.stderr)
+  }
+  if res.exitCode == -1 {
+    printErr("test: --coverage: failed to start java for jacococli.jar report")
+    return false
+  }
+  if res.timedOut {
+    printErr("test: --coverage: jacococli.jar report timed out (120 s limit reached)")
+    return false
+  }
+  if res.exitCode != 0 or not File.fileExists(jacocoXmlPath) {
+    printErr("test: --coverage: jacococli.jar report failed (exit " + toString(res.exitCode) + ")")
+    return false
+  }
+  val jacocoXml = match File.readText(jacocoXmlPath) {
+    case Ok(t) -> t
+    case Err(e) -> {
+      printErr("test: --coverage: cannot read " + jacocoXmlPath + ": " + IOError.message(e))
+      return false
+    }
+  }
+  val coberturaXml = match Jc.jacocoXmlToCobertura(jacocoXml) {
+    case Ok(x) -> x
+    case Err(e) -> {
+      printErr("test: --coverage: " + e.message())
+      return false
+    }
+  }
+  match File.writeText(coberturaXmlPath, coberturaXml) {
+    case Ok(_) -> ()
+    case Err(e) -> {
+      printErr("test: --coverage: cannot write " + coberturaXmlPath + ": " + IOError.message(e))
+      return false
+    }
+  }
+  Console.println("test: coverage report written to " + coberturaXmlPath + " (JaCoCo XML: " + jacocoXmlPath + ")")
+  true
+}
+
 func cmdTest(argv: in slice[String]): Int {
   var filterArg: Option[String] = None
   var manifestArg: Option[String] = None
@@ -201,6 +330,7 @@ func cmdTest(argv: in slice[String]): Int {
   var targetNative = false
   var failFast = false
   var runProperties = false
+  var coverage = false
   var noDefaultFeatures = false
   var allFeatures = false
   val cliFeatures: List[String] = newList()
@@ -278,9 +408,41 @@ func cmdTest(argv: in slice[String]): Int {
     } else if arg == "--properties" {
       runProperties = true
       i += 1
+    } else if arg == "--coverage" {
+      coverage = true
     } else {
       positional.add(arg)
       i += 1
+    }
+  }
+
+  // `--coverage` (JVM-target JaCoCo instrumentation, docs/03-decision-log.md)
+  // is scoped to a single explicit test file for its first slice — manifest
+  // (multi-package) suites and non-JVM targets are explicit, loud errors
+  // rather than a silent no-op (the exact anti-pattern that motivated this
+  // feature: the old F#-era `coverage` CI job kept reporting green while
+  // collecting nothing).
+  if coverage and not targetJvm {
+    printErr(
+      "test: --coverage requires --target jvm (JaCoCo-based; MSIL/native coverage is a tracked follow-up — see docs/03-decision-log.md)"
+    )
+    return 1
+  }
+  if coverage {
+    match manifestArg {
+      case Some(_) -> {
+        printErr(
+          "test: --coverage does not yet support --manifest (multi-package) test suites; run the test file directly: lyric test <file.l> --target jvm --coverage"
+        )
+        return 1
+      }
+      case None -> ()
+    }
+    if positional.count == 0 {
+      printErr(
+        "test: --coverage requires an explicit source file (auto-discovered manifests are not yet supported): lyric test <file.l> --target jvm --coverage"
+      )
+      return 1
     }
   }
 
@@ -470,7 +632,31 @@ func cmdTest(argv: in slice[String]): Int {
       // bundles the user package plus its transitive stdlib import closure),
       // so it runs directly via `java -jar` with no DLL staging or runtimeconfig.
       if targetJvm {
+        var jacocoAgentJar = ""
+        var coverageExecPath = ""
+        if coverage {
+          val agentJar = match findJacocoAgentJar() {
+            case Some(j) -> j
+            case None -> {
+              printErr(jacocoToolMissingMessage("jacocoagent.jar", "LYRIC_JACOCO_AGENT"))
+              return 1
+            }
+          }
+          jacocoAgentJar = agentJar
+          val coverageDir = Path.join(Path.dirname(outPath), "coverage")
+          match File.createDir(coverageDir) {
+            case Ok(_) -> ()
+            case Err(e) -> {
+              printErr("test: --coverage: cannot create " + coverageDir + ": " + IOError.message(e))
+              return 1
+            }
+          }
+          coverageExecPath = Path.join(coverageDir, stem + ".exec")
+        }
         val jvmArgs: List[String] = newList()
+        if coverage {
+          jvmArgs.add("-javaagent:" + jacocoAgentJar + "=destfile=" + coverageExecPath + ",append=false,dumponexit=true")
+        }
         jvmArgs.add("-jar")
         jvmArgs.add(outPath)
         val jvmRes = ProcessCapture.runCaptureWithDiagnosticsTimeout("java", jvmArgs, "", 600000)
@@ -489,6 +675,22 @@ func cmdTest(argv: in slice[String]): Int {
         if jvmRes.stdout.length == 0 and jvmRes.exitCode == 0 {
           printErr("test: compiled test binary produced no TAP output — possible silent compile or runtime failure")
           return 1
+        }
+        if coverage {
+          val cliJar = match findJacocoCliJar() {
+            case Some(j) -> j
+            case None -> {
+              printErr(jacocoToolMissingMessage("jacococli.jar", "LYRIC_JACOCO_CLI"))
+              return 1
+            }
+          }
+          val coverageDir2 = Path.join(Path.dirname(outPath), "coverage")
+          val jacocoXmlPath = Path.join(coverageDir2, stem + "-jacoco.xml")
+          val coberturaXmlPath = Path.join(coverageDir2, stem + "-cobertura.xml")
+          val reportOk = generateJvmCoverageReport(cliJar, coverageExecPath, outPath, jacocoXmlPath, coberturaXmlPath)
+          if not reportOk {
+            return 1
+          }
         }
         return jvmRes.exitCode
       }

@@ -1040,6 +1040,12 @@ lyric test <file.l>                    # a loose test file next to a lyric.toml 
                                        # that manifest's dependencies (D123/#5341), exactly like
                                        # `lyric build`/`lyric run` — an unbuilt dependency fails
                                        # the run rather than silently compiling without it
+lyric test <file.l> --target jvm \
+  --coverage                           # instrument with JaCoCo, write
+                                       # <dir>/.lyric-test/coverage/<stem>-cobertura.xml
+                                       # (+ <stem>-jacoco.xml); single-file JVM-target only
+                                       # for now (D135). Needs jacocoagent.jar/jacococli.jar
+                                       # via LYRIC_JACOCO_AGENT/LYRIC_JACOCO_CLI or `make jacoco`.
 lyric test                             # project mode: run every [project.tests] entry;
                                        # falls back to scanning [project.packages] for
                                        # @test_module files when [project.tests] is empty
