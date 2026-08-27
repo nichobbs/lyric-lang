@@ -423,12 +423,21 @@ func parseHexInt(s: in String): Option[Int] {
     match hexDigitOf(s.substring(i, 1)) {
       case None -> return None
       case Some(d) -> {
-        // Same overflow guard as `parseNonNegativeInt`, for the same
-        // reason (#6636): an attacker-supplied chunk-size hex digit
-        // string long enough to overflow `Int32` could otherwise wrap to
-        // a small value and bypass `readChunkedBody`'s cumulative
-        // `maxResponseBodyBytes` cap.
-        if n > 200000000 {
+        // Overflow guard for the same reason as `parseNonNegativeInt`
+        // (#6636), but with the correct threshold for BASE 16 (×16 per
+        // digit, not ×10) — #6647: the earlier version reused
+        // `parseNonNegativeInt`'s base-10 threshold (200000000) here,
+        // which does not prevent `n * 16 + d` from overflowing `Int32` on
+        // the final fold (e.g. an 8-hex-digit chunk-size line like
+        // "8000000F" passes every intermediate check and then wraps to a
+        // large NEGATIVE `size`, bypassing `readChunkedBody`'s cumulative
+        // `maxResponseBodyBytes` cap entirely and driving `dataStart`/`pos`
+        // negative — an out-of-bounds buffer index on the very next read,
+        // a remote memory-safety bug, not just a cap bypass). 134217727 is
+        // the largest `n` for which `n * 16 + 15` cannot exceed
+        // `Int32.MaxValue` (2147483647): `134217727 * 16 + 15 ==
+        // 2147483647` exactly.
+        if n > 134217727 {
           return None
         }
         n = n * 16 + d
@@ -1314,7 +1323,7 @@ record FilteredHeaders {
 /// `java.net.http.HttpClient` (JDK-8217264) use to decide whether to keep
 /// carrying credential-bearing headers across a redirect.
 func isSameRedirectAuthority(from: in ParsedUrl, to: in ParsedUrl): Bool {
-  from.host == to.host and from.port == to.port and (from.isHttps or not to.isHttps)
+  from.host == to.host and from.port == to.port and (not from.isHttps or to.isHttps)
 }
 
 /// Drop headers that leak credentials if forwarded to a different origin:

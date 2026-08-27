@@ -35002,3 +35002,70 @@ applied clean (no refusals) to both changed files.
 tracking issue), D-progress-804 (original entry), D-progress-808 (the
 prior review-fix round on this same PR).
 
+## D-progress-810 — `_kernel_native/http_host.l`: inverted TLS-downgrade check (#6646) + wrong-base overflow guard (#6647), both third-review findings on the D-progress-809 fixes themselves
+
+**Context.** A THIRD `claude-review` pass on PR #6623 confirmed both of
+D-progress-809's fixes (#6635 CRLF-injection guard, #6636 response size
+limits) correct and their tracking issues closed, but found two NEW
+REQUIRED findings — both logic bugs in the code D-progress-809 itself
+added, both untested by that round's self-test suite, and both undermining
+the very fixes they sit beside:
+
+- **#6646 — `isSameRedirectAuthority`'s scheme clause inverted.**
+  D-progress-808's original fix wrote `(from.isHttps or not to.isHttps)`
+  in the `and`-chain guarding whether a redirect strips
+  `Authorization`/`Cookie`/`Proxy-Authorization`. This makes an `https://`
+  → `http://` redirect to the identical host:port evaluate as "same
+  authority" (`from.isHttps` alone is `true`, short-circuiting the whole
+  clause `true` regardless of `to.isHttps`) — so headers are NOT stripped
+  on exactly the TLS-downgrade case the fix was written to close. Fixed:
+  `(not from.isHttps or to.isHttps)` — "safe to keep credentials" now
+  means "wasn't https to begin with, or is still https," matching the doc
+  comment above it (which was already correct; only the code was
+  inverted).
+- **#6647 — `parseHexInt`'s overflow guard used the wrong threshold.**
+  D-progress-809's `parseNonNegativeInt` overflow fix was copy-pasted into
+  `parseHexInt` (chunk-size parsing) with the SAME threshold
+  (`n > 200000000`), but chunk-size parsing grows `n` by `×16` per digit,
+  not `×10` — `200000000 * 16` overflows `Int32` many times over before
+  the guard would ever trip. An 8-hex-digit chunk-size line (e.g.
+  `"8000000F"`) passes the guard at every intermediate digit and then
+  overflows on the FINAL fold, wrapping to a large NEGATIVE `size`. That
+  doesn't just bypass the `maxResponseBodyBytes` cap (#6636's whole
+  point) — it drives `dataStart`/`pos` negative in `readChunkedBody`,
+  reaching an out-of-bounds buffer index on the connection's NEXT read: a
+  real, remotely-triggerable memory-safety bug, confirmed by reverting the
+  fix locally and observing a SIGABRT crash (exit 134), not merely a
+  wrong result. Fixed with the correct base-16 threshold: `134217727` is
+  the largest `n` for which `n * 16 + 15` cannot exceed `Int32.MaxValue`
+  (`134217727 * 16 + 15 == 2147483647` exactly).
+
+**Verification.** Two new self-test cases (now 6 total: E, F, G, H, I,
+J). Item I drives the EXACT #6646 scenario end to end — one TLS listener
+serving both legs (`hostAcceptTls` for the first connection, then plain
+`hostAccept` for the second, since a TCP listen socket doesn't care which
+accept function handles a given incoming connection), a 302 to
+`http://<same host:port>/final`, asserting the second request does not
+carry the `Authorization` header the first one did. Item I's FIRST
+version used `"https://localhost:<port>/start"` for the initial URL but
+`"http://127.0.0.1:<port>/final"` for the redirect target — different
+host STRINGS pointing at the same loopback interface — which meant
+`isSameRedirectAuthority`'s HOST comparison alone (not the scheme clause
+under test) was already forcing a strip, masking the exact bug being
+tested for; caught by deliberately reverting the #6646 fix and observing
+the test still passed, then fixing the test to use the identical host
+string (`"127.0.0.1"`) for both legs (the cert fixture's SAN already
+covers the `127.0.0.1` IP, reused from item B/D/E), after which reverting
+the fix correctly failed the test (exit 4). Item J has a server send an
+`"8000000F"` chunk-size line and asserts the client returns `Err` rather
+than crashing; reverting the #6647 fix reproduces the exact SIGABRT
+(exit 134) the finding described. Both new tests, and both fixes, were
+verified genuine by disabling each fix in turn and confirming the
+corresponding test fails, then restoring and confirming all 6 pass clean.
+`lyric fmt --write` applied clean (no diff) to both changed files.
+
+**Related:** #6623 (the PR both fixes ship in), #6646, #6647 (the two
+REQUIRED findings), D-progress-808 (the original, inverted
+`isSameRedirectAuthority`), D-progress-809 (the original, wrong-threshold
+`parseHexInt` guard).
+

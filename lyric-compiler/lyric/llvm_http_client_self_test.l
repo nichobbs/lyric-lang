@@ -561,3 +561,226 @@ test "Std.HttpHost native client rejects a response Content-Length beyond the si
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "Std.HttpHost native client rejects an oversized Content-Length")
 }
+
+test "Std.HttpHost native redirect strips Authorization on an https-to-http downgrade at the SAME host:port (item I, #6646)" {
+  // The exact scenario #6646 found inverted: a redirect that changes
+  // SCHEME (https -> http) but stays on the identical host AND port is a
+  // genuine cross-authority hop for credential-stripping purposes (a
+  // passive network observer can now read the plaintext request), even
+  // though `host == host and port == port`. One listener serves both legs
+  // — `hostAcceptTls` for the first (TLS) connection, then plain
+  // `hostAccept` for the second (the client reconnects in cleartext after
+  // the downgrade) — since a TCP listen socket doesn't care which accept
+  // function a given incoming connection is handled with.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Tls\n" +
+    "import Std.TcpHost\n" +
+    "import Std.HttpHost\n" +
+    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
+    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
+    "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
+    "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
+    "val certPem: String = \"" +
+    luQuote(certPemLines) +
+    "\"\n" +
+    "val keyPem: String = \"" +
+    luQuote(keyPemLines) +
+    "\"\n" +
+    "func containsAt(s: String, needle: String, start: Int): Bool {\n" +
+    "  if start + needle.length > s.length { false } else { s.substring(start, needle.length) == needle }\n" +
+    "}\n" +
+    "func containsSubstring(s: String, needle: String): Bool {\n" +
+    "  var i = 0\n" +
+    "  var found = false\n" +
+    "  while i <= s.length - needle.length {\n" +
+    "    if containsAt(s, needle, i) { found = true }\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  found\n" +
+    "}\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  val listener = match hostListen(\"127.0.0.1\", 0) {\n" +
+    "    case Ok(l) -> l\n" +
+    "    case Err(_) -> return 1\n" +
+    "  }\n" +
+    "  val port = hostLocalPort(listener)\n" +
+    "  val worker: () -> NativePtr[Byte] = { ->\n" +
+    "    match Identity.fromPem(certPem, keyPem) {\n" +
+    "      case Err(_) -> toC(\"identity_failed\")\n" +
+    "      case Ok(identity) -> {\n" +
+    "        val cfg = TlsServerConfig(identity = identity, minVersion = TlsVersion.Tls12, clientCa = None, requireClientCert = false)\n" +
+    "        match hostAcceptTls(listener, cfg) {\n" +
+    "          case Err(_) -> toC(\"accept1_failed\")\n" +
+    "          case Ok(conn1) -> {\n" +
+    "            var authOnFirst = false\n" +
+    "            match hostRead(conn1, 8192) {\n" +
+    "              case Ok(bytes) -> match tryDecodeUtf8(bytes) {\n" +
+    "                case Some(t) -> { authOnFirst = containsSubstring(t, \"Authorization: Bearer secret-token\") }\n" +
+    "                case None -> ()\n" +
+    "              }\n" +
+    "              case Err(_) -> ()\n" +
+    "            }\n" +
+    "            val loc = \"http://127.0.0.1:\" + port.toString() + \"/final\"\n" +
+    "            val resp1 = \"HTTP/1.1 302 Found\\r\\nLocation: \" + loc + \"\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n\"\n" +
+    "            val _ = hostWrite(conn1, encodeUtf8(resp1))\n" +
+    "            hostClose(conn1)\n" +
+    "            if not authOnFirst {\n" +
+    "              toC(\"auth_missing_on_first\")\n" +
+    "            } else {\n" +
+    "              match hostAccept(listener) {\n" +
+    "                case Err(_) -> toC(\"accept2_failed\")\n" +
+    "                case Ok(conn2) -> {\n" +
+    "                  var authLeakedOnSecond = false\n" +
+    "                  match hostRead(conn2, 8192) {\n" +
+    "                    case Ok(bytes2) -> match tryDecodeUtf8(bytes2) {\n" +
+    "                      case Some(t2) -> { authLeakedOnSecond = containsSubstring(t2, \"Authorization:\") }\n" +
+    "                      case None -> ()\n" +
+    "                    }\n" +
+    "                    case Err(_) -> ()\n" +
+    "                  }\n" +
+    "                  val resp2 = \"HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\nConnection: close\\r\\n\\r\\nOK\"\n" +
+    "                  val _ = hostWrite(conn2, encodeUtf8(resp2))\n" +
+    "                  hostClose(conn2)\n" +
+    "                  if authLeakedOnSecond { toC(\"leaked\") } else { toC(\"ok\") }\n" +
+    "                }\n" +
+    "              }\n" +
+    "            }\n" +
+    "          }\n" +
+    "        }\n" +
+    "      }\n" +
+    "    }\n" +
+    "  }\n" +
+    "  var tid: Long = 0\n" +
+    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  if rc != 0 {\n" +
+    "    hostStopListener(listener)\n" +
+    "    return 2\n" +
+    "  }\n" +
+    "  val cert = match Certificate.fromPem(certPem) {\n" +
+    "    case Ok(c) -> c\n" +
+    "    case Err(_) -> return 3\n" +
+    "  }\n" +
+    "  val client = hostClientWithTls(None, false, false, None, Some(value = cert), None, None, false)\n" +
+    // Same host string ("127.0.0.1") as the redirect target below — the
+    // whole point of this test is isolating the SCHEME change alone; a
+    // different host string (e.g. "localhost" here vs "127.0.0.1" there)
+    // would make `isSameRedirectAuthority`'s host comparison alone strip
+    // the header regardless of whether the scheme clause is correct,
+    // masking the exact bug #6646 was about (caught by disabling the fix
+    // and confirming this test failed to catch the reintroduced bug,
+    // before fixing the host mismatch here).
+    "  val url = \"https://127.0.0.1:\" + port.toString() + \"/start\"\n" +
+    "  val baseRequest = hostMakeRequest(\"GET\", url)\n" +
+    "  val request = hostWithHeader(baseRequest, \"Authorization\", \"Bearer secret-token\")\n" +
+    "  var finalStatus = 0\n" +
+    "  var sendOk = false\n" +
+    "  match await hostSendSafe(client, request) {\n" +
+    "    case Ok(response) -> {\n" +
+    "      finalStatus = hostStatusCode(response)\n" +
+    "      sendOk = true\n" +
+    "    }\n" +
+    "    case Err(_) -> ()\n" +
+    "  }\n" +
+    "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
+    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  var serverOk = false\n" +
+    "  if rj == 0 {\n" +
+    "    val n = cStrlen(outp)\n" +
+    "    if n == 2 {\n" +
+    "      serverOk = true\n" +
+    "    }\n" +
+    "    freeC(outp)\n" +
+    "  }\n" +
+    "  hostStopListener(listener)\n" +
+    "  if not serverOk {\n" +
+    "    return 4\n" +
+    "  }\n" +
+    "  if not sendOk {\n" +
+    "    return 5\n" +
+    "  }\n" +
+    "  if finalStatus != 200 {\n" +
+    "    return 6\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpHost native https-to-http downgrade at same host:port strips Authorization")
+}
+
+test "Std.HttpHost native client rejects an overflowing hex chunk-size line rather than reading past the buffer (item J, #6647)" {
+  // A malicious "8000000F" chunk-size line overflows Int32 on the final
+  // base-16 fold if the overflow guard uses the wrong (base-10) threshold
+  // — wrapping to a large NEGATIVE size that drives `dataStart`/`pos`
+  // negative in `readChunkedBody`, an out-of-bounds buffer index on the
+  // next read. This asserts the client rejects the response with an
+  // error instead (whether by failing to parse the chunk-size line at
+  // all, or by some other clean `Err`), and specifically that it does
+  // NOT crash/hang — the real risk #6647 was about.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
+    "import Std.HttpHost\n" +
+    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
+    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
+    "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
+    "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  val listener = match hostListen(\"127.0.0.1\", 0) {\n" +
+    "    case Ok(l) -> l\n" +
+    "    case Err(_) -> return 1\n" +
+    "  }\n" +
+    "  val port = hostLocalPort(listener)\n" +
+    "  val worker: () -> NativePtr[Byte] = { ->\n" +
+    "    match hostAccept(listener) {\n" +
+    "      case Err(_) -> toC(\"accept_failed\")\n" +
+    "      case Ok(conn) -> {\n" +
+    "        var reqOk = false\n" +
+    "        match hostRead(conn, 8192) {\n" +
+    "          case Ok(_) -> { reqOk = true }\n" +
+    "          case Err(_) -> ()\n" +
+    "        }\n" +
+    "        val resp = \"HTTP/1.1 200 OK\\r\\nTransfer-Encoding: chunked\\r\\nConnection: close\\r\\n\\r\\n\" + \"8000000F\\r\\n\"\n" +
+    "        val _ = hostWrite(conn, encodeUtf8(resp))\n" +
+    "        hostClose(conn)\n" +
+    "        if reqOk { toC(\"ok\") } else { toC(\"leaked\") }\n" +
+    "      }\n" +
+    "    }\n" +
+    "  }\n" +
+    "  var tid: Long = 0\n" +
+    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  if rc != 0 {\n" +
+    "    hostStopListener(listener)\n" +
+    "    return 2\n" +
+    "  }\n" +
+    "  val client = hostDefaultClient()\n" +
+    "  val url = \"http://127.0.0.1:\" + port.toString() + \"/x\"\n" +
+    "  val request = hostMakeRequest(\"GET\", url)\n" +
+    "  var rejected = false\n" +
+    "  match await hostSendSafe(client, request) {\n" +
+    "    case Err(_) -> { rejected = true }\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "  }\n" +
+    "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
+    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  var serverOk = false\n" +
+    "  if rj == 0 {\n" +
+    "    val n = cStrlen(outp)\n" +
+    "    if n == 2 {\n" +
+    "      serverOk = true\n" +
+    "    }\n" +
+    "    freeC(outp)\n" +
+    "  }\n" +
+    "  hostStopListener(listener)\n" +
+    "  if not serverOk {\n" +
+    "    return 3\n" +
+    "  }\n" +
+    "  if not rejected {\n" +
+    "    return 4\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpHost native client rejects an overflowing hex chunk-size line")
+}
