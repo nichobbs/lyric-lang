@@ -44,8 +44,11 @@ fi
 # Stage JaCoCo (idempotent — make jacoco no-ops if already downloaded) and
 # pin the exact jars via env vars rather than relying on search-path
 # discovery, matching how CI pins LYRIC_MAVEN_RESOLVER for the bundled
-# Maven resolver jar.
-make -C "$REPO_ROOT" jacoco
+# Maven resolver jar. Bounded by `timeout` as defense in depth beyond the
+# curl-level --max-time: a network stall here must fail loud within
+# minutes, not silently hang the whole CI job for hours (the actual
+# failure mode observed on PR #6627 before curl's own timeout was added).
+timeout 240 make -C "$REPO_ROOT" jacoco
 export LYRIC_JACOCO_AGENT="$REPO_ROOT/.tools/jacoco/lib/jacocoagent.jar"
 export LYRIC_JACOCO_CLI="$REPO_ROOT/.tools/jacoco/lib/jacococli.jar"
 if [ ! -f "$LYRIC_JACOCO_AGENT" ] || [ ! -f "$LYRIC_JACOCO_CLI" ]; then

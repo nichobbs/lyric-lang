@@ -32153,6 +32153,20 @@ compiles.
 D065 (`Std.Xml`, the parser `Lyric.JacocoCobertura` is built on),
 `docs/44-jvm-production-readiness-plan.md` (the JVM-backend audit this
 sits alongside), `resolver/` (the analogous bundled-JAR precedent).
+
+**Addendum (2026-08-27, PR #6627 CI incident):** the `make jacoco` target's
+`curl` download of the JaCoCo release ZIP had no `--connect-timeout`/
+`--max-time`, so a stalled connection could hang indefinitely — observed
+live on this PR's own `compiler-self-tests-jvm` CI run, which sat blocked
+on the "Coverage smoke test" step for 2+ hours (well past the 600s/120s
+timeouts already covering the actual `java`/`jacococli.jar` subprocess
+calls downstream in `cli_test.l`, confirming the hang was in the untimed
+download, not the coverage logic itself). Fixed by adding
+`--connect-timeout 20 --max-time 180` to the `curl` call and wrapping the
+whole `make jacoco` invocation in `scripts/ci/coverage-smoke-test.sh` with
+`timeout 240` as defense in depth. A network call with no timeout has no
+place in a CI script regardless of how reliable the target host usually
+is.
 ## D-progress-804 — `compiler-self-tests-dotnet-a`/`-b`: further split `background: true` batches to ~4-6 concurrent steps; corrected the "RAM disk" mitigation comment (#4975)
 
 **Bug.** `compiler-self-tests-dotnet-a`/`-b` occasionally SIGBUS (exit

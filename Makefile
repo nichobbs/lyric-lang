@@ -427,7 +427,7 @@ jacoco: ## Download jacocoagent.jar/jacococli.jar into .tools/jacoco/lib (LYRIC_
 		set -e; \
 		mkdir -p "$(JACOCO_DIR)"; \
 		tmp_zip="$$(mktemp)"; \
-		curl -fsSL -o "$$tmp_zip" "https://github.com/jacoco/jacoco/releases/download/v$(JACOCO_VERSION)/jacoco-$(JACOCO_VERSION).zip"; \
+		curl -fsSL --connect-timeout 20 --max-time 180 -o "$$tmp_zip" "https://github.com/jacoco/jacoco/releases/download/v$(JACOCO_VERSION)/jacoco-$(JACOCO_VERSION).zip"; \
 		unzip -q -o "$$tmp_zip" -d "$(JACOCO_DIR)" lib/jacocoagent.jar lib/jacococli.jar; \
 		rm -f "$$tmp_zip"; \
 		echo "jacoco: staged jacocoagent.jar + jacococli.jar into $(JACOCO_DIR)/lib (v$(JACOCO_VERSION))"; \
