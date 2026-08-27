@@ -1256,7 +1256,7 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
               emitErr(st, "P0190", "expected '(' after 'old'", peekSpan(st))
             }
           }
-          val inner = parseExpr(st)
+          val inner = parseDelimitedExpr(st)
           val endSpan = match tryEatPunct(st, RParen) {
             case Some(t) -> t.span
             case None -> {

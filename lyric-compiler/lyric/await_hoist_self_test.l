@@ -377,3 +377,29 @@ test "#5629: a mutable index receiver reassigned by the awaited call keeps its p
     "index receiver must be captured before the mutating await, not after"
   )
 }
+
+// #6555 (review follow-up on #5629): `hzCollectMutableNamesExpr` recursed
+// into `EAwait`/`EYield`/`ESpawn`/`ETry`/`EOld` but not `EPropagate` — so a
+// `var` declared and used entirely INSIDE the inner expression of a `?`
+// (a hazard kind `hzHoistSpine` itself already recurses into) was invisible
+// to the mutability pre-walk and treated as safe-to-skip-binding, reopening
+// the exact #5629 stale-receiver bug one `?` deeper.
+async func receiverMutatedInsidePropagatedBlock(): Result[Int, String] {
+  val n = match true { case true -> { var y = MutRecvBox(tag = 1); Ok(value = y.describe(await mutateBoxSlot(y))) }; case false -> Err(error = "unreachable") }?
+  // `y` is declared AND used as a mutable receiver entirely inside this
+  // match-arm block, which is itself the inner expression of the outer
+  // `?` below — the collector must descend through EPropagate to see
+  // this `var`.
+  Ok(value = n)
+}
+
+test "#6555: a mutable receiver declared inside a ?-propagated block keeps its pre-await value" {
+  // Correct: describe(self=tag 1, n=5) = 1*1000+5 = 1005, same as #5629's
+  // non-propagated case. Before the EPropagate fix, `y` was missing from
+  // `mutableNames` (the collector never looked past the `?`), so it was
+  // re-read AFTER the hoisted await, observing tag=99 and producing 99005.
+  match await receiverMutatedInsidePropagatedBlock() {
+    case Ok(v) -> assertEqualInt(v, 1005, "receiver inside a ?-propagated block must be captured before the mutating await")
+    case Err(e) -> assertTrue(false, "unexpected Err: " + e)
+  }
+}

@@ -618,7 +618,8 @@ func hzNeedsHoist(cfg: in HoistConfig, e: in Expr): Bool {
     case EMember(receiver, _) -> hzNeedsHoist(cfg, receiver)
     case EYield(inner) -> hzNeedsHoist(cfg, inner)
     case ETypeApp(fn, _) -> hzNeedsHoist(cfg, fn)
-    case EAssign(target, _, value) -> hzNeedsHoist(cfg, target) or hzNeedsHoist(cfg, value) or (hzAssignTargetStacks(target) and hzHasHazard(cfg, value))
+    case EAssign(target, _, value) -> hzNeedsHoist(cfg, target) or hzNeedsHoist(cfg, value) or
+      (hzAssignTargetStacks(target) and hzHasHazard(cfg, value))
     case EIf(cond, thenB, elseO, _) -> {
       if hzNeedsHoist(cfg, cond) or hzNeedsHoistEob(cfg, thenB) {
         true
@@ -712,7 +713,8 @@ func hzNeedsHoistStmt(cfg: in HoistConfig, s: in Statement): Bool {
         }
       }
     }
-    case SAssign(target, _, value) -> hzNeedsHoist(cfg, target) or hzNeedsHoist(cfg, value) or (hzAssignTargetStacks(target) and hzHasHazard(cfg, value))
+    case SAssign(target, _, value) -> hzNeedsHoist(cfg, target) or hzNeedsHoist(cfg, value) or
+      (hzAssignTargetStacks(target) and hzHasHazard(cfg, value))
     case SReturn(valOpt) -> {
       match valOpt {
         case Some(e) -> hzNeedsHoist(cfg, e)
@@ -917,7 +919,13 @@ func hzHoistSpine(cfg: in HoistConfig, e: in Expr, acc: in List[Statement], st: 
       }
     }
     case EPrefix(op, operand) -> mkExpr(EPrefix(op = op, operand = hzHoistSpine(cfg, operand, acc, st)), e.span)
-    case EMember(receiver, memberName) -> mkExpr(EMember(receiver = hzHoistSpine(cfg, receiver, acc, st), memberName = memberName), e.span)
+    case EMember(receiver, memberName) -> mkExpr(
+      EMember(
+        receiver = hzHoistSpine(cfg, receiver, acc, st),
+        memberName = memberName
+      ),
+      e.span
+    )
     case EYield(inner) -> mkExpr(EYield(inner = hzHoistSpine(cfg, inner, acc, st)), e.span)
     case ETypeApp(fn, targs) -> mkExpr(ETypeApp(fn = hzHoistSpine(cfg, fn, acc, st), args = targs), e.span)
     case EAssign(target, op, value) -> {
@@ -1376,6 +1384,7 @@ func hzCollectMutableNamesExpr(e: in Expr, m: in Map[String, Bool]): Unit {
       }
     }
     case EAwait(inner) -> hzCollectMutableNamesExpr(inner, m)
+    case EPropagate(inner) -> hzCollectMutableNamesExpr(inner, m)
     case EYield(inner) -> hzCollectMutableNamesExpr(inner, m)
     case ESpawn(inner) -> hzCollectMutableNamesExpr(inner, m)
     case ETry(inner) -> hzCollectMutableNamesExpr(inner, m)
