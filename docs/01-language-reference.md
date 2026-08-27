@@ -180,7 +180,7 @@ val age: Age = Age.tryFrom(human.years)?
 val total: Int = age.toInt() + 5
 ```
 
-Range-violating values cause a runtime check failure on construction (`tryFrom` returns `Result`; `from` throws `System.ArgumentOutOfRangeException` on .NET). JVM bounds-checking is not yet implemented (tracked in #2997). Inside a `@proof_required` module, the prover discharges the range obligation statically; runtime checks are elided when proof succeeds.
+Range-violating values cause a runtime check failure on construction (`tryFrom` returns `Result`; `from` panics — `System.ArgumentOutOfRangeException` on `--target dotnet`, `java.lang.RuntimeException` with the same message shape on `--target jvm`). Both the .NET and JVM backends bounds-check identically (#5956; the historical `#2997` JVM gap is closed). Inside a `@proof_required` module, the prover discharges the range obligation statically; runtime checks are elided when proof succeeds.
 
 Range syntax:
 - `a ..= b` — closed range, both endpoints included

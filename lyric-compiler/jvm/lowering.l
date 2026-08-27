@@ -12,6 +12,7 @@ package Jvm.Lowering
 import Std.Core
 import Std.Collections
 import Std.String as Str
+import Std.Math
 import Std.File as File
 import Std.Environment as Env
 import Std.ProcessCapture as ProcessCapture
@@ -3493,11 +3494,330 @@ pub func lowerThreadJoin(asm: in MethodAssembler): Unit {
 //
 // Lowers a Lyric distinct type (`type T = U`) to a plain final class with a
 // single private final field `$value` of the underlying JVM type, a public
-// canonical constructor, and a public `$value()` accessor.
-// This is the bootstrap approximation of §6.2 (Java record shape deferred).
+// canonical constructor, a public `$value()` accessor, and — mirroring
+// `Msil.Lowering.lowerMDistinctType` (#5956) — the static `from`/`tryFrom`
+// construction API the language reference defines for distinct and range
+// subtypes: a static `from(x): T` (range-checked, panics on violation like
+// MSIL's `ArgumentOutOfRangeException`) and a static `tryFrom(x):
+// Std.Core.Result` (returns `Err(message)` instead of panicking).
 pub record LDistinctType {
   wrapperClass: String
   underlyingType: JvmType
+  // Range-subtype validation (#5956): mirrors `Msil.Lowering.MDistinctType`.
+  // When `hasRange` is true, `from`/`tryFrom` bounds-check the incoming value
+  // and panic (`from`) or return `Err` (`tryFrom`) on violation;
+  // `upperExclusive` distinguishes a half-open (`..<`) from a closed (`..=`)
+  // range.  `rangeIsFloat` selects the Double-typed bounds (`minF`/`maxF`)
+  // over the Long-typed ones (`minI`/`maxI`, used for both Int- and
+  // Long-underlying ranges).
+  hasRange: Bool
+  rangeIsFloat: Bool
+  minI: Long
+  maxI: Long
+  minF: Double
+  maxF: Double
+  upperExclusive: Bool
+}
+
+// Simple (unqualified) class name from a "pkg/pkg/Name" JVM binary name, for
+// the `from`/`tryFrom` panic/`Err` message — mirrors
+// `Msil.Lowering.simpleNameFromFqn`.
+func jvmDistinctSimpleName(wrapperClass: in String): String {
+  val idx = Str.lastIndexOfRaw(wrapperClass, "/")
+  if idx < 0 {
+    wrapperClass
+  } else {
+    Str.substring(wrapperClass, idx + 1)
+  }
+}
+
+// Human-readable range description for the bounds-violation message —
+// mirrors `Msil.Lowering.distinctRangeDesc` exactly (same `"[lo, hi]"` /
+// `"[lo, hi)"` shape).
+func jvmDistinctRangeDesc(d: in LDistinctType): String {
+  val lo = if d.rangeIsFloat { d.minF.toString() } else { d.minI.toString() }
+  val hi = if d.rangeIsFloat { d.maxF.toString() } else { d.maxI.toString() }
+  val close = if d.upperExclusive { ")" } else { "]" }
+  "[" + lo + ", " + hi + close
+}
+
+// `<SimpleName>.from: value out of range [...]` — byte-identical shape to
+// `Msil.Lowering`'s `rangeMsg`, for cross-target error-message consistency.
+func jvmDistinctFromMsg(d: in LDistinctType): String {
+  jvmDistinctSimpleName(d.wrapperClass) + ".from: value out of range " +
+    (if d.hasRange { jvmDistinctRangeDesc(d) } else { "" })
+}
+
+// `<SimpleName>.tryFrom: value out of range [...]` — byte-identical shape to
+// `Msil.Lowering`'s `tryFromMsg`.
+func jvmDistinctTryFromMsg(d: in LDistinctType): String {
+  jvmDistinctSimpleName(d.wrapperClass) + ".tryFrom: value out of range " +
+    (if d.hasRange { jvmDistinctRangeDesc(d) } else { "" })
+}
+
+// Push the value at local slot 0 (a static `from`/`tryFrom`'s sole argument),
+// typed by the distinct type's underlying JVM type.
+func emitJvmDistinctArgLoad(asm: in MethodAssembler, ty: in JvmType): Unit {
+  match ty {
+    case JLong -> emitLload(asm, 0)
+    case JDouble -> emitDload(asm, 0)
+    case JFloat -> emitFload(asm, 0)
+    case JBoolean -> emitIload(asm, 0)
+    case JByte -> emitIload(asm, 0)
+    case JChar -> emitIload(asm, 0)
+    case JShort -> emitIload(asm, 0)
+    case JInt -> emitIload(asm, 0)
+    case JVoid -> ()
+    case JRef(_) -> emitAload(asm, 0)
+    case JArray(_) -> emitAload(asm, 0)
+  }
+}
+
+// Emit the range bounds test for a distinct type's `from`/`tryFrom` argument
+// (local slot 0), branching to `failLabel` on any violation (value below
+// `min`, or above/at `max`).  No-op when the type carries no range (#5956).
+// Mirrors `Msil.Lowering.emitDistinctBoundsToFail`: the JVM has no direct
+// long/double comparison-branch opcode, so the Long/Double arms compare via
+// `lcmp`/`dcmpl`/`dcmpg` then branch on the int result against zero — `dcmpl`
+// for the lower bound (NaN → -1, so a NaN value correctly fails as "less than
+// min") and `dcmpg` for the upper bound (NaN → 1, so it also fails as
+// "greater than max").
+func emitJvmDistinctBoundsToFail(asm: in MethodAssembler, d: in LDistinctType, failLabel: in String): Unit {
+  if not d.hasRange {
+    return
+  }
+  if d.rangeIsFloat {
+    emitDload(asm, 0)
+    emitPushDouble(asm, d.minF)
+    emitDcmpl(asm)
+    emitIflt(asm, failLabel)
+    emitDload(asm, 0)
+    emitPushDouble(asm, d.maxF)
+    emitDcmpg(asm)
+    if d.upperExclusive {
+      emitIfge(asm, failLabel)
+    } else {
+      emitIfgt(asm, failLabel)
+    }
+  } else {
+    match d.underlyingType {
+      case JLong -> {
+        emitLload(asm, 0)
+        emitPushLong(asm, d.minI)
+        emitLcmp(asm)
+        emitIflt(asm, failLabel)
+        emitLload(asm, 0)
+        emitPushLong(asm, d.maxI)
+        emitLcmp(asm)
+        if d.upperExclusive {
+          emitIfge(asm, failLabel)
+        } else {
+          emitIfgt(asm, failLabel)
+        }
+      }
+      // JInt (and any other integer-width case, defensively) — mirrors
+      // `Msil.Lowering.emitDistinctBoundsToFail`'s `case _` I4 fallback.
+      case _ -> {
+        emitIload(asm, 0)
+        emitPushInt(asm, longToInt(d.minI))
+        emitIfIcmplt(asm, failLabel)
+        emitIload(asm, 0)
+        emitPushInt(asm, longToInt(d.maxI))
+        if d.upperExclusive {
+          emitIfIcmpge(asm, failLabel)
+        } else {
+          emitIfIcmpgt(asm, failLabel)
+        }
+      }
+    }
+  }
+}
+
+// The verifier-frame type of a distinct type's underlying JVM type, for the
+// StackMapTable entry at a ranged `from`/`tryFrom`'s `fail:` branch target.
+// Range subtypes are numeric-only (Int/Long/Double per the language
+// reference), so this never sees a reference/array underlying type in
+// practice; the panic is defense-in-depth against a future range-eligible
+// underlying type reaching here unhandled.
+func jvmVerifierTypeOfUnderlying(ty: in JvmType): VerifierType {
+  match ty {
+    case JLong -> VLong
+    case JDouble -> VDouble
+    case JFloat -> VFloat
+    case JBoolean -> VInteger
+    case JByte -> VInteger
+    case JChar -> VInteger
+    case JShort -> VInteger
+    case JInt -> VInteger
+    case _ -> panic("Jvm.Lowering: distinct-type range bound on a non-numeric underlying type")
+  }
+}
+
+// Static `from(x): T` factory (#5956).  Constructs `T` directly when the type
+// carries no range; when ranged, bounds-checks first and panics — throws
+// `java.lang.RuntimeException` with the same message shape MSIL's
+// `ArgumentOutOfRangeException` carries — on violation, matching the JVM
+// backend's own `panic(...)` intrinsic lowering (`Jvm.Codegen`'s
+// `emitPanicFromStack`).
+func lowerDistinctFrom(d: in LDistinctType, pool: in Pool): MethodInfo {
+  val ctorPs: List[JvmType] = newList()
+  ctorPs.add(d.underlyingType)
+  val ctorIdx = poolMethodref(pool, d.wrapperClass, "<init>", buildDescriptor(ctorPs, JVoid))
+  val ps: List[JvmType] = newList()
+  ps.add(d.underlyingType)
+  val retTy = JRef(className = d.wrapperClass)
+  val paramSlots = fieldSlotSize(d.underlyingType)
+  // Direct bytecode.l `emitXxx` calls (unlike the `LInsn`/`lowerInsn` path
+  // elsewhere in this file) never touch `asm.peakStack` — `emitInsn` just
+  // appends to the instruction list, so `assembleCode{,WithFrames}Inferred`
+  // would silently write `max_stack = 0` and the verifier rejects the very
+  // first push (`VerifyError: Operand stack overflow`, caught in testing).
+  // `maxStack` is hand-computed instead, matching this file's OTHER
+  // direct-`emitXxx` methods (e.g. the ctor/`$value()` accessor above):
+  // peak is `new; dup; <load arg>` (2 + the arg's word count) — the ranged
+  // bounds check's own peak (2x the arg's word count) never exceeds that for
+  // Int/Long/Double.
+  val maxStack = 2 + paramSlots
+  val asm = newAssembler(pool)
+  if d.hasRange {
+    emitJvmDistinctBoundsToFail(asm, d, "fail")
+    emitNew(asm, poolClass(pool, d.wrapperClass))
+    emitDup(asm)
+    emitJvmDistinctArgLoad(asm, d.underlyingType)
+    emitInvokespecial(asm, ctorIdx)
+    emitAreturn(asm)
+    emitLabel(asm, "fail")
+    emitNew(asm, poolClass(pool, "java/lang/RuntimeException"))
+    emitDup(asm)
+    emitPushString(asm, jvmDistinctFromMsg(d))
+    emitInvokespecial(asm, poolMethodref(pool, "java/lang/RuntimeException", "<init>", "(Ljava/lang/String;)V"))
+    emitAthrow(asm)
+    val frameLocals: List[VerifierType] = newList()
+    frameLocals.add(jvmVerifierTypeOfUnderlying(d.underlyingType))
+    val code = assembleCodeWithFrames(asm, maxStack, paramSlots, frameLocals)
+    val attrs: List[Attribute] = newList()
+    attrs.add(code)
+    makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "from", buildDescriptor(ps, retTy), attrs)
+  } else {
+    emitNew(asm, poolClass(pool, d.wrapperClass))
+    emitDup(asm)
+    emitJvmDistinctArgLoad(asm, d.underlyingType)
+    emitInvokespecial(asm, ctorIdx)
+    emitAreturn(asm)
+    val code = assembleCode(asm, maxStack, paramSlots)
+    val attrs: List[Attribute] = newList()
+    attrs.add(code)
+    makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "from", buildDescriptor(ps, retTy), attrs)
+  }
+}
+
+// Static `tryFrom(x): Std.Core.Result` factory (#5956).  Wraps the
+// constructed value in `Result.Ok`, or — when ranged and out of range — an
+// `Err(<message>)` carrying the same message shape as MSIL's `tryFrom`.  JVM
+// generics are fully erased (docs/41 audit): `Result`/`Ok`/`Err` are plain
+// non-generic classes with `Object`-typed payload fields, exactly like every
+// other generic Lyric type on this backend, so no type-argument
+// instantiation (MSIL's closed `Result_Ok<Self, String>` TypeSpec) is needed.
+// The referenced classes resolve lazily at first invocation — the same
+// "no import-reachability gate needed" property `lowerProjectableType`'s
+// `tryInto()` already relies on — so `tryFrom` is emitted unconditionally,
+// unlike MSIL's `hasTryFrom` token-budget gate.
+func lowerDistinctTryFrom(d: in LDistinctType, pool: in Pool): MethodInfo {
+  val ctorPs: List[JvmType] = newList()
+  ctorPs.add(d.underlyingType)
+  val ctorIdx = poolMethodref(pool, d.wrapperClass, "<init>", buildDescriptor(ctorPs, JVoid))
+  val okIdx = poolMethodref(pool, "Std/Core/Result$Ok", "<init>", "(Ljava/lang/Object;)V")
+  val errIdx = poolMethodref(pool, "Std/Core/Result$Err", "<init>", "(Ljava/lang/Object;)V")
+  val ps: List[JvmType] = newList()
+  ps.add(d.underlyingType)
+  val retTy = JRef(className = "Std/Core/Result")
+  val paramSlots = fieldSlotSize(d.underlyingType)
+  // See `lowerDistinctFrom`'s comment: `asm.peakStack` is never populated by
+  // direct `emitXxx` calls, so `maxStack` is hand-computed. Peak here is
+  // `new Ok; dup; new T; dup; <load arg>` (4 + the arg's word count) — the
+  // ranged bounds check's own peak (2x the arg's word count) and the `Err`
+  // fail path's peak (3: `new; dup; ldstr`) never exceed that for
+  // Int/Long/Double.
+  val maxStack = 4 + paramSlots
+  val asm = newAssembler(pool)
+  if d.hasRange {
+    emitJvmDistinctBoundsToFail(asm, d, "fail")
+    emitNew(asm, poolClass(pool, "Std/Core/Result$Ok"))
+    emitDup(asm)
+    emitNew(asm, poolClass(pool, d.wrapperClass))
+    emitDup(asm)
+    emitJvmDistinctArgLoad(asm, d.underlyingType)
+    emitInvokespecial(asm, ctorIdx)
+    emitInvokespecial(asm, okIdx)
+    emitAreturn(asm)
+    emitLabel(asm, "fail")
+    emitNew(asm, poolClass(pool, "Std/Core/Result$Err"))
+    emitDup(asm)
+    emitPushString(asm, jvmDistinctTryFromMsg(d))
+    emitInvokespecial(asm, errIdx)
+    emitAreturn(asm)
+    val frameLocals: List[VerifierType] = newList()
+    frameLocals.add(jvmVerifierTypeOfUnderlying(d.underlyingType))
+    val code = assembleCodeWithFrames(asm, maxStack, paramSlots, frameLocals)
+    val attrs: List[Attribute] = newList()
+    attrs.add(code)
+    makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "tryFrom", buildDescriptor(ps, retTy), attrs)
+  } else {
+    emitNew(asm, poolClass(pool, "Std/Core/Result$Ok"))
+    emitDup(asm)
+    emitNew(asm, poolClass(pool, d.wrapperClass))
+    emitDup(asm)
+    emitJvmDistinctArgLoad(asm, d.underlyingType)
+    emitInvokespecial(asm, ctorIdx)
+    emitInvokespecial(asm, okIdx)
+    emitAreturn(asm)
+    val code = assembleCode(asm, maxStack, paramSlots)
+    val attrs: List[Attribute] = newList()
+    attrs.add(code)
+    makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "tryFrom", buildDescriptor(ps, retTy), attrs)
+  }
+}
+
+// Inherent conversion-method name for a distinct type's underlying JVM type
+// (#5956) — mirrors `Msil.Lowering.distinctConvName` exactly (same four
+// convertible underlying types, same empty-string "no conversion" sentinel
+// for everything else).
+pub func jvmDistinctConvName(ty: in JvmType): String {
+  match ty {
+    case JInt -> "toInt"
+    case JLong -> "toLong"
+    case JDouble -> "toDouble"
+    case JByte -> "toByte"
+    case _ -> ""
+  }
+}
+
+// Build a public zero-arg accessor named `methodName` that reads the
+// `$value` field and returns it typed as `d.underlyingType` — shared by the
+// bootstrap-form `$value()` accessor and the `toX` conversion method (#5956),
+// which are byte-identical apart from name.
+func lowerDistinctAccessor(d: in LDistinctType, pool: in Pool, fieldIdx: in Int, methodName: in String): MethodInfo {
+  val accAsm = newAssembler(pool)
+  emitAload(accAsm, 0)
+  emitGetfield(accAsm, fieldIdx)
+  match d.underlyingType {
+    case JLong -> emitLreturn(accAsm)
+    case JDouble -> emitDreturn(accAsm)
+    case JFloat -> emitFreturn(accAsm)
+    case JBoolean -> emitIreturn(accAsm)
+    case JByte -> emitIreturn(accAsm)
+    case JChar -> emitIreturn(accAsm)
+    case JShort -> emitIreturn(accAsm)
+    case JInt -> emitIreturn(accAsm)
+    case JVoid -> ()
+    case JRef(_) -> emitAreturn(accAsm)
+    case JArray(_) -> emitAreturn(accAsm)
+  }
+  val accCode = assembleCode(accAsm, fieldSlotSize(d.underlyingType), 1)
+  val accAttrs: List[Attribute] = newList()
+  accAttrs.add(accCode)
+  val noPs: List[JvmType] = newList()
+  makeMethodInfo(ACC_PUBLIC, methodName, buildDescriptor(noPs, d.underlyingType), accAttrs)
 }
 
 pub func lowerDistinctType(d: in LDistinctType, pool: in Pool): ClassFile {
@@ -3537,34 +3857,31 @@ pub func lowerDistinctType(d: in LDistinctType, pool: in Pool): ClassFile {
   ctorPs.add(d.underlyingType)
   val ctor = makeMethodInfo(ACC_PUBLIC, "<init>", buildDescriptor(ctorPs, JVoid), ctorAttrs)
 
-  // public <underlying> $value()
-  val accAsm = newAssembler(pool)
-  emitAload(accAsm, 0)
-  emitGetfield(accAsm, fieldIdx)
-  match d.underlyingType {
-    case JLong -> emitLreturn(accAsm)
-    case JDouble -> emitDreturn(accAsm)
-    case JFloat -> emitFreturn(accAsm)
-    case JBoolean -> emitIreturn(accAsm)
-    case JByte -> emitIreturn(accAsm)
-    case JChar -> emitIreturn(accAsm)
-    case JShort -> emitIreturn(accAsm)
-    case JInt -> emitIreturn(accAsm)
-    case JVoid -> ()
-    case JRef(_) -> emitAreturn(accAsm)
-    case JArray(_) -> emitAreturn(accAsm)
-  }
-  val accCode = assembleCode(accAsm, fieldSlotSize(d.underlyingType), 1)
-  val accAttrs: List[Attribute] = newList()
-  accAttrs.add(accCode)
-  val noPs: List[JvmType] = newList()
-  val acc = makeMethodInfo(ACC_PUBLIC, "$value", buildDescriptor(noPs, d.underlyingType), accAttrs)
+  // public <underlying> $value() — the bootstrap-form accessor kept for
+  // backward compatibility (hand-built bytecode self-tests reference it by
+  // name); `toInt`/`toLong`/`toDouble`/`toByte` (#5956) is the properly-named
+  // conversion method the language reference's construction API defines and
+  // that ordinary call sites (`v.toInt()`) dispatch through.
+  val acc = lowerDistinctAccessor(d, pool, fieldIdx, "$value")
 
   val fields: List[FieldInfo] = newList()
   fields.add(valueField)
   val methods: List[MethodInfo] = newList()
   methods.add(ctor)
   methods.add(acc)
+  // Inherent `toX` projection (#5956) — mirrors MSIL's `distinctConvName`
+  // method (Method 3 of `lowerMDistinctType`).  Registered into the call-site
+  // registry by `Jvm.Codegen.collectFileSigsSeeded`'s `IDistinctType` arm so
+  // `v.toInt()` resolves through the ordinary `<class>#<method>` instance
+  // dispatch path (`lowerMethodCall`) instead of needing special-casing there.
+  val convName = jvmDistinctConvName(d.underlyingType)
+  if convName.length > 0 {
+    methods.add(lowerDistinctAccessor(d, pool, fieldIdx, convName))
+  }
+  // Static `from`/`tryFrom` construction API (#5956) — parity with MSIL's
+  // `lowerMDistinctType`.
+  methods.add(lowerDistinctFrom(d, pool))
+  methods.add(lowerDistinctTryFrom(d, pool))
 
   ClassFile(
     minorVersion = 0,
@@ -6120,7 +6437,20 @@ pub record LDistinctWithDerives {
 /// underlying primitive.
 pub func lowerDeriveOrd(d: in LDistinctWithDerives, pool: in Pool): ClassFile {
   // Build base distinct type
-  val base = LDistinctType(wrapperClass = d.wrapperClass, underlyingType = d.underlyingType)
+  // `@generate(Compare/Add/Sub)` derives on a distinct type carry no range
+  // clause of their own here (#5956 scopes range-subtype construction, not
+  // this pre-existing derive path) — build the plain no-range descriptor.
+  val base = LDistinctType(
+    wrapperClass = d.wrapperClass,
+    underlyingType = d.underlyingType,
+    hasRange = false,
+    rangeIsFloat = false,
+    minI = 0i64,
+    maxI = 0i64,
+    minF = 0.0,
+    maxF = 0.0,
+    upperExclusive = false
+  )
   val cf = lowerDistinctType(base, pool)
 
   val extraMethods: List[MethodInfo] = newList()

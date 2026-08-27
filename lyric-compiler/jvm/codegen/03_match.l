@@ -246,6 +246,48 @@ func recordVarGenericArgs(ctx: in FuncCtx, name: in String, init: in Expr, tyOpt
   }
 }
 
+// Record a function/method PARAMETER's own generic-instantiation type
+// annotation against its bound name (#5956), so a `match <param> { … }`
+// directly on the parameter — not just a `let`/`var` re-binding — recovers
+// its payload type via `scrutineeGenericArgs`'s bare-`EPath` arm.  Before
+// this, a parameter typed `r: in Result[Age, String]` left `case Ok(a) -> …`
+// bound `a` to erased `java.lang.Object` (no producer ever registered
+// `varGenericArgs` for a bare parameter — only `let`/`var` bindings did via
+// `recordVarGenericArgs`), so a genuinely user-typed method call on it
+// (`a.toInt()`) failed JVM auto-FFI resolution (`no matching instance or
+// inherited method for 'java.lang.Object.toInt()'`) even once the callee
+// itself (`Age.tryFrom`) carried the right `retGenericArgs`.
+//
+// Unlike `recordVarGenericArgs`'s bare-annotation fallback (safe there only
+// because a record/union-case CONSTRUCTOR the fallback covers is always
+// resolvable via `ctorClassFor` at the bind site), a parameter's args are
+// PRE-RESOLVED here via `eagerlyResolveGenericArgs` — exactly like a
+// function's own `retGenericArgs` — because `resolveConcreteTypeExpr`'s bare-
+// name path resolves a distinct/range-subtype name (`Age`) through
+// `ctorClassFor`, which only knows record/union/protected/opaque types, not
+// distinct types (#5956); pre-resolving to the slash-qualified "already
+// resolved" marker (`owner/Age`) sidesteps that lookup entirely.
+// Only a `TGenericApp` annotation (`Result[Age, String]`) contributes
+// anything — a bare-non-generic or `TSlice`/`List[Elem]` annotation yields an
+// empty list here (`annotationGenericArgs` only matches `TGenericApp`/
+// `TParen`), and MUST NOT clear an existing entry in that case: this runs
+// immediately after `recordDeclaredElemType` in the same param loop, which
+// already populated `varGenericArgs[name]` for a `slice[Elem]`/`List[Elem]`
+// parameter — unconditionally removing here wiped that entry back out even
+// when this function had nothing of its own to contribute, silently
+// re-erasing every slice/List-typed parameter's element type (caught by a
+// `Std.Core.maxInt`-shaped regression: `slice[Int]` `xs[i] > best` started
+// comparing erased `java.lang.Object`s instead of `Int`s).
+func recordParamGenericArgs(ctx: in FuncCtx, name: in String, ty: in TypeExpr): Unit {
+  val args = eagerlyResolveGenericArgs(annotationGenericArgs(ty), ctx.pkgName, ctx.externTypes)
+  if args.count > 0 {
+    if ctx.varGenericArgs.containsKey(name) {
+      ctx.varGenericArgs.remove(name)
+    }
+    ctx.varGenericArgs.add(name, args)
+  }
+}
+
 // Record `name`'s real closure-invoke return type when `init` is a call
 // chain rooted at a known same-package top-level function whose OWN
 // declared return type is function-shaped (#6398) — e.g. `val f =

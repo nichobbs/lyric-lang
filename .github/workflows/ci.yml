@@ -4379,6 +4379,16 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/list_literal_index_self_test.l
 
+      # Distinct/range-subtype static-factory self-test on JVM (#5956): the
+      # JVM backend now emits the same `Type.from`/`Type.tryFrom` construction
+      # API MSIL synthesises (`Jvm.Lowering.lowerDistinctType`), so this file
+      # runs unmodified on both targets — the dotnet leg (load-bearing per
+      # its own header) runs in the compiler-self-tests job above.
+      - name: Range-subtype self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/range_subtype_self_test.l
+
       # Await-hoist self-test on JVM (#5606/#5628, #5630) — JVM already
       # compiled every hoist shape correctly before the rewrite (the rewrite
       # is semantics-preserving there), so this pins that the shared rewrite

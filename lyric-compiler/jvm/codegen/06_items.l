@@ -646,6 +646,9 @@ pub func setupInstanceParamSlotsAndHolders(
   var rdi = 0
   while rdi < params.count {
     recordDeclaredElemType(ctx, params[rdi].name, params[rdi].ty, typeParams)
+    // #5956: see `lowerFunc`'s matching call — an instance method's own
+    // generic-instantiation-typed parameter needs the same registration.
+    recordParamGenericArgs(ctx, params[rdi].name, params[rdi].ty)
     rdi = rdi + 1
   }
 }
@@ -908,6 +911,10 @@ pub func lowerFunc(
   var rdi = 0
   while rdi < resolvedParams.count {
     recordDeclaredElemType(ctx, resolvedParams[rdi].name, resolvedParams[rdi].ty, fnElemTps)
+    // #5956: a `Result[Age, String]`-typed (or any other generic-instantiation-
+    // typed) parameter's own annotation seeds `varGenericArgs` so `match
+    // <param> { … }` on it unboxes the payload — see `recordParamGenericArgs`.
+    recordParamGenericArgs(ctx, resolvedParams[rdi].name, resolvedParams[rdi].ty)
     rdi = rdi + 1
   }
 
@@ -3246,6 +3253,99 @@ pub func collectFileSigsSeeded(
           mi = mi + 1
         }
       }
+      // Register the synthesised `toX` conversion method (#5956) under
+      // `<wrapperClass>#toX` so `v.toInt()` on a distinct/range-subtype
+      // receiver resolves through the ordinary `<class>#<method>` instance
+      // dispatch (`lowerMethodCall`'s `ctx.funcSigs` lookup) instead of
+      // falling through to the "no known method" fallback. `Jvm.Lowering`'s
+      // `jvmDistinctConvName` picks the SAME name the emitted method carries
+      // — no conversion method (and no registration) for a non-convertible
+      // underlying type (`""`).
+      case IDistinctType(decl) -> {
+        val distClass = owner + "/" + decl.name
+        val inner = typeExprToJvm(decl.underlying, owner)
+        val convName = jvmDistinctConvName(inner)
+        if convName.length > 0 {
+          val noParams: List[Param] = newList()
+          registerInstanceSigErased(
+            into,
+            distClass,
+            convName,
+            noParams,
+            Some(value = decl.underlying),
+            owner,
+            newList(),
+            externTypes
+          )
+        }
+        // Static `from`/`tryFrom` construction API (#5956): registered under
+        // the same `<TypeName>.<member>` dot-key `lowerMethodCall`'s existing
+        // dot-named-static-call arm already dispatches through (the
+        // `AppWire.bootstrap()` mechanism), so the call site needs no
+        // special-casing of its own. `tryFrom`'s `retGenericArgs` —
+        // pre-resolved via `eagerlyResolveGenericArgs`, exactly like a real
+        // generic function's declared return (#4877) — lets
+        // `scrutineeGenericArgs` recognise `Type.tryFrom(x)` as a
+        // `Result[Type, String]` instantiation, so a `match`/`?`/`let`-bind
+        // on it unboxes the erased `Ok`/`Err` payload back to the real
+        // distinct-type class instead of leaving it `java.lang.Object` — the
+        // JVM-erasure counterpart of `Lyric.Mono`'s front-end recognition of
+        // this same call shape (#5841).
+        val noParamNames: List[String] = newList()
+        val noParamDefaults: List[Option[Expr]] = newList()
+        val noParamModes: List[ParamMode] = newList()
+        val fromKey = decl.name + ".from"
+        if not into.containsKey(fromKey) {
+          val fromParams: List[JvmType] = newList()
+          fromParams.add(inner)
+          into.add(
+            fromKey,
+            JvmFuncSig(
+              owner = distClass,
+              params = fromParams,
+              ret = JRef(className = distClass),
+              paramNames = noParamNames,
+              paramDefaults = noParamDefaults,
+              paramModes = noParamModes,
+              isIface = false,
+              retGenericArgs = newList(),
+              closureRetTy = None,
+              recordRetClass = None,
+              retIsSelf = false
+            )
+          )
+        }
+        val tryFromKey = decl.name + ".tryFrom"
+        if not into.containsKey(tryFromKey) {
+          val tryFromParams: List[JvmType] = newList()
+          tryFromParams.add(inner)
+          val selfSeg: List[String] = newList()
+          selfSeg.add(decl.name)
+          val selfTe = TypeExpr(kind = TRef(path = ModulePath(segments = selfSeg, span = decl.span)), span = decl.span)
+          val stringSeg: List[String] = newList()
+          stringSeg.add("String")
+          val stringTe = TypeExpr(kind = TRef(path = ModulePath(segments = stringSeg, span = decl.span)), span = decl.span)
+          val rawArgs: List[TypeExpr] = newList()
+          rawArgs.add(selfTe)
+          rawArgs.add(stringTe)
+          into.add(
+            tryFromKey,
+            JvmFuncSig(
+              owner = distClass,
+              params = tryFromParams,
+              ret = JRef(className = "Std/Core/Result"),
+              paramNames = noParamNames,
+              paramDefaults = noParamDefaults,
+              paramModes = noParamModes,
+              isIface = false,
+              retGenericArgs = eagerlyResolveGenericArgs(rawArgs, owner, externTypes),
+              closureRetTy = None,
+              recordRetClass = None,
+              retIsSelf = false
+            )
+          )
+        }
+      }
       case IImpl(decl) -> {
         // Register each impl method under `<targetClass>#<methodName>` so that
         // call sites (`lowerMethodCall` J3 M-3 path) emit a precisely-typed
@@ -4161,6 +4261,104 @@ func addCtorKeys(into: in Map[String, String], owner: in String, name: in String
   val dottedKey = owner.replace("/", ".") + "." + name
   if not into.containsKey(dottedKey) {
     into.add(dottedKey, cls)
+  }
+}
+
+// ── Distinct/range-subtype static factories (#5956) ──────────────────────────
+// JVM counterpart of `Msil.Codegen.foldRangeBound`/`mkDistinctTypeIR`: folds a
+// distinct/range-subtype declaration's range clause into concrete bounds so
+// the synthesised `from`/`tryFrom` factories (`Jvm.Lowering.lowerDistinctType`)
+// can emit a real bounds check, and so `Jvm.Codegen.lowerMethodCall` can
+// recognise a `TypeName.from(x)` / `TypeName.tryFrom(x)` call site.
+record JvmRangeBoundVal {
+  ok: Bool
+  isFloat: Bool
+  l: Long
+  d: Double
+}
+
+func foldRangeBoundJvm(e: in Expr): JvmRangeBoundVal {
+  val failVal = JvmRangeBoundVal(ok = false, isFloat = false, l = 0i64, d = 0.0)
+  match e.kind {
+    case ELiteral(lit) -> {
+      match lit {
+        case LInt(v, _, _) -> JvmRangeBoundVal(ok = true, isFloat = false, l = v, d = 0.0)
+        case LFloat(v, _, _) -> JvmRangeBoundVal(ok = true, isFloat = true, l = 0i64, d = v)
+        case _ -> failVal
+      }
+    }
+    case EPrefix(op, operand) -> {
+      match op {
+        case PreNeg -> {
+          val inner = foldRangeBoundJvm(operand)
+          if inner.ok {
+            JvmRangeBoundVal(ok = true, isFloat = inner.isFloat, l = 0i64 - inner.l, d = 0.0 - inner.d)
+          } else {
+            failVal
+          }
+        }
+        case _ -> failVal
+      }
+    }
+    case _ -> failVal
+  }
+}
+
+func mkJvmDistinctNoRange(wrapperClass: in String, inner: in JvmType): LDistinctType {
+  LDistinctType(
+    wrapperClass = wrapperClass,
+    underlyingType = inner,
+    hasRange = false,
+    rangeIsFloat = false,
+    minI = 0i64,
+    maxI = 0i64,
+    minF = 0.0,
+    maxF = 0.0,
+    upperExclusive = false
+  )
+}
+
+func mkJvmDistinctRanged(
+  wrapperClass: in String, inner: in JvmType, loE: in Expr, hiE: in Expr, upperExcl: in Bool
+): LDistinctType {
+  val lo = foldRangeBoundJvm(loE)
+  val hi = foldRangeBoundJvm(hiE)
+  val isFloatInner = match inner { case JDouble -> true; case _ -> false }
+  if lo.ok and hi.ok {
+    val loF = if lo.isFloat { lo.d } else { lo.l.toDouble() }
+    val hiF = if hi.isFloat { hi.d } else { hi.l.toDouble() }
+    LDistinctType(
+      wrapperClass = wrapperClass,
+      underlyingType = inner,
+      hasRange = true,
+      rangeIsFloat = isFloatInner,
+      minI = lo.l,
+      maxI = hi.l,
+      minF = loF,
+      maxF = hiF,
+      upperExclusive = upperExcl
+    )
+  } else {
+    mkJvmDistinctNoRange(wrapperClass, inner)
+  }
+}
+
+// Build the distinct-type IR item, folding any range clause to integer/float
+// bounds for the synthesised `from`/`tryFrom` validation.  Mirrors
+// `Msil.Codegen.mkDistinctTypeIR` exactly (same fold, same no-range fallback
+// for an unrecognised `RangeBound` variant, #3116).
+pub func mkJvmDistinctTypeIR(
+  wrapperClass: in String, inner: in JvmType, rangeClause: in Option[RangeBound]
+): LDistinctType {
+  match rangeClause {
+    case Some(rb) -> {
+      match rb {
+        case RBClosed(loE, hiE) -> mkJvmDistinctRanged(wrapperClass, inner, loE, hiE, false)
+        case RBHalfOpen(loE, hiE) -> mkJvmDistinctRanged(wrapperClass, inner, loE, hiE, true)
+        case _ -> mkJvmDistinctNoRange(wrapperClass, inner)
+      }
+    }
+    case None -> mkJvmDistinctNoRange(wrapperClass, inner)
   }
 }
 
@@ -5481,7 +5679,7 @@ pub func codegenPackageWithSigsSeeded(
       }
       case IDistinctType(decl) -> {
         val inner = typeExprToJvm(decl.underlying, pkgName)
-        items.add(LPDistinctType(dt = LDistinctType(wrapperClass = pkgName + "/" + decl.name, underlyingType = inner)))
+        items.add(LPDistinctType(dt = mkJvmDistinctTypeIR(pkgName + "/" + decl.name, inner, decl.rangeClause)))
       }
       case IEnum(decl) -> {
         val className2 = pkgName + "/" + decl.name

@@ -1,18 +1,23 @@
 //! range_subtype_self_test.l — executable regression test for distinct- and
-//! range-subtype construction in the **self-hosted** MSIL backend (#1501).
+//! range-subtype construction in the **self-hosted** MSIL and JVM backends
+//! (#1501, JVM parity in #5956).
 //!
 //! Why this lives here and not in `lyric-stdlib/tests/*_tests.l`: those
 //! `_tests.l` files are compiled and run by the **F# stage-0** emitter, which
 //! has always synthesised the distinct/range construction API (`from`,
-//! `tryFrom`, `toInt`).  The self-hosted `Msil.Bridge` did not — a
+//! `tryFrom`, `toInt`).  Neither self-hosted backend did, at first — a
 //! `Type.from(x)` / `Type.tryFrom(x)` / `value.toInt()` call compiled to invalid
-//! IL (InvalidProgramException at run time), and range bounds were dropped
-//! entirely (`rangeClause` was never read by the emitter).  This file is run by
+//! IL under `Msil.Bridge` (InvalidProgramException at run time, #1501) or
+//! failed to compile at all under `Jvm.Bridge` ("reference 'Age' resolves to
+//! no local, parameter, ...", #5956), and range bounds were dropped entirely
+//! (`rangeClause` was never read by either emitter).  This file is run by
 //! native `lyric test`, which compiles it in-process through the self-hosted
-//! pipeline (lexer → parser → type-checker → mode-checker → codegen → MSIL PE)
-//! and executes it, so it exercises the path the `_tests.l` files cannot.
+//! pipeline (lexer → parser → type-checker → mode-checker → codegen → MSIL PE
+//! or JVM class files) and executes it, so it exercises the path the
+//! `_tests.l` files cannot.
 //!
 //!   lyric test lyric-compiler/lyric/range_subtype_self_test.l
+//!   lyric test --target jvm lyric-compiler/lyric/range_subtype_self_test.l
 //!
 //! Most cases below consume `match` rather than the `isOk`/`isErr` stdlib
 //! helpers: a generic stdlib function applied to a `Result` over a *user*
@@ -27,11 +32,11 @@
 //! `Type.from(x)` as returning the real `Result[Type, String]` /  `Type`
 //! instantiation (rather than defaulting the unresolved type argument(s) to
 //! `Object`), so these calls monomorphise correctly instead of throwing
-//! "match not exhaustive" at runtime.  MSIL only: the JVM backend does not
-//! yet emit the distinct/range-subtype construction API at all (`Age.tryFrom`
-//! fails to compile under `--target jvm` with "reference 'Age' resolves to
-//! no local, parameter, ..."), a separate, pre-existing JVM gap tracked
-//! under docs/44.
+//! "match not exhaustive" at runtime.  Runs on both `--target dotnet` and
+//! `--target jvm` (#5956): `Lyric.Mono`'s `Type.tryFrom`/`Type.from`
+//! return-type recognition is shared front-end logic, so once the JVM
+//! backend gained the construction API this monomorphization slice worked
+//! unmodified on both targets.
 @test_module
 package Lyric.RangeSubtypeSelfTest
 

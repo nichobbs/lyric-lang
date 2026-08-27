@@ -24183,13 +24183,16 @@ gap in the `lyric-stdlib/tests/*_tests.l` suite.
 covering closed/half-open boundary semantics, `Int` and `Long` ranges, the
 in-range `from` round-trip, and a plain (rangeless) distinct type. Run under
 native `lyric test --target dotnet`; added to the compiler self-test CI loop.
+**JVM parity landed in #5956** (see that entry below) — the same test file now
+also runs under `--target jvm`, both in CI.
 
 **Scope notes:** `Double`-bound ranges are rejected upstream by the type checker
 (`T0093`, integer literals only), so the `Double` bounds path is forward-compat
-only. Applying a generic stdlib helper (`isOk`/`isErr`/`unwrapResult`) to a
-`Result` over a *user* type still erases its type arguments — the cross-package
-generic-function monomorphization gap (#1498) — so consumers (and this test)
-use `match`. JVM range-bound checking remains tracked separately (#2997).
+only (on both backends). Applying a generic stdlib helper (`isOk`/`isErr`/
+`unwrapResult`) to a `Result` over a *user* type still erases its type
+arguments — the cross-package generic-function monomorphization gap (#1498) —
+so consumers (and this test) use `match`. ~~JVM range-bound checking remains
+tracked separately (#2997).~~ **Closed** — see #5956.
 
 Closes #1501.
 
