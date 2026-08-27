@@ -488,17 +488,28 @@ test "dispatch: fallbackToIndex serves index.html for an unmatched static path" 
 
 // ─── Response helper constructors ─────────────────────────────────────────────
 test "json/text/html/noContent/errorResponse construct the expected status and content type" {
-  // Valid JSON should be preserved as-is
+  // Valid JSON is sent unmodified, byte-for-byte — no parse.
   val j = Web.json(200, "{\"a\":1}")
   assertEqualInt(j.status, 200, "json status")
   assertEqual(j.contentType, "application/json; charset=utf-8", "json content type")
   assertEqual(decodeUtf8(j.bodyBytes), "{\"a\":1}", "json body")
 
-  // Raw primitive unquoted string should be automatically quote-escaped
-  val jEscaped = Web.json(201, "550e8400-e29b-41d4-a716-446655440000")
-  assertEqualInt(jEscaped.status, 201, "escaped json status")
-  assertEqual(decodeUtf8(jEscaped.bodyBytes), "\"550e8400-e29b-41d4-a716-446655440000\"", "automatically quote-escaped raw session ID")
+  // Malformed JSON is sent AS-IS — `json` never parses or re-interprets the
+  // body, so a caller's malformed-JSON bug surfaces instead of being
+  // silently masked as a quoted string (#5813 regression test).
+  val jMalformed = Web.json(200, "{\"a\":1")
+  assertEqual(decodeUtf8(jMalformed.bodyBytes), "{\"a\":1", "malformed json is sent unmodified, not re-escaped")
 
+  // `jsonString` is the explicit helper for wrapping a raw (non-JSON) string
+  // value, e.g. a bare UUID, as a JSON string.
+  val jEscaped = Web.jsonString(201, "550e8400-e29b-41d4-a716-446655440000")
+  assertEqualInt(jEscaped.status, 201, "jsonString status")
+  assertEqual(jEscaped.contentType, "application/json; charset=utf-8", "jsonString content type")
+  assertEqual(
+    decodeUtf8(jEscaped.bodyBytes),
+    "\"550e8400-e29b-41d4-a716-446655440000\"",
+    "jsonString quotes and escapes the raw value"
+  )
 
   val t = Web.text(201, "created")
   assertEqualInt(t.status, 201, "text status")

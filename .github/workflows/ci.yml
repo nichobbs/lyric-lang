@@ -6133,9 +6133,18 @@ jobs:
         run: |
           "$LYRIC_CLI_PATH" test --manifest lyric-mq/lyric.toml
 
+      # lyric-grpc's dotnet kernel has mandatory NuGet deps (Grpc.Net.Client,
+      # Grpc.AspNetCore, System.Threading.RateLimiting) whose extern types/
+      # ctors resolve from package metadata at compile time — restore first,
+      # like lyric-db/lyric-session.
       - name: Run tests (grpc)
         if: matrix.id == 'grpc'
         run: |
+          set -euo pipefail
+          if ! "$LYRIC_CLI_PATH" restore --manifest lyric-grpc/lyric.toml; then
+            echo "::error::failed to restore lyric-grpc NuGet dependencies"
+            exit 1
+          fi
           "$LYRIC_CLI_PATH" test --manifest lyric-grpc/lyric.toml
 
       # lyric-db's dotnet kernel has mandatory NuGet deps (Npgsql +

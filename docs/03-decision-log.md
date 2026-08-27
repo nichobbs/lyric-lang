@@ -31856,3 +31856,50 @@ classifier, still open — unaffected by this entry), #6551 and #6552 (the
 two upstream JVM codegen bugs above, filed as follow-ups, not fixed
 here).
 
+---
+
+## D134 — `Web.json` reverts #5797's auto-detect regression, back to its documented raw-passthrough contract; `Web.jsonString` added (#5813)
+
+**Date:** 2026-08-27
+**Status:** ACCEPTED
+
+**Context.** `Web.json(status, body)` (`lyric-web/src/web.l`) carries
+`@stable(since = "0.2")` and its doc comment describes it as a raw JSON
+passthrough helper — send `body` as the response, unmodified. #5797 changed
+its implementation to call `tryParseJson(body)` and, on parse failure,
+silently re-encode `body` as a quoted JSON string via `encodeString`. This
+is a behavioral change to a `@stable` function: every call now pays a full
+JSON parse (even for a large, already-valid body built by a real encoder),
+and a caller that passes malformed JSON — a real bug — gets a "successful"
+response whose body is a quoted string instead of a visible failure. Per
+the `@stable` editing protocol (D077 §Context), any change to stable
+surface behavior needs a decision-log entry; #5797 landed without one.
+
+**Decision.** Revert `Web.json` to pure raw passthrough — a UTF-8 encode
+of `body` and nothing else, matching its pre-#5797, currently-documented
+contract exactly. Add `Web.jsonString(status, value)`, a new
+`@stable(since = "0.2")` function, as the explicit named helper for the
+use case #5797 was actually solving: quoting/escaping an arbitrary raw
+string (a bare id, UUID, or token) as a JSON string value.
+
+**Consequences.**
+
+- `Web.json`'s `@stable` contract is restored to what it always documented:
+  no parsing, no re-escaping, no cost beyond a UTF-8 encode. A caller that
+  passes malformed JSON now ships malformed JSON, surfacing the bug instead
+  of masking it.
+- Every in-repo caller of `Web.json` (`examples/ledger`, `examples/rbac`,
+  `examples/jobqueue`, `jvm_server_smoke.l`) was already passing a real
+  JSON-encoder-built body, so none needed migration to `jsonString` —
+  verified by rebuilding all three example services.
+- `lyric-web/tests/dispatch_tests.l`'s test (the one exercising #5797's
+  removed auto-detect path) is rewritten to cover: valid JSON sent
+  unmodified byte-for-byte (no parse); malformed JSON sent AS-IS (the
+  #5813 regression test — the masking bug can never silently reappear);
+  and `jsonString` correctly quoting/escaping a raw value.
+
+**Related:** #5813, #5797 (the PR this reverts the auto-detect half of),
+D077 (the `@stable` editing-protocol precedent this follows),
+`docs/10-bootstrap-progress.md` D-progress-632.
+
+

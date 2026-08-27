@@ -98,17 +98,53 @@
 //!     and this server emits none, so this is exact for all traffic it
 //!     realistically sees; a padding-exact variant would require the frame
 //!     layer to surface the on-wire frame length. Tracked as #6063.
-//!   - **Closed streams are retained for the connection's lifetime** so a late
-//!     WINDOW_UPDATE/RST_STREAM on a just-closed stream is correctly treated
-//!     as a harmless no-op rather than an idle-stream error. Growth is bounded
-//!     by the total number of streams opened on the connection; pruning
-//!     fully-closed streams under a long-lived connection is tracked as #6064.
+//!   - **Closed streams are retained only within a bounded trailing window.**
+//!     A late WINDOW_UPDATE/RST_STREAM on a just-closed stream is correctly
+//!     treated as a harmless no-op rather than an idle-stream error; this
+//!     holds for *any* closed stream, pruned or not, because `isIdleStreamId`
+//!     classifies a lookup miss as "forgotten, not idle" for any id at or
+//!     below `lastPeerStreamId` regardless of whether a record for it
+//!     survives (RFC 9113 section 5.1). `pruneClosedStreams` reclaims a
+//!     `H2SClosed` record once its id has scrolled
+//!     `h2ClosedStreamRetentionWindow()` stream-slots behind
+//!     `lastPeerStreamId`, bounding `H2Connection.streams` growth on a
+//!     long-lived connection (#6064) — the window exists to keep a
+//!     recently-closed stream's exact terminal event (e.g. a late
+//!     `RST_STREAM`'s `H2PeerReset`) observable for longer, not because
+//!     pruning any sooner would be unsafe.
 //!   - **A codec-detected stream-level frame fault is escalated to a
 //!     connection error.** The two such faults (`PRIORITY` of the wrong length,
 //!     a zero `WINDOW_UPDATE` increment on a stream) do not carry a stream id
 //!     through `H2Frame.FrameError`, so the FSM cannot target a `RST_STREAM`;
 //!     it sends a `GOAWAY` instead. RFC 9113 §5.4 permits treating a stream
 //!     error more severely, and `PRIORITY` is ignored/deprecated regardless.
+//!   - **A duplicate/late HEADERS frame is a per-stream error while its
+//!     stream record is retained, but a connection `PROTOCOL_ERROR` once
+//!     pruned.** Unlike WINDOW_UPDATE/RST_STREAM/DATA (whose no-op-vs-error
+//!     classification is pruning-invariant, see above), `handleHeaders`
+//!     dispatches purely on whether `findStream` still holds a record: a
+//!     retained closed/half-closed-remote stream routes through
+//!     `beginTrailerHeaders`, which rejects just that stream (`streamFail`,
+//!     RFC 9113 §5.1) and the connection survives; once pruned, the same
+//!     frame instead misses `findStream` and falls into
+//!     `beginNewStreamHeaders`'s `streamId <= lastPeerStreamId` monotonic-id
+//!     check, which is a connection-level `PROTOCOL_ERROR` (§5.1.1). This is
+//!     arguably the more spec-faithful response either way — a HEADERS frame
+//!     attempting to reuse an already-used stream id is a monotonicity
+//!     violation, not a flow-control/reset timing race — so it is documented
+//!     as intended pruning-introduced divergence, not fixed to match the
+//!     retained-stream behaviour. Never misclassifies a lookup miss as an
+//!     *idle* (never-opened) stream either way; only the stream-vs-connection
+//!     error severity differs. See `http_h2conn_tests.l`'s "duplicate HEADERS
+//!     against a pruned stream id" case. Whether the *retained*-stream path's
+//!     leniency is itself correct against RFC 9113 §5.1.1's connection-scoped
+//!     monotonicity rule is an open compliance question, tracked as #6562.
+//!   - **`streamState`'s `H2SIdle` result is ambiguous between "never seen"
+//!     and "closed and pruned."** Unlike the internal frame-dispatch path
+//!     (which distinguishes the two via `isIdleStreamId`), the public query
+//!     function reports `H2SIdle` for both a genuinely never-opened stream id
+//!     and one that was opened, closed, and later reclaimed by
+//!     `pruneClosedStreams`. See `streamState`'s own doc comment and #6572.
 @runtime_checked
 package Std.HttpEngine.H2Conn
 
@@ -648,6 +684,67 @@ func windowUpdateOverflows(window: in Int, increment: in Int): Bool {
 /// forgotten.
 func isIdleStreamId(state: in H2Connection, streamId: in Int): Bool {
   streamId % 2 == 0 or streamId > state.lastPeerStreamId
+}
+
+/// How many trailing client stream-id slots (each 2 apart — client ids are
+/// odd) a `H2SClosed` record is kept for after closing, before
+/// `pruneClosedStreams` reclaims it (#6064). Bounds `H2Connection.streams`
+/// growth on a connection that opens many streams over its lifetime while
+/// keeping a generous margin over the default concurrent-streams ceiling
+/// (128, `h2DefaultServerSettings`) so a closed stream's exact terminal
+/// event stays observable well past any realistic close/reopen race.
+/// Pruning past this window is a bookkeeping choice, not a safety boundary:
+/// see the module header note above `isIdleStreamId` for why a lookup miss
+/// on *any* id at or below `lastPeerStreamId` — pruned or never retained —
+/// is always classified as "forgotten, not idle".
+@pure
+@experimental
+pub func h2ClosedStreamRetentionWindow(): Int {
+  200
+}
+
+func isClosedState(s: in H2StreamState): Bool {
+  match s {
+    case H2SClosed -> true
+    case _ -> false
+  }
+}
+
+/// Drop `H2SClosed` records whose id has scrolled more than
+/// `h2ClosedStreamRetentionWindow()` stream-slots behind
+/// `state.lastPeerStreamId`. Never touches an idle/open/half-closed record —
+/// only fully `H2SClosed` entries are eligible — so an active stream's flow-
+/// control bookkeeping is never disturbed, and `isIdleStreamId`'s
+/// id-and-high-water-mark-only test still classifies a pruned id exactly as
+/// it would an unpruned one (see `h2ClosedStreamRetentionWindow`).
+func pruneClosedStreams(state: inout H2Connection): Unit {
+  // Cheap escape hatch: the total retained-stream count is an upper bound on
+  // how many *closed* records could possibly be prunable, so there is
+  // nothing to do until it exceeds the window. This bound is by *count*, not
+  // by id-distance — a client whose HEADERS skip large id ranges (e.g. every
+  // refused/idle id in between is never retained at all) can have a small
+  // `streams.count` while some of those few entries are already past the
+  // id-distance threshold below. That only delays reclaiming them a little
+  // longer, never grows them unboundedly: the next stream this connection
+  // opens pushes `streams.count` up again, and pruning catches up once it
+  // crosses the window. Not a safety concern, just an imprecise trigger.
+  if state.streams.count <= h2ClosedStreamRetentionWindow() {
+    return
+  }
+  val threshold = state.lastPeerStreamId - h2ClosedStreamRetentionWindow() * 2
+  if threshold <= 0 {
+    return
+  }
+  val kept: List[H2Stream] = newList()
+  var i = 0
+  while i < state.streams.count {
+    val st: H2Stream = state.streams[i]
+    if not (isClosedState(st.state) and st.id < threshold) {
+      kept.add(st)
+    }
+    i = i + 1
+  }
+  state.streams = kept
 }
 
 // =============================================================================
@@ -1449,6 +1546,7 @@ pub func feed(conn: in H2Connection, bytes: in slice[Byte]): H2FeedResult
   val events: List[H2Event] = newList()
   val outb: List[Byte] = newList()
   driveConnection(state, bytes, events, outb)
+  pruneClosedStreams(state)
   if events.count == 0 {
     events.add(H2NeedMore)
   }
@@ -1476,7 +1574,16 @@ pub func connectionReceiveWindow(conn: in H2Connection): Int {
   conn.connRecvWindow
 }
 
-/// The current state of `streamId` (`H2SIdle` if never seen).
+/// The current state of `streamId` (`H2SIdle` if never seen). Caveat: once a
+/// closed stream's record has been reclaimed by `pruneClosedStreams` (#6064),
+/// it is indistinguishable at this query surface from a truly never-opened
+/// id — both report `H2SIdle` — even though the internal frame-dispatch path
+/// (`isIdleStreamId`) correctly tells the two apart for its own no-op-vs-error
+/// decisions. A caller using `streamState` as an observability/diagnostic
+/// check ("was this stream properly closed?") on a long-lived connection can
+/// therefore get a false "never seen" for a stream that really was opened and
+/// cleanly closed, once it ages out of the retention window. Tracked as
+/// #6572.
 @pure
 @experimental
 pub func streamState(conn: in H2Connection, streamId: in Int): H2StreamState {

@@ -11,7 +11,33 @@ import Std.Core
 /// An open gRPC channel to a single server address.
 /// Created by Grpc.openChannel; released by Grpc.closeChannel.
 /// Channels are safe to share across calls but are not automatically closed.
-pub opaque type GrpcChannel
+///
+/// Representation: an opaque type's body is only constructible inside its
+/// defining package (this one), but the live handle (an `HttpClient` on
+/// .NET, something else on JVM) is owned by the platform kernel package —
+/// a *different* package. Rather than leak a platform-specific extern type
+/// into this neutral package (which would break the other target's build),
+/// the kernel keeps the live handle in its own registry keyed by a plain
+/// `Int` (the same `HandleCounter`-allocated-id idiom `lyric-ws` /
+/// `lyric-jobs` / `lyric-mq` kernels already use), and this type just wraps
+/// that key. `wrapChannelHandle` / `channelHandleId` are the "authoring
+/// functions" the language reference (docs/01 §2.8) calls for; `internal`
+/// visibility (docs/01 §3.1) makes them reachable from `Grpc.Kernel.Net` /
+/// `Grpc.Kernel.Jvm` (same project) while staying invisible to external
+/// consumers of this library.
+pub opaque type GrpcChannel {
+  handle: Int
+}
+
+/// Wrap a platform kernel's registry key as a `GrpcChannel`. Kernel-only.
+internal func wrapChannelHandle(id: in Int): GrpcChannel {
+  GrpcChannel(handle = id)
+}
+
+/// Recover the platform kernel's registry key from a `GrpcChannel`. Kernel-only.
+internal func channelHandleId(ch: in GrpcChannel): Int {
+  ch.handle
+}
 
 // ─── Status codes ────────────────────────────────────────────────────────────
 /// Canonical gRPC status codes (https://grpc.github.io/grpc/core/md_doc_statuscodes.html).
@@ -102,7 +128,20 @@ pub opaque type GrpcStream
 
 /// A handle to a running gRPC server.
 /// Created by Grpc.startHandle; passed to Grpc.stop for graceful shutdown.
-pub opaque type GrpcServerHandle
+/// Same registry-key representation as `GrpcChannel`; see its doc comment.
+pub opaque type GrpcServerHandle {
+  handle: Int
+}
+
+/// Wrap a platform kernel's registry key as a `GrpcServerHandle`. Kernel-only.
+internal func wrapServerHandle(id: in Int): GrpcServerHandle {
+  GrpcServerHandle(handle = id)
+}
+
+/// Recover the platform kernel's registry key from a `GrpcServerHandle`. Kernel-only.
+internal func serverHandleId(h: in GrpcServerHandle): Int {
+  h.handle
+}
 
 // ─── Server routing ───────────────────────────────────────────────────────────
 /// Single RPC method registration: proto service name, proto method name,

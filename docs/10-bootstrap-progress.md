@@ -31532,6 +31532,87 @@ assertion used `env -i PATH=/usr/bin:/bin`, and GitHub's runner image ships
 would have passed vacuously, defeating the one assertion meant to prove
 `--no-fallback` held (caught in review, #6260).
 
+### D-progress-631 — `Std.HttpEngine.H2Conn`: closed-stream pruning bounds `H2Connection.streams` growth on long-lived connections (#6064)
+
+**Status:** Shipped (`lyric-stdlib/std/http_h2conn.l`).
+
+`H2Connection.streams` previously retained every stream — including fully
+`H2SClosed` ones — for the connection's lifetime, deliberately, so a late
+`WINDOW_UPDATE`/`RST_STREAM` racing a just-closed stream is correctly treated
+as a harmless no-op rather than an idle-stream `PROTOCOL_ERROR` (RFC 9113
+section 5.1). A very long-lived connection opening millions of streams grew
+this list without bound.
+
+`isIdleStreamId` already decides the no-op-vs-error question purely from
+`streamId`'s parity and `state.lastPeerStreamId` — never from whether a
+`H2Stream` record for it survives — so a lookup miss on *any* id at or below
+`lastPeerStreamId` (a closed stream, pruned or not) is always classified as
+"forgotten, not idle." `pruneClosedStreams` (called once at the end of every
+`feed()`) reclaims a `H2SClosed` record once its id has scrolled more than
+`h2ClosedStreamRetentionWindow()` (200) stream-slots behind
+`lastPeerStreamId` — a bookkeeping choice, not a safety boundary: the window
+exists to keep a recently-closed stream's exact terminal event (e.g. a late
+`RST_STREAM`'s `H2PeerReset`) observable for longer, not because pruning any
+sooner would be unsafe. Only `H2SClosed` entries are ever eligible, so an
+active (open/half-closed) stream's flow-control bookkeeping is never
+disturbed. A cheap escape hatch (`state.streams.count <=
+h2ClosedStreamRetentionWindow()`) skips the scan entirely on the common case
+of a connection that never approaches the window.
+
+Five new cases in `lyric-stdlib/tests/http_h2conn_tests.l` drive a
+connection through 260 real open+complete request/response cycles (well past
+the 200-stream window) via the existing `runCompletions` helper, then assert:
+a late `RST_STREAM` against the first (now-pruned) stream is a true no-op —
+connection healthy, no `H2ConnError`, no `H2PeerReset` surfaced (the record is
+gone); a late `RST_STREAM` against the most-recently-closed (still-retained)
+stream is unchanged from pre-#6064 behaviour — connection healthy, no error,
+and `H2PeerReset` still surfaces; a late `WINDOW_UPDATE` against the pruned
+stream is likewise a safe no-op, never a `PROTOCOL_ERROR`; a duplicate HEADERS
+frame against a pruned stream id *does* escalate to a connection
+`PROTOCOL_ERROR` — unlike WINDOW_UPDATE/RST_STREAM/DATA, HEADERS dispatch is
+not pruning-invariant (`beginTrailerHeaders` for a retained record vs.
+`beginNewStreamHeaders`'s monotonic-id check for a pruned one), documented as
+intended and tracked as #6562 pending an RFC 9113 §5.1.1 compliance
+investigation; and `streamState(conn, streamId)` reports `H2SIdle` for a
+pruned stream indistinguishable from a truly never-opened one, a real gap in
+this PR's own public query surface disclosed in `streamState`'s doc comment
+and tracked as #6572. The `rejectedStreams` marker map in
+`_kernel/http_server.l` has the identical unbounded-growth shape #6064 fixed
+for `H2Connection.streams`, not yet applied there — tracked as #6566.
+
+**Related:** #6064, #6562, #6566, #6572, `docs/61-https-tls-http-versions.md` §6.4 (D128).
+
+### D-progress-632 — `Web.json` restored to raw JSON passthrough; `Web.jsonString` added for wrapping a raw string value (#5813)
+
+**Status:** Shipped (`lyric-web/src/web.l`).
+
+A prior change (#5797) made `Web.json(status, body)` — documented and
+`@stable(since = "0.2")` as a raw-passthrough helper — call `tryParseJson`
+to auto-detect whether `body` was valid JSON, silently re-encoding it as a
+quoted JSON string on parse failure. This cost a full parse on every call
+(even for large, already-valid JSON bodies built by a real encoder) and,
+worse, masked a caller's malformed-JSON bug by "successfully" wrapping it as
+a string instead of surfacing the breakage — a production-quality violation
+by this repo's own no-silently-masked-bugs standard.
+
+`Web.json` is restored to pure raw passthrough: a UTF-8 encode of `body`,
+nothing else — `body` must already be valid JSON, and a caller bug that
+produces malformed JSON now ships malformed JSON instead of a silently
+"corrected" string. `Web.jsonString(status, value)` is the new, explicitly-
+named helper for the "wrap an arbitrary raw string as a JSON string value"
+use case #5797 was actually solving (e.g. a bare UUID/session id).
+
+Every in-repo caller of `Web.json` (the `ledger`/`rbac`/`jobqueue` examples,
+`lyric-health`'s doc comments, `jvm_server_smoke.l`) was already passing a
+real JSON-encoder-built body, so none needed migration to `jsonString`. Only
+`lyric-web/tests/dispatch_tests.l`'s own test — which exercised the removed
+auto-detect behaviour directly — needed updating: it now covers valid JSON
+sent unmodified (byte-for-byte, no parse), malformed JSON sent AS-IS (the
+#5813 regression case — the masking bug can never silently reappear), and
+`jsonString` correctly quoting/escaping a raw value.
+
+**Related:** #5813, #5797 (the change this reverts the auto-detect half of), `docs/03-decision-log.md` D134 (the `@stable`-editing-protocol entry for this change).
+
 ### D-progress-802 — JVM kernel/codegen batch: piped-process reads, `Std.Environment.args()`, regex ReDoS timeout (#6135, #5377, #1103)
 
 Three previously-documented JVM-only gaps closed together. `Std.Process
