@@ -64,7 +64,10 @@ func firstFuncBodyStmtCount(pr: in ParseResult): Int {
     return -1
   }
   match pr.file.items[0].kind {
-    case IFunc(fd) -> match fd.body { case Some(b) -> match b { case FBBlock(blk) -> blk.statements.count; case FBExpr(_) -> -2 }; case None -> -3 }
+    case IFunc(fd) -> match fd.body {
+      case Some(b) -> match b { case FBBlock(blk) -> blk.statements.count; case FBExpr(_) -> -2 }
+      case None -> -3
+    }
     case _ -> -4
   }
 }
@@ -1405,6 +1408,21 @@ test "lambda: compound match-arm guard ending in a parenthesised identifier does
   assertEqualInt(diagCount(pr), 0, "guard `if flag and (cond) -> ...` parses clean")
 }
 
+// #5672: a guard that combines BOTH a legitimate nested bare-lambda call
+// argument (`xs.any((v) -> v > 0)`) AND a separately-ambiguous trailing
+// paren-group (`and (flag)`) in the SAME expression. The #5667/#5668 retry
+// held `suppressArrowLambda` as a single flag for the whole retry parse, so
+// fixing the trailing `(flag)` ambiguity also broke the nested `(v) -> ...`
+// lambda, producing a P0080/P0201/P0202/P0051 cascade. `parseDelimitedExpr`
+// scopes suppression to genuine tail position (clearing/restoring it around
+// the call-argument parse) so both are handled correctly at once.
+test "lambda: guard with both a nested lambda call argument and a trailing ambiguous paren-group parses clean" {
+  val pr = parse(
+    "package P\nfunc classify(y: Int, xs: List[Int], flag: Bool): Int {\n  match y {\n    case y if xs.any((v) -> v > 0) and (flag) -> 1\n    case _ -> 0\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(pr), 0, "guard `if xs.any((v) -> v > 0) and (flag) -> ...` parses clean")
+}
+
 // Exact shape from the issue repro: a bare two-param lambda whose body is a
 // multi-line `{ ... }` block (not a single expression), as the second
 // positional call argument.
@@ -1715,7 +1733,11 @@ func protectedMemberFirstAnnName(pm: in ProtectedMember): String {
       match pf {
         case PFVar(_, _, _, _, anns, _) -> if anns.count > 0 { modulePathJoin(anns[0].name.segments) } else { "<none>" }
         case PFLet(_, _, _, _, anns, _) -> if anns.count > 0 { modulePathJoin(anns[0].name.segments) } else { "<none>" }
-        case PFImmutable(fd) -> if fd.annotations.count > 0 { modulePathJoin(fd.annotations[0].name.segments) } else { "<none>" }
+        case PFImmutable(fd) -> if fd.annotations.count > 0 {
+          modulePathJoin(fd.annotations[0].name.segments)
+        } else {
+          "<none>"
+        }
       }
     }
     case PMEntry(ed) -> if ed.annotations.count > 0 { modulePathJoin(ed.annotations[0].name.segments) } else { "<none>" }
