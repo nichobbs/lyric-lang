@@ -299,6 +299,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/defer_self_test.l \
 	lyric-compiler/lyric/derives_self_test.l \
 	lyric-compiler/lyric/emitter_project_self_test.l \
+	lyric-compiler/lyric/enum_case_collision_self_test.l \
 	lyric-compiler/lyric/enum_closure_pattern_bind_self_test.l \
 	lyric-compiler/lyric/ensures_self_test.l \
 	lyric-compiler/lyric/enum_msil_self_test.l \

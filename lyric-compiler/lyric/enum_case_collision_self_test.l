@@ -133,6 +133,32 @@
 //! to a bare Int ordinal and resolve bare references through the differently-
 //! shaped `varEnumTypes`/`enumHint` mechanism (#5995/#6595), not touched here.
 //!
+//! A fifth fixture package (`EnumCollReal`, MSIL-only) covers issue #6650's
+//! review finding: every collision case above uses SYNTHETIC fixture
+//! packages on both sides.  The bug report's own confirmed live repro (see
+//! `docs/03-decision-log.md`'s #5995 entry) was a user package's own
+//! `HttpVersion` enum colliding with `Std.Http.HttpVersion` -- a REAL
+//! stdlib enum that is compiled into `Lyric.Stdlib.dll` and linked into
+//! every build that reaches it, not a hand-written fixture string.
+//! `EnumCollReal.HttpVersion` (cases `Http10`, `Http11`) collides with
+//! `Std.Http.HttpVersion` (cases `Http11`, `Http2`, `Http3`) on BOTH the
+//! bare case name (`Http11`, ordinal 1 here vs. 0 in `Std.Http`) and the
+//! bare type name (`HttpVersion`), exercising the same two-layer defect
+//! class as `EnumCollC` above, but against the actual compiled stdlib
+//! bundle via `Emitter.findStdlibSources()` / `Emitter.copyStdlibDllsBeside`
+//! (mirroring `msil_project_bridge_self_test.l`'s `compileAndRunWithStdlib`)
+//! instead of an empty `stdlibSources` list.  Only CONSTRUCTION (1) is
+//! exercised from the ambiguous scope (a package importing both `Std.Http`
+//! and `EnumCollReal`); the match/label step for each side is delegated to
+//! a single-declarer package, the same "isolate the match" split `EnumCollC`
+//! needs `EnumCollAppC` for (see `stdLabelSource`'s doc comment) -- a bare
+//! match against a locally-typed var when a package imports BOTH same-named
+//! declarers together is the separate, pre-existing scrutinee-hint gap this
+//! test class does not attempt to close, not the #5995/#6607 defect this
+//! case targets.  MSIL-only: `Std.Http` is
+//! non-functional on the JVM backend today (docs/59 phantom `_kernel_jvm`
+//! gap), so a JVM run of this case would test nothing real.
+//!
 //! Run in CI via:
 //!   lyric test lyric-compiler/lyric/enum_case_collision_self_test.l
 @test_module
@@ -152,6 +178,7 @@ import Msil.Bridge
 import Jvm.Bridge
 import Lyric.RestoredPackages
 import Lyric.ContractMeta as Meta
+import Lyric.Emitter as Emitter
 
 // ─── Shared fixture sources ─────────────────────────────────────────────────
 // `HttpVersion.Http11` is ordinal 1 (Http10 is 0); `ConnState.Http11` is
@@ -323,6 +350,74 @@ func expectedDStdout(): String {
   "D:Status:Ok\n" + "D:Health:Ok\n" + "match-D:Status:Ok\n" + "match-D:Health:Ok"
 }
 
+// #6650: a user package's own enum colliding with a REAL stdlib enum
+// (`Std.Http.HttpVersion`), the exact shape the #5995 bug report's live
+// repro described. `HttpVersion.Http11` is ordinal 1 here (Http10 is 0);
+// `Std.Http.HttpVersion.Http11` is ordinal 0 (Http2 is 1, Http3 is 2) --
+// deliberately different so a misrouted ordinal prints the WRONG label
+// instead of coincidentally matching.
+func pkgRealSource(): String {
+  "package EnumCollReal\n" + "\n" + "pub enum HttpVersion {\n" + "  case Http10\n" + "  case Http11\n" + "}\n" + "\n" +
+    "pub func labelOf(v: in HttpVersion): String {\n" +
+    "  match v {\n" +
+    "    case Http10 -> \"Real:Http10\"\n" +
+    "    case Http11 -> \"Real:Http11\"\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "pub func make11(): HttpVersion {\n" +
+    "  Http11\n" +
+    "}\n"
+}
+
+// `label`'s bare-arm match resolves against `Std.Http`'s own `HttpVersion`
+// unambiguously because THIS package imports only `Std.Http` -- the same
+// "isolate the match, not the construction" split `EnumCollAppC` uses below
+// for `EnumCollC`, applied here because the OTHER declarer of the colliding
+// bare `HttpVersion` name (`EnumCollReal`) is a project package, not a
+// synthetic sibling that can simply be left out of the bundle: a package
+// whose own import list names only ONE of the two colliding declarers keeps
+// the bare-arm scrutinee hint unambiguous regardless of what else the wider
+// bundle links in.
+func stdLabelSource(): String {
+  "package EnumCollRealStdLabel\n" + "\n" + "import Std.Http\n" + "\n" + "pub func label(v: in HttpVersion): String {\n" +
+    "  match v {\n" +
+    "    case Http11 -> \"Std:Http11\"\n" +
+    "    case Http2 -> \"Std:Http2\"\n" +
+    "    case Http3 -> \"Std:Http3\"\n" +
+    "  }\n" +
+    "}\n"
+}
+
+// Imports `Std.Http` (always reachable in a real build, per the #5995 bug
+// report), `EnumCollReal`, and `EnumCollRealStdLabel` together -- the actual
+// collision scope, since `Std.Http.HttpVersion` and `EnumCollReal.HttpVersion`
+// share both their bare CASE name (`Http11`) and their bare TYPE name
+// (`HttpVersion`) and are both live in this one build. Deliberately CALLS
+// INTO single-declarer packages for the match/label step (see
+// `stdLabelSource`'s doc comment and `EnumCollAppC` below) rather than
+// pattern-matching here directly: only cross-package-QUALIFIED case
+// CONSTRUCTION as a call argument is exercised in this ambiguous scope --
+// exactly the #5995/#6607 defect class (does a qualified reference resolve
+// to the RIGHT declaring package's ordinal, not whichever registered
+// first?), without also depending on the separate, pre-existing
+// scrutinee-hint gap `EnumCollC`'s doc comment describes (a bare match
+// against a locally-typed var is ambiguous when a package imports BOTH
+// same-named declarers together -- not the defect this test targets).
+func realAppSource(): String {
+  "package EnumCollRealApp\n" + "\n" + "import Std.Http\n" + "import EnumCollReal\n" + "import EnumCollRealStdLabel\n" +
+    "\n" +
+    "func main(): Int {\n" +
+    "  println(EnumCollRealStdLabel.label(Std.Http.Http11))\n" +
+    "  println(EnumCollReal.labelOf(EnumCollReal.Http11))\n" +
+    "  0\n" +
+    "}\n"
+}
+
+func expectedRealStdout(): String {
+  "Std:Http11\n" + "Real:Http11"
+}
+
 // ─── Shared temp-dir helpers ─────────────────────────────────────────────────
 func tempBase(): String {
   Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
@@ -380,6 +475,36 @@ func compileAndRunMsil(
     cleanup(dir)
     panic(label + ": compileProjectToMsil returned false")
   }
+  writeRuntimeConfig(dllPath)
+  val args: List[String] = newList()
+  args.add("exec")
+  args.add(dllPath)
+  val result = Capture.runCaptureWithDiagnostics("dotnet", args, "")
+  cleanup(dir)
+  result
+}
+
+// Like `compileAndRunMsil` but populates the REAL stdlib sources
+// (`Emitter.findStdlibSources()`) so user packages may reference stdlib
+// types by name -- #6650's requirement that the collision be exercised
+// against `Std.Http.HttpVersion` as compiled, not a synthetic stand-in.
+// Mirrors `msil_project_bridge_self_test.l`'s `compileAndRunWithStdlib`:
+// copies the compiled stdlib DLLs beside the output so `dotnet exec`
+// resolves the cross-assembly references `registerStdlibArtifactTokens`
+// emits.
+func compileAndRunMsilWithStdlib(
+  label: in String, packages: in List[ProjectPackagePayload], assemblyName: in String
+): Capture.CaptureResult {
+  val dir = freshTempDir(label)
+  val dllPath = Path.join(dir, assemblyName + ".dll")
+  val stdlibSources = Emitter.findStdlibSources()
+  val ok = compileProjectToMsil(packages, assemblyName, dllPath, stdlibSources)
+  if not ok {
+    cleanup(dir)
+    panic(label + ": compileProjectToMsil (with stdlib) returned false")
+  }
+  val libDir = Emitter.findCompiledStdlibDir()
+  Emitter.copyStdlibDllsBeside(dllPath, libDir)
   writeRuntimeConfig(dllPath)
   val args: List[String] = newList()
   args.add("exec")
@@ -668,5 +793,28 @@ test "jvm: same-package two-enum case-name collision resolves bare construction 
     Str.trim(resultD.stdout),
     expectedDStdout(),
     "enum_case_collision jvm (D): bare Ok construction/match resolves against the RIGHT same-package enum"
+  )
+}
+
+// #6650: the real-stdlib-collision case the review finding asked for --
+// a user package's own `HttpVersion` enum linked against the actual
+// compiled `Std.Http.HttpVersion`, not a synthetic fixture on both sides.
+// MSIL-only: see `pkgRealSource`'s doc comment above for why.
+test "dotnet: a user enum colliding with a real stdlib enum (Std.Http.HttpVersion) resolves the right one (#6650)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("EnumCollReal", pkgRealSource()))
+  packages.add(mkPkg("EnumCollRealStdLabel", stdLabelSource()))
+  packages.add(mkPkg("EnumCollRealApp", realAppSource()))
+  val result = compileAndRunMsilWithStdlib("enumcoll-real-dotnet", packages, "EnumCollRealApp")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "enum_case_collision (real stdlib) dotnet: exit 0 expected (stderr=" + result.stderr + ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    expectedRealStdout(),
+    "enum_case_collision (real stdlib) dotnet: Std.Http.HttpVersion.Http11 and EnumCollReal.HttpVersion.Http11 " +
+      "each resolve qualified construction to their OWN enum's ordinal, not whichever registered first"
   )
 }

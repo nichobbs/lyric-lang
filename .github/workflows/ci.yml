@@ -2836,6 +2836,22 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/msil_project_bridge_self_test.l
 
+      # Enum case-name collision self-test (#5995, plus #6638/#6639/#6640
+      # follow-ups and the #6650 real-stdlib-enum coverage) — compiles small
+      # multi-package fixtures through BOTH `Msil.Bridge.compileProjectToMsil`
+      # and `Jvm.Bridge.compileProjectToJarBundledWithFeatures` in-process
+      # (its own "dotnet: …" and "jvm: …" test bodies run both bridges from
+      # this single step; no separate `--target jvm` invocation needed), runs
+      # each produced binary, and asserts stdout — the same heavy in-process
+      # multi-package-build shape as `msil_project_bridge_self_test.l` above
+      # and `jvm_cross_package_collision_self_test.l`, so it rides the same
+      # non-background placement.  The #6650 case additionally links the REAL
+      # compiled stdlib (`Emitter.findStdlibSources()`), needing the same
+      # `dotnet`/Java 21 toolchain this job already sets up.
+      - name: Enum case-name collision self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/enum_case_collision_self_test.l
+
       # MSIL codegen diagnostics self-test (#4898) — pins that the F0021-F0025, F0034
       # external-interface-conformance and try-catch-as-expression codegen
       # errors are reported as positioned CodegenCtx.diagnostics entries
