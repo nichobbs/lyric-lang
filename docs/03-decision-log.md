@@ -32557,3 +32557,82 @@ div/rem-unsigned and wrap paths this change touches) on both targets — all
 green, no regressions.
 
 **Related:** #5688, #5657 (the plain-variable widening this extends).
+
+---
+
+## D-progress-805 — MSIL: scalar `Byte`'s ABI is genuinely U1 end-to-end, fixing hoisted-cell and record-field wrap divergence (#5520)
+
+**Context.** #5520: PR #5515's Byte canonicalization made Byte-declared
+LOCALS re-narrow with `conv.u1` on plain and compound stores
+(`FuncCtx.byteSlots`), matching JVM's masked-unsigned 0..255 canonical
+form. Two storage classes were left un-narrowed: hoisted Byte cells
+(captured `var`s promoted to closure-environment fields) stayed
+int32-backed on MSIL (`b *= 2` on 200 stored 400 instead of wrapping to
+144); Byte record fields' overflow channel was separately fixed for
+`+=`/`*=`/`-=` in PR #6525 via a `CodegenCtx.byteFields` compensating map
+mirroring `byteSlots`, but the underlying field storage type itself
+stayed int32.
+
+**Root cause.** `typeExprToMsilCtx`'s `TRef("Byte")` arm
+(`lyric-compiler/msil/codegen.l`) erased a bare `Byte` type annotation to
+`MInt` (Int32) instead of `MByte` (Byte) — the single point every
+downstream consumer (record field types, hoisted-cell element types,
+closure-class field synthesis, local slot types, param/return types)
+derives from. `slice[Byte]`/`List[Byte]`/`Map[_,Byte]` already bypassed it
+via dedicated `MByte` arms, so those channels always wrapped correctly;
+only the SCALAR annotation path erased.
+
+**Change.** `typeExprToMsilCtx`'s `TRef("Byte")` arm now maps to `MByte`
+directly. Every downstream consumer already correctly branches on `MByte`
+(built earlier for the collection-element channels) — `finishHoistedCellMsil`
+already selects `MArray(elemTy=MByte)` for a hoisted Byte cell's
+closure-environment field, `fieldMsilTypes` already registers whatever type
+`typeExprToMsilCtx` hands it — so flipping the root map alone is
+sufficient for both storage classes named in the issue.
+
+**Blast radius, also fixed in this pass:**
+`funcAbiArgBoxTypeMsil` — a compensating function that re-tagged a
+genuine `MByte` box as `MInt` before crossing the uniform `Func<object,…>`
+lambda-invoke ABI (#1877), because a lifted lambda's own Byte-annotated
+parameter was (before this fix) recorded as `MInt` in `boxedParamTypes`
+and unboxed via `unbox.any int32` at the identifier-load site — is now
+UNNECESSARY and, left in place, would have been actively WRONG: with the
+root map fixed, a lambda's Byte parameter is now genuinely recorded as
+`MByte` in `boxedParamTypes` too (both sides derive from the same
+`typeExprToMsilCtx`), so the load-side `castObjectToMsil` correctly
+`unbox.any`s against `System.Byte` — re-tagging the box as `Int32` at the
+call site would now mismatch and throw `InvalidCastException`. Removed
+`funcAbiArgBoxTypeMsil` entirely; its one call site
+(`lowerFuncValueInvokeMsil`) now boxes the argument's own honest type
+directly.
+
+**Deferred (documented, not shipped as a shortcut).** `CodegenCtx.byteFields`
+/ `FuncCtx.byteSlots` and their `conv.u1` re-narrowing call sites (added in
+PR #5515/#6525 to compensate for the erasure this entry fixes) are now
+redundant — `combineTy = if fctx.byteSlots.containsKey(slot) { MByte } else
+{ ty }` evaluates to `MByte` either way once `ty` itself is genuinely
+`MByte` — but are LEFT IN PLACE rather than swept in this pass: they remain
+correct (not wrong, just redundant), and fully auditing every mark/consult
+site to prove no other case depends on the side-channel boolean map (as
+opposed to the now-correct tracked type) is a nontrivial verification
+exercise distinct from this issue's actual ask (wrap correctness). Tracked
+as a follow-up cleanup, not a new issue (low priority — dead code, not a
+behavior gap).
+
+**Verification.** New regression test in `byte_arithmetic_self_test.l`,
+"Byte compound assignments on hoisted closure variables wrap on overflow
+(#5520)": `+=`/`*=`/`-=` overflow cases on a hoisted Byte cell (the exact
+`200 += 100` repro from the issue, now correctly wrapping to 44 instead of
+400) plus a plain-store sanity check — all pass, extending the file's
+existing 12 tests to 13. Spot-checked against `closure_zero_overhead_self_test.l`,
+`hof_type_propagation_self_test.l`, `bare_func_ref_self_test.l`, and —
+critically — `slice_byte_lambda_arg_self_test.l` (the dedicated #5934
+regression test `funcAbiArgBoxTypeMsil` was originally added to fix: a
+`slice[Byte]` index expression passed directly to a `(Byte) -> Bool`
+lambda argument) — all green on `--target dotnet`, confirming the
+`funcAbiArgBoxTypeMsil` removal did not reopen #5934.
+
+**Related:** #5520, PR #5515 (D-progress-639 item 4, local re-narrowing),
+PR #6525 (record-field overflow compensating fix), #5934 (the lambda-ABI
+box-tag bug `funcAbiArgBoxTypeMsil` fixed, now fixed at the root instead),
+docs/59 §3.2 F7 (the scalar Byte ABI decision this entry implements).

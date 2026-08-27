@@ -6290,7 +6290,7 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
       } else if seg == "Char" {
         MChar
       } else if seg == "Byte" {
-        MInt
+        MByte
       } else if seg == "Unit" {
         MVoid
       } else if seg == "Object" {
@@ -6760,32 +6760,6 @@ func boxTypeRef(cctx: in CodegenCtx, ty: in MsilType): Int {
 func boxIfNeededMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType): Unit {
   if isValueType(ty) {
     insns.add(MBox(typeToken = boxTypeRef(cctx, ty)))
-  }
-}
-
-// Normalize a value's static type to the "scalar `Byte`" convention the
-// uniform `Func<object,…>` lambda-invoke ABI (#1877) uses for `Byte`-typed
-// parameters, before boxing an argument across that ABI boundary.
-// `typeExprToMsilCtx`'s `TRef("Byte")` arm maps a `Byte` type ANNOTATION to
-// `MInt` (Int32) — including a lifted lambda's own `Byte`-annotated
-// parameter, which `lowerFuncMsil` records in `boxedParamTypes` and later
-// unboxes via `unbox.any int32` at the identifier-load site.  A value read
-// straight out of a `slice[Byte]` / `List[Byte]` / `Map[_, Byte]` keeps the
-// genuine `MByte` (`System.Byte`) static type instead (`sliceElemMsilCtx`,
-// kept for `byte[]`/`List<byte>` BCL interop, #3472/#3473).  Boxing such a
-// value with its own `MByte` tag when it crosses INTO the Func-invoke ABI
-// produces an object the callee's `unbox.any int32` cannot cast:
-// `InvalidCastException: Unable to cast object of type 'System.Byte' to
-// type 'System.Int32'` (#5934) — e.g. `pred(bytes[i])` where `bytes:
-// slice[Byte]` and `pred: (Byte) -> Bool`.  Both box forms wrap the
-// identical (non-negative, since `Byte` is unsigned) int32 stack value a
-// `ldelem.u1`/`callvirt IList.get_Item`-loaded byte is CLI stack-normalized
-// to (ECMA-335 §III.1.1), so re-tagging the box as `Int32` here is exactly
-// the value the callee expects, not an approximation.
-func funcAbiArgBoxTypeMsil(ty: in MsilType): MsilType {
-  match ty {
-    case MByte -> MInt
-    case _ -> ty
   }
 }
 
@@ -13176,7 +13150,7 @@ func lowerFuncValueInvokeMsil(
   var i = 0
   while i < args.count {
     val argTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
-    boxIfNeededMsil(cctx, insns, funcAbiArgBoxTypeMsil(argTy))
+    boxIfNeededMsil(cctx, insns, argTy)
     i = i + 1
   }
   insns.add(MCallvirt(methodToken = buildFuncNInvokeTok(cctx, args.count)))

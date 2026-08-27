@@ -116,6 +116,39 @@ test "Byte compound assignments on hoisted closure variables" {
   assertEqualInt(x2.toInt(), 2, "hoisted x2 %= 3 updates the captured var to 2")
 }
 
+// #5520: `/=`/`%=` above never leave the 0..255 range, so they never
+// exercised the hoisted cell's actual MSIL storage type — only `+=`/`*=`
+// overflow it.  A hoisted Byte cell's MSIL closure-environment field stayed
+// int32-backed and never re-narrowed a compound-store result (`x += 100` on
+// 200 kept 300 instead of wrapping to 44), diverging from the JVM's real
+// byte field. Fixed by making scalar `Byte`'s MSIL ABI genuinely U1
+// end-to-end (`typeExprToMsilCtx`'s `TRef("Byte")` arm), so the existing
+// hoisted-cell array-element-type selection (`finishHoistedCellMsil`) picks
+// up the real `MByte` it always branched on rather than never receiving.
+test "Byte compound assignments on hoisted closure variables wrap on overflow (#5520)" {
+  var x: Byte = 200.toByte()
+  val dummyAdd = { -> x += 100.toByte(); 0 }
+  dummyAdd()
+  assertEqualInt(x.toInt(), 44, "hoisted x += 100 on 200 wraps unsigned to 44, not 300")
+
+  var x2: Byte = 100.toByte()
+  val dummyMul = { -> x2 *= 3.toByte(); 0 }
+  dummyMul()
+  assertEqualInt(x2.toInt(), 44, "hoisted x2 *= 3 on 100 wraps unsigned to 44, not 300")
+
+  var x3: Byte = 10.toByte()
+  val dummySub = { -> x3 -= 20.toByte(); 0 }
+  dummySub()
+  assertEqualInt(x3.toInt(), 246, "hoisted x3 -= 20 on 10 wraps unsigned to 246, not -10")
+
+  // A plain (non-compound) store through the hoisted cell must also carry
+  // the real value, not an unwrapped int32 remnant of an earlier compound op.
+  var x4: Byte = 200.toByte()
+  val dummyStore = { -> x4 = 44.toByte(); 0 }
+  dummyStore()
+  assertEqualInt(x4.toInt(), 44, "hoisted x4 = 44 stores the real Byte value")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Values >= 128: the canonical Byte representation is unsigned 0..255 on both
 // targets (MSIL `conv.u1`; JVM masked-unsigned in-slot, docs/59 §4.3).  These
