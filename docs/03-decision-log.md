@@ -35270,3 +35270,71 @@ REQUIRED findings), D-progress-820 (the prior round's #6656 fix, whose
 `acc`-based cap this entry's #6693 fix supplements rather than
 replaces).
 
+---
+
+## D-progress-822 — `_kernel_native/http_host.l`: unbounded count of interim `1xx` responses in `readResponse` allows unbounded memory growth (#6704), a sixth review round on this same PR
+
+**Context.** After rebasing PR #6623 onto `main` (which had, in the
+interim, landed its own unrelated D-progress-804/808/809/810/811/812
+entries — resolved as a decision-log renumbering, not a code conflict,
+by moving this branch's colliding entries to D-progress-816–821), a
+sixth `claude-review` pass re-read `_kernel_native/http_host.l`,
+`tcp_host.l`, and `lyric_tls.c` from scratch rather than trusting the
+decision-log narrative, and found one more REQUIRED bug: D-progress-821's
+`readResponse` loop (added to fix #6692, discarding interim `1xx`
+responses until the real final response arrives) has no cap on the
+*number* of interim responses it will discard. Each interim response's
+own header block is individually bounded by `maxResponseHeaderBytes`
+(the pre-existing #6636 fix), but nothing bounds how many such responses
+a server can stream in a row — a malicious/compromised peer sending an
+endless run of minimal `100 Continue` responses drives unbounded client
+memory growth (`buf` never shrinks across loop iterations), the exact
+"a byte cap doesn't bound an unbounded COUNT of small messages" gap
+`maxTrailerLines` was introduced to close on the chunked-trailer path
+(D-progress-809/#6636), left unaddressed on this newer interim-response
+path. Reachable today via `Std.Http`'s free functions (`sendAsync`/
+`getAsync`/`postAsync`), independent of the separately-tracked N3.2
+async-interface-dispatch gap.
+
+Two prior `claude-review` runs on this same push (the automatic run and
+one manual re-run) failed at Claude Code's own package-install step
+("Failed to install Claude Code after 3 attempts: Error: Install failed
+with exit code 22") for both the primary (Sonnet) and fallback (Haiku)
+attempts configured by `main`'s newly-rebased-in
+`.github/workflows/claude-code-review.yml` — a genuine CI-infrastructure
+flake, unrelated to this PR's code, that never reached the actual review
+step. A second re-run completed normally and produced this entry's
+finding.
+
+**Fix.** Added `maxInterimResponses: Int = 20` (mirroring
+`maxTrailerLines`'s doc-comment rationale) and an `interimCount` counter
+in `readResponse`'s loop, checked at the top of each iteration before
+attempting to read the next header block: `if interimCount >
+maxInterimResponses { return Err(...) }`, incremented once per discarded
+interim response. 20 is deliberately generous — real interim responses
+(100 Continue, 103 Early Hints) are sent at most once or twice per
+request in practice — while still bounding worst-case memory to
+`maxInterimResponses * maxResponseHeaderBytes` instead of unbounded.
+
+**Verification.** New self-test case (item P, now 12 total: E–P): a
+server sends 25 minimal `HTTP/1.1 100 Continue\r\n\r\n` responses in a
+row (exceeding the cap of 20) and never sends a real final response;
+asserts the client rejects with an error containing "maximum allowed
+number of interim" rather than looping indefinitely. Verified as a
+genuine regression check by reverting the fix locally (`git stash push`
+on just `_kernel_native/http_host.l`, keeping the new test) and
+confirming the test fails with the specific predicted wrong behavior —
+"not rejected" (the old code eventually fails with a DIFFERENT error,
+"connection closed before expected data arrived", once the test's fixed
+25-response send loop ends and the connection closes, rather than
+proactively rejecting once the interim-response count cap is exceeded)
+— while all 11 prior items (E–O) continue to pass unaffected. Restored
+the fix and confirmed all 12 tests pass again, both before and after
+`lyric fmt --write` on both changed files (clean, no unsafe-format
+refusal).
+
+**Related:** #6623 (the PR this fix ships in), #6704 (the REQUIRED
+finding), D-progress-821 (the #6692 fix whose `readResponse` loop this
+entry closes the remaining count-cap gap in), D-progress-809 (the
+`maxTrailerLines` precedent this entry's `maxInterimResponses` mirrors).
+

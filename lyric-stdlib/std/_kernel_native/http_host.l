@@ -578,6 +578,20 @@ val maxChunkLineBytes: Int = 8192
 /// path reuses for the identical reason.
 val maxTrailerLines: Int = 100
 
+/// Caps the number of `1xx` interim responses `readResponse` will discard
+/// while waiting for the real final response (#6704). Each interim
+/// response's own header block is bounded by `maxResponseHeaderBytes`, but
+/// nothing capped how many of them a server could send in a row — a
+/// malicious/compromised peer could stream an endless run of minimal `100
+/// Continue` responses to grow `buf` without bound, the exact "byte cap
+/// doesn't bound an unbounded COUNT of messages" gap `maxTrailerLines`
+/// closes on the chunked-trailer path, left open here. Real interim
+/// responses (100 Continue, 103 Early Hints) are sent at most once or
+/// twice per request in practice; this leaves generous headroom while
+/// still bounding worst-case memory to `maxInterimResponses *
+/// maxResponseHeaderBytes` instead of unbounded.
+val maxInterimResponses: Int = 20
+
 func crlfBytes(): slice[Byte] {
   [13u8, 10u8]
 }
@@ -1281,11 +1295,18 @@ func readBody(
 /// re-reading a response). `searchFrom` re-uses `buf` across iterations
 /// rather than restarting it, since bytes already read for a discarded
 /// interim response's header block may already include the start of the
-/// next response.
+/// next response. `interimCount` bounds how many such responses are
+/// discarded before giving up (#6704): each one's header block is
+/// individually bounded by `maxResponseHeaderBytes`, but nothing else
+/// bounded how many a server could stream in a row.
 func readResponse(conn: in Tcp.Conn, method: in String): Result[HttpResponseMessage, String] {
   val buf: List[Byte] = newList()
   var searchFrom = 0
+  var interimCount = 0
   while true {
+    if interimCount > maxInterimResponses {
+      return Err(error = "response exceeds the maximum allowed number of interim (1xx) responses")
+    }
     val headerEndIdx = match readUntilPatternFrom(conn, buf, searchFrom, crlfcrlfBytes(), maxResponseHeaderBytes) {
       case Ok(idx) -> idx
       case Err(e) -> return Err(error = e)
@@ -1314,6 +1335,7 @@ func readResponse(conn: in Tcp.Conn, method: in String): Result[HttpResponseMess
         )
       )
     }
+    interimCount = interimCount + 1
     searchFrom = bodyStart
   }
 }
