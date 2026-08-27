@@ -251,3 +251,60 @@ test "17-field record constructor does not overflow the operand stack" {
   assertEqualInt(w.f9, 9, "Wide17.f9 == 9")
   assertEqualInt(w.f17, 17, "Wide17.f17 == 17")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6660: a record method's own parameter typed as a generic instantiation
+// whose type ARGUMENT is the ENCLOSING record's own unresolved type
+// parameter (`Box[T]` on `record Extractor[T] { ... }`) is exactly the shape
+// `recordParamGenericArgs` must not mistake for a real same-package type
+// name.  Unlike a top-level generic `func`, `Lyric.Mono` never drops or
+// specialises a record method's `T` — the JVM backend compiles it ONCE, with
+// `T` erased to `Object` at runtime — so this method's own params are
+// compiled with `T` still literally present in the AST.  `Box` is a
+// USER-DEFINED generic union (not `Std.Core.Result`, whose cases the
+// backend resolves through a separate, already-guarded kernel path that
+// doesn't reach `recordParamGenericArgs` at all and so cannot exercise this
+// fix) — `match b { case Full(v) -> ... }` below resolves `v`'s checkcast
+// type through the ordinary `ctx.varGenericArgs` / `resolveConcreteTypeExpr`
+// path every user generic goes through. Before this fix,
+// `recordParamGenericArgs` had no guard comparing a generic arg name
+// against the method's own `typeParams` (only `recordDeclaredElemType`, its
+// sibling in the same param-setup loop, had one), so it registered a
+// PHANTOM class guess (`<pkg>/T`) for `b`'s `ctx.varGenericArgs` entry; the
+// `match b { ... }` below would then `checkcast` the `Full` payload against
+// that nonexistent class, panicking `NoClassDefFoundError` (or a JVM
+// `VerifyError` at class load) instead of returning the payload — a
+// runtime crash, not a compile error, on every instantiation.
+// ─────────────────────────────────────────────────────────────────────────────
+union Box6660[T] {
+  case Full(v: T)
+  case Empty6660
+}
+
+record Extractor[T] {
+  fallback: T
+  func extractOrFallback(b: in Box6660[T]): T {
+    match b {
+      case Full(v) -> v
+      case Empty6660 -> self.fallback
+    }
+  }
+}
+
+test "generic record method matches a user generic union parameter naming its own unresolved type parameter, populated case (#6660)" {
+  val e = Extractor(fallback = -1)
+  val v = e.extractOrFallback(Full(v = 7))
+  assertEqualInt(v, 7, "Extractor[Int](fallback=-1).extractOrFallback(Full(7)) == 7")
+}
+
+test "generic record method matches a user generic union parameter naming its own unresolved type parameter, nullary case (#6660)" {
+  val e = Extractor(fallback = -1)
+  val v = e.extractOrFallback(Empty6660)
+  assertEqualInt(v, -1, "Extractor[Int](fallback=-1).extractOrFallback(Empty6660) falls back to self.fallback == -1")
+}
+
+test "generic record method's user generic union parameter also works for a String instantiation of T (#6660)" {
+  val e = Extractor(fallback = "none")
+  val v = e.extractOrFallback(Full(v = "hi"))
+  assertEqual(v, "hi", "Extractor[String](fallback=none).extractOrFallback(Full(hi)) == hi")
+}

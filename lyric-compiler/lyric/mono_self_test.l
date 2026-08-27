@@ -1913,3 +1913,197 @@ test "PConstructor field binding verifies the resolved case's owner against the 
   assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
   assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
 }
+
+// #6698: `rewriteBinding`'s `LBVal` arm used to add the SHADOWING binding's
+// own type (`x: String` here) to `env` before rewriting its OWN
+// initializer expression. A generic call inside that initializer which
+// references the shadowed name (`like(x)`) must resolve `x` against the
+// OUTER binding (`x: Int`) still live at the point the initializer runs at
+// RUNTIME — the new `x: String` binding doesn't exist yet while its own
+// initializer is evaluating. Mutating `env` first made the initializer see
+// the not-yet-bound inner type instead, so the call wrongly specialised
+// against `String` (`like__String`) and got rewritten to call it with the
+// outer, still-`Int`-typed runtime value -- a miscompile, not a mere
+// imprecision. Nothing else in this program ever binds `x` to `String` and
+// then calls `like` on it, so `like__String` appearing at all is a direct
+// signal of the pre-fix bug; only `like__Int` should be produced.
+//
+// The initializer is `like(x) + "!"` (a binop wrapping the call), not a
+// bare `like(x)` -- `bindingEnvTE`'s `directCallEnvTE` fast path special-
+// cases an initializer that IS itself a single call (trusting the callee's
+// own real return-type inference over the annotation, #5604/#5631), and
+// that path happens to run against the PRE-mutation `env` too, so a bare
+// `val x: String = like(x)` accidentally reads the correct outer `x: Int`
+// for env-tracking purposes regardless of the ordering bug, masking it. A
+// binop-wrapped initializer bypasses that fast path entirely (`directCallEnvTE`
+// only recognises a bare `ECall`), so `bindingEnvTE` falls through to the
+// plain annotation (`String`) as `trackPatternEnv`'s value -- exactly the
+// shape needed to observe the ordering bug in the SUBSEQUENT
+// `rewriteExpr(state, env, init)` call.
+test "shadowing val's own initializer resolves the shadowed name against the OUTER binding, not its own not-yet-bound type (#6698)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" + "func caller(): String {\n" + "  val x: Int = 1\n" +
+    "  if true {\n" +
+    "    val x: String = like(x) + \"!\"\n" +
+    "  }\n" +
+    "  \"done\"\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "like__Int"), "like__Int specialised for the outer x inside the shadowing initializer")
+  assertTrue(
+    not hasFunc(res.file, "like__String"),
+    "must not specialise against the shadowing val's own not-yet-bound type inside its own initializer"
+  )
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
+// #6698 (LBVar variant): same ordering bug, `var` form, same binop-wrapped
+// initializer to bypass `directCallEnvTE`'s bare-call fast path (see the
+// `LBVal` test above for why a bare `like(x)` initializer doesn't
+// discriminate the bug). A shadowing `var` whose initializer references the
+// outer same-named binding must resolve against the OUTER type, not the
+// not-yet-assigned `var`'s own declared type.
+test "shadowing var's own initializer resolves the shadowed name against the OUTER binding, not its own not-yet-bound type (#6698)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" + "func caller(): String {\n" + "  val x: Int = 1\n" +
+    "  if true {\n" +
+    "    var x: String = like(x) + \"!\"\n" +
+    "  }\n" +
+    "  \"done\"\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(
+    hasFunc(res.file, "like__Int"),
+    "like__Int specialised for the outer x inside the shadowing var's initializer"
+  )
+  assertTrue(
+    not hasFunc(res.file, "like__String"),
+    "must not specialise against the shadowing var's own not-yet-bound type inside its own initializer"
+  )
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
+// #6666 residual (item 1): an UNTYPED lambda parameter has no positive type
+// this compiler stage can recover (no bidirectional inference against the
+// call site's expected function type -- see the `ELambda` arm's doc comment
+// in `rewriteExpr`), so the body's `like(r)` call genuinely cannot
+// specialise: the worst case must be "stays imprecise" (M0002, an honest
+// compile-time diagnostic), never "silently wrong" (specialising against
+// whatever type an outer same-named binding happens to carry, which need
+// not match the lambda's real argument type at its call site at all).  This
+// case's outer `r: Int` happens to share a type with what a full
+// type-checker would infer for the untyped param, so `hasFunc` alone can't
+// tell the fixed and buggy behaviour apart (both would produce `like__Int`
+// somewhere) -- the diagnostic count is the real signal: the untyped
+// param's OWN call site must raise M0002 (proving `r` was evicted, not
+// silently resolved to the outer binding), while the call AFTER the lambda
+// still resolves the genuinely-outer `r` correctly.
+test "untyped lambda parameter shadowing an outer binding evicts it, so the body's generic call raises M0002 instead of silently resolving to the outer type (#6666)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" + "func caller(): Int {\n" + "  val r: Int = 1\n" +
+    "  val f = { r -> like(r) }\n" +
+    "  like(r)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertEqualInt(
+    diagCountCode(res.diagnostics, "M0002"),
+    1,
+    "the untyped param's own shadow must be evicted, leaving its body's like(r) call genuinely unresolvable -- M0002, not a silent (possibly wrong) resolution to the outer binding"
+  )
+  assertTrue(
+    hasFunc(res.file, "like__Int"),
+    "the outer, genuinely-Int r after the lambda literal still specialises correctly"
+  )
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+}
+
+// #6666 residual (item 2, PConstructor ambiguous-owner branch): ZERO
+// owner-matching candidates (here, an explicit qualifier `Other.Tag` that
+// doesn't spell ANY in-scope case's real owner) used to be a silent no-op --
+// the field pattern `x` was left completely untracked, so it kept
+// whatever outer binding of the same name was already sitting in `env`
+// instead of being evicted as an unresolvable field.  `A.Tag`'s real field
+// type is `Int`, but with the bug, `like(x)` inside the arm resolves
+// against the outer `val x: String` and wrongly specialises `like__String`
+// -- a genuine miscompile, since the runtime value flowing through that
+// field position is never actually a `String`.
+test "PConstructor pattern with zero owner-matching candidates evicts its field bindings instead of leaking the outer type (#6666)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" + "union A { case Tag(x: Int) }\n" +
+    "func caller(a: in A): Int {\n" +
+    "  val x: String = \"outer\"\n" +
+    "  match a {\n" +
+    "    case Other.Tag(x) -> like(x)\n" +
+    "  }\n" +
+    "  0\n" +
+    "}\n"
+  val res = runMono(src)
+  assertEqualInt(
+    diagCountCode(res.diagnostics, "M0002"),
+    1,
+    "x must be evicted so the arm's like(x) call is genuinely unresolvable -- M0002, not a silent wrong resolution"
+  )
+  assertTrue(
+    not hasFunc(res.file, "like__String"),
+    "must not specialise against the outer x's leaked type just because the qualifier's owner couldn't be resolved"
+  )
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+}
+
+// #6666 residual (item 2, PConstructor arity-mismatch): a pattern supplying
+// MORE field args than the resolved case's own declared arity used to leave
+// every args-index past that arity completely untouched by the binding
+// loop's `fi < ctorDecl.params.count` guard -- the extra name kept whatever
+// outer binding already existed instead of being evicted as unresolvable.
+// `Tag` has exactly one field (`x: Int`); the pattern here supplies two
+// (`x, y`), so `y` is the mismatched-arity extra.
+test "PConstructor pattern arity exceeding the resolved case's own field count evicts the extra field bindings (#6666)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" + "union A { case Tag(x: Int) }\n" +
+    "func caller(a: in A): Int {\n" +
+    "  val y: String = \"outer\"\n" +
+    "  match a {\n" +
+    "    case Tag(x, y) -> like(y)\n" +
+    "  }\n" +
+    "  0\n" +
+    "}\n"
+  val res = runMono(src)
+  assertEqualInt(
+    diagCountCode(res.diagnostics, "M0002"),
+    1,
+    "y must be evicted so the arm's like(y) call is genuinely unresolvable -- M0002, not a silent wrong resolution"
+  )
+  assertTrue(
+    not hasFunc(res.file, "like__String"),
+    "must not specialise against the outer y's leaked type just because the pattern's extra field has no real arity slot"
+  )
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+}
+
+// #6666 residual (item 2, PConstructor incomplete substitution): a
+// scrutinee whose inferred type names the right owner but carries no (or
+// too few) generic type arguments (`b: in Box` where `Box[T]` is generic)
+// makes `unifyTE` unable to bind every one of the resolved case's own type
+// parameters. Before this fix, an incomplete substitution left every field
+// pattern completely untouched (no `else` on the `substIsComplete` check),
+// so `x` kept whatever outer binding already existed instead of being
+// evicted as unresolvable -- the same "worse than tracking nothing" class
+// `substIsComplete` was already guarding against on the SUCCESS path.
+test "PConstructor pattern with an incomplete generic substitution evicts its field bindings instead of leaking the outer type (#6666)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" + "union Box[T] { case Full(x: T) }\n" +
+    "func caller(b: in Box): Int {\n" +
+    "  val x: String = \"outer\"\n" +
+    "  match b {\n" +
+    "    case Full(x) -> like(x)\n" +
+    "  }\n" +
+    "  0\n" +
+    "}\n"
+  val res = runMono(src)
+  assertEqualInt(
+    diagCountCode(res.diagnostics, "M0002"),
+    1,
+    "x must be evicted so the arm's like(x) call is genuinely unresolvable -- M0002, not a silent wrong resolution"
+  )
+  assertTrue(
+    not hasFunc(res.file, "like__String"),
+    "must not specialise against the outer x's leaked type just because Box's own type argument couldn't be resolved from the scrutinee"
+  )
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+}

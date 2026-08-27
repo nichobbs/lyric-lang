@@ -278,8 +278,37 @@ func recordVarGenericArgs(ctx: in FuncCtx, name: in String, init: in Expr, tyOpt
 // re-erasing every slice/List-typed parameter's element type (caught by a
 // `Std.Core.maxInt`-shaped regression: `slice[Int]` `xs[i] > best` started
 // comparing erased `java.lang.Object`s instead of `Int`s).
-func recordParamGenericArgs(ctx: in FuncCtx, name: in String, ty: in TypeExpr): Unit {
-  val args = eagerlyResolveGenericArgs(annotationGenericArgs(ty), ctx.pkgName, ctx.externTypes)
+//
+// `typeParams` is the CURRENT function/method's own generic-parameter names
+// (`decl.generics` for a free function, the impl's `typeParams` for a method
+// — the same list `recordDeclaredElemType`, its sibling in the same param
+// loop, is already guarded against via `typeParamIndexOf`).  A parameter
+// typed `Result[T, String]` on a still-generic `func foo[T](...)` has an
+// arg (`T`) that names one of THIS function's own type params, not a
+// concrete class — `eagerlyResolveGenericArg`'s bare-`TRef` arm has no way
+// to distinguish an unresolved type-parameter name from a genuine
+// same-package type name, so it falls through to its `case None` arm and
+// guesses a PHANTOM class `<pkgName>/T`.  That bogus class then gets
+// `checkcast`-ed against at the match site (#6660) — a NoClassDefFoundError
+// / VerifyError at runtime, not a compile-time diagnostic.  `c27e023`
+// patched the one manifestation that was crashing CI (the literal marker
+// string `"Object"`, reserved into `isPrimitiveTypeKeyword`) but every
+// other real type-parameter name (`T`, `U`, `K`, `V`, …) still hit the same
+// phantom-class path.  Bail out before resolving (registering nothing, same
+// as `recordDeclaredElemType`'s early `return`) the moment ANY top-level
+// arg names one of `typeParams` — a partially-phantom arg list is exactly
+// as unsafe as a fully phantom one, since a match arm can select any case's
+// field position.
+func recordParamGenericArgs(ctx: in FuncCtx, name: in String, ty: in TypeExpr, typeParams: in List[String]): Unit {
+  val rawArgs = annotationGenericArgs(ty)
+  var ti = 0
+  while ti < rawArgs.count {
+    if typeParamIndexOf(rawArgs[ti], typeParams) >= 0 {
+      return
+    }
+    ti = ti + 1
+  }
+  val args = eagerlyResolveGenericArgs(rawArgs, ctx.pkgName, ctx.externTypes)
   if args.count > 0 {
     if ctx.varGenericArgs.containsKey(name) {
       ctx.varGenericArgs.remove(name)

@@ -648,7 +648,10 @@ pub func setupInstanceParamSlotsAndHolders(
     recordDeclaredElemType(ctx, params[rdi].name, params[rdi].ty, typeParams)
     // #5956: see `lowerFunc`'s matching call — an instance method's own
     // generic-instantiation-typed parameter needs the same registration.
-    recordParamGenericArgs(ctx, params[rdi].name, params[rdi].ty)
+    // #6660: `typeParams` (this method's own generic-parameter names) is
+    // threaded through so `recordParamGenericArgs` can bail on an arg that
+    // names an unresolved type parameter instead of guessing a phantom class.
+    recordParamGenericArgs(ctx, params[rdi].name, params[rdi].ty, typeParams)
     rdi = rdi + 1
   }
 }
@@ -914,7 +917,12 @@ pub func lowerFunc(
     // #5956: a `Result[Age, String]`-typed (or any other generic-instantiation-
     // typed) parameter's own annotation seeds `varGenericArgs` so `match
     // <param> { … }` on it unboxes the payload — see `recordParamGenericArgs`.
-    recordParamGenericArgs(ctx, resolvedParams[rdi].name, resolvedParams[rdi].ty)
+    // #6660: `fnElemTps` (this function's own generic-parameter names,
+    // already computed above for `recordDeclaredElemType`) is threaded
+    // through so an arg naming an unresolved type param (e.g. `Result[T,
+    // String]` on `func foo[T](...)`) bails instead of registering a
+    // phantom `<pkgName>/T` class.
+    recordParamGenericArgs(ctx, resolvedParams[rdi].name, resolvedParams[rdi].ty, fnElemTps)
     rdi = rdi + 1
   }
 
