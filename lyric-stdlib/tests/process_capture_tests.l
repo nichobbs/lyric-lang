@@ -34,8 +34,33 @@ func testQuoteEmbeddedQuote(): Unit {
 func testQuoteTrailingBackslash(): Unit {
   // The headline CWE-78 case.  Input `C:\dir\` — without doubling the
   // trailing backslash the closing `"` would be escaped by it and the
-  // next argument would be merged.
-  assertEqual(quoteArg("C:\\dir\\"), "\"C:\\\\dir\\\\\"", "trailing backslash is doubled")
+  // next argument would be merged.  Only the TRAILING backslash run
+  // (immediately followed by the closing `"`) is doubled; the earlier,
+  // non-quote-adjacent backslash between `C:` and `dir` passes through
+  // unchanged (#6577 review follow-up — see quoteArg's header comment:
+  // a blanket "double every backslash" previously doubled this one too,
+  // which does NOT round-trip through the real CommandLineToArgvW
+  // decode rule since a backslash run followed by an ordinary character
+  // is preserved as-is, not halved).
+  assertEqual(quoteArg("C:\\dir\\"), "\"C:\\dir\\\\\"", "only the trailing backslash run is doubled")
+}
+
+func testQuoteBackslashNotAdjacentToQuote(): Unit {
+  // The exact shape that exposed the blanket-doubling bug: a shell
+  // command string embedding a `printf` octal escape (`\377`).  The
+  // backslash here is followed by an ordinary digit, not a quote and
+  // not the end of the argument, so it must survive quoting completely
+  // unchanged — the real .NET/CommandLineToArgvW decoder does not halve
+  // a backslash run unless a `"` immediately follows it.  Before the
+  // fix this doubled to `\\377`, which `sh`'s printf then read back as
+  // the 4 literal characters `\`,`3`,`7`,`7` instead of the single byte
+  // 0xFF, corrupting `testDiagnosticsStdoutBytesInvalidUtf8` below
+  // (#6577 review follow-up).
+  assertEqual(
+    quoteArg("printf 'AB\\377\\376CD'"),
+    "\"printf 'AB\\377\\376CD'\"",
+    "a backslash followed by an ordinary character is left unchanged"
+  )
 }
 
 func testQuoteBackslashBeforeQuote(): Unit {
@@ -201,6 +226,7 @@ func main(): Int {
   testQuoteWithSpaces()
   testQuoteEmbeddedQuote()
   testQuoteTrailingBackslash()
+  testQuoteBackslashNotAdjacentToQuote()
   testQuoteBackslashBeforeQuote()
   testQuoteBackslashOnly()
   testQuoteEmpty()

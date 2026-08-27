@@ -146,7 +146,7 @@ match m.get("age") {
 `List[T]` also has `remove(index)`, `get(index)` (returns `Option[T]`), and `toSlice()` for converting to an immutable slice. If you need to remove by value rather than by index, use `Std.Iter` to filter and rebuild.
 
 ::: sidebar
-**Why not immutable collections by default?** The decision log entry D038 frames the stdlib as evolving toward native Lyric implementations with verifiable invariants. `List[T]` and `Map[K, V]` are the mutable BCL-backed forms, which are the right default for most application code. `Std.Collections.Persistent` (below) ships the immutable, structurally-sharing variant for code that wants persistence.
+**Why not immutable collections by default?** The decision log entry D038 frames the stdlib as evolving toward native Lyric implementations with verifiable invariants. `List[T]` and `Map[K, V]` are the mutable BCL-backed forms, which are the right default for most application code. `Std.Collections.Persistent` (below) ships the immutable, non-mutating variant for code that wants persistence.
 :::
 
 ### `Std.Collections.Persistent`

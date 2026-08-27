@@ -2,13 +2,16 @@
 //! Std.Collections.Persistent (#684).
 //!
 //! Covers: List ops (empty edge cases, cons/head/tail, lookup,
-//! insert/delete by index, toList/fromList round trip, structural
-//! sharing).
+//! insert/delete by index, toList/fromList round trip, non-mutation).
 //!
-//! "Structural sharing" here means: deriving a new persistent value from
-//! an existing one (e.g. `plistCons(x, a)`) never mutates the original —
+//! Non-mutation here means: deriving a new persistent value from an
+//! existing one (e.g. `plistCons(x, a)`) never mutates the original —
 //! every test that derives `b` from `a` re-reads `a` afterward and
-//! asserts it is unchanged.
+//! asserts it is unchanged.  This is NOT structural sharing in the
+//! traditional persistent-data-structure sense (internal nodes shared
+//! across versions for cheap amortized derive operations) — every
+//! "modifying" op here does a full O(n) rebuild of a bare `slice[T]`
+//! (see the module's own header doc comment).
 //!
 //! Map/Set operations are deferred to a follow-up (see the module's
 //! header doc comment for the backend gaps found while building them) —
@@ -77,8 +80,8 @@ func testPlistConsHeadTail(): Unit {
   }
 }
 
-// ─── List ops: structural sharing (never mutates the input) ─────────────
-func testPlistStructuralSharing(): Unit {
+// ─── List ops: non-mutation (never mutates the input) ────────────────────
+func testPlistNonMutation(): Unit {
   val e = emptyInts()
   // Innermost cons evaluates first: plistCons(1, e) = [1], then
   // plistCons(2, [1]) = [2, 1], then plistCons(3, [2, 1]) = [3, 2, 1] —
@@ -89,7 +92,7 @@ func testPlistStructuralSharing(): Unit {
   val b = plistCons(0, a)
   // b = [0, 3, 2, 1] — must not mutate a.
   assertEqualInt(plistLength(b), 4, "b has one more element than a")
-  assertEqualInt(plistLength(a), 3, "a is unchanged after deriving b (#684 structural sharing)")
+  assertEqualInt(plistLength(a), 3, "a is unchanged after deriving b (#684 non-mutation)")
   match plistHead(a) {
     case Some(h) -> assertEqualInt(h, 3, "a's head is still 3 after b was derived from it")
     case None -> assertTrue(false, "expected Some(3)")
@@ -144,7 +147,7 @@ func testPlistInsertMiddleAndEnd(): Unit {
   assertEqualInt(asList[1], 99, "withMiddle[1] is the inserted value")
   assertEqualInt(asList[2], 20, "withMiddle[2]")
   assertEqualInt(asList[3], 30, "withMiddle[3]")
-  // base must be unchanged (#684 structural sharing).
+  // base must be unchanged (#684 non-mutation).
   assertEqualInt(plistLength(base), 3, "base is unchanged after insert")
   match plistLookup(base, 1) {
     case Some(v) -> assertEqualInt(v, 20, "base[1] is still 20, not 99")
@@ -168,7 +171,7 @@ func testPlistDeleteVariants(): Unit {
   assertEqualInt(asList[0], 10, "withoutMiddle[0]")
   assertEqualInt(asList[1], 30, "withoutMiddle[1] — the deleted element is gone")
   // base must be unchanged.
-  assertEqualInt(plistLength(base), 3, "base is unchanged after delete (#684 structural sharing)")
+  assertEqualInt(plistLength(base), 3, "base is unchanged after delete (#684 non-mutation)")
 
   // Out-of-range delete is a documented no-op.
   val unchanged = plistDelete(base, 99)
@@ -196,7 +199,7 @@ func main(): Unit {
   testPlistEmpty()
   testPlistDeleteAndInsertOnEmpty()
   testPlistConsHeadTail()
-  testPlistStructuralSharing()
+  testPlistNonMutation()
   testPlistLookup()
   testPlistInsertMiddleAndEnd()
   testPlistDeleteVariants()

@@ -434,11 +434,13 @@ func scanJsonString(json: in String, quotePos: in Int): Int {
 //
 // CI coverage gap (pre-existing, not introduced by #3165): this JVM port
 // has no functional CI test running the parser under `--target jvm`
-// specifically — `auth_security_tests.l` runs on `dotnet` only. `docs/59`
-// §9 documents JVM-specific miscompiles the self-hosted backend has shown
-// for recursive-union code, so a JVM-specific run is worth adding rather
-// than assuming byte-for-byte behavior parity with `Auth.Kernel.Net`.
-// Tracked for follow-up alongside the other JVM CI gaps in `docs/59`.
+// specifically — `auth_security_tests.l` runs on `dotnet` only; the only
+// JVM exercise of this file today is a compile-only build check
+// (ci.yml's compiler-self-tests-jvm gate comment). `docs/59` §4.1
+// documents JVM-specific miscompiles the self-hosted backend has shown
+// for recursive-union code — exactly this file's `JsonValue` shape — so a
+// JVM-specific run is worth adding rather than assuming byte-for-byte
+// behavior parity with `Auth.Kernel.Net`.  Tracked in #6583.
 union JsonValue {
   case JVString(value: String)
   case JVNumber(raw: String)
