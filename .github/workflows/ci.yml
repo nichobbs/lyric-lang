@@ -5555,22 +5555,37 @@ jobs:
           header="$(curl -s --max-time 3 -H 'X-Test: abc' http://localhost:8099/echo-header)"
           body="$(curl -s --max-time 3 -X POST --data 'ping' http://localhost:8099/echo-body)"
           code404="$(curl -s --max-time 3 -o /dev/null -w '%{http_code}' http://localhost:8099/nope)"
-          # TLS phase 2.2 (#5881): before the plaintext listener, main runs two
-          # in-process self-checks and logs a single PASS/FAIL line each:
-          #   MTLS-REJECT-SELFCHECK — Web.serveTls with requireClientCert=true
-          #     must return a typed ServerTlsUnsupported (naming #6017), never a
-          #     crash or a silent plaintext-auth listener (#6040).
+          # TLS phase 2.2/2.3 (#5881/#6017): before the plaintext listener,
+          # main runs three in-process self-checks and logs a single
+          # PASS/FAIL line each:
+          #   MTLS-MISCONFIG-SELFCHECK — Web.serveTls with
+          #     requireClientCert=true and NO clientCa must return a typed
+          #     ServerTlsUnsupported (a genuine misconfiguration — no CA to
+          #     pin trust to), never a crash or a silent plaintext-auth
+          #     listener (#6040).
           #   HTTPS-H2-SELFCHECK — a TLS-terminated Undertow listener
           #     (Web.serveTls, ENABLE_HTTP2) on :8100 driven by an in-process
           #     Std.Http client that trusts the fixture cert, asserting 200 AND
           #     an h2-negotiated connection (HttpResponse.negotiatedVersion). The
           #     client retries in a BOUNDED poll loop until the listener binds
           #     (was a fixed sleep that flaked under CI jitter, #6028).
-          # Both self-checks run before the plaintext :8099 listener this loop
-          # waited on, so the lines are already in the log. An independent
-          # curl --http2 cross-checks h2 against the real HTTPS listener.
+          #   MTLS-ACCEPT-SELFCHECK / MTLS-REJECT-SELFCHECK — a REAL mTLS
+          #     listener on :8102 (clientCa + requireClientCert=true, the
+          #     client-CA TrustManager + XNIO SSL_CLIENT_AUTH_MODE wiring
+          #     from #6017): a client presenting a cert signed by the
+          #     configured CA must connect and get a 200 (ACCEPT), and a
+          #     client presenting an unrelated self-signed cert must fail
+          #     the TLS handshake (REJECT) — proving mTLS at the real TLS
+          #     layer, not just that the config is accepted at the API
+          #     surface.
+          # All three self-checks run before the plaintext :8099 listener
+          # this loop waited on, so the lines are already in the log. An
+          # independent curl --http2 cross-checks h2 against the real HTTPS
+          # listener.
           h2selfcheck="$(grep -o 'HTTPS-H2-SELFCHECK: PASS.*' /tmp/jvm_server_smoke.run.log | head -1)"
-          mtlsselfcheck="$(grep -o 'MTLS-REJECT-SELFCHECK: PASS.*' /tmp/jvm_server_smoke.run.log | head -1)"
+          mtlsmisconfigselfcheck="$(grep -o 'MTLS-MISCONFIG-SELFCHECK: PASS.*' /tmp/jvm_server_smoke.run.log | head -1)"
+          mtlsacceptselfcheck="$(grep -o 'MTLS-ACCEPT-SELFCHECK: PASS.*' /tmp/jvm_server_smoke.run.log | head -1)"
+          mtlsrejectselfcheck="$(grep -o 'MTLS-REJECT-SELFCHECK: PASS.*' /tmp/jvm_server_smoke.run.log | head -1)"
           curlh2="$(curl -sk --http2 --max-time 4 -o /dev/null -w '%{http_version}:%{http_code}' https://127.0.0.1:8100/hello/Ada || echo 'curl-failed')"
           kill "$srv_pid" 2>/dev/null || true
           wait "$srv_pid" 2>/dev/null || true
@@ -5580,13 +5595,15 @@ jobs:
           [ "$body" = "ping" ] || { echo "::error::body endpoint returned '$body'"; fail=1; }
           [ "$code404" = "404" ] || { echo "::error::unmatched route returned HTTP $code404, expected 404"; fail=1; }
           [ -n "$h2selfcheck" ] || { echo "::error::HTTPS/h2 in-process self-check did not report PASS (Web.serveTls + negotiatedVersion)"; fail=1; }
-          [ -n "$mtlsselfcheck" ] || { echo "::error::mTLS-rejection self-check did not report PASS (Web.serveTls requireClientCert -> typed ServerTlsUnsupported)"; fail=1; }
+          [ -n "$mtlsmisconfigselfcheck" ] || { echo "::error::mTLS-misconfig self-check did not report PASS (Web.serveTls requireClientCert with no clientCa -> typed ServerTlsUnsupported)"; fail=1; }
+          [ -n "$mtlsacceptselfcheck" ] || { echo "::error::mTLS-accept self-check did not report PASS (trusted client cert should connect)"; fail=1; }
+          [ -n "$mtlsrejectselfcheck" ] || { echo "::error::mTLS-reject self-check did not report PASS (untrusted client cert should be rejected at the TLS layer)"; fail=1; }
           [ "$curlh2" = "2:200" ] || { echo "::error::curl --http2 against the TLS listener returned '$curlh2', expected 2:200"; fail=1; }
           if [ "$fail" != 0 ]; then
             tail -40 /tmp/jvm_server_smoke.run.log
             exit 1
           fi
-          echo "lyric-web Undertow JVM smoke passed (4/4 plaintext endpoints + HTTPS/h2 serveTls: $h2selfcheck; mTLS-reject: $mtlsselfcheck; curl --http2 $curlh2)" >> "$GITHUB_STEP_SUMMARY"
+          echo "lyric-web Undertow JVM smoke passed (4/4 plaintext endpoints + HTTPS/h2 serveTls: $h2selfcheck; mTLS-misconfig: $mtlsmisconfigselfcheck; mTLS-accept: $mtlsacceptselfcheck; mTLS-reject: $mtlsrejectselfcheck; curl --http2 $curlh2)" >> "$GITHUB_STEP_SUMMARY"
       # Map-iteration self-test on JVM (#3676, #3229) — pins the completed
       # `_kernel_jvm/collections_host.l` kernel (dictGetKeys/dictGetValues
       # views, pure-Lyric tryGetValue) AND the post-mono signature
@@ -5777,6 +5794,44 @@ jobs:
       - name: Cross-package collision self-test (native lyric test)
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_cross_package_collision_self_test.l
+
+      # Same-manifest package-cycle self-test (#6024) — exercises
+      # `Jvm.Bridge.compileProjectToJarBundledWithFeatures` in-process AND
+      # `Lyric.Cli.buildProject` (the `--manifest ... --target jvm` path the
+      # issue reports broken), same outer-runs-on-dotnet shape as the
+      # cross-package collision self-test above. Pins: a sibling package
+      # that imports the ENTRY package back (a legitimate same-manifest
+      # import cycle, mirroring the real `Web`/`Web.Kernel.Runtime` shape)
+      # now resolves the entry package's own qualified types instead of
+      # `error[T0014] unknown qualified type`.
+      - name: JVM manifest package-cycle self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_manifest_package_cycle_self_test.l
+
+      # Path-dependency self-test (#6264) — exercises `Lyric.Cli.buildProject`
+      # (manifest/multi-package path) and `Lyric.Cli.buildOne`
+      # (`emitSingleFileOrProject`'s single-file-near-a-manifest leg) with a
+      # local `path = "../dep"` dependency on `--target jvm`, never building
+      # the dependency's own `.dll` first (the fresh-checkout scenario the
+      # issue's acceptance criteria describes). Pins: the dependency's real
+      # code — not just its aspect/wire templates — compiles into the JVM
+      # bundle and the produced JAR runs correctly under `java`.
+      - name: JVM path-dependency self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_path_dependency_self_test.l
+
+      # Compiled-bundle stdlib-source fallback self-test (#4994, the JVM
+      # counterpart of #4980) — exercises the WRITER half (`Jvm.Bridge` now
+      # embeds one `Lyric.Contract.<Pkg>` ZIP entry per project package,
+      # readable back via `Lyric.ContractMeta.readAllContractsFromJarFile`)
+      # and the READER half (`Lyric.Emitter.stdlibSourcesFromCompiledBundleJvm`
+      # reconstructs declaration-only stdlib source from an installed
+      # `Lyric.Stdlib.Jvm.jar`, mirroring the dotnet-side
+      # `stdlibSourcesFromCompiledBundle`), then compiles a real consumer
+      # against the reconstructed source.
+      - name: JVM stdlib compiled-bundle fallback self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_stdlib_compiled_bundle_self_test.l
 
   # Numbered backend self-test corpus (docs/59 §9.5, H8) — the ~215 plain
   # `func main` regression programs (`lyric-compiler/msil/msil_self_test_m1..m84`
@@ -6441,6 +6496,8 @@ jobs:
       # slice[T] cast) was fixed, book_ch12_tests once #5843 (mono
       # cross-package name-collision) was, and book_ch02_tests once #5955
       # (module-val dependent-initializer .cctor InvalidProgramException) was.
+      # collections_persistent_tests (#684, #6575) joined covering the new
+      # Std.Collections.Persistent list ops.
       # Deliberately still excluded (tracked, not silent): metadata_reader_tests
       # (#5624 placeholder Param rows; also needs LYRIC_LOAD_COMPILER=1).  Each
       # suite exits non-zero on any assertion failure or runtime fault.
@@ -6459,13 +6516,39 @@ jobs:
             collections_tests char_tests math_tests hash_tests path_tests \
             errors_tests environment_tests string_tests string_methods_tests \
             regex_tests yaml_tests testing_tests mocking_tests xml_tests \
-            set_tests sort_tests \
+            set_tests sort_tests collections_persistent_tests \
             book_ch01_tests book_ch02_tests book_ch03_tests book_ch04_tests \
             book_ch05_tests book_ch07_tests book_ch12_tests book_ch13_ffi_tests \
             kernel_bcl_tests xml_viability_tests; do
             echo "--- lyric run lyric-stdlib/tests/$suite.l"
             "$lyric_bin" run "lyric-stdlib/tests/$suite.l"
           done
+
+      # Std.Collections.Persistent on JVM (#684, #6577 review follow-up):
+      # the module is pure Lyric with no BCL/JDK extern boundary, so unlike
+      # most of the dotnet-only suites above it runs unmodified under
+      # `--target jvm` — verified locally before wiring this in.  Runs the
+      # same `collections_persistent_tests.l` suite already covered on
+      # dotnet above, so both targets are exercised for every push.
+      # `lyric run --target jvm` shells out to `java` on PATH; this job has
+      # no other JVM step, so it needs its own setup-java (#6585 — JVM-target
+      # class files require 21, see "class files target major version 65"
+      # elsewhere in this workflow).
+      - name: Set up Java 21 (for the JVM suite below)
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Std.Collections.Persistent suite on JVM
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping"
+            exit 1
+          fi
+          "$lyric_bin" run --target jvm lyric-stdlib/tests/collections_persistent_tests.l
 
       # Std.Http async client surface (#5564): interface dispatch through
       # defaultClient() and the free getAsync/sendAsync functions.  Uses

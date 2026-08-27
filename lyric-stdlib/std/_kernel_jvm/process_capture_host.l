@@ -63,6 +63,8 @@ func currentTimeMillis(): Long = ()
 pub record ProcessCaptureResult {
   stdout: String
   stderr: String
+  stdoutBytes: slice[Byte]
+  stderrBytes: slice[Byte]
   exitCode: Int
   timedOut: Bool
 }
@@ -73,6 +75,17 @@ pub func pcResultStdout(r: in ProcessCaptureResult): String {
 
 pub func pcResultStderr(r: in ProcessCaptureResult): String {
   r.stderr
+}
+
+// Raw captured bytes for stdout/stderr — the `ByteArrayOutputStream`
+// accumulator's backing array, read via `toByteArray()` before the
+// `toString("UTF-8")` decode.  No decode/re-encode round trip (#4753).
+pub func pcResultStdoutBytes(r: in ProcessCaptureResult): slice[Byte] {
+  r.stdoutBytes
+}
+
+pub func pcResultStderrBytes(r: in ProcessCaptureResult): slice[Byte] {
+  r.stderrBytes
 }
 
 pub func pcResultExitCode(r: in ProcessCaptureResult): Int {
@@ -217,6 +230,8 @@ func runImpl(
   ProcessCaptureResult(
     stdout = stdoutBuf.toString("UTF-8"),
     stderr = stderrBuf.toString("UTF-8"),
+    stdoutBytes = stdoutBuf.toByteArray(),
+    stderrBytes = stderrBuf.toByteArray(),
     exitCode = exitCode,
     timedOut = timedOut
   )
@@ -230,7 +245,7 @@ pub func hostRunCapture(executable: in String, arguments: in String, stdinConten
   try {
     runImpl(executable, arguments, stdinContent, 10000)
   } catch Bug as _ {
-    ProcessCaptureResult(stdout = "", stderr = "", exitCode = -1, timedOut = false)
+    ProcessCaptureResult(stdout = "", stderr = "", stdoutBytes = [], stderrBytes = [], exitCode = -1, timedOut = false)
   }
 }
 
@@ -241,7 +256,7 @@ pub func hostRunCaptureTimeout(
   try {
     runImpl(executable, arguments, stdinContent, timeoutMs)
   } catch Bug as _ {
-    ProcessCaptureResult(stdout = "", stderr = "", exitCode = -1, timedOut = false)
+    ProcessCaptureResult(stdout = "", stderr = "", stdoutBytes = [], stderrBytes = [], exitCode = -1, timedOut = false)
   }
 }
 

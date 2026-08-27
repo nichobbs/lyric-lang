@@ -201,7 +201,7 @@ pub func runRestoreWithRetry(restoreArgs: in List[String], label: in String): In
     val captureResult = try {
       ProcessCapture.runCaptureWithDiagnosticsTimeout("dotnet", effectiveArgs, "", 300000)
     } catch Bug as b {
-      CaptureResult(stdout = "", stderr = b.message, exitCode = -1, timedOut = false)
+      CaptureResult(stdout = "", stderr = b.message, stdoutBytes = [], stderrBytes = [], exitCode = -1, timedOut = false)
     }
     if not Str.isEmpty(captureResult.stdout) {
       Console.print(captureResult.stdout)

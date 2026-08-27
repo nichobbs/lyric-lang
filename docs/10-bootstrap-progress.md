@@ -30698,6 +30698,8 @@ additionally needs its XNIO `SSL_CLIENT_AUTH_MODE` option wired.
 `ServerTlsUnsupported` at the `Web` layer) for any
 `requireClientCert`/`clientCa` request, tracked in #6017 (a different
 blocker than phase 2.1's `HttpsConfigurator` gap #5930).
+(Superseded by phase 2.3 / D-progress-805, #6017: mTLS ships on this path
+too — see the entry below.)
 
 Verified end-to-end by `tests/jvm_server_smoke.l`'s in-process HTTPS/h2
 self-check (a real `Web.serveTls` Undertow listener + a `Std.Http` client
@@ -30706,7 +30708,23 @@ that trusts the SAN fixture cert and asserts `HttpResponse.negotiatedVersion()
 `compiler-self-tests-jvm` CI job; and by `tests/serve_tls_tests.l` on dotnet
 (`Web.ServeTlsTests`, 4/4). A published-tool sandbox limitation (the 0.4.33
 `build --manifest lyric-web --target jvm` cyclic-package crash, #6024) meant
-JVM verification used the CI-equivalent single-file build path.
+JVM verification used the CI-equivalent single-file build path at the time.
+**#6024's cyclic-import failure is now fixed**
+(`Jvm.Bridge.compileProjectToJarBundledWithFeatures` was missing the entry
+package's own items from its cross-package `importedPkgs` list, so
+`Web.Kernel.Runtime` — a sibling that imports `Web` back — saw `Web`'s
+qualified types as unknown, `error[T0014]`): `lyric build --manifest
+lyric-web/lyric.toml --target jvm` now gets past type-check on the `Web` ↔
+`Web.Kernel.Runtime` cycle, confirmed against a source build. It does not
+yet reach a fully successful build in this checkout, though — getting past
+type-check newly surfaces a separate, pre-existing JVM codegen gap
+(`Web.Kernel.Runtime`'s JVM kernel iterating an extern
+`JHttpStringCollection[JHttpString]` erases each element's `.toString()`
+return type to `Object`, so the following `.toLower()` call has no
+resolvable receiver — `error[J002]`), unrelated to the cyclic-import
+mechanism and not attempted here; filed as #6565. The CI-equivalent
+single-file build path (what `compiler-self-tests-jvm` actually exercises)
+remains the verified JVM path for this library in the meantime.
 
 Surfacing the qualified stdlib type `Std.Tls.TlsServerConfig` in lyric-web's
 public API additionally required a compiler fix in
@@ -31115,8 +31133,9 @@ over the `Std.TcpHost` `TcpListener`/`SslStream` transport shipped in phase 3.3
 `Web.dispatch` core as plaintext `serve`. The phase-2.2 typed
 `ServerTlsUnsupported`-on-dotnet stub is gone.
 
-**Mutual TLS is fully supported on dotnet** (unlike the JVM Undertow listener,
-where mTLS is #6017): the `tls` config — including `clientCa`/`requireClientCert`
+**Mutual TLS is fully supported on dotnet** (at this point in the timeline,
+unlike the JVM Undertow listener, where mTLS was still #6017 — since shipped,
+see D-progress-805 below): the `tls` config — including `clientCa`/`requireClientCert`
 — is passed straight through to the callback-free mTLS transport kernel. A
 configuration that cannot bind a listener (a mutual-TLS misconfiguration:
 `requireClientCert` with no `clientCa`; or a socket bind failure) is surfaced as
@@ -31144,7 +31163,7 @@ covered by `tests/jvm_server_smoke.l`. Verified against a from-source-built
 
 Boundary: h2/ALPN end-to-end on the dotnet server is #5889 (gated on the h2 FSM
 #5888; the transport advertises only `http/1.1`). Native server TLS is #5890.
-JVM mTLS is #6017.
+JVM mTLS shipped in phase 2.3 (D-progress-805, #6017; see that entry below).
 
 **Related:** `docs/03-decision-log.md` D-progress-701; docs/61 §6.3, D128; #5885,
 #5874, #5884 (D-progress-700), #5881 (D-progress-698), #6017, #5889, #5903.
@@ -31655,3 +31674,35 @@ hit this).
 
 **Related:** `docs/03-decision-log.md` D-progress-802 (full account),
 #6135, #5377, #1103, #6551, #6552.
+
+## lyric-web Undertow mTLS ships on JVM — client-CA `TrustManager` + XNIO `SSL_CLIENT_AUTH_MODE` (2026-08-27)
+
+`Web.serveTls` on `--target jvm` now supports mutual TLS end to end,
+closing #6017 (docs/61 §6.3 phase 2.3). `Std.HttpServer`'s JVM kernel
+(`_kernel_jvm/http_server.l`) gains `serverSslContextFromConfigMtls(
+identity, minVersion, clientCa): ServerSslContext` — a sibling to the
+existing non-mTLS `serverSslContextFromConfig` — which builds a
+trust-only `KeyStore` holding `clientCa` and wires it into the server
+`SSLContext` via a `TrustManagerFactory`, reusing the same
+`java.lang.reflect`-bridged `makeTypedArray1` idiom the existing
+`KeyManager[]` construction already uses for the new `TrustManager[]`.
+lyric-web's Undertow kernel (`src/_kernel/jvm/web_kernel.l`) picks that
+constructor when `tls.clientCa` is set and additionally calls
+`Undertow.Builder.setSocketOption(Options.SSL_CLIENT_AUTH_MODE, mode)`
+— `REQUIRED` when `tls.requireClientCert`, `REQUESTED` otherwise. `Web`'s
+jvm `serveTls` (`src/web.l`) narrows its up-front rejection to the one
+remaining genuine misconfiguration (`requireClientCert` with no
+`clientCa`), mirroring the dotnet kernel's `InvalidConfig` guard.
+
+Verified end-to-end by `tests/jvm_server_smoke.l`: a real Undertow mTLS
+listener accepts a client presenting a cert signed by the configured CA
+(`MTLS-ACCEPT-SELFCHECK: PASS`) and rejects a client presenting an
+unrelated self-signed cert at the TLS handshake
+(`MTLS-REJECT-SELFCHECK: PASS`, the same self-check name previously used
+for the up-front rejection — now proving real mTLS instead); the
+narrowed misconfiguration guard gets its own
+`MTLS-MISCONFIG-SELFCHECK: PASS`. All wired into the `compiler-self-tests-jvm`
+CI job's existing "lyric-web Undertow smoke on JVM" step.
+
+**Related:** `docs/03-decision-log.md` D-progress-805; #6017, #5881,
+#5874, D-progress-698 (the phase-2.2 shipment this extends).

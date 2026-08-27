@@ -115,9 +115,12 @@ match Identity.fromPemFiles("server.pem", "server.key") {
   same router and handlers serve both with no code change. **Mutual TLS is fully
   supported** here — set `clientCa` and `requireClientCert` on the config.
 - **`--target jvm`** terminates real TLS over an Undertow HTTPS listener with
-  HTTP/2 enabled (via ALPN, TLS-only). Mutual TLS on this path is not yet
-  supported (issue #6017); a mutual-TLS config returns a typed
-  `ServerTlsUnsupported`.
+  HTTP/2 enabled (via ALPN, TLS-only). **Mutual TLS is fully supported** here
+  too (issue #6017) — `clientCa` pins a client-CA `TrustManager` onto the
+  listener's `SSLContext`, and `requireClientCert` drives Undertow's XNIO
+  `SSL_CLIENT_AUTH_MODE` socket option (required vs. optional client cert).
+  The only rejected configuration is `requireClientCert` set with no
+  `clientCa` to pin trust to, which returns a typed `ServerTlsUnsupported`.
 
 To keep cert/key paths configurable per environment without a rebuild, use the
 `Web.WebTls` config template (`certPath`/`keyPath`/`clientCaPath`/

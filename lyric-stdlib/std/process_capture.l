@@ -9,6 +9,7 @@ package Std.ProcessCapture
 import Std.Core
 import Std.Collections
 import Std.ProcessCaptureHost
+import Std.String
 
 // Quote a single argument so it round-trips through both the .NET
 // `ProcessStartInfo.Arguments` parser and the Windows
@@ -26,20 +27,65 @@ import Std.ProcessCaptureHost
 // or `"`, in which case the run of backslashes is doubled and any
 // trailing `"` is also `\`-escaped.
 //
-// Doubling every `\` and escaping every `"` is the canonical safe
-// over-encoding: e.g. `C:\dir\` → `"C:\\dir\\"` → CRT decodes back to
-// `C:\dir\`.  Over-escaping is harmless on POSIX (single tokens never
-// reach this path because the .NET `ProcessStartInfo` does its own
-// re-tokenisation), and the alternative — only doubling runs that
-// precede `"` — is harder to get right.
+// #6577 review follow-up: an earlier version of this function did a
+// blanket `arg.replace("\\", "\\\\")` — doubling EVERY backslash in the
+// argument, not just ones adjacent to a quote or at the very end.  That
+// over-corrects: the CommandLineToArgvW decode rule only collapses a
+// backslash run that is immediately followed by a `"`; a run followed
+// by any other character passes through completely unchanged (not
+// halved).  So a blanket-doubled backslash that isn't adjacent to a
+// quote survives the round trip AS TWO backslashes instead of the
+// original ONE — real corruption, not just an over-escape — for any
+// argument containing a backslash used for something other than a
+// Windows path (e.g. a shell command string embedding a `printf`
+// octal escape like `\377`, discovered via `process_capture_tests.l`'s
+// `testDiagnosticsStdoutBytesInvalidUtf8`).  This implementation only
+// doubles a backslash run when it is immediately followed by `"` (an
+// embedded quote — doubled + one more backslash so the quote is
+// escaped, not a terminator) or sits at the very end of the argument
+// (immediately followed by the closing wrapper `"` this function adds)
+// — the same canonical encoder every faithful CommandLineToArgvW
+// quoting implementation uses.  Backslashes anywhere else are copied
+// through unchanged, since the decoder does the same.
 // Exposed `pub` so callers building command lines piecemeal (outside
 // `buildArgString`) can reuse the same escape ordering.
 @stable(since = "1.0")
 pub func quoteArg(arg: in String): String {
-  // Order matters: escape backslashes first so the `\` introduced by
-  // the second step don't get double-escaped.
-  val escaped = arg.replace("\\", "\\\\").replace("\"", "\\\"")
-  "\"" + escaped + "\""
+  var acc = "\""
+  var i = 0
+  val n = arg.length
+  while i < n {
+    val ch = arg.substring(i, 1)
+    if ch == "\\" {
+      var numBackslashes = 0
+      while i < n and arg.substring(i, 1) == "\\" {
+        numBackslashes += 1
+        i += 1
+      }
+      if i == n {
+        // Trailing backslash run: immediately followed by the closing
+        // `"` this function appends below, so it must be doubled.
+        acc = acc + repeat("\\", numBackslashes * 2)
+      } else if arg.substring(i, 1) == "\"" {
+        // Backslash run immediately before a literal quote: 2N+1
+        // backslashes then the quote, so the decoder sees N literal
+        // backslashes followed by an escaped (non-terminating) `"`.
+        acc = acc + repeat("\\", numBackslashes * 2 + 1) + "\""
+        i += 1
+      } else {
+        // Backslash run followed by an ordinary character: the decoder
+        // passes these through unchanged, so this encoder must too.
+        acc = acc + repeat("\\", numBackslashes)
+      }
+    } else if ch == "\"" {
+      acc = acc + "\\\""
+      i += 1
+    } else {
+      acc = acc + ch
+      i += 1
+    }
+  }
+  acc + "\""
 }
 
 // Build a single pre-formed argument string from a list.  Every
@@ -62,14 +108,21 @@ pub func buildArgString(args: in List[String]): String {
 
 // Full diagnostic result returned by `runCaptureWithDiagnostics`.
 // `stdout` and `stderr` are the complete captured text from the child
-// process.  `exitCode` is the process exit code (-1 on spawn failure,
-// -2 when the process was killed after the wall-clock timeout).
-// `timedOut` is true when the 10-second cap fired and the process was
-// killed before it could exit normally.
+// process, UTF-8-decoded.  `stdoutBytes` and `stderrBytes` are the exact
+// raw bytes the child wrote, captured directly from the drain buffer
+// before that decode — use these instead of re-encoding `stdout`/`stderr`
+// whenever the caller needs a byte-exact result (e.g. hashing downloaded
+// content), since a decode/re-encode round trip is lossy for output that
+// is not valid UTF-8 (#4753).  `exitCode` is the process exit code (-1 on
+// spawn failure, -2 when the process was killed after the wall-clock
+// timeout).  `timedOut` is true when the 10-second cap fired and the
+// process was killed before it could exit normally.
 @stable(since = "1.0")
 pub record CaptureResult {
   stdout: String
   stderr: String
+  stdoutBytes: slice[Byte]
+  stderrBytes: slice[Byte]
   exitCode: Int
   timedOut: Bool
 }
@@ -103,6 +156,8 @@ pub func runCaptureWithDiagnostics(executable: in String, args: in List[String],
   CaptureResult(
     stdout = pcResultStdout(raw),
     stderr = pcResultStderr(raw),
+    stdoutBytes = pcResultStdoutBytes(raw),
+    stderrBytes = pcResultStderrBytes(raw),
     exitCode = pcResultExitCode(raw),
     timedOut = pcResultTimedOut(raw)
   )
@@ -126,6 +181,8 @@ pub func runCaptureWithDiagnosticsTimeout(
   CaptureResult(
     stdout = pcResultStdout(raw),
     stderr = pcResultStderr(raw),
+    stdoutBytes = pcResultStdoutBytes(raw),
+    stderrBytes = pcResultStderrBytes(raw),
     exitCode = pcResultExitCode(raw),
     timedOut = pcResultTimedOut(raw)
   )

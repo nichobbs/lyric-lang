@@ -134,6 +134,38 @@ pub func loadRestoredPackage(dllPath: in String): Result[List[RestoredArtifact],
   Ok(value = artifacts)
 }
 
+/// JAR-resident counterpart of `loadRestoredPackage` (#4994): identical
+/// contract, identical artifact/error shapes — only the resource source
+/// differs (`Lyric.ContractMeta.readAllContractsFromJarFile`'s ZIP
+/// central-directory walk instead of the PE/CLI metadata reader).
+@stable(since = "0.1")
+pub func loadRestoredPackageJvm(jarPath: in String): Result[List[RestoredArtifact], RestoredLoadError] {
+  if not File.fileExists(jarPath) {
+    return Err(error = DllMissing(path = jarPath))
+  }
+
+  val entries = Meta.readAllContractsFromJarFile(jarPath)
+  if entries.count == 0 {
+    return Err(error = NoContractResource(path = jarPath))
+  }
+
+  val artifacts: List[RestoredArtifact] = newList()
+  var i = 0
+  while i < entries.count {
+    val e = entries[i]
+    match Meta.parseFromJson(e.json) {
+      case None -> return Err(error = MalformedContract(path = jarPath, pkgKey = e.packageName))
+      case Some(c) -> {
+        val pkgName = if Str.isNotEmpty(c.packageName) { c.packageName } else { e.packageName }
+        artifacts.add(RestoredArtifact(packageName = pkgName, version = c.version, dllPath = jarPath, contract = c))
+      }
+    }
+    i = i + 1
+  }
+
+  Ok(value = artifacts)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Source synthesis
 // ─────────────────────────────────────────────────────────────────────────────

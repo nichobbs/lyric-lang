@@ -11,7 +11,6 @@ import Std.Environment as Environment
 import Std.Errors
 import Std.ProcessCapture as ProcessCapture
 import Std.Uuid as Uuid
-import Std.Encoding as Encoding
 import Std.Hash as Hash
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -224,12 +223,21 @@ pub func extractTagNameFromReleaseJson(json: in String): Option[String] {
 // — the caller must not silently fall back to `main` in that case.
 func fetchLatestReleaseTag(): Option[String] {
   match downloadUrl("https://api.github.com/repos/nichobbs/lyric-lang/releases/latest") {
-    case Some(body) -> extractTagNameFromReleaseJson(body)
+    case Some(body) -> extractTagNameFromReleaseJson(body.text)
     case None -> None
   }
 }
 
-func downloadUrl(url: in String): Option[String] {
+// Result of a successful download: the UTF-8-decoded text (for parsing /
+// writing to disk) and the exact raw bytes the child process wrote to
+// stdout (for byte-exact hashing) — both sourced from the same capture,
+// never a decode/re-encode round trip of one another (#4753).
+pub record Downloaded {
+  text: String
+  bytes: slice[Byte]
+}
+
+func downloadUrl(url: in String): Option[Downloaded] {
   // Try curl
   val curlArgs: List[String] = newList()
   curlArgs.add("-fsSL")
@@ -237,7 +245,7 @@ func downloadUrl(url: in String): Option[String] {
 
   val curlRes = ProcessCapture.runCaptureWithDiagnostics("curl", curlArgs, "")
   if curlRes.exitCode == 0 and not curlRes.timedOut {
-    return Some(value = curlRes.stdout)
+    return Some(value = Downloaded(text = curlRes.stdout, bytes = curlRes.stdoutBytes))
   }
 
   // Try wget
@@ -249,7 +257,7 @@ func downloadUrl(url: in String): Option[String] {
 
   val wgetRes = ProcessCapture.runCaptureWithDiagnostics("wget", wgetArgs, "")
   if wgetRes.exitCode == 0 and not wgetRes.timedOut {
-    return Some(value = wgetRes.stdout)
+    return Some(value = Downloaded(text = wgetRes.stdout, bytes = wgetRes.stdoutBytes))
   }
 
   None
@@ -351,9 +359,11 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
 
   Console.println("Retrieving installation script from GitHub (" + scriptUrl + ")...")
   var scriptContent = ""
+  var scriptBytes: slice[Byte] = []
   match downloadUrl(scriptUrl) {
-    case Some(content) -> {
-      scriptContent = content
+    case Some(downloaded) -> {
+      scriptContent = downloaded.text
+      scriptBytes = downloaded.bytes
     }
     case None -> {
       printErr("upgrade: failed to download the installation script from " + scriptUrl)
@@ -367,8 +377,8 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
 
   var expectedHash = ""
   match sha256Option {
-    case Some(checksumContent) -> {
-      val trimmed = checksumContent.trim()
+    case Some(checksumDownload) -> {
+      val trimmed = checksumDownload.text.trim()
       if trimmed.length >= 64 {
         expectedHash = trimmed.substring(0, 64).toUpper()
       } else {
@@ -392,19 +402,12 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
   // (e.g. a GPG key pinned into the binary at build time, or Sigstore) —
   // tracked as a follow-up; not implemented here.
   //
-  // `scriptContent` is the String `downloadUrl` decoded from curl/wget's
-  // captured stdout bytes (UTF-8, via `Std.ProcessCapture`'s internal
-  // MemoryStream + StreamReader drain — see process_capture_host.l).
-  // Re-encoding it here to hash is therefore hashing a decode/re-encode
-  // round trip of the downloaded bytes, not the raw bytes themselves
-  // (#4614). For a well-formed UTF-8 file with no byte-order mark this
-  // round trip is lossless, which holds for `scripts/install.sh` today,
-  // but the check has no way to detect a future violation of that
-  // assumption (e.g. CRLF normalization on a different capture backend).
-  // A byte-exact fix needs a raw-bytes capture variant on
-  // `Std.ProcessCapture` (or a dedicated byte-returning download helper);
-  // that's a stdlib-boundary change outside `Lyric.Cli`.
-  val scriptBytes = Encoding.encodeUtf8(scriptContent)
+  // `scriptBytes` is the exact byte sequence curl/wget wrote to stdout,
+  // captured directly from `Std.ProcessCapture`'s drain buffer
+  // (`CaptureResult.stdoutBytes`) — not a re-encode of the decoded
+  // `scriptContent` String.  This closes the lossy decode/re-encode round
+  // trip that previously hashed `Encoding.encodeUtf8(scriptContent)`
+  // instead of the raw downloaded bytes (#4753, follow-up to #4614).
   val actualHash = Hash.sha256OfBytes(scriptBytes).toUpper()
   if actualHash != expectedHash {
     printErr("upgrade: installation script hash mismatch (does not match install.sh.sha256) — aborting")
