@@ -1813,6 +1813,28 @@ pub func ctorClassForExpecting(ctx: in FuncCtx, name: in String): Option[String]
   mapGet(ctx.ctors, name)
 }
 
+// Cross-package enum case-name collision fix (#5995).  As `ctorClassForExpecting`
+// but for a bare enum-case reference (`enumcase:` keys instead of `ctors`):
+// consults `ctx.ctorExpectStack`'s top entry (the declaring package of a
+// directly-enclosing call's expected parameter type — pushed at every call
+// argument via `pushCtorExpect`/`popCtorExpect`, #5976) BEFORE the
+// bundle-global first-registered bare-name fallback, so a bare-case argument
+// (`serializeResponseHead(Http11, ...)`) resolves against the SAME package
+// the callee's parameter actually declares, not whichever same-named-case
+// enum happened to register first.
+pub func enumCaseClassForExpecting(ctx: in FuncCtx, caseName: in String): Option[String] {
+  if ctx.ctorExpectStack.count > 0 {
+    val expectedOwner = ctx.ctorExpectStack[ctx.ctorExpectStack.count - 1]
+    if expectedOwner.length > 0 {
+      match enumVariantClassByPkg(ctx, expectedOwner.replace("/", "."), caseName) {
+        case Some(cls) -> return Some(value = cls)
+        case None -> ()
+      }
+    }
+  }
+  enumCaseClassBare(ctx, caseName)
+}
+
 // The owning JVM package (slash form) of class `cls` — everything before the
 // last "/" — or "" for a top-level (package-less) class name.  Used to
 // derive the `ctorExpectStack` hint from a resolved parameter's JRef class.
@@ -1871,6 +1893,24 @@ pub func enumVariantClass(ctx: in FuncCtx, enumName: in String, caseName: in Str
 // The declaring enum's JVM class for a bare `<Case>` reference, when registered.
 pub func enumCaseClassBare(ctx: in FuncCtx, caseName: in String): Option[String] {
   enumSigOwner(mapGet(ctx.funcSigs, "enumcase:" + caseName))
+}
+
+// Cross-package enum case-name collision fix (#5995).  The declaring enum's
+// JVM class for a PACKAGE-scoped `<dottedPkg>.<Case>` reference (the
+// `"enum:" + dottedPkg + "." + case` key `collectFileSigsSeeded`'s `IEnum`
+// branch registers alongside the enum-simple-name-scoped one), or `None` when
+// `dottedPkg` is empty or unregistered.  Unlike `enumVariantClass` (which
+// keys on the enum's own SIMPLE TYPE NAME and so still collides when two
+// DIFFERENT packages each declare an enum with the SAME type name — e.g. two
+// unrelated `HttpVersion` enums, the issue's literal repro shape), this keys
+// on the DECLARING PACKAGE, which is unambiguous across packages regardless
+// of whether their enum type names happen to match too.
+pub func enumVariantClassByPkg(ctx: in FuncCtx, dottedPkg: in String, caseName: in String): Option[String] {
+  if dottedPkg.length > 0 {
+    enumSigOwner(mapGet(ctx.funcSigs, "enum:" + dottedPkg + "." + caseName))
+  } else {
+    None
+  }
 }
 
 // Flatten a chain of nested `EMember`s over an `EPath` root into its full

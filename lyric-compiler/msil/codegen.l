@@ -281,6 +281,16 @@ pub record CodegenCtx {
   // rather than erasing to `<object>` (keeps the canonical nullary-case
   // representation consistent across construction positions).
   funcParamTypes: Map[String, List[MsilType]]
+  // Cross-package enum case-name collision fix (#5995).  Same keys as
+  // `funcParamTypes` (arity-qualified + bare FQN); each entry is the
+  // corresponding parameter's declared enum type SIMPLE NAME, or "" when that
+  // parameter isn't a (resolvable) enum.  `typeExprToMsilCtx` erases every
+  // enum to a bare `MInt`, so `funcParamTypes` alone can never tell a call
+  // site which enum a bare-case argument (`serializeResponseHead(Http11, …)`)
+  // is meant to construct — this side map keeps the Lyric-level enum name
+  // alive from `addPackageTokens` through to the call-argument lowering loop,
+  // which pushes it onto the callee's `enumHint` stack.
+  funcParamEnumTypeNames: Map[String, List[String]]
   // Declared parameter MODES per function (same keys as funcParamTypes:
   // arity-qualified + bare-FQN alias).  Lets a call site pass `out`/`inout`
   // arguments by managed pointer (address-load) instead of by value.  See #1761.
@@ -1927,6 +1937,7 @@ pub func newCodegenCtx(
     pbGenerics = newList(),
     funcRetTypes = newMap(),
     funcParamTypes = newMap(),
+    funcParamEnumTypeNames = newMap(),
     funcParamModes = newMap(),
     funcParamNames = newMap(),
     funcDefaultExprs = newMap(),
@@ -4214,8 +4225,12 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // so we reuse it here (#2597: no need for a separate declGenericsP).
         val isExternTargetFn = hasExternTargetMsil(decl.annotations)
         val paramTys: List[MsilType] = newList()
+        // #5995: parallel per-position declared enum type name ("" when the
+        // param isn't a resolvable enum) — see `funcParamEnumTypeNames`'s doc.
+        val paramEnumTys: List[String] = newList()
         var ppi = 0
         while ppi < decl.params.count {
+          paramEnumTys.add(enumSimpleNameOfTypeExprMsil(cctx, decl.params[ppi].ty))
           // Whether this parameter is the specific bounded case that needs the
           // real closed System.Func/Action instead of the shared (erasing)
           // typeExprToMsilCtx TFunction default (Epic #1877/#3923 FFI-boundary
@@ -4269,6 +4284,12 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         }
         if not cctx.funcParamTypes.containsKey(fqn) {
           cctx.funcParamTypes.add(fqn, paramTys)
+        }
+        if not cctx.funcParamEnumTypeNames.containsKey(arityKey) {
+          cctx.funcParamEnumTypeNames.add(arityKey, paramEnumTys)
+        }
+        if not cctx.funcParamEnumTypeNames.containsKey(fqn) {
+          cctx.funcParamEnumTypeNames.add(fqn, paramEnumTys)
         }
         // Inner parameter types of each function-typed parameter (#1939), so a
         // call site can propagate them into a lambda passed directly as an arg.
@@ -4895,6 +4916,33 @@ pub record FuncCtx {
   // Initialised `newMap()` at the construction site.
   byteSlots: Map[Int, Bool]
   var generics: List[String]
+  // Cross-package enum case-name collision fix (#5995).  A Lyric enum lowers
+  // to a bare Int ordinal (no distinguishing CLR type), so two in-bundle
+  // enums sharing a case name (`Http11` in both `Std.Http.HttpVersion` and an
+  // unrelated `HttpVersion`) cannot be told apart from `scrutTy`/`MsilType`
+  // alone the way a union case can (`pickCaseFqnByScrutinee`, #6337/#6510).
+  // `varEnumTypes` records each param/local's declared enum type SIMPLE NAME
+  // (populated wherever the Lyric-level TypeExpr is known — registerParamsMsil,
+  // the lowerFuncMsil param loop, and LBVal/LBLet/LBVar annotations — never
+  // guessed), keyed by binding name; a bare `match theVar { case Http11 -> }`
+  // scrutinee resolves its enum type through this map instead of the
+  // first-registered-wins bare `enumCaseOrdinals` key.
+  varEnumTypes: Map[String, String]
+  // Expected-enum-type-name hint stack (mirrors `contextHintTyArgs`/
+  // `collExpect`): pushed by a construction position whose Lyric-level
+  // expected type is a known enum (a call argument's declared parameter type,
+  // a `return`'s declared function return type, a `val`/`var`/`let`
+  // annotation) so a bare case reference (`Http11`) resolves via the
+  // type-scoped `<EnumType>.<Case>` key rather than the bare, first-wins one.
+  // Empty string entries mean "no enum expected here" (never popped past
+  // empty; the bare-name fallback then applies exactly as before this fix).
+  enumHint: List[String]
+  // This function's own declared return type's enum simple name, or "" when
+  // the return type isn't a (resolvable) enum.  Computed once from `decl.ret`
+  // at FuncCtx construction (mirrors `declaredRetTy`) and pushed onto
+  // `enumHint` around each `return <expr>` so a bare-case return
+  // (`return Http11`) resolves against the function's own declared enum type.
+  var declaredRetEnumTy: String
 }
 
 // A saved lexical scope (general shadowing fix, #5191).  A `{ … }` block is a
@@ -6957,6 +7005,50 @@ func popCollExpect(fctx: in FuncCtx): Unit {
   }
 }
 
+// Cross-package enum case-name collision fix (#5995).  `te`'s enum SIMPLE
+// NAME when it resolves (following `alias` chains, exactly like
+// `typeExprToMsilCtx`'s own enum branch) to a registered enum type, or ""
+// otherwise.  Kept in sync with `typeExprToMsilCtx`'s TRef arm — both must
+// agree on which TypeExprs name an enum.
+func enumSimpleNameOfTypeExprMsil(cctx: in CodegenCtx, te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> {
+      val seg = lastSegmentMsil(path)
+      if cctx.enumTypeNames.containsKey(seg) {
+        seg
+      } else if cctx.aliasTargets.containsKey(seg) {
+        match mapGet(cctx.aliasTargets, seg) {
+          case Some(rhs) -> enumSimpleNameOfTypeExprMsil(cctx, rhs)
+          case None -> ""
+        }
+      } else {
+        ""
+      }
+    }
+    case _ -> ""
+  }
+}
+
+// The current expected-enum-type-name hint (top of `enumHint`), or "" when
+// no construction position has pushed one.  See `FuncCtx.enumHint`'s doc.
+func currentEnumHintMsil(fctx: in FuncCtx): String {
+  if fctx.enumHint.count > 0 {
+    fctx.enumHint[fctx.enumHint.count - 1]
+  } else {
+    ""
+  }
+}
+
+func pushEnumHintMsil(fctx: in FuncCtx, name: in String): Unit {
+  fctx.enumHint.add(name)
+}
+
+func popEnumHintMsil(fctx: in FuncCtx): Unit {
+  if fctx.enumHint.count > 0 {
+    fctx.enumHint.removeAt(fctx.enumHint.count - 1)
+  }
+}
+
 // The generic type arguments of a type, or empty for a non-generic one.
 func genericArgsOfMsil(t: in MsilType): List[MsilType] {
   match t {
@@ -8066,7 +8158,22 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             case None -> {
               // Enum case reference (`val l = Debug`): emit the ordinal
               // directly — enum values are I4 at the IL level (#3196).
-              match mapGet(cctx.enumCaseOrdinals, name) {
+              // #5995: two in-bundle enums may share a bare case name
+              // (`Http11` in both `Std.Http.HttpVersion` and an unrelated
+              // enum); the bare `enumCaseOrdinals` key is first-registered-
+              // wins, so an unqualified reference silently resolved to
+              // whichever enum happened to compile first. When the
+              // surrounding construction context (a call argument's declared
+              // parameter type, a `return`, or a `val`/`var`/`let`
+              // annotation) pushed an expected enum type name onto
+              // `enumHint`, prefer the type-scoped `<EnumType>.<Case>` key —
+              // only falling back to the ambiguous bare key when no hint is
+              // in scope (unannotated `val l = Debug`-style references keep
+              // their pre-existing, best-effort behaviour).
+              val enumHintName = currentEnumHintMsil(fctx)
+              val hintedOrd = if enumHintName.length > 0 { mapGet(cctx.enumCaseOrdinals, enumHintName + "." + name) } else { None }
+              val ordHit = match hintedOrd { case Some(o) -> Some(value = o); case None -> mapGet(cctx.enumCaseOrdinals, name) }
+              match ordHit {
                 case Some(ordv) -> {
                   insns.add(MLdcI4(v = ordv))
                   return MInt
@@ -11113,6 +11220,30 @@ func lowerAssignExprMsil(
   }
 }
 
+// Cross-package enum case-name collision fix (#5995).  The declared enum
+// type SIMPLE NAME of `e`, when `e` is a bare reference to a param/local whose
+// annotation is a known enum (`fctx.varEnumTypes`), or "" otherwise.  Scoped
+// deliberately narrow: only a directly-named binding is recognised (no
+// field-access or call-result inference) — a wider scrutinee shape falls
+// back to the pre-existing first-registered-wins bare lookup, exactly as it
+// did before this fix.
+func inferScrutineeEnumHintMsil(fctx: in FuncCtx, e: in Expr): String {
+  match e.kind {
+    case EParen(inner) -> inferScrutineeEnumHintMsil(fctx, inner)
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        match mapGet(fctx.varEnumTypes, path.segments[0]) {
+          case Some(n) -> n
+          case None -> ""
+        }
+      } else {
+        ""
+      }
+    }
+    case _ -> ""
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §5e. Match expression lowering.
 //      Bootstrap-grade: literal, binding, constructor, and wildcard patterns.
@@ -11135,6 +11266,10 @@ func lowerMatchExprMsil(
   val scrutTy = lowerExprMsil(cctx, fctx, insns, scrutinee)
   val scrutSlot = allocSlotMsil(fctx, "__scrut_" + toString(fctx.slotTicker.count), scrutTy)
   emitStoreSlot(insns, scrutSlot, fctx.paramCount)
+  // #5995: this scrutinee's declared enum type name (if recognisable), so a
+  // bare-case arm (`case Http11 ->`) resolves against it instead of
+  // colliding with another in-bundle enum's same-named case.
+  val scrutEnumHint = inferScrutineeEnumHintMsil(fctx, scrutinee)
 
   val afterL = freshLabelMsil(fctx)
   var hasAfterBranch = false
@@ -11206,7 +11341,7 @@ func lowerMatchExprMsil(
     // restored per arm.  `POr` alternatives re-bind the same names INSIDE this
     // one scope, so they intentionally share slots.
     val armScope = enterBlockScopeMsil(fctx)
-    lowerPatternTestMsil(cctx, fctx, armInsns, arm.pattern, scrutSlot, scrutTy, nextArmL)
+    lowerPatternTestMsil(cctx, fctx, armInsns, arm.pattern, scrutSlot, scrutTy, nextArmL, scrutEnumHint)
     lowerPatternBindMsil(cctx, fctx, armInsns, arm.pattern, scrutSlot, scrutTy)
     match arm.guard {
       case Some(g) -> {
@@ -11626,11 +11761,21 @@ func testCaseFieldMsil(
     emitCaseFieldLoad(insns, castTy, castSlot, fctx.paramCount, caseClass, caseClassBt, fTok, fMTy, actualFieldName)
     val fldSlot = allocSlotMsil(fctx, "__ftest_" + toString(fi) + "_" + toString(fctx.slotTicker.count), fieldTy)
     emitStoreSlot(insns, fldSlot, fctx.paramCount)
-    lowerPatternTestMsil(cctx, fctx, insns, fieldPat, fldSlot, fieldTy, failLabel)
+    // A constructor field's own declared enum type isn't tracked (only
+    // param/local annotations are, #5995) — "" falls back to the
+    // pre-existing bare-name lookup for a nested field scrutinee, same as
+    // before this fix.
+    lowerPatternTestMsil(cctx, fctx, insns, fieldPat, fldSlot, fieldTy, failLabel, "")
   }
 }
 
 // Emit a runtime test for a pattern.  Jumps to `failLabel` if the test fails.
+// `scrutEnumHint` (#5995) is the scrutinee's declared enum type SIMPLE NAME
+// when known (see `inferScrutineeEnumHintMsil`/`FuncCtx.varEnumTypes`), or ""
+// when unknown — propagated to recursive calls that test the SAME value
+// (`PBinding`'s inner, `PParen`, `POr` alternatives) and reset to "" for a
+// structurally different sub-scrutinee (tuple/record field tests), which
+// have no comparable type-name tracking.
 func lowerPatternTestMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -11639,6 +11784,7 @@ func lowerPatternTestMsil(
   scrutSlot: in Int,
   scrutTy: in MsilType,
   failLabel: in Int,
+  scrutEnumHint: in String,
 ): Unit {
   match pat.kind {
     case PWildcard -> {
@@ -11646,14 +11792,27 @@ func lowerPatternTestMsil(
     case PBinding(pBindName, innerOpt) -> {
       match innerOpt {
         case Some(inner) -> {
-          lowerPatternTestMsil(cctx, fctx, insns, inner, scrutSlot, scrutTy, failLabel)
+          lowerPatternTestMsil(cctx, fctx, insns, inner, scrutSlot, scrutTy, failLabel, scrutEnumHint)
         }
         case None -> {
           // `case Debug ->` over an enum scrutinee: the parser produced a
           // PBinding, but the name is a known enum case — compare ordinals
           // (mirrors the F# emitter's EnumCases-first lookup).  An MObject
           // scrutinee (boxed) is unboxed to I4 first.
-          match mapGet(cctx.enumCaseOrdinals, pBindName) {
+          // #5995: two in-bundle enums may share a bare case name; prefer the
+          // type-scoped `<EnumType>.<Case>` key when the scrutinee's declared
+          // enum type is known, falling back to the ambiguous bare key
+          // otherwise (unchanged pre-existing behaviour).
+          val hintedOrd = if scrutEnumHint.length > 0 {
+            mapGet(cctx.enumCaseOrdinals, scrutEnumHint + "." + pBindName)
+          } else {
+            None
+          }
+          val ordHit = match hintedOrd {
+            case Some(o) -> Some(value = o)
+            case None -> mapGet(cctx.enumCaseOrdinals, pBindName)
+          }
+          match ordHit {
             case Some(ordv) -> {
               emitLoadSlot(insns, scrutSlot, fctx.paramCount)
               match scrutTy {
@@ -12122,12 +12281,14 @@ func lowerPatternTestMsil(
         }
         val ptElemSlot = allocSlotMsil(fctx, "__tuptest_" + toString(pti) + "_" + toString(fctx.slotTicker.count), ptElemTy)
         emitStoreSlot(insns, ptElemSlot, fctx.paramCount)
-        lowerPatternTestMsil(cctx, fctx, insns, tuplePats[pti], ptElemSlot, ptElemTy, failLabel)
+        // A tuple element's own declared enum type isn't tracked (#5995) —
+        // "" falls back to the pre-existing bare-name lookup.
+        lowerPatternTestMsil(cctx, fctx, insns, tuplePats[pti], ptElemSlot, ptElemTy, failLabel, "")
         pti = pti + 1
       }
     }
     case PParen(inner) -> {
-      lowerPatternTestMsil(cctx, fctx, insns, inner, scrutSlot, scrutTy, failLabel)
+      lowerPatternTestMsil(cctx, fctx, insns, inner, scrutSlot, scrutTy, failLabel, scrutEnumHint)
     }
     case PRange(lo, inclusive, hi) -> {
       // Numeric range test: fail unless `lo <= scrut (<|<=) hi`.  `clt`/`cgt`
@@ -12189,7 +12350,9 @@ func lowerPatternTestMsil(
                 emitCaseFieldLoad(insns, scrutTy, scrutSlot, fctx.paramCount, plainRecClass, recClassBt, fTok, fMTy, fname)
                 val tSlot = allocSlotMsil(fctx, "__rtest_" + fname + "_" + toString(fctx.slotTicker.count), fty)
                 emitStoreSlot(insns, tSlot, fctx.paramCount)
-                lowerPatternTestMsil(cctx, fctx, insns, subPat, tSlot, fty, failLabel)
+                // A record field's own declared enum type isn't tracked
+                // (#5995) — "" falls back to the pre-existing bare-name lookup.
+                lowerPatternTestMsil(cctx, fctx, insns, subPat, tSlot, fty, failLabel, "")
               }
               case None -> {
               }
@@ -12218,7 +12381,7 @@ func lowerPatternTestMsil(
       var ai = 0
       while ai < patterns.count {
         val nextAltL = freshLabelMsil(fctx)
-        lowerPatternTestMsil(cctx, fctx, insns, patterns[ai], scrutSlot, scrutTy, nextAltL)
+        lowerPatternTestMsil(cctx, fctx, insns, patterns[ai], scrutSlot, scrutTy, nextAltL, scrutEnumHint)
         // This alternative matched: bind ITS variables before jumping to the
         // shared success label.  An or-pattern's bindings cannot be emitted by
         // the (alternative-agnostic) bind pass — only here do we know which
@@ -14221,6 +14384,12 @@ func lowerBuiltinOrStaticCallMsil(
               match mapGet(cctx.funcTokens, tokKey) {
                 case Some(tok) -> {
                   val callParamTys = match mapGet(cctx.funcParamTypes, tokKey) { case Some(pts) -> pts; case None -> newList() }
+                  // #5995: parallel declared-enum-type-name list — see
+                  // `funcParamEnumTypeNames`'s doc.
+                  val callParamEnumTys = match mapGet(cctx.funcParamEnumTypeNames, tokKey) {
+                    case Some(ns) -> ns
+                    case None -> newList()
+                  }
                   val callParamModes = match mapGet(cctx.funcParamModes, tokKey) { case Some(ms) -> ms; case None -> newList() }
                   val reorderedArgs = reorderFuncNamedArgs(cctx, tokKey, args)
                   val callArgs = fillPositionalFuncDefaults(cctx, tokKey, reorderedArgs)
@@ -14359,6 +14528,13 @@ func lowerBuiltinOrStaticCallMsil(
                       // (rather than append) so an enclosing val/return context for
                       // a *different* type doesn't leak into the argument.
                       val pTy = if i < callParamTys.count { callParamTys[i] } else { MObject }
+                      // #5995: thread the callee's declared enum type name (if
+                      // any) for this position so a bare-case argument
+                      // (`serializeResponseHead(Http11, ...)`) resolves against
+                      // the parameter's OWN enum instead of colliding with
+                      // another in-bundle enum's same-named case.
+                      val argEnumHint = if i < callParamEnumTys.count { callParamEnumTys[i] } else { "" }
+                      pushEnumHintMsil(fctx, argEnumHint)
                       match pTy {
                         case MGenericInst(_, _, pArgs) -> {
                           val savedHints: List[MsilType] = newList()
@@ -14496,6 +14672,7 @@ func lowerBuiltinOrStaticCallMsil(
                           }
                         }
                       }
+                      popEnumHintMsil(fctx)
                       i = i + 1
                     }
                   }
@@ -16732,12 +16909,17 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       match binding {
         case LBVal(pat, tyOpt, init) -> {
           val annoTy = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MObject }
+          // #5995: this binding's declared enum type (if any), so a bare-case
+          // init (`val v: HttpVersion = Http11`) resolves against it instead
+          // of colliding with another in-bundle enum's same-named case.
+          val annoEnumName = match tyOpt { case Some(te) -> enumSimpleNameOfTypeExprMsil(cctx, te); case None -> "" }
           // Establish a fresh hint scope from this binding's annotation: a
           // generic annotation (`val m: Option[List[String]] = None`) threads its
           // concrete args so a nullary `None` instantiates closed (#2362), and
           // clearing first stops an enclosing block's return-type hint from
           // leaking in (which would instantiate the `None` at the wrong args).
           val savedAnnoHint = pushAnnoHintTyArgs(fctx, annoTy)
+          pushEnumHintMsil(fctx, annoEnumName)
           // Empty typed-slice literal (`val xs: slice[T] = []`): the generic
           // `[]` otherwise lowers to a `List<object>`, which then mis-reads as
           // a `T[]` at the MArray-typed local (#1497).  Emit a real empty
@@ -16765,6 +16947,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             coerceCallArgMsil(cctx, insns, initTy, annoTy)
           }
           popCollExpect(fctx)
+          popEnumHintMsil(fctx)
           restoreHintTyArgs(fctx, savedAnnoHint)
           val effectiveTy = if annoTy != MObject { annoTy } else { initTy }
           lowerLocalPatBindMsil(cctx, fctx, insns, pat, effectiveTy, tyOpt)
@@ -16773,7 +16956,14 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // name pattern (no destructuring), try the record-field-read
           // source too, same as the `LBLet`/`LBVar` fallback below.
           match pat.kind {
-            case PBinding(bindName, None) -> registerFieldFuncValTypesMsil(cctx, fctx, bindName, init)
+            case PBinding(bindName, None) -> {
+              registerFieldFuncValTypesMsil(cctx, fctx, bindName, init)
+              // #5995: remember this local's declared enum type so a later
+              // bare `match bindName { case Http11 -> }` scopes correctly.
+              if annoEnumName.length > 0 {
+                fctx.varEnumTypes.add(bindName, annoEnumName)
+              }
+            }
             case _ -> ()
           }
           // Phase B.1 promoted-local (#6249): `val x = ...` is LBVal, and its
@@ -16786,8 +16976,11 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         }
         case LBLet(name, tyOpt, init) -> {
           val annoTy = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MObject }
+          // #5995: see the matching LBVal comment above.
+          val annoEnumName = match tyOpt { case Some(te) -> enumSimpleNameOfTypeExprMsil(cctx, te); case None -> "" }
           // Fresh hint scope from the annotation (see LBVal above).
           val savedAnnoHint = pushAnnoHintTyArgs(fctx, annoTy)
+          pushEnumHintMsil(fctx, annoEnumName)
           pushCollExpect(fctx, annoTy)
           val initTy = lowerExprMsil(cctx, fctx, insns, init)
           // Unbox a closure/HOF call result before it binds into a
@@ -16796,9 +16989,13 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             coerceCallArgMsil(cctx, insns, initTy, annoTy)
           }
           popCollExpect(fctx)
+          popEnumHintMsil(fctx)
           restoreHintTyArgs(fctx, savedAnnoHint)
           val ty = if annoTy != MObject { annoTy } else { initTy }
           val slot = allocSlotMsil(fctx, name, ty)
+          if annoEnumName.length > 0 {
+            fctx.varEnumTypes.add(name, annoEnumName)
+          }
           markByteSlotMsil(fctx, slot, isByteAnnotationMsil(tyOpt))
           emitByteSlotNarrowMsil(fctx, insns, slot)
           emitStoreSlot(insns, slot, fctx.paramCount)
@@ -16879,6 +17076,11 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // newobj List; dup; <value>; finishHoistedCell.  Reads/writes route
           // through the cell so the closure and this scope share the location.
           val isHoisted = nameListContains(fctx.hoistedVarNames, name)
+          // #5995: see the matching LBVal comment above.
+          val annoEnumName = match tyOpt { case Some(te) -> enumSimpleNameOfTypeExprMsil(cctx, te); case None -> "" }
+          if annoEnumName.length > 0 {
+            fctx.varEnumTypes.add(name, annoEnumName)
+          }
           match initOpt {
             case Some(init) -> {
               val annoTy = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MObject }
@@ -16900,6 +17102,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               }
               // Fresh hint scope from the annotation (see LBVal above).
               val savedAnnoHint = pushAnnoHintTyArgs(fctx, annoTy)
+              pushEnumHintMsil(fctx, annoEnumName)
               pushCollExpect(fctx, annoTy)
               val initTy = lowerExprMsil(cctx, fctx, insns, init)
               // Unbox a closure/HOF call result before it binds into a
@@ -16911,6 +17114,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 coerceCallArgMsil(cctx, insns, initTy, annoTy)
               }
               popCollExpect(fctx)
+              popEnumHintMsil(fctx)
               restoreHintTyArgs(fctx, savedAnnoHint)
               val ty = if annoTy != MObject { annoTy } else { initTy }
               if isHoisted {
@@ -17014,7 +17218,11 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           case Some(e) -> {
             pushCollExpect(fctx, fctx.declaredRetTy)
             val savedRetHint1 = pushRetHintTyArgs(fctx, fctx.declaredRetTy)
+            // #5995: a bare-case return (`return Http11`) resolves against
+            // THIS function's own declared enum return type.
+            pushEnumHintMsil(fctx, fctx.declaredRetEnumTy)
             val retExprTy1 = lowerExprMsil(cctx, fctx, insns, e)
+            popEnumHintMsil(fctx)
             restoreHintTyArgs(fctx, savedRetHint1)
             popCollExpect(fctx)
             // A void/Unit function with `return <expr>` (commonly `return ()`):
@@ -17044,7 +17252,10 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           case Some(e) -> {
             pushCollExpect(fctx, fctx.declaredRetTy)
             val savedRetHint2 = pushRetHintTyArgs(fctx, fctx.declaredRetTy)
+            // #5995: see the matching comment on the protected-region arm above.
+            pushEnumHintMsil(fctx, fctx.declaredRetEnumTy)
             val retExprTy2 = lowerExprMsil(cctx, fctx, insns, e)
+            popEnumHintMsil(fctx)
             restoreHintTyArgs(fctx, savedRetHint2)
             popCollExpect(fctx)
             // A void/Unit function with `return <expr>` (commonly `return ()`):
@@ -17651,7 +17862,10 @@ func makeFuncCtxMsil(
     scopeBaseMsil = 0,
     scopeUndoMsil = newList(),
     byteSlots = newMap(),
-    generics = newList()
+    generics = newList(),
+    varEnumTypes = newMap(),
+    enumHint = newList(),
+    declaredRetEnumTy = ""
   )
 }
 
@@ -24348,6 +24562,10 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   }
   val fctx = makeFuncCtxMsil(pkgName, className, decl.name, effectiveParamCount, lambdaLogicalRetTy)
   fctx.generics = fnGenerics
+  // #5995: this function's own declared return enum type (if any), so a bare
+  // `return Http11` resolves against the RIGHT enum instead of whichever
+  // same-named-case enum happened to register first.
+  fctx.declaredRetEnumTy = match decl.ret { case Some(te) -> enumSimpleNameOfTypeExprMsil(cctx, te); case None -> "" }
   val insns: List[MInsn] = newList()
 
   // Allocate slots for parameters.  These occupy slots 0..N-1 in the
@@ -24441,6 +24659,12 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
     if isByrefMode(p.mode) {
       fctx.byrefSlotTypes.add(slot, paramTy)
     }
+    // #5995: record this param's declared enum type (if any) — see the
+    // matching comment in registerParamsMsil.
+    val paramEnumName = enumSimpleNameOfTypeExprMsil(cctx, p.ty)
+    if paramEnumName.length > 0 {
+      fctx.varEnumTypes.add(p.name, paramEnumName)
+    }
     // For lambda parameters with a logical type (annotated or propagated), record
     // the slot's logical type in boxedParamTypes. The load-side code at codegen.l:5080
     // consults this to emit castObjectToMsil (unbox) on parameter reads (#1939, #4101).
@@ -24518,7 +24742,14 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
               // push/pop their own collExpect on top, so only the tail inherits it.
               pushCollExpect(fctx, retTy)
               val savedTrailHint = pushRetHintTyArgs(fctx, retTy)
+              // #5995: a bare-case IMPLICIT tail return (`func make11():
+              // HttpVersion { Http11 }`, no explicit `return`) resolves
+              // against this function's own declared enum return type —
+              // this tail form bypasses `SReturn` entirely (the block's
+              // last expression falls off the end).
+              pushEnumHintMsil(fctx, fctx.declaredRetEnumTy)
               val trailTy = lowerBlockExprMsil(cctx, fctx, insns, block)
+              popEnumHintMsil(fctx)
               restoreHintTyArgs(fctx, savedTrailHint)
               popCollExpect(fctx)
               if not endsWithReturnMsil(insns) {
@@ -24540,7 +24771,10 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
           case FBExpr(e) -> {
             pushCollExpect(fctx, retTy)
             val savedExprHint = pushRetHintTyArgs(fctx, retTy)
+            // #5995: see the matching FBBlock comment above.
+            pushEnumHintMsil(fctx, fctx.declaredRetEnumTy)
             val exprTailTy = lowerExprMsil(cctx, fctx, insns, e)
+            popEnumHintMsil(fctx)
             restoreHintTyArgs(fctx, savedExprHint)
             popCollExpect(fctx)
             // A `: Never`-typed tail call erases to MVoid (`Never` unifies with
@@ -24750,6 +24984,13 @@ func registerParamsMsil(
     if isByrefMode(p.mode) {
       fctx.byrefSlotTypes.add(slot, paramTy)
     }
+    // #5995: record this param's declared enum type (if any) so a bare
+    // `match p { case Http11 -> }` scrutinee scopes its case lookup instead
+    // of colliding with another in-bundle enum's same-named case.
+    val paramEnumName = enumSimpleNameOfTypeExprMsil(cctx, p.ty)
+    if paramEnumName.length > 0 {
+      fctx.varEnumTypes.add(p.name, paramEnumName)
+    }
     // #5366: resolve through a type alias too — see `resolveFuncTypeExprMsil`.
     match resolveFuncTypeExprMsil(cctx, p.ty) {
       case Some(funcTe) -> {
@@ -24807,6 +25048,8 @@ pub func lowerImplMethodMsil(
   // correct methodTokens key.
   val fctx = makeFuncCtxMsil(pkgName, targetTypeName, decl.name, 1 + implRealParams.count, declaredRetTyCtx)
   fctx.slotTicker.add(0)  // slot 0 = this, no name binding
+  // #5995: see the matching comment in lowerFuncMsil.
+  fctx.declaredRetEnumTy = match decl.ret { case Some(te) -> enumSimpleNameOfTypeExprMsil(cctx, te); case None -> "" }
 
   val insns: List[MInsn] = newList()
 
@@ -24884,7 +25127,15 @@ func lowerMethodBodyTailMsil(
     case FBBlock(block) -> {
       if retTy != MVoid {
         pushCollExpect(fctx, collExpectTy)
+        // #5995: a bare-case IMPLICIT tail return (`func make11(): HttpVersion
+        // { Http11 }`, no explicit `return`) resolves against this function's
+        // own declared enum return type — mirrors the explicit-`return` fix
+        // in `lowerStmtMsil`'s `SReturn` arm, which this tail form bypasses
+        // entirely (the block's last expression falls off the end rather
+        // than going through `SReturn`).
+        pushEnumHintMsil(fctx, fctx.declaredRetEnumTy)
         val trailTy = lowerBlockExprMsil(cctx, fctx, insns, block)
+        popEnumHintMsil(fctx)
         popCollExpect(fctx)
         if not endsWithReturnMsil(insns) {
           coerceTrailingToRetMsil(cctx, fctx, insns, trailTy, retTy)
@@ -24899,7 +25150,10 @@ func lowerMethodBodyTailMsil(
     }
     case FBExpr(e) -> {
       pushCollExpect(fctx, collExpectTy)
+      // #5995: see the matching FBBlock comment above.
+      pushEnumHintMsil(fctx, fctx.declaredRetEnumTy)
       val exprTailTy = lowerExprMsil(cctx, fctx, insns, e)
+      popEnumHintMsil(fctx)
       popCollExpect(fctx)
       if exprTailTy == MVoid and retTy != MVoid {
         pushDefaultValueMsil(cctx, fctx, insns, retTy)
@@ -24957,6 +25211,8 @@ pub func lowerRecordMethodMsil(
   val realParams: List[Param] = realMethodParamsOf(decl.params)
   val fctx = makeFuncCtxMsil(pkgName, targetTypeName, decl.name, decl.params.count, retTy)
   fctx.slotTicker.add(0)  // slot 0 = self ("this"), no name binding — ESelf reads ldarg.0 directly
+  // #5995: see the matching comment in lowerFuncMsil.
+  fctx.declaredRetEnumTy = match decl.ret { case Some(te) -> enumSimpleNameOfTypeExprMsil(cctx, te); case None -> "" }
 
   if generics.count > 0 {
     // Bind `self`'s type to the OPEN self-instantiation (`Box`1<!0>`) rather

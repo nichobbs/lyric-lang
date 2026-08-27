@@ -1042,8 +1042,15 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                               // A bare reference to a declared enum's case
                               // (`log(Debug, …)`) is the variant's singleton
                               // field — mirrors the MSIL `EPath` ordinal
-                              // resolution (docs/59 §4.4).
-                              match enumCaseClassBare(ctx, name) {
+                              // resolution (docs/59 §4.4).  Cross-package
+                              // collision fix (#5995): prefer the
+                              // enclosing call argument's expected-package
+                              // hint (`ctorExpectStack`) over the bundle-
+                              // global first-registered bare key, so
+                              // `serializeResponseHead(Http11, ...)`
+                              // constructs the SAME enum the parameter
+                              // actually declares.
+                              match enumCaseClassForExpecting(ctx, name) {
                                 case Some(ecls) -> {
                                   insns.add(LGetstatic(owner = ecls, name = name, t = JRef(className = ecls)))
                                   JRef(className = ecls)
