@@ -294,12 +294,30 @@ func containsTypeParam(te: in TypeExpr, typeParams: in List[String]): Bool {
 // `01_types.l` loads before `03_match.l`, so the single definition lives here
 // (#5052; previously duplicated under two names since this file couldn't
 // call forward into `03_match.l`'s copy).
+//
+// `Object` is reserved here too (#5843 JVM parity fix): `Lyric.Mono`
+// defaults an imported generic's unpinned type parameter to the bare name
+// `Object` when it specialises (mono.l's `singleSegPath("Object")` fill —
+// see `typeExprToJvm`'s own `seg == "Object"` arm, D-progress-658, which
+// already treats it as reserved "like Int / String"). Before this arm,
+// `eagerlyResolveGenericArg` — the ONLY caller of this predicate that also
+// rewrites a non-primitive bare `TRef` into a same-package marker — took
+// the `else` branch for `Object` and guessed a phantom same-package class
+// (`<pkg>/Object`), which `recordParamGenericArgs` (#5956) then fed into
+// `ctx.varGenericArgs` for a monomorphized copy whose unpinned type param
+// erased to `Object`: a later read of that param resolved the phantom
+// class and printed/compared against its (nonexistent-at-runtime) class
+// name instead of the real value, surfacing as a raw JVM-internal-name
+// string (`Lyric/StdlibGenericMonoSelfTest/Object`) where a real value was
+// expected. Leaving `Object` as a bare identifier here routes it back
+// through `typeExprToJvm`'s existing reserved-`Object` arm instead.
 pub func isPrimitiveTypeKeyword(seg: in String): Bool {
   seg == "Int" or seg == "Long" or seg == "Double" or seg == "Float" or seg == "Bool" or seg == "String" or
     seg == "Char" or
     seg == "Byte" or
     seg == "Nat" or
-    seg == "Unit"
+    seg == "Unit" or
+    seg == "Object"
 }
 
 // Rewrite a single `retGenericArgs` `TypeExpr`'s bare, non-primitive `TRef`

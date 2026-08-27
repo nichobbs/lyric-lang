@@ -36183,3 +36183,93 @@ change reuses, no decision-log entry of its own yet), D-progress-628 (the
 `lyric-i18n` workarounds this fix obsoletes), `lyric-compiler/lyric/
 mono.l`, `lyric-compiler/lyric/mono_self_test.l`, `lyric-compiler/lyric/
 match_bound_pattern_type_self_test.l`.
+
+---
+
+## D-progress-813 — CI regression on PR #6631: `recordParamGenericArgs` (#5956) leaked mono's `Object` erasure marker as a phantom same-package class on JVM (#5843)
+
+**Status:** Shipped.
+
+**Context.** PR #6631 (a 15-commit batch of JVM-generics/runtime-semantics
+fixes) rebased cleanly onto `main` and pushed, but CI's
+`compiler-self-tests-jvm` job failed test 7 of
+`stdlib_generic_mono_self_test.l` — "mapOption + lambda calling an
+ambiguous cross-package name (#5843)" — with a raw JVM internal class name
+(`Lyric/StdlibGenericMonoSelfTest/Object`) printed where the real
+(uppercased-string) value was expected.
+
+Confirmed as a genuine regression, not a pre-existing failure: built
+`./bin/lyric` from `d9349bf` (the commit immediately before this batch's
+first commit) in a separate worktree and ran the same
+`lyric test --target jvm stdlib_generic_mono_self_test.l` — all 7 tests
+passed there. The batch's `a4db215` (JVM: implement distinct/range-subtype
+`Type.from`/`tryFrom` static factories, fixes #5956) introduced
+`recordParamGenericArgs` (`lyric-compiler/jvm/codegen/03_match.l`), a new
+producer into `ctx.varGenericArgs` that records a function parameter's own
+generic-instantiation annotation (so a later `match <param> { … }` on it
+recovers a concrete payload type instead of erased `Object`). Both of its
+call sites (`lyric-compiler/jvm/codegen/06_items.l:651`, `:917`) sit right
+next to a call to the pre-existing `recordDeclaredElemType`, which filters
+out any element type that names the enclosing function's OWN generic type
+parameter before registering (`typeParamIndexOf` guard, "the receiver
+type's own generic params are filtered — they erase to Object") — but
+`recordParamGenericArgs` carries no such filter and does not even take a
+`typeParams` argument.
+
+That omission alone wasn't the mechanism here, though: `mapOption` is an
+IMPORTED stdlib generic, and `Lyric.Mono` (`mono.l` lines ~2101, ~3397)
+defaults an unpinned type parameter of exactly this class of generic to
+the bare marker `TRef(path = singleSegPath("Object"))` when it specialises
+a call site — the SAME defaulting `typeExprToJvm`
+(`lyric-compiler/jvm/codegen/01_types.l`) already special-cases (`seg ==
+"Object" -> JRef("java/lang/Object")`, reserved "like `Int` / `String`",
+D-progress-658). `recordParamGenericArgs`'s param-annotation walk reaches
+this same substituted `Object` marker via `eagerlyResolveGenericArgs`
+(01_types.l), whose `eagerlyResolveGenericArg` TRef branch had NO matching
+case for `Object` — it isn't in `isPrimitiveTypeKeyword`'s list — so it
+fell to the generic "same-package user type" guess and rewrote it to the
+pre-resolved marker `<pkgName>/Object`, a phantom class with no `.class`
+file. A later read of that `varGenericArgs` entry (in the #5843 test,
+`unwrapOr(upper, "")`'s payload resolution after `mapOption`'s call)
+resolved that phantom class and, since it doesn't exist at runtime,
+surfaced its slash-qualified name instead of the real string value —
+exactly the "phantom-class checkcast" symptom family `02_exprs.l`'s
+`sameTypeExprElemFallback` doc comment already warned about: "a stray,
+un-filtered generic type-parameter name reaching [`resolveConcreteTypeExpr`]
+must never guess a phantom same-package class," an invariant
+`recordParamGenericArgs` broke as a new, unfiltered third producer into
+`ctx.varGenericArgs`.
+
+**Fix (`01_types.l`).** Added `Object` to `isPrimitiveTypeKeyword`. This is
+the single choke point both `eagerlyResolveGenericArg` (rewrites a bare
+`TRef` into a same-package marker unless it's a reserved primitive
+keyword) and `resolveConcreteTypeExpr`/`sameTypeExprElemFallback` (read a
+resolved arg back) already share, so treating `Object` as reserved there
+routes it straight back through `typeExprToJvm`'s existing D-progress-658
+`Object -> java/lang/Object` arm instead of duplicating that mapping at a
+second site. This also closes a second latent instance of the exact same
+bug in `sameTypeExprElemFallback` (02_exprs.l), which had the identical
+gap. A `typeParams`-filter fix at `recordParamGenericArgs` itself (mirroring
+`recordDeclaredElemType`'s guard, the reviewer's first-suggested angle) was
+considered and rejected: it only catches an UN-monomorphized function's own
+literal type-param name (`T`/`U`), but `mapOption` here is a monomorphized
+specialization whose `decl.generics` is already empty by codegen time —
+the literal name surviving into the parameter annotation is `Object`, not
+`T`/`U`, so a `typeParams` filter would never have fired for this call
+shape.
+
+**Verification.** `./bin/lyric test --target jvm
+stdlib_generic_mono_self_test.l`: 7/7 (was 6/7). `./bin/lyric test
+stdlib_generic_mono_self_test.l` (`--target dotnet`): 7/7, unchanged.
+Regression sweep on `--target jvm`: `mono_self_test.l` (N/A — compiler-package
+import, not run under `--target jvm` in CI), `generic_extern_jvm_self_test.l`
+5/5, `list_literal_index_self_test.l` 6/6, `match_bound_pattern_type_
+self_test.l` 6/6, `range_subtype_self_test.l` 10/10, `slice_append_
+widening_self_test.l` 2/2, `slice_ops_self_test.l` 13/13 — all pass, no
+regressions from the `isPrimitiveTypeKeyword` change.
+
+**Related:** #5843, #5956 (D-progress-809, the commit that introduced
+`recordParamGenericArgs`), D-progress-658 (the `typeExprToJvm` `Object`
+reservation this fix reuses rather than duplicates), `lyric-compiler/jvm/
+codegen/01_types.l`, `lyric-compiler/jvm/codegen/03_match.l`,
+`lyric-compiler/lyric/stdlib_generic_mono_self_test.l`, PR #6631.

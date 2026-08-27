@@ -32398,3 +32398,20 @@ source-bundling (`depTemplateSrcs`), not `restoredDllPaths` — full `lyric
 build --target jvm` / `lyric.toml` CLI wiring of a genuinely pre-compiled-only
 restored JVM dependency (e.g. a Maven-published lyric-jvm package with no
 local source) needs that target-aware artifact-naming/resolution work first.
+
+### D-progress-813: CI regression on PR #6631, `stdlib_generic_mono_self_test.l` test 7 (#5843)
+
+`recordParamGenericArgs` (#5956, D-progress-809) was a new, unfiltered
+producer into `ctx.varGenericArgs` on JVM: it fed `Lyric.Mono`'s `Object`
+erasure marker for an unpinned imported-generic type parameter through
+`eagerlyResolveGenericArg`, which had no reserved case for the bare name
+`Object` and guessed a phantom same-package class
+(`<pkg>/Object`) — the exact "stray, un-filtered generic type-parameter
+name" hazard `02_exprs.l`'s `sameTypeExprElemFallback` doc comment already
+warned other `varGenericArgs` producers to filter against. Fixed by adding
+`Object` to `isPrimitiveTypeKeyword` (`01_types.l`), routing it back
+through `typeExprToJvm`'s existing D-progress-658 `Object ->
+java/lang/Object` reservation instead of duplicating that mapping.
+`stdlib_generic_mono_self_test.l` 7/7 on both targets; regression sweep
+across the batch's other JVM generic-arg-tracking self-tests unaffected.
+See `docs/03-decision-log.md` D-progress-813.
