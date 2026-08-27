@@ -403,3 +403,68 @@ test "#6555: a mutable receiver declared inside a ?-propagated block keeps its p
     case Err(e) -> assertTrue(false, "unexpected Err: " + e)
   }
 }
+
+// ── #6600 (review follow-up on #5629): a `var` RECORD FIELD mutated ─────────
+// through a member-write during the awaited call is invisible to the
+// base-name-only mutability check. `hzNameLikeMutable` used to recurse an
+// `EMember` receiver down to its base name only — so `h.box`, with `h` a
+// `val`, was treated as unconditionally safe to re-read after the hoisted
+// await even though `swapMemberBox` reassigns the FIELD (not `h` itself)
+// via a member-target write (`h.box = ...`), which the type checker's
+// T0087 mutability check does not catch either (it only fires for bare
+// `EPath` assignment targets — a member-target write is unchecked there
+// too). Records support `var` fields on both targets, so this reproduces
+// identically on `--target dotnet` and `--target jvm`.
+record Holder {
+  var box: MutRecvBox
+}
+
+func swapMemberBox(h: in Holder): Int {
+  h.box = MutRecvBox(tag = 99)
+  5
+}
+
+async func memberFieldMutatedDuringAwaitArg(): Int {
+  val h = Holder(box = MutRecvBox(tag = 1))
+  // `h.box` (the method receiver) must be captured with tag=1 BEFORE the
+  // awaited call reassigns the field through the member-write.
+  return h.box.describe(await swapMemberBox(h))
+}
+
+test "#6600: a var record field mutated via member-write during the awaited call keeps its pre-await value" {
+  // Correct: describe(self=tag 1, n=5) = 1*1000+5 = 1005 — h.box is
+  // captured before swapMemberBox's `h.box = ...` reassigns the field.
+  // Before the fix, `h.box` was re-read AFTER the hoisted await,
+  // observing tag=99 and producing 99005 instead.
+  assertEqualInt(
+    await memberFieldMutatedDuringAwaitArg(),
+    1005,
+    "member-field receiver must be captured before the mutating await, not after"
+  )
+}
+
+// The identical shape one level deeper: the receiver base is `self` itself
+// (`case ESelf -> false` was unconditional, so `self.box` was unreachable
+// by the base-name rule at all, not merely under-conservative like a plain
+// `EPath` base — #6600's other required fix).
+func swapCacheBox(c: in Cache): Int {
+  c.box = MutRecvBox(tag = 99)
+  5
+}
+
+record Cache {
+  var box: MutRecvBox
+
+  async func run(self: in Cache): Int {
+    return self.box.describe(await swapCacheBox(self))
+  }
+}
+
+test "#6600: a var field mutated via self.field member-write during the awaited call keeps its pre-await value" {
+  val c = Cache(box = MutRecvBox(tag = 1))
+  // Same expected value as the plain-record case: describe(self=tag 1,
+  // n=5) = 1005. Before the fix, `self.box` was re-read AFTER the hoisted
+  // await (the `ESelf -> false` base case made this unreachable by the
+  // conservative rule at all), observing tag=99 and producing 99005.
+  assertEqualInt(await c.run(), 1005, "self.box must be captured before the mutating await, not after")
+}

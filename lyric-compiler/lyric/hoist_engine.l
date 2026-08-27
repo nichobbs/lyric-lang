@@ -253,15 +253,30 @@ func hzIsNameLike(e: in Expr): Bool {
 // `await`ed call reachable from the same statement takes it as an `inout`
 // argument, or — under real concurrency — a spawned sibling task shares the
 // slot), so re-reading it afterward risks a stale-vs-mutated read (#5629). A
-// multi-segment path (a package/type qualifier) and `self` are never
-// reassignable bindings and stay unconditionally safe; a literal is already
-// excluded upstream by `hzIsNameLike`'s own callers gating on `hzHasHazard`.
+// multi-segment path (a package/type qualifier) is never a reassignable
+// binding and stays unconditionally safe; a literal is already excluded
+// upstream by `hzIsNameLike`'s own callers gating on `hzHasHazard`.
+//
+// `EMember` (and `self`, which can itself be an `EMember` receiver, e.g.
+// `self.box`) is NOT unconditionally safe the way a bare path base is:
+// records support `var` fields, and the type checker's own mutability
+// check (T0087) only fires for bare-`EPath` assignment targets — a
+// member-target write like `h.box = ...` (or `self.box = ...`) is
+// unchecked at the type-checker level too, so a `var` record field
+// mutated through a member-write during the hoisted hazard is completely
+// invisible if we only recurse to the base name's own mutability (#6600).
+// We cannot cheaply prove non-`var` field-ness at this point in the
+// pipeline, so conservatively treat every `EMember` receiver — and a bare
+// `self` receiver, whose own fields are just as mutable — as mutable.
+// This costs a spurious extra temp bind when the field genuinely is
+// immutable (a minor codegen inefficiency), which is the safe direction
+// to err versus the silent stale-read this replaces.
 func hzNameLikeMutable(st: in HoistState, e: in Expr): Bool {
   match e.kind {
     case EPath(path) -> path.segments.count == 1 and st.mutableNames.containsKey(path.segments[0])
-    case ESelf -> false
+    case ESelf -> true
     case ELiteral(_) -> false
-    case EMember(recv, _) -> hzNameLikeMutable(st, recv)
+    case EMember(_, _) -> true
     case EParen(inner) -> hzNameLikeMutable(st, inner)
     case _ -> false
   }
