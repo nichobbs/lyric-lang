@@ -32636,3 +32636,97 @@ lambda argument) — all green on `--target dotnet`, confirming the
 PR #6525 (record-field overflow compensating fix), #5934 (the lambda-ABI
 box-tag bug `funcAbiArgBoxTypeMsil` fixed, now fixed at the root instead),
 docs/59 §3.2 F7 (the scalar Byte ABI decision this entry implements).
+
+---
+
+## D-progress-806 — Reject `null` in pattern position (T0073); migrate the 3 live `case null` sites off the silent-catch-all bug (#4775)
+
+**Context.** #4775: the language has no `null` literal or null pattern
+(docs/01 §FFI, D107) — the lexer treats `null` as an ordinary identifier,
+so `case null -> ...` parsed as `PBinding("null")`, an ordinary catch-all
+binding. As the first arm (every real usage) it silently matched EVERY
+value, null or not — a silent miscompile with no diagnostic. The issue's
+remaining-work item 3 ("reject `null` in pattern position... once no `case
+null` remains in the tree") was explicitly contingent on migrating any
+surviving occurrences first; items 1/2 (D107-migrating the stdlib's own
+`String?` kernel surfaces) stay blocked on the bootstrap seed constraint
+(#3936) and are NOT part of this entry.
+
+**Precondition check.** A full-tree grep found the two stdlib sites #4775
+already lists as fixed (slice B of #4752) genuinely fixed, plus three
+LIVE, previously-unknown `case null` sites, all in ecosystem-library JVM
+kernel files (none blocked by #3936 — ordinary object-typed JVM API
+returns, not stdlib Option-returning externs):
+
+- `lyric-aws-xray/src/xray.l:304` (`kernel_currentSubsegment`) — always
+  returned `XDummySubsegment.new(recorder)`, even when
+  `recorder.getCurrentSubsegment()` was non-null.
+- `lyric-session/src/_kernel/jvm/session_kernel.l:113` (`kernelLoad`) —
+  always returned `Ok("")`, even when Redis had a value — session data
+  was silently unreadable on JVM.
+- `lyric-storage/src/_kernel/jvm/storage_kernel.l:186` (`listChildren`) —
+  always returned `[]`, even when `listFiles()` succeeded — `hostGetFiles`/
+  `hostGetDirectories` were broken on JVM.
+
+**Migration.** All three replaced with `java.util.Objects.isNull(x)` via
+`extern type JObjects = "java.util.Objects"` (`lyric-ws`'s JVM kernel
+already established this idiom) — `if JObjects.isNull(v) { ... } else {
+... }` instead of the fake `match`.
+
+**Second bug found and fixed in the same pass.** `storage_kernel.l`'s
+`listFiles()` return is `File[]` (a reference-ELEMENT array,
+`[Ljava/io/File;`), and `Objects.isNull(children)` failed to compile:
+`lyric-compiler/jvm/auto_ffi.l`'s `scoreParamMatch` had a rule for "any
+reference type → `java/lang/Object`" gated on `argDesc.startsWith("L")` —
+which is true for a plain reference descriptor (`Ljava/io/File;`) but
+FALSE for an array descriptor (`[Ljava/io/File;`), so no rule matched an
+array argument against an `Object`-typed parameter at all, even though
+arrays are objects in the JVM type system (JLS §10.7) and any real JDK API
+accepts one. Widened the rule to also match `argDesc.startsWith("[L")`
+(reference-element arrays specifically) at the same score (3). Deliberately
+NOT widened to primitive-element array descriptors (`[C`/`[B`/etc.) — an
+earlier, broader attempt (`argDesc.startsWith("[")`, any array) regressed
+`slice_array_abi_self_test.l`'s `--target jvm` `.toInt()` calls on
+`slice[Char]`/`slice[Byte]` elements; investigated and found to be a
+**pre-existing, unrelated bug** (confirmed via a clean `git worktree` build
+of the pre-session base commit, `d9349bf` — fails identically with zero
+of this session's changes present), filed separately as #6586 rather than
+chased down here. The primitive-array-descriptor case stays untouched
+either way since fixing #4775 only needed the reference-array case.
+
+**Diagnostic.** `bindPatternTyped`'s `PBinding` case
+(`lyric-compiler/lyric/type_checker/typechecker_exprs.l`) — the single
+choke point both `Msil.Bridge` and `Jvm.Bridge` share (both call
+`Lyric.TypeChecker.checkFile` before any backend-specific codegen) — now
+emits `T0073` (error severity, gated fatal by the existing
+`tcFatal`/`gate()` pipeline wiring, no new plumbing needed) whenever a
+pattern binding's name is literally `"null"`, at any nesting depth
+(top-level arm, nested inside a constructor pattern, etc.). Added to
+`book/chapters/appendix-b-quick-reference.md`'s diagnostic table.
+
+**Verification.** 4 new cases in `typechecker_self_test.l` (first-arm
+`case null`, non-first-arm, nested inside `Some(null)`, and a negative
+control confirming an ordinary binding pattern does NOT fire T0073) — all
+pass, 371/371 total, no regressions. `lyric-aws-xray` JVM test suite (4/4)
+and `lyric-storage` JVM test suite (35/35 + 2/2) both green after their
+kernel migrations. `lyric-session`'s JVM suite has pre-existing,
+unrelated build failures (`Session.connectRedis` unresolved — the
+`@cfg`-erasure bug class #5621 investigation independently found still
+live in this library; `expiresAt` on an erased receiver, `Session:342` —
+a separate JVM codegen gap) that predate and are unrelated to this
+change; `kernelLoad` itself was not reachable through either failing
+suite to verify at runtime, only at compile time (the file containing it
+now compiles cleanly, which it did not before if `connectRedis` were
+fixed enough to reach it).
+
+**Boundary.** Items 1/2 of #4775's remaining work (D107-migrating the
+stdlib's own `String?` kernel surfaces: `console_host.l`/`console.l:52`,
+`path_host.l`/`path.l:73`, `io.l`) stay blocked on #3936 and are
+untouched. `T0073` is unconditional now that no `case null` remains
+anywhere in the tree outside comments/documentation.
+
+**Related:** #4775, #4752 (slice B, the two already-fixed stdlib sites),
+#3936 (the bootstrap seed constraint blocking items 1/2), #6586 (the
+pre-existing JVM slice-element bug found and filed, not fixed, during
+this investigation), `lyric-ws`'s JVM kernel (the `JObjects.isNull` idiom
+this entry reuses).

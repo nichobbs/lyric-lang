@@ -63,6 +63,13 @@ extern type JFOS = "java.io.FileOutputStream"
 
 extern type JString = "java.lang.String"
 
+// `case null -> ...` in pattern position parses as an unconditional
+// catch-all binding, not a null test (#4775) — the language has no null
+// literal or null pattern (D107). Test nullability of a raw JDK-API return
+// via `java.util.Objects.isNull`, the established idiom (`lyric-ws`'s JVM
+// kernel).
+extern type JObjects = "java.util.Objects"
+
 // ── Base64 — Lyric `String <-> slice[Byte]` wire-format encoding ─────────────
 /// Decode a base64-encoded string into raw bytes.  Throws
 /// `IllegalArgumentException` for malformed base64 input; callers in
@@ -182,11 +189,8 @@ func listChildren(path: in String, kind: in Int): slice[String] {
   // `listFiles()` returns NULL for a non-directory or an I/O error (#4781)
   // — treat both as "no children" rather than NPE.
   val children = d.listFiles()
-  match children {
-    case null -> {
-      return out2.toArray()
-    }
-    case _ -> ()
+  if JObjects.isNull(children) {
+    return out2.toArray()
   }
   var i = 0
   while i < children.count {

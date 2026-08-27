@@ -271,6 +271,14 @@ extern type XRecorder = "com.amazonaws.xray.AWSXRayRecorder"
 @cfg(feature = "jvm")
 extern type XDummySubsegment = "com.amazonaws.xray.entities.DummySubsegment"
 
+// `case null -> ...` in pattern position parses as an unconditional
+// catch-all binding, not a null test (#4775) — the language has no null
+// literal or null pattern (D107). Test nullability of a raw JDK-API return
+// via `java.util.Objects.isNull`, the established idiom (`lyric-ws`'s JVM
+// kernel).
+@cfg(feature = "jvm")
+extern type XObjects = "java.util.Objects"
+
 @cfg(feature = "jvm")
 func jvmRecorder(): XRecorder {
   XAWSXRay.getGlobalRecorder()
@@ -300,9 +308,10 @@ func kernel_addMetadata(handle: SubsegmentHandle, key: String, value: String): U
 func kernel_currentSubsegment(): SubsegmentHandle {
   val recorder = jvmRecorder()
   val current = recorder.getCurrentSubsegment()
-  match current {
-    case null -> XDummySubsegment.new(recorder)
-    case _ -> current
+  if XObjects.isNull(current) {
+    XDummySubsegment.new(recorder)
+  } else {
+    current
   }
 }
 

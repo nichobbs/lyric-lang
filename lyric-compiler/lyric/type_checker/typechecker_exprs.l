@@ -3682,6 +3682,22 @@ func eraseTyVars(t: in Type): Type {
 func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnostic], pat: in Pattern, ty: in Type): Unit {
   match pat.kind {
     case PBinding(name, inner) -> {
+      // The language has no `null` literal or null pattern (docs/01 §FFI,
+      // D107) — the lexer treats `null` as an ordinary identifier, so
+      // `case null -> ...` parses as an ordinary catch-all binding named
+      // `null`, not a null test.  As the first arm (every real usage) it
+      // silently matches EVERY value, null or not — a silent stdlib
+      // miscompile with no diagnostic (#4775).  Reject it explicitly rather
+      // than let it bind like any other identifier.
+      if name == "null" {
+        diag.add(
+          errorDiagnostic(
+            "T0073",
+            "'null' has no meaning as a pattern — Lyric has no null literal or null pattern (see docs/01 §FFI); this binds a local named 'null' and matches every value",
+            pat.span
+          )
+        )
+      }
       if name != "_" and not isConstructorPatternName(tbl, name) {
         scopeAdd(sc, LocalBinding(name = name, ty = eraseTyVars(ty), isMutable = false))
       }

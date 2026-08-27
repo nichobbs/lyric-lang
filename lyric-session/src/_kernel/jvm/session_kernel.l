@@ -41,6 +41,13 @@ extern type LettuceCommands = "io.lettuce.core.api.sync.RedisCommands"
 
 extern type LettuceSetArgs = "io.lettuce.core.SetArgs"
 
+// `case null -> ...` in pattern position parses as an unconditional
+// catch-all binding, not a null test (#4775) — the language has no null
+// literal or null pattern (D107). Test nullability of a raw Lettuce-API
+// return via `java.util.Objects.isNull`, the established idiom
+// (`lyric-ws`'s JVM kernel).
+extern type JObjects = "java.util.Objects"
+
 // ── Opaque store handle ───────────────────────────────────────────────────────
 /// Opaque handle returned by `connect` and consumed by every other kernel
 /// function.  Holds the synchronous `RedisCommands` facade (which
@@ -109,9 +116,10 @@ pub func kernelLoad(handle: in RedisStoreHandle, sessionId: in String): Result[S
   val key = sessionKey(handle, sessionId)
   try {
     val v = handle.commands.get(key)
-    match v {
-      case null -> Ok("")
-      case _ -> Ok(v)
+    if JObjects.isNull(v) {
+      Ok("")
+    } else {
+      Ok(v)
     }
   } catch Bug as b {
     Err(b.message)
