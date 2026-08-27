@@ -90,23 +90,21 @@ extern type NetQueueProcessingOrder = "System.Threading.RateLimiting.QueueProces
 
 extern type NetTimeSpan = "System.TimeSpan"
 
-// `Std.HttpServerHost` (`lyric-stdlib/std/_kernel/http_server.l`) declares
-// the identical binding, but as a non-`pub` module-private helper — not
+// `Ws.Kernel.Net` (`lyric-ws/src/_kernel/net/ws_kernel.l`) declares the
+// identical binding, but as a non-`pub` module-private helper — not
 // importable from here. Re-declared locally rather than exported upstream,
 // per the kernel-boundary rule that only a file's own `_kernel/` package may
 // declare `extern`/`@externTarget` surface (docs/14-native-stdlib-plan.md).
-extern type Semaphore = "System.Threading.SemaphoreSlim"
+extern type ConcurrentDict[K, V] = "System.Collections.Concurrent.ConcurrentDictionary`2"
 
-@externTarget("System.Threading.SemaphoreSlim..ctor")
-func newSemaphore(initialCount: in Int): Semaphore = ()
+@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2..ctor")
+func newConcurrentDict[K, V](): ConcurrentDict[K, V] = ()
 
-@externInstance
-@externTarget("System.Threading.SemaphoreSlim.Wait")
-func semWait(s: in Semaphore): Unit = ()
+@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.TryGetValue")
+func cdTryGetValue[K, V](dict: in ConcurrentDict[K, V], key: in K, value: out V): Bool = ()
 
-@externInstance
-@externTarget("System.Threading.SemaphoreSlim.Release")
-func semRelease(s: in Semaphore): Int = ()
+@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.TryAdd")
+func cdTryAdd[K, V](dict: in ConcurrentDict[K, V], key: in K, value: in V): Bool = ()
 
 @axiom("System.Threading.RateLimiting.SlidingWindowRateLimiter conforms to its documented .NET contract")
 @externTarget("System.Threading.RateLimiting.SlidingWindowRateLimiterOptions..ctor")
@@ -168,35 +166,50 @@ func newSlidingWindowLimiter(windowMs: in Int, permitLimit: in Int, segmentsPerW
   newRateLimiter(o)
 }
 
-// Per-method (sustained, burst) limiter pair, created lazily on first use and
-// reused across calls. Guarded by `rateLimiterLock` since the registry `Map`
-// itself is an ordinary mutable Lyric collection with no built-in thread
-// safety, and concurrent RPCs may race to create the same method's entry.
+// Per-method (sustained, burst) limiter pair, created lazily on first use
+// and reused across calls. The registry is a real `ConcurrentDictionary`
+// (not Lyric's own `Map[K, V]` — a module-level `Map` with a non-primitive
+// record value type was found to compile to a mis-specialized
+// `Dictionary<object, object>` at runtime, an unrelated self-hosted-backend
+// gap; `lyric-ws`/`lyric-jobs`/`lyric-mq` kernels already use this same
+// `ConcurrentDict` extern-type idiom for exactly this kind of registry),
+// so concurrent RPCs racing to create the same method's entry need no
+// separate lock. `sustained`/`burst` are `Option[NetRateLimiter]` (not a
+// bare `NetRateLimiter`) purely so `default()` has a well-defined
+// zero-value to zero-init the `out` parameter on a `cdTryGetValue` miss —
+// Lyric has no null literal, so an extern type with no natural "empty"
+// value can only appear in a `default()`-able record wrapped in `Option`.
+// Both fields are always `Some` in every pair this file ever stores.
 record RateLimiterPair {
-  sustained: NetRateLimiter
-  burst: NetRateLimiter
+  sustained: Option[NetRateLimiter] = None
+  burst: Option[NetRateLimiter] = None
 }
 
-val rateLimiters: Map[String, RateLimiterPair] = newMap()
-
-val rateLimiterLock: Semaphore = newSemaphore(1)
+val rateLimiters: ConcurrentDict[String, RateLimiterPair] = newConcurrentDict()
 
 func getOrCreateLimiterPair(method: in String, requestsPerMinute: in Int, burstSize: in Int): RateLimiterPair {
-  semWait(rateLimiterLock)
-  defer {
-    val _ = semRelease(rateLimiterLock);
-    ()
+  var existing: RateLimiterPair = default()
+  if cdTryGetValue(rateLimiters, method, existing) {
+    return existing
   }
-  match mapGet(rateLimiters, method) {
-    case Some(pair) -> pair
-    case None -> {
-      val pair = RateLimiterPair(
-        sustained = newSlidingWindowLimiter(60000, requestsPerMinute, 6),
-        burst = newSlidingWindowLimiter(1000, burstSize, 1)
-      )
-      rateLimiters.add(method, pair)
-      pair
-    }
+  val fresh = RateLimiterPair(
+    sustained = Some(value = newSlidingWindowLimiter(60000, requestsPerMinute, 6)),
+    burst = Some(value = newSlidingWindowLimiter(1000, burstSize, 1))
+  )
+  if cdTryAdd(rateLimiters, method, fresh) {
+    return fresh
+  }
+  // Lost the race to another thread creating the same method's entry
+  // concurrently; use its winning pair instead of our (now-orphaned) one.
+  var winner: RateLimiterPair = default()
+  val _ = cdTryGetValue(rateLimiters, method, winner)
+  winner
+}
+
+func unwrapLimiter(opt: in Option[NetRateLimiter]): NetRateLimiter {
+  match opt {
+    case Some(limiter) -> limiter
+    case None -> panic("unreachable: RateLimiterPair's limiters are always Some")
   }
 }
 
@@ -209,13 +222,13 @@ pub func checkRateLimit(method: in String, requestsPerMinute: in Int, burstSize:
   requires: burstSize > 0
 {
   val pair = getOrCreateLimiterPair(method, requestsPerMinute, burstSize)
-  val burstLease = rlAttemptAcquire(pair.burst, 1)
+  val burstLease = rlAttemptAcquire(unwrapLimiter(pair.burst), 1)
   val burstOk = rlLeaseIsAcquired(burstLease)
   rlLeaseDispose(burstLease)
   if not burstOk {
     return false
   }
-  val sustainedLease = rlAttemptAcquire(pair.sustained, 1)
+  val sustainedLease = rlAttemptAcquire(unwrapLimiter(pair.sustained), 1)
   val sustainedOk = rlLeaseIsAcquired(sustainedLease)
   rlLeaseDispose(sustainedLease)
   sustainedOk
