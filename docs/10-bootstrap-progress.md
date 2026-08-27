@@ -31639,6 +31639,49 @@ sent unmodified (byte-for-byte, no parse), malformed JSON sent AS-IS (the
 
 **Related:** #5813, #5797 (the change this reverts the auto-detect half of), `docs/03-decision-log.md` D134 (the `@stable`-editing-protocol entry for this change).
 
+### D-progress-802 — JVM kernel/codegen batch: piped-process reads, `Std.Environment.args()`, regex ReDoS timeout (#6135, #5377, #1103)
+
+Three previously-documented JVM-only gaps closed together. `Std.Process
+.spawnPiped`'s JVM read side (`hostPipedReadLineOpt`) is rewritten off
+`BufferedReader.readLine()` (unreliable — spurious immediate `None` or
+unbounded blocking against a live child) onto the same byte-level
+`InputStream.available()`-polled technique `process_capture_host.l`
+already used reliably for batch capture; verified against a real `cat`
+subprocess with 5/5 cases matching the `.NET` kernel's coverage
+(`lyric-compiler/jvm/piped_process_jvm_main.l`). `Std.Environment.args()`
+on JVM (previously a documented panic — the JDK exposes no process-wide
+argv API) now works via real entry-point codegen: `Jvm.Codegen`'s
+`hasMain` synthesis stashes argv into a new package-independent holder
+class (`__LyricJvmRuntime`, `LPRuntimeArgsHolder` in `Jvm.Lowering`)
+unconditionally, and `hostGetCommandLineArgs` call sites are intercepted
+and lowered to a direct `getstatic` read — verified end-to-end with a
+program whose `main()` takes no argv parameter
+(`lyric-compiler/jvm/env_args_jvm_main.l`). The JVM regex ReDoS timeout
+(#330 Phase 6 follow-up) is closed with the daemon-thread shim the issue
+asked for: `Regex` is now a small record pairing the compiled `Pattern`
+with a `timeoutMs`, and each match operation races on a background
+`Thread` (`Thread.join(timeoutMs)` — a genuinely bounded wait) via the
+JVM backend's existing Lyric-closure-to-`Runnable` SAM bridging;
+verified with a real catastrophic-backtracking pattern
+(`((a+)+)+$`, empirically confirmed exponential on this JDK — the more
+commonly cited `(a+)+$` was found to be neutralized by an apparent JDK
+21 `java.util.regex.Pattern` optimization) hitting the compiled-in
+1.5s deadline (`lyric-compiler/jvm/regex_redos_jvm_main.l`).
+
+Two general (not regex-specific) JVM codegen bugs found and worked
+around while building the regex fix, filed as follow-ups (not fixed
+here): #6551 (a closure body shaped `try { ... } catch Bug as b {
+<captured var> = ... }` fails class verification with `VerifyError:
+Operand stack overflow`) and #6552 (a closure bound to a `val` first,
+then passed by name to a JDK-functional-interface-typed parameter,
+skips SAM-bridging and passes the raw `Lyric$Lambda` object directly,
+producing `IncompatibleClassChangeError` at the first interface
+dispatch — a lambda literal inlined directly at the call site does not
+hit this).
+
+**Related:** `docs/03-decision-log.md` D-progress-802 (full account),
+#6135, #5377, #1103, #6551, #6552.
+
 ## lyric-web Undertow mTLS ships on JVM — client-CA `TrustManager` + XNIO `SSL_CLIENT_AUTH_MODE` (2026-08-27)
 
 `Web.serveTls` on `--target jvm` now supports mutual TLS end to end,

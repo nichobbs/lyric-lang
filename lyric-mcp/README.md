@@ -49,7 +49,7 @@ start section below.
 | `Mcp.Server` (`serveStdio`) | full, 26/26 in-memory lifecycle tests pass | unverified (gap #3) |
 | `Mcp.Client` (`connectStdio`) | full, tested against a real spawned process (5/5 process tests) | unverified (gap #3); the underlying `Std.Process` piped-spawn kernel also has its own separate, real JVM gap (#1) even setting #3 aside |
 | `Mcp.Stdio` (`PipedNdjsonTransport`) | full | unverified (gap #3); also gap #1 |
-| `Std.Process.spawnPiped` / `pipedReadLine` / `pipedWriteLine` (stdlib seam this library needed and added) | full, tested with a real `cat` subprocess | compiles; **spawning and writing work, reading back a line from the child does not reliably work** — gap #1 |
+| `Std.Process.spawnPiped` / `pipedReadLine` / `pipedWriteLine` (stdlib seam this library needed and added) | full, tested with a real `cat` subprocess | **fixed (#6135)** — full, tested with a real `cat` subprocess (`lyric-compiler/jvm/piped_process_jvm_main.l`, 5/5 cases matching the dotnet coverage); see gap #1 below for the byte-level rewrite that fixed it. This library's own use of it (`Mcp.Client.connectStdio` etc.) is still unverified on this target — gap #3 |
 
 `Mcp.Server`'s protocol logic (`server/discover` capability derivation,
 tools/resources/prompts dispatch, resumable-tool `input_required`/resume
@@ -61,7 +61,7 @@ nothing about its own design is target-specific.
 
 ## Known JVM gaps
 
-### 1. `Std.Process`'s piped-spawn kernel: reads don't reliably work on JVM
+### 1. `Std.Process`'s piped-spawn kernel: reads don't reliably work on JVM — FIXED (#6135)
 
 This library needed a stdlib seam `Std.Process` did not have: a
 long-lived, bidirectional piped child process (`Std.Process.run` blocks
@@ -82,52 +82,41 @@ stdlib-level test in this track — that's `lyric-mcp`'s job as the first
 consumer, tracked as a stdlib test-coverage gap worth closing directly in
 `lyric-stdlib/tests/` in a follow-up).
 
-**The JVM kernel spawns and writes correctly but the read side is
-unreliable.** `pipedIsAlive` and `pipedWriteLine` behave exactly as
-expected (the child process starts, stays alive, and the write call
-raises no error), but a subsequent `pipedReadLine` against a process that
-is still alive and has real bytes queued on its stdout either returns a
-spurious immediate `None` (as if the stream had hit clean EOF) or blocks
-past any reasonable deadline, depending on the exact code path taken —
-reproduced with the simplest possible case (`cat`, no arguments, one
-short line written then read back).
+**The JVM kernel's read side is now fixed (#6135).** The previous
+version routed `pipedReadLine` through `BufferedReader.readLine()`
+(mirroring the `.NET` kernel's blocking `StreamReader.ReadLine()`) and
+observed it fail unreliably — a spurious immediate `None` (as if EOF)
+against a process that was still alive with real bytes queued, or a
+block past any reasonable deadline, depending on the exact code path.
+Two candidate root causes (the `redirectError(Redirect.INHERIT)` call,
+and the nested `BufferedReader`/`InputStreamReader` constructor chain)
+were investigated and ruled out by direct experiment; the actual fix
+was the byte-level rewrite flagged as the most promising next step
+below — `pipedReadLine` now routes stdout through the SAME
+`InputStream.available()`-polled, `readNBytes`-into-a-
+`ByteArrayOutputStream` technique `process_capture_host.l`'s
+`hostRunCapture` already used reliably for batch output capture, never
+calling a blocking `Reader`/`InputStream` method at all. See
+`lyric-stdlib/std/_kernel_jvm/process_piped_host.l`'s module header for
+the full technique. Verified with the same 5-case coverage as the
+`.NET` suite above — a real `cat` subprocess: single-line echo,
+multi-line ordering, `pipedCloseStdin` clean-exit-with-final-line, a
+nonexistent-executable spawn failure, and post-EOF `None`
+(`lyric-compiler/jvm/piped_process_jvm_main.l`, run via `lyric build
+--target jvm` + `java -jar` in CI, mirroring `entry_args_jvm_main.l`'s
+pattern since `lyric test` doesn't fit a real-process-spawning check
+any better here than it did there).
 
-Two specific candidate root causes were investigated and *ruled out* by
-direct experiment (see `process_piped_host.l`'s module doc for the full
-account):
-
-1. The `ProcessBuilder.redirectError(Redirect.INHERIT)` call interfering
-   with the stdout pipe — removing it entirely did not change the
-   symptom.
-2. The nested `JBufferedReader.new(JInputStreamReader.new(stream))` /
-   `JPrintWriter.new(JOutputStreamWriter.new(stream), true)` constructor
-   calls — rebinding each inner `.new()` result through an explicit
-   intermediate `val` (this repo's standard convention for exactly this
-   shape) changed the observed failure mode from "always immediate
-   spurious EOF" to "sometimes blocks," but did not fix it.
-
-Not yet tried, and the most promising next step: `process_capture_host.l`'s
-JVM kernel already reliably drains a child's stdout via
-`InputStream.available()` polling + `readNBytes` into a
-`ByteArrayOutputStream` (used by `Std.Process.runCapture`, which works).
-A byte-level rewrite of the piped kernel's read side along those lines,
-instead of `BufferedReader`, is the most likely fix — tracked as a
-follow-up rather than attempted in this track, given the isolation work
-above did not point at a single clear root cause within budget.
-
-**Practical consequence:** `Mcp.Client.connectStdio` /
-`Mcp.Stdio.newPipedNdjsonTransport` should be treated as `.NET`-only
-until this is resolved. `tests/mcp_stdio_process_tests.l` — the real
-spawned-process test — is annotated `@cfg(target = "dotnet")`
-(docs/24-build-features.md "whole-file gating") specifically because of
-this gap: leaving it registered unconditionally would make `lyric test
---manifest lyric-mcp/lyric.toml --target jvm` *hang* rather than fail
-(the read call can block past any deadline), which is a worse CI citizen
-than a documented, visible gap. This mirrors `lyric-ws/tests/
-ws_jvm_e2e_test.l`'s precedent for an analogous real, unresolved JVM
-issue, adapted to a `@cfg` gate (which keeps the file registered and
-running on the target it's proven on) rather than omitting the file from
-`[project.tests]` entirely.
+**Practical consequence:** the `Std.Process` piped-spawn kernel itself
+is now reliable on JVM. `Mcp.Client.connectStdio` /
+`Mcp.Stdio.newPipedNdjsonTransport` still cannot be verified on this
+target, but for an entirely separate, unrelated reason — gap #3 below
+(this library's own test suite fails to type-check under `--target
+jvm`, a pre-existing multi-package-workspace-dependency gap that has
+nothing to do with the piped-process kernel). `tests/
+mcp_stdio_process_tests.l` stays `@cfg(target = "dotnet")`-gated
+(docs/24-build-features.md "whole-file gating") until gap #3 is
+resolved and the file can even be type-checked on `--target jvm`.
 
 ### 2. `lyric-jsonrpc`'s known JVM gap: `JObject`/`JArray` results over `runLoop`
 

@@ -736,9 +736,12 @@ alone doesn't show: `Convert.ToInt32` (~19 overloads), `TextWriter.WriteLine`
   and `path_host` are small and JDK-expressible today).
 
 MAJOR divergences: JVM `delay()` blocks eagerly at construction
-(`_kernel_jvm/task.l:209-212`) vs .NET's real timer; JVM regex accepts and
+(`_kernel_jvm/task.l:209-212`) vs .NET's real timer; ~~JVM regex accepts and
 **ignores** the timeout (`_kernel_jvm/regex_host.l:74-81` — ReDoS gap,
-#330/#1103) vs .NET's 1-second timeout; the JVM `http_server` twin exposes 8
+#330/#1103) vs .NET's 1-second timeout~~ **fixed** — `_kernel_jvm/
+regex_host.l` now enforces the timeout via a daemon-thread race
+(`Thread.join(timeoutMs)`), verified against a real catastrophic pattern;
+the JVM `http_server` twin exposes 8
 of 15 functions (breaks `lyric-web` static files on JVM); native kernels
 silently lack functions that loaded public modules call
 (`Std.Console.readLine`, `Std.File.stat` and the throwing reads,

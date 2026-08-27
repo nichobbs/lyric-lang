@@ -89,10 +89,14 @@ func testErrorMessageInvalidPattern(): Unit {
 //          runtimes the BCL message won't contain "time-out", so the classifier
 //          falls back to InvalidPattern (#1100 — locale-stable classifier
 //          is a follow-up).
-//   JVM  — Ok(false) is currently permissible: java.util.regex.Pattern has no
-//          timeout mechanism until the daemon-thread shim lands (#1103).  The
-//          Ok branch logs a warning; an Ok result is NOT a pass for correctness
-//          but IS acceptable while #1103 is open.
+//   JVM  — Err(TimedOut) as of #1103's daemon-thread shim
+//          (std/_kernel_jvm/regex_host.l): the calling thread is unblocked
+//          within the deadline even though java.util.regex isn't
+//          interruptible.  Ok(false) remains a logged-but-accepted outcome
+//          here (a benign fast-path termination shouldn't fail this
+//          cross-platform smoke test); the strict JVM-only acceptance test
+//          that requires Err(TimedOut) lives in `lyric-compiler/jvm/
+//          regex_redos_jvm_main.l` (see the comment above `main()` below).
 //
 // In all cases the important guarantee is "match returns at all — not that it
 // hangs".  The Ok branch is therefore a documented permissible outcome, not a
@@ -115,41 +119,20 @@ func testReDoSTimeoutFires(): Unit {
   hostile = hostile + "b"
   val r = Re.compileWithTimeout("(a+)+$", 0.1)
   match Re.tryIsMatch(r, hostile) {
-    case Ok(matched) -> println("testReDoSTimeoutFires: match returned " + toString(matched) + " (JVM — no timeout until #1103)")
+    case Ok(matched) -> println("testReDoSTimeoutFires: match returned " + toString(matched) + " (benign fast path)")
     case Err(_) -> ()
   }
 }
 
-// JVM-only follow-up: once #1103 ships the daemon-thread shim, the
-// catastrophic-backtracking pattern below must return Err(TimedOut)
-// within 2 seconds rather than running for minutes.  The `@cfg(feature
-// = "jvm")` guard keeps the test off the .NET CI path (where the 3-arg
-// Regex ctor's matchTimeout already covers the ReDoS case) and pins the
-// JVM acceptance criterion documented in #1103.  The test compiles
-// only when the `jvm` feature is enabled; on .NET builds the function
-// is erased entirely and the gating annotation here keeps that intent
-// explicit.
-@cfg(feature = "jvm")
-func testReDoSTimeoutFiresJvm(): Unit {
-  // Build a longer hostile input than the cross-platform test above so
-  // an un-instrumented Pattern would clearly run past the 2-second
-  // budget — distinguishes a real shim hit from accidental fast-path
-  // termination.
-  var hostile = ""
-  var i = 0
-  while i < 80 {
-    hostile = hostile + "a"
-    i = i + 1
-  }
-  hostile = hostile + "b"
-  val r = Re.compileWithTimeout("(a+)+$", 1.5)
-  match Re.tryIsMatch(r, hostile) {
-    case Ok(_) -> assertTrue(false, "JVM: catastrophic pattern should time out (#1103); shim missing?")
-    case Err(e) -> match e { case TimedOut(_) -> (); case InvalidPattern(_) -> assertTrue(false, "JVM: ReDoS guard surfaced InvalidPattern; expected TimedOut") }
-  }
-  // expected path
-}
-
+// The strict JVM-only acceptance test for #1103's daemon-thread shim (must
+// return Err(TimedOut), not just "returns at all") lives in
+// `lyric-compiler/jvm/regex_redos_jvm_main.l` as a standalone `lyric build
+// --target jvm` + `java -jar` program, not a `@cfg(feature = "jvm")`-gated
+// function here: `lyric run` (which drives this file in CI) has no
+// `--features` flag, so a feature-gated-but-uncalled function in this file
+// would compile only under a build path nothing here ever exercises,
+// silently never running (the previous state, tracked in #1165 — the gate
+// existed but nothing ever wired `--features jvm` through to call it).
 func main(): Unit {
   testTryCompileOk()
   testTryCompileInvalidPattern()
@@ -163,12 +146,5 @@ func main(): Unit {
   testErrorMessageTimedOut()
   testErrorMessageInvalidPattern()
   testReDoSTimeoutFires()
-  // `testReDoSTimeoutFiresJvm` is declared with `@cfg(feature = "jvm")`
-  // and therefore only compiles under the `jvm` feature.  Calling it
-  // unconditionally here would leave a dangling reference on the
-  // `dotnet` build (the symbol is erased by `@cfg` before codegen).
-  // The JVM test runner (#1103 acceptance gate) drives the gated case
-  // via a separate top-level entry — see `lyric-stdlib/lyric.toml`'s
-  // JVM target manifest.  Tracked in #1165.
   println("regex_tests: ok")
 }

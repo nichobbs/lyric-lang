@@ -8,9 +8,13 @@
 //!
 //! ReDoS posture:
 //!   .NET — RegexMatchTimeoutException fires after the configured deadline.
-//!   JVM  — no timeout is enforced yet: java.util.regex has no timeout
-//!           mechanism, and the interruptible-CharSequence fix is tracked
-//!           in #1103.  `TimedOut` never fires on this target today.
+//!   JVM  — java.util.regex has no timeout mechanism of its own; the kernel
+//!          (std/_kernel_jvm/regex_host.l, #1103) enforces one via a
+//!          daemon-thread race, so `TimedOut` fires here too. The caller is
+//!          always unblocked within the deadline; the abandoned background
+//!          thread (java.util.regex isn't interruptible) may keep running
+//!          until it finishes naturally or the JVM exits — see the kernel's
+//!          module header for the full tradeoff.
 //!
 //! Recommended usage for user-controlled patterns: tryCompile + tryIsMatch.
 //! Hard-coded, non-backtracking patterns can use compile + isMatch directly.

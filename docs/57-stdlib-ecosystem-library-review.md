@@ -157,10 +157,12 @@ affected by this constraint — `.new(args)` is safe to use there today.
   `otel.l` so users importing on JVM don't expect traces to actually
   export.
 - **stdlib JVM gaps**: HTTP Unix-domain-socket support
-  (`std/_kernel_jvm/http_host.l:106-116`, tracked #2663) and regex
-  timeout (`std/_kernel_jvm/regex_host.l:75-76`, tracked #1103) both route
-  to stubs. Already tracked; no new issue needed, just confirming they're
-  still open.
+  (`std/_kernel_jvm/http_host.l:106-116`, tracked #2663) still routes to
+  a stub. Regex timeout (`std/_kernel_jvm/regex_host.l`, tracked #1103)
+  is **fixed** — no longer a stub: `hostIsMatch`/`hostMatchOne`/
+  `hostReplace` now race each match on a daemon `Thread` against the
+  compiled-in timeout, verified against a real catastrophic-backtracking
+  pattern.
 - **lyric-storage**: only the local-filesystem backend is
   production-grade; S3 and Azure Blob backends
   (`storage_kernel.l:24-29`, `storage.l:850-880`) return

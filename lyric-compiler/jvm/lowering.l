@@ -6231,6 +6231,18 @@ pub union LPackageItem {
   // guards zero-field blocks (see `Jvm.Codegen`'s `IConfig` item arm),
   // mirroring `Msil.Codegen`'s identical guard.
   case LPConfig(ns: String, blockName: String, fields: List[LConfigField])
+  // #5377: a package-independent holder class for the process argv, emitted
+  // once alongside the entry-point `main(String[])` wrapper (see
+  // `Jvm.Codegen`'s `hasMain` synthesis in `codegen/06_items.l`).  The JDK
+  // exposes no process-wide argv retrieval API, so the entry-point wrapper
+  // stores the incoming `String[]` into this class's public static field
+  // before forwarding to the Lyric `main`; `Std.EnvironmentHost`'s
+  // `hostGetCommandLineArgs` call sites are lowered directly to a `getstatic`
+  // read of it (`Jvm.Codegen`'s `lowerBuiltinOrStaticCall` in
+  // `codegen/04_calls.l`) instead of an ordinary function call.  A single
+  // non-final `[Ljava/lang/String;` field, default-null until `main` runs —
+  // no other field or method is needed.
+  case LPRuntimeArgsHolder(className: String, fieldName: String)
 }
 
 pub record LPackage {
@@ -6479,8 +6491,24 @@ pub func lowerPackage(pkg: in LPackage, pool: in Pool): List[ClassFile] {
       case LPConfig(ns, blockName, fields) -> {
         result.add(lowerConfigBlock(ns, blockName, fields, pool))
       }
+      case LPRuntimeArgsHolder(className, fieldName) -> {
+        result.add(lowerRuntimeArgsHolder(className, fieldName, pool))
+      }
     }
   }
 
   result
+}
+
+// #5377: emit the argv-holder class described on `LPRuntimeArgsHolder`.  A
+// non-final `public static [Ljava/lang/String;` field with no explicit
+// initializer — the JVM zero-initializes it to `null`, immediately
+// overwritten by the entry-point wrapper's `putstatic` before any other
+// program code (including any `Std.Environment.args()` call) can run.
+func lowerRuntimeArgsHolder(className: in String, fieldName: in String, pool: in Pool): ClassFile {
+  val fields: List[FieldInfo] = newList()
+  val emptyAttrs: List[Attribute] = newList()
+  fields.add(makeFieldInfo(ACC_PUBLIC + ACC_STATIC, fieldName, "[Ljava/lang/String;", emptyAttrs))
+  val noMethods: List[MethodInfo] = newList()
+  makeClassFull(className, fields, noMethods)
 }
