@@ -32541,3 +32541,735 @@ B), D-progress-543 (the sandbox-seeding technique this session reused),
 issue #6103 (N9.2's parent), issue #6105 (N9.4, `Std.Http`'s native
 client — the scope this entry deliberately does not preempt).
 
+---
+
+## D-progress-812 — MSIL: `lowerMConfig` registers its synthesized static class's TypeDef row, fixing config-block + closure codegen aborts (#6096)
+
+**Context.** #6096: a package containing both a module-level `config { … }`
+block and a capturing closure aborted MSIL lowering with `Msil.Lowering:
+MNewobjByName could not resolve .ctor for type '.__Closure_0'`. Either
+construct alone compiled fine. `lyric-web`'s TLS phase-3.4 test suite
+(D-progress-701, #5885) hit this and worked around it by splitting the
+config block and the closures into separate files rather than fixing the
+root cause.
+
+**Root cause.** `lowerMConfig` (`lyric-compiler/msil/lowering.l`) called
+`addTypeDef` for the config block's synthesized static class but — unlike
+every other type-lowering function (`lowerMRecord`, `lowerMUnion`,
+`lowerMDistinctType`, `lowerMRangeType`, `lowerMEnum`, `lowerMInterface`,
+`lowerMOpaque`, the host class) — never called `recordUserTypeDefRow`
+afterward. That call populates the positionally-indexed `typeDefRowFqns`
+list that `findMethodDefRowOfType`/`findFieldDefRowOfType`'s reverse-lookup
+fallback depends on to translate a forward-referenced TypeDef row back to
+its FQN. Skipping it desynced every type registered afterward in the same
+package — including closure classes (`__Closure_N`), which are drained and
+appended only after the rest of the package's items are lowered — so
+`__Closure_0`'s `.ctor` resolved against the wrong FQN. Identical bug class
+to #5361 (`lowerMEnum`, fixed in D-progress-624).
+
+**Change.** `lowerMConfig` now captures `addTypeDef`'s return value and
+calls `recordUserTypeDefRow(ctx, ns, typeName, cfgTypeDefRow)` immediately
+after, mirroring every sibling type-lowering function exactly.
+
+**Verification.** New regression test
+`lyric-compiler/lyric/config_closure_self_test.l` (`@test_module`,
+`--target dotnet` — MSIL-only bug, JVM's `IConfig` lowering is unaffected)
+combines a module-level `config { }` block and a capturing closure in one
+package; both pass. Wired into CI as its own step (mirroring
+`config_block_self_test.l`'s pattern) and into the Makefile's
+`TEST_EMITTER_FILES` aggregate (no special env vars needed, unlike
+`config_block_self_test.l`).
+
+**Boundary.** `lyric-web`'s D-progress-701 workaround (splitting
+`serve_tls_tests.l`'s closures from `webtls_config_tests.l`'s config-block
+env-override test) is left in place — reverting it is a `lyric-web`-scoped
+follow-up, out of scope for this compiler-only fix.
+
+**Related:** #6096, #5361, D-progress-624, D-progress-701, #5885.
+
+---
+
+## D-progress-803 — MSIL: `ETuple` codegen threads per-element expected type into `collExpect`/`contextHintTyArgs`, fixing bare `None` losing its type argument inside a tuple literal (#4965)
+
+**Context.** #4965 (originally surfaced as D-progress-555, against a
+single call site that has since been patched): a bare `None` literal
+constructed inside a tuple literal loses its generic type argument, so
+`val t: (Int, Option[String]) = (1, None)` erases the `None` element to
+`Option_None<object>` instead of the annotated `Option[String]`. A later
+`match`/cast against the tuple's declared type then fails to match its
+own `None` arm (or throws `InvalidCastException`).
+
+**Root cause.** `lowerExprMsil`'s `ETuple` arm
+(`lyric-compiler/msil/codegen.l`) lowered each element with a bare
+recursive `lowerExprMsil` call, never pushing any expected-type context —
+unlike the sibling `EList` arm, which pushes each element's declared type
+onto `collExpect` before lowering it. The enclosing binding/return/field/
+call-arg annotation logic (e.g. `LBVal`'s handling of `val t: (...) = ...`)
+already pushes the *whole* tuple annotation (`MTuple(elems=[...])`) onto
+`collExpect` before lowering the tuple literal — `ETuple` simply never read
+it back out per element. Confirmed via the type checker too: `ETuple`
+inference (`typechecker_exprs.l`) never propagates an expected element
+type into tuple elements either, so a bare `None` element always infers as
+`Option[TyError]` — `typeEquiv` treats `TyError` as a wildcard, so no
+diagnostic catches the gap at type-check time; it's a pure codegen
+soundness hole.
+
+**Change.** `ETuple`'s MSIL lowering now reads `collExpectTop(fctx)`; when
+it holds an `MTuple` with matching arity, each element is lowered with its
+own expected type pushed through both `collExpect` (in case the element is
+itself a nested collection/tuple) and `contextHintTyArgs` (via
+`pushAnnoHintTyArgs`, so a nullary case like `None` constructs the closed
+generic instantiation), mirroring `EList`'s per-element handling exactly.
+Falls back to the prior untyped lowering when no matching tuple
+expectation is in scope (e.g. an unannotated `(1, None)` with no enclosing
+context) — unchanged behavior there, since there is nothing to propagate.
+
+**Verification.** New regression test
+`lyric-compiler/lyric/tuple_none_typearg_self_test.l` (`@test_module`,
+`--target dotnet` — JVM erases generic type arguments entirely, so it has
+no `Option_None<T>` reified class to mis-instantiate and is unaffected):
+a bare `None` element, a `Some(...)` element, and a `None` nested two
+tuple-levels deep, all under an annotated `val` binding. All three pass.
+Spot-checked for regressions against `pattern_lowering_self_test.l`
+(tuple destructuring), `hof_type_propagation_self_test.l`,
+`closure_zero_overhead_self_test.l`, `func_val_local_rettype_self_test.l`,
+and `extern_option_self_test.l` — all green, no regressions.
+
+**Boundary.** Only the `val`/return/field/call-arg annotation path is
+covered (the paths that already push a tuple's `MTuple` annotation onto
+`collExpect`); an unannotated tuple literal with no surrounding expected
+type still erases nullary cases the same way it always has (there being no
+context to propagate), matching `EList`'s equivalent fallback.
+
+**Related:** #4965, D-progress-555 (the original, narrower single-call-site
+patch), PR #4955.
+
+---
+
+## D-progress-804 — `+=` String widening extended to field and indexed targets (#5688)
+
+**Context.** #5657 made `s += <any RHS>` type-check when `s` is a `String`
+(mirroring binary `+`'s "any operand + String = String"), but scoped it to
+a plain 1-segment variable target: field (`obj.f += x`) and indexed
+(`xs[i] += x`) String targets' compound-assign codegen inferred the
+element/field type from the RHS rather than the container's own declared
+type — a non-String RHS would have unboxed/cast against the wrong type
+(`InvalidCastException` on MSIL, `ClassCastException` on JVM). `obj.f += "str"`
+/ `xs[i] += "str"` (String RHS) already worked and had to keep working.
+
+**Type checker.** `isStringPlusVarAssign` (`typechecker_exprs.l`) widened
+from `targetIsSimpleVar` (a 1-segment `EPath` only) to also accept
+`EMember`/`EIndex` target shapes. No other change needed: both call sites
+(`SAssign`/`EAssign`) already pass `targetType` computed via `inferExpr` on
+the target itself, which was already correct for field/indexed shapes
+(the container's real field/element type) — the type checker never
+inferred it from the RHS to begin with; only codegen did.
+
+**MSIL.** The field compound-assign path (`EMember`) was already correct —
+`fieldMsilTypes` supplies the real declared field type independent of the
+RHS. The indexed (`EIndex`) path used the RHS's own type (`rTy`) as the
+presumed container element type for `materializeBoxedElemMsil`/
+`emitCompoundCombineSlotMsil`. Fixed by deriving `containerElemTy` from
+`recvTy`'s own generic argument (`MConcreteList`/`MListOf`/`MConcreteMap`/
+`MMapOf` all carry it) and threading it through both functions in place of
+`rTy` for every type-driven decision (string-vs-arithmetic, Byte
+div/rem-unsigned and wrap, the final box/store type) — `rTy` is still
+needed (renamed nowhere; kept as a separate parameter) to know how to
+coerce the loaded RHS slot value to a string when it isn't already one.
+
+**JVM.** Same story — the field path (`EMember`) already threaded the real
+field type through `recordFieldType`. The indexed path's `HashMap`/
+`ArrayList` arms used the RHS's own type (`vTy`) for both unboxing the
+read-back current value and combining. Fixed by resolving the container's
+real declared element/value type via `indexedElemTypeOverride` (the same
+resolver the read-path `EIndex` arm already uses) and applying it via
+`applyIndexedElemOverride` when available, falling back to the prior
+`vTy`-inferred `emitUnboxObjectTo` behavior when no static override exists
+(preserving existing behavior exactly for that case). The `JArray` arm
+needed no change — it already combines against the array's own element
+type (`elem`), never the RHS's.
+
+**Verification.** Extended `compound_string_assign_self_test.l` with
+`Box{s: String}` field cases (Bool/Int/Double widening + a String-RHS
+regression) and `List[String]` indexed cases (Bool/Int/Double/record
+widening + a String-RHS regression) — 8/8 on both `--target dotnet` and
+`--target jvm` (up from 4/4). A record RHS's default `ToString()`/
+`toString()` differs across targets (MSIL: qualified type name; JVM:
+`ClassName@hash`), so that case asserts only that the container's own
+literal prefix survived the combine (`startsWith`), not the record's exact
+stringified suffix. Spot-checked for regressions against
+`bool_tostring_self_test.l`, `match_compound_self_test.l` (an existing
+`Map[String, Int]` indexed compound-assign case), and
+`byte_arithmetic_self_test.l` (indexed Byte compound-assign, the
+div/rem-unsigned and wrap paths this change touches) on both targets — all
+green, no regressions.
+
+**Related:** #5688, #5657 (the plain-variable widening this extends).
+
+---
+
+## D-progress-813 — MSIL: scalar `Byte`'s ABI is genuinely U1 end-to-end, fixing hoisted-cell and record-field wrap divergence (#5520)
+
+**Context.** #5520: PR #5515's Byte canonicalization made Byte-declared
+LOCALS re-narrow with `conv.u1` on plain and compound stores
+(`FuncCtx.byteSlots`), matching JVM's masked-unsigned 0..255 canonical
+form. Two storage classes were left un-narrowed: hoisted Byte cells
+(captured `var`s promoted to closure-environment fields) stayed
+int32-backed on MSIL (`b *= 2` on 200 stored 400 instead of wrapping to
+144); Byte record fields' overflow channel was separately fixed for
+`+=`/`*=`/`-=` in PR #6525 via a `CodegenCtx.byteFields` compensating map
+mirroring `byteSlots`, but the underlying field storage type itself
+stayed int32.
+
+**Root cause.** `typeExprToMsilCtx`'s `TRef("Byte")` arm
+(`lyric-compiler/msil/codegen.l`) erased a bare `Byte` type annotation to
+`MInt` (Int32) instead of `MByte` (Byte) — the single point every
+downstream consumer (record field types, hoisted-cell element types,
+closure-class field synthesis, local slot types, param/return types)
+derives from. `slice[Byte]`/`List[Byte]`/`Map[_,Byte]` already bypassed it
+via dedicated `MByte` arms, so those channels always wrapped correctly;
+only the SCALAR annotation path erased.
+
+**Change.** `typeExprToMsilCtx`'s `TRef("Byte")` arm now maps to `MByte`
+directly. Every downstream consumer already correctly branches on `MByte`
+(built earlier for the collection-element channels) — `finishHoistedCellMsil`
+already selects `MArray(elemTy=MByte)` for a hoisted Byte cell's
+closure-environment field, `fieldMsilTypes` already registers whatever type
+`typeExprToMsilCtx` hands it — so flipping the root map alone is
+sufficient for both storage classes named in the issue.
+
+**Blast radius, also fixed in this pass:**
+`funcAbiArgBoxTypeMsil` — a compensating function that re-tagged a
+genuine `MByte` box as `MInt` before crossing the uniform `Func<object,…>`
+lambda-invoke ABI (#1877), because a lifted lambda's own Byte-annotated
+parameter was (before this fix) recorded as `MInt` in `boxedParamTypes`
+and unboxed via `unbox.any int32` at the identifier-load site — is now
+UNNECESSARY and, left in place, would have been actively WRONG: with the
+root map fixed, a lambda's Byte parameter is now genuinely recorded as
+`MByte` in `boxedParamTypes` too (both sides derive from the same
+`typeExprToMsilCtx`), so the load-side `castObjectToMsil` correctly
+`unbox.any`s against `System.Byte` — re-tagging the box as `Int32` at the
+call site would now mismatch and throw `InvalidCastException`. Removed
+`funcAbiArgBoxTypeMsil` entirely; its one call site
+(`lowerFuncValueInvokeMsil`) now boxes the argument's own honest type
+directly.
+
+**Deferred (documented, not shipped as a shortcut).** `CodegenCtx.byteFields`
+/ `FuncCtx.byteSlots` and their `conv.u1` re-narrowing call sites (added in
+PR #5515/#6525 to compensate for the erasure this entry fixes) are now
+redundant — `combineTy = if fctx.byteSlots.containsKey(slot) { MByte } else
+{ ty }` evaluates to `MByte` either way once `ty` itself is genuinely
+`MByte` — but are LEFT IN PLACE rather than swept in this pass: they remain
+correct (not wrong, just redundant), and fully auditing every mark/consult
+site to prove no other case depends on the side-channel boolean map (as
+opposed to the now-correct tracked type) is a nontrivial verification
+exercise distinct from this issue's actual ask (wrap correctness). Tracked
+as a follow-up cleanup, not a new issue (low priority — dead code, not a
+behavior gap).
+
+**Verification.** New regression test in `byte_arithmetic_self_test.l`,
+"Byte compound assignments on hoisted closure variables wrap on overflow
+(#5520)": `+=`/`*=`/`-=` overflow cases on a hoisted Byte cell (the exact
+`200 += 100` repro from the issue, now correctly wrapping to 44 instead of
+400) plus a plain-store sanity check — all pass, extending the file's
+existing 12 tests to 13. Spot-checked against `closure_zero_overhead_self_test.l`,
+`hof_type_propagation_self_test.l`, `bare_func_ref_self_test.l`, and —
+critically — `slice_byte_lambda_arg_self_test.l` (the dedicated #5934
+regression test `funcAbiArgBoxTypeMsil` was originally added to fix: a
+`slice[Byte]` index expression passed directly to a `(Byte) -> Bool`
+lambda argument) — all green on `--target dotnet`, confirming the
+`funcAbiArgBoxTypeMsil` removal did not reopen #5934.
+
+**Related:** #5520, PR #5515 (D-progress-639 item 4, local re-narrowing),
+PR #6525 (record-field overflow compensating fix), #5934 (the lambda-ABI
+box-tag bug `funcAbiArgBoxTypeMsil` fixed, now fixed at the root instead),
+docs/59 §3.2 F7 (the scalar Byte ABI decision this entry implements).
+
+---
+
+## D-progress-814 — Reject `null` in pattern position (T0073); migrate the 3 live `case null` sites off the silent-catch-all bug (#4775)
+
+**Context.** #4775: the language has no `null` literal or null pattern
+(docs/01 §FFI, D107) — the lexer treats `null` as an ordinary identifier,
+so `case null -> ...` parsed as `PBinding("null")`, an ordinary catch-all
+binding. As the first arm (every real usage) it silently matched EVERY
+value, null or not — a silent miscompile with no diagnostic. The issue's
+remaining-work item 3 ("reject `null` in pattern position... once no `case
+null` remains in the tree") was explicitly contingent on migrating any
+surviving occurrences first; items 1/2 (D107-migrating the stdlib's own
+`String?` kernel surfaces) stay blocked on the bootstrap seed constraint
+(#3936) and are NOT part of this entry.
+
+**Precondition check.** A full-tree grep found the two stdlib sites #4775
+already lists as fixed (slice B of #4752) genuinely fixed, plus three
+LIVE, previously-unknown `case null` sites, all in ecosystem-library JVM
+kernel files (none blocked by #3936 — ordinary object-typed JVM API
+returns, not stdlib Option-returning externs):
+
+- `lyric-aws-xray/src/xray.l:304` (`kernel_currentSubsegment`) — always
+  returned `XDummySubsegment.new(recorder)`, even when
+  `recorder.getCurrentSubsegment()` was non-null.
+- `lyric-session/src/_kernel/jvm/session_kernel.l:113` (`kernelLoad`) —
+  always returned `Ok("")`, even when Redis had a value — session data
+  was silently unreadable on JVM.
+- `lyric-storage/src/_kernel/jvm/storage_kernel.l:186` (`listChildren`) —
+  always returned `[]`, even when `listFiles()` succeeded — `hostGetFiles`/
+  `hostGetDirectories` were broken on JVM.
+
+**Migration.** All three replaced with `java.util.Objects.isNull(x)` via
+`extern type JObjects = "java.util.Objects"` (`lyric-ws`'s JVM kernel
+already established this idiom) — `if JObjects.isNull(v) { ... } else {
+... }` instead of the fake `match`.
+
+**Second bug found and fixed in the same pass.** `storage_kernel.l`'s
+`listFiles()` return is `File[]` (a reference-ELEMENT array,
+`[Ljava/io/File;`), and `Objects.isNull(children)` failed to compile:
+`lyric-compiler/jvm/auto_ffi.l`'s `scoreParamMatch` had a rule for "any
+reference type → `java/lang/Object`" gated on `argDesc.startsWith("L")` —
+which is true for a plain reference descriptor (`Ljava/io/File;`) but
+FALSE for an array descriptor (`[Ljava/io/File;`), so no rule matched an
+array argument against an `Object`-typed parameter at all, even though
+arrays are objects in the JVM type system (JLS §10.7) and any real JDK API
+accepts one. Widened the rule to also match `argDesc.startsWith("[L")`
+(reference-element arrays specifically) at the same score (3). Deliberately
+NOT widened to primitive-element array descriptors (`[C`/`[B`/etc.) — an
+earlier, broader attempt (`argDesc.startsWith("[")`, any array) regressed
+`slice_array_abi_self_test.l`'s `--target jvm` `.toInt()` calls on
+`slice[Char]`/`slice[Byte]` elements; investigated and found to be a
+**pre-existing, unrelated bug** (confirmed via a clean `git worktree` build
+of the pre-session base commit, `d9349bf` — fails identically with zero
+of this session's changes present), filed separately as #6586 rather than
+chased down here. The primitive-array-descriptor case stays untouched
+either way since fixing #4775 only needed the reference-array case.
+
+**Diagnostic.** `bindPatternTyped`'s `PBinding` case
+(`lyric-compiler/lyric/type_checker/typechecker_exprs.l`) — the single
+choke point both `Msil.Bridge` and `Jvm.Bridge` share (both call
+`Lyric.TypeChecker.checkFile` before any backend-specific codegen) — now
+emits `T0073` (error severity, gated fatal by the existing
+`tcFatal`/`gate()` pipeline wiring, no new plumbing needed) whenever a
+pattern binding's name is literally `"null"`, at any nesting depth
+(top-level arm, nested inside a constructor pattern, etc.). Added to
+`book/chapters/appendix-b-quick-reference.md`'s diagnostic table.
+
+**Verification.** 4 new cases in `typechecker_self_test.l` (first-arm
+`case null`, non-first-arm, nested inside `Some(null)`, and a negative
+control confirming an ordinary binding pattern does NOT fire T0073) — all
+pass, 371/371 total, no regressions. `lyric-aws-xray` JVM test suite (4/4)
+and `lyric-storage` JVM test suite (35/35 + 2/2) both green after their
+kernel migrations. `lyric-session`'s JVM suite has pre-existing,
+unrelated build failures (`Session.connectRedis` unresolved — the
+`@cfg`-erasure bug class #5621 investigation independently found still
+live in this library; `expiresAt` on an erased receiver, `Session:342` —
+a separate JVM codegen gap) that predate and are unrelated to this
+change; `kernelLoad` itself was not reachable through either failing
+suite to verify at runtime, only at compile time (the file containing it
+now compiles cleanly, which it did not before if `connectRedis` were
+fixed enough to reach it).
+
+**Boundary.** Items 1/2 of #4775's remaining work (D107-migrating the
+stdlib's own `String?` kernel surfaces: `console_host.l`/`console.l:52`,
+`path_host.l`/`path.l:73`, `io.l`) stay blocked on #3936 and are
+untouched. `T0073` is unconditional now that no `case null` remains
+anywhere in the tree outside comments/documentation.
+
+**Related:** #4775, #4752 (slice B, the two already-fixed stdlib sites),
+#3936 (the bootstrap seed constraint blocking items 1/2), #6586 (the
+pre-existing JVM slice-element bug found and filed, not fixed, during
+this investigation), `lyric-ws`'s JVM kernel (the `JObjects.isNull` idiom
+this entry reuses).
+
+---
+
+## D-progress-815 — Codegen fails loudly on unresolved calls instead of silently dropping them, on both backends (#5621, #5516)
+
+**Context.** #5621/#5516: when MSIL codegen couldn't find a registered
+function token for a cross-package call, it silently dropped it — the
+call's arguments were lowered for side effects, but no `MCall`/`MCallvirt`
+was ever emitted, leaving the operand stack imbalanced (a far-from-the-cause
+`InvalidProgramException`) or the last stacked value silently flowing
+onward as a bogus result. The JVM backend's equivalent guessed a
+best-effort `invokestatic` against a derived owner with an all-`Object`
+signature — never silent, but not a compile-time diagnostic either, only
+failing later at JVM link/class-load time (`NoSuchMethodError`/
+`NoClassDefFoundError`). D-progress-658 named this the meta-defect behind
+two independently-fixed, long-invisible breakage families (#5604, #5612).
+
+**Change.** MSIL: `lowerBuiltinOrStaticCallMsil`'s cross-package fallback
+(`lyric-compiler/msil/codegen.l`) now `panic`s with a new diagnostic code
+`T0123`, naming the callee, arity, imported path, and package. JVM:
+`lowerGeneralStaticCall`'s equivalent fallback (`lyric-compiler/jvm/codegen/04_calls.l`)
+now panics identically (reusing `T0123` for cross-backend consistency)
+instead of guessing an `invokestatic`, mirroring the already-loud
+non-`JRef`-receiver method-call panic in the same file (docs/59 §4.4). Both
+sites still lower every argument's own side effects onto the stack before
+panicking, matching the established D-progress-656 precedent for turning a
+silent resolution gap into a hard compile-time abort. The method-dispatch
+"unsupported method" runtime-throw stub (#1481 item 4,
+`lowerMethodCallMsil`) was deliberately left as a RUNTIME throw, not
+promoted to compile-time: it's a distinct, already-reasoned design choice
+(a program whose unreachable paths merely MENTION an unresolvable method
+stays compilable; only an executed path fails) rather than the #5621/#5516
+silent-drop bug class.
+
+**Audit — the real work.** Per #5621's own directive ("build the full tree +
+ecosystem with the panic enabled and fix whatever it flags"), ran the new
+diagnostic against the self-hosted compiler's own self-build and all 28
+ecosystem libraries (`./bin/lyric test --manifest <toml>`, matching each
+library's own CI invocation exactly). Found and fixed two real,
+previously-invisible gaps this loud-failure diagnostic newly exposed
+(a third apparent hit, `lyric-aws-secrets`, was confirmed a false positive
+from the sweep's own missing `--features local` flag — CI always passes
+it):
+
+1. **`lyric-grpc`'s `.NET` client/server kernel has never worked at all**
+   (filed as #6592, fixed here as an honest interim stub — not a real
+   implementation). Every function in `Grpc.Kernel.Net`
+   (`_kernel/net/grpc_kernel.l`) was declared inside `extern package { }`
+   blocks — a declaration-only FFI form the self-hosted MSIL backend's item
+   dispatcher has always treated as a pure no-op (`IExtern(_) -> {}`,
+   confirmed via a dedicated investigation agent: no MethodDef/MemberRef
+   ever emitted for it). The type checker allowed calls into it anyway
+   (`registerItem`'s `IExtern` arm never populates `symbols`, on the
+   documented assumption codegen resolves these separately — it doesn't).
+   Rewrote all 10 functions as plain Lyric functions that fail fast/honestly:
+   `Result`-returning functions return a typed `Err` naming #6592;
+   `serve`/`netStartHandle` (no `Result` in their signature, matching a real
+   implementation's "throws on failure" contract, and `netStartHandle`
+   additionally can't fabricate a `GrpcServerHandle` — an `opaque type` with
+   no public constructor outside `Grpc.Types`) `panic`; `checkRateLimit`
+   fails OPEN (`true`) rather than closed, so enabling rate limiting on this
+   target doesn't silently reject all traffic. Confirmed narrow to
+   `lyric-grpc`: every other ecosystem library's `_kernel/net/*.l` (dotnet)
+   kernel already uses the working `@externTarget`/`import extern` pattern;
+   only `lyric-grpc`'s dotnet kernel used the never-codegen'd `extern
+   package` form. Real implementation tracked in #6592, not attempted here.
+
+2. **`Lyric.Mono` two compounding bugs, affecting `monitorEnter[T]`/
+   `monitorExit[T]`-shaped generics independently declared in `lyric-jobs`,
+   `lyric-web` (and its `lyric-lambda` workspace consumer), `lyric-mq`, and
+   `lyric-ws`** (filed and fixed together as #6594): (a) `annsHaveAxiomMono`
+   treated ANY `@axiom`-tagged generic as proof-only and exempt from the
+   normal drop/keep/`M0002`-diagnostic bookkeeping, conflating the common
+   package-level `@axiom` (a whole `_kernel/*.l` file) with the distinct,
+   spec-sanctioned (docs/01 §6.5) per-function `@axiom`+`@externTarget`
+   pattern these lock wrappers use — real runtime code, not a proof-only
+   declaration. (b) `inferExprTE`'s `EPath` case only consulted `env`
+   (function params/locals), never module-level `val`s — `monitorEnter
+   (jobHandleCounter)` passes a module-level `val` as its sole argument, so
+   `T` could never be inferred and specialisation silently failed. Together:
+   an unspecialised call site referenced a declaration Phase 2 had already
+   dropped (non-generic-extern, exempted from the diagnostic by bug (a)) —
+   invisible before this session's diagnostic, a hard failure after.
+   **Fix:** new `annsAxiomOnlyMono` predicate (`@axiom` AND no
+   `@externTarget`) replaces the two `annsHaveAxiomMono` call sites that
+   gate this behaviour; new `MonoState.moduleValTypes` (populated from
+   every module-level `IVal` carrying an explicit type annotation — same
+   safe-degradation philosophy as the rest of the file for the unannotated
+   case) that `inferExprTE`'s `EPath` case falls back to when `env` has no
+   entry.
+
+**Verification.** Self-hosted compiler self-build (stage 1 + AOT) clean
+after each change. Full ecosystem sweep (all 28 `lyric-*/lyric.toml`
+libraries, dotnet target) clean except the two pre-existing/false-positive
+findings named above. `lyric-grpc`'s own test suites (2/2) and all four
+`monitorEnter`-affected libraries' full suites (`lyric-jobs` 17/17,
+`lyric-mq` 5/5, `lyric-ws` 6/6, `lyric-web` 7/7) pass. Compiler self-test
+corpus spot-checked (full `TEST_EMITTER_FILES` sweep run separately).
+
+**Related:** #5621, #5516, #6592 (lyric-grpc real implementation, tracked),
+#6594 (the two mono.l bugs, fixed here), D-progress-658 (#5604/#5612, the
+meta-defect this closes), D-progress-656 (the loud-failure precedent for
+unresolved auto-FFI).
+
+## D-progress-808 — `Std.Rest.fullUrl` no longer crashes on the opaque `String` receiver of `.charAt` (#5622, part 1 of 2)
+
+**Status:** ACCEPTED (first of two independent bugs #5622 reports; the
+second — `sendRequest`'s async state-machine `match not exhaustive` panic —
+is tracked and fixed separately, see the follow-up entry for that half).
+
+**Root cause.** `fullUrl(client, path)` computed whether to insert or
+strip a `/` at the base/path join point via `base.charAt(lastBase)` and
+`path.charAt(0)`. `.charAt` on `String` is a throw-stub left over from an
+earlier String-representation migration (the opaque-field `String`
+receiver shape `.charAt` was written against no longer matches how a
+`String` is represented) — every call into `fullUrl` with a non-empty
+`path` panicked immediately, making `RestClient.get`/`post`/etc.
+unusable for any request with a URL path.
+
+**Fix.** Switched both computations to bracket indexing
+(`base[lastBase]`, `path[0]`), the same live, correctly-supported
+character-access spelling already used throughout the rest of the
+stdlib (and the form `.charAt` itself was presumably meant to be a
+synonym for, before it bit-rotted into a throw-stub). No change to
+`fullUrl`'s join-logic semantics — only the character-access mechanism.
+
+**Verification.** `lyric-stdlib/tests/rest_tests.l` passes cleanly
+against a stdlib bundle rebuilt from this change (targeted redeploy via
+`scripts/stage-selfhosted-stdlib.sh`, not a full `make lyric`).
+
+**Related:** #5622 (this issue also tracks the `sendRequest` half, fixed
+in a separate commit/entry), D-progress-780 (a similar "MSIL diverged
+from Std.String's real API surface" class of bug, different root cause).
+
+## D-progress-809 — MSIL call-site construction hint threading covers in-bundle generic parameters (`MGenericInstByName`), fixing `Std.Rest.sendRequest`'s async "match not exhaustive" panic (#5622, part 2 of 2)
+
+**Context.** #5622 part 2: `Std.Rest.sendRequest` (an `async func`) has an
+exhaustive `match body { case None -> …; case Some(json) -> … }` over its
+own `body: in Option[String]` parameter — genuinely exhaustive over
+`Option` in the source. Yet calling it on `--target dotnet` (e.g. via
+`RestClient.get`, which calls `sendRequest(client, GET, path, None, "")`)
+panicked at runtime:
+
+```
+Unhandled exception. System.Exception: Msil.Codegen: match not exhaustive
+in Std.Rest.<sendRequest>__SM_22.MoveNext scr=GNStd.Core.Option`1<S,> arms=2
+```
+
+**Root cause.** `lyric-compiler/msil/codegen.l`'s
+`lowerBuiltinOrStaticCallMsil` (the free-function `ECall` lowering path)
+threads a callee's declared parameter type into `fctx.contextHintTyArgs`
+before lowering each call argument, specifically so a bare nullary case
+literal (`None`, or a bare `Ok(...)`/`Err(...)`) constructs the closed
+generic instantiation the parameter's declared type calls for, rather than
+erasing to `<object>` (see the doc comment directly above the site, and the
+`#3920`/`#4965` history of the same construction-hint mechanism). Before
+this fix that `match pTy { … }` dispatch (around line 14078) had an arm
+for `MGenericInst` — the representation for a **restored, cross-assembly**
+generic type reference (e.g. `Option[T]` as seen from a plain user program
+that imports the already-compiled `Lyric.Stdlib.dll`) — but no arm at all
+for `MGenericInstByName`, the representation `typeExprToMsilCtx` produces
+for an **in-bundle** generic type (docs/43's by-name TypeSpec encoding,
+resolved to the real TypeDef at lowering): any `pTy` shaped that way fell
+into the catch-all `case _`, which only pushes `collExpect` and threads
+**no** `contextHintTyArgs` at all.
+
+`Std.Core.Option` is in-bundle relative to `Std.Rest` whenever the two are
+compiled together in the same compilation unit — which is exactly how the
+real `Lyric.Stdlib.dll` bundle is built (`lyric-stdlib/lyric.toml`
+compiles all 73 stdlib packages as one bundle). So the call site
+`sendRequest(client, GET, path, None, "")` inside `RestClient.get` saw
+`pTy = MGenericInstByName("Std.Core.Option\`1", [MString])` for the `body`
+parameter, hit the gap, and the bare `None` argument built via
+`lowerNullaryCaseValueMsil` fell back to `fctx.declaredRetTy` (RestClient.get's
+own `Result[HttpResponse, RestError]`, not `Option`-shaped, so still no
+usable hint) — constructing an untyped/erased `Option_None<object>`
+instead of the closed `Option_None<String>` `sendRequest`'s SM class field
+declares. The SM field store (a plain `stfld`, no runtime type check) let
+the mismatched value through; `sendRequest`'s own `match body { … }` then
+`isinst`-tested the SM field's value against both `Option_Some<String>`
+and `Option_None<String>` and matched **neither**, since the actual CLR
+object was `Option_None<object>` — hence "match not exhaustive" against a
+scrutinee whose *declared* type looked perfectly closed
+(`scr=GNStd.Core.Option\`1<S,>`decodes to `Option<System.String>`, the
+correct declared type — it's the *runtime value*, not the declared type,
+that was wrong).
+
+This is not async-specific: it is a general call-site argument-construction
+gap for any in-bundle function taking a bare nullary-case argument for a
+generic parameter. It manifests specifically here because `sendRequest` is
+the first in-bundle stdlib function whose Option/Result-typed parameter is
+later `match`ed with a concrete `isinst` test against the exact case —
+most other stdlib call sites either pass the payload-typed case
+(`Some(x)`) or never re-`match` the parameter, so the wrong runtime type
+never got exercised. Confirmed via two standalone repros: a plain
+cross-assembly sync function calling `f(None)` for an `Option[String]`
+parameter (imported `Std.Core` from an already-built `Lyric.Stdlib.dll`,
+so `pTy` is `MGenericInst`) worked correctly before this fix, matching the
+theory that only the missing `MGenericInstByName` arm was broken.
+
+**Fix.** Added an `MGenericInstByName(_, pArgs) ->` arm to the `match pTy`
+dispatch in `lowerBuiltinOrStaticCallMsil`, mirroring the existing
+`MGenericInst` arm instruction-for-instruction: save/clear/replace
+`fctx.contextHintTyArgs` with the parameter's own generic type args around
+the argument's lowering, then restore the saved hints afterward (so an
+enclosing hint for a *different* type never leaks into the argument, same
+invariant the `MGenericInst` arm already upholds).
+
+**Verification.**
+- Standalone repro (`await client.get("/status")` against an unreachable
+  `127.0.0.1:1`, exercising `RestClient.get` → `sendRequest` → the `match
+  body { … }`) no longer panics; it now returns cleanly with the expected
+  `Err` result (connection refused, no server listening).
+- Full `LYRIC_BOOTSTRAP_VERSION=0.5.1 make lyric` rebuild clean.
+- `lyric-compiler/lyric/pattern_lowering_self_test.l` (17/17),
+  `const_pattern_self_test.l` (18/18), and
+  `qualified_union_case_self_test.l` (8/8) all pass unchanged on
+  `--target dotnet` — ordinary match-expression lowering elsewhere is
+  unaffected.
+- `lyric-compiler/lyric/async_sm_self_test.l` (71/71) passes, including
+  two updated regression cases (`restViaParamRecv`/`restViaMatchBoundRecv`,
+  #5606) that previously ran with the real send path gated off
+  (`doSend = false`, `path = ""`) specifically to dodge this bug (and its
+  #5622-part-1 `fullUrl` sibling). Both bugs are now fixed, so the gate is
+  removed: the tests pass `doSend = true` and a non-empty path, exercising
+  the full async send/receive/match round trip end-to-end.
+
+**Related:** #5622 (part 1, `fullUrl`'s `.charAt` crash, fixed in
+D-progress-808), #3920 and #4965 (earlier fixes to the same bare-nullary-
+case construction-hint mechanism for the `MGenericInst`/scrutinee-typed
+cases, which this entry extends to `MGenericInstByName`).
+
+## D-progress-810 — Issue #5133 re-verified: narrow bug fixed and shipped (`MockDbConnection`/`MockDbTransaction`), broad bug not reproduced
+
+**Status:** ACCEPTED (partial resolution — see "Remaining scope" below).
+
+**Context.** #5133 reported two suspected self-hosted MSIL codegen bugs
+found while adding five new `impl Interface for Record` mock types to
+`lyric-testing/src/testing.l` (docs/57 §5.3/§7 item 7): a "narrow" bug
+(an interface-typed value extracted from a `Result`/`Option` returned by
+another cross-package interface method, then dispatched through a
+further interface method call, failed to resolve —
+`MissingMethodException`), and a "broad" bug (adding several `impl`
+blocks to one file allegedly caused widespread `InvalidProgramException`,
+including on pre-existing untouched mock methods, suspected to be a
+scale-sensitive MethodDef/FieldDef "predicted row" bookkeeping drift in
+`lyric-compiler/msil/lowering.l`/`codegen.l`). A 2026-07-29 triage
+comment on the issue had already confirmed the narrow bug fixed and left
+the broad bug unconfirmed/unrefuted, recommending re-verification plus a
+real `lyric-testing` mock re-addition as the next low-risk step.
+
+**Narrow bug: re-verified fixed, now shipped in production code.**
+`MockDbConnection`/`MockDbTransaction` were added to
+`lyric-testing/src/testing.l` (implementing `lyric-db`'s real
+`Db.DbConnection`/`Db.DbTransaction` interfaces) and exercised by five new
+tests in `lyric-testing/tests/testing_tests.l`, including the exact
+`#5133`-shaped case: `match ctx.db.transaction() { case Ok(tx) ->
+tx.commit() ... }`. The full `lyric-testing` suite (44/44, up from 37/37)
+passes cleanly via `./bin/lyric test --manifest lyric-testing/lyric.toml`,
+confirming the fix end-to-end against a real cross-package interface, not
+just a synthetic repro. `TestContext` gained a `db: MockDbConnection`
+field; `newTestContext()` initializes it.
+
+**Broad bug: could not be reproduced.** Built a same-file, same-package
+regression test (`lyric-compiler/lyric/multi_impl_iface_result_self_test.l`)
+deliberately mirroring the original bisection shape as closely as a
+`Std.*`-only self-test allows: five distinct interface/record pairs in
+one file, one pair (`DbLikeConn`/`DbLikeTxn`) returning an interface type
+wrapped in `Result` with a further interface method dispatched on the
+`match`-extracted value (mirroring `DbConnection.transaction()`), one pair
+(`SearchLikeClient`) using `async func` interface methods (mirroring
+`Search.SearchClient` — the point at which the original bisection's
+second failure appeared), and two tests specifically re-exercising the
+first two pairs' methods AFTER all five pairs were declared, to catch the
+"pre-existing, untouched mock method starts failing once file size grows"
+symptom the issue reported. All 9 tests pass; no `InvalidProgramException`
+or token-resolution failure occurred at any point. This corroborates the
+prior triage's own 10-interfaces-×-4-methods scale-up finding — no
+same-file multi-`impl`-block corruption could be produced in two
+independent sessions across three different repro shapes now. The
+suspected root cause (a per-file, not per-type, predicted-row counter
+drifting with `impl`-block count) was also inspected directly: the
+MethodDef-row budget for `impl` methods is computed per-record in
+`msil/codegen.l`'s `addPackageTokens` Pass 1 (the `implImplTargets`/
+`implImplNames` parallel-list scan, mirrored identically for `IRecord`
+and `IExposedRec`), independent of how many other `impl` blocks exist
+elsewhere in the file — no shared/global counter that could drift with
+unrelated `impl` blocks was found in that path.
+
+**Note (incidental, out of scope, not fixed here):** while building the
+broad-bug repro, `isOk(r)`/`isErr(r)` (`Std.Core`'s generic `Result`
+helpers) panicked with `Msil.Codegen: match not exhaustive ... arms=2`
+when `r` was a `val` bound from `await <interfaceValue>.<asyncMethod>(...)`
+(a `Result` produced by awaiting an async interface-dispatched call) —
+the generic specialization degraded to `isOk__Object__Object` instead of
+the concrete `Result[Unit, String]`, so its `case Ok`/`case Err` isinst
+checks against the real instance never matched either arm. Calling
+`isOk`/`isErr` directly on a *non-async* interface-dispatched `Result`
+(no intervening `await`+`val`) worked fine, and `match` against the same
+awaited value always worked — only the generic-helper-on-an-awaited-`val`
+combination triggered it. This is unrelated to #5133's `impl`-block-count
+theory (it's a generic type-argument inference gap for async-dispatched
+results, not an `InvalidProgramException`/`MissingMethodException`), was
+not chased down further to keep this fix scoped, and is not tracked by
+an issue yet — `multi_impl_iface_result_self_test.l` avoids the shape
+(uses `match` throughout, matching the codebase's existing idiom) rather
+than exercising it.
+
+**Remaining scope.** `MockSearchClient` stays unadded: building
+`lyric-search` as a restored path dependency of `lyric-testing` hits a
+separate, already-identified blocker (`lyric-search` restored-DLL
+contract-metadata synthesis fails on `unknown type name 'JsonElement'`),
+noted in #5133's own triage comment as out of scope for this issue.
+`MockJobScheduler`, `MockQueueConsumer`, `MockTranslationStore`, and
+`MockWsHandler`/`MockWsRegistry` (docs/57 §5.3's other named gaps) were
+not attempted this round — no #5133 blocker applies to them, they are
+simply unblocked follow-up work now that #5133 itself is resolved as far
+as this session could take it.
+
+**Verification.** `./bin/lyric test --target dotnet
+lyric-compiler/lyric/multi_impl_iface_result_self_test.l` (9/9).
+`./bin/lyric test --manifest lyric-testing/lyric.toml` (44/44).
+`./bin/lyric test --target dotnet lyric-compiler/lyric/impl_method_self_test.l`
+(22/22, no interface-dispatch regression). Full `make lyric` clean build.
+
+**Related:** #5133, docs/57 §5.3/§7 item 7 (updated), the 2026-07-29 issue
+triage comment (partial prior verification this entry builds on).
+
+## D-progress-811 — CI post-merge fallout from D-progress-815's T0123 loud-failure diagnostic: JVM free-function `hashCode(x)` builtin unhandled; `lyric-aws-secrets` had no safe default feature set
+
+**Context.** #5629/#5516's T0123 loud-failure diagnostic (D-progress-815)
+turned every previously-silent unresolved-call gap into a hard compile-time
+panic. D-progress-815's own audit swept the self-hosted compiler build and
+all 28 ecosystem library manifests, but PR #6629 (this ticket batch's PR)
+still surfaced two further gaps once real CI ran the full self-test suite
+and the generic "stdlib-builds" ecosystem sanity-build step — both are
+genuine, previously-silent bugs the loud-failure diagnostic correctly
+caught; neither is a regression in this PR's own logic.
+
+**Bug 1 — JVM `hashCode(x)` free-function builtin.** `Lyric.Derives`'
+`hashBodyForFields` synthesizes a free-function call `hashCode(x)` for every
+`@derive(Hash)` field (mirroring MSIL's own `funcName == "hashCode"`
+builtin arm in `msil/codegen.l`). The JVM backend
+(`lyric-compiler/jvm/codegen/04_calls.l`,
+`lowerBuiltinOrStaticCall`) had no matching arm — this call fell through to
+the general call resolver, which the T0123 fix turned from a silent
+best-effort guess into a hard panic, surfacing via
+`map_key_self_test.l --target jvm` (a compiler self-test, not an ecosystem
+library — outside the scope of D-progress-815's own ecosystem-manifest
+sweep). Fixed by adding a `hashCode` arm mirroring MSIL's: box the argument
+if needed, then dispatch `Object.hashCode()` virtually so it resolves to
+the real type's own override (`Integer.hashCode()`, a derived record's own
+`hashCode()`, etc.) either way.
+
+**Bug 2 — `lyric-aws-secrets` had no safe default feature set.**
+`lyric-aws-secrets/lyric.toml`'s `[features]` table (`aws`/`local`/`jvm`)
+declared no `default`, so CI's `stdlib-builds` job's ecosystem sanity-build
+loop (`lyric build --manifest lyric-aws-secrets/lyric.toml`, no
+`--features` flag — this loop deliberately passes none, unlike the
+library's own dedicated `--features local` test job) activated NONE of the
+three, leaving `AwsSecrets.Kernel.Net`'s `@cfg`-gated kernel file entirely
+unselected. The main package's `initFromAnnotations` call therefore had no
+resolvable target — previously silently miscompiled (dropped call, #5621's
+own bug class), now a T0123 panic. D-progress-815 itself flagged this exact
+build failure during its own audit and dismissed it as "a false positive
+from the sweep's own missing `--features local` flag" — too hasty a
+dismissal: it is a real, reachable CI path (the generic ecosystem-build
+step), just not one D-progress-815's own targeted sweep script happened to
+exercise. Fixed by adding `default = ["local"]` — the only feature with no
+external NuGet/Maven dependency (mirrors `lyric-mq`'s `default =
+["inmemory"]` and `lyric-jobs`'s `default = ["dotnet", "inprocess"]`
+established convention of defaulting to the dependency-free backend; unlike
+`lyric-session`'s deliberate no-default choice, whose *every* feature needs
+an external package). No CI job currently builds this library with
+`--features aws`/`jvm` without also expecting `--no-default-features`
+(mirroring `lyric-jobs`'s own documented `--target jvm
+--no-default-features --features jvm,quartz` pattern), so this introduces
+no new default/explicit-feature collision. Verified: plain
+`lyric build --manifest lyric-aws-secrets/lyric.toml` (no flags) now
+succeeds; `lyric test --manifest lyric-aws-secrets/lyric.toml --features
+local` still 13/13; `lyric-lambda`'s equivalent plain (no-`--features`)
+build was checked and does NOT share this gap (unaffected).
+
+**Verification.** `map_key_self_test.l --target jvm` 8/8. `restored_async_
+self_test.l --target dotnet` 4/4 in isolation (CI's own two same-run
+failures on this file were the pre-existing, already-tracked-and-closed
+#5933 infra flake — a random concurrent self-test process killed by the CI
+runner's OS-level memory pressure, exit 135/SIGBUS-class, no diagnostic
+output, victim differs every run; not a code issue, confirmed by this
+file's own clean local pass and by #5933's own closed remediation PRs
+already limiting (not eliminating) the flake's frequency).
+
+**Related:** #5621, #5516, D-progress-815 (the diagnostic that surfaced
+both gaps), #5933 (the separately-tracked, closed CI infra flake hit in the
+same CI run, not fixed here since it needs no fix — a re-run is sufficient).

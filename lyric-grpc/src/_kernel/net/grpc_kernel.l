@@ -1,17 +1,27 @@
 //! Grpc.Kernel.Net — .NET extern boundary for gRPC client and server.
 //!
-//! Client side (Grpc.Net.Client) — real:
+//! Real:
 //!   netOpenChannel / netCloseChannel — channel lifecycle (`GrpcChannel.ForAddress`
 //!     / `.Dispose()`, registry-keyed like `lyric-mq`/`lyric-ws`/`lyric-jobs`)
+//!   checkRateLimit()                 — in-process sliding-window rate limiter
 //!
-//! Server side — real:
-//!   checkRateLimit() — in-process sliding-window rate limiter
-//!
-//! NOT implemented — blocked on a self-hosted-compiler gap, not a design
-//! choice; see the long comment on `netCallUnary` below for the root cause:
+//! NOT implemented — blocked on a self-hosted-compiler gap (#6581), not a
+//! design choice; see the long comment on `netCallUnary` below for the root
+//! cause. Each fails fast (a typed `Err`, or a `panic` for the two functions
+//! whose signature has no room for one) rather than the ORIGINAL design's
+//! declaration-only `extern package { ... }` blocks against
+//! `Grpc.Net.Client`/`Grpc.AspNetCore`, which the self-hosted MSIL backend
+//! has never actually lowered to any MethodDef/MemberRef (`IExtern` is a
+//! documented no-op there; see `Msil.Codegen`'s item dispatcher) — every
+//! call through one of those blocks either silently dropped (the
+//! pre-#5621/#5516 loud-failure behaviour) or, once that fix landed, would
+//! hard-panic at compile time with no path forward for a caller. Tracked
+//! overall in #6592; the compiler-side blocker itself is #6581:
 //!   netCallUnary                                                 — unary RPC
 //!   netOpenServerStream / netNextStreamMessage / netCloseStream  — server streaming
 //!   serve() / netStartHandle() / netStopHandle()                 — server hosting
+//!
+//! JWT verification lives in Auth.Kernel.Net (lyric-auth).
 //!
 //! Only active when compiled with feature = "dotnet".
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
@@ -219,34 +229,109 @@ pub func netCloseChannel(channel: in GrpcChannel): Unit {
 // Tracked as a compiler-side follow-up in #6581 (out of `lyric-grpc`'s
 // scope — see docs/37-grpc-proto-sketch.md and this package's
 // kernel-boundary contract). Channel lifecycle and the rate limiter above
-// have no dependency on either gap and are real.
-@axiom("Grpc.Net.Client CallInvoker with pass-through marshaller conforms to its NuGet contract")
-extern package Grpc.Net.Client.Unary {
-  pub func netCallUnary(channel: GrpcChannel, service: in String, method: in String, payload: in slice[Byte], timeoutMs: in Int, metadata: in String): Result[slice[Byte], GrpcStatus]
-  // ─── Client: server-streaming calls ──────────────────────────────────────────
+// have no dependency on either gap and are real. Until #6581 lands, this
+// fails fast (a typed `Err`) instead of the ORIGINAL design's inert
+// `extern package Grpc.Net.Client.Unary { ... }` declaration block, which
+// the self-hosted MSIL backend never lowers to any MethodDef/MemberRef
+// (see the module doc comment) — a caller reaching this function used to
+// hit a silently-dropped call (or, after #5621/#5516's loud-failure fix,
+// a hard compile-time panic naming only a compiler internal). This
+// `Err`-returning function compiles cleanly and fails honestly at the one
+// call site that can actually explain why.
+pub func netCallUnary(
+  channel: in GrpcChannel,
+  service: in String,
+  method: in String,
+  payload: in slice[Byte],
+  timeoutMs: in Int,
+  metadata: in String,
+): Result[slice[Byte], GrpcStatus] {
+  Err(
+    GrpcStatus(
+      code = GrpcStatusCode.Unimplemented,
+      message = "gRPC .NET unary calls are blocked on a self-hosted-compiler gap (tracked in #6581)"
+    )
+  )
 }
 
-@axiom("Grpc.Net.Client server-streaming CallInvoker conforms to its NuGet contract")
-extern package Grpc.Net.Client.Stream {
-  pub func netOpenServerStream(channel: GrpcChannel, service: in String, method: in String, payload: in slice[Byte], timeoutMs: in Int, metadata: in String): Result[GrpcStream, GrpcStatus]
-
-  pub func netNextStreamMessage(stream: GrpcStream): Result[Option[slice[Byte]], GrpcStatus]
-  pub func netCloseStream(stream: GrpcStream): Unit
-  // ─── Server: hosting ─────────────────────────────────────────────────────────
+// ─── Client: server-streaming calls ────────────────────────────────────────────
+/// **BLOCKED** (#6581) — see `netCallUnary`'s long comment; server-streaming
+/// needs the same `CallInvoker`/generic-method machinery.
+pub func netOpenServerStream(
+  channel: in GrpcChannel,
+  service: in String,
+  method: in String,
+  payload: in slice[Byte],
+  timeoutMs: in Int,
+  metadata: in String,
+): Result[GrpcStream, GrpcStatus] {
+  Err(
+    GrpcStatus(
+      code = GrpcStatusCode.Unimplemented,
+      message = "gRPC .NET server-streaming calls are blocked on a self-hosted-compiler gap (tracked in #6581)"
+    )
+  )
 }
 
-@axiom("Grpc.AspNetCore / grpc-dotnet server host")
-extern package Grpc.AspNetCore {
-  pub func serve(host: String, port: Int, reflectionEnabled: Bool, maxConnectionIdleMs: Int, registry: Grpc.ServiceRegistry): Unit
+/// A stream from `netOpenServerStream` never exists on this target, so
+/// this is unreachable in practice.
+pub func netNextStreamMessage(stream: in GrpcStream): Result[Option[slice[Byte]], GrpcStatus] {
+  Err(
+    GrpcStatus(
+      code = GrpcStatusCode.Unimplemented,
+      message = "gRPC .NET server-streaming calls are blocked on a self-hosted-compiler gap (tracked in #6581)"
+    )
+  )
 }
 
-@axiom("Grpc.AspNetCore IHost.StopAsync provides drain-with-timeout shutdown")
-extern package Grpc.AspNetCore.Managed {
-  pub func netStartHandle(host: String, port: Int, reflectionEnabled: Bool, maxConnectionIdleMs: Int, registry: Grpc.ServiceRegistry): GrpcServerHandle
+/// A stream from `netOpenServerStream` never exists on this target, so
+/// this is unreachable in practice; a real stream-close call is a no-op
+/// stub rather than a panic since closing is idempotent and side-effect-
+/// free to skip.
+pub func netCloseStream(stream: in GrpcStream): Unit {
+  ()
+}
 
-  pub func netStopHandle(handle: GrpcServerHandle, drainTimeoutMs: Int): Unit
-    requires: drainTimeoutMs >= 0
-  // ─── Server: rate limiting ────────────────────────────────────────────────────
+// ─── Server: hosting ────────────────────────────────────────────────────────────
+/// **BLOCKED** (#6581). `Grpc.serve` (`grpc.l`) declares this
+/// `Unit`-returning and blocking (it is meant to run the server host
+/// forever) — there is no `Result` in its signature to fail into, so a
+/// real implementation would only ever fail via an unhandled .NET
+/// exception anyway; `panic` matches that contract honestly rather than
+/// silently returning as if a server were actually running.
+pub func serve(
+  host: in String,
+  port: in Int,
+  reflectionEnabled: in Bool,
+  maxConnectionIdleMs: in Int,
+  registry: in ServiceRegistry,
+): Unit {
+  panic("gRPC .NET server hosting is blocked on a self-hosted-compiler gap (tracked in #6581)")
+}
+
+/// **BLOCKED** (#6581). `Grpc.startHandle` (`grpc.l`) declares
+/// this as returning a bare `GrpcServerHandle` (no `Result`) — matching a
+/// real implementation's "throws on failure" contract; `panic` is the
+/// honest signal here too. `GrpcServerHandle` is `opaque type` owned by
+/// `Grpc.Types` with no public constructor exposed to this package, so a
+/// dummy success value cannot be fabricated even if this function's
+/// signature allowed one.
+pub func netStartHandle(
+  host: in String,
+  port: in Int,
+  reflectionEnabled: in Bool,
+  maxConnectionIdleMs: in Int,
+  registry: in ServiceRegistry,
+): GrpcServerHandle {
+  panic("gRPC .NET server hosting is blocked on a self-hosted-compiler gap (tracked in #6581)")
+}
+
+/// A handle from `netStartHandle` never exists on this target, so this is
+/// unreachable in practice.
+pub func netStopHandle(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit
+  requires: drainTimeoutMs >= 0
+{
+  ()
 }
 
 // ─── Server: rate limiting (System.Threading.RateLimiting) ────────────────────
@@ -395,7 +480,7 @@ func unwrapLimiter(opt: in Option[NetRateLimiter]): NetRateLimiter {
 /// Check (and consume, if allowed) one permit from both the sustained
 /// (`requestsPerMinute` over a rolling 60s window) and burst (`burstSize`
 /// over a rolling 1s window) limiters for `method`. Returns `true` only if
-/// both grant a permit.
+/// both grant a permit. Real enforcement — does not depend on #6581.
 pub func checkRateLimit(method: in String, requestsPerMinute: in Int, burstSize: in Int): Bool
   requires: requestsPerMinute > 0
   requires: burstSize > 0

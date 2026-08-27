@@ -1245,6 +1245,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0066` | `while` condition is not Bool |
 | `T0067` | `if`/`match` guard or condition type error; value-position `try` handler type incompatible with the `try` body |
 | `T0070` | Function body type does not match declared return type |
+| `T0073` | `null` used in pattern position — Lyric has no null literal or null pattern; `case null -> ...` parses as an ordinary catch-all binding named `null`, not a null test |
 | `T0080` | `old(…)` used outside an `ensures` clause |
 | `T0085` | `out`/`inout` argument (value-type) must be a mutable l-value |
 | `T0086` | `out` parameter is never assigned before the function returns |

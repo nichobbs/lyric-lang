@@ -460,10 +460,22 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 emitLoad(insns, mapSlot, recvTy)
                 emitLoad(insns, keySlot, JRef(className = "java/lang/Object"))
                 emitMapGet(insns)
-                emitUnboxObjectTo(insns, vTy)
+                // The map's real declared value type (#5688): `m[k] += <non-
+                // String>` on a `Map[K, String]` is well-typed since #5688
+                // (mirroring plain-variable and array-element widening), so
+                // the RHS's own type (`vTy`) is no longer a safe stand-in for
+                // the container's value type — unbox/combine/re-box against
+                // the real declared value type when statically known
+                // (`indexedElemTypeOverride`, the same resolver the read-path
+                // `EIndex` arm uses), falling back to the prior `vTy`-inferred
+                // behavior when no static override is available.
+                val elemTy = match indexedElemTypeOverride(ctx, recv) {
+                  case JVoid -> emitUnboxObjectTo(insns, vTy)
+                  case overrideTy -> applyIndexedElemOverride(insns, overrideTy)
+                }
                 emitLoad(insns, rhsSlot, vTy)
-                emitCompoundCombineJvm(ctx, insns, op, vTy, vTy)
-                boxIfNeeded(insns, vTy)
+                emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy)
+                boxIfNeeded(insns, elemTy)
                 emitMapPut(insns)
               }
             }
@@ -509,10 +521,15 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 emitLoad(insns, listSlot, recvTy)
                 emitLoad(insns, idxSlot, JInt)
                 emitListGet(insns)
-                emitUnboxObjectTo(insns, vTy)
+                // The list's real declared element type (#5688) — see the
+                // matching HashMap-arm comment above.
+                val elemTy = match indexedElemTypeOverride(ctx, recv) {
+                  case JVoid -> emitUnboxObjectTo(insns, vTy)
+                  case overrideTy -> applyIndexedElemOverride(insns, overrideTy)
+                }
                 emitLoad(insns, rhsSlot, vTy)
-                emitCompoundCombineJvm(ctx, insns, op, vTy, vTy)
-                boxIfNeeded(insns, vTy)
+                emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy)
+                boxIfNeeded(insns, elemTy)
                 emitListSet(insns)
               }
             }

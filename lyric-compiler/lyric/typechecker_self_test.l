@@ -3848,3 +3848,28 @@ test "out param never mentioned still fires T0086 after the call-argument credit
   val src = "package P\nfunc helper(v: in Int): Unit { val _ = v }\nfunc f(x: out Int): Unit { helper(1) }\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0086"), "out param never mentioned anywhere: T0086 still fires")
 }
+
+// #4775: `null` has no meaning as a pattern (the language has no null
+// literal or null pattern, D107) — the lexer treats it as an ordinary
+// identifier, so `case null -> ...` silently parsed as a catch-all binding
+// named `null` and matched every value, null or not.  Reject it with a hard
+// diagnostic instead.
+test "case null: T0073 fires, null pattern rejected (#4775)" {
+  val src = "package P\nfunc f(x: in Int): Int {\n  match x {\n    case null -> 1\n    case _ -> 2\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0073"), "case null: T0073 fires")
+}
+
+test "case null as a non-first arm still fires T0073 (#4775)" {
+  val src = "package P\nfunc f(x: in Int): Int {\n  match x {\n    case 0 -> 1\n    case null -> 2\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0073"), "non-first-arm case null: T0073 still fires")
+}
+
+test "nested case null (inside a constructor pattern) still fires T0073 (#4775)" {
+  val src = "package P\nimport Std.Core\nfunc f(x: in Option[Int]): Int {\n  match x {\n    case Some(null) -> 1\n    case None -> 2\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0073"), "nested case Some(null): T0073 fires")
+}
+
+test "an ordinary identifier binding pattern does not fire T0073 (#4775)" {
+  val src = "package P\nfunc f(x: in Int): Int {\n  match x {\n    case n -> n\n  }\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0073"), "ordinary binding pattern: no T0073")
+}

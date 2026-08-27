@@ -13,6 +13,7 @@ import Mq
 import Flags
 import Session
 import Cache
+import Db
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 func makeEmailMsg(): Mail.EmailMessage {
@@ -331,6 +332,77 @@ test "MockFlagStore: getValue returns None for unknown flag" {
     case None -> ()
     case Some(_) -> assertTrue(false, "getValue must be None for unknown flag")
   }
+}
+
+// ─── MockDbConnection / MockDbTransaction ──────────────────────────────────────
+// Regression coverage for issue #5133's "narrow" bug (confirmed fixed,
+// D-progress-808): an interface-typed value (`Db.DbTransaction`) returned
+// wrapped in a `Result` by another cross-package interface method
+// (`Db.DbConnection.transaction()`), extracted via `match`, then dispatched
+// through a further interface method call — previously failed to resolve the
+// interface method's token (`MissingMethodException`).
+test "MockDbConnection: query returns Ok and increments queryCount" {
+  val ctx = Testing.newTestContext()
+  match ctx.db.query("select 1", []) {
+    case Err(e) -> assertTrue(false, "query() must return Ok: " + e.message)
+    case Ok(_) -> ()
+  }
+  assertEqualInt(ctx.db.queryCount, 1, "queryCount after one query")
+}
+
+test "MockDbConnection: execute returns Ok and increments executeCount" {
+  val ctx = Testing.newTestContext()
+  match ctx.db.execute("update t set x = 1", []) {
+    case Err(e) -> assertTrue(false, "execute() must return Ok: " + e.message)
+    case Ok(_) -> ()
+  }
+  assertEqualInt(ctx.db.executeCount, 1, "executeCount after one execute")
+}
+
+test "MockDbConnection: transaction commits and rolls back independently (#5133)" {
+  val ctx = Testing.newTestContext()
+  match ctx.db.transaction() {
+    case Ok(tx) -> {
+      match tx.commit() {
+        case Ok(_) -> ()
+        case Err(_) -> assertTrue(false, "tx.commit() must return Ok")
+      }
+    }
+    case Err(_) -> assertTrue(false, "transaction() must return Ok")
+  }
+  match ctx.db.transaction() {
+    case Ok(tx) -> {
+      match tx.rollback() {
+        case Ok(_) -> ()
+        case Err(_) -> assertTrue(false, "tx.rollback() must return Ok")
+      }
+    }
+    case Err(_) -> assertTrue(false, "transaction() must return Ok")
+  }
+  assertEqualInt(Testing.txCount(ctx.db), 2, "two independent transactions were begun")
+}
+
+test "MockDbConnection: transaction's query/execute work on the extracted interface value" {
+  val ctx = Testing.newTestContext()
+  match ctx.db.transaction() {
+    case Ok(tx) -> {
+      match tx.query("select 2", []) {
+        case Ok(_) -> ()
+        case Err(_) -> assertTrue(false, "tx.query() must return Ok")
+      }
+      match tx.execute("insert into t values (1)", []) {
+        case Ok(_) -> ()
+        case Err(_) -> assertTrue(false, "tx.execute() must return Ok")
+      }
+    }
+    case Err(_) -> assertTrue(false, "transaction() must return Ok")
+  }
+}
+
+test "MockDbConnection: close does not error" {
+  val ctx = Testing.newTestContext()
+  ctx.db.close()
+  assertTrue(true, "close() completes without error")
 }
 
 // ─── Assertion helpers ────────────────────────────────────────────────────────

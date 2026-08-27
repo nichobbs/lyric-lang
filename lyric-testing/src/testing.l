@@ -14,9 +14,9 @@
 //! failure-injection hooks are tracked as lyric-lang #410.
 //!
 //! Provides in-process mock implementations of Cache, Mail, Storage, Mq,
-//! Session, and Flags interfaces so that unit tests can exercise application
-//! logic without real infrastructure.  Also provides assertion helpers for
-//! writing concise, readable test cases.
+//! Session, Flags, and Db interfaces so that unit tests can exercise
+//! application logic without real infrastructure.  Also provides assertion
+//! helpers for writing concise, readable test cases.
 //!
 //! Usage:
 //!
@@ -42,6 +42,7 @@ import Storage
 import Mq
 import Session
 import Flags
+import Db
 
 // ─── Test support types ───────────────────────────────────────────────────────
 /// A captured outbound email as recorded by MockMailSender.
@@ -522,6 +523,87 @@ pub func cacheSize(store: in MockCacheStore): Int {
   return store.entries.count
 }
 
+// ─── MockDbTransaction / MockDbConnection ─────────────────────────────────────
+/// Mock in-flight database transaction returned by `MockDbConnection.transaction()`.
+///
+/// `query`/`execute` return empty/zero results by default; `commit`/`rollback`
+/// record which one was called via `committed`/`rolledBack` — the mock has no
+/// persisted rows to actually roll back. See docs/57 §5.3 / issue #5133: this
+/// mock exists specifically to exercise `DbConnection.transaction()` returning
+/// an interface-typed (`DbTransaction`) value through a `Result`, with a
+/// further interface method dispatched on the unwrapped value — the shape
+/// #5133's "narrow" bug (fixed) originally broke.
+@stable(since = "0.1")
+pub record MockDbTransaction {
+  var committed: Bool
+  var rolledBack: Bool
+  var queryCount: Int
+  var executeCount: Int
+}
+
+impl Db.DbTransaction for MockDbTransaction {
+  func query(sql: in String, params: in slice[String]): Result[slice[Db.DbRow], Db.DbError]
+    requires: sql.length > 0
+  {
+    self.queryCount = self.queryCount + 1
+    return Ok([])
+  }
+  func execute(sql: in String, params: in slice[String]): Result[Int, Db.DbError]
+    requires: sql.length > 0
+  {
+    self.executeCount = self.executeCount + 1
+    return Ok(0)
+  }
+  func commit(): Result[Unit, Db.DbError] {
+    self.committed = true
+    return Ok(())
+  }
+  func rollback(): Result[Unit, Db.DbError] {
+    self.rolledBack = true
+    return Ok(())
+  }
+}
+
+/// Mock database connection that hands out `MockDbTransaction` values from
+/// `transaction()`.  `query`/`execute` succeed with empty/zero results by
+/// default; use `queryCount`/`executeCount`/`txCount` to verify call counts.
+@stable(since = "0.1")
+pub record MockDbConnection {
+  var queryCount: Int
+  var executeCount: Int
+  var txCount: Int
+  var closed: Bool
+}
+
+impl Db.DbConnection for MockDbConnection {
+  func query(sql: in String, params: in slice[String]): Result[slice[Db.DbRow], Db.DbError]
+    requires: sql.length > 0
+  {
+    self.queryCount = self.queryCount + 1
+    return Ok([])
+  }
+  func execute(sql: in String, params: in slice[String]): Result[Int, Db.DbError]
+    requires: sql.length > 0
+  {
+    self.executeCount = self.executeCount + 1
+    return Ok(0)
+  }
+  func transaction(): Result[Db.DbTransaction, Db.DbError] {
+    self.txCount = self.txCount + 1
+    val tx: Db.DbTransaction = MockDbTransaction(committed = false, rolledBack = false, queryCount = 0, executeCount = 0)
+    return Ok(tx)
+  }
+  func close(): Unit {
+    self.closed = true
+  }
+}
+
+/// Return the number of transactions begun on this mock connection.
+@stable(since = "0.1")
+pub func txCount(conn: in MockDbConnection): Int {
+  return conn.txCount
+}
+
 // ─── TestContext ──────────────────────────────────────────────────────────────
 /// A bundle of mock service implementations for use in unit tests.
 ///
@@ -535,6 +617,7 @@ pub record TestContext {
   queue: MockMessageQueue
   session: MockSessionStore
   flags: MockFlagStore
+  db: MockDbConnection
   clock: TestClock
 }
 
@@ -553,6 +636,7 @@ pub func newTestContext(): TestContext {
     queue = MockMessageQueue(published = newList(), queueName = "test-queue", msgCount = 0),
     session = MockSessionStore(entries = newMap(), sessionSeq = 0),
     flags = MockFlagStore(flags = newMap()),
+    db = MockDbConnection(queryCount = 0, executeCount = 0, txCount = 0, closed = false),
     clock = TestClock(currentEpochMs = 0i64)
   )
 }

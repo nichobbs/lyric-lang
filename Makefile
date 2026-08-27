@@ -287,6 +287,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/cli_workspace_builder_self_test.l \
 	lyric-compiler/lyric/closure_correctness_self_test.l \
 	lyric-compiler/lyric/closure_zero_overhead_self_test.l \
+	lyric-compiler/lyric/config_closure_self_test.l \
 	lyric-compiler/lyric/config_templates_self_test.l \
 	lyric-compiler/lyric/const_pattern_self_test.l \
 	lyric-compiler/lyric/contract_elaborator_self_test.l \
@@ -338,6 +339,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/mono_self_test.l \
 	lyric-compiler/lyric/mono_shadow_self_test.l \
 	lyric-compiler/lyric/msil_project_bridge_self_test.l \
+	lyric-compiler/lyric/multi_impl_iface_result_self_test.l \
 	lyric-compiler/lyric/named_arg_order_self_test.l \
 	lyric-compiler/lyric/nested_constructor_pattern_self_test.l \
 	lyric-compiler/lyric/nested_generic_self_test.l \
@@ -370,6 +372,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/test_synth_self_test.l \
 	lyric-compiler/lyric/toarray_array_abi_self_test.l \
 	lyric-compiler/lyric/try_catch_expr_self_test.l \
+	lyric-compiler/lyric/tuple_none_typearg_self_test.l \
 	lyric-compiler/lyric/typechecker_extern_dedup_self_test.l \
 	lyric-compiler/lyric/typechecker_self_test.l \
 	lyric-compiler/lyric/typed_ffi_delegate_self_test.l \

@@ -112,8 +112,8 @@ func fullUrl(client: in RestClient, path: in String): String {
     return base
   }
   val lastBase = base.length - 1
-  val baseEndsSlash = base.charAt(lastBase) == '/'
-  val pathStartsSlash = path.charAt(0) == '/'
+  val baseEndsSlash = base[lastBase] == '/'
+  val pathStartsSlash = path[0] == '/'
   if baseEndsSlash and pathStartsSlash {
     return base + path.substring(1, path.length)
   }

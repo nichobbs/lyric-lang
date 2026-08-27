@@ -5536,33 +5536,59 @@ func emitCompoundCombineMsil(
 
 // Like `emitCompoundCombineMsil`, but the right-hand operand has already been
 // evaluated into a local slot (`rSlot`, typed `rTy`).  Used by the indexed
-// compound-assignment path, which evaluates the rhs up-front to recover the
-// element's arithmetic type (List/Map elements are stored boxed and the
-// receiver erases primitive element types to `object`).  The current value is
-// already on the stack, typed `rTy`.
+// compound-assignment path, which evaluates the rhs up-front (List/Map
+// elements are stored boxed and the receiver erases primitive element types
+// to `object`, so the element's own type has to come from the container,
+// not the read-back boxed value).  The current value is already on the
+// stack, typed `elemTy` — the container's REAL declared element type (from
+// `recvTy`), not necessarily `rTy`: `xs[i] += <non-String>` on a
+// `List[String]` is well-typed since #5688 (mirroring plain-variable `s +=`,
+// #5657), so `elemTy` (String) and `rTy` (the rhs's own type) can genuinely
+// differ. `elemTy` drives the string-vs-arithmetic decision and the Byte
+// wrap/div-rem-unsigned choice (same as `emitCompoundCombineMsil`); `rTy`
+// drives how the loaded `rSlot` value is coerced to a string when it isn't
+// already one (mirroring `emitCompoundCombineMsil`'s Bool/box+ToString
+// handling) — for every op other than a String `AssPlus`, the type checker
+// still requires `rTy == elemTy` (widening is scoped to that one case), so
+// this is a strict generalization, not a behavior change elsewhere.
 func emitCompoundCombineSlotMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
   insns: in List[MInsn],
   op: in AssignOp,
+  elemTy: in MsilType,
   rTy: in MsilType,
   rSlot: in Int,
 ): Unit {
-  val isStringConcat = match op { case AssPlus -> match rTy { case MString -> true; case _ -> false }; case _ -> false }
+  val isStringConcat = match op {
+    case AssPlus -> match elemTy { case MString -> true; case _ -> false }
+    case _ -> false
+  }
   emitLoadSlot(insns, rSlot, fctx.paramCount)
   if isStringConcat {
+    match rTy {
+      case MString -> {
+      }
+      case MBool -> emitBoolToStringMsil(cctx, fctx, insns)
+      case _ -> {
+        if isValueType(rTy) {
+          boxIfNeededMsil(cctx, insns, rTy)
+        }
+        insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+      }
+    }
     insns.add(MCall(methodToken = cctx.tokConcat2))
   } else {
     match assignOpArithInsnMsil(op) {
       case Some(arith) -> {
         val concreteArith = match arith {
-          case MDiv -> match rTy { case MByte -> MDivUn; case _ -> MDiv }
-          case MRem -> match rTy { case MByte -> MRemUn; case _ -> MRem }
+          case MDiv -> match elemTy { case MByte -> MDivUn; case _ -> MDiv }
+          case MRem -> match elemTy { case MByte -> MRemUn; case _ -> MRem }
           case other -> other
         }
         insns.add(concreteArith)
         // Byte compound results wrap unsigned — see emitCompoundCombineMsil.
-        match rTy {
+        match elemTy {
           case MByte -> insns.add(MConvU1)
           case _ -> ()
         }
@@ -6264,7 +6290,7 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
       } else if seg == "Char" {
         MChar
       } else if seg == "Byte" {
-        MInt
+        MByte
       } else if seg == "Unit" {
         MVoid
       } else if seg == "Object" {
@@ -6734,32 +6760,6 @@ func boxTypeRef(cctx: in CodegenCtx, ty: in MsilType): Int {
 func boxIfNeededMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType): Unit {
   if isValueType(ty) {
     insns.add(MBox(typeToken = boxTypeRef(cctx, ty)))
-  }
-}
-
-// Normalize a value's static type to the "scalar `Byte`" convention the
-// uniform `Func<object,…>` lambda-invoke ABI (#1877) uses for `Byte`-typed
-// parameters, before boxing an argument across that ABI boundary.
-// `typeExprToMsilCtx`'s `TRef("Byte")` arm maps a `Byte` type ANNOTATION to
-// `MInt` (Int32) — including a lifted lambda's own `Byte`-annotated
-// parameter, which `lowerFuncMsil` records in `boxedParamTypes` and later
-// unboxes via `unbox.any int32` at the identifier-load site.  A value read
-// straight out of a `slice[Byte]` / `List[Byte]` / `Map[_, Byte]` keeps the
-// genuine `MByte` (`System.Byte`) static type instead (`sliceElemMsilCtx`,
-// kept for `byte[]`/`List<byte>` BCL interop, #3472/#3473).  Boxing such a
-// value with its own `MByte` tag when it crosses INTO the Func-invoke ABI
-// produces an object the callee's `unbox.any int32` cannot cast:
-// `InvalidCastException: Unable to cast object of type 'System.Byte' to
-// type 'System.Int32'` (#5934) — e.g. `pred(bytes[i])` where `bytes:
-// slice[Byte]` and `pred: (Byte) -> Bool`.  Both box forms wrap the
-// identical (non-negative, since `Byte` is unsigned) int32 stack value a
-// `ldelem.u1`/`callvirt IList.get_Item`-loaded byte is CLI stack-normalized
-// to (ECMA-335 §III.1.1), so re-tagging the box as `Int32` here is exactly
-// the value the callee expects, not an approximation.
-func funcAbiArgBoxTypeMsil(ty: in MsilType): MsilType {
-  match ty {
-    case MByte -> MInt
-    case _ -> ty
   }
 }
 
@@ -8745,11 +8745,36 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       // destructuring can narrow each element to its concrete type even when the
       // binding carries no annotation; MTuple itself erases to object (0x1C) in
       // every signature, so the produced value is a plain object reference.
+      //
+      // The enclosing binding/return/field/call-arg annotation (when the
+      // expected type is itself a tuple of matching arity) is pushed onto
+      // `collExpect` by the caller — same mechanism EList consults. Read it
+      // here and thread each element's own expected type down as BOTH a
+      // collExpect and a contextHintTyArgs scope, mirroring EList's per-
+      // element `pushCollExpect`/`pushAnnoHintTyArgs` handling. Without this
+      // a bare `None`/`Some(..)` tuple element erases its generic type
+      // argument to `object` (`Option_None<object>`) instead of the
+      // declared `Option[T]`, so a later `match`/cast against the tuple's
+      // declared type throws `InvalidCastException` (#4965).
+      val eteExpectElems: List[MsilType] = match collExpectTop(fctx) {
+        case MTuple(elems) -> if elems.count == exprs.count { elems } else { newList() }
+        case _ -> newList()
+      }
       val eteElemTys: List[MsilType] = newList()
       var etei = 0
       while etei < exprs.count {
         insns.add(MDup)
-        val eteTy = lowerExprMsil(cctx, fctx, insns, exprs[etei])
+        val eteTy = if eteExpectElems.count > 0 {
+          val eteElemExpect = eteExpectElems[etei]
+          val eteSavedHint = pushAnnoHintTyArgs(fctx, eteElemExpect)
+          pushCollExpect(fctx, eteElemExpect)
+          val t = lowerExprMsil(cctx, fctx, insns, exprs[etei])
+          popCollExpect(fctx)
+          restoreHintTyArgs(fctx, eteSavedHint)
+          t
+        } else {
+          lowerExprMsil(cctx, fctx, insns, exprs[etei])
+        }
         eteElemTys.add(eteTy)
         boxIfNeededMsil(cctx, insns, eteTy)
         insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
@@ -10944,13 +10969,17 @@ func lowerAssignExprMsil(
             //
             // List/Map elements are stored boxed and the receiver erases
             // primitive element types to `object` (`List[Int]` → MObject,
-            // `Map[K,V]` → MMapOf(object,object)), so the element's arithmetic
-            // type cannot come from the receiver.  Instead the rhs is evaluated
-            // up-front: for a well-typed compound assignment the element and the
-            // rhs share a type, so the rhs type drives the unbox / combine /
-            // re-box.  The receiver's tracked type still selects the container
-            // shape (Dictionary vs List), mirroring the `AssEq` indexed path.
-            // #1481.
+            // `Map[K,V]` → MMapOf(object,object)), so `recvTy`'s own generic
+            // argument (`MConcreteList`/`MListOf`/`MConcreteMap`/`MMapOf`'s
+            // elemTy/valTy) is the element's REAL type — `containerElemTy`
+            // below — and drives the unbox / combine / re-box.  This used to
+            // be inferred from the rhs's own type instead (`xs[i] += true` on
+            // a `List[String]` would try to unbox the read-back boxed String
+            // element as a Bool and throw `InvalidCastException`); #5688
+            // widened `+=` on a String element to accept any rhs (mirroring
+            // plain-variable `s +=`, #5657), so `containerElemTy` and the
+            // rhs's own type can now legitimately differ and only the real
+            // container type is sound to unbox/re-box against.
             val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
             val isMap = match recvTy { case MMapOf(_, _) -> true; case MConcreteMap(_, _) -> true; case _ -> false }
             // The container ref is stashed in an `object`-typed temp, so the
@@ -10984,10 +11013,20 @@ func lowerAssignExprMsil(
             }
             val kSlot = allocSlotMsil(fctx, "__cidx_k_" + toString(fctx.slotTicker.count), ckTy)
             emitStoreSlot(insns, kSlot, fctx.paramCount)
-            // Right-hand operand up-front — its type is the element type.
+            // Right-hand operand up-front.
             val rTy = lowerExprMsil(cctx, fctx, insns, value)
             val rSlot = allocSlotMsil(fctx, "__cidx_r_" + toString(fctx.slotTicker.count), rTy)
             emitStoreSlot(insns, rSlot, fctx.paramCount)
+            // The container's real declared element type — see the comment
+            // above.  Falls back to `rTy` for a container shape without a
+            // tracked element type (there is none besides the four below).
+            val containerElemTy: MsilType = match recvTy {
+              case MConcreteList(e) -> e
+              case MListOf(e) -> e
+              case MConcreteMap(_, v) -> v
+              case MMapOf(_, v) -> v
+              case _ -> rTy
+            }
             // current = container[key]
             emitLoadSlot(insns, cSlot, fctx.paramCount)
             if isMap {
@@ -11002,11 +11041,11 @@ func lowerAssignExprMsil(
               emitListGetItem(cctx, insns, recvTy)
             }
             if not isConcreteColl {
-              materializeBoxedElemMsil(cctx, insns, rTy)
+              materializeBoxedElemMsil(cctx, insns, containerElemTy)
             }
-            emitCompoundCombineSlotMsil(cctx, fctx, insns, op, rTy, rSlot)
-            collBoxIfNeeded(cctx, insns, rTy, recvTy)
-            val vSlotTy = if isConcreteColl { rTy } else { MObject }
+            emitCompoundCombineSlotMsil(cctx, fctx, insns, op, containerElemTy, rTy, rSlot)
+            collBoxIfNeeded(cctx, insns, containerElemTy, recvTy)
+            val vSlotTy = if isConcreteColl { containerElemTy } else { MObject }
             val vSlot = allocSlotMsil(fctx, "__cidx_v_" + toString(fctx.slotTicker.count), vSlotTy)
             emitStoreSlot(insns, vSlot, fctx.paramCount)
             emitLoadSlot(insns, cSlot, fctx.paramCount)
@@ -13111,7 +13150,7 @@ func lowerFuncValueInvokeMsil(
   var i = 0
   while i < args.count {
     val argTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
-    boxIfNeededMsil(cctx, insns, funcAbiArgBoxTypeMsil(argTy))
+    boxIfNeededMsil(cctx, insns, argTy)
     i = i + 1
   }
   insns.add(MCallvirt(methodToken = buildFuncNInvokeTok(cctx, args.count)))
@@ -14291,6 +14330,53 @@ func lowerBuiltinOrStaticCallMsil(
                             rh = rh + 1
                           }
                         }
+                        // In-bundle generic parameter (#2362 by-name encoding, e.g. an
+                        // Option[String]/Result[T,E] parameter of a function compiled in
+                        // the SAME bundle as its generic head, as opposed to a restored
+                        // cross-assembly MGenericInst) — mirrors the MGenericInst arm
+                        // above exactly. Without this arm a bare `None`/`Ok(...)`/`Err(...)`
+                        // argument threaded no construction hint at all (fell to the
+                        // catch-all `case _` below, which only pushes `collExpect`), so it
+                        // erased to `Option_None<object>` / etc. instead of the callee's
+                        // declared closed instantiation. The callee's SM/field storage
+                        // then held a value whose real CLR type didn't match the field's
+                        // declared closed generic type, and a later `isinst` test against
+                        // the concrete case (e.g. inside a `match` over the parameter)
+                        // could never succeed for either arm — surfaced as a runtime
+                        // "match not exhaustive" panic in `Std.Rest.sendRequest`'s async
+                        // state machine (issue #5622, part 2): `RestClient.get`/`delete`
+                        // call `sendRequest(client, GET, path, None, "")`, and the bare
+                        // `None` built an untyped `Option_None<object>` that never isinst-
+                        // matched `Option_None<String>`/`Option_Some<String>` inside
+                        // `sendRequest`'s own `match body { case None -> …; case Some(json)
+                        // -> … }`.
+                        case MGenericInstByName(_, pArgs) -> {
+                          val savedHints: List[MsilType] = newList()
+                          var sh = 0
+                          while sh < fctx.contextHintTyArgs.count {
+                            savedHints.add(fctx.contextHintTyArgs[sh])
+                            sh = sh + 1
+                          }
+                          while fctx.contextHintTyArgs.count > 0 {
+                            fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+                          }
+                          var ph = 0
+                          while ph < pArgs.count {
+                            fctx.contextHintTyArgs.add(pArgs[ph])
+                            ph = ph + 1
+                          }
+                          pushCollExpect(fctx, pTy)
+                          val _ = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
+                          popCollExpect(fctx)
+                          while fctx.contextHintTyArgs.count > 0 {
+                            fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+                          }
+                          var rh = 0
+                          while rh < savedHints.count {
+                            fctx.contextHintTyArgs.add(savedHints[rh])
+                            rh = rh + 1
+                          }
+                        }
                         case MConcreteMap(keyTy, valTy) -> {
                           // Thread the map's key and value types into contextHintTyArgs
                           // so a bare `newMap()` argument builds Map[K,V], not the
@@ -14408,18 +14494,33 @@ func lowerBuiltinOrStaticCallMsil(
               // dispatches both through the same `callvirt`.
               narrowSelfCallResultMsil(cctx, sibKey, fctx.className)
             } else {
-              // Cross-package call without a registered token: walk args for
-              // side effects and yield MObject as a defensive default.  In
-              // pre-Phase-2 single-package builds this branch fired for
-              // unknown imported funcs (where the call would crash at
-              // runtime); same behaviour preserved here so we don't mask
-              // a missing token with bogus IL.
-              var i = 0
-              while i < args.count {
-                lowerCallArgMsil(cctx, fctx, insns, args[i])
-                i = i + 1
-              }
-              MObject
+              // Cross-package call without a registered token: this used to
+              // walk the args for side effects and yield MObject as a
+              // "defensive default" — lowering NO MCall/MCallvirt at all, so
+              // the last stacked value silently flowed onward as the call's
+              // result (an unbalanced-stack InvalidProgramException far from
+              // the cause, or a wrong value with no diagnostic at all — the
+              // #5621/#5516 silent-drop class, D-progress-658/D-progress-656).
+              // A resolution gap here means the typechecker's symbol table
+              // and this function's `cctx.funcTokens` map disagreed about
+              // whether the callee resolves — always a real compiler bug
+              // (mono not specializing a generic call, cfg-erasure removing
+              // a call's only definition, etc.), never something codegen can
+              // paper over safely. Fail loudly at compile time instead.
+              panic(
+                "error[T0123] " + toString(path.span.startPos.line) + ":" + toString(path.span.startPos.column) +
+                  ": unresolved call to '" +
+                  funcName +
+                  "' (arity " +
+                  toString(args.count) +
+                  ") imported as '" +
+                  modulePathJoin(path.segments) +
+                  "' in package '" +
+                  fctx.pkgName +
+                  "' — no function token could be resolved for this callee. This means the callee legitimately " +
+                  "type-checked but codegen's own resolver disagrees; check for a generic call mono failed to " +
+                  "specialize, or a definition dropped by @cfg erasure."
+              )
             }
           }
         }

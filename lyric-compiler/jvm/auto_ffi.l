@@ -463,8 +463,21 @@ func scoreParamMatch(argDesc: in String, paramDesc: in String): Int {
     }
     return -1
   }
-  // Any reference type → java/lang/Object
-  if paramDesc == "Ljava/lang/Object;" and argDesc.startsWith("L") {
+  // Any reference type → java/lang/Object.  Also a REFERENCE-ELEMENT array
+  // (`[L...;`) — arrays are objects in the JVM type system too (JLS §10.7),
+  // so `Objects.isNull(File[])` or any other genuine JDK API's
+  // `Object`-typed parameter accepts a reference-array argument exactly
+  // like it accepts a plain reference (#4775: previously only a LYRIC
+  // slice's `[Ljava/lang/Object;` had an array rule at all, and only for
+  // widening to a PRIMITIVE array param — a real, non-slice Java array
+  // return value like `java.io.File.listFiles()`'s `File[]` had no rule
+  // matching it to `Object` at all, so `Objects.isNull(children)` failed
+  // overload resolution outright). Deliberately NOT extended to a
+  // primitive-element array descriptor (`[C`/`[B`/etc.) — those interact
+  // with `slice[T]`'s own primitive-array codegen/element-type inference
+  // in ways this narrow fix doesn't need to touch, and widening them here
+  // regressed `slice_array_abi_self_test.l`.
+  if paramDesc == "Ljava/lang/Object;" and (argDesc.startsWith("L") or argDesc.startsWith("[L")) {
     return 3
   }
   if argDesc == "" and paramDesc.startsWith("L") {

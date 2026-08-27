@@ -7,17 +7,23 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 
-// `s += <rhs>` onto a String *plain-variable* target accepts any RHS type,
-// mirroring binary `+`'s "any operand + String = String" inference (#5657).
-// Scoped to `+=` with a 1-segment path target of String type: field
-// (`obj.f += x`) and indexed (`xs[i] += x`) String targets stay strict because
-// their compound-assign codegen infers the element/field type from the RHS and
-// would miscompile a non-String RHS (widening them is tracked in #5688).  Every
-// other compound op and every other target type also stays strict, like `=`.
-// Shared by the SAssign (typechecker_stmts.l) and EAssign checking paths.
+// `s += <rhs>` onto a String target accepts any RHS type, mirroring binary
+// `+`'s "any operand + String = String" inference (#5657).  Scoped to `+=`
+// with a String-typed target: a plain 1-segment variable, a field access
+// (`obj.f += x`), or an index expression (`xs[i] += x`) — all three shapes'
+// compound-assign codegen on both backends threads the target's real
+// (checker-known) String type rather than inferring it from the RHS (#5688),
+// so widening them is sound. Every other compound op and every other target
+// type also stays strict, like `=`.  Shared by the SAssign
+// (typechecker_stmts.l) and EAssign checking paths.
 pub func isStringPlusVarAssign(target: in Expr, op: in AssignOp, targetType: in Type): Bool {
-  val targetIsSimpleVar = match target.kind { case EPath(p) -> p.segments.count == 1; case _ -> false }
-  targetIsSimpleVar and
+  val targetIsWidenableShape = match target.kind {
+    case EPath(p) -> p.segments.count == 1
+    case EMember(_, _) -> true
+    case EIndex(_, _) -> true
+    case _ -> false
+  }
+  targetIsWidenableShape and
     match op {
       case AssPlus -> match targetType { case TyPrim(pt) -> match pt { case PtString -> true; case _ -> false }; case _ -> false }
       case _ -> false
@@ -3676,6 +3682,22 @@ func eraseTyVars(t: in Type): Type {
 func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnostic], pat: in Pattern, ty: in Type): Unit {
   match pat.kind {
     case PBinding(name, inner) -> {
+      // The language has no `null` literal or null pattern (docs/01 §FFI,
+      // D107) — the lexer treats `null` as an ordinary identifier, so
+      // `case null -> ...` parses as an ordinary catch-all binding named
+      // `null`, not a null test.  As the first arm (every real usage) it
+      // silently matches EVERY value, null or not — a silent stdlib
+      // miscompile with no diagnostic (#4775).  Reject it explicitly rather
+      // than let it bind like any other identifier.
+      if name == "null" {
+        diag.add(
+          errorDiagnostic(
+            "T0073",
+            "'null' has no meaning as a pattern — Lyric has no null literal or null pattern (see docs/01 §FFI); this binds a local named 'null' and matches every value",
+            pat.span
+          )
+        )
+      }
       if name != "_" and not isConstructorPatternName(tbl, name) {
         scopeAdd(sc, LocalBinding(name = name, ty = eraseTyVars(ty), isMutable = false))
       }
