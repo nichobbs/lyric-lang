@@ -13,6 +13,9 @@
 //! Pure Lyric, no BCL/JVM extern boundary — cross-target by construction
 //! (unlike `Std.Collections.List`, which is backed by a BCL/JDK
 //! collection type), and so contracts/proofs apply throughout (D038).
+//! `collections_persistent_tests.l` is CI-wired on BOTH `--target dotnet`
+//! and `--target jvm` (#6577 review follow-up) — the cross-target claim
+//! above is verified, not just structural.
 //!
 //! Representation: rather than a bespoke `PersistentList[T]` nominal
 //! type, the persistent value IS a `slice[T]` — `slice[T]` is already

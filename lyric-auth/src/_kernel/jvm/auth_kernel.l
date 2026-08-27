@@ -431,6 +431,14 @@ func scanJsonString(json: in String, quotePos: in Int): Int {
 // every claim (not just `aud`) would be a broader behavior change than
 // this fix calls for.  `audHasDuplicates` below applies the JWT-specific
 // duplicate-`aud`-key policy explicitly, against the parsed field list.
+//
+// CI coverage gap (pre-existing, not introduced by #3165): this JVM port
+// has no functional CI test running the parser under `--target jvm`
+// specifically — `auth_security_tests.l` runs on `dotnet` only. `docs/59`
+// §9 documents JVM-specific miscompiles the self-hosted backend has shown
+// for recursive-union code, so a JVM-specific run is worth adding rather
+// than assuming byte-for-byte behavior parity with `Auth.Kernel.Net`.
+// Tracked for follow-up alongside the other JVM CI gaps in `docs/59`.
 union JsonValue {
   case JVString(value: String)
   case JVNumber(raw: String)
@@ -527,14 +535,29 @@ func jsonParseLiteral(json: in String, i: in Int, lit: in String, value: in Json
   }
 }
 
-func jsonParseArray(json: in String, i: in Int): Option[JsonParse] {
+// Recursion-depth cap for jsonParseValue/jsonParseObject/jsonParseArray
+// (#6573).  A JWT header/payload is a small, flat-ish object in every
+// legitimate use — 32 levels is far beyond any real claim shape.  Without
+// this cap an attacker-controlled token with deeply nested `[[[[...`/
+// `{"a":{"a":{"a":...` runs unbounded recursion BEFORE the HMAC signature
+// is ever checked, which on JVM surfaces as a StackOverflowError — a
+// pre-auth DoS.  Every recursive descent point (object/array entry) fails
+// closed (returns `None`, which callers already treat as
+// MALFORMED_HEADER/MALFORMED_PAYLOAD) once the cap is exceeded, rather
+// than recursing further.
+val jsonMaxDepth = 32
+
+func jsonParseArray(json: in String, i: in Int, depth: in Int): Option[JsonParse] {
+  if depth > jsonMaxDepth {
+    return None
+  }
   var p = jsonSkipWs(json, i + 1)
   val items: List[JsonValue] = newList()
   if p < json.length and json[p] == ']' {
     return Some(value = JsonParse(value = JVArray(items = items), next = p + 1))
   }
   while true {
-    match jsonParseValue(json, p) {
+    match jsonParseValue(json, p, depth + 1) {
       case None -> return None
       case Some(pv) -> {
         items.add(pv.value)
@@ -554,7 +577,10 @@ func jsonParseArray(json: in String, i: in Int): Option[JsonParse] {
   }
 }
 
-func jsonParseObject(json: in String, i: in Int): Option[JsonParse] {
+func jsonParseObject(json: in String, i: in Int, depth: in Int): Option[JsonParse] {
+  if depth > jsonMaxDepth {
+    return None
+  }
   var p = jsonSkipWs(json, i + 1)
   val fields: List[JsonField] = newList()
   if p < json.length and json[p] == '}' {
@@ -575,7 +601,7 @@ func jsonParseObject(json: in String, i: in Int): Option[JsonParse] {
         if afterKey >= json.length or json[afterKey] != ':' {
           return None
         }
-        match jsonParseValue(json, afterKey + 1) {
+        match jsonParseValue(json, afterKey + 1, depth + 1) {
           case None -> return None
           case Some(pv) -> {
             fields.add(JsonField(key = key, value = pv.value))
@@ -597,7 +623,7 @@ func jsonParseObject(json: in String, i: in Int): Option[JsonParse] {
   }
 }
 
-func jsonParseValue(json: in String, i0: in Int): Option[JsonParse] {
+func jsonParseValue(json: in String, i0: in Int, depth: in Int): Option[JsonParse] {
   val i = jsonSkipWs(json, i0)
   if i >= json.length {
     return None
@@ -606,9 +632,9 @@ func jsonParseValue(json: in String, i0: in Int): Option[JsonParse] {
   if c == '"' {
     jsonParseString(json, i)
   } else if c == '{' {
-    jsonParseObject(json, i)
+    jsonParseObject(json, i, depth)
   } else if c == '[' {
-    jsonParseArray(json, i)
+    jsonParseArray(json, i, depth)
   } else if c == 't' {
     jsonParseLiteral(json, i, "true", JVBool(value = true))
   } else if c == 'f' {
@@ -624,14 +650,15 @@ func jsonParseValue(json: in String, i0: in Int): Option[JsonParse] {
 
 // Parse `json` as a top-level JSON object and return its key→value fields.
 // Returns None when the payload is not a well-formed JSON object: leading
-// non-`{`, an unterminated/malformed structure anywhere in the tree, or
-// trailing garbage after the closing `}`.
+// non-`{`, an unterminated/malformed structure anywhere in the tree,
+// nesting deeper than `jsonMaxDepth` (#6573), or trailing garbage after
+// the closing `}`.
 func parseJsonObjectTopLevel(json: in String): Option[List[JsonField]] {
   val start = jsonSkipWs(json, 0)
   if start >= json.length or json[start] != '{' {
     return None
   }
-  match jsonParseObject(json, start) {
+  match jsonParseObject(json, start, 0) {
     case None -> None
     case Some(pv) -> {
       val afterEnd = jsonSkipWs(json, pv.next)

@@ -467,6 +467,54 @@ test "structural parsing: nested \"aud\" inside an unrelated claim's object valu
   )
 }
 
+// ─── #6573: parser depth cap — unbounded-recursion pre-auth DoS ──────────────
+// The #3165 recursive-descent parser above had no recursion-depth limit, and
+// `jwtAlgFromHeader` runs on the fully attacker-controlled header BEFORE the
+// HMAC signature is ever checked (see `verifyJwtImpl` — header parse happens
+// first, signature verification only after alg allow-listing).  An
+// unauthenticated attacker could submit a token whose header (or payload) is
+// nested far deeper than any legitimate JWT claim shape and drive the parser
+// into unbounded recursion — on .NET this surfaces as an uncatchable
+// StackOverflowException that kills the whole process, not a normal
+// exception a caller could handle.  The fix caps recursion at
+// `jsonMaxDepth` (32) in both kernels, failing closed with
+// MALFORMED_HEADER/MALFORMED_PAYLOAD once exceeded.
+//
+// Both tokens below nest 40 levels of `{"a": ... }` — comfortably past the
+// cap — generated with:
+//   def nested(depth):
+//     v = "leaf"
+//     for _ in range(depth): v = {"a": v}
+//     return v
+//
+// Header case: header = {"alg":"HS256","nested": nested(40)}, third segment
+// is arbitrary garbage — the depth-capped header parse must fail BEFORE any
+// signature check runs, so an invalid signature does not change the outcome.
+test "structural parsing: over-depth JWT header fails closed as MALFORMED_HEADER instead of crashing (#6573)" {
+  val token = "eyJhbGciOiJIUzI1NiIsIm5lc3RlZCI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjoibGVhZiJ9fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fQ.eyJzdWIiOiJ4In0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  val r = Auth.verifyJwt(token, "test-secret", "", "", "HS256")
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(
+    code,
+    "MALFORMED_HEADER",
+    "40-level-nested header must be rejected as MALFORMED_HEADER (depth cap), not crash the process (#6573)"
+  )
+}
+
+// Payload case: header is a normal `{"alg":"HS256"}`, signature is a real
+// HMAC-SHA256("test-secret") over header.payload so the token reaches
+// `validatePayload` — payload = {"sub":"x","nested": nested(40)}.
+test "structural parsing: over-depth JWT payload fails closed as MALFORMED_PAYLOAD instead of crashing (#6573)" {
+  val token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4IiwibmVzdGVkIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOnsiYSI6eyJhIjp7ImEiOiJsZWFmIn19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19.CD45Q1ya8HSdRd02As7O2cn3rfm7hBKEeivI32rvFuI"
+  val r = Auth.verifyJwt(token, "test-secret", "", "", "HS256")
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(
+    code,
+    "MALFORMED_PAYLOAD",
+    "40-level-nested payload must be rejected as MALFORMED_PAYLOAD (depth cap), not crash the process (#6573)"
+  )
+}
+
 // ─── #1079: JSON escape decoding in claim values ─────────────────────────────
 // extractClaim must decode standard JSON escape sequences in the claim value.
 // Before #1079 a `sub` claim of `"O\"Brien"` was returned as the literal bytes

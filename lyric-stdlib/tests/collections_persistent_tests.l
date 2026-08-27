@@ -20,13 +20,8 @@ import Std.Collections
 import Std.Collections.Persistent
 import Std.Testing
 
-// A bare `[]` slice literal, even bound through an explicitly-typed
-// `val`, does not reliably carry its element type through a later call
-// into a multi-parameter generic function on this backend — route every
-// empty starting value through `newList().toArray()` instead.
 func emptyInts(): slice[Int] {
-  val acc: List[Int] = newList()
-  acc.toArray()
+  []
 }
 
 // ─── List ops: empty edge cases ──────────────────────────────────────────
