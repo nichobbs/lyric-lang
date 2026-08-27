@@ -8,6 +8,19 @@
 //! `buildOneNative`/`buildProject` colocation test failing for an unrelated-
 //! looking reason.
 //!
+//! #6301: `copyDllBeside` used to overwrite its destination via a plain
+//! `File.writeBytes` (BCL `File.WriteAllBytes`), which truncates the
+//! destination to zero length before streaming the new bytes — a process
+//! concurrently reading that exact path (another `lyric` invocation
+//! resolving the DLL as a runtime dependency, or the CLR loader) could
+//! observe a truncated/invalid PE image mid-write, surfacing downstream as
+//! `BadImageFormatException` / `MissingFieldException`.  The fix routes the
+//! write through `writeBytesAtomicBeside` (write-to-temp-then-rename), so
+//! the tests below assert the temp file the helper creates never survives a
+//! completed `copyDllBeside` call — a leftover `*.tmp-*` file would mean the
+//! rename step silently failed to fire or clean up, reopening the
+//! truncated-read window this fix closes.
+//!
 //! Run in CI via:
 //!
 //!   lyric test lyric-compiler/lyric/cli_copydll_self_test.l
@@ -19,6 +32,7 @@ import Std.Collections
 import Std.Errors
 import Std.File as File
 import Std.Path as Path
+import Std.String as Str
 import Std.Environment as Environment
 import Std.Uuid
 import Std.Testing
@@ -55,6 +69,24 @@ func readTextOrPanic(path: in String): String {
   match File.readText(path) {
     case Ok(t) -> t
     case Err(e) -> panic("cannot read " + path + ": " + IOError.message(e))
+  }
+}
+
+// Counts entries in `dir` whose basename carries the `writeBytesAtomicBeside`
+// temp-file marker (`.tmp-<uuid>`) — a nonzero count after a completed
+// `copyDllBeside` call means the atomic-rename step didn't clean up (#6301).
+func tmpFileCount(dir: in String): Int {
+  match File.listFiles(dir) {
+    case Ok(fs) -> {
+      var n = 0
+      for f in fs.toArray() {
+        if Str.contains(Path.basename(f), ".tmp-") {
+          n = n + 1
+        }
+      }
+      n
+    }
+    case Err(e) -> panic("cannot list " + dir + ": " + IOError.message(e))
   }
 }
 
@@ -155,5 +187,51 @@ test "copyDllBeside: overwrites an existing destination with the source's curren
     readTextOrPanic(destPath),
     "updated bytes",
     "copyDllBeside: an existing destination is overwritten with the source's current bytes, not left stale"
+  )
+}
+
+test "copyDllBeside: leaves no leftover temp file after copying into a fresh destination" {
+  val srcDir = freshTempDir("no-tmp-fresh-src")
+  defer {
+    cleanup(srcDir)
+  }
+  val destDir = freshTempDir("no-tmp-fresh-dest")
+  defer {
+    cleanup(destDir)
+  }
+  val srcPath = Path.join(srcDir, "Dep.dll")
+  writeFileOrPanic(srcPath, "fresh dll bytes")
+  val outPath = Path.join(destDir, "App.dll")
+
+  Cli.copyDllBeside(outPath, srcPath)
+
+  assertEqualInt(
+    tmpFileCount(destDir),
+    0,
+    "copyDllBeside: no '*.tmp-*' file survives a completed copy into a fresh destination"
+  )
+}
+
+test "copyDllBeside: leaves no leftover temp file after overwriting an existing destination" {
+  val srcDir = freshTempDir("no-tmp-overwrite-src")
+  defer {
+    cleanup(srcDir)
+  }
+  val destDir = freshTempDir("no-tmp-overwrite-dest")
+  defer {
+    cleanup(destDir)
+  }
+  val srcPath = Path.join(srcDir, "Dep.dll")
+  writeFileOrPanic(srcPath, "new dll bytes")
+  val outPath = Path.join(destDir, "App.dll")
+  val destPath = Path.join(destDir, "Dep.dll")
+  writeFileOrPanic(destPath, "stale dll bytes")
+
+  Cli.copyDllBeside(outPath, srcPath)
+
+  assertEqualInt(
+    tmpFileCount(destDir),
+    0,
+    "copyDllBeside: no '*.tmp-*' file survives a completed copy that overwrites an existing destination"
   )
 }

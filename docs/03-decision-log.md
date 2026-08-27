@@ -31708,3 +31708,130 @@ dotnet and JVM self-test CI jobs (`.github/workflows/ci.yml`) and the
 `Makefile`'s `TEST_EMITTER_FILES` aggregate list (dotnet-only, per that
 list's own scope).
 
+## D134 — MSIL/CLI DLL writes are atomic (write-temp-then-rename), closing the #6301 stdlib-rebuild flake
+
+**Status:** ACCEPTED
+
+**Problem (#6301).** `lyric build --manifest lyric-stdlib/lyric.full.toml
+-o Lyric.Stdlib.dll --target dotnet` was observed to intermittently crash
+with `MissingFieldException` or `BadImageFormatException` "inside
+`restoreMavenClasspath`" on a clean checkout, always succeeding on an
+identical retry. Investigation (recorded in the issue's 2026-08-26 triage
+comment, confirmed again here) ruled out the function actually named in
+the title: both call sites
+(`cli_build.l`'s `buildOneNative` and `buildProjectFromManifest`) gate
+`injectMavenClasspathForJvm` behind `case Jvm -> ...`/`case _ -> ()`, so a
+`--target dotnet` build always calls `restoreMavenClasspath(None)`, which
+hits its own `case None -> ()` no-op arm — it touches no file, no
+environment variable, nothing that can throw. The two exception shapes
+are the CLR's classic signature for loading a PE/DLL file while another
+process is still writing it, and `restoreMavenClasspath` merely happened
+to be the next call site the JIT touched when a stale/concurrently-
+rewritten dependency assembly's metadata was resolved — a coincidental
+attribution, not the fault site.
+
+**Root cause.** Three write sites in the self-hosted compiler and CLI
+wrote their destination DLL via a plain BCL `File.WriteAllBytes`
+(`Std.File.writeBytes` on the `.NET` kernel), which truncates the
+destination to zero length *before* streaming the new bytes:
+
+- `Msil.Bridge.compileToMsilWithVersion` and
+  `compileProjectToMsilWithRestoredAndVersion`
+  (`lyric-compiler/msil/bridge.l`) — the actual PE emission for every
+  `--target dotnet` build, including the `lyric.full.toml` stdlib bundle
+  this issue's repro command rebuilds.
+- `Lyric.Cli`'s `copyRuntimeDepsBeside` and `copyDllBeside`
+  (`lyric-compiler/lyric/cli/cli_shared.l`) — co-locate the compiled
+  stdlib bundle and restored dependency DLLs beside a build's output for
+  `dotnet exec` resolution; `copyRuntimeDepsBeside` explicitly reads its
+  source DLLs from `findCompiledLibDir()`, which resolves to the running
+  toolchain's own `bin/` directory when the SDK's stdlib is already
+  present there.
+
+A reader that opens either destination in the truncate-then-write window
+— another `lyric` process's CLR loader resolving the same DLL as a
+runtime dependency, or a second build targeting an overlapping output
+path — observes a zero-length or partially-written PE image, surfacing
+exactly as `BadImageFormatException` (unparsable PE header) or
+`MissingFieldException` (a since-changed field/type layout resolved
+against stale metadata). This matches the report's own "several builds
+in parallel worktrees" note and the suspicion that `checkDllIsStale`'s
+mtime-only staleness check (#5611) could be contributing — the real gap
+was upstream of staleness checking, in the write itself never being
+observably atomic.
+
+**Decision.** Route every one of the three write sites above through a
+local `writeBytesAtomic`/`writeBytesAtomicBeside` helper: write the full
+byte buffer to a same-directory, UUID-suffixed temp file
+(`<dest>.tmp-<uuid>`), then `System.IO.File.Move(tmp, dest, overwrite:
+true)` to publish it. A same-directory rename is a single atomic
+filesystem operation on the platforms this compiler ships for, so a
+concurrent reader of `dest` only ever observes the complete previous file
+or the complete new one — never a truncated intermediate state. A failed
+move deletes the orphaned temp file and reports failure exactly as the
+old code did (both helpers preserve their call sites' existing
+`Bool`/`Unit` return shape — no signature changes ripple outward).
+
+Each helper is declared locally in the package that needs it
+(`Msil.Bridge`, which is `--target dotnet`-only by construction, and
+`Lyric.Cli`'s `cli_shared.l`, whose three copy-helper call sites are all
+gated on `case Dotnet -> ...`) rather than as a new `Std.File` public API.
+This keeps the fix's blast radius to the two files actually implicated
+and avoids the JVM/native kernel-parity obligation a new cross-target
+stdlib primitive would otherwise carry (docs/03's "no one-platform
+implementations" rule applies to constructs the language reference
+defines for both targets — an internal write-atomicity fix confined to
+an already-dotnet-only code path is not one of those).
+
+`restoreMavenClasspath` itself is untouched (it was already correct) but
+now carries a doc comment recording the #6301 investigation, so a future
+reader who arrives via a stack trace naming this function is redirected
+immediately to the real fault sites instead of re-investigating a
+confirmed dead end.
+
+**Alternatives considered:**
+- *Lock file around the restore-cache read-modify-write.* Rejected: there
+  is no restore-cache read-modify-write in the dotnet-target path at all
+  (`injectMavenClasspathForJvm`/`restoreMavenClasspath` are JVM-only and
+  provably inert on `--target dotnet`) — a lock would guard a file that
+  is never the one actually racing.
+- *Content-hash staleness instead of mtime (#5611).* Orthogonal: even a
+  perfect staleness check only decides *whether* to rewrite a DLL: it
+  does nothing about a *concurrent reader* observing a rewrite already in
+  flight. Left for #5611 to address on its own terms.
+- *Retry-on-failure wrapper around the build command.* Rejected outright
+  as the "band-aid" the issue explicitly asks not to ship — it would hide
+  the symptom without shrinking the truncate-then-write race window that
+  causes it.
+- *A new cross-target `Std.File.writeBytesAtomic` stdlib primitive.*
+  Would need JVM (`java.nio.file.Files.move` or `File.renameTo`) and
+  native (a new `lyric_rt` `rename(2)` wrapper) kernel twins to satisfy
+  CLAUDE.md's platform-parity rule, since any function reachable from
+  `Std.File`'s always-compiled surface must type-check on every target
+  that imports it. Deferred: neither `Jvm.Bridge`'s JAR-writing path nor
+  any native-target output path was shown to exhibit this race, so adding
+  the parity surface now would be scope beyond what the evidence
+  supports. Revisit if a JVM or native analog of #6301 is ever reported.
+
+**Verification.** Rebuilt the self-hosted compiler+CLI from both the
+pre-fix and post-fix sources (`make lyric`, ~6 min each) and ran the
+exact `lyric build --manifest lyric-stdlib/lyric.full.toml -o
+Lyric.Stdlib.dll --target dotnet` repro command from the issue: a single
+run, 4-way concurrent runs against the same output path, and (against the
+pre-fix binary) an 8-way and then a 16-way concurrent run with a
+background file-size watcher sampling the destination throughout — all
+runs exited 0 with no exception, on both the fixed and unfixed binaries;
+the race was not caught live even at 16-way concurrency (consistent with
+the triage comment's own 3-way attempt also failing to reproduce it — the
+window this environment's filesystem/JIT expose is evidently narrow). The
+fix therefore ships on code-level evidence (the truncate-then-write
+mechanism is real and matches both reported exception shapes exactly)
+rather than a captured stack trace. Confirmed no regression: `cli_copydll
+_self_test.l` (7/7, including two new leftover-temp-file regression
+cases), `cli_shared_self_test.l` (25/25), `cli_build_self_test.l`
+(81/81), `cli_workspace_builder_self_test.l` (19/19, including the
+existing `injectMavenClasspathForJvm` cases), `msil_project_bridge_self_
+test.l` (45/45), and `emitter_project_self_test.l` (35/35) — all green
+post-fix. No leftover `*.tmp-*` files after any successful or concurrent
+run.
+
