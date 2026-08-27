@@ -791,8 +791,7 @@ func rewriteBlock(ctx: in RewriteCtx, blk: in Block): Block {
   val newStmts: List[Statement] = newList()
   var i = 0
   while i < blk.statements.count {
-    val isLast = i == blk.statements.count - 1
-    newStmts.add(rewriteStmt(ctx, blk.statements[i], isLast))
+    newStmts.add(rewriteStmt(ctx, blk.statements[i]))
     i = i + 1
   }
   Block(statements = newStmts, span = blk.span)
@@ -913,40 +912,49 @@ func elaborateWrapperBodyForAspectContracts(
   }
 }
 
-func rewriteStmt(ctx: in RewriteCtx, stmt: in Statement, isLast: in Bool): Statement {
+func rewriteStmt(ctx: in RewriteCtx, stmt: in Statement): Statement {
   val s = stmt.span
   match stmt.kind {
     case SExpr(e) -> {
-      // #5182: a BARE, non-capturing, NON-TRAILING `proceed(args)` statement
-      // (as opposed to the explicit `ret = proceed(args)` form #3402 already
-      // handles) is auto-lifted into an assignment into the declared
-      // out-variable whenever the target returns a real value.  Without
-      // this, a `proceed(args)` that is not the advice body's LAST
-      // statement relies on nothing to carry its result forward: the
-      // wrapper is declared to return the target's type (`ret =
-      // originalFn.ret`), but the elaborated body's actual trailing
-      // statement is whatever comes AFTER `proceed(args)` — e.g. a logging
-      // call returning `Unit` — so the synthesised function falls off its
-      // non-void end with no return value, producing
-      // `InvalidProgramException` at the first call (confirmed independent
-      // of a `matches:` wildcard vs. exact pattern).
+      // #5182 (and #6624, a review round on the first fix): a BARE,
+      // non-capturing `proceed(args)` statement (as opposed to the
+      // explicit `ret = proceed(args)` form #3402 already handles) is
+      // auto-lifted into an assignment into the declared out-variable
+      // whenever the target returns a real value — UNCONDITIONALLY,
+      // regardless of where it sits in the advice body. Without this, a
+      // `proceed(args)` that is not the advice body's very last statement
+      // relies on nothing to carry its result forward: the wrapper is
+      // declared to return the target's type (`ret = originalFn.ret`),
+      // but the elaborated body's actual trailing statement becomes
+      // whatever comes after it — e.g. a logging call returning `Unit` —
+      // so the synthesised function falls off its non-void end with no
+      // return value, producing `InvalidProgramException` at the first
+      // call.
       //
-      // Gated on `not isLast`: `proceed(args)` as the SOLE/trailing
-      // statement already works via ordinary implicit-return fall-through
-      // (the well-tested "expression-style advice" case) and is left
-      // completely untouched here — auto-lifting it too would still be
-      // correct in EFFECT, but it would also shift every OTHER statement
-      // in the wrapper body down by the synthesised `var ret` declaration
-      // (`buildBModeSpecializedFunction`/the main `weaveOneFunction`'s
-      // `withRet` prepends it before everything else), silently changing
-      // the statement-index shape existing AST-inspection self-tests
-      // (`weaver_self_test.l`'s config/call-prelude-ordering cases) depend
-      // on for a case that was never broken. Scoped to a bare `SExpr` so a
-      // `proceed(args)` nested inside a larger expression (a call
-      // argument, a condition) is untouched — only a proceed call used AS
-      // a statement, whose result would otherwise be silently discarded,
-      // is eligible for auto-capture.
-      if not isLast and not ctx.targetReturnsUnit and isProceedCall(e) {
+      // #6624: an EARLIER version of this fix gated the lift on
+      // `not isLast`, computed per ENCLOSING BLOCK — so a bare
+      // `proceed(args)` that was the last statement of a NESTED `if`/
+      // `while`/`try` body (but not of the advice's own top-level body)
+      // was still missed, reproducing the identical bug one level of
+      // nesting deeper than the originally-reported flat case. Composing
+      // genuine function-tail-position awareness across every nested
+      // block shape is real complexity for no upside: `ret =
+      // proceed(args)` already routes correctly through the existing
+      // `var ret; ...; return ret` synthesis (#3402) whether or not the
+      // statement is in tail position, so unconditional lifting is
+      // simply the correct general fix, not a narrower special case of
+      // it. The one-time cost is that three pre-existing AST-shape
+      // self-tests in `weaver_self_test.l` (config-prelude-ordering
+      // checks) had fixtures using a TRAILING bare `proceed(args)` and
+      // asserted the config prelude landed at statement index 0 — updated
+      // to use the already-dominant `ret = proceed(args)` spelling in
+      // this file instead, since those tests are about prelude ordering,
+      // not about which `proceed` spelling triggers the lift. Scoped to a
+      // bare `SExpr` so a `proceed(args)` nested inside a larger
+      // expression (a call argument, a condition) is untouched — only a
+      // proceed call used AS a statement, whose result would otherwise be
+      // silently discarded, is eligible for auto-capture.
+      if not ctx.targetReturnsUnit and isProceedCall(e) {
         match ctx.retVarOpt {
           case Some(rv) -> return Statement(kind = SAssign(target = singleSegPathExpr(rv), op = AssEq, value = rewriteExpr(ctx, e)), span = s)
           case None -> {
@@ -1063,15 +1071,16 @@ func mkVarStmtNoInit(name: in String, ty: in Option[TypeExpr]): Statement {
 /// `name = <expr>` statement.  Drives the `around(...) -> ret`
 /// out-variable lowering: when the advice body writes the named return
 /// value, the wrapper must declare it as a local and return it (#3402).
-/// Since #5182, `rewriteStmt`'s `SExpr` arm auto-lifts a BARE
-/// (non-capturing), NON-TRAILING `proceed(args)` statement into `ret =
-/// proceed(args)` before this ever runs (when the target returns a real
-/// value), so a body whose ONLY proceed call is the unadorned
-/// expression-style form followed by more statements now also assigns
-/// `ret` and reaches this function's `true` branch. A bare proceed call
-/// that IS the trailing statement is deliberately left untouched (still
-/// returns via ordinary implicit-return fall-through, not `ret`), so
-/// "expression-style advice" bodies are unaffected here.
+/// Since #5182/#6624, `rewriteStmt`'s `SExpr` arm auto-lifts EVERY bare
+/// (non-capturing) `proceed(args)` statement — trailing or not, at any
+/// nesting depth — into `ret = proceed(args)` before this ever runs (when
+/// the target returns a real value), so a body whose ONLY proceed call is
+/// the unadorned expression-style form now also assigns `ret` and reaches
+/// this function's `true` branch, including the former "expression-style
+/// advice" bodies (a trailing bare `proceed(args)` used to rely on
+/// implicit-return fall-through instead; #6624 found that trailing-only
+/// gating still missed a bare `proceed(args)` in tail position of a
+/// NESTED block, so the lift is unconditional now).
 func blockAssignsToName(blk: in Block, name: in String): Bool {
   var i = 0
   while i < blk.statements.count {

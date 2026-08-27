@@ -1034,20 +1034,47 @@ func builtinMember(recvRaw: in Type, name: in String): Option[Type] {
           return Some(value = TyPrim(pt = PtInt))
         }
       }
-      // Direct field-style accessors on the two builtin monadic unions
-      // (docs/01 §generics, docs/08 §6.2, docs/02 worked examples):
-      // `.isOk`/`.isErr`/`.value`/`.error` on `Result[T, E]`,
-      // `.isSome`/`.isNone`/`.value` on `Option[T]`.  `result.isOk implies
-      // result.value >= 0` is the documented `ensures:` idiom this exists
-      // to make actually type-check with a real type instead of silently
-      // degrading to `TyError` (no field on a union, no dot-named function
-      // under that name either) — which reached codegen as an unregistered
-      // field read and produced `InvalidProgramException` at runtime
-      // regardless of whether `E` was trivial or payload-carrying (#5183).
-      // Matched by short name — the same `nm == "List"`/`"Map"` convention
-      // this function already uses for the other compiler-known generic
-      // stdlib types; `Result`/`Option` are equally reserved names in that
-      // convention.
+      None
+    }
+    case _ -> None
+  }
+}
+
+// Direct field-style accessors on the two builtin monadic unions
+// (docs/01 §generics, docs/08 §6.2, docs/02 worked examples):
+// `.isOk`/`.isErr`/`.value`/`.error` on `Result[T, E]`, `.isSome`/`.isNone`/
+// `.value` on `Option[T]`.  `result.isOk implies result.value >= 0` is the
+// documented `ensures:` idiom this exists to make actually type-check with a
+// real type instead of silently degrading to `TyError` (no field on a
+// union, no dot-named function under that name either) — which reached
+// codegen as an unregistered field read and produced
+// `InvalidProgramException` at runtime regardless of whether `E` was
+// trivial or payload-carrying (#5183).
+//
+// Deliberately NOT folded into `builtinMember` (consulted by
+// `inferMemberBase`, which BOTH the bare-`EMember` path and the `ECall`
+// callee-type lookup share, #6624 review): `isOk`/`isErr`/`isSome`/`isNone`
+// are ordinary plain functions in `Std.Core` (`pub func isOk[T,E](r: in
+// Result[T,E]): Bool`, not a dot-named `Result.isOk`), callable via the
+// existing UFCS call-site resolution as `r.isOk()` — that path works by
+// leaving the `ECall`'s callee type `TyError` (`inferMemberBase` finds no
+// real field) so it falls through to `resolveMethodCallPick`'s UFCS
+// candidate search. Returning a real `TyPrim(Bool)` from `inferMemberBase`
+// for `.isOk` would short-circuit that fallback and make `.isOk()`
+// (`ECall(EMember(...), [])`) treat a `Bool` as the callee, T0044 "called
+// value of non-function type Bool" — exactly the regression this
+// separation avoids. This function is consulted only from `inferMember`
+// (the bare-member-access wrapper `inferExpr`'s plain `EMember` arm calls),
+// never from the `ECall` arm's own direct `inferMemberBase` call, so the
+// bare `.isOk` form (this fix) and the call form `.isOk()` (pre-existing)
+// both keep working.
+// Matched by short name — the same `nm == "List"`/`"Map"` convention
+// `builtinMember` already uses for the other compiler-known generic
+// stdlib types; `Result`/`Option` are equally reserved names in that
+// convention.
+func monadAccessorType(recvRaw: in Type, name: in String): Option[Type] {
+  match unrefine(recvRaw) {
+    case TyUser(_, nm, targs) -> {
       if nm == "Result" and targs.count == 2 {
         if name == "isOk" or name == "isErr" {
           return Some(value = TyPrim(pt = PtBool))
@@ -1859,6 +1886,17 @@ func inferMember(
     }
     case _ -> {
       return base
+    }
+  }
+  // #5183 / #6624: bare (non-call) `.isOk`/`.isErr`/`.value`/`.error` /
+  // `.isSome`/`.isNone` on `Result`/`Option` — see `monadAccessorType`'s own
+  // comment for why this lives here (the bare-member wrapper) and not in
+  // `inferMemberBase` (also consulted by `ECall`'s callee-type lookup,
+  // which must keep seeing `TyError` here so `.isOk()` still resolves via
+  // the ordinary UFCS call-site path).
+  match monadAccessorType(recvRaw, name) {
+    case Some(t) -> return t
+    case None -> {
     }
   }
   // A method referenced in plain member position types as its function type

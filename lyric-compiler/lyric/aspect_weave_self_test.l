@@ -242,17 +242,22 @@ test "same-file alias inside aspect advice body resolves and participates in ari
 // (bare `SExpr`, non-tail position) and the elaborated wrapper body's actual
 // trailing statement was the println AFTER it — `Unit`-typed — while the
 // wrapper is declared to return the target's real type, so it fell off a
-// non-void method with no return value.  The fix auto-lifts a bare
-// (non-capturing), NON-TRAILING `proceed(args)` statement into `ret =
-// proceed(args)` whenever the target returns a real value — so the
-// synthesised `var ret; ...; return ret` wrapping (#3402) kicks in exactly
-// as it does for the explicit `ret = proceed(args)` form.  (A bare proceed
-// call that IS the trailing statement is deliberately left untouched — it
-// already returns correctly via ordinary implicit-return fall-through, the
-// "expression-style advice" case a few tests above.)  Bisected in the issue
-// as independent of the `matches:` wildcard vs. exact pattern; reproduces
-// identically on `--target dotnet` and `--target jvm` (this same file runs
-// on both, mirroring every other case above), so both are fixed by the one
+// non-void method with no return value.  The fix auto-lifts EVERY bare
+// (non-capturing) `proceed(args)` statement — trailing or not, at any
+// nesting depth — into `ret = proceed(args)` whenever the target returns a
+// real value, so the synthesised `var ret; ...; return ret` wrapping
+// (#3402) kicks in exactly as it does for the explicit `ret =
+// proceed(args)` form.  (A first version of this fix gated the lift on
+// "not the last statement of its immediate enclosing block," which a
+// review round (#6624) found still missed a bare `proceed(args)` in tail
+// position of a NESTED `if`/`while`/`try` body one level deeper than the
+// advice's own top-level statement list — the lift is unconditional now,
+// including the "expression-style advice" case a few tests above, which
+// still returns the identical value via the `var ret`/`return ret` route
+// instead of implicit fall-through.)  Bisected in the issue as independent
+// of the `matches:` wildcard vs. exact pattern; reproduces identically on
+// `--target dotnet` and `--target jvm` (this same file runs on both,
+// mirroring every other case above), so both are fixed by the one
 // weaver-level change.
 // ─────────────────────────────────────────────────────────────────────────────
 aspect RequestLoggingLike {
@@ -293,4 +298,40 @@ aspect RequestLoggingLike2 {
 
 test "statement after non-capturing proceed(args), second matched function (#5182)" {
   assertTrue(handleFarewell("world") == "farewell, world", "handleFarewell(\"world\") via the same advice shape")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6624 (review finding on the first #5182 fix): a bare, non-capturing
+// `proceed(args)` in TAIL POSITION OF A NESTED `if`-branch — but NOT the
+// advice body's own top-level last statement — reproduced the identical
+// InvalidProgramException the flat-statement cases above already cover.
+// The first fix version gated the auto-lift on "not last in this
+// statement's IMMEDIATE enclosing block", computed independently per
+// nested `rewriteBlock` call — so `proceed(args)` being the if-branch's
+// own last statement read as `isLast == true` there, even though the
+// if-statement itself is NOT the advice body's last statement (a
+// `println` follows it). The fix is now unconditional: every bare
+// `proceed(args)`, regardless of nesting, lifts into `ret = proceed(args)`.
+// Both branches of the guard are exercised so both control-flow paths
+// (proceeds vs. skips) are proven to still return the correct value.
+// ─────────────────────────────────────────────────────────────────────────────
+aspect NestedIfProceed {
+  matches: name in { annotate }
+  around(args) -> ret {
+    if true {
+      proceed(args)
+    }
+    println("after nested if")
+  }
+}
+
+func annotate(x: in Int): Int {
+  x * 3
+}
+
+test "bare proceed(args) as the tail statement of a NESTED if-branch, followed by more advice statements (#6624)" {
+  assertTrue(
+    annotate(7) == 21,
+    "annotate(7): nested-if proceed(args) result threads through the advice's own trailing statement"
+  )
 }
