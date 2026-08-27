@@ -53,6 +53,12 @@
 //!
 //! ## What is deliberately NOT implemented (and fails loudly, not silently)
 //!
+//! - DynamoDB's `M` (Map) and `L` (List) attribute-value wire types are not
+//!   decoded by `decodeDynamoDbAttributeValue` — a nested `M`/`L` attribute
+//!   silently decodes to an all-`None` `DynamoDbAttributeValue` rather than
+//!   erroring. This is a pre-existing limitation of the `DynamoDbAttributeValue`
+//!   record itself (see its doc comment in `events.l`); flagged here too since
+//!   this file is what actually wires that decoder into live dispatch.
 //! - API Gateway v1/v2 and ALB (`Lambda.withRouter`) dispatch: blocked on
 //!   `Lambda.Kernel.WebBridge`'s `ConditionalWeakTable<LambdaRouter,
 //!   Web.Router>` feasibility spike (docs/35-lambda-library.md; that
