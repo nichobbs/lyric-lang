@@ -1005,6 +1005,12 @@ func cmdTestManifest(
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
     val pkgSources: List[String] = newList()
+    // Set only by the single-file-package branch below, where the real
+    // absolute path is already resolved as `abs` (mirrors the #6609 fix
+    // just below for the test package itself); left "" for the directory
+    // and explicit-file-list branches, which genuinely don't track a
+    // single per-package path here.
+    var singleFilePkgPath = ""
     if pkgEntry.paths.count > 0 {
       // Explicit file list (TOML array form): read each named file and assemble
       // them with CfgGate so per-file @cfg erasure works the same as for dir packages.
@@ -1037,6 +1043,7 @@ func cmdTestManifest(
       }
     } else {
       val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
+      singleFilePkgPath = abs
       if File.fileExists(abs) {
         match File.readText(abs) {
           case Ok(t) -> {
@@ -1111,13 +1118,17 @@ func cmdTestManifest(
       }
     }  // end else (single-file/directory path)
     if pkgSources.count > 0 {
-      // Compiler-DLL-linked test packages (#2364 Stage 5) don't currently
+      // The directory and explicit-file-list branches above (and
+      // compiler-DLL-linked test packages, #2364 Stage 5) don't currently
       // track per-file paths through this reader; "" (unknown) is correct
-      // and safe — no attribution rather than a guessed one.
+      // and safe there — no attribution rather than a guessed one. The
+      // single-file branch DOES know its real path (`singleFilePkgPath`,
+      // set above) and always produces exactly one source, so it gets
+      // real attribution instead of "" (#6694).
       val libPaths: List[String] = newList()
       var lpi = 0
       while lpi < pkgSources.count {
-        libPaths.add("")
+        libPaths.add(singleFilePkgPath)
         lpi += 1
       }
       libPkgs.add(ProjectPackage(name = pkgEntry.name, sources = pkgSources, paths = libPaths))
