@@ -34,6 +34,18 @@
 //!   dispatch shapes in this library (a batch-of-records event, and an
 //!   opaque passthrough) and the `README.md`'s own quick-start examples
 //!   both use them.
+//! - Full JSON decode/encode and `Lambda.Direct` dispatch for `aws:sns`,
+//!   `aws:s3`, `aws:dynamodb`, `aws:kinesis`, and EventBridge events,
+//!   following the `aws:sqs` pattern (#5600). Each decoder is checked
+//!   against AWS's documented real-payload field casing, which is not
+//!   uniform: SNS records are PascalCase ("EventSource", "Sns", ...); S3's
+//!   request/response elements use "sourceIPAddress" and the hyphenated
+//!   "x-amz-request-id"/"x-amz-id-2"; DynamoDB and Kinesis records use
+//!   "eventID" (not "eventId") and "eventSourceARN"; DynamoDB attribute
+//!   values use the single/double-letter DynamoDB wire keys ("S", "N",
+//!   "BOOL", ...); EventBridge is a single envelope at the payload root
+//!   (no `Records` array) with the "detail-type" JSON key mapped to the
+//!   `detailType` field.
 //! - Full JSON decode/encode and dispatch for all three Lambda authorizer
 //!   types (TOKEN, REQUEST, HTTP API v2) — the IAM-policy and simple
 //!   isAuthorized response shapes are already fully modelled in
@@ -41,13 +53,12 @@
 //!
 //! ## What is deliberately NOT implemented (and fails loudly, not silently)
 //!
-//! - `aws:sns`, `aws:s3`, `aws:dynamodb`, `aws:kinesis`, and EventBridge
-//!   events are correctly *detected* (so the loop never misclassifies or
-//!   crashes on them) but dispatch returns `LambdaError.InternalError`
-//!   naming the missing JSON decoder. Porting the remaining five is
-//!   mechanical repetition of the `aws:sqs` pattern below — tracked as
-//!   follow-up, not attempted here to keep this change's blast radius
-//!   reviewable.
+//! - DynamoDB's `M` (Map) and `L` (List) attribute-value wire types are not
+//!   decoded by `decodeDynamoDbAttributeValue` — a nested `M`/`L` attribute
+//!   silently decodes to an all-`None` `DynamoDbAttributeValue` rather than
+//!   erroring. This is a pre-existing limitation of the `DynamoDbAttributeValue`
+//!   record itself (see its doc comment in `events.l`); flagged here too since
+//!   this file is what actually wires that decoder into live dispatch.
 //! - API Gateway v1/v2 and ALB (`Lambda.withRouter`) dispatch: blocked on
 //!   `Lambda.Kernel.WebBridge`'s `ConditionalWeakTable<LambdaRouter,
 //!   Web.Router>` feasibility spike (docs/35-lambda-library.md; that
@@ -154,14 +165,27 @@ func jsonArrayFirst(elem: in JsonElement): Option[JsonElement] {
   return None
 }
 
+// SQS, S3, DynamoDB, and Kinesis all use the lowerCamelCase "eventSource"
+// key, but AWS's documented SNS-to-Lambda event shape uses "EventSource"
+// (PascalCase, alongside "Sns"/"MessageId"/...) — `JsonElement.TryGetProperty`
+// is case-sensitive (`JsonDocumentOptions` default), so a real SNS payload
+// would otherwise never match and would silently fall through to `RawSrc`.
 func firstRecordEventSource(root: in JsonElement): String {
   match tryGetProperty(root, "Records") {
     case Some(recordsElem) -> {
       match jsonArrayFirst(recordsElem) {
         case Some(first) -> {
-          match tryGetProperty(first, "eventSource") {
+          val lower = match tryGetProperty(first, "eventSource") {
             case Some(esElem) -> if valueKind(esElem) == 3 { getString(esElem) } else { "" }
             case None -> ""
+          }
+          if lower.length > 0 {
+            lower
+          } else {
+            match tryGetProperty(first, "EventSource") {
+              case Some(esElem) -> if valueKind(esElem) == 3 { getString(esElem) } else { "" }
+              case None -> ""
+            }
           }
         }
         case None -> ""
@@ -313,6 +337,29 @@ func decodeOptStringArray(root: in JsonElement, name: in String): Option[slice[S
   }
 }
 
+func getOptStringProp(elem: in JsonElement, name: in String): Option[String] {
+  match tryGetProperty(elem, name) {
+    case Some(v) -> if valueKind(v) == 3 { Some(value = getString(v)) } else { None }
+    case None -> None
+  }
+}
+
+// JsonValueKind.True = 5, JsonValueKind.False = 6 — used for DynamoDB's
+// BOOL/NULL attribute-value shapes, which are JSON booleans, not strings.
+func getOptBoolProp(elem: in JsonElement, name: in String): Option[Bool] {
+  match tryGetProperty(elem, name) {
+    case Some(v) -> {
+      val k = valueKind(v)
+      if k == 5 or k == 6 {
+        Some(value = getBoolean(v))
+      } else {
+        None
+      }
+    }
+    case None -> None
+  }
+}
+
 // ─── SQS decode / encode ──────────────────────────────────────────────────────
 func decodeSqsMessageAttribute(elem: in JsonElement): SqsMessageAttribute {
   val stringValue = match tryGetProperty(elem, "stringValue") {
@@ -387,6 +434,371 @@ func encodeSqsBatchResponse(resp: in SqsBatchResponse): String {
     i = i + 1
   }
   return sb + "]}"
+}
+
+// ─── SNS decode ────────────────────────────────────────────────────────────────
+// AWS's SNS notification wrapper uses PascalCase field names throughout
+// ("EventSource", "Sns", "MessageId", ...) — a different convention from
+// SQS's lowerCamelCase, confirmed against AWS's documented Lambda-SNS
+// sample event.
+func decodeSnsMessageAttribute(elem: in JsonElement): SnsMessageAttribute {
+  return SnsMessageAttribute(attributeType = getStringProp(elem, "Type"), value = getStringProp(elem, "Value"))
+}
+
+func decodeSnsMessageAttributeMap(elem: in JsonElement): Map[String, SnsMessageAttribute] {
+  val result: Map[String, SnsMessageAttribute] = newMap()
+  var cur = enumerateObject(elem)
+  while objectMoveNext(cur) {
+    val prop = objectCurrent(cur)
+    result.add(propertyName(prop), decodeSnsMessageAttribute(propertyValue(prop)))
+  }
+  return result
+}
+
+func emptySnsMessage(): SnsMessage {
+  return SnsMessage(
+    messageId = "",
+    topicArn = "",
+    subject = None,
+    message = "",
+    timestamp = "",
+    signatureVersion = "",
+    signature = "",
+    signingCertUrl = "",
+    unsubscribeUrl = "",
+    messageAttributes = newMap()
+  )
+}
+
+func decodeSnsMessage(elem: in JsonElement): SnsMessage {
+  return SnsMessage(
+    messageId = getStringProp(elem, "MessageId"),
+    topicArn = getStringProp(elem, "TopicArn"),
+    subject = getOptStringProp(elem, "Subject"),
+    message = getStringProp(elem, "Message"),
+    timestamp = getStringProp(elem, "Timestamp"),
+    signatureVersion = getStringProp(elem, "SignatureVersion"),
+    signature = getStringProp(elem, "Signature"),
+    signingCertUrl = getStringProp(elem, "SigningCertUrl"),
+    unsubscribeUrl = getStringProp(elem, "UnsubscribeUrl"),
+    messageAttributes = match tryGetProperty(elem, "MessageAttributes") {
+      case Some(v) -> decodeSnsMessageAttributeMap(v)
+      case None -> newMap()
+    }
+  )
+}
+
+func decodeSnsRecord(elem: in JsonElement): SnsRecord {
+  return SnsRecord(
+    eventSource = getStringProp(elem, "EventSource"),
+    eventVersion = getStringProp(elem, "EventVersion"),
+    eventSubscriptionArn = getStringProp(elem, "EventSubscriptionArn"),
+    sns = match tryGetProperty(elem, "Sns") {
+      case Some(v) -> decodeSnsMessage(v)
+      case None -> emptySnsMessage()
+    }
+  )
+}
+
+func decodeSnsEvent(root: in JsonElement): SnsEvent {
+  val records: List[SnsRecord] = newList()
+  match tryGetProperty(root, "Records") {
+    case Some(recordsElem) -> {
+      var cur = enumerateArray(recordsElem)
+      while arrayMoveNext(cur) {
+        records.add(decodeSnsRecord(arrayCurrent(cur)))
+      }
+    }
+    case None -> ()
+  }
+  return SnsEvent(records = records.toArray())
+}
+
+// ─── S3 decode ─────────────────────────────────────────────────────────────────
+// Two real-payload quirks vs. the record field names: the request
+// parameter is "sourceIPAddress" (capital IP), and the response elements
+// are the hyphenated "x-amz-request-id" / "x-amz-id-2" — neither is a
+// valid Lyric identifier, which is exactly why S3ResponseElements /
+// S3RequestParameters rename them in the record shape.
+func emptyS3RequestParameters(): S3RequestParameters {
+  return S3RequestParameters(sourceIpAddress = "")
+}
+
+func decodeS3RequestParameters(elem: in JsonElement): S3RequestParameters {
+  return S3RequestParameters(sourceIpAddress = getStringProp(elem, "sourceIPAddress"))
+}
+
+func emptyS3ResponseElements(): S3ResponseElements {
+  return S3ResponseElements(xAmzRequestId = "", xAmzId2 = "")
+}
+
+func decodeS3ResponseElements(elem: in JsonElement): S3ResponseElements {
+  return S3ResponseElements(
+    xAmzRequestId = getStringProp(elem, "x-amz-request-id"),
+    xAmzId2 = getStringProp(elem, "x-amz-id-2")
+  )
+}
+
+func emptyS3Bucket(): S3Bucket {
+  return S3Bucket(name = "", ownerIdentity = newMap(), arn = "")
+}
+
+func decodeS3Bucket(elem: in JsonElement): S3Bucket {
+  return S3Bucket(
+    name = getStringProp(elem, "name"),
+    ownerIdentity = match tryGetProperty(elem, "ownerIdentity") {
+      case Some(v) -> decodeStringMap(v)
+      case None -> newMap()
+    },
+    arn = getStringProp(elem, "arn")
+  )
+}
+
+func emptyS3Object(): S3Object {
+  return S3Object(key = "", size = 0i64, eTag = "", sequencer = "")
+}
+
+func decodeS3Object(elem: in JsonElement): S3Object {
+  return S3Object(
+    key = getStringProp(elem, "key"),
+    size = getLongProp(elem, "size"),
+    eTag = getStringProp(elem, "eTag"),
+    sequencer = getStringProp(elem, "sequencer")
+  )
+}
+
+func emptyS3Detail(): S3Detail {
+  return S3Detail(s3SchemaVersion = "", configurationId = "", bucket = emptyS3Bucket(), object = emptyS3Object())
+}
+
+func decodeS3Detail(elem: in JsonElement): S3Detail {
+  return S3Detail(
+    s3SchemaVersion = getStringProp(elem, "s3SchemaVersion"),
+    configurationId = getStringProp(elem, "configurationId"),
+    bucket = match tryGetProperty(elem, "bucket") {
+      case Some(v) -> decodeS3Bucket(v)
+      case None -> emptyS3Bucket()
+    },
+    object = match tryGetProperty(elem, "object") {
+      case Some(v) -> decodeS3Object(v)
+      case None -> emptyS3Object()
+    }
+  )
+}
+
+func decodeS3Record(elem: in JsonElement): S3Record {
+  return S3Record(
+    eventVersion = getStringProp(elem, "eventVersion"),
+    eventSource = getStringProp(elem, "eventSource"),
+    awsRegion = getStringProp(elem, "awsRegion"),
+    eventTime = getStringProp(elem, "eventTime"),
+    eventName = getStringProp(elem, "eventName"),
+    userIdentity = match tryGetProperty(elem, "userIdentity") {
+      case Some(v) -> decodeStringMap(v)
+      case None -> newMap()
+    },
+    requestParameters = match tryGetProperty(elem, "requestParameters") {
+      case Some(v) -> decodeS3RequestParameters(v)
+      case None -> emptyS3RequestParameters()
+    },
+    responseElements = match tryGetProperty(elem, "responseElements") {
+      case Some(v) -> decodeS3ResponseElements(v)
+      case None -> emptyS3ResponseElements()
+    },
+    s3 = match tryGetProperty(elem, "s3") { case Some(v) -> decodeS3Detail(v); case None -> emptyS3Detail() }
+  )
+}
+
+func decodeS3Event(root: in JsonElement): S3Event {
+  val records: List[S3Record] = newList()
+  match tryGetProperty(root, "Records") {
+    case Some(recordsElem) -> {
+      var cur = enumerateArray(recordsElem)
+      while arrayMoveNext(cur) {
+        records.add(decodeS3Record(arrayCurrent(cur)))
+      }
+    }
+    case None -> ()
+  }
+  return S3Event(records = records.toArray())
+}
+
+// ─── DynamoDB Streams decode ────────────────────────────────────────────────────
+// Two quirks vs. the record field names: the per-record id is "eventID"
+// (capital ID, like Kinesis below), and DynamoDB's low-level attribute-value
+// wire format uses single/double-uppercase-letter keys ("S", "N", "B",
+// "BOOL", "NULL", "SS", "NS", "BS") per the DynamoDB Streams Record API,
+// not the Lyric-conventional lowercase field names on DynamoDbAttributeValue.
+func decodeDynamoDbAttributeValue(elem: in JsonElement): DynamoDbAttributeValue {
+  return DynamoDbAttributeValue(
+    s = getOptStringProp(elem, "S"),
+    n = getOptStringProp(elem, "N"),
+    b = getOptStringProp(elem, "B"),
+    bool = getOptBoolProp(elem, "BOOL"),
+    null = getOptBoolProp(elem, "NULL"),
+    ss = decodeOptStringArray(elem, "SS"),
+    ns = decodeOptStringArray(elem, "NS"),
+    bs = decodeOptStringArray(elem, "BS")
+  )
+}
+
+func decodeDynamoDbAttributeMap(elem: in JsonElement): Map[String, DynamoDbAttributeValue] {
+  val result: Map[String, DynamoDbAttributeValue] = newMap()
+  var cur = enumerateObject(elem)
+  while objectMoveNext(cur) {
+    val prop = objectCurrent(cur)
+    result.add(propertyName(prop), decodeDynamoDbAttributeValue(propertyValue(prop)))
+  }
+  return result
+}
+
+// ApproximateCreationDateTime is documented as a Unix-epoch number but is
+// not guaranteed to be integral on the wire; fall back to a Double read
+// (truncated) so a fractional-second timestamp still decodes instead of
+// silently dropping to None.
+func getOptEpochLongProp(elem: in JsonElement, name: in String): Option[Long] {
+  match tryGetProperty(elem, name) {
+    case Some(v) -> match tryGetLong(v) { case Some(n) -> Some(value = n); case None -> match tryGetDouble(v) { case Some(d) -> Some(value = d.toLong()); case None -> None } }
+    case None -> None
+  }
+}
+
+func emptyDynamoDbStreamRecord(): DynamoDbStreamRecord {
+  return DynamoDbStreamRecord(
+    approximateCreationDateTime = None,
+    keys = newMap(),
+    newImage = None,
+    oldImage = None,
+    sequenceNumber = "",
+    sizeBytes = 0i64,
+    streamViewType = ""
+  )
+}
+
+func decodeDynamoDbStreamRecord(elem: in JsonElement): DynamoDbStreamRecord {
+  return DynamoDbStreamRecord(
+    approximateCreationDateTime = getOptEpochLongProp(elem, "ApproximateCreationDateTime"),
+    keys = match tryGetProperty(elem, "Keys") {
+      case Some(v) -> decodeDynamoDbAttributeMap(v)
+      case None -> newMap()
+    },
+    newImage = match tryGetProperty(elem, "NewImage") {
+      case Some(v) -> if valueKind(v) == 1 { Some(value = decodeDynamoDbAttributeMap(v)) } else { None }
+      case None -> None
+    },
+    oldImage = match tryGetProperty(elem, "OldImage") {
+      case Some(v) -> if valueKind(v) == 1 { Some(value = decodeDynamoDbAttributeMap(v)) } else { None }
+      case None -> None
+    },
+    sequenceNumber = getStringProp(elem, "SequenceNumber"),
+    sizeBytes = getLongProp(elem, "SizeBytes"),
+    streamViewType = getStringProp(elem, "StreamViewType")
+  )
+}
+
+func decodeDynamoDbRecord(elem: in JsonElement): DynamoDbRecord {
+  return DynamoDbRecord(
+    eventId = getStringProp(elem, "eventID"),
+    eventVersion = getStringProp(elem, "eventVersion"),
+    eventSource = getStringProp(elem, "eventSource"),
+    eventName = getStringProp(elem, "eventName"),
+    awsRegion = getStringProp(elem, "awsRegion"),
+    dynamodb = match tryGetProperty(elem, "dynamodb") {
+      case Some(v) -> decodeDynamoDbStreamRecord(v)
+      case None -> emptyDynamoDbStreamRecord()
+    },
+    eventSourceArn = getStringProp(elem, "eventSourceARN")
+  )
+}
+
+func decodeDynamoDbEvent(root: in JsonElement): DynamoDbEvent {
+  val records: List[DynamoDbRecord] = newList()
+  match tryGetProperty(root, "Records") {
+    case Some(recordsElem) -> {
+      var cur = enumerateArray(recordsElem)
+      while arrayMoveNext(cur) {
+        records.add(decodeDynamoDbRecord(arrayCurrent(cur)))
+      }
+    }
+    case None -> ()
+  }
+  return DynamoDbEvent(records = records.toArray())
+}
+
+// ─── Kinesis Data Streams decode ────────────────────────────────────────────────
+// Like DynamoDB, the per-record id is "eventID" (capital ID) and the ARN
+// field is "eventSourceARN" (all-caps ARN), both mapped onto the
+// Lyric-conventional eventId / eventSourceArn fields.
+func emptyKinesisRecord(): KinesisRecord {
+  return KinesisRecord(
+    kinesisSchemaVersion = "",
+    partitionKey = "",
+    sequenceNumber = "",
+    data = "",
+    approximateArrivalTimestamp = 0.0
+  )
+}
+
+func decodeKinesisRecord(elem: in JsonElement): KinesisRecord {
+  return KinesisRecord(
+    kinesisSchemaVersion = getStringProp(elem, "kinesisSchemaVersion"),
+    partitionKey = getStringProp(elem, "partitionKey"),
+    sequenceNumber = getStringProp(elem, "sequenceNumber"),
+    data = getStringProp(elem, "data"),
+    approximateArrivalTimestamp = match tryGetProperty(elem, "approximateArrivalTimestamp") {
+      case Some(v) -> match tryGetDouble(v) { case Some(d) -> d; case None -> 0.0 }
+      case None -> 0.0
+    }
+  )
+}
+
+func decodeKinesisStreamRecord(elem: in JsonElement): KinesisStreamRecord {
+  return KinesisStreamRecord(
+    kinesis = match tryGetProperty(elem, "kinesis") {
+      case Some(v) -> decodeKinesisRecord(v)
+      case None -> emptyKinesisRecord()
+    },
+    eventSource = getStringProp(elem, "eventSource"),
+    eventVersion = getStringProp(elem, "eventVersion"),
+    eventId = getStringProp(elem, "eventID"),
+    eventName = getStringProp(elem, "eventName"),
+    invokeIdentityArn = getStringProp(elem, "invokeIdentityArn"),
+    awsRegion = getStringProp(elem, "awsRegion"),
+    eventSourceArn = getStringProp(elem, "eventSourceARN")
+  )
+}
+
+func decodeKinesisEvent(root: in JsonElement): KinesisEvent {
+  val records: List[KinesisStreamRecord] = newList()
+  match tryGetProperty(root, "Records") {
+    case Some(recordsElem) -> {
+      var cur = enumerateArray(recordsElem)
+      while arrayMoveNext(cur) {
+        records.add(decodeKinesisStreamRecord(arrayCurrent(cur)))
+      }
+    }
+    case None -> ()
+  }
+  return KinesisEvent(records = records.toArray())
+}
+
+// ─── EventBridge decode ──────────────────────────────────────────────────────────
+// Unlike the other four sources, EventBridge delivers a single event
+// envelope directly at the root — no "Records" wrapper. "detail-type" is
+// not a valid Lyric identifier, hence the detailType rename; "detail" is
+// kept as raw JSON text since its shape depends on source + detailType.
+func decodeEventBridgeEvent(root: in JsonElement): EventBridgeEvent {
+  return EventBridgeEvent(
+    version = getStringProp(root, "version"),
+    id = getStringProp(root, "id"),
+    source = getStringProp(root, "source"),
+    account = getStringProp(root, "account"),
+    time = getStringProp(root, "time"),
+    region = getStringProp(root, "region"),
+    resources = match decodeOptStringArray(root, "resources") { case Some(arr) -> arr; case None -> [] },
+    detailType = getStringProp(root, "detail-type"),
+    detail = match tryGetProperty(root, "detail") { case Some(v) -> getRawText(v); case None -> "{}" }
+  )
 }
 
 // ─── Authorizer decode / encode ───────────────────────────────────────────────
@@ -658,6 +1070,66 @@ func findRawDirect(app: in LambdaApp): Option[DirectHandler] {
   return None
 }
 
+func findSnsDirect(app: in LambdaApp): Option[DirectHandler] {
+  var i = 0
+  while i < app.directHandlers.length {
+    match app.directHandlers[i] {
+      case SnsDirect(_) -> return Some(value = app.directHandlers[i])
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  return None
+}
+
+func findS3Direct(app: in LambdaApp): Option[DirectHandler] {
+  var i = 0
+  while i < app.directHandlers.length {
+    match app.directHandlers[i] {
+      case S3Direct(_) -> return Some(value = app.directHandlers[i])
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  return None
+}
+
+func findDynamoDbDirect(app: in LambdaApp): Option[DirectHandler] {
+  var i = 0
+  while i < app.directHandlers.length {
+    match app.directHandlers[i] {
+      case DynamoDbDirect(_) -> return Some(value = app.directHandlers[i])
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  return None
+}
+
+func findKinesisDirect(app: in LambdaApp): Option[DirectHandler] {
+  var i = 0
+  while i < app.directHandlers.length {
+    match app.directHandlers[i] {
+      case KinesisDirect(_) -> return Some(value = app.directHandlers[i])
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  return None
+}
+
+func findEventBridgeDirect(app: in LambdaApp): Option[DirectHandler] {
+  var i = 0
+  while i < app.directHandlers.length {
+    match app.directHandlers[i] {
+      case EventBridgeDirect(_) -> return Some(value = app.directHandlers[i])
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  return None
+}
+
 func findTokenAuthorizerDirect(app: in LambdaApp): Option[DirectHandler] {
   var i = 0
   while i < app.directHandlers.length {
@@ -720,6 +1192,91 @@ func dispatchSqs(app: in LambdaApp, rawPayload: in String, ctx: in LambdaContext
       }
     }
     case _ -> Err(error = InternalError("no handler registered for aws:sqs; register one with Lambda.Direct.sqsHandler / " + "sqsBatchHandler and Lambda.withDirect"))
+  }
+}
+
+func dispatchSns(app: in LambdaApp, rawPayload: in String, ctx: in LambdaContext): Result[String, LambdaError] {
+  match findSnsDirect(app) {
+    case Some(SnsDirect(handler)) -> {
+      val doc = parseJson(rawPayload)
+      defer {
+        disposeJson(doc)
+      }
+      val event = decodeSnsEvent(rootElement(doc))
+      match handler.handle(event, ctx) {
+        case Ok(_) -> Ok(value = "null")
+        case Err(e) -> Err(error = e)
+      }
+    }
+    case _ -> Err(error = InternalError("no handler registered for aws:sns; register one with Lambda.Direct.snsHandler " + "and Lambda.withDirect"))
+  }
+}
+
+func dispatchS3(app: in LambdaApp, rawPayload: in String, ctx: in LambdaContext): Result[String, LambdaError] {
+  match findS3Direct(app) {
+    case Some(S3Direct(handler)) -> {
+      val doc = parseJson(rawPayload)
+      defer {
+        disposeJson(doc)
+      }
+      val event = decodeS3Event(rootElement(doc))
+      match handler.handle(event, ctx) {
+        case Ok(_) -> Ok(value = "null")
+        case Err(e) -> Err(error = e)
+      }
+    }
+    case _ -> Err(error = InternalError("no handler registered for aws:s3; register one with Lambda.Direct.s3Handler " + "and Lambda.withDirect"))
+  }
+}
+
+func dispatchDynamoDb(app: in LambdaApp, rawPayload: in String, ctx: in LambdaContext): Result[String, LambdaError] {
+  match findDynamoDbDirect(app) {
+    case Some(DynamoDbDirect(handler)) -> {
+      val doc = parseJson(rawPayload)
+      defer {
+        disposeJson(doc)
+      }
+      val event = decodeDynamoDbEvent(rootElement(doc))
+      match handler.handle(event, ctx) {
+        case Ok(_) -> Ok(value = "null")
+        case Err(e) -> Err(error = e)
+      }
+    }
+    case _ -> Err(error = InternalError("no handler registered for aws:dynamodb; register one with Lambda.Direct.dynamoDbHandler " + "and Lambda.withDirect"))
+  }
+}
+
+func dispatchKinesis(app: in LambdaApp, rawPayload: in String, ctx: in LambdaContext): Result[String, LambdaError] {
+  match findKinesisDirect(app) {
+    case Some(KinesisDirect(handler)) -> {
+      val doc = parseJson(rawPayload)
+      defer {
+        disposeJson(doc)
+      }
+      val event = decodeKinesisEvent(rootElement(doc))
+      match handler.handle(event, ctx) {
+        case Ok(_) -> Ok(value = "null")
+        case Err(e) -> Err(error = e)
+      }
+    }
+    case _ -> Err(error = InternalError("no handler registered for aws:kinesis; register one with Lambda.Direct.kinesisHandler " + "and Lambda.withDirect"))
+  }
+}
+
+func dispatchEventBridge(app: in LambdaApp, rawPayload: in String, ctx: in LambdaContext): Result[String, LambdaError] {
+  match findEventBridgeDirect(app) {
+    case Some(EventBridgeDirect(handler)) -> {
+      val doc = parseJson(rawPayload)
+      defer {
+        disposeJson(doc)
+      }
+      val event = decodeEventBridgeEvent(rootElement(doc))
+      match handler.handle(event, ctx) {
+        case Ok(_) -> Ok(value = "null")
+        case Err(e) -> Err(error = e)
+      }
+    }
+    case _ -> Err(error = InternalError("no handler registered for EventBridge events; register one with Lambda.Direct.eventBridgeHandler " + "and Lambda.withDirect"))
   }
 }
 
@@ -815,16 +1372,6 @@ func dispatchHttp(app: in LambdaApp): Result[String, LambdaError] {
   return Err(error = InternalError("no HTTP handler registered on this LambdaApp"))
 }
 
-func notImplementedSource(sourceName: in String): Result[String, LambdaError] {
-  return Err(
-    error = InternalError(
-      sourceName + " event JSON decoding is not implemented yet (this release implements aws:sqs, raw, " +
-        "and all three authorizer types as the reference pattern; the remaining event sources " +
-        "are mechanical repetition of that pattern, tracked as follow-up work)"
-    )
-  )
-}
-
 /// Classify `rawPayload` and dispatch it to the matching registered
 /// `Lambda.Direct` handler, returning the JSON response body to post back
 /// (`Ok`) or the `LambdaError` to report via the error endpoint (`Err`).
@@ -839,11 +1386,11 @@ pub func dispatchInvocation(
     case TokenAuthSrc -> dispatchTokenAuthorizer(app, rawPayload, ctx)
     case RequestAuthSrc -> dispatchRequestAuthorizer(app, rawPayload, ctx)
     case HttpAuthSrc -> dispatchHttpAuthorizer(app, rawPayload, ctx)
-    case SnsSrc -> notImplementedSource("aws:sns")
-    case S3Src -> notImplementedSource("aws:s3")
-    case DynamoDbSrc -> notImplementedSource("aws:dynamodb")
-    case KinesisSrc -> notImplementedSource("aws:kinesis")
-    case EventBridgeSrc -> notImplementedSource("EventBridge")
+    case SnsSrc -> dispatchSns(app, rawPayload, ctx)
+    case S3Src -> dispatchS3(app, rawPayload, ctx)
+    case DynamoDbSrc -> dispatchDynamoDb(app, rawPayload, ctx)
+    case KinesisSrc -> dispatchKinesis(app, rawPayload, ctx)
+    case EventBridgeSrc -> dispatchEventBridge(app, rawPayload, ctx)
     case ApiGwV1Src -> dispatchHttp(app)
     case ApiGwV2Src -> dispatchHttp(app)
     case AlbSrc -> dispatchHttp(app)

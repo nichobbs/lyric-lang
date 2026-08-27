@@ -149,7 +149,13 @@ extern type JKeyManager = "javax.net.ssl.KeyManager"
 
 extern type JKeyManagerFactory = "javax.net.ssl.KeyManagerFactory"
 
+extern type JTrustManager = "javax.net.ssl.TrustManager"
+
+extern type JTrustManagerFactory = "javax.net.ssl.TrustManagerFactory"
+
 extern type JSSLContext = "javax.net.ssl.SSLContext"
+
+extern type JSSLParameters = "javax.net.ssl.SSLParameters"
 
 extern type JSecureRandom = "java.security.SecureRandom"
 
@@ -276,51 +282,192 @@ func protocolNameFor(v: in TlsVersion): String {
   }
 }
 
-// Build a server-identity SSLContext from `identity`, enforcing
-// `minVersion` by selecting the JDK protocol algorithm name accordingly
-// (`"TLS"` negotiates the JDK's full supported range — TLS 1.2 and 1.3
-// today — matching the `Tls12` floor; `"TLSv1.3"` restricts negotiation
-// to that version alone). No client-cert trust manager is configured
-// (mTLS is not yet supported on this target — module header); the
-// context trusts no client certificates, which is inert since nothing
-// requests one without `HttpsParameters.setNeedClientAuth`.
-func buildServerSslContext(identity: in Identity, minVersion: in TlsVersion): JSSLContext {
+// The protocol floor `Std.Tls`'s `TlsVersion` variants guarantee: never
+// below TLS 1.2, regardless of the JDK algorithm name `protocolNameFor`
+// selects. Kept as an explicit literal (not derived from any JDK API) so
+// the guarantee doesn't depend on how a particular provider or JVM vendor
+// happens to compute its "default" set (module header on
+// `assertProtocolFloor` explains why an even stronger, actively-restricting
+// fix isn't reachable yet).
+func minTlsProtocols(): List[String] {
+  val allowed: List[String] = newList()
+  allowed.add("TLSv1.2")
+  allowed.add("TLSv1.3")
+  allowed
+}
+
+// `SSLContext.getInstance(protocolNameFor(minVersion)).init(...)` computes
+// its "default" enabled-protocol set (what `HttpsConfigurator`'s
+// no-override `configure()` below actually applies to every accepted
+// connection) from this JVM's `jdk.tls.disabledAlgorithms` security
+// property AT `init()` TIME — captured once, not implicit magic, but also
+// not something `startListenerTls` controls. If that property has been
+// weakened (a deployment misconfiguration, or a JDK vendor whose "TLS"/
+// "TLSv1.3" algorithm defaults differ from mainline OpenJDK's), the
+// resulting context could silently negotiate down to TLSv1.1/TLSv1.0/SSLv3
+// even though `protocolNameFor` asked for a TLS-1.2-or-newer floor (#5997).
+//
+// The idiomatic JSSE fix is to override `HttpsConfigurator.configure(...)`
+// to call `params.setProtocols(["TLSv1.2", "TLSv1.3"])` explicitly (exactly
+// how `_kernel_jvm/http_host.l`'s `buildClientSslParameters` pins the
+// client side) instead of trusting `getDefaultSSLParameters()`. That fix
+// is not reachable here: it requires subclassing the concrete
+// `HttpsConfigurator` class, which the JVM backend's `impl <ExternType>
+// for Record` does not support (issue #5930 — the same class-subclassing
+// gap the mTLS rejection above names).
+//
+// Until #5930 ships, this assertion is the strongest guarantee actually
+// enforceable: it inspects the SAME `getDefaultSSLParameters()` value
+// `HttpsConfigurator`'s default `configure()` is about to hand every
+// connection, and panics loudly — refusing to start the listener — rather
+// than silently accepting a floor weaker than `minTlsProtocols()`
+// specifies. This turns an implicit, unverified trust in the ambient JDK
+// default into an explicit, checked one: `startListenerTls` never serves a
+// single connection under a misconfigured floor.
+func assertProtocolFloor(actual: in slice[String]): Unit {
+  val allowed = minTlsProtocols()
+  var i = 0
+  while i < actual.length {
+    val p = actual[i]
+    if not listContains(allowed, p) {
+      panic(
+        "Std.HttpServer: this JVM's SSLContext default protocol set includes " + p +
+          ", below the TLS 1.2 floor startListenerTls guarantees -- check this JVM's " +
+          "jdk.tls.disabledAlgorithms security property (docs/61, issue #5997)"
+      )
+    }
+    i = i + 1
+  }
+}
+
+// Shared `KeyManagerFactory`/`SSLContext.init`/floor-assertion core for
+// BOTH `buildServerSslContext` (no client-cert trust, `tmArr` a null
+// `TrustManager[]`) and `buildServerSslContextWithClientCa` (`tmArr` a
+// real one-element `TrustManager[]` pinned to the configured client CA).
+// Factored out after issue #6563 (a REQUIRED PR-6560 review finding): the
+// two callers had independently duplicated this sequence, and the mTLS
+// copy silently omitted the `assertProtocolFloor` call the non-mTLS one
+// had — every mTLS listener lost the TLS-1.2-floor guarantee #5997 adds
+// for the non-mTLS path, with no test exercising the mTLS context's
+// protocol set to catch it. A single core makes that class of divergence
+// structurally impossible: there is now exactly one `SSLContext.init` +
+// floor-check call site for server contexts on this target.
+func buildServerSslContextCore(identity: in Identity, minVersion: in TlsVersion, tmArr: in JObject): JSSLContext {
   val ks = buildIdentityKeyStore(identity)
   val kmf: JKeyManagerFactory = JKeyManagerFactory.getInstance(JKeyManagerFactory.getDefaultAlgorithm())
   val _init = invoke2(kmf, "init", ks, emptyCharArrayObj())
   val keyManagers: slice[JKeyManager] = kmf.getKeyManagers()
   val kmArr = makeTypedArray1("javax.net.ssl.KeyManager", keyManagers[0])
-  val tmArr = nullOfClass("[Ljavax.net.ssl.TrustManager;")
   val ctx: JSSLContext = JSSLContext.getInstance(protocolNameFor(minVersion))
   val random: JSecureRandom = JSecureRandom.new()
   val _ctxInit = invoke3(ctx, "init", kmArr, tmArr, random)
+  val defaultParams: JSSLParameters = ctx.getDefaultSSLParameters()
+  val actualProtocols: slice[String] = defaultParams.getProtocols()
+  assertProtocolFloor(actualProtocols)
   ctx
 }
 
+// Build a server-identity SSLContext from `identity`, enforcing
+// `minVersion` by selecting the JDK protocol algorithm name accordingly
+// (`"TLS"` negotiates the JDK's full supported range — TLS 1.2 and 1.3
+// today — matching the `Tls12` floor; `"TLSv1.3"` restricts negotiation
+// to that version alone), then explicitly verifying the resulting
+// context's actual default protocol set never dips below TLS 1.2
+// (`assertProtocolFloor` above) rather than trusting it implicitly. No
+// client-cert trust manager is configured; the context trusts no client
+// certificates, which is inert since nothing requests one without
+// `HttpsParameters.setNeedClientAuth`. This function itself never builds
+// client-cert trust — callers that need mTLS use the sibling
+// `buildServerSslContextWithClientCa`/`serverSslContextFromConfigMtls`
+// (#6017) instead. It is `Std.HttpServer.startListenerTls`'s own
+// `HttpsServer`/`HttpsConfigurator` path (below) that still cannot host
+// mTLS at all — blocked on the unrelated #5930 class-subclassing gap, not
+// a limitation of this function or of the JVM target generally.
+func buildServerSslContext(identity: in Identity, minVersion: in TlsVersion): JSSLContext {
+  val tmArr = nullOfClass("[Ljavax.net.ssl.TrustManager;")
+  buildServerSslContextCore(identity, minVersion, tmArr)
+}
+
 /// An opaque, server-identity `javax.net.ssl.SSLContext` built from a
-/// `Std.Tls` `Identity` + `TlsVersion`. Exposed so OTHER JVM server
-/// kernels in this project — specifically `lyric-web`'s Undertow kernel,
-/// which drives `Undertow.Builder.addHttpsListener(port, host, sslContext)`
-/// rather than `com.sun.net.httpserver.HttpsServer` — can reuse the
-/// `KeyManagerFactory`/`KeyStore`/`java.lang.reflect` extern wiring above
-/// (module header) instead of re-declaring the whole boundary a second
-/// time. It carries no client-cert trust configuration: mutual TLS
-/// (`TlsServerConfig.clientCa` / `requireClientCert`) is the caller's
-/// responsibility to accept or reject, since the trust-manager + per-server
-/// client-auth wiring differs per server implementation
-/// (`HttpsServer.setNeedClientAuth` vs Undertow's XNIO `SSL_CLIENT_AUTH_MODE`).
+/// `Std.Tls` `Identity` + `TlsVersion` (optionally with client-cert trust
+/// pinned to a `Certificate`, via `serverSslContextFromConfigMtls`).
+/// Exposed so OTHER JVM server kernels in this project — specifically
+/// `lyric-web`'s Undertow kernel, which drives
+/// `Undertow.Builder.addHttpsListener(port, host, sslContext)` rather than
+/// `com.sun.net.httpserver.HttpsServer` — can reuse the
+/// `KeyManagerFactory`/`TrustManagerFactory`/`KeyStore`/`java.lang.reflect`
+/// extern wiring above (module header) instead of re-declaring the whole
+/// boundary a second time. A context built by the non-mTLS
+/// `serverSslContextFromConfig` carries no client-cert trust configuration,
+/// which is inert on its own: the per-server client-auth wiring
+/// (`HttpsServer.setNeedClientAuth` vs Undertow's XNIO
+/// `SSL_CLIENT_AUTH_MODE`) still differs per server implementation and is
+/// each caller's own responsibility to set.
 pub opaque type ServerSslContext {
   ctx: JSSLContext
 }
 
 /// Build a server-identity `SSLContext` from a certificate/key `Identity`
 /// and a minimum protocol version. Non-mTLS only (see `ServerSslContext`);
-/// callers that support mutual TLS layer the client-cert trust on top of
-/// the returned context themselves. Reuses `buildServerSslContext` — the
-/// exact same construction `startListenerTls` uses for its own
-/// `HttpsServer`.
+/// callers that support mutual TLS call `serverSslContextFromConfigMtls`
+/// instead. Reuses `buildServerSslContext` — the exact same construction
+/// `startListenerTls` uses for its own `HttpsServer`.
 pub func serverSslContextFromConfig(identity: in Identity, minVersion: in TlsVersion): ServerSslContext {
   ServerSslContext(ctx = buildServerSslContext(identity, minVersion))
+}
+
+// Builds a trust-only PKCS12 keystore holding `clientCa` under a fixed
+// alias — the standard JDK way to feed a `TrustManagerFactory` pinned to
+// exactly one CA rather than the platform default trust store. Mirrors
+// `buildIdentityKeyStore`'s pattern but with `setCertificateEntry` (a
+// trusted-cert entry, no private key) instead of `setKeyEntry`; neither
+// argument here is an array, so this calls straight through auto-FFI with
+// no `java.lang.reflect` bridging needed (module header).
+func buildClientCaKeyStore(clientCa: in Certificate): JKeyStore {
+  val handle = clientCa.rawHandle()
+  val cert: JCertificate = handle.cert
+  val ks: JKeyStore = JKeyStore.getInstance("PKCS12")
+  val nullStream = nullOfClass("java.io.InputStream")
+  val _load = invoke2(ks, "load", nullStream, emptyCharArrayObj())
+  ks.setCertificateEntry("lyric-client-ca", cert)
+  ks
+}
+
+// Build a server SSLContext with client-cert trust pinned to `clientCa`
+// (mutual TLS, docs/61 §6.3 phase 2.3 / issue #6017): the same
+// KeyManagerFactory-backed server identity + TLS-1.2-floor enforcement as
+// `buildServerSslContext` (via the shared `buildServerSslContextCore`),
+// plus a TrustManagerFactory over `buildClientCaKeyStore`'s keystore in
+// place of the `null` TrustManager array. `makeTypedArray1` (module
+// header) builds the genuinely-typed `TrustManager[]` `SSLContext.init`
+// needs, mirroring the `KeyManager[]` construction the core performs for
+// `KeyManager[]`.
+func buildServerSslContextWithClientCa(
+  identity: in Identity,
+  minVersion: in TlsVersion,
+  clientCa: in Certificate,
+): JSSLContext {
+  val trustKs = buildClientCaKeyStore(clientCa)
+  val tmf: JTrustManagerFactory = JTrustManagerFactory.getInstance(JTrustManagerFactory.getDefaultAlgorithm())
+  tmf.init(trustKs)
+  val trustManagers: slice[JTrustManager] = tmf.getTrustManagers()
+  val tmArr = makeTypedArray1("javax.net.ssl.TrustManager", trustManagers[0])
+  buildServerSslContextCore(identity, minVersion, tmArr)
+}
+
+/// Build a server-identity `SSLContext` with client-cert trust pinned to
+/// `clientCa` (mutual TLS). Companion to `serverSslContextFromConfig` for
+/// callers that support mTLS — currently `lyric-web`'s Undertow kernel
+/// (`Web.Kernel.Runtime.serveTls`, issue #6017). `Std.HttpServer`'s own
+/// `startListenerTls` (`com.sun.net.httpserver.HttpsServer`) still rejects
+/// mTLS for the separate, harder `HttpsConfigurator` class-subclassing gap
+/// (#5930) — this function does not touch that path.
+pub func serverSslContextFromConfigMtls(
+  identity: in Identity,
+  minVersion: in TlsVersion,
+  clientCa: in Certificate,
+): ServerSslContext {
+  ServerSslContext(ctx = buildServerSslContextWithClientCa(identity, minVersion, clientCa))
 }
 
 /// Kernel-boundary accessor for the underlying `javax.net.ssl.SSLContext`.

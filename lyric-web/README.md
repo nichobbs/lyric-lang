@@ -72,7 +72,7 @@ func main(): Unit {
 - **Query parameters**: `Web.queryParam(req, "name")`.
 - **Headers**: `Web.header(req, "name")` — lookup is case-insensitive.
 - **Request body**: `req.body: String` (raw text; parse JSON with `Std.Json`, or hand-roll for the request record's shape — see `examples/ledger`, `examples/rbac`, `examples/jobqueue` for worked JSON-parsing examples).
-- **Responses**: build with `Web.json`, `Web.text`, `Web.html`, `Web.bytesResponse`, `Web.noContent`, or `Web.errorResponse(apiError)`; add headers with `Web.withResponseHeader`.
+- **Responses**: build with `Web.json`, `Web.text`, `Web.html`, `Web.bytesResponse`, `Web.noContent`, or `Web.errorResponse(apiError)`; add headers with `Web.withResponseHeader`. `Web.json(status, body)` sends `body` exactly as given — `body` must already be valid JSON. To wrap an arbitrary raw string (an id, a UUID, a token) as a JSON string value instead, use `Web.jsonString(status, value)`.
 
 There is no automatic request-body deserialization or path/query-parameter-to-function-argument binding — Lyric's project direction has moved away from runtime reflection entirely (see `docs/03-decision-log.md` D099/D006), so this is deliberately explicit rather than "magic". Compose multiple packages' routers with `Web.merge` and scope them with `Web.prefix`.
 
@@ -297,12 +297,11 @@ targets**, built from a `Std.Tls.TlsServerConfig` (PEM cert + key; see
   yet negotiated on this server (the transport advertises only `http/1.1`;
   issue #5889).
 - **`--target jvm`: real TLS termination** over an Undertow `addHttpsListener`
-  with `ENABLE_HTTP2` (HTTP/2 via ALPN, TLS-only). **mTLS
-  (`requireClientCert` / `clientCa`) is not supported on the JVM Undertow path
-  yet** — it needs a client-CA `TrustManager` on the `SSLContext` plus
-  Undertow's XNIO `SSL_CLIENT_AUTH_MODE` option; `serveTls` returns a typed
-  `ServerTlsUnsupported` naming issue #6017. Non-mTLS TLS termination (server
-  identity + minimum version) is fully supported.
+  with `ENABLE_HTTP2` (HTTP/2 via ALPN, TLS-only). **Mutual TLS is fully
+  supported here** (issue #6017): `clientCa` pins a client-CA `TrustManager`
+  onto the listener's `SSLContext`, and `requireClientCert` drives Undertow's
+  XNIO `SSL_CLIENT_AUTH_MODE` socket option (`REQUIRED` when set, `REQUESTED`
+  — optional — when `clientCa` is configured without `requireClientCert`).
 
 A configuration that cannot bind a listener — a mutual-TLS misconfiguration
 (`requireClientCert` with no `clientCa`) or a socket bind failure — returns a

@@ -672,7 +672,6 @@ func emitSingleFileOrProject(
     )
   }
 
-
   val pkgNameRaw = Release.packageNameOf(req.source)
   val pkgName = if pkgNameRaw.length > 0 { pkgNameRaw } else { req.assemblyName }
 
@@ -1971,20 +1970,18 @@ func buildReleaseProject(
   // which crashed ILC at runtime with `FileNotFoundException` for any
   // NuGet-restored assembly the program actually calls into (#5782).
   //
-  // On the JVM target none of the above applies, for two different reasons —
-  // do not read this as "the JVM arm handles everything the .NET arm does":
+  // On the JVM target none of the above applies — do not read this as "the
+  // JVM arm handles everything the .NET arm does":
   //
-  //   - Same-manifest `[project.packages]` siblings and the transitive `Std.*`
-  //     closure genuinely ARE compiled into the bundled JAR
-  //     (`emitProjectJvmInProcess` merges every package into one bundle), so
-  //     they need no external reference.
-  //   - `[dependencies]` path/workspace deps are NOT compiled in. That is a
-  //     pre-existing JVM limitation, not something this release path
-  //     introduces: `buildWorkspaceDeps` deliberately returns empty for
-  //     `target = Jvm`, and `depTemplateSrcs` carries only wire/aspect
-  //     *templates*, never full dependency code. A JVM project with path deps
-  //     is equally broken under plain `lyric build --target jvm`. Tracked in
-  //     #6264.
+  //   - Same-manifest `[project.packages]` siblings, `[dependencies]`
+  //     path/workspace deps (#6264), and the transitive `Std.*` closure all
+  //     genuinely ARE compiled into the bundled JAR: `emitProjectJvmInProcess`
+  //     merges the project's own packages, and `buildProjectFromManifest`
+  //     (called above via `buildProject` for the staging build) additionally
+  //     appends every collected `depTemplateSrcs` package to that same bundle
+  //     for `target = Jvm` — see its comment for the full rationale. So the
+  //     staging JAR built above already embeds a path/workspace dep's code;
+  //     it needs no external reference for that.
   //
   // The only external classpath entries are the restored `[maven]` jars, which
   // `buildProject` has just written beside the staging JAR as

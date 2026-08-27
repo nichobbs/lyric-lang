@@ -32210,7 +32210,7 @@ script with`) and nothing new; `scripts/ci/check-workflow-size.sh` passes
 under the new split can only be confirmed by observing `main` over
 subsequent PRs, per #4975's own evidence-gathering pattern.
 
-## D-progress-805 — actionlint: scope the `matrix.authenticode` dead-code suppression to `publish.yml` via a path-scoped `.github/actionlint.yaml`, instead of a global `-ignore` regex (#5638)
+## D-progress-807 — actionlint: scope the `matrix.authenticode` dead-code suppression to `publish.yml` via a path-scoped `.github/actionlint.yaml`, instead of a global `-ignore` regex (#5638)
 
 **Problem.** The `actionlint` CI job's "Run actionlint" step suppressed
 three finding classes via a single global `-ignore` regex: the permanent
@@ -32252,4 +32252,276 @@ matrix entry itself stays commented out, gated on #3941 — re-enabling it
 is out of scope here, and once it lands, `.github/actionlint.yaml` should
 be deleted rather than edited (the suppression becomes unnecessary, not
 narrower).
+---
+
+## D136 — `Web.json` reverts #5797's auto-detect regression, back to its documented raw-passthrough contract; `Web.jsonString` added (#5813)
+
+**Date:** 2026-08-27
+**Status:** ACCEPTED
+
+**Context.** `Web.json(status, body)` (`lyric-web/src/web.l`) carries
+`@stable(since = "0.2")` and its doc comment describes it as a raw JSON
+passthrough helper — send `body` as the response, unmodified. #5797 changed
+its implementation to call `tryParseJson(body)` and, on parse failure,
+silently re-encode `body` as a quoted JSON string via `encodeString`. This
+is a behavioral change to a `@stable` function: every call now pays a full
+JSON parse (even for a large, already-valid body built by a real encoder),
+and a caller that passes malformed JSON — a real bug — gets a "successful"
+response whose body is a quoted string instead of a visible failure. Per
+the `@stable` editing protocol (D077 §Context), any change to stable
+surface behavior needs a decision-log entry; #5797 landed without one.
+
+**Decision.** Revert `Web.json` to pure raw passthrough — a UTF-8 encode
+of `body` and nothing else, matching its pre-#5797, currently-documented
+contract exactly. Add `Web.jsonString(status, value)`, a new
+`@stable(since = "0.2")` function, as the explicit named helper for the
+use case #5797 was actually solving: quoting/escaping an arbitrary raw
+string (a bare id, UUID, or token) as a JSON string value.
+
+**Consequences.**
+
+- `Web.json`'s `@stable` contract is restored to what it always documented:
+  no parsing, no re-escaping, no cost beyond a UTF-8 encode. A caller that
+  passes malformed JSON now ships malformed JSON, surfacing the bug instead
+  of masking it.
+- Every in-repo caller of `Web.json` (`examples/ledger`, `examples/rbac`,
+  `examples/jobqueue`, `jvm_server_smoke.l`) was already passing a real
+  JSON-encoder-built body, so none needed migration to `jsonString` —
+  verified by rebuilding all three example services.
+- `lyric-web/tests/dispatch_tests.l`'s test (the one exercising #5797's
+  removed auto-detect path) is rewritten to cover: valid JSON sent
+  unmodified byte-for-byte (no parse); malformed JSON sent AS-IS (the
+  #5813 regression test — the masking bug can never silently reappear);
+  and `jsonString` correctly quoting/escaping a raw value.
+
+**Related:** #5813, #5797 (the PR this reverts the auto-detect half of),
+D077 (the `@stable` editing-protocol precedent this follows),
+`docs/10-bootstrap-progress.md` D-progress-632.
+
+---
+
+## D-progress-805 — TLS phase 2.3: lyric-web Undertow mTLS — client-CA `TrustManager` + XNIO `SSL_CLIENT_AUTH_MODE` (docs/61 §6.3, D128, #6017)
+
+**Context.** D-progress-698 (phase 2.2, #5881) shipped non-mTLS server TLS
+for lyric-web's `--target jvm` Undertow listener but deferred mutual TLS:
+the reused `Std.HttpServer.serverSslContextFromConfig` built an
+identity-only `SSLContext` (no client-CA `TrustManager`), and Undertow's
+own client-auth wiring (the XNIO `SSL_CLIENT_AUTH_MODE` socket option) was
+never set. `Web.serveTls` on `--target jvm` rejected every
+`requireClientCert`/`clientCa` request with a typed
+`ServerTlsUnsupported` naming this issue. This entry closes that gap.
+
+**Shipped.**
+
+- `Std.HttpServer` JVM kernel (`_kernel_jvm/http_server.l`):
+  `buildClientCaKeyStore` builds a trust-only PKCS12 keystore holding
+  `TlsServerConfig.clientCa` under a fixed alias via
+  `KeyStore.setCertificateEntry` — no `java.lang.reflect` bridging needed
+  here, since neither argument is an array (module header's reflection
+  bridge is only for reference-typed *array* arguments/results). A new
+  `buildServerSslContextWithClientCa(identity, minVersion, clientCa)`
+  builds the SAME `KeyManagerFactory`-backed server identity as
+  `buildServerSslContext`, then adds a `TrustManagerFactory` initialised
+  over that keystore in place of the `null` `TrustManager` array —
+  reusing the exact `makeTypedArray1`/`java.lang.reflect` idiom the
+  existing `KeyManager[]` construction already uses (the module header's
+  documented workaround for the JVM auto-FFI's inability to pass a
+  reference-typed array as a call argument), applied unchanged to the new
+  `TrustManager[]`. Exposed as `pub func serverSslContextFromConfigMtls(
+  identity, minVersion, clientCa): ServerSslContext` — a sibling to the
+  existing `serverSslContextFromConfig`, not a signature change to it (no
+  existing caller, including `startListenerTls`'s own non-mTLS path, is
+  touched).
+- lyric-web JVM kernel (`src/_kernel/jvm/web_kernel.l`): `serveTls` now
+  matches `tls.clientCa` to pick `serverSslContextFromConfigMtls` (mTLS)
+  vs `serverSslContextFromConfig` (plain TLS), then — only when
+  `clientCa` is set — calls
+  `Undertow.Builder.setSocketOption(Options.SSL_CLIENT_AUTH_MODE,
+  authMode)` with `authMode = SslClientAuthMode.REQUIRED` when
+  `tls.requireClientCert`, else `REQUESTED` (optional client cert, for a
+  `clientCa`-configured-without-`requireClientCert` deployment).
+  `Options`/`SslClientAuthMode` are `org.xnio` extern types read via the
+  same auto-FFI static-field idiom `UndertowOptions.ENABLE_HTTP2` already
+  uses; `setSocketOption` is the XNIO *socket*-level option setter
+  (Undertow's own documented spelling for per-listener TLS knobs),
+  distinct from `setServerOption`'s worker/server-level options.
+- lyric-web `Web` package (`src/web.l`): the jvm `serveTls`'s up-front
+  rejection narrows from "any mTLS request" to the one genuine
+  misconfiguration — `requireClientCert` set with no `clientCa` to pin
+  trust to — mirroring the dotnet kernel's `InvalidConfig` guard
+  (`_kernel/http_server.l`). A valid mTLS or non-mTLS config now falls
+  straight through to the kernel. The `#5903` cross-error-type
+  nested-match hazard D-progress-698 worked around is unaffected: the
+  kernel `serveTls` still returns `Unit`, and the two new `match
+  tls.clientCa` sites (context selection, XNIO option) both match
+  `Std.Core.Option` — never a cross-package user union — so neither
+  crosses into the miscompiling shape.
+
+**Verification.** `tests/jvm_server_smoke.l`'s `MTLS-REJECT-SELFCHECK`
+(previously: "any mTLS request is rejected") is now a REAL end-to-end
+mTLS accept/reject proof, plus a separate `MTLS-MISCONFIG-SELFCHECK` for
+the narrowed up-front guard:
+
+- **`MTLS-MISCONFIG-SELFCHECK`** — `requireClientCert = true` with no
+  `clientCa` still returns a typed `ServerTlsUnsupported` before any
+  listener binds (unchanged behaviour, re-verified against the narrowed
+  message).
+- **`MTLS-ACCEPT-SELFCHECK` / `MTLS-REJECT-SELFCHECK`** — a real Undertow
+  listener on `:8102` configured with `clientCa` (a fresh self-signed test
+  CA) and `requireClientCert = true`: a `Std.Http` client presenting a
+  leaf certificate signed by that CA (`HttpClientBuilder.withClientIdentity`)
+  connects and gets a 200 (`MTLS-ACCEPT-SELFCHECK: PASS`), logged after the
+  same bounded-poll-loop bind-race guard `HTTPS-H2-SELFCHECK` uses
+  (#6028); a second client presenting an unrelated self-signed certificate
+  (no relation to the configured CA) fails the TLS handshake
+  (`MTLS-REJECT-SELFCHECK: PASS`) — run only after the accept leg has
+  already proven the listener live, so the rejection is a genuine
+  TLS-layer failure, never a bind-race false negative. All five fixture
+  PEMs (CA, CA-signed client cert+key, unrelated cert+key) are
+  `openssl`-generated, committed as test-only literals in
+  `jvm_server_smoke.l` alongside the pre-existing server identity fixture.
+  `.github/workflows/ci.yml`'s "lyric-web Undertow smoke on JVM" step
+  greps all four self-check lines (`MTLS-MISCONFIG-SELFCHECK`,
+  `HTTPS-H2-SELFCHECK`, `MTLS-ACCEPT-SELFCHECK`, `MTLS-REJECT-SELFCHECK`)
+  for `PASS`, alongside the existing 4/4 plaintext-endpoint and
+  `curl --http2` assertions.
+- Run locally through the CI-equivalent flow (`make maven-resolver` +
+  `lyric restore` + single-file `lyric build --target jvm` + `java -jar`)
+  against the published NuGet `lyric` 0.5.1 tool + `LYRIC_STD_PATH` (this
+  sandbox cannot build `./bin/lyric` from source — GitHub release download
+  is blocked — so this follows the D-progress-543 sandbox exception, as
+  D-progress-698's own verification did against 0.4.33): 4/4 plaintext
+  endpoints, `HTTPS-H2-SELFCHECK: PASS`, `MTLS-MISCONFIG-SELFCHECK: PASS`,
+  `MTLS-ACCEPT-SELFCHECK: PASS status=200 body=Hello,Ada`,
+  `MTLS-REJECT-SELFCHECK: PASS unrelated client cert rejected at the TLS
+  layer`, curl `2:200`. Also re-ran `lyric test --manifest
+  lyric-web/lyric.toml` (dotnet): `Web.ServeTlsTests` unaffected, 7/7
+  (this PR touches no dotnet-only code path).
+- **Formatting note (D-progress-543 sandbox exception applies):** the
+  published 0.5.1 tool's `lyric fmt --write` measurably diverged from
+  `_kernel_jvm/http_server.l`'s established canonical style on lines this
+  PR did not touch — collapsing an existing multi-line `match`/`if` into
+  single-line semicolon form, and wrapping an unrelated pre-existing long
+  function signature — confirmed by isolating the reformat to untouched
+  code (`invoke4`, `startListenerTls`'s `mtlsRequested`/`addr` locals).
+  Those unrelated changes were reverted; this PR's own two new long
+  signatures (`buildServerSslContextWithClientCa`,
+  `serverSslContextFromConfigMtls`) were hand-wrapped one-parameter-per-line
+  instead, matching the file's own established convention for an
+  over-width signature (`respondBytesWith`'s pre-existing shape). The
+  tool's rewrap of this PR's own newly-added, shorter lines in
+  `web_kernel.l` and `jvm_server_smoke.l` was accepted as-is (no
+  pre-existing untouched code was affected there).
+
+**Related:** #6017, D-progress-698 (phase 2.2, the non-mTLS Undertow
+listener this extends), D-progress-692 (phase 2.1, the `Std.HttpServer`
+`HttpsServer` kernel — still blocked on the unrelated #5930
+`HttpsConfigurator` class-subclassing gap, untouched by this entry),
+D-progress-543 (published-tool sandbox exception, both the `lyric test`
+build path and the `fmt` divergence invoked here).
+
+## D-progress-806 — PR-6560 review fixes: mTLS SSLContext floor-assertion gap (#6563) + reverted `Web.TlsTestFixtures` production-DLL leak (#6564)
+
+`claude-review` on PR #6560 (the #5997/#6027/#6017 batch) raised two
+REQUIRED findings.
+
+**#6563 — `buildServerSslContextWithClientCa` skipped the TLS-1.2 floor
+assertion.** It was a near-verbatim copy of `buildServerSslContext`'s
+`KeyManagerFactory`/`SSLContext.init` sequence (`_kernel_jvm/http_server.l`)
+but never called the new `assertProtocolFloor` (D-progress-805's sibling,
+#5997) the non-mTLS path does — so every mTLS listener (every caller of
+`serverSslContextFromConfigMtls`, i.e. lyric-web's Undertow `serveTls`
+whenever `clientCa` is set) silently lost the TLS-1.2-floor guarantee, with
+no test exercising the mTLS context's protocol set to catch it. Fixed by
+factoring the shared `KeyManagerFactory`/`SSLContext.init`/floor-assertion
+sequence into one `buildServerSslContextCore(identity, minVersion, tmArr)`
+helper parameterized on the (null or real) `TrustManager[]`, called by both
+`buildServerSslContext` and `buildServerSslContextWithClientCa` — the
+`claude-review` SUGGESTION alongside the REQUIRED finding, applied because
+it makes the class of bug (two copies of one init sequence silently
+diverging) structurally impossible rather than merely re-syncing the copies
+this once. There is now exactly one server-`SSLContext.init` + floor-check
+call site on this target.
+
+**#6564 — `Web.TlsTestFixtures` (the #6027 fix, this same PR) bundled a
+test-only private key into the production `Web.dll`.** The shared fixture
+package was registered under `[project.packages]` in `lyric-web/lyric.toml`
+— the only table `collectImportedOwnPackages` (`cli_build.l`) and `lyric
+test`'s `libPkgs` (`cli_test.l`) resolve local-manifest imports through, so
+this was necessary for `jvm_server_smoke.l`'s standalone single-file build
+and for `serve_tls_tests.l`'s `[project.tests]` compile to both see it. But
+`buildProjectFromManifest` bundles **every** `[project.packages]` entry into
+the project's single output assembly with no import-reachability
+filtering (unlike the single-file path's `collectImportedOwnPackages`,
+which only pulls in entries the source actually imports) — so any ordinary
+whole-project build of `Lyric.Web` (`lyric build --manifest
+lyric-web/lyric.toml`, the shape `make lyric` and any downstream consumer's
+restore+build use) now bundled the test cert **and private key** PEM text
+into `Web.dll` as public API surface, for every consumer.
+
+Investigated three non-compiler workarounds before concluding none exist:
+a second test-only manifest (would need to duplicate `Web`/`Web.Aspects`/etc.
+path references, or gets no first-class "local dependency" support); a
+`[dependencies]`-style reference (this compiler has no dev-dependencies
+table, and it would still add an unnecessary production dependency edge to
+a fixtures-only package); reading the fixture from a PEM file on disk at
+test run time (fragile — the single-file JVM smoke test's jar can run from
+an arbitrary CWD in CI or locally, with no reliable relative path back to
+the checkout). All three either don't actually close the leak (the leak is
+triggered by mere presence in `[project.packages]`, regardless of which
+consumer needs it) or trade it for a different fragility. This compiler
+has no "test-only package" concept — no per-`[project.packages]`-entry
+exclusion from a whole-project build, no `[project.tests]`-sourced import
+resolution for `collectImportedOwnPackages` — so a shared fixture package
+cannot be built here without either the whole-project-build leak or a
+compiler change neither buildable nor testable in this environment
+(`./bin/lyric` cannot be built from source in the sandbox this PR was
+authored in; see D-progress-543).
+
+**Resolution: reverted #6027's dedup**, restoring the original
+byte-identical `certPem`/`keyPem` (`serve_tls_tests.l`) /
+`httpsCertPem`/`httpsKeyPem` (`jvm_server_smoke.l`) local constants and
+deleting `Web.TlsTestFixtures`/its `[project.packages]` entry. This matches
+a decision already on record two paragraphs above this entry ("lyric-web
+cleanups", 2026-08-11): "#6027 (byte-identical PEM fixtures duplicated
+between two test files) left as-is — a shared test fixtures module isn't
+buildable without shipping test-only data in the production `Web.dll`/jar;
+harmless non-secret duplication." That decision predates this PR; #6027's
+GitHub issue nonetheless stayed open and got re-attempted here, independently
+rediscovering (via `claude-review`, not by consulting this log first) the
+exact same conclusion. Closing #6027 as won't-fix, pointing at both this
+entry and the 2026-08-11 one, is this entry's own housekeeping action.
+Tracked follow-up for the real fix: teach `buildProjectFromManifest` a
+test-only package marker (or resolve manifest imports for a single-file
+build from `[project.tests]` too), so a shared fixture package becomes
+possible without a whole-project-build leak — filed as #6579.
+
+**Addendum: a `claude-review` SUGGESTION on this same round surfaced a
+separate, real JVM codegen bug (#6578).** The re-review's third SUGGESTION
+(combining `serveTls`'s two separate `match tls.clientCa { ... }` blocks
+into one match producing a `(JSSLContext, Option[JSslClientAuthMode])`
+tuple) was implemented, but the resulting `--target jvm` build — while
+compiling cleanly with zero diagnostics — crashed at class-load time with
+`java.lang.VerifyError: Bad type on operand stack` (`serveTls`'s
+`builder.addHttpsListener` call site, `sslContext` typed `Object` instead
+of `SSLContext`). Caught by re-running `jvm_server_smoke.l` end to end
+after the change — the exact discipline this PR's own process section
+insists on ("actually build and run the test to confirm it passes before
+stopping") — rather than trusting a clean compile. Reverted that one
+SUGGESTION back to the original working two-match shape (#6017's own
+code, unchanged) and filed #6578 with the full verifier output and repro
+steps for the JVM backend's tuple-destructuring-from-divergent-match-arms
+codegen gap, rather than either shipping a crashing "fix" or silently
+dropping the SUGGESTION without a trace. The doc-comment and mTLS-floor
+test SUGGESTIONs from the same review round were applied normally (no
+codegen risk — comment-only and additive-test changes respectively).
+
+**Related:** #5997 (D-progress-805 is the sibling, non-mTLS TLS-1.2-floor
+fix this parallels), #6017 (D-progress-805, the PR this batches with),
+#6027 (the reverted fix; see the 2026-08-11 "lyric-web cleanups" entry
+above for the original decision), #6578 (the JVM tuple-destructuring
+`VerifyError` this entry's addendum discovered), #6579 (the test-only
+package compiler follow-up), D-progress-543 (sandbox exception: no
+`./bin/lyric` buildable from source here, hence no compiler-level fix for
+either #6564's or #6578's root cause).
 

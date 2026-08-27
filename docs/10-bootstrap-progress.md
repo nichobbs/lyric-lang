@@ -30698,6 +30698,8 @@ additionally needs its XNIO `SSL_CLIENT_AUTH_MODE` option wired.
 `ServerTlsUnsupported` at the `Web` layer) for any
 `requireClientCert`/`clientCa` request, tracked in #6017 (a different
 blocker than phase 2.1's `HttpsConfigurator` gap #5930).
+(Superseded by phase 2.3 / D-progress-805, #6017: mTLS ships on this path
+too — see the entry below.)
 
 Verified end-to-end by `tests/jvm_server_smoke.l`'s in-process HTTPS/h2
 self-check (a real `Web.serveTls` Undertow listener + a `Std.Http` client
@@ -30706,7 +30708,23 @@ that trusts the SAN fixture cert and asserts `HttpResponse.negotiatedVersion()
 `compiler-self-tests-jvm` CI job; and by `tests/serve_tls_tests.l` on dotnet
 (`Web.ServeTlsTests`, 4/4). A published-tool sandbox limitation (the 0.4.33
 `build --manifest lyric-web --target jvm` cyclic-package crash, #6024) meant
-JVM verification used the CI-equivalent single-file build path.
+JVM verification used the CI-equivalent single-file build path at the time.
+**#6024's cyclic-import failure is now fixed**
+(`Jvm.Bridge.compileProjectToJarBundledWithFeatures` was missing the entry
+package's own items from its cross-package `importedPkgs` list, so
+`Web.Kernel.Runtime` — a sibling that imports `Web` back — saw `Web`'s
+qualified types as unknown, `error[T0014]`): `lyric build --manifest
+lyric-web/lyric.toml --target jvm` now gets past type-check on the `Web` ↔
+`Web.Kernel.Runtime` cycle, confirmed against a source build. It does not
+yet reach a fully successful build in this checkout, though — getting past
+type-check newly surfaces a separate, pre-existing JVM codegen gap
+(`Web.Kernel.Runtime`'s JVM kernel iterating an extern
+`JHttpStringCollection[JHttpString]` erases each element's `.toString()`
+return type to `Object`, so the following `.toLower()` call has no
+resolvable receiver — `error[J002]`), unrelated to the cyclic-import
+mechanism and not attempted here; filed as #6565. The CI-equivalent
+single-file build path (what `compiler-self-tests-jvm` actually exercises)
+remains the verified JVM path for this library in the meantime.
 
 Surfacing the qualified stdlib type `Std.Tls.TlsServerConfig` in lyric-web's
 public API additionally required a compiler fix in
@@ -31115,8 +31133,9 @@ over the `Std.TcpHost` `TcpListener`/`SslStream` transport shipped in phase 3.3
 `Web.dispatch` core as plaintext `serve`. The phase-2.2 typed
 `ServerTlsUnsupported`-on-dotnet stub is gone.
 
-**Mutual TLS is fully supported on dotnet** (unlike the JVM Undertow listener,
-where mTLS is #6017): the `tls` config — including `clientCa`/`requireClientCert`
+**Mutual TLS is fully supported on dotnet** (at this point in the timeline,
+unlike the JVM Undertow listener, where mTLS was still #6017 — since shipped,
+see D-progress-805 below): the `tls` config — including `clientCa`/`requireClientCert`
 — is passed straight through to the callback-free mTLS transport kernel. A
 configuration that cannot bind a listener (a mutual-TLS misconfiguration:
 `requireClientCert` with no `clientCa`; or a socket bind failure) is surfaced as
@@ -31144,7 +31163,7 @@ covered by `tests/jvm_server_smoke.l`. Verified against a from-source-built
 
 Boundary: h2/ALPN end-to-end on the dotnet server is #5889 (gated on the h2 FSM
 #5888; the transport advertises only `http/1.1`). Native server TLS is #5890.
-JVM mTLS is #6017.
+JVM mTLS shipped in phase 2.3 (D-progress-805, #6017; see that entry below).
 
 **Related:** `docs/03-decision-log.md` D-progress-701; docs/61 §6.3, D128; #5885,
 #5874, #5884 (D-progress-700), #5881 (D-progress-698), #6017, #5889, #5903.
@@ -31776,3 +31795,116 @@ Full option analysis (IL/bytecode counters built into the self-hosted
 emitters; a source-level statement-coverage AST pass), why JaCoCo was
 chosen as the tractable first slice, and the deferred MSIL/dotnet-coverage
 direction: `docs/03-decision-log.md` D135.
+
+### D-progress-631 — `Std.HttpEngine.H2Conn`: closed-stream pruning bounds `H2Connection.streams` growth on long-lived connections (#6064)
+
+**Status:** Shipped (`lyric-stdlib/std/http_h2conn.l`).
+
+`H2Connection.streams` previously retained every stream — including fully
+`H2SClosed` ones — for the connection's lifetime, deliberately, so a late
+`WINDOW_UPDATE`/`RST_STREAM` racing a just-closed stream is correctly treated
+as a harmless no-op rather than an idle-stream `PROTOCOL_ERROR` (RFC 9113
+section 5.1). A very long-lived connection opening millions of streams grew
+this list without bound.
+
+`isIdleStreamId` already decides the no-op-vs-error question purely from
+`streamId`'s parity and `state.lastPeerStreamId` — never from whether a
+`H2Stream` record for it survives — so a lookup miss on *any* id at or below
+`lastPeerStreamId` (a closed stream, pruned or not) is always classified as
+"forgotten, not idle." `pruneClosedStreams` (called once at the end of every
+`feed()`) reclaims a `H2SClosed` record once its id has scrolled more than
+`h2ClosedStreamRetentionWindow()` (200) stream-slots behind
+`lastPeerStreamId` — a bookkeeping choice, not a safety boundary: the window
+exists to keep a recently-closed stream's exact terminal event (e.g. a late
+`RST_STREAM`'s `H2PeerReset`) observable for longer, not because pruning any
+sooner would be unsafe. Only `H2SClosed` entries are ever eligible, so an
+active (open/half-closed) stream's flow-control bookkeeping is never
+disturbed. A cheap escape hatch (`state.streams.count <=
+h2ClosedStreamRetentionWindow()`) skips the scan entirely on the common case
+of a connection that never approaches the window.
+
+Five new cases in `lyric-stdlib/tests/http_h2conn_tests.l` drive a
+connection through 260 real open+complete request/response cycles (well past
+the 200-stream window) via the existing `runCompletions` helper, then assert:
+a late `RST_STREAM` against the first (now-pruned) stream is a true no-op —
+connection healthy, no `H2ConnError`, no `H2PeerReset` surfaced (the record is
+gone); a late `RST_STREAM` against the most-recently-closed (still-retained)
+stream is unchanged from pre-#6064 behaviour — connection healthy, no error,
+and `H2PeerReset` still surfaces; a late `WINDOW_UPDATE` against the pruned
+stream is likewise a safe no-op, never a `PROTOCOL_ERROR`; a duplicate HEADERS
+frame against a pruned stream id *does* escalate to a connection
+`PROTOCOL_ERROR` — unlike WINDOW_UPDATE/RST_STREAM/DATA, HEADERS dispatch is
+not pruning-invariant (`beginTrailerHeaders` for a retained record vs.
+`beginNewStreamHeaders`'s monotonic-id check for a pruned one), documented as
+intended and tracked as #6562 pending an RFC 9113 §5.1.1 compliance
+investigation; and `streamState(conn, streamId)` reports `H2SIdle` for a
+pruned stream indistinguishable from a truly never-opened one, a real gap in
+this PR's own public query surface disclosed in `streamState`'s doc comment
+and tracked as #6572. The `rejectedStreams` marker map in
+`_kernel/http_server.l` has the identical unbounded-growth shape #6064 fixed
+for `H2Connection.streams`, not yet applied there — tracked as #6566.
+
+**Related:** #6064, #6562, #6566, #6572, `docs/61-https-tls-http-versions.md` §6.4 (D128).
+
+### D-progress-632 — `Web.json` restored to raw JSON passthrough; `Web.jsonString` added for wrapping a raw string value (#5813)
+
+**Status:** Shipped (`lyric-web/src/web.l`).
+
+A prior change (#5797) made `Web.json(status, body)` — documented and
+`@stable(since = "0.2")` as a raw-passthrough helper — call `tryParseJson`
+to auto-detect whether `body` was valid JSON, silently re-encoding it as a
+quoted JSON string on parse failure. This cost a full parse on every call
+(even for large, already-valid JSON bodies built by a real encoder) and,
+worse, masked a caller's malformed-JSON bug by "successfully" wrapping it as
+a string instead of surfacing the breakage — a production-quality violation
+by this repo's own no-silently-masked-bugs standard.
+
+`Web.json` is restored to pure raw passthrough: a UTF-8 encode of `body`,
+nothing else — `body` must already be valid JSON, and a caller bug that
+produces malformed JSON now ships malformed JSON instead of a silently
+"corrected" string. `Web.jsonString(status, value)` is the new, explicitly-
+named helper for the "wrap an arbitrary raw string as a JSON string value"
+use case #5797 was actually solving (e.g. a bare UUID/session id).
+
+Every in-repo caller of `Web.json` (the `ledger`/`rbac`/`jobqueue` examples,
+`lyric-health`'s doc comments, `jvm_server_smoke.l`) was already passing a
+real JSON-encoder-built body, so none needed migration to `jsonString`. Only
+`lyric-web/tests/dispatch_tests.l`'s own test — which exercised the removed
+auto-detect behaviour directly — needed updating: it now covers valid JSON
+sent unmodified (byte-for-byte, no parse), malformed JSON sent AS-IS (the
+#5813 regression case — the masking bug can never silently reappear), and
+`jsonString` correctly quoting/escaping a raw value.
+
+**Related:** #5813, #5797 (the change this reverts the auto-detect half of), `docs/03-decision-log.md` D136 (the `@stable`-editing-protocol entry for this change).
+
+## lyric-web Undertow mTLS ships on JVM — client-CA `TrustManager` + XNIO `SSL_CLIENT_AUTH_MODE` (2026-08-27)
+
+`Web.serveTls` on `--target jvm` now supports mutual TLS end to end,
+closing #6017 (docs/61 §6.3 phase 2.3). `Std.HttpServer`'s JVM kernel
+(`_kernel_jvm/http_server.l`) gains `serverSslContextFromConfigMtls(
+identity, minVersion, clientCa): ServerSslContext` — a sibling to the
+existing non-mTLS `serverSslContextFromConfig` — which builds a
+trust-only `KeyStore` holding `clientCa` and wires it into the server
+`SSLContext` via a `TrustManagerFactory`, reusing the same
+`java.lang.reflect`-bridged `makeTypedArray1` idiom the existing
+`KeyManager[]` construction already uses for the new `TrustManager[]`.
+lyric-web's Undertow kernel (`src/_kernel/jvm/web_kernel.l`) picks that
+constructor when `tls.clientCa` is set and additionally calls
+`Undertow.Builder.setSocketOption(Options.SSL_CLIENT_AUTH_MODE, mode)`
+— `REQUIRED` when `tls.requireClientCert`, `REQUESTED` otherwise. `Web`'s
+jvm `serveTls` (`src/web.l`) narrows its up-front rejection to the one
+remaining genuine misconfiguration (`requireClientCert` with no
+`clientCa`), mirroring the dotnet kernel's `InvalidConfig` guard.
+
+Verified end-to-end by `tests/jvm_server_smoke.l`: a real Undertow mTLS
+listener accepts a client presenting a cert signed by the configured CA
+(`MTLS-ACCEPT-SELFCHECK: PASS`) and rejects a client presenting an
+unrelated self-signed cert at the TLS handshake
+(`MTLS-REJECT-SELFCHECK: PASS`, the same self-check name previously used
+for the up-front rejection — now proving real mTLS instead); the
+narrowed misconfiguration guard gets its own
+`MTLS-MISCONFIG-SELFCHECK: PASS`. All wired into the `compiler-self-tests-jvm`
+CI job's existing "lyric-web Undertow smoke on JVM" step.
+
+**Related:** `docs/03-decision-log.md` D-progress-805; #6017, #5881,
+#5874, D-progress-698 (the phase-2.2 shipment this extends).

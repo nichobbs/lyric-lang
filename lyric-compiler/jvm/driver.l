@@ -38,6 +38,30 @@ pub record BuiltClass {
 }
 
 pub func writeJarFromClasses(req: in BuildRequest, classes: in List[BuiltClass]): Bool {
+  val noNames: List[String] = newList()
+  val noDatas: List[List[Byte]] = newList()
+  writeJarFromClassesWithResources(req, classes, noNames, noDatas)
+}
+
+// Like `writeJarFromClasses`, but also stores extra raw resource entries —
+// e.g. `Lyric.Contract.<Pkg>` metadata (#4994) — alongside the class files.
+// `extraNames[i]` / `extraDatas[i]` are parallel (same count): a ZIP entry
+// name and its raw byte content. Plain parallel lists rather than a
+// `Jvm.Zip.ZipEntry` list: passing that record across the `Jvm.Bridge` →
+// `Jvm.Driver` boundary hit a cross-file nominal-type-identity mismatch
+// (`Jvm.Bridge` also imports `Jvm.AutoFfi`, which imports `Jvm.ZipReader` —
+// a DIFFERENT, same-named `ZipEntry` record — and aliasing the import at
+// the `Jvm.Bridge` call site did not resolve the ambiguity the type checker
+// saw at this call). A separate entry point rather than widening
+// `writeJarFromClasses` itself: that function has ~100 direct self-test
+// call sites across `jvm/self_test_b*.l`, none of which need resource
+// embedding.
+pub func writeJarFromClassesWithResources(
+  req: in BuildRequest,
+  classes: in List[BuiltClass],
+  extraNames: in List[String],
+  extraDatas: in List[List[Byte]],
+): Bool {
   val meta = PackageMeta(
     packageName = req.packageName,
     mainClass = req.mainClass,
@@ -55,6 +79,12 @@ pub func writeJarFromClasses(req: in BuildRequest, classes: in List[BuiltClass])
     val bc = classes[i]
     jarEntries.add(ZipEntry(name = bc.binaryName + ".class", data = bc.bytes))
     i = i + 1
+  }
+
+  var ei = 0
+  while ei < extraNames.count {
+    jarEntries.add(ZipEntry(name = extraNames[ei], data = extraDatas[ei]))
+    ei = ei + 1
   }
 
   val jarBytes = buildJar(jarEntries)
