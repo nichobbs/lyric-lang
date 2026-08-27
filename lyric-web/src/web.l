@@ -1415,9 +1415,10 @@ pub func serve(router: in Router, host: in String, port: in Int): Unit
 /// returned when the HTTPS listener cannot be brought up — on `dotnet`, an
 /// invalid TLS configuration (a mutual-TLS misconfiguration:
 /// `requireClientCert` with no `clientCa`) or a bind failure surfaced by
-/// `Std.HttpServer.startListenerTls`; on `jvm`, a mutual-TLS request
-/// (`requireClientCert`/`clientCa`), which the Undertow listener does not yet
-/// support (issue #6017).  Since phase 3.4 (issue #5885) `dotnet` server TLS
+/// `Std.HttpServer.startListenerTls`; on `jvm`, the same mutual-TLS
+/// misconfiguration (`requireClientCert` with no `clientCa`) — a valid mTLS
+/// or non-mTLS config is fully supported by the Undertow listener since
+/// issue #6017.  Since phase 3.4 (issue #5885) `dotnet` server TLS
 /// is real (the sans-IO `Std.HttpEngine` + `Std.TcpHost`/`SslStream`
 /// transport replaced `HttpListener`), so the "unsupported on dotnet at all"
 /// state is gone; non-mTLS and mTLS both serve there.  The case is named
@@ -1569,21 +1570,29 @@ pub func serveTls(
   return Ok(value = ())
 }
 
-/// jvm: rejects mutual-TLS configs with a typed `ServerTlsUnsupported`
-/// (naming issue #6017), then delegates non-mTLS serving to
+/// jvm: mutual TLS is fully supported (issue #6017): `tls.clientCa` pins a
+/// client-CA `TrustManager` onto the Undertow listener's `SSLContext` and
+/// `tls.requireClientCert` drives Undertow's XNIO `SSL_CLIENT_AUTH_MODE`
+/// socket option (`REQUIRED` when set, `REQUESTED` — optional — when
+/// `clientCa` is configured without `requireClientCert`).  Only one
+/// misconfiguration is rejected up front, with a typed
+/// `ServerTlsUnsupported`: `requireClientCert` set with no `clientCa` to
+/// pin trust to, mirroring the `dotnet` kernel's `InvalidConfig` guard
+/// (`_kernel/http_server.l`).  A valid config delegates entirely to
 /// `Web.Kernel.Runtime.serveTls` — an Undertow HTTPS listener with
 /// `ENABLE_HTTP2` (h2 via ALPN) built from `tls` — which blocks forever once
 /// bound, so the `Ok(())` return is unreachable in normal operation.
 ///
-/// The mTLS check lives HERE (not in the kernel) on purpose: the kernel's
-/// `serveTls` returns `Unit`, so this function never `match`es a
-/// `Result[_, Std.HttpServer.TlsListenError]` from inside a function returning
-/// `Result[_, ServeTlsError]`.  That cross-error-type nested match miscompiles
-/// on `--target jvm` — the backend casts the inner `Err` payload
-/// (`TlsListenError.NotSupportedOnTarget`) to the OUTER error type
-/// (`Web.ServeTlsError`) and throws `ClassCastException` at runtime (the #5903
-/// global-case-table family; verified via the mTLS-rejection self-check in
-/// `tests/jvm_server_smoke.l`).  Reading `tls`'s fields and matching
+/// The misconfiguration check lives HERE (not in the kernel) on purpose:
+/// the kernel's `serveTls` returns `Unit`, so this function never `match`es
+/// a `Result[_, Std.HttpServer.TlsListenError]` from inside a function
+/// returning `Result[_, ServeTlsError]`.  That cross-error-type nested
+/// match miscompiles on `--target jvm` — the backend casts the inner `Err`
+/// payload to the OUTER error type (`Web.ServeTlsError`) and throws
+/// `ClassCastException` at runtime (the #5903 global-case-table family;
+/// previously verified via the mTLS-rejection self-check in
+/// `tests/jvm_server_smoke.l`, now an end-to-end mTLS accept/reject
+/// self-check instead).  Reading `tls`'s fields and matching
 /// `Std.Core.Option` here is safe — only cross-package *user*-union case
 /// matching hits the bug.
 @stable(since = "0.3")
@@ -1595,14 +1604,12 @@ pub func serveTls(
   requires: port >= 1
   requires: port <= 65535
 {
-  val mtlsRequested = tls.requireClientCert or match tls.clientCa { case Some(_) -> true; case None -> false }
-  if mtlsRequested {
+  val hasClientCa = match tls.clientCa { case Some(_) -> true; case None -> false }
+  if tls.requireClientCert and not hasClientCa {
     return Err(
       error = ServerTlsUnsupported(
-        message = "mutual TLS (requireClientCert / clientCa) is not yet supported by lyric-web's " +
-          "Undertow HTTPS listener: it needs a client-CA TrustManager on the SSLContext plus Undertow's " +
-          "XNIO SSL_CLIENT_AUTH_MODE socket option (tracked in #6017). Non-mTLS server TLS " +
-          "(identity + minVersion) is fully supported."
+        message = "requireClientCert is set but no clientCa is configured; mutual TLS must pin trust to a " +
+          "client CA"
       )
     )
   }

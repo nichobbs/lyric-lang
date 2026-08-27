@@ -59,6 +59,19 @@ extern type JUndertowOptions = "io.undertow.UndertowOptions"
 
 extern type JBoolean = "java.lang.Boolean"
 
+// Mutual-TLS client-auth wiring (docs/61 §6.3, phase 2.3 of epic #5874,
+// issue #6017).  `Options.SSL_CLIENT_AUTH_MODE` is an `org.xnio.Option`
+// static field (same auto-FFI static-field-read idiom as
+// `UndertowOptions.ENABLE_HTTP2` above) set via
+// `Undertow.Builder.setSocketOption` — the XNIO *socket*-option setter,
+// distinct from `setServerOption` above (a worker/server-level XNIO
+// option); `SSL_CLIENT_AUTH_MODE` is specifically a per-listener socket
+// option in Undertow's own examples.  `SslClientAuthMode.REQUIRED`/
+// `REQUESTED` are likewise `org.xnio` static fields.
+extern type JXnioOptions = "org.xnio.Options"
+
+extern type JSslClientAuthMode = "org.xnio.SslClientAuthMode"
+
 extern type JHttpServerExchange = "io.undertow.server.HttpServerExchange"
 
 extern type JHeaderMap = "io.undertow.util.HeaderMap"
@@ -236,36 +249,56 @@ pub func serve(host: in String, port: in Int, router: in Web.Router): Unit
 /// exactly when TLS is — docs/61 §5.2, decision 8).
 ///
 /// The server `SSLContext` is built by reusing
-/// `Std.HttpServer.serverSslContextFromConfig` — the same
-/// `KeyManagerFactory`-backed context construction the JVM
-/// `Std.HttpServer.startListenerTls` kernel uses — rather than re-declaring
-/// the whole `KeyStore` / `KeyManagerFactory` / reflection extern boundary a
-/// second time.  `tls.minVersion` restricts the negotiated protocol range;
-/// `tls.identity` supplies the server certificate + key.
+/// `Std.HttpServer.serverSslContextFromConfig` (non-mTLS) or
+/// `Std.HttpServer.serverSslContextFromConfigMtls` (`tls.clientCa` set) —
+/// the same `KeyManagerFactory`/`TrustManagerFactory`-backed context
+/// construction the JVM `Std.HttpServer` kernel exposes — rather than
+/// re-declaring the whole `KeyStore` / reflection extern boundary a second
+/// time.  `tls.minVersion` restricts the negotiated protocol range;
+/// `tls.identity` supplies the server certificate + key.  When `tls.clientCa`
+/// is set, the listener additionally requests client certs via Undertow's
+/// XNIO `SSL_CLIENT_AUTH_MODE` socket option — `REQUIRED` when
+/// `tls.requireClientCert`, `REQUESTED` (optional) otherwise — closing
+/// issue #6017 (mutual TLS on the Undertow listener).
 ///
 /// Returns `Unit` (blocks forever, like the plaintext `serve`), NOT a
-/// `Result`: the caller (`Web.serveTls`) rejects mutual-TLS configs BEFORE
-/// calling here, so this path always has a servable non-mTLS config and
-/// never needs to report a typed error.  Keeping the return type `Unit`
-/// avoids a `Web`-layer `match` over a `Result[_, Std.HttpServer error]`
-/// nested inside a function returning `Result[_, Web.ServeTlsError]`, which
-/// the JVM backend miscompiles to a `ClassCastException` (it casts the inner
+/// `Result`: the caller (`Web.serveTls`) rejects an invalid mTLS
+/// configuration (`requireClientCert` with no `clientCa`) BEFORE calling
+/// here, so this path always has a servable config and never needs to
+/// report a typed error.  Keeping the return type `Unit` avoids a
+/// `Web`-layer `match` over a `Result[_, Std.HttpServer error]` nested
+/// inside a function returning `Result[_, Web.ServeTlsError]`, which the
+/// JVM backend miscompiles to a `ClassCastException` (it casts the inner
 /// `Err` payload to the outer error type — the #5903 family; see
-/// `Web.serveTls`).  This kernel therefore assumes `tls` is non-mTLS
-/// (`serverSslContextFromConfig` builds an identity-only context regardless);
-/// `Web.serveTls` enforces that invariant.
+/// `Web.serveTls`).  This kernel therefore assumes `tls` is a valid
+/// configuration; `Web.serveTls` enforces that invariant.  Matching
+/// `tls.clientCa` (a `Std.Core.Option`, not a cross-package user union) is
+/// safe here — only cross-package *user*-union case matching hits #5903.
 @stable(since = "0.3")
 pub func serveTls(host: in String, port: in Int, tls: in TlsServerConfig, router: in Web.Router): Unit
   requires: host.length > 0
   requires: port >= 1
   requires: port <= 65535
 {
-  val serverCtx = serverSslContextFromConfig(tls.identity, tls.minVersion)
-  val sslContext: JSSLContext = serverCtx.rawContext()
+  val sslContext: JSSLContext = match tls.clientCa {
+    case Some(ca) -> serverSslContextFromConfigMtls(tls.identity, tls.minVersion, ca).rawContext()
+    case None -> serverSslContextFromConfig(tls.identity, tls.minVersion).rawContext()
+  }
   val handler: JHttpHandler = LyricUndertowHandler(router = router)
   val builder = JUndertow.builder()
   val _listener = builder.addHttpsListener(port, host, sslContext)
   val _http2 = builder.setServerOption(JUndertowOptions.ENABLE_HTTP2, JBoolean.TRUE)
+  match tls.clientCa {
+    case Some(_) -> {
+      val authMode: JSslClientAuthMode = if tls.requireClientCert {
+        JSslClientAuthMode.REQUIRED
+      } else {
+        JSslClientAuthMode.REQUESTED
+      }
+      val _authOpt = builder.setSocketOption(JXnioOptions.SSL_CLIENT_AUTH_MODE, authMode)
+    }
+    case None -> ()
+  }
   val _handler = builder.setHandler(handler)
   val server: JUndertow = builder.build()
   server.start()
