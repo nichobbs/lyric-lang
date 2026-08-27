@@ -1616,6 +1616,15 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"config-closure self-test ran: config_closure_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/config_closure_self_test.l"
 
+      # Tuple + bare None type-argument self-test (#4965, MSIL-only — a
+      # nullary case like `None` nested in a tuple literal erased its
+      # generic type argument instead of reading the enclosing binding's
+      # per-element expected type; see tuple_none_typearg_self_test.l).
+      - name: tuple None type-arg self-test (native lyric test, dotnet)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"tuple-none-typearg self-test ran: tuple_none_typearg_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/tuple_none_typearg_self_test.l"
+
       # Slice-ops self-test (#5244).  `slice[T].append`/`.concat`/`.slice` —
       # the compiler's own documented canonical `slice[T]` example
       # (docs/agent/reference.md) — threw "unsupported method" at runtime on

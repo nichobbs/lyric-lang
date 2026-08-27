@@ -371,6 +371,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/test_synth_self_test.l \
 	lyric-compiler/lyric/toarray_array_abi_self_test.l \
 	lyric-compiler/lyric/try_catch_expr_self_test.l \
+	lyric-compiler/lyric/tuple_none_typearg_self_test.l \
 	lyric-compiler/lyric/typechecker_extern_dedup_self_test.l \
 	lyric-compiler/lyric/typechecker_self_test.l \
 	lyric-compiler/lyric/typed_ffi_delegate_self_test.l \

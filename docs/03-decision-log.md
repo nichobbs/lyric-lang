@@ -32438,3 +32438,60 @@ env-override test) is left in place — reverting it is a `lyric-web`-scoped
 follow-up, out of scope for this compiler-only fix.
 
 **Related:** #6096, #5361, D-progress-624, D-progress-701, #5885.
+
+---
+
+## D-progress-803 — MSIL: `ETuple` codegen threads per-element expected type into `collExpect`/`contextHintTyArgs`, fixing bare `None` losing its type argument inside a tuple literal (#4965)
+
+**Context.** #4965 (originally surfaced as D-progress-555, against a
+single call site that has since been patched): a bare `None` literal
+constructed inside a tuple literal loses its generic type argument, so
+`val t: (Int, Option[String]) = (1, None)` erases the `None` element to
+`Option_None<object>` instead of the annotated `Option[String]`. A later
+`match`/cast against the tuple's declared type then fails to match its
+own `None` arm (or throws `InvalidCastException`).
+
+**Root cause.** `lowerExprMsil`'s `ETuple` arm
+(`lyric-compiler/msil/codegen.l`) lowered each element with a bare
+recursive `lowerExprMsil` call, never pushing any expected-type context —
+unlike the sibling `EList` arm, which pushes each element's declared type
+onto `collExpect` before lowering it. The enclosing binding/return/field/
+call-arg annotation logic (e.g. `LBVal`'s handling of `val t: (...) = ...`)
+already pushes the *whole* tuple annotation (`MTuple(elems=[...])`) onto
+`collExpect` before lowering the tuple literal — `ETuple` simply never read
+it back out per element. Confirmed via the type checker too: `ETuple`
+inference (`typechecker_exprs.l`) never propagates an expected element
+type into tuple elements either, so a bare `None` element always infers as
+`Option[TyError]` — `typeEquiv` treats `TyError` as a wildcard, so no
+diagnostic catches the gap at type-check time; it's a pure codegen
+soundness hole.
+
+**Change.** `ETuple`'s MSIL lowering now reads `collExpectTop(fctx)`; when
+it holds an `MTuple` with matching arity, each element is lowered with its
+own expected type pushed through both `collExpect` (in case the element is
+itself a nested collection/tuple) and `contextHintTyArgs` (via
+`pushAnnoHintTyArgs`, so a nullary case like `None` constructs the closed
+generic instantiation), mirroring `EList`'s per-element handling exactly.
+Falls back to the prior untyped lowering when no matching tuple
+expectation is in scope (e.g. an unannotated `(1, None)` with no enclosing
+context) — unchanged behavior there, since there is nothing to propagate.
+
+**Verification.** New regression test
+`lyric-compiler/lyric/tuple_none_typearg_self_test.l` (`@test_module`,
+`--target dotnet` — JVM erases generic type arguments entirely, so it has
+no `Option_None<T>` reified class to mis-instantiate and is unaffected):
+a bare `None` element, a `Some(...)` element, and a `None` nested two
+tuple-levels deep, all under an annotated `val` binding. All three pass.
+Spot-checked for regressions against `pattern_lowering_self_test.l`
+(tuple destructuring), `hof_type_propagation_self_test.l`,
+`closure_zero_overhead_self_test.l`, `func_val_local_rettype_self_test.l`,
+and `extern_option_self_test.l` — all green, no regressions.
+
+**Boundary.** Only the `val`/return/field/call-arg annotation path is
+covered (the paths that already push a tuple's `MTuple` annotation onto
+`collExpect`); an unannotated tuple literal with no surrounding expected
+type still erases nullary cases the same way it always has (there being no
+context to propagate), matching `EList`'s equivalent fallback.
+
+**Related:** #4965, D-progress-555 (the original, narrower single-call-site
+patch), PR #4955.

@@ -8745,11 +8745,36 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       // destructuring can narrow each element to its concrete type even when the
       // binding carries no annotation; MTuple itself erases to object (0x1C) in
       // every signature, so the produced value is a plain object reference.
+      //
+      // The enclosing binding/return/field/call-arg annotation (when the
+      // expected type is itself a tuple of matching arity) is pushed onto
+      // `collExpect` by the caller — same mechanism EList consults. Read it
+      // here and thread each element's own expected type down as BOTH a
+      // collExpect and a contextHintTyArgs scope, mirroring EList's per-
+      // element `pushCollExpect`/`pushAnnoHintTyArgs` handling. Without this
+      // a bare `None`/`Some(..)` tuple element erases its generic type
+      // argument to `object` (`Option_None<object>`) instead of the
+      // declared `Option[T]`, so a later `match`/cast against the tuple's
+      // declared type throws `InvalidCastException` (#4965).
+      val eteExpectElems: List[MsilType] = match collExpectTop(fctx) {
+        case MTuple(elems) -> if elems.count == exprs.count { elems } else { newList() }
+        case _ -> newList()
+      }
       val eteElemTys: List[MsilType] = newList()
       var etei = 0
       while etei < exprs.count {
         insns.add(MDup)
-        val eteTy = lowerExprMsil(cctx, fctx, insns, exprs[etei])
+        val eteTy = if eteExpectElems.count > 0 {
+          val eteElemExpect = eteExpectElems[etei]
+          val eteSavedHint = pushAnnoHintTyArgs(fctx, eteElemExpect)
+          pushCollExpect(fctx, eteElemExpect)
+          val t = lowerExprMsil(cctx, fctx, insns, exprs[etei])
+          popCollExpect(fctx)
+          restoreHintTyArgs(fctx, eteSavedHint)
+          t
+        } else {
+          lowerExprMsil(cctx, fctx, insns, exprs[etei])
+        }
         eteElemTys.add(eteTy)
         boxIfNeededMsil(cctx, insns, eteTy)
         insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
