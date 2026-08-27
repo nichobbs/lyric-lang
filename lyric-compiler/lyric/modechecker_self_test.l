@@ -938,3 +938,48 @@ test "a write reaching a record from a different FILE in the same build marks th
   val unsafeSet = lockSafetyMulti(srcs)
   assertTrue(unsafeSet.containsKey("pos"), "cross-file write to Other.Cursor.pos: unsafe to lock")
 }
+
+// #6641: `walkFileForFieldWriteChecks` (shared by V0015's diagnostic pass and
+// this whole-build audit) had no traversal case for `IInterface` — an
+// interface DEFAULT method's body (`IMFunc`, distinct from a body-less
+// `IMSig` signature) was never walked at all, so an unchecked write inside a
+// default method was silently treated as safe to lock even though the
+// default body compiles into real, executed code for any implementing
+// record.  This uses a `val`-bound-receiver write (the same shape as the
+// #6596 scenario 2 test above), not a `self.field` write: the language
+// reference (§2.12) rejects `self.<field>` access inside a default method
+// body at compile time (T0118, `Self` owns no fields there) — a real
+// default-method body can still reach an ordinary record's field through
+// any other unchecked shape (a `val`-bound local, a nested chain, an
+// `out`/`inout` call argument), exactly the class this audit exists to
+// catch.
+test "a field written only through a val-bound receiver inside an interface default method marks it unsafe to lock (#6641)" {
+  val src = "package P\nrecord Cursor {\n  pos: Int\n}\ninterface Helper {\n  func bump(): Int {\n    val c = Cursor(pos = 0)\n    c.pos = 1\n    c.pos\n  }\n}\n"
+  val unsafeSet = lockSafety(src)
+  assertTrue(unsafeSet.containsKey("pos"), "interface default-method val-bound write to Cursor.pos: unsafe to lock")
+}
+
+// A body-less interface signature (`IMSig`, no default) carries no code to
+// walk at all — must not spuriously mark anything unsafe.
+test "an interface with only a body-less signature does not mark any field unsafe to lock (#6641)" {
+  val src = "package P\nrecord Cursor2 {\n  pos: Int\n}\ninterface Helper2 {\n  func bump(): Unit\n}\n"
+  val unsafeSet = lockSafety(src)
+  assertTrue(not (unsafeSet.containsKey("pos")), "no default body to walk: safe to lock")
+}
+
+// #6641: the same walker had no traversal case for `ITest` — a `@test_module`
+// file's `test "..." { … }` body, on the file's RAW pre-`Lyric.TestSynth`
+// AST, was never walked either. `Lyric.TestSynth.synthesize` always rewrites
+// every `ITest` into a real `func __lyric_test_<i>` before the MSIL/JVM
+// bridges parse the source `computeFieldLockSafetyForBuild` runs against, so
+// an executed test's write is in practice caught by the (pre-existing)
+// `IFunc` case post-synthesis — but `checkImmutableFieldWrites`'s V0015 pass
+// (and any other caller of the shared walker) sees the RAW `ITest` AST
+// directly, where this case was the only thing standing between a
+// self-contained regression here and a silent gap in every other consumer of
+// this shared traversal.
+test "a field written only inside a test block body marks it unsafe to lock (#6641)" {
+  val src = "@test_module\npackage P\nrecord Cursor {\n  pos: Int\n}\ntest \"bumps cursor\" {\n  val c = Cursor(pos = 0)\n  c.pos = 1\n}\n"
+  val unsafeSet = lockSafety(src)
+  assertTrue(unsafeSet.containsKey("pos"), "test-block-only write to Cursor.pos: unsafe to lock")
+}

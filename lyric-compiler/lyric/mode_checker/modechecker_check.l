@@ -3257,7 +3257,15 @@ func checkFuncForFieldWrite(
   match fn.body {
     case None -> {
     }
-    case Some(body) -> checkFuncBodyForFieldWrite(recordFields, diag, fn.params, body, selfType, unsafeFieldNames, funcSigs)
+    case Some(body) -> checkFuncBodyForFieldWrite(
+      recordFields,
+      diag,
+      fn.params,
+      body,
+      selfType,
+      unsafeFieldNames,
+      funcSigs
+    )
   }
 }
 
@@ -3303,6 +3311,28 @@ func walkFileForFieldWriteChecks(
           mi = mi + 1
         }
       }
+      // #6641: `IMFunc`'s `FunctionDecl.body` carries an interface DEFAULT
+      // method's real body (a body-less `IMSig` signature has no such body
+      // to walk).  `Self` isn't a known in-file record here — whichever type
+      // implements the interface supplies the concrete receiver — so this
+      // passes `noSelf` exactly like the top-level `IFunc` arm above: an
+      // unresolved `self.field = …` inside a default method then falls
+      // through `checkFieldWriteTarget`'s `ESelf` / `None`-`selfType` arm,
+      // which conservatively marks the field name unsafe-to-lock rather than
+      // silently doing nothing (mirrors `checkSpawnConsumption`'s own
+      // `IInterface` arm a few hundred lines above, the established pattern
+      // for walking interface default-method bodies in this file).
+      case IInterface(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn, noSelf, unsafeFieldNames, funcSigs)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
       case IImpl(decl) -> {
         val implTypeName = fieldWriteSimpleTypeName(decl.target)
         val selfTy: Option[String] = if implTypeName == "" { None } else { Some(value = implTypeName) }
@@ -3322,7 +3352,14 @@ func walkFileForFieldWriteChecks(
         while mi < decl.members.count {
           match decl.members[mi] {
             case PMFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn, selfTy, unsafeFieldNames, funcSigs)
-            case PMEntry(entryDecl) -> checkEntryForFieldWrite(recordFields, diag, entryDecl, selfTy, unsafeFieldNames, funcSigs)
+            case PMEntry(entryDecl) -> checkEntryForFieldWrite(
+              recordFields,
+              diag,
+              entryDecl,
+              selfTy,
+              unsafeFieldNames,
+              funcSigs
+            )
             case _ -> {
             }
           }
@@ -3339,9 +3376,38 @@ func walkFileForFieldWriteChecks(
         val noSelfForAspect: Option[String] = None
         val noParamsForAspect: List[Param] = newList()
         match decl.around {
-          case Some(around) -> checkFuncBodyForFieldWrite(recordFields, diag, noParamsForAspect, FBBlock(block = around.body), noSelfForAspect, unsafeFieldNames, funcSigs)
+          case Some(around) -> checkFuncBodyForFieldWrite(
+            recordFields,
+            diag,
+            noParamsForAspect,
+            FBBlock(block = around.body),
+            noSelfForAspect,
+            unsafeFieldNames,
+            funcSigs
+          )
           case None -> ()
         }
+      }
+      // #6641: a `@test_module` file's `test "..." { … }` body executes as
+      // real code once `Lyric.TestSynth` rewrites it into a synthesised
+      // `func` — but this walker also runs (via `checkImmutableFieldWrites`)
+      // on a file's RAW, pre-synthesis AST, where the body is still an
+      // `ITest` item rather than an `IFunc`.  No enclosing function/record
+      // (`noSelf`) and no parameters, same shape as the `IAspect` arm above;
+      // mirrors `checkSpawnConsumption`'s own `ITest` arm for the same file's
+      // analogous whole-file walk.
+      case ITest(decl) -> {
+        val noSelfForTest: Option[String] = None
+        val noParamsForTest: List[Param] = newList()
+        checkFuncBodyForFieldWrite(
+          recordFields,
+          diag,
+          noParamsForTest,
+          FBBlock(block = decl.body),
+          noSelfForTest,
+          unsafeFieldNames,
+          funcSigs
+        )
       }
       case _ -> {
       }
