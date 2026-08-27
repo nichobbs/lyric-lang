@@ -32063,10 +32063,10 @@ sharper version of D-progress-543's exception, not a new one: CI (which
 does perform a real `make lyric` from-source build) is this class of
 change's only verification path from this environment.
 
-**Follow-up (#6104, not shipped by this entry).** The `Std.HttpServer`
-native twin itself (`_kernel_native/http_server.l`) hit two further,
-architectural native-backend gaps while being built on top of these two
-prerequisites: native `String` has no `.trim`/`.toLower`/`.indexOf`/
+**Follow-up (#6104, not shipped by this entry).** Drafting the
+`Std.HttpServer` native twin itself (`_kernel_native/http_server.l`) on
+top of these two prerequisites hit two further, architectural
+native-backend gaps: native `String` has no `.trim`/`.toLower`/`.indexOf`/
 `.startsWith`/`.contains`/`.endsWith` (only `.toString()`/`.substring()`),
 and a bare cross-package enum-case value reference (`val v: HttpVersion =
 Http1_1`) fails to resolve at the point codegen tries to disambiguate it,
@@ -32074,8 +32074,12 @@ because enums erase to a bare `NI32` with no distinguishing type by then.
 Both block `Std.HttpEngine`/`Std.String` from compiling for `--target
 native` at all, independent of this entry's two fixes. Neither is
 scopeable around; both are tracked as follow-up issues (linked from
-native/plan/08-work-items.md's N9.3 entry) rather than shipped here or
-worked around with a stub.
+native/plan/08-work-items.md's N9.3 entry). The draft kernel could not be
+made to compile against these gaps and was **not committed** — neither
+`_kernel_native/http_server.l` nor a self-test for it exist anywhere in
+this repository (not in this PR, not on `main`); a future contributor
+picking up #6104/N9.3 starts from zero on the kernel itself once #6588
+and #6589 are resolved.
 
 **Related:** #6104, `native/plan/08-work-items.md` N9.3, docs/61 §7 item 5,
 D-progress-543 (the sandbox-exception precedent this sharpens).
