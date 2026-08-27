@@ -46,9 +46,9 @@
 //! `?` in stacked operand position, run it through
 //! `Lyric.Propagate.lowerPropagateFile` (the exact pass the compiler runs
 //! on every file, hoist included), and assert the entry body gained the
-//! hoisted `val` and the call argument became a bare path — the SAME
-//! structural assertion `propagate_hoist_self_test.l`'s runtime tests make
-//! by executing, made here by inspecting the post-pass AST.
+//! hoisted `val`(s) and the call receiver/argument became bare paths — the
+//! SAME structural assertion `propagate_hoist_self_test.l`'s runtime tests
+//! make by executing, made here by inspecting the post-pass AST.
 //!
 //! Run in CI via native `lyric test --target dotnet` ONLY (model:
 //! `alias_rewriter_self_test.l`): importing `Lyric.Lexer`/`Lyric.Parser`/
@@ -95,15 +95,48 @@ test "protected-type entry: ? in a stacked method-call arg gets hoisted (AST pin
               // statements: `items.add(decode(s)?)` then `Ok(())`. Hoisted,
               // a fresh `val` lands before the call, matching every
               // plain-`func` case in `propagate_hoist_self_test.l`.
-              assertEqualInt(blk.statements.count, 3, "entry body gains a hoisted val ahead of the original 2 statements")
+              //
+              // The call's own receiver (`items`, a bare implicit-self
+              // field read) ALSO gets its own hoisted `val` ahead of the
+              // hazard's, since #6684 made `Lyric.HoistEngine` recognize a
+              // bare implicit-self field the same way it already treated
+              // `self.field` (#6600): `hzHoistSpine`'s `ECall` case binds a
+              // mutable call receiver whenever the call has a hazardous
+              // argument (hoist_engine.l ~line 907), regardless of hazard
+              // kind, so this fires for propagate the same as it would for
+              // await even though `?` never suspends and so never actually
+              // risks a stale receiver read here. That's the same
+              // documented "costs a spurious extra temp bind... which is
+              // the safe direction to err" tradeoff `hzNameLikeMutable`'s
+              // own doc comment already accepts elsewhere, so the pin
+              // widens to 4 statements: [0] the receiver hoist, [1] the
+              // `decode(s)?` hoist, [2] the rewritten call, [3] `Ok(())`.
+              assertEqualInt(
+                blk.statements.count,
+                4,
+                "entry body gains a hoisted receiver val AND a hoisted arg val ahead of the original 2 statements (#6684)"
+              )
               match blk.statements[0].kind {
-                case SLocal(_) -> assertTrue(true, "first statement is the hoisted val binding")
-                case _ -> assertTrue(false, "expected the hoisted val as the first statement")
+                case SLocal(_) -> assertTrue(true, "first statement is the hoisted receiver val binding")
+                case _ -> assertTrue(false, "expected the hoisted receiver val as the first statement")
               }
               match blk.statements[1].kind {
+                case SLocal(_) -> assertTrue(true, "second statement is the hoisted arg val binding")
+                case _ -> assertTrue(false, "expected the hoisted arg val as the second statement")
+              }
+              match blk.statements[2].kind {
                 case SExpr(e) -> {
                   match e.kind {
-                    case ECall(_, args) -> {
+                    case ECall(fn, args) -> {
+                      match fn.kind {
+                        case EMember(recv, _) -> {
+                          match recv.kind {
+                            case EPath(_) -> assertTrue(true, "call receiver is now a bare path reading the hoisted val")
+                            case _ -> assertTrue(false, "call receiver still holds the original items reference")
+                          }
+                        }
+                        case _ -> assertTrue(false, "expected the call callee to remain an EMember (items.add)")
+                      }
                       assertEqualInt(args.count, 1, "items.add still has exactly one argument")
                       match args[0] {
                         case CAPositional(v) -> {
@@ -115,10 +148,14 @@ test "protected-type entry: ? in a stacked method-call arg gets hoisted (AST pin
                         case CANamed(_, _, _) -> assertTrue(false, "unexpected named argument shape")
                       }
                     }
-                    case _ -> assertTrue(false, "expected the items.add call as the second statement's expr")
+                    case _ -> assertTrue(false, "expected the items.add call as the third statement's expr")
                   }
                 }
-                case _ -> assertTrue(false, "expected the original call as the second statement")
+                case _ -> assertTrue(false, "expected the original call as the third statement")
+              }
+              match blk.statements[3].kind {
+                case SExpr(_) -> assertTrue(true, "fourth statement is the original Ok(()) trailing expression")
+                case _ -> assertTrue(false, "expected Ok(()) as the fourth statement")
               }
             }
             case FBExpr(_) -> assertTrue(false, "expected an FBBlock entry body")
