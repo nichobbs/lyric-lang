@@ -6601,8 +6601,22 @@ jobs:
           fi
           # Build the dependency libraries bottom-up so each example's
           # restored path deps resolve to an existing bin/<assembly>.dll.
+          # lyric-otel/lyric-db/lyric-web's plain `build` auto-resolves their
+          # own NuGet deps here (their manifests hit `lyric build`'s
+          # lyric.lock-missing auto-restore path). lyric-grpc's does not --
+          # confirmed on a real run (#6582) that its build fails here the
+          # same way it does everywhere else without an explicit restore
+          # first, so give it the same treatment as the "Test multi-package
+          # examples" / dedicated "Run tests (grpc)" steps.
           libs=(lyric-logging lyric-auth lyric-resilience lyric-otel lyric-db lyric-web lyric-health lyric-grpc)
           for lib in "${libs[@]}"; do
+            if [ "$lib" = "lyric-grpc" ]; then
+              echo "=== restore dependency $lib ==="
+              if ! "$lyric_bin" restore --manifest "$lib/lyric.toml"; then
+                echo "::error::failed to restore $lib NuGet dependencies"
+                exit 1
+              fi
+            fi
             echo "=== build dependency $lib ==="
             if ! "$lyric_bin" build --manifest "$lib/lyric.toml"; then
               echo "::error::failed to build example dependency $lib"
