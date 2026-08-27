@@ -426,6 +426,16 @@ pub record CodegenCtx {
   // — without spamming the warning once per impl.  See
   // `warnFfiIndexEmptyOnce` in `validateOneExternImplMsil`.
   ffiIndexEmptyWarned: List[Bool]
+  // Compile-time-detectable codegen errors (#4898): F0020–F0025 (external
+  // interface conformance + try-catch-as-expression Unit/value mismatch)
+  // append a positioned `Diagnostic` here instead of calling `panic`, so a
+  // genuine user-code error becomes a clean, recoverable build diagnostic
+  // rather than an escaped exception.  `codegenMPackage`'s caller
+  // (`Msil.Bridge`) checks this list immediately after codegen and aborts
+  // the build before lowering/writing any bytes when it holds an
+  // error-severity entry — see `Msil.Bridge.compileToMsilWithVersion` /
+  // `compileProjectToMsilWithRestoredAndVersion`.
+  diagnostics: List[Diagnostic]
   // Lambda / yield / extern-type support (Band 2, R6).
   tokActionCtor: Int  // System.Action::.ctor(object, native int)
   tokActionInvoke: Int  // System.Action::Invoke(): void
@@ -1950,6 +1960,7 @@ pub func newCodegenCtx(
     metadataParsedPaths = newList(),
     metadataParsedAssemblies = newList(),
     ffiIndexEmptyWarned = newList(),
+    diagnostics = newList(),
     tokActionCtor = tokActionCtor,
     tokActionInvoke = tokActionInvoke,
     tokStringGetChars = tokStringGetChars,
@@ -17444,14 +17455,16 @@ func lowerTryCatchExprMsil(
           }
           case _ -> {
             if not blockDivergesMsil(c.body) {
-              val pos = c.span.startPos
-              panic(
-                "F0025: " + toString(pos.line) + ":" + toString(pos.column) +
-                  ": try-catch used as an expression, but this catch arm yields Unit while the " +
-                  "try body (or an earlier catch arm) yields a value; the MSIL backend cannot " +
-                  "route an absent value through the result slot. Give the catch arm a trailing " +
-                  "value of the try body's type, or annotate the try-catch result type explicitly " +
-                  "(type-checker gap #2042)."
+              cctx.diagnostics.add(
+                errorDiagnostic(
+                  "F0025",
+                  "try-catch used as an expression, but this catch arm yields Unit while the " +
+                    "try body (or an earlier catch arm) yields a value; the MSIL backend cannot " +
+                    "route an absent value through the result slot. Give the catch arm a trailing " +
+                    "value of the try body's type, or annotate the try-catch result type explicitly " +
+                    "(type-checker gap #2042).",
+                  c.span
+                )
               )
             }
           }
@@ -31519,7 +31532,7 @@ func checkOneInterfaceMethodMsil(
   ifaceTypeArgs: in List[Mdr.SigType],
 ): Unit {
   match findImplFunctionDeclMsil(decl, ifaceMethod.name) {
-    case None -> panic("F0021: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: interface method '" + ifaceMethod.name + "' is not implemented. " + "Add `func " + ifaceMethod.name + "(…): …` to the impl block.")
+    case None -> cctx.diagnostics.add(errorDiagnostic("F0021", "`impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: interface method '" + ifaceMethod.name + "' is not implemented. " + "Add `func " + ifaceMethod.name + "(…): …` to the impl block.", decl.span))
     case Some(implFn) -> {
       // Substitute STVar against the iface's resolved type args.  For
       // non-generic ifaces this is a no-op (typeArgs is empty); for
@@ -31547,13 +31560,16 @@ func checkOneInterfaceMethodMsil(
           case Some(implSigs) -> {
             val implParamCount = implSigs.count - 1
             if implParamCount != substParams.count {
-              panic(
-                "F0022: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: method '" + ifaceMethod.name +
-                  "' takes " +
-                  toString(implParamCount) +
-                  " parameter(s) but the .NET interface declares " +
-                  toString(substParams.count) +
-                  "."
+              cctx.diagnostics.add(
+                errorDiagnostic(
+                  "F0022",
+                  "`impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: method '" + ifaceMethod.name + "' takes " +
+                    toString(implParamCount) +
+                    " parameter(s) but the .NET interface declares " +
+                    toString(substParams.count) +
+                    ".",
+                  implFn.span
+                )
               )
             } else {
               var pk = 0
@@ -31561,28 +31577,36 @@ func checkOneInterfaceMethodMsil(
                 val expected = substParams[pk]
                 val got = implSigs[pk]
                 if not sigTypesEqualMsil(expected, got) {
-                  panic(
-                    "F0022: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: method '" + ifaceMethod.name +
-                      "' parameter " +
-                      toString(pk + 1) +
-                      " has type " +
-                      renderSigForDiagMsil(got) +
-                      " but the .NET interface expects " +
-                      renderSigForDiagMsil(expected) +
-                      "."
+                  cctx.diagnostics.add(
+                    errorDiagnostic(
+                      "F0022",
+                      "`impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: method '" + ifaceMethod.name +
+                        "' parameter " +
+                        toString(pk + 1) +
+                        " has type " +
+                        renderSigForDiagMsil(got) +
+                        " but the .NET interface expects " +
+                        renderSigForDiagMsil(expected) +
+                        ".",
+                      implFn.span
+                    )
                   )
                 }
                 pk = pk + 1
               }
               val implRet = implSigs[implSigs.count - 1]
               if not sigTypesEqualMsil(substRet, implRet) {
-                panic(
-                  "F0023: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: method '" + ifaceMethod.name +
-                    "' returns " +
-                    renderSigForDiagMsil(implRet) +
-                    " but the .NET interface declares return type " +
-                    renderSigForDiagMsil(substRet) +
-                    "."
+                cctx.diagnostics.add(
+                  errorDiagnostic(
+                    "F0023",
+                    "`impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: method '" + ifaceMethod.name +
+                      "' returns " +
+                      renderSigForDiagMsil(implRet) +
+                      " but the .NET interface declares return type " +
+                      renderSigForDiagMsil(substRet) +
+                      ".",
+                    implFn.span
+                  )
                 )
               }
             }
@@ -31650,14 +31674,18 @@ func validateOneExternImplMsil(cctx: in CodegenCtx, decl: in ImplDecl, pkgName: 
       //     the user would only learn of the typo at first use as a CLR
       //     `TypeLoadException`; raise it at build time instead.
       if cctx.metadataTypeIndex.count > 0 {
-        panic(
-          "F0024: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: '" + ifaceFqn +
-            "' is not present in any reference-pack or restored-dependency " +
-            "assembly's TypeDef table.  Check the `extern type` FQN for typos " +
-            "(BCL convention: `Namespace.SimpleName\\`<arity>`, e.g. `System.IEquatable\\`1`).  " +
-            "Validation is silent-skipped only when no reference pack is loaded " +
-            "(SDK-less build); this build's index is populated, so a missing FQN " +
-            "is treated as a typo."
+        cctx.diagnostics.add(
+          errorDiagnostic(
+            "F0024",
+            "`impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: '" + ifaceFqn +
+              "' is not present in any reference-pack or restored-dependency " +
+              "assembly's TypeDef table.  Check the `extern type` FQN for typos " +
+              "(BCL convention: `Namespace.SimpleName\\`<arity>`, e.g. `System.IEquatable\\`1`).  " +
+              "Validation is silent-skipped only when no reference pack is loaded " +
+              "(SDK-less build); this build's index is populated, so a missing FQN " +
+              "is treated as a typo.",
+            decl.span
+          )
         )
       } else {
         warnFfiIndexEmptyOnceMsil(cctx)
@@ -31671,12 +31699,21 @@ func validateOneExternImplMsil(cctx: in CodegenCtx, decl: in ImplDecl, pkgName: 
         }
         case Some(insp) -> {
           if not insp.isInterface {
-            panic(
-              "F0020: `impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: '" + ifaceFqn +
-                "' resolves through `extern type` / `import extern` but its .NET metadata is " +
-                "not an interface (TypeAttributes.ClassSemanticsMask = 0). " +
-                "An `impl` block can only target a .NET interface."
+            cctx.diagnostics.add(
+              errorDiagnostic(
+                "F0020",
+                "`impl " + ifaceFqn + " for " + implTargetNameMsil(decl, pkgName) + "`: '" + ifaceFqn +
+                  "' resolves through `extern type` / `import extern` but its .NET metadata is " +
+                  "not an interface (TypeAttributes.ClassSemanticsMask = 0). " +
+                  "An `impl` block can only target a .NET interface.",
+                decl.span
+              )
             )
+            // The target isn't even a valid interface — walking its methods
+            // for F0021–F0023 below would compare against a meaningless slot
+            // list and pile on noise, so stop here (mirrors the panic's
+            // original abort-immediately behaviour without escaping).
+            return
           }
           // For closed generic interfaces, build the substitution table so the
           // F0021–F0023 pass can compare against the *substituted* iface sig

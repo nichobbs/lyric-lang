@@ -11,6 +11,7 @@ import Std.Core
 import Std.Collections
 import Std.File
 import Lyric.Lexer
+import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.Parser
 import Lyric.BuildDefines as BD
 import Lyric.TypeChecker
@@ -114,6 +115,16 @@ func seedResultTypeRefs(cctx: in CodegenCtx): Unit {
       case None -> ()
     }
   }
+}
+
+// #4898: prints any `cctx.diagnostics` accumulated by `codegenMPackage`
+// (F0020–F0025 — external interface conformance + try-catch-as-expression
+// Unit/value mismatch) and reports whether the build must abort.  Named
+// distinctly from `Lyric.DiagnosticUtil.diagReportAndAbort` per that
+// package's own guidance: a bridge that defined a same-named local
+// `reportAndAbort` would shadow the fully-qualified call and recurse.
+func abortOnCodegenDiagnosticsMsil(cctx: in CodegenCtx): Bool {
+  DiagUtil.diagReportAndAbort(cctx.diagnostics)
 }
 
 /// Variant of `compileToMsil` that accepts a `[package].version` string.
@@ -321,7 +332,17 @@ pub func compileToMsilWithVersion(
   // Containment into a printed T0119/T0120 diagnostic + structured
   // `EmitResult.diagnostics` entry happens one layer up, in
   // `Lyric.Emitter`'s `msilBridgePanicDiagnostic` boundary.
+  //
+  // #4898: F0020–F0025 (external interface conformance + try-catch-as-
+  // expression Unit/value mismatch) are a different case — genuine,
+  // compile-time-detectable user errors that `codegenMPackage` records on
+  // `cctx.diagnostics` instead of panicking.  Report and abort here, the
+  // same way the type-checker / mode-checker error lists just above in this
+  // pipeline gate the build, instead of proceeding to lower invalid IR.
   val pkg = codegenMPackage(liftedFile, cctx)
+  if abortOnCodegenDiagnosticsMsil(cctx) {
+    return false
+  }
 
   // Append any closure-class records synthesized while lowering this
   // package's lambdas (#5177) — a single-file compile has exactly one
@@ -1015,13 +1036,18 @@ pub func compileProjectToMsilWithRestoredAndVersion(
 
   // Phase 4: codegen each package into an MPackage against the same cctx.
   // #6449/#6459: codegen panics escape (the bridge's library contract) —
-  // see the single-file call site's comment above.
+  // see the single-file call site's comment above.  #4898: F0020–F0025
+  // diagnostics accumulate on the shared `cctx` across every package in the
+  // bundle, so the gate below runs once after the whole loop.
   val mpkgs: List[MPackage] = newList()
   var ci = 0
   while ci < liftedFiles.count {
     val mpkg = codegenMPackage(liftedFiles[ci], cctx)
     mpkgs.add(mpkg)
     ci = ci + 1
+  }
+  if abortOnCodegenDiagnosticsMsil(cctx) {
+    return false
   }
 
   // Append every closure-class record synthesized while lowering ANY
