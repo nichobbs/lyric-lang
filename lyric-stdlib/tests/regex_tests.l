@@ -94,8 +94,9 @@ func testErrorMessageInvalidPattern(): Unit {
 //          within the deadline even though java.util.regex isn't
 //          interruptible.  Ok(false) remains a logged-but-accepted outcome
 //          here (a benign fast-path termination shouldn't fail this
-//          cross-platform smoke test); `testReDoSTimeoutFiresJvm` below is
-//          the strict JVM-only acceptance test that requires Err(TimedOut).
+//          cross-platform smoke test); the strict JVM-only acceptance test
+//          that requires Err(TimedOut) lives in `lyric-compiler/jvm/
+//          regex_redos_jvm_main.l` (see the comment above `main()` below).
 //
 // In all cases the important guarantee is "match returns at all — not that it
 // hangs".  The Ok branch is therefore a documented permissible outcome, not a
@@ -145,12 +146,5 @@ func main(): Unit {
   testErrorMessageTimedOut()
   testErrorMessageInvalidPattern()
   testReDoSTimeoutFires()
-  // `testReDoSTimeoutFiresJvm` is declared with `@cfg(feature = "jvm")`
-  // and therefore only compiles under the `jvm` feature.  Calling it
-  // unconditionally here would leave a dangling reference on the
-  // `dotnet` build (the symbol is erased by `@cfg` before codegen).
-  // The JVM test runner (#1103 acceptance gate) drives the gated case
-  // via a separate top-level entry — see `lyric-stdlib/lyric.toml`'s
-  // JVM target manifest.  Tracked in #1165.
   println("regex_tests: ok")
 }

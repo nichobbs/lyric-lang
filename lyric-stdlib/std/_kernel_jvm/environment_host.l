@@ -33,6 +33,16 @@
 //! type-checks and to fail loudly (rather than silently) in the
 //! unreachable case where some future refactor removes the call-site
 //! interception without updating this fallback.
+//!
+//! **Ordering constraint:** `__LyricJvmRuntime.commandLineArgs` is only
+//! populated once the entry-point `main(String[])` wrapper's `putstatic`
+//! executes -- before that (e.g. a module-level `val` initializer that
+//! called `args()` during some OTHER class's `<clinit>`, ahead of `main`
+//! ever running) the field still reads its JVM zero-init default (`null`),
+//! which would NPE downstream. Not reachable today (no module-level `val`
+//! in the tree calls `Std.Environment.args()`), but a real divergence from
+//! the `.NET` kernel below, which calls a real OS API unconditionally --
+//! keep this in mind before adding one.
 @axiom("java.lang.System operations conform to their documented JVM contracts")
 package Std.EnvironmentHost
 
