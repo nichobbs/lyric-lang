@@ -370,7 +370,7 @@ pub record H2Connection {
   remoteSettings: H2Settings
   var connSendWindow: Int
   var connRecvWindow: Int
-  streams: List[H2Stream]
+  var streams: List[H2Stream]
   var cont: Option[ContinuationState]
   var lastPeerStreamId: Int
   var expectClientSettings: Bool
