@@ -31765,3 +31765,46 @@ script with`) and nothing new; `scripts/ci/check-workflow-size.sh` passes
 under the new split can only be confirmed by observing `main` over
 subsequent PRs, per #4975's own evidence-gathering pattern.
 
+## D-progress-803 — actionlint: scope the `matrix.authenticode` dead-code suppression to `publish.yml` via a path-scoped `.github/actionlint.yaml`, instead of a global `-ignore` regex (#5638)
+
+**Problem.** The `actionlint` CI job's "Run actionlint" step suppressed
+three finding classes via a single global `-ignore` regex: the permanent
+`background`/`wait-all` schema gap, `gemini-teammate.yaml`'s missing
+`on:` block (already resolved elsewhere — the file was deleted), and
+`publish.yml:322`'s `matrix.authenticode` reference (dead code until
+win-x64, #3941, is re-enabled). #5638 flagged that the `authenticode`
+pattern, as a *global* message-text regex, would also silently mask a
+genuine future `matrix.<property>` typo on any OTHER workflow file — the
+real cost of a broad suppression for a finding that is only ever valid on
+one specific line of one specific file.
+
+**Fix.** `actionlint` (1.7.12, matching the version pinned in
+`.github/workflows/ci.yml`) supports path-scoped suppression via a
+`.github/actionlint.yaml` (or `.yml`) config file's `paths:` map — an
+`ignore:` list under a glob key applies only to matching files, composing
+with (not replacing) the CLI's own `-ignore` flag. Added
+`.github/actionlint.yaml` scoping the `authenticode` message pattern to
+`.github/workflows/publish.yml` only, and removed it from the global
+`-ignore` flag in `ci.yml`'s actionlint step (the `background`/`wait-all`
+pattern stays global — it is a permanent schema-gap suppression, not a
+finding scoped to one file, so a global regex is the correct fit there).
+Verified locally with the exact pinned `actionlint` binary
+(`rhysd/actionlint@sha256:b1934...` / v1.7.12): removing the
+`authenticode` pattern from `-ignore` without the config file reproduces
+the finding at `publish.yml:322:13`; adding `.github/actionlint.yaml`
+back suppresses it with exit code 0, and a full unfiltered run
+(`-shellcheck= `, no `-ignore` at all) shows only the two expected
+permanent categories (`unexpected key "background"`/`"wait-all"`, `step
+must run script with`) plus nothing from `authenticode` or
+`gemini-teammate.yaml` (already deleted, per the 2026-08-07 status update
+on #5638).
+
+Not changed: `gemini-teammate.yaml`'s `-ignore` clause was already
+removed (PR #6385, per #5638's 2026-08-07 comment — the file itself was
+deleted); the `background`/`wait-all` suppression stays a permanent
+global `-ignore`, unchanged; `publish.yml`'s win-x64/`authenticode`
+matrix entry itself stays commented out, gated on #3941 — re-enabling it
+is out of scope here, and once it lands, `.github/actionlint.yaml` should
+be deleted rather than edited (the suppression becomes unnecessary, not
+narrower).
+

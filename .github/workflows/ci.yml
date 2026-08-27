@@ -815,9 +815,9 @@ jobs:
       - name: Check ci.yml workflow-file size (#6387 guardrail)
         run: bash scripts/ci/check-workflow-size.sh
 
-      # Three `-ignore` patterns suppress known-benign findings rather than
-      # failing on them forever silently; each is tracked in #5638 with the
-      # condition under which it should be revisited:
+      # Two remaining known-benign findings are suppressed rather than
+      # failing on them forever silently; both are tracked in #5638 with the
+      # condition under which they should be revisited:
       #   1/2. `background:`/`wait-all:` are official GitHub Actions step
       #      keys (parallel steps, shipped 2026-06-25; see the changelog link
       #      in the "Parallel step execution" comment further down, verified
@@ -828,10 +828,18 @@ jobs:
       #      "unexpected key" for the key itself, and "step must run script
       #      with" because actionlint doesn't recognize it as a valid step
       #      body (in place of `run:`/`uses:`). Same root cause; not a bug;
-      #      revisit when actionlint's schema catches up.
+      #      revisit when actionlint's schema catches up. Suppressed here via
+      #      the global `-ignore` flag (it only ever occurs in ci.yml, but a
+      #      broad message-text match is fine for a permanent suppression).
       #   3. publish.yml's `matrix.authenticode` is only defined on the
       #      commented-out win-x64 matrix entry (#3941) -- revisit once
-      #      win-x64 is re-enabled.
+      #      win-x64 is re-enabled. Unlike #1/2, this is suppressed via the
+      #      path-scoped `ignore:` in `.github/actionlint.yaml` (glob
+      #      `.github/workflows/publish.yml` only), NOT the global `-ignore`
+      #      flag below -- #5638 flagged the earlier global regex as broad
+      #      enough to also mask a genuine future `matrix.<property>` typo on
+      #      ANY workflow file; scoping it to publish.yml closes that gap
+      #      while keeping the exact same suppression for this known case.
       # Two former patterns were removed once their causes were fixed:
       # gemini-teammate.yaml's commented-out `on:` block (file deleted,
       # #6248) and bench.yml's job-level `env:` referencing the `env`
@@ -847,7 +855,7 @@ jobs:
       - name: Run actionlint
         uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667  # 1.7.12
         with:
-          args: -color -shellcheck= -ignore "unexpected key .(background|wait-all).|step must run script with|property .authenticode. is not defined in object type"
+          args: -color -shellcheck= -ignore "unexpected key .(background|wait-all).|step must run script with"
 
   # The bundled Maven resolver (resolver/pom.xml) that `lyric restore
   # --target jvm` shells out to for `[maven]` dependency resolution

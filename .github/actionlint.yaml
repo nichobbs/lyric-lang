@@ -1,0 +1,17 @@
+# actionlint configuration (see docs/config.md at
+# https://github.com/rhysd/actionlint/blob/main/docs/config.md).
+#
+# This file exists for exactly one purpose (#5638): scope the
+# `matrix.authenticode` dead-code suppression to `publish.yml` only, instead
+# of a global `-ignore` regex (in the "Run actionlint" step in ci.yml) that
+# would also mask a genuine future `matrix.<property>` typo on ANY workflow
+# file. `matrix.authenticode` is only defined on publish.yml's commented-out
+# win-x64 matrix entry (#3941); once win-x64 is re-enabled, delete this file.
+#
+# The `background`/`wait-all` step-key suppression stays a global `-ignore`
+# flag in ci.yml (it is a permanent suppression for an actionlint schema gap,
+# not a dead-code finding scoped to one file — see the comment there).
+paths:
+  .github/workflows/publish.yml:
+    ignore:
+      - 'property "authenticode" is not defined in object type'
