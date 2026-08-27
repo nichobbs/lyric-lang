@@ -5,20 +5,19 @@ AWS Lambda runtime adapter for [Lyric](https://github.com/nichobbs/lyric-lang). 
 > **Status**: @experimental — the `aws`/`local` runtime loop (event-source
 > detection, JSON marshalling, `Lambda.Direct` dispatch, and the wire-level
 > HTTP transport) is real, pure-Lyric code, no longer an unbacked `extern
-> package` declaration. `aws:sqs`, the `raw` catch-all, and all three
-> authorizer types are fully wired; `aws:sns`/`aws:s3`/`aws:dynamodb`/
-> `aws:kinesis`/EventBridge are detected but dispatch fails closed as
-> not-yet-implemented (same mechanical pattern, not yet ported); API
-> Gateway/ALB dispatch via `Lambda.withRouter` and response streaming are
-> blocked on separate feasibility work (see "Known gaps" below). The `jvm`
-> feature is not implemented pending a deployment-model decision. See
-> `docs/35-lambda-library.md` and the decision log (D062–D064, D099).
+> package` declaration. `aws:sqs`, `aws:sns`, `aws:s3`, `aws:dynamodb`,
+> `aws:kinesis`, EventBridge, the `raw` catch-all, and all three authorizer
+> types are fully wired; API Gateway/ALB dispatch via `Lambda.withRouter`
+> and response streaming are blocked on separate feasibility work (see
+> "Known gaps" below). The `jvm` feature is not implemented pending a
+> deployment-model decision. See `docs/35-lambda-library.md` and the
+> decision log (D062–D064, D099).
 
 ## Platform parity
 
 | Feature flag | Runtime | Status |
 |---|---|---|
-| `aws` | .NET custom runtime: HTTP long-polling against `$AWS_LAMBDA_RUNTIME_API` | Available — `aws:sqs`/raw/authorizers wired; five event sources detected but not yet dispatched; HTTP/streaming not implemented (see "Known gaps") |
+| `aws` | .NET custom runtime: HTTP long-polling against `$AWS_LAMBDA_RUNTIME_API` | Available — all six event sources (`aws:sqs`/`aws:sns`/`aws:s3`/`aws:dynamodb`/`aws:kinesis`/EventBridge), `raw`, and authorizers wired; HTTP/streaming not implemented (see "Known gaps") |
 | `local` | Local test server (compatible with `sam local invoke`) | Available — same dispatch logic and gaps as `aws`, different transport |
 | `jvm` | JVM managed runtime (`RequestStreamHandler`) | **Not implemented** — needs a product decision, see "Known gaps" |
 
@@ -107,13 +106,11 @@ func main(): Int {
 }
 ```
 
-Only `aws:sqs`, the `raw` catch-all, and the three authorizer types
-(`TOKEN`/`REQUEST`/HTTP API v2) actually dispatch today — `aws:sns`,
-`aws:s3`, `aws:dynamodb`, `aws:kinesis`, and EventBridge are correctly
-*detected* but fail closed with an `InternalError` naming the missing JSON
-decoder (mechanical follow-up work, see "Known gaps"). The legacy
-string-based `onSqs`/`onSns`/etc. registration (resolved "via DLL
-reflection") was never implemented and cannot be: `lyric-health`'s
+All six event sources (`aws:sqs`, `aws:sns`, `aws:s3`, `aws:dynamodb`,
+`aws:kinesis`, EventBridge), the `raw` catch-all, and the three authorizer
+types (`TOKEN`/`REQUEST`/HTTP API v2) dispatch today via `Lambda.Direct`.
+The legacy string-based `onSqs`/`onSns`/etc. registration (resolved "via
+DLL reflection") was never implemented and cannot be: `lyric-health`'s
 identical design was rejected outright in D099. Prefer `Lambda.Direct`.
 
 ### Multiple event sources
@@ -494,7 +491,6 @@ or a `panic` with an explanatory message) rather than pretending to work:
 
 | Gap | Where it fails | What's needed |
 |---|---|---|
-| `aws:sns`/`aws:s3`/`aws:dynamodb`/`aws:kinesis`/EventBridge dispatch | Detected correctly; `dispatchInvocation` returns `InternalError` naming the source | Mechanical repetition of the `aws:sqs` JSON decode/encode pattern in `Lambda.Dispatch` — not attempted here to keep this change reviewable |
 | API Gateway v1/v2/ALB dispatch (`Lambda.withRouter`) | `dispatchInvocation` returns `InternalError` | A feasibility spike for `Lambda.Kernel.Net`'s `ConditionalWeakTable<LambdaRouter, Web.Router>` registry — there is currently no `lookupRouter` to resolve a `LambdaRouter` token back to a `Web.Router` |
 | Response streaming (`Lambda.Stream`, `Lambda.withStreamingHandler`, `Lambda.Direct.streamingHandler`) | Every `Lambda.Stream` function panics; `streamingHandler` panics at registration time | A real streaming transport design (Function URL `RESPONSE_STREAM` uses a different invoke path than the GET-next/POST-response loop this library implements) |
 | `jvm` feature (AWS Java managed runtime) | `serve()` panics with a message pointing at this table | A product decision between (a) new JVM emitter codegen synthesizing a host-invoked `RequestStreamHandler` entry-point class, or (b) redesigning the JVM target onto the same custom-runtime HTTP polling protocol via a bootstrap executable — see `lambda_kernel_jvm.l`'s header comment |
