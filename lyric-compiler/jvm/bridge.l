@@ -682,6 +682,8 @@ func codegenPackageInto(
   acc: in List[BuiltClass],
   externSeed: in Map[String, String],
   fileName: in String,
+  // #6596: see `Jvm.Codegen.lowerRecord`'s matching parameter doc comment.
+  unsafeFieldLockNames: in Map[String, Bool],
 ): Unit {
   // `file` here already has its `alias X = ...` references resolved — see
   // `runMiddleEnd`'s #6404 comment; every caller of `codegenPackageInto`
@@ -693,7 +695,8 @@ func codegenPackageInto(
     ctorReg,
     autoFfi,
     allProjFqns,
-    externSeed
+    externSeed,
+    unsafeFieldLockNames
   )
   val pool = poolNew()
   val classFiles = lowerPackage(pkg, pool)
@@ -2053,6 +2056,25 @@ pub func compileProjectToJarBundledWithRestored(
   // falls back to the legacy "0.1.0" default (matches `compileToJar`, #5834).
   val jarVersion = if packageVersion.length == 0 { "0.1.0" } else { packageVersion }
 
+  // #6596: whole-build field-write lock-safety audit, across every in-bundle
+  // package's PRE-weave source (`userFile` + `toBundle`) — matches the MSIL
+  // bridge's `perPkgFiles` audit scope and V0015's own pre-weave mode-check
+  // pass.  Must be computed before either `codegenPackageInto` call site
+  // below so the unsafe-name set every package's `lowerRecord` consults is
+  // fully populated first.  See `Lyric.ModeChecker.
+  // computeFieldLockSafetyForBuild`'s doc comment for the full rationale,
+  // including why a separately restored/precompiled dependency (not
+  // source-visible here) is out of this pass's reach.
+  val filesForAudit: List[SourceFile] = newList()
+  filesForAudit.add(userFile)
+  var afi = 0
+  while afi < toBundle.count {
+    filesForAudit.add(toBundle[afi])
+    afi = afi + 1
+  }
+  val unsafeFieldLockNames: Map[String, Bool] = newMap()
+  computeFieldLockSafetyForBuild(filesForAudit, unsafeFieldLockNames)
+
   // Stdlib pure-Lyric generic `pub func`s, fed to each package's monomorphizer
   // so cross-package generic calls (`mapGet`, `unwrapOr`, …) specialise into
   // this bundle instead of erasing their generic return (M-5; parity with the
@@ -2143,7 +2165,8 @@ pub func compileProjectToJarBundledWithRestored(
         allProjFqns,
         allClasses,
         externSeedForFile(f, extPkgNames, extPkgMaps),
-        userFileName
+        userFileName,
+        unsafeFieldLockNames
       )
     }
     case None -> return false
@@ -2214,7 +2237,8 @@ pub func compileProjectToJarBundledWithRestored(
             allProjFqns,
             allClasses,
             externSeedForFile(ff, extPkgNames, extPkgMaps),
-            bundledFileName
+            bundledFileName,
+            unsafeFieldLockNames
           )
           true
         }

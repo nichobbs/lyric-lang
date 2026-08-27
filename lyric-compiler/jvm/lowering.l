@@ -2741,8 +2741,9 @@ pub func lowerRecord(r: in LRecord, pool: in Pool): ClassFile {
   // ── Build FieldInfo list ───────────────────────────────────────────────────
   // `fld.flags` (set by `Jvm.Codegen.lowerRecord`'s `RMField` arm) carries
   // ACC_PUBLIC alone for a `var` field, or ACC_PUBLIC + ACC_FINAL for a
-  // non-`var` one (issue #1815 part 2a) — previously hardcoded to ACC_PUBLIC
-  // here, silently dropping the ACC_FINAL bit codegen had already computed.
+  // non-`var` one the whole-build lock-safety audit proved safe to lock
+  // (issue #1815 part 2a, #6596) — previously hardcoded to ACC_PUBLIC here,
+  // silently dropping the ACC_FINAL bit codegen had already computed.
   val cfFields: List[FieldInfo] = newList()
   for fld in r.fields.toArray() {
     val fa: List[Attribute] = newList()

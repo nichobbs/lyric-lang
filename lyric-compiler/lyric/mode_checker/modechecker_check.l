@@ -2513,6 +2513,17 @@ func checkSpawnConsumption(file: in SourceFile, fileLevel: in VerificationLevel,
 // write-site tracking to method receivers under a non-`inout` mode are out
 // of scope; see issue #6155 / #1815.
 // ─────────────────────────────────────────────────────────────────────────────
+// Top-level function param modes/names, by function name (first-wins across
+// files/packages, matching every other "first registration wins" idiom in
+// this compiler).  `Param.mode`/`Param.name` are available directly off the
+// parsed AST, so no symbol table is needed.  Used only by §10d's whole-build
+// audit (`scanCallArgsForUnsafeFieldWrites`) to recognise an `out`/`inout`
+// call argument at a direct, unqualified call site.
+record FieldWriteFuncSig {
+  modes: List[ParamMode]
+  names: List[String]
+}
+
 record FieldWriteCtx {
   diag: List[Diagnostic]
   recordFields: Map[String, Map[String, Bool]]
@@ -2522,6 +2533,17 @@ record FieldWriteCtx {
   // `around` advice, neither of which has an implicit `self`) — lets
   // `checkFieldWriteTarget` resolve an `self.field = …` write (#6181).
   selfType: Option[String] = None
+  // #6596: accumulator for `computeFieldLockSafetyForBuild`'s whole-build
+  // audit (see §10d below).  Every ordinary V0015-diagnostic invocation of
+  // this walker (`checkImmutableFieldWrites`) passes a throwaway map here —
+  // only the whole-build audit's own accumulator, threaded across every file
+  // and every function it walks, actually matters.
+  unsafeFieldNames: Map[String, Bool]
+  // Top-level function signatures (param modes/names) collected across the
+  // whole build, used ONLY by `scanCallArgsForUnsafeFieldWrites` (§10d) to
+  // recognise an `out`/`inout` call argument.  Empty for an ordinary V0015
+  // invocation (that pass never consults it).
+  funcSigs: Map[String, FieldWriteFuncSig]
 }
 
 func fieldWriteSimpleTypeName(t: in TypeExpr): String {
@@ -2810,9 +2832,18 @@ func checkFieldWriteTarget(ctx: in FieldWriteCtx, target: in Expr): Unit {
           if path.segments.count == 1 {
             match mapGet(ctx.locals, path.segments[0]) {
               case Some(recordName) -> checkFieldMutability(ctx, recordName, fieldName, path.segments[0], target.span)
-              case None -> {
-              }
+              // #6596: not a tracked `var`-record local — a `val`/`let`-bound
+              // receiver (`val r = Rec(...); r.f = 2`) or a plain parameter,
+              // neither of which V0015 resolves.  Unresolved, so conservatively
+              // unsafe to lock: codegen cannot tell whether this write targets a
+              // `var` field (fine) or a non-`var` one (should have been V0015).
+              case None -> markFieldNameUnsafeToLock(ctx.unsafeFieldNames, fieldName)
             }
+          } else {
+            // A qualified multi-segment path receiver (`Pkg.Type.field`, or a
+            // module-level static value being field-accessed) — not a shape
+            // V0015 resolves either; conservatively unsafe (#6596).
+            markFieldNameUnsafeToLock(ctx.unsafeFieldNames, fieldName)
           }
         }
         // `self.field = …` inside a method/entry on a known enclosing type
@@ -2822,26 +2853,37 @@ func checkFieldWriteTarget(ctx: in FieldWriteCtx, target: in Expr): Unit {
         case ESelf -> {
           match ctx.selfType {
             case Some(recordName) -> checkFieldMutability(ctx, recordName, fieldName, "self", target.span)
-            case None -> {
-            }
+            case None -> markFieldNameUnsafeToLock(ctx.unsafeFieldNames, fieldName)
           }
         }
-        case _ -> {
+        // #6596: any other receiver shape — a nested chain (`c.inner.n = 1`),
+        // an index expression, a call result, etc. — is exactly the "unchecked
+        // shape" this pass exists to catch.  Unconditionally unsafe: codegen
+        // has no way to know whether `fieldName` is `var` on whatever type this
+        // receiver resolves to.
+        case _ -> markFieldNameUnsafeToLock(ctx.unsafeFieldNames, fieldName)
+      }
+    }
+    // A bare (non-`EMember`) single-segment assignment target that isn't a
+    // tracked `var`-record local, inside a method/entry with a known `self`
+    // type, MIGHT be a bare implicit-self field write (`total = 0` meaning
+    // `self.total = 0`) — genuinely ambiguous with an ordinary local
+    // reassignment from this pass's data alone (see the existing note below),
+    // but for LOCK-SAFETY (unlike the V0015 diagnostic) ambiguity must resolve
+    // to "unsafe", not "skip" (#6596).
+    case EPath(path) -> {
+      if path.segments.count == 1 and not ctx.locals.containsKey(path.segments[0]) {
+        match ctx.selfType {
+          case Some(_) -> markFieldNameUnsafeToLock(ctx.unsafeFieldNames, path.segments[0])
+          case None -> {
+          }
         }
       }
     }
-    // A bare implicit-self field write (`total = 0` inside an impl method,
-    // meaning the same as `self.total = 0`) is deliberately NOT handled here.
-    // Unlike `self.field = …`, a bare name is genuinely ambiguous from this
-    // narrow pass's data alone: `ctx.locals` only tracks `var` locals whose
-    // type resolves to an in-file record (the same narrowing
-    // `checkFuncForFieldWrite`'s header comment documents), so an ordinary
-    // scalar/param local reassignment (`count = count + 1`) is
-    // indistinguishable from an implicit-self field write without a full
-    // lexical scope of every declared name (not just record-typed ones) —
-    // building that safely (matching the existing per-scope snapshot/restore
-    // discipline for #6157/#6166/#6167/#6185) is a separately-scoped
-    // follow-up, not a safe "smallest diff" addition here.
+    // V0015 itself still does not diagnose a bare implicit-self write as a
+    // distinct error (see the comment on the `EPath` arm above) — only the
+    // §10d lock-safety consequence is handled there.  Any other target shape
+    // (indexing, etc.) is not a field write at all.
     case _ -> {
     }
   }
@@ -2941,6 +2983,9 @@ func walkExprForFieldWrite(ctx: in FieldWriteCtx, e: in Expr): Unit {
       walkExprForFieldWrite(ctx, r)
     }
     case ECall(fn, args) -> {
+      // #6596: a call argument that is a field access MIGHT be an `out`/
+      // `inout` write-back (`bump(c.pos)`) — see §10d.
+      scanCallArgsForUnsafeFieldWrites(ctx, fn, args)
       walkExprForFieldWrite(ctx, fn)
       var ai = 0
       while ai < args.count {
@@ -3182,10 +3227,18 @@ func checkFuncBodyForFieldWrite(
   params: in List[Param],
   body: in FunctionBody,
   selfType: in Option[String],
+  unsafeFieldNames: in Map[String, Bool],
+  funcSigs: in Map[String, FieldWriteFuncSig],
 ): Unit {
   val locals: Map[String, String] = newMap()
-  val ctx = FieldWriteCtx(diag = diag, recordFields = recordFields, locals = locals, selfType = selfType)
-  fieldWriteSeedParams(ctx, params)
+  val ctx = FieldWriteCtx(
+    diag = diag,
+    recordFields = recordFields,
+    locals = locals,
+    selfType = selfType,
+    unsafeFieldNames = unsafeFieldNames,
+    funcSigs = funcSigs
+  )
   match body {
     case FBExpr(e) -> walkExprForFieldWrite(ctx, e)
     case FBBlock(blk) -> walkBlockForFieldWrite(ctx, blk)
@@ -3197,11 +3250,13 @@ func checkFuncForFieldWrite(
   diag: in List[Diagnostic],
   fn: in FunctionDecl,
   selfType: in Option[String],
+  unsafeFieldNames: in Map[String, Bool],
+  funcSigs: in Map[String, FieldWriteFuncSig],
 ): Unit {
   match fn.body {
     case None -> {
     }
-    case Some(body) -> checkFuncBodyForFieldWrite(recordFields, diag, fn.params, body, selfType)
+    case Some(body) -> checkFuncBodyForFieldWrite(recordFields, diag, body, selfType, unsafeFieldNames, funcSigs)
   }
 }
 
@@ -3212,26 +3267,35 @@ func checkEntryForFieldWrite(
   diag: in List[Diagnostic],
   entry: in EntryDecl,
   selfType: in Option[String],
+  unsafeFieldNames: in Map[String, Bool],
+  funcSigs: in Map[String, FieldWriteFuncSig],
 ): Unit {
-  checkFuncBodyForFieldWrite(recordFields, diag, entry.params, entry.body, selfType)
+  checkFuncBodyForFieldWrite(recordFields, diag, entry.body, selfType, unsafeFieldNames, funcSigs)
 }
 
-func checkImmutableFieldWrites(file: in SourceFile, diag: in List[Diagnostic]): Unit {
-  val recordFields = collectRecordFieldsOfFile(file)
-  if mapIsEmpty(recordFields) {
-    return
-  }
+// Shared item-level traversal for BOTH the per-file V0015 diagnostic pass
+// (`checkImmutableFieldWrites`) and the whole-build lock-safety audit
+// (`computeFieldLockSafetyForBuild`, §10d below) — the two differ only in
+// what `diag`/`unsafeFieldNames`/`funcSigs` accumulate into, not in which
+// bodies get walked.
+func walkFileForFieldWriteChecks(
+  file: in SourceFile,
+  recordFields: in Map[String, Map[String, Bool]],
+  diag: in List[Diagnostic],
+  unsafeFieldNames: in Map[String, Bool],
+  funcSigs: in Map[String, FieldWriteFuncSig],
+): Unit {
   val noSelf: Option[String] = None
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
-      case IFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn, noSelf)
+      case IFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn, noSelf, unsafeFieldNames, funcSigs)
       case IRecord(decl) | IExposedRec(decl) -> {
         val selfTy = Some(value = decl.name)
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
-            case RMFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn, selfTy)
+            case RMFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn, selfTy, unsafeFieldNames, funcSigs)
             case _ -> {
             }
           }
@@ -3244,7 +3308,7 @@ func checkImmutableFieldWrites(file: in SourceFile, diag: in List[Diagnostic]): 
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
-            case IMplFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn, selfTy)
+            case IMplFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn, selfTy, unsafeFieldNames, funcSigs)
             case _ -> {
             }
           }
@@ -3256,8 +3320,8 @@ func checkImmutableFieldWrites(file: in SourceFile, diag: in List[Diagnostic]): 
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
-            case PMFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn, selfTy)
-            case PMEntry(entryDecl) -> checkEntryForFieldWrite(recordFields, diag, entryDecl, selfTy)
+            case PMFunc(fn) -> checkFuncForFieldWrite(recordFields, diag, fn, selfTy, unsafeFieldNames, funcSigs)
+            case PMEntry(entryDecl) -> checkEntryForFieldWrite(recordFields, diag, entryDecl, selfTy, unsafeFieldNames, funcSigs)
             case _ -> {
             }
           }
@@ -3274,13 +3338,223 @@ func checkImmutableFieldWrites(file: in SourceFile, diag: in List[Diagnostic]): 
         val noSelfForAspect: Option[String] = None
         val noParamsForAspect: List[Param] = newList()
         match decl.around {
-          case Some(around) -> checkFuncBodyForFieldWrite(recordFields, diag, noParamsForAspect, FBBlock(block = around.body), noSelfForAspect)
+          case Some(around) -> checkFuncBodyForFieldWrite(recordFields, diag, FBBlock(block = around.body), noSelfForAspect, unsafeFieldNames, funcSigs)
           case None -> ()
         }
       }
       case _ -> {
       }
     }
+    i = i + 1
+  }
+}
+
+func checkImmutableFieldWrites(file: in SourceFile, diag: in List[Diagnostic]): Unit {
+  val recordFields = collectRecordFieldsOfFile(file)
+  if mapIsEmpty(recordFields) {
+    return
+  }
+  // Diagnostics-only invocation: neither of these is consulted for the V0015
+  // report itself, only by the whole-build audit below.
+  val unusedUnsafe: Map[String, Bool] = newMap()
+  val unusedSigs: Map[String, FieldWriteFuncSig] = newMap()
+  walkFileForFieldWriteChecks(file, recordFields, diag, unusedUnsafe, unusedSigs)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §10d. Whole-build field-write lock-safety audit (#6596).
+//
+// V0015 above (and `checkImmutableFieldWrites`'s per-file diagnostic pass)
+// resolves only a same-file write through a `var` local or `self` receiver.
+// Every other write shape — a nested field-access chain (`c.inner.n = 1`), a
+// write through a `val`-bound receiver, or a field passed as an `out`/
+// `inout` call argument (`bump(c.pos)`) — falls through UNCHECKED at the
+// mode-checker level.  Before this pass existed, the MSIL/JVM emitters
+// nonetheless marked every non-`var` field `initonly`/`ACC_FINAL`
+// unconditionally: an unchecked write then either produced IL that CoreCLR
+// silently tolerates at runtime despite failing static verification (MSIL)
+// or threw `IllegalAccessError` (JVM) — a silent cross-target divergence for
+// identical source, and a hard crash on JVM.
+//
+// This pass computes, by bare field NAME (not per-record — see below), the
+// set of field names that appear ANYWHERE in the build through one of the
+// unchecked shapes above, so `Msil.Codegen.lowerRecordMsil` /
+// `Jvm.Codegen.lowerRecord` can skip `initonly`/`ACC_FINAL` for those fields
+// specifically while still locking every field V0015's existing coverage can
+// vouch for.  A field that never appears as a write target at all — the
+// common case for most `val`-only records — is safe to lock unconditionally:
+// there is no write site to have missed.
+//
+// Deliberately NAME-keyed, not (record, field)-keyed: resolving the nested
+// chain's own type precisely (e.g. what `c.inner` resolves to, to know
+// exactly which record's field is at risk) needs the same cross-file symbol
+// table V0015 itself lacks.  Keying by bare name is coarser — a write to
+// `SomeOtherRecord.pos` anywhere in the build also blocks locking
+// `Cursor.pos` — but it is never UNSOUND, only occasionally more
+// conservative than a fully-precise per-record analysis would be.  The same
+// reasoning applies to `scanCallArgsForUnsafeFieldWrites`: an argument whose
+// callee can't be resolved to a known, direct, single-segment function call
+// (a method call, a UFCS call, a call through a lambda/function value) is
+// conservatively treated as a possible write-back, even though most such
+// calls pass the field by value.
+//
+// Scope: this runs once across every file the current build compiles
+// together — for a single-file build that is just the one file (the
+// `computeFieldLockSafetyForBuild([file])` degenerate case), and for a
+// multi-package build it is every package's parsed source, since the
+// self-hosted MSIL/JVM bridges hold the woven AST for every in-build package
+// before per-package codegen runs.  A record imported from a SEPARATELY
+// published/restored dependency — a different `lyric.toml` package compiled
+// in an earlier, disconnected `lyric build` invocation — is outside what
+// this pass (or any same-invocation static analysis) can see; that residual
+// gap is the same one V0015 itself already discloses for cross-file writes
+// in general (§10c above).
+// ─────────────────────────────────────────────────────────────────────────────
+func markFieldNameUnsafeToLock(unsafeSet: in Map[String, Bool], fieldName: in String): Unit {
+  if not unsafeSet.containsKey(fieldName) {
+    unsafeSet.add(fieldName, true)
+  }
+}
+
+func collectFuncSigsOfFile(file: in SourceFile, sigs: in Map[String, FieldWriteFuncSig]): Unit {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(fn) -> {
+        if not sigs.containsKey(fn.name) {
+          val ms: List[ParamMode] = newList()
+          val ns: List[String] = newList()
+          var pi = 0
+          while pi < fn.params.count {
+            ms.add(fn.params[pi].mode)
+            ns.add(fn.params[pi].name)
+            pi = pi + 1
+          }
+          sigs.add(fn.name, FieldWriteFuncSig(modes = ms, names = ns))
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+// `sig`'s parameter bound by a POSITIONAL argument at `argIdx` (`argName ==
+// ""`) or a NAMED argument `argName`: is that parameter `out`/`inout`?
+// Anything this can't resolve precisely — an out-of-range positional index,
+// or a named arg matching no declared parameter — reports `true` (unsafe),
+// so imprecision here only ever makes the audit MORE conservative.
+func callArgIsByrefMode(sig: in FieldWriteFuncSig, argIdx: in Int, argName: in String): Bool {
+  if argName == "" {
+    if argIdx < 0 or argIdx >= sig.modes.count {
+      true
+    } else {
+      match sig.modes[argIdx] {
+        case PMOut -> true
+        case PMInout -> true
+        case PMIn -> false
+      }
+    }
+  } else {
+    var pi = 0
+    var isByref = true
+    while pi < sig.names.count {
+      if sig.names[pi] == argName {
+        isByref = match sig.modes[pi] { case PMOut -> true; case PMInout -> true; case PMIn -> false }
+      }
+      pi = pi + 1
+    }
+    isByref
+  }
+}
+
+// The bare field name at the end of an (optionally parenthesised) member
+// access, for a call argument that MIGHT be a field write-back target
+// (`bump(c.pos)`).  `None` for anything else — not a field access at all.
+func fieldWriteArgTargetName(e: in Expr): Option[String] {
+  match e.kind {
+    case EMember(_, fieldName) -> Some(value = fieldName)
+    case EParen(inner) -> fieldWriteArgTargetName(inner)
+    case _ -> None
+  }
+}
+
+func scanCallArgsForUnsafeFieldWrites(ctx: in FieldWriteCtx, fn: in Expr, args: in List[CallArg]): Unit {
+  var directName = ""
+  match fn.kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        directName = path.segments[0]
+      }
+    }
+    case _ -> {
+    }
+  }
+  val sigOpt: Option[FieldWriteFuncSig] = if directName == "" { None } else { mapGet(ctx.funcSigs, directName) }
+  var ai = 0
+  while ai < args.count {
+    match args[ai] {
+      case CAPositional(v) -> {
+        match fieldWriteArgTargetName(v) {
+          case Some(fieldName) -> {
+            val unsafeHere = match sigOpt { case Some(sig) -> callArgIsByrefMode(sig, ai, ""); case None -> true }
+            if unsafeHere {
+              markFieldNameUnsafeToLock(ctx.unsafeFieldNames, fieldName)
+            }
+          }
+          case None -> {
+          }
+        }
+      }
+      case CANamed(nm, v, _) -> {
+        match fieldWriteArgTargetName(v) {
+          case Some(fieldName) -> {
+            val unsafeHere = match sigOpt { case Some(sig) -> callArgIsByrefMode(sig, -1, nm); case None -> true }
+            if unsafeHere {
+              markFieldNameUnsafeToLock(ctx.unsafeFieldNames, fieldName)
+            }
+          }
+          case None -> {
+          }
+        }
+      }
+    }
+    ai = ai + 1
+  }
+}
+
+// Accumulates into the caller-provided `into` map rather than returning a
+// fresh one — the cross-package generic-return-type erasure gap this
+// codebase's OWN "into: Map[...]" accumulator idiom exists to sidestep
+// (`Lyric.ModeChecker` is a different package from every caller: `Msil.
+// Bridge`, `Jvm.Bridge`, `Jvm.Codegen`), rather than returning `Map[String,
+// Bool]` directly.
+pub func computeFieldLockSafetyForBuild(files: in List[SourceFile], into: in Map[String, Bool]): Unit {
+  val recordFields: Map[String, Map[String, Bool]] = newMap()
+  val funcSigs: Map[String, FieldWriteFuncSig] = newMap()
+  var fi = 0
+  while fi < files.count {
+    val fileFields = collectRecordFieldsOfFile(files[fi])
+    for k in mapKeys(fileFields) {
+      if not recordFields.containsKey(k) {
+        match mapGet(fileFields, k) {
+          case Some(v) -> recordFields.add(k, v)
+          case None -> {
+          }
+        }
+      }
+    }
+    collectFuncSigsOfFile(files[fi], funcSigs)
+    fi = fi + 1
+  }
+  if mapIsEmpty(recordFields) {
+    return
+  }
+  val discardedDiag: List[Diagnostic] = newList()
+  var i = 0
+  while i < files.count {
+    walkFileForFieldWriteChecks(files[i], recordFields, discardedDiag, into, funcSigs)
     i = i + 1
   }
 }

@@ -824,3 +824,117 @@ test "local variable shadowing a field name is not affected by the ESelf write c
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "V0015")), "shadowing local `total` reassignment: no V0015")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6596: whole-build field-write lock-safety audit
+// (`computeFieldLockSafetyForBuild`).  V0015 above only resolves same-file
+// `var`-local / `self` writes; every other write shape must exclude the
+// field NAME from `Msil.Codegen.lowerRecordMsil` / `Jvm.Codegen.lowerRecord`
+// locking it `initonly`/`ACC_FINAL`, or an unchecked write compiles into
+// invalid/crashing IL — see that function's doc comment for the full
+// rationale.  These tests exercise the audit function directly (not V0015's
+// diagnostics), covering the four #6596 scenarios plus the two safe cases.
+// ─────────────────────────────────────────────────────────────────────────────
+func lockSafety(src: in String): Map[String, Bool] {
+  val pr = parse(src)
+  val files: List[SourceFile] = newList()
+  files.add(pr.file)
+  val unsafeSet: Map[String, Bool] = newMap()
+  computeFieldLockSafetyForBuild(files, unsafeSet)
+  unsafeSet
+}
+
+func lockSafetyMulti(srcs: in List[String]): Map[String, Bool] {
+  val files: List[SourceFile] = newList()
+  var i = 0
+  while i < srcs.count {
+    val pr = parse(srcs[i])
+    files.add(pr.file)
+    i = i + 1
+  }
+  val unsafeSet: Map[String, Bool] = newMap()
+  computeFieldLockSafetyForBuild(files, unsafeSet)
+  unsafeSet
+}
+
+test "a field never written anywhere is safe to lock" {
+  val src = "package P\nrecord Point {\n  x: Int\n  y: Int\n}\nfunc f(): Point {\n  Point(x = 1, y = 2)\n}\n"
+  val unsafeSet = lockSafety(src)
+  assertTrue(not (unsafeSet.containsKey("x")), "never-written x: safe to lock")
+  assertTrue(not (unsafeSet.containsKey("y")), "never-written y: safe to lock")
+}
+
+test "a field written only through a checked var-local shape is safe to lock" {
+  val src = "package P\nrecord Counter {\n  var count: Int\n  label: String\n}\nfunc f(): Int {\n  var c = Counter(count = 0, label = \"x\")\n  c.count = c.count + 1\n  c.count\n}\n"
+  val unsafeSet = lockSafety(src)
+  assertTrue(not (unsafeSet.containsKey("count")), "checked var-local write: safe to lock")
+  assertTrue(not (unsafeSet.containsKey("label")), "never-written label: safe to lock")
+}
+
+test "a field written only through a checked self write is safe to lock" {
+  val src = "package P\nrecord Counter2 {\n  var total: Int\n}\ninterface Nudge {\n  func poke(): Unit\n}\nimpl Nudge for Counter2 {\n  func poke(): Unit {\n    self.total = 0\n  }\n}\n"
+  val unsafeSet = lockSafety(src)
+  assertTrue(not (unsafeSet.containsKey("total")), "checked self write: safe to lock")
+}
+
+// Scenario 1 (#6596): a nested field-access chain write (`c.inner.n = 1`) is
+// invisible to V0015's `EMember(EPath, field)`/`EMember(ESelf, field)`
+// receiver match — the receiver here is itself an `EMember`.  Before this
+// fix, codegen locked `Inner.n` regardless, so this write compiled into a
+// field store that violates MSIL `initonly` / JVM `ACC_FINAL` — invalid IL
+// CoreCLR tolerates at runtime but the JVM verifier rejects with
+// `IllegalAccessError`.
+test "nested field-access chain write marks the field unsafe to lock (#6596 scenario 1)" {
+  val src = "package P\nrecord Inner {\n  n: Int\n}\nrecord Outer {\n  inner: Inner\n}\nfunc f(c: inout Outer): Unit {\n  c.inner.n = 1\n}\n"
+  val unsafeSet = lockSafety(src)
+  assertTrue(unsafeSet.containsKey("n"), "nested-path write to Inner.n: unsafe to lock")
+}
+
+// Scenario 2 (#6596): a write through a `val`-bound receiver is a pre-
+// existing, documented V0015 gap (see the "non-var field write through a
+// val binding is not tracked" test above) — but the lock-safety audit must
+// still catch it, or the field gets locked at the IL/bytecode level despite
+// the write compiling cleanly.
+test "val-bound receiver write marks the field unsafe to lock (#6596 scenario 2)" {
+  val src = "package P\nrecord Box {\n  n: Int\n}\nfunc f(): Int {\n  val b = Box(n = 0)\n  b.n = 1\n  b.n\n}\n"
+  val unsafeSet = lockSafety(src)
+  assertTrue(unsafeSet.containsKey("n"), "val-bound write to Box.n: unsafe to lock")
+}
+
+// Scenario 4 (#6596): a field passed as an `out`/`inout` call argument
+// (`bump(c.pos)`) is a write-back target the JVM `writeBackHolderArg` /
+// MSIL `emitByrefArgMsil` codegen paths `putfield`/`stfld` into after the
+// call, but V0015's `walkExprForFieldWrite` never inspected call arguments
+// at all.
+test "out/inout call-argument write-back marks the field unsafe to lock (#6596 scenario 4)" {
+  val src = "package P\nrecord Cursor {\n  pos: Int\n}\nfunc bump(n: inout Int): Unit {\n  n = n + 1\n}\nfunc f(c: inout Cursor): Unit {\n  bump(c.pos)\n}\n"
+  val unsafeSet = lockSafety(src)
+  assertTrue(unsafeSet.containsKey("pos"), "inout call-arg write-back to Cursor.pos: unsafe to lock")
+}
+
+// A plain (`in`-mode, the default) call argument is not a write-back target
+// — passing a field by value must not poison it.
+test "a plain by-value call argument does not mark the field unsafe to lock" {
+  val src = "package P\nrecord Cursor {\n  pos: Int\n}\nfunc show(n: Int): Unit {\n}\nfunc f(c: inout Cursor): Unit {\n  show(c.pos)\n}\n"
+  val unsafeSet = lockSafety(src)
+  assertTrue(not (unsafeSet.containsKey("pos")), "by-value call-arg read of Cursor.pos: safe to lock")
+}
+
+// Scenario 3 (#6596) proxy: a genuinely cross-*package* restored-dependency
+// write is outside what any same-invocation static analysis can see (see
+// `computeFieldLockSafetyForBuild`'s doc comment) — but a write reaching a
+// record from a DIFFERENT file in the SAME build (the common case for an
+// actual multi-package `lyric build`/`lyric test` invocation, since the
+// self-hosted bridges hand every in-build package's parsed source to this
+// audit together) must still be caught.  This is the closest reproduction of
+// the "Other is a different package" scenario reachable from a single-file
+// self-test.
+test "a write reaching a record from a different FILE in the same build marks the field unsafe to lock (#6596 scenario 3 proxy)" {
+  val defSrc = "package Other\npub record Cursor {\n  pos: Int\n}\n"
+  val useSrc = "package Consumer\nimport Other\nfunc bump(c: inout Other.Cursor): Unit {\n  c.pos = c.pos + 1\n}\n"
+  val srcs: List[String] = newList()
+  srcs.add(defSrc)
+  srcs.add(useSrc)
+  val unsafeSet = lockSafetyMulti(srcs)
+  assertTrue(unsafeSet.containsKey("pos"), "cross-file write to Other.Cursor.pos: unsafe to lock")
+}

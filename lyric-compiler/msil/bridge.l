@@ -277,6 +277,12 @@ pub func compileToMsilWithVersion(
   val emptyNugetPaths: List[String] = newList()
   val verParts = parseSemverMajorMinor(packageVersion)
   val cctx = newCodegenCtx(pkgName, emptyArtifacts, emptyNugetPaths, verParts[0], verParts[1])
+  // #6596: whole-build (here: whole-file) field-write lock-safety audit —
+  // must run BEFORE `lowerRecordMsil` for any record in `file` so the
+  // computed unsafe-name set is populated when field flags are decided.
+  val singleFileForAudit: List[SourceFile] = newList()
+  singleFileForAudit.add(file)
+  computeFieldLockSafetyForBuild(singleFileForAudit, cctx.unsafeFieldLockNames)
   // Allocate cross-assembly MemberRef rows for every stdlib `pub func`
   // so that user code calling `Std.X.foo(...)` emits a real
   // `call <memberref>` instead of falling through to the `MObject`
@@ -975,6 +981,15 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // falls back to 0.0.0.0.
   val pvParts = parseSemverMajorMinor(packageVersion)
   val cctx = newCodegenCtx(assemblyName, restoredArtifacts, nugetAssemblyPaths, pvParts[0], pvParts[1])
+  // #6596: whole-build field-write lock-safety audit, across every in-build
+  // package's woven source — must run before ANY package's `lowerRecordMsil`
+  // (the codegenMPackage loop below) so the unsafe-name set this build's
+  // record fields are locked against is fully populated first.  A record
+  // imported from a SEPARATELY restored/precompiled dependency is outside
+  // `perPkgFiles` (it has no source here, only compiled metadata) — see
+  // `Lyric.ModeChecker.computeFieldLockSafetyForBuild`'s doc comment for why
+  // that residual gap is accepted, mirroring V0015's own cross-file scope.
+  computeFieldLockSafetyForBuild(perPkgFiles, cctx.unsafeFieldLockNames)
   // Allocate cross-assembly AssemblyRef / TypeRef / MemberRef rows for
   // every `pub func` declared in the stdlib so that user code which
   // calls `Std.X.foo(...)` (e.g. `Std.Encoding.tryDecodeBase64`)

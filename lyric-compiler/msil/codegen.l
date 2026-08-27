@@ -190,6 +190,16 @@ pub record CodegenCtx {
   distinctTryFromTokens: Map[String, Int]
   distinctTryFromRetTypes: Map[String, MsilType]
   fieldTokens: Map[String, Int]  // "ClassName/fieldName" → FieldDef token
+  // #6596: field NAMES (not "ClassName/fieldName" — see
+  // `Lyric.ModeChecker.computeFieldLockSafetyForBuild`'s doc comment for why
+  // this is name-keyed) that a whole-build write-safety audit found written
+  // through a shape V0015 doesn't resolve.  Populated once, in place, by the
+  // bridge right after this ctx is constructed (before any package's
+  // `lowerRecordMsil` runs) — empty here, so a caller that never runs the
+  // audit (nothing populates this map) locks every non-`var` field exactly
+  // as before.  Consulted by `lowerRecordMsil` to skip `initonly` for a field
+  // this build cannot prove has no unchecked write site.
+  unsafeFieldLockNames: Map[String, Bool]
   // Field metadata for cross-assembly generic union cases.  Both maps use the
   // same "ClassName/fieldName" and "ClassName/fieldN" key space as fieldTokens.
   // fieldSigBytes  → raw FieldSig blob (06 13 00 for VAR(0), etc.) used to
@@ -1941,6 +1951,7 @@ pub func newCodegenCtx(
     distinctTryFromTokens = newMap(),
     distinctTryFromRetTypes = newMap(),
     fieldTokens = fieldToks,
+    unsafeFieldLockNames = newMap(),
     fieldSigBytes = newMap(),
     fieldDeclaredNames = newMap(),
     ctorDefaultExprs = newMap(),
@@ -26421,8 +26432,22 @@ pub func lowerRecordMsil(cctx: in CodegenCtx, decl: in RecordDecl, pkgName: in S
         // follow-up (issue #6155 part 2b) first widened V0015's write-site
         // tracking to `inout` params and added `var` to every field genuinely
         // mutated through the `st: inout StateRecord` idiom across the
-        // compiler + stdlib tree — see docs/03-decision-log.md.
-        val recordFieldFlags = if f.isMutable { FDA_PUBLIC } else { FDA_PUBLIC + FDA_INIT_ONLY }
+        // compiler + stdlib tree — see docs/03-decision-log.md.  #6596: a
+        // non-`var` field is locked `initonly` ONLY when the whole-build
+        // write-safety audit (`Lyric.ModeChecker.computeFieldLockSafetyForBuild`,
+        // wired in by the bridge before any package's codegen runs) found no
+        // unchecked write site for this field NAME anywhere in the build —
+        // see that function's doc comment for the full rationale (V0015 only
+        // resolves same-file `var`-local/`self` writes; every other write
+        // shape, e.g. a nested field-access chain or an inout call-argument
+        // write-back, is unchecked and would otherwise let codegen mark a
+        // field `initonly` that some unchecked write site then violates —
+        // invalid IL that CoreCLR silently tolerates at runtime, diverging
+        // from JVM's `IllegalAccessError`).  `unsafeFieldLockNames` is empty
+        // when the bridge never ran the audit, so an un-audited caller locks
+        // exactly as before.
+        val skipLock = f.isMutable or cctx.unsafeFieldLockNames.containsKey(f.name)
+        val recordFieldFlags = if skipLock { FDA_PUBLIC } else { FDA_PUBLIC + FDA_INIT_ONLY }
         fields.add(
           MField(flags = recordFieldFlags, name = f.name, fieldType = recordFieldMsilType(cctx, f.ty, pkgName, generics))
         )

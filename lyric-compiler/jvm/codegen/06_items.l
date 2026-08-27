@@ -10,6 +10,7 @@ import Std.Collections
 import Std.String
 import Lyric.Parser
 import Lyric.BareFuncRef as BareFuncRef
+import Lyric.ModeChecker
 import Jvm.Classfile
 import Jvm.Lowering
 import Jvm.AutoFfi
@@ -1246,6 +1247,13 @@ pub func lowerRecord(
   // in-package class `<pkgName>/Handler` (`NoClassDefFoundError` at link
   // time).
   aliasTargets: in Map[String, TypeExpr],
+  // #6596: field NAMES the whole-build write-safety audit found written
+  // through a shape V0015 doesn't resolve — see `Msil.Codegen.lowerRecordMsil`'s
+  // matching comment and `Lyric.ModeChecker.computeFieldLockSafetyForBuild`'s
+  // doc comment for the full rationale.  Empty when the caller never ran the
+  // audit, so an un-audited caller locks every non-`var` field exactly as
+  // before this fix.
+  unsafeFieldLockNames: in Map[String, Bool],
 ): LRecord {
   val className = pkgName + "/" + decl.name
   // Generic type params erase to `Object` (docs/44 M-1 / Q-J001) so a `T`-typed
@@ -1264,8 +1272,12 @@ pub func lowerRecord(
         // level.  See the MSIL twin (`Msil.Codegen.lowerRecordMsil`'s
         // `RMField` arm) for the full safety rationale (D-progress-706
         // part 2b widened V0015 + added `var` to every genuinely-mutated
-        // `inout`-threaded field first).
-        val recordFieldFlags = if f.isMutable { 0x0001 } else { 0x0001 + 0x0010 }
+        // `inout`-threaded field first).  #6596: a field the whole-build
+        // write-safety audit could not vouch for (a write shape V0015 can't
+        // resolve) is also left unlocked, rather than risk emitting a
+        // `putfield` the JVM verifier rejects with `IllegalAccessError`.
+        val skipLock = f.isMutable or unsafeFieldLockNames.containsKey(f.name)
+        val recordFieldFlags = if skipLock { 0x0001 } else { 0x0001 + 0x0010 }
         // public [+ final]
         fields.add(
           LField(
@@ -5421,7 +5433,13 @@ pub func codegenPackage(file: in SourceFile): LPackage {
   collectFileProjectables(file, allProjFqns)
   registerProjectableViews(file, allProjFqns, cases, sigs)
   val autoFfi = buildAutoFfiCtx()
-  codegenPackageWithSigs(file, sigs, cases, ctors, autoFfi, allProjFqns)
+  // #6596: single-file entry point, so its "whole build" is just this file —
+  // see `Lyric.ModeChecker.computeFieldLockSafetyForBuild`'s doc comment.
+  val singleFileForAudit: List[SourceFile] = newList()
+  singleFileForAudit.add(file)
+  val unsafeFieldLockNames: Map[String, Bool] = newMap()
+  computeFieldLockSafetyForBuild(singleFileForAudit, unsafeFieldLockNames)
+  codegenPackageWithSigs(file, sigs, cases, ctors, autoFfi, allProjFqns, unsafeFieldLockNames)
 }
 
 // Codegen a package against a pre-built call registry `funcSigs` spanning the
@@ -5435,9 +5453,10 @@ pub func codegenPackageWithSigs(
   ctors: in Map[String, String],
   autoFfi: in AutoFfiCtx,
   allProjFqns: in Map[String, Bool],
+  unsafeFieldLockNames: in Map[String, Bool],
 ): LPackage {
   val emptySeed: Map[String, String] = newMap()
-  codegenPackageWithSigsSeeded(file, funcSigs, caseFields, ctors, autoFfi, allProjFqns, emptySeed)
+  codegenPackageWithSigsSeeded(file, funcSigs, caseFields, ctors, autoFfi, allProjFqns, emptySeed, unsafeFieldLockNames)
 }
 
 // As `codegenPackageWithSigs`, but resolving extern-type aliases against the
@@ -5455,6 +5474,10 @@ pub func codegenPackageWithSigsSeeded(
   // independent — the JVM counterpart of the MSIL `allProjFqns`.
   allProjFqns: in Map[String, Bool],
   externSeed: in Map[String, String],
+  // #6596: see `lowerRecord`'s matching parameter doc comment.  Defaults to
+  // an empty map at every existing caller below except the ones this fix
+  // updates to pass a real, whole-build-computed set.
+  unsafeFieldLockNames: in Map[String, Bool],
 ): LPackage {
   val pkgName = segmentsToJvmPath(file.packageDecl.path.segments)
   val funcsClass = pkgName
@@ -5705,7 +5728,8 @@ pub func codegenPackageWithSigsSeeded(
           closureAcc,
           usesLyricCount,
           importsStdString,
-          aliasTargets
+          aliasTargets,
+          unsafeFieldLockNames
         )
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
@@ -5763,7 +5787,8 @@ pub func codegenPackageWithSigsSeeded(
           closureAcc,
           usesLyricCount,
           importsStdString,
-          aliasTargets
+          aliasTargets,
+          unsafeFieldLockNames
         )
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
