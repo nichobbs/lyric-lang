@@ -3261,9 +3261,47 @@ func sliceElemTypeJvm(recvTy: in JvmType): JvmType {
   }
 }
 
+// Box a `.append`/slice-mutation scalar argument into the array's erased
+// `Object[]` element slot, widening it to the receiver's TRUE declared
+// numeric element type first when known (#5257): every `slice[T]` erases
+// uniformly to `JArray(Object)` on the JVM, so boxing the argument against
+// `erasedElemTy` alone boxes it as whatever its OWN natural type is (`Integer`
+// for a plain `Int` literal) regardless of the receiver's real element type —
+// a `slice[Long]` ends up holding a mix of `Long`- and `Integer`-boxed
+// elements once M6 numeric widening lets an `Int` argument satisfy a `Long`
+// parameter. `declaredElemTy` (from `indexedElemTypeOverride`, the same
+// bare-name/field declared-type registry `EIndex` narrowing already
+// consults) supplies the true target when the receiver resolves to a
+// tracked local/param/field; a reference-typed argument (already erased —
+// e.g. relayed from another `Object`-typed slot) or an unresolved declared
+// type falls back to the prior erased-target boxing unchanged.
+func coerceScalarToSliceElem(
+  insns: in List[LInsn],
+  argTy: in JvmType,
+  declaredElemTy: in JvmType,
+  erasedElemTy: in JvmType,
+): Unit {
+  if (not isRefJvm(argTy)) and isNumericJvm(declaredElemTy) {
+    coerceArgTo(insns, argTy, declaredElemTy)
+    boxIfNeeded(insns, declaredElemTy)
+  } else {
+    coerceArgTo(insns, argTy, erasedElemTy)
+  }
+}
+
 // `xs.append(x)`: a new slice one element longer than `xs`, `x` at the end.
-func lowerSliceAppendJvm(ctx: in FuncCtx, insns: in List[LInsn], recvTy: in JvmType, args: in List[CallArg]): JvmType {
+func lowerSliceAppendJvm(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  recv: in Expr,
+  recvTy: in JvmType,
+  args: in List[CallArg],
+): JvmType {
   val e = sliceElemTypeJvm(recvTy)
+  // The receiver's TRUE declared element type when resolvable (a nested-slice
+  // override, or "no override", both fall back to the erased `e` — see
+  // `coerceScalarToSliceElem`'s doc comment).
+  val declaredElemTy = indexedElemTypeOverride(ctx, recv)
   val recvSlot = allocSlot(ctx, "__sliceapp_recv_" + toString(ctx.slotTicker.count), recvTy)
   emitStore(insns, recvSlot, recvTy)
   emitLoad(insns, recvSlot, recvTy)
@@ -3279,7 +3317,7 @@ func lowerSliceAppendJvm(ctx: in FuncCtx, insns: in List[LInsn], recvTy: in JvmT
     insns.add(LAconstNull)
     JRef(className = "java/lang/Object")
   }
-  coerceArgTo(insns, argTy, e)
+  coerceScalarToSliceElem(insns, argTy, declaredElemTy, e)
   val argSlot = allocSlot(ctx, "__sliceapp_arg_" + toString(ctx.slotTicker.count), e)
   emitStore(insns, argSlot, e)
   val zeroSlot = storeIntConstSlotJvm(ctx, insns, 0)
@@ -3881,7 +3919,7 @@ func lowerMethodCall(
   match recvTy {
     case JArray(_) -> {
       if memberName == "append" and args.count == 1 {
-        return lowerSliceAppendJvm(ctx, insns, recvTy, args)
+        return lowerSliceAppendJvm(ctx, insns, recv, recvTy, args)
       } else if memberName == "concat" and args.count == 1 {
         return lowerSliceConcatJvm(ctx, insns, recvTy, args)
       } else if memberName == "slice" and args.count == 2 {

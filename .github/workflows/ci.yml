@@ -5064,6 +5064,16 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/generic_extern_jvm_self_test.l
+      # JVM twin of the dotnet-only slice[T].append numeric-widening
+      # regression (#5254 MSIL, #5257 JVM) that runs in
+      # compiler-self-tests-dotnet-a — every `slice[T]` erases uniformly to
+      # `Object[]` on the JVM, so an M6-numeric-widened `.append` argument
+      # used to box against the erased Object[] target (Integer) instead of
+      # the receiver's declared element type (Long).  Imports only `Std.*`.
+      - name: slice[T].append numeric-widening self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/slice_append_widening_self_test.l
       # Negative test: an ambiguous primitive-array overload must fail loud,
       # not silently guess.  A Lyric slice[T] argument erases to Object[]
       # before the JVM auto-FFI resolver ever sees it, so java.lang.String's
@@ -5116,7 +5126,7 @@ jobs:
       # the JVM kernel on this target; the test asserts three NIST SHA-512
       # vectors under `java`.  First native JVM self-test that depends on a
       # `_kernel_jvm`-only module.  Imports only `Std.*`.
-      # Concurrency cap (JVM): this job ran all 55 background steps at once —
+      # Concurrency cap (JVM): this job ran all 56 background steps at once —
       # each compiles in-process via Jvm.Bridge AND spawns a `java` process, the
       # heaviest self-test shape — which is well past the ~18 peak documented as
       # safe on the dotnet self-test jobs. Three barriers (here and two below)
