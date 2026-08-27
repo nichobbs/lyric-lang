@@ -114,6 +114,38 @@
 //! unboundedly, and defending against sustained attack traffic in the
 //! first place (rate limiting, WAF) is out of scope for a regex kernel.
 //!
+//! **Permit release is `defer`-guaranteed, not a post-`try` statement
+//! (#6711):** `raceWithDeadline`'s background-thread lambda releases
+//! `matchSemaphore` via `defer { matchSemaphore.release() }`, registered
+//! before the `try { action() } catch Bug as b { ... }` that runs the
+//! actual match — not as a plain statement placed after that block. A
+//! plain post-`try` statement only runs when the `try`/`catch` completes
+//! normally; anything that unwinds past the `catch` arm entirely would
+//! skip it and leak the permit forever (each occurrence permanently
+//! shrinking `maxConcurrentMatches` by one). `catch Bug` on THIS target
+//! lowers to `catch (java.lang.Throwable)` (`Jvm.Codegen`'s catch-class
+//! resolution, `codegen/05_stmts.l`) — the widest possible JVM catch,
+//! already covering ordinary exceptions and JVM `Error`s alike (a real
+//! `StackOverflowError` from a pathologically deep pattern was directly
+//! verified to still be caught by it) — so no ordinary fault actually
+//! escapes the existing `catch Bug` arm on this target today; `defer`
+//! is defense in depth against that invariant ever narrowing, not a fix
+//! for an exploitable escape verified to exist right now. It costs
+//! nothing to get right: `regex_jvm_semaphore_leak_self_test.l` pins a
+//! sustained real fault path (an out-of-range `$n` group reference in a
+//! replacement string, which throws `IndexOutOfBoundsException` from
+//! `Matcher.replaceAll` inside the raced closure, not a pattern-compile-
+//! time error) never exhausts `matchSemaphore` across many repeated
+//! calls. `defer`-inside-a-closure-body was itself verified against a
+//! real JVM build before landing (mirroring this file's own captured-
+//! `var`-in-`catch` note below): combined with a captured `AtomicBoolean`
+//! *and* an `AtomicReference` *and* a captured closure parameter (this
+//! module's exact shape) it lowers correctly; a simpler synthetic repro
+//! with a different capture/call shape was found to trip an unrelated,
+//! pre-existing `VerifyError: Operand stack overflow` in the JVM
+//! `defer`+`try`/`catch`-inside-a-closure `maxStack` calculation — not
+//! reachable from this module's actual shape, but real, tracked as #6714.
+//!
 //! Replacement-string semantics: Matcher.replaceAll treats `$n` group
 //! references the same way .NET substitutions do; Java additionally
 //! treats backslash as an escape in the replacement.
@@ -272,13 +304,15 @@ func raceWithDeadline(action: in () -> Unit, timeoutMs: in Long): RaceOutcome {
     // `setDaemon` call is needed here.
     val t = JThread.startVirtualThread(
       { ->
+        defer {
+          matchSemaphore.release()
+        }
         try {
           action()
         } catch Bug as b {
           hasFault.set(true)
           faultMessage.set(b.message)
-        }
-        matchSemaphore.release();
+        };
         ()
       }
     )

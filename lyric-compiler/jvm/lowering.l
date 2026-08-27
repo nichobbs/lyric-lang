@@ -6237,11 +6237,15 @@ pub union LPackageItem {
   // exposes no process-wide argv retrieval API, so the entry-point wrapper
   // stores the incoming `String[]` into this class's public static field
   // before forwarding to the Lyric `main`; `Std.EnvironmentHost`'s
-  // `hostGetCommandLineArgs` call sites are lowered directly to a `getstatic`
-  // read of it (`Jvm.Codegen`'s `lowerBuiltinOrStaticCall` in
-  // `codegen/04_calls.l`) instead of an ordinary function call.  A single
-  // non-final `[Ljava/lang/String;` field, default-null until `main` runs —
-  // no other field or method is needed.
+  // `hostGetCommandLineArgs` call sites are lowered directly to a
+  // null-checked `getstatic` read of it (`Jvm.Codegen`'s
+  // `lowerBuiltinOrStaticCall` in `codegen/04_calls.l` — #6587: a `null`
+  // read, e.g. from a module-level `val` initializer racing ahead of
+  // `main()` at class-init time, panics with a diagnostic naming that
+  // ordering hazard rather than surfacing as a bare NPE) instead of an
+  // ordinary function call.  A single non-final `[Ljava/lang/String;`
+  // field, default-null until `main` runs — no other field or method is
+  // needed.
   case LPRuntimeArgsHolder(className: String, fieldName: String)
 }
 

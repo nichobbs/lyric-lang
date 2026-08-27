@@ -6014,6 +6014,13 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/check-regex-redos.sh
 
+      # matchSemaphore fault-path permit-release regression on JVM (#6711)
+      # — see regex_jvm_semaphore_leak_self_test.l's header.
+      - name: Regex JVM semaphore leak self-test (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/regex_jvm_semaphore_leak_self_test.l
+
       # Std.Process.spawnPiped/pipedReadLine real-child-process round trip on
       # JVM (#6135) — builds a program that spawns a real `cat` subprocess
       # and drives 5 cases (single-line echo, multi-line ordering,

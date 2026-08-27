@@ -1123,23 +1123,49 @@ func isReservedMonadAccessorName(name: in String): Bool {
   name == "isOk" or name == "isErr" or name == "value" or name == "error" or name == "isSome" or name == "isNone"
 }
 
-// #6630: `recvRaw` structurally matches `Result[T, E]` / `Option[T]` (the
-// reserved bare name + arity `monadAccessorType` looks for) but is NOT the
-// genuine `Std.Core` type (that function already returned `None`), and
-// `name` is one of the six reserved accessor names. Called from
-// `inferMember`'s final fallback, only once every legitimate resolution
-// path (a real method/UFCS function the receiver's own type defines) has
-// already come up empty, so a same-shaped union that genuinely implements
-// its own `.isOk` etc. is unaffected. See the call site for why this
-// diagnostic needs to exist at all instead of relying on the general
-// unknown-member path.
-func monadAccessorShapeMismatchDiag(recvRaw: in Type, name: in String, span: in Span): Option[Diagnostic] {
+// #6630 / #6710: `recvRaw` structurally matches `Result[T, E]` / `Option[T]`
+// (the reserved bare name + arity `monadAccessorType` looks for), and
+// `name` is one of the six reserved accessor names, but `monadAccessorType`
+// already returned `None` for it. Called from `inferMember`'s final
+// fallback, only once every legitimate resolution path (a real
+// method/UFCS function the receiver's own type defines) has already come
+// up empty, so a same-shaped union that genuinely implements its own
+// `.isOk` etc. is unaffected. See the call site for why this diagnostic
+// needs to exist at all instead of relying on the general unknown-member
+// path.
+//
+// `monadAccessorType` returning `None` here has TWO distinct causes that
+// must NOT share the same wording (#6710 review finding): either (a)
+// `recvRaw` is the genuine `Std.Core.Result`/`Option`, but `name` is the
+// OTHER monad's accessor (`.isSome`/`.isNone` on a real `Result`, or
+// `.isOk`/`.isErr`/`.error` on a real `Option` — `monadAccessorType` only
+// grants each monad its own accessor set, so this falls through even
+// though the type identity check passes), or (b) `recvRaw` is a genuinely
+// foreign lookalike type outside `Std.Core`. Re-running
+// `isStdCoreMonadType` (the same identity check `monadAccessorType`
+// itself uses) distinguishes the two: case (a) never mentions a foreign
+// type (there isn't one), case (b) keeps the original "declared outside
+// Std.Core" wording.
+func monadAccessorShapeMismatchDiag(
+  tbl: in SymbolTable, recvRaw: in Type, name: in String, span: in Span
+): Option[Diagnostic] {
   if not isReservedMonadAccessorName(name) {
     return None
   }
   match unrefine(recvRaw) {
-    case TyUser(_, nm, targs) -> {
+    case TyUser(tid, nm, targs) -> {
       if nm == "Result" and targs.count == 2 {
+        if isStdCoreMonadType(tbl, tid, "Result") {
+          return Some(
+            value = errorDiagnostic(
+              "T0124",
+              "no member '" + name + "' on type 'Result' -- Result's accessors are .isOk/.isErr/.value/.error; '" +
+                name +
+                "' is Option's accessor, not Result's",
+              span
+            )
+          )
+        }
         return Some(
           value = errorDiagnostic(
             "T0124",
@@ -1150,6 +1176,17 @@ func monadAccessorShapeMismatchDiag(recvRaw: in Type, name: in String, span: in 
         )
       }
       if nm == "Option" and targs.count == 1 {
+        if isStdCoreMonadType(tbl, tid, "Option") {
+          return Some(
+            value = errorDiagnostic(
+              "T0124",
+              "no member '" + name + "' on type 'Option' -- Option's accessors are .isSome/.isNone/.value; '" +
+                name +
+                "' is Result's accessor, not Option's",
+              span
+            )
+          )
+        }
         return Some(
           value = errorDiagnostic(
             "T0124",
@@ -2012,24 +2049,27 @@ func inferMember(
         return TyError
       }
       // #6630: a receiver that structurally LOOKS like `Result[T, E]` /
-      // `Option[T]` (same reserved bare name + arity) but resolved to a
-      // DIFFERENT type than the genuine `Std.Core` one (`monadAccessorType`
-      // above already returned `None` for it) would otherwise fall through
-      // silently here: unions are never "member-complete" (docs/59 A5), so
-      // `maybeUnknownMemberDiag` below stays lenient and emits nothing,
-      // reaching codegen as an unresolved `TyError` member read -- the
-      // exact #5183 miscompile this whole accessor feature exists to
-      // prevent, just for a foreign `Result`/`Option` instead of the real
-      // one. Diagnose it explicitly. Placed AFTER the `cands.count > 0` /
-      // `T0116` checks above (both already checked this exact receiver+name
-      // and came up empty before reaching here), so a same-shaped union
-      // that genuinely declares its own real method or dot-named UFCS
-      // function under one of these six names is unaffected — verified for
-      // the dot-named case, which resolves to `T0116` ("call it as
-      // 'isOk(...)'"), not this diagnostic. An unrelated genuinely-unknown
-      // member on the same union still falls through to the ordinary
-      // (silent, by design) union member-access path below.
-      match monadAccessorShapeMismatchDiag(recvRaw, name, span) {
+      // `Option[T]` (same reserved bare name + arity), and `name` is one of
+      // the six reserved accessor names, but `monadAccessorType` above
+      // already returned `None` for it — either because this IS the
+      // genuine `Std.Core` type but `name` is the OTHER monad's accessor,
+      // or because it's a genuinely foreign lookalike type
+      // (`monadAccessorShapeMismatchDiag` distinguishes the two, #6710) —
+      // would otherwise fall through silently here: unions are never
+      // "member-complete" (docs/59 A5), so `maybeUnknownMemberDiag` below
+      // stays lenient and emits nothing, reaching codegen as an unresolved
+      // `TyError` member read -- the exact #5183 miscompile this whole
+      // accessor feature exists to prevent. Diagnose it explicitly. Placed
+      // AFTER the `cands.count > 0` / `T0116` checks above (both already
+      // checked this exact receiver+name and came up empty before reaching
+      // here), so a same-shaped union that genuinely declares its own real
+      // method or dot-named UFCS function under one of these six names is
+      // unaffected — verified for the dot-named case, which resolves to
+      // `T0116` ("call it as 'isOk(...)'"), not this diagnostic. An
+      // unrelated genuinely-unknown member on the same union still falls
+      // through to the ordinary (silent, by design) union member-access
+      // path below.
+      match monadAccessorShapeMismatchDiag(tbl, recvRaw, name, span) {
         case Some(d) -> {
           diag.add(d)
           return TyError
