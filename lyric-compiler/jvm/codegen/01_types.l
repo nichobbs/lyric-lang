@@ -1677,8 +1677,12 @@ pub func tryQualifiedModuleValJvm(ctx: in FuncCtx, expr: in Expr): Option[JvmFun
 // `checkcast` the erased `Object` element back to its concrete class.  An
 // element naming one of the enclosing declaration's own type parameters is
 // skipped: it erases to `Object`, so there is nothing concrete to narrow to.
-// `Map` types are NOT recorded — the HashMap indexing arm is value-typed by
-// its own path and a 2-arg entry would never be consulted anyway.
+// `Map[K, V]` is ALSO recorded (#5451), as the `[K, V]` two-element list the
+// call-derived path (`returnTypeGenericArgs`'s `TGenericApp` arm) already
+// produces for a `Map`-returning call: `indexedElemTypeOverride`'s general
+// arm consults index 1 (`V`) for a 2-element list, so a bare-name `Map[K, V]`
+// receiver's `m[k]` read narrows exactly like a `List[Elem]` receiver's
+// `xs[i]` does, instead of staying erased `Object`.
 pub func recordDeclaredElemType(ctx: in FuncCtx, name: in String, ty: in TypeExpr, typeParams: in List[String]): Unit {
   val elems: List[TypeExpr] = newList()
   match ty.kind {
@@ -1689,6 +1693,15 @@ pub func recordDeclaredElemType(ctx: in FuncCtx, name: in String, ty: in TypeExp
           case TAType(inner) -> elems.add(inner)
           case TAValue(_) -> ()
         }
+      } else if head.segments.count == 1 and lastSegment(head) == "Map" and args.count == 2 {
+        match args[0] {
+          case TAType(k) -> elems.add(k)
+          case TAValue(_) -> ()
+        }
+        match args[1] {
+          case TAType(v) -> elems.add(v)
+          case TAValue(_) -> ()
+        }
       }
     }
     case TParen(inner) -> {
@@ -1697,8 +1710,10 @@ pub func recordDeclaredElemType(ctx: in FuncCtx, name: in String, ty: in TypeExp
     }
     case _ -> ()
   }
-  if elems.count == 1 {
-    if typeParamIndexOf(elems[0], typeParams) >= 0 {
+  // The consulted index is always the LAST element: index 0 for a 1-element
+  // slice/List entry, index 1 (the value `V`) for a 2-element Map entry.
+  if elems.count == 1 or elems.count == 2 {
+    if typeParamIndexOf(elems[elems.count - 1], typeParams) >= 0 {
       return
     }
     if ctx.varGenericArgs.containsKey(name) {

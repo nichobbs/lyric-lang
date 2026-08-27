@@ -35954,3 +35954,125 @@ the original `#5388` repro (`assertPanicsWith("...", "custom message
 here", { -> boom() })`) directly via `lyric run --target jvm`: prints
 `ok` post-fix (previously panicked with the wrong message); `--target
 dotnet` was already correct and remains correct.
+
+---
+
+## D-progress-805 — JVM: `Map[K, V]` value-type erasure confusion across sibling instantiations fixed (fixes #5451, root-causes the open half of #6347/#6357)
+
+**Status:** ACCEPTED
+
+**Context.** #5451 (filed integrating `lyric-session`, D-progress-631 item
+10): `InProcessSessionStore` — a `record` holding `var sessions: Map[String,
+SessionData]` next to a sibling `ttlSeconds: Long` field — crashed on
+`--target jvm` the moment a session actually stored data, historically with
+a runtime `ClassCastException` ("`Session.SessionData` cannot be cast to
+class `java.lang.Long`"); on this branch's current `main` (post-#6422's
+"fail loud instead of silently miscompile" change), the same root cause
+instead surfaces as a compile-time `error[J007]` refusal on the value's
+first typed use. Filed alongside the same family as #5439 (`slice[Record]`
+field access) and #5444 (union-case field accessor), whose fixes established
+the `elem:<class>#<field>` funcSigs registry + `ctx.varGenericArgs` bare-name
+convention this entry extends — but `erased_element_checkcast_jvm_self_test.l`'s
+own header (added fixing #5444) explicitly flagged `Map[K, V]` VALUES as
+"remain NOT covered," anticipating exactly this gap.
+
+**Root cause.** Three independent gaps, all in `lyric-compiler/jvm/`:
+
+1. `recordDeclaredElemType` (`codegen/01_types.l`) and `registerFieldElemSig`
+   (`codegen/06_items.l`) — the declared-element-type registries #5439/#5444
+   built — only recognized `slice[Elem]`/bare `List[Elem]` shapes; a `Map[K,
+   V]`-typed parameter, local, or record field never got its `V` recorded
+   anywhere.
+2. `indexedElemTypeOverride` (`codegen/02_exprs.l`) only consulted a
+   single-element `varGenericArgs`/`retGenericArgs` entry (the slice/List
+   convention); even where a 2-arg entry already existed incidentally (e.g. a
+   `Map[String, Int]`-returning function's call-derived `retGenericArgs`,
+   which `returnTypeGenericArgs` has always extracted generically for any
+   `TGenericApp`), it was ignored.
+3. The `EIndex` `HashMap.get` codegen arm computed `elemOverride` up front
+   (mirroring the array/`ArrayList.get` arms) but never applied it — always
+   returning a hard-coded, unconditional `JRef("java/lang/Object")`.
+
+**Fix.** `recordDeclaredElemType` and `registerFieldElemSig` gained a
+`Map`-with-2-type-args arm recording `V` (the value type) — for
+`registerFieldElemSig` under the SAME `elem:<class>#<field>` key slice/List
+already uses (a field is only ever one collection shape, so no ambiguity);
+for `recordDeclaredElemType`, as a 2-element `[K, V]` list matching the
+shape `returnTypeGenericArgs` already produces for a call-derived binding.
+`indexedElemTypeOverride`'s general arg-count check now treats a 2-element
+entry as `V` at index 1 (alongside the existing 1-element-at-index-0 slice/
+List convention). The `HashMap.get` `EIndex` arm now calls
+`applyIndexedElemOverride` with the resolved override, exactly like the
+`ArrayList.get`/array arms already did, instead of discarding it.
+
+**Scoping bug found and fixed during this same development pass (before
+landing): `indexedElemTypeOverride` is a SHARED helper — it also backs
+`SFor`'s loop-iterable element narrowing (`codegen/05_stmts.l`), where a
+2-arg return type does NOT reliably mean "Map's `V`".** Naively extending
+the general arg-count check to *every* caller regressed
+`map_iteration_jvm_self_test.l`'s `mapKeys`/`mapEntries`/`mapPutAll` cases
+(discovered by running the broader Map/Collections self-test sweep before
+considering the fix done, per this repo's own regression-testing
+convention): `Std.CollectionsHost.MapKeyCollection[K, V]` (`extern type
+... = "java.util.Set"`, aliased with 2 phantom type params purely for
+symmetry with `Map[K, V]` even though a `Set` only ever holds `K`) is a
+real 2-type-param generic whose iterated element is the FIRST arg, not the
+second. `Std.Collections.mapKeys[K, V]`'s own `for k in dictGetKeys(m) {
+result.add(k) }` loop — once `dictGetKeys`'s `MapKeyCollection[K, V]`
+return type got monomorphized to concrete `<String, Int>` args at the
+call's compile time — hit the new count-2 branch and wrongly narrowed the
+loop's `String` key element to `Int`'s class, a `ClassCastException`
+("`String` cannot be cast to `Integer`") at runtime. Root-fixed (not
+special-cased around `MapKeyCollection` by name) by adding an
+`allowMapValueArg: Bool` parameter to `indexedElemTypeOverride`, threaded
+through its two recursive call sites (`EParen`, and `staticBaseClass`'s
+chained-`EIndex` arm from #6493): `true` at both real `EIndex` call sites
+(the type checker only ever lets a genuine `Map[K, V]` be `[k]`-subscripted,
+so a 2-arg entry reaching either site is unambiguous), `false` at the
+`SFor` call site (preserves that site's pre-existing, safe single-arg-only
+behaviour — an unrecognized 2-arg iterable stays erased `Object`, exactly
+as before this fix).
+
+**Regression test.** Extended `erased_element_checkcast_jvm_self_test.l`
+(the existing #5439/#5444/#5453 CI-gated self-test whose own header
+anticipated this gap) with a new section 7 (4 cases): a record with two
+sibling `Map[K, V]` fields of different value types (`Map[String, Long]`
+next to `Map[String, Pt]`, the exact `InProcessSessionStore` shape) read
+through `self.field[key]` inside `impl` methods; a bare-name annotated
+`Map[String, Record]` local; and a call-derived unannotated `Map[String,
+Record]` local. Updated the file's header comment to describe the `Map[K,
+V]` coverage and the `allowMapValueArg` scoping rationale.
+
+**Verification.** `erased_element_checkcast_jvm_self_test.l`: 16/16 on
+`--target jvm` and `--target dotnet` (dotnet was never broken — MSIL
+reifies generics through its own instantiation model). `lyric-session`'s
+full suite (`lyric test --manifest lyric-session/lyric.toml`) on both
+targets: `Session.SessionFixationTests` 5/5 including the exact #5451 repro
+("set() succeeds for an id obtained via create()"), `Session.SessionStoreTests`
+15/15, `Session.SensitiveUrlTests` 11/11, `Session.SessionCookieTests` 10/10,
+`Session.SessionConfigEnvTests` 6/6 — identical pass/fail shape on both
+targets, the sole failure (`Session.SessionRedisJvmTests`, `@cfg(feature =
+"jvm")`-gated, needs `--features jvm` + a live Redis, not exercised here)
+pre-existing and unrelated. Broader Map/Collections regression sweep on
+both targets: `map_iteration_jvm_self_test.l` 5/5 (the file that caught the
+scoping bug above), `subscript_assign_jvm_self_test.l` 13/13,
+`map_key_self_test.l` 8/8, `map_option_self_test.l` 6/6,
+`map_value_self_test.l` 10/10, `nested_generic_self_test.l` 8/8;
+`map_enhancements_self_test.l`'s one pre-existing J007 failure (a
+`List[MapEntry[K,V]]`-element field-read gap, unrelated to `Map` value
+narrowing) confirmed present identically on the pre-fix baseline, not a
+regression. Also re-ran `bitwise_self_test.l` (10/10),
+`async_spawn_self_test.l` (26/26), `block_shadow_self_test.l` (20/20), and
+`chained_elem_jvm_self_test.l` (2/2, the #6493 chained-index family this
+fix's `staticBaseClass` call site shares) on both targets as a general
+codegen-path sanity sweep, since this fix touches the shared
+`indexedElemTypeOverride`/`EIndex`/`SFor` machinery those tests also
+exercise — all green, no regressions.
+
+**Related:** #5439, #5442, #5444, #5451, #5456 (the erased-generic-
+confusion family this entry closes the `Map`-value instance of), #6347,
+#6357 (D-progress-754 fixed only the containment/surfacing half of these;
+their root-cause half — "a JVM generics-erasure gap in member access on a
+generic-collection element" — is this entry's fix), #6493 (the chained-
+index `staticBaseClass` machinery this fix's `allowMapValueArg` threading
+touches), docs/44 m-97.

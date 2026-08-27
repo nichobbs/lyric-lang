@@ -3614,11 +3614,13 @@ func registerInstanceSigErased(
 }
 
 // Register a record/protected/opaque field's DECLARED `slice[Elem]` /
-// `List[Elem]` element type under the pseudo-key `elem:<class>#<field>`
-// (#5444, following the `field:` / `enum:` / `enumcase:` funcSigs-key
-// precedents).  `indexedElemTypeOverride`'s `EMember` / bare-self-field arms
-// consult it so an indexed element read through a FIELD receiver
-// (`self.mws[self.idx]` — the lyric-web `MiddlewareChain` shape) narrows the
+// `List[Elem]` element type — or a `Map[K, V]` field's VALUE type `V`
+// (#5451) — under the pseudo-key `elem:<class>#<field>` (#5444, following
+// the `field:` / `enum:` / `enumcase:` funcSigs-key precedents).
+// `indexedElemTypeOverride`'s `EMember` / bare-self-field arms consult it so
+// an indexed element read through a FIELD receiver (`self.mws[self.idx]` —
+// the lyric-web `MiddlewareChain` shape; `self.sessions[id]` — a
+// `Map[String, SessionData]` field, the lyric-session shape) narrows the
 // erased `Object` element back to its concrete class, exactly as the
 // bare-name `varGenericArgs` path already does for parameters and locals.
 // The element is resolved eagerly against the DECLARING file's own
@@ -3626,9 +3628,12 @@ func registerInstanceSigErased(
 // consumer reading the field sees the real class, never its own in-package
 // guess.  Only genuinely-narrowing elements are registered: the declaration's
 // own generic params (erase to Object), `Object` itself, and nested
-// slice/List elements (`JArray` — `coerceArgTo` has no Object→array narrowing
-// arm, mirroring `indexedElemTypeOverride`'s caution) are all skipped, so a
-// registered entry's `ret` can be applied unconditionally at the read site.
+// slice/List/Map elements (`JArray` — `coerceArgTo` has no Object→array
+// narrowing arm, mirroring `indexedElemTypeOverride`'s caution) are all
+// skipped, so a registered entry's `ret` can be applied unconditionally at
+// the read site.  Only `V` is ever recorded for a Map field — `K` is never
+// consulted by an indexed VALUE read, and this registry holds a single
+// `JvmFuncSig.ret`, not a `[K, V]` list.
 func registerFieldElemSig(
   into: in Map[String, JvmFuncSig],
   className: in String,
@@ -3645,6 +3650,11 @@ func registerFieldElemSig(
       if head.segments.count == 1 and lastSegment(head) == "List" and args.count == 1 {
         match args[0] {
           case TAType(inner) -> elems.add(inner)
+          case TAValue(_) -> ()
+        }
+      } else if head.segments.count == 1 and lastSegment(head) == "Map" and args.count == 2 {
+        match args[1] {
+          case TAType(v) -> elems.add(v)
           case TAValue(_) -> ()
         }
       }

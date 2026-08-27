@@ -1,16 +1,18 @@
 //! erased_element_checkcast_jvm_self_test.l — CI gate for the "erased
 //! collection element" family of JVM backend bugs (#5055, #5381, #5249,
-//! #5439, #5444, #5453): indexing a `List[T]`/`slice[T]` receiver whose
-//! DECLARED element type `T` is statically known (a bare-name parameter,
-//! `val`/`var` local with an explicit annotation, or a bare local bound from
-//! a call whose own declared return type is `slice[T]`/`List[T]`) left the
-//! erased `java/lang/Object` result of `aaload`/`ArrayList.get` uncast — any
-//! further typed use of the element (a `T`-specific instance method, a field
-//! read, a numeric intrinsic, interface dispatch) either panicked at compile
-//! time (auto-FFI: no matching method on `java.lang.Object`) or crashed at
-//! runtime (`ClassCastException`) or failed bytecode verification, depending
-//! on the consuming context. `--target dotnet` was never affected (MSIL
-//! reifies the element type through its own generic-instantiation model).
+//! #5439, #5444, #5453, #5451): indexing a `List[T]`/`slice[T]`/`Map[K, V]`
+//! receiver whose DECLARED element/value type is statically known (a
+//! bare-name parameter, `val`/`var` local with an explicit annotation, or a
+//! bare local bound from a call whose own declared return type carries the
+//! same shape) left the erased `java/lang/Object` result of `aaload`/
+//! `ArrayList.get`/`HashMap.get` uncast — any further typed use of the
+//! element (a `T`-specific instance method, a field read, a numeric
+//! intrinsic, interface dispatch) either panicked at compile time (auto-FFI:
+//! no matching method on `java.lang.Object`) or crashed at runtime
+//! (`ClassCastException`, possibly against an entirely unrelated type, #5451)
+//! or failed bytecode verification, depending on the consuming context.
+//! `--target dotnet` was never affected (MSIL reifies the element type
+//! through its own generic-instantiation model).
 //!
 //! Fix: `Jvm.Codegen.indexedElemTypeOverride` (jvm/codegen/02_exprs.l)
 //! resolves the indexed receiver's recorded element type (from
@@ -33,11 +35,27 @@
 //! register their declared element type at signature collection, and
 //! `indexedElemTypeOverride`'s `EMember` / bare-self-field arms consult it
 //! with the base's statically-resolved class (`staticBaseClass`).
-//! `Map[K, V]` VALUES remain NOT covered (`recordDeclaredElemType` and
-//! `registerFieldElemSig` both skip `Map`, and the `HashMap.get` `EIndex`
-//! arm has no override applied) — extending to Map would need a 2-argument
-//! `varGenericArgs` convention (record `[K, V]`, consult index 1) that
-//! isn't wired here either.
+//!
+//! `Map[K, V]` VALUES (#5451, section 7 below) are covered the same way: a
+//! `Map` field's `V` registers under the identical `elem:<class>#<field>`
+//! key (`registerFieldElemSig`'s new `Map`-with-2-args arm records only `V`
+//! at index 1 — `K` is never consulted by a value read); a bare-name/
+//! call-derived `Map[K, V]` receiver records the full `[K, V]` pair into
+//! `ctx.varGenericArgs` (`recordDeclaredElemType`'s new `Map` arm, and
+//! `returnTypeGenericArgs`'s existing generic `TGenericApp` arm for the
+//! call-derived path), and `indexedElemTypeOverride`'s general arm consults
+//! index 1 for a 2-element entry (index 0 remains the 1-element
+//! slice/List convention). The `HashMap.get` `EIndex` arm now applies the
+//! resolved override via `applyIndexedElemOverride`, exactly like the
+//! `ArrayList.get`/array arms already did — before this fix it discarded the
+//! override and always returned an unconditional, un-narrowed erased
+//! `Object`, which meant a Map[String, Record] field sharing a JVM bundle
+//! with an unrelated Map[String, Long] instantiation could — once ANY
+//! downstream consumer of the erased Object guessed a concrete type from
+//! some other coarser source — surface as a `ClassCastException` naming an
+//! entirely unrelated class (the `lyric-session` `InProcessSessionStore`
+//! repro: a `Map[String, SessionData]` field's `self.sessions[id]` read
+//! crashing next to a sibling `ttlSeconds: Long` field).
 //!
 //! NOT this fix (found while drafting this file, unrelated pre-existing bug,
 //! reported separately): a UFCS method declared OUTSIDE a record body
@@ -269,4 +287,74 @@ test "chained field access: holder.inner.f[i] narrows for interface dispatch (#5
 test "slice[Record] record field: self.f[0] inside a record method calls the element's own method (#5444)" {
   val srow = SquareRow(row = [Square(side = 8)])
   assertEqualInt(srow.firstArea(), 64, "self.row[0].area() inside a record method")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. Map[K, V] VALUES (#5451, the `lyric-session` `InProcessSessionStore`
+//    shape): a `Map`-typed field/local/call-return's VALUE narrows on
+//    `m[k]`, and does not resolve against an unrelated Map instantiation of
+//    a different value type sharing the same JVM compilation unit.
+// ─────────────────────────────────────────────────────────────────────────────
+record MultiValueStore {
+  var counts: Map[String, Long]
+  var points: Map[String, Pt]
+}
+
+interface Multi {
+  func setCount(id: in String, n: in Long): Unit
+  func getCount(id: in String): Long
+  func setPoint(id: in String, p: in Pt): Unit
+  func getPointA(id: in String): Int
+}
+
+impl Multi for MultiValueStore {
+  func setCount(id: in String, n: in Long): Unit {
+    self.counts[id] = n
+  }
+
+  func getCount(id: in String): Long {
+    self.counts[id]
+  }
+
+  func setPoint(id: in String, p: in Pt): Unit {
+    self.points[id] = p
+  }
+
+  func getPointA(id: in String): Int {
+    self.points[id].a
+  }
+}
+
+func makeStringPtMap(): Map[String, Pt] {
+  val m: Map[String, Pt] = newMap()
+  m["only"] = Pt(a = 33, b = "thirty-three")
+  m
+}
+
+test "record with two sibling Map[K, V] fields of different value types: self.field[key] reads narrow independently inside methods (#5451, the InProcessSessionStore shape)" {
+  val mvs = MultiValueStore(counts = newMap(), points = newMap())
+  mvs.setCount("x", 42i64)
+  mvs.setPoint("p", Pt(a = 5, b = "five"))
+  assertEqualLong(mvs.getCount("x"), 42i64, "self.counts[id] on a Map[String, Long] field narrows to Long")
+  assertEqualInt(
+    mvs.getPointA("p"),
+    5,
+    "self.points[id].a on a sibling Map[String, Record] field narrows to the record, not Long"
+  )
+}
+
+test "Map[String, Record] bare-name local: an explicit declared-type annotation narrows the value on index (#5451)" {
+  val m: Map[String, Pt] = newMap()
+  m["k"] = Pt(a = 21, b = "twenty-one")
+  val pt = m["k"]
+  assertEqualInt(pt.a, 21, "an annotated Map[String, Record] local's indexed value narrows via recordDeclaredElemType")
+}
+
+test "Map[String, Record] bare-name local bound from a call: the call-derived declared return narrows the value on index (#5451)" {
+  val m = makeStringPtMap()
+  assertEqualInt(
+    m["only"].a,
+    33,
+    "a call-derived, unannotated Map[String, Pt] binding narrows via returnTypeGenericArgs, no intervening `val e: Pt = m[\"only\"]`"
+  )
 }

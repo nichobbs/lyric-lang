@@ -362,7 +362,7 @@ func staticBaseClass(ctx: in FuncCtx, base: in Expr): Option[String] {
     // resolvable.  Mutually recursive with `indexedElemTypeOverride`, so an
     // arbitrarily deep `a[i].b[j].c[k]` chain resolves link by link.
     case EIndex(recvE, _) -> {
-      match indexedElemTypeOverride(ctx, recvE) {
+      match indexedElemTypeOverride(ctx, recvE, true) {
         case JRef(cls) -> {
           if cls == "java/lang/Object" {
             None
@@ -539,16 +539,33 @@ func builtinTypeNameForJvmElem(t: in JvmType): Option[String] {
   }
 }
 
-func indexedElemTypeOverride(ctx: in FuncCtx, recv: in Expr): JvmType {
+func indexedElemTypeOverride(ctx: in FuncCtx, recv: in Expr, allowMapValueArg: in Bool): JvmType {
   // Recorded/declared instantiation args first, resolved through the same
   // `scrutineeGenericArgs` extraction match-payload unboxing uses
   // (#4938/#4933/#5570): a bare name's recorded `varGenericArgs` entry, a
   // direct call's declared return instantiation (`for n in headerNamesOf(hm)`
   // — the phantom-generic extern-collection idiom), an instance-method call,
-  // or an `await`-wrapped call.
+  // or an `await`-wrapped call.  A single-arg entry is a `slice[Elem]`/
+  // `List[Elem]` receiver (`Elem` at index 0).  A two-arg entry is a
+  // `Map[K, V]` receiver (`V` at index 1, #5451) — but ONLY when the caller
+  // passes `allowMapValueArg`: a genuine `EIndex` receiver (`m[k]`, or a
+  // chained index base — `staticBaseClass`'s `EIndex` arm) is the only shape
+  // the type checker allows a 2-arg generic to be SUBSCRIPTED as, so a 2-arg
+  // entry there is unambiguously `Map[K, V]`.  A `for`-loop ITERABLE
+  // (`05_stmts.l`'s `SFor`) is a different call site sharing this same
+  // function: its 2-arg entries are just as often an unrelated 2-type-param
+  // collection view whose iterated element is the FIRST arg, not the second
+  // — `Std.CollectionsHost.MapKeyCollection[K, V]` (`java.util.Set`, iterates
+  // `K`) is the concrete counter-example (`mapKeys`'s `for k in
+  // dictGetKeys(m)`, #5451 regression during this fix's own development):
+  // guessing index 1 there narrowed the loop's `K` element to `V`'s class
+  // instead, a silent miscompile.  `SFor` passes `false` and keeps the
+  // pre-existing single-arg-only behaviour for its 2-arg case (no override,
+  // safe erased `Object`).
   val args = scrutineeGenericArgs(ctx, recv)
-  if args.count == 1 {
-    val resolved = sameTypeExprElemFallback(ctx, args[0], resolveConcreteTypeExpr(ctx, args[0]))
+  val valueArgIdx = if args.count == 1 { 0 } else if args.count == 2 and allowMapValueArg { 1 } else { -1 }
+  if valueArgIdx >= 0 {
+    val resolved = sameTypeExprElemFallback(ctx, args[valueArgIdx], resolveConcreteTypeExpr(ctx, args[valueArgIdx]))
     match resolved {
       case JRef(cls) -> {
         if cls != "java/lang/Object" {
@@ -590,7 +607,7 @@ func indexedElemTypeOverride(ctx: in FuncCtx, recv: in Expr): JvmType {
         case None -> JVoid
       }
     }
-    case EParen(inner) -> indexedElemTypeOverride(ctx, inner)
+    case EParen(inner) -> indexedElemTypeOverride(ctx, inner, allowMapValueArg)
     case _ -> JVoid
   }
 }
@@ -2049,7 +2066,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       // narrows to it (docs/59 §4.3 #5439 class) — resolved BEFORE the
       // receiver is lowered so the recorded entry is read against the
       // receiver's own binding.
-      val elemOverride = indexedElemTypeOverride(ctx, recv)
+      val elemOverride = indexedElemTypeOverride(ctx, recv, true)
       val recvTy0 = lowerExpr(ctx, insns, recv)
       // A list/map receiver whose static type is imprecise (an erased-`Object`
       // match binding, or an imported type's in-package guess) must be cast
@@ -2120,11 +2137,18 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             } else if idxCls == "java/util/HashMap" {
               // `m[k]` on a Map[K, V] → `HashMap.get(Object)` (#1707/m-5). The
               // key is boxed like any Object-erased argument; a primitive key
-              // (e.g. `Map[Int, V]`) must be boxed before the call.
+              // (e.g. `Map[Int, V]`) must be boxed before the call. The
+              // erased `Object` VALUE narrows to the receiver's recorded
+              // declared `V` when known (#5451 — `self.sessions[id]` on a
+              // `Map[String, SessionData]` field, mirroring the List-style
+              // arm below's element narrowing) instead of staying an
+              // unconditional erased `Object` regardless of what a coarser,
+              // unrelated `Map[String, Long]` elsewhere in the same bundle
+              // happens to look like.
               val kTy = lowerExpr(ctx, insns, indices[0])
               boxIfNeeded(insns, kTy)
               emitMapGet(insns)
-              JRef(className = "java/lang/Object")
+              applyIndexedElemOverride(insns, elemOverride)
             } else {
               // List-style indexing via ArrayList.get(int).  The erased
               // `Object` element narrows to the receiver's recorded concrete

@@ -1229,7 +1229,15 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           // mis-resolves — e.g. `for name in mapKeys(...)` fed
           // `HttpString.new(name)` the `ByteBuffer` ctor overload instead of
           // `String` (VerifyError at class load).
-          val forElemOverride = indexedElemTypeOverride(ctx, iter)
+          // `allowMapValueArg = false` (#5451 regression during this fix's
+          // own development): a `for`-loop iterable's 2-arg entry is not
+          // reliably `Map[K, V]`'s `V` — `Std.CollectionsHost
+          // .MapKeyCollection[K, V]` (`java.util.Set`, iterates `K`) is a
+          // real 2-arg-generic iterable whose element is the FIRST arg, so
+          // guessing index 1 here silently miscompiled `mapKeys`'s own
+          // `for k in dictGetKeys(m)` loop. See `indexedElemTypeOverride`'s
+          // own comment (`jvm/codegen/02_exprs.l`) for the full rationale.
+          val forElemOverride = indexedElemTypeOverride(ctx, iter, false)
           // A nested `slice[...]`/`List[...]` element (`Validation.all`'s
           // `slice[slice[ValidationError]]`, JVM nested-slice `for` bug —
           // see the tracking issue): resolved once here and consumed by
