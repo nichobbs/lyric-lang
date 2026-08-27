@@ -335,3 +335,52 @@ test "bare proceed(args) as the tail statement of a NESTED if-branch, followed b
     "annotate(7): nested-if proceed(args) result threads through the advice's own trailing statement"
   )
 }
+
+// The unconditional fix recurses through `rewriteBlock` uniformly for every
+// block-bearing statement kind, so the `if`-branch case above is not
+// special — but per review on PR #6621, verified rather than inferred for
+// `while` and `try` too (the same generic recursion, exercised concretely).
+aspect NestedWhileProceed {
+  matches: name in { annotateWhile }
+  around(args) -> ret {
+    var i = 0
+    while i < 1 {
+      i = i + 1
+      proceed(args)
+    }
+    println("after nested while")
+  }
+}
+
+func annotateWhile(x: in Int): Int {
+  x * 5
+}
+
+test "bare proceed(args) as the tail statement of a NESTED while-loop body, followed by more advice statements (#6624)" {
+  assertTrue(
+    annotateWhile(4) == 20,
+    "annotateWhile(4): nested-while proceed(args) result threads through the advice's own trailing statement"
+  )
+}
+
+aspect NestedTryProceed {
+  matches: name in { annotateTry }
+  around(args) -> ret {
+    try {
+      proceed(args)
+    } catch Bug {
+    }
+    println("after nested try")
+  }
+}
+
+func annotateTry(x: in Int): Int {
+  x * 7
+}
+
+test "bare proceed(args) as the tail statement of a NESTED try-block, followed by more advice statements (#6624)" {
+  assertTrue(
+    annotateTry(3) == 21,
+    "annotateTry(3): nested-try proceed(args) result threads through the advice's own trailing statement"
+  )
+}
