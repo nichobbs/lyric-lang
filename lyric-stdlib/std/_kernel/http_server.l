@@ -347,8 +347,12 @@ record H2ConnState {
   // its buffered headers/body), so the accumulator map only ever holds
   // in-progress non-rejected streams (#6145); this marker set is pruned when the
   // stream reaches END_STREAM or is reset. A rejected stream a client abandons
-  // (never END_STREAM/RST) retains only this tiny id marker — bounded by streams
-  // opened, consistent with the FSM's own retained-stream bookkeeping (#6064).
+  // (never END_STREAM/RST) retains only this tiny id marker — but unlike
+  // `H2Connection.streams` (bounded by `pruneClosedStreams`'s retention
+  // window, #6064), nothing here ever prunes an abandoned-and-forgotten
+  // entry, so this map is unbounded for the connection's lifetime on a
+  // pathological client that opens-then-abandons many over-cap streams. A
+  // narrower follow-up than #6064, not yet tracked separately.
   rejectedStreams: Map[Int, Bool]
 }
 

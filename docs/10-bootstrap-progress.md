@@ -31600,4 +31600,4 @@ sent unmodified (byte-for-byte, no parse), malformed JSON sent AS-IS (the
 #5813 regression case — the masking bug can never silently reappear), and
 `jsonString` correctly quoting/escaping a raw value.
 
-**Related:** #5813, #5797 (the change this reverts the auto-detect half of).
+**Related:** #5813, #5797 (the change this reverts the auto-detect half of), `docs/03-decision-log.md` D134 (the `@stable`-editing-protocol entry for this change).

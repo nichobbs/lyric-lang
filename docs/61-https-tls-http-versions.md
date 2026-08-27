@@ -728,8 +728,9 @@ items marked ∥ are independent and can proceed in parallel.
     priority tree (`PRIORITY` accepted + ignored). 62-case `@test_module`
     (`http_h2conn_tests.l`) drives the FSM end to end through the real
     `H2Frame` + `Hpack` calls, green on dotnet + jvm and wired into CI beside
-    the #5886/#5887 steps. Two tracked bounded characteristics filed (#6063
-    padded-DATA receive-accounting, #6064 closed-stream pruning)._
+    the #5886/#5887 steps. One remaining tracked bounded characteristic
+    (#6063 padded-DATA receive-accounting); #6064 (closed-stream pruning)
+    shipped via D-progress-631._
 14. ALPN wiring in the dotnet transport + e2e h2 self-test (own client +
     `curl --http2`). (After 13.) _Shipped (D-progress-704, #5889):
     `Std.TcpHost` advertises `h2` ahead of `http/1.1` via ALPN, and the dotnet
