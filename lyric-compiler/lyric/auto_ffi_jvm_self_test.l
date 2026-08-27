@@ -18,6 +18,11 @@
 //! install), the auto-FFI context falls back to the Object-typed guess.
 //! The fallback still links at runtime for methods whose return type is
 //! upcast-compatible with Object, but typed arithmetic comparisons would fail.
+//!
+//! The `#6662` instance-method / constructor overload-scoring tests near the
+//! end of this file additionally require a small fixture jar on
+//! LYRIC_FFI_JARS at compile time — build it with
+//! `scripts/ci/build-auto-ffi-fixture.sh` (see that test's header comment).
 @test_module
 package Lyric.AutoFfiJvmSelfTest
 
@@ -673,4 +678,50 @@ test "for-loop over an extern generic collection types the loop variable as the 
     loweredLen = loweredLen + lowered.length
   }
   assertEqualInt(loweredLen, 9, "\"alpha\".length (5) + \"beta\".length (4) == 9")
+}
+
+// ── #6662: instance-method / constructor overload scoring (Arrays.copyOf's
+// static-call fix extended to the other two auto-FFI call shapes) ───────────
+//
+// The #5526 fix (`ffiScoreDescFor`, jvm/codegen/04_calls.l) scores auto-FFI
+// overloads against a `slice[T]` argument's TRUE declared Lyric element type
+// rather than its erased `[Ljava/lang/Object;` runtime descriptor, so a
+// primitive-array overload (`int[]`) is no longer shadowed by a sibling
+// `Object[]`/generic-array overload that always "exact matches" the erased
+// descriptor. That fix originally wired `ffiScoreDescFor` into
+// `lowerAutoFfiStaticCall` only (`Arrays.copyOf` above) — the identical bug
+// was independently reachable through `lowerAutoFfiInstanceCall` and
+// `lowerAutoFfiConstructorCall`, which built their own argDescs and never
+// consulted the scoring hint.
+//
+// The JDK ships no INSTANCE method or CONSTRUCTOR pairing an `int[]`
+// overload against an `Object[]` overload on the same name (every such pair
+// in the JDK — `Arrays.copyOf`, `Arrays.hashCode`, … — is a STATIC utility,
+// already covered above), so this exercises the fix against a small fixture
+// class built for exactly this shape:
+// lyric-compiler/jvm/testdata/AutoFfiOverloadFixture.java, whose constructor
+// and `sumInts` instance method both offer an `int[]` overload beside an
+// `Object[]` overload. `kind()`/a `-1` sentinel prove which overload actually
+// ran, not just that SOME overload ran.
+//
+// Requires the fixture jar on LYRIC_FFI_JARS at compile time (the CI step
+// "Auto-FFI metadata self-test on JVM" builds it via
+// scripts/ci/build-auto-ffi-fixture.sh). To run locally:
+//   jar_path="$(bash scripts/ci/build-auto-ffi-fixture.sh)"
+//   LYRIC_FFI_JARS="$jar_path" ./bin/lyric test --target jvm \
+//     lyric-compiler/lyric/auto_ffi_jvm_self_test.l
+extern type OverloadFixture = "lyric.autoffi.fixture.AutoFfiOverloadFixture"
+
+test "constructor overload scoring: slice[Int] argument picks the int[] overload, not Object[] (#6662)" {
+  val values: slice[Int] = [1, 2, 3, 4]
+  val f = OverloadFixture.new(values)
+  assertEqual(f.kind(), "primitive", "OverloadFixture.new(slice[Int]) resolved the int[] constructor")
+  assertEqualInt(f.sum(), 10, "int[] constructor computed the real sum, not the Object[] overload's -1 sentinel")
+}
+
+test "instance-method overload scoring: slice[Int] argument picks the int[] overload, not Object[] (#6662)" {
+  val values: slice[Int] = [5, 6, 7]
+  val f = OverloadFixture.new(values)
+  val total = f.sumInts(values)
+  assertEqualInt(total, 18, "sumInts(slice[Int]) resolved the int[] overload, not the Object[] overload's -1 sentinel")
 }

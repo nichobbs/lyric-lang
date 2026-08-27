@@ -1658,7 +1658,11 @@ func emitFfiCoerce(ctx: in FuncCtx, insns: in List[LInsn], fromDesc: in String, 
 // resolves to a tracked local/param/field; this changes ONLY the descriptor
 // fed into overload scoring — the real erased descriptor (`argDescs`, used
 // for the actual per-argument coercion once an overload is picked) is
-// untouched.
+// untouched.  Shared by all three auto-FFI call shapes — static
+// (`lowerAutoFfiStaticCall`), instance (`lowerAutoFfiInstanceCall`), and
+// constructor (`lowerAutoFfiConstructorCall`) — since the identical
+// erased-array scoring ambiguity is reachable through any of them (#6662:
+// the original #5526 fix wired this into the static path only).
 func ffiScoreDescFor(ctx: in FuncCtx, arg: in Expr, erasedDesc: in String): String {
   if erasedDesc == "[Ljava/lang/Object;" {
     // `arg` is already known to be array/slice-erased here (the `erasedDesc`
@@ -1809,15 +1813,18 @@ func lowerAutoFfiInstanceCall(
 ): JvmType {
   val argBufs: List[List[LInsn]] = newList()
   val argDescs: List[String] = newList()
+  val scoreDescs: List[String] = newList()
   var i = 0
   while i < args.count {
     val buf: List[LInsn] = newList()
     val aTy = lowerCallArg(ctx, buf, args[i])
     argBufs.add(buf)
-    argDescs.add(jvmTypeToDescStr(aTy))
+    val erasedDesc = jvmTypeToDescStr(aTy)
+    argDescs.add(erasedDesc)
+    scoreDescs.add(ffiScoreDescFor(ctx, callArgExpr(args[i]), erasedDesc))
     i = i + 1
   }
-  match findBestInstanceMethod(ctx.autoFfi, ci, methodName, argDescs) {
+  match findBestInstanceMethod(ctx.autoFfi, ci, methodName, scoreDescs) {
     case None -> {
       var argStr = ""
       var ai = 0
@@ -1945,15 +1952,18 @@ func lowerAutoFfiConstructorCall(
   }
   val argBufs: List[List[LInsn]] = newList()
   val argDescs: List[String] = newList()
+  val scoreDescs: List[String] = newList()
   var i = 0
   while i < args.count {
     val buf: List[LInsn] = newList()
     val aTy = lowerCallArg(ctx, buf, args[i])
     argBufs.add(buf)
-    argDescs.add(jvmTypeToDescStr(aTy))
+    val erasedDesc = jvmTypeToDescStr(aTy)
+    argDescs.add(erasedDesc)
+    scoreDescs.add(ffiScoreDescFor(ctx, callArgExpr(args[i]), erasedDesc))
     i = i + 1
   }
-  match findBestConstructor(ctx.autoFfi, ci, argDescs) {
+  match findBestConstructor(ctx.autoFfi, ci, scoreDescs) {
     case None -> {
       var argStr = ""
       var ai = 0
