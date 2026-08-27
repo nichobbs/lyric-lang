@@ -7,17 +7,17 @@
 //! that never existed at runtime, which left those operations non-functional
 //! on this target (docs/59 F-1c).
 //!
-//! **ReDoS timeout enforcement (#330 / #1103):** `java.util.regex.Pattern`
+//! **ReDoS timeout enforcement (#330 / #1103 / #6576):** `java.util.regex.Pattern`
 //! carries no timeout mechanism of its own (unlike the BCL `Regex` object,
 //! which bakes a `matchTimeout` into the compiled pattern via its 3-arg
 //! constructor).  This kernel closes that gap with the standard
 //! daemon-thread-race technique the issue asked for: every match operation
 //! (`hostIsMatch` / `hostMatchOne` / `hostReplace`) runs the actual
-//! `Matcher` call on a fresh background `java.lang.Thread`, marked daemon,
-//! while the calling thread blocks on `Thread.join(timeoutMs)` — a bounded
-//! wait, unlike `Future.get()`. `Regex` is therefore no longer a bare
-//! `extern type` alias for `Pattern`; it is a small Lyric record pairing
-//! the compiled `Pattern` with the timeout (milliseconds) baked in by
+//! `Matcher` call on a fresh background thread while the calling thread
+//! blocks on `Thread.join(timeoutMs)` — a bounded wait, unlike
+//! `Future.get()`. `Regex` is therefore no longer a bare `extern type`
+//! alias for `Pattern`; it is a small Lyric record pairing the compiled
+//! `Pattern` with the timeout (milliseconds) baked in by
 //! `hostCompile`/`hostCompileWithTimeout` — the JVM-side equivalent of the
 //! BCL 3-arg constructor's embedded `matchTimeout`. `Match` is unchanged
 //! (still the real `java.util.regex.Matcher`, per the module's existing
@@ -43,12 +43,6 @@
 //!   - A raw, unstructured `Thread.join(millis)` DOES return after `millis`
 //!     regardless of whether the thread has finished — the only primitive
 //!     reachable from pure Lyric that provides a genuine bounded wait here.
-//!     Passing the match closure to `Thread.new(...)` uses the JVM
-//!     backend's existing Lyric-closure-to-functional-interface SAM
-//!     bridging (`Jvm.Codegen.ensureSamAdapterClass`,
-//!     `codegen/04_calls.l` — already proven for arbitrary JDK functional
-//!     interfaces, `Runnable` included), so no hand-written Java shim class
-//!     is needed.
 //!   - Documented tradeoff, same as every daemon-thread-race timeout
 //!     technique on the JVM: `java.util.regex` is not interruptible (no
 //!     backtracking checkpoint observes `Thread.interrupt()`), so a timed-
@@ -56,22 +50,69 @@
 //!     unblocked within the deadline (the actual ReDoS protection: an
 //!     attacker can no longer tie up the calling thread indefinitely), but
 //!     the abandoned background thread may keep burning CPU until it
-//!     finishes naturally or the JVM exits. Marking it daemon guarantees it
-//!     never blocks JVM shutdown. A fully leak-free fix needs an
+//!     finishes naturally or the JVM exits. A fully leak-free fix needs an
 //!     interruptible `CharSequence` wrapper around the match input (its
 //!     `charAt`/`length` observing the deadline and throwing) so the
 //!     backtracking loop itself notices promptly — a real further
 //!     improvement, but out of scope here: the issue asked specifically for
 //!     the daemon-thread shim, and this closes the actual vulnerability
 //!     (unbounded blocking) that #330/#1103 track.
-//!   - Residual surface this shim does NOT close: a caller that
-//!     re-invokes the same vulnerable pattern repeatedly (e.g. once per
-//!     HTTP request) accumulates one abandoned, permanently-running
-//!     daemon thread per timed-out call — each call is individually
-//!     bounded, but nothing caps the number of them in flight, so
-//!     sustained attack traffic is still a real multi-request CPU/thread
-//!     exhaustion risk. See #6576 (tracked follow-up: `Thread.ofVirtual()`
-//!     or a bounded pool instead of one platform `Thread` per call).
+//!
+//! **Virtual threads + a concurrency cap (#6576):** the background thread
+//! is now started via `Thread.startVirtualThread(Runnable)` (GA since JDK
+//! 21, no preview flag) instead of `new Thread(...)`.  Every match/replace
+//! call pays a thread spin-up on the timeout-racing path — with a platform
+//! `Thread` that's a real OS-thread-creation cost on every single call,
+//! even the overwhelming common case of a benign, fast-matching pattern.
+//! A virtual thread's spin-up is orders of magnitude cheaper (a
+//! `Continuation` object, not an OS thread), which is what actually closes
+//! the throughput gap for that common case; `Thread.join(millis)` is
+//! supported identically on a virtual `Thread`, so the bounded-wait design
+//! above is unchanged.
+//!
+//! Carrier-pinning was investigated, not assumed away.  JEP 444's "pinning"
+//! specifically means a virtual thread parking *inside* a `synchronized`
+//! block or a native frame, which blocks its carrier from being freed for
+//! another virtual thread even while the operation is logically blocked;
+//! `Pattern.matcher(...).find()`/`.replaceAll(...)` take no monitor and
+//! make no native call, so a regex match is never "pinned" in that formal
+//! sense.  There is a *related* but distinct risk that pinning does not
+//! cover: virtual-thread scheduling is cooperative, not preemptive, for
+//! CPU-bound work that never reaches a blocking op — a virtual thread
+//! doing tight, non-yielding computation (which catastrophic backtracking
+//! is) holds its carrier for the computation's entire duration with no
+//! JVM-level time-slicing, whereas the platform-thread design got real OS
+//! preemption across however many abandoned threads had piled up. Once
+//! live abandoned matches reach the carrier pool's parallelism (default
+//! `Runtime.availableProcessors()`, tunable only via the
+//! `jdk.virtualThreadScheduler.parallelism` system property — the JDK
+//! exposes no public per-call-site custom-scheduler API in 21), every
+//! carrier is monopolized and unrelated virtual-thread work sharing that
+//! pool (e.g. other request handlers) queues behind it until each
+//! abandoned match finishes naturally. A concurrency cap cannot prevent
+//! that momentary saturation once it reaches the carrier count — no
+//! achievable cap value fixes that without either an interruptible match
+//! (the CharSequence wrapper noted above, not yet built) or a dedicated
+//! non-shared carrier pool (not exposed by the public JDK 21 API). What a
+//! cap *does* fix is the other half of the original concern: unbounded
+//! accumulation of live abandoned matches over an app's lifetime under
+//! sustained attack traffic, each one a permanently-running background
+//! computation that never gets reclaimed. `matchSemaphore` (below) bounds
+//! that to `maxConcurrentMatches` via non-blocking `tryAcquire()` —
+//! rejected immediately (see `saturationMessage`) rather than queued, so a
+//! caller already inside its own bounded-wait contract never blocks
+//! waiting for a permit held by an abandoned match that may never release
+//! it. The permit is released by the background thread itself once its
+//! `action` call returns (success or fault) — for a timed-out match that
+//! is only once the abandoned computation finally finishes on its own,
+//! matching the intended "cap the *outstanding* set, timed-out or not"
+//! semantics. This closes #6576(b) (unbounded thread/permit accumulation);
+//! the momentary carrier-pool-saturation risk from #6576's carrier-pinning
+//! note is real but not something a per-call cap can eliminate, and is
+//! judged acceptable for this kernel's threat model: it degrades shared
+//! virtual-thread throughput during an active attack, it does not grow
+//! unboundedly, and defending against sustained attack traffic in the
+//! first place (rate limiting, WAF) is out of scope for a regex kernel.
 //!
 //! Replacement-string semantics: Matcher.replaceAll treats `$n` group
 //! references the same way .NET substitutions do; Java additionally
@@ -95,6 +136,10 @@ extern type JPattern = "java.util.regex.Pattern"
 extern type Match = "java.util.regex.Matcher"
 
 extern type JThread = "java.lang.Thread"
+
+extern type JRuntime = "java.lang.Runtime"
+
+extern type JSemaphore = "java.util.concurrent.Semaphore"
 
 // ─── Compilation ─────────────────────────────────────────────────────────────
 // Default compile: routes to java.util.regex.Pattern.compile(String).
@@ -147,17 +192,20 @@ func secondsToDeadlineMs(seconds: in Double): Long {
 // ─── Daemon-thread deadline race ─────────────────────────────────────────────
 // Outcome of racing `action` against `timeoutMs` on a background thread (see
 // module header for why this shape, not Future/ExecutorService/scope).
-// Exactly one of `timedOut` / (not timedOut) applies; when not timed out,
-// `faulted` distinguishes "action ran to completion successfully" (the
-// caller's own captured `var`s hold the real result) from "action threw"
-// (`faultMessage` carries the original exception's message, re-panicked by
-// the caller so unrelated bugs — e.g. a JVM `StackOverflowError` from a
-// pathologically deep pattern — surface as themselves, not silently as a
-// stale/default result).
+// `saturated` short-circuits the other two fields (no thread was even
+// started — see `matchSemaphore` below); otherwise exactly one of
+// `timedOut` / (not timedOut) applies, and when not timed out `faulted`
+// distinguishes "action ran to completion successfully" (the caller's own
+// captured `var`s hold the real result) from "action threw" (`faultMessage`
+// carries the original exception's message, re-panicked by the caller so
+// unrelated bugs — e.g. a JVM `StackOverflowError` from a pathologically
+// deep pattern — surface as themselves, not silently as a stale/default
+// result).
 record RaceOutcome {
   timedOut: Bool
   faulted: Bool
   faultMessage: String
+  saturated: Bool
 }
 
 // Fault state shared between the background thread and the joining thread.
@@ -173,31 +221,78 @@ extern type JAtomicBoolean = "java.util.concurrent.atomic.AtomicBoolean"
 
 extern type JAtomicReference = "java.util.concurrent.atomic.AtomicReference"
 
-func raceWithDeadline(action: in () -> Unit, timeoutMs: in Long): RaceOutcome {
-  val hasFault: JAtomicBoolean = JAtomicBoolean.new(false)
-  val faultMessage: JAtomicReference = JAtomicReference.new("")
-  // The lambda literal is passed directly as the constructor argument
-  // (not bound to a `val` first): `Jvm.Codegen`'s Lyric-closure-to-
-  // functional-interface SAM bridging (`emitFfiCoerce`,
-  // `codegen/04_calls.l`) only fires when the argument expression's own
-  // static type is the package's `Lyric$Lambda` interface — a `val f: ()
-  // -> Unit = { -> ... }` local's declared function-type annotation
-  // erases differently, so passing `f` by name skipped the bridge and
-  // handed `Thread`'s constructor the raw (non-`Runnable`) closure
-  // object, verified by direct experiment (`IncompatibleClassChangeError:
-  // ... does not implement the requested interface java.lang.Runnable`
-  // at `Thread.run()`).
-  val t = JThread.new({ -> try { action() } catch Bug as b { hasFault.set(true); faultMessage.set(b.message) }; () })
-  t.setDaemon(true)
-  t.start()
-  t.join(timeoutMs)
-  if t.isAlive() {
-    RaceOutcome(timedOut = true, faulted = false, faultMessage = "")
-  } else if hasFault.get() {
-    val msg: String = faultMessage.get()
-    RaceOutcome(timedOut = false, faulted = true, faultMessage = msg)
+// Caps the number of concurrently-outstanding match operations (timed-out
+// ones included) — see the module header's "Virtual threads + a
+// concurrency cap" section for why this exists and what it does/doesn't
+// protect against.  Scaled off the carrier pool's own sizing signal
+// (`availableProcessors()`, the same default the JVM's virtual-thread
+// scheduler uses) with headroom for legitimate bursty concurrent load,
+// which — unlike an abandoned ReDoS match — holds its permit only for the
+// real match duration (microseconds for a benign pattern) before
+// releasing it; floored so a small-core CI/container environment still
+// gets a workable cap.
+func computeMaxConcurrentMatches(): Int {
+  val cores = JRuntime.getRuntime().availableProcessors()
+  val scaled = cores * 16
+  if scaled < 64 {
+    64
   } else {
-    RaceOutcome(timedOut = false, faulted = false, faultMessage = "")
+    scaled
+  }
+}
+
+val maxConcurrentMatches: Int = computeMaxConcurrentMatches()
+
+// One process-wide permit pool shared by every `Regex` value on this
+// target — matches the fact that the underlying risk (unbounded
+// background-thread accumulation) is a process-wide resource, not a
+// per-pattern one.
+val matchSemaphore: JSemaphore = JSemaphore.new(maxConcurrentMatches)
+
+func raceWithDeadline(action: in () -> Unit, timeoutMs: in Long): RaceOutcome {
+  if matchSemaphore.tryAcquire() {
+    val hasFault: JAtomicBoolean = JAtomicBoolean.new(false)
+    val faultMessage: JAtomicReference = JAtomicReference.new("")
+    // The lambda literal is passed directly as the call argument (not
+    // bound to a `val` first): `Jvm.Codegen`'s Lyric-closure-to-
+    // functional-interface SAM bridging (`emitFfiCoerce`,
+    // `codegen/04_calls.l`) only fires when the argument expression's own
+    // static type is the package's `Lyric$Lambda` interface — a `val f: ()
+    // -> Unit = { -> ... }` local's declared function-type annotation
+    // erases differently, so passing `f` by name skipped the bridge and
+    // handed the SAM parameter the raw (non-`Runnable`) closure object,
+    // verified by direct experiment (`IncompatibleClassChangeError: ...
+    // does not implement the requested interface java.lang.Runnable`).
+    // `matchSemaphore.release()` runs inside the background thread itself,
+    // after `action` returns — for a timed-out match that only happens
+    // once the abandoned computation finally finishes on its own, which is
+    // the intended "cap the outstanding set, timed-out or not" semantics
+    // (module header).  Virtual threads are always daemon threads (a JVM
+    // invariant — `setDaemon(false)` on one throws), so no explicit
+    // `setDaemon` call is needed here.
+    val t = JThread.startVirtualThread(
+      { ->
+        try {
+          action()
+        } catch Bug as b {
+          hasFault.set(true)
+          faultMessage.set(b.message)
+        }
+        matchSemaphore.release();
+        ()
+      }
+    )
+    t.join(timeoutMs)
+    if t.isAlive() {
+      RaceOutcome(timedOut = true, faulted = false, faultMessage = "", saturated = false)
+    } else if hasFault.get() {
+      val msg: String = faultMessage.get()
+      RaceOutcome(timedOut = false, faulted = true, faultMessage = msg, saturated = false)
+    } else {
+      RaceOutcome(timedOut = false, faulted = false, faultMessage = "", saturated = false)
+    }
+  } else {
+    RaceOutcome(timedOut = false, faulted = false, faultMessage = "", saturated = true)
   }
 }
 
@@ -209,13 +304,28 @@ func timeoutMessage(op: in String, timeoutMs: in Long): String {
   op + " exceeded its configured time-out of " + timeoutMs.toString() + "ms"
 }
 
+// Capacity-rejection message.  Deliberately ALSO contains "time-out" (see
+// `timeoutMessage` above): from the caller's perspective the contract is
+// "this operation is bounded," and rejecting immediately because the
+// system-wide in-flight cap (`maxConcurrentMatches`) is already saturated
+// is a different cause but the same observable shape as a timeout — the
+// caller was not, and will not be, blocked waiting for this match. Callers
+// that need to tell the two apart can do so on the message text.
+func saturationMessage(op: in String): String {
+  op + " was rejected before it could start: its bounded time-out contract could not be honored because " +
+    maxConcurrentMatches.toString() +
+    " regex match operations are already in flight (system-wide cap)"
+}
+
 // ─── Match operations ────────────────────────────────────────────────────────
 /// True when `input` contains at least one match: Pattern.matcher + find(),
 /// raced against `r`'s compiled-in timeout.
 pub func hostIsMatch(r: in Regex, input: in String): Bool {
   var result = false
   val outcome = raceWithDeadline({ -> result = matchFind(r.pattern, input) }, r.timeoutMs)
-  if outcome.timedOut {
+  if outcome.saturated {
+    panic(saturationMessage("regex match"))
+  } else if outcome.timedOut {
     panic(timeoutMessage("regex match", r.timeoutMs))
   } else if outcome.faulted {
     panic(outcome.faultMessage)
@@ -236,7 +346,9 @@ func matchFind(p: in JPattern, input: in String): Bool {
 pub func hostMatchOne(r: in Regex, input: in String): Match {
   val m = r.pattern.matcher(input)
   val outcome = raceWithDeadline({ -> advanceToFirstMatch(m) }, r.timeoutMs)
-  if outcome.timedOut {
+  if outcome.saturated {
+    panic(saturationMessage("regex match-one"))
+  } else if outcome.timedOut {
     panic(timeoutMessage("regex match-one", r.timeoutMs))
   } else if outcome.faulted {
     panic(outcome.faultMessage)
@@ -258,7 +370,9 @@ func advanceToFirstMatch(m: in Match): Unit {
 pub func hostReplace(r: in Regex, input: in String, replacement: in String): String {
   var result = ""
   val outcome = raceWithDeadline({ -> result = doReplace(r.pattern, input, replacement) }, r.timeoutMs)
-  if outcome.timedOut {
+  if outcome.saturated {
+    panic(saturationMessage("regex replace"))
+  } else if outcome.timedOut {
     panic(timeoutMessage("regex replace", r.timeoutMs))
   } else if outcome.faulted {
     panic(outcome.faultMessage)

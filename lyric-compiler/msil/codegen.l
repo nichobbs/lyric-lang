@@ -7701,14 +7701,24 @@ func lowerCaseFieldReadMsil(
 // (`Result_Ok/value`) never match the base union's own class name
 // (`Result/value`) either way.
 //
-// Matched by the union's bare short name (`Result`/`Option`), the same
-// `nm == "List"`/`"Map"` convention `builtinMember`/`indexElementType`
-// already use for the other compiler-known generic stdlib types — `Result`
-// and `Option` are equally reserved names in that convention.
-// `caseClassFqn` is always built from the RECEIVER's own resolved head FQN
-// (never a hardcoded `"Std.Core.Result"`), so this also covers a
-// hypothetical future in-bundle re-export under a different package path
-// while still requiring the bare type name to be `Result`/`Option`.
+// Matched by the union's FULL resolved FQN (`"Std.Core.Result"` /
+// `"Std.Core.Option"`), not the bare short name (#6630). The previous
+// bare-name match (mirroring the `nm == "List"`/`"Map"` convention
+// `builtinMember`/`indexElementType` use for OTHER compiler-known generic
+// stdlib types) also matched any user- or library-defined 2-type-arg union
+// named `Result` (or 1-type-arg union named `Option`) declared outside
+// `Std.Core`, lowering `.isOk`/`.isErr`/`.value`/`.error`/`.isSome`/
+// `.isNone` on it as though it were the real `Std.Core.Result`/`Option` —
+// an incorrect isinst/castclass/field-read against the wrong case classes
+// rather than a clean type error. The type checker (`monadAccessorType`,
+// `typechecker_exprs.l`) only ever types this sugar for the real
+// `Std.Core` types now, so codegen only needs to reach this arm for a
+// legitimate `Std.Core.Result`/`Option` receiver in practice; the FQN
+// check here is defense in depth against that invariant drifting.
+// `caseClassFqn` is still always built from the RECEIVER's own resolved
+// head FQN (never a hand-written literal) for the isinst/field-token
+// lookups below, so a genuine future in-bundle re-export of `Std.Core`
+// itself under a different assembly would still resolve correctly.
 func lowerBuiltinMonadAccessorMsil(
   cctx: in CodegenCtx,
   insns: in List[MInsn],
@@ -7719,9 +7729,7 @@ func lowerBuiltinMonadAccessorMsil(
   if head.length == 0 {
     return None
   }
-  val dotIdx = String.lastIndexOfRaw(head, ".")
-  val shortName = if dotIdx >= 0 { head.substring(dotIdx + 1, head.length - dotIdx - 1) } else { head }
-  if shortName == "Result" {
+  if head == "Std.Core.Result" {
     if memberName == "isOk" or memberName == "isErr" {
       lowerCaseIsinstBoolMsil(insns, recvTy, head + (if memberName == "isOk" { "_Ok" } else { "_Err" }))
       return Some(value = MBool)
@@ -7734,7 +7742,7 @@ func lowerBuiltinMonadAccessorMsil(
     }
     return None
   }
-  if shortName == "Option" {
+  if head == "Std.Core.Option" {
     if memberName == "isSome" or memberName == "isNone" {
       lowerCaseIsinstBoolMsil(insns, recvTy, head + (if memberName == "isSome" { "_Some" } else { "_None" }))
       return Some(value = MBool)

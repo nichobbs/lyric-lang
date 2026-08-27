@@ -1920,6 +1920,57 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"result/option accessor self-test ran: result_ensures_accessor_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/result_ensures_accessor_self_test.l"
 
+      # #6630 regression: a user-defined 2-type-arg union named `Result`
+      # (declared OUTSIDE Std.Core) must get a clean T0124 type error on
+      # `.isOk`, not have the reserved Std.Core.Result accessor sugar
+      # (monadAccessorType/lowerBuiltinMonadAccessorMsil, matched by bare
+      # short name before this fix) silently mis-lower it against the
+      # wrong case classes. This is a compile-time type-checker rejection,
+      # not a runtime `Bug` a compiled program could catch, so it is
+      # asserted as a `lyric build` failure (mirrors the ambiguous-
+      # primitive-array-overload negative test below) rather than a
+      # `@test_module` assertion.
+      - name: Foreign Result/Option accessor fails loud, not a miscompile (native lyric build --target dotnet, #6630)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping #6630 foreign-Result negative test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping #6630 foreign-Result negative test"
+            exit 1
+          fi
+          dir="$(mktemp -d)"
+          neg="$dir/foreignresult.l"
+          cat > "$neg" <<'LYRIC'
+          package ForeignResult
+          union Result[T, E] {
+            case Ok(value: T)
+            case Err(error: E)
+          }
+          func make(): Result[Int, String] {
+            Ok(value = 1)
+          }
+          func main(): Int {
+            val r = make()
+            if r.isOk {
+              println("ok")
+            }
+            0
+          }
+          LYRIC
+          if "$lyric_bin" build --target dotnet "$neg" -o "$dir/foreignresult.dll" > "$dir/foreignresult.out" 2>&1; then
+            echo "::error::a foreign (non-Std.Core) Result[T, E] union's .isOk compiled — #6630 package-path qualification did not fire"; cat "$dir/foreignresult.out"; exit 1
+          fi
+          if ! grep -q "T0124" "$dir/foreignresult.out"; then
+            echo "::error::foreign Result.isOk failed without the expected T0124 diagnostic (may be a different, unrelated failure, or a silent miscompile)"; cat "$dir/foreignresult.out"; exit 1
+          fi
+          echo "OK: a foreign (non-Std.Core) Result[T, E] union's .isOk gets a clean T0124 type error, not a miscompile."
+
       # B'-mode aspect runtime self-test (#4600) — pins that a shape-keyed
       # B'-mode aspect specialisation actually RUNS and produces correct values
       # (plain proceed-doubling, two-shape dedup, row-constrained `args` + a
@@ -4853,6 +4904,54 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"result/option accessor self-test ran: result_ensures_accessor_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/result_ensures_accessor_self_test.l"
 
+      # #6630 regression, JVM half of the --target dotnet negative test
+      # above: a user-defined 2-type-arg union named `Result` (declared
+      # OUTSIDE Std.Core) must get a clean T0124 type error on `.isOk`, not
+      # have the reserved Std.Core.Result accessor sugar mis-lower it. The
+      # type checker is shared between targets (both `Msil.Bridge` and
+      # `Jvm.Bridge` call `Lyric.TypeChecker.checkFile`), so the same
+      # fixture and expected diagnostic apply here unchanged.
+      - name: Foreign Result/Option accessor fails loud, not a miscompile (native lyric build --target jvm, #6630)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping #6630 foreign-Result negative test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping #6630 foreign-Result negative test"
+            exit 1
+          fi
+          dir="$(mktemp -d)"
+          neg="$dir/foreignresult.l"
+          cat > "$neg" <<'LYRIC'
+          package ForeignResult
+          union Result[T, E] {
+            case Ok(value: T)
+            case Err(error: E)
+          }
+          func make(): Result[Int, String] {
+            Ok(value = 1)
+          }
+          func main(): Int {
+            val r = make()
+            if r.isOk {
+              println("ok")
+            }
+            0
+          }
+          LYRIC
+          if "$lyric_bin" build --target jvm "$neg" -o "$dir/foreignresult.jar" > "$dir/foreignresult.out" 2>&1; then
+            echo "::error::a foreign (non-Std.Core) Result[T, E] union's .isOk compiled — #6630 package-path qualification did not fire"; cat "$dir/foreignresult.out"; exit 1
+          fi
+          if ! grep -q "T0124" "$dir/foreignresult.out"; then
+            echo "::error::foreign Result.isOk failed without the expected T0124 diagnostic (may be a different, unrelated failure, or a silent miscompile)"; cat "$dir/foreignresult.out"; exit 1
+          fi
+          echo "OK: a foreign (non-Std.Core) Result[T, E] union's .isOk gets a clean T0124 type error, not a miscompile."
+
       # B'-mode runtime self-test on JVM (#4600) — the load-bearing half: pins
       # the JVM bridge post-weave re-scan fix (B'-mode's synthesised
       # `__lyric_bmode_*` functions + `__LyricBModeCallContext`/`__LyricBModeCfg_*`/
@@ -5785,6 +5884,31 @@ jobs:
           # dotnet builds of dependents; drop it now that it is asserted.
           rm -rf lyric-auth/bin
           echo "lyric-auth JVM feature-resolution build ran (no --features flags)" >> "$GITHUB_STEP_SUMMARY"
+      # lyric-auth security regression suite on JVM (#6583) — until this,
+      # `Auth.Kernel.Jvm`'s structural JSON claim parser (JWT header/payload
+      # parsing, algorithm pinning per RFC 8725 §3.1, claim validation —
+      # authentication-critical) was only ever COMPILED on `--target jvm`
+      # (the build step above), never actually EXECUTED there: the 38-case
+      # `auth_security_tests.l` suite ran exclusively on `--target dotnet`
+      # (the "Run tests (auth)" step in the ecosystem-tests matrix job).
+      # Runs the full manifest test suite (both `auth_security_tests.l` and
+      # `auth_aspect_weaving_tests.l`) on `--target jvm` — the whole suite
+      # passes cleanly on this target with no compiler-level gap found, so
+      # no curated subset was needed. Plain `--target jvm` (no explicit
+      # `--features jvm`), matching the build step above and pinning the
+      # same #5571 target-normalized feature-resolution path for the test
+      # runner.
+      - name: lyric-auth security regression suite on JVM (lyric test --target jvm, #6583)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping lyric-auth JVM security suite"
+            exit 1
+          fi
+          "$lyric_bin" test --manifest lyric-auth/lyric.toml --target jvm
       # lyric-web Undertow end-to-end smoke on JVM (#5610/#5444/#5458): builds
       # tests/jvm_server_smoke.l single-file (bundling the imported Web +
       # Web.Kernel.Runtime project packages with their workspace deps and
@@ -5943,6 +6067,40 @@ jobs:
           grep -qx "argc=2" <<< "$out" || { echo "::error::argc line missing"; exit 1; }
           grep -qx "arg0=four" <<< "$out" || { echo "::error::arg0 line missing"; exit 1; }
           grep -qx "arg1=five" <<< "$out" || { echo "::error::arg1 line missing"; exit 1; }
+
+      # Std.Environment.args() class-init ordering-hazard check on JVM
+      # (#6587) — builds a program whose module-level `val` calls
+      # Std.Environment.args() (forcing that call during the entry class's
+      # own `<clinit>`, strictly before the entry-point wrapper's
+      # `putstatic __LyricJvmRuntime.commandLineArgs` runs), and asserts the
+      # process crashes with the guarded diagnostic naming the ordering
+      # hazard rather than main() running or a bare NullPointerException.
+      - name: Std.Environment.args() class-init ordering-hazard check on JVM (lyric build --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Environment.args() ordering-hazard JVM check"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          "$lyric_bin" build lyric-compiler/jvm/env_args_ordering_jvm_main.l --target jvm -o "$work/envargsordering.jar"
+          set +e
+          out="$(java -jar "$work/envargsordering.jar" 2>&1)"
+          code=$?
+          set -e
+          echo "$out"
+          if [ "$code" -eq 0 ]; then
+            echo "::error::env_args_ordering_jvm_main exited 0 (#6587 guard did not fire; main() may have run with a null/default argv)"
+            exit 1
+          fi
+          grep -q "FAIL: reached main()" <<< "$out" && { echo "::error::main() ran despite the class-init-time argv read (#6587 guard did not fire)"; exit 1; }
+          grep -q "was called before the JVM entry-point wrapper populated its argv holder" <<< "$out" || {
+            echo "::error::expected diagnostic naming the #6587 ordering hazard was not in the output (bare NullPointerException regression?)"
+            exit 1
+          }
 
       # Std.Regex ReDoS-timeout enforcement on JVM (#330/#1103) — builds a
       # program that races a catastrophic-backtracking pattern against

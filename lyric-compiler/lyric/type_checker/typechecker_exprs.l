@@ -1074,14 +1074,25 @@ func builtinMember(recvRaw: in Type, name: in String): Option[Type] {
 // never from the `ECall` arm's own direct `inferMemberBase` call, so the
 // bare `.isOk` form (this fix) and the call form `.isOk()` (pre-existing)
 // both keep working.
-// Matched by short name — the same `nm == "List"`/`"Map"` convention
-// `builtinMember` already uses for the other compiler-known generic
-// stdlib types; `Result`/`Option` are equally reserved names in that
-// convention.
-func monadAccessorType(recvRaw: in Type, name: in String): Option[Type] {
+// Keyed by `TypeId` (not simple name) — the same #2303 soundness precedent
+// `SymbolTable.impls` documents: a same-simple-name `Result`/`Option`
+// union declared OUTSIDE `Std.Core` must never satisfy this check (#6630).
+// A plain `nm == "Result"` string test (the previous behaviour) would also
+// match a package-local `MyLib.Result[T, E]` union and lower it as though
+// it were the real `Std.Core.Result`, producing an incorrect isinst/
+// castclass/field-read against the wrong case classes instead of a clean
+// type error.
+func isStdCoreMonadType(tbl: in SymbolTable, tid: in TypeId, name: in String): Bool {
+  match symTableTryFindInPackage(tbl, "Std.Core", name) {
+    case Some(sym) -> match symbolTypeIdOpt(sym) { case Some(realId) -> typeIdEq(tid, realId); case None -> false }
+    case None -> false
+  }
+}
+
+func monadAccessorType(tbl: in SymbolTable, recvRaw: in Type, name: in String): Option[Type] {
   match unrefine(recvRaw) {
-    case TyUser(_, nm, targs) -> {
-      if nm == "Result" and targs.count == 2 {
+    case TyUser(tid, nm, targs) -> {
+      if nm == "Result" and targs.count == 2 and isStdCoreMonadType(tbl, tid, "Result") {
         if name == "isOk" or name == "isErr" {
           return Some(value = TyPrim(pt = PtBool))
         }
@@ -1092,13 +1103,61 @@ func monadAccessorType(recvRaw: in Type, name: in String): Option[Type] {
           return Some(value = targs[1])
         }
       }
-      if nm == "Option" and targs.count == 1 {
+      if nm == "Option" and targs.count == 1 and isStdCoreMonadType(tbl, tid, "Option") {
         if name == "isSome" or name == "isNone" {
           return Some(value = TyPrim(pt = PtBool))
         }
         if name == "value" {
           return Some(value = targs[0])
         }
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
+// True for the six reserved bare-member accessor names `monadAccessorType`
+// grants a real type to on the genuine `Std.Core.Result`/`Option` (#6630).
+func isReservedMonadAccessorName(name: in String): Bool {
+  name == "isOk" or name == "isErr" or name == "value" or name == "error" or name == "isSome" or name == "isNone"
+}
+
+// #6630: `recvRaw` structurally matches `Result[T, E]` / `Option[T]` (the
+// reserved bare name + arity `monadAccessorType` looks for) but is NOT the
+// genuine `Std.Core` type (that function already returned `None`), and
+// `name` is one of the six reserved accessor names. Called from
+// `inferMember`'s final fallback, only once every legitimate resolution
+// path (a real method/UFCS function the receiver's own type defines) has
+// already come up empty, so a same-shaped union that genuinely implements
+// its own `.isOk` etc. is unaffected. See the call site for why this
+// diagnostic needs to exist at all instead of relying on the general
+// unknown-member path.
+func monadAccessorShapeMismatchDiag(recvRaw: in Type, name: in String, span: in Span): Option[Diagnostic] {
+  if not isReservedMonadAccessorName(name) {
+    return None
+  }
+  match unrefine(recvRaw) {
+    case TyUser(_, nm, targs) -> {
+      if nm == "Result" and targs.count == 2 {
+        return Some(
+          value = errorDiagnostic(
+            "T0124",
+            "no member '" + name +
+              "' on type 'Result' -- this looks like the reserved Std.Core.Result accessor sugar, but this 'Result' is a different type declared outside Std.Core",
+            span
+          )
+        )
+      }
+      if nm == "Option" and targs.count == 1 {
+        return Some(
+          value = errorDiagnostic(
+            "T0124",
+            "no member '" + name +
+              "' on type 'Option' -- this looks like the reserved Std.Core.Option accessor sugar, but this 'Option' is a different type declared outside Std.Core",
+            span
+          )
+        )
       }
       None
     }
@@ -1900,7 +1959,7 @@ func inferMember(
   // `inferMemberBase` (also consulted by `ECall`'s callee-type lookup,
   // which must keep seeing `TyError` here so `.isOk()` still resolves via
   // the ordinary UFCS call-site path).
-  match monadAccessorType(recvRaw, name) {
+  match monadAccessorType(tbl, recvRaw, name) {
     case Some(t) -> return t
     case None -> {
     }
@@ -1951,6 +2010,32 @@ func inferMember(
           )
         )
         return TyError
+      }
+      // #6630: a receiver that structurally LOOKS like `Result[T, E]` /
+      // `Option[T]` (same reserved bare name + arity) but resolved to a
+      // DIFFERENT type than the genuine `Std.Core` one (`monadAccessorType`
+      // above already returned `None` for it) would otherwise fall through
+      // silently here: unions are never "member-complete" (docs/59 A5), so
+      // `maybeUnknownMemberDiag` below stays lenient and emits nothing,
+      // reaching codegen as an unresolved `TyError` member read -- the
+      // exact #5183 miscompile this whole accessor feature exists to
+      // prevent, just for a foreign `Result`/`Option` instead of the real
+      // one. Diagnose it explicitly. Placed AFTER the `cands.count > 0` /
+      // `T0116` checks above (both already checked this exact receiver+name
+      // and came up empty before reaching here), so a same-shaped union
+      // that genuinely declares its own real method or dot-named UFCS
+      // function under one of these six names is unaffected — verified for
+      // the dot-named case, which resolves to `T0116` ("call it as
+      // 'isOk(...)'"), not this diagnostic. An unrelated genuinely-unknown
+      // member on the same union still falls through to the ordinary
+      // (silent, by design) union member-access path below.
+      match monadAccessorShapeMismatchDiag(recvRaw, name, span) {
+        case Some(d) -> {
+          diag.add(d)
+          return TyError
+        }
+        case None -> {
+        }
       }
       maybeUnknownMemberDiag(tbl, sigs, diag, recvRaw, name, span, false)
       TyError
