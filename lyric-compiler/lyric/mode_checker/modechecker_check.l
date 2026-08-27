@@ -3420,6 +3420,77 @@ func walkFileForFieldWriteChecks(
           funcSigs
         )
       }
+      // #6680: a `property "..." forAll ... { … }` block's `body: Block`
+      // executes as real code at proof/property-check time, exactly like a
+      // `test { }` block above; mirrors `checkSpawnConsumption`'s own
+      // `IProperty` arm for the same file's analogous whole-file walk.
+      case IProperty(decl) -> {
+        val noSelfForProperty: Option[String] = None
+        val noParamsForProperty: List[Param] = newList()
+        checkFuncBodyForFieldWrite(
+          recordFields,
+          diag,
+          noParamsForProperty,
+          FBBlock(block = decl.body),
+          noSelfForProperty,
+          unsafeFieldNames,
+          funcSigs
+        )
+      }
+      // #6680: a `fixture name = expr` declaration's `init: Expr` runs once
+      // per test that consumes it — a value-position expression (unlike
+      // `ITest`/`IProperty`'s `Block` bodies), so it is wrapped as `FBExpr`
+      // rather than `FBBlock`.  Mirrors `checkSpawnConsumption`'s own
+      // `IFixture` arm.  `Lyric.TestSynth` later rewrites this same
+      // declaration into a module-level `val` (a source-text splice, not an
+      // AST transform) before `lyric test` compiles the synthesised file —
+      // the `IVal`/`IConst` arms below cover that post-synthesis shape.
+      case IFixture(decl) -> {
+        val noSelfForFixture: Option[String] = None
+        val noParamsForFixture: List[Param] = newList()
+        checkFuncBodyForFieldWrite(
+          recordFields,
+          diag,
+          noParamsForFixture,
+          FBExpr(expr = decl.init),
+          noSelfForFixture,
+          unsafeFieldNames,
+          funcSigs
+        )
+      }
+      // #6680: a module-level `val`/`const` initialiser is an executed
+      // value-position `Expr` just like `IFixture.init` above — most
+      // directly relevant as the shape `Lyric.TestSynth` rewrites a
+      // `fixture` declaration into, but this is a general gap: ANY
+      // module-level `val`/`const` initialiser was previously invisible to
+      // both the V0015 diagnostic pass and the whole-build lock-safety
+      // audit.
+      case IVal(decl) -> {
+        val noSelfForVal: Option[String] = None
+        val noParamsForVal: List[Param] = newList()
+        checkFuncBodyForFieldWrite(
+          recordFields,
+          diag,
+          noParamsForVal,
+          FBExpr(expr = decl.init),
+          noSelfForVal,
+          unsafeFieldNames,
+          funcSigs
+        )
+      }
+      case IConst(decl) -> {
+        val noSelfForConst: Option[String] = None
+        val noParamsForConst: List[Param] = newList()
+        checkFuncBodyForFieldWrite(
+          recordFields,
+          diag,
+          noParamsForConst,
+          FBExpr(expr = decl.init),
+          noSelfForConst,
+          unsafeFieldNames,
+          funcSigs
+        )
+      }
       case _ -> {
       }
     }
@@ -3494,12 +3565,37 @@ func markFieldNameUnsafeToLock(unsafeSet: in Map[String, Bool], fieldName: in St
   }
 }
 
-func collectFuncSigsOfFile(file: in SourceFile, sigs: in Map[String, FieldWriteFuncSig]): Unit {
+// #6679: `sigs` is merged across every file/package in the build, keyed by
+// BARE function name (no cross-file symbol table exists to qualify it —
+// same limitation `recordFields` has, see #6682 below).  Two different
+// packages declaring a same-named top-level function with different by-ref
+// parameter modes (e.g. one `in`, one `inout`) means an unqualified call
+// site (`scanCallArgsForUnsafeFieldWrites`) can't tell which declaration it
+// actually resolves to.  Silently keeping the first-registered signature
+// (the old behaviour) risked checking a call against the WRONG one:
+// `callArgIsByrefMode` could report an argument safe (`in`) when the call
+// really resolves to the `inout` declaration, letting a genuine write-back
+// through unmarked.  `ambiguousNames` poisons any bare name seen more than
+// once: `sigs` never carries an entry for it (removed on the second
+// sighting, never re-added on a third+), so `scanCallArgsForUnsafeFieldWrites`
+// falls through its existing `sigOpt == None` branch, which already treats
+// an unresolved callee conservatively as unsafe.
+func collectFuncSigsOfFile(
+  file: in SourceFile,
+  sigs: in Map[String, FieldWriteFuncSig],
+  ambiguousNames: in Map[String, Bool],
+): Unit {
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case IFunc(fn) -> {
-        if not sigs.containsKey(fn.name) {
+        if ambiguousNames.containsKey(fn.name) {
+          // Already poisoned by an earlier file in this build; `sigs` never
+          // holds an entry for it, so there is nothing to update here.
+        } else if sigs.containsKey(fn.name) {
+          sigs.remove(fn.name)
+          ambiguousNames.add(fn.name, true)
+        } else {
           val ms: List[ParamMode] = newList()
           val ns: List[String] = newList()
           var pi = 0
@@ -3602,6 +3698,26 @@ func scanCallArgsForUnsafeFieldWrites(ctx: in FieldWriteCtx, fn: in Expr, args: 
   }
 }
 
+// #6682: called at each `recordFields` merge collision (bare record name
+// already registered by an earlier file/package in this build).  There is
+// no cross-file symbol table to tell which of the two colliding
+// declarations a given `k`-typed local actually resolves to — the same
+// "no symbol table" limitation this whole pass's header comment already
+// documents for nested field-access chains — so silently keeping the
+// first-registered record's field-mutability map (the old behaviour) risks
+// resolving a write through the SECOND record's differently-named field via
+// the FIRST record's field map, finding nothing, and never marking it
+// unsafe-to-lock.  Mark every field name from BOTH colliding declarations
+// unsafe-to-lock outright instead: sound, if conservative, exactly like
+// every other "can't resolve precisely" fallback in this pass (see
+// `callArgIsByrefMode`'s doc comment for the same trade-off on the
+// `funcSigs` side).
+func markAllFieldsUnsafeToLock(unsafeSet: in Map[String, Bool], fields: in Map[String, Bool]): Unit {
+  for fieldName in mapKeys(fields) {
+    markFieldNameUnsafeToLock(unsafeSet, fieldName)
+  }
+}
+
 // Accumulates into the caller-provided `into` map rather than returning a
 // fresh one — the cross-package generic-return-type erasure gap this
 // codebase's OWN "into: Map[...]" accumulator idiom exists to sidestep
@@ -3611,19 +3727,29 @@ func scanCallArgsForUnsafeFieldWrites(ctx: in FieldWriteCtx, fn: in Expr, args: 
 pub func computeFieldLockSafetyForBuild(files: in List[SourceFile], into: in Map[String, Bool]): Unit {
   val recordFields: Map[String, Map[String, Bool]] = newMap()
   val funcSigs: Map[String, FieldWriteFuncSig] = newMap()
+  val ambiguousFuncNames: Map[String, Bool] = newMap()
   var fi = 0
   while fi < files.count {
     val fileFields = collectRecordFieldsOfFile(files[fi])
     for k in mapKeys(fileFields) {
-      if not recordFields.containsKey(k) {
-        match mapGet(fileFields, k) {
-          case Some(v) -> recordFields.add(k, v)
-          case None -> {
+      match mapGet(fileFields, k) {
+        case Some(v) -> {
+          if recordFields.containsKey(k) {
+            match mapGet(recordFields, k) {
+              case Some(existing) -> markAllFieldsUnsafeToLock(into, existing)
+              case None -> {
+              }
+            }
+            markAllFieldsUnsafeToLock(into, v)
+          } else {
+            recordFields.add(k, v)
           }
+        }
+        case None -> {
         }
       }
     }
-    collectFuncSigsOfFile(files[fi], funcSigs)
+    collectFuncSigsOfFile(files[fi], funcSigs, ambiguousFuncNames)
     fi = fi + 1
   }
   if mapIsEmpty(recordFields) {

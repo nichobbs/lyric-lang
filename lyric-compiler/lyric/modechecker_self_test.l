@@ -1012,3 +1012,82 @@ test "an unqualified cross-file inout-parameter write marks the field unsafe to 
   val unsafeSet = lockSafetyMulti(srcs)
   assertTrue(unsafeSet.containsKey("pos"), "unqualified cross-file inout write to Cursor.pos: unsafe to lock")
 }
+
+// #6679: `collectFuncSigsOfFile` populated the whole-build `funcSigs` map
+// keyed by BARE function name, first-file-wins across the whole build. Package
+// `A` here declares `reset`'s BY-VALUE (`in`) signature and is walked first,
+// so the old first-wins behaviour would register only that signature; a
+// DIFFERENT package `B` then declares an `inout` `reset` with the same bare
+// name. `Consumer.bump`'s unqualified `reset(c.pos)` call can't be told which
+// declaration it actually resolves to — checking it against `A`'s `in`
+// signature via `callArgIsByrefMode` would wrongly report the argument safe
+// (`PMIn -> false`), so `pos` would never be marked unsafe to lock even
+// though a real `inout` write-back exists elsewhere in the build. Poisoning
+// any bare name registered more than once (removing it from `funcSigs`
+// rather than keeping the first-registered signature) routes an ambiguous
+// callee through the existing `sigOpt == None` unresolved-callee branch,
+// which is already conservative.
+test "a duplicate bare function name across packages with differing by-ref modes marks the call unsafe to lock (#6679)" {
+  val aSrc = "package A\nfunc reset(n: in Int): Unit {\n}\n"
+  val bSrc = "package B\nfunc reset(n: inout Int): Unit {\n}\n"
+  val consumerSrc = "package Consumer\nrecord Cursor {\n  pos: Int\n}\nfunc bump(c: inout Cursor): Unit {\n  reset(c.pos)\n}\n"
+  val srcs: List[String] = newList()
+  srcs.add(aSrc)
+  srcs.add(bSrc)
+  srcs.add(consumerSrc)
+  val unsafeSet = lockSafetyMulti(srcs)
+  assertTrue(unsafeSet.containsKey("pos"), "ambiguous bare-name callee reset(c.pos): unsafe to lock")
+}
+
+// #6680: `walkFileForFieldWriteChecks` had no traversal case for `IFixture` —
+// a `fixture name = expr` declaration's `init: Expr` runs once per test that
+// consumes it, but was silently treated as safe to lock even though it
+// compiles into real, executed code. This is the exact repro from the issue:
+// a fixture initialiser that constructs a record and then writes to one of
+// its non-`var` fields before yielding it.
+test "a field written only inside a fixture initializer marks it unsafe to lock (#6680)" {
+  val src = "@test_module\npackage P\nrecord Cursor {\n  pos: Int\n}\nfixture c = {\n  val k = Cursor(pos = 0)\n  k.pos = 1\n  k\n}\n"
+  val unsafeSet = lockSafety(src)
+  assertTrue(unsafeSet.containsKey("pos"), "fixture-initializer-only write to Cursor.pos: unsafe to lock")
+}
+
+// #6680: `Lyric.TestSynth` rewrites a `@test_module`'s `fixture name = expr`
+// into a module-level `val name = expr` (a source-text splice, not an AST
+// transform) before `lyric test` compiles the synthesised file — so on the
+// POST-synthesis AST the walker sees an `IVal`, not an `IFixture`, which was
+// also unhandled. This is the general case too: ANY module-level `val`/
+// `const` initialiser was invisible to both the V0015 diagnostic pass and
+// the whole-build lock-safety audit before this fix, not only the
+// TestSynth-rewritten shape.
+test "a field written only inside a module-level val initializer marks it unsafe to lock (#6680)" {
+  val src = "package P\nrecord Cursor {\n  pos: Int\n}\nval c = {\n  val k = Cursor(pos = 0)\n  k.pos = 1\n  k\n}\n"
+  val unsafeSet = lockSafety(src)
+  assertTrue(unsafeSet.containsKey("pos"), "module-level val-initializer-only write to Cursor.pos: unsafe to lock")
+}
+
+// #6682: `computeFieldLockSafetyForBuild`'s `recordFields` merge was keyed by
+// BARE record name, first-file-wins across packages — the same shape bug as
+// #6653, but here the root cause is the merge itself resolving a write
+// through the WRONG record's field-mutability map rather than the write-
+// target resolution. Package `A` declares `record State { a: Int }` and is
+// walked first, so the merged map holds only `{a}`. Package `B` declares a
+// DIFFERENT `record State { b: Int }` plus a write to its own field `b`
+// through a tracked `var` local; before the fix, `checkFieldMutability`
+// looks up `"b"` in `A`'s field map, finds nothing (`case None -> {}`), and
+// silently does nothing — `b` is never marked unsafe to lock despite the
+// real, non-`var` write. Marking every field of BOTH colliding declarations
+// unsafe to lock on the collision itself (not just the field actually
+// written) closes the gap regardless of merge order.
+test "two same-named records in different packages mark all colliding fields unsafe to lock (#6682)" {
+  val aSrc = "package A\nrecord State {\n  a: Int\n}\n"
+  val bSrc = "package B\nrecord State {\n  b: Int\n}\nfunc f(): Unit {\n  var s = State(b = 1)\n  s.b = 2\n}\n"
+  val srcs: List[String] = newList()
+  srcs.add(aSrc)
+  srcs.add(bSrc)
+  val unsafeSet = lockSafetyMulti(srcs)
+  assertTrue(unsafeSet.containsKey("b"), "write to colliding B.State.b: unsafe to lock")
+  assertTrue(
+    unsafeSet.containsKey("a"),
+    "colliding A.State.a also marked unsafe to lock (name collision, not just the written field)"
+  )
+}
