@@ -20,7 +20,6 @@ package Grpc.Kernel.Net
 
 import Grpc.Types
 import Std.Core
-import Std.Collections
 
 // ─── Opaque .NET types ────────────────────────────────────────────────────────
 extern type NetGrpcChannel = "Grpc.Net.Client.GrpcChannel"
@@ -78,6 +77,22 @@ func channelDictTryAdd(dict: in NetGrpcChannelDict, key: in Int, value: in NetGr
 @externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.TryRemove")
 func channelDictTryRemove(dict: in NetGrpcChannelDict, key: in Int, value: out NetGrpcChannel): Bool = ()
 
+// Guards `channelHandleCounter`'s read-modify-write below — the identical
+// `monitorEnter`/`monitorExit` idiom `lyric-ws`/`lyric-jobs`/`lyric-mq`
+// kernels already use for their own `HandleCounter` (#6584: an earlier
+// version of this file left the increment unguarded, letting two
+// concurrent `Grpc.openChannel` calls compute the same id and alias one
+// caller's channel onto the other's handle).
+@axiom("System.Threading.Monitor.Enter — acquires an exclusive lock on obj")
+@externStatic
+@externTarget("System.Threading.Monitor.Enter")
+func monitorEnter[T](obj: in T): Unit = ()
+
+@axiom("System.Threading.Monitor.Exit — releases an exclusive lock on obj")
+@externStatic
+@externTarget("System.Threading.Monitor.Exit")
+func monitorExit[T](obj: in T): Unit = ()
+
 // Live `Grpc.Net.Client.GrpcChannel` objects, keyed by the counter-issued id
 // the public `GrpcChannel` opaque type wraps (`Grpc.Types`' registry-key
 // idiom — see that file's doc comment). `GrpcChannel` cannot hold the live
@@ -104,8 +119,10 @@ record ChannelHandleCounter {
 val channelHandleCounter: ChannelHandleCounter = ChannelHandleCounter()
 
 func nextChannelHandleId(): Int {
+  monitorEnter(channelHandleCounter)
+  channelHandleCounter.next = channelHandleCounter.next + 1
   val id = channelHandleCounter.next
-  channelHandleCounter.next = id + 1
+  monitorExit(channelHandleCounter)
   id
 }
 
