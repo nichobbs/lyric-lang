@@ -25,35 +25,35 @@
 //! `plistFromList` are head-to-tail order; `plistHead`/`plistLookup` are
 //! O(1), the rest rebuild the slice, O(n).
 //!
-//! Scope note (#684): the issue also asked for a persistent `Map` (and,
-//! as a stretch goal, a `Set`).  Hand-probing the self-hosted MSIL
-//! backend while building both surfaced a family of reproducible generic
-//! code-generation bugs with no working precedent anywhere in this
+//! Scope note (#684, tracked follow-up #6570): the issue also asked for
+//! a persistent `Map` (and, as a stretch goal, a `Set`).  Hand-probing
+//! the self-hosted MSIL backend while building both surfaced two
+//! reproducible generic code-generation bugs — each filed with a
+//! minimal isolated repro — with no working precedent anywhere in this
 //! codebase today:
-//!   - A union/record case field typed as the enclosing generic type's
-//!     own open instantiation (a classic cons-list/BST node, e.g.
+//!   - #6568 — a union/record case field typed as the enclosing generic
+//!     type's own open instantiation (a classic cons-list/BST node, e.g.
 //!     `PLCons(head: T, tail: PersistentList[T])`) or as a container
 //!     (`List[T]`/`slice[T]`) of the enclosing type's own parameter
 //!     corrupts field reads at runtime (silently wrong values,
 //!     `MissingFieldException`, or `MissingMethodException`, depending
 //!     on the exact shape).
-//!   - A generic function whose body invokes a closure PARAMETER inside
-//!     a loop conditional over a `slice[UserGenericRecord[K, V]]`
-//!     parameter (the natural shape for a `pmapInsert`/`pmapDelete`
-//!     keyed by a caller-supplied equality/comparator predicate)
-//!     monomorphizes to a specialization whose first parameter is
-//!     erased to `Object` instead of the real slice type, crashing with
-//!     `NullReferenceException` on the very first call — reproduced with
-//!     a minimal isolated case (see PR history for this module).
+//!   - #6569 — a generic function whose body invokes a closure
+//!     PARAMETER inside a loop conditional over a
+//!     `slice[UserGenericRecord[K, V]]` parameter (the natural shape
+//!     for a `pmapInsert`/`pmapDelete` keyed by a caller-supplied
+//!     equality/comparator predicate) monomorphizes to a specialization
+//!     whose first parameter is erased to `Object` instead of the real
+//!     slice type, crashing with `NullReferenceException` on the very
+//!     first call.
 //! Every existing recursive type in this codebase (e.g. `Std.Yaml`'s
 //! `YamlValue`) is non-generic; every existing generic type (e.g.
 //! `Option`/`Result`/`List`/`Map`) is non-recursive and never invokes a
 //! closure parameter over its own generic container shape.  `PersistentList[T]`
 //! above is a proven-safe subset (plain `slice[T]`, no closures invoked
 //! over a user-generic-record container) that sidesteps both gaps; the
-//! persistent `Map`/`Set` are deferred to a tracked follow-up once the
-//! backend gaps are fixed and verified — not shipped as broken or
-//! stubbed code.
+//! persistent `Map`/`Set` are deferred to #6570 (blocked on #6568/#6569)
+//! rather than shipped broken or stubbed.
 @runtime_checked
 package Std.Collections.Persistent
 
