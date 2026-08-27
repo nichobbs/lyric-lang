@@ -3019,11 +3019,18 @@ func rewriteCallArgs(state: in MonoState, env: in Map[String, TypeExpr], args: i
   buf
 }
 
+// #6121: `eob` is always a NESTED scope (an `if`/`match` branch) relative
+// to whatever scope `env` already reflects, so any `val` it binds must not
+// survive past this call — snapshot/restore around the recursion (see the
+// scope-isolation note above `snapshotEnv`).
 func rewriteEOB(state: in MonoState, env: in Map[String, TypeExpr], eob: in ExprOrBlock): ExprOrBlock {
-  match eob {
+  val snap = snapshotEnv(env)
+  val result = match eob {
     case EOBExpr(e) -> EOBExpr(expr = rewriteExpr(state, env, e))
     case EOBBlock(b) -> EOBBlock(block = rewriteBlock(state, env, b))
   }
+  restoreEnv(env, snap)
+  result
 }
 
 // True when `name` is a registered union/record constructor SYNTH (see
@@ -3623,9 +3630,9 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
       )
     }
 
-    case EBlock(blk) -> Expr(kind = EBlock(block = rewriteBlock(state, env, blk)), span = s)
+    case EBlock(blk) -> Expr(kind = EBlock(block = rewriteBlockScoped(state, env, blk)), span = s)
 
-    case EUnsafe(blk) -> Expr(kind = EUnsafe(block = rewriteBlock(state, env, blk)), span = s)
+    case EUnsafe(blk) -> Expr(kind = EUnsafe(block = rewriteBlockScoped(state, env, blk)), span = s)
 
     case EAwait(inner) -> Expr(kind = EAwait(inner = rewriteExpr(state, env, inner)), span = s)
 
@@ -3663,7 +3670,7 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
 
     case EInterpolated(segs) -> Expr(kind = EInterpolated(segments = rewriteInterpolSegs(state, env, segs)), span = s)
 
-    case ELambda(lparams, body) -> Expr(kind = ELambda(lambdaParams = lparams, body = rewriteBlock(state, env, body)), span = s)
+    case ELambda(lparams, body) -> Expr(kind = ELambda(lambdaParams = lparams, body = rewriteBlockScoped(state, env, body)), span = s)
 
     case ETypeApp(fn, targs) -> Expr(kind = ETypeApp(fn = rewriteExpr(state, env, fn), args = targs), span = s)
 
@@ -3680,6 +3687,17 @@ func rewriteBlock(state: in MonoState, env: in Map[String, TypeExpr], blk: in Bl
     i = i + 1
   }
   Block(statements = newStmts, span = blk.span)
+}
+
+// #6121: like `rewriteEOB`, every loop/`scope`/`defer`/bare-block body is a
+// NESTED scope relative to `env` — wrap the recursion in snapshot/restore
+// so a `val` bound inside doesn't leak into the caller's scope once the
+// body ends.
+func rewriteBlockScoped(state: in MonoState, env: in Map[String, TypeExpr], blk: in Block): Block {
+  val snap = snapshotEnv(env)
+  val result = rewriteBlock(state, env, blk)
+  restoreEnv(env, snap)
+  result
 }
 
 func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in Statement): Statement {
@@ -3708,15 +3726,15 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
 
     case SExpr(e) -> Statement(kind = SExpr(expr = rewriteExpr(state, env, e)), span = s)
 
-    case SWhile(lbl, cond, body) -> Statement(kind = SWhile(label = lbl, cond = rewriteExpr(state, env, cond), body = rewriteBlock(state, env, body)), span = s)
+    case SWhile(lbl, cond, body) -> Statement(kind = SWhile(label = lbl, cond = rewriteExpr(state, env, cond), body = rewriteBlockScoped(state, env, body)), span = s)
 
-    case SFor(lbl, pat, iter, body) -> Statement(kind = SFor(label = lbl, pat = pat, iter = rewriteExpr(state, env, iter), body = rewriteBlock(state, env, body)), span = s)
+    case SFor(lbl, pat, iter, body) -> Statement(kind = SFor(label = lbl, pat = pat, iter = rewriteExpr(state, env, iter), body = rewriteBlockScoped(state, env, body)), span = s)
 
-    case SLoop(lbl, body) -> Statement(kind = SLoop(label = lbl, body = rewriteBlock(state, env, body)), span = s)
+    case SLoop(lbl, body) -> Statement(kind = SLoop(label = lbl, body = rewriteBlockScoped(state, env, body)), span = s)
 
-    case SDefer(body) -> Statement(kind = SDefer(body = rewriteBlock(state, env, body)), span = s)
+    case SDefer(body) -> Statement(kind = SDefer(body = rewriteBlockScoped(state, env, body)), span = s)
 
-    case SScope(lbl, body) -> Statement(kind = SScope(binding = lbl, body = rewriteBlock(state, env, body)), span = s)
+    case SScope(lbl, body) -> Statement(kind = SScope(binding = lbl, body = rewriteBlockScoped(state, env, body)), span = s)
 
     case SInvariant(e) -> Statement(kind = SInvariant(expr = rewriteExpr(state, env, e)), span = s)
 
@@ -4031,6 +4049,63 @@ func trackPatternEnv(env: in Map[String, TypeExpr], pat: in Pattern, te: in Type
       env.add(name, te)
     }
     case _ -> ()
+  }
+}
+
+// Nested-block scope isolation (#6121 follow-up): `env` is one mutable Map
+// threaded through the whole rewrite, so a `val` bound inside a nested
+// scope (an `if`/`match` branch, a loop body, a `scope { }` body) must not
+// leak its type into the ENCLOSING scope once that nested block ends —
+// the same lexical-shadowing rule `block_shadow_self_test.l` (#5191)
+// already enforces at codegen for runtime values.  `snapshotEnv` copies
+// every current binding; `restoreEnv` puts `env` back to exactly that
+// snapshot afterwards (evicting anything the nested block added, and
+// resetting anything it shadowed back to the outer binding). Every call
+// site that recurses into a nested `Block`/`ExprOrBlock` (`rewriteEOB`,
+// the loop/scope arms of `rewriteStmt`, a lambda body) wraps the
+// recursive call in a snapshot/restore pair; the top-level function body
+// itself is never wrapped, since there is no enclosing scope to restore
+// into.
+func snapshotEnv(env: in Map[String, TypeExpr]): Map[String, TypeExpr] {
+  val snap: Map[String, TypeExpr] = newMap()
+  val ks = mapKeys(env)
+  var i = 0
+  while i < ks.count {
+    match mapGet(env, ks[i]) {
+      case Some(te) -> snap.add(ks[i], te)
+      case None -> ()
+    }
+    i = i + 1
+  }
+  snap
+}
+
+func restoreEnv(env: in Map[String, TypeExpr], snap: in Map[String, TypeExpr]): Unit {
+  // Evict anything the nested block introduced that wasn't there before.
+  val curKeys = mapKeys(env)
+  var i = 0
+  while i < curKeys.count {
+    if not snap.containsKey(curKeys[i]) {
+      env.remove(curKeys[i])
+    }
+    i = i + 1
+  }
+  // Reset every snapshotted binding back to its pre-block type (covers
+  // both a shadowed-and-changed key and one the block removed outright).
+  val snapKeys = mapKeys(snap)
+  var j = 0
+  while j < snapKeys.count {
+    val k = snapKeys[j]
+    match mapGet(snap, k) {
+      case Some(te) -> {
+        if env.containsKey(k) {
+          env.remove(k)
+        }
+        env.add(k, te)
+      }
+      case None -> ()
+    }
+    j = j + 1
   }
 }
 
