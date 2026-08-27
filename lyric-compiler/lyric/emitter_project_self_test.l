@@ -1353,3 +1353,97 @@ test "three-interface diamond conflict folds the extra supplier into 'and N more
   assertTrue(foundExtra, "T0117 message folds the third supplier into 'and 1 more'")
   assertEqualInt(t0117Count, 1, "still exactly one T0117 diagnostic for the 3-way conflict (dedupe unchanged)")
 }
+
+// ─── depTemplateSrcs -> weaver template resolution (#3650) ──────────────────
+// PR #3633 added the `depTemplatePkgs` loop in `Msil.Bridge`'s
+// `compileProjectToMsilWithRestoredAndVersion` (parse each dep-template
+// source, `Weaver.collectAspectTemplates`, resolve `from`-instances against
+// them), threaded here from `Emitter.EmitProjectRequest.depTemplateSrcs`.
+// Every existing self-test — including every OTHER test in this file —
+// passes `depTemplateSrcs = newList()`, so that loop never actually ran in
+// CI; `weaver_self_test.l` covers template collection/resolution at the
+// in-process weaver level only, never through this bridge entry point.  This
+// is the first test to exercise it with a non-empty `depTemplateSrcs`: a
+// template aspect declared in a SEPARATE dep-package source (never part of
+// `packages`, only `depTemplateSrcs` — the whole point of the dep-template
+// mechanism is that the template's OWN package need not be compiled into the
+// bundle), a `from`-instance in the main package, and the woven output
+// actually compiled, run, and asserted on its runtime value (not just "no
+// A0045").
+func mkTemplatePkg(name: in String, source: in String): Emitter.ProjectPackage {
+  mkProjectPkg(name, source)
+}
+
+test "emitProject depTemplateSrcs: from-instance aspect resolved against a dep-package template, woven output runs" {
+  val templateSrc = "package DepTplLib.Logging\n" + "\n" + "pub aspect DoubleResult {\n" +
+    "  matches: name like \"*\"\n" +
+    "  around(args) -> ret {\n" +
+    "    ret = proceed(args)\n" +
+    "    ret = ret * 2\n" +
+    "  }\n" +
+    "}\n"
+  val depTemplates: List[Emitter.ProjectPackage] = newList()
+  depTemplates.add(mkTemplatePkg("DepTplLib.Logging", templateSrc))
+
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "DepTplApp",
+      "package DepTplApp\n" + "\n" + "aspect MyDouble from DepTplLib.Logging.DoubleResult {\n" +
+        "  matches: name like \"compute\"\n" +
+        "}\n" +
+        "\n" +
+        "pub func compute(x: in Int): Int { x + 1 }\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  println(compute(5))\n" +
+        "}\n"
+    )
+  )
+
+  val dir = freshTempDir("emitproj-deptpl")
+  val dllPath = Path.join(dir, "DepTplApp.dll")
+  val req = Emitter.EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = "DepTplApp",
+    outputPath = dllPath,
+    target = Emitter.Dotnet,
+    restoredDllPaths = newList(),
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = depTemplates,
+    nugetAssemblyPaths = newList(),
+    defines = newList()
+  )
+  val result = Emitter.emitProject(req)
+
+  var a0045Count = 0
+  var di2 = 0
+  while di2 < result.diagnostics.count {
+    if result.diagnostics[di2].code == "A0045" {
+      a0045Count = a0045Count + 1
+    }
+    di2 = di2 + 1
+  }
+  assertEqualInt(a0045Count, 0, "depTemplateSrcs: from-instance template resolves, no A0045 (unresolved template)")
+
+  match result.outputPath {
+    case None -> {
+      cleanup(dir)
+      panic("emitproj-deptpl: emitProject produced no output (diagnostics on stderr)")
+    }
+    case Some(_) -> ()
+  }
+  writeRuntimeConfig(dllPath)
+  val args: List[String] = newList()
+  args.add("exec")
+  args.add(dllPath)
+  val captured = Capture.runCaptureWithDiagnostics("dotnet", args, "")
+  cleanup(dir)
+  assertEqualInt(captured.exitCode, 0, "emitproj-deptpl: exit 0 (stderr=" + captured.stderr + ")")
+  // compute(5) = 6, doubled by the dep-template's around advice = 12 --
+  // proves the woven output isn't just "compiles", it actually RUNS the
+  // template's advice body against the main package's matched function.
+  assertEqual(Str.trim(captured.stdout), "12", "emitproj-deptpl: DoubleResult advice actually ran (5+1)*2=12")
+}

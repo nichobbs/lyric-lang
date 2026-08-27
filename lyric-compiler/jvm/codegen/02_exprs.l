@@ -503,6 +503,85 @@ func forLoopNestedArrayElemTypeExpr(ctx: in FuncCtx, recv: in Expr): Option[Type
   }
 }
 
+// Direct field-style accessors on the two builtin monadic unions
+// `Std.Core.Result[T, E]` / `Std.Core.Option[T]` — `.isOk`/`.isErr`/
+// `.value`/`.error` on Result, `.isSome`/`.isNone`/`.value` on Option
+// (docs/01 §generics, docs/08 §6.2, docs/02 worked examples).  `cls` is the
+// receiver's already-lowered erased class name (`Std/Core/Result`); JVM
+// generics are erased, so there is no type-arg-shaped variant to match on
+// the way MSIL's `MGenericInst`/`MGenericInstByName` split requires.
+// Case classes follow the same `Outer$Case` naming the `isOk`/`isErr`/
+// `isSome`/`isNone` CALL-form intrinsics already use (`04_calls.l`,
+// `Std/Core/Result$Ok` etc.) — this is the bare member-access (no-call)
+// counterpart of that existing sugar, and closes the MSIL twin of #5183:
+// before this, `.isOk`/`.value` on Result/Option failed the generic
+// record-field fallback below and hit its loud `error[J009]` guard
+// (docs/59 §4.4's stack-safety hardening) — a real compile error rather
+// than MSIL's corrupted-stack `InvalidProgramException`, but still an
+// unsupported documented idiom.  `instanceof` already pushes a genuine
+// `0`/`1` int, so no MSIL-style double-negation ceq/xor dance is needed.
+func builtinMonadCaseClassJvm(cls: in String, caseName: in String): String {
+  cls + "$" + caseName
+}
+
+func lowerBuiltinMonadCaseFieldJvm(
+  ctx: in FuncCtx, insns: in List[LInsn], caseCls: in String, fieldName: in String
+): JvmType {
+  insns.add(LCheckcast(className = caseCls))
+  match recordFieldType(ctx, caseCls, fieldName) {
+    case Some(fty) -> {
+      insns.add(LGetfield(owner = caseCls, name = fieldName, t = fty))
+      match fty {
+        case JByte -> maskByteUnsigned(insns)
+        case _ -> ()
+      }
+      fty
+    }
+    case None -> {
+      // Unreachable in practice: `Std.Core.Result`/`Std.Core.Option`'s case
+      // fields are always registered before user code is lowered.  Fail
+      // loudly (the same J00x-style self-tagged panic convention as the
+      // erased/unknown-receiver guards just below) rather than silently
+      // mis-stacking.
+      panic(
+        "error[J012]: lowerBuiltinMonadCaseFieldJvm: no field registered for '" + caseCls + "." + fieldName +
+          "' -- Std.Core stdlib registration order invariant violated"
+      )
+    }
+  }
+}
+
+func lowerBuiltinMonadAccessorJvm(
+  ctx: in FuncCtx, insns: in List[LInsn], cls: in String, memberName: in String
+): Option[JvmType] {
+  if cls == "Std/Core/Result" {
+    if memberName == "isOk" or memberName == "isErr" {
+      val caseName = if memberName == "isOk" { "Ok" } else { "Err" }
+      insns.add(LInstanceof(className = builtinMonadCaseClassJvm(cls, caseName)))
+      return Some(value = JBoolean)
+    }
+    if memberName == "value" {
+      return Some(value = lowerBuiltinMonadCaseFieldJvm(ctx, insns, builtinMonadCaseClassJvm(cls, "Ok"), "value"))
+    }
+    if memberName == "error" {
+      return Some(value = lowerBuiltinMonadCaseFieldJvm(ctx, insns, builtinMonadCaseClassJvm(cls, "Err"), "error"))
+    }
+    return None
+  }
+  if cls == "Std/Core/Option" {
+    if memberName == "isSome" or memberName == "isNone" {
+      val caseName = if memberName == "isSome" { "Some" } else { "None" }
+      insns.add(LInstanceof(className = builtinMonadCaseClassJvm(cls, caseName)))
+      return Some(value = JBoolean)
+    }
+    if memberName == "value" {
+      return Some(value = lowerBuiltinMonadCaseFieldJvm(ctx, insns, builtinMonadCaseClassJvm(cls, "Some"), "value"))
+    }
+    return None
+  }
+  None
+}
+
 // Lower a single expression.  Pushes exactly one value onto the operand
 // stack (or nothing for JVoid).  Returns the JvmType of the pushed value.
 pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmType {
@@ -1336,6 +1415,11 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       val recvTy = lowerExpr(ctx, insns, recv)
       match recvTy {
         case JRef(cls) -> {
+          match lowerBuiltinMonadAccessorJvm(ctx, insns, cls, memberName) {
+            case Some(monadTy) -> return monadTy
+            case None -> {
+            }
+          }
           // TyException built-in members: .message and .typeName.
           if cls == "java/lang/Throwable" and memberName == "message" {
             val getMessagePs: List[JvmType] = newList()

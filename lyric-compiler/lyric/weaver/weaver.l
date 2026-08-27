@@ -257,6 +257,16 @@ record RewriteCtx {
   ///             function does not provide a field the template's
   ///             `where TArgs has { ... }` clause declares (docs/56 / D115).
   weaveDiags: List[WeaveDiagEntry]
+  /// The advice's declared out-variable name (`around(...) -> ret`'s
+  /// `ret`), when one exists.  Threaded into the rewriter (rather than
+  /// only consulted after the fact via `blockAssignsToName`, as it was
+  /// pre-#5182) so a BARE, non-capturing `proceed(args)` statement — not
+  /// just an explicit `ret = proceed(args)` — can be auto-lifted into an
+  /// assignment at rewrite time (see `rewriteStmt`'s `SExpr` arm).  `None`
+  /// for `around(...) { ... }` advice with no `-> ret` binding at all, and
+  /// for the contract-clause-only rewrite (`rewriteContractClauseArgs`),
+  /// neither of which has an out-variable to capture into.
+  retVarOpt: Option[String]
 }
 
 /// Discriminator + payload for a weave-time diagnostic.  Three kinds
@@ -290,6 +300,7 @@ func newRewriteCtx(
   aspectName: in String,
   funcName: in String,
   weaveDiags: in List[WeaveDiagEntry],
+  retVarOpt: in Option[String],
 ): RewriteCtx {
   RewriteCtx(
     targetName = targetName,
@@ -302,7 +313,8 @@ func newRewriteCtx(
     argsRowFields = argsRowFields,
     aspectName = aspectName,
     funcName = funcName,
-    weaveDiags = weaveDiags
+    weaveDiags = weaveDiags,
+    retVarOpt = retVarOpt
   )
 }
 
@@ -779,7 +791,8 @@ func rewriteBlock(ctx: in RewriteCtx, blk: in Block): Block {
   val newStmts: List[Statement] = newList()
   var i = 0
   while i < blk.statements.count {
-    newStmts.add(rewriteStmt(ctx, blk.statements[i]))
+    val isLast = i == blk.statements.count - 1
+    newStmts.add(rewriteStmt(ctx, blk.statements[i], isLast))
     i = i + 1
   }
   Block(statements = newStmts, span = blk.span)
@@ -819,7 +832,8 @@ func rewriteContractClauseArgs(
     emptyFields,
     aspectName,
     funcName,
-    weaveDiags
+    weaveDiags,
+    None
   )
   match cc {
     case CCRequires(e, s) -> CCRequires(expr = rewriteExpr(ctx, e), span = s)
@@ -899,10 +913,48 @@ func elaborateWrapperBodyForAspectContracts(
   }
 }
 
-func rewriteStmt(ctx: in RewriteCtx, stmt: in Statement): Statement {
+func rewriteStmt(ctx: in RewriteCtx, stmt: in Statement, isLast: in Bool): Statement {
   val s = stmt.span
   match stmt.kind {
-    case SExpr(e) -> Statement(kind = SExpr(expr = rewriteExpr(ctx, e)), span = s)
+    case SExpr(e) -> {
+      // #5182: a BARE, non-capturing, NON-TRAILING `proceed(args)` statement
+      // (as opposed to the explicit `ret = proceed(args)` form #3402 already
+      // handles) is auto-lifted into an assignment into the declared
+      // out-variable whenever the target returns a real value.  Without
+      // this, a `proceed(args)` that is not the advice body's LAST
+      // statement relies on nothing to carry its result forward: the
+      // wrapper is declared to return the target's type (`ret =
+      // originalFn.ret`), but the elaborated body's actual trailing
+      // statement is whatever comes AFTER `proceed(args)` — e.g. a logging
+      // call returning `Unit` — so the synthesised function falls off its
+      // non-void end with no return value, producing
+      // `InvalidProgramException` at the first call (confirmed independent
+      // of a `matches:` wildcard vs. exact pattern).
+      //
+      // Gated on `not isLast`: `proceed(args)` as the SOLE/trailing
+      // statement already works via ordinary implicit-return fall-through
+      // (the well-tested "expression-style advice" case) and is left
+      // completely untouched here — auto-lifting it too would still be
+      // correct in EFFECT, but it would also shift every OTHER statement
+      // in the wrapper body down by the synthesised `var ret` declaration
+      // (`buildBModeSpecializedFunction`/the main `weaveOneFunction`'s
+      // `withRet` prepends it before everything else), silently changing
+      // the statement-index shape existing AST-inspection self-tests
+      // (`weaver_self_test.l`'s config/call-prelude-ordering cases) depend
+      // on for a case that was never broken. Scoped to a bare `SExpr` so a
+      // `proceed(args)` nested inside a larger expression (a call
+      // argument, a condition) is untouched — only a proceed call used AS
+      // a statement, whose result would otherwise be silently discarded,
+      // is eligible for auto-capture.
+      if not isLast and not ctx.targetReturnsUnit and isProceedCall(e) {
+        match ctx.retVarOpt {
+          case Some(rv) -> return Statement(kind = SAssign(target = singleSegPathExpr(rv), op = AssEq, value = rewriteExpr(ctx, e)), span = s)
+          case None -> {
+          }
+        }
+      }
+      Statement(kind = SExpr(expr = rewriteExpr(ctx, e)), span = s)
+    }
     case SReturn(opt) -> {
       val newOpt = match opt { case None -> None; case Some(e) -> Some(value = rewriteExpr(ctx, e)) }
       Statement(kind = SReturn(value = newOpt), span = s)
@@ -1011,8 +1063,15 @@ func mkVarStmtNoInit(name: in String, ty: in Option[TypeExpr]): Statement {
 /// `name = <expr>` statement.  Drives the `around(...) -> ret`
 /// out-variable lowering: when the advice body writes the named return
 /// value, the wrapper must declare it as a local and return it (#3402).
-/// Expression-style bodies (e.g. trailing `proceed(args)`) never assign
-/// `ret`, so they are left untouched.
+/// Since #5182, `rewriteStmt`'s `SExpr` arm auto-lifts a BARE
+/// (non-capturing), NON-TRAILING `proceed(args)` statement into `ret =
+/// proceed(args)` before this ever runs (when the target returns a real
+/// value), so a body whose ONLY proceed call is the unadorned
+/// expression-style form followed by more statements now also assigns
+/// `ret` and reaches this function's `true` branch. A bare proceed call
+/// that IS the trailing statement is deliberately left untouched (still
+/// returns via ordinary implicit-return fall-through, not `ret`), so
+/// "expression-style advice" bodies are unaffected here.
 func blockAssignsToName(blk: in Block, name: in String): Bool {
   var i = 0
   while i < blk.statements.count {
@@ -1688,7 +1747,8 @@ func buildWrapper(
     noArgsRowFields,
     aspect.name,
     originalFn.name,
-    site.weaveDiags
+    site.weaveDiags,
+    around.retName
   )
 
   val rewiredBody = rewriteBlock(ctx, around.body)
@@ -3626,7 +3686,8 @@ func buildBModeSpecializedFunction(
     argsRowFieldsMap,
     aspect.name,
     specName,
-    emptyDiags
+    emptyDiags,
+    around.retName
   )
 
   val rewiredBody = rewriteBlock(ctx, around.body)

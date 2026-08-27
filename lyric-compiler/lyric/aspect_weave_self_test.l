@@ -231,3 +231,66 @@ func addBonus(): Long {
 test "same-file alias inside aspect advice body resolves and participates in arithmetic (#6416)" {
   assertEqualLong(addBonus(), 11i64, "proceed() + Meters-typed local: 1 + 10 = 11")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #5182: a statement AFTER a BARE, non-capturing `proceed(args)` (as opposed
+// to #3402's `ret = proceed()` capturing form) produced `InvalidProgramException`
+// when the matched target's return type is not `Unit` — exactly the shape
+// `examples/agent/config-and-aspects.l`'s `RequestLogging`/`Auth` aspects use
+// (`Std.Log.info(...); proceed(args); Std.Log.info(...)`).  Before the fix, the
+// weaver's naive statement splice left `proceed(args)`'s call result discarded
+// (bare `SExpr`, non-tail position) and the elaborated wrapper body's actual
+// trailing statement was the println AFTER it — `Unit`-typed — while the
+// wrapper is declared to return the target's real type, so it fell off a
+// non-void method with no return value.  The fix auto-lifts a bare
+// (non-capturing), NON-TRAILING `proceed(args)` statement into `ret =
+// proceed(args)` whenever the target returns a real value — so the
+// synthesised `var ret; ...; return ret` wrapping (#3402) kicks in exactly
+// as it does for the explicit `ret = proceed(args)` form.  (A bare proceed
+// call that IS the trailing statement is deliberately left untouched — it
+// already returns correctly via ordinary implicit-return fall-through, the
+// "expression-style advice" case a few tests above.)  Bisected in the issue
+// as independent of the `matches:` wildcard vs. exact pattern; reproduces
+// identically on `--target dotnet` and `--target jvm` (this same file runs
+// on both, mirroring every other case above), so both are fixed by the one
+// weaver-level change.
+// ─────────────────────────────────────────────────────────────────────────────
+aspect RequestLoggingLike {
+  matches: name in { handleGreet }
+  around(args) -> ret {
+    println("enter")
+    proceed(args)
+    println("exit")
+  }
+}
+
+func handleGreet(name: in String): String {
+  "hello, " + name
+}
+
+test "statement after non-capturing proceed(args) on a non-Unit target runs cleanly (#5182)" {
+  assertTrue(
+    handleGreet("world") == "hello, world",
+    "handleGreet(\"world\") threads proceed(args)'s result through a trailing statement without InvalidProgramException"
+  )
+}
+
+// A second matched function proves the auto-lift isn't a one-shot / single-
+// call-site fluke — both `handleGreet` and `handleFarewell` route through the
+// SAME advice body, each getting its own woven wrapper.
+func handleFarewell(name: in String): String {
+  "farewell, " + name
+}
+
+aspect RequestLoggingLike2 {
+  matches: name in { handleFarewell }
+  around(args) -> ret {
+    println("enter")
+    proceed(args)
+    println("exit")
+  }
+}
+
+test "statement after non-capturing proceed(args), second matched function (#5182)" {
+  assertTrue(handleFarewell("world") == "farewell, world", "handleFarewell(\"world\") via the same advice shape")
+}
