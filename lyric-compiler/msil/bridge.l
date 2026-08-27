@@ -487,6 +487,42 @@ pub func compileProjectToMsilWithFeatures(
   )
 }
 
+/// Like `compileProjectToMsilWithFeatures`, but also appends any F0020–F0025
+/// codegen-conformance diagnostics (#4898) into `outDiagnostics` on failure —
+/// see `compileProjectToMsilWithRestoredAndVersionDiag` for the full
+/// rationale and the cross-assembly caveat.  No restored artifacts, no
+/// version threading (matches `compileProjectToMsilWithFeatures`'s own
+/// scope); callers that need those use
+/// `compileProjectToMsilWithRestoredAndVersionDiag` directly.
+pub func compileProjectToMsilWithFeaturesDiag(
+  packages: in List[ProjectPackagePayload],
+  assemblyName: in String,
+  outputPath: in String,
+  stdlibSources: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  outDiagnostics: in List[Diagnostic],
+): Bool {
+  val noArtifacts: List[SynthesisedArtifact] = newList()
+  val emptyNugetPaths: List[String] = newList()
+  val noDepTemplatePkgs: List[ProjectPackagePayload] = newList()
+  val noDefines: List[String] = newList()
+  compileProjectToMsilWithRestoredAndVersionDiag(
+    packages,
+    assemblyName,
+    outputPath,
+    stdlibSources,
+    activeFeatures,
+    declaredFeatures,
+    noArtifacts,
+    emptyNugetPaths,
+    "",
+    noDepTemplatePkgs,
+    noDefines,
+    outDiagnostics
+  )
+}
+
 /// Like `compileProjectToMsilWithFeatures` but accepts a list of
 /// `Lyric.RestoredPackages.SynthesisedArtifact`s for the consumer's
 /// restored dependencies and seeds them into `CodegenCtx.restoredArtifacts`.
@@ -548,6 +584,54 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   depTemplatePkgs: in List[ProjectPackagePayload],
   defines: in List[String],
   paths: in List[String],
+): Bool {
+  val noDiagOut: List[Diagnostic] = newList()
+  compileProjectToMsilWithRestoredAndVersionDiag(
+    packages,
+    assemblyName,
+    outputPath,
+    stdlibSources,
+    activeFeatures,
+    declaredFeatures,
+    restoredArtifacts,
+    nugetAssemblyPaths,
+    packageVersion,
+    depTemplatePkgs,
+    defines,
+    noDiagOut
+  )
+}
+
+/// Like `compileProjectToMsilWithRestoredAndVersion`, but also appends the
+/// F0020–F0025 external-interface-conformance / try-catch-as-expression
+/// diagnostics accumulated on the shared `CodegenCtx` (#4898) into
+/// `outDiagnostics` on a codegen-level failure, instead of discarding them
+/// behind the bare `Bool` return.  `abortOnCodegenDiagnosticsMsil` already
+/// prints every one of them to stderr before this returns; `outDiagnostics`
+/// lets an in-process caller (a test harness) also assert on the exact code
+/// and position without needing to capture stderr from a spawned subprocess
+/// — cross-package (cross-assembly) codegen-context field reads are not
+/// execution-clean for the self-hosted emitter today (docs/41 §R7,
+/// `scripts/stage-selfhosted-compiler.sh`'s header), so a caller that reads
+/// `cctx.diagnostics` from a DIFFERENT compiled assembly than the one that
+/// populated it (e.g. the CLI's own per-package DLL bundle, as opposed to
+/// the single merged `Lyric.Compiler.dll` `lyric test` links) cannot rely on
+/// this being correct.  Returns false unchanged; `outDiagnostics` stays
+/// empty on every non-codegen failure (parse / typecheck / mode-check /
+/// weave), matching the bare function's existing scope.
+pub func compileProjectToMsilWithRestoredAndVersionDiag(
+  packages: in List[ProjectPackagePayload],
+  assemblyName: in String,
+  outputPath: in String,
+  stdlibSources: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  restoredArtifacts: in List[SynthesisedArtifact],
+  nugetAssemblyPaths: in List[String],
+  packageVersion: in String,
+  depTemplatePkgs: in List[ProjectPackagePayload],
+  defines: in List[String],
+  outDiagnostics: in List[Diagnostic],
 ): Bool {
   if packages.count == 0 {
     return false
@@ -1087,6 +1171,11 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     val mpkg = codegenMPackage(liftedFiles[ci], cctx)
     mpkgs.add(mpkg)
     if abortOnCodegenDiagnosticsMsilInPkg(cctx, perPkgNames[ci]) {
+      var cdi = 0
+      while cdi < cctx.diagnostics.count {
+        outDiagnostics.add(cctx.diagnostics[cdi])
+        cdi = cdi + 1
+      }
       return false
     }
     ci = ci + 1

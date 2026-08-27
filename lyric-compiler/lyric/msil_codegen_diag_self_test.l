@@ -12,15 +12,41 @@
 //! cfg-erasure diagnostic lists) instead of proceeding to lower invalid
 //! IR.
 //!
-//! Every "bad" case below compiles a small package payload through the
-//! in-process `Msil.Bridge` and asserts the build **fails cleanly**
-//! (`compileProjectToMsilWithFeatures` returns `false`, no panic
-//! propagates out of this test process) — mirroring how
-//! `msil_project_bridge_self_test.l`'s "cfg erasure F0012 malformed" test
-//! already pins the identical hard-error-diagnostic contract for
-//! `Lyric.Cfg`.  A "good" companion case per condition pins that the
-//! corresponding conforming shape still compiles, so the new diagnostic
-//! logic cannot spuriously reject legitimate code.
+//! Every "good" case below compiles a small package payload through the
+//! in-process `Msil.Bridge` and asserts the build succeeds — pinning that
+//! the F002x checks don't spuriously reject legitimate code.
+//!
+//! Every "bad" case compiles through `Msil.Bridge.compileProjectToMsilWith
+//! FeaturesDiag` (added alongside this fix) instead of the plain
+//! `compileProjectToMsilWithFeatures`: the plain variant only ever returns a
+//! `Bool` (this file's own original form), which proved the build merely
+//! FAILED — never which diagnostic fired, its code, or its position, so a
+//! future change that deleted the `errorDiagnostic("F00xx", …, decl.span)`
+//! call (or fed it an empty/wrong span) could regress silently as long as
+//! *some* failure still resulted. `...Diag` threads `cctx.diagnostics`
+//! (`Msil.Codegen`'s F0020–F0025 accumulator) back through an `outDiagnostics`
+//! out-list, so each "bad" case asserts the EXACT diagnostic — code AND the
+//! real source position of the offending construct (the `impl` keyword for
+//! F0020/F0024, the mismatching `func` for F0022/F0023, the `catch` keyword
+//! for F0025) — not merely that the build failed.
+//!
+//! In-process, not a spawned `./bin/lyric build` subprocess (contrast
+//! `source_path_diagnostics_self_test.l`, added alongside this fix for
+//! #6282/#6284): the self-hosted emitter's cross-PACKAGE emission is not
+//! execution-clean today (docs/41 §R7 — see
+//! `scripts/stage-selfhosted-compiler.sh`'s header for the canonical
+//! writeup), so reading a `CodegenCtx` field like `cctx.diagnostics` from a
+//! caller compiled into a DIFFERENT assembly than the one that populated it
+//! is exactly the shape that corrupts. `./bin/lyric`'s own CLI bundle
+//! compiles `Msil.Codegen` / `Msil.Bridge` / `Lyric.Emitter` as separate
+//! per-package DLLs (cross-assembly), which is confirmed to hit this: a
+//! `lyric build` subprocess on any of this file's "bad" fixtures degrades
+//! the clean `error[F0020] 9:1: …` diagnostic into a generic, position-lost
+//! `error[T0120]: MSIL codegen failed: …` panic wrapper instead. `lyric
+//! test` avoids the corruption by resolving this file's own compiler-package
+//! imports (`Msil.Bridge`) from the single merged `Lyric.Compiler.dll`
+//! bundle (D111) — every cross-package reference stays in-bundle — so the
+//! in-process calls below see the real, correctly-positioned diagnostics.
 //!
 //! Run in CI via:
 //!   lyric test lyric-compiler/lyric/msil_codegen_diag_self_test.l
@@ -49,8 +75,8 @@ func tempBase(): String {
 // Compiles `source` as a single-package project bundle to a throwaway
 // path and returns whether the bridge accepted it.  Never writes
 // anything meaningful to disk — `outputPath` is never read back by
-// these tests, only the boolean result matters (did the build reject
-// the F002x condition without panicking).
+// these tests, only the boolean result matters.  Used by the "good"
+// companion cases, where a plain pass/fail is all that's needed.
 func compiles(label: in String, source: in String): Bool {
   val pkgs: List[ProjectPackagePayload] = newList()
   pkgs.add(mkPkg(label, source))
@@ -63,6 +89,53 @@ func compiles(label: in String, source: in String): Bool {
     stdlibSources,
     empty,
     empty
+  )
+}
+
+// Compiles `source` the same way as `compiles`, but through the
+// diagnostics-returning bridge entry point — used by every "bad" case so it
+// can assert the exact F00xx code and position, not just pass/fail.
+func compileDiag(label: in String, source: in String, outDiagnostics: in List[Diagnostic]): Bool {
+  val pkgs: List[ProjectPackagePayload] = newList()
+  pkgs.add(mkPkg(label, source))
+  val empty: List[String] = newList()
+  val stdlibSources: List[String] = newList()
+  compileProjectToMsilWithFeaturesDiag(
+    pkgs,
+    label,
+    tempBase() + "/lyric-msil-codegen-diag-" + label + ".dll",
+    stdlibSources,
+    empty,
+    empty,
+    outDiagnostics
+  )
+}
+
+// Asserts `diags` carries exactly one error-severity diagnostic with the
+// given `code` at the given `line`/`col` — proving a real, positioned
+// `Diagnostic` fired with THIS specific code at THIS specific source
+// location, not merely "the build failed for some reason".
+func assertDiagAt(diags: in List[Diagnostic], code: in String, line: in Int, col: in Int, label: in String): Unit {
+  var found = false
+  var i = 0
+  while i < diags.count {
+    val d = diags[i]
+    if d.code == code and d.span.startPos.line == line and d.span.startPos.column == col {
+      found = true
+    }
+    i = i + 1
+  }
+  var seen = ""
+  var j = 0
+  while j < diags.count {
+    val d = diags[j]
+    seen = seen + d.code + "@" + toString(d.span.startPos.line) + ":" + toString(d.span.startPos.column) + " "
+    j = j + 1
+  }
+  assertTrue(
+    found,
+    label + ": expected " + code + "@" + toString(line) + ":" + toString(col) + " among the returned diagnostics, got: " +
+      seen
   )
 }
 
@@ -80,7 +153,12 @@ test "F0020: impl block against a non-interface extern type fails cleanly" {
     "func main(): Unit {\n" +
     "  println(\"unreachable\")\n" +
     "}\n"
-  assertTrue(not compiles("F0020Bad", src), "impl against System.String (a class) must be rejected, not panic")
+  // `impl` keyword on line 9, column 1 — `decl.span` starts there
+  // (`parser_items.l::parseImplBody`'s `startTok`).
+  val diags: List[Diagnostic] = newList()
+  val ok = compileDiag("F0020Bad", src, diags)
+  assertTrue(not ok, "impl against System.String (a class) must be rejected, not panic")
+  assertDiagAt(diags, "F0020", 9, 1, "F0020: impl against System.String (a class)")
 }
 
 // ─── F0021: `impl` is missing a required interface method ──────────────────
@@ -96,7 +174,13 @@ test "F0021: impl block missing a required method fails cleanly" {
     "func main(): Unit {\n" +
     "  println(\"unreachable\")\n" +
     "}\n"
-  assertTrue(not compiles("F0021Bad", src), "impl IDisposable missing Dispose() must be rejected, not panic")
+  // `impl` keyword on line 9, column 1 — F0021 also uses `decl.span`
+  // (`checkOneInterfaceMethodMsil`'s `None` arm, no matching impl method
+  // found for the interface's `Dispose`).
+  val diags: List[Diagnostic] = newList()
+  val ok = compileDiag("F0021Bad", src, diags)
+  assertTrue(not ok, "impl IDisposable missing Dispose() must be rejected, not panic")
+  assertDiagAt(diags, "F0021", 9, 1, "F0021: impl IDisposable missing Dispose()")
 }
 
 // Companion "good" case: the same interface, correctly implemented,
@@ -134,9 +218,18 @@ test "F0022: impl method with wrong parameter count fails cleanly" {
     "func main(): Unit {\n" +
     "  println(\"unreachable\")\n" +
     "}\n"
-  assertTrue(
-    not compiles("F0022CountBad", src),
-    "Dispose(extra: Int) takes one parameter more than the .NET interface declares; must be rejected"
+  // F0022/F0023 use `implFn.span`, whose start is the impl method's `func`
+  // token (`parseFunctionDeclBody`'s `startSpan`) — line 10, column 3
+  // (two-space indent before `func Dispose`).
+  val diags: List[Diagnostic] = newList()
+  val ok = compileDiag("F0022CountBad", src, diags)
+  assertTrue(not ok, "Dispose(extra: Int) takes one parameter more than the .NET interface declares; must be rejected")
+  assertDiagAt(
+    diags,
+    "F0022",
+    10,
+    3,
+    "F0022: Dispose(extra: Int) takes one parameter more than the .NET interface declares"
   )
 }
 
@@ -160,10 +253,11 @@ test "F0022: impl method with wrong parameter type fails cleanly" {
     "func main(): Unit {\n" +
     "  println(\"unreachable\")\n" +
     "}\n"
-  assertTrue(
-    not compiles("F0022TypeBad", src),
-    "Equals(other: Int) instead of Equals(other: GenRec0022t) must be rejected"
-  )
+  // `func Equals` is on line 10, column 3.
+  val diags: List[Diagnostic] = newList()
+  val ok = compileDiag("F0022TypeBad", src, diags)
+  assertTrue(not ok, "Equals(other: Int) instead of Equals(other: GenRec0022t) must be rejected")
+  assertDiagAt(diags, "F0022", 10, 3, "F0022: Equals(other: Int) instead of Equals(other: GenRec0022t)")
 }
 
 // ─── F0023: impl method return type mismatch ───────────────────────────────
@@ -182,7 +276,11 @@ test "F0023: impl method with wrong return type fails cleanly" {
     "func main(): Unit {\n" +
     "  println(\"unreachable\")\n" +
     "}\n"
-  assertTrue(not compiles("F0023Bad", src), "Equals returning Int instead of Bool must be rejected")
+  // `func Equals` is on line 10, column 3 (same shape as F0022's type case).
+  val diags: List[Diagnostic] = newList()
+  val ok = compileDiag("F0023Bad", src, diags)
+  assertTrue(not ok, "Equals returning Int instead of Bool must be rejected")
+  assertDiagAt(diags, "F0023", 10, 3, "F0023: Equals returning Int instead of Bool")
 }
 
 // Companion "good" case: the closed generic interface correctly
@@ -222,10 +320,15 @@ test "F0024: impl target FQN typo (not in reference metadata) fails cleanly" {
     "func main(): Unit {\n" +
     "  println(\"unreachable\")\n" +
     "}\n"
+  // F0024 uses `decl.span` too (`validateOneExternImplMsil`'s typo-not-
+  // present arm) — `impl` keyword on line 9, column 1.
+  val diags: List[Diagnostic] = newList()
+  val ok = compileDiag("F0024Bad", src, diags)
   assertTrue(
-    not compiles("F0024Bad", src),
+    not ok,
     "a typo'd extern-type FQN absent from every indexed assembly must be rejected, not silently accepted"
   )
+  assertDiagAt(diags, "F0024", 9, 1, "F0024: typo'd extern-type FQN absent from every indexed assembly")
 }
 
 // ─── F0025: try-catch-as-expression Unit/value mismatch ────────────────────
@@ -253,10 +356,17 @@ test "F0025: try-catch expression with a Unit-yielding, non-diverging catch arm 
     "func main(): Unit {\n" +
     "  println(toString(wrap(1)))\n" +
     "}\n"
-  assertTrue(
-    not compiles("F0025Bad", src),
-    "try-catch expr with a Unit catch arm beside an Int try body must be rejected, not panic"
-  )
+  // F0025 uses `c.span` (the catch clause's own span, `parseCatchClause`'s
+  // `startTok` = the `catch` keyword) — line 6, column 5 (`  } catch …`:
+  // two-space indent, `}`, space, then `catch` starts at column 5).
+  // `Lyric.Mono` preserves the original clause span verbatim when it clones
+  // `wrap`'s body for the `Int`-specialised copy (`mono.l`'s `STry`
+  // substitution threads `span = cc.span` through unchanged), so the
+  // diagnostic still points at the generic source, not a synthetic location.
+  val diags: List[Diagnostic] = newList()
+  val ok = compileDiag("F0025Bad", src, diags)
+  assertTrue(not ok, "try-catch expr with a Unit catch arm beside an Int try body must be rejected, not panic")
+  assertDiagAt(diags, "F0025", 6, 5, "F0025: try-catch expr with a Unit catch arm beside an Int try body")
 }
 
 // Companion "good" case: the catch arm yields the same type as the try
