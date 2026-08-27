@@ -389,6 +389,156 @@ func fieldElemOverride(ctx: in FuncCtx, cls: in String, fieldName: in String): J
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §5b. Unannotated list-literal element-type inference (#5686 — JVM parity
+//      for the MSIL #5620 fix).
+// ─────────────────────────────────────────────────────────────────────────────
+// The static element type of one list-literal element for the homogeneity
+// check below: a simple literal's own type, or — for a bare 1-segment name —
+// the tracked `JvmType` of the local/param it binds (`ctx.types`), so
+// `[a, b]` with `Int` locals recovers `JInt`, not just `[9, 7]` (mirrors
+// MSIL's `listLiteralElemTypeMsil`, msil/codegen.l).  A call, member access,
+// or any other element shape this peek can't resolve without doing real
+// call/name resolution falls back to the `java/lang/Object` sentinel, which
+// `isSimpleListElemJvm` below rejects — such a literal keeps the legacy
+// erased-element behaviour, unchanged.
+func listLiteralElemTypeJvm(ctx: in FuncCtx, e: in Expr): JvmType {
+  match e.kind {
+    case EPath(p) -> {
+      if p.segments.count == 1 {
+        match mapGet(ctx.types, p.segments[0]) {
+          case Some(t) -> t
+          case None -> JRef(className = "java/lang/Object")
+        }
+      } else {
+        JRef(className = "java/lang/Object")
+      }
+    }
+    case ELiteral(lit) -> {
+      match lit {
+        case LInt(v, suffix, _) -> {
+          match suffix {
+            case I8 -> JByte
+            case U8 -> JByte
+            case NoIntSuffix -> if v >= -2147483648i64 and v <= 2147483647i64 { JInt } else { JRef(className = "java/lang/Object") }
+            case I16 -> if v >= -2147483648i64 and v <= 2147483647i64 { JInt } else { JRef(className = "java/lang/Object") }
+            case I32 -> if v >= -2147483648i64 and v <= 2147483647i64 { JInt } else { JRef(className = "java/lang/Object") }
+            case I64 -> JLong
+            case _ -> JRef(className = "java/lang/Object")
+          }
+        }
+        case LFloat(_, floatSuffix, _) -> {
+          match floatSuffix {
+            case NoFloatSuffix -> JDouble
+            case F64 -> JDouble
+            case _ -> JRef(className = "java/lang/Object")
+          }
+        }
+        case LString(_) -> JRef(className = "java/lang/String")
+        case LTripleString(_) -> JRef(className = "java/lang/String")
+        case LRawString(_) -> JRef(className = "java/lang/String")
+        case LBool(_) -> JBoolean
+        case LChar(_) -> JChar
+        case _ -> JRef(className = "java/lang/Object")
+      }
+    }
+    case EParen(inner) -> listLiteralElemTypeJvm(ctx, inner)
+    case EPrefix(op, inner) -> {
+      match op {
+        case PreNeg -> listLiteralElemTypeJvm(ctx, inner)
+        case _ -> JRef(className = "java/lang/Object")
+      }
+    }
+    case _ -> JRef(className = "java/lang/Object")
+  }
+}
+
+// The value/String element types whose erasure to `Object` was the #5686
+// miscompile class (a value element read back unboxed as the wrong width, or
+// a relational/arithmetic op panicking on a reference-typed operand).
+// Reference/record element types are deliberately excluded — a
+// `[record, record]` literal keeps the conservative legacy path, mirroring
+// MSIL's `isSimpleListElemMsil`.
+func isSimpleListElemJvm(t: in JvmType): Bool {
+  match t {
+    case JInt -> true
+    case JLong -> true
+    case JDouble -> true
+    case JBoolean -> true
+    case JChar -> true
+    case JByte -> true
+    case JRef(cls) -> cls == "java/lang/String"
+    case _ -> false
+  }
+}
+
+func jvmSimpleTypeEq(a: in JvmType, b: in JvmType): Bool {
+  match a {
+    case JInt -> match b { case JInt -> true; case _ -> false }
+    case JLong -> match b { case JLong -> true; case _ -> false }
+    case JDouble -> match b { case JDouble -> true; case _ -> false }
+    case JBoolean -> match b { case JBoolean -> true; case _ -> false }
+    case JChar -> match b { case JChar -> true; case _ -> false }
+    case JByte -> match b { case JByte -> true; case _ -> false }
+    case JRef(ca) -> match b { case JRef(cb) -> ca == cb; case _ -> false }
+    case _ -> false
+  }
+}
+
+// Infer a single concrete element `JvmType` for an unannotated list literal
+// when every element shares one simple static type — the JVM-side parity fix
+// for #5686 (MSIL's analogous `inferHomogeneousListElemTypeMsil`, #5620).
+// Returns `None` for an empty list, any element whose type can't be peeked, a
+// non-simple element type, or a heterogeneous mix — those keep the legacy
+// erased-`Object` element type.  `scrutineeGenericArgs`'s `EList` arm
+// (03_match.l) consults this so `val xs = [9, 7]` records `Int` as `xs`'s
+// element type exactly like the annotated `val xs: List[Int] = newList()`
+// form already does, letting `indexedElemTypeOverride` narrow `xs[i]` from
+// erased `Object` to the real element type instead of panicking on a
+// following relational/arithmetic use (the reported #5686 symptom).
+func inferHomogeneousListElemTypeJvm(ctx: in FuncCtx, exprs: in List[Expr]): Option[JvmType] {
+  if exprs.count == 0 {
+    return None
+  }
+  val firstTy = listLiteralElemTypeJvm(ctx, exprs[0])
+  if not isSimpleListElemJvm(firstTy) {
+    return None
+  }
+  var i = 1
+  var homogeneous = true
+  while i < exprs.count {
+    if not jvmSimpleTypeEq(listLiteralElemTypeJvm(ctx, exprs[i]), firstTy) {
+      homogeneous = false
+    }
+    i = i + 1
+  }
+  if homogeneous {
+    Some(value = firstTy)
+  } else {
+    None
+  }
+}
+
+// Map a simple element `JvmType` (as `isSimpleListElemJvm` accepts) to its
+// Lyric built-in type name, so `scrutineeGenericArgs`'s `EList` arm can
+// synthesise a `TypeExpr` and hand it to the SAME `resolveConcreteTypeExpr`
+// pipeline an explicit `List[Int]` annotation's `TGenericApp` argument goes
+// through (`isPrimitiveTypeKeyword` / `typeExprToJvm`) — one resolution path
+// for both the annotated and unannotated forms, so they can never disagree
+// on how an element is boxed/read.
+func builtinTypeNameForJvmElem(t: in JvmType): Option[String] {
+  match t {
+    case JInt -> Some(value = "Int")
+    case JLong -> Some(value = "Long")
+    case JDouble -> Some(value = "Double")
+    case JBoolean -> Some(value = "Bool")
+    case JChar -> Some(value = "Char")
+    case JByte -> Some(value = "Byte")
+    case JRef(cls) -> if cls == "java/lang/String" { Some(value = "String") } else { None }
+    case _ -> None
+  }
+}
+
 func indexedElemTypeOverride(ctx: in FuncCtx, recv: in Expr): JvmType {
   // Recorded/declared instantiation args first, resolved through the same
   // `scrutineeGenericArgs` extraction match-payload unboxing uses

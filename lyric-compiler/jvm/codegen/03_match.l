@@ -100,6 +100,34 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
     // `Result[slice[Byte], String]`), so the instantiation passes through
     // (#5570 — `val bb = await HttpResponse.bodyBytes(resp); match bb { … }`).
     case EAwait(inner) -> scrutineeGenericArgs(ctx, inner)
+    // An unannotated homogeneous list literal (`[9, 7]`) — #5686, the JVM
+    // parity fix for MSIL's #5620: `inferHomogeneousListElemTypeJvm`
+    // (02_exprs.l) peeks the elements for one shared simple type, and — when
+    // found — a synthetic `TypeExpr` naming it is returned exactly as an
+    // explicit `List[Int]` annotation's `TGenericApp` argument would be
+    // (`annotationGenericArgs`), so `recordVarGenericArgs` records it under
+    // the SAME `ctx.varGenericArgs` registry, letting `indexedElemTypeOverride`
+    // narrow a later `xs[i]` from erased `Object` to the real element type.
+    // Heterogeneous / unpeekable-element literals fall back to `newList()`
+    // (no recorded args), unchanged from before this fix.
+    case EList(exprs) -> {
+      match inferHomogeneousListElemTypeJvm(ctx, exprs) {
+        case Some(t) -> {
+          match builtinTypeNameForJvmElem(t) {
+            case Some(nm) -> {
+              val segs: List[String] = newList()
+              segs.add(nm)
+              val te = TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = scrutinee.span)), span = scrutinee.span)
+              val teList: List[TypeExpr] = newList()
+              teList.add(te)
+              teList
+            }
+            case None -> newList()
+          }
+        }
+        case None -> newList()
+      }
+    }
     case ECall(fn, callArgs) -> {
       match fn.kind {
         // Qualified-first resolution (#5976 follow-up): a bare-name-only

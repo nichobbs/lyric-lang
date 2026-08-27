@@ -1840,9 +1840,9 @@ jobs:
       # List-literal indexed-read self-test (#5620, MSIL).  An unannotated list
       # literal (`val xs = [9, 7]`) now builds a genuine `List<e>` when
       # homogeneous, so `xs[0]` recovers the element type instead of a boxed
-      # `object` that downstream `+`/comparison mis-read as garbage.  dotnet-only
-      # — the JVM backend has the same root cause in a separate path, tracked as
-      # a parity follow-up.  Imports only `Std.*`.
+      # `object` that downstream `+`/comparison mis-read as garbage.  dotnet
+      # half of the now-dual-target test; the JVM half (#5686 parity fix) runs
+      # in compiler-self-tests-jvm.  Imports only `Std.*`.
       - name: List-literal index self-test (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
@@ -4364,6 +4364,20 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/iface_slice_arg_self_test.l
+
+      # List-literal indexed-read self-test, JVM leg (#5686 parity fix for
+      # MSIL's #5620): an unannotated homogeneous list literal (`val xs =
+      # [9, 7]`) now records its peeked element type (`inferHomogeneousListElemTypeJvm`,
+      # 02_exprs.l) against the binding, so `indexedElemTypeOverride` narrows
+      # `xs[i]` from erased `Object` to the real element type instead of
+      # panicking on a following relational/arithmetic use.  The runtime
+      # representation stays a plain `ArrayList` (JVM has no reified
+      # generics); only the compiler's own type tracking changed.  dotnet
+      # half (the original #5620 fix) runs in compiler-self-tests-dotnet-a.
+      - name: List-literal index self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/list_literal_index_self_test.l
 
       # Await-hoist self-test on JVM (#5606/#5628, #5630) — JVM already
       # compiled every hoist shape correctly before the rewrite (the rewrite

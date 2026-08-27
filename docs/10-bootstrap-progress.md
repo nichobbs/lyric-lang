@@ -32268,3 +32268,75 @@ gaps. Zero regressions across `out_inout_jvm_self_test.l` (18),
 `lyric-compiler/lyric/generic_extern_jvm_self_test.l` (new),
 `lyric-web/src/_kernel/jvm/web_kernel.l` (stale `#5458` comment corrected),
 `.github/workflows/ci.yml` (new self-test wired in).
+
+### D-progress-803 — JVM: track element type through unannotated list literals so indexed reads no longer erase to `Object` (#5686, JVM parity for MSIL's #5620)
+
+`Jvm.Codegen`'s `case EList` (`codegen/02_exprs.l`) always built a plain
+`ArrayList` with every element boxed to `Object` and no element-type
+tracking, unlike MSIL's #5620 fix (a homogeneous unannotated literal builds
+a genuine `T[]`). An indexed read (`xs[0]`) on `val xs = [3, 5, 8]` therefore
+stayed statically `Object`, and a following relational/arithmetic use
+(`xs[0] < xs[1]`) panicked loudly at codegen time
+("unsupported reference comparison op … on operands of reference type
+'java/lang/Object'") — not the MSIL flavor's silent garbage, but still a
+real usability gap: an unannotated homogeneous list literal could not be
+indexed-and-used on JVM the way it could on MSIL after #5620.
+
+**Design.** The issue anticipated needing a new `JvmType` "typed list"
+variant. That was deliberately **not** built: `JvmType` is matched
+exhaustively at roughly 700 call sites across the JVM backend (member-call
+dispatch for `.add`/`.count`/`.remove`/…, `for`-loop iteration, auto-FFI
+receiver resolution, compound assignment, pattern-match narrowing, stackmap
+frame merging, …), and every one of them treats "a list value" as bare
+`JRef("java/util/ArrayList")` — the ONLY consumer that needs the extra
+element-type information is the indexed-read narrowing path, which the
+backend already has a purpose-built, orthogonal mechanism for:
+`ctx.varGenericArgs` (a `Map[String, List[TypeExpr]]` populated at
+`val`/`var` binding sites by `recordVarGenericArgs`/`recordDeclaredElemType`
+for a declared `List[Elem]`/`slice[Elem]` annotation, consulted by
+`indexedElemTypeOverride`/`applyIndexedElemOverride` to narrow an `xs[i]`
+read from erased `Object` to the real element type). Extending THAT registry
+to also cover the unannotated-literal case reuses the exact same resolution
+pipeline the already-correct annotated form goes through, so the two forms
+can never disagree on how an element is boxed/read, and touches none of the
+~700 unrelated match sites: `case EList`'s own codegen (still a plain boxed
+`ArrayList`, unchanged) is left alone entirely.
+
+Three new pure peek helpers in `codegen/02_exprs.l` — `listLiteralElemTypeJvm`
+(a literal's own type, or a bare name's tracked `ctx.types` entry, mirroring
+MSIL's `listLiteralElemTypeMsil`), `isSimpleListElemJvm`/`jvmSimpleTypeEq`
+(the `Int`/`Long`/`Double`/`Bool`/`Char`/`Byte`/`String` set whose erasure to
+`Object` was the miscompile class, mirroring `isSimpleListElemMsil`), and
+`inferHomogeneousListElemTypeJvm` (mirroring
+`inferHomogeneousListElemTypeMsil`) — determine whether every element of a
+list literal shares one such simple type. `scrutineeGenericArgs`'s new
+`EList` arm (`codegen/03_match.l`) consults this peek and, when homogeneous,
+synthesises a `TypeExpr` naming the built-in type (via a new
+`builtinTypeNameForJvmElem` mapping) exactly as an explicit `List[Int]`
+annotation's `TGenericApp` argument would be — so `recordVarGenericArgs`
+(already called, unconditionally, at every `val`/`var` binding site) records
+it into `ctx.varGenericArgs` with zero new call sites. `indexedElemTypeOverride`
+then narrows `xs[i]` through its existing `resolveConcreteTypeExpr` /
+`sameTypeExprElemFallback` pipeline, unchanged.
+
+Verified by `lyric-compiler/lyric/list_literal_index_self_test.l` (shared
+with the #5620 MSIL fix, previously dotnet-only): 6 cases now pass on
+`--target jvm` too (Int index/sum/compare, the annotated `newList()`+`.add`
+baseline, String/Double/Bool/Char/Long/Byte element types, and a `[a, b]`
+list literal over local variables), wired into `compiler-self-tests-jvm`.
+Regression-checked against 15 other list/slice/generic/collection JVM
+self-tests spanning the exact machinery touched
+(`indexedElemTypeOverride`/`scrutineeGenericArgs`/`fieldElemOverride`):
+`erased_element_checkcast_jvm_self_test.l`, `method_scrutinee_jvm_self_test.l`,
+`generic_jvm_self_test.l`, `erased_generic_arith_jvm_self_test.l`,
+`subscript_assign_jvm_self_test.l`, `chained_elem_jvm_self_test.l`,
+`map_iteration_jvm_self_test.l`, `iface_slice_arg_self_test.l`, and (dotnet
+target, unaffected by this JVM-only change) `list_value_compare_self_test.l`,
+`generic_slice_self_test.l`, `slice_ops_self_test.l`,
+`union_list_match_self_test.l`, `slice_append_widening_self_test.l`,
+`slice_array_abi_self_test.l`, `for_loop_slice_self_test.l`,
+`inout_slice_self_test.l`, `restored_slice_list_return_self_test.l`,
+`slice_byte_lambda_arg_self_test.l`, `slice_string_self_test.l` — all pass,
+no regressions.
+
+**Related:** `docs/44-jvm-production-readiness-plan.md` m-97.
