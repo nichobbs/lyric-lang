@@ -507,6 +507,7 @@ pub func compileProjectToMsilWithFeaturesDiag(
   val emptyNugetPaths: List[String] = newList()
   val noDepTemplatePkgs: List[ProjectPackagePayload] = newList()
   val noDefines: List[String] = newList()
+  val noSourcePaths: List[String] = newList()
   compileProjectToMsilWithRestoredAndVersionDiag(
     packages,
     assemblyName,
@@ -519,6 +520,7 @@ pub func compileProjectToMsilWithFeaturesDiag(
     "",
     noDepTemplatePkgs,
     noDefines,
+    noSourcePaths,
     outDiagnostics
   )
 }
@@ -598,6 +600,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     packageVersion,
     depTemplatePkgs,
     defines,
+    paths,
     noDiagOut
   )
 }
@@ -631,6 +634,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   packageVersion: in String,
   depTemplatePkgs: in List[ProjectPackagePayload],
   defines: in List[String],
+  paths: in List[String],
   outDiagnostics: in List[Diagnostic],
 ): Bool {
   if packages.count == 0 {
