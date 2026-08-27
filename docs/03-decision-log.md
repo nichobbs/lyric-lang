@@ -39449,3 +39449,279 @@ future B3/B4 slice has it available without re-plumbing.
 **Related:** #6282, #6284, `docs/63-build-profiles-and-debugger.md`
 §9.5, §9.7 (the surveys this entry implements slices 1–2 of).
 
+
+---
+
+## D-progress-809 — MSIL F0020–F0025 codegen-conformance diagnostics now go through `CodegenCtx.diagnostics`, not `panic()` (#4898)
+
+**Bug.** `Msil.Codegen`'s external-interface-conformance and try-catch-
+as-expression checks (F0020: `impl` target not a real .NET interface,
+F0021: missing interface method, F0022/F0023: parameter/return type
+mismatch, F0024: unresolvable extern-interface FQN, F0025: a `try`
+expression's catch arm yields `Unit` while the body/an earlier arm
+yields a value) reported these genuine, compile-time-detectable user
+errors by `panic()`ing — an F# `failwith`-style abrupt process exit
+with no structured diagnostic, no position information beyond whatever
+happened to be in the panic message, and no way for an in-process
+caller (a test harness, an IDE integration) to recover the failure as
+data rather than an uncaught exception.
+
+**Fix.** Added a `diagnostics: List[Diagnostic]` field to `CodegenCtx`
+and routed all six F0020–F0025 sites through it instead of `panic()`.
+`Msil.Bridge`'s single-file and project-build entry points gate on the
+accumulated list via `Lyric.DiagnosticUtil.diagReportAndAbort` (later
+widened to `diagReportAndAbortInPkg` for per-package attribution, see
+D-progress-804) immediately after codegen, printing every diagnostic
+and returning `false` — the same report-and-abort shape the
+type-checker and mode-checker error lists already use earlier in the
+pipeline — instead of proceeding to lower invalid IR or crashing the
+process outright.
+
+**Diagnostics.** New codes F0020, F0021, F0022, F0023, F0024, F0025,
+each carrying an exact `(code, line, column)` position and a message
+naming the offending `impl`/method/type.
+
+**Coverage.** `msil_codegen_diag_self_test.l` exercises all six codes
+against real bad-`impl` fixtures; wired into CI's build-and-test
+workflow (later hardened in this same PR batch, D-progress-813's
+sibling fixes, to assert the exact code and position via an
+in-process `outDiagnostics`-returning bridge entry point rather than a
+looser "did it fail" check).
+
+**Verification.** `make lyric` full self-host rebuild; `msil_codegen_diag_self_test.l`
+green; `msil_project_bridge_self_test.l` unaffected (existing `Bool`-only
+entry points kept their exact behavior via thin-forwarder wrapping).
+
+**Related:** #4898.
+
+---
+
+## D-progress-810 — `Lyric.HoistEngine` no longer re-reads a mutable receiver/index after a hoisted `await` (#5629)
+
+**Bug.** When compiling a call argument, an assignment target, or a
+receiver expression that contains an `await`, `Lyric.HoistEngine`
+hoists the surrounding subexpressions into temporaries evaluated
+*before* the awaited call, so their evaluation order matches source
+order despite the await's suspension point. The hoist pass's
+mutable-name analysis (deciding which subexpressions are safe to
+re-read *after* the await completes, versus which must be captured
+*before* it) walked most `ExprKind` variants but had no case for
+`EPropagate` (the `?` postfix operator) — a mutable receiver or index
+reached only through a `?`-propagated sub-expression (e.g.
+`obj.field?.method(await x)`) fell through to the default "safe to
+re-read" answer, so the hoist pass captured its value *after* the
+await instead of before. If the awaited call (or a concurrent sibling
+task) mutated that receiver/index in between, the post-await re-read
+observed the *mutated* value instead of the pre-await one — a stale
+data hazard masquerading as source-order-correct code.
+
+**Fix.** Added an `EPropagate(inner) -> hzCollectMutableNamesExpr(inner, m)`
+case to the mutable-name collector, recursing into the propagated
+inner expression exactly as every other single-child `ExprKind`
+variant already does. This is a strict widening (more names correctly
+recognized as mutable, never fewer), so it cannot regress an
+already-safe hoist decision.
+
+**Coverage.** `await_hoist_self_test.l` gained cases pinning a mutable
+receiver reached through `?` propagation to its pre-await value,
+alongside the pre-existing #5629 base-case coverage (a mutable
+receiver/index reassigned by the awaited call itself keeps its
+pre-await value).
+
+**Verification.** `make lyric` full self-host rebuild; `await_hoist_self_test.l`
+and `async_spawn_self_test.l` green on both `--target dotnet` and
+`--target jvm`.
+
+**Related:** #5629, #6555 (a related `?`-propagated-block mutable-receiver
+gap fixed in the same area later in this PR batch).
+
+---
+
+## D-progress-811 — Bare-paren-lambda arrow-suppression scoped to tail position instead of one global retry flag (#5672)
+
+**Bug.** Disambiguating `(x)` as a parenthesized expression versus the
+start of a bare-paren lambda literal `(x) -> body` (no `func`/`val`
+keyword announcing the lambda) required the parser to speculatively
+retry a failed parse. The retry was gated by a single global
+`suppressArrowLambda: Bool` flag on `ParseState`, set for the
+duration of parsing a call argument and cleared afterward — but a
+call argument can itself contain nested constructs (an `if`/`match`
+branch, a block) where a `->` arrow is legal and expected (e.g. a
+match arm inside a call argument), and the blanket suppression
+incorrectly carried into those nested, unrelated parse contexts too,
+misparsing legal arrow usage that happened to be lexically inside a
+call argument.
+
+**Fix.** Rescoped the suppression to genuine tail position — the
+exact call-argument-list position where a bare-paren lambda is
+actually ambiguous with a parenthesized expression — saving and
+restoring the flag around each nested construct that has its own
+legitimate arrow usage, instead of one flag held for an entire call
+argument's parse. (Later generalized further in this same PR batch,
+#6601, to cover the analogous ambiguity inside `parseBlock`/
+`parseIfExpr`/`parseMatchExpr` bodies, not just call-argument tail
+position.)
+
+**Coverage.** `parser_self_test.l` gained regression cases for the
+call-argument-nested-match/if-arrow shapes that previously misparsed,
+alongside the base bare-paren-lambda cases.
+
+**Verification.** `make lyric` full self-host rebuild; `parser_self_test.l`
+green, including every pre-existing bare-paren-lambda case.
+
+**Related:** #5672, #6553 (an unrelated pre-existing MSIL codegen gap
+filed while validating this fix), #6601 (this PR batch's further
+generalization).
+
+---
+
+## D-progress-812 — Formatter's `if`/`match` arm-body rendering respects the 120-column width budget before collapsing to one line (Class B, #2280)
+
+**Bug.** `Lyric.Fmt`'s layout for an `if`/`match` expression used as a
+match arm's body (or nested inside another arm) always rendered the
+arm inline on one line regardless of the resulting line's actual
+width, so a sufficiently long nested arm body produced a rendered
+line well past the formatter's own 120-column convention — a
+formatter that itself violates the width budget it enforces
+everywhere else.
+
+**Fix.** Added a width check (`exprFitsInline`) before collapsing a
+match arm's body to one line: when the arm body's rendered width
+(including its enclosing indentation and arrow prefix) would exceed
+120 columns, the formatter falls back to its existing multi-line call
+layout instead. (This first pass computed the check in a column
+space relative to the arm alone; a real absolute-column threading bug
+in that computation — silently undercounting the true rendered width
+at nested match/if depths — was found and fixed later in this same PR
+batch, #6606.)
+
+**Coverage.** `fmt_self_test.l` gained cases for a long inline match
+arm body forcing multi-line layout, alongside a companion case
+confirming a genuinely short arm body at the same nesting depth stays
+inline (no over-splitting).
+
+**Verification.** `make lyric` full self-host rebuild; `fmt_self_test.l`
+green; `lyric fmt --write` loss-checked clean on the changed files.
+
+**Related:** #2280, #6606 (this PR batch's follow-up fixing the
+absolute-column undercounting this entry's first pass left behind).
+
+---
+
+## D-progress-813 — Cross-package bare-name ambiguity now raises T0123 instead of silently resolving last-registered-wins (#6287 Phase B, item 1)
+
+**Bug.** When two or more packages imported at the same use site each
+declared something with the same bare (unqualified) name — a
+function, `val`/`const`, or union/enum case constructor — referencing
+that name unqualified silently resolved to whichever package's
+declaration happened to be registered last in the symbol table, with
+no diagnostic at all. This is a genuine correctness hazard: which
+package "wins" depends on registration order (import order, or even
+incidental processing order across a project's packages), not on
+anything visible in the source referencing the name, so the same
+source text could resolve differently depending on unrelated changes
+elsewhere in the build.
+
+**Fix.** Added `checkBareNameAmbiguity` (`lyric-compiler/lyric/type_checker/typechecker_exprs.l`),
+gating every bare-name resolution site (free-function/val calls,
+value references, and nullary union/enum-case constructor references)
+on whether more than one imported package declares the name. An
+ambiguous bare reference is now a hard error (**T0123**) naming every
+declaring package and suggesting the qualified form (`Pkg.name`). Not
+flagged: a local declaration that shadows the ambiguous import (the
+existing scope-shadowing precedent already applied elsewhere); a name
+reachable through only one import (no real collision); a name
+reachable only transitively through another package's own imports
+(the kernel/host re-export idiom several stdlib packages rely on); and
+a pattern match against a scrutinee of statically known type, which
+resolves the case against the scrutinee's own union/enum directly
+without ever falling through to the ambiguity check (mirrored for
+enum scrutinees in this same PR batch, closing a related false-positive
+gap the deep-review pass surfaced).
+
+Item 2 of the original Phase B scope — additionally *rejecting*
+resolution to a package not directly imported at the use site — was
+implemented, then reverted: it broke the stdlib's implicit `Std.Core`
+prelude convention (names conventionally available without an
+explicit `import Std.Core`) and a real ecosystem library that relied
+on the same transitive-resolution idiom. That narrower rejection is
+documented as an explicitly scoped-out follow-up, not silently
+dropped.
+
+**Diagnostics.** New code **T0123** — "'<name>' is ambiguous: it is
+declared by '<PkgA>', '<PkgB>', ... — qualify the reference".
+
+**Coverage.** `typechecker_self_test.l` gained cases for: a bare val
+name ambiguous across two imports (T0123); a bare union-case
+constructor call ambiguous across two imports (T0123); a bare name
+imported from only one package (not ambiguous); a local declaration
+shadowing an ambiguous import collision (no T0123); a bare name from
+an unrelated sibling package still resolving (the residual scope
+decision after item 2's revert); and a bare name reachable only via a
+transitive import still resolving (the kernel/host idiom).
+
+**Verification.** `make lyric` full self-host rebuild;
+`typechecker_self_test.l` green; a tree-wide audit qualifying every
+genuinely-ambiguous bare reference surfaced across the compiler,
+stdlib, and ecosystem libraries once the diagnostic went live
+(`examples/rbac`, `lyric-stdlib/tests/regex_safe_tests.l`,
+`lyric-grpc`'s test and kernel sources — each a real, previously
+silent last-registered-wins resolution the new diagnostic correctly
+caught).
+
+**Related:** #6287, #2899 (`pickCaseFqnByScope`, the pre-existing
+union-case qualified-resolution analog this diagnostic's scrutinee-typed
+exemption mirrors).
+
+---
+
+## D-progress-814 — Cross-package enum bare-case-name collision fixed on both backends; package-scoped resolution follow-up (#5995)
+
+**Bug.** Two same-named enum cases declared by different packages
+(e.g. two distinct `HttpVersion` enums each declaring `Http11`) could
+be misrouted at a bare (unqualified) construction or pattern-match
+site: the MSIL/JVM backends resolved a bare case name through a flat,
+package-unaware lookup keyed only by the case's simple name, so
+whichever enum happened to register the name last "won" for every
+bare reference to it — the codegen-level analog of the type-checker's
+T0123 bare-name hazard (D-progress-813), but for *enum case*
+resolution specifically, and silent (no diagnostic; the construction
+simply picked the wrong ordinal).
+
+**Fix.** Added package-scoped enum-case ordinal resolution mirroring
+the pre-existing union-case analog (`pickCaseFqnByScope`, #2899): a
+bare case reference now resolves against the declaring package(s)
+actually reachable at the use site (the current package itself, or a
+package it imports), falling back to the single registered declarer
+when there is no genuine collision. A follow-up during validation
+found the fix's own first pass was *itself* first-registered-wins by
+bare *type* name at one further layer — confirmed live with a
+minimal repro: a user package's own `HttpVersion` enum collided with
+`Std.Http.HttpVersion` (always linked into every build, whether or
+not the program imports `Std.Http`), silently reproducing the exact
+class of bug the issue reported. Fixed by additionally scoping the
+ordinal lookup by declaring package at that layer too.
+
+A later deep-review pass in this same PR batch found and fixed two
+further latent bugs this area: an unguarded `Map.add` in
+`fctx.varEnumTypes` crashed on legal block-scope shadowing of an
+enum-typed binding (#6595), and a package-qualified enum-case
+*pattern* reference (`Pkg.Case`) reaching MSIL codegen as a flattened
+multi-segment path had its explicit qualifier discarded in favor of
+an ambiguous construction-context hint (#6607) — both fixed alongside
+proper scope-undo tracking and additional regression fixtures.
+
+**Coverage.** `enum_case_collision_self_test.l` covers bare
+enum-case construction and pattern matching resolving against each
+colliding enum's own package, on both `--target dotnet` and
+`--target jvm`, including the type-name-collision-with-a-stdlib-enum
+scenario and a third same-simple-name fixture package added by the
+#6607 follow-up. `block_shadow_self_test.l` covers the #6595
+duplicate-key crash and correct scope-undo for a differently-typed
+enum shadow.
+
+**Verification.** `make lyric` full self-host rebuild;
+`enum_case_collision_self_test.l`, `block_shadow_self_test.l`, and
+`msil_project_bridge_self_test.l` all green on both targets.
+
+**Related:** #5995, #6595, #6607, #2899 (`pickCaseFqnByScope`).
