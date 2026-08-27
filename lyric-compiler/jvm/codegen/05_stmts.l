@@ -893,6 +893,28 @@ func emitCountingForJvm(
   insns.add(LLabel(name = endL))
 }
 
+// Resolve a local `val`/`var`'s type ANNOTATION to a `JvmType`, same-file
+// function-type alias included (#6393's `BareFuncRef.resolveFuncTypeAliasOrSelf`),
+// with one addition over the general `typeExprToJvmExtern` erasure: a
+// (possibly alias-resolved) `TFunction` annotation maps to the package's
+// shared `Lyric$Lambda` interface, not the generic `Object` erasure
+// `typeExprToJvm`'s `TFunction` arm uses for fields/params/generics.  A
+// closure LITERAL is already typed this way the instant it is lowered
+// (`lowerExpr`'s `ELambda` arm, `02_exprs.l`); without this override, a
+// `val`/`var` declared WITH an explicit function-type annotation disagreed
+// with that — its slot's tracked JvmType was the erased `Ljava/lang/Object;`
+// — so reading the local back by NAME (e.g. as an auto-FFI call argument)
+// reported a descriptor `emitFfiCoerce` doesn't recognize as SAM-bridgeable,
+// silently skipping the adapter wrap the identical closure gets when it is
+// instead passed as a literal directly at the call site (#6552).
+func localAnnotatedJvmType(ctx: in FuncCtx, te: in TypeExpr): JvmType {
+  val resolved = BareFuncRef.resolveFuncTypeAliasOrSelf(ctx.aliasTargets, te)
+  match resolved.kind {
+    case TFunction(_, _) -> JRef(className = lambdaIfaceName(ctx.pkgName))
+    case _ -> typeExprToJvmExtern(resolved, ctx.pkgName, ctx.externTypes)
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. Statement lowering.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -944,10 +966,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
         case LBLet(name, tyOpt, init) -> {
           // #6393: resolve through a same-file function-type alias too — see
           // `FuncCtx.aliasTargets`.
-          val annTy = match tyOpt {
-            case Some(te) -> typeExprToJvmExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(ctx.aliasTargets, te), ctx.pkgName, ctx.externTypes)
-            case None -> JVoid
-          }
+          val annTy = match tyOpt { case Some(te) -> localAnnotatedJvmType(ctx, te); case None -> JVoid }
           if isDefaultCall(init) and pushPrimitiveZero(insns, annTy) {
             val slot0 = allocSlot(ctx, name, annTy)
             emitStore(insns, slot0, annTy)
@@ -977,10 +996,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               // initialiser; an annotated `var x: T = e` coerces `e` to `T`.
               // #6393: resolve through a same-file function-type alias too —
               // see `FuncCtx.aliasTargets`.
-              val annTy = match tyOpt {
-                case Some(te) -> typeExprToJvmExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(ctx.aliasTargets, te), ctx.pkgName, ctx.externTypes)
-                case None -> JVoid
-              }
+              val annTy = match tyOpt { case Some(te) -> localAnnotatedJvmType(ctx, te); case None -> JVoid }
               var ty = annTy
               if isDefaultCall(init) and pushPrimitiveZero(insns, annTy) {
                 ()
@@ -1033,10 +1049,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               // default to JInt only as a last resort (matches prior behaviour).
               // #6393: resolve through a same-file function-type alias too —
               // see `FuncCtx.aliasTargets`.
-              val ty = match tyOpt {
-                case Some(te) -> typeExprToJvmExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(ctx.aliasTargets, te), ctx.pkgName, ctx.externTypes)
-                case None -> JInt
-              }
+              val ty = match tyOpt { case Some(te) -> localAnnotatedJvmType(ctx, te); case None -> JInt }
               match tyOpt {
                 case Some(te2) -> recordDeclaredElemType(ctx, name, te2, newList())
                 case None -> ()
@@ -1483,10 +1496,7 @@ func lowerLocalPatBind(
       // #6393: resolve through a same-file function-type alias
       // (`val f: Handler = ...`) too, not just a literal `(A,...) -> R`
       // annotation — see `FuncCtx.aliasTargets`.
-      val ty = match tyOpt {
-        case Some(te) -> typeExprToJvmExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(ctx.aliasTargets, te), ctx.pkgName, ctx.externTypes)
-        case None -> initTy
-      }
+      val ty = match tyOpt { case Some(te) -> localAnnotatedJvmType(ctx, te); case None -> initTy }
       // `coerceValueTo` boxes a primitive array into an annotated `slice[T]`
       // val's erased slot type (#5572).
       coerceValueTo(ctx, insns, initTy, ty)

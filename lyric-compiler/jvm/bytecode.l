@@ -568,6 +568,12 @@ pub record MethodAssembler {
   curStack: Int           // current stack depth during lowerInsn calls
   peakStack: Int           // maximum stack depth seen so far
   exnHandlers: List[AsmExnHandler]   // exception-table entries accumulated by emitters
+  // Exception-handler entry label -> catch class ("" = catch-all), seeded by
+  // the caller before a lowering pass so `LLabel`'s stack-reset (see
+  // `resetStack`/`resetStackToHandlerEntry` below) knows which labels are
+  // real JVM handler entries (implicit `[exception]` on the stack, JVMS
+  // §4.10.1.6) rather than ordinary empty-stack control-flow joins (#6551).
+  handlerLabels: Map[String, String]
 }
 
 /// Construct a fresh assembler sharing `pool`.
@@ -583,7 +589,8 @@ pub func newAssembler(pool: in Pool): MethodAssembler {
     swLookupOff = newList(),
     curStack = 0,
     peakStack = 0,
-    exnHandlers = newList()
+    exnHandlers = newList(),
+    handlerLabels = newMap()
   )
 }
 
@@ -613,9 +620,28 @@ pub func trackStack(asm: in MethodAssembler, delta: in Int): Unit {
   }
 }
 
-/// Reset the current stack depth to 0 (used at every label / branch target).
+/// Reset the current stack depth to 0 (used at an ordinary label / branch
+/// target, where Lyric's codegen invariants guarantee the operand stack is
+/// empty on every incoming edge).  For an exception-handler entry label, use
+/// `resetStackToHandlerEntry` instead — see its doc comment (#6551).
 pub func resetStack(asm: in MethodAssembler): Unit {
   asm.curStack = 0
+}
+
+/// Reset the current stack depth to 1 (used at an exception-handler entry
+/// label instead of `resetStack`).  JVMS §4.10.1.6: when control transfers to
+/// a handler, the JVM implicitly pushes the caught exception reference onto
+/// an otherwise-empty operand stack, so the handler body executes with a
+/// starting depth of 1, not 0.  Treating a handler entry as an ordinary
+/// empty-stack label under-counts the true peak stack depth for any handler
+/// whose body reaches a peak that the missing slot would have covered,
+/// producing a `maxStack` that is 1 too small and a runtime `VerifyError:
+/// Operand stack overflow` (#6551).
+pub func resetStackToHandlerEntry(asm: in MethodAssembler): Unit {
+  asm.curStack = 1
+  if asm.curStack > asm.peakStack {
+    asm.peakStack = asm.curStack
+  }
 }
 
 /// Append a raw `AsmInsn` to the assembler.  Most callers use the typed
