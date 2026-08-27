@@ -7525,6 +7525,228 @@ func lowerNullaryCaseValueMsil(
   }
 }
 
+// The union's bare FQN (no arity suffix) that a receiver's already-lowered
+// `MsilType` denotes, or "" when the shape carries no class identity at all.
+// Mirrors `derivedEqualsTokenMsil`'s `MClass`/`MGenericInst` match but also
+// covers `MGenericInstByName` (the in-bundle generic-instance shape) so the
+// builtin Result/Option accessor sugar below (#5183) resolves regardless of
+// whether the receiver came from the restored stdlib bundle (`MGenericInst`)
+// or an in-bundle generic instantiation (`MGenericInstByName`).
+func monadReceiverHeadFqnMsil(ty: in MsilType): String {
+  match ty {
+    case MClass(c) -> c
+    case MGenericInst(_, headFqn, _) -> headFqn
+    case MGenericInstByName(fqn, _) -> stripGenericArity(fqn)
+    case _ -> ""
+  }
+}
+
+// `isinst <caseClass>; ldnull; ceq; ldc.i4.1; xor` — a boolean "is this
+// instance of the given case class" test, the same double-negation idiom
+// `BNeq` uses on reference types (`insns.add(MCeq); insns.add(MLdcI4(v = 1));
+// insns.add(MXor)`) applied to an `isinst` result instead of a direct `ceq`.
+// `Result`/`Option`'s case classes are themselves generic (they share the
+// union's own type params, e.g. `Result_Ok<T,E>` even though only `T` is
+// used in a field) — a bare open TypeRef `isinst` fails at runtime the same
+// way match-arm case testing's own comment documents for `Option[Int]`
+// (line ~11788 below), so this mirrors THAT exact `MIsinstGeneric` dispatch
+// instead of the simpler by-name form, branching on the receiver's own
+// already-resolved shape to recover its concrete type args.
+func lowerCaseIsinstBoolMsil(insns: in List[MInsn], recvTy: in MsilType, caseClassFqn: in String): Unit {
+  match recvTy {
+    case MGenericInst(_, _, typeArgs) -> insns.add(MIsinstGeneric(className = caseClassFqn, typeArgs = typeArgs))
+    case MValueTypeGenericInst(_, _, typeArgs) -> insns.add(MIsinstGeneric(className = caseClassFqn, typeArgs = typeArgs))
+    case MGenericInstByName(_, typeArgs) -> {
+      insns.add(MIsinstGeneric(className = genericBacktickFqn(caseClassFqn, typeArgs.count), typeArgs = typeArgs))
+    }
+    case _ -> insns.add(MIsinstByName(className = caseClassFqn))
+  }
+  insns.add(MLdNull)
+  insns.add(MCeq)
+  insns.add(MLdcI4(v = 1))
+  insns.add(MXor)
+}
+
+// `castclass <caseClass>; ldfld <caseClass/fieldName>` — an unchecked payload
+// read off a specific case, for the direct field-style Result/Option
+// accessors below.  A receiver that is dynamically the wrong case throws
+// `InvalidCastException` rather than reading garbage; well-formed contract
+// code never reaches the cast on the wrong case because `implies`'s
+// short-circuit only evaluates the payload read once `.isOk`/`.isSome` (or
+// the equivalent `match` arm) has already proven the case.
+//
+// Same generic-case-class subtlety as `lowerCaseIsinstBoolMsil` above: the
+// field itself is usually a VAR(n) generic-param field (`value: T` on
+// `Result_Ok<T,E>`), so this mirrors the EXISTING generic field-read branch
+// (`case MGenericInst(_, headFqn, typeArgs) ->` a few hundred lines below
+// in `lowerExprMsil`'s `EMember` arm) rather than the plain non-generic
+// `MCastclassByName`/`MLdfld` pair — those only work for a closed,
+// non-generic class and produced the `Could not load type
+// 'Std.Core.Result_Ok`2'` `TypeLoadException` this comment's fix replaced
+// (an open-TypeRef `isinst`/`ldfld` against a 2-arity generic case class).
+func lowerCaseFieldReadMsil(
+  cctx: in CodegenCtx,
+  insns: in List[MInsn],
+  recvTy: in MsilType,
+  caseClassFqn: in String,
+  fieldName: in String,
+): MsilType {
+  val key = caseClassFqn + "/" + fieldName
+  match recvTy {
+    case MGenericInst(_, _, typeArgs) -> {
+      val vi = match mapGet(cctx.fieldVarIndices, key) { case Some(v) -> v; case None -> -1 }
+      val hasFld = cctx.fieldVarIndices.containsKey(key) or cctx.fieldSigBytes.containsKey(key) or
+        cctx.fieldTokens.containsKey(key)
+      if not hasFld {
+        panic(
+          "Msil.Codegen: lowerCaseFieldReadMsil: no field registered for '" + key +
+            "' -- Std.Core stdlib registration order invariant violated"
+        )
+      }
+      val fMTy: MsilType = if vi >= 0 {
+        MTypeVar(index = vi)
+      } else {
+        match mapGet(cctx.fieldMsilTypes, key) {
+          case Some(t) -> t
+          case None -> MObject
+        }
+      }
+      insns.add(MCastclassGeneric(className = caseClassFqn, typeArgs = typeArgs))
+      insns.add(
+        MLdfldGeneric(baseClassName = caseClassFqn, typeArgs = typeArgs, fieldName = fieldName, fieldMsilType = fMTy)
+      )
+      if vi >= 0 {
+        if vi < typeArgs.count {
+          typeArgs[vi]
+        } else {
+          MObject
+        }
+      } else {
+        match mapGet(cctx.fieldMsilTypes, key) {
+          case Some(fty) -> substituteTypeVarsMsil(fty, typeArgs)
+          case None -> MObject
+        }
+      }
+    }
+    case MGenericInstByName(_, typeArgs) -> {
+      val btFqn = genericBacktickFqn(caseClassFqn, typeArgs.count)
+      val vi = match mapGet(cctx.fieldVarIndices, key) { case Some(v) -> v; case None -> -1 }
+      if not cctx.fieldSigBytes.containsKey(key) {
+        panic(
+          "Msil.Codegen: lowerCaseFieldReadMsil: no field sig registered for '" + key +
+            "' -- in-bundle generic-union registration order invariant violated"
+        )
+      }
+      val fMTy: MsilType = if vi >= 0 {
+        MTypeVar(index = vi)
+      } else {
+        match mapGet(cctx.fieldMsilTypes, key) {
+          case Some(t) -> t
+          case None -> MObject
+        }
+      }
+      insns.add(MCastclassGeneric(className = btFqn, typeArgs = typeArgs))
+      insns.add(MLdfldGeneric(baseClassName = btFqn, typeArgs = typeArgs, fieldName = fieldName, fieldMsilType = fMTy))
+      if vi >= 0 {
+        if vi < typeArgs.count {
+          typeArgs[vi]
+        } else {
+          MObject
+        }
+      } else {
+        match mapGet(cctx.fieldMsilTypes, key) {
+          case Some(fty) -> substituteTypeVarsMsil(fty, typeArgs)
+          case None -> MObject
+        }
+      }
+    }
+    case _ -> {
+      // Closed (non-generic-instantiation) receiver — unreachable for
+      // `Result`/`Option` in practice (they are always generic), kept as a
+      // defensive fallback so an unexpected shape fails loudly rather than
+      // silently mis-stacking.
+      insns.add(MCastclassByName(className = caseClassFqn))
+      match mapGet(cctx.fieldTokens, key) {
+        case Some(tok) -> {
+          insns.add(MLdfld(fieldToken = tok))
+          match mapGet(cctx.fieldMsilTypes, key) {
+            case Some(fty) -> fty
+            case None -> MObject
+          }
+        }
+        case None -> {
+          panic(
+            "Msil.Codegen: lowerCaseFieldReadMsil: no field token registered for '" + key +
+              "' -- Std.Core stdlib registration order invariant violated"
+          )
+        }
+      }
+    }
+  }
+}
+
+// Direct field-style accessors on the two builtin monadic unions
+// `Std.Core.Result[T, E]` and `Std.Core.Option[T]` — `.isOk`/`.isErr`/
+// `.value`/`.error` on `Result`, `.isSome`/`.isNone`/`.value` on `Option`
+// (docs/01 §generics "where"-bound / contract examples, docs/08
+// §6.2, docs/02 worked examples) — read the case without a `match`.
+// `result.isOk implies result.value >= 0` is the documented `ensures:`
+// idiom this exists to make actually compile: before this, `.isOk`/`.value`
+// silently typed as `TyError` (no field on a union, no dot-named function
+// under that name either) and codegen's generic EMember field-read arm fell
+// to its unregistered-field fallback (`MPop` with no matching push),
+// corrupting the evaluation stack and producing `InvalidProgramException`
+// at the first call (#5183) — independent of whether `E`/`T` is a trivial
+// or payload-carrying type, since the case-scoped field-token keys
+// (`Result_Ok/value`) never match the base union's own class name
+// (`Result/value`) either way.
+//
+// Matched by the union's bare short name (`Result`/`Option`), the same
+// `nm == "List"`/`"Map"` convention `builtinMember`/`indexElementType`
+// already use for the other compiler-known generic stdlib types — `Result`
+// and `Option` are equally reserved names in that convention.
+// `caseClassFqn` is always built from the RECEIVER's own resolved head FQN
+// (never a hardcoded `"Std.Core.Result"`), so this also covers a
+// hypothetical future in-bundle re-export under a different package path
+// while still requiring the bare type name to be `Result`/`Option`.
+func lowerBuiltinMonadAccessorMsil(
+  cctx: in CodegenCtx,
+  insns: in List[MInsn],
+  recvTy: in MsilType,
+  memberName: in String,
+): Option[MsilType] {
+  val head = monadReceiverHeadFqnMsil(recvTy)
+  if head.length == 0 {
+    return None
+  }
+  val dotIdx = String.lastIndexOfRaw(head, ".")
+  val shortName = if dotIdx >= 0 { head.substring(dotIdx + 1, head.length - dotIdx - 1) } else { head }
+  if shortName == "Result" {
+    if memberName == "isOk" or memberName == "isErr" {
+      lowerCaseIsinstBoolMsil(insns, recvTy, head + (if memberName == "isOk" { "_Ok" } else { "_Err" }))
+      return Some(value = MBool)
+    }
+    if memberName == "value" {
+      return Some(value = lowerCaseFieldReadMsil(cctx, insns, recvTy, head + "_Ok", "value"))
+    }
+    if memberName == "error" {
+      return Some(value = lowerCaseFieldReadMsil(cctx, insns, recvTy, head + "_Err", "error"))
+    }
+    return None
+  }
+  if shortName == "Option" {
+    if memberName == "isSome" or memberName == "isNone" {
+      lowerCaseIsinstBoolMsil(insns, recvTy, head + (if memberName == "isSome" { "_Some" } else { "_None" }))
+      return Some(value = MBool)
+    }
+    if memberName == "value" {
+      return Some(value = lowerCaseFieldReadMsil(cctx, insns, recvTy, head + "_Some", "value"))
+    }
+    return None
+  }
+  None
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Expression lowering.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -8123,6 +8345,11 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             }
           }
           val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
+          match lowerBuiltinMonadAccessorMsil(cctx, insns, recvTy, memberName) {
+            case Some(monadTy) -> return monadTy
+            case None -> {
+            }
+          }
           match recvTy {
             case MClass(cls) -> {
               val key = cls + "/" + memberName
