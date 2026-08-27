@@ -2978,6 +2978,39 @@ test "do loop with escaping break not divergent" {
   assertTrue(hasDiagCode(parseCheck(src), "T0060"), "do-loop with an escaping break: still Unit-typed, T0060 fires")
 }
 
+// #6651: `breakTargetsLoop`'s `nested` parameter was threaded through
+// `blockMayEscapeLoop`/`exprMayEscapeLoop`/`stmtMayEscapeLoop` but never
+// actually consulted, so a bare `break` inside a NESTED inner loop was
+// misclassified as escaping the OUTER loop under analysis.  Here the outer
+// `do` loop's only `break` is scoped to the inner `for` loop, so the `do`
+// loop itself never escapes and diverges (its only way out is `return`, of
+// which there is none, so it's an infinite loop) — its type is `Never`,
+// satisfying the declared `Int` return without a spurious T0070.  Before the
+// fix, `breakTargetsLoop` ignored `nested` and unconditionally returned
+// `true`, so the inner `break` was wrongly counted as escaping the `do`
+// loop, typing it `Unit` and false-firing T0070.
+test "nested loop break does not escape outer loop diverges no T0070" {
+  val src = "package P\nfunc c(): Bool { true }\nfunc f(): Int {\n  do {\n    for i in 0 ..< 3 {\n      if c() { break }\n    }\n  }\n}\n"
+  assertEqualInt(
+    diagCount(parseCheck(src)),
+    0,
+    "do-loop whose only break is scoped to a nested for-loop: outer loop still diverges, no spurious T0070"
+  )
+}
+
+// #6651 correct-positive companion: a bare `break` that sits directly in the
+// OUTER loop's own body (beside, not inside, a nested inner loop) must still
+// be recognised as escaping that outer loop — confirms the `nested` fix
+// didn't overcorrect into never detecting a genuine escape.  Value-position
+// pinning matches "do loop with escaping break not divergent" above.
+test "outer loop direct break still escapes beside nested inner loop" {
+  val src = "package P\nfunc c(): Bool { true }\nfunc f(cond: in Bool): Unit {\n  val x: Int = {\n    do {\n      for i in 0 ..< 3 {\n        if c() { break }\n      }\n      if cond { break }\n    }\n  }\n}\n"
+  assertTrue(
+    hasDiagCode(parseCheck(src), "T0060"),
+    "do-loop with a direct escaping break beside a nested loop: still Unit-typed, T0060 fires"
+  )
+}
+
 // #6603: `scope { }`'s checked body type (`Never`, when every path through it
 // diverges) must propagate to the enclosing block instead of defaulting to
 // `Unit` — the trailing statement here is `SExpr(EIf)`, not `SReturn`, so

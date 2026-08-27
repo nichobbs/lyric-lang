@@ -508,10 +508,16 @@ pub func checkStatement(
 // §3. Block checking.
 // ─────────────────────────────────────────────────────────────────────────────
 // Whether `label` (a loop's own label, if any) is targeted by `bl`, a
-// `break`'s label argument (`None` for a bare `break`).
-func breakTargetsLoop(bl: in Option[String], label: in Option[String]): Bool {
+// `break`'s label argument (`None` for a bare `break`), given whether this
+// break was reached by passing through a more-nested loop's own break scope
+// first (`nested`).  A bare `break` targets only the innermost enclosing
+// loop, so once `nested` is true it has already been "claimed" by that
+// nested loop and cannot also escape the outer loop being analyzed here.  A
+// labelled `break <label>` always identifies its exact target regardless of
+// nesting, so `nested` does not affect that case.
+func breakTargetsLoop(bl: in Option[String], label: in Option[String], nested: in Bool): Bool {
   match bl {
-    case None -> true
+    case None -> not nested
     case Some(l) -> match label { case Some(ll) -> l == ll; case None -> false }
   }
 }
@@ -669,7 +675,7 @@ func exprMayEscapeLoop(e: in Expr, label: in Option[String], nested: in Bool): B
 
 func stmtMayEscapeLoop(stmt: in Statement, label: in Option[String], nested: in Bool): Bool {
   match stmt.kind {
-    case SBreak(bl) -> breakTargetsLoop(bl, label)
+    case SBreak(bl) -> breakTargetsLoop(bl, label, nested)
     case SContinue(_) -> false
     case SReturn(_) -> false
     case SThrow(e) -> exprMayEscapeLoop(e, label, nested)
