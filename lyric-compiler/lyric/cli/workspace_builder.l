@@ -722,7 +722,18 @@ pub func resolveManifestDependencies(
                   // that Jvm compiles them as real packages, a dep whose source can't
                   // be read means its symbols are simply absent from the Jvm bundle —
                   // matching the project's own "sibling packages are FATAL" policy
-                  // (the issue's suggested diagnostic severity), this is fatal on Jvm.
+                  // (the issue's suggested diagnostic severity), this now sets
+                  // `hadUnbuiltLocalDep = true` on Jvm too (`if not dllMatters`, below).
+                  // "Fatal" cashes out differently per caller, same as the DLL-missing
+                  // case above: `emitSingleFileOrProject` reads the flag directly and
+                  // returns early with a clear message (cli_build.l:hadUnbuiltLocalDep
+                  // check); `buildProjectFromManifest` (the `--manifest` path) never
+                  // reads this flag at all (by design — see
+                  // `ResolvedManifestDeps.hadUnbuiltLocalDep`'s doc comment) and instead
+                  // fails downstream, when the consumer package that imports the
+                  // now-symbol-less dependency hits an unresolved-reference type error.
+                  // Both are exercised by
+                  // `jvm_path_dependency_self_test.l`'s "unreadable source" tests.
                   match depMf.project {
                     case Some(proj) -> {
                       var pki = 0

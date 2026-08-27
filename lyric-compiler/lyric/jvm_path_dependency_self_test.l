@@ -39,6 +39,7 @@ import Std.Uuid
 import Std.Environment as Environment
 import Lyric.Cli as Cli
 import Lyric.Emitter as Emitter
+import Lyric.Manifest as Mf
 
 func tempBase(): String {
   Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
@@ -311,4 +312,142 @@ test "buildProject: the same path-dependency fixture still builds on --target do
     noDefines
   )
   assertEqualInt(appRc, 0, "buildProject: --target dotnet still builds the path-dependency fixture")
+}
+
+// ─── The OTHER half of #6264's diagnostic-policy change: a path
+// dependency's SOURCE (as opposed to its DLL) failing to read must still be
+// fatal on Jvm — unlike a merely-unbuilt DLL, Jvm has no fallback for a
+// dependency it can't even read. Exercises `resolveManifestDependencies`
+// directly (the precise unit under test — `hadUnbuiltLocalDep`'s two
+// `if not dllMatters { hadUnbuiltLocalDep = true }` branches in the
+// `pkgEntry.paths` / bare-`pkgEntry.path` source-read-failure arms),
+// mirroring `cli_workspace_builder_self_test.l`'s #6136
+// `resolveManifestDependencies` fixture-level test.
+test "resolveManifestDependencies: a path dependency's unreadable source is fatal on --target jvm (#6264)" {
+  val root = freshTempDir("srcfail")
+  defer {
+    cleanup(root)
+  }
+  // A [project.packages] entry naming a source file that is never written —
+  // the manifest is well-formed, but the dependency's own source is not
+  // actually readable, unlike the DLL-missing case the other tests above
+  // cover.
+  val depDir = mkPackageDir(
+    root,
+    "DepBroken",
+    "[package]\n" + "name = \"Fixture.PathDepBroken\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"Fixture.PathDepBroken\"\n" +
+      "output_assembly = \"PathDepBroken.dll\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"Fixture.PathDepBroken\" = \"src/missing.l\"\n"
+  )
+  assertFalse(
+    File.fileExists(Path.join(depDir, "src/missing.l")),
+    "sanity: the dependency's declared source file is never written"
+  )
+
+  val appDir = Path.join(root, "AppBroken")
+  match File.createDir(appDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create appBroken dir: " + IOError.message(e))
+  }
+  val appMfPath = Path.join(appDir, "lyric.toml")
+  writeFileOrPanic(
+    appMfPath,
+    "[package]\n" + "name = \"Fixture.PathAppBroken\"\n" + "version = \"0.1.0\"\n" + "\n" + "[dependencies]\n" +
+      "\"Fixture.PathDepBroken\" = { path = \"../DepBroken\" }\n"
+  )
+  val appMfText = match File.readText(appMfPath) {
+    case Ok(t) -> t
+    case Err(e) -> panic("cannot read appBroken manifest: " + IOError.message(e))
+  }
+  val appManifest = match Mf.parseManifest(appMfText, appMfPath) {
+    case Ok(m) -> m
+    case Err(e) -> panic("cannot parse appBroken manifest: " + ManifestError.message(e))
+  }
+
+  val noFeatures: List[String] = newList()
+  val resolvedJvm = Cli.resolveManifestDependencies(appManifest, appMfPath, Emitter.Jvm, noFeatures, false)
+  assertTrue(
+    resolvedJvm.hadUnbuiltLocalDep,
+    "resolveManifestDependencies: an unreadable path-dependency source is fatal on --target jvm, even though a " +
+      "merely-unbuilt DLL is not (#6264)"
+  )
+
+  val resolvedDotnet = Cli.resolveManifestDependencies(appManifest, appMfPath, Emitter.Dotnet, noFeatures, false)
+  assertTrue(
+    resolvedDotnet.hadUnbuiltLocalDep,
+    "resolveManifestDependencies: an unreadable path-dependency source is (still) fatal on --target dotnet too " +
+      "(regression guard — dotnet already fails here via the missing-DLL check, unaffected by #6264)"
+  )
+}
+
+// End-to-end companion to the resolver-level test above: `buildProject`
+// (`buildProjectFromManifest`) never reads `hadUnbuiltLocalDep` at all — it
+// is a non-fatal warning for that path by design (see
+// `ResolvedManifestDeps.hadUnbuiltLocalDep`'s doc comment). A dependency
+// whose source can't be read still surfaces as a build failure there, but
+// via a DOWNSTREAM missing-symbol type-check error on the consumer package
+// that imports it, not an early return. This pins that claim empirically
+// rather than leaving it asserted only in a comment.
+test "buildProject: a path dependency's unreadable source still fails the --target jvm manifest build, via downstream type-check (#6264)" {
+  val root = freshTempDir("srcfail-e2e")
+  defer {
+    cleanup(root)
+  }
+  val depDir = mkPackageDir(
+    root,
+    "DepBroken2",
+    "[package]\n" + "name = \"Fixture.PathDepBroken2\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"Fixture.PathDepBroken2\"\n" +
+      "output_assembly = \"PathDepBroken2.dll\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"Fixture.PathDepBroken2\" = \"src/missing.l\"\n"
+  )
+
+  val appDir = mkPackageDir(
+    root,
+    "AppBroken2",
+    "[package]\n" + "name = \"Fixture.PathAppBroken2\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"Fixture.PathAppBroken2\"\n" +
+      "output_assembly = \"PathAppBroken2.dll\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"Fixture.PathAppBroken2\" = \"src/app.l\"\n" +
+      "\n" +
+      "[dependencies]\n" +
+      "\"Fixture.PathDepBroken2\" = { path = \"../DepBroken2\" }\n"
+  )
+  match File.createDir(Path.join(appDir, "src")) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create appBroken2 src dir: " + IOError.message(e))
+  }
+  writeFileOrPanic(
+    Path.join(appDir, "src/app.l"),
+    "package Fixture.PathAppBroken2\n\nimport Std.Console as Console\nimport Fixture.PathDepBroken2\n\nfunc main(): Int {\n  Console.println(pathDepGreeting())\n  0\n}\n"
+  )
+
+  val noFeatures: List[String] = newList()
+  val noDefines: List[String] = newList()
+  val noPre: Option[Cli.ResolvedManifestDeps] = None
+  val rc = Cli.buildProject(
+    Path.join(appDir, "lyric.toml"),
+    None,
+    Emitter.Jvm,
+    noFeatures,
+    false,
+    false,
+    true,
+    None,
+    noPre,
+    noDefines
+  )
+  assertTrue(
+    rc != 0,
+    "buildProject: an unreadable path-dependency source still fails the --manifest --target jvm build overall — " +
+      "buildProjectFromManifest itself never checks hadUnbuiltLocalDep, so the failure comes from the consumer " +
+      "package's downstream reference to the now-absent 'pathDepGreeting' symbol, not an early return"
+  )
 }

@@ -30706,7 +30706,23 @@ that trusts the SAN fixture cert and asserts `HttpResponse.negotiatedVersion()
 `compiler-self-tests-jvm` CI job; and by `tests/serve_tls_tests.l` on dotnet
 (`Web.ServeTlsTests`, 4/4). A published-tool sandbox limitation (the 0.4.33
 `build --manifest lyric-web --target jvm` cyclic-package crash, #6024) meant
-JVM verification used the CI-equivalent single-file build path.
+JVM verification used the CI-equivalent single-file build path at the time.
+**#6024's cyclic-import failure is now fixed**
+(`Jvm.Bridge.compileProjectToJarBundledWithFeatures` was missing the entry
+package's own items from its cross-package `importedPkgs` list, so
+`Web.Kernel.Runtime` — a sibling that imports `Web` back — saw `Web`'s
+qualified types as unknown, `error[T0014]`): `lyric build --manifest
+lyric-web/lyric.toml --target jvm` now gets past type-check on the `Web` ↔
+`Web.Kernel.Runtime` cycle, confirmed against a source build. It does not
+yet reach a fully successful build in this checkout, though — getting past
+type-check newly surfaces a separate, pre-existing JVM codegen gap
+(`Web.Kernel.Runtime`'s JVM kernel iterating an extern
+`JHttpStringCollection[JHttpString]` erases each element's `.toString()`
+return type to `Object`, so the following `.toLower()` call has no
+resolvable receiver — `error[J002]`), unrelated to the cyclic-import
+mechanism and not attempted here; filed as #6565. The CI-equivalent
+single-file build path (what `compiler-self-tests-jvm` actually exercises)
+remains the verified JVM path for this library in the meantime.
 
 Surfacing the qualified stdlib type `Std.Tls.TlsServerConfig` in lyric-web's
 public API additionally required a compiler fix in
