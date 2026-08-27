@@ -725,3 +725,45 @@ test "instance-method overload scoring: slice[Int] argument picks the int[] over
   val total = f.sumInts(values)
   assertEqualInt(total, 18, "sumInts(slice[Int]) resolved the int[] overload, not the Object[] overload's -1 sentinel")
 }
+
+// ── #6696: reverse compatibility for genuinely Object[]-only overloads ──────
+//
+// `ffiScoreDescFor` (#6662/#5526, above) narrows a `slice[T]` argument's
+// SCORE-ONLY descriptor to a primitive-array shape (`[I`, …) when `T` is a
+// JVM primitive, so a sibling primitive-array overload outscores a same-named
+// `Object[]`-erased generic overload. Some JDK methods declare `Object[]` —
+// including a `T...` varargs parameter's erasure — as their ONLY candidate:
+// `Arrays.asList(T... a)`, `Objects.hash(Object... values)`,
+// `String.format(String, Object...)`. Before the #6696 fix to
+// `scoreParamMatch` (`lyric-compiler/jvm/auto_ffi.l`), the narrowed
+// primitive-array descriptor matched no parameter on any of these (no rule
+// scored a primitive-array argDesc against an `Object[]` paramDesc), so
+// `findBestMethod` returned `None` and the call PANICKED AT COMPILE TIME
+// instead of resolving to the one overload that always worked before #6662.
+// The fix's reverse-compatibility rule recovers this — a Lyric slice's
+// runtime representation is ALWAYS `Object[]` (boxed elements) regardless of
+// its declared element type — while staying strictly lower-priority than an
+// exact primitive-array match, so `OverloadFixture`'s `int[]`-vs-`Object[]`
+// disambiguation two tests above is unaffected.
+extern type JObjects = "java.util.Objects"
+
+test "Arrays.asList(slice[Int]) resolves the Object[]-only varargs overload (#6696)" {
+  val values: slice[Int] = [10, 20, 30]
+  val xs = JArrays.asList(values)
+  assertEqualInt(xs.size(), 3, "Arrays.asList(slice[Int]).size() == 3")
+  assertEqualInt(xs.get(0), 10, "Arrays.asList(slice[Int]).get(0) == 10")
+  assertEqualInt(xs.get(2), 30, "Arrays.asList(slice[Int]).get(2) == 30")
+}
+
+test "Objects.hash(slice[Int]) resolves the Object[]-only varargs overload (#6696)" {
+  val values: slice[Int] = [1, 2, 3]
+  // Objects.hash delegates to Arrays.hashCode: result = 1; result = 31*result
+  // + boxed-Integer.hashCode() per element -- 31*(31*(31*1+1)+2)+3 == 30817.
+  assertEqualInt(JObjects.hash(values), 30817, "Objects.hash(1,2,3) matches Arrays.hashCode's boxed-Integer formula")
+}
+
+test "String.format(String, slice[Int]) resolves the Object[]-only varargs overload (#6696)" {
+  val values: slice[Int] = [7, 9]
+  val s = JString.format("%d and %d", values)
+  assertEqual(s, "7 and 9", "String.format with a slice[Int] varargs argument")
+}

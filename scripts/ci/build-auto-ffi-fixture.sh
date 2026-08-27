@@ -28,8 +28,9 @@ if [ ! -f "$SRC" ]; then
   exit 1
 fi
 
+rm -rf "$CLASSES_DIR"
 mkdir -p "$CLASSES_DIR"
-javac -d "$CLASSES_DIR" "$SRC"
+javac --release 21 -d "$CLASSES_DIR" "$SRC"
 jar cf "$JAR_PATH" -C "$CLASSES_DIR" .
 
 echo "$JAR_PATH"

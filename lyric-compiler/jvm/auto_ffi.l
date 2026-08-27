@@ -493,6 +493,27 @@ func scoreParamMatch(argDesc: in String, paramDesc: in String): Int {
   if argDesc == "[Ljava/lang/Object;" and isPrimitiveArrayDesc(paramDesc) {
     return 2
   }
+  // Reverse-compatibility (#6696): `ffiScoreDescFor` narrows a `slice[T]`
+  // argument's SCORE-ONLY descriptor (never its actual runtime
+  // representation — see that function's header comment) to a primitive
+  // array shape when `T` is a JVM primitive, so a competing primitive-array
+  // overload (`int[] Arrays.copyOf(int[], int)`) outscores a same-named
+  // generic-array overload erased to `Object[]` (#6662/#5526). But some JDK
+  // methods declare `Object[]` — including a `T...` varargs parameter's
+  // erasure — as their ONLY sensible target (`Arrays.asList`, `Objects.hash`,
+  // `String.format`), and a Lyric slice's actual runtime representation is
+  // ALWAYS `Object[]` (boxed elements) regardless of its declared element
+  // type, so the narrowed primitive-array descriptor is still a genuinely
+  // valid — if low-priority — match against an `Object[]` parameter. This is
+  // a REFINEMENT, not a replacement: when a real primitive-array overload
+  // also exists for the same name, its exact match (10) still outscores this
+  // fallback (2), so `Arrays.copyOf`-shaped disambiguation is unaffected;
+  // this rule only becomes load-bearing when `Object[]` is the only
+  // candidate, where without it NO overload would score >= 0 and the call
+  // would panic at compile time instead of resolving.
+  if isPrimitiveArrayDesc(argDesc) and paramDesc == "[Ljava/lang/Object;" {
+    return 2
+  }
   // Reference/reference pairs are not classified here: the descriptor strings
   // alone do not carry the class hierarchy.  `scoreParam` (which has the auto-FFI
   // context) resolves these via `isAssignableRef`, scoring a verified IS-A match
