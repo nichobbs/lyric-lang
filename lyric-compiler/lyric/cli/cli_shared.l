@@ -85,6 +85,7 @@ import Std.Json as Json
 import Std.Yaml as Yaml
 import Std.ProcessCapture as ProcessCapture
 import Std.Time as Time
+import Std.Uuid
 import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Workspace as Ws
@@ -936,6 +937,33 @@ pub func warnIfStdlibBundleStale(libDir: in String): Unit {
   }
 }
 
+// Best-effort atomic replace for a DLL landing beside a build output (used
+// by `copyRuntimeDepsBeside` and `copyDllBeside` below).  Plain
+// `File.writeBytes` (BCL `File.WriteAllBytes`) truncates `dest` to zero
+// length before streaming the new bytes, so a process concurrently reading
+// the exact same path — another `lyric` invocation rebuilding the shared
+// toolchain bundle this DLL was copied from, or the CLR loader resolving it
+// as a runtime dependency — can observe a truncated/invalid PE image
+// mid-write, surfacing downstream as BadImageFormatException or
+// MissingFieldException (#6301).  Writing to a same-directory temp file
+// first and renaming over `dest` means a concurrent reader only ever sees
+// the complete previous file or the complete new one.
+extern type NetFileMove = "System.IO.File"
+
+func writeBytesAtomicBeside(dest: in String, bytes: in List[Byte]): Unit {
+  val tmpPath = dest + ".tmp-" + uuidToString(newUuid())
+  match File.writeBytes(tmpPath, bytes) {
+    case Err(_) -> ()
+    case Ok(_) -> {
+      try {
+        NetFileMove.Move(tmpPath, dest, true)
+      } catch Bug as _ {
+        val _ = File.deleteFile(tmpPath)
+      }
+    }
+  }
+}
+
 // Co-locate the stdlib runtime assemblies (the single `Lyric.Stdlib.dll` bundle
 // plus the per-package HTTP/async DLLs not yet bundleable, #4030) from the
 // SDK/publish lib dir `srcDir` next to the assembly at `outPath`, so `dotnet
@@ -965,9 +993,7 @@ func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
           val dest = Path.join(destDir, base)
           if dest != outPath {
             match File.readBytes(f) {
-              case Ok(bs) -> {
-                val _ = File.writeBytes(dest, bs)
-              }
+              case Ok(bs) -> writeBytesAtomicBeside(dest, bs)
               case Err(_) -> ()
             }
           }
@@ -987,9 +1013,7 @@ pub func copyDllBeside(outPath: in String, dllPath: in String): Unit {
   }
   val dest = Path.join(Path.dirname(outPath), Path.basename(dllPath))
   match File.readBytes(dllPath) {
-    case Ok(bs) -> {
-      val _ = File.writeBytes(dest, bs)
-    }
+    case Ok(bs) -> writeBytesAtomicBeside(dest, bs)
     case Err(_) -> ()
   }
 }

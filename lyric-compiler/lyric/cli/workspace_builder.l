@@ -863,6 +863,16 @@ pub func injectMavenClasspathForJvm(mfDir: in String, manifest: in Manifest): Ma
 /// Restore `LYRIC_FFI_JARS` to the value `injectMavenClasspathForJvm`
 /// captured, undoing its injection once a compile finishes.  A no-op when
 /// nothing was injected (`None`).
+///
+/// #6301: every call site gates `injectMavenClasspathForJvm` behind
+/// `case Jvm -> ...` (`cli_build.l`'s `buildOneNative` and
+/// `buildProjectFromManifest`), so a `--target dotnet` build always passes
+/// `None` here and this function is a pure no-op — it touches no file, no
+/// environment variable, nothing that can throw.  A `BadImageFormatException`
+/// / `MissingFieldException` observed on a `--target dotnet` build cannot
+/// originate here; look at the concurrent DLL read/write paths instead
+/// (`Msil.Bridge`'s `writeBytesAtomic` and `cli_shared.l`'s
+/// `writeBytesAtomicBeside`, both fixed for exactly this symptom).
 pub func restoreMavenClasspath(saved: in Option[String]): Unit {
   match saved {
     case Some(prev) -> Environment.setVar("LYRIC_FFI_JARS", prev)

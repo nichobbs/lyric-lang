@@ -32,6 +32,38 @@ import Msil.Lowering
 import Msil.Codegen
 import Msil.Tables
 import Msil.Heaps
+import Std.Uuid
+
+// Final-write helper shared by `compileToMsilWithVersion` and
+// `compileProjectToMsilWithRestoredAndVersion` below.  Plain `writeBytes`
+// (BCL `File.WriteAllBytes`) truncates `path` to zero length before
+// streaming the new bytes, so a process concurrently reading the exact
+// same path — another `lyric` invocation rebuilding a shared toolchain
+// bundle (e.g. `Lyric.Stdlib.dll`), or the CLR loader resolving this DLL
+// as a runtime dependency — can observe a truncated/invalid PE image
+// mid-write, surfacing downstream as BadImageFormatException or
+// MissingFieldException (#6301).  Writing the full PE to a same-directory
+// temp file first and renaming over the destination means a concurrent
+// reader only ever sees the complete previous file or the complete new
+// one — `File.Move(.., overwrite: true)` resolves to an atomic same-
+// filesystem rename on the platforms this compiler ships for.
+extern type NetFileMove = "System.IO.File"
+
+func writeBytesAtomic(path: in String, bytes: in List[Byte]): Bool {
+  val tmpPath = path + ".tmp-" + uuidToString(newUuid())
+  match writeBytes(tmpPath, bytes) {
+    case Err(_) -> false
+    case Ok(_) -> {
+      try {
+        NetFileMove.Move(tmpPath, path, true)
+        true
+      } catch Bug as _ {
+        val _ = deleteFile(tmpPath)
+        false
+      }
+    }
+  }
+}
 
 // Resolve `alias X = ...` references to their underlying types before any
 // registry or checker sees the file — the same whole-file pre-pass the JVM
@@ -323,11 +355,7 @@ pub func compileToMsilWithVersion(
   val bytes = lowerMPackageWithCtx(pkg, cctx.lctx, entryToken)
 
   // Write the PE to disk.
-  val result = writeBytes(outputPath, bytes)
-  match result {
-    case Ok(_) -> true
-    case Err(_) -> false
-  }
+  writeBytesAtomic(outputPath, bytes)
 }
 
 /// One package's per-source-file payload for `compileProjectToMsil`.
@@ -1026,11 +1054,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // Phase 6: lower all MPackages into a single PE against the shared lctx.
   val bytes = lowerMPackagesWithCtx(mpkgs, cctx.lctx, entryToken)
 
-  val result = writeBytes(outputPath, bytes)
-  match result {
-    case Ok(_) -> true
-    case Err(_) -> false
-  }
+  writeBytesAtomic(outputPath, bytes)
 }
 
 /// Tab-encoded variant of `compileProjectToMsil` for reflection-based
