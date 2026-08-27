@@ -6424,6 +6424,48 @@ jobs:
           cp lyric-stdlib/bin/Lyric.Stdlib*.dll .bootstrap/httprt-lib/
           LYRIC_STDLIB_BIN="$PWD/.bootstrap/httprt-lib" "$lyric_bin" test --target dotnet lyric-compiler/lyric/http_roundtrip_self_test.l
 
+      # Std.Rest.RestClient.json live round trip (#1119): the same
+      # child-process Std.HttpServer listener pattern as the step above, but
+      # exercising `RestClient.json` on a real `HttpResponse`. `HttpResponse`
+      # is `pub opaque` with no test-stub constructor, so
+      # `lyric-stdlib/tests/rest_tests.l` (below, dotnet stdlib-suites step)
+      # can only pin the `parseJson`/`disposeJson` contract in isolation —
+      # this is the live-endpoint coverage that closes the gap. Response is
+      # obtained via the free `getAsync`, not `RestClient.get`: `.get`/`.post`/
+      # etc. route through `fullUrl`, which is runtime-broken on MSIL
+      # (#5622 — a `String` method dispatched on a value read from an
+      # opaque-type field throws before any request is sent) and, separately,
+      # throws a JVM `StringIndexOutOfBoundsException` — neither is this
+      # file's concern to fix. Dotnet-only: the child server here is built
+      # in-process via `Lyric.Emitter`, and `lyric test --target jvm` cannot
+      # resolve `Lyric.Emitter`'s compiler-package closure the way
+      # `--target dotnet` does (T0014 `unknown qualified type
+      # 'Lyric.Emitter.ProjectPackage'`) — the same reason
+      # `http_roundtrip_self_test.l` above is dotnet-only, not something new
+      # to this file.
+      - name: Std.Rest RestClient.json round-trip self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping Std.Rest RestClient.json round-trip self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Rest RestClient.json round-trip self-test"
+            exit 1
+          fi
+          if [ ! -f lyric-stdlib/bin/Lyric.Stdlib.dll ]; then
+            echo "::error::lyric-stdlib/bin/Lyric.Stdlib.dll missing — the 'Build full stdlib' step must run before this one"
+            exit 1
+          fi
+          rm -rf .bootstrap/httprt-lib
+          mkdir -p .bootstrap/httprt-lib
+          cp .bootstrap/stage1/*.dll .bootstrap/httprt-lib/
+          cp lyric-stdlib/bin/Lyric.Stdlib*.dll .bootstrap/httprt-lib/
+          LYRIC_STDLIB_BIN="$PWD/.bootstrap/httprt-lib" "$lyric_bin" test --target dotnet lyric-compiler/lyric/rest_json_roundtrip_self_test.l
+
       # HttpVersion deterministic coverage (docs/61 §5.1, D128 decision 4;
       # #5879): the Http3-unsupported gate never touches the network (build()
       # routes to Std.Http.HttpClientImpl.unsupportedReason before any kernel

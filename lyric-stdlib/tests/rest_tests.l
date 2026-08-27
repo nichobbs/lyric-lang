@@ -12,18 +12,20 @@
 //!
 //! True round-trip coverage of `RestClient.json(response)` requires
 //! constructing an `HttpResponse`, which is `pub opaque` in `Std.Http`
-//! and has no test-stub constructor.  Spinning up a loopback
-//! `HttpListener` from a stdlib test is currently out of scope for the
-//! flat `lyric run` invocation this suite gets in the "Stdlib runtime
-//! suites on dotnet" CI step (it lacks the task-runtime priming the
-//! in-process server needs), and a direct `import Std.Rest` trips a
-//! pre-existing emitter limitation when `Std.Rest` is the first ever
-//! importer of certain payload-bearing union pattern shapes — none of
-//! the production codebase currently imports `Std.Rest`, so the path
-//! has gone unexercised and a fix belongs in the codegen track, not
-//! here.
+//! and has no test-stub constructor.  This file gets a flat `lyric run`
+//! invocation (the "Stdlib runtime suites on dotnet" CI step) with no
+//! task-runtime priming for an in-process server, so it deliberately
+//! stays offline; genuine live coverage lives in
+//! `lyric-compiler/lyric/rest_json_roundtrip_self_test.l` instead — a
+//! `@test_module` run via native `lyric test`, which spins up a real
+//! `Std.HttpServer` listener in a child process and drives
+//! `RestClient.json` against a real fetched `HttpResponse`. That file's
+//! header also documents the remaining gap this one does NOT close: the
+//! `RestClient.get`/`.post`/`.put`/`.patch`/`.delete` request-building
+//! path (`fullUrl` -> `sendRequest`) is runtime-broken on both MSIL
+//! (#5622) and JVM, so no test anywhere exercises that path live yet.
 //!
-//! What this file CAN cover, and does:
+//! What this file CAN cover, and does, without a live server:
 //!
 //!   * The `parseJson` + `rootElement` + `getProperty` + `disposeJson`
 //!     sequence — the exact sequence `RestClient.json` invokes after a
@@ -39,10 +41,6 @@
 //!     `Http(Transport(...))`; the formatting of the inner error is
 //!     delegated to `HttpError.message`, so verifying that here pins
 //!     the surface text that surfaces in production logs.
-//!
-//! Re-evaluate when the codegen bug is closed and when the test runner
-//! gains async-server support; at that point the round-trip tests
-//! listed above should land here directly.
 package Std.Rest.Tests
 
 import Std.Core
