@@ -1504,3 +1504,60 @@ test "PRIORITY frames are accepted and ignored" {
   assertFalse(H2.isFailed(r.conn), "PRIORITY does not fault the connection")
   assertFalse(hasConnError(r.events), "no error from PRIORITY")
 }
+
+// ===========================================================================
+// Closed-stream pruning (#6064).
+// ===========================================================================
+test "a late RST_STREAM against a pruned (very old) closed stream is a safe no-op, never a PROTOCOL_ERROR (#6064)" {
+  // Open and fully complete far more streams than the retention window, so
+  // the very first stream's `H2Stream` record has scrolled well out of it
+  // and `pruneClosedStreams` has reclaimed it.
+  val window = H2.h2ClosedStreamRetentionWindow()
+  val total = window + 60
+  var conn = setupDefault()
+  var c = runCompletions(conn, 1, total)
+  val lastId = 1 + 2 * (total - 1)
+  val prunedId = 1
+  assertTrue(lastId - prunedId > window * 2, "prunedId is well outside the retention window")
+  assertFalse(H2.isFailed(c), "connection healthy after the completion run")
+  val r = H2.feed(c, rstFrame(prunedId, H2Cancel))
+  // A pruned stream's lookup miss is classified exactly like a lookup miss
+  // on a stream that was retained-but-closed: `isIdleStreamId` only ever
+  // considers parity and `lastPeerStreamId`, never whether a record
+  // survived — so this can never be misclassified as an idle-stream
+  // PROTOCOL_ERROR (RFC 9113 section 5.1).
+  assertFalse(H2.isFailed(r.conn), "a late RST_STREAM on a pruned stream must not poison the connection")
+  assertFalse(hasConnError(r.events), "a late RST_STREAM on a pruned stream is not a PROTOCOL_ERROR")
+  assertFalse(hasPeerReset(r.events, prunedId), "the pruned stream's record is gone, so no H2PeerReset is surfaced")
+}
+
+test "a late RST_STREAM against a recently-closed (not-yet-pruned) stream is still a no-op and still surfaces H2PeerReset (#6064)" {
+  // Same setup as the pruned-stream test, but the frame targets the very
+  // last stream opened — still well inside the retention window — so its
+  // exact terminal-event behaviour is unchanged from before #6064.
+  val window = H2.h2ClosedStreamRetentionWindow()
+  val total = window + 60
+  var conn = setupDefault()
+  var c = runCompletions(conn, 1, total)
+  val recentId = 1 + 2 * (total - 1)
+  val r = H2.feed(c, rstFrame(recentId, H2Cancel))
+  assertFalse(H2.isFailed(r.conn), "a late RST_STREAM on a recently-closed stream must not poison the connection")
+  assertFalse(hasConnError(r.events), "no PROTOCOL_ERROR")
+  assertTrue(
+    hasPeerReset(r.events, recentId),
+    "the retained record still surfaces H2PeerReset (unchanged pre-#6064 behaviour)"
+  )
+  assertTrue(stateIs(H2.streamState(r.conn, recentId), "closed"), "the stream stays closed")
+}
+
+test "a late WINDOW_UPDATE against a pruned (very old) closed stream is a safe no-op, never a PROTOCOL_ERROR (#6064)" {
+  val window = H2.h2ClosedStreamRetentionWindow()
+  val total = window + 60
+  var conn = setupDefault()
+  var c = runCompletions(conn, 1, total)
+  val prunedId = 1
+  val r = H2.feed(c, windowUpdateFrame(prunedId, 100))
+  assertFalse(H2.isFailed(r.conn), "a late WINDOW_UPDATE on a pruned stream must not poison the connection")
+  assertFalse(hasConnError(r.events), "a late WINDOW_UPDATE on a pruned stream is not a PROTOCOL_ERROR")
+  assertFalse(hasWindowUpdated(r.events, prunedId), "no H2WindowUpdated: there is no send-flow window left to update")
+}

@@ -98,11 +98,20 @@
 //!     and this server emits none, so this is exact for all traffic it
 //!     realistically sees; a padding-exact variant would require the frame
 //!     layer to surface the on-wire frame length. Tracked as #6063.
-//!   - **Closed streams are retained for the connection's lifetime** so a late
-//!     WINDOW_UPDATE/RST_STREAM on a just-closed stream is correctly treated
-//!     as a harmless no-op rather than an idle-stream error. Growth is bounded
-//!     by the total number of streams opened on the connection; pruning
-//!     fully-closed streams under a long-lived connection is tracked as #6064.
+//!   - **Closed streams are retained only within a bounded trailing window.**
+//!     A late WINDOW_UPDATE/RST_STREAM on a just-closed stream is correctly
+//!     treated as a harmless no-op rather than an idle-stream error; this
+//!     holds for *any* closed stream, pruned or not, because `isIdleStreamId`
+//!     classifies a lookup miss as "forgotten, not idle" for any id at or
+//!     below `lastPeerStreamId` regardless of whether a record for it
+//!     survives (RFC 9113 section 5.1). `pruneClosedStreams` reclaims a
+//!     `H2SClosed` record once its id has scrolled
+//!     `h2ClosedStreamRetentionWindow()` stream-slots behind
+//!     `lastPeerStreamId`, bounding `H2Connection.streams` growth on a
+//!     long-lived connection (#6064) — the window exists to keep a
+//!     recently-closed stream's exact terminal event (e.g. a late
+//!     `RST_STREAM`'s `H2PeerReset`) observable for longer, not because
+//!     pruning any sooner would be unsafe.
 //!   - **A codec-detected stream-level frame fault is escalated to a
 //!     connection error.** The two such faults (`PRIORITY` of the wrong length,
 //!     a zero `WINDOW_UPDATE` increment on a stream) do not carry a stream id
@@ -648,6 +657,60 @@ func windowUpdateOverflows(window: in Int, increment: in Int): Bool {
 /// forgotten.
 func isIdleStreamId(state: in H2Connection, streamId: in Int): Bool {
   streamId % 2 == 0 or streamId > state.lastPeerStreamId
+}
+
+/// How many trailing client stream-id slots (each 2 apart — client ids are
+/// odd) a `H2SClosed` record is kept for after closing, before
+/// `pruneClosedStreams` reclaims it (#6064). Bounds `H2Connection.streams`
+/// growth on a connection that opens many streams over its lifetime while
+/// keeping a generous margin over the default concurrent-streams ceiling
+/// (128, `h2DefaultServerSettings`) so a closed stream's exact terminal
+/// event stays observable well past any realistic close/reopen race.
+/// Pruning past this window is a bookkeeping choice, not a safety boundary:
+/// see the module header note above `isIdleStreamId` for why a lookup miss
+/// on *any* id at or below `lastPeerStreamId` — pruned or never retained —
+/// is always classified as "forgotten, not idle".
+@pure
+@experimental
+pub func h2ClosedStreamRetentionWindow(): Int {
+  200
+}
+
+func isClosedState(s: in H2StreamState): Bool {
+  match s {
+    case H2SClosed -> true
+    case _ -> false
+  }
+}
+
+/// Drop `H2SClosed` records whose id has scrolled more than
+/// `h2ClosedStreamRetentionWindow()` stream-slots behind
+/// `state.lastPeerStreamId`. Never touches an idle/open/half-closed record —
+/// only fully `H2SClosed` entries are eligible — so an active stream's flow-
+/// control bookkeeping is never disturbed, and `isIdleStreamId`'s
+/// id-and-high-water-mark-only test still classifies a pruned id exactly as
+/// it would an unpruned one (see `h2ClosedStreamRetentionWindow`).
+func pruneClosedStreams(state: inout H2Connection): Unit {
+  // Cheap escape hatch: the total retained-stream count is an upper bound on
+  // how many *closed* records could possibly be prunable, so there is
+  // nothing to do until it exceeds the window.
+  if state.streams.count <= h2ClosedStreamRetentionWindow() {
+    return
+  }
+  val threshold = state.lastPeerStreamId - h2ClosedStreamRetentionWindow() * 2
+  if threshold <= 0 {
+    return
+  }
+  val kept: List[H2Stream] = newList()
+  var i = 0
+  while i < state.streams.count {
+    val st: H2Stream = state.streams[i]
+    if not (isClosedState(st.state) and st.id < threshold) {
+      kept.add(st)
+    }
+    i = i + 1
+  }
+  state.streams = kept
 }
 
 // =============================================================================
@@ -1449,6 +1512,7 @@ pub func feed(conn: in H2Connection, bytes: in slice[Byte]): H2FeedResult
   val events: List[H2Event] = newList()
   val outb: List[Byte] = newList()
   driveConnection(state, bytes, events, outb)
+  pruneClosedStreams(state)
   if events.count == 0 {
     events.add(H2NeedMore)
   }

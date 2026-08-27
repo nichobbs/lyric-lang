@@ -276,24 +276,37 @@ func utf8Encode(s: in String): slice[Byte] {
   return Enc.encodeUtf8(s)
 }
 
-/// A `application/json; charset=utf-8` response with the given raw JSON body.
-/// Automatically quote-escapes the body string if it is not already a valid JSON structure.
+/// A `application/json; charset=utf-8` response with the given raw JSON body,
+/// sent exactly as given — no parsing, no re-escaping, no cost beyond a UTF-8
+/// encode. `body` must already be a complete, valid JSON document (build it
+/// with `Std.Json` or your own encoder); this function does not
+/// validate it, so a caller bug that produces malformed JSON ships malformed
+/// JSON — surfacing the bug rather than silently masking it by re-quoting the
+/// body as a JSON string (#5813). To wrap an arbitrary raw string value (one
+/// that is not itself JSON, e.g. a bare id/UUID/token) as a JSON string, use
+/// `jsonString` instead.
 @stable(since = "0.2")
 pub func json(status: in Int, body: in String): Response {
   val empty: Map[String, String] = newMap()
-  var finalBody = body
-  match tryParseJson(body) {
-    case Ok(doc) -> {
-      disposeJson(doc)
-    }
-    case Err(_) -> {
-      finalBody = encodeString(body)
-    }
-  }
   return Response(
     status = status,
     contentType = "application/json; charset=utf-8",
-    bodyBytes = utf8Encode(finalBody),
+    bodyBytes = utf8Encode(body),
+    headers = empty
+  )
+}
+
+/// A `application/json; charset=utf-8` response whose body is `value` quoted
+/// and escaped as a single JSON string value — for wrapping an arbitrary raw
+/// string (an id, a UUID, a token) that is not itself JSON. Use `json`
+/// instead when `body` is already a complete JSON document.
+@stable(since = "0.2")
+pub func jsonString(status: in Int, value: in String): Response {
+  val empty: Map[String, String] = newMap()
+  return Response(
+    status = status,
+    contentType = "application/json; charset=utf-8",
+    bodyBytes = utf8Encode(encodeString(value)),
     headers = empty
   )
 }
