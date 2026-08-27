@@ -115,6 +115,12 @@ test "compileProjectToJarBundledWithFeatures: entry package's own types resolve 
   val noFeatures: List[String] = newList()
   val noDepTemplateSrcs: List[String] = newList()
   val noDefines: List[String] = newList()
+  val noPaths: List[String] = newList()
+  var pi = 0
+  while pi < pkgSrcs.count {
+    noPaths.add("")
+    pi += 1
+  }
   val ok = compileProjectToJarBundledWithFeatures(
     pkgSrcs,
     jarPath,
@@ -124,7 +130,8 @@ test "compileProjectToJarBundledWithFeatures: entry package's own types resolve 
     noFeatures,
     noDepTemplateSrcs,
     noDefines,
-    "0.1.0"
+    "0.1.0",
+    noPaths
   )
   assertTrue(
     ok,

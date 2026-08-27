@@ -103,6 +103,8 @@ test "compileProjectToJarBundledWithFeatures embeds Lyric.Contract.<Pkg>, readab
   val noFeatures: List[String] = newList()
   val noDeps: List[String] = newList()
   val noDefines: List[String] = newList()
+  val noPaths: List[String] = newList()
+  noPaths.add("")
   val ok = compileProjectToJarBundledWithFeatures(
     pkgSrcs,
     jarPath,
@@ -112,7 +114,8 @@ test "compileProjectToJarBundledWithFeatures embeds Lyric.Contract.<Pkg>, readab
     noFeatures,
     noDeps,
     noDefines,
-    "0.1.0"
+    "0.1.0",
+    noPaths
   )
   assertTrue(ok, "compile: fixture Std.Core package compiles to a JAR")
   assertTrue(File.fileExists(jarPath), "compile: JAR file exists")
@@ -180,6 +183,8 @@ test "stdlibSourcesFromCompiledBundleJvm reconstructs Std.Core from an installed
   val noFeatures: List[String] = newList()
   val noDeps: List[String] = newList()
   val noDefines: List[String] = newList()
+  val noPaths: List[String] = newList()
+  noPaths.add("")
   val ok = compileProjectToJarBundledWithFeatures(
     pkgSrcs,
     jarPath,
@@ -189,7 +194,8 @@ test "stdlibSourcesFromCompiledBundleJvm reconstructs Std.Core from an installed
     noFeatures,
     noDeps,
     noDefines,
-    "0.1.0"
+    "0.1.0",
+    noPaths
   )
   assertTrue(ok, "compile: fixture Lyric.Stdlib.Jvm.jar compiles")
 
@@ -232,6 +238,8 @@ test "stdlibSourcesFromCompiledBundleJvm reconstructs Std.Core from an installed
   val consumerPkgs: List[String] = newList()
   consumerPkgs.add(consumerSrc)
   val consumerOut = Path.join(dir, "consumer.jar")
+  val consumerNoPaths: List[String] = newList()
+  consumerNoPaths.add("")
   val consumerOk = compileProjectToJarBundledWithFeatures(
     consumerPkgs,
     consumerOut,
@@ -241,7 +249,8 @@ test "stdlibSourcesFromCompiledBundleJvm reconstructs Std.Core from an installed
     noFeatures,
     noDeps,
     noDefines,
-    "0.1.0"
+    "0.1.0",
+    consumerNoPaths
   )
   assertTrue(
     consumerOk,
