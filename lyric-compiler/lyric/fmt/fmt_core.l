@@ -1010,7 +1010,7 @@ pub func exprAtCol(col: in Int, ctx: inout FmtCtx, e: in Expr): List[String] {
         ifBlockLines(cond, thn, els, ctx)
       }
     }
-    case EMatch(scrut, arms) -> matchLines(scrut, arms, e.span.endPos.offset, ctx)
+    case EMatch(scrut, arms) -> matchLines(col, scrut, arms, e.span.endPos.offset, ctx)
     case EBlock(b) -> blockExprDoc(ctx, b)
     case _ -> singleLineDoc(inline)
   }
@@ -1840,7 +1840,7 @@ pub func invariantDoc(col: in Int, ctx: inout FmtCtx, e: in Expr): List[String] 
 
 func stmtExprLines(s: in Statement, e: in Expr, ctx: inout FmtCtx): List[String] {
   match e.kind {
-    case EMatch(scrut, arms) -> matchLines(scrut, arms, e.span.endPos.offset, ctx)
+    case EMatch(scrut, arms) -> matchLines(2, scrut, arms, e.span.endPos.offset, ctx)
     case EIf(cond, thn, els, thenForm) -> {
       // Route the `then`-form through the ctx-aware expression printer so
       // that internal comments (e.g. `then x  // note`) are preserved
@@ -1856,9 +1856,15 @@ func stmtExprLines(s: in Statement, e: in Expr, ctx: inout FmtCtx): List[String]
   }
 }
 
-func matchLines(scrut: in Expr, arms: in List[MatchArm], matchEnd: in Int, ctx: inout FmtCtx): List[String] {
+func matchLines(col: in Int, scrut: in Expr, arms: in List[MatchArm], matchEnd: in Int, ctx: inout FmtCtx): List[String] {
   val head = singleLineDoc("match " + exprInline(0, scrut) + " {")
   val armLines: List[String] = newList()
+  // Absolute column each arm's body starts rendering at, once this whole
+  // `Doc` lands at `col` (the "match" keyword's own column) and the arm
+  // lines below get `indentDoc(2, armLines)`'d relative to it — the same
+  // "+2 per nesting level" convention `exprCallMulti`/`exprBinopMulti` use
+  // for their own recursive `col` threading.
+  val armCol = col + 2
   var i = 0
   while i < arms.count {
     val a = arms[i]
@@ -1871,15 +1877,19 @@ func matchLines(scrut: in Expr, arms: in List[MatchArm], matchEnd: in Int, ctx: 
         // no interior comment (e.g. a `then`-form if whose then-arm has a
         // trailing `// note` must render through the ctx-aware printer so
         // the comment is woven in rather than dropped by the flat
-        // `exprInline`) AND fits the width budget at the arrow's column —
-        // a nested `match`/`if` arm body that overflows must fall back to
-        // its own multi-line layout (`exprAtCol` dispatches on `ExprKind`
-        // recursively) rather than being collapsed onto one line.
+        // `exprInline`) AND fits the width budget at the arrow's REAL
+        // absolute column (`armCol + arrow.length`, not `arrow.length`
+        // alone — the latter undercounts by the arm's own indentation at
+        // every nesting level) — a nested `match`/`if` arm body that
+        // overflows must fall back to its own multi-line layout
+        // (`exprAtCol` dispatches on `ExprKind` recursively) rather than
+        // being collapsed onto one line.
+        val bodyCol = armCol + arrow.length
         val inlineBody = exprInline(0, body)
-        if exprFitsInline(arrow.length, ctx, body, inlineBody) {
+        if exprFitsInline(bodyCol, ctx, body, inlineBody) {
           armLines.add(arrow + inlineBody)
         } else {
-          val bd = exprAtCol(arrow.length, ctx, body)
+          val bd = exprAtCol(bodyCol, ctx, body)
           if bd.count > 0 {
             armLines.add(arrow + bd[0])
             var j = 1
