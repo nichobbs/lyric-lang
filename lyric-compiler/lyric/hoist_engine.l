@@ -181,6 +181,25 @@ record HoistState {
   // from the same statement, e.g. via an `inout` argument, or a
   // concurrently spawned task sharing the slot) may have reassigned it.
   mutableNames: Map[String, Bool]
+  // #6684: field names declared on the enclosing record/impl-target/
+  // protected-type body, resolved when statically visible from THIS file.
+  // Lets `hzNameLikeMutable` treat a BARE (implicit-self) reference to one
+  // of these names exactly as conservatively as the `self.<name>`/`EMember`
+  // spelling already is (#6600, see the doc comment there): the type
+  // checker resolves an unqualified name inside a record/impl/protected-
+  // type member body against the enclosing type's own fields whenever it
+  // is not a local/parameter (#6173/#6487, D-progress-774) — a spelling
+  // `hzNameLikeMutable` previously had no case for at all, so it fell
+  // through to `hzIsNameLikeSafe` returning `true` and reopened the exact
+  // #5629/#6600 stale-receiver-read bug one spelling later. Empty for a
+  // non-member function/entry (no implicit-self scope to shadow) and,
+  // narrowly, for an `impl` method whose target type is declared in a
+  // DIFFERENT file: this pass runs per-file with no symbol table (unlike
+  // the type checker's whole-compilation-unit view), so a same-file impl
+  // target resolves exactly and a cross-file one quietly yields an empty
+  // map — a strictly narrower residual gap than the one this fix closes,
+  // not a new one.
+  selfFieldNames: Map[String, Bool]
 }
 
 func hzFresh(cfg: in HoistConfig, st: in HoistState): String {
@@ -271,9 +290,23 @@ func hzIsNameLike(e: in Expr): Bool {
 // This costs a spurious extra temp bind when the field genuinely is
 // immutable (a minor codegen inefficiency), which is the safe direction
 // to err versus the silent stale-read this replaces.
+//
+// A record/impl/protected-type member body may ALSO reference its own
+// fields with a BARE (implicit-self) name instead of the `self.<name>`
+// spelling above (#6173/#6487, D-progress-774) — `box` instead of
+// `self.box`. Structurally that is a single-segment `EPath`, identical in
+// shape to a local `val`/`var`/parameter read, so it needs its own case:
+// `st.selfFieldNames` (built per-member from the enclosing type's OWN
+// field declarations, never a broad "not a known local" guess — see its
+// doc comment on `HoistState` for why precision matters here) says
+// exactly which bare names are field candidates, letting a genuine local
+// keep resolving exactly as it did before this case existed (#6684).
 func hzNameLikeMutable(st: in HoistState, e: in Expr): Bool {
   match e.kind {
-    case EPath(path) -> path.segments.count == 1 and st.mutableNames.containsKey(path.segments[0])
+    case EPath(path) -> {
+      path.segments.count == 1 and
+        (st.mutableNames.containsKey(path.segments[0]) or st.selfFieldNames.containsKey(path.segments[0]))
+    }
     case ESelf -> true
     case ELiteral(_) -> false
     case EMember(_, _) -> true
@@ -1283,7 +1316,16 @@ func hzStmt(cfg: in HoistConfig, s: in Statement, dest: in List[Statement], st: 
       }
       dest.add(mkStmt(STry(body = hzBlock(cfg, body, st), catches = newCatches, finally_ = newFinally), s.span))
     }
-    case SItem(item) -> dest.add(mkStmt(SItem(item = hzRewriteItem(cfg, item, st)), s.span))
+    case SItem(item) -> {
+      // No enclosing `SourceFile` is threaded this deep into the statement
+      // rewrite (#6684) — a nested `impl` here resolves its target's fields
+      // only when the target itself is ALSO declared locally inside this
+      // same nested item (self-contained in `hzRewriteRecord`/
+      // `hzProtectedFieldNames`, no `file` needed); see
+      // `hzImplTargetFieldNames`'s doc comment.
+      val noFile: Option[SourceFile] = None
+      dest.add(mkStmt(SItem(item = hzRewriteItem(cfg, item, st, noFile)), s.span))
+    }
     case SInvariant(e) -> {
       val e2 = if hzNeedsHoist(cfg, e) { hzHoistTop(cfg, e, dest, st) } else { e }
       dest.add(mkStmt(SInvariant(expr = e2), s.span))
@@ -1562,6 +1604,114 @@ func hzBuildMutableNames(params: in List[Param], body: in FunctionBody): Map[Str
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Self-field name sets for the #6684 bare-implicit-self-field case (see
+// `HoistState.selfFieldNames`'s doc comment). Deliberately an EXACT name
+// allowlist, never a "not a known local" guess: a bare single-segment
+// `EPath` can also name a same-package TYPE or a free function used as a
+// static-call qualifier (`Cache.default(...)`), and this pass runs AFTER
+// type checking with the rewritten tree going straight to codegen with no
+// re-check (see the module doc) — wrongly treating such a qualifier as a
+// value to hoist-bind would try to emit `val temp = Cache`, not a
+// spurious-but-safe extra bind like the mutable-local case, but a genuine
+// miscompile. Restricting the set to the enclosing type's OWN declared
+// field names avoids that risk entirely, since a field name colliding
+// with an in-scope type/package name is exactly as unlikely as any other
+// name collision this file's flat, non-scope-precise approximations
+// already tolerate (see `mutableNames`'s doc comment).
+// ─────────────────────────────────────────────────────────────────────────────
+func hzAddFieldName(m: in Map[String, Bool], name: in String): Unit {
+  if not m.containsKey(name) {
+    m.add(name, true)
+  }
+}
+
+func hzRecordFieldNames(members: in List[RecordMember]): Map[String, Bool] {
+  val names: Map[String, Bool] = newMap()
+  var i = 0
+  while i < members.count {
+    match members[i] {
+      case RMField(field) -> hzAddFieldName(names, field.name)
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  names
+}
+
+func hzProtectedFieldNames(members: in List[ProtectedMember]): Map[String, Bool] {
+  val names: Map[String, Bool] = newMap()
+  var i = 0
+  while i < members.count {
+    match members[i] {
+      case PMField(field) -> {
+        match field {
+          case PFVar(name, _, _, _, _, _) -> hzAddFieldName(names, name)
+          case PFLet(name, _, _, _, _, _) -> hzAddFieldName(names, name)
+          case PFImmutable(fd) -> hzAddFieldName(names, fd.name)
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  names
+}
+
+// Resolves an `impl <Iface> for <target> { ... }` block's TARGET type's own
+// field names by scanning THIS SAME FILE for a matching record/exposed-
+// record/protected-type declaration. A same-file match is exact; a
+// cross-file target, OR an `impl` nested inside a statement block where no
+// top-level `SourceFile` is threaded (`fileOpt = None` — the `SItem` case
+// deep in the statement rewrite never carries one, see `hzRewriteItem`'s
+// doc comment), quietly returns an empty map — this pass has no cross-file
+// symbol table, unlike the type checker (see `HoistState.selfFieldNames`'s
+// doc comment), and neither residual case is new: both are narrower slices
+// of the gap this fix closes, not gaps it introduces.
+func hzImplTargetFieldNames(fileOpt: in Option[SourceFile], target: in TypeExpr): Map[String, Bool] {
+  val noNames: Map[String, Bool] = newMap()
+  val file = match fileOpt { case Some(f) -> f; case None -> return noNames }
+  val targetName = match target.kind {
+    case TRef(path) -> {
+      if path.segments.count == 0 {
+        ""
+      } else {
+        path.segments[path.segments.count - 1]
+      }
+    }
+    case _ -> ""
+  }
+  if targetName == "" {
+    return noNames
+  }
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IRecord(decl) -> {
+        if decl.name == targetName {
+          return hzRecordFieldNames(decl.members)
+        }
+      }
+      case IExposedRec(decl) -> {
+        if decl.name == targetName {
+          return hzRecordFieldNames(decl.members)
+        }
+      }
+      case IProtected(decl) -> {
+        if decl.name == targetName {
+          return hzProtectedFieldNames(decl.members)
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  noNames
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Function / entry / item drivers. Under `asyncGated = true` only `async
 // func` bodies are visited (a blocking, non-async hazard has no suspension
 // to protect, and `EntryDecl` — no `isAsync` field, entries can never be
@@ -1602,12 +1752,22 @@ func hzFunctionNeedsHoist(cfg: in HoistConfig, fn: in FunctionDecl): Bool {
   }
 }
 
-func hzRewriteFunction(cfg: in HoistConfig, fn: in FunctionDecl, st: in HoistState): FunctionDecl {
+// `selfFieldNames` is the enclosing member's own field-name set (#6684,
+// `hzRecordFieldNames`/`hzProtectedFieldNames`/`hzImplTargetFieldNames`) —
+// an empty map for a non-member (top-level `IFunc`, interface default
+// method) `fn`.
+func hzRewriteFunction(
+  cfg: in HoistConfig, fn: in FunctionDecl, st: in HoistState, selfFieldNames: in Map[String, Bool]
+): FunctionDecl {
   if not hzFunctionNeedsHoist(cfg, fn) {
     return fn
   }
   val body = match fn.body { case Some(b) -> b; case None -> return fn }
-  val fnSt = HoistState(counter = st.counter, mutableNames = hzBuildMutableNames(fn.params, body))
+  val fnSt = HoistState(
+    counter = st.counter,
+    mutableNames = hzBuildMutableNames(fn.params, body),
+    selfFieldNames = selfFieldNames
+  )
   FunctionDecl(
     docComments = fn.docComments,
     annotations = fn.annotations,
@@ -1634,11 +1794,20 @@ func hzEntryNeedsHoist(cfg: in HoistConfig, ed: in EntryDecl): Bool {
   }
 }
 
-func hzRewriteEntry(cfg: in HoistConfig, ed: in EntryDecl, st: in HoistState): EntryDecl {
+// `selfFieldNames` is the enclosing protected type's own field-name set
+// (#6684, `hzProtectedFieldNames`) — `PMEntry` is only ever a protected-type
+// member (see the module doc), so every call site has one to pass.
+func hzRewriteEntry(
+  cfg: in HoistConfig, ed: in EntryDecl, st: in HoistState, selfFieldNames: in Map[String, Bool]
+): EntryDecl {
   if not hzEntryNeedsHoist(cfg, ed) {
     return ed
   }
-  val edSt = HoistState(counter = st.counter, mutableNames = hzBuildMutableNames(ed.params, ed.body))
+  val edSt = HoistState(
+    counter = st.counter,
+    mutableNames = hzBuildMutableNames(ed.params, ed.body),
+    selfFieldNames = selfFieldNames
+  )
   EntryDecl(
     docComments = ed.docComments,
     annotations = ed.annotations,
@@ -1727,18 +1896,31 @@ func hzRecordNeedsHoist(cfg: in HoistConfig, decl: in RecordDecl): Bool {
   false
 }
 
-func hzRewriteItem(cfg: in HoistConfig, it: in Item, st: in HoistState): Item {
+// `fileOpt` is the enclosing `SourceFile`, when one is threaded (#6684) —
+// needed only to resolve an `IImpl` block's target type's own fields via
+// `hzImplTargetFieldNames`; every other case's field-name set is
+// self-contained in `it.kind` itself. `hoistFile`'s top-level driver always
+// has one to pass; the `SItem` case deep in the statement rewrite (a LOCAL
+// item declared inside a function body) does not thread the outer file that
+// far and passes `None` — see `hzImplTargetFieldNames`'s doc comment for why
+// that residual gap is narrow and pre-existing in spirit.
+func hzRewriteItem(cfg: in HoistConfig, it: in Item, st: in HoistState, fileOpt: in Option[SourceFile]): Item {
   if not hzItemNeedsHoist(cfg, it) {
     return it
   }
+  val noFields: Map[String, Bool] = newMap()
   val newKind: ItemKind = match it.kind {
-    case IFunc(fn) -> IFunc(decl = hzRewriteFunction(cfg, fn, st))
+    case IFunc(fn) -> IFunc(decl = hzRewriteFunction(cfg, fn, st, noFields))
     case IImpl(decl) -> {
+      // A non-member `IMFunc` default method never has fields of its own to
+      // shadow (interfaces declare no fields at all), but an `impl` block's
+      // methods DO — resolved once per block, not per method.
+      val implFields = hzImplTargetFieldNames(fileOpt, decl.target)
       val newMembers: List[ImplMember] = newList()
       var i = 0
       while i < decl.members.count {
         match decl.members[i] {
-          case IMplFunc(fn) -> newMembers.add(IMplFunc(fn = hzRewriteFunction(cfg, fn, st)))
+          case IMplFunc(fn) -> newMembers.add(IMplFunc(fn = hzRewriteFunction(cfg, fn, st, implFields)))
           case IMplAssoc(asc) -> newMembers.add(IMplAssoc(assoc = asc))
         }
         i = i + 1
@@ -1759,7 +1941,7 @@ func hzRewriteItem(cfg: in HoistConfig, it: in Item, st: in HoistState): Item {
       var i = 0
       while i < decl.members.count {
         match decl.members[i] {
-          case IMFunc(fn) -> newMembers.add(IMFunc(fn = hzRewriteFunction(cfg, fn, st)))
+          case IMFunc(fn) -> newMembers.add(IMFunc(fn = hzRewriteFunction(cfg, fn, st, noFields)))
           case IMSig(sig) -> newMembers.add(IMSig(sig = sig))
           case IMAssoc(a) -> newMembers.add(IMAssoc(assoc = a))
         }
@@ -1778,12 +1960,13 @@ func hzRewriteItem(cfg: in HoistConfig, it: in Item, st: in HoistState): Item {
     case IRecord(decl) -> IRecord(decl = hzRewriteRecord(cfg, decl, st))
     case IExposedRec(decl) -> IExposedRec(decl = hzRewriteRecord(cfg, decl, st))
     case IProtected(decl) -> {
+      val protectedFields = hzProtectedFieldNames(decl.members)
       val newMembers: List[ProtectedMember] = newList()
       var i = 0
       while i < decl.members.count {
         match decl.members[i] {
-          case PMFunc(fn) -> newMembers.add(PMFunc(fn = hzRewriteFunction(cfg, fn, st)))
-          case PMEntry(ed) -> newMembers.add(PMEntry(entryDecl = hzRewriteEntry(cfg, ed, st)))
+          case PMFunc(fn) -> newMembers.add(PMFunc(fn = hzRewriteFunction(cfg, fn, st, protectedFields)))
+          case PMEntry(ed) -> newMembers.add(PMEntry(entryDecl = hzRewriteEntry(cfg, ed, st, protectedFields)))
           case PMField(f) -> newMembers.add(PMField(field = f))
           case PMInvariant(v) -> newMembers.add(PMInvariant(inv = v))
         }
@@ -1811,11 +1994,12 @@ func hzRewriteItem(cfg: in HoistConfig, it: in Item, st: in HoistState): Item {
 }
 
 func hzRewriteRecord(cfg: in HoistConfig, decl: in RecordDecl, st: in HoistState): RecordDecl {
+  val recordFields = hzRecordFieldNames(decl.members)
   val newMembers: List[RecordMember] = newList()
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
-      case RMFunc(fn) -> newMembers.add(RMFunc(fn = hzRewriteFunction(cfg, fn, st)))
+      case RMFunc(fn) -> newMembers.add(RMFunc(fn = hzRewriteFunction(cfg, fn, st, recordFields)))
       case RMField(f) -> newMembers.add(RMField(field = f))
       case RMInvariant(inv) -> newMembers.add(RMInvariant(inv = inv))
     }
@@ -1847,14 +2031,16 @@ pub func hoistFile(cfg: in HoistConfig, file: in SourceFile): SourceFile {
   if not any {
     return file
   }
-  // `mutableNames` here is a placeholder: `hzRewriteFunction`/`hzRewriteEntry`
-  // build their own per-function/entry map (sharing this `counter`) before
-  // ever consulting it, so this file-level state's map is never read.
-  val st = HoistState(counter = newList(), mutableNames = newMap())
+  // `mutableNames`/`selfFieldNames` here are placeholders: `hzRewriteFunction`/
+  // `hzRewriteEntry` build their own per-function/entry maps (sharing this
+  // `counter`) before ever consulting them, so this file-level state's maps
+  // are never read.
+  val st = HoistState(counter = newList(), mutableNames = newMap(), selfFieldNames = newMap())
+  val someFile: Option[SourceFile] = Some(value = file)
   val newItems: List[Item] = newList()
   var j = 0
   while j < file.items.count {
-    newItems.add(hzRewriteItem(cfg, file.items[j], st))
+    newItems.add(hzRewriteItem(cfg, file.items[j], st, someFile))
     j = j + 1
   }
   SourceFile(

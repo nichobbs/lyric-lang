@@ -399,7 +399,11 @@ test "#6555: a mutable receiver declared inside a ?-propagated block keeps its p
   // `mutableNames` (the collector never looked past the `?`), so it was
   // re-read AFTER the hoisted await, observing tag=99 and producing 99005.
   match await receiverMutatedInsidePropagatedBlock() {
-    case Ok(v) -> assertEqualInt(v, 1005, "receiver inside a ?-propagated block must be captured before the mutating await")
+    case Ok(v) -> assertEqualInt(
+      v,
+      1005,
+      "receiver inside a ?-propagated block must be captured before the mutating await"
+    )
     case Err(e) -> assertTrue(false, "unexpected Err: " + e)
   }
 }
@@ -458,6 +462,18 @@ record Cache {
   async func run(self: in Cache): Int {
     return self.box.describe(await swapCacheBox(self))
   }
+
+  // #6684 (review follow-up on #6600): the identical shape one spelling
+  // further still — `box` referenced BARE (implicit self) instead of
+  // `self.box`. Per docs/01 §2.12/2.4 (#6173/#6487, D-progress-774) a
+  // record/impl/protected-type member body may reference its own fields
+  // this way; `hzNameLikeMutable` had no case for a bare single-segment
+  // `EPath` field reference at all, so it fell through to
+  // `hzIsNameLikeSafe` returning `true` and reopened the exact
+  // #5629/#6600 stale-receiver-read bug one spelling later.
+  async func runBare(self: in Cache): Int {
+    return box.describe(await swapCacheBox(self))
+  }
 }
 
 test "#6600: a var field mutated via self.field member-write during the awaited call keeps its pre-await value" {
@@ -467,4 +483,44 @@ test "#6600: a var field mutated via self.field member-write during the awaited 
   // await (the `ESelf -> false` base case made this unreachable by the
   // conservative rule at all), observing tag=99 and producing 99005.
   assertEqualInt(await c.run(), 1005, "self.box must be captured before the mutating await, not after")
+}
+
+test "#6684: a var field mutated via bare implicit-self field write during the awaited call keeps its pre-await value" {
+  val c = Cache(box = MutRecvBox(tag = 1))
+  // Same expected value again: describe(self=tag 1, n=5) = 1005 — bare
+  // `box` must be captured before `swapCacheBox`'s `c.box = ...` reassigns
+  // the field. Before the fix, `box` was re-read AFTER the hoisted await,
+  // observing tag=99 and producing 99005 instead.
+  assertEqualInt(await c.runBare(), 1005, "bare `box` must be captured before the mutating await, not after")
+}
+
+// The same #6684 shape one member-kind further: an `impl` method (not a
+// record-body method) referencing the target's field bare. `hzNameLikeMutable`
+// alone isn't enough here — `hzRewriteItem`'s `IImpl` case must ALSO resolve
+// the target's own field names via `hzImplTargetFieldNames` (a same-file
+// lookup by the target's simple name, since this file-scoped pass has no
+// symbol table), so this exercises that lookup, not just the mutability
+// check.
+interface CacheRunner6684 {
+  async func run(self: in Self): Int
+}
+
+record ImplCache6684 {
+  var box: MutRecvBox
+}
+
+func swapImplCacheBox6684(c: in ImplCache6684): Int {
+  c.box = MutRecvBox(tag = 99)
+  5
+}
+
+impl CacheRunner6684 for ImplCache6684 {
+  async func run(self: in ImplCache6684): Int {
+    return box.describe(await swapImplCacheBox6684(self))
+  }
+}
+
+test "#6684: impl method — a var field mutated via bare implicit-self field write during the awaited call keeps its pre-await value" {
+  val c = ImplCache6684(box = MutRecvBox(tag = 1))
+  assertEqualInt(await c.run(), 1005, "impl-method bare `box` must be captured before the mutating await, not after")
 }
