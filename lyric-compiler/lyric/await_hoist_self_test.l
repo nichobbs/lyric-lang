@@ -47,6 +47,7 @@ package Lyric.AwaitHoistSelfTest
 
 import Std.Collections
 import Std.Core
+import Std.String
 import Std.Testing
 
 // Appends `tag` to `log`, then returns `value`. Used directly as a plain
@@ -523,4 +524,34 @@ impl CacheRunner6684 for ImplCache6684 {
 test "#6684: impl method — a var field mutated via bare implicit-self field write during the awaited call keeps its pre-await value" {
   val c = ImplCache6684(box = MutRecvBox(tag = 1))
   assertEqualInt(await c.run(), 1005, "impl-method bare `box` must be captured before the mutating await, not after")
+}
+
+// ── #6699 (review follow-up on #6684): a PACKAGE-QUALIFIED call receiver ────
+// must never be routed through the hoist bind, even when it sits ahead of a
+// hazardous argument. #6684's fix made `hzNameLikeMutable`'s `EMember` case
+// check `st.selfFieldNames` for the bare-implicit-self-field spelling, but
+// it left the shared `case EMember(_, _) -> true` unconditional for every
+// OTHER `EMember` shape too — including a pure package/type qualifier
+// chain with no binding in scope at all. `Std.String.repeat("ab", await
+// ...)`'s call receiver is `Std.String`, itself `EMember(EPath(["Std"]),
+// "String")` (a two-level qualifier, matching the real in-repo
+// `Std.Json.encodeString(...)` call at `examples/ledger/src/transfers.l:87`
+// the review cited): before the fix this was wrongly treated as mutable and
+// hoist-bound, attempting to emit `val __lyric_hoist_N = Std.String` — not a
+// value at all, since a package/type qualifier can never be bound to a
+// local (`hzIsNameLike`'s own doc comment, "MUST NOT be bound to a local").
+async func hazardRepeatCount(log: in List[String]): Int {
+  log.add("count")
+  3
+}
+
+async func packageQualifiedReceiverAwait(log: in List[String]): String {
+  return Std.String.repeat("ab", await hazardRepeatCount(log))
+}
+
+test "#6699: a package-qualified call receiver ahead of a hazardous argument is never hoist-bound" {
+  val log: List[String] = newList()
+  val result = await packageQualifiedReceiverAwait(log)
+  assertEqual(result, "ababab", "Std.String.repeat(\"ab\", 3) must repeat the string 3 times")
+  assertEqual(joinLog(log), "count", "the hazard argument still runs exactly once")
 }

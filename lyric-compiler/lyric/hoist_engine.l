@@ -200,6 +200,26 @@ record HoistState {
   // map — a strictly narrower residual gap than the one this fix closes,
   // not a new one.
   selfFieldNames: Map[String, Bool]
+  // #6699: every name bound ANYWHERE in the enclosing function/entry's own
+  // params + body — `val`/`let`/`var` locals (including destructured
+  // pattern bindings), every parameter regardless of mode, `for`/`catch`/
+  // match-arm bindings, and lambda params — built by the same flat,
+  // non-scope-precise whole-body walk `mutableNames` uses (see its doc
+  // comment), just without the mutability filter. Answers a DIFFERENT
+  // question than `mutableNames`: `hzNameLikeMutable`'s `EMember` case
+  // needs to know whether a dotted chain's ULTIMATE base names a genuine
+  // bound value at all (so a member read through it can observe a `var`
+  // field mutated during a hoisted hazard, #6600's `h.box` — true even
+  // when `h` itself is an immutable `val`) as opposed to an unbound
+  // package/type qualifier used purely as a static dotted-call prefix
+  // (`Std.Json.encodeString(...)`, #6699) — which is never a value and
+  // must never be hoist-bound (`val temp = Std.Json` is not a compile
+  // error the pass can recover from, unlike a spurious-but-safe extra
+  // bind of a real value). `mutableNames` alone under-approximates this
+  // (a `val` local is absent from it), and blindly treating every
+  // `EMember` as mutable (the pre-#6699 approximation) over-approximates
+  // it the other way by also catching pure qualifiers.
+  localNames: Map[String, Bool]
 }
 
 func hzFresh(cfg: in HoistConfig, st: in HoistState): String {
@@ -301,6 +321,20 @@ func hzIsNameLike(e: in Expr): Bool {
 // doc comment on `HoistState` for why precision matters here) says
 // exactly which bare names are field candidates, letting a genuine local
 // keep resolving exactly as it did before this case existed (#6684).
+//
+// An `EMember` chain's mutability turns on its ULTIMATE base (walk down
+// through nested `EMember`/`EParen`), not on the chain shape alone (#6699):
+// `self.box` and `h.box` (h bound anywhere in scope, `val` or `var` — see
+// `HoistState.localNames`'s doc comment for why `val` still counts) reach a
+// real value whose field a member-write can mutate during the hazard, so
+// they stay conservatively mutable exactly as before. `Std.Json` in
+// `Std.Json.encodeString(await f())` does NOT — its base `Std` is a
+// package qualifier with no binding in scope at all, never a value in the
+// first place, so it stays safe (`hzIsNameLike`'s own contract: "a package
+// qualifier MUST NOT be bound to a local"). Treating it as mutable used to
+// route it into `hzBind`, which emits `val __lyric_hoist_N = Std.Json` — not
+// a spurious-but-safe extra bind like the genuine-value case, but a
+// miscompile, since a qualifier is not a value at all.
 func hzNameLikeMutable(st: in HoistState, e: in Expr): Bool {
   match e.kind {
     case EPath(path) -> {
@@ -309,8 +343,41 @@ func hzNameLikeMutable(st: in HoistState, e: in Expr): Bool {
     }
     case ESelf -> true
     case ELiteral(_) -> false
-    case EMember(_, _) -> true
+    case EMember(_, _) -> hzMemberChainBaseIsValue(st, e)
     case EParen(inner) -> hzNameLikeMutable(st, inner)
+    case _ -> false
+  }
+}
+
+// The expression at the bottom of a dotted `EMember`/`EParen` chain — the
+// receiver `hzIsNameLike`'s own `EMember`/`EParen` cases recurse toward.
+// Guaranteed (by `hzNameLikeMutable`'s only caller, `hzIsNameLikeSafe`,
+// short-circuiting on `hzIsNameLike(e)` first) to land on `EPath`, `ESelf`,
+// or `ELiteral` — the only terminal cases `hzIsNameLike` accepts.
+func hzMemberChainBase(e: in Expr): Expr {
+  match e.kind {
+    case EMember(recv, _) -> hzMemberChainBase(recv)
+    case EParen(inner) -> hzMemberChainBase(inner)
+    case _ -> e
+  }
+}
+
+// True when an `EMember` chain's ultimate base names a real bound value —
+// `self`, or a single-segment name declared ANYWHERE in the enclosing
+// function/entry (`st.localNames`) or an implicit-self field
+// (`st.selfFieldNames`) — as opposed to an unbound package/type qualifier
+// (#6699, see `hzNameLikeMutable`'s doc comment above).
+func hzMemberChainBaseIsValue(st: in HoistState, e: in Expr): Bool {
+  val base = hzMemberChainBase(e)
+  match base.kind {
+    case ESelf -> true
+    case EPath(path) -> {
+      path.segments.count == 1 and
+        (
+          st.mutableNames.containsKey(path.segments[0]) or st.selfFieldNames.containsKey(path.segments[0]) or
+            st.localNames.containsKey(path.segments[0])
+        )
+    }
     case _ -> false
   }
 }
@@ -1361,10 +1428,75 @@ func hzBlock(cfg: in HoistConfig, blk: in Block, st: in HoistState): Block {
 // sibling statement writes the same outer `var go`), so a reassignment
 // reachable only through a closure still makes the outer name unsafe to
 // re-read after a hoisted hazard.
+//
+// The SAME walk also fills `localM` (`HoistState.localNames`, #6699): every
+// name bound anywhere in scope, mutable or not — a `val`/`let` local (incl.
+// every name a destructuring pattern binds), a `for`/`catch`/match-arm
+// binding, a lambda param, or a parameter of ANY mode (not just
+// `out`/`inout`). One pass populates both maps so they can never drift out
+// of sync with each other.
 // ─────────────────────────────────────────────────────────────────────────────
 func hzAddMutableName(m: in Map[String, Bool], name: in String): Unit {
   if not m.containsKey(name) {
     m.add(name, true)
+  }
+}
+
+func hzAddLocalName(localM: in Map[String, Bool], name: in String): Unit {
+  if not localM.containsKey(name) {
+    localM.add(name, true)
+  }
+}
+
+// Every name a pattern binds, walked flatly — matches this file's existing
+// non-scope-precise tolerance (see `mutableNames`'s doc comment) — so a
+// `val`/`for`/`catch`/match-arm destructure anywhere in the body is visible
+// to `hzMemberChainBaseIsValue`'s "known local" check (#6699).
+func hzCollectPatternNames(pat: in Pattern, localM: in Map[String, Bool]): Unit {
+  match pat.kind {
+    case PBinding(name, inner) -> {
+      hzAddLocalName(localM, name)
+      match inner {
+        case Some(p) -> hzCollectPatternNames(p, localM)
+        case None -> {
+        }
+      }
+    }
+    case PConstructor(_, args) -> {
+      var i = 0
+      while i < args.count {
+        hzCollectPatternNames(args[i], localM)
+        i = i + 1
+      }
+    }
+    case PRecord(_, fields, _) -> {
+      var i = 0
+      while i < fields.count {
+        match fields[i] {
+          case RPFNamed(_, pattern, _) -> hzCollectPatternNames(pattern, localM)
+          case RPFShort(name, _) -> hzAddLocalName(localM, name)
+        }
+        i = i + 1
+      }
+    }
+    case PTuple(patterns) -> {
+      var i = 0
+      while i < patterns.count {
+        hzCollectPatternNames(patterns[i], localM)
+        i = i + 1
+      }
+    }
+    case PParen(inner) -> hzCollectPatternNames(inner, localM)
+    case PTypeTest(inner, _) -> hzCollectPatternNames(inner, localM)
+    case POr(patterns) -> {
+      var i = 0
+      while i < patterns.count {
+        hzCollectPatternNames(patterns[i], localM)
+        i = i + 1
+      }
+    }
+    case _ -> {
+    }
   }
 }
 
@@ -1387,22 +1519,22 @@ func hzRecordAssignTargetName(target: in Expr, m: in Map[String, Bool]): Unit {
   }
 }
 
-func hzCollectMutableNamesExprList(es: in List[Expr], m: in Map[String, Bool]): Unit {
+func hzCollectMutableNamesExprList(es: in List[Expr], m: in Map[String, Bool], localM: in Map[String, Bool]): Unit {
   var i = 0
   while i < es.count {
-    hzCollectMutableNamesExpr(es[i], m)
+    hzCollectMutableNamesExpr(es[i], m, localM)
     i = i + 1
   }
 }
 
-func hzCollectMutableNamesEob(eob: in ExprOrBlock, m: in Map[String, Bool]): Unit {
+func hzCollectMutableNamesEob(eob: in ExprOrBlock, m: in Map[String, Bool], localM: in Map[String, Bool]): Unit {
   match eob {
-    case EOBExpr(e) -> hzCollectMutableNamesExpr(e, m)
-    case EOBBlock(blk) -> hzCollectMutableNamesBlock(blk, m)
+    case EOBExpr(e) -> hzCollectMutableNamesExpr(e, m, localM)
+    case EOBBlock(blk) -> hzCollectMutableNamesBlock(blk, m, localM)
   }
 }
 
-func hzCollectMutableNamesExpr(e: in Expr, m: in Map[String, Bool]): Unit {
+func hzCollectMutableNamesExpr(e: in Expr, m: in Map[String, Bool], localM: in Map[String, Bool]): Unit {
   match e.kind {
     case EInterpolated(segments) -> {
       var i = 0
@@ -1410,114 +1542,129 @@ func hzCollectMutableNamesExpr(e: in Expr, m: in Map[String, Bool]): Unit {
         match segments[i] {
           case ISText(_, _) -> {
           }
-          case ISExpr(ex) -> hzCollectMutableNamesExpr(ex, m)
+          case ISExpr(ex) -> hzCollectMutableNamesExpr(ex, m, localM)
         }
         i = i + 1
       }
     }
-    case EParen(inner) -> hzCollectMutableNamesExpr(inner, m)
-    case ETuple(exprs) -> hzCollectMutableNamesExprList(exprs, m)
-    case EList(exprs) -> hzCollectMutableNamesExprList(exprs, m)
+    case EParen(inner) -> hzCollectMutableNamesExpr(inner, m, localM)
+    case ETuple(exprs) -> hzCollectMutableNamesExprList(exprs, m, localM)
+    case EList(exprs) -> hzCollectMutableNamesExprList(exprs, m, localM)
     case EIf(cond, thenB, elseO, _) -> {
-      hzCollectMutableNamesExpr(cond, m)
-      hzCollectMutableNamesEob(thenB, m)
+      hzCollectMutableNamesExpr(cond, m, localM)
+      hzCollectMutableNamesEob(thenB, m, localM)
       match elseO {
-        case Some(eb) -> hzCollectMutableNamesEob(eb, m)
+        case Some(eb) -> hzCollectMutableNamesEob(eb, m, localM)
         case None -> {
         }
       }
     }
     case EMatch(scrutinee, arms) -> {
-      hzCollectMutableNamesExpr(scrutinee, m)
+      hzCollectMutableNamesExpr(scrutinee, m, localM)
       var i = 0
       while i < arms.count {
+        hzCollectPatternNames(arms[i].pattern, localM)
         match arms[i].guard {
-          case Some(ge) -> hzCollectMutableNamesExpr(ge, m)
+          case Some(ge) -> hzCollectMutableNamesExpr(ge, m, localM)
           case None -> {
           }
         }
-        hzCollectMutableNamesEob(arms[i].body, m)
+        hzCollectMutableNamesEob(arms[i].body, m, localM)
         i = i + 1
       }
     }
-    case EAwait(inner) -> hzCollectMutableNamesExpr(inner, m)
-    case EPropagate(inner) -> hzCollectMutableNamesExpr(inner, m)
-    case EYield(inner) -> hzCollectMutableNamesExpr(inner, m)
-    case ESpawn(inner) -> hzCollectMutableNamesExpr(inner, m)
-    case ETry(inner) -> hzCollectMutableNamesExpr(inner, m)
-    case EOld(inner) -> hzCollectMutableNamesExpr(inner, m)
+    case EAwait(inner) -> hzCollectMutableNamesExpr(inner, m, localM)
+    case EPropagate(inner) -> hzCollectMutableNamesExpr(inner, m, localM)
+    case EYield(inner) -> hzCollectMutableNamesExpr(inner, m, localM)
+    case ESpawn(inner) -> hzCollectMutableNamesExpr(inner, m, localM)
+    case ETry(inner) -> hzCollectMutableNamesExpr(inner, m, localM)
+    case EOld(inner) -> hzCollectMutableNamesExpr(inner, m, localM)
     case EForall(_, whereOpt, body) -> {
       match whereOpt {
-        case Some(we) -> hzCollectMutableNamesExpr(we, m)
+        case Some(we) -> hzCollectMutableNamesExpr(we, m, localM)
         case None -> {
         }
       }
-      hzCollectMutableNamesExpr(body, m)
+      hzCollectMutableNamesExpr(body, m, localM)
     }
     case EExists(_, whereOpt, body) -> {
       match whereOpt {
-        case Some(we) -> hzCollectMutableNamesExpr(we, m)
+        case Some(we) -> hzCollectMutableNamesExpr(we, m, localM)
         case None -> {
         }
       }
-      hzCollectMutableNamesExpr(body, m)
+      hzCollectMutableNamesExpr(body, m, localM)
     }
-    case ELambda(_, body) -> hzCollectMutableNamesBlock(body, m)
+    case ELambda(lambdaParams, body) -> {
+      var i = 0
+      while i < lambdaParams.count {
+        hzAddLocalName(localM, lambdaParams[i].name)
+        i = i + 1
+      }
+      hzCollectMutableNamesBlock(body, m, localM)
+    }
     case ECall(fn, args) -> {
-      hzCollectMutableNamesExpr(fn, m)
+      hzCollectMutableNamesExpr(fn, m, localM)
       var i = 0
       while i < args.count {
-        hzCollectMutableNamesExpr(hzArgExpr(args[i]), m)
+        hzCollectMutableNamesExpr(hzArgExpr(args[i]), m, localM)
         i = i + 1
       }
     }
-    case ETypeApp(fn, _) -> hzCollectMutableNamesExpr(fn, m)
+    case ETypeApp(fn, _) -> hzCollectMutableNamesExpr(fn, m, localM)
     case EIndex(receiver, indices) -> {
-      hzCollectMutableNamesExpr(receiver, m)
-      hzCollectMutableNamesExprList(indices, m)
+      hzCollectMutableNamesExpr(receiver, m, localM)
+      hzCollectMutableNamesExprList(indices, m, localM)
     }
-    case EMember(receiver, _) -> hzCollectMutableNamesExpr(receiver, m)
-    case EPrefix(_, operand) -> hzCollectMutableNamesExpr(operand, m)
+    case EMember(receiver, _) -> hzCollectMutableNamesExpr(receiver, m, localM)
+    case EPrefix(_, operand) -> hzCollectMutableNamesExpr(operand, m, localM)
     case EBinop(_, lhs, rhs) -> {
-      hzCollectMutableNamesExpr(lhs, m)
-      hzCollectMutableNamesExpr(rhs, m)
+      hzCollectMutableNamesExpr(lhs, m, localM)
+      hzCollectMutableNamesExpr(rhs, m, localM)
     }
     case ERange(bound) -> {
       match bound {
         case RBClosed(lo, hi) -> {
-          hzCollectMutableNamesExpr(lo, m)
-          hzCollectMutableNamesExpr(hi, m)
+          hzCollectMutableNamesExpr(lo, m, localM)
+          hzCollectMutableNamesExpr(hi, m, localM)
         }
         case RBHalfOpen(lo, hi) -> {
-          hzCollectMutableNamesExpr(lo, m)
-          hzCollectMutableNamesExpr(hi, m)
+          hzCollectMutableNamesExpr(lo, m, localM)
+          hzCollectMutableNamesExpr(hi, m, localM)
         }
-        case RBLowerOpen(hi) -> hzCollectMutableNamesExpr(hi, m)
-        case RBUpperOpen(lo) -> hzCollectMutableNamesExpr(lo, m)
+        case RBLowerOpen(hi) -> hzCollectMutableNamesExpr(hi, m, localM)
+        case RBUpperOpen(lo) -> hzCollectMutableNamesExpr(lo, m, localM)
       }
     }
     case EAssign(target, _, value) -> {
       hzRecordAssignTargetName(target, m)
-      hzCollectMutableNamesExpr(target, m)
-      hzCollectMutableNamesExpr(value, m)
+      hzCollectMutableNamesExpr(target, m, localM)
+      hzCollectMutableNamesExpr(value, m, localM)
     }
-    case EBlock(blk) -> hzCollectMutableNamesBlock(blk, m)
-    case EUnsafe(blk) -> hzCollectMutableNamesBlock(blk, m)
+    case EBlock(blk) -> hzCollectMutableNamesBlock(blk, m, localM)
+    case EUnsafe(blk) -> hzCollectMutableNamesBlock(blk, m, localM)
     case _ -> {
     }
   }
 }
 
-func hzCollectMutableNamesStmt(s: in Statement, m: in Map[String, Bool]): Unit {
+func hzCollectMutableNamesStmt(s: in Statement, m: in Map[String, Bool], localM: in Map[String, Bool]): Unit {
   match s.kind {
     case SLocal(binding) -> {
       match binding {
-        case LBVal(_, _, init) -> hzCollectMutableNamesExpr(init, m)
-        case LBLet(_, _, init) -> hzCollectMutableNamesExpr(init, m)
+        case LBVal(pat, _, init) -> {
+          hzCollectPatternNames(pat, localM)
+          hzCollectMutableNamesExpr(init, m, localM)
+        }
+        case LBLet(name, _, init) -> {
+          hzAddLocalName(localM, name)
+          hzCollectMutableNamesExpr(init, m, localM)
+        }
         case LBVar(name, _, initOpt) -> {
           hzAddMutableName(m, name)
+          hzAddLocalName(localM, name)
           match initOpt {
-            case Some(init) -> hzCollectMutableNamesExpr(init, m)
+            case Some(init) -> hzCollectMutableNamesExpr(init, m, localM)
             case None -> {
             }
           }
@@ -1526,63 +1673,70 @@ func hzCollectMutableNamesStmt(s: in Statement, m: in Map[String, Bool]): Unit {
     }
     case SAssign(target, _, value) -> {
       hzRecordAssignTargetName(target, m)
-      hzCollectMutableNamesExpr(target, m)
-      hzCollectMutableNamesExpr(value, m)
+      hzCollectMutableNamesExpr(target, m, localM)
+      hzCollectMutableNamesExpr(value, m, localM)
     }
     case SReturn(valOpt) -> {
       match valOpt {
-        case Some(e) -> hzCollectMutableNamesExpr(e, m)
+        case Some(e) -> hzCollectMutableNamesExpr(e, m, localM)
         case None -> {
         }
       }
     }
-    case SThrow(e) -> hzCollectMutableNamesExpr(e, m)
-    case SExpr(e) -> hzCollectMutableNamesExpr(e, m)
+    case SThrow(e) -> hzCollectMutableNamesExpr(e, m, localM)
+    case SExpr(e) -> hzCollectMutableNamesExpr(e, m, localM)
     case SWhile(_, cond, body) -> {
-      hzCollectMutableNamesExpr(cond, m)
-      hzCollectMutableNamesBlock(body, m)
+      hzCollectMutableNamesExpr(cond, m, localM)
+      hzCollectMutableNamesBlock(body, m, localM)
     }
-    case SFor(_, _, iter, body) -> {
-      hzCollectMutableNamesExpr(iter, m)
-      hzCollectMutableNamesBlock(body, m)
+    case SFor(_, pat, iter, body) -> {
+      hzCollectPatternNames(pat, localM)
+      hzCollectMutableNamesExpr(iter, m, localM)
+      hzCollectMutableNamesBlock(body, m, localM)
     }
-    case SLoop(_, body) -> hzCollectMutableNamesBlock(body, m)
-    case SScope(_, body) -> hzCollectMutableNamesBlock(body, m)
-    case SDefer(body) -> hzCollectMutableNamesBlock(body, m)
+    case SLoop(_, body) -> hzCollectMutableNamesBlock(body, m, localM)
+    case SScope(_, body) -> hzCollectMutableNamesBlock(body, m, localM)
+    case SDefer(body) -> hzCollectMutableNamesBlock(body, m, localM)
     case STry(body, catches, finallyOpt) -> {
-      hzCollectMutableNamesBlock(body, m)
+      hzCollectMutableNamesBlock(body, m, localM)
       var i = 0
       while i < catches.count {
-        hzCollectMutableNamesBlock(catches[i].body, m)
+        match catches[i].bindName {
+          case Some(n) -> hzAddLocalName(localM, n)
+          case None -> {
+          }
+        }
+        hzCollectMutableNamesBlock(catches[i].body, m, localM)
         i = i + 1
       }
       match finallyOpt {
-        case Some(fb) -> hzCollectMutableNamesBlock(fb, m)
+        case Some(fb) -> hzCollectMutableNamesBlock(fb, m, localM)
         case None -> {
         }
       }
     }
-    case SInvariant(e) -> hzCollectMutableNamesExpr(e, m)
+    case SInvariant(e) -> hzCollectMutableNamesExpr(e, m, localM)
     case SRule(lhs, rhs) -> {
-      hzCollectMutableNamesExpr(lhs, m)
-      hzCollectMutableNamesExpr(rhs, m)
+      hzCollectMutableNamesExpr(lhs, m, localM)
+      hzCollectMutableNamesExpr(rhs, m, localM)
     }
     case _ -> {
     }
   }
 }
 
-func hzCollectMutableNamesBlock(blk: in Block, m: in Map[String, Bool]): Unit {
+func hzCollectMutableNamesBlock(blk: in Block, m: in Map[String, Bool], localM: in Map[String, Bool]): Unit {
   var i = 0
   while i < blk.statements.count {
-    hzCollectMutableNamesStmt(blk.statements[i], m)
+    hzCollectMutableNamesStmt(blk.statements[i], m, localM)
     i = i + 1
   }
 }
 
-func hzCollectMutableNamesParams(params: in List[Param], m: in Map[String, Bool]): Unit {
+func hzCollectMutableNamesParams(params: in List[Param], m: in Map[String, Bool], localM: in Map[String, Bool]): Unit {
   var i = 0
   while i < params.count {
+    hzAddLocalName(localM, params[i].name)
     match params[i].mode {
       case PMOut -> hzAddMutableName(m, params[i].name)
       case PMInout -> hzAddMutableName(m, params[i].name)
@@ -1593,12 +1747,17 @@ func hzCollectMutableNamesParams(params: in List[Param], m: in Map[String, Bool]
   }
 }
 
-func hzBuildMutableNames(params: in List[Param], body: in FunctionBody): Map[String, Bool] {
+// Builds `mutableNames` (`m`) as before; ALSO fills the caller-supplied
+// `localOut` (`HoistState.localNames`, #6699) with every name bound
+// anywhere in `params`/`body`, mutable or not, from the SAME walk.
+func hzBuildMutableNames(
+  params: in List[Param], body: in FunctionBody, localOut: in Map[String, Bool]
+): Map[String, Bool] {
   val m: Map[String, Bool] = newMap()
-  hzCollectMutableNamesParams(params, m)
+  hzCollectMutableNamesParams(params, m, localOut)
   match body {
-    case FBBlock(blk) -> hzCollectMutableNamesBlock(blk, m)
-    case FBExpr(e) -> hzCollectMutableNamesExpr(e, m)
+    case FBBlock(blk) -> hzCollectMutableNamesBlock(blk, m, localOut)
+    case FBExpr(e) -> hzCollectMutableNamesExpr(e, m, localOut)
   }
   m
 }
@@ -1765,10 +1924,12 @@ func hzRewriteFunction(
     return fn
   }
   val body = match fn.body { case Some(b) -> b; case None -> return fn }
+  val fnLocalNames: Map[String, Bool] = newMap()
   val fnSt = HoistState(
     counter = st.counter,
-    mutableNames = hzBuildMutableNames(fn.params, body),
-    selfFieldNames = selfFieldNames
+    mutableNames = hzBuildMutableNames(fn.params, body, fnLocalNames),
+    selfFieldNames = selfFieldNames,
+    localNames = fnLocalNames
   )
   FunctionDecl(
     docComments = fn.docComments,
@@ -1805,10 +1966,12 @@ func hzRewriteEntry(
   if not hzEntryNeedsHoist(cfg, ed) {
     return ed
   }
+  val edLocalNames: Map[String, Bool] = newMap()
   val edSt = HoistState(
     counter = st.counter,
-    mutableNames = hzBuildMutableNames(ed.params, ed.body),
-    selfFieldNames = selfFieldNames
+    mutableNames = hzBuildMutableNames(ed.params, ed.body, edLocalNames),
+    selfFieldNames = selfFieldNames,
+    localNames = edLocalNames
   )
   EntryDecl(
     docComments = ed.docComments,
@@ -2033,11 +2196,11 @@ pub func hoistFile(cfg: in HoistConfig, file: in SourceFile): SourceFile {
   if not any {
     return file
   }
-  // `mutableNames`/`selfFieldNames` here are placeholders: `hzRewriteFunction`/
-  // `hzRewriteEntry` build their own per-function/entry maps (sharing this
-  // `counter`) before ever consulting them, so this file-level state's maps
-  // are never read.
-  val st = HoistState(counter = newList(), mutableNames = newMap(), selfFieldNames = newMap())
+  // `mutableNames`/`selfFieldNames`/`localNames` here are placeholders:
+  // `hzRewriteFunction`/`hzRewriteEntry` build their own per-function/entry
+  // maps (sharing this `counter`) before ever consulting them, so this
+  // file-level state's maps are never read.
+  val st = HoistState(counter = newList(), mutableNames = newMap(), selfFieldNames = newMap(), localNames = newMap())
   val someFile: Option[SourceFile] = Some(value = file)
   val newItems: List[Item] = newList()
   var j = 0
