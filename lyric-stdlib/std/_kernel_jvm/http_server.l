@@ -340,6 +340,33 @@ func assertProtocolFloor(actual: in slice[String]): Unit {
   }
 }
 
+// Shared `KeyManagerFactory`/`SSLContext.init`/floor-assertion core for
+// BOTH `buildServerSslContext` (no client-cert trust, `tmArr` a null
+// `TrustManager[]`) and `buildServerSslContextWithClientCa` (`tmArr` a
+// real one-element `TrustManager[]` pinned to the configured client CA).
+// Factored out after issue #6563 (a REQUIRED PR-6560 review finding): the
+// two callers had independently duplicated this sequence, and the mTLS
+// copy silently omitted the `assertProtocolFloor` call the non-mTLS one
+// had — every mTLS listener lost the TLS-1.2-floor guarantee #5997 adds
+// for the non-mTLS path, with no test exercising the mTLS context's
+// protocol set to catch it. A single core makes that class of divergence
+// structurally impossible: there is now exactly one `SSLContext.init` +
+// floor-check call site for server contexts on this target.
+func buildServerSslContextCore(identity: in Identity, minVersion: in TlsVersion, tmArr: in JObject): JSSLContext {
+  val ks = buildIdentityKeyStore(identity)
+  val kmf: JKeyManagerFactory = JKeyManagerFactory.getInstance(JKeyManagerFactory.getDefaultAlgorithm())
+  val _init = invoke2(kmf, "init", ks, emptyCharArrayObj())
+  val keyManagers: slice[JKeyManager] = kmf.getKeyManagers()
+  val kmArr = makeTypedArray1("javax.net.ssl.KeyManager", keyManagers[0])
+  val ctx: JSSLContext = JSSLContext.getInstance(protocolNameFor(minVersion))
+  val random: JSecureRandom = JSecureRandom.new()
+  val _ctxInit = invoke3(ctx, "init", kmArr, tmArr, random)
+  val defaultParams: JSSLParameters = ctx.getDefaultSSLParameters()
+  val actualProtocols: slice[String] = defaultParams.getProtocols()
+  assertProtocolFloor(actualProtocols)
+  ctx
+}
+
 // Build a server-identity SSLContext from `identity`, enforcing
 // `minVersion` by selecting the JDK protocol algorithm name accordingly
 // (`"TLS"` negotiates the JDK's full supported range — TLS 1.2 and 1.3
@@ -352,19 +379,8 @@ func assertProtocolFloor(actual: in slice[String]): Unit {
 // certificates, which is inert since nothing requests one without
 // `HttpsParameters.setNeedClientAuth`.
 func buildServerSslContext(identity: in Identity, minVersion: in TlsVersion): JSSLContext {
-  val ks = buildIdentityKeyStore(identity)
-  val kmf: JKeyManagerFactory = JKeyManagerFactory.getInstance(JKeyManagerFactory.getDefaultAlgorithm())
-  val _init = invoke2(kmf, "init", ks, emptyCharArrayObj())
-  val keyManagers: slice[JKeyManager] = kmf.getKeyManagers()
-  val kmArr = makeTypedArray1("javax.net.ssl.KeyManager", keyManagers[0])
   val tmArr = nullOfClass("[Ljavax.net.ssl.TrustManager;")
-  val ctx: JSSLContext = JSSLContext.getInstance(protocolNameFor(minVersion))
-  val random: JSecureRandom = JSecureRandom.new()
-  val _ctxInit = invoke3(ctx, "init", kmArr, tmArr, random)
-  val defaultParams: JSSLParameters = ctx.getDefaultSSLParameters()
-  val actualProtocols: slice[String] = defaultParams.getProtocols()
-  assertProtocolFloor(actualProtocols)
-  ctx
+  buildServerSslContextCore(identity, minVersion, tmArr)
 }
 
 /// An opaque, server-identity `javax.net.ssl.SSLContext` built from a
@@ -414,30 +430,24 @@ func buildClientCaKeyStore(clientCa: in Certificate): JKeyStore {
 
 // Build a server SSLContext with client-cert trust pinned to `clientCa`
 // (mutual TLS, docs/61 §6.3 phase 2.3 / issue #6017): the same
-// KeyManagerFactory-backed server identity as `buildServerSslContext`,
+// KeyManagerFactory-backed server identity + TLS-1.2-floor enforcement as
+// `buildServerSslContext` (via the shared `buildServerSslContextCore`),
 // plus a TrustManagerFactory over `buildClientCaKeyStore`'s keystore in
 // place of the `null` TrustManager array. `makeTypedArray1` (module
 // header) builds the genuinely-typed `TrustManager[]` `SSLContext.init`
-// needs, mirroring the `KeyManager[]` construction above.
+// needs, mirroring the `KeyManager[]` construction the core performs for
+// `KeyManager[]`.
 func buildServerSslContextWithClientCa(
   identity: in Identity,
   minVersion: in TlsVersion,
   clientCa: in Certificate,
 ): JSSLContext {
-  val ks = buildIdentityKeyStore(identity)
-  val kmf: JKeyManagerFactory = JKeyManagerFactory.getInstance(JKeyManagerFactory.getDefaultAlgorithm())
-  val _init = invoke2(kmf, "init", ks, emptyCharArrayObj())
-  val keyManagers: slice[JKeyManager] = kmf.getKeyManagers()
-  val kmArr = makeTypedArray1("javax.net.ssl.KeyManager", keyManagers[0])
   val trustKs = buildClientCaKeyStore(clientCa)
   val tmf: JTrustManagerFactory = JTrustManagerFactory.getInstance(JTrustManagerFactory.getDefaultAlgorithm())
   tmf.init(trustKs)
   val trustManagers: slice[JTrustManager] = tmf.getTrustManagers()
   val tmArr = makeTypedArray1("javax.net.ssl.TrustManager", trustManagers[0])
-  val ctx: JSSLContext = JSSLContext.getInstance(protocolNameFor(minVersion))
-  val random: JSecureRandom = JSecureRandom.new()
-  val _ctxInit = invoke3(ctx, "init", kmArr, tmArr, random)
-  ctx
+  buildServerSslContextCore(identity, minVersion, tmArr)
 }
 
 /// Build a server-identity `SSLContext` with client-cert trust pinned to

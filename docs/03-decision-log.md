@@ -31876,3 +31876,86 @@ listener this extends), D-progress-692 (phase 2.1, the `Std.HttpServer`
 D-progress-543 (published-tool sandbox exception, both the `lyric test`
 build path and the `fmt` divergence invoked here).
 
+## D-progress-806 — PR-6560 review fixes: mTLS SSLContext floor-assertion gap (#6563) + reverted `Web.TlsTestFixtures` production-DLL leak (#6564)
+
+`claude-review` on PR #6560 (the #5997/#6027/#6017 batch) raised two
+REQUIRED findings.
+
+**#6563 — `buildServerSslContextWithClientCa` skipped the TLS-1.2 floor
+assertion.** It was a near-verbatim copy of `buildServerSslContext`'s
+`KeyManagerFactory`/`SSLContext.init` sequence (`_kernel_jvm/http_server.l`)
+but never called the new `assertProtocolFloor` (D-progress-805's sibling,
+#5997) the non-mTLS path does — so every mTLS listener (every caller of
+`serverSslContextFromConfigMtls`, i.e. lyric-web's Undertow `serveTls`
+whenever `clientCa` is set) silently lost the TLS-1.2-floor guarantee, with
+no test exercising the mTLS context's protocol set to catch it. Fixed by
+factoring the shared `KeyManagerFactory`/`SSLContext.init`/floor-assertion
+sequence into one `buildServerSslContextCore(identity, minVersion, tmArr)`
+helper parameterized on the (null or real) `TrustManager[]`, called by both
+`buildServerSslContext` and `buildServerSslContextWithClientCa` — the
+`claude-review` SUGGESTION alongside the REQUIRED finding, applied because
+it makes the class of bug (two copies of one init sequence silently
+diverging) structurally impossible rather than merely re-syncing the copies
+this once. There is now exactly one server-`SSLContext.init` + floor-check
+call site on this target.
+
+**#6564 — `Web.TlsTestFixtures` (the #6027 fix, this same PR) bundled a
+test-only private key into the production `Web.dll`.** The shared fixture
+package was registered under `[project.packages]` in `lyric-web/lyric.toml`
+— the only table `collectImportedOwnPackages` (`cli_build.l`) and `lyric
+test`'s `libPkgs` (`cli_test.l`) resolve local-manifest imports through, so
+this was necessary for `jvm_server_smoke.l`'s standalone single-file build
+and for `serve_tls_tests.l`'s `[project.tests]` compile to both see it. But
+`buildProjectFromManifest` bundles **every** `[project.packages]` entry into
+the project's single output assembly with no import-reachability
+filtering (unlike the single-file path's `collectImportedOwnPackages`,
+which only pulls in entries the source actually imports) — so any ordinary
+whole-project build of `Lyric.Web` (`lyric build --manifest
+lyric-web/lyric.toml`, the shape `make lyric` and any downstream consumer's
+restore+build use) now bundled the test cert **and private key** PEM text
+into `Web.dll` as public API surface, for every consumer.
+
+Investigated three non-compiler workarounds before concluding none exist:
+a second test-only manifest (would need to duplicate `Web`/`Web.Aspects`/etc.
+path references, or gets no first-class "local dependency" support); a
+`[dependencies]`-style reference (this compiler has no dev-dependencies
+table, and it would still add an unnecessary production dependency edge to
+a fixtures-only package); reading the fixture from a PEM file on disk at
+test run time (fragile — the single-file JVM smoke test's jar can run from
+an arbitrary CWD in CI or locally, with no reliable relative path back to
+the checkout). All three either don't actually close the leak (the leak is
+triggered by mere presence in `[project.packages]`, regardless of which
+consumer needs it) or trade it for a different fragility. This compiler
+has no "test-only package" concept — no per-`[project.packages]`-entry
+exclusion from a whole-project build, no `[project.tests]`-sourced import
+resolution for `collectImportedOwnPackages` — so a shared fixture package
+cannot be built here without either the whole-project-build leak or a
+compiler change neither buildable nor testable in this environment
+(`./bin/lyric` cannot be built from source in the sandbox this PR was
+authored in; see D-progress-543).
+
+**Resolution: reverted #6027's dedup**, restoring the original
+byte-identical `certPem`/`keyPem` (`serve_tls_tests.l`) /
+`httpsCertPem`/`httpsKeyPem` (`jvm_server_smoke.l`) local constants and
+deleting `Web.TlsTestFixtures`/its `[project.packages]` entry. This matches
+a decision already on record two paragraphs above this entry ("lyric-web
+cleanups", 2026-08-11): "#6027 (byte-identical PEM fixtures duplicated
+between two test files) left as-is — a shared test fixtures module isn't
+buildable without shipping test-only data in the production `Web.dll`/jar;
+harmless non-secret duplication." That decision predates this PR; #6027's
+GitHub issue nonetheless stayed open and got re-attempted here, independently
+rediscovering (via `claude-review`, not by consulting this log first) the
+exact same conclusion. Closing #6027 as won't-fix, pointing at both this
+entry and the 2026-08-11 one, is this entry's own housekeeping action.
+Tracked follow-up for the real fix: teach `buildProjectFromManifest` a
+test-only package marker (or resolve manifest imports for a single-file
+build from `[project.tests]` too), so a shared fixture package becomes
+possible without a whole-project-build leak — no issue filed yet.
+
+**Related:** #5997 (D-progress-805 is the sibling, non-mTLS TLS-1.2-floor
+fix this parallels), #6017 (D-progress-805, the PR this batches with),
+#6027 (the reverted fix; see the 2026-08-11 "lyric-web cleanups" entry
+above for the original decision), D-progress-543 (sandbox exception: no
+`./bin/lyric` buildable from source here, hence no compiler-level fix for
+#6564's root cause).
+

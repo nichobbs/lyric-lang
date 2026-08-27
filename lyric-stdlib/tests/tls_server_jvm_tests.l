@@ -519,3 +519,34 @@ test "startListenerTls rejects a clientCa request as Unsupported" {
     case Err(e) -> match e { case NotSupportedOnTarget(message) -> assertTrue(message.contains("mutual TLS"), "NotSupportedOnTarget names mutual TLS") }
   }
 }
+
+// PR-6560 review finding #6563: `serverSslContextFromConfigMtls`
+// (`_kernel_jvm/http_server.l` — the mTLS `SSLContext` constructor lyric-web's
+// Undertow `serveTls` calls whenever `clientCa` is set, #6017) was a
+// near-verbatim copy of the non-mTLS `buildServerSslContext` that silently
+// omitted the `assertProtocolFloor` call the two tests above prove for the
+// non-mTLS path — every mTLS listener lost the TLS-1.2-floor guarantee with
+// no test to catch it. Fixed by routing both constructors through one shared
+// `buildServerSslContextCore` helper; this test proves the mTLS path's
+// resulting `SSLContext` enforces the same floor directly (unit-level on the
+// `internal ServerSslContext.rawContext` accessor, mirroring the non-mTLS
+// tests' `getDefaultSSLParameters().getProtocols()` inspection, since
+// `Std.HttpServer.startListenerTls` itself still cannot host a live
+// mTLS-terminated listener to run a real handshake against — that gap is
+// #5930, unrelated to and unfixed by #6563).
+test "serverSslContextFromConfigMtls (Tls12 floor) never negotiates below TLS 1.2" {
+  val ca = match Certificate.fromPem(rsaCert) {
+    case Ok(c) -> c
+    case Err(e) -> panic("fixture cert load failed: " + TlsError.message(e))
+  }
+  val serverCtx = serverSslContextFromConfigMtls(freshIdentity(), Tls12, ca)
+  val ctx: JSSLContext = serverCtx.rawContext()
+  val defaultParams: JSSLParameters = ctx.getDefaultSSLParameters()
+  val protocols: slice[String] = defaultParams.getProtocols()
+  var i = 0
+  while i < protocols.length {
+    val p = protocols[i]
+    assertTrue(p == "TLSv1.2" or p == "TLSv1.3", "mTLS SSLContext protocol " + p + " is below the TLS 1.2 floor (#6563)")
+    i = i + 1
+  }
+}

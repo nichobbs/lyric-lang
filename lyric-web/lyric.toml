@@ -61,11 +61,6 @@ output_assembly = "Web.dll"
   "src/_kernel/net/web_kernel.l",
   "src/_kernel/jvm/web_kernel.l",
 ]
-# Shared TLS test fixture (cert + key), reused by tests/serve_tls_tests.l
-# (a [project.tests] entry) and tests/jvm_server_smoke.l (a standalone
-# single-file build) — see [project.packages] resolution note at
-# collectImportedOwnPackages in lyric-compiler/lyric/cli/cli_build.l.
-"Web.TlsTestFixtures" = "tests/tls_test_fixtures.l"
 
 [project.tests]
 "Web.CorsGuardTests"   = "tests/cors_guard_tests.l"
