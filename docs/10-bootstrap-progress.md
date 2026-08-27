@@ -31324,8 +31324,9 @@ via `hostAcceptTls`, was dropped — see below). **This is now stale**: with
 #6234 part 1 shipped (see the entry below), the PEM-loading case was
 re-added through `Std.Tls`'s real public API, with the kernel-boundary
 variant kept alongside for defense in depth; the loopback-handshake case
-remains a separate, not-yet-authored test, no longer blocked on #6234.
-Every new/changed C function is also covered by new cases in
+has since shipped too (D-progress-807), which also fixed two previously-
+latent `Lyric.LlvmCodegen`/`Lyric.LlvmBridge` UFCS-resolution bugs it
+surfaced. Every new/changed C function is also covered by new cases in
 `lyric-rt/test/lyric_tls_test.c`, green under clang + gcc + the gcc ASan
 run.
 
@@ -31355,12 +31356,12 @@ addendum. **Now resolved for the PEM-loading case**: #6234 part 1 shipped
 (see the entry below), so `Std.Tls`'s public API compiles and constructs
 correctly on native, and the PEM-loading case now also exercises it
 directly (kernel-boundary variant kept alongside). The TLS-handshake case
-remains a separate, not-yet-authored test, no longer blocked on #6234.
+has since shipped too — see D-progress-807.
 
-**Related:** `docs/03-decision-log.md` D-progress-712, D-progress-713;
-docs/61 §7 item 4 / §8 item 15; `native/plan/08-work-items.md` N9.2;
-#6103, #5874; #6234 (native `opaque type` codegen — part 1 shipped, part 2
-custom-destructor still open).
+**Related:** `docs/03-decision-log.md` D-progress-712, D-progress-713,
+D-progress-807; docs/61 §7 item 4 / §8 item 15;
+`native/plan/08-work-items.md` N9.2; #6103, #5874; #6234 (native `opaque
+type` codegen — part 1 shipped, part 2 custom-destructor still open).
 
 ## Native backend: `opaque type` codegen ships — `Llvm.Codegen` `IOpaque` dispatch, #6234 part 1 (2026-07-20)
 
@@ -31434,8 +31435,14 @@ genuinely separate-file, bundled `Std.Tls` package compiled through
 `Lyric.LlvmBridge.compileToNativeWithFlags`, exercising `unitOf`'s
 `IOpaque` arm (the bundled-path half of this fix) rather than just
 `unitOfFile`'s single-file path. A real loopback TLS handshake (item D)
-remains a separate, not-yet-authored test — no longer blocked on #6234,
-just not yet written; tracked under #6103's remaining work.
+has since shipped too (D-progress-807): server via `hostAcceptTls` on the
+main thread, client on a genuine second pthread driving the raw
+`lyric_tls_client_*` seam directly (test-local FFI, not a new
+`Std.TcpHost` public API — client TLS stays N9.4/#6105's scope). Item D
+also surfaced and fixed two previously-latent `Lyric.LlvmCodegen`/
+`Lyric.LlvmBridge` bugs in resolving a cross-package UFCS call on an
+extension-method-style declaration (`Identity.rawHandle`) — see
+D-progress-807 for the full root-cause writeup.
 
 Boundary (honest, matches D-progress-543/D-progress-703): this session
 could not build the self-hosted compiler from source in-sandbox
@@ -31444,10 +31451,10 @@ tool's native backend predates Phase N2/N3 entirely, so no in-sandbox
 compiled-Lyric run of either test was possible; CI's
 `native-backend-self-tests` job is the load-bearing verification.
 
-**Related:** `docs/03-decision-log.md` D-progress-713; #6234 (part 1 resolved,
-part 2 open); #6239 (the `@projectable` finding, resolved here); #6103 (N9.2,
-merged as #6235); #6104–#6106; docs/61 §7 item 4;
-`native/plan/08-work-items.md` Phase N9; D-N-014;
+**Related:** `docs/03-decision-log.md` D-progress-713, D-progress-807;
+#6234 (part 1 resolved, part 2 open); #6239 (the `@projectable` finding,
+resolved here); #6103 (N9.2, merged as #6235); #6104–#6106; docs/61 §7
+item 4; `native/plan/08-work-items.md` Phase N9; D-N-014;
 D-progress-540, D-progress-545, D-progress-703.
 
 ### D-progress-630 — `lyric build --release --target jvm`: GraalVM `native-image` binaries (#1975, #675; D131)

@@ -813,11 +813,13 @@ items marked ∥ are independent and can proceed in parallel.
     API (`Certificate.fromPem`/`Identity.fromPem`), now that #6234 part 1
     (§7 item 4 above) unblocks it, with the file's original kernel-boundary variant
     (`Std.TlsHost` called directly) kept alongside for defense in depth;
-    and a plain `Std.TcpHost` round-trip. A real loopback TLS handshake via
-    `hostAcceptTls` remains a separate, not-yet-authored test —
-    `TlsServerConfig.identity: Identity` now constructs fine, so this is no
-    longer blocked on #6234, just not yet written; tracked under #6103's
-    remaining work. **N9.3** `Std.HttpServer` native twin (thread-per-connection
+    and a plain `Std.TcpHost` round-trip; a real loopback TLS handshake via
+    `hostAcceptTls` (server side, against a client on a genuine second
+    pthread driving the raw `lyric_tls_client_*` seam directly — client TLS
+    itself stays out of scope here, deferred to N9.4/#6105) has since
+    shipped too (D-progress-807 in `docs/03-decision-log.md`), which also
+    fixed two previously-latent `Lyric.LlvmCodegen`/`Lyric.LlvmBridge`
+    UFCS-resolution bugs the new case surfaced. **N9.3** `Std.HttpServer` native twin (thread-per-connection
     over the pthread kernel driving `Std.HttpEngine`); **N9.4** `Std.Http`
     native client; **N9.5** lyric-web `serveTls` + ALPN h2. See
     `native/plan/08-work-items.md` Phase N9 for the full banding and

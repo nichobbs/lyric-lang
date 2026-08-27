@@ -4,7 +4,7 @@
 //! (`Lyric.LlvmBridge.compileToNativeWithFlags` with the `_kernel_native/`
 //! twins loaded, exactly like `lyric build --target native`) and run.
 //!
-//! Scope covered here (four cases — item B RE-ADDED, see below):
+//! Scope covered here (four cases — item D now shipped, see below):
 //!   - item A: `Std.Encoding` native round-trip (base64 + UTF-8, including
 //!     a supplementary-plane codepoint).
 //!   - item B: `Std.Tls`'s real public `Certificate.fromPem`/
@@ -15,6 +15,9 @@
 //!     boundary variant retained for defense in depth (see below).
 //!   - item C: `Std.TcpHost` plain (non-TLS) round-trip:
 //!     listen/connect/accept/read/write/close.
+//!   - item D: a real loopback TLS handshake through
+//!     `Std.TcpHost.hostAcceptTls` (server side) against a genuine
+//!     concurrent client peer (see "Item D" below).
 //!
 //! ## Item B history: was blocked on #6234, now unblocked
 //!
@@ -44,22 +47,108 @@
 //! fields, not a raw pointer, so the ordinary ARC-managed-field release
 //! path is exactly what's needed.
 //!
-//! Item D (the real loopback TLS handshake through
-//! `Std.TcpHost.hostAcceptTls`, which takes a `Tls.TlsServerConfig` whose
-//! `identity: Identity` field is unavoidably the opaque type) remains
-//! deferred — NOT because of #6234 any more (item B proves `Identity`
-//! itself now constructs fine), but because driving a real concurrent
-//! client/server handshake needs both peers actively driving handshake
-//! I/O at once, which is separate test-authoring effort tracked under
-//! #6103's remaining work, not a compiler blocker.
+//! ## Item D: a real loopback TLS handshake (server via `Std.TcpHost`,
+//! client via the raw `lyric_tls_*` seam)
 //!
-//! Both connection-oriented tests bind an ephemeral port
+//! Item D drives `Std.TcpHost.hostAcceptTls` (server side, the real public
+//! API, using an `Identity` built from item B's now-working
+//! `Certificate`/`Identity.fromPem`) against a SECOND, genuinely concurrent
+//! OS thread that drives the client side of the handshake — the missing
+//! half the earlier deferral note called out: a TLS handshake (unlike item
+//! C's plain-TCP round trip, which tolerates connect-then-accept ordering
+//! because the listen backlog queues the SYN) needs both peers actively
+//! pumping handshake I/O at the same time, so the client MUST run on its
+//! own thread while the server blocks in `hostAcceptTls`.
+//!
+//! The second thread is spawned with the exact `pthread_create`/
+//! `pthread_join` FFI pattern `llvm_ffi_self_test.l`'s "closure trampoline
+//! runs on a pthread" case already established (a zero-arg closure,
+//! `() -> NativePtr[Byte]`, rides the N4.5 callback trampoline; its result
+//! comes back through `pthread_join`'s retval out-param as a C string).
+//!
+//! ## Item D: why the client side is test-local FFI, not a new
+//! `Std.TcpHost`/`Std.TlsHost` public API
+//!
+//! `_kernel_native/tcp_host.l`'s own module header is explicit that N9.2
+//! deliberately ships NO client-TLS surface: "TLS (server-side; N9.2 has
+//! no client-TLS surface — that is Std.Http's job, N9.4/#6105)". Adding a
+//! public `hostConnectTls`-shaped function to `Std.TcpHost` now would
+//! reopen and preempt that already-recorded scope boundary and collide
+//! with whatever shape `Std.Http`/#6105 eventually gives client TLS.  The
+//! underlying C seam already has full, already-tested client-TLS support
+//! (`lyric_tls_client_new`/`lyric_tls_client_connect`/`lyric_tls_read`/
+//! `lyric_tls_write`, exercised end to end by `lyric_tls_test.c`'s own
+//! `run_tls_scenario` client role), so item D's client thread binds those
+//! `extern func`s directly in its own generated test source — no
+//! `_kernel_native/` file changes were needed. This mirrors the pthread
+//! externs immediately above it (`pthread_create`/`pthread_join` are also
+//! test-local, not part of any planned `Std` concurrency API): both are
+//! genuinely-existing runtime-library C entry points a test drives
+//! directly because the corresponding *public* Lyric surface for that
+//! capability doesn't exist yet (concurrency primitives generally, for
+//! pthreads; client TLS specifically, deferred to #6105, for
+//! `lyric_tls_client_*`) — not a workaround for a missing kernel
+//! boundary. `Std.TcpHost`'s own `_kernel_native/` surface is unchanged by
+//! item D.
+//!
+//! The server's ALPN preference is the existing hardcoded
+//! `"h2,http/1.1"` (`_kernel_native/tcp_host.l`'s `alpnPreference`); the
+//! client thread offers exactly `"h2"` so the negotiated protocol is
+//! unambiguous regardless of ALPN preference-order semantics. The
+//! self-signed `certPemLines` fixture below (reused from item B) is
+//! `Basic Constraints: CA:TRUE`, so it doubles as its own trust anchor for
+//! the client's `lyric_tls_client_new(ca_pem, ...)` call — the same
+//! "self-signed root directly in the trust store" technique real TLS test
+//! suites use, no separate CA fixture needed.
+//!
+//! ## Item D: two native-codegen bugs it surfaced (both fixed)
+//!
+//! Item D is `hostAcceptTls`'s FIRST native invocation ever (items A–C
+//! never call it), so it was also the first native compile to exercise
+//! `_kernel_native/tcp_host.l`'s `buildServerCtx` calling
+//! `cfg.identity.rawHandle()` — an `internal func Identity.rawHandle(id:
+//! in Identity)` (extension-method-style: the declared name literally
+//! carries its receiver type, "Identity.rawHandle") invoked via UFCS from
+//! a DIFFERENT package. Two real, previously-latent `Lyric.LlvmCodegen` /
+//! `Lyric.LlvmBridge` bugs blocked it, both fixed in this same change:
+//!
+//! 1. `Lyric.LlvmCodegen.lowerUfcsCall`'s NStruct-receiver signature
+//!    lookup only tried the receiver's DEFINING PACKAGE alone joined with
+//!    the bare call-site name (the D037 in-type-body method shape) — it
+//!    never tried the receiver's full struct type name
+//!    ("Std.Tls.Identity") joined with the name, the key an
+//!    extension-method-style declaration actually registers under. Fixed
+//!    by trying `tyName + "." + name` (then bare `TypeName.methodName`)
+//!    before that legacy fallback.
+//! 2. Even with (1) fixed, `rawHandle` was still missing from the
+//!    compiled `Std.Tls` unit entirely: `Lyric.LlvmBridge`'s
+//!    function-granularity reachability walk (which decides which
+//!    bundled-package functions the native codegen unit even includes)
+//!    traces call edges via `callKeyOf`, which only resolves an `EMember`
+//!    whose receiver is itself a bare type/package `EPath` (the
+//!    `Type.method(args)` static-call shape) — a UFCS call on a VALUE
+//!    receiver (`cfg.identity.rawHandle()`) returns no key at all, so the
+//!    edge was invisible and `Identity.rawHandle` was pruned as
+//!    unreachable. Fixed with a bare member-name-only reachability
+//!    fallback in `collectCallKeys`, resolved through a NEW, separate
+//!    `Map[String, List[String]]` (`registerFileFns`'s `bareTrailing`) —
+//!    not folded into the existing single-valued `canonical` map, because
+//!    `Std.Tls` itself declares TWO same-named/arity extension methods
+//!    (`Certificate.rawHandle`/`Identity.rawHandle`, both trailing to
+//!    "rawHandle/1"); a single-valued map's first-write-wins `addKey`
+//!    would silently resolve the fallback to only ONE of them, potentially
+//!    the wrong one, rather than tracing both. The multi-valued map marks
+//!    every same-named/arity candidate reachable — over-inclusive, never
+//!    under-inclusive.
+//!
+//! Every connection-oriented test (C and D) binds an ephemeral port
 //! (`hostListen(host, 0)`) and read the kernel-assigned one back via
 //! `hostLocalPort` before dialing — the same pattern `lyric_tls_test.c`'s
 //! C-level tests already use over `lyric_sock_local_port` — rather than a
 //! fixed port number, to avoid CI flakiness from a fixed port being in use
 //! on the runner. Every scenario compiles with `-fsanitize=address`, so a
-//! leaked fd or byte buffer fails the run.
+//! leaked fd, byte buffer, SSL handle, or pthread join failure fails the
+//! run.
 //!
 //! Requires `clang` on PATH and a built runtime (`make -C lyric-rt`).
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1:
@@ -407,10 +496,175 @@ test "Std.TcpHost native plain round-trip: listen/connect/accept/read/write/clos
   assertEqualInt(r.exitCode, 42, "Std.TcpHost plain round-trip")
 }
 
-// Item D (a real loopback TLS handshake through
-// `Std.TcpHost.hostAcceptTls`) is deliberately not in this file — see the
-// module header's "item B history" section. `Std.Tls`'s opaque `Identity`
-// type now constructs fine (item B above proves it), so item D is no
-// longer blocked on #6234; it remains a separate test-authoring effort
-// (driving a real concurrent client/server handshake) tracked under
-// #6103's remaining work.
+test "Std.TcpHost native TLS handshake: real concurrent client/server loopback (item D)" {
+  // The client side is a raw `lyric_tls_*` FFI driver on a genuine second
+  // pthread (module header's "item D" section explains why these externs
+  // are test-local rather than a new `Std.TcpHost` public API). The
+  // server side is the real `Std.TcpHost.hostAcceptTls` under test,
+  // driven on the main thread — both block on handshake I/O concurrently,
+  // the scenario item C's plain-TCP round trip could not exercise.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" + "import Std.Tls\n" +
+    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
+    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
+    "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
+    "extern func cStrcmp(a: NativePtr[Byte], b: NativePtr[Byte]): Int = \"strcmp\"\n" +
+    "extern func rtSockConnect(host: NativePtr[Byte], port: Int): Int = \"lyric_sock_connect\"\n" +
+    "extern func rtSockClose(fd: Int): Int = \"lyric_sock_close\"\n" +
+    "extern func rtTlsClientNew(caPem: NativePtr[Byte], minVersion: Int, insecure: Int): Long = \"lyric_tls_client_new\"\n" +
+    "extern func rtTlsClientConnect(ctx: Long, fd: Int, sni: NativePtr[Byte], alpnCsv: NativePtr[Byte]): Long = \"lyric_tls_client_connect\"\n" +
+    "extern func rtTlsShutdown(conn: Long): Unit = \"lyric_tls_shutdown\"\n" +
+    "extern func rtTlsFree(conn: Long): Unit = \"lyric_tls_free\"\n" +
+    "extern func rtTlsCtxFree(ctx: Long): Unit = \"lyric_tls_ctx_free\"\n" +
+    "extern func rtTlsAlpnString(conn: Long): String = \"lyric_tls_alpn_string\"\n" +
+    "extern func rtTlsReadBytes(conn: Long, maxBytes: Long, okOut: NativePtr[Int]): slice[Byte] = \"lyric_tls_read_bytes\"\n" +
+    "extern func rtTlsWriteBytes(conn: Long, bytes: slice[Byte]): Long = \"lyric_tls_write_bytes\"\n" +
+    "@unsafe_ffi\n" +
+    "func clientHandshake(port: in Int, certPem: in String): NativePtr[Byte] {\n" +
+    "  val certPemC = toC(certPem)\n" +
+    "  val hostC = toC(\"127.0.0.1\")\n" +
+    "  val fd = rtSockConnect(hostC, port)\n" +
+    "  freeC(hostC)\n" +
+    "  if fd < 0 {\n" +
+    "    freeC(certPemC)\n" +
+    "    return toC(\"FAIL:connect\")\n" +
+    "  }\n" +
+    "  val ctx = rtTlsClientNew(certPemC, 12, 0)\n" +
+    "  freeC(certPemC)\n" +
+    "  if ctx == 0i64 {\n" +
+    "    val _ = rtSockClose(fd)\n" +
+    "    return toC(\"FAIL:ctxnew\")\n" +
+    "  }\n" +
+    "  val sniC = toC(\"localhost\")\n" +
+    "  val alpnC = toC(\"h2\")\n" +
+    "  val conn = rtTlsClientConnect(ctx, fd, sniC, alpnC)\n" +
+    "  freeC(alpnC)\n" +
+    "  freeC(sniC)\n" +
+    "  if conn == 0i64 {\n" +
+    "    rtTlsCtxFree(ctx)\n" +
+    "    val _ = rtSockClose(fd)\n" +
+    "    return toC(\"FAIL:handshake\")\n" +
+    "  }\n" +
+    "  val alpn = rtTlsAlpnString(conn)\n" +
+    "  if alpn != \"h2\" {\n" +
+    "    rtTlsShutdown(conn)\n" +
+    "    rtTlsFree(conn)\n" +
+    "    rtTlsCtxFree(ctx)\n" +
+    "    val _ = rtSockClose(fd)\n" +
+    "    return toC(\"FAIL:alpn\")\n" +
+    "  }\n" +
+    "  val wroteN = rtTlsWriteBytes(conn, encodeUtf8(\"ping-from-client\"))\n" +
+    "  if wroteN < 0i64 {\n" +
+    "    rtTlsShutdown(conn)\n" +
+    "    rtTlsFree(conn)\n" +
+    "    rtTlsCtxFree(ctx)\n" +
+    "    val _ = rtSockClose(fd)\n" +
+    "    return toC(\"FAIL:write\")\n" +
+    "  }\n" +
+    "  var okFlag: Int = 0\n" +
+    "  val respBytes = rtTlsReadBytes(conn, 64i64, nativeAddrOf(okFlag))\n" +
+    "  var result = \"FAIL:read\"\n" +
+    "  if okFlag == 1 {\n" +
+    "    match tryDecodeUtf8(respBytes) {\n" +
+    "      case Some(t) -> {\n" +
+    "        if t == \"pong-from-server\" {\n" +
+    "          result = \"PASS\"\n" +
+    "        } else {\n" +
+    "          result = \"FAIL:mismatch\"\n" +
+    "        }\n" +
+    "      }\n" +
+    "      case None -> {\n" +
+    "        result = \"FAIL:decode\"\n" +
+    "      }\n" +
+    "    }\n" +
+    "  }\n" +
+    "  rtTlsShutdown(conn)\n" +
+    "  rtTlsFree(conn)\n" +
+    "  rtTlsCtxFree(ctx)\n" +
+    "  val _ = rtSockClose(fd)\n" +
+    "  toC(result)\n" +
+    "}\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  val certPem = \"" +
+    luQuote(certPemLines) +
+    "\"\n" +
+    "  val keyPem = \"" +
+    luQuote(keyPemLines) +
+    "\"\n" +
+    "  val identity = match Identity.fromPem(certPem, keyPem) {\n" +
+    "    case Ok(id) -> id\n" +
+    "    case Err(_) -> return 1\n" +
+    "  }\n" +
+    "  val cfg = TlsServerConfig(identity = identity, minVersion = TlsVersion.Tls12)\n" +
+    "  val listener = match hostListen(\"127.0.0.1\", 0) {\n" +
+    "    case Ok(l) -> l\n" +
+    "    case Err(_) -> return 2\n" +
+    "  }\n" +
+    "  val port = hostLocalPort(listener)\n" +
+    "  var tid: Long = 0\n" +
+    "  val worker: () -> NativePtr[Byte] = { -> clientHandshake(port, certPem) }\n" +
+    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  if rc != 0 {\n" +
+    "    hostStopListener(listener)\n" +
+    "    return 3\n" +
+    "  }\n" +
+    "  var exitCode = 0\n" +
+    "  match hostAcceptTls(listener, cfg) {\n" +
+    "    case Err(_) -> {\n" +
+    "      exitCode = 4\n" +
+    "    }\n" +
+    "    case Ok(c) -> {\n" +
+    "      if hostAlpn(c) != \"h2\" {\n" +
+    "        exitCode = 5\n" +
+    "      } else {\n" +
+    "        var gotPing = false\n" +
+    "        match hostRead(c, 64) {\n" +
+    "          case Ok(bytes) -> {\n" +
+    "            match tryDecodeUtf8(bytes) {\n" +
+    "              case Some(t) -> {\n" +
+    "                gotPing = t == \"ping-from-client\"\n" +
+    "              }\n" +
+    "              case None -> {\n" +
+    "              }\n" +
+    "            }\n" +
+    "          }\n" +
+    "          case Err(_) -> {\n" +
+    "          }\n" +
+    "        }\n" +
+    "        if not gotPing {\n" +
+    "          exitCode = 6\n" +
+    "        } else {\n" +
+    "          match hostWrite(c, encodeUtf8(\"pong-from-server\")) {\n" +
+    "            case Ok(_) -> {\n" +
+    "            }\n" +
+    "            case Err(_) -> {\n" +
+    "              exitCode = 7\n" +
+    "            }\n" +
+    "          }\n" +
+    "        }\n" +
+    "      }\n" +
+    "      hostClose(c)\n" +
+    "    }\n" +
+    "  }\n" +
+    "  hostStopListener(listener)\n" +
+    "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
+    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  if rj != 0 {\n" +
+    "    return 8\n" +
+    "  }\n" +
+    "  val passC = toC(\"PASS\")\n" +
+    "  val clientOk = cStrcmp(outp, passC) == 0\n" +
+    "  freeC(passC)\n" +
+    "  freeC(outp)\n" +
+    "  if exitCode != 0 {\n" +
+    "    return exitCode\n" +
+    "  }\n" +
+    "  if not clientOk {\n" +
+    "    return 9\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.TcpHost real TLS handshake (item D)")
+}

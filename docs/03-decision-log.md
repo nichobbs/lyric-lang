@@ -31981,3 +31981,171 @@ package compiler follow-up), D-progress-543 (sandbox exception: no
 `./bin/lyric` buildable from source here, hence no compiler-level fix for
 either #6564's or #6578's root cause).
 
+## D-progress-807 — TLS phase 5 (native) N9.2 item D: real loopback TLS handshake through `Std.TcpHost.hostAcceptTls`, plus two latent `Lyric.LlvmCodegen`/`Lyric.LlvmBridge` UFCS bugs it uncovered (issue #6103)
+
+**Context.** D-progress-712 shipped N9.2's `Std.TcpHost`/`Std.TlsHost`/
+`Std.EncodingHost` native twins with `llvm_tls_self_test.l` covering three
+cases (A: `Std.Encoding` round-trip, B: `Std.Tls` PEM loading, C: plain
+non-TLS round-trip); a fourth case — a real loopback TLS handshake through
+`hostAcceptTls` — was deliberately deferred, not because of a compiler
+blocker but because driving a real concurrent client/server handshake is
+separate test-authoring effort (a TLS handshake, unlike a bare TCP
+connect, needs both peers actively pumping handshake I/O at once). This
+entry ships that item D and documents the two real native-codegen bugs it
+surfaced along the way.
+
+**Item D: the test.** `llvm_tls_self_test.l` gains a fourth case: the
+server side runs on the main thread and drives the real N9.2 deliverable,
+`Std.TcpHost.hostAcceptTls`, against a `Tls.TlsServerConfig` built from
+item B's now-working `Identity.fromPem`; the client side runs on a
+genuine second OS thread (spawned with the exact `pthread_create`/
+`pthread_join` FFI pattern `llvm_ffi_self_test.l`'s pthread-trampoline
+case already established) and drives a raw TLS client handshake directly
+against the already-existing `lyric_tls_client_new`/
+`lyric_tls_client_connect`/`lyric_tls_read`/`lyric_tls_write` seam
+functions (`lyric-rt/src/lyric_tls.c`, already exercised end to end by
+`lyric_tls_test.c`'s own `run_tls_scenario` client role). The assertions
+cover both sides completing the handshake, the negotiated ALPN protocol
+(client offers exactly `"h2"` against the server's fixed
+`"h2,http/1.1"` preference, so the negotiated result is unambiguous), and
+a request/response byte round trip over the encrypted channel. The
+self-signed `certPemLines` fixture item B already uses is `Basic
+Constraints: CA:TRUE`, so it doubles as its own client-side trust anchor
+— no separate CA fixture needed.
+
+**Why the client side is test-local FFI, not a new `Std.TcpHost` public
+API.** `_kernel_native/tcp_host.l`'s own module header is explicit that
+N9.2 deliberately ships NO client-TLS surface ("TLS (server-side; N9.2
+has no client-TLS surface — that is Std.Http's job, N9.4/#6105)"). Adding
+a public `hostConnectTls`-shaped function now would reopen and preempt
+that already-recorded scope boundary and collide with whatever shape
+`Std.Http`/#6105 eventually gives client TLS. The client thread instead
+binds the seam's `extern func`s directly in its own generated test
+source — the same test-local-FFI idiom the pthread externs immediately
+above it already use (neither `pthread_create`/`pthread_join` nor
+`lyric_tls_client_*` are part of any planned public `Std` API surface
+yet; both are genuinely-existing runtime-library entry points a test
+drives directly because the corresponding *public* Lyric surface doesn't
+exist). `Std.TcpHost`'s own `_kernel_native/` public surface is unchanged
+by item D.
+
+**Two native-codegen bugs uncovered (both fixed, `lyric-compiler/lyric/`
+only — no `lyric-rt` C changes needed).** Item D is `hostAcceptTls`'s
+FIRST native invocation ever (items A–C never call it), so it was also
+the first native compile to exercise `_kernel_native/tcp_host.l`'s
+`buildServerCtx` calling `cfg.identity.rawHandle()` — a UFCS call, on a
+VALUE receiver, into `internal func Identity.rawHandle(id: in Identity):
+Host.CertHandle` (`std/tls.l`'s kernel-boundary escape hatch, D128 phase
+1.2): an extension-method-style declaration whose declared NAME literally
+carries its receiver type ("Identity.rawHandle", not bare "rawHandle") —
+distinct from D037's in-type-body method sugar, which desugars to a bare
+package-level function name instead. Both bugs were confirmed by reading
+the actual codegen/bridge source (not assumed), each verified fixed
+against a real local build (see Verification):
+
+1. **`Lyric.LlvmCodegen.lowerUfcsCall`'s struct-receiver signature lookup
+   never tried the compound "TypeName.methodName" key.** For a
+   `NPtr(NStruct(tyName, _))` receiver (e.g. `tyName =
+   "Std.Tls.Identity"`), the only non-current-package fallback stripped
+   ONE dot component off `tyName` (assumed to yield the receiver's
+   DEFINING PACKAGE, e.g. "Std.Tls") and joined that with the bare
+   call-site name ("Std.Tls.rawHandle/1") — correct for a D037
+   in-type-body method (whose sig registers under a bare package-level
+   name), but this drops the type-name component an extension-method
+   declaration's OWN registered key needs ("Std.Tls.Identity.rawHandle/1"
+   / bare "Identity.rawHandle/1"). Fixed by trying `tyName + "." + name`
+   (then bare `TypeName.methodName`, stripped of its package prefix)
+   BEFORE falling back to the legacy stripped-package lookup, which is
+   kept unchanged for the D037 shape it actually serves.
+2. **Even with (1) fixed, `Identity.rawHandle` was still missing from the
+   compiled `Std.Tls` codegen unit entirely** — a deeper bug in
+   `Lyric.LlvmBridge`'s function-granularity reachability walk, which
+   decides which bundled-package functions a native codegen unit even
+   includes (`unitOf`'s `reachable.containsKey(id)` gate). The walk
+   traces call edges via `Lyric.LlvmCodegen.callKeyOf`, exported
+   specifically so "the bridge's reachability walk resolves call sites
+   identically to the codegen" — but `callKeyOf`'s `EMember` arm only
+   resolves a receiver that is itself a bare type/package `EPath` (the
+   `Type.method(args)` static-call shape, e.g. `Certificate.fromPem(pem)`
+   — a plain multi-segment path, not a value expression). A UFCS call on
+   a VALUE receiver (`cfg.identity.rawHandle()`, whose `EMember` receiver
+   is itself another `EMember`, `cfg.identity`) returns no key at all, so
+   the call edge from `buildServerCtx` to `Identity.rawHandle` was
+   invisible to the walk — confirmed empirically by instrumenting the
+   walk directly (a temporary debug panic dumping the collected call-site
+   keys for `buildServerCtx`'s body showed `rawHandle/1` correctly
+   collected once `collectCallKeys` gained a bare-name fallback, but the
+   walk still failed to mark `Identity.rawHandle` reachable — the second,
+   independent bug below). Fixed in two parts:
+   - `collectCallKeys`'s `ECall` handling, when `callKeyOf` returns "" for
+     an `EMember` callee, now also emits a bare `memberName + "/" +
+     arity` reachability key (e.g. "rawHandle/1") — the same
+     bare-name-fallback philosophy `lowerUfcsCall`'s own resolution order
+     already relies on for the analogous CODEGEN-side lookup.
+   - Resolving that bare key is NOT safe to fold into the existing
+     single-valued `canonical: Map[String, String]` `registerFileFns`
+     already builds (first-write-wins via `addKey`): `Std.Tls` itself
+     declares TWO extension methods that both trail to the exact same
+     bare key, "rawHandle/1" — `Certificate.rawHandle` (declared first in
+     file order) and `Identity.rawHandle`. A single-valued map would
+     silently resolve the fallback to whichever one happened to register
+     first, permanently shadowing the other under an ambiguous key — this
+     is exactly what was observed empirically: adding a naive single-value
+     bare-key registration made `Certificate.rawHandle` reachable (a
+     false negative masquerading as progress) while `Identity.rawHandle`
+     stayed unreachable. Fixed with a SEPARATE `bareTrailing: Map[String,
+     List[String]]`, threaded alongside `canonical` through
+     `registerFileFns`/`registerBareTrailingSegment`; the walk's
+     resolution step now ALSO looks up `raw` in `bareTrailing` and marks
+     EVERY same-named/arity candidate reachable, independent of whatever
+     the single-valued `canonical` lookup already found. Over-inclusive
+     (a few extra bytes of dead code may compile into the unit), never
+     under-inclusive — the correctness property that matters here, since
+     under-inclusive is a hard compile failure while over-inclusive is
+     silently harmless.
+
+**Scope note.** Both fixes are confined to `lyric-compiler/lyric/
+llvm_codegen.l` (`lowerUfcsCall`, plus making the existing private
+`lastDotIndex` helper `pub` for cross-file reuse) and `lyric-compiler/
+lyric/llvm_bridge.l` (`collectCallKeys`, `registerFileFns`,
+`registerBareTrailingSegment`, the reachability walk's resolution loop).
+No `_kernel_native/` file, no `lyric-rt` C code, and no MSIL/JVM backend
+code changed — `lowerUfcsCall`/`callKeyOf`/the reachability walk are
+native-target-only surfaces.
+
+**Verification.** Unlike D-progress-712's own "could not build the native
+LLVM backend from source in this sandbox" caveat, this session built a
+working `./bin/lyric` from source end to end: the GitHub release-download
+bootstrap step is still network-policy-blocked here, so stage 0 was
+seeded from the published NuGet `lyric` 0.5.1 global tool's own installed
+DLLs (fed into `.bootstrap/stage0-publish/` so `scripts/bootstrap.sh`'s
+cached-seed check accepts them), then stage 1 recompiled the CURRENT
+`lyric-compiler/lyric/**/*.l` source (including every fix in this entry)
+against that seed — the same technique D-progress-543's 2026-07-04
+addendum used. `make -C lyric-rt test` (clang + gcc) and `make -C
+lyric-rt test-asan CC=gcc` pass locally (the C-level seam, unchanged by
+this entry). `LYRIC_LOAD_COMPILER=1 ./bin/lyric test
+lyric-compiler/lyric/llvm_tls_self_test.l` passes 5/5 (all four real
+cases plus the retained kernel-boundary variant of item B), ASan-compiled
+(`-fsanitize=address`, `libclang-rt-18-dev` installed locally to provide
+the runtime archive) — confirmed genuinely exercising the fix, not just
+compiling, by first reproducing both bugs as real failures (`Lyric.
+LlvmCodegen: method '.rawHandle' on this receiver is not yet supported
+for --target native (no matching function 'rawHandle/1' in the bundled
+import closure)`), then re-running after each fix until green. The
+existing native self-test battery (`llvm_ir_self_test.l`,
+`llvm_codegen_self_test.l`, `llvm_heap_self_test.l` — including its
+"ufcs call on record" case — `llvm_ffi_self_test.l`,
+`llvm_collections_self_test.l`, `llvm_stdlib_self_test.l`,
+`llvm_self_test_n3.l`, `llvm_self_test_n34.l`, `llvm_self_test_async.l`,
+`llvm_self_test_defer.l`, `llvm_opaque_self_test.l` — including its own
+"ufcs call on opaque type" case) all still pass unchanged (140+ cases
+total), confirming no regression to the reachability walk or UFCS
+resolution for the shapes they already covered.
+
+**Related:** D-progress-712 (N9.2's original shipment, including its
+three-case self-test and the #6234 opaque-type fix that unblocked item
+B), D-progress-543 (the sandbox-seeding technique this session reused),
+issue #6103 (N9.2's parent), issue #6105 (N9.4, `Std.Http`'s native
+client — the scope this entry deliberately does not preempt).
+

@@ -1335,9 +1335,33 @@ the full root-cause breakdown at the time. **This is now stale**: with
 #6234 part 1 shipped (see the "Compiler-level prerequisite" paragraph
 below), the file's item B was re-added through `Std.Tls`'s real public API,
 with the original kernel-boundary variant kept alongside for defense in
-depth. The originally-planned loopback-handshake case remains a separate,
-not-yet-authored test — no longer blocked on #6234, just not yet written;
-tracked under this item's own remaining work.
+depth. **The originally-planned loopback-handshake case (item D) has since
+shipped too (D-progress-807):** a real client/server TLS handshake, server
+side through `Std.TcpHost.hostAcceptTls` on the main thread, client side on
+a genuine second pthread (the concurrency the deferral note above called
+for — a handshake, unlike a plain-TCP connect, needs both peers actively
+pumping I/O at once). The client thread binds the already-existing
+`lyric_tls_client_*` seam functions directly as test-local `extern func`s
+rather than through a new `Std.TcpHost`/`Std.TlsHost` public API: N9.2's own
+`_kernel_native/tcp_host.l` header is explicit that client TLS is N9.4's
+scope (#6105, `Std.Http`), not N9.2's, so item D deliberately does not add
+a `hostConnectTls`-shaped function that would preempt that boundary. Item D
+was `hostAcceptTls`'s FIRST native invocation ever, and it surfaced two
+previously-latent `Lyric.LlvmCodegen`/`Lyric.LlvmBridge` bugs in resolving
+`buildServerCtx`'s cross-package UFCS call `cfg.identity.rawHandle()` — an
+extension-method-style declaration (`internal func Identity.rawHandle(...)`)
+whose declared name carries its receiver type: (1) `lowerUfcsCall`'s
+struct-receiver signature lookup never tried the receiver's full type name
+joined with the call-site name (only a legacy D037-shaped fallback); (2) the
+bundled-compile reachability walk's `callKeyOf`-based call-edge tracing
+can't see a UFCS call on a value receiver at all, so `Identity.rawHandle`
+was pruned as unreachable before (1) could even matter — fixed with a
+bare-member-name reachability fallback resolved through a NEW multi-valued
+map (not folded into the existing single-valued one, since `Std.Tls` itself
+has two same-named/arity extension methods, `Certificate.rawHandle` and
+`Identity.rawHandle`, that would otherwise silently collide). See
+`llvm_tls_self_test.l`'s module header and D-progress-807 for the full
+reasoning and the four-case test now shipped.
 
 **Prerequisite (SHIPPED alongside):** the `Std.TcpHost` surface takes
 `Std.Tls.TlsServerConfig`, so `Std.Tls` must compile on native first —
