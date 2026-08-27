@@ -1867,12 +1867,18 @@ func matchLines(scrut: in Expr, arms: in List[MatchArm], matchEnd: in Int, ctx: 
     match a.body {
       case EOBExpr(body) -> {
         val arrow = "case " + patStr(a.pattern) + guard + " -> "
-        // An expression arm body that carries an interior comment (e.g. a
-        // `then`-form if whose then-arm has a trailing `// note`) must
-        // render through the ctx-aware printer so the comment is woven in
-        // rather than dropped by the flat `exprInline`.  The common case
-        // (no interior trivia) keeps the single-line inline rendering.
-        if hasTriviaInRange(ctx, body.span.startPos.offset, body.span.endPos.offset) {
+        // An expression arm body renders inline only when it both carries
+        // no interior comment (e.g. a `then`-form if whose then-arm has a
+        // trailing `// note` must render through the ctx-aware printer so
+        // the comment is woven in rather than dropped by the flat
+        // `exprInline`) AND fits the width budget at the arrow's column —
+        // a nested `match`/`if` arm body that overflows must fall back to
+        // its own multi-line layout (`exprAtCol` dispatches on `ExprKind`
+        // recursively) rather than being collapsed onto one line.
+        val inlineBody = exprInline(0, body)
+        if exprFitsInline(arrow.length, ctx, body, inlineBody) {
+          armLines.add(arrow + inlineBody)
+        } else {
           val bd = exprAtCol(arrow.length, ctx, body)
           if bd.count > 0 {
             armLines.add(arrow + bd[0])
@@ -1882,8 +1888,6 @@ func matchLines(scrut: in Expr, arms: in List[MatchArm], matchEnd: in Int, ctx: 
               j = j + 1
             }
           }
-        } else {
-          armLines.add(arrow + exprInline(0, body))
         }
       }
       case EOBBlock(blk) -> {
