@@ -32158,15 +32158,41 @@ sits alongside), `resolver/` (the analogous bundled-JAR precedent).
 `curl` download of the JaCoCo release ZIP had no `--connect-timeout`/
 `--max-time`, so a stalled connection could hang indefinitely — observed
 live on this PR's own `compiler-self-tests-jvm` CI run, which sat blocked
-on the "Coverage smoke test" step for 2+ hours (well past the 600s/120s
-timeouts already covering the actual `java`/`jacococli.jar` subprocess
-calls downstream in `cli_test.l`, confirming the hang was in the untimed
-download, not the coverage logic itself). Fixed by adding
+on the "Coverage smoke test" step for 2+ hours. Fixed by adding
 `--connect-timeout 20 --max-time 180` to the `curl` call and wrapping the
 whole `make jacoco` invocation in `scripts/ci/coverage-smoke-test.sh` with
-`timeout 240` as defense in depth. A network call with no timeout has no
-place in a CI script regardless of how reliable the target host usually
-is.
+`timeout 240` as defense in depth.
+
+That fix alone did not close the incident: the very next CI run hung again
+on the same step, this time for 47+ minutes with `make jacoco` already
+timeout-bounded — meaning the untimed `curl` was a real bug worth fixing
+but not the (or not the only) cause of the original 2-hour hang. The
+`java -jar <bundled-test.jar>` run and `jacococli.jar report` calls inside
+`cli_test.l`'s coverage path already carry their own 600s/120s timeouts via
+`Std.ProcessCapture.runCaptureWithDiagnosticsTimeout`, whose kernel
+implementation (`lyric-stdlib/std/_kernel/process_capture_host.l::runImpl`)
+looks properly hardened against the classic pitfalls (concurrent stdout/
+stderr drain tasks started before `WaitForExit`, `procKillTree` on timeout,
+a bounded drain-collection fallback) — no obvious bug was found there on
+inspection, and this exact command (`bitwise_self_test.l --target jvm
+--coverage`) had already been verified working correctly in the sandbox
+that built the original feature. Rather than guess further without being
+able to read logs from a still-running job (GitHub's job-log API only
+serves completed jobs), `scripts/ci/coverage-smoke-test.sh` now wraps the
+whole `lyric test --coverage` invocation in `timeout --signal=KILL 900`
+(comfortably above the 720s theoretical worst case from the internal
+timeouts) so a recurrence fails loudly within 15 minutes with a clear
+`::error::` message instead of consuming CI runner time indefinitely —
+producing real, downloadable failure logs to root-cause from if it fires
+again, rather than another multi-hour silent stall. If this timeout does
+fire, that is a genuine, unresolved bug in this PR's coverage path (or,
+less likely, in `ProcessCapture` itself) requiring further investigation —
+not a fluke to retry past.
+
+A network call with no timeout has no place in a CI script regardless of
+how reliable the target host usually is, and neither does a subprocess
+invocation with no *externally verifiable* bound, even when the callee
+claims to enforce its own.
 ## D-progress-804 — `compiler-self-tests-dotnet-a`/`-b`: further split `background: true` batches to ~4-6 concurrent steps; corrected the "RAM disk" mitigation comment (#4975)
 
 **Bug.** `compiler-self-tests-dotnet-a`/`-b` occasionally SIGBUS (exit

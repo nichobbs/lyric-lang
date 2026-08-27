@@ -56,7 +56,24 @@ if [ ! -f "$LYRIC_JACOCO_AGENT" ] || [ ! -f "$LYRIC_JACOCO_CLI" ]; then
   exit 1
 fi
 
-"$lyric_bin" test "$test_file" --target jvm --coverage
+# Hard external bound as a last line of defense: the `lyric test --coverage`
+# path already carries its own internal timeouts (600s for the coverage-
+# instrumented `java -jar` run, 120s for `jacococli.jar report`), so this
+# should never need to fire. It exists because PR #6627's CI run observed
+# this exact step hang for 2+ hours with no completion — well past every
+# internal timeout combined — which the internal timeouts alone evidently
+# did not prevent. Failing loudly within a bounded window, even if the
+# underlying cause turns out to be something this script can't see, beats
+# consuming an unbounded amount of CI runner time silently.
+rc=0
+timeout --signal=KILL 900 "$lyric_bin" test "$test_file" --target jvm --coverage || rc=$?
+if [ "$rc" -eq 137 ]; then
+  echo "::error::coverage-smoke-test.sh: '$lyric_bin test $test_file --target jvm --coverage' exceeded the 900s external timeout and was force-killed — this should never happen given the command's own internal 600s/120s timeouts; treat as a real bug in the coverage/compile path, not a fluke" >&2
+  exit 1
+elif [ "$rc" -ne 0 ]; then
+  echo "::error::coverage-smoke-test.sh: 'lyric test $test_file --target jvm --coverage' failed with exit code $rc" >&2
+  exit "$rc"
+fi
 
 test_dir="$(dirname "$test_file")"
 base="$(basename "$test_file")"
