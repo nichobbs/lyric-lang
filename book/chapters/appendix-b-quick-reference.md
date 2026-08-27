@@ -1032,6 +1032,12 @@ lyric test <file.l> --target native    # compile via the LLVM backend and run th
                                        # directly (single-file only; no try/catch isolation
                                        # per test — a failing assertion aborts the process,
                                        # D-N-003/D-N-018)
+lyric test <file.l> --target jvm \
+  --coverage                           # instrument with JaCoCo, write
+                                       # <dir>/.lyric-test/coverage/<stem>-cobertura.xml
+                                       # (+ <stem>-jacoco.xml); single-file JVM-target only
+                                       # for now (D134). Needs jacocoagent.jar/jacococli.jar
+                                       # via LYRIC_JACOCO_AGENT/LYRIC_JACOCO_CLI or `make jacoco`.
 lyric test                             # project mode: run every [project.tests] entry;
                                        # falls back to scanning [project.packages] for
                                        # @test_module files when [project.tests] is empty
