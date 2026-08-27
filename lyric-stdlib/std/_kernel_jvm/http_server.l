@@ -149,6 +149,10 @@ extern type JKeyManager = "javax.net.ssl.KeyManager"
 
 extern type JKeyManagerFactory = "javax.net.ssl.KeyManagerFactory"
 
+extern type JTrustManager = "javax.net.ssl.TrustManager"
+
+extern type JTrustManagerFactory = "javax.net.ssl.TrustManagerFactory"
+
 extern type JSSLContext = "javax.net.ssl.SSLContext"
 
 extern type JSSLParameters = "javax.net.ssl.SSLParameters"
@@ -364,29 +368,91 @@ func buildServerSslContext(identity: in Identity, minVersion: in TlsVersion): JS
 }
 
 /// An opaque, server-identity `javax.net.ssl.SSLContext` built from a
-/// `Std.Tls` `Identity` + `TlsVersion`. Exposed so OTHER JVM server
-/// kernels in this project — specifically `lyric-web`'s Undertow kernel,
-/// which drives `Undertow.Builder.addHttpsListener(port, host, sslContext)`
-/// rather than `com.sun.net.httpserver.HttpsServer` — can reuse the
-/// `KeyManagerFactory`/`KeyStore`/`java.lang.reflect` extern wiring above
-/// (module header) instead of re-declaring the whole boundary a second
-/// time. It carries no client-cert trust configuration: mutual TLS
-/// (`TlsServerConfig.clientCa` / `requireClientCert`) is the caller's
-/// responsibility to accept or reject, since the trust-manager + per-server
-/// client-auth wiring differs per server implementation
-/// (`HttpsServer.setNeedClientAuth` vs Undertow's XNIO `SSL_CLIENT_AUTH_MODE`).
+/// `Std.Tls` `Identity` + `TlsVersion` (optionally with client-cert trust
+/// pinned to a `Certificate`, via `serverSslContextFromConfigMtls`).
+/// Exposed so OTHER JVM server kernels in this project — specifically
+/// `lyric-web`'s Undertow kernel, which drives
+/// `Undertow.Builder.addHttpsListener(port, host, sslContext)` rather than
+/// `com.sun.net.httpserver.HttpsServer` — can reuse the
+/// `KeyManagerFactory`/`TrustManagerFactory`/`KeyStore`/`java.lang.reflect`
+/// extern wiring above (module header) instead of re-declaring the whole
+/// boundary a second time. A context built by the non-mTLS
+/// `serverSslContextFromConfig` carries no client-cert trust configuration,
+/// which is inert on its own: the per-server client-auth wiring
+/// (`HttpsServer.setNeedClientAuth` vs Undertow's XNIO
+/// `SSL_CLIENT_AUTH_MODE`) still differs per server implementation and is
+/// each caller's own responsibility to set.
 pub opaque type ServerSslContext {
   ctx: JSSLContext
 }
 
 /// Build a server-identity `SSLContext` from a certificate/key `Identity`
 /// and a minimum protocol version. Non-mTLS only (see `ServerSslContext`);
-/// callers that support mutual TLS layer the client-cert trust on top of
-/// the returned context themselves. Reuses `buildServerSslContext` — the
-/// exact same construction `startListenerTls` uses for its own
-/// `HttpsServer`.
+/// callers that support mutual TLS call `serverSslContextFromConfigMtls`
+/// instead. Reuses `buildServerSslContext` — the exact same construction
+/// `startListenerTls` uses for its own `HttpsServer`.
 pub func serverSslContextFromConfig(identity: in Identity, minVersion: in TlsVersion): ServerSslContext {
   ServerSslContext(ctx = buildServerSslContext(identity, minVersion))
+}
+
+// Builds a trust-only PKCS12 keystore holding `clientCa` under a fixed
+// alias — the standard JDK way to feed a `TrustManagerFactory` pinned to
+// exactly one CA rather than the platform default trust store. Mirrors
+// `buildIdentityKeyStore`'s pattern but with `setCertificateEntry` (a
+// trusted-cert entry, no private key) instead of `setKeyEntry`; neither
+// argument here is an array, so this calls straight through auto-FFI with
+// no `java.lang.reflect` bridging needed (module header).
+func buildClientCaKeyStore(clientCa: in Certificate): JKeyStore {
+  val handle = clientCa.rawHandle()
+  val cert: JCertificate = handle.cert
+  val ks: JKeyStore = JKeyStore.getInstance("PKCS12")
+  val nullStream = nullOfClass("java.io.InputStream")
+  val _load = invoke2(ks, "load", nullStream, emptyCharArrayObj())
+  ks.setCertificateEntry("lyric-client-ca", cert)
+  ks
+}
+
+// Build a server SSLContext with client-cert trust pinned to `clientCa`
+// (mutual TLS, docs/61 §6.3 phase 2.3 / issue #6017): the same
+// KeyManagerFactory-backed server identity as `buildServerSslContext`,
+// plus a TrustManagerFactory over `buildClientCaKeyStore`'s keystore in
+// place of the `null` TrustManager array. `makeTypedArray1` (module
+// header) builds the genuinely-typed `TrustManager[]` `SSLContext.init`
+// needs, mirroring the `KeyManager[]` construction above.
+func buildServerSslContextWithClientCa(
+  identity: in Identity,
+  minVersion: in TlsVersion,
+  clientCa: in Certificate,
+): JSSLContext {
+  val ks = buildIdentityKeyStore(identity)
+  val kmf: JKeyManagerFactory = JKeyManagerFactory.getInstance(JKeyManagerFactory.getDefaultAlgorithm())
+  val _init = invoke2(kmf, "init", ks, emptyCharArrayObj())
+  val keyManagers: slice[JKeyManager] = kmf.getKeyManagers()
+  val kmArr = makeTypedArray1("javax.net.ssl.KeyManager", keyManagers[0])
+  val trustKs = buildClientCaKeyStore(clientCa)
+  val tmf: JTrustManagerFactory = JTrustManagerFactory.getInstance(JTrustManagerFactory.getDefaultAlgorithm())
+  tmf.init(trustKs)
+  val trustManagers: slice[JTrustManager] = tmf.getTrustManagers()
+  val tmArr = makeTypedArray1("javax.net.ssl.TrustManager", trustManagers[0])
+  val ctx: JSSLContext = JSSLContext.getInstance(protocolNameFor(minVersion))
+  val random: JSecureRandom = JSecureRandom.new()
+  val _ctxInit = invoke3(ctx, "init", kmArr, tmArr, random)
+  ctx
+}
+
+/// Build a server-identity `SSLContext` with client-cert trust pinned to
+/// `clientCa` (mutual TLS). Companion to `serverSslContextFromConfig` for
+/// callers that support mTLS — currently `lyric-web`'s Undertow kernel
+/// (`Web.Kernel.Runtime.serveTls`, issue #6017). `Std.HttpServer`'s own
+/// `startListenerTls` (`com.sun.net.httpserver.HttpsServer`) still rejects
+/// mTLS for the separate, harder `HttpsConfigurator` class-subclassing gap
+/// (#5930) — this function does not touch that path.
+pub func serverSslContextFromConfigMtls(
+  identity: in Identity,
+  minVersion: in TlsVersion,
+  clientCa: in Certificate,
+): ServerSslContext {
+  ServerSslContext(ctx = buildServerSslContextWithClientCa(identity, minVersion, clientCa))
 }
 
 /// Kernel-boundary accessor for the underlying `javax.net.ssl.SSLContext`.

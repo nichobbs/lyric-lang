@@ -297,12 +297,11 @@ targets**, built from a `Std.Tls.TlsServerConfig` (PEM cert + key; see
   yet negotiated on this server (the transport advertises only `http/1.1`;
   issue #5889).
 - **`--target jvm`: real TLS termination** over an Undertow `addHttpsListener`
-  with `ENABLE_HTTP2` (HTTP/2 via ALPN, TLS-only). **mTLS
-  (`requireClientCert` / `clientCa`) is not supported on the JVM Undertow path
-  yet** — it needs a client-CA `TrustManager` on the `SSLContext` plus
-  Undertow's XNIO `SSL_CLIENT_AUTH_MODE` option; `serveTls` returns a typed
-  `ServerTlsUnsupported` naming issue #6017. Non-mTLS TLS termination (server
-  identity + minimum version) is fully supported.
+  with `ENABLE_HTTP2` (HTTP/2 via ALPN, TLS-only). **Mutual TLS is fully
+  supported here** (issue #6017): `clientCa` pins a client-CA `TrustManager`
+  onto the listener's `SSLContext`, and `requireClientCert` drives Undertow's
+  XNIO `SSL_CLIENT_AUTH_MODE` socket option (`REQUIRED` when set, `REQUESTED`
+  — optional — when `clientCa` is configured without `requireClientCert`).
 
 A configuration that cannot bind a listener — a mutual-TLS misconfiguration
 (`requireClientCert` with no `clientCa`) or a socket bind failure — returns a

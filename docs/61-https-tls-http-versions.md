@@ -21,7 +21,7 @@ TLS support off-Windows and is HTTP/1.1-only by construction.
 | Client TLS | Works (platform trust), no config surface | Works (default `SSLContext`), no config surface |
 | Client HTTP version | **1.1 only** (`HttpClient` default; the kernel never sets `DefaultRequestVersion`) | **h2 with 1.1 fallback** (JDK default; `_kernel_jvm/http_host.l` never calls `Builder.version()`) |
 | Server TLS (`Std.HttpServer`) | Shipped (phase 3.3, #5884): `startListenerTls` over the sans-IO `Std.HttpEngine` + `Std.TcpHost`/`SslStream` transport (identity + `minVersion` + ALPN `http/1.1` + callback-free mTLS); `HttpListener` retired | Shipped (phase 2.1, #5880): `HttpsServer` + `SSLContext` from `TlsServerConfig` (mTLS is #5930) |
-| Server TLS (`lyric-web`) | Shipped (phase 3.4, #5885): `Web.serveTls` terminates real TLS via `Std.HttpServer.startListenerTls`, mTLS supported | Shipped (phase 2.2, #5881): Undertow `addHttpsListener` + `ENABLE_HTTP2` (mTLS is #6017) |
+| Server TLS (`lyric-web`) | Shipped (phase 3.4, #5885): `Web.serveTls` terminates real TLS via `Std.HttpServer.startListenerTls`, mTLS supported | Shipped (phase 2.2, #5881): Undertow `addHttpsListener` + `ENABLE_HTTP2`, mTLS shipped (#6017) |
 | Server HTTP version | 1.1 (`HttpListener` cannot do h2) | 1.1 (`com.sun.net.httpserver` cannot; Undertow can but `ENABLE_HTTP2` is not set) |
 | native | No HTTP kernel exists yet | — |
 
@@ -596,15 +596,27 @@ items marked ∥ are independent and can proceed in parallel.
    sketch's `pub config … from { }` form isn't valid parser syntax, since
    `from` is the config-derivation keyword) plus `tlsServerConfigFromWebTls`
    give env-overridable cert/key/client-CA paths (D128 decision 2).
-   **mTLS did NOT ship on this path**: the reused identity-only `SSLContext`
-   builder carries no client-CA `TrustManager`, and Undertow needs its XNIO
-   `SSL_CLIENT_AUTH_MODE` socket option wired too — `serveTls` rejects any
-   `requireClientCert`/`clientCa` request with a typed `NotSupportedOnTarget`,
-   tracked in issue #6017. Verified end-to-end by
+   **mTLS shipped on this path** (D-progress-805, issue #6017):
+   `Std.HttpServer.serverSslContextFromConfigMtls` (`_kernel_jvm/http_server.l`)
+   builds a client-cert `TrustManager` over a trust-only keystore holding
+   `TlsServerConfig.clientCa` — the same `java.lang.reflect`-bridged
+   `makeTypedArray1` idiom `serverSslContextFromConfig`'s `KeyManager[]`
+   already uses, applied to the `TrustManager[]` `SSLContext.init` needs —
+   and `Web.Kernel.Runtime.serveTls` wires Undertow's XNIO
+   `SSL_CLIENT_AUTH_MODE` socket option (`REQUIRED` when
+   `requireClientCert`, `REQUESTED` when `clientCa` is set without it) onto
+   the listener via `Undertow.Builder.setSocketOption`. `Web.serveTls`
+   (jvm) now only rejects the one genuine misconfiguration —
+   `requireClientCert` with no `clientCa` — mirroring the dotnet kernel's
+   `InvalidConfig` guard. Verified end-to-end by
    `tests/jvm_server_smoke.l`'s in-process HTTPS/h2 self-check (a real
    Undertow TLS listener + a `Std.Http` client that trusts the fixture cert
    and asserts `HttpResponse.negotiatedVersion() == Http2`) plus a
-   `curl --http2` cross-check, and by `tests/serve_tls_tests.l` on dotnet.
+   `curl --http2` cross-check, an mTLS-accept self-check (a client
+   presenting a cert signed by the configured `clientCa` connects
+   successfully) and an mTLS-reject self-check (an unrelated self-signed
+   client cert is rejected at the TLS handshake), and by
+   `tests/serve_tls_tests.l` on dotnet.
 
 **Phase 3 — .NET server engine**
 7. `_kernel/tcp_host.l`: `TcpListener`/`NetworkStream`/`SslStream` transport
@@ -669,9 +681,10 @@ items marked ∥ are independent and can proceed in parallel.
     loop / `dispatch` core as plaintext `serve`; the phase-2.2 typed
     `ServerTlsUnsupported`-on-dotnet stub is gone. **mTLS is fully supported
     on dotnet** (the config is passed straight through to the callback-free
-    mTLS transport kernel), unlike the JVM Undertow listener (mTLS is #6017);
-    a config that cannot bind (mutual-TLS misconfiguration or bind failure)
-    returns a typed `ServerTlsUnsupported` carrying the underlying
+    mTLS transport kernel); the JVM Undertow listener shipped mTLS too
+    (D-progress-805, #6017). A config that cannot bind (mutual-TLS
+    misconfiguration or bind failure) returns a typed `ServerTlsUnsupported`
+    carrying the underlying
     `TlsListenError` message, never a silent failure. Verified by
     `lyric-web/tests/serve_tls_tests.l` (real in-process `Web.serveTls`
     end-to-end over TLS + mTLS driven by the real Lyric HTTPS client, plus the
