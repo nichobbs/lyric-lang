@@ -34815,9 +34815,9 @@ tests; `llvm_http_client_self_test.l` genuinely green locally via the NuGet
 (`_kernel_native/tcp_host.l`, `_kernel_native/http_host.l`,
 `llvm_http_client_self_test.l`).
 
-## D-progress-808 — `_kernel_native/http_host.l`: strip `Authorization`/`Cookie`/`Proxy-Authorization` on a cross-authority redirect (PR #6623 review finding)
+## D-progress-817 — `_kernel_native/http_host.l`: strip `Authorization`/`Cookie`/`Proxy-Authorization` on a cross-authority redirect (PR #6623 review finding)
 
-**Context.** `claude-review`'s pass on PR #6105/#6623 (D-progress-804's
+**Context.** `claude-review`'s pass on PR #6105/#6623 (D-progress-816's
 native `Std.Http` client twin) found a real gap in
 `nextRequestForRedirect`: a 301/302/307/308 redirect that preserves the
 request's headers (i.e. every case except a 303/GET-downgrade, which
@@ -34836,7 +34836,7 @@ header as a known divergence either.
 
 **Not yet live-exploitable, fixed anyway.** `Std.Http`'s public builder
 surface (`defaultClient()`/`HttpClientBuilder`) cannot construct on native
-today (the pre-existing N3.2 async-interface-dispatch gap D-progress-804
+today (the pre-existing N3.2 async-interface-dispatch gap D-progress-816
 already documents at length), so nothing in a real user program can reach
 this kernel's redirect path yet. Fixed now rather than deferred, since the
 fix is small, self-contained, and this exact code becomes reachable the
@@ -34876,13 +34876,13 @@ still passes unaffected; restored the fix and re-ran clean (2/2, exit 0).
 `lyric fmt --write` applied clean (no refusals) to both changed files.
 
 **Related:** #6623 (the PR this review finding was raised on),
-D-progress-804 (the original native `Std.Http` client twin entry, whose
+D-progress-816 (the original native `Std.Http` client twin entry, whose
 N3.2 gap this fix's "not yet live-exploitable" reasoning depends on).
 
-## D-progress-809 — `_kernel_native/http_host.l`: CRLF/header-injection guard (#6635) + response size limits (#6636), and a genuine native-codegen bug found along the way (#6637/#6645)
+## D-progress-818 — `_kernel_native/http_host.l`: CRLF/header-injection guard (#6635) + response size limits (#6636), and a genuine native-codegen bug found along the way (#6637/#6645)
 
-**Context.** A second `claude-review` pass on PR #6623 (D-progress-804's
-native `Std.Http` client twin, already extended once by D-progress-808's
+**Context.** A second `claude-review` pass on PR #6623 (D-progress-816's
+native `Std.Http` client twin, already extended once by D-progress-817's
 redirect-header-stripping fix) found two REQUIRED findings, both reachable
 today through `Std.Http`'s free functions (`sendAsync`/`getAsync`/
 `postAsync`), independent of the separate N3.2 `HttpClient`-interface
@@ -34992,27 +34992,27 @@ exact scenario (the server never sends 99999999 bytes either way), so a
 looser assertion would pass even with the cap fix reverted — caught by
 deliberately disabling the cap check locally and confirming the looser
 assertion's false pass before tightening it. Both new tests (and item F
-from D-progress-808) were verified as genuine regression checks by
+from D-progress-817) were verified as genuine regression checks by
 disabling each fix in turn and confirming the corresponding test fails,
 then restoring and confirming all 4 pass clean. `lyric fmt --write`
 applied clean (no refusals) to both changed files.
 
 **Related:** #6623 (the PR both fixes and the workaround ship in), #6635,
 #6636 (the two REQUIRED review findings), #6645 (the native-codegen bug
-tracking issue), D-progress-804 (original entry), D-progress-808 (the
+tracking issue), D-progress-816 (original entry), D-progress-817 (the
 prior review-fix round on this same PR).
 
-## D-progress-810 — `_kernel_native/http_host.l`: inverted TLS-downgrade check (#6646) + wrong-base overflow guard (#6647), both third-review findings on the D-progress-809 fixes themselves
+## D-progress-819 — `_kernel_native/http_host.l`: inverted TLS-downgrade check (#6646) + wrong-base overflow guard (#6647), both third-review findings on the D-progress-818 fixes themselves
 
 **Context.** A THIRD `claude-review` pass on PR #6623 confirmed both of
-D-progress-809's fixes (#6635 CRLF-injection guard, #6636 response size
+D-progress-818's fixes (#6635 CRLF-injection guard, #6636 response size
 limits) correct and their tracking issues closed, but found two NEW
-REQUIRED findings — both logic bugs in the code D-progress-809 itself
+REQUIRED findings — both logic bugs in the code D-progress-818 itself
 added, both untested by that round's self-test suite, and both undermining
 the very fixes they sit beside:
 
 - **#6646 — `isSameRedirectAuthority`'s scheme clause inverted.**
-  D-progress-808's original fix wrote `(from.isHttps or not to.isHttps)`
+  D-progress-817's original fix wrote `(from.isHttps or not to.isHttps)`
   in the `and`-chain guarding whether a redirect strips
   `Authorization`/`Cookie`/`Proxy-Authorization`. This makes an `https://`
   → `http://` redirect to the identical host:port evaluate as "same
@@ -35024,7 +35024,7 @@ the very fixes they sit beside:
   comment above it (which was already correct; only the code was
   inverted).
 - **#6647 — `parseHexInt`'s overflow guard used the wrong threshold.**
-  D-progress-809's `parseNonNegativeInt` overflow fix was copy-pasted into
+  D-progress-818's `parseNonNegativeInt` overflow fix was copy-pasted into
   `parseHexInt` (chunk-size parsing) with the SAME threshold
   (`n > 200000000`), but chunk-size parsing grows `n` by `×16` per digit,
   not `×10` — `200000000 * 16` overflows `Int32` many times over before
@@ -35065,17 +35065,17 @@ corresponding test fails, then restoring and confirming all 6 pass clean.
 `lyric fmt --write` applied clean (no diff) to both changed files.
 
 **Related:** #6623 (the PR both fixes ship in), #6646, #6647 (the two
-REQUIRED findings), D-progress-808 (the original, inverted
-`isSameRedirectAuthority`), D-progress-809 (the original, wrong-threshold
+REQUIRED findings), D-progress-817 (the original, inverted
+`isSameRedirectAuthority`), D-progress-818 (the original, wrong-threshold
 `parseHexInt` guard).
 
-## D-progress-811 — `_kernel_native/http_host.l`: cumulative chunk-size overflow bypasses the body-size cap (#6656), a fourth review round on this same PR
+## D-progress-820 — `_kernel_native/http_host.l`: cumulative chunk-size overflow bypasses the body-size cap (#6656), a fourth review round on this same PR
 
 **Context.** A FOURTH `claude-review` pass on PR #6623 confirmed
-D-progress-808/809/810's fixes correct and closed #6646/#6647, but found
+D-progress-817/809/810's fixes correct and closed #6646/#6647, but found
 one more REQUIRED bug in the same area: `readChunkedBody`'s cumulative
 cap check, `if acc.count + size > maxResponseBodyBytes`, is itself
-overflow-prone. D-progress-810's #6647 fix bounds a SINGLE chunk-size
+overflow-prone. D-progress-819's #6647 fix bounds a SINGLE chunk-size
 line's own parsed value to `<= Int32.MaxValue`, but does nothing about
 the SUM of `acc.count` (bytes already decoded from prior chunks) plus a
 new chunk's `size` — a server sending a tiny first chunk (so
@@ -35085,7 +35085,7 @@ silently passing the `>` check. The same negative value then flows into
 `dataEnd = dataStart + size` a few lines down, eventually driving `pos`
 negative and reaching an out-of-bounds buffer index (`buf[pos + j]` inside
 `findPattern`/`bytesEqualAt`) on the connection's next read — the
-identical memory-safety crash class D-progress-810 fixed for the
+identical memory-safety crash class D-progress-819 fixed for the
 single-line case, reachable here through a second, distinct arithmetic
 path that fix didn't close.
 
@@ -35127,11 +35127,11 @@ introduced by this PR.
 
 **Related:** #6623 (the PR this fix ships in), #6656 (the REQUIRED
 finding), #6658 (the header-collision follow-up, filed but not fixed
-here), D-progress-810 (the prior review-fix round's #6647 fix, whose
+here), D-progress-819 (the prior review-fix round's #6647 fix, whose
 single-line overflow guard this entry's bug sits one arithmetic step
 beyond).
 
-## D-progress-812 — `_kernel_native/http_host.l`: HEAD/1xx/204/304 responses read as if they carry a body (#6692) + raw-buffer amplification bypass of the body-size cap (#6693), a fifth review round on this same PR
+## D-progress-821 — `_kernel_native/http_host.l`: HEAD/1xx/204/304 responses read as if they carry a body (#6692) + raw-buffer amplification bypass of the body-size cap (#6693), a fifth review round on this same PR
 
 **Context.** A FIFTH `claude-review` pass on PR #6623 (after two runs that
 completed successfully but, for reasons unrelated to this PR's code —
@@ -35165,7 +35165,7 @@ the already-fixed #6656) found two more REQUIRED bugs, both in
    if they were the `1xx`'s own body.
 
 2. **#6693 — the raw receive buffer has no cap independent of the decoded
-   body.** D-progress-811 (#6656) correctly bounded the *decoded* chunked
+   body.** D-progress-820 (#6656) correctly bounded the *decoded* chunked
    body (`acc`) against `maxResponseBodyBytes` (10 MB) with an
    overflow-safe check. But nothing bounded the *raw* wire bytes `buf`
    that `readChunkedBody` reads every byte into — RFC 9112 section 7.1.1
@@ -35226,7 +35226,7 @@ native bridge pipeline:
   self-test source.
 
 All four verified as genuine regression checks by reverting
-`_kernel_native/http_host.l` to its pre-D-progress-812 state (via `git
+`_kernel_native/http_host.l` to its pre-D-progress-821 state (via `git
 stash push` on just that file, keeping the new tests) and confirming
 each fails with the EXACT predicted wrong behavior, not a generic
 false-positive: item L and M both fail with "not sendOk" (the old code
@@ -35250,7 +35250,7 @@ distinct compiler-inference limitation from anything this PR is otherwise
 about, worth naming here so a future reader doesn't mistake it for
 evidence against the fix's substance.
 
-**Review-tooling note (not a code issue).** Between the D-progress-811
+**Review-tooling note (not a code issue).** Between the D-progress-820
 push and this round's actual findings, the `claude-review` job ran twice
 (once automatically, once via a manual re-run) and both times completed
 successfully (28 and 29 turns, `is_error: false`) without posting a
@@ -35266,7 +35266,7 @@ produced the two genuine findings this entry fixes — the tooling
 hiccup did not mask any real issue, it just delayed this round's start.
 
 **Related:** #6623 (the PR this fix ships in), #6692, #6693 (the two
-REQUIRED findings), D-progress-811 (the prior round's #6656 fix, whose
+REQUIRED findings), D-progress-820 (the prior round's #6656 fix, whose
 `acc`-based cap this entry's #6693 fix supplements rather than
 replaces).
 
