@@ -13,6 +13,7 @@ package Grpc.ChannelLifecycleTests
 import Std.Core
 import Std.Testing
 import Grpc
+import Grpc.Types
 
 test "openChannel: a well-formed address succeeds" {
   match Grpc.openChannel("http://localhost:50051") {
@@ -51,6 +52,28 @@ test "openChannel: repeated open/close does not leak or crash" {
     }
     i = i + 1
   }
+}
+
+test "closeChannel: closing the same handle twice is a safe no-op" {
+  match Grpc.openChannel("http://localhost:50054") {
+    case Err(msg) -> assertTrue(false, "expected Ok, got Err(" + msg + ")")
+    case Ok(channel) -> {
+      Grpc.closeChannel(channel)
+      // The second close's registry lookup misses (already TryRemove'd by
+      // the first) -- must be a silent no-op, not a crash or double-dispose.
+      Grpc.closeChannel(channel)
+    }
+  }
+}
+
+test "closeChannel: a never-issued handle is a safe no-op" {
+  // Grpc.Types.wrapChannelHandle constructs a GrpcChannel around a raw
+  // registry key with no corresponding live Grpc.Net.Client.GrpcChannel --
+  // exercises the same "registry lookup misses" no-op path a stale or
+  // forged handle would hit, without needing #6580's pub-visibility
+  // workaround to persist for this test to make sense.
+  val neverIssued = Grpc.Types.wrapChannelHandle(999999999)
+  Grpc.closeChannel(neverIssued)
 }
 
 test "openChannel: two concurrently-open channels get independent handles that both close cleanly" {
