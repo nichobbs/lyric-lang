@@ -18,12 +18,58 @@ import Lyric.CliSuggest as Suggest
 // ─────────────────────────────────────────────────────────────────────────────
 // §12. Entry point
 // ─────────────────────────────────────────────────────────────────────────────
+// #5860: the result of the "no usable manifest" arms of the bare `lyric`
+// dispatch (`FoundBrokenManifest` / `NoManifestFound`), returned as data so a
+// test can assert on the exact warning text without a stdout/stderr capture
+// facility (`Lyric.Cli` has none). `warningPrinted` mirrors — not replaces —
+// the real `printErr` call `reportNoUsableManifestForBare` makes below.
+pub record BareDispatchResult {
+  exitCode: Int
+  warningPrinted: Option[String]
+}
+
+// Shared print-and-exit behavior for `FoundBrokenManifest`/`NoManifestFound`:
+// a single implementation means both arms call `printUsage()` identically —
+// a future edit cannot silently drop it from just one of them (#5860).
+func reportNoUsableManifestForBare(warning: in Option[String]): BareDispatchResult {
+  match warning {
+    case Some(w) -> printErr(w)
+    case None -> ()
+  }
+  printUsage()
+  BareDispatchResult(exitCode = 1, warningPrinted = warning)
+}
+
+pub union BareDispatchOutcome {
+  case BareShouldBuild(manifestPath: String)
+  case BareReported(outcome: BareDispatchResult)
+}
+
+// The bare-`lyric`-dispatch decision, with `startDir` injectable (rather than
+// hardcoded to `Environment.currentDirectory()`) so a self-test can drive it
+// against a fixture directory in-process (#5860; `pub` for the same reason
+// `buildOneNative` is — see its doc comment, #4127).
+pub func resolveBareDispatch(startDir: in String): BareDispatchOutcome {
+  match Disc.findNearestManifestDetailed(startDir) {
+    case FoundManifest(p) -> BareShouldBuild(manifestPath = p)
+    case FoundBrokenManifest(p, error) -> {
+      val warningText = Disc.brokenManifestWarning(p, error)
+      val dispatchResult = reportNoUsableManifestForBare(Some(value = warningText))
+      BareReported(outcome = dispatchResult)
+    }
+    case NoManifestFound -> {
+      val dispatchResult = reportNoUsableManifestForBare(None)
+      BareReported(outcome = dispatchResult)
+    }
+  }
+}
+
 pub func main(argv: in slice[String]): Int {
   // Bare `lyric` builds the discovered project (the project-aware default).
   // Outside a project it is still a usage error, not a silent no-op.
   if argv.length == 0 {
-    match Disc.findNearestManifestDetailed(Environment.currentDirectory()) {
-      case FoundManifest(p) -> {
+    match resolveBareDispatch(Environment.currentDirectory()) {
+      case BareShouldBuild(p) -> {
         // Forward the discovered path so cmdBuild doesn't walk the tree again.
         val buildArgv: List[String] = newList()
         buildArgv.add("build")
@@ -31,15 +77,7 @@ pub func main(argv: in slice[String]): Int {
         buildArgv.add(p)
         return cmdBuild(buildArgv.toArray())
       }
-      case FoundBrokenManifest(p, error) -> {
-        printErr(Disc.brokenManifestWarning(p, error))
-        printUsage()
-        return 1
-      }
-      case NoManifestFound -> {
-        printUsage()
-        return 1
-      }
+      case BareReported(outcome) -> return outcome.exitCode
     }
   }
 

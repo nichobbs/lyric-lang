@@ -31708,7 +31708,620 @@ dotnet and JVM self-test CI jobs (`.github/workflows/ci.yml`) and the
 `Makefile`'s `TEST_EMITTER_FILES` aggregate list (dotnet-only, per that
 list's own scope).
 
-## D-progress-802 — JVM kernel/codegen batch: piped-process reads, `Std.Environment.args()`, regex ReDoS timeout (#6135, #5377, #1103)
+## D-progress-802 — `file_tests.l` gets its `--target jvm` CI step; closes #5113
+
+**Context.** #5113 (a PR #5084 review finding) flagged that the three new
+core-I/O CI steps (`file_tests.l`, `directory_tests.l`, an `Std.Http` test)
+ran `--target dotnet` only. `Std.Http` is legitimately .NET-only (no JVM
+gap there); `Std.File`/`Std.Directory` are cross-platform stdlib modules
+with real JVM kernels and should get JVM CI coverage per the
+`bitwise_self_test.l`/`aspect_weave_self_test.l` precedent (dedicated
+`--target dotnet` + `--target jvm` steps).
+
+Follow-up comments on #5113 (2026-07-10, 2026-07-29) found both suites
+genuinely failed on `--target jvm` at the time: `directory_tests.l`'s
+"delete on a non-empty directory surfaces IoError" case (the JVM kernel's
+`hostDeleteDirectory` called bare `JFile.delete()`, which reports failure
+via a silent `false` return rather than throwing like the .NET twin, so a
+non-empty-directory delete silently "succeeded"), and `file_tests.l`'s
+"writeBytes/readBytes round-trips raw bytes" case (`class java.lang.Byte
+cannot be cast to class java.lang.Integer`, part of the `slice[Byte]`
+Byte/Integer cast erasure family, #5453/#5257). PR #6385 fixed the
+`hostDeleteDirectory` bug and wired `directory_tests.l`'s JVM step,
+leaving `file_tests.l` as the tracked remainder.
+
+**Resolution.** Re-verified against current `main` (2026-08-27): #5453
+(numeric-intrinsic dispatch — `.toInt()` and friends — consulting the
+JVM-erased `Object` receiver type instead of the Lyric-level `Byte` type
+of an indexed `slice[Byte]` element) was fixed and closed 2026-07-12.
+Running `file_tests.l --target jvm` against current `main` now passes
+11/11, including the previously-failing byte round-trip case, and stays
+green across repeated runs — not flaky. #5257 (a separate, still-open
+`.append` numeric-widening boxing bug on `slice[T]`) does not affect this
+suite: `writeBytes`/`readBytes` never append to a `slice[Byte]`, so the
+two issues are unrelated in practice despite #5113's original comments
+grouping them together as one blocker.
+
+No kernel code changes were needed — `lyric-stdlib/std/_kernel_jvm/file_host.l`
+was already correct once #5453 landed. Added the `Std.File test coverage on
+JVM` CI step in `.github/workflows/ci.yml`, immediately after the
+`Std.Directory test coverage on JVM` step, matching that step's shape
+(`background: true`, no `--summary`, same sub-batch). This closes #5113:
+`Std.Http` intentionally stays dotnet-only (no JVM gap to close), and both
+`Std.File`/`Std.Directory` now run on both targets.
+
+**Related:** #5113, #5453 (closed), #5257 (open, unrelated to this suite),
+PR #6385 (the `directory_tests.l` half), `docs/57-stdlib-ecosystem-library-review.md`
+§5.1 (the original stdlib core-I/O test-gap finding).
+
+## D-progress-803 — `Std.Rest.RestClient.json` gets a live HTTP round-trip self-test (#1119); two `fullUrl` runtime bugs found (MSIL #5622 confirmed still open, JVM newly found)
+
+**Context.** #1119 has been triaged twice before (2026-07-03, 2026-07-16)
+without landing full coverage: `lyric-stdlib/tests/rest_tests.l` pins the
+`parseJson`/`disposeJson` contract `RestClient.json` depends on, but
+`HttpResponse` is `pub opaque` with no test-stub constructor, so nothing
+had ever driven `RestClient.json` itself against a real response. The
+second triage comment identified the reusable fix: `http_roundtrip_self_test.l`'s
+child-process `Std.HttpServer` pattern, not a new `Std.Testing.MockHttpServer`
+(the issue's own option 1).
+
+**What shipped.** `lyric-compiler/lyric/rest_json_roundtrip_self_test.l`
+(`@test_module`, native `lyric test --target dotnet`, CI-wired immediately
+after the existing "Std.Http round-trip self-test" step): reuses the
+child-process listener pattern to serve a real JSON body, a malformed
+non-JSON body, and a `/quit` route, then drives `RestClient.json` against
+the real `HttpResponse` `Std.Http.getAsync` returns. Three cases: happy
+path (`Ok(doc)`, fields verified via `getProperty`/`getString`/`getInt32`/
+`getBoolean`), a non-JSON body classifying as `Err(Deserialize(...))`, and
+`disposeJson` being a no-op on a second call. `rest_tests.l`'s header was
+updated to point at this file and drop a stale claim (importing `Std.Rest`
+no longer trips any emitter limitation — empirically reconfirmed while
+authoring this entry, the file already imports and runs it).
+
+**Scope boundary — `RestClient.get`/`.post`/etc. stay untested live.**
+`RestClient.get` (and `.post`/`.put`/`.patch`/`.delete`) route through
+`sendRequest` -> `fullUrl`, which throws before sending anything. #5622
+(filed 2026-07-12, still open) already named the MSIL half; reproduced
+here directly rather than assumed:
+
+```
+Unhandled exception. System.Exception: unsupported method 'charAt' on the
+receiver type at this call site (no matching user method, extern binding,
+or built-in intrinsic)
+   at Std.Rest.Program.fullUrl(RestClient, String)
+```
+
+`fullUrl`'s `val base = client.baseUrl; ...; base.charAt(lastBase)` — a
+`String` method called on a value read from an opaque-type field — never
+resolves to the `String.charAt` intrinsic on MSIL. Newly found while
+verifying JVM parity for this same test: `--target jvm` fails `fullUrl`
+too, differently — a `java.lang.StringIndexOutOfBoundsException` out of
+`String.substring` at `path.substring(1, path.length)`, not yet filed as
+its own issue. Testing `RestClient.json` doesn't need `fullUrl` — the
+function only takes an already-fetched `HttpResponse` — so this test
+sidesteps both bugs deliberately rather than papering over either; per
+CLAUDE.md's production-readiness standard, the `RestClient.get`-family
+live round trip is called out here as a real, open gap (not silently
+dropped) until #5622's codegen fix lands.
+
+**JVM parity for this test, not shipped, concrete blocker (not a
+`Std.Rest` gap).** `Std.Http`/`Std.HttpServer`/`Std.Json` all carry real
+JVM kernels today — the H5 finding in
+`docs/59-compiler-stdlib-deep-review.md` reads as still-open but is stale;
+verified directly by running `Std.Json`'s JVM kernel
+(`_kernel_jvm/json_host.l`, a pure-Lyric parser over `Std.Yaml`, no
+phantom classes). The actual blocker is this test's own harness: it
+imports `Lyric.Emitter` (a compiler package) to build the child server
+in-process, and `lyric test --target jvm` cannot resolve
+`Lyric.Emitter.ProjectPackage` — reproduced directly:
+
+```
+error[T0014] unknown qualified type 'Lyric.Emitter.ProjectPackage'
+('ProjectPackage' not found in scope)
+```
+
+This is the same class of limitation that already keeps
+`http_roundtrip_self_test.l` itself dotnet-only (compiler-package
+resolution under `lyric test` is wired for dotnet's stage-1 bundle DLLs,
+not a JVM-buildable compiler-package set) — not something new introduced
+by this file. A JVM analog is a real, tracked follow-up once
+`Lyric.Emitter`'s compiler-package closure resolves under `--target jvm`.
+
+**Sandbox note.** This session's release-download bootstrap step
+(`./scripts/bootstrap.sh --stage 1`) was blocked by network/proxy policy
+denying `api.github.com`, so no `./bin/lyric` could be built from this
+repo's own source — the exact sandbox profile D-progress-543 documents.
+Every claim above (both `fullUrl` failure modes, the JVM `Lyric.Emitter`
+resolution failure, and all three new test cases passing) was verified
+against the published NuGet `lyric` 0.5.1 global tool instead of a
+from-source build, per that entry's precedent. A from-source CI run
+should re-verify before merge; if `lyric fmt --write` (also run from the
+0.5.1 tool here) is later found to diverge from `main`'s canonical style
+for either changed file, D-progress-543 applies.
+
+**Related:** #1119, #5622, D-progress-543, `docs/59-compiler-stdlib-deep-review.md`.
+
+## D134 — MSIL/CLI DLL writes are atomic (write-temp-then-rename), closing the #6301 stdlib-rebuild flake
+
+**Status:** ACCEPTED
+
+**Problem (#6301).** `lyric build --manifest lyric-stdlib/lyric.full.toml
+-o Lyric.Stdlib.dll --target dotnet` was observed to intermittently crash
+with `MissingFieldException` or `BadImageFormatException` "inside
+`restoreMavenClasspath`" on a clean checkout, always succeeding on an
+identical retry. Investigation (recorded in the issue's 2026-08-26 triage
+comment, confirmed again here) ruled out the function actually named in
+the title: both call sites
+(`cli_build.l`'s `buildOneNative` and `buildProjectFromManifest`) gate
+`injectMavenClasspathForJvm` behind `case Jvm -> ...`/`case _ -> ()`, so a
+`--target dotnet` build always calls `restoreMavenClasspath(None)`, which
+hits its own `case None -> ()` no-op arm — it touches no file, no
+environment variable, nothing that can throw. The two exception shapes
+are the CLR's classic signature for loading a PE/DLL file while another
+process is still writing it, and `restoreMavenClasspath` merely happened
+to be the next call site the JIT touched when a stale/concurrently-
+rewritten dependency assembly's metadata was resolved — a coincidental
+attribution, not the fault site.
+
+**Root cause.** Three write sites in the self-hosted compiler and CLI
+wrote their destination DLL via a plain BCL `File.WriteAllBytes`
+(`Std.File.writeBytes` on the `.NET` kernel), which truncates the
+destination to zero length *before* streaming the new bytes:
+
+- `Msil.Bridge.compileToMsilWithVersion` and
+  `compileProjectToMsilWithRestoredAndVersion`
+  (`lyric-compiler/msil/bridge.l`) — the actual PE emission for every
+  `--target dotnet` build, including the `lyric.full.toml` stdlib bundle
+  this issue's repro command rebuilds.
+- `Lyric.Cli`'s `copyRuntimeDepsBeside` and `copyDllBeside`
+  (`lyric-compiler/lyric/cli/cli_shared.l`) — co-locate the compiled
+  stdlib bundle and restored dependency DLLs beside a build's output for
+  `dotnet exec` resolution; `copyRuntimeDepsBeside` explicitly reads its
+  source DLLs from `findCompiledLibDir()`, which resolves to the running
+  toolchain's own `bin/` directory when the SDK's stdlib is already
+  present there.
+
+A reader that opens either destination in the truncate-then-write window
+— another `lyric` process's CLR loader resolving the same DLL as a
+runtime dependency, or a second build targeting an overlapping output
+path — observes a zero-length or partially-written PE image, surfacing
+exactly as `BadImageFormatException` (unparsable PE header) or
+`MissingFieldException` (a since-changed field/type layout resolved
+against stale metadata). This matches the report's own "several builds
+in parallel worktrees" note and the suspicion that `checkDllIsStale`'s
+mtime-only staleness check (#5611) could be contributing — the real gap
+was upstream of staleness checking, in the write itself never being
+observably atomic.
+
+**Decision.** Route every one of the three write sites above through a
+local `writeBytesAtomic`/`writeBytesAtomicBeside` helper: write the full
+byte buffer to a same-directory, UUID-suffixed temp file
+(`<dest>.tmp-<uuid>`), then `System.IO.File.Move(tmp, dest, overwrite:
+true)` to publish it. A same-directory rename is a single atomic
+filesystem operation on the platforms this compiler ships for, so a
+concurrent reader of `dest` only ever observes the complete previous file
+or the complete new one — never a truncated intermediate state. A failed
+move deletes the orphaned temp file and reports failure exactly as the
+old code did (both helpers preserve their call sites' existing
+`Bool`/`Unit` return shape — no signature changes ripple outward).
+
+Each helper is declared locally in the package that needs it
+(`Msil.Bridge`, which is `--target dotnet`-only by construction, and
+`Lyric.Cli`'s `cli_shared.l`, whose three copy-helper call sites are all
+gated on `case Dotnet -> ...`) rather than as a new `Std.File` public API.
+This keeps the fix's blast radius to the two files actually implicated
+and avoids the JVM/native kernel-parity obligation a new cross-target
+stdlib primitive would otherwise carry (docs/03's "no one-platform
+implementations" rule applies to constructs the language reference
+defines for both targets — an internal write-atomicity fix confined to
+an already-dotnet-only code path is not one of those).
+
+`restoreMavenClasspath` itself is untouched (it was already correct) but
+now carries a doc comment recording the #6301 investigation, so a future
+reader who arrives via a stack trace naming this function is redirected
+immediately to the real fault sites instead of re-investigating a
+confirmed dead end.
+
+**Alternatives considered:**
+- *Lock file around the restore-cache read-modify-write.* Rejected: there
+  is no restore-cache read-modify-write in the dotnet-target path at all
+  (`injectMavenClasspathForJvm`/`restoreMavenClasspath` are JVM-only and
+  provably inert on `--target dotnet`) — a lock would guard a file that
+  is never the one actually racing.
+- *Content-hash staleness instead of mtime (#5611).* Orthogonal: even a
+  perfect staleness check only decides *whether* to rewrite a DLL: it
+  does nothing about a *concurrent reader* observing a rewrite already in
+  flight. Left for #5611 to address on its own terms.
+- *Retry-on-failure wrapper around the build command.* Rejected outright
+  as the "band-aid" the issue explicitly asks not to ship — it would hide
+  the symptom without shrinking the truncate-then-write race window that
+  causes it.
+- *A new cross-target `Std.File.writeBytesAtomic` stdlib primitive.*
+  Would need JVM (`java.nio.file.Files.move` or `File.renameTo`) and
+  native (a new `lyric_rt` `rename(2)` wrapper) kernel twins to satisfy
+  CLAUDE.md's platform-parity rule, since any function reachable from
+  `Std.File`'s always-compiled surface must type-check on every target
+  that imports it. Deferred: neither `Jvm.Bridge`'s JAR-writing path nor
+  any native-target output path was shown to exhibit this race, so adding
+  the parity surface now would be scope beyond what the evidence
+  supports. Revisit if a JVM or native analog of #6301 is ever reported.
+
+**Verification.** Rebuilt the self-hosted compiler+CLI from both the
+pre-fix and post-fix sources (`make lyric`, ~6 min each) and ran the
+exact `lyric build --manifest lyric-stdlib/lyric.full.toml -o
+Lyric.Stdlib.dll --target dotnet` repro command from the issue: a single
+run, 4-way concurrent runs against the same output path, and (against the
+pre-fix binary) an 8-way and then a 16-way concurrent run with a
+background file-size watcher sampling the destination throughout — all
+runs exited 0 with no exception, on both the fixed and unfixed binaries;
+the race was not caught live even at 16-way concurrency (consistent with
+the triage comment's own 3-way attempt also failing to reproduce it — the
+window this environment's filesystem/JIT expose is evidently narrow). The
+fix therefore ships on code-level evidence (the truncate-then-write
+mechanism is real and matches both reported exception shapes exactly)
+rather than a captured stack trace. Confirmed no regression: `cli_copydll
+_self_test.l` (7/7, including two new leftover-temp-file regression
+cases), `cli_shared_self_test.l` (25/25), `cli_build_self_test.l`
+(81/81), `cli_workspace_builder_self_test.l` (19/19, including the
+existing `injectMavenClasspathForJvm` cases), `msil_project_bridge_self_
+test.l` (45/45), and `emitter_project_self_test.l` (35/35) — all green
+post-fix. No leftover `*.tmp-*` files after any successful or concurrent
+run.
+
+## D135 — Native-toolchain code coverage, first slice: JVM-target JaCoCo + a pure-Lyric Cobertura converter (#5294)
+
+**Context.** #5294 (post-F#-removal CI audit): the old `coverage` CI job
+ran `dotnet-coverage collect` against five F# Expecto test projects that
+no longer exist — every iteration failed with "project not found," but a
+`|| echo "::warning::…; continuing"` swallowed the failure, so the job
+reported green while collecting **zero** coverage data for years. That
+job has already been deleted outright (no half-fix). This entry picks a
+real replacement for the self-hosted, native-toolchain world: `lyric
+test` compiling and running `@test_module` programs through the AOT
+`./bin/lyric` binary on both the MSIL and JVM targets. There is currently
+no line/branch coverage instrumentation for either the compiler's own
+Lyric source (`lyric-compiler/lyric/**`) or user Lyric programs it
+compiles.
+
+**Options considered.**
+
+1. **IL/bytecode-level coverage counters built into the self-hosted
+   emitters.** Have `Msil.Codegen`/`Jvm.Codegen` emit a per-basic-block
+   (or per-statement) counter increment alongside normal codegen, plus a
+   runtime hook that dumps the counter table and a report generator that
+   turns it into Cobertura XML. Fully self-hosted, uniform across both
+   targets, no third-party tooling. Rejected **for a first slice**: this
+   is a from-scratch coverage *engine* — instrumentation-point selection,
+   a counter-storage ABI on both backends, a dump format, and a report
+   renderer — which is exactly the kind of "broad slice with caveats"
+   CLAUDE.md's production-readiness standard says to split rather than
+   ship half-done. It is the most promising path to true MSIL/dotnet
+   coverage (see the deferred-work note below) but is multi-week work on
+   its own, not a first slice.
+2. **A source-level statement-coverage pass written in Lyric** (a
+   Lyric-native `dotnet-coverage`/JaCoCo equivalent operating on the
+   *front-end* AST rather than backend bytecode): rewrite each statement
+   to also bump a counter, similar in spirit to `Lyric.ContractElaborator`
+   or `Lyric.TestSynth`'s AST-rewrite-then-recompile shape. Target-
+   independent (works identically on both backends since it's a pre-
+   codegen rewrite) and no third-party tooling. Rejected for the same
+   reason as (1) — it is a new coverage engine, not existing tooling — with
+   the added risk that a source rewrite pass changes line numbers and
+   interacts with every existing AST transform in the pipeline
+   (`Lyric.Weaver`, `Lyric.Mono`, `Lyric.ContractElaborator`,
+   `Lyric.CfgGate`), multiplying the surface this pass would need to stay
+   correct against.
+3. **JaCoCo for the JVM-target path only, MSIL parity as a separate
+   question** (the option #5294 itself flagged as most tractable).
+   JaCoCo is mature, off-the-shelf, non-invasive bytecode instrumentation
+   (`-javaagent:jacocoagent.jar` at `java` invocation time — no offline
+   `.class` rewriting step needed) that already produces exec data
+   convertible to a structured XML report via its own `jacococli.jar`.
+   Invoking it from `lyric test`'s existing `java -jar <bundled.jar>`
+   step is the same shape as the bundled Maven resolver JAR
+   (`resolver/lyric-resolver.jar`) that `lyric restore` already shells
+   out to for JVM dependency resolution (D053) — an existing third-party
+   JVM tool, not new F#, not a new Lyric-side collector, not a host shim.
+   **Chosen.**
+
+**Decision.** Ship option 3, scoped tightly:
+
+- **New CLI flag: `lyric test <file.l> --target jvm --coverage`.**
+  Gated to a single explicit JVM-target test file for this slice — both
+  `--manifest` (multi-package) suites and non-JVM targets are explicit,
+  loud errors (`test: --coverage requires --target jvm …`,
+  `test: --coverage does not yet support --manifest …`) rather than a
+  silent no-op, since a silent degrade is the exact anti-pattern this
+  issue exists to eliminate. Implemented in
+  `lyric-compiler/lyric/cli/cli_test.l`'s single-file JVM run path:
+  when `--coverage` is set, `java` is invoked with
+  `-javaagent:<jacocoagent.jar>=destfile=<exec>,append=false,dumponexit=true`
+  prepended to the existing `-jar <bundled-test.jar>` invocation, so the
+  agent instruments the already-self-contained bundled JAR the JVM
+  bridge produces (the user package plus its transitive stdlib-import
+  closure) with **zero changes to JVM codegen**.
+- **JaCoCo jar discovery** (`findJacocoAgentJar`/`findJacocoCliJar` in
+  `cli_test.l`) mirrors `findMavenResolverJar` (`cli_restore.l`)
+  exactly: an exact-path env var (`LYRIC_JACOCO_AGENT`/
+  `LYRIC_JACOCO_CLI`) first, then `<appBaseDir>/<file>`,
+  `<appBaseDir>/../<file>`, then `$HOME/.lyric/tools/<file>`. Missing
+  jars are a hard error naming the fix (`make jacoco`, or set the env
+  var) — never a silent skip of the coverage step.
+- **`make jacoco`** (new `Makefile` target) downloads the official
+  JaCoCo release ZIP (pinned `JACOCO_VERSION` = 0.8.12) from
+  `github.com/jacoco/jacoco/releases` and stages `jacocoagent.jar` +
+  `jacococli.jar` under `.tools/jacoco/lib/`, mirroring
+  `make maven-resolver`'s "one target, idempotent, CI runs it once and
+  points an env var at the output" shape. `.tools/` is `.gitignore`d —
+  this is fetched tooling, not vendored source, exactly like
+  `resolver/target/lyric-resolver.jar` is a build product, not a
+  committed artifact.
+- **Report format: JaCoCo XML -> Cobertura XML, via a new pure-Lyric
+  converter, not JaCoCo XML alone.** `jacococli.jar report --xml`
+  produces JaCoCo's own native report schema (`report.dtd`), which is
+  **not** Cobertura's schema — the two are different XML vocabularies
+  despite both being "a coverage XML report." Since #5294 asks for "a
+  Cobertura-or-equivalent report," and Cobertura XML specifically is
+  what most CI coverage tooling (Codecov, GitHub coverage-badge actions,
+  `lcov`-adjacent viewers) expects by name, this entry ships a real
+  translator rather than leaning on the "-or-equivalent" escape hatch:
+  `lyric-compiler/lyric/jacoco_cobertura.l` (`Lyric.JacocoCobertura`,
+  ~360 lines) walks the JaCoCo XML tree via `Std.Xml` (the existing
+  pure-Lyric XML 1.0 parser, D065) and emits Cobertura XML directly —
+  package/class line-rate and branch-rate from JaCoCo's `LINE`/`BRANCH`
+  `<counter>` elements, per-line `hits="1"/"0"` from JaCoCo's per-line
+  `ci` (covered-instructions) count (the standard, if lossy, community
+  convention for this exact schema gap — JaCoCo tracks missed/covered
+  instruction counts per line, not a true per-line execution count, so
+  "covered at all" collapses to `hits=1`; documented as a fidelity note
+  in the module's own header), and method-level line-rate/branch-rate
+  from JaCoCo's per-method counters. This is new Lyric code, not a new
+  F#/host-shim coverage-collector path — it is a text-in/text-out XML
+  translator over data JaCoCo (an off-the-shelf third-party tool) already
+  produced, the same category of "glue, not a collector" as
+  `Lyric.ContractMetaEmit`'s JSON writer.
+- Both reports land under `<test-dir>/.lyric-test/coverage/`:
+  `<stem>-jacoco.xml` (JaCoCo's native report, kept for debugging) and
+  `<stem>-cobertura.xml` (the CI-facing artifact). A failure anywhere in
+  the report pipeline (`jacococli.jar report` exits non-zero, the XML
+  is unparsable, the file can't be written) is a hard CLI error
+  (`lyric test` returns 1) — coverage was explicitly requested via
+  `--coverage`, so a silent partial success would be exactly the
+  anti-pattern being fixed.
+- **CI wiring:** `scripts/ci/coverage-smoke-test.sh` (new) stages JaCoCo,
+  runs `lyric test <file> --target jvm --coverage` through the AOT
+  binary, and — critically — does not just check the command's exit
+  code. It asserts the JaCoCo XML and Cobertura XML files actually exist,
+  are non-empty, the Cobertura file has a `<coverage ...>` root element,
+  and its `lines-valid` attribute is non-zero (i.e. real coverage data,
+  not an empty/degenerate report). This is the check the old job never
+  had — "the step passed" and "the step did something" are different
+  claims, and #5294 exists because CI only ever checked the first one.
+  Wired into the JVM self-tests job in `.github/workflows/ci.yml`
+  against `bitwise_self_test.l` (an existing, small, deterministic JVM
+  self-test — no new fixture needed for the smoke check itself).
+  `jacoco_cobertura_self_test.l` (the converter's own unit tests, 9
+  cases against a byte-for-byte real JaCoCo 0.8.12 report captured from
+  an actual instrumented `javac`/`java` run — not a hand-imagined XML
+  shape) is wired in as a native `lyric test` self-test alongside
+  `cfg_gate_self_test.l` (same linking shape: it imports a compiler
+  package, `Lyric.JacocoCobertura`, resolved via the staged
+  `Lyric.Compiler.dll` bundle, no `LYRIC_LOAD_COMPILER=1` recompile).
+
+**Explicitly deferred (follow-up, not this entry).**
+
+- **MSIL/dotnet-target coverage.** No `--coverage` support for
+  `--target dotnet` in this slice — `lyric test <file.l> --coverage`
+  with no `--target` (or an explicit `--target dotnet`) is a clear error
+  naming this as a tracked follow-up, not a silent no-op. The most
+  promising direction (per option 1 above, now scoped as a concrete
+  follow-up rather than "TBD"): **statement-level counter injection in
+  the self-hosted MSIL emitter** — `Msil.Codegen` already walks every
+  statement to lower it to IL, so the natural point is to have that walk
+  optionally emit an `ldc.i4 <slot>` / `ldsflda` / `stind.i4`-style
+  increment into a synthesized static `Int32[]` counter array (or,
+  cleaner given the ABI, a call to a small runtime helper
+  `Lyric.CoverageRt.hit(assemblyId, slot)`) immediately before each
+  statement's real IL, gated behind a new `--coverage` build mode so
+  uninstrumented builds pay zero cost. Dump-on-exit would hook the same
+  process-exit path `dotnet-coverage`/`ilverify`-adjacent tools use
+  today, or a simpler `AppDomain.ProcessExit`-equivalent registered by a
+  small runtime shim in `Std.*` (not host F# — an `extern` boundary
+  kernel file, same as every other BCL seam). This reuses the existing
+  statement-walk rather than introducing a second AST pass, unlike
+  option 2 above, and produces the SAME Cobertura-shaped output this
+  entry already ships a converter for once the counter data exists in
+  some intermediate form (JaCoCo-XML-shaped or otherwise) — the
+  `Lyric.JacocoCobertura` module's downstream half (line/branch rate
+  computation, XML rendering) is not JaCoCo-specific in its output side,
+  only its input parsing is.
+- **`--manifest` (multi-package) coverage suites.** `cmdTestManifest`
+  (the `[project.tests]`-driven multi-file test runner) has no
+  `--coverage` wiring; a suite-level Cobertura merge (JaCoCo's own
+  `merge` command, or per-test reports left separate) is a follow-up
+  once the single-file slice has bake time.
+- **True Cobertura `hits` counts.** As noted above, JaCoCo's line data
+  is missed/covered-instruction counts, not an execution count; `hits`
+  in the emitted Cobertura XML is therefore always `0` or `1`, never a
+  real repetition count. No known Cobertura consumer in this project's
+  CI (coverage-percentage reporting, diff-coverage gating) depends on
+  anything beyond covered-vs-uncovered, so this is accepted as
+  intrinsic to the JaCoCo-sourced data, not a bug to chase.
+
+**Related:** #5294, D053 (bundled Maven resolver — the precedent for
+"shell out to existing third-party JVM tooling, not a new host shim"),
+D065 (`Std.Xml`, the parser `Lyric.JacocoCobertura` is built on),
+`docs/44-jvm-production-readiness-plan.md` (the JVM-backend audit this
+sits alongside), `resolver/` (the analogous bundled-JAR precedent).
+
+**Addendum (2026-08-27, PR #6627 CI incident):** the `make jacoco` target's
+`curl` download of the JaCoCo release ZIP had no `--connect-timeout`/
+`--max-time`, so a stalled connection could hang indefinitely — observed
+live on this PR's own `compiler-self-tests-jvm` CI run, which sat blocked
+on the "Coverage smoke test" step for 2+ hours. Fixed by adding
+`--connect-timeout 20 --max-time 180` to the `curl` call and wrapping the
+whole `make jacoco` invocation in `scripts/ci/coverage-smoke-test.sh` with
+`timeout 240` as defense in depth.
+
+That fix alone did not close the incident: the very next CI run hung again
+on the same step, this time for 47+ minutes with `make jacoco` already
+timeout-bounded — meaning the untimed `curl` was a real bug worth fixing
+but not the (or not the only) cause of the original 2-hour hang. The
+`java -jar <bundled-test.jar>` run and `jacococli.jar report` calls inside
+`cli_test.l`'s coverage path already carry their own 600s/120s timeouts via
+`Std.ProcessCapture.runCaptureWithDiagnosticsTimeout`, whose kernel
+implementation (`lyric-stdlib/std/_kernel/process_capture_host.l::runImpl`)
+looks properly hardened against the classic pitfalls (concurrent stdout/
+stderr drain tasks started before `WaitForExit`, `procKillTree` on timeout,
+a bounded drain-collection fallback) — no obvious bug was found there on
+inspection, and this exact command (`bitwise_self_test.l --target jvm
+--coverage`) had already been verified working correctly in the sandbox
+that built the original feature. Rather than guess further without being
+able to read logs from a still-running job (GitHub's job-log API only
+serves completed jobs), `scripts/ci/coverage-smoke-test.sh` now wraps the
+whole `lyric test --coverage` invocation in `timeout --signal=KILL 900`
+(comfortably above the 720s theoretical worst case from the internal
+timeouts) so a recurrence fails loudly within 15 minutes with a clear
+`::error::` message instead of consuming CI runner time indefinitely —
+producing real, downloadable failure logs to root-cause from if it fires
+again, rather than another multi-hour silent stall. If this timeout does
+fire, that is a genuine, unresolved bug in this PR's coverage path (or,
+less likely, in `ProcessCapture` itself) requiring further investigation —
+not a fluke to retry past.
+
+A network call with no timeout has no place in a CI script regardless of
+how reliable the target host usually is, and neither does a subprocess
+invocation with no *externally verifiable* bound, even when the callee
+claims to enforce its own.
+
+**Final status (2026-08-27, end of PR #6627's own CI cycle):** the
+external `timeout --signal=KILL 900` fix confirmed the underlying bug is
+real, not a fluke — the very next CI run hit it again and the process had
+to be force-killed at exactly the 900s mark (GitHub Actions job log:
+`scripts/ci/coverage-smoke-test.sh: line 69: 2374 Killed`), well past the
+600s/120s internal timeouts that should have already returned control.
+The delta versus a working sibling step in the *same* job
+(`Bitwise self-test on JVM`, the identical file, `--target jvm`, no
+`--coverage`, succeeds quickly) is entirely the JaCoCo
+`-javaagent:...=destfile=...,append=false,dumponexit=true` instrumentation.
+Ruled out on inspection: instrumentation-scale overhead (the bundled JAR
+is only 41 small classes — trivial for ASM to process), a `ProcessCapture`
+kernel bug (`process_capture_host.l::runImpl` already handles the classic
+drain/kill-tree pitfalls), and the JVM `main()` wrapper's `System.exit()`
+codegen (a standard, well-formed pattern, not obviously broken). No live
+thread-dump access was available to pin down the actual blocked thread, so
+the true root cause remains open — tracked in #6659, with the most
+promising untried lead being `dumponexit=true`'s shutdown-hook path racing
+against the codegen's explicit `System.exit()` call, and the suggested
+fix being `output=tcpserver` + an explicit `jacococli.jar dump` to avoid
+that path entirely. The "Coverage smoke test" CI step has been **removed**
+from `.github/workflows/ci.yml` (not merely made non-blocking) rather than
+shipped in a step that reliably hangs or fails on every run — the
+underlying feature code (`Lyric.JacocoCobertura`, the `--coverage` flag,
+and `jacoco_cobertura_self_test.l`, which passes) all remain, matching
+this entry's framing throughout as "first slice" rather than a closed
+issue.
+## D-progress-804 — `compiler-self-tests-dotnet-a`/`-b`: further split `background: true` batches to ~4-6 concurrent steps; corrected the "RAM disk" mitigation comment (#4975)
+
+**Bug.** `compiler-self-tests-dotnet-a`/`-b` occasionally SIGBUS (exit
+135) on standard `ubuntu-latest` (2-core/7GB) runners under concurrent-
+step load. #4810 split an original ~38-step single batch into ~18-step
+batches; a later pass split those further to a ~14-step "empirically
+reliable cap." #4975 documented that the cap was insufficient — real
+incidents recurred at the ~14-step size (`cross_package_generics_self_test`,
+`cross_package_nat_self_test`, `restored_async_self_test`, `map_
+enhancements_self_test`, `defer_self_test`, each on an unrelated PR,
+confirming resource pressure rather than a product regression) — and that
+the mitigation step's name and comment ("prevent SIGBUS RAM disk
+exhaustion") misdescribed the mechanism: on a standard `ubuntu-latest`
+runner, `/tmp` and `runner.temp` both sit on the same persistent disk, not
+tmpfs (the actual tmpfs mounts there are `/dev/shm`, `/run`, `/run/lock`,
+`/sys/fs/cgroup`).
+
+**Fix.** Every `wait-all: true`-bounded batch in `compiler-self-tests-
+dotnet-a` and `compiler-self-tests-dotnet-b` (`.github/workflows/ci.yml`)
+that ran more than ~6 concurrent `background: true` steps was split
+further via additional `wait-all: true` barriers, bringing every batch in
+both jobs down to at most 6 concurrent steps (`compiler-self-tests-
+dotnet-a`: 10 batches → 19; `compiler-self-tests-dotnet-b`: 5 batches → 9;
+109 background steps total, unchanged, just spread across more, smaller
+barriers). No steps were removed, reordered across barriers, or made
+sequential — the split preserves the existing `#4486`/`#4841` concurrency
+model, just at a materially smaller per-barrier fan-out. The three
+"Redirect temporary directory to prevent SIGBUS RAM disk exhaustion"
+steps (`compiler-self-tests-dotnet-a`, `compiler-self-tests-dotnet-b`,
+`native-backend-self-tests`) were renamed and their comments corrected to
+attribute the pressure to disk I/O and memory contention among concurrent
+`dotnet`-hosted self-hosted-compiler invocations, not RAM-disk exhaustion
+— the `TMPDIR=${{ runner.temp }}` redirect itself is unchanged (still
+needed so per-step scratch files land under one well-known path rather
+than the bare `/tmp` some external tools default to). Audited every
+`background: true` step in both jobs plus `native-backend-self-tests` for
+hardcoded `/tmp` usage bypassing the `TMPDIR` redirect: none found beyond
+the `asan_preflight` case #4976 already fixed.
+
+Not attempted: requesting a larger GitHub-hosted runner
+(`ubuntu-latest-4-cores`/`-8-cores`) for these two jobs. #4975 lists it as
+an untried, likely-more-durable fix; it was left alone here because it
+changes the jobs' billing/quota profile, which is a decision for a human
+to make explicitly rather than a CI-hygiene session to make unilaterally.
+If the further split above does not fully resolve the recurrence, a
+larger runner is the next lever to pull.
+
+**Verification.** `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"`
+parses cleanly; `actionlint 1.7.12` (the version pinned in the `actionlint`
+CI job) reports only the two pre-existing, permanently-suppressed finding
+categories (`unexpected key "background"`/`"wait-all"` and `step must run
+script with`) and nothing new; `scripts/ci/check-workflow-size.sh` passes
+(470,762 / 500,000 bytes). No live CI run was triggered from this session
+(CI-only YAML change, not pushed) — the actual SIGBUS-recurrence rate
+under the new split can only be confirmed by observing `main` over
+subsequent PRs, per #4975's own evidence-gathering pattern.
+
+## D-progress-810 — actionlint: scope the `matrix.authenticode` dead-code suppression to `publish.yml` via a path-scoped `.github/actionlint.yaml`, instead of a global `-ignore` regex (#5638)
+
+**Problem.** The `actionlint` CI job's "Run actionlint" step suppressed
+three finding classes via a single global `-ignore` regex: the permanent
+`background`/`wait-all` schema gap, `gemini-teammate.yaml`'s missing
+`on:` block (already resolved elsewhere — the file was deleted), and
+`publish.yml:322`'s `matrix.authenticode` reference (dead code until
+win-x64, #3941, is re-enabled). #5638 flagged that the `authenticode`
+pattern, as a *global* message-text regex, would also silently mask a
+genuine future `matrix.<property>` typo on any OTHER workflow file — the
+real cost of a broad suppression for a finding that is only ever valid on
+one specific line of one specific file.
+
+**Fix.** `actionlint` (1.7.12, matching the version pinned in
+`.github/workflows/ci.yml`) supports path-scoped suppression via a
+`.github/actionlint.yaml` (or `.yml`) config file's `paths:` map — an
+`ignore:` list under a glob key applies only to matching files, composing
+with (not replacing) the CLI's own `-ignore` flag. Added
+`.github/actionlint.yaml` scoping the `authenticode` message pattern to
+`.github/workflows/publish.yml` only, and removed it from the global
+`-ignore` flag in `ci.yml`'s actionlint step (the `background`/`wait-all`
+pattern stays global — it is a permanent schema-gap suppression, not a
+finding scoped to one file, so a global regex is the correct fit there).
+Verified locally with the exact pinned `actionlint` binary
+(`rhysd/actionlint@sha256:b1934...` / v1.7.12): removing the
+`authenticode` pattern from `-ignore` without the config file reproduces
+the finding at `publish.yml:322:13`; adding `.github/actionlint.yaml`
+back suppresses it with exit code 0, and a full unfiltered run
+(`-shellcheck= `, no `-ignore` at all) shows only the two expected
+permanent categories (`unexpected key "background"`/`"wait-all"`, `step
+must run script with`) plus nothing from `authenticode` or
+`gemini-teammate.yaml` (already deleted, per the 2026-08-07 status update
+on #5638).
+
+Not changed: `gemini-teammate.yaml`'s `-ignore` clause was already
+removed (PR #6385, per #5638's 2026-08-07 comment — the file itself was
+deleted); the `background`/`wait-all` suppression stays a permanent
+global `-ignore`, unchanged; `publish.yml`'s win-x64/`authenticode`
+matrix entry itself stays commented out, gated on #3941 — re-enabling it
+is out of scope here, and once it lands, `.github/actionlint.yaml` should
+be deleted rather than edited (the suppression becomes unnecessary, not
+narrower).
+
+## D-progress-808 — JVM kernel/codegen batch: piped-process reads, `Std.Environment.args()`, regex ReDoS timeout (#6135, #5377, #1103)
 
 **Date:** 2026-08-27
 **Status:** SHIPPED
@@ -31858,7 +32471,7 @@ here).
 
 ---
 
-## D134 — `Web.json` reverts #5797's auto-detect regression, back to its documented raw-passthrough contract; `Web.jsonString` added (#5813)
+## D136 — `Web.json` reverts #5797's auto-detect regression, back to its documented raw-passthrough contract; `Web.jsonString` added (#5813)
 
 **Date:** 2026-08-27
 **Status:** ACCEPTED
@@ -32128,7 +32741,7 @@ above for the original decision), #6578 (the JVM tuple-destructuring
 package compiler follow-up), D-progress-543 (sandbox exception: no
 `./bin/lyric` buildable from source here, hence no compiler-level fix for
 either #6564's or #6578's root cause).
-## D-progress-802 — Native prerequisites for N9.3 (`Std.HttpServer` native twin, #6104): `lyric_sem_*` counting semaphore + `slice[T]` `.slice`/`.concat`/`.append`
+## D-progress-809 — Native prerequisites for N9.3 (`Std.HttpServer` native twin, #6104): `lyric_sem_*` counting semaphore + `slice[T]` `.slice`/`.concat`/`.append`
 
 **Context.** Issue #6104 (native/plan/08-work-items.md N9.3, docs/61 §7 item 5)
 needs a thread-per-connection native `Std.HttpServer` twin driving

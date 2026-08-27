@@ -31558,6 +31558,256 @@ assertion used `env -i PATH=/usr/bin:/bin`, and GitHub's runner image ships
 would have passed vacuously, defeating the one assertion meant to prove
 `--no-fallback` held (caught in review, #6260).
 
+---
+
+### D-progress-784 — `lyric test`'s single-file path gains manifest dependency resolution (#5341, D123 follow-up); `--properties` runs auto-derived Int/Bool/Double property tests for real (#677); CLI-integration regression tests for the broken-manifest warning path (#5860)
+
+**#5341 — shipped.** `lyric test <source.l>`'s single-file build step
+called `Emitter.emit` directly, bypassing the manifest-driven dependency
+resolution `buildOneNative`/`emitSingleFileOrProject` gave `lyric build`/
+`lyric run` in D123 (D-progress-610). A loose `@test_module` file sitting
+next to a `lyric.toml` with real dependencies could not import them.
+`cli_test.l`'s plain (non-compiler-DLL-linked, non-native) emit path now
+routes the already-test-synthesised source through a new
+`emitTestPlainOrProject` helper that calls the same `emitSingleFileOrProject`
+`lyric build` uses — auto-discovering the nearest manifest from the source
+file's own directory, resolving workspace/path/`[nuget]`/`[maven]`
+dependencies and `[features]`, and colocating the resolved dependency DLLs
+beside the compiled test binary on `--target dotnet`. Composes correctly
+with the pre-existing `#2364` compiler-DLL-linking path (`emitTestLinked`,
+used only when the test imports `Lyric.*` compiler packages) and the
+native path (`emitTestNative`), both left untouched since neither has a
+manifest-aware routing concern. An unbuilt/undeclared local dependency
+fails the test run loudly, matching `lyric build`'s conservative
+never-implicitly-restore contract. Verified end-to-end on both
+`--target dotnet` and `--target jvm` (the JVM backend bundles the
+dependency's own source into the compiled JAR rather than reading
+`restoredDllPaths` at all — the pre-existing, tracked-separately #3094 gap
+this issue's cross-reference explicitly scoped out).
+
+**#5860 — shipped.** Neither the bare `lyric` dispatch's
+`FoundBrokenManifest`/`NoManifestFound` arms (`cli_main.l`) nor `cmdTest`'s
+auto-discovery arms of the same shape (`cli_test.l`) had a direct
+regression test — only the lower-level `Disc.findNearestManifestDetailed`
+primitive was tested. Both call sites are hardcoded to
+`Environment.currentDirectory()`, so a test could not previously redirect
+discovery at a fixture directory, and `printErr`/`printUsage` write
+straight to `Std.Console` with no capture facility to assert exact printed
+text against. Rather than leaving this undone, both files gained a small,
+genuinely useful refactor: `resolveBareDispatch(startDir)` /
+`resolveTestAutoDiscovery(startDir)` take the start directory as an
+explicit parameter (mirroring why `buildOneNative` is `pub`, #4127) and
+return a `BareDispatchResult` / `TestAutoDiscoveryResult` record carrying
+the exact `exitCode` and the warning/message text `printErr` was just
+called with — the real print calls still happen (production behavior is
+byte-for-byte unchanged), but the returned value lets a test assert on the
+exact text without a capture facility. Each file's two "no usable
+manifest" arms now share ONE print-and-return implementation
+(`reportNoUsableManifestForBare` / `reportTestAutoDiscoveryFailure`), so a
+future edit cannot silently drop `printUsage()` (`cli_main.l`) or the
+"missing source file" message (`cli_test.l`) from just one of the two arms
+— the exact risk the issue flagged, now closed structurally rather than
+only by a test. 6 new cases added to `cli_shared_self_test.l`, replacing
+the file's prior "investigated, documented as blocked" comment.
+
+**#677 — shipped (v1.x slice).** `Lyric.TestSynth` gained
+`synthesizeWithProperties` (an additive entry point alongside the
+`@stable` `synthesize`, which is unchanged and still unconditionally skips
+every property): when every `forall` binder on a `property` declaration is
+`Int`, `Bool`, or `Double`, `tryBuildPropertyDriver` synthesises a real
+sampling-and-shrinking harness — 100 samples from a per-property-seeded
+`Std.Random`, a `where` guard evaluated fresh per sample (a guard failure
+skips the sample rather than counting as pass/fail), and on the first
+failing sample a greedy per-binder shrink search (holding every other
+binder fixed at its last-known-failing value) converging toward the
+simplest failing input before `panic`-ing with all binders' final shrunk
+values in the failure message. The shrink algorithm is the same
+first-smaller-failure-wins fixed point `shrinkToFixedPoint` /
+`forAllIntPair`'s `shrinkPairLeft`/`shrinkPairRight` already use in
+`testing_property.l`, reimplemented unrolled-per-binder-arity at synthesis
+time since there is no variadic-generic way to call the stdlib's
+single-`T` shrink helpers once for an N-ary property. A property with any
+other binder type (a record, union, opaque type, `String`, …) still
+reports `# skip` naming the unsupported type, exactly as v1 did
+unconditionally — auto-derived generators for non-primitive types,
+`--property-trials`, `--seed`, and `ensures:`-derived properties are
+explicitly NOT part of this slice (tracked as follow-up work; the
+worked-example `SortedSet[Int]` property style in
+`docs/02-worked-examples.md` §3 does not run under `--properties` yet).
+`lyric test --properties` (single-file, project-mode, and the
+`[project.tests]`-fallback scan path) and `lyric test --manifest
+… --properties` thread the flag through; it composes with `--filter`/
+`--fail-fast`/`--features`. Rejected outright on `--target native` (no
+exception unwinding to isolate a failing sample without aborting the whole
+binary — the same reason native has no per-test try/catch isolation,
+D-N-003). `Std.Random`/`Std.Testing.Property` are injected into the
+synthesised source only when at least one property actually gets a real
+driver, and only when the user hasn't already imported the path
+themselves (checked by exact `ModulePath` match, not text sniffing).
+
+**Verification.** `cli_test_self_test.l` (new) drives the real
+`Lyric.Cli.main([...])` entry point end-to-end for both #5341 (dependency
+resolves and runs; an unbuilt dependency fails loud; a manifest-less file
+is unaffected) and #677 (an always-failing property is skipped by default
+and fails under `--properties` with the correct shrunk counterexample in
+the panic message; an always-true property and a mixed Bool/Double
+property pass; a `where false` guard makes the body never run; a
+`forall`-less property still executes once; an unsupported `String`
+binder still skips under `--properties`; `--properties --target native`
+is rejected) — 10/10 passing. `test_synth_self_test.l` (10 cases,
+unchanged) confirms `synthesize`'s stable skip-only behavior is
+byte-for-byte unaffected. `cli_shared_self_test.l` grew from 25 to 31
+cases (the 6 new #5860 cases). `cli_build_self_test.l` (81 cases) and the
+full existing self-test suite pass unchanged. Manual end-to-end
+verification additionally covered a fresh two-package workspace fixture
+on both `--target dotnet` and `--target jvm`.
+
+**Docs:** `docs/01-language-reference.md` §13.2 (single-file dependency
+resolution for `lyric test`, `--properties`, and the now-accurate feature-
+selection note), `docs/24-test-runner-plan.md` §1.2/§5/§6 (Stage 3 marked
+partially shipped, T0904 updated), `book/chapters/15-testing.md` §15.5
+(scoped status note distinguishing the shipped v1.x slice from the
+aspirational rest of the section) and `appendix-b-quick-reference.md`
+(`--properties` flag, corrected `lyric test --manifest` v2 note).
+
+**Related:** D123, D-progress-610, #5341, #5860, #677.
+
+---
+
+## `Std.Rest.RestClient.json` gets a live HTTP round-trip self-test (#1119) (2026-08-27)
+
+Closes the "no unit tests" gap `RestClient.json` has carried since #983:
+`HttpResponse` is `pub opaque` in `Std.Http` with no test-stub constructor,
+so `lyric-stdlib/tests/rest_tests.l` (added earlier against this issue) could
+only pin the `parseJson`/`disposeJson` contract in isolation, not
+`RestClient.json` itself. New self-test
+`lyric-compiler/lyric/rest_json_roundtrip_self_test.l` (`@test_module`, run
+via native `lyric test --target dotnet`, CI-wired alongside the existing
+"Std.Http round-trip self-test" step) closes that: it reuses
+`http_roundtrip_self_test.l`'s child-process `Std.HttpServer` listener
+pattern (an in-process server thread still isn't an option — see that
+file's header) to serve a real JSON body, a malformed non-JSON body, and a
+`/quit` shutdown route, then drives `RestClient.json` against the real
+`HttpResponse` `Std.Http.getAsync` returns. Three cases: the happy path
+(`Ok(doc)`, fields read back via `getProperty`/`getString`/`getInt32`/
+`getBoolean`), a non-JSON body classifying as `Err(Deserialize(...))`, and
+`disposeJson` being a no-op on a second call against a live-fetched doc.
+
+The issue's own proposed option 1 (`Std.Testing.MockHttpServer`) was not
+built — the two prior triage passes on #1119 had already identified that
+`http_roundtrip_self_test.l`'s existing child-process pattern was reusable
+instead of standing up a parallel mocking abstraction, and reusing it
+avoids duplicating a second HTTP-mocking surface.
+
+**Scope boundary, deliberate:** the response is obtained via the free
+`Std.Http.getAsync`, not `RestClient.get`. `RestClient.get`/`.post`/`.put`/
+`.patch`/`.delete` route through `sendRequest` -> `fullUrl`, which throws at
+runtime before sending anything — confirmed two ways while authoring this
+test (both against the published 0.5.1 CLI, the only compiler available in
+a sandbox where the release-download bootstrap step is blocked, per
+D-progress-543's sandbox profile): on `--target dotnet` it's exactly #5622
+(`base.charAt(...)` on a `String` read off an opaque-type field throws
+"unsupported method 'charAt' on the receiver type"); on `--target jvm` the
+same `fullUrl` throws a `StringIndexOutOfBoundsException` out of
+`String.substring`, a related but distinct bug not yet filed. Testing
+`RestClient.json` doesn't need `fullUrl` at all — the function only takes an
+already-fetched `HttpResponse` — so this sidesteps both bugs rather than
+papering over either; the `RestClient.get`-family live round trip stays a
+real, open gap (tracked at #5622 for the MSIL half) until the codegen is
+fixed.
+
+**JVM parity, not shipped, concrete reason:** `Std.Rest`'s own dependencies
+(`Std.Http`, `Std.HttpServer`, `Std.Json`) all have real JVM kernels today
+(the H5 finding in `docs/59-compiler-stdlib-deep-review.md` is stale — this
+was verified directly, not assumed), so `RestClient.json` itself is not a
+JVM gap. The blocker is narrower: this test's child-server harness imports
+`Lyric.Emitter` (a compiler package) to build the server executable
+in-process, and `lyric test --target jvm` cannot resolve
+`Lyric.Emitter.ProjectPackage` the way `--target dotnet` does — reproduced
+directly (`T0014 unknown qualified type 'Lyric.Emitter.ProjectPackage'`)
+rather than assumed from `http_roundtrip_self_test.l`'s own dotnet-only
+scoping (the same class of limitation, not something new to this file). A
+JVM analog is a real follow-up once `Lyric.Emitter`'s compiler-package
+closure resolves under `--target jvm`.
+
+**Sandbox note:** this session's release-download bootstrap step was
+blocked by network policy (no `./bin/lyric` buildable from source), so
+every claim above — including the two `fullUrl` failure modes and all three
+new test cases passing — was verified against the published NuGet `lyric`
+0.5.1 global tool per D-progress-543's sandbox profile, not a from-source
+build. A from-source CI run should re-verify before merge.
+
+**Related:** `docs/03-decision-log.md` D-progress-543; #1119, #5622,
+`docs/59-compiler-stdlib-deep-review.md`.
+
+---
+
+## `lyric test --target jvm --coverage` ships — JaCoCo instrumentation + pure-Lyric Cobertura converter (2026-08-27)
+
+Native-toolchain code coverage story, first slice (#5294, D135). The old
+`coverage` CI job — `dotnet-coverage collect` against five F# Expecto test
+projects deleted when the F# bootstrap compiler was removed — had been
+failing every iteration for months, silently swallowed by
+`|| echo "::warning::…; continuing"`, so it reported green while collecting
+**zero** coverage data. That job is gone outright; this entry is its
+self-hosted, native-toolchain replacement (JVM-target first; MSIL/dotnet is
+a tracked follow-up, see D135's deferred-work note for the concrete
+statement-level-counter-injection direction).
+
+**New CLI flag.** `lyric test <file.l> --target jvm --coverage` — single
+explicit JVM-target test file only for this slice; `--manifest` suites and
+non-JVM targets are loud errors, not a silent skip. Implemented in
+`lyric-compiler/lyric/cli/cli_test.l`: the JVM run path prepends
+`-javaagent:<jacocoagent.jar>=destfile=<exec>,append=false,dumponexit=true`
+to the existing `java -jar <bundled-test.jar>` invocation (zero JVM codegen
+changes — the bundled JAR the JVM bridge already produces is what gets
+instrumented), then runs `jacococli.jar report` and converts the resulting
+JaCoCo XML into Cobertura XML.
+
+**New package: `Lyric.JacocoCobertura`** (`lyric-compiler/lyric/jacoco_cobertura.l`,
+~360 lines). JaCoCo's `--xml` report uses JaCoCo's own schema, not
+Cobertura's — despite both being "a coverage XML report," they're different
+vocabularies — so this is a real from-scratch translator, not a rename: it
+walks the JaCoCo tree via `Std.Xml` and computes package/class/method
+line-rate and branch-rate from JaCoCo's `LINE`/`BRANCH` counters, with
+per-line `hits="1"/"0"` from JaCoCo's per-line covered-instruction count
+(documented fidelity note: JaCoCo has no true per-line execution count to
+report). Verified by `jacoco_cobertura_self_test.l` (9 cases) against a
+byte-for-byte real JaCoCo 0.8.12 report captured from an actual
+`javac`/`java`-instrumented run, not a hand-imagined shape.
+
+**Tooling.** `make jacoco` (new `Makefile` target) downloads the official
+JaCoCo release ZIP (pinned 0.8.12) and stages `jacocoagent.jar` +
+`jacococli.jar` under `.tools/jacoco/lib/` (`.gitignore`d — fetched
+tooling, not vendored source). Jar discovery
+(`findJacocoAgentJar`/`findJacocoCliJar` in `cli_test.l`) mirrors
+`findMavenResolverJar` (`cli_restore.l`) exactly: `LYRIC_JACOCO_AGENT`/
+`LYRIC_JACOCO_CLI` env vars first, then default search paths. This is
+shelling out to existing third-party JVM tooling — the same category as
+the bundled Maven resolver JAR under `resolver/` — not new F#, not a new
+Lyric-side collector, not a host shim.
+
+**CI.** `scripts/ci/coverage-smoke-test.sh` (new) is the check the old job
+never had: it runs `lyric test <file> --target jvm --coverage` and then
+inspects the produced report file itself — exists, non-empty, has a
+`<coverage ...>` root element, `lines-valid` is non-zero — rather than
+just checking the command's exit code. **Not currently wired into CI**:
+the JVM-target end-to-end run hangs on real GitHub Actions runners (the
+identical file without `--coverage` runs fine in the same job) — see D135's
+addendum and #6659 for the full incident and investigation. The script
+itself works correctly when run directly; the step was removed from
+`.github/workflows/ci.yml` rather than shipped hanging or red.
+`jacoco_cobertura_self_test.l` (the converter's own self-test, unaffected
+by the JVM-execution hang) runs alongside `cfg_gate_self_test.l` in the
+compiler self-tests job (same linking shape — a compiler-package import
+resolved via the staged `Lyric.Compiler.dll` bundle, no
+`LYRIC_LOAD_COMPILER=1`).
+
+Full option analysis (IL/bytecode counters built into the self-hosted
+emitters; a source-level statement-coverage AST pass), why JaCoCo was
+chosen as the tractable first slice, and the deferred MSIL/dotnet-coverage
+direction: `docs/03-decision-log.md` D135.
+
 ### D-progress-631 — `Std.HttpEngine.H2Conn`: closed-stream pruning bounds `H2Connection.streams` growth on long-lived connections (#6064)
 
 **Status:** Shipped (`lyric-stdlib/std/http_h2conn.l`).
@@ -31637,9 +31887,9 @@ sent unmodified (byte-for-byte, no parse), malformed JSON sent AS-IS (the
 #5813 regression case — the masking bug can never silently reappear), and
 `jsonString` correctly quoting/escaping a raw value.
 
-**Related:** #5813, #5797 (the change this reverts the auto-detect half of), `docs/03-decision-log.md` D134 (the `@stable`-editing-protocol entry for this change).
+**Related:** #5813, #5797 (the change this reverts the auto-detect half of), `docs/03-decision-log.md` D136 (the `@stable`-editing-protocol entry for this change).
 
-### D-progress-802 — JVM kernel/codegen batch: piped-process reads, `Std.Environment.args()`, regex ReDoS timeout (#6135, #5377, #1103)
+### D-progress-808 — JVM kernel/codegen batch: piped-process reads, `Std.Environment.args()`, regex ReDoS timeout (#6135, #5377, #1103)
 
 Three previously-documented JVM-only gaps closed together. `Std.Process
 .spawnPiped`'s JVM read side (`hostPipedReadLineOpt`) is rewritten off
@@ -31679,7 +31929,7 @@ producing `IncompatibleClassChangeError` at the first interface
 dispatch — a lambda literal inlined directly at the call site does not
 hit this).
 
-**Related:** `docs/03-decision-log.md` D-progress-802 (full account),
+**Related:** `docs/03-decision-log.md` D-progress-808 (full account),
 #6135, #5377, #1103, #6551, #6552.
 
 ## lyric-web Undertow mTLS ships on JVM — client-CA `TrustManager` + XNIO `SSL_CLIENT_AUTH_MODE` (2026-08-27)

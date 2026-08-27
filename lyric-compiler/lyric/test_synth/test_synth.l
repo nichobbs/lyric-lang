@@ -10,7 +10,10 @@
 //!   * A synthesised `func main(): Int` is appended that runs each
 //!     test inside `try`/`catch Bug as b { … }` and prints a
 //!     TAP-shaped report to stdout.
-//!   * Properties parse but skip with a `# skip` line.
+//!   * Properties parse but skip with a `# skip` line by default; with
+//!     `--properties` (`synthesizeWithProperties`, #677), a `property`
+//!     whose `forall` binders are all Int/Bool/Double gets a real
+//!     sampling-and-shrinking harness instead — see §3a below.
 //!   * Fixtures are rewritten to module-level `val` declarations
 //!     (D-progress-474).
 //!
@@ -137,6 +140,347 @@ record SkipSlot {
   reason: String
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §3a. Property execution (#677, `lyric test --properties`).  A `property`
+// declaration whose `forall` binders are all auto-derived primitive types
+// (Int/Bool/Double) is synthesised into a real sampling-and-shrinking
+// harness; any other binder type still reports `# skip` (v1's "parses but
+// never runs" behaviour, unconditionally — see `tryBuildPropertyDriver`).
+// ─────────────────────────────────────────────────────────────────────────────
+// The simple (single-segment) type name of a `forall` binder's declared
+// type, e.g. `Int` for `x: Int`.  `None` for anything not a bare named type
+// (generic instantiations, tuples, qualified paths, …) — none of those are
+// auto-derivable in v1.
+func propBinderTypeName(ty: in TypeExpr): Option[String] {
+  match ty.kind {
+    case TRef(path) -> {
+      if path.segments.count == 1 {
+        Some(value = path.segments[0])
+      } else {
+        None
+      }
+    }
+    case _ -> None
+  }
+}
+
+func isSupportedPropType(name: in String): Bool {
+  name == "Int" or name == "Bool" or name == "Double"
+}
+
+// Random-sample generator expression for one binder, evaluated fresh each
+// sampling iteration.
+func propGenExpr(tyName: in String, rngVar: in String): String {
+  if tyName == "Int" {
+    "Std.Random.nextIntRange(" + rngVar + ", -1000, 1000)"
+  } else if tyName == "Bool" {
+    "Std.Random.nextBool(" + rngVar + ")"
+  } else {
+    "Std.Random.nextDouble(" + rngVar + ")"
+  }
+}
+
+// Shrink-candidate list expression for one binder's current failing value.
+// Doubles are not shrunk (mirrors `Std.Testing.Property.forAllDouble`) — an
+// explicitly empty list makes the shrink loop below run zero iterations
+// rather than needing a separate no-shrink code path.
+func propShrinkExpr(tyName: in String, valueExpr: in String): String {
+  if tyName == "Int" {
+    "Std.Testing.Property.shrinkInt(" + valueExpr + ", -1000)"
+  } else if tyName == "Bool" {
+    "Std.Testing.Property.shrinkBool(" + valueExpr + ")"
+  } else {
+    "newList()"
+  }
+}
+
+func propZeroLiteral(tyName: in String): String {
+  if tyName == "Int" {
+    "0"
+  } else if tyName == "Bool" {
+    "false"
+  } else {
+    "0.0"
+  }
+}
+
+record PropBinderInfo {
+  name: String
+  tyName: String
+}
+
+func propCallArgs(binders: in List[PropBinderInfo]): String {
+  var s = ""
+  var i = 0
+  while i < binders.count {
+    if i > 0 {
+      s = s + ", "
+    }
+    s = s + binders[i].name
+    i = i + 1
+  }
+  s
+}
+
+// `var <varName> = <guardText>` (or `= true` with no `where` clause), at the
+// given indentation.
+func propGuardAssign(guardText: in Option[String], varName: in String, indent: in String): String {
+  match guardText {
+    case Some(g) -> indent + "var " + varName + " = " + g + "\n"
+    case None -> indent + "var " + varName + " = true\n"
+  }
+}
+
+// One shrink phase for binder `j`: repeatedly try simpler candidates for
+// binder `j` alone (holding every other binder fixed at its currently-known
+// failing value) until no candidate reduces the failure further.  A
+// property's `forall` arity is small and fixed at synthesis time, so each
+// phase is unrolled directly into the generated source — there is no
+// variadic-generic way to call the stdlib's single-`T`
+// `Std.Testing.Property` shrink helpers once for an N-ary property. This
+// reimplements the same greedy "first smaller failure wins" fixed-point
+// algorithm `shrinkToFixedPoint` / `forAllIntPair`'s
+// `shrinkPairLeft`/`shrinkPairRight` already use in `testing_property.l`,
+// at whatever arity this property actually has.
+func propShrinkPhase(idx: in Int, binders: in List[PropBinderInfo], j: in Int, guardText: in Option[String]): String {
+  val jStr = toString(j)
+  val binder = binders[j]
+  var sb = ""
+  sb = sb + "    var __lyric_shrinking_" + jStr + " = true\n"
+  sb = sb + "    while __lyric_shrinking_" + jStr + " {\n"
+  sb = sb + "      __lyric_shrinking_" + jStr + " = false\n"
+  sb = sb + "      val __lyric_cands_" + jStr + ": List[" + binder.tyName + "] = " +
+    propShrinkExpr(binder.tyName, "__lyric_fail_" + binder.name) +
+    "\n"
+  sb = sb + "      var __lyric_ci_" + jStr + " = 0\n"
+  sb = sb + "      while __lyric_ci_" + jStr + " < __lyric_cands_" + jStr + ".count {\n"
+  sb = sb + "        val __lyric_cand_" + jStr + " = __lyric_cands_" + jStr + "[__lyric_ci_" + jStr + "]\n"
+  var bi = 0
+  while bi < binders.count {
+    val b = binders[bi]
+    if bi == j {
+      sb = sb + "        val " + b.name + " = __lyric_cand_" + jStr + "\n"
+    } else {
+      sb = sb + "        val " + b.name + " = __lyric_fail_" + b.name + "\n"
+    }
+    bi = bi + 1
+  }
+  sb = sb + propGuardAssign(guardText, "__lyric_guard_ok_" + jStr, "        ")
+  sb = sb + "        var __lyric_stillFails_" + jStr + " = false\n"
+  sb = sb + "        if __lyric_guard_ok_" + jStr + " {\n"
+  sb = sb + "          try {\n"
+  sb = sb + "            __lyric_prop_body_" + toString(idx) + "(" + propCallArgs(binders) + ")\n"
+  sb = sb + "          } catch Bug as __lyric_pe2_" + jStr + " {\n"
+  sb = sb + "            __lyric_stillFails_" + jStr + " = true\n"
+  sb = sb + "          }\n"
+  sb = sb + "        }\n"
+  sb = sb + "        if __lyric_stillFails_" + jStr + " {\n"
+  sb = sb + "          __lyric_fail_" + binder.name + " = __lyric_cand_" + jStr + "\n"
+  sb = sb + "          __lyric_shrinking_" + jStr + " = true\n"
+  sb = sb + "          __lyric_ci_" + jStr + " = __lyric_cands_" + jStr + ".count\n"
+  sb = sb + "        } else {\n"
+  sb = sb + "          __lyric_ci_" + jStr + " = __lyric_ci_" + jStr + " + 1\n"
+  sb = sb + "        }\n"
+  sb = sb + "      }\n"
+  sb = sb + "    }\n"
+  sb
+}
+
+// The `panic("property failed: \"<title>\" forall(x = ..., y = ...)")`
+// expression reporting every binder's final shrunk value.
+func propFailureMessageExpr(titleEsc: in String, binders: in List[PropBinderInfo]): String {
+  var expr = "\"property failed: \\\"" + titleEsc + "\\\" forall(\""
+  var i = 0
+  while i < binders.count {
+    val b = binders[i]
+    if i > 0 {
+      expr = expr + " + \", \""
+    }
+    expr = expr + " + \"" + b.name + " = \" + toString(__lyric_fail_" + b.name + ")"
+    i = i + 1
+  }
+  expr = expr + " + \")\""
+  expr
+}
+
+func propAllBindersSupported(p: in PropertyDecl): Bool {
+  var i = 0
+  while i < p.forAll.count {
+    match propBinderTypeName(p.forAll[i].ty) {
+      case Some(n) -> {
+        if not isSupportedPropType(n) {
+          return false
+        }
+      }
+      case None -> return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+// Whether ANY property in the file will get a real driver (as opposed to a
+// `# skip` line) — decides whether `Std.Random` / `Std.Testing.Property`
+// need injecting.  A `forall`-less property never calls either, so it alone
+// does not trigger the injection.
+func anyPropertyNeedsStdlibImports(items: in List[Item], runProperties: in Bool): Bool {
+  if not runProperties {
+    return false
+  }
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IProperty(p) -> {
+        if p.forAll.count > 0 and propAllBindersSupported(p) {
+          return true
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  false
+}
+
+func importPathText(mp: in ModulePath): String {
+  var s = ""
+  var i = 0
+  while i < mp.segments.count {
+    if i > 0 {
+      s = s + "."
+    }
+    s = s + mp.segments[i]
+    i = i + 1
+  }
+  s
+}
+
+// Whether the user's own file already imports `dottedPath` (any alias) —
+// checked before injecting `import Std.Random` / `import Std.Testing.Property`
+// so the synthesised source never carries a duplicate import of the same
+// path.
+func hasImportOfPath(imports: in List[ImportDecl], dottedPath: in String): Bool {
+  var i = 0
+  while i < imports.count {
+    if importPathText(imports[i].path) == dottedPath {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Builds the pair of synthesised functions (`__lyric_prop_body_<idx>` /
+// `__lyric_prop_<idx>`) for one `property` declaration, or `Err(reason)`
+// naming the first unsupported `forall` binder type encountered — the
+// caller reports that as a `# skip` line, exactly like v1's unconditional
+// skip.
+func tryBuildPropertyDriver(
+  source: in String, p: in PropertyDecl, idx: in Int, annText: in String
+): Result[String, String] {
+  val binders: List[PropBinderInfo] = newList()
+  var bi = 0
+  while bi < p.forAll.count {
+    val b = p.forAll[bi]
+    match propBinderTypeName(b.ty) {
+      case Some(n) -> {
+        if isSupportedPropType(n) {
+          binders.add(PropBinderInfo(name = b.name, tyName = n))
+        } else {
+          return Err(error = "unsupported generator type '" + n + "' for auto-derived properties (Int/Bool/Double only in v1)")
+        }
+      }
+      case None -> return Err(error = "unsupported generator type for auto-derived properties (Int/Bool/Double only in v1)")
+    }
+    bi = bi + 1
+  }
+
+  val idxStr = toString(idx)
+  val bodyFn = "__lyric_prop_body_" + idxStr
+  val driverFn = "__lyric_prop_" + idxStr
+
+  var params = ""
+  var pi = 0
+  while pi < binders.count {
+    if pi > 0 {
+      params = params + ", "
+    }
+    params = params + binders[pi].name + ": " + binders[pi].tyName
+    pi = pi + 1
+  }
+
+  val bodyText = slice(source, p.body.span)
+  val guardText: Option[String] = match p.guardExpr {
+    case Some(g) -> Some(value = slice(source, g.span))
+    case None -> None
+  }
+  val titleEsc = escapeForLiteral(p.title)
+
+  var sb = ""
+  sb = sb + annText + "func " + bodyFn + "(" + params + "): Unit " + bodyText + "\n\n"
+  sb = sb + annText + "func " + driverFn + "(): Unit {\n"
+
+  if binders.count == 0 {
+    // No `forall` binders at all: a single guarded execution, no sampling
+    // or shrinking (there is nothing to shrink toward).
+    sb = sb + propGuardAssign(guardText, "__lyric_guard_ok", "  ")
+    sb = sb + "  if __lyric_guard_ok {\n"
+    sb = sb + "    " + bodyFn + "()\n"
+    sb = sb + "  }\n"
+    sb = sb + "}\n"
+    return Ok(value = sb)
+  }
+
+  sb = sb + "  val __lyric_rng = Std.Random.makeRandom(" + toString(1000 + idx) + ")\n"
+  sb = sb + "  val __lyric_n = 100\n"
+  sb = sb + "  var __lyric_iter = 0\n"
+  sb = sb + "  var __lyric_failed = false\n"
+  var fi = 0
+  while fi < binders.count {
+    val b = binders[fi]
+    sb = sb + "  var __lyric_fail_" + b.name + ": " + b.tyName + " = " + propZeroLiteral(b.tyName) + "\n"
+    fi = fi + 1
+  }
+  sb = sb + "  while __lyric_iter < __lyric_n and not __lyric_failed {\n"
+  var gi = 0
+  while gi < binders.count {
+    val b = binders[gi]
+    sb = sb + "    val " + b.name + " = " + propGenExpr(b.tyName, "__lyric_rng") + "\n"
+    gi = gi + 1
+  }
+  sb = sb + propGuardAssign(guardText, "__lyric_guard_ok", "    ")
+  sb = sb + "    if __lyric_guard_ok {\n"
+  sb = sb + "      var __lyric_ok = true\n"
+  sb = sb + "      try {\n"
+  sb = sb + "        " + bodyFn + "(" + propCallArgs(binders) + ")\n"
+  sb = sb + "      } catch Bug as __lyric_pe {\n"
+  sb = sb + "        __lyric_ok = false\n"
+  sb = sb + "      }\n"
+  sb = sb + "      if not __lyric_ok {\n"
+  sb = sb + "        __lyric_failed = true\n"
+  var si = 0
+  while si < binders.count {
+    val b = binders[si]
+    sb = sb + "        __lyric_fail_" + b.name + " = " + b.name + "\n"
+    si = si + 1
+  }
+  sb = sb + "      }\n"
+  sb = sb + "    }\n"
+  sb = sb + "    __lyric_iter = __lyric_iter + 1\n"
+  sb = sb + "  }\n"
+  sb = sb + "  if __lyric_failed {\n"
+  var shi = 0
+  while shi < binders.count {
+    sb = sb + propShrinkPhase(idx, binders, shi, guardText)
+    shi = shi + 1
+  }
+  sb = sb + "    panic(" + propFailureMessageExpr(titleEsc, binders) + ")\n"
+  sb = sb + "  }\n"
+  sb = sb + "}\n"
+  Ok(value = sb)
+}
+
 // `nativeMode` drops the try/catch isolation `--target native` cannot lower
 // (D-N-003: native has no unwinding — try/catch panics the codegen with
 // "not supported for --target native").  Each test calls straight through;
@@ -247,7 +591,7 @@ func parseErrors(diags: in List[Diagnostic]): List[Diagnostic] {
 
 @stable(since = "0.1")
 pub func synthesize(source: in String, filter: in Option[String]): Outcome {
-  synthesizeFor(source, filter, false)
+  synthesizeFor(source, filter, false, false)
 }
 
 // Native variant (N7.2): synthesises straight-through test calls instead of
@@ -255,10 +599,22 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
 // `@stable` — `synthesize` is the stable dotnet/jvm entry point; this is a
 // separate, additive entry point rather than a breaking signature change.
 pub func synthesizeNative(source: in String, filter: in Option[String]): Outcome {
-  synthesizeFor(source, filter, true)
+  synthesizeFor(source, filter, true, false)
 }
 
-func synthesizeFor(source: in String, filter: in Option[String], nativeMode: in Bool): Outcome {
+// `lyric test --properties` variant (#677): `property` declarations whose
+// `forall` binders are all auto-derivable primitive types (Int/Bool/Double)
+// are synthesised into a real sampling-and-shrinking harness (see
+// `tryBuildPropertyDriver`) and run alongside ordinary tests; a property
+// with any other binder type still reports `# skip` with a reason naming
+// the unsupported type.  Not `@stable` — additive alongside `synthesize`,
+// which keeps skipping every property unconditionally (byte-for-byte
+// unchanged) for callers that don't pass `--properties`.
+pub func synthesizeWithProperties(source: in String, filter: in Option[String]): Outcome {
+  synthesizeFor(source, filter, false, true)
+}
+
+func synthesizeFor(source: in String, filter: in Option[String], nativeMode: in Bool, runProperties: in Bool): Outcome {
   val pf = parse(source)
   val errs = parseErrors(pf.diagnostics)
   if errs.count > 0 {
@@ -286,6 +642,20 @@ func synthesizeFor(source: in String, filter: in Option[String], nativeMode: in 
   if nativeMode {
     sb = sb + "import Std.Console as __lyric_console\n"
   }
+  // #677: inject the two stdlib imports the synthesised property harness
+  // needs, unaliased (referenced by full qualified name everywhere below,
+  // so an alias collision with the user's own imports is impossible) and
+  // only when at least one property will actually get a real driver, and
+  // only when the user hasn't already imported the path themselves.
+  val needsPropertyStdlib = anyPropertyNeedsStdlibImports(pf.file.items, runProperties)
+  if needsPropertyStdlib {
+    if not hasImportOfPath(pf.file.imports, "Std.Random") {
+      sb = sb + "import Std.Random\n"
+    }
+    if not hasImportOfPath(pf.file.imports, "Std.Testing.Property") {
+      sb = sb + "import Std.Testing.Property\n"
+    }
+  }
   var ii = 0
   while ii < pf.file.imports.count {
     sb = sb + slice(source, pf.file.imports[ii].span) + "\n"
@@ -301,6 +671,7 @@ func synthesizeFor(source: in String, filter: in Option[String], nativeMode: in 
   var tests: List[TestSlot] = newList()
   var skipped: List[SkipSlot] = newList()
   var testIdx = 0
+  var propIdx = 0
   var i = 0
   while i < pf.file.items.count {
     val it = pf.file.items[i]
@@ -331,7 +702,29 @@ func synthesizeFor(source: in String, filter: in Option[String], nativeMode: in 
         tests.add(TestSlot(funcName = fname, title = t.title))
       }
       case IProperty(p) -> {
-        skipped.add(SkipSlot(title = p.title, reason = "property: not implemented in v1"))
+        if runProperties {
+          // Preserve any annotation prefix (e.g. `@cfg(...)`) before the
+          // `property` keyword, mirroring the `ITest`/`IFixture` arms
+          // (#5609 item 4) — repeated before EACH synthesised func below so
+          // `@cfg` erasure (which gates whole items) sees it on both, not
+          // just the first.
+          val propStart = p.span.startPos.offset
+          val annLen = propStart - s
+          val annText = if annLen > 0 { source.substring(s, annLen) } else { "" }
+          match tryBuildPropertyDriver(source, p, propIdx, annText) {
+            case Ok(driverCode) -> {
+              val fname = "__lyric_prop_" + toString(propIdx)
+              sb = sb + "\n" + driverCode
+              tests.add(TestSlot(funcName = fname, title = "property: " + p.title))
+            }
+            case Err(reason) -> {
+              skipped.add(SkipSlot(title = p.title, reason = "property: " + reason))
+            }
+          }
+          propIdx = propIdx + 1
+        } else {
+          skipped.add(SkipSlot(title = p.title, reason = "property: not implemented in v1"))
+        }
       }
       case IFixture(f) -> {
         // Preserve any annotations before the `fixture` keyword, then replace

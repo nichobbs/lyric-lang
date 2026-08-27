@@ -413,6 +413,7 @@ Core commands you will use constantly:
 | `lyric test <file.l> --list` | Print test titles without compiling |
 | `lyric test <file.l> --filter <substring>` | Run only tests whose title contains the substring |
 | `lyric test <file.l> --fail-fast` | Stop after the first file with failing tests; print an early summary |
+| `lyric test <file.l> --target jvm --coverage` | Run on the JVM target under JaCoCo, writing a Cobertura XML coverage report |
 | `lyric check <file.l>` | Type-check without producing a usable output artifact |
 | `lyric check` | Type-check the discovered project (output to `.lyric-check/`, not `bin/`) |
 | `lyric clean` | Remove `bin/`, `.lyric-run/`, `.lyric-test/`, `.lyric-bench/`, `.lyric-check/`, `.lyric-release/` |

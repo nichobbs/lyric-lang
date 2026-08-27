@@ -1409,7 +1409,7 @@ connection, each pumping `hostRead` bytes through its own
 the `_kernel/http_server.l` .NET-specific concurrency (Task.Run /
 ConcurrentQueue / SemaphoreSlim) with the native thread model. Gated on N9.2.
 
-**Prerequisites SHIPPED (D-progress-802):** `lyric_sem_*` (a counting
+**Prerequisites SHIPPED (D-progress-809):** `lyric_sem_*` (a counting
 semaphore — native had no blocking wait/signal primitive at all) and
 `List[T]`/`slice[T]` `.slice`/`.concat`/`.append` (`Std.HttpEngine.feed`'s
 buffer bookkeeping needs both on nearly every parse step).
@@ -1419,7 +1419,7 @@ the `_kernel_native/http_server.l` kernel (the same 12-function surface as
 the dotnet/JVM twins + `startListenerTls`, over a real
 `pthread_create`-per-connection accept loop, using a
 self-unregistering-closure pattern keyed by fd to solve the detached
-thread's userdata lifetime problem — see D-progress-802 for the design)
+thread's userdata lifetime problem — see D-progress-809 for the design)
 surfaced two further, architectural native-backend gaps independent of
 this item's own scope: native `String` has no
 `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith`

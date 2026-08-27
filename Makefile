@@ -420,6 +420,23 @@ maven-resolver: ## Build resolver/pom.xml into resolver/target/lyric-resolver.ja
 	mvn package -q -DskipTests -f resolver/pom.xml
 	@echo "lyric-resolver.jar built: resolver/target/lyric-resolver.jar"
 
+# ── JaCoCo (JVM-target `lyric test --coverage`, docs/03-decision-log.md) ────
+JACOCO_VERSION ?= 0.8.12
+JACOCO_DIR := .tools/jacoco
+
+jacoco: ## Download jacocoagent.jar/jacococli.jar into .tools/jacoco/lib (LYRIC_JACOCO_AGENT/LYRIC_JACOCO_CLI)
+	@if [ -f "$(JACOCO_DIR)/lib/jacocoagent.jar" ] && [ -f "$(JACOCO_DIR)/lib/jacococli.jar" ]; then \
+		echo "jacoco: already staged at $(JACOCO_DIR)/lib (version pin: $(JACOCO_VERSION))"; \
+	else \
+		set -e; \
+		mkdir -p "$(JACOCO_DIR)"; \
+		tmp_zip="$$(mktemp)"; \
+		curl -fsSL --connect-timeout 20 --max-time 180 -o "$$tmp_zip" "https://github.com/jacoco/jacoco/releases/download/v$(JACOCO_VERSION)/jacoco-$(JACOCO_VERSION).zip"; \
+		unzip -q -o "$$tmp_zip" -d "$(JACOCO_DIR)" lib/jacocoagent.jar lib/jacococli.jar; \
+		rm -f "$$tmp_zip"; \
+		echo "jacoco: staged jacocoagent.jar + jacococli.jar into $(JACOCO_DIR)/lib (v$(JACOCO_VERSION))"; \
+	fi
+
 # ── Housekeeping ────────────────────────────────────────────────────────────
 
 clean: ## Remove bootstrap artefacts (.bootstrap) and the ./bin symlink

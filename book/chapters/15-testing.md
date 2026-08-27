@@ -5,7 +5,7 @@ Testing in Lyric is a language feature, not a framework. The `test`, `property`,
 This chapter covers the three test styles (unit tests, property tests, and snapshots), doctests extracted from doc comments, and the command-line flags that control what runs. The next chapter covers stubs and test wires, which are how you isolate code that depends on interfaces.
 
 ::: note
-**Test runner status.** `lyric test <file.l>` runs `test` blocks and supports `--filter` and `--list`. `Std.Testing.Snapshot` is fully shipped and `@stable` — snapshot assertions write on first run and compare on subsequent runs, with diff output and a configurable snapshot directory (`snapshotIn(dir, label, actual)`). `Std.Testing.Property` is in the stdlib with composable generators, but `lyric test` currently skips `property` declarations (reporting `# skip`) — property execution is a v2 runner item. Doctests, `--manifest`-driven multi-file discovery, `--properties`, `--update-snapshots`, and cross-package non-`pub` access are also v2. See `docs/24-test-runner-plan.md`.
+**Test runner status.** `lyric test <file.l>` runs `test` blocks and supports `--filter` and `--list`. `Std.Testing.Snapshot` is fully shipped and `@stable` — snapshot assertions write on first run and compare on subsequent runs, with diff output and a configurable snapshot directory (`snapshotIn(dir, label, actual)`). `lyric test --properties` (#677) now actually runs `property` declarations instead of unconditionally skipping them, but only for the v1.x slice described in §15.5's status note below — auto-derived generators for `Int`/`Bool`/`Double` `forall` binders, with real shrinking on failure. Doctests, `--manifest`-driven multi-file discovery, `--update-snapshots`, and cross-package non-`pub` access are still v2. See `docs/24-test-runner-plan.md`.
 :::
 
 ## §15.1 `@test_module`
@@ -210,6 +210,10 @@ Snapshot files live in a `snapshots/` directory relative to the test source file
 
 A property test states an invariant that should hold for all inputs of a given type, then lets the runtime search for a counterexample. Where a unit test checks the cases you thought of, a property test searches the space you didn't.
 
+::: note
+**Current implementation status (v1.x, #677).** `lyric test --properties` runs a property for real only when every `forall` binder is `Int`, `Bool`, or `Double` — those get an auto-derived generator (100 samples, seeded per property for reproducible runs) and real shrinking toward the simplest failing value on the first counterexample. A `where` guard is evaluated before each sample; a sample that fails the guard is skipped rather than counted as pass or fail. A property whose binders include any other type — `SortedSet[Int]` in the worked example below, or any record/union/opaque type — still parses but reports `# skip` naming the unsupported type, exactly as it does without `--properties`. The generator catalogue below (records generated field-by-field, unions picking a random case, invariant-respecting opaque-type generation, range-subtype generation), the `--property-trials` flag, and the `ensures:`-clause-to-property auto-derivation described in the sidebar are the intended v2 design and are **not implemented yet** — treat the rest of this section as the target shape property testing is heading toward, not the current CLI surface. `--properties` is rejected outright on `--target native` (no exception unwinding to isolate a failing sample). See `docs/24-test-runner-plan.md` §5.
+:::
+
 ```lyric
 @test_module
 package SortedSet
@@ -281,7 +285,7 @@ Property tests are not included in the default `lyric test` run because they are
 lyric test --properties
 ```
 
-In CI, run `lyric test --properties` separately, perhaps on a longer schedule or only on certain branches.
+In CI, run `lyric test --properties` separately, perhaps on a longer schedule or only on certain branches. (There is no `--property-trials` flag yet — the sample count is fixed at 100 per property; see the status note above.)
 
 ## §15.6 Doctests
 

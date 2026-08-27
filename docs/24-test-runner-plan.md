@@ -1,6 +1,7 @@
 ## Native test runner — `lyric test`
 
-Status: shipped (v1 — D-progress-138).
+Status: shipped (v1 — D-progress-138); property execution partially
+shipped as v1.x (#677, D-progress-784, §5 Stage 3).
 
 This document describes the native `lyric test` command and the
 `@test_module` / `test "…" { … }` surface it consumes.  v1 scope:
@@ -10,7 +11,10 @@ the language reference §3.2 / §13.2 specifies.  Property-based
 testing, fixtures, snapshot infrastructure beyond
 `Std.Testing.snapshot`, parallelism, JUnit XML output, doctests,
 and contract-based property auto-derivation are explicitly out of
-v1 scope and tracked for follow-up milestones.
+v1 scope and tracked for follow-up milestones.  (`lyric test
+--properties` for Int/Bool/Double `forall` binders has since shipped
+as v1.x — see §5 Stage 3 below; every other property-testing item in
+this paragraph is still unimplemented.)
 
 Background — why v1 was urgent: the panic-on-failure idiom
 (`assertEqual` panics → exit 0 = pass) used to couple the stdlib
@@ -45,13 +49,15 @@ test "deposit increases balance" {
   is a string literal and serves as the human-readable identifier
   in test output.
 
-#### 1.2 Items v1 *parses* but does not *execute*
+#### 1.2 Items v1 *parses* but does not *execute* (without `--properties`)
 
 * `property "<title>" forall(<binders>) [where <expr>] { <block> }`
-  — emitted as a **skipped** test in the report (`# skip property
-  "…": properties not implemented`) so the surface compiles
-  without errors but the runner does not invent generators. v2
-  adds property execution.
+  — emitted as a **skipped** test in the report (`# skip`, with a
+  reason) by default. Passing `lyric test --properties` (#677, §5
+  Stage 3) runs it for real when every binder is `Int`/`Bool`/`Double`
+  — auto-derived generators for any other binder type are still v2
+  work, so those still report `# skip` (naming the unsupported type)
+  even under `--properties`.
 * `fixture <name>[: <type>] = <expr>` — parsed and rewritten to a
   module-level `val` declaration in the synthesised source
   (D-progress-474), making the value available to all test functions
@@ -195,9 +201,20 @@ driven discovery story.
   multi-file test runs via `Emitter.emitProject`, feature-default resolution,
   local-path dep resolution.  Cross-package non-pub access (§3.2) and retiring
   the F# Expecto bridge for the stdlib test suite are follow-up items.
-* **Stage 3** — property execution (auto-derived generators for
-  primitive types and opaque ranges), `lyric test --properties`,
-  doctest harness for ` ```lyric ` blocks.
+* **Stage 3** — property execution. **Partially shipped (#677,
+  D-progress-784):** `lyric test --properties` synthesises a real
+  sampling-and-shrinking harness (100 seeded samples, `where`-guard
+  evaluation, greedy per-binder shrinking on the first counterexample)
+  for any `property` whose `forall` binders are all `Int`/`Bool`/`Double`
+  — see `Lyric.TestSynth.synthesizeWithProperties` /
+  `tryBuildPropertyDriver`. Auto-derived generators for opaque/record/
+  union types (the `SortedSet[Int]`-style worked example in
+  `docs/02-worked-examples.md` §3 and `book/chapters/15-testing.md`
+  §15.5), `--property-trials`, `--seed`, and contract (`ensures:`)-
+  derived properties remain unimplemented; a property with any other
+  binder type still reports `# skip` (naming the unsupported type)
+  under `--properties`, exactly as it does without the flag. Doctest
+  harness for ` ```lyric ` blocks is unstarted (tracked under #678).
 * **Stage 4** — fixture lifetimes, parallel runs, JUnit XML output,
   `--seed` for reproducible property runs.
 
@@ -269,7 +286,7 @@ Q-J007e).
 | T0901 | *(Retired — D-progress-474. `fixture` declarations are now rewritten to `val`.)* |
 | T0902 | `@test_module` package may not declare `func main(): Unit`. |
 | T0903 | (reserved — single-arg `expect(...)` lowering is v2 work.) |
-| T0904 | `property` declarations are parsed but skipped at runtime. (Warning, not error — the v1 runner emits a TAP `# skip` line.) |
+| T0904 | `property` declarations are parsed but skipped at runtime by default, and also under `--properties` when the binder types aren't all Int/Bool/Double. (Warning, not error — the runner emits a TAP `# skip` line naming the reason.) |
 
 T-codes 0900–0999 are reserved for the test runner.
 

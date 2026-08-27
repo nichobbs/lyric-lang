@@ -9,6 +9,13 @@
 //! same code path `lyric build`/`lyric test` exercise for a real restore
 //! (#4340).
 //!
+//! Also covers `Lyric.Cli.resolveBareDispatch` (cli_main.l) and
+//! `Lyric.Cli.resolveTestAutoDiscovery` (cli_test.l) — the injectable-
+//! start-directory decision functions behind the bare `lyric` dispatch and
+//! `cmdTest`'s auto-discovery, added so the broken-manifest warning path
+//! (#4881) is regression-tested at the wiring level, not just via the
+//! lower-level `Disc.findNearestManifestDetailed` primitive (#5860).
+//!
 //! Run in CI via:
 //!
 //!   lyric test lyric-compiler/lyric/cli_shared_self_test.l
@@ -830,41 +837,161 @@ test "findNearestManifestDetailed: no lyric.toml anywhere reports NoManifestFoun
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// #5860: no CLI-integration test exists for `Lyric.Cli.main`'s bare-dispatch
-// `FoundBrokenManifest` arm (cli_main.l) or `cmdTest`'s auto-discovery
-// `FoundBrokenManifest` arm (cli_test.l) — only the lower-level
-// `Disc.findNearestManifestDetailed` primitive above is driven directly.
-// Investigated adding one; documenting why it isn't possible in-process
-// today rather than shipping a test that doesn't actually exercise the
-// wiring it claims to cover:
+// #5860: `Lyric.Cli.main`'s bare-dispatch `FoundBrokenManifest`/`NoManifestFound`
+// arms (cli_main.l) and `cmdTest`'s auto-discovery arms of the same shape
+// (cli_test.l) previously had no CLI-integration test — only the lower-level
+// `Disc.findNearestManifestDetailed` primitive above was driven directly.
+// Closing this needed two small seams on the production code (not test-only
+// changes), both added alongside these tests:
 //
-//  1. Both call sites are hardcoded to
-//     `Disc.findNearestManifestDetailed(Environment.currentDirectory())` —
-//     the discovery PRIMITIVE takes an explicit `startDir` (which is how
-//     the tests above drive it against fixture directories), but neither
-//     `main`'s bare-argv branch nor `cmdTest`'s auto-discovery branch
-//     exposes a way to substitute a fixture directory for the real process
-//     cwd. `Std.Environment` has no `setCurrentDirectory`/chdir extern
-//     either (checked `_kernel/environment_host.l`), so there is no way to
-//     redirect discovery to a controlled fixture tree without changing
-//     `main`/`cmdTest`'s own signatures — a production-code change, not a
-//     test addition, and out of scope for this test-coverage follow-up.
-//  2. `cmdTest` (cli_test.l) is package-private (not `pub`), so even
-//     setting aside (1), this self-test's package (`Lyric.CliSharedSelfTest`)
-//     cannot call it directly today.
-//  3. `printErr`/`printUsage` write straight to `Std.Console.error`/stdout;
-//     there is no capture facility, so even with (1) and (2) solved, the
-//     exact warning text the issue calls out could not be asserted — only
-//     the Int exit code could be.
-//  4. Actually invoking `Lyric.Cli.main([])` for real (the one call of the
-//     two that IS `pub`) is unsafe here regardless: it runs against
-//     whatever the test process's ACTUAL cwd is, which under `lyric test`
-//     is inside a real checkout with a valid `lyric.toml` — it would kick
-//     off a full recursive `cmdBuild` of the discovered project rather
-//     than hit the broken-manifest branch this issue is about.
-//
-// Closing this properly needs an injectable start-directory seam on
-// `main`/`cmdTest` (or their discovery call) plus a stdout/stderr capture
-// facility — both real production-code additions, not test-only changes.
-// Filed as a documented gap rather than a fabricated assertion.
+//  1. `resolveBareDispatch(startDir)` / `resolveTestAutoDiscovery(startDir)`
+//     take an explicit `startDir` instead of hardcoding
+//     `Environment.currentDirectory()` (`Std.Environment` has no chdir
+//     extern, so this is the only way to point the decision at a fixture
+//     directory), mirroring how `buildOneNative` is `pub` for the same
+//     reason (#4127).
+//  2. `printErr`/`printUsage` still write straight to `Std.Console` (no
+//     capture facility exists, and adding one is out of scope for this
+//     SUGGESTION-severity finding) — so `reportNoUsableManifestForBare` /
+//     `reportTestAutoDiscoveryFailure` call them for real AND return the
+//     exact text as data (`BareDispatchResult.warningPrinted` /
+//     `TestAutoDiscoveryResult.warningPrinted` + `.missingFileMessage`),
+//     letting these tests assert on the literal printed text without a
+//     capture facility. A single shared implementation backs BOTH arms in
+//     each file, so `printUsage()` (cli_main.l) and the "missing source
+//     file" message (cli_test.l) cannot be dropped from just one arm by a
+//     future edit — the risk the issue actually flagged.
 // ─────────────────────────────────────────────────────────────────────────────
+test "resolveBareDispatch: a corrupt lyric.toml reports the exact broken-manifest warning and printUsage's exit code" {
+  val root = freshTempDir("bare-dispatch-broken")
+  defer {
+    cleanup(root)
+  }
+  // Malformed TOML: an unterminated section header (same shape as the
+  // `findNearestManifestDetailed` corrupt-manifest test above).
+  writeFileOrPanic(Path.join(root, "lyric.toml"), "[package\nname = \"Root\"\n")
+
+  val expectedError = match Disc.findNearestManifestDetailed(root) {
+    case FoundBrokenManifest(_, error) -> error
+    case _ -> panic("fixture setup: expected FoundBrokenManifest")
+  }
+  val expectedWarning = Disc.brokenManifestWarning(Path.join(root, "lyric.toml"), expectedError)
+
+  match Cli.resolveBareDispatch(root) {
+    case BareReported(outcome) -> {
+      assertEqualInt(outcome.exitCode, 1, "broken manifest: bare dispatch exits 1")
+      match outcome.warningPrinted {
+        case Some(w) -> assertEqual(w, expectedWarning, "bare dispatch prints the exact brokenManifestWarning text")
+        case None -> panic("expected a warning to be printed for a broken manifest")
+      }
+    }
+    case BareShouldBuild(p) -> panic("expected BareReported for a broken manifest, got BareShouldBuild(" + p + ")")
+  }
+}
+
+test "resolveBareDispatch: no manifest anywhere reports no warning and exits 1" {
+  val root = freshTempDir("bare-dispatch-none")
+  defer {
+    cleanup(root)
+  }
+  val leafDir = Path.join(root, "leaf")
+  match File.createDir(leafDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create dir " + leafDir + ": " + IOError.message(e))
+  }
+
+  match Cli.resolveBareDispatch(leafDir) {
+    case BareReported(outcome) -> {
+      assertEqualInt(outcome.exitCode, 1, "no manifest: bare dispatch exits 1")
+      match outcome.warningPrinted {
+        case None -> assertTrue(true, "no manifest: no broken-manifest warning is printed")
+        case Some(w) -> panic("unexpected warning printed with no manifest at all: " + w)
+      }
+    }
+    case BareShouldBuild(p) -> panic("expected BareReported with no manifest, got BareShouldBuild(" + p + ")")
+  }
+}
+
+test "resolveBareDispatch: a valid manifest resolves to BareShouldBuild with its path" {
+  val root = freshTempDir("bare-dispatch-valid")
+  defer {
+    cleanup(root)
+  }
+  writeFileOrPanic(Path.join(root, "lyric.toml"), "[package]\nname = \"Root\"\nversion = \"0.1.0\"\n")
+
+  match Cli.resolveBareDispatch(root) {
+    case BareShouldBuild(p) -> assertEqual(p, Path.join(root, "lyric.toml"), "resolves to the fixture's own manifest path")
+    case BareReported(_) -> panic("expected BareShouldBuild for a valid manifest")
+  }
+}
+
+test "resolveTestAutoDiscovery: a corrupt lyric.toml prints the warning AND the missing-source-file message" {
+  val root = freshTempDir("test-autodisc-broken")
+  defer {
+    cleanup(root)
+  }
+  writeFileOrPanic(Path.join(root, "lyric.toml"), "[package\nname = \"Root\"\n")
+
+  val expectedError = match Disc.findNearestManifestDetailed(root) {
+    case FoundBrokenManifest(_, error) -> error
+    case _ -> panic("fixture setup: expected FoundBrokenManifest")
+  }
+  val expectedWarning = Disc.brokenManifestWarning(Path.join(root, "lyric.toml"), expectedError)
+
+  match Cli.resolveTestAutoDiscovery(root) {
+    case TestReported(outcome) -> {
+      assertEqualInt(outcome.exitCode, 1, "broken manifest: test auto-discovery exits 1")
+      assertEqual(
+        outcome.missingFileMessage,
+        "test: missing source file and no lyric.toml found",
+        "always prints the fixed missing-source-file message"
+      )
+      match outcome.warningPrinted {
+        case Some(w) -> assertEqual(w, expectedWarning, "test auto-discovery prints the exact brokenManifestWarning text")
+        case None -> panic("expected a warning to be printed for a broken manifest")
+      }
+    }
+    case TestShouldRunManifest(p) -> panic("expected TestReported for a broken manifest, got TestShouldRunManifest(" + p + ")")
+  }
+}
+
+test "resolveTestAutoDiscovery: no manifest anywhere prints only the missing-source-file message" {
+  val root = freshTempDir("test-autodisc-none")
+  defer {
+    cleanup(root)
+  }
+  val leafDir = Path.join(root, "leaf")
+  match File.createDir(leafDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create dir " + leafDir + ": " + IOError.message(e))
+  }
+
+  match Cli.resolveTestAutoDiscovery(leafDir) {
+    case TestReported(outcome) -> {
+      assertEqualInt(outcome.exitCode, 1, "no manifest: test auto-discovery exits 1")
+      assertEqual(
+        outcome.missingFileMessage,
+        "test: missing source file and no lyric.toml found",
+        "always prints the fixed missing-source-file message"
+      )
+      match outcome.warningPrinted {
+        case None -> assertTrue(true, "no manifest: no broken-manifest warning is printed")
+        case Some(w) -> panic("unexpected warning printed with no manifest at all: " + w)
+      }
+    }
+    case TestShouldRunManifest(p) -> panic("expected TestReported with no manifest, got TestShouldRunManifest(" + p + ")")
+  }
+}
+
+test "resolveTestAutoDiscovery: a valid manifest resolves to TestShouldRunManifest with its path" {
+  val root = freshTempDir("test-autodisc-valid")
+  defer {
+    cleanup(root)
+  }
+  writeFileOrPanic(Path.join(root, "lyric.toml"), "[package]\nname = \"Root\"\nversion = \"0.1.0\"\n")
+
+  match Cli.resolveTestAutoDiscovery(root) {
+    case TestShouldRunManifest(p) -> assertEqual(p, Path.join(root, "lyric.toml"), "resolves to the fixture's own manifest path")
+    case TestReported(_) -> panic("expected TestShouldRunManifest for a valid manifest")
+  }
+}
