@@ -407,3 +407,58 @@ test "list passed to and returned from functions (ASan)" {
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 45, "fn-boundary: sum 0..9")
 }
+
+// `.slice`/`.concat`/`.append` (#6104): never-mutating `slice[T]`
+// combinators added for Std.HttpEngine's buffer bookkeeping (the type
+// checker's `builtinMember` only defines these three for `TySlice`
+// receivers, not `List[T]` — `slice[String]` below, not `List[String]`,
+// matches what a real `lyric build`/`lyric test` actually accepts).
+// Each returns a FRESH slice (ref-typed elements retained by the new
+// slice); the C-level retain/release/OOB-panic contract is covered by
+// lyric-rt's own lyric_rt_test.c, so these cases exercise the actual
+// codegen call-site wiring through the real
+// compileToNativeWithFlags-equivalent pipeline — ASan-checked so a wrong
+// retain count on the fresh slice's String elements (over- or
+// under-release) fails the run.
+test "slice[String].slice returns a fresh subslice, source untouched (ASan)" {
+  val src = "package T\n" + "func main(): Int {\n" +
+    "  val xs: slice[String] = [\"a\", \"bb\", \"ccc\", \"dddd\", \"eeeee\"]\n" +
+    "  val sub = xs.slice(1, 4)\n" +
+    "  val subLen = sub.length\n" +
+    "  val origLen = xs.length\n" +
+    "  val midLen = sub[1].length\n" +
+    "  subLen * 20 + origLen * 3 + midLen\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 78, "slice: sub.length=3, xs.length=5 (untouched), sub[1]=\"ccc\".length=3")
+}
+
+test "slice[String].concat returns a fresh merged slice, both sources untouched (ASan)" {
+  val src = "package T\n" + "func main(): Int {\n" + "  val a: slice[String] = [\"a\", \"bb\", \"ccc\"]\n" +
+    "  val b: slice[String] = [\"dddd\", \"eeeee\"]\n" +
+    "  val merged = a.concat(b)\n" +
+    "  val mergedLen = merged.length\n" +
+    "  val aLen = a.length\n" +
+    "  val bLen = b.length\n" +
+    "  val boundaryLen = merged[3].length\n" +
+    "  mergedLen * 20 + aLen * 5 + bLen * 3 + boundaryLen\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(
+    r.exitCode,
+    125,
+    "concat: merged.length=5, a.length=3, b.length=2 (both untouched), merged[3]=\"dddd\".length=4"
+  )
+}
+
+test "slice[String].append returns a fresh extended slice, source untouched (ASan)" {
+  val src = "package T\n" + "func main(): Int {\n" + "  val xs: slice[String] = [\"a\", \"bb\"]\n" +
+    "  val extended = xs.append(\"ccc\")\n" +
+    "  val extendedLen = extended.length\n" +
+    "  val origLen = xs.length\n" +
+    "  val lastLen = extended[2].length\n" +
+    "  extendedLen * 20 + origLen * 5 + lastLen\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 73, "append: extended.length=3, xs.length=2 (untouched), extended[2]=\"ccc\".length=3")
+}

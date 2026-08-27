@@ -86,6 +86,67 @@ void lyric_mutex_destroy(void* m) {
     pthread_mutex_destroy((pthread_mutex_t*)m);
 }
 
+/* Counting semaphore: a mutex + condvar + count, rather than POSIX
+ * sem_init (unnamed process-private semaphores are not implemented on
+ * macOS — sem_init there always fails with ENOSYS). Mirrors the
+ * lyric_mutex_* shape above. */
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    int32_t count;
+} lyric_sem_t;
+
+int32_t lyric_sem_size(void) {
+    return (int32_t)sizeof(lyric_sem_t);
+}
+
+void lyric_sem_init(void* s, int32_t initial) {
+    lyric_sem_t* sem = (lyric_sem_t*)s;
+    if (pthread_mutex_init(&sem->mutex, 0) != 0) {
+        lyric_panic_msg("pthread_mutex_init (sem) failed", "lyric_posix.c", __LINE__);
+    }
+    if (pthread_cond_init(&sem->cond, 0) != 0) {
+        lyric_panic_msg("pthread_cond_init (sem) failed", "lyric_posix.c", __LINE__);
+    }
+    sem->count = initial;
+}
+
+void lyric_sem_wait(void* s) {
+    lyric_sem_t* sem = (lyric_sem_t*)s;
+    if (pthread_mutex_lock(&sem->mutex) != 0) {
+        lyric_panic_msg("pthread_mutex_lock (sem) failed", "lyric_posix.c", __LINE__);
+    }
+    while (sem->count <= 0) {
+        if (pthread_cond_wait(&sem->cond, &sem->mutex) != 0) {
+            lyric_panic_msg("pthread_cond_wait (sem) failed", "lyric_posix.c", __LINE__);
+        }
+    }
+    sem->count -= 1;
+    if (pthread_mutex_unlock(&sem->mutex) != 0) {
+        lyric_panic_msg("pthread_mutex_unlock (sem) failed", "lyric_posix.c", __LINE__);
+    }
+}
+
+void lyric_sem_post(void* s) {
+    lyric_sem_t* sem = (lyric_sem_t*)s;
+    if (pthread_mutex_lock(&sem->mutex) != 0) {
+        lyric_panic_msg("pthread_mutex_lock (sem) failed", "lyric_posix.c", __LINE__);
+    }
+    sem->count += 1;
+    if (pthread_cond_signal(&sem->cond) != 0) {
+        lyric_panic_msg("pthread_cond_signal (sem) failed", "lyric_posix.c", __LINE__);
+    }
+    if (pthread_mutex_unlock(&sem->mutex) != 0) {
+        lyric_panic_msg("pthread_mutex_unlock (sem) failed", "lyric_posix.c", __LINE__);
+    }
+}
+
+void lyric_sem_destroy(void* s) {
+    lyric_sem_t* sem = (lyric_sem_t*)s;
+    pthread_cond_destroy(&sem->cond);
+    pthread_mutex_destroy(&sem->mutex);
+}
+
 int64_t lyric_epoch_millis(void) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);

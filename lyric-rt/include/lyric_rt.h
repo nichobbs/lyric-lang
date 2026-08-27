@@ -156,6 +156,16 @@ void       lyric_list_clear(LyricList* list);
  * snapshot semantics of `.toArray()`.  A NULL `src` defensively yields
  * a fresh empty scalar list rather than crashing (#4851). */
 LyricList* lyric_list_copy(LyricList* src);
+/* `.slice(start, stop)` (#6104): fresh rc=1 half-open [start, stop)
+ * sub-copy; panics "slice(start, end) requires 0 <= start <= end <=
+ * length" out of bounds, matching the MSIL/JVM twins. */
+LyricList* lyric_list_slice(LyricList* src, int64_t start, int64_t stop);
+/* `.concat(other)` (#6104): fresh rc=1 list holding every element of
+ * `a` then every element of `b`; never mutates either input. */
+LyricList* lyric_list_concat(LyricList* a, LyricList* b);
+/* `.append(x)` (#6104): fresh rc=1 copy of `src` with `x` pushed on the
+ * end; never mutates `src` (unlike `.add`/`lyric_list_push`). */
+LyricList* lyric_list_append(LyricList* src, int64_t val);
 void       lyric_list_dtor(void* obj);
 
 /* Map: open-addressing hash map.  Keys are either LyricString* (hashed
@@ -219,6 +229,24 @@ void lyric_mutex_init(void* m);
 void lyric_mutex_lock(void* m);
 void lyric_mutex_unlock(void* m);
 void lyric_mutex_destroy(void* m);
+
+/* sizeof(the counting-semaphore struct) for the running platform (a
+ * pthread_mutex_t + pthread_cond_t + int32 count — POSIX unnamed
+ * semaphores, sem_init, are not implemented on macOS).  Mirrors
+ * lyric_mutex_size's "size/init/op.../destroy" shape so a caller can
+ * lyric_alloc(lyric_sem_size()) a buffer without a hardcoded struct
+ * layout — used by _kernel_native/http_server.l (#6104) for the
+ * blocking pull queue and the per-request completion signal. */
+int32_t lyric_sem_size(void);
+
+/* Counting-semaphore wrappers. `s` points at a buffer of at least
+ * lyric_sem_size() bytes. lyric_sem_wait blocks until the count is
+ * positive, then decrements it; lyric_sem_post increments the count and
+ * wakes one waiter. */
+void lyric_sem_init(void* s, int32_t initial);
+void lyric_sem_wait(void* s);
+void lyric_sem_post(void* s);
+void lyric_sem_destroy(void* s);
 
 /* Milliseconds since the Unix epoch (CLOCK_REALTIME). */
 int64_t lyric_epoch_millis(void);

@@ -111,6 +111,43 @@ LyricList* lyric_list_copy(LyricList* src) {
     return out;
 }
 
+/* `List[T].slice(start, stop)` / `slice[T].slice(start, stop)` (#6104):
+ * a fresh half-open [start, stop) sub-copy. Bounds contract and panic
+ * message match the MSIL/JVM twins (Msil.Codegen's lowerSliceSliceMsil)
+ * for cross-target parity. */
+LyricList* lyric_list_slice(LyricList* src, int64_t start, int64_t stop) {
+    if (start < 0 || stop < start || stop > src->len) {
+        lyric_panic_msg("slice(start, end) requires 0 <= start <= end <= length", "lyric_collections.c", __LINE__);
+    }
+    LyricList* out = lyric_list_new(src->elems_are_refs);
+    for (int64_t i = start; i < stop; i++) {
+        lyric_list_push(out, src->data[i]);
+    }
+    return out;
+}
+
+/* `List[T].concat(other)` / `slice[T].concat(other)` (#6104): a fresh
+ * list holding every element of `a` followed by every element of `b`.
+ * Never mutates either input. */
+LyricList* lyric_list_concat(LyricList* a, LyricList* b) {
+    LyricList* out = lyric_list_new(a->elems_are_refs);
+    for (int64_t i = 0; i < a->len; i++) {
+        lyric_list_push(out, a->data[i]);
+    }
+    for (int64_t i = 0; i < b->len; i++) {
+        lyric_list_push(out, b->data[i]);
+    }
+    return out;
+}
+
+/* `List[T].append(x)` / `slice[T].append(x)` (#6104): a fresh copy of
+ * `src` with `val` appended. Never mutates `src` (unlike `.add`/`.push`). */
+LyricList* lyric_list_append(LyricList* src, int64_t val) {
+    LyricList* out = lyric_list_copy(src);
+    lyric_list_push(out, val);
+    return out;
+}
+
 /* ── SipHash-2-4 ───────────────────────────────────────────────────── */
 
 #define SIP_ROTL(x, b) (uint64_t)(((x) << (b)) | ((x) >> (64 - (b))))
