@@ -156,14 +156,24 @@ test "generic fn: try/catch where every arm yields the type param still compiles
 // #6426 shipped real `checkcast` emission for exactly that shape
 // (`emitSelfParamChecksJvm`, `jvm/codegen/06_items.l`), so it no longer
 // panics and had to be replaced (documented in D-progress-755) with a
-// repro that stays GENUINELY erased: a match binding on a user-defined
-// GENERIC UNION's payload (`Box[T]`'s `Full(value: T)` case).
-// `scrutineeGenericArgs` (`jvm/codegen/03_match.l`) only recovers a bare-name
-// scrutinee's concrete instantiation from `ctx.varGenericArgs`, which
-// `recordDeclaredElemType` (`01_types.l`) populates ONLY for a `TSlice` or a
-// bare `List[Elem]` parameter — a user's own generic union type (`Box[T]`,
-// arbitrary head name) is never recorded, so the case-payload bind stays
-// boxed `Object` and `.n` on it hits the same refusal.  This is the same
+// match binding on a user-defined GENERIC UNION's payload, reached through a
+// bare function PARAMETER (`b: Box[Widget]`, matched directly).
+// `#5956` then taught `scrutineeGenericArgs` to recover a bare-parameter
+// scrutinee's own `TGenericApp` annotation too
+// (`recordParamGenericArgs`, `jvm/codegen/03_match.l`), so that repro
+// stopped panicking — confirmed by reverting `recordParamGenericArgs`
+// locally and observing this test fail exactly as it started failing in CI
+// once #5956 shipped, then restoring it and observing `w.n` compile clean.
+//
+// Replaced again (this time via a RECORD FIELD read as the match
+// scrutinee, `h.box`, rather than a bare parameter/local name) with a shape
+// `scrutineeGenericArgs` still leaves erased: it only recognises
+// `EParen`/`EAwait`/`EList`/`ECall`/a single-segment `EPath` as its
+// top-level scrutinee shape (`jvm/codegen/03_match.l`) — a bare `EMember`
+// field read used directly as a match scrutinee falls through its final
+// `case _ -> newList()` arm and stays boxed `Object`, so `w.n` inside the
+// match arm still hits the J007 refusal (verified directly against
+// `./bin/lyric build --target jvm` on this exact source). This is the same
 // panic FAMILY #6347/#6357 report against a real generic-collection-element
 // read; the underlying non-List/slice generic-payload gap stays open
 // (untouched by this file).
@@ -176,15 +186,19 @@ test "erased-receiver member access aborts codegen under error[J007] with a pack
     "  case Empty\n" +
     "}\n" +
     "\n" +
-    "func unwrap(b: Box[Widget]): Int {\n" +
-    "  match b {\n" +
+    "record Holder {\n" +
+    "  box: Box[Widget]\n" +
+    "}\n" +
+    "\n" +
+    "func unwrap(h: Holder): Int {\n" +
+    "  match h.box {\n" +
     "    case Full(w) -> w.n\n" +
     "    case Empty -> 0\n" +
     "  }\n" +
     "}\n" +
     "\n" +
     "func main(): Unit {\n" +
-    "  println(unwrap(Full(value = Widget(n = 40))))\n" +
+    "  println(unwrap(Holder(box = Full(value = Widget(n = 40)))))\n" +
     "}\n"
   val noStdlib: List[String] = newList()
   var panicked = false
