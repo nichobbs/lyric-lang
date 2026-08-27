@@ -64,6 +64,14 @@
 //!     improvement, but out of scope here: the issue asked specifically for
 //!     the daemon-thread shim, and this closes the actual vulnerability
 //!     (unbounded blocking) that #330/#1103 track.
+//!   - Residual surface this shim does NOT close: a caller that
+//!     re-invokes the same vulnerable pattern repeatedly (e.g. once per
+//!     HTTP request) accumulates one abandoned, permanently-running
+//!     daemon thread per timed-out call — each call is individually
+//!     bounded, but nothing caps the number of them in flight, so
+//!     sustained attack traffic is still a real multi-request CPU/thread
+//!     exhaustion risk. See #6576 (tracked follow-up: `Thread.ofVirtual()`
+//!     or a bounded pool instead of one platform `Thread` per call).
 //!
 //! Replacement-string semantics: Matcher.replaceAll treats `$n` group
 //! references the same way .NET substitutions do; Java additionally
