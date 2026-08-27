@@ -300,3 +300,137 @@ test "Std.HttpHost native HTTPS round trip: TLS handshake + redirect + chunked b
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "Std.HttpHost native HTTPS round trip (TLS + redirect + chunked)")
 }
+
+test "Std.HttpHost native redirect strips Authorization on a cross-authority hop (item F)" {
+  // Plain HTTP (no TLS) on two distinct listeners so "cross-authority"
+  // means an actual different port, exercised end to end: the first
+  // request carries `Authorization`, the 302 response's `Location` is an
+  // ABSOLUTE url pointing at the SECOND listener's port (a genuine
+  // different authority, not just a different path on the same one like
+  // item E's redirect), and the server thread asserts the second request
+  // does NOT carry the header. No TLS/pthread-FFI trampoline is needed for
+  // the plain-HTTP transport itself (item C's reasoning), but the full
+  // client-request/server-response round trip still blocks on I/O both
+  // sides must drive concurrently, so the server runs on a second
+  // `pthread_create`d thread exactly like item E.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
+    "import Std.HttpHost\n" +
+    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
+    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
+    "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
+    "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
+    "func containsAt(s: String, needle: String, start: Int): Bool {\n" +
+    "  if start + needle.length > s.length { false } else { s.substring(start, needle.length) == needle }\n" +
+    "}\n" +
+    "func containsSubstring(s: String, needle: String): Bool {\n" +
+    "  var i = 0\n" +
+    "  var found = false\n" +
+    "  while i <= s.length - needle.length {\n" +
+    "    if containsAt(s, needle, i) { found = true }\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  found\n" +
+    "}\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  val listener1 = match hostListen(\"127.0.0.1\", 0) {\n" +
+    "    case Ok(l) -> l\n" +
+    "    case Err(_) -> return 1\n" +
+    "  }\n" +
+    "  val port1 = hostLocalPort(listener1)\n" +
+    "  val listener2 = match hostListen(\"127.0.0.1\", 0) {\n" +
+    "    case Ok(l) -> l\n" +
+    "    case Err(_) -> return 2\n" +
+    "  }\n" +
+    "  val port2 = hostLocalPort(listener2)\n" +
+    "  val worker: () -> NativePtr[Byte] = { ->\n" +
+    "    match hostAccept(listener1) {\n" +
+    "      case Err(_) -> toC(\"accept1_failed\")\n" +
+    "      case Ok(conn1) -> {\n" +
+    "        var authOnFirst = false\n" +
+    "        match hostRead(conn1, 8192) {\n" +
+    "          case Ok(bytes) -> match tryDecodeUtf8(bytes) {\n" +
+    "            case Some(t) -> { authOnFirst = containsSubstring(t, \"Authorization: Bearer secret-token\") }\n" +
+    "            case None -> ()\n" +
+    "          }\n" +
+    "          case Err(_) -> ()\n" +
+    "        }\n" +
+    "        val loc = \"http://127.0.0.1:\" + port2.toString() + \"/final\"\n" +
+    "        val resp1 = \"HTTP/1.1 302 Found\\r\\nLocation: \" + loc + \"\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n\"\n" +
+    "        val _ = hostWrite(conn1, encodeUtf8(resp1))\n" +
+    "        hostClose(conn1)\n" +
+    "        if not authOnFirst {\n" +
+    "          toC(\"auth_missing_on_first\")\n" +
+    "        } else {\n" +
+    "          match hostAccept(listener2) {\n" +
+    "            case Err(_) -> toC(\"accept2_failed\")\n" +
+    "            case Ok(conn2) -> {\n" +
+    "              var authLeakedOnSecond = false\n" +
+    "              match hostRead(conn2, 8192) {\n" +
+    "                case Ok(bytes2) -> match tryDecodeUtf8(bytes2) {\n" +
+    "                  case Some(t2) -> { authLeakedOnSecond = containsSubstring(t2, \"Authorization:\") }\n" +
+    "                  case None -> ()\n" +
+    "                }\n" +
+    "                case Err(_) -> ()\n" +
+    "              }\n" +
+    "              val resp2 = \"HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\nConnection: close\\r\\n\\r\\nOK\"\n" +
+    "              val _ = hostWrite(conn2, encodeUtf8(resp2))\n" +
+    "              hostClose(conn2)\n" +
+    "              if authLeakedOnSecond {\n" +
+    "                toC(\"leaked\")\n" +
+    "              } else {\n" +
+    "                toC(\"ok\")\n" +
+    "              }\n" +
+    "            }\n" +
+    "          }\n" +
+    "        }\n" +
+    "      }\n" +
+    "    }\n" +
+    "  }\n" +
+    "  var tid: Long = 0\n" +
+    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  if rc != 0 {\n" +
+    "    hostStopListener(listener1)\n" +
+    "    hostStopListener(listener2)\n" +
+    "    return 3\n" +
+    "  }\n" +
+    "  val client = hostDefaultClient()\n" +
+    "  val url = \"http://127.0.0.1:\" + port1.toString() + \"/start\"\n" +
+    "  val baseRequest = hostMakeRequest(\"GET\", url)\n" +
+    "  val request = hostWithHeader(baseRequest, \"Authorization\", \"Bearer secret-token\")\n" +
+    "  var finalStatus = 0\n" +
+    "  var sendOk = false\n" +
+    "  match await hostSendSafe(client, request) {\n" +
+    "    case Ok(response) -> {\n" +
+    "      finalStatus = hostStatusCode(response)\n" +
+    "      sendOk = true\n" +
+    "    }\n" +
+    "    case Err(_) -> ()\n" +
+    "  }\n" +
+    "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
+    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  var serverOk = false\n" +
+    "  if rj == 0 {\n" +
+    "    val n = cStrlen(outp)\n" +
+    "    if n == 2 {\n" +
+    "      serverOk = true\n" +
+    "    }\n" +
+    "    freeC(outp)\n" +
+    "  }\n" +
+    "  hostStopListener(listener1)\n" +
+    "  hostStopListener(listener2)\n" +
+    "  if not serverOk {\n" +
+    "    return 4\n" +
+    "  }\n" +
+    "  if not sendOk {\n" +
+    "    return 5\n" +
+    "  }\n" +
+    "  if finalStatus != 200 {\n" +
+    "    return 6\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpHost native redirect strips Authorization on cross-authority hop")
+}

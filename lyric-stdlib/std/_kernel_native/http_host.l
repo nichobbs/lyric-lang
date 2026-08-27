@@ -1154,21 +1154,72 @@ func resolveRedirectUrl(base: in ParsedUrl, location: in String): String {
   }
 }
 
+/// Two parallel header-name/value lists, returned together so a filter can
+/// hand back both sides of the pair in one value (Lyric has no tuple sugar
+/// for this shape).
+record FilteredHeaders {
+  names: List[String]
+  values: List[String]
+}
+
+/// `true` when a redirect from `from` to `to` stays on the same host/port
+/// without downgrading scheme from https to http — the same "same
+/// authority" test .NET's `SocketsHttpHandler` and the JDK's
+/// `java.net.http.HttpClient` (JDK-8217264) use to decide whether to keep
+/// carrying credential-bearing headers across a redirect.
+func isSameRedirectAuthority(from: in ParsedUrl, to: in ParsedUrl): Bool {
+  from.host == to.host and from.port == to.port and (from.isHttps or not to.isHttps)
+}
+
+/// Drop headers that leak credentials if forwarded to a different origin:
+/// `Authorization`/`Proxy-Authorization` (bearer/basic credentials) and
+/// `Cookie` (session credentials a caller set manually via
+/// `hostWithHeader` — this kernel has no automatic cookie jar). Every other
+/// header (including a custom auth scheme's own header name) passes
+/// through unchanged, matching this file's "no header allowlisting beyond
+/// what's needed for the leak this fixes" scope.
+func stripSensitiveRedirectHeaders(names: in List[String], values: in List[String]): FilteredHeaders {
+  val outNames: List[String] = newList()
+  val outValues: List[String] = newList()
+  var i = 0
+  while i < names.count {
+    val n = names[i]
+    if not asciiEqualsCaseInsensitive(n, "Authorization") and not asciiEqualsCaseInsensitive(n, "Proxy-Authorization") and not asciiEqualsCaseInsensitive(n, "Cookie") {
+      outNames.add(n)
+      outValues.add(values[i])
+    }
+    i = i + 1
+  }
+  FilteredHeaders(names = outNames, values = outValues)
+}
+
 /// 303 always downgrades to a bodyless GET; 301/302 downgrade to GET only
 /// when the original method wasn't GET/HEAD (the long-standing "legacy
 /// user-agent" convention most HTTP clients converged on); 307/308 always
-/// preserve method and body (RFC 9110 §15.4.8-9).
+/// preserve method and body (RFC 9110 §15.4.8-9). A redirect that changes
+/// host/port or downgrades https to http strips credential-bearing headers
+/// (see `stripSensitiveRedirectHeaders`) — a URL that fails to (re-)parse
+/// here is treated as cross-origin (strip), never as same-origin.
 func nextRequestForRedirect(request: in HttpRequestMessage, status: in Int, newUrl: in String): HttpRequestMessage {
   val downgradeToGet = status == 303 or
     ((status == 301 or status == 302) and request.method != "GET" and request.method != "HEAD")
   if downgradeToGet {
     hostMakeRequest("GET", newUrl)
   } else {
+    val sameAuthority = match parseUrl(request.url) {
+      case Err(_) -> false
+      case Ok(fromParsed) -> match parseUrl(newUrl) { case Err(_) -> false; case Ok(toParsed) -> isSameRedirectAuthority(fromParsed, toParsed) }
+    }
+    val filtered = if sameAuthority {
+      FilteredHeaders(names = request.headerNames, values = request.headerValues)
+    } else {
+      stripSensitiveRedirectHeaders(request.headerNames, request.headerValues)
+    }
     HttpRequestMessage(
       method = request.method,
       url = newUrl,
-      headerNames = request.headerNames,
-      headerValues = request.headerValues,
+      headerNames = filtered.names,
+      headerValues = filtered.values,
       contentType = request.contentType,
       body = request.body,
       hasBody = request.hasBody,

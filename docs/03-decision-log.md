@@ -34815,3 +34815,67 @@ tests; `llvm_http_client_self_test.l` genuinely green locally via the NuGet
 (`_kernel_native/tcp_host.l`, `_kernel_native/http_host.l`,
 `llvm_http_client_self_test.l`).
 
+## D-progress-808 — `_kernel_native/http_host.l`: strip `Authorization`/`Cookie`/`Proxy-Authorization` on a cross-authority redirect (PR #6623 review finding)
+
+**Context.** `claude-review`'s pass on PR #6105/#6623 (D-progress-804's
+native `Std.Http` client twin) found a real gap in
+`nextRequestForRedirect`: a 301/302/307/308 redirect that preserves the
+request's headers (i.e. every case except a 303/GET-downgrade, which
+already starts a fresh header-less request via `hostMakeRequest`) copied
+`request.headerNames`/`headerValues` onto the redirected request
+unconditionally — including a redirect that changes host, port, or
+downgrades scheme from `https://` to `http://`. A caller-set
+`Authorization`/`Cookie`/`Proxy-Authorization` header would follow the
+redirect to a completely different origin. The two kernels this file
+mirrors get this stripping for free from their platform HTTP stack (.NET's
+`SocketsHttpHandler` strips `Authorization` on a host change; the JDK's
+`java.net.http.HttpClient` does the same, JDK-8217264) — this hand-rolled
+wire-protocol implementation had no equivalent check, and (unlike every
+other scope decision in this file) it wasn't disclosed in the module
+header as a known divergence either.
+
+**Not yet live-exploitable, fixed anyway.** `Std.Http`'s public builder
+surface (`defaultClient()`/`HttpClientBuilder`) cannot construct on native
+today (the pre-existing N3.2 async-interface-dispatch gap D-progress-804
+already documents at length), so nothing in a real user program can reach
+this kernel's redirect path yet. Fixed now rather than deferred, since the
+fix is small, self-contained, and this exact code becomes reachable the
+moment N3.2 closes — better to have it already correct than to reopen this
+file for a security fix later.
+
+**Fix.** `nextRequestForRedirect`'s header-preserving branch now resolves
+the redirect's origin change by parsing both `request.url` and the target
+`newUrl` (`parseUrl`, already used elsewhere in this file) and comparing
+host/port/scheme (`isSameRedirectAuthority`: same host, same port, and
+not downgrading `https` to `http`). Same-authority redirects keep every
+header unchanged (parity with the pre-fix behaviour for the common case);
+a cross-authority redirect drops `Authorization`/`Proxy-Authorization`/
+`Cookie` (case-insensitively, via the file's existing
+`asciiEqualsCaseInsensitive`) and keeps every other header. A URL that
+fails to (re-)parse is treated as cross-authority (strip) rather than
+same-origin — fail closed, not open.
+
+**Verification.** A new case, `llvm_http_client_self_test.l`'s item F,
+drives this exact scenario end to end: two real listeners on distinct
+ports (no TLS — item C's "plain TCP completes into the backlog without a
+handshake" reasoning doesn't apply here since the full client
+connect-write-block-on-read round trip still needs the two sides driving
+I/O concurrently, so the server runs on a second `pthread_create`d thread
+exactly like item E), a first request carrying `Authorization: Bearer
+secret-token`, a 302 response whose `Location` is an ABSOLUTE URL pointing
+at the SECOND listener's port (a genuine different authority, not just a
+different path on the same one like item E's redirect), and the server
+thread itself asserting the second request does not carry the header —
+the assertion lives in the compiled native program under test, not in the
+harness, so it fails the same way a real bug would (a wrong exit code),
+not by trusting a client-side self-report. Confirmed the test is a real
+regression check, not a tautology: reverted the fix locally
+(`git stash` on `_kernel_native/http_host.l` alone) and re-ran — item F
+fails with exit code 4 (the server thread's `"leaked"` sentinel), item E
+still passes unaffected; restored the fix and re-ran clean (2/2, exit 0).
+`lyric fmt --write` applied clean (no refusals) to both changed files.
+
+**Related:** #6623 (the PR this review finding was raised on),
+D-progress-804 (the original native `Std.Http` client twin entry, whose
+N3.2 gap this fix's "not yet live-exploitable" reasoning depends on).
+
