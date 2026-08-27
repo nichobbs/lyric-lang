@@ -4437,13 +4437,25 @@ jobs:
       # hostDeleteDirectory fix: java.io.File.delete() reports failure via a
       # false return (unlike the throwing .NET twin), so a non-empty-directory
       # delete silently returned Ok until the JVM kernel surfaced it through
-      # the catch Bug -> Err(IoError) seam.  file_tests.l stays dotnet-only:
-      # its writeBytes/readBytes case is blocked on the slice[Byte]
-      # Byte/Integer cast erasure family (#5453/#5257).
+      # the catch Bug -> Err(IoError) seam.
       - name: Std.Directory test coverage on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-stdlib/tests/directory_tests.l
+
+      # Std.File test coverage on JVM — the JVM half of the dotnet-job step of
+      # the same name.  Closes out #5113: the writeBytes/readBytes round-trip
+      # case was blocked on the slice[Byte] Byte/Integer cast erasure family
+      # (#5453/#5257). #5453 (numeric-intrinsic dispatch consulting the
+      # JVM-erased receiver type instead of the Lyric-level Byte type, which
+      # broke `.toInt()` on an indexed slice[Byte] element) is fixed on
+      # `main`; #5257 (a separate, still-open `.append` numeric-widening
+      # boxing bug) does not affect this suite, which never appends to a
+      # slice[Byte].
+      - name: Std.File test coverage on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-stdlib/tests/file_tests.l
 
       # Real HTTP round-trip proving HttpVersion.negotiatedVersion() against
       # a live plaintext Std.HttpServer listener on JVM (docs/61 §5.1, D128

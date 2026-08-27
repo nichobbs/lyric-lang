@@ -31708,3 +31708,49 @@ dotnet and JVM self-test CI jobs (`.github/workflows/ci.yml`) and the
 `Makefile`'s `TEST_EMITTER_FILES` aggregate list (dotnet-only, per that
 list's own scope).
 
+## D-progress-802 — `file_tests.l` gets its `--target jvm` CI step; closes #5113
+
+**Context.** #5113 (a PR #5084 review finding) flagged that the three new
+core-I/O CI steps (`file_tests.l`, `directory_tests.l`, an `Std.Http` test)
+ran `--target dotnet` only. `Std.Http` is legitimately .NET-only (no JVM
+gap there); `Std.File`/`Std.Directory` are cross-platform stdlib modules
+with real JVM kernels and should get JVM CI coverage per the
+`bitwise_self_test.l`/`aspect_weave_self_test.l` precedent (dedicated
+`--target dotnet` + `--target jvm` steps).
+
+Follow-up comments on #5113 (2026-07-10, 2026-07-29) found both suites
+genuinely failed on `--target jvm` at the time: `directory_tests.l`'s
+"delete on a non-empty directory surfaces IoError" case (the JVM kernel's
+`hostDeleteDirectory` called bare `JFile.delete()`, which reports failure
+via a silent `false` return rather than throwing like the .NET twin, so a
+non-empty-directory delete silently "succeeded"), and `file_tests.l`'s
+"writeBytes/readBytes round-trips raw bytes" case (`class java.lang.Byte
+cannot be cast to class java.lang.Integer`, part of the `slice[Byte]`
+Byte/Integer cast erasure family, #5453/#5257). PR #6385 fixed the
+`hostDeleteDirectory` bug and wired `directory_tests.l`'s JVM step,
+leaving `file_tests.l` as the tracked remainder.
+
+**Resolution.** Re-verified against current `main` (2026-08-27): #5453
+(numeric-intrinsic dispatch — `.toInt()` and friends — consulting the
+JVM-erased `Object` receiver type instead of the Lyric-level `Byte` type
+of an indexed `slice[Byte]` element) was fixed and closed 2026-07-12.
+Running `file_tests.l --target jvm` against current `main` now passes
+11/11, including the previously-failing byte round-trip case, and stays
+green across repeated runs — not flaky. #5257 (a separate, still-open
+`.append` numeric-widening boxing bug on `slice[T]`) does not affect this
+suite: `writeBytes`/`readBytes` never append to a `slice[Byte]`, so the
+two issues are unrelated in practice despite #5113's original comments
+grouping them together as one blocker.
+
+No kernel code changes were needed — `lyric-stdlib/std/_kernel_jvm/file_host.l`
+was already correct once #5453 landed. Added the `Std.File test coverage on
+JVM` CI step in `.github/workflows/ci.yml`, immediately after the
+`Std.Directory test coverage on JVM` step, matching that step's shape
+(`background: true`, no `--summary`, same sub-batch). This closes #5113:
+`Std.Http` intentionally stays dotnet-only (no JVM gap to close), and both
+`Std.File`/`Std.Directory` now run on both targets.
+
+**Related:** #5113, #5453 (closed), #5257 (open, unrelated to this suite),
+PR #6385 (the `directory_tests.l` half), `docs/57-stdlib-ecosystem-library-review.md`
+§5.1 (the original stdlib core-I/O test-gap finding).
+
