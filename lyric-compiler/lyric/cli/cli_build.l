@@ -716,9 +716,10 @@ func emitSingleFileOrProject(
   }
 
   // Jvm parity with `buildProjectFromManifest`: a workspace/path dependency's
-  // own packages must ride the same bundled compile as `pkgs` (the JVM
-  // backend never reads `restoredDllPaths`) — see that function's comment
-  // for the full rationale (#6136).
+  // own packages must ride the same bundled compile as `pkgs` — Jvm gets
+  // nothing from `resolvedDeps.restoredDllPaths`, which
+  // `resolveManifestDependencies` never populates for Jvm (#6136, #6697) —
+  // see that function's comment for the full rationale.
   match req.target {
     case Jvm -> {
       var jdpi = 0
@@ -792,7 +793,8 @@ func emitSingleFileWithWorkspaceMembers(req: in EmitRequest, sourcePath: in Stri
   val pkgs: List[ProjectPackage] = newList()
   pkgs.add(ProjectPackage(name = pkgName, sources = srcs))
   // JVM parity with the manifest leg: member packages ride the bundled
-  // compile — the JVM backend never reads `restoredDllPaths` (#6136).
+  // compile — the JVM leg below deliberately never forwards `wsDeps.restoredDlls`
+  // into `EmitProjectRequest.restoredDllPaths` (#6136, #6697).
   match req.target {
     case Jvm -> {
       var wj = 0
@@ -805,12 +807,19 @@ func emitSingleFileWithWorkspaceMembers(req: in EmitRequest, sourcePath: in Stri
   }
   val noFeatures: List[String] = newList()
   val noNuget: List[String] = newList()
+  val noRestoredDlls: List[String] = newList()
+  // #6697: a matched member's `bin/<name>.dll` is always an MSIL PE (never
+  // a JVM-compatible JAR); on `--target jvm` the member's SOURCE already
+  // rides the bundle via `pkgs` above, so feeding its `.dll` path into
+  // `restoredDllPaths` here would hit the same JAR-parse hard-fail in
+  // `emitProjectJvmInProcess` that the manifest leg's fix
+  // (`resolveManifestDependencies`) addresses.
   val projReq = EmitProjectRequest(
     packages = pkgs,
     assemblyName = req.assemblyName,
     outputPath = req.outputPath,
     target = req.target,
-    restoredDllPaths = wsDeps.restoredDlls,
+    restoredDllPaths = match req.target { case Jvm -> noRestoredDlls; case _ -> wsDeps.restoredDlls },
     activeFeatures = noFeatures,
     declaredFeatures = noFeatures,
     packageVersion = req.packageVersion,
@@ -2392,10 +2401,14 @@ pub func buildProjectFromManifest(
   val nativeAssetPaths = resolved.nativeAssetPaths
 
   // On Jvm, a workspace/path dependency's own packages must ride the same
-  // bundled compile as `pkgs`: the JVM backend never reads `restoredDllPaths`
-  // (the .NET restored-DLL symbol-resolution path has no JVM analog) and only
-  // scans `depTemplateSrcs` for aspect/wire templates, not full declarations
-  // — so without this, a `--target jvm` build of a workspace-dep consumer saw
+  // bundled compile as `pkgs`: `resolveManifestDependencies` never populates
+  // `restoredDllPaths` for a workspace/path/NuGet-Lyric dependency on Jvm
+  // (#6697 — the dep's own `bin/*.dll` is always an MSIL PE, never a JVM
+  // JAR, so it would crash `emitProjectJvmInProcess`'s restored-dep JAR
+  // loader; that loader is real infrastructure for a genuinely pre-compiled
+  // JVM producer JAR, #3094, just never fed one by this CLI path), so only
+  // `depTemplateSrcs` (aspect/wire templates, not full declarations) carries
+  // anything here — without this, a `--target jvm` build of a workspace-dep consumer saw
   // every cross-package symbol from the dep as unknown even though the
   // identical `--target dotnet` build passed via the restored-DLL path
   // (#6136). Harmless duplication on Dotnet is avoided by gating on target:

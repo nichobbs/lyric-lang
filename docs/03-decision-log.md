@@ -36459,3 +36459,82 @@ Manual repro confirmed exact .NET parity for `20000000.0`, `1e20`, `1e-10`,
 **Related:** #5660, #4688, #4551, D-progress-664 (the earlier
 trailing-`.0` fix this extends), docs/44-jvm-production-readiness-plan.md
 m-21.
+
+---
+
+## D-progress-817 — CLI: stop feeding a path/NuGet dependency's MSIL `.dll` into the JVM restored-dep loader (#6697, review CRITICAL on D-progress-811)
+
+**Status:** Shipped.
+
+**Context.** D-progress-811 gave `emitProjectJvmInProcess` a restored-
+dependency loop over `EmitProjectRequest.restoredDllPaths`, reading each
+entry through `Lyric.RestoredPackages.loadRestoredPackageJvm` (a JAR ZIP-
+central-directory reader) — by design, for a genuinely pre-compiled JVM
+producer JAR. D-progress-811's own "Scope" section already noted that
+`resolveManifestDependencies`/`workspace_builder.l` still hardcode `.dll`
+naming for path/workspace/NuGet dependencies and that JVM manifest builds
+consume those via source-bundling (`depTemplateSrcs`), not
+`restoredDllPaths` — but the code did not actually enforce that boundary.
+`resolveManifestDependencies`'s Path branch added an existing `bin/*.dll`
+to `restoredDlls` regardless of target (only whether a *missing* DLL was
+fatal was target-gated, via `dllMatters`, #6264), and its NuGet-Lyric-
+package branch added every entry unconditionally too. A `bin/<name>.dll`
+built by an earlier `--target dotnet` build is always an MSIL PE — never a
+JVM-compatible JAR — so once it existed on disk, a `--target jvm` build of
+ANY consumer of that same dependency fed it straight into
+`emitProjectJvmInProcess`'s JAR loader, which hard-failed the whole build:
+`restored JVM dep '...' failed to load: restored DLL has no Lyric.Contract
+resource (not a Lyric assembly?)`. This is not a contrived edge case — it
+is the ordinary "build the dependency once, then build a JVM consumer"
+sequence — so a code review of the D-progress-811 PR flagged it CRITICAL
+(#6697) before merge. The same gap existed in the OTHER caller that
+populates `restoredDllPaths`: `emitSingleFileWithWorkspaceMembers`
+(cli/cli_build.l, #6503's single-file-inside-a-workspace leg), which passed
+`resolveWorkspaceImportDeps`'s matched-member `.dll` path straight through
+unconditionally.
+
+**Fix.** `resolveManifestDependencies` (cli/workspace_builder.l) now gates
+the Path branch's `restoredDlls.add(...)` (and its transitive-dep walk)
+on `dllMatters` — the same flag that already decided fatality — so an
+existing `.dll` is skipped entirely on Jvm, not just tolerated when
+missing. Its NuGet-Lyric-entries loop now routes those entries through
+`nugetThirdPartyPaths` instead on Jvm (surfacing the existing "NuGet
+assembly resolution is not yet supported on the JVM target" `W0006`
+warning) rather than `restoredDlls`. `emitSingleFileWithWorkspaceMembers`
+(cli/cli_build.l) now passes an empty list for `restoredDllPaths` on Jvm
+instead of `wsDeps.restoredDlls` — the matched member's source already
+rides the bundle via `depTemplateSrcs`/`pkgs`, so nothing is lost. Neither
+change touches the D-progress-811 pipeline itself (`emitProjectJvmInProcess`
+still reads `restoredDllPaths` and loads a real JAR through
+`loadRestoredPackageJvm` when one is actually supplied — the in-process
+`Emitter.emitProject` API and any future genuinely-pre-compiled-JVM-dep CLI
+feature keep working unmodified); it only stops the CLI's manifest/single-
+file resolvers from feeding that pipeline a `.dll` it was never meant to
+receive.
+
+**Tests.** Reproduced the crash first (fix stashed out, `make
+selfhosted-compiler` rebuilt from the reverted sources): both new tests
+below failed with the exact `restored JVM dep '...' failed to load:
+restored DLL has no Lyric.Contract resource` message, confirming the CLI-
+level repro before the fix landed. `jvm_path_dependency_self_test.l` gained
+"buildProject: --target jvm build succeeds when the path dependency's
+--target dotnet DLL already exists on disk (#6697)" — builds a path
+dependency for `--target dotnet` first (so its `bin/*.dll` exists), then
+builds a *different* consumer of the same dependency for `--target jvm`
+via `Cli.buildProject`, asserting the JAR builds and runs (6/6 pass).
+`cli_workspace_builder_self_test.l` gained the `emitSingleFileWithWorkspaceMembers`
+analog — a workspace member built for `--target dotnet`, then imported by
+a bare `.l` file (no nearby `[package]` manifest) built for `--target jvm`
+via `Cli.buildOne` (20/20 pass). Both exercise the real CLI entry points
+(`Cli.buildProject`/`Cli.buildOne`) a `lyric build --target jvm` invocation
+drives, not just the in-process `Emitter.emitProject` API surface a
+fabricated `.jar`-shaped `restoredDllPaths` entry would exercise (which
+would not have caught this — the CLI never reaches the point of
+fabricating one). `emitter_project_self_test.l` (36/36) and
+`lyric-compiler/jvm/cross_package_generics_jvm_self_test.l` (7/7, the
+genuine-JAR-restored-dep pipeline D-progress-811 shipped) both stay green,
+confirming the fix does not regress the intended restored-dep path.
+`cli_shared_self_test.l` (25/25) and `cli_build_self_test.l` (81/81) also
+verified green.
+
+**Related:** #6697, D-progress-811, #3094, #6264, #6136, #6503.

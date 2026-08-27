@@ -32597,3 +32597,37 @@ regression cases, 38/38 pass. Manual repro confirmed exact .NET parity for
 `0.0001`, `0.00001`.
 
 **Related:** #5660, #4688, #4551, D-progress-664, docs/44 m-21.
+
+### D-progress-817 — CLI: stop feeding a path/NuGet dependency's MSIL `.dll` into the JVM restored-dep loader (#6697, review CRITICAL on D-progress-811)
+
+D-progress-811 gave `emitProjectJvmInProcess` a restored-dependency loop
+over `EmitProjectRequest.restoredDllPaths`, for a genuinely pre-compiled
+JVM producer JAR. But `resolveManifestDependencies`/`workspace_builder.l`
+(and `emitSingleFileWithWorkspaceMembers`/cli_build.l) still fed an
+existing path/workspace/NuGet dependency's `bin/*.dll` — always an MSIL
+PE, never a JAR — into that same field regardless of target, so building
+the dependency once for `--target dotnet` and then a *different* consumer
+of it for `--target jvm` crashed the whole build: `restored JVM dep '...'
+failed to load: restored DLL has no Lyric.Contract resource`. A pre-merge
+review of D-progress-811 flagged this CRITICAL (#6697).
+
+`resolveManifestDependencies`'s Path branch now gates adding an existing
+`.dll` to `restoredDlls` on the same `dllMatters` flag that already gated
+fatality-on-missing (#6264); its NuGet-Lyric-entries loop routes those
+entries through `nugetThirdPartyPaths` on Jvm instead (surfacing the
+existing `W0006` warning). `emitSingleFileWithWorkspaceMembers` passes an
+empty `restoredDllPaths` on Jvm — the matched member's source already
+rides the bundle via `depTemplateSrcs`. Neither change touches
+`emitProjectJvmInProcess` itself, which still loads a real JAR when one is
+genuinely supplied.
+
+Reproduced the crash first (fix reverted, rebuilt, both new tests failed
+with the exact message), then verified green after the fix:
+`jvm_path_dependency_self_test.l` (6/6, new "stray dotnet DLL" case),
+`cli_workspace_builder_self_test.l` (20/20, new single-file-workspace-
+member analog), `emitter_project_self_test.l` (36/36),
+`cross_package_generics_jvm_self_test.l` (7/7, confirms the genuine
+restored-JAR pipeline is unaffected), `cli_shared_self_test.l` (25/25),
+`cli_build_self_test.l` (81/81).
+
+**Related:** #6697, D-progress-811, #3094, #6264, #6136, #6503.

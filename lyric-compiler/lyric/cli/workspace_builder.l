@@ -76,14 +76,17 @@ pub func buildWorkspaceDeps(
   }
 
   // The JVM bundled compile consumes cross-package code from SOURCE
-  // (`depTemplateSrcs` + the stdlib-closure bundling model);
-  // `emitProjectJvmInProcess` never reads `restoredDllPaths`.  Building
-  // workspace dep DLLs for a `--target jvm` consumer is therefore pure
-  // waste — and actively harmful: the dep's `[project].output_assembly`
-  // names a `.dll`, so the JVM dep build wrote a JAR to `bin/<name>.dll`,
-  // which the next `--target dotnet` build of any consumer then failed to
-  // load as a restored dep ("no Lyric.Contract resource") until the file
-  // was deleted by hand (#5571).
+  // (`depTemplateSrcs` + the stdlib-closure bundling model); nothing this
+  // function returns for a workspace dep ever reaches
+  // `EmitProjectRequest.restoredDllPaths` on Jvm (#6697 closed the one
+  // caller — `resolveManifestDependencies`'s Path/NuGet branches — that
+  // used to leak an existing `.dll` in there anyway). Building workspace
+  // dep DLLs for a `--target jvm` consumer is therefore pure waste — and
+  // actively harmful: the dep's `[project].output_assembly` names a `.dll`,
+  // so the JVM dep build wrote a JAR to `bin/<name>.dll`, which the next
+  // `--target dotnet` build of any consumer then failed to load as a
+  // restored dep ("no Lyric.Contract resource") until the file was deleted
+  // by hand (#5571).
   match target {
     case Jvm -> {
       return (result, false, wsCtxOpt)
@@ -696,12 +699,11 @@ pub func resolveManifestDependencies(
                   // (`restoredDlls`). On Jvm the dep's SOURCE (collected right
                   // below into `depTemplatePkgsList`, then compiled as an
                   // ordinary bundle package by `buildProjectFromManifest` /
-                  // `emitSingleFileOrProject`) is what matters — the JVM
-                  // bundler never reads `restoredDllPaths` at all (#6136), so
-                  // treating an absent `.dll` as fatal here made a `--target
-                  // jvm` build of a fresh checkout's path dependency fail
-                  // before it ever reached codegen, even though nothing on
-                  // that path needs the DLL to exist (#6264).
+                  // `emitSingleFileOrProject`) is what matters — treating an
+                  // absent `.dll` as fatal here made a `--target jvm` build of
+                  // a fresh checkout's path dependency fail before it ever
+                  // reached codegen, even though nothing on that path needs
+                  // the DLL to exist (#6264).
                   // Explicit `Native` arm (rather than folding it into the
                   // wildcard) so this reads as a deliberate choice, not an
                   // accident of the wildcard: `--target native` path deps are
@@ -711,8 +713,27 @@ pub func resolveManifestDependencies(
                   // "DLL matters" behavior rather than silently absorbing
                   // whatever the Jvm case does as targets are added later.
                   val dllMatters = match target { case Jvm -> false; case Native -> true; case _ -> true }
+                  // #6697: `dllMatters` also gates whether an EXISTING `.dll`
+                  // is added to `restoredDlls` at all — not just whether a
+                  // MISSING one is fatal. `bin/<name>.dll` here is always an
+                  // MSIL PE (path deps are never built for a specific target
+                  // by this resolver; `[project].output_assembly` names a
+                  // plain `.dll` regardless of what built it) — never a
+                  // JVM-compatible JAR. Before this fix, a stray leftover from
+                  // an earlier `--target dotnet` build of the SAME dependency
+                  // directory (a common real-world sequence: build the dep for
+                  // dotnet once, then build a consumer for `--target jvm`)
+                  // flowed straight into `EmitProjectRequest.restoredDllPaths`,
+                  // where the JVM restored-dep loader
+                  // (`Lyric.RestoredPackages.loadRestoredPackageJvm`, #3094)
+                  // tried to read it as a JAR's ZIP central directory and
+                  // hard-failed the whole build ("restored JVM dep '...'
+                  // failed to load: ..."). Jvm never needs this path — the
+                  // dep's source is already compiled directly into the bundle
+                  // below — so skip the add entirely on Jvm, mirroring
+                  // `buildWorkspaceDeps`'s early return for the same target.
                   if File.fileExists(dllPath) {
-                    if not stringListContains(seenDeps, dep.name) {
+                    if dllMatters and not stringListContains(seenDeps, dep.name) {
                       restoredDlls.add(dep.name + "\t" + dllPath)
                       seenDeps.add(dep.name)
                       collectTransitiveDepDlls(depDir, wsCtxOpt, seenDeps, restoredDlls)
@@ -832,8 +853,30 @@ pub func resolveManifestDependencies(
   val nugetPaths = allNugetAssets.dllPaths
   warnIfNugetUnresolved(mfDir, manifest.nuget, nugetPaths)
   val (nugetLyricEntries, nugetThirdPartyPaths) = partitionNugetLyricDeps(nugetPaths)
-  for entry in nugetLyricEntries {
-    restoredDlls.add(entry)
+  // #6697: NuGet is the dotnet-only package channel
+  // (docs/39-package-registry.md §"NuGet.org as the .NET channel"; Maven is
+  // the JVM channel). A NuGet-restored Lyric package ships an MSIL .dll with
+  // no JVM artifact, so on `--target jvm` it cannot satisfy the JVM
+  // restored-dep JAR loader (`Lyric.RestoredPackages.loadRestoredPackageJvm`,
+  // #3094) any more than a path dependency's stray dotnet-built `.dll` can
+  // (see the Path branch above) — feeding it in used to hard-fail the whole
+  // build ("restored JVM dep '...' failed to load: ..."). Route it through
+  // `nugetThirdPartyPaths` instead so it surfaces via the existing "NuGet
+  // assembly resolution is not yet supported on the JVM target" W0006
+  // warning (`Lyric.Emitter`) rather than silently vanishing or crashing.
+  match target {
+    case Jvm -> {
+      for entry in nugetLyricEntries {
+        val tabPos = Str.indexOfRaw(entry, "\t")
+        val entryPath = if tabPos >= 0 { entry.substring(tabPos + 1, entry.length - tabPos - 1) } else { entry }
+        nugetThirdPartyPaths.add(entryPath)
+      }
+    }
+    case _ -> {
+      for entry in nugetLyricEntries {
+        restoredDlls.add(entry)
+      }
+    }
   }
   val nativeAssetPaths = allNugetAssets.nativePaths
 
