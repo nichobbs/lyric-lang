@@ -1396,7 +1396,13 @@ func handleContinuation(
   endHeaders: in Bool,
 ): Unit {
   match state.cont {
-    case None -> connFail(state, events, outb, H2ProtocolError, "CONTINUATION with no preceding HEADERS (RFC 9113 section 6.10)")
+    case None -> connFail(
+      state,
+      events,
+      outb,
+      H2ProtocolError,
+      "CONTINUATION with no preceding HEADERS (RFC 9113 section 6.10)"
+    )
     case Some(c) -> {
       // Typed local before any field access — the erased-receiver JVM fix (see
       // `markEndStreamReceived`). Do not inline `cs` back to `c`.
@@ -1502,15 +1508,43 @@ func dispatchDuringContinuation(
         )
       }
     }
-    case _ -> connFail(state, events, outb, H2ProtocolError, "expected CONTINUATION for the open HEADERS block (RFC 9113 section 6.10)")
+    case _ -> connFail(
+      state,
+      events,
+      outb,
+      H2ProtocolError,
+      "expected CONTINUATION for the open HEADERS block (RFC 9113 section 6.10)"
+    )
   }
 }
 
 func dispatchNormal(state: inout H2Connection, events: in List[H2Event], outb: in List[Byte], frame: in H2Frame): Unit {
   match frame {
-    case DataFrame(streamId, data, endStream, wireLength) -> handleData(state, events, outb, streamId, data, endStream, wireLength)
-    case HeadersFrame(streamId, fragment, endStream, endHeaders, _) -> handleHeaders(state, events, outb, streamId, fragment, endStream, endHeaders)
-    case ContinuationFrame(_, _, _) -> connFail(state, events, outb, H2ProtocolError, "CONTINUATION with no preceding HEADERS (RFC 9113 section 6.10)")
+    case DataFrame(streamId, data, endStream, wireLength) -> handleData(
+      state,
+      events,
+      outb,
+      streamId,
+      data,
+      endStream,
+      wireLength
+    )
+    case HeadersFrame(streamId, fragment, endStream, endHeaders, _) -> handleHeaders(
+      state,
+      events,
+      outb,
+      streamId,
+      fragment,
+      endStream,
+      endHeaders
+    )
+    case ContinuationFrame(_, _, _) -> connFail(
+      state,
+      events,
+      outb,
+      H2ProtocolError,
+      "CONTINUATION with no preceding HEADERS (RFC 9113 section 6.10)"
+    )
     case PriorityFrame(_, _) -> ()
     case RstStreamFrame(streamId, errorCode) -> handleRstStream(state, events, outb, streamId, errorCode)
     case SettingsFrame(settings, ack) -> handleSettings(state, events, outb, settings, ack)

@@ -1,6 +1,6 @@
 //! enum_case_collision_self_test.l — regression test for #5995: cross-package
-//! enum case-name collision silently mis-dispatching bare (unqualified) enum
-//! case construction and pattern matching on BOTH backends.
+//! enum case-name collision silently mis-dispatching enum case construction
+//! and pattern matching on BOTH backends.
 //!
 //! Two independent fixture packages each declare their own enum with a case
 //! literally named `Http11` — `EnumCollA.HttpVersion` (cases `Http10`,
@@ -11,23 +11,39 @@
 //! imports both and exercises the two independently-triggerable halves of
 //! the bug against each enum:
 //!
-//!   1. Bare CASE CONSTRUCTION as a call argument (the issue's literal repro
-//!      shape, `serializeResponseHead(Http11, ...)`) — `EnumCollA.labelOf`'s
-//!      own declared parameter type must select `HttpVersion`'s `Http11`,
-//!      and `EnumCollB.labelOf`'s own declared parameter type must select
-//!      `ConnState`'s `Http11`, never the other's.
+//!   1. Cross-package-QUALIFIED case CONSTRUCTION as a call argument
+//!      (`EnumCollA.Http11`/`EnumCollB.Http11`) — `EnumCollA.labelOf`'s own
+//!      declared parameter type must select `HttpVersion`'s `Http11`, and
+//!      `EnumCollB.labelOf`'s own declared parameter type must select
+//!      `ConnState`'s `Http11`, never the other's. A genuinely BARE
+//!      `Http11` here (both packages imported unqualified) is now a
+//!      compile-time T0123 ambiguity error (#6287) rather than a silent
+//!      mis-dispatch — the class of bug this test guards is unreachable for
+//!      that shape; qualification is what a caller is now required to (and
+//!      correctly can) do, and the remaining live risk this test targets is
+//!      whether a QUALIFIED reference resolves to the RIGHT package's
+//!      ordinal at the CODEGEN level (it did not, pre-fix: the type-scoped
+//!      `<EnumType>.<Case>` key `registerEnumDeclMsil` maintains is itself
+//!      keyed by the enum's bare simple TYPE name, so two same-named types
+//!      — or, in the wild, a user enum sharing a name with a stdlib one
+//!      such as `Std.Http.HttpVersion`, always linked into every build
+//!      regardless of import — collided on THAT key too).
 //!   2. Bare PATTERN MATCH (`case Http11 -> ...`) against a locally-annotated
 //!      variable, built via each package's OWN (collision-free) internal
-//!      constructor so the match assertion isolates the pattern-test fix
-//!      from the construction fix above.
+//!      constructor. The scrutinee's declared type is unambiguous at the
+//!      type-checker level (no cross-import name lookup involved), so a
+//!      bare arm pattern is legal here — this exercises the codegen
+//!      scrutinee-hint path (#5995) directly, isolated from the
+//!      construction fix above.
 //!
-//! Before the fix, every bare `Http11` reference (construction OR pattern)
+//! Before the fix, every one of these references (construction OR pattern)
 //! resolved through a single bundle-wide first-registered-wins table keyed
-//! by the bare case name alone — MSIL's `enumCaseOrdinals` (an Int ordinal;
+//! by the bare case name (or, for a qualified reference, the enum's bare
+//! simple TYPE name) alone — MSIL's `enumCaseOrdinals` (an Int ordinal;
 //! Lyric enums lower to a bare Int with no distinguishing CLR type) and
 //! JVM's `enumcase:` `funcSigs` entries — so whichever enum registered
-//! `Http11` first silently won every bare reference in the whole bundle,
-//! with no compile error.
+//! `Http11` first silently won every reference in the whole bundle, with no
+//! compile error.
 //!
 //! Compiles each of the three packages above via the in-process self-hosted
 //! project bridges (`Msil.Bridge.compileProjectToMsil` for `--target dotnet`,
@@ -91,13 +107,23 @@ func pkgBSource(): String {
 
 func appSource(): String {
   "package EnumCollApp\n" + "\n" + "import EnumCollA as A\n" + "import EnumCollB as B\n" + "\n" + "func main(): Int {\n" +
-    "  // (1) Bare case CONSTRUCTION as a call argument: each callee's own\n" +
-    "  // declared parameter type must select its OWN enum's Http11 case.\n" +
-    "  println(A.labelOf(Http11))\n" +
-    "  println(B.labelOf(Http11))\n" +
+    "  // (1) Cross-package-QUALIFIED case CONSTRUCTION as a call argument:\n" +
+    "  // each callee's own declared parameter type must select its OWN\n" +
+    "  // enum's Http11 case. Both packages are imported unqualified here, so\n" +
+    "  // (per #6287's T0123) a genuinely bare `Http11` is a compile-time\n" +
+    "  // ambiguity error requiring qualification -- exactly the outcome that\n" +
+    "  // makes the silent-mis-dispatch class this test guards against\n" +
+    "  // unreachable for two SIMULTANEOUSLY-imported same-case-name enums.\n" +
+    "  // The remaining, still-live risk this test targets is the codegen-level\n" +
+    "  // one: does the QUALIFIED reference resolve to the RIGHT enum's ordinal?\n" +
+    "  println(A.labelOf(EnumCollA.Http11))\n" +
+    "  println(B.labelOf(EnumCollB.Http11))\n" +
     "\n" +
-    "  // (2) Bare PATTERN MATCH against a locally-annotated variable, built\n" +
-    "  // via each package's own (collision-free) constructor.\n" +
+    "  // (2) PATTERN MATCH against a locally-annotated variable, built via\n" +
+    "  // each package's own (collision-free) constructor. The scrutinee's\n" +
+    "  // declared type is unambiguous, so a bare arm pattern is legal here\n" +
+    "  // (no cross-import ambiguity at the type-checker level) -- this is\n" +
+    "  // the codegen scrutinee-hint path (#5995) exercised directly.\n" +
     "  val a3: A.HttpVersion = A.make11()\n" +
     "  val b3: B.ConnState = B.make11()\n" +
     "  match a3 {\n" +
@@ -190,6 +216,7 @@ func compileAndRunJvm(label: in String, pkgSrcs: in List[String], entryPkgName: 
   val noFeatures: List[String] = newList()
   val noDepTemplateSrcs: List[String] = newList()
   val noDefines: List[String] = newList()
+  val noPaths: List[String] = newList()
   val ok = compileProjectToJarBundledWithFeatures(
     pkgSrcs,
     jarPath,
@@ -199,7 +226,8 @@ func compileAndRunJvm(label: in String, pkgSrcs: in List[String], entryPkgName: 
     noFeatures,
     noDepTemplateSrcs,
     noDefines,
-    "0.1.0"
+    "0.1.0",
+    noPaths
   )
   if not ok {
     cleanup(dir)
