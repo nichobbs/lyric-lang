@@ -691,18 +691,57 @@ pub func resolveManifestDependencies(
                     case None -> depMf.packageSection.name + ".dll"
                   }
                   val dllPath = Path.join(depBinDir, dllName)
+                  // A missing DLL only blocks Dotnet: that's the target whose
+                  // restored-dependency resolution actually reads `dllPath`
+                  // (`restoredDlls`). On Jvm the dep's SOURCE (collected right
+                  // below into `depTemplatePkgsList`, then compiled as an
+                  // ordinary bundle package by `buildProjectFromManifest` /
+                  // `emitSingleFileOrProject`) is what matters — the JVM
+                  // bundler never reads `restoredDllPaths` at all (#6136), so
+                  // treating an absent `.dll` as fatal here made a `--target
+                  // jvm` build of a fresh checkout's path dependency fail
+                  // before it ever reached codegen, even though nothing on
+                  // that path needs the DLL to exist (#6264).
+                  // Explicit `Native` arm (rather than folding it into the
+                  // wildcard) so this reads as a deliberate choice, not an
+                  // accident of the wildcard: `--target native` path deps are
+                  // out of scope here (`buildProjectFromManifest` already
+                  // refuses `native` for manifest/multi-package builds
+                  // elsewhere in this file), so Native inherits Dotnet's
+                  // "DLL matters" behavior rather than silently absorbing
+                  // whatever the Jvm case does as targets are added later.
+                  val dllMatters = match target { case Jvm -> false; case Native -> true; case _ -> true }
                   if File.fileExists(dllPath) {
                     if not stringListContains(seenDeps, dep.name) {
                       restoredDlls.add(dep.name + "\t" + dllPath)
                       seenDeps.add(dep.name)
                       collectTransitiveDepDlls(depDir, wsCtxOpt, seenDeps, restoredDlls)
                     }
-                  } else {
+                  } else if dllMatters {
                     printErr("build: " + Release.localDepNotBuiltMessage(dep.name, dllPath, depToml))
                     hadUnbuiltLocalDep = true
                   }
                   // Collect source files from this path dependency so the weaver can
-                  // resolve cross-package `from`-instance aspect templates (#3498).
+                  // resolve cross-package `from`-instance aspect templates (#3498) and
+                  // — on Jvm — so the dependency's actual code (not just its templates)
+                  // compiles into the bundle (#6264). A source-read failure has always
+                  // been a non-fatal warning here because the pre-#6264 Jvm path never
+                  // consumed these sources for anything but template extraction; now
+                  // that Jvm compiles them as real packages, a dep whose source can't
+                  // be read means its symbols are simply absent from the Jvm bundle —
+                  // matching the project's own "sibling packages are FATAL" policy
+                  // (the issue's suggested diagnostic severity), this now sets
+                  // `hadUnbuiltLocalDep = true` on Jvm too (`if not dllMatters`, below).
+                  // "Fatal" cashes out differently per caller, same as the DLL-missing
+                  // case above: `emitSingleFileOrProject` reads the flag directly and
+                  // returns early with a clear message (cli_build.l:hadUnbuiltLocalDep
+                  // check); `buildProjectFromManifest` (the `--manifest` path) never
+                  // reads this flag at all (by design — see
+                  // `ResolvedManifestDeps.hadUnbuiltLocalDep`'s doc comment) and instead
+                  // fails downstream, when the consumer package that imports the
+                  // now-symbol-less dependency hits an unresolved-reference type error.
+                  // Both are exercised by
+                  // `jvm_path_dependency_self_test.l`'s "unreadable source" tests.
                   match depMf.project {
                     case Some(proj) -> {
                       var pki = 0
@@ -717,6 +756,9 @@ pub func resolveManifestDependencies(
                               case Ok(srcText) -> srcList.add(srcText)
                               case Err(e) -> {
                                 printErr("build: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
+                                if not dllMatters {
+                                  hadUnbuiltLocalDep = true
+                                }
                               }
                             }
                             fi += 1
@@ -727,6 +769,9 @@ pub func resolveManifestDependencies(
                             case Ok(srcText) -> srcList.add(srcText)
                             case Err(e) -> {
                               printErr("build: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
+                              if not dllMatters {
+                                hadUnbuiltLocalDep = true
+                              }
                             }
                           }
                         }
