@@ -28432,6 +28432,27 @@ func collectLambdasBfsExpr(e: in Expr, ticker: in List[Int], synths: in List[Ite
       collectLambdasBfsExpr(scr, ticker, synths, deferred)
       var ai = 0
       while ai < arms.count {
+        // #6601: a match-arm `guard` was never walked here (unlike every
+        // sibling BFS-style walker over `EMatch` — `collectRefNamesExpr`,
+        // `collectInLambdaNamesExpr`, `collectBareFuncValueRefsExpr` — which
+        // all visit `arms[ai].guard`), so a lambda literal living inside a
+        // guard had no lifted `__lambda_*` token and codegen panicked with
+        // "lambda token missing ... liftLambdasMsil pre-pass was not run".
+        // Previously unreachable in practice (the parser mis-parsed a guard
+        // containing a nested block-statement lambda before the #6601 parser
+        // fix), but the parser fix now makes such guards parse correctly, so
+        // this pre-pass must handle them too.  Visit the guard BEFORE the
+        // body to match `lowerExprMsil`'s own per-arm order (guard-lowered
+        // as the branch test, then body — see the match-arm lowering loop
+        // above) so the BFS ticker's indices line up with the order real
+        // codegen encounters each `ELambda`.
+        match arms[ai].guard {
+          case Some(guardExpr) -> {
+            collectLambdasBfsExpr(guardExpr, ticker, synths, deferred)
+          }
+          case None -> {
+          }
+        }
         match arms[ai].body {
           case EOBExpr(ex) -> {
             collectLambdasBfsExpr(ex, ticker, synths, deferred)
