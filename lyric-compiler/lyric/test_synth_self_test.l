@@ -70,6 +70,53 @@ func testSynthesisesAnnotatedCfgTest(): Unit {
   }
 }
 
+// #6642: a multi-line module-level `//!` doc-comment header, plus the
+// `@test_module` annotation line itself, both land in separate `SourceFile`
+// fields (`moduleDoc` / `fileAnnotations`) ahead of `packageDecl`. Slicing
+// only `packageDecl.span` when building the rewritten source drops that
+// leading text entirely, shifting every subsequent line number in the
+// rewritten (and then re-parsed) source by however many lines the header
+// occupied — a `lyric test` diagnostic named the right file but the wrong
+// line. `helper()` below is a plain (non-`test`, non-`fixture`) item, which
+// the rewrite always copies byte-for-byte regardless of what it does to
+// `test { }` blocks elsewhere in the file, so this isolates the header-drop
+// bug from any line-count change the `ITest` rewrite itself might introduce.
+func headerLineNumbersSource(): String {
+  "//! Header line 1.\n" + "//! Header line 2.\n" + "//! Header line 3.\n" + "@test_module\n" +
+    "package HeaderLineRepro\n" +
+    "\n" +
+    "import Std.Testing\n" +
+    "\n" +
+    "func helper(): Int {\n" +
+    "  totallyUnknownIdentifierXYZ\n" +
+    "}\n" +
+    "\n" +
+    "test \"trivial\" {\n" +
+    "  assertTrue(true, \"x\")\n" +
+    "}\n"
+}
+
+func testHeaderLineNumbersPreserved(): Unit {
+  match synthesize(headerLineNumbersSource(), Some(value = "")) {
+    case Synthesised(rewritten, n, sk) -> {
+      assertEqualInt(n, 1, "one test")
+      assertEqualInt(sk, 0, "no skips")
+      val lines = Str.split(rewritten, "\n")
+      // Line 10 (1-indexed) of the ORIGINAL source is
+      // "  totallyUnknownIdentifierXYZ" — line index 9 in a 0-indexed split.
+      // Before the fix, dropping the 3-line header + the `@test_module` line
+      // (4 lines total) shifted this content up to index 5 (line 6).
+      assertTrue(lines.length > 9, "rewritten source has fewer than 10 lines:\n" + rewritten)
+      assertTrue(
+        Str.contains(lines[9], "totallyUnknownIdentifierXYZ"),
+        "expected line 10 (index 9) of the rewritten source to still be the helper() body, got '" + lines[9] +
+          "'\nfull rewritten source:\n" + rewritten
+      )
+    }
+    case _ -> panic("expected Synthesised outcome")
+  }
+}
+
 func testSynthesisesPassingTwoTests(): Unit {
   // Use Some(value = "") rather than None: both mean "no active filter"
   // (empty string is a substring of every title), but Some avoids the
@@ -200,6 +247,10 @@ func testListEntriesEnumerates(): Unit {
     }
     case Err(_) -> panic("listEntries unexpectedly errored")
   }
+}
+
+test "module //! header line numbers preserved in rewritten source (#6642)" {
+  testHeaderLineNumbersPreserved()
 }
 
 test "synthesises passing two tests" {

@@ -342,3 +342,66 @@ test "multi-file project package: a parse error is labelled with the package nam
       result.stderr
   )
 }
+
+// #6642: `Lyric.TestSynth`'s rewrite for `@test_module` files (which backs
+// `lyric test`) sliced only `packageDecl.span` when building the rewritten
+// source, dropping the module-level `//!` doc-comment header and the
+// `@test_module` annotation line — both live in separate `SourceFile`
+// fields ahead of `packageDecl` — entirely. That shifted every subsequent
+// line number in the rewritten (and then re-parsed) source by however many
+// lines the header occupied: `lyric test` named the right file (the
+// #6282/#6284 fix above) but the WRONG line. `helper()` is a plain
+// (non-`test`, non-`fixture`) item the rewrite always copies byte-for-byte,
+// isolating the header-drop bug from the `test { }` block's own rewrite.
+func headerLineShiftTestModuleSource(): String {
+  "//! Header line 1.\n" + "//! Header line 2.\n" + "//! Header line 3.\n" + "@test_module\n" +
+    "package HeaderLineRepro\n" +
+    "\n" +
+    "import Std.Testing\n" +
+    "\n" +
+    "func helper(): Int {\n" +
+    "  totallyUnknownIdentifierXYZ\n" +
+    "}\n" +
+    "\n" +
+    "test \"trivial\" {\n" +
+    "  assertTrue(true, \"x\")\n" +
+    "}\n"
+}
+
+test "lyric test: a compile error names the real line despite a multi-line module //! header (#6642)" {
+  val dir = freshTempDir("testsynth-header")
+  defer {
+    cleanup(dir)
+  }
+  val srcPath = Path.join(dir, "header_line_repro.l")
+  match File.writeText(srcPath, headerLineShiftTestModuleSource()) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write fixture: " + IOError.message(e))
+  }
+  val args: List[String] = newList()
+  args.add("test")
+  args.add(srcPath)
+  // `runCaptureWithDiagnostics`'s default 10s cap is tuned for the other
+  // tests in this file, which fail during PARSE (before ever touching the
+  // stdlib import graph) and so return almost immediately. This fixture
+  // synthesises a full `@test_module` unit that imports `Std.Testing` and
+  // runs a real type-check over the whole stdlib closure — routinely well
+  // past 10s under CI/sandbox CPU contention — so it needs the same
+  // generous explicit timeout `cmdTest` itself uses for its own subprocess
+  // calls.
+  val result = Capture.runCaptureWithDiagnosticsTimeout(lyricBinPath(), args, "", 300000)
+  assertTrue(not result.timedOut, "lyric test timed out before producing a diagnostic")
+  assertTrue(result.exitCode != 0, "an unresolved identifier inside helper() must fail the build")
+  assertTrue(
+    Str.contains(result.stderr, srcPath),
+    "expected the real source path '" + srcPath + "' in stderr, got:\n" + result.stderr
+  )
+  // The error is `totallyUnknownIdentifierXYZ` on line 10 of the ORIGINAL
+  // file. Before the fix, dropping the 3-line header + the `@test_module`
+  // line (4 lines total) shifted the reported line to 6, not 10.
+  assertTrue(
+    Str.contains(result.stderr, "] 10:"),
+    "expected the diagnostic to name line 10 (the 'totallyUnknownIdentifierXYZ' reference in helper()), " +
+      "not a header-shifted line, got:\n" + result.stderr
+  )
+}

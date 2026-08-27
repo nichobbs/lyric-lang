@@ -628,7 +628,18 @@ func synthesizeFor(source: in String, filter: in Option[String], nativeMode: in 
     case None -> {
     }
   }
-  var sb = slice(source, pf.file.packageDecl.span)
+  // #6642: slicing just `packageDecl.span` drops everything the parser
+  // hoisted ahead of it into separate `SourceFile` fields — the module-level
+  // `//!` doc comments (`moduleDoc`) and any file-level annotations (e.g.
+  // `@test_module` itself) — because `packageDecl.span` starts at the
+  // `package` keyword, not at the top of the file. Losing that leading text
+  // shifted every line number in the rewritten (and then re-parsed) source
+  // by however many lines the header occupied, so a diagnostic reported
+  // during `lyric test` named the right file but the wrong line. Copying
+  // the raw byte range `[0, packageDecl end)` instead reproduces the
+  // original file's line numbering exactly for everything up to and
+  // including the `package` line, with no reconstruction from spans.
+  var sb = source.substring(0, pf.file.packageDecl.span.endPos.offset)
   sb = sb + "\n"
   // Native has no builtin-`println` prelude special case (unlike the dotnet/
   // jvm emitters) — the synthesised main below calls the real, already
