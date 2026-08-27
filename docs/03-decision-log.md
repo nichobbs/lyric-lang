@@ -34582,3 +34582,236 @@ ask), #6708 (new, filed — JVM generics-erasure gap blocking
 (the generic-codegen design this extends), docs/44-jvm-production-
 readiness-plan.md ("generics erased" — #6708 is a concrete instance of
 that already-catalogued JVM-backend gap class).
+---
+
+## D-progress-823 — TLS phase 5 (native) N9.4: `Std.Http` native client twin on the `lyric_tls_*`/`Std.TcpHost` seam (issue #6105, epic #5874 phase 5)
+
+Exposes N9.2's `Std.TcpHost` native twin (D-progress-712, #6103) as a client
+HTTP/HTTPS surface: `_kernel_native/http_host.l`, matching the dotnet/JVM
+twins' public client API. Two premises in the issue's own plan text turned
+out to be false once the source was actually read, both requiring genuine
+reimplementation rather than the reuse the plan assumed:
+
+**A) `Std.HttpEngine` has no client half.** The issue's plan (and this
+doc's own §7 N9 banding) described driving "the sans-IO engine's client
+connection FSM." Reading `lyric-stdlib/std/http_engine.l` in full and
+grepping its only consumers (`_kernel/http_server.l`, plus doc-comment
+mentions in `tcp_host.l`) found the engine is server-only — there has never
+been a client-side `Connection`/state-machine type anywhere in the tree, on
+any target. `_kernel_native/http_host.l` therefore implements a genuine,
+from-scratch HTTP/1.1 client wire protocol: RFC 9112 request-line and
+header-line construction/parsing, `Content-Length` vs
+`Transfer-Encoding: chunked` framing precedence (Content-Length checked
+first per the RFC, since a response can't sensibly carry both), chunked-body
+decoding, and a 301/302/303/307/308 redirect loop with the standard
+method-downgrade rule (303 always downgrades to GET; 301/302 downgrade a
+POST to GET for compatibility with real-world servers, matching
+`_kernel/http_host.l`'s and `_kernel_jvm/http_host.l`'s own redirect
+behavior; 307/308 preserve method and body). Every byte/string primitive
+used (`findSubstring`, `splitOn`, `trimSpaces`, `parseHexInt`,
+`asciiEqualsCaseInsensitive`, `findHeaderValue`, chunked-frame scanning) is
+hand-rolled from `.substring`/`.length`/indexing/`+`/`==` alone — a
+deliberate scope decision documented in the file's own header, not an
+oversight: neither `Std.String` nor `Std.Char`'s combinator surface is
+called anywhere in this file.
+
+**B) `Std.Http.HttpClient`'s interface surface cannot be constructed on
+native today — a pre-existing, general compiler gap.** The issue asked this
+kernel to "match `Std.Http`'s public client surface... exactly," which
+reads as including the `HttpClient`-interface-returning builder functions
+(`HttpClientBuilder.build()`, `defaultClient()`, `clientWithRedirects`, …).
+Verified directly, twice, before writing a single line of workaround code:
+
+```text
+$ lyric build --target native repro.l   # val c = defaultClient()
+Unhandled exception. System.Exception: Lyric.LlvmCodegen: type
+'HttpClient' is not yet supported for --target native (Phase N1 lowers
+scalars and String only)
+```
+
+and, isolating the general shape with a same-signature custom interface (to
+confirm this is `async`-interface-dispatch-general, not `HttpClient`- or
+bundled-stdlib-specific):
+
+```text
+Unhandled exception. System.Exception: Lyric.LlvmCodegen: interface
+method '.greet' on 'T.Greeter' is not yet lowerable for --target native
+— only non-generic abstract interface methods dispatch through the
+vtable; default, generic, async, and Self-returning interface methods
+are deferred (N3.2).
+```
+
+`Std.Http.HttpClient` declares seven `async func` methods; N3.2's interface
+vtable dispatch lowers only non-generic, non-async abstract methods. This is
+a codegen-level gap in `Lyric.LlvmCodegen`, not a kernel-boundary problem —
+fixing it is out of this item's scope (filed as a follow-up alongside this
+entry, not blocking). `_kernel_native/http_host.l` is therefore the real,
+substantive deliverable, and its self-test — like `Std.Http`'s own free
+functions `getAsync`/`postAsync`/`sendAsync`, which never touch the
+`HttpClient` interface and already call straight into this kernel — drives
+the kernel's free functions directly (`hostClientWithTls`, `hostMakeRequest`,
+`hostSendSafe`, …) rather than through the interface-returning builder
+surface. Once the N3.2 gap closes, `Std.Http`'s own public surface works
+unmodified — no further kernel change needed.
+
+**C) Client TLS added to `Std.TcpHost` (`_kernel_native/tcp_host.l`), not a
+new file.** The client-TLS connect path needs the same package-private
+`Conn`/`Listener` internals `hostAcceptTls`/`hostUpgradeServerTls` already
+live beside, so `hostConnectTls`/`hostUpgradeClientTls` were added directly
+to `tcp_host.l` rather than duplicated behind a second file — mirroring
+where `hostUpgradeServerTls` already lives for the identical reason. A new
+`TlsClientTrust` union (`TlsTrustSystemDefault`/`TlsTrustAdditive(caPem)`/
+`TlsTrustExclusive(caPem)`/`TlsTrustInsecure`) makes the trust mode
+explicit at the call site, resolved to the right `rtTlsClientNew*` seam call
+by `buildClientCtx`. This surfaced a genuine trust-semantics gap in the
+N9.1 seam: `lyric_tls_client_new` treats a non-empty CA PEM as *exclusive*
+trust (only that CA verifies chains), but docs/61 §3.2's
+`withCaCertificate()` client-builder option is documented as *additive*
+(system default trust plus the supplied CA — a chain valid against either
+verifies) — the seam had no function expressing that distinction. Fixed by
+refactoring `lyric_tls_client_new`'s body into a shared
+`client_new_impl(ca_pem, min_version, insecure, additive)` static helper in
+`lyric-rt/src/lyric_tls.c` and adding a new public `lyric_tls_client_new_additive`
+entry point (`additive=1`: load system default trust paths unconditionally,
+then add `ca_pem` on top; `additive=0` reproduces `lyric_tls_client_new`'s
+existing exclusive-or-system-default behavior byte-for-byte). Two new C
+tests (`test_tls_client_additive_ca`, `test_tls_client_additive_requires_ca`)
+cover the new function's happy path (a real loopback handshake against a
+server whose cert is verified via the additive trust store) and its
+`ca_pem`-required error path. SNI and hostname verification stay hard-wired
+on for every trust mode (inherited unconditionally from the N9.1 seam); the
+dual-key insecure policy (docs/61 §4) is reused as-is via
+`TlsTrustInsecure`, no new override mechanism.
+
+While wiring `buildClientCtx`'s TLS-identity path, `buildServerCtx`
+(pre-existing N9.2 code, never previously exercised through a live TLS
+accept in any self-test) turned out to already contain two UFCS calls that
+fail to resolve on native (`cfg.identity.rawHandle()`,
+`ca.rawHandle().certPem`) — a **cross-package UFCS-call gap**: `method '.X'
+on this receiver is not yet supported for --target native (no matching
+function 'X/1' in the bundled import closure)`, confirmed for both an
+`internal` function (`rawHandle`) and a `pub` one (`TcpError.message`).
+Same-package UFCS works; only the cross-package case fails. Fixed at both
+call sites (and this item's own two new call sites) by using the explicit
+static-call form instead — `Tls.Identity.rawHandle(id)`,
+`Tls.Certificate.rawHandle(ca).certPem` — a general native-codegen
+limitation, not specific to this kernel, filed as a follow-up.
+
+**D) Additional previously-undocumented native-codegen gaps, found via
+minimal-repro bisection while this kernel's ~1300 lines were being written,
+each worked around (none are this item's compiler fix to make):**
+
+- **The `?` operator fails specifically when the function using it is
+  reachable from a *different* package than the one that defines it** —
+  `this expression form is not yet supported for --target native (Phase
+  N1)`. Confirmed same-package `?` compiles fine; the identical code fails
+  the moment a different package calls in, even transitively through a
+  same-package intermediate call. All 11 uses of `?` in `http_host.l` were
+  rewritten to explicit `match { case Ok(v) -> v; case Err(e) -> return
+  Err(error = e) }` (the same pattern `tcp_host.l`'s pre-existing code
+  already used everywhere, which in hindsight is this convention already
+  being silently honored rather than a stylistic choice).
+- **`out` is a reserved keyword.** Using it as a variable name
+  (`val out: List[Byte] = newList()`) parses fine as an isolated repro
+  (a clean `P0051` in a minimal file) but manifested as the generic "this
+  expression form is not yet supported" codegen panic inside the larger
+  kernel file, which cost real bisection time to trace back to its actual
+  cause. Renamed to `acc` at all three sites.
+- **A module-level `val` with a non-literal initializer** (e.g. a
+  slice-literal, `val crlf: slice[Byte] = [13u8, 10u8]`) is rejected:
+  "module-level 'crlf' has a non-literal initializer, which is not yet
+  supported for --target native... #5977" (a pre-existing, already-tracked
+  gap). Converted both byte-pattern constants this kernel needed
+  (CRLF, CRLFCRLF) into zero-arg functions (`crlfBytes()`/`crlfcrlfBytes()`)
+  instead.
+- **A bare nullary enum-case reference does not resolve, even within the
+  same file** — `func f(): MyEnum { A }` (instead of `MyEnum.A`) fails with
+  "unknown name 'A'". The same failure mode hits a record field's *default*
+  value when the field is omitted at a construction site and that default
+  is itself a bare enum case (`TlsServerConfig`'s `minVersion: TlsVersion =
+  Tls12` default, when a caller writes `TlsServerConfig(identity = ...)`
+  without naming `minVersion`). Worked around by always fully-qualifying
+  enum cases (`TlsVersion.Tls12`, or `Tls.TlsVersion.Tls12` under an
+  aliased import) and supplying every field explicitly at every
+  `TlsServerConfig` construction site in this item's own code and its
+  self-test's generated program, never relying on the enum-typed default.
+
+**E) Self-test (`lyric-compiler/lyric/llvm_http_client_self_test.l`).** One
+case, compiled through `Lyric.LlvmBridge.compileToNativeWithFlags` with
+`-fsanitize=address`, mirroring `llvm_tls_self_test.l`'s harness shape: the
+server accepts two sequential TLS connections over the same listener on a
+second `pthread_create`d OS thread (a TLS handshake needs both peers
+actively exchanging handshake records at once, unlike a bare TCP `connect`,
+which completes into the listen backlog before `accept` runs — the same
+reasoning D-progress-712 gave for its own item-C case); the first request
+gets a 302 redirect to a second path, the second a 200 response with a
+`Transfer-Encoding: chunked` body split across two chunks. One client call
+(`await hostSendSafe`) is asserted to complete the TLS handshake against a
+self-signed certificate pinned via `hostClientWithTls`'s exclusive-CA trust
+option (real chain + hostname verification, not `withInsecureSkipVerify`),
+follow the redirect to the second URL, and dechunk the reassembled body back
+to the original `"Hello, world!"` text.
+
+One genuine logic bug (in this item's own new code, not a compiler gap) was
+found and fixed via this self-test: `readChunkedBody`'s trailer-section scan
+initially searched for a 4-byte CRLFCRLF terminator, copying the
+"end of headers" pattern instead of applying RFC 9112's actual chunked
+trailer-part rule — after the last (`0`-sized) chunk's own already-consumed
+CRLF, a *single* CRLF terminates an empty trailer section (only a nonzero
+trailer field count needs the second CRLF pair). The bug manifested as the
+client hanging until the read timed out ("connection closed before expected
+data arrived") on every chunked response, since it kept waiting for 4 bytes
+the server would never send. Fixed by rewriting the trailer scan as a loop
+over CRLF-terminated lines, treating an immediately-empty line as end of
+trailer — correct for both the zero- and nonzero-trailer-field cases.
+
+**Sandbox/CI-validator boundary — a genuine improvement on D-progress-712's
+own boundary note.** This session, like D-progress-712's, could not run
+`scripts/bootstrap.sh --stage 0` (GitHub access is not enabled for this
+sandbox) and so could not build `./bin/lyric` from source. Unlike
+D-progress-712, however, this session found and used the already-installed
+NuGet global tool (`lyric` v0.5.1 on `PATH` via `~/.dotnet/tools`), which
+genuinely supports `--target native` end to end — real `clang` invocation,
+real `lyric_rt.a` linking, real process execution. Every claim in this
+entry was verified by actually running it, not inferred by
+cross-referencing already-shipped syntax: `make -C lyric-rt test` (clang +
+gcc) and `make -C lyric-rt test-asan CC=gcc` pass locally including the two
+new additive-CA C tests, and
+`LYRIC_LOAD_COMPILER=1 LYRIC_RT_PATH=<worktree>/lyric-rt/build/lyric_rt.a
+LYRIC_STD_PATH=<worktree>/lyric-stdlib/std lyric test
+lyric-compiler/lyric/llvm_http_client_self_test.l` genuinely passes,
+confirmed on four separate consecutive runs (including a re-run after the
+chunked-trailer bug fix and a final re-run after `lyric fmt --write` was
+applied to every changed `.l` file):
+
+```
+1..1
+ok 1 - Std.HttpHost native HTTPS round trip: TLS handshake + redirect + chunked body (item E)
+
+# tests 1
+# pass  1
+# fail  0
+# skip  0
+```
+
+CI's `native-backend-self-tests` job remains the authoritative from-source
+validator going forward (this session's NuGet-tool verification is real
+execution, not a substitute for CI, since the tool tracks a released
+version rather than this branch's own compiler source) — the test is wired
+into that job's `for t in ...` loop immediately after `llvm_tls_self_test.l`.
+
+**Tracked follow-ups filed, not blocking this item:** the general
+async-interface vtable-dispatch gap (item B above, `Lyric.LlvmCodegen`
+N3.2), the general cross-package UFCS-call resolution gap (item C above),
+and the general cross-package `?`-operator codegen gap (item D above) are
+all pre-existing native-codegen limitations this item worked around rather
+than fixed, each filed as its own follow-up issue referencing this entry.
+
+**Verification.** `make -C lyric-rt test` (clang + gcc) and
+`make -C lyric-rt test-asan CC=gcc` green locally including the two new
+tests; `llvm_http_client_self_test.l` genuinely green locally via the NuGet
+`lyric` tool (see boundary note above), four consecutive runs; `lyric fmt
+--write` applied clean (no refusals) to all three changed `.l` files
+(`_kernel_native/tcp_host.l`, `_kernel_native/http_host.l`,
+`llvm_http_client_self_test.l`).
+

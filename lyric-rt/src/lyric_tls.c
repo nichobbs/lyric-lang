@@ -745,7 +745,15 @@ static int set_min_version(ossl_ssl_ctx* ctx, int32_t min_version) {
 
 /* ── Client ───────────────────────────────────────────────────────────── */
 
-void* lyric_tls_client_new(const char* ca_pem, int32_t min_version, int32_t insecure) {
+/* Shared body for lyric_tls_client_new / lyric_tls_client_new_additive
+ * (docs/61 §3.2; N9.4, issue #6105).  `additive` == 0 reproduces
+ * lyric_tls_client_new's original, unchanged behaviour exactly (non-empty
+ * ca_pem PINS trust exclusively to it; empty ca_pem falls back to the
+ * system default paths).  `additive` != 0 loads the system default trust
+ * paths UNCONDITIONALLY and then adds ca_pem on top of the same
+ * SSL_CTX-owned X509_STORE — a chain valid against either set verifies —
+ * and requires a non-empty ca_pem (there is nothing to add otherwise). */
+static void* client_new_impl(const char* ca_pem, int32_t min_version, int32_t insecure, int additive) {
     if (!tls_ready()) return NULL;
     ossl_ssl_ctx* ctx = O.SSL_CTX_new(O.TLS_client_method());
     if (!ctx) {
@@ -761,7 +769,23 @@ void* lyric_tls_client_new(const char* ca_pem, int32_t min_version, int32_t inse
         O.SSL_CTX_set_verify(ctx, OSSL_SSL_VERIFY_NONE, NULL);
     } else {
         O.SSL_CTX_set_verify(ctx, OSSL_SSL_VERIFY_PEER, NULL);
-        if (ca_pem && ca_pem[0] != '\0') {
+        int have_ca = ca_pem && ca_pem[0] != '\0';
+        if (additive) {
+            if (!have_ca) {
+                set_err("additive client context requires a non-empty ca_pem");
+                O.SSL_CTX_free(ctx);
+                return NULL;
+            }
+            if (O.SSL_CTX_set_default_verify_paths(ctx) != 1) {
+                set_ossl_err("load system trust store");
+                O.SSL_CTX_free(ctx);
+                return NULL;
+            }
+            if (add_ca(ctx, ca_pem) != 0) {
+                O.SSL_CTX_free(ctx);
+                return NULL;
+            }
+        } else if (have_ca) {
             if (add_ca(ctx, ca_pem) != 0) {
                 O.SSL_CTX_free(ctx);
                 return NULL;
@@ -784,6 +808,21 @@ void* lyric_tls_client_new(const char* ca_pem, int32_t min_version, int32_t inse
     w->ctx = ctx;
     w->insecure = insecure ? 1 : 0;
     return w;
+}
+
+void* lyric_tls_client_new(const char* ca_pem, int32_t min_version, int32_t insecure) {
+    return client_new_impl(ca_pem, min_version, insecure, 0);
+}
+
+/* ADDITIVE client context (docs/61 §3.2 `withCaCertificate`): system
+ * default trust paths PLUS `ca_pem`, both live in the same X509_STORE — a
+ * chain valid against either set verifies.  Contrast with
+ * lyric_tls_client_new's non-empty-ca_pem case, which pins trust
+ * EXCLUSIVELY to `ca_pem` (docs/61 §3.2 `withExclusiveCaCertificate`).
+ * `ca_pem` must be non-empty.  Returns a context handle, or NULL
+ * (last_error set).  Free with lyric_tls_ctx_free. */
+void* lyric_tls_client_new_additive(const char* ca_pem, int32_t min_version, int32_t insecure) {
+    return client_new_impl(ca_pem, min_version, insecure, 1);
 }
 
 int32_t lyric_tls_client_set_identity(void* client_ctx, const char* cert_pem, const char* key_pem) {

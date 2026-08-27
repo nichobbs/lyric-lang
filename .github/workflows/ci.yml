@@ -2919,6 +2919,24 @@ jobs:
       # Certificate.fromPem/Identity.fromPem API, unblocked by the
       # llvm_opaque fix below).
       #
+      # llvm_http_client_self_test (N9.4, issue #6105: Std.HttpHost native
+      # client twin over the tcp_host.l client-TLS extension this item
+      # added -- hostConnectTls/hostUpgradeClientTls, TlsClientTrust, and
+      # an additive-CA lyric_tls_client_new_additive C seam alongside the
+      # existing exclusive/system-default/insecure trust modes). Drives a
+      # hand-rolled HTTP/1.1 client wire protocol (RFC 9112 request/status
+      # line, header parsing, Content-Length and chunked transfer-encoding
+      # framing, and a 301/302/303/307/308 redirect loop) since no sans-IO
+      # client engine exists (Std.HttpEngine is server-only) and
+      # Std.Http.HttpClient's own async-interface surface does not lower
+      # on native yet (N3.2 covers non-async abstract methods only -- a
+      # pre-existing, tracked gap this item's kernel deliberately routes
+      # around by calling Std.HttpHost directly, per its module header).
+      # The ASan case drives a genuine TLS handshake against a self-signed
+      # certificate pinned via exclusive-CA trust, follows a redirect to a
+      # fresh TLS connection, and dechunks a two-chunk response body -- all
+      # over a real loopback socket with the server on a second pthread.
+      #
       # llvm_opaque (#6234 part 1: `opaque type` codegen -- construction,
       # field access, mutation, UFCS methods, and an opaque type nested in
       # a record all lower identically to a record on both the single-file
@@ -2970,6 +2988,7 @@ jobs:
             lyric-compiler/lyric/llvm_collections_self_test.l \
             lyric-compiler/lyric/llvm_stdlib_self_test.l \
             lyric-compiler/lyric/llvm_tls_self_test.l \
+            lyric-compiler/lyric/llvm_http_client_self_test.l \
             lyric-compiler/lyric/llvm_self_test_n3.l \
             lyric-compiler/lyric/llvm_self_test_n34.l \
             lyric-compiler/lyric/llvm_self_test_async.l \

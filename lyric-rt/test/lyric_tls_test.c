@@ -377,6 +377,39 @@ static void test_multi_anchor_ca_bundle(void) {
     lyric_tls_ctx_free(client);
 }
 
+/* N9.4 (#6105): the ADDITIVE client constructor (docs/61 §3.2
+ * `withCaCertificate`) — same handshake as test_tls_server_auth, but built
+ * via lyric_tls_client_new_additive instead of lyric_tls_client_new.
+ * Proves the wiring path (add_ca still runs on top of the unconditionally-
+ * loaded system default paths) without needing a fake trust anchor
+ * planted in the host's real system store — the server's chain validates
+ * against CA_CRT exactly as it would in exclusive mode. */
+static void test_tls_client_additive_ca(void) {
+    void* server = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 12, "", 0, "http/1.1");
+    CHECK(server != NULL);
+    void* client = lyric_tls_client_new_additive(CA_CRT, 12, 0);
+    CHECK(client != NULL);
+    if (server && client) {
+        char calpn[32];
+        int rt = 0;
+        tls_server_arg srv;
+        int ok = run_tls_scenario(server, client, "localhost", "http/1.1", calpn, &rt, &srv);
+        CHECK(ok == 1);
+        CHECK(rt == 1);
+        CHECK(srv.accept_ok == 1);
+        CHECK(srv.echoed == 1);
+    }
+    lyric_tls_ctx_free(server);
+    lyric_tls_ctx_free(client);
+}
+
+/* Additive constructor rejects an empty ca_pem outright (nothing to add) —
+ * unlike lyric_tls_client_new, which treats "" as "use system trust only". */
+static void test_tls_client_additive_requires_ca(void) {
+    void* client = lyric_tls_client_new_additive("", 12, 0);
+    CHECK(client == NULL);
+}
+
 static void test_tls_tls13_floor(void) {
     void* server = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 13, "", 0, "http/1.1");
     CHECK(server != NULL);
@@ -819,6 +852,8 @@ int main(void) {
     test_tls_server_auth();
     test_tls_server_chain();
     test_multi_anchor_ca_bundle();
+    test_tls_client_additive_ca();
+    test_tls_client_additive_requires_ca();
     test_tls_tls13_floor();
     test_mtls_accept();
     test_mtls_reject_no_client_cert();

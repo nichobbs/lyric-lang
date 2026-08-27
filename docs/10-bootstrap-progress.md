@@ -31472,6 +31472,83 @@ resolved here); #6103 (N9.2, merged as #6235); #6104–#6106; docs/61 §7
 item 4; `native/plan/08-work-items.md` Phase N9; D-N-014;
 D-progress-540, D-progress-545, D-progress-703.
 
+## `Std.Http` native client twin ships over the N9.2 seam, TLS phase 5 band N9.4 (2026-08-27)
+
+`_kernel_native/http_host.l` exposes `Std.TcpHost`'s N9.2 twin as a client
+HTTP/HTTPS surface, matching the dotnet/JVM twins' public client API
+(`hostDefaultClient`/`hostClientWithTls`/`hostMakeRequest`/`hostSendSafe`/
+`hostGetSafe`/`hostPostStringSafe`/`hostReadBodyTextSafe`/…), plus a
+client-TLS extension to `_kernel_native/tcp_host.l` (`hostConnectTls`/
+`hostUpgradeClientTls`, a `TlsClientTrust` union) and a new
+`lyric_tls_client_new_additive` seam function in `lyric-rt` for the
+additive-CA trust mode `withCaCertificate()` needs (the existing
+`lyric_tls_client_new` treats a non-empty CA as exclusive). SNI and hostname
+verification stay hard-wired on for every trust mode; the dual-key insecure
+policy (docs/61 §4) is reused as-is.
+
+Two premises in the original N9.4 plan text (docs/61 §7 item 15,
+`native/plan/08-work-items.md`'s original N9.4 wording) turned out to be
+false once the source was read rather than assumed: **(1)** `Std.HttpEngine`
+— the plan's "drive the sans-IO engine's client connection FSM" — has no
+client half anywhere in the tree (`_kernel/http_server.l`'s `Connection`
+type is server-only); the client therefore speaks a genuine, from-scratch
+HTTP/1.1 wire protocol (RFC 9112 request/status-line and header parsing,
+`Content-Length`/chunked framing, a 301/302/303/307/308 redirect loop),
+hand-rolled from `String`/byte primitives with no `Std.String`/`Std.Char`
+combinator calls, by design. **(2)** `Std.Http.HttpClient`'s own interface
+surface (`HttpClientBuilder.build()`, `defaultClient()`, …) cannot be
+constructed on native at all today — its seven methods are `async func`,
+and `Lyric.LlvmCodegen`'s interface vtable dispatch (N3.2) lowers only
+non-generic, non-async abstract methods, confirmed with both the real
+`HttpClient` interface and an isolated same-shape repro interface. This is a
+pre-existing, general compiler gap (filed as a follow-up, not fixed here);
+`_kernel_native/http_host.l`'s free functions are therefore the real
+deliverable, called directly by the self-test rather than through the
+interface-returning builder surface — `Std.Http`'s own free functions
+(`getAsync`/`postAsync`/`sendAsync`) already route into this same kernel and
+will work unmodified once the interface-dispatch gap closes.
+
+While wiring client-TLS, two pre-existing UFCS calls in N9.2's
+`buildServerCtx` (never previously exercised through a live TLS accept)
+turned out to fail on native — a general cross-package UFCS-call resolution
+gap, not specific to this kernel — fixed at those two sites and this item's
+own new call sites by using the explicit static-call form instead. Several
+further previously-undocumented native-codegen limitations surfaced via
+minimal-repro bisection while writing this ~1300-line kernel and were worked
+around (all filed as follow-ups, none fixed here): the `?` operator fails
+when the enclosing function is reachable from a different package than the
+one defining it; `out` is a reserved keyword that fails opaquely deep in
+codegen rather than at parse time when used as a variable name in a larger
+file; a module-level `val` with a non-literal initializer is rejected
+(already tracked as #5977); and a bare nullary enum-case reference fails to
+resolve even same-file, including as an omitted record field's default
+value. One genuine logic bug in this item's own new code (not a compiler
+gap) was found and fixed via the self-test: `readChunkedBody`'s trailer scan
+initially expected a 4-byte CRLFCRLF terminator, when RFC 9112 only requires
+one more CRLF after an empty trailer section.
+
+Verified by `lyric-compiler/lyric/llvm_http_client_self_test.l` (wired into
+`native-backend-self-tests`, ASan-compiled): a real loopback HTTPS round
+trip through `hostSendSafe` — TLS handshake against a self-signed
+certificate pinned via exclusive-CA trust, a 302 redirect followed to a
+fresh TLS connection, and a two-chunk `Transfer-Encoding: chunked` body
+dechunked back to the original text — server driving `hostAcceptTls`/
+`hostRead`/`hostWrite` on a second pthread.
+
+Boundary (an improvement on N9.1/N9.2's own boundary note): this session
+also could not build `./bin/lyric` from source in-sandbox, but found and
+used the already-installed NuGet global tool (`lyric` 0.5.1), whose native
+backend genuinely supports `--target native` end to end. Every claim above
+was verified by actually running it — `make -C lyric-rt test`/`test-asan`
+green, and the self-test genuinely green across four consecutive local runs
+— rather than inferred by cross-referencing already-shipped syntax; CI's
+`native-backend-self-tests` job remains the authoritative from-source
+validator going forward.
+
+**Related:** `docs/03-decision-log.md` D-progress-804; #6105; #6103 (N9.2);
+docs/61 §7 item 15; `native/plan/08-work-items.md` Phase N9 (N9.4);
+D-progress-712, D-progress-703.
+
 ### D-progress-630 — `lyric build --release --target jvm`: GraalVM `native-image` binaries (#1975, #675; D131)
 
 **Status:** Shipped for Linux and macOS (`lyric-compiler/lyric/release.l`,

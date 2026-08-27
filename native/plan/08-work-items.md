@@ -1432,11 +1432,103 @@ self-test for it exist anywhere in the repository. A future contributor
 picking up #6104/N9.3 starts from zero on the kernel itself once #6588 and
 #6589 are resolved. N9.3 remains open pending #6588/#6589.
 
-### N9.4 — `Std.Http` native client — follow-on (#6105)
+### N9.4 — `Std.Http` native client twin (`_kernel_native/http_host.l`) — ✅ SHIPPED (D-progress-804, #6105)
 
-The `_kernel_native/http_host.l` client twin on the seam (client TLS connect
-+ the sans-IO engine's client connection FSM), so `Std.Http` works on native.
-Gated on N9.2.
+**SHIPPED (D-progress-804):** `_kernel_native/http_host.l`, matching the
+dotnet/JVM twins' public client surface (`hostDefaultClient`/
+`hostClientWithTls`/`hostClientWithRedirects`/`hostMakeRequest`/
+`hostWithHeader`/`hostWithStringBody`/`hostSendSafe`/`hostGetSafe`/
+`hostPostStringSafe`/`hostReadBodyTextSafe`/`hostReadBodyBytesSafe`/
+`hostStatusCode`/`hostResponseHeader`, plus the `*WithCancel*` variants), and
+a client-TLS extension to `_kernel_native/tcp_host.l` (`hostConnectTls`/
+`hostUpgradeClientTls`, mirroring `hostUpgradeServerTls`'s existing shape, and
+a `TlsClientTrust` union covering system-default/additive-CA/exclusive-CA/
+insecure trust). Two corrections to this item's original plan text, both
+forced by reading the source first rather than assuming:
+
+- **No sans-IO client engine exists to reuse.** `Std.HttpEngine` — this
+  item's original "drive the sans-IO engine's client connection FSM" plan —
+  is server-only (`_kernel/http_server.l`'s `Connection` type, with no
+  client-side counterpart anywhere in the tree, dotnet or JVM). The client
+  therefore speaks a genuine, from-scratch HTTP/1.1 wire protocol: RFC 9112
+  request/status-line and header-line parsing, `Content-Length` vs
+  `Transfer-Encoding: chunked` framing precedence, chunked-body decoding
+  (including correct empty-trailer handling — chunk data is followed by
+  exactly one more CRLF when there are zero trailer fields, not a second
+  CRLF pair), and a 301/302/303/307/308 redirect loop with per-RFC
+  method-downgrade rules. All of it is hand-rolled from `String`/byte
+  primitives (`.substring`, `.length`, indexing, `+`, `==`) since neither
+  `Std.String` nor `Std.Char` combinator helpers are used by design (module
+  header documents the exact scope decision).
+- **`Std.Http.HttpClient`'s interface surface does not lower on native at
+  all today** — a pre-existing, general compiler gap, not specific to this
+  kernel. Its seven methods are all `async func`, and `Lyric.LlvmCodegen`'s
+  interface vtable dispatch (N3.2) lowers only non-generic, non-async
+  abstract methods. Verified two ways: compiling a program that calls
+  `Std.Http.defaultClient()` panics with `Lyric.LlvmCodegen: type
+  'HttpClient' is not yet supported for --target native (Phase N1 lowers
+  scalars and String only)`; an isolated same-shape custom interface
+  (`interface Greeter { async func greet(...): String }`) confirms the
+  general form with `Lyric.LlvmCodegen: interface method '.greet' on
+  'T.Greeter' is not yet lowerable for --target native — only non-generic
+  abstract interface methods dispatch through the vtable; default, generic,
+  async, and Self-returning interface methods are deferred (N3.2)`. This
+  compiler-level fix is out of this item's scope (a codegen change, not a
+  kernel-boundary one); `_kernel_native/http_host.l`'s own module header
+  documents it in full. The kernel is therefore the real, substantive
+  deliverable, called directly rather than through `Std.Http`'s
+  interface-returning builder surface (`HttpClientBuilder.build()`,
+  `defaultClient()`, `clientWithRedirects`, …) — `Std.Http`'s free functions
+  (`getAsync`/`postAsync`/`sendAsync`, which never touch the `HttpClient`
+  interface) already call straight into this same kernel and will work
+  unmodified once the interface-dispatch gap closes separately.
+
+A new `lyric_tls_client_new_additive` seam function was added to
+`lyric-rt/src/lyric_tls.c` (refactoring the existing `lyric_tls_client_new`
+body into a shared `client_new_impl(..., additive)` helper): the existing
+function treats a non-empty CA PEM as *exclusive* trust (only that CA
+verifies), but docs/61 §3.2's `withCaCertificate` client-builder option is
+*additive* (system default trust plus the supplied CA) — the seam had no way
+to express that distinction before this item. `Std.TcpHost`'s
+`buildServerCtx` also had three pre-existing UFCS calls
+(`cfg.identity.rawHandle()`, `ca.rawHandle().certPem`) that were never
+exercised until this item's self-test drove a live TLS accept through them —
+both fixed to the explicit static-call form (`Tls.Identity.rawHandle(id)`,
+`Tls.Certificate.rawHandle(ca).certPem`) alongside this item's own new code,
+per the next paragraph's finding.
+
+Several previously-undocumented native-codegen gaps surfaced during
+implementation and were worked around (none are this item's to fix, all
+newly confirmed by direct minimal repro, all cited in full in
+D-progress-804): cross-package UFCS method calls do not resolve
+(`method '.X' on this receiver is not yet supported for --target native`) —
+worked around with explicit static calls everywhere; the `?` operator fails
+specifically when the enclosing function is reachable from a *different*
+package than the one that defines it (same-package `?` works) — worked
+around by replacing every use in `http_host.l` with an explicit
+`match { case Ok(v) -> v; case Err(e) -> return Err(error = e) }`; a
+module-level `val` with a non-literal (e.g. slice-construction) initializer
+is rejected (tracked as #5977) — worked around with zero-arg functions in
+place of the two byte-pattern constants this kernel needed; and a bare
+nullary enum-case reference (`A` instead of `EnumName.A`) fails to resolve
+even within the same file, including as a record field's *default* value
+when omitted at a construction site — worked around by always
+fully-qualifying enum cases and supplying every field explicitly at
+`TlsServerConfig` construction sites.
+
+Verified by `lyric-compiler/lyric/llvm_http_client_self_test.l`, wired into
+the `native-backend-self-tests` CI job, ASan-compiled: a real loopback HTTPS
+round trip through `hostSendSafe` — TLS handshake against a self-signed
+certificate pinned via `hostClientWithTls`'s exclusive-CA trust option (real
+chain + hostname verification, not `withInsecureSkipVerify`), a 302 redirect
+followed to a fresh TLS connection (this kernel never keeps a connection
+alive, always `Connection: close`), and a two-chunk
+`Transfer-Encoding: chunked` response body dechunked back to the original
+text — with the server driving `Std.TcpHost.hostAcceptTls`/`hostRead`/
+`hostWrite` directly on a second `pthread_create`d OS thread (a TLS
+handshake needs both peers actively exchanging handshake records at once,
+unlike a bare TCP `connect`, which completes into the listen backlog before
+`accept` runs).
 
 ### N9.5 — lyric-web `serveTls` on native; ALPN h2 — follow-on (#6106)
 
