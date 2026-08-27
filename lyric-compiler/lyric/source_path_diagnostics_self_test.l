@@ -88,9 +88,20 @@ test "single-file dotnet build: a parse error names the real source path" {
   args.add(outPath)
   val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
   assertTrue(result.exitCode != 0, "a broken source file must fail the build")
+  // A bare `Str.contains(result.stderr, srcPath)` is NOT discriminating here:
+  // `cli_build.l` always appends a trailing "<srcPath>: build failed" summary
+  // line whenever `hadError` is true, regardless of whether the underlying
+  // per-diagnostic label threading actually worked, so that weaker assertion
+  // would pass even against the pre-fix `gate("", …)` behaviour (#6654).
+  // Anchor on the diagnostic's own label prefix (`<label>: error[P0050] …`,
+  // `Lyric.DiagnosticUtil.diagReportAndAbortInPkg`'s format for the parser's
+  // "expected an expression" diagnostic on the dangling `=`) so this only
+  // passes when the diagnostic line ITSELF carries the real path.
   assertTrue(
-    Str.contains(result.stderr, srcPath),
-    "expected the real source path '" + srcPath + "' in stderr, got:\n" + result.stderr
+    Str.contains(result.stderr, srcPath + ": error[P0050]"),
+    "expected the P0050 diagnostic line itself to be labelled with the real source path '" + srcPath +
+      "' (not just present somewhere in stderr via the catch-all 'build failed' line), got:\n" +
+      result.stderr
   )
 }
 
@@ -114,9 +125,14 @@ test "single-file jvm build: a parse error names the real source path" {
   args.add(outPath)
   val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
   assertTrue(result.exitCode != 0, "a broken source file must fail the build")
+  // See the dotnet test above (#6654): anchor on the diagnostic's own label
+  // prefix, not the catch-all "build failed" summary line, which would pass
+  // regardless of whether label threading actually worked.
   assertTrue(
-    Str.contains(result.stderr, srcPath),
-    "expected the real source path '" + srcPath + "' in stderr, got:\n" + result.stderr
+    Str.contains(result.stderr, srcPath + ": error[P0050]"),
+    "expected the P0050 diagnostic line itself to be labelled with the real source path '" + srcPath +
+      "' (not just present somewhere in stderr via the catch-all 'build failed' line), got:\n" +
+      result.stderr
   )
 }
 
@@ -201,9 +217,14 @@ test "single-file native build: a parse error names the real source path" {
   args.add(outPath)
   val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
   assertTrue(result.exitCode != 0, "a broken source file must fail the build")
+  // See the dotnet test above (#6654): anchor on the diagnostic's own label
+  // prefix, not the catch-all "build failed" summary line, which would pass
+  // regardless of whether label threading actually worked.
   assertTrue(
-    Str.contains(result.stderr, srcPath),
-    "expected the real source path '" + srcPath + "' in stderr, got:\n" + result.stderr
+    Str.contains(result.stderr, srcPath + ": error[P0050]"),
+    "expected the P0050 diagnostic line itself to be labelled with the real source path '" + srcPath +
+      "' (not just present somewhere in stderr via the catch-all 'build failed' line), got:\n" +
+      result.stderr
   )
 }
 
@@ -305,10 +326,16 @@ test "single-file dotnet build routed through the project path (nearby [features
   // next to a lyric.toml" shape.
   val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
   assertTrue(result.exitCode != 0, "a broken source file must fail the build")
+  // See the plain single-file dotnet test above (#6654): a bare
+  // `Str.contains(result.stderr, srcPath)` is NOT discriminating — the
+  // catch-all "<srcPath>: build failed" summary line `cli_build.l` always
+  // appends would satisfy it regardless of whether the routed-through-project
+  // label threading (#6610) actually worked. Anchor on the diagnostic's own
+  // label prefix instead.
   assertTrue(
-    Str.contains(result.stderr, srcPath),
-    "expected the real source path '" + srcPath +
-      "' in stderr (single-file build routed through the project path via a nearby lyric.toml, #6610), got:\n" +
+    Str.contains(result.stderr, srcPath + ": error[P0050]"),
+    "expected the P0050 diagnostic line itself to be labelled with the real source path '" + srcPath +
+      "' (single-file build routed through the project path via a nearby lyric.toml, #6610), got:\n" +
       result.stderr
   )
 }
