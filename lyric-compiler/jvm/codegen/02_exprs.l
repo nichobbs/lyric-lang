@@ -777,9 +777,38 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           // stack ("Operand stack underflow"); a plain unsuffixed literal stays
           // an int when it fits in 32 bits.
           val isLong = match suffix { case I64 -> true; case U64 -> true; case _ -> false }
+          // #6661: an EXPLICITLY 32-bit-or-narrower suffix (`i8`/`u8`/`i16`/
+          // `u16`/`i32`/`u32`) unambiguously means "push an int", regardless
+          // of the magnitude check below — that check exists only to
+          // disambiguate an UNSUFFIXED literal (which could plausibly mean
+          // either `Int` or `Long`).  A `u32` literal above `Int32.MaxValue`
+          // (e.g. `2500000000u32`, well within `UInt`'s real `0 ..=
+          // 4_294_967_295` range) used to fall through to the magnitude
+          // check, miss it, and get pushed as a `long` (`ldc2_w`) — a real
+          // stack-shape/verifier type mismatch against the `int`-typed JVM
+          // slot every OTHER `UInt`-erasing call site in this file expects
+          // (`Jvm.Codegen.typeExprToJvm`'s `UInt -> JInt`), not merely a
+          // wrong value.  `longToInt` (`Std.Math.longToInt` ->
+          // `Convert.ToInt32`) narrows the value into its `int` bit
+          // pattern — the range-subtype bound fold
+          // (`Jvm.Lowering.emitJvmDistinctBoundsToFail`) already relies on
+          // the identical conversion for a `UInt` upper bound above
+          // `Int32.MaxValue`, matching how JVM natively represents `UInt`.
+          val isExplicit32OrNarrower = match suffix {
+            case I8 -> true
+            case U8 -> true
+            case I16 -> true
+            case U16 -> true
+            case I32 -> true
+            case U32 -> true
+            case _ -> false
+          }
           if isLong {
             insns.add(LLconst(v = v))
             JLong
+          } else if isExplicit32OrNarrower {
+            insns.add(LIconst(v = longToInt(v)))
+            JInt
           } else if v >= -2147483648i64 and v <= 2147483647i64 {
             insns.add(LIconst(v = longToInt(v)))
             JInt

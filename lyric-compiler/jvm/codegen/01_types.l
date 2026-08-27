@@ -1203,6 +1203,21 @@ pub func typeExprToJvm(te: in TypeExpr, pkgName: in String): JvmType {
         JChar
       } else if seg == "Byte" {
         JByte
+      } else if seg == "UInt" {
+        // `UInt` (32-bit unsigned, docs/01 §2.1) has no distinct JVM
+        // primitive — it erases to the same two's-complement `int` an `Int`
+        // uses (#6661); unsigned-aware comparison/arithmetic is the
+        // consuming codegen's responsibility (see
+        // `Jvm.Lowering.LDistinctType.isUnsigned` for the range-subtype
+        // bounds-check case). Without this arm a `UInt`-typed
+        // parameter/return/field/range-subtype-underlying fell through to
+        // "user type in the same package" (`JRef(pkgName + "/UInt")`), a
+        // nonexistent class (`NoClassDefFoundError` at link time).
+        JInt
+      } else if seg == "ULong" {
+        // `ULong` (64-bit unsigned) mirrors `UInt`: erases to the same `long`
+        // an `Int64`-width `Long` uses (#6661).
+        JLong
       } else if seg == "Unit" {
         JVoid
       } else if seg == "Object" {

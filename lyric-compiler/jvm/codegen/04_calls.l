@@ -3503,7 +3503,25 @@ func lowerMethodCall(
       // FFI fast path below is unaffected for real externs.
       // J3 M-3: this same key also serves `AppWire.bootstrap()` /
       // `AppWire.<exposed>()` — a static call on the wire factory class.
-      match mapGet(ctx.funcSigs, lastSegment(path) + "." + memberName) {
+      //
+      // #6664: the calling package's OWN scoped registration
+      // (`<ctx.pkgName>::<TypeName>.<member>`) is tried FIRST, before the
+      // bundle-global bare key — mirrors `ctorClassFor`'s scoped-key-wins
+      // precedence (#5976).  Distinct/range-subtype `from`/`tryFrom` are the
+      // only registrants that populate the scoped key today (06_items.l), so
+      // for every OTHER dot-named registrant (AppWire, a union's dot-named
+      // function) this lookup simply misses and falls through to the
+      // existing bare-key behaviour, unchanged.  Without this, two packages
+      // each declaring their own same-simple-name distinct/range-subtype
+      // (e.g. both named `Age`) collided on the bare `"Age.from"` /
+      // `"Age.tryFrom"` key: whichever package's file the pre-scan visited
+      // first won the bundle-wide registration, and the OTHER package's own
+      // `Age.tryFrom(...)` call site silently validated against the wrong
+      // package's range bounds.
+      val distinctDotKey = lastSegment(path) + "." + memberName
+      val scopedDotSig = mapGet(ctx.funcSigs, ctx.pkgName + "::" + distinctDotKey)
+      val dotSig = match scopedDotSig { case Some(_) -> scopedDotSig; case None -> mapGet(ctx.funcSigs, distinctDotKey) }
+      match dotSig {
         case Some(sig) -> {
           var wi = 0
           while wi < args.count {

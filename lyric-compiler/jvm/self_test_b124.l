@@ -43,7 +43,8 @@ func makePackageClasses(pool: in Pool): List[BuiltClass] {
     maxI = 0i64,
     minF = 0.0,
     maxF = 0.0,
-    upperExclusive = false
+    upperExclusive = false,
+    isUnsigned = false
   )
 
   // LPFuncs: Utils with add(x, y) = x + y

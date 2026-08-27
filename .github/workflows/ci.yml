@@ -4399,6 +4399,14 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/range_subtype_self_test.l
 
+      # `UInt`/`ULong`-backed range-subtype self-test — JVM-ONLY (#6661):
+      # `UInt`/`ULong` have no MSIL representation at all, so this file (unlike
+      # range_subtype_self_test.l above) is never run on --target dotnet.
+      - name: Unsigned range-subtype self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/range_subtype_unsigned_jvm_self_test.l
+
       # Await-hoist self-test on JVM (#5606/#5628, #5630) — JVM already
       # compiled every hoist shape correctly before the rewrite (the rewrite
       # is semantics-preserving there), so this pins that the shared rewrite

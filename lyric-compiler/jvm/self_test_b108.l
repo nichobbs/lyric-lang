@@ -35,7 +35,8 @@ func makeUserIdBytes(): List[Byte] {
       maxI = 0i64,
       minF = 0.0,
       maxF = 0.0,
-      upperExclusive = false
+      upperExclusive = false,
+      isUnsigned = false
     ),
     pool
   )
@@ -54,7 +55,8 @@ func makeOrderIdBytes(): List[Byte] {
       maxI = 0i64,
       minF = 0.0,
       maxF = 0.0,
-      upperExclusive = false
+      upperExclusive = false,
+      isUnsigned = false
     ),
     pool
   )

@@ -3294,56 +3294,75 @@ pub func collectFileSigsSeeded(
         val noParamNames: List[String] = newList()
         val noParamDefaults: List[Option[Expr]] = newList()
         val noParamModes: List[ParamMode] = newList()
+        // #6664: register BOTH the bundle-global bare key (`<TypeName>.from`,
+        // legacy first-wins shape, kept for a call site that never shadows)
+        // AND a package-scoped key (`<owner>::<TypeName>.from`) — mirrors
+        // `addCtorKeys`/`ctorClassFor`'s scoped-key-wins pattern that fixed
+        // the identical same-simple-name collision for union cases (#5976).
+        // Without the scoped key, two different packages each declaring
+        // their own distinct/range-subtype named e.g. `Age` collide on the
+        // bare `"Age.from"` key: whichever package's file this pre-scan
+        // visits FIRST wins the bundle-wide registration, and every OTHER
+        // package's `Age.from(...)`/`Age.tryFrom(...)` call site silently
+        // resolves through the wrong package's class + range bounds
+        // (`lowerMethodCall`'s `mapGet(ctx.funcSigs, ...)` has no way to
+        // tell them apart from the bare key alone). `lowerMethodCall` now
+        // consults the scoped key first via `ctx.pkgName`, so each
+        // package's own call sites always resolve to their OWN type.
         val fromKey = decl.name + ".from"
+        val fromParams: List[JvmType] = newList()
+        fromParams.add(inner)
+        val fromSig = JvmFuncSig(
+          owner = distClass,
+          params = fromParams,
+          ret = JRef(className = distClass),
+          paramNames = noParamNames,
+          paramDefaults = noParamDefaults,
+          paramModes = noParamModes,
+          isIface = false,
+          retGenericArgs = newList(),
+          closureRetTy = None,
+          recordRetClass = None,
+          retIsSelf = false
+        )
         if not into.containsKey(fromKey) {
-          val fromParams: List[JvmType] = newList()
-          fromParams.add(inner)
-          into.add(
-            fromKey,
-            JvmFuncSig(
-              owner = distClass,
-              params = fromParams,
-              ret = JRef(className = distClass),
-              paramNames = noParamNames,
-              paramDefaults = noParamDefaults,
-              paramModes = noParamModes,
-              isIface = false,
-              retGenericArgs = newList(),
-              closureRetTy = None,
-              recordRetClass = None,
-              retIsSelf = false
-            )
-          )
+          into.add(fromKey, fromSig)
+        }
+        val fromScopedKey = owner + "::" + fromKey
+        if not into.containsKey(fromScopedKey) {
+          into.add(fromScopedKey, fromSig)
         }
         val tryFromKey = decl.name + ".tryFrom"
+        val tryFromParams: List[JvmType] = newList()
+        tryFromParams.add(inner)
+        val selfSeg: List[String] = newList()
+        selfSeg.add(decl.name)
+        val selfTe = TypeExpr(kind = TRef(path = ModulePath(segments = selfSeg, span = decl.span)), span = decl.span)
+        val stringSeg: List[String] = newList()
+        stringSeg.add("String")
+        val stringTe = TypeExpr(kind = TRef(path = ModulePath(segments = stringSeg, span = decl.span)), span = decl.span)
+        val rawArgs: List[TypeExpr] = newList()
+        rawArgs.add(selfTe)
+        rawArgs.add(stringTe)
+        val tryFromSig = JvmFuncSig(
+          owner = distClass,
+          params = tryFromParams,
+          ret = JRef(className = "Std/Core/Result"),
+          paramNames = noParamNames,
+          paramDefaults = noParamDefaults,
+          paramModes = noParamModes,
+          isIface = false,
+          retGenericArgs = eagerlyResolveGenericArgs(rawArgs, owner, externTypes),
+          closureRetTy = None,
+          recordRetClass = None,
+          retIsSelf = false
+        )
         if not into.containsKey(tryFromKey) {
-          val tryFromParams: List[JvmType] = newList()
-          tryFromParams.add(inner)
-          val selfSeg: List[String] = newList()
-          selfSeg.add(decl.name)
-          val selfTe = TypeExpr(kind = TRef(path = ModulePath(segments = selfSeg, span = decl.span)), span = decl.span)
-          val stringSeg: List[String] = newList()
-          stringSeg.add("String")
-          val stringTe = TypeExpr(kind = TRef(path = ModulePath(segments = stringSeg, span = decl.span)), span = decl.span)
-          val rawArgs: List[TypeExpr] = newList()
-          rawArgs.add(selfTe)
-          rawArgs.add(stringTe)
-          into.add(
-            tryFromKey,
-            JvmFuncSig(
-              owner = distClass,
-              params = tryFromParams,
-              ret = JRef(className = "Std/Core/Result"),
-              paramNames = noParamNames,
-              paramDefaults = noParamDefaults,
-              paramModes = noParamModes,
-              isIface = false,
-              retGenericArgs = eagerlyResolveGenericArgs(rawArgs, owner, externTypes),
-              closureRetTy = None,
-              recordRetClass = None,
-              retIsSelf = false
-            )
-          )
+          into.add(tryFromKey, tryFromSig)
+        }
+        val tryFromScopedKey = owner + "::" + tryFromKey
+        if not into.containsKey(tryFromScopedKey) {
+          into.add(tryFromScopedKey, tryFromSig)
         }
       }
       case IImpl(decl) -> {
@@ -4304,7 +4323,21 @@ func foldRangeBoundJvm(e: in Expr): JvmRangeBoundVal {
   }
 }
 
-func mkJvmDistinctNoRange(wrapperClass: in String, inner: in JvmType): LDistinctType {
+// `UInt`/`ULong` have no distinct JVM primitive (`typeExprToJvm` erases both
+// to `JInt`/`JLong`, #6661), so `LDistinctType.isUnsigned` can't be derived
+// from the erased `JvmType` alone — it's read off the SOURCE `TypeExpr`
+// before erasure, at `mkJvmDistinctTypeIR`'s call site below.
+func isUnsignedNumericBaseType(te: in TypeExpr): Bool {
+  match te.kind {
+    case TRef(path) -> {
+      val seg = lastSegment(path)
+      seg == "UInt" or seg == "ULong"
+    }
+    case _ -> false
+  }
+}
+
+func mkJvmDistinctNoRange(wrapperClass: in String, inner: in JvmType, isUnsigned: in Bool): LDistinctType {
   LDistinctType(
     wrapperClass = wrapperClass,
     underlyingType = inner,
@@ -4314,16 +4347,29 @@ func mkJvmDistinctNoRange(wrapperClass: in String, inner: in JvmType): LDistinct
     maxI = 0i64,
     minF = 0.0,
     maxF = 0.0,
-    upperExclusive = false
+    upperExclusive = false,
+    isUnsigned = isUnsigned
   )
 }
 
 func mkJvmDistinctRanged(
-  wrapperClass: in String, inner: in JvmType, loE: in Expr, hiE: in Expr, upperExcl: in Bool
+  wrapperClass: in String,
+  inner: in JvmType,
+  loE: in Expr,
+  hiE: in Expr,
+  upperExcl: in Bool,
+  isUnsigned: in Bool,
 ): LDistinctType {
   val lo = foldRangeBoundJvm(loE)
   val hi = foldRangeBoundJvm(hiE)
-  val isFloatInner = match inner { case JDouble -> true; case _ -> false }
+  // #6661: `Float` (`JFloat`) is floating-point too — it was excluded here
+  // (only `JDouble` counted), so a `Float`-backed range subtype folded its
+  // bounds into the WRONG field pair (`minI`/`maxI`, always 0 for a
+  // non-integer literal bound) and `Jvm.Lowering.emitJvmDistinctBoundsToFail`
+  // then took the plain-int comparison branch against a 32-bit `float`
+  // argument loaded via `fload` — a verifier type mismatch (unverifiable
+  // bytecode), not merely a wrong bound.
+  val isFloatInner = match inner { case JDouble -> true; case JFloat -> true; case _ -> false }
   if lo.ok and hi.ok {
     val loF = if lo.isFloat { lo.d } else { lo.l.toDouble() }
     val hiF = if hi.isFloat { hi.d } else { hi.l.toDouble() }
@@ -4336,29 +4382,35 @@ func mkJvmDistinctRanged(
       maxI = hi.l,
       minF = loF,
       maxF = hiF,
-      upperExclusive = upperExcl
+      upperExclusive = upperExcl,
+      isUnsigned = isUnsigned
     )
   } else {
-    mkJvmDistinctNoRange(wrapperClass, inner)
+    mkJvmDistinctNoRange(wrapperClass, inner, isUnsigned)
   }
 }
 
 // Build the distinct-type IR item, folding any range clause to integer/float
 // bounds for the synthesised `from`/`tryFrom` validation.  Mirrors
 // `Msil.Codegen.mkDistinctTypeIR` exactly (same fold, same no-range fallback
-// for an unrecognised `RangeBound` variant, #3116).
+// for an unrecognised `RangeBound` variant, #3116) — MSIL has no `isUnsigned`
+// counterpart to thread since `UInt`/`ULong` have no MSIL representation at
+// all yet (#6661).
 pub func mkJvmDistinctTypeIR(
-  wrapperClass: in String, inner: in JvmType, rangeClause: in Option[RangeBound]
+  wrapperClass: in String,
+  inner: in JvmType,
+  rangeClause: in Option[RangeBound],
+  isUnsigned: in Bool,
 ): LDistinctType {
   match rangeClause {
     case Some(rb) -> {
       match rb {
-        case RBClosed(loE, hiE) -> mkJvmDistinctRanged(wrapperClass, inner, loE, hiE, false)
-        case RBHalfOpen(loE, hiE) -> mkJvmDistinctRanged(wrapperClass, inner, loE, hiE, true)
-        case _ -> mkJvmDistinctNoRange(wrapperClass, inner)
+        case RBClosed(loE, hiE) -> mkJvmDistinctRanged(wrapperClass, inner, loE, hiE, false, isUnsigned)
+        case RBHalfOpen(loE, hiE) -> mkJvmDistinctRanged(wrapperClass, inner, loE, hiE, true, isUnsigned)
+        case _ -> mkJvmDistinctNoRange(wrapperClass, inner, isUnsigned)
       }
     }
-    case None -> mkJvmDistinctNoRange(wrapperClass, inner)
+    case None -> mkJvmDistinctNoRange(wrapperClass, inner, isUnsigned)
   }
 }
 
@@ -5679,7 +5731,16 @@ pub func codegenPackageWithSigsSeeded(
       }
       case IDistinctType(decl) -> {
         val inner = typeExprToJvm(decl.underlying, pkgName)
-        items.add(LPDistinctType(dt = mkJvmDistinctTypeIR(pkgName + "/" + decl.name, inner, decl.rangeClause)))
+        items.add(
+          LPDistinctType(
+            dt = mkJvmDistinctTypeIR(
+              pkgName + "/" + decl.name,
+              inner,
+              decl.rangeClause,
+              isUnsignedNumericBaseType(decl.underlying)
+            )
+          )
+        )
       }
       case IEnum(decl) -> {
         val className2 = pkgName + "/" + decl.name

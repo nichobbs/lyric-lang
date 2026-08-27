@@ -341,3 +341,72 @@ test "extern type reachable only via an intermediate package's re-exported funct
     "transitive_extern_type_resolves: the Full(b) bind resolves HostPkg3.Builder to java.lang.StringBuilder"
   )
 }
+
+// ─── #6664: same-simple-name range subtype `from`/`tryFrom` collision — the
+// range-subtype analog of the #5976 union-case collision above ─────────────
+// `AgeLoPkg` and `AgeHiPkg` each declare their OWN `type Age = Int range …`
+// with the SAME simple name (`Age`) but DISJOINT ranges, and each package's
+// OWN `classify` function calls its OWN bare `Age.from(x)` — never
+// qualifying the package, exactly the shape that used to collide.  Before
+// the fix, `Jvm.Codegen.collectFileSigsSeeded` registered BOTH packages'
+// `from`/`tryFrom` static factories under the identical bundle-global
+// `"Age.from"`/`"Age.tryFrom"` key (first-registered-wins), so ONE of the
+// two packages' `classify` calls silently validated against the OTHER
+// package's range bounds instead of its own.  Because the two ranges are
+// DISJOINT (`[0, 10]` vs. `[100, 200]`), a collision is directly observable:
+// whichever package's registration lost would `panic` (`Age.from` throws
+// `RuntimeException` on a range violation) validating a value that is
+// genuinely in ITS OWN declared range but not in the OTHER package's —
+// crashing the whole program with a non-zero exit instead of the expected
+// "5\n150" output.  A minimal hand-rolled `Std.Core` package (`Result`/
+// `Ok`/`Err` only) is included even though the test only calls `from` (never
+// `tryFrom`): `Jvm.Lowering.lowerDistinctType` unconditionally emits BOTH
+// `from` AND `tryFrom` on every distinct type, and the JVM verifies EVERY
+// method's bytecode at class-LOAD time (not lazily per invocation) — so
+// `Age`'s never-called `tryFrom` (which references `Std/Core/Result$Ok`/
+// `Std/Core/Result$Err`) still needs those classes to exist in the bundle,
+// or `AgeLoPkg`/`AgeHiPkg` fail to load at all (`NoClassDefFoundError:
+// Std/Core/Result`) before `classify` ever runs.  `compileAndRunJvm` bundles
+// no real stdlib sources, so this file supplies the minimal shape needed —
+// its case-class names (`Std/Core/Result$Ok`/`$Err`) are exactly what the
+// hardcoded `poolMethodref` references in `lowerDistinctTryFrom` expect,
+// regardless of whether a real `Std.Core` is ever imported.
+test "same-simple-name range subtype: each package's from() validates against its OWN range (#6664)" {
+  val pkgSrcs: List[String] = newList()
+  pkgSrcs.add(
+    "package Std.Core\n" + "\n" + "pub union Result[T, E] {\n" + "  case Ok(value: T)\n" + "  case Err(error: E)\n" +
+      "}\n"
+  )
+  pkgSrcs.add(
+    "package AgeLoPkg\n" + "\n" + "import Std.Core\n" + "\n" + "type Age = Int range 0 ..= 10\n" + "\n" +
+      "pub func classify(x: Int): Int {\n" +
+      "  Age.from(x).toInt()\n" +
+      "}\n"
+  )
+  pkgSrcs.add(
+    "package AgeHiPkg\n" + "\n" + "import Std.Core\n" + "\n" + "type Age = Int range 100 ..= 200\n" + "\n" +
+      "pub func classify(x: Int): Int {\n" +
+      "  Age.from(x).toInt()\n" +
+      "}\n"
+  )
+  pkgSrcs.add(
+    "package AgeCollisionApp\n" + "\n" + "import AgeLoPkg\n" + "import AgeHiPkg\n" + "\n" + "func main(): Int {\n" +
+      "  println(AgeLoPkg.classify(5))\n" +
+      "  println(AgeHiPkg.classify(150))\n" +
+      "  0\n" +
+      "}\n"
+  )
+  val result = compileAndRunJvm("xpkg-age-collision", pkgSrcs, "AgeCollisionApp")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "range_subtype_collision: exit 0 — a collision panics validating 5 or 150 against the WRONG package's range (stderr=" +
+      result.stderr +
+      ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    "5\n150",
+    "range_subtype_collision: AgeLoPkg.classify(5) and AgeHiPkg.classify(150) each validate against their OWN range"
+  )
+}

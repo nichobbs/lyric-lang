@@ -3517,6 +3517,18 @@ pub record LDistinctType {
   minF: Double
   maxF: Double
   upperExclusive: Bool
+  // #6661: true for a `UInt`/`ULong`-backed distinct/range subtype.  JVM has
+  // no unsigned integer primitive — `UInt`/`ULong` erase to plain `JInt`/
+  // `JLong` (`Jvm.Codegen.typeExprToJvm`), the same two's-complement bit
+  // pattern a signed `Int`/`Long` of the same width uses.  A bound or an
+  // in-range value at or above 2^31 (`UInt`) / a magnitude the folded `Long`
+  // literal can't express unsigned (`ULong`) reads as NEGATIVE under a plain
+  // signed comparison, so the bounds check below dispatches to
+  // `Integer.compareUnsigned`/`Long.compareUnsigned` instead of `if_icmpxx`/
+  // `lcmp` whenever this is set — the `from`/`tryFrom` construction API
+  // and the numeric conversion methods stay bit-identical either way, only
+  // the comparison semantics differ.
+  isUnsigned: Bool
 }
 
 // Simple (unqualified) class name from a "pkg/pkg/Name" JVM binary name, for
@@ -3533,7 +3545,11 @@ func jvmDistinctSimpleName(wrapperClass: in String): String {
 
 // Human-readable range description for the bounds-violation message —
 // mirrors `Msil.Lowering.distinctRangeDesc` exactly (same `"[lo, hi]"` /
-// `"[lo, hi)"` shape).
+// `"[lo, hi)"` shape).  `rangeIsFloat` covers BOTH `Float`- and
+// `Double`-backed ranges (#6661): both fold their bounds into the same
+// Double-typed `minF`/`maxF` pair (`mkJvmDistinctRanged`), so the message
+// formatting needs no separate Float-vs-Double branch — only the bytecode
+// comparison in `emitJvmDistinctBoundsToFail` does.
 func jvmDistinctRangeDesc(d: in LDistinctType): String {
   val lo = if d.rangeIsFloat { d.minF.toString() } else { d.minI.toString() }
   val hi = if d.rangeIsFloat { d.maxF.toString() } else { d.maxI.toString() }
@@ -3576,53 +3592,115 @@ func emitJvmDistinctArgLoad(asm: in MethodAssembler, ty: in JvmType): Unit {
 // Emit the range bounds test for a distinct type's `from`/`tryFrom` argument
 // (local slot 0), branching to `failLabel` on any violation (value below
 // `min`, or above/at `max`).  No-op when the type carries no range (#5956).
-// Mirrors `Msil.Lowering.emitDistinctBoundsToFail`: the JVM has no direct
-// long/double comparison-branch opcode, so the Long/Double arms compare via
-// `lcmp`/`dcmpl`/`dcmpg` then branch on the int result against zero — `dcmpl`
-// for the lower bound (NaN → -1, so a NaN value correctly fails as "less than
-// min") and `dcmpg` for the upper bound (NaN → 1, so it also fails as
-// "greater than max").
+// Mirrors `Msil.Lowering.emitDistinctBoundsToFail`, extended for JVM's wider
+// underlying-type surface (#6661 — MSIL has no distinct `Float`/`UInt`/
+// `ULong` representation to mirror: `Float` erases to the same `MDouble`
+// `Double` uses there, and `UInt`/`ULong` have no MSIL codegen at all yet).
+// Dispatches on `d.underlyingType` DIRECTLY (not the `rangeIsFloat` flag,
+// which only selects which folded-bound FIELDS are authoritative) so every
+// JVM primitive width gets its own correctly-typed load/compare instructions:
+//   - `JDouble`/`JFloat`: the JVM has no direct floating-point
+//     comparison-branch opcode, so both compare via `dcmpl`/`dcmpg` or
+//     `fcmpl`/`fcmpg` then branch on the int result against zero — the `l`
+//     variant for the lower bound (NaN → -1, so a NaN value correctly fails
+//     as "less than min") and the `g` variant for the upper bound (NaN → 1,
+//     so it also fails as "greater than max").  Before this fix, `Float`
+//     (JFloat) fell through to the plain-int `case _` arm below: the
+//     bounds-check loaded the argument with `iload` while the ARGUMENT was
+//     actually pushed as a 32-bit `float` bit pattern by every OTHER call
+//     site in this file (`emitJvmDistinctArgLoad`'s `JFloat -> emitFload`,
+//     the ctor's `JFloat -> emitFload`) — a verifier type mismatch
+//     (`fload`'s `float`-typed local vs. `iload`'s `int`-typed read of the
+//     SAME slot), i.e. unverifiable bytecode / `VerifyError` at class-load,
+//     not merely a wrong comparison result.
+//   - `JLong`/the plain-int fallback: signed `lcmp`/`if_icmpxx` UNLESS
+//     `d.isUnsigned` (a `ULong`/`UInt`-backed range subtype) — JVM has no
+//     unsigned integer primitive, so `UInt`/`ULong` erase to the same
+//     two's-complement `JInt`/`JLong` bit pattern a signed `Int`/`Long` of
+//     the same width uses (`Jvm.Codegen.typeExprToJvm`).  A signed compare
+//     of a bound or an in-range value at/above 2^31 (`UInt`) reads as
+//     NEGATIVE, so an unsigned base type instead calls
+//     `Integer.compareUnsigned`/`Long.compareUnsigned` and branches on the
+//     returned `int` sign — same operand-stack shape (2 argument words in,
+//     1 comparison-result word out) as the signed `lcmp`/`if_icmpxx` path it
+//     replaces, so the hand-computed `maxStack` in `lowerDistinctFrom`/
+//     `lowerDistinctTryFrom` still bounds it correctly.
 func emitJvmDistinctBoundsToFail(asm: in MethodAssembler, d: in LDistinctType, failLabel: in String): Unit {
   if not d.hasRange {
     return
   }
-  if d.rangeIsFloat {
-    emitDload(asm, 0)
-    emitPushDouble(asm, d.minF)
-    emitDcmpl(asm)
-    emitIflt(asm, failLabel)
-    emitDload(asm, 0)
-    emitPushDouble(asm, d.maxF)
-    emitDcmpg(asm)
-    if d.upperExclusive {
-      emitIfge(asm, failLabel)
-    } else {
-      emitIfgt(asm, failLabel)
+  match d.underlyingType {
+    case JDouble -> {
+      emitDload(asm, 0)
+      emitPushDouble(asm, d.minF)
+      emitDcmpl(asm)
+      emitIflt(asm, failLabel)
+      emitDload(asm, 0)
+      emitPushDouble(asm, d.maxF)
+      emitDcmpg(asm)
+      if d.upperExclusive {
+        emitIfge(asm, failLabel)
+      } else {
+        emitIfgt(asm, failLabel)
+      }
     }
-  } else {
-    match d.underlyingType {
-      case JLong -> {
-        emitLload(asm, 0)
-        emitPushLong(asm, d.minI)
+    case JFloat -> {
+      emitFload(asm, 0)
+      emitPushFloat(asm, d.minF)
+      emitFcmpl(asm)
+      emitIflt(asm, failLabel)
+      emitFload(asm, 0)
+      emitPushFloat(asm, d.maxF)
+      emitFcmpg(asm)
+      if d.upperExclusive {
+        emitIfge(asm, failLabel)
+      } else {
+        emitIfgt(asm, failLabel)
+      }
+    }
+    case JLong -> {
+      emitLload(asm, 0)
+      emitPushLong(asm, d.minI)
+      if d.isUnsigned {
+        emitInvokestatic(asm, poolMethodref(asm.pool, "java/lang/Long", "compareUnsigned", "(JJ)I"))
+      } else {
         emitLcmp(asm)
+      }
+      emitIflt(asm, failLabel)
+      emitLload(asm, 0)
+      emitPushLong(asm, d.maxI)
+      if d.isUnsigned {
+        emitInvokestatic(asm, poolMethodref(asm.pool, "java/lang/Long", "compareUnsigned", "(JJ)I"))
+      } else {
+        emitLcmp(asm)
+      }
+      if d.upperExclusive {
+        emitIfge(asm, failLabel)
+      } else {
+        emitIfgt(asm, failLabel)
+      }
+    }
+    // JInt (and any other integer-width case, defensively) — mirrors
+    // `Msil.Lowering.emitDistinctBoundsToFail`'s `case _` I4 fallback.
+    case _ -> {
+      emitIload(asm, 0)
+      emitPushInt(asm, longToInt(d.minI))
+      if d.isUnsigned {
+        emitInvokestatic(asm, poolMethodref(asm.pool, "java/lang/Integer", "compareUnsigned", "(II)I"))
         emitIflt(asm, failLabel)
-        emitLload(asm, 0)
-        emitPushLong(asm, d.maxI)
-        emitLcmp(asm)
+      } else {
+        emitIfIcmplt(asm, failLabel)
+      }
+      emitIload(asm, 0)
+      emitPushInt(asm, longToInt(d.maxI))
+      if d.isUnsigned {
+        emitInvokestatic(asm, poolMethodref(asm.pool, "java/lang/Integer", "compareUnsigned", "(II)I"))
         if d.upperExclusive {
           emitIfge(asm, failLabel)
         } else {
           emitIfgt(asm, failLabel)
         }
-      }
-      // JInt (and any other integer-width case, defensively) — mirrors
-      // `Msil.Lowering.emitDistinctBoundsToFail`'s `case _` I4 fallback.
-      case _ -> {
-        emitIload(asm, 0)
-        emitPushInt(asm, longToInt(d.minI))
-        emitIfIcmplt(asm, failLabel)
-        emitIload(asm, 0)
-        emitPushInt(asm, longToInt(d.maxI))
+      } else {
         if d.upperExclusive {
           emitIfIcmpge(asm, failLabel)
         } else {
@@ -3635,10 +3713,12 @@ func emitJvmDistinctBoundsToFail(asm: in MethodAssembler, d: in LDistinctType, f
 
 // The verifier-frame type of a distinct type's underlying JVM type, for the
 // StackMapTable entry at a ranged `from`/`tryFrom`'s `fail:` branch target.
-// Range subtypes are numeric-only (Int/Long/Double per the language
-// reference), so this never sees a reference/array underlying type in
-// practice; the panic is defense-in-depth against a future range-eligible
-// underlying type reaching here unhandled.
+// Range subtypes are numeric-only (docs/01 §2.1's primitive table: `Byte`,
+// `Int`, `Long`, `UInt`, `ULong`, `Nat`, `Float`, `Double` — `UInt`/`ULong`
+// share `JInt`/`JLong`'s arm since neither has a distinct JVM
+// representation, #6661), so this never sees a reference/array underlying
+// type in practice; the panic is defense-in-depth against a future
+// range-eligible underlying type reaching here unhandled.
 func jvmVerifierTypeOfUnderlying(ty: in JvmType): VerifierType {
   match ty {
     case JLong -> VLong
@@ -6449,7 +6529,8 @@ pub func lowerDeriveOrd(d: in LDistinctWithDerives, pool: in Pool): ClassFile {
     maxI = 0i64,
     minF = 0.0,
     maxF = 0.0,
-    upperExclusive = false
+    upperExclusive = false,
+    isUnsigned = false
   )
   val cf = lowerDistinctType(base, pool)
 

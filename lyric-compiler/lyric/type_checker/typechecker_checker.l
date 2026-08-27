@@ -503,11 +503,66 @@ func checkClosed(
   }
 }
 
+// #6661: `tryFoldInt`/`foldOrErr`/`checkClosed` above are INTEGER-only (mirror
+// `compiler/src/Lyric.TypeChecker/ConstFold.fs`, which the F# emitter never
+// needed to extend since range subtypes were an MSIL-only feature there
+// too). A `Float`/`Double`-backed range subtype's bounds are float literals
+// (`type Weight = Float range 0.0 ..= 100.0`), which `tryFoldInt` rejects
+// outright (T0093 "not a compile-time integer constant") — so NO
+// `Float`/`Double`-backed NAMED range subtype could be declared at all, on
+// EITHER backend, independent of `Jvm.Lowering.emitJvmDistinctBoundsToFail`'s
+// bytecode-level `Float` fix (06_items.l/lowering.l) ever running. This
+// mirrors `Jvm.Codegen.foldRangeBoundJvm`/`Msil.Codegen.foldRangeBound`'s
+// existing literal+negation-only scope (no module-level float `val` lookup)
+// — deliberately narrow, since a distinct type's range bounds are meant to
+// be simple literal constants.
+func tryFoldFloat(e: in Expr): Option[Double] {
+  match e.kind {
+    case EParen(inner) -> tryFoldFloat(inner)
+    case ELiteral(lit) -> match lit { case LFloat(v, _, _) -> Some(value = v); case LInt(v, _, _) -> Some(value = v.toDouble()); case _ -> None }
+    case EPrefix(op, inner) -> match op { case PreNeg -> match tryFoldFloat(inner) { case Some(v) -> Some(value = 0.0 - v); case None -> None }; case _ -> None }
+    case _ -> None
+  }
+}
+
+func foldOrErrFloat(diag: in List[Diagnostic], name: in String, e: in Expr): Option[Double] {
+  match tryFoldFloat(e) {
+    case Some(v) -> Some(value = v)
+    case None -> {
+      diag.add(
+        errorDiagnostic(
+          "T0093",
+          "range subtype '" + name +
+            "' has a symbolic bound that cannot be folded: expression is not a compile-time numeric constant",
+          e.span
+        )
+      )
+      None
+    }
+  }
+}
+
+func checkClosedFloat(
+  diag: in List[Diagnostic],
+  name: in String,
+  lo: in Expr,
+  hi: in Expr,
+  sym: in String,
+  span: in Span,
+): Unit {
+  match foldOrErrFloat(diag, name, lo) {
+    case None -> {
+    }
+    case Some(loV) -> match foldOrErrFloat(diag, name, hi) { case None -> {  }; case Some(hiV) -> { val invalid = if sym == "..=" { loV > hiV } else if sym == "..<" { loV >= hiV } else { false }; if invalid { diag.add(errorDiagnostic("T0090", "range subtype '" + name + "' has empty bounds: " + toString(loV) + " " + sym + " " + toString(hiV), span)) } } }
+  }
+}
+
 func checkDistinctType(tbl: in SymbolTable, diag: in List[Diagnostic], dt: in DistinctTypeDecl): Unit {
   match dt.rangeClause {
     case None -> {
     }
     case Some(_) -> {
+      var isFloatBase = false
       match dt.underlying.kind {
         case TRef(path) -> {
           if path.segments.count == 1 {
@@ -521,6 +576,7 @@ func checkDistinctType(tbl: in SymbolTable, diag: in List[Diagnostic], dt: in Di
                 )
               )
             }
+            isFloatBase = uname == "Float" or uname == "Double"
           }
         }
         case _ -> {
@@ -529,7 +585,7 @@ func checkDistinctType(tbl: in SymbolTable, diag: in List[Diagnostic], dt: in Di
       match dt.rangeClause {
         case None -> {
         }
-        case Some(rb) -> match rb { case RBClosed(lo, hi) -> checkClosed(tbl, diag, dt.name, lo, hi, "..=", dt.span); case RBHalfOpen(lo, hi) -> checkClosed(tbl, diag, dt.name, lo, hi, "..<", dt.span); case _ -> {  } }
+        case Some(rb) -> match rb { case RBClosed(lo, hi) -> { if isFloatBase { checkClosedFloat(diag, dt.name, lo, hi, "..=", dt.span) } else { checkClosed(tbl, diag, dt.name, lo, hi, "..=", dt.span) } }; case RBHalfOpen(lo, hi) -> { if isFloatBase { checkClosedFloat(diag, dt.name, lo, hi, "..<", dt.span) } else { checkClosed(tbl, diag, dt.name, lo, hi, "..<", dt.span) } }; case _ -> {  } }
       }
     }
   }

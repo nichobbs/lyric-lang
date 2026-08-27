@@ -32420,3 +32420,116 @@ java/lang/Object` reservation instead of duplicating that mapping.
 `stdlib_generic_mono_self_test.l` 7/7 on both targets; regression sweep
 across the batch's other JVM generic-arg-tracking self-tests unaffected.
 See `docs/03-decision-log.md` D-progress-813.
+### D-progress-814 — JVM range-subtype lowering: `Float`/`UInt`/`ULong` base types, package-qualified `from`/`tryFrom` registration (#6661, #6664)
+
+Two review findings against #5956's distinct/range-subtype construction API
+(D-progress entry above): #6661 (the JVM bytecode was wrong for a `Float`,
+`UInt`, or `ULong` base type) and #6664 (a same-simple-name distinct type in
+two different bundled packages collided on a single bundle-global `funcSigs`
+key).
+
+**#6661.** Confirmed which base types docs/01 §2.1's primitive table
+actually admits a `range` clause over — `Byte`, `Int`, `Long`, `UInt`,
+`ULong`, `Nat`, `Float`, `Double` (`isNumericPrimitiveName`'s `Short`/
+`UShort`/`UByte` entries are dead: none of the three has a `PrimType` case
+at all, so `type X = Short range …` fails type-checking before reaching any
+backend, on either target — out of scope here). Two real, distinct JVM bugs
+in that set:
+
+- `Float`: `Jvm.Codegen.mkJvmDistinctRanged`'s `isFloatInner` check only
+  matched `JDouble`, so a `Float`-backed range subtype's bounds folded into
+  the wrong field pair and `Jvm.Lowering.emitJvmDistinctBoundsToFail` took
+  the plain-`int` comparison branch against a 32-bit `float` argument loaded
+  via `fload` elsewhere in the same method — a verifier type mismatch
+  (unverifiable bytecode), not merely a wrong bound. Fixed by matching
+  `emitJvmDistinctBoundsToFail` on `d.underlyingType` directly (a real
+  `JFloat` arm using `fload`/`fcmpl`/`fcmpg`/`emitPushFloat`) instead of the
+  `rangeIsFloat` flag alone, and fixing `isFloatInner` to also cover
+  `JFloat`.
+- `UInt`/`ULong`: `Jvm.Codegen.typeExprToJvm` had NO arm for either name at
+  all — both fell through to "user type in this package" (`JRef`), a
+  nonexistent class. Fixed by mapping `UInt -> JInt` / `ULong -> JLong`
+  (JVM has no unsigned primitive; both erase to the same two's-complement
+  bit pattern a same-width signed type uses — matches how `Byte`, itself
+  8-bit unsigned per docs/01, already erases to signed `JByte` plus the
+  existing `maskByteUnsigned` masking convention elsewhere in this backend).
+  A `UInt` bound or in-range value at/above 2^31 then reads as NEGATIVE
+  under a plain signed comparison — a genuine silent miscompile, not just a
+  verifier failure — so `LDistinctType` gained an `isUnsigned` flag (read
+  off the SOURCE `TypeExpr` in `mkJvmDistinctTypeIR`'s caller, since `UInt`/
+  `Int` are indistinguishable once erased to `JInt`) that routes the bounds
+  check through `Integer.compareUnsigned`/`Long.compareUnsigned` instead of
+  `if_icmpxx`/`lcmp`. A third, unrelated bug surfaced while testing this:
+  `Jvm.Codegen.lowerExpr`'s `ELiteral`/`LInt` arm ONLY forced a `long` push
+  for an explicit `i64`/`u64` suffix — any OTHER explicit suffix
+  (`u8`/`i8`/`u16`/`i16`/`u32`/`i32`) fell through to the magnitude-based
+  "does it fit `Int32`" heuristic meant for UNSUFFIXED literals only, so a
+  `u32`-suffixed literal above `Int32.MaxValue` (e.g. `2500000000u32`, well
+  within `UInt`'s real range) got pushed as a `long` — a stack-shape
+  mismatch against the `int`-typed call-site slot every OTHER `UInt`-erasing
+  path expects. Fixed by making any explicit ≤32-bit suffix force an `int`
+  push unconditionally.
+- `Byte`, `Nat`, `Double` (named, not just inline) were untested but already
+  correct — pinned with new cases. `Nat` could not get an ADDITIONAL
+  dedicated range-subtype test beyond the existing `dbPoolSize`-shaped
+  coverage: no integer literal suffix produces `PtNat`
+  (`typechecker_exprs.l`'s suffix table) and `PtNat` participates in
+  neither `widenArithmetic`'s signed nor unsigned family, so a `Nat`-typed
+  parameter can't be satisfied by ANY integer-literal call argument today —
+  a genuine, separate, pre-existing type-checker gap, orthogonal to #6661.
+
+A related front-end gap surfaced testing `Float`/`Double`: `Float`/`Double`
+bounds are float literals, and the range-subtype bound validator
+(`Lyric.TypeChecker.checkClosed`/`foldOrErr`) only ever folded INTEGER
+constants (`tryFoldInt`) — so a NAMED `Float`/`Double` range subtype's
+`range` clause failed type-checking (`T0093`, "not a compile-time integer
+constant") on BOTH backends, independent of any JVM codegen fix, and was
+never reachable through either target before this. Fixed with a small,
+additive, literal+negation-only `tryFoldFloat`/`foldOrErrFloat`/
+`checkClosedFloat` path in `typechecker_checker.l`, dispatched when the
+underlying type name is `Float`/`Double` — `tryFoldInt`'s existing single
+caller (`foldOrErr`) is untouched, so this fix carries zero blast radius
+outside range-subtype bound validation.
+
+`UInt`/`ULong` support stays JVM-only: `Msil.Codegen.typeExprToMsilCtx` has
+no `UInt`/`ULong` arm at all (unlike `Float`, which already erases to
+`MDouble` there), so a `UInt`/`ULong`-backed distinct type still crashes the
+CLR loader ("invalid program") on `--target dotnet` — tracked as a separate,
+larger, cross-cutting MSIL change (that function is consulted for every
+scalar position, not just range-subtype underlying types), out of scope
+here. The `UInt`/`ULong` test cases accordingly moved to a new
+JVM-only file (`range_subtype_unsigned_jvm_self_test.l`) rather than the
+dual-target `range_subtype_self_test.l`, with a matching JVM-only CI step.
+
+**#6664.** `Jvm.Codegen.collectFileSigsSeeded`'s `IDistinctType` arm
+registered `from`/`tryFrom` under the bundle-wide bare key
+(`"<TypeName>.from"`/`"<TypeName>.tryFrom"`, first-registered-wins) that
+`lowerMethodCall`'s existing dot-named-static-call dispatch consults — the
+exact same bug CLASS as #5976's union-case collision, just for range-subtype
+static factories. Fixed by mirroring `addCtorKeys`/`ctorClassFor`'s
+scoped-key-wins pattern (#5976): each distinct type ALSO registers under a
+package-scoped key (`"<owner>::<TypeName>.<member>"`), and
+`lowerMethodCall`'s dot-named-call arm now tries `ctx.pkgName + "::" +
+key` FIRST, falling back to the bare key unchanged for every other
+dot-named registrant (`AppWire.bootstrap()`, a union's dot-named function)
+that never populates a scoped key.
+
+**Tests:** `range_subtype_self_test.l` (14/14 on both targets, up from 10 —
+new named `Byte`/`Double`/`Float` cases), new
+`range_subtype_unsigned_jvm_self_test.l` (3/3, `--target jvm` only,
+`UInt`/`ULong`), and a new #6664 regression case in
+`jvm_cross_package_collision_self_test.l` (two packages each declaring their
+own `Age` distinct type with disjoint ranges, each calling its own bare
+`Age.from(x)` — 6/6, mirroring the existing #5976 test shape in the same
+file). `bitwise_self_test.l` (10/10 both targets) and
+`erased_generic_arith_jvm_self_test.l` (23/23) re-verified unaffected by the
+literal-lowering change.
+
+**Files:** `lyric-compiler/jvm/lowering.l`, `lyric-compiler/jvm/codegen/{01_types,02_exprs,04_calls,06_items}.l`,
+`lyric-compiler/lyric/type_checker/typechecker_checker.l`,
+`lyric-compiler/jvm/self_test_{b108,b124}.l` (updated hand-built
+`LDistinctType(...)` literals for the new `isUnsigned` field),
+`lyric-compiler/lyric/range_subtype_self_test.l`,
+`lyric-compiler/lyric/range_subtype_unsigned_jvm_self_test.l` (new),
+`lyric-compiler/lyric/jvm_cross_package_collision_self_test.l`,
+`.github/workflows/ci.yml`.
