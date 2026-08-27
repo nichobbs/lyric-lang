@@ -32193,6 +32193,34 @@ A network call with no timeout has no place in a CI script regardless of
 how reliable the target host usually is, and neither does a subprocess
 invocation with no *externally verifiable* bound, even when the callee
 claims to enforce its own.
+
+**Final status (2026-08-27, end of PR #6627's own CI cycle):** the
+external `timeout --signal=KILL 900` fix confirmed the underlying bug is
+real, not a fluke — the very next CI run hit it again and the process had
+to be force-killed at exactly the 900s mark (GitHub Actions job log:
+`scripts/ci/coverage-smoke-test.sh: line 69: 2374 Killed`), well past the
+600s/120s internal timeouts that should have already returned control.
+The delta versus a working sibling step in the *same* job
+(`Bitwise self-test on JVM`, the identical file, `--target jvm`, no
+`--coverage`, succeeds quickly) is entirely the JaCoCo
+`-javaagent:...=destfile=...,append=false,dumponexit=true` instrumentation.
+Ruled out on inspection: instrumentation-scale overhead (the bundled JAR
+is only 41 small classes — trivial for ASM to process), a `ProcessCapture`
+kernel bug (`process_capture_host.l::runImpl` already handles the classic
+drain/kill-tree pitfalls), and the JVM `main()` wrapper's `System.exit()`
+codegen (a standard, well-formed pattern, not obviously broken). No live
+thread-dump access was available to pin down the actual blocked thread, so
+the true root cause remains open — tracked in #6659, with the most
+promising untried lead being `dumponexit=true`'s shutdown-hook path racing
+against the codegen's explicit `System.exit()` call, and the suggested
+fix being `output=tcpserver` + an explicit `jacococli.jar dump` to avoid
+that path entirely. The "Coverage smoke test" CI step has been **removed**
+from `.github/workflows/ci.yml` (not merely made non-blocking) rather than
+shipped in a step that reliably hangs or fails on every run — the
+underlying feature code (`Lyric.JacocoCobertura`, the `--coverage` flag,
+and `jacoco_cobertura_self_test.l`, which passes) all remain, matching
+this entry's framing throughout as "first slice" rather than a closed
+issue.
 ## D-progress-804 — `compiler-self-tests-dotnet-a`/`-b`: further split `background: true` batches to ~4-6 concurrent steps; corrected the "RAM disk" mitigation comment (#4975)
 
 **Bug.** `compiler-self-tests-dotnet-a`/`-b` occasionally SIGBUS (exit

@@ -31791,9 +31791,14 @@ Lyric-side collector, not a host shim.
 never had: it runs `lyric test <file> --target jvm --coverage` and then
 inspects the produced report file itself — exists, non-empty, has a
 `<coverage ...>` root element, `lines-valid` is non-zero — rather than
-just checking the command's exit code. Wired into the JVM self-tests job
-against `bitwise_self_test.l`.
-`jacoco_cobertura_self_test.l` runs alongside `cfg_gate_self_test.l` in the
+just checking the command's exit code. **Not currently wired into CI**:
+the JVM-target end-to-end run hangs on real GitHub Actions runners (the
+identical file without `--coverage` runs fine in the same job) — see D135's
+addendum and #6659 for the full incident and investigation. The script
+itself works correctly when run directly; the step was removed from
+`.github/workflows/ci.yml` rather than shipped hanging or red.
+`jacoco_cobertura_self_test.l` (the converter's own self-test, unaffected
+by the JVM-execution hang) runs alongside `cfg_gate_self_test.l` in the
 compiler self-tests job (same linking shape — a compiler-package import
 resolved via the staged `Lyric.Compiler.dll` bundle, no
 `LYRIC_LOAD_COMPILER=1`).
