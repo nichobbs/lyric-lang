@@ -407,21 +407,30 @@ static void test_list_slice_concat_append(void) {
 
 /* `.slice` out-of-bounds must panic (matching the MSIL/JVM twins'
  * "slice(start, end) requires 0 <= start <= end <= length" contract),
- * forked so the abort leaves no residue in the parent. */
-static void test_list_slice_oob_aborts(void) {
+ * forked so the abort leaves no residue in the parent. One fork per
+ * independent bounds condition (`start < 0`, `stop < start`, `stop >
+ * length`) so a fix that only guards one of the three can't silently
+ * regress the other two. */
+static void run_forked_slice_oob(int64_t start, int64_t stop) {
     pid_t pid = fork();
     CHECK(pid >= 0);
     if (pid == 0) {
         if (!freopen("/dev/null", "w", stderr)) _exit(9);
         LyricList* xs = lyric_list_new(0);
         lyric_list_push(xs, 1);
-        LyricList* bad = lyric_list_slice(xs, 0, 5); /* stop > len */
+        LyricList* bad = lyric_list_slice(xs, start, stop);
         (void)bad;
         _exit(0); /* not reached */
     }
     int status = 0;
     CHECK(waitpid(pid, &status, 0) == pid);
     CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+}
+
+static void test_list_slice_oob_aborts(void) {
+    run_forked_slice_oob(0, 5);  /* stop > len */
+    run_forked_slice_oob(-1, 1); /* start < 0 */
+    run_forked_slice_oob(1, 0);  /* stop < start */
 }
 
 static void test_read_bytes(void) {
