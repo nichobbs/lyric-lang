@@ -881,11 +881,13 @@ built once each project package's own `package` declaration is known,
 exactly the refinement this section called out over the plain
 "sibling parameter" phrasing. Slice 3 (multi-file) is still open — see
 §9.5's "correct by construction" recommendation, not yet attempted;
-slice 4 (MSIL/native path confirmation) is satisfied for MSIL and
-partially for native (`EmitRequest.path` reaches
-`emitNativeInProcess`, but `compileToNativeWithFlags` itself does not
-yet take it — no B3/B4 codegen consumes it either way, so the data is
-available without re-plumbing when that band starts).
+slice 4 (MSIL/native path confirmation) is now fully satisfied for
+MSIL, JVM, and native — `compileToNativeWithFlags` takes a `path: in
+String` parameter and threads it into `pipeParseAndErase(source,
+"native", noFeatures, noFeatures, nativeDefines, path)` (verified by
+`source_path_diagnostics_self_test.l`'s native-build test case), so
+`EmitRequest.path` reaches every backend's parse-phase diagnostics
+with no re-plumbing needed when B3/B4 codegen starts consuming it.
 
 ---
 
