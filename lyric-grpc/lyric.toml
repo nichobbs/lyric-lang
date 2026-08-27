@@ -60,6 +60,7 @@ output_assembly = "Lyric.Grpc.dll"
 [project.tests]
 "Grpc.GrpcTypesTests" = "tests/grpc_types_tests.l"
 "Grpc.SecurityAspectWeavingTests" = "tests/security_aspect_weaving_tests.l"
+"Grpc.RateLimitTests" = "tests/rate_limit_tests.l"
 
 [dependencies]
 "Lyric.Auth"       = { workspace = true }
@@ -71,6 +72,15 @@ output_assembly = "Lyric.Grpc.dll"
 "Grpc.Net.Client" = "2.65.0"
 # Server: grpc-dotnet is part of the ASP.NET Core SDK from .NET 6+.
 "Grpc.AspNetCore" = "2.65.0"
+# System.Threading.RateLimiting ships in the ASP.NET Core shared framework
+# (Microsoft.AspNetCore.App), not the base runtime — the auto-FFI resolver
+# only scans NuGet-restored package assemblies plus the base runtime ref
+# pack, not the ASP.NET Core one, so RateLimitLease (never directly
+# constructed, only ever a member return/parameter type) resolved against
+# the wrong assembly and threw System.TypeLoadException at runtime. An
+# explicit NuGet reference to the standalone package sidesteps the shared-
+# framework ambiguity entirely.
+"System.Threading.RateLimiting" = "8.0.0"
 
 [maven]
 "io.grpc:grpc-netty-shaded" = "1.65.0"
