@@ -5,7 +5,7 @@
 > | Phase | Slice | Shipped in |
 > |---|---|---|
 > | 1 | Non-generic InterfaceImpl emission | #3851 |
-> | 2 | F0020–F0023 metadata-based signature validation | #3856 |
+> | 2 | F0021–F0023, F0034 metadata-based signature validation | #3856 |
 > | 3 | Widening to extern-interface-typed bindings / parameters | #3857 |
 > | 4 | Closed generic external interfaces (TypeSpec + CLR name-match) | #3862 |
 > | §A (i) | STVar substitution for F0022/F0023 on generic ifaces | #3864 |
@@ -16,7 +16,7 @@
 > | §C | Bridge-thunk synthesis | N/A — Lyric primitives are native CLR primitives |
 >
 > `F0024` is gone: TypeSpec emission produces structurally-valid IL for
-> any closed instantiation, Phase 2 F0020–F0023 catches every
+> any closed instantiation, Phase 2 F0021–F0023/F0034 catches every
 > build-time-detectable structural mismatch (with `STVar` substitution
 > and recursive `STSzArray` / `STByRef` / `STNamedGenericInst` handling),
 > and the runtime catches the rest as `TypeLoadException`.
@@ -85,7 +85,7 @@ Phases 1–4 and follow-ups A, B, C are all shipped:
 | § | Item | Status |
 |---|---|---|
 | Phase 1 | Non-generic InterfaceImpl emission | Shipped in #3851 |
-| Phase 2 | F0020–F0023 metadata-based signature validation | Shipped in #3856 |
+| Phase 2 | F0021–F0023, F0034 metadata-based signature validation | Shipped in #3856 |
 | Phase 3 | Widening to extern-interface-typed bindings / parameters | Shipped in #3857 |
 | Phase 4 | Closed generic external interfaces — TypeSpec + CLR name-matching | Shipped in #3862 |
 | §A (i) | STVar substitution for F0022/F0023 on generic ifaces | Shipped in #3864 |
@@ -99,7 +99,7 @@ Phases 1–4 and follow-ups A, B, C are all shipped:
 
 `F0024` was removed in #3865.  TypeSpec emission produces
 structurally-valid IL for any closed instantiation, and Phase 2's
-F0020 / F0021 / F0022 / F0023 catches every build-time-detectable
+F0021 / F0022 / F0023 / F0034 catches every build-time-detectable
 structural mismatch — with `STVar` substitution against the iface's
 resolved type args and recursive shape handling for `STSzArray`,
 `STByRef`, and `STNamedGenericInst`.  The only previously-imagined
