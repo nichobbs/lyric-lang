@@ -43,6 +43,7 @@ import Std.Encoding as Encoding
 import Lyric.Lexer
 import Lyric.Parser
 import Msil.MetadataReader as Mdr
+import Jvm.ZipReader as JvmZip
 import Lyric.CliShell as CliShell
 import Lyric.Fmt as Fmt
 
@@ -162,6 +163,71 @@ pub func readAllContractsFromFile(path: in String): List[ContractEntry] {
       result
     }
   }
+}
+
+// Convert a raw byte payload (as `Jvm.ZipReader.extractEntry` returns it —
+// unsigned 0-255 values in a `List[Int]`) to `slice[Byte]` so it can go
+// through `Std.Encoding.tryDecodeUtf8`, the same decoder `decodeUtf8Resource`
+// already uses for the MSIL resource path.
+func intsToByteSlice(xs: in List[Int]): slice[Byte] {
+  val bs: List[Byte] = newList()
+  var i = 0
+  while i < xs.count {
+    bs.add(xs[i].toByte())
+    i = i + 1
+  }
+  bs.toArray()
+}
+
+/// JAR-resident counterpart of `readAllContractsFromFile` (#4994). Walks
+/// every `Lyric.Contract` / `Lyric.Contract.<Pkg>` entry stored directly in
+/// `jarPath`'s ZIP central directory and returns each as a `ContractEntry` —
+/// same return shape, same two-form (legacy bare / project-as-bundle
+/// per-package) handling as the DLL reader above.
+///
+/// A JAR carries no CLI/PE metadata tables, so this can't reuse
+/// `Msil.MetadataReader`: `Jvm.Bridge` embeds the identical contract JSON
+/// (built the same target-agnostic way, via `buildContractFromFile` /
+/// `contractToJson`) as a plain named ZIP entry instead of a
+/// ManifestResource row — see `Jvm.Bridge`'s `compileProjectToJarBundledWithFeatures`.
+/// Reading it back reuses the pure-Lyric ZIP central-directory reader
+/// `Jvm.ZipReader` already built for JDK `.jmod` / Maven-JAR auto-FFI
+/// resolution (`jvm/zip_reader.l`, `jvm/auto_ffi.l`) — same central-directory
+/// walk, same STORED/DEFLATE `extractEntry` decompression, no new ZIP-parsing
+/// code. Returns an empty list when `jarPath` is missing, unreadable, not a
+/// valid ZIP, or carries no `Lyric.Contract*` entry (e.g. a non-Lyric JAR) —
+/// the same graceful-degradation contract `readAllContractsFromFile` has.
+@stable(since = "0.1")
+pub func readAllContractsFromJarFile(jarPath: in String): List[ContractEntry] {
+  val result: List[ContractEntry] = newList()
+  if not File.fileExists(jarPath) {
+    return result
+  }
+  try {
+    val bytes = File.readBytesOrPanic(jarPath)
+    val entries = JvmZip.readZipEntries(bytes)
+    val prefix = "Lyric.Contract."
+    var i = 0
+    while i < entries.count {
+      val e = entries[i]
+      if e.name == "Lyric.Contract" {
+        match decodeUtf8Resource(intsToByteSlice(JvmZip.extractEntry(bytes, e))) {
+          case Some(json) -> result.add(ContractEntry(packageName = "", json = json))
+          case None -> ()
+        }
+      } else if Str.startsWith(e.name, prefix) {
+        val pkgName = e.name.substring(prefix.length, e.name.length - prefix.length)
+        match decodeUtf8Resource(intsToByteSlice(JvmZip.extractEntry(bytes, e))) {
+          case Some(json) -> result.add(ContractEntry(packageName = pkgName, json = json))
+          case None -> ()
+        }
+      }
+      i = i + 1
+    }
+  } catch Bug as _ {
+    ()
+  }
+  result
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

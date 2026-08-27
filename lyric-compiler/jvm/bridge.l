@@ -9,7 +9,9 @@ import Std.Core
 import Std.Collections
 import Std.String as Str
 import Std.Console as Console
+import Std.Encoding as Encoding
 import Lyric.BuildDefines as BD
+import Lyric.ContractMeta as Meta
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.TypeChecker
@@ -66,6 +68,46 @@ func mainReturns2SlotType(file: in SourceFile): Option[String] {
     i = i + 1
   }
   return None
+}
+
+// `Std.Encoding.encodeUtf8` returns `slice[Byte]`; `Jvm.Zip.ZipEntry.data`
+// wants `List[Byte]` (it accumulates entries alongside compiled class-file
+// byte lists). Plain copy, no re-encoding.
+func utf8SliceToByteList(bs: in slice[Byte]): List[Byte] {
+  val result: List[Byte] = newList()
+  var i = 0
+  while i < bs.length {
+    result.add(bs[i])
+    i = i + 1
+  }
+  result
+}
+
+// Build this package's `Lyric.Contract.<Pkg>` JAR resource entry (#4994) as
+// a (name, bytes) pair: mirrors `Msil.Bridge`'s `embedLyricContract` for a
+// project-as-DLL bundle, except the payload lands as a plain named ZIP entry
+// (no CLI/PE manifest-resource table on the JVM side) rather than a
+// `ManifestResource` row. `Lyric.ContractMeta.buildContractFromFile` /
+// `contractToJson` are already target-agnostic (pure structural walk over
+// the parsed `SourceFile` plus a JSON string writer) — the only
+// JVM-specific piece is where the bytes end up. Read back by
+// `Lyric.ContractMeta.readAllContractsFromJarFile`.
+//
+// Returns a plain `(String, List[Byte])` pair rather than a
+// `Jvm.Zip.ZipEntry` — see `Jvm.Driver.writeJarFromClassesWithResources`'s
+// doc comment for why threading that record through this file didn't work.
+//
+// Always suffixed (`Lyric.Contract.<Pkg>`), never the bare legacy
+// `Lyric.Contract` name the MSIL bridge uses for a genuinely single-package
+// assembly: every JVM build — including a one-file program — routes through
+// THIS multi-package bridge (`compileToJarBundledWithFeatures` forwards a
+// single source into a one-element `pkgSrcs` list), so there is no separate
+// single-package JVM emission path to give the bare name meaning, and the
+// reader scans for either form regardless.
+func contractZipEntry(file: in SourceFile, pkgName: in String, version: in String): (String, List[Byte]) {
+  val contract = Meta.buildContractFromFile(file, version)
+  val json = Meta.contractToJson(contract);
+  ("Lyric.Contract." + pkgName, utf8SliceToByteList(Encoding.encodeUtf8(json)))
 }
 
 /// Compile `source` to a JAR at `outputPath`.
@@ -1251,6 +1293,38 @@ pub func compileProjectToJarBundledWithFeatures(
   // Type items grouped by declaring package (see `compileToJar` for the
   // RegexError collision this scope-aware grouping fixes).
   val importedPkgs: List[ImportedPackage] = newList()
+  // #6024: the entry package (`userFile`, `pkgSrcs[0]`) must ALSO contribute
+  // its own cross-package items here, exactly like every stdlib file (below)
+  // and every non-entry sibling package (further below) already does.
+  // Before this, a sibling package importing the entry package's types
+  // — e.g. a manifest declaring `"Web" = "src/web.l"` first and
+  // `"Web.Kernel.Runtime" = [...]` second, where the kernel imports `Web`
+  // for `Request`/`Response`/`Router` (a legitimate same-manifest import
+  // cycle: `Web` imports the kernel back for `serve`) — saw the entry
+  // package's public types as entirely unknown (`error[T0014] unknown
+  // qualified type 'Web.Request'`), even though every OTHER project package
+  // resolves fine and the single-file bundled JVM build (which folds the
+  // whole transitive import closure into one flat registry, entry package
+  // included) handles the identical cycle correctly. `--target dotnet` was
+  // unaffected: `Msil.Bridge`'s `perPackageImportedPackages` walks each
+  // package's own transitive in-bundle closure from a full `inBundleItems`
+  // map that always includes the entry package. This mirrors that by
+  // seeding the entry package into the SAME flat `importedPkgs` list this
+  // bridge already unions across every other package — sufficient here
+  // because every package's `runMiddleEnd` call below consults the full
+  // flat list, not a per-package reachability walk.
+  val userEntryPkgName = dottedPath(userFile.packageDecl.path)
+  val userEntryItems: List[Item] = newList()
+  var uei = 0
+  while uei < userFile.items.count {
+    if pipeIsCrossPackageItem(userFile.items[uei]) {
+      userEntryItems.add(userFile.items[uei])
+    }
+    uei = uei + 1
+  }
+  importedPkgs.add(
+    ImportedPackage(name = userEntryPkgName, items = userEntryItems, imports = collectImportNames(userFile.imports))
+  )
   val stdlibFiles: List[SourceFile] = newList()
   val stdlibByPkg: Map[String, SourceFile] = newMap()
   var si = 0
@@ -1561,6 +1635,21 @@ pub func compileProjectToJarBundledWithFeatures(
 
   val autoFfi = buildAutoFfiCtx()
   val allClasses: List[BuiltClass] = newList()
+  // Every PROJECT package's `Lyric.Contract.<Pkg>` JAR resource (#4994) —
+  // stdlib/dependency packages merely bundled for their bytecode are NOT
+  // included, matching `Msil.Bridge`'s `embedLyricContract` scope (only
+  // `perPkgFiles`, the project's own packages, ever get a contract
+  // resource). For a stdlib-as-project build (`lyric build --manifest
+  // lyric-stdlib/lyric.toml --target jvm`) every stdlib package IS a
+  // project package, so this is exactly what produces `Lyric.Stdlib.Jvm.jar`'s
+  // embedded metadata.
+  val contractEntryNames: List[String] = newList()
+  val contractEntryDatas: List[List[Byte]] = newList()
+  // Hoisted above the codegen loops (rather than computed once right before
+  // `writeJarFromClasses` at the very end, as `compileToJar` does) because
+  // the contract-building calls below need it too. Empty `packageVersion`
+  // falls back to the legacy "0.1.0" default (matches `compileToJar`, #5834).
+  val jarVersion = if packageVersion.length == 0 { "0.1.0" } else { packageVersion }
 
   // Stdlib pure-Lyric generic `pub func`s, fed to each package's monomorphizer
   // so cross-package generic calls (`mapGet`, `unwrapOr`, …) specialise into
@@ -1639,6 +1728,9 @@ pub func compileProjectToJarBundledWithFeatures(
       // call site, producing a NoSuchMethodError for a phantom static method
       // (#4600).  `collectFileCtors` first-wins-guards the same way.
       collectFileCtors(f, ctorReg)
+      val (fContractName, fContractData) = contractZipEntry(f, dottedPath(f.packageDecl.path), jarVersion)
+      contractEntryNames.add(fContractName)
+      contractEntryDatas.add(fContractData)
       codegenPackageInto(
         f,
         registry,
@@ -1686,6 +1778,14 @@ pub func compileProjectToJarBundledWithFeatures(
           collectMonoSpecializedSigs(ff, registry, externSeedForFile(ff, extPkgNames, extPkgMaps))
           collectFileCasesExtern(ff, caseReg, externSeedForFile(ff, extPkgNames, extPkgMaps))
           collectFileCtors(ff, ctorReg)
+          // #4994: only the project's OWN packages get a contract resource —
+          // a merely-referenced stdlib package (isProjectPkg == false) never
+          // does, matching `Msil.Bridge`'s `embedLyricContract` scope.
+          if isProjectPkg {
+            val (ffContractName, ffContractData) = contractZipEntry(ff, pkgName, jarVersion)
+            contractEntryNames.add(ffContractName)
+            contractEntryDatas.add(ffContractData)
+          }
           codegenPackageInto(
             ff,
             registry,
@@ -1764,9 +1864,7 @@ pub func compileProjectToJarBundledWithFeatures(
   // which passes `-cp` — can actually load Maven dependency classes at
   // runtime instead of throwing NoClassDefFoundError the moment a `[maven]`
   // dependency (e.g. Quartz) is actually used.
-  // Empty `packageVersion` falls back to the legacy "0.1.0" default — see
-  // the identical fallback in `compileToJar` (#5834).
-  val jarVersion = if packageVersion.length == 0 { "0.1.0" } else { packageVersion }
+  // (`jarVersion` was hoisted above the codegen loops — see its declaration.)
   val req = BuildRequest(
     packageName = packageName,
     mainClass = mainClassName,
@@ -1774,5 +1872,5 @@ pub func compileProjectToJarBundledWithFeatures(
     outPath = outputPath,
     classpathJars = autoFfi.jarPaths
   )
-  writeJarFromClasses(req, allClasses)
+  writeJarFromClassesWithResources(req, allClasses, contractEntryNames, contractEntryDatas)
 }

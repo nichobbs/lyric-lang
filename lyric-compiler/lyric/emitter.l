@@ -170,6 +170,15 @@ func dirHasCompiledStdlib(dir: in String): Bool {
   dir.length > 0 and File.fileExists(Path.join(dir, "Lyric.Stdlib.dll"))
 }
 
+// JVM counterpart of `dirHasCompiledStdlib` (#4994): the installed-SDK
+// layout ships `lib/Lyric.Stdlib.Jvm.jar` alongside `Lyric.Stdlib.dll`
+// (docs/34 §4), so a JVM-only checkout (or a `dotnet`-side build the
+// caller deliberately doesn't want to touch) still needs its own probe
+// rather than requiring `Lyric.Stdlib.dll` to be present too.
+func dirHasCompiledStdlibJvm(dir: in String): Bool {
+  dir.length > 0 and File.fileExists(Path.join(dir, "Lyric.Stdlib.Jvm.jar"))
+}
+
 // Walk up from `start` (max 32 hops) looking for `<start>/…/<rel>` that
 // holds the compiled stdlib bundle; returns that path or "".
 func walkUpForCompiledStdlibDir(start: in String, rel: in String): String {
@@ -181,6 +190,29 @@ func walkUpForCompiledStdlibDir(start: in String, rel: in String): String {
   while hop < 32 {
     val candidate = Path.join(dir, rel)
     if dirHasCompiledStdlib(candidate) {
+      return candidate
+    }
+    val parent = Path.dirname(dir)
+    if parent.length == 0 or parent == dir {
+      return ""
+    }
+    dir = parent
+    hop = hop + 1
+  }
+  ""
+}
+
+// JVM counterpart of `walkUpForCompiledStdlibDir`, probing for
+// `Lyric.Stdlib.Jvm.jar` instead of `Lyric.Stdlib.dll` (#4994).
+func walkUpForCompiledStdlibDirJvm(start: in String, rel: in String): String {
+  if start.length == 0 {
+    return ""
+  }
+  var dir = start
+  var hop = 0
+  while hop < 32 {
+    val candidate = Path.join(dir, rel)
+    if dirHasCompiledStdlibJvm(candidate) {
       return candidate
     }
     val parent = Path.dirname(dir)
@@ -242,6 +274,48 @@ pub func findCompiledStdlibDir(): String {
     return hit
   }
   walkUpForCompiledStdlibDir(cwd, ".lyric-test")
+}
+
+// JVM counterpart of `findCompiledStdlibDir` (#4994): same discovery
+// order, probing for `Lyric.Stdlib.Jvm.jar` instead of `Lyric.Stdlib.dll`
+// at every candidate.
+pub func findCompiledStdlibDirJvm(): String {
+  val env = Environment.getVarOrDefault("LYRIC_STDLIB_BIN", "")
+  if dirHasCompiledStdlibJvm(env) {
+    return env
+  }
+  val appBase = Environment.appBaseDirectory()
+  if dirHasCompiledStdlibJvm(appBase) {
+    return appBase
+  }
+  val appLib = Path.join(appBase, "lib")
+  if dirHasCompiledStdlibJvm(appLib) {
+    return appLib
+  }
+  val cwd = Environment.currentDirectory()
+  val stage1 = Path.join(".bootstrap", "stage1")
+  val libBin = Path.join("lyric-stdlib", "bin")
+  var hit = walkUpForCompiledStdlibDirJvm(appBase, stage1)
+  if hit.length > 0 {
+    return hit
+  }
+  hit = walkUpForCompiledStdlibDirJvm(cwd, stage1)
+  if hit.length > 0 {
+    return hit
+  }
+  hit = walkUpForCompiledStdlibDirJvm(appBase, libBin)
+  if hit.length > 0 {
+    return hit
+  }
+  hit = walkUpForCompiledStdlibDirJvm(cwd, libBin)
+  if hit.length > 0 {
+    return hit
+  }
+  hit = walkUpForCompiledStdlibDirJvm(appBase, ".lyric-test")
+  if hit.length > 0 {
+    return hit
+  }
+  walkUpForCompiledStdlibDirJvm(cwd, ".lyric-test")
 }
 
 // Co-locate the split stdlib runtime assemblies (`Lyric.Stdlib*.dll` and
@@ -388,8 +462,10 @@ func findStdlibSourcesForTarget(forJvm: in Bool): List[String] {
     stdlibDir = walkUpForStdlib(Environment.currentDirectory())
   }
   if stdlibDir.length == 0 {
-    // No raw source reachable: fall back to the compiled bundle (#4980; JVM: #4994).
-    return if forJvm { sources } else { stdlibSourcesFromCompiledBundle() }
+    // No raw source reachable: fall back to the compiled bundle (#4980 dotnet,
+    // #4994 jvm — both reconstruct declaration-only stdlib source from the
+    // installed bundle's embedded `Lyric.Contract.<Pkg>` metadata).
+    return if forJvm { stdlibSourcesFromCompiledBundleJvm() } else { stdlibSourcesFromCompiledBundle() }
   }
   // Load kernel files FIRST so their extern type declarations
   // (`extern type List[T] = "System.Collections.Generic.List`1"`,
@@ -430,6 +506,41 @@ pub func stdlibSourcesFromCompiledBundle(): List[String] {
     case Err(e) -> {
       Console.error(
         "warning: could not load stdlib contract metadata from '" + dllPath + "': " + RP.errorMessage(e) +
+          "; Std.* types may fail to resolve"
+      )
+      sources
+    }
+    case Ok(arts) -> {
+      var i = 0
+      while i < arts.count {
+        sources.add(RP.synthesiseSource(arts[i].contract, noPreamble))
+        i = i + 1
+      }
+      sources
+    }
+  }
+}
+
+// JVM counterpart of `stdlibSourcesFromCompiledBundle` (#4994).
+// Reconstructs stdlib source per package from `Lyric.Stdlib.Jvm.jar`'s
+// `Lyric.Contract.<Pkg>` ZIP entries (embedded by `Jvm.Bridge`'s
+// `compileProjectToJarBundledWithFeatures` — the JAR-resident analog of
+// the MSIL bridge's `embedLyricContract`), via the JAR-resident contract
+// reader (`Lyric.ContractMeta.readAllContractsFromJarFile`) and the SAME
+// `Lyric.RestoredPackages` synthesis path the `.NET` fallback above uses —
+// `RestoredArtifact.contract` and `synthesiseSource` are both target-agnostic.
+pub func stdlibSourcesFromCompiledBundleJvm(): List[String] {
+  val sources: List[String] = newList()
+  val dir = findCompiledStdlibDirJvm()
+  if dir.length == 0 {
+    return sources
+  }
+  val jarPath = Path.join(dir, "Lyric.Stdlib.Jvm.jar")
+  val noPreamble: List[Meta.ContractDecl] = newList()
+  match RP.loadRestoredPackageJvm(jarPath) {
+    case Err(e) -> {
+      Console.error(
+        "warning: could not load stdlib contract metadata from '" + jarPath + "': " + RP.errorMessage(e) +
           "; Std.* types may fail to resolve"
       )
       sources

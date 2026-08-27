@@ -5684,6 +5684,44 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_cross_package_collision_self_test.l
 
+      # Same-manifest package-cycle self-test (#6024) — exercises
+      # `Jvm.Bridge.compileProjectToJarBundledWithFeatures` in-process AND
+      # `Lyric.Cli.buildProject` (the `--manifest ... --target jvm` path the
+      # issue reports broken), same outer-runs-on-dotnet shape as the
+      # cross-package collision self-test above. Pins: a sibling package
+      # that imports the ENTRY package back (a legitimate same-manifest
+      # import cycle, mirroring the real `Web`/`Web.Kernel.Runtime` shape)
+      # now resolves the entry package's own qualified types instead of
+      # `error[T0014] unknown qualified type`.
+      - name: JVM manifest package-cycle self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_manifest_package_cycle_self_test.l
+
+      # Path-dependency self-test (#6264) — exercises `Lyric.Cli.buildProject`
+      # (manifest/multi-package path) and `Lyric.Cli.buildOne`
+      # (`emitSingleFileOrProject`'s single-file-near-a-manifest leg) with a
+      # local `path = "../dep"` dependency on `--target jvm`, never building
+      # the dependency's own `.dll` first (the fresh-checkout scenario the
+      # issue's acceptance criteria describes). Pins: the dependency's real
+      # code — not just its aspect/wire templates — compiles into the JVM
+      # bundle and the produced JAR runs correctly under `java`.
+      - name: JVM path-dependency self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_path_dependency_self_test.l
+
+      # Compiled-bundle stdlib-source fallback self-test (#4994, the JVM
+      # counterpart of #4980) — exercises the WRITER half (`Jvm.Bridge` now
+      # embeds one `Lyric.Contract.<Pkg>` ZIP entry per project package,
+      # readable back via `Lyric.ContractMeta.readAllContractsFromJarFile`)
+      # and the READER half (`Lyric.Emitter.stdlibSourcesFromCompiledBundleJvm`
+      # reconstructs declaration-only stdlib source from an installed
+      # `Lyric.Stdlib.Jvm.jar`, mirroring the dotnet-side
+      # `stdlibSourcesFromCompiledBundle`), then compiles a real consumer
+      # against the reconstructed source.
+      - name: JVM stdlib compiled-bundle fallback self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_stdlib_compiled_bundle_self_test.l
+
   # Numbered backend self-test corpus (docs/59 §9.5, H8) — the ~215 plain
   # `func main` regression programs (`lyric-compiler/msil/msil_self_test_m1..m84`
   # and `lyric-compiler/jvm/self_test_b3..b134`, ~40k lines) whose F# Expecto

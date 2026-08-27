@@ -691,18 +691,38 @@ pub func resolveManifestDependencies(
                     case None -> depMf.packageSection.name + ".dll"
                   }
                   val dllPath = Path.join(depBinDir, dllName)
+                  // A missing DLL only blocks Dotnet: that's the target whose
+                  // restored-dependency resolution actually reads `dllPath`
+                  // (`restoredDlls`). On Jvm the dep's SOURCE (collected right
+                  // below into `depTemplatePkgsList`, then compiled as an
+                  // ordinary bundle package by `buildProjectFromManifest` /
+                  // `emitSingleFileOrProject`) is what matters — the JVM
+                  // bundler never reads `restoredDllPaths` at all (#6136), so
+                  // treating an absent `.dll` as fatal here made a `--target
+                  // jvm` build of a fresh checkout's path dependency fail
+                  // before it ever reached codegen, even though nothing on
+                  // that path needs the DLL to exist (#6264).
+                  val dllMatters = match target { case Jvm -> false; case _ -> true }
                   if File.fileExists(dllPath) {
                     if not stringListContains(seenDeps, dep.name) {
                       restoredDlls.add(dep.name + "\t" + dllPath)
                       seenDeps.add(dep.name)
                       collectTransitiveDepDlls(depDir, wsCtxOpt, seenDeps, restoredDlls)
                     }
-                  } else {
+                  } else if dllMatters {
                     printErr("build: " + Release.localDepNotBuiltMessage(dep.name, dllPath, depToml))
                     hadUnbuiltLocalDep = true
                   }
                   // Collect source files from this path dependency so the weaver can
-                  // resolve cross-package `from`-instance aspect templates (#3498).
+                  // resolve cross-package `from`-instance aspect templates (#3498) and
+                  // — on Jvm — so the dependency's actual code (not just its templates)
+                  // compiles into the bundle (#6264). A source-read failure has always
+                  // been a non-fatal warning here because the pre-#6264 Jvm path never
+                  // consumed these sources for anything but template extraction; now
+                  // that Jvm compiles them as real packages, a dep whose source can't
+                  // be read means its symbols are simply absent from the Jvm bundle —
+                  // matching the project's own "sibling packages are FATAL" policy
+                  // (the issue's suggested diagnostic severity), this is fatal on Jvm.
                   match depMf.project {
                     case Some(proj) -> {
                       var pki = 0
@@ -717,6 +737,9 @@ pub func resolveManifestDependencies(
                               case Ok(srcText) -> srcList.add(srcText)
                               case Err(e) -> {
                                 printErr("build: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
+                                if not dllMatters {
+                                  hadUnbuiltLocalDep = true
+                                }
                               }
                             }
                             fi += 1
@@ -727,6 +750,9 @@ pub func resolveManifestDependencies(
                             case Ok(srcText) -> srcList.add(srcText)
                             case Err(e) -> {
                               printErr("build: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
+                              if not dllMatters {
+                                hadUnbuiltLocalDep = true
+                              }
                             }
                           }
                         }
