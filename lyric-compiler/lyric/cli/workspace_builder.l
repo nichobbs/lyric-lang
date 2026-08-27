@@ -702,7 +702,15 @@ pub func resolveManifestDependencies(
                   // jvm` build of a fresh checkout's path dependency fail
                   // before it ever reached codegen, even though nothing on
                   // that path needs the DLL to exist (#6264).
-                  val dllMatters = match target { case Jvm -> false; case _ -> true }
+                  // Explicit `Native` arm (rather than folding it into the
+                  // wildcard) so this reads as a deliberate choice, not an
+                  // accident of the wildcard: `--target native` path deps are
+                  // out of scope here (`buildProjectFromManifest` already
+                  // refuses `native` for manifest/multi-package builds
+                  // elsewhere in this file), so Native inherits Dotnet's
+                  // "DLL matters" behavior rather than silently absorbing
+                  // whatever the Jvm case does as targets are added later.
+                  val dllMatters = match target { case Jvm -> false; case Native -> true; case _ -> true }
                   if File.fileExists(dllPath) {
                     if not stringListContains(seenDeps, dep.name) {
                       restoredDlls.add(dep.name + "\t" + dllPath)

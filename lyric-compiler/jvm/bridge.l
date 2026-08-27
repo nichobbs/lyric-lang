@@ -83,6 +83,63 @@ func utf8SliceToByteList(bs: in slice[Byte]): List[Byte] {
   result
 }
 
+// Re-attach same-file pub generic `func`s the monomorphizer stripped, so the
+// embedded contract's declaration list still carries them (#4994 review
+// finding). `Lyric.Mono` (shared `pipeCheckAndMono`, target-agnostic) drops
+// a generic `pub func` from a file's item list once every call site in that
+// SAME compilation unit has been specialised into a concrete copy — correct
+// for codegen (nothing calls the generic original directly any more) but
+// wrong for a contract meant to describe the package's public API to
+// EXTERNAL consumers, who need the generic declaration itself (its own
+// call sites live in a DIFFERENT file, so `Lyric.Mono` never sees them and
+// they will fail to resolve without it). `Msil.Bridge` hit this exact
+// failure mode building `Lyric.Contract.<Pkg>` resources for its own
+// project-as-DLL bundles and fixed it with `withGenericFuncsForContract`;
+// this mirrors that verbatim (same merge rule: keep every `postMono` item,
+// then walk `preMono` adding back any `pub`+generic `IFunc` whose name
+// isn't already present post-mono).
+func withGenericFuncsForContract(preMono: in SourceFile, postMono: in SourceFile): SourceFile {
+  val items: List[Item] = newList()
+  val postFuncNames: Map[String, Bool] = newMap()
+  var pi = 0
+  while pi < postMono.items.count {
+    val it = postMono.items[pi]
+    match it.kind {
+      case IFunc(decl) -> {
+        if not postFuncNames.containsKey(decl.name) {
+          postFuncNames.add(decl.name, true)
+        }
+      }
+      case _ -> ()
+    }
+    items.add(it)
+    pi = pi + 1
+  }
+  var gi = 0
+  while gi < preMono.items.count {
+    val it = preMono.items[gi]
+    match it.kind {
+      case IFunc(decl) -> {
+        val isPub = match it.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+        val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+        if isPub and isGeneric and not postFuncNames.containsKey(decl.name) {
+          items.add(it)
+        }
+      }
+      case _ -> ()
+    }
+    gi = gi + 1
+  }
+  SourceFile(
+    moduleDoc = postMono.moduleDoc,
+    fileAnnotations = postMono.fileAnnotations,
+    packageDecl = postMono.packageDecl,
+    imports = postMono.imports,
+    items = items,
+    span = postMono.span
+  )
+}
+
 // Build this package's `Lyric.Contract.<Pkg>` JAR resource entry (#4994) as
 // a (name, bytes) pair: mirrors `Msil.Bridge`'s `embedLyricContract` for a
 // project-as-DLL bundle, except the payload lands as a plain named ZIP entry
@@ -92,6 +149,11 @@ func utf8SliceToByteList(bs: in slice[Byte]): List[Byte] {
 // the parsed `SourceFile` plus a JSON string writer) — the only
 // JVM-specific piece is where the bytes end up. Read back by
 // `Lyric.ContractMeta.readAllContractsFromJarFile`.
+//
+// `preMono` is the file as it stood just before `runMiddleEnd` (which calls
+// `pipeCheckAndMono` internally); `postMono` is the file `runMiddleEnd`
+// returned. Both are needed only for `withGenericFuncsForContract`'s
+// re-attachment merge, above.
 //
 // Returns a plain `(String, List[Byte])` pair rather than a
 // `Jvm.Zip.ZipEntry` — see `Jvm.Driver.writeJarFromClassesWithResources`'s
@@ -104,8 +166,11 @@ func utf8SliceToByteList(bs: in slice[Byte]): List[Byte] {
 // single source into a one-element `pkgSrcs` list), so there is no separate
 // single-package JVM emission path to give the bare name meaning, and the
 // reader scans for either form regardless.
-func contractZipEntry(file: in SourceFile, pkgName: in String, version: in String): (String, List[Byte]) {
-  val contract = Meta.buildContractFromFile(file, version)
+func contractZipEntry(
+  preMono: in SourceFile, postMono: in SourceFile, pkgName: in String, version: in String
+): (String, List[Byte]) {
+  val withGenerics = withGenericFuncsForContract(preMono, postMono)
+  val contract = Meta.buildContractFromFile(withGenerics, version)
   val json = Meta.contractToJson(contract);
   ("Lyric.Contract." + pkgName, utf8SliceToByteList(Encoding.encodeUtf8(json)))
 }
@@ -1728,7 +1793,7 @@ pub func compileProjectToJarBundledWithFeatures(
       // call site, producing a NoSuchMethodError for a phantom static method
       // (#4600).  `collectFileCtors` first-wins-guards the same way.
       collectFileCtors(f, ctorReg)
-      val (fContractName, fContractData) = contractZipEntry(f, dottedPath(f.packageDecl.path), jarVersion)
+      val (fContractName, fContractData) = contractZipEntry(userFile, f, dottedPath(f.packageDecl.path), jarVersion)
       contractEntryNames.add(fContractName)
       contractEntryDatas.add(fContractData)
       codegenPackageInto(
@@ -1782,7 +1847,7 @@ pub func compileProjectToJarBundledWithFeatures(
           // a merely-referenced stdlib package (isProjectPkg == false) never
           // does, matching `Msil.Bridge`'s `embedLyricContract` scope.
           if isProjectPkg {
-            val (ffContractName, ffContractData) = contractZipEntry(ff, pkgName, jarVersion)
+            val (ffContractName, ffContractData) = contractZipEntry(f, ff, pkgName, jarVersion)
             contractEntryNames.add(ffContractName)
             contractEntryDatas.add(ffContractData)
           }
