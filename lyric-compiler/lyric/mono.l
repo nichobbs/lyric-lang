@@ -3288,6 +3288,44 @@ func bindPatternEnvMono(
         }
       }
     }
+    case PRecord(_, fields, _) -> {
+      // #6743: record-destructuring patterns (`case Shape { n } -> …`)
+      // previously fell through to the catch-all `case _ -> {}` no-op
+      // below, so a field binding that SHADOWS an outer generic-typed
+      // local left the outer entry sitting untouched in `env` for the
+      // whole arm body -- the same silent-wrong-type-leak class the
+      // `PConstructor`/`PBinding` arms above already guard against.
+      // `lookupFieldTE` mirrors `inferMemberTE`'s own field-projection
+      // resolution (a same-package record's declared field type,
+      // substituted through the scrutinee's own type arguments), so a
+      // resolvable field gets tracked with its REAL type exactly like a
+      // `PConstructor` case-field does; an unresolved record name or field
+      // (imported record, undeclared field) degrades to `None`, which the
+      // reused `PBinding` arm still evicts rather than leaving stale.
+      val recordName = match scrutTe {
+        case Some(te) -> match typeExprHeadNameMono(te) { case Some(n) -> n; case None -> "" }
+        case None -> ""
+      }
+      val recordArgs: List[TypeArg] = match scrutTe {
+        case Some(te) -> match te.kind { case TGenericApp(_, a) -> a; case _ -> newList() }
+        case None -> newList()
+      }
+      var fi = 0
+      while fi < fields.count {
+        match fields[fi] {
+          case RPFNamed(fname, p, _) -> {
+            val fieldTe = if recordName.length > 0 { lookupFieldTE(state, recordName, fname, recordArgs) } else { None }
+            bindPatternEnvMono(state, env, p, fieldTe)
+          }
+          case RPFShort(nm, fspan) -> {
+            val fieldTe = if recordName.length > 0 { lookupFieldTE(state, recordName, nm, recordArgs) } else { None }
+            val bindPat = Pattern(kind = PBinding(name = nm, inner = None), span = fspan)
+            bindPatternEnvMono(state, env, bindPat, fieldTe)
+          }
+        }
+        fi = fi + 1
+      }
+    }
     case PTuple(patterns) -> {
       val elemTes: List[TypeExpr] = match scrutTe {
         case Some(te) -> match te.kind { case TTuple(es) -> es; case _ -> newList() }

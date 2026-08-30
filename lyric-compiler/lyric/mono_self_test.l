@@ -2107,3 +2107,35 @@ test "PConstructor pattern with an incomplete generic substitution evicts its fi
   )
   assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
 }
+
+// #6743: `bindPatternEnvMono` had no arm for `PRecord` (record-destructuring
+// `case Shape { n } -> …` patterns) at all -- it fell through to the
+// catch-all `case _ -> {}` no-op, so a field binding that SHADOWS an outer
+// generic-typed local left the outer entry sitting untouched in `env` for
+// the whole arm body. `s: Shape` here carries a `Bool` field `n`, shadowing
+// the outer `val n: String`; before the fix `like(n)` inside the arm
+// resolved `n` against the STALE outer `String` (producing `like__String`
+// from inside the arm, never `like__Bool`) -- a genuine silent miscompile,
+// not merely a missed optimisation, since codegen would then bind the
+// arm's real `Bool` value to a specialisation typed for `String`. The
+// second `like(n)` after the match must still resolve against the outer
+// `String` binding, proving the field binding doesn't leak past the arm
+// either (mirrors #6633's sibling-arm-leak coverage for `PConstructor`).
+test "record-destructuring pattern field binding shadows an outer binding and specialises against the field's own type, not the stale outer type (#6743)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" + "record Shape { n: Bool }\n" +
+    "func caller(s: in Shape): String {\n" +
+    "  val n: String = \"outer\"\n" +
+    "  match s {\n" +
+    "    case Shape { n } -> like(n)\n" +
+    "  }\n" +
+    "  like(n)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "like__Bool"), "like__Bool specialised for the record field's own n")
+  assertTrue(
+    hasFunc(res.file, "like__String"),
+    "like__String specialised for the outer n after the match -- must not still see the arm's leaked field binding"
+  )
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
