@@ -499,7 +499,7 @@ func lowerCall(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, args: in Lis
 func lowerLambdaInvokeTail(
   ctx: in FuncCtx, insns: in List[LInsn], args: in List[CallArg], retType: in Option[JvmType]
 ): JvmType {
-  val ifaceName = lambdaIfaceName(ctx.pkgName)
+  val ifaceName = lambdaIfaceName()
   insns.add(LCheckcast(className = ifaceName))
   insns.add(LIconst(v = args.count))
   insns.add(LAnewarray(className = "java/lang/Object"))
@@ -644,7 +644,7 @@ func lowerCloseExecutorIntrinsic(ctx: in FuncCtx, insns: in List[LInsn], args: i
 func isLambdaLocal(ctx: in FuncCtx, name: in String): Bool {
   match lookupSlot(ctx, name) {
     case Some(_) -> {
-      val ifaceName = lambdaIfaceName(ctx.pkgName)
+      val ifaceName = lambdaIfaceName()
       match lookupType(ctx, name) {
         case Some(t) -> match t { case JRef(cls) -> cls == ifaceName or cls == "java/lang/Object"; case _ -> false }
         case None -> false
@@ -1482,7 +1482,7 @@ func ensureSamAdapterClass(ctx: in FuncCtx, ifaceBin: in String, sam: in ClassMe
     }
     ei = ei + 1
   }
-  val lambdaIface = lambdaIfaceName(ctx.pkgName)
+  val lambdaIface = lambdaIfaceName()
   val paramDescs = parseDescriptorParams(sam.descriptor)
   val retTy = descStrToJvmType(returnDescFromMethodDesc(sam.descriptor))
   val paramTys: List[JvmType] = newList()
@@ -1546,7 +1546,7 @@ func ensureSamAdapterClass(ctx: in FuncCtx, ifaceBin: in String, sam: in ClassMe
 // lambda is stashed to a temp slot so the `new; dup; aload; invokespecial`
 // construction sequence runs on a clean stack top.
 func emitSamAdapterWrap(ctx: in FuncCtx, insns: in List[LInsn], ifaceBin: in String, sam: in ClassMethod): Unit {
-  val lambdaIface = lambdaIfaceName(ctx.pkgName)
+  val lambdaIface = lambdaIfaceName()
   val adapterClass = ensureSamAdapterClass(ctx, ifaceBin, sam)
   val tmp = allocSlot(ctx, "__sam_tmp_" + freshLabel(ctx), JRef(className = lambdaIface))
   insns.add(LAstoreAs(slot = tmp, className = lambdaIface))
@@ -1567,7 +1567,7 @@ func emitFfiCoerce(ctx: in FuncCtx, insns: in List[LInsn], fromDesc: in String, 
   // unavailable (or that is not a functional interface — only reachable through
   // the permissive no-metadata score) is left untouched, preserving the legacy
   // behavior for that configuration.
-  if toDesc.startsWith("L") and toDesc != "Ljava/lang/Object;" and fromDesc == "L" + lambdaIfaceName(ctx.pkgName) + ";" {
+  if toDesc.startsWith("L") and toDesc != "Ljava/lang/Object;" and fromDesc == "L" + lambdaIfaceName() + ";" {
     val ifaceBin = refDescToBinary(toDesc)
     match findSamMethod(ctx.autoFfi, ifaceBin) {
       case Some(sam) -> emitSamAdapterWrap(ctx, insns, ifaceBin, sam)

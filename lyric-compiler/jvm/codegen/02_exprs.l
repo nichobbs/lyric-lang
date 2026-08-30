@@ -417,14 +417,26 @@ func listLiteralElemTypeJvm(ctx: in FuncCtx, e: in Expr): JvmType {
     case ELiteral(lit) -> {
       match lit {
         case LInt(v, suffix, _) -> {
+          // Mirror `Lyric.TypeChecker`'s literal-suffix table
+          // (typechecker_exprs.l: `NoIntSuffix|I16|I32 -> Int`, `I8|U8 ->
+          // Byte`, `I64 -> Long`, `U16|U32 -> UInt`, `U64 -> ULong`) and
+          // `typeExprToJvm`'s erasure of `UInt -> JInt` / `ULong -> JLong`
+          // (#6661): `U16`/`U32` erase to the identical `int` `I16`/`I32`
+          // already produce here, and `U64` erases to the identical `long`
+          // `I64` produces. Before this fix `U16`/`U32`/`U64` fell through to
+          // the `_` sentinel, disabling the homogeneity fast path below for
+          // every `u16`/`u32`/`u64`-suffixed list-literal element (#6741
+          // SUGGESTION).
           match suffix {
             case I8 -> JByte
             case U8 -> JByte
             case NoIntSuffix -> if v >= -2147483648i64 and v <= 2147483647i64 { JInt } else { JRef(className = "java/lang/Object") }
             case I16 -> if v >= -2147483648i64 and v <= 2147483647i64 { JInt } else { JRef(className = "java/lang/Object") }
+            case U16 -> if v >= -2147483648i64 and v <= 2147483647i64 { JInt } else { JRef(className = "java/lang/Object") }
             case I32 -> if v >= -2147483648i64 and v <= 2147483647i64 { JInt } else { JRef(className = "java/lang/Object") }
+            case U32 -> if v >= -2147483648i64 and v <= 2147483647i64 { JInt } else { JRef(className = "java/lang/Object") }
             case I64 -> JLong
-            case _ -> JRef(className = "java/lang/Object")
+            case U64 -> JLong
           }
         }
         case LFloat(_, floatSuffix, _) -> {
@@ -3603,7 +3615,17 @@ func boxIfNeeded(insns: in List[LInsn], ty: in JvmType): Unit {
 // interface still decides independently whether to emit one via
 // `fileNeedsLambdaIface`/`closureAcc`, so several packages in one bundle
 // legitimately try to emit the identical class) before writing the JAR.
-pub func lambdaIfaceName(pkgName: in String): String {
+// Zero-arg rather than taking a `pkgName` it ignores: the binary name is
+// fixed (see the block comment above), so it never actually depended on a
+// `pkgName` argument — every call site used to pass one anyway (including
+// `bridge.l`'s `lambdaIfaceName("")`), which read as parameterized when it
+// wasn't (#6741 SUGGESTION). A `pub val` reads even more directly as "this
+// never varies," but a cross-package unqualified reference to a `pub val`
+// (`bridge.l`'s call site) is `T0020 unknown name` under this codebase's
+// current name resolution — unlike a `pub func`, which resolves fine
+// unqualified across an unaliased `import Jvm.Codegen` (every OTHER call
+// site here) — so this stays a function.
+pub func lambdaIfaceName(): String {
   "Lyric/Lyric$Lambda"
 }
 
@@ -4207,7 +4229,7 @@ func lambdaCaptureNamesJvm(ctx: in FuncCtx, lparams: in List[LambdaParam], body:
 // then emit `new` + capture-load + `invokespecial <init>` so the closure object
 // is left on the stack.  Returns the closure's static type (the shared iface).
 func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[LambdaParam], body: in Block): JvmType {
-  val ifaceName = lambdaIfaceName(ctx.pkgName)
+  val ifaceName = lambdaIfaceName()
   val idx = ctx.closureAcc.count
   // Use `$Lambda$<n>` nesting under the package host class so the binary name is
   // unique and not mistaken for a user record/union.

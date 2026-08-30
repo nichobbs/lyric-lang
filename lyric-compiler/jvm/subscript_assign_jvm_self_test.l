@@ -29,12 +29,34 @@
 //!      (reused from the #4877 erased-payload work), combine via the existing
 //!      `emitCompoundArith`, box the result, and `set`/`put` back.
 //!
+//!   3. **Plain `=` element-write skipped the numeric widening `.append()`/
+//!      compound-assign already had (#6741).** `xs[0] = 5` on a `List[Long]`/
+//!      `slice[Long]`/`Map[K, Long]` boxed the RHS at its OWN native width
+//!      (`Integer`, since `5` is an unsuffixed `Int` literal satisfying the
+//!      `Long` element type via M6 widening) instead of the receiver's
+//!      declared element width — a later indexed read threw
+//!      `ClassCastException: class java.lang.Integer cannot be cast to class
+//!      java.lang.Long` (the `EIndex` read side genuinely `checkcast`s to the
+//!      declared element class, `applyIndexedElemOverride`).  Fixed by
+//!      routing all three `AssEq` arms (`JArray`/`HashMap`/`ArrayList`)
+//!      through `coerceScalarToSliceElem` — the SAME helper `.append()`'s
+//!      `lowerSliceAppendJvm` already used — which widens the RHS to the
+//!      receiver's `indexedElemTypeOverride`-resolved declared type before
+//!      boxing, falling back to the prior erased-target boxing when no
+//!      declared type is known.
+//!
 //! Run via the native test runner on BOTH targets (MSIL already reifies List/
 //! Map's real element/value types and was never affected — this file locks in
 //! parity):
 //!
 //!   lyric test --target dotnet lyric-compiler/jvm/subscript_assign_jvm_self_test.l
 //!   lyric test --target jvm    lyric-compiler/jvm/subscript_assign_jvm_self_test.l
+//!
+//! The `U16`/`U32`/`U64` unannotated-list-literal element-type-inference
+//! regression (#6741 SUGGESTION, `Jvm.Codegen.listLiteralElemTypeJvm`) is
+//! covered separately, JVM-only, in `list_literal_uint_elem_jvm_self_test.l`
+//! — it fixes a JVM-only codegen helper with no MSIL counterpart to lock
+//! parity against.
 //!
 //! Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1` is needed.
 @test_module
@@ -185,4 +207,55 @@ test "list subscript assignment with a branching RHS (#6169)" {
   assertEqualInt(lst[0], 42, "list subscript set from a branching if-expression RHS")
   lst[0] = match flag { case true -> 7; case false -> 8 }
   assertEqualInt(lst[0], 7, "list subscript set from a branching match-expression RHS")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. Plain `=` element-write numeric widening (#6741). Each case writes an
+//    RHS whose OWN type is narrower than the container's declared element
+//    type, but still M6-widening-compatible with it (`widenPrimArithmetic`,
+//    `typechecker_exprs.l`: `Byte < Int < Long` for signed integers,
+//    `Float < Double` for floating point — `Int` does NOT widen to
+//    `Double`/`Float`, a different family, so those pairs are not exercised
+//    here), then reads the element back — pre-fix, the write boxed the RHS
+//    at its own native width, so the read's `checkcast` to the wider
+//    declared class threw `ClassCastException`.
+// ─────────────────────────────────────────────────────────────────────────────
+test "list subscript plain assignment widens an Int RHS to the declared Long element type (#6741)" {
+  val lst: List[Long] = newList()
+  lst.add(1i64)
+  lst[0] = 5
+  assertEqualLong(lst[0], 5i64, "List[Long] element write boxes an Int RHS as Long, not Integer")
+}
+
+test "map subscript plain assignment widens an Int RHS to the declared Long value type (#6741)" {
+  val m: Map[String, Long] = newMap()
+  m["k"] = 1i64
+  m["k"] = 5
+  assertEqualLong(m["k"], 5i64, "Map[String, Long] value write boxes an Int RHS as Long, not Integer")
+}
+
+test "slice subscript plain assignment widens an Int RHS to the declared Long element type (#6741)" {
+  var xs: slice[Long] = [1i64, 2i64, 3i64]
+  xs[0] = 5
+  assertEqualLong(xs[0], 5i64, "slice[Long] element write boxes an Int RHS as Long, not Integer")
+}
+
+test "list subscript plain assignment widens a Byte RHS to the declared Long element type (#6741)" {
+  val lst: List[Long] = newList()
+  lst.add(1i64)
+  lst[0] = 5.toByte()
+  assertEqualLong(lst[0], 5i64, "List[Long] element write boxes a Byte RHS as Long, not Byte")
+}
+
+test "map subscript plain assignment widens a Float RHS to the declared Double value type (#6741)" {
+  val m: Map[String, Double] = newMap()
+  m["k"] = 1.5
+  m["k"] = 5.0f32
+  assertTrue(m["k"] == 5.0, "Map[String, Double] value write boxes a Float RHS as Double, not Float")
+}
+
+test "slice subscript plain assignment widens a Float RHS to the declared Double element type (#6741)" {
+  var xs: slice[Double] = [1.5, 2.5, 3.5]
+  xs[0] = 5.0f32
+  assertTrue(xs[0] == 5.0, "slice[Double] element write boxes a Float RHS as Double, not Float")
 }

@@ -652,7 +652,7 @@ func codegenPackageInto(
   // interface (`fileNeedsLambdaIface`/`closureAcc`), so several packages in
   // one bundle legitimately try to emit the identical class; keep only the
   // first copy so the JAR never carries duplicate entries for it.
-  val sharedLambdaIface = lambdaIfaceName("")
+  val sharedLambdaIface = lambdaIfaceName()
   var j = 0
   while j < classFiles.count {
     val cf = classFiles[j]

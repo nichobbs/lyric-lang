@@ -6222,7 +6222,7 @@ pub func codegenPackageWithSigsSeeded(
   // `<pkg>/Lyric$Lambda` they all implement
   // (`invoke([Ljava/lang/Object;)Ljava/lang/Object;`).
   if closureAcc.count > 0 or fileNeedsLambdaIface(file) {
-    val ifaceName = lambdaIfaceName(pkgName)
+    val ifaceName = lambdaIfaceName()
     val ifaceParams: List[JvmType] = newList()
     ifaceParams.add(JArray(elem = JRef(className = "java/lang/Object")))
     val ifaceDesc = buildDescriptor(ifaceParams, JRef(className = "java/lang/Object"))

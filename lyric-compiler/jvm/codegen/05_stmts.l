@@ -392,7 +392,19 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               emitLoad(insns, arrSlot, recvTy)
               emitLoad(insns, idxSlot, JInt)
               emitLoad(insns, rhsSlot, vTy)
-              coerceArgTo(insns, vTy, elem)
+              // The receiver's TRUE declared element type when resolvable
+              // (#6741): a plain `xs[i] = e` write used to box `e` at its OWN
+              // native width via a bare `coerceArgTo(insns, vTy, elem)` —
+              // `elem` here is the ERASED `slice[T]` element type (`Object`,
+              // #5257's uniform boxed-array ABI), not the receiver's real
+              // declared element type, so a `slice[Long]` ended up holding a
+              // mix of `Long`- and `Integer`-boxed elements exactly like the
+              // pre-#5257 `.append()` bug this mirrors — a later indexed read
+              // threw `ClassCastException`. `coerceScalarToSliceElem` (the
+              // SAME helper `.append()`'s `lowerSliceAppendJvm` already uses)
+              // widens first when the declared type is known and numeric,
+              // falling back to the prior erased-target boxing otherwise.
+              coerceScalarToSliceElem(insns, vTy, indexedElemTypeOverride(ctx, recv, false), elem)
               emitArrayStore(insns, elem)
             }
             case _ -> {
@@ -433,7 +445,14 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 val keySlot = allocSlot(ctx, "__idxasn_k_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
                 emitStore(insns, keySlot, JRef(className = "java/lang/Object"))
                 val vTy = lowerExpr(ctx, insns, value)
-                boxIfNeeded(insns, vTy)
+                // The map's TRUE declared VALUE type when resolvable (#6741,
+                // mirrors the compound-assign arm below and `.append()`'s
+                // `coerceScalarToSliceElem`): a plain `m[k] = e` write used to
+                // box `e` at its own native width via a bare
+                // `boxIfNeeded(insns, vTy)`, so a `Map[K, Long]` ended up
+                // holding a mix of `Long`- and `Integer`-boxed values — a
+                // later indexed read threw `ClassCastException`.
+                coerceScalarToSliceElem(insns, vTy, indexedElemTypeOverride(ctx, recv, true), JRef(className = "java/lang/Object"))
                 val rhsSlot = allocSlot(ctx, "__idxasn_rhs_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
                 emitStore(insns, rhsSlot, JRef(className = "java/lang/Object"))
                 emitLoad(insns, mapSlot, recvTy)
@@ -495,7 +514,14 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 val idxSlot = allocSlot(ctx, "__idxasn_i_" + freshLabel(ctx), JInt)
                 emitStore(insns, idxSlot, JInt)
                 val vTy = lowerExpr(ctx, insns, value)
-                boxIfNeeded(insns, vTy)
+                // The list's TRUE declared element type when resolvable
+                // (#6741, mirrors the compound-assign arm below and
+                // `.append()`'s `coerceScalarToSliceElem`): a plain
+                // `xs[i] = e` write used to box `e` at its own native width
+                // via a bare `boxIfNeeded(insns, vTy)`, so a `List[Long]`
+                // ended up holding a mix of `Long`- and `Integer`-boxed
+                // elements — a later indexed read threw `ClassCastException`.
+                coerceScalarToSliceElem(insns, vTy, indexedElemTypeOverride(ctx, recv, true), JRef(className = "java/lang/Object"))
                 val rhsSlot = allocSlot(ctx, "__idxasn_rhs_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
                 emitStore(insns, rhsSlot, JRef(className = "java/lang/Object"))
                 emitLoad(insns, listSlot, recvTy)
@@ -910,7 +936,7 @@ func emitCountingForJvm(
 func localAnnotatedJvmType(ctx: in FuncCtx, te: in TypeExpr): JvmType {
   val resolved = BareFuncRef.resolveFuncTypeAliasOrSelf(ctx.aliasTargets, te)
   match resolved.kind {
-    case TFunction(_, _) -> JRef(className = lambdaIfaceName(ctx.pkgName))
+    case TFunction(_, _) -> JRef(className = lambdaIfaceName())
     case _ -> typeExprToJvmExtern(resolved, ctx.pkgName, ctx.externTypes)
   }
 }
