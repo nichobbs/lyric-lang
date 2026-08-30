@@ -2,7 +2,7 @@
 //! `UInt`/`ULong` missing from `Jvm.Codegen.isPrimitiveTypeKeyword`.
 //!
 //! Same choke-point bug class as #5843/#6660 (fixed for the bare `Object`
-//! marker in `c27e023`, D-progress-820): when a generic container is
+//! marker in `c27e023`, D-progress-834): when a generic container is
 //! instantiated over `UInt`/`ULong` (`List[UInt]`, `Option[UInt]`, …), the
 //! bare type-argument name reaches `eagerlyResolveGenericArg` (`01_types.l`)
 //! for pre-resolution into a function's `retGenericArgs`

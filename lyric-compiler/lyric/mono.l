@@ -1125,7 +1125,7 @@ func inferLitTE(lit: in Literal, span: in Span): Option[TypeExpr] {
   match lit {
     case LInt(_, suffix, _) -> {
       // `I16`/`U16` name their surrogate `TypeExpr` "Int"/"UInt", NOT
-      // "Short"/"UShort" (#6661 residual, D-progress-826): the suffix only
+      // "Short"/"UShort" (#6661 residual, D-progress-840): the suffix only
       // constrains the literal's VALUE range at parse time — the
       // type-checker's own literal typing (`typechecker_exprs.l`'s `LInt`
       // arm) widens every sub-32-bit suffix to its 32-bit primitive
@@ -2990,7 +2990,7 @@ func primitiveSatisfiesMarker(name: in String, marker: in String): Bool {
 
 // `Short`/`UShort`/`UByte` deliberately excluded — not real Lyric surface
 // types (no `PrimType` backing; see `Lyric.TypeChecker.isNumericPrimitiveName`
-// for the full rationale, #6661 residual, D-progress-826). `inferLitTE`
+// for the full rationale, #6661 residual, D-progress-840). `inferLitTE`
 // above is the only producer of a numeric-suffix `TypeExpr` name and never
 // emits these three, so this list matching them was always dead.
 func isNumericPrimitiveName(name: in String): Bool {

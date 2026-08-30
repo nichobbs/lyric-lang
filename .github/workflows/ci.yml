@@ -1209,7 +1209,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/block_shadow_self_test.l
 
-      # Match-bound pattern type self-test (#5422, #5423 / D-progress-819).
+      # Match-bound pattern type self-test (#5422, #5423 / D-progress-833).
       # Runtime regression test for a `match`-arm pattern-bound variable's
       # type flowing into a downstream generic call / native method dispatch
       # (`Lyric.Mono.bindPatternEnvMono`/`rewriteMatchArms`).  Run via native
@@ -3912,7 +3912,7 @@ jobs:
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/block_shadow_self_test.l
 
       # Match-bound pattern type self-test on JVM (#5422, #5423 /
-      # D-progress-819) — the JVM half of the dotnet-job step of the same
+      # D-progress-833) — the JVM half of the dotnet-job step of the same
       # name.
       - name: Match-bound pattern type self-test on JVM (native lyric test --target jvm)
         background: true

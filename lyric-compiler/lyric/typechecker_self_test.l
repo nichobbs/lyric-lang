@@ -436,7 +436,7 @@ test "range subtype empty bounds" {
   assertTrue(hasDiagCode(cr, "T0090"), "range-empty: T0090 emitted")
 }
 
-// #6661 residual (D-progress-826): `Short`/`UShort`/`UByte` are not real
+// #6661 residual (D-progress-840): `Short`/`UShort`/`UByte` are not real
 // Lyric surface types (no `PrimType` case, absent from docs/01 §2.1's
 // primitive table) — `isNumericPrimitiveName` used to wrongly admit them,
 // so a range subtype declared over one type-checked cleanly and then
