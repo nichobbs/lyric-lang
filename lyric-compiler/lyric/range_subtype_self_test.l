@@ -128,6 +128,22 @@ test "from constructs in-range and projects back via toInt" {
   assertEqualInt(Age.from(150).toInt(), 150, "from(150).toInt()")
 }
 
+// docs/01 §2.2: `from`'s panic message carries "<TypeName>.from: value out of
+// range [lo, hi]" on both backends, though not byte-identically — on
+// `--target jvm` that text IS the caught `.message` verbatim; on
+// `--target dotnet` the emitter's single-`String` `ArgumentOutOfRangeException`
+// constructor is interpreted by .NET as the `paramName` overload, so the
+// caught `.message` wraps the same text in .NET's default boilerplate
+// ("Specified argument was out of the range of valid values. (Parameter
+// '...')"). Assert the substring both targets actually share.
+test "from panics with the documented cross-target message shape (docs/01 §2.2)" {
+  assertPanicsWith(
+    "Age.from(151) panics out of range",
+    "Age.from: value out of range [0, 150]",
+    { -> val _ = Age.from(151) }
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Plain distinct types (no range) get the same construction/projection API.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -293,11 +309,11 @@ test "Float-backed range subtype: bounds — the #6661 headline case" {
   assertFalse(weightIsOk(Weight.tryFrom(100.5f32)), "100.5 above upper bound")
 }
 
-test "Float-backed range subtype: from() constructs in-range (#6661)" {
+test "Float-backed range subtype: from() constructs in-range and panics out-of-range (#6661)" {
   val _ = Weight.from(0.0f32)
   val _ = Weight.from(100.0f32)
   val _ = Weight.from(42.5f32)
-  assertTrue(true, "Weight.from(...) did not panic for in-range values")
+  assertPanics("Weight.from(100.5) panics above the upper bound", { -> val _ = Weight.from(100.5f32) })
 }
 
 // No `.toFloat()`/`.toDouble()` projection assertion here (same reasoning as

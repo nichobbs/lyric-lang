@@ -23941,7 +23941,7 @@ The contract elaborator inserts `let __old_N = expr` snapshot bindings before an
 Replaced the no-op `lowerProtectedMsil` stub with production `Monitor.Enter`/`Monitor.Exit` wrapping. Uses `this` as the CLR sync-block object. Each `PMEntry` body is wrapped in a try/finally EH region: Enter before the try, Exit in the finally. Non-void entries stash the return value before `leave` and reload after the merge label. 3/3 protected-type emitter tests pass.
 
 **Range-subtype construction validation** (`lowering.l`):
-`lowerMRangeType` now emits a bounds-checking `.ctor(value)` that throws `System.ArgumentOutOfRangeException` with a descriptive message when the value is outside `[minVal, maxVal]`. `MInt` inner types use `ldc.i4`; other types use `ldc.i8`. 15/15 range-type emitter tests pass. **JVM parity was tracked in #2997 — closed, see #5956 / D-progress-827.**
+`lowerMRangeType` now emits a bounds-checking `.ctor(value)` that throws `System.ArgumentOutOfRangeException` with a descriptive message when the value is outside `[minVal, maxVal]`. `MInt` inner types use `ldc.i4`; other types use `ldc.i8`. 15/15 range-type emitter tests pass. **JVM parity was tracked in #2997 — closed, see #5956 / D-progress-837.**
 
 **`@generate(Pkg.Name)` source-generator pre-processing wired** (`cli.l`):
 `buildProject` now calls `Generator.preprocess` before type-checking on both single-file and directory-scan code paths.
@@ -24183,7 +24183,7 @@ gap in the `lyric-stdlib/tests/*_tests.l` suite.
 covering closed/half-open boundary semantics, `Int` and `Long` ranges, the
 in-range `from` round-trip, and a plain (rangeless) distinct type. Run under
 native `lyric test --target dotnet`; added to the compiler self-test CI loop.
-**JVM parity landed in #5956** (D-progress-827, below) — the same test file now
+**JVM parity landed in #5956** (D-progress-837, below) — the same test file now
 also runs under `--target jvm`, both in CI.
 
 **Scope notes:** `Double`-bound ranges are rejected upstream by the type checker
@@ -30251,7 +30251,8 @@ argument — a significant, previously-undiscovered general correctness
 bug), #5381 (`List[String]` indexing loses its element type for auto-FFI
 resolution, blocking `Std.Process.run()` end-to-end on JVM), #5388 (a
 panic's message is lost when it propagates through a closure invoked via
-a higher-order function parameter).
+a higher-order function parameter — fixed in D-progress-831, PR #6631;
+see `docs/03-decision-log.md`).
 
 Review hardening (2 rounds) found and fixed two REQUIRED gaps in the
 initial version: `environment_host.l` was still missing

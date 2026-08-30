@@ -581,9 +581,17 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   `VerifyError`), #5379 (discarded instance-call-on-parameter emits no
   invoke), #5380 (nullary enum argument value corruption — a significant
   general correctness bug), #5381 (`List[String]` indexing loses element
-  type for auto-FFI, blocking `Std.Process.run()`), #5388 (a panic's
+  type for auto-FFI, blocking `Std.Process.run()`), ~~#5388 (a panic's
   `.message` is lost/replaced when the panic propagates through a
-  closure invoked via a higher-order function parameter), #5395
+  closure invoked via a higher-order function parameter)~~ **Fixed:** the
+  self-hosted JVM backend emitted one closure-invocation functional
+  interface (`<pkg>/Lyric$Lambda`) per package, so a cross-package
+  higher-order call `checkcast`ed against the wrong nominal type and threw
+  `ClassCastException`, which `catch Bug` silently caught in place of the
+  real panic. `Jvm.Codegen.lambdaIfaceName` now returns one shared binary
+  name (`Lyric/Lyric$Lambda`) for the whole bundle; `Jvm.Bridge.codegenPackageInto`
+  dedupes the resulting duplicate class-file entry. Shipped in PR #6631
+  (`docs/03-decision-log.md` D-progress-831). #5395
   (`Jvm.Bridge`'s single-file path treats type-checker diagnostics as
   advisory rather than fatal — a genuine `T0043` mismatch compiled to a
   runnable JAR with exit 0; the still-open JVM half of docs/41 §C1's
