@@ -308,3 +308,73 @@ test "generic record method's user generic union parameter also works for a Stri
   val v = e.extractOrFallback(Full(v = "hi"))
   assertEqual(v, "hi", "Extractor[String](fallback=none).extractOrFallback(Full(hi)) == hi")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6742: same class of bug as #6660, but with the unresolved type parameter
+// NESTED inside another generic instantiation instead of appearing as a bare
+// top-level arg — `Box6742[Box6742[T]]` on `record NestedExtractor[T]` nests
+// `T` one level inside the outer parameter's own type argument (`Box6742[T]`).
+// The #6660 fix's guard (`recordParamGenericArgs` in `03_match.l`) only
+// inspected the TOP LEVEL of each arg via `typeParamIndexOf`: `Box6742[T]` is
+// a `TGenericApp`, not a bare `TRef`, so the guard did not recognise it as
+// carrying an unresolved type parameter and let it through to
+// `eagerlyResolveGenericArgs`, which DOES recurse into nested `TGenericApp`
+// args and rewrote the buried `T` to a phantom `<pkg>/T` class reference.
+// That phantom then only surfaces as a `checkcast` target once the OUTER
+// match's bound payload (`inner: Box6742[T]`) is matched a SECOND time —
+// `extractNested` does exactly that (`match b { case Populated(inner) -> match
+// inner { case Populated(v) -> v ... } ... }`), so `v`'s bind previously
+// `checkcast`ed against the nonexistent phantom class and threw
+// `NoClassDefFoundError` at runtime.  The fix widens the guard to a full
+// recursive walk (`containsTypeParam`, mirroring the walk
+// `returnTypeGenericArgsFiltered` already uses for a function's own return
+// type) so a NESTED unresolved type parameter bails registration exactly
+// like a top-level one does.
+// ─────────────────────────────────────────────────────────────────────────────
+union Box6742[T] {
+  case Populated(v: T)
+  case Empty6742
+}
+
+record NestedExtractor[T] {
+  fallback: T
+  func extractNested(b: in Box6742[Box6742[T]]): T {
+    match b {
+      case Populated(inner) -> {
+        match inner {
+          case Populated(v) -> v
+          case Empty6742 -> self.fallback
+        }
+      }
+      case Empty6742 -> self.fallback
+    }
+  }
+}
+
+test "generic record method matches a NESTED unresolved type parameter (Box6742[Box6742[T]]), populated/populated case (#6742)" {
+  val e = NestedExtractor(fallback = -1)
+  val v = e.extractNested(Populated(v = Populated(v = 7)))
+  assertEqualInt(v, 7, "NestedExtractor[Int](fallback=-1).extractNested(Populated(Populated(7))) == 7")
+}
+
+test "generic record method matches a NESTED unresolved type parameter (Box6742[Box6742[T]]), populated/empty case (#6742)" {
+  val e = NestedExtractor(fallback = -1)
+  val v = e.extractNested(Populated(v = Empty6742))
+  assertEqualInt(
+    v,
+    -1,
+    "NestedExtractor[Int](fallback=-1).extractNested(Populated(Empty6742)) falls back to self.fallback == -1"
+  )
+}
+
+test "generic record method matches a NESTED unresolved type parameter (Box6742[Box6742[T]]), outer empty case (#6742)" {
+  val e = NestedExtractor(fallback = -1)
+  val v = e.extractNested(Empty6742)
+  assertEqualInt(v, -1, "NestedExtractor[Int](fallback=-1).extractNested(Empty6742) falls back to self.fallback == -1")
+}
+
+test "generic record method's NESTED unresolved type parameter also works for a String instantiation of T, across a different call site (#6742)" {
+  val e = NestedExtractor(fallback = "none")
+  val v = e.extractNested(Populated(v = Populated(v = "hi")))
+  assertEqual(v, "hi", "NestedExtractor[String](fallback=none).extractNested(Populated(Populated(hi))) == hi")
+}

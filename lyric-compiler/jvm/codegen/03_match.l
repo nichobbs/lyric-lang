@@ -295,15 +295,29 @@ func recordVarGenericArgs(ctx: in FuncCtx, name: in String, init: in Expr, tyOpt
 // string `"Object"`, reserved into `isPrimitiveTypeKeyword`) but every
 // other real type-parameter name (`T`, `U`, `K`, `V`, …) still hit the same
 // phantom-class path.  Bail out before resolving (registering nothing, same
-// as `recordDeclaredElemType`'s early `return`) the moment ANY top-level
-// arg names one of `typeParams` — a partially-phantom arg list is exactly
-// as unsafe as a fully phantom one, since a match arm can select any case's
-// field position.
+// as `recordDeclaredElemType`'s early `return`) the moment ANY arg — at any
+// nesting depth (#6742) — names one of `typeParams`; a partially-phantom arg
+// list is exactly as unsafe as a fully phantom one, since a match arm can
+// select any case's field position.
 func recordParamGenericArgs(ctx: in FuncCtx, name: in String, ty: in TypeExpr, typeParams: in List[String]): Unit {
   val rawArgs = annotationGenericArgs(ty)
+  // `typeParamIndexOf` alone only catches a bare top-level arg (`Result[T,
+  // String]`'s `T`); it does not recurse, so a type param NESTED inside
+  // another generic instantiation (`Result[Option[T], String]`'s `T`, buried
+  // inside the `Option[T]` arg) slipped past it straight into
+  // `eagerlyResolveGenericArgs` below, which DOES recurse (into `TGenericApp`
+  // args/`TSlice` elem/`TParen` inner) and guesses a phantom same-package
+  // class for the nested unresolved `T` it finds — that phantom class name
+  // then gets threaded into `Option[T]`'s own recorded args and used as a
+  // `checkcast` target the moment a later `match` destructures the `Option`
+  // payload itself, throwing `NoClassDefFoundError`/`ClassCastException` at
+  // runtime (#6742). `containsTypeParam` (01_types.l) is the full recursive
+  // walk `returnTypeGenericArgsFiltered` already uses for the same class of
+  // bug on a function's RETURN type — reuse it here so a nested occurrence
+  // bails the whole arg list exactly as a top-level one does.
   var ti = 0
   while ti < rawArgs.count {
-    if typeParamIndexOf(rawArgs[ti], typeParams) >= 0 {
+    if containsTypeParam(rawArgs[ti], typeParams) {
       return
     }
     ti = ti + 1
