@@ -34220,7 +34220,224 @@ loud on both targets; `typechecker_self_test.l` 378/378,
 regex-timeout / `Std.Environment.args()` JVM landing these four follow
 up on), #5183 (the original Result/Option accessor feature #6630
 hardens).
-## D-progress-818 — MSIL backend: self-referential/container-of-own-parameter generic fields fixed (#6568), #6569 re-verified as already fixed, `Std.Collections.Persistent.PersistentMap[K, V]` shipped dotnet-only (#6570), new JVM generics-erasure gap filed (#6708)
+
+## D-progress-818 — JVM extern generic-collection `for`-loop element-type erasure and Object-inherited-method fallback typing fixed; `lyric-web` `--target jvm` build unblocked (#6565)
+
+**Context.** #6558/#6024 got `lyric build --manifest lyric-web/lyric.toml
+--target jvm` past type-check on the `Web` ↔ `Web.Kernel.Runtime` package
+cycle, surfacing a separate, pre-existing JVM codegen gap: compilation
+failed with `error[J002]: ... no matching instance or inherited method for
+'java.lang.Object.toLower()'` while compiling `Web.Kernel.Runtime`.
+`Web.Kernel.Runtime`'s JVM kernel (`lyric-web/src/_kernel/jvm/web_kernel.l`)
+exposes Undertow's `HeaderMap.getHeaderNames(): Collection<HttpString>` via
+the phantom-type-param extern idiom `Std.CollectionsHost`'s
+`MapKeyCollection`/`MapValueCollection` already use —
+`extern type JHttpStringCollection[T] = "java.util.Collection"`, instantiated
+at each call site as `JHttpStringCollection[JHttpString]` — and iterates it:
+`for name in headerNamesOf(hm) { val key = name.toString().toLower() ... }`.
+
+**Root cause, part 1 (type checker).** `Lyric.TypeChecker`'s `SFor`
+element-type resolution (`typechecker_stmts.l`, `checkStatement`) only
+special-cased the literal generic name `List` (plus the two-arg
+`MapKeyCollection`/`MapValueCollection` forms) when picking a `for`-loop's
+element type from a single-type-parameter generic iterable; every other
+single-param generic — including any extern generic collection using the
+same phantom-type-param idiom — fell through to `TyError`, silently erasing
+the loop variable's static type to `Object` instead of the real
+instantiated argument.
+
+**Root cause, part 2 (JVM codegen).** `Jvm.Codegen.lowerMethodCall`'s final
+fallback arm (`04_calls.l`, reached when no auto-FFI metadata is resolvable
+for the receiver's class — an unrestored Maven-sourced extern type, or any
+class genuinely absent from both JDK jmods and `LYRIC_FFI_JARS`) blanket-
+guessed a `()Object` signature for every method call on that receiver,
+including `toString()`/`hashCode()`/`equals(Object)` — three methods every
+reference type inherits from `java.lang.Object` with a signature the JVM
+spec fixes regardless of the receiver's real (unresolvable) class. Guessing
+`()Object` for `toString()` specifically meant a chained Lyric stdlib
+`String` extension call (`.toLower()`) off that untyped result failed
+auto-FFI resolution against `java.lang.Object` instead of `String` — the
+exact `Web.Kernel.Runtime.buildRequestHeaders` shape and #6565's reported
+error text.
+
+**Fix.** (1) `checkStatement`'s `SFor` arm gained a general fallback: any
+single-type-parameter generic (not just `List`) resolves the loop element
+type to its sole type argument, following the same convention `List[T]`
+already used — covering extern generic collections and any other
+single-param Lyric-native generic. A type that isn't actually iterable at
+runtime is still not separately rejected here; codegen owns that rejection,
+unchanged. (2) `lowerMethodCall`'s no-metadata `JRef(cls)` fallback now pins
+the real, JVM-spec-fixed descriptors for `toString()` (returns `String`),
+`hashCode()` (returns `Int`), and `equals(Object)` (returns `Bool`) instead
+of guessing `()Object` for these three specifically; every other unknown
+method name on an unresolvable receiver still degrades to the `()Object`
+guess unchanged — verified by a dedicated control test (below) that a
+non-pinned method name is NOT silently widened to a precise type.
+
+**A subtlety surfaced during verification: #6565's precise symptom is
+latent once a full JDK + restored Maven classpath is available.** With
+real `java.lang.Object` metadata resolvable (always true — `Object` is a
+core JDK class present in every `java.base.jmod`), `name.toString()`
+resolves through the ordinary metadata-based instance-call path
+(`lowerMethodCall`'s earlier `loadClass(ctx.autoFfi, "java.lang.Object")`
+arm) to the real, correctly-typed `String`-returning signature *regardless*
+of whether `name`'s own static type was correctly `JHttpString` or wrongly
+erased to `Object` — so `.toLower()` succeeds either way, and part 1 alone
+does not reproduce #6565's exact failure text once metadata is available.
+The codegen fallback fix (part 2) only becomes observable when
+`loadClass` itself returns `None` for the specific receiver class — which
+happens deterministically for a genuinely unresolvable class (no JAR, no
+jmods entry) independent of whether JDK jmods are discoverable at all, but
+which is the *only* path that reaches #6565's precise
+`java.lang.Object.toLower()` diagnostic. #6565 was most plausibly filed
+from a compile-time environment where JDK jmods metadata was not
+discoverable at all (`Jvm.AutoFfi.findJmodsDir()` returned empty), at which
+point every auto-FFI call — not just the extern-collection element ones —
+degraded through the same untyped-Object fallback path 2 fixes. Both fixes
+are kept and independently justified: part 1 is a genuine element-type
+correctness fix (matters for any extern-collection element usage besides
+Object-inherited methods, and for any future non-Undertow phantom-generic
+extern collection); part 2 is the direct, environment-independent fix for
+the `()Object`-guess-on-`toString()`/`hashCode()`/`equals()` gap.
+
+**Testing.** `lyric-compiler/lyric/auto_ffi_jvm_self_test.l` (41/41,
+`--target jvm`): a new real-runtime `for`-loop-over-extern-generic-
+collection test mirrors `headerNamesOf`'s exact shape
+(`extern type JCollectionOfString[T] = "java.util.Collection"`, populated
+via a real `HashMap.values()` auto-FFI call, iterated with
+`v.toString().toLower()` inside the loop body) and asserts the summed
+string lengths — proving the element type resolves correctly and the
+downstream method chain runs, on the real JVM. `lyric-compiler/lyric/
+jvm_auto_ffi_bridge_self_test.l` (9/9, default `--target dotnet` — the
+pipeline under test runs in-process regardless of the outer test binary's
+own target): two new tests drive `Jvm.Bridge.compileToJarBundled`
+in-process against a made-up, genuinely-unresolvable extern FQN
+(`com.example.nonexistent.NotARealJdkOrMavenClass`, playing the role of an
+unrestored-Maven-JAR class — `loadClass` returns `None` for it
+deterministically regardless of whether JDK jmods are otherwise
+discoverable) — one proving `toString()`/`hashCode()`/`equals()` all
+compile with their real signatures against that unresolvable receiver, and
+a control test proving a genuinely unknown method name on the same
+receiver still degrades to the untyped `Object` guess (not silently
+widened). A third test drives `Cli.buildProject` against the real on-disk
+`lyric-web/lyric.toml` for `--target jvm` — kept as an environment-
+dependent smoke test (needs a restored Maven classpath for
+`io.undertow:undertow-core`, `LYRIC_MAVEN_RESOLVER` + network access to
+Maven Central) reproving the literal `lyric build --manifest
+lyric-web/lyric.toml --target jvm` acceptance criterion from #6565, with
+its docstring corrected to not overclaim it reproduces #6565's exact
+failure mode hermetically (see "a subtlety" above) — the two tests above it
+are the hermetic, environment-independent regression guards for the
+codegen half, and `auto_ffi_jvm_self_test.l`'s new case is the hermetic
+guard for the type-checker half. `typechecker_self_test.l` (378/378),
+`map_key_self_test.l`/`map_value_self_test.l`/`map_option_self_test.l`/
+`map_enhancements_self_test.l` (the `MapKeyCollection`/`MapValueCollection`
+`SFor` arms adjacent to this change), `for_loop_slice_self_test.l`,
+`generic_extern_self_test.l`, `generic_slice_self_test.l`,
+`jvm_impl_extern_class_self_test.l`, `jvm_trycatch_bridge_self_test.l`,
+`cross_package_generics_self_test.l`, `modechecker_self_test.l`,
+`bitwise_self_test.l` (`--target jvm`), `aspect_weave_self_test.l`
+(`--target jvm`), and `indexof_aliased_bcl_self_test.l` (`--target jvm`)
+all pass with no regressions. Confirmed against a real build: reverting
+both fixes and running `lyric build --manifest lyric-web/lyric.toml
+--target jvm` without a restored Maven classpath reproduces the *different*,
+already-correct M-15-part-1 diagnostic (`class 'io.undertow.util.HttpString'
+not found in JDK jmods or LYRIC_FFI_JARS`) rather than #6565's error on this
+host (real JDK jmods discoverable) — consistent with the "latent" finding
+above and confirming the fix's own scope is exactly the two gaps described,
+not a workaround for the unrelated missing-dependency case. Full `make
+lyric` clean build.
+
+**Related:** #6565, #6558/#6024 (the cyclic-import fix that first made this
+codegen gap reachable), docs/44-jvm-production-readiness-plan.md M-15
+(the `java.lang.Object`-inherited-method / metadata-unresolvable-receiver
+robustness gaps this fix's part 2 extends), docs/42-extern-metadata-
+resolution.md (the auto-FFI metadata-resolution design this fix's "latent
+symptom" finding depends on).
+
+## D-progress-819 — JVM `equals(Object)` fallback (D-progress-818) boxes a primitive argument before the pinned `invokevirtual`, fixing a `VerifyError` at class-load time (#6718, review finding on PR #6717)
+
+**Context.** D-progress-818's `lowerMethodCall` fix pinned the JVM-spec-fixed
+`equals(Object): boolean` descriptor whenever `memberName == "equals" and
+args.count == 1`, regardless of the argument's own lowered JVM type.
+`lowerCallArg` (run earlier in the same function to push each argument onto
+the operand stack) does not auto-box a primitive on its own — a Lyric `Int`
+literal like the `5` in `x.equals(5)` lowers straight to `LIconst` + `JInt`,
+leaving a raw JVM primitive `int` on the stack. Pinning the descriptor to
+`(Ljava/lang/Object;)Z` without boxing that primitive first is a stack-
+type/descriptor mismatch: the constant pool says the parameter is a
+reference, the actual stack entry is a primitive. The JVM bytecode verifier
+rejects this — `VerifyError: Bad type on operand stack ... Type integer ...
+is not assignable to 'java/lang/Object'` — at CLASS-LOAD time, not compile
+time, so a `lyric build` for code shaped this way would have appeared to
+succeed and only failed later when something actually loaded the emitted
+class. A code-review pass on PR #6717 (the one landing D-progress-818)
+caught this before merge, filed as #6718, and PR #6717 was held for the fix
+rather than landing with the gap.
+
+**Fix.** `lowerMethodCall`'s `isObjectEquals` branch now calls
+`coerceArgTo(insns, paramTys[0], JRef(className = "java/lang/Object"))`
+immediately before emitting the pinned `invokevirtual`, whenever
+`isObjectEquals` is true. `coerceArgTo`'s existing `JRef(toCls)` target arm
+already owns every primitive-to-`Object` boxing case for every other
+reference-slot coercion in this function (the fallback fix reuses it rather
+than inventing a second boxing path, per the review finding's own
+suggestion) — it correctly no-ops (via `boxIfNeeded`'s catch-all `LNop`
+branch) when the argument is already a reference type, so the call is safe
+to make unconditionally rather than needing an extra `isRefJvm` guard.
+
+**Testing.** A new hermetic regression test in
+`jvm_auto_ffi_bridge_self_test.l` (10/10 total) targets exactly the failure
+mode the review finding described, and does so by actually EXECUTING the
+compiled class under a real JVM (not merely asserting `compileToJarBundled`
+succeeds — a `VerifyError` is invisible to the compiler itself, which is
+why the #6565 tests one section above, compile-only, never caught this).
+Getting a genuinely-executable regression case took one iteration:  the
+obvious design — an extern type naming a wholly nonexistent FQN (the same
+`com.example.nonexistent.*` idiom the #6565 tests already use) — turned out
+to be untestable this way, confirmed empirically: `java` fails merely
+*preparing* `EqualsPrimitiveArg.App` for execution with `NoClassDefFoundError`
+resolving the receiver's own (genuinely nonexistent) type, before bytecode
+verification is ever reached, for ANY class with a method whose descriptor
+names that FQN — regardless of whether the method's bytecode is
+verifier-valid. The test instead needs a receiver class that is
+unresolvable to the COMPILER (so #6718's fallback path actually fires) but
+genuinely loadable by the JVM at RUN time (so class-loading can proceed far
+enough to reach real bytecode verification). The test achieves this by
+shelling out to `javac` (the same JDK already required to provide `java` for
+every JVM self-test in this suite) to compile a trivial one-line stub class
+into a side directory that is deliberately never shown to the Lyric
+compiler (kept off `LYRIC_FFI_JARS`, so `Jvm.AutoFfi.loadClass` still
+returns `None` for it and the fallback fires) but IS added to `java`'s own
+`-cp` at run time (so the class resolves and full verification runs) — a
+fully self-contained, network-free, ambient-state-free reproduction.
+`checkEqualsInt`/`checkEqualsBool` (covering `Int` and `Bool` primitive
+arguments) are never actually CALLED from `main` (there remains no way to
+construct an instance of the stub class from Lyric — the compiler never
+learned its shape) — confirmed unnecessary: loading `EqualsPrimitiveArg.App`
+to run `main` already requires the JVM to resolve and verify the WHOLE
+class file in one pass (the same empirical finding above — an unresolvable
+type in one method's descriptor already breaks loading of the entire class,
+not just that method), so a verifier-invalid `checkEqualsInt` reliably fails
+class-load before `main`'s own `println` ever runs, with or without an
+explicit call. Verified the test is actually discriminating, not just
+green by construction: reverted only the `coerceArgTo` call (keeping the
+rest of D-progress-818's fix), rebuilt (`make selfhosted-compiler`), and
+reran — the test failed with exactly the predicted diagnostic
+(`VerifyError: Bad type on operand stack ... Location:
+EqualsPrimitiveArg/App.checkEqualsInt(...)... Type integer (current frame,
+stack[1]) is not assignable to 'java/lang/Object'`), then restored the fix
+and confirmed green again before proceeding. Full `make lyric` clean
+build; `jvm_auto_ffi_bridge_self_test.l` 10/10, `auto_ffi_jvm_self_test.l`
+41/41 (`--target jvm`), `typechecker_self_test.l` 378/378, plus the same
+broader regression sweep D-progress-818 ran (map/generic/JVM-codegen self-
+tests, `bitwise_self_test.l`/`aspect_weave_self_test.l`/
+`indexof_aliased_bcl_self_test.l` on `--target jvm`) — no regressions.
+
+**Related:** #6718, #6717 (the PR this review finding was raised against),
+D-progress-818 (the `equals(Object)` fallback this fixes a gap in).
+
+## D-progress-820 — MSIL backend: self-referential/container-of-own-parameter generic fields fixed (#6568), #6569 re-verified as already fixed, `Std.Collections.Persistent.PersistentMap[K, V]` shipped dotnet-only (#6570), new JVM generics-erasure gap filed (#6708)
 
 **Context.** #6568 and #6569 were both filed against the published NuGet
 `lyric` 0.5.1 global tool (a sandbox that could not build `./bin/lyric`
