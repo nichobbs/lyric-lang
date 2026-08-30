@@ -3984,6 +3984,20 @@ func lowerMethodCall(
       } else {
         JRef(className = "java/lang/Object")
       }
+      if isObjectEquals {
+        // The pinned `(Ljava/lang/Object;)Z` descriptor requires a reference
+        // on the stack at the call site, but `lowerCallArg` above left a raw
+        // primitive there when the argument's own static type is a JVM
+        // primitive (e.g. `x.equals(5)`'s literal `5` is `LIconst` + `JInt`,
+        // never auto-boxed). Pinning `Object` without boxing produces a
+        // stack-type/descriptor mismatch the verifier rejects at class-load
+        // time (`VerifyError`), not compile time (#6718). `coerceArgTo`
+        // already owns every primitive-to-Object boxing case (mirrors its
+        // `JRef(toCls)` arm used for every other reference-slot coercion in
+        // this function) and no-ops when the argument is already a
+        // reference, so this is safe to call unconditionally.
+        coerceArgTo(insns, paramTys[0], JRef(className = "java/lang/Object"))
+      }
       insns.add(LInvokevirtual(owner = cls, name = memberName, params = fallbackParams, ret = fallbackRet))
       fallbackRet
     }

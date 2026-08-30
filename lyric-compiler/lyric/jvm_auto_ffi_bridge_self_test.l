@@ -44,6 +44,7 @@ import Std.Collections
 import Std.String as Str
 import Std.File as File
 import Std.Path as Path
+import Std.ProcessCapture as Capture
 import Std.Testing
 import Std.Uuid
 import Std.Environment as Environment
@@ -258,6 +259,142 @@ test "a genuinely unknown method on a metadata-unresolvable extern type still de
   assertTrue(
     Str.contains(caughtMessage, "no matching instance or inherited method"),
     "diagnostic still names the unresolved-method problem (got: " + caughtMessage + ")"
+  )
+}
+
+// ─── #6718 (review finding on PR #6717): equals(Object) fallback with a
+// PRIMITIVE argument must box it before the pinned invokevirtual ───────────
+//
+// The #6565 fix above pins `equals(Object): boolean`'s descriptor whenever
+// `memberName == "equals" and args.count == 1`, regardless of the argument's
+// own lowered type. `lowerCallArg` (called before this fallback runs) leaves
+// a raw JVM primitive on the stack for a primitive-typed argument — an Int
+// literal like `5` lowers straight to `LIconst` + `JInt`, never auto-boxed —
+// so pinning the descriptor to `(Ljava/lang/Object;)Z` without boxing that
+// primitive produces a stack-type/descriptor mismatch: the constant pool
+// says the parameter is a reference, but the value on the stack is a raw
+// `int`. The JVM bytecode verifier rejects this at CLASS-LOAD time
+// (`VerifyError`), not compile time — a `lyric build` for such code would
+// have appeared to succeed and only failed later when something actually
+// ran the emitted class.
+//
+// This must be caught by actually LOADING the compiled class under a real
+// JVM, not merely by asserting `compileToJarBundled` returns true (a
+// VerifyError is a class-loading-time failure, invisible to the compiler
+// itself, which is exactly why the #6565 tests above — compile-only —
+// missed this regression, per the review finding). That rules out the
+// tests-above's `com.example.nonexistent.*` FQN for THIS test specifically:
+// a class that genuinely does not exist anywhere can never be loaded by a
+// real JVM at all (confirmed empirically — `java` fails with
+// `NoClassDefFoundError` merely resolving the receiver's own type while
+// preparing the class, before bytecode verification is even reached), so a
+// class whose receiver type is unresolvable everywhere can never prove
+// anything about verifier-level correctness. This test instead needs a
+// receiver class that is unresolvable to the COMPILER (so the fix's
+// fallback path is actually exercised) but genuinely loadable by the JVM at
+// RUN time (so class-load can proceed far enough to hit real bytecode
+// verification). `javac` (the same JDK providing `java`, already required
+// by every other JVM self-test in this suite) compiles a trivial stub class
+// into a side directory that is deliberately NOT passed to the Lyric
+// compiler (so `Jvm.AutoFfi.loadClass` still returns `None` for it and the
+// #6718 fallback fires) but IS added to `java`'s own `-cp` at run time —
+// fully self-contained, no network access or ambient sibling-test restore
+// state required. `checkEqualsInt`/`checkEqualsBool` are never CALLED from
+// `main` (there is still no way to construct an instance of the stub class
+// from Lyric — the compiler never learned its shape), but that is not
+// needed: loading `EqualsPrimitiveArg.App` to run `main` requires the JVM
+// to resolve and verify the WHOLE class file in one pass (empirically
+// confirmed above — the receiver type in an unresolvable method's
+// descriptor already breaks loading of the whole class, not just that one
+// method), so if `checkEqualsInt`'s bytecode were verifier-invalid, `java`
+// would fail with `VerifyError` loading `EqualsPrimitiveArg.App` before
+// `main`'s own `println` ever ran, regardless of whether `checkEqualsInt`
+// itself is invoked.
+test "equals(Object) fallback boxes a primitive argument before the pinned invokevirtual — no VerifyError at class-load (#6718)" {
+  val dir = freshTempDir("equals-primitive-arg")
+
+  // Stub class: compiled by `javac`, deliberately never shown to the Lyric
+  // compiler (so its metadata stays unresolvable to `Jvm.AutoFfi`), but real
+  // enough for `java` to load at run time.
+  val stubSrcDir = Path.join(dir, "stubsrc/com/example/nonexistent")
+  match File.createDir(stubSrcDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create stub source dir: " + IOError.message(e))
+  }
+  val stubSrcPath = Path.join(stubSrcDir, "NotARealJdkOrMavenClass.java")
+  val stubSrc = "package com.example.nonexistent;\n" + "public class NotARealJdkOrMavenClass {}\n"
+  match File.writeText(stubSrcPath, stubSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write stub source: " + IOError.message(e))
+  }
+  val stubClassesDir = Path.join(dir, "stubclasses")
+  match File.createDir(stubClassesDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create stub classes dir: " + IOError.message(e))
+  }
+  val javacArgs: List[String] = newList()
+  javacArgs.add("-d")
+  javacArgs.add(stubClassesDir)
+  javacArgs.add(stubSrcPath)
+  val javacResult = Capture.runCaptureWithDiagnostics("javac", javacArgs, "")
+  assertEqualInt(
+    javacResult.exitCode,
+    0,
+    "javac must compile the stub receiver class (stderr=" + javacResult.stderr + ")"
+  )
+
+  val outPath = Path.join(dir, "EqualsPrimitiveArg.jar")
+  val source = "package EqualsPrimitiveArg.App\n" + "\n" +
+    "extern type JUnresolvable = \"com.example.nonexistent.NotARealJdkOrMavenClass\"\n" +
+    "\n" +
+    "func checkEqualsInt(x: in JUnresolvable): Bool {\n" +
+    "  x.equals(5)\n" +
+    "}\n" +
+    "\n" +
+    "func checkEqualsBool(x: in JUnresolvable): Bool {\n" +
+    "  x.equals(true)\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(\"loaded-ok\")\n" +
+    "}\n"
+  val noStdlib: List[String] = newList()
+  var panicked = false
+  var caughtMessage = ""
+  val ok = try {
+    compileToJarBundled(source, outPath, "EqualsPrimitiveArg", noStdlib, "")
+  } catch Bug as b {
+    panicked = true
+    caughtMessage = b.message
+    false
+  }
+  assertTrue(
+    not panicked,
+    "equals(Object) with a primitive argument must not panic at compile time (message: " + caughtMessage + ")"
+  )
+  assertTrue(ok, "equals(Object) with a primitive argument compiles")
+
+  val classpathSep = if Str.startsWith(Environment.runtimeIdentifier(), "win") { ";" } else { ":" }
+  val runArgs: List[String] = newList()
+  runArgs.add("-cp")
+  runArgs.add(outPath + classpathSep + stubClassesDir)
+  runArgs.add("EqualsPrimitiveArg.App")
+  val result = Capture.runCaptureWithDiagnostics("java", runArgs, "")
+  cleanup(dir)
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "the compiled class must LOAD (verify) and RUN cleanly under a real JVM, not throw VerifyError " + "(stderr=" +
+      result.stderr +
+      ")"
+  )
+  assertTrue(
+    Str.contains(result.stdout, "loaded-ok"),
+    "main actually ran to completion (stdout=" + result.stdout + ", stderr=" + result.stderr + ")"
+  )
+  assertTrue(
+    not Str.contains(result.stderr, "VerifyError"),
+    "no VerifyError anywhere in stderr (stderr=" + result.stderr + ")"
   )
 }
 

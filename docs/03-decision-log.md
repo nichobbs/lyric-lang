@@ -34355,3 +34355,85 @@ codegen gap reachable), docs/44-jvm-production-readiness-plan.md M-15
 robustness gaps this fix's part 2 extends), docs/42-extern-metadata-
 resolution.md (the auto-FFI metadata-resolution design this fix's "latent
 symptom" finding depends on).
+
+## D-progress-819 — JVM `equals(Object)` fallback (D-progress-818) boxes a primitive argument before the pinned `invokevirtual`, fixing a `VerifyError` at class-load time (#6718, review finding on PR #6717)
+
+**Context.** D-progress-818's `lowerMethodCall` fix pinned the JVM-spec-fixed
+`equals(Object): boolean` descriptor whenever `memberName == "equals" and
+args.count == 1`, regardless of the argument's own lowered JVM type.
+`lowerCallArg` (run earlier in the same function to push each argument onto
+the operand stack) does not auto-box a primitive on its own — a Lyric `Int`
+literal like the `5` in `x.equals(5)` lowers straight to `LIconst` + `JInt`,
+leaving a raw JVM primitive `int` on the stack. Pinning the descriptor to
+`(Ljava/lang/Object;)Z` without boxing that primitive first is a stack-
+type/descriptor mismatch: the constant pool says the parameter is a
+reference, the actual stack entry is a primitive. The JVM bytecode verifier
+rejects this — `VerifyError: Bad type on operand stack ... Type integer ...
+is not assignable to 'java/lang/Object'` — at CLASS-LOAD time, not compile
+time, so a `lyric build` for code shaped this way would have appeared to
+succeed and only failed later when something actually loaded the emitted
+class. A code-review pass on PR #6717 (the one landing D-progress-818)
+caught this before merge, filed as #6718, and PR #6717 was held for the fix
+rather than landing with the gap.
+
+**Fix.** `lowerMethodCall`'s `isObjectEquals` branch now calls
+`coerceArgTo(insns, paramTys[0], JRef(className = "java/lang/Object"))`
+immediately before emitting the pinned `invokevirtual`, whenever
+`isObjectEquals` is true. `coerceArgTo`'s existing `JRef(toCls)` target arm
+already owns every primitive-to-`Object` boxing case for every other
+reference-slot coercion in this function (the fallback fix reuses it rather
+than inventing a second boxing path, per the review finding's own
+suggestion) — it correctly no-ops (via `boxIfNeeded`'s catch-all `LNop`
+branch) when the argument is already a reference type, so the call is safe
+to make unconditionally rather than needing an extra `isRefJvm` guard.
+
+**Testing.** A new hermetic regression test in
+`jvm_auto_ffi_bridge_self_test.l` (10/10 total) targets exactly the failure
+mode the review finding described, and does so by actually EXECUTING the
+compiled class under a real JVM (not merely asserting `compileToJarBundled`
+succeeds — a `VerifyError` is invisible to the compiler itself, which is
+why the #6565 tests one section above, compile-only, never caught this).
+Getting a genuinely-executable regression case took one iteration:  the
+obvious design — an extern type naming a wholly nonexistent FQN (the same
+`com.example.nonexistent.*` idiom the #6565 tests already use) — turned out
+to be untestable this way, confirmed empirically: `java` fails merely
+*preparing* `EqualsPrimitiveArg.App` for execution with `NoClassDefFoundError`
+resolving the receiver's own (genuinely nonexistent) type, before bytecode
+verification is ever reached, for ANY class with a method whose descriptor
+names that FQN — regardless of whether the method's bytecode is
+verifier-valid. The test instead needs a receiver class that is
+unresolvable to the COMPILER (so #6718's fallback path actually fires) but
+genuinely loadable by the JVM at RUN time (so class-loading can proceed far
+enough to reach real bytecode verification). The test achieves this by
+shelling out to `javac` (the same JDK already required to provide `java` for
+every JVM self-test in this suite) to compile a trivial one-line stub class
+into a side directory that is deliberately never shown to the Lyric
+compiler (kept off `LYRIC_FFI_JARS`, so `Jvm.AutoFfi.loadClass` still
+returns `None` for it and the fallback fires) but IS added to `java`'s own
+`-cp` at run time (so the class resolves and full verification runs) — a
+fully self-contained, network-free, ambient-state-free reproduction.
+`checkEqualsInt`/`checkEqualsBool` (covering `Int` and `Bool` primitive
+arguments) are never actually CALLED from `main` (there remains no way to
+construct an instance of the stub class from Lyric — the compiler never
+learned its shape) — confirmed unnecessary: loading `EqualsPrimitiveArg.App`
+to run `main` already requires the JVM to resolve and verify the WHOLE
+class file in one pass (the same empirical finding above — an unresolvable
+type in one method's descriptor already breaks loading of the entire class,
+not just that method), so a verifier-invalid `checkEqualsInt` reliably fails
+class-load before `main`'s own `println` ever runs, with or without an
+explicit call. Verified the test is actually discriminating, not just
+green by construction: reverted only the `coerceArgTo` call (keeping the
+rest of D-progress-818's fix), rebuilt (`make selfhosted-compiler`), and
+reran — the test failed with exactly the predicted diagnostic
+(`VerifyError: Bad type on operand stack ... Location:
+EqualsPrimitiveArg/App.checkEqualsInt(...)... Type integer (current frame,
+stack[1]) is not assignable to 'java/lang/Object'`), then restored the fix
+and confirmed green again before proceeding. Full `make lyric` clean
+build; `jvm_auto_ffi_bridge_self_test.l` 10/10, `auto_ffi_jvm_self_test.l`
+41/41 (`--target jvm`), `typechecker_self_test.l` 378/378, plus the same
+broader regression sweep D-progress-818 ran (map/generic/JVM-codegen self-
+tests, `bitwise_self_test.l`/`aspect_weave_self_test.l`/
+`indexof_aliased_bcl_self_test.l` on `--target jvm`) — no regressions.
+
+**Related:** #6718, #6717 (the PR this review finding was raised against),
+D-progress-818 (the `equals(Object)` fallback this fixes a gap in).
