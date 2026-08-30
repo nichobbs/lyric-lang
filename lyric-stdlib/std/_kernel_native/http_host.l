@@ -799,7 +799,7 @@ func readChunkedBody(conn: in Tcp.Conn, buf: in List[Byte], startPos: in Int): R
       var trailerDone = false
       var trailerCount = 0
       while not trailerDone {
-        if trailerCount > maxTrailerLines {
+        if trailerCount >= maxTrailerLines {
           return Err(error = "chunked response trailer section exceeds the maximum allowed number of lines")
         }
         val trailerLineEnd = match readUntilPatternFrom(conn, buf, trailerPos, crlfBytes(), maxChunkLineBytes) {

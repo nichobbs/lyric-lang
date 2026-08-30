@@ -35346,3 +35346,40 @@ finding), D-progress-821 (the #6692 fix whose `readResponse` loop this
 entry closes the remaining count-cap gap in), D-progress-818 (the
 `maxTrailerLines` precedent this entry's `maxInterimResponses` mirrors).
 
+---
+
+## D-progress-824 — `_kernel_native/http_host.l`: `maxTrailerLines` had the same off-by-one D-progress-822 fixed for `maxInterimResponses`, a ninth review round on this same PR
+
+**Context.** A ninth `claude-review` pass (APPROVED, no REQUIRED
+findings) re-read the full diff from scratch and flagged, as a
+SUGGESTION, that `readChunkedBody`'s trailer-line cap check
+(`if trailerCount > maxTrailerLines`, from D-progress-818/#6636 —
+predating D-progress-822) has the identical off-by-one D-progress-822
+found and fixed for `maxInterimResponses`: the check runs at the top of
+the loop before processing that iteration's trailer line, so it
+actually permits reading up to 101 trailer lines before rejecting, not
+the documented 100. Not a security issue on its own (still bounded, no
+overflow) — just an inconsistency with the sibling fix and the
+constant's own doc comment.
+
+**Fix.** Changed `>` to `>=`, matching D-progress-822's `>=
+maxInterimResponses` form exactly.
+
+A second, unrelated SUGGESTION from the same review round — a
+doc-precision mismatch in `native/plan/08-work-items.md`'s N9.4
+write-up, which said `buildServerCtx` had "three pre-existing UFCS
+calls" while listing only two example call sites (matching
+D-progress-823's own "two" wording) — was also fixed in the same commit
+as a one-word correction.
+
+**Verification.** All 12 existing self-test cases (items E–P) re-run
+clean after the change (the trailer-count cap isn't directly exercised
+by name in any current test, so no new case was added for a one-line
+boundary correction with no behavior-visible-at-the-tested-boundary
+change; the existing suite's chunked-body cases don't send trailer
+fields at all). `lyric fmt --write` applied clean to both changed files.
+
+**Related:** #6623 (the PR this fix ships in), D-progress-822 (the
+sibling fix for `maxInterimResponses` this entry mirrors), D-progress-818
+(the original `maxTrailerLines` introduction, #6636).
+

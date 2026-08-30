@@ -1490,7 +1490,7 @@ function treats a non-empty CA PEM as *exclusive* trust (only that CA
 verifies), but docs/61 §3.2's `withCaCertificate` client-builder option is
 *additive* (system default trust plus the supplied CA) — the seam had no way
 to express that distinction before this item. `Std.TcpHost`'s
-`buildServerCtx` also had three pre-existing UFCS calls
+`buildServerCtx` also had two pre-existing UFCS calls
 (`cfg.identity.rawHandle()`, `ca.rawHandle().certPem`) that were never
 exercised until this item's self-test drove a live TLS accept through them —
 both fixed to the explicit static-call form (`Tls.Identity.rawHandle(id)`,
