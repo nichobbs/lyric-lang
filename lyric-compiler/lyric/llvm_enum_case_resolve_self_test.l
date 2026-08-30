@@ -18,7 +18,7 @@
 //! lookup in `lowerExpr` — previously only ever hit by an
 //! already-qualified path — now resolves a truly bare reference too.
 //!
-//! Three cases:
+//! Four cases:
 //!   - item A (#6589's exact reported shape): a bare reference to a
 //!     CROSS-PACKAGE enum case (`Std.HttpEngine.HttpVersion.Http1_1`,
 //!     the issue's own motivating example), assigned against an
@@ -31,6 +31,11 @@
 //!   - item C (D-progress-823 item D, second half): a record field's
 //!     *default* value that is itself a bare enum case, exercised by
 //!     omitting the field at a construction site.
+//!   - item D (review finding on PR #6746): a bare case name shared by
+//!     an enum and a union in the same bundle must resolve to the enum,
+//!     matching `Msil.Codegen`'s bare-name check order (enum ordinal
+//!     before nullary union case) — `lowerExpr`'s `EPath` arm checks
+//!     `ctx.enumDefs` before `ctx.caseRefs` for exactly this reason.
 //!
 //! Every case's `match` arms use the fully-qualified `EnumType.Case`
 //! pattern form deliberately — a *pattern*-position bare case name is a
@@ -260,4 +265,35 @@ test "bare enum-case record field default resolves when the field is omitted at 
     "}\n"
   val r = compileAndRun(src)
   assertEqualInt(r.exitCode, 42, "bare enum-case record field default (D-progress-823 item D)")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Item D (review finding on PR #6746): when a bare case name collides
+// across an enum and a union in the same bundle, `lowerExpr`'s `EPath`
+// arm must check `ctx.enumDefs` BEFORE `ctx.caseRefs`, matching
+// `Msil.Codegen`'s bare-name resolution order (`enumCaseOrdinals` before
+// `unionCaseCtorByName`) exactly, so identical unqualified source
+// resolves the same way on `--target native` as on `--target dotnet`.
+// `Status` (an enum) and `Wrapper` (a union) both declare a case named
+// `Ready`; a bare `Ready` used against an explicit `Status`-typed
+// annotation must resolve to `Status`'s enum ordinal, not `Wrapper`'s
+// union-case constructor.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a bare case name shared by an enum and a union resolves to the enum, matching Msil.Codegen's precedence (#6746 review)" {
+  val src = "package T\n" + "enum Status {\n" + "  case Ready\n" + "  case Done\n" + "}\n" + "union Wrapper {\n" +
+    "  case Ready\n" +
+    "  case Pending\n" +
+    "}\n" +
+    "func statusToInt(s: in Status): Int {\n" +
+    "  match s {\n" +
+    "    case Status.Ready -> 1\n" +
+    "    case Status.Done -> 2\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  var s: Status = Ready\n" +
+    "  statusToInt(s)\n" +
+    "}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(r.exitCode, 1, "bare case name collision resolves to the enum, not the union (#6746 review)")
 }

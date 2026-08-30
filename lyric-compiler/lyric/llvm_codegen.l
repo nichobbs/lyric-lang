@@ -1477,8 +1477,25 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
           return loadLocal(ctx, insns, path.segments[0])
         }
       }
-      // Nullary union case (`None`, `Option.None`) constructs an
-      // instance; enum case paths (`Color.Red`) are i32 discriminants.
+      // Enum case ordinal (`Red`) is checked BEFORE a nullary union case
+      // (`None`) for a bare single-segment name — matching
+      // `Msil.Codegen`'s bare-name resolution order exactly
+      // (`enumCaseOrdinals` before `unionCaseCtorByName`, ~codegen.l:8058
+      // vs :8080). Enum case paths (`Color.Red`) are i32 discriminants.
+      // This ordering only matters when a bundle has an enum case and a
+      // union case sharing the exact same bare name — pick the same
+      // winner MSIL/dotnet does for identical unqualified source, rather
+      // than an arbitrary native-only choice.
+      match mapGet(ctx.enumDefs, joined) {
+        case Some(idx) -> {
+          if not Str.endsWith(joined, ".__enum") {
+            return NVal(ty = NI32, value = NLitInt(v = intToLong(idx), ty = NI32))
+          }
+        }
+        case None -> {
+        }
+      }
+      // Nullary union case (`None`, `Option.None`) constructs an instance.
       match mapGet(ctx.caseRefs, joined) {
         case Some(cref) -> {
           val ui = match mapGet(ctx.unionDefs, cref.unionKey) {
@@ -1490,15 +1507,6 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
           }
           val noArgs: List[CallArg] = newList()
           return lowerUnionConstruct(ctx, insns, ui, cref.caseIdx, noArgs)
-        }
-        case None -> {
-        }
-      }
-      match mapGet(ctx.enumDefs, joined) {
-        case Some(idx) -> {
-          if not Str.endsWith(joined, ".__enum") {
-            return NVal(ty = NI32, value = NLitInt(v = intToLong(idx), ty = NI32))
-          }
         }
         case None -> {
         }
