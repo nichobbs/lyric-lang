@@ -689,6 +689,22 @@ branch that diverges (`return`/`throw`/`break`/`continue`/`panic`) has the botto
 type and does not constrain the other arm, so `if c { x } else { return d }` is
 typed by its `then` branch. An `if` *without* an `else` produces no value on the
 false path and so has type `Unit`.
+
+Branch-type unification (`if`/`else` and `match` arms alike) is
+**position-aware**: a lone `Unit` branch beside a value-producing branch
+(e.g. one `if`/`match` arm ending `println(x)` and the other `y`) unifies
+cleanly — and is rejected as a mismatch (**T0067**) — depending on
+whether the whole `if`/`match` is itself in **value position** (bound to
+a `val`/`var`, returned, or otherwise consumed as an operand) or
+**statement position** (its result is discarded). In statement position,
+a `Unit`-vs-value branch mismatch is accepted leniently (the discarded
+branch's real type never surfaces); in value position, it is T0067,
+since silently coercing the value branch away would lose data the
+caller asked for. An **else-less** `if` always yields `Unit` regardless
+of the outer expression's own position, since its then-branch's value is
+unconditionally discarded either way — so a nested `if`/`match` inside
+an else-less `if`'s then-branch is always checked leniently (statement
+position), even when the else-less `if` itself sits in value position.
 ```
 val x = if cond then a else b
 ```

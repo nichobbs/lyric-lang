@@ -970,6 +970,61 @@ test "jvm: call-argument enum hint resolves the bare case against the CALLEE's d
   )
 }
 
+// #6735: an IMPLICIT TAIL-RETURN shape (`func f(): T.Level { Debug }`, no
+// explicit `return`), distinct from the `#6688` CALL-ARGUMENT shape above
+// and the `#6639` PATTERN-MATCH shape — a third, independent call site in
+// `enumCaseClassForExpecting`'s consumers. `lowerFunc`'s implicit-tail-return
+// lowering (`06_items.l`, both the `FBBlock` trailing-expression path and the
+// `FBExpr` `= expr` body path) never seeded the enum-hint expect-stack from
+// the function's own declared return type before this fix, unlike the
+// explicit `SReturn` path (`05_stmts.l`) and unlike MSIL's analogous
+// `pushEnumHintMsil` call. `makeBDebug` returns a bare `Debug` with no
+// `return` keyword and no call-argument context at all — only the function's
+// own `B.Level` return-type annotation can disambiguate it from `CrossHintA2`'s
+// own same-named, differently-ordered `Level`.
+func crossHintAImplicitReturnSource(): String {
+  "package CrossHintA2\n" + "\n" + "import CrossHintB as B\n" + "\n" + "pub enum Level {\n" + "  case Debug\n" +
+    "  case Info\n" +
+    "}\n" +
+    "\n" +
+    "func makeBDebug(): B.Level {\n" +
+    "  Debug\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Int {\n" +
+    "  println(B.log(makeBDebug()))\n" +
+    "  0\n" +
+    "}\n"
+}
+
+test "dotnet: implicit tail-return enum hint resolves against the function's OWN declared return type (#6735)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("CrossHintB", crossHintBSource()))
+  packages.add(mkPkg("CrossHintA2", crossHintAImplicitReturnSource()))
+  val result = compileAndRunMsil("crosshint-implicit-dotnet", packages, "CrossHintA2")
+  assertEqualInt(result.exitCode, 0, "cross_hint_implicit dotnet: exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "B:Debug",
+    "cross_hint_implicit dotnet: an implicit tail-return `Debug` resolves against the function's own " +
+      "declared B.Level return type, not CrossHintA2's own same-named, differently-ordered Level"
+  )
+}
+
+test "jvm: implicit tail-return enum hint resolves against the function's OWN declared return type (#6735)" {
+  val pkgSrcs: List[String] = newList()
+  pkgSrcs.add(crossHintBSource())
+  pkgSrcs.add(crossHintAImplicitReturnSource())
+  val result = compileAndRunJvm("crosshint-implicit-jvm", pkgSrcs, "CrossHintA2")
+  assertEqualInt(result.exitCode, 0, "cross_hint_implicit jvm: exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "B:Debug",
+    "cross_hint_implicit jvm: an implicit tail-return `Debug` resolves against the function's own " +
+      "declared B.Level return type, not CrossHintA2's own same-named, differently-ordered Level"
+  )
+}
+
 // #6640: JVM-only — see `pkgDSource`'s doc comment. Single-package (the
 // collision is intra-package), so no separate consumer package is needed.
 test "jvm: same-package two-enum case-name collision resolves bare construction and pattern match (#6640)" {

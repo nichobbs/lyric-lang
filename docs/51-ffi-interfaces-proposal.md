@@ -15,17 +15,21 @@
 > | §B | LSP "Implement <Iface>" code action | #3861 |
 > | §C | Bridge-thunk synthesis | N/A — Lyric primitives are native CLR primitives |
 >
-> `F0024` in the sense this doc originally proposed it (an iface-impl
-> structural-mismatch typo guard) is gone: TypeSpec emission produces
-> structurally-valid IL for any closed instantiation, Phase 2
-> F0021–F0023/F0034 catches every build-time-detectable structural
-> mismatch (with `STVar` substitution and recursive `STSzArray` /
-> `STByRef` / `STNamedGenericInst` handling), and the runtime catches
-> the rest as `TypeLoadException`. The code itself was later reassigned
-> (#6547) to an unrelated diagnostic — "the `extern type` FQN does not
-> resolve to any type in the reference-assembly metadata" (see
-> `docs/01-language-reference.md` §"Diagnostics") — so `F0024` is a
-> live code again, just not for this feature.
+> **Correction (#6547):** the "`F0024` removed" claim below was never
+> accurate for the code as shipped. `F0024` covers the structural
+> shapes §A (i)–(iii) lifted (`STVar` substitution, `STSzArray`,
+> `STByRef`, `STNamedGenericInst`), so those no longer fire it — but
+> `validateOneExternImplMsil`'s own iface-FQN-typo guard (`impl
+> <ExternInterface> for Record` naming an FQN absent from every
+> indexed reference-pack/restored-dependency assembly) has fired
+> `F0024` continuously since before this PR; it was never actually
+> reached the unreachable "silent-skip" path §"F0024 — removed" below
+> describes. This PR's own `msil_codegen_diag_self_test.l`
+> (`"F0024: impl target FQN typo (not in reference metadata) fails
+> cleanly"`) exercises exactly this live path. `docs/01-language-
+> reference.md`'s F0024 row describes the current, correct, single
+> meaning. Treat the paragraph and the "F0024 — removed" section below
+> as historical/aspirational, not the shipped behavior.
 >
 > Explicitly deferred (rare in BCL; silent-skip F0022/F0023 with runtime
 > as the backstop): `STMVar` (method-generic iface methods),
@@ -97,31 +101,39 @@ Phases 1–4 and follow-ups A, B, C are all shipped:
 | §A (i) | STVar substitution for F0022/F0023 on generic ifaces | Shipped in #3864 |
 | §A (ii) | F0024 lift for STSzArray / STByRef | Shipped in #3864 |
 | §A (iii) | F0024 lift for STNamedGenericInst (nested generic types) | Shipped in #3865 |
-| §A (iv) | F0024 removed from this feature (later reassigned, #6547 — see below) | Shipped in #3865 |
+| §A (iv) | F0024 narrowed to the iface-FQN-typo guard only (never actually removed — see correction below) | Shipped in #3865 |
 | §B | LSP "Implement Interface" code action (native + extern) | Shipped in #3861 |
 | §C | Bridge-thunk synthesis | N/A (see below) |
 
-### F0024 — removed from this feature, since reassigned
+### F0024 — live, narrowed to the iface-FQN-typo guard (correction, #6547)
 
-`F0024` was removed from the iface-impl validation path in #3865.
-TypeSpec emission produces structurally-valid IL for any closed
-instantiation, and Phase 2's F0021 / F0022 / F0023 / F0034 catches
-every build-time-detectable structural mismatch — with `STVar`
-substitution against the iface's resolved type args and recursive
-shape handling for `STSzArray`, `STByRef`, and `STNamedGenericInst`.
-The only previously-imagined F0024 role (typo guard for "iface FQN not
-in reference-assembly TypeDef table") proved unreachable in practice:
-`Mdr.assemblyForType` returns `None` for an unknown FQN and the
-validation path silently skips, so the panic site never fired.  The
-wider FFI contract — runtime catches genuine mismatches as
-`TypeLoadException` — covers the typo case at first use instead.
+The paragraphs below describe what #3865 *intended*: `F0024` narrowed
+away from every structural-mismatch shape (those are now Phase 2's
+F0021 / F0022 / F0023 / F0034, with `STVar` substitution and recursive
+`STSzArray` / `STByRef` / `STNamedGenericInst` handling), leaving only
+one imagined role — a typo guard for "iface FQN not in
+reference-assembly TypeDef table" — which #3865 believed was
+unreachable (`Mdr.assemblyForType` returning `None` supposedly always
+meant a silent-skip, never reaching the panic site) and so treated as
+dead code.
 
-The freed code was **not left retired**: #6547 reassigned `F0024` to
-an unrelated diagnostic in `lyric-compiler/msil/codegen.l` — an
-`extern type` FQN that doesn't resolve to any type in an indexed
-reference-pack or restored-dependency assembly (see
-`docs/01-language-reference.md` §"Diagnostics" for the current
-meaning). Do not reuse `F0024` for a third purpose; treat it as taken.
+That belief was **never actually true of the shipped code**:
+`validateOneExternImplMsil` (`msil/codegen.l`) has always distinguished
+an EMPTY metadata index (SDK-less build, genuinely silent-skipped) from
+a POPULATED index that simply doesn't contain the FQN (a real typo,
+which fires `F0024` — originally via `panic("F0024: ...")`, converted
+to `cctx.diagnostics.add(errorDiagnostic("F0024", ...))` by this PR's
+own #4898 panic→diagnostic sweep, which is what made the code visible
+to a naive "does the string F0024 appear in this file" diff check and
+caused an earlier review pass on this PR to mistake it for a brand-new
+diagnostic). `msil_codegen_diag_self_test.l`'s `"F0024: impl target FQN
+typo (not in reference metadata) fails cleanly"` test exercises exactly
+this live path and always has.
+
+There is no reassignment, no freed code, and no second meaning to
+track: `F0024` has had exactly one job — the iface-FQN-typo guard —
+continuously since before this PR existed. `docs/01-language-
+reference.md`'s F0024 row describes this correctly.
 
 ### Explicitly deferred (no real-world impact)
 

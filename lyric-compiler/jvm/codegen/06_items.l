@@ -977,7 +977,19 @@ pub func lowerFunc(
                   // mode `lowerBlock` here popped the tail, leaving the stack empty
                   // for the synthesised `ireturn` (VerifyError: operand stack
                   // underflow).
+                  // #6735: seed the enum-hint expect-stack from this
+                  // function's own declared return type before lowering
+                  // the implicit tail-return expression, exactly like
+                  // `SReturn` already does (05_stmts.l) — an implicit
+                  // bare-case tail return (`func mk(): T.Level { Debug }`)
+                  // is otherwise resolved with no expectation hint at all,
+                  // falling through to the current-package/bare tiers and
+                  // risking the same wrong-same-name-case resolution the
+                  // #6728 CrossHintA/CrossHintB fix closed for the
+                  // call-argument and pattern-match positions.
+                  pushCtorExpect(ctx, retTy)
                   val tailTy = lowerBlockExpr(ctx, insns, block)
+                  popCtorExpect(ctx)
                   // `try { … } finally { … }` in tail position now correctly
                   // propagates the try/catch result through the finally block
                   // via `lowerTryCatchFinallyExpr` (#2043; previously fell back
@@ -1014,7 +1026,11 @@ pub func lowerFunc(
               }
             }
             case FBExpr(e) -> {
+              // #6735: same enum-hint seeding as the FBBlock tail-return
+              // path above, for the `func f(): T = <expr>` body form.
+              pushCtorExpect(ctx, retTy)
               val ty = lowerExpr(ctx, insns, e)
+              popCtorExpect(ctx)
               // A `func f(): T = <Never-typed call>` body reports `JVoid`
               // (`Never` erases to `JVoid` same as `Unit`, #5378/#5651) with
               // nothing left on the operand stack; `emitReturnArrayCoerced`

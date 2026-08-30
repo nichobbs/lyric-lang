@@ -7414,6 +7414,50 @@ func enumSimpleNameOfTypeExprMsil(cctx: in CodegenCtx, te: in TypeExpr): String 
 // since it only ever sees the reading FuncCtx's `fctx.pkgName`, i.e. the
 // CALLER).
 func paramEnumHintMsil(cctx: in CodegenCtx, pkgName: in String, te: in TypeExpr): String {
+  // #6735: a QUALIFIED type reference (`B.Level`, already flattened to the
+  // real declaring package's FQN by `Lyric.AliasRewriter` by the time
+  // codegen runs) names its declaring package explicitly — use it directly
+  // rather than falling through to `resolveEnumTypeDeclPkg`'s bare-name
+  // heuristic below. That heuristic's self-preference branch
+  // (`declarers.count >= 2 and listContains(declarers, fromPkg) -> fromPkg`)
+  // exists for the genuinely bare-name case (an unqualified `Level`
+  // resolves to its OWN declaring package's `Level` when that package is
+  // itself a declarer), but wrongly wins here too: `pkgName` (the
+  // enclosing function's OWN package, e.g. `CrossHintA2`) can ALSO declare
+  // a same-named enum, so the heuristic silently redirects an explicitly
+  // qualified `B.Level` return-type annotation back to `CrossHintA2`'s own
+  // `Level` instead of the named `CrossHintB`.
+  match te.kind {
+    case TRef(path) -> {
+      if path.segments.count >= 2 {
+        val simple = path.segments[path.segments.count - 1]
+        if cctx.enumTypeNames.containsKey(simple) {
+          val qualSegs: List[String] = newList()
+          var qi = 0
+          while qi < path.segments.count - 1 {
+            qualSegs.add(path.segments[qi])
+            qi = qi + 1
+          }
+          modulePathJoin(qualSegs) + "::" + simple
+        } else {
+          ""
+        }
+      } else {
+        paramEnumHintBareMsil(cctx, pkgName, te)
+      }
+    }
+    case _ -> paramEnumHintBareMsil(cctx, pkgName, te)
+  }
+}
+
+// The pre-#6735 bare-name heuristic: resolves an UNQUALIFIED type
+// reference's declaring package by preferring `pkgName` itself when it's
+// among the declarers, else an imported declarer, else the first
+// registered one. Correct only for a genuinely unqualified reference (a
+// call-argument parameter type declared inside its own package, #6688) —
+// see `paramEnumHintMsil`'s doc comment for why a qualified reference must
+// bypass this entirely.
+func paramEnumHintBareMsil(cctx: in CodegenCtx, pkgName: in String, te: in TypeExpr): String {
   val simple = enumSimpleNameOfTypeExprMsil(cctx, te)
   if simple.length == 0 {
     ""
@@ -25447,9 +25491,16 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   val fctx = makeFuncCtxMsil(pkgName, className, decl.name, effectiveParamCount, lambdaLogicalRetTy)
   fctx.generics = fnGenerics
   // #5995: this function's own declared return enum type (if any), so a bare
-  // `return Http11` resolves against the RIGHT enum instead of whichever
-  // same-named-case enum happened to register first.
-  fctx.declaredRetEnumTy = match decl.ret { case Some(te) -> enumSimpleNameOfTypeExprMsil(cctx, te); case None -> "" }
+  // `return Http11` (or an implicit tail-return) resolves against the RIGHT
+  // enum instead of whichever same-named-case enum happened to register
+  // first. Uses `paramEnumHintMsil` (#6688's package-qualified encoding),
+  // not the bare `enumSimpleNameOfTypeExprMsil` this originally called
+  // (#6735): a package-qualified return-type annotation (`func f(): B.Level`)
+  // needs the SAME `<declPkg>::<EnumSimpleName>` disambiguation the
+  // call-argument hint path already gets, or it silently resolves against
+  // whichever same-named enum `resolveEnumCaseOrdinalByScope` prefers by
+  // CALLER scope instead of the function's own declared return type.
+  fctx.declaredRetEnumTy = match decl.ret { case Some(te) -> paramEnumHintMsil(cctx, pkgName, te); case None -> "" }
   val insns: List[MInsn] = newList()
 
   // Allocate slots for parameters.  These occupy slots 0..N-1 in the
@@ -25933,7 +25984,7 @@ pub func lowerImplMethodMsil(
   val fctx = makeFuncCtxMsil(pkgName, targetTypeName, decl.name, 1 + implRealParams.count, declaredRetTyCtx)
   fctx.slotTicker.add(0)  // slot 0 = this, no name binding
   // #5995: see the matching comment in lowerFuncMsil.
-  fctx.declaredRetEnumTy = match decl.ret { case Some(te) -> enumSimpleNameOfTypeExprMsil(cctx, te); case None -> "" }
+  fctx.declaredRetEnumTy = match decl.ret { case Some(te) -> paramEnumHintMsil(cctx, pkgName, te); case None -> "" }
 
   val insns: List[MInsn] = newList()
 
@@ -26100,7 +26151,7 @@ pub func lowerRecordMethodMsil(
   val fctx = makeFuncCtxMsil(pkgName, targetTypeName, decl.name, decl.params.count, retTy)
   fctx.slotTicker.add(0)  // slot 0 = self ("this"), no name binding — ESelf reads ldarg.0 directly
   // #5995: see the matching comment in lowerFuncMsil.
-  fctx.declaredRetEnumTy = match decl.ret { case Some(te) -> enumSimpleNameOfTypeExprMsil(cctx, te); case None -> "" }
+  fctx.declaredRetEnumTy = match decl.ret { case Some(te) -> paramEnumHintMsil(cctx, pkgName, te); case None -> "" }
 
   if generics.count > 0 {
     // Bind `self`'s type to the OPEN self-instantiation (`Box`1<!0>`) rather

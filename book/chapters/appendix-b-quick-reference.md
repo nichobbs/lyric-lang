@@ -1269,7 +1269,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0064` | `return` without value in non-Unit function |
 | `T0065` | Returned type does not match declared return type |
 | `T0066` | `while` condition is not Bool |
-| `T0067` | `if`/`match` guard or condition type error; value-position `try` handler type incompatible with the `try` body |
+| `T0067` | `if`/`match` guard or condition type error; incompatible `if`/`match` branch types (or value-position `try` handler type incompatible with the `try` body) — branch unification is position-aware: a `Unit`-vs-value branch mismatch is lenient in statement position but rejected in value position |
 | `T0070` | Function body type does not match declared return type |
 | `T0073` | `null` used in pattern position — Lyric has no null literal or null pattern; `case null -> ...` parses as an ordinary catch-all binding named `null`, not a null test |
 | `T0080` | `old(…)` used outside an `ensures` clause |
