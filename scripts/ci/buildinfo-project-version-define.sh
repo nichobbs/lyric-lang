@@ -137,7 +137,7 @@ echo "=== dotnet --define build_profile=release (override) ==="
 outpo="$(dotnet "$proj/prof2.dll")"
 echo "dotnet(--define): $outpo"
 echo "$outpo" | grep -qx "profile=release" || { echo "::error::--define build_profile did not override the debug fallback (#5852 M1h)"; exit 1; }
-echo "BuildInfo project version + --define OK (dotnet + jvm: no-define 4.5.6; --define override 9.9.9/7.7.7 + @build_const; well-known target dotnet/jvm + override; build_profile debug/override)" >> "$GITHUB_STEP_SUMMARY"
+echo "BuildInfo project version + --define OK (dotnet + jvm: no-define 4.5.6; --define override 9.9.9/7.7.7 + @build_const; well-known target dotnet/jvm + override; build_profile debug/override)" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 # docs/63 band B0 (#6279): the profile axis is independent of the shape
 # axis. Every other AOT assertion in this workflow pairs `--release
@@ -170,5 +170,5 @@ outdbg="$(dotnet "$proj/prof_dbg.dll")"
 echo "$outdbg" | grep -qx "profile=debug" \
   || { echo "::error::explicit --debug did not report build_profile=debug (docs/63 B0)"; exit 1; }
 
-echo "profile/shape axes OK (--release portable => release; bare --release => managed PE, not AOT; --debug => debug)" >> "$GITHUB_STEP_SUMMARY"
+echo "profile/shape axes OK (--release portable => release; bare --release => managed PE, not AOT; --debug => debug)" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 

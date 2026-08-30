@@ -62,10 +62,11 @@ jobs:
           fetch-depth: 0
           filter: blob:none
 
-      # Guardrail for #6171: the ECO_DEPS declare -A table below and the
-      # ecosystem-tests matrix's `deps:` entries are hand-maintained
-      # duplicates with no other sync check. Fail fast, before the
-      # expensive build steps, if they drift apart.
+      # Guardrail for #6171: the ECO_DEPS declare -A table in
+      # scripts/ci/detect-code-changes.sh and the ecosystem-tests matrix's
+      # `deps:` entries below are hand-maintained duplicates with no other
+      # sync check. Fail fast, before the expensive build steps, if they
+      # drift apart.
       - name: Check ECO_DEPS / ecosystem-tests matrix sync
         run: bash scripts/check-eco-deps-sync.sh
 

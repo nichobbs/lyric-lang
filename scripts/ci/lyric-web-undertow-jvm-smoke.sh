@@ -92,4 +92,4 @@ if [ "$fail" != 0 ]; then
   tail -40 /tmp/jvm_server_smoke.run.log
   exit 1
 fi
-echo "lyric-web Undertow JVM smoke passed (4/4 plaintext endpoints + HTTPS/h2 serveTls: $h2selfcheck; mTLS-misconfig: $mtlsmisconfigselfcheck; mTLS-accept: $mtlsacceptselfcheck; mTLS-reject: $mtlsrejectselfcheck; curl --http2 $curlh2)" >> "$GITHUB_STEP_SUMMARY"
+echo "lyric-web Undertow JVM smoke passed (4/4 plaintext endpoints + HTTPS/h2 serveTls: $h2selfcheck; mTLS-misconfig: $mtlsmisconfigselfcheck; mTLS-accept: $mtlsacceptselfcheck; mTLS-reject: $mtlsrejectselfcheck; curl --http2 $curlh2)" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
