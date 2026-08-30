@@ -870,6 +870,18 @@ this check existed. The same access from *outside* the opaque type's
 declaring package is still T0116, since a real field is never legitimately
 reachable there in the first place.
 
+`Std.Core.Result[T, E]`/`Std.Core.Option[T]` carry six reserved field-style
+accessors — `.isOk`/`.isErr`/`.value`/`.error` on `Result`, `.isSome`/
+`.isNone`/`.value` on `Option` — resolved against the genuine `Std.Core`
+declaration by type identity, not by the receiver's bare name: a
+user- or library-defined union that happens to also be named `Result`
+(2 type parameters) or `Option` (1 type parameter), declared outside
+`Std.Core`, never receives this sugar. Accessing one of the six reserved
+names on such a foreign `Result`/`Option` — when that type does not itself
+define a matching member — is a compile error (**T0124**) naming the
+lookalike shape, rather than silently miscompiling against the real
+`Std.Core` case classes.
+
 ### 5.2 Parameter modes
 
 - `in`: parameter is read-only inside the function. **Default mode** when no keyword is given. The compiler may pass by value or by reference; the function cannot mutate.

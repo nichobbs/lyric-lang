@@ -32046,3 +32046,45 @@ part of the main `packages` list — the point of the mechanism is the
 template's own package need not be compiled into the bundle), a
 `from`-instance in the main package, asserting zero A0045 diagnostics AND
 the woven output's actual runtime value (not just "compiles").
+
+### D-progress-817 — Four small follow-ups: JVM regex virtual threads + concurrency cap, lyric-auth JVM CI coverage, JVM argv class-init ordering guard, Result/Option accessor package-path qualification (#6576, #6583, #6587, #6630)
+
+Four independent follow-ups on D-progress-808's JVM regex/argv landing
+and #5183's Result/Option accessor sugar. **#6576:** the JVM regex
+ReDoS-timeout daemon-thread shim (`_kernel_jvm/regex_host.l`) now uses
+`Thread.startVirtualThread` instead of `new Thread`, closing most of the
+common-case (non-timeout) throughput gap, paired with a non-blocking
+`tryAcquire()`-gated concurrency cap (`matchSemaphore`) that bounds
+unbounded live-abandoned-match accumulation under sustained attack
+traffic without ever blocking the calling thread's own bounded-wait
+contract; carrier-pinning was investigated and found not applicable in
+JEP 444's formal sense (no monitor/native call held), though a related,
+documented, accepted residual risk remains (CPU-bound abandoned matches
+can still monopolize the shared virtual-thread carrier pool up to its
+own parallelism — no per-call cap can fully prevent that). **#6583:**
+`lyric-auth/tests/auth_security_tests.l` (38 cases) and
+`auth_aspect_weaving_tests.l` (4 cases) now run on `--target jvm` in CI
+(`compiler-self-tests-jvm`), not just `--target dotnet` — the whole suite
+passed cleanly against `Auth.Kernel.Jvm`'s structural JSON claim parser
+with no compiler bug found. **#6587:** the JVM `hostGetCommandLineArgs`
+call-site interception (`Jvm.Codegen.lowerBuiltinOrStaticCall`) now
+null-checks the `__LyricJvmRuntime.commandLineArgs` `getstatic` read and
+panics with a diagnostic naming the documented class-init ordering hazard
+(a module-level `val` calling `Std.Environment.args()` forces its own
+class's `<clinit>` ahead of the entry-point wrapper's argv-populating
+`main()` body, JLS 12.4.1) instead of an opaque NPE; new standalone
+repro `env_args_ordering_jvm_main.l`. **#6630:** `monadAccessorType`
+(type checker) and `lowerBuiltinMonadAccessorMsil` (MSIL) now match the
+`Std.Core.Result`/`Option` accessor sugar (`.isOk`/`.isErr`/`.value`/
+`.error`/`.isSome`/`.isNone`) by resolved type identity / full package
+path instead of the receiver's bare short name — a same-named foreign
+union outside `Std.Core` no longer gets silently mis-lowered against the
+real case classes (the JVM backend was audited and found already correct
+by full internal class name); a related pre-existing gap found while
+testing this (a foreign `Result`'s `.isOk` type-checked with NO
+diagnostic and miscompiled to `InvalidProgramException` at runtime) is
+closed by a new, narrowly-scoped T0124 diagnostic
+(`docs/01-language-reference.md` §5.1).
+
+**Related:** `docs/03-decision-log.md` D-progress-817 (full account),
+#6576, #6583, #6587, #6630.

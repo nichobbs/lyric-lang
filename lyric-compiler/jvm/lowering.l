@@ -291,11 +291,49 @@ pub func slotSum(ps: in List[JvmType]): Int {
   s
 }
 
+// Scan an `LInsn` list, adding every `LTryCatch` meta-insn's exception-handler
+// entry label -> catch class ("" = catch-all) into `out`. Seed
+// `MethodAssembler.handlerLabels` with the result before lowering a body
+// that may contain `try`/`catch`, so `lowerInsn`'s `LLabel` case can tell a
+// handler entry from an ordinary label when inferring `maxStack` (#6551).
+// First writer wins for a given label, matching `LTryCatch`'s other
+// handler-label consumers (e.g. `lowerFuncImpl`'s own pre-pass below).
+// `out` may already hold entries (e.g. from a sibling insn list) — callers
+// that need a fresh map can pass `newMap()`.
+pub func collectHandlerLabelsInto(insns: in List[LInsn], acc: in Map[String, String]): Unit {
+  var i = 0
+  while i < insns.count {
+    match insns[i] {
+      case LTryCatch(_, _, hl, cc) -> {
+        match mapGet(acc, hl) {
+          case None -> acc.add(hl, cc)
+          case Some(_) -> ()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
+// Convenience wrapper over `collectHandlerLabelsInto` that returns a fresh map.
+pub func collectHandlerLabels(insns: in List[LInsn]): Map[String, String] {
+  val acc: Map[String, String] = newMap()
+  collectHandlerLabelsInto(insns, acc)
+  acc
+}
+
 pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
   match insn {
     case LLabel(n) -> {
       emitLabel(asm, n)
-      resetStack(asm)
+      // A handler-entry label starts with the JVM-pushed exception reference
+      // already on the stack (depth 1); an ordinary label is an empty-stack
+      // join (depth 0).  See `resetStackToHandlerEntry`'s doc comment (#6551).
+      match mapGet(asm.handlerLabels, n) {
+        case Some(_) -> resetStackToHandlerEntry(asm)
+        case None -> resetStack(asm)
+      }
     }
     // No `resetStack`: a line marker is not a basic-block boundary, and
     // treating it as one would corrupt the stackmap frames.
@@ -2242,6 +2280,10 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
   // that every StackMapTable branch-target frame sees all slots as initialized,
   // preventing VerifyError for locals declared inside loops or late in the body.
   val asm = newAssembler(pool)
+  // Seed the handler-entry label set (#6551) from the pre-pass above so the
+  // `maxStack`-inference loop below distinguishes a real handler entry
+  // (implicit `[exception]` on the stack) from an ordinary label.
+  asm.handlerLabels = handlerTargets
   var preSlot = paramSlotCount
   while preSlot < actualMaxLocals {
     match mapGet(storeTypes, preSlot) {
@@ -3003,6 +3045,15 @@ pub func lowerWire(w: in LWire, pool: in Pool): ClassFile {
   }
 
   // Run remaining bindings (WMSingleton / WMLocal / WMBind etc.).
+  // Pre-scan every binding's insns for handler-entry labels (#6551) before
+  // lowering any of them, so a binding whose init expression contains a
+  // `try`/`catch` gets a correct `maxStack` inference just like an ordinary
+  // function body.
+  val bsHandlerLabels: Map[String, String] = newMap()
+  for b in w.bindings.toArray() {
+    collectHandlerLabelsInto(b.insns, bsHandlerLabels)
+  }
+  bsAsm.handlerLabels = bsHandlerLabels
   var bsBindingMaxSlots = 0
   for b in w.bindings.toArray() {
     for insn in b.insns.toArray() {
@@ -5165,6 +5216,9 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
 
   val sqPutIdx = poolMethodref(pool, sqClass, "put", "(Ljava/lang/Object;)V")
   val bodyAsm = newAssembler(pool)
+  // Seed handler-entry labels (#6551) so a `try`/`catch` inside the generator
+  // body gets a correct `maxStack` inference, same as `lowerFuncImpl`.
+  bodyAsm.handlerLabels = collectHandlerLabels(g.bodyInsns)
   emitLabel(bodyAsm, "run_try_start")
   var bi = 0
   while bi < g.bodyInsns.count {
@@ -6237,11 +6291,15 @@ pub union LPackageItem {
   // exposes no process-wide argv retrieval API, so the entry-point wrapper
   // stores the incoming `String[]` into this class's public static field
   // before forwarding to the Lyric `main`; `Std.EnvironmentHost`'s
-  // `hostGetCommandLineArgs` call sites are lowered directly to a `getstatic`
-  // read of it (`Jvm.Codegen`'s `lowerBuiltinOrStaticCall` in
-  // `codegen/04_calls.l`) instead of an ordinary function call.  A single
-  // non-final `[Ljava/lang/String;` field, default-null until `main` runs —
-  // no other field or method is needed.
+  // `hostGetCommandLineArgs` call sites are lowered directly to a
+  // null-checked `getstatic` read of it (`Jvm.Codegen`'s
+  // `lowerBuiltinOrStaticCall` in `codegen/04_calls.l` — #6587: a `null`
+  // read, e.g. from a module-level `val` initializer racing ahead of
+  // `main()` at class-init time, panics with a diagnostic naming that
+  // ordering hazard rather than surfacing as a bare NPE) instead of an
+  // ordinary function call.  A single non-final `[Ljava/lang/String;`
+  // field, default-null until `main` runs — no other field or method is
+  // needed.
   case LPRuntimeArgsHolder(className: String, fieldName: String)
 }
 

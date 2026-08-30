@@ -34,15 +34,22 @@
 //! unreachable case where some future refactor removes the call-site
 //! interception without updating this fallback.
 //!
-//! **Ordering constraint:** `__LyricJvmRuntime.commandLineArgs` is only
-//! populated once the entry-point `main(String[])` wrapper's `putstatic`
-//! executes -- before that (e.g. a module-level `val` initializer that
-//! called `args()` during some OTHER class's `<clinit>`, ahead of `main`
-//! ever running) the field still reads its JVM zero-init default (`null`),
-//! which would NPE downstream. Not reachable today (no module-level `val`
-//! in the tree calls `Std.Environment.args()`), but a real divergence from
-//! the `.NET` kernel below, which calls a real OS API unconditionally --
-//! keep this in mind before adding one.
+//! **Ordering constraint (#6587):** `__LyricJvmRuntime.commandLineArgs` is
+//! only populated once the entry-point `main(String[])` wrapper's
+//! `putstatic` executes -- before that (e.g. a module-level `val`
+//! initializer that called `args()` during some OTHER class's `<clinit>`,
+//! ahead of `main` ever running) the field still reads its JVM zero-init
+//! default (`null`). Not reachable today (no module-level `val` in the
+//! tree calls `Std.Environment.args()`), but a real divergence from the
+//! `.NET` kernel below, which calls a real OS API unconditionally -- keep
+//! this in mind before adding one. The call-site interception that reads
+//! this field (`Jvm.Codegen.lowerBuiltinOrStaticCall`, `codegen/04_calls.l`)
+//! now guards the read with an explicit null check: a `null` read panics
+//! with a diagnostic naming this exact ordering hazard instead of letting
+//! a bare `NullPointerException` propagate, so a future caller who trips
+//! this gets a message pointing at the real problem. See
+//! `env_args_ordering_jvm_main.l` for the standalone repro that exercises
+//! the panic path.
 @axiom("java.lang.System operations conform to their documented JVM contracts")
 package Std.EnvironmentHost
 

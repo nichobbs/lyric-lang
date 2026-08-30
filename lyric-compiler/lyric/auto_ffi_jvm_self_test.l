@@ -492,6 +492,26 @@ test "Runnable: zero-arg void lambda capturing a var, via Thread(Runnable)" {
   assertEqualInt(ran, 1, "Runnable lambda ran exactly once on the spawned thread")
 }
 
+// #6552: `r` above has no type ANNOTATION, so its slot type comes straight
+// from the `ELambda`'s own JvmType (the package's `Lyric$Lambda` interface)
+// and always matched `emitFfiCoerce`'s SAM-wrap condition. A `val` declared
+// WITH an explicit function-type annotation instead resolved its slot type
+// through the general `typeExprToJvm`/`typeExprToJvmExtern` erasure, whose
+// `TFunction` arm collapses to `Ljava/lang/Object;` — a descriptor
+// `emitFfiCoerce` doesn't recognize as SAM-bridgeable, so the raw
+// `Lyric$Lambda`-implementing object was passed directly where `Runnable`
+// was expected, surfacing as `IncompatibleClassChangeError` at the JDK's
+// first `run()` dispatch on the spawned thread (not a compile-time or
+// class-verification failure — the class loads fine, unlike #6551).
+test "Runnable: annotated val bound to a lambda, then passed by name (#6552)" {
+  var ran = 0
+  val action: () -> Unit = { -> ran = ran + 1 }
+  val t = JThread.new(action)
+  t.start()
+  t.join()
+  assertEqualInt(ran, 1, "annotated val-bound Runnable lambda ran exactly once on the spawned thread")
+}
+
 test "Runnable: inline lambda literal argument" {
   var hits = 0
   val t = JThread.new({ -> hits = hits + 10 })
