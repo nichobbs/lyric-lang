@@ -34879,7 +34879,7 @@ still passes unaffected; restored the fix and re-ran clean (2/2, exit 0).
 D-progress-823 (the original native `Std.Http` client twin entry, whose
 N3.2 gap this fix's "not yet live-exploitable" reasoning depends on).
 
-## D-progress-818 — `_kernel_native/http_host.l`: CRLF/header-injection guard (#6635) + response size limits (#6636), and a genuine native-codegen bug found along the way (#6637/#6645)
+## D-progress-827 — `_kernel_native/http_host.l`: CRLF/header-injection guard (#6635) + response size limits (#6636), and a genuine native-codegen bug found along the way (#6637/#6645)
 
 **Context.** A second `claude-review` pass on PR #6623 (D-progress-823's
 native `Std.Http` client twin, already extended once by D-progress-826's
@@ -35002,12 +35002,12 @@ applied clean (no refusals) to both changed files.
 tracking issue), D-progress-823 (original entry), D-progress-826 (the
 prior review-fix round on this same PR).
 
-## D-progress-819 — `_kernel_native/http_host.l`: inverted TLS-downgrade check (#6646) + wrong-base overflow guard (#6647), both third-review findings on the D-progress-818 fixes themselves
+## D-progress-828 — `_kernel_native/http_host.l`: inverted TLS-downgrade check (#6646) + wrong-base overflow guard (#6647), both third-review findings on the D-progress-827 fixes themselves
 
 **Context.** A THIRD `claude-review` pass on PR #6623 confirmed both of
-D-progress-818's fixes (#6635 CRLF-injection guard, #6636 response size
+D-progress-827's fixes (#6635 CRLF-injection guard, #6636 response size
 limits) correct and their tracking issues closed, but found two NEW
-REQUIRED findings — both logic bugs in the code D-progress-818 itself
+REQUIRED findings — both logic bugs in the code D-progress-827 itself
 added, both untested by that round's self-test suite, and both undermining
 the very fixes they sit beside:
 
@@ -35024,7 +35024,7 @@ the very fixes they sit beside:
   comment above it (which was already correct; only the code was
   inverted).
 - **#6647 — `parseHexInt`'s overflow guard used the wrong threshold.**
-  D-progress-818's `parseNonNegativeInt` overflow fix was copy-pasted into
+  D-progress-827's `parseNonNegativeInt` overflow fix was copy-pasted into
   `parseHexInt` (chunk-size parsing) with the SAME threshold
   (`n > 200000000`), but chunk-size parsing grows `n` by `×16` per digit,
   not `×10` — `200000000 * 16` overflows `Int32` many times over before
@@ -35066,7 +35066,7 @@ corresponding test fails, then restoring and confirming all 6 pass clean.
 
 **Related:** #6623 (the PR both fixes ship in), #6646, #6647 (the two
 REQUIRED findings), D-progress-826 (the original, inverted
-`isSameRedirectAuthority`), D-progress-818 (the original, wrong-threshold
+`isSameRedirectAuthority`), D-progress-827 (the original, wrong-threshold
 `parseHexInt` guard).
 
 ## D-progress-820 — `_kernel_native/http_host.l`: cumulative chunk-size overflow bypasses the body-size cap (#6656), a fourth review round on this same PR
@@ -35075,7 +35075,7 @@ REQUIRED findings), D-progress-826 (the original, inverted
 D-progress-826/818/819's fixes correct and closed #6646/#6647, but found
 one more REQUIRED bug in the same area: `readChunkedBody`'s cumulative
 cap check, `if acc.count + size > maxResponseBodyBytes`, is itself
-overflow-prone. D-progress-819's #6647 fix bounds a SINGLE chunk-size
+overflow-prone. D-progress-828's #6647 fix bounds a SINGLE chunk-size
 line's own parsed value to `<= Int32.MaxValue`, but does nothing about
 the SUM of `acc.count` (bytes already decoded from prior chunks) plus a
 new chunk's `size` — a server sending a tiny first chunk (so
@@ -35085,7 +35085,7 @@ silently passing the `>` check. The same negative value then flows into
 `dataEnd = dataStart + size` a few lines down, eventually driving `pos`
 negative and reaching an out-of-bounds buffer index (`buf[pos + j]` inside
 `findPattern`/`bytesEqualAt`) on the connection's next read — the
-identical memory-safety crash class D-progress-819 fixed for the
+identical memory-safety crash class D-progress-828 fixed for the
 single-line case, reachable here through a second, distinct arithmetic
 path that fix didn't close.
 
@@ -35127,7 +35127,7 @@ introduced by this PR.
 
 **Related:** #6623 (the PR this fix ships in), #6656 (the REQUIRED
 finding), #6658 (the header-collision follow-up, filed but not fixed
-here), D-progress-819 (the prior review-fix round's #6647 fix, whose
+here), D-progress-828 (the prior review-fix round's #6647 fix, whose
 single-line overflow guard this entry's bug sits one arithmetic step
 beyond).
 
@@ -35295,7 +35295,7 @@ endless run of minimal `100 Continue` responses drives unbounded client
 memory growth (`buf` never shrinks across loop iterations), the exact
 "a byte cap doesn't bound an unbounded COUNT of small messages" gap
 `maxTrailerLines` was introduced to close on the chunked-trailer path
-(D-progress-818/#6636), left unaddressed on this newer interim-response
+(D-progress-827/#6636), left unaddressed on this newer interim-response
 path. Reachable today via `Std.Http`'s free functions (`sendAsync`/
 `getAsync`/`postAsync`), independent of the separately-tracked N3.2
 async-interface-dispatch gap.
@@ -35343,7 +35343,7 @@ refusal).
 
 **Related:** #6623 (the PR this fix ships in), #6704 (the REQUIRED
 finding), D-progress-821 (the #6692 fix whose `readResponse` loop this
-entry closes the remaining count-cap gap in), D-progress-818 (the
+entry closes the remaining count-cap gap in), D-progress-827 (the
 `maxTrailerLines` precedent this entry's `maxInterimResponses` mirrors).
 
 ---
@@ -35353,7 +35353,7 @@ entry closes the remaining count-cap gap in), D-progress-818 (the
 **Context.** A ninth `claude-review` pass (APPROVED, no REQUIRED
 findings) re-read the full diff from scratch and flagged, as a
 SUGGESTION, that `readChunkedBody`'s trailer-line cap check
-(`if trailerCount > maxTrailerLines`, from D-progress-818/#6636 —
+(`if trailerCount > maxTrailerLines`, from D-progress-827/#6636 —
 predating D-progress-822) has the identical off-by-one D-progress-822
 found and fixed for `maxInterimResponses`: the check runs at the top of
 the loop before processing that iteration's trailer line, so it
@@ -35380,7 +35380,7 @@ change; the existing suite's chunked-body cases don't send trailer
 fields at all). `lyric fmt --write` applied clean to both changed files.
 
 **Related:** #6623 (the PR this fix ships in), D-progress-822 (the
-sibling fix for `maxInterimResponses` this entry mirrors), D-progress-818
+sibling fix for `maxInterimResponses` this entry mirrors), D-progress-827
 (the original `maxTrailerLines` introduction, #6636).
 
 ---
@@ -35395,7 +35395,7 @@ malicious/compromised server could pack that byte budget (819200 bytes)
 into roughly 200,000 minimal `a:`-shaped header lines instead of a
 normal handful, the identical "bytes bounded, count unbounded" gap this
 same PR already closed twice on other paths (`maxTrailerLines` in
-D-progress-818/#6636, `maxInterimResponses` in D-progress-822/#6704).
+D-progress-827/#6636, `maxInterimResponses` in D-progress-822/#6704).
 Bounded in absolute terms by the existing byte cap (not unbounded like
 those two bugs), so not REQUIRED — but inconsistent with this file's own
 established hardening pattern and with `Std.HttpEngine`'s server-side
@@ -35422,7 +35422,7 @@ unaffected. Restored the fix and confirmed all 13 tests pass again, both
 before and after `lyric fmt --write` on both changed files (clean, no
 unsafe-format refusal).
 
-**Related:** #6623 (the PR this fix ships in), D-progress-818 and
+**Related:** #6623 (the PR this fix ships in), D-progress-827 and
 D-progress-822 (the two prior "bytes bounded, count unbounded" fixes
 this entry closes the third instance of).
 
