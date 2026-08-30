@@ -35642,3 +35642,102 @@ modeled on, not fixed by this PR), `lyric-stdlib/std/http_engine.l`
 (the module header documenting #5995's real-world trigger and
 workaround).
 
+---
+
+## D-progress-831 — Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
+
+**Context.** N9.3 (`native/plan/08-work-items.md`), drafting the
+`_kernel_native/http_server.l` kernel for issue #6104, needed
+`Std.HttpEngine`/`Std.String` to compile for `--target native`. Only
+`.toString()`/`.substring()` were implemented as native `String` scalar
+methods; `.trim()`, `.toLower()`, `.indexOf()`, `.startsWith()`,
+`.contains()`, and `.endsWith()` all panicked with "method not yet
+supported", blocking any native build touching `Std.HttpEngine` or any
+other stdlib module using these idioms.
+
+**Fix.** Six new `lyric_string_*` C runtime primitives
+(`lyric-rt/src/lyric_string.c`, declared in `lyric-rt/include/lyric_rt.h`)
+plus matching `Lyric.LlvmCodegen` scalar-method dispatch
+(`lowerScalarMethodCall`, extending the existing `isStringNType` branch
+that already handled `.toString`/`.substring`) and six new
+`lyric_string_*` runtime declarations in `runtimeDecls()`:
+
+- `lyric_string_index_of`/`_starts_with`/`_contains`/`_ends_with` do
+  ordinal (byte-exact) substring search — consistent with this runtime's
+  existing byte-indexed `.length`/`.substring` model (D-N-006), not a
+  codepoint count. An empty needle/prefix/suffix always matches, mirroring
+  the dotnet/JVM twins (`String.IndexOf("")`/`java.lang.String.indexOf("")`
+  == 0, `Contains("")` == true). `.startsWith`/`.contains`/`.endsWith`
+  share one new codegen helper, `lowerStringPredicateCall`, that
+  materialises a proper `i1` from the runtime's `int32_t` 0/1 return the
+  same way `BEq`/`BNeq`/`stringCmpTo` already do for `lyric_string_eq`.
+- `lyric_string_trim` strips leading/trailing Unicode `White_Space`
+  code points, decoding UTF-8 forward from both ends (no backward UTF-8
+  decode needed — a single forward pass tracks the byte offset just past
+  the last non-whitespace code point seen so far). The code-point set is
+  hand-copied from `lyric-stdlib/std/char.l::isWhiteSpace` (this C runtime
+  has no dependency on the self-hosted stdlib, so it can't import that
+  function) — kept byte-for-byte identical so `.trim()` agrees with
+  `Std.Char.isWhiteSpace` on every target, including the non-ASCII cases
+  (`Std.Char.isWhiteSpace`'s own header explains why a pure hand-picked
+  code-point set was chosen there over either BCL's or the JVM's host
+  predicate: they disagree on U+00A0/U+2007/U+202F).
+- `lyric_string_to_lower` applies a genuine (not ASCII-only) Unicode
+  *simple* lowercase mapping across Basic Latin, Latin-1 Supplement, Latin
+  Extended-A, Greek, and Cyrillic — a real multi-script case fold, but
+  explicitly **not** the full Unicode Character Database: no
+  context-sensitive `SpecialCasing.txt` rules (no Turkish dotless-I, no
+  German ß expansion, no final-sigma positional form). Every mapped pair
+  in the table shares its input's UTF-8 encoded byte length by
+  construction (verified case by case in the implementation comment),
+  which lets the function allocate the output string at the input's exact
+  byte length and do a single decode-map-encode pass with no dynamic
+  growth; a defensive `lyric_panic_msg` fires if a future script addition
+  ever breaks that invariant, rather than silently corrupting bytes.
+  Malformed/non-canonical UTF-8 byte sequences pass through unmapped
+  (never re-encoded), so a corrupt lead byte can't be misread as a
+  different codepoint's case-mapping target.
+
+Widening `.toLower()`'s script coverage toward full Unicode-Character-
+Database correctness is out of scope for this fix and not separately
+tracked — the five scripts above cover the common non-ASCII cases the
+issue asked for ("not a naive ASCII-only implementation").
+
+**Verification.** `test_string_trim_case_search`, a new case in
+`lyric-rt/test/lyric_rt_test.c` (run by both `make -C lyric-rt test` and,
+manually for this change, a `-fsanitize=address,undefined` build — the
+`test-asan` Make target itself only covers the TLS seam, unchanged here):
+trim across ASCII whitespace, all-whitespace, no-padding, empty-string,
+and a U+00A0 NO-BREAK SPACE case; toLower across ASCII, Latin-1
+Supplement (café), Greek, Cyrillic, and an already-lowercase/punctuation
+no-op case; indexOf's found/not-found(-1)/empty-needle/empty-haystack
+matrix; contains sharing indexOf's sentinel; startsWith/endsWith across
+match, mismatch, over-length-needle, and empty-prefix/suffix. Seven new
+end-to-end cases in `lyric-compiler/lyric/llvm_codegen_self_test.l`
+(parse → `codegenNativePackage` → clang → run a real binary, the file's
+established harness — extended with a `compileAndRunAsan` variant
+mirroring `llvm_collections_self_test.l`'s pattern for the two
+heap-allocating methods): the same trim/toLower/indexOf/predicate matrix
+plus a 200-iteration `trim().toLower()` allocation-churn case run under
+ASan. All pass; `make -C lyric-rt test`, `make -C lyric-rt test-asan
+CC=gcc`, `make lyric`, and the full `native-backend-self-tests` CI job's
+self-test list (`llvm_ir_self_test.l`, `llvm_codegen_self_test.l`,
+`llvm_heap_self_test.l`, `llvm_ffi_self_test.l`,
+`llvm_collections_self_test.l`, `llvm_stdlib_self_test.l`,
+`llvm_tls_self_test.l`, `llvm_http_client_self_test.l`,
+`llvm_self_test_n3.l`, `llvm_self_test_n34.l`, `llvm_self_test_async.l`,
+`llvm_self_test_defer.l`, `llvm_opaque_self_test.l`) re-run clean —
+zero regressions, including the exact `Std.HttpHost` native client suite
+(`llvm_http_client_self_test.l`) this issue's own #6104/#6105 lineage
+depends on.
+
+`native/plan/08-work-items.md`'s N9.3 write-up is updated to record
+#6588 as shipped; N9.3 itself remains open pending #6589 (the unrelated
+bare cross-package enum-case resolution gap).
+
+**Related:** #6588 (this fix), #6104/N9.3 (the blocked follow-on this
+unblocks one of two gaps for), #6589 (N9.3's other, still-open blocker),
+D-N-006 (native `String` representation/byte-indexing), `docs/03` this
+same file's `lyric-stdlib/std/char.l::isWhiteSpace` cross-platform
+code-point-set precedent this fix's `.trim()` mirrors.
+

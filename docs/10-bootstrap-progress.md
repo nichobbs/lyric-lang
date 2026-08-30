@@ -32180,3 +32180,34 @@ closed by a new, narrowly-scoped T0124 diagnostic
 
 **Related:** `docs/03-decision-log.md` D-progress-817 (full account),
 #6576, #6583, #6587, #6630.
+
+### Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
+
+`native/plan/08-work-items.md`'s N9.3 (`Std.HttpServer` native twin,
+#6104) surfaced that native `String` scalar-method support was far
+narrower than the dotnet/JVM targets: only `.toString()`/`.substring()`
+existed, so any native build touching `Std.HttpEngine` (or any other
+stdlib module using these idioms) panicked. Six new `lyric_string_*` C
+runtime primitives (`lyric-rt/src/lyric_string.c`) plus matching
+`Lyric.LlvmCodegen` scalar-method dispatch close the gap:
+`.indexOf`/`.startsWith`/`.contains`/`.endsWith` do ordinal (byte-exact)
+substring search, consistent with native's existing byte-indexed
+`.length`/`.substring` model (D-N-006); `.trim()` strips Unicode
+`White_Space` code points using the exact set
+`lyric-stdlib/std/char.l::isWhiteSpace` uses (hand-copied — the C
+runtime has no stdlib dependency); `.toLower()` applies a genuine (not
+ASCII-only) Unicode simple-case fold across Basic Latin, Latin-1
+Supplement, Latin Extended-A, Greek, and Cyrillic (not the full Unicode
+Character Database — no `SpecialCasing.txt` context rules).
+
+Verified by a new `lyric_rt_test.c` case (`make -C lyric-rt test`) and
+seven new end-to-end cases in `llvm_codegen_self_test.l` (ASan-compiled
+for the two heap-allocating methods), all green alongside the full
+`native-backend-self-tests` CI job's existing self-test list with zero
+regressions — including `llvm_http_client_self_test.l`, the
+`Std.HttpHost` native client suite this issue's #6104/#6105 lineage
+depends on.
+
+**Related:** `docs/03-decision-log.md` D-progress-831 (full account),
+#6588, #6104/N9.3 (#6589, N9.3's other blocker, has since shipped too —
+N9.3 itself remains open pending only its own kernel work).

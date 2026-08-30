@@ -2006,8 +2006,23 @@ func lowerRecordFieldLoad(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInfo, v
   NVal(ty = ri.fieldTys[idx], value = NLocal(name = dest))
 }
 
+/// Shared lowering for String's boolean-returning one-arg predicates
+/// (`.startsWith`/`.contains`/`.endsWith`): call the `sym` runtime function
+/// (returns `int32_t` 0/1, matching `lyric_string_eq`'s convention) and
+/// materialise a proper `i1` the same way `BEq`/`BNeq` do (`stringCmpTo`).
+func lowerStringPredicateCall(
+  ctx: in Ctx, insns: in List[NInsn], sym: in String, v: in NVal, args: in List[CallArg]
+): NVal {
+  val a0 = lowerPositionalArg(ctx, insns, args, 0)
+  val r = callRuntime(ctx, insns, sym, NI32, arg2(lyricStringNType(), v.value, lyricStringNType(), a0.value))
+  val dest = freshTmp(ctx)
+  insns.add(NICmp(dest = dest, pred = INe, ty = NI32, a = r.value, b = NLitInt(v = 0i64, ty = NI32)))
+  NVal(ty = NI1, value = NLocal(name = dest))
+}
+
 /// Scalar method-call receivers: `.and/.or/.xor/.shl/.shr`, the
-/// conversion family, `.toString()`, and String's `.substring`.
+/// conversion family, `.toString()`, and String's `.substring`/`.trim`/
+/// `.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith`.
 /// Returns None when `name` is not a scalar method (the caller then
 /// resolves it as a UFCS function call).
 func lowerScalarMethodCall(
@@ -2034,6 +2049,44 @@ func lowerScalarMethodCall(
       callArgs.add(NArg(ty = NI64, value = NLocal(name = startW)))
       callArgs.add(NArg(ty = NI64, value = NLocal(name = lenW)))
       return Some(value = callRuntime(ctx, insns, "lyric_string_substring", lyricStringNType(), callArgs))
+    }
+    if name == "trim" and args.count == 0 {
+      return Some(
+        value = callRuntime(ctx, insns, "lyric_string_trim", lyricStringNType(), arg1(lyricStringNType(), v.value))
+      )
+    }
+    if name == "toLower" and args.count == 0 {
+      return Some(
+        value = callRuntime(
+          ctx,
+          insns,
+          "lyric_string_to_lower",
+          lyricStringNType(),
+          arg1(lyricStringNType(), v.value)
+        )
+      )
+    }
+    if name == "indexOf" and args.count == 1 {
+      val a0 = lowerPositionalArg(ctx, insns, args, 0)
+      val n = callRuntime(
+        ctx,
+        insns,
+        "lyric_string_index_of",
+        NI64,
+        arg2(lyricStringNType(), v.value, lyricStringNType(), a0.value)
+      )
+      val dest = freshTmp(ctx)
+      insns.add(NTrunc(dest = dest, fromTy = NI64, value = n.value, toTy = NI32))
+      return Some(value = NVal(ty = NI32, value = NLocal(name = dest)))
+    }
+    if name == "startsWith" and args.count == 1 {
+      return Some(value = lowerStringPredicateCall(ctx, insns, "lyric_string_starts_with", v, args))
+    }
+    if name == "contains" and args.count == 1 {
+      return Some(value = lowerStringPredicateCall(ctx, insns, "lyric_string_contains", v, args))
+    }
+    if name == "endsWith" and args.count == 1 {
+      return Some(value = lowerStringPredicateCall(ctx, insns, "lyric_string_ends_with", v, args))
     }
     return None
   }
@@ -8611,6 +8664,12 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl1("lyric_string_from_bool", sTy, NI32))
   decls.add(mkDecl1("lyric_string_from_char", sTy, NI32))
   decls.add(mkDecl3("lyric_string_substring", sTy, sTy, NI64, NI64))
+  decls.add(mkDecl1("lyric_string_trim", sTy, sTy))
+  decls.add(mkDecl1("lyric_string_to_lower", sTy, sTy))
+  decls.add(mkDecl2("lyric_string_index_of", NI64, sTy, sTy))
+  decls.add(mkDecl2("lyric_string_starts_with", NI32, sTy, sTy))
+  decls.add(mkDecl2("lyric_string_contains", NI32, sTy, sTy))
+  decls.add(mkDecl2("lyric_string_ends_with", NI32, sTy, sTy))
   decls.add(mkDecl1("lyric_string_to_cstring", NPtr(pointee = NI8), sTy))
   decls.add(mkDecl1("lyric_cstring_free", NVoid, NPtr(pointee = NI8)))
   decls.add(mkDecl1("lyric_weak_upgrade", NPtr(pointee = NI8), NPtr(pointee = NI8)))

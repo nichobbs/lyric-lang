@@ -1421,20 +1421,42 @@ the dotnet/JVM twins + `startListenerTls`, over a real
 self-unregistering-closure pattern keyed by fd to solve the detached
 thread's userdata lifetime problem — see D-progress-809 for the design)
 surfaced two further, architectural native-backend gaps independent of
-this item's own scope: native `String` has no
+this item's own scope: native `String` had no
 `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith`
 (#6588), and a bare cross-package enum-case value reference (`val v:
 HttpVersion = Http1_1`, used throughout `Std.HttpEngine`) failed to
 resolve (#6589). Both blocked `Std.HttpEngine`/`Std.String` from compiling
 for `--target native` at all — the draft kernel could not be made to
 compile, so it was **not committed**; neither `_kernel_native/http_server.l`
-nor a self-test for it exist anywhere in the repository. **#6589 is now
-SHIPPED** (D-progress-830): `ctx.enumDefs` indexes a case's bare name too,
-mirroring `Msil.Codegen.registerEnumDeclMsil`, so `Http1_1` (and any other
-bare, unqualified enum-case reference — same-file or cross-package)
-resolves without requiring the `HttpVersion.Http1_1` workaround. N9.3
-remains open pending #6588 alone; a future contributor picking up
-#6104/N9.3 starts from zero on the kernel itself once #6588 is resolved.
+nor a self-test for it exist anywhere in the repository.
+
+**Both blockers are now SHIPPED — N9.3 itself remains open, pending only
+its own kernel work.** #6589 (bare enum-case resolution): `ctx.enumDefs`
+indexes a case's bare name too, mirroring `Msil.Codegen.registerEnumDeclMsil`,
+so `Http1_1` (and any other bare, unqualified enum-case reference —
+same-file or cross-package) resolves without requiring the
+`HttpVersion.Http1_1` workaround (D-progress-830). #6588 (String methods):
+`lyric_string_trim`/`lyric_string_to_lower`/`lyric_string_index_of`/
+`lyric_string_starts_with`/`lyric_string_contains`/`lyric_string_ends_with`
+(`lyric-rt/src/lyric_string.c`) plus the matching `Lyric.LlvmCodegen`
+scalar-method dispatch (`lowerScalarMethodCall`, mirroring `.substring`'s
+existing wiring) now lower all six methods for `--target native`,
+byte-indexed like the existing `.length`/`.substring` (D-N-006) — ordinal
+search for `.indexOf`/`.startsWith`/`.contains`/`.endsWith`, and a Unicode
+`White_Space`-set-driven `.trim()` matching `Std.Char.isWhiteSpace`'s
+code-point list exactly. `.toLower()` applies a genuine (not ASCII-only)
+Unicode simple-case mapping across Basic Latin, Latin-1 Supplement, Latin
+Extended-A, Greek, and Cyrillic — not the full Unicode Character Database
+(no context-sensitive `SpecialCasing.txt` rules: no Turkish dotless-I, no
+German ß expansion); widening script coverage is tracked in #6779
+(D-progress-831). Verified by a new C unit test (`test_string_trim_case_search`
+in `lyric-rt/test/lyric_rt_test.c`, run by `make -C lyric-rt test`) and
+end-to-end cases in `lyric-compiler/lyric/llvm_codegen_self_test.l` (ASan-
+compiled for the two heap-allocating methods) plus
+`indexof_native_self_test.l` (the `import Std.String` → `Option[Int]`
+gate, #6752), wired into the `native-backend-self-tests` CI job. A future
+contributor picking up #6104/N9.3 starts from zero on the kernel itself —
+neither compiler-level gap holds it back any longer.
 
 ### N9.4 — `Std.Http` native client twin (`_kernel_native/http_host.l`) — ✅ SHIPPED (D-progress-823, #6105)
 
