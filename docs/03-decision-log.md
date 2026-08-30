@@ -35561,3 +35561,84 @@ on #6588, the native `String` method gaps, independently),
 `Msil.Codegen.registerEnumDeclMsil` (the shipped-MSIL pattern this fix
 ports rather than reinvents).
 
+**Addendum (review rounds on PR #6746, two further bugs found and fixed
+before merge — `llvm_enum_case_resolve_self_test.l` now ships 6 cases,
+not the 3 described above).**
+
+- **Item D — bare-name check ordering, enum before union.** A review
+  pass noticed `lowerExpr`'s `EPath` arm checked `ctx.caseRefs` (nullary
+  union case) *before* `ctx.enumDefs` (enum ordinal) for a bare
+  single-segment name — the opposite of `Msil.Codegen`'s order
+  (`enumCaseOrdinals` before `unionCaseCtorByName`). Before this entry's
+  fix the native enum-bare-name branch was unreachable, so the ordering
+  was moot; once reachable, a bundle with an enum case and a union case
+  sharing the exact same bare name would resolve differently on
+  `--target native` than on `--target dotnet` for identical unqualified
+  source. Reordered to match MSIL exactly (enum before union). Item D
+  covers this in *value* position: an enum `Status` and a union
+  `Wrapper` both declare a case named `Ready`; a bare `Ready` against an
+  explicit `Status`-typed annotation resolves to the enum.
+- **Item E — `emitConstructorTest` scrutinee-type gating.** A second
+  review pass (tracked as issue #6753) found that item D's own fix
+  exposed a genuine correctness regression: `emitConstructorTest`
+  consulted `ctx.enumDefs` for a bare case name unconditionally, before
+  any scrutinee-type check. It is also reached with a bare
+  single-segment head from `emitPatternTest`'s `PBinding` ->
+  `scrutineeHasCase` redirect — which only fires once the scrutinee is
+  already confirmed to be a **union** (a struct pointer, never `NI32`).
+  Once a bare enum-case key exists, a union `match` arm using a bare
+  case name that happened to collide with some unrelated enum's case
+  name anywhere in the bundle would wrongly take the enum branch,
+  emitting a type-mismatched `NICmp(ty=NI32, ...)` against what is
+  actually a struct pointer — a compile-time or runtime corruption for
+  a `match` that compiled and ran correctly before this entry's own
+  fix. Item D's own test never caught this because it deliberately used
+  fully-qualified `EnumType.Case` pattern forms throughout, per its
+  stated scope boundary against #6740. Fixed by gating the enum branch
+  in `emitConstructorTest` on `sv.ty == NI32` (the enum's actual runtime
+  representation), which correctly handles both call sites into the
+  function (the `PBinding` redirect and a direct `PConstructor`
+  pattern) with no caller-specific flag needed. Item E covers this in
+  *pattern* position: the same `Status`/`Wrapper` collision, but a
+  `match` arm using the bare `Ready`/`Pending` names against a
+  `Wrapper` scrutinee, asserting the union case still resolves
+  correctly.
+- **Item F — enum-vs-enum bare-name collision (first-wins).** Items D/E
+  cover enum-vs-union collisions; the bug class that originally
+  motivated this whole fix line also includes enum-vs-**enum**
+  collisions — the exact shape `lyric-stdlib/std/http_engine.l`'s own
+  module header documents as issue #5995 (`Std.Http.HttpVersion` and
+  `Std.HttpEngine.HttpVersion` both declaring a case named `Http11`,
+  resolving against the wrong package's enum on MSIL/JVM once both
+  compile into the same program — the reason `http_engine.l` renamed
+  its own cases to `Http1_0`/`Http1_1` rather than fix the underlying
+  resolver). Item F adds two enums, `First { case OnlyFirst; case
+  Shared }` and `Second { case Shared; case OnlySecond }`, declared in
+  that order in one file, and asserts a bare `Shared` reference against
+  an explicit `First`-typed annotation resolves to `First`'s `Shared`
+  ordinal (1) rather than `Second`'s (0) — the deterministic, documented
+  first-wins outcome (`Msil.Codegen`'s own "first-wins (cross-package
+  collisions keep the first registration...)" policy, now mirrored on
+  native), verified by round-tripping through a fully-qualified
+  `First.Case` match so a wrong-ordinal resolution fails the assertion
+  rather than merely not panicking. This test does not re-litigate
+  #5995 itself (a pre-existing MSIL/JVM behavior, out of scope for a
+  native-only PR) — it documents that native's first-wins semantics are
+  now deterministic and match the other two targets' for the same
+  unqualified-name-collision shape, so a future #5995-class bug report
+  against native has a baseline test to compare against.
+
+**Verification (updated).** All three additional fixes verified the
+same way as the original entry: the full native-backend self-test suite
+(all `llvm_*_self_test.l` files listed above) re-run clean after each
+change, `lyric fmt --write` applied clean, and `make lyric` succeeding
+end to end from source before each push. `llvm_enum_case_resolve_self_test.l`
+now has 6 cases (A–F), all passing.
+
+**Related (addendum):** #6753 (the `emitConstructorTest` REQUIRED
+finding, auto-closed once its fix landed in this same PR), #5995 (the
+pre-existing MSIL/JVM enum-vs-enum bare-name collision item F's test is
+modeled on, not fixed by this PR), `lyric-stdlib/std/http_engine.l`
+(the module header documenting #5995's real-world trigger and
+workaround).
+

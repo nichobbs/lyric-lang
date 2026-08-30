@@ -18,7 +18,7 @@
 //! lookup in `lowerExpr` — previously only ever hit by an
 //! already-qualified path — now resolves a truly bare reference too.
 //!
-//! Five cases:
+//! Six cases:
 //!   - item A (#6589's exact reported shape): a bare reference to a
 //!     CROSS-PACKAGE enum case (`Std.HttpEngine.HttpVersion.Http1_1`,
 //!     the issue's own motivating example), assigned against an
@@ -49,8 +49,21 @@
 //!     enum branch on `sv.ty == NI32` (the enum's actual runtime
 //!     representation) so a union scrutinee (always a struct pointer)
 //!     can never be misrouted into it.
+//!   - item F (the other half of the bare-name collision space): an
+//!     enum-vs-**enum** bare-name collision — the exact bug class
+//!     `lyric-stdlib/std/http_engine.l`'s own module header documents
+//!     as issue #5995 (two enums sharing a case name resolving against
+//!     the wrong one once both compile into the same program). Two
+//!     enums each declare a case named `Shared` at a different ordinal;
+//!     a bare `Shared` reference against an explicit type annotation
+//!     must resolve to the first-declared enum's ordinal — the
+//!     deterministic first-wins outcome `Msil.Codegen`'s own comment
+//!     documents, now mirrored on native. Does not re-litigate #5995
+//!     itself (a pre-existing MSIL/JVM behavior); documents that
+//!     native's collision semantics are deterministic and match the
+//!     other two targets'.
 //!
-//! Items A-D's `match` arms use the fully-qualified `EnumType.Case`
+//! Items A-D and F's `match` arms use the fully-qualified `EnumType.Case`
 //! pattern form deliberately, to isolate the value-position fix from a
 //! separate, still-open, pre-existing gap: a bare pattern-position case
 //! name against an ENUM scrutinee (`emitPatternTest`'s `scrutineeHasCase`
@@ -352,5 +365,57 @@ test "a bare case name in a match PATTERN against a union scrutinee still resolv
     r.exitCode,
     42,
     "bare pattern-position match against a union resolves correctly despite a same-named enum (#6753)"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Item F: an enum-vs-ENUM bare-name collision — the bug class
+// `lyric-stdlib/std/http_engine.l`'s own module header documents as
+// issue #5995 (`Std.Http.HttpVersion` and `Std.HttpEngine.HttpVersion`
+// both declaring a case named `Http11`, resolving against the *wrong*
+// package's enum on MSIL/JVM once both compile into the same program —
+// the reason `http_engine.l` renamed its own cases to `Http1_0`/
+// `Http1_1` rather than fix the resolver). Items D/E cover enum-vs-union
+// collisions; this covers the other half of the bare-name collision
+// space. `First` (declaring `Shared` at ordinal 1) and `Second`
+// (declaring `Shared` at ordinal 0) are declared in that order in one
+// file; a bare `Shared` reference against an explicit `First`-typed
+// annotation must resolve to `First`'s `Shared` (ordinal 1) — the
+// deterministic first-wins outcome `Msil.Codegen.registerEnumDeclMsil`'s
+// own comment documents ("first-wins... keeps the first registration"),
+// now mirrored on native. Round-tripped through a fully-qualified
+// `First.Case` match so a wrong-ordinal resolution (silently reading as
+// `Second`'s `Shared`, ordinal 0, i.e. `First.OnlyFirst`) fails the
+// assertion rather than merely not panicking. This does not re-litigate
+// #5995 itself (a pre-existing MSIL/JVM behavior, out of scope here) —
+// it documents that native's first-wins semantics are deterministic and
+// match the other two targets' for the same collision shape.
+// ─────────────────────────────────────────────────────────────────────────────
+test "an enum-vs-enum bare-name collision resolves via first-wins, matching Msil.Codegen's documented semantics (#5995 shape)" {
+  val src = "package T\n" + "enum First {\n" + "  case OnlyFirst\n" + "  case Shared\n" + "}\n" + "enum Second {\n" +
+    "  case Shared\n" +
+    "  case OnlySecond\n" +
+    "}\n" +
+    "func pickShared(): First {\n" +
+    "  Shared\n" +
+    "}\n" +
+    "func firstToInt(f: in First): Int {\n" +
+    "  match f {\n" +
+    "    case First.OnlyFirst -> 0\n" +
+    "    case First.Shared -> 1\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  if firstToInt(pickShared()) == 1 {\n" +
+    "    42\n" +
+    "  } else {\n" +
+    "    1\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(
+    r.exitCode,
+    42,
+    "enum-vs-enum bare-name collision resolves to the first-declared enum's case (#5995 shape)"
   )
 }

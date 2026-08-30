@@ -2953,11 +2953,23 @@ jobs:
       # different package; `ctx.enumDefs` only ever indexed a case under
       # its qualified forms, never the bare case name alone, mirroring
       # the fix now applied: `Msil.Codegen.registerEnumDeclMsil`'s `cn`
-      # key. Covers #6589's own cross-package repro (`Std.HttpEngine`'s
-      # `HttpVersion`/`Http1_1`, via the bundled `Lyric.LlvmBridge` path)
-      # plus the same-file bare-return-value and bare-record-field-default
-      # cases `docs/03-decision-log.md` D-progress-823 item D worked
-      # around instead of fixing).
+      # key). Six cases (A-F): A covers #6589's own cross-package repro
+      # (`Std.HttpEngine`'s `HttpVersion`/`Http1_1`, via the bundled
+      # `Lyric.LlvmBridge` path); B/C cover the same-file bare-return-
+      # value and bare-record-field-default cases
+      # `docs/03-decision-log.md` D-progress-823 item D worked around
+      # instead of fixing; D/E were added during this PR's own review
+      # rounds -- D covers a bare case name shared by an enum and a
+      # union in VALUE position (the `EPath` bare-name lookup must check
+      # `ctx.enumDefs` before `ctx.caseRefs`, matching `Msil.Codegen`'s
+      # order), and E covers the identical enum/union collision in
+      # PATTERN position (issue #6753: `emitConstructorTest`'s enum
+      # branch must gate on `sv.ty == NI32` so a union scrutinee is never
+      # misrouted into it just because an unrelated enum shares the
+      # union case's bare name); F covers an enum-vs-**enum** bare-name
+      # collision (the bug class `lyric-stdlib/std/http_engine.l`'s own
+      # header documents as issue #5995), asserting the deterministic
+      # first-wins outcome `Msil.Codegen` already documents.
       #
       # The tests import `Lyric.Llvm*` compiler packages by source, so
       # LYRIC_LOAD_COMPILER=1.
