@@ -347,7 +347,7 @@ test "MockFlagStore: getValue returns None for unknown flag" {
 test "MockDbConnection: query returns Ok and increments queryCount" {
   val ctx = Testing.newTestContext()
   match ctx.db.query("select 1", []) {
-    case Err(e) -> assertTrue(false, "query() must return Ok: " + e.message)
+    case Err(e) -> Testing.assertTrue(false, "query() must return Ok: " + e.message)
     case Ok(_) -> ()
   }
   assertEqualInt(ctx.db.queryCount, 1, "queryCount after one query")
@@ -356,7 +356,7 @@ test "MockDbConnection: query returns Ok and increments queryCount" {
 test "MockDbConnection: execute returns Ok and increments executeCount" {
   val ctx = Testing.newTestContext()
   match ctx.db.execute("update t set x = 1", []) {
-    case Err(e) -> assertTrue(false, "execute() must return Ok: " + e.message)
+    case Err(e) -> Testing.assertTrue(false, "execute() must return Ok: " + e.message)
     case Ok(_) -> ()
   }
   assertEqualInt(ctx.db.executeCount, 1, "executeCount after one execute")
@@ -368,19 +368,19 @@ test "MockDbConnection: transaction commits and rolls back independently (#5133)
     case Ok(tx) -> {
       match tx.commit() {
         case Ok(_) -> ()
-        case Err(_) -> assertTrue(false, "tx.commit() must return Ok")
+        case Err(_) -> Testing.assertTrue(false, "tx.commit() must return Ok")
       }
     }
-    case Err(_) -> assertTrue(false, "transaction() must return Ok")
+    case Err(_) -> Testing.assertTrue(false, "transaction() must return Ok")
   }
   match ctx.db.transaction() {
     case Ok(tx) -> {
       match tx.rollback() {
         case Ok(_) -> ()
-        case Err(_) -> assertTrue(false, "tx.rollback() must return Ok")
+        case Err(_) -> Testing.assertTrue(false, "tx.rollback() must return Ok")
       }
     }
-    case Err(_) -> assertTrue(false, "transaction() must return Ok")
+    case Err(_) -> Testing.assertTrue(false, "transaction() must return Ok")
   }
   assertEqualInt(Testing.txCount(ctx.db), 2, "two independent transactions were begun")
 }
@@ -391,21 +391,21 @@ test "MockDbConnection: transaction's query/execute work on the extracted interf
     case Ok(tx) -> {
       match tx.query("select 2", []) {
         case Ok(_) -> ()
-        case Err(_) -> assertTrue(false, "tx.query() must return Ok")
+        case Err(_) -> Testing.assertTrue(false, "tx.query() must return Ok")
       }
       match tx.execute("insert into t values (1)", []) {
         case Ok(_) -> ()
-        case Err(_) -> assertTrue(false, "tx.execute() must return Ok")
+        case Err(_) -> Testing.assertTrue(false, "tx.execute() must return Ok")
       }
     }
-    case Err(_) -> assertTrue(false, "transaction() must return Ok")
+    case Err(_) -> Testing.assertTrue(false, "transaction() must return Ok")
   }
 }
 
 test "MockDbConnection: close does not error" {
   val ctx = Testing.newTestContext()
   ctx.db.close()
-  assertTrue(true, "close() completes without error")
+  Testing.assertTrue(true, "close() completes without error")
 }
 
 // ─── Assertion helpers ────────────────────────────────────────────────────────
