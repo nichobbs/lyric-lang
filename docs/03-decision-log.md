@@ -36670,3 +36670,134 @@ round trip #6695 breaks). `bitwise_self_test.l` and
 corrects), D-progress-837, D-progress-834 (the `Object`-marker fix this
 mirrors), D-progress-571 (established `Short` is not a surface type),
 docs/01-language-reference.md §2.1.
+
+## D-progress-841 — JVM auto-FFI: gate the reverse-compatibility array-scoring arm to genuine slice-erasure narrowing; F0015-J emits the resolved descriptor (#6745, review findings on #6631)
+
+**Status:** Shipped.
+
+**Context.** An automated code-review pass against #6631's diff filed two
+findings against `jvm/auto_ffi.l` / `jvm/codegen/04_calls.l`: a REQUIRED
+silent-miscompile bug in the #6696 reverse-compatibility scoring arm, and a
+SUGGESTION that F0015-J's `@externTarget` signature check validates via
+widening-tolerant scoring but emits the unwidened declared descriptor.
+
+**#6745 — reverse-compatibility arm conflated a narrowed score-only
+descriptor with a genuine primitive-array descriptor.** #6696's fix to
+`scoreParamMatch` (`jvm/auto_ffi.l`) added `isPrimitiveArrayDesc(argDesc) and
+paramDesc == "[Ljava/lang/Object;" -> score 2` unconditionally, reasoning
+that a Lyric `slice[T]`'s runtime representation is always `Object[]`
+regardless of its narrowed SCORE-ONLY descriptor. True for the narrowed-slice
+case `ffiScoreDescFor` produces — but the same descriptor shape (`"[I"`,
+`"[C"`, …) is reachable from a GENUINELY primitive-array-typed argument that
+was never a slice at all: a JDK method's real primitive-array return value
+(e.g. `Arrays.copyOf(int[], int): int[]`) flowing directly into another
+auto-FFI call retains its real `JArray(JInt)` codegen type — `ffiScoreDescFor`
+never narrows it (its narrowing `if` gates on `erasedDesc ==
+"[Ljava/lang/Object;"`, which is false here), so the argument's score
+descriptor IS its real descriptor. The ungated arm scored this a "match"
+against an `Object[]`-only overload (e.g. `Arrays.asList`) with no coercion
+emitted — `emitFfiCoerce` has no rule to box a real primitive array
+element-by-element into a fresh `Object[]` (only the reverse: unboxing an
+`Object[]`-erased slice into a primitive array) — leaving a real `int[]`
+reference on the stack where the invoke's descriptor expects `Object[]`.
+Reproduced and confirmed on unpatched code: compiling `Arrays.asList(grown)`
+(`grown` from `Arrays.copyOf`) succeeded, then failed at class load with
+`VerifyError: Bad type on operand stack. Type '[I' ... is not assignable to
+'[Ljava/lang/Object;'`.
+
+Fixed by threading an explicit `argIsNarrowedSliceErasure: Bool` flag through
+`scoreParamMatch` -> `scoreParam` -> `scoreMethod` -> `findBestMethod` /
+`findBestConstructor` / `findBestInstanceMethod` (and their internal
+superclass/interface-walk helpers `scoreAndGetSuper` / `scoreInterfacesRec`),
+computed at the three auto-FFI call-lowering call sites
+(`lowerAutoFfiStaticCall` / `lowerAutoFfiInstanceCall` /
+`lowerAutoFfiConstructorCall` in `jvm/codegen/04_calls.l`) as
+`scoreDesc != erasedDesc` — true exactly when `ffiScoreDescFor` narrowed this
+argument, the ONLY case the reverse arm is valid for. Callers with no
+narrowing concept (F0015-J's declared-signature checks, `verifyExternTargetJvm`
+turned `resolveExternTargetJvm`, see below) pass an empty flags list, which
+`narrowedAt` treats as "not narrowed" for every position. After the fix, the
+same repro fails loud at COMPILE time (`JVM auto-FFI: no matching static
+overload for 'java.util.Arrays.asList([I)'`) instead of silently miscompiling
+— matching the project's established "fail loud, never silently miscompile"
+posture (C337448c) and the sibling `checkPrimitiveArraySliceAmbiguity`
+negative-test pattern. The #6696 legitimate case (a genuinely `slice[T]`-typed
+argument whose score descriptor IS narrowed) is unaffected: `Arrays.asList` /
+`Objects.hash` / `String.format` with a `slice[Int]` argument still resolve
+correctly (verified: existing #6662/#6696 tests unchanged, all pass).
+
+**SUGGESTION — F0015-J emitted the declared descriptor, not the resolved
+one.** `findBestMethod`/`findBestConstructor`'s scoring (used by F0015-J to
+verify a declared `@externTarget` signature against real JDK metadata) is
+widening-tolerant: numeric widening, primitive-to-`Object` boxing, and
+verified-reference-IS-A all validate without an exact descriptor match. But
+`lowerExternTargetBody` emitted the invoke using the DECLARED (unwidened)
+parameter types regardless — so a declared signature that validated via, say,
+the reference-IS-A arm encoded a MethodRef the JDK class doesn't actually
+have. Confirmed independently reproducible pre-fix (unrelated to the #6745
+scoring bug above): `@externTarget("java.util.Objects.toString")` declared
+with a Lyric `String` parameter validates (F0015-J: `String IS-A Object`,
+`Objects.toString`'s only 1-arg overload takes `Object`), but the emitted
+`invokestatic java/util/Objects.toString(Ljava/lang/String;)Ljava/lang/String;`
+references a method `Objects` doesn't have (only `toString(Ljava/lang/Object;)`
+exists) — a real `NoSuchMethodError`/verifier failure despite F0015-J having
+reported the signature "verified".
+
+Fixed by changing `verifyExternTargetJvm`'s `Bool` return into
+`resolveExternTargetJvm`, returning a new `ExternTargetResolution { classFound:
+Bool; method: Option[ClassMethod] }` record: `classFound = false` means "class
+absent from metadata, pass silently, keep the declared descriptor" (unchanged
+behaviour); `classFound = true, method = None` means "found but no match,
+panic" (F0015-J's existing diagnostic, unchanged wording); `classFound = true,
+method = Some(m)` carries the ACTUAL resolved overload. `lowerExternTargetBody`
+(ctor, static, and instance branches) now resolves each parameter's descriptor
+from `m.descriptor` (via a shared `resolvedParamDescsOr` helper) rather than
+re-deriving it from the declared Lyric types, and threads it through the same
+`emitFfiCoerce` machinery the general-purpose auto-FFI call paths already use
+— buffering each loaded argument (and the instance receiver, when present)
+through a temp local slot before the coercion runs, mirroring
+`lowerAutoFfiInstanceCall`/`lowerAutoFfiConstructorCall`'s existing
+"coercions may branch, so keep the operand stack empty at branch targets"
+guard. For the overwhelmingly common case (declared descriptor already equals
+the resolved one) `emitFfiCoerce` is a no-op, so this adds no bytecode beyond
+the store/reload pair. Verified: the `Objects.toString(String)` repro above
+now runs correctly post-fix, returning the real value.
+
+**Incidental fix — avoid a `Lyric.Mono` generic-monomorphization gap.**
+The most natural way to read `ExternTargetResolution.method: Option[ClassMethod]`
+is `Std.Core.isNone(resolution.method)`, but that call — a generic `isNone[T]`
+instantiated against a cross-package record type from `Jvm.ClassReader` inside
+`Jvm.Codegen`'s own source — monomorphizes to a specialization
+(`isNone__Object`) whose compiled body panics `"match not exhaustive"` at
+RUNTIME when actually invoked (a `Lyric.Mono` generic-inference gap unrelated
+to this fix's own logic, in the same documented class as `mono_self_test.l`'s
+`isOk__Object__Object` case). Worked around by using a plain inline `match`
+instead of the generic helper at both call sites — no `Lyric.Mono` change,
+smallest viable fix; the underlying monomorphizer gap is out of scope here and
+not separately tracked (worth a follow-up issue if it resurfaces elsewhere).
+
+**Tests.** `auto_ffi_jvm_self_test.l` gained two cases (49/50, all 50 pass):
+a positive regression pinning that a genuinely-real primitive array
+(`Arrays.copyOf`'s actual `int[]` return) still resolves EXACT primitive
+overloads correctly (`Arrays.hashCode(int[])`, `Arrays.toString(int[])`) —
+the reverse-arm gating doesn't regress the case an exact match already wins
+outright — and the `Objects.toString(String)` F0015-J descriptor-emission
+regression. The genuinely-broken case itself (a real primitive array against
+an `Object[]`-only overload) now fails at COMPILE time, so it's asserted as a
+new CI negative-test step ("Genuine primitive-array argument rejected for an
+Object[]-only overload on JVM") mirroring the existing "Ambiguous
+primitive-array overload fails loud on JVM" step's shape, inserted into the
+same JVM batch 1 group. Verified manually end-to-end: the repro compiled and
+ran under unpatched code, producing the exact `VerifyError` above; after the
+fix the same repro fails to compile with the expected diagnostic; the
+pre-existing ambiguous-overload negative repro (`String(char[])` vs
+`String(byte[])` via an if/else-sourced `slice[Char]`) still fires unchanged.
+Full `auto_ffi_jvm_self_test.l` (50/50), `bitwise_self_test.l` (10/10),
+`slice_append_widening_self_test.l` (2/2), and `generic_extern_jvm_self_test.l`
+(5/5) re-verified with no regressions.
+
+**Files:** `lyric-compiler/jvm/auto_ffi.l`, `lyric-compiler/jvm/codegen/04_calls.l`,
+`lyric-compiler/lyric/auto_ffi_jvm_self_test.l`, `.github/workflows/ci.yml`.
+
+**Related:** #6745, #6696, #6662, #6631, D-progress-834 (the sibling
+`Lyric.Mono` generic-marker gap this incidentally works around).

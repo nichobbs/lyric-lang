@@ -767,3 +767,72 @@ test "String.format(String, slice[Int]) resolves the Object[]-only varargs overl
   val s = JString.format("%d and %d", values)
   assertEqual(s, "7 and 9", "String.format with a slice[Int] varargs argument")
 }
+
+// ── #6745: reverse-compat arm must not fire for a GENUINE primitive array ──
+//
+// `scoreParamMatch`'s reverse-compatibility arm (above, #6696) is only valid
+// when the argument's descriptor is a SCORE-ONLY narrowing of an actually
+// `[Ljava/lang/Object;`-erased `slice[T]` — `emitFfiCoerce` can then safely
+// skip coercion, since the real value on the stack already IS an `Object[]`.
+// It is NOT valid for a genuinely primitive-array-typed argument: `grown`
+// below has REAL JVM storage type `int[]` (`Arrays.copyOf`'s actual resolved
+// return type, never re-erased back to `Object[]`), so passing it to an
+// `Object[]`-only overload has no correct coercion (`emitFfiCoerce` has no
+// rule to box a real primitive array element-by-element into a fresh
+// `Object[]`) — before the #6745 fix, the ungated arm still scored this a
+// "match" with no coercion emitted, corrupting the emitted bytecode with a
+// real `int[]` reference where `Object[]` is expected: `VerifyError` at
+// class load.  After the fix this correctly refuses to resolve any overload
+// at all — asserted as a `lyric build --target jvm` failure in ci.yml's
+// "Genuine primitive-array argument rejected for an Object[]-only overload
+// on JVM" step (a compile-time panic inside the compiler process itself is
+// not expressible as a `@test_module` runtime assertion).  This test instead
+// pins the POSITIVE half: `grown`'s real `int[]` continues to resolve
+// correctly against overloads that actually declare `int[]` (unaffected by
+// gating the reverse arm, since an exact match always short-circuits before
+// that arm is ever reached).
+test "genuine primitive array (Arrays.copyOf's real int[] return) still resolves exact primitive overloads (#6745)" {
+  val src: slice[Int] = [4, 5, 6]
+  val grown = JArrays.copyOf(src, 3)
+  // Arrays.hashCode(int[]): r=1; r=31*r+4=35; r=31*r+5=1090; r=31*r+6=33796.
+  assertEqualInt(
+    JArrays.hashCode(grown),
+    33796,
+    "Arrays.hashCode(int[]) resolves the exact int[] overload for a genuinely-real primitive array"
+  )
+  val s = JArrays.toString(grown)
+  assertEqual(
+    s,
+    "[4, 5, 6]",
+    "Arrays.toString(int[]) resolves the exact int[] overload for a genuinely-real primitive array"
+  )
+}
+
+// ── #6745: F0015-J emits the RESOLVED descriptor, not the declared one ─────
+//
+// `Objects.toString(Object)` is the JDK's ONLY one-argument overload — no
+// `Objects.toString(String)` exists.  Declaring this `@externTarget` with a
+// Lyric `String` parameter makes `findBestMethod`'s scoring resolve it via
+// the reference-widening arm (`String IS-A Object`), which VALIDATES the
+// declared signature (F0015-J passes) without the declared descriptor
+// (`Ljava/lang/String;`) equaling the resolved one (`Ljava/lang/Object;`).
+// Before the #6745 fix, `lowerExternTargetBody` emitted the invoke against
+// the DECLARED descriptor regardless — encoding
+// `invokestatic java/util/Objects.toString(Ljava/lang/String;)Ljava/lang/String;`,
+// a `<clinit>`/method reference `java.util.Objects` does not actually have
+// (only `toString(Ljava/lang/Object;)` and the two-arg overload exist),
+// which fails at runtime with `NoSuchMethodError`/`VerifyError` despite
+// F0015-J having reported the signature "verified".  After the fix, the
+// invoke is emitted against the RESOLVED `(Ljava/lang/Object;)` descriptor
+// (a `String` argument reference is verifier-compatible with an `Object`
+// parameter slot with no coercion needed), so this now actually runs.
+@externTarget("java.util.Objects.toString")
+func Objects_toStringOfString(x: in String): String = ()
+
+test "F0015-J emits the resolved descriptor for a reference-widened @externTarget signature (#6745)" {
+  assertEqual(
+    Objects_toStringOfString("hello"),
+    "hello",
+    "Objects.toString(String) resolves against the real Object-typed overload"
+  )
+}

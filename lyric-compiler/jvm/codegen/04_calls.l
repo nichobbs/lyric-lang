@@ -176,6 +176,20 @@ func isStaticExternByName(name: in String): Bool {
   }
 }
 
+// Resolved-overload parameter descriptors for `lowerExternTargetBody`'s
+// F0015-J emission (#6745): `findBestMethod`/`findBestConstructor`'s scoring
+// is widening-tolerant, so a declared @externTarget signature that VALIDATES
+// need not equal the resolved overload's descriptor bit for bit — emitting
+// the call against the DECLARED descriptor in that case encodes a MethodRef
+// the JDK class doesn't actually have.  Falls back to `declared` unchanged
+// when the class wasn't found in metadata (nothing resolved to defer to).
+func resolvedParamDescsOr(resolution: in ExternTargetResolution, declared: in List[String]): List[String] {
+  match resolution.method {
+    case Some(m) -> parseDescriptorParams(m.descriptor)
+    case None -> declared
+  }
+}
+
 // Emit the body of a body-less function that has `@externTarget("java.Class.method")`.
 // Loads all params, emits invokestatic or invokevirtual, and wraps the result in
 // Result$Ok / Result$Err when the declared return type is Result[T, JvmException].
@@ -229,11 +243,21 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
         // `List[T]`) is never compared against `<init>`'s own `void`
         // descriptor — it is reconciled by construction, since the emitted
         // shape below always returns the freshly `new`'d instance rather
-        // than whatever `<init>` returns.  `verifyExternTargetJvm` passes
-        // silently when the class is absent from the metadata index
-        // (mirrors the static/instance F0015-J check below), so a
+        // than whatever `<init>` returns.  `resolveExternTargetJvm` reports
+        // "not found" silently when the class is absent from the metadata
+        // index (mirrors the static/instance F0015-J check below), so a
         // non-JDK/non-Maven ctor target is unaffected.
-        if not verifyExternTargetJvm(ctx.autoFfi, targetFqnDot, "new", allParamDescs, true) {
+        val ctorResolution = resolveExternTargetJvm(ctx.autoFfi, targetFqnDot, "new", allParamDescs, true)
+        // Inline `match` rather than `Std.Core.isNone` (#6745): calling the
+        // generic `isNone[T]` here on `Option[ClassMethod]` — a cross-package
+        // record type — monomorphizes to a specialization (`isNone__Object`)
+        // whose body panics "match not exhaustive" at RUNTIME (a genuine
+        // `Lyric.Mono` generic-inference gap, unrelated to this fix's own
+        // logic); a plain inline match avoids the generic instantiation
+        // entirely.
+        val ctorMethodMissing = ctorResolution.classFound and
+          match ctorResolution.method { case Some(_) -> false; case None -> true }
+        if ctorMethodMissing {
           var ctorSigStr = "("
           var csi = 0
           while csi < ctorParamTys.count {
@@ -252,18 +276,47 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
               "Verify the Lyric parameter types match a real Java constructor overload."
           )
         }
-        insns.add(LNew(className = javaClass))
-        insns.add(LDup)
-        // Parameter slots: long/double occupy two local slots.
+        // Emit against the RESOLVED overload's real descriptor, not the
+        // declared one (#6745): `findBestConstructor`'s scoring above is
+        // widening-tolerant (numeric widening, primitive->Object boxing,
+        // verified reference IS-A), so a declared parameter list that
+        // VALIDATES need not equal the actual `<init>` descriptor bit for
+        // bit — emitting the raw declared descriptor in that case encodes a
+        // MethodRef the JDK class doesn't actually have.  Falls back to the
+        // declared descriptors unchanged when the class wasn't found in
+        // metadata at all (nothing resolved to defer to).
+        val ctorResolvedParamDescs = resolvedParamDescsOr(ctorResolution, allParamDescs)
+        // Load + coerce each declared param into a temp slot BEFORE `new;
+        // dup`: a coercion may branch (the `[Ljava/lang/Object; ->
+        // primitive[]` unbox loop), and the StackMapTable declares an empty
+        // operand stack at every branch target — running it with the
+        // uninitialised receiver ref already on the stack fails verification
+        // (mirrors `lowerAutoFfiConstructorCall`'s identical guard).
+        val ctorParamJvms: List[JvmType] = newList()
+        val ctorArgSlots: List[Int] = newList()
         var cpSlot = 0
         var cpJ = 0
         while cpJ < decl.params.count {
           emitLoad(insns, cpSlot, ctorParamTys[cpJ])
           val w = match ctorParamTys[cpJ] { case JLong -> 2; case JDouble -> 2; case _ -> 1 }
+          val resolvedDesc = if cpJ < ctorResolvedParamDescs.count { ctorResolvedParamDescs[cpJ] } else { allParamDescs[cpJ] }
+          emitFfiCoerce(ctx, insns, allParamDescs[cpJ], resolvedDesc)
+          val pj = descStrToJvmType(resolvedDesc)
+          ctorParamJvms.add(pj)
+          val aslot = allocSlot(ctx, "__ext_ctor_arg_" + freshLabel(ctx), pj)
+          emitStore(insns, aslot, pj)
+          ctorArgSlots.add(aslot)
           cpSlot = cpSlot + w
           cpJ = cpJ + 1
         }
-        insns.add(LInvokespecial(owner = javaClass, name = "<init>", params = ctorParamTys, ret = JVoid))
+        insns.add(LNew(className = javaClass))
+        insns.add(LDup)
+        var caj = 0
+        while caj < ctorArgSlots.count {
+          emitLoad(insns, ctorArgSlots[caj], ctorParamJvms[caj])
+          caj = caj + 1
+        }
+        insns.add(LInvokespecial(owner = javaClass, name = "<init>", params = ctorParamJvms, ret = JVoid))
         val ctorRet = JRef(className = javaClass)
         emitReturn(insns, ctorRet)
         return ctorRet
@@ -291,7 +344,7 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
       }
       val isStatic = match loadClass(ctx.autoFfi, targetFqnDot) {
         case Some(ci) -> {
-          match findBestMethod(ctx.autoFfi, ci, methodName, allParamDescs, true) {
+          match findBestMethod(ctx.autoFfi, ci, methodName, allParamDescs, true, newList()) {
             case Some(_) -> true
             case None -> false
           }
@@ -328,7 +381,11 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
         f5ai = f5ai + 1
       }
       val javaFqnDot = replace(javaClass, "/", ".")
-      if not verifyExternTargetJvm(ctx.autoFfi, javaFqnDot, methodName, f5ArgDescs, isStatic) {
+      val f5Resolution = resolveExternTargetJvm(ctx.autoFfi, javaFqnDot, methodName, f5ArgDescs, isStatic)
+      // Inline `match`, not `isNone` — see the ctor-form comment above (#6745).
+      val f5MethodMissing = f5Resolution.classFound and
+        match f5Resolution.method { case Some(_) -> false; case None -> true }
+      if f5MethodMissing {
         var f5SigStr = "("
         var f5si = 0
         while f5si < javaArgTypes.count {
@@ -349,9 +406,43 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
             "Verify the Lyric parameter/return types match the Java method."
         )
       }
+      // Resolved param descriptors + JVM types for the actual invoke (#6745):
+      // `findBestMethod`'s scoring above is widening-tolerant, so a declared
+      // signature that VALIDATES need not equal the resolved overload's real
+      // descriptor — see `resolvedParamDescsOr`.
+      val f5ResolvedDescs = resolvedParamDescsOr(f5Resolution, f5ArgDescs)
+      val extArgTypes: List[JvmType] = newList()
+      var eatI = 0
+      while eatI < f5ResolvedDescs.count {
+        extArgTypes.add(descStrToJvmType(f5ResolvedDescs[eatI]))
+        eatI = eatI + 1
+      }
 
-      // Load all params in order: receiver first for instance calls.
+      // Load all params in order: receiver first for instance calls, stashed
+      // in a temp slot so each following argument's coercion (#6745) runs
+      // with an empty operand stack — a coercion may branch (the
+      // `[Ljava/lang/Object; -> primitive[]` unbox loop), and the
+      // StackMapTable declares an empty stack at every branch target
+      // (mirrors `lowerAutoFfiInstanceCall`'s identical `needsRecvStash`
+      // guard).  Every param is routed through this temp-slot buffering
+      // uniformly — for the overwhelmingly common case (declared descriptor
+      // already equals the resolved one) `emitFfiCoerce` is a pure no-op, so
+      // this adds no bytecode beyond the store/reload pair.
       var li = 0
+      var extRecvSlot = -1
+      var extRecvTy = JVoid
+      if not isStatic and decl.params.count > 0 {
+        extRecvTy = typeExprToJvm(decl.params[0].ty, ctx.pkgName)
+        match lookupSlot(ctx, decl.params[0].name) {
+          case Some(s) -> emitLoad(insns, s, extRecvTy)
+          case None -> insns.add(LAconstNull)
+        }
+        extRecvSlot = allocSlot(ctx, "__ext_recv_" + freshLabel(ctx), extRecvTy)
+        emitStore(insns, extRecvSlot, extRecvTy)
+        li = 1
+      }
+      val extArgSlots: List[Int] = newList()
+      var argJ = 0
       while li < decl.params.count {
         val p = decl.params[li]
         val paramTy = typeExprToJvm(p.ty, ctx.pkgName)
@@ -359,7 +450,23 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
           case Some(s) -> emitLoad(insns, s, paramTy)
           case None -> insns.add(LAconstNull)
         }
+        val declDesc = if argJ < f5ArgDescs.count { f5ArgDescs[argJ] } else { jvmTypeToDescStr(paramTy) }
+        val resolvedDesc = if argJ < f5ResolvedDescs.count { f5ResolvedDescs[argJ] } else { declDesc }
+        emitFfiCoerce(ctx, insns, declDesc, resolvedDesc)
+        val rj = if argJ < extArgTypes.count { extArgTypes[argJ] } else { paramTy }
+        val aslot = allocSlot(ctx, "__ext_arg_" + freshLabel(ctx), rj)
+        emitStore(insns, aslot, rj)
+        extArgSlots.add(aslot)
         li = li + 1
+        argJ = argJ + 1
+      }
+      if extRecvSlot >= 0 {
+        emitLoad(insns, extRecvSlot, extRecvTy)
+      }
+      var eaj = 0
+      while eaj < extArgSlots.count {
+        emitLoad(insns, extArgSlots[eaj], extArgTypes[eaj])
+        eaj = eaj + 1
       }
 
       if wrapResult {
@@ -374,9 +481,9 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
 
         insns.add(LLabel(name = tryStartL))
         if isStatic {
-          insns.add(LInvokestatic(owner = javaClass, name = methodName, params = javaArgTypes, ret = javaRet))
+          insns.add(LInvokestatic(owner = javaClass, name = methodName, params = extArgTypes, ret = javaRet))
         } else {
-          insns.add(LInvokevirtual(owner = javaClass, name = methodName, params = javaArgTypes, ret = javaRet))
+          insns.add(LInvokevirtual(owner = javaClass, name = methodName, params = extArgTypes, ret = javaRet))
         }
         match javaRet {
           case JVoid -> insns.add(LAconstNull)
@@ -416,9 +523,9 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
         JRef(className = "java/lang/Object")
       } else {
         if isStatic {
-          insns.add(LInvokestatic(owner = javaClass, name = methodName, params = javaArgTypes, ret = javaRet))
+          insns.add(LInvokestatic(owner = javaClass, name = methodName, params = extArgTypes, ret = javaRet))
         } else {
-          insns.add(LInvokevirtual(owner = javaClass, name = methodName, params = javaArgTypes, ret = javaRet))
+          insns.add(LInvokevirtual(owner = javaClass, name = methodName, params = extArgTypes, ret = javaRet))
         }
         emitReturn(insns, javaRet)
         javaRet
@@ -1688,6 +1795,11 @@ func lowerAutoFfiStaticCall(
   val argBufs: List[List[LInsn]] = newList()
   val argDescs: List[String] = newList()
   val scoreDescs: List[String] = newList()
+  // `narrowedFlags[i]` (#6745) is true exactly when `ffiScoreDescFor` narrowed
+  // this argument's score-only descriptor away from its real erased one — the
+  // ONLY case `scoreParamMatch`'s reverse-compatibility arm may fire for; see
+  // that function's doc comment.
+  val narrowedFlags: List[Bool] = newList()
   var i = 0
   while i < args.count {
     val buf: List[LInsn] = newList()
@@ -1695,7 +1807,9 @@ func lowerAutoFfiStaticCall(
     argBufs.add(buf)
     val erasedDesc = jvmTypeToDescStr(aTy)
     argDescs.add(erasedDesc)
-    scoreDescs.add(ffiScoreDescFor(ctx, callArgExpr(args[i]), erasedDesc))
+    val scoreDesc = ffiScoreDescFor(ctx, callArgExpr(args[i]), erasedDesc)
+    scoreDescs.add(scoreDesc)
+    narrowedFlags.add(scoreDesc != erasedDesc)
     i = i + 1
   }
 
@@ -1742,7 +1856,7 @@ func lowerAutoFfiStaticCall(
       if methodName == "new" {
         return lowerAutoFfiConstructorCall(ctx, insns, ci, args, callSpan)
       }
-      match findBestMethod(ctx.autoFfi, ci, methodName, scoreDescs, true) {
+      match findBestMethod(ctx.autoFfi, ci, methodName, scoreDescs, true, narrowedFlags) {
         case None -> {
           // No static overload matches — compile-time diagnostic.
           var argStr = ""
@@ -1814,6 +1928,8 @@ func lowerAutoFfiInstanceCall(
   val argBufs: List[List[LInsn]] = newList()
   val argDescs: List[String] = newList()
   val scoreDescs: List[String] = newList()
+  // See `lowerAutoFfiStaticCall`'s identical `narrowedFlags` comment (#6745).
+  val narrowedFlags: List[Bool] = newList()
   var i = 0
   while i < args.count {
     val buf: List[LInsn] = newList()
@@ -1821,10 +1937,12 @@ func lowerAutoFfiInstanceCall(
     argBufs.add(buf)
     val erasedDesc = jvmTypeToDescStr(aTy)
     argDescs.add(erasedDesc)
-    scoreDescs.add(ffiScoreDescFor(ctx, callArgExpr(args[i]), erasedDesc))
+    val scoreDesc = ffiScoreDescFor(ctx, callArgExpr(args[i]), erasedDesc)
+    scoreDescs.add(scoreDesc)
+    narrowedFlags.add(scoreDesc != erasedDesc)
     i = i + 1
   }
-  match findBestInstanceMethod(ctx.autoFfi, ci, methodName, scoreDescs) {
+  match findBestInstanceMethod(ctx.autoFfi, ci, methodName, scoreDescs, narrowedFlags) {
     case None -> {
       var argStr = ""
       var ai = 0
@@ -1953,6 +2071,8 @@ func lowerAutoFfiConstructorCall(
   val argBufs: List[List[LInsn]] = newList()
   val argDescs: List[String] = newList()
   val scoreDescs: List[String] = newList()
+  // See `lowerAutoFfiStaticCall`'s identical `narrowedFlags` comment (#6745).
+  val narrowedFlags: List[Bool] = newList()
   var i = 0
   while i < args.count {
     val buf: List[LInsn] = newList()
@@ -1960,10 +2080,12 @@ func lowerAutoFfiConstructorCall(
     argBufs.add(buf)
     val erasedDesc = jvmTypeToDescStr(aTy)
     argDescs.add(erasedDesc)
-    scoreDescs.add(ffiScoreDescFor(ctx, callArgExpr(args[i]), erasedDesc))
+    val scoreDesc = ffiScoreDescFor(ctx, callArgExpr(args[i]), erasedDesc)
+    scoreDescs.add(scoreDesc)
+    narrowedFlags.add(scoreDesc != erasedDesc)
     i = i + 1
   }
-  match findBestConstructor(ctx.autoFfi, ci, scoreDescs) {
+  match findBestConstructor(ctx.autoFfi, ci, scoreDescs, narrowedFlags) {
     case None -> {
       var argStr = ""
       var ai = 0
