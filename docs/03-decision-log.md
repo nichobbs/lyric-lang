@@ -34077,7 +34077,6 @@ rule the `H2SHalfClosedRemote` path in `beginTrailerHeaders` still
 honours), #6029 (the raw h2 client FFI gap blocking full #6566
 end-to-end coverage).
 
-<<<<<<< HEAD
 ## D-progress-817 — Four independent small follow-ups: JVM regex virtual threads + concurrency cap, lyric-auth JVM CI coverage, JVM argv class-init ordering guard, Result/Option accessor package-path qualification (#6576, #6583, #6587, #6630)
 
 **Context.** Four small, independent tickets bundled into one PR for

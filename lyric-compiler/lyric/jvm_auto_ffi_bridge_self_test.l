@@ -34,6 +34,18 @@
 //! since it needs an actual JVM run to prove the resolved call executes
 //! correctly.
 //!
+//! **Not wired into any CI job** (checked: no `jvm_auto_ffi_bridge_self_test.l`
+//! reference in `.github/workflows/`) — run manually via `make self-test
+//! NAME=jvm_auto_ffi_bridge` or `make test`/`make test-emitter`. Most tests in
+//! this file are hermetic and need nothing beyond `java`, but the #6565
+//! acceptance-criterion test (`Cli.buildProject` against the real
+//! `lyric-web/lyric.toml`) is **local-only**: it needs a restored Maven
+//! classpath for `io.undertow:undertow-core` (`lyric restore --manifest
+//! lyric-web/lyric.toml`, `LYRIC_MAVEN_RESOLVER` set, network access to Maven
+//! Central) — see that test's own comment for why. Wiring this whole file
+//! into CI, and giving that one test a CI-side restored classpath, is
+//! tracked as a follow-up rather than attempted here.
+//!
 //! Run via:
 //!   lyric test lyric-compiler/lyric/jvm_auto_ffi_bridge_self_test.l
 @test_module
