@@ -35426,3 +35426,138 @@ unsafe-format refusal).
 D-progress-822 (the two prior "bytes bounded, count unbounded" fixes
 this entry closes the third instance of).
 
+## D-progress-830 — Native: bare (same-file and cross-package) enum-case value reference resolved (#6589), closing the D-progress-823 item D workaround
+
+**Context.** D-progress-823 item D documented, but did not fix, a native
+codegen gap discovered while writing `_kernel_native/http_host.l`: "A bare
+nullary enum-case reference does not resolve, even within the same file —
+`func f(): MyEnum { A }` (instead of `MyEnum.A`) fails with 'unknown name
+A'. The same failure mode hits a record field's default value when the
+field is omitted at a construction site and that default is itself a bare
+enum case." That item's own workaround was to always fully-qualify enum
+cases. Issue #6589, filed independently while implementing the native
+`Std.HttpServer` twin (#6104, N9.3), reported the identical symptom in a
+CROSS-PACKAGE shape: `Std.HttpEngine`'s own source uses the idiom
+`var version: HttpVersion = Http1_1` pervasively (`HttpVersion`/`Http1_1`
+declared in `Std.HttpEngine`, referenced bare from a consuming package
+relying on the expected-type annotation to disambiguate), and this fails
+to compile for `--target native` with "unknown name 'Http1_1'" — not
+scopeable around within #6104 itself, since the idiom is used throughout
+the file N9.3 needs to compile.
+
+**Root cause — confirmed identical to D-progress-823 item D, not a
+distinct cross-package-specific bug.** `Lyric.LlvmCodegen`'s enum-case
+registry (`ctx.enumDefs`, populated once per bundle in
+`codegenNativeBundle`'s Phase A) only ever indexed a case under its
+*qualified* forms — `EnumName.CaseName` and `pkgName.EnumName.CaseName` —
+never the bare case name alone. `lowerExpr`'s `EPath` arm already had a
+bare-name lookup (`mapGet(ctx.enumDefs, joined)`, `joined` being the
+single-segment name for an unqualified reference) — but since no bare key
+was ever registered, that lookup could only ever succeed for an
+*already-qualified* multi-segment path, making it effectively dead code
+for the one case (a truly bare reference) it looks purpose-built for.
+Every unqualified case reference — same-file or cross-package, the two
+are handled by literally the same map lookup — fell through to
+`loadLocal`'s "unknown name" panic. The issue's own root-cause writeup
+("enums erase to bare NI32 too early") is directionally right but
+slightly overstates the fix's difficulty: no type information needs to
+survive to a later point, since the *case name itself* uniquely
+identifies its ordinal once bare names are indexed at all (modulo the
+same cross-bundle collision risk any bare-name index in this codebase
+already accepts — see below).
+
+**Fix — ported the existing MSIL pattern, not a new mechanism.** Per the
+issue's own suggestion to check how `Msil.Codegen` handles the same
+bare-name-against-expected-type case before inventing a native-only fix:
+`Msil.Codegen.registerEnumDeclMsil` already indexes an enum case under
+**three** keys — the pkg-qualified form, the type-qualified form
+(`EnumType.Case`), and the bare case name alone (`cn`) — with the bare key
+explicitly documented as "first-wins (cross-package collisions keep the
+first registration, like every other simple-name index here)". MSIL's own
+expression-lowering (`lowerExprMsil`'s `EPath` arm) then resolves a bare
+identifier's enum-case ordinal straight from that bare key, with no
+expected-type consultation at all — locals, then a module-level const,
+then the bare enum ordinal, then a nullary union case, then a module-level
+val, in that fixed order. The native fix mirrors this exactly: three lines
+added to the enum-registration loop in `codegenNativeBundle` register
+`ed.cases[eci].name` (the bare case name) into `ctx.enumDefs` alongside
+the two qualified keys already there, first-wins, guarded by the same
+`containsKey` check every other key in that loop already uses. No changes
+to `lowerExpr`, `lowerMember`, or `emitConstructorTest` were needed — the
+bare-`EPath` lookup and the `PConstructor`-pattern lookup (`case
+Http1_1(x) ->`, an enum-with-payload shape that cannot occur today but
+whose code path shares the same map) both already consult `ctx.enumDefs`
+by the joined path string, so a truly single-segment reference now
+resolves through the exact same branch a two-segment qualified reference
+already used. This also fixes the record-field-default sub-case
+D-progress-823 item D described for free: a defaulted field's initializer
+expression lowers via a plain `lowerExpr` call at the record-construction
+site (`lowerRecordConstruct`'s missing-field branch), with no dedicated
+bare-case handling of its own — it inherits the fix through the same
+`EPath` arm every other bare reference goes through.
+
+**Scope boundary — a *pattern*-position bare enum case is a separate,
+pre-existing gap, not touched here.** While tracing this fix,
+`emitPatternTest`'s `PBinding` arm (which decides whether `case Foo ->`
+is a nullary-constructor test or an ordinary catch-all bind — the parser
+can't tell the two apart, producing `PBinding(name, None)` either way)
+was found to consult `scrutineeHasCase`, which only ever checks
+`unionInfoOfType` — never `ctx.enumDefs`. Since an enum value erases to a
+bare `NI32` at the native IR level, `unionInfoOfType` always returns
+`None` for an enum scrutinee, so a bare-case `match` arm over an enum
+value is silently miscompiled today (the first arm becomes an
+unconditional catch-all, not a genuine equality test) — a materially
+worse failure mode (wrong answer, no error) than this entry's "unknown
+name" panic, but a different code path with its own, separate fix and its
+own regression surface (a real catch-all bind over a plain `Int` whose
+name happens to collide with an unrelated enum's case name must not
+regress into a bogus equality test). Filed as #6740 rather than folded
+into this fix; `llvm_enum_case_resolve_self_test.l`'s three cases
+deliberately use the fully-qualified `EnumType.Case` form in every `match`
+arm so they exercise only the value-position fix this entry makes, not
+#6740's separate pattern-position gap.
+
+**Verification (`llvm_enum_case_resolve_self_test.l`, 3 cases, run via
+native `lyric test` on `--target native`).** Item A is #6589's own
+reported shape verbatim: a program compiled through the bundled
+`Lyric.LlvmBridge.compileToNativeWithFlags` path (a genuinely separate
+package is needed for a real cross-package repro) that `import
+Std.HttpEngine` and assigns `var version: HttpVersion = Http1_1` /
+`var other: HttpVersion = Http1_0` — both bare, both cross-package — then
+classifies each through a same-file helper using fully-qualified match
+arms, asserting BOTH ordinals came back distinct and correct (not merely
+"didn't panic"; a fix that resolved every bare case to the same ordinal
+would still pass a same-value-only assertion). Item B is D-progress-823
+item D's first half: a same-file `enum Color { Red, Green, Blue }` with a
+function returning a bare case (`Red`/`Green`/`Blue`) as an `if`/`else
+if`/`else` branch's trailing block value, asserting all three distinct
+ordinals round-trip correctly. Item C is D-progress-823 item D's second
+half: a record field `level: Level = Info` (bare default) exercised both
+by omitting the field at one construction site (triggering the default)
+and by supplying a different bare case (`Warn`) explicitly at a second
+site, asserting both resolve to their correct, distinct ordinals.
+`make -C lyric-rt test` (clang) green; the three new cases pass via
+`LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/llvm_enum_case_resolve_self_test.l`;
+the full pre-existing native-backend self-test suite
+(`llvm_ir_self_test.l`, `llvm_codegen_self_test.l`, `llvm_heap_self_test.l`,
+`llvm_ffi_self_test.l`, `llvm_collections_self_test.l`,
+`llvm_stdlib_self_test.l`, `llvm_tls_self_test.l`,
+`llvm_http_client_self_test.l`, `llvm_self_test_n3.l`,
+`llvm_self_test_n34.l`, `llvm_self_test_async.l`, `llvm_self_test_defer.l`,
+`llvm_opaque_self_test.l`) re-run clean after the change — a fix touching
+the shared `ctx.enumDefs` registry has broad blast radius (every existing
+enum self-test uses the already-working qualified form, so this is a
+regression check that adding the bare key doesn't shadow anything those
+tests depend on), confirmed by a full clean run of all thirteen files plus
+the new one. `lyric fmt --write` applied clean (no refusals) to
+`llvm_codegen.l` and the new self-test file.
+
+**Related:** #6589 (this entry's fix), D-progress-823 item D (the
+same-file/record-default half of this bug, documented-but-unfixed there),
+#6740 (the separate pattern-position bare-enum-case gap filed, not fixed,
+during this investigation), `native/plan/08-work-items.md` N9.3 (the
+`Std.HttpServer` native twin this unblocks half of — N9.3 remains blocked
+on #6588, the native `String` method gaps, independently),
+`Msil.Codegen.registerEnumDeclMsil` (the shipped-MSIL pattern this fix
+ports rather than reinvents).
+

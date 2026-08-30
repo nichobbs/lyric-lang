@@ -3196,6 +3196,23 @@ func registerHeapTypes(
         if not ctx.enumDefs.containsKey(qKey) {
           ctx.enumDefs.add(qKey, eci)
         }
+        // Bare case name (#6589): a reference with no qualifying prefix
+        // at all (`Http1_1` rather than `HttpVersion.Http1_1`), whether
+        // in the same file or a different package — the common idiom
+        // for a value assigned against an explicit type annotation
+        // (`var v: HttpVersion = Http1_1`) or returned as a function's
+        // trailing block value. Mirrors `Msil.Codegen.registerEnumDeclMsil`'s
+        // `cn` key exactly, including its first-wins collision policy
+        // across the whole bundle: whichever enum is scanned first claims
+        // a case name two different enums both use, so an ambiguous bare
+        // name must still be qualified at the use site. This lets the
+        // existing bare-`EPath` lookup in `lowerExpr` (previously only
+        // ever hit by an already-qualified multi-segment path) resolve a
+        // truly bare case reference too.
+        val bareKey = ed.cases[eci].name
+        if not ctx.enumDefs.containsKey(bareKey) {
+          ctx.enumDefs.add(bareKey, eci)
+        }
         eci = eci + 1
       }
       ei = ei + 1
