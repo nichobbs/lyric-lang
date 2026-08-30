@@ -34817,7 +34817,7 @@ tests; `llvm_http_client_self_test.l` genuinely green locally via the NuGet
 
 ## D-progress-817 — `_kernel_native/http_host.l`: strip `Authorization`/`Cookie`/`Proxy-Authorization` on a cross-authority redirect (PR #6623 review finding)
 
-**Context.** `claude-review`'s pass on PR #6105/#6623 (D-progress-816's
+**Context.** `claude-review`'s pass on PR #6105/#6623 (D-progress-823's
 native `Std.Http` client twin) found a real gap in
 `nextRequestForRedirect`: a 301/302/307/308 redirect that preserves the
 request's headers (i.e. every case except a 303/GET-downgrade, which
@@ -34836,7 +34836,7 @@ header as a known divergence either.
 
 **Not yet live-exploitable, fixed anyway.** `Std.Http`'s public builder
 surface (`defaultClient()`/`HttpClientBuilder`) cannot construct on native
-today (the pre-existing N3.2 async-interface-dispatch gap D-progress-816
+today (the pre-existing N3.2 async-interface-dispatch gap D-progress-823
 already documents at length), so nothing in a real user program can reach
 this kernel's redirect path yet. Fixed now rather than deferred, since the
 fix is small, self-contained, and this exact code becomes reachable the
@@ -34876,12 +34876,12 @@ still passes unaffected; restored the fix and re-ran clean (2/2, exit 0).
 `lyric fmt --write` applied clean (no refusals) to both changed files.
 
 **Related:** #6623 (the PR this review finding was raised on),
-D-progress-816 (the original native `Std.Http` client twin entry, whose
+D-progress-823 (the original native `Std.Http` client twin entry, whose
 N3.2 gap this fix's "not yet live-exploitable" reasoning depends on).
 
 ## D-progress-818 — `_kernel_native/http_host.l`: CRLF/header-injection guard (#6635) + response size limits (#6636), and a genuine native-codegen bug found along the way (#6637/#6645)
 
-**Context.** A second `claude-review` pass on PR #6623 (D-progress-816's
+**Context.** A second `claude-review` pass on PR #6623 (D-progress-823's
 native `Std.Http` client twin, already extended once by D-progress-817's
 redirect-header-stripping fix) found two REQUIRED findings, both reachable
 today through `Std.Http`'s free functions (`sendAsync`/`getAsync`/
@@ -34999,7 +34999,7 @@ applied clean (no refusals) to both changed files.
 
 **Related:** #6623 (the PR both fixes and the workaround ship in), #6635,
 #6636 (the two REQUIRED review findings), #6645 (the native-codegen bug
-tracking issue), D-progress-816 (original entry), D-progress-817 (the
+tracking issue), D-progress-823 (original entry), D-progress-817 (the
 prior review-fix round on this same PR).
 
 ## D-progress-819 — `_kernel_native/http_host.l`: inverted TLS-downgrade check (#6646) + wrong-base overflow guard (#6647), both third-review findings on the D-progress-818 fixes themselves
@@ -35277,8 +35277,12 @@ replaces).
 **Context.** After rebasing PR #6623 onto `main` (which had, in the
 interim, landed its own unrelated D-progress-804/808/809/810/811/812
 entries — resolved as a decision-log renumbering, not a code conflict,
-by moving this branch's colliding entries to D-progress-816–821), a
-sixth `claude-review` pass re-read `_kernel_native/http_host.l`,
+by moving this branch's colliding entries to D-progress-816–821; a
+LATER rebase collided again when `main` independently added its own
+unrelated D-progress-816, moving the original native-client-twin entry
+a second time, to D-progress-823 — see that entry's own header for the
+current number), a sixth `claude-review` pass re-read
+`_kernel_native/http_host.l`,
 `tcp_host.l`, and `lyric_tls.c` from scratch rather than trusting the
 decision-log narrative, and found one more REQUIRED bug: D-progress-821's
 `readResponse` loop (added to fix #6692, discarding interim `1xx`

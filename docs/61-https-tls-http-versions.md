@@ -820,7 +820,7 @@ items marked ∥ are independent and can proceed in parallel.
     shipped too (D-progress-807 in `docs/03-decision-log.md`), which also
     fixed two previously-latent `Lyric.LlvmCodegen`/`Lyric.LlvmBridge`
     UFCS-resolution bugs the new case surfaced. **N9.4 — `Std.Http` native client twin — shipped
-    (D-progress-816, #6105)**: `_kernel_native/http_host.l`, matching the
+    (D-progress-823, #6105)**: `_kernel_native/http_host.l`, matching the
     dotnet/JVM twins' public surface (`hostDefaultClient`/
     `hostClientWithTls`/`hostMakeRequest`/`hostSendSafe`/`hostGetSafe`/
     `hostPostStringSafe`/`hostReadBodyTextSafe`/…), plus a client-TLS
@@ -833,7 +833,7 @@ items marked ∥ are independent and can proceed in parallel.
     docs/61 §3.2's `withCaCertificate` needs additive semantics). SNI and
     hostname verification are hard-wired on (inherited from the N9.1 seam);
     the dual-key insecure policy (§4) is reused as-is. Two plan corrections
-    surfaced during implementation, both cited in D-progress-816 with exact
+    surfaced during implementation, both cited in D-progress-823 with exact
     repro text: (1) `Std.HttpEngine` — the plan's intended reuse target for
     a client wire-protocol state machine — is server-only, so the client
     speaks a hand-rolled HTTP/1.1 wire protocol instead (request/status line,

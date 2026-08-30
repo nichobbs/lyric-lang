@@ -31545,7 +31545,7 @@ green, and the self-test genuinely green across four consecutive local runs
 `native-backend-self-tests` job remains the authoritative from-source
 validator going forward.
 
-**Related:** `docs/03-decision-log.md` D-progress-816; #6105; #6103 (N9.2);
+**Related:** `docs/03-decision-log.md` D-progress-823; #6105; #6103 (N9.2);
 docs/61 §7 item 15; `native/plan/08-work-items.md` Phase N9 (N9.4);
 D-progress-712, D-progress-703.
 

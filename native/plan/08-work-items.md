@@ -1432,9 +1432,9 @@ self-test for it exist anywhere in the repository. A future contributor
 picking up #6104/N9.3 starts from zero on the kernel itself once #6588 and
 #6589 are resolved. N9.3 remains open pending #6588/#6589.
 
-### N9.4 — `Std.Http` native client twin (`_kernel_native/http_host.l`) — ✅ SHIPPED (D-progress-816, #6105)
+### N9.4 — `Std.Http` native client twin (`_kernel_native/http_host.l`) — ✅ SHIPPED (D-progress-823, #6105)
 
-**SHIPPED (D-progress-816):** `_kernel_native/http_host.l`, matching the
+**SHIPPED (D-progress-823):** `_kernel_native/http_host.l`, matching the
 dotnet/JVM twins' public client surface (`hostDefaultClient`/
 `hostClientWithTls`/`hostClientWithRedirects`/`hostMakeRequest`/
 `hostWithHeader`/`hostWithStringBody`/`hostSendSafe`/`hostGetSafe`/
@@ -1500,7 +1500,7 @@ per the next paragraph's finding.
 Several previously-undocumented native-codegen gaps surfaced during
 implementation and were worked around (none are this item's to fix, all
 newly confirmed by direct minimal repro, all cited in full in
-D-progress-816): cross-package UFCS method calls do not resolve
+D-progress-823): cross-package UFCS method calls do not resolve
 (`method '.X' on this receiver is not yet supported for --target native`) —
 worked around with explicit static calls everywhere; the `?` operator fails
 specifically when the enclosing function is reachable from a *different*
