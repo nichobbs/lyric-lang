@@ -3211,7 +3211,17 @@ func fieldWriteSeedParams(ctx: in FieldWriteCtx, params: in List[Param]): Unit {
         val tn = fieldWriteSimpleTypeName(p.ty)
         if tn != "" {
           match mapGet(ctx.recordFields, tn) {
-            case Some(_) -> ctx.locals.add(p.name, tn)
+            case Some(_) -> {
+              // `ctx.locals` is a single flat map with no scope push/pop
+              // (see `fieldWriteTrackLocal`'s doc comment above): two
+              // `inout` params can't share a name in valid source, but an
+              // unguarded `Map.add` still throws instead of producing a
+              // diagnostic when they do (#6157's crash class, #6726).
+              if ctx.locals.containsKey(p.name) {
+                ctx.locals.remove(p.name)
+              }
+              ctx.locals.add(p.name, tn)
+            }
             case None -> {
             }
           }

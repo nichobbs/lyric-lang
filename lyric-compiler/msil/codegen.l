@@ -9387,7 +9387,11 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       // declared `Option[T]`, so a later `match`/cast against the tuple's
       // declared type throws `InvalidCastException` (#4965).
       val eteExpectElems: List[MsilType] = match collExpectTop(fctx) {
-        case MTuple(elems) -> if elems.count == exprs.count { elems } else { newList() }
+        case MTuple(elems) -> if elems.count == exprs.count {
+          elems
+        } else {
+          newList()
+        }
         case _ -> newList()
       }
       val eteElemTys: List[MsilType] = newList()
@@ -15163,12 +15167,24 @@ func lowerBuiltinOrStaticCallMsil(
                           false
                         }
                         if isGenericDelegateShape {
-                          panic(
-                            "F0026: call to '" + tokKey + "' passes a non-literal expression for " + "parameter #" + toString(i) +
-                              ", which is bridged to a real .NET delegate " +
-                              "type at the FFI boundary (Epic #1877/#3923). Pass a lambda literal " +
-                              "(`{ ... -> ... }`) directly as this argument — binding it to a `val` " +
-                              "first, or otherwise producing it indirectly, is not yet supported here."
+                          // Recorded, not aborted here: the ordinary
+                          // argument-push path just below still runs and
+                          // leaves the instruction stream stack-valid (it
+                          // already handles this argument shape in every
+                          // other case), and `diagReportAndAbort` (run by
+                          // the bridge once codegen finishes) aborts before
+                          // the resulting (structurally valid, semantically
+                          // mismatched) IL is ever written or run (#6727).
+                          cctx.diagnostics.add(
+                            errorDiagnostic(
+                              "F0026",
+                              "call to '" + tokKey + "' passes a non-literal expression for " + "parameter #" + toString(i) +
+                                ", which is bridged to a real .NET delegate " +
+                                "type at the FFI boundary (Epic #1877/#3923). Pass a lambda literal " +
+                                "(`{ ... -> ... }`) directly as this argument — binding it to a `val` " +
+                                "first, or otherwise producing it indirectly, is not yet supported here.",
+                              callArgExpr(callArgs[i]).span
+                            )
                           )
                         }
                       }
@@ -20128,11 +20144,13 @@ func emitExternOptionalDefault(
 // the static-field `ldsfld` branch) — so a shape mismatch is a build-time
 // panic, never a fall-through.
 func emitExternTargetConstMsil(
+  cctx: in CodegenCtx,
   insns: in List[MInsn],
   cv: in Mdr.ExternConstValue,
   retTy: in MsilType,
   target: in String,
   declName: in String,
+  span: in Span,
 ): Unit {
   val retIsDouble = match retTy { case MDouble -> true; case _ -> false }
   val retIsLong = match retTy { case MLong -> true; case _ -> false }
@@ -20152,33 +20170,58 @@ func emitExternTargetConstMsil(
       } else if retIsLong {
         insns.add(MLdcI8(v = v))
       } else {
-        panic(
-          "F0015: @externTarget '" + target + "' on '" + declName +
-            "' names a 64-bit integer literal constant but declares a non-Long return type; " +
-            "declare the wrapper's return as Long."
+        // F0015: shape mismatch between the constant's decoded kind and
+        // the wrapper's declared return type. A literal field has no
+        // storage (`ldsfld` on one faults at run time with
+        // MissingFieldException), so this must be a build-time
+        // diagnostic, never a silent fall-through — but codegen still
+        // needs a stack-valid placeholder here so the surrounding
+        // instruction stream stays well-formed for the rest of this
+        // build pass; `diagReportAndAbort` (run by the bridge once
+        // codegen finishes) aborts before the degraded IL is ever
+        // written or run (#6727, matching the F0021–F0025 pattern).
+        cctx.diagnostics.add(
+          errorDiagnostic(
+            "F0015",
+            "@externTarget '" + target + "' on '" + declName +
+              "' names a 64-bit integer literal constant but declares a non-Long return type; " +
+              "declare the wrapper's return as Long.",
+            span
+          )
         )
+        insns.add(MLdcI4(v = 0))
       }
     }
     case Mdr.ECVR4Bits(bits) -> {
       if retIsDouble {
         insns.add(MLdcR8(v = int32BitsToDouble(bits)))
       } else {
-        panic(
-          "F0015: @externTarget '" + target + "' on '" + declName +
-            "' names a floating-point literal constant but declares a non-Double return type; " +
-            "declare the wrapper's return as Double."
+        cctx.diagnostics.add(
+          errorDiagnostic(
+            "F0015",
+            "@externTarget '" + target + "' on '" + declName +
+              "' names a floating-point literal constant but declares a non-Double return type; " +
+              "declare the wrapper's return as Double.",
+            span
+          )
         )
+        insns.add(MLdcI4(v = 0))
       }
     }
     case Mdr.ECVR8Bits(bits) -> {
       if retIsDouble {
         insns.add(MLdcR8(v = int64BitsToDouble(bits)))
       } else {
-        panic(
-          "F0015: @externTarget '" + target + "' on '" + declName +
-            "' names a floating-point literal constant but declares a non-Double return type; " +
-            "declare the wrapper's return as Double."
+        cctx.diagnostics.add(
+          errorDiagnostic(
+            "F0015",
+            "@externTarget '" + target + "' on '" + declName +
+              "' names a floating-point literal constant but declares a non-Double return type; " +
+              "declare the wrapper's return as Double.",
+            span
+          )
         )
+        insns.add(MLdcI4(v = 0))
       }
     }
   }
@@ -20411,14 +20454,24 @@ func emitExternTargetBody(
                     dsi = dsi + 1
                   }
                   declSigStr = declSigStr + ") -> " + msilTypeKeyStr(retTy)
-                  panic(
-                    "F0015: @externTarget '" + target + "' on '" + decl.name + "': " + "declared signature " + declSigStr +
-                      " does not match any overload of '" +
-                      resolvedFqn +
-                      "." +
-                      r.memberName +
-                      "' in reference-assembly metadata. " +
-                      "Verify the Lyric parameter/return types match the BCL method."
+                  // Pure verification pre-check — no instructions emitted in
+                  // this branch to replace, so recording the diagnostic and
+                  // falling through to the best-effort call-emission path
+                  // below is enough; `diagReportAndAbort` (run by the
+                  // bridge once codegen finishes) aborts before whatever
+                  // that path emits is ever written or run (#6727).
+                  cctx.diagnostics.add(
+                    errorDiagnostic(
+                      "F0015",
+                      "@externTarget '" + target + "' on '" + decl.name + "': " + "declared signature " + declSigStr +
+                        " does not match any overload of '" +
+                        resolvedFqn +
+                        "." +
+                        r.memberName +
+                        "' in reference-assembly metadata. " +
+                        "Verify the Lyric parameter/return types match the BCL method.",
+                      decl.span
+                    )
                   )
                 }
               }
@@ -20487,7 +20540,7 @@ func emitExternTargetBody(
             case Some(asmPath) -> {
               match Mdr.getLiteralFieldConst(asmPath, resolvedFqn, r.memberName) {
                 case Some(litCv) -> {
-                  emitExternTargetConstMsil(insns, litCv, ffiRetTy, target, decl.name)
+                  emitExternTargetConstMsil(cctx, insns, litCv, ffiRetTy, target, decl.name, decl.span)
                   insns.add(MRet)
                   return true
                 }

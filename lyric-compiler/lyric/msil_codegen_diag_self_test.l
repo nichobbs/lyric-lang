@@ -391,3 +391,115 @@ test "try-catch expression with matching arm types still compiles" {
     "}\n"
   assertTrue(compiles("F0025Good", src), "a well-typed try-catch expression must still compile cleanly")
 }
+
+// ─── F0015: @externTarget literal-constant kind vs declared return type ────
+// `emitExternTargetConstMsil` (#6727) covers the shape where an
+// `@externTarget` names a BCL literal (Constant-table) field whose decoded
+// kind doesn't match the wrapper's declared Lyric return type — a literal
+// field has no storage, so falling through to `ldsfld` would fault at run
+// time with `MissingFieldException` instead of failing here at build time.
+// `System.Math.PI` is a real `public const double PI` field; declaring the
+// wrapper's return as `Int` (not `Double`) hits the `ECVR8Bits` /
+// `not retIsDouble` arm.
+test "F0015: @externTarget literal-constant field with a mismatched declared return type fails cleanly" {
+  val src = "package F0015App\n" + "\n" + "@externTarget(\"System.Math.PI\")\n" + "func mathPiWrongType(): Int = ()\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(toString(mathPiWrongType()))\n" +
+    "}\n"
+  val diags: List[Diagnostic] = newList()
+  val ok = compileDiag("F0015Bad", src, diags)
+  assertTrue(
+    not ok,
+    "an @externTarget literal-constant field with a mismatched declared return type must be rejected, not panic"
+  )
+  var found = false
+  var i = 0
+  while i < diags.count {
+    if diags[i].code == "F0015" {
+      found = true
+    }
+    i = i + 1
+  }
+  assertTrue(found, "F0015: Math.PI (a Double literal) declared as Int must raise F0015")
+}
+
+// Companion "good" case: the same literal field, declared with the correct
+// (`Double`) return type, must still compile and inline the real constant.
+test "@externTarget literal-constant field with a matching declared return type still compiles" {
+  val src = "package F0015Good\n" + "\n" + "@externTarget(\"System.Math.PI\")\n" + "func mathPi(): Double = ()\n" + "\n" +
+    "func main(): Unit {\n" +
+    "  println(toString(mathPi()))\n" +
+    "}\n"
+  assertTrue(compiles("F0015Good", src), "Math.PI declared as Double must still compile cleanly")
+}
+
+// ─── F0026: @externTarget typed-delegate parameter passed a non-literal ────
+// A function-typed `@externTarget` parameter that binds to a real closed
+// `System.Action`N`/`System.Func`N`` delegate (docs/50/D122) only builds
+// that typed delegate for a lambda LITERAL passed directly at the call
+// site — any other argument shape (here, a `val`-bound lambda passed by
+// name) would still carry the pre-existing uniform boxed ABI value, which
+// no longer matches the callee's now-really-typed parameter. `Task.
+// ContinueWith(Action<Task>)` is a real, minimal BCL target for this: a
+// one-param, `Unit`-returning delegate is a genuinely *generic* `Action`1`
+// instantiation (not the always-safe zero-arg `System.Action` shape),
+// so it is at risk of the mismatch this check exists to catch.
+test "F0026: @externTarget typed-delegate parameter passed a val-bound lambda (not a literal) fails cleanly" {
+  val src = "package F0026App\n" + "\n" + "extern type Task0026 = \"System.Threading.Tasks.Task\"\n" + "\n" +
+    "@externStatic\n" +
+    "@externTarget(\"System.Threading.Tasks.Task.Delay\")\n" +
+    "func taskDelay0026(ms: in Int): Task0026 = ()\n" +
+    "\n" +
+    "@externInstance\n" +
+    "@externTarget(\"System.Threading.Tasks.Task.ContinueWith\")\n" +
+    "func continueWith0026(t: in Task0026, action: in (Task0026) -> Unit): Task0026 = ()\n" +
+    "\n" +
+    "func makeAction0026(): (Task0026) -> Unit {\n" +
+    "  { t: Task0026 -> () }\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  val t = taskDelay0026(0)\n" +
+    "  val cb = makeAction0026()\n" +
+    "  val _ = continueWith0026(t, cb)\n" +
+    "}\n"
+  val diags: List[Diagnostic] = newList()
+  val ok = compileDiag("F0026Bad", src, diags)
+  assertTrue(
+    not ok,
+    "an @externTarget typed-delegate parameter passed a val-bound (non-literal) lambda must be rejected, not panic"
+  )
+  var found = false
+  var i = 0
+  while i < diags.count {
+    if diags[i].code == "F0026" {
+      found = true
+    }
+    i = i + 1
+  }
+  assertTrue(found, "F0026: a val-bound lambda passed to a typed-delegate @externTarget parameter must raise F0026")
+}
+
+// Companion "good" case: the same target, called with a direct lambda
+// literal at the call site instead of a `val`-bound reference — must still
+// compile cleanly (the whole point of the ELambda-literal exemption).
+test "@externTarget typed-delegate parameter passed a direct lambda literal still compiles" {
+  val src = "package F0026Good\n" + "\n" + "extern type Task0026g = \"System.Threading.Tasks.Task\"\n" + "\n" +
+    "@externStatic\n" +
+    "@externTarget(\"System.Threading.Tasks.Task.Delay\")\n" +
+    "func taskDelay0026g(ms: in Int): Task0026g = ()\n" +
+    "\n" +
+    "@externInstance\n" +
+    "@externTarget(\"System.Threading.Tasks.Task.ContinueWith\")\n" +
+    "func continueWith0026g(t: in Task0026g, action: in (Task0026g) -> Unit): Task0026g = ()\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  val t = taskDelay0026g(0)\n" +
+    "  val _ = continueWith0026g(t, { x: Task0026g -> () })\n" +
+    "}\n"
+  assertTrue(
+    compiles("F0026Good", src),
+    "a direct lambda-literal argument to a typed-delegate parameter must still compile cleanly"
+  )
+}

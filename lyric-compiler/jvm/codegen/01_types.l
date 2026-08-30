@@ -1858,10 +1858,16 @@ pub func ctorClassForExpecting(ctx: in FuncCtx, name: in String): Option[String]
 // against the SAME enum the callee's parameter actually declares, not
 // whichever same-named-case enum happened to register first.
 pub func enumCaseClassForExpecting(ctx: in FuncCtx, caseName: in String): Option[String] {
-  match enumVariantClassByPkg(ctx, ctx.pkgName.replace("/", "."), caseName) {
-    case Some(cls) -> return Some(value = cls)
-    case None -> ()
-  }
+  // #6728: the expected-TYPE tier is consulted FIRST, ahead of the
+  // current-package tier. `enumVariantClassByPkg` resolves as soon as the
+  // CALLER's own package has exactly one unambiguous enum declaring
+  // `caseName` — even when the callee's expected parameter type names a
+  // DIFFERENT package's same-named-case enum. Package `CrossHintA`
+  // declaring its own unambiguous `Level.Debug` must not shadow a bare
+  // `Debug` call argument whose expected type is `CrossHintB.Level`; the
+  // (package, TYPE, case)-scoped `enumVariantClassByFullClass` tier is the
+  // only one that can disambiguate against the actual expected class, so it
+  // has to win whenever a real expectation hint is available.
   if ctx.ctorExpectClassStack.count > 0 {
     val expectedClass = ctx.ctorExpectClassStack[ctx.ctorExpectClassStack.count - 1]
     if expectedClass.length > 0 {
@@ -1870,6 +1876,10 @@ pub func enumCaseClassForExpecting(ctx: in FuncCtx, caseName: in String): Option
         case None -> ()
       }
     }
+  }
+  match enumVariantClassByPkg(ctx, ctx.pkgName.replace("/", "."), caseName) {
+    case Some(cls) -> return Some(value = cls)
+    case None -> ()
   }
   if ctx.ctorExpectStack.count > 0 {
     val expectedOwner = ctx.ctorExpectStack[ctx.ctorExpectStack.count - 1]

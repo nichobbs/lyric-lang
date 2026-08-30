@@ -15,11 +15,17 @@
 > | §B | LSP "Implement <Iface>" code action | #3861 |
 > | §C | Bridge-thunk synthesis | N/A — Lyric primitives are native CLR primitives |
 >
-> `F0024` is gone: TypeSpec emission produces structurally-valid IL for
-> any closed instantiation, Phase 2 F0021–F0023/F0034 catches every
-> build-time-detectable structural mismatch (with `STVar` substitution
-> and recursive `STSzArray` / `STByRef` / `STNamedGenericInst` handling),
-> and the runtime catches the rest as `TypeLoadException`.
+> `F0024` in the sense this doc originally proposed it (an iface-impl
+> structural-mismatch typo guard) is gone: TypeSpec emission produces
+> structurally-valid IL for any closed instantiation, Phase 2
+> F0021–F0023/F0034 catches every build-time-detectable structural
+> mismatch (with `STVar` substitution and recursive `STSzArray` /
+> `STByRef` / `STNamedGenericInst` handling), and the runtime catches
+> the rest as `TypeLoadException`. The code itself was later reassigned
+> (#6547) to an unrelated diagnostic — "the `extern type` FQN does not
+> resolve to any type in the reference-assembly metadata" (see
+> `docs/01-language-reference.md` §"Diagnostics") — so `F0024` is a
+> live code again, just not for this feature.
 >
 > Explicitly deferred (rare in BCL; silent-skip F0022/F0023 with runtime
 > as the backstop): `STMVar` (method-generic iface methods),
@@ -91,24 +97,31 @@ Phases 1–4 and follow-ups A, B, C are all shipped:
 | §A (i) | STVar substitution for F0022/F0023 on generic ifaces | Shipped in #3864 |
 | §A (ii) | F0024 lift for STSzArray / STByRef | Shipped in #3864 |
 | §A (iii) | F0024 lift for STNamedGenericInst (nested generic types) | Shipped in #3865 |
-| §A (iv) | F0024 narrowed to "iface type not found in metadata" | Shipped in #3865 |
+| §A (iv) | F0024 removed from this feature (later reassigned, #6547 — see below) | Shipped in #3865 |
 | §B | LSP "Implement Interface" code action (native + extern) | Shipped in #3861 |
 | §C | Bridge-thunk synthesis | N/A (see below) |
 
-### F0024 — removed
+### F0024 — removed from this feature, since reassigned
 
-`F0024` was removed in #3865.  TypeSpec emission produces
-structurally-valid IL for any closed instantiation, and Phase 2's
-F0021 / F0022 / F0023 / F0034 catches every build-time-detectable
-structural mismatch — with `STVar` substitution against the iface's
-resolved type args and recursive shape handling for `STSzArray`,
-`STByRef`, and `STNamedGenericInst`.  The only previously-imagined
-F0024 role (typo guard for "iface FQN not in reference-assembly
-TypeDef table") proved unreachable in practice: `Mdr.assemblyForType`
-returns `None` for an unknown FQN and the validation path silently
-skips, so the panic site never fired.  The wider FFI contract — runtime
-catches genuine mismatches as `TypeLoadException` — covers the typo
-case at first use instead.
+`F0024` was removed from the iface-impl validation path in #3865.
+TypeSpec emission produces structurally-valid IL for any closed
+instantiation, and Phase 2's F0021 / F0022 / F0023 / F0034 catches
+every build-time-detectable structural mismatch — with `STVar`
+substitution against the iface's resolved type args and recursive
+shape handling for `STSzArray`, `STByRef`, and `STNamedGenericInst`.
+The only previously-imagined F0024 role (typo guard for "iface FQN not
+in reference-assembly TypeDef table") proved unreachable in practice:
+`Mdr.assemblyForType` returns `None` for an unknown FQN and the
+validation path silently skips, so the panic site never fired.  The
+wider FFI contract — runtime catches genuine mismatches as
+`TypeLoadException` — covers the typo case at first use instead.
+
+The freed code was **not left retired**: #6547 reassigned `F0024` to
+an unrelated diagnostic in `lyric-compiler/msil/codegen.l` — an
+`extern type` FQN that doesn't resolve to any type in an indexed
+reference-pack or restored-dependency assembly (see
+`docs/01-language-reference.md` §"Diagnostics" for the current
+meaning). Do not reuse `F0024` for a third purpose; treat it as taken.
 
 ### Explicitly deferred (no real-world impact)
 

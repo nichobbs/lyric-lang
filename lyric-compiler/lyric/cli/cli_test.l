@@ -1043,8 +1043,8 @@ func cmdTestManifest(
       }
     } else {
       val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
-      singleFilePkgPath = abs
       if File.fileExists(abs) {
+        singleFilePkgPath = abs
         match File.readText(abs) {
           case Ok(t) -> {
             if CfgGate.isCfgGatedOut(t, activeFeatures) {

@@ -1509,6 +1509,31 @@ test "lambda: bare two-param form with block body parses clean (issue repro)" {
   assertEqualInt(diagCount(pr), 0, "lambda: `(k, v) -> { ... }` block-body call argument parses clean")
 }
 
+// #6731: `parseIfExpr`'s ternary (`if … then … else …`) form deliberately
+// parses `elseExpr` via plain `parseExpr`, NOT `parseDelimitedExpr` — unlike
+// every other bounded sub-expression the #5672/#6601 fixes scoped
+// suppression around (call args, list/tuple items, `cond`/`thenExpr`, block
+// statements). The ternary else-branch has no closing token of its own, so
+// it must keep inheriting the ambient `suppressArrowLambda` state from an
+// enclosing guard/statement retry — delimiting it here would reintroduce
+// the #5667/#5668 misparse for this one remaining call site. These two
+// cases pin that invariant so a future "consistency fix" wrapping
+// `elseExpr` in `parseDelimitedExpr` (matching every other call site in the
+// same commit) fails loudly instead of silently regressing.
+test "ternary: guard's trailing ambiguous paren-group inside a ternary else-branch still ends the guard, not a lambda (#6731)" {
+  val pr = parse(
+    "package P\nfunc classify(y: Int, flag: Bool, p: Bool, cond: Bool): Int {\n  match y {\n    case y if flag and if p then true else (cond) -> 1\n    case _ -> 0\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(pr), 0, "guard `if flag and if p then true else (cond) -> ...` parses clean")
+}
+
+test "ternary: a legitimately-delimited nested lambda call argument inside a ternary else-branch parses clean (#6731)" {
+  val pr = parse(
+    "package P\nfunc classify(y: Int, xs: List[Int], flag: Bool, p: Bool): Int {\n  match y {\n    case y if flag and if p then true else xs.any((v) -> v > 0) -> 1\n    case _ -> 0\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(pr), 0, "guard `if flag and if p then true else xs.any((v) -> v > 0) -> ...` parses clean")
+}
+
 // A tuple expression that happens to contain bare identifiers but has no
 // trailing `->` must still parse as an ordinary tuple, not be mistaken for
 // an (incomplete) lambda parameter list.

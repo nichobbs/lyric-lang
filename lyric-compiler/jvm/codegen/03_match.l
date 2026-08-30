@@ -1163,7 +1163,27 @@ func lowerPatternTest(
             insns.add(LIfAcmpne(label = failLabel))
             return
           }
-          case None -> ()
+          case None -> {
+            // #6728: `enumVariantClassByPkg` returns `None` when the
+            // `enumpkg:` key is poisoned (the same package declares two
+            // DIFFERENT enums sharing this case name, #6640) — unlike
+            // `enumPatternClass` above, this package-qualified path had no
+            // further fallback, even though `scrutTy` is already in scope
+            // and is the only tier that can still disambiguate against the
+            // scrutinee's own exact declaring class.
+            val scrutCls = match scrutTy { case JRef(cls) -> cls; case _ -> "" }
+            if scrutCls.length > 0 {
+              match enumVariantClassByFullClass(ctx, scrutCls.replace("/", "."), lastSegment(head)) {
+                case Some(eqcls) -> {
+                  emitLoad(insns, scrutSlot, scrutTy)
+                  insns.add(LGetstatic(owner = eqcls, name = lastSegment(head), t = JRef(className = eqcls)))
+                  insns.add(LIfAcmpne(label = failLabel))
+                  return
+                }
+                case None -> ()
+              }
+            }
+          }
         }
       }
       // isinst test against the case class; fail if the scrutinee is not that
@@ -1815,7 +1835,23 @@ func lowerPatternBind(
             insns.add(LNop)
             return
           }
-          case None -> ()
+          case None -> {
+            // #6728: same poisoned-key gap as the TEST-phase fallback above
+            // — without this, a poisoned `enumpkg:` key wrongly falls
+            // through to the union-case checkcast path below instead of
+            // being recognised as (still) an enum-case pattern that binds
+            // nothing.
+            val scrutCls = match scrutTy { case JRef(cls) -> cls; case _ -> "" }
+            if scrutCls.length > 0 {
+              match enumVariantClassByFullClass(ctx, scrutCls.replace("/", "."), lastSegment(head)) {
+                case Some(_) -> {
+                  insns.add(LNop)
+                  return
+                }
+                case None -> ()
+              }
+            }
+          }
         }
       }
       val caseClass = resolveCaseClassJvm(ctx, head, scrutTy)

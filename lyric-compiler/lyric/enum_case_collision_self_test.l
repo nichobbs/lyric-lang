@@ -784,6 +784,76 @@ test "dotnet: package-qualified pattern match resolves the right ordinal for sib
   )
 }
 
+// #6728: the JVM twin of the #6639 test above — exercises the
+// `03_match.l` package-qualified pattern-match fallback this fix added
+// (`enumVariantClassByFullClass(scrutTy)`, consulted when the `enumpkg:`
+// key is poisoned by the same-package `Beam`/`Ray` collision on `On`).
+// Zero JVM coverage existed for this fixture before.
+//
+// Uses its OWN fixture (`idBeam`/`idRay`-wrapped construction), not
+// `siblingEnumsSource()`/`siblingEnumsAppSource()` directly: those
+// construct via a bare trailing-return `On` expression, which hits a
+// SEPARATE, pre-existing JVM-only bug (`ctorExpectClassStack` is never
+// seeded from a function's own declared return type for a trailing-return
+// construction, only from a call argument's parameter type) — tracked
+// separately as #6735, out of scope for this fix. Routing construction
+// through an identity call (`idBeam(On)`/`idRay(On)`) gives the SAME
+// call-argument-hinted resolution path the #6688 CrossHint test above
+// already exercises successfully, isolating the PATTERN-MATCH fix this
+// test actually targets from that unrelated construction-path gap.
+func siblingEnumsSourceJvm(): String {
+  "package SiblingEnumsJvm\n" + "\n" + "pub enum Beam {\n" + "  case Off\n" + "  case On\n" + "}\n" + "\n" +
+    "pub enum Ray {\n" +
+    "  case On\n" +
+    "  case Idle\n" +
+    "}\n" +
+    "\n" +
+    "func idBeam(v: in Beam): Beam {\n" +
+    "  v\n" +
+    "}\n" +
+    "\n" +
+    "func idRay(v: in Ray): Ray {\n" +
+    "  v\n" +
+    "}\n" +
+    "\n" +
+    "pub func makeBeamOn(): Beam {\n" +
+    "  idBeam(On)\n" +
+    "}\n" +
+    "\n" +
+    "pub func makeRayOn(): Ray {\n" +
+    "  idRay(On)\n" +
+    "}\n"
+}
+
+func siblingEnumsAppSourceJvm(): String {
+  "package SiblingEnumsJvmApp\n" + "\n" + "import SiblingEnumsJvm\n" + "\n" + "func main(): Int {\n" +
+    "  val beam: SiblingEnumsJvm.Beam = SiblingEnumsJvm.makeBeamOn()\n" +
+    "  val ray: SiblingEnumsJvm.Ray = SiblingEnumsJvm.makeRayOn()\n" +
+    "  match beam {\n" +
+    "    case SiblingEnumsJvm.On -> println(\"beam-on\")\n" +
+    "    case SiblingEnumsJvm.Off -> println(\"beam-off\")\n" +
+    "  }\n" +
+    "  match ray {\n" +
+    "    case SiblingEnumsJvm.On -> println(\"ray-on\")\n" +
+    "    case SiblingEnumsJvm.Idle -> println(\"ray-idle\")\n" +
+    "  }\n" +
+    "  0\n" +
+    "}\n"
+}
+
+test "jvm: package-qualified pattern match resolves the right ordinal for sibling same-package enums (#6639/#6728)" {
+  val pkgSrcs: List[String] = newList()
+  pkgSrcs.add(siblingEnumsSourceJvm())
+  pkgSrcs.add(siblingEnumsAppSourceJvm())
+  val result = compileAndRunJvm("siblingenums-jvm", pkgSrcs, "SiblingEnumsJvmApp")
+  assertEqualInt(result.exitCode, 0, "sibling_enums jvm: exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    expectedSiblingEnumsStdout(),
+    "sibling_enums jvm: package-qualified `On` resolves to each enum's OWN ordinal, not whichever registered first"
+  )
+}
+
 // ─── #6639 (residual): package-qualified case CONSTRUCTION (EPath value
 // position), not just pattern match ────────────────────────────────────────
 // The earlier #6639 fix only touched `lowerPatternTestMsil` (the `case
@@ -876,6 +946,26 @@ test "dotnet: call-argument enum hint resolves the bare case against the CALLEE'
     Str.trim(result.stdout),
     "B:Debug",
     "cross_hint dotnet: a bare call-argument `Debug` resolves against CALLEE CrossHintB's Level " +
+      "(ordinal 1), not CALLER CrossHintA's own same-named, differently-ordered Level (ordinal 0)"
+  )
+}
+
+// #6728: the JVM twin of the dotnet test above — this is the LITERAL repro
+// shape the #6728 review finding names for `enumCaseClassForExpecting`'s
+// tier-ordering bug (the current-package tier resolving `CrossHintA`'s own
+// unambiguous `Level.Debug` before the expected-TYPE tier ever gets to
+// disambiguate against `CrossHintB.Level`). Zero JVM coverage existed for
+// this fixture before, so the bug (and this fix) were both unverified by CI.
+test "jvm: call-argument enum hint resolves the bare case against the CALLEE's declaring package (#6688/#6728)" {
+  val pkgSrcs: List[String] = newList()
+  pkgSrcs.add(crossHintBSource())
+  pkgSrcs.add(crossHintASource())
+  val result = compileAndRunJvm("crosshint-jvm", pkgSrcs, "CrossHintA")
+  assertEqualInt(result.exitCode, 0, "cross_hint jvm: exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "B:Debug",
+    "cross_hint jvm: a bare call-argument `Debug` resolves against CALLEE CrossHintB's Level " +
       "(ordinal 1), not CALLER CrossHintA's own same-named, differently-ordered Level (ordinal 0)"
   )
 }

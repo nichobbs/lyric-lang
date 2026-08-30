@@ -367,6 +367,14 @@ func hzMemberChainBase(e: in Expr): Expr {
 // function/entry (`st.localNames`) or an implicit-self field
 // (`st.selfFieldNames`) — as opposed to an unbound package/type qualifier
 // (#6699, see `hzNameLikeMutable`'s doc comment above).
+//
+// KNOWN GAP (#6734, tracked): a module-scope `val` binding used as a
+// receiver is indistinguishable here from a bare package/type qualifier —
+// `HoistState` is never given the enclosing `SourceFile`'s top-level `val`
+// names, so a module value mutated in place through a different path
+// between a hoisted hazard and its resumed read is not protected the way
+// a local/self-field receiver is. See #6734 for the fix plan (threading
+// module-scope names into `HoistState` construction).
 func hzMemberChainBaseIsValue(st: in HoistState, e: in Expr): Bool {
   val base = hzMemberChainBase(e)
   match base.kind {
@@ -911,7 +919,21 @@ func hzHoistSpine(cfg: in HoistConfig, e: in Expr, acc: in List[Statement], st: 
           }
           mkExpr(EMember(receiver = recv2, memberName = nm), fn.span)
         }
-        case EPath(_) -> fn
+        case EPath(_) -> {
+          // #6729: a bare-name callee (`f(...)`) skipped stacking
+          // unconditionally, even when `f` is a reassignable local and a
+          // later argument evaluates a hoisted hazard — the callee, exactly
+          // like a member-call's receiver just above, is evaluated and
+          // stacked BEFORE the arguments on MSIL, so a reassignment inside
+          // a hazardous argument (`f(await g(f))` where `f` is later
+          // reassigned) reads the STALE pre-hazard closure value at the
+          // call site instead of the one actually invoked.
+          if last >= 0 and not hzIsNameLikeSafe(st, fn) {
+            hzBind(cfg, fn, acc, st)
+          } else {
+            fn
+          }
+        }
         case _ -> {
           if hzHasHazard(cfg, fn) {
             hzBind(cfg, hzHoistSpine(cfg, fn, acc, st), acc, st)
@@ -1695,7 +1717,19 @@ func hzCollectMutableNamesStmt(s: in Statement, m: in Map[String, Bool], localM:
       hzCollectMutableNamesBlock(body, m, localM)
     }
     case SLoop(_, body) -> hzCollectMutableNamesBlock(body, m, localM)
-    case SScope(_, body) -> hzCollectMutableNamesBlock(body, m, localM)
+    case SScope(bindingOpt, body) -> {
+      // #6729: `scope <name> { ... }` binds `<name>` to the scope's own
+      // handle in the surrounding block — discarding it here (rather than
+      // adding it to `localM`, exactly like every other local binding form
+      // in this function) meant a bare reference to that name after the
+      // scope was wrongly treated as free/outer instead of local.
+      match bindingOpt {
+        case Some(n) -> hzAddLocalName(localM, n)
+        case None -> {
+        }
+      }
+      hzCollectMutableNamesBlock(body, m, localM)
+    }
     case SDefer(body) -> hzCollectMutableNamesBlock(body, m, localM)
     case STry(body, catches, finallyOpt) -> {
       hzCollectMutableNamesBlock(body, m, localM)
@@ -1720,12 +1754,32 @@ func hzCollectMutableNamesStmt(s: in Statement, m: in Map[String, Bool], localM:
       hzCollectMutableNamesExpr(lhs, m, localM)
       hzCollectMutableNamesExpr(rhs, m, localM)
     }
+    case SItem(item) -> {
+      // #6729: a block-local item declaration (`func foo() { ... }` nested
+      // inside another function's body) shadows any outer same-named
+      // binding for the rest of the enclosing block, exactly like a
+      // `val`/`let`/`var` local — not recording its name here left a
+      // later bare reference to it wrongly classified as free/outer.
+      // Only `IFunc` is handled: it's the realistic block-local shape, and
+      // the only one that introduces a directly-callable VALUE name this
+      // collector's receiver/index safety analysis cares about (a nested
+      // record/union/enum/type declaration introduces a TYPE name, not a
+      // value binding this pass tracks).
+      match item.kind {
+        case IFunc(decl) -> hzAddLocalName(localM, decl.name)
+        case _ -> {
+        }
+      }
+    }
     case _ -> {
     }
   }
 }
 
-func hzCollectMutableNamesBlock(blk: in Block, m: in Map[String, Bool], localM: in Map[String, Bool]): Unit {
+// `pub` for `propagate_hoist_entry_polarity_self_test.l`'s #6729 AST pin,
+// which exercises this collector directly (the unit under test for the
+// `SScope` binding-name gap) rather than through a full hoist call site.
+pub func hzCollectMutableNamesBlock(blk: in Block, m: in Map[String, Bool], localM: in Map[String, Bool]): Unit {
   var i = 0
   while i < blk.statements.count {
     hzCollectMutableNamesStmt(blk.statements[i], m, localM)

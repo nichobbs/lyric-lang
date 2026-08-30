@@ -4388,7 +4388,13 @@ func inferIfExpr(
     }
     case _ -> diag.add(errorDiagnostic("T0066", "if-condition must be Bool (got " + renderType(condT) + ")", cond.span))
   }
-  val tt = inferExprOrBlock(sc, tbl, sigs, diag, thenBranch, isValuePosition)
+  // An else-less `if` always yields `Unit` regardless of what the
+  // then-branch itself produces, so the then-branch's own value is
+  // discarded here even when the whole `if` is used in value position —
+  // type it accordingly (statement position), or a discarded branch
+  // mismatch spuriously fires T0067 one level down (#6730).
+  val thenIsValuePosition = isValuePosition and (match elseBranch { case Some(_) -> true; case None -> false })
+  val tt = inferExprOrBlock(sc, tbl, sigs, diag, thenBranch, thenIsValuePosition)
   match elseBranch {
     case None -> TyPrim(pt = PtUnit)
     case Some(eb) -> {

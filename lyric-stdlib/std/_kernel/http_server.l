@@ -286,7 +286,7 @@ pub record HttpContext {
   method: String
   target: String
   version: HttpVersion
-  var headers: List[HeaderField]
+  headers: List[HeaderField]
   body: slice[Byte]
   keepAlive: Bool
   done: Semaphore
@@ -326,7 +326,7 @@ record H2ReqAccum {
 record H2RequestLine {
   method: String
   target: String
-  var headers: List[HeaderField]
+  headers: List[HeaderField]
 }
 
 // Mutable per-connection h2 driver state, threaded (by reference) through the
@@ -376,7 +376,7 @@ pub record HttpChunkedStream {
   // to the exchange's buffered body and `endChunkedResponse` flushes it as one
   // h2 response. `None` for HTTP/1.1, where chunks are written to the wire
   // incrementally. (Incremental h2 DATA streaming is the #6107 follow-up.)
-  var h2: Option[H2Exchange]
+  h2: Option[H2Exchange]
 }
 
 // =====================================================================

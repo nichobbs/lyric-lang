@@ -450,6 +450,30 @@ test "match statement position unit vs value accepted (#3362)" {
   assertEqualInt(diagCount(parseCheck(ok)), 0, "match statement-position: Int-vs-Unit arms stay clean when discarded")
 }
 
+// #6730: an else-less `if` always yields Unit regardless of its then-branch,
+// even when the whole else-less `if` sits in value position (e.g. as the
+// initializer of a `val`). The then-branch's own value is provably
+// discarded either way, so a nested if/else inside it must be typed
+// leniently (statement position), not spuriously rejected as if the outer
+// `if`'s value position propagated all the way down.
+test "else-less if in value position types its then-branch leniently (#6730)" {
+  val ok = "package P\nfunc f(c: in Bool, d: in Bool): Unit {\n  val x = if c { if d { 1 } else { () } }\n}\n"
+  assertEqualInt(
+    diagCount(parseCheck(ok)),
+    0,
+    "else-less if: nested if/else Int-vs-Unit mismatch stays clean when the outer if has no else"
+  )
+}
+
+test "else-less if with a genuinely bad nested match statement stays clean too (#6730)" {
+  val ok = "package P\nfunc f(c: in Bool, d: in Bool): Unit {\n  val x = if c { match d { case true -> 1; case false -> () } }\n}\n"
+  assertEqualInt(
+    diagCount(parseCheck(ok)),
+    0,
+    "else-less if: nested match Int-vs-Unit mismatch stays clean when the outer if has no else"
+  )
+}
+
 // #2127/#2129: a bare UpperCamelCase member-call receiver that does not resolve
 // is treated as a module reference (e.g. a `Std.String as Str` alias that
 // survived rewriting), so it does NOT emit T0020 …

@@ -664,11 +664,17 @@ func synthesizeFor(source: in String, filter: in Option[String], nativeMode: in 
   // only when the user hasn't already imported the path themselves.
   val needsPropertyStdlib = anyPropertyNeedsStdlibImports(pf.file.items, runProperties)
   if needsPropertyStdlib {
+    // Leading `\n`, no trailing one — same rule as the `__lyric_console`
+    // injection above: `sb` never ends with a newline at this point (the
+    // header slice and the native-mode injection both omit their trailing
+    // terminator by design), so each injected line must supply its own
+    // leading separator instead, leaving the real terminator for the
+    // gap-copy loop below to supply (#6724).
     if not hasImportOfPath(pf.file.imports, "Std.Random") {
-      sb = sb + "import Std.Random\n"
+      sb = sb + "\nimport Std.Random"
     }
     if not hasImportOfPath(pf.file.imports, "Std.Testing.Property") {
-      sb = sb + "import Std.Testing.Property\n"
+      sb = sb + "\nimport Std.Testing.Property"
     }
   }
   // #6687: the header fix above (#6642) reproduces everything through the
