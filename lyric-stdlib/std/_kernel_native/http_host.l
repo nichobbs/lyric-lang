@@ -592,6 +592,16 @@ val maxTrailerLines: Int = 100
 /// maxResponseHeaderBytes` instead of unbounded.
 val maxInterimResponses: Int = 20
 
+/// Caps the number of header lines `parseHeadersText` accepts in a single
+/// response, the same "bytes bounded, count unbounded" gap
+/// `maxTrailerLines`/`maxInterimResponses` close elsewhere in this file
+/// (a tenth-review-round finding): `maxResponseHeaderBytes` bounds the
+/// total header-block size, but a server could still pack that budget
+/// into ~200,000 minimal `a:`-shaped lines with no per-entry cost.
+/// Mirrors `Std.HttpEngine`'s server-side `EngineLimits.maxHeaderCount`
+/// default (100).
+val maxHeaderCount: Int = 100
+
 func crlfBytes(): slice[Byte] {
   [13u8, 10u8]
 }
@@ -1247,6 +1257,9 @@ func parseHeadersText(text: in String): Result[ParsedHeaders, String] {
     if line.length > 0 {
       val colonIdx = findSubstring(line, ":", 0)
       if colonIdx >= 0 {
+        if names.count >= maxHeaderCount {
+          return Err(error = "response exceeds the maximum allowed number of header fields")
+        }
         val name = line.substring(0, colonIdx)
         val rawValue = line.substring(colonIdx + 1, line.length - colonIdx - 1)
         names.add(name)

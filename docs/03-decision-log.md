@@ -35383,3 +35383,46 @@ fields at all). `lyric fmt --write` applied clean to both changed files.
 sibling fix for `maxInterimResponses` this entry mirrors), D-progress-818
 (the original `maxTrailerLines` introduction, #6636).
 
+---
+
+## D-progress-825 — `_kernel_native/http_host.l`: `parseHeadersText` had no cap on header field COUNT, only total header-block bytes, a tenth review round on this same PR
+
+**Context.** A tenth `claude-review` pass (APPROVED, no REQUIRED
+findings) flagged, as a SUGGESTION, that `parseHeadersText` had no
+independent cap on the number of header lines it accepts — only
+`maxResponseHeaderBytes` bounding the total header-block size. A
+malicious/compromised server could pack that byte budget (819200 bytes)
+into roughly 200,000 minimal `a:`-shaped header lines instead of a
+normal handful, the identical "bytes bounded, count unbounded" gap this
+same PR already closed twice on other paths (`maxTrailerLines` in
+D-progress-818/#6636, `maxInterimResponses` in D-progress-822/#6704).
+Bounded in absolute terms by the existing byte cap (not unbounded like
+those two bugs), so not REQUIRED — but inconsistent with this file's own
+established hardening pattern and with `Std.HttpEngine`'s server-side
+`EngineLimits.maxHeaderCount` default.
+
+**Fix.** Added `maxHeaderCount: Int = 100` (mirroring
+`Std.HttpEngine.EngineLimits.maxHeaderCount`'s default) and a check
+inside `parseHeadersText`'s header-parsing loop, using `>=` from the
+start (not the `>` D-progress-822/D-progress-824 both had to correct
+after the fact): `if names.count >= maxHeaderCount { return Err(...) }`,
+checked immediately before adding each new header to `names`/`values`.
+
+**Verification.** New self-test case (item Q, now 13 total: E–Q): a
+server responds with 150 minimal `a:1\r\n` header lines (well under the
+819200-byte cap, well over the 100-field cap) and asserts the client
+rejects with an error containing "maximum allowed number of header
+fields". Verified as a genuine regression check by reverting the fix
+locally (`git stash push` on just `_kernel_native/http_host.l`, keeping
+the new test) and confirming the test fails with "not rejected" — the
+old code accepts all 150 headers without complaint, since nothing but
+the byte cap (819200 bytes, nowhere near exhausted by 150 short lines)
+ever bounded it — while all 12 prior items (E–P) continue to pass
+unaffected. Restored the fix and confirmed all 13 tests pass again, both
+before and after `lyric fmt --write` on both changed files (clean, no
+unsafe-format refusal).
+
+**Related:** #6623 (the PR this fix ships in), D-progress-818 and
+D-progress-822 (the two prior "bytes bounded, count unbounded" fixes
+this entry closes the third instance of).
+
