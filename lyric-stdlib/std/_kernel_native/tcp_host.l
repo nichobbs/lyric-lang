@@ -1,6 +1,7 @@
-//! std/_kernel_native/tcp_host.l - native-target TCP + server-side TLS
+//! std/_kernel_native/tcp_host.l - native-target TCP + client/server TLS
 //! transport kernel for the sans-IO `Std.HttpEngine` (docs/61 §7, D128;
-//! N9.2 of epic #5874 phase 5, issue #6103).
+//! N9.2 of epic #5874 phase 5, issue #6103) and for `Std.HttpHost`'s
+//! native client twin (N9.4, issue #6105).
 //!
 //! Mirrors the dotnet `_kernel/tcp_host.l` public surface —
 //! `hostListen`/`hostConnect`/`hostStopListener`/`hostAccept`/
@@ -13,6 +14,19 @@
 //! translation of the dotnet twin's try/catch bodies (D-N-003: native has
 //! no exceptions) — every fallible operation here is driven directly off
 //! the seam's -1/NULL return values plus `lyric_tls_last_error`.
+//!
+//! **Client TLS (`hostConnectTls`/`hostUpgradeClientTls`) added for N9.4.**
+//! The N9.2 header below originally said "N9.2 has no client-TLS surface —
+//! that is Std.Http's job, N9.4/#6105"; this is that job. It lives HERE,
+//! not in `_kernel_native/http_host.l`, for the same reason
+//! `hostAcceptTls`/`hostUpgradeServerTls` live here rather than in a
+//! caller's package: constructing a `Conn` requires touching its
+//! package-private `fd`/`tlsConnHandle`/`alpn` fields (module header below),
+//! so the function that builds one from a client-side handshake must be a
+//! member of this package, exactly like its server-side counterpart.
+//! `Std.HttpHost`'s native kernel calls `hostConnectTls` and otherwise reads
+//! the resulting `Conn` only through `hostRead`/`hostWrite`/`hostClose`,
+//! same as every other `Std.TcpHost` consumer.
 //!
 //! ## Representation: why `Listener`/`Conn` are plain records, not `opaque type`
 //!
@@ -165,6 +179,30 @@ pub record Conn {
   alpn: String
 }
 
+/// A fully-resolved client trust decision (N9.4, issue #6105): the CA
+/// precedence policy (docs/61 §3.2 — `withExclusiveCaCertificate` beats
+/// `withCaCertificate`, which beats "no CA configured") is a `Std.Http`
+/// concern and is resolved BEFORE calling `hostConnectTls`/
+/// `hostUpgradeClientTls`; this union is the fully-decided instruction the
+/// seam executes. `TlsTrustAdditive`/`TlsTrustExclusive` carry the PEM text
+/// directly (not a `Tls.Certificate`) so this file never depends on
+/// `Std.HttpHost`'s builder-level `Option[Certificate]` shape.
+pub union TlsClientTrust {
+  // Verify against the platform's default trust store only
+  // (`SSL_CTX_set_default_verify_paths` + `SSL_CERT_FILE`/`SSL_CERT_DIR`).
+  case TlsTrustSystemDefault
+  // Platform trust store PLUS `caPem` (`lyric_tls_client_new_additive`) — a
+  // chain valid against either set verifies.
+  case TlsTrustAdditive(caPem: String)
+  // ONLY `caPem` (`lyric_tls_client_new`'s exclusive case) — the platform
+  // trust store is never consulted.
+  case TlsTrustExclusive(caPem: String)
+  // Disable certificate AND hostname verification outright (docs/61 §4's
+  // dual-key policy — the caller has already resolved that policy before
+  // this union is constructed).
+  case TlsTrustInsecure
+}
+
 // =====================================================================
 // Extern seam bindings (lyric-rt/src/lyric_tls.c).
 // =====================================================================
@@ -189,8 +227,7 @@ extern func rtSockReadBytes(fd: Int, maxBytes: Long, okOut: NativePtr[Int]): sli
 
 extern func rtSockWriteBytes(fd: Int, bytes: slice[Byte]): Long = "lyric_sock_write_bytes"
 
-// --- TLS (server-side; N9.2 has no client-TLS surface — that is
-// Std.Http's job, N9.4/#6105) ------------------------------------------
+// --- TLS (server-side) --------------------------------------------------
 extern func rtTlsServerNew(certPem: NativePtr[Byte], keyPem: NativePtr[Byte], minVersion: Int, clientCaPem: NativePtr[Byte], requireClientCert: Int, alpnCsv: NativePtr[Byte]): Long = "lyric_tls_server_new"
 
 extern func rtTlsServerAccept(serverCtx: Long, fd: Int): Long = "lyric_tls_server_accept"
@@ -206,6 +243,15 @@ extern func rtTlsAlpnString(conn: Long): String = "lyric_tls_alpn_string"
 extern func rtTlsReadBytes(conn: Long, maxBytes: Long, okOut: NativePtr[Int]): slice[Byte] = "lyric_tls_read_bytes"
 
 extern func rtTlsWriteBytes(conn: Long, bytes: slice[Byte]): Long = "lyric_tls_write_bytes"
+
+// --- TLS (client-side; N9.4, issue #6105) -------------------------------
+extern func rtTlsClientNew(caPem: NativePtr[Byte], minVersion: Int, insecure: Int): Long = "lyric_tls_client_new"
+
+extern func rtTlsClientNewAdditive(caPem: NativePtr[Byte], minVersion: Int, insecure: Int): Long = "lyric_tls_client_new_additive"
+
+extern func rtTlsClientSetIdentity(clientCtx: Long, certPem: NativePtr[Byte], keyPem: NativePtr[Byte]): Int = "lyric_tls_client_set_identity"
+
+extern func rtTlsClientConnect(clientCtx: Long, fd: Int, sniHost: NativePtr[Byte], alpnCsv: NativePtr[Byte]): Long = "lyric_tls_client_connect"
 
 // The server's ALPN preference list — `h2` first, matching docs/61 §6.4
 // phase 4.4 and the dotnet twin's `setApplicationProtocols`; a peer that
@@ -289,12 +335,7 @@ pub func hostAccept(l: in Listener): Result[Conn, TcpError] {
 func validateServerConfig(cfg: in Tls.TlsServerConfig): Option[TcpError] {
   if cfg.requireClientCert {
     match cfg.clientCa {
-      case None -> Some(
-        value = TlsConfigInvalid(
-          message = "requireClientCert is set but no clientCa is configured; mutual TLS must pin trust to a client CA " +
-            "(refusing to fall back to the system trust store, which would accept any publicly-trusted client certificate)"
-        )
-      )
+      case None -> Some(value = TlsConfigInvalid(message = "requireClientCert is set but no clientCa is configured; mutual TLS must pin trust to a client CA " + "(refusing to fall back to the system trust store, which would accept any publicly-trusted client certificate)"))
       case Some(_) -> None
     }
   } else {
@@ -316,7 +357,18 @@ func tlsVersionNumber(v: in Tls.TlsVersion): Int {
 // a single accept, unlike the returned `conn` handle).
 @unsafe_ffi
 func buildServerCtx(cfg: in Tls.TlsServerConfig): Result[Long, TcpError] {
-  val handle: TlsHost.CertHandle = cfg.identity.rawHandle()
+  // Explicit static-call form (`Tls.Identity.rawHandle(cfg.identity)`), NOT the
+  // UFCS spelling (`cfg.identity.rawHandle()`): the native backend's
+  // bundled-import-closure UFCS resolver does not find an `internal`
+  // cross-package function by receiver-method lookup (confirmed by direct
+  // repro: "method '.rawHandle' on this receiver is not yet supported for
+  // --target native (no matching function 'rawHandle/1' in the bundled
+  // import closure)"), while the plain call form resolves and lowers
+  // correctly. N9.4/#6105 (this file's own client identity handling below
+  // hit the identical gap first — fixed here too since `hostAcceptTls`'s
+  // real accept path was never previously exercised on native, item D of
+  // `llvm_tls_self_test.l`'s own header).
+  val handle: TlsHost.CertHandle = Tls.Identity.rawHandle(cfg.identity)
   val keyPem = match handle.keyPem {
     case Some(k) -> k
     // Std.Tls only ever constructs an Identity's handle via
@@ -325,10 +377,7 @@ func buildServerCtx(cfg: in Tls.TlsServerConfig): Result[Long, TcpError] {
     // type (invariant violation, not a user-reachable error).
     case None -> panic("Std.TcpHost: TlsServerConfig.identity has no private key (invariant violation)")
   }
-  val clientCaPem = match cfg.clientCa {
-    case Some(ca) -> ca.rawHandle().certPem
-    case None -> ""
-  }
+  val clientCaPem = match cfg.clientCa { case Some(ca) -> Tls.Certificate.rawHandle(ca).certPem; case None -> "" }
   val requireClientCert = if cfg.requireClientCert { 1 } else { 0 }
   val certC = toC(handle.certPem)
   val keyC = toC(keyPem)
@@ -427,11 +476,7 @@ pub func hostRead(c: in Conn, maxBytes: in Int): Result[slice[Byte], TcpError]
 /// connection is `Err(TransportFailed(...))` rather than an uncaught
 /// panic.
 pub func hostWrite(c: in Conn, bytes: in slice[Byte]): Result[Unit, TcpError] {
-  val n = if c.tlsConnHandle != 0i64 {
-    rtTlsWriteBytes(c.tlsConnHandle, bytes)
-  } else {
-    rtSockWriteBytes(c.fd, bytes)
-  }
+  val n = if c.tlsConnHandle != 0i64 { rtTlsWriteBytes(c.tlsConnHandle, bytes) } else { rtSockWriteBytes(c.fd, bytes) }
   if n < 0i64 {
     Err(error = TransportFailed(message = rtLastErrorString()))
   } else {
@@ -447,4 +492,133 @@ pub func hostClose(c: in Conn): Unit {
     rtTlsFree(c.tlsConnHandle)
   }
   val _ = rtSockClose(c.fd)
+}
+
+// =====================================================================
+// Client TLS (N9.4, issue #6105).
+// =====================================================================
+@unsafe_ffi
+func buildClientCtx(trust: in TlsClientTrust, minVersionNum: in Int): Result[Long, TcpError] {
+  match trust {
+    case TlsTrustInsecure -> {
+      val emptyC = toC("")
+      val ctx = rtTlsClientNew(emptyC, minVersionNum, 1)
+      freeC(emptyC)
+      if ctx != 0i64 {
+        Ok(value = ctx)
+      } else {
+        Err(error = TlsHandshakeFailed(message = rtLastErrorString()))
+      }
+    }
+    case TlsTrustSystemDefault -> {
+      val emptyC = toC("")
+      val ctx = rtTlsClientNew(emptyC, minVersionNum, 0)
+      freeC(emptyC)
+      if ctx != 0i64 {
+        Ok(value = ctx)
+      } else {
+        Err(error = TlsHandshakeFailed(message = rtLastErrorString()))
+      }
+    }
+    case TlsTrustExclusive(caPem) -> {
+      val caC = toC(caPem)
+      val ctx = rtTlsClientNew(caC, minVersionNum, 0)
+      freeC(caC)
+      if ctx != 0i64 {
+        Ok(value = ctx)
+      } else {
+        Err(error = TlsHandshakeFailed(message = rtLastErrorString()))
+      }
+    }
+    case TlsTrustAdditive(caPem) -> {
+      val caC = toC(caPem)
+      val ctx = rtTlsClientNewAdditive(caC, minVersionNum, 0)
+      freeC(caC)
+      if ctx != 0i64 {
+        Ok(value = ctx)
+      } else {
+        Err(error = TlsHandshakeFailed(message = rtLastErrorString()))
+      }
+    }
+  }
+}
+
+@unsafe_ffi
+func applyClientIdentity(ctx: in Long, clientIdentity: in Option[Tls.Identity]): Result[Unit, TcpError] {
+  match clientIdentity {
+    case None -> Ok(value = ())
+    case Some(id) -> {
+      val handle: TlsHost.CertHandle = Tls.Identity.rawHandle(id)
+      val keyPem = match handle.keyPem {
+        case Some(k) -> k
+        // Std.Tls only ever constructs an Identity's handle via
+        // hostIdentityFromPemBytes, which always populates keyPem — a
+        // certificate-only handle can never reach here through Identity's
+        // type (invariant violation, not a user-reachable error). Mirrors
+        // buildServerCtx's identical guard above.
+        case None -> panic("Std.TcpHost: client Identity has no private key (invariant violation)")
+      }
+      val certC = toC(handle.certPem)
+      val keyC = toC(keyPem)
+      val rc = rtTlsClientSetIdentity(ctx, certC, keyC)
+      freeC(keyC)
+      freeC(certC)
+      if rc == 0 {
+        Ok(value = ())
+      } else {
+        Err(error = TlsHandshakeFailed(message = rtLastErrorString()))
+      }
+    }
+  }
+}
+
+/// Dial `host`:`port` and terminate TLS on the connection as a client,
+/// using `trust` for certificate verification, `clientIdentity` for mTLS
+/// (`None` presents no client certificate), `minVersion` for the minimum
+/// negotiated TLS protocol version, and `alpnCsv` to advertise ALPN
+/// protocols (e.g. `"http/1.1"`; `""` disables ALPN). `host` is used for
+/// BOTH the socket dial (`hostConnect`'s `getaddrinfo` resolution) and SNI
+/// / RFC 6125 hostname verification — the ordinary case where the URL
+/// authority names the peer directly. A connect failure is
+/// `Err(TransportFailed(...))`; a handshake failure (including hostname
+/// mismatch, or `TlsTrustInsecure` misuse — see the seam's own fail-closed
+/// guard) is `Err(TlsHandshakeFailed(...))`.
+pub func hostConnectTls(
+  host: in String,
+  port: in Int,
+  trust: in TlsClientTrust,
+  clientIdentity: in Option[Tls.Identity],
+  minVersion: in Tls.TlsVersion,
+  alpnCsv: in String,
+): Result[Conn, TcpError] {
+  match hostConnect(host, port) {
+    case Err(e) -> Err(error = e)
+    case Ok(plain) -> hostUpgradeClientTls(plain, host, trust, clientIdentity, minVersion, alpnCsv)
+  }
+}
+
+/// Terminate TLS on an already-connected plain connection, as a client
+/// (the connect/upgrade split mirrors `hostAcceptTls`/
+/// `hostUpgradeServerTls`'s server-side shape). `sniHost` is the name sent
+/// as SNI and verified against the peer's certificate (RFC 6125) — see
+/// `hostConnectTls`'s doc comment for the ordinary case where it equals the
+/// dial host. The underlying socket is closed on every failure path so a
+/// rejected handshake never leaks a connection.
+@unsafe_ffi
+pub func hostUpgradeClientTls(
+  conn: in Conn,
+  sniHost: in String,
+  trust: in TlsClientTrust,
+  clientIdentity: in Option[Tls.Identity],
+  minVersion: in Tls.TlsVersion,
+  alpnCsv: in String,
+): Result[Conn, TcpError] {
+  val minVersionNum = tlsVersionNumber(minVersion)
+  match buildClientCtx(trust, minVersionNum) {
+    case Err(e) -> {
+      val _ = rtSockClose(conn.fd)
+      Err(error = e)
+    }
+    case Ok(ctx) -> match applyClientIdentity(ctx, clientIdentity) { case Err(e) -> { rtTlsCtxFree(ctx); val _ = rtSockClose(conn.fd); Err(error = e) }; case Ok(_) -> { val sniC = toC(sniHost); val alpnC = toC(alpnCsv); val tlsConn = rtTlsClientConnect(ctx, conn.fd, sniC, alpnC); freeC(alpnC); freeC(sniC); rtTlsCtxFree(ctx); if tlsConn == 0i64 { val msg = rtLastErrorString(); val _ = rtSockClose(conn.fd); Err(error = TlsHandshakeFailed(message = msg)) } else { val alpn = rtTlsAlpnString(tlsConn); Ok(value = Conn(fd = conn.fd, tlsConnHandle = tlsConn, alpn = alpn)) } } }
+  }
 }

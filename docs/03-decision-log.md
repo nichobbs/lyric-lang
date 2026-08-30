@@ -34582,3 +34582,847 @@ ask), #6708 (new, filed — JVM generics-erasure gap blocking
 (the generic-codegen design this extends), docs/44-jvm-production-
 readiness-plan.md ("generics erased" — #6708 is a concrete instance of
 that already-catalogued JVM-backend gap class).
+---
+
+## D-progress-823 — TLS phase 5 (native) N9.4: `Std.Http` native client twin on the `lyric_tls_*`/`Std.TcpHost` seam (issue #6105, epic #5874 phase 5)
+
+Exposes N9.2's `Std.TcpHost` native twin (D-progress-712, #6103) as a client
+HTTP/HTTPS surface: `_kernel_native/http_host.l`, matching the dotnet/JVM
+twins' public client API. Two premises in the issue's own plan text turned
+out to be false once the source was actually read, both requiring genuine
+reimplementation rather than the reuse the plan assumed:
+
+**A) `Std.HttpEngine` has no client half.** The issue's plan (and this
+doc's own §7 N9 banding) described driving "the sans-IO engine's client
+connection FSM." Reading `lyric-stdlib/std/http_engine.l` in full and
+grepping its only consumers (`_kernel/http_server.l`, plus doc-comment
+mentions in `tcp_host.l`) found the engine is server-only — there has never
+been a client-side `Connection`/state-machine type anywhere in the tree, on
+any target. `_kernel_native/http_host.l` therefore implements a genuine,
+from-scratch HTTP/1.1 client wire protocol: RFC 9112 request-line and
+header-line construction/parsing, `Content-Length` vs
+`Transfer-Encoding: chunked` framing precedence (Content-Length checked
+first per the RFC, since a response can't sensibly carry both), chunked-body
+decoding, and a 301/302/303/307/308 redirect loop with the standard
+method-downgrade rule (303 always downgrades to GET; 301/302 downgrade a
+POST to GET for compatibility with real-world servers, matching
+`_kernel/http_host.l`'s and `_kernel_jvm/http_host.l`'s own redirect
+behavior; 307/308 preserve method and body). Every byte/string primitive
+used (`findSubstring`, `splitOn`, `trimSpaces`, `parseHexInt`,
+`asciiEqualsCaseInsensitive`, `findHeaderValue`, chunked-frame scanning) is
+hand-rolled from `.substring`/`.length`/indexing/`+`/`==` alone — a
+deliberate scope decision documented in the file's own header, not an
+oversight: neither `Std.String` nor `Std.Char`'s combinator surface is
+called anywhere in this file.
+
+**B) `Std.Http.HttpClient`'s interface surface cannot be constructed on
+native today — a pre-existing, general compiler gap.** The issue asked this
+kernel to "match `Std.Http`'s public client surface... exactly," which
+reads as including the `HttpClient`-interface-returning builder functions
+(`HttpClientBuilder.build()`, `defaultClient()`, `clientWithRedirects`, …).
+Verified directly, twice, before writing a single line of workaround code:
+
+```text
+$ lyric build --target native repro.l   # val c = defaultClient()
+Unhandled exception. System.Exception: Lyric.LlvmCodegen: type
+'HttpClient' is not yet supported for --target native (Phase N1 lowers
+scalars and String only)
+```
+
+and, isolating the general shape with a same-signature custom interface (to
+confirm this is `async`-interface-dispatch-general, not `HttpClient`- or
+bundled-stdlib-specific):
+
+```text
+Unhandled exception. System.Exception: Lyric.LlvmCodegen: interface
+method '.greet' on 'T.Greeter' is not yet lowerable for --target native
+— only non-generic abstract interface methods dispatch through the
+vtable; default, generic, async, and Self-returning interface methods
+are deferred (N3.2).
+```
+
+`Std.Http.HttpClient` declares seven `async func` methods; N3.2's interface
+vtable dispatch lowers only non-generic, non-async abstract methods. This is
+a codegen-level gap in `Lyric.LlvmCodegen`, not a kernel-boundary problem —
+fixing it is out of this item's scope (filed as a follow-up alongside this
+entry, not blocking). `_kernel_native/http_host.l` is therefore the real,
+substantive deliverable, and its self-test — like `Std.Http`'s own free
+functions `getAsync`/`postAsync`/`sendAsync`, which never touch the
+`HttpClient` interface and already call straight into this kernel — drives
+the kernel's free functions directly (`hostClientWithTls`, `hostMakeRequest`,
+`hostSendSafe`, …) rather than through the interface-returning builder
+surface. Once the N3.2 gap closes, `Std.Http`'s own public surface works
+unmodified — no further kernel change needed.
+
+**C) Client TLS added to `Std.TcpHost` (`_kernel_native/tcp_host.l`), not a
+new file.** The client-TLS connect path needs the same package-private
+`Conn`/`Listener` internals `hostAcceptTls`/`hostUpgradeServerTls` already
+live beside, so `hostConnectTls`/`hostUpgradeClientTls` were added directly
+to `tcp_host.l` rather than duplicated behind a second file — mirroring
+where `hostUpgradeServerTls` already lives for the identical reason. A new
+`TlsClientTrust` union (`TlsTrustSystemDefault`/`TlsTrustAdditive(caPem)`/
+`TlsTrustExclusive(caPem)`/`TlsTrustInsecure`) makes the trust mode
+explicit at the call site, resolved to the right `rtTlsClientNew*` seam call
+by `buildClientCtx`. This surfaced a genuine trust-semantics gap in the
+N9.1 seam: `lyric_tls_client_new` treats a non-empty CA PEM as *exclusive*
+trust (only that CA verifies chains), but docs/61 §3.2's
+`withCaCertificate()` client-builder option is documented as *additive*
+(system default trust plus the supplied CA — a chain valid against either
+verifies) — the seam had no function expressing that distinction. Fixed by
+refactoring `lyric_tls_client_new`'s body into a shared
+`client_new_impl(ca_pem, min_version, insecure, additive)` static helper in
+`lyric-rt/src/lyric_tls.c` and adding a new public `lyric_tls_client_new_additive`
+entry point (`additive=1`: load system default trust paths unconditionally,
+then add `ca_pem` on top; `additive=0` reproduces `lyric_tls_client_new`'s
+existing exclusive-or-system-default behavior byte-for-byte). Two new C
+tests (`test_tls_client_additive_ca`, `test_tls_client_additive_requires_ca`)
+cover the new function's happy path (a real loopback handshake against a
+server whose cert is verified via the additive trust store) and its
+`ca_pem`-required error path. SNI and hostname verification stay hard-wired
+on for every trust mode (inherited unconditionally from the N9.1 seam); the
+dual-key insecure policy (docs/61 §4) is reused as-is via
+`TlsTrustInsecure`, no new override mechanism.
+
+While wiring `buildClientCtx`'s TLS-identity path, `buildServerCtx`
+(pre-existing N9.2 code, never previously exercised through a live TLS
+accept in any self-test) turned out to already contain two UFCS calls that
+fail to resolve on native (`cfg.identity.rawHandle()`,
+`ca.rawHandle().certPem`) — a **cross-package UFCS-call gap**: `method '.X'
+on this receiver is not yet supported for --target native (no matching
+function 'X/1' in the bundled import closure)`, confirmed for both an
+`internal` function (`rawHandle`) and a `pub` one (`TcpError.message`).
+Same-package UFCS works; only the cross-package case fails. Fixed at both
+call sites (and this item's own two new call sites) by using the explicit
+static-call form instead — `Tls.Identity.rawHandle(id)`,
+`Tls.Certificate.rawHandle(ca).certPem` — a general native-codegen
+limitation, not specific to this kernel, filed as a follow-up.
+
+**D) Additional previously-undocumented native-codegen gaps, found via
+minimal-repro bisection while this kernel's ~1300 lines were being written,
+each worked around (none are this item's compiler fix to make):**
+
+- **The `?` operator fails specifically when the function using it is
+  reachable from a *different* package than the one that defines it** —
+  `this expression form is not yet supported for --target native (Phase
+  N1)`. Confirmed same-package `?` compiles fine; the identical code fails
+  the moment a different package calls in, even transitively through a
+  same-package intermediate call. All 11 uses of `?` in `http_host.l` were
+  rewritten to explicit `match { case Ok(v) -> v; case Err(e) -> return
+  Err(error = e) }` (the same pattern `tcp_host.l`'s pre-existing code
+  already used everywhere, which in hindsight is this convention already
+  being silently honored rather than a stylistic choice).
+- **`out` is a reserved keyword.** Using it as a variable name
+  (`val out: List[Byte] = newList()`) parses fine as an isolated repro
+  (a clean `P0051` in a minimal file) but manifested as the generic "this
+  expression form is not yet supported" codegen panic inside the larger
+  kernel file, which cost real bisection time to trace back to its actual
+  cause. Renamed to `acc` at all three sites.
+- **A module-level `val` with a non-literal initializer** (e.g. a
+  slice-literal, `val crlf: slice[Byte] = [13u8, 10u8]`) is rejected:
+  "module-level 'crlf' has a non-literal initializer, which is not yet
+  supported for --target native... #5977" (a pre-existing, already-tracked
+  gap). Converted both byte-pattern constants this kernel needed
+  (CRLF, CRLFCRLF) into zero-arg functions (`crlfBytes()`/`crlfcrlfBytes()`)
+  instead.
+- **A bare nullary enum-case reference does not resolve, even within the
+  same file** — `func f(): MyEnum { A }` (instead of `MyEnum.A`) fails with
+  "unknown name 'A'". The same failure mode hits a record field's *default*
+  value when the field is omitted at a construction site and that default
+  is itself a bare enum case (`TlsServerConfig`'s `minVersion: TlsVersion =
+  Tls12` default, when a caller writes `TlsServerConfig(identity = ...)`
+  without naming `minVersion`). Worked around by always fully-qualifying
+  enum cases (`TlsVersion.Tls12`, or `Tls.TlsVersion.Tls12` under an
+  aliased import) and supplying every field explicitly at every
+  `TlsServerConfig` construction site in this item's own code and its
+  self-test's generated program, never relying on the enum-typed default.
+
+**E) Self-test (`lyric-compiler/lyric/llvm_http_client_self_test.l`).** One
+case, compiled through `Lyric.LlvmBridge.compileToNativeWithFlags` with
+`-fsanitize=address`, mirroring `llvm_tls_self_test.l`'s harness shape: the
+server accepts two sequential TLS connections over the same listener on a
+second `pthread_create`d OS thread (a TLS handshake needs both peers
+actively exchanging handshake records at once, unlike a bare TCP `connect`,
+which completes into the listen backlog before `accept` runs — the same
+reasoning D-progress-712 gave for its own item-C case); the first request
+gets a 302 redirect to a second path, the second a 200 response with a
+`Transfer-Encoding: chunked` body split across two chunks. One client call
+(`await hostSendSafe`) is asserted to complete the TLS handshake against a
+self-signed certificate pinned via `hostClientWithTls`'s exclusive-CA trust
+option (real chain + hostname verification, not `withInsecureSkipVerify`),
+follow the redirect to the second URL, and dechunk the reassembled body back
+to the original `"Hello, world!"` text.
+
+One genuine logic bug (in this item's own new code, not a compiler gap) was
+found and fixed via this self-test: `readChunkedBody`'s trailer-section scan
+initially searched for a 4-byte CRLFCRLF terminator, copying the
+"end of headers" pattern instead of applying RFC 9112's actual chunked
+trailer-part rule — after the last (`0`-sized) chunk's own already-consumed
+CRLF, a *single* CRLF terminates an empty trailer section (only a nonzero
+trailer field count needs the second CRLF pair). The bug manifested as the
+client hanging until the read timed out ("connection closed before expected
+data arrived") on every chunked response, since it kept waiting for 4 bytes
+the server would never send. Fixed by rewriting the trailer scan as a loop
+over CRLF-terminated lines, treating an immediately-empty line as end of
+trailer — correct for both the zero- and nonzero-trailer-field cases.
+
+**Sandbox/CI-validator boundary — a genuine improvement on D-progress-712's
+own boundary note.** This session, like D-progress-712's, could not run
+`scripts/bootstrap.sh --stage 0` (GitHub access is not enabled for this
+sandbox) and so could not build `./bin/lyric` from source. Unlike
+D-progress-712, however, this session found and used the already-installed
+NuGet global tool (`lyric` v0.5.1 on `PATH` via `~/.dotnet/tools`), which
+genuinely supports `--target native` end to end — real `clang` invocation,
+real `lyric_rt.a` linking, real process execution. Every claim in this
+entry was verified by actually running it, not inferred by
+cross-referencing already-shipped syntax: `make -C lyric-rt test` (clang +
+gcc) and `make -C lyric-rt test-asan CC=gcc` pass locally including the two
+new additive-CA C tests, and
+`LYRIC_LOAD_COMPILER=1 LYRIC_RT_PATH=<worktree>/lyric-rt/build/lyric_rt.a
+LYRIC_STD_PATH=<worktree>/lyric-stdlib/std lyric test
+lyric-compiler/lyric/llvm_http_client_self_test.l` genuinely passes,
+confirmed on four separate consecutive runs (including a re-run after the
+chunked-trailer bug fix and a final re-run after `lyric fmt --write` was
+applied to every changed `.l` file):
+
+```
+1..1
+ok 1 - Std.HttpHost native HTTPS round trip: TLS handshake + redirect + chunked body (item E)
+
+# tests 1
+# pass  1
+# fail  0
+# skip  0
+```
+
+CI's `native-backend-self-tests` job remains the authoritative from-source
+validator going forward (this session's NuGet-tool verification is real
+execution, not a substitute for CI, since the tool tracks a released
+version rather than this branch's own compiler source) — the test is wired
+into that job's `for t in ...` loop immediately after `llvm_tls_self_test.l`.
+
+**Tracked follow-ups filed, not blocking this item:** the general
+async-interface vtable-dispatch gap (item B above, `Lyric.LlvmCodegen`
+N3.2), the general cross-package UFCS-call resolution gap (item C above),
+and the general cross-package `?`-operator codegen gap (item D above) are
+all pre-existing native-codegen limitations this item worked around rather
+than fixed, each filed as its own follow-up issue referencing this entry.
+
+**Verification.** `make -C lyric-rt test` (clang + gcc) and
+`make -C lyric-rt test-asan CC=gcc` green locally including the two new
+tests; `llvm_http_client_self_test.l` genuinely green locally via the NuGet
+`lyric` tool (see boundary note above), four consecutive runs; `lyric fmt
+--write` applied clean (no refusals) to all three changed `.l` files
+(`_kernel_native/tcp_host.l`, `_kernel_native/http_host.l`,
+`llvm_http_client_self_test.l`).
+
+## D-progress-826 — `_kernel_native/http_host.l`: strip `Authorization`/`Cookie`/`Proxy-Authorization` on a cross-authority redirect (PR #6623 review finding)
+
+**Context.** `claude-review`'s pass on PR #6105/#6623 (D-progress-823's
+native `Std.Http` client twin) found a real gap in
+`nextRequestForRedirect`: a 301/302/307/308 redirect that preserves the
+request's headers (i.e. every case except a 303/GET-downgrade, which
+already starts a fresh header-less request via `hostMakeRequest`) copied
+`request.headerNames`/`headerValues` onto the redirected request
+unconditionally — including a redirect that changes host, port, or
+downgrades scheme from `https://` to `http://`. A caller-set
+`Authorization`/`Cookie`/`Proxy-Authorization` header would follow the
+redirect to a completely different origin. The two kernels this file
+mirrors get this stripping for free from their platform HTTP stack (.NET's
+`SocketsHttpHandler` strips `Authorization` on a host change; the JDK's
+`java.net.http.HttpClient` does the same, JDK-8217264) — this hand-rolled
+wire-protocol implementation had no equivalent check, and (unlike every
+other scope decision in this file) it wasn't disclosed in the module
+header as a known divergence either.
+
+**Not yet live-exploitable, fixed anyway.** `Std.Http`'s public builder
+surface (`defaultClient()`/`HttpClientBuilder`) cannot construct on native
+today (the pre-existing N3.2 async-interface-dispatch gap D-progress-823
+already documents at length), so nothing in a real user program can reach
+this kernel's redirect path yet. Fixed now rather than deferred, since the
+fix is small, self-contained, and this exact code becomes reachable the
+moment N3.2 closes — better to have it already correct than to reopen this
+file for a security fix later.
+
+**Fix.** `nextRequestForRedirect`'s header-preserving branch now resolves
+the redirect's origin change by parsing both `request.url` and the target
+`newUrl` (`parseUrl`, already used elsewhere in this file) and comparing
+host/port/scheme (`isSameRedirectAuthority`: same host, same port, and
+not downgrading `https` to `http`). Same-authority redirects keep every
+header unchanged (parity with the pre-fix behaviour for the common case);
+a cross-authority redirect drops `Authorization`/`Proxy-Authorization`/
+`Cookie` (case-insensitively, via the file's existing
+`asciiEqualsCaseInsensitive`) and keeps every other header. A URL that
+fails to (re-)parse is treated as cross-authority (strip) rather than
+same-origin — fail closed, not open.
+
+**Verification.** A new case, `llvm_http_client_self_test.l`'s item F,
+drives this exact scenario end to end: two real listeners on distinct
+ports (no TLS — item C's "plain TCP completes into the backlog without a
+handshake" reasoning doesn't apply here since the full client
+connect-write-block-on-read round trip still needs the two sides driving
+I/O concurrently, so the server runs on a second `pthread_create`d thread
+exactly like item E), a first request carrying `Authorization: Bearer
+secret-token`, a 302 response whose `Location` is an ABSOLUTE URL pointing
+at the SECOND listener's port (a genuine different authority, not just a
+different path on the same one like item E's redirect), and the server
+thread itself asserting the second request does not carry the header —
+the assertion lives in the compiled native program under test, not in the
+harness, so it fails the same way a real bug would (a wrong exit code),
+not by trusting a client-side self-report. Confirmed the test is a real
+regression check, not a tautology: reverted the fix locally
+(`git stash` on `_kernel_native/http_host.l` alone) and re-ran — item F
+fails with exit code 4 (the server thread's `"leaked"` sentinel), item E
+still passes unaffected; restored the fix and re-ran clean (2/2, exit 0).
+`lyric fmt --write` applied clean (no refusals) to both changed files.
+
+**Related:** #6623 (the PR this review finding was raised on),
+D-progress-823 (the original native `Std.Http` client twin entry, whose
+N3.2 gap this fix's "not yet live-exploitable" reasoning depends on).
+
+## D-progress-827 — `_kernel_native/http_host.l`: CRLF/header-injection guard (#6635) + response size limits (#6636), and a genuine native-codegen bug found along the way (#6637/#6645)
+
+**Context.** A second `claude-review` pass on PR #6623 (D-progress-823's
+native `Std.Http` client twin, already extended once by D-progress-826's
+redirect-header-stripping fix) found two REQUIRED findings, both reachable
+today through `Std.Http`'s free functions (`sendAsync`/`getAsync`/
+`postAsync`), independent of the separate N3.2 `HttpClient`-interface
+async-dispatch gap:
+
+- **#6635 — no CRLF/header-injection guard.** `hostWithHeader` stored
+  caller-supplied header names/values verbatim with no validation, and
+  `buildRequestBytes` spliced them directly into the request text via
+  plain `+` concatenation — a caller-supplied header value (or the
+  request-line target/host, also unchecked) containing `\r\n` allowed
+  HTTP request splitting/smuggling. The dotnet/JVM kernels get this
+  rejection for free from their platform HTTP stack
+  (`SocketsHttpHandler`/`java.net.http.HttpClient` both reject an embedded
+  CR/LF at send time); this hand-rolled wire protocol had no equivalent.
+- **#6636 — no size limits on response headers/body.** `readUntilPatternFrom`
+  (header-block and chunk-size/trailer-line scanning), `readAtLeast`
+  (`Content-Length`-framed bodies), and `readChunkedBody` (chunked bodies)
+  all grew their buffers without bound, driven by attacker-controlled
+  input (a header block that never terminates, a huge declared
+  `Content-Length`, or an unbounded run of chunk data) — a malicious or
+  compromised server could force unbounded client-process memory growth.
+  `Std.HttpEngine`'s server-side `EngineLimits` (`maxHeaderCount = 100`,
+  `maxHeaderLineLength = 8192`, `maxBodyBytes = 10485760`) already guards
+  the identical class of attack on the server side; this client-side
+  kernel had no analogous limits.
+
+**Shipped.**
+
+- `hasForbiddenWireChar`/`validateRequestForWire`: rejects an embedded CR
+  or LF in the request method, target, host, `Content-Type` (when a body
+  is present), or any header name/value, before any of it reaches the
+  socket. Wired into `buildRequestBytes` (see the codegen-bug workaround
+  below for why this isn't a `Result[slice[Byte], String]` return).
+- `maxResponseHeaderBytes` (819200, mirroring `EngineLimits`'
+  `maxHeaderCount * maxHeaderLineLength` worst case) caps the header-block
+  scan; `maxResponseBodyBytes` (10485760, mirroring `EngineLimits.maxBodyBytes`
+  exactly) caps a `Content-Length`-declared body, a close-delimited
+  (`readUntilEof`) body, and the CUMULATIVE decoded size of a chunked
+  body; `maxChunkLineBytes` (8192) caps each individual chunk-size/trailer
+  line; `maxTrailerLines` (100) caps the trailer section's line COUNT
+  (each trailer line is discarded rather than accumulated, so the byte cap
+  alone doesn't bound an unbounded NUMBER of small lines). All four are
+  hardcoded v1 defaults — this kernel has no `EngineLimits`-shaped config
+  surface of its own yet to thread a caller override through.
+- `parseNonNegativeInt`/`parseHexInt` (used for `Content-Length` and
+  chunk-size parsing respectively) gained an overflow guard
+  (`n > 200000000 -> None`), found while writing item H's self-test: an
+  attacker-supplied digit string long enough to overflow `Int32` would
+  otherwise silently wrap to a small (or negative) value and bypass the
+  size cap entirely — a real bypass of #6636's own fix, not a hypothetical
+  one (caught because the FIRST self-test attempt used a 12-digit
+  Content-Length that happened to overflow, silently defeating the very
+  cap it was meant to exercise, until the test was tightened to assert on
+  the specific error message rather than merely "some `Err` came back").
+
+**A genuine native-codegen bug, found and worked around, not fixed here
+(#6637, tracked as issue #6645).** Implementing #6635's fix the obvious
+way — `buildRequestBytes: (...) -> Result[slice[Byte], String]`, read at
+its one call site via `match ... { case Ok(b) -> b; case Err(e) -> {
+Tcp.hostClose(conn); return Err(error = e) } }` — compiled with zero
+diagnostics but corrupted the heap at runtime: not inside
+`buildRequestBytes` itself, but LATER, as a SEGV inside `lyric_release`
+on an entirely unrelated `String` release deep inside a subsequent,
+otherwise-unrelated `parseUrl` call (confirmed under both `-O0`, where it
+surfaces as glibc's `malloc(): unaligned tcache chunk detected`, and
+`-fsanitize=address`, where ASan catches the SEGV directly with a full
+stack trace through `doSendOnce`/`doSend`/`hostSendSafe`). Bisected to
+EXACTLY this one signature change: reverting only the `Result`-wrapping —
+even leaving `validateRequestForWire` itself fully defined but
+unreferenced — makes the crash disappear every time, repeatably. This is
+NOT a blanket "`Result[slice[Byte], E]` is broken" bug:
+`readChunkedBody`, in this very file, already has that exact return type
+and works correctly (exercised by the same self-test both before and
+after this change), so whatever the real trigger is, it's narrower than
+the type shape alone — most likely something specific to this one call
+site (three `Result`-returning calls in sequence inside `doSendOnce`, or
+the `Err` arm's extra statement before `return`), not yet root-caused.
+Worked around, not fixed, by having `buildRequestBytes` return a plain
+record instead:
+```
+record BuiltRequestBytes { ok: Bool; bytes: slice[Byte]; errorMessage: String }
+```
+Plain records are used pervasively elsewhere in this file with zero
+issues, so this sidesteps the bug entirely rather than papering over it
+with, e.g., a global mutable or an unsafe cast. Filed as #6645 (issue
+number differs from the internal `#6637` reference in code comments,
+since the review-finding numbering and the follow-up-issue numbering are
+different sequences) with the full bisection writeup, for whoever picks
+up the actual `Lyric.LlvmCodegen` root cause later — this is squarely a
+native-backend ARC-insertion bug, out of `_kernel_native/http_host.l`'s
+own power to fix.
+
+**Verification.** Two new self-test cases added to
+`lyric-compiler/lyric/llvm_http_client_self_test.l` (now 4 cases: E, F,
+G, H): item G sends a request with a header value containing `\r\n` and
+asserts `hostSendSafe` returns `Err` (a listener that never `accept`s is
+enough, since validation runs client-side before any bytes are written —
+mirrors item C's "plain TCP connect completes into the backlog" reasoning
+to avoid needing a real server); item H has a real server declare
+`Content-Length: 99999999` (comfortably over the 10485760 cap, comfortably
+under the new overflow guard's threshold) and close without sending any
+body, asserting the client's error message specifically contains "maximum
+allowed size" — checking the SPECIFIC message, not merely that some `Err`
+came back, was necessary because the pre-existing "connection closed
+before response body was fully received" error is ALSO an `Err` for this
+exact scenario (the server never sends 99999999 bytes either way), so a
+looser assertion would pass even with the cap fix reverted — caught by
+deliberately disabling the cap check locally and confirming the looser
+assertion's false pass before tightening it. Both new tests (and item F
+from D-progress-826) were verified as genuine regression checks by
+disabling each fix in turn and confirming the corresponding test fails,
+then restoring and confirming all 4 pass clean. `lyric fmt --write`
+applied clean (no refusals) to both changed files.
+
+**Related:** #6623 (the PR both fixes and the workaround ship in), #6635,
+#6636 (the two REQUIRED review findings), #6645 (the native-codegen bug
+tracking issue), D-progress-823 (original entry), D-progress-826 (the
+prior review-fix round on this same PR).
+
+## D-progress-828 — `_kernel_native/http_host.l`: inverted TLS-downgrade check (#6646) + wrong-base overflow guard (#6647), both third-review findings on the D-progress-827 fixes themselves
+
+**Context.** A THIRD `claude-review` pass on PR #6623 confirmed both of
+D-progress-827's fixes (#6635 CRLF-injection guard, #6636 response size
+limits) correct and their tracking issues closed, but found two NEW
+REQUIRED findings — both logic bugs in the code D-progress-827 itself
+added, both untested by that round's self-test suite, and both undermining
+the very fixes they sit beside:
+
+- **#6646 — `isSameRedirectAuthority`'s scheme clause inverted.**
+  D-progress-826's original fix wrote `(from.isHttps or not to.isHttps)`
+  in the `and`-chain guarding whether a redirect strips
+  `Authorization`/`Cookie`/`Proxy-Authorization`. This makes an `https://`
+  → `http://` redirect to the identical host:port evaluate as "same
+  authority" (`from.isHttps` alone is `true`, short-circuiting the whole
+  clause `true` regardless of `to.isHttps`) — so headers are NOT stripped
+  on exactly the TLS-downgrade case the fix was written to close. Fixed:
+  `(not from.isHttps or to.isHttps)` — "safe to keep credentials" now
+  means "wasn't https to begin with, or is still https," matching the doc
+  comment above it (which was already correct; only the code was
+  inverted).
+- **#6647 — `parseHexInt`'s overflow guard used the wrong threshold.**
+  D-progress-827's `parseNonNegativeInt` overflow fix was copy-pasted into
+  `parseHexInt` (chunk-size parsing) with the SAME threshold
+  (`n > 200000000`), but chunk-size parsing grows `n` by `×16` per digit,
+  not `×10` — `200000000 * 16` overflows `Int32` many times over before
+  the guard would ever trip. An 8-hex-digit chunk-size line (e.g.
+  `"8000000F"`) passes the guard at every intermediate digit and then
+  overflows on the FINAL fold, wrapping to a large NEGATIVE `size`. That
+  doesn't just bypass the `maxResponseBodyBytes` cap (#6636's whole
+  point) — it drives `dataStart`/`pos` negative in `readChunkedBody`,
+  reaching an out-of-bounds buffer index on the connection's NEXT read: a
+  real, remotely-triggerable memory-safety bug, confirmed by reverting the
+  fix locally and observing a SIGABRT crash (exit 134), not merely a
+  wrong result. Fixed with the correct base-16 threshold: `134217727` is
+  the largest `n` for which `n * 16 + 15` cannot exceed `Int32.MaxValue`
+  (`134217727 * 16 + 15 == 2147483647` exactly).
+
+**Verification.** Two new self-test cases (now 6 total: E, F, G, H, I,
+J). Item I drives the EXACT #6646 scenario end to end — one TLS listener
+serving both legs (`hostAcceptTls` for the first connection, then plain
+`hostAccept` for the second, since a TCP listen socket doesn't care which
+accept function handles a given incoming connection), a 302 to
+`http://<same host:port>/final`, asserting the second request does not
+carry the `Authorization` header the first one did. Item I's FIRST
+version used `"https://localhost:<port>/start"` for the initial URL but
+`"http://127.0.0.1:<port>/final"` for the redirect target — different
+host STRINGS pointing at the same loopback interface — which meant
+`isSameRedirectAuthority`'s HOST comparison alone (not the scheme clause
+under test) was already forcing a strip, masking the exact bug being
+tested for; caught by deliberately reverting the #6646 fix and observing
+the test still passed, then fixing the test to use the identical host
+string (`"127.0.0.1"`) for both legs (the cert fixture's SAN already
+covers the `127.0.0.1` IP, reused from item B/D/E), after which reverting
+the fix correctly failed the test (exit 4). Item J has a server send an
+`"8000000F"` chunk-size line and asserts the client returns `Err` rather
+than crashing; reverting the #6647 fix reproduces the exact SIGABRT
+(exit 134) the finding described. Both new tests, and both fixes, were
+verified genuine by disabling each fix in turn and confirming the
+corresponding test fails, then restoring and confirming all 6 pass clean.
+`lyric fmt --write` applied clean (no diff) to both changed files.
+
+**Related:** #6623 (the PR both fixes ship in), #6646, #6647 (the two
+REQUIRED findings), D-progress-826 (the original, inverted
+`isSameRedirectAuthority`), D-progress-827 (the original, wrong-threshold
+`parseHexInt` guard).
+
+## D-progress-829 — `_kernel_native/http_host.l`: cumulative chunk-size overflow bypasses the body-size cap (#6656), a fourth review round on this same PR
+
+**Context.** A FOURTH `claude-review` pass on PR #6623 confirmed
+D-progress-826/818/819's fixes correct and closed #6646/#6647, but found
+one more REQUIRED bug in the same area: `readChunkedBody`'s cumulative
+cap check, `if acc.count + size > maxResponseBodyBytes`, is itself
+overflow-prone. D-progress-828's #6647 fix bounds a SINGLE chunk-size
+line's own parsed value to `<= Int32.MaxValue`, but does nothing about
+the SUM of `acc.count` (bytes already decoded from prior chunks) plus a
+new chunk's `size` — a server sending a tiny first chunk (so
+`acc.count > 0`) followed by a second chunk declaring a size near
+`Int32.MaxValue` overflows `acc.count + size` to a negative number,
+silently passing the `>` check. The same negative value then flows into
+`dataEnd = dataStart + size` a few lines down, eventually driving `pos`
+negative and reaching an out-of-bounds buffer index (`buf[pos + j]` inside
+`findPattern`/`bytesEqualAt`) on the connection's next read — the
+identical memory-safety crash class D-progress-828 fixed for the
+single-line case, reachable here through a second, distinct arithmetic
+path that fix didn't close.
+
+**Fix.** Replaced the addition-based check with a subtraction-based one
+that cannot overflow: `if size < 0 or size > maxResponseBodyBytes -
+acc.count`. `acc.count` is always in `[0, maxResponseBodyBytes]` at this
+point (the check runs before every addition to `acc`, so it can never
+have already grown past the cap), so `maxResponseBodyBytes - acc.count`
+is always a small non-negative number — comparing `size` against it
+can't overflow regardless of how large `size` is. The `size < 0` half is
+defense in depth (not reachable today, given #6647's guard already
+prevents `parseHexInt` from ever returning a negative value) against a
+hypothetical future regression in that guard.
+
+**Verification.** A new self-test case (item K, now 7 total: E–K): a
+server sends a real 1-byte first chunk, then declares a second chunk of
+size `0x7FFFFFFF` (the C-style hex literal for `Int32.MaxValue`) and
+closes without sending any of that chunk's data — the fixed check runs on
+the DECLARED size before any attempt to read chunk data, so no actual
+2GB transfer is needed to trigger or verify the fix. Asserts the client's
+error message specifically contains "maximum allowed size" (not merely
+that some `Err` came back), following item H/J's established discipline
+against the "any `Err` passes" false-positive trap. Verified as a genuine
+regression check by reverting to the pre-fix `acc.count + size >
+maxResponseBodyBytes` form and confirming the test fails with a SIGABRT
+(exit 134) — a real crash, not merely a wrong result, matching the exact
+severity the finding described — then restoring and confirming all 7
+tests pass clean. `lyric fmt --write` applied clean (no diff) to both
+changed files.
+
+A related, non-blocking SUGGESTION from the same review round —
+`hostWithHeader` doesn't guard against a caller-supplied header name
+colliding with the kernel's own auto-generated framing headers
+(`Host`/`Connection`/`Content-Type`/`Content-Length`) — was filed as its
+own cross-kernel follow-up (#6658) rather than fixed here: it mirrors the
+already-shipped dotnet kernel's identical behavior, so it's a pre-existing
+`Std.Http` API-design gap across all three kernels, not a regression
+introduced by this PR.
+
+**Related:** #6623 (the PR this fix ships in), #6656 (the REQUIRED
+finding), #6658 (the header-collision follow-up, filed but not fixed
+here), D-progress-828 (the prior review-fix round's #6647 fix, whose
+single-line overflow guard this entry's bug sits one arithmetic step
+beyond).
+
+## D-progress-821 — `_kernel_native/http_host.l`: HEAD/1xx/204/304 responses read as if they carry a body (#6692) + raw-buffer amplification bypass of the body-size cap (#6693), a fifth review round on this same PR
+
+**Context.** A FIFTH `claude-review` pass on PR #6623 (after two runs that
+completed successfully but, for reasons unrelated to this PR's code —
+see "Review-tooling note" below — never posted their verdict or acted on
+the already-fixed #6656) found two more REQUIRED bugs, both in
+`_kernel_native/http_host.l`'s response-reading path:
+
+1. **#6692 — bodyless responses read as if they had a body.** `readBody`/
+   `readResponse` decided body framing purely from `Transfer-Encoding`/
+   `Content-Length`/EOF, with no access to the request method and no
+   special-casing of the response status. RFC 9112 section 6.3 rule 1
+   requires that a response to a `HEAD` request, and any `1xx`
+   (informational)/`204`/`304` response, is always terminated by the
+   header block's blank line regardless of what `Content-Length`/
+   `Transfer-Encoding` claims — a `HEAD` response's `Content-Length`
+   describes the body the equivalent `GET` would have had and MUST NOT be
+   read from the wire. Reachable today through `Std.Http`'s free-function
+   surface (`request(HEAD, url)` + `sendAsync`), which calls straight into
+   this kernel and is not blocked by the pre-existing N3.2 async-interface-
+   dispatch gap documented elsewhere in this PR. Without the fix,
+   `Http.sendAsync(Http.request(HEAD, url))` against any normal server
+   blocks in `readAtLeast` waiting for body bytes that will never arrive,
+   eventually failing with "connection closed before response body was
+   fully received" instead of succeeding with an empty body; the same
+   applies to a conditional `GET` answered `304` with a `Content-Length`
+   header (explicitly permitted by RFC 9110 section 15.4.5); and a `1xx`
+   interim response (e.g. `100 Continue`) was treated as THE final
+   response by the old single-shot `readResponse` — since it carries no
+   `Content-Length`/`Transfer-Encoding`, its close-delimited
+   `readUntilEof` path swallowed the real final response's raw bytes as
+   if they were the `1xx`'s own body.
+
+2. **#6693 — the raw receive buffer has no cap independent of the decoded
+   body.** D-progress-829 (#6656) correctly bounded the *decoded* chunked
+   body (`acc`) against `maxResponseBodyBytes` (10 MB) with an
+   overflow-safe check. But nothing bounded the *raw* wire bytes `buf`
+   that `readChunkedBody` reads every byte into — RFC 9112 section 7.1.1
+   chunk extensions let a malicious server pad each chunk-size line with
+   up to ~8180 bytes of junk after the hex size (still within the
+   existing per-line `maxChunkLineBytes` cap), so a chunk declaring size 1
+   grows `acc` by only 1 byte while growing `buf` by ~8195 bytes. The
+   `acc`-based cap wouldn't trip until `buf` held roughly 86 GB — the
+   client would be OOM-killed long before the intended 10 MB budget was
+   ever enforced, defeating the #6636 memory-budget fix through a distinct
+   path that fix didn't cover.
+
+**Fix.**
+
+1. Added `isBodylessResponse(method, status): Bool` (HEAD, or status
+   `< 200`/`== 204`/`== 304`) and restructured `readResponse` into a
+   `while true` loop: on each iteration it parses one header block: a
+   `1xx` status advances `searchFrom` to just past that header block's
+   blank line and loops (discarding the interim response and continuing
+   to read the SAME connection for the real final response — `buf`
+   and the underlying `Tcp.Conn` are reused across iterations, not
+   restarted, since bytes already buffered for a discarded interim
+   response's header search may already include the start of the next
+   one); a non-`1xx` status short-circuits to an empty body when
+   `isBodylessResponse` is true, otherwise calls `readBody` as before,
+   and returns. `doSendOnce` now threads `request.method` through to
+   `readResponse`.
+2. Added a raw-buffer cap inside `readChunkedBody`'s `while not done`
+   loop, checked every iteration before attempting to read the next
+   chunk-size line: `if buf.count - startPos > maxResponseBodyBytes {
+   return Err(...) }`. This bounds total raw bytes received for the
+   chunked body independent of how an attacker splits them between
+   chunk-extension padding and real chunk data, alongside (not replacing)
+   the existing `acc`-based decoded-body cap.
+
+**Verification.** Four new self-test cases (items L–O, now 11 total:
+E–O), all `native-backend-self-tests` CI cases compiled through the full
+native bridge pipeline:
+- Item L: a `HEAD` request against a server that sends `Content-Length:
+  1234` but never writes those bytes — asserts the client succeeds with
+  status 200 and a zero-length body rather than erroring.
+- Item M: a plain `GET` answered `204 No Content` with a (per RFC 9110
+  section 15.4.5, legal but ignorable) `Content-Length: 50` and no body
+  bytes sent — same assertion shape as item L, exercising the
+  status-based (not method-based) branch of `isBodylessResponse`.
+- Item N: a `100 Continue` interim response immediately followed by the
+  real `200 OK` response with body `"hello"` on the SAME connection —
+  asserts the client reports status 200 and body `"hello"`, not the
+  interim response's own status/a garbled body.
+- Item O: a server repeating `"1;<8150 bytes of 'A' padding>\r\nX\r\n"`
+  for 1300 iterations (~10.6 MB of raw wire bytes, ~1300 bytes of decoded
+  body) — asserts the client rejects with an error containing "maximum
+  allowed raw size" well before all 1300 iterations are sent, rather than
+  accepting arbitrarily more. The padding string and repeated writes are
+  generated by a small runtime loop inside the compiled test program
+  (not a literal embedded in the meta-test file), keeping the actual
+  transfer fast (loopback, well under a second) without bloating the
+  self-test source.
+
+All four verified as genuine regression checks by reverting
+`_kernel_native/http_host.l` to its pre-D-progress-821 state (via `git
+stash push` on just that file, keeping the new tests) and confirming
+each fails with the EXACT predicted wrong behavior, not a generic
+false-positive: item L and M both fail with "not sendOk" (the old code
+returns `Err` instead of succeeding with an empty body); item N fails
+with "finalStatus != 200" (the old code reports status 100 with the real
+response's bytes swallowed as body); item O fails with "not rejected"
+(the old code eventually fails with a DIFFERENT error — "connection
+closed before expected data arrived", once the test's fixed 1300-chunk
+send loop ends — rather than proactively rejecting once the raw-buffer
+cap is exceeded, exactly the missing-cap bug being fixed). Restored the
+fix and confirmed all 11 tests pass again, both before and after running
+`lyric fmt --write` on both changed files (clean, no unsafe-format
+refusal). One implementation bug was self-caught during this process:
+the first attempt at `readResponse`'s bodyless branch (`val bodyBytes =
+if isBodylessResponse(...) { [] } else { match readBody(...) { ... } }`)
+left the `[]` literal without an expected type on `--target native`,
+failing ALL 11 tests (including E–K, untouched by this fix) with
+`Lyric.LlvmCodegen: an empty list literal '[]' needs an expected type` —
+fixed by annotating the binding (`val bodyBytes: slice[Byte] = ...`), a
+distinct compiler-inference limitation from anything this PR is otherwise
+about, worth naming here so a future reader doesn't mistake it for
+evidence against the fix's substance.
+
+**Review-tooling note (not a code issue).** Between the D-progress-829
+push and this round's actual findings, the `claude-review` job ran twice
+(once automatically, once via a manual re-run) and both times completed
+successfully (28 and 29 turns, `is_error: false`) without posting a
+summary comment, closing the already-resolved #6656, or clearing the
+`review:changes-required` label — each run logged an escalating
+`permission_denials_count` (4, then 27), consistent with the review
+agent repeatedly hitting disallowed tool calls rather than finding any
+new problem. #6656's fix was independently verified correct by reading
+the diff directly, then manually closed with a comment and the stale
+label cleared, rather than waiting further on the review tooling. The
+THIRD re-run (after the label was already clear) completed normally and
+produced the two genuine findings this entry fixes — the tooling
+hiccup did not mask any real issue, it just delayed this round's start.
+
+**Related:** #6623 (the PR this fix ships in), #6692, #6693 (the two
+REQUIRED findings), D-progress-829 (the prior round's #6656 fix, whose
+`acc`-based cap this entry's #6693 fix supplements rather than
+replaces).
+
+---
+
+## D-progress-822 — `_kernel_native/http_host.l`: unbounded count of interim `1xx` responses in `readResponse` allows unbounded memory growth (#6704), a sixth review round on this same PR
+
+**Context.** After rebasing PR #6623 onto `main` (which had, in the
+interim, landed its own unrelated D-progress-804/808/809/810/811/812
+entries — resolved as a decision-log renumbering, not a code conflict,
+by moving this branch's colliding entries to D-progress-816–821; a
+LATER rebase collided again when `main` independently added its own
+unrelated D-progress-816, moving the original native-client-twin entry
+a second time, to D-progress-823 — see that entry's own header for the
+current number), a sixth `claude-review` pass re-read
+`_kernel_native/http_host.l`,
+`tcp_host.l`, and `lyric_tls.c` from scratch rather than trusting the
+decision-log narrative, and found one more REQUIRED bug: D-progress-821's
+`readResponse` loop (added to fix #6692, discarding interim `1xx`
+responses until the real final response arrives) has no cap on the
+*number* of interim responses it will discard. Each interim response's
+own header block is individually bounded by `maxResponseHeaderBytes`
+(the pre-existing #6636 fix), but nothing bounds how many such responses
+a server can stream in a row — a malicious/compromised peer sending an
+endless run of minimal `100 Continue` responses drives unbounded client
+memory growth (`buf` never shrinks across loop iterations), the exact
+"a byte cap doesn't bound an unbounded COUNT of small messages" gap
+`maxTrailerLines` was introduced to close on the chunked-trailer path
+(D-progress-827/#6636), left unaddressed on this newer interim-response
+path. Reachable today via `Std.Http`'s free functions (`sendAsync`/
+`getAsync`/`postAsync`), independent of the separately-tracked N3.2
+async-interface-dispatch gap.
+
+Two prior `claude-review` runs on this same push (the automatic run and
+one manual re-run) failed at Claude Code's own package-install step
+("Failed to install Claude Code after 3 attempts: Error: Install failed
+with exit code 22") for both the primary (Sonnet) and fallback (Haiku)
+attempts configured by `main`'s newly-rebased-in
+`.github/workflows/claude-code-review.yml` — a genuine CI-infrastructure
+flake, unrelated to this PR's code, that never reached the actual review
+step. A second re-run completed normally and produced this entry's
+finding.
+
+**Fix.** Added `maxInterimResponses: Int = 20` (mirroring
+`maxTrailerLines`'s doc-comment rationale) and an `interimCount` counter
+in `readResponse`'s loop, checked at the top of each iteration before
+attempting to read the next header block: `if interimCount >=
+maxInterimResponses { return Err(...) }`, incremented once per discarded
+interim response. (The seventh review round found this originally shipped
+as `>` rather than `>=`, off-by-one-permitting 21 interim responses
+rather than the documented 20 before rejecting — harmless, since it made
+the cap more lenient than described rather than less safe, but corrected
+to `>=` so the constant means what it says.) 20 is deliberately generous — real interim responses
+(100 Continue, 103 Early Hints) are sent at most once or twice per
+request in practice — while still bounding worst-case memory to
+`maxInterimResponses * maxResponseHeaderBytes` instead of unbounded.
+
+**Verification.** New self-test case (item P, now 12 total: E–P): a
+server sends 25 minimal `HTTP/1.1 100 Continue\r\n\r\n` responses in a
+row (exceeding the cap of 20) and never sends a real final response;
+asserts the client rejects with an error containing "maximum allowed
+number of interim" rather than looping indefinitely. Verified as a
+genuine regression check by reverting the fix locally (`git stash push`
+on just `_kernel_native/http_host.l`, keeping the new test) and
+confirming the test fails with the specific predicted wrong behavior —
+"not rejected" (the old code eventually fails with a DIFFERENT error,
+"connection closed before expected data arrived", once the test's fixed
+25-response send loop ends and the connection closes, rather than
+proactively rejecting once the interim-response count cap is exceeded)
+— while all 11 prior items (E–O) continue to pass unaffected. Restored
+the fix and confirmed all 12 tests pass again, both before and after
+`lyric fmt --write` on both changed files (clean, no unsafe-format
+refusal).
+
+**Related:** #6623 (the PR this fix ships in), #6704 (the REQUIRED
+finding), D-progress-821 (the #6692 fix whose `readResponse` loop this
+entry closes the remaining count-cap gap in), D-progress-827 (the
+`maxTrailerLines` precedent this entry's `maxInterimResponses` mirrors).
+
+---
+
+## D-progress-824 — `_kernel_native/http_host.l`: `maxTrailerLines` had the same off-by-one D-progress-822 fixed for `maxInterimResponses`, a ninth review round on this same PR
+
+**Context.** A ninth `claude-review` pass (APPROVED, no REQUIRED
+findings) re-read the full diff from scratch and flagged, as a
+SUGGESTION, that `readChunkedBody`'s trailer-line cap check
+(`if trailerCount > maxTrailerLines`, from D-progress-827/#6636 —
+predating D-progress-822) has the identical off-by-one D-progress-822
+found and fixed for `maxInterimResponses`: the check runs at the top of
+the loop before processing that iteration's trailer line, so it
+actually permits reading up to 101 trailer lines before rejecting, not
+the documented 100. Not a security issue on its own (still bounded, no
+overflow) — just an inconsistency with the sibling fix and the
+constant's own doc comment.
+
+**Fix.** Changed `>` to `>=`, matching D-progress-822's `>=
+maxInterimResponses` form exactly.
+
+A second, unrelated SUGGESTION from the same review round — a
+doc-precision mismatch in `native/plan/08-work-items.md`'s N9.4
+write-up, which said `buildServerCtx` had "three pre-existing UFCS
+calls" while listing only two example call sites (matching
+D-progress-823's own "two" wording) — was also fixed in the same commit
+as a one-word correction.
+
+**Verification.** All 12 existing self-test cases (items E–P) re-run
+clean after the change (the trailer-count cap isn't directly exercised
+by name in any current test, so no new case was added for a one-line
+boundary correction with no behavior-visible-at-the-tested-boundary
+change; the existing suite's chunked-body cases don't send trailer
+fields at all). `lyric fmt --write` applied clean to both changed files.
+
+**Related:** #6623 (the PR this fix ships in), D-progress-822 (the
+sibling fix for `maxInterimResponses` this entry mirrors), D-progress-827
+(the original `maxTrailerLines` introduction, #6636).
+
+---
+
+## D-progress-825 — `_kernel_native/http_host.l`: `parseHeadersText` had no cap on header field COUNT, only total header-block bytes, a tenth review round on this same PR
+
+**Context.** A tenth `claude-review` pass (APPROVED, no REQUIRED
+findings) flagged, as a SUGGESTION, that `parseHeadersText` had no
+independent cap on the number of header lines it accepts — only
+`maxResponseHeaderBytes` bounding the total header-block size. A
+malicious/compromised server could pack that byte budget (819200 bytes)
+into roughly 200,000 minimal `a:`-shaped header lines instead of a
+normal handful, the identical "bytes bounded, count unbounded" gap this
+same PR already closed twice on other paths (`maxTrailerLines` in
+D-progress-827/#6636, `maxInterimResponses` in D-progress-822/#6704).
+Bounded in absolute terms by the existing byte cap (not unbounded like
+those two bugs), so not REQUIRED — but inconsistent with this file's own
+established hardening pattern and with `Std.HttpEngine`'s server-side
+`EngineLimits.maxHeaderCount` default.
+
+**Fix.** Added `maxHeaderCount: Int = 100` (mirroring
+`Std.HttpEngine.EngineLimits.maxHeaderCount`'s default) and a check
+inside `parseHeadersText`'s header-parsing loop, using `>=` from the
+start (not the `>` D-progress-822/D-progress-824 both had to correct
+after the fact): `if names.count >= maxHeaderCount { return Err(...) }`,
+checked immediately before adding each new header to `names`/`values`.
+
+**Verification.** New self-test case (item Q, now 13 total: E–Q): a
+server responds with 150 minimal `a:1\r\n` header lines (well under the
+819200-byte cap, well over the 100-field cap) and asserts the client
+rejects with an error containing "maximum allowed number of header
+fields". Verified as a genuine regression check by reverting the fix
+locally (`git stash push` on just `_kernel_native/http_host.l`, keeping
+the new test) and confirming the test fails with "not rejected" — the
+old code accepts all 150 headers without complaint, since nothing but
+the byte cap (819200 bytes, nowhere near exhausted by 150 short lines)
+ever bounded it — while all 12 prior items (E–P) continue to pass
+unaffected. Restored the fix and confirmed all 13 tests pass again, both
+before and after `lyric fmt --write` on both changed files (clean, no
+unsafe-format refusal).
+
+**Related:** #6623 (the PR this fix ships in), D-progress-827 and
+D-progress-822 (the two prior "bytes bounded, count unbounded" fixes
+this entry closes the third instance of).
+

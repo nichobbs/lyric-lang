@@ -617,6 +617,18 @@ int32_t lyric_tls_available(void);
  * context handle, or NULL (last_error set).  Free with `lyric_tls_ctx_free`. */
 void* lyric_tls_client_new(const char* ca_pem, int32_t min_version, int32_t insecure);
 
+/* ADDITIVE variant of `lyric_tls_client_new` (docs/61 §3.2
+ * `withCaCertificate`, as opposed to `lyric_tls_client_new`'s own
+ * non-empty-`ca_pem` case, which is EXCLUSIVE — see that function's doc
+ * comment).  Loads the system default trust paths UNCONDITIONALLY (same as
+ * an empty `ca_pem` on `lyric_tls_client_new`) and then adds `ca_pem` on
+ * top of the same store — a chain valid against either set verifies.
+ * `ca_pem` must be non-empty (NULL/"" fails with last_error set: there is
+ * nothing to add). `min_version`/`insecure` behave identically to
+ * `lyric_tls_client_new`. Returns a context handle, or NULL (last_error
+ * set). Free with `lyric_tls_ctx_free`. */
+void* lyric_tls_client_new_additive(const char* ca_pem, int32_t min_version, int32_t insecure);
+
 /* Present a client certificate + key on `client_ctx` for mutual TLS.
  * `key_pem` must be an unencrypted PKCS#8 key ("BEGIN PRIVATE KEY").
  * Returns 0 on success, -1 on a load / cert-key-mismatch failure

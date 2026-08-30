@@ -23,7 +23,7 @@ TLS support off-Windows and is HTTP/1.1-only by construction.
 | Server TLS (`Std.HttpServer`) | Shipped (phase 3.3, #5884): `startListenerTls` over the sans-IO `Std.HttpEngine` + `Std.TcpHost`/`SslStream` transport (identity + `minVersion` + ALPN `http/1.1` + callback-free mTLS); `HttpListener` retired | Shipped (phase 2.1, #5880): `HttpsServer` + `SSLContext` from `TlsServerConfig` (mTLS is #5930) |
 | Server TLS (`lyric-web`) | Shipped (phase 3.4, #5885): `Web.serveTls` terminates real TLS via `Std.HttpServer.startListenerTls`, mTLS supported | Shipped (phase 2.2, #5881): Undertow `addHttpsListener` + `ENABLE_HTTP2`, mTLS shipped (#6017) |
 | Server HTTP version | 1.1 (`HttpListener` cannot do h2) | 1.1 (`com.sun.net.httpserver` cannot; Undertow can but `ENABLE_HTTP2` is not set) |
-| native | No HTTP kernel exists yet | — |
+| native | Client TLS shipped (N9.4, #6105): `_kernel_native/http_host.l` over a hand-rolled HTTP/1.1 client + `Std.TcpHost`'s new `hostConnectTls`/`hostUpgradeClientTls`. No server yet (N9.3). | — |
 
 HTTP/3 exists nowhere: on .NET it needs `libmsquic` plus explicit version
 policy; on JDK 21 it does not exist in `java.net.http` (JEP 517 is still in
@@ -819,9 +819,51 @@ items marked ∥ are independent and can proceed in parallel.
     itself stays out of scope here, deferred to N9.4/#6105) has since
     shipped too (D-progress-807 in `docs/03-decision-log.md`), which also
     fixed two previously-latent `Lyric.LlvmCodegen`/`Lyric.LlvmBridge`
-    UFCS-resolution bugs the new case surfaced. **N9.3** `Std.HttpServer` native twin (thread-per-connection
-    over the pthread kernel driving `Std.HttpEngine`); **N9.4** `Std.Http`
-    native client; **N9.5** lyric-web `serveTls` + ALPN h2. See
+    UFCS-resolution bugs the new case surfaced. **N9.4 — `Std.Http` native client twin — shipped
+    (D-progress-823, #6105)**: `_kernel_native/http_host.l`, matching the
+    dotnet/JVM twins' public surface (`hostDefaultClient`/
+    `hostClientWithTls`/`hostMakeRequest`/`hostSendSafe`/`hostGetSafe`/
+    `hostPostStringSafe`/`hostReadBodyTextSafe`/…), plus a client-TLS
+    extension to `_kernel_native/tcp_host.l` (`hostConnectTls`/
+    `hostUpgradeClientTls`, a `TlsClientTrust` union covering system-default/
+    additive-CA/exclusive-CA/insecure trust) and a new
+    `lyric_tls_client_new_additive` seam function in `lyric-rt` (loads the
+    system trust store AND a caller-supplied CA, needed because the
+    existing `lyric_tls_client_new` treats a non-empty CA as exclusive —
+    docs/61 §3.2's `withCaCertificate` needs additive semantics). SNI and
+    hostname verification are hard-wired on (inherited from the N9.1 seam);
+    the dual-key insecure policy (§4) is reused as-is. Two plan corrections
+    surfaced during implementation, both cited in D-progress-823 with exact
+    repro text: (1) `Std.HttpEngine` — the plan's intended reuse target for
+    a client wire-protocol state machine — is server-only, so the client
+    speaks a hand-rolled HTTP/1.1 wire protocol instead (request/status line,
+    header parsing, `Content-Length`/chunked framing per RFC 9112, and a
+    301/302/303/307/308 redirect loop), all built from `String`/byte
+    primitives alone, since no sans-IO client engine exists anywhere in the
+    tree to reuse; (2) `Std.Http.HttpClient`'s own interface surface cannot
+    be constructed on native today — its seven methods are all `async func`,
+    and `Lyric.LlvmCodegen`'s interface vtable dispatch (N3.2) only lowers
+    non-generic, non-async abstract methods, confirmed with both the real
+    `HttpClient` interface and an isolated same-shape repro. This is a
+    pre-existing, general compiler gap (not specific to this kernel or to
+    HTTP), so `_kernel_native/http_host.l` is the real, substantive
+    deliverable and is called directly rather than through `Std.Http`'s
+    builder surface; `Std.Http`'s own free functions
+    (`getAsync`/`postAsync`/`sendAsync`) already route into this same kernel
+    and will work unmodified once the interface-dispatch gap closes
+    separately. Verified by `lyric-compiler/lyric/llvm_http_client_self_test.l`
+    (wired into `native-backend-self-tests`, ASan-compiled): a real loopback
+    HTTPS round trip — TLS handshake against a self-signed certificate
+    pinned via exclusive-CA trust (real chain + hostname verification, not
+    `withInsecureSkipVerify`), a 302 redirect followed to a fresh TLS
+    connection (this kernel never keeps a connection alive — always
+    `Connection: close`), and a chunked-transfer-encoding response body
+    dechunked back to the original text — with the server driving
+    `Std.TcpHost.hostAcceptTls`/`hostRead`/`hostWrite` directly on a second
+    pthread (a TLS handshake needs both peers actively driving I/O at once,
+    unlike a bare TCP `connect`). **N9.3** `Std.HttpServer` native twin
+    (thread-per-connection over the pthread kernel driving `Std.HttpEngine`);
+    **N9.5** lyric-web `serveTls` + ALPN h2. See
     `native/plan/08-work-items.md` Phase N9 for the full banding and
     prerequisites._
 
