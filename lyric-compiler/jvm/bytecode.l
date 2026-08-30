@@ -573,7 +573,7 @@ pub record MethodAssembler {
   // `resetStack`/`resetStackToHandlerEntry` below) knows which labels are
   // real JVM handler entries (implicit `[exception]` on the stack, JVMS
   // §4.10.1.6) rather than ordinary empty-stack control-flow joins (#6551).
-  handlerLabels: Map[String, String]
+  var handlerLabels: Map[String, String]
 }
 
 /// Construct a fresh assembler sharing `pool`.
@@ -923,7 +923,9 @@ func emitAllInsns(asm: in MethodAssembler, labels: in Map[String, Int], buf: in 
 /// fall through: the instruction *after* one of these begins a new basic block.
 func isTransferInsn(insn: in AsmInsn): Bool {
   match insn {
-    case Nullary(op) -> op == OP_IRETURN or op == OP_LRETURN or op == OP_FRETURN or op == OP_DRETURN or op == OP_ARETURN or op == OP_RETURN or op == OP_ATHROW
+    case Nullary(op) -> op == OP_IRETURN or op == OP_LRETURN or op == OP_FRETURN or op == OP_DRETURN or op == OP_ARETURN or
+      op == OP_RETURN or
+      op == OP_ATHROW
     case BranchInsn(op, _) -> op == OP_GOTO
     case GotoW(_) -> true
     case _ -> false
