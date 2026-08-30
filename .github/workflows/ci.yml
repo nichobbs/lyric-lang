@@ -3808,6 +3808,27 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/generic_uint_erasure_jvm_self_test.l
 
+      # Subscript-assignment self-test (#1707, #6169, #6741) — dual-target,
+      # never wired into CI before now: covers map/list/slice indexed read,
+      # write, and compound-assign, including the #6741 plain-`=` numeric-
+      # widening fix.
+      - name: Subscript-assignment self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/subscript_assign_jvm_self_test.l
+
+      - name: Subscript-assignment self-test on dotnet (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh lyric-compiler/jvm/subscript_assign_jvm_self_test.l
+
+      # `UInt`/`ULong` unsigned comparison/division/toString self-test
+      # (#6748) — JVM-ONLY: `UInt`/`ULong` have no MSIL representation.
+      - name: Unsigned UInt/ULong operations self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/unsigned_int_ops_jvm_self_test.l
+
       # Await-hoist self-test on JVM (#5606/#5628, #5630) — JVM already
       # compiled every hoist shape correctly before the rewrite (the rewrite
       # is semantics-preserving there), so this pins that the shared rewrite
