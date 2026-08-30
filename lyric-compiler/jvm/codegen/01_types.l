@@ -717,6 +717,28 @@ pub record FuncCtx {
   // shared cross-package context exists here, unlike MSIL's `CodegenCtx`)
   // — see `Lyric.BareFuncRef`'s module doc and D-progress-752.
   aliasTargets: Map[String, TypeExpr]
+  // #6748: names (locals AND parameters) whose DECLARED Lyric type is
+  // `UInt`/`ULong`, recorded by `recordUnsignedVar`/`recordUnsignedVarTy` at
+  // every `val`/`var`/`let` binding and parameter registration site (mirrors
+  // `varGenericArgs`'s declared-type tracking, just for the one bit codegen
+  // needs here). The JVM has no unsigned integer primitive — `UInt` erases to
+  // the same two's-complement `int` an `Int` uses, `ULong` to the same `long`
+  // a `Long` uses (`typeExprToJvm`) — so relational comparison (`<`/`<=`/`>`/
+  // `>=`), `/`, `%`, and stringification (`.toString()`, interpolation, `+`
+  // concatenation) all need to know a value came from a `UInt`/`ULong`
+  // binding to dispatch to `Integer`/`Long`'s `*Unsigned` static methods
+  // instead of the native signed opcodes those erase to by default — the same
+  // problem `Jvm.Lowering.LDistinctType.isUnsigned` already solves for a
+  // range subtype's `from`/`tryFrom` bounds check. `isUnsignedExpr` consults
+  // this map for a bare-name operand; a `u32`/`u64`-suffixed literal is
+  // detected directly from its `IntSuffix`, no lookup needed. Not threaded
+  // through `ScopeUndo` (like `varGenericArgs`/`funcValRetTypes`, which
+  // share the same limitation): a shadowed name's stale entry can leak into
+  // an enclosing scope after the shadowing block exits, tracked as a
+  // pre-existing acknowledged gap, not one this fix introduces. No default
+  // per the JVM-codegen no-defaulted-field rule; initialised `newMap()` at
+  // every construction site.
+  unsignedVars: Map[String, Bool]
 }
 
 // A saved lexical scope (general shadowing fix, #5191).  A `{ … }` block is a
@@ -1290,6 +1312,84 @@ pub func typeExprToJvm(te: in TypeExpr, pkgName: in String): JvmType {
     case TParen(inner) -> typeExprToJvm(inner, pkgName)
     case TSelf -> JRef(className = "java/lang/Object")
     case TError -> JRef(className = "java/lang/Object")
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §3b. Unsigned-operand tracking (#6748).
+// ─────────────────────────────────────────────────────────────────────────────
+// True when `te` names `UInt`/`ULong` — the two Lyric primitives with no
+// distinct JVM representation (`typeExprToJvm`'s `UInt -> JInt` / `ULong ->
+// JLong` arms).  A range subtype declared directly over one of them
+// (`TRefined`) counts too, mirroring `typeExprToJvm`'s own `TRefined` arm —
+// its underlying representation is exactly its base type's.
+pub func isUnsignedTypeExpr(te: in TypeExpr): Bool {
+  match te.kind {
+    case TRef(path) -> {
+      val seg = lastSegment(path)
+      seg == "UInt" or seg == "ULong"
+    }
+    case TRefined(underlying, _) -> {
+      val seg = lastSegment(underlying)
+      seg == "UInt" or seg == "ULong"
+    }
+    case TParen(inner) -> isUnsignedTypeExpr(inner)
+    case _ -> false
+  }
+}
+
+// Record `name` in `ctx.unsignedVars` when its declared type is `UInt`/
+// `ULong` — called at every `val`/`var`/`let` binding and parameter
+// registration site (mirrors `recordDeclaredElemType`'s call sites). A
+// no-op for every other declared type, so a plain `Int`/`Long` binding is
+// simply absent from the map (same "absence means no" shape `varGenericArgs`
+// uses).
+pub func recordUnsignedVarTy(ctx: in FuncCtx, name: in String, ty: in TypeExpr): Unit {
+  if isUnsignedTypeExpr(ty) {
+    if ctx.unsignedVars.containsKey(name) {
+      ctx.unsignedVars.remove(name)
+    }
+    ctx.unsignedVars.add(name, true)
+  }
+}
+
+// `Option[TypeExpr]` convenience for the local-binding call sites
+// (`LBVal`/`LBLet`/`LBVar` in `05_stmts.l`), whose annotation is optional.
+pub func recordUnsignedVar(ctx: in FuncCtx, name: in String, tyOpt: in Option[TypeExpr]): Unit {
+  match tyOpt {
+    case Some(te) -> recordUnsignedVarTy(ctx, name, te)
+    case None -> ()
+  }
+}
+
+// True when `e` statically denotes a `UInt`/`ULong` value: a bare name
+// previously recorded by `recordUnsignedVar`/`recordUnsignedVarTy`, or a
+// `u32`/`u64`-suffixed integer literal (`3_000_000_000u32`) — the suffix
+// alone decides for a literal, independent of any variable it might later be
+// assigned to.  Anything else (a field/method-call/index result, an
+// unsuffixed literal, an arithmetic expression) conservatively reports
+// `false`: comparison/division/stringification still work correctly for
+// every value that FITS the signed range either way, so understating
+// "unsigned" only matters for the sign-bit-set values this ticket exists to
+// fix, and those overwhelmingly originate from a declared `UInt`/`ULong`
+// binding or literal, not an opaque intermediate expression.
+pub func isUnsignedExpr(ctx: in FuncCtx, e: in Expr): Bool {
+  match e.kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        ctx.unsignedVars.containsKey(path.segments[0])
+      } else {
+        false
+      }
+    }
+    case ELiteral(lit) -> {
+      match lit {
+        case LInt(_, suffix, _) -> match suffix { case U32 -> true; case U64 -> true; case _ -> false }
+        case _ -> false
+      }
+    }
+    case EParen(inner) -> isUnsignedExpr(ctx, inner)
+    case _ -> false
   }
 }
 

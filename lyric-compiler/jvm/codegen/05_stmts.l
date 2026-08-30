@@ -169,7 +169,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   insns.add(LIconst(v = 0))
                   emitArrayLoad(insns, cellElemTy)
                   val cvTy = lowerExpr(ctx, insns, value)
-                  emitCompoundCombineJvm(ctx, insns, op, cellElemTy, cvTy)
+                  emitCompoundCombineJvm(ctx, insns, op, cellElemTy, cvTy, isUnsignedExpr(ctx, value))
                   val resultSlot = allocSlot(ctx, "__cell_result_" + freshLabel(ctx), cellElemTy)
                   emitStore(insns, resultSlot, cellElemTy)
                   emitLoad(insns, cellSlot, cellType)
@@ -208,7 +208,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   // erased-RHS coercion — see the helper's doc).
                   emitLoad(insns, slot, ty)
                   val cvTy = lowerExpr(ctx, insns, value)
-                  emitCompoundCombineJvm(ctx, insns, op, ty, cvTy)
+                  emitCompoundCombineJvm(ctx, insns, op, ty, cvTy, isUnsignedExpr(ctx, value))
                   emitStoreLocalWriteThrough(ctx, insns, slot, ty)
                 }
               }
@@ -261,7 +261,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   emitStore(insns, vSlot, vTy)
                   emitLoad(insns, curSlot, fty)
                   emitLoad(insns, vSlot, vTy)
-                  emitCompoundCombineJvm(ctx, insns, op, fty, vTy)
+                  emitCompoundCombineJvm(ctx, insns, op, fty, vTy, isUnsignedExpr(ctx, value))
                   val combSlot = allocSlot(ctx, "__sfassign_comb_" + freshLabel(ctx), fty)
                   emitStore(insns, combSlot, fty)
                   insns.add(LAload(slot = 0))
@@ -346,7 +346,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               emitStore(insns, vSlot, vTy)
               emitLoad(insns, curSlot, fty)
               emitLoad(insns, vSlot, vTy)
-              emitCompoundCombineJvm(ctx, insns, op, fty, vTy)
+              emitCompoundCombineJvm(ctx, insns, op, fty, vTy, isUnsignedExpr(ctx, value))
               val combSlot = allocSlot(ctx, "__fassign_comb_" + freshLabel(ctx), fty)
               emitStore(insns, combSlot, fty)
               emitLoad(insns, recvSlot, recvTy)
@@ -421,7 +421,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               emitLoad(insns, idxSlot, JInt)
               emitArrayLoad(insns, elem)
               val vTy = lowerExpr(ctx, insns, value)
-              emitCompoundCombineJvm(ctx, insns, op, elem, vTy)
+              emitCompoundCombineJvm(ctx, insns, op, elem, vTy, isUnsignedExpr(ctx, value))
               emitArrayStore(insns, elem)
             }
           }
@@ -493,7 +493,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   case overrideTy -> applyIndexedElemOverride(insns, overrideTy)
                 }
                 emitLoad(insns, rhsSlot, vTy)
-                emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy)
+                emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy, isUnsignedExpr(ctx, value))
                 boxIfNeeded(insns, elemTy)
                 emitMapPut(insns)
               }
@@ -554,7 +554,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   case overrideTy -> applyIndexedElemOverride(insns, overrideTy)
                 }
                 emitLoad(insns, rhsSlot, vTy)
-                emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy)
+                emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy, isUnsignedExpr(ctx, value))
                 boxIfNeeded(insns, elemTy)
                 emitListSet(insns)
               }
@@ -724,6 +724,7 @@ func emitCompoundCombineJvm(
   op: in AssignOp,
   targetTy: in JvmType,
   vTy: in JvmType,
+  isUnsignedRhs: in Bool,
 ): Unit {
   match targetTy {
     case JRef(cls) -> {
@@ -745,7 +746,8 @@ func emitCompoundCombineJvm(
             val lSlot = allocSlot(ctx, "__compcat_lhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
             emitStore(insns, lSlot, JRef(className = "java/lang/String"))
             emitLoad(insns, rawSlot, vTy)
-            coerceToStringForConcat(ctx, insns, vTy)
+            // #6748: `s += uintVal`.
+            coerceToStringForConcat(ctx, insns, vTy, isUnsignedRhs)
             val rSlot = allocSlot(ctx, "__compcat_rhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
             emitStore(insns, rSlot, JRef(className = "java/lang/String"))
             insns.add(LNew(className = "java/lang/StringBuilder"))
@@ -985,6 +987,9 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
                 case Some(te) -> recordDeclaredElemType(ctx, nm, te, newList())
                 case None -> ()
               }
+              // #6748: a `val x: UInt/ULong = …` binding needs unsigned-aware
+              // comparison/division/stringification downstream.
+              recordUnsignedVar(ctx, nm, tyOpt)
             }
             case _ -> ()
           }
@@ -1011,6 +1016,8 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               case Some(te) -> recordDeclaredElemType(ctx, name, te, newList())
               case None -> ()
             }
+            // #6748: see the matching `LBVal` note above.
+            recordUnsignedVar(ctx, name, tyOpt)
           }
         }
         case LBVar(name, tyOpt, initOpt) -> {
@@ -1069,6 +1076,8 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
                 case Some(te) -> recordDeclaredElemType(ctx, name, te, newList())
                 case None -> ()
               }
+              // #6748: see the matching `LBVal` note above.
+              recordUnsignedVar(ctx, name, tyOpt)
             }
             case None -> {
               // No initialiser: an annotation is required to know the slot type;
@@ -1080,6 +1089,8 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
                 case Some(te2) -> recordDeclaredElemType(ctx, name, te2, newList())
                 case None -> ()
               }
+              // #6748: see the matching `LBVal` note above.
+              recordUnsignedVar(ctx, name, tyOpt)
               if isHoisted {
                 // Create an empty cell for the hoisted var
                 val cellType = JArray(elem = ty)

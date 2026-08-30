@@ -954,35 +954,50 @@ func lowerBuiltinOrStaticCall(
   } else if funcName == "toString" {
     if args.count > 0 {
       val argTy = lowerCallArg(ctx, insns, args[0])
-      match argTy {
-        case JRef(_) -> {
-          val tsPs: List[JvmType] = newList()
-          insns.add(
-            LInvokevirtual(
-              owner = "java/lang/Object",
-              name = "toString",
-              params = tsPs,
-              ret = JRef(className = "java/lang/String")
+      // #6748: a `UInt`/`ULong` argument. Boxing + `Object.toString()` (the
+      // path below) would dispatch to `Integer`/`Long`'s own SIGNED
+      // `toString()` — go straight to the unsigned static method on the
+      // still-unboxed primitive instead.
+      val isUnsignedArg = isUnsignedExpr(ctx, callArgExpr(args[0])) and
+        (match argTy { case JInt -> true; case JLong -> true; case _ -> false })
+      if isUnsignedArg {
+        val uPs: List[JvmType] = newList()
+        uPs.add(argTy)
+        val uOwner = match argTy { case JLong -> "java/lang/Long"; case _ -> "java/lang/Integer" }
+        insns.add(
+          LInvokestatic(owner = uOwner, name = "toUnsignedString", params = uPs, ret = JRef(className = "java/lang/String"))
+        )
+      } else {
+        match argTy {
+          case JRef(_) -> {
+            val tsPs: List[JvmType] = newList()
+            insns.add(
+              LInvokevirtual(
+                owner = "java/lang/Object",
+                name = "toString",
+                params = tsPs,
+                ret = JRef(className = "java/lang/String")
+              )
             )
-          )
-        }
-        case _ -> {
-          boxIfNeeded(insns, argTy)
-          val tsPs2: List[JvmType] = newList()
-          insns.add(
-            LInvokevirtual(
-              owner = "java/lang/Object",
-              name = "toString",
-              params = tsPs2,
-              ret = JRef(className = "java/lang/String")
+          }
+          case _ -> {
+            boxIfNeeded(insns, argTy)
+            val tsPs2: List[JvmType] = newList()
+            insns.add(
+              LInvokevirtual(
+                owner = "java/lang/Object",
+                name = "toString",
+                params = tsPs2,
+                ret = JRef(className = "java/lang/String")
+              )
             )
-          )
-          // #4688: the free-function `toString(x)` form boxes and dispatches
-          // to Double.toString the same way the member `x.toString()` form
-          // does — normalize identically.
-          match argTy {
-            case JDouble -> emitNormalizeDoubleString(ctx, insns)
-            case _ -> ()
+            // #4688: the free-function `toString(x)` form boxes and dispatches
+            // to Double.toString the same way the member `x.toString()` form
+            // does — normalize identically.
+            match argTy {
+              case JDouble -> emitNormalizeDoubleString(ctx, insns)
+              case _ -> ()
+            }
           }
         }
       }
@@ -3818,6 +3833,20 @@ func lowerMethodCall(
   // auto-FFI / registry paths below, which resolve the real toString.
   val recvIsBoxablePrim = isNumericJvm(recvTy) or (match recvTy { case JBoolean -> true; case _ -> false })
   if memberName == "toString" and args.count == 0 and recvIsBoxablePrim {
+    // #6748: a `UInt`/`ULong` receiver — `String.valueOf(int/long)` below
+    // would render a sign-bit-set value as negative; go through
+    // `Integer`/`Long.toUnsignedString` instead.
+    val isUnsignedRecv = isUnsignedExpr(ctx, recv) and
+      (match recvTy { case JInt -> true; case JLong -> true; case _ -> false })
+    if isUnsignedRecv {
+      val uPs: List[JvmType] = newList()
+      uPs.add(recvTy)
+      val uOwner = match recvTy { case JLong -> "java/lang/Long"; case _ -> "java/lang/Integer" }
+      insns.add(
+        LInvokestatic(owner = uOwner, name = "toUnsignedString", params = uPs, ret = JRef(className = "java/lang/String"))
+      )
+      return JRef(className = "java/lang/String")
+    }
     // String.valueOf(<primitive>) — no boxing, unlike Object.toString on a
     // boxed wrapper (keeps the closure zero-overhead boxing gate flat).
     val prTsPs: List[JvmType] = newList()

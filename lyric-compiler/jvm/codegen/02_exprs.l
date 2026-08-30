@@ -52,7 +52,34 @@ func floatCmpInsn(op: in BinOp, isDouble: in Bool): LInsn {
   }
 }
 
-// Lower a comparison expression.  lhs type determines which comparison is used.
+// Emit `java.lang.Integer.compareUnsigned(int,int)int` on the two `JInt`
+// operands already stacked as [lhs, rhs] (#6748) — `UInt` erases to the same
+// two's-complement `int` an `Int` uses, so a plain signed compare reads a
+// value/bound at or above 2^31 as negative.  Pushes a signed `int` whose
+// sign matches the unsigned ordering, same operand-stack shape as `lcmp` /
+// the two-operand `if_icmpxx` form it stands in for.
+func emitIntCompareUnsigned(insns: in List[LInsn]): Unit {
+  val ps: List[JvmType] = newList()
+  ps.add(JInt)
+  ps.add(JInt)
+  insns.add(LInvokestatic(owner = "java/lang/Integer", name = "compareUnsigned", params = ps, ret = JInt))
+}
+
+// `java.lang.Long.compareUnsigned(long,long)int` — the `JLong` analog of
+// `emitIntCompareUnsigned` (#6748), for a `ULong`-typed operand.
+func emitLongCompareUnsigned(insns: in List[LInsn]): Unit {
+  val ps: List[JvmType] = newList()
+  ps.add(JLong)
+  ps.add(JLong)
+  insns.add(LInvokestatic(owner = "java/lang/Long", name = "compareUnsigned", params = ps, ret = JInt))
+}
+
+// Lower a comparison expression.  lhs type determines which comparison is
+// used; `isUnsigned` (#6748, true when either operand is statically known
+// `UInt`/`ULong` — see `isUnsignedExpr`) selects `Integer`/`Long`'s
+// `compareUnsigned` over the native signed `lcmp`/`if_icmpxx` for the
+// RELATIONAL ops (`<`/`<=`/`>`/`>=`); `==`/`!=` are sign-independent and stay
+// on the native op either way.
 func lowerCmp(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -60,10 +87,19 @@ func lowerCmp(
   lhsTy: in JvmType,
   trueLabel: in String,
   falseLabel: in String,
+  isUnsigned: in Bool,
 ): Unit {
   match lhsTy {
     case JLong -> {
-      insns.add(LLcmp)
+      if isUnsigned {
+        match op {
+          case BEq -> insns.add(LLcmp)
+          case BNeq -> insns.add(LLcmp)
+          case _ -> emitLongCompareUnsigned(insns)
+        }
+      } else {
+        insns.add(LLcmp)
+      }
       match op {
         case BEq -> insns.add(LIfeq(label = trueLabel))
         case BNeq -> insns.add(LIfne(label = trueLabel))
@@ -161,15 +197,42 @@ func lowerCmp(
       }
     }
     case _ -> {
-      // Integer comparison (int, bool, char, byte, short).
-      match op {
-        case BEq -> insns.add(LIfIcmpeq(label = trueLabel))
-        case BNeq -> insns.add(LIfIcmpne(label = trueLabel))
-        case BLt -> insns.add(LIfIcmplt(label = trueLabel))
-        case BLte -> insns.add(LIfIcmple(label = trueLabel))
-        case BGt -> insns.add(LIfIcmpgt(label = trueLabel))
-        case BGte -> insns.add(LIfIcmpge(label = trueLabel))
-        case _ -> panic("Jvm.Codegen: unsupported int comparison op")
+      // Integer comparison (int, bool, char, byte, short) — `UInt` erases
+      // here too, so a `UInt`-typed operand (#6748) dispatches through
+      // `Integer.compareUnsigned` for the relational ops; `==`/`!=` stay on
+      // the native two-operand `if_icmpxx` form either way.
+      if isUnsigned {
+        match op {
+          case BEq -> insns.add(LIfIcmpeq(label = trueLabel))
+          case BNeq -> insns.add(LIfIcmpne(label = trueLabel))
+          case BLt -> {
+            emitIntCompareUnsigned(insns)
+            insns.add(LIflt(label = trueLabel))
+          }
+          case BLte -> {
+            emitIntCompareUnsigned(insns)
+            insns.add(LIfle(label = trueLabel))
+          }
+          case BGt -> {
+            emitIntCompareUnsigned(insns)
+            insns.add(LIfgt(label = trueLabel))
+          }
+          case BGte -> {
+            emitIntCompareUnsigned(insns)
+            insns.add(LIfge(label = trueLabel))
+          }
+          case _ -> panic("Jvm.Codegen: unsupported int comparison op")
+        }
+      } else {
+        match op {
+          case BEq -> insns.add(LIfIcmpeq(label = trueLabel))
+          case BNeq -> insns.add(LIfIcmpne(label = trueLabel))
+          case BLt -> insns.add(LIfIcmplt(label = trueLabel))
+          case BLte -> insns.add(LIfIcmple(label = trueLabel))
+          case BGt -> insns.add(LIfIcmpgt(label = trueLabel))
+          case BGte -> insns.add(LIfIcmpge(label = trueLabel))
+          case _ -> panic("Jvm.Codegen: unsupported int comparison op")
+        }
       }
     }
   }
@@ -1163,7 +1226,10 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                     // MSIL backend's String.Concat lowering.
                     val rSlot = allocSlot(ctx, "__cat_rhs_" + freshLabel(ctx), rhsTy)
                     emitStore(insns, rSlot, rhsTy)
-                    coerceToStringForConcat(ctx, insns, lhsTy)
+                    // lhsTy is a `JRef` here (the outer match already ruled
+                    // that in) — never a numeric primitive, so `isUnsigned`
+                    // is moot.
+                    coerceToStringForConcat(ctx, insns, lhsTy, false)
                     val catSb: List[JvmType] = newList()
                     val lSlot = allocSlot(ctx, "__cat_lhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
                     emitStore(insns, lSlot, JRef(className = "java/lang/String"))
@@ -1182,7 +1248,9 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                       )
                     )
                     emitLoad(insns, rSlot, rhsTy)
-                    coerceToStringForConcat(ctx, insns, rhsTy)
+                    // #6748: rhs may be a `UInt`/`ULong` value concatenated
+                    // onto an erased-to-Object lhs (`xs[0] + uintVal`).
+                    coerceToStringForConcat(ctx, insns, rhsTy, isUnsignedExpr(ctx, rhs))
                     insns.add(
                       LInvokevirtual(
                         owner = "java/lang/StringBuilder",
@@ -1239,7 +1307,8 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               // `Object` slice element, a primitive): stringify before the
               // `append(String)` call or verification fails at the append.
               val rhsConcatTy = lowerExpr(ctx, insns, rhs)
-              coerceToStringForConcat(ctx, insns, rhsConcatTy)
+              // #6748: rhs may be a `UInt`/`ULong` value (`"n=" + uintVal`).
+              coerceToStringForConcat(ctx, insns, rhsConcatTy, isUnsignedExpr(ctx, rhs))
               val rhsSlot = allocSlot(ctx, "__add_rhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
               emitStore(insns, rhsSlot, JRef(className = "java/lang/String"))
               insns.add(LNew(className = "java/lang/StringBuilder"))
@@ -1358,9 +1427,21 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
+          // #6748: `UInt`/`ULong` erase to the JVM's signed `int`/`long`, so
+          // `idiv`/`ldiv` compute the WRONG quotient whenever either operand
+          // has its sign bit set — dispatch to `Integer`/`Long.divideUnsigned`
+          // instead, mirroring the comparison fix above.
+          val isUnsignedDiv = isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs)
           match lhsTy {
             case JLong -> {
-              insns.add(LLdiv)
+              if isUnsignedDiv {
+                val ps: List[JvmType] = newList()
+                ps.add(JLong)
+                ps.add(JLong)
+                insns.add(LInvokestatic(owner = "java/lang/Long", name = "divideUnsigned", params = ps, ret = JLong))
+              } else {
+                insns.add(LLdiv)
+              }
               JLong
             }
             case JDouble -> {
@@ -1383,7 +1464,14 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               JByte
             }
             case _ -> {
-              insns.add(LIdiv)
+              if isUnsignedDiv {
+                val ps: List[JvmType] = newList()
+                ps.add(JInt)
+                ps.add(JInt)
+                insns.add(LInvokestatic(owner = "java/lang/Integer", name = "divideUnsigned", params = ps, ret = JInt))
+              } else {
+                insns.add(LIdiv)
+              }
               JInt
             }
           }
@@ -1392,9 +1480,18 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
+          // #6748: see the matching `BDiv` note above.
+          val isUnsignedMod = isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs)
           match lhsTy {
             case JLong -> {
-              insns.add(LLrem)
+              if isUnsignedMod {
+                val ps: List[JvmType] = newList()
+                ps.add(JLong)
+                ps.add(JLong)
+                insns.add(LInvokestatic(owner = "java/lang/Long", name = "remainderUnsigned", params = ps, ret = JLong))
+              } else {
+                insns.add(LLrem)
+              }
               JLong
             }
             case JDouble -> {
@@ -1417,7 +1514,14 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               JByte
             }
             case _ -> {
-              insns.add(LIrem)
+              if isUnsignedMod {
+                val ps: List[JvmType] = newList()
+                ps.add(JInt)
+                ps.add(JInt)
+                insns.add(LInvokestatic(owner = "java/lang/Integer", name = "remainderUnsigned", params = ps, ret = JInt))
+              } else {
+                insns.add(LIrem)
+              }
               JInt
             }
           }
@@ -2397,7 +2501,8 @@ func lowerCmpExpr(ctx: in FuncCtx, insns: in List[LInsn], op: in BinOp, lhs: in 
   // doesn't match stackmap"), since the StackMapTable declares an empty stack
   // at every branch target (see lowerIfExpr).
   val rslot = allocSlot(ctx, "__cmp_r_" + afterL, JInt)
-  lowerCmp(ctx, insns, op, lhsTy, trueL, afterL)
+  val isUnsigned = isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs)
+  lowerCmp(ctx, insns, op, lhsTy, trueL, afterL, isUnsigned)
   // fall-through: comparison was false
   insns.add(LIconst(v = 0))
   emitStore(insns, rslot, JInt)
@@ -2422,11 +2527,22 @@ func lowerCmpExpr(ctx: in FuncCtx, insns: in List[LInsn], op: in BinOp, lhs: in 
 // lowerCmpFail:       emit the branch-on-failure comparison for lowerBoolCond.
 // ─────────────────────────────────────────────────────────────────────────────
 // Branch to failLabel if the comparison encoded by `op` is NOT satisfied.
-// Both operands must already be on the stack; both are consumed.
-func lowerCmpFail(insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLabel: in String): Unit {
+// Both operands must already be on the stack; both are consumed.  `isUnsigned`
+// (#6748) mirrors `lowerCmp`'s parameter of the same name.
+func lowerCmpFail(
+  insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLabel: in String, isUnsigned: in Bool
+): Unit {
   match lhsTy {
     case JLong -> {
-      insns.add(LLcmp)
+      if isUnsigned {
+        match op {
+          case BEq -> insns.add(LLcmp)
+          case BNeq -> insns.add(LLcmp)
+          case _ -> emitLongCompareUnsigned(insns)
+        }
+      } else {
+        insns.add(LLcmp)
+      }
       match op {
         case BEq -> insns.add(LIfne(label = failLabel))
         case BNeq -> insns.add(LIfeq(label = failLabel))
@@ -2521,14 +2637,39 @@ func lowerCmpFail(insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLa
       }
     }
     case _ -> {
-      match op {
-        case BEq -> insns.add(LIfIcmpne(label = failLabel))
-        case BNeq -> insns.add(LIfIcmpeq(label = failLabel))
-        case BLt -> insns.add(LIfIcmpge(label = failLabel))
-        case BLte -> insns.add(LIfIcmpgt(label = failLabel))
-        case BGt -> insns.add(LIfIcmple(label = failLabel))
-        case BGte -> insns.add(LIfIcmplt(label = failLabel))
-        case _ -> insns.add(LNop)
+      // #6748: see `lowerCmp`'s matching `case _` arm.
+      if isUnsigned {
+        match op {
+          case BEq -> insns.add(LIfIcmpne(label = failLabel))
+          case BNeq -> insns.add(LIfIcmpeq(label = failLabel))
+          case BLt -> {
+            emitIntCompareUnsigned(insns)
+            insns.add(LIfge(label = failLabel))
+          }
+          case BLte -> {
+            emitIntCompareUnsigned(insns)
+            insns.add(LIfgt(label = failLabel))
+          }
+          case BGt -> {
+            emitIntCompareUnsigned(insns)
+            insns.add(LIfle(label = failLabel))
+          }
+          case BGte -> {
+            emitIntCompareUnsigned(insns)
+            insns.add(LIflt(label = failLabel))
+          }
+          case _ -> insns.add(LNop)
+        }
+      } else {
+        match op {
+          case BEq -> insns.add(LIfIcmpne(label = failLabel))
+          case BNeq -> insns.add(LIfIcmpeq(label = failLabel))
+          case BLt -> insns.add(LIfIcmpge(label = failLabel))
+          case BLte -> insns.add(LIfIcmpgt(label = failLabel))
+          case BGt -> insns.add(LIfIcmple(label = failLabel))
+          case BGte -> insns.add(LIfIcmplt(label = failLabel))
+          case _ -> insns.add(LNop)
+        }
       }
     }
   }
@@ -2554,37 +2695,37 @@ func lowerBoolCond(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, failLa
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmpFail(insns, BEq, lhsTy, failLabel)
+          lowerCmpFail(insns, BEq, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BNeq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmpFail(insns, BNeq, lhsTy, failLabel)
+          lowerCmpFail(insns, BNeq, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BLt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmpFail(insns, BLt, lhsTy, failLabel)
+          lowerCmpFail(insns, BLt, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BLte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmpFail(insns, BLte, lhsTy, failLabel)
+          lowerCmpFail(insns, BLte, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BGt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmpFail(insns, BGt, lhsTy, failLabel)
+          lowerCmpFail(insns, BGt, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BGte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmpFail(insns, BGte, lhsTy, failLabel)
+          lowerCmpFail(insns, BGte, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case _ -> {
           // Coerce before the test (#5563 item 2): `cond` may lower to an
@@ -2643,37 +2784,37 @@ func lowerBoolCondTrue(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, su
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmp(ctx, insns, BEq, lhsTy, succeedLabel, "")
+          lowerCmp(ctx, insns, BEq, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BNeq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmp(ctx, insns, BNeq, lhsTy, succeedLabel, "")
+          lowerCmp(ctx, insns, BNeq, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BLt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmp(ctx, insns, BLt, lhsTy, succeedLabel, "")
+          lowerCmp(ctx, insns, BLt, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BLte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmp(ctx, insns, BLte, lhsTy, succeedLabel, "")
+          lowerCmp(ctx, insns, BLte, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BGt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmp(ctx, insns, BGt, lhsTy, succeedLabel, "")
+          lowerCmp(ctx, insns, BGt, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BGte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmp(ctx, insns, BGte, lhsTy, succeedLabel, "")
+          lowerCmp(ctx, insns, BGte, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case _ -> {
           // Coerce before the test (#5563 item 2): see the matching comment
@@ -2954,7 +3095,8 @@ func lowerInterpolated(ctx: in FuncCtx, insns: in List[LInsn], segments: in List
     match segments[pi] {
       case ISExpr(e) -> {
         val eTy = lowerExpr(ctx, insns, e)
-        coerceToStringForConcat(ctx, insns, eTy)
+        // #6748: an interpolated `UInt`/`ULong` segment (`"${uintVal}"`).
+        coerceToStringForConcat(ctx, insns, eTy, isUnsignedExpr(ctx, e))
         val eSlot = allocSlot(ctx, "__interp_" + freshLabel(ctx), JRef(className = "java/lang/String"))
         emitStore(insns, eSlot, JRef(className = "java/lang/String"))
         exprSlots.add(eSlot)
@@ -3009,8 +3151,12 @@ func lowerInterpolated(ctx: in FuncCtx, insns: in List[LInsn], segments: in List
 // a String is left as-is; any other reference (an erased `Object` slice
 // element, an extern value) calls `Object.toString`; a primitive goes through
 // `String.valueOf(<primitive>)` (no boxing).  `JVoid` (nothing on the stack)
-// is a type-checker/lowering bug and panics (#4685).
-func coerceToStringForConcat(ctx: in FuncCtx, insns: in List[LInsn], ty: in JvmType): Unit {
+// is a type-checker/lowering bug and panics (#4685).  `isUnsigned` (#6748):
+// a `UInt`/`ULong` operand (erased to `JInt`/`JLong`) renders via
+// `Integer`/`Long.toUnsignedString` instead — `String.valueOf(int)` would
+// print a sign-bit-set value as a negative number, e.g. `3000000000u32`
+// (a valid `UInt`) as `"-1294967296"`.
+func coerceToStringForConcat(ctx: in FuncCtx, insns: in List[LInsn], ty: in JvmType, isUnsigned: in Bool): Unit {
   match ty {
     case JRef(c) -> {
       if not (c == "java/lang/String") {
@@ -3053,16 +3199,28 @@ func coerceToStringForConcat(ctx: in FuncCtx, insns: in List[LInsn], ty: in JvmT
       }
       // String.valueOf(<primitive>) — no boxing, unlike Object.toString on a
       // boxed wrapper (keeps the closure zero-overhead boxing gate flat).
-      val voPs: List[JvmType] = newList()
-      voPs.add(stringValueOfParam(ty))
-      insns.add(
-        LInvokestatic(
-          owner = "java/lang/String",
-          name = "valueOf",
-          params = voPs,
-          ret = JRef(className = "java/lang/String")
+      // #6748: a `UInt`/`ULong` operand renders via `Integer`/
+      // `Long.toUnsignedString` instead — see this function's doc comment.
+      val isUnsignedIntOrLong = isUnsigned and (match ty { case JInt -> true; case JLong -> true; case _ -> false })
+      if isUnsignedIntOrLong {
+        val uPs: List[JvmType] = newList()
+        uPs.add(ty)
+        val uOwner = match ty { case JLong -> "java/lang/Long"; case _ -> "java/lang/Integer" }
+        insns.add(
+          LInvokestatic(owner = uOwner, name = "toUnsignedString", params = uPs, ret = JRef(className = "java/lang/String"))
         )
-      )
+      } else {
+        val voPs: List[JvmType] = newList()
+        voPs.add(stringValueOfParam(ty))
+        insns.add(
+          LInvokestatic(
+            owner = "java/lang/String",
+            name = "valueOf",
+            params = voPs,
+            ret = JRef(className = "java/lang/String")
+          )
+        )
+      }
       // #4688: Java's Double.toString always renders a fractional digit
       // ("1500.0") where .NET's default ToString() omits it for whole values
       // ("1500").  Normalize the JVM target onto the already-established
@@ -4353,6 +4511,17 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
       }
     }
   }
+  // #6748: same propagation for a captured `UInt`/`ULong` local — a lambda
+  // body comparing/dividing/stringifying a captured unsigned var needs the
+  // same unsigned-aware codegen the enclosing function's own use of it gets.
+  for uvk in mapKeys(ctx.unsignedVars) {
+    if not closureParamNames.containsKey(uvk) {
+      match mapGet(ctx.unsignedVars, uvk) {
+        case Some(_) -> bodyCtx.unsignedVars.add(uvk, true)
+        case None -> ()
+      }
+    }
+  }
   // Reserve slot 0 (this) and slot 1 (Object[] args).
   allocSlot(bodyCtx, "__closure_this", JRef(className = closureClass))
   val argsSlot = allocSlot(bodyCtx, "__closure_args", JArray(elem = JRef(className = "java/lang/Object")))
@@ -4368,6 +4537,8 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
       case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes)
       case None -> JRef(className = "java/lang/Object")
     }
+    // #6748: a `UInt`/`ULong`-annotated lambda parameter.
+    recordUnsignedVar(bodyCtx, lp.name, lp.ty)
     val pslot = allocSlot(bodyCtx, lp.name, pty)
     bodyInsns.add(LAload(slot = argsSlot))
     bodyInsns.add(LIconst(v = pi))
@@ -4789,6 +4960,14 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
   for fvk in mapKeys(ctx.funcValRetTypes) {
     match mapGet(ctx.funcValRetTypes, fvk) {
       case Some(frt) -> bodyCtx.funcValRetTypes.add(fvk, frt)
+      case None -> ()
+    }
+  }
+  // #6748: same propagation for a captured `UInt`/`ULong` local — see the
+  // matching note in the lambda-closure builder above.
+  for uvk in mapKeys(ctx.unsignedVars) {
+    match mapGet(ctx.unsignedVars, uvk) {
+      case Some(_) -> bodyCtx.unsignedVars.add(uvk, true)
       case None -> ()
     }
   }

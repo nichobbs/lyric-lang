@@ -96,7 +96,8 @@ func makeFuncCtx(
     scopeBase = 0,
     scopeUndo = newList(),
     ctorExpectStack = newList(),
-    aliasTargets = aliasTargets
+    aliasTargets = aliasTargets,
+    unsignedVars = newMap()
   )
 }
 
@@ -146,7 +147,8 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     scopeBase = ctx.scopeBase,
     scopeUndo = ctx.scopeUndo,
     ctorExpectStack = ctx.ctorExpectStack,
-    aliasTargets = ctx.aliasTargets
+    aliasTargets = ctx.aliasTargets,
+    unsignedVars = ctx.unsignedVars
   )
 }
 
@@ -219,7 +221,8 @@ func makeFuncCtxForGenerator(
     ctorExpectStack = newList(),
     // #6393: a generator body has no reachable file-scoped alias table at
     // this call site — out of scope for now (see `FuncCtx.aliasTargets`).
-    aliasTargets = newMap()
+    aliasTargets = newMap(),
+    unsignedVars = newMap()
   )
 }
 
@@ -295,7 +298,8 @@ func makeFuncCtxInstance(
     // #6393: an instance-method body (protected-type entry / record method /
     // impl method) has no reachable file-scoped alias table at this call
     // site — out of scope for now (see `FuncCtx.aliasTargets`).
-    aliasTargets = newMap()
+    aliasTargets = newMap(),
+    unsignedVars = newMap()
   )
 }
 
@@ -652,6 +656,9 @@ pub func setupInstanceParamSlotsAndHolders(
     // threaded through so `recordParamGenericArgs` can bail on an arg that
     // names an unresolved type parameter instead of guessing a phantom class.
     recordParamGenericArgs(ctx, params[rdi].name, params[rdi].ty, typeParams)
+    // #6748: a `UInt`/`ULong`-typed parameter needs unsigned-aware
+    // comparison/division/stringification inside the method body.
+    recordUnsignedVarTy(ctx, params[rdi].name, params[rdi].ty)
     rdi = rdi + 1
   }
 }
@@ -923,6 +930,8 @@ pub func lowerFunc(
     // String]` on `func foo[T](...)`) bails instead of registering a
     // phantom `<pkgName>/T` class.
     recordParamGenericArgs(ctx, resolvedParams[rdi].name, resolvedParams[rdi].ty, fnElemTps)
+    // #6748: see `setupInstanceParamSlotsAndHolders`'s matching call.
+    recordUnsignedVarTy(ctx, resolvedParams[rdi].name, resolvedParams[rdi].ty)
     rdi = rdi + 1
   }
 

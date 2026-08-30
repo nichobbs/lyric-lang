@@ -32703,3 +32703,104 @@ phantom class). `bitwise_self_test.l` and
 
 **Related:** #6661, #6695, #6631, D-progress-814 (corrected), D-progress-837,
 D-progress-834, D-progress-571.
+
+### D-progress-842 — JVM: `UInt`/`ULong` comparison/division/remainder/stringification were still signed outside the range-subtype bounds check (#6748)
+
+D-progress-814/D-progress-840 gave the JVM backend proper `UInt`/`ULong`
+type-erasure handling (`isPrimitiveTypeKeyword`, `typeExprToJvm` ->
+`JInt`/`JLong`) and taught the range-subtype `from`/`tryFrom` bounds check
+(`Jvm.Lowering.emitJvmDistinctBoundsToFail`, gated on
+`LDistinctType.isUnsigned`) to dispatch through
+`Integer`/`Long.compareUnsigned` — but that bounds check is internal
+plumbing for range-subtype CONSTRUCTION, not the general-purpose operand
+path. An automated review of the #6631 diff (#6748) correctly flagged that
+ordinary user code comparing (`<`/`<=`/`>`/`>=`), dividing (`/`), taking the
+remainder (`%`), or stringifying (`.toString()`, the free `toString(x)`
+form, string interpolation, `+` concatenation, `s += x`) a plain
+`UInt`/`ULong` VALUE — not just a range-subtype's bound — still fell through
+to the native SIGNED `if_icmpxx`/`lcmp`/`idiv`/`ldiv`/`irem`/`lrem`/
+`String.valueOf` those erased types inherit from `Int`/`Long`, silently
+wrong for any value with the sign bit set (`UInt` >= 2^31, `ULong` >= 2^63):
+confirmed with a real repro before the fix — `3_000_000_000u32 < 1_000_000_000u32`
+evaluated `true` (backwards), `3_000_000_000u32 / 2u32` returned
+`-647483648`, and `3_000_000_000u32.toString()` printed `"-1294967296"`.
+
+Root cause: `Jvm.Codegen`'s comparison/arithmetic/stringification lowering
+(`lowerCmp`/`lowerCmpFail`/`BDiv`/`BMod`/`coerceToStringForConcat`/the
+`.toString()`/`toString(x)` builtins) dispatches purely on the OPERAND'S
+ERASED `JvmType` (`JInt`/`JLong`), which is indistinguishable between `Int`
+and `UInt` (same for `Long`/`ULong`) once erased — there was no signal
+anywhere in that path for "this specific operand is `UInt`/`ULong`".
+
+Fix: added a lightweight declared-Lyric-type tracking side-channel to
+`Jvm.Codegen.FuncCtx` (mirroring the existing `varGenericArgs`/
+`funcValRetTypes` pattern, not a new type system) — `unsignedVars: Map[String,
+Bool]`, populated by `recordUnsignedVar`/`recordUnsignedVarTy` at every
+`val`/`var`/`let` binding, function/instance-method parameter, and lambda
+parameter whose declared type is `UInt`/`ULong` (propagated into a nested
+closure's own ctx for captured vars/spawned-expression bodies, same as the
+other two maps). `isUnsignedExpr(ctx, e)` consults it for a bare-name
+operand and inspects a literal's `IntSuffix` directly (`u32`/`u64` ->
+unsigned, independent of any variable it's later assigned to) — anything
+else (a field/method-call/index result, an unsuffixed literal) conservatively
+reports `false`, since understating "unsigned" only matters for a
+sign-bit-set value and those overwhelmingly originate from a declared
+binding or literal, not an opaque intermediate expression. Every call site
+that lowers a relational comparison, `/`, `%`, or a stringification now
+computes `isUnsignedExpr` on its operand(s) and, when true, dispatches to
+`Integer`/`Long`'s `compareUnsigned`/`divideUnsigned`/`remainderUnsigned`/
+`toUnsignedString` static methods instead of the native signed opcode —
+`==`/`!=` are unaffected (sign-independent either way, so they stay on the
+cheaper native `if_icmpxx`/`lcmp` form). Plain `Int`/`Long` operands are
+completely untouched — `isUnsignedExpr` reports `false` for them, so they
+keep the native signed opcodes at identical codegen to before this fix.
+
+**Tests:** new `lyric-compiler/jvm/unsigned_int_ops_jvm_self_test.l` (11/11,
+`--target jvm` only, same reasoning as `range_subtype_unsigned_jvm_self_test.l`
+for why MSIL is out of scope — `UInt`/`ULong` have no MSIL representation at
+all) covers `UInt`/`ULong` relational comparison (both directions, including
+a param-typed operand), division/remainder, `.toString()`/free
+`toString(x)`/interpolation/`+` concatenation, and an equality sanity check,
+all with a sign-bit-set operand. A `ULong` sign-bit-set value can't be
+expressed as a literal at all (the lexer folds every int literal through a
+signed `Int64` field, so no literal can reach `2^63` or above — the same
+limitation `range_subtype_unsigned_jvm_self_test.l`'s `BigId` header
+documents); the test reaches one via `ULong` ADDITION instead
+(`Long.MAX_VALUE + 4u64`), which is a faithful way to do it since two's-complement
+`ladd` wraps identically for signed and unsigned interpretations, so no
+separate arithmetic-overflow fix was needed to construct the test fixture.
+`range_subtype_unsigned_jvm_self_test.l` (4/4) and
+`generic_uint_erasure_jvm_self_test.l` (5/5) re-verified unaffected;
+`silent_miscompile_guard_jvm_self_test.l` (38/38, heavy `Double`
+stringification/compound-assignment coverage), `bitwise_self_test.l`
+(10/10), `range_subtype_self_test.l` (15/15), `nan_compare_jvm_self_test.l`
+(6/6), `control_flow_jvm_self_test.l` (17/17),
+`erased_generic_arith_jvm_self_test.l` (23/23), `block_shadow_self_test.l`
+(20/20), `closure_jvm_self_test.l` (14/14), and `async_spawn_self_test.l`
+(26/26) re-verified unaffected by the `coerceToStringForConcat`/`lowerCmp`/
+`lowerCmpFail`/closure-ctx-propagation signature changes.
+
+**Residual gap found, NOT fixed here (out of scope for #6748):**
+`docs/01-language-reference.md` §"integer methods" documents `.shr(n)` as
+**logical** (zero-extended) right shift on `UInt`/`ULong`, vs. **arithmetic**
+(sign-replicating) on `Int`/`Long`/`Byte` — but `04_calls.l`'s bitwise-op
+lowering (the `and`/`or`/`xor`/`shl`/`shr` arm) dispatches purely on the
+receiver's erased `JvmType` and always emits the arithmetic `ishr`/`lshr`
+opcode, with a comment asserting "the JVM backend has no unsigned integer
+type, so the logical-shift opcodes (`iushr`/`lushr`) are not reachable
+here" — written before `UInt`/`ULong` had ANY JVM representation
+(D-progress-814) and never revisited once they gained one. `UInt`/
+`ULong.shr()` on a value whose shifted-in bit would differ (i.e. the
+original value's sign bit is set) is consequently still a silent miscompile
+today, same bug class as this entry, just in a different call site
+(`isUnsignedExpr`-style receiver tracking would fix it identically: dispatch
+`iushr`/`lushr` instead of `ishr`/`lshr` when the receiver is a tracked
+`UInt`/`ULong`). Left untouched here because the assigned scope was
+comparison/division/remainder/stringification specifically — tracked as a
+follow-up, not silently left undocumented per this repo's no-silent-gaps
+standard.
+
+**Files:** `lyric-compiler/jvm/codegen/{01_types,02_exprs,04_calls,05_stmts,06_items}.l`,
+`lyric-compiler/jvm/unsigned_int_ops_jvm_self_test.l` (new).
+
+**Related:** #6748, #6661, #6695, D-progress-814, D-progress-840.
