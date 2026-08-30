@@ -1161,7 +1161,22 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // #5362: see the matching single-file comment above.
     val fnRefPkgFile = synthesizeBareFuncRefThunksMsil(weaved)
     val lifted = liftLambdasMsil(fnRefPkgFile)
-    addPackageTokens(cctx, lifted, perPkgNames[li])
+    // #6547: key every token this pre-scan registers by the package's OWN
+    // `package X` declaration, not `perPkgNames[li]` (the caller-supplied
+    // `ProjectPackagePayload.name`/label).  `codegenMPackage` independently
+    // derives its `pkgName` — and hence `fctx.pkgName`, which every bare
+    // same-package call site's FQN lookup (`fctx.pkgName + "." + funcName`)
+    // is keyed on — from `file.packageDecl.path.segments` (codegen.l
+    // `codegenMPackage`).  Every real caller keeps `ProjectPackagePayload.name`
+    // equal to the declared package (see `extractPackageName`'s doc comment
+    // in `Lyric.Emitter`), so this is a no-op for them; a caller that lets
+    // the two diverge (e.g. a test harness using a distinct on-disk-path
+    // label) previously registered tokens under a key body codegen's own
+    // lookup could never match, silently miscompiling until #6547's
+    // caller-side strict check turned the miss into a hard "no function
+    // token could be resolved" panic instead.
+    val declaredPkgName = segmentsToString(lifted.packageDecl.path.segments)
+    addPackageTokens(cctx, lifted, declaredPkgName)
     // Project-as-DLL embedding: each package's contract goes in its
     // own `Lyric.Contract.<Pkg>` resource so the in-process loader can
     // surface them per-package (matching the F# bundled-DLL layout).

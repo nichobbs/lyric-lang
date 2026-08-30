@@ -39810,3 +39810,48 @@ compiler-DLL closure under the gated emission) completes cleanly.
 **Related:** #1815, #6155, #6641; D-progress-803 (Part 2a, the initial
 unconditional-emission landing this entry gates); docs/01
 §2.4 (documents the gated behavior directly).
+
+## D-progress-816 — MSIL project-build token pre-scan keyed off the caller's label instead of the package's own declared name (#6547)
+
+**Symptom.** `msil_codegen_diag_self_test.l`'s F0025 test (a generic
+function's mono-specialized copy hitting the try-catch-as-expression
+Unit/value mismatch) started panicking instead of cleanly reporting
+`F0025`: `error[T0123] ... unresolved call to 'wrap__Int' (arity 1)
+imported as 'wrap__Int' in package 'F0025App' — no function token could
+be resolved for this callee`. This surfaced only after D-progress-815
+(this file, above) replaced a silent `MObject`-default fallback for an
+unresolved cross-package call token with a hard panic — the token-
+resolution gap was pre-existing and previously invisible.
+
+**Root cause.** `compileProjectToMsilWithRestoredAndVersionDiag`
+(`lyric-compiler/msil/bridge.l`) pre-registers every package's function/
+field tokens via `addPackageTokens(cctx, lifted, perPkgNames[li])`, where
+`perPkgNames[li]` is the caller-supplied `ProjectPackagePayload.name`
+label. Body codegen's own same-package call resolution
+(`fctx.pkgName + "." + funcName`, `msil/codegen.l`) instead derives
+`fctx.pkgName` from `codegenMPackage`'s reading of the package's own
+`package X` declaration (`file.packageDecl.path.segments`). Every real
+production caller keeps these two in sync (`extractPackageName`'s
+documented convention in `Lyric.Emitter`), so the mismatch was latent.
+`msil_codegen_diag_self_test.l`'s `compileDiag` test harness does not:
+it calls `mkPkg(label, source)` with a distinct `label` (e.g.
+`"F0025Bad"`) than the fixture's own `package F0025App` declaration —
+tokens registered under `F0025Bad.wrap__Int` never match a body-codegen
+lookup for `F0025App.wrap__Int`, so the call resolves to nothing.
+
+**Fix.** `addPackageTokens`'s registration key is now the package's own
+declared name (`segmentsToString(lifted.packageDecl.path.segments)`),
+matching what `codegenMPackage` derives independently — a no-op for
+every caller whose label already agrees with the declared package, and
+a real fix for a caller (test harness or otherwise) that lets them
+diverge.
+
+**Coverage.** `msil_codegen_diag_self_test.l` test 9 (previously
+panicking, now asserts the clean `F0025` diagnostic at its correct
+span); full `msil_project_bridge_self_test.l` (45/45),
+`emitter_project_self_test.l` (36/36), and `mono_self_test.l` (55/55)
+re-verified with no regression. Full `make lyric` rebuild completes
+cleanly.
+
+**Related:** #6547, D-progress-815 (the loud-failure change that
+surfaced this latent gap).
