@@ -118,27 +118,32 @@
 //!     through `H2Frame.FrameError`, so the FSM cannot target a `RST_STREAM`;
 //!     it sends a `GOAWAY` instead. RFC 9113 §5.4 permits treating a stream
 //!     error more severely, and `PRIORITY` is ignored/deprecated regardless.
-//!   - **A duplicate/late HEADERS frame is a per-stream error while its
-//!     stream record is retained, but a connection `PROTOCOL_ERROR` once
-//!     pruned.** Unlike WINDOW_UPDATE/RST_STREAM/DATA (whose no-op-vs-error
-//!     classification is pruning-invariant, see above), `handleHeaders`
-//!     dispatches purely on whether `findStream` still holds a record: a
-//!     retained closed/half-closed-remote stream routes through
-//!     `beginTrailerHeaders`, which rejects just that stream (`streamFail`,
-//!     RFC 9113 §5.1) and the connection survives; once pruned, the same
-//!     frame instead misses `findStream` and falls into
-//!     `beginNewStreamHeaders`'s `streamId <= lastPeerStreamId` monotonic-id
-//!     check, which is a connection-level `PROTOCOL_ERROR` (§5.1.1). This is
-//!     arguably the more spec-faithful response either way — a HEADERS frame
-//!     attempting to reuse an already-used stream id is a monotonicity
-//!     violation, not a flow-control/reset timing race — so it is documented
-//!     as intended pruning-introduced divergence, not fixed to match the
-//!     retained-stream behaviour. Never misclassifies a lookup miss as an
-//!     *idle* (never-opened) stream either way; only the stream-vs-connection
-//!     error severity differs. See `http_h2conn_tests.l`'s "duplicate HEADERS
-//!     against a pruned stream id" case. Whether the *retained*-stream path's
-//!     leniency is itself correct against RFC 9113 §5.1.1's connection-scoped
-//!     monotonicity rule is an open compliance question, tracked as #6562.
+//!   - **A duplicate/late HEADERS reusing an already-used stream id is a
+//!     connection `PROTOCOL_ERROR`, whether or not the target stream's
+//!     record is still retained — except the one case RFC 9113 itself
+//!     singles out for per-stream leniency.** `handleHeaders` used to
+//!     dispatch purely on whether `findStream` still held a record — a
+//!     pruning-introduced divergence where the identical wire frame got a
+//!     different error *severity* depending only on internal bookkeeping
+//!     the peer cannot observe (#6562). Resolved (D-progress-816): a
+//!     retained `H2SHalfClosedRemote` stream still routes through
+//!     `beginTrailerHeaders` to a per-stream `streamFail` (RFC 9113 section
+//!     5.1's half-closed (remote) state is explicit that anything but
+//!     WINDOW_UPDATE/PRIORITY/RST_STREAM there "MUST" get a stream error,
+//!     not a connection error — a deliberate spec carve-out, unaffected by
+//!     pruning since a half-closed-remote record is always retained; #6075
+//!     predates #6064's pruning work). Every other way the target id can be
+//!     "already used" — a retained, fully `H2SClosed` record, or a
+//!     pruned/never-retained id at or below `lastPeerStreamId` — now
+//!     produces a connection `connFail` with `H2ProtocolError`: RFC 9113
+//!     section 5.1.1's "unexpected stream identifier" rule treats the frame
+//!     as indistinguishable from an attempt to open a new stream whose id
+//!     violates the monotonic ordering already established, and section
+//!     5.1's general catch-all independently backs a connection error for
+//!     any frame type a closed stream's state does not explicitly permit.
+//!     Never misclassifies a lookup miss as an *idle* (never-opened) stream
+//!     either way. See `http_h2conn_tests.l`'s "duplicate HEADERS against a
+//!     pruned stream id" case and its retained-`H2SClosed` mirror.
 //!   - **`streamState`'s `H2SIdle` result is ambiguous between "never seen"
 //!     and "closed and pruned."** Unlike the internal frame-dispatch path
 //!     (which distinguishes the two via `isIdleStreamId`), the public query
@@ -1273,21 +1278,66 @@ func beginTrailerHeaders(
     case H2SClosed -> false
   }
   if not receivable {
-    // Reject the stream, but STILL run the block through the HPACK decoder
-    // (accepted = false → decode-and-discard) so the connection's shared
-    // compression context stays in sync (RFC 9113 §4.3) — otherwise every
-    // subsequent header block on the connection mis-decodes (#6082). This
-    // mirrors the new-stream-refusal path.
-    val sid = st.id
-    streamFail(
-      state,
-      events,
-      outb,
-      sid,
-      H2StreamClosed,
-      "HEADERS on a half-closed (remote) or closed stream (RFC 9113 section 5.1)"
-    )
-    beginAssembly(state, events, outb, sid, fragment, endStream, endHeaders, false)
+    match st.state {
+      case H2SHalfClosedRemote -> {
+        // RFC 9113 section 5.1's half-closed (remote) state is explicit and
+        // narrow: "If an endpoint receives additional frames, other than
+        // WINDOW_UPDATE, PRIORITY, or RST_STREAM, for a stream that is in
+        // this state, it MUST respond with a stream error ... of type
+        // STREAM_CLOSED" — a per-stream error, not a connection error. This
+        // is a deliberate spec carve-out (unlike the H2SClosed/pruned-id
+        // case below, RFC 9113 does not treat a HEADERS on a half-closed
+        // (remote) stream as a monotonic-id violation), it is unaffected by
+        // pruning (a half-closed-remote record is always retained — only
+        // fully `H2SClosed` records are ever reclaimed by
+        // `pruneClosedStreams`), and it predates #6064's pruning work
+        // (#6075). Reject the stream, but STILL run the block through the
+        // HPACK decoder (accepted = false → decode-and-discard) so the
+        // connection's shared compression context stays in sync (RFC 9113
+        // §4.3) — otherwise every subsequent header block on the
+        // connection mis-decodes (#6082). This mirrors the
+        // new-stream-refusal path.
+        val sid = st.id
+        streamFail(
+          state,
+          events,
+          outb,
+          sid,
+          H2StreamClosed,
+          "HEADERS on a half-closed (remote) stream (RFC 9113 section 5.1)"
+        )
+        beginAssembly(state, events, outb, sid, fragment, endStream, endHeaders, false)
+      }
+      case _ -> {
+        // `H2SClosed` (both directions done — via clean END_STREAM or a
+        // prior RST_STREAM), or, defensively, `H2SIdle` (unreachable in
+        // practice: `findStream` only ever returns a retained record, and
+        // `createStream` always creates one already `H2SOpen`). RFC 9113
+        // section 5.1's general catch-all governs here — a frame type not
+        // among the state's explicitly-permitted ones "SHOULD" be a
+        // connection PROTOCOL_ERROR — and critically, this HEADERS is
+        // wire-indistinguishable from an attempt to reuse an already-used
+        // stream id, which section 5.1.1's monotonic-id rule always treats
+        // as a connection error. #6562: this must match the severity a
+        // HEADERS against this exact id gets once its record is reclaimed
+        // by `pruneClosedStreams` and the lookup misses entirely
+        // (`beginNewStreamHeaders`'s `streamId <= lastPeerStreamId` check,
+        // a few lines below) — that path has always been a connFail, so
+        // this one now is too, closing the pruning-introduced severity gap
+        // between "retained and closed" vs. "pruned or never retained" for
+        // the exact same wire-level violation. No HPACK decode-and-discard
+        // here (matching the pruned-id path): the connection is about to be
+        // poisoned and no further frame on it will be processed, so keeping
+        // the compression context in sync is moot.
+        connFail(
+          state,
+          events,
+          outb,
+          H2ProtocolError,
+          "HEADERS reusing an already-used, now-closed stream id (RFC 9113 section 5.1.1)"
+        )
+      }
+    }
     return
   }
   if not endStream {
@@ -1572,6 +1622,19 @@ pub func connectionSendWindow(conn: in H2Connection): Int {
 @experimental
 pub func connectionReceiveWindow(conn: in H2Connection): Int {
   conn.connRecvWindow
+}
+
+/// The highest client stream id opened (or implicitly closed by a higher id,
+/// RFC 9113 section 5.1.1) so far on this connection — 0 before any HEADERS
+/// has been received. Exposed so a caller layered on top of this FSM (e.g.
+/// `Std.HttpServer`'s own bounded-growth bookkeeping, #6566) can mirror
+/// `pruneClosedStreams`'s id-distance-behind-the-high-water-mark pruning
+/// shape for its own per-stream state without needing a second copy of the
+/// monotonic-id tracking this FSM already keeps.
+@pure
+@experimental
+pub func lastPeerStreamId(conn: in H2Connection): Int {
+  conn.lastPeerStreamId
 }
 
 /// The current state of `streamId` (`H2SIdle` if never seen). Caveat: once a

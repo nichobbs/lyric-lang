@@ -32047,7 +32047,7 @@ template's own package need not be compiled into the bundle), a
 `from`-instance in the main package, asserting zero A0045 diagnostics AND
 the woven output's actual runtime value (not just "compiles").
 
-### D-progress-816 — Four small follow-ups: JVM regex virtual threads + concurrency cap, lyric-auth JVM CI coverage, JVM argv class-init ordering guard, Result/Option accessor package-path qualification (#6576, #6583, #6587, #6630)
+### D-progress-817 — Four small follow-ups: JVM regex virtual threads + concurrency cap, lyric-auth JVM CI coverage, JVM argv class-init ordering guard, Result/Option accessor package-path qualification (#6576, #6583, #6587, #6630)
 
 Four independent follow-ups on D-progress-808's JVM regex/argv landing
 and #5183's Result/Option accessor sugar. **#6576:** the JVM regex
@@ -32086,5 +32086,5 @@ diagnostic and miscompiled to `InvalidProgramException` at runtime) is
 closed by a new, narrowly-scoped T0124 diagnostic
 (`docs/01-language-reference.md` §5.1).
 
-**Related:** `docs/03-decision-log.md` D-progress-816 (full account),
+**Related:** `docs/03-decision-log.md` D-progress-817 (full account),
 #6576, #6583, #6587, #6630.

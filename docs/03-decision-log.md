@@ -33887,7 +33887,197 @@ already limiting (not eliminating) the flake's frequency).
 both gaps), #5933 (the separately-tracked, closed CI infra flake hit in the
 same CI run, not fixed here since it needs no fix — a re-run is sufficient).
 
-## D-progress-816 — Four independent small follow-ups: JVM regex virtual threads + concurrency cap, lyric-auth JVM CI coverage, JVM argv class-init ordering guard, Result/Option accessor package-path qualification (#6576, #6583, #6587, #6630)
+## D-progress-816 — RFC 9113 §5.1.1 duplicate/late HEADERS severity made consistent regardless of pruning; `Std.HttpServer`'s rejected-stream bookkeeping bounded (#6562, #6566)
+
+**Context.** Both issues are follow-ups to the `H2Conn` closed-stream
+pruning work (PR #6549, #6064). #6562 asked a real compliance question the
+pruning PR left open rather than settled: `handleHeaders`
+(`lyric-stdlib/std/http_h2conn.l`) routed a duplicate/late HEADERS frame to
+a per-stream `streamFail` when the target stream's record was still
+*retained* (closed or half-closed-remote), but to a connection-level
+`connFail`/`PROTOCOL_ERROR` once the same id's record had been *pruned* —
+the identical wire-level violation getting a different severity purely as
+a function of internal bookkeeping the peer cannot observe. #6566 asked
+whether `Std.HttpServer`'s own `H2ConnState.rejectedStreams` marker map
+(`lyric-stdlib/std/_kernel/http_server.l`) — which remembers a stream a
+`413` terminally rejected, so it can never re-dispatch (#6144/#6145) — has
+the same unbounded-growth characteristic #6064 fixed for the FSM's own
+`H2Connection.streams` table, and if so, needs the same bounded-window
+treatment.
+
+**Decision on #6562: the retained-stream path was the divergent one; fixed
+to match the pruned path, with one deliberate exception.** Re-reading RFC
+9113 §5.1 and §5.1.1 side by side settles this. §5.1.1 is unambiguous and
+connection-scoped: "The identifier of a newly established stream MUST be
+numerically greater than all streams that the initiating endpoint has
+opened or reserved. ... An endpoint that receives an unexpected stream
+identifier MUST respond with a connection error ... of type
+PROTOCOL_ERROR." A HEADERS frame reusing an already-used id is
+wire-indistinguishable from an attempt to open a new stream with a
+non-monotonic id — whether or not this server still happens to be holding
+a bookkeeping record for that id is not something the wire frame encodes,
+and is not a factor §5.1.1 conditions its rule on. §5.1's own general
+catch-all backs the same conclusion independently for a `H2SClosed`
+stream: "implementations SHOULD treat the receipt of a frame that is not
+expressly permitted in the description of a state as a connection error
+... of type PROTOCOL_ERROR" — HEADERS is not among the frame types §5.1's
+"closed" state text names as explicitly tolerated. So the pruned path's
+existing connection-level severity was correct all along; the retained
+`H2SClosed` path's per-stream leniency was the pre-existing gap (predating
+#6064's pruning work entirely — it was just never exercised by a test
+targeting a *pruned* id until #6064 added one).
+
+The one deliberate exception is `H2SHalfClosedRemote`, and it stays a
+per-stream error on purpose: §5.1's half-closed (remote) state carries its
+own explicit, narrower rule that overrides the general catch-all — "If an
+endpoint receives additional frames, other than WINDOW_UPDATE, PRIORITY,
+or RST_STREAM, for a stream that is in this state, it MUST respond with a
+stream error ... of type STREAM_CLOSED." This is not a "leave it lenient
+because it might be an ordinary race" judgment call — it is what the RFC
+text itself mandates for that specific state, already correct and already
+covered by its own pre-existing test (#6075, predating #6064). It is also
+unaffected by pruning by construction: `pruneClosedStreams` only ever
+reclaims a fully `H2SClosed` record (`isClosedState`), never a
+half-closed-remote one, so a half-closed-remote stream's record is always
+retained — there is no pruned-vs-retained divergence to close for this
+case in the first place.
+
+**Fix.** `beginTrailerHeaders` now matches on `st.state` directly instead
+of using it only to reject the record: `H2SHalfClosedRemote` keeps the
+existing `streamFail`/`H2StreamClosed` path (with the HPACK
+decode-and-discard #6082 already required); every other not-receivable
+state (`H2SClosed`, and defensively `H2SIdle` — unreachable in practice,
+since `findStream` only returns a record `createStream` always creates
+already `H2SOpen`) now calls `connFail`/`H2ProtocolError`, identical to
+what `beginNewStreamHeaders`'s pre-existing `streamId <= lastPeerStreamId`
+monotonic-id check already produced for the pruned/never-retained case. No
+HPACK decode-and-discard on the new `connFail` branch: the connection is
+about to be poisoned and `feed` refuses to run again once `isFailed`, so
+keeping the shared compression context in sync is moot (mirrors the
+pruned path's own early return). The module header's "Known bounded
+characteristics" note (`http_h2conn.l` around line 121) is rewritten to
+describe the resolved, consistent behavior instead of flagging it as an
+open compliance question.
+
+**Decision on #6566: `rejectedStreams`' true growth ceiling is not
+literally unbounded the way #6064's was, but the coupling that bounds it
+is incidental, not designed — so it gets its own bounded reclaim,
+mirroring #6064's id-distance shape but adapted for a real safety gap
+naive copying would introduce.** Tracing `rejectedStreams`' lifecycle: a
+marker is only ever left lingering (not immediately re-removed) when the
+DATA/HEADERS frame that triggered the `413` rejection does *not* itself
+carry END_STREAM — meaning the client's side of the stream is still open
+at that moment. `sendH2Reject413` sends the server's own response with
+END_STREAM immediately, so the underlying FSM stream transitions to
+`H2SHalfClosedLocal` right then — active, not closed. It only ever leaves
+that state (and, in lockstep, has its `rejectedStreams` marker forgotten
+by the existing `forgetRejectedStream` call sites) when the client
+eventually sends its own END_STREAM or RST_STREAM. A client that never
+does either — the #6566 "abandons it" scenario — leaves that stream stuck
+at `H2SHalfClosedLocal` forever, which means it counts against
+`SETTINGS_MAX_CONCURRENT_STREAMS` (128 by default) for as long as it
+lingers: `beginNewStreamHeaders`'s own admission check refuses a new
+stream once `countActiveStreams` hits that ceiling, so a single connection
+cannot accumulate unboundedly many such stuck entries — unlike
+`H2Connection.streams` before #6064, where a closed record was `isActiveState
+= false` and so invisible to that same admission check, letting it grow
+with the connection's entire sequential history rather than its
+concurrent footprint. So #6566's "unbounded growth" premise does not hold
+as literally stated against the current code.
+
+That said, the bound existing today is a *side effect* of
+`SETTINGS_MAX_CONCURRENT_STREAMS` admission control — a mechanism
+`rejectedStreams` does not own and was never designed against. If that
+setting is ever exposed as configurable (`Std.HttpServer` hardcodes
+`h2DefaultServerSettings()` today) or raised, `rejectedStreams`' effective
+ceiling grows right along with it, with no independent ceiling of its
+own. This is worth closing regardless of whether it is exploitable today,
+matching CLAUDE.md's "no bootstrap-grade, defense-in-depth over an
+incidental coupling" standard.
+
+Naively copying `pruneClosedStreams`' mechanism — drop the marker once its
+id has scrolled far enough behind the high-water mark — would be **unsafe**
+here, unlike for the FSM's own table. `pruneClosedStreams` only ever
+prunes records already `H2SClosed`: once a `rejectedStreams` marker is old
+enough to be prune-eligible by id-distance alone, its underlying FSM
+stream is *not* closed (as traced above, it is stuck exactly at
+`H2SHalfClosedLocal`, which never closes without client action) — so a
+later legitimate-looking DATA or trailer HEADERS on that id would sail
+past the now-missing `isRejectedStream` guard and get freshly
+accumulated/dispatched, exactly the re-dispatch #6144/#6145 exist to
+prevent. The real equivalent of `pruneClosedStreams`'s safety invariant
+("a lookup miss is never silently permitted, only ever classified as
+forgotten-not-idle") has to be constructed differently here: reclaiming an
+old-enough entry first sends a real `RST_STREAM` (RFC 9113 §6.4's
+administrative-close idiom, the same mechanism `sendH2Reject413`'s own
+HPACK-encode-failure path already uses) via `H2.sendRstStream`, which
+transitions the FSM's own record to `H2SClosed` before the marker is
+forgotten. From that point on, any further frame on the id is rejected by
+the FSM itself before it can ever reach `onH2Data`/`onH2Headers` again —
+DATA gets `reclaimAndStreamFail`, and a HEADERS reusing the id gets the
+`connFail`/`PROTOCOL_ERROR` #6562 (above) now guarantees consistently — so
+forgetting the marker at that same moment is provably safe, not merely
+convenient. `H2.sendRstStream` is itself a safe no-op if the FSM has no
+record for the id at all, so this can never resurrect or mis-close an
+unrelated stream.
+
+**Fix.** Two small additions:
+- `H2.lastPeerStreamId(conn): Int` (`http_h2conn.l`), a `pub` accessor
+  exposing the FSM's own monotonic high-water mark — `H2Connection` is
+  opaque cross-package, so `Std.HttpServer` had no way to read it before.
+- `pruneRejectedStreams` (`_kernel/http_server.l`), called once per h2
+  batch (mirroring `H2.feed`'s own `pruneClosedStreams` cadence): once
+  `rejectedStreams` exceeds `h2RejectedStreamRetentionWindow()` (64
+  client-id slots — deliberately smaller than `h2ClosedStreamRetentionWindow()`'s
+  200, since this marker set is already soft-bounded well below that by
+  the concurrency ceiling and only needs margin comfortably clear of a
+  single request round trip, not #6064's "keep the terminal event
+  observable" generosity), any marker whose id has scrolled that far
+  behind `H2.lastPeerStreamId` gets `H2.sendRstStream` + forgotten, per
+  the safety argument above. The pure id-distance comparison
+  (`h2RejectedStreamIsReclaimable`) and the window constant are both
+  `pub`/`@experimental`, mirroring `H2Conn`'s own testable-query-surface
+  precedent (`h2ClosedStreamRetentionWindow`) and this file's existing
+  `resolveMaxConcurrentConnections` precedent — `H2ConnState` itself is
+  package-private and real-socket-backed, so the pruning function's own
+  wiring cannot be unit-tested directly, only its threshold arithmetic
+  can.
+
+**Testing.** `lyric-stdlib/tests/http_h2conn_tests.l` (73/73 on both
+`--target dotnet` and `--target jvm`): the existing pruned-id duplicate
+HEADERS test is retitled to drop the now-inaccurate "unlike RST_STREAM/
+WINDOW_UPDATE" framing, a new mirror test pins the identical connection-level
+severity against a still-retained `H2SClosed` id, and a small
+`lastPeerStreamId` test covers the new accessor (including the
+implicitly-closed-by-a-higher-id case, RFC 9113 §5.1.1). The pre-existing
+`H2SHalfClosedRemote` stream-error test (#6075) is untouched and still
+passes, confirming the carve-out. `lyric-stdlib/tests/http_server_dotnet_tests.l`
+(19/19, `--target dotnet` — this suite is dotnet-only, JVM has its own
+kernel/suite): a deterministic unit test pins
+`h2RejectedStreamIsReclaimable`'s threshold arithmetic (the strict `<`
+boundary, matching `pruneClosedStreams`'s own strict comparison), and an
+integration test drives 40 sequential real over-cap rejections plus a
+final valid request on one TLS h2 connection to prove the new per-batch
+pruning pass introduces no regression under sustained real traffic.
+Genuinely reproducing the "rejected AND abandoned" (as opposed to
+rejected-then-properly-closed, which every real HTTP client does) scenario
+end-to-end needs a raw h2 frame client that can withhold END_STREAM/
+RST_STREAM indefinitely — blocked by the same pre-existing FFI gaps the
+#6144 trailer-HEADERS test in the same file already documents
+(`X509Certificate2.CreateFromPem` crashes the emitter; the client-side
+ALPN `List<SslApplicationProtocol>` setter hits #6029) — not attempted
+here for the same reason #6144 did not attempt it, rather than skipped or
+faked. Full `make lyric` clean build.
+
+**Related:** #6562, #6566, #6064/PR #6549 (the pruning work both issues
+follow up on), #6144/#6145 (the rejected-stream invariants #6566's fix
+must not break), #6075 (the pre-existing half-closed-remote stream-error
+test #6562's fix leaves unchanged), #6082 (the HPACK-decode-and-discard
+rule the `H2SHalfClosedRemote` path in `beginTrailerHeaders` still
+honours), #6029 (the raw h2 client FFI gap blocking full #6566
+end-to-end coverage).
+
+## D-progress-817 — Four independent small follow-ups: JVM regex virtual threads + concurrency cap, lyric-auth JVM CI coverage, JVM argv class-init ordering guard, Result/Option accessor package-path qualification (#6576, #6583, #6587, #6630)
 
 **Context.** Four small, independent tickets bundled into one PR for
 review efficiency — no file overlap between them.

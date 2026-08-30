@@ -1562,14 +1562,12 @@ test "a late WINDOW_UPDATE against a pruned (very old) closed stream is a safe n
   assertFalse(hasWindowUpdated(r.events, prunedId), "no H2WindowUpdated: there is no send-flow window left to update")
 }
 
-test "a duplicate HEADERS frame against a pruned (very old) stream id is a connection PROTOCOL_ERROR, unlike RST_STREAM/WINDOW_UPDATE (#6064)" {
-  // Unlike WINDOW_UPDATE/RST_STREAM/DATA, whose no-op-vs-error classification
-  // is pruning-invariant (see the module header's 4th bounded-characteristic
-  // bullet), a duplicate HEADERS on a pruned id is escalated to a connection
-  // error by beginNewStreamHeaders' monotonic stream-id check, whereas the
-  // identical frame against a still-retained closed stream is only a
-  // per-stream error via beginTrailerHeaders. This pins that documented
-  // pruning-introduced divergence.
+test "a duplicate HEADERS frame against a pruned (very old) stream id is a connection PROTOCOL_ERROR (#6064/#6562)" {
+  // A duplicate HEADERS on a pruned id is escalated to a connection error by
+  // `beginNewStreamHeaders`'s monotonic stream-id check. #6562 made the
+  // identical frame against a still-*retained*, fully-closed stream produce
+  // the same connection-level severity (see the mirror test immediately
+  // below) — this pins the pruned-id side of that now-consistent pair.
   val window = H2.h2ClosedStreamRetentionWindow()
   val total = window + 60
   var conn = setupDefault()
@@ -1579,6 +1577,40 @@ test "a duplicate HEADERS frame against a pruned (very old) stream id is a conne
   val r = H2.feed(c, headersFrame(prunedId, block, true, true))
   expectConnError(r.events, H2ProtocolError, "duplicate HEADERS against a pruned stream id")
   assertTrue(H2.isFailed(r.conn), "connection poisoned (monotonic stream-id violation, RFC 9113 section 5.1.1)")
+}
+
+test "a duplicate HEADERS frame against a RETAINED, fully-closed stream id is ALSO a connection PROTOCOL_ERROR (#6562)" {
+  // Mirror of the pruned-id case above, using a still-retained (well inside
+  // the retention window) fully `H2SClosed` stream instead. Before #6562
+  // this went through `beginTrailerHeaders`'s "not receivable" branch as a
+  // per-stream `streamFail`, the exact same wire-level violation the pruned
+  // case above treats as connection-fatal — purely because this record
+  // happened to still be retained. #6562 resolved that inconsistency: a
+  // retained `H2SClosed` stream now gets the same `connFail`/`PROTOCOL_ERROR`
+  // as a pruned one (RFC 9113 section 5.1.1's monotonic-id rule applies
+  // regardless of whether bookkeeping for the id survives). Only
+  // `H2SHalfClosedRemote` keeps the per-stream-error carve-out RFC 9113
+  // section 5.1 explicitly names — see "HEADERS on a half-closed (remote)
+  // stream is a stream error (#6075)" above, unaffected by this change.
+  val window = H2.h2ClosedStreamRetentionWindow()
+  val total = window + 60
+  var conn = setupDefault()
+  var c = runCompletions(conn, 1, total)
+  val recentId = 1 + 2 * (total - 1)
+  assertTrue(stateIs(H2.streamState(c, recentId), "closed"), "recentId is a retained, fully-closed stream")
+  val block = encodeBlock(requestHeaders())
+  val r = H2.feed(c, headersFrame(recentId, block, true, true))
+  expectConnError(r.events, H2ProtocolError, "duplicate HEADERS against a retained, fully-closed stream id")
+  assertTrue(H2.isFailed(r.conn), "connection poisoned (monotonic stream-id violation, RFC 9113 section 5.1.1)")
+}
+
+test "lastPeerStreamId reports the client high-water mark (#6566)" {
+  var conn = setupDefault()
+  assertEqualInt(H2.lastPeerStreamId(conn), 0, "no HEADERS received yet")
+  val r1 = H2.feed(conn, headersFrame(1, encodeBlock(requestHeaders()), true, true))
+  assertEqualInt(H2.lastPeerStreamId(r1.conn), 1, "high-water mark after stream 1")
+  val r2 = H2.feed(r1.conn, headersFrame(7, encodeBlock(requestHeaders()), true, true))
+  assertEqualInt(H2.lastPeerStreamId(r2.conn), 7, "high-water mark jumps to 7 even though 3/5 were skipped")
 }
 
 test "streamState reports H2SIdle for a pruned stream, indistinguishable from never-seen (#6572)" {
