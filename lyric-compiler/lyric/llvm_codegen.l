@@ -7251,15 +7251,31 @@ func emitConstructorTest(
   bindVals: in List[NVal],
 ): Unit {
   val joined = modulePathJoin(head.segments)
-  // Enum case pattern: scrutinee is the i32 discriminant itself.
-  match mapGet(ctx.enumDefs, joined) {
-    case Some(idx) -> {
-      val cmp = freshTmp(ctx)
-      insns.add(NICmp(dest = cmp, pred = IEq, ty = NI32, a = sv.value, b = NLitInt(v = intToLong(idx), ty = NI32)))
-      insns.add(NCondBr(cond = NLocal(name = cmp), thenLabel = okLabel, elseLabel = failLabel))
-      return
+  // Enum case pattern: scrutinee is the i32 discriminant itself. Gated on
+  // the scrutinee's actual runtime representation (`sv.ty == NI32`), not
+  // just a name match in `ctx.enumDefs` (#6753): this function is also
+  // reached with a BARE single-segment `head` from `emitPatternTest`'s
+  // `PBinding` -> `scrutineeHasCase` redirect once the scrutinee is
+  // already confirmed to be a union — a struct pointer, never NI32 — so
+  // without this guard an unrelated enum elsewhere in the bundle sharing
+  // the union case's bare name (now that bare enum-case names are
+  // registered, #6589) would hijack the test into a type-mismatched
+  // `NICmp` against a pointer value instead of falling through to the
+  // union-case check below.
+  match sv.ty {
+    case NI32 -> {
+      match mapGet(ctx.enumDefs, joined) {
+        case Some(idx) -> {
+          val cmp = freshTmp(ctx)
+          insns.add(NICmp(dest = cmp, pred = IEq, ty = NI32, a = sv.value, b = NLitInt(v = intToLong(idx), ty = NI32)))
+          insns.add(NCondBr(cond = NLocal(name = cmp), thenLabel = okLabel, elseLabel = failLabel))
+          return
+        }
+        case None -> {
+        }
+      }
     }
-    case None -> {
+    case _ -> {
     }
   }
   val ui = match unionInfoOfType(ctx, sv.ty) {

@@ -18,7 +18,7 @@
 //! lookup in `lowerExpr` — previously only ever hit by an
 //! already-qualified path — now resolves a truly bare reference too.
 //!
-//! Four cases:
+//! Five cases:
 //!   - item A (#6589's exact reported shape): a bare reference to a
 //!     CROSS-PACKAGE enum case (`Std.HttpEngine.HttpVersion.Http1_1`,
 //!     the issue's own motivating example), assigned against an
@@ -32,18 +32,33 @@
 //!     *default* value that is itself a bare enum case, exercised by
 //!     omitting the field at a construction site.
 //!   - item D (review finding on PR #6746): a bare case name shared by
-//!     an enum and a union in the same bundle must resolve to the enum,
-//!     matching `Msil.Codegen`'s bare-name check order (enum ordinal
-//!     before nullary union case) — `lowerExpr`'s `EPath` arm checks
-//!     `ctx.enumDefs` before `ctx.caseRefs` for exactly this reason.
+//!     an enum and a union in the same bundle must resolve to the enum
+//!     in VALUE position, matching `Msil.Codegen`'s bare-name check
+//!     order (enum ordinal before nullary union case) — `lowerExpr`'s
+//!     `EPath` arm checks `ctx.enumDefs` before `ctx.caseRefs` for
+//!     exactly this reason.
+//!   - item E (review finding #6753, found while fixing item D's own
+//!     review round): the identical enum/union bare-name collision, but
+//!     in PATTERN position — a `match` arm using the bare case name
+//!     against a UNION scrutinee. Registering the bare enum-case name
+//!     (the whole point of this fix) made `emitConstructorTest`'s
+//!     unconditional `ctx.enumDefs` lookup a live hazard for the
+//!     unrelated `PBinding` -> `scrutineeHasCase` redirect path, which
+//!     is reached with a bare name only once the scrutinee is already
+//!     confirmed to be a union — `emitConstructorTest` now gates its
+//!     enum branch on `sv.ty == NI32` (the enum's actual runtime
+//!     representation) so a union scrutinee (always a struct pointer)
+//!     can never be misrouted into it.
 //!
-//! Every case's `match` arms use the fully-qualified `EnumType.Case`
-//! pattern form deliberately — a *pattern*-position bare case name is a
-//! separate, pre-existing gap (`emitPatternTest`'s `scrutineeHasCase`
+//! Items A-D's `match` arms use the fully-qualified `EnumType.Case`
+//! pattern form deliberately, to isolate the value-position fix from a
+//! separate, still-open, pre-existing gap: a bare pattern-position case
+//! name against an ENUM scrutinee (`emitPatternTest`'s `scrutineeHasCase`
 //! only recognises union cases, not enum cases, so a bare pattern name
 //! over an enum scrutinee silently binds instead of testing equality;
-//! filed as a follow-up, not fixed here) — so each case here isolates
-//! exactly the value-position bare-case-reference fix and nothing else.
+//! filed as #6740, not fixed here). Item E's bare pattern deliberately
+//! targets a UNION scrutinee instead — a different, now-fixed path
+//! (#6753), unrelated to #6740's still-open enum-scrutinee gap.
 //!
 //! Requires `clang` on PATH and a built runtime (`make -C lyric-rt`) for
 //! items B/C; item A additionally needs the native stdlib source tree
@@ -296,4 +311,46 @@ test "a bare case name shared by an enum and a union resolves to the enum, match
     "}\n"
   val r = compileAndRun(src)
   assertEqualInt(r.exitCode, 1, "bare case name collision resolves to the enum, not the union (#6746 review)")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Item E (review finding #6753, follow-on from item D): the SAME
+// enum/union bare-name collision as item D, but in PATTERN position — a
+// `match` arm using the bare case name against a UNION scrutinee.
+// `emitConstructorTest` is reached with a bare single-segment head from
+// `emitPatternTest`'s `PBinding` -> `scrutineeHasCase` redirect only once
+// the scrutinee is already confirmed to be a union with that case, so its
+// enum-ordinal branch must never fire there just because an unrelated
+// enum elsewhere in the bundle happens to share the bare case name — the
+// scrutinee is a struct pointer, not an i32 discriminant. Asserts the
+// `match` still resolves the union case correctly (not a panic, not a
+// type-mismatched comparison) even with `Status.Ready` present in the
+// same bundle.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a bare case name in a match PATTERN against a union scrutinee still resolves to the union, even with a same-named enum in the bundle (#6753)" {
+  val src = "package T\n" + "enum Status {\n" + "  case Ready\n" + "  case Done\n" + "}\n" + "union Wrapper {\n" +
+    "  case Ready\n" +
+    "  case Pending\n" +
+    "}\n" +
+    "func classify(w: in Wrapper): Int {\n" +
+    "  match w {\n" +
+    "    case Ready -> 1\n" +
+    "    case Pending -> 2\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val a = classify(Wrapper.Ready)\n" +
+    "  val b = classify(Wrapper.Pending)\n" +
+    "  if a == 1 and b == 2 {\n" +
+    "    42\n" +
+    "  } else {\n" +
+    "    1\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(
+    r.exitCode,
+    42,
+    "bare pattern-position match against a union resolves correctly despite a same-named enum (#6753)"
+  )
 }
