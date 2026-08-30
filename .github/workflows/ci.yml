@@ -298,7 +298,7 @@ jobs:
 
       - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
         if: steps.changes.outputs.has_code_changes == 'true'
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c  # v6.0.0
         with:
           distribution: temurin
           java-version: '21'
@@ -891,7 +891,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       - name: Set up Java 21
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c  # v6.0.0
         with:
           distribution: temurin
           java-version: '21'
@@ -933,7 +933,7 @@ jobs:
           global-json-file: bootstrap/global.json
 
       - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c  # v6.0.0
         with:
           distribution: temurin
           java-version: '21'
@@ -1074,7 +1074,7 @@ jobs:
         with:
           global-json-file: bootstrap/global.json
       - name: Set up Java 21
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c  # v6.0.0
         with:
           distribution: temurin
           java-version: '21'
@@ -1116,7 +1116,7 @@ jobs:
         with:
           global-json-file: bootstrap/global.json
       - name: Set up Java 21
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c  # v6.0.0
         with:
           distribution: temurin
           java-version: '21'
@@ -1160,7 +1160,7 @@ jobs:
         with:
           global-json-file: bootstrap/global.json
       - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c  # v6.0.0
         with:
           distribution: temurin
           java-version: '21'
@@ -3082,7 +3082,7 @@ jobs:
         with:
           global-json-file: bootstrap/global.json
       - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c  # v6.0.0
         with:
           distribution: temurin
           java-version: '21'
@@ -4223,7 +4223,7 @@ jobs:
         with:
           global-json-file: bootstrap/global.json
       - name: Set up Java 21 (for JVM emitter tests)
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c  # v6.0.0
         with:
           distribution: temurin
           java-version: '21'
@@ -6149,7 +6149,7 @@ jobs:
       # self_test_b13.l compiles its own probe fixture with the host javac.
       - name: Set up Java 21 (jvm set only)
         if: matrix.set == 'jvm'
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c  # v6.0.0
         with:
           distribution: temurin
           java-version: '21'
@@ -6810,7 +6810,7 @@ jobs:
       # class files require 21, see "class files target major version 65"
       # elsewhere in this workflow).
       - name: Set up Java 21 (for the JVM suite below)
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c  # v6.0.0
         with:
           distribution: temurin
           java-version: '21'
