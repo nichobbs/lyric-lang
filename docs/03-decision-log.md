@@ -35069,7 +35069,7 @@ REQUIRED findings), D-progress-826 (the original, inverted
 `isSameRedirectAuthority`), D-progress-827 (the original, wrong-threshold
 `parseHexInt` guard).
 
-## D-progress-820 — `_kernel_native/http_host.l`: cumulative chunk-size overflow bypasses the body-size cap (#6656), a fourth review round on this same PR
+## D-progress-829 — `_kernel_native/http_host.l`: cumulative chunk-size overflow bypasses the body-size cap (#6656), a fourth review round on this same PR
 
 **Context.** A FOURTH `claude-review` pass on PR #6623 confirmed
 D-progress-826/818/819's fixes correct and closed #6646/#6647, but found
@@ -35165,7 +35165,7 @@ the already-fixed #6656) found two more REQUIRED bugs, both in
    if they were the `1xx`'s own body.
 
 2. **#6693 — the raw receive buffer has no cap independent of the decoded
-   body.** D-progress-820 (#6656) correctly bounded the *decoded* chunked
+   body.** D-progress-829 (#6656) correctly bounded the *decoded* chunked
    body (`acc`) against `maxResponseBodyBytes` (10 MB) with an
    overflow-safe check. But nothing bounded the *raw* wire bytes `buf`
    that `readChunkedBody` reads every byte into — RFC 9112 section 7.1.1
@@ -35250,7 +35250,7 @@ distinct compiler-inference limitation from anything this PR is otherwise
 about, worth naming here so a future reader doesn't mistake it for
 evidence against the fix's substance.
 
-**Review-tooling note (not a code issue).** Between the D-progress-820
+**Review-tooling note (not a code issue).** Between the D-progress-829
 push and this round's actual findings, the `claude-review` job ran twice
 (once automatically, once via a manual re-run) and both times completed
 successfully (28 and 29 turns, `is_error: false`) without posting a
@@ -35266,7 +35266,7 @@ produced the two genuine findings this entry fixes — the tooling
 hiccup did not mask any real issue, it just delayed this round's start.
 
 **Related:** #6623 (the PR this fix ships in), #6692, #6693 (the two
-REQUIRED findings), D-progress-820 (the prior round's #6656 fix, whose
+REQUIRED findings), D-progress-829 (the prior round's #6656 fix, whose
 `acc`-based cap this entry's #6693 fix supplements rather than
 replaces).
 
