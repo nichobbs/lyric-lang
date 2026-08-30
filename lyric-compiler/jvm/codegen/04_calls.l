@@ -990,14 +990,35 @@ func lowerBuiltinOrStaticCall(
     // `06_items.l`, `LPRuntimeArgsHolder` in `Jvm.Lowering`).  Mirrors the
     // `intToLong`/`stringToUtf8Bytes` bare-name compiler-intrinsic
     // convention already used in this dispatcher.
+    //
+    // #6587: the field is only populated once the entry-point wrapper's
+    // `putstatic` actually runs — a module-level `val` initializer that
+    // calls `Std.Environment.args()` during some OTHER class's `<clinit>`
+    // (which the JVM can run ahead of `main()`) would read the field's
+    // zero-init default (`null`) and NPE downstream with no indication of
+    // the real cause. Guard the read with an explicit null check, so that
+    // scenario fails loudly with a diagnostic naming the actual ordering
+    // hazard instead of an opaque `NullPointerException`. The array is
+    // stashed to a local (rather than left mid-stack across the branch) so
+    // the StackMapTable generator sees an empty operand stack at both the
+    // fall-through and the branch target, matching the discipline used
+    // elsewhere in this codegen (e.g. `lowerPatternTest`'s null-case test).
+    val argvTy = JArray(elem = JRef(className = "java/lang/String"))
+    insns.add(LGetstatic(owner = "__LyricJvmRuntime", name = "commandLineArgs", t = argvTy))
+    val argvSlot = allocSlot(ctx, "__hostargv_" + freshLabel(ctx), argvTy)
+    emitStore(insns, argvSlot, argvTy)
+    emitLoad(insns, argvSlot, argvTy)
+    val argvOkLabel = freshLabel(ctx)
+    insns.add(LIfnonnull(label = argvOkLabel))
     insns.add(
-      LGetstatic(
-        owner = "__LyricJvmRuntime",
-        name = "commandLineArgs",
-        t = JArray(elem = JRef(className = "java/lang/String"))
+      LPushString(
+        s = "Std.Environment.args() was called before the JVM entry-point wrapper populated its argv holder (__LyricJvmRuntime.commandLineArgs is still null). This happens when a module-level `val` initializer calls Std.Environment.args() during class-loading of some OTHER class, which the JVM can run ahead of main() ever executing. Move the call into a function invoked explicitly from main() (or later), rather than a module-level initializer."
       )
     )
-    JArray(elem = JRef(className = "java/lang/String"))
+    emitPanicFromStack(ctx, insns)
+    insns.add(LLabel(name = argvOkLabel))
+    emitLoad(insns, argvSlot, argvTy)
+    argvTy
   } else if funcName == "default" {
     insns.add(LAconstNull)
     JRef(className = "java/lang/Object")

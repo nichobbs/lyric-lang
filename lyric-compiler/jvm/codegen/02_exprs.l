@@ -520,6 +520,19 @@ func forLoopNestedArrayElemTypeExpr(ctx: in FuncCtx, recv: in Expr): Option[Type
 // than MSIL's corrupted-stack `InvalidProgramException`, but still an
 // unsupported documented idiom.  `instanceof` already pushes a genuine
 // `0`/`1` int, so no MSIL-style double-negation ceq/xor dance is needed.
+//
+// #6630 audit note: `lowerBuiltinMonadAccessorJvm` below matches `cls`
+// against the receiver's FULL resolved JVM internal name
+// (`"Std/Core/Result"` / `"Std/Core/Option"`, package included), not a
+// bare short name — unlike `monadAccessorType` (`typechecker_exprs.l`) and
+// `lowerBuiltinMonadAccessorMsil` (`msil/codegen.l`) before their #6630
+// fixes. `cls` always originates from a `JRef(className)` receiver type
+// (see the `lowerExpr` call site), and every JVM class carries its
+// declaring package in its binary name (there is no "bare, unqualified"
+// class-name shape a same-named-but-different-package `Result`/`Option`
+// union could produce here), so this site never needed the fix — kept
+// as-is; this note exists so the audit trail for #6630 covers all three
+// sites the issue named even though only two needed a code change.
 func builtinMonadCaseClassJvm(cls: in String, caseName: in String): String {
   cls + "$" + caseName
 }

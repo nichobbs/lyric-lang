@@ -34076,3 +34076,147 @@ test #6562's fix leaves unchanged), #6082 (the HPACK-decode-and-discard
 rule the `H2SHalfClosedRemote` path in `beginTrailerHeaders` still
 honours), #6029 (the raw h2 client FFI gap blocking full #6566
 end-to-end coverage).
+
+## D-progress-817 — Four independent small follow-ups: JVM regex virtual threads + concurrency cap, lyric-auth JVM CI coverage, JVM argv class-init ordering guard, Result/Option accessor package-path qualification (#6576, #6583, #6587, #6630)
+
+**Context.** Four small, independent tickets bundled into one PR for
+review efficiency — no file overlap between them.
+
+**#6576 — JVM regex daemon-thread throughput.** D-progress-808's
+daemon-thread ReDoS shim (`_kernel_jvm/regex_host.l`) spawned a fresh
+platform `java.lang.Thread` on every single match/replace call, even the
+overwhelming common (fast, non-timeout) case, and had no cap on
+concurrently-outstanding timed-out matches. Switched to
+`Thread.startVirtualThread(Runnable)` (GA since JDK 21) — orders of
+magnitude cheaper spin-up, closing the common-case throughput gap while
+`Thread.join(timeoutMs)` keeps the same bounded-wait design. Investigated
+carrier-pinning per the issue's request rather than assuming it away: a
+regex match takes no monitor and makes no native call, so it is never
+"pinned" in JEP 444's formal sense, but CPU-bound non-yielding work (which
+catastrophic backtracking is) still monopolizes its carrier with no
+JVM-level preemption — a real, documented residual risk a per-call
+concurrency cap cannot fully eliminate once live abandoned matches reach
+the carrier pool's parallelism. Added `matchSemaphore` (sized off
+`Runtime.availableProcessors() * 16`, floored at 64), acquired via
+non-blocking `tryAcquire()` and released by the background thread itself
+once its match call returns (so a still-running abandoned match keeps
+holding its permit) — this bounds the *other* half of the original
+concern, unbounded accumulation of live abandoned background computations
+over an app's lifetime under sustained attack traffic, without ever
+blocking the calling thread's own bounded-wait contract. A rejected
+acquire panics with a message that deliberately still contains
+"time-out" (`Std.Regex.isTimeout`'s classifier scans for that exact
+phrase) so it still maps to `RegexError.TimedOut`, just with wording
+naming the real cause (system-wide in-flight cap, not this call's own
+slowness). Verified unchanged: `regex_redos_jvm_main.l` (still reports
+`Err(TimedOut)` within its 1.5s deadline) and
+`stdlib_jvm_kernels_self_test.l`'s normal-path regex cases (32/32).
+
+**#6583 — lyric-auth JVM CI coverage.** `Auth.Kernel.Jvm`'s structural
+JSON claim parser (JWT header/payload parsing, algorithm pinning per RFC
+8725 §3.1, claim validation) was only ever compiled on `--target jvm`
+(the existing #5571 feature-resolution build-only step), never executed:
+`auth_security_tests.l`'s 38-case suite ran exclusively on `--target
+dotnet`. Ran the full manifest test suite locally against a real
+`make lyric` build first, per the issue's own instruction to root-cause
+rather than skip a genuine JVM-specific gap if found — the whole suite
+(38 security cases + 4 aspect-weaving cases) passed cleanly with no
+compiler bug surfaced, so no curated subset or fix was needed; just wired
+`lyric test --manifest lyric-auth/lyric.toml --target jvm` as a new CI
+step in `compiler-self-tests-jvm`, plain `--target jvm` (no explicit
+`--features jvm`) to match the existing #5571 build step's own
+target-normalized feature-resolution coverage.
+
+**#6587 — JVM `Std.Environment.args()` class-init ordering hazard.**
+`_kernel_jvm/environment_host.l`'s module header documented a dormant
+(not reachable by anything in the tree) ordering hazard: a module-level
+`val` initializer calling `Std.Environment.args()` during some OTHER
+class's `<clinit>` — which the JVM can run ahead of `main()` ever
+executing — would read `__LyricJvmRuntime.commandLineArgs`'s zero-init
+`null` default and NPE with no indication of the real cause, since the
+`hostGetCommandLineArgs` call-site interception
+(`Jvm.Codegen.lowerBuiltinOrStaticCall`, `codegen/04_calls.l`) lowered
+straight to an unguarded `getstatic`. Added an explicit null check at
+that lowering site (array stashed to a local so the StackMapTable
+generator sees an empty operand stack at both the fall-through and the
+branch target, mirroring `lowerPatternTest`'s existing null-case-test
+discipline) that panics with a diagnostic naming the ordering hazard
+instead of an opaque NPE. New standalone repro
+(`lyric-compiler/jvm/env_args_ordering_jvm_main.l`, following the
+existing `env_args_jvm_main.l` pattern): a module-level `val` calling
+`args()` forces its own class's `<clinit>` to run before the entry-point
+wrapper's `main(String[])` body ever starts (JLS 12.4.1 — invoking a
+class's own static method requires that class's `<clinit>` to complete
+first), so this reliably reproduces the hazard without needing a
+separate class. Verified: the repro crashes with
+`ExceptionInInitializerError` wrapping the new diagnostic message
+(`main()` never reached, confirmed by the absence of its own "reached
+main()" print), while the pre-existing `env_args_jvm_main.l` (normal
+post-`main()` argv read) and `stdlib_jvm_kernels_self_test.l` test 5
+(`hostGetCommandLineArgs` via the in-process `lyric test` pipeline) both
+still pass unchanged.
+
+**#6630 — Result/Option accessor package-path qualification.**
+`monadAccessorType` (`typechecker_exprs.l`),
+`lowerBuiltinMonadAccessorMsil` (`msil/codegen.l`), and
+`lowerBuiltinMonadAccessorJvm` (`jvm/codegen/02_exprs.l`) all identified
+the `.isOk`/`.isErr`/`.value`/`.error`/`.isSome`/`.isNone` accessor
+sugar's receiver by testing only the bare last path segment (`nm ==
+"Result"`), matching any user- or library-defined 2-type-arg union named
+`Result` (or 1-type-arg `Option`) outside `Std.Core` too and lowering it
+against the real `Std.Core` case classes. Fixed the type checker by
+resolving `Std.Core`'s real `Result`/`Option` `TypeId` via
+`symTableTryFindInPackage` once and comparing by `TypeId` identity
+(`isStdCoreMonadType`) — the same TypeId-keyed soundness precedent
+`SymbolTable.impls` already documents for interface conformance (#2303).
+Fixed the MSIL backend by comparing the receiver's full resolved head FQN
+(`monadReceiverHeadFqnMsil`, already dotted-package-qualified) against
+the literal `"Std.Core.Result"`/`"Std.Core.Option"` instead of stripping
+to a short name. Audited the JVM backend and found it was already
+correct: `lowerBuiltinMonadAccessorJvm` matches `cls` against the
+receiver's FULL resolved JVM internal name (`"Std/Core/Result"`, every
+JVM class binary name carries its package), never a bare short name — no
+code change needed there, just a comment documenting the audit finding.
+Testing the fix surfaced a second, closely-related pre-existing gap: a
+foreign `Result`/`Option` union's `.isOk` (bare, non-call access) with no
+matching member of its own type-checked cleanly with NO diagnostic at
+all (unions are never "member-complete" per docs/59 A5, so
+`maybeUnknownMemberDiag`'s existing lenient fallback stayed silent) and
+reached MSIL codegen as an unresolved field read, producing a real
+`InvalidProgramException` at runtime — the exact #5183 miscompile this
+whole accessor feature exists to prevent, just for a foreign type.
+Closed with a new, narrowly-scoped diagnostic (T0124 — T0117-T0123 are
+all already taken by other diagnostics, `monadAccessorShapeMismatchDiag`):
+fires only when the receiver
+structurally matches `Result`/`Option`'s reserved shape AND the accessed
+name is one of the six reserved accessor names AND no real
+method/UFCS-function resolution already succeeded for it (ordering
+verified: a foreign `Result` that itself declares a dot-named
+`Result.isOk` function still correctly gets T0116 — "call it as
+'isOk(...)'" — not T0124). A genuinely-unrelated unknown member on the
+same foreign union still falls through to the ordinary silent-by-design
+union member-access path, unaffected. Documented in
+`docs/01-language-reference.md` §5.1 alongside T0113/T0116. Verified: a
+`ForeignResult` fixture (2-arg union literally named `Result`, no own
+`.isOk`) now fails loud with T0124 on both `--target dotnet` and
+`--target jvm` (previously: compiled cleanly on both, then
+`InvalidProgramException` at runtime on dotnet); `result_ensures_
+accessor_self_test.l` (the original #5183 test, both targets, 6/6) is
+unaffected.
+
+**Verification.** Full `make lyric` clean build. Targeted:
+`result_ensures_accessor_self_test.l` 6/6 (`--target dotnet` and
+`--target jvm`); `stdlib_jvm_kernels_self_test.l` 32/32; `lyric test
+--manifest lyric-auth/lyric.toml --target jvm` 38+4 passed (and
+`--target dotnet` unaffected, 38+4); `env_args_ordering_jvm_main.l` and
+`env_args_jvm_main.l` both behave as designed on `--target jvm`;
+`regex_redos_jvm_main.l` still reports `Err(TimedOut)` inside its 1.5s
+deadline on `--target jvm`; the foreign-`Result` T0124 fixture fails
+loud on both targets; `typechecker_self_test.l` 378/378,
+`contract_elaborator_self_test.l` 36/36, `modechecker_self_test.l` 92/92
+(no regression from the `monadAccessorType` signature change).
+
+**Related:** #6576, #6583, #6587, #6630, D-progress-808 (the original
+regex-timeout / `Std.Environment.args()` JVM landing these four follow
+up on), #5183 (the original Result/Option accessor feature #6630
+hardens).
