@@ -3957,10 +3957,35 @@ func lowerMethodCall(
   }
   match recvTy {
     case JRef(cls) -> {
-      insns.add(
-        LInvokevirtual(owner = cls, name = memberName, params = paramTys, ret = JRef(className = "java/lang/Object"))
-      )
-      JRef(className = "java/lang/Object")
+      // Every reference type declares `toString()`/`hashCode()`/`equals(Object)`
+      // via `java.lang.Object`, with a signature fixed by the JVM spec no
+      // matter what the receiver's OWN class is — so when this generic
+      // fallback is reached (no metadata for `cls` was resolvable; the more
+      // specific auto-FFI / in-package paths above all missed, typically an
+      // ecosystem/Maven-sourced extern type whose JAR isn't on the auto-FFI
+      // classpath, e.g. `lyric-resolver.jar` not configured), pin the known
+      // descriptor for these three instead of guessing `()Object` for
+      // everything. Without this, a chained Lyric stdlib String extension
+      // call off an untyped `.toString()` result (`name.toString().toLower()`,
+      // `Web.Kernel.Runtime.buildRequestHeaders`'s shape, #6565) fails
+      // auto-FFI resolution against `java.lang.Object` instead of `String` —
+      // every OTHER unknown method still degrades to the `()Object` guess,
+      // unchanged.
+      val objParams: List[JvmType] = newList()
+      objParams.add(JRef(className = "java/lang/Object"))
+      val isObjectEquals = memberName == "equals" and args.count == 1
+      val fallbackParams = if isObjectEquals { objParams } else { paramTys }
+      val fallbackRet = if memberName == "toString" and args.count == 0 {
+        JRef(className = "java/lang/String")
+      } else if memberName == "hashCode" and args.count == 0 {
+        JInt
+      } else if isObjectEquals {
+        JBoolean
+      } else {
+        JRef(className = "java/lang/Object")
+      }
+      insns.add(LInvokevirtual(owner = cls, name = memberName, params = fallbackParams, ret = fallbackRet))
+      fallbackRet
     }
     case _ -> {
       // The old fallback emitted NO instruction while reporting an Object
