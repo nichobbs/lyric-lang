@@ -883,6 +883,7 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
     interfaces = interfaces,
     impls = impls,
     protecteds = protecteds,
-    moduleVals = moduleVals
+    moduleVals = moduleVals,
+    importsStdString = fileImportsStdString(f)
   )
 }
