@@ -2455,6 +2455,19 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/inbundle_generics_self_test.l
 
+      # #6569 regression: a generic function calling a closure PARAMETER
+      # inside a loop conditional over a `slice[UserGenericRecord[K, V]]`
+      # parameter monomorphized to a specialization whose first parameter
+      # was erased to `Object` -- `NullReferenceException` on the very
+      # first call.  Re-verified already fixed on `main` when re-triaged
+      # against a from-source build; pinned here so a regression is
+      # caught immediately.  Compiled in-process through the self-hosted
+      # `Msil.Bridge`; imports only `Std.*`.
+      - name: Generic closure-over-container self-test (native lyric test, #6569)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/generic_closure_container_self_test.l
+
       # Extra barrier (batch 2a-split, #5933): THIS group produced two of the
       # four observed exit-135 random step kills (cross_package_generics on
       # PR #5910's run, restored_async on PR #5909's) — the runner killed one
@@ -6814,7 +6827,9 @@ jobs:
       # cross-package name-collision) was, and book_ch02_tests once #5955
       # (module-val dependent-initializer .cctor InvalidProgramException) was.
       # collections_persistent_tests (#684, #6575) joined covering the new
-      # Std.Collections.Persistent list ops.
+      # Std.Collections.Persistent list ops.  collections_persistent_map_tests
+      # (#6570) joined covering the new PersistentMap[K, V] ops -- dotnet-only
+      # (see that file's own header for why; #6708 tracks the JVM gap).
       # Deliberately still excluded (tracked, not silent): metadata_reader_tests
       # (#5624 placeholder Param rows; also needs LYRIC_LOAD_COMPILER=1).  Each
       # suite exits non-zero on any assertion failure or runtime fault.
@@ -6834,6 +6849,7 @@ jobs:
             errors_tests environment_tests string_tests string_methods_tests \
             regex_tests yaml_tests testing_tests mocking_tests xml_tests \
             set_tests sort_tests collections_persistent_tests \
+            collections_persistent_map_tests \
             book_ch01_tests book_ch02_tests book_ch03_tests book_ch04_tests \
             book_ch05_tests book_ch07_tests book_ch12_tests book_ch13_ffi_tests \
             kernel_bcl_tests xml_viability_tests; do
@@ -6841,12 +6857,17 @@ jobs:
             "$lyric_bin" run "lyric-stdlib/tests/$suite.l"
           done
 
-      # Std.Collections.Persistent on JVM (#684, #6577 review follow-up):
-      # the module is pure Lyric with no BCL/JDK extern boundary, so unlike
-      # most of the dotnet-only suites above it runs unmodified under
-      # `--target jvm` — verified locally before wiring this in.  Runs the
-      # same `collections_persistent_tests.l` suite already covered on
-      # dotnet above, so both targets are exercised for every push.
+      # Std.Collections.Persistent (List ops) on JVM (#684, #6577 review
+      # follow-up): the module is pure Lyric with no BCL/JDK extern
+      # boundary, so unlike most of the dotnet-only suites above it runs
+      # unmodified under `--target jvm` — verified locally before wiring
+      # this in.  Runs the same `collections_persistent_tests.l` suite
+      # already covered on dotnet above, so both targets are exercised
+      # for every push.  Deliberately does NOT run
+      # `collections_persistent_map_tests.l` (the PersistentMap ops
+      # added in #6570) — that suite is dotnet-only pending #6708, a
+      # separate JVM-backend generics-erasure gap; see that test file's
+      # own header for the full explanation.
       # `lyric run --target jvm` shells out to `java` on PATH; this job has
       # no other JVM step, so it needs its own setup-java (#6585 — JVM-target
       # class files require 21, see "class files target major version 65"

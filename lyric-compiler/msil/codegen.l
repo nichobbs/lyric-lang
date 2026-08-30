@@ -2943,6 +2943,21 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // var-index, its FIELD VAR(n) signature, and the VAR-form ctor params are
         // registered for the construction / field-read routing.
         val recGenerics = genericNamesOf(decl.generics)
+        // #6568: register the record's OWN arity BEFORE processing its fields
+        // (mirroring the union registration a few lines below, which already
+        // gets this order right).  A field whose type is the enclosing record
+        // itself — directly (`tail: Box[T]`) or nested inside another generic
+        // (`tail: Option[Box[T]]`) — is resolved via `typeExprToMsilG`, which
+        // looks the head FQN up in `cctx.genericTypeArity`.  Registering the
+        // arity only AFTER the field loop left every self-referential field on
+        // a RECORD (unlike a union case, which already registered first)
+        // unable to find its own type's arity, so the field's type argument
+        // silently erased to `MObject` instead of `MGenericInstByName` —
+        // the #6568 repro-2 `MissingMethodException` (ctor signature encoded
+        // the self-referential field as `object` instead of the real type).
+        if recGenerics.count > 0 and not cctx.genericTypeArity.containsKey(className) {
+          cctx.genericTypeArity.add(className, recGenerics.count)
+        }
         val recCtorParams: List[MsilType] = newList()
         var fi = 0
         var fpos = 0
@@ -3146,6 +3161,11 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         val className = pkgName + "." + decl.name
         registerTypeFqnCandidate(cctx, decl.name, className)
         val recGenerics = genericNamesOf(decl.generics)
+        // #6568: register the record's OWN arity BEFORE processing its fields —
+        // see the identical fix (and its rationale) on the IRecord arm above.
+        if recGenerics.count > 0 and not cctx.genericTypeArity.containsKey(className) {
+          cctx.genericTypeArity.add(className, recGenerics.count)
+        }
         val recCtorParams: List[MsilType] = newList()
         var fi = 0
         var fpos = 0
@@ -25071,6 +25091,20 @@ func typeExprToMsilG(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, g
     }
     case TParen(inner) -> typeExprToMsilG(cctx, inner, pkgName, generics)
     case TGenericApp(head, args) -> typeExprToMsilGApp(cctx, head, args, pkgName, generics)
+    // #6568 repro-3: a `slice[T]` field on a generic record/union case (a
+    // CONTAINER of the enclosing type's own parameter, not a bare `T`) fell
+    // through to the generics-blind `typeExprToMsilCtx`, which resolves `T`
+    // via `cctx.pbGenerics` to plain `MObject` — so the FIELD/ctor-param
+    // signature registered `object[]` instead of the VAR-carrying `!0[]`
+    // (`MArray(elemTy = MTypeVar(n))`).  A `Box[Int]` instance then stored a
+    // real `int32[]` into a field statically typed `object[]`, corrupting
+    // reads (garbage values / `MissingFieldException`) at every consumer.
+    // Recurse the element through `sliceElemMsilG` — mirrors the `List`/`Map`/
+    // `Set` arms in `typeExprToMsilGApp` just below, and the array element
+    // then encodes correctly via `bufMsilTypeSigSlot`'s `MArray` handling
+    // (which already special-cases an `MTypeVar` element, e.g. `!0[]` on the
+    // stdlib `List<T>.ToArray()`).
+    case TSlice(elem) -> MArray(elemTy = sliceElemMsilG(cctx, elem, pkgName, generics))
     case _ -> typeExprToMsilCtx(cctx, te, pkgName)
   }
 }
@@ -25103,6 +25137,31 @@ func sliceElemMsilG(cctx: in CodegenCtx, elem: in TypeExpr, pkgName: in String, 
 // value-typed element (e.g. a bare type-variable element erased to a
 // value-typed context, or a nested generic-parameter struct) still gets an
 // unboxed-element `List<T>` rather than falling all the way to `List<object>`.
+// `collElemConcrete` plus `MTypeVar` — used ONLY by `typeExprToMsilGApp`
+// below (#6568 List[T]/Map[K,V] field-container follow-on for the slice[T]
+// fix above).  A `List[T]`/`Map[K,V]` field on a generic record/union case
+// whose element/key/value is the enclosing type's OWN parameter must reify
+// as a genuine open `List`1<!0>`/`Dictionary`2<!K,!V>` (`MConcreteList`/
+// `MConcreteMap` carrying an `MTypeVar` element) — not erase to `object` —
+// so the FIELD/ctor signature stays generic instead of degrading to
+// `List<object>`/`Dictionary<object,object>` (which corrupts every
+// concrete instantiation's stored element, same root cause as the
+// `slice[T]` bug).  `bufMsilTypeWithCtx`'s `MConcreteList`/`MConcreteMap`
+// arms already encode an `MTypeVar` element/key/value correctly (plain
+// `bufMsilTypeWithCtx` recursion, no extra casing needed), and
+// `substituteTypeVarsMsil` already recurses into `MConcreteList`/
+// `MConcreteMap` to resolve the field's concrete type at each read site —
+// this is purely widening WHICH representation gets chosen, not new
+// encoding/substitution machinery.  Never used for the generic-FUNCTION
+// body/signature erasure paths (`typeExprToMsilGenBody`/`typeExprToMsilGenSig`),
+// which erase a type variable to `MObject` before this would ever see it.
+func collElemConcreteG(t: in MsilType): Bool {
+  match t {
+    case MTypeVar(_) -> true
+    case _ -> collElemConcrete(t)
+  }
+}
+
 func typeExprToMsilGApp(
   cctx: in CodegenCtx,
   head: in ModulePath,
@@ -25115,7 +25174,7 @@ func typeExprToMsilGApp(
     match args[0] {
       case TAType(elemTe) -> {
         val elemTy = sliceElemMsilG(cctx, elemTe, pkgName, generics)
-        if collElemConcrete(elemTy) {
+        if collElemConcreteG(elemTy) {
           MConcreteList(elemTy = elemTy)
         } else if isValueType(elemTy) {
           MListOf(elemTy = elemTy)
@@ -25134,7 +25193,7 @@ func typeExprToMsilGApp(
       case TAType(vte) -> sliceElemMsilG(cctx, vte, pkgName, generics)
       case TAValue(_) -> MObject
     }
-    if collElemConcrete(keyTy) and collElemConcrete(valTyRaw) {
+    if collElemConcreteG(keyTy) and collElemConcreteG(valTyRaw) {
       MConcreteMap(keyTy = keyTy, valTy = valTyRaw)
     } else {
       val mapValTy = if isValueType(valTyRaw) { valTyRaw } else { MObject }

@@ -166,9 +166,32 @@ println(toString(plistLength(b)))                          // 4
 
 `plistHead`/`plistLookup` are O(1); `plistCons`/`plistTail`/`plistInsert`/`plistDelete` rebuild the backing slice, O(n). `plistToList`/`plistFromList` convert to and from `Std.Collections.List[T]`.
 
-Pure Lyric, no BCL/JDK extern boundary, so it works identically on every target and contracts/proofs apply throughout, per D038.
+Pure Lyric, no BCL/JDK extern boundary, so the List ops work identically on every target and contracts/proofs apply throughout, per D038.
 
-A persistent `Map` (and, as a stretch goal, a `Set`) were also planned for this module. Building them surfaced reproducible self-hosted MSIL backend bugs with no working precedent anywhere in this codebase — a classic cons-list/BST node shape (a case field typed as the enclosing generic type's own open instantiation) corrupts field reads at runtime (issue #6568), and a generic function that invokes a closure parameter inside a loop over a `slice[UserGenericRecord[K, V]]` parameter (the natural shape for a comparator/equality-keyed map) monomorphizes with a corrupted first-parameter signature (issue #6569). Both are deferred to a tracked follow-up (#6570) rather than shipped broken or stubbed; see the module's header doc comment (`lyric-stdlib/std/collections_persistent.l`) for the full detail.
+The same module also ships a persistent `Map[K, V]` (#6570), following the same bare-value representation: a `PersistentMap[K, V]` is a bare `slice[MapEntry[K, V]]` — a persistent association list, keyed by a caller-supplied equality predicate rather than a hash or ordering (Lyric has no generic `Eq`/`Ord` interface to dispatch on):
+
+```lyric
+import Std.Collections
+import Std.Collections.Persistent
+
+func intEq(a: in Int, b: in Int): Bool { a == b }
+
+val empty: slice[MapEntry[Int, String]] = []
+val m1 = pmapInsert(empty, 1, "one", intEq)
+val m2 = pmapInsert(m1, 2, "two", intEq)
+// `m1` is unchanged — deriving `m2` never mutates it.
+match pmapLookup(m2, 1, intEq) {
+  case Some(v) -> println(v)   // "one"
+  case None -> println("missing")
+}
+println(toString(pmapSize(m2)))   // 2
+```
+
+`pmapSize`/`pmapIsEmpty` are O(1); `pmapLookup`/`pmapContainsKey`/`pmapInsert`/`pmapDelete` are O(n) — this is a naive-but-correct v1 (a persistent association list), not a balanced BST, matching the "reasonable complexity" bar the original #684 issue asked for. `pmapInsert` replaces an existing key's value in place, keeping its position, rather than growing the map; `pmapDelete` of a missing key is a documented no-op. `pmapToList`/`pmapFromList` convert to and from a `List[MapEntry[K, V]]`.
+
+`PersistentMap` is **`--target dotnet` only** for now: building it surfaced a separate, still-open self-hosted JVM backend generics-erasure gap (issue #6708) — reading a field off an element indexed out of a generic function's returned `List[MapEntry[K, V]]` fails to compile — unrelated to and unblocked by the two self-hosted **MSIL** backend bugs building it also found and fixed (issues #6568 and #6569, both fixed in the same change as `PersistentMap` shipped; see the module's header doc comment, `lyric-stdlib/std/collections_persistent.l`, for the full detail on all three). `PersistentList[T]` above is unaffected and stays verified on both targets.
+
+`PersistentSet[T]` remains an unshipped stretch goal.
 
 ## §12.5 `Std.Time`
 

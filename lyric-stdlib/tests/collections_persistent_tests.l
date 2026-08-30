@@ -13,9 +13,10 @@
 //! "modifying" op here does a full O(n) rebuild of a bare `slice[T]`
 //! (see the module's own header doc comment).
 //!
-//! Map/Set operations are deferred to a follow-up (see the module's
-//! header doc comment for the backend gaps found while building them) —
-//! not tested here because they are not shipped in this module.
+//! `PersistentMap[K, V]` (#684, #6570) ships in the same module but is
+//! tested separately in `collections_persistent_map_tests.l` — dotnet-only
+//! for now, see that file's header for why.  Set operations remain a
+//! stretch goal, not shipped in this module.
 package Std.Collections.Persistent.Tests
 
 import Std.Core
