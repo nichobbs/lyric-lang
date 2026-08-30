@@ -36801,3 +36801,72 @@ Full `auto_ffi_jvm_self_test.l` (50/50), `bitwise_self_test.l` (10/10),
 
 **Related:** #6745, #6696, #6662, #6631, D-progress-834 (the sibling
 `Lyric.Mono` generic-marker gap this incidentally works around).
+
+---
+
+## D-progress-843 — CLI: apply D-progress-817's `dllMatters` gate to `lyric test --target jvm --manifest` too (#6750)
+
+**Status:** Shipped.
+
+**Context.** D-progress-817 (#6697) fixed `resolveManifestDependencies`
+(cli/workspace_builder.l, the `lyric build --manifest` resolver) and
+`emitSingleFileWithWorkspaceMembers` (cli/cli_build.l) so a path/
+workspace/NuGet-Lyric dependency's stray `--target dotnet`-built
+`bin/<name>.dll` never reaches `EmitProjectRequest.restoredDllPaths` on
+Jvm — `emitProjectJvmInProcess`'s restored-dep loop (D-progress-811,
+#3094) reads that field as a JVM producer JAR and hard-fails
+(`restored JVM dep '...' failed to load: restored DLL has no
+Lyric.Contract resource`) when handed an MSIL PE instead. `cli/cli_test.l`
+(`cmdTestManifest`, the `lyric test --manifest` whole-project runner) has
+its OWN independent copy of this dependency-resolution logic — a
+`resolveDepDllPath`-based Path branch and a `nugetLyricEntries` loop, both
+predating D-progress-817 — and was never updated with the same gate. A
+review of PR #6631's current diff (issue #6750) flagged this: the fix's
+own D-progress-811 change (making a JVM restored-dep load failure fatal,
+where the pipeline previously didn't consume `restoredDllPaths` for Jvm
+at all) turned the pre-existing gap in `cmdTestManifest` into a live
+regression — `lyric test --target jvm --manifest <path>` on a project
+whose path dependency had already been built once for `--target dotnet`
+(the ordinary "build the dep, then test a JVM consumer" sequence) crashed
+with the same "restored JVM dep '...' failed to load" message.
+
+**Fix.** Same shape as D-progress-817, applied to `cmdTestManifest`'s
+copy: a `dllMatters = not targetJvm` local now gates both the Path
+branch's `restoredDlls.add(...)` (skipping the transitive-dep walk too)
+and its "could not be built" fatality — an existing or missing `.dll`
+only matters on Dotnet, since Jvm compiles the dependency's SOURCE
+(`depTemplatePkgsList`, folded into `libPkgs`) into the bundle directly.
+The `nugetLyricEntries` loop now routes through `nugetThirdPartyPaths` on
+Jvm instead of `restoredDlls`, surfacing the existing "NuGet assembly
+resolution is not yet supported on the JVM target" `W0006` warning rather
+than crashing — mirroring `resolveManifestDependencies`'s NuGet branch
+exactly. A stale comment on the `{ workspace = true }` branch claiming
+"the JVM backend never reads `restoredDllPaths`" (true before
+D-progress-811, false after) was also corrected so it doesn't mislead the
+next reader into re-introducing this bug in a third copy.
+
+Deliberately NOT deduplicated into a shared helper in this change:
+`cli_test.l`'s Path branch is intertwined with `cmdTestManifest`'s own
+dep-build topo-order loop (`resolveDepDllPath`/`testExt`-keyed, not
+`workspace_builder.l`'s inline manifest-parse-and-derive shape) and its
+own `depBinDirs` runtime-probing collection, so extracting a shared
+`dllMatters`-gated helper across both call shapes would be a larger
+refactor than this fix's scope justifies. The duplication is now at
+least consistent, not divergent; a follow-up to unify the three
+independent copies (`resolveManifestDependencies`,
+`emitSingleFileWithWorkspaceMembers`, `cmdTestManifest`) behind one
+shared resolver is worth doing but out of scope here.
+
+Reproduced the crash first (fix reverted, rebuilt, `lyric test --target
+jvm --manifest` on a fixture whose path dependency was pre-built for
+`--target dotnet` failed with the exact "restored JVM dep '...' failed to
+load: restored DLL has no Lyric.Contract resource" message), then
+verified green: `jvm_path_dependency_self_test.l` (7/7, including the new
+#6750 case), `cli_workspace_builder_self_test.l` (20/20).
+
+**Files:** `lyric-compiler/lyric/cli/cli_test.l`,
+`lyric-compiler/lyric/jvm_path_dependency_self_test.l`.
+
+**Related:** #6750, #6697, D-progress-817 (the fix this mirrors),
+D-progress-811 (#3094, the JVM restored-dep loader that made this a
+regression), #6264, #6136.

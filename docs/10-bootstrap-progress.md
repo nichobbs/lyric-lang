@@ -32804,3 +32804,39 @@ standard.
 `lyric-compiler/jvm/unsigned_int_ops_jvm_self_test.l` (new).
 
 **Related:** #6748, #6661, #6695, D-progress-814, D-progress-840.
+
+### D-progress-843 — CLI: apply D-progress-817's `dllMatters` gate to `lyric test --target jvm --manifest` too (#6750)
+
+D-progress-817 (#6697) fixed `resolveManifestDependencies`
+(cli/workspace_builder.l) and `emitSingleFileWithWorkspaceMembers`
+(cli/cli_build.l) so a path/workspace/NuGet-Lyric dependency's stray
+`--target dotnet`-built `.dll` never reaches
+`EmitProjectRequest.restoredDllPaths` on Jvm. `cli/cli_test.l`
+(`cmdTestManifest`, the `lyric test --manifest` runner) has its own
+independent copy of this dependency-resolution logic and was never
+updated with the same gate, so `lyric test --target jvm --manifest
+<path>` on a project whose path dependency had already been built once
+for `--target dotnet` still crashed with "restored JVM dep '...' failed
+to load: restored DLL has no Lyric.Contract resource".
+
+Same fix shape as D-progress-817: a `dllMatters = not targetJvm` local
+now gates `cmdTestManifest`'s Path branch (`restoredDlls.add` + the
+transitive-dep walk, and the "could not be built" fatality) and its
+`nugetLyricEntries` loop routes through `nugetThirdPartyPaths` on Jvm
+instead of `restoredDlls`, mirroring `resolveManifestDependencies`
+exactly. A stale comment claiming "the JVM backend never reads
+`restoredDllPaths`" (true before D-progress-811, false after) was
+corrected too.
+
+Reproduced the crash first (fix reverted, rebuilt, `lyric test --target
+jvm --manifest` on a pre-built-for-dotnet path-dependency fixture failed
+with the exact message), then verified green: `jvm_path_dependency_self_test.l`
+(7/7, new #6750 case exercising `Cli.main(["test", "--target", "jvm",
+"--manifest", ...])` end-to-end), `cli_workspace_builder_self_test.l`
+(20/20, regression guard).
+
+**Files:** `lyric-compiler/lyric/cli/cli_test.l`,
+`lyric-compiler/lyric/jvm_path_dependency_self_test.l`.
+
+**Related:** #6750, #6697, D-progress-817, D-progress-811, #3094, #6264,
+#6136.

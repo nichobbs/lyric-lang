@@ -1279,8 +1279,21 @@ func cmdTestManifest(
           match resolveDepDllPath(depToml, testExt) {
             case Ok(info) -> {
               val depBinDir = Path.dirname(info.dllPath)
+              // #6750: mirrors `resolveManifestDependencies`'s `dllMatters`
+              // gate (#6697) — a path dependency's own `bin/<name>.dll` is
+              // always an MSIL PE (the manifest's `output_assembly` names a
+              // plain `.dll` regardless of what target built it), never a
+              // JVM-compatible JAR. On Jvm the dep's SOURCE is what matters
+              // (compiled directly into the bundle below via
+              // `depTemplatePkgsList`, folded into `libPkgs`) — a stray
+              // leftover `.dll` from an earlier `--target dotnet` build of
+              // the same dependency directory must never reach
+              // `EmitProjectRequest.restoredDllPaths`, or the JVM
+              // restored-dep loader (`Lyric.RestoredPackages.loadRestoredPackageJvm`,
+              // #3094) hard-fails trying to read it as a JAR.
+              val dllMatters = not targetJvm
               if File.fileExists(info.dllPath) {
-                if not stringListContains(seenDeps, dep.name) {
+                if dllMatters and not stringListContains(seenDeps, dep.name) {
                   restoredDlls.add(dep.name + "\t" + info.dllPath)
                   seenDeps.add(dep.name)
                   collectTransitiveDepDlls(depDir, wsCtxOpt, seenDeps, restoredDlls)
@@ -1297,7 +1310,7 @@ func cmdTestManifest(
                 if not alreadyHave {
                   depBinDirs.add(depBinDir)
                 }
-              } else {
+              } else if dllMatters {
                 printErr("test: local dep '" + dep.name + "' could not be built")
                 return 1
               }
@@ -1370,9 +1383,10 @@ func cmdTestManifest(
         // `depTemplatePkgsList` regardless of target — on Dotnet this feeds
         // cross-package aspect/wire-template resolution (parity with a
         // `path = "..."` dep, #3498); on Jvm it is additionally compiled as a
-        // real bundle package below (folded into `libPkgs`), since the JVM backend
-        // never reads `restoredDllPaths` and has no other way to see a
-        // workspace dependency's symbols (#6136).
+        // real bundle package below (folded into `libPkgs`) — a `{ workspace
+        // = true }` dep's own `.dll` is never a JVM-compatible restored-dep
+        // JAR (#6750, mirroring the Path branch above), so its SOURCE is the
+        // only way Jvm sees the workspace dependency's symbols (#6136).
         match wsCtxOpt {
           case None -> ()
           case Some(wsCtx) -> {
@@ -1446,8 +1460,24 @@ func cmdTestManifest(
   val nugetPaths = allNugetAssets.dllPaths
   warnIfNugetUnresolved(mfDir, manifest.nuget, nugetPaths)
   val (nugetLyricEntries, nugetThirdPartyPaths) = partitionNugetLyricDeps(nugetPaths)
-  for entry in nugetLyricEntries {
-    restoredDlls.add(entry)
+  // #6750: NuGet is the dotnet-only package channel (docs/39
+  // §"NuGet.org as the .NET channel"; Maven is the JVM channel), so a
+  // NuGet-restored Lyric package's MSIL `.dll` can't satisfy the JVM
+  // restored-dep JAR loader either (#6697 applied the same routing to
+  // `resolveManifestDependencies`) — route it through
+  // `nugetThirdPartyPaths` instead so it surfaces via the existing
+  // "NuGet assembly resolution is not yet supported on the JVM target"
+  // W0006 warning rather than crashing the build.
+  if targetJvm {
+    for entry in nugetLyricEntries {
+      val tabPos = Str.indexOfRaw(entry, "\t")
+      val entryPath = if tabPos >= 0 { entry.substring(tabPos + 1, entry.length - tabPos - 1) } else { entry }
+      nugetThirdPartyPaths.add(entryPath)
+    }
+  } else {
+    for entry in nugetLyricEntries {
+      restoredDlls.add(entry)
+    }
   }
   val nativeAssetPaths = allNugetAssets.nativePaths
 
