@@ -1368,6 +1368,18 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/list_literal_index_self_test.l
 
+      # Double-stringification fixed/scientific-notation boundary self-test
+      # (#5660 follow-up, review finding #6749 against PR #6631). Pins the
+      # exp=16/exp=17 threshold in `emitNormalizeDoubleString`
+      # (jvm/codegen/02_exprs.l) against real .NET output, at and one ULP
+      # either side of the boundary — the existing silent_miscompile_guard_jvm
+      # cases all sat well clear of it. dotnet half is the real .NET output;
+      # the JVM half (below) must match it exactly. Imports only `Std.*`.
+      - name: Double-stringification boundary self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/double_stringify_boundary_self_test.l
+
       # Extra barrier (batch 1a-split-2, #5859): the sub-batch below the
       # 1a-split barrier had grown to 13 concurrent steps — one below the
       # ~14-step cap the header documents, and the exit-135 SIGBUS flake
@@ -3755,6 +3767,17 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/list_literal_index_self_test.l
+
+      # Double-stringification fixed/scientific-notation boundary self-test,
+      # JVM leg (#5660 follow-up, review finding #6749 against PR #6631):
+      # asserts `emitNormalizeDoubleString`'s exp=16/exp=17 threshold against
+      # the SAME strings the dotnet leg (compiler-self-tests-dotnet-a) gets
+      # from real .NET `Double.ToString()`, at and one ULP either side of the
+      # boundary. Imports only `Std.*`.
+      - name: Double-stringification boundary self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/double_stringify_boundary_self_test.l
 
       # Distinct/range-subtype static-factory self-test on JVM (#5956): the
       # JVM backend now emits the same `Type.from`/`Type.tryFrom` construction
