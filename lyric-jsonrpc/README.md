@@ -94,16 +94,24 @@ see the referenced file/function for the in-code repro notes.
    goes through `match` instead of `== Some(...)` (see `json_tests.l`'s
    module-level NOTE).
 
-5. **Calling a generic `Std.Core` function (`isSome`/`isNone`/
+5. **FIXED.** Calling a generic `Std.Core` function (`isSome`/`isNone`/
    `unwrapOption`) with several different concrete type arguments across
-   one file intermittently crashes at runtime**. Filed as [#6121](https://github.com/nichobbs/lyric-lang/issues/6121). with `Msil.Codegen: match
+   one file intermittently crashed at runtime. Filed as [#6121](https://github.com/nichobbs/lyric-lang/issues/6121), with `Msil.Codegen: match
    not exhaustive in <Pkg>.isSome__Object` / an analogous JVM message —
-   even though each individual call type-checks and the same call
-   sometimes runs correctly in a different `lyric test` invocation of the
+   even though each individual call type-checked and the same call
+   sometimes ran correctly in a different `lyric test` invocation of the
    *identical* source (non-deterministic across runs, not across calls
-   within one run). Reproducible enough to catch in this library's own
-   CI-shaped test loop but not narrowed to a single minimal trigger.
-   **Workaround**: `json_tests.l` uses fully concrete (non-generic),
+   within one run). Root cause: `Lyric.Mono`'s call-site inference
+   environment (`env`) was a single mutable map shared across an entire
+   file's monomorphization pass with no scope isolation, so a generic
+   call's inferred type argument could leak into and overwrite a sibling
+   call's binding depending on visitation order — non-deterministic
+   because that order depended on unrelated file state. Fixed by scoping
+   `env` per call site via `snapshotEnv`/`restoreEnv` at every
+   scope-introducing construct (blocks, loops, `try`/`catch`/`finally`,
+   match arms, lambdas). The workaround below is no longer required but
+   is left in place since it costs nothing to keep. **Former
+   workaround**: `json_tests.l` uses fully concrete (non-generic),
    single-purpose assertion helpers (`assertIsNoneString`,
    `assertIsSomeArray`, ...) instead of one generic `assertIsSome[T]` —
    see its module-level NOTE for the full account, including the JVM-only
