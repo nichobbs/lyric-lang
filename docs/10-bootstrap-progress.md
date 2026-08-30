@@ -30726,6 +30726,21 @@ mechanism and not attempted here; filed as #6565. The CI-equivalent
 single-file build path (what `compiler-self-tests-jvm` actually exercises)
 remains the verified JVM path for this library in the meantime.
 
+**#6565 is now fixed (D-progress-818).** Two gaps, both closed:
+`Lyric.TypeChecker`'s `SFor` element-type resolution only special-cased the
+literal generic name `List`, so any OTHER single-type-parameter generic
+(including this extern-collection phantom-type-param idiom) fell through to
+`TyError`/`Object`; and `Jvm.Codegen.lowerMethodCall`'s metadata-unresolvable
+fallback blanket-guessed `()Object` for every method, including the three
+`java.lang.Object`-inherited ones (`toString`/`hashCode`/`equals`) whose
+signature the JVM spec fixes regardless of the receiver's real class. `lyric
+build --manifest lyric-web/lyric.toml --target jvm` now succeeds end-to-end
+against a source build with a restored Maven classpath for
+`io.undertow:undertow-core`, confirmed via `Cli.buildProject` in
+`jvm_auto_ffi_bridge_self_test.l`. The multi-file `--manifest` project path
+is now a verified JVM path for this library too, alongside the CI-equivalent
+single-file build path above.
+
 Surfacing the qualified stdlib type `Std.Tls.TlsServerConfig` in lyric-web's
 public API additionally required a compiler fix in
 `Lyric.RestoredPackages.synthesiseArtifact`: its standalone contract recheck

@@ -275,6 +275,25 @@ pub func checkStatement(
                 iterArgs[0]
               } else if iterName == "MapValueCollection" and iterArgs.count == 2 {
                 iterArgs[1]
+              } else if iterArgs.count == 1 {
+                // Any other single-type-parameter generic collection follows
+                // the same List[T] convention: the sole type parameter IS the
+                // element type.  This covers extern generic collections
+                // (e.g. `extern type JHttpStringCollection[T] = "java.util.Collection"`,
+                // the phantom-type-param idiom `Web.Kernel.Runtime`'s
+                // `headerNamesOf` uses to expose a JDK `Collection<HttpString>`)
+                // as well as any other Lyric-native single-param generic
+                // (`Set[T]`, a user-defined wrapper, …) — before this arm,
+                // only the literal name `List` got a typed element and
+                // everything else fell through to `TyError`, silently
+                // erasing the loop variable to `Object` and breaking any
+                // extension-method call chained on it downstream (JVM
+                // auto-FFI resolving against `java.lang.Object` instead of
+                // the real element type, #6565).  A type that isn't actually
+                // iterable at runtime is still not separately rejected here
+                // — as with the `Map[K,V]` case above, codegen owns that
+                // rejection.
+                iterArgs[0]
               } else {
                 TyError
               }

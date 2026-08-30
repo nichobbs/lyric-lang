@@ -584,3 +584,50 @@ test "slice[JObject] parameter: indexed element resolves through the real java.l
     "xs[0].toString() resolves via java.lang.Object, not a NoClassDefFoundError same-package guess"
   )
 }
+
+// ── `for`-loop over an EXTERN generic collection types the loop variable as
+// the real element type, not Object (#6565) ──────────────────────────────
+//
+// `extern type JHttpStringCollection[T] = "java.util.Collection"` in
+// `lyric-web/src/_kernel/jvm/web_kernel.l`'s `headerNamesOf` is the
+// phantom-type-param idiom: the real runtime type is
+// `java.util.Collection<HttpString>`, but Lyric's `extern type` grammar has
+// no way to spell a fixed JVM generic argument, so the declaration carries a
+// Lyric-only type parameter `T` that the AUTHOR instantiates at each call
+// site (mirroring `Std.CollectionsHost`'s `MapKeyCollection[K,V]` /
+// `MapValueCollection[K,V]`).  Before this fix, `Lyric.TypeChecker`'s
+// `SFor` element-type resolution (`typechecker_stmts.l`) only recognized
+// the literal name `List` for a single-type-parameter generic — every other
+// single-param generic, extern or not, fell through to `TyError`, so the
+// loop variable's static type erased to `Object`.  A JVM auto-FFI method
+// call on that untyped variable then resolved against `java.lang.Object`
+// instead of the real element type and failed to compile
+// ("no matching instance or inherited method for 'java.lang.Object.<m>()'")
+// — exactly the failure that broke `lyric build --manifest
+// lyric-web/lyric.toml --target jvm` end to end.
+extern type JCollectionOfString[T] = "java.util.Collection"
+
+// Mirrors `headerNamesOf`: an auto-FFI call (`HashMap.values()`, a real JDK
+// method returning `java.util.Collection<V>`) whose result is trusted into
+// the declared phantom-generic return type.
+func stringValuesOf(m: in JHashMap): JCollectionOfString[JString] {
+  m.values()
+}
+
+test "for-loop over an extern generic collection types the loop variable as the collection's real element type, not Object (#6565)" {
+  val m = JHashMap.new()
+  m.put("a", "Alpha")
+  m.put("b", "Beta")
+  var loweredLen = 0
+  for v in stringValuesOf(m) {
+    // `v` must be statically typed `JString` (not `Object`) for BOTH of
+    // these to resolve: `.toString()` is a JVM auto-FFI instance call on
+    // `v` itself, and `.toLower()` is a Lyric stdlib extension method
+    // (`Std.String.toLower(s: in String)`) that only exists for `String` —
+    // the exact two-hop shape `Web.Kernel.Runtime.buildRequestHeaders` uses
+    // (`name.toString().toLower()`).
+    val lowered = v.toString().toLower()
+    loweredLen = loweredLen + lowered.length
+  }
+  assertEqualInt(loweredLen, 9, "\"alpha\".length (5) + \"beta\".length (4) == 9")
+}
