@@ -34815,7 +34815,7 @@ tests; `llvm_http_client_self_test.l` genuinely green locally via the NuGet
 (`_kernel_native/tcp_host.l`, `_kernel_native/http_host.l`,
 `llvm_http_client_self_test.l`).
 
-## D-progress-817 — `_kernel_native/http_host.l`: strip `Authorization`/`Cookie`/`Proxy-Authorization` on a cross-authority redirect (PR #6623 review finding)
+## D-progress-826 — `_kernel_native/http_host.l`: strip `Authorization`/`Cookie`/`Proxy-Authorization` on a cross-authority redirect (PR #6623 review finding)
 
 **Context.** `claude-review`'s pass on PR #6105/#6623 (D-progress-823's
 native `Std.Http` client twin) found a real gap in
@@ -34882,7 +34882,7 @@ N3.2 gap this fix's "not yet live-exploitable" reasoning depends on).
 ## D-progress-818 — `_kernel_native/http_host.l`: CRLF/header-injection guard (#6635) + response size limits (#6636), and a genuine native-codegen bug found along the way (#6637/#6645)
 
 **Context.** A second `claude-review` pass on PR #6623 (D-progress-823's
-native `Std.Http` client twin, already extended once by D-progress-817's
+native `Std.Http` client twin, already extended once by D-progress-826's
 redirect-header-stripping fix) found two REQUIRED findings, both reachable
 today through `Std.Http`'s free functions (`sendAsync`/`getAsync`/
 `postAsync`), independent of the separate N3.2 `HttpClient`-interface
@@ -34992,14 +34992,14 @@ exact scenario (the server never sends 99999999 bytes either way), so a
 looser assertion would pass even with the cap fix reverted — caught by
 deliberately disabling the cap check locally and confirming the looser
 assertion's false pass before tightening it. Both new tests (and item F
-from D-progress-817) were verified as genuine regression checks by
+from D-progress-826) were verified as genuine regression checks by
 disabling each fix in turn and confirming the corresponding test fails,
 then restoring and confirming all 4 pass clean. `lyric fmt --write`
 applied clean (no refusals) to both changed files.
 
 **Related:** #6623 (the PR both fixes and the workaround ship in), #6635,
 #6636 (the two REQUIRED review findings), #6645 (the native-codegen bug
-tracking issue), D-progress-823 (original entry), D-progress-817 (the
+tracking issue), D-progress-823 (original entry), D-progress-826 (the
 prior review-fix round on this same PR).
 
 ## D-progress-819 — `_kernel_native/http_host.l`: inverted TLS-downgrade check (#6646) + wrong-base overflow guard (#6647), both third-review findings on the D-progress-818 fixes themselves
@@ -35012,7 +35012,7 @@ added, both untested by that round's self-test suite, and both undermining
 the very fixes they sit beside:
 
 - **#6646 — `isSameRedirectAuthority`'s scheme clause inverted.**
-  D-progress-817's original fix wrote `(from.isHttps or not to.isHttps)`
+  D-progress-826's original fix wrote `(from.isHttps or not to.isHttps)`
   in the `and`-chain guarding whether a redirect strips
   `Authorization`/`Cookie`/`Proxy-Authorization`. This makes an `https://`
   → `http://` redirect to the identical host:port evaluate as "same
@@ -35065,14 +35065,14 @@ corresponding test fails, then restoring and confirming all 6 pass clean.
 `lyric fmt --write` applied clean (no diff) to both changed files.
 
 **Related:** #6623 (the PR both fixes ship in), #6646, #6647 (the two
-REQUIRED findings), D-progress-817 (the original, inverted
+REQUIRED findings), D-progress-826 (the original, inverted
 `isSameRedirectAuthority`), D-progress-818 (the original, wrong-threshold
 `parseHexInt` guard).
 
 ## D-progress-820 — `_kernel_native/http_host.l`: cumulative chunk-size overflow bypasses the body-size cap (#6656), a fourth review round on this same PR
 
 **Context.** A FOURTH `claude-review` pass on PR #6623 confirmed
-D-progress-817/809/810's fixes correct and closed #6646/#6647, but found
+D-progress-826/818/819's fixes correct and closed #6646/#6647, but found
 one more REQUIRED bug in the same area: `readChunkedBody`'s cumulative
 cap check, `if acc.count + size > maxResponseBodyBytes`, is itself
 overflow-prone. D-progress-819's #6647 fix bounds a SINGLE chunk-size
