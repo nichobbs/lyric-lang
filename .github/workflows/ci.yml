@@ -2340,6 +2340,35 @@ jobs:
       # header documents as issue #5995), asserting the deterministic
       # first-wins outcome `Msil.Codegen` already documents.
       #
+      # llvm_inout (N9.6, #6794, unblocks #6808: `out`/`inout` function
+      # parameters were not lowered at all for `--target native` --
+      # `Lyric.LlvmCodegen` panicked unconditionally. The fix synthesizes
+      # an implicit pointer parameter for each `out`/`inout` parameter (the
+      # ADDRESS of the caller's storage cell) with no callee-side alloca --
+      # every local read/write already treats `ctx.varSlots[name]` as a
+      # bare pointer, so aliasing the parameter name directly to the
+      # incoming pointer gives true by-ref semantics matching MSIL's
+      # `MByRef`/JVM's boxed-cell lowering, including free chained
+      # forwarding (an `inout` parameter passed on to another `inout` call,
+      # the shape `Std.HttpEngine`'s H2 frame dispatch uses pervasively).
+      # Nine cases: a scalar `inout Int` mutated across repeated calls, an
+      # `out Int` parameter, two independent `inout` params in one call,
+      # chained `inout` forwarding through a nested call, the exact
+      # `record St { var n: Int }` / `bump(s: inout St)` repro from #6808's
+      # own writeup, an `inout` argument that is a nested record field
+      # access, two ARC cases under ASan (a `String` field reassignment
+      # churn, and a record with a ref-typed field both mutated in place
+      # and wholesale-replaced mid-loop -- proving retain-new/release-old
+      # runs correctly through the by-ref alias), and a loud diagnostic
+      # (not a silent miscompile) for the documented scope cut -- an
+      # index-expression by-ref argument. Real-world validation:
+      # `Std.HttpEngine.H2Frame`'s entire `inout FrameDecoder` mutually-
+      # recursive dispatch chain (5 `inout` sites) now compiles and runs
+      # for `--target native`; the sibling `Hpack`/`H2Conn` files still hit
+      # a separate, pre-existing gap (`Std.Char` has no `_kernel_native`
+      # twin, so its Huffman codec's char<->int bridge is unresolvable on
+      # native) -- unrelated to this fix and tracked separately.
+      #
       # The tests import `Lyric.Llvm*` compiler packages by source, so
       # LYRIC_LOAD_COMPILER=1.
       - name: Native backend self-tests (lyric-rt + llvm via native lyric test)

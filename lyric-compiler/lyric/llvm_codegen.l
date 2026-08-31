@@ -128,6 +128,12 @@ record NFuncSig {
   pkg: String
   paramNames: List[String]
   paramTys: List[TypeExpr]
+  // Per-parameter mode (N9.6): `out`/`inout` parameters are passed as an
+  // address to the caller's storage rather than by value — see
+  // `paramArgNType` and `lowerByRefArg`.  Always `PMIn` for extern funcs
+  // (no `_kernel_native/` declaration uses `out`/`inout`; enforced in
+  // `buildSigs`).
+  paramModes: List[ParamMode]
   retTy: Option[TypeExpr]
   isExternSym: Bool
   // Async callee (stage B2): the define returns a LyricTask* (as i8*) and
@@ -1011,6 +1017,34 @@ func paramTysOf(params: in List[Param]): List[TypeExpr] {
   tys
 }
 
+func paramModesOf(params: in List[Param]): List[ParamMode] {
+  val modes: List[ParamMode] = newList()
+  var i = 0
+  while i < params.count {
+    modes.add(params[i].mode)
+    i = i + 1
+  }
+  modes
+}
+
+/// `out`/`inout` are unsupported on `extern func` (C-ABI) declarations: the
+/// native FFI boundary already has an explicit pointer idiom
+/// (`NativePtr[T]`), and no `_kernel_native/` package declares one. Loud
+/// diagnostic instead of silently treating the C symbol's parameter as
+/// pass-by-value (which would be a real ABI mismatch against the address
+/// a caller-side by-ref lowering would otherwise pass).
+func checkExternNoByRefParams(ef: in ExternFuncDecl): Unit {
+  var i = 0
+  while i < ef.params.count {
+    match ef.params[i].mode {
+      case PMIn -> {
+      }
+      case _ -> panic("Lyric.LlvmCodegen: extern func '" + ef.name + "' declares '" + ef.params[i].name + "' as out/inout, which is not supported for --target native extern declarations (use NativePtr[T] for C-ABI pointer parameters)")
+    }
+    i = i + 1
+  }
+}
+
 func addSig(sigs: in Map[String, NFuncSig], key: in String, sig: in NFuncSig): Unit {
   if not sigs.containsKey(key) {
     sigs.add(key, sig)
@@ -1076,6 +1110,7 @@ func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
         pkg = u.pkgName,
         paramNames = paramNamesOf(fn.params),
         paramTys = paramTysOf(fn.params),
+        paramModes = paramModesOf(fn.params),
         retTy = fn.ret,
         isExternSym = false,
         isAsync = fn.isAsync
@@ -1088,11 +1123,13 @@ func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
     while ei < u.externs.count {
       val ef = u.externs[ei]
       val arity = ef.params.count
+      checkExternNoByRefParams(ef)
       val sig = NFuncSig(
         irName = ef.symbol,
         pkg = u.pkgName,
         paramNames = paramNamesOf(ef.params),
         paramTys = paramTysOf(ef.params),
+        paramModes = paramModesOf(ef.params),
         retTy = ef.ret,
         isExternSym = true,
         isAsync = false
@@ -1650,11 +1687,7 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
         case _ -> lowerExpr(ctx, insns, inner)
       }
     }
-    case _ -> panic(
-      "Lyric.LlvmCodegen: this expression form (" + describeExprKind(expr.kind) +
-        ") is not yet supported for --target native (Phase N1) at [" +
-        expr.span.startPos.line.toString() + ":" + expr.span.startPos.column.toString() + "]"
-    )
+    case _ -> panic("Lyric.LlvmCodegen: this expression form (" + describeExprKind(expr.kind) + ") is not yet supported for --target native (Phase N1) at [" + expr.span.startPos.line.toString() + ":" + expr.span.startPos.column.toString() + "]")
   }
 }
 
@@ -2449,14 +2482,46 @@ func bindCallArgs(
       pi2 = pi2 + 1
       continue
     }
-    val declTy = typeToN(ctx, sig.paramTys[pi2])
+    val declTy = paramArgNType(ctx, sig, pi2)
     val v = if sig.isExternSym {
       externAdaptArg(ctx, insns, sig.paramTys[pi2], declTy, vals[found])
+    } else if isByRefParam(ctx, sig, pi2) {
+      // The value IS already the address (lowerArgAgainst routed it
+      // through lowerByRefArg below) — never run value-coercion (Int→Long
+      // widening etc.) over a pointer.
+      vals[found]
     } else {
       coerceTo(ctx, insns, vals[found], declTy)
     }
     ordered.add(NArg(ty = declTy, value = v.value))
     pi2 = pi2 + 1
+  }
+}
+
+/// True when parameter `slot` of `sig` is declared `out`/`inout` AND its
+/// underlying type is representable (a `Unit` out/inout parameter carries
+/// no address — see `lowerFunctionEnv`).
+func isByRefParam(ctx: in Ctx, sig: in NFuncSig, slot: Int): Bool {
+  val isByRefMode = match sig.paramModes[slot] { case PMIn -> false; case _ -> true }
+  if not isByRefMode {
+    return false
+  }
+  match typeToN(ctx, sig.paramTys[slot]) {
+    case NVoid -> false
+    case _ -> true
+  }
+}
+
+/// The LLVM argument type for parameter `slot`: a pointer-to-declared-type
+/// for `out`/`inout` (the caller passes the address of its storage cell),
+/// the declared type itself for `in` (see `lowerFunctionEnv`'s matching
+/// callee-side lowering).
+func paramArgNType(ctx: in Ctx, sig: in NFuncSig, slot: Int): NType {
+  val base = typeToN(ctx, sig.paramTys[slot])
+  if isByRefParam(ctx, sig, slot) {
+    NPtr(pointee = base)
+  } else {
+    base
   }
 }
 
@@ -2467,8 +2532,12 @@ func bindCallArgs(
 /// parameter lowers with NO expected type — lowerExprExpecting's
 /// fallback coerces eagerly, which would reject the closure value the
 /// ordering pass adapts into the userdata pointer (a genuine i8* value
-/// coerces there as a no-op).
+/// coerces there as a no-op).  An `out`/`inout` parameter (N9.6) lowers
+/// the argument expression's ADDRESS instead of its value.
 func lowerArgAgainst(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, ex: in Expr, slot: Int): NVal {
+  if isByRefParam(ctx, sig, slot) {
+    return lowerByRefArg(ctx, insns, ex, typeToN(ctx, sig.paramTys[slot]))
+  }
   if sig.isExternSym {
     if isFunctionTypeExpr(sig.paramTys[slot]) {
       return lowerExprExpecting(ctx, insns, ex, externCallbackClosureWant(ctx, sig.paramTys[slot]))
@@ -2478,6 +2547,59 @@ func lowerArgAgainst(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, ex: i
     }
   }
   lowerExprExpecting(ctx, insns, ex, typeToN(ctx, sig.paramTys[slot]))
+}
+
+/// The address of an `out`/`inout` call argument (N9.6). The type checker
+/// (`typechecker_exprs.l::argIsValidByRefTarget`) already rejects a
+/// non-l-value argument at an `out`/`inout` parameter, but it is
+/// deliberately conservative — it *accepts* any `EMember`/`EIndex` shape as
+/// a "potential l-value" without deciding whether the native backend can
+/// actually compute its address.  This function covers the two shapes
+/// verified safe: a bare local (its `ctx.varSlots` entry already IS a
+/// pointer to its storage, whether that local is a plain `alloca` or
+/// itself an aliased `out`/`inout` parameter — see `lowerFunctionEnv`) and
+/// a record field access (a GEP off the record's heap pointer, exactly
+/// `lowerFieldAssign`'s addressing). Anything else (an index/element
+/// expression, a qualified module path, …) is a loud, named diagnostic —
+/// never a silent miscompile — pending its own verified addressing scheme.
+func lowerByRefArg(ctx: in Ctx, insns: in List[NInsn], ex: in Expr, declTy: in NType): NVal {
+  match ex.kind {
+    case EParen(inner) -> lowerByRefArg(ctx, insns, inner, declTy)
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        val name = path.segments[0]
+        val slot = match mapGet(ctx.varSlots, name) {
+          case Some(s) -> s
+          case None -> panic("Lyric.LlvmCodegen: out/inout argument '" + name + "' is not a local variable or parameter — module-level bindings are not yet supported as out/inout arguments for --target native")
+        }
+        return NVal(ty = NPtr(pointee = declTy), value = NLocal(name = slot))
+      }
+      panic(
+        "Lyric.LlvmCodegen: out/inout argument '" + modulePathJoin(path.segments) +
+          "' is a qualified path, which is not yet supported for --target native (only a local variable/parameter or a record field access is)"
+      )
+    }
+    case EMember(recv, fieldName) -> {
+      val obj = lowerExpr(ctx, insns, recv)
+      val ri = match recInfoOfType(ctx, obj.ty) {
+        case Some(r) -> r
+        case None -> panic("Lyric.LlvmCodegen: out/inout argument '." + fieldName + "' is not a record field, which is required for --target native")
+      }
+      val idx = recFieldIndex(ri, fieldName)
+      if idx < 0 {
+        panic("Lyric.LlvmCodegen: record '" + ri.irName + "' has no field '" + fieldName + "'")
+      }
+      val fieldTy = ri.fieldTys[idx]
+      val structTy = match obj.ty { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
+      val fieldPtr = freshTmp(ctx)
+      val fArgs: List[NArg] = newList()
+      fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+      fArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(2 + idx), ty = NI32)))
+      insns.add(NGEP(dest = fieldPtr, ty = structTy, ptr = obj.value, indices = fArgs))
+      NVal(ty = NPtr(pointee = fieldTy), value = NLocal(name = fieldPtr))
+    }
+    case _ -> panic("Lyric.LlvmCodegen: this out/inout argument shape is not yet supported for --target native (only a local variable/parameter or a record field access is; index/element expressions and other l-value forms are not yet supported)")
+  }
 }
 
 /// Adapt a value to the declared type: integer literals retype freely;
@@ -8563,26 +8685,74 @@ func lowerFunctionEnv(
   // Parameters land in allocas so `var`-style reads/writes and address
   // uniformity hold; mem2reg cleans this up at -O1+.  `in` params are
   // ARC borrows (Rule 5): never retained on entry or released on exit.
+  //
+  // `out`/`inout` (N9.6, #6794): the LLVM signature takes a pointer to the
+  // parameter's own type — the ADDRESS of the caller's storage cell —
+  // instead of copying a value in.  No fresh alloca is needed: every read
+  // (`loadLocal`) and write (`lowerAssign`) of a local name goes through
+  // `ctx.varSlots[name]` as a bare pointer-to-`ty` SSA value already (the
+  // same shape an `alloca` produces), so binding `varSlots[p.name]`
+  // directly to the incoming pointer parameter makes every subsequent
+  // read/write alias the CALLER's cell — true reference semantics, exactly
+  // like the MSIL backend's `MByRef` and the JVM backend's boxed-cell
+  // by-ref lowering.  This also means a chained `inout` forward (passing
+  // an `inout` parameter on to another `inout` call, as `Std.HttpEngine`'s
+  // H2 frame dispatch does pervasively) is a plain pointer forward with no
+  // extra copy.
+  //
+  // ARC (04-arc-design.md Rules 3/4): a write to the by-ref cell runs
+  // through the ordinary `lowerAssign`/`lowerFieldAssign` paths, which
+  // already retain-new/release-old for a ref-typed slot — since the slot
+  // IS the caller's storage, this is exactly the ARC bookkeeping a direct
+  // `x = newVal` at the caller site would perform.  The callee must NOT
+  // retain on entry or release on exit for `out`/`inout` any more than it
+  // would for `in` (Rule 5): the pointed-to value is never in this
+  // function's ownership, so it is not added to `ctx.scopeRefs`.
+  //
+  // `out` and `inout` lower IDENTICALLY here: the only language-level
+  // difference (an `out` parameter is definite-assignment-checked, T0086
+  // in `typechecker_stmts.l`; nothing requires WRITE-BEFORE-READ to be
+  // enforced at the machine level) is a type-checker concern, not a
+  // codegen one — a stray read of an unwritten `out` parameter reads
+  // whatever the caller's cell already holds (never uninitialized memory:
+  // every `var` local is zero/null-initialized when declared without an
+  // initializer, and `lyric_release`/`lyric_retain` on a null pointer are
+  // safe no-ops, so there is no memory-safety hazard either way).
+  //
+  // A `Unit`-typed `out`/`inout` parameter carries no representable value
+  // (there is nothing to write a pointer at), so it lowers exactly like a
+  // `Unit`-typed `in` parameter regardless of the declared mode.
   var pi = 0
   while pi < fn.params.count {
     val p = fn.params[pi]
-    match p.mode {
-      case PMIn -> {
-      }
-      case _ -> panic("Lyric.LlvmCodegen: out/inout parameters are not yet supported for --target native")
+    val isByRefMode = match p.mode { case PMIn -> false; case _ -> true }
+    if isByRefMode and isCoro {
+      panic(
+        "Lyric.LlvmCodegen: async function '" + fn.name + "' declares out/inout parameter '" + p.name +
+          "', which is not yet supported for --target native (a suspended coroutine cannot safely hold a pointer into caller-frame storage across a suspend point)"
+      )
     }
     val pty = typeToN(ctx, p.ty)
-    params.add(NParam(name = "arg." + p.name, ty = pty))
-    match pty {
-      case NVoid -> {
-        ctx.varTypes.add(p.name, NVoid)
-      }
-      case _ -> {
-        val slot = p.name + ".slot." + freshTmp(ctx)
-        ctx.allocas.add(NAlloca(dest = slot, ty = pty))
-        body.add(NStore(ty = pty, value = NLocal(name = "arg." + p.name), ptr = NLocal(name = slot)))
-        ctx.varSlots.add(p.name, slot)
-        ctx.varTypes.add(p.name, pty)
+    val ptyIsVoid = match pty { case NVoid -> true; case _ -> false }
+    if isByRefMode and not ptyIsVoid {
+      val ptrTy = NPtr(pointee = pty)
+      params.add(NParam(name = "arg." + p.name, ty = ptrTy))
+      // No alloca, no copy: the incoming pointer IS the storage slot.
+      ctx.varSlots.add(p.name, "arg." + p.name)
+      ctx.varTypes.add(p.name, pty)
+    } else {
+      params.add(NParam(name = "arg." + p.name, ty = pty))
+      match pty {
+        case NVoid -> {
+          ctx.varTypes.add(p.name, NVoid)
+        }
+        case _ -> {
+          val slot = p.name + ".slot." + freshTmp(ctx)
+          ctx.allocas.add(NAlloca(dest = slot, ty = pty))
+          body.add(NStore(ty = pty, value = NLocal(name = "arg." + p.name), ptr = NLocal(name = slot)))
+          ctx.varSlots.add(p.name, slot)
+          ctx.varTypes.add(p.name, pty)
+        }
       }
     }
     pi = pi + 1
@@ -10178,6 +10348,21 @@ func registerProtectedMember(
   ret: in Option[TypeExpr],
   fns: in List[NFunc],
 ): Unit {
+  // Protected-type entry/method params are forwarded verbatim by the
+  // hand-built lock/unlock wrapper below (no per-param slot machinery,
+  // unlike `lowerFunctionEnv`); threading a by-ref pointer through that
+  // shape is unverified, so reject loudly rather than risk a silent
+  // ABI mismatch between the wrapper and the inner function (N9.6 scope
+  // cut — no shipped `protected type` method uses `out`/`inout` today).
+  var mci = 0
+  while mci < params.count {
+    match params[mci].mode {
+      case PMIn -> {
+      }
+      case _ -> panic("Lyric.LlvmCodegen: protected type '" + pd.name + "' method '" + methodName + "' declares '" + params[mci].name + "' as out/inout, which is not yet supported for --target native on protected-type methods")
+    }
+    mci = mci + 1
+  }
   val arity = 1 + params.count
   val wrapperIrName = pkg + "." + pd.name + "." + methodName
   val innerIrName = pkg + "." + pd.name + "." + methodName + ".__inner"
@@ -10185,10 +10370,13 @@ func registerProtectedMember(
   sigParamTys.add(selfTypeRef(pd.name, pd.span))
   val sigParamNames: List[String] = newList()
   sigParamNames.add("self")
+  val sigParamModes: List[ParamMode] = newList()
+  sigParamModes.add(PMIn)
   var i = 0
   while i < params.count {
     sigParamTys.add(params[i].ty)
     sigParamNames.add(params[i].name)
+    sigParamModes.add(PMIn)
     i = i + 1
   }
   val sig = NFuncSig(
@@ -10196,6 +10384,7 @@ func registerProtectedMember(
     pkg = pkg,
     paramNames = sigParamNames,
     paramTys = sigParamTys,
+    paramModes = sigParamModes,
     retTy = ret,
     isExternSym = false,
     isAsync = false

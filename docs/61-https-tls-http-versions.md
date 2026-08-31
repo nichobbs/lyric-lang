@@ -941,7 +941,15 @@ items marked ∥ are independent and can proceed in parallel.
     project/multi-package support at all, so no ecosystem library
     (`lyric-web` included) can be imported into a native build today —
     issue #6809. See `native/plan/08-work-items.md` Phase N9 for the full
-    banding and prerequisites._
+    banding and prerequisites.
+    **N9.6 (D-progress-853, #6794)** ✅ SHIPPED: general native `out`/
+    `inout` function-parameter lowering. Unblocks `Std.HttpEngine.H2Frame`'s
+    entire `inout` dispatch chain (verified compiling and running standalone
+    on `--target native`), but does NOT fully unblock N9.5's h2 half —
+    `Std.HttpEngine.Hpack`'s Huffman codec calls `Std.Char`, which has no
+    native kernel (`_kernel_native/char_host.l` twin), a separate,
+    newly-filed gap (issue #6811). N9.5 stays blocked on issue #6809
+    (project/multi-package support) and #6811 (Std.Char native kernel)._
 
 Every PR carries its own docs/book/progress-log sync per the working
 conventions; none lands with a silent one-target gap.

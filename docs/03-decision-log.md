@@ -38321,3 +38321,236 @@ precedent and the `LYRIC_BOOTSTRAP_VERSION` sandbox substitute), D-progress-699/
 (the h2 FSM and its dotnet ALPN wiring), `docs/61-https-tls-http-versions.md`
 §6.4/§7 item 5, `native/plan/08-work-items.md` N9.5.
 
+---
+
+## D-progress-853 — N9.6: native `out`/`inout` function-parameter lowering — SHIPPED (issue #6794; unblocks #6808's h2-frame half)
+
+**Context.** D-progress-852 (#6106 investigation) filed #6794 as blocker 1
+of native ALPN-h2: `Lyric.LlvmCodegen`'s function-parameter lowering
+(`lowerFunctionEnv`, `llvm_codegen.l`) panicked unconditionally on any
+`out`/`inout` parameter for `--target native` — the only one of the three
+backends missing this, despite `out`/`inout` being ordinary, documented
+Lyric parameter modes used pervasively on dotnet/JVM. #6808 additionally
+found `Std.HttpEngine.H2Conn`/`H2Frame`/`Hpack` use 49 `inout` parameters
+(`state: inout H2Connection` / `inout FrameDecoder`, threaded through
+mutually-recursive frame dispatch), naming this the higher-leverage of two
+fix options (the other being a 49-call-site mechanical rewrite of shared,
+wire-protocol-critical, already-shipped-on-dotnet code — real regression
+risk to an existing production path). This entry ships the general fix.
+
+**Sandbox verification boundary.** Real `--target native` toolchain
+throughout, per D-progress-850/852's documented substitute for the
+network-policy-blocked default bootstrap path: `LYRIC_BOOTSTRAP_VERSION=0.5.1
+make stage1-fast` (inner loop), `LYRIC_BOOTSTRAP_VERSION=0.5.1 make lyric`
+(full AOT rebuild, needed since a codegen change is invisible to
+`stage1-fast`'s skipped CLI bundle — `./bin/lyric` runs the OLD compiler
+until `make lyric` completes), and a from-source `make -C lyric-rt` rebuild
+(the pre-existing `lyric_rt.a` on disk predated #6747's `.indexOf`/
+`.toLower`/`.startsWith`/`.contains`/`.endsWith` runtime symbols and
+produced real linker failures on the existing `llvm_codegen_self_test.l`
+suite — a stale artifact, not a regression from this change; rebuilding
+from `lyric-rt/src/*.c` on this branch fixed it).
+
+**Design (see `lowerFunctionEnv`'s and `lowerByRefArg`'s doc comments in
+`llvm_codegen.l` for the complete in-source reasoning).** Each `out`/
+`inout` parameter's LLVM signature type becomes a pointer to the
+parameter's own type (the ADDRESS of the caller's storage cell) instead of
+the value itself, with NO callee-side alloca or copy. This works with
+essentially zero new machinery because of how parameters already lower:
+every local read (`loadLocal`) and write (`lowerAssign`/
+`lowerFieldAssign`) already treats `ctx.varSlots[name]` as a bare
+pointer-to-declared-type SSA value — exactly what an `alloca` instruction
+produces. Binding the parameter name directly to the incoming pointer
+(`ctx.varSlots.add(p.name, "arg." + p.name)`, no alloca, no store) makes
+every subsequent read/write alias the CALLER's cell for free — true
+by-reference semantics, matching the MSIL backend's `MByRef` (managed
+pointer) and the JVM backend's boxed-cell by-ref lowering. This also means
+a chained `inout` forward — a parameter received `inout` passed on
+unchanged to another `inout` call, the exact shape `Std.HttpEngine`'s H2
+frame-dispatch chain uses pervasively (`dispatchFrame` → per-frame-type
+handlers → nested mutators) — is a plain pointer forward at zero extra
+implementation cost: the forwarded parameter's own `varSlots` entry IS
+already the address to pass on.
+
+At call sites (`bindCallArgs`/`lowerArgAgainst`, new `isByRefParam`/
+`paramArgNType`/`lowerByRefArg`), an `out`/`inout` argument's ADDRESS is
+computed instead of its value:
+- a bare local or parameter (`EPath`, single segment) uses its existing
+  `varSlots` entry directly — this covers every real call site in
+  `http_h2conn.l`/`http_h2frame.l`/`http_hpack.l`, which uniformly forward
+  a first-positional `state`/`decoder`/`encoder` identifier;
+- a record field access (`EMember`, including nested `a.b.c`) computes a
+  GEP off the record's heap pointer, exactly mirroring
+  `lowerFieldAssign`'s existing field-write addressing;
+- anything else (an index/element expression, a qualified module-level
+  path) is a **loud, named `panic`** naming the unsupported shape — never
+  a silent miscompile. This scope cut exists because the type checker's
+  `argIsValidByRefTarget` (`typechecker_exprs.l`) is deliberately
+  conservative: it accepts `EMember`/`EIndex` as "potential l-values"
+  without deciding whether the NATIVE backend can actually compute their
+  address, so the backend needs its own defensive check for the shapes it
+  hasn't verified. Checked first, per the task's own instruction: no
+  mode-checker or type-checker rule already covers native-specific
+  addressability, so this check belongs in the codegen, not a duplicate of
+  an existing rule.
+
+`out` and `inout` lower IDENTICALLY (`isByRefMode` folds both into one
+branch) — the only language-level asymmetry (an `out` parameter must be
+definite-assigned before return, `T0086` in `typechecker_stmts.l`; nothing
+requires write-before-read at the machine level) is a type-checker
+concern, not a codegen one. A stray read of an unwritten `out` parameter
+reads whatever the caller's cell currently holds — never uninitialized
+memory: a `var` declared without an initializer is zero/null-initialized
+(`zeroValueOf`/`bindLocal`), and `lyric_retain`/`lyric_release` on a null
+pointer are safe no-ops per `lyric-rt`'s own null guard, so there is no
+memory-safety hazard in either the `out` or the `inout` case.
+
+**ARC reasoning (04-arc-design.md Rules 3-5), read in full before this
+change, per the task's own instruction.** A write through the by-ref cell
+runs through the ordinary `lowerAssign`/`lowerFieldAssign` retain-new/
+release-old path — since the slot IS the caller's storage (not a copy),
+this is *exactly* the bookkeeping a direct `x = newVal` at the caller site
+would perform: the new value is retained (or its ownership transferred, if
+it was an owned temp) before the store, and the OLD value the cell held is
+released after. No new ARC surface was added; the existing per-assignment
+protocol already produces the correct result once the "slot" is the
+caller's real storage instead of a copy. The callee never retains an
+`out`/`inout` parameter on entry, nor releases it on exit (unlike a `val`
+local, Rule 4) — it never owns the pointed-to value, matching Rule 5's
+"the caller guarantees liveness through the call" for a synchronous
+callee. This is why async functions with an `out`/`inout` parameter are
+explicitly rejected (loud diagnostic, not silently accepted): a suspended
+coroutine's frame can outlive the call that created it (the whole point of
+`await`), so a raw pointer into the CALLER's stack frame captured at
+suspend time would dangle the moment the caller's own frame unwinds past
+that point — a real use-after-free, not a hypothetical one. No existing
+coroutine self-test exercises this combination, so the fix rejects it
+outright rather than risk landing an unverified unsafe path.
+
+**Scope shipped.** Scalar (`Int`/`Long`/`Bool`/`Byte`/etc.) and
+reference-typed (record, `String`) `out`/`inout` parameters; a bare
+local/parameter argument; a record field argument (including nested field
+chains); chained `inout` forwarding through nested calls; two independent
+`inout` parameters mutated in one call; a record whose ARC-managed field
+is both mutated in place and wholesale-replaced mid-loop (verified
+leak-free under `-fsanitize=address`).
+
+**Scope cuts — loud diagnostics, never a silent miscompile (per the task's
+explicit instruction to stop and scope down rather than ship an unverified
+edge case):**
+- `out`/`inout` on an `extern func` (C-ABI) declaration
+  (`checkExternNoByRefParams`): the native FFI boundary already has an
+  explicit, audited pointer idiom (`NativePtr[T]` + `nativeAddrOf`), and a
+  grep of every `_kernel_native/*.l` file found zero uses of `out`/`inout`
+  on an extern declaration — nothing depends on this, and threading a
+  by-ref pointer through the C-ABI calling convention (as opposed to
+  Lyric's own convention) is a different, unverified problem.
+- `out`/`inout` on a `protected type` entry/method
+  (`registerProtectedMember`'s new guard): the hand-built lock/unlock
+  wrapper forwards parameters by NAME through a bespoke synthesis path
+  (`synthProtectedWrapper`), not through `lowerFunctionEnv`'s normal
+  parameter machinery — threading a by-ref pointer through that shape
+  correctly (matching inner-function signature, no double-indirection)
+  was not verified, and no shipped `protected type` method uses
+  `out`/`inout` today (`lyric-testing`'s `StubCounter` — the one shipped
+  `protected type` with methods — takes none).
+  - Both extern and protected-type guards are enforced eagerly, at
+    signature-registration time (`buildSigs`/`registerProtectedMember`),
+    not lazily at first use — a program that never calls the offending
+    function still gets the diagnostic if the function is *declared*,
+    matching this codegen's existing eager-registration style.
+- `out`/`inout` on an async function's own parameter (see the ARC
+  reasoning above) — checked in `lowerFunctionEnv` before any codegen for
+  the function body runs.
+- A by-ref call-site argument that is an index/element expression
+  (`xs[0]`) or a qualified module-level path (`lowerByRefArg`'s catch-all).
+
+**Test coverage.** New `lyric-compiler/lyric/llvm_inout_self_test.l`
+(`@test_module`, mirrors `llvm_heap_self_test.l`'s harness), 9 cases, 2
+under `-fsanitize=address`: `inout Int` mutated across repeated calls; an
+`out Int` parameter; two independent `inout` parameters in one call;
+chained `inout` forwarding through a nested call; the exact
+`record St { var n: Int }` / `func bump(s: inout St): Unit` repro from
+#6808's own writeup (called twice, asserts `2`); an `inout` argument that
+is a nested record field access (`o.inner.count`); an ASan `String`-field
+reassignment churn (3000 iterations); an ASan record with a `String`
+field both mutated (`+ "!"`) and wholesale-replaced (`s = St(tag =
+"fresh")`) mid-loop (2000 iterations); and `assertPanicsWith` proving the
+index-expression scope cut produces the named diagnostic rather than
+silently compiling. All 9 pass. Wired into
+`scripts/ci/native-backend-self-tests.sh` and documented in
+`.github/workflows/ci.yml`'s native-backend-self-tests job comment block.
+
+**Zero-regression verification.** The full existing native self-test
+suite was re-run against the rebuilt stage-1/AOT binary and passed with no
+changes in outcome: `llvm_ir_self_test.l` (14/14), `llvm_codegen_self_test.l`
+(32/32, after the `lyric-rt` rebuild above — 8 tests failed with linker
+errors against the STALE runtime archive before rebuilding; unrelated to
+this change), `llvm_heap_self_test.l` (35/35), `llvm_ffi_self_test.l`
+(6/6), `llvm_collections_self_test.l` (20/20), `llvm_stdlib_self_test.l`
+(18/18), `llvm_opaque_self_test.l`, `llvm_enum_case_resolve_self_test.l`,
+`llvm_self_test_n3.l`, `llvm_self_test_n34.l`, `llvm_self_test_async.l`
+(31/31), `llvm_self_test_defer.l` (8/8), `llvm_tls_self_test.l` (5/5),
+`llvm_http_client_self_test.l`, `llvm_http_server_self_test.l` — every
+suite green, run via `LYRIC_LOAD_COMPILER=1 ./bin/lyric test <file>` per
+this repo's documented invocation.
+
+**Real-world validation (the H2 stack #6808 named as the motivating
+case).** `Std.HttpEngine.H2Frame`'s entire `inout FrameDecoder`
+mutually-recursive dispatch chain (5 `inout` sites: `failDecoder`,
+`stepPreface`, `stepFrame`, `stepFrameWithLength`, `driveDecoder`) now
+compiles standalone for `--target native` via
+`Lyric.LlvmBridge.compileToNativeWithFlags`, and a driver program calling
+its public `feedFrames`/`connectionPreface`/`newFrameDecoder` entry points
+ran without incident. `Std.HttpEngine.Hpack`'s 6 `inout HpackDecoder`/
+`HpackEncoder` sites also compile in isolation (`newDynamicTable`,
+`dynamicTableSize`, and friends). **However, #6808 is NOT fully resolved**
+by this fix: `Std.HttpEngine.Hpack`'s Huffman codec
+(`huffmanEncode`/`huffmanDecode`/`octetsToString`) calls `Std.Char`'s
+char↔int bridge (`Char.fromInt`/`.toInt()`), and `Std.Char` has **no**
+`_kernel_native/char_host.l` twin — only `_kernel/char_host.l`, the
+`.NET`-`System.Convert`-backed kernel (`extern type CharConvert =
+"System.Convert"`), which the native source loader still picks up (no
+native-specific override exists to shadow it) and which native codegen
+cannot lower (a BCL extern type has no meaning outside the MSIL target).
+Confirmed directly: a minimal driver calling `huffmanEncode` alone hits
+`Lyric.LlvmCodegen: cannot resolve call target 'CharConvert.ToInt32/1' for
+--target native` — the same failure `Std.HttpEngine.H2Conn` hits once its
+own reachable call graph includes header encoding (`serverInitialFrame` →
+`buildSettingsFrame` → `serializeFrame`, in this session's testing, pulled
+in enough of the bundle to reach it once both `H2Conn` and `H2Frame` were
+imported together — the exact mechanism was not fully isolated, but the
+root cause is unambiguous and reproducible: `Std.Char` is unresolvable on
+native regardless of the calling path). RFC 9113 makes Hpack header
+compression mandatory-to-implement, so this is not an avoidable code path
+for any real HTTP/2 traffic. **#6808 stays open, re-scoped**: its
+`inout`/`out` half is done; its remaining blocker is a `Std.Char` native
+kernel gap, unrelated to parameter modes, filed separately as #6811 rather
+than folded into this fix (a native `Std.Char` kernel is a distinct,
+non-trivial stdlib-parity task — Unicode classification tables and
+case-folding are not a few-line C shim — and mixing it into this PR would
+violate this repo's "smaller, fully-finished slice" standard for what is
+otherwise a complete, verified compiler fix).
+
+**Files changed:** `lyric-compiler/lyric/llvm_codegen.l` (`NFuncSig` gains
+`paramModes`; `paramModesOf`/`checkExternNoByRefParams`/`isByRefParam`/
+`paramArgNType`/`lowerByRefArg` new; `lowerFunctionEnv`'s parameter loop,
+`bindCallArgs`/`lowerArgAgainst`, and `registerProtectedMember` updated),
+`lyric-compiler/lyric/llvm_inout_self_test.l` (new),
+`scripts/ci/native-backend-self-tests.sh` (test wired in),
+`.github/workflows/ci.yml` (job comment documents the new test),
+`native/plan/08-work-items.md` (new N9.6 entry; N9.5 updated with the
+re-scoped blocker-1 status).
+
+**Related:** #6794 (this entry's issue, closed), #6808 (partially
+unblocked — its `inout`/`out` half is fixed; its `Std.Char` half is
+tracked as #6811), #6106/D-progress-852 (the investigation that surfaced
+both), D-progress-850 (N9.3, the addendum-4 `inout`-avoidance precedent
+this fix makes unnecessary going forward), `native/plan/04-arc-design.md`
+(Rules 3-5, the ARC protocol this fix reuses unchanged),
+`lyric-compiler/msil/codegen.l` (`MByRef`, the reference semantics this
+fix mirrors), `lyric-compiler/lyric/type_checker/typechecker_exprs.l`
+(`argIsValidByRefTarget`/`modeNeedsLValue`/`isByRefValueType`, the
+existing language-level lvalue enforcement this fix builds on without
+duplicating).
+
