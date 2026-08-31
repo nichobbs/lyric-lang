@@ -591,7 +591,7 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   real panic. `Jvm.Codegen.lambdaIfaceName` now returns one shared binary
   name (`Lyric/Lyric$Lambda`) for the whole bundle; `Jvm.Bridge.codegenPackageInto`
   dedupes the resulting duplicate class-file entry. Shipped in PR #6631
-  (`docs/03-decision-log.md` D-progress-831). #5395
+  (`docs/03-decision-log.md` D-progress-847). #5395
   (`Jvm.Bridge`'s single-file path treats type-checker diagnostics as
   advisory rather than fatal — a genuine `T0043` mismatch compiled to a
   runnable JAR with exit 0; the still-open JVM half of docs/41 §C1's

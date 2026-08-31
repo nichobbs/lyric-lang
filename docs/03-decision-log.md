@@ -35771,7 +35771,7 @@ per-target at all.
 
 ---
 
-## D-progress-831 — JVM generic-declaring-type `@externTarget` member emission: no MSIL-analog needed, but a real monomorphized-`out`-param bug found and fixed (#3432)
+## D-progress-846 — JVM generic-declaring-type `@externTarget` member emission: no MSIL-analog needed, but a real monomorphized-`out`-param bug found and fixed (#3432)
 
 **Investigation.** #3432 asked for a JVM analog of MSIL's
 `Msil.Codegen.emitGenericExternMember` (closed GENERICINST TypeSpec + `!0`/`!1`
@@ -35892,7 +35892,7 @@ branch), `lyric-compiler/lyric/generic_extern_jvm_self_test.l` (new),
 **Related:** #3432, #3392, #3413 (the MSIL fix this issue tracked JVM parity
 against), #5458, D-progress-588, D-progress-663, docs/44 m-25/m-97.
 
-## D-progress-831 — JVM: a panic inside a closure invoked through a cross-package function-typed parameter corrupted the caught `Bug.message` (#5388, #5251)
+## D-progress-847 — JVM: a panic inside a closure invoked through a cross-package function-typed parameter corrupted the caught `Bug.message` (#5388, #5251)
 
 **Status:** Shipped.
 

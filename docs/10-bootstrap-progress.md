@@ -30251,7 +30251,7 @@ argument — a significant, previously-undiscovered general correctness
 bug), #5381 (`List[String]` indexing loses its element type for auto-FFI
 resolution, blocking `Std.Process.run()` end-to-end on JVM), #5388 (a
 panic's message is lost when it propagates through a closure invoked via
-a higher-order function parameter — fixed in D-progress-831, PR #6631;
+a higher-order function parameter — fixed in D-progress-847, PR #6631;
 see `docs/03-decision-log.md`).
 
 Review hardening (2 rounds) found and fixed two REQUIRED gaps in the
@@ -32275,7 +32275,7 @@ gaps. Zero regressions across `out_inout_jvm_self_test.l` (18),
 `lyric-web/src/_kernel/jvm/web_kernel.l` (stale `#5458` comment corrected),
 `.github/workflows/ci.yml` (new self-test wired in).
 
-### D-progress-831 — JVM: a panic inside a closure invoked through a cross-package function-typed parameter corrupted the caught `Bug.message` (#5388, #5251)
+### D-progress-847 — JVM: a panic inside a closure invoked through a cross-package function-typed parameter corrupted the caught `Bug.message` (#5388, #5251)
 
 **Status:** Shipped.
 
