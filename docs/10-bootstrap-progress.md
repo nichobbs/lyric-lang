@@ -33133,3 +33133,44 @@ with the exact message), then verified green: `jvm_path_dependency_self_test.l`
 
 **Related:** #6750, #6697, D-progress-817, D-progress-811, #3094, #6264,
 #6136.
+
+---
+
+### D-progress-849 — JVM `longToInt`/`intToLong` bare-name intrinsic interception now defers to a real qualified override (#6712)
+
+`Jvm.Codegen.lowerBuiltinOrStaticCall` intercepted ANY call whose bare
+`funcName` was `longToInt`/`intToLong` — qualified or not — always
+lowering to unchecked `l2i`/`i2l`, silently bypassing `Std.Math.longToInt`'s
+real `@externTarget("java.lang.Math.toIntExact")` panic-on-overflow
+contract (`Math.longToInt(overflowing)` returned a truncated value
+instead of throwing). `Msil.Codegen` already gates this class of
+intrinsic behind `hasQualifiedFuncOverrideMsil` (a bare call always
+takes the fast path — needed for the self-hosted compiler's own
+`lexer.l`, which has an unrelated internal `longToInt` helper for
+surrogate-pair math; a qualified call resolving to a real registered
+function does not); `Jvm.Codegen` never had the equivalent gate at all.
+
+Predates PR #6631 (`git blame` → commit `91b593a2`, 2026-08-11);
+discovered while investigating a `compiler-self-tests-jvm` CI failure
+on that PR and fixed there since it was the sole remaining blocker on
+that PR's required check.
+
+**Fix.** New `hasQualifiedFuncOverrideJvm` mirrors the MSIL twin using
+`resolveGeneralFuncSig` (JVM's own cross-package signature lookup); the
+`longToInt`/`intToLong` branches now guard on it, falling through to
+`lowerGeneralStaticCall` (which resolves the real `Std.Math.longToInt`/
+`intToLong`) for any qualified, registered call site.
+
+**Verified:** `stdlib_jvm_kernels_self_test.l` 32/32 (the `assertPanics`
+case now passes). Zero regressions: `range_subtype_self_test.l` (15/15,
+both targets — the range-subtype bound-check codegen was never actually
+at risk, since it emits its bound constants via a compile-time-only
+helper, not a runtime call), `range_subtype_unsigned_jvm_self_test.l`
+(4/4), `bitwise_self_test.l` (10/10), `unsigned_int_ops_jvm_self_test.l`
+(17/17). `make lyric`'s own bootstrap (which compiles `lexer.l`'s bare
+`longToInt` call through this same path) succeeded end to end.
+
+**Files:** `lyric-compiler/jvm/codegen/04_calls.l`.
+
+**Related:** #6712, `docs/03-decision-log.md` D-progress-849 (full
+account), PR #6631, `Msil.Codegen.hasQualifiedFuncOverrideMsil`.
