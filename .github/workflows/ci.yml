@@ -5744,11 +5744,19 @@ jobs:
       # JVM bundle-wide registry rollback + reachability self-tests (#6766,
       # #6767, review findings on #6631) — #6783 flagged neither was actually
       # wired into CI despite their own headers claiming coverage.
+      #
+      # `if: always()` on these three (and the auto-FFI bridge step below):
+      # an earlier unrelated background-batch step in this same job can fail
+      # (tracked #6712) and GitHub Actions skips every subsequent step by
+      # default with no `if:` guard — silently preventing these from ever
+      # running at all, defeating the point of wiring them in. See #6788.
       - name: JVM bundle-leak reachability self-test (native lyric test)
+        if: always()
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_bundle_leak_reachability_self_test.l
 
       - name: JVM registry-rollback self-test (native lyric test)
+        if: always()
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_registry_rollback_self_test.l
 
@@ -5756,6 +5764,7 @@ jobs:
       # reachable via the local-only `make test-emitter` target, which CI
       # never invokes (#6783).
       - name: JVM auto-FFI bridge self-test (native lyric test)
+        if: always()
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_auto_ffi_bridge_self_test.l
 
