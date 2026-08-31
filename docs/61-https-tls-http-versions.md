@@ -932,9 +932,16 @@ items marked ∥ are independent and can proceed in parallel.
     before releasing the queue mutex, not after, or a handler thread
     preempted in between can have its already-queued context orphaned
     by `stopListener`'s abandoned-queue drain).
-    **N9.5** lyric-web `serveTls` + ALPN h2. See
-    `native/plan/08-work-items.md` Phase N9 for the full banding and
-    prerequisites._
+    **N9.5** lyric-web `serveTls` + ALPN h2 investigated and found ⛔
+    BLOCKED on two independent structural gaps, neither a lyric-web nor an
+    accept-loop wiring fix (D-progress-852): the h2 FSM is not actually
+    target-independent (`Std.HttpEngine.H2Conn`/`H2Frame`/`Hpack` use 49
+    `inout` parameters, and native `inout`/`out` lowering does not exist —
+    issue #6808, depends on #6794), and the native build pipeline has no
+    project/multi-package support at all, so no ecosystem library
+    (`lyric-web` included) can be imported into a native build today —
+    issue #6809. See `native/plan/08-work-items.md` Phase N9 for the full
+    banding and prerequisites._
 
 Every PR carries its own docs/book/progress-log sync per the working
 conventions; none lands with a silent one-target gap.

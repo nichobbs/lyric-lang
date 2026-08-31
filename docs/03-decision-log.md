@@ -38198,3 +38198,126 @@ D-progress-806 (#6563, the mTLS-path floor-assertion gap fixed in the same
 PR batch), #5930 (the `HttpsConfigurator` class-subclassing gap blocking
 the fully idiomatic fix).
 
+## D-progress-852 — TLS phase 5 (native) N9.5: `lyric-web serveTls` on native + ALPN h2 — investigated, found BLOCKED on two independent, structural gaps neither wiring work nor lyric-web changes can work around (issue #6106, epic #5874 phase 5)
+
+**Context.** #6106 asked for two things, both gated on N9.3 (D-progress-850,
+merged as PR #6789 just before this session started): `lyric-web`'s
+`serveTls` dispatching through the native `Std.HttpServer.startListenerTls`
+(mirroring the dotnet/JVM wiring), and ALPN-selected h2 driving
+`Std.HttpEngine.H2Conn` from the native accept loop, "once the engine's h2
+stack is target-independent" (docs/61 §6.4, `native/plan/08-work-items.md`
+N9.5). Neither premise holds. This entry documents both blockers with
+direct evidence, files the two tracked follow-ups, and scopes this PR down
+to documentation only, per this repo's "smaller, fully-finished slice over
+a broad slice with caveats" standard — there is no wiring-level fix
+available for either half; both need dedicated compiler/engine work first.
+
+**Blocker 1 — `Std.HttpEngine.H2Conn`/`H2Frame`/`Hpack` are not actually
+target-independent: 49 `inout` parameters, and native `inout`/`out`
+lowering doesn't exist (#6794).** `grep -c "inout "` over
+`lyric-stdlib/std/http_h2conn.l` / `http_h2frame.l` / `http_hpack.l` reports
+38/5/6 — 49 total, mostly `state: inout H2Connection` / `state: inout
+FrameDecoder` threaded through mutually-recursive dispatch
+(`dispatchFrame` → per-frame-type handlers → connection mutation).
+`Lyric.LlvmCodegen`'s function-parameter lowering panics unconditionally on
+any `out`/`inout` parameter for `--target native` (`llvm_codegen.l:8391`,
+the same site issue #6794 already documents for a narrower case). Confirmed
+directly, not inferred from the grep count alone: a minimal standalone
+`inout`-mutation program (a `record St { var n: Int }` and a `func
+bump(s: inout St): Unit`) built with `./bin/lyric build --target native`
+against a real from-source toolchain (`LYRIC_BOOTSTRAP_VERSION=0.5.1` seed)
+reproduced the exact panic verbatim. `Std.HttpEngine`'s own HTTP/1.1 half
+already has zero `inout` uses — D-progress-850 addendum 4 put its 19
+`inout Connection`-taking functions through the same "return the advanced
+state in a record" mechanical rewrite this file's own `readOneRequest` used
+first — but that treatment was never applied to the h2 half, because
+nothing had tried to compile it for native until this investigation. Filed
+as issue #6808, with two options: fix #6794 generally (higher leverage, but
+nontrivial native-codegen work needing careful regression verification —
+a silent miscompile here is exactly what this repo's production-readiness
+standard forbids), or repeat addendum 4's mechanical rewrite at 49-call-site
+scale across shared, wire-protocol-critical, already-shipped-on-dotnet code
+(#5889, 16+ passing `http_server_dotnet_tests.l` cases) — a real regression
+risk to an existing production path, not a native-only change.
+
+**Blocker 2 — the native build pipeline has no project/multi-package
+support at all, so no ecosystem library (not just `lyric-web`) can be
+imported into a native build today.** `lyric-compiler/lyric/cli/
+cli_build.l`'s `buildOneNativeWithFeatures` hardcodes `Emitter.emitNative(req,
+...)` for `--target native` — `manifestPath` is consulted only for the
+`[native]` table (`triple`/`opt_level`/`extra_libs`); `emitSingleFileOrProject`,
+the function that understands `[project.packages]`/`[dependencies]`/workspace
+members (what `lyric-web/lyric.toml`'s four-package project and its
+`Lyric.Auth`/`Lyric.Resilience` dependencies rely on for dotnet/jvm), is only
+reached in the non-native branch. `lyric-compiler/lyric/emitter.l`'s
+`findStdlibSourcesNative` — the function supplying every source file a
+native build compiles alongside the entry file — only ever walks up looking
+for a `lyric-stdlib/std/`-shaped directory; there is no ecosystem-library
+source-path override and no "restored native package" concept (dotnet/jvm
+restore prebuilt DLLs from NuGet/Maven; native has never had an equivalent,
+since it already compiles everything else from source). A native build
+today is one `.l` entry file plus its transitive `Std.*` closure, full
+stop — no native program can `import Web`, `import Auth`, `import
+Resilience`, or any other `lyric-*/` root library regardless of how
+native-portable that library's own code is made. Filed as issue #6809.
+Once that project-level gap is closed, `lyric-web`'s own remaining
+per-file tax looks small: no `native` entry in `[features]`, `serve`/
+`serveTls`/`buildRequest`/`writeResponse`/the static-file canonical-path
+guard (`pathGetFullPath`) are `@cfg(feature = "dotnet"|"jvm")`-only, and
+`Web.Kernel.Runtime`'s per-target-file array has no native member for the
+rate limiter `Web.Aspects.RateLimit` needs — but a scan of `web.l`'s shared
+(target-independent) code found only two bare-`String`-bracket-index call
+sites (`webJsonStr`, issue #6237's class), so the library-level work is
+genuinely the smaller half of what N9.5 needs.
+
+**Why this PR ships no code.** Both blockers are structural — one a
+compiler codegen gap in a shared, cross-target, wire-protocol-critical
+module; the other a whole missing build-pipeline capability affecting every
+ecosystem library on this target, not a `lyric-web`-specific omission. Per
+this repo's standing "smaller, fully-finished slice... or split the work
+and ship the slice you can finish properly" convention, and given neither
+half of #6106 has a bounded, verifiable fix reachable from lyric-web/http_server
+source alone, this entry documents the investigation and its evidence
+rather than shipping a workaround that would either (a) hack around the
+project-support gap with something lyric-web-specific and non-representative
+of how the library is actually built for other targets, or (b) attempt an
+unverified, large-blast-radius rewrite of the shared h2 engine under time
+pressure — both of which this repo's production-readiness standard rules
+out as shortcuts.
+
+**Sandbox verification boundary.** This session used the
+`LYRIC_BOOTSTRAP_VERSION=0.5.1` stage-0 pin (D-progress-850's own
+documented substitute for the network-policy-blocked default bootstrap
+path) for a real `--target native` build throughout: `make stage1-fast`,
+`make lyric` (real AOT binary), `make -C lyric-rt` (fresh runtime archive —
+the stage-0 tarball's bundled `lyric_rt.a` predates #6588's `.indexOf`/
+`.toLower` runtime symbols and produced real linker failures on the
+existing suite until rebuilt from this branch's source), and
+`make selfhosted-compiler` (stages the compiler DLLs `lyric test` needs to
+resolve `Lyric.Emitter`/`Lyric.LlvmBridge` imports for the meta-tests that
+drive the native bridge in-process). With all three staged, the existing
+native self-test suite was re-verified green with no regressions before
+concluding this investigation: `llvm_http_server_self_test.l` 9/9 (`ok 1`
+through `ok 9`, items A–I, `LYRIC_LOAD_COMPILER=1 ./bin/lyric test
+lyric-compiler/lyric/llvm_http_server_self_test.l`, no `--target native`
+flag — that flag is for compiling a native PROGRAM directly, not for this
+meta-test, which itself runs on `--target dotnet` and calls
+`Lyric.LlvmBridge.compileToNativeWithFlags` in-process to compile and run
+the native programs under test; the distinction cost real time to work out
+correctly during this session and is worth stating plainly for the next
+reader). The `InoutRepro` snippet's panic was reproduced via a direct
+`./bin/lyric build <file> --target native` — the correct invocation for
+compiling a single native program directly. No `.l` source was changed by
+this investigation, so no `lyric fmt` pass was needed.
+
+**Related:** #6106 (this entry's issue, left open pending the two
+follow-ups), #6808 (blocker 1: H2Conn/H2Frame/Hpack `inout` usage), #6809
+(blocker 2: no native project/multi-package support), #6794 (the general
+native `inout`/`out` parameter compiler gap #6808 depends on), #6237 (bare-
+`String` indexing, the one `web.l`-specific gap already tracked),
+D-progress-850 (N9.3, the native `Std.HttpServer` twin this issue is a
+follow-on to, and the source of both the addendum-4 `inout` rewrite
+precedent and the `LYRIC_BOOTSTRAP_VERSION` sandbox substitute), D-progress-699/704
+(the h2 FSM and its dotnet ALPN wiring), `docs/61-https-tls-http-versions.md`
+§6.4/§7 item 5, `native/plan/08-work-items.md` N9.5.
+
