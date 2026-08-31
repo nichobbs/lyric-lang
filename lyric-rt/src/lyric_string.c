@@ -148,6 +148,247 @@ LyricString* lyric_string_substring(LyricString* s, int64_t start, int64_t len) 
     return lyric_string_from_literal(LYRIC_STRING_DATA(s) + start, len);
 }
 
+/* Encodes one Unicode scalar value as UTF-8 into `out` (>= 4 bytes) and
+ * returns the byte count (1-4).  Shared by lyric_string_from_char and the
+ * `.toLower()` re-encode path below. */
+static int utf8_encode(uint32_t cp, uint8_t out[4]) {
+    if (cp < 0x80) {
+        out[0] = (uint8_t)cp;
+        return 1;
+    } else if (cp < 0x800) {
+        out[0] = (uint8_t)(0xC0 | (cp >> 6));
+        out[1] = (uint8_t)(0x80 | (cp & 0x3F));
+        return 2;
+    } else if (cp < 0x10000) {
+        out[0] = (uint8_t)(0xE0 | (cp >> 12));
+        out[1] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
+        out[2] = (uint8_t)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    out[0] = (uint8_t)(0xF0 | (cp >> 18));
+    out[1] = (uint8_t)(0x80 | ((cp >> 12) & 0x3F));
+    out[2] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
+    out[3] = (uint8_t)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
+/* Decodes the UTF-8 sequence at data[i] (0 <= i < len).  On a well-formed
+ * sequence sets *cp and *valid = 1, returning its length (1-4).  On a
+ * malformed lead byte or a truncated trailing sequence, sets *cp to the raw
+ * byte value, *valid = 0, and returns 1 — callers must advance by exactly
+ * one byte and must not re-encode an invalid decode (it was never a real
+ * code point). */
+static int utf8_decode_at(const uint8_t* data, int64_t len, int64_t i, uint32_t* cp, int* valid) {
+    uint8_t b0 = data[i];
+    *valid = 1;
+    if (b0 < 0x80) {
+        *cp = b0;
+        return 1;
+    }
+    if ((b0 & 0xE0) == 0xC0 && i + 1 < len && (data[i + 1] & 0xC0) == 0x80) {
+        *cp = ((uint32_t)(b0 & 0x1F) << 6) | (uint32_t)(data[i + 1] & 0x3F);
+        return 2;
+    }
+    if ((b0 & 0xF0) == 0xE0 && i + 2 < len && (data[i + 1] & 0xC0) == 0x80 && (data[i + 2] & 0xC0) == 0x80) {
+        *cp = ((uint32_t)(b0 & 0x0F) << 12) | ((uint32_t)(data[i + 1] & 0x3F) << 6) | (uint32_t)(data[i + 2] & 0x3F);
+        return 3;
+    }
+    if ((b0 & 0xF8) == 0xF0 && i + 3 < len && (data[i + 1] & 0xC0) == 0x80 && (data[i + 2] & 0xC0) == 0x80 &&
+        (data[i + 3] & 0xC0) == 0x80) {
+        *cp = ((uint32_t)(b0 & 0x07) << 18) | ((uint32_t)(data[i + 1] & 0x3F) << 12) |
+              ((uint32_t)(data[i + 2] & 0x3F) << 6) | (uint32_t)(data[i + 3] & 0x3F);
+        return 4;
+    }
+    *cp = b0;
+    *valid = 0;
+    return 1;
+}
+
+/* The exact Unicode White_Space code-point set used by
+ * `lyric-stdlib/std/char.l::isWhiteSpace` — kept byte-for-byte in sync by
+ * hand (this runtime does not depend on the self-hosted stdlib) so
+ * `.trim()` agrees with `Std.Char.isWhiteSpace` on every target. */
+static int cp_is_lyric_whitespace(uint32_t cp) {
+    if (cp >= 0x09 && cp <= 0x0D) return 1;   /* HT, LF, VT, FF, CR */
+    if (cp == 0x20) return 1;                 /* SPACE */
+    if (cp == 0x85) return 1;                 /* NEL */
+    if (cp == 0xA0) return 1;                 /* NO-BREAK SPACE */
+    if (cp == 0x1680) return 1;               /* OGHAM SPACE MARK */
+    if (cp >= 0x2000 && cp <= 0x200A) return 1;  /* EN QUAD … HAIR SPACE */
+    if (cp == 0x2028) return 1;               /* LINE SEPARATOR */
+    if (cp == 0x2029) return 1;               /* PARAGRAPH SEPARATOR */
+    if (cp == 0x202F) return 1;               /* NARROW NO-BREAK SPACE */
+    if (cp == 0x205F) return 1;               /* MEDIUM MATHEMATICAL SPACE */
+    if (cp == 0x3000) return 1;               /* IDEOGRAPHIC SPACE */
+    return 0;
+}
+
+LyricString* lyric_string_trim(LyricString* s) {
+    int64_t len = s ? s->len : 0;
+    const uint8_t* data = len > 0 ? LYRIC_STRING_DATA(s) : NULL;
+
+    int64_t start = len;
+    int64_t i = 0;
+    while (i < len) {
+        uint32_t cp;
+        int valid;
+        int n = utf8_decode_at(data, len, i, &cp, &valid);
+        if (!(valid && cp_is_lyric_whitespace(cp))) {
+            start = i;
+            break;
+        }
+        i += n;
+    }
+    if (start == len) {
+        return lyric_string_from_literal((const uint8_t*)"", 0);
+    }
+
+    /* `end` tracks the byte offset just past the last non-whitespace code
+     * point seen so far; a single forward pass avoids needing to decode
+     * UTF-8 backwards from the end of the string. */
+    int64_t end = start;
+    i = start;
+    while (i < len) {
+        uint32_t cp;
+        int valid;
+        int n = utf8_decode_at(data, len, i, &cp, &valid);
+        i += n;
+        if (!(valid && cp_is_lyric_whitespace(cp))) {
+            end = i;
+        }
+    }
+    return lyric_string_from_literal(data + start, end - start);
+}
+
+/* Unicode *simple* lowercase mapping (no context-sensitive
+ * `SpecialCasing.txt` rules) across Basic Latin, Latin-1 Supplement, Latin
+ * Extended-A, Greek, and Cyrillic.  Every mapped pair EXCEPT U+0130 (see
+ * below) shares the same UTF-8 encoded length as its input, which is what
+ * lets `lyric_string_to_lower` allocate the output buffer at the input's
+ * byte length as an upper bound (never exceeded — see that function). */
+static uint32_t cp_to_lower(uint32_t cp) {
+    if (cp >= 'A' && cp <= 'Z') return cp + 32;
+    /* Latin-1 Supplement: À-Þ (0xC0-0xDE) -> à-þ, skipping × (0xD7). */
+    if (cp >= 0xC0 && cp <= 0xDE && cp != 0xD7) return cp + 32;
+    /* U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE has NO case partner in
+     * Latin Extended-A's otherwise-uniform even/odd pairing below: per
+     * UnicodeData.txt its unconditional simple lowercase mapping is
+     * U+0069 (plain ASCII "i"), not U+0131 (a wholly separate letter
+     * whose own uppercase is U+0049, not U+0130).  Falling through to the
+     * generic 0x100-0x137 range rule would wrongly return 0x131.  Checked
+     * — and excluded — before that rule; this is the one mapping in this
+     * table whose UTF-8 byte length shrinks (2 bytes -> 1), which
+     * `lyric_string_to_lower`'s write loop accounts for.  (This is
+     * distinct from — and not to be confused with — the locale-
+     * conditional "Turkish dotless-I" `SpecialCasing.txt` rule, which
+     * lowercases plain ASCII I/U+0049 to U+0131 only in tr/az locales:
+     * this codebase has no locale concept and correctly excludes that
+     * rule; U+0130's OWN unconditional mapping applies in every locale,
+     * including the root/invariant one this function implements.) */
+    if (cp == 0x130) return 0x69;
+    /* Latin Extended-A: three alternating upper/lower runs plus one
+     * standalone pair (Ÿ/ÿ straddles Latin-1 Supplement). */
+    if (cp >= 0x100 && cp <= 0x137 && (cp % 2) == 0) return cp + 1;
+    if (cp >= 0x139 && cp <= 0x148 && (cp % 2) == 1) return cp + 1;
+    if (cp >= 0x14A && cp <= 0x177 && (cp % 2) == 0) return cp + 1;
+    if (cp == 0x178) return 0xFF;
+    if (cp >= 0x179 && cp <= 0x17E && (cp % 2) == 1) return cp + 1;
+    /* Greek: Α-Ω (0x391-0x3A9, 0x3A2 unassigned) -> α-ω. */
+    if (cp >= 0x391 && cp <= 0x3A9 && cp != 0x3A2) return cp + 32;
+    /* Cyrillic: Ѐ-Џ (0x400-0x40F) -> ѐ-џ, А-Я (0x410-0x42F) -> а-я. */
+    if (cp >= 0x400 && cp <= 0x40F) return cp + 0x50;
+    if (cp >= 0x410 && cp <= 0x42F) return cp + 32;
+    return cp;
+}
+
+LyricString* lyric_string_to_lower(LyricString* s) {
+    int64_t len = s ? s->len : 0;
+    /* `len` bytes is an upper bound on the output: every mapping in
+     * `cp_to_lower` either preserves or shrinks (U+0130 only) a code
+     * point's UTF-8 length, never grows it.  `out` is written compactly
+     * (output position `o` trails input position `i` exactly when a
+     * shrink happened), then trimmed to the real length below. */
+    LyricString* out = string_alloc(len);
+    if (len == 0) return out;
+
+    const uint8_t* src = LYRIC_STRING_DATA(s);
+    uint8_t* dst = LYRIC_STRING_DATA(out);
+    int64_t i = 0;
+    int64_t o = 0;
+    while (i < len) {
+        uint32_t cp;
+        int valid;
+        int n = utf8_decode_at(src, len, i, &cp, &valid);
+        uint32_t lower = valid ? cp_to_lower(cp) : cp;
+        if (lower == cp) {
+            memcpy(dst + o, src + i, (size_t)n);
+            o += n;
+        } else {
+            uint8_t buf[4];
+            int m = utf8_encode(lower, buf);
+            if (m > n) {
+                /* Would only trip if a future script addition to
+                 * cp_to_lower grew a code point's UTF-8 length beyond
+                 * what `out`'s allocation (sized to the input's length)
+                 * can hold; the runtime would rather panic loudly than
+                 * silently overflow the buffer. */
+                lyric_panic_msg(
+                    "lyric_string_to_lower: case mapping grew UTF-8 byte length beyond the input's allocation",
+                    "lyric_string.c", __LINE__
+                );
+            }
+            memcpy(dst + o, buf, (size_t)m);
+            o += m;
+        }
+        i += n;
+    }
+    out->len = o;
+    LYRIC_STRING_DATA(out)[o] = 0;
+    return out;
+}
+
+/* Ordinal (byte-exact) substring search — matches this runtime's existing
+ * byte-indexed `.length`/`.substring` model (D-N-006).  An empty needle
+ * matches at offset 0, mirroring the dotnet/JVM twins' `IndexOf("")` /
+ * `indexOf("")`. */
+static int64_t find_substring(const uint8_t* hay, int64_t hlen, const uint8_t* needle, int64_t nlen) {
+    if (nlen == 0) return 0;
+    if (nlen > hlen) return -1;
+    int64_t last = hlen - nlen;
+    for (int64_t i = 0; i <= last; i++) {
+        if (memcmp(hay + i, needle, (size_t)nlen) == 0) return i;
+    }
+    return -1;
+}
+
+int64_t lyric_string_index_of(LyricString* haystack, LyricString* needle) {
+    int64_t hlen = haystack ? haystack->len : 0;
+    int64_t nlen = needle ? needle->len : 0;
+    const uint8_t* hay = hlen > 0 ? LYRIC_STRING_DATA(haystack) : NULL;
+    const uint8_t* nee = nlen > 0 ? LYRIC_STRING_DATA(needle) : NULL;
+    return find_substring(hay, hlen, nee, nlen);
+}
+
+int32_t lyric_string_contains(LyricString* haystack, LyricString* needle) {
+    return lyric_string_index_of(haystack, needle) >= 0 ? 1 : 0;
+}
+
+int32_t lyric_string_starts_with(LyricString* s, LyricString* prefix) {
+    int64_t slen = s ? s->len : 0;
+    int64_t plen = prefix ? prefix->len : 0;
+    if (plen == 0) return 1;
+    if (plen > slen) return 0;
+    return memcmp(LYRIC_STRING_DATA(s), LYRIC_STRING_DATA(prefix), (size_t)plen) == 0 ? 1 : 0;
+}
+
+int32_t lyric_string_ends_with(LyricString* s, LyricString* suffix) {
+    int64_t slen = s ? s->len : 0;
+    int64_t xlen = suffix ? suffix->len : 0;
+    if (xlen == 0) return 1;
+    if (xlen > slen) return 0;
+    return memcmp(LYRIC_STRING_DATA(s) + (slen - xlen), LYRIC_STRING_DATA(suffix), (size_t)xlen) == 0 ? 1 : 0;
+}
+
 const char* lyric_string_to_cstring(LyricString* s) {
     int64_t len = s ? s->len : 0;
     char* buf = (char*)malloc((size_t)len + 1);

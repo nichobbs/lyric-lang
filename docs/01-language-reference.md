@@ -1830,12 +1830,29 @@ form with the import in scope call the explicit
 | `s.contains(sub)` | `Bool` | |
 | `s.startsWith(prefix)` | `Bool` | |
 | `s.endsWith(suffix)` | `Bool` | |
-| `s.toLower()` | `String` | culture-invariant fold (`String.ToLowerInvariant` on .NET) |
-| `s.toUpper()` | `String` | culture-invariant fold (`String.ToUpperInvariant` on .NET) |
+| `s.toLower()` | `String` | culture-invariant fold (`String.ToLowerInvariant` on .NET); narrower on `--target native`, see below |
+| `s.toUpper()` | `String` | culture-invariant fold (`String.ToUpperInvariant` on .NET); not yet implemented on `--target native` |
 
 String `==` / `!=` compare by value (not reference identity). An empty-string
 check is the `Std.String.isEmpty(s)` free function (`s.length == 0`), not a
 method-syntax form.
+
+**`--target native` coverage note (#6588, #6778):** the six methods
+`.trim()`/`.toLower()`/`.indexOf()`/`.startsWith()`/`.contains()`/
+`.endsWith()` above are implemented for `--target native` (`lyric-rt/src/lyric_string.c`),
+matching the dotnet/JVM semantics documented here, with two exceptions.
+`s.toLower()` on native applies a genuine Unicode simple-case fold, but
+only across five scripts — Basic Latin, Latin-1 Supplement, Latin
+Extended-A, Greek, and Cyrillic — rather than the full Unicode Character
+Database `ToLowerInvariant`/`toLowerCase` use on the other two targets;
+every other cased script (e.g. Armenian, Georgian, Deseret) passes
+through unchanged on native today. Widening this is tracked in #6779.
+`s.toUpper()` has no native implementation at all yet (`.toString()`/
+`.substring()`/the six methods above are the only String scalar methods
+native currently lowers). Native's indices are byte offsets into the
+UTF-8 representation rather than the UTF-16 code-unit offsets `.length`/
+`s[i]` use on dotnet/JVM (D-N-006) — a pre-existing target divergence,
+unrelated to #6588/#6778, not newly introduced by these methods.
 
 ## 13. Tooling
 

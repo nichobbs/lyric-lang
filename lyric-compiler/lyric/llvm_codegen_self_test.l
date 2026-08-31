@@ -59,8 +59,11 @@ record RunOutcome {
 }
 
 /// Parse, lower, clang-compile, and run `source`; panics (failing the
-/// test) on any stage error so assertion sites stay simple.
-func compileAndRun(source: in String): RunOutcome {
+/// test) on any stage error so assertion sites stay simple.  `sanitize`
+/// links `-fsanitize=address` for ARC-sensitive cases (a leaked, over-, or
+/// under-released heap value fails the run) — see `compileAndRun` /
+/// `compileAndRunAsan` below.
+func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
   val pr = parse(source)
   if pr.diagnostics.count > 0 {
     var msg = "test source has parse diagnostics:"
@@ -88,6 +91,9 @@ func compileAndRun(source: in String): RunOutcome {
   }
   val clangArgs: List[String] = newList()
   clangArgs.add("-O0")
+  if sanitize {
+    clangArgs.add("-fsanitize=address")
+  }
   clangArgs.add(llPath)
   clangArgs.add(rt)
   clangArgs.add("-lm")
@@ -107,6 +113,14 @@ func compileAndRun(source: in String): RunOutcome {
     case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout)
     case Err(e) -> panic("binary could not be started: " + e)
   }
+}
+
+func compileAndRun(source: in String): RunOutcome {
+  compileAndRunWith(source, false)
+}
+
+func compileAndRunAsan(source: in String): RunOutcome {
+  compileAndRunWith(source, true)
 }
 
 // Compile + run a multi-package bundle (units[0] is the entry package) through
@@ -455,4 +469,148 @@ test "unit main and substring" {
   val r = compileAndRun(shim)
   assertEqualInt(r.exitCode, 0, "unit main exit 0")
   assertEqual(r.stdout, "native", "substring")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// String.trim/toLower/indexOf/startsWith/contains/endsWith (#6588).
+// trim/toLower allocate a fresh heap String, so they run under ASan; the
+// boolean predicates and indexOf don't allocate but are included alongside
+// for a single coherent block covering every method the issue lists.
+// ─────────────────────────────────────────────────────────────────────────────
+test "string trim strips ASCII and Unicode whitespace (ASan)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "func main(): Int {\n" +
+    // U+00A0 NO-BREAK SPACE flanks the ASCII spaces on each side — trim must
+    // strip both kinds, matching Std.Char.isWhiteSpace's code-point set.
+    "  val padded = \"  \\u{00A0}hi there\\u{00A0}  \"\n" +
+    "  val trimmed = padded.trim()\n" +
+    "  consoleWriteFd(1, trimmed)\n" +
+    "  trimmed.length\n" +
+    "}\n"
+  val r = compileAndRunAsan(shim)
+  assertEqualInt(r.exitCode, 8, "trim: \"hi there\".length")
+  assertEqual(r.stdout, "hi there", "trim result")
+}
+
+test "string trim: all-whitespace collapses to empty, no-padding is unchanged (ASan)" {
+  val src = "package T\n" + "func main(): Int {\n" + "  val allSpace = \"   \\u{00A0} \"\n" +
+    "  val noPad = \"clean\"\n" +
+    "  val empty = \"\"\n" +
+    "  allSpace.trim().length * 100 + noPad.trim().length * 10 + empty.trim().length\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 50, "trim edges: 0*100 + 5*10 + 0")
+}
+
+test "string toLower folds ASCII, Latin-1, Greek, and Cyrillic (ASan)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "func main(): Int {\n" +
+    "  val s = \"CAFÉ ΑΒΓ АБВ\"\n" +
+    "  consoleWriteFd(1, s.toLower())\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRunAsan(shim)
+  assertEqualInt(r.exitCode, 0, "toLower exit")
+  assertEqual(r.stdout, "café αβγ абв", "toLower: Latin-1 + Greek + Cyrillic")
+}
+
+test "string toLower leaves already-lowercase text and punctuation unchanged (ASan)" {
+  val src = "package T\n" + "func main(): Int {\n" + "  val s = \"already-lower! 123\"\n" + "  if s.toLower() == s {\n" +
+    "    1\n" +
+    "  } else {\n" +
+    "    0\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 1, "toLower: no-op on already-lowercase/punctuation")
+}
+
+// U+0130 (İ, LATIN CAPITAL LETTER I WITH DOT ABOVE) has no case partner in
+// Latin Extended-A's otherwise-uniform even/odd pairing: its unconditional
+// simple lowercase mapping is U+0069 (plain ASCII "i"), not U+0131 (a
+// wholly separate letter). Also the one mapping that shrinks the UTF-8
+// byte length (2 bytes -> 1 byte), exercising the ASan-checked compacting
+// write path end to end (#6758).
+test "string toLower maps U+0130 (İ) to plain ASCII i, not U+0131 dotless i (#6758, ASan)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "func main(): Int {\n" +
+    "  val s = \"İstanbul\"\n" +
+    "  val lowered = s.toLower()\n" +
+    "  consoleWriteFd(1, lowered)\n" +
+    "  lowered.length\n" +
+    "}\n"
+  val r = compileAndRunAsan(shim)
+  assertEqualInt(r.exitCode, 8, "\"istanbul\".length (byte length shrinks from 9 to 8)")
+  assertEqual(r.stdout, "istanbul", "toLower: U+0130 -> U+0069 (plain i), not U+0131 (dotless i)")
+}
+
+test "string indexOf: found offset, -1 sentinel, and empty-needle/-haystack" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val s = \"hello world\"\n" +
+    "  println(s.indexOf(\"world\").toString())\n" +
+    "  println(s.indexOf(\"xyz\").toString())\n" +
+    "  println(s.indexOf(\"\").toString())\n" +
+    "  println(\"\".indexOf(\"\").toString())\n" +
+    "  println(s.indexOf(\"hello\").toString())\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRun(shim)
+  assertEqualInt(r.exitCode, 0, "indexOf exit")
+  assertEqual(r.stdout, "6\n-1\n0\n0\n0\n", "indexOf: found, missing (-1), empty needle/haystack, offset 0")
+}
+
+test "string startsWith/contains/endsWith: match, mismatch, and empty-argument edge cases" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val s = \"hello world\"\n" +
+    "  println(s.startsWith(\"hello\").toString())\n" +
+    "  println(s.startsWith(\"world\").toString())\n" +
+    "  println(s.startsWith(\"\").toString())\n" +
+    "  println(s.startsWith(\"hello world!\").toString())\n" +
+    "  println(s.contains(\"lo wo\").toString())\n" +
+    "  println(s.contains(\"xyz\").toString())\n" +
+    "  println(s.contains(\"\").toString())\n" +
+    "  println(s.endsWith(\"world\").toString())\n" +
+    "  println(s.endsWith(\"hello\").toString())\n" +
+    "  println(s.endsWith(\"\").toString())\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRun(shim)
+  assertEqualInt(r.exitCode, 0, "predicates exit")
+  assertEqual(
+    r.stdout,
+    "true\nfalse\ntrue\nfalse\ntrue\nfalse\ntrue\ntrue\nfalse\ntrue\n",
+    "startsWith/contains/endsWith across match, mismatch, over-length, and empty-argument cases"
+  )
+}
+
+test "string trim().toLower() under repeated allocation (ASan)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "func main(): Int {\n" +
+    "  var total = 0\n" +
+    "  var i = 0\n" +
+    "  while i < 200 {\n" +
+    "    val s = \"  MiXeD Case \" + i.toString() + \"  \"\n" +
+    "    val t = s.trim().toLower()\n" +
+    "    total = total + t.length\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  consoleWriteFd(1, total.toString())\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRunAsan(shim)
+  assertEqualInt(r.exitCode, 0, "repeated trim/toLower exit")
+  // 200 * len("mixed case ") [11] + sum(len(str(i)) for i in 0..199) [10*1 + 90*2 + 100*3 = 490]
+  assertEqual(r.stdout, "2690", "repeated trim/toLower: total length across 200 allocations")
 }

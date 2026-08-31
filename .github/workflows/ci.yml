@@ -3077,6 +3077,8 @@ jobs:
             exit 1
           fi
           echo "Native lyric test --target native smoke test passed"
+          "$lyric_bin" test lyric-compiler/lyric/indexof_native_self_test.l --target native
+          echo "Native indexof_native_self_test.l (--target native) passed"
 
       # `lyric build --target native --define` end-to-end (docs/60 #5977): with
       # both native-codegen gaps closed (list literals + module-level `val`

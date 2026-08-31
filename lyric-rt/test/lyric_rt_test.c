@@ -154,6 +154,151 @@ static void test_strings(void) {
     lyric_release(ch);
 }
 
+/* Trim / lowercase / search intrinsics behind `.trim()`, `.toLower()`,
+ * `.indexOf()`, `.startsWith()`, `.contains()`, `.endsWith()` (#6588). */
+static void test_string_trim_case_search(void) {
+    LyricString* padded = lyric_string_from_literal((const uint8_t*)"  hi there  ", 12);
+    LyricString* trimmed = lyric_string_trim(padded);
+    CHECK(lyric_string_len(trimmed) == 8);
+    CHECK(memcmp(LYRIC_STRING_DATA(trimmed), "hi there", 8) == 0);
+
+    LyricString* allSpace = lyric_string_from_literal((const uint8_t*)"   ", 3);
+    LyricString* trimmedEmpty = lyric_string_trim(allSpace);
+    CHECK(lyric_string_len(trimmedEmpty) == 0);
+
+    LyricString* noPad = lyric_string_from_literal((const uint8_t*)"clean", 5);
+    LyricString* trimmedNoPad = lyric_string_trim(noPad);
+    CHECK(lyric_string_len(trimmedNoPad) == 5);
+    CHECK(memcmp(LYRIC_STRING_DATA(trimmedNoPad), "clean", 5) == 0);
+
+    LyricString* empty0 = lyric_string_from_literal((const uint8_t*)"", 0);
+    LyricString* trimmedEmpty0 = lyric_string_trim(empty0);
+    CHECK(lyric_string_len(trimmedEmpty0) == 0);
+
+    /* U+00A0 NO-BREAK SPACE (UTF-8 0xC2 0xA0) on both sides of "x" — a
+     * Unicode whitespace code point ASCII-only trimming would miss. */
+    LyricString* nbsp = lyric_string_from_literal((const uint8_t*)"\xC2\xA0x\xC2\xA0", 5);
+    LyricString* nbspTrimmed = lyric_string_trim(nbsp);
+    CHECK(lyric_string_len(nbspTrimmed) == 1);
+    CHECK(memcmp(LYRIC_STRING_DATA(nbspTrimmed), "x", 1) == 0);
+
+    /* .toLower(): ASCII, then three non-Latin/accented scripts proving this
+     * is not a naive ASCII-only implementation. */
+    LyricString* asciiUp = lyric_string_from_literal((const uint8_t*)"HELLO 123!", 10);
+    LyricString* asciiLow = lyric_string_to_lower(asciiUp);
+    CHECK(lyric_string_len(asciiLow) == 10);
+    CHECK(memcmp(LYRIC_STRING_DATA(asciiLow), "hello 123!", 10) == 0);
+
+    /* "CAF\xC3\x89" = "CAFÉ" (É = U+00C9) -> "caf\xC3\xA9" = "café" (é = U+00E9). */
+    LyricString* cafeUp = lyric_string_from_literal((const uint8_t*)"CAF\xC3\x89", 5);
+    LyricString* cafeLow = lyric_string_to_lower(cafeUp);
+    CHECK(lyric_string_len(cafeLow) == 5);
+    CHECK(memcmp(LYRIC_STRING_DATA(cafeLow), "caf\xC3\xA9", 5) == 0);
+
+    /* Greek Α Β Γ (U+0391 U+0392 U+0393) -> α β γ (U+03B1 U+03B2 U+03B3). */
+    LyricString* greekUp = lyric_string_from_literal((const uint8_t*)"\xCE\x91\xCE\x92\xCE\x93", 6);
+    LyricString* greekLow = lyric_string_to_lower(greekUp);
+    CHECK(lyric_string_len(greekLow) == 6);
+    CHECK(memcmp(LYRIC_STRING_DATA(greekLow), "\xCE\xB1\xCE\xB2\xCE\xB3", 6) == 0);
+
+    /* Cyrillic А Б В (U+0410 U+0411 U+0412) -> а б в (U+0430 U+0431 U+0432). */
+    LyricString* cyrUp = lyric_string_from_literal((const uint8_t*)"\xD0\x90\xD0\x91\xD0\x92", 6);
+    LyricString* cyrLow = lyric_string_to_lower(cyrUp);
+    CHECK(lyric_string_len(cyrLow) == 6);
+    CHECK(memcmp(LYRIC_STRING_DATA(cyrLow), "\xD0\xB0\xD0\xB1\xD0\xB2", 6) == 0);
+
+    /* U+0130 (İ, LATIN CAPITAL LETTER I WITH DOT ABOVE, UTF-8 0xC4 0xB0)
+     * has its OWN unconditional simple lowercase mapping to plain ASCII
+     * U+0069 ("i"), NOT U+0131 (ı, dotless small i) -- the two are not
+     * case-partners despite both falling inside Latin Extended-A's
+     * otherwise-uniform even/odd pairing (#6758). This is also the one
+     * mapping that shrinks the UTF-8 byte length (2 bytes -> 1),
+     * exercising lyric_string_to_lower's compacting write loop. */
+    LyricString* dottedIUp = lyric_string_from_literal((const uint8_t*)"\xC4\xB0", 2);
+    LyricString* dottedILow = lyric_string_to_lower(dottedIUp);
+    CHECK(lyric_string_len(dottedILow) == 1);
+    CHECK(memcmp(LYRIC_STRING_DATA(dottedILow), "i", 1) == 0);
+
+    /* Embedded mid-string ("İstanbul" -> "istanbul") proves the shrink's
+     * compaction shift doesn't corrupt the bytes that follow it. */
+    LyricString* istanbulUp = lyric_string_from_literal((const uint8_t*)"\xC4\xB0stanbul", 9);
+    LyricString* istanbulLow = lyric_string_to_lower(istanbulUp);
+    CHECK(lyric_string_len(istanbulLow) == 8);
+    CHECK(memcmp(LYRIC_STRING_DATA(istanbulLow), "istanbul", 8) == 0);
+
+    LyricString* alreadyLow = lyric_string_from_literal((const uint8_t*)"already-lower!", 14);
+    LyricString* stillLow = lyric_string_to_lower(alreadyLow);
+    CHECK(lyric_string_len(stillLow) == 14);
+    CHECK(memcmp(LYRIC_STRING_DATA(stillLow), "already-lower!", 14) == 0);
+
+    LyricString* emptyLower = lyric_string_to_lower(empty0);
+    CHECK(lyric_string_len(emptyLower) == 0);
+
+    /* .indexOf(): found, not-found (-1 sentinel), and empty-needle/-haystack. */
+    LyricString* haystack = lyric_string_from_literal((const uint8_t*)"hello world", 11);
+    LyricString* needleFound = lyric_string_from_literal((const uint8_t*)"world", 5);
+    LyricString* needleMissing = lyric_string_from_literal((const uint8_t*)"xyz", 3);
+    LyricString* helloOnly = lyric_string_from_literal((const uint8_t*)"hello", 5);
+    CHECK(lyric_string_index_of(haystack, needleFound) == 6);
+    CHECK(lyric_string_index_of(haystack, needleMissing) == -1);
+    CHECK(lyric_string_index_of(haystack, empty0) == 0);
+    CHECK(lyric_string_index_of(empty0, needleFound) == -1);
+    CHECK(lyric_string_index_of(empty0, empty0) == 0);
+    CHECK(lyric_string_index_of(haystack, helloOnly) == 0);
+
+    /* .contains() shares indexOf's sentinel semantics. */
+    CHECK(lyric_string_contains(haystack, needleFound));
+    CHECK(!lyric_string_contains(haystack, needleMissing));
+    CHECK(lyric_string_contains(haystack, empty0));
+
+    /* .startsWith() / .endsWith(): match, mismatch, over-length needle, and
+     * the empty-prefix/-suffix edge case (always true). */
+    LyricString* worldSuffix = lyric_string_from_literal((const uint8_t*)"world", 5);
+    LyricString* wrongPrefix = lyric_string_from_literal((const uint8_t*)"world", 5);
+    LyricString* tooLong = lyric_string_from_literal((const uint8_t*)"hello world!", 12);
+    CHECK(lyric_string_starts_with(haystack, helloOnly));
+    CHECK(!lyric_string_starts_with(haystack, wrongPrefix));
+    CHECK(!lyric_string_starts_with(haystack, tooLong));
+    CHECK(lyric_string_starts_with(haystack, empty0));
+    CHECK(lyric_string_ends_with(haystack, worldSuffix));
+    CHECK(!lyric_string_ends_with(haystack, helloOnly));
+    CHECK(!lyric_string_ends_with(haystack, tooLong));
+    CHECK(lyric_string_ends_with(haystack, empty0));
+
+    lyric_release(padded);
+    lyric_release(trimmed);
+    lyric_release(allSpace);
+    lyric_release(trimmedEmpty);
+    lyric_release(noPad);
+    lyric_release(trimmedNoPad);
+    lyric_release(empty0);
+    lyric_release(trimmedEmpty0);
+    lyric_release(nbsp);
+    lyric_release(nbspTrimmed);
+    lyric_release(asciiUp);
+    lyric_release(asciiLow);
+    lyric_release(cafeUp);
+    lyric_release(cafeLow);
+    lyric_release(greekUp);
+    lyric_release(greekLow);
+    lyric_release(cyrUp);
+    lyric_release(cyrLow);
+    lyric_release(dottedIUp);
+    lyric_release(dottedILow);
+    lyric_release(istanbulUp);
+    lyric_release(istanbulLow);
+    lyric_release(alreadyLow);
+    lyric_release(stillLow);
+    lyric_release(emptyLower);
+    lyric_release(haystack);
+    lyric_release(needleFound);
+    lyric_release(needleMissing);
+    lyric_release(helloOnly);
+    lyric_release(worldSuffix);
+    lyric_release(wrongPrefix);
+    lyric_release(tooLong);
+}
+
 static void test_weak(void) {
     LyricObjectHeader* h = (LyricObjectHeader*)lyric_alloc(sizeof(LyricObjectHeader));
     atomic_store(&h->rc, 1);
@@ -1799,6 +1944,7 @@ int main(void) {
     test_alloc_retain_release();
     test_free();
     test_strings();
+    test_string_trim_case_search();
     test_weak();
     test_weak_uaf();
     test_weak_liveness();

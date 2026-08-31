@@ -106,6 +106,9 @@ pub record CodegenUnit {
   // non-literal initializer is collected too, so `loadLocal` can surface a
   // clean diagnostic instead of an "unknown name" one.
   moduleVals: List[ModuleValDef]
+  // Whether this package's own source file has `import Std.String` in
+  // scope (#6588 review follow-up, #6752) — see `Ctx.pkgImportsStdString`.
+  importsStdString: Bool
 }
 
 /// A module-level `val`/`const` binding, normalized for native inlining
@@ -246,6 +249,13 @@ record Ctx {
   // Module accumulators.
   globals: List[NGlobalDef]
   sigs: Map[String, NFuncSig]
+  // Per-package `import Std.String` gate (#6588 review follow-up, #6752):
+  // whether the package's own source file has `import Std.String` in
+  // scope, mirroring `Msil.Codegen.pkgImports` / `Jvm.Codegen.importsStdString`.
+  // Consulted by `.indexOf`'s scalar-method arm so the import-sensitive
+  // `Option[Int]` UFCS form (`Lyric.TypeChecker.stringIndexOfMember`) is
+  // never shadowed by the raw `Int`-returning runtime intrinsic.
+  pkgImportsStdString: Map[String, Bool]
   // Package the function being lowered belongs to (self-package call
   // resolution).
   curPkg: List[String]
@@ -2006,8 +2016,23 @@ func lowerRecordFieldLoad(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInfo, v
   NVal(ty = ri.fieldTys[idx], value = NLocal(name = dest))
 }
 
+/// Shared lowering for String's boolean-returning one-arg predicates
+/// (`.startsWith`/`.contains`/`.endsWith`): call the `sym` runtime function
+/// (returns `int32_t` 0/1, matching `lyric_string_eq`'s convention) and
+/// materialise a proper `i1` the same way `BEq`/`BNeq` do (`stringCmpTo`).
+func lowerStringPredicateCall(
+  ctx: in Ctx, insns: in List[NInsn], sym: in String, v: in NVal, args: in List[CallArg]
+): NVal {
+  val a0 = lowerPositionalArg(ctx, insns, args, 0)
+  val r = callRuntime(ctx, insns, sym, NI32, arg2(lyricStringNType(), v.value, lyricStringNType(), a0.value))
+  val dest = freshTmp(ctx)
+  insns.add(NICmp(dest = dest, pred = INe, ty = NI32, a = r.value, b = NLitInt(v = 0i64, ty = NI32)))
+  NVal(ty = NI1, value = NLocal(name = dest))
+}
+
 /// Scalar method-call receivers: `.and/.or/.xor/.shl/.shr`, the
-/// conversion family, `.toString()`, and String's `.substring`.
+/// conversion family, `.toString()`, and String's `.substring`/`.trim`/
+/// `.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith`.
 /// Returns None when `name` is not a scalar method (the caller then
 /// resolves it as a UFCS function call).
 func lowerScalarMethodCall(
@@ -2034,6 +2059,75 @@ func lowerScalarMethodCall(
       callArgs.add(NArg(ty = NI64, value = NLocal(name = startW)))
       callArgs.add(NArg(ty = NI64, value = NLocal(name = lenW)))
       return Some(value = callRuntime(ctx, insns, "lyric_string_substring", lyricStringNType(), callArgs))
+    }
+    if name == "trim" and args.count == 0 {
+      return Some(
+        value = callRuntime(ctx, insns, "lyric_string_trim", lyricStringNType(), arg1(lyricStringNType(), v.value))
+      )
+    }
+    if name == "toLower" and args.count == 0 {
+      return Some(
+        value = callRuntime(
+          ctx,
+          insns,
+          "lyric_string_to_lower",
+          lyricStringNType(),
+          arg1(lyricStringNType(), v.value)
+        )
+      )
+    }
+    if name == "indexOf" and args.count == 1 {
+      // #6588 review follow-up (#6752): `.indexOf` is import-sensitive
+      // (`Lyric.TypeChecker.stringIndexOfMember`) — with `import Std.String`
+      // in scope of the calling file, `s.indexOf(x)` type-checks as
+      // `Option[Int]`, the UFCS spelling of the real `Std.String.indexOf`
+      // free function; without the import it types as the raw `-1`-sentinel
+      // `Int`. Intercepting unconditionally here with the raw runtime
+      // intrinsic (as MSIL originally did before #6348, and as JVM's
+      // `fileImportsStdString`/`importsStdString` gate exists to prevent)
+      // would hand a raw i32 to a caller whose `match`/`isinst` expects a
+      // real `Option[Int]` union value — memory corruption, not a type
+      // error. `ctx.curPkg[0] != "Std.String"` mirrors the JVM gate's own
+      // defensive self-package exclusion (`Std.String`'s own `indexOf`
+      // wrapper body calls this raw form on purpose; routing it back
+      // through itself would recurse forever) even though `Std.String`
+      // does not import itself today.
+      var importsStdStr = false
+      if ctx.curPkg[0] != "Std.String" {
+        match mapGet(ctx.pkgImportsStdString, ctx.curPkg[0]) {
+          case Some(v) -> {
+            importsStdStr = v
+          }
+          case None -> {
+          }
+        }
+      }
+      if importsStdStr {
+        // Fall through to `lowerUfcsCall`, which resolves `Std.String.indexOf`
+        // as an ordinary UFCS function call — the same path this call took
+        // before this scalar-method arm existed.
+        return None
+      }
+      val a0 = lowerPositionalArg(ctx, insns, args, 0)
+      val n = callRuntime(
+        ctx,
+        insns,
+        "lyric_string_index_of",
+        NI64,
+        arg2(lyricStringNType(), v.value, lyricStringNType(), a0.value)
+      )
+      val dest = freshTmp(ctx)
+      insns.add(NTrunc(dest = dest, fromTy = NI64, value = n.value, toTy = NI32))
+      return Some(value = NVal(ty = NI32, value = NLocal(name = dest)))
+    }
+    if name == "startsWith" and args.count == 1 {
+      return Some(value = lowerStringPredicateCall(ctx, insns, "lyric_string_starts_with", v, args))
+    }
+    if name == "contains" and args.count == 1 {
+      return Some(value = lowerStringPredicateCall(ctx, insns, "lyric_string_contains", v, args))
+    }
+    if name == "endsWith" and args.count == 1 {
+      return Some(value = lowerStringPredicateCall(ctx, insns, "lyric_string_ends_with", v, args))
     }
     return None
   }
@@ -8103,6 +8197,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     loopCont = newList(),
     globals = mod.globals,
     sigs = mod.sigs,
+    pkgImportsStdString = mod.pkgImportsStdString,
     curPkg = curPkg,
     curRet = curRet,
     moduleVals = mod.moduleVals,
@@ -8611,6 +8706,12 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl1("lyric_string_from_bool", sTy, NI32))
   decls.add(mkDecl1("lyric_string_from_char", sTy, NI32))
   decls.add(mkDecl3("lyric_string_substring", sTy, sTy, NI64, NI64))
+  decls.add(mkDecl1("lyric_string_trim", sTy, sTy))
+  decls.add(mkDecl1("lyric_string_to_lower", sTy, sTy))
+  decls.add(mkDecl2("lyric_string_index_of", NI64, sTy, sTy))
+  decls.add(mkDecl2("lyric_string_starts_with", NI32, sTy, sTy))
+  decls.add(mkDecl2("lyric_string_contains", NI32, sTy, sTy))
+  decls.add(mkDecl2("lyric_string_ends_with", NI32, sTy, sTy))
   decls.add(mkDecl1("lyric_string_to_cstring", NPtr(pointee = NI8), sTy))
   decls.add(mkDecl1("lyric_cstring_free", NVoid, NPtr(pointee = NI8)))
   decls.add(mkDecl1("lyric_weak_upgrade", NPtr(pointee = NI8), NPtr(pointee = NI8)))
@@ -8870,6 +8971,16 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     }
     mvUi = mvUi + 1
   }
+  // Per-package `import Std.String` gate (#6588 review follow-up, #6752) —
+  // see `Ctx.pkgImportsStdString`.
+  val pkgImportsStdString: Map[String, Bool] = newMap()
+  var impUi = 0
+  while impUi < units.count {
+    if not pkgImportsStdString.containsKey(units[impUi].pkgName) {
+      pkgImportsStdString.add(units[impUi].pkgName, units[impUi].importsStdString)
+    }
+    impUi = impUi + 1
+  }
   val emptySlots: Map[String, String] = newMap()
   val emptyTypes: Map[String, NType] = newMap()
   val emptyRecs: Map[String, NRecInfo] = newMap()
@@ -8899,6 +9010,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     loopCont = newList(),
     globals = newList(),
     sigs = sigs,
+    pkgImportsStdString = pkgImportsStdString,
     curPkg = newList(),
     curRet = newList(),
     moduleVals = moduleVals,
@@ -9131,6 +9243,27 @@ pub func opaqueToRecordDecl(od: in OpaqueTypeDecl): RecordDecl {
   RecordDecl(name = od.name, generics = od.generics, whereClause = od.whereClause, members = members, span = od.span)
 }
 
+/// True when `file` has `import Std.String` (or `import Std.String as X`)
+/// in scope — the per-package gate `.indexOf`'s scalar-method arm
+/// consults (#6588 review follow-up, #6752), mirroring
+/// `Jvm.Codegen.fileImportsStdString` / `Msil.Codegen`'s `pkgImports`
+/// check (both exist for the identical reason: routing `.indexOf`
+/// unconditionally through the raw host/runtime intrinsic when the
+/// caller's file imports `Std.String` — and therefore expects the real
+/// `Option[Int]`-returning `Std.String.indexOf` per
+/// `Lyric.TypeChecker.stringIndexOfMember` — reintroduces the #6348
+/// class of memory corruption).
+pub func fileImportsStdString(file: in SourceFile): Bool {
+  var i = 0
+  while i < file.imports.count {
+    if modulePathJoin(file.imports[i].path.segments) == "Std.String" {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 /// Collect one source file's lowerable items into a CodegenUnit.
 pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
   val fns: List[FunctionDecl] = newList()
@@ -9207,7 +9340,8 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
     interfaces = interfaces,
     impls = impls,
     protecteds = protecteds,
-    moduleVals = moduleVals
+    moduleVals = moduleVals,
+    importsStdString = fileImportsStdString(file)
   )
 }
 
