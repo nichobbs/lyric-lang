@@ -32275,6 +32275,299 @@ gaps. Zero regressions across `out_inout_jvm_self_test.l` (18),
 `lyric-web/src/_kernel/jvm/web_kernel.l` (stale `#5458` comment corrected),
 `.github/workflows/ci.yml` (new self-test wired in).
 
+### D-progress-831 — JVM: a panic inside a closure invoked through a cross-package function-typed parameter corrupted the caught `Bug.message` (#5388, #5251)
+
+**Status:** Shipped.
+
+**The bug.** `Std.Testing.assertPanicsWith(label, expectedSubstring, fn)`
+on `--target jvm` returned the wrong exception message whenever `fn`'s
+panic originated inside a closure literal that crossed a package
+boundary to reach its point of invocation — which is *every* call,
+since `assertPanicsWith`'s own `runAndCapturePanic(fn: in () -> Unit)`
+lives in `Std.Testing` while the closure literal is always written in
+the caller's own test file. `assertPanics` (occurrence-only, no message
+check) was unaffected, which misdirected initial suspicion toward the
+exception-propagation path rather than the call site itself.
+
+Root cause: the self-hosted JVM backend emits one closure-invocation
+functional interface — `<pkg>/Lyric$Lambda`, `invoke([Ljava/lang/Object;)
+Ljava/lang/Object;` — **per package** (`Jvm.Codegen.lambdaIfaceName`).
+A closure literal implements the interface belonging to the package it
+is LEXICALLY WRITTEN in; a function-typed parameter's call site
+`checkcast`s the argument to the interface belonging to the package the
+PARAMETER is declared in (`lowerLambdaInvokeTail`, `04_calls.l`). When
+those two packages differ — any higher-order call across a package
+boundary — the two interfaces are nominally distinct JVM types despite
+being structurally identical, and the `checkcast` throws
+`ClassCastException: class <CallerPkg>$Lambda$N cannot be cast to class
+<CalleePkg>.Lyric$Lambda`. Confirmed via a live repro
+(`assertPanicsWith("...", "custom message here", { -> boom() })` where
+`boom()` panics with that exact string): the real exception reaching
+`runAndCapturePanic`'s `catch Bug as b` was this `ClassCastException`,
+not the panic — `catch Bug` maps broadly onto `java/lang/Throwable`
+(`Jvm.Codegen`'s catch-class mapping, `05_stmts.l`), so it silently
+caught the wrong exception and `b.message` surfaced the CCE's own text.
+This is the same root-cause family already documented (without a fix)
+in `lyric-jsonrpc/README.md`'s former "Known upstream issues" #3 and
+issue #5329 (its bug 3) — a `ClassCastException`, not the class-name-
+shaped `NoClassDefFoundError` string both issue reports guessed at, but
+empirically the same failure either way: `catch Bug as b { b.message }`
+never sees the real panic text.
+
+**The fix.** Unify the closure-invocation interface to ONE shared
+binary name across the entire bundle instead of one per package:
+`Jvm.Codegen.lambdaIfaceName` now always returns the constant
+`"Lyric/Lyric$Lambda"` regardless of which package asks (the retained
+`Lyric/` prefix keeps `Jvm.AutoFfi.isLyricLambdaDesc`'s `.endsWith("/
+Lyric$Lambda;")` descriptor check matching unchanged). Every package
+that needs the interface (`fileNeedsLambdaIface`/`closureAcc`, per
+package, unchanged) now still independently decides to emit it, so
+several packages in one bundle legitimately try to emit the identical
+class; `Jvm.Bridge.codegenPackageInto` — the single per-package
+class-file-append point used by both the single-file
+(`compileToJarBundled`) and multi-package project
+(`compileProjectToJarBundledWithFeatures`) build paths — deduplicates
+by keeping only the first copy of that one shared class name, so the
+JAR never carries duplicate entries for it. A closure literal from any
+package now implements the exact interface every call site checks
+against, closing the cross-package higher-order-function gap in
+general (not just the panic-message symptom).
+
+**Tests.** `lyric-compiler/lyric/closure_correctness_self_test.l`
+(already covered `assertPanicsWith`'s lambda-argument form on dotnet;
+its JVM half was missing from CI per the issues' own observation) —
+wired into `.github/workflows/ci.yml`'s `compiler-self-tests-jvm` job
+alongside `closure_jvm_self_test.l`; both targets pass 8/8.
+`lyric-compiler/lyric/jvm_lambda_iface_bundling_self_test.l` (#6113
+regression coverage) updated for the new shared binary name and
+extended with a new end-to-end test that compiles two real packages
+(one declaring the higher-order function, one supplying the closure
+literal) via `compileProjectToJarBundledWithFeatures` and runs the
+resulting JAR under `java`, proving the cross-package call itself now
+works (not just that one interface class-file entry exists). Verified
+the original `#5388` repro (`assertPanicsWith("...", "custom message
+here", { -> boom() })`) directly via `lyric run --target jvm`: prints
+`ok` post-fix (previously panicked with the wrong message); `--target
+dotnet` was already correct and remains correct.
+
+
+### D-progress-832 — JVM: `Map[K, V]` value-type erasure confusion across sibling instantiations fixed (fixes #5451, root-causes the open half of #6347/#6357)
+
+**Status:** ACCEPTED
+
+**Context.** #5451 (filed integrating `lyric-session`, D-progress-631 item
+10): `InProcessSessionStore` — a `record` holding `var sessions: Map[String,
+SessionData]` next to a sibling `ttlSeconds: Long` field — crashed on
+`--target jvm` the moment a session actually stored data, historically with
+a runtime `ClassCastException` ("`Session.SessionData` cannot be cast to
+class `java.lang.Long`"); on this branch's current `main` (post-#6422's
+"fail loud instead of silently miscompile" change), the same root cause
+instead surfaces as a compile-time `error[J007]` refusal on the value's
+first typed use. Filed alongside the same family as #5439 (`slice[Record]`
+field access) and #5444 (union-case field accessor), whose fixes established
+the `elem:<class>#<field>` funcSigs registry + `ctx.varGenericArgs` bare-name
+convention this entry extends — but `erased_element_checkcast_jvm_self_test.l`'s
+own header (added fixing #5444) explicitly flagged `Map[K, V]` VALUES as
+"remain NOT covered," anticipating exactly this gap.
+
+**Root cause.** Three independent gaps, all in `lyric-compiler/jvm/`:
+
+1. `recordDeclaredElemType` (`codegen/01_types.l`) and `registerFieldElemSig`
+   (`codegen/06_items.l`) — the declared-element-type registries #5439/#5444
+   built — only recognized `slice[Elem]`/bare `List[Elem]` shapes; a `Map[K,
+   V]`-typed parameter, local, or record field never got its `V` recorded
+   anywhere.
+2. `indexedElemTypeOverride` (`codegen/02_exprs.l`) only consulted a
+   single-element `varGenericArgs`/`retGenericArgs` entry (the slice/List
+   convention); even where a 2-arg entry already existed incidentally (e.g. a
+   `Map[String, Int]`-returning function's call-derived `retGenericArgs`,
+   which `returnTypeGenericArgs` has always extracted generically for any
+   `TGenericApp`), it was ignored.
+3. The `EIndex` `HashMap.get` codegen arm computed `elemOverride` up front
+   (mirroring the array/`ArrayList.get` arms) but never applied it — always
+   returning a hard-coded, unconditional `JRef("java/lang/Object")`.
+
+**Fix.** `recordDeclaredElemType` and `registerFieldElemSig` gained a
+`Map`-with-2-type-args arm recording `V` (the value type) — for
+`registerFieldElemSig` under the SAME `elem:<class>#<field>` key slice/List
+already uses (a field is only ever one collection shape, so no ambiguity);
+for `recordDeclaredElemType`, as a 2-element `[K, V]` list matching the
+shape `returnTypeGenericArgs` already produces for a call-derived binding.
+`indexedElemTypeOverride`'s general arg-count check now treats a 2-element
+entry as `V` at index 1 (alongside the existing 1-element-at-index-0 slice/
+List convention). The `HashMap.get` `EIndex` arm now calls
+`applyIndexedElemOverride` with the resolved override, exactly like the
+`ArrayList.get`/array arms already did, instead of discarding it.
+
+**Scoping bug found and fixed during this same development pass (before
+landing): `indexedElemTypeOverride` is a SHARED helper — it also backs
+`SFor`'s loop-iterable element narrowing (`codegen/05_stmts.l`), where a
+2-arg return type does NOT reliably mean "Map's `V`".** Naively extending
+the general arg-count check to *every* caller regressed
+`map_iteration_jvm_self_test.l`'s `mapKeys`/`mapEntries`/`mapPutAll` cases
+(discovered by running the broader Map/Collections self-test sweep before
+considering the fix done, per this repo's own regression-testing
+convention): `Std.CollectionsHost.MapKeyCollection[K, V]` (`extern type
+... = "java.util.Set"`, aliased with 2 phantom type params purely for
+symmetry with `Map[K, V]` even though a `Set` only ever holds `K`) is a
+real 2-type-param generic whose iterated element is the FIRST arg, not the
+second. `Std.Collections.mapKeys[K, V]`'s own `for k in dictGetKeys(m) {
+result.add(k) }` loop — once `dictGetKeys`'s `MapKeyCollection[K, V]`
+return type got monomorphized to concrete `<String, Int>` args at the
+call's compile time — hit the new count-2 branch and wrongly narrowed the
+loop's `String` key element to `Int`'s class, a `ClassCastException`
+("`String` cannot be cast to `Integer`") at runtime. Root-fixed (not
+special-cased around `MapKeyCollection` by name) by adding an
+`allowMapValueArg: Bool` parameter to `indexedElemTypeOverride`, threaded
+through its two recursive call sites (`EParen`, and `staticBaseClass`'s
+chained-`EIndex` arm from #6493): `true` at both real `EIndex` call sites
+(the type checker only ever lets a genuine `Map[K, V]` be `[k]`-subscripted,
+so a 2-arg entry reaching either site is unambiguous), `false` at the
+`SFor` call site (preserves that site's pre-existing, safe single-arg-only
+behaviour — an unrecognized 2-arg iterable stays erased `Object`, exactly
+as before this fix).
+
+**Regression test.** Extended `erased_element_checkcast_jvm_self_test.l`
+(the existing #5439/#5444/#5453 CI-gated self-test whose own header
+anticipated this gap) with a new section 7 (4 cases): a record with two
+sibling `Map[K, V]` fields of different value types (`Map[String, Long]`
+next to `Map[String, Pt]`, the exact `InProcessSessionStore` shape) read
+through `self.field[key]` inside `impl` methods; a bare-name annotated
+`Map[String, Record]` local; and a call-derived unannotated `Map[String,
+Record]` local. Updated the file's header comment to describe the `Map[K,
+V]` coverage and the `allowMapValueArg` scoping rationale.
+
+**Verification.** `erased_element_checkcast_jvm_self_test.l`: 16/16 on
+`--target jvm` and `--target dotnet` (dotnet was never broken — MSIL
+reifies generics through its own instantiation model). `lyric-session`'s
+full suite (`lyric test --manifest lyric-session/lyric.toml`) on both
+targets: `Session.SessionFixationTests` 5/5 including the exact #5451 repro
+("set() succeeds for an id obtained via create()"), `Session.SessionStoreTests`
+15/15, `Session.SensitiveUrlTests` 11/11, `Session.SessionCookieTests` 10/10,
+`Session.SessionConfigEnvTests` 6/6 — identical pass/fail shape on both
+targets, the sole failure (`Session.SessionRedisJvmTests`, `@cfg(feature =
+"jvm")`-gated, needs `--features jvm` + a live Redis, not exercised here)
+pre-existing and unrelated. Broader Map/Collections regression sweep on
+both targets: `map_iteration_jvm_self_test.l` 5/5 (the file that caught the
+scoping bug above), `subscript_assign_jvm_self_test.l` 13/13,
+`map_key_self_test.l` 8/8, `map_option_self_test.l` 6/6,
+`map_value_self_test.l` 10/10, `nested_generic_self_test.l` 8/8;
+`map_enhancements_self_test.l`'s one pre-existing J007 failure (a
+`List[MapEntry[K,V]]`-element field-read gap, unrelated to `Map` value
+narrowing) confirmed present identically on the pre-fix baseline, not a
+regression. Also re-ran `bitwise_self_test.l` (10/10),
+`async_spawn_self_test.l` (26/26), `block_shadow_self_test.l` (20/20), and
+`chained_elem_jvm_self_test.l` (2/2, the #6493 chained-index family this
+fix's `staticBaseClass` call site shares) on both targets as a general
+codegen-path sanity sweep, since this fix touches the shared
+`indexedElemTypeOverride`/`EIndex`/`SFor` machinery those tests also
+exercise — all green, no regressions.
+
+**Related:** #5439, #5442, #5444, #5451, #5456 (the erased-generic-
+confusion family this entry closes the `Map`-value instance of), #6347,
+#6357 (D-progress-754 fixed only the containment/surfacing half of these;
+their root-cause half — "a JVM generics-erasure gap in member access on a
+generic-collection element" — is this entry's fix), #6493 (the chained-
+index `staticBaseClass` machinery this fix's `allowMapValueArg` threading
+touches), docs/44 m-99.
+
+
+### D-progress-833 — `Lyric.Mono`: match-arm pattern bindings now tracked into the call-site type environment, and isolated to their own arm's scope (#5422, #5423, #6632, #6633)
+
+**Status:** Shipped.
+
+**Context.** `Lyric.Mono`'s call-site type-argument inference threads one
+mutable `env: Map[String, TypeExpr]` through the whole rewrite, populated at
+every `val`/`var`/`let` binding (`rewriteBinding` → `trackPatternEnv`) so a
+later generic call argument sourced from that name can specialise against
+its real type. A `match`-arm pattern binding (`case Some(mm) -> …`) never
+populated `env` at all: a generic call argument sourced from a match-bound
+name (`Std.Collections.mapKeys(mm)` on an `Option[Map[K, V]]` destructure)
+had no known type in `env`. Since `mapKeys` is an IMPORTED generic (erased
+from the compiled assembly, so every call site must specialise — the
+"default unbound params to `Object`" fallback in `rewriteExpr`'s `EPath`
+call arm), the unresolved type parameter silently defaulted to `Object`
+instead of the real `Map[K, V]` instantiation, producing a specialisation
+(`mapKeys__Object__Object`) whose body operates on the WRONG generic
+instantiation — `InvalidCastException` at runtime on `--target dotnet`
+(#5422, confirmed via a minimal repro; surfaced in practice inside
+`lyric-i18n`'s kernel work, D-progress-628, which had to hand-apply a
+re-bind-to-explicit-local workaround at three call sites since no fix
+existed yet). #5423 (a suspected JVM-only sibling: calling a native
+`String` method on a `match`-bound `String` payload) was investigated
+alongside #5422 per the issue's own "possibly shared root cause"
+hypothesis, but could not be reproduced against `HEAD` across several
+faithful repro shapes — the JVM backend's own `bindCaseField`/
+`scrutineeGenericArgs` machinery (`lyric-compiler/jvm/codegen/03_match.l`)
+already resolves a match-bound payload's concrete JVM type correctly, so
+#5423 shipped as a standing regression test rather than a targeted fix.
+
+**Fix (mono.l).** New `bindPatternEnvMono` (mirroring `rewriteBinding`'s
+existing `val`/`var`/`let` tracking) types each `match` arm's pattern from
+the scrutinee's own (possibly generic) instantiation, walking `PBinding`/
+`PParen`/`PTypeTest`/`PConstructor`/`PTuple`/`POr` recursively and binding
+destructured constructor-field payloads through the case's own resolved
+`ctorDecl` signature. A bare nullary-case arm (`case None -> …`) is
+excluded via `isKnownConstructorNameMono` (mirroring the type checker's
+`isConstructorPatternName`) so it is never mistracked as a fresh variable
+binding named `"None"`. `rewriteMatchArms` calls `bindPatternEnvMono` for
+each arm before rewriting its guard and body.
+
+**Review findings folded in during this integration pass (#6632, #6633).**
+A subsequent automated review of the shipped fix raised two REQUIRED
+findings, addressed in this same pass rather than as a follow-up:
+
+- **#6632:** `match_bound_pattern_type_self_test.l` (the six end-to-end
+  runtime tests this fix shipped with) was never wired into
+  `.github/workflows/ci.yml` — its own header claimed dual-target CI
+  coverage like `block_shadow_self_test.l`/`bitwise_self_test.l`, but no
+  step existed. Fixed: added the `--target dotnet` and `--target jvm` CI
+  steps, following the existing pattern for those comparable files.
+- **#6633:** `env` is one mutable map threaded through the WHOLE rewrite
+  (function body, not just one `match`), so a variable name reused across
+  TWO SIBLING match arms with different payload types — or a match-bound
+  name that collides with a name used again AFTER the whole match
+  statement — risked either arm-to-arm contamination or the last-processed
+  arm's binding surviving past the match into unrelated later code. This
+  landed in the same integration window as the separate `#6121`
+  monomorphizer-nondeterminism fix, which added `snapshotEnv`/`restoreEnv`
+  scope isolation around every OTHER nested-block recursion (`rewriteEOB`
+  for `if`/`match`-arm bodies, `rewriteBlockScoped` for loop/`scope`/
+  `defer`/lambda bodies) — but `rewriteMatchArms`'s own bare
+  `bindPatternEnvMono` call was not itself wrapped in a snapshot/restore
+  pair, so a pattern binding could still leak past the arm it was bound in
+  (`rewriteEOB`'s inner snapshot, taken AFTER `bindPatternEnvMono` already
+  ran, captured the polluted state as its own "before" baseline and
+  restored right back to it). Fixed by moving the snapshot to the TOP of
+  each loop iteration in `rewriteMatchArms` — before `bindPatternEnvMono`
+  runs — and restoring immediately after the arm's guard and body are both
+  rewritten, so the restore also evicts the arm's own pattern bindings.
+  New regression test in `mono_self_test.l`: two sibling `union` case arms
+  (`Circle(x: Float)`, `Square(x: Int)`) binding the SAME name `x` to
+  DIFFERENT types, each feeding its own `like[T]` call, plus a THIRD
+  `like` call on an unrelated outer `val x: String` declared before and
+  referenced again after the whole match — asserts `like__Float`,
+  `like__Int`, and `like__String` all specialise correctly, which would
+  fail if any arm's binding leaked into a sibling or past the match.
+
+**Tests.** `mono_self_test.l` 59/59 (57 pre-existing + the #6121 shadowed-
+`val` case + the new #6633 sibling-arm case), `match_bound_pattern_type_
+self_test.l` 6/6 on both `--target dotnet` and `--target jvm`, now wired
+into CI on both targets.
+
+**Docs.** D-progress-628's original "#5422/#5423 ... not fixed here, filed
+separately" text is left as written (append-only) with a new "Revisions"
+paragraph added pointing at this entry; the `lyric-i18n` kernel test
+comments describing the re-bind-to-local workarounds are updated to note
+the workaround is no longer required.
+
+**Related:** #5422, #5423, #6632, #6633, #6121 (the `snapshotEnv`/
+`restoreEnv` scope-isolation machinery this fix's `rewriteMatchArms`
+change reuses, no decision-log entry of its own yet), D-progress-628 (the
+`lyric-i18n` workarounds this fix obsoletes), `lyric-compiler/lyric/
+mono.l`, `lyric-compiler/lyric/mono_self_test.l`, `lyric-compiler/lyric/
+match_bound_pattern_type_self_test.l`.
+
 ### D-progress-835 — JVM: track element type through unannotated list literals so indexed reads no longer erase to `Object` (#5686, JVM parity for MSIL's #5620)
 
 `Jvm.Codegen`'s `case EList` (`codegen/02_exprs.l`) always built a plain

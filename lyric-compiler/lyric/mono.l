@@ -391,6 +391,21 @@ func typeExprHeadNameMono(te: in TypeExpr): Option[String] {
   }
 }
 
+// Extracts a `TGenericApp`'s type-argument list, unwrapping a `TParen`/
+// `TNullable` wrapper first -- mirrors `typeExprHeadNameMono`'s own
+// recursion so a parenthesized generic type expression (`(Box[T])`) yields
+// its real args instead of silently degrading to an empty list (which would
+// otherwise leave an unresolved type parameter unsubstituted, review finding
+// on #6743's `PRecord` arm).
+func genericAppArgsMono(te: in TypeExpr): List[TypeArg] {
+  match te.kind {
+    case TGenericApp(_, a) -> a
+    case TParen(inner) -> genericAppArgsMono(inner)
+    case TNullable(inner) -> genericAppArgsMono(inner)
+    case _ -> newList()
+  }
+}
+
 func typeArgListKey(args: in List[TypeArg]): String {
   var acc = ""
   var i = 0
@@ -3306,10 +3321,7 @@ func bindPatternEnvMono(
         case Some(te) -> match typeExprHeadNameMono(te) { case Some(n) -> n; case None -> "" }
         case None -> ""
       }
-      val recordArgs: List[TypeArg] = match scrutTe {
-        case Some(te) -> match te.kind { case TGenericApp(_, a) -> a; case _ -> newList() }
-        case None -> newList()
-      }
+      val recordArgs: List[TypeArg] = match scrutTe { case Some(te) -> genericAppArgsMono(te); case None -> newList() }
       var fi = 0
       while fi < fields.count {
         match fields[fi] {
