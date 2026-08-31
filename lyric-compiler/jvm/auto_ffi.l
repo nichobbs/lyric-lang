@@ -385,9 +385,15 @@ pub func parseDescriptorParams(descriptor: in String): List[String] {
       params.add(descriptor.substring(i, j - i + 1))
       i = j + 1
     } else if ch == '[' {
-      // Array: capture the bracket + element
+      // Array: capture every leading bracket (multi-dimensional arrays, e.g.
+      // "[[I" for int[][] or "[[Ljava/lang/String;" for String[][][], carry
+      // MULTIPLE leading '[' before the element-type character — JVMS §4.3.2's
+      // FieldType grammar allows unbounded array-dimension nesting) plus the
+      // element type.
       val start = i
-      i = i + 1
+      while i < len and descriptor[i] == '[' {
+        i = i + 1
+      }
       if i < len and descriptor[i] == 'L' {
         while i < len and descriptor[i] != ';' {
           i = i + 1
@@ -468,6 +474,63 @@ func scoreParamMatch(argDesc: in String, paramDesc: in String, argIsNarrowedSlic
   if argDesc == "F" {
     if paramDesc == "D" {
       return 5
+    }
+    return -1
+  }
+  // byte/short/char widening (#6769, JLS §5.1.2): the JVM represents all four
+  // integral-below-int types (`byte`/`short`/`char`/`int`) on the same `int`
+  // operand-stack slot, so — unlike int→long/float/double above — no
+  // conversion bytecode is emitted for a byte/short/char argument reaching an
+  // `int` parameter; `emitFfiCoerce` already treats that case as a no-op.
+  // `char` widens directly to int/long/float/double (never to `short`, and
+  // never FROM `byte`/`short` — JLS's byte/short/char are mutually
+  // non-widening siblings). Scores decrease with each additional widening
+  // step, mirroring the int-widening arms above.
+  if argDesc == "B" {
+    if paramDesc == "S" {
+      return 8
+    }
+    if paramDesc == "I" {
+      return 7
+    }
+    if paramDesc == "J" {
+      return 6
+    }
+    if paramDesc == "F" {
+      return 5
+    }
+    if paramDesc == "D" {
+      return 4
+    }
+    return -1
+  }
+  if argDesc == "S" {
+    if paramDesc == "I" {
+      return 7
+    }
+    if paramDesc == "J" {
+      return 6
+    }
+    if paramDesc == "F" {
+      return 5
+    }
+    if paramDesc == "D" {
+      return 4
+    }
+    return -1
+  }
+  if argDesc == "C" {
+    if paramDesc == "I" {
+      return 7
+    }
+    if paramDesc == "J" {
+      return 6
+    }
+    if paramDesc == "F" {
+      return 5
+    }
+    if paramDesc == "D" {
+      return 4
     }
     return -1
   }
@@ -763,6 +826,18 @@ func scoreMethod(
   narrowedFlags: in List[Bool],
 ): Int {
   if wantStatic and not method.isStatic {
+    return -1
+  }
+  // Converse rejection (#6765): a STATIC method must never satisfy an
+  // instance-call site.  Without this, an instance lookup (wantStatic =
+  // false) could select a same-named static method that outscores every
+  // genuine instance overload (e.g. `Thread.sleep(long)` for `t.sleep(1000L)`
+  // against a `Thread`-typed receiver with no instance `sleep`), and the
+  // caller then unconditionally emits `invokevirtual`/`invokeinterface`
+  // against a static method's descriptor — invalid bytecode that fails
+  // verification (`IncompatibleClassChangeError`) at first execution instead
+  // of failing to resolve at compile time.
+  if not wantStatic and method.isStatic {
     return -1
   }
   val params = parseDescriptorParams(method.descriptor)

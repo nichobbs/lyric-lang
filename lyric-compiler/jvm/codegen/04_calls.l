@@ -1748,6 +1748,27 @@ func emitFfiCoerce(ctx: in FuncCtx, insns: in List[LInsn], fromDesc: in String, 
       return ()
     }
   }
+  // byte/short/char widening (#6769): the value is already on the operand
+  // stack as a full `int` (the JVM has no narrower integral stack slot — see
+  // `scoreParamMatch`'s widening-arm comment), so widening to `short`/`int`
+  // itself needs no bytecode at all (falls through, matching the `fromDesc ==
+  // toDesc` early-return's no-op shape); only widening past `int` to
+  // `long`/`float`/`double` needs the same `i2l`/`i2d`/`i2f` conversion
+  // bytecode the `fromDesc == "I"` arm above emits.
+  if fromDesc == "B" or fromDesc == "S" or fromDesc == "C" {
+    if toDesc == "J" {
+      insns.add(LI2l)
+      return ()
+    }
+    if toDesc == "D" {
+      insns.add(LI2d)
+      return ()
+    }
+    if toDesc == "F" {
+      insns.add(LI2f)
+      return ()
+    }
+  }
   // Lyric slice (`[Ljava/lang/Object;`) → any JDK primitive array.  The
   // source array reference is on the operand stack; `emitUnboxObjectArray`
   // replaces it with a freshly-built primitive array copy (element-copy

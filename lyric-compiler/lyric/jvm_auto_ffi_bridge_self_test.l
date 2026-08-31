@@ -410,6 +410,167 @@ test "equals(Object) fallback boxes a primitive argument before the pinned invok
   )
 }
 
+// ─── #6768: parseDescriptorParams must consume every leading '[' ────────────
+//
+// JVMS §4.3.2's FieldType grammar allows unbounded array-dimension nesting
+// (`[[I` is `int[][]`, `[[[Ljava/lang/String;` is `String[][][]`). Before the
+// fix, the array branch of `parseDescriptorParams` consumed only ONE leading
+// `[` before dispatching on the element-type character, so `([[I)V` split
+// into TWO bogus params (`["[[", "I"]`) instead of one (`["[[I"]`),
+// corrupting the arity of every parameter that follows a multi-dimensional
+// array in the descriptor. Tested directly (no JVM run needed) since
+// `parseDescriptorParams` is a pure function of the descriptor string.
+test "parseDescriptorParams consumes every leading '[' of a multi-dimensional array descriptor (#6768)" {
+  val oneDim = parseDescriptorParams("([I)V")
+  assertEqualInt(oneDim.count, 1, "single-dim int[] param: arity 1")
+  assertEqual(oneDim[0], "[I", "single-dim int[] descriptor preserved")
+
+  val twoDim = parseDescriptorParams("([[I)V")
+  assertEqualInt(twoDim.count, 1, "two-dim int[][] param: arity 1, not 2")
+  assertEqual(twoDim[0], "[[I", "two-dim int[][] descriptor captured whole, not split at the second '['")
+
+  val threeDimRef = parseDescriptorParams("([[[Ljava/lang/String;)V")
+  assertEqualInt(threeDimRef.count, 1, "three-dim String[][][] param: arity 1")
+  assertEqual(threeDimRef[0], "[[[Ljava/lang/String;", "three-dim reference-array descriptor captured whole")
+
+  // A multi-dim array followed by another parameter: the bug corrupted
+  // parsing of every parameter AFTER the array too, not just the array itself.
+  val withTrailingParam = parseDescriptorParams("([[II)V")
+  assertEqualInt(withTrailingParam.count, 2, "int[][] followed by int: arity 2, not 3")
+  assertEqual(withTrailingParam[0], "[[I", "first param: two-dim int[][]")
+  assertEqual(withTrailingParam[1], "I", "second param: plain int, not corrupted by the array's split")
+
+  val mixed = parseDescriptorParams("(I[[[DLjava/lang/Object;)V")
+  assertEqualInt(mixed.count, 3, "int, double[][][], Object: arity 3")
+  assertEqual(mixed[0], "I", "first param: int")
+  assertEqual(mixed[1], "[[[D", "second param: three-dim double[][][]")
+  assertEqual(mixed[2], "Ljava/lang/Object;", "third param: Object reference, unaffected by the preceding array")
+}
+
+// ─── #6765: findBestInstanceMethod must never select a STATIC method ────────
+//
+// A JDK class may legally declare an instance method and a static method of
+// the same name with DIFFERENT (but scoring-compatible) parameter types —
+// `scoreMethod` never filtered static methods out of an instance lookup
+// (`wantStatic = false`), so a same-named static overload that happens to
+// score higher than the genuine instance overload could win. The caller then
+// unconditionally emits `invokevirtual` against the (static) method's
+// descriptor — invalid bytecode that fails class-load verification
+// (`IncompatibleClassChangeError`) at first execution rather than at compile
+// time.
+//
+// Fixture: `StaticInstanceCollision.compute` is declared TWICE —
+// `static int compute(int)` and instance `long compute(long)` — this is
+// legal Java (different parameter types, so no duplicate-signature error).
+// `recv.compute(5)` (an `Int` argument) scores the static overload at 10
+// (exact `int` match) against the instance overload's 7 (`int -> long`
+// widening); before the fix the static candidate won regardless of the
+// instance-call context. After the fix the static candidate is rejected
+// outright at the instance-call site, so the genuine instance overload
+// is selected, compiled, and actually runs.
+func buildStaticInstanceCollisionFixtureJar(dir: in String): String {
+  val srcDir = Path.join(dir, "fixturesrc/com/example/autoffi6765")
+  match File.createDir(srcDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create fixture source dir: " + IOError.message(e))
+  }
+  val srcPath = Path.join(srcDir, "StaticInstanceCollision.java")
+  val src = "package com.example.autoffi6765;\n" + "\n" + "public class StaticInstanceCollision {\n" +
+    "  public static int compute(int x) { return x + 1000; }\n" +
+    "  public long compute(long x) { return x + 1L; }\n" +
+    "}\n"
+  match File.writeText(srcPath, src) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write fixture source: " + IOError.message(e))
+  }
+  val classesDir = Path.join(dir, "fixtureclasses")
+  match File.createDir(classesDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create fixture classes dir: " + IOError.message(e))
+  }
+  val javacArgs: List[String] = newList()
+  javacArgs.add("-d")
+  javacArgs.add(classesDir)
+  javacArgs.add(srcPath)
+  val javacResult = Capture.runCaptureWithDiagnostics("javac", javacArgs, "")
+  assertEqualInt(
+    javacResult.exitCode,
+    0,
+    "javac must compile the static/instance collision fixture (stderr=" + javacResult.stderr + ")"
+  )
+  val jarPath = Path.join(dir, "static-instance-collision.jar")
+  val jarArgs: List[String] = newList()
+  jarArgs.add("cf")
+  jarArgs.add(jarPath)
+  jarArgs.add("-C")
+  jarArgs.add(classesDir)
+  jarArgs.add(".")
+  val jarResult = Capture.runCaptureWithDiagnostics("jar", jarArgs, "")
+  assertEqualInt(jarResult.exitCode, 0, "jar must package the fixture classes (stderr=" + jarResult.stderr + ")")
+  jarPath
+}
+
+test "findBestInstanceMethod never selects a same-named STATIC method over a genuine instance overload (#6765)" {
+  val dir = freshTempDir("static-instance-collision")
+  val fixtureJar = buildStaticInstanceCollisionFixtureJar(dir)
+
+  val prevFfiJars = Environment.getVarOrDefault("LYRIC_FFI_JARS", "")
+  Environment.setVar("LYRIC_FFI_JARS", fixtureJar)
+
+  val outPath = Path.join(dir, "StaticInstanceCollision.jar")
+  val source = "package StaticInstanceCollision.App\n" + "\n" +
+    "extern type JCollision = \"com.example.autoffi6765.StaticInstanceCollision\"\n" +
+    "\n" +
+    "func callCompute(recv: in JCollision, x: in Int): Long {\n" +
+    "  recv.compute(x)\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  val obj = JCollision.new()\n" +
+    "  println(callCompute(obj, 5))\n" +
+    "}\n"
+  val noStdlib: List[String] = newList()
+  var panicked = false
+  var caughtMessage = ""
+  val ok = try {
+    compileToJarBundled(source, outPath, "StaticInstanceCollision", noStdlib, "")
+  } catch Bug as b {
+    panicked = true
+    caughtMessage = b.message
+    false
+  }
+  Environment.setVar("LYRIC_FFI_JARS", prevFfiJars)
+  assertTrue(
+    not panicked,
+    "recv.compute(5) must resolve to the genuine instance overload, not panic (message: " + caughtMessage + ")"
+  )
+  assertTrue(ok, "instance-call resolution against a same-named static overload compiles successfully")
+
+  val classpathSep = if Str.startsWith(Environment.runtimeIdentifier(), "win") { ";" } else { ":" }
+  val runArgs: List[String] = newList()
+  runArgs.add("-cp")
+  runArgs.add(outPath + classpathSep + fixtureJar)
+  runArgs.add("StaticInstanceCollision.App")
+  val result = Capture.runCaptureWithDiagnostics("java", runArgs, "")
+  cleanup(dir)
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "the instance method must run without IncompatibleClassChangeError (stderr=" + result.stderr + ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    "6",
+    "recv.compute(5) must run the INSTANCE overload (5 + 1 = 6), not the static one (5 + 1000 = 1005) " + "(stdout=" +
+      result.stdout +
+      ")"
+  )
+  assertTrue(
+    not Str.contains(result.stderr, "IncompatibleClassChangeError"),
+    "no IncompatibleClassChangeError anywhere in stderr (stderr=" + result.stderr + ")"
+  )
+}
+
 // ─── #6565 end-to-end: the reported acceptance criterion ────────────────────
 //
 // `lyric build --manifest lyric-web/lyric.toml --target jvm` failed to build

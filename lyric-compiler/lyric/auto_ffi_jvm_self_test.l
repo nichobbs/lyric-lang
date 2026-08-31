@@ -662,6 +662,49 @@ func stringValuesOf(m: in JHashMap): JCollectionOfString[JString] {
   m.values()
 }
 
+// ── byte/short/char widening (#6769, JLS §5.1.2) ─────────────────────────────
+//
+// `scoreParamMatch` previously only widened `int`/`long`/`float` — a
+// `Byte`- or `Char`-typed Lyric argument had no widening arm at all, so a
+// call whose only compatible JDK overload takes `int` (or wider) failed
+// overload resolution outright ("no matching ... overload"), even though the
+// call is completely legal per JLS §5.1.2 and requires zero runtime
+// conversion (the JVM represents byte/short/char/int on the same `int`
+// operand-stack slot).
+test "Byte argument widens to Math.abs(int) — no int overload literally typed byte (#6769)" {
+  assertEqualInt(JMath.abs(5.toByte()), 5, "Math.abs(byte 5) widens byte->int and resolves to abs(int)")
+  // Lyric's `Byte` is canonically UNSIGNED 0..255 (docs/59 §4.3, `04_calls.l`
+  // `maskByteUnsigned`) — a `JByte`-typed slot always holds the
+  // masked-unsigned value, matching MSIL's `conv.u1`. `(0 - 7).toByte()`
+  // therefore masks to 249 (`256 - 7`), NOT a JVM-signed-byte sign-extended
+  // -7, so the byte->int widening this test exercises must pass the
+  // already-canonical 249 straight through — asserting 7 here would lock in
+  // Java's signed-byte semantics, which this language deliberately does not
+  // have.
+  assertEqualInt(
+    JMath.abs(220.toByte()),
+    220,
+    "Math.abs(byte 220) widens the canonical unsigned value (not sign-extended) to int"
+  )
+}
+
+test "Char argument widens to StringBuilder.charAt(int) — no charAt(char) overload (#6769)" {
+  // "charAt(char)" does not exist on StringBuilder, only "charAt(int)" — a
+  // Char-typed argument must widen char->int to resolve at all. Build a
+  // buffer via repeated single-char appends (avoids unrelated string-concat
+  // codegen paths) so the character's own code point ('a' == 97) lands on a
+  // marker character placed exactly there.
+  val sb = JStringBuilder.new("")
+  var i = 0
+  while i < 97 {
+    sb.append("x")
+    i = i + 1
+  }
+  sb.append("Z")
+  val ch = sb.charAt('a')
+  assertTrue(ch == 'Z', "charAt('a') widens 'a' (codepoint 97) to int and indexes the marker character")
+}
+
 test "for-loop over an extern generic collection types the loop variable as the collection's real element type, not Object (#6565)" {
   val m = JHashMap.new()
   m.put("a", "Alpha")
