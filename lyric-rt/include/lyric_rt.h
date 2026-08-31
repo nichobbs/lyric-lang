@@ -104,12 +104,16 @@ LyricString* lyric_string_substring(LyricString* s, int64_t start, int64_t len);
  * runtime has no dependency on the self-hosted stdlib.
  *
  * `lyric_string_to_lower` applies the Unicode *simple* lowercase mapping
- * (no context-sensitive `SpecialCasing.txt` rules — no Turkish dotless-I, no
- * German ß expansion) for Basic Latin, Latin-1 Supplement, Latin Extended-A,
- * Greek, and Cyrillic; every other code point passes through unchanged.
- * This is a real Unicode case fold across five scripts, not an ASCII-only
- * shim, but it is not the full Unicode Character Database — issue #6588's
- * follow-up tracks widening script coverage.
+ * (no context-sensitive `SpecialCasing.txt` rules — no locale-conditional
+ * Turkish/Azeri dotless-I folding of plain ASCII I, no German ß expansion)
+ * for Basic Latin, Latin-1 Supplement, Latin Extended-A, Greek, and
+ * Cyrillic; every other code point passes through unchanged. This is a
+ * real Unicode case fold across five scripts, not an ASCII-only shim, but
+ * it is not the full Unicode Character Database — issue #6588's follow-up
+ * tracks widening script coverage. U+0130 (İ) is special-cased to its own
+ * unconditional (locale-independent) mapping U+0069 rather than treated as
+ * Latin Extended-A's uniform even/odd pairing would suggest (#6758) — see
+ * `cp_to_lower` in `lyric_string.c`.
  *
  * `lyric_string_index_of` / `_contains` / `_starts_with` / `_ends_with`
  * compare raw UTF-8 bytes (ordinal, no normalization or collation), matching

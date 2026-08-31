@@ -207,6 +207,25 @@ static void test_string_trim_case_search(void) {
     CHECK(lyric_string_len(cyrLow) == 6);
     CHECK(memcmp(LYRIC_STRING_DATA(cyrLow), "\xD0\xB0\xD0\xB1\xD0\xB2", 6) == 0);
 
+    /* U+0130 (İ, LATIN CAPITAL LETTER I WITH DOT ABOVE, UTF-8 0xC4 0xB0)
+     * has its OWN unconditional simple lowercase mapping to plain ASCII
+     * U+0069 ("i"), NOT U+0131 (ı, dotless small i) -- the two are not
+     * case-partners despite both falling inside Latin Extended-A's
+     * otherwise-uniform even/odd pairing (#6758). This is also the one
+     * mapping that shrinks the UTF-8 byte length (2 bytes -> 1),
+     * exercising lyric_string_to_lower's compacting write loop. */
+    LyricString* dottedIUp = lyric_string_from_literal((const uint8_t*)"\xC4\xB0", 2);
+    LyricString* dottedILow = lyric_string_to_lower(dottedIUp);
+    CHECK(lyric_string_len(dottedILow) == 1);
+    CHECK(memcmp(LYRIC_STRING_DATA(dottedILow), "i", 1) == 0);
+
+    /* Embedded mid-string ("İstanbul" -> "istanbul") proves the shrink's
+     * compaction shift doesn't corrupt the bytes that follow it. */
+    LyricString* istanbulUp = lyric_string_from_literal((const uint8_t*)"\xC4\xB0stanbul", 9);
+    LyricString* istanbulLow = lyric_string_to_lower(istanbulUp);
+    CHECK(lyric_string_len(istanbulLow) == 8);
+    CHECK(memcmp(LYRIC_STRING_DATA(istanbulLow), "istanbul", 8) == 0);
+
     LyricString* alreadyLow = lyric_string_from_literal((const uint8_t*)"already-lower!", 14);
     LyricString* stillLow = lyric_string_to_lower(alreadyLow);
     CHECK(lyric_string_len(stillLow) == 14);
@@ -264,6 +283,10 @@ static void test_string_trim_case_search(void) {
     lyric_release(greekLow);
     lyric_release(cyrUp);
     lyric_release(cyrLow);
+    lyric_release(dottedIUp);
+    lyric_release(dottedILow);
+    lyric_release(istanbulUp);
+    lyric_release(istanbulLow);
     lyric_release(alreadyLow);
     lyric_release(stillLow);
     lyric_release(emptyLower);

@@ -525,6 +525,25 @@ test "string toLower leaves already-lowercase text and punctuation unchanged (AS
   assertEqualInt(r.exitCode, 1, "toLower: no-op on already-lowercase/punctuation")
 }
 
+// U+0130 (İ, LATIN CAPITAL LETTER I WITH DOT ABOVE) has no case partner in
+// Latin Extended-A's otherwise-uniform even/odd pairing: its unconditional
+// simple lowercase mapping is U+0069 (plain ASCII "i"), not U+0131 (a
+// wholly separate letter). Also the one mapping that shrinks the UTF-8
+// byte length (2 bytes -> 1 byte), exercising the ASan-checked compacting
+// write path end to end (#6758).
+test "string toLower maps U+0130 (İ) to plain ASCII i, not U+0131 dotless i (#6758, ASan)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "func main(): Int {\n" +
+    "  val s = \"İstanbul\"\n" +
+    "  val lowered = s.toLower()\n" +
+    "  consoleWriteFd(1, lowered)\n" +
+    "  lowered.length\n" +
+    "}\n"
+  val r = compileAndRunAsan(shim)
+  assertEqualInt(r.exitCode, 8, "\"istanbul\".length (byte length shrinks from 9 to 8)")
+  assertEqual(r.stdout, "istanbul", "toLower: U+0130 -> U+0069 (plain i), not U+0131 (dotless i)")
+}
+
 test "string indexOf: found offset, -1 sentinel, and empty-needle/-haystack" {
   val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
     "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +

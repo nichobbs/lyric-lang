@@ -3032,6 +3032,11 @@ jobs:
       # output and exits 0; a failing assertion `panic`s the whole process
       # (nonzero/abort exit, no per-test isolation) — asserted here too, so a
       # future change that silently swallows the failure (exit 0) is caught.
+      # Also runs `indexof_native_self_test.l` (#6752/#6757): that file's own
+      # header says to run it via plain `lyric test ... --target native` —
+      # the real bundling pipeline, not the `LYRIC_LOAD_COMPILER=1` in-process
+      # harness the fixed-list loop above uses — so this is its only correct
+      # home, and until this step existed it had zero CI coverage at all.
       - name: Native lyric test --target native smoke test (N7.2)
         working-directory: ${{ github.workspace }}
         run: |
@@ -3077,6 +3082,8 @@ jobs:
             exit 1
           fi
           echo "Native lyric test --target native smoke test passed"
+          "$lyric_bin" test lyric-compiler/lyric/indexof_native_self_test.l --target native
+          echo "Native indexof_native_self_test.l (--target native) passed"
 
       # `lyric build --target native --define` end-to-end (docs/60 #5977): with
       # both native-codegen gaps closed (list literals + module-level `val`

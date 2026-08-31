@@ -262,14 +262,30 @@ LyricString* lyric_string_trim(LyricString* s) {
 
 /* Unicode *simple* lowercase mapping (no context-sensitive
  * `SpecialCasing.txt` rules) across Basic Latin, Latin-1 Supplement, Latin
- * Extended-A, Greek, and Cyrillic.  Every mapped pair shares the same
- * UTF-8 encoded length as its input (see the callers' comment), which is
- * what lets `lyric_string_to_lower` allocate the output at the input's
- * exact byte length. */
+ * Extended-A, Greek, and Cyrillic.  Every mapped pair EXCEPT U+0130 (see
+ * below) shares the same UTF-8 encoded length as its input, which is what
+ * lets `lyric_string_to_lower` allocate the output buffer at the input's
+ * byte length as an upper bound (never exceeded — see that function). */
 static uint32_t cp_to_lower(uint32_t cp) {
     if (cp >= 'A' && cp <= 'Z') return cp + 32;
     /* Latin-1 Supplement: À-Þ (0xC0-0xDE) -> à-þ, skipping × (0xD7). */
     if (cp >= 0xC0 && cp <= 0xDE && cp != 0xD7) return cp + 32;
+    /* U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE has NO case partner in
+     * Latin Extended-A's otherwise-uniform even/odd pairing below: per
+     * UnicodeData.txt its unconditional simple lowercase mapping is
+     * U+0069 (plain ASCII "i"), not U+0131 (a wholly separate letter
+     * whose own uppercase is U+0049, not U+0130).  Falling through to the
+     * generic 0x100-0x137 range rule would wrongly return 0x131.  Checked
+     * — and excluded — before that rule; this is the one mapping in this
+     * table whose UTF-8 byte length shrinks (2 bytes -> 1), which
+     * `lyric_string_to_lower`'s write loop accounts for.  (This is
+     * distinct from — and not to be confused with — the locale-
+     * conditional "Turkish dotless-I" `SpecialCasing.txt` rule, which
+     * lowercases plain ASCII I/U+0049 to U+0131 only in tr/az locales:
+     * this codebase has no locale concept and correctly excludes that
+     * rule; U+0130's OWN unconditional mapping applies in every locale,
+     * including the root/invariant one this function implements.) */
+    if (cp == 0x130) return 0x69;
     /* Latin Extended-A: three alternating upper/lower runs plus one
      * standalone pair (Ÿ/ÿ straddles Latin-1 Supplement). */
     if (cp >= 0x100 && cp <= 0x137 && (cp % 2) == 0) return cp + 1;
@@ -287,34 +303,47 @@ static uint32_t cp_to_lower(uint32_t cp) {
 
 LyricString* lyric_string_to_lower(LyricString* s) {
     int64_t len = s ? s->len : 0;
+    /* `len` bytes is an upper bound on the output: every mapping in
+     * `cp_to_lower` either preserves or shrinks (U+0130 only) a code
+     * point's UTF-8 length, never grows it.  `out` is written compactly
+     * (output position `o` trails input position `i` exactly when a
+     * shrink happened), then trimmed to the real length below. */
     LyricString* out = string_alloc(len);
     if (len == 0) return out;
 
     const uint8_t* src = LYRIC_STRING_DATA(s);
     uint8_t* dst = LYRIC_STRING_DATA(out);
     int64_t i = 0;
+    int64_t o = 0;
     while (i < len) {
         uint32_t cp;
         int valid;
         int n = utf8_decode_at(src, len, i, &cp, &valid);
         uint32_t lower = valid ? cp_to_lower(cp) : cp;
         if (lower == cp) {
-            memcpy(dst + i, src + i, (size_t)n);
+            memcpy(dst + o, src + i, (size_t)n);
+            o += n;
         } else {
             uint8_t buf[4];
             int m = utf8_encode(lower, buf);
-            if (m != n) {
+            if (m > n) {
                 /* Would only trip if a future script addition to
-                 * cp_to_lower crossed a UTF-8 length band; the runtime
-                 * would rather panic loudly than silently corrupt bytes. */
+                 * cp_to_lower grew a code point's UTF-8 length beyond
+                 * what `out`'s allocation (sized to the input's length)
+                 * can hold; the runtime would rather panic loudly than
+                 * silently overflow the buffer. */
                 lyric_panic_msg(
-                    "lyric_string_to_lower: case mapping changed UTF-8 byte length", "lyric_string.c", __LINE__
+                    "lyric_string_to_lower: case mapping grew UTF-8 byte length beyond the input's allocation",
+                    "lyric_string.c", __LINE__
                 );
             }
-            memcpy(dst + i, buf, (size_t)m);
+            memcpy(dst + o, buf, (size_t)m);
+            o += m;
         }
         i += n;
     }
+    out->len = o;
+    LYRIC_STRING_DATA(out)[o] = 0;
     return out;
 }
 
