@@ -5763,10 +5763,30 @@ jobs:
       # JVM auto-FFI bridge self-test (#6565, #6765, #6768) — was only
       # reachable via the local-only `make test-emitter` target, which CI
       # never invokes (#6783).
+      #
+      # Test 12 (the `lyric-web --manifest --target jvm` acceptance case)
+      # needs lyric-web's Maven deps restored first (the Undertow classpath
+      # its JVM auto-FFI resolution reads from
+      # `lyric-web/target/restore/jvm-classpath.txt`). The "lyric-web
+      # Undertow smoke on JVM" step above also restores this, but it runs
+      # `background: true` with no ordering guarantee relative to this
+      # (non-background) step — the race lost on the first real CI run
+      # after this step landed, failing test 12 with "class
+      # 'io.undertow.util.HttpString' not found" (#6790). Restoring here
+      # too makes this step self-contained instead of depending on timing
+      # against an unrelated background job; `lyric restore` is idempotent
+      # so re-running it after (or concurrently with) the smoke step's own
+      # restore is harmless.
       - name: JVM auto-FFI bridge self-test (native lyric test)
         if: always()
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_auto_ffi_bridge_self_test.l
+        run: |
+          set -euo pipefail
+          make maven-resolver
+          export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          "$lyric_bin" restore --manifest "$PWD/lyric-web/lyric.toml"
+          bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_auto_ffi_bridge_self_test.l
 
       # Compiled-bundle stdlib-source fallback self-test (#4994, the JVM
       # counterpart of #4980) — exercises the WRITER half (`Jvm.Bridge` now
