@@ -39296,7 +39296,7 @@ V0015 (2b) itself resolves, but 2b's same-file/single-segment-path
 tracking has known blind spots (a nested field-access chain, a write
 through a `val`-bound receiver, an unresolved `out`/`inout` call
 argument) that can genuinely mutate a field the mode checker never
-flagged. See D-progress-837 (#6596) for the whole-build write-safety
+flagged. See D-progress-857 (#6596) for the whole-build write-safety
 audit gate added immediately after this landing to close that gap before
 it could reach `main`.
 
@@ -39491,7 +39491,7 @@ naming the offending `impl`/method/type.
 
 **Coverage.** `msil_codegen_diag_self_test.l` exercises all six codes
 against real bad-`impl` fixtures; wired into CI's build-and-test
-workflow (later hardened in this same PR batch, D-progress-835's
+workflow (later hardened in this same PR batch, D-progress-855's
 sibling fixes, to assert the exact code and position via an
 in-process `outDiagnostics`-returning bridge entry point rather than a
 looser "did it fail" check).
@@ -39545,7 +39545,7 @@ gap fixed in the same area later in this PR batch).
 
 ---
 
-## D-progress-833 — Bare-paren-lambda arrow-suppression scoped to tail position instead of one global retry flag (#5672)
+## D-progress-853 — Bare-paren-lambda arrow-suppression scoped to tail position instead of one global retry flag (#5672)
 
 **Bug.** Disambiguating `(x)` as a parenthesized expression versus the
 start of a bare-paren lambda literal `(x) -> body` (no `func`/`val`
@@ -39583,7 +39583,7 @@ generalization).
 
 ---
 
-## D-progress-834 — Formatter's `if`/`match` arm-body rendering respects the 120-column width budget before collapsing to one line (Class B, #2280)
+## D-progress-854 — Formatter's `if`/`match` arm-body rendering respects the 120-column width budget before collapsing to one line (Class B, #2280)
 
 **Bug.** `Lyric.Fmt`'s layout for an `if`/`match` expression used as a
 match arm's body (or nested inside another arm) always rendered the
@@ -39616,7 +39616,7 @@ absolute-column undercounting this entry's first pass left behind).
 
 ---
 
-## D-progress-835 — Cross-package bare-name ambiguity now raises T0123 instead of silently resolving last-registered-wins (#6287 Phase B, item 1)
+## D-progress-855 — Cross-package bare-name ambiguity now raises T0123 instead of silently resolving last-registered-wins (#6287 Phase B, item 1)
 
 **Bug.** When two or more packages imported at the same use site each
 declared something with the same bare (unqualified) name — a
@@ -39685,7 +39685,7 @@ this entry's shipped item 1).
 
 ---
 
-## D-progress-836 — Cross-package enum bare-case-name collision fixed on both backends; package-scoped resolution follow-up (#5995)
+## D-progress-856 — Cross-package enum bare-case-name collision fixed on both backends; package-scoped resolution follow-up (#5995)
 
 **Bug.** Two same-named enum cases declared by different packages
 (e.g. two distinct `HttpVersion` enums each declaring `Http11`) could
@@ -39694,7 +39694,7 @@ site: the MSIL/JVM backends resolved a bare case name through a flat,
 package-unaware lookup keyed only by the case's simple name, so
 whichever enum happened to register the name last "won" for every
 bare reference to it — the codegen-level analog of the type-checker's
-T0123 bare-name hazard (D-progress-835), but for *enum case*
+T0123 bare-name hazard (D-progress-855), but for *enum case*
 resolution specifically, and silent (no diagnostic; the construction
 simply picked the wrong ordinal).
 
@@ -39738,7 +39738,7 @@ enum shadow.
 
 ---
 
-## D-progress-837 — Whole-build field-lock-safety audit gates MSIL `initonly`/JVM `ACC_FINAL` emission (#6596)
+## D-progress-857 — Whole-build field-lock-safety audit gates MSIL `initonly`/JVM `ACC_FINAL` emission (#6596)
 
 **Date:** 2026-08-27
 **Status:** SHIPPED
@@ -39811,14 +39811,14 @@ compiler-DLL closure under the gated emission) completes cleanly.
 unconditional-emission landing this entry gates); docs/01
 §2.4 (documents the gated behavior directly).
 
-## D-progress-838 — MSIL project-build token pre-scan keyed off the caller's label instead of the package's own declared name (#6547)
+## D-progress-858 — MSIL project-build token pre-scan keyed off the caller's label instead of the package's own declared name (#6547)
 
 **Symptom.** `msil_codegen_diag_self_test.l`'s F0025 test (a generic
 function's mono-specialized copy hitting the try-catch-as-expression
 Unit/value mismatch) started panicking instead of cleanly reporting
 `F0025`: `error[T0123] ... unresolved call to 'wrap__Int' (arity 1)
 imported as 'wrap__Int' in package 'F0025App' — no function token could
-be resolved for this callee`. This surfaced only after D-progress-837
+be resolved for this callee`. This surfaced only after D-progress-857
 (this file, above) replaced a silent `MObject`-default fallback for an
 unresolved cross-package call token with a hard panic — the token-
 resolution gap was pre-existing and previously invisible.
@@ -39853,10 +39853,10 @@ span); full `msil_project_bridge_self_test.l` (45/45),
 re-verified with no regression. Full `make lyric` rebuild completes
 cleanly.
 
-**Related:** #6547, D-progress-837 (the loud-failure change that
+**Related:** #6547, D-progress-857 (the loud-failure change that
 surfaced this latent gap).
 
-## D-progress-832 — `Lyric.HoistEngine` recognizes a module-scope `val` as a real bound value for hoist-hazard receiver protection (#6734)
+## D-progress-859 — `Lyric.HoistEngine` recognizes a module-scope `val` as a real bound value for hoist-hazard receiver protection (#6734)
 
 **Symptom.** `hzMemberChainBaseIsValue` (`lyric-compiler/lyric/hoist_engine.l`)
 decides whether an `EMember` chain's ultimate base names a real bound
