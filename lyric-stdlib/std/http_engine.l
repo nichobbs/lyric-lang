@@ -705,14 +705,24 @@ func validateRequestTarget(target: in String, method: in String): Option[ProtoEr
 
 // The request-line grammar (`method SP request-target SP HTTP-version`) is
 // deliberately parsed as a flat chain of single-purpose, non-nested helper
-// functions threaded together with `?`, rather than as one deeply nested
-// `match`-inside-`match`-arm expression: a self-hosted JVM backend codegen
-// bug (filed as #5936) emits bytecode with an inconsistent stack-map frame
-// at a branch target for a sufficiently deep nested-match shape here
-// (`VerifyError: Inconsistent stackmap frames`), verified with a minimal
-// standalone repro independent of this file. Splitting each grammar step
-// into its own function with at most one non-nested `match` avoids the
-// bad shape entirely and is more readable besides.
+// functions, rather than as one deeply nested `match`-inside-`match`-arm
+// expression: a self-hosted JVM backend codegen bug (filed as #5936) emits
+// bytecode with an inconsistent stack-map frame at a branch target for a
+// sufficiently deep nested-match shape here (`VerifyError: Inconsistent
+// stackmap frames`), verified with a minimal standalone repro independent
+// of this file. Splitting each grammar step into its own function with at
+// most one non-nested `match` avoids the bad shape entirely and is more
+// readable besides.
+//
+// The chain itself is threaded with the explicit `match { case Ok(v) -> v;
+// case Err(e) -> return Err(error = e) }` form rather than `?`: this file is
+// a shared, cross-target module reached transitively by the native
+// `_kernel_native/http_server.l` kernel, and `?` panics with `this
+// expression form (EPropagate) is not yet supported for --target native`
+// whenever the calling function is reachable from a *different* package
+// than the one defining it (D-progress-823 item D, issue #6104). `match`
+// and `?` are semantically identical Result-unwrapping here, so this
+// spelling is not a native-only workaround — it's just more portable.
 record SplitPoint {
   before: slice[Byte]
   after: slice[Byte]
@@ -756,12 +766,18 @@ func requireVersion(bytes: in slice[Byte]): Result[HttpVersion, ProtoErr] {
 }
 
 func parseRequestLine(line: in slice[Byte]): Result[ParsedRequestLine, ProtoErr] {
-  val firstSplit = requireSpaceSplit(line, "request line has no spaces")?
-  val method = requireMethodToken(firstSplit.before)?
-  val secondSplit = requireSpaceSplit(firstSplit.after, "request line missing a second space")?
-  val target = requireTargetToken(secondSplit.before)?
-  val validTarget = requireValidTarget(target, method)?
-  val version = requireVersion(secondSplit.after)?
+  val firstSplit = match requireSpaceSplit(line, "request line has no spaces") {
+    case Ok(v) -> v
+    case Err(e) -> return Err(error = e)
+  }
+  val method = match requireMethodToken(firstSplit.before) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
+  val secondSplit = match requireSpaceSplit(firstSplit.after, "request line missing a second space") {
+    case Ok(v) -> v
+    case Err(e) -> return Err(error = e)
+  }
+  val target = match requireTargetToken(secondSplit.before) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
+  val validTarget = match requireValidTarget(target, method) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
+  val version = match requireVersion(secondSplit.after) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
   Ok(value = ParsedRequestLine(method = method, target = validTarget, version = version))
 }
 
