@@ -1141,7 +1141,8 @@ pub func stopListener(l: in HttpListener): Unit {
   // closure (POSIX join synchronizes-with thread termination) -- release
   // the retain `startListener`/`startListenerTls` took before spawning it
   // (#6797).
-  rtRelease(rtLongToPtr(l.acceptWorkerHandle))
+  val acceptWorkerPtr = rtLongToPtr(l.acceptWorkerHandle)
+  rtRelease(acceptWorkerPtr)
   // Interrupt every still-open connection's blocking hostRead (the common
   // case: an idle HTTP/1.1 keep-alive connection whose client hasn't sent
   // another request -- Std.HttpEngine defaults keepAlive = true, so this is
@@ -1235,7 +1236,8 @@ pub func stopListener(l: in HttpListener): Unit {
     // under one lock, so index `i` always names the SAME connection's
     // thread and closure -- release the retain `spawnHandler` took now
     // that this join proves the thread is done using it (#6797).
-    rtRelease(rtLongToPtr(workerHandles[i]))
+    val workerPtr = rtLongToPtr(workerHandles[i])
+    rtRelease(workerPtr)
     i = i + 1
   }
   rtMutexDestroy(l.queue.mutex)
