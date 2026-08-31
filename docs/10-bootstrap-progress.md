@@ -33214,12 +33214,24 @@ HTTP/1.1 parser (native ALPN-selected h2 is N9.5's job); no
 the override, has no `_kernel_native/` twin yet) — both disclosed v1 scope
 decisions, not silent omissions.
 
-Verified by `lyric-compiler/lyric/llvm_http_server_self_test.l` (three
+Verified by `lyric-compiler/lyric/llvm_http_server_self_test.l` (six
 cases, ASan-compiled): a plaintext HTTP/1.1 round trip; a real concurrent
 TLS round trip with the client on a second `pthread_create`d thread driving
-N9.4's real `Std.TcpHost.hostConnectTls` public API; and the h2-rejection
+N9.4's real `Std.TcpHost.hostConnectTls` public API; the h2-rejection
 guard, exercised by having the client genuinely negotiate `h2` ALPN and
-asserting the server closed the connection.
+asserting the server closed the connection; a keep-alive round trip (two
+requests over one connection); the #6791 regression — `stopListener` must
+not hang on a genuinely idle keep-alive connection (`Std.HttpEngine`
+defaults `keepAlive = true`, so this is the default HTTP/1.1 behavior, not
+an edge case), fixed by tracking every accepted `Conn` in
+`ServerQueue.activeConns` and `hostShutdown`-ing each one before
+`stopListener` joins its handler thread; and the #6792 regression —
+`spawnHandler` used to register a connection into `activeConns` AFTER
+spawning its handler thread, racing that thread's own `unregisterConn` for
+a connection that finishes fast enough (a connect-then-immediate-
+disconnect scan), which could leave a permanently stale, already-closed
+entry behind — fixed by registering BEFORE spawning, so the child
+thread's own start is always ordered after its registration.
 
 Boundary (same class as N9.1/N9.2/N9.4/D-progress-809): this session could
 not build `./bin/lyric` from source (GitHub release-artifact download is

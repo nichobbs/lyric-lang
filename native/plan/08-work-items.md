@@ -1445,7 +1445,7 @@ tryParseInt` to read the environment override, and `Std.Parse` has no
 `_kernel_native/parse_host.l` twin yet — a disclosed v1 scope decision, not
 a silent omission.
 
-Verified by `lyric-compiler/lyric/llvm_http_server_self_test.l` (three
+Verified by `lyric-compiler/lyric/llvm_http_server_self_test.l` (six
 cases, ASan-compiled): item A is a plaintext HTTP/1.1 round trip (client and
 server on the same process, no second thread needed — a bare TCP `connect`
 completes into the listen backlog before `accept` runs); item B is a real
@@ -1455,7 +1455,26 @@ concurrent TLS round trip, with the client on a genuine second
 needed, unlike N9.2/N9.4's own self-tests, which predate `hostConnectTls`'s
 existence); item C drives the h2-rejection guard end to end by having the
 client genuinely negotiate `h2` ALPN and asserting the server closed the
-connection rather than hanging or echoing garbage back.
+connection rather than hanging or echoing garbage back; item D is a
+keep-alive round trip (two requests over one connection, neither carrying
+`Connection: close`); item E is the **#6791 regression**:
+`stopListener` hung forever on any genuinely idle keep-alive connection
+(`Std.HttpEngine` defaults `keepAlive = true`, so this was the default
+HTTP/1.1 behavior, not an edge case) because `stopListener` only ever
+closed the LISTENING socket, never an already-accepted connection's own
+fd — fixed by having `Std.TcpHost` grow `hostFd`/`hostShutdown` (a raw
+`shutdown(fd, SHUT_RDWR)` that interrupts a blocked read/write from
+another thread without releasing the descriptor) and tracking every
+accepted `Conn` in `ServerQueue.activeConns`, `hostShutdown`-ing each one
+once the accept thread has joined and before joining every handler
+thread; item F is the **#6792 regression**: `spawnHandler` registered a
+connection into `activeConns` AFTER spawning its handler thread, racing
+that thread's own `unregisterConn` for a connection that finishes fast
+enough (a connect-then-immediate-disconnect health-check/scan pattern),
+which could leave a permanently stale, already-closed (and potentially
+fd-reused) entry behind for a later `stopListener` to `hostShutdown` —
+fixed by registering BEFORE spawning the thread, so the child's own start
+is always ordered after its registration exists.
 
 **Sandbox/CI-validator boundary (same class as D-progress-712/809/823).**
 This session could not run `scripts/bootstrap.sh --stage 0`/`--stage 1`
