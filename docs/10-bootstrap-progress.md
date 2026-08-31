@@ -33174,3 +33174,100 @@ helper, not a runtime call), `range_subtype_unsigned_jvm_self_test.l`
 
 **Related:** #6712, `docs/03-decision-log.md` D-progress-849 (full
 account), PR #6631, `Msil.Codegen.hasQualifiedFuncOverrideMsil`.
+### `Std.HttpServer` native twin ships — thread-per-connection over the pthread kernel, TLS phase 5 band N9.3 (#6104)
+
+`_kernel_native/http_server.l` implements the native `Std.HttpServer` twin:
+the same twelve-function surface (`startListener`/`nextContext`/
+`stopListener`/`requestMethod`/`requestPath`/`requestBody`/`requestQuery`/
+`requestHeaders`/`urlDecode`/`respondText`/`respondJson`/
+`respondBytesWithHeaders`) plus `startListenerTls` as the dotnet/JVM twins,
+following the dotnet twin's architecture — drive `Std.HttpEngine`'s
+per-connection FSM over `Std.TcpHost`'s transport, not the JVM twin's (which
+bypasses the engine entirely for the JDK's own `HttpServer`). Both of N9.3's
+prerequisite blockers (#6588 native `String` methods, #6589 bare
+cross-package enum-case resolution) already shipped; this closes N9.3
+itself.
+
+Concurrency is thread-per-connection over real `pthread_create`d OS threads
+(native `spawn`/`scope` is a single-threaded coroutine scheduler, not
+genuine concurrency yet). There is no BCL `ConcurrentQueue`/`SemaphoreSlim`
+equivalent on native, so the pull-model hand-off queue (a connection thread
+parses a request and blocks until a puller thread responds) is built
+directly from `lyric_mutex_*`/`lyric_sem_*` (D-progress-809): a
+mutex-guarded `List[HttpContext]` FIFO plus a counting semaphore for
+"available", and a per-request one-shot semaphore mirroring the dotnet
+twin's per-request `SemaphoreSlim`. Every raw buffer handle is stored as
+`Long`, not `NativePtr[Byte]` — the same "opaque handle as integer" trick
+`_kernel_native/tcp_host.l`'s `Conn.tlsConnHandle` already established,
+required because the mode checker's N0100 boundary rejects a `NativePtr[T]`
+record/union field outright. `stopListener` deterministically
+`pthread_join`s the accept thread and every spawned connection thread
+before freeing the queue's buffers — native has no GC to defer that cleanup
+to, so this is a stronger, blocking-until-fully-drained shutdown contract
+than the dotnet/JVM twins' fire-and-forget one.
+
+Scope: HTTP/1.1 only in this v1 — `_kernel_native/tcp_host.l`'s TLS accept
+path unconditionally advertises `h2` ahead of `http/1.1`, so a connection
+that actually negotiates `h2` is closed immediately rather than fed to the
+HTTP/1.1 parser (native ALPN-selected h2 is N9.5's job); no
+`LYRIC_HTTP_MAX_CONNECTIONS` backpressure cap (`Std.Parse`, needed to read
+the override, has no `_kernel_native/` twin yet) — both disclosed v1 scope
+decisions, not silent omissions.
+
+Verified by `lyric-compiler/lyric/llvm_http_server_self_test.l` (nine
+cases, ASan-compiled): a plaintext HTTP/1.1 round trip; a real concurrent
+TLS round trip with the client on a second `pthread_create`d thread driving
+N9.4's real `Std.TcpHost.hostConnectTls` public API; the h2-rejection
+guard, exercised by having the client genuinely negotiate `h2` ALPN and
+asserting the server closed the connection; a keep-alive round trip (two
+requests over one connection); the #6791 regression — `stopListener` must
+not hang on a genuinely idle keep-alive connection (`Std.HttpEngine`
+defaults `keepAlive = true`, so this is the default HTTP/1.1 behavior, not
+an edge case), fixed by tracking every accepted `Conn` in
+`ServerQueue.activeConns` and `hostShutdown`-ing each one before
+`stopListener` joins its handler thread; the #6792 regression —
+`spawnHandler` used to register a connection into `activeConns` AFTER
+spawning its handler thread, racing that thread's own `unregisterConn` for
+a connection that finishes fast enough (a connect-then-immediate-
+disconnect scan), which could leave a permanently stale, already-closed
+entry behind — fixed by registering BEFORE spawning, so the child
+thread's own start is always ordered after its registration; and the
+#6795 regression — `stopListener` snapshotted `activeConns` under the
+queue mutex, released it, then called `hostShutdown` on each entry with
+no further synchronization, so a connection finishing NATURALLY and
+concurrently (an ordinary `Connection: close` exchange completing while
+`stopListener` runs — the common graceful-shutdown case, not an edge
+case) could be unregistered and closed by its own thread in between,
+shutting down an already-closed/reused fd — fixed by holding the mutex
+across the entire snapshot-then-shutdown sequence, making the race
+impossible by construction rather than merely unlikely; the #6802
+regression — `stopListener` unconditionally freed the queue's mutex/
+semaphore even while a caller-owned puller thread could still be
+genuinely parked inside `nextContext`'s blocking wait, a real ASan
+use-after-free — fixed by a `waitingPullers` counter checked under the
+same mutex immediately before freeing, deferring to a new
+`lyric_lsan_ignore_leak` runtime primitive (LeakSanitizer's
+`__lsan_ignore_object`) when a wait is provably still parked, since an
+unconditional never-free alone still failed a real ASan+LSan run; and
+the #6803 regression — `enqueueContext` released the queue mutex before
+posting its availability credit, letting `stopListener`'s abandoned-
+queue drain race a not-yet-posted credit and orphan an already-queued
+context — fixed by posting inside the same critical section as the add.
+
+Boundary (same class as N9.1/N9.2/N9.4/D-progress-809): this session could
+not build `./bin/lyric` from source (GitHub release-artifact download is
+network-policy-blocked) and confirmed the already-installed NuGet `lyric`
+v0.5.1 tool cannot substitute for this change either — it predates the
+`NativePtr` FFI surface entirely, confirmed by a direct repro of
+`llvm_ffi_self_test.l`'s own already-shipped pthread idiom failing
+verbatim. The single-thread half of the queue design (mutex+semaphore+
+`List[T]` as `ServerQueue`'s shape) DID verify locally via a standalone
+repro against that tool (real compile + real run, exit code 0); the
+cross-thread half (anything touching `pthread_create`) is CI-verified only.
+`make -C lyric-rt test`/`test-asan` pass locally (unchanged C runtime).
+
+**Related:** `docs/03-decision-log.md` D-progress-850 (full account,
+including addendum 5's #6802/#6803/#6804/#6805 fixes), #6104,
+`native/plan/08-work-items.md` N9.3, D-progress-809 (the `lyric_sem_*`
+prerequisite), D-progress-830/831 (the two blockers this item's own kernel
+depends on).

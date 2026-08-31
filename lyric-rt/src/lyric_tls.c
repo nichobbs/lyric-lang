@@ -50,6 +50,11 @@
 
 static _Thread_local char g_err[256];
 
+/* The raw errno from the most recent lyric_sock_accept() failure on this
+ * thread (issue #6805) -- see lyric_sock_accept_errno/
+ * lyric_sock_accept_error_class in lyric_rt.h. */
+static _Thread_local int32_t g_sock_accept_errno;
+
 /* The OpenSSL load happens once on whichever thread first touches TLS, and
  * its failure reason must be visible to EVERY caller thread — not just the
  * one that ran the load.  So the load failure is captured in this
@@ -208,10 +213,40 @@ int32_t lyric_sock_accept(int32_t listen_fd) {
         fd = accept(listen_fd, NULL, NULL);
     } while (fd < 0 && errno == EINTR);
     if (fd < 0) {
+        g_sock_accept_errno = errno;
         set_err("accept: %s", strerror(errno));
         return -1;
     }
+    g_sock_accept_errno = 0;
     return (int32_t)fd;
+}
+
+int32_t lyric_sock_accept_errno(void) {
+    return g_sock_accept_errno;
+}
+
+int32_t lyric_sock_accept_error_class(void) {
+    switch (g_sock_accept_errno) {
+        case ECONNABORTED:
+#ifdef EPROTO
+        case EPROTO:
+#endif
+        case ENETDOWN:
+        case ENOPROTOOPT:
+        case EHOSTDOWN:
+#ifdef ENONET
+        case ENONET:
+#endif
+        case EHOSTUNREACH:
+        case EOPNOTSUPP:
+        case ENETUNREACH:
+            return 1;
+        case EMFILE:
+        case ENFILE:
+            return 2;
+        default:
+            return 0;
+    }
 }
 
 int64_t lyric_sock_read(int32_t fd, uint8_t* buf, int64_t n) {

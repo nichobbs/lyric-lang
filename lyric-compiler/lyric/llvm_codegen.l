@@ -1476,6 +1476,44 @@ func widenBoolToI32(ctx: in Ctx, insns: in List[NInsn], v: in NValue): NValue {
 // ─────────────────────────────────────────────────────────────────────────────
 // §8. Expression lowering.
 // ─────────────────────────────────────────────────────────────────────────────
+/// Short, stable variant name for an `ExprKind`, used only to make the
+/// `lowerExpr` fallback panic below self-diagnosing — this is not a
+/// user-facing pretty-printer, so it need not cover every field.
+func describeExprKind(kind: in ExprKind): String {
+  match kind {
+    case ELiteral(_) -> "ELiteral"
+    case EInterpolated(_) -> "EInterpolated"
+    case EPath(_) -> "EPath"
+    case EParen(_) -> "EParen"
+    case ETuple(_) -> "ETuple"
+    case EList(_) -> "EList"
+    case EIf(_, _, _, _) -> "EIf"
+    case EMatch(_, _) -> "EMatch"
+    case EAwait(_) -> "EAwait"
+    case EYield(_) -> "EYield"
+    case ESpawn(_) -> "ESpawn"
+    case ETry(_) -> "ETry"
+    case EOld(_) -> "EOld"
+    case EForall(_, _, _) -> "EForall"
+    case EExists(_, _, _) -> "EExists"
+    case ESelf -> "ESelf"
+    case EResult -> "EResult"
+    case ELambda(_, _) -> "ELambda"
+    case ECall(_, _) -> "ECall"
+    case ETypeApp(_, _) -> "ETypeApp"
+    case EIndex(_, _) -> "EIndex"
+    case EMember(_, _) -> "EMember"
+    case EPropagate(_) -> "EPropagate"
+    case EPrefix(_, _) -> "EPrefix"
+    case EBinop(_, _, _) -> "EBinop"
+    case ERange(_) -> "ERange"
+    case EAssign(_, _, _) -> "EAssign"
+    case EBlock(_) -> "EBlock"
+    case EUnsafe(_) -> "EUnsafe"
+    case EError -> "EError"
+  }
+}
+
 func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
   match expr.kind {
     case ELiteral(lit) -> lowerLiteral(ctx, insns, lit)
@@ -1612,7 +1650,11 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
         case _ -> lowerExpr(ctx, insns, inner)
       }
     }
-    case _ -> panic("Lyric.LlvmCodegen: this expression form is not yet supported for --target native (Phase N1)")
+    case _ -> panic(
+      "Lyric.LlvmCodegen: this expression form (" + describeExprKind(expr.kind) +
+        ") is not yet supported for --target native (Phase N1) at [" +
+        expr.span.startPos.line.toString() + ":" + expr.span.startPos.column.toString() + "]"
+    )
   }
 }
 
@@ -5020,7 +5062,10 @@ func lowerCollectionIndex(
     }
   }
   panic(
-    "Lyric.LlvmCodegen: indexing on this receiver is not yet supported for --target native (lists and maps index; slices land with N5)"
+    "Lyric.LlvmCodegen: indexing on this receiver is not yet supported for --target native (lists, maps, and slices index; String bracket indexing is a separate tracked gap, issue #6237) at line " +
+      line.toString() +
+      ": " +
+      nTypeToIrString(recv.ty)
   )
 }
 

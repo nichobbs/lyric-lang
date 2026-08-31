@@ -187,7 +187,7 @@ package Std.HttpEngine
 import Std.Core
 import Std.Collections
 import Std.String
-import Std.Char as Char
+import Std.Encoding
 
 // =============================================================================
 // §1. Limits.
@@ -246,9 +246,17 @@ pub enum HttpVersion {
 @pure
 @experimental
 pub func httpVersionToken(v: in HttpVersion): String {
+  // Qualified case names (`HttpVersion.Http1_0`), not bare (`Http1_0`): a
+  // bare pattern against an enum scrutinee is not yet a supported codegen
+  // shape for `--target native` (`Lyric.LlvmCodegen`'s `emitPatternTest`
+  // only recognises union cases for a bare name, so a bare pattern over an
+  // enum scrutinee silently binds instead of testing equality — the first
+  // arm always "matches" regardless of the real value; confirmed via direct
+  // repro; issue #6740, `llvm_enum_case_resolve_self_test.l`'s own header
+  // documents the same gap and its fully-qualified-pattern workaround).
   match v {
-    case Http1_0 -> "HTTP/1.0"
-    case Http1_1 -> "HTTP/1.1"
+    case HttpVersion.Http1_0 -> "HTTP/1.0"
+    case HttpVersion.Http1_1 -> "HTTP/1.1"
   }
 }
 
@@ -590,15 +598,20 @@ func trimOws(bytes: in slice[Byte]): slice[Byte] {
 /// Every byte here is guaranteed ASCII (< 0x80) by the tchar/vchar checks
 /// above at every call site, so this is a total, allocation-simple
 /// byte-to-`String` conversion with no UTF-8 multi-byte decoding needed —
-/// an ASCII code point IS its own Unicode code point.
+/// an ASCII code point IS its own Unicode code point. Delegates to
+/// `tryDecodeUtf8` (a single call, not a per-byte accumulator loop) rather
+/// than the `"" + Char.fromInt(...)` idiom: `lowerStringBinop` on
+/// `--target native` requires both operands to already be `String`, and
+/// neither `"" + Char` nor `Char.toString()` produce one there (confirmed
+/// via direct repro — the "mixed String/non-String operands" panic; issue
+/// #6237, `_kernel_native/encoding_host.l`'s header documents the same
+/// gap for `Std.Encoding.tryDecodeUtf8`'s own former implementation).
+/// ASCII is always valid UTF-8, so this never returns `None`.
 func asciiBytesToString(bytes: in slice[Byte]): String {
-  var acc = ""
-  var i = 0
-  while i < bytes.length {
-    acc = acc + ("" + Char.fromInt(bytes[i].toInt()))
-    i = i + 1
+  match tryDecodeUtf8(bytes) {
+    case Some(s) -> s
+    case None -> ""
   }
-  acc
 }
 
 /// Result of scanning for the next CRLF-terminated line within a byte
@@ -699,14 +712,24 @@ func validateRequestTarget(target: in String, method: in String): Option[ProtoEr
 
 // The request-line grammar (`method SP request-target SP HTTP-version`) is
 // deliberately parsed as a flat chain of single-purpose, non-nested helper
-// functions threaded together with `?`, rather than as one deeply nested
-// `match`-inside-`match`-arm expression: a self-hosted JVM backend codegen
-// bug (filed as #5936) emits bytecode with an inconsistent stack-map frame
-// at a branch target for a sufficiently deep nested-match shape here
-// (`VerifyError: Inconsistent stackmap frames`), verified with a minimal
-// standalone repro independent of this file. Splitting each grammar step
-// into its own function with at most one non-nested `match` avoids the
-// bad shape entirely and is more readable besides.
+// functions, rather than as one deeply nested `match`-inside-`match`-arm
+// expression: a self-hosted JVM backend codegen bug (filed as #5936) emits
+// bytecode with an inconsistent stack-map frame at a branch target for a
+// sufficiently deep nested-match shape here (`VerifyError: Inconsistent
+// stackmap frames`), verified with a minimal standalone repro independent
+// of this file. Splitting each grammar step into its own function with at
+// most one non-nested `match` avoids the bad shape entirely and is more
+// readable besides.
+//
+// The chain itself is threaded with the explicit `match { case Ok(v) -> v;
+// case Err(e) -> return Err(error = e) }` form rather than `?`: this file is
+// a shared, cross-target module reached transitively by the native
+// `_kernel_native/http_server.l` kernel, and `?` panics with `this
+// expression form (EPropagate) is not yet supported for --target native`
+// whenever the calling function is reachable from a *different* package
+// than the one defining it (D-progress-823 item D, issue #6104). `match`
+// and `?` are semantically identical Result-unwrapping here, so this
+// spelling is not a native-only workaround — it's just more portable.
 record SplitPoint {
   before: slice[Byte]
   after: slice[Byte]
@@ -750,12 +773,18 @@ func requireVersion(bytes: in slice[Byte]): Result[HttpVersion, ProtoErr] {
 }
 
 func parseRequestLine(line: in slice[Byte]): Result[ParsedRequestLine, ProtoErr] {
-  val firstSplit = requireSpaceSplit(line, "request line has no spaces")?
-  val method = requireMethodToken(firstSplit.before)?
-  val secondSplit = requireSpaceSplit(firstSplit.after, "request line missing a second space")?
-  val target = requireTargetToken(secondSplit.before)?
-  val validTarget = requireValidTarget(target, method)?
-  val version = requireVersion(secondSplit.after)?
+  val firstSplit = match requireSpaceSplit(line, "request line has no spaces") {
+    case Ok(v) -> v
+    case Err(e) -> return Err(error = e)
+  }
+  val method = match requireMethodToken(firstSplit.before) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
+  val secondSplit = match requireSpaceSplit(firstSplit.after, "request line missing a second space") {
+    case Ok(v) -> v
+    case Err(e) -> return Err(error = e)
+  }
+  val target = match requireTargetToken(secondSplit.before) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
+  val validTarget = match requireValidTarget(target, method) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
+  val version = match requireVersion(secondSplit.after) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
   Ok(value = ParsedRequestLine(method = method, target = validTarget, version = version))
 }
 
@@ -841,18 +870,30 @@ union BodyPlan {
   case BpChunked
 }
 
+// Scans UTF-8 bytes rather than `charAt`/`Char.digitValue`: `String[i]`
+// bracket indexing is not a supported codegen shape for `--target native`
+// (`Lyric.LlvmCodegen.lowerCollectionIndex` only recognises List/slice/Map
+// receivers, confirmed via direct repro; issue #6237), the same tracked gap
+// `_kernel_native/http_server.l`'s own header documents working around via a
+// byte-based `charCodeAt` helper. Content-Length is an RFC 9112 digit
+// sequence — a fixed ASCII byte alphabet — so `encodeUtf8` (already a
+// cross-target `Std.Encoding` primitive) is exact here: any non-ASCII input
+// byte is guaranteed outside `[48, 57]` and correctly falls through to
+// `None`, matching the original per-character rejection.
 func parseDigitsToInt(raw: in String): Option[Int] {
   val s = trim(raw)
   if s.length == 0 or s.length > 9 {
     return None
   }
+  val bytes = encodeUtf8(s)
   var n = 0
   var i = 0
-  while i < s.length {
-    match charAt(s, i) {
-      case None -> return None
-      case Some(c) -> match digitValue(c) { case None -> return None; case Some(d) -> { n = n * 10 + d } }
+  while i < bytes.length {
+    val b = bytes[i].toInt()
+    if b < 48 or b > 57 {
+      return None
     }
+    n = n * 10 + (b - 48)
     i = i + 1
   }
   Some(value = n)
@@ -989,9 +1030,10 @@ func computeKeepAlive(version: in HttpVersion, headers: in List[HeaderField]): B
   if hasClose {
     false
   } else {
+    // Qualified case names — see `httpVersionToken`'s header comment (#6740).
     match version {
-      case Http1_1 -> true
-      case Http1_0 -> hasKeepAlive
+      case HttpVersion.Http1_1 -> true
+      case HttpVersion.Http1_0 -> hasKeepAlive
     }
   }
 }
@@ -1014,9 +1056,10 @@ func hasExpectContinue(headers: in List[HeaderField]): Bool {
 /// RFC 9112 section 3.2: an HTTP/1.1 request must carry exactly one `Host`
 /// header field; HTTP/1.0 has no such requirement and is exempt.
 func validateHostHeader(version: in HttpVersion, headers: in List[HeaderField]): Option[ProtoErr] {
+  // Qualified case names — see `httpVersionToken`'s header comment (#6740).
   match version {
-    case Http1_0 -> None
-    case Http1_1 -> checkHostCount(headerValues(headers, "Host").count)
+    case HttpVersion.Http1_0 -> None
+    case HttpVersion.Http1_1 -> checkHostCount(headerValues(headers, "Host").count)
   }
 }
 
@@ -1085,20 +1128,41 @@ func parseChunkSizeLine(line: in slice[Byte]): Result[Int, ProtoErr] {
 // =============================================================================
 // §9. The feed loop.
 // =============================================================================
-func failWith(state: inout Connection, events: in List[HttpEvent], kind: in ProtocolErrorKind, message: in String): Unit {
-  state.fatal = true
-  state.phase = PhFatal
+// `state` is threaded by return value, never `inout`, throughout this
+// section: `Lyric.LlvmCodegen`'s function-parameter lowering does not yet
+// support `out`/`inout` for `--target native` (unconditional panic at every
+// `out`/`inout` parameter position, #6794), and this sans-IO engine is
+// reached transitively by the native `_kernel_native/http_server.l` kernel.
+// Every helper below takes `state: in Connection` and returns the advanced
+// `Connection` (bundled with a `Bool` in `StepOutcome` where a step also
+// reports whether it made progress) instead of mutating one in place; each
+// caller rebinds its own local from the result. This is the same pattern
+// `_kernel_native/http_server.l`'s `ReadOutcome`/`readOneRequest` establishes
+// for the identical gap one layer up — see that record's doc comment for the
+// full writeup.
+record StepOutcome {
+  conn: Connection
+  progress: Bool
+}
+
+func failWith(
+  state: in Connection, events: in List[HttpEvent], kind: in ProtocolErrorKind, message: in String
+): Connection {
+  var newState = state
+  newState.fatal = true
+  newState.phase = PhFatal
   events.add(ProtocolError(kind = kind, message = message))
+  newState
 }
 
 func finishHeaders(
-  state: inout Connection,
+  state: in Connection,
   events: in List[HttpEvent],
   method: in String,
   target: in String,
   version: in HttpVersion,
   headers: in List[HeaderField],
-): Unit {
+): Connection {
   match analyzeFraming(headers) {
     case Err(e) -> failWith(state, events, e.kind, e.message)
     case Ok(plan) -> finishHeadersWithPlan(state, events, method, target, version, headers, plan)
@@ -1109,100 +1173,101 @@ func finishHeaders(
 /// both a missing/duplicate Host header and a framing defect reports the
 /// framing defect (checked by the caller) rather than the Host omission.
 func finishHeadersWithPlan(
-  state: inout Connection,
+  state: in Connection,
   events: in List[HttpEvent],
   method: in String,
   target: in String,
   version: in HttpVersion,
   headers: in List[HeaderField],
   plan: in BodyPlan,
-): Unit {
+): Connection {
   match validateHostHeader(version, headers) {
     case Some(e) -> failWith(state, events, e.kind, e.message)
     case None -> {
-      state.keepAlive = computeKeepAlive(version, headers)
+      var newState = state
+      newState.keepAlive = computeKeepAlive(version, headers)
       events.add(RequestHead(method = method, target = target, version = version, headers = headers))
       if hasExpectContinue(headers) {
         events.add(ExpectContinue)
       }
-      enterBodyPhase(state, events, plan)
+      enterBodyPhase(newState, events, plan)
     }
   }
 }
 
-func enterBodyPhase(state: inout Connection, events: in List[HttpEvent], plan: in BodyPlan): Unit {
+func enterBodyPhase(state: in Connection, events: in List[HttpEvent], plan: in BodyPlan): Connection {
   match plan {
     case BpNone -> {
       events.add(RequestComplete)
-      state.phase = PhRequestLine
+      var newState = state
+      newState.phase = PhRequestLine
+      newState
     }
     case BpFixed(length) -> enterFixedBodyPhase(state, events, length)
     case BpChunked -> {
-      state.phase = PhChunkSize(bodyBytesSoFar = 0)
+      var newState = state
+      newState.phase = PhChunkSize(bodyBytesSoFar = 0)
+      newState
     }
   }
 }
 
-func enterFixedBodyPhase(state: inout Connection, events: in List[HttpEvent], length: in Int): Unit {
+func enterFixedBodyPhase(state: in Connection, events: in List[HttpEvent], length: in Int): Connection {
   if length == 0 {
     events.add(RequestComplete)
-    state.phase = PhRequestLine
+    var newState = state
+    newState.phase = PhRequestLine
+    newState
   } else if length > state.limits.maxBodyBytes {
     failWith(state, events, BodyTooLarge, "request body length exceeds the configured limit")
   } else {
-    state.phase = PhFixedBody(remaining = length)
+    var newState = state
+    newState.phase = PhFixedBody(remaining = length)
+    newState
   }
 }
 
-func enterHeaderPhase(state: inout Connection, parsed: in ParsedRequestLine): Unit {
-  state.phase = PhHeaders(
+func enterHeaderPhase(state: in Connection, parsed: in ParsedRequestLine): Connection {
+  var newState = state
+  newState.phase = PhHeaders(
     method = parsed.method,
     target = parsed.target,
     version = parsed.version,
     headers = newList(),
     headerBytes = 0
   )
+  newState
 }
 
-func finishRequestLine(state: inout Connection, events: in List[HttpEvent], lineEnd: in Int, consumed: in Int): Unit {
+func finishRequestLine(state: in Connection, events: in List[HttpEvent], lineEnd: in Int, consumed: in Int): Connection {
   val line = state.buf.slice(0, lineEnd)
   // Binding the slice result to `remaining` before assigning it to
-  // `state.buf` is load-bearing, not decoration: writing
-  // `state.buf = state.buf.slice(...)` directly (self-referential field
-  // reassignment via a call on the field's own value) on an `inout` record
-  // parameter, followed by more code in the same function, emits invalid
-  // JVM bytecode (`VerifyError: Inconsistent stackmap frames`) — a compiler
-  // bug filed as #5936 with a minimal standalone repro. Every `state.buf =
-  // state.buf.slice(...)`/`.concat(...)` site in this file goes through a
-  // local first for the same reason; do not "simplify" any of them back.
+  // `newState.buf` is load-bearing, not decoration: writing
+  // `newState.buf = newState.buf.slice(...)` directly (self-referential
+  // field reassignment via a call on the field's own value), followed by
+  // more code in the same function, emits invalid JVM bytecode
+  // (`VerifyError: Inconsistent stackmap frames`) — a compiler bug filed as
+  // #5936 with a minimal standalone repro. Every `.buf = ....slice(...)`/
+  // `.concat(...)` site in this file computes the new value from a
+  // differently-named local first for the same reason; do not "simplify"
+  // any of them back.
   val remaining = state.buf.slice(consumed, state.buf.length)
-  state.buf = remaining
+  var newState = state
+  newState.buf = remaining
   val parseResult = parseRequestLine(line)
   match parseResult {
-    case Err(e) -> failWith(state, events, e.kind, e.message)
-    case Ok(parsed) -> enterHeaderPhase(state, parsed)
+    case Err(e) -> failWith(newState, events, e.kind, e.message)
+    case Ok(parsed) -> enterHeaderPhase(newState, parsed)
   }
 }
 
-func stepRequestLine(state: inout Connection, events: in List[HttpEvent]): Bool {
+func stepRequestLine(state: in Connection, events: in List[HttpEvent]): StepOutcome {
   match scanCrlfLine(state.buf, state.limits.maxRequestLineLength) {
-    case LsNeedMore -> false
-    case LsTooLong -> {
-      failWith(state, events, RequestLineTooLong, "request line exceeds configured limit")
-      true
-    }
-    case LsBareCr -> {
-      failWith(state, events, BareCr, "bare CR in request line")
-      true
-    }
-    case LsBareLf -> {
-      failWith(state, events, BareLf, "bare LF in request line")
-      true
-    }
-    case LsFound(lineEnd, consumed) -> {
-      finishRequestLine(state, events, lineEnd, consumed)
-      true
-    }
+    case LsNeedMore -> StepOutcome(conn = state, progress = false)
+    case LsTooLong -> StepOutcome(conn = failWith(state, events, RequestLineTooLong, "request line exceeds configured limit"), progress = true)
+    case LsBareCr -> StepOutcome(conn = failWith(state, events, BareCr, "bare CR in request line"), progress = true)
+    case LsBareLf -> StepOutcome(conn = failWith(state, events, BareLf, "bare LF in request line"), progress = true)
+    case LsFound(lineEnd, consumed) -> StepOutcome(conn = finishRequestLine(state, events, lineEnd, consumed), progress = true)
   }
 }
 
@@ -1215,21 +1280,22 @@ func stepRequestLine(state: inout Connection, events: in List[HttpEvent]): Bool 
 // and how much work they do; keeping every arm here to a single function
 // call sidesteps the bad shape.
 func onHeaderBlank(
-  state: inout Connection,
+  state: in Connection,
   events: in List[HttpEvent],
   method: in String,
   target: in String,
   version: in HttpVersion,
   headersSoFar: in List[HeaderField],
   consumed: in Int,
-): Unit {
+): Connection {
   val remaining = state.buf.slice(consumed, state.buf.length)
-  state.buf = remaining
-  finishHeaders(state, events, method, target, version, headersSoFar)
+  var newState = state
+  newState.buf = remaining
+  finishHeaders(newState, events, method, target, version, headersSoFar)
 }
 
 func onHeaderField(
-  state: inout Connection,
+  state: in Connection,
   events: in List[HttpEvent],
   method: in String,
   target: in String,
@@ -1239,106 +1305,90 @@ func onHeaderField(
   name: in String,
   value: in String,
   consumed: in Int,
-): Unit {
+): Connection {
   val remaining = state.buf.slice(consumed, state.buf.length)
-  state.buf = remaining
+  var newState = state
+  newState.buf = remaining
   val newCount = headersSoFar.count + 1
   val newBytes = headerBytes + consumed
   if newCount > state.limits.maxHeaderCount {
-    failWith(state, events, TooManyHeaders, "header count exceeds configured limit")
+    failWith(newState, events, TooManyHeaders, "header count exceeds configured limit")
   } else if newBytes > state.limits.maxTotalHeaderBytes {
-    failWith(state, events, HeadersTooLarge, "total header bytes exceed configured limit")
+    failWith(newState, events, HeadersTooLarge, "total header bytes exceed configured limit")
   } else {
     headersSoFar.add(HeaderField(name = name, value = value))
-    state.phase = PhHeaders(
+    newState.phase = PhHeaders(
       method = method,
       target = target,
       version = version,
       headers = headersSoFar,
       headerBytes = newBytes
     )
+    newState
   }
 }
 
 func stepHeaders(
-  state: inout Connection,
+  state: in Connection,
   events: in List[HttpEvent],
   method: in String,
   target: in String,
   version: in HttpVersion,
   headersSoFar: in List[HeaderField],
   headerBytes: in Int,
-): Bool {
+): StepOutcome {
   match scanHeaderLine(state.buf, state.limits.maxHeaderLineLength) {
-    case HlrNeedMore -> false
-    case HlrErr(kind, message) -> {
-      failWith(state, events, kind, message)
-      true
-    }
-    case HlrBlank(consumed) -> {
-      onHeaderBlank(state, events, method, target, version, headersSoFar, consumed)
-      true
-    }
-    case HlrField(name, value, consumed) -> {
-      onHeaderField(state, events, method, target, version, headersSoFar, headerBytes, name, value, consumed)
-      true
-    }
+    case HlrNeedMore -> StepOutcome(conn = state, progress = false)
+    case HlrErr(kind, message) -> StepOutcome(conn = failWith(state, events, kind, message), progress = true)
+    case HlrBlank(consumed) -> StepOutcome(conn = onHeaderBlank(state, events, method, target, version, headersSoFar, consumed), progress = true)
+    case HlrField(name, value, consumed) -> StepOutcome(conn = onHeaderField(state, events, method, target, version, headersSoFar, headerBytes, name, value, consumed), progress = true)
   }
 }
 
-func stepFixedBody(state: inout Connection, events: in List[HttpEvent], remaining: in Int): Bool {
+func stepFixedBody(state: in Connection, events: in List[HttpEvent], remaining: in Int): StepOutcome {
   if remaining == 0 {
     events.add(RequestComplete)
-    state.phase = PhRequestLine
-    true
+    var newState = state
+    newState.phase = PhRequestLine
+    StepOutcome(conn = newState, progress = true)
   } else if state.buf.length == 0 {
-    false
+    StepOutcome(conn = state, progress = false)
   } else {
     val take = if state.buf.length < remaining { state.buf.length } else { remaining }
     val chunk = state.buf.slice(0, take)
     val remainingBuf = state.buf.slice(take, state.buf.length)
-    state.buf = remainingBuf
+    var newState = state
+    newState.buf = remainingBuf
     events.add(BodyChunk(bytes = chunk))
-    state.phase = PhFixedBody(remaining = remaining - take)
-    true
+    newState.phase = PhFixedBody(remaining = remaining - take)
+    StepOutcome(conn = newState, progress = true)
   }
 }
 
-func stepChunkSize(state: inout Connection, events: in List[HttpEvent], bodyBytesSoFar: in Int): Bool {
+func stepChunkSize(state: in Connection, events: in List[HttpEvent], bodyBytesSoFar: in Int): StepOutcome {
   match scanCrlfLine(state.buf, state.limits.maxHeaderLineLength) {
-    case LsNeedMore -> false
-    case LsTooLong -> {
-      failWith(state, events, MalformedChunkSize, "chunk-size line exceeds configured limit")
-      true
-    }
-    case LsBareCr -> {
-      failWith(state, events, BareCr, "bare CR in chunk-size line")
-      true
-    }
-    case LsBareLf -> {
-      failWith(state, events, BareLf, "bare LF in chunk-size line")
-      true
-    }
-    case LsFound(lineEnd, consumed) -> {
-      onChunkSizeLine(state, events, lineEnd, consumed, bodyBytesSoFar)
-      true
-    }
+    case LsNeedMore -> StepOutcome(conn = state, progress = false)
+    case LsTooLong -> StepOutcome(conn = failWith(state, events, MalformedChunkSize, "chunk-size line exceeds configured limit"), progress = true)
+    case LsBareCr -> StepOutcome(conn = failWith(state, events, BareCr, "bare CR in chunk-size line"), progress = true)
+    case LsBareLf -> StepOutcome(conn = failWith(state, events, BareLf, "bare LF in chunk-size line"), progress = true)
+    case LsFound(lineEnd, consumed) -> StepOutcome(conn = onChunkSizeLine(state, events, lineEnd, consumed, bodyBytesSoFar), progress = true)
   }
 }
 
 func onChunkSizeLine(
-  state: inout Connection,
+  state: in Connection,
   events: in List[HttpEvent],
   lineEnd: in Int,
   consumed: in Int,
   bodyBytesSoFar: in Int,
-): Unit {
+): Connection {
   val line = state.buf.slice(0, lineEnd)
   val remaining = state.buf.slice(consumed, state.buf.length)
-  state.buf = remaining
+  var newState = state
+  newState.buf = remaining
   match parseChunkSizeLine(line) {
-    case Err(e) -> failWith(state, events, e.kind, e.message)
-    case Ok(size) -> enterChunkFromSize(state, events, size, bodyBytesSoFar)
+    case Err(e) -> failWith(newState, events, e.kind, e.message)
+    case Ok(size) -> enterChunkFromSize(newState, events, size, bodyBytesSoFar)
   }
 }
 
@@ -1347,108 +1397,138 @@ func onChunkSizeLine(
 /// `BodyTooLarge` if the cumulative chunked body would exceed
 /// `EngineLimits.maxBodyBytes` — the only point where a chunked body's
 /// total size is checkable, since it is never declared up front.
-func enterChunkFromSize(state: inout Connection, events: in List[HttpEvent], size: in Int, bodyBytesSoFar: in Int): Unit {
+func enterChunkFromSize(
+  state: in Connection, events: in List[HttpEvent], size: in Int, bodyBytesSoFar: in Int
+): Connection {
   if size == 0 {
-    state.phase = PhTrailer(count = 0, bytes = 0)
+    var newState = state
+    newState.phase = PhTrailer(count = 0, bytes = 0)
+    newState
   } else {
     val newTotal = bodyBytesSoFar + size
     if newTotal > state.limits.maxBodyBytes {
       failWith(state, events, BodyTooLarge, "chunked request body length exceeds the configured limit")
     } else {
-      state.phase = PhChunkData(remaining = size, bodyBytesSoFar = newTotal)
+      var newState = state
+      newState.phase = PhChunkData(remaining = size, bodyBytesSoFar = newTotal)
+      newState
     }
   }
 }
 
-func stepChunkData(state: inout Connection, events: in List[HttpEvent], remaining: in Int, bodyBytesSoFar: in Int): Bool {
+func stepChunkData(
+  state: in Connection, events: in List[HttpEvent], remaining: in Int, bodyBytesSoFar: in Int
+): StepOutcome {
   if remaining == 0 {
-    state.phase = PhChunkCrlf(bodyBytesSoFar = bodyBytesSoFar)
-    true
+    var newState = state
+    newState.phase = PhChunkCrlf(bodyBytesSoFar = bodyBytesSoFar)
+    StepOutcome(conn = newState, progress = true)
   } else if state.buf.length == 0 {
-    false
+    StepOutcome(conn = state, progress = false)
   } else {
     val take = if state.buf.length < remaining { state.buf.length } else { remaining }
     val chunk = state.buf.slice(0, take)
     val remainingBuf = state.buf.slice(take, state.buf.length)
-    state.buf = remainingBuf
+    var newState = state
+    newState.buf = remainingBuf
     events.add(BodyChunk(bytes = chunk))
-    state.phase = PhChunkData(remaining = remaining - take, bodyBytesSoFar = bodyBytesSoFar)
-    true
+    newState.phase = PhChunkData(remaining = remaining - take, bodyBytesSoFar = bodyBytesSoFar)
+    StepOutcome(conn = newState, progress = true)
   }
 }
 
-func stepChunkCrlf(state: inout Connection, events: in List[HttpEvent], bodyBytesSoFar: in Int): Bool {
+func stepChunkCrlf(state: in Connection, events: in List[HttpEvent], bodyBytesSoFar: in Int): StepOutcome {
   if state.buf.length < 2 {
-    false
+    StepOutcome(conn = state, progress = false)
   } else if isCr(state.buf[0]) and isLf(state.buf[1]) {
     val remaining = state.buf.slice(2, state.buf.length)
-    state.buf = remaining
-    state.phase = PhChunkSize(bodyBytesSoFar = bodyBytesSoFar)
-    true
+    var newState = state
+    newState.buf = remaining
+    newState.phase = PhChunkSize(bodyBytesSoFar = bodyBytesSoFar)
+    StepOutcome(conn = newState, progress = true)
   } else {
-    failWith(state, events, MalformedChunkSize, "chunk data not followed by CRLF")
-    true
+    StepOutcome(conn = failWith(state, events, MalformedChunkSize, "chunk data not followed by CRLF"), progress = true)
   }
 }
 
-func stepTrailer(state: inout Connection, events: in List[HttpEvent], count: in Int, bytes: in Int): Bool {
+func stepTrailer(state: in Connection, events: in List[HttpEvent], count: in Int, bytes: in Int): StepOutcome {
   match scanHeaderLine(state.buf, state.limits.maxHeaderLineLength) {
-    case HlrNeedMore -> false
-    case HlrErr(kind, message) -> {
-      failWith(state, events, kind, message)
-      true
-    }
+    case HlrNeedMore -> StepOutcome(conn = state, progress = false)
+    case HlrErr(kind, message) -> StepOutcome(conn = failWith(state, events, kind, message), progress = true)
     case HlrBlank(consumed) -> {
       val remaining = state.buf.slice(consumed, state.buf.length)
-      state.buf = remaining
+      var newState = state
+      newState.buf = remaining
       events.add(RequestComplete)
-      state.phase = PhRequestLine
-      true
+      newState.phase = PhRequestLine
+      StepOutcome(conn = newState, progress = true)
     }
     case HlrField(_, _, consumed) -> {
       val remaining = state.buf.slice(consumed, state.buf.length)
-      state.buf = remaining
+      var newState = state
+      newState.buf = remaining
       val newCount = count + 1
       val newBytes = bytes + consumed
       if newCount > state.limits.maxHeaderCount {
-        failWith(state, events, TooManyHeaders, "trailer field count exceeds configured limit")
+        StepOutcome(
+          conn = failWith(newState, events, TooManyHeaders, "trailer field count exceeds configured limit"),
+          progress = true
+        )
       } else if newBytes > state.limits.maxTotalHeaderBytes {
-        failWith(state, events, HeadersTooLarge, "trailer bytes exceed configured limit")
+        StepOutcome(
+          conn = failWith(newState, events, HeadersTooLarge, "trailer bytes exceed configured limit"),
+          progress = true
+        )
       } else {
-        state.phase = PhTrailer(count = newCount, bytes = newBytes)
+        newState.phase = PhTrailer(count = newCount, bytes = newBytes)
+        StepOutcome(conn = newState, progress = true)
       }
-      true
     }
   }
 }
 
-func driveFeed(state: inout Connection, bytes: in slice[Byte]): List[HttpEvent] {
+func driveFeed(state: in Connection, bytes: in slice[Byte]): FeedResult {
   val combined = state.buf.concat(bytes)
-  state.buf = combined
+  var current = state
+  current.buf = combined
   val events: List[HttpEvent] = newList()
   var progress = true
   while progress {
-    match state.phase {
+    match current.phase {
       case PhRequestLine -> {
-        progress = stepRequestLine(state, events)
+        val outcome = stepRequestLine(current, events)
+        current = outcome.conn
+        progress = outcome.progress
       }
       case PhHeaders(method, target, version, headers, headerBytes) -> {
-        progress = stepHeaders(state, events, method, target, version, headers, headerBytes)
+        val outcome = stepHeaders(current, events, method, target, version, headers, headerBytes)
+        current = outcome.conn
+        progress = outcome.progress
       }
       case PhFixedBody(remaining) -> {
-        progress = stepFixedBody(state, events, remaining)
+        val outcome = stepFixedBody(current, events, remaining)
+        current = outcome.conn
+        progress = outcome.progress
       }
       case PhChunkSize(bodyBytesSoFar) -> {
-        progress = stepChunkSize(state, events, bodyBytesSoFar)
+        val outcome = stepChunkSize(current, events, bodyBytesSoFar)
+        current = outcome.conn
+        progress = outcome.progress
       }
       case PhChunkData(remaining, bodyBytesSoFar) -> {
-        progress = stepChunkData(state, events, remaining, bodyBytesSoFar)
+        val outcome = stepChunkData(current, events, remaining, bodyBytesSoFar)
+        current = outcome.conn
+        progress = outcome.progress
       }
       case PhChunkCrlf(bodyBytesSoFar) -> {
-        progress = stepChunkCrlf(state, events, bodyBytesSoFar)
+        val outcome = stepChunkCrlf(current, events, bodyBytesSoFar)
+        current = outcome.conn
+        progress = outcome.progress
       }
       case PhTrailer(count, bytes) -> {
-        progress = stepTrailer(state, events, count, bytes)
+        val outcome = stepTrailer(current, events, count, bytes)
+        current = outcome.conn
+        progress = outcome.progress
       }
       case PhFatal -> {
         progress = false
@@ -1458,7 +1538,7 @@ func driveFeed(state: inout Connection, bytes: in slice[Byte]): List[HttpEvent] 
   if events.count == 0 {
     events.add(NeedMore)
   }
-  events
+  FeedResult(conn = current, events = events)
 }
 
 /// Feed newly-received bytes into `conn`, returning the connection's next
@@ -1483,8 +1563,7 @@ pub func feed(conn: in Connection, bytes: in slice[Byte]): FeedResult
   // `conn` after `feed`" linear-value contract by construction rather than
   // by caller discipline alone.
   state.phase = cloneHeaderPhaseIfNeeded(state.phase)
-  val events = driveFeed(state, bytes)
-  FeedResult(conn = state, events = events)
+  driveFeed(state, bytes)
 }
 
 func cloneHeaderPhaseIfNeeded(phase: in ConnPhase): ConnPhase {
@@ -1533,12 +1612,17 @@ func isResponseSafeByte(cp: in Int): Bool {
   (cp >= 32 and cp <= 126) or cp == 9
 }
 
+// Scans UTF-8 bytes rather than `charAt` (see `parseDigitsToInt`'s header
+// comment for why): every byte of a multi-byte (non-ASCII) sequence is >=
+// 0x80, outside `isResponseSafeByte`'s `[32, 126]`/HTAB range, so scanning
+// bytes instead of decoded characters still rejects non-ASCII input exactly
+// as before.
 func isResponseSafeString(s: in String): Bool {
+  val bytes = encodeUtf8(s)
   var i = 0
-  while i < s.length {
-    match charAt(s, i) {
-      case None -> return false
-      case Some(c) -> if not isResponseSafeByte(toInt(c)) { return false }
+  while i < bytes.length {
+    if not isResponseSafeByte(bytes[i].toInt()) {
+      return false
     }
     i = i + 1
   }
@@ -1557,21 +1641,12 @@ func allHeadersResponseSafe(headers: in List[HeaderField]): Bool {
   true
 }
 
-/// Every char in `s` is ASCII (< 0x80), so a direct code-point-to-byte
-/// conversion is exact — no UTF-8 multi-byte encoding is needed. Safe to
-/// call only after `isResponseSafeString`/`isResponseSafeByte` have
-/// validated every character is in `[32, 126]` or HTAB (0x09).
+/// Every char in `s` is ASCII (< 0x80), so UTF-8 encoding IS a plain
+/// byte-for-byte copy — no multi-byte sequences are produced. Safe to call
+/// only after `isResponseSafeString`/`isResponseSafeByte` have validated
+/// every character is in `[32, 126]` or HTAB (0x09).
 func asciiStringToBytes(s: in String): slice[Byte] {
-  val acc: List[Byte] = newList()
-  var i = 0
-  while i < s.length {
-    match charAt(s, i) {
-      case None -> ()
-      case Some(c) -> acc.add(toInt(c).toByte())
-    }
-    i = i + 1
-  }
-  acc.toArray()
+  encodeUtf8(s)
 }
 
 /// Serialize a response status line + headers + terminating blank line.
@@ -1646,11 +1721,43 @@ pub func serializeLastChunk(): slice[Byte] {
   asciiStringToBytes("0\r\n\r\n")
 }
 
-func hexDigitChar(v: in Int): Char {
-  if v < 10 {
-    Char.fromInt(48 + v)
+// A single-digit lowercase hex STRING (not `Char`): `"" + Char` concatenation
+// is not a supported `--target native` codegen shape (see `asciiBytesToString`'s
+// doc comment, issue #6237), so `toHexAscii`'s accumulator needs a `String`
+// straight from the digit value, never a `Char` intermediate.
+func hexDigitStr(v: in Int): String {
+  if v == 0 {
+    "0"
+  } else if v == 1 {
+    "1"
+  } else if v == 2 {
+    "2"
+  } else if v == 3 {
+    "3"
+  } else if v == 4 {
+    "4"
+  } else if v == 5 {
+    "5"
+  } else if v == 6 {
+    "6"
+  } else if v == 7 {
+    "7"
+  } else if v == 8 {
+    "8"
+  } else if v == 9 {
+    "9"
+  } else if v == 10 {
+    "a"
+  } else if v == 11 {
+    "b"
+  } else if v == 12 {
+    "c"
+  } else if v == 13 {
+    "d"
+  } else if v == 14 {
+    "e"
   } else {
-    Char.fromInt(97 + (v - 10))
+    "f"
   }
 }
 
@@ -1663,7 +1770,7 @@ func toHexAscii(n: in Int): String {
     var acc = ""
     var v = n
     while v > 0 {
-      acc = ("" + hexDigitChar(v % 16)) + acc
+      acc = hexDigitStr(v % 16) + acc
       v = v / 16
     }
     acc

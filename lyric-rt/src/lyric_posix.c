@@ -127,6 +127,30 @@ void lyric_sem_wait(void* s) {
     }
 }
 
+/* Non-blocking variant of lyric_sem_wait: decrements and returns 1 only
+ * if the count is already positive, otherwise leaves the count alone and
+ * returns 0 immediately. Lets a caller drain exactly the credits that are
+ * genuinely unclaimed right now without ever waiting on a post nothing
+ * will ever send — the shape _kernel_native/http_server.l's
+ * stopListener needs to retire an abandoned-but-still-queued request
+ * without stealing a credit a concurrently racing dequeueContext caller
+ * already consumed (#6796). */
+int32_t lyric_sem_trywait(void* s) {
+    lyric_sem_t* sem = (lyric_sem_t*)s;
+    int32_t acquired = 0;
+    if (pthread_mutex_lock(&sem->mutex) != 0) {
+        lyric_panic_msg("pthread_mutex_lock (sem) failed", "lyric_posix.c", __LINE__);
+    }
+    if (sem->count > 0) {
+        sem->count -= 1;
+        acquired = 1;
+    }
+    if (pthread_mutex_unlock(&sem->mutex) != 0) {
+        lyric_panic_msg("pthread_mutex_unlock (sem) failed", "lyric_posix.c", __LINE__);
+    }
+    return acquired;
+}
+
 void lyric_sem_post(void* s) {
     lyric_sem_t* sem = (lyric_sem_t*)s;
     if (pthread_mutex_lock(&sem->mutex) != 0) {

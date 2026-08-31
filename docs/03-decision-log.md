@@ -37176,3 +37176,944 @@ end to end, confirming the bare-call fast path is untouched.
 **Related:** #6712, PR #6631 (the `compiler-self-tests-jvm` required
 check this unblocks), `Msil.Codegen.hasQualifiedFuncOverrideMsil`
 (the pre-existing pattern this mirrors).
+## D-progress-850 — TLS phase 5 (native) N9.3: `Std.HttpServer` native twin — thread-per-connection over the pthread kernel driving `Std.HttpEngine` (issue #6104, epic #5874 phase 5)
+
+Implements `_kernel_native/http_server.l`: the native `Std.HttpServer` twin,
+the last of the four N9 stdlib-kernel items in this epic's phase 5 native
+band (N9.1 the C seam, N9.2 `Std.TcpHost`, N9.4 the HTTP client, this entry
+N9.3 the HTTP server; N9.5 lyric-web integration + ALPN h2 remains open).
+Both of N9.3's own prerequisite blockers — native `String` gaining
+`.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588,
+D-progress-831) and bare cross-package enum-case value resolution (#6589,
+D-progress-830) — shipped earlier in this same session, unblocking the
+kernel work this entry ships.
+
+**Architecture: follow the dotnet twin, not the JVM twin.** `_kernel/
+http_server.l` (dotnet) drives the sans-IO `Std.HttpEngine`'s
+per-connection FSM over `Std.TcpHost`'s transport; `_kernel_jvm/
+http_server.l` bypasses `Std.HttpEngine` entirely in favour of the JDK's
+own `com.sun.net.httpserver.HttpServer`. The issue's own text ("driving the
+sans-IO `Std.HttpEngine`'s FSM") and `native/plan/08-work-items.md`'s N9.3
+banding both point at the dotnet shape, so `_kernel_native/http_server.l`
+mirrors it: a real HTTP/1.1 parser/serializer (`Std.HttpEngine`, already
+native-buildable end to end since D-progress-830/831 fixed the two blockers
+above) driven by real transport I/O (`Std.TcpHost`'s N9.2 twin), not a
+from-scratch wire-protocol reimplementation the way N9.4's client kernel had
+to be (`Std.HttpEngine` is server-only; there was never a client FSM to
+reuse there).
+
+**Scope, matched exactly to the issue text: the twelve-function surface
+plus `startListenerTls`, nothing more.** Reading both existing twins in
+full before writing found the "twelve-function `Std.HttpServer` surface"
+the issue names is precisely `startListener`/`nextContext`/`stopListener`/
+`requestMethod`/`requestPath`/`requestBody`/`requestQuery`/
+`requestHeaders`/`urlDecode`/`respondText`/`respondJson`/
+`respondBytesWithHeaders` — the JVM twin implements exactly these twelve
+plus `startListenerTls` and nothing else (no h2, no chunked-streaming
+helpers, no `*WithLimits` variants); the dotnet twin additionally ships h2/
+ALPN, three chunked-streaming helpers, and `startListener{,Tls}WithLimits`,
+none of which the issue's text mentions. This entry ships the JVM twin's
+narrower *surface* over the dotnet twin's *architecture* — deliberately,
+not by omission — and documents every point where that narrows behaviour
+(no h2, no per-request size-limit override, no backpressure cap) in the
+kernel's own module header rather than silently.
+
+**Concurrency: a hand-built mutex+semaphore queue, not a BCL collection.**
+There is no `ConcurrentQueue`/`SemaphoreSlim` equivalent on native. The
+pull-model hand-off (a connection thread parses one request, hands a ready
+context to a shared queue, blocks until a puller thread responds via a
+per-request one-shot signal — `_kernel/http_server.l`'s own module header
+names this pattern) is built directly from D-progress-809's prerequisite
+primitives: `lyric_mutex_*` guards a plain `List[HttpContext]` FIFO
+(`ServerQueue`), and `lyric_sem_*` (mutex+condvar backed, not POSIX
+`sem_init`, since that is unimplemented on macOS) both signals "an item is
+available" and gives each request its own one-shot "response written"
+semaphore (`HttpContext.done`), mirroring the dotnet twin's per-request
+`SemaphoreSlim` exactly. Every raw buffer handle (`rtMalloc`'d, then
+`lyric_mutex_init`/`lyric_sem_init`'d) is declared `Long`, never
+`NativePtr[Byte]` — the identical "opaque handle as integer" trick
+`_kernel_native/tcp_host.l`'s own module header documents at length for
+`Conn.tlsConnHandle`: the mode checker's N0100 boundary rejects a
+`NativePtr[T]` record/union FIELD outright ("heap storage outlives any
+frame"), but `ServerQueue`/`HttpContext` must survive across many separate
+calls on many separate threads, so a pointer is reinterpreted as the `i64`
+it already is at the machine-word level (identical on every `--target
+native` triple, x86-64/AArch64, both LP64). `ServerQueue`/`HttpContext`
+themselves are plain (non-opaque) records — per `native/plan/
+04-arc-design.md`, a Lyric `record` is heap-allocated with atomically
+refcounted ARC on this target (unlike the self-hosted MSIL emitter, which
+may lay a generic record out as a value type, docs/43), and a
+`lyric_mutex_lock`/`unlock` pair supplies the memory-visibility barrier a
+plain field/list mutation needs to be safely observed cross-thread — so
+sharing a mutable `List[HttpContext]`/`List[Long]` through a mutex-guarded
+record reference is sound with no additional synchronisation mechanism
+needed.
+
+**Shutdown: `stopListener` blocks until every accepted connection has
+genuinely finished — stronger than either existing twin's contract, forced
+by the lack of a GC.** The dotnet twin's own `stopListener` doc comment is
+explicit that it does not wait for in-flight connections ("the accept loop
+ends when the stopped listener's next accept fails"; connection tasks
+finish independently, garbage-collected once idle). That fire-and-forget
+model is safe on a GC'd target but would either leak this kernel's
+`malloc`'d mutex/semaphore buffers on native, or — worse — risk a
+use-after-free if a still-running connection thread later touched a queue
+whose backing buffer `stopListener` had already freed. `stopListener` here
+instead: closes the transport (unblocking the accept thread's
+`hostAccept`/`hostAcceptTls` call with an error so its own loop ends),
+`pthread_join`s the accept thread (a POSIX thread's termination
+synchronizes-with its joiner, so every `ServerQueue.workerTids.add` call the
+accept thread's own connection-spawning path could ever make is already
+visible here with no extra locking needed), then `pthread_join`s every
+handler thread the accept thread ever spawned (tracked in
+`ServerQueue.workerTids`, appended by `spawnHandler` right after a
+successful `pthread_create`), and only then frees the queue's mutex/
+semaphore. This makes `stopListener` a genuinely blocking "drain everything,
+then free" call — a caller wanting a non-blocking stop can spawn its own
+thread to call it — traded deliberately against the dotnet/JVM twins'
+non-blocking-but-GC-dependent contract, since native has no GC to fall back
+on.
+
+**Two disclosed v1 scope gaps, neither silent.**
+
+1. **No h2.** `_kernel_native/tcp_host.l`'s `hostAcceptTls` unconditionally
+   advertises `"h2,http/1.1"` as its ALPN preference — that constant
+   (`alpnPreference`) is shared with `Std.HttpHost`'s client kernel and the
+   TLS self-tests, so narrowing it here would be a cross-cutting change out
+   of this item's scope. A TLS peer that actually negotiates `h2` would
+   otherwise have its binary frame format silently mis-parsed as HTTP/1.1
+   text by this kernel's engine-driving loop — `onAccepted` guards against
+   this explicitly: any connection whose negotiated ALPN is `"h2"` is closed
+   immediately, never handed to the HTTP/1.1 parser. A loud, tested gap
+   (item C of this entry's self-test), not a silent miscompile. Native
+   ALPN-selected h2 is already tracked as N9.5 (issue #6106), gated on this
+   item.
+2. **No `LYRIC_HTTP_MAX_CONNECTIONS` backpressure cap.** The dotnet twin's
+   #6071 hardening reads this environment override via
+   `Std.Parse.tryParseInt`; `Std.Parse` has no `_kernel_native/parse_host.l`
+   twin (confirmed: only `_kernel/parse_host.l` and `_kernel_jvm/
+   parse_host.l` exist), so depending on it here would either fail to build
+   or punch a new, unaudited hole in the native stdlib-kernel boundary. An
+   unbounded native listener is this v1's deliberate, disclosed scope
+   decision; a future `Std.Parse` native twin removes the gap without
+   touching this file's public surface.
+
+**Self-test (`lyric-compiler/lyric/llvm_http_server_self_test.l`).** Three
+cases compiled through `Lyric.LlvmBridge.compileToNativeWithFlags` with
+`-fsanitize=address`, mirroring `llvm_tls_self_test.l`'s and
+`llvm_http_client_self_test.l`'s harness shape:
+
+- **Item A** — a plaintext HTTP/1.1 round trip. The client
+  (`Std.TcpHost.hostConnect`) runs on the SAME thread as the assertions,
+  needing no second `pthread_create`d thread at all: a bare TCP `connect`
+  completes into the listen backlog before `accept` runs (the same
+  reasoning D-progress-712's own item C gives for its plain-TCP case),
+  and `nextContext` blocks correctly regardless of exactly when the
+  server's own background accept/connection threads get scheduled. Asserts
+  `requestMethod`/`requestPath`/`requestQuery`/`requestHeaders` all observe
+  a real `GET /hello?x=1` request with a custom header correctly, and reads
+  back a real response built via `respondText` + `urlDecode`.
+- **Item B** — a real loopback TLS round trip. Unlike item A, a TLS
+  handshake needs both peers actively exchanging handshake records at once,
+  so the client runs on a genuine second `pthread_create`d OS thread — the
+  same N4.5 callback-trampoline mechanism `llvm_ffi_self_test.l`'s pthread
+  case and `llvm_tls_self_test.l`'s item D already verify — but unlike
+  those two (which predate N9.4), this client drives N9.4's real, already-
+  shipped public `Std.TcpHost.hostConnectTls` API directly rather than a
+  hand-rolled raw `lyric_tls_*` driver: N9.4 postdates N9.2/D-progress-712's
+  own item D, so there is no need to re-derive what N9.4 already ships. The
+  server thread (`main`) drives the real N9.3 deliverable under test:
+  `startListenerTls` + `nextContext` + `requestMethod`/`requestPath`/
+  `requestBody` + `respondJson`, against the exact self-signed EC test
+  certificate `llvm_tls_self_test.l` already verified parses with real
+  OpenSSL and completes a real `openssl s_server`/`s_client` handshake
+  (reused verbatim, no new PKI fixture to verify).
+- **Item C** — the h2-rejection guard, exercised end to end rather than
+  merely asserted safe in prose: the client offers ONLY `"h2"` ALPN against
+  a real TLS handshake (so it genuinely negotiates `h2`, confirmed via
+  `hostAlpn` on the client's own connection, not merely claims to), then
+  asserts the server closed the connection (observed as either a
+  zero-length read or a read error — native has no exceptions to rely on as
+  an alternate "it broke" signal, D-N-003) rather than hanging or echoing
+  garbage back.
+
+**Sandbox/CI-validator boundary (same class as D-progress-712/809/823).**
+This session could not run `scripts/bootstrap.sh --stage 0`/`--stage 1`
+(GitHub release-artifact download is network-policy-blocked) and confirmed,
+by direct repro rather than assumption, that the already-installed NuGet
+`lyric` v0.5.1 global tool — the substitute D-progress-823 used successfully
+for its own change — cannot substitute here: it predates the `NativePtr`/
+`nativeAddrOf`/`nativeNullPtr` FFI surface entirely. Copying
+`llvm_ffi_self_test.l`'s own already-shipped, already-CI-green pthread idiom
+verbatim into a minimal repro and building it with this tool fails with
+`error[T0010] 10:21: unknown type name 'NativePtr'` at every local-variable
+`NativePtr[T]` type-annotation position (extern `func` parameter/return
+positions, the audited boundary, are unaffected) — confirming this specific
+tool build predates Phase N4's FFI work, independent of anything this entry
+changes. It also lacks `.indexOf`/`.startsWith` (#6588/D-progress-831) and
+the bare-enum-case fix (#6589/D-progress-830) this kernel's own code
+depends on, both verified by direct repro too. What WAS verified locally:
+`make -C lyric-rt test` and `make -C lyric-rt test-asan CC=gcc` pass
+(unchanged C runtime — this entry adds no new `lyric-rt` C code, only new
+`.l`-level `extern func` declarations against already-shipped
+`lyric_mutex_*`/`lyric_sem_*`/`malloc`/`free`/`lyric_string_byte_at`
+symbols); and a minimal standalone repro of `ServerQueue`'s exact
+single-thread shape (`rtMalloc`+`rtMutexInit`+`rtSemInit`, `rtMutexLock`/
+`List[Int].add`/`rtMutexUnlock`/`rtSemPost` to enqueue, `rtSemWait`/
+`rtMutexLock`/index-`0`+`removeAt(0)`/`rtMutexUnlock` to dequeue,
+`rtMutexDestroy`/`rtSemDestroy`/`rtFree` to tear down) compiled and ran
+correctly against the NuGet tool (5 enqueued values summed back out to the
+expected total, real exit code 0) — confirming the `Long`-typed extern
+handle codegen, `List[T]` as the shared mutable queue backing store, and
+the mutex/semaphore call sequence all work exactly as designed. The moment
+a repro adds `pthread_create` (needed to exercise the queue ACROSS threads,
+and needed by every accept-loop/connection-thread spawn this kernel makes),
+the tool's `NativePtr` gap blocks it, same as the FFI-idiom repro above —
+the cross-thread half of the design, the kernel file itself, and the
+self-test are therefore CI-verified only. CI's `native-backend-self-tests`
+job (real `clang`, real from-source `Lyric.LlvmCodegen`) is the load-bearing
+validator for every compiled-Lyric correctness claim in this entry, exactly
+as it was for N9.1/N9.2/N9.4's own equivalent claims.
+
+**Verification.** `make -C lyric-rt test` (clang + gcc) and `make -C
+lyric-rt test-asan CC=gcc` green locally (pre-existing, unmodified C suite).
+The `ServerQueue`-shape single-thread repro above green locally via the
+NuGet tool. `lyric fmt --write` could not be run locally either (needs
+`./bin/lyric`, itself blocked by the same GitHub-access wall) — every
+construct in the new `.l` files was written by cross-referencing an
+already-shipped, already-CI-verified self-test or kernel file (`_kernel/
+http_server.l`'s dotnet architecture, `_kernel_native/tcp_host.l`'s
+`Long`-as-pointer idiom and module-header conventions, `llvm_tls_self_test.l`/
+`llvm_http_client_self_test.l`'s pthread-client harness shape) rather than
+invented fresh syntax, and CI's own `lyric fmt --check` (or an explicit
+`lyric fmt --write` pass before merge, per this repo's standing convention)
+is the load-bearing formatting check, same as the compilation claims above.
+
+**Related:** #6104 (this entry's issue), `native/plan/08-work-items.md` N9.3,
+D-progress-809 (`lyric_sem_*`/`slice` prerequisites), D-progress-830/831
+(the two blockers this item's kernel depends on, both already shipped),
+D-progress-712/823 (N9.2/N9.4, whose `Long`-as-pointer idiom and
+`Std.TcpHost.hostConnectTls` API this entry reuses directly), issue #6106
+(N9.5, native ALPN h2 — the tracked follow-up for this entry's h2-rejection
+gap).
+
+**Addendum (2026-08-31, review findings #6791 and #6792, two REQUIRED
+findings on this same PR's `stopListener`/`spawnHandler` concurrency
+design — `llvm_http_server_self_test.l` now ships six cases, not the
+three described above).**
+
+- **#6791 — `stopListener` hung forever on any idle keep-alive
+  connection.** `stopListener` only ever closed the LISTENING socket
+  (`hostStopListener`); it never touched an already-accepted connection's
+  own fd. `Std.HttpEngine.newConnection` defaults `keepAlive = true`, and
+  HTTP/1.1 keeps a connection open unless a request explicitly carries
+  `Connection: close` — so an ORDINARY, well-behaved client that is
+  simply idle between requests left its handler thread parked in
+  `readOneRequest`'s `hostRead` indefinitely, and `stopListener`'s
+  `pthread_join` on that thread never returned. This is the default
+  HTTP/1.1 behavior, not an edge case — every one of this entry's original
+  three self-test cases happened to send `Connection: close` on every
+  request, which is exactly why the gap went uncaught. Fixed by two
+  additions: `Std.TcpHost` gains `hostFd`/`hostShutdown` (a raw
+  `shutdown(fd, SHUT_RDWR)` that interrupts a blocked read/write from
+  another thread WITHOUT releasing the descriptor, unlike `hostClose`,
+  which would race a concurrent owner-thread close on a reused fd);
+  `ServerQueue` gains `activeConns: List[Conn]`, with every accepted
+  connection registered alongside its handler thread's tid and
+  unregistered strictly BEFORE (never after) that thread's own
+  `hostClose` — the ordering `unregisterConn`'s doc comment states is
+  load-bearing, since `stopListener`'s shutdown loop must never observe
+  (and therefore never touch) a connection whose fd its own thread is
+  about to invalidate. `stopListener` now joins the accept thread FIRST
+  (guaranteeing the `activeConns` snapshot is the complete, final set —
+  no connection accepted "too late" can be missed), `hostShutdown`s every
+  still-registered connection, THEN joins every handler thread.
+  Deliberately does NOT force-`rtSemPost` an outstanding per-request
+  semaphore for a context `nextContext` already dequeued but the caller
+  never answered: nothing prevents the caller's own puller thread from
+  later calling `respond*` on that same already-force-completed context,
+  which would use-after-free the `malloc`'d semaphore buffer once
+  `processConnection` runs `freeOneShotSem` — trading a hang for memory
+  corruption. This is not a native-specific gap either: the dotnet twin's
+  `stopListener` does not wait for in-flight connections at all, so an
+  abandoned dequeued context hangs there too — on every target, "call
+  `respond*` for whatever `nextContext` returns before shutting down" is
+  the caller's own obligation, documented in the module header rather
+  than left silent. Items D (a keep-alive round trip, two requests over
+  one connection, proving the same connection-handler thread genuinely
+  loops back for a second request) and E (the literal #6791 regression —
+  one request answered with no `Connection: close`, client sends nothing
+  further and does not close its own socket, then `stopListener` must
+  still return promptly; the harness's `Process.runCapture` 60-second
+  timeout turns a reintroduced deadlock into a real, visible failure
+  rather than a silently-hanging CI job) verify this end to end.
+- **#6792 — `spawnHandler` registered a connection into `activeConns`
+  AFTER spawning its handler thread, racing that thread's own
+  `unregisterConn`.** `pthread_create` starts the child thread running
+  `processConnection` concurrently with the parent; nothing forced the
+  child to wait for a registration the parent had not made yet. A
+  connection that finishes its whole lifecycle fast enough — the common
+  "client connects, sends nothing, disconnects" health-check/port-scanner
+  pattern, not a corner case — could run `processConnection`'s `defer`
+  block (`unregisterConn`, a harmless no-op against an entry that did not
+  exist yet, then `hostClose`) BEFORE the parent's registration call ever
+  ran. That registration would then add an ALREADY-CLOSED, potentially
+  fd-reused `Conn` into `activeConns` permanently — nothing would ever
+  remove it again, since the one and only `unregisterConn` call for that
+  connection had already happened. A later `stopListener` would
+  `hostShutdown` this stale entry's fd, by then possibly belonging to a
+  completely unrelated resource — exactly the class of bug #6791's own
+  fix was written to prevent, but the registration half of the same
+  invariant didn't hold it. Fixed by splitting the combined
+  `registerWorker` into `registerConn` (called BEFORE `pthread_create`,
+  never after) and `registerTid` (called after, once the real tid is
+  known — safe to register late, since `pthread_join` on an
+  already-terminated, not-yet-joined thread still succeeds per POSIX,
+  unlike `activeConns`, which has no such "always safe to reconcile
+  later" property once the one unregister call has already fired). A
+  failed `pthread_create` now explicitly `unregisterConn`s the
+  connection it just speculatively registered, then `hostClose`s it
+  itself, since no thread will ever exist to run that cleanup through the
+  normal `defer` path. The `startListener`/`startListenerTls` accept-
+  thread spawn was checked for an analogous gap and found not to have
+  one: `acceptTid` is returned once, synchronously, as part of the
+  `HttpListener` record the caller receives — there is no shared,
+  mutable, prematurely-unregisterable registry entry for it the way
+  `activeConns` is for a per-connection `Conn`. Item F verifies the fix:
+  since this is inherently timing-dependent (no deterministic single-shot
+  repro exists without an injected synchronization point this file has no
+  access to), it hammers the listener with 200 rapid
+  connect-then-immediate-disconnect cycles (no bytes sent, maximizing the
+  scheduling window #6792 describes), then drives one real,
+  well-behaved request/response round trip and checks it completes
+  uncorrupted (a stale entry whose fd got reused by this real connection
+  would have `stopListener` shut it down out from under it), and finally
+  asserts `stopListener` itself still returns promptly and cleanly.
+
+Also corrected: three stale "three cases" mentions (this file, `docs/
+61-https-tls-http-versions.md`, and `.github/workflows/ci.yml`'s
+`native-backend-self-tests` job comment) all still described the
+original A/B/C-only self-test, predating items D–F.
+
+**Verification (addendum).** `make -C lyric-rt test`/`test-asan` green
+(unchanged C runtime — this addendum adds no new `lyric-rt` C code, only
+new `.l`-level `extern func rtShutdown` against the already-shipped POSIX
+`shutdown` symbol). The same sandbox boundary as the original entry
+applies (`NativePtr` unsupported by the local NuGet tool), with one
+additional genuine local verification this time: a standalone repro
+against `Std.TcpHost` directly — `hostListen`/`hostConnect`/`hostAccept`,
+then `hostShutdown` on the accepted side before ever reading, then
+`hostRead` — compiled and ran for real (exit 0), confirming `hostFd`/
+`hostShutdown`/`rtShutdown` link correctly and that a `shutdown()`'d
+connection's subsequent read genuinely observes EOF, the exact mechanism
+both fixes depend on. `lyric fmt --write` (same NuGet tool) applied
+cleanly to both changed `.l` files, no refusals.
+
+**Related (addendum):** #6791, #6792 (this addendum's two fixes), PR
+#6789 (where both review findings were raised and fixed).
+
+**Addendum 2 (2026-08-31): a hard compile-time failure — native `out`/
+`inout` function parameters are not lowered at all — blocked every one of
+this file's six self-test cases identically, fixed by reshaping
+`readOneRequest` to avoid the parameter mode rather than fixing the
+compiler (issue #6794, tracked, not attempted here).**
+
+CI's `native-backend-self-tests` job failed all six
+`llvm_http_server_self_test.l` cases with the identical panic:
+
+```
+Lyric.LlvmCodegen: out/inout parameters are not yet supported for --target native
+```
+
+**Root cause.** `readOneRequest(conn: in Conn, engineConn: inout
+Connection): ReqOutcome` was this file's (and, as far as this
+investigation found, the whole native-backend tree's) first use of an
+`inout` parameter — every other `_kernel_native/` kernel, including this
+same file's own `tcp_host.l` sibling, only ever uses `in`. `Lyric.
+LlvmCodegen`'s function-parameter lowering
+(`lyric-compiler/lyric/llvm_codegen.l:8391`) handles `in` alone; `out`/
+`inout` hit an explicit, unconditional panic. Since `readOneRequest` sits
+on the core per-connection request loop every server-handling path goes
+through, ANY native compile that imports `Std.HttpServer` panicked
+immediately — hence the uniform 0/6 failure across every self-test case,
+none of which ever got far enough to open a real socket.
+
+**Fix — reshape the function, don't fix the compiler.** Per this file's
+own established convention (the `Long`-as-pointer-handle trick for the
+`NativePtr[T]` record-field restriction is the precedent this fix
+explicitly follows), `readOneRequest` now takes `engineConn: in
+Connection` and returns a new record, `ReadOutcome { conn: Connection;
+outcome: ReqOutcome }`, bundling the FSM's advanced state with the
+existing outcome union at every return point (the loop-exit fallback and
+all three early returns — a closed connection, a fully-parsed request, a
+protocol error). The caller, `processConnection`, reassigns its own local
+`var engineConn` from `readResult.conn` before matching on
+`readResult.outcome`, exactly reproducing the semantics the `inout`
+parameter would have given (an evolving FSM state threaded across
+however many socket reads one logical request takes) with no mutation
+across the call boundary at all. This is a straightforward, mechanical
+reshaping with no behavioral change — `Std.HttpEngine.feed` already
+returns the FSM's next `Connection` value rather than mutating one in
+place (the engine has no concept of "the caller's local"), so
+`readOneRequest` was already computing the value this fix now threads
+through a return value instead of an `inout` write.
+
+**Filed, not fixed: issue #6794** (native `out`/`inout` parameter
+lowering in `Lyric.LlvmCodegen` — a general compiler gap, not specific to
+this kernel or to HTTP). Implementing `inout`/`out` support for
+`--target native` is out of this PR's scope per the standing convention
+this whole file already follows for native-codegen gaps found while
+writing it (`hostFd`/`hostShutdown`'s addendum-1 entry above is the most
+recent example) — the kernel is reshaped to work without the feature,
+the compiler gap is tracked separately for whoever picks it up.
+
+**Verification.** The full file re-verified to type-check completely via
+the local NuGet tool (same sandbox boundary as every other verification
+pass on this file — panics only at the pre-existing, unrelated
+`--target native` `.indexOf` codegen gap deep in `parsePrefix`, reached
+via a different call path than `readOneRequest`, confirming no `inout`-
+related error remains anywhere in the file: `grep -n '\binout\b\|: out '`
+over the file now matches only this addendum's own prose comments, never
+an actual parameter declaration). The specific reshaping pattern this fix
+uses — a record wrapping a union outcome, a mutable local reassigned
+across loop iterations from a callee's returned record field, multiple
+early-return points each constructing that record — was verified end to
+end with a minimal, non-`Std.HttpServer` standalone repro reproducing the
+exact shape (`stepOnce`/`Wrapped`/`Outcome`): real compile, real run, exit
+code 0, across 30 loop iterations exercising both the close-early and
+request-observed paths. `lyric fmt --write` (same tool) applied cleanly,
+no refusals.
+
+**Related (addendum 2):** #6794 (the tracked compiler-gap follow-up this
+fix does not attempt), the CI failure this addendum documents (all six
+`llvm_http_server_self_test.l` cases, `native-backend-self-tests` job).
+
+**Addendum 3 (2026-08-31, review finding #6795 — a third, un-hardened
+instance of the same fd-reuse hazard class #6791/#6792 already close,
+this time a connection racing its own NATURAL completion against
+`stopListener` rather than one stuck in `hostRead` or racing
+registration — `llvm_http_server_self_test.l` now ships seven cases, not
+the six described in addendum 2.)**
+
+**Root cause.** `stopListener`'s `hostShutdown` loop read the
+`activeConns` snapshot under `l.queue.mutex`, released the mutex, and
+only THEN iterated the snapshot calling `hostShutdown` on each entry:
+
+```
+rtMutexLock(l.queue.mutex)
+val liveConns = l.queue.activeConns.toArray()
+rtMutexUnlock(l.queue.mutex)
+var k = 0
+while k < liveConns.length {
+  hostShutdown(liveConns[k])
+  k = k + 1
+}
+```
+
+Meanwhile, any connection that finishes ON ITS OWN — an ordinary
+request carrying `Connection: close`, or simply the natural end of a
+non-keep-alive exchange — runs `processConnection`'s `defer` block
+(`unregisterConn` then `hostClose`) concurrently and independently of
+`stopListener`. `unregisterConn` is itself mutex-guarded, so it cannot
+corrupt the list — but nothing synchronized "a connection is included
+in the snapshot" against "that connection's owning thread naturally
+unregisters and closes its own fd" a moment later. A connection
+captured in the snapshot the instant before its thread ran
+`unregisterConn`+`hostClose` would have `stopListener`'s loop later call
+`hostShutdown` on that entry's fd AFTER the real fd had already been
+closed — and, per `hostShutdown`'s own doc comment in `tcp_host.l`, a
+closed fd number can be reused elsewhere in the process, so this is a
+real "shut down the wrong resource" hazard, not merely a harmless
+`EBADF`. This is exactly the fd-reuse hazard class #6791/#6792 already
+went to considerable lengths to close, but neither of those fixes
+addresses a connection that is actively, legitimately finishing
+concurrently with a `stopListener` call — the common case for a
+graceful shutdown under real production load, where in-flight requests
+are naturally completing at the same moment an operator asks the server
+to stop.
+
+**Fix — hold the mutex across the entire snapshot-then-shutdown
+sequence, not just the snapshot** (the reviewer's own first suggested
+direction, verified against this file's design before taking it):
+`rtMutexUnlock` moved from immediately after the snapshot to after the
+`hostShutdown` loop finishes. Since `unregisterConn` needs the SAME
+`q.mutex` to remove its entry, holding it here for the whole loop makes
+that removal impossible while the loop runs — every entry the loop
+calls `hostShutdown` on is therefore GUARANTEED to still be registered
+(i.e. not yet `hostClose`'d, so its fd cannot have been reused) at the
+moment of the call, not merely at the moment of an earlier,
+since-released snapshot. This closes the race by construction rather
+than narrowing its window: `hostShutdown` is a single syscall per
+entry, so holding the mutex for this bounded loop costs nothing
+meaningful. The alternative direction the reviewer offered (a
+per-connection "already closing" flag) was not needed once the simpler
+fix was verified sufficient — the flag approach would have added a new
+piece of shared state to reason about for no additional safety here.
+
+**A related gap surfaced while auditing this: a request `enqueueContext`'d
+but never pulled via `nextContext` would hang the `tid`-join loop, not
+merely leak a semaphore (SUGGESTION 2 on the same review).** The
+reviewer's suggestion described this as a semaphore leak; tracing it
+further found the actual consequence is worse — the connection thread
+that enqueued such a context stays parked in `rtSemWait(doneSem)`
+forever (its own socket being `hostShutdown`'d does nothing for a
+thread blocked on a semaphore, not a socket read), so `stopListener`'s
+own `tid`-join loop would hang waiting for a thread that can now never
+finish — the same deadlock CLASS as #6791, just triggered by an
+abandoned QUEUE entry instead of an idle READ. Unlike a context
+`nextContext` has already handed to the caller (the module header's
+pre-existing, deliberately-NOT-fixed "dequeued and never answered"
+disclosure — force-completing that one is unsafe, since the caller
+might still call `respond*` on it), nothing outside the queue holds a
+reference to a still-queued context, so it is safe to force-complete:
+`stopListener` now drains `queue.items` and `rtSemPost`s each entry's
+`done` semaphore (after clearing the list, so no later `nextContext`
+call can ever hand the same context to a caller) before joining handler
+threads. This is a genuine bug fix enabled by investigating a
+"non-blocking" suggestion, not merely the cosmetic cleanup the
+suggestion described.
+
+**SUGGESTION 1 (trivial, fixed alongside): `unregisterConn`'s linear
+scan kept overwriting `idx` on every match instead of stopping at the
+first one.** Not a correctness bug on its own (duplicate registrations
+should never occur, per this file's own invariants), but needless O(n)
+work on every unregister. Added a `break` on the first match.
+
+**Self-test (item G, `llvm_http_server_self_test.l`).** Like items
+F/#6792, this race has no deterministic single-shot repro without an
+injected synchronization point this file has no access to, so item G
+follows the same stress approach: twenty concurrent `pthread_create`d
+clients, each a real connection sending a real `Connection: close`
+request and disconnecting, served via the normal `nextContext`/
+`respondText` pull loop, then `stopListener` called while several of
+those twenty connections may still be mid-close. Because the fix
+eliminates the race by construction rather than merely reducing its
+probability, item G's role is to prove `stopListener` still completes
+cleanly and promptly under that concurrent load (no crash, no hang) —
+not to probabilistically catch the specific interleaving the way a
+weaker fix would need a test to.
+
+**Verification.** The `List[Item].clear()` (record element type) +
+prior-`toArray()`-snapshot-unaffected interaction this fix's queue-drain
+step depends on was verified with a minimal standalone repro: real
+compile, real run, exit code 0. The full file re-verified to type-check
+completely via the local NuGet tool (same sandbox boundary as every
+other verification pass on this file — panics only at the pre-existing,
+unrelated `--target native` `.indexOf` codegen gap). `lyric fmt --write`
+applied cleanly, no refusals. Synced the "six cases" → "seven cases"
+count across `docs/61-https-tls-http-versions.md`,
+`native/plan/08-work-items.md`, `docs/10-bootstrap-progress.md`, and
+`.github/workflows/ci.yml`'s job comment alongside this addendum, rather
+than leaving them for a follow-up review round the way addendum 1's
+"three cases" mentions initially were (issue #6793).
+
+**Related (addendum 3):** #6795 (this addendum's fix), #6791/#6792
+(the same fd-reuse hazard class, narrower windows), #6793 (the stale-
+doc-count pattern this addendum avoided repeating).
+
+**Addendum 4 (2026-08-31): the remaining CI round-trip from "seven cases
+compile-fail" to "seven cases pass" — four narrower native codegen gaps,
+not the hypothesized `slice[Byte]` bug.** After addendum 3 landed, four
+further REQUIRED review findings on `stopListener`'s shutdown path were
+fixed in one consolidated pass: `#6796` (the abandoned-queue drain
+desynced `ServerQueue.available`'s semaphore count from `items`'s length,
+risking an out-of-bounds `dequeueContext` — fixed by draining one item at
+a time through the same `rtSemTryWait`-then-locked-pop protocol
+`dequeueContext` itself uses, backed by a new `lyric_sem_trywait` runtime
+primitive), `#6797` (every `pthread_create`d closure in this file was
+never retained, risking use-after-free once the spawning function
+returns without joining in the same scope — fixed by retaining before
+the call and releasing after the matching join, via new
+`lyric_ptr_to_long`/`lyric_long_to_ptr` runtime helpers so the retained
+pointer survives as a `Long` field per this file's existing handle
+idiom), `#6798` (no `stopping` flag on `ServerQueue`, so a request that
+finished parsing just after the one-shot drain could still
+`enqueueContext` and then hang the join loop forever — fixed with
+`ServerQueue.stopping`, checked under the same mutex `enqueueContext`
+uses), and `#6799` (`startListenerTls` leaked the bound socket and the
+queue's `malloc`'d mutex/semaphore buffers on a `pthread_create`
+failure — fixed to mirror `stopListener`'s own teardown). Also picked up
+along the way: `HttpListener.stopped`/`HttpContext.responded` misuse
+guards against a second `stopListener`/`respond*` call on the same
+object, and an `unregisterConn` early-`break` fix (it kept overwriting
+its scan index on every match instead of stopping at the first).
+
+The consolidated fix for those four also carried a genuine, real
+compile-time blocker unrelated to any of them: `appendExtraHeaders`'s
+`mapKeys(extra)`/`mapGet(extra, name)` calls failed native codegen's
+generic-argument inference ("cannot infer type argument 'K'") because
+`Std.Collections.mapKeys[K, V]` is an ordinary Lyric-defined generic
+function going through the same general call-site inference every
+spelling was going to hit — fixed by switching to `dictGetKeys(m)` /
+`mapGet(m, key)`, which `Lyric.LlvmCodegen` special-cases as reserved
+`--target native` builtins bypassing generic dispatch entirely (the
+same idiom `mapKeys`'s own body and `llvm_collections_self_test.l`'s
+own passing case already use). Separately, an incomplete `Std.Char` →
+`Std.Encoding` import migration left `parseDigitsToInt`'s
+`digitValue(c)` call unqualified, breaking the entire stdlib bundle
+build (not just this test) — fixed by restoring `import Std.Char as
+Char` and qualifying the call.
+
+The very next CI run then reported a NEW, universal regression: all
+seven cases failed identically with a location-less
+"this expression form is not yet supported for `--target native`
+(Phase N1)" panic — a location-less diagnostic made two full CI-round-
+trip bisection attempts against every suspect construct in the four
+fixes above (closure retain/release argument lowering, the
+`rtSemTryWait` loop, the bare-field `if q.stopping` read, direct scalar
+field assignment through an `in`-mode parameter) inconclusive: each had
+a direct, already-CI-passing precedent elsewhere in the native codebase
+except one genuinely novel shape (`rtRelease(rtLongToPtr(...))`, a
+nested extern-call-as-argument with no precedent anywhere in this file),
+which was un-nested via intermediate `val`s but did NOT resolve the
+failure — an honest, disclosed non-fix. The diagnostic itself was then
+fixed at the source: `lowerExpr`'s default match arm gained a
+`describeExprKind` helper (exhaustive over `ExprKind`) plus
+`expr.span.startPos.line`/`.column` threaded into the panic message,
+matching the `[line:col]` convention used elsewhere in this compiler
+(`diagnostic_util.l`, `fmt.l`, `cli_lint.l`) — a permanent diagnostic-
+quality improvement, independent of whatever the location would reveal.
+
+That location pinpointed the actual cause immediately: `EPropagate` (the
+`?` operator) is not lowered for `--target native` when the propagating
+function is reachable from a different package than the one defining
+it — the exact gap `D-progress-823` item D already documented for the
+native `Std.Http` client twin. `Std.HttpEngine.parseRequestLine` used
+`?` six times and is a shared, cross-target module transitively pulled
+in by this PR's native kernel for the first time; every one of the
+seven cases reaches it unconditionally, explaining the "all seven,
+identical error" shape. Fixed by rewriting every site to the equivalent
+explicit `match { case Ok(v) -> v; case Err(e) -> return Err(error = e)
+}` form already used throughout `_kernel_native/http_host.l` and
+`_kernel_native/tcp_host.l` — semantically identical on every target,
+verified via `lyric test --target dotnet` against the existing
+`http_engine_tests.l` corpus (66/66 passing).
+
+The next CI run surfaced a second, narrower instance of the SAME
+`inout`-parameter compiler gap `#6794` had already fixed once (for
+`readOneRequest`'s own `inout Connection` — see addendum 2): 19 MORE
+`inout Connection` parameters existed inside `Std.HttpEngine`'s internal
+sans-IO state machine (`failWith`, `finishHeaders`/
+`finishHeadersWithPlan`, `enterBodyPhase`/`enterFixedBodyPhase`/
+`enterHeaderPhase`, `finishRequestLine`, the `step*`/`on*` helpers, and
+`driveFeed`), never reached by native codegen until the `?`-operator fix
+above let compilation get this far. The original `readOneRequest` fix
+was necessary but not sufficient. Rewrote every one to take `state: in
+Connection` and return the advanced `Connection` (bool-returning "step"
+functions now return a new `StepOutcome { conn; progress }` record;
+`driveFeed` returns the pre-existing `FeedResult` type instead of
+mutating via `inout`), following the exact pattern the `ReadOutcome`/
+`readOneRequest` fix already established. Verified via the published
+`lyric` 0.5.1 tool (D-progress-543 sandbox exception): all 66
+`http_engine_tests.l` cases pass on both `--target dotnet` and `--target
+jvm`.
+
+**The final blocker, and the correction to this addendum's own working
+hypothesis.** CI still reported all seven cases failing to compile with
+"indexing on this receiver is not yet supported for `--target native`
+(lists and maps index; slices land with N5)" — which, reasoning from the
+`Std.HttpEngine` wire-parsing helpers' `slice[Byte]` bracket-indexing
+call sites (`allBytes`, `findByteWhere`, `trimOws`, `scanCrlfLine`, etc.)
+and D-N-015's stated design (that `slice[T]` should share `List[T]`'s
+codegen path regardless of element type), was hypothesized — and stated
+as fact in this PR's own tracking comment — to be a live compiler bug:
+`slice[Byte]` indexing broken while `slice[String]` indexing (already
+covered by `llvm_collections_self_test.l`) works. **This hypothesis was
+wrong**, and is recorded here specifically so a future reader does not
+repeat the same reasoning-from-first-principles mistake instead of
+bisecting: a real `--target native` build (obtained via the
+`LYRIC_BOOTSTRAP_VERSION=0.5.1` stage-0 seed pin, since this sandbox has
+no GitHub API access for the default bootstrap path) confirmed
+`slice[Byte]` bracket-indexing works correctly and unmodified — an
+isolated literal (`b[0]` on `[1u8,2u8,3u8]`), a function parameter in a
+loop, and a real `Std.Encoding.encodeUtf8`/`tryDecodeUtf8` round trip all
+passed cleanly. Direct bisection of the real failures found three
+genuinely different, narrower causes instead:
+
+1. `Std.HttpEngine`'s `parseDigitsToInt`, `isResponseSafeString`, and
+   `asciiStringToBytes` call `Std.String.charAt` directly, which does
+   `s[index]` on a bare `String` receiver — a real, already-tracked,
+   already-worked-around-elsewhere gap (issue #6237:
+   `Lyric.LlvmCodegen.lowerCollectionIndex` only recognises List/slice/Map
+   receivers, not bare `String`). Because this is the first PR to compile
+   `Std.HttpEngine` through the native backend at all, the gap was
+   previously latent. Rewritten to scan UTF-8 bytes via the already-
+   public, already-imported `Std.Encoding.encodeUtf8` instead — the same
+   idiom the rest of the tree already uses for this gap. No compiler
+   change needed; `String` bracket indexing remains a separate, tracked,
+   out-of-scope gap, not something this PR's kernel depends on.
+2. `Std.HttpServer.stopListener` hung forever in `pthreadJoin` on the
+   accept thread: `hostStopListener` only `close()`d the listening fd,
+   which does not reliably interrupt a thread already blocked in
+   `accept()` on that fd (a different failure mode than the #6791
+   idle-*connection* deadlock this addendum's earlier fixes already
+   closed). Fixed by calling the existing `rtShutdown(fd, SHUT_RDWR)`
+   primitive before `close()`, mirroring `hostShutdown`'s identical use
+   of the same primitive to interrupt a connection's blocked read.
+3. Four `match` statements on the `HttpVersion` enum (in `http_engine.l`'s
+   `httpVersionToken`/`computeKeepAlive`/`validateHostHeader` and
+   `http_server.l`'s `appendConnectionHeader`) used bare case-name
+   patterns (`case Http1_0` instead of `case HttpVersion.Http1_0`) — a
+   separate, already-tracked compiler gap (#6740): a bare pattern against
+   an ENUM scrutinee is not recognised by `emitPatternTest`, so it
+   silently compiles as an unconditional binding pattern, meaning the
+   first arm always "matches" regardless of the real value.
+   `httpVersionToken`'s first arm is `Http1_0`, so every response
+   serialized as `HTTP/1.0` regardless of the negotiated version — the
+   actual cause of item A's runtime assertion failure once the `charAt`
+   blocker above was cleared. Fixed by qualifying every pattern with the
+   enum type name, the same workaround `llvm_enum_case_resolve_self_test.l`'s
+   own header already documents for exactly this gap.
+
+The only `Lyric.LlvmCodegen` change from this final round is a
+diagnostic-quality improvement to `lowerCollectionIndex`'s existing
+"indexing not supported" panic (now reports the source line and the
+receiver's actual `NType`, matching neighbouring panics in the same
+file) — the same fix that made bisecting cause 1 tractable in the first
+place. `slice[Byte]`/`slice[String]` indexing itself needed no fix: item
+2 of this addendum's earlier verification (`llvm_collections_self_test.l`
+20/20, unaffected) already re-confirmed this on the same CI run that
+proved the real fix.
+
+**Full verification (2026-08-31, real `--target native` build via the
+`LYRIC_BOOTSTRAP_VERSION=0.5.1` stage-0 pin, real `clang` + `lyric-rt`
+linking — not the published-tool sandbox substitute used elsewhere in
+this addendum):** `llvm_http_server_self_test.l` 7/7 (previously blocked
+at compile time), with no regressions across the full native suite:
+`llvm_collections_self_test.l` 20/20, `llvm_tls_self_test.l` 5/5,
+`llvm_enum_case_resolve_self_test.l` 6/6, `llvm_http_client_self_test.l`
+13/13, `llvm_heap_self_test.l` 35/35, `llvm_ir_self_test.l` 14/14,
+`llvm_stdlib_self_test.l` 18/18, `llvm_opaque_self_test.l` 8/8,
+`llvm_ffi_self_test.l` 6/6, `llvm_codegen_self_test.l` 32/32.
+
+**Related (addendum 4):** #6796, #6797, #6798, #6799 (the four
+consolidated shutdown-path fixes), #6794 (the same `inout`-parameter gap
+class, first instance — see addendum 2), #6237 (bare-`String` indexing,
+the actual cause of blocker 1 above, pre-existing and out of scope),
+#6740 (bare enum-case pattern matching, the actual cause of blocker 3
+above, pre-existing and out of scope). No new issue was filed for the
+retracted `slice[Byte]` hypothesis — it does not reproduce, so there is
+nothing to track.
+
+**Addendum 5 (2026-08-31, review findings #6802/#6803/#6804/#6805 on
+head `9aeb15d6` — a genuine use-after-free, an orphaning race, a
+documented macOS gap, and a silent listener death, none exercised by
+the seven-then-nine cases above).** Four more REQUIRED findings landed
+on the same PR, this time all found by reading the actual concurrent
+control flow (not the diff hunks) rather than by CI failure — closing
+them added two new self-test cases (items H and I, "seven cases" →
+"nine cases" everywhere that count is quoted) and two runtime primitives
+to `lyric-rt`.
+
+**#6802 — `stopListener` use-after-freed the queue's mutex/semaphore
+while a puller was genuinely parked in `nextContext`.** `dequeueContext`
+blocks in `rtSemWait(q.available)` with no way to know whether anyone
+else is still relying on that wait; `stopListener`'s final step
+unconditionally `rtMutexDestroy`/`rtFree`'d the mutex and
+`rtSemDestroy`/`rtFree`'d the semaphore regardless. A caller-owned
+puller thread parked inside that wait at the exact moment `stopListener`
+reached this step would have its blocking syscall's own buffer freed out
+from under it — a real ASan heap-use-after-free the instant that thread
+next touched the (by-then-invalid) mutex, confirmed by direct repro
+(`lyric_mutex_lock` failing with a garbage/invalid state) before the
+fix, not merely asserted. **Fix:** `ServerQueue` gained a
+`waitingPullers: Long` counter, incremented/decremented under `q.mutex`
+by `dequeueContext` around exactly its blocking wait. `stopListener`
+reads this count under the same mutex immediately before it would free:
+zero means every entry point into `dequeueContext` that could ever touch
+the buffer again has already returned, so freeing is provably safe
+(the fast path, unchanged from before, exercised by every one of items
+A-G); nonzero means a thread's own increment happened-before this read
+(same mutex, so no race), so a legitimate waiter is parked right now and
+freeing would use-after-free it — `stopListener` does not free in that
+case. Since `stopping` is set (and checked by `enqueueContext`) before
+this point and no more handler threads can enqueue after the join loop
+just above, that parked waiter can never receive a legitimate item again
+and stays parked for the rest of the process's life — the same
+"caller's own obligation to avoid" category this file's module header
+already accepts for an abandoned *dequeued* context, now extended one
+step further upstream.
+
+**The naive fix (silently never free) does not actually work: it fails
+under real `-fsanitize=address` LeakSanitizer, disproving an initial,
+plausible-but-wrong assumption written into this addendum's own first
+draft and left here so nobody re-derives it.** The working theory was
+that a still-live, merely-blocked thread's own stack/registers would
+keep the mutex/semaphore's address reachable, so LeakSanitizer's
+"reachable from a live thread" rule would treat an unconditionally-
+skipped free as not-a-leak. A real ASan+LSan run of item H (below)
+falsified this immediately: `LeakSanitizer: detected memory leaks,
+Direct leak of 40 byte(s) in 1 object(s)` at `newServerQueue`'s mutex
+allocation, reproduced deterministically down to a single iteration —
+this project's condvar-backed `lyric_sem_t` (mutex + cond + count,
+`lyric_posix.c`, needed because POSIX `sem_init` is unimplemented on
+macOS) does not keep the malloc'd buffer's address on the blocked
+thread's stack in a form LSan's conservative scanner recognizes as a
+root, at least not reliably. **Real fix:** a new `lyric_rt.c` primitive,
+`lyric_lsan_ignore_leak(void* p)`, calls the LeakSanitizer interface's
+`__lsan_ignore_object(p)` — the sanctioned API for exactly this
+situation (a small, bounded, disclosed, provably-safe retention, not a
+general "hide a leak" escape hatch) — when `stopListener` decides not to
+free. Exposed to `_kernel_native/http_server.l` as `rtLsanIgnoreLeak`,
+called on both the mutex and semaphore handles in the "not safe to
+free" branch (neither `rtMutexDestroy` nor `rtSemDestroy` run either —
+destroying a mutex/condvar a thread might still be blocked inside is
+its own separate UB, independent of freeing the buffer underneath it).
+
+**The first attempt at even THAT fix also silently failed, for a build-
+architecture reason specific to this repo, not a sanitizer-API mistake.**
+`lyric_lsan_ignore_leak` was first written with a compile-time
+`#if defined(__SANITIZE_ADDRESS__) || __has_feature(address_sanitizer)`
+guard around `#include <sanitizer/lsan_interface.h>` and the
+`__lsan_ignore_object` call, falling back to a no-op otherwise (the
+obvious, "portable ASan-optional code" idiom). This compiled and linked
+cleanly but was a **permanent no-op in every real self-test binary**:
+`lyric-rt.a` is built exactly once, by a plain `make -C lyric-rt` with no
+`-fsanitize=address`, and then statically linked into every
+`--target native` binary regardless of whether THAT specific
+`compileToNativeWithFlags` invocation later asks clang to add
+`-fsanitize=address` to the final link — so `lyric_rt.c`'s own
+compile-time sanitizer-feature check can never see whether the
+DOWNSTREAM binary will actually be ASan-instrumented, and is always
+false for this archive as built. Confirmed by an added debug
+`fprintf` in `lyric_lsan_ignore_leak` before diagnosing further: it
+printed `asan=0` on every call from a `-fsanitize=address`-compiled test
+binary. **Real fix:** declare `__lsan_ignore_object` as a weak external
+symbol (`__attribute__((weak))`) instead of behind a compile-time guard,
+and check it for non-NULL at runtime before calling it — the standard
+pattern for calling an optional sanitizer-runtime interceptor from code
+that may or may not end up linked against the sanitizer at the FINAL
+link (which is the granularity that actually matters here): a
+non-ASan-instrumented final binary simply never links the LeakSanitizer
+runtime, so the weak symbol resolves to a null function pointer and the
+call is skipped; an ASan-instrumented one resolves it to the real
+function regardless of how `lyric_rt.o` itself was compiled. Verified
+directly (single-iteration standalone repro) before re-running the full
+suite: `EXIT: 42`, no leak report.
+
+**#6803 — `enqueueContext` released `q.mutex` before `rtSemPost`ing,
+letting the abandoned-queue drain race a not-yet-posted credit and
+orphan a context.** A handler thread could `items.add(ctx)`, unlock, get
+preempted before `rtSemPost(q.available)`, and have `stopListener`'s
+drain (`rtSemTryWait` as its sole "anything left" signal) observe no
+credit and stop — leaving that context in `items` forever and hanging
+`stopListener`'s later `pthreadJoin` on that handler's thread (the exact
+hang class #6791/#6792/#6795/#6798 already closed, reopened through this
+narrower window). **Fix:** move `rtSemPost(q.available)` to before
+`rtMutexUnlock`, inside the same critical section as `items.add` — this
+alone closes the root cause, because it makes "item present in `items`"
+and "its credit posted" atomic from every other thread's point of view
+(nothing can observe the former without the latter having already
+happened), which is exactly the invariant the EXISTING drain loop's
+`rtSemTryWait`-then-locked-pop protocol (from addendum 4's #6796 fix)
+already assumed and relied on — so the drain loop itself needed no
+change; the bug was purely that `enqueueContext` could violate an
+invariant the drain already correctly trusted.
+
+**#6804 — the module's own comment overstated cross-platform accept()-
+interrupt parity; taken as a documented-gap fix, not a real one.** The
+`shutdown(fd, SHUT_RDWR)`-before-`close()` interrupt trick
+`hostStopListener` uses to unblock a concurrently-blocked `accept()` on
+the listening socket is Linux-specific: on macOS/BSD, `shutdown()` on a
+LISTENING socket returns `ENOTCONN` and does not wake a concurrent
+`accept()`. `hostStopListener`'s own comment already correctly scoped
+its factual claim to "Linux documents...", but a nearby unrelated
+comment (about `SHUT_RDWR`'s numeric value being portable) also named
+"(Linux/macOS)" in a way a reader could conflate with the accept-
+interrupt claim, and nothing in the file loudly disclosed the actual
+macOS gap. A real portable fix (a self-pipe or `pipe(2)`-based wakeup fd
+multiplexed with the listening socket via `poll(2)`/`select(2)`, instead
+of today's bare blocking `accept()`) is a materially larger rework of
+`lyric_sock_accept`/`hostAccept`/`plainAcceptLoop`/`tlsAcceptLoop`'s
+blocking-accept model, and this sandbox has no macOS build or CI to
+verify it against (this project's CI is Linux-only) — per this file's
+own "prefer the real fix if you can reason through it confidently...
+otherwise take the documented-gap path" standard, shipping an unverified
+"portable" rewrite of the accept loop would itself violate the
+production-readiness bar it's meant to satisfy. **Fix taken:** clarified
+both comments so neither can be misread as claiming macOS parity,
+spelled out the concrete macOS failure mode (`stopListener` hangs in
+`pthreadJoin` on the accept thread, itself still blocked in `accept()`
+on the now-closed fd), and filed #6806 tracking the real portable fix
+with the specifics above, rather than leaving it as an undisclosed gap
+or guessing at an unverifiable fix.
+
+**#6805 — any `accept()` failure permanently and silently killed the
+listener, including transient ones a portable server should just
+retry.** `hostAccept` collapsed every `accept()` errno into one
+`AcceptFailed(message: String)` case with no detail; `onAccepted`
+treated any of it as fatal, ending the accept loop for good with nothing
+logged — existing connections kept working, so the server looked
+healthy while it had silently stopped accepting new ones. **Fix:**
+`lyric_sock_accept` (already retrying internally on `EINTR`, so that
+one never escapes to Lyric) now also captures the failing `errno`
+thread-locally and exposes two new `lyric-rt` primitives:
+`lyric_sock_accept_errno` (the raw errno, diagnostic detail) and
+`lyric_sock_accept_error_class` (a portable 0/1/2 classification
+computed from the REAL platform's `<errno.h>` macros, so it is correct
+on every POSIX target this project builds for, not hardcoded to Linux's
+numeric values). `TcpError.AcceptFailed` gained `errno: Int` and
+`kind: AcceptFailureKind` fields (`AcceptFatal` — the listening socket
+itself is gone, e.g. the intentional `stopListener` shutdown path's
+Linux `EINVAL`, or a genuine fault; `AcceptTransient` — `ECONNABORTED`
+and the handful of related already-pending-network-error codes Linux's
+`accept(2)` documents passing through, which POSIX recommends just
+retrying; `AcceptOverloaded` — `EMFILE`/`ENFILE`, the fd table is full).
+`onAccepted` now ends the loop only on `AcceptFatal`/`BindFailed`,
+retries immediately on `AcceptTransient`, and backs off 5ms
+(`Std.Time.sleepMillis`) before retrying on `AcceptOverloaded` (avoiding
+a tight spin-loop burning CPU while the fd table stays full) — one bad
+`accept()` no longer silently ends the listener's ability to accept ANY
+future connection.
+
+**New self-test coverage.** `llvm_http_server_self_test.l` gained two
+cases (seven → nine): **item H** (#6802) repeats fifteen times — a
+fresh listener, a puller thread spawned to call `nextContext` on it
+(which, since no connection is ever made, can only end up genuinely
+parked or not-yet-scheduled, never legitimately fed a request), a
+deliberate `sleepMillis(20)` to give that freshly-`pthread_create`d
+thread a real window to reach its own `rtSemWait` before racing it (a
+freshly spawned thread is only guaranteed to start running at SOME
+point after `pthread_create` returns, not that it has already executed
+any specific line — the sleep targets the ACTUAL documented scenario, a
+puller already running its loop, rather than a raw scheduling coin
+flip), and an immediate `stopListener` call; every spawned puller thread
+is deliberately never joined (it can never legitimately return) and
+process exit does not wait for it, so the pass/fail signal is the
+harness completing promptly and cleanly under ASan across all fifteen
+iterations. **item I** (#6803) sends twenty real, fully-parseable
+requests over twenty concurrent connections but never calls
+`nextContext` for any of them, forcing every single one through the
+abandoned-queue drain exclusively (unlike item G, which drains all
+twenty through the normal puller loop first and only races
+`stopListener` against their post-response socket close) — maximizing
+concurrent `enqueueContext` activity racing the drain the instant
+`stopListener` runs; every client thread is joined, so the pass/fail
+signal is `stopListener` (and every client join) still returning
+promptly and cleanly. Case-count references synced in
+`docs/61-https-tls-http-versions.md`, `native/plan/08-work-items.md`,
+and `docs/10-bootstrap-progress.md`.
+
+**Full verification (2026-08-31, real `--target native` build via the
+`LYRIC_BOOTSTRAP_VERSION=0.5.1` stage-0 pin, real `clang` + `lyric-rt`
+linking, four full rebuilds across the debugging process above):**
+`lyric-rt` builds clean under both plain (`-Wall -Wextra -Werror`) and
+`-fsanitize=address` compilation. `llvm_http_server_self_test.l` 9/9,
+repeated four consecutive full runs with no flakes (items H and I are
+probabilistic stress tests, like F/G before them). Full native suite,
+no regressions: `llvm_collections_self_test.l` 20/20,
+`llvm_tls_self_test.l` 5/5, `llvm_enum_case_resolve_self_test.l` 6/6,
+`llvm_http_client_self_test.l` 13/13, `llvm_heap_self_test.l` 35/35,
+`llvm_ir_self_test.l` 14/14, `llvm_stdlib_self_test.l` 18/18,
+`llvm_opaque_self_test.l` 8/8, `llvm_ffi_self_test.l` 6/6,
+`llvm_codegen_self_test.l` 32/32 — all rerun once more after a final
+clean `make lyric` to confirm the finalized AOT binary and stage-1 DLLs
+agree. `lyric fmt --write` applied cleanly to every changed `.l` file,
+no refusals.
+
+**Related (addendum 5):** #6802, #6803, #6804, #6805 (this addendum's
+four fixes), #6806 (the new tracked macOS accept-interrupt follow-up,
+filed rather than guessed at), #6791/#6792/#6795/#6796/#6798 (the same
+shutdown-hang/orphaning hazard class, earlier narrower windows — see
+addenda 1/3/4).
+
