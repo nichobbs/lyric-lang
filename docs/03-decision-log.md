@@ -12370,7 +12370,7 @@ here, filed separately):**
   cause as #5422 (match-bound pattern types losing precision before a
   subsequent call).
 
-**Revisions (D-progress-812).** #5422 is fixed: `Lyric.Mono` now tracks a
+**Revisions (D-progress-833).** #5422 is fixed: `Lyric.Mono` now tracks a
 `match`-arm pattern binding's type into its call-site inference `env`
 (the root cause), so the re-bind-to-explicit-local workaround above is no
 longer required, though it is left in place as harmless defensive code.
@@ -12379,7 +12379,7 @@ several faithful repro shapes — the JVM backend's `bindCaseField`/
 `scrutineeGenericArgs` machinery already resolves a match-bound payload's
 concrete JVM type correctly, so no targeted fix was needed; shipped as a
 standing regression test instead (`match_bound_pattern_type_self_test.l`,
-wired into CI on both targets). See D-progress-812 for the fix, the
+wired into CI on both targets). See D-progress-833 for the fix, the
 investigation, and the kernel test comment updates.
 
 **Verification.** `./bin/lyric test --manifest lyric-i18n/lyric.toml`

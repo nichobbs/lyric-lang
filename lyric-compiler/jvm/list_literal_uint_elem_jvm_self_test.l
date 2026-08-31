@@ -30,8 +30,8 @@
 //! `msil/codegen.l`) has a separate, pre-existing, unrelated bug for
 //! `u16`/`u32`-suffixed list literals (confirmed by hand:
 //! `[1u16, 2u16][0] + [1u16, 2u16][1]` yields a garbage value on
-//! `--target dotnet`, not even a compile failure) — out of scope for this
-//! fix; do not run this file with `--target dotnet`.
+//! `--target dotnet`, not even a compile failure) — tracked as #6761,
+//! out of scope for this fix; do not run this file with `--target dotnet`.
 //!
 //!   lyric test --target jvm lyric-compiler/jvm/list_literal_uint_elem_jvm_self_test.l
 //!
