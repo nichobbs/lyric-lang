@@ -33271,3 +33271,42 @@ including addendum 5's #6802/#6803/#6804/#6805 fixes), #6104,
 `native/plan/08-work-items.md` N9.3, D-progress-809 (the `lyric_sem_*`
 prerequisite), D-progress-830/831 (the two blockers this item's own kernel
 depends on).
+
+## TLS phase 5 (native) N9.5 investigated and found BLOCKED — two structural gaps, neither a wiring fix (#6106)
+
+N9.5 (lyric-web `serveTls` on native + ALPN h2, gated on N9.3 above) was
+picked up and investigated with a real from-source `--target native` build
+(`LYRIC_BOOTSTRAP_VERSION=0.5.1` stage-0 seed, `make lyric`, a freshly
+rebuilt `lyric-rt.a`, and `make selfhosted-compiler`). Both halves of the
+issue turned out to be blocked on structural gaps, not on lyric-web changes
+or accept-loop wiring:
+
+- The h2 engine is not actually target-independent, despite docs/61 §6.4's
+  premise: `Std.HttpEngine.H2Conn`/`H2Frame`/`Hpack` use 49 `inout`
+  parameters, and native `out`/`inout` parameter lowering does not exist at
+  all (`Lyric.LlvmCodegen` panics unconditionally) — confirmed via a
+  minimal standalone repro on the real toolchain, not merely a grep count.
+  Filed as issue #6808 (depends on the general gap, issue #6794).
+- The native build pipeline has no project/multi-package support at all:
+  `--target native` always takes the single-file `Emitter.emitNative` path
+  (`buildOneNativeWithFeatures`, `cli_build.l`), never the
+  `[project.packages]`/`[dependencies]` resolver dotnet/jvm use, and the
+  native source loader (`findStdlibSourcesNative`, `emitter.l`) only ever
+  resolves `Std.*`. No ecosystem library — `lyric-web`, `lyric-auth`,
+  `lyric-resilience`, or any other `lyric-*/` root library — can be
+  imported into a native build today. Filed as issue #6809.
+
+Per this repo's "smaller, fully-finished slice over a broad slice with
+caveats" convention, this investigation shipped no code (a workaround for
+either gap would either be lyric-web-specific and non-representative of
+how the library is built for other targets, or an unverified, large-blast-
+radius rewrite of shared, already-shipped-on-dotnet h2 engine code) —
+documentation and the two tracked follow-ups only. The existing native
+self-test suite was re-verified green with no regressions
+(`llvm_http_server_self_test.l` 9/9) before concluding.
+
+**Related:** `docs/03-decision-log.md` D-progress-852 (full account,
+evidence, and verification commands), #6106 (left open), #6808, #6809,
+#6794, #6237, D-progress-850 (N9.3, the prerequisite this follow-on builds
+on), `native/plan/08-work-items.md` N9.5, `docs/61-https-tls-http-versions.md`
+§6.4/§7 item 5.

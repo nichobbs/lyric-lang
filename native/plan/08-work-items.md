@@ -1687,11 +1687,37 @@ handshake needs both peers actively exchanging handshake records at once,
 unlike a bare TCP `connect`, which completes into the listen backlog before
 `accept` runs).
 
-### N9.5 — lyric-web `serveTls` on native; ALPN h2 — follow-on (#6106)
+### N9.5 — lyric-web `serveTls` on native; ALPN h2 — ⛔ BLOCKED on two structural gaps, both filed (D-progress-852, #6106)
 
 lyric-web's `serveTls` onto the native `Std.HttpServer`, plus ALPN-selected
 h2 (docs/61 §6.4) once the engine's h2 stack is target-independent. Gated on
-N9.3.
+N9.3 (✅ shipped, D-progress-850).
+
+**Investigated in D-progress-852 and found blocked on two independent,
+structural gaps — neither is a lyric-web change or an accept-loop wiring
+change.** The "once the engine's h2 stack is target-independent" premise
+above does not hold: `Std.HttpEngine.H2Conn`/`H2Frame`/`Hpack` use 49
+`inout` parameters (`state: inout H2Connection` / `inout FrameDecoder`,
+threaded through mutually-recursive frame dispatch), and native `inout`/
+`out` parameter lowering does not exist at all
+(`Lyric.LlvmCodegen` panics unconditionally, issue #6794) — confirmed via a
+minimal standalone repro on a real `--target native` build, not merely the
+grep count. Filed as **issue #6808**. Separately, `lyric-web` `serveTls`
+on native needs the native build pipeline to support a multi-package
+project/dependency graph at all — `buildOneNativeWithFeatures`
+(`cli_build.l`) hardcodes the single-file `Emitter.emitNative` path for
+`--target native`, never reaching `emitSingleFileOrProject` (the
+`[project.packages]`/`[dependencies]` resolver dotnet/jvm use), and
+`findStdlibSourcesNative` (`emitter.l`) only ever resolves `Std.*` — so
+**no** ecosystem library (`lyric-web`, `lyric-auth`, `lyric-resilience`, or
+any other `lyric-*/` root library) can be imported into a native build
+today, not a `lyric-web`-specific gap. Filed as **issue #6809**. Once
+#6809 is closed, `lyric-web`'s own remaining per-file native-readiness tax
+looks small (a `native` feature entry, `@cfg(feature = "native")` variants
+of `serve`/`serveTls`/`buildRequest`/`writeResponse`/`pathGetFullPath`, a
+native `Web.Kernel.Runtime` rate-limiter kernel, and fixing the two bare-
+`String`-index sites in `web.l` per #6237) — see D-progress-852 for the
+full evidence trail and the exact commands used to verify each finding.
 
 **Open questions (docs/61 §9):** Q-TLS-001 (macOS native trust: the seam
 uses `SSL_CTX_set_default_verify_paths` + `SSL_CERT_FILE`/`SSL_CERT_DIR` on
