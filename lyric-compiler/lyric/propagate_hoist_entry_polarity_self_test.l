@@ -1,7 +1,10 @@
 //! propagate_hoist_entry_polarity_self_test.l — D-progress-769: AST-level
 //! pin for `Lyric.HoistEngine`'s `asyncGated = false` axis as applied to
 //! `protected type` ENTRY bodies, exercised via `Lyric.Propagate`'s `?`
-//! operand-position hoist (#6448, `propagate_hoist_self_test.l`).
+//! operand-position hoist (#6448, `propagate_hoist_self_test.l`). Also
+//! carries #6734's module-scope-val pin (via `Lyric.AwaitHoist`'s `await`
+//! instantiation instead) for the same "blocked from runtime testing by an
+//! unrelated codegen gap" reason — see that test's own header below.
 //!
 //! `Lyric.HoistEngine`'s five-axis `HoistConfig` (see that package's module
 //! doc) has `asyncGated` gate whether `EntryDecl` bodies are visited at all:
@@ -73,6 +76,7 @@ import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Propagate
 import Lyric.HoistEngine
+import Lyric.AwaitHoist
 
 test "protected-type entry: ? in a stacked method-call arg gets hoisted (AST pin, D-progress-769)" {
   val src = "package PinSrc\n" + "import Std.Collections\n" + "import Std.Core\n" + "protected type Bag {\n" +
@@ -295,4 +299,112 @@ test "scope binding name is tracked as a local by the mutable-names collector (#
     localM.containsKey("sc"),
     "a `SScope(binding = Some(\"sc\"), ...)` statement's binding name must be tracked as a local, not discarded (#6729)"
   )
+}
+
+// #6734 (review follow-up on #6729/#6600): a MODULE-SCOPE `val` used as a
+// receiver is the identical shape one scope further out still. Before the
+// fix, `HoistState` had no `moduleValNames` field, so a module-level `val`'s
+// name was invisible to `hzMemberChainBaseIsValue` (which only consulted
+// `st.mutableNames`/`st.selfFieldNames`/`st.localNames`, all function/entry-
+// or record/impl/protected-type-scoped) — indistinguishable from an unbound
+// package/type qualifier (#6699) — so a `var` field mutated through it
+// during a hoisted hazard was never protected.
+//
+// This CANNOT be pinned as a runtime `test` in `await_hoist_self_test.l`
+// (the natural home, given the identical shape to that file's #6600/#6684
+// cases): compiling and running the equivalent module-`val` program hits a
+// separate, unrelated pre-existing MSIL codegen gap in async-SM local
+// promotion (tracked as #6787) — the hoisted receiver's captured value does
+// not survive the awaited suspension when its initializer reads a field off
+// a module-level val, even though (as this test itself proves) the
+// front-end AST rewrite is correct. Pinned at the AST level instead, same
+// as this file's other two cases — via `Lyric.AwaitHoist.hoistAwaitsFile`
+// (the `await` instantiation) rather than `Lyric.Propagate.lowerPropagateFile`,
+// since #6734 is an `await`-hoist case, not a `?`-hoist one.
+test "module-scope val receiver: a var field mutated during a hoisted await gets hoist-protected (#6734)" {
+  val src = "package PinSrc4\n" + "record MutBox4 {\n" + "  tag: Int\n" +
+    "  func describe(self: in MutBox4, n: Int): Int {\n" +
+    "    self.tag * 1000 + n\n" +
+    "  }\n" +
+    "}\n" +
+    "record Cache4 {\n" +
+    "  var box: MutBox4\n" +
+    "}\n" +
+    "func swapCacheBox4(c: in Cache4): Int {\n" +
+    "  c.box = MutBox4(tag = 99)\n" +
+    "  5\n" +
+    "}\n" +
+    "val gCache4: Cache4 = Cache4(box = MutBox4(tag = 1))\n" +
+    "async func useGCache4(): Int {\n" +
+    "  return gCache4.box.describe(await swapCacheBox4(gCache4))\n" +
+    "}\n"
+  val pr = parse(src)
+  assertEqualInt(pr.diagnostics.count, 0, "the pinned source parses with no diagnostics")
+  val result = hoistAwaitsFile(pr.file)
+  // Items: [0] MutBox4, [1] Cache4, [2] swapCacheBox4, [3] gCache4 (IVal), [4] useGCache4.
+  val fnItem = result.items[4]
+  match fnItem.kind {
+    case IFunc(decl) -> {
+      val body = match decl.body { case Some(b) -> b; case None -> panic("expected useGCache4 to have a body") }
+      match body {
+        case FBBlock(blk) -> {
+          // Un-hoisted (a #6734 regression), this stays at 1 statement: the
+          // bare `return gCache4.box.describe(await swapCacheBox4(gCache4))`.
+          // Hoisted, the receiver (`gCache4.box`) AND the hazard
+          // (`await swapCacheBox4(gCache4)`) each gain their own hoisted
+          // `val` ahead of the (rewritten) return — matching the identical
+          // 3-statement shape `await_hoist_self_test.l`'s #6600/#6684 cases
+          // produce for a local-`val`/`self` receiver.
+          assertEqualInt(
+            blk.statements.count,
+            3,
+            "function body gains a hoisted receiver val AND a hoisted hazard val ahead of the original 1 statement (#6734)"
+          )
+          match blk.statements[0].kind {
+            case SLocal(_) -> assertTrue(true, "first statement is the hoisted receiver val binding")
+            case _ -> assertTrue(false, "expected the hoisted receiver val as the first statement")
+          }
+          match blk.statements[1].kind {
+            case SLocal(_) -> assertTrue(true, "second statement is the hoisted hazard val binding")
+            case _ -> assertTrue(false, "expected the hoisted hazard val as the second statement")
+          }
+          match blk.statements[2].kind {
+            case SReturn(valOpt) -> {
+              val retExpr = match valOpt {
+                case Some(e) -> e
+                case None -> panic("expected the rewritten return to still carry a value")
+              }
+              match retExpr.kind {
+                case ECall(fn, args) -> {
+                  match fn.kind {
+                    case EMember(recv, _) -> {
+                      match recv.kind {
+                        case EPath(_) -> assertTrue(true, "call receiver is now a bare path reading the hoisted val")
+                        case _ -> assertTrue(false, "call receiver still holds the original gCache4.box chain")
+                      }
+                    }
+                    case _ -> assertTrue(false, "expected the call callee to remain an EMember (....describe)")
+                  }
+                  assertEqualInt(args.count, 1, "describe still has exactly one argument")
+                  match args[0] {
+                    case CAPositional(v) -> {
+                      match v.kind {
+                        case EPath(_) -> assertTrue(true, "call argument is now a bare path reading the hoisted val")
+                        case _ -> assertTrue(false, "call argument still nests the unhoisted await")
+                      }
+                    }
+                    case CANamed(_, _, _) -> assertTrue(false, "unexpected named argument shape")
+                  }
+                }
+                case _ -> assertTrue(false, "expected the describe call as the rewritten return's value")
+              }
+            }
+            case _ -> assertTrue(false, "expected the rewritten return as the third statement")
+          }
+        }
+        case FBExpr(_) -> assertTrue(false, "expected an FBBlock function body")
+      }
+    }
+    case _ -> assertTrue(false, "expected useGCache4 as the fifth parsed item")
+  }
 }

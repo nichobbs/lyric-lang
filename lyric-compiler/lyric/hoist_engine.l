@@ -220,6 +220,21 @@ record HoistState {
   // `EMember` as mutable (the pre-#6699 approximation) over-approximates
   // it the other way by also catching pure qualifiers.
   localNames: Map[String, Bool]
+  // #6734: names bound by a module-level `val`/`const` item in the
+  // enclosing `SourceFile` (`hzModuleValNames`), threaded once from
+  // `hoistFile`'s top-level `st` through `hzRewriteFunction`/
+  // `hzRewriteEntry` exactly like `counter` is (neither is rebuilt
+  // per-function/entry — both are file-scoped). Closes the same "is this
+  // EMember chain's base a real bound value" gap `localNames`/
+  // `selfFieldNames` close for locals/fields (#6699/#6684): a module
+  // `val gCache = Cache(...)` used as `gCache.box.describe(await ...)`
+  // was previously indistinguishable from a bare package/type qualifier
+  // to `hzMemberChainBaseIsValue`, so a `var` field mutated through
+  // `gCache` during a hoisted hazard was never protected. Kept as its
+  // own field rather than merged into `localNames` since it answers a
+  // narrower, file-scoped question with its own doc trail (this
+  // comment) that would otherwise be lost inside a generically-named map.
+  moduleValNames: Map[String, Bool]
 }
 
 func hzFresh(cfg: in HoistConfig, st: in HoistState): String {
@@ -364,17 +379,10 @@ func hzMemberChainBase(e: in Expr): Expr {
 
 // True when an `EMember` chain's ultimate base names a real bound value —
 // `self`, or a single-segment name declared ANYWHERE in the enclosing
-// function/entry (`st.localNames`) or an implicit-self field
-// (`st.selfFieldNames`) — as opposed to an unbound package/type qualifier
-// (#6699, see `hzNameLikeMutable`'s doc comment above).
-//
-// KNOWN GAP (#6734, tracked): a module-scope `val` binding used as a
-// receiver is indistinguishable here from a bare package/type qualifier —
-// `HoistState` is never given the enclosing `SourceFile`'s top-level `val`
-// names, so a module value mutated in place through a different path
-// between a hoisted hazard and its resumed read is not protected the way
-// a local/self-field receiver is. See #6734 for the fix plan (threading
-// module-scope names into `HoistState` construction).
+// function/entry (`st.localNames`), an implicit-self field
+// (`st.selfFieldNames`), or a module-level `val`/`const` in the enclosing
+// file (`st.moduleValNames`, #6734) — as opposed to an unbound package/
+// type qualifier (#6699, see `hzNameLikeMutable`'s doc comment above).
 func hzMemberChainBaseIsValue(st: in HoistState, e: in Expr): Bool {
   val base = hzMemberChainBase(e)
   match base.kind {
@@ -383,7 +391,8 @@ func hzMemberChainBaseIsValue(st: in HoistState, e: in Expr): Bool {
       path.segments.count == 1 and
         (
           st.mutableNames.containsKey(path.segments[0]) or st.selfFieldNames.containsKey(path.segments[0]) or
-            st.localNames.containsKey(path.segments[0])
+            st.localNames.containsKey(path.segments[0]) or
+            st.moduleValNames.containsKey(path.segments[0])
         )
     }
     case _ -> false
@@ -1926,6 +1935,27 @@ func hzImplTargetFieldNames(fileOpt: in Option[SourceFile], target: in TypeExpr)
   noNames
 }
 
+// Every name a module-level `val`/`const` item binds, for `hzMemberChainBaseIsValue`'s
+// `moduleValNames` (#6734). `IVal`'s `pattern` can destructure (matches
+// `hzCollectPatternNames`'s existing flat, non-scope-precise tolerance);
+// `IConst`'s `name` is always a bare binding. Every other item kind
+// (functions, types, `impl`s, ...) contributes no name a receiver
+// expression could read as a value.
+func hzModuleValNames(file: in SourceFile): Map[String, Bool] {
+  val names: Map[String, Bool] = newMap()
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IVal(decl) -> hzCollectPatternNames(decl.pattern, names)
+      case IConst(decl) -> hzAddLocalName(names, decl.name)
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  names
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Function / entry / item drivers. Under `asyncGated = true` only `async
 // func` bodies are visited (a blocking, non-async hazard has no suspension
@@ -1983,7 +2013,8 @@ func hzRewriteFunction(
     counter = st.counter,
     mutableNames = hzBuildMutableNames(fn.params, body, fnLocalNames),
     selfFieldNames = selfFieldNames,
-    localNames = fnLocalNames
+    localNames = fnLocalNames,
+    moduleValNames = st.moduleValNames
   )
   FunctionDecl(
     docComments = fn.docComments,
@@ -2025,7 +2056,8 @@ func hzRewriteEntry(
     counter = st.counter,
     mutableNames = hzBuildMutableNames(ed.params, ed.body, edLocalNames),
     selfFieldNames = selfFieldNames,
-    localNames = edLocalNames
+    localNames = edLocalNames,
+    moduleValNames = st.moduleValNames
   )
   EntryDecl(
     docComments = ed.docComments,
@@ -2253,8 +2285,17 @@ pub func hoistFile(cfg: in HoistConfig, file: in SourceFile): SourceFile {
   // `mutableNames`/`selfFieldNames`/`localNames` here are placeholders:
   // `hzRewriteFunction`/`hzRewriteEntry` build their own per-function/entry
   // maps (sharing this `counter`) before ever consulting them, so this
-  // file-level state's maps are never read.
-  val st = HoistState(counter = newList(), mutableNames = newMap(), selfFieldNames = newMap(), localNames = newMap())
+  // file-level state's maps are never read. `moduleValNames` is the
+  // opposite: genuinely file-scoped (#6734), computed once here and
+  // threaded forward unchanged through every `fnSt`/`edSt`, the same way
+  // `counter` already is.
+  val st = HoistState(
+    counter = newList(),
+    mutableNames = newMap(),
+    selfFieldNames = newMap(),
+    localNames = newMap(),
+    moduleValNames = hzModuleValNames(file)
+  )
   val someFile: Option[SourceFile] = Some(value = file)
   val newItems: List[Item] = newList()
   var j = 0

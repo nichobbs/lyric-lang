@@ -555,3 +555,26 @@ test "#6699: a package-qualified call receiver ahead of a hazardous argument is 
   assertEqual(result, "ababab", "Std.String.repeat(\"ab\", 3) must repeat the string 3 times")
   assertEqual(joinLog(log), "count", "the hazard argument still runs exactly once")
 }
+
+// #6734 (review follow-up on #6729/#6600): a MODULE-SCOPE `val` used as a
+// receiver is the identical shape one scope further out still — before the
+// fix, `st.moduleValNames` didn't exist, so a module-level `val`'s name was
+// invisible to `hzMemberChainBaseIsValue` (which only consulted
+// `st.mutableNames`/`st.selfFieldNames`/`st.localNames`, all function/entry-
+// or type-scoped) and was therefore treated exactly like an unbound
+// package/type qualifier — never hoist-protecting a `var` field mutated
+// through it during an awaited call.
+//
+// This CANNOT be pinned as a runtime `test` here (the natural home, given
+// the identical shape to the #6600/#6684 cases just above): compiling and
+// running the equivalent module-`val` program hits a separate, unrelated
+// pre-existing MSIL codegen gap in async-SM local promotion — the hoisted
+// receiver's captured value does not survive the awaited suspension when
+// its initializer reads a field off a module-level val, even though the
+// front-end AST rewrite is verified correct (tracked as #6787; a second,
+// narrower gap in the same neighborhood — an UNANNOTATED module `val`
+// initialized by a record-constructor call getting the wrong MSIL field
+// type — is #6786). See `propagate_hoist_entry_polarity_self_test.l`'s
+// header for the precedent: this pin is added there instead, at the AST
+// level, the same way that file's own cases are pinned when the runtime
+// shape hits an unrelated blocker.

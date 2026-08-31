@@ -39855,3 +39855,74 @@ cleanly.
 
 **Related:** #6547, D-progress-815 (the loud-failure change that
 surfaced this latent gap).
+
+## D-progress-831 — `Lyric.HoistEngine` recognizes a module-scope `val` as a real bound value for hoist-hazard receiver protection (#6734)
+
+**Symptom.** `hzMemberChainBaseIsValue` (`lyric-compiler/lyric/hoist_engine.l`)
+decides whether an `EMember` chain's ultimate base names a real bound
+value (needing hoist protection ahead of an `await`/`?` hazard, #5629/
+#6600/#6684/#6699) by checking `HoistState.mutableNames`/`selfFieldNames`/
+`localNames` — all built exclusively from the current function/entry's
+own params + body, or the enclosing type's own fields. A module-level
+`val` used as a receiver (`gCache.box.describe(await mutate(gCache))`,
+`gCache` a file-scope `val`) was invisible to all three, and therefore
+indistinguishable from an unbound package/type qualifier — never
+hoist-protecting a `var` field mutated through it during the hazard's
+evaluation. Filed as a known, scoped-out gap by the review pass that
+found #6729 (its item 1), tracked separately as #6734 pending a bigger
+change than the other two sibling gaps in that finding (module-callee
+hoisting, `SScope`/`SItem` collector exhaustiveness), which were fixed
+directly in #6547.
+
+**Fix.** `HoistState` gained a `moduleValNames: Map[String, Bool]` field,
+populated once per file by a new `hzModuleValNames(file)` (walks
+`file.items` for `IVal`/`IConst`, using the existing `hzCollectPatternNames`/
+`hzAddLocalName` helpers) and threaded — like `counter` already is —
+unchanged through every `HoistState` construction site
+(`hoistFile`'s top-level `st`, and `hzRewriteFunction`/`hzRewriteEntry`'s
+per-function/entry `fnSt`/`edSt`, via `moduleValNames = st.moduleValNames`).
+`hzMemberChainBaseIsValue` now also consults `st.moduleValNames`.
+
+**Verification note (residual gaps found while landing this).** Compiling
+and RUNNING the natural end-to-end MSIL regression (module `val` +
+mutated `var` field + `await`) surfaces two separate, pre-existing MSIL
+codegen defects unrelated to this fix's own AST-level correctness:
+
+- An unannotated module-level `val` initialized by a record-constructor
+  call gets `MObject` as its MSIL field type (`inferUntypedStaticValMsilType`
+  has no `ECall` case), which then mis-resolves a later field access
+  against the wrong same-named-field record — `InvalidCastException` at
+  runtime. Tracked as #6786.
+- Even with an explicit type annotation sidestepping that, the
+  async state-machine lowering does not preserve a hoisted local's
+  captured value across the awaited suspension when its initializer
+  reads a field off a module-level val — the front-end rewrite is
+  verified correct (see Coverage below) but the compiled-and-run program
+  still observes the stale value. Tracked as #6787.
+
+Both are scoped out of #6547 (unrelated to hoist-hazard tracking,
+discovered incidentally while validating this fix) — per the "smaller,
+fully-finished slice" standard, filed with concrete repro/root-cause
+detail rather than papered over.
+
+**Coverage.** Because of #6787, this fix cannot be pinned as an executed
+`--target dotnet` program the way its sibling receiver-kind cases in
+`await_hoist_self_test.l` are (#5629/#6600/#6684 all execute and assert
+the runtime value). Pinned at the AST level instead — same precedent as
+`propagate_hoist_entry_polarity_self_test.l`'s existing two cases, which
+hit their own unrelated pre-existing-bug blockers (#6475/#6476) the same
+way: parse a small source string with a module `val` receiver ahead of
+an `await` hazard, run it through `Lyric.AwaitHoist.hoistAwaitsFile` (the
+exact pass the compiler runs on every file), and assert the rewritten
+body gained the two hoisted `val` bindings and the call receiver/argument
+became bare paths. New test added to that file:
+"module-scope val receiver: a var field mutated during a hoisted await
+gets hoist-protected (#6734)" (4/4 passing in that file). Full regression
+sweep: `await_hoist_self_test.l` 19/19, `propagate_hoist_self_test.l`
+42/42, `typechecker_self_test.l` 409/409, `make lyric` full self-host
+rebuild clean.
+
+**Related:** #6547, #6729 (the finding this item was split from),
+#6699/#6684/#6600/#5629 (the `hzMemberChainBaseIsValue` precedent this
+fix extends), #6786, #6787 (residual MSIL codegen gaps found while
+validating this fix, filed separately).
