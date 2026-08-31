@@ -35741,3 +35741,19 @@ D-N-006 (native `String` representation/byte-indexing), `docs/03` this
 same file's `lyric-stdlib/std/char.l::isWhiteSpace` cross-platform
 code-point-set precedent this fix's `.trim()` mirrors.
 
+**Addendum (2026-08-31, review finding #6778):** this entry's "not
+separately tracked" line above, describing `.toLower()`'s five-script
+scope limit, was itself a finding on the shipping PR — CLAUDE.md's
+production-readiness standard requires a scope gap like this to carry a
+tracked issue with a concrete widening plan rather than live only as a
+disclaimer here. Filed as #6779 (generate — not hand-write — a fuller
+case-folding table from `UnicodeData.txt`'s `SimpleLowercaseMapping`
+field, script by script, starting with Armenian; excludes
+`SpecialCasing.txt`'s conditional entries per this entry's existing
+no-locale-concept scope; also covers the not-yet-implemented
+`.toUpper()`'s mirror-image table once the generation pipeline exists).
+`docs/01-language-reference.md` §12.1's `.toLower()`/`.toUpper()` rows
+now note the native five-script limit and point at #6779, closing the
+gap where the language reference didn't scope any of these methods
+per-target at all.
+
