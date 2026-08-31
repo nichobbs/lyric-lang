@@ -2139,3 +2139,232 @@ test "record-destructuring pattern field binding shadows an outer binding and sp
   assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
   assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
 }
+
+// #6772: `rewriteBinding`'s `LBVal` arm routed every `val` pattern through
+// `trackPatternEnv`, whose catch-all (`case _ -> ()`) is a no-op for every
+// pattern kind besides `PBinding` -- so a destructuring `val (k, v) = …`
+// neither tracked its element types NOR evicted a stale outer binding a
+// shadowed element name left in `env`. Here `pairs[0]` resolves (via
+// `List[(Int, Bool)]`'s own element type) to a REAL tuple type, so each
+// element must be tracked with its own concrete type -- `k` (shadowing the
+// outer `String` param) against `Int`, `v` against `Bool` -- not left
+// pointing at the outer `String`.
+test "val-destructuring tuple pattern tracks each element's own type and evicts a shadowed outer binding (#6772)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" +
+    "func caller(k: in String, pairs: in List[(Int, Bool)]): Unit {\n" +
+    "  val (k, v) = pairs[0]\n" +
+    "  like(k)\n" +
+    "  like(v)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(
+    hasFunc(res.file, "like__Int"),
+    "like__Int specialised for the tuple's first element, shadowing the outer String k"
+  )
+  assertTrue(hasFunc(res.file, "like__Bool"), "like__Bool specialised for the tuple's second element v")
+  assertTrue(
+    not hasFunc(res.file, "like__String"),
+    "must not specialise against the outer (now-shadowed) String k -- the destructured k overrides/evicts it"
+  )
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
+// #6772 (eviction-only case): when the tuple initializer's type can't be
+// inferred at all (an unresolvable call), `bindPatternEnvMono`'s `PTuple`
+// arm has no positive element type to track for either `k` or `v` -- but
+// `k` still SHADOWS the outer `String` param and must be evicted regardless,
+// the same "nothing positive to add, but still evict" contract every other
+// binding form in this file (`for`, `catch`, lambda params, match arms)
+// already honours. Before the fix, `env["k"]` silently stayed `String` and
+// `like(k)` specialised against it instead of raising M0002.
+test "val-destructuring tuple pattern evicts a shadowed outer binding even when the element types can't be inferred (#6772)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" + "func caller(k: in String): Int {\n" +
+    "  val (k, v) = unknownPair()\n" +
+    "  like(k)\n" +
+    "  0\n" +
+    "}\n"
+  val res = runMono(src)
+  assertEqualInt(
+    diagCountCode(res.diagnostics, "M0002"),
+    1,
+    "the destructured k must be evicted, leaving like(k) genuinely unresolvable -- M0002, not a silent resolution to the outer String"
+  )
+  assertTrue(not hasFunc(res.file, "like__String"), "must not specialise against the stale outer String k")
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+}
+
+// #6773: `typeExprKey`/`valueExprKey` fed a qualified (multi-segment) type
+// reference's segments straight through `pathSegsKey`'s dot-joined form into
+// a mangled specialisation name (`like__Foo.Bar`). JVM/MSIL identifiers
+// cannot contain `.`, so the declaration-side and call-site-side renderings
+// of that same string could silently diverge downstream (JVMS 4.2.2 forces
+// codegen to strip to the last segment when EMITTING the method, but the
+// call site's `invokestatic` used the untouched dotted string) -- a
+// guaranteed name mismatch. Sanitizing in `identSafePathKey` (the single
+// place a qualified path becomes part of a mangled key) means both sides
+// are built from the same already-dot-free string.
+test "qualified (multi-segment) type argument produces a dot-free mangled specialisation name (#6773)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" + "func caller(v: in Foo.Bar): Foo.Bar {\n" +
+    "  like(v)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(
+    hasFunc(res.file, "like__Foo_Bar"),
+    "qualified type argument's mangled specialisation name must sanitize '.' to '_' -- JVM/MSIL identifiers can't contain a dot"
+  )
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
+// #6774: `indexExprToTypeArgMono`'s whitelist (primitive / record /
+// interface) was missing `state.distinctDecls` and a union-type lookup
+// entirely, so an explicit type application over a union type (`f[MyUnion]`)
+// failed the whitelist, `convOk` became `false`, and the call fell through
+// COMPLETELY UNCHANGED -- Phase 2 still erases the generic declaration,
+// leaving a dangling reference with no diagnostic ever raised.
+test "explicit type application over a union type specialises instead of silently failing (#6774)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" +
+    "union Shape { case Circle(r: Float)\n  case Square(s: Float) }\n" +
+    "func caller(sh: in Shape): Shape {\n" +
+    "  like[Shape](sh)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "like__Shape"), "like__Shape specialised for the explicit union type argument")
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics -- the explicit type application resolved cleanly")
+}
+
+// #6774: same gap for a same-package distinct/range-subtype decl -- also
+// missing from the whitelist despite `state.distinctDecls` already existing
+// on `MonoState` for an unrelated purpose (the `Type.from`/`Type.tryFrom`
+// static-factory special case).
+test "explicit type application over a distinct type specialises instead of silently failing (#6774)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" + "type Age = Int range 0 ..= 150\n" +
+    "func caller(a: in Age): Age {\n" +
+    "  like[Age](a)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "like__Age"), "like__Age specialised for the explicit distinct-type argument")
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
+// #6774: a MULTI-segment (qualified) type argument (`f[Pkg.Type]`) failed
+// `indexExprToTypeArgMono`'s single-segment-only gate outright -- unlike a
+// bare name, a dotted path can never be a local variable reference, so it
+// is unambiguously a type argument here; also exercises the #6773 mangled-
+// name sanitisation together with the #6774 recognition fix in one call.
+test "explicit type application over a qualified (multi-segment) type specialises instead of silently failing (#6774)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" + "func caller(v: in Foo.Bar): Foo.Bar {\n" +
+    "  like[Foo.Bar](v)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "like__Foo_Bar"), "like__Foo_Bar specialised for the explicit qualified type argument")
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
+// #6774: an explicit type application whose type argument genuinely cannot
+// be resolved (not primitive/record/interface/distinct/union) used to fall
+// through `indexExprToTypeArgMono`'s failure UNCHANGED with zero diagnostic
+// -- Phase 2 still erases `like`, so the surviving call site became a
+// dangling reference the emitter would choke on with no compile-time
+// warning at all. It must now raise M0002 instead.
+test "explicit type application whose type argument can't be resolved raises M0002 instead of silently leaving a dangling call (#6774)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" + "func caller(v: in Int): Int {\n" +
+    "  like[NoSuchType](v)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertEqualInt(
+    diagCountCode(res.diagnostics, "M0002"),
+    1,
+    "an unresolvable single-segment type argument must raise M0002, not silently leave a dangling call to the erased generic"
+  )
+  assertTrue(not hasFunc(res.file, "like__NoSuchType"), "no specialisation produced for the unresolvable type argument")
+}
+
+// #6775: `unifyLambdaArgTE`'s `case None ->` arm (an "unseedable" lambda
+// parameter, whose substituted declared type still mentions an unbound type
+// parameter) did NOTHING -- unlike the sibling `Some(sty)` arm, it never
+// checked whether the parameter name SHADOWED an outer binding, so that
+// outer entry stayed in `env` untouched. `lambdaBodyResultTE` (called right
+// after, to infer the call's return-type unification) then silently read
+// the STALE outer type instead of treating the name as genuinely
+// unresolved -- here, the outer `val x: String` leaking into `T`'s
+// inference for `mapOnly[T](f: (T) -> T): T`, producing a wrong CLOSED
+// specialisation (`mapOnly__String`) even though nothing legitimately pins
+// `T` to `String` (or to anything at all).
+test "unifyLambdaArgTE evicts an unseedable lambda parameter's outer shadow instead of leaking it into the call's return-type inference (#6775)" {
+  val src = "package P\n" + "func mapOnly[T](f: (T) -> T): T { 0 }\n" + "func caller(): Int {\n" +
+    "  val x: String = \"outer\"\n" +
+    "  mapOnly({ x -> x })\n" +
+    "  0\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(
+    not hasFunc(res.file, "mapOnly__String"),
+    "the lambda parameter x's own type is unresolvable (nothing pins T); it must NOT be leaked from the outer, shadowed val x: String"
+  )
+  assertEqualInt(
+    diagCountCode(res.diagnostics, "M0002"),
+    1,
+    "with the outer x's stale type correctly evicted, T is genuinely unresolvable -- M0002, not a silently WRONG closed specialisation"
+  )
+}
+
+// The first `case v is T -> ...` arm's pattern, when `e` is a trailing
+// `EMatch` expression -- `None` for any other shape.  Mirrors the file's
+// own `lastStmtExprInFunc` navigation style; used by the #6776 test below
+// to inspect a SPECIALISED function's own body for the type-test pattern's
+// (substituted, or not) annotation.
+func matchArmTypeTestName(e: in Expr): Option[String] {
+  match e.kind {
+    case EMatch(_, arms) -> {
+      if arms.count == 0 {
+        None
+      } else {
+        match arms[0].pattern.kind {
+          case PTypeTest(_, ty) -> match ty.kind { case TRef(path) -> if path.segments.count > 0 { Some(value = path.segments[path.segments.count - 1]) } else { None }; case _ -> None }
+          case _ -> None
+        }
+      }
+    }
+    case _ -> None
+  }
+}
+
+// #6776: `substTypesStmt`'s `SFor` arm and `substTypesExpr`'s `EMatch` arm
+// passed `pat`/`arm.pattern` through UNCHANGED, so `PatternKind`'s one
+// TypeExpr-bearing shape (`PTypeTest(inner, ty)` -- the `case v is T -> …`
+// runtime type-test form) never got substituted when `specializeFunc`
+// rewrote a generic function's own body. A specialised copy whose body
+// matches on its OWN type parameter (`case v is T -> …`) therefore kept the
+// unsubstituted generic `T` literally in the specialised output -- this
+// file's own header claims the pass rewrites "every TypeExpr annotation
+// reachable from the body", so this was a real gap in that claim.
+test "match-arm type-test pattern annotation is substituted into a specialised function's own body, not left as the unsubstituted generic parameter (#6776)" {
+  val src = "package P\n" + "func describe[T](x: in Object): String {\n" + "  match x {\n" +
+    "    case v is T -> \"yes\"\n" +
+    "    case _ -> \"no\"\n" +
+    "  }\n" +
+    "}\n" +
+    "func caller(): String {\n" +
+    "  describe[Int](3)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "describe__Int"), "describe__Int specialised for the explicit Int type argument")
+  match lastStmtExprInFunc(res.file, "describe__Int") {
+    case Some(e) -> {
+      val tn = match matchArmTypeTestName(e) { case Some(n) -> n; case None -> "<missing>" }
+      assertEqual(
+        tn,
+        "Int",
+        "specialised body's `case v is T ->` arm must be rewritten to `case v is Int ->`, not left as the generic T"
+      )
+    }
+    case None -> assertTrue(false, "describe__Int should have a trailing match expression")
+  }
+  assertTrue(not hasFunc(res.file, "describe"), "generic describe removed from output")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}

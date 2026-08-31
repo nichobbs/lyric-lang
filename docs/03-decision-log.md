@@ -36987,3 +36987,123 @@ covers — introduced no regression.
 
 **Related:** #6754, #6748, D-progress-842 (the fix this follows up on),
 #6631 (the umbrella PR both review passes are against).
+
+## D-progress-845 — Five #6631 review findings in `Lyric.Mono`: tuple-destructuring tracking/eviction, dot-free mangled names, union/distinct/qualified explicit type args, lambda-arg eviction, match-arm type-test substitution (#6772, #6773, #6774, #6775, #6776)
+
+A round of automated review against PR #6631's diff raised five REQUIRED
+findings, all in `lyric-compiler/lyric/mono.l`. All five were confirmed
+reproducible (a failing self-test was written for each before touching
+the fix) and are now fixed, with a dedicated regression test per finding
+added to `mono_self_test.l` (74–82, growing the suite from 73 to 82).
+
+**#6772 — `val`-destructuring tuple patterns neither tracked nor
+evicted.** `rewriteBinding`'s `LBVal` arm called `trackPatternEnv`
+directly, whose catch-all (`case _ -> ()`) is a no-op for every pattern
+kind besides `PBinding` — so `val (k, v) = someTupleExpr` neither tracked
+`k`/`v`'s element types into `env` NOR evicted a stale outer binding a
+shadowed element name left behind. A shadowed `k` (e.g. a `String` param
+shadowed by a tuple element that's really an `Int`) kept specialising a
+later generic call against the STALE outer type. Fix: route through
+`bindPatternEnvMono` instead — already correct for `PTuple`/`PRecord`/
+`PConstructor` via the match-arm and `for`-loop paths — closing the same
+gap for plain `val` destructuring, both tracking a resolvable element
+type and evicting on an unresolvable one.
+
+**#6773 — qualified type arguments produced dotted mangled names.**
+`typeExprKey`/`valueExprKey` fed a qualified (multi-segment) `TRef`'s
+segments straight through `pathSegsKey`'s dot-joined form into a mangled
+specialisation name (`isSome__Lyric.Cli.ResolvedManifestDeps`). JVM/MSIL
+identifiers cannot contain `.` (JVMS 4.2.2); since that same string names
+both the specialised declaration and every rewritten call site, a
+downstream dot-stripping fix on ONE side without the other would silently
+diverge — this file already knows mangled names must be identifier-safe
+elsewhere (`floatLitKey` maps `.`→`d`, `longLitKey` maps `-`→`n`) but
+`pathSegsKey` itself had no such transform. Fix: a new
+`identSafePathKey` helper (`pathSegsKey` + `.`→`_`) used everywhere a
+qualified path becomes part of a mangled key; `renderTypeExpr`'s
+human-readable diagnostic text and the plain path-equality check on
+`pathSegsKey` deliberately keep calling `pathSegsKey` directly, since
+both want the real dotted name.
+
+**#6774 — explicit type application over a union/distinct/qualified type
+silently failed.** `indexExprToTypeArgMono`'s whitelist (primitive /
+record / interface) was missing `state.distinctDecls` (which already
+existed on `MonoState` for the unrelated `Type.from`/`Type.tryFrom`
+static-factory case) and a union-type lookup entirely, so `f[MyUnion](x)`
+/ `f[Age](x)` fell through `convOk == false` completely UNCHANGED — Phase
+2 still erases `f`'s declaration, leaving a dangling call with NO M0002
+diagnostic ever raised (the fallthrough never reached
+`noteUnspecialisableLocalCall`). A separate, deeper gap: a qualified type
+argument (`f[Pkg.Type](x)`) never even parses as a multi-segment `EPath`
+— expression grammar's primary-identifier rule only ever builds a
+single-segment `EPath`, with every `.name` postfix building an
+`EMember(receiver, name)` chain instead (multi-segment `EPath`s only
+arise later, from `Lyric.AliasRewriter` flattening a qualified alias
+call — a pass this AST never sees at this point), so `f[Pkg.Type]`'s
+index expression is unrecognisable as ANY known shape. Fix: (1) add a
+`unionDecls: Map[String, Bool]` field to `MonoState`, populated in Phase
+1 collection alongside `recordDecls`/`ifaceDecls`/`distinctDecls`, and
+consult it (plus the pre-existing `distinctDecls`) in
+`indexExprToTypeArgMono`; (2) a new `flattenMemberChainToPath` helper
+recurses an `EMember` chain back into a `ModulePath`, so a genuinely
+qualified type argument resolves to a `TRef` (a multi-segment path can
+never be a local variable reference, so it is unambiguously a type
+argument, matching how the sibling `ETypeApp` arm already trusts an
+explicit type argument's shape with zero registry check); (3) the
+`EIndex` call-rewrite arm now calls `noteUnspecialisableLocalCall` when
+conversion still fails after these additions, so a genuinely unresolvable
+explicit type argument raises M0002 instead of silently degrading.
+
+**#6775 — `unifyLambdaArgTE` leaked a stale outer binding for an
+unseedable lambda parameter.** When a lambda-argument parameter's
+declared type still mentions an unbound generic type parameter after
+substitution (`teMentionsTypeParam` true), the `case None -> ()` arm did
+nothing at all — unlike the sibling `Some(sty)` arm (and unlike the
+`#6666` fix in this same file's plain `ELambda` rewrite arm), it never
+checked whether the parameter name SHADOWED an outer binding, so that
+outer entry stayed live in `env`. The very next step,
+`lambdaBodyResultTE`, then silently read the STALE outer type when the
+lambda body referenced the shadowing parameter by name, producing a
+wrong CLOSED specialisation instead of treating the parameter as
+genuinely unresolved. Fix: mirror the `Some(sty)` arm's shadow-save
+discipline in the `None` arm too — evict (and queue for restoration) any
+existing `env` entry for the parameter name, adding nothing positive in
+its place.
+
+**#6776 — match-arm type-test pattern annotations were never substituted
+into a specialised function's own body.** `PatternKind`'s one
+`TypeExpr`-bearing shape, `PTypeTest(inner, ty)` (the `case v is T -> …`
+form both backends lower to a real runtime type test), was passed
+through UNCHANGED by both `substTypesStmt`'s `SFor` arm and
+`substTypesExpr`'s `EMatch` arm — despite this file's own header
+claiming the pass "rewrites every TypeExpr annotation reachable from the
+body". A specialised copy of a generic function whose body pattern-
+matched on its OWN type parameter (`case v is T -> …`) therefore kept the
+literal, unsubstituted `T` in the specialised output. Fix: a new
+`substTypesPattern` helper recurses through every `PatternKind` shape
+(`PWildcard`, `PLiteral`, `PRange`, `PBinding`, `PConstructor`, `PRecord`,
+`PTuple`, `PParen`, `PTypeTest`, `POr`, `PConstRef`, `PError`),
+substituting `PTypeTest`'s embedded `ty` the same way `substTypesExpr`
+already does for expressions; wired into both the `SFor` and `EMatch`
+call sites that previously passed the pattern through verbatim.
+
+**Verification.** `mono_self_test.l` grew from 73 to 82 tests (9 new: two
+for #6772, one for #6773, four for #6774, one for #6775, one for #6776),
+all A/B-verified against the pre-fix behaviour (a wrong specialisation
+name, a missing diagnostic, or an unsubstituted generic parameter
+surviving into the specialised output) before the corresponding fix
+landed. Full suite: 82/82 passing (`--target dotnet`, this file's
+existing convention — `Lyric.Mono` is target-independent middle-end AST
+rewriting, so a single-target self-test is sufficient, unlike the
+per-backend codegen self-tests). Broader regression sweep, all green:
+`stdlib_generic_mono_self_test.l` (7/7, both `--target dotnet` and
+`--target jvm`), `result_generic_specialization_self_test.l` (4/4),
+`bitwise_self_test.l` (10/10), `aspect_weave_self_test.l` (13/13),
+`block_shadow_self_test.l` (20/20).
+
+**Files:** `lyric-compiler/lyric/mono.l`,
+`lyric-compiler/lyric/mono_self_test.l`.
+
+**Related:** #6772, #6773, #6774, #6775, #6776 (all review findings on
+PR #6631), #6666, #6743, #6121, #6633, #6665, #6669, #6698 (the prior
+shadow-eviction fixes this batch's pattern mirrors).
