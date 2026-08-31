@@ -37711,3 +37711,187 @@ than leaving them for a follow-up review round the way addendum 1's
 (the same fd-reuse hazard class, narrower windows), #6793 (the stale-
 doc-count pattern this addendum avoided repeating).
 
+**Addendum 4 (2026-08-31): the remaining CI round-trip from "seven cases
+compile-fail" to "seven cases pass" — four narrower native codegen gaps,
+not the hypothesized `slice[Byte]` bug.** After addendum 3 landed, four
+further REQUIRED review findings on `stopListener`'s shutdown path were
+fixed in one consolidated pass: `#6796` (the abandoned-queue drain
+desynced `ServerQueue.available`'s semaphore count from `items`'s length,
+risking an out-of-bounds `dequeueContext` — fixed by draining one item at
+a time through the same `rtSemTryWait`-then-locked-pop protocol
+`dequeueContext` itself uses, backed by a new `lyric_sem_trywait` runtime
+primitive), `#6797` (every `pthread_create`d closure in this file was
+never retained, risking use-after-free once the spawning function
+returns without joining in the same scope — fixed by retaining before
+the call and releasing after the matching join, via new
+`lyric_ptr_to_long`/`lyric_long_to_ptr` runtime helpers so the retained
+pointer survives as a `Long` field per this file's existing handle
+idiom), `#6798` (no `stopping` flag on `ServerQueue`, so a request that
+finished parsing just after the one-shot drain could still
+`enqueueContext` and then hang the join loop forever — fixed with
+`ServerQueue.stopping`, checked under the same mutex `enqueueContext`
+uses), and `#6799` (`startListenerTls` leaked the bound socket and the
+queue's `malloc`'d mutex/semaphore buffers on a `pthread_create`
+failure — fixed to mirror `stopListener`'s own teardown). Also picked up
+along the way: `HttpListener.stopped`/`HttpContext.responded` misuse
+guards against a second `stopListener`/`respond*` call on the same
+object, and an `unregisterConn` early-`break` fix (it kept overwriting
+its scan index on every match instead of stopping at the first).
+
+The consolidated fix for those four also carried a genuine, real
+compile-time blocker unrelated to any of them: `appendExtraHeaders`'s
+`mapKeys(extra)`/`mapGet(extra, name)` calls failed native codegen's
+generic-argument inference ("cannot infer type argument 'K'") because
+`Std.Collections.mapKeys[K, V]` is an ordinary Lyric-defined generic
+function going through the same general call-site inference every
+spelling was going to hit — fixed by switching to `dictGetKeys(m)` /
+`mapGet(m, key)`, which `Lyric.LlvmCodegen` special-cases as reserved
+`--target native` builtins bypassing generic dispatch entirely (the
+same idiom `mapKeys`'s own body and `llvm_collections_self_test.l`'s
+own passing case already use). Separately, an incomplete `Std.Char` →
+`Std.Encoding` import migration left `parseDigitsToInt`'s
+`digitValue(c)` call unqualified, breaking the entire stdlib bundle
+build (not just this test) — fixed by restoring `import Std.Char as
+Char` and qualifying the call.
+
+The very next CI run then reported a NEW, universal regression: all
+seven cases failed identically with a location-less
+"this expression form is not yet supported for `--target native`
+(Phase N1)" panic — a location-less diagnostic made two full CI-round-
+trip bisection attempts against every suspect construct in the four
+fixes above (closure retain/release argument lowering, the
+`rtSemTryWait` loop, the bare-field `if q.stopping` read, direct scalar
+field assignment through an `in`-mode parameter) inconclusive: each had
+a direct, already-CI-passing precedent elsewhere in the native codebase
+except one genuinely novel shape (`rtRelease(rtLongToPtr(...))`, a
+nested extern-call-as-argument with no precedent anywhere in this file),
+which was un-nested via intermediate `val`s but did NOT resolve the
+failure — an honest, disclosed non-fix. The diagnostic itself was then
+fixed at the source: `lowerExpr`'s default match arm gained a
+`describeExprKind` helper (exhaustive over `ExprKind`) plus
+`expr.span.startPos.line`/`.column` threaded into the panic message,
+matching the `[line:col]` convention used elsewhere in this compiler
+(`diagnostic_util.l`, `fmt.l`, `cli_lint.l`) — a permanent diagnostic-
+quality improvement, independent of whatever the location would reveal.
+
+That location pinpointed the actual cause immediately: `EPropagate` (the
+`?` operator) is not lowered for `--target native` when the propagating
+function is reachable from a different package than the one defining
+it — the exact gap `D-progress-823` item D already documented for the
+native `Std.Http` client twin. `Std.HttpEngine.parseRequestLine` used
+`?` six times and is a shared, cross-target module transitively pulled
+in by this PR's native kernel for the first time; every one of the
+seven cases reaches it unconditionally, explaining the "all seven,
+identical error" shape. Fixed by rewriting every site to the equivalent
+explicit `match { case Ok(v) -> v; case Err(e) -> return Err(error = e)
+}` form already used throughout `_kernel_native/http_host.l` and
+`_kernel_native/tcp_host.l` — semantically identical on every target,
+verified via `lyric test --target dotnet` against the existing
+`http_engine_tests.l` corpus (66/66 passing).
+
+The next CI run surfaced a second, narrower instance of the SAME
+`inout`-parameter compiler gap `#6794` had already fixed once (for
+`readOneRequest`'s own `inout Connection` — see addendum 2): 19 MORE
+`inout Connection` parameters existed inside `Std.HttpEngine`'s internal
+sans-IO state machine (`failWith`, `finishHeaders`/
+`finishHeadersWithPlan`, `enterBodyPhase`/`enterFixedBodyPhase`/
+`enterHeaderPhase`, `finishRequestLine`, the `step*`/`on*` helpers, and
+`driveFeed`), never reached by native codegen until the `?`-operator fix
+above let compilation get this far. The original `readOneRequest` fix
+was necessary but not sufficient. Rewrote every one to take `state: in
+Connection` and return the advanced `Connection` (bool-returning "step"
+functions now return a new `StepOutcome { conn; progress }` record;
+`driveFeed` returns the pre-existing `FeedResult` type instead of
+mutating via `inout`), following the exact pattern the `ReadOutcome`/
+`readOneRequest` fix already established. Verified via the published
+`lyric` 0.5.1 tool (D-progress-543 sandbox exception): all 66
+`http_engine_tests.l` cases pass on both `--target dotnet` and `--target
+jvm`.
+
+**The final blocker, and the correction to this addendum's own working
+hypothesis.** CI still reported all seven cases failing to compile with
+"indexing on this receiver is not yet supported for `--target native`
+(lists and maps index; slices land with N5)" — which, reasoning from the
+`Std.HttpEngine` wire-parsing helpers' `slice[Byte]` bracket-indexing
+call sites (`allBytes`, `findByteWhere`, `trimOws`, `scanCrlfLine`, etc.)
+and D-N-015's stated design (that `slice[T]` should share `List[T]`'s
+codegen path regardless of element type), was hypothesized — and stated
+as fact in this PR's own tracking comment — to be a live compiler bug:
+`slice[Byte]` indexing broken while `slice[String]` indexing (already
+covered by `llvm_collections_self_test.l`) works. **This hypothesis was
+wrong**, and is recorded here specifically so a future reader does not
+repeat the same reasoning-from-first-principles mistake instead of
+bisecting: a real `--target native` build (obtained via the
+`LYRIC_BOOTSTRAP_VERSION=0.5.1` stage-0 seed pin, since this sandbox has
+no GitHub API access for the default bootstrap path) confirmed
+`slice[Byte]` bracket-indexing works correctly and unmodified — an
+isolated literal (`b[0]` on `[1u8,2u8,3u8]`), a function parameter in a
+loop, and a real `Std.Encoding.encodeUtf8`/`tryDecodeUtf8` round trip all
+passed cleanly. Direct bisection of the real failures found three
+genuinely different, narrower causes instead:
+
+1. `Std.HttpEngine`'s `parseDigitsToInt`, `isResponseSafeString`, and
+   `asciiStringToBytes` call `Std.String.charAt` directly, which does
+   `s[index]` on a bare `String` receiver — a real, already-tracked,
+   already-worked-around-elsewhere gap (issue #6237:
+   `Lyric.LlvmCodegen.lowerCollectionIndex` only recognises List/slice/Map
+   receivers, not bare `String`). Because this is the first PR to compile
+   `Std.HttpEngine` through the native backend at all, the gap was
+   previously latent. Rewritten to scan UTF-8 bytes via the already-
+   public, already-imported `Std.Encoding.encodeUtf8` instead — the same
+   idiom the rest of the tree already uses for this gap. No compiler
+   change needed; `String` bracket indexing remains a separate, tracked,
+   out-of-scope gap, not something this PR's kernel depends on.
+2. `Std.HttpServer.stopListener` hung forever in `pthreadJoin` on the
+   accept thread: `hostStopListener` only `close()`d the listening fd,
+   which does not reliably interrupt a thread already blocked in
+   `accept()` on that fd (a different failure mode than the #6791
+   idle-*connection* deadlock this addendum's earlier fixes already
+   closed). Fixed by calling the existing `rtShutdown(fd, SHUT_RDWR)`
+   primitive before `close()`, mirroring `hostShutdown`'s identical use
+   of the same primitive to interrupt a connection's blocked read.
+3. Four `match` statements on the `HttpVersion` enum (in `http_engine.l`'s
+   `httpVersionToken`/`computeKeepAlive`/`validateHostHeader` and
+   `http_server.l`'s `appendConnectionHeader`) used bare case-name
+   patterns (`case Http1_0` instead of `case HttpVersion.Http1_0`) — a
+   separate, already-tracked compiler gap (#6740): a bare pattern against
+   an ENUM scrutinee is not recognised by `emitPatternTest`, so it
+   silently compiles as an unconditional binding pattern, meaning the
+   first arm always "matches" regardless of the real value.
+   `httpVersionToken`'s first arm is `Http1_0`, so every response
+   serialized as `HTTP/1.0` regardless of the negotiated version — the
+   actual cause of item A's runtime assertion failure once the `charAt`
+   blocker above was cleared. Fixed by qualifying every pattern with the
+   enum type name, the same workaround `llvm_enum_case_resolve_self_test.l`'s
+   own header already documents for exactly this gap.
+
+The only `Lyric.LlvmCodegen` change from this final round is a
+diagnostic-quality improvement to `lowerCollectionIndex`'s existing
+"indexing not supported" panic (now reports the source line and the
+receiver's actual `NType`, matching neighbouring panics in the same
+file) — the same fix that made bisecting cause 1 tractable in the first
+place. `slice[Byte]`/`slice[String]` indexing itself needed no fix: item
+2 of this addendum's earlier verification (`llvm_collections_self_test.l`
+20/20, unaffected) already re-confirmed this on the same CI run that
+proved the real fix.
+
+**Full verification (2026-08-31, real `--target native` build via the
+`LYRIC_BOOTSTRAP_VERSION=0.5.1` stage-0 pin, real `clang` + `lyric-rt`
+linking — not the published-tool sandbox substitute used elsewhere in
+this addendum):** `llvm_http_server_self_test.l` 7/7 (previously blocked
+at compile time), with no regressions across the full native suite:
+`llvm_collections_self_test.l` 20/20, `llvm_tls_self_test.l` 5/5,
+`llvm_enum_case_resolve_self_test.l` 6/6, `llvm_http_client_self_test.l`
+13/13, `llvm_heap_self_test.l` 35/35, `llvm_ir_self_test.l` 14/14,
+`llvm_stdlib_self_test.l` 18/18, `llvm_opaque_self_test.l` 8/8,
+`llvm_ffi_self_test.l` 6/6, `llvm_codegen_self_test.l` 32/32.
+
+**Related (addendum 4):** #6796, #6797, #6798, #6799 (the four
+consolidated shutdown-path fixes), #6794 (the same `inout`-parameter gap
+class, first instance — see addendum 2), #6237 (bare-`String` indexing,
+the actual cause of blocker 1 above, pre-existing and out of scope),
+#6740 (bare enum-case pattern matching, the actual cause of blocker 3
+above, pre-existing and out of scope). No new issue was filed for the
+retracted `slice[Byte]` hypothesis — it does not reproduce, so there is
+nothing to track.
+
