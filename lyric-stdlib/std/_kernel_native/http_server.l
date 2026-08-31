@@ -1404,9 +1404,17 @@ func appendConnectionHeader(headers: in List[HeaderField], version: in HttpVersi
   if not keepAlive {
     headers.add(HeaderField(name = "Connection", value = "close"))
   } else {
+    // Qualified case names, not bare: a bare pattern against an enum
+    // scrutinee is not yet a supported codegen shape for `--target native`
+    // (`Lyric.LlvmCodegen`'s `emitPatternTest` only recognises union cases
+    // for a bare name, so a bare pattern over an enum scrutinee silently
+    // binds instead of testing equality — the first arm always "matches"
+    // regardless of the real value; confirmed via direct repro; issue
+    // #6740, `llvm_enum_case_resolve_self_test.l`'s own header documents
+    // the same gap and its fully-qualified-pattern workaround).
     match version {
-      case Http1_0 -> headers.add(HeaderField(name = "Connection", value = "keep-alive"))
-      case Http1_1 -> ()
+      case HttpVersion.Http1_0 -> headers.add(HeaderField(name = "Connection", value = "keep-alive"))
+      case HttpVersion.Http1_1 -> ()
     }
   }
 }

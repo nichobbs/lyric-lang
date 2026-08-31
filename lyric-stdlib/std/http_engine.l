@@ -187,7 +187,6 @@ package Std.HttpEngine
 import Std.Core
 import Std.Collections
 import Std.String
-import Std.Char as Char
 import Std.Encoding
 
 // =============================================================================
@@ -247,9 +246,17 @@ pub enum HttpVersion {
 @pure
 @experimental
 pub func httpVersionToken(v: in HttpVersion): String {
+  // Qualified case names (`HttpVersion.Http1_0`), not bare (`Http1_0`): a
+  // bare pattern against an enum scrutinee is not yet a supported codegen
+  // shape for `--target native` (`Lyric.LlvmCodegen`'s `emitPatternTest`
+  // only recognises union cases for a bare name, so a bare pattern over an
+  // enum scrutinee silently binds instead of testing equality — the first
+  // arm always "matches" regardless of the real value; confirmed via direct
+  // repro; issue #6740, `llvm_enum_case_resolve_self_test.l`'s own header
+  // documents the same gap and its fully-qualified-pattern workaround).
   match v {
-    case Http1_0 -> "HTTP/1.0"
-    case Http1_1 -> "HTTP/1.1"
+    case HttpVersion.Http1_0 -> "HTTP/1.0"
+    case HttpVersion.Http1_1 -> "HTTP/1.1"
   }
 }
 
@@ -863,18 +870,30 @@ union BodyPlan {
   case BpChunked
 }
 
+// Scans UTF-8 bytes rather than `charAt`/`Char.digitValue`: `String[i]`
+// bracket indexing is not a supported codegen shape for `--target native`
+// (`Lyric.LlvmCodegen.lowerCollectionIndex` only recognises List/slice/Map
+// receivers, confirmed via direct repro; issue #6237), the same tracked gap
+// `_kernel_native/http_server.l`'s own header documents working around via a
+// byte-based `charCodeAt` helper. Content-Length is an RFC 9112 digit
+// sequence — a fixed ASCII byte alphabet — so `encodeUtf8` (already a
+// cross-target `Std.Encoding` primitive) is exact here: any non-ASCII input
+// byte is guaranteed outside `[48, 57]` and correctly falls through to
+// `None`, matching the original per-character rejection.
 func parseDigitsToInt(raw: in String): Option[Int] {
   val s = trim(raw)
   if s.length == 0 or s.length > 9 {
     return None
   }
+  val bytes = encodeUtf8(s)
   var n = 0
   var i = 0
-  while i < s.length {
-    match charAt(s, i) {
-      case None -> return None
-      case Some(c) -> match Char.digitValue(c) { case None -> return None; case Some(d) -> { n = n * 10 + d } }
+  while i < bytes.length {
+    val b = bytes[i].toInt()
+    if b < 48 or b > 57 {
+      return None
     }
+    n = n * 10 + (b - 48)
     i = i + 1
   }
   Some(value = n)
@@ -1011,9 +1030,10 @@ func computeKeepAlive(version: in HttpVersion, headers: in List[HeaderField]): B
   if hasClose {
     false
   } else {
+    // Qualified case names — see `httpVersionToken`'s header comment (#6740).
     match version {
-      case Http1_1 -> true
-      case Http1_0 -> hasKeepAlive
+      case HttpVersion.Http1_1 -> true
+      case HttpVersion.Http1_0 -> hasKeepAlive
     }
   }
 }
@@ -1036,9 +1056,10 @@ func hasExpectContinue(headers: in List[HeaderField]): Bool {
 /// RFC 9112 section 3.2: an HTTP/1.1 request must carry exactly one `Host`
 /// header field; HTTP/1.0 has no such requirement and is exempt.
 func validateHostHeader(version: in HttpVersion, headers: in List[HeaderField]): Option[ProtoErr] {
+  // Qualified case names — see `httpVersionToken`'s header comment (#6740).
   match version {
-    case Http1_0 -> None
-    case Http1_1 -> checkHostCount(headerValues(headers, "Host").count)
+    case HttpVersion.Http1_0 -> None
+    case HttpVersion.Http1_1 -> checkHostCount(headerValues(headers, "Host").count)
   }
 }
 
@@ -1591,12 +1612,17 @@ func isResponseSafeByte(cp: in Int): Bool {
   (cp >= 32 and cp <= 126) or cp == 9
 }
 
+// Scans UTF-8 bytes rather than `charAt` (see `parseDigitsToInt`'s header
+// comment for why): every byte of a multi-byte (non-ASCII) sequence is >=
+// 0x80, outside `isResponseSafeByte`'s `[32, 126]`/HTAB range, so scanning
+// bytes instead of decoded characters still rejects non-ASCII input exactly
+// as before.
 func isResponseSafeString(s: in String): Bool {
+  val bytes = encodeUtf8(s)
   var i = 0
-  while i < s.length {
-    match charAt(s, i) {
-      case None -> return false
-      case Some(c) -> if not isResponseSafeByte(toInt(c)) { return false }
+  while i < bytes.length {
+    if not isResponseSafeByte(bytes[i].toInt()) {
+      return false
     }
     i = i + 1
   }
@@ -1615,21 +1641,12 @@ func allHeadersResponseSafe(headers: in List[HeaderField]): Bool {
   true
 }
 
-/// Every char in `s` is ASCII (< 0x80), so a direct code-point-to-byte
-/// conversion is exact — no UTF-8 multi-byte encoding is needed. Safe to
-/// call only after `isResponseSafeString`/`isResponseSafeByte` have
-/// validated every character is in `[32, 126]` or HTAB (0x09).
+/// Every char in `s` is ASCII (< 0x80), so UTF-8 encoding IS a plain
+/// byte-for-byte copy — no multi-byte sequences are produced. Safe to call
+/// only after `isResponseSafeString`/`isResponseSafeByte` have validated
+/// every character is in `[32, 126]` or HTAB (0x09).
 func asciiStringToBytes(s: in String): slice[Byte] {
-  val acc: List[Byte] = newList()
-  var i = 0
-  while i < s.length {
-    match charAt(s, i) {
-      case None -> ()
-      case Some(c) -> acc.add(toInt(c).toByte())
-    }
-    i = i + 1
-  }
-  acc.toArray()
+  encodeUtf8(s)
 }
 
 /// Serialize a response status line + headers + terminating blank line.

@@ -305,7 +305,20 @@ pub func hostConnect(host: in String, port: in Int): Result[Conn, TcpError] {
 
 /// Stop listening and release the socket. Idempotent-safe: a redundant
 /// stop is swallowed rather than surfaced (matches the dotnet twin).
+///
+/// `rtShutdown` BEFORE `rtSockClose` (confirmed via direct repro; the
+/// accept-loop thread hangs in the blocking `accept()` inside `hostAccept`
+/// forever without it — `Std.HttpServer.stopListener`'s `pthreadJoin` on
+/// that thread then never returns). A bare `close()` on the listening fd
+/// from another thread does not reliably unblock a concurrent, already-
+/// blocked `accept()` call on this fd — unlike `shutdown()`, which Linux
+/// documents as delivering an error (`EINVAL`) to a blocked `accept()` on
+/// the same socket. This mirrors `hostShutdown`'s identical use of
+/// `rtShutdown` to interrupt a connection's blocked `hostRead` (see that
+/// function's doc comment) — the same POSIX interrupt-then-close pattern,
+/// applied to the listening socket instead of a connection socket.
 pub func hostStopListener(l: in Listener): Unit {
+  val _ = rtShutdown(l.fd, 2)
   val _ = rtSockClose(l.fd)
 }
 

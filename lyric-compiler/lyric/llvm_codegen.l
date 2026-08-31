@@ -5062,7 +5062,10 @@ func lowerCollectionIndex(
     }
   }
   panic(
-    "Lyric.LlvmCodegen: indexing on this receiver is not yet supported for --target native (lists and maps index; slices land with N5)"
+    "Lyric.LlvmCodegen: indexing on this receiver is not yet supported for --target native (lists, maps, and slices index; String bracket indexing is a separate tracked gap, issue #6237) at line " +
+      line.toString() +
+      ": " +
+      nTypeToIrString(recv.ty)
   )
 }
 
