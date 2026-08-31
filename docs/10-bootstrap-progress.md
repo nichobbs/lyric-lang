@@ -33310,3 +33310,55 @@ evidence, and verification commands), #6106 (left open), #6808, #6809,
 #6794, #6237, D-progress-850 (N9.3, the prerequisite this follow-on builds
 on), `native/plan/08-work-items.md` N9.5, `docs/61-https-tls-http-versions.md`
 §6.4/§7 item 5.
+
+## Native `out`/`inout` function-parameter lowering ships, TLS phase 5 band N9.6 (#6794; unblocks #6808's h2-frame half)
+
+N9.5's blocker 1 (above) is fixed: `Lyric.LlvmCodegen`'s function-parameter
+lowering panicked unconditionally on any `out`/`inout` parameter for
+`--target native` — the only one of the three backends missing this
+ordinary, documented Lyric parameter mode. The fix synthesizes an implicit
+pointer parameter for each `out`/`inout` parameter (the ADDRESS of the
+caller's storage cell) with no callee-side alloca: every local read/write
+already treats `ctx.varSlots[name]` as a bare pointer, so aliasing the
+parameter name to the incoming pointer gives true by-reference semantics —
+matching the MSIL backend's `MByRef` and the JVM backend's boxed-cell
+lowering — including free chained forwarding (an `inout` parameter passed
+on unchanged to another `inout` call, the shape `Std.HttpEngine`'s H2
+frame dispatch uses pervasively). ARC (04-arc-design.md Rules 3-5) needed
+no new machinery: a write through the by-ref cell runs through the
+existing retain-new/release-old assignment path unchanged, since the slot
+IS the caller's storage.
+
+Nine self-test cases (`llvm_inout_self_test.l`, 2 under
+`-fsanitize=address`) cover scalar and reference-typed `out`/`inout`
+parameters, two independent `inout` params in one call, chained `inout`
+forwarding, the exact `record St { var n: Int }` / `bump(s: inout St)`
+repro from #6808's own writeup, a nested record-field by-ref argument, and
+two ARC churn/replace cases. Scope cuts (loud diagnostics, never a silent
+miscompile): `out`/`inout` on an `extern func` C-ABI declaration, on a
+`protected type` method, or on an async function's parameter (a suspended
+coroutine holding a pointer into caller-frame storage across a suspend
+point would dangle); a by-ref call-site argument that is an index
+expression or a qualified module path.
+
+Real-world validation against #6808's own motivating case:
+`Std.HttpEngine.H2Frame`'s entire `inout FrameDecoder` mutually-recursive
+dispatch chain (5 `inout` sites) now compiles and runs standalone on
+`--target native`. This does NOT fully close #6808, though: real HTTP/2
+traffic always exercises `Std.HttpEngine.Hpack`'s Huffman codec, which
+calls `Std.Char`'s char↔int bridge — and `Std.Char` has no
+`_kernel_native/char_host.l` twin (only the `.NET`-`System.Convert`-backed
+`_kernel/char_host.l`, unresolvable on native). This is a separate,
+unrelated, newly-surfaced gap, filed as issue #6811 and left for its own
+follow-up per this repo's "smaller, fully-finished slice" standard rather
+than folded into this fix. The full existing native self-test suite
+(fourteen `llvm_*_self_test.l` files) was re-verified green with zero
+regressions.
+
+**Related:** `docs/03-decision-log.md` D-progress-853 (full account: ARC
+reasoning, exact scope cuts, and the H2Conn/H2Frame/Hpack verification
+trail), #6794 (closed by this fix), #6808 (partially unblocked — its
+`inout` half is fixed, its `Std.Char` half is #6811), #6811 (new, the
+remaining h2-stack blocker), D-progress-852 (the investigation that filed
+#6794/#6808), `native/plan/08-work-items.md` N9.6,
+`docs/61-https-tls-http-versions.md` §6.4/§7 item 5.

@@ -1687,7 +1687,7 @@ handshake needs both peers actively exchanging handshake records at once,
 unlike a bare TCP `connect`, which completes into the listen backlog before
 `accept` runs).
 
-### N9.5 — lyric-web `serveTls` on native; ALPN h2 — ⛔ BLOCKED on two structural gaps, both filed (D-progress-852, #6106)
+### N9.5 — lyric-web `serveTls` on native; ALPN h2 — ⛔ BLOCKED on two structural gaps (D-progress-852, #6106); blocker 1's `inout`/`out` root cause now ✅ SHIPPED (N9.6, D-progress-853, #6794)
 
 lyric-web's `serveTls` onto the native `Std.HttpServer`, plus ALPN-selected
 h2 (docs/61 §6.4) once the engine's h2 stack is target-independent. Gated on
@@ -1724,6 +1724,103 @@ uses `SSL_CTX_set_default_verify_paths` + `SSL_CERT_FILE`/`SSL_CERT_DIR` on
 both OSes for now; the Security.framework question is deferred). Q-TLS-004
 (session resumption / 0-RTT policy — 0-RTT off; resumption cache tuning is a
 later item).
+
+**Update (N9.6, D-progress-853):** blocker 1's root cause (#6794 — native
+`inout`/`out` parameter lowering did not exist at all) is now fixed and
+verified against a real `--target native` build. This unblocks
+`Std.HttpEngine.H2Frame`'s entire `inout FrameDecoder` dispatch chain (5
+`inout` sites), which now compiles and runs on native standalone. It does
+**not** close blocker 1 for the full h2 stack: `Std.HttpEngine.Hpack`'s
+Huffman codec (`huffmanEncode`/`huffmanDecode`/`octetsToString`) calls
+`Std.Char`'s char↔int bridge, and `Std.Char` has no `_kernel_native/
+char_host.l` twin — its only kernel (`_kernel/char_host.l`) is the
+.NET-`System.Convert`-backed one, which the native loader still picks up
+(no native-specific override exists) and which native codegen cannot lower
+(`extern type CharConvert = "System.Convert"` has no native meaning). Real
+HTTP/2 traffic always exercises Hpack's Huffman path (RFC 9113 header
+compression is mandatory-to-implement), so `Std.HttpEngine.H2Conn`'s full
+compile for `--target native` is still blocked — by a different, unrelated,
+newly-surfaced gap, not by `inout`/`out` any more. Filed as issue #6811.
+Blocker 2 (no native project/multi-package support, #6809) is untouched by
+this update. See N9.6 below and D-progress-853 for the full verification
+trail.
+
+---
+
+### N9.6 — Native `out`/`inout` function-parameter lowering — ✅ SHIPPED (D-progress-853, #6794; unblocks #6808)
+
+`Lyric.LlvmCodegen`'s function-parameter lowering (`lowerFunctionEnv`)
+panicked unconditionally on any `out`/`inout` parameter for `--target
+native` — the only one of the three backends missing this. `out`/`inout`
+are ordinary, documented Lyric parameter modes used pervasively on
+dotnet/JVM (e.g. threading an evolving FSM-state value through a loop
+without a wrapper record); native could not compile any function
+declaring one.
+
+**Design.** Each `out`/`inout` parameter's LLVM signature type becomes a
+pointer to the parameter's own type (the ADDRESS of the caller's storage
+cell) instead of the value itself. No callee-side alloca or copy: every
+local read (`loadLocal`) and write (`lowerAssign`/`lowerFieldAssign`)
+already treats `ctx.varSlots[name]` as a bare pointer-to-declared-type SSA
+value (exactly what an `alloca` produces), so binding the parameter name
+directly to the incoming pointer makes every subsequent read/write alias
+the CALLER's cell — true reference semantics, matching the MSIL backend's
+`MByRef` and the JVM backend's boxed-cell by-ref lowering. This also makes
+a chained `inout` forward (a parameter received `inout` passed on
+unchanged to another `inout` call — the shape `Std.HttpEngine`'s H2 frame
+dispatch chain uses pervasively: `dispatchFrame` → per-frame-type handlers
+→ nested mutators) a plain pointer forward with no extra copy, at zero
+extra implementation cost. At call sites, an `out`/`inout` argument's
+ADDRESS is computed instead of its value: a bare local/parameter uses its
+existing `varSlots` entry directly; a record field access (`a.b.c`) GEPs
+off the record's heap pointer exactly like `lowerFieldAssign` already
+does for a direct field write. `out` and `inout` lower IDENTICALLY — the
+only language-level difference (an `out` parameter is definite-assignment-
+checked at type-check time, T0086) is not a codegen concern; a stray read
+of an unwritten `out` parameter reads whatever the caller's cell already
+holds, which is never uninitialized memory (every `var` local is zero/
+null-initialized when declared without an initializer, and `lyric_release`/
+`lyric_retain` on a null pointer are safe no-ops).
+
+**ARC (04-arc-design.md Rules 3-5).** A write through the by-ref cell runs
+through the ordinary `lowerAssign`/`lowerFieldAssign` retain-new/release-old
+path — since the slot IS the caller's storage, this is exactly the ARC
+bookkeeping a direct `x = newVal` at the caller site would perform. The
+callee never retains on entry or releases on exit for an `out`/`inout`
+parameter, matching Rule 5 (never owns the pointed-to value).
+
+**Scope shipped:** scalar and reference-typed (record/`String`) `out`/
+`inout` parameters; a bare local/parameter argument; a record field
+(including nested, `a.b.c`) argument; chained `inout` forwarding through
+nested calls; two independent `inout` parameters in one call. **Scope
+cuts (loud diagnostics, never a silent miscompile):** `out`/`inout` on an
+`extern func` C-ABI declaration (use `NativePtr[T]` instead — no
+`_kernel_native/` file uses this shape); `out`/`inout` on a `protected
+type` method (its hand-built lock/unlock wrapper forwards params by name,
+not by address — unverified, no shipped consumer); `out`/`inout` on an
+async function's parameter (a suspended coroutine cannot safely hold a
+pointer into caller-frame storage across a suspend point); a by-ref
+argument that is an index/element expression (`xs[0]`) or a qualified
+module-level path — the type checker's `argIsValidByRefTarget` is
+deliberately conservative and accepts these as "potential l-values" without
+deciding whether native can address them, so the diagnostic lives in
+`lowerByRefArg`. See D-progress-853 for the exact panic messages and test
+coverage.
+
+**Real-world validation:** `Std.HttpEngine.H2Frame`'s entire `inout
+FrameDecoder` mutually-recursive dispatch chain (5 `inout` sites) compiles
+and runs standalone on `--target native`. `Std.HttpEngine.Hpack`'s 6
+`inout HpackDecoder`/`HpackEncoder` sites also compile; its Huffman codec
+functions specifically do not, due to a separate, unrelated gap (`Std.Char`
+has no native kernel, issue #6811 — see N9.5's update above). `Std.HttpEngine.H2Conn`'s
+38 `inout H2Connection` sites are unverified in isolation (H2Conn always
+transitively pulls in Hpack's Huffman path once real header traffic is
+exercised) but hit no `inout`-related failure in every case tried.
+
+Verified with a dedicated self-test,
+`lyric-compiler/lyric/llvm_inout_self_test.l` (9 cases, 2 under
+`-fsanitize=address`), wired into `scripts/ci/native-backend-self-tests.sh`,
+plus a zero-regression run of the full existing native self-test suite.
 
 ---
 
