@@ -187,7 +187,7 @@ package Std.HttpEngine
 import Std.Core
 import Std.Collections
 import Std.String
-import Std.Char as Char
+import Std.Encoding
 
 // =============================================================================
 // §1. Limits.
@@ -590,15 +590,20 @@ func trimOws(bytes: in slice[Byte]): slice[Byte] {
 /// Every byte here is guaranteed ASCII (< 0x80) by the tchar/vchar checks
 /// above at every call site, so this is a total, allocation-simple
 /// byte-to-`String` conversion with no UTF-8 multi-byte decoding needed —
-/// an ASCII code point IS its own Unicode code point.
+/// an ASCII code point IS its own Unicode code point. Delegates to
+/// `tryDecodeUtf8` (a single call, not a per-byte accumulator loop) rather
+/// than the `"" + Char.fromInt(...)` idiom: `lowerStringBinop` on
+/// `--target native` requires both operands to already be `String`, and
+/// neither `"" + Char` nor `Char.toString()` produce one there (confirmed
+/// via direct repro — the "mixed String/non-String operands" panic; issue
+/// #6237, `_kernel_native/encoding_host.l`'s header documents the same
+/// gap for `Std.Encoding.tryDecodeUtf8`'s own former implementation).
+/// ASCII is always valid UTF-8, so this never returns `None`.
 func asciiBytesToString(bytes: in slice[Byte]): String {
-  var acc = ""
-  var i = 0
-  while i < bytes.length {
-    acc = acc + ("" + Char.fromInt(bytes[i].toInt()))
-    i = i + 1
+  match tryDecodeUtf8(bytes) {
+    case Some(s) -> s
+    case None -> ""
   }
-  acc
 }
 
 /// Result of scanning for the next CRLF-terminated line within a byte
@@ -1646,11 +1651,43 @@ pub func serializeLastChunk(): slice[Byte] {
   asciiStringToBytes("0\r\n\r\n")
 }
 
-func hexDigitChar(v: in Int): Char {
-  if v < 10 {
-    Char.fromInt(48 + v)
+// A single-digit lowercase hex STRING (not `Char`): `"" + Char` concatenation
+// is not a supported `--target native` codegen shape (see `asciiBytesToString`'s
+// doc comment, issue #6237), so `toHexAscii`'s accumulator needs a `String`
+// straight from the digit value, never a `Char` intermediate.
+func hexDigitStr(v: in Int): String {
+  if v == 0 {
+    "0"
+  } else if v == 1 {
+    "1"
+  } else if v == 2 {
+    "2"
+  } else if v == 3 {
+    "3"
+  } else if v == 4 {
+    "4"
+  } else if v == 5 {
+    "5"
+  } else if v == 6 {
+    "6"
+  } else if v == 7 {
+    "7"
+  } else if v == 8 {
+    "8"
+  } else if v == 9 {
+    "9"
+  } else if v == 10 {
+    "a"
+  } else if v == 11 {
+    "b"
+  } else if v == 12 {
+    "c"
+  } else if v == 13 {
+    "d"
+  } else if v == 14 {
+    "e"
   } else {
-    Char.fromInt(97 + (v - 10))
+    "f"
   }
 }
 
@@ -1663,7 +1700,7 @@ func toHexAscii(n: in Int): String {
     var acc = ""
     var v = n
     while v > 0 {
-      acc = ("" + hexDigitChar(v % 16)) + acc
+      acc = hexDigitStr(v % 16) + acc
       v = v / 16
     }
     acc

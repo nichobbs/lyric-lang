@@ -1087,12 +1087,29 @@ func appendSafeHeader(headers: in List[HeaderField], name: in String, value: in 
   }
 }
 
+// `extra` is rebound to a freshly-annotated local (`m`) before either
+// generic call: `Lyric.LlvmCodegen`'s generic-argument inference reads a
+// literal or an explicitly-annotated local variable's type, not a
+// function PARAMETER's own declared type, so `mapKeys(extra)`/
+// `mapGet(extra, name)` (both keyed off `extra`'s parameter type alone)
+// failed with "cannot infer type argument 'K'" on `--target native`
+// (confirmed via direct repro) even though `extra: in Map[String, String]`
+// is fully concrete at this call site. `requestHeaders` above already
+// relies on the same "explicitly-annotated local" shape for its own
+// `mapGet` call (`val result: Map[String, String] = newMap()`), proven to
+// compile on native, so this mirrors an already-working pattern rather
+// than introducing an untested one -- explicit type-argument application
+// (`mapKeys[String, String](extra)`) was tried first but produces an
+// `InvalidProgramException` on `--target dotnet` for this exact stdlib
+// generic pair (a separate, MSIL-backend-specific bug in the explicit
+// type-application path, not something to depend on here).
 func appendExtraHeaders(headers: in List[HeaderField], extra: in Map[String, String]): Unit {
-  val names = mapKeys(extra).toArray()
+  val m: Map[String, String] = extra
+  val names = mapKeys(m).toArray()
   var i = 0
   while i < names.length {
     val name = names[i]
-    match mapGet(extra, name) {
+    match mapGet(m, name) {
       case Some(value) -> appendSafeHeader(headers, name, value)
       case None -> ()
     }
