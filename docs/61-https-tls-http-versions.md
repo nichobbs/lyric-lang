@@ -883,7 +883,7 @@ items marked ∥ are independent and can proceed in parallel.
     ALPN-selected h2 is N9.5's job. No `LYRIC_HTTP_MAX_CONNECTIONS`
     backpressure cap yet (`Std.Parse`, needed to read the override, has no
     `_kernel_native/` twin). Verified by
-    `lyric-compiler/lyric/llvm_http_server_self_test.l` (seven cases: a
+    `lyric-compiler/lyric/llvm_http_server_self_test.l` (nine cases: a
     plaintext round trip, a real concurrent TLS round trip via N9.4's
     `hostConnectTls` on a second pthread, the h2-rejection guard, a
     keep-alive round trip over one connection, the #6791 regression
@@ -894,14 +894,23 @@ items marked ∥ are independent and can proceed in parallel.
     into the active-connection registry BEFORE spawning its handler
     thread, not after, or a connection that finishes fast enough (a
     connect-then-immediate-disconnect scan) can race its own
-    unregistration and leave a stale, already-closed entry behind — and
-    the #6795 regression — `stopListener` must hold the queue mutex
+    unregistration and leave a stale, already-closed entry behind — the
+    #6795 regression — `stopListener` must hold the queue mutex
     across its ENTIRE snapshot-then-`hostShutdown` sequence, not just
     the snapshot, or a connection finishing naturally and concurrently
     (an ordinary `Connection: close` exchange completing while
     `stopListener` runs) can be unregistered and closed by its own
     thread in between, so `hostShutdown` ends up acting on an
-    already-closed, potentially fd-reused descriptor).
+    already-closed, potentially fd-reused descriptor — the #6802
+    regression — `stopListener` must not free the queue's mutex/
+    semaphore while a caller-owned puller thread is genuinely parked in
+    `nextContext`, or that thread's own blocking wait use-after-frees
+    them (fixed by a `waitingPullers` counter plus a LeakSanitizer-
+    ignore for the disclosed retention that results) — and the #6803
+    regression — `enqueueContext` must post its availability credit
+    before releasing the queue mutex, not after, or a handler thread
+    preempted in between can have its already-queued context orphaned
+    by `stopListener`'s abandoned-queue drain).
     **N9.5** lyric-web `serveTls` + ALPN h2. See
     `native/plan/08-work-items.md` Phase N9 for the full banding and
     prerequisites._

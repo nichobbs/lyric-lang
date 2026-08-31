@@ -54,6 +54,14 @@ void* lyric_alloc(uint64_t size);
  * objects are freed by lyric_release, never this.  No-op on NULL. */
 void lyric_free(void* p);
 
+/* Mark a raw malloc'd/lyric_alloc'd block (`p` must be the exact pointer
+ * returned by the allocator) as a deliberate, provably-safe retention
+ * LeakSanitizer should not report as a leak (issue #6802) -- see
+ * lyric_rt.c's own doc comment on this function for the full reasoning
+ * (`_kernel_native/http_server.l`'s `stopListener` is the one caller).
+ * A no-op in a non-ASan build. No-op on NULL. */
+void lyric_lsan_ignore_leak(void* p);
+
 /* Atomic rc increment.  No-op on NULL and on static objects. */
 void lyric_retain(void* obj);
 
@@ -614,8 +622,40 @@ int32_t lyric_sock_listen(const char* ip, int32_t port, int32_t backlog);
 int32_t lyric_sock_local_port(int32_t fd);
 
 /* Block until a client connects to the listening `listen_fd`; returns the
- * accepted connection fd, or -1 (last_error set). */
+ * accepted connection fd, or -1 (last_error set).  Retries internally on
+ * EINTR (never surfaced to the caller).  On any OTHER failure, the errno is
+ * captured thread-locally for `lyric_sock_accept_errno`/
+ * `lyric_sock_accept_error_class` below (issue #6805) -- callers that used to
+ * treat every failure here as fatal for the whole listener now have enough
+ * information to retry a merely transient one instead. */
 int32_t lyric_sock_accept(int32_t listen_fd);
+
+/* The raw `errno` from the most recent `lyric_sock_accept` failure on this
+ * thread (issue #6805). Diagnostic detail alongside `lyric_tls_last_error*`'s
+ * human-readable message; `lyric_sock_accept_error_class` below is what a
+ * caller should actually branch on (raw errno values are platform-specific,
+ * e.g. ECONNABORTED differs between Linux and macOS). */
+int32_t lyric_sock_accept_errno(void);
+
+/* Classifies the most recent `lyric_sock_accept` failure (issue #6805),
+ * using the REAL platform's <errno.h> macros so the classification is
+ * correct on every POSIX target this project builds for, not just Linux:
+ *   0 -> fatal: the listening socket itself is gone (the intentional
+ *        `Std.TcpHost.hostStopListener` shutdown()+close() path yields
+ *        EINVAL on Linux for a blocked accept(), per that function's own
+ *        doc comment; a genuine unexpected socket fault falls here too) --
+ *        the caller's accept loop should end.
+ *   1 -> transient: an already-pending network error on the new connection
+ *        that Linux's accept(2) documents passing through (ECONNABORTED and
+ *        the handful of related codes accept(2) recommends treating like
+ *        EAGAIN) -- POSIX says a portable server should just retry
+ *        immediately; this error has nothing to do with the LISTENING
+ *        socket's own health.
+ *   2 -> overloaded: EMFILE/ENFILE (the process- or system-wide open-file
+ *        table is full) -- also not the listener's fault, but retrying
+ *        immediately would spin-loop burning CPU while every accept() call
+ *        fails the same way, so the caller should back off briefly first. */
+int32_t lyric_sock_accept_error_class(void);
 
 /* Read up to `n` bytes into `buf`, blocking until at least one arrives.
  * Returns the count read, 0 on a clean peer close (EOF), or -1 on error.

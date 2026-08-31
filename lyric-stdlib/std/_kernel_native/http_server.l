@@ -292,6 +292,7 @@ import Std.Encoding
 import Std.Tls
 import Std.HttpEngine
 import Std.TcpHost
+import Std.Time
 
 // =====================================================================
 // Extern seam bindings.
@@ -301,6 +302,12 @@ extern func rtByteAt(s: String, idx: Int): Int = "lyric_string_byte_at"
 extern func rtMalloc(n: Long): Long = "malloc"
 
 extern func rtFree(p: Long): Unit = "free"
+
+// Marks a raw malloc'd buffer as a deliberate, provably-safe retention
+// LeakSanitizer should not report (issue #6802) -- see `lyric_rt.c`'s own
+// doc comment on `lyric_lsan_ignore_leak` for the full reasoning.
+// `stopListener`'s queue-free step is the one call site.
+extern func rtLsanIgnoreLeak(p: Long): Unit = "lyric_lsan_ignore_leak"
 
 extern func rtMutexSize(): Int = "lyric_mutex_size"
 
@@ -429,6 +436,14 @@ record ServerQueue {
   // that thread indefinitely -- the exact deadlock class #6791 closed, via a
   // narrower timing window on the other side of the one-shot drain.
   var stopping: Bool
+  // Count of `dequeueContext` calls currently blocked inside
+  // `rtSemWait(q.available)`, incremented/decremented under `mutex` around
+  // that wait (#6802). `stopListener` reads this, under the same mutex,
+  // immediately before it would free `mutex`/`available` -- see
+  // `dequeueContext`'s and `stopListener`'s own doc comments for why this is
+  // the ONLY race-free way to know whether freeing right now would destroy a
+  // buffer a live thread's blocking syscall still references.
+  var waitingPullers: Long
 }
 
 func newServerQueue(): ServerQueue {
@@ -447,7 +462,8 @@ func newServerQueue(): ServerQueue {
     workerTids = tids,
     workerClosures = closures,
     activeConns = conns,
-    stopping = false
+    stopping = false,
+    waitingPullers = 0
   )
 }
 
@@ -461,6 +477,23 @@ func newServerQueue(): ServerQueue {
 // nothing will ever pull from again. No response is written to the wire for
 // it -- the same disclosed scope as the drain step's own handling of a
 // context already queued when shutdown began (module header).
+//
+// `rtSemPost(q.available)` runs BEFORE `rtMutexUnlock`, not after (#6803):
+// posting after releasing the mutex left a window where a thread that had
+// just unlocked -- item already added to `items`, credit not yet posted --
+// could be preempted right there. `stopListener`'s abandoned-queue drain
+// (below) uses `rtSemTryWait` as its sole "is there really an
+// unclaimed item" signal, so during that exact window the drain would see
+// no available credit, conclude there was nothing left to drain, and stop
+// -- even though an item was already sitting in `items`. That item's
+// enqueuing thread would then resume, post a credit nobody is looking for
+// any more, and park in `rtSemWait(doneSem)` forever waiting for a response
+// that will never come, hanging `stopListener`'s later `pthreadJoin` on
+// that thread. Posting and adding the item under the SAME critical section
+// makes "item present in `items`" and "its credit posted" atomic from every
+// other thread's point of view: nothing can ever observe the former without
+// the latter having already happened, so the drain's `rtSemTryWait` check
+// stays a fully reliable signal.
 func enqueueContext(q: in ServerQueue, ctx: in HttpContext): Unit {
   rtMutexLock(q.mutex)
   if q.stopping {
@@ -469,13 +502,25 @@ func enqueueContext(q: in ServerQueue, ctx: in HttpContext): Unit {
     return
   }
   q.items.add(ctx)
-  rtMutexUnlock(q.mutex)
   rtSemPost(q.available)
+  rtMutexUnlock(q.mutex)
 }
 
+// `waitingPullers` brackets the blocking wait (#6802): incremented under
+// `mutex` before it, decremented under `mutex` after it returns. This is
+// NOT about the wait's own correctness (unchanged from before) -- it exists
+// purely so `stopListener` can later ask, under the same mutex, "is any
+// thread genuinely parked inside `rtSemWait` on this queue's semaphore
+// right now" before it frees that semaphore's backing buffer. See
+// `stopListener`'s own doc comment for the full reasoning and the
+// use-after-free this closes.
 func dequeueContext(q: in ServerQueue): HttpContext {
+  rtMutexLock(q.mutex)
+  q.waitingPullers = q.waitingPullers + 1
+  rtMutexUnlock(q.mutex)
   rtSemWait(q.available)
   rtMutexLock(q.mutex)
+  q.waitingPullers = q.waitingPullers - 1
   val ctx = q.items[0]
   q.items.removeAt(0)
   rtMutexUnlock(q.mutex)
@@ -955,12 +1000,27 @@ func spawnHandler(conn: in Conn, queue: in ServerQueue, limits: in EngineLimits)
   }
 }
 
+// How long to back off before retrying accept() after an EMFILE/ENFILE
+// (issue #6805): long enough that a tight retry loop doesn't pin a CPU core
+// spinning through failing accept() calls while the fd table stays full,
+// short enough that the listener resumes serving promptly once something
+// else closes a descriptor.
+val acceptOverloadBackoffMs: Int = 5
+
 // Handle one accept result: on success, reject a negotiated-h2 connection
 // (module header's "Scope: v1 is HTTP/1.1 only" section) or spawn a
-// per-connection thread and keep looping; on a stopped listener
-// (`AcceptFailed`/`BindFailed`) end the loop; any other per-connection
-// failure (e.g. a TLS handshake that failed for one client) is skipped so
-// one bad peer never takes the listener down.
+// per-connection thread and keep looping; on a genuinely dead listener
+// (`AcceptFatal`/`BindFailed` -- the intentional `stopListener` shutdown
+// path, or a real socket-level fault) end the loop; on a transient or
+// resource-exhaustion accept() failure (issue #6805's `AcceptFailureKind`,
+// e.g. a client that sent RST between SYN and accept(), or a momentary
+// EMFILE/ENFILE under fd pressure) keep looping instead -- existing
+// connections stay healthy either way, but before this fix ANY accept()
+// failure silently and permanently ended the loop, so the listener looked
+// alive from the outside while it had actually stopped accepting new
+// connections for good, with nothing logged; any other per-connection
+// failure (e.g. a TLS handshake that failed for one client) is likewise
+// skipped so one bad peer never takes the listener down.
 func onAccepted(accepted: in Result[Conn, TcpError], queue: in ServerQueue, limits: in EngineLimits): Bool {
   match accepted {
     case Ok(conn) -> {
@@ -972,7 +1032,7 @@ func onAccepted(accepted: in Result[Conn, TcpError], queue: in ServerQueue, limi
         true
       }
     }
-    case Err(e) -> match e { case AcceptFailed(_) -> false; case BindFailed(_) -> false; case _ -> true }
+    case Err(e) -> match e { case AcceptFailed(_, _, kind) -> match kind { case AcceptFatal -> false; case AcceptTransient -> true; case AcceptOverloaded -> { sleepMillis(acceptOverloadBackoffMs); true } }; case BindFailed(_) -> false; case _ -> true }
   }
 }
 
@@ -1240,10 +1300,57 @@ pub func stopListener(l: in HttpListener): Unit {
     rtRelease(workerPtr)
     i = i + 1
   }
-  rtMutexDestroy(l.queue.mutex)
-  rtFree(l.queue.mutex)
-  rtSemDestroy(l.queue.available)
-  rtFree(l.queue.available)
+  // A CALLER-owned puller thread -- one blocked inside `nextContext` ->
+  // `dequeueContext` -> `rtSemWait(q.available)` -- may still be genuinely
+  // parked right now (#6802). Unlike every thread joined just above, this
+  // one is not spawned or tracked by this file at all: an application can
+  // call `nextContext` from any thread it likes, with no registration step,
+  // so `stopListener` has no `pthread_join`-style way to wait for it. Before
+  // this fix, the free below ran unconditionally -- destroying `q.mutex`
+  // via `rtMutexDestroy`/`rtFree` and `q.available` via `rtSemDestroy`/
+  // `rtFree` while that thread's own blocking syscall still referenced
+  // them, a real ASan use-after-free under concurrent shutdown that none of
+  // this file's seven original self-test cases exercised (every one of them
+  // only calls `stopListener` after every `nextContext` call on that same
+  // thread had already returned).
+  //
+  // `waitingPullers`, incremented/decremented under this SAME mutex around
+  // exactly that wait (`dequeueContext`'s own doc comment), makes the
+  // question "is anyone parked in there right now" answerable without
+  // racing: a nonzero count here is guaranteed to reflect a genuinely
+  // still-parked waiter, because its own increment (also under this mutex)
+  // must have already happened-before this read. When it IS nonzero, this
+  // function deliberately does not free -- not silently, and not a leak
+  // in the classical sense: no further `enqueueContext` call can ever
+  // legitimately post `q.available` again once `stopping` is set (checked
+  // at the top of this function) and every handler thread is already
+  // joined (the loop just above), so that parked waiter can never receive
+  // a legitimate item and will stay parked for the remaining life of the
+  // process -- exactly the same "the caller's own obligation to avoid"
+  // category this file's own module header already accepts for an
+  // abandoned *dequeued* context (see "What this does NOT fix" above), now
+  // extended to a caller that keeps a `nextContext` call outstanding after
+  // it has already decided to stop the listener. This is a disclosed,
+  // deliberate, PROVEN-safe retention, not a silent resource leak: it is
+  // explicitly marked via `rtLsanIgnoreLeak` (confirmed by direct repro
+  // that a genuinely still-blocked thread's own stack does NOT reliably
+  // keep this project's condvar-backed semaphore's pointer in a form
+  // LeakSanitizer's scanner recognizes as reachable on its own -- an
+  // unconditionally-leaked buffer here failed a real ASan+LSan run) so the
+  // test suite's leak detection stays meaningful for every OTHER
+  // allocation in this file, rather than needing to be weakened globally.
+  rtMutexLock(l.queue.mutex)
+  val safeToFreeQueue = l.queue.waitingPullers == 0
+  rtMutexUnlock(l.queue.mutex)
+  if safeToFreeQueue {
+    rtMutexDestroy(l.queue.mutex)
+    rtFree(l.queue.mutex)
+    rtSemDestroy(l.queue.available)
+    rtFree(l.queue.available)
+  } else {
+    rtLsanIgnoreLeak(l.queue.available)
+    rtLsanIgnoreLeak(l.queue.mutex)
+  }
 }
 
 /// HTTP method (`"GET"`, `"POST"`, ...).

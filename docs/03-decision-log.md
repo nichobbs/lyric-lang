@@ -37895,3 +37895,225 @@ above, pre-existing and out of scope). No new issue was filed for the
 retracted `slice[Byte]` hypothesis — it does not reproduce, so there is
 nothing to track.
 
+**Addendum 5 (2026-08-31, review findings #6802/#6803/#6804/#6805 on
+head `9aeb15d6` — a genuine use-after-free, an orphaning race, a
+documented macOS gap, and a silent listener death, none exercised by
+the seven-then-nine cases above).** Four more REQUIRED findings landed
+on the same PR, this time all found by reading the actual concurrent
+control flow (not the diff hunks) rather than by CI failure — closing
+them added two new self-test cases (items H and I, "seven cases" →
+"nine cases" everywhere that count is quoted) and two runtime primitives
+to `lyric-rt`.
+
+**#6802 — `stopListener` use-after-freed the queue's mutex/semaphore
+while a puller was genuinely parked in `nextContext`.** `dequeueContext`
+blocks in `rtSemWait(q.available)` with no way to know whether anyone
+else is still relying on that wait; `stopListener`'s final step
+unconditionally `rtMutexDestroy`/`rtFree`'d the mutex and
+`rtSemDestroy`/`rtFree`'d the semaphore regardless. A caller-owned
+puller thread parked inside that wait at the exact moment `stopListener`
+reached this step would have its blocking syscall's own buffer freed out
+from under it — a real ASan heap-use-after-free the instant that thread
+next touched the (by-then-invalid) mutex, confirmed by direct repro
+(`lyric_mutex_lock` failing with a garbage/invalid state) before the
+fix, not merely asserted. **Fix:** `ServerQueue` gained a
+`waitingPullers: Long` counter, incremented/decremented under `q.mutex`
+by `dequeueContext` around exactly its blocking wait. `stopListener`
+reads this count under the same mutex immediately before it would free:
+zero means every entry point into `dequeueContext` that could ever touch
+the buffer again has already returned, so freeing is provably safe
+(the fast path, unchanged from before, exercised by every one of items
+A-G); nonzero means a thread's own increment happened-before this read
+(same mutex, so no race), so a legitimate waiter is parked right now and
+freeing would use-after-free it — `stopListener` does not free in that
+case. Since `stopping` is set (and checked by `enqueueContext`) before
+this point and no more handler threads can enqueue after the join loop
+just above, that parked waiter can never receive a legitimate item again
+and stays parked for the rest of the process's life — the same
+"caller's own obligation to avoid" category this file's module header
+already accepts for an abandoned *dequeued* context, now extended one
+step further upstream.
+
+**The naive fix (silently never free) does not actually work: it fails
+under real `-fsanitize=address` LeakSanitizer, disproving an initial,
+plausible-but-wrong assumption written into this addendum's own first
+draft and left here so nobody re-derives it.** The working theory was
+that a still-live, merely-blocked thread's own stack/registers would
+keep the mutex/semaphore's address reachable, so LeakSanitizer's
+"reachable from a live thread" rule would treat an unconditionally-
+skipped free as not-a-leak. A real ASan+LSan run of item H (below)
+falsified this immediately: `LeakSanitizer: detected memory leaks,
+Direct leak of 40 byte(s) in 1 object(s)` at `newServerQueue`'s mutex
+allocation, reproduced deterministically down to a single iteration —
+this project's condvar-backed `lyric_sem_t` (mutex + cond + count,
+`lyric_posix.c`, needed because POSIX `sem_init` is unimplemented on
+macOS) does not keep the malloc'd buffer's address on the blocked
+thread's stack in a form LSan's conservative scanner recognizes as a
+root, at least not reliably. **Real fix:** a new `lyric_rt.c` primitive,
+`lyric_lsan_ignore_leak(void* p)`, calls the LeakSanitizer interface's
+`__lsan_ignore_object(p)` — the sanctioned API for exactly this
+situation (a small, bounded, disclosed, provably-safe retention, not a
+general "hide a leak" escape hatch) — when `stopListener` decides not to
+free. Exposed to `_kernel_native/http_server.l` as `rtLsanIgnoreLeak`,
+called on both the mutex and semaphore handles in the "not safe to
+free" branch (neither `rtMutexDestroy` nor `rtSemDestroy` run either —
+destroying a mutex/condvar a thread might still be blocked inside is
+its own separate UB, independent of freeing the buffer underneath it).
+
+**The first attempt at even THAT fix also silently failed, for a build-
+architecture reason specific to this repo, not a sanitizer-API mistake.**
+`lyric_lsan_ignore_leak` was first written with a compile-time
+`#if defined(__SANITIZE_ADDRESS__) || __has_feature(address_sanitizer)`
+guard around `#include <sanitizer/lsan_interface.h>` and the
+`__lsan_ignore_object` call, falling back to a no-op otherwise (the
+obvious, "portable ASan-optional code" idiom). This compiled and linked
+cleanly but was a **permanent no-op in every real self-test binary**:
+`lyric-rt.a` is built exactly once, by a plain `make -C lyric-rt` with no
+`-fsanitize=address`, and then statically linked into every
+`--target native` binary regardless of whether THAT specific
+`compileToNativeWithFlags` invocation later asks clang to add
+`-fsanitize=address` to the final link — so `lyric_rt.c`'s own
+compile-time sanitizer-feature check can never see whether the
+DOWNSTREAM binary will actually be ASan-instrumented, and is always
+false for this archive as built. Confirmed by an added debug
+`fprintf` in `lyric_lsan_ignore_leak` before diagnosing further: it
+printed `asan=0` on every call from a `-fsanitize=address`-compiled test
+binary. **Real fix:** declare `__lsan_ignore_object` as a weak external
+symbol (`__attribute__((weak))`) instead of behind a compile-time guard,
+and check it for non-NULL at runtime before calling it — the standard
+pattern for calling an optional sanitizer-runtime interceptor from code
+that may or may not end up linked against the sanitizer at the FINAL
+link (which is the granularity that actually matters here): a
+non-ASan-instrumented final binary simply never links the LeakSanitizer
+runtime, so the weak symbol resolves to a null function pointer and the
+call is skipped; an ASan-instrumented one resolves it to the real
+function regardless of how `lyric_rt.o` itself was compiled. Verified
+directly (single-iteration standalone repro) before re-running the full
+suite: `EXIT: 42`, no leak report.
+
+**#6803 — `enqueueContext` released `q.mutex` before `rtSemPost`ing,
+letting the abandoned-queue drain race a not-yet-posted credit and
+orphan a context.** A handler thread could `items.add(ctx)`, unlock, get
+preempted before `rtSemPost(q.available)`, and have `stopListener`'s
+drain (`rtSemTryWait` as its sole "anything left" signal) observe no
+credit and stop — leaving that context in `items` forever and hanging
+`stopListener`'s later `pthreadJoin` on that handler's thread (the exact
+hang class #6791/#6792/#6795/#6798 already closed, reopened through this
+narrower window). **Fix:** move `rtSemPost(q.available)` to before
+`rtMutexUnlock`, inside the same critical section as `items.add` — this
+alone closes the root cause, because it makes "item present in `items`"
+and "its credit posted" atomic from every other thread's point of view
+(nothing can observe the former without the latter having already
+happened), which is exactly the invariant the EXISTING drain loop's
+`rtSemTryWait`-then-locked-pop protocol (from addendum 4's #6796 fix)
+already assumed and relied on — so the drain loop itself needed no
+change; the bug was purely that `enqueueContext` could violate an
+invariant the drain already correctly trusted.
+
+**#6804 — the module's own comment overstated cross-platform accept()-
+interrupt parity; taken as a documented-gap fix, not a real one.** The
+`shutdown(fd, SHUT_RDWR)`-before-`close()` interrupt trick
+`hostStopListener` uses to unblock a concurrently-blocked `accept()` on
+the listening socket is Linux-specific: on macOS/BSD, `shutdown()` on a
+LISTENING socket returns `ENOTCONN` and does not wake a concurrent
+`accept()`. `hostStopListener`'s own comment already correctly scoped
+its factual claim to "Linux documents...", but a nearby unrelated
+comment (about `SHUT_RDWR`'s numeric value being portable) also named
+"(Linux/macOS)" in a way a reader could conflate with the accept-
+interrupt claim, and nothing in the file loudly disclosed the actual
+macOS gap. A real portable fix (a self-pipe or `pipe(2)`-based wakeup fd
+multiplexed with the listening socket via `poll(2)`/`select(2)`, instead
+of today's bare blocking `accept()`) is a materially larger rework of
+`lyric_sock_accept`/`hostAccept`/`plainAcceptLoop`/`tlsAcceptLoop`'s
+blocking-accept model, and this sandbox has no macOS build or CI to
+verify it against (this project's CI is Linux-only) — per this file's
+own "prefer the real fix if you can reason through it confidently...
+otherwise take the documented-gap path" standard, shipping an unverified
+"portable" rewrite of the accept loop would itself violate the
+production-readiness bar it's meant to satisfy. **Fix taken:** clarified
+both comments so neither can be misread as claiming macOS parity,
+spelled out the concrete macOS failure mode (`stopListener` hangs in
+`pthreadJoin` on the accept thread, itself still blocked in `accept()`
+on the now-closed fd), and filed #6806 tracking the real portable fix
+with the specifics above, rather than leaving it as an undisclosed gap
+or guessing at an unverifiable fix.
+
+**#6805 — any `accept()` failure permanently and silently killed the
+listener, including transient ones a portable server should just
+retry.** `hostAccept` collapsed every `accept()` errno into one
+`AcceptFailed(message: String)` case with no detail; `onAccepted`
+treated any of it as fatal, ending the accept loop for good with nothing
+logged — existing connections kept working, so the server looked
+healthy while it had silently stopped accepting new ones. **Fix:**
+`lyric_sock_accept` (already retrying internally on `EINTR`, so that
+one never escapes to Lyric) now also captures the failing `errno`
+thread-locally and exposes two new `lyric-rt` primitives:
+`lyric_sock_accept_errno` (the raw errno, diagnostic detail) and
+`lyric_sock_accept_error_class` (a portable 0/1/2 classification
+computed from the REAL platform's `<errno.h>` macros, so it is correct
+on every POSIX target this project builds for, not hardcoded to Linux's
+numeric values). `TcpError.AcceptFailed` gained `errno: Int` and
+`kind: AcceptFailureKind` fields (`AcceptFatal` — the listening socket
+itself is gone, e.g. the intentional `stopListener` shutdown path's
+Linux `EINVAL`, or a genuine fault; `AcceptTransient` — `ECONNABORTED`
+and the handful of related already-pending-network-error codes Linux's
+`accept(2)` documents passing through, which POSIX recommends just
+retrying; `AcceptOverloaded` — `EMFILE`/`ENFILE`, the fd table is full).
+`onAccepted` now ends the loop only on `AcceptFatal`/`BindFailed`,
+retries immediately on `AcceptTransient`, and backs off 5ms
+(`Std.Time.sleepMillis`) before retrying on `AcceptOverloaded` (avoiding
+a tight spin-loop burning CPU while the fd table stays full) — one bad
+`accept()` no longer silently ends the listener's ability to accept ANY
+future connection.
+
+**New self-test coverage.** `llvm_http_server_self_test.l` gained two
+cases (seven → nine): **item H** (#6802) repeats fifteen times — a
+fresh listener, a puller thread spawned to call `nextContext` on it
+(which, since no connection is ever made, can only end up genuinely
+parked or not-yet-scheduled, never legitimately fed a request), a
+deliberate `sleepMillis(20)` to give that freshly-`pthread_create`d
+thread a real window to reach its own `rtSemWait` before racing it (a
+freshly spawned thread is only guaranteed to start running at SOME
+point after `pthread_create` returns, not that it has already executed
+any specific line — the sleep targets the ACTUAL documented scenario, a
+puller already running its loop, rather than a raw scheduling coin
+flip), and an immediate `stopListener` call; every spawned puller thread
+is deliberately never joined (it can never legitimately return) and
+process exit does not wait for it, so the pass/fail signal is the
+harness completing promptly and cleanly under ASan across all fifteen
+iterations. **item I** (#6803) sends twenty real, fully-parseable
+requests over twenty concurrent connections but never calls
+`nextContext` for any of them, forcing every single one through the
+abandoned-queue drain exclusively (unlike item G, which drains all
+twenty through the normal puller loop first and only races
+`stopListener` against their post-response socket close) — maximizing
+concurrent `enqueueContext` activity racing the drain the instant
+`stopListener` runs; every client thread is joined, so the pass/fail
+signal is `stopListener` (and every client join) still returning
+promptly and cleanly. Case-count references synced in
+`docs/61-https-tls-http-versions.md`, `native/plan/08-work-items.md`,
+and `docs/10-bootstrap-progress.md`.
+
+**Full verification (2026-08-31, real `--target native` build via the
+`LYRIC_BOOTSTRAP_VERSION=0.5.1` stage-0 pin, real `clang` + `lyric-rt`
+linking, four full rebuilds across the debugging process above):**
+`lyric-rt` builds clean under both plain (`-Wall -Wextra -Werror`) and
+`-fsanitize=address` compilation. `llvm_http_server_self_test.l` 9/9,
+repeated four consecutive full runs with no flakes (items H and I are
+probabilistic stress tests, like F/G before them). Full native suite,
+no regressions: `llvm_collections_self_test.l` 20/20,
+`llvm_tls_self_test.l` 5/5, `llvm_enum_case_resolve_self_test.l` 6/6,
+`llvm_http_client_self_test.l` 13/13, `llvm_heap_self_test.l` 35/35,
+`llvm_ir_self_test.l` 14/14, `llvm_stdlib_self_test.l` 18/18,
+`llvm_opaque_self_test.l` 8/8, `llvm_ffi_self_test.l` 6/6,
+`llvm_codegen_self_test.l` 32/32 — all rerun once more after a final
+clean `make lyric` to confirm the finalized AOT binary and stage-1 DLLs
+agree. `lyric fmt --write` applied cleanly to every changed `.l` file,
+no refusals.
+
+**Related (addendum 5):** #6802, #6803, #6804, #6805 (this addendum's
+four fixes), #6806 (the new tracked macOS accept-interrupt follow-up,
+filed rather than guessed at), #6791/#6792/#6795/#6796/#6798 (the same
+shutdown-hang/orphaning hazard class, earlier narrower windows — see
+addenda 1/3/4).
+

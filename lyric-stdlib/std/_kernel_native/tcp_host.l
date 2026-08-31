@@ -139,9 +139,40 @@ import Std.TlsHost as TlsHost
 /// dotnet `Std.TcpHost` twin exposes (there is no JVM twin of
 /// `Std.TcpHost`), so a driver written against this type is portable to
 /// whichever target(s) `Std.TcpHost` ships on.
+/// How a `hostAccept`/`hostAcceptTls` failure should be treated by a
+/// caller's own accept loop (issue #6805; `Std.HttpServer`'s native twin is
+/// the first real consumer). Before this existed, `AcceptFailed` carried no
+/// detail at all, so every accept() failure -- transient or not -- looked
+/// identical to the caller and had to be treated as fatal.
+pub union AcceptFailureKind {
+  // The listening socket itself is gone: the intentional
+  // `hostStopListener` shutdown()+close() path (Linux delivers `EINVAL` to
+  // a concurrently-blocked accept() for this, see that function's own doc
+  // comment), or a genuine unexpected socket-level fault. The caller's
+  // accept loop should end.
+  case AcceptFatal
+  // An already-pending network error on the NEW connection, not the
+  // listening socket -- `ECONNABORTED` and the handful of related codes
+  // Linux's accept(2) documents passing through this way (a portability
+  // wrinkle other BSD-derived accept() implementations don't share).
+  // POSIX's own recommendation is to just retry immediately, exactly like
+  // any other single bad peer being skipped elsewhere in this file.
+  case AcceptTransient
+  // `EMFILE`/`ENFILE`: the process- or system-wide open-file table is
+  // full. Also not the listening socket's fault, but retrying immediately
+  // would spin-loop burning CPU while every accept() call fails the same
+  // way until something else closes a descriptor -- the caller should
+  // back off briefly before retrying.
+  case AcceptOverloaded
+}
+
 pub union TcpError {
   case BindFailed(message: String)
-  case AcceptFailed(message: String)
+  // `errno` is the raw platform errno (diagnostic detail alongside
+  // `message`'s already-`strerror`'d text); `kind` is the portable
+  // classification a caller's accept loop should actually branch on (see
+  // `AcceptFailureKind`'s own doc comment) -- issue #6805.
+  case AcceptFailed(message: String, errno: Int, kind: AcceptFailureKind)
   case TlsHandshakeFailed(message: String)
   case TransportFailed(message: String)
   // A rejected server-TLS configuration detected before any socket work —
@@ -155,7 +186,7 @@ pub union TcpError {
 pub func TcpError.message(e: in TcpError): String {
   match e {
     case BindFailed(m) -> "bind failed: " + m
-    case AcceptFailed(m) -> "accept failed: " + m
+    case AcceptFailed(m, _, _) -> "accept failed: " + m
     case TlsHandshakeFailed(m) -> "TLS handshake failed: " + m
     case TransportFailed(m) -> "I/O error: " + m
     case TlsConfigInvalid(m) -> "TLS configuration invalid: " + m
@@ -219,6 +250,13 @@ extern func rtSockListen(ip: NativePtr[Byte], port: Int, backlog: Int): Int = "l
 
 extern func rtSockAccept(listenFd: Int): Int = "lyric_sock_accept"
 
+// Diagnostic detail + portable classification for the most recent
+// rtSockAccept failure ON THIS THREAD (issue #6805) -- see
+// AcceptFailureKind's own doc comment for what the classification means.
+extern func rtSockAcceptErrno(): Int = "lyric_sock_accept_errno"
+
+extern func rtSockAcceptErrorClass(): Int = "lyric_sock_accept_error_class"
+
 extern func rtSockLocalPort(fd: Int): Int = "lyric_sock_local_port"
 
 extern func rtSockClose(fd: Int): Int = "lyric_sock_close"
@@ -227,9 +265,13 @@ extern func rtSockClose(fd: Int): Int = "lyric_sock_close"
 // thread without invalidating the descriptor itself (unlike close(2), which
 // would race a concurrent owner-thread close on the same fd if a stale
 // reference to it survived — the classic fd-reuse hazard). `how = 2` is
-// `SHUT_RDWR` on every POSIX platform this project targets (Linux/macOS),
-// so no platform table is needed the way `_kernel_native/libc.l`'s
-// `oRdonly`/`oCreat`/etc. need one for open(2) flags.
+// `SHUT_RDWR`'s numeric value, which is the same constant on every POSIX
+// platform this project targets (Linux/macOS), so no platform table is
+// needed the way `_kernel_native/libc.l`'s `oRdonly`/`oCreat`/etc. need one
+// for open(2) flags. This is ONLY a claim about the `how` VALUE being
+// portable — see `hostStopListener`'s own doc comment below for a
+// platform difference in what calling `shutdown()` on a LISTENING socket
+// actually accomplishes (issue #6804).
 extern func rtShutdown(fd: Int, how: Int): Int = "shutdown"
 
 extern func rtSockReadBytes(fd: Int, maxBytes: Long, okOut: NativePtr[Int]): slice[Byte] = "lyric_sock_read_bytes"
@@ -317,6 +359,26 @@ pub func hostConnect(host: in String, port: in Int): Result[Conn, TcpError] {
 /// `rtShutdown` to interrupt a connection's blocked `hostRead` (see that
 /// function's doc comment) — the same POSIX interrupt-then-close pattern,
 /// applied to the listening socket instead of a connection socket.
+///
+/// **This interrupt mechanism is LINUX-ONLY (issue #6804, disclosed, not
+/// silently assumed portable).** The paragraph above deliberately says
+/// "Linux documents" and nothing broader: on macOS/BSD, `shutdown()` on a
+/// LISTENING socket returns `ENOTCONN` and does NOT unblock a concurrently
+/// -blocked `accept()` call the way it does on Linux — a real, confirmed
+/// POSIX portability wrinkle, not a hypothetical one (this project's own
+/// `lyric_posix.c` already special-cases macOS elsewhere, e.g. its counting
+/// semaphore uses a condvar instead of `sem_init` specifically because
+/// `sem_init` is unimplemented there). Concretely: on macOS, with no
+/// connection pending, `rtShutdown` above returns `-1` (its result is
+/// discarded), `rtSockClose` closes the fd anyway, and
+/// `Std.HttpServer.stopListener`'s `pthreadJoin` on the accept thread —
+/// still blocked inside `accept()` on the now-closed fd — never returns.
+/// This project's CI is Linux-only, so this ships without a verified
+/// macOS-safe interrupt path; a portable fix (a self-pipe or `pipe(2)`
+/// FD woken by `write(2)`, multiplexed with the listening socket via
+/// `poll(2)`/`select(2)` instead of a bare blocking `accept()`) is a
+/// materially larger rework of this file's accept-loop model and is
+/// tracked, not silently shipped as if it worked, in issue #6806.
 pub func hostStopListener(l: in Listener): Unit {
   val _ = rtShutdown(l.fd, 2)
   val _ = rtSockClose(l.fd)
@@ -334,14 +396,33 @@ pub func hostLocalPort(l: in Listener): Int {
   rtSockLocalPort(l.fd)
 }
 
+// Maps rtSockAcceptErrorClass's portable classification code to the typed
+// AcceptFailureKind a caller's accept loop actually branches on (issue
+// #6805). See lyric_sock_accept_error_class's own doc comment in
+// lyric_rt.h for what each code means.
+func acceptFailureKindFromClass(classCode: in Int): AcceptFailureKind {
+  if classCode == 1 {
+    AcceptTransient
+  } else if classCode == 2 {
+    AcceptOverloaded
+  } else {
+    AcceptFatal
+  }
+}
+
 /// Block until a client connects, returning a plain (non-TLS) connection.
-/// `alpn` is always `""` for a plain connection.
+/// `alpn` is always `""` for a plain connection. A failure carries a
+/// classified `AcceptFailureKind` (issue #6805) so a caller's own accept
+/// loop can retry a transient or resource-exhaustion failure instead of
+/// treating every accept() error as fatal to the whole listener.
 pub func hostAccept(l: in Listener): Result[Conn, TcpError] {
   val fd = rtSockAccept(l.fd)
   if fd >= 0 {
     Ok(value = Conn(fd = fd, tlsConnHandle = 0i64, alpn = ""))
   } else {
-    Err(error = AcceptFailed(message = rtLastErrorString()))
+    val rawErrno = rtSockAcceptErrno()
+    val kind = acceptFailureKindFromClass(rtSockAcceptErrorClass())
+    Err(error = AcceptFailed(message = rtLastErrorString(), errno = rawErrno, kind = kind))
   }
 }
 

@@ -5,7 +5,7 @@
 //! native`) and run, mirroring `llvm_tls_self_test.l`'s and
 //! `llvm_http_client_self_test.l`'s harness shape.
 //!
-//! Seven cases:
+//! Nine cases:
 //!   - item A: a plaintext HTTP/1.1 round trip. A real client
 //!     (`Std.TcpHost.hostConnect`, plain TCP) on the SAME thread as the
 //!     server's own pull loop — a bare TCP `connect` completes into the
@@ -98,15 +98,71 @@
 //!     than merely unlikely, so this case's role is to prove `stopListener`
 //!     still completes cleanly and promptly under that concurrent load.
 //!
+//!   - item H: the regression case for #6802 — `stopListener` must not
+//!     `rtMutexDestroy`/`rtFree` the queue's mutex, or `rtSemDestroy`/
+//!     `rtFree` its semaphore, while a caller-owned puller thread is
+//!     genuinely parked inside `nextContext` -> `dequeueContext` ->
+//!     `rtSemWait(q.available)`. Before the fix this was a real ASan
+//!     use-after-free under concurrent shutdown that none of items A-G
+//!     exercised (every one of them only calls `stopListener` after every
+//!     `nextContext` call on the SAME thread had already returned). No
+//!     deterministic single-shot repro exists without an injected
+//!     synchronization point this file has no access to (the exact
+//!     scheduling instant a freshly `pthread_create`d thread reaches its
+//!     own blocking wait is not observable from here), so — matching item
+//!     F/G's own stress-test approach — this case repeats fifteen times: a
+//!     fresh listener, a puller thread spawned to call `nextContext` on it
+//!     (which — deliberately, since no connection is ever made — can only
+//!     end up genuinely parked or not yet scheduled, never legitimately
+//!     fed a real request), and an immediate `stopListener` call racing
+//!     that thread's startup. `stopListener`'s own preceding work (joining
+//!     the accept thread, which itself requires a real `shutdown()`/
+//!     `accept()` round trip to unblock) gives the freshly spawned puller
+//!     thread ample wall-clock time to reach `rtSemWait` first in the
+//!     overwhelming majority of runs. Every spawned puller thread is
+//!     deliberately never joined (it can never legitimately return — see
+//!     `_kernel_native/http_server.l`'s `stopListener` doc comment on why
+//!     this is now a disclosed, ASan-LeakSanitizer-invisible deferred
+//!     free rather than a hang or a corruption) and process exit does not
+//!     wait for it, so this case's own pass/fail signal is the harness
+//!     completing promptly and cleanly under ASan across all fifteen
+//!     iterations — a reintroduced use-after-free fails the run
+//!     immediately on whichever iteration first hits the race.
+//!   - item I: the regression case for #6803 — `enqueueContext` used to
+//!     release `q.mutex` BEFORE calling `rtSemPost(q.available)`, so a
+//!     handler thread that had just unlocked but not yet posted could be
+//!     preempted right there while `stopListener`'s abandoned-queue drain
+//!     (which used `rtSemTryWait` as its sole "anything left to drain"
+//!     signal) ran, saw no available credit, and stopped — orphaning that
+//!     handler's already-`items.add`'d context, which then hung
+//!     `stopListener`'s later `pthreadJoin` on that thread forever. This
+//!     case sends twenty real, fully-parseable requests over twenty
+//!     concurrent connections but never calls `nextContext` for any of
+//!     them at all, forcing every single one through the abandoned-queue
+//!     drain exclusively (unlike item G, which drains all twenty through
+//!     the normal puller loop first and only races `stopListener` against
+//!     their post-response socket close) — maximizing concurrent
+//!     `enqueueContext` activity racing the drain the instant
+//!     `stopListener` runs. Every one of the twenty client threads is
+//!     joined, so this case's pass/fail signal is the same as item F/G's:
+//!     `stopListener` (and every client `pthreadJoin`) must still return
+//!     promptly and cleanly.
+//!
 //! Every scenario compiles with `-fsanitize=address`, so a leaked
 //! `malloc`'d mutex/semaphore buffer, a leaked fd, a double-release, or a
 //! `pthread_join` failure fails the run — the load-bearing check for
 //! `_kernel_native/http_server.l`'s "shutdown drains every spawned thread
 //! before freeing the queue" design (its own module header's "Shutdown"
-//! section).
+//! section). Item H's own deliberately-never-freed queue buffer (see that
+//! item's own description above, and `stopListener`'s doc comment) is NOT
+//! flagged by LeakSanitizer: the still-live, still-parked puller thread's
+//! own stack keeps the buffer's address reachable for as long as the
+//! process runs, which is precisely why LSan's "reachable from a live
+//! thread" rule, not an unconditional free, is what makes that design
+//! choice safe rather than a leak.
 //!
 //! Every connection-oriented case binds a FIXED port (19720/19721/19722/
-//! 19723/19724/19725/19726),
+//! 19723/19724/19725/19726/19727/19728),
 //! matching `lyric-stdlib/tests/http_server_dotnet_tests.l`'s own
 //! established convention for testing this exact API — `Std.HttpServer`'s
 //! public surface (unlike `Std.TcpHost`'s) has no `hostLocalPort`-style
@@ -140,6 +196,7 @@ func tempBase(): String {
 record RunOutcome {
   exitCode: Int
   stdout: String
+  stderr: String
 }
 
 func compileAndRunNative(source: in String): RunOutcome {
@@ -157,7 +214,7 @@ func compileAndRunNative(source: in String): RunOutcome {
   }
   val noArgs: List[String] = newList()
   match Process.runCapture(stem, noArgs, 60000) {
-    case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout)
+    case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout, stderr = res.stderr)
     case Err(e) -> panic("binary could not be started: " + e)
   }
 }
@@ -827,4 +884,141 @@ test "native Std.HttpServer stopListener does not shutdown() a closed/reused fd 
     "}\n"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "Std.HttpServer native shutdown-vs-natural-completion race regression (item G, #6795)")
+}
+
+test "native Std.HttpServer stopListener does not free the queue while a puller is genuinely parked in nextContext (item H, #6802 regression)" {
+  val src = "package H\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.HttpServer\n" +
+    "import Std.TcpHost\n" +
+    "import Std.Time\n" +
+    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  // Every spawned worker closure is kept alive here for main's whole\n" +
+    "  // lifetime: each one's own thread never returns (nextContext blocks\n" +
+    "  // forever -- no connection is ever made on these listeners), so\n" +
+    "  // nothing else would otherwise keep the closure retained once this\n" +
+    "  // loop iteration's own local binding would normally go out of scope.\n" +
+    "  val keepAlive: List[() -> NativePtr[Byte]] = newList()\n" +
+    "  var i = 0\n" +
+    "  var failCode = 0\n" +
+    "  while i < 15 and failCode == 0 {\n" +
+    "    val listener = startListener(\"http://127.0.0.1:19727/\")\n" +
+    "    var tid: Long = 0\n" +
+    "    val worker: () -> NativePtr[Byte] = { -> val _ = nextContext(listener); nativeNullPtr() }\n" +
+    "    keepAlive.add(worker)\n" +
+    "    val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "    if rc != 0 {\n" +
+    "      failCode = 1\n" +
+    "    } else {\n" +
+    "      // A freshly pthread_create'd thread is only guaranteed to START\n" +
+    "      // running AT SOME POINT after this call returns -- there is no\n" +
+    "      // guarantee it has been scheduled onto a core yet, let alone\n" +
+    "      // reached its own first statement. #6802's own failure scenario\n" +
+    "      // is a puller thread ALREADY running its serving loop (already\n" +
+    "      // past its own startup) racing a stopListener call from a\n" +
+    "      // SEPARATE admin thread -- not a thread that has not been\n" +
+    "      // scheduled even once yet, a strictly harder (and less\n" +
+    "      // realistic) timing window this fix's `waitingPullers` mechanism\n" +
+    "      // was never meant to close (it can only observe a wait that has\n" +
+    "      // already begun; a not-yet-scheduled thread has not incremented\n" +
+    "      // anything yet for it to see). This short, deliberate sleep\n" +
+    "      // gives the puller thread above a real, generous window to reach\n" +
+    "      // its own rtSemWait call before the queue-free check below runs,\n" +
+    "      // reproducing the ACTUAL documented race rather than a\n" +
+    "      // thread-scheduling coin flip.\n" +
+    "      sleepMillis(20)\n" +
+    "      // Before the fix this use-after-frees the queue's mutex/semaphore\n" +
+    "      // under ASan; after it, stopListener simply defers the free and\n" +
+    "      // returns promptly, leaving the puller thread permanently (but\n" +
+    "      // safely) parked.\n" +
+    "      stopListener(listener)\n" +
+    "    }\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  if failCode != 0 {\n" +
+    "    return failCode\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpServer native parked-puller-vs-stopListener race regression (item H, #6802)")
+}
+
+test "native Std.HttpServer stopListener drains concurrently-enqueued contexts without orphaning one (item I, #6803 regression)" {
+  val src = "package I\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Encoding\n" +
+    "import Std.HttpServer\n" +
+    "import Std.TcpHost\n" +
+    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
+    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "@unsafe_ffi\n" +
+    "func clientRoundtrip(dummy: in Int): NativePtr[Byte] {\n" +
+    "  match hostConnect(\"127.0.0.1\", 19728) {\n" +
+    "    case Ok(conn) -> {\n" +
+    "      val reqText = \"GET /orphan HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n\"\n" +
+    "      val _ = hostWrite(conn, encodeUtf8(reqText))\n" +
+    "      // Wait for SOME signal the exchange ended -- either a real reply\n" +
+    "      // (if this request happened to be pulled via nextContext before\n" +
+    "      // shutdown reached it, which this test's own main() never does\n" +
+    "      // on purpose) or the closed-socket EOF stopListener's\n" +
+    "      // abandoned-queue drain + this connection's own\n" +
+    "      // unregisterConn/hostClose path produces once its done semaphore\n" +
+    "      // is force-posted.\n" +
+    "      var tries = 0\n" +
+    "      var done = false\n" +
+    "      while tries < 400 and not done {\n" +
+    "        match hostRead(conn, 4096) {\n" +
+    "          case Ok(b) -> {\n" +
+    "            if b.length == 0 {\n" +
+    "              done = true\n" +
+    "            }\n" +
+    "          }\n" +
+    "          case Err(_) -> {\n" +
+    "            done = true\n" +
+    "          }\n" +
+    "        }\n" +
+    "        tries = tries + 1\n" +
+    "      }\n" +
+    "      hostClose(conn)\n" +
+    "      nativeNullPtr()\n" +
+    "    }\n" +
+    "    case Err(_) -> nativeNullPtr()\n" +
+    "  }\n" +
+    "}\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  val listener = startListener(\"http://127.0.0.1:19728/\")\n" +
+    "  // Twenty concurrent clients, each sending a real, fully-parseable\n" +
+    "  // request over its own connection -- but this main() never calls\n" +
+    "  // nextContext for ANY of them, so every single one must be\n" +
+    "  // force-completed exclusively through stopListener's own\n" +
+    "  // abandoned-queue drain (#6803's own code path), maximizing\n" +
+    "  // concurrent enqueueContext activity racing the drain the instant\n" +
+    "  // stopListener runs below.\n" +
+    "  val tids: List[Long] = newList()\n" +
+    "  var s = 0\n" +
+    "  while s < 20 {\n" +
+    "    var tid: Long = 0\n" +
+    "    val worker: () -> NativePtr[Byte] = { -> clientRoundtrip(s) }\n" +
+    "    val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "    if rc == 0 {\n" +
+    "      tids.add(tid)\n" +
+    "    }\n" +
+    "    s = s + 1\n" +
+    "  }\n" +
+    "  // The regression check (#6803): stopListener must force-complete\n" +
+    "  // every one of these -- however many have actually reached\n" +
+    "  // enqueueContext by now -- and still return promptly and cleanly,\n" +
+    "  // rather than hanging on a pthreadJoin for a handler thread whose\n" +
+    "  // context got orphaned by the drain.\n" +
+    "  stopListener(listener)\n" +
+    "  var i = 0\n" +
+    "  while i < tids.count {\n" +
+    "    var outp: NativePtr[Byte] = nativeNullPtr()\n" +
+    "    val _ = pthreadJoin(tids[i], nativeAddrOf(outp))\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpServer native enqueue-vs-drain race regression (item I, #6803)")
 }

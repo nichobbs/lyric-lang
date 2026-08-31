@@ -1445,7 +1445,7 @@ tryParseInt` to read the environment override, and `Std.Parse` has no
 `_kernel_native/parse_host.l` twin yet — a disclosed v1 scope decision, not
 a silent omission.
 
-Verified by `lyric-compiler/lyric/llvm_http_server_self_test.l` (seven
+Verified by `lyric-compiler/lyric/llvm_http_server_self_test.l` (nine
 cases, ASan-compiled): item A is a plaintext HTTP/1.1 round trip (client and
 server on the same process, no second thread needed — a bare TCP `connect`
 completes into the listen backlog before `accept` runs); item B is a real
@@ -1487,7 +1487,28 @@ holding `q.mutex` across the ENTIRE snapshot-then-shutdown sequence
 (not just the snapshot), which makes the race impossible by
 construction rather than merely unlikely; item G's own role is to prove
 `stopListener` still completes cleanly and promptly against twenty
-concurrent real connections racing their own natural completion.
+concurrent real connections racing their own natural completion; item H
+is the **#6802 regression**: `stopListener` unconditionally
+`rtMutexDestroy`/`rtFree`'d the queue mutex and
+`rtSemDestroy`/`rtFree`'d the semaphore even while a caller-owned puller
+thread could still be genuinely parked inside `nextContext`'s blocking
+`rtSemWait` — a real ASan use-after-free the instant that thread next
+touched the freed buffer — fixed by a `ServerQueue.waitingPullers`
+counter `stopListener` checks under the same mutex immediately before
+freeing (nonzero means a live wait is provably still parked, so
+`stopListener` does not free; instead it calls a new
+`lyric_lsan_ignore_leak` runtime primitive, wrapping LeakSanitizer's
+`__lsan_ignore_object`, since a plain unconditional "never free" was
+confirmed by direct repro to still fail a real ASan+LSan run — this
+project's condvar-backed semaphore does not reliably keep the buffer
+reachable from the blocked thread's own stack); item I is the
+**#6803 regression**: `enqueueContext` released `q.mutex` BEFORE
+`rtSemPost`ing the availability credit, so a handler thread preempted in
+that exact window could have its already-`items.add`'d context orphaned
+by `stopListener`'s abandoned-queue drain (which trusted `rtSemTryWait`
+as its sole "anything left" signal) — fixed by moving the post inside
+the same critical section as the add, making "item present" and
+"credit posted" atomic from every other thread's point of view.
 
 **Sandbox/CI-validator boundary (same class as D-progress-712/809/823).**
 This session could not run `scripts/bootstrap.sh --stage 0`/`--stage 1`

@@ -33214,7 +33214,7 @@ HTTP/1.1 parser (native ALPN-selected h2 is N9.5's job); no
 the override, has no `_kernel_native/` twin yet) — both disclosed v1 scope
 decisions, not silent omissions.
 
-Verified by `lyric-compiler/lyric/llvm_http_server_self_test.l` (seven
+Verified by `lyric-compiler/lyric/llvm_http_server_self_test.l` (nine
 cases, ASan-compiled): a plaintext HTTP/1.1 round trip; a real concurrent
 TLS round trip with the client on a second `pthread_create`d thread driving
 N9.4's real `Std.TcpHost.hostConnectTls` public API; the h2-rejection
@@ -33240,7 +33240,19 @@ concurrently (an ordinary `Connection: close` exchange completing while
 case) could be unregistered and closed by its own thread in between,
 shutting down an already-closed/reused fd — fixed by holding the mutex
 across the entire snapshot-then-shutdown sequence, making the race
-impossible by construction rather than merely unlikely.
+impossible by construction rather than merely unlikely; the #6802
+regression — `stopListener` unconditionally freed the queue's mutex/
+semaphore even while a caller-owned puller thread could still be
+genuinely parked inside `nextContext`'s blocking wait, a real ASan
+use-after-free — fixed by a `waitingPullers` counter checked under the
+same mutex immediately before freeing, deferring to a new
+`lyric_lsan_ignore_leak` runtime primitive (LeakSanitizer's
+`__lsan_ignore_object`) when a wait is provably still parked, since an
+unconditional never-free alone still failed a real ASan+LSan run; and
+the #6803 regression — `enqueueContext` released the queue mutex before
+posting its availability credit, letting `stopListener`'s abandoned-
+queue drain race a not-yet-posted credit and orphan an already-queued
+context — fixed by posting inside the same critical section as the add.
 
 Boundary (same class as N9.1/N9.2/N9.4/D-progress-809): this session could
 not build `./bin/lyric` from source (GitHub release-artifact download is
@@ -33254,7 +33266,8 @@ repro against that tool (real compile + real run, exit code 0); the
 cross-thread half (anything touching `pthread_create`) is CI-verified only.
 `make -C lyric-rt test`/`test-asan` pass locally (unchanged C runtime).
 
-**Related:** `docs/03-decision-log.md` D-progress-850 (full account), #6104,
+**Related:** `docs/03-decision-log.md` D-progress-850 (full account,
+including addendum 5's #6802/#6803/#6804/#6805 fixes), #6104,
 `native/plan/08-work-items.md` N9.3, D-progress-809 (the `lyric_sem_*`
 prerequisite), D-progress-830/831 (the two blockers this item's own kernel
 depends on).
