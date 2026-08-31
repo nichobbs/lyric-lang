@@ -284,10 +284,39 @@ func dequeueContext(q: in ServerQueue): HttpContext {
   ctx
 }
 
-func registerWorker(q: in ServerQueue, tid: in Long, conn: in Conn): Unit {
+// Register `conn` into the active-connection registry. MUST be called
+// BEFORE the connection's handler thread is spawned, never after (#6792):
+// `pthread_create` starts the child running `processConnection`
+// concurrently with the parent, and nothing forces the child to wait for a
+// registration the parent hasn't made yet. If registration happened AFTER
+// spawning, a connection that finishes its whole lifecycle fast (a
+// health-check/port-scanner style connect-then-immediately-disconnect,
+// common enough to not be a corner case) could reach `processConnection`'s
+// `defer` block -- `unregisterConn` (a harmless no-op against an
+// entry that doesn't exist yet) then `hostClose` -- before the parent's
+// registration call ever runs; that registration would then add an
+// ALREADY-CLOSED, potentially fd-reused `Conn` into the registry
+// permanently (nothing would ever remove it again, since the one and only
+// `unregisterConn` call for this connection already happened). Calling
+// this first makes the child thread's own start strictly happen-after the
+// entry already exists, so its `unregisterConn` can never race an add that
+// hasn't happened yet.
+func registerConn(q: in ServerQueue, conn: in Conn): Unit {
+  rtMutexLock(q.mutex)
+  q.activeConns.add(conn)
+  rtMutexUnlock(q.mutex)
+}
+
+// Record a spawned handler thread's tid for `stopListener` to join. Safe to
+// call any time after `pthread_create` returns successfully, including
+// after the thread has already finished (`pthread_join` on an
+// already-terminated, not-yet-joined thread still succeeds per POSIX) --
+// unlike `registerConn`, there is no "stays stale forever" failure mode
+// here to order against, since nothing ever re-removes a workerTids entry
+// early the way `unregisterConn` does for `activeConns`.
+func registerTid(q: in ServerQueue, tid: in Long): Unit {
   rtMutexLock(q.mutex)
   q.workerTids.add(tid)
-  q.activeConns.add(conn)
   rtMutexUnlock(q.mutex)
 }
 
@@ -652,12 +681,20 @@ func processConnection(conn: in Conn, queue: in ServerQueue, limits: in EngineLi
 // header). A spawn failure closes the connection rather than leaking it.
 @unsafe_ffi
 func spawnHandler(conn: in Conn, queue: in ServerQueue, limits: in EngineLimits): Unit {
+  // Register BEFORE spawning (#6792, `registerConn`'s doc comment) -- never
+  // the other way around.
+  registerConn(queue, conn)
   var tid: Long = 0
   val worker: () -> NativePtr[Byte] = { -> processConnection(conn, queue, limits); nativeNullPtr() }
   val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)
   if rc == 0 {
-    registerWorker(queue, tid, conn)
+    registerTid(queue, tid)
   } else {
+    // The thread never started, so processConnection's own
+    // unregisterConn/hostClose will never run for this connection --
+    // undo the registration and close it here instead, or it would leak
+    // into activeConns forever with no thread ever coming to remove it.
+    unregisterConn(queue, conn)
     hostClose(conn)
   }
 }

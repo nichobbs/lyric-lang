@@ -2272,13 +2272,27 @@ jobs:
       # malloc'd-buffer cleanup to. v1 is HTTP/1.1 only (a negotiated-h2
       # connection is closed rather than mis-parsed -- N9.5/#6106 tracks
       # native h2) with no LYRIC_HTTP_MAX_CONNECTIONS cap yet (Std.Parse has
-      # no native kernel). Item A is a plaintext round trip on a single
-      # thread (a bare TCP connect completes into the backlog before accept
-      # runs); item B is a real concurrent TLS round trip with the client
-      # on a second pthread driving N9.4's real hostConnectTls API; item C
-      # drives the h2-rejection guard end to end by having the client
-      # genuinely negotiate h2 ALPN and asserting the server closed the
-      # connection.
+      # no native kernel). Six cases: item A is a plaintext round trip on
+      # a single thread (a bare TCP connect completes into the backlog
+      # before accept runs); item B is a real concurrent TLS round trip
+      # with the client on a second pthread driving N9.4's real
+      # hostConnectTls API; item C drives the h2-rejection guard end to end
+      # by having the client genuinely negotiate h2 ALPN and asserting the
+      # server closed the connection; item D is a keep-alive round trip
+      # (two requests over one connection, neither carrying Connection:
+      # close); item E is the #6791 regression -- stopListener must not
+      # hang on a genuinely idle keep-alive connection (Std.HttpEngine
+      # defaults keepAlive = true, so this is the default HTTP/1.1
+      # behavior, not an edge case) -- fixed by tracking every accepted
+      # Conn in ServerQueue.activeConns and hostShutdown-ing each one
+      # before stopListener joins its handler thread; item F is the #6792
+      # regression -- spawnHandler used to register a connection into
+      # activeConns AFTER spawning its handler thread, racing that
+      # thread's own unregisterConn for a connection that finishes fast
+      # enough (a connect-then-immediate-disconnect scan), which could
+      # leave a permanently stale, already-closed entry behind -- fixed by
+      # registering BEFORE spawning, so the child thread's own start is
+      # always ordered after its registration.
       #
       # llvm_opaque (#6234 part 1: `opaque type` codegen -- construction,
       # field access, mutation, UFCS methods, and an opaque type nested in

@@ -37397,3 +37397,118 @@ D-progress-712/823 (N9.2/N9.4, whose `Long`-as-pointer idiom and
 (N9.5, native ALPN h2 — the tracked follow-up for this entry's h2-rejection
 gap).
 
+**Addendum (2026-08-31, review findings #6791 and #6792, two REQUIRED
+findings on this same PR's `stopListener`/`spawnHandler` concurrency
+design — `llvm_http_server_self_test.l` now ships six cases, not the
+three described above).**
+
+- **#6791 — `stopListener` hung forever on any idle keep-alive
+  connection.** `stopListener` only ever closed the LISTENING socket
+  (`hostStopListener`); it never touched an already-accepted connection's
+  own fd. `Std.HttpEngine.newConnection` defaults `keepAlive = true`, and
+  HTTP/1.1 keeps a connection open unless a request explicitly carries
+  `Connection: close` — so an ORDINARY, well-behaved client that is
+  simply idle between requests left its handler thread parked in
+  `readOneRequest`'s `hostRead` indefinitely, and `stopListener`'s
+  `pthread_join` on that thread never returned. This is the default
+  HTTP/1.1 behavior, not an edge case — every one of this entry's original
+  three self-test cases happened to send `Connection: close` on every
+  request, which is exactly why the gap went uncaught. Fixed by two
+  additions: `Std.TcpHost` gains `hostFd`/`hostShutdown` (a raw
+  `shutdown(fd, SHUT_RDWR)` that interrupts a blocked read/write from
+  another thread WITHOUT releasing the descriptor, unlike `hostClose`,
+  which would race a concurrent owner-thread close on a reused fd);
+  `ServerQueue` gains `activeConns: List[Conn]`, with every accepted
+  connection registered alongside its handler thread's tid and
+  unregistered strictly BEFORE (never after) that thread's own
+  `hostClose` — the ordering `unregisterConn`'s doc comment states is
+  load-bearing, since `stopListener`'s shutdown loop must never observe
+  (and therefore never touch) a connection whose fd its own thread is
+  about to invalidate. `stopListener` now joins the accept thread FIRST
+  (guaranteeing the `activeConns` snapshot is the complete, final set —
+  no connection accepted "too late" can be missed), `hostShutdown`s every
+  still-registered connection, THEN joins every handler thread.
+  Deliberately does NOT force-`rtSemPost` an outstanding per-request
+  semaphore for a context `nextContext` already dequeued but the caller
+  never answered: nothing prevents the caller's own puller thread from
+  later calling `respond*` on that same already-force-completed context,
+  which would use-after-free the `malloc`'d semaphore buffer once
+  `processConnection` runs `freeOneShotSem` — trading a hang for memory
+  corruption. This is not a native-specific gap either: the dotnet twin's
+  `stopListener` does not wait for in-flight connections at all, so an
+  abandoned dequeued context hangs there too — on every target, "call
+  `respond*` for whatever `nextContext` returns before shutting down" is
+  the caller's own obligation, documented in the module header rather
+  than left silent. Items D (a keep-alive round trip, two requests over
+  one connection, proving the same connection-handler thread genuinely
+  loops back for a second request) and E (the literal #6791 regression —
+  one request answered with no `Connection: close`, client sends nothing
+  further and does not close its own socket, then `stopListener` must
+  still return promptly; the harness's `Process.runCapture` 60-second
+  timeout turns a reintroduced deadlock into a real, visible failure
+  rather than a silently-hanging CI job) verify this end to end.
+- **#6792 — `spawnHandler` registered a connection into `activeConns`
+  AFTER spawning its handler thread, racing that thread's own
+  `unregisterConn`.** `pthread_create` starts the child thread running
+  `processConnection` concurrently with the parent; nothing forced the
+  child to wait for a registration the parent had not made yet. A
+  connection that finishes its whole lifecycle fast enough — the common
+  "client connects, sends nothing, disconnects" health-check/port-scanner
+  pattern, not a corner case — could run `processConnection`'s `defer`
+  block (`unregisterConn`, a harmless no-op against an entry that did not
+  exist yet, then `hostClose`) BEFORE the parent's registration call ever
+  ran. That registration would then add an ALREADY-CLOSED, potentially
+  fd-reused `Conn` into `activeConns` permanently — nothing would ever
+  remove it again, since the one and only `unregisterConn` call for that
+  connection had already happened. A later `stopListener` would
+  `hostShutdown` this stale entry's fd, by then possibly belonging to a
+  completely unrelated resource — exactly the class of bug #6791's own
+  fix was written to prevent, but the registration half of the same
+  invariant didn't hold it. Fixed by splitting the combined
+  `registerWorker` into `registerConn` (called BEFORE `pthread_create`,
+  never after) and `registerTid` (called after, once the real tid is
+  known — safe to register late, since `pthread_join` on an
+  already-terminated, not-yet-joined thread still succeeds per POSIX,
+  unlike `activeConns`, which has no such "always safe to reconcile
+  later" property once the one unregister call has already fired). A
+  failed `pthread_create` now explicitly `unregisterConn`s the
+  connection it just speculatively registered, then `hostClose`s it
+  itself, since no thread will ever exist to run that cleanup through the
+  normal `defer` path. The `startListener`/`startListenerTls` accept-
+  thread spawn was checked for an analogous gap and found not to have
+  one: `acceptTid` is returned once, synchronously, as part of the
+  `HttpListener` record the caller receives — there is no shared,
+  mutable, prematurely-unregisterable registry entry for it the way
+  `activeConns` is for a per-connection `Conn`. Item F verifies the fix:
+  since this is inherently timing-dependent (no deterministic single-shot
+  repro exists without an injected synchronization point this file has no
+  access to), it hammers the listener with 200 rapid
+  connect-then-immediate-disconnect cycles (no bytes sent, maximizing the
+  scheduling window #6792 describes), then drives one real,
+  well-behaved request/response round trip and checks it completes
+  uncorrupted (a stale entry whose fd got reused by this real connection
+  would have `stopListener` shut it down out from under it), and finally
+  asserts `stopListener` itself still returns promptly and cleanly.
+
+Also corrected: three stale "three cases" mentions (this file, `docs/
+61-https-tls-http-versions.md`, and `.github/workflows/ci.yml`'s
+`native-backend-self-tests` job comment) all still described the
+original A/B/C-only self-test, predating items D–F.
+
+**Verification (addendum).** `make -C lyric-rt test`/`test-asan` green
+(unchanged C runtime — this addendum adds no new `lyric-rt` C code, only
+new `.l`-level `extern func rtShutdown` against the already-shipped POSIX
+`shutdown` symbol). The same sandbox boundary as the original entry
+applies (`NativePtr` unsupported by the local NuGet tool), with one
+additional genuine local verification this time: a standalone repro
+against `Std.TcpHost` directly — `hostListen`/`hostConnect`/`hostAccept`,
+then `hostShutdown` on the accepted side before ever reading, then
+`hostRead` — compiled and ran for real (exit 0), confirming `hostFd`/
+`hostShutdown`/`rtShutdown` link correctly and that a `shutdown()`'d
+connection's subsequent read genuinely observes EOF, the exact mechanism
+both fixes depend on. `lyric fmt --write` (same NuGet tool) applied
+cleanly to both changed `.l` files, no refusals.
+
+**Related (addendum):** #6791, #6792 (this addendum's two fixes), PR
+#6789 (where both review findings were raised and fixed).
+

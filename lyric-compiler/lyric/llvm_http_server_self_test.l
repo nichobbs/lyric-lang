@@ -5,7 +5,7 @@
 //! native`) and run, mirroring `llvm_tls_self_test.l`'s and
 //! `llvm_http_client_self_test.l`'s harness shape.
 //!
-//! Five cases:
+//! Six cases:
 //!   - item A: a plaintext HTTP/1.1 round trip. A real client
 //!     (`Std.TcpHost.hostConnect`, plain TCP) on the SAME thread as the
 //!     server's own pull loop — a bare TCP `connect` completes into the
@@ -58,6 +58,26 @@
 //!     `stopListener` returning at all — the harness's `Process.runCapture`
 //!     60-second timeout turns a reintroduced deadlock into a real,
 //!     visible test failure rather than a silently-hanging CI job.
+//!   - item F: the regression case for #6792 — `spawnHandler` registered a
+//!     connection into `ServerQueue.activeConns` AFTER spawning its
+//!     handler thread, racing that thread's own `unregisterConn`. A
+//!     connection that finishes its whole lifecycle fast enough (the
+//!     common "client connects, never sends a byte, disconnects"
+//!     health-check/port-scanner pattern) could run `unregisterConn` (a
+//!     no-op, since the entry didn't exist yet) and `hostClose` BEFORE the
+//!     parent ever registered it — leaving a permanently stale,
+//!     already-closed (and potentially fd-reused) entry that `stopListener`
+//!     would later `hostShutdown`. This is inherently timing-dependent (no
+//!     deterministic single-shot repro exists without an injected
+//!     synchronization point this file has no access to), so this case
+//!     instead hammers the listener with 200 rapid connect-then-immediate-
+//!     disconnect cycles — no bytes sent, maximizing the chance of the
+//!     adverse scheduling #6792 describes — then drives one real,
+//!     well-behaved request/response round trip and checks it completes
+//!     uncorrupted (a stale entry whose fd got reused by this real
+//!     connection would have `stopListener` shut down THIS connection out
+//!     from under it), and finally asserts `stopListener` itself still
+//!     returns promptly.
 //!
 //! Every scenario compiles with `-fsanitize=address`, so a leaked
 //! `malloc`'d mutex/semaphore buffer, a leaked fd, a double-release, or a
@@ -67,7 +87,7 @@
 //! section).
 //!
 //! Every connection-oriented case binds a FIXED port (19720/19721/19722/
-//! 19723/19724),
+//! 19723/19724/19725),
 //! matching `lyric-stdlib/tests/http_server_dotnet_tests.l`'s own
 //! established convention for testing this exact API — `Std.HttpServer`'s
 //! public surface (unlike `Std.TcpHost`'s) has no `hostLocalPort`-style
@@ -608,4 +628,108 @@ test "native Std.HttpServer stopListener does not hang on an idle keep-alive con
     "}\n"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "Std.HttpServer native stopListener idle-keep-alive regression (item E, #6791)")
+}
+
+test "native Std.HttpServer registry does not go stale under a fast connect-disconnect burst (item F, #6792 regression)" {
+  val src = "package F\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Encoding\n" +
+    "import Std.HttpServer\n" +
+    "import Std.TcpHost\n" +
+    "func joined(parts: in List[String]): String {\n" +
+    "  var s = \"\"\n" +
+    "  var i = 0\n" +
+    "  while i < parts.count {\n" +
+    "    s = s + parts[i]\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  s\n" +
+    "}\n" +
+    "func readInto(conn: in Conn, acc: in List[String], marker: in String): Bool {\n" +
+    "  var tries = 0\n" +
+    "  var done = false\n" +
+    "  while tries < 400 and not done {\n" +
+    "    match hostRead(conn, 4096) {\n" +
+    "      case Ok(b) -> {\n" +
+    "        if b.length == 0 {\n" +
+    "          done = true\n" +
+    "        }\n" +
+    "        match tryDecodeUtf8(b) {\n" +
+    "          case Some(s) -> acc.add(s)\n" +
+    "          case None -> ()\n" +
+    "        }\n" +
+    "      }\n" +
+    "      case Err(_) -> {\n" +
+    "        done = true\n" +
+    "      }\n" +
+    "    }\n" +
+    "    if joined(acc).contains(marker) {\n" +
+    "      done = true\n" +
+    "    }\n" +
+    "    tries = tries + 1\n" +
+    "  }\n" +
+    "  joined(acc).contains(marker)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val listener = startListener(\"http://127.0.0.1:19725/\")\n" +
+    "  // Hammer the listener with rapid connect-then-immediate-disconnect\n" +
+    "  // cycles, no bytes sent -- the #6792 repro shape (a health-check/\n" +
+    "  // port-scanner pattern). Each connection's handler thread should run\n" +
+    "  // its whole lifecycle (accept -> immediate EOF -> RoClose ->\n" +
+    "  // unregister -> close) essentially instantly, maximizing the chance\n" +
+    "  // the accept-loop thread's own registration call races behind it if\n" +
+    "  // the #6792 fix were ever reverted.\n" +
+    "  var i = 0\n" +
+    "  var scanErr = 0\n" +
+    "  while i < 200 and scanErr == 0 {\n" +
+    "    match hostConnect(\"127.0.0.1\", 19725) {\n" +
+    "      case Ok(c) -> {\n" +
+    "        hostClose(c)\n" +
+    "      }\n" +
+    "      case Err(_) -> {\n" +
+    "        scanErr = 1\n" +
+    "      }\n" +
+    "    }\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  if scanErr != 0 {\n" +
+    "    stopListener(listener)\n" +
+    "    return 1\n" +
+    "  }\n" +
+    "  // A real, well-behaved request/response round trip right after the\n" +
+    "  // scan burst: if a stale, already-closed entry from the scan burst\n" +
+    "  // survived into activeConns (the #6792 bug) and its fd got reused by\n" +
+    "  // THIS connection, stopListener's later hostShutdown on that stale\n" +
+    "  // entry would hit this live connection's fd instead of a genuinely\n" +
+    "  // dead one -- corrupting or prematurely killing it.\n" +
+    "  val clientConn = match hostConnect(\"127.0.0.1\", 19725) {\n" +
+    "    case Ok(c) -> c\n" +
+    "    case Err(_) -> return 2\n" +
+    "  }\n" +
+    "  val reqText = \"GET /after-scan HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n\"\n" +
+    "  match hostWrite(clientConn, encodeUtf8(reqText)) {\n" +
+    "    case Ok(_) -> ()\n" +
+    "    case Err(_) -> return 3\n" +
+    "  }\n" +
+    "  val ctx = nextContext(listener)\n" +
+    "  var exitCode = 0\n" +
+    "  if requestPath(ctx) != \"/after-scan\" {\n" +
+    "    exitCode = 4\n" +
+    "  }\n" +
+    "  respondText(ctx, 200, \"post-scan-ok\")\n" +
+    "  val acc: List[String] = newList()\n" +
+    "  val got = readInto(clientConn, acc, \"post-scan-ok\")\n" +
+    "  if not got {\n" +
+    "    exitCode = 5\n" +
+    "  }\n" +
+    "  hostClose(clientConn)\n" +
+    "  // The real regression check (#6792): stopListener must still return\n" +
+    "  // promptly and cleanly (no crash, no hang) after absorbing the\n" +
+    "  // 200-connection scan burst.\n" +
+    "  stopListener(listener)\n" +
+    "  if exitCode != 0 {\n" +
+    "    return exitCode\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpServer native connection-registry race regression (item F, #6792)")
 }
