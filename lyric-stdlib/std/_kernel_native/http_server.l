@@ -169,6 +169,18 @@
 //! scanning, `parsePort`'s digit scanning) are the natural shape, matching
 //! `_kernel/http_server.l`'s original `toInt(s[i])`-based logic byte-for-byte
 //! once `s[i]` is replaced by `charCodeAt(s, i)`.
+//!
+//! `readOneRequest` avoids an `inout Connection` parameter: `Lyric.
+//! LlvmCodegen`'s function-parameter lowering does not yet support `out`/
+//! `inout` for `--target native` at all (an unconditional panic at every
+//! such parameter position — this file's own `readOneRequest` was the
+//! first native-backend code anywhere in the tree to try one, confirmed by
+//! a real CI failure across all six self-test cases before this workaround
+//! shipped; filed as issue #6794, a general tracked compiler gap, not
+//! fixed here). `readOneRequest` instead takes `engineConn` `in` and
+//! returns the advanced `Std.HttpEngine.Connection` bundled with its
+//! `ReqOutcome` in a new `ReadOutcome` record; see that record's own doc
+//! comment for the full reasoning.
 @axiom("lyric_mutex_*/lyric_sem_* (lyric-rt/src/lyric_posix.c), pthread_create/pthread_join, and malloc/free conform to their documented POSIX/C99 contracts")
 package Std.HttpServer
 
@@ -534,6 +546,28 @@ union ReqOutcome {
   case RoProtocolFail(status: Int)
 }
 
+// `readOneRequest`'s own return, bundling the outcome with the advanced
+// engine FSM state. `Std.HttpEngine.feed` returns the FSM's next
+// `Connection` value rather than mutating one in place (the engine has no
+// concept of "the caller's local" at all), and `readOneRequest` drives
+// `feed` in a loop across possibly-several socket reads for one logical
+// request -- the natural signature would thread that advancing state
+// through an `inout Connection` parameter, but `Lyric.LlvmCodegen`'s
+// function-parameter lowering does not yet support `out`/`inout` for
+// `--target native` (confirmed by direct repro: an unconditional panic at
+// every `out`/`inout` parameter position, filed as #6794 as a general,
+// tracked compiler gap -- not attempted here, following this file's own
+// established "work around the native-codegen gap, don't fix the
+// compiler" convention, e.g. the `Long`-as-pointer-handle trick for the
+// `NativePtr[T]` record-field restriction). `readOneRequest` therefore
+// takes `engineConn` `in` and returns the advanced `Connection` as part of
+// this record instead; the caller (`processConnection`) reassigns its own
+// local `var` from the result at each call.
+record ReadOutcome {
+  conn: Connection
+  outcome: ReqOutcome
+}
+
 func emptyBytes(): slice[Byte] {
   val e: slice[Byte] = []
   e
@@ -557,7 +591,8 @@ func writeInterimContinue(conn: in Conn, version: in HttpVersion): Unit {
 
 // Read and parse exactly one request off `conn`, advancing the engine FSM.
 // Drains any already-buffered (pipelined) bytes before issuing a fresh read.
-func readOneRequest(conn: in Conn, engineConn: inout Connection): ReqOutcome {
+func readOneRequest(conn: in Conn, initialEngineConn: in Connection): ReadOutcome {
+  var engineConn = initialEngineConn
   var method = ""
   var target = ""
   var version: HttpVersion = Http1_1
@@ -573,10 +608,10 @@ func readOneRequest(conn: in Conn, engineConn: inout Connection): ReqOutcome {
       events = fr0.events
     } else {
       match hostRead(conn, 65536) {
-        case Err(_) -> return RoClose
+        case Err(_) -> return ReadOutcome(conn = engineConn, outcome = RoClose)
         case Ok(bytes) -> {
           if bytes.length == 0 {
-            return RoClose
+            return ReadOutcome(conn = engineConn, outcome = RoClose)
           }
           val fr1 = feed(engineConn, bytes)
           engineConn = fr1.conn
@@ -598,21 +633,24 @@ func readOneRequest(conn: in Conn, engineConn: inout Connection): ReqOutcome {
         case ExpectContinue -> writeInterimContinue(conn, version)
         case BodyChunk(b) -> appendBytes(body, b)
         case RequestComplete -> {
-          return RoRequest(
-            method = method,
-            target = target,
-            version = version,
-            headers = headers,
-            body = body.toArray(),
-            keepAlive = not shouldClose(engineConn)
+          return ReadOutcome(
+            conn = engineConn,
+            outcome = RoRequest(
+              method = method,
+              target = target,
+              version = version,
+              headers = headers,
+              body = body.toArray(),
+              keepAlive = not shouldClose(engineConn)
+            )
           )
         }
-        case ProtocolError(kind, _) -> return RoProtocolFail(status = protocolErrorStatus(kind))
+        case ProtocolError(kind, _) -> return ReadOutcome(conn = engineConn, outcome = RoProtocolFail(status = protocolErrorStatus(kind)))
       }
       i = i + 1
     }
   }
-  RoClose
+  ReadOutcome(conn = engineConn, outcome = RoClose)
 }
 
 // Write a minimal bodyless error response (used for a `ProtocolError` before
@@ -640,8 +678,9 @@ func processConnection(conn: in Conn, queue: in ServerQueue, limits: in EngineLi
   var engineConn = newConnection(limits)
   var open = true
   while open {
-    val outcome = readOneRequest(conn, engineConn)
-    match outcome {
+    val readResult = readOneRequest(conn, engineConn)
+    engineConn = readResult.conn
+    match readResult.outcome {
       case RoClose -> {
         open = false
       }

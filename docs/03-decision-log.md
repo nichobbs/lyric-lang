@@ -37512,3 +37512,79 @@ cleanly to both changed `.l` files, no refusals.
 **Related (addendum):** #6791, #6792 (this addendum's two fixes), PR
 #6789 (where both review findings were raised and fixed).
 
+**Addendum 2 (2026-08-31): a hard compile-time failure — native `out`/
+`inout` function parameters are not lowered at all — blocked every one of
+this file's six self-test cases identically, fixed by reshaping
+`readOneRequest` to avoid the parameter mode rather than fixing the
+compiler (issue #6794, tracked, not attempted here).**
+
+CI's `native-backend-self-tests` job failed all six
+`llvm_http_server_self_test.l` cases with the identical panic:
+
+```
+Lyric.LlvmCodegen: out/inout parameters are not yet supported for --target native
+```
+
+**Root cause.** `readOneRequest(conn: in Conn, engineConn: inout
+Connection): ReqOutcome` was this file's (and, as far as this
+investigation found, the whole native-backend tree's) first use of an
+`inout` parameter — every other `_kernel_native/` kernel, including this
+same file's own `tcp_host.l` sibling, only ever uses `in`. `Lyric.
+LlvmCodegen`'s function-parameter lowering
+(`lyric-compiler/lyric/llvm_codegen.l:8391`) handles `in` alone; `out`/
+`inout` hit an explicit, unconditional panic. Since `readOneRequest` sits
+on the core per-connection request loop every server-handling path goes
+through, ANY native compile that imports `Std.HttpServer` panicked
+immediately — hence the uniform 0/6 failure across every self-test case,
+none of which ever got far enough to open a real socket.
+
+**Fix — reshape the function, don't fix the compiler.** Per this file's
+own established convention (the `Long`-as-pointer-handle trick for the
+`NativePtr[T]` record-field restriction is the precedent this fix
+explicitly follows), `readOneRequest` now takes `engineConn: in
+Connection` and returns a new record, `ReadOutcome { conn: Connection;
+outcome: ReqOutcome }`, bundling the FSM's advanced state with the
+existing outcome union at every return point (the loop-exit fallback and
+all three early returns — a closed connection, a fully-parsed request, a
+protocol error). The caller, `processConnection`, reassigns its own local
+`var engineConn` from `readResult.conn` before matching on
+`readResult.outcome`, exactly reproducing the semantics the `inout`
+parameter would have given (an evolving FSM state threaded across
+however many socket reads one logical request takes) with no mutation
+across the call boundary at all. This is a straightforward, mechanical
+reshaping with no behavioral change — `Std.HttpEngine.feed` already
+returns the FSM's next `Connection` value rather than mutating one in
+place (the engine has no concept of "the caller's local"), so
+`readOneRequest` was already computing the value this fix now threads
+through a return value instead of an `inout` write.
+
+**Filed, not fixed: issue #6794** (native `out`/`inout` parameter
+lowering in `Lyric.LlvmCodegen` — a general compiler gap, not specific to
+this kernel or to HTTP). Implementing `inout`/`out` support for
+`--target native` is out of this PR's scope per the standing convention
+this whole file already follows for native-codegen gaps found while
+writing it (`hostFd`/`hostShutdown`'s addendum-1 entry above is the most
+recent example) — the kernel is reshaped to work without the feature,
+the compiler gap is tracked separately for whoever picks it up.
+
+**Verification.** The full file re-verified to type-check completely via
+the local NuGet tool (same sandbox boundary as every other verification
+pass on this file — panics only at the pre-existing, unrelated
+`--target native` `.indexOf` codegen gap deep in `parsePrefix`, reached
+via a different call path than `readOneRequest`, confirming no `inout`-
+related error remains anywhere in the file: `grep -n '\binout\b\|: out '`
+over the file now matches only this addendum's own prose comments, never
+an actual parameter declaration). The specific reshaping pattern this fix
+uses — a record wrapping a union outcome, a mutable local reassigned
+across loop iterations from a callee's returned record field, multiple
+early-return points each constructing that record — was verified end to
+end with a minimal, non-`Std.HttpServer` standalone repro reproducing the
+exact shape (`stepOnce`/`Wrapped`/`Outcome`): real compile, real run, exit
+code 0, across 30 loop iterations exercising both the close-early and
+request-observed paths. `lyric fmt --write` (same tool) applied cleanly,
+no refusals.
+
+**Related (addendum 2):** #6794 (the tracked compiler-gap follow-up this
+fix does not attempt), the CI failure this addendum documents (all six
+`llvm_http_server_self_test.l` cases, `native-backend-self-tests` job).
+
