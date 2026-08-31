@@ -38117,3 +38117,84 @@ filed rather than guessed at), #6791/#6792/#6795/#6796/#6798 (the same
 shutdown-hang/orphaning hazard class, earlier narrower windows — see
 addenda 1/3/4).
 
+## D-progress-851 — Issue #5997 (JVM `Tls12`-floor pinning): reverified already-shipped, backfills its own missing decision-log entry
+
+**Context.** Issue #5997 (`group:tls-https` sweep) asked to pin
+`startListenerTls`'s `Tls12`-floor `SSLContext` protocol list explicitly
+(`SSLParameters.setProtocols(["TLSv1.2", "TLSv1.3"])`) rather than trusting
+the JVM's ambient `jdk.tls.disabledAlgorithms`-derived default. Reading
+`_kernel_jvm/http_server.l` before starting found the fix, its
+`assertProtocolFloor` mitigation, and full real-handshake test coverage
+already on `main` — shipped in commit `f898bc21` (PR #6560, "TLS/HTTPS
+ticket batch: JVM TLS1.2 floor pinning, fixture dedupe, Undertow mTLS"),
+predating this session. That PR's own decision-log entry (D-progress-805)
+is titled and scoped entirely around the mTLS half of the same batch
+(docs/61 §6.3, #6017); the #5997 pinning work is referenced from
+D-progress-806 as "D-progress-805's sibling" as though a dedicated entry
+existed, but no entry with its own header documenting the #5997 fix was
+ever written — a genuine decision-log gap this entry backfills, per the
+log's append-only convention (nothing here is reversed or superseded).
+
+**What `main` already ships (unchanged by this entry).**
+`buildServerSslContext`'s `SSLContext.getInstance("TLS")` call for a
+`Tls12`-floor listener does still rely on the JDK's default enabled-protocol
+set — the idiomatic JSSE fix (overriding
+`HttpsConfigurator.configure(...)` to call `SSLParameters.setProtocols(...)`
+explicitly, exactly mirroring `_kernel_jvm/http_host.l`'s
+`buildClientSslParameters` client-side pinning) is genuinely unreachable:
+it requires subclassing the concrete `HttpsConfigurator` class, and the JVM
+backend's `impl <ExternInterface> for Record` only implements interfaces
+(verified empirically pre-#6560: `IncompatibleClassChangeError` at
+class-load time), tracked as issue #5930. Until #5930 ships,
+`assertProtocolFloor` (`_kernel_jvm/http_server.l`) is the strongest
+guarantee actually enforceable on this target: it inspects the SAME
+`getDefaultSSLParameters()` value `HttpsConfigurator`'s default
+`configure()` is about to hand every connection against a literal
+`["TLSv1.2", "TLSv1.3"]` allow-list, and panics — refusing to start the
+listener — the instant that set would include anything weaker, rather than
+silently accepting a floor a deployment's `jdk.tls.disabledAlgorithms`
+override has weakened. `buildServerSslContextCore` routes both the non-mTLS
+(`buildServerSslContext`) and mTLS (`buildServerSslContextWithClientCa`)
+constructors through one `SSLContext.init` + floor-check call site
+(D-progress-806 / #6563), so neither path can silently lose the guarantee
+the other has.
+
+**Reverification performed by this session.** Rebuilt nothing — the
+existing `.bootstrap/stage1` + `bootstrap/src/Lyric.Cli.Aot` Release binary
+in this sandbox was already current for `main` at the point this ticket was
+picked up. Ran `lyric-stdlib/tests/tls_server_jvm_tests.l` for real via
+`scripts/ci/self-test.sh --target jvm` (the same invocation
+`.github/workflows/ci.yml`'s "Std.HttpServer TLS test coverage on JVM"
+step uses): **8/8 pass**, including the two cases that directly exercise
+this issue — "startListenerTls (Tls12 floor) never negotiates below TLS
+1.2" (a real handshake against an unrestricted client, asserting the
+negotiated `SSLSession.getProtocol()` is `TLSv1.2` or `TLSv1.3`) and
+"startListenerTls (Tls12 floor) rejects a TLSv1.1-only client handshake" (a
+real client `SSLSocket` whose own `SSLParameters` are pinned to `TLSv1.1`
+alone via `setProtocols` — the JDK genuinely still offers a TLSv1.1-capable
+client context on this runtime, so this is a real forced-legacy-client
+handshake, not a synthetic stand-in — fails `startHandshake()` against the
+`Tls12`-floor listener), plus "`serverSslContextFromConfigMtls` (Tls12
+floor) never negotiates below TLS 1.2" (the #6563 mTLS-path sibling
+assertion). No code change was needed or made to `_kernel_jvm/http_server.l`
+or its test file; `lyric fmt --write` was not run since no `.l` file in
+this diff changed.
+
+**Shipped by this entry:** the backfilled decision-log entry above, and a
+short "Tls12-floor pinning (issue #5997)" note added to
+`docs/61-https-tls-http-versions.md` §"Phase 2 — JVM server TLS" item 5,
+which previously described the mTLS #5930 gap in that same paragraph but
+never mentioned the `Tls12`-floor pinning fix or `assertProtocolFloor` at
+all.
+
+**Resolution:** issue #5997 closed as already-fixed, pointing at commit
+`f898bc21` / PR #6560 as the resolving change and this entry as its
+decision-log record, per this repo's convention for review-finding issues
+whose fix landed on `main` outside the auto-closer's window.
+
+**Related:** #5997, #6560 (the PR that actually shipped the fix), D-progress-805
+(mTLS phase 2.3 — the entry this fix was mis-attributed to as a "sibling"),
+D-progress-806 (#6563, the mTLS-path floor-assertion gap fixed in the same
+PR batch), #5930 (the `HttpsConfigurator` class-subclassing gap blocking
+the fully idiomatic fix).
+

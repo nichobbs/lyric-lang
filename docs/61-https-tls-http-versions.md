@@ -580,6 +580,27 @@ items marked ∥ are independent and can proceed in parallel.
    `_kernel_jvm/http_server.l` instead, reached through the minimal
    `Identity.hostHandle` kernel-only accessor added to `tls.l`. Mutual TLS
    remains tracked (issue #5930); dotnet server TLS shipped (#5884, D-progress-700).
+   **Tls12-floor pinning (issue #5997):** `buildServerSslContext`'s
+   `SSLContext.getInstance("TLS")` call for a `Tls12`-floor listener relies
+   on this JVM's `jdk.tls.disabledAlgorithms` security property to keep
+   TLSv1.0/1.1 disabled — the idiomatic fix (overriding
+   `HttpsConfigurator.configure(...)` to call
+   `SSLParameters.setProtocols(["TLSv1.2", "TLSv1.3"])` explicitly, mirroring
+   the client-side `buildClientSslParameters` pinning) is unreachable for the
+   same #5930 class-subclassing reason above. `assertProtocolFloor`
+   (`_kernel_jvm/http_server.l`) closes the gap by construction instead: it
+   inspects the SAME `getDefaultSSLParameters()` value `HttpsConfigurator`'s
+   default `configure()` is about to hand every connection and panics,
+   refusing to start the listener, if that set ever includes a protocol
+   below TLS 1.2 — a deployment that has weakened
+   `jdk.tls.disabledAlgorithms` fails loud at listener construction rather
+   than silently downgrading. Applies uniformly to both the non-mTLS
+   (`buildServerSslContext`) and mTLS (`buildServerSslContextWithClientCa`)
+   context constructors via the shared `buildServerSslContextCore` helper.
+   Verified by `tls_server_jvm_tests.l`: a real handshake proving
+   negotiation lands on TLSv1.2 or TLSv1.3, and a client whose own socket is
+   pinned to TLSv1.1 alone (`SSLParameters.setProtocols`) failing the
+   handshake outright against a `Tls12`-floor listener.
 6. lyric-web: Undertow `addHttpsListener` + `ENABLE_HTTP2`, `Web.serveTls`,
    `WebTls` config template, typed dotnet `Unsupported` until phase 3;
    docs + book. (After 1; ∥ with 5.) _Shipped in phase 2.2 (issue #5881,
