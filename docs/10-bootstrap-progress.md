@@ -13457,7 +13457,7 @@ the mode checker's narrow same-file/single-segment-path pass cannot see
 (nested-member writes, non-`inout` aliasing, cross-file access) —
 **but that first landing emitted `initonly`/`ACC_FINAL` unconditionally**
 for every non-`var` field, which is unsound against exactly the write
-shapes it was meant to backstop. Issue #6596 (D-progress-815) closed that
+shapes it was meant to backstop. Issue #6596 (D-progress-837) closed that
 gap immediately after: `Lyric.ModeChecker.computeFieldLockSafetyForBuild`
 runs a whole-build write-safety audit before any package's codegen, and
 both emitters now check a field's bare name against that audit's result
