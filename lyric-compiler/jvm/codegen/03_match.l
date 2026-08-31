@@ -409,7 +409,7 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
     // the body reads).
     val armScope = enterBlockScope(ctx)
     // Emit pattern test.
-    lowerPatternTest(ctx, insns, arm.pattern, scrutSlot, scrutTy, nextArmL)
+    lowerPatternTest(ctx, insns, arm.pattern, scrutSlot, scrutTy, scrutTy, scrutTypeArgs, nextArmL)
     // Bind pattern variables.
     lowerPatternBind(ctx, insns, arm.pattern, scrutSlot, scrutTy, scrutTypeArgs)
     // Emit guard if present.
@@ -821,6 +821,7 @@ func testCaseFieldJvm(
   caseClass: in String,
   fi: in Int,
   fieldPat: in Pattern,
+  scrutTypeArgs: in List[TypeExpr],
   failLabel: in String,
 ): Unit {
   if not patternIsRefutableJvm(ctx, fieldPat) {
@@ -838,27 +839,54 @@ func testCaseFieldJvm(
       if fi < flds.count {
         val realName = flds[fi].name
         val fty = flds[fi].ty
+        // #6763: resolve this field's concrete instantiated type from the
+        // scrutinee's own generic type args the same way `lowerPatternBind`'s
+        // PConstructor arm resolves `concreteTy` (above) — an erased
+        // type-parameter payload (`fty` = `Object`) otherwise leaves the
+        // literal/range test to guess the wrapper class from the pattern
+        // literal's own width, which mismatches the scrutinee's REAL boxed
+        // type (e.g. `java/lang/Long` for a `Result[Long, String]` payload)
+        // and throws `ClassCastException` at runtime.
+        var numHint: JvmType = fty
+        val pIdx = flds[fi].paramIdx
+        if pIdx >= 0 and pIdx < scrutTypeArgs.count {
+          numHint = resolveConcreteTypeExpr(ctx, scrutTypeArgs[pIdx])
+        }
         val fSlot = extractClassField(ctx, insns, castSlot, JRef(className = caseClass), caseClass, realName, fty)
-        lowerPatternTest(ctx, insns, fieldPat, fSlot, fty, failLabel)
+        lowerPatternTest(ctx, insns, fieldPat, fSlot, fty, numHint, newList(), failLabel)
       }
     }
     case None -> ()
   }
 }
 
+// `numHint` (#6763) is the scrutinee's concrete instantiated type when it is
+// known to differ from the (possibly erased) `scrutTy` at this test site —
+// resolved once at `testCaseFieldJvm` from the scrutinee's generic type args
+// and threaded down so the `PLiteral`/`PRange` arms unbox against the REAL
+// wrapper class instead of guessing from the pattern literal's own width.
+// Equal to `scrutTy` at every call site that has no better information
+// (record fields, tuple elements, the top-level scrutinee), so it is a no-op
+// there. `scrutTypeArgs` carries the CURRENT scrutinee's own generic type
+// args (mirrors `lowerPatternBind`'s parameter of the same name) — consulted
+// only by the `PConstructor` arm's `testCaseFieldJvm` call, and reset to an
+// empty list for every nested recursion (nested destructures re-enter with no
+// instantiation info, matching the bind side).
 func lowerPatternTest(
   ctx: in FuncCtx,
   insns: in List[LInsn],
   pat: in Pattern,
   scrutSlot: in Int,
   scrutTy: in JvmType,
+  numHint: in JvmType,
+  scrutTypeArgs: in List[TypeExpr],
   failLabel: in String,
 ): Unit {
   match pat.kind {
     case PWildcard -> insns.add(LNop)
     case PBinding(name, innerOpt) -> {
       match innerOpt {
-        case Some(inner) -> lowerPatternTest(ctx, insns, inner, scrutSlot, scrutTy, failLabel)
+        case Some(inner) -> lowerPatternTest(ctx, insns, inner, scrutSlot, scrutTy, numHint, scrutTypeArgs, failLabel)
         case None -> {
           // `case null ->` on a nullable scrutinee (`String?`) parses as a
           // binding named "null" ("null" is not a keyword); the spec intent —
@@ -913,7 +941,20 @@ func lowerPatternTest(
           // (or one outside Int32 range) compares as a long (lcmp), else as an
           // int (if_icmpne).  A boxed scrutinee (e.g. a tuple element) is
           // checkcast to its wrapper and unboxed first.
-          val useLong = match suffix { case I64 -> true; case U64 -> true; case _ -> (v < -2147483648i64 or v > 2147483647i64) }
+          //
+          // #6763: when `numHint` resolves the scrutinee's REAL instantiated
+          // type (an erased type-parameter payload's concrete type arg, e.g.
+          // `Long` for `Result[Long, String]`), it overrides the literal's own
+          // suffix/magnitude — otherwise a small unsuffixed literal
+          // (`case Ok(0)`) checkcasts to `java/lang/Integer` even though the
+          // boxed payload is really a `java/lang/Long`, throwing
+          // `ClassCastException` at runtime. `numHint` equals `scrutTy` (never
+          // `JLong` on its own for an erased Object scrutinee) at every other
+          // call site, so this is a no-op there.
+          val useLong = match numHint {
+            case JLong -> true
+            case _ -> match suffix { case I64 -> true; case U64 -> true; case _ -> (v < -2147483648i64 or v > 2147483647i64) }
+          }
           emitLoad(insns, scrutSlot, scrutTy)
           if useLong {
             if scrutIsRef {
@@ -986,7 +1027,14 @@ func lowerPatternTest(
       // width is the scrutinee's own (int / long / double); for an erased
       // (boxed) scrutinee — e.g. a tuple element — it is taken from the range
       // bounds so a Long/Double range is not silently truncated to int.
-      val numTy = rangeNumericTypeJvm(scrutTy, lo)
+      //
+      // #6763: `numHint` (the scrutinee's resolved concrete instantiated
+      // type, when known — see `lowerPatternTest`'s header comment) takes
+      // priority over the erased `scrutTy` here, the identical hole
+      // `PLiteral`'s `LInt` arm above had: `case Ok(0 ..= 9) ->` on a
+      // `Result[Long, String]` payload must compare as `long`, not fall back
+      // to guessing `Int` from the range bounds' own literal widths.
+      val numTy = rangeNumericTypeJvm(numHint, lo)
       match numTy {
         case JLong -> {
           emitLoad(insns, scrutSlot, scrutTy)
@@ -1121,7 +1169,7 @@ func lowerPatternTest(
           emitStore(insns, castSlot, JRef(className = caseClass))
           var tfi = 0
           while tfi < fields.count {
-            testCaseFieldJvm(ctx, insns, castSlot, caseClass, tfi, fields[tfi], failLabel)
+            testCaseFieldJvm(ctx, insns, castSlot, caseClass, tfi, fields[tfi], scrutTypeArgs, failLabel)
             tfi = tfi + 1
           }
         }
@@ -1148,7 +1196,7 @@ func lowerPatternTest(
                   case None -> JRef(className = "java/lang/Object")
                 }
                 val fSlot = extractClassField(ctx, insns, scrutSlot, scrutTy, recClass, fieldName, fty)
-                lowerPatternTest(ctx, insns, subPat, fSlot, fty, failLabel)
+                lowerPatternTest(ctx, insns, subPat, fSlot, fty, fty, newList(), failLabel)
               }
               case RPFShort(_, _) -> ()
             }
@@ -1164,11 +1212,20 @@ func lowerPatternTest(
       var pti = 0
       while pti < patterns.count {
         val elemSlot = extractTupleElem(ctx, insns, scrutSlot, scrutTy, pti)
-        lowerPatternTest(ctx, insns, patterns[pti], elemSlot, JRef(className = "java/lang/Object"), failLabel)
+        lowerPatternTest(
+          ctx,
+          insns,
+          patterns[pti],
+          elemSlot,
+          JRef(className = "java/lang/Object"),
+          JRef(className = "java/lang/Object"),
+          newList(),
+          failLabel
+        )
         pti = pti + 1
       }
     }
-    case PParen(inner) -> lowerPatternTest(ctx, insns, inner, scrutSlot, scrutTy, failLabel)
+    case PParen(inner) -> lowerPatternTest(ctx, insns, inner, scrutSlot, scrutTy, numHint, scrutTypeArgs, failLabel)
     case PTypeTest(_, ty) -> {
       // `case x: T ->` — isinst against T.  Primitive T is a degenerate test
       // (a value of that static type always matches), so emit no test.
@@ -1188,7 +1245,7 @@ func lowerPatternTest(
       var ai = 0
       while ai < patterns.count {
         val nextAltL = freshLabel(ctx)
-        lowerPatternTest(ctx, insns, patterns[ai], scrutSlot, scrutTy, nextAltL)
+        lowerPatternTest(ctx, insns, patterns[ai], scrutSlot, scrutTy, numHint, scrutTypeArgs, nextAltL)
         insns.add(LGoto(label = succeedL))
         insns.add(LLabel(name = nextAltL))
         ai = ai + 1
@@ -1850,7 +1907,7 @@ func lowerPatternBind(
       var ai = 0
       while ai < patterns.count {
         val nextAltL = freshLabel(ctx)
-        lowerPatternTest(ctx, insns, patterns[ai], scrutSlot, scrutTy, nextAltL)
+        lowerPatternTest(ctx, insns, patterns[ai], scrutSlot, scrutTy, scrutTy, scrutTypeArgs, nextAltL)
         lowerPatternBind(ctx, insns, patterns[ai], scrutSlot, scrutTy, scrutTypeArgs)
         insns.add(LGoto(label = doneL))
         insns.add(LLabel(name = nextAltL))

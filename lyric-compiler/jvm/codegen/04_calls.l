@@ -4371,6 +4371,16 @@ func printArgType(ty: in JvmType): JvmType {
     case JDouble -> JDouble
     case JBoolean -> JBoolean
     case JChar -> JChar
+    // #6764: PrintStream has no println/print overload narrower than
+    // `int` — Byte/Short values are already `istore`/`iload`'d as ints
+    // (`emitStore`/`emitLoad`, 01_types.l), so the descriptor must widen
+    // to match what's really on the operand stack, mirroring
+    // `stringValueOfParam`'s widening (02_exprs.l:2866-2875). `Float` DOES
+    // have a real `println(float)` overload and must keep its own type,
+    // not fall through to the String catch-all below.
+    case JByte -> JInt
+    case JShort -> JInt
+    case JFloat -> JFloat
     case JVoid -> JRef(className = "java/lang/String")
     case JRef(cls) -> {
       // The Object-invoke convention (`lowerLambdaInvoke` / `lowerCallOnExprResult`,
