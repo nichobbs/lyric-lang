@@ -30251,7 +30251,7 @@ argument — a significant, previously-undiscovered general correctness
 bug), #5381 (`List[String]` indexing loses its element type for auto-FFI
 resolution, blocking `Std.Process.run()` end-to-end on JVM), #5388 (a
 panic's message is lost when it propagates through a closure invoked via
-a higher-order function parameter — fixed in D-progress-847, PR #6631;
+a higher-order function parameter — fixed in D-progress-848, PR #6631;
 see `docs/03-decision-log.md`).
 
 Review hardening (2 rounds) found and fixed two REQUIRED gaps in the
@@ -30276,10 +30276,10 @@ point; `tests/i18n_kernel_tests.l` (10 cases) passes on both
 JVM/MSIL compiler bugs along the way (filed as #5422, #5423 — both
 about match-bound pattern variables losing type precision at a
 subsequent generic/method call site). **Both since resolved** — #5422
-fixed in D-progress-823 (`Lyric.Mono.bindPatternEnvMono`); #5423
+fixed in D-progress-833 (`Lyric.Mono.bindPatternEnvMono`); #5423
 investigated in the same entry but never reproduced against `HEAD`.
 
-**Related:** `docs/03-decision-log.md` D-progress-628, D-progress-823.
+**Related:** `docs/03-decision-log.md` D-progress-628, D-progress-833.
 
 ### D-progress-629 — JVM: fixed `impl <ExternInterface> for Record` resolving against the local package instead of the real JDK FQN; `lyric-web` gets a real Undertow-backed `Web.Kernel.Runtime`, blocked on two newly-found JVM backend bugs
 
@@ -32218,7 +32218,7 @@ depends on.
 #6588, #6104/N9.3 (#6589, N9.3's other blocker, has since shipped too —
 N9.3 itself remains open pending only its own kernel work).
 
-### D-progress-830: JVM generic-declaring-type `@externTarget` member emission (#3432)
+### D-progress-846: JVM generic-declaring-type `@externTarget` member emission (#3432)
 
 Investigated the MSIL-only `emitGenericExternMember` parity gap (#3432,
 docs/44 m-97). JVM erasure means a closed-GENERICINST-TypeSpec analog is
@@ -32275,7 +32275,7 @@ gaps. Zero regressions across `out_inout_jvm_self_test.l` (18),
 `lyric-web/src/_kernel/jvm/web_kernel.l` (stale `#5458` comment corrected),
 `.github/workflows/ci.yml` (new self-test wired in).
 
-### D-progress-847 — JVM: a panic inside a closure invoked through a cross-package function-typed parameter corrupted the caught `Bug.message` (#5388, #5251)
+### D-progress-848 — JVM: a panic inside a closure invoked through a cross-package function-typed parameter corrupted the caught `Bug.message` (#5388, #5251)
 
 **Status:** Shipped.
 
@@ -32714,7 +32714,7 @@ java/lang/Object` reservation instead of duplicating that mapping.
 `stdlib_generic_mono_self_test.l` 7/7 on both targets; regression sweep
 across the batch's other JVM generic-arg-tracking self-tests unaffected.
 See `docs/03-decision-log.md` D-progress-834.
-### D-progress-814 — JVM range-subtype lowering: `Float`/`UInt`/`ULong` base types, package-qualified `from`/`tryFrom` registration (#6661, #6664)
+### D-progress-847 — JVM range-subtype lowering: `Float`/`UInt`/`ULong` base types, package-qualified `from`/`tryFrom` registration (#6661, #6664)
 
 Two review findings against #5956's distinct/range-subtype construction API
 (D-progress entry above): #6661 (the JVM bytecode was wrong for a `Float`,
@@ -32940,7 +32940,7 @@ restored-JAR pipeline is unaffected), `cli_shared_self_test.l` (25/25),
 ### D-progress-840 — Two #6631 review findings: `Short`/`UShort`/`UByte` range subtypes actually DID crash the JVM backend (#6661 residual), plus `Float` distinct-type read-back and `UInt`/`ULong` generic-container erasure (#6695)
 
 PR review against #6631 raised two residual findings. **#6661 residual:**
-D-progress-814's claim that `Short`/`UShort`/`UByte` "fail type-checking
+D-progress-847's claim that `Short`/`UShort`/`UByte` "fail type-checking
 before reaching any backend" was never verified and was wrong — a
 distinct type's underlying `TypeExpr` is only ever validated by
 `isNumericPrimitiveName`'s name-based T0091 gate (`typechecker_checker.l`),
@@ -32994,12 +32994,12 @@ phantom class). `bitwise_self_test.l` and
 `lyric-compiler/jvm/generic_uint_erasure_jvm_self_test.l` (new),
 `.github/workflows/ci.yml`.
 
-**Related:** #6661, #6695, #6631, D-progress-814 (corrected), D-progress-837,
+**Related:** #6661, #6695, #6631, D-progress-847 (corrected), D-progress-837,
 D-progress-834, D-progress-571.
 
 ### D-progress-842 — JVM: `UInt`/`ULong` comparison/division/remainder/stringification were still signed outside the range-subtype bounds check (#6748)
 
-D-progress-814/D-progress-840 gave the JVM backend proper `UInt`/`ULong`
+D-progress-847/D-progress-840 gave the JVM backend proper `UInt`/`ULong`
 type-erasure handling (`isPrimitiveTypeKeyword`, `typeExprToJvm` ->
 `JInt`/`JLong`) and taught the range-subtype `from`/`tryFrom` bounds check
 (`Jvm.Lowering.emitJvmDistinctBoundsToFail`, gated on
@@ -33082,7 +33082,7 @@ receiver's erased `JvmType` and always emits the arithmetic `ishr`/`lshr`
 opcode, with a comment asserting "the JVM backend has no unsigned integer
 type, so the logical-shift opcodes (`iushr`/`lushr`) are not reachable
 here" — written before `UInt`/`ULong` had ANY JVM representation
-(D-progress-814) and never revisited once they gained one. `UInt`/
+(D-progress-847) and never revisited once they gained one. `UInt`/
 `ULong.shr()` on a value whose shifted-in bit would differ (i.e. the
 original value's sign bit is set) is consequently still a silent miscompile
 today, same bug class as this entry, just in a different call site
@@ -33096,7 +33096,7 @@ standard.
 **Files:** `lyric-compiler/jvm/codegen/{01_types,02_exprs,04_calls,05_stmts,06_items}.l`,
 `lyric-compiler/jvm/unsigned_int_ops_jvm_self_test.l` (new).
 
-**Related:** #6748, #6661, #6695, D-progress-814, D-progress-840.
+**Related:** #6748, #6661, #6695, D-progress-847, D-progress-840.
 
 ### D-progress-843 — CLI: apply D-progress-817's `dllMatters` gate to `lyric test --target jvm --manifest` too (#6750)
 

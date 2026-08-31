@@ -35892,7 +35892,7 @@ branch), `lyric-compiler/lyric/generic_extern_jvm_self_test.l` (new),
 **Related:** #3432, #3392, #3413 (the MSIL fix this issue tracked JVM parity
 against), #5458, D-progress-588, D-progress-663, docs/44 m-25/m-97.
 
-## D-progress-847 — JVM: a panic inside a closure invoked through a cross-package function-typed parameter corrupted the caught `Bug.message` (#5388, #5251)
+## D-progress-848 — JVM: a panic inside a closure invoked through a cross-package function-typed parameter corrupted the caught `Bug.message` (#5388, #5251)
 
 **Status:** Shipped.
 
@@ -36549,7 +36549,7 @@ verified green.
 static factories, D-progress-837) raised two residual findings.
 
 **#6661 residual — `Short`/`UShort`/`UByte` were reachable, and DID
-panic.** D-progress-814's writeup claimed `type X = UShort range 0 ..=
+panic.** D-progress-847's writeup claimed `type X = UShort range 0 ..=
 100` "fails type-checking before reaching any backend" because none of
 `Short`/`UShort`/`UByte` has a `PrimType` case — but never verified that
 claim against the actual code path, and it was wrong. A distinct type's
@@ -36577,7 +36577,7 @@ union (docs/10 D-progress-571 already established this for `Short`
 specifically: "not a surface Lyric type"). Adding real `UShort`/`UByte`
 support (a new `PtUShort`/`PtUByte` `PrimType` variant threaded through
 literal typing, arithmetic widening, and both backends' codegen — the
-scope `UInt`/`ULong` needed, D-progress-814) is a materially larger
+scope `UInt`/`ULong` needed, D-progress-847) is a materially larger
 change than this residual review finding calls for and was rejected as
 out of scope — mirroring `UInt`/`ULong`'s treatment would require
 inventing language surface that was never speced. The correct,
@@ -36666,7 +36666,7 @@ round trip #6695 breaks). `bitwise_self_test.l` and
 `lyric-compiler/jvm/generic_uint_erasure_jvm_self_test.l` (new),
 `.github/workflows/ci.yml`.
 
-**Related:** #6661, #6695, #6631, D-progress-814 (the entry this
+**Related:** #6661, #6695, #6631, D-progress-847 (the entry this
 corrects), D-progress-837, D-progress-834 (the `Object`-marker fix this
 mirrors), D-progress-571 (established `Short` is not a surface type),
 docs/01-language-reference.md §2.1.
