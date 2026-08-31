@@ -176,6 +176,20 @@ func isStaticExternByName(name: in String): Bool {
   }
 }
 
+// Resolved-overload parameter descriptors for `lowerExternTargetBody`'s
+// F0015-J emission (#6745): `findBestMethod`/`findBestConstructor`'s scoring
+// is widening-tolerant, so a declared @externTarget signature that VALIDATES
+// need not equal the resolved overload's descriptor bit for bit — emitting
+// the call against the DECLARED descriptor in that case encodes a MethodRef
+// the JDK class doesn't actually have.  Falls back to `declared` unchanged
+// when the class wasn't found in metadata (nothing resolved to defer to).
+func resolvedParamDescsOr(resolution: in ExternTargetResolution, declared: in List[String]): List[String] {
+  match resolution.method {
+    case Some(m) -> parseDescriptorParams(m.descriptor)
+    case None -> declared
+  }
+}
+
 // Emit the body of a body-less function that has `@externTarget("java.Class.method")`.
 // Loads all params, emits invokestatic or invokevirtual, and wraps the result in
 // Result$Ok / Result$Err when the declared return type is Result[T, JvmException].
@@ -223,18 +237,86 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
           ctorParamTys.add(typeExprToJvmExtern(decl.params[cpI].ty, ctx.pkgName, ctx.externTypes))
           cpI = cpI + 1
         }
-        insns.add(LNew(className = javaClass))
-        insns.add(LDup)
-        // Parameter slots: long/double occupy two local slots.
+        // F0015-J (ctor form, #3432): verify the declared parameter list
+        // against a real `<init>` overload in JDK class metadata.  The
+        // wrapper's declared RETURN type (the constructed type, e.g.
+        // `List[T]`) is never compared against `<init>`'s own `void`
+        // descriptor — it is reconciled by construction, since the emitted
+        // shape below always returns the freshly `new`'d instance rather
+        // than whatever `<init>` returns.  `resolveExternTargetJvm` reports
+        // "not found" silently when the class is absent from the metadata
+        // index (mirrors the static/instance F0015-J check below), so a
+        // non-JDK/non-Maven ctor target is unaffected.
+        val ctorResolution = resolveExternTargetJvm(ctx.autoFfi, targetFqnDot, "new", allParamDescs, true)
+        // Inline `match` rather than `Std.Core.isNone` (#6745): calling the
+        // generic `isNone[T]` here on `Option[ClassMethod]` — a cross-package
+        // record type — monomorphizes to a specialization (`isNone__Object`)
+        // whose body panics "match not exhaustive" at RUNTIME (a genuine
+        // `Lyric.Mono` generic-inference gap, unrelated to this fix's own
+        // logic); a plain inline match avoids the generic instantiation
+        // entirely.
+        val ctorMethodMissing = ctorResolution.classFound and
+          match ctorResolution.method { case Some(_) -> false; case None -> true }
+        if ctorMethodMissing {
+          var ctorSigStr = "("
+          var csi = 0
+          while csi < ctorParamTys.count {
+            if csi > 0 {
+              ctorSigStr = ctorSigStr + ", "
+            }
+            ctorSigStr = ctorSigStr + jvmTypeToDescStr(ctorParamTys[csi])
+            csi = csi + 1
+          }
+          ctorSigStr = ctorSigStr + ") -> " + javaClass
+          panic(
+            "F0015-J: @externTarget '" + target + "' on '" + decl.name + "': " + "declared constructor signature " + ctorSigStr +
+              " does not match any constructor of '" +
+              targetFqnDot +
+              "' in JDK class metadata. " +
+              "Verify the Lyric parameter types match a real Java constructor overload."
+          )
+        }
+        // Emit against the RESOLVED overload's real descriptor, not the
+        // declared one (#6745): `findBestConstructor`'s scoring above is
+        // widening-tolerant (numeric widening, primitive->Object boxing,
+        // verified reference IS-A), so a declared parameter list that
+        // VALIDATES need not equal the actual `<init>` descriptor bit for
+        // bit — emitting the raw declared descriptor in that case encodes a
+        // MethodRef the JDK class doesn't actually have.  Falls back to the
+        // declared descriptors unchanged when the class wasn't found in
+        // metadata at all (nothing resolved to defer to).
+        val ctorResolvedParamDescs = resolvedParamDescsOr(ctorResolution, allParamDescs)
+        // Load + coerce each declared param into a temp slot BEFORE `new;
+        // dup`: a coercion may branch (the `[Ljava/lang/Object; ->
+        // primitive[]` unbox loop), and the StackMapTable declares an empty
+        // operand stack at every branch target — running it with the
+        // uninitialised receiver ref already on the stack fails verification
+        // (mirrors `lowerAutoFfiConstructorCall`'s identical guard).
+        val ctorParamJvms: List[JvmType] = newList()
+        val ctorArgSlots: List[Int] = newList()
         var cpSlot = 0
         var cpJ = 0
         while cpJ < decl.params.count {
           emitLoad(insns, cpSlot, ctorParamTys[cpJ])
           val w = match ctorParamTys[cpJ] { case JLong -> 2; case JDouble -> 2; case _ -> 1 }
+          val resolvedDesc = if cpJ < ctorResolvedParamDescs.count { ctorResolvedParamDescs[cpJ] } else { allParamDescs[cpJ] }
+          emitFfiCoerce(ctx, insns, allParamDescs[cpJ], resolvedDesc)
+          val pj = descStrToJvmType(resolvedDesc)
+          ctorParamJvms.add(pj)
+          val aslot = allocSlot(ctx, "__ext_ctor_arg_" + freshLabel(ctx), pj)
+          emitStore(insns, aslot, pj)
+          ctorArgSlots.add(aslot)
           cpSlot = cpSlot + w
           cpJ = cpJ + 1
         }
-        insns.add(LInvokespecial(owner = javaClass, name = "<init>", params = ctorParamTys, ret = JVoid))
+        insns.add(LNew(className = javaClass))
+        insns.add(LDup)
+        var caj = 0
+        while caj < ctorArgSlots.count {
+          emitLoad(insns, ctorArgSlots[caj], ctorParamJvms[caj])
+          caj = caj + 1
+        }
+        insns.add(LInvokespecial(owner = javaClass, name = "<init>", params = ctorParamJvms, ret = JVoid))
         val ctorRet = JRef(className = javaClass)
         emitReturn(insns, ctorRet)
         return ctorRet
@@ -262,7 +344,7 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
       }
       val isStatic = match loadClass(ctx.autoFfi, targetFqnDot) {
         case Some(ci) -> {
-          match findBestMethod(ctx.autoFfi, ci, methodName, allParamDescs, true) {
+          match findBestMethod(ctx.autoFfi, ci, methodName, allParamDescs, true, newList()) {
             case Some(_) -> true
             case None -> false
           }
@@ -299,7 +381,11 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
         f5ai = f5ai + 1
       }
       val javaFqnDot = replace(javaClass, "/", ".")
-      if not verifyExternTargetJvm(ctx.autoFfi, javaFqnDot, methodName, f5ArgDescs, isStatic) {
+      val f5Resolution = resolveExternTargetJvm(ctx.autoFfi, javaFqnDot, methodName, f5ArgDescs, isStatic)
+      // Inline `match`, not `isNone` — see the ctor-form comment above (#6745).
+      val f5MethodMissing = f5Resolution.classFound and
+        match f5Resolution.method { case Some(_) -> false; case None -> true }
+      if f5MethodMissing {
         var f5SigStr = "("
         var f5si = 0
         while f5si < javaArgTypes.count {
@@ -320,9 +406,43 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
             "Verify the Lyric parameter/return types match the Java method."
         )
       }
+      // Resolved param descriptors + JVM types for the actual invoke (#6745):
+      // `findBestMethod`'s scoring above is widening-tolerant, so a declared
+      // signature that VALIDATES need not equal the resolved overload's real
+      // descriptor — see `resolvedParamDescsOr`.
+      val f5ResolvedDescs = resolvedParamDescsOr(f5Resolution, f5ArgDescs)
+      val extArgTypes: List[JvmType] = newList()
+      var eatI = 0
+      while eatI < f5ResolvedDescs.count {
+        extArgTypes.add(descStrToJvmType(f5ResolvedDescs[eatI]))
+        eatI = eatI + 1
+      }
 
-      // Load all params in order: receiver first for instance calls.
+      // Load all params in order: receiver first for instance calls, stashed
+      // in a temp slot so each following argument's coercion (#6745) runs
+      // with an empty operand stack — a coercion may branch (the
+      // `[Ljava/lang/Object; -> primitive[]` unbox loop), and the
+      // StackMapTable declares an empty stack at every branch target
+      // (mirrors `lowerAutoFfiInstanceCall`'s identical `needsRecvStash`
+      // guard).  Every param is routed through this temp-slot buffering
+      // uniformly — for the overwhelmingly common case (declared descriptor
+      // already equals the resolved one) `emitFfiCoerce` is a pure no-op, so
+      // this adds no bytecode beyond the store/reload pair.
       var li = 0
+      var extRecvSlot = -1
+      var extRecvTy = JVoid
+      if not isStatic and decl.params.count > 0 {
+        extRecvTy = typeExprToJvm(decl.params[0].ty, ctx.pkgName)
+        match lookupSlot(ctx, decl.params[0].name) {
+          case Some(s) -> emitLoad(insns, s, extRecvTy)
+          case None -> insns.add(LAconstNull)
+        }
+        extRecvSlot = allocSlot(ctx, "__ext_recv_" + freshLabel(ctx), extRecvTy)
+        emitStore(insns, extRecvSlot, extRecvTy)
+        li = 1
+      }
+      val extArgSlots: List[Int] = newList()
+      var argJ = 0
       while li < decl.params.count {
         val p = decl.params[li]
         val paramTy = typeExprToJvm(p.ty, ctx.pkgName)
@@ -330,7 +450,23 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
           case Some(s) -> emitLoad(insns, s, paramTy)
           case None -> insns.add(LAconstNull)
         }
+        val declDesc = if argJ < f5ArgDescs.count { f5ArgDescs[argJ] } else { jvmTypeToDescStr(paramTy) }
+        val resolvedDesc = if argJ < f5ResolvedDescs.count { f5ResolvedDescs[argJ] } else { declDesc }
+        emitFfiCoerce(ctx, insns, declDesc, resolvedDesc)
+        val rj = if argJ < extArgTypes.count { extArgTypes[argJ] } else { paramTy }
+        val aslot = allocSlot(ctx, "__ext_arg_" + freshLabel(ctx), rj)
+        emitStore(insns, aslot, rj)
+        extArgSlots.add(aslot)
         li = li + 1
+        argJ = argJ + 1
+      }
+      if extRecvSlot >= 0 {
+        emitLoad(insns, extRecvSlot, extRecvTy)
+      }
+      var eaj = 0
+      while eaj < extArgSlots.count {
+        emitLoad(insns, extArgSlots[eaj], extArgTypes[eaj])
+        eaj = eaj + 1
       }
 
       if wrapResult {
@@ -345,9 +481,9 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
 
         insns.add(LLabel(name = tryStartL))
         if isStatic {
-          insns.add(LInvokestatic(owner = javaClass, name = methodName, params = javaArgTypes, ret = javaRet))
+          insns.add(LInvokestatic(owner = javaClass, name = methodName, params = extArgTypes, ret = javaRet))
         } else {
-          insns.add(LInvokevirtual(owner = javaClass, name = methodName, params = javaArgTypes, ret = javaRet))
+          insns.add(LInvokevirtual(owner = javaClass, name = methodName, params = extArgTypes, ret = javaRet))
         }
         match javaRet {
           case JVoid -> insns.add(LAconstNull)
@@ -387,9 +523,9 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
         JRef(className = "java/lang/Object")
       } else {
         if isStatic {
-          insns.add(LInvokestatic(owner = javaClass, name = methodName, params = javaArgTypes, ret = javaRet))
+          insns.add(LInvokestatic(owner = javaClass, name = methodName, params = extArgTypes, ret = javaRet))
         } else {
-          insns.add(LInvokevirtual(owner = javaClass, name = methodName, params = javaArgTypes, ret = javaRet))
+          insns.add(LInvokevirtual(owner = javaClass, name = methodName, params = extArgTypes, ret = javaRet))
         }
         emitReturn(insns, javaRet)
         javaRet
@@ -470,7 +606,7 @@ func lowerCall(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, args: in Lis
 func lowerLambdaInvokeTail(
   ctx: in FuncCtx, insns: in List[LInsn], args: in List[CallArg], retType: in Option[JvmType]
 ): JvmType {
-  val ifaceName = lambdaIfaceName(ctx.pkgName)
+  val ifaceName = lambdaIfaceName()
   insns.add(LCheckcast(className = ifaceName))
   insns.add(LIconst(v = args.count))
   insns.add(LAnewarray(className = "java/lang/Object"))
@@ -615,7 +751,7 @@ func lowerCloseExecutorIntrinsic(ctx: in FuncCtx, insns: in List[LInsn], args: i
 func isLambdaLocal(ctx: in FuncCtx, name: in String): Bool {
   match lookupSlot(ctx, name) {
     case Some(_) -> {
-      val ifaceName = lambdaIfaceName(ctx.pkgName)
+      val ifaceName = lambdaIfaceName()
       match lookupType(ctx, name) {
         case Some(t) -> match t { case JRef(cls) -> cls == ifaceName or cls == "java/lang/Object"; case _ -> false }
         case None -> false
@@ -752,6 +888,28 @@ func reorderAndFillJvmArgs(sig: in JvmFuncSig, args: in List[CallArg]): List[Cal
   ordered
 }
 
+// #6712: true when `path` is a QUALIFIED call site (2+ segments, e.g.
+// `Std.Math.longToInt` or an already-alias-resolved `Math.longToInt`) that
+// resolves to a real, registered function via `resolveGeneralFuncSig`.
+// Mirrors `Msil.Codegen.hasQualifiedFuncOverrideMsil`'s intent: a handful of
+// `lowerBuiltinOrStaticCall` intrinsics (currently `longToInt`/`intToLong`)
+// share a bare name with a genuine `Std.*` function that has its own real
+// (possibly panic-on-overflow) `@externTarget` contract — a BARE call to
+// that name (used internally by the self-hosted compiler's own source,
+// e.g. `lexer.l`'s unrelated `longToInt` helper) should still hit the fast
+// intrinsic path, but a QUALIFIED call naming the real function must not be
+// silently overridden by it.
+func hasQualifiedFuncOverrideJvm(ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int): Bool {
+  if path.segments.count < 2 {
+    false
+  } else {
+    match resolveGeneralFuncSig(ctx, funcName, path, argc) {
+      case Some(_) -> true
+      case None -> false
+    }
+  }
+}
+
 // Lower a builtin or static function call.
 func lowerBuiltinOrStaticCall(
   ctx: in FuncCtx,
@@ -769,11 +927,18 @@ func lowerBuiltinOrStaticCall(
     // lowered argument to a temp, then push the receiver and reload.
     if args.count > 0 {
       val rawTy = lowerCallArg(ctx, insns, args[0])
+      // #6754 (finding 1.1): a `UInt`/`ULong` argument, stringified via
+      // `Integer`/`Long.toUnsignedString` BEFORE the double-normalization
+      // below — `PrintStream.println(int)`/`(long)` always renders the
+      // SIGNED decimal, same class of bug `coerceToStringForConcat`'s
+      // `isUnsigned` parameter fixes for interpolation/`+`/`.toString()`
+      // (this builtin never routed through that helper at all).
+      val unsignedTy = normalizeUnsignedPrintArg(insns, rawTy, isUnsignedExpr(ctx, callArgExpr(args[0])))
       // #4688: PrintStream.println(double) would hand off to Java's
       // Double.toString directly ("1500.0" for a whole value) — normalize
       // to a String first so println matches the interpolation/toString()
       // rendering ("1500", matching .NET's Double.ToString()).
-      val argTy = normalizeDoublePrintArg(ctx, insns, rawTy)
+      val argTy = normalizeDoublePrintArg(ctx, insns, unsignedTy)
       val aSlot = allocSlot(ctx, "__println_a_" + freshLabel(ctx), argTy)
       emitStore(insns, aSlot, argTy)
       insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
@@ -791,8 +956,10 @@ func lowerBuiltinOrStaticCall(
     // Same receiver-after-argument discipline as println above.
     if args.count > 0 {
       val rawTy = lowerCallArg(ctx, insns, args[0])
+      // #6754 (finding 1.1): same unsigned normalization as println above.
+      val unsignedTy = normalizeUnsignedPrintArg(insns, rawTy, isUnsignedExpr(ctx, callArgExpr(args[0])))
       // #4688: same Double normalization as println above.
-      val argTy = normalizeDoublePrintArg(ctx, insns, rawTy)
+      val argTy = normalizeDoublePrintArg(ctx, insns, unsignedTy)
       val aSlot = allocSlot(ctx, "__print_a_" + freshLabel(ctx), argTy)
       emitStore(insns, aSlot, argTy)
       insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
@@ -818,35 +985,50 @@ func lowerBuiltinOrStaticCall(
   } else if funcName == "toString" {
     if args.count > 0 {
       val argTy = lowerCallArg(ctx, insns, args[0])
-      match argTy {
-        case JRef(_) -> {
-          val tsPs: List[JvmType] = newList()
-          insns.add(
-            LInvokevirtual(
-              owner = "java/lang/Object",
-              name = "toString",
-              params = tsPs,
-              ret = JRef(className = "java/lang/String")
+      // #6748: a `UInt`/`ULong` argument. Boxing + `Object.toString()` (the
+      // path below) would dispatch to `Integer`/`Long`'s own SIGNED
+      // `toString()` — go straight to the unsigned static method on the
+      // still-unboxed primitive instead.
+      val isUnsignedArg = isUnsignedExpr(ctx, callArgExpr(args[0])) and
+        (match argTy { case JInt -> true; case JLong -> true; case _ -> false })
+      if isUnsignedArg {
+        val uPs: List[JvmType] = newList()
+        uPs.add(argTy)
+        val uOwner = match argTy { case JLong -> "java/lang/Long"; case _ -> "java/lang/Integer" }
+        insns.add(
+          LInvokestatic(owner = uOwner, name = "toUnsignedString", params = uPs, ret = JRef(className = "java/lang/String"))
+        )
+      } else {
+        match argTy {
+          case JRef(_) -> {
+            val tsPs: List[JvmType] = newList()
+            insns.add(
+              LInvokevirtual(
+                owner = "java/lang/Object",
+                name = "toString",
+                params = tsPs,
+                ret = JRef(className = "java/lang/String")
+              )
             )
-          )
-        }
-        case _ -> {
-          boxIfNeeded(insns, argTy)
-          val tsPs2: List[JvmType] = newList()
-          insns.add(
-            LInvokevirtual(
-              owner = "java/lang/Object",
-              name = "toString",
-              params = tsPs2,
-              ret = JRef(className = "java/lang/String")
+          }
+          case _ -> {
+            boxIfNeeded(insns, argTy)
+            val tsPs2: List[JvmType] = newList()
+            insns.add(
+              LInvokevirtual(
+                owner = "java/lang/Object",
+                name = "toString",
+                params = tsPs2,
+                ret = JRef(className = "java/lang/String")
+              )
             )
-          )
-          // #4688: the free-function `toString(x)` form boxes and dispatches
-          // to Double.toString the same way the member `x.toString()` form
-          // does — normalize identically.
-          match argTy {
-            case JDouble -> emitNormalizeDoubleString(ctx, insns)
-            case _ -> ()
+            // #4688: the free-function `toString(x)` form boxes and dispatches
+            // to Double.toString the same way the member `x.toString()` form
+            // does — normalize identically.
+            match argTy {
+              case JDouble -> emitNormalizeDoubleString(ctx, insns)
+              case _ -> ()
+            }
           }
         }
       }
@@ -1055,13 +1237,25 @@ func lowerBuiltinOrStaticCall(
       JVoid
     }
     JRef(className = "java/lang/String")
-  } else if funcName == "longToInt" {
+  } else if (not hasQualifiedFuncOverrideJvm(ctx, funcName, path, args.count)) and funcName == "longToInt" {
+    // #6712: only intercept a BARE `longToInt` call (a self-hosted-compiler
+    // convention used internally — e.g. `lexer.l`'s own unrelated
+    // `longToInt` helper — that always wants unchecked `l2i` truncation).
+    // A QUALIFIED call site (`Std.Math.longToInt` / an aliased
+    // `Math.longToInt`) that resolves to the real, registered
+    // `Std.Math.longToInt` function must fall through to the general call
+    // path instead, so it actually reaches `Host.hostLongToInt`
+    // (`@externTarget("java.lang.Math.toIntExact")`, panics on overflow —
+    // the documented contract) rather than silently truncating.
     if args.count > 0 {
       lowerCallArg(ctx, insns, args[0])
     }
     insns.add(LL2i)
     JInt
-  } else if funcName == "intToLong" {
+  } else if (not hasQualifiedFuncOverrideJvm(ctx, funcName, path, args.count)) and funcName == "intToLong" {
+    // #6712: same qualified-call-site guard as `longToInt` above, for
+    // consistency (a qualified `Std.Math.intToLong` should reach the real
+    // `Host.hostIntToLong`, even though `i2l` widening can never overflow).
     if args.count > 0 {
       lowerCallArg(ctx, insns, args[0])
     }
@@ -1453,7 +1647,7 @@ func ensureSamAdapterClass(ctx: in FuncCtx, ifaceBin: in String, sam: in ClassMe
     }
     ei = ei + 1
   }
-  val lambdaIface = lambdaIfaceName(ctx.pkgName)
+  val lambdaIface = lambdaIfaceName()
   val paramDescs = parseDescriptorParams(sam.descriptor)
   val retTy = descStrToJvmType(returnDescFromMethodDesc(sam.descriptor))
   val paramTys: List[JvmType] = newList()
@@ -1517,7 +1711,7 @@ func ensureSamAdapterClass(ctx: in FuncCtx, ifaceBin: in String, sam: in ClassMe
 // lambda is stashed to a temp slot so the `new; dup; aload; invokespecial`
 // construction sequence runs on a clean stack top.
 func emitSamAdapterWrap(ctx: in FuncCtx, insns: in List[LInsn], ifaceBin: in String, sam: in ClassMethod): Unit {
-  val lambdaIface = lambdaIfaceName(ctx.pkgName)
+  val lambdaIface = lambdaIfaceName()
   val adapterClass = ensureSamAdapterClass(ctx, ifaceBin, sam)
   val tmp = allocSlot(ctx, "__sam_tmp_" + freshLabel(ctx), JRef(className = lambdaIface))
   insns.add(LAstoreAs(slot = tmp, className = lambdaIface))
@@ -1538,7 +1732,7 @@ func emitFfiCoerce(ctx: in FuncCtx, insns: in List[LInsn], fromDesc: in String, 
   // unavailable (or that is not a functional interface — only reachable through
   // the permissive no-metadata score) is left untouched, preserving the legacy
   // behavior for that configuration.
-  if toDesc.startsWith("L") and toDesc != "Ljava/lang/Object;" and fromDesc == "L" + lambdaIfaceName(ctx.pkgName) + ";" {
+  if toDesc.startsWith("L") and toDesc != "Ljava/lang/Object;" and fromDesc == "L" + lambdaIfaceName() + ";" {
     val ifaceBin = refDescToBinary(toDesc)
     match findSamMethod(ctx.autoFfi, ifaceBin) {
       case Some(sam) -> emitSamAdapterWrap(ctx, insns, ifaceBin, sam)
@@ -1588,6 +1782,27 @@ func emitFfiCoerce(ctx: in FuncCtx, insns: in List[LInsn], fromDesc: in String, 
       return ()
     }
   }
+  // byte/short/char widening (#6769): the value is already on the operand
+  // stack as a full `int` (the JVM has no narrower integral stack slot — see
+  // `scoreParamMatch`'s widening-arm comment), so widening to `short`/`int`
+  // itself needs no bytecode at all (falls through, matching the `fromDesc ==
+  // toDesc` early-return's no-op shape); only widening past `int` to
+  // `long`/`float`/`double` needs the same `i2l`/`i2d`/`i2f` conversion
+  // bytecode the `fromDesc == "I"` arm above emits.
+  if fromDesc == "B" or fromDesc == "S" or fromDesc == "C" {
+    if toDesc == "J" {
+      insns.add(LI2l)
+      return ()
+    }
+    if toDesc == "D" {
+      insns.add(LI2d)
+      return ()
+    }
+    if toDesc == "F" {
+      insns.add(LI2f)
+      return ()
+    }
+  }
   // Lyric slice (`[Ljava/lang/Object;`) → any JDK primitive array.  The
   // source array reference is on the operand stack; `emitUnboxObjectArray`
   // replaces it with a freshly-built primitive array copy (element-copy
@@ -1610,6 +1825,43 @@ func emitFfiCoerce(ctx: in FuncCtx, insns: in List[LInsn], fromDesc: in String, 
 // and `methodName` is the Java method.  Resolves the best-matching overload
 // from JDK metadata and emits invokestatic / invokevirtual with the real
 // descriptor.  Falls back to an Object-typed guess when the JDK is unavailable.
+// The overload-SCORING descriptor for auto-FFI argument `arg`, preferring the
+// argument's TRUE declared Lyric element type over its erased runtime
+// descriptor when they disagree (#5526 root cause): every `slice[T]` erases
+// uniformly to `[Ljava/lang/Object;` on the JVM, so an overload set with both
+// a primitive-array member (`int[] copyOf(int[], int)`) and a generic
+// reference-array member (`<T> T[] copyOf(T[], int)`, itself erased to
+// `[Ljava/lang/Object;`) always scores the erased descriptor as an EXACT
+// match against the generic member — `Arrays.copyOf(someSliceIntValue, n)`
+// silently dispatched to the generic overload, returning a boxed `Object[]`
+// that grows with `null`-padded new slots instead of the primitive `0` a
+// real `int[]` grows with, regardless of tail-expression vs. explicit
+// `return` position (`emitFfiCoerce`'s existing `[Ljava/lang/Object; ->
+// primitive[]` per-argument conversion was designed to feed exactly the
+// primitive overload, but never got the chance). `indexedElemTypeOverride`
+// (the same bare-name/field declared-type registry `EIndex` narrowing
+// already consults) supplies the true element type when the argument
+// resolves to a tracked local/param/field; this changes ONLY the descriptor
+// fed into overload scoring — the real erased descriptor (`argDescs`, used
+// for the actual per-argument coercion once an overload is picked) is
+// untouched.  Shared by all three auto-FFI call shapes — static
+// (`lowerAutoFfiStaticCall`), instance (`lowerAutoFfiInstanceCall`), and
+// constructor (`lowerAutoFfiConstructorCall`) — since the identical
+// erased-array scoring ambiguity is reachable through any of them (#6662:
+// the original #5526 fix wired this into the static path only).
+func ffiScoreDescFor(ctx: in FuncCtx, arg: in Expr, erasedDesc: in String): String {
+  if erasedDesc == "[Ljava/lang/Object;" {
+    // `arg` is already known to be array/slice-erased here (the `erasedDesc`
+    // gate above), never a genuine `Map[K, V]` receiver — `allowMapValueArg
+    // = false` mirrors `SFor`'s same conservative default (#5451).
+    val elemTy = indexedElemTypeOverride(ctx, arg, false)
+    if isJvmPrimitiveElemType(elemTy) {
+      return "[" + typeDescriptor(elemTy)
+    }
+  }
+  erasedDesc
+}
+
 func lowerAutoFfiStaticCall(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -1621,12 +1873,22 @@ func lowerAutoFfiStaticCall(
   // Buffer each arg's lowering so coercions can be inserted per-overload.
   val argBufs: List[List[LInsn]] = newList()
   val argDescs: List[String] = newList()
+  val scoreDescs: List[String] = newList()
+  // `narrowedFlags[i]` (#6745) is true exactly when `ffiScoreDescFor` narrowed
+  // this argument's score-only descriptor away from its real erased one — the
+  // ONLY case `scoreParamMatch`'s reverse-compatibility arm may fire for; see
+  // that function's doc comment.
+  val narrowedFlags: List[Bool] = newList()
   var i = 0
   while i < args.count {
     val buf: List[LInsn] = newList()
     val aTy = lowerCallArg(ctx, buf, args[i])
     argBufs.add(buf)
-    argDescs.add(jvmTypeToDescStr(aTy))
+    val erasedDesc = jvmTypeToDescStr(aTy)
+    argDescs.add(erasedDesc)
+    val scoreDesc = ffiScoreDescFor(ctx, callArgExpr(args[i]), erasedDesc)
+    scoreDescs.add(scoreDesc)
+    narrowedFlags.add(scoreDesc != erasedDesc)
     i = i + 1
   }
 
@@ -1673,7 +1935,7 @@ func lowerAutoFfiStaticCall(
       if methodName == "new" {
         return lowerAutoFfiConstructorCall(ctx, insns, ci, args, callSpan)
       }
-      match findBestMethod(ctx.autoFfi, ci, methodName, argDescs, true) {
+      match findBestMethod(ctx.autoFfi, ci, methodName, scoreDescs, true, narrowedFlags) {
         case None -> {
           // No static overload matches — compile-time diagnostic.
           var argStr = ""
@@ -1744,15 +2006,22 @@ func lowerAutoFfiInstanceCall(
 ): JvmType {
   val argBufs: List[List[LInsn]] = newList()
   val argDescs: List[String] = newList()
+  val scoreDescs: List[String] = newList()
+  // See `lowerAutoFfiStaticCall`'s identical `narrowedFlags` comment (#6745).
+  val narrowedFlags: List[Bool] = newList()
   var i = 0
   while i < args.count {
     val buf: List[LInsn] = newList()
     val aTy = lowerCallArg(ctx, buf, args[i])
     argBufs.add(buf)
-    argDescs.add(jvmTypeToDescStr(aTy))
+    val erasedDesc = jvmTypeToDescStr(aTy)
+    argDescs.add(erasedDesc)
+    val scoreDesc = ffiScoreDescFor(ctx, callArgExpr(args[i]), erasedDesc)
+    scoreDescs.add(scoreDesc)
+    narrowedFlags.add(scoreDesc != erasedDesc)
     i = i + 1
   }
-  match findBestInstanceMethod(ctx.autoFfi, ci, methodName, argDescs) {
+  match findBestInstanceMethod(ctx.autoFfi, ci, methodName, scoreDescs, narrowedFlags) {
     case None -> {
       var argStr = ""
       var ai = 0
@@ -1880,15 +2149,22 @@ func lowerAutoFfiConstructorCall(
   }
   val argBufs: List[List[LInsn]] = newList()
   val argDescs: List[String] = newList()
+  val scoreDescs: List[String] = newList()
+  // See `lowerAutoFfiStaticCall`'s identical `narrowedFlags` comment (#6745).
+  val narrowedFlags: List[Bool] = newList()
   var i = 0
   while i < args.count {
     val buf: List[LInsn] = newList()
     val aTy = lowerCallArg(ctx, buf, args[i])
     argBufs.add(buf)
-    argDescs.add(jvmTypeToDescStr(aTy))
+    val erasedDesc = jvmTypeToDescStr(aTy)
+    argDescs.add(erasedDesc)
+    val scoreDesc = ffiScoreDescFor(ctx, callArgExpr(args[i]), erasedDesc)
+    scoreDescs.add(scoreDesc)
+    narrowedFlags.add(scoreDesc != erasedDesc)
     i = i + 1
   }
-  match findBestConstructor(ctx.autoFfi, ci, argDescs) {
+  match findBestConstructor(ctx.autoFfi, ci, scoreDescs, narrowedFlags) {
     case None -> {
       var argStr = ""
       var ai = 0
@@ -3232,9 +3508,49 @@ func sliceElemTypeJvm(recvTy: in JvmType): JvmType {
   }
 }
 
+// Box a `.append`/slice-mutation scalar argument into the array's erased
+// `Object[]` element slot, widening it to the receiver's TRUE declared
+// numeric element type first when known (#5257): every `slice[T]` erases
+// uniformly to `JArray(Object)` on the JVM, so boxing the argument against
+// `erasedElemTy` alone boxes it as whatever its OWN natural type is (`Integer`
+// for a plain `Int` literal) regardless of the receiver's real element type —
+// a `slice[Long]` ends up holding a mix of `Long`- and `Integer`-boxed
+// elements once M6 numeric widening lets an `Int` argument satisfy a `Long`
+// parameter. `declaredElemTy` (from `indexedElemTypeOverride`, the same
+// bare-name/field declared-type registry `EIndex` narrowing already
+// consults) supplies the true target when the receiver resolves to a
+// tracked local/param/field; a reference-typed argument (already erased —
+// e.g. relayed from another `Object`-typed slot) or an unresolved declared
+// type falls back to the prior erased-target boxing unchanged.
+func coerceScalarToSliceElem(
+  insns: in List[LInsn],
+  argTy: in JvmType,
+  declaredElemTy: in JvmType,
+  erasedElemTy: in JvmType,
+): Unit {
+  if (not isRefJvm(argTy)) and isNumericJvm(declaredElemTy) {
+    coerceArgTo(insns, argTy, declaredElemTy)
+    boxIfNeeded(insns, declaredElemTy)
+  } else {
+    coerceArgTo(insns, argTy, erasedElemTy)
+  }
+}
+
 // `xs.append(x)`: a new slice one element longer than `xs`, `x` at the end.
-func lowerSliceAppendJvm(ctx: in FuncCtx, insns: in List[LInsn], recvTy: in JvmType, args: in List[CallArg]): JvmType {
+func lowerSliceAppendJvm(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  recv: in Expr,
+  recvTy: in JvmType,
+  args: in List[CallArg],
+): JvmType {
   val e = sliceElemTypeJvm(recvTy)
+  // The receiver's TRUE declared element type when resolvable (a nested-slice
+  // override, or "no override", both fall back to the erased `e` — see
+  // `coerceScalarToSliceElem`'s doc comment). `recv` is a `slice[T]` receiver
+  // here (`.append` is slice-only), never `Map[K, V]` — `allowMapValueArg =
+  // false` (#5451).
+  val declaredElemTy = indexedElemTypeOverride(ctx, recv, false)
   val recvSlot = allocSlot(ctx, "__sliceapp_recv_" + toString(ctx.slotTicker.count), recvTy)
   emitStore(insns, recvSlot, recvTy)
   emitLoad(insns, recvSlot, recvTy)
@@ -3250,7 +3566,7 @@ func lowerSliceAppendJvm(ctx: in FuncCtx, insns: in List[LInsn], recvTy: in JvmT
     insns.add(LAconstNull)
     JRef(className = "java/lang/Object")
   }
-  coerceArgTo(insns, argTy, e)
+  coerceScalarToSliceElem(insns, argTy, declaredElemTy, e)
   val argSlot = allocSlot(ctx, "__sliceapp_arg_" + toString(ctx.slotTicker.count), e)
   emitStore(insns, argSlot, e)
   val zeroSlot = storeIntConstSlotJvm(ctx, insns, 0)
@@ -3398,7 +3714,25 @@ func lowerMethodCall(
       // FFI fast path below is unaffected for real externs.
       // J3 M-3: this same key also serves `AppWire.bootstrap()` /
       // `AppWire.<exposed>()` — a static call on the wire factory class.
-      match mapGet(ctx.funcSigs, lastSegment(path) + "." + memberName) {
+      //
+      // #6664: the calling package's OWN scoped registration
+      // (`<ctx.pkgName>::<TypeName>.<member>`) is tried FIRST, before the
+      // bundle-global bare key — mirrors `ctorClassFor`'s scoped-key-wins
+      // precedence (#5976).  Distinct/range-subtype `from`/`tryFrom` are the
+      // only registrants that populate the scoped key today (06_items.l), so
+      // for every OTHER dot-named registrant (AppWire, a union's dot-named
+      // function) this lookup simply misses and falls through to the
+      // existing bare-key behaviour, unchanged.  Without this, two packages
+      // each declaring their own same-simple-name distinct/range-subtype
+      // (e.g. both named `Age`) collided on the bare `"Age.from"` /
+      // `"Age.tryFrom"` key: whichever package's file the pre-scan visited
+      // first won the bundle-wide registration, and the OTHER package's own
+      // `Age.tryFrom(...)` call site silently validated against the wrong
+      // package's range bounds.
+      val distinctDotKey = lastSegment(path) + "." + memberName
+      val scopedDotSig = mapGet(ctx.funcSigs, ctx.pkgName + "::" + distinctDotKey)
+      val dotSig = match scopedDotSig { case Some(_) -> scopedDotSig; case None -> mapGet(ctx.funcSigs, distinctDotKey) }
+      match dotSig {
         case Some(sig) -> {
           var wi = 0
           while wi < args.count {
@@ -3563,6 +3897,20 @@ func lowerMethodCall(
   // auto-FFI / registry paths below, which resolve the real toString.
   val recvIsBoxablePrim = isNumericJvm(recvTy) or (match recvTy { case JBoolean -> true; case _ -> false })
   if memberName == "toString" and args.count == 0 and recvIsBoxablePrim {
+    // #6748: a `UInt`/`ULong` receiver — `String.valueOf(int/long)` below
+    // would render a sign-bit-set value as negative; go through
+    // `Integer`/`Long.toUnsignedString` instead.
+    val isUnsignedRecv = isUnsignedExpr(ctx, recv) and
+      (match recvTy { case JInt -> true; case JLong -> true; case _ -> false })
+    if isUnsignedRecv {
+      val uPs: List[JvmType] = newList()
+      uPs.add(recvTy)
+      val uOwner = match recvTy { case JLong -> "java/lang/Long"; case _ -> "java/lang/Integer" }
+      insns.add(
+        LInvokestatic(owner = uOwner, name = "toUnsignedString", params = uPs, ret = JRef(className = "java/lang/String"))
+      )
+      return JRef(className = "java/lang/String")
+    }
     // String.valueOf(<primitive>) — no boxing, unlike Object.toString on a
     // boxed wrapper (keeps the closure zero-overhead boxing gate flat).
     val prTsPs: List[JvmType] = newList()
@@ -3852,7 +4200,7 @@ func lowerMethodCall(
   match recvTy {
     case JArray(_) -> {
       if memberName == "append" and args.count == 1 {
-        return lowerSliceAppendJvm(ctx, insns, recvTy, args)
+        return lowerSliceAppendJvm(ctx, insns, recv, recvTy, args)
       } else if memberName == "concat" and args.count == 1 {
         return lowerSliceConcatJvm(ctx, insns, recvTy, args)
       } else if memberName == "slice" and args.count == 2 {
@@ -4015,6 +4363,33 @@ func lowerMethodCall(
   }
 }
 
+// #6754 (finding 1.1): `println`/`print`'s already-lowered argument, on the
+// stack as `rawTy`, stringified via `Integer`/`Long.toUnsignedString` when
+// `isUnsigned` is true and `rawTy` is `JInt`/`JLong` — mirrors
+// `coerceToStringForConcat`'s `isUnsignedIntOrLong` branch (02_exprs.l),
+// which `println`/`print` never routed through: `PrintStream.println(int)`/
+// `(long)` always renders the SIGNED decimal
+// (`println(3_000_000_000u32)` -> "-1294967296"), the exact miscompile this
+// ticket describes. Runs BEFORE `normalizeDoublePrintArg` below — a
+// `UInt`/`ULong` value is never `JDouble`, so at most one of the two
+// normalizations ever fires. Non-unsigned/non-Int/Long args pass through
+// unchanged. Shared by both `println` and `print` in
+// `lowerBuiltinOrStaticCall` above.
+func normalizeUnsignedPrintArg(insns: in List[LInsn], rawTy: in JvmType, isUnsigned: in Bool): JvmType {
+  val isUnsignedIntOrLong = isUnsigned and (match rawTy { case JInt -> true; case JLong -> true; case _ -> false })
+  if isUnsignedIntOrLong {
+    val uPs: List[JvmType] = newList()
+    uPs.add(rawTy)
+    val uOwner = match rawTy { case JLong -> "java/lang/Long"; case _ -> "java/lang/Integer" }
+    insns.add(
+      LInvokestatic(owner = uOwner, name = "toUnsignedString", params = uPs, ret = JRef(className = "java/lang/String"))
+    )
+    JRef(className = "java/lang/String")
+  } else {
+    rawTy
+  }
+}
+
 // #4688: `println`/`print`'s already-lowered argument, on the stack as
 // `rawTy`. `PrintStream.println(double)`/`.print(double)` would hand off to
 // Java's `Double.toString` directly ("1500.0" for a whole value); stringify
@@ -4051,6 +4426,16 @@ func printArgType(ty: in JvmType): JvmType {
     case JDouble -> JDouble
     case JBoolean -> JBoolean
     case JChar -> JChar
+    // #6764: PrintStream has no println/print overload narrower than
+    // `int` — Byte/Short values are already `istore`/`iload`'d as ints
+    // (`emitStore`/`emitLoad`, 01_types.l), so the descriptor must widen
+    // to match what's really on the operand stack, mirroring
+    // `stringValueOfParam`'s widening (02_exprs.l:2866-2875). `Float` DOES
+    // have a real `println(float)` overload and must keep its own type,
+    // not fall through to the String catch-all below.
+    case JByte -> JInt
+    case JShort -> JInt
+    case JFloat -> JFloat
     case JVoid -> JRef(className = "java/lang/String")
     case JRef(cls) -> {
       // The Object-invoke convention (`lowerLambdaInvoke` / `lowerCallOnExprResult`,

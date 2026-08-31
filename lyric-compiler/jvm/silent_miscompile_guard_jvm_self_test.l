@@ -36,6 +36,25 @@
 //!       hoisted-holder-cell element type (Float/Long/Int/Byte/Double/Bool/
 //!       Char, plus the default JRef branch via String) gets a real
 //!       regression test; `JShort` has no reachable Lyric surface type.
+//!   15. Double stringification matches .NET at and beyond Java's own
+//!       scientific-notation threshold (#5660): Java's Double.toString()
+//!       switches to "E" notation at |value| >= 1e7 or < 1e-3, .NET's
+//!       default ToString() only at |value| >= 1e17 or < 1e-4 — the gap
+//!       between those two thresholds is re-laid-out into plain decimal,
+//!       and magnitudes beyond .NET's own threshold are re-spelled in
+//!       .NET's "D[.DDD]E[+-]NN" form instead of Java's.
+//!   16. Generic union/record payload literal and range match-arm tests
+//!       resolve the scrutinee's real instantiated type (#6763: the
+//!       match-lowering TEST phase ignored `scrutTypeArgs`, so a literal
+//!       arm on an erased `Long` payload checkcast against
+//!       `java/lang/Integer` and threw `ClassCastException`).
+//!   17. `println` accepts `Byte` and `Float` arguments without
+//!       `VerifyError` (#6764: `printArgType` fell through to the
+//!       `println(String)` descriptor for both, though the actual stack
+//!       value is `int`/`float`; `print` shares the fix but only ever
+//!       type-checks with a `String` argument, so it isn't independently
+//!       exercised; `Short` has no reachable Lyric surface type — see
+//!       item 14's note).
 @test_module
 package Lyric.SilentMiscompileGuardJvmSelfTest
 
@@ -64,6 +83,16 @@ union Box {
 union Tagged2 {
   case A(x: Int)
   case B(x: Int)
+}
+
+// A generic union whose payload erases to `Object`, used by the #6763
+// literal/range match-arm tests below (`Box` above is already non-generic).
+// Case names are deliberately distinct from `Box`'s (`Full`/`Empty`) — a
+// same-name unannotated constructor call elsewhere in this file would
+// otherwise resolve ambiguously between the two unions.
+union GenBox[T] {
+  case Present(value: T)
+  case Absent
 }
 
 // Returns its Float argument scaled, to force a Float value across a function
@@ -498,4 +527,171 @@ test "zero and negative whole Doubles omit trailing .0" {
   val neg: Double = -5.0
   assertEqual(z.toString(), "0", "0.0.toString() == \"0\"")
   assertEqual(neg.toString(), "-5", "(-5.0).toString() == \"-5\"")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 15. Double stringification matches .NET at and beyond Java's own
+//     scientific-notation threshold (#5660, docs/44 m-21 follow-up).  Java's
+//     `Double.toString()` switches to "D.DDDEn" notation at |value| >= 1e7 or
+//     < 1e-3; .NET's default `ToString()` only does so at |value| >= 1e17 or
+//     < 1e-4.  `emitNormalizeDoubleString` re-derives whichever of .NET's two
+//     notations actually applies to the magnitude from Java's digits.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a whole Double just above Java's 1e7 threshold renders as plain decimal" {
+  val d: Double = 20000000.0
+  assertEqual(d.toString(), "20000000", "20000000.0 stays plain decimal (.NET's threshold is 1e17)")
+}
+
+test "a whole Double just below Java's 1e7 threshold is unaffected" {
+  val d: Double = 9999999.0
+  assertEqual(d.toString(), "9999999", "9999999.0.toString() == \"9999999\"")
+}
+
+test "a negative whole Double above 1e7 renders as plain decimal" {
+  val d: Double = -20000000.0
+  assertEqual(d.toString(), "-20000000", "-20000000.0.toString() == \"-20000000\"")
+}
+
+test "a fractional Double above 1e7 renders as plain decimal" {
+  val d: Double = 123456789.123
+  assertEqual(d.toString(), "123456789.123", "123456789.123 stays plain decimal")
+}
+
+test "a Double at .NET's own 1e17 scientific threshold matches .NET's spelling" {
+  val d: Double = 1e17
+  assertEqual(d.toString(), "1E+17", "1e17 uses .NET's E+NN spelling, not Java's E17")
+}
+
+test "a large multi-digit-mantissa Double matches .NET's scientific spelling" {
+  val d: Double = 1.5e20
+  assertEqual(d.toString(), "1.5E+20", "1.5e20 keeps its mantissa digits under .NET's spelling")
+}
+
+test "a very small Double below .NET's 1e-4 threshold matches .NET's spelling" {
+  val d: Double = 1e-10
+  assertEqual(d.toString(), "1E-10", "1e-10 uses .NET's E-NN spelling")
+}
+
+test "a Double whose exponent needs zero-padding matches .NET's spelling" {
+  val d: Double = 1e-5
+  assertEqual(d.toString(), "1E-05", "1e-5's exponent is zero-padded to 2 digits, matching .NET")
+}
+
+test "a small Double within Java's scientific range but .NET's fixed range stays plain" {
+  val d: Double = 0.0001
+  assertEqual(d.toString(), "0.0001", "1e-4 stays plain decimal under .NET's wider fixed-point range")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 16. Generic union payload literal/range match-arm tests resolve the
+//     scrutinee's REAL instantiated type (#6763).  The match-lowering TEST
+//     phase (`lowerPatternTest` / `testCaseFieldJvm`) previously ignored the
+//     scrutinee's tracked generic type args (`scrutTypeArgs`), so a literal
+//     or range arm on an erased type-parameter payload guessed the wrapper
+//     class from the pattern literal's own width instead of the payload's
+//     real one — a small unsuffixed literal (`case Ok(0)`) checkcast against
+//     `java/lang/Integer` even when the real boxed value was a
+//     `java/lang/Long`, throwing `ClassCastException` at runtime.  Covered
+//     against both the stdlib's `Result[Long, String]` (the exact #6763
+//     repro) and a locally-declared generic union.
+// ─────────────────────────────────────────────────────────────────────────────
+// Scrutinee is the CALL EXPRESSION's own result (not a re-bound local or an
+// `in` parameter): `scrutineeGenericArgs` recovers a call's instantiation
+// from the callee's registered `JvmFuncSig.retGenericArgs`, matching the
+// exact #6763 repro shape (`match mk() { case Ok(0) -> ... }`).  A function
+// PARAMETER's own generic-typed annotation is a separate, pre-existing gap
+// (`varGenericArgs` is only populated at `val`/`var` binding sites, not
+// parameter binding) — out of scope for this fix.
+func mkOkLong(n: in Long): Result[Long, String] {
+  Ok(value = n)
+}
+
+func mkErrLong(msg: in String): Result[Long, String] {
+  Err(error = msg)
+}
+
+test "Result[Long, String] literal-0 match arm unboxes java/lang/Long, not Integer" {
+  val zeroLabel = match mkOkLong(0i64) { case Ok(0) -> "zero"; case Ok(n) -> "other:" + toString(n); case Err(e) -> e }
+  assertEqual(zeroLabel, "zero", "Ok(0) matches when the payload really is 0")
+  val fiveLabel = match mkOkLong(5i64) { case Ok(0) -> "zero"; case Ok(n) -> "other:" + toString(n); case Err(e) -> e }
+  assertEqual(fiveLabel, "other:5", "Ok(0) correctly falls through for a non-zero Long payload")
+  val errLabel = match mkErrLong("boom") {
+    case Ok(0) -> "zero"
+    case Ok(n) -> "other:" + toString(n)
+    case Err(e) -> e
+  }
+  assertEqual(errLabel, "boom", "Err arm is unaffected")
+}
+
+test "Result[Long, String] range match arm unboxes java/lang/Long, not Integer" {
+  val inRangeLabel = match mkOkLong(5i64) {
+    case Ok(0 ..= 9) -> "in-range"
+    case Ok(n) -> "other:" + toString(n)
+    case Err(e) -> e
+  }
+  assertEqual(inRangeLabel, "in-range", "5 is inside 0..=9")
+  val outOfRangeLabel = match mkOkLong(100i64) {
+    case Ok(0 ..= 9) -> "in-range"
+    case Ok(n) -> "other:" + toString(n)
+    case Err(e) -> e
+  }
+  assertEqual(outOfRangeLabel, "other:100", "100 correctly falls outside 0..=9")
+}
+
+test "user-defined generic union literal match arm unboxes the real wrapper" {
+  val zero: GenBox[Long] = Present(value = 0i64)
+  val five: GenBox[Long] = Present(value = 5i64)
+  val zr = match zero { case Present(0) -> "zero"; case Present(n) -> "other:" + toString(n); case Absent -> "absent" }
+  val fr = match five { case Present(0) -> "zero"; case Present(n) -> "other:" + toString(n); case Absent -> "absent" }
+  assertEqual(zr, "zero", "GenBox[Long] Present(0) unboxes java/lang/Long, not java/lang/Integer")
+  assertEqual(fr, "other:5", "GenBox[Long] Present(5) correctly falls through to the binding arm")
+}
+
+test "user-defined generic union range match arm unboxes the real wrapper" {
+  val inRange: GenBox[Long] = Present(value = 5i64)
+  val outOfRange: GenBox[Long] = Present(value = 100i64)
+  val ir = match inRange {
+    case Present(0 ..= 9) -> "in-range"
+    case Present(n) -> "other:" + toString(n)
+    case Absent -> "absent"
+  }
+  val oor = match outOfRange {
+    case Present(0 ..= 9) -> "in-range"
+    case Present(n) -> "other:" + toString(n)
+    case Absent -> "absent"
+  }
+  assertEqual(ir, "in-range", "GenBox[Long] Present(5) matches 0..=9 by unboxing java/lang/Long, not Integer")
+  assertEqual(oor, "other:100", "GenBox[Long] Present(100) correctly falls outside 0..=9")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 17. `println` accepts `Byte` and `Float` arguments without `VerifyError`
+//     (#6764).  `printArgType` fell through its catch-all arm to the
+//     `println(String)` descriptor for both — but the value actually on the
+//     operand stack at that point is `int` (Byte, per `emitStore`/
+//     `emitLoad`'s `istore`/`iload`) or `float` (Float), not a `String`, so
+//     the emitted `invokevirtual ...println(Ljava/lang/String;)V` mismatched
+//     the real stack contents and failed class-load verification. `printArgType`
+//     is shared by `print`'s call site too, but `print` itself always
+//     type-checks against `Std.Console.print(s: String)` (there is no
+//     polymorphic `print` builtin, unlike `println` — see
+//     `isCodegenBuiltinName`), so a non-String `print(...)` argument is a
+//     compile-time type error, not a reachable runtime path; only `println`
+//     is exercised here. As elsewhere in this file (see item 13's note),
+//     `println` is not independently value-assertable (no stdout-capture
+//     harness) — but a reintroduced `VerifyError` here fails the WHOLE
+//     `lyric test --target jvm` run (the class cannot even be loaded), so
+//     simply calling it is real regression coverage.  `Short` has no
+//     reachable Lyric surface type (item 14's note).
+// ─────────────────────────────────────────────────────────────────────────────
+test "println accepts a Byte argument without VerifyError" {
+  val b: Byte = 200.toByte()
+  println(b)
+  assertEqualInt(b.toInt(), 200, "the Byte value itself is unaffected by the println call")
+}
+
+test "println accepts a Float argument without VerifyError" {
+  val f: Float = 2.5f32
+  println(f)
+  assertTrue(f == 2.5f32, "the Float value itself is unaffected by the println call")
 }

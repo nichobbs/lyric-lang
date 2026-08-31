@@ -1,20 +1,23 @@
-//! slice_append_widening_self_test.l — MSIL-only regression test for
-//! `slice[T].append`'s numeric-widening miscompile (#5254).
+//! slice_append_widening_self_test.l — regression test for `slice[T].append`'s
+//! numeric-widening miscompile on both targets (#5254 MSIL, #5257 JVM).
 //!
 //! M6 numeric widening (`Int` satisfies `Long`, in `typechecker_exprs.l`'s
 //! `argSatisfiesParam`) lets `xs.append(-7)` type-check against a
 //! `slice[Long]` receiver. The MSIL lowering's array-backed path pushed the
 //! Int32 argument straight into an `Int64[]` `stelem` with no `conv.i8`,
 //! silently zero-extending instead of sign-extending — `xs.append(-7)`
-//! produced `4294967289`, not `-7`.
+//! produced `4294967289`, not `-7` (#5254).
 //!
-//! This is dotnet-only (not wired into the `--target jvm` CI job, unlike
-//! `slice_ops_self_test.l`): the JVM backend erases every `slice[T]` to a
-//! uniform `Object[]` with no per-array element-type tracking, so a fresh
-//! `Int` argument to `.append` on a `slice[Long]` boxes as `Integer` rather
-//! than `Long` regardless of the receiver's declared element type — a
-//! separate, deeper, pre-existing JVM architecture gap unrelated to this
-//! fix, filed as #5257.
+//! The JVM backend erases every `slice[T]` to a uniform `Object[]` with no
+//! per-array element-type tracking, so `sliceElemTypeJvm`'s erased target
+//! (`Object`) let `coerceArgTo` box a fresh `Int` argument as `Integer`
+//! rather than the receiver's real `Long` element type — appending mixed
+//! `Long`/`Integer`-boxed elements into the same array, `ClassCastException`
+//! on the next `Long`-typed read (#5257). Fixed by consulting
+//! `indexedElemTypeOverride` (the same bare-name/field declared-type
+//! registry `EIndex` narrowing already uses) for the receiver's TRUE
+//! declared element type at the `.append` call site, widening the argument
+//! to it before boxing.
 @test_module
 package Lyric.SliceAppendWideningSelfTest
 

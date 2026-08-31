@@ -25,13 +25,41 @@ import Jvm.Kernel
 // ── Build wrapper classes ─────────────────────────────────────────────────────
 func makeUserIdBytes(): List[Byte] {
   val pool = poolNew()
-  val cf = lowerDistinctType(LDistinctType(wrapperClass = "UserId", underlyingType = JLong), pool)
+  val cf = lowerDistinctType(
+    LDistinctType(
+      wrapperClass = "UserId",
+      underlyingType = JLong,
+      hasRange = false,
+      rangeIsFloat = false,
+      minI = 0i64,
+      maxI = 0i64,
+      minF = 0.0,
+      maxF = 0.0,
+      upperExclusive = false,
+      isUnsigned = false
+    ),
+    pool
+  )
   serializeClassWithPool(cf, pool)
 }
 
 func makeOrderIdBytes(): List[Byte] {
   val pool = poolNew()
-  val cf = lowerDistinctType(LDistinctType(wrapperClass = "OrderId", underlyingType = JInt), pool)
+  val cf = lowerDistinctType(
+    LDistinctType(
+      wrapperClass = "OrderId",
+      underlyingType = JInt,
+      hasRange = false,
+      rangeIsFloat = false,
+      minI = 0i64,
+      maxI = 0i64,
+      minF = 0.0,
+      maxF = 0.0,
+      upperExclusive = false,
+      isUnsigned = false
+    ),
+    pool
+  )
   serializeClassWithPool(cf, pool)
 }
 

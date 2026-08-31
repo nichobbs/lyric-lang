@@ -1020,9 +1020,23 @@ test "emitProject cross-package impl of an imported interface (qualified)" {
 // `Self`-typed impl param (`other: in Self`) whose field was read — #6426
 // shipped real `checkcast` emission for that shape, so it stopped panicking
 // and this repro was replaced (D-progress-755) with a match binding on a
-// user-defined generic union's payload, a shape `scrutineeGenericArgs`
-// still leaves erased (see `jvm_trycatch_bridge_self_test.l`'s matching
-// update for the full rationale).
+// user-defined generic union's payload (a function PARAMETER typed
+// `Box[Widget]`, matched directly). #5956 then taught `scrutineeGenericArgs`
+// to recover a bare-parameter scrutinee's own `TGenericApp` annotation
+// (`recordParamGenericArgs`, `jvm/codegen/03_match.l`), so that repro
+// stopped panicking too — confirmed by reverting `recordParamGenericArgs`
+// locally and observing this test fail exactly as CI did, then restoring it
+// and observing the case-payload `w.n` read compile clean.
+//
+// Replaced again with a shape `scrutineeGenericArgs` still leaves erased:
+// the SAME union payload, but reached through a RECORD FIELD read
+// (`h.box`) rather than a bare parameter/local name. `scrutineeGenericArgs`
+// only recognises `EParen`/`EAwait`/`EList`/`ECall`/a single-segment
+// `EPath` as its top-level scrutinee shape (`jvm/codegen/03_match.l`); a
+// bare `EMember` field read used directly as a match scrutinee falls
+// through its final `case _ -> newList()` arm and stays boxed `Object`, so
+// `w.n` inside the match arm still hits the J007 refusal (verified directly
+// against `./bin/lyric build --target jvm` on this exact source).
 test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure, not a thrown exception (#6422)" {
   val dir = freshTempDir("jvm-contain-j007")
   val source = "package ContainJ007.App\n" + "\n" + "record Widget {\n" + "  n: Int\n" + "}\n" + "\n" +
@@ -1031,15 +1045,19 @@ test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure
     "  case Empty\n" +
     "}\n" +
     "\n" +
-    "func unwrap(b: Box[Widget]): Int {\n" +
-    "  match b {\n" +
+    "record Holder {\n" +
+    "  box: Box[Widget]\n" +
+    "}\n" +
+    "\n" +
+    "func unwrap(h: Holder): Int {\n" +
+    "  match h.box {\n" +
     "    case Full(w) -> w.n\n" +
     "    case Empty -> 0\n" +
     "  }\n" +
     "}\n" +
     "\n" +
     "func main(): Unit {\n" +
-    "  println(unwrap(Full(value = Widget(n = 40))))\n" +
+    "  println(unwrap(Holder(box = Full(value = Widget(n = 40)))))\n" +
     "}\n"
   val noDefines: List[String] = newList()
   val req = Emitter.EmitRequest(
@@ -1081,7 +1099,7 @@ test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure
     "the contained refusal carries its J007 code in EmitResult.diagnostics (got: " + diagText + ")"
   )
   // #6464: the diagnostic's span carries the REAL `line:col` the panic
-  // message embeds (`ContainJ007.App:14:21` — the `w` receiver of `w.n` in
+  // message embeds (`ContainJ007.App:18:21` — the `w` receiver of `w.n` in
   // `case Full(w) -> w.n`), not the synthetic file-start point span every
   // contained panic used to get.
   var j007Idx = -1
@@ -1097,7 +1115,7 @@ test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure
     val sp = result.diagnostics[j007Idx].span
     assertEqualInt(
       sp.startPos.line,
-      14,
+      18,
       "J007 span points at the real source line (got: " + toString(sp.startPos.line) + ")"
     )
     assertEqualInt(

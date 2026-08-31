@@ -56,34 +56,42 @@ func testCompileWithTimeoutSmoke(): Unit {
 }
 
 // ReDoS regression: a catastrophic-backtracking pattern with a short
-// timeout must surface an Err (rather than hang).  We accept either
-// TimedOut or RegexBug because the BCL's RegexMatchTimeoutException.Message
-// is locale-sensitive and the classifier in `Std.RegexSafe.isTimeout`
-// only handles the en-US "time-out" phrasing.  The important guarantee
-// is that the match returns rather than running for minutes.
-//
-// Uses `Re.compileWithTimeout(0.1)` rather than the 1-second default
-// so the test costs ~100 ms in CI instead of ~1 s (#832).
+// timeout must surface an Err (rather than hang) -- `Re.isMatch` throws a
+// `Bug` on timeout (see std/regex.l), so a hard assertion that the `Bug`
+// actually fires is the real guard here, not just "the call returned".
 //
 // #843: a `try { … } catch Bug as _` block would silently swallow a
 // failing `assertTrue(false, …)` (assertions panic as a Bug too).  We
 // guard against the false-pass by setting a `caught` flag in the catch
 // arm and asserting it after — that way an assertion thrown from the
-// try-body propagates instead of being swallowed.  On fast hosts where
-// the engine completes within 100 ms (unlikely but possible) the test
-// surfaces the non-fire as a clear "ReDoS-timeout: match returned"
-// signal rather than passing silently.
+// try-body propagates instead of being swallowed.
+//
+// #1103 shipped a real ReDoS-timeout mechanism on BOTH targets:
+// `java.util.regex.Pattern` has no timeout of its own, so
+// `std/_kernel_jvm/regex_host.l`'s `hostIsMatch` races the match on a
+// daemon thread against `r.timeoutMs` and `panic`s (raises `Bug`) when the
+// deadline is hit -- functionally the same "match returns via a thrown
+// Bug" contract .NET's 3-arg `Regex` ctor gives for free. A single-nested
+// `(a+)+$` doesn't reliably exercise that path on JVM though:
+// `java.util.regex.Pattern` neutralizes it via an internal loop-collapse
+// optimization (verified by direct experiment -- completes in single-digit
+// ms even at 70 'a's), so this uses the triple-nested `((a+)+)+$` form and
+// the 30-'a' / 1.5s budget `lyric-compiler/jvm/regex_redos_jvm_main.l`
+// (the strict JVM-only acceptance check for #1103) proved genuinely
+// exponential on JVM (~3-4s at 25 'a's) -- and .NET's classic backtracking
+// engine has no such loop-collapse optimization to begin with, so the same
+// pattern blows up there too.
 func testReDoSTimeoutFires(): Unit {
-  // 60-character string of 'a's followed by 'b' — non-matching suffix
-  // forces the (a+)+$ backtrack explosion.
+  // 30-character string of 'a's followed by 'b' — non-matching suffix
+  // forces the ((a+)+)+$ backtrack explosion.
   var hostile = ""
   var i = 0
-  while i < 60 {
+  while i < 30 {
     hostile = hostile + "a"
     i = i + 1
   }
   hostile = hostile + "b"
-  val r = Re.compileWithTimeout("(a+)+$", 0.1)
+  val r = Re.compileWithTimeout("((a+)+)+$", 1.5)
   var caught = false
   try {
     val matched = Re.isMatch(r, hostile)

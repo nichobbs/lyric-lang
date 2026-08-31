@@ -169,6 +169,119 @@ test "buildProject: --target jvm compiles a path dependency's code into the bund
   runJarAndAssertGreeting(jarPath, "buildProject output")
 }
 
+// ─── Regression for #6697 (review CRITICAL on #3094's JVM restored-dep
+// pipeline): a path dependency's `.dll` is always an MSIL PE — never a
+// JVM-compatible JAR. Before the fix, `resolveManifestDependencies` fed that
+// `.dll` into `restoredDllPaths` whenever it happened to already exist on
+// disk (regardless of target), and `emitProjectJvmInProcess`'s restored-dep
+// loop (added by #3094 in this same PR) tried to read it as a JAR's ZIP
+// central directory via `Lyric.RestoredPackages.loadRestoredPackageJvm`,
+// hard-failing the WHOLE `--target jvm` build with "restored JVM dep '...'
+// failed to load: ...". This is a real, common sequence — not a contrived
+// edge case: build the dependency for `--target dotnet` once (its `bin/*.dll`
+// now exists), then build a *different* consumer of the SAME dependency for
+// `--target jvm`. Exercised at the exact CLI entry point (`Cli.buildProject`)
+// a real `lyric build --manifest ... --target jvm` invocation drives, not
+// just the in-process `Emitter.emitProject` API surface — a fixture with a
+// fabricated `.jar`-shaped `restoredDllPaths` entry (as
+// `emitter_project_self_test.l`'s "restored dep wiring no crash" test uses)
+// would not have caught this, because the CLI never even reaches the point
+// of fabricating one.
+test "buildProject: --target jvm build succeeds when the path dependency's --target dotnet DLL already exists on disk (#6697)" {
+  val root = freshTempDir("manifest-stray-dll")
+  defer {
+    cleanup(root)
+  }
+  val depDir = mkPackageDir(
+    root,
+    "Dep3",
+    "[package]\n" + "name = \"Fixture.PathDep3\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"Fixture.PathDep3\"\n" +
+      "output_assembly = \"PathDep3.dll\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"Fixture.PathDep3\" = \"src/dep3.l\"\n"
+  )
+  match File.createDir(Path.join(depDir, "src")) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create dep3 src dir: " + IOError.message(e))
+  }
+  writeFileOrPanic(
+    Path.join(depDir, "src/dep3.l"),
+    "package Fixture.PathDep3\n\npub func pathDepGreeting(): String {\n  \"hello-from-path-dep\"\n}\n"
+  )
+
+  // Build the dependency for --target dotnet FIRST, so its `bin/PathDep3.dll`
+  // (a real MSIL PE) exists on disk before the JVM consumer build runs — the
+  // real-world sequence #6697 describes.
+  val noFeatures: List[String] = newList()
+  val noDefines: List[String] = newList()
+  val noPreDep: Option[Cli.ResolvedManifestDeps] = None
+  val depRc = Cli.buildProject(
+    Path.join(depDir, "lyric.toml"),
+    None,
+    Emitter.Dotnet,
+    noFeatures,
+    false,
+    false,
+    true,
+    None,
+    noPreDep,
+    noDefines
+  )
+  assertEqualInt(depRc, 0, "buildProject: the path dependency itself builds on --target dotnet")
+  val depDllPath = Path.join(Path.join(depDir, "bin"), "PathDep3.dll")
+  assertTrue(File.fileExists(depDllPath), "sanity: the path dependency's --target dotnet DLL now exists on disk")
+
+  val appDir = mkPackageDir(
+    root,
+    "App3",
+    "[package]\n" + "name = \"Fixture.PathApp3\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"Fixture.PathApp3\"\n" +
+      "output_assembly = \"PathApp3.dll\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"Fixture.PathApp3\" = \"src/app.l\"\n" +
+      "\n" +
+      "[dependencies]\n" +
+      "\"Fixture.PathDep3\" = { path = \"../Dep3\" }\n"
+  )
+  match File.createDir(Path.join(appDir, "src")) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create app3 src dir: " + IOError.message(e))
+  }
+  writeFileOrPanic(
+    Path.join(appDir, "src/app.l"),
+    "package Fixture.PathApp3\n\nimport Std.Console as Console\nimport Fixture.PathDep3\n\nfunc main(): Int {\n  Console.println(pathDepGreeting())\n  0\n}\n"
+  )
+
+  val noPreApp: Option[Cli.ResolvedManifestDeps] = None
+  val appRc = Cli.buildProject(
+    Path.join(appDir, "lyric.toml"),
+    None,
+    Emitter.Jvm,
+    noFeatures,
+    false,
+    false,
+    true,
+    None,
+    noPreApp,
+    noDefines
+  )
+  assertEqualInt(
+    appRc,
+    0,
+    "buildProject: a --target jvm manifest build must not crash just because the SAME path dependency has a " +
+      "stray --target dotnet DLL on disk from an earlier build (#6697)"
+  )
+  val jarPath = Path.join(Path.join(appDir, "bin"), "PathApp3.dll")
+  assertTrue(
+    File.fileExists(jarPath),
+    "buildProject: the Jvm build produced an output artifact despite the stray dep DLL"
+  )
+  runJarAndAssertGreeting(jarPath, "buildProject output (#6697 stray-DLL fixture)")
+}
+
 // ─── Single-file path: a bare `.l` file sitting next to a manifest that
 // declares ONLY `[dependencies]` (no `[project.packages]` of its own) — the
 // `emitSingleFileOrProject` leg `Cli.buildOne` routes through. This is the
@@ -449,5 +562,225 @@ test "buildProject: a path dependency's unreadable source still fails the --targ
     "buildProject: an unreadable path-dependency source still fails the --manifest --target jvm build overall — " +
       "buildProjectFromManifest itself never checks hadUnbuiltLocalDep, so the failure comes from the consumer " +
       "package's downstream reference to the now-absent 'pathDepGreeting' symbol, not an early return"
+  )
+}
+
+func argv(args: in List[String]): slice[String] {
+  args.toArray()
+}
+
+// ─── #6750: `lyric test --target jvm --manifest` had its OWN
+// dependency-resolution copy in `cli/cli_test.l` (`cmdTestManifest`'s Path
+// branch), never updated with the `dllMatters`-style gating #6697 applied to
+// `resolveManifestDependencies` (`cli/workspace_builder.l`) and
+// `emitSingleFileWithWorkspaceMembers` (`cli/cli_build.l`). A path
+// dependency built once for `--target dotnet` (leaving a real MSIL PE at
+// `bin/<name>.dll`) then consumed by `lyric test --target jvm --manifest`
+// fed that `.dll` straight into `EmitProjectRequest.restoredDllPaths`,
+// which `Jvm.Bridge`'s restored-dep loader (#3094,
+// `Lyric.RestoredPackages.loadRestoredPackageJvm`) reads as a JAR — a hard
+// build failure ("restored JVM dep '...' failed to load: restored DLL has
+// no Lyric.Contract resource") instead of the source-recompilation path
+// Jvm actually uses. Driven via `Cli.main([...])` (the real `lyric test`
+// entry point) rather than a private helper, so this exercises the exact
+// user-visible command.
+test "lyric test --target jvm --manifest: a path dependency pre-built for --target dotnet does not feed its stray MSIL .dll into the JVM restored-dep loader (#6750)" {
+  val root = freshTempDir("manifest-test-jvm")
+  defer {
+    cleanup(root)
+  }
+  val depDir = mkPackageDir(
+    root,
+    "Dep",
+    "[package]\n" + "name = \"Fixture.PathDep3\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"Fixture.PathDep3\"\n" +
+      "output_assembly = \"PathDep3.dll\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"Fixture.PathDep3\" = \"src/dep.l\"\n"
+  )
+  match File.createDir(Path.join(depDir, "src")) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create dep src dir: " + IOError.message(e))
+  }
+  writeFileOrPanic(
+    Path.join(depDir, "src/dep.l"),
+    "package Fixture.PathDep3\n\npub func pathDepGreeting(): String {\n  \"hello-from-path-dep\"\n}\n"
+  )
+
+  val appDir = mkPackageDir(
+    root,
+    "App",
+    "[package]\n" + "name = \"Fixture.PathApp3\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"Fixture.PathApp3\"\n" +
+      "output_assembly = \"PathApp3.dll\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"Fixture.PathApp3\" = \"src/app.l\"\n" +
+      "\n" +
+      "[project.tests]\n" +
+      "\"Fixture.PathApp3.Test\" = \"src/app_test.l\"\n" +
+      "\n" +
+      "[dependencies]\n" +
+      "\"Fixture.PathDep3\" = { path = \"../Dep\" }\n"
+  )
+  match File.createDir(Path.join(appDir, "src")) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create app src dir: " + IOError.message(e))
+  }
+  writeFileOrPanic(
+    Path.join(appDir, "src/app.l"),
+    "package Fixture.PathApp3\n\nimport Fixture.PathDep3\n\npub func greetSomeone(): String {\n  pathDepGreeting()\n}\n"
+  )
+  writeFileOrPanic(
+    Path.join(appDir, "src/app_test.l"),
+    "@test_module\npackage Fixture.PathApp3.Test\n\nimport Std.Testing\nimport Fixture.PathApp3\n\ntest \"greetSomeone returns the dep greeting\" {\n  assertEqual(greetSomeone(), \"hello-from-path-dep\", \"greeting matches\")\n}\n"
+  )
+
+  // Pre-build the dependency for `--target dotnet` — this is the exact
+  // real-world sequence (build the dep for dotnet once, then run a
+  // consumer's JVM test suite) that fed a real MSIL PE into the JVM
+  // restored-dep loader before this fix.
+  val noFeatures: List[String] = newList()
+  val noDefines: List[String] = newList()
+  val noPreDep: Option[Cli.ResolvedManifestDeps] = None
+  val depRc = Cli.buildProject(
+    Path.join(depDir, "lyric.toml"),
+    None,
+    Emitter.Dotnet,
+    noFeatures,
+    false,
+    false,
+    true,
+    None,
+    noPreDep,
+    noDefines
+  )
+  assertEqualInt(depRc, 0, "sanity: the path dependency builds cleanly on --target dotnet")
+  assertTrue(
+    File.fileExists(Path.join(Path.join(depDir, "bin"), "PathDep3.dll")),
+    "sanity: the path dependency's --target dotnet build leaves a real MSIL PE at bin/PathDep3.dll"
+  )
+
+  val testArgs: List[String] = newList()
+  testArgs.add("test")
+  testArgs.add("--target")
+  testArgs.add("jvm")
+  testArgs.add("--manifest")
+  testArgs.add(Path.join(appDir, "lyric.toml"))
+  val rc = Cli.main(argv(testArgs))
+  assertEqualInt(
+    rc,
+    0,
+    "lyric test --target jvm --manifest: succeeds and runs the test rather than crashing on 'restored JVM dep " +
+      "... failed to load' when the path dependency was previously built for --target dotnet (#6750)"
+  )
+}
+
+// ─── Regression for #6770: the topo dependency-BUILD loop in cli_test.l
+// (distinct from #6750's read-path `dllMatters` gate above) built an
+// unbuilt path dependency for whatever `testTarget` the current run used,
+// unconditionally. Because `resolveDepDllPath` honors the manifest's
+// `[project].output_assembly` verbatim regardless of target, a `--target
+// jvm` run of a FRESH, never-built dependency wrote real JVM bytecode to
+// `bin/<name>.dll` — the exact filename a later `--target dotnet` run
+// expects an MSIL PE at. This proves the fix by running jvm THEN dotnet
+// back-to-back against the same never-built dependency and asserting both
+// succeed, with the dependency's bin/ directory never touched by the jvm
+// run.
+test "lyric test --target jvm --manifest: building a never-built path dependency for --target jvm does not poison bin/<name>.dll for a later --target dotnet run (#6770)" {
+  val root = freshTempDir("manifest-test-jvm-poison")
+  defer {
+    cleanup(root)
+  }
+  val depDir = mkPackageDir(
+    root,
+    "Dep",
+    "[package]\n" + "name = \"Fixture.PathDep4\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"Fixture.PathDep4\"\n" +
+      "output_assembly = \"PathDep4.dll\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"Fixture.PathDep4\" = \"src/dep.l\"\n"
+  )
+  match File.createDir(Path.join(depDir, "src")) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create dep src dir: " + IOError.message(e))
+  }
+  writeFileOrPanic(
+    Path.join(depDir, "src/dep.l"),
+    "package Fixture.PathDep4\n\npub func pathDepGreeting(): String {\n  \"hello-from-path-dep-4\"\n}\n"
+  )
+
+  val appDir = mkPackageDir(
+    root,
+    "App",
+    "[package]\n" + "name = \"Fixture.PathApp4\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"Fixture.PathApp4\"\n" +
+      "output_assembly = \"PathApp4.dll\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"Fixture.PathApp4\" = \"src/app.l\"\n" +
+      "\n" +
+      "[project.tests]\n" +
+      "\"Fixture.PathApp4.Test\" = \"src/app_test.l\"\n" +
+      "\n" +
+      "[dependencies]\n" +
+      "\"Fixture.PathDep4\" = { path = \"../Dep\" }\n"
+  )
+  match File.createDir(Path.join(appDir, "src")) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create app src dir: " + IOError.message(e))
+  }
+  writeFileOrPanic(
+    Path.join(appDir, "src/app.l"),
+    "package Fixture.PathApp4\n\nimport Fixture.PathDep4\n\npub func greetSomeone(): String {\n  pathDepGreeting()\n}\n"
+  )
+  writeFileOrPanic(
+    Path.join(appDir, "src/app_test.l"),
+    "@test_module\npackage Fixture.PathApp4.Test\n\nimport Std.Testing\nimport Fixture.PathApp4\n\ntest \"greetSomeone returns the dep greeting\" {\n  assertEqual(greetSomeone(), \"hello-from-path-dep-4\", \"greeting matches\")\n}\n"
+  )
+
+  // Deliberately never build the dependency for ANY target first — a fresh
+  // checkout's first CI run of `lyric test --target jvm`.
+  val depBinDllPath = Path.join(Path.join(depDir, "bin"), "PathDep4.dll")
+  assertFalse(File.fileExists(depBinDllPath), "sanity: the path dependency has never been built for any target")
+
+  val jvmTestArgs: List[String] = newList()
+  jvmTestArgs.add("test")
+  jvmTestArgs.add("--target")
+  jvmTestArgs.add("jvm")
+  jvmTestArgs.add("--manifest")
+  jvmTestArgs.add(Path.join(appDir, "lyric.toml"))
+  val jvmRc = Cli.main(argv(jvmTestArgs))
+  assertEqualInt(
+    jvmRc,
+    0,
+    "lyric test --target jvm --manifest: succeeds on a never-built path dependency, compiling its source " +
+      "directly instead of building it (#6770)"
+  )
+  assertFalse(
+    File.fileExists(depBinDllPath),
+    "the --target jvm test run must not have written a JAR to bin/PathDep4.dll — the topo build loop is " +
+      "skipped entirely on Jvm (#6770)"
+  )
+
+  // Now run --target dotnet against the SAME dependency: it must build a
+  // real MSIL PE at bin/PathDep4.dll and succeed — proving the earlier jvm
+  // run left that path untouched.
+  val dotnetTestArgs: List[String] = newList()
+  dotnetTestArgs.add("test")
+  dotnetTestArgs.add("--manifest")
+  dotnetTestArgs.add(Path.join(appDir, "lyric.toml"))
+  val dotnetRc = Cli.main(argv(dotnetTestArgs))
+  assertEqualInt(
+    dotnetRc,
+    0,
+    "lyric test --manifest (--target dotnet): succeeds after a prior --target jvm run of the same never-built " +
+      "path dependency, proving bin/PathDep4.dll was not poisoned with JVM bytecode (#6770)"
+  )
+  assertTrue(
+    File.fileExists(depBinDllPath),
+    "the --target dotnet run built the dependency and left a real MSIL PE at bin/PathDep4.dll"
   )
 }

@@ -160,6 +160,14 @@ record MonoState {
   /// rather than through normal method resolution, so `recv` never
   /// resolves to a value the general inferer can see through (#5841).
   distinctDecls: Map[String, DistinctTypeDecl]
+  /// Simple names of same-package `union` decls (#6774). `indexExprToTypeArgMono`
+  /// consults this — alongside `recordDecls`/`ifaceDecls`/`distinctDecls` — to
+  /// recognise an explicit type-application call site (`f[MyUnion](x)`) whose
+  /// type argument names a union: without it, a union type argument failed the
+  /// "is this actually a type" whitelist and the call silently fell through
+  /// UNCHANGED (never reaching `noteUnspecialisableLocalCall`), leaving a
+  /// dangling reference to a generic Phase 2 erases.
+  unionDecls: Map[String, Bool]
   /// Simple names of top-level generic functions declared in THIS file
   /// that Phase 2 will drop from the output (neither `@externTarget`-kept
   /// nor `@axiom`).  A call site still referencing one of these after the
@@ -183,6 +191,18 @@ record MonoState {
   /// genuinely irresolvable (e.g. an untyped argument).  See
   /// `resolveAmbiguousOverload`.
   ambiguousFuncOverloads: Map[String, List[FunctionDecl]]
+  /// Every union-case (and generic-record) inference-only constructor synth
+  /// visible to the file, keyed by bare case name, WITHOUT the first-wins
+  /// collapse `funcDecls` applies (#6669). `funcDecls`/`genDecls` only ever
+  /// keep one representative per bare name, so a same-named case belonging
+  /// to a DIFFERENT union than the one actually being matched could
+  /// silently win the bare-name lookup and donate its (wrong) field types
+  /// into `env`. `bindPatternEnvMono`'s `PConstructor` arm consults this
+  /// table instead, filters candidates down to the ones whose declared
+  /// owning type actually matches the scrutinee (or the pattern's own
+  /// qualifier), and only binds fields when exactly one candidate survives
+  /// — never guessing among an unresolved tie. See `addCtorCandidateMono`.
+  ctorCandidates: Map[String, List[FunctionDecl]]
   seenSpecs: Map[String, Bool]
   allSpecs: List[SpecRequest]
   diags: List[Diagnostic]
@@ -195,8 +215,10 @@ func newMonoState(
   recordDecls: in Map[String, RecordDecl],
   ifaceDecls: in Map[String, InterfaceDecl],
   distinctDecls: in Map[String, DistinctTypeDecl],
+  unionDecls: in Map[String, Bool],
   droppedLocalGenerics: in Map[String, Bool],
   ambiguousFuncOverloads: in Map[String, List[FunctionDecl]],
+  ctorCandidates: in Map[String, List[FunctionDecl]],
 ): MonoState {
   MonoState(
     moduleValTypes = moduleValTypes,
@@ -205,12 +227,42 @@ func newMonoState(
     recordDecls = recordDecls,
     ifaceDecls = ifaceDecls,
     distinctDecls = distinctDecls,
+    unionDecls = unionDecls,
     droppedLocalGenerics = droppedLocalGenerics,
     ambiguousFuncOverloads = ambiguousFuncOverloads,
+    ctorCandidates = ctorCandidates,
     seenSpecs = newMap(),
     allSpecs = newList(),
     diags = newList()
   )
+}
+
+// Append `decl` to `table[decl.name]`'s candidate list (#6669), deduping
+// against any existing candidate with the same structural signature so the
+// same synth re-collected from two merge passes (e.g. a local union's ctor
+// AND that same package re-imported) doesn't accumulate duplicate entries.
+func addCtorCandidateMono(table: in Map[String, List[FunctionDecl]], decl: in FunctionDecl): Unit {
+  val sigKey = funcSigKeyMono(decl)
+  match mapGet(table, decl.name) {
+    case None -> {
+      val lst: List[FunctionDecl] = newList()
+      lst.add(decl)
+      table.add(decl.name, lst)
+    }
+    case Some(lst) -> {
+      var isDup = false
+      var i = 0
+      while i < lst.count {
+        if funcSigKeyMono(lst[i]) == sigKey {
+          isDup = true
+        }
+        i = i + 1
+      }
+      if not isDup {
+        lst.add(decl)
+      }
+    }
+  }
 }
 
 // #349: collect generic IFunc methods nested inside `interface I { … }`
@@ -303,8 +355,8 @@ func singleSegPathExpr(name: in String, span: in Span): Expr {
 // ─────────────────────────────────────────────────────────────────────────────
 func typeExprKey(te: in TypeExpr): String {
   match te.kind {
-    case TRef(path) -> pathSegsKey(path.segments)
-    case TGenericApp(h, gargs) -> pathSegsKey(h.segments) + "_" + typeArgListKey(gargs)
+    case TRef(path) -> identSafePathKey(path.segments)
+    case TGenericApp(h, gargs) -> identSafePathKey(h.segments) + "_" + typeArgListKey(gargs)
     case TUnit -> "Unit"
     case TNever -> "Never"
     case TSelf -> "Self"
@@ -314,7 +366,7 @@ func typeExprKey(te: in TypeExpr): String {
     case TTuple(ts) -> "Tup_" + typeExprListKey(ts)
     case TFunction(ps, r) -> "Fn_" + typeExprListKey(ps) + "_" + typeExprKey(r)
     case TParen(inner) -> typeExprKey(inner)
-    case TRefined(p, _) -> pathSegsKey(p.segments)
+    case TRefined(p, _) -> identSafePathKey(p.segments)
     case TError -> "Err"
   }
 }
@@ -330,6 +382,59 @@ func pathSegsKey(segs: in List[String]): String {
     i = i + 1
   }
   acc
+}
+
+// #6773: a mangled specialisation name must be a valid bare JVM/MSIL
+// identifier -- no `.` characters. `Lyric.AliasRewriter` routinely expands a
+// short type reference to its fully-qualified `TRef` (`Mf.MavenEntry` ->
+// `Lyric.Manifest.MavenEntry`), and such qualified annotations are pervasive
+// in this codebase, so `pathSegsKey`'s dot-joined form leaking into
+// `typeExprKey`/`valueExprKey` produced a mangled name like
+// `isSome__Lyric.Cli.ResolvedManifestDeps`. Because that SAME string names
+// both the specialised declaration and every rewritten call site, JVM
+// codegen's declaration-side emission (which must strip everything up to the
+// last `.`, per JVMS 4.2.2) and the call-site's `invokestatic` (which used
+// the untouched dotted string) silently disagreed on the real method name.
+// Sanitizing here -- the single place a qualified path's segments become
+// part of an identifier-safe mangled key -- means declaration and call site
+// are built from the same already-dot-free string, so they can no longer
+// diverge; `renderTypeExpr`'s human-readable diagnostic text (which wants
+// the real dotted name) and the plain path-equality check on `pathSegsKey`
+// deliberately keep calling `pathSegsKey` directly, unaffected by this.
+func identSafePathKey(segs: in List[String]): String {
+  Str.replace(pathSegsKey(segs), ".", "_")
+}
+
+// The bare (last-segment) name of a TypeExpr's head, when it has one —
+// `MyUnion` for `TRef(MyUnion)` / `TGenericApp(MyUnion, […])`, unwrapping
+// `TParen`/`TNullable` transparently.  Used by `bindPatternEnvMono`'s
+// `PConstructor` arm (#6669) to verify a case-registry lookup's resolved
+// owner actually matches the type being pattern-matched, rather than
+// trusting a first-wins bare-name hit.  `None` for any other TypeExpr shape
+// (tuple, slice, function, …) — those never name a union/record owner.
+func typeExprHeadNameMono(te: in TypeExpr): Option[String] {
+  match te.kind {
+    case TRef(path) -> if path.segments.count > 0 { Some(value = path.segments[path.segments.count - 1]) } else { None }
+    case TGenericApp(h, _) -> if h.segments.count > 0 { Some(value = h.segments[h.segments.count - 1]) } else { None }
+    case TParen(inner) -> typeExprHeadNameMono(inner)
+    case TNullable(inner) -> typeExprHeadNameMono(inner)
+    case _ -> None
+  }
+}
+
+// Extracts a `TGenericApp`'s type-argument list, unwrapping a `TParen`/
+// `TNullable` wrapper first -- mirrors `typeExprHeadNameMono`'s own
+// recursion so a parenthesized generic type expression (`(Box[T])`) yields
+// its real args instead of silently degrading to an empty list (which would
+// otherwise leave an unresolved type parameter unsubstituted, review finding
+// on #6743's `PRecord` arm).
+func genericAppArgsMono(te: in TypeExpr): List[TypeArg] {
+  match te.kind {
+    case TGenericApp(_, a) -> a
+    case TParen(inner) -> genericAppArgsMono(inner)
+    case TNullable(inner) -> genericAppArgsMono(inner)
+    case _ -> newList()
+  }
 }
 
 func typeArgListKey(args: in List[TypeArg]): String {
@@ -431,7 +536,7 @@ func valueExprKey(e: in Expr): String {
         case LUnit -> "u"
       }
     }
-    case EPath(path) -> pathSegsKey(path.segments)
+    case EPath(path) -> identSafePathKey(path.segments)
     case EParen(inner) -> valueExprKey(inner)
     case _ -> "x"
   }
@@ -1065,13 +1170,26 @@ func specFuncName(
 func inferLitTE(lit: in Literal, span: in Span): Option[TypeExpr] {
   match lit {
     case LInt(_, suffix, _) -> {
+      // `I16`/`U16` name their surrogate `TypeExpr` "Int"/"UInt", NOT
+      // "Short"/"UShort" (#6661 residual, D-progress-840): the suffix only
+      // constrains the literal's VALUE range at parse time — the
+      // type-checker's own literal typing (`typechecker_exprs.l`'s `LInt`
+      // arm) widens every sub-32-bit suffix to its 32-bit primitive
+      // (`I16 -> PtInt`, `U16 -> PtUInt`), because `Short`/`UShort` are not
+      // Lyric surface types at all (no `PrimType` case; excluded from
+      // docs/01 §2.1's primitive table). This inference helper must mirror
+      // that widening exactly — before this fix it invented a phantom
+      // "Short"/"UShort" `TRef` that never matched the type checker's real
+      // `UInt`/`Int` typing, corrupting call-site type inference (mono
+      // overload disambiguation, generic-arg specialization) for any
+      // `i16`/`u16`-suffixed literal argument.
       val name = match suffix {
         case I8 -> "Byte"
-        case I16 -> "Short"
+        case I16 -> "Int"
         case I32 -> "Int"
         case I64 -> "Long"
         case U8 -> "Byte"
-        case U16 -> "UShort"
+        case U16 -> "UInt"
         case U32 -> "UInt"
         case U64 -> "ULong"
         case NoIntSuffix -> "Int"
@@ -1717,7 +1835,29 @@ func unifyLambdaArgTE(
             env.add(lp.name, sty)
             addedNames.add(lp.name)
           }
-          case None -> ()
+          case None -> {
+            // #6775: this param is unseedable (either untyped with a
+            // substitution that still mentions an unbound type parameter, or
+            // an annotated param whose `unifyTE` call above left `subst`
+            // incomplete) -- there is nothing positive to record, but if
+            // `lp.name` SHADOWS an outer binding, that outer entry must
+            // still be evicted for the body's duration.  Without this,
+            // `lambdaBodyResultTE` below silently reads the STALE outer
+            // type instead of treating the name as unresolved, producing a
+            // wrong, closed instantiation (mirrors the `ELambda` rewrite
+            // arm's own #6666 untyped-param fix — same shadow-save/no-add
+            // shape, just through this function's own manual
+            // shadowedNames/shadowedVals restore list instead of
+            // `snapshotEnv`/`restoreEnv`).
+            match mapGet(env, lp.name) {
+              case Some(prev) -> {
+                shadowedNames.add(lp.name)
+                shadowedVals.add(prev)
+                val _ = env.remove(lp.name)
+              }
+              case None -> ()
+            }
+          }
         }
         j = j + 1
       }
@@ -2271,6 +2411,75 @@ func substTypesOptTy(
   }
 }
 
+// #6776: `PatternKind` embeds a raw `TypeExpr` in exactly one shape --
+// `PTypeTest(inner, ty)`, the `case v is T -> …` match-arm form both backends
+// lower to a real runtime type test (MSIL `MIsinstByName`, JVM `instanceof`).
+// `substTypesStmt`'s `SFor` arm and `substTypesExpr`'s `EMatch` arm used to
+// pass `pat`/`arm.pattern` through UNCHANGED, so a specialised copy of a
+// generic function whose body matched on its OWN type parameter (`case v: T
+// -> …`) kept the unsubstituted generic `T` in the specialised output --
+// this file's own header claims the pass "rewrites every TypeExpr
+// annotation reachable from the body", so `PTypeTest` was a real gap in
+// that claim, not a deliberately out-of-scope shape. Recurses through
+// every `Pattern` shape so a `PTypeTest` nested inside a `PConstructor` /
+// `PRecord` / `PTuple` / `POr` / `PParen` / `PBinding` still gets found.
+func substTypesPattern(subst: in Map[String, TypeExpr], valueSubst: in Map[String, Expr], pat: in Pattern): Pattern {
+  val s = pat.span
+  val k = match pat.kind {
+    case PWildcard -> PWildcard
+    case PLiteral(lit) -> PLiteral(lit = lit)
+    case PRange(lo, inclusive, hi) -> PRange(lo = substTypesExpr(subst, valueSubst, lo), inclusive = inclusive, hi = substTypesExpr(subst, valueSubst, hi))
+    case PBinding(name, inner) -> {
+      val ni = match inner { case Some(p) -> Some(value = substTypesPattern(subst, valueSubst, p)); case None -> None }
+      PBinding(name = name, inner = ni)
+    }
+    case PConstructor(head, args) -> {
+      val na: List[Pattern] = newList()
+      var i = 0
+      while i < args.count {
+        na.add(substTypesPattern(subst, valueSubst, args[i]))
+        i = i + 1
+      }
+      PConstructor(head = head, args = na)
+    }
+    case PRecord(head, fields, ignoreRest) -> {
+      val nf: List[RecordPatternField] = newList()
+      var i = 0
+      while i < fields.count {
+        match fields[i] {
+          case RPFNamed(fname, p, fspan) -> nf.add(RPFNamed(name = fname, pattern = substTypesPattern(subst, valueSubst, p), span = fspan))
+          case RPFShort(fname, fspan) -> nf.add(RPFShort(name = fname, span = fspan))
+        }
+        i = i + 1
+      }
+      PRecord(head = head, fields = nf, ignoreRest = ignoreRest)
+    }
+    case PTuple(patterns) -> {
+      val np: List[Pattern] = newList()
+      var i = 0
+      while i < patterns.count {
+        np.add(substTypesPattern(subst, valueSubst, patterns[i]))
+        i = i + 1
+      }
+      PTuple(patterns = np)
+    }
+    case PParen(inner) -> PParen(inner = substTypesPattern(subst, valueSubst, inner))
+    case PTypeTest(inner, ty) -> PTypeTest(inner = substTypesPattern(subst, valueSubst, inner), ty = substTypeExpr(subst, valueSubst, ty))
+    case POr(patterns) -> {
+      val np: List[Pattern] = newList()
+      var i = 0
+      while i < patterns.count {
+        np.add(substTypesPattern(subst, valueSubst, patterns[i]))
+        i = i + 1
+      }
+      POr(patterns = np)
+    }
+    case PConstRef(name) -> PConstRef(name = name)
+    case PError -> PError
+  }
+  Pattern(kind = k, span = s)
+}
+
 func substTypesStmt(subst: in Map[String, TypeExpr], valueSubst: in Map[String, Expr], stmt: in Statement): Statement {
   val s = stmt.span
   val k = match stmt.kind {
@@ -2315,7 +2524,7 @@ func substTypesStmt(subst: in Map[String, TypeExpr], valueSubst: in Map[String, 
     }
     case SDefer(body) -> SDefer(body = substTypesBlock(subst, valueSubst, body))
     case SScope(binding, body) -> SScope(binding = binding, body = substTypesBlock(subst, valueSubst, body))
-    case SFor(label, pat, iter, body) -> SFor(label = label, pat = pat, iter = substTypesExpr(subst, valueSubst, iter), body = substTypesBlock(subst, valueSubst, body))
+    case SFor(label, pat, iter, body) -> SFor(label = label, pat = substTypesPattern(subst, valueSubst, pat), iter = substTypesExpr(subst, valueSubst, iter), body = substTypesBlock(subst, valueSubst, body))
     case SWhile(label, cond, body) -> SWhile(label = label, cond = substTypesExpr(subst, valueSubst, cond), body = substTypesBlock(subst, valueSubst, body))
     case SLoop(label, body) -> SLoop(label = label, body = substTypesBlock(subst, valueSubst, body))
     case SInvariant(expr) -> SInvariant(expr = substTypesExpr(subst, valueSubst, expr))
@@ -2371,7 +2580,12 @@ func substTypesExpr(subst: in Map[String, TypeExpr], valueSubst: in Map[String, 
         val arm = arms[i]
         val ng = match arm.guard { case Some(g) -> Some(value = substTypesExpr(subst, valueSubst, g)); case None -> None }
         na.add(
-          MatchArm(pattern = arm.pattern, guard = ng, body = substTypesEOB(subst, valueSubst, arm.body), span = arm.span)
+          MatchArm(
+            pattern = substTypesPattern(subst, valueSubst, arm.pattern),
+            guard = ng,
+            body = substTypesEOB(subst, valueSubst, arm.body),
+            span = arm.span
+          )
         )
         i = i + 1
       }
@@ -2916,11 +3130,13 @@ func primitiveSatisfiesMarker(name: in String, marker: in String): Bool {
   isNumericPrimitiveName(name)
 }
 
+// `Short`/`UShort`/`UByte` deliberately excluded — not real Lyric surface
+// types (no `PrimType` backing; see `Lyric.TypeChecker.isNumericPrimitiveName`
+// for the full rationale, #6661 residual, D-progress-840). `inferLitTE`
+// above is the only producer of a numeric-suffix `TypeExpr` name and never
+// emits these three, so this list matching them was always dead.
 func isNumericPrimitiveName(name: in String): Bool {
-  name == "Int" or name == "Long" or name == "Short" or name == "Byte" or name == "UInt" or name == "ULong" or
-    name == "UShort" or
-    name == "UByte" or
-    name == "Float" or
+  name == "Int" or name == "Long" or name == "Byte" or name == "UInt" or name == "ULong" or name == "Float" or
     name == "Double"
 }
 
@@ -3019,18 +3235,280 @@ func rewriteCallArgs(state: in MonoState, env: in Map[String, TypeExpr], args: i
   buf
 }
 
+// #6121: `eob` is always a NESTED scope (an `if`/`match` branch) relative
+// to whatever scope `env` already reflects, so any `val` it binds must not
+// survive past this call — snapshot/restore around the recursion (see the
+// scope-isolation note above `snapshotEnv`).
 func rewriteEOB(state: in MonoState, env: in Map[String, TypeExpr], eob: in ExprOrBlock): ExprOrBlock {
-  match eob {
+  val snap = snapshotEnv(env)
+  val result = match eob {
     case EOBExpr(e) -> EOBExpr(expr = rewriteExpr(state, env, e))
     case EOBBlock(b) -> EOBBlock(block = rewriteBlock(state, env, b))
   }
+  restoreEnv(env, snap)
+  result
 }
 
-func rewriteMatchArms(state: in MonoState, env: in Map[String, TypeExpr], arms: in List[MatchArm]): List[MatchArm] {
+// True when `name` is a registered union/record constructor SYNTH (see
+// `unionCtorInferenceDecls`/`recordCtorInferenceDecl`) rather than a real
+// function — mirrors the type checker's `isConstructorPatternName`. A bare
+// uppercase pattern like `case None ->` / `case Empty ->` parses as
+// `PBinding`, but names a nullary CASE, not a fresh variable; without this
+// guard `bindPatternEnvMono` would track a bogus `env["None"] = <scrutinee
+// type>` entry instead of correctly binding no variable at all.
+func isKnownConstructorNameMono(state: in MonoState, name: in String): Bool {
+  match mapGet(state.funcDecls, name) {
+    case Some(d) -> annsInferenceOnlyMono(d.annotations)
+    case None -> false
+  }
+}
+
+// Bind a `match` arm pattern's destructured variables into `env`, typed from
+// the scrutinee's own (possibly generic) instantiation — the match-arm
+// counterpart of `rewriteBinding`'s `val`/`var`/`let` tracking (#5422/#5423).
+// Without this, a name bound by `case Some(mm) -> …` / `case Ok(json) -> …`
+// carried NO entry in `env`, so a generic call argument sourced from it
+// (`mapKeys(mm)`) could not unify its type parameters from the argument and
+// either stayed un-specialised or — for an IMPORTED generic whose erased
+// call must always specialise (the "default unbound params to Object"
+// fallback below in the caller) — silently specialised against the WRONG,
+// Object-erased instantiation (`mapKeys__Object__Object` called with a real
+// `Dictionary<string,string>` argument: `InvalidCastException` at runtime,
+// #5422). `scrutTe` is the scrutinee's inferred TypeExpr (`None` when
+// unresolved, in which case nothing is tracked here — the pre-existing
+// degradation, unchanged).
+// #6666 residual: recurse into every field pattern with an unresolved
+// (`None`) scrutinee type when a `PConstructor`'s owner/case candidate
+// can't be trusted (ambiguous, unmatched qualifier, or incomplete generic
+// substitution) — NOT a no-op.  `bindPatternEnvMono`'s own `PBinding` arm
+// evicts any outer binding a nested name would otherwise shadow once it
+// sees `None`, so routing every skipped field through here closes the same
+// silent-wrong-type-leak class the untyped-lambda-param fix closes, at
+// every nesting depth (`Circle(Point(x, y))` evicts `x`/`y` too, not just
+// the outer pattern's own names).
+func evictPatternArgsMono(state: in MonoState, env: in Map[String, TypeExpr], args: in List[Pattern]): Unit {
+  var i = 0
+  while i < args.count {
+    bindPatternEnvMono(state, env, args[i], None)
+    i = i + 1
+  }
+}
+
+func bindPatternEnvMono(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  pat: in Pattern,
+  scrutTe: in Option[TypeExpr],
+): Unit {
+  match pat.kind {
+    case PBinding(name, inner) -> {
+      match scrutTe {
+        case Some(te) -> {
+          if not isKnownConstructorNameMono(state, name) {
+            trackPatternEnv(env, pat, te)
+          }
+        }
+        case None -> {
+          // #6666 residual: an unresolvable scrutinee type (or a
+          // PConstructor field whose owner/case couldn't be trusted) has no
+          // positive type to record, but a name binding here can still
+          // SHADOW an outer binding of the same name — evict it from `env`
+          // for the duration of this pattern's scope regardless, mirroring
+          // `trackPatternEnv`'s own remove-before-add discipline (just
+          // without the add half, since there's nothing concrete to add).
+          // Without this, the outer binding's type silently leaks into the
+          // arm body wherever `name` is referenced — wrong, not merely
+          // imprecise (the same class of gap the PConstructor arm below and
+          // the untyped-lambda-param fix above both close).
+          if not isKnownConstructorNameMono(state, name) and env.containsKey(name) {
+            env.remove(name)
+          }
+        }
+      }
+      match inner {
+        case Some(p) -> bindPatternEnvMono(state, env, p, scrutTe)
+        case None -> ()
+      }
+    }
+    case PParen(inner) -> bindPatternEnvMono(state, env, inner, scrutTe)
+    case PTypeTest(inner, tyExpr) -> bindPatternEnvMono(state, env, inner, Some(value = tyExpr))
+    case PConstructor(head, args) -> {
+      match scrutTe {
+        case None -> evictPatternArgsMono(state, env, args)
+        case Some(te) -> {
+          val caseName = head.segments[head.segments.count - 1]
+          // #6669: `state.ctorCandidates` holds EVERY case in scope named
+          // `caseName`, not just a first-wins representative — a qualified
+          // pattern (`Shape.Circle(r)`) names its owner directly via the
+          // segment before the case name; an unqualified one (`Circle(r)`)
+          // falls back to the scrutinee's own inferred type. Filter the
+          // candidate list down to whichever ones' declared return type
+          // actually matches that owner: exactly one match is trustworthy,
+          // zero or several is an unresolved/ambiguous hit — skip binding
+          // rather than guess a possibly-wrong field type into `env` (the
+          // same conservative degradation this file uses whenever inference
+          // can't be trusted, e.g. `substIsComplete` below).
+          val expectedOwner: Option[String] = if head.segments.count > 1 {
+            Some(value = head.segments[head.segments.count - 2])
+          } else {
+            typeExprHeadNameMono(te)
+          }
+          val candidates: List[FunctionDecl] = match mapGet(state.ctorCandidates, caseName) {
+            case Some(lst) -> lst
+            case None -> newList()
+          }
+          var matched: Option[FunctionDecl] = None
+          var matchCount = 0
+          match expectedOwner {
+            case None -> ()
+            case Some(exp) -> {
+              var ci = 0
+              while ci < candidates.count {
+                val cand = candidates[ci]
+                val ownerName = match cand.ret { case Some(retTe) -> typeExprHeadNameMono(retTe); case None -> None }
+                match ownerName {
+                  case Some(actual) -> {
+                    if actual == exp {
+                      matched = Some(value = cand)
+                      matchCount = matchCount + 1
+                    }
+                  }
+                  case None -> ()
+                }
+                ci = ci + 1
+              }
+            }
+          }
+          if matchCount == 1 {
+            match matched {
+              // Unreachable in practice (`matchCount` only increments
+              // alongside `matched`), but evict defensively rather than
+              // silently trust a stale env entry if that ever changes.
+              case None -> evictPatternArgsMono(state, env, args)
+              case Some(ctorDecl) -> {
+                val typeParamNames = extractTypeParamNames(ctorDecl.generics)
+                val subst: Map[String, TypeExpr] = newMap()
+                match ctorDecl.ret {
+                  case Some(retTe) -> unifyTE(typeParamNames, retTe, te, subst)
+                  case None -> ()
+                }
+                // Only bind fields when EVERY generic parameter resolved: a
+                // partial/failed unification (arity mismatch or a scrutinee
+                // type shape that doesn't structurally match) would
+                // otherwise substitute a dangling bare type-var name (`T`)
+                // into `env` instead of a real type — worse than tracking
+                // nothing.
+                if substIsComplete(typeParamNames, subst) {
+                  val emptyValueSubst: Map[String, Expr] = newMap()
+                  var fi = 0
+                  while fi < args.count {
+                    // A field index past the resolved ctor's own declared
+                    // arity (a mismatched-arity pattern) has no real field
+                    // type either — evict rather than leave it untouched.
+                    if fi < ctorDecl.params.count {
+                      val fieldTe = substTypeExpr(subst, emptyValueSubst, ctorDecl.params[fi].ty)
+                      bindPatternEnvMono(state, env, args[fi], Some(value = fieldTe))
+                    } else {
+                      bindPatternEnvMono(state, env, args[fi], None)
+                    }
+                    fi = fi + 1
+                  }
+                } else {
+                  evictPatternArgsMono(state, env, args)
+                }
+              }
+            }
+          } else {
+            // Zero or several owner-matching candidates (an unqualified
+            // pattern with no resolvable owner, a qualifier that doesn't
+            // spell any candidate's owner, or a genuinely ambiguous hit) —
+            // #6666 residual: this used to be a silent no-op, which left any
+            // outer binding a field name shadowed fully intact and visible
+            // inside the arm body.  Evict every field name instead.
+            evictPatternArgsMono(state, env, args)
+          }
+        }
+      }
+    }
+    case PRecord(_, fields, _) -> {
+      // #6743: record-destructuring patterns (`case Shape { n } -> …`)
+      // previously fell through to the catch-all `case _ -> {}` no-op
+      // below, so a field binding that SHADOWS an outer generic-typed
+      // local left the outer entry sitting untouched in `env` for the
+      // whole arm body -- the same silent-wrong-type-leak class the
+      // `PConstructor`/`PBinding` arms above already guard against.
+      // `lookupFieldTE` mirrors `inferMemberTE`'s own field-projection
+      // resolution (a same-package record's declared field type,
+      // substituted through the scrutinee's own type arguments), so a
+      // resolvable field gets tracked with its REAL type exactly like a
+      // `PConstructor` case-field does; an unresolved record name or field
+      // (imported record, undeclared field) degrades to `None`, which the
+      // reused `PBinding` arm still evicts rather than leaving stale.
+      val recordName = match scrutTe {
+        case Some(te) -> match typeExprHeadNameMono(te) { case Some(n) -> n; case None -> "" }
+        case None -> ""
+      }
+      val recordArgs: List[TypeArg] = match scrutTe { case Some(te) -> genericAppArgsMono(te); case None -> newList() }
+      var fi = 0
+      while fi < fields.count {
+        match fields[fi] {
+          case RPFNamed(fname, p, _) -> {
+            val fieldTe = if recordName.length > 0 { lookupFieldTE(state, recordName, fname, recordArgs) } else { None }
+            bindPatternEnvMono(state, env, p, fieldTe)
+          }
+          case RPFShort(nm, fspan) -> {
+            val fieldTe = if recordName.length > 0 { lookupFieldTE(state, recordName, nm, recordArgs) } else { None }
+            val bindPat = Pattern(kind = PBinding(name = nm, inner = None), span = fspan)
+            bindPatternEnvMono(state, env, bindPat, fieldTe)
+          }
+        }
+        fi = fi + 1
+      }
+    }
+    case PTuple(patterns) -> {
+      val elemTes: List[TypeExpr] = match scrutTe {
+        case Some(te) -> match te.kind { case TTuple(es) -> es; case _ -> newList() }
+        case None -> newList()
+      }
+      var ti = 0
+      while ti < patterns.count {
+        val et: Option[TypeExpr] = if ti < elemTes.count { Some(value = elemTes[ti]) } else { None }
+        bindPatternEnvMono(state, env, patterns[ti], et)
+        ti = ti + 1
+      }
+    }
+    case POr(patterns) -> {
+      // All alternatives bind the same names by language rule (mirrors the
+      // type checker's `bindPatternTyped`); the first is representative.
+      if patterns.count > 0 {
+        bindPatternEnvMono(state, env, patterns[0], scrutTe)
+      }
+    }
+    case _ -> {
+    }
+  }
+}
+
+func rewriteMatchArms(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  arms: in List[MatchArm],
+  scrutTe: in Option[TypeExpr],
+): List[MatchArm] {
   val buf: List[MatchArm] = newList()
   var i = 0
   while i < arms.count {
     val arm = arms[i]
+    // #6121: each arm is its own nested scope, same as an `if`/`match`
+    // branch body — `bindPatternEnvMono`'s destructured names (#5422/#5423)
+    // must not leak into a SIBLING arm or survive past this whole `match`
+    // once every arm has been processed. Snapshot BEFORE binding the
+    // pattern (not just around the body, as `rewriteEOB` does on its own)
+    // so the restore below also evicts the pattern bindings themselves —
+    // `rewriteEOB`'s own inner snapshot/restore around `arm.body` is still
+    // correct and left in place, it just has nothing extra left to do here.
+    val snap = snapshotEnv(env)
+    bindPatternEnvMono(state, env, arm.pattern, scrutTe)
     // Typed `var` + assignment (not a two-arm `None`/`Some` match): the bootstrap
     // F# emitter widens such a match to `Option<object>`, which then matches
     // neither arm of codegen's instantiation-sensitive `match guard`.
@@ -3042,7 +3520,9 @@ func rewriteMatchArms(state: in MonoState, env: in Map[String, TypeExpr], arms: 
         newGuard = Some(value = rewriteExpr(state, env, g))
       }
     }
-    buf.add(MatchArm(pattern = arm.pattern, guard = newGuard, body = rewriteEOB(state, env, arm.body), span = arm.span))
+    val newBody = rewriteEOB(state, env, arm.body)
+    restoreEnv(env, snap)
+    buf.add(MatchArm(pattern = arm.pattern, guard = newGuard, body = newBody, span = arm.span))
     i = i + 1
   }
   buf
@@ -3063,23 +3543,75 @@ func rewriteInterpolSegs(
   buf
 }
 
+// #6774: a qualified type argument (`f[Pkg.Type](x)`) never parses as a
+// multi-segment `EPath` at all — expression grammar's primary-identifier
+// rule (`parser_exprs.l`) only ever builds a SINGLE-segment `EPath`; every
+// `.name` postfix builds an `EMember(receiver, name)` chain instead
+// (multi-segment `EPath`s only arise later, from `Lyric.AliasRewriter`
+// flattening a qualified alias call — a pass this compilation unit's own
+// AST never sees for an index-position type argument). Flatten such a
+// chain back into a `ModulePath`, bottoming out at a single-segment
+// `EPath`; `None` for anything else (a real member-access value
+// expression, a call, …), which correctly stays a non-type-argument.
+func flattenMemberChainToPath(e: in Expr): Option[ModulePath] {
+  match e.kind {
+    case EPath(p) -> if p.segments.count == 1 { Some(value = p) } else { None }
+    case EMember(recv, name) -> {
+      match flattenMemberChainToPath(recv) {
+        case Some(basePath) -> {
+          val segs: List[String] = newList()
+          var i = 0
+          while i < basePath.segments.count {
+            segs.add(basePath.segments[i])
+            i = i + 1
+          }
+          segs.add(name)
+          Some(value = ModulePath(segments = segs, span = e.span))
+        }
+        case None -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
 // Convert one index of a surface explicit type application
 // (`f[String, WebRateEntry](...)`) to a `TypeArg`: a bare single-segment
 // name that resolves as a type in this file's mono tables.  `None` for
 // anything else so a genuine indexed-value call is never hijacked (a local
 // value name, a literal, a qualified constant all stay indices).
+// #6774: recognise every type-shape a bare single-segment name can name in
+// this compilation unit -- records/interfaces (pre-existing), plus
+// distinct/range-subtype decls and unions (previously missing, so
+// `f[MyUnion](x)` / `f[Age](x)` failed this whitelist and fell through to
+// an UNCHANGED call site with no diagnostic).  A MULTI-segment path
+// (`f[Pkg.Type](x)`) can never be a local variable reference (dots only
+// ever spell a qualified type/value path, never a bare local name), so it
+// is unambiguously a type argument here -- unlike the single-segment case,
+// there is no "is this actually a type, or a value being indexed" ambiguity
+// to resolve against a local table; the sibling `ETypeApp` arm above
+// already trusts an explicit type argument's shape with no registry check
+// at all, so trusting a qualified `TRef` here is consistent with that.
+// `EMember` chains (`Pkg.Type`) route through `flattenMemberChainToPath`
+// above.
 func indexExprToTypeArgMono(state: in MonoState, e: in Expr): Option[TypeArg] {
   match e.kind {
     case EPath(p) -> {
       if p.segments.count == 1 {
         val nm = p.segments[0]
-        if isPrimitiveName(nm) or state.recordDecls.containsKey(nm) or state.ifaceDecls.containsKey(nm) {
+        if isPrimitiveName(nm) or state.recordDecls.containsKey(nm) or state.ifaceDecls.containsKey(nm) or state.distinctDecls.containsKey(nm) or state.unionDecls.containsKey(nm) {
           Some(value = TAType(ty = TypeExpr(kind = TRef(path = p), span = e.span)))
         } else {
           None
         }
       } else {
-        None
+        Some(value = TAType(ty = TypeExpr(kind = TRef(path = p), span = e.span)))
+      }
+    }
+    case EMember(_, _) -> {
+      match flattenMemberChainToPath(e) {
+        case Some(p) -> Some(value = TAType(ty = TypeExpr(kind = TRef(path = p), span = e.span)))
+        case None -> None
       }
     }
     case _ -> None
@@ -3439,6 +3971,27 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                   val taFn = Expr(kind = ETypeApp(fn = idxRecv, args = targsConv), span = fn.span)
                   return rewriteExpr(state, env, Expr(kind = ECall(fn = taFn, args = args), span = s))
                 }
+                // #6774: the callee is a KNOWN same-file generic and every
+                // index looks like an attempted type argument (this arm only
+                // ever fires when the callee itself resolved via
+                // `state.genDecls`) -- a failed conversion here means the
+                // call intended an explicit type application that this pass
+                // could not resolve, not a genuine value-index expression.
+                // Previously this fell through completely silently: Phase 2
+                // still erases the generic declaration, so the surviving
+                // call site became a dangling reference with no diagnostic
+                // ever raised (`noteUnspecialisableLocalCall` was never
+                // reached from this arm at all).  `noteUnspecialisableLocalCall`
+                // itself no-ops when `ipath.segments[0]` is shadowed by a
+                // local binding in `env`, so a genuine same-named value index
+                // still degrades silently, exactly as before.
+                noteUnspecialisableLocalCall(
+                  state,
+                  env,
+                  ipath.segments[0],
+                  "an explicit type argument does not resolve to a known type in this compilation unit",
+                  fn.span
+                )
               }
             }
             case _ -> ()
@@ -3492,11 +4045,25 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
       )
     }
 
-    case EMatch(scrut, arms) -> Expr(kind = EMatch(scrutinee = rewriteExpr(state, env, scrut), arms = rewriteMatchArms(state, env, arms)), span = s)
+    case EMatch(scrut, arms) -> {
+      // Infer the scrutinee's type BEFORE rewriting it (mirrors `rewriteBinding`'s
+      // LBVal: infer off the original expr, then rewrite separately) so each arm's
+      // pattern bindings can be tracked into `env` (#5422/#5423) — otherwise a
+      // generic call argument or native-method receiver sourced from a `match`-
+      // pattern-bound name (`case Some(mm) -> mapKeys(mm)`) has no entry in `env`
+      // and either fails to specialise or (for an imported generic whose erased
+      // call MUST specialise, see the "default unbound params to Object" fallback
+      // below) silently specialises against the wrong, Object-erased instantiation.
+      val scrutTe = inferExprTE(state, env, scrut)
+      Expr(
+        kind = EMatch(scrutinee = rewriteExpr(state, env, scrut), arms = rewriteMatchArms(state, env, arms, scrutTe)),
+        span = s
+      )
+    }
 
-    case EBlock(blk) -> Expr(kind = EBlock(block = rewriteBlock(state, env, blk)), span = s)
+    case EBlock(blk) -> Expr(kind = EBlock(block = rewriteBlockScoped(state, env, blk)), span = s)
 
-    case EUnsafe(blk) -> Expr(kind = EUnsafe(block = rewriteBlock(state, env, blk)), span = s)
+    case EUnsafe(blk) -> Expr(kind = EUnsafe(block = rewriteBlockScoped(state, env, blk)), span = s)
 
     case EAwait(inner) -> Expr(kind = EAwait(inner = rewriteExpr(state, env, inner)), span = s)
 
@@ -3534,7 +4101,59 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
 
     case EInterpolated(segs) -> Expr(kind = EInterpolated(segments = rewriteInterpolSegs(state, env, segs)), span = s)
 
-    case ELambda(lparams, body) -> Expr(kind = ELambda(lambdaParams = lparams, body = rewriteBlock(state, env, body)), span = s)
+    case ELambda(lparams, body) -> {
+      // #6666: an explicitly-typed lambda parameter shadowing an outer
+      // binding of the same name must be tracked into `env` for the
+      // duration of the lambda body — otherwise a generic call inside the
+      // body that references the parameter by name still sees the OUTER
+      // binding's (possibly different) type.  Scope-isolated by the same
+      // snapshot/restore pair `rewriteBlockScoped` uses, so the shadow is
+      // correctly evicted (or the outer binding restored) once the lambda
+      // body ends.
+      //
+      // An UNTYPED param (`ty = None`) has nothing positive to record — this
+      // compiler stage has no access to the type-checker's own bidirectional
+      // inference (the expected function type a lambda literal is checked
+      // against at its call site), and recovering it here would mean either
+      // widening `rewriteExpr`'s signature to thread an "expected type"
+      // through every one of its hundreds of call sites, or re-deriving the
+      // callee's resolved overload ahead of `rewriteCallArgs` (duplicating,
+      // and risking disagreeing with, the ambiguous-overload resolution the
+      // call-rewrite logic below already performs) — both a materially
+      // larger, riskier change than this fix's scope.  So the type genuinely
+      // stays unrecovered here: any generic call inside the body that
+      // references an untyped param by name stays unspecialised/erased,
+      // same as an unannotated `val` with no inferrable initializer.
+      //
+      // What MUST still happen even without a positive type, though: if the
+      // untyped name happens to SHADOW an outer binding, that outer entry
+      // has to be evicted from `env` for the body's duration — otherwise a
+      // generic call referencing the (shadowing, untyped) name resolves to
+      // the OUTER binding's type, which is silently WRONG, not merely
+      // imprecise (a strictly worse failure mode than "stays erased"). This
+      // is the fix: `env.remove` with no replacing `add`, so `restoreEnv`
+      // below still puts the outer binding back once the lambda body ends.
+      val snap = snapshotEnv(env)
+      var pi = 0
+      while pi < lparams.count {
+        val lp = lparams[pi]
+        match lp.ty {
+          case None -> {
+            if env.containsKey(lp.name) {
+              env.remove(lp.name)
+            }
+          }
+          case Some(pty) -> {
+            val bindPat = Pattern(kind = PBinding(name = lp.name, inner = None), span = lp.span)
+            trackPatternEnv(env, bindPat, pty)
+          }
+        }
+        pi = pi + 1
+      }
+      val newBody = rewriteBlock(state, env, body)
+      restoreEnv(env, snap)
+      Expr(kind = ELambda(lambdaParams = lparams, body = newBody), span = s)
+    }
 
     case ETypeApp(fn, targs) -> Expr(kind = ETypeApp(fn = rewriteExpr(state, env, fn), args = targs), span = s)
 
@@ -3551,6 +4170,17 @@ func rewriteBlock(state: in MonoState, env: in Map[String, TypeExpr], blk: in Bl
     i = i + 1
   }
   Block(statements = newStmts, span = blk.span)
+}
+
+// #6121: like `rewriteEOB`, every loop/`scope`/`defer`/bare-block body is a
+// NESTED scope relative to `env` — wrap the recursion in snapshot/restore
+// so a `val` bound inside doesn't leak into the caller's scope once the
+// body ends.
+func rewriteBlockScoped(state: in MonoState, env: in Map[String, TypeExpr], blk: in Block): Block {
+  val snap = snapshotEnv(env)
+  val result = rewriteBlock(state, env, blk)
+  restoreEnv(env, snap)
+  result
 }
 
 func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in Statement): Statement {
@@ -3579,34 +4209,66 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
 
     case SExpr(e) -> Statement(kind = SExpr(expr = rewriteExpr(state, env, e)), span = s)
 
-    case SWhile(lbl, cond, body) -> Statement(kind = SWhile(label = lbl, cond = rewriteExpr(state, env, cond), body = rewriteBlock(state, env, body)), span = s)
+    case SWhile(lbl, cond, body) -> Statement(kind = SWhile(label = lbl, cond = rewriteExpr(state, env, cond), body = rewriteBlockScoped(state, env, body)), span = s)
 
-    case SFor(lbl, pat, iter, body) -> Statement(kind = SFor(label = lbl, pat = pat, iter = rewriteExpr(state, env, iter), body = rewriteBlock(state, env, body)), span = s)
+    case SFor(lbl, pat, iter, body) -> {
+      // #6666: a `for` loop's pattern variable shadowing an outer binding of
+      // the same name must be tracked into `env` (typed from the iterable's
+      // own element type, mirroring `EMatch`'s scrutinee-type inference)
+      // for the duration of the loop body, then evicted/restored once it
+      // ends — same scope-isolation contract as a `val`/match-arm binding.
+      // Infer off the ORIGINAL (pre-rewrite) `iter` expression, then rewrite
+      // it separately, matching `EMatch`'s own infer-before-rewrite order.
+      val elemTe = inferIndexTE(state, env, iter)
+      val newIter = rewriteExpr(state, env, iter)
+      val snap = snapshotEnv(env)
+      bindPatternEnvMono(state, env, pat, elemTe)
+      val newBody = rewriteBlock(state, env, body)
+      restoreEnv(env, snap)
+      Statement(kind = SFor(label = lbl, pat = pat, iter = newIter, body = newBody), span = s)
+    }
 
-    case SLoop(lbl, body) -> Statement(kind = SLoop(label = lbl, body = rewriteBlock(state, env, body)), span = s)
+    case SLoop(lbl, body) -> Statement(kind = SLoop(label = lbl, body = rewriteBlockScoped(state, env, body)), span = s)
 
-    case SDefer(body) -> Statement(kind = SDefer(body = rewriteBlock(state, env, body)), span = s)
+    case SDefer(body) -> Statement(kind = SDefer(body = rewriteBlockScoped(state, env, body)), span = s)
 
-    case SScope(lbl, body) -> Statement(kind = SScope(binding = lbl, body = rewriteBlock(state, env, body)), span = s)
+    case SScope(lbl, body) -> Statement(kind = SScope(binding = lbl, body = rewriteBlockScoped(state, env, body)), span = s)
 
     case SInvariant(e) -> Statement(kind = SInvariant(expr = rewriteExpr(state, env, e)), span = s)
 
     case SRule(lhs, rhs) -> Statement(kind = SRule(lhs = rewriteExpr(state, env, lhs), rhs = rewriteExpr(state, env, rhs)), span = s)
 
     case STry(body, catches, finally_) -> {
-      val newBody = rewriteBlock(state, env, body)
+      // #6665: the `try` body, each `catch` body, and `finally` are each
+      // their own nested scope, exactly like a loop/`scope`/`defer` body —
+      // a `val`/pattern binding inside any of them must not leak into a
+      // sibling clause or survive past the whole `try` statement.  Every
+      // clause gets its own snapshot/restore pair (not one shared around
+      // the whole statement) so a name bound in `body` doesn't leak into
+      // `catches`/`finally_` either, matching how sibling `match` arms are
+      // isolated from each other in `rewriteMatchArms`.
+      val newBody = rewriteBlockScoped(state, env, body)
       val newCatches: List[CatchClause] = newList()
       var i = 0
       while i < catches.count {
         val cc = catches[i]
-        newCatches.add(
-          CatchClause(
-            typeName = cc.typeName,
-            bindName = cc.bindName,
-            body = rewriteBlock(state, env, cc.body),
-            span = cc.span
-          )
-        )
+        // #6666: a `catch T as e` binding shadows any outer `e` for the
+        // duration of the catch body — track its (exception) type into
+        // `env` before rewriting the body, scope-isolated by the same
+        // snapshot/restore pair so the binding (and anything it shadowed)
+        // is correctly evicted/restored once the catch body ends.
+        val catchSnap = snapshotEnv(env)
+        match cc.bindName {
+          case None -> ()
+          case Some(bn) -> {
+            val excTe = TypeExpr(kind = TRef(path = singleSegPath(cc.typeName)), span = cc.span)
+            val bindPat = Pattern(kind = PBinding(name = bn, inner = None), span = cc.span)
+            trackPatternEnv(env, bindPat, excTe)
+          }
+        }
+        val newCatchBody = rewriteBlock(state, env, cc.body)
+        restoreEnv(env, catchSnap)
+        newCatches.add(CatchClause(typeName = cc.typeName, bindName = cc.bindName, body = newCatchBody, span = cc.span))
         i = i + 1
       }
       // Typed `var` + assignment, not a two-arm match — see the `EIf` note
@@ -3617,7 +4279,7 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
         case None -> {
         }
         case Some(fb) -> {
-          newFinally = Some(value = rewriteBlock(state, env, fb))
+          newFinally = Some(value = rewriteBlockScoped(state, env, fb))
         }
       }
       Statement(kind = STry(body = newBody, catches = newCatches, finally_ = newFinally), span = s)
@@ -3796,21 +4458,53 @@ func bindingEnvTE(state: in MonoState, env: in Map[String, TypeExpr], annoTe: in
   }
 }
 
+// #6698: every arm below rewrites `init`/`initOpt` against `env` BEFORE
+// this binding's own name is added to (or re-added to, for a shadowing
+// same-named binding) `env` — never after.  A shadowing binding whose
+// initializer expression references the OUTER same-named binding (`val x:
+// Int = 5; { val x: String = someGenericCall(x) }`) must resolve that `x`
+// inside `someGenericCall(x)` against the outer `Int` entry, not the
+// not-yet-visible-to-its-own-initializer inner `String` one.  Mutating
+// `env` first (the pre-fix order) made the inner binding visible to its
+// OWN initializer, so a generic call inside `init` that referenced the
+// shadowed name silently specialised against the WRONG (inner, not-yet-
+// bound) type.  The inference helpers (`bindingEnvTE`/`inferExprTE`) below
+// are still handed the ORIGINAL (unrewritten) `init`/`ie` for their
+// structural analysis, matching pre-fix behaviour — only the ORDER
+// relative to the `env` mutation changed, not what they're passed.
 func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding: in LocalBinding): LocalBinding {
   match binding {
     case LBVal(pat, tyOpt, init) -> {
+      val newInit = rewriteExpr(state, env, init)
+      // #6772: route through `bindPatternEnvMono` rather than
+      // `trackPatternEnv` directly. `trackPatternEnv`'s catch-all
+      // (`case _ -> ()`) is a no-op for every pattern kind besides
+      // `PBinding`, so a destructuring `val (k, v) = …` neither tracked
+      // its element types NOR evicted a stale outer binding a shadowed
+      // element name (`k` or `v`) left in `env` -- a value bound to the
+      // WRONG (outer, shadowed) type could then leak into a later generic
+      // call. `bindPatternEnvMono` already handles `PTuple` / `PRecord` /
+      // `PConstructor` correctly (tracking a resolvable element type,
+      // evicting on an unresolvable `None` otherwise) for match arms and
+      // `for`-loop patterns; reusing it here closes the same gap for
+      // plain `val` destructuring.
       match tyOpt {
-        case Some(te) -> trackPatternEnv(env, pat, bindingEnvTE(state, env, te, init))
-        case None -> {
-          match inferExprTE(state, env, init) {
-            case Some(inferred) -> trackPatternEnv(env, pat, inferred)
-            case None -> ()
-          }
-        }
+        case Some(te) -> bindPatternEnvMono(state, env, pat, Some(value = bindingEnvTE(state, env, te, init)))
+        case None -> bindPatternEnvMono(state, env, pat, inferExprTE(state, env, init))
       }
-      LBVal(pat = pat, ty = tyOpt, init = rewriteExpr(state, env, init))
+      LBVal(pat = pat, ty = tyOpt, init = newInit)
     }
     case LBVar(name, tyOpt, initOpt) -> {
+      // Typed `var` + assignment, not a two-arm match: a bare-`None`
+      // arm would be `None<object>` and corrupt an init-less `var` binding.
+      var newInit: Option[Expr] = None
+      match initOpt {
+        case None -> {
+        }
+        case Some(e) -> {
+          newInit = Some(value = rewriteExpr(state, env, e))
+        }
+      }
       match tyOpt {
         case Some(te) -> {
           val envTe = match initOpt { case Some(ie) -> bindingEnvTE(state, env, te, ie); case None -> te }
@@ -3836,19 +4530,10 @@ func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding:
           }
         }
       }
-      // Typed `var` + assignment, not a two-arm match: a bare-`None`
-      // arm would be `None<object>` and corrupt an init-less `var` binding.
-      var newInit: Option[Expr] = None
-      match initOpt {
-        case None -> {
-        }
-        case Some(e) -> {
-          newInit = Some(value = rewriteExpr(state, env, e))
-        }
-      }
       LBVar(name = name, ty = tyOpt, init = newInit)
     }
     case LBLet(name, tyOpt, init) -> {
+      val newInit = rewriteExpr(state, env, init)
       match tyOpt {
         case Some(te) -> {
           if env.containsKey(name) {
@@ -3868,19 +4553,97 @@ func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding:
           }
         }
       }
-      LBLet(name = name, ty = tyOpt, init = rewriteExpr(state, env, init))
+      LBLet(name = name, ty = tyOpt, init = newInit)
     }
   }
 }
 
+// A `val` binding SHADOWS any earlier binding of the same name in this
+// scope (Lyric allows `val r = ...; val r = ...` — each `val` introduces a
+// fresh binding, not a rebind of the first).  `Map.add` throws on a
+// duplicate key, so a stale entry from an earlier same-named `val` must be
+// evicted before recording this one's type — mirroring the remove-then-add
+// pattern `rewriteBinding`'s `LBVar`/`LBLet` arms already use.  Before this
+// fix the guard was "only add if absent," which SILENTLY KEPT the first
+// binding's type for every later use of the name (#6121): a file that
+// calls a generic helper (`isSome`/`unwrapOption`/a user-defined generic)
+// through several `val`s sharing one name but binding DIFFERENT concrete
+// `Option[T]` instantiations had every call after the first specialise
+// against the FIRST val's type instead of its own — producing a
+// specialisation whose parameter type doesn't match the runtime value's
+// real (reified) generic instantiation, which panics "match not
+// exhaustive" at the mismatched `isinst` (the same failure family as
+// #1442/#1602/#1731/#2592/#3332/#6231). Removing and re-adding here makes
+// each shadowing `val` correctly override the tracked type for every
+// reference after it, so the SAME name reused across several concrete
+// instantiations in one scope specialises each call against its own real
+// argument type instead of an earlier shadowed binding's.
 func trackPatternEnv(env: in Map[String, TypeExpr], pat: in Pattern, te: in TypeExpr): Unit {
   match pat.kind {
     case PBinding(name, _) -> {
-      if not env.containsKey(name) {
-        env.add(name, te)
+      if env.containsKey(name) {
+        env.remove(name)
       }
+      env.add(name, te)
     }
     case _ -> ()
+  }
+}
+
+// Nested-block scope isolation (#6121 follow-up): `env` is one mutable Map
+// threaded through the whole rewrite, so a `val` bound inside a nested
+// scope (an `if`/`match` branch, a loop body, a `scope { }` body) must not
+// leak its type into the ENCLOSING scope once that nested block ends —
+// the same lexical-shadowing rule `block_shadow_self_test.l` (#5191)
+// already enforces at codegen for runtime values.  `snapshotEnv` copies
+// every current binding; `restoreEnv` puts `env` back to exactly that
+// snapshot afterwards (evicting anything the nested block added, and
+// resetting anything it shadowed back to the outer binding). Every call
+// site that recurses into a nested `Block`/`ExprOrBlock` (`rewriteEOB`,
+// the loop/scope arms of `rewriteStmt`, a lambda body) wraps the
+// recursive call in a snapshot/restore pair; the top-level function body
+// itself is never wrapped, since there is no enclosing scope to restore
+// into.
+func snapshotEnv(env: in Map[String, TypeExpr]): Map[String, TypeExpr] {
+  val snap: Map[String, TypeExpr] = newMap()
+  val ks = mapKeys(env)
+  var i = 0
+  while i < ks.count {
+    match mapGet(env, ks[i]) {
+      case Some(te) -> snap.add(ks[i], te)
+      case None -> ()
+    }
+    i = i + 1
+  }
+  snap
+}
+
+func restoreEnv(env: in Map[String, TypeExpr], snap: in Map[String, TypeExpr]): Unit {
+  // Evict anything the nested block introduced that wasn't there before.
+  val curKeys = mapKeys(env)
+  var i = 0
+  while i < curKeys.count {
+    if not snap.containsKey(curKeys[i]) {
+      env.remove(curKeys[i])
+    }
+    i = i + 1
+  }
+  // Reset every snapshotted binding back to its pre-block type (covers
+  // both a shadowed-and-changed key and one the block removed outright).
+  val snapKeys = mapKeys(snap)
+  var j = 0
+  while j < snapKeys.count {
+    val k = snapKeys[j]
+    match mapGet(snap, k) {
+      case Some(te) -> {
+        if env.containsKey(k) {
+          env.remove(k)
+        }
+        env.add(k, te)
+      }
+      case None -> ()
+    }
+    j = j + 1
   }
 }
 
@@ -4042,6 +4805,9 @@ pub func monoFileWithImportsAndTypeDecls(
   // #5841: same-package distinct/range-subtype decls, for the
   // `Type.from`/`Type.tryFrom` static-factory return-type special case.
   val distinctDecls: Map[String, DistinctTypeDecl] = newMap()
+  // #6774: same-package union decls, so `indexExprToTypeArgMono` recognises
+  // a union name as a legitimate explicit type argument (`f[MyUnion](x)`).
+  val unionDecls: Map[String, Bool] = newMap()
   // Same-file generic functions that Phase 2 will erase from the output —
   // an unrewritten call site to one of these is a dangling reference and
   // must raise M0002 (docs/59 §5.2 B2).  `@externTarget`-kept generics
@@ -4108,6 +4874,11 @@ pub func monoFileWithImportsAndTypeDecls(
       case IDistinctType(decl) -> {
         if not distinctDecls.containsKey(decl.name) {
           distinctDecls.add(decl.name, decl)
+        }
+      }
+      case IUnion(decl) -> {
+        if not unionDecls.containsKey(decl.name) {
+          unionDecls.add(decl.name, true)
         }
       }
       case _ -> ()
@@ -4189,6 +4960,12 @@ pub func monoFileWithImportsAndTypeDecls(
   val importedFuncSigKeys: Map[String, String] = newMap()
   val ambiguousImportedFuncNames: Map[String, Bool] = newMap()
   val ambiguousFuncOverloads: Map[String, List[FunctionDecl]] = newMap()
+  // #6669: every union-case ctor synth in scope, keyed by bare case name,
+  // WITHOUT the first-wins collapse `funcDecls` applies below — lets
+  // `bindPatternEnvMono`'s `PConstructor` arm verify a match pattern's case
+  // actually belongs to the type being matched instead of trusting whichever
+  // same-named case happened to win the `funcDecls` slot.
+  val ctorCandidates: Map[String, List[FunctionDecl]] = newMap()
   // Snapshot the names Phase 1 already registered from the SAME package
   // before any imported decl is merged (#5961): a same-package local always
   // shadows every import ("same-package wins on name collision"), so an
@@ -4208,6 +4985,9 @@ pub func monoFileWithImportsAndTypeDecls(
   var ig = 0
   while ig < importedGenDecls.count {
     val idecl = importedGenDecls[ig]
+    if annsInferenceOnlyMono(idecl.annotations) {
+      addCtorCandidateMono(ctorCandidates, idecl)
+    }
     if not annsInferenceOnlyMono(idecl.annotations) {
       val sigKey = funcSigKeyMono(idecl)
       match mapGet(importedFuncSigKeys, idecl.name) {
@@ -4270,6 +5050,7 @@ pub func monoFileWithImportsAndTypeDecls(
     if not funcDecls.containsKey(ldecl.name) {
       funcDecls.add(ldecl.name, ldecl)
     }
+    addCtorCandidateMono(ctorCandidates, ldecl)
     lu = lu + 1
   }
 
@@ -4287,8 +5068,10 @@ pub func monoFileWithImportsAndTypeDecls(
     recordDecls,
     ifaceDecls,
     distinctDecls,
+    unionDecls,
     droppedLocalGenerics,
-    ambiguousFuncOverloads
+    ambiguousFuncOverloads,
+    ctorCandidates
   )
 
   // ── Phase 2: rewrite non-generic items ──────────────────────────────────

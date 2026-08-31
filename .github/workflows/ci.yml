@@ -62,10 +62,11 @@ jobs:
           fetch-depth: 0
           filter: blob:none
 
-      # Guardrail for #6171: the ECO_DEPS declare -A table below and the
-      # ecosystem-tests matrix's `deps:` entries are hand-maintained
-      # duplicates with no other sync check. Fail fast, before the
-      # expensive build steps, if they drift apart.
+      # Guardrail for #6171: the ECO_DEPS declare -A table in
+      # scripts/ci/detect-code-changes.sh and the ecosystem-tests matrix's
+      # `deps:` entries below are hand-maintained duplicates with no other
+      # sync check. Fail fast, before the expensive build steps, if they
+      # drift apart.
       - name: Check ECO_DEPS / ecosystem-tests matrix sync
         run: bash scripts/check-eco-deps-sync.sh
 
@@ -76,197 +77,12 @@ jobs:
       # proceed.
       - name: Detect code changes
         id: changes
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE_SHA="${{ github.event.pull_request.base.sha }}"
-            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          else
-            BASE_SHA="${{ github.event.before }}"
-            HEAD_SHA="${{ github.sha }}"
-          fi
-
-          # Shared core-infra prefix: anything here can change what every
-          # ecosystem-tests matrix entry does (the manifest chain, or how
-          # it's invoked) regardless of which library's own directory
-          # changed, so it must appear in EVERY entry's trigger pattern
-          # below, not just the has_core_changes check further down. A
-          # ci.yml-only change (like this PR's own diff) is the case that
-          # would otherwise silently zero out the whole matrix.
-          CORE_INFRA_PATTERN='lyric-compiler/|lyric-stdlib/|bootstrap/|lyric-rt/|resolver/|scripts/|Makefile|\.github/workflows/ci\.yml'
-
-          # Per-ecosystem-library dependency map backing the `ecosystem-tests`
-          # matrix (split from the old monolithic `ecosystem-security-tests`
-          # job). Each id names one lyric-<id>/ library; the value lists the
-          # OTHER lyric-<dep>/ directories that library's own test-manifest
-          # chain actually path-depends on, transcribed from the build-order
-          # comments that used to live inline in that job. `emit_run_map`
-          # below turns this into a JSON {id: true|false} map: a PR touching
-          # only an unrelated library's directory skips that matrix entry; a
-          # compiler/stdlib/core-infra change (per CORE_INFRA_PATTERN above)
-          # always triggers every entry.
-          declare -A ECO_DEPS=(
-            [auth]=""
-            [session]="cache"
-            [health]=""
-            [cache]=""
-            [docker]=""
-            [mail]=""
-            [aws-xray]=""
-            [aws-secrets]=""
-            [feature-flags]=""
-            [validation]=""
-            [storage]=""
-            [proto]=""
-            [otel]="proto"
-            [jsonrpc]=""
-            [mcp]="jsonrpc"
-            [logging]=""
-            [mq]="cache"
-            [grpc]="auth resilience"
-            [db]="logging"
-            [search]="resilience"
-            [lambda]="auth resilience web"
-            [web]="auth resilience"
-            [ws]="auth"
-            [testing]="cache mail storage feature-flags mq session"
-          )
-
-          # $1: "true" forces every entry to true (conservative fallback /
-          # first push); otherwise $2 is the newline-separated changed-file
-          # list to grep each entry's trigger pattern against. Builds the
-          # JSON via an array + IFS join rather than manual comma bookkeeping
-          # so no branch of this loop can trip the shell's default `-e`.
-          emit_run_map() {
-            local force_true="$1"
-            local files="$2"
-            local id dep pattern val
-            local entries=()
-            for id in "${!ECO_DEPS[@]}"; do
-              if [ "$force_true" = "true" ]; then
-                val=true
-              else
-                pattern="^(${CORE_INFRA_PATTERN}|lyric-${id}/"
-                for dep in ${ECO_DEPS[$id]}; do
-                  pattern="${pattern}|lyric-${dep}/"
-                done
-                pattern="${pattern})"
-                if printf '%s\n' "$files" | grep -qE "$pattern"; then
-                  val=true
-                else
-                  val=false
-                fi
-              fi
-              entries+=("\"${id}\":${val}")
-            done
-            run_map="{$(IFS=,; echo "${entries[*]}")}"
-            echo "run_map=${run_map}" >> "$GITHUB_OUTPUT"
-            echo "Ecosystem per-library run map: ${run_map}"
-          }
-
-          # First-ever push to a branch has no parent; treat as code change.
-          if [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
-            echo "has_code_changes=true" >> "$GITHUB_OUTPUT"
-            echo "has_core_changes=true" >> "$GITHUB_OUTPUT"
-            echo "has_jvm_ecosystem_changes=true" >> "$GITHUB_OUTPUT"
-            emit_run_map true ""
-            echo "First push — assuming code changes."
-            exit 0
-          fi
-
-          # Skip the full build when only documentation or repository
-          # metadata files changed.  The filter set is:
-          #
-          # * `book/`, `docs/`, `*.md` — narrative docs.
-          # * `.github/CODEOWNERS`, `.github/PULL_REQUEST_TEMPLATE*`,
-          #   `.github/ISSUE_TEMPLATE/` — repository metadata that
-          #   doesn't affect what CI does.  `ci.yml` itself and any
-          #   shell scripts under `.github/` stay *inside* the build
-          #   set so that misconfigurations are caught on the same PR
-          #   they land in, not the next unrelated push.
-          #
-          # `pipefail` stays on so a `git diff` failure propagates and
-          # the outer `|| changed="yes"` fires the safe fallback.  A
-          # single combined `grep -vE` keeps the pipeline short so the
-          # `|| true` wrapper only has to absorb one benign exit-1
-          # (every line filtered out on a docs-only PR); `head -1`
-          # then sees empty stdin and `changed` ends up empty,
-          # correctly signalling "skip".
-          set -o pipefail
-          changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null \
-            | { grep -vE '^(book/|docs/|\.github/(CODEOWNERS|PULL_REQUEST_TEMPLATE|ISSUE_TEMPLATE/))|\.md$' || true; } \
-            | head -1) || changed="yes"
-
-          if [ -n "$changed" ]; then
-            echo "has_code_changes=true" >> "$GITHUB_OUTPUT"
-            echo "Code changes detected — full build and test will run."
-          else
-            echo "has_code_changes=false" >> "$GITHUB_OUTPUT"
-            echo "Docs-only change — build and test skipped."
-          fi
-
-          # Second, finer-grained signal: does the diff touch the
-          # compiler/runtime core (CORE_INFRA_PATTERN, declared above:
-          # lyric-compiler/, lyric-stdlib/, bootstrap/, lyric-rt/,
-          # resolver/, scripts/, this workflow file, or the root Makefile)?
-          # Deliberately excludes native/ — that directory holds only *.md
-          # backend-design planning docs (no code; the real native backend
-          # lives under lyric-compiler/lyric/llvm_*.l and
-          # lyric-stdlib/std/_kernel_native/, both already covered), so
-          # including it would force a rebuild for doc-only edits with
-          # nothing to actually verify. The compiler self-test,
-          # native-backend, closure zero-overhead, ilverify, AOT-smoke, and
-          # e2e-CLI jobs below only ever exercise this surface — a PR that
-          # touches just one ecosystem library (lyric-web/, lyric-mq/,
-          # ...), lyric-vscode/, lyric-testing/, or examples/ gains nothing
-          # from re-running them. Same conservative-fallback shape as the
-          # has_code_changes check above: any ambiguity (git diff failure,
-          # first push already handled) resolves to "true" — a missed skip
-          # costs CI minutes, a wrong skip hides a regression.
-          core_changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null \
-            | { grep -E "^(${CORE_INFRA_PATTERN})" || true; } \
-            | head -1) || core_changed="yes"
-
-          if [ -n "$core_changed" ]; then
-            echo "has_core_changes=true" >> "$GITHUB_OUTPUT"
-            echo "Compiler/runtime-core changes detected — compiler/native/JVM/AOT test jobs will run."
-          else
-            echo "has_core_changes=false" >> "$GITHUB_OUTPUT"
-            echo "No compiler/runtime-core changes — compiler/native/JVM/AOT test jobs skipped."
-          fi
-
-          # compiler-self-tests-jvm's own gate: a superset of has_core_changes.
-          # Unlike the other 12 has_core_changes-gated jobs, this one also
-          # contains the ONLY CI exercise of four ecosystem libraries' JVM
-          # kernels/manifests — Storage.Kernel.Jvm, Resilience.Kernel.Jvm, the
-          # Auth.Kernel.Jvm feature-resolution build, and the lyric-web
-          # Undertow end-to-end smoke (tests/jvm_server_smoke.l) — none of
-          # which the ecosystem-tests matrix duplicates (it only runs their
-          # default/dotnet manifests). Folding lyric-web/storage/resilience/
-          # auth into the shared has_core_changes pattern instead would have
-          # over-broadened the OTHER 12 jobs' gates for libraries they never
-          # touch, so this is a separate, job-specific signal.
-          jvm_ecosystem_changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null \
-            | { grep -E "^(${CORE_INFRA_PATTERN}|lyric-web/|lyric-storage/|lyric-resilience/|lyric-auth/)" || true; } \
-            | head -1) || jvm_ecosystem_changed="yes"
-
-          if [ -n "$jvm_ecosystem_changed" ]; then
-            echo "has_jvm_ecosystem_changes=true" >> "$GITHUB_OUTPUT"
-            echo "Compiler-core or web/storage/resilience/auth JVM-kernel changes detected — compiler-self-tests-jvm will run."
-          else
-            echo "has_jvm_ecosystem_changes=false" >> "$GITHUB_OUTPUT"
-            echo "No compiler-core or web/storage/resilience/auth changes — compiler-self-tests-jvm skipped."
-          fi
-
-          # Finally, the per-library run map itself (a fresh `git diff` call,
-          # independent of the `changed`/`core_changed` computations above so
-          # a grep quirk in either can't affect this one).
-          eco_files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null) && eco_ok=1 || eco_ok=0
-          if [ "$eco_ok" -eq 1 ]; then
-            emit_run_map false "$eco_files"
-          else
-            emit_run_map true ""
-          fi
-
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: bash scripts/ci/detect-code-changes.sh
       # Guardrail for #733: PR #687 gutted `_kernel/net/*.l` files in
       # eight ecosystem libraries; the lint blocks new stubs from
       # landing while restoration PRs reintroduce real bindings.
@@ -395,164 +211,7 @@ jobs:
       - name: Run single-file examples
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found; skipping example runs"
-            exit 0
-          fi
-          # Run-to-completion examples (assert exit 0).
-          for ex in csv fizzbuzz primes wordcount ffi_bcl ffi_datetime; do
-            echo "=== run examples/$ex.l ==="
-            "$lyric_bin" run "examples/$ex.l" > /tmp/"$ex".run.log 2>&1 \
-              && echo "PASS" || { echo "FAIL"; tail -10 /tmp/"$ex".run.log; exit 1; }
-          done
-          # rest_service starts an HTTP listener and runs until killed.  Run it
-          # in the background, wait for the "Listening on" line in its log,
-          # smoke-test the endpoint, then SIGTERM the server.
-          echo "=== smoke examples/rest_service.l ==="
-          "$lyric_bin" run examples/rest_service.l > /tmp/rest_service.run.log 2>&1 &
-          srv_pid=$!
-          for _ in $(seq 1 20); do
-            if grep -q "Listening on" /tmp/rest_service.run.log 2>/dev/null; then
-              break
-            fi
-            sleep 0.5
-          done
-          if ! kill -0 "$srv_pid" 2>/dev/null; then
-            echo "FAIL: rest_service exited before serving"
-            tail -20 /tmp/rest_service.run.log
-            exit 1
-          fi
-          body="$(curl -s --max-time 3 http://localhost:8080/ || true)"
-          kill "$srv_pid" 2>/dev/null || true
-          wait "$srv_pid" 2>/dev/null || true
-          if [ "$body" != "Hello from Lyric!" ]; then
-            echo "FAIL: unexpected body '$body'"
-            tail -20 /tmp/rest_service.run.log
-            exit 1
-          fi
-          echo "PASS"
-          # Web.serve() per-request crash isolation (#5261, supersedes the
-          # #5260 fail-fast contract): the server's /crash route panics during
-          # request handling; serve()'s per-request catch-Bug arm must log the
-          # [lyric-web] failure line, answer that request 500, and KEEP the
-          # accept loop running — a single bad request must not take the whole
-          # server down. Assert /crash -> 500, the failure line is logged, and
-          # /health still serves 200 afterward; then kill the server (it no
-          # longer exits on its own).
-          echo "=== smoke lyric-web/tests/serve_failure_tests.l ==="
-          "$lyric_bin" run lyric-web/tests/serve_failure_tests.l > /tmp/serve_failure.run.log 2>&1 &
-          sf_pid=$!
-          for _ in $(seq 1 20); do
-            if curl -s --max-time 1 http://127.0.0.1:8199/health >/dev/null 2>&1; then
-              break
-            fi
-            sleep 0.5
-          done
-          if ! kill -0 "$sf_pid" 2>/dev/null; then
-            echo "FAIL: serve_failure server exited before serving"
-            tail -20 /tmp/serve_failure.run.log
-            exit 1
-          fi
-          sf_crash_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:8199/crash || echo "000")
-          if [ "$sf_crash_code" != "500" ]; then
-            echo "FAIL: /crash returned '$sf_crash_code', expected 500 (#5261)"
-            kill "$sf_pid" 2>/dev/null || true
-            tail -20 /tmp/serve_failure.run.log
-            exit 1
-          fi
-          if ! grep -q "\[lyric-web\] request handling failed" /tmp/serve_failure.run.log; then
-            echo "FAIL: missing [lyric-web] failure line in serve_failure log (#5261)"
-            kill "$sf_pid" 2>/dev/null || true
-            tail -20 /tmp/serve_failure.run.log
-            exit 1
-          fi
-          sf_health_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:8199/health || echo "000")
-          if [ "$sf_health_code" != "200" ]; then
-            echo "FAIL: /health returned '$sf_health_code' after a request-handler panic; server did not survive (#5261)"
-            kill "$sf_pid" 2>/dev/null || true
-            tail -20 /tmp/serve_failure.run.log
-            exit 1
-          fi
-          kill "$sf_pid" 2>/dev/null || true
-          wait "$sf_pid" 2>/dev/null || true
-          echo "PASS"
-          # Web.serveStreaming()/ResponseWriter (lyric-lang#5979): a chunk
-          # written before the handler finishes must reach the client before
-          # the handler produces the next one -- not be buffered until the
-          # whole response is done. /stream sleeps 400ms between its two
-          # chunks; time the request and require it took at least that long
-          # (a buffered/instant response would come back near-instantly).
-          echo "=== smoke lyric-web/tests/streaming_tests.l ==="
-          "$lyric_bin" run lyric-web/tests/streaming_tests.l > /tmp/streaming.run.log 2>&1 &
-          st_pid=$!
-          for _ in $(seq 1 20); do
-            if curl -s --max-time 1 http://127.0.0.1:8210/health >/dev/null 2>&1; then
-              break
-            fi
-            sleep 0.5
-          done
-          if ! kill -0 "$st_pid" 2>/dev/null; then
-            echo "FAIL: streaming_tests server exited before serving"
-            tail -20 /tmp/streaming.run.log
-            exit 1
-          fi
-          stream_start=$(date +%s%N)
-          curl -sN --max-time 5 -D /tmp/stream_headers.txt -o /tmp/stream_body.txt http://127.0.0.1:8210/stream
-          stream_end=$(date +%s%N)
-          stream_ms=$(( (stream_end - stream_start) / 1000000 ))
-          if [ "$stream_ms" -lt 350 ]; then
-            echo "FAIL: /stream returned in ${stream_ms}ms, expected >= 400ms (chunks were buffered, not streamed)"
-            cat /tmp/stream_headers.txt
-            exit 1
-          fi
-          if ! grep -q "chunk0" /tmp/stream_body.txt || ! grep -q "chunk1" /tmp/stream_body.txt; then
-            echo "FAIL: /stream body missing expected chunk markers"
-            cat /tmp/stream_body.txt
-            exit 1
-          fi
-          if ! grep -qi "Transfer-Encoding: *chunked" /tmp/stream_headers.txt; then
-            echo "FAIL: /stream response missing Transfer-Encoding: chunked"
-            cat /tmp/stream_headers.txt
-            exit 1
-          fi
-          if grep -qi "Content-Length" /tmp/stream_headers.txt; then
-            echo "FAIL: /stream response set Content-Length (chunked responses must not need one up front)"
-            cat /tmp/stream_headers.txt
-            exit 1
-          fi
-          empty_body="$(curl -s --max-time 3 http://127.0.0.1:8210/empty || true)"
-          if [ -n "$empty_body" ]; then
-            echo "FAIL: /empty (handler that never calls writeChunk) returned a non-empty body: '$empty_body'"
-            exit 1
-          fi
-          created_status="$(curl -s --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8210/created || true)"
-          if [ "$created_status" != "201" ]; then
-            echo "FAIL: /created (writeStatus(w, 201)) returned status '$created_status', expected 201"
-            exit 1
-          fi
-          # BlockingMiddleware (lyric-lang#5985): a streaming route's middleware
-          # must run and be able to reject the request before the streaming
-          # handler is ever invoked -- a 403 here (not a crash from
-          # NeverRunHandler's panic) proves streaming dispatch goes through
-          # router.middlewares.
-          blocked_status="$(curl -s --max-time 3 -o /tmp/blocked_body.txt -w '%{http_code}' http://127.0.0.1:8210/blocked || true)"
-          if [ "$blocked_status" != "403" ]; then
-            echo "FAIL: /blocked returned status '$blocked_status', expected 403 (BlockingMiddleware should reject before the streaming handler runs)"
-            cat /tmp/blocked_body.txt
-            exit 1
-          fi
-          if ! kill -0 "$st_pid" 2>/dev/null; then
-            echo "FAIL: streaming_tests server crashed handling /blocked (NeverRunHandler's panic ran -- middleware did not block it)"
-            tail -20 /tmp/streaming.run.log
-            exit 1
-          fi
-          kill "$st_pid" 2>/dev/null || true
-          wait "$st_pid" 2>/dev/null || true
-          echo "PASS"
-
+        run: bash scripts/ci/run-single-file-examples.sh
       # Test multi-package examples with `lyric test --manifest`.
       - name: Test multi-package examples
         if: steps.changes.outputs.has_code_changes == 'true'
@@ -599,161 +258,7 @@ jobs:
       - name: BuildInfo project version + --define (docs/60 §9.2, #5852)
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found; skipping BuildInfo project version test"
-            exit 1
-          fi
-          proj="$(mktemp -d)"
-          mkdir -p "$proj/src"
-          cat > "$proj/lyric.toml" <<'TOML'
-          [package]
-          name = "biverproj"
-          version = "4.5.6"
-
-          [project]
-          name = "biverproj"
-          output = "single"
-          output_assembly = "biverproj.dll"
-
-          [project.packages]
-          "biverproj" = "src/main.l"
-          TOML
-          cat > "$proj/src/main.l" <<'LYR'
-          package biverproj
-
-          import Std.Console
-          import Std.BuildInfo
-
-          @build_const("greeting")
-          val GREETING: String = "default-greeting"
-
-          func main(): Int {
-            val bi = buildInfo()
-            println("version=" + bi.version)
-            println("greeting=" + GREETING)
-            0
-          }
-          LYR
-          # (M1d) project build with NO --define: BuildInfo.version auto-injected
-          # from the manifest; @build_const keeps its in-source fallback.
-          echo "=== dotnet project build (manifest version=4.5.6, no --define) ==="
-          "$lyric_bin" build --manifest "$proj/lyric.toml"
-          out="$(dotnet "$proj/bin/biverproj.dll")"
-          echo "dotnet: $out"
-          echo "$out" | grep -qx "version=4.5.6"          || { echo "::error::dotnet project build did not auto-inject BuildInfo.version from the manifest"; exit 1; }
-          echo "$out" | grep -qx "greeting=default-greeting" || { echo "::error::@build_const fallback wrong on project build"; exit 1; }
-          echo "=== jvm project build (no --define) ==="
-          "$lyric_bin" build --manifest "$proj/lyric.toml" --target jvm -o "$proj/biverproj.jar"
-          outj="$(java -jar "$proj/biverproj.jar")"
-          echo "jvm: $outj"
-          echo "$outj" | grep -qx "version=4.5.6" || { echo "::error::jvm project build did not auto-inject BuildInfo.version from the manifest"; exit 1; }
-          # (phase C, #5852) project build WITH --define: user --define overrides
-          # the well-known manifest version, and substitutes the @build_const.
-          echo "=== dotnet project build WITH --define (override) ==="
-          "$lyric_bin" build --manifest "$proj/lyric.toml" --define version=9.9.9 --define greeting=hello-project
-          outd="$(dotnet "$proj/bin/biverproj.dll")"
-          echo "dotnet(--define): $outd"
-          echo "$outd" | grep -qx "version=9.9.9"        || { echo "::error::project --define version did not override the manifest well-known version"; exit 1; }
-          echo "$outd" | grep -qx "greeting=hello-project" || { echo "::error::project --define did not substitute the @build_const"; exit 1; }
-          echo "=== jvm project build WITH --define (override) ==="
-          "$lyric_bin" build --manifest "$proj/lyric.toml" --target jvm --define version=7.7.7 --define greeting=jvm-greet -o "$proj/biverproj.jar"
-          outjd="$(java -jar "$proj/biverproj.jar")"
-          echo "jvm(--define): $outjd"
-          echo "$outjd" | grep -qx "version=7.7.7"     || { echo "::error::jvm project --define version did not override the manifest version"; exit 1; }
-          echo "$outjd" | grep -qx "greeting=jvm-greet" || { echo "::error::jvm project --define did not substitute the @build_const"; exit 1; }
-          # (M1f, #5852) well-known `target` define auto-injected in pipeParseAndErase
-          # with NO --define: @build_const("target") resolves to the active backend
-          # name on each target, and an explicit --define target=… still overrides it.
-          # Single-file (the injection is not manifest-sourced, unlike `version`).
-          cat > "$proj/src/tgt.l" <<'LYR'
-          package tgtprobe
-
-          @build_const("target")
-          val TARGET: String = "unknown"
-
-          func main(): Int {
-            println("target=" + TARGET)
-            0
-          }
-          LYR
-          echo "=== dotnet single-file @build_const(\"target\") (no --define) ==="
-          "$lyric_bin" build "$proj/src/tgt.l" -o "$proj/tgt.dll"
-          outt="$(dotnet "$proj/tgt.dll")"
-          echo "dotnet: $outt"
-          echo "$outt" | grep -qx "target=dotnet" || { echo "::error::well-known target define not auto-injected on dotnet (#5852 M1f)"; exit 1; }
-          echo "=== jvm single-file @build_const(\"target\") (no --define) ==="
-          "$lyric_bin" build "$proj/src/tgt.l" --target jvm -o "$proj/tgt.jar"
-          outtj="$(java -jar "$proj/tgt.jar")"
-          echo "jvm: $outtj"
-          echo "$outtj" | grep -qx "target=jvm" || { echo "::error::well-known target define not auto-injected on jvm (#5852 M1f)"; exit 1; }
-          echo "=== dotnet --define target=custom (override) ==="
-          "$lyric_bin" build "$proj/src/tgt.l" --define target=custom -o "$proj/tgt2.dll"
-          outtc="$(dotnet "$proj/tgt2.dll")"
-          echo "dotnet(--define): $outtc"
-          echo "$outtc" | grep -qx "target=custom" || { echo "::error::explicit --define target did not override the well-known target (#5852 M1f)"; exit 1; }
-          # (M1h, #5852) well-known `build_profile` define: `debug` on a normal
-          # build (pipeParseAndErase fallback), overridable by --define. The
-          # `release`-on-a-real-`--release --aot`-build case needs clang/ILCompiler, so
-          # it is asserted in the dedicated `aot-smoke` job (which installs those
-          # prerequisites), not here in the `build` job.
-          cat > "$proj/src/prof.l" <<'LYR'
-          package profprobe
-
-          import Std.BuildInfo
-
-          func main(): Int {
-            println("profile=" + buildInfo().profile)
-            0
-          }
-          LYR
-          echo "=== dotnet normal build (expect profile=debug) ==="
-          "$lyric_bin" build "$proj/src/prof.l" -o "$proj/prof.dll"
-          outp="$(dotnet "$proj/prof.dll")"
-          echo "dotnet: $outp"
-          echo "$outp" | grep -qx "profile=debug" || { echo "::error::normal build did not auto-inject build_profile=debug (#5852 M1h)"; exit 1; }
-          echo "=== dotnet --define build_profile=release (override) ==="
-          "$lyric_bin" build "$proj/src/prof.l" --define build_profile=release -o "$proj/prof2.dll"
-          outpo="$(dotnet "$proj/prof2.dll")"
-          echo "dotnet(--define): $outpo"
-          echo "$outpo" | grep -qx "profile=release" || { echo "::error::--define build_profile did not override the debug fallback (#5852 M1h)"; exit 1; }
-          echo "BuildInfo project version + --define OK (dotnet + jvm: no-define 4.5.6; --define override 9.9.9/7.7.7 + @build_const; well-known target dotnet/jvm + override; build_profile debug/override)" >> "$GITHUB_STEP_SUMMARY"
-
-          # docs/63 band B0 (#6279): the profile axis is independent of the shape
-          # axis. Every other AOT assertion in this workflow pairs `--release
-          # --aot`, so nothing covered the headline unlock -- `--release` on the
-          # DEFAULT portable shape -- nor the clean break that a bare `--release`
-          # no longer produces a native binary. Both are asserted here, on the
-          # cheap managed path, with no ILC/clang toolchain needed.
-          echo "=== --release --shape portable (expect profile=release, portable DLL) ==="
-          "$lyric_bin" build "$proj/src/prof.l" --release --shape portable -o "$proj/prof_rel.dll"
-          outrel="$(dotnet "$proj/prof_rel.dll")"
-          echo "dotnet(--release portable): $outrel"
-          echo "$outrel" | grep -qx "profile=release" \
-            || { echo "::error::--release --shape portable did not report build_profile=release (docs/63 B0, #6279)"; exit 1; }
-
-          echo "=== bare --release no longer implies AOT (clean break) ==="
-          rm -f "$proj/src/prof_bare" "$proj/src/prof_bare.dll"
-          "$lyric_bin" build "$proj/src/prof.l" --release -o "$proj/prof_bare.dll"
-          # The artifact must be a managed assembly runnable via `dotnet`, NOT a
-          # native executable: that is precisely what the clean break changed.
-          outbare="$(dotnet "$proj/prof_bare.dll")"
-          echo "dotnet(bare --release): $outbare"
-          echo "$outbare" | grep -qx "profile=release" \
-            || { echo "::error::bare --release did not report build_profile=release (docs/63 B0, #6279)"; exit 1; }
-          file "$proj/prof_bare.dll" | grep -qiE "PE32|MS-DOS|COFF" \
-            || { echo "::error::bare --release did not produce a managed PE -- it may still be implying AOT (docs/63 B0 clean break, #6279)"; exit 1; }
-
-          echo "=== --debug --aot keeps the debug profile (#6267) ==="
-          "$lyric_bin" build "$proj/src/prof.l" --debug --shape portable -o "$proj/prof_dbg.dll"
-          outdbg="$(dotnet "$proj/prof_dbg.dll")"
-          echo "$outdbg" | grep -qx "profile=debug" \
-            || { echo "::error::explicit --debug did not report build_profile=debug (docs/63 B0)"; exit 1; }
-
-          echo "profile/shape axes OK (--release portable => release; bare --release => managed PE, not AOT; --debug => debug)" >> "$GITHUB_STEP_SUMMARY"
-
+        run: bash scripts/ci/buildinfo-project-version-define.sh
       # Prove proof-only examples.
       - name: Prove proof-only examples (with z3)
         if: steps.changes.outputs.has_code_changes == 'true'
@@ -1200,6 +705,11 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
         with:
           global-json-file: bootstrap/global.json
+      - name: Set up Java 21 (jvm_lambda_iface_bundling_self_test.l's last case runs `java -jar` on this dotnet-target job — #6671)
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '21'
       - name: Download build artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
@@ -1700,6 +1210,16 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/block_shadow_self_test.l
 
+      # Match-bound pattern type self-test (#5422, #5423 / D-progress-833).
+      # Runtime regression test for a `match`-arm pattern-bound variable's
+      # type flowing into a downstream generic call / native method dispatch
+      # (`Lyric.Mono.bindPatternEnvMono`/`rewriteMatchArms`).  Run via native
+      # `lyric test` (imports only `Std.*`), asserting every runtime value.
+      - name: Match-bound pattern type self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/match_bound_pattern_type_self_test.l
+
       # Nested-slice for-loop self-test (#6541).  Runtime regression test for
       # a `for`-in-`for` loop over a nested `slice[slice[T]]` element on the
       # JVM backend (the array-outer half is dotnet-identical byte-for-byte
@@ -1840,13 +1360,25 @@ jobs:
       # List-literal indexed-read self-test (#5620, MSIL).  An unannotated list
       # literal (`val xs = [9, 7]`) now builds a genuine `List<e>` when
       # homogeneous, so `xs[0]` recovers the element type instead of a boxed
-      # `object` that downstream `+`/comparison mis-read as garbage.  dotnet-only
-      # — the JVM backend has the same root cause in a separate path, tracked as
-      # a parity follow-up.  Imports only `Std.*`.
+      # `object` that downstream `+`/comparison mis-read as garbage.  dotnet
+      # half of the now-dual-target test; the JVM half (#5686 parity fix) runs
+      # in compiler-self-tests-jvm.  Imports only `Std.*`.
       - name: List-literal index self-test (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/list_literal_index_self_test.l
+
+      # Double-stringification fixed/scientific-notation boundary self-test
+      # (#5660 follow-up, review finding #6749 against PR #6631). Pins the
+      # exp=16/exp=17 threshold in `emitNormalizeDoubleString`
+      # (jvm/codegen/02_exprs.l) against real .NET output, at and one ULP
+      # either side of the boundary — the existing silent_miscompile_guard_jvm
+      # cases all sat well clear of it. dotnet half is the real .NET output;
+      # the JVM half (below) must match it exactly. Imports only `Std.*`.
+      - name: Double-stringification boundary self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/double_stringify_boundary_self_test.l
 
       # Extra barrier (batch 1a-split-2, #5859): the sub-batch below the
       # 1a-split barrier had grown to 13 concurrent steps — one below the
@@ -2227,150 +1759,7 @@ jobs:
       - name: FFI iface impl F0020–F0023 + generic-iface negative tests
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping F0020–F0023 negative tests"
-            exit 1
-          fi
-          bin_abs="$(pwd)/$lyric_bin"
-          work="$(mktemp -d)"
-          trap 'rm -rf "$work"' EXIT
-          run_fixture() {
-            local diag="$1" file="$2"
-            local rc=0
-            ( cd "$work" && "$bin_abs" build "$file" ) > "$work/build.out" 2>&1 || rc=$?
-            echo "--- $diag fixture build output (rc=$rc) ---"; cat "$work/build.out"
-            if [ "$rc" -eq 0 ]; then
-              echo "::error::$diag fixture compiled but expected failure"
-              exit 1
-            fi
-            grep -q "$diag" "$work/build.out" || {
-              echo "::error::$diag fixture failed but did not report $diag"; exit 1; }
-            echo "$diag negative test passed (rc=$rc)"
-          }
-          # F0020: impl block targets a non-interface (System.Math is a class).
-          cat > "$work/f0020_fixture.l" <<'LYR'
-          package F0020Fixture
-
-          extern type NotAnIface = "System.Math"
-
-          record R { tag: Int }
-
-          impl NotAnIface for R {
-          }
-
-          func main(): Int { 0 }
-          LYR
-          run_fixture "F0020" "f0020_fixture.l"
-          # F0021: impl is missing a required interface method (IDisposable.Dispose).
-          cat > "$work/f0021_fixture.l" <<'LYR'
-          package F0021Fixture
-
-          extern type IDisposable = "System.IDisposable"
-
-          record R { tag: Int }
-
-          impl IDisposable for R {
-          }
-
-          func main(): Int { 0 }
-          LYR
-          run_fixture "F0021" "f0021_fixture.l"
-          # F0022: parameter type mismatch (IComparable.CompareTo expects object,
-          # the impl declares Int).
-          cat > "$work/f0022_fixture.l" <<'LYR'
-          package F0022Fixture
-
-          extern type IComparable = "System.IComparable"
-
-          record R { tag: Int }
-
-          impl IComparable for R {
-            func CompareTo(other: in Int): Int { 0 }
-          }
-
-          func main(): Int { 0 }
-          LYR
-          run_fixture "F0022" "f0022_fixture.l"
-          # F0023: return type mismatch (IDisposable.Dispose returns void; impl
-          # declares Int).
-          cat > "$work/f0023_fixture.l" <<'LYR'
-          package F0023Fixture
-
-          extern type IDisposable = "System.IDisposable"
-
-          record R { tag: Int }
-
-          impl IDisposable for R {
-            func Dispose(): Int { 0 }
-          }
-
-          func main(): Int { 0 }
-          LYR
-          run_fixture "F0023" "f0023_fixture.l"
-          # F0022 on a generic iface: substitution catches a mismatched
-          # impl-method parameter type — `IEquatable[GenRec]` requires
-          # `Equals(GenRec)`, but the fixture declares `Equals(Int)`.  Before
-          # substitution landed (D105 §A follow-up), the F0021–F0023 pass
-          # bailed per-method on STVar shapes; this fixture pins the new
-          # substitution path.
-          cat > "$work/f0022_gen_fixture.l" <<'LYR'
-          package F0022GenFixture
-
-          extern type IEquatable[T] = "System.IEquatable`1"
-
-          record GenRec { tag: Int }
-
-          impl IEquatable[GenRec] for GenRec {
-            func Equals(other: in Int): Bool { false }
-          }
-
-          func main(): Int { 0 }
-          LYR
-          run_fixture "F0022" "f0022_gen_fixture.l"
-          # F0021 on a closed generic interface with a STGenericInst return type
-          # — `IEnumerable<T>.GetEnumerator(): IEnumerator<T>` is now
-          # representable (D105 §A nested-generic lift) so the empty impl
-          # surfaces F0021 (missing method) instead of F0024 (unrepresentable
-          # shape).  This pin guards both the lift (test would surface F0024
-          # if STGenericInst regressed) and the structural-validation pass
-          # (test would surface no diagnostic if F0021 silently passed
-          # through STGenericInst signatures).
-          cat > "$work/f0021_gen_fixture.l" <<'LYR'
-          package F0021GenFixture
-
-          extern type IEnumerable[T] = "System.Collections.Generic.IEnumerable`1"
-
-          record R { tag: Int }
-
-          impl IEnumerable[Int] for R {
-          }
-
-          func main(): Int { 0 }
-          LYR
-          run_fixture "F0021" "f0021_gen_fixture.l"
-          # F0024 — narrow typo guard.  Fires when the iface FQN doesn't
-          # resolve in any indexed reference-pack / restored-dep assembly,
-          # AND the metadata index is non-empty (the build is *not* SDK-less).
-          # SDK-less builds (no reference pack on disk) continue to silent-skip,
-          # matching the F0015 fallback convention.
-          cat > "$work/f0024_fixture.l" <<'LYR'
-          package F0024Fixture
-
-          extern type ITypo[T] = "System.IDoesNotExist`1"
-
-          record R { tag: Int }
-
-          impl ITypo[Int] for R {
-          }
-
-          func main(): Int { 0 }
-          LYR
-          run_fixture "F0024" "f0024_fixture.l"
-          echo "all F0020–F0024 negative tests passed"
-
+        run: bash scripts/ci/ffi-iface-impl-negative-tests.sh
       # Sub-batch barrier (#4841): the 36-step background:true group above
       # reproducibly corrupted output/status tracking for unrelated,
       # already-passing steps under this job's full peak concurrency — two
@@ -4365,6 +3754,89 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/iface_slice_arg_self_test.l
 
+      # List-literal indexed-read self-test, JVM leg (#5686 parity fix for
+      # MSIL's #5620): an unannotated homogeneous list literal (`val xs =
+      # [9, 7]`) now records its peeked element type (`inferHomogeneousListElemTypeJvm`,
+      # 02_exprs.l) against the binding, so `indexedElemTypeOverride` narrows
+      # `xs[i]` from erased `Object` to the real element type instead of
+      # panicking on a following relational/arithmetic use.  The runtime
+      # representation stays a plain `ArrayList` (JVM has no reified
+      # generics); only the compiler's own type tracking changed.  dotnet
+      # half (the original #5620 fix) runs in compiler-self-tests-dotnet-a.
+      - name: List-literal index self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/list_literal_index_self_test.l
+
+      # Double-stringification fixed/scientific-notation boundary self-test,
+      # JVM leg (#5660 follow-up, review finding #6749 against PR #6631):
+      # asserts `emitNormalizeDoubleString`'s exp=16/exp=17 threshold against
+      # the SAME strings the dotnet leg (compiler-self-tests-dotnet-a) gets
+      # from real .NET `Double.ToString()`, at and one ULP either side of the
+      # boundary. Imports only `Std.*`.
+      - name: Double-stringification boundary self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/double_stringify_boundary_self_test.l
+
+      # Distinct/range-subtype static-factory self-test on JVM (#5956): the
+      # JVM backend now emits the same `Type.from`/`Type.tryFrom` construction
+      # API MSIL synthesises (`Jvm.Lowering.lowerDistinctType`), so this file
+      # runs unmodified on both targets — the dotnet leg (load-bearing per
+      # its own header) runs in the compiler-self-tests job above.
+      - name: Range-subtype self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/range_subtype_self_test.l
+
+      # `UInt`/`ULong`-backed range-subtype self-test — JVM-ONLY (#6661):
+      # `UInt`/`ULong` have no MSIL representation at all, so this file (unlike
+      # range_subtype_self_test.l above) is never run on --target dotnet.
+      - name: Unsigned range-subtype self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/range_subtype_unsigned_jvm_self_test.l
+
+      # `UInt`/`ULong` generic-container erasure self-test — JVM-ONLY (#6695):
+      # `isPrimitiveTypeKeyword` (`Jvm.Codegen`) had no `UInt`/`ULong` case, so
+      # `List[UInt]`/`Option[UInt]` (and the `ULong` counterparts) resolved a
+      # phantom same-package class through `eagerlyResolveGenericArg` instead
+      # of the real erased `JInt`/`JLong` representation. `UInt`/`ULong` have
+      # no MSIL representation at all, so this file is JVM-only.
+      - name: UInt/ULong generic-container erasure self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/generic_uint_erasure_jvm_self_test.l
+
+      # Subscript-assignment self-test (#1707, #6169, #6741) — dual-target,
+      # never wired into CI before now: covers map/list/slice indexed read,
+      # write, and compound-assign, including the #6741 plain-`=` numeric-
+      # widening fix.
+      - name: Subscript-assignment self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/subscript_assign_jvm_self_test.l
+
+      - name: Subscript-assignment self-test on dotnet (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh lyric-compiler/jvm/subscript_assign_jvm_self_test.l
+
+      # `UInt`/`ULong` unsigned comparison/division/toString self-test
+      # (#6748) — JVM-ONLY: `UInt`/`ULong` have no MSIL representation.
+      - name: Unsigned UInt/ULong operations self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/unsigned_int_ops_jvm_self_test.l
+
+      # Unannotated U16/U32/U64 list-literal element-type inference
+      # self-test (#6741 SUGGESTION) — JVM-ONLY: the equivalent MSIL path
+      # has a separate pre-existing bug tracked as #6761.
+      - name: U16/U32/U64 list-literal element inference self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/list_literal_uint_elem_jvm_self_test.l
+
       # Await-hoist self-test on JVM (#5606/#5628, #5630) — JVM already
       # compiled every hoist shape correctly before the rewrite (the rewrite
       # is semantics-preserving there), so this pins that the shared rewrite
@@ -4491,6 +3963,14 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/block_shadow_self_test.l
+
+      # Match-bound pattern type self-test on JVM (#5422, #5423 /
+      # D-progress-833) — the JVM half of the dotnet-job step of the same
+      # name.
+      - name: Match-bound pattern type self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/match_bound_pattern_type_self_test.l
 
       # Nested-slice for-loop self-test on JVM (#6541) — the load-bearing
       # target for this fix: a `for`-in-`for` loop over a nested
@@ -5036,18 +4516,67 @@ jobs:
       - name: Auto-FFI metadata self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/auto_ffi_jvm_self_test.l
+        # #6662's instance-method/constructor overload-scoring tests resolve
+        # a small fixture class through auto-FFI at compile time; build its
+        # jar and put it on LYRIC_FFI_JARS before compiling the test file.
+        run: |
+          set -euo pipefail
+          fixture_jar="$(bash scripts/ci/build-auto-ffi-fixture.sh)"
+          LYRIC_FFI_JARS="$fixture_jar" bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/auto_ffi_jvm_self_test.l
+      # Generic-declaring-type @externTarget member self-test — the JVM analog
+      # of generic_extern_self_test.l (#3432).  Unlike MSIL's closed-GENERICINST
+      # emitGenericExternMember, JVM erasure means the generic extern-type alias
+      # resolves to its raw host class directly (#5458); this test's real load-
+      # bearing regression coverage is collectMonoSpecializedSigs now threading
+      # holder-array param types + paramModes into the cross-package call
+      # registry, so a monomorphized generic function's `out`/`inout` parameter
+      # (`cdTryGetValue[K, V]`, mirroring Web.Kernel.Jvm's rate limiter) resolves
+      # against its real holder-typed descriptor instead of NoSuchMethodError.
+      - name: Generic-declaring-type extern member self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/generic_extern_jvm_self_test.l
+      # JVM twin of the dotnet-only slice[T].append numeric-widening
+      # regression (#5254 MSIL, #5257 JVM) that runs in
+      # compiler-self-tests-dotnet-a — every `slice[T]` erases uniformly to
+      # `Object[]` on the JVM, so an M6-numeric-widened `.append` argument
+      # used to box against the erased Object[] target (Integer) instead of
+      # the receiver's declared element type (Long).  Imports only `Std.*`.
+      - name: slice[T].append numeric-widening self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/slice_append_widening_self_test.l
       # Negative test: an ambiguous primitive-array overload must fail loud,
       # not silently guess.  A Lyric slice[T] argument erases to Object[]
-      # before the JVM auto-FFI resolver ever sees it, so java.lang.String's
-      # own (char[]) vs (byte[]) constructors tie at equal score for a
-      # slice[Char] argument -- exactly the case checkPrimitiveArraySliceAmbiguity
-      # (jvm/auto_ffi.l) exists to reject at compile time rather than resolve
-      # to whichever overload happens to appear first in the parsed class
-      # metadata.  This is a compile-time panic inside the self-hosted
-      # compiler process itself, not a runtime Bug the compiled program could
-      # catch, so it cannot be expressed as a @test_module assertion --
-      # asserted here as a `lyric build` failure instead.
+      # before the JVM auto-FFI resolver ever sees it -- but since #6662
+      # (2026-08-27), `ffiScoreDescFor` recovers the argument's TRUE declared
+      # Lyric element type (via `indexedElemTypeOverride`, the same
+      # bare-name/field/param declared-type registry `EIndex` narrowing
+      # already consults) for any argument the compiler can actually TRACK
+      # the declared type of -- a bare local/param/field typed `slice[Char]`
+      # now scores ONLY against `String(char[])` (`String(byte[])` no longer
+      # even ties, since the recovered score descriptor is the concrete "[C",
+      # not the erased "[Ljava/lang/Object;" checkPrimitiveArraySliceAmbiguity
+      # keys off of), so that former repro is no longer ambiguous at all --
+      # verified by javap'ing the emitted class: it invokes
+      # `String.<init>:([C)V`, never `([B)V`.  The genuine remaining gap is
+      # an argument whose declared element type the compiler CANNOT recover
+      # this way: an `if`/`else` expression's result is not one of the
+      # tracked shapes (`scrutineeGenericArgs` has no `EIf` arm, unlike its
+      # `ECall`/`EList`/`EMember`/`EPath` arms), so `chosen`'s element type is
+      # lost even though both branches are ordinary fully-materialized
+      # `slice[Char]` locals (verified by javap + a real JVM run against an
+      # unambiguous single-overload target: the `if`/`else` result is a
+      # genuine `Object[]` of boxed `Character`s at runtime, not a
+      # verifier-rejecting half-built value) -- `String(char[])` and
+      # `String(byte[])` genuinely tie again here, exactly the case
+      # checkPrimitiveArraySliceAmbiguity (jvm/auto_ffi.l) exists to reject at
+      # compile time rather than resolve to whichever overload happens to
+      # appear first in the parsed class metadata.  This is a compile-time
+      # panic inside the self-hosted compiler process itself, not a runtime
+      # Bug the compiled program could catch, so it cannot be expressed as a
+      # @test_module assertion -- asserted here as a `lyric build` failure
+      # instead.
       - name: Ambiguous primitive-array overload fails loud on JVM (native lyric build --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
@@ -5069,8 +4598,11 @@ jobs:
           import Std.Core
           extern type JString = "java.lang.String"
           func main(): Int {
-            val letters: slice[Char] = ['h', 'i']
-            val s = JString.new(letters)
+            val a: slice[Char] = ['h', 'i']
+            val b: slice[Char] = ['b', 'y']
+            val cond = true
+            val chosen = if cond { a } else { b }
+            val s = JString.new(chosen)
             println(s.toString())
             0
           }
@@ -5081,7 +4613,62 @@ jobs:
           if ! grep -qi "ambiguous overload" "$dir/ambig.out"; then
             echo "::error::ambiguous slice[Char] overload failed without the expected diagnostic"; cat "$dir/ambig.out"; exit 1
           fi
-          echo "OK: ambiguous primitive-array overload (String(char[]) vs String(byte[])) for a slice[Char] argument fails loud."
+          echo "OK: ambiguous primitive-array overload (String(char[]) vs String(byte[])) for an if/else-sourced slice[Char] argument fails loud."
+      # Negative test (#6745): a GENUINE primitive-array argument (a real
+      # `int[]`, not a `slice[T]` narrowed for scoring purposes only) must
+      # never resolve against an `Object[]`-only overload.  `Arrays.copyOf`'s
+      # actual JDK-metadata-resolved return type is a real `int[]` -- unlike
+      # a `slice[T]` local, it is never re-erased back to `Object[]` -- so
+      # `grown` below carries the exact shape `scoreParamMatch`'s
+      # reverse-compatibility arm (#6696) used to accept unconditionally.
+      # `Arrays.asList` has exactly one overload, `<T> List<T> asList(T...
+      # a)`, erased to `(Object[])List` -- before the #6745 fix this silently
+      # "matched" with no coercion emitted (`emitFfiCoerce` has no rule to
+      # box a real primitive array element-by-element into a fresh
+      # `Object[]`), corrupting the emitted bytecode with a real `int[]`
+      # reference where `Object[]` is expected: VerifyError at class load.
+      # After the fix, `argIsNarrowedSliceErasure` correctly gates the arm
+      # off for this genuinely-real argument, so no overload scores >= 0 and
+      # the call fails loud at compile time instead -- same pattern as the
+      # ambiguous-overload negative test above (a compile-time panic inside
+      # the compiler process itself, not expressible as a @test_module
+      # runtime assertion).
+      - name: Genuine primitive-array argument rejected for an Object[]-only overload on JVM (native lyric build --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping genuine-primitive-array JVM negative test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping genuine-primitive-array JVM negative test"
+            exit 1
+          fi
+          dir="$(mktemp -d)"
+          neg="$dir/genuine_prim_array.l"
+          cat > "$neg" <<'LYRIC'
+          package GenuinePrimArray
+          import Std.Core
+          import Std.Collections
+          extern type JArrays = "java.util.Arrays"
+          func main(): Int {
+            val src: slice[Int] = [1, 2, 3]
+            val grown = JArrays.copyOf(src, 5)
+            val xs = JArrays.asList(grown)
+            println("size=" + xs.size().toString())
+            0
+          }
+          LYRIC
+          if "$lyric_bin" build --target jvm "$neg" -o "$dir/genuine_prim_array.jar" > "$dir/genuine_prim_array.out" 2>&1; then
+            echo "::error::a genuine int[] argument (Arrays.copyOf's real return type) compiled against Arrays.asList's Object[]-only overload with no coercion — scoreParamMatch's reverse-compatibility arm fired for a non-narrowed argument"; cat "$dir/genuine_prim_array.out"; exit 1
+          fi
+          if ! grep -qi "no matching static overload" "$dir/genuine_prim_array.out"; then
+            echo "::error::genuine int[] argument against an Object[]-only overload failed without the expected diagnostic"; cat "$dir/genuine_prim_array.out"; exit 1
+          fi
+          echo "OK: a genuine primitive-array argument correctly fails loud against an Object[]-only overload instead of silently miscompiling."
       # Hash self-test on JVM — proves the target-aware kernel source loader
       # (docs/44 J6 M-10) loads `lyric-stdlib/std/_kernel_jvm/hash_host.l` and
       # the JVM SHA-512 host (M-9, java.security.MessageDigest + HexFormat via
@@ -5089,7 +4676,7 @@ jobs:
       # the JVM kernel on this target; the test asserts three NIST SHA-512
       # vectors under `java`.  First native JVM self-test that depends on a
       # `_kernel_jvm`-only module.  Imports only `Std.*`.
-      # Concurrency cap (JVM): this job ran all 55 background steps at once —
+      # Concurrency cap (JVM): this job ran all 56 background steps at once —
       # each compiles in-process via Jvm.Bridge AND spawns a `java` process, the
       # heaviest self-test shape — which is well past the ~18 peak documented as
       # safe on the dotnet self-test jobs. Three barriers (here and two below)
@@ -5340,6 +4927,20 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/closure_jvm_self_test.l
+      # Closure-correctness self-test on the JVM target (#5388/#5251). The
+      # dotnet leg (compiler-self-tests-dotnet-*) already ran this module;
+      # this is the JVM half the issues note was missing from CI. Covers the
+      # multi-level nested-capture regressions plus, critically,
+      # `assertPanics`/`assertPanicsWith` invoked with a lambda literal —
+      # `Std.Testing` and this test file are always different packages, so
+      # this is exactly the cross-package closure-invocation shape that used
+      # to `checkcast` against the WRONG package's `Lyric$Lambda` interface
+      # and throw `ClassCastException`, corrupting the caught `Bug.message`
+      # into the exception's own text instead of the real panic message.
+      - name: Closure-correctness self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/closure_correctness_self_test.l
       # Zero-overhead closure self-test RUN on JVM (band J4, #4798/#2667).
       # The no-box gates above only DISASSEMBLE this module; this step runs
       # its 18 cases under java so the two-slot (Long/Double) capture paths —
@@ -5365,6 +4966,26 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/record_method_jvm_self_test.l
+
+      # Cross-package generic records/unions self-test on JVM (#3094, the JVM
+      # counterpart of #1496/D097's MSIL fix — see `Lyric.CrossPackageGenericsSelfTest`).
+      # Builds a PRODUCER JAR (generic record / union) in-process via
+      # `Lyric.Emitter.emitProject` with `target = Jvm`, then compiles a
+      # CONSUMER that imports the producer as a restored dep
+      # (`EmitProjectRequest.restoredDllPaths`) and runs it under `java -jar`.
+      # Pins the new `Jvm.Bridge` restored-dependency pipeline: the producer
+      # JAR embeds its own `Lyric.Contract.<Pkg>` JSON as a ZIP entry,
+      # `Lyric.RestoredPackages.loadRestoredPackageJvm` reads it back, and the consumer's cross-package
+      # registries (erased `Object` fields — no MSIL-style arity-suffixed
+      # TypeRef needed) resolve construction/field-read/match against it.
+      # The outer test program itself runs on the default `--target dotnet`
+      # (like `jvm_cross_package_collision_self_test.l`); it builds and runs
+      # its own nested JVM programs via `java -jar`.  Uses `Lyric.Emitter`, so
+      # `LYRIC_LOAD_COMPILER=1` is needed.
+      - name: Cross-package generics self-test on JVM (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/jvm/cross_package_generics_jvm_self_test.l
 
       # Std.Http TLS client configuration test coverage on JVM (docs/61
       # §3.2 + §4, D128; phase 1.2, #5877) — the JVM half of the
@@ -5917,83 +5538,7 @@ jobs:
       - name: lyric-web Undertow smoke on JVM (tests/jvm_server_smoke.l)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping lyric-web JVM smoke"
-            exit 1
-          fi
-          make maven-resolver
-          export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
-          "$lyric_bin" restore --manifest "$PWD/lyric-web/lyric.toml"
-          (cd lyric-web && "../$lyric_bin" build --target jvm tests/jvm_server_smoke.l -o /tmp/jvm_server_smoke.jar)
-          java -jar /tmp/jvm_server_smoke.jar > /tmp/jvm_server_smoke.run.log 2>&1 &
-          srv_pid=$!
-          up=0
-          for _ in $(seq 1 40); do
-            if curl -s --max-time 1 -o /dev/null http://localhost:8099/hello/Ada; then up=1; break; fi
-            if ! kill -0 "$srv_pid" 2>/dev/null; then break; fi
-            sleep 0.5
-          done
-          if [ "$up" != 1 ]; then
-            echo "::error::jvm_server_smoke server did not come up"
-            tail -40 /tmp/jvm_server_smoke.run.log
-            exit 1
-          fi
-          hello="$(curl -s --max-time 3 http://localhost:8099/hello/Ada)"
-          header="$(curl -s --max-time 3 -H 'X-Test: abc' http://localhost:8099/echo-header)"
-          body="$(curl -s --max-time 3 -X POST --data 'ping' http://localhost:8099/echo-body)"
-          code404="$(curl -s --max-time 3 -o /dev/null -w '%{http_code}' http://localhost:8099/nope)"
-          # TLS phase 2.2/2.3 (#5881/#6017): before the plaintext listener,
-          # main runs three in-process self-checks and logs a single
-          # PASS/FAIL line each:
-          #   MTLS-MISCONFIG-SELFCHECK — Web.serveTls with
-          #     requireClientCert=true and NO clientCa must return a typed
-          #     ServerTlsUnsupported (a genuine misconfiguration — no CA to
-          #     pin trust to), never a crash or a silent plaintext-auth
-          #     listener (#6040).
-          #   HTTPS-H2-SELFCHECK — a TLS-terminated Undertow listener
-          #     (Web.serveTls, ENABLE_HTTP2) on :8100 driven by an in-process
-          #     Std.Http client that trusts the fixture cert, asserting 200 AND
-          #     an h2-negotiated connection (HttpResponse.negotiatedVersion). The
-          #     client retries in a BOUNDED poll loop until the listener binds
-          #     (was a fixed sleep that flaked under CI jitter, #6028).
-          #   MTLS-ACCEPT-SELFCHECK / MTLS-REJECT-SELFCHECK — a REAL mTLS
-          #     listener on :8102 (clientCa + requireClientCert=true, the
-          #     client-CA TrustManager + XNIO SSL_CLIENT_AUTH_MODE wiring
-          #     from #6017): a client presenting a cert signed by the
-          #     configured CA must connect and get a 200 (ACCEPT), and a
-          #     client presenting an unrelated self-signed cert must fail
-          #     the TLS handshake (REJECT) — proving mTLS at the real TLS
-          #     layer, not just that the config is accepted at the API
-          #     surface.
-          # All three self-checks run before the plaintext :8099 listener
-          # this loop waited on, so the lines are already in the log. An
-          # independent curl --http2 cross-checks h2 against the real HTTPS
-          # listener.
-          h2selfcheck="$(grep -o 'HTTPS-H2-SELFCHECK: PASS.*' /tmp/jvm_server_smoke.run.log | head -1)"
-          mtlsmisconfigselfcheck="$(grep -o 'MTLS-MISCONFIG-SELFCHECK: PASS.*' /tmp/jvm_server_smoke.run.log | head -1)"
-          mtlsacceptselfcheck="$(grep -o 'MTLS-ACCEPT-SELFCHECK: PASS.*' /tmp/jvm_server_smoke.run.log | head -1)"
-          mtlsrejectselfcheck="$(grep -o 'MTLS-REJECT-SELFCHECK: PASS.*' /tmp/jvm_server_smoke.run.log | head -1)"
-          curlh2="$(curl -sk --http2 --max-time 4 -o /dev/null -w '%{http_version}:%{http_code}' https://127.0.0.1:8100/hello/Ada || echo 'curl-failed')"
-          kill "$srv_pid" 2>/dev/null || true
-          wait "$srv_pid" 2>/dev/null || true
-          fail=0
-          [ "$hello" = "Hello, Ada!" ] || { echo "::error::hello endpoint returned '$hello'"; fail=1; }
-          [ "$header" = '{"xTest":"abc"}' ] || { echo "::error::header endpoint returned '$header'"; fail=1; }
-          [ "$body" = "ping" ] || { echo "::error::body endpoint returned '$body'"; fail=1; }
-          [ "$code404" = "404" ] || { echo "::error::unmatched route returned HTTP $code404, expected 404"; fail=1; }
-          [ -n "$h2selfcheck" ] || { echo "::error::HTTPS/h2 in-process self-check did not report PASS (Web.serveTls + negotiatedVersion)"; fail=1; }
-          [ -n "$mtlsmisconfigselfcheck" ] || { echo "::error::mTLS-misconfig self-check did not report PASS (Web.serveTls requireClientCert with no clientCa -> typed ServerTlsUnsupported)"; fail=1; }
-          [ -n "$mtlsacceptselfcheck" ] || { echo "::error::mTLS-accept self-check did not report PASS (trusted client cert should connect)"; fail=1; }
-          [ -n "$mtlsrejectselfcheck" ] || { echo "::error::mTLS-reject self-check did not report PASS (untrusted client cert should be rejected at the TLS layer)"; fail=1; }
-          [ "$curlh2" = "2:200" ] || { echo "::error::curl --http2 against the TLS listener returned '$curlh2', expected 2:200"; fail=1; }
-          if [ "$fail" != 0 ]; then
-            tail -40 /tmp/jvm_server_smoke.run.log
-            exit 1
-          fi
-          echo "lyric-web Undertow JVM smoke passed (4/4 plaintext endpoints + HTTPS/h2 serveTls: $h2selfcheck; mTLS-misconfig: $mtlsmisconfigselfcheck; mTLS-accept: $mtlsacceptselfcheck; mTLS-reject: $mtlsrejectselfcheck; curl --http2 $curlh2)" >> "$GITHUB_STEP_SUMMARY"
+        run: bash scripts/ci/lyric-web-undertow-jvm-smoke.sh
       # Map-iteration self-test on JVM (#3676, #3229) — pins the completed
       # `_kernel_jvm/collections_host.l` kernel (dictGetKeys/dictGetValues
       # views, pure-Lyric tryGetValue) AND the post-mono signature
@@ -6195,6 +5740,53 @@ jobs:
       - name: JVM path-dependency self-test (native lyric test)
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_path_dependency_self_test.l
+
+      # JVM bundle-wide registry rollback + reachability self-tests (#6766,
+      # #6767, review findings on #6631) — #6783 flagged neither was actually
+      # wired into CI despite their own headers claiming coverage.
+      #
+      # `if: always()` on these three (and the auto-FFI bridge step below):
+      # an earlier unrelated background-batch step in this same job can fail
+      # (tracked #6712) and GitHub Actions skips every subsequent step by
+      # default with no `if:` guard — silently preventing these from ever
+      # running at all, defeating the point of wiring them in. See #6788.
+      - name: JVM bundle-leak reachability self-test (native lyric test)
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_bundle_leak_reachability_self_test.l
+
+      - name: JVM registry-rollback self-test (native lyric test)
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_registry_rollback_self_test.l
+
+      # JVM auto-FFI bridge self-test (#6565, #6765, #6768) — was only
+      # reachable via the local-only `make test-emitter` target, which CI
+      # never invokes (#6783).
+      #
+      # Test 12 (the `lyric-web --manifest --target jvm` acceptance case)
+      # needs lyric-web's Maven deps restored first (the Undertow classpath
+      # its JVM auto-FFI resolution reads from
+      # `lyric-web/target/restore/jvm-classpath.txt`). The "lyric-web
+      # Undertow smoke on JVM" step above also restores this, but it runs
+      # `background: true` with no ordering guarantee relative to this
+      # (non-background) step — the race lost on the first real CI run
+      # after this step landed, failing test 12 with "class
+      # 'io.undertow.util.HttpString' not found" (#6790). Restoring here
+      # too makes this step self-contained instead of depending on timing
+      # against an unrelated background job; `lyric restore` is idempotent
+      # so re-running it after (or concurrently with) the smoke step's own
+      # restore is harmless.
+      - name: JVM auto-FFI bridge self-test (native lyric test)
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          make maven-resolver
+          export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          "$lyric_bin" restore --manifest "$PWD/lyric-web/lyric.toml"
+          bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_auto_ffi_bridge_self_test.l
 
       # Compiled-bundle stdlib-source fallback self-test (#4994, the JVM
       # counterpart of #4980) — exercises the WRITER half (`Jvm.Bridge` now
@@ -6918,7 +6510,7 @@ jobs:
       # no other JVM step, so it needs its own setup-java (#6585 — JVM-target
       # class files require 21, see "class files target major version 65"
       # elsewhere in this workflow).
-      - name: Set up Java 21 (for the JVM suite below)
+      - name: Set up Java 21 (for the JVM suites below)
         uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c  # v6.0.0
         with:
           distribution: temurin
@@ -6933,6 +6525,30 @@ jobs:
             exit 1
           fi
           "$lyric_bin" run --target jvm lyric-stdlib/tests/collections_persistent_tests.l
+
+      # Std.RegexSafe cross-package union-case/function collision on JVM
+      # (#5976): `regex_safe_tests.l` imports both `Std.Regex as Re` and
+      # `Std.RegexSafe as Rx`, which each declare a same-simple-name
+      # `RegexError` union and a same-named `errorMessage` function — the
+      # literal repro from #5976 (a `ClassCastException` constructing/
+      # dispatching the wrong package's case/function) — plus
+      # `Std.RegexSafe.tryCompile`'s `Result[Std.RegexHost.Regex, RegexError]`
+      # return, whose `extern type Regex` is only reachable transitively
+      # (`Std.RegexHost` is never imported by this file directly). Only
+      # wired for `dotnet` above (D-progress-670); this is the JVM
+      # counterpart the issue's acceptance criteria calls for. Not folded
+      # into the dotnet loop above because it is the only suite in that
+      # list that needs `--target jvm`. Shares the Java 21 setup step above.
+      - name: Std.RegexSafe cross-package collision on JVM (regex_safe_tests.l, #5976)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping regex_safe_tests JVM run"
+            exit 1
+          fi
+          "$lyric_bin" run --target jvm lyric-stdlib/tests/regex_safe_tests.l
 
       # Std.Http async client surface (#5564): interface dispatch through
       # defaultClient() and the free getAsync/sendAsync functions.  Uses

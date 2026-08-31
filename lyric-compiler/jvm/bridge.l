@@ -27,6 +27,8 @@ import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.Mono
 import Lyric.Derives
 import Lyric.Pipeline
+import Lyric.ContractMeta as Meta
+import Lyric.RestoredPackages
 import Jvm.Kernel
 import Jvm.Classfile
 import Jvm.Lowering
@@ -508,31 +510,46 @@ func externSeedForFile(
   }
   var pi = 0
   while pi < extPkgNames.count {
-    if wanted.containsKey(extPkgNames[pi]) {
-      for k in mapKeys(extPkgMaps[pi]) {
-        match mapGet(extPkgMaps[pi], k) {
-          case Some(v) -> {
+    val isWanted = wanted.containsKey(extPkgNames[pi])
+    for k in mapKeys(extPkgMaps[pi]) {
+      match mapGet(extPkgMaps[pi], k) {
+        case Some(v) -> {
+          // Bare short-name key: only from packages `file` DIRECTLY imports
+          // (own-package/import shadowing stays scoped to what `file` can
+          // plausibly mean by an unqualified name — `ownAwareExternTypes`
+          // (06_items.l) layers the caller's own colliding local type over
+          // this, #5976).
+          if isWanted {
             if not seed.containsKey(k) {
               seed.add(k, v)
             }
-            // ALSO seed a package-qualified key (`<owningPkgDotted>.<shortName>`)
-            // alongside the bare short-name key above.  `ownAwareExternTypes`
-            // (06_items.l) may later shadow the BARE key with the caller's own
-            // colliding local type (#5976 — correct for an unqualified same-file
-            // reference), but a multi-segment `TRef`/`EPath` — the flattened
-            // form `Lyric.AliasRewriter` produces for `import X as Y` + `Y.Type`
-            // — names its owning package explicitly and can never legitimately
-            // mean a local type.  The qualified key is never touched by that
-            // override (own-declared short names carry no "."), so
-            // `typeExprToJvmExtern`/`lowerMethodCall` can resolve a qualified
-            // reference through it directly, bypassing the collision (#6338).
-            val qualKey = extPkgNames[pi] + "." + k
-            if not seed.containsKey(qualKey) {
-              seed.add(qualKey, v)
-            }
           }
-          case None -> ()
+          // Package-qualified key (`<owningPkgDotted>.<shortName>`) is seeded
+          // BUNDLE-WIDE, regardless of `isWanted`: a multi-segment `TRef`/
+          // `EPath` — the flattened form `Lyric.AliasRewriter` produces for
+          // `import X as Y` + `Y.Type`, or the shape `eagerlyResolveGenericArg`
+          // leaves untouched for a `retGenericArgs` entry whose head already
+          // spells out its owning package — names its owning package
+          // explicitly and can never legitimately mean a local type, so
+          // scoping it to `file`'s own direct imports serves no shadowing
+          // purpose and only creates blind spots. Without this, an extern
+          // type reachable ONLY via an intermediate package's re-exported
+          // function signature (`Std.RegexSafe.tryCompile(): Result[
+          // Std.RegexHost.Regex, RegexError]`, consumed by a file that
+          // imports `Std.RegexSafe` but never `Std.RegexHost` directly)
+          // resolves through neither the bare key (not wanted) nor the
+          // qualified key (also gated on wanted) at the match-bind site
+          // (`resolveConcreteTypeExpr`/`typeExprToJvmExtern`), falling back
+          // to "user type in my own package" — `NoClassDefFoundError` at
+          // class-load (regex_safe_tests.l JVM, #5976 follow-up). Mirrors
+          // `ctx.ctors`'s existing bundle-wide qualified-key registry for
+          // plain declared types; extern types had no equivalent fallback.
+          val qualKey = extPkgNames[pi] + "." + k
+          if not seed.containsKey(qualKey) {
+            seed.add(qualKey, v)
+          }
         }
+        case None -> ()
       }
     }
     pi = pi + 1
@@ -588,6 +605,54 @@ func importAwareRegistry(file: in SourceFile, registry: in Map[String, JvmFuncSi
   overlay
 }
 
+// True when `acc` already carries a `BuiltClass` named `name` — used to
+// deduplicate the shared cross-package `Lyric$Lambda` interface (see below).
+func builtClassNameExists(acc: in List[BuiltClass], name: in String): Bool {
+  var i = 0
+  while i < acc.count {
+    if acc[i].binaryName == name {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Snapshot the keys currently in `m`, as a `Map[String, Bool]` set — pairs
+// with `rollbackNewKeys` below to undo whatever a package's signature
+// registration contributes to a bundle-wide registry (`registry` / `caseReg`
+// / `ctorReg`) when its subsequent codegen panics and is J003-skipped
+// (#6766).
+func snapshotKeySet[V](m: in Map[String, V]): Map[String, Bool] {
+  val keys: Map[String, Bool] = newMap()
+  for k in mapKeys(m) {
+    keys.add(k, true)
+  }
+  keys
+}
+
+// Remove every key from `m` that is absent from `before` (a `snapshotKeySet`
+// taken earlier) — i.e. undo every addition made to `m` since the snapshot.
+// Used to roll back the bundle-wide registry/caseReg/ctorReg entries a
+// package's signature registration contributed when its codegen
+// subsequently panics and the package is skipped as unreached (J003):
+// without this, the entries survive and a LATER bundled package's
+// `importAwareRegistry` lookup can still resolve a bare call into a class
+// that was never written to the JAR, producing a runtime
+// `NoClassDefFoundError`/`NoSuchMethodError` on an otherwise-successful
+// build (#6766).  Every one of `collectAspectWovenSigs` /
+// `collectBModeWovenSigs` / `collectMonoSpecializedSigs` /
+// `collectFileCasesExtern` / `collectFileCtors` is first-wins (guarded by
+// `into.containsKey`), so a key present in `before` was never overwritten by
+// this package's registration and is safe to leave untouched.
+func rollbackNewKeys[V](m: in Map[String, V], before: in Map[String, Bool]): Unit {
+  for k in mapKeys(m) {
+    if not before.containsKey(k) {
+      m.remove(k)
+    }
+  }
+}
+
 // Codegen one (already middle-ended) file against `registry` and append its
 // class files to `out`.  Uses an isolated constant pool per package.
 func codegenPackageInto(
@@ -614,10 +679,23 @@ func codegenPackageInto(
   )
   val pool = poolNew()
   val classFiles = lowerPackage(pkg, pool)
+  // The shared `Lyric/Lyric$Lambda` functional interface (#5388/#5251,
+  // `Jvm.Codegen.lambdaIfaceName`) is the SAME binary name for every package
+  // in the bundle by design — cross-package closure invocation needs one
+  // common interface to `checkcast`/`invokeinterface` against. Each
+  // package's own codegen still decides independently whether it needs the
+  // interface (`fileNeedsLambdaIface`/`closureAcc`), so several packages in
+  // one bundle legitimately try to emit the identical class; keep only the
+  // first copy so the JAR never carries duplicate entries for it.
+  val sharedLambdaIface = lambdaIfaceName()
   var j = 0
   while j < classFiles.count {
     val cf = classFiles[j]
-    acc.add(BuiltClass(binaryName = cf.thisClass, bytes = serializeClassWithPool(cf, pool)))
+    if cf.thisClass == sharedLambdaIface and builtClassNameExists(acc, cf.thisClass) {
+      ()
+    } else {
+      acc.add(BuiltClass(binaryName = cf.thisClass, bytes = serializeClassWithPool(cf, pool)))
+    }
     j = j + 1
   }
 }
@@ -942,7 +1020,12 @@ func collectDeriveFreeSigs(
             closureRetTy = None,
             recordRetClass = None,
             // Derive-synthesized free functions never return `Self`.
-            retIsSelf = false
+            retIsSelf = false,
+            // #6754 (finding 1.2a): computed from the real declared return —
+            // registered under the qualified key only, so unreachable from a
+            // bare single-segment `ECall(EPath, …)` in practice, but cheap
+            // and correct to compute here regardless.
+            retIsUnsigned = match decl.ret { case Some(te) -> isUnsignedTypeExpr(te); case None -> false }
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -1008,7 +1091,13 @@ func collectWovenSigsMatching(
             // the checkcast narrowing to `registerInstanceSigErased`'s
             // impl/record/protected methods only) — conservative `false`
             // leaves any such call erased, same as before this fix.
-            retIsSelf = false
+            retIsSelf = false,
+            // #6754 (finding 1.2a): a bare key IS registered below
+            // (`proceed()`/B'-mode call sites are unqualified `ECall(EPath,
+            // …)`), so this one matters — computed from the woven/specialised
+            // function's own declared return, which keeps the original
+            // function's type (the weaver/mono renaming never changes it).
+            retIsUnsigned = match decl.ret { case Some(te) -> isUnsignedTypeExpr(te); case None -> false }
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -1102,12 +1191,26 @@ func collectMonoSpecializedSigs(
     match file.items[i].kind {
       case IFunc(decl) -> {
         if isMonoSpecializedName(decl.name) {
-          val params: List[JvmType] = newList()
+          // Mono specialisations are fully concrete post-monomorphization
+          // (no type params of their own remain to erase), but an `out`/
+          // `inout` parameter still needs the holder-array descriptor
+          // (`Counter` -> `Counter[]`) `holderAwareParamTypes` already gives
+          // every OTHER registration path (`collectFileSigsSeeded` /
+          // `registerFileSigs`, 06_items.l) — this hand-rolled loop skipped
+          // it and always recorded plain (non-array) types plus an EMPTY
+          // `paramModes`, so a call site to a specialised function with an
+          // `out`/`inout` param (`cdTryGetValue[K, V]` and any other generic
+          // helper wrapping an `out` parameter) never wrapped its holder
+          // argument, producing a MemberRef with the wrong (non-array)
+          // descriptor — `NoSuchMethodError` at runtime against the real,
+          // correctly holder-typed specialised method (#3432).
+          val params: List[JvmType] = holderAwareParamTypes(decl.params, owner, false, newList(), externTypes)
           val paramNames: List[String] = newList()
+          val paramModes: List[ParamMode] = newList()
           var pi = 0
           while pi < decl.params.count {
-            params.add(typeExprToJvmExtern(decl.params[pi].ty, owner, externTypes))
             paramNames.add(decl.params[pi].name)
+            paramModes.add(decl.params[pi].mode)
             pi = pi + 1
           }
           val ret = match decl.ret { case Some(te) -> typeExprToJvmExtern(te, owner, externTypes); case None -> JVoid }
@@ -1117,11 +1220,9 @@ func collectMonoSpecializedSigs(
             ret = ret,
             paramNames = paramNames,
             paramDefaults = newList(),
-            paramModes = newList(),
+            paramModes = paramModes,
             isIface = false,
             retGenericArgs = returnTypeGenericArgs(decl.ret),
-            // Mono specialisations are fully concrete post-monomorphization,
-            // so no type params remain to erase.
             closureRetTy = closureRetTypeOf(decl.ret, owner, newList(), externTypes),
             // Same "no local-record scan available here" rationale as the
             // woven-sig path above (#6399): a mono-specialised function
@@ -1132,7 +1233,11 @@ func collectMonoSpecializedSigs(
             // Mono-specialised functions are free functions (monomorphized
             // from a generic `func`), never impl/record methods — no `Self`
             // return possible.
-            retIsSelf = false
+            retIsSelf = false,
+            // #6754 (finding 1.2a): a bare key IS registered below
+            // (specialised copies are called by bare name) — computed from
+            // the specialised function's own declared return.
+            retIsUnsigned = match decl.ret { case Some(te) -> isUnsignedTypeExpr(te); case None -> false }
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -1196,9 +1301,47 @@ pub func compileToJarBundledWithFeatures(
   defines: in List[String],
   packageVersion: in String,
 ): Bool {
+  val noRestored: List[SynthesisedArtifact] = newList()
+  compileToJarBundledWithRestored(
+    source,
+    outputPath,
+    packageName,
+    stdlibSources,
+    activeFeatures,
+    declaredFeatures,
+    depTemplateSrcs,
+    defines,
+    packageVersion,
+    noRestored
+  )
+}
+
+/// Like `compileToJarBundledWithFeatures` but accepts a list of restored-
+/// dependency `SynthesisedArtifact`s (#3094) — the JVM analog of the MSIL
+/// bridge's `compileProjectToMsilWithRestored`.  Each restored artifact's
+/// re-synthesised source (`Lyric.RestoredPackages.synthesiseArtifact`,
+/// already loaded and preamble-checked by the caller — see
+/// `Lyric.Emitter.emitProjectJvmInProcess`, which reads them from a JAR's
+/// embedded `Lyric.Contract.<Pkg>` ZIP entries via
+/// `Lyric.RestoredPackages.loadRestoredPackageJvm`) is registered into the
+/// SAME cross-package signature/case/ctor registries a stdlib or sibling
+/// project file feeds — see `compileProjectToJarBundledWithRestored` for
+/// the registration design and why no codegen runs over it.
+pub func compileToJarBundledWithRestored(
+  source: in String,
+  outputPath: in String,
+  packageName: in String,
+  stdlibSources: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  depTemplateSrcs: in List[String],
+  defines: in List[String],
+  packageVersion: in String,
+  restoredArtifacts: in List[SynthesisedArtifact],
+): Bool {
   val one: List[String] = newList()
   one.add(source)
-  compileProjectToJarBundledWithFeatures(
+  compileProjectToJarBundledWithRestored(
     one,
     outputPath,
     packageName,
@@ -1207,7 +1350,8 @@ pub func compileToJarBundledWithFeatures(
     declaredFeatures,
     depTemplateSrcs,
     defines,
-    packageVersion
+    packageVersion,
+    restoredArtifacts
   )
 }
 
@@ -1257,6 +1401,60 @@ pub func compileProjectToJarBundledWithFeatures(
   depTemplateSrcs: in List[String],
   defines: in List[String],
   packageVersion: in String,
+): Bool {
+  val noRestored: List[SynthesisedArtifact] = newList()
+  compileProjectToJarBundledWithRestored(
+    pkgSrcs,
+    outputPath,
+    packageName,
+    stdlibSources,
+    activeFeatures,
+    declaredFeatures,
+    depTemplateSrcs,
+    defines,
+    packageVersion,
+    noRestored
+  )
+}
+
+/// Like `compileProjectToJarBundledWithFeatures` but accepts a list of
+/// restored-dependency `SynthesisedArtifact`s (#3094): the consumer's `import
+/// <RestoredPkg>` resolves generic (and non-generic) records, unions, and
+/// functions declared by a pre-compiled Lyric-JVM producer JAR — the JVM
+/// counterpart of #1496 / D097's MSIL restored-generics fix.
+///
+/// Design (JVM's type-erasure model makes this substantially simpler than
+/// the MSIL side, which needs arity-suffixed TypeRefs and VAR-form generic
+/// metadata maps): each restored artifact's re-synthesised `SourceFile`
+/// (`Lyric.RestoredPackages.synthesiseArtifact`; its record/union/function
+/// declarations are reconstructed, verbatim, from the producer's embedded
+/// contract JSON) is fed through the SAME `collectFileSigsSeeded` /
+/// `collectFileCasesExtern` / `collectFileCtors` / `collectFileProjectables`
+/// registration calls a stdlib or sibling project file gets — a generic
+/// record/union's fields already erase to `Object` uniformly (JVM has no
+/// reified generics to preserve), so no separate arity-suffixed class-name
+/// bookkeeping is needed the way MSIL's `genericTypeArity` /
+/// `genericCtorParams` / `fieldSigBytes` / `fieldVarIndices` maps require.
+///
+/// Critically, a restored artifact's file is registered into `registry` /
+/// `caseReg` / `ctorReg` / `allProjFqns` but is deliberately NEVER added to
+/// `stdlibFiles` / `stdlibByPkg` / `toBundle`: its bytecode already exists in
+/// the producer JAR, so codegen must never re-emit (and thus duplicate) it —
+/// only its call-site SIGNATURES need to be known here.  The producer JAR's
+/// own path is threaded onto the consumer's manifest `Class-Path:` (the same
+/// mechanism `autoFfi.jarPaths` already uses for Maven/non-JDK JARs) so the
+/// JVM classloader can actually find those classes at runtime.
+pub func compileProjectToJarBundledWithRestored(
+  pkgSrcs: in List[String],
+  outputPath: in String,
+  packageName: in String,
+  stdlibSources: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  depTemplateSrcs: in List[String],
+  defines: in List[String],
+  packageVersion: in String,
+  restoredArtifacts: in List[SynthesisedArtifact],
 ): Bool {
   if pkgSrcs.count == 0 {
     Console.error("error[J001]: JVM project build received no packages")
@@ -1479,6 +1677,27 @@ pub func compileProjectToJarBundledWithFeatures(
     extPkgMaps.add(xExtMap)
     xi = xi + 1
   }
+  // #6668: a restored dependency (#3094) is a real OWNING package too — its
+  // non-generic declared types (and any extern-type aliases its own kernel
+  // declares) must join the SAME extPkgNames/extPkgMaps pair userFile and
+  // every stdlib file feed above, BEFORE any `externSeedForFile` call runs
+  // below.  Without this, a consumer function signature naming a restored
+  // type (`func consume(x: RestoredPkg.SomeRecord)`) has no way to resolve
+  // `SomeRecord`'s owning package: `externSeedForFile` finds no entry for
+  // it in either the bare or `<pkg>.<name>`-qualified form, so the
+  // descriptor falls back to the "declared in my own package" guess — a
+  // wrong-owner descriptor that mismatches the producer JAR's real class at
+  // the call boundary (`NoSuchMethodError` at runtime, never a build-time
+  // failure).
+  var rpi0 = 0
+  while rpi0 < restoredArtifacts.count {
+    val raFile = restoredArtifacts[rpi0].source
+    extPkgNames.add(restoredArtifacts[rpi0].packageName)
+    val raExtMap = collectExternTypesFromFile(raFile)
+    collectFileDeclaredTypeFqns(raFile, raExtMap)
+    extPkgMaps.add(raExtMap)
+    rpi0 = rpi0 + 1
+  }
 
   // Build the cross-package call registry across the user file and *every*
   // stdlib file (resolution is cheap and harmless for packages we don't bundle).
@@ -1512,6 +1731,51 @@ pub func compileProjectToJarBundledWithFeatures(
     collectFileProjectables(stdlibFiles[ri], allProjFqns)
     ri = ri + 1
   }
+
+  // ── Restored-dependency registration (#3094) ──────────────────────────
+  // See `compileProjectToJarBundledWithRestored`'s doc comment for the full
+  // design.  Each restored artifact's synthesised source registers into the
+  // same registries the stdlib loop above just populated, AND joins
+  // `importedPkgs` so the TYPE CHECKER (not just codegen) resolves
+  // `import <RestoredPkg>` — a plain codegen-only registration still left
+  // every restored type/function an "unknown name"/"unknown type name" at
+  // type-check, since `Lyric.TypeChecker.checkFile` resolves imports purely
+  // from `importedPkgs`.  The producer JAR's own path (deduplicated) rides
+  // the manifest `Class-Path:` below alongside `autoFfi.jarPaths`, since the
+  // restored classes are never re-emitted into THIS jar's bytecode.
+  val restoredJarPathsSeen: Map[String, Bool] = newMap()
+  val restoredJarPaths: List[String] = newList()
+  var rai = 0
+  while rai < restoredArtifacts.count {
+    val synArt = restoredArtifacts[rai]
+    val rf = synArt.source
+    // #6668: seed through the SAME `extPkgNames`/`extPkgMaps` pair (now
+    // including every restored artifact, registered above) that userFile
+    // and every stdlib file use — an empty seed here left the restored
+    // file's OWN signatures unable to resolve types from sibling restored
+    // packages, extern kernels, or stdlib.
+    collectFileSigsSeeded(rf, registry, externSeedForFile(rf, extPkgNames, extPkgMaps))
+    collectFileCasesExtern(rf, caseReg, ownAwareExternTypes(rf, externSeedForFile(rf, extPkgNames, extPkgMaps)))
+    collectFileCtors(rf, ctorReg)
+    collectFileProjectables(rf, allProjFqns)
+    val rPkgItems: List[Item] = newList()
+    var rii = 0
+    while rii < rf.items.count {
+      if pipeIsCrossPackageItem(rf.items[rii]) {
+        rPkgItems.add(rf.items[rii])
+      }
+      rii = rii + 1
+    }
+    importedPkgs.add(
+      ImportedPackage(name = synArt.packageName, items = rPkgItems, imports = collectImportNames(rf.imports))
+    )
+    if not restoredJarPathsSeen.containsKey(synArt.dllPath) {
+      restoredJarPathsSeen.add(synArt.dllPath, true)
+      restoredJarPaths.add(synArt.dllPath)
+    }
+    rai = rai + 1
+  }
+
   // View-twin registration must run after the pre-scan is complete (the
   // substituted view field types depend on the full projectable set).
   registerProjectableViews(userFile, allProjFqns, caseReg, registry)
@@ -1582,13 +1846,21 @@ pub func compileProjectToJarBundledWithFeatures(
   // codegen failure to a silent skip and the build error to a runtime
   // NoClassDefFoundError.
   val userOwner = pkgJvmOwner(userFile.packageDecl.path)
+  // Resolve bare call names through the SAME import-aware view of the
+  // registry `codegenPackageInto` uses (`importAwareRegistry` above).
+  // Otherwise a bare name two bundled packages both export (e.g.
+  // `Std.Process` / `Std.ProcessCapture` both exporting `runCapture`,
+  // #2535) can resolve to a different owner here than codegen resolves it
+  // to, marking the wrong package "reachable" and shipping a JAR missing
+  // the class actually invoked at runtime (#6767).
+  val userRegistry = importAwareRegistry(userFile, registry)
   var gi = 0
   while gi < userFile.items.count {
     match userFile.items[gi].kind {
       case IFunc(decl) -> {
         val selfKey = userOwner + "/" + decl.name
         if not callGraph.containsKey(selfKey) {
-          callGraph.add(selfKey, collectFuncCallKeys(decl, registry))
+          callGraph.add(selfKey, collectFuncCallKeys(decl, userRegistry))
         }
         if not reachableFns.containsKey(selfKey) {
           reachableFns.add(selfKey, true)
@@ -1599,7 +1871,7 @@ pub func compileProjectToJarBundledWithFeatures(
         match aspDecl.around {
           case Some(ar) -> {
             val adviceCallees: List[String] = newList()
-            collectBlockNames(ar.body, adviceCallees, registry)
+            collectBlockNames(ar.body, adviceCallees, userRegistry)
             var aci = 0
             while aci < adviceCallees.count {
               val callee = adviceCallees[aci]
@@ -1630,17 +1902,21 @@ pub func compileProjectToJarBundledWithFeatures(
   }
 
   // Bundled packages: index their functions' outgoing calls (not roots).
+  // Each package gets its OWN import-aware registry view (its own bare-name
+  // resolution can differ from every other package's, and from the user
+  // package's — same rationale as `userRegistry` above, #6767).
   var bgi = 0
   while bgi < toBundle.count {
     val bf = toBundle[bgi]
     val bOwner = pkgJvmOwner(bf.packageDecl.path)
+    val bfRegistry = importAwareRegistry(bf, registry)
     var bii = 0
     while bii < bf.items.count {
       match bf.items[bii].kind {
         case IFunc(decl) -> {
           val selfKey = bOwner + "/" + decl.name
           if not callGraph.containsKey(selfKey) {
-            callGraph.add(selfKey, collectFuncCallKeys(decl, registry))
+            callGraph.add(selfKey, collectFuncCallKeys(decl, bfRegistry))
           }
         }
         case _ -> ()
@@ -1835,6 +2111,20 @@ pub func compileProjectToJarBundledWithFeatures(
     // fatally, unlike bundled stdlib files.
     val isProjectPkg = projectOwners.containsKey(pkgJvmOwner(f.packageDecl.path))
     val reachable = referencedPkgs.containsKey(pkgJvmOwner(f.packageDecl.path)) or isProjectPkg
+    // A codegen panic for a REACHABLE package is always fatal (see the catch
+    // below) and aborts the whole build, so no rollback is ever needed for
+    // it — only take the snapshot for an unreached package, where a panic
+    // gets silently J003-skipped and must not leave this package's
+    // signatures/cases/ctors behind for a later package to resolve into
+    // (#6766).
+    var registryBefore: Map[String, Bool] = newMap()
+    var caseRegBefore: Map[String, Bool] = newMap()
+    var ctorRegBefore: Map[String, Bool] = newMap()
+    if not reachable {
+      registryBefore = snapshotKeySet(registry)
+      caseRegBefore = snapshotKeySet(caseReg)
+      ctorRegBefore = snapshotKeySet(ctorReg)
+    }
     val ok = try {
       match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, allTemplates, isProjectPkg, pkgName) {
         case Some(ff) -> {
@@ -1892,6 +2182,16 @@ pub func compileProjectToJarBundledWithFeatures(
         // bytecode is never invoked, but counted (with the package name and the
         // panic's own message) so the J003 note below names exactly what was
         // dropped and why instead of an anonymous count.
+        //
+        // Roll back whatever this package's signature registration
+        // contributed to the bundle-wide registry/caseReg/ctorReg before it
+        // panicked — otherwise a LATER bundled package could still resolve a
+        // bare call into a class that was never written to the JAR, since
+        // those registrations happened unconditionally above regardless of
+        // whether codegen itself then succeeded (#6766).
+        rollbackNewKeys(registry, registryBefore)
+        rollbackNewKeys(caseReg, caseRegBefore)
+        rollbackNewKeys(ctorReg, ctorRegBefore)
         skippedCount = skippedCount + 1
         skippedNames.add(pkgName + " (" + b.message + ")")
         true
@@ -1928,14 +2228,39 @@ pub func compileProjectToJarBundledWithFeatures(
   // `lyric run --target jvm` and `lyric test --target jvm`, neither of
   // which passes `-cp` — can actually load Maven dependency classes at
   // runtime instead of throwing NoClassDefFoundError the moment a `[maven]`
-  // dependency (e.g. Quartz) is actually used.
+  // dependency (e.g. Quartz) is actually used.  Restored Lyric-package JARs
+  // (#3094) ride the same `Class-Path:` mechanism, appended after the Maven
+  // entries, for the identical reason: their classes are registered above
+  // but never re-emitted into THIS jar.
   // (`jarVersion` was hoisted above the codegen loops — see its declaration.)
+  val mergedClasspathJars: List[String] = newList()
+  var mcpi = 0
+  while mcpi < autoFfi.jarPaths.count {
+    mergedClasspathJars.add(autoFfi.jarPaths[mcpi])
+    mcpi = mcpi + 1
+  }
+  var mrji = 0
+  while mrji < restoredJarPaths.count {
+    mergedClasspathJars.add(restoredJarPaths[mrji])
+    mrji = mrji + 1
+  }
+
+  // This build's own package(s) are already embedded as `Lyric.Contract.<Pkg>`
+  // ZIP entries by the `contractZipEntry` calls above (#4994), so a
+  // DOWNSTREAM consumer can later restore THIS jar as a dependency
+  // (`Lyric.ContractMeta.readAllContractsFromJarFile` /
+  // `Lyric.RestoredPackages.loadRestoredPackageJvm`, #3094) — no separate
+  // contract-collection pass is needed here; that
+  // hoisted `contractEntryNames`/`contractEntryDatas` pair (built from the
+  // POST-middle-end `userFile`/`toBundle` pairs, reconciled via
+  // `withGenericFuncsForContract` for generic-function-body fidelity) is
+  // passed straight through to `writeJarFromClassesWithResources` below.
   val req = BuildRequest(
     packageName = packageName,
     mainClass = mainClassName,
     version = jarVersion,
     outPath = outputPath,
-    classpathJars = autoFfi.jarPaths
+    classpathJars = mergedClasspathJars
   )
   writeJarFromClassesWithResources(req, allClasses, contractEntryNames, contractEntryDatas)
 }

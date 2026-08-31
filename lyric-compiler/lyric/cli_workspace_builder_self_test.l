@@ -587,3 +587,138 @@ test "buildProject: the same workspace-dep fixture still builds on --target dotn
     "buildProject: --target dotnet builds the workspace dep's own DLL (the restored-dependency path)"
   )
 }
+
+// ─── Regression for #6697 on the OTHER caller that feeds
+// `EmitProjectRequest.restoredDllPaths` — `emitSingleFileWithWorkspaceMembers`
+// (cli/cli_build.l, #6503), the single-file-inside-a-workspace leg
+// `Cli.buildOne` routes through when no manifest with a `[package]` section
+// sits above the source. `resolveWorkspaceImportDeps` matches an import
+// against an already-built member DLL the same way `resolveManifestDependencies`
+// matches a `path = "..."` dependency — so the identical stray-DLL crash
+// applies: a member built for `--target dotnet` once, then imported by a
+// single `.l` file built for `--target jvm`, used to feed that member's MSIL
+// `.dll` straight into the JVM restored-dep JAR loader and hard-fail.
+test "buildOne: --target jvm single-file import of a workspace member succeeds even though the member's --target dotnet DLL exists on disk (#6697)" {
+  val root = freshTempDir("ws-import-stray-dll")
+  defer {
+    cleanup(root)
+  }
+  writeFileOrPanic(Path.join(root, "lyric.toml"), "[workspace]\nexclude = []\n")
+
+  val memberDir = mkPackageDir(
+    root,
+    "Member4",
+    "[package]\n" + "name = \"Fixture.WsMember4\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"Fixture.WsMember4\"\n" +
+      "output_assembly = \"WsMember4.dll\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"Fixture.WsMember4\" = \"src/member4.l\"\n"
+  )
+  match File.createDir(Path.join(memberDir, "src")) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create member4 src dir: " + IOError.message(e))
+  }
+  writeFileOrPanic(
+    Path.join(memberDir, "src/member4.l"),
+    "package Fixture.WsMember4\n\npub func memberGreeting(): String {\n  \"hello-from-member\"\n}\n"
+  )
+
+  // Build the member for --target dotnet FIRST, so its bin/WsMember4.dll (a
+  // real MSIL PE) exists on disk before the single-file JVM build runs.
+  val noFeatures: List[String] = newList()
+  val noDefines: List[String] = newList()
+  val noPre: Option[Cli.ResolvedManifestDeps] = None
+  val memberRc = Cli.buildProject(
+    Path.join(memberDir, "lyric.toml"),
+    None,
+    Emitter.Dotnet,
+    noFeatures,
+    false,
+    false,
+    true,
+    None,
+    noPre,
+    noDefines
+  )
+  assertEqualInt(memberRc, 0, "buildProject: the workspace member itself builds on --target dotnet")
+  assertTrue(
+    File.fileExists(Path.join(Path.join(memberDir, "bin"), "WsMember4.dll")),
+    "sanity: the member's --target dotnet DLL now exists on disk"
+  )
+
+  val standalonePath = Path.join(root, "standalone4.l")
+  writeFileOrPanic(
+    standalonePath,
+    "package Fixture.Standalone4\n\nimport Std.Console as Console\nimport Fixture.WsMember4\n\nfunc main(): Int {\n  Console.println(memberGreeting())\n  0\n}\n"
+  )
+  val outJar = Path.join(root, "standalone4.jar")
+  val noManifest: Option[String] = None
+  val rc = Cli.buildOne(standalonePath, outJar, Emitter.Jvm, noManifest)
+  assertEqualInt(
+    rc,
+    0,
+    "buildOne: a --target jvm single-file build importing a workspace member must not crash just because the " +
+      "member has a stray --target dotnet DLL on disk (#6697)"
+  )
+  assertTrue(File.fileExists(outJar), "buildOne: the Jvm build produced an output artifact")
+}
+
+// ─── Regression for #6771 — `resolveWorkspaceImportDeps` took no `target`
+// param, so its DLL-existence probe (and the fatal "DLL is not built" path)
+// applied unconditionally: a `--target jvm` single-file build importing a
+// workspace member that was NEVER built for any target (no `bin/` DLL at
+// all — the common fresh-checkout case, unlike #6697's "stray dotnet DLL"
+// scenario) hard-failed even though Jvm never reads that DLL and compiles
+// the member's source directly into the bundle.
+test "buildOne: --target jvm single-file import of a never-built workspace member succeeds by compiling its source directly (#6771)" {
+  val root = freshTempDir("ws-import-unbuilt-jvm")
+  defer {
+    cleanup(root)
+  }
+  writeFileOrPanic(Path.join(root, "lyric.toml"), "[workspace]\nexclude = []\n")
+
+  val memberDir = mkPackageDir(
+    root,
+    "Member5",
+    "[package]\n" + "name = \"Fixture.WsMember5\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"Fixture.WsMember5\"\n" +
+      "output_assembly = \"WsMember5.dll\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"Fixture.WsMember5\" = \"src/member5.l\"\n"
+  )
+  match File.createDir(Path.join(memberDir, "src")) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create member5 src dir: " + IOError.message(e))
+  }
+  writeFileOrPanic(
+    Path.join(memberDir, "src/member5.l"),
+    "package Fixture.WsMember5\n\npub func memberGreeting(): String {\n  \"hello-from-unbuilt-member\"\n}\n"
+  )
+
+  // Deliberately never build the member for ANY target — no bin/ dir, no
+  // DLL of any kind exists on disk.  A prior --target dotnet build is not a
+  // precondition on Jvm: the member's source compiles straight into the
+  // bundle (#6771).
+  assertFalse(
+    File.fileExists(Path.join(Path.join(memberDir, "bin"), "WsMember5.dll")),
+    "sanity: the member has never been built for any target"
+  )
+
+  val standalonePath = Path.join(root, "standalone5.l")
+  writeFileOrPanic(
+    standalonePath,
+    "package Fixture.Standalone5\n\nimport Std.Console as Console\nimport Fixture.WsMember5\n\nfunc main(): Int {\n  Console.println(memberGreeting())\n  0\n}\n"
+  )
+  val outJar = Path.join(root, "standalone5.jar")
+  val noManifest: Option[String] = None
+  val rc = Cli.buildOne(standalonePath, outJar, Emitter.Jvm, noManifest)
+  assertEqualInt(
+    rc,
+    0,
+    "buildOne: a --target jvm single-file build importing a workspace member must succeed even though the " +
+      "member has never been built for any target — Jvm compiles its source directly (#6771)"
+  )
+  assertTrue(File.fileExists(outJar), "buildOne: the Jvm build produced an output artifact")
+}

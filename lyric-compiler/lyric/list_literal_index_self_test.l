@@ -1,7 +1,7 @@
 //! list_literal_index_self_test.l — runtime regression test for indexed reads
-//! of unannotated list literals (#5620).
+//! of unannotated list literals (#5620 MSIL, #5686 JVM parity).
 //!
-//! Before the fix, an unannotated list literal (`val xs = [9, 7]`) with no
+//! Before the MSIL fix, an unannotated list literal (`val xs = [9, 7]`) with no
 //! surrounding type hint lowered on MSIL to a legacy `List<object>` tracked as
 //! bare `MObject`; the indexed read `xs[0]` returned the boxed element ref
 //! without unboxing, mislabeled as a raw value, so downstream `+`/`println`
@@ -10,14 +10,21 @@
 //! the read recovers the real element type — matching the already-correct
 //! annotated `val xs: List[Int] = newList()` path.
 //!
-//! Runs on `--target dotnet` (the MSIL fix, #5620).  The JVM backend has the
-//! same root cause in a separate code path — its EList lowering always builds
-//! an untyped `ArrayList` with no element-type tracking, so an unannotated
-//! literal's indexed elements erase to `Object` and a relational/arithmetic use
-//! panics loudly (not the MSIL silent-garbage flavor).  Fixing that needs
-//! element-type tracking in the JVM emitter and is a tracked parity follow-up,
-//! so this test is not wired for `--target jvm`.
+//! The JVM backend had the same root cause in a separate code path: its
+//! `EList` lowering always builds an untyped `ArrayList` with no element-type
+//! tracking, so an unannotated literal's indexed elements erased to `Object`
+//! and a relational/arithmetic use panicked loudly (not the MSIL
+//! silent-garbage flavor).  #5686 fixes this by peeking a homogeneous
+//! literal's element type (`inferHomogeneousListElemTypeJvm`,
+//! jvm/codegen/02_exprs.l) and recording it against the binding through the
+//! same `ctx.varGenericArgs` registry an explicit `List[Int]` annotation
+//! already populates, so `indexedElemTypeOverride` narrows the indexed read
+//! from erased `Object` to the real element type.  The runtime
+//! representation stays a plain `ArrayList` — only the compiler's own type
+//! tracking changed.
+//! Runs on both `--target dotnet` and `--target jvm`.
 //!   lyric test --target dotnet lyric-compiler/lyric/list_literal_index_self_test.l
+//!   lyric test --target jvm lyric-compiler/lyric/list_literal_index_self_test.l
 //! Imports only `Std.*` (no `LYRIC_LOAD_COMPILER=1`).
 @test_module
 package Lyric.ListLiteralIndexSelfTest

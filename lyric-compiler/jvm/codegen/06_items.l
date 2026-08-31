@@ -96,7 +96,10 @@ func makeFuncCtx(
     scopeBase = 0,
     scopeUndo = newList(),
     ctorExpectStack = newList(),
-    aliasTargets = aliasTargets
+    aliasTargets = aliasTargets,
+    unsignedVars = newMap(),
+    unsignedUndo = newList(),
+    varGenericArgsUndo = newList()
   )
 }
 
@@ -146,7 +149,10 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     scopeBase = ctx.scopeBase,
     scopeUndo = ctx.scopeUndo,
     ctorExpectStack = ctx.ctorExpectStack,
-    aliasTargets = ctx.aliasTargets
+    aliasTargets = ctx.aliasTargets,
+    unsignedVars = ctx.unsignedVars,
+    unsignedUndo = ctx.unsignedUndo,
+    varGenericArgsUndo = ctx.varGenericArgsUndo
   )
 }
 
@@ -219,7 +225,10 @@ func makeFuncCtxForGenerator(
     ctorExpectStack = newList(),
     // #6393: a generator body has no reachable file-scoped alias table at
     // this call site — out of scope for now (see `FuncCtx.aliasTargets`).
-    aliasTargets = newMap()
+    aliasTargets = newMap(),
+    unsignedVars = newMap(),
+    unsignedUndo = newList(),
+    varGenericArgsUndo = newList()
   )
 }
 
@@ -295,7 +304,10 @@ func makeFuncCtxInstance(
     // #6393: an instance-method body (protected-type entry / record method /
     // impl method) has no reachable file-scoped alias table at this call
     // site — out of scope for now (see `FuncCtx.aliasTargets`).
-    aliasTargets = newMap()
+    aliasTargets = newMap(),
+    unsignedVars = newMap(),
+    unsignedUndo = newList(),
+    varGenericArgsUndo = newList()
   )
 }
 
@@ -646,6 +658,15 @@ pub func setupInstanceParamSlotsAndHolders(
   var rdi = 0
   while rdi < params.count {
     recordDeclaredElemType(ctx, params[rdi].name, params[rdi].ty, typeParams)
+    // #5956: see `lowerFunc`'s matching call — an instance method's own
+    // generic-instantiation-typed parameter needs the same registration.
+    // #6660: `typeParams` (this method's own generic-parameter names) is
+    // threaded through so `recordParamGenericArgs` can bail on an arg that
+    // names an unresolved type parameter instead of guessing a phantom class.
+    recordParamGenericArgs(ctx, params[rdi].name, params[rdi].ty, typeParams)
+    // #6748: a `UInt`/`ULong`-typed parameter needs unsigned-aware
+    // comparison/division/stringification inside the method body.
+    recordUnsignedVarTy(ctx, params[rdi].name, params[rdi].ty)
     rdi = rdi + 1
   }
 }
@@ -908,6 +929,17 @@ pub func lowerFunc(
   var rdi = 0
   while rdi < resolvedParams.count {
     recordDeclaredElemType(ctx, resolvedParams[rdi].name, resolvedParams[rdi].ty, fnElemTps)
+    // #5956: a `Result[Age, String]`-typed (or any other generic-instantiation-
+    // typed) parameter's own annotation seeds `varGenericArgs` so `match
+    // <param> { … }` on it unboxes the payload — see `recordParamGenericArgs`.
+    // #6660: `fnElemTps` (this function's own generic-parameter names,
+    // already computed above for `recordDeclaredElemType`) is threaded
+    // through so an arg naming an unresolved type param (e.g. `Result[T,
+    // String]` on `func foo[T](...)`) bails instead of registering a
+    // phantom `<pkgName>/T` class.
+    recordParamGenericArgs(ctx, resolvedParams[rdi].name, resolvedParams[rdi].ty, fnElemTps)
+    // #6748: see `setupInstanceParamSlotsAndHolders`'s matching call.
+    recordUnsignedVarTy(ctx, resolvedParams[rdi].name, resolvedParams[rdi].ty)
     rdi = rdi + 1
   }
 
@@ -3117,6 +3149,18 @@ pub func collectFileSigsSeeded(
         } else {
           recordRetClassOf(decl.ret, owner, localRecordNames)
         }
+        // #6754 (finding 1.2a): same async-generator exclusion as
+        // `sigClosureRetTy`/`sigRecordRetClass` above — the synthesised
+        // generator object is never `UInt`/`ULong`, only `resolvedRet` (the
+        // ACTUAL declared return, alias-resolved) is.
+        val sigRetIsUnsigned: Bool = if decl.isAsync and funcBodyContainsYield(decl) {
+          false
+        } else {
+          match resolvedRet {
+            case Some(te) -> isUnsignedTypeExpr(te)
+            case None -> false
+          }
+        }
         val sig = JvmFuncSig(
           owner = owner,
           params = params,
@@ -3134,7 +3178,8 @@ pub func collectFileSigsSeeded(
           recordRetClass = sigRecordRetClass,
           // A free function's return type is never `Self` (only legal on an
           // interface/impl/record method signature) — always false here.
-          retIsSelf = false
+          retIsSelf = false,
+          retIsUnsigned = sigRetIsUnsigned
         )
         // Qualified key (`Std/Testing/assertEqualInt`) is unique across the
         // bundle, so two packages exporting the same short name (e.g.
@@ -3246,6 +3291,123 @@ pub func collectFileSigsSeeded(
           mi = mi + 1
         }
       }
+      // Register the synthesised `toX` conversion method (#5956) under
+      // `<wrapperClass>#toX` so `v.toInt()` on a distinct/range-subtype
+      // receiver resolves through the ordinary `<class>#<method>` instance
+      // dispatch (`lowerMethodCall`'s `ctx.funcSigs` lookup) instead of
+      // falling through to the "no known method" fallback. `Jvm.Lowering`'s
+      // `jvmDistinctConvName` picks the SAME name the emitted method carries
+      // — no conversion method (and no registration) for a non-convertible
+      // underlying type (`""`).
+      case IDistinctType(decl) -> {
+        val distClass = owner + "/" + decl.name
+        val inner = typeExprToJvm(decl.underlying, owner)
+        val convName = jvmDistinctConvName(inner)
+        if convName.length > 0 {
+          val noParams: List[Param] = newList()
+          registerInstanceSigErased(
+            into,
+            distClass,
+            convName,
+            noParams,
+            Some(value = decl.underlying),
+            owner,
+            newList(),
+            externTypes
+          )
+        }
+        // Static `from`/`tryFrom` construction API (#5956): registered under
+        // the same `<TypeName>.<member>` dot-key `lowerMethodCall`'s existing
+        // dot-named-static-call arm already dispatches through (the
+        // `AppWire.bootstrap()` mechanism), so the call site needs no
+        // special-casing of its own. `tryFrom`'s `retGenericArgs` —
+        // pre-resolved via `eagerlyResolveGenericArgs`, exactly like a real
+        // generic function's declared return (#4877) — lets
+        // `scrutineeGenericArgs` recognise `Type.tryFrom(x)` as a
+        // `Result[Type, String]` instantiation, so a `match`/`?`/`let`-bind
+        // on it unboxes the erased `Ok`/`Err` payload back to the real
+        // distinct-type class instead of leaving it `java.lang.Object` — the
+        // JVM-erasure counterpart of `Lyric.Mono`'s front-end recognition of
+        // this same call shape (#5841).
+        val noParamNames: List[String] = newList()
+        val noParamDefaults: List[Option[Expr]] = newList()
+        val noParamModes: List[ParamMode] = newList()
+        // #6664: register BOTH the bundle-global bare key (`<TypeName>.from`,
+        // legacy first-wins shape, kept for a call site that never shadows)
+        // AND a package-scoped key (`<owner>::<TypeName>.from`) — mirrors
+        // `addCtorKeys`/`ctorClassFor`'s scoped-key-wins pattern that fixed
+        // the identical same-simple-name collision for union cases (#5976).
+        // Without the scoped key, two different packages each declaring
+        // their own distinct/range-subtype named e.g. `Age` collide on the
+        // bare `"Age.from"` key: whichever package's file this pre-scan
+        // visits FIRST wins the bundle-wide registration, and every OTHER
+        // package's `Age.from(...)`/`Age.tryFrom(...)` call site silently
+        // resolves through the wrong package's class + range bounds
+        // (`lowerMethodCall`'s `mapGet(ctx.funcSigs, ...)` has no way to
+        // tell them apart from the bare key alone). `lowerMethodCall` now
+        // consults the scoped key first via `ctx.pkgName`, so each
+        // package's own call sites always resolve to their OWN type.
+        val fromKey = decl.name + ".from"
+        val fromParams: List[JvmType] = newList()
+        fromParams.add(inner)
+        val fromSig = JvmFuncSig(
+          owner = distClass,
+          params = fromParams,
+          ret = JRef(className = distClass),
+          paramNames = noParamNames,
+          paramDefaults = noParamDefaults,
+          paramModes = noParamModes,
+          isIface = false,
+          retGenericArgs = newList(),
+          closureRetTy = None,
+          recordRetClass = None,
+          retIsSelf = false,
+          // `Type.from(x)` is `ECall(EMember(…), …)` — never matches
+          // `isUnsignedExpr`'s `ECall(EPath, …)`-only arm.
+          retIsUnsigned = false
+        )
+        if not into.containsKey(fromKey) {
+          into.add(fromKey, fromSig)
+        }
+        val fromScopedKey = owner + "::" + fromKey
+        if not into.containsKey(fromScopedKey) {
+          into.add(fromScopedKey, fromSig)
+        }
+        val tryFromKey = decl.name + ".tryFrom"
+        val tryFromParams: List[JvmType] = newList()
+        tryFromParams.add(inner)
+        val selfSeg: List[String] = newList()
+        selfSeg.add(decl.name)
+        val selfTe = TypeExpr(kind = TRef(path = ModulePath(segments = selfSeg, span = decl.span)), span = decl.span)
+        val stringSeg: List[String] = newList()
+        stringSeg.add("String")
+        val stringTe = TypeExpr(kind = TRef(path = ModulePath(segments = stringSeg, span = decl.span)), span = decl.span)
+        val rawArgs: List[TypeExpr] = newList()
+        rawArgs.add(selfTe)
+        rawArgs.add(stringTe)
+        val tryFromSig = JvmFuncSig(
+          owner = distClass,
+          params = tryFromParams,
+          ret = JRef(className = "Std/Core/Result"),
+          paramNames = noParamNames,
+          paramDefaults = noParamDefaults,
+          paramModes = noParamModes,
+          isIface = false,
+          retGenericArgs = eagerlyResolveGenericArgs(rawArgs, owner, externTypes),
+          closureRetTy = None,
+          recordRetClass = None,
+          retIsSelf = false,
+          // `Type.tryFrom(x)` is `ECall(EMember(…), …)` — same as `fromSig`.
+          retIsUnsigned = false
+        )
+        if not into.containsKey(tryFromKey) {
+          into.add(tryFromKey, tryFromSig)
+        }
+        val tryFromScopedKey = owner + "::" + tryFromKey
+        if not into.containsKey(tryFromScopedKey) {
+          into.add(tryFromScopedKey, tryFromSig)
+        }
+      }
       case IImpl(decl) -> {
         // Register each impl method under `<targetClass>#<methodName>` so that
         // call sites (`lowerMethodCall` J3 M-3 path) emit a precisely-typed
@@ -3324,7 +3486,10 @@ pub func collectFileSigsSeeded(
                       closureRetTy = None,
                       recordRetClass = None,
                       // An opaque field accessor's declared type is never `Self`.
-                      retIsSelf = false
+                      retIsSelf = false,
+                      // Field read is `EMember`, not `ECall` — out of scope
+                      // for `isUnsignedExpr` (finding 1.2b, see its doc).
+                      retIsUnsigned = false
                     )
                   )
                 }
@@ -3410,7 +3575,11 @@ pub func collectFileSigsSeeded(
                   closureRetTy = None,
                   recordRetClass = None,
                   // A module-level `val`'s type is never `Self`.
-                  retIsSelf = false
+                  retIsSelf = false,
+                  // Keyed `val:`-prefixed, never a bare name — unreachable
+                  // from `isUnsignedExpr`'s `ECall` arm, and a val read is
+                  // `EMember` anyway, never `ECall`.
+                  retIsUnsigned = false
                 )
                 val vqkey = owner + "/val:" + vname
                 if not into.containsKey(vqkey) {
@@ -3462,7 +3631,10 @@ pub func collectFileSigsSeeded(
             closureRetTy = None,
             recordRetClass = None,
             // An enum case value's type is never `Self`.
-            retIsSelf = false
+            retIsSelf = false,
+            // Keyed `enum:`/`enumcase:`-prefixed, never a bare name, and a
+            // nullary case reference is `EMember`, never `ECall`.
+            retIsUnsigned = false
           )
           val etkey = "enum:" + decl.name + "." + ecn
           if not into.containsKey(etkey) {
@@ -3607,18 +3779,24 @@ func registerInstanceSigErased(
         retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, typeParams), owner, externTypes),
         closureRetTy = closureRetTypeOf(retOpt, owner, typeParams, externTypes),
         recordRetClass = None,
-        retIsSelf = retIsSelf
+        retIsSelf = retIsSelf,
+        // Keyed `<class>#<method>` — an instance-method call is
+        // `ECall(EMember(…), …)`, never matches `isUnsignedExpr`'s
+        // `ECall(EPath, …)`-only arm.
+        retIsUnsigned = false
       )
     )
   }
 }
 
 // Register a record/protected/opaque field's DECLARED `slice[Elem]` /
-// `List[Elem]` element type under the pseudo-key `elem:<class>#<field>`
-// (#5444, following the `field:` / `enum:` / `enumcase:` funcSigs-key
-// precedents).  `indexedElemTypeOverride`'s `EMember` / bare-self-field arms
-// consult it so an indexed element read through a FIELD receiver
-// (`self.mws[self.idx]` — the lyric-web `MiddlewareChain` shape) narrows the
+// `List[Elem]` element type — or a `Map[K, V]` field's VALUE type `V`
+// (#5451) — under the pseudo-key `elem:<class>#<field>` (#5444, following
+// the `field:` / `enum:` / `enumcase:` funcSigs-key precedents).
+// `indexedElemTypeOverride`'s `EMember` / bare-self-field arms consult it so
+// an indexed element read through a FIELD receiver (`self.mws[self.idx]` —
+// the lyric-web `MiddlewareChain` shape; `self.sessions[id]` — a
+// `Map[String, SessionData]` field, the lyric-session shape) narrows the
 // erased `Object` element back to its concrete class, exactly as the
 // bare-name `varGenericArgs` path already does for parameters and locals.
 // The element is resolved eagerly against the DECLARING file's own
@@ -3626,9 +3804,12 @@ func registerInstanceSigErased(
 // consumer reading the field sees the real class, never its own in-package
 // guess.  Only genuinely-narrowing elements are registered: the declaration's
 // own generic params (erase to Object), `Object` itself, and nested
-// slice/List elements (`JArray` — `coerceArgTo` has no Object→array narrowing
-// arm, mirroring `indexedElemTypeOverride`'s caution) are all skipped, so a
-// registered entry's `ret` can be applied unconditionally at the read site.
+// slice/List/Map elements (`JArray` — `coerceArgTo` has no Object→array
+// narrowing arm, mirroring `indexedElemTypeOverride`'s caution) are all
+// skipped, so a registered entry's `ret` can be applied unconditionally at
+// the read site.  Only `V` is ever recorded for a Map field — `K` is never
+// consulted by an indexed VALUE read, and this registry holds a single
+// `JvmFuncSig.ret`, not a `[K, V]` list.
 func registerFieldElemSig(
   into: in Map[String, JvmFuncSig],
   className: in String,
@@ -3645,6 +3826,11 @@ func registerFieldElemSig(
       if head.segments.count == 1 and lastSegment(head) == "List" and args.count == 1 {
         match args[0] {
           case TAType(inner) -> elems.add(inner)
+          case TAValue(_) -> ()
+        }
+      } else if head.segments.count == 1 and lastSegment(head) == "Map" and args.count == 2 {
+        match args[1] {
+          case TAType(v) -> elems.add(v)
           case TAValue(_) -> ()
         }
       }
@@ -3694,7 +3880,12 @@ func registerFieldElemSig(
       closureRetTy = None,
       recordRetClass = None,
       // A field's declared element type is never `Self`.
-      retIsSelf = false
+      retIsSelf = false,
+      // Keyed `elem:<class>#<field>`, consulted only by
+      // `indexedElemTypeOverride`'s field-receiver arm — not the bare-name
+      // `varGenericArgs` path `isUnsignedExpr`'s `EIndex` arm consults
+      // (finding 1.2c is scoped to a bare-name receiver; see its doc).
+      retIsUnsigned = false
     )
   )
 }
@@ -3757,7 +3948,10 @@ func registerIfaceSig(
         retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, typeParams), owner, externTypes),
         closureRetTy = closureRetTypeOf(retOpt, owner, typeParams, externTypes),
         recordRetClass = None,
-        retIsSelf = retIsSelf
+        retIsSelf = retIsSelf,
+        // Keyed `<ifaceClass>#<method>` — interface method calls are
+        // `ECall(EMember(…), …)`, same as `registerInstanceSigErased`.
+        retIsUnsigned = false
       )
     )
   }
@@ -3789,7 +3983,11 @@ func registerStaticWireSig(
         closureRetTy = None,
         recordRetClass = None,
         // A wire's static factory/accessor return is never `Self`.
-        retIsSelf = false
+        retIsSelf = false,
+        // Keyed `<wireShortName>.<method>` — called `EMember`-form
+        // (`AppWire.bootstrap()`), and `ret` here is already an erased
+        // `JvmType` with no declared `TypeExpr` on hand to check.
+        retIsUnsigned = false
       )
     )
   }
@@ -4154,6 +4352,137 @@ func addCtorKeys(into: in Map[String, String], owner: in String, name: in String
   }
 }
 
+// ── Distinct/range-subtype static factories (#5956) ──────────────────────────
+// JVM counterpart of `Msil.Codegen.foldRangeBound`/`mkDistinctTypeIR`: folds a
+// distinct/range-subtype declaration's range clause into concrete bounds so
+// the synthesised `from`/`tryFrom` factories (`Jvm.Lowering.lowerDistinctType`)
+// can emit a real bounds check, and so `Jvm.Codegen.lowerMethodCall` can
+// recognise a `TypeName.from(x)` / `TypeName.tryFrom(x)` call site.
+record JvmRangeBoundVal {
+  ok: Bool
+  isFloat: Bool
+  l: Long
+  d: Double
+}
+
+func foldRangeBoundJvm(e: in Expr): JvmRangeBoundVal {
+  val failVal = JvmRangeBoundVal(ok = false, isFloat = false, l = 0i64, d = 0.0)
+  match e.kind {
+    case ELiteral(lit) -> {
+      match lit {
+        case LInt(v, _, _) -> JvmRangeBoundVal(ok = true, isFloat = false, l = v, d = 0.0)
+        case LFloat(v, _, _) -> JvmRangeBoundVal(ok = true, isFloat = true, l = 0i64, d = v)
+        case _ -> failVal
+      }
+    }
+    case EPrefix(op, operand) -> {
+      match op {
+        case PreNeg -> {
+          val inner = foldRangeBoundJvm(operand)
+          if inner.ok {
+            JvmRangeBoundVal(ok = true, isFloat = inner.isFloat, l = 0i64 - inner.l, d = 0.0 - inner.d)
+          } else {
+            failVal
+          }
+        }
+        case _ -> failVal
+      }
+    }
+    case _ -> failVal
+  }
+}
+
+// `UInt`/`ULong` have no distinct JVM primitive (`typeExprToJvm` erases both
+// to `JInt`/`JLong`, #6661), so `LDistinctType.isUnsigned` can't be derived
+// from the erased `JvmType` alone — it's read off the SOURCE `TypeExpr`
+// before erasure, at `mkJvmDistinctTypeIR`'s call site below.
+func isUnsignedNumericBaseType(te: in TypeExpr): Bool {
+  match te.kind {
+    case TRef(path) -> {
+      val seg = lastSegment(path)
+      seg == "UInt" or seg == "ULong"
+    }
+    case _ -> false
+  }
+}
+
+func mkJvmDistinctNoRange(wrapperClass: in String, inner: in JvmType, isUnsigned: in Bool): LDistinctType {
+  LDistinctType(
+    wrapperClass = wrapperClass,
+    underlyingType = inner,
+    hasRange = false,
+    rangeIsFloat = false,
+    minI = 0i64,
+    maxI = 0i64,
+    minF = 0.0,
+    maxF = 0.0,
+    upperExclusive = false,
+    isUnsigned = isUnsigned
+  )
+}
+
+func mkJvmDistinctRanged(
+  wrapperClass: in String,
+  inner: in JvmType,
+  loE: in Expr,
+  hiE: in Expr,
+  upperExcl: in Bool,
+  isUnsigned: in Bool,
+): LDistinctType {
+  val lo = foldRangeBoundJvm(loE)
+  val hi = foldRangeBoundJvm(hiE)
+  // #6661: `Float` (`JFloat`) is floating-point too — it was excluded here
+  // (only `JDouble` counted), so a `Float`-backed range subtype folded its
+  // bounds into the WRONG field pair (`minI`/`maxI`, always 0 for a
+  // non-integer literal bound) and `Jvm.Lowering.emitJvmDistinctBoundsToFail`
+  // then took the plain-int comparison branch against a 32-bit `float`
+  // argument loaded via `fload` — a verifier type mismatch (unverifiable
+  // bytecode), not merely a wrong bound.
+  val isFloatInner = match inner { case JDouble -> true; case JFloat -> true; case _ -> false }
+  if lo.ok and hi.ok {
+    val loF = if lo.isFloat { lo.d } else { lo.l.toDouble() }
+    val hiF = if hi.isFloat { hi.d } else { hi.l.toDouble() }
+    LDistinctType(
+      wrapperClass = wrapperClass,
+      underlyingType = inner,
+      hasRange = true,
+      rangeIsFloat = isFloatInner,
+      minI = lo.l,
+      maxI = hi.l,
+      minF = loF,
+      maxF = hiF,
+      upperExclusive = upperExcl,
+      isUnsigned = isUnsigned
+    )
+  } else {
+    mkJvmDistinctNoRange(wrapperClass, inner, isUnsigned)
+  }
+}
+
+// Build the distinct-type IR item, folding any range clause to integer/float
+// bounds for the synthesised `from`/`tryFrom` validation.  Mirrors
+// `Msil.Codegen.mkDistinctTypeIR` exactly (same fold, same no-range fallback
+// for an unrecognised `RangeBound` variant, #3116) — MSIL has no `isUnsigned`
+// counterpart to thread since `UInt`/`ULong` have no MSIL representation at
+// all yet (#6661).
+pub func mkJvmDistinctTypeIR(
+  wrapperClass: in String,
+  inner: in JvmType,
+  rangeClause: in Option[RangeBound],
+  isUnsigned: in Bool,
+): LDistinctType {
+  match rangeClause {
+    case Some(rb) -> {
+      match rb {
+        case RBClosed(loE, hiE) -> mkJvmDistinctRanged(wrapperClass, inner, loE, hiE, false, isUnsigned)
+        case RBHalfOpen(loE, hiE) -> mkJvmDistinctRanged(wrapperClass, inner, loE, hiE, true, isUnsigned)
+        case _ -> mkJvmDistinctNoRange(wrapperClass, inner, isUnsigned)
+      }
+    }
+    case None -> mkJvmDistinctNoRange(wrapperClass, inner, isUnsigned)
+  }
+}
+
 // Collect every module-level `val NAME [: T] = expr` binding from `file` into
 // `into`, keyed by `NAME` with its JVM field type.  Drives bare-name reads of
 // module-level vals (lowered to `getstatic <hostClass>.<name>`).  Only the
@@ -4485,7 +4814,9 @@ pub func registerProjectableViews(
                 recordRetClass = None,
                 // A synthesised `toView()` accessor's return is the view
                 // class itself, never `Self`.
-                retIsSelf = false
+                retIsSelf = false,
+                // Keyed `<class>#toView` — called `EMember`-form.
+                retIsUnsigned = false
               )
             )
           }
@@ -4508,7 +4839,9 @@ pub func registerProjectableViews(
                   recordRetClass = None,
                   // A synthesised `tryInto()` accessor's return is
                   // `Std.Core.Result`, never `Self`.
-                  retIsSelf = false
+                  retIsSelf = false,
+                  // Keyed `<class>#tryInto` — called `EMember`-form.
+                  retIsUnsigned = false
                 )
               )
             }
@@ -5471,7 +5804,16 @@ pub func codegenPackageWithSigsSeeded(
       }
       case IDistinctType(decl) -> {
         val inner = typeExprToJvm(decl.underlying, pkgName)
-        items.add(LPDistinctType(dt = LDistinctType(wrapperClass = pkgName + "/" + decl.name, underlyingType = inner)))
+        items.add(
+          LPDistinctType(
+            dt = mkJvmDistinctTypeIR(
+              pkgName + "/" + decl.name,
+              inner,
+              decl.rangeClause,
+              isUnsignedNumericBaseType(decl.underlying)
+            )
+          )
+        )
       }
       case IEnum(decl) -> {
         val className2 = pkgName + "/" + decl.name
@@ -5945,7 +6287,7 @@ pub func codegenPackageWithSigsSeeded(
   // `<pkg>/Lyric$Lambda` they all implement
   // (`invoke([Ljava/lang/Object;)Ljava/lang/Object;`).
   if closureAcc.count > 0 or fileNeedsLambdaIface(file) {
-    val ifaceName = lambdaIfaceName(pkgName)
+    val ifaceName = lambdaIfaceName()
     val ifaceParams: List[JvmType] = newList()
     ifaceParams.add(JArray(elem = JRef(className = "java/lang/Object")))
     val ifaceDesc = buildDescriptor(ifaceParams, JRef(className = "java/lang/Object"))

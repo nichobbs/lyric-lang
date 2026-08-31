@@ -448,11 +448,27 @@ func typeIdOfType(t: in Type): Option[TypeId] {
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Range subtype validation (T2.5).
 // ─────────────────────────────────────────────────────────────────────────────
+// `Short`/`UShort`/`UByte` are DELIBERATELY excluded (#6661 residual,
+// D-progress-840): none of the three has a real `PrimType` case
+// (`typechecker_types.l`'s `PrimType` union has no `PtShort`/`PtUShort`/
+// `PtUByte` variant) or appears in docs/01-language-reference.md §2.1's
+// 13-primitive table — they are not Lyric surface types at all (see also
+// docs/10-bootstrap-progress.md D-progress-571: "`Short` is not a surface
+// Lyric type"). Before this fix, this name-based T0091 gate wrongly
+// admitted them: `type Age = UShort range 0 ..= 100` type-checked cleanly
+// (no T0091 — the ONLY validation `IDistinctType`'s underlying `TypeExpr`
+// ever receives; distinct-type underlyings are never independently
+// resolved via `resolveTypePath`), then reached JVM codegen, where
+// `Jvm.Codegen.typeExprToJvm` has no `UShort` arm either and erased it to
+// "user type in the same package" (`JRef(pkgName + "/UShort")`) — a
+// non-numeric `JvmType` that `Jvm.Lowering.jvmVerifierTypeOfUnderlying`'s
+// defense-in-depth `case _ -> panic(...)` then hit while building the
+// ranged `from`/`tryFrom`'s StackMapTable, crashing the compiler on
+// source the checker had just accepted as valid. Rejecting all three here
+// makes `type X = UShort/UByte/Short range …` a clean T0091 diagnostic
+// instead of ever reaching a backend panic.
 func isNumericPrimitiveName(name: in String): Bool {
-  name == "Int" or name == "Long" or name == "Short" or name == "Byte" or name == "UInt" or name == "ULong" or
-    name == "UShort" or
-    name == "UByte" or
-    name == "Float" or
+  name == "Int" or name == "Long" or name == "Byte" or name == "UInt" or name == "ULong" or name == "Float" or
     name == "Double" or
     // `Nat` is a full numeric primitive (`PtNat`, `typechecker_types.l`) and
     // docs/02's worked examples declare `Nat range A..=B` distinct types
@@ -503,11 +519,66 @@ func checkClosed(
   }
 }
 
+// #6661: `tryFoldInt`/`foldOrErr`/`checkClosed` above are INTEGER-only (mirror
+// `compiler/src/Lyric.TypeChecker/ConstFold.fs`, which the F# emitter never
+// needed to extend since range subtypes were an MSIL-only feature there
+// too). A `Float`/`Double`-backed range subtype's bounds are float literals
+// (`type Weight = Float range 0.0 ..= 100.0`), which `tryFoldInt` rejects
+// outright (T0093 "not a compile-time integer constant") — so NO
+// `Float`/`Double`-backed NAMED range subtype could be declared at all, on
+// EITHER backend, independent of `Jvm.Lowering.emitJvmDistinctBoundsToFail`'s
+// bytecode-level `Float` fix (06_items.l/lowering.l) ever running. This
+// mirrors `Jvm.Codegen.foldRangeBoundJvm`/`Msil.Codegen.foldRangeBound`'s
+// existing literal+negation-only scope (no module-level float `val` lookup)
+// — deliberately narrow, since a distinct type's range bounds are meant to
+// be simple literal constants.
+func tryFoldFloat(e: in Expr): Option[Double] {
+  match e.kind {
+    case EParen(inner) -> tryFoldFloat(inner)
+    case ELiteral(lit) -> match lit { case LFloat(v, _, _) -> Some(value = v); case LInt(v, _, _) -> Some(value = v.toDouble()); case _ -> None }
+    case EPrefix(op, inner) -> match op { case PreNeg -> match tryFoldFloat(inner) { case Some(v) -> Some(value = 0.0 - v); case None -> None }; case _ -> None }
+    case _ -> None
+  }
+}
+
+func foldOrErrFloat(diag: in List[Diagnostic], name: in String, e: in Expr): Option[Double] {
+  match tryFoldFloat(e) {
+    case Some(v) -> Some(value = v)
+    case None -> {
+      diag.add(
+        errorDiagnostic(
+          "T0093",
+          "range subtype '" + name +
+            "' has a symbolic bound that cannot be folded: expression is not a compile-time numeric constant",
+          e.span
+        )
+      )
+      None
+    }
+  }
+}
+
+func checkClosedFloat(
+  diag: in List[Diagnostic],
+  name: in String,
+  lo: in Expr,
+  hi: in Expr,
+  sym: in String,
+  span: in Span,
+): Unit {
+  match foldOrErrFloat(diag, name, lo) {
+    case None -> {
+    }
+    case Some(loV) -> match foldOrErrFloat(diag, name, hi) { case None -> {  }; case Some(hiV) -> { val invalid = if sym == "..=" { loV > hiV } else if sym == "..<" { loV >= hiV } else { false }; if invalid { diag.add(errorDiagnostic("T0090", "range subtype '" + name + "' has empty bounds: " + toString(loV) + " " + sym + " " + toString(hiV), span)) } } }
+  }
+}
+
 func checkDistinctType(tbl: in SymbolTable, diag: in List[Diagnostic], dt: in DistinctTypeDecl): Unit {
   match dt.rangeClause {
     case None -> {
     }
     case Some(_) -> {
+      var isFloatBase = false
       match dt.underlying.kind {
         case TRef(path) -> {
           if path.segments.count == 1 {
@@ -521,6 +592,7 @@ func checkDistinctType(tbl: in SymbolTable, diag: in List[Diagnostic], dt: in Di
                 )
               )
             }
+            isFloatBase = uname == "Float" or uname == "Double"
           }
         }
         case _ -> {
@@ -529,7 +601,7 @@ func checkDistinctType(tbl: in SymbolTable, diag: in List[Diagnostic], dt: in Di
       match dt.rangeClause {
         case None -> {
         }
-        case Some(rb) -> match rb { case RBClosed(lo, hi) -> checkClosed(tbl, diag, dt.name, lo, hi, "..=", dt.span); case RBHalfOpen(lo, hi) -> checkClosed(tbl, diag, dt.name, lo, hi, "..<", dt.span); case _ -> {  } }
+        case Some(rb) -> match rb { case RBClosed(lo, hi) -> { if isFloatBase { checkClosedFloat(diag, dt.name, lo, hi, "..=", dt.span) } else { checkClosed(tbl, diag, dt.name, lo, hi, "..=", dt.span) } }; case RBHalfOpen(lo, hi) -> { if isFloatBase { checkClosedFloat(diag, dt.name, lo, hi, "..<", dt.span) } else { checkClosed(tbl, diag, dt.name, lo, hi, "..<", dt.span) } }; case _ -> {  } }
       }
     }
   }

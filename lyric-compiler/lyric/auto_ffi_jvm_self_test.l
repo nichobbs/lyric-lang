@@ -18,6 +18,11 @@
 //! install), the auto-FFI context falls back to the Object-typed guess.
 //! The fallback still links at runtime for methods whose return type is
 //! upcast-compatible with Object, but typed arithmetic comparisons would fail.
+//!
+//! The `#6662` instance-method / constructor overload-scoring tests near the
+//! end of this file additionally require a small fixture jar on
+//! LYRIC_FFI_JARS at compile time — build it with
+//! `scripts/ci/build-auto-ffi-fixture.sh` (see that test's header comment).
 @test_module
 package Lyric.AutoFfiJvmSelfTest
 
@@ -376,14 +381,57 @@ func copyOfIntsExplicit(src: in slice[Int], newLen: in Int): slice[Int] {
   return JArrays.copyOf(src, newLen)
 }
 
-// Truncating/same-length copyOf, not growing: a real bug was found (and
-// reported separately, not asserted here) where the TAIL-EXPRESSION return
-// path leaves newly-grown padding slots as `null` instead of boxed zero
-// (`Arrays.toString` prints `[1, 2, 3, null, null]` instead of
-// `[1, 2, 3, 0, 0]`) — the sibling explicit-`return` case below, on the same
-// element type, correctly zero-pads. Sticking to non-growing lengths here
-// keeps this test asserting only the return-side coercion this issue asks
-// for, without depending on the separately-reported padding bug.
+// #5526: a growing `Arrays.copyOf` call used to leave its newly-grown
+// padding slots as `null` instead of boxed zero (`Arrays.toString` printed
+// `[1, 2, 3, null, null]` instead of `[1, 2, 3, 0, 0]`), on BOTH the
+// tail-expression and explicit-`return` forms equally — not a tail-vs-
+// explicit asymmetry. Root cause: every `slice[T]` erases uniformly to
+// `[Ljava/lang/Object;` on the JVM, and `Arrays.copyOf`'s overload set has
+// both `int[] copyOf(int[], int)` and the generic `<T> T[] copyOf(T[], int)`
+// (itself erased to `[Ljava/lang/Object;`) — scoring the argument's erased
+// descriptor against candidate overloads let the generic overload win as an
+// "exact match", so the call silently returned a boxed `Object[]` (whose
+// freshly-grown slots default to `null`, correct behavior for THAT
+// overload) instead of dispatching to the primitive overload
+// `emitFfiCoerce`'s `[Ljava/lang/Object; -> primitive[]` argument
+// conversion was designed to feed. Fixed by scoring auto-FFI overloads
+// against the argument's TRUE declared Lyric element type (from the same
+// `indexedElemTypeOverride` declared-type registry `EIndex` narrowing
+// already consults) when it resolves to a primitive, rather than the
+// argument's erased runtime descriptor alone.
+func growIntsTail(src: in slice[Int], newLen: in Int): slice[Int] {
+  JArrays.copyOf(src, newLen)
+}
+
+func growIntsExplicit(src: in slice[Int], newLen: in Int): slice[Int] {
+  return JArrays.copyOf(src, newLen)
+}
+
+test "Arrays.copyOf(int[],int) GROWN tail-expression return zero-pads new slots" {
+  val src: slice[Int] = [1, 2, 3]
+  val grown = growIntsTail(src, 5)
+  assertEqualInt(grown.count, 5, "copyOf(int[],5) grows to newLen")
+  assertEqualInt(grown[0], 1, "element 0 preserved")
+  assertEqualInt(grown[1], 2, "element 1 preserved")
+  assertEqualInt(grown[2], 3, "element 2 preserved")
+  assertEqualInt(grown[3], 0, "grown element 3 is boxed zero, not null")
+  assertEqualInt(grown[4], 0, "grown element 4 is boxed zero, not null")
+  val s = JArrays.toString(grown)
+  assertEqual(s, "[1, 2, 3, 0, 0]", "copyOf growth round-trips through Arrays.toString(int[])")
+}
+
+test "Arrays.copyOf(int[],int) GROWN explicit return zero-pads new slots" {
+  val src: slice[Int] = [4, 5]
+  val grown = growIntsExplicit(src, 4)
+  assertEqualInt(grown.count, 4, "copyOf(int[],4) grows to newLen")
+  assertEqualInt(grown[2], 0, "grown element 2 is boxed zero, not null")
+  assertEqualInt(grown[3], 0, "grown element 3 is boxed zero, not null")
+  val s = JArrays.toString(grown)
+  assertEqual(s, "[4, 5, 0, 0]", "copyOf growth round-trips through Arrays.toString(int[])")
+}
+
+// Truncating/same-length copyOf, not growing — kept as its own coverage
+// (the return-side coercion, independent of the growth-padding case above).
 test "Arrays.copyOf(int[],int) tail-expression return coerces to slice[Int]" {
   val src: slice[Int] = [1, 2, 3]
   val copied = copyOfIntsTail(src, 2)
@@ -614,6 +662,49 @@ func stringValuesOf(m: in JHashMap): JCollectionOfString[JString] {
   m.values()
 }
 
+// ── byte/short/char widening (#6769, JLS §5.1.2) ─────────────────────────────
+//
+// `scoreParamMatch` previously only widened `int`/`long`/`float` — a
+// `Byte`- or `Char`-typed Lyric argument had no widening arm at all, so a
+// call whose only compatible JDK overload takes `int` (or wider) failed
+// overload resolution outright ("no matching ... overload"), even though the
+// call is completely legal per JLS §5.1.2 and requires zero runtime
+// conversion (the JVM represents byte/short/char/int on the same `int`
+// operand-stack slot).
+test "Byte argument widens to Math.abs(int) — no int overload literally typed byte (#6769)" {
+  assertEqualInt(JMath.abs(5.toByte()), 5, "Math.abs(byte 5) widens byte->int and resolves to abs(int)")
+  // Lyric's `Byte` is canonically UNSIGNED 0..255 (docs/59 §4.3, `04_calls.l`
+  // `maskByteUnsigned`) — a `JByte`-typed slot always holds the
+  // masked-unsigned value, matching MSIL's `conv.u1`. `(0 - 7).toByte()`
+  // therefore masks to 249 (`256 - 7`), NOT a JVM-signed-byte sign-extended
+  // -7, so the byte->int widening this test exercises must pass the
+  // already-canonical 249 straight through — asserting 7 here would lock in
+  // Java's signed-byte semantics, which this language deliberately does not
+  // have.
+  assertEqualInt(
+    JMath.abs(220.toByte()),
+    220,
+    "Math.abs(byte 220) widens the canonical unsigned value (not sign-extended) to int"
+  )
+}
+
+test "Char argument widens to StringBuilder.charAt(int) — no charAt(char) overload (#6769)" {
+  // "charAt(char)" does not exist on StringBuilder, only "charAt(int)" — a
+  // Char-typed argument must widen char->int to resolve at all. Build a
+  // buffer via repeated single-char appends (avoids unrelated string-concat
+  // codegen paths) so the character's own code point ('a' == 97) lands on a
+  // marker character placed exactly there.
+  val sb = JStringBuilder.new("")
+  var i = 0
+  while i < 97 {
+    sb.append("x")
+    i = i + 1
+  }
+  sb.append("Z")
+  val ch = sb.charAt('a')
+  assertTrue(ch == 'Z', "charAt('a') widens 'a' (codepoint 97) to int and indexes the marker character")
+}
+
 test "for-loop over an extern generic collection types the loop variable as the collection's real element type, not Object (#6565)" {
   val m = JHashMap.new()
   m.put("a", "Alpha")
@@ -630,4 +721,161 @@ test "for-loop over an extern generic collection types the loop variable as the 
     loweredLen = loweredLen + lowered.length
   }
   assertEqualInt(loweredLen, 9, "\"alpha\".length (5) + \"beta\".length (4) == 9")
+}
+
+// ── #6662: instance-method / constructor overload scoring (Arrays.copyOf's
+// static-call fix extended to the other two auto-FFI call shapes) ───────────
+//
+// The #5526 fix (`ffiScoreDescFor`, jvm/codegen/04_calls.l) scores auto-FFI
+// overloads against a `slice[T]` argument's TRUE declared Lyric element type
+// rather than its erased `[Ljava/lang/Object;` runtime descriptor, so a
+// primitive-array overload (`int[]`) is no longer shadowed by a sibling
+// `Object[]`/generic-array overload that always "exact matches" the erased
+// descriptor. That fix originally wired `ffiScoreDescFor` into
+// `lowerAutoFfiStaticCall` only (`Arrays.copyOf` above) — the identical bug
+// was independently reachable through `lowerAutoFfiInstanceCall` and
+// `lowerAutoFfiConstructorCall`, which built their own argDescs and never
+// consulted the scoring hint.
+//
+// The JDK ships no INSTANCE method or CONSTRUCTOR pairing an `int[]`
+// overload against an `Object[]` overload on the same name (every such pair
+// in the JDK — `Arrays.copyOf`, `Arrays.hashCode`, … — is a STATIC utility,
+// already covered above), so this exercises the fix against a small fixture
+// class built for exactly this shape:
+// lyric-compiler/jvm/testdata/AutoFfiOverloadFixture.java, whose constructor
+// and `sumInts` instance method both offer an `int[]` overload beside an
+// `Object[]` overload. `kind()`/a `-1` sentinel prove which overload actually
+// ran, not just that SOME overload ran.
+//
+// Requires the fixture jar on LYRIC_FFI_JARS at compile time (the CI step
+// "Auto-FFI metadata self-test on JVM" builds it via
+// scripts/ci/build-auto-ffi-fixture.sh). To run locally:
+//   jar_path="$(bash scripts/ci/build-auto-ffi-fixture.sh)"
+//   LYRIC_FFI_JARS="$jar_path" ./bin/lyric test --target jvm \
+//     lyric-compiler/lyric/auto_ffi_jvm_self_test.l
+extern type OverloadFixture = "lyric.autoffi.fixture.AutoFfiOverloadFixture"
+
+test "constructor overload scoring: slice[Int] argument picks the int[] overload, not Object[] (#6662)" {
+  val values: slice[Int] = [1, 2, 3, 4]
+  val f = OverloadFixture.new(values)
+  assertEqual(f.kind(), "primitive", "OverloadFixture.new(slice[Int]) resolved the int[] constructor")
+  assertEqualInt(f.sum(), 10, "int[] constructor computed the real sum, not the Object[] overload's -1 sentinel")
+}
+
+test "instance-method overload scoring: slice[Int] argument picks the int[] overload, not Object[] (#6662)" {
+  val values: slice[Int] = [5, 6, 7]
+  val f = OverloadFixture.new(values)
+  val total = f.sumInts(values)
+  assertEqualInt(total, 18, "sumInts(slice[Int]) resolved the int[] overload, not the Object[] overload's -1 sentinel")
+}
+
+// ── #6696: reverse compatibility for genuinely Object[]-only overloads ──────
+//
+// `ffiScoreDescFor` (#6662/#5526, above) narrows a `slice[T]` argument's
+// SCORE-ONLY descriptor to a primitive-array shape (`[I`, …) when `T` is a
+// JVM primitive, so a sibling primitive-array overload outscores a same-named
+// `Object[]`-erased generic overload. Some JDK methods declare `Object[]` —
+// including a `T...` varargs parameter's erasure — as their ONLY candidate:
+// `Arrays.asList(T... a)`, `Objects.hash(Object... values)`,
+// `String.format(String, Object...)`. Before the #6696 fix to
+// `scoreParamMatch` (`lyric-compiler/jvm/auto_ffi.l`), the narrowed
+// primitive-array descriptor matched no parameter on any of these (no rule
+// scored a primitive-array argDesc against an `Object[]` paramDesc), so
+// `findBestMethod` returned `None` and the call PANICKED AT COMPILE TIME
+// instead of resolving to the one overload that always worked before #6662.
+// The fix's reverse-compatibility rule recovers this — a Lyric slice's
+// runtime representation is ALWAYS `Object[]` (boxed elements) regardless of
+// its declared element type — while staying strictly lower-priority than an
+// exact primitive-array match, so `OverloadFixture`'s `int[]`-vs-`Object[]`
+// disambiguation two tests above is unaffected.
+extern type JObjects = "java.util.Objects"
+
+test "Arrays.asList(slice[Int]) resolves the Object[]-only varargs overload (#6696)" {
+  val values: slice[Int] = [10, 20, 30]
+  val xs = JArrays.asList(values)
+  assertEqualInt(xs.size(), 3, "Arrays.asList(slice[Int]).size() == 3")
+  assertEqualInt(xs.get(0), 10, "Arrays.asList(slice[Int]).get(0) == 10")
+  assertEqualInt(xs.get(2), 30, "Arrays.asList(slice[Int]).get(2) == 30")
+}
+
+test "Objects.hash(slice[Int]) resolves the Object[]-only varargs overload (#6696)" {
+  val values: slice[Int] = [1, 2, 3]
+  // Objects.hash delegates to Arrays.hashCode: result = 1; result = 31*result
+  // + boxed-Integer.hashCode() per element -- 31*(31*(31*1+1)+2)+3 == 30817.
+  assertEqualInt(JObjects.hash(values), 30817, "Objects.hash(1,2,3) matches Arrays.hashCode's boxed-Integer formula")
+}
+
+test "String.format(String, slice[Int]) resolves the Object[]-only varargs overload (#6696)" {
+  val values: slice[Int] = [7, 9]
+  val s = JString.format("%d and %d", values)
+  assertEqual(s, "7 and 9", "String.format with a slice[Int] varargs argument")
+}
+
+// ── #6745: reverse-compat arm must not fire for a GENUINE primitive array ──
+//
+// `scoreParamMatch`'s reverse-compatibility arm (above, #6696) is only valid
+// when the argument's descriptor is a SCORE-ONLY narrowing of an actually
+// `[Ljava/lang/Object;`-erased `slice[T]` — `emitFfiCoerce` can then safely
+// skip coercion, since the real value on the stack already IS an `Object[]`.
+// It is NOT valid for a genuinely primitive-array-typed argument: `grown`
+// below has REAL JVM storage type `int[]` (`Arrays.copyOf`'s actual resolved
+// return type, never re-erased back to `Object[]`), so passing it to an
+// `Object[]`-only overload has no correct coercion (`emitFfiCoerce` has no
+// rule to box a real primitive array element-by-element into a fresh
+// `Object[]`) — before the #6745 fix, the ungated arm still scored this a
+// "match" with no coercion emitted, corrupting the emitted bytecode with a
+// real `int[]` reference where `Object[]` is expected: `VerifyError` at
+// class load.  After the fix this correctly refuses to resolve any overload
+// at all — asserted as a `lyric build --target jvm` failure in ci.yml's
+// "Genuine primitive-array argument rejected for an Object[]-only overload
+// on JVM" step (a compile-time panic inside the compiler process itself is
+// not expressible as a `@test_module` runtime assertion).  This test instead
+// pins the POSITIVE half: `grown`'s real `int[]` continues to resolve
+// correctly against overloads that actually declare `int[]` (unaffected by
+// gating the reverse arm, since an exact match always short-circuits before
+// that arm is ever reached).
+test "genuine primitive array (Arrays.copyOf's real int[] return) still resolves exact primitive overloads (#6745)" {
+  val src: slice[Int] = [4, 5, 6]
+  val grown = JArrays.copyOf(src, 3)
+  // Arrays.hashCode(int[]): r=1; r=31*r+4=35; r=31*r+5=1090; r=31*r+6=33796.
+  assertEqualInt(
+    JArrays.hashCode(grown),
+    33796,
+    "Arrays.hashCode(int[]) resolves the exact int[] overload for a genuinely-real primitive array"
+  )
+  val s = JArrays.toString(grown)
+  assertEqual(
+    s,
+    "[4, 5, 6]",
+    "Arrays.toString(int[]) resolves the exact int[] overload for a genuinely-real primitive array"
+  )
+}
+
+// ── #6745: F0015-J emits the RESOLVED descriptor, not the declared one ─────
+//
+// `Objects.toString(Object)` is the JDK's ONLY one-argument overload — no
+// `Objects.toString(String)` exists.  Declaring this `@externTarget` with a
+// Lyric `String` parameter makes `findBestMethod`'s scoring resolve it via
+// the reference-widening arm (`String IS-A Object`), which VALIDATES the
+// declared signature (F0015-J passes) without the declared descriptor
+// (`Ljava/lang/String;`) equaling the resolved one (`Ljava/lang/Object;`).
+// Before the #6745 fix, `lowerExternTargetBody` emitted the invoke against
+// the DECLARED descriptor regardless — encoding
+// `invokestatic java/util/Objects.toString(Ljava/lang/String;)Ljava/lang/String;`,
+// a `<clinit>`/method reference `java.util.Objects` does not actually have
+// (only `toString(Ljava/lang/Object;)` and the two-arg overload exist),
+// which fails at runtime with `NoSuchMethodError`/`VerifyError` despite
+// F0015-J having reported the signature "verified".  After the fix, the
+// invoke is emitted against the RESOLVED `(Ljava/lang/Object;)` descriptor
+// (a `String` argument reference is verifier-compatible with an `Object`
+// parameter slot with no coercion needed), so this now actually runs.
+@externTarget("java.util.Objects.toString")
+func Objects_toStringOfString(x: in String): String = ()
+
+test "F0015-J emits the resolved descriptor for a reference-widened @externTarget signature (#6745)" {
+  assertEqual(
+    Objects_toStringOfString("hello"),
+    "hello",
+    "Objects.toString(String) resolves against the real Object-typed overload"
+  )
 }

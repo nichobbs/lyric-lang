@@ -52,10 +52,10 @@ pub func writeJarFromClasses(req: in BuildRequest, classes: in List[BuiltClass])
 // (`Jvm.Bridge` also imports `Jvm.AutoFfi`, which imports `Jvm.ZipReader` —
 // a DIFFERENT, same-named `ZipEntry` record — and aliasing the import at
 // the `Jvm.Bridge` call site did not resolve the ambiguity the type checker
-// saw at this call). A separate entry point rather than widening
-// `writeJarFromClasses` itself: that function has ~100 direct self-test
-// call sites across `jvm/self_test_b*.l`, none of which need resource
-// embedding.
+// saw at this call; tracked as a self-hosted-compiler bug in #6689). A
+// separate entry point rather than widening `writeJarFromClasses` itself:
+// that function has ~100 direct self-test call sites across
+// `jvm/self_test_b*.l`, none of which need resource embedding.
 pub func writeJarFromClassesWithResources(
   req: in BuildRequest,
   classes: in List[BuiltClass],
@@ -71,13 +71,13 @@ pub func writeJarFromClassesWithResources(
 
   val mfBytes = stringToUtf8Bytes(makeManifestMf(meta))
 
-  val jarEntries: List[ZipEntry] = newList()
-  jarEntries.add(ZipEntry(name = "META-INF/MANIFEST.MF", data = mfBytes))
+  val jarEntries: List[Jvm.Zip.ZipEntry] = newList()
+  jarEntries.add(Jvm.Zip.ZipEntry(name = "META-INF/MANIFEST.MF", data = mfBytes))
 
   var i = 0
   while i < classes.count {
     val bc = classes[i]
-    jarEntries.add(ZipEntry(name = bc.binaryName + ".class", data = bc.bytes))
+    jarEntries.add(Jvm.Zip.ZipEntry(name = bc.binaryName + ".class", data = bc.bytes))
     i = i + 1
   }
 

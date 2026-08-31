@@ -52,7 +52,34 @@ func floatCmpInsn(op: in BinOp, isDouble: in Bool): LInsn {
   }
 }
 
-// Lower a comparison expression.  lhs type determines which comparison is used.
+// Emit `java.lang.Integer.compareUnsigned(int,int)int` on the two `JInt`
+// operands already stacked as [lhs, rhs] (#6748) — `UInt` erases to the same
+// two's-complement `int` an `Int` uses, so a plain signed compare reads a
+// value/bound at or above 2^31 as negative.  Pushes a signed `int` whose
+// sign matches the unsigned ordering, same operand-stack shape as `lcmp` /
+// the two-operand `if_icmpxx` form it stands in for.
+func emitIntCompareUnsigned(insns: in List[LInsn]): Unit {
+  val ps: List[JvmType] = newList()
+  ps.add(JInt)
+  ps.add(JInt)
+  insns.add(LInvokestatic(owner = "java/lang/Integer", name = "compareUnsigned", params = ps, ret = JInt))
+}
+
+// `java.lang.Long.compareUnsigned(long,long)int` — the `JLong` analog of
+// `emitIntCompareUnsigned` (#6748), for a `ULong`-typed operand.
+func emitLongCompareUnsigned(insns: in List[LInsn]): Unit {
+  val ps: List[JvmType] = newList()
+  ps.add(JLong)
+  ps.add(JLong)
+  insns.add(LInvokestatic(owner = "java/lang/Long", name = "compareUnsigned", params = ps, ret = JInt))
+}
+
+// Lower a comparison expression.  lhs type determines which comparison is
+// used; `isUnsigned` (#6748, true when either operand is statically known
+// `UInt`/`ULong` — see `isUnsignedExpr`) selects `Integer`/`Long`'s
+// `compareUnsigned` over the native signed `lcmp`/`if_icmpxx` for the
+// RELATIONAL ops (`<`/`<=`/`>`/`>=`); `==`/`!=` are sign-independent and stay
+// on the native op either way.
 func lowerCmp(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -60,10 +87,19 @@ func lowerCmp(
   lhsTy: in JvmType,
   trueLabel: in String,
   falseLabel: in String,
+  isUnsigned: in Bool,
 ): Unit {
   match lhsTy {
     case JLong -> {
-      insns.add(LLcmp)
+      if isUnsigned {
+        match op {
+          case BEq -> insns.add(LLcmp)
+          case BNeq -> insns.add(LLcmp)
+          case _ -> emitLongCompareUnsigned(insns)
+        }
+      } else {
+        insns.add(LLcmp)
+      }
       match op {
         case BEq -> insns.add(LIfeq(label = trueLabel))
         case BNeq -> insns.add(LIfne(label = trueLabel))
@@ -161,15 +197,42 @@ func lowerCmp(
       }
     }
     case _ -> {
-      // Integer comparison (int, bool, char, byte, short).
-      match op {
-        case BEq -> insns.add(LIfIcmpeq(label = trueLabel))
-        case BNeq -> insns.add(LIfIcmpne(label = trueLabel))
-        case BLt -> insns.add(LIfIcmplt(label = trueLabel))
-        case BLte -> insns.add(LIfIcmple(label = trueLabel))
-        case BGt -> insns.add(LIfIcmpgt(label = trueLabel))
-        case BGte -> insns.add(LIfIcmpge(label = trueLabel))
-        case _ -> panic("Jvm.Codegen: unsupported int comparison op")
+      // Integer comparison (int, bool, char, byte, short) — `UInt` erases
+      // here too, so a `UInt`-typed operand (#6748) dispatches through
+      // `Integer.compareUnsigned` for the relational ops; `==`/`!=` stay on
+      // the native two-operand `if_icmpxx` form either way.
+      if isUnsigned {
+        match op {
+          case BEq -> insns.add(LIfIcmpeq(label = trueLabel))
+          case BNeq -> insns.add(LIfIcmpne(label = trueLabel))
+          case BLt -> {
+            emitIntCompareUnsigned(insns)
+            insns.add(LIflt(label = trueLabel))
+          }
+          case BLte -> {
+            emitIntCompareUnsigned(insns)
+            insns.add(LIfle(label = trueLabel))
+          }
+          case BGt -> {
+            emitIntCompareUnsigned(insns)
+            insns.add(LIfgt(label = trueLabel))
+          }
+          case BGte -> {
+            emitIntCompareUnsigned(insns)
+            insns.add(LIfge(label = trueLabel))
+          }
+          case _ -> panic("Jvm.Codegen: unsupported int comparison op")
+        }
+      } else {
+        match op {
+          case BEq -> insns.add(LIfIcmpeq(label = trueLabel))
+          case BNeq -> insns.add(LIfIcmpne(label = trueLabel))
+          case BLt -> insns.add(LIfIcmplt(label = trueLabel))
+          case BLte -> insns.add(LIfIcmple(label = trueLabel))
+          case BGt -> insns.add(LIfIcmpgt(label = trueLabel))
+          case BGte -> insns.add(LIfIcmpge(label = trueLabel))
+          case _ -> panic("Jvm.Codegen: unsupported int comparison op")
+        }
       }
     }
   }
@@ -362,7 +425,7 @@ func staticBaseClass(ctx: in FuncCtx, base: in Expr): Option[String] {
     // resolvable.  Mutually recursive with `indexedElemTypeOverride`, so an
     // arbitrarily deep `a[i].b[j].c[k]` chain resolves link by link.
     case EIndex(recvE, _) -> {
-      match indexedElemTypeOverride(ctx, recvE) {
+      match indexedElemTypeOverride(ctx, recvE, true) {
         case JRef(cls) -> {
           if cls == "java/lang/Object" {
             None
@@ -389,16 +452,195 @@ func fieldElemOverride(ctx: in FuncCtx, cls: in String, fieldName: in String): J
   }
 }
 
-func indexedElemTypeOverride(ctx: in FuncCtx, recv: in Expr): JvmType {
+// ─────────────────────────────────────────────────────────────────────────────
+// §5b. Unannotated list-literal element-type inference (#5686 — JVM parity
+//      for the MSIL #5620 fix).
+// ─────────────────────────────────────────────────────────────────────────────
+// The static element type of one list-literal element for the homogeneity
+// check below: a simple literal's own type, or — for a bare 1-segment name —
+// the tracked `JvmType` of the local/param it binds (`ctx.types`), so
+// `[a, b]` with `Int` locals recovers `JInt`, not just `[9, 7]` (mirrors
+// MSIL's `listLiteralElemTypeMsil`, msil/codegen.l).  A call, member access,
+// or any other element shape this peek can't resolve without doing real
+// call/name resolution falls back to the `java/lang/Object` sentinel, which
+// `isSimpleListElemJvm` below rejects — such a literal keeps the legacy
+// erased-element behaviour, unchanged.
+func listLiteralElemTypeJvm(ctx: in FuncCtx, e: in Expr): JvmType {
+  match e.kind {
+    case EPath(p) -> {
+      if p.segments.count == 1 {
+        match mapGet(ctx.types, p.segments[0]) {
+          case Some(t) -> t
+          case None -> JRef(className = "java/lang/Object")
+        }
+      } else {
+        JRef(className = "java/lang/Object")
+      }
+    }
+    case ELiteral(lit) -> {
+      match lit {
+        case LInt(v, suffix, _) -> {
+          // Mirror `Lyric.TypeChecker`'s literal-suffix table
+          // (typechecker_exprs.l: `NoIntSuffix|I16|I32 -> Int`, `I8|U8 ->
+          // Byte`, `I64 -> Long`, `U16|U32 -> UInt`, `U64 -> ULong`) and
+          // `typeExprToJvm`'s erasure of `UInt -> JInt` / `ULong -> JLong`
+          // (#6661): `U16`/`U32` erase to the identical `int` `I16`/`I32`
+          // already produce here, and `U64` erases to the identical `long`
+          // `I64` produces. Before this fix `U16`/`U32`/`U64` fell through to
+          // the `_` sentinel, disabling the homogeneity fast path below for
+          // every `u16`/`u32`/`u64`-suffixed list-literal element (#6741
+          // SUGGESTION).
+          match suffix {
+            case I8 -> JByte
+            case U8 -> JByte
+            case NoIntSuffix -> if v >= -2147483648i64 and v <= 2147483647i64 { JInt } else { JRef(className = "java/lang/Object") }
+            case I16 -> if v >= -2147483648i64 and v <= 2147483647i64 { JInt } else { JRef(className = "java/lang/Object") }
+            case U16 -> if v >= -2147483648i64 and v <= 2147483647i64 { JInt } else { JRef(className = "java/lang/Object") }
+            case I32 -> if v >= -2147483648i64 and v <= 2147483647i64 { JInt } else { JRef(className = "java/lang/Object") }
+            case U32 -> if v >= -2147483648i64 and v <= 2147483647i64 { JInt } else { JRef(className = "java/lang/Object") }
+            case I64 -> JLong
+            case U64 -> JLong
+          }
+        }
+        case LFloat(_, floatSuffix, _) -> {
+          match floatSuffix {
+            case NoFloatSuffix -> JDouble
+            case F64 -> JDouble
+            case _ -> JRef(className = "java/lang/Object")
+          }
+        }
+        case LString(_) -> JRef(className = "java/lang/String")
+        case LTripleString(_) -> JRef(className = "java/lang/String")
+        case LRawString(_) -> JRef(className = "java/lang/String")
+        case LBool(_) -> JBoolean
+        case LChar(_) -> JChar
+        case _ -> JRef(className = "java/lang/Object")
+      }
+    }
+    case EParen(inner) -> listLiteralElemTypeJvm(ctx, inner)
+    case EPrefix(op, inner) -> {
+      match op {
+        case PreNeg -> listLiteralElemTypeJvm(ctx, inner)
+        case _ -> JRef(className = "java/lang/Object")
+      }
+    }
+    case _ -> JRef(className = "java/lang/Object")
+  }
+}
+
+// The value/String element types whose erasure to `Object` was the #5686
+// miscompile class (a value element read back unboxed as the wrong width, or
+// a relational/arithmetic op panicking on a reference-typed operand).
+// Reference/record element types are deliberately excluded — a
+// `[record, record]` literal keeps the conservative legacy path, mirroring
+// MSIL's `isSimpleListElemMsil`.
+func isSimpleListElemJvm(t: in JvmType): Bool {
+  match t {
+    case JInt -> true
+    case JLong -> true
+    case JDouble -> true
+    case JBoolean -> true
+    case JChar -> true
+    case JByte -> true
+    case JRef(cls) -> cls == "java/lang/String"
+    case _ -> false
+  }
+}
+
+func jvmSimpleTypeEq(a: in JvmType, b: in JvmType): Bool {
+  match a {
+    case JInt -> match b { case JInt -> true; case _ -> false }
+    case JLong -> match b { case JLong -> true; case _ -> false }
+    case JDouble -> match b { case JDouble -> true; case _ -> false }
+    case JBoolean -> match b { case JBoolean -> true; case _ -> false }
+    case JChar -> match b { case JChar -> true; case _ -> false }
+    case JByte -> match b { case JByte -> true; case _ -> false }
+    case JRef(ca) -> match b { case JRef(cb) -> ca == cb; case _ -> false }
+    case _ -> false
+  }
+}
+
+// Infer a single concrete element `JvmType` for an unannotated list literal
+// when every element shares one simple static type — the JVM-side parity fix
+// for #5686 (MSIL's analogous `inferHomogeneousListElemTypeMsil`, #5620).
+// Returns `None` for an empty list, any element whose type can't be peeked, a
+// non-simple element type, or a heterogeneous mix — those keep the legacy
+// erased-`Object` element type.  `scrutineeGenericArgs`'s `EList` arm
+// (03_match.l) consults this so `val xs = [9, 7]` records `Int` as `xs`'s
+// element type exactly like the annotated `val xs: List[Int] = newList()`
+// form already does, letting `indexedElemTypeOverride` narrow `xs[i]` from
+// erased `Object` to the real element type instead of panicking on a
+// following relational/arithmetic use (the reported #5686 symptom).
+func inferHomogeneousListElemTypeJvm(ctx: in FuncCtx, exprs: in List[Expr]): Option[JvmType] {
+  if exprs.count == 0 {
+    return None
+  }
+  val firstTy = listLiteralElemTypeJvm(ctx, exprs[0])
+  if not isSimpleListElemJvm(firstTy) {
+    return None
+  }
+  var i = 1
+  var homogeneous = true
+  while i < exprs.count {
+    if not jvmSimpleTypeEq(listLiteralElemTypeJvm(ctx, exprs[i]), firstTy) {
+      homogeneous = false
+    }
+    i = i + 1
+  }
+  if homogeneous {
+    Some(value = firstTy)
+  } else {
+    None
+  }
+}
+
+// Map a simple element `JvmType` (as `isSimpleListElemJvm` accepts) to its
+// Lyric built-in type name, so `scrutineeGenericArgs`'s `EList` arm can
+// synthesise a `TypeExpr` and hand it to the SAME `resolveConcreteTypeExpr`
+// pipeline an explicit `List[Int]` annotation's `TGenericApp` argument goes
+// through (`isPrimitiveTypeKeyword` / `typeExprToJvm`) — one resolution path
+// for both the annotated and unannotated forms, so they can never disagree
+// on how an element is boxed/read.
+func builtinTypeNameForJvmElem(t: in JvmType): Option[String] {
+  match t {
+    case JInt -> Some(value = "Int")
+    case JLong -> Some(value = "Long")
+    case JDouble -> Some(value = "Double")
+    case JBoolean -> Some(value = "Bool")
+    case JChar -> Some(value = "Char")
+    case JByte -> Some(value = "Byte")
+    case JRef(cls) -> if cls == "java/lang/String" { Some(value = "String") } else { None }
+    case _ -> None
+  }
+}
+
+func indexedElemTypeOverride(ctx: in FuncCtx, recv: in Expr, allowMapValueArg: in Bool): JvmType {
   // Recorded/declared instantiation args first, resolved through the same
   // `scrutineeGenericArgs` extraction match-payload unboxing uses
   // (#4938/#4933/#5570): a bare name's recorded `varGenericArgs` entry, a
   // direct call's declared return instantiation (`for n in headerNamesOf(hm)`
   // — the phantom-generic extern-collection idiom), an instance-method call,
-  // or an `await`-wrapped call.
+  // or an `await`-wrapped call.  A single-arg entry is a `slice[Elem]`/
+  // `List[Elem]` receiver (`Elem` at index 0).  A two-arg entry is a
+  // `Map[K, V]` receiver (`V` at index 1, #5451) — but ONLY when the caller
+  // passes `allowMapValueArg`: a genuine `EIndex` receiver (`m[k]`, or a
+  // chained index base — `staticBaseClass`'s `EIndex` arm) is the only shape
+  // the type checker allows a 2-arg generic to be SUBSCRIPTED as, so a 2-arg
+  // entry there is unambiguously `Map[K, V]`.  A `for`-loop ITERABLE
+  // (`05_stmts.l`'s `SFor`) is a different call site sharing this same
+  // function: its 2-arg entries are just as often an unrelated 2-type-param
+  // collection view whose iterated element is the FIRST arg, not the second
+  // — `Std.CollectionsHost.MapKeyCollection[K, V]` (`java.util.Set`, iterates
+  // `K`) is the concrete counter-example (`mapKeys`'s `for k in
+  // dictGetKeys(m)`, #5451 regression during this fix's own development):
+  // guessing index 1 there narrowed the loop's `K` element to `V`'s class
+  // instead, a silent miscompile.  `SFor` passes `false` and keeps the
+  // pre-existing single-arg-only behaviour for its 2-arg case (no override,
+  // safe erased `Object`).
   val args = scrutineeGenericArgs(ctx, recv)
-  if args.count == 1 {
-    val resolved = sameTypeExprElemFallback(ctx, args[0], resolveConcreteTypeExpr(ctx, args[0]))
+  val valueArgIdx = if args.count == 1 { 0 } else if args.count == 2 and allowMapValueArg { 1 } else { -1 }
+  if valueArgIdx >= 0 {
+    val resolved = sameTypeExprElemFallback(ctx, args[valueArgIdx], resolveConcreteTypeExpr(ctx, args[valueArgIdx]))
     match resolved {
       case JRef(cls) -> {
         if cls != "java/lang/Object" {
@@ -440,7 +682,7 @@ func indexedElemTypeOverride(ctx: in FuncCtx, recv: in Expr): JvmType {
         case None -> JVoid
       }
     }
-    case EParen(inner) -> indexedElemTypeOverride(ctx, inner)
+    case EParen(inner) -> indexedElemTypeOverride(ctx, inner, allowMapValueArg)
     case _ -> JVoid
   }
 }
@@ -610,9 +852,38 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           // stack ("Operand stack underflow"); a plain unsuffixed literal stays
           // an int when it fits in 32 bits.
           val isLong = match suffix { case I64 -> true; case U64 -> true; case _ -> false }
+          // #6661: an EXPLICITLY 32-bit-or-narrower suffix (`i8`/`u8`/`i16`/
+          // `u16`/`i32`/`u32`) unambiguously means "push an int", regardless
+          // of the magnitude check below — that check exists only to
+          // disambiguate an UNSUFFIXED literal (which could plausibly mean
+          // either `Int` or `Long`).  A `u32` literal above `Int32.MaxValue`
+          // (e.g. `2500000000u32`, well within `UInt`'s real `0 ..=
+          // 4_294_967_295` range) used to fall through to the magnitude
+          // check, miss it, and get pushed as a `long` (`ldc2_w`) — a real
+          // stack-shape/verifier type mismatch against the `int`-typed JVM
+          // slot every OTHER `UInt`-erasing call site in this file expects
+          // (`Jvm.Codegen.typeExprToJvm`'s `UInt -> JInt`), not merely a
+          // wrong value.  `longToInt` (`Std.Math.longToInt` ->
+          // `Convert.ToInt32`) narrows the value into its `int` bit
+          // pattern — the range-subtype bound fold
+          // (`Jvm.Lowering.emitJvmDistinctBoundsToFail`) already relies on
+          // the identical conversion for a `UInt` upper bound above
+          // `Int32.MaxValue`, matching how JVM natively represents `UInt`.
+          val isExplicit32OrNarrower = match suffix {
+            case I8 -> true
+            case U8 -> true
+            case I16 -> true
+            case U16 -> true
+            case I32 -> true
+            case U32 -> true
+            case _ -> false
+          }
           if isLong {
             insns.add(LLconst(v = v))
             JLong
+          } else if isExplicit32OrNarrower {
+            insns.add(LIconst(v = longToInt(v)))
+            JInt
           } else if v >= -2147483648i64 and v <= 2147483647i64 {
             insns.add(LIconst(v = longToInt(v)))
             JInt
@@ -955,7 +1226,10 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                     // MSIL backend's String.Concat lowering.
                     val rSlot = allocSlot(ctx, "__cat_rhs_" + freshLabel(ctx), rhsTy)
                     emitStore(insns, rSlot, rhsTy)
-                    coerceToStringForConcat(ctx, insns, lhsTy)
+                    // lhsTy is a `JRef` here (the outer match already ruled
+                    // that in) — never a numeric primitive, so `isUnsigned`
+                    // is moot.
+                    coerceToStringForConcat(ctx, insns, lhsTy, false)
                     val catSb: List[JvmType] = newList()
                     val lSlot = allocSlot(ctx, "__cat_lhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
                     emitStore(insns, lSlot, JRef(className = "java/lang/String"))
@@ -974,7 +1248,9 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                       )
                     )
                     emitLoad(insns, rSlot, rhsTy)
-                    coerceToStringForConcat(ctx, insns, rhsTy)
+                    // #6748: rhs may be a `UInt`/`ULong` value concatenated
+                    // onto an erased-to-Object lhs (`xs[0] + uintVal`).
+                    coerceToStringForConcat(ctx, insns, rhsTy, isUnsignedExpr(ctx, rhs))
                     insns.add(
                       LInvokevirtual(
                         owner = "java/lang/StringBuilder",
@@ -1031,7 +1307,8 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               // `Object` slice element, a primitive): stringify before the
               // `append(String)` call or verification fails at the append.
               val rhsConcatTy = lowerExpr(ctx, insns, rhs)
-              coerceToStringForConcat(ctx, insns, rhsConcatTy)
+              // #6748: rhs may be a `UInt`/`ULong` value (`"n=" + uintVal`).
+              coerceToStringForConcat(ctx, insns, rhsConcatTy, isUnsignedExpr(ctx, rhs))
               val rhsSlot = allocSlot(ctx, "__add_rhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
               emitStore(insns, rhsSlot, JRef(className = "java/lang/String"))
               insns.add(LNew(className = "java/lang/StringBuilder"))
@@ -1150,9 +1427,21 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
+          // #6748: `UInt`/`ULong` erase to the JVM's signed `int`/`long`, so
+          // `idiv`/`ldiv` compute the WRONG quotient whenever either operand
+          // has its sign bit set — dispatch to `Integer`/`Long.divideUnsigned`
+          // instead, mirroring the comparison fix above.
+          val isUnsignedDiv = isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs)
           match lhsTy {
             case JLong -> {
-              insns.add(LLdiv)
+              if isUnsignedDiv {
+                val ps: List[JvmType] = newList()
+                ps.add(JLong)
+                ps.add(JLong)
+                insns.add(LInvokestatic(owner = "java/lang/Long", name = "divideUnsigned", params = ps, ret = JLong))
+              } else {
+                insns.add(LLdiv)
+              }
               JLong
             }
             case JDouble -> {
@@ -1175,7 +1464,14 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               JByte
             }
             case _ -> {
-              insns.add(LIdiv)
+              if isUnsignedDiv {
+                val ps: List[JvmType] = newList()
+                ps.add(JInt)
+                ps.add(JInt)
+                insns.add(LInvokestatic(owner = "java/lang/Integer", name = "divideUnsigned", params = ps, ret = JInt))
+              } else {
+                insns.add(LIdiv)
+              }
               JInt
             }
           }
@@ -1184,9 +1480,18 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
+          // #6748: see the matching `BDiv` note above.
+          val isUnsignedMod = isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs)
           match lhsTy {
             case JLong -> {
-              insns.add(LLrem)
+              if isUnsignedMod {
+                val ps: List[JvmType] = newList()
+                ps.add(JLong)
+                ps.add(JLong)
+                insns.add(LInvokestatic(owner = "java/lang/Long", name = "remainderUnsigned", params = ps, ret = JLong))
+              } else {
+                insns.add(LLrem)
+              }
               JLong
             }
             case JDouble -> {
@@ -1209,7 +1514,14 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               JByte
             }
             case _ -> {
-              insns.add(LIrem)
+              if isUnsignedMod {
+                val ps: List[JvmType] = newList()
+                ps.add(JInt)
+                ps.add(JInt)
+                insns.add(LInvokestatic(owner = "java/lang/Integer", name = "remainderUnsigned", params = ps, ret = JInt))
+              } else {
+                insns.add(LIrem)
+              }
               JInt
             }
           }
@@ -1899,7 +2211,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       // narrows to it (docs/59 §4.3 #5439 class) — resolved BEFORE the
       // receiver is lowered so the recorded entry is read against the
       // receiver's own binding.
-      val elemOverride = indexedElemTypeOverride(ctx, recv)
+      val elemOverride = indexedElemTypeOverride(ctx, recv, true)
       val recvTy0 = lowerExpr(ctx, insns, recv)
       // A list/map receiver whose static type is imprecise (an erased-`Object`
       // match binding, or an imported type's in-package guess) must be cast
@@ -1970,11 +2282,18 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             } else if idxCls == "java/util/HashMap" {
               // `m[k]` on a Map[K, V] → `HashMap.get(Object)` (#1707/m-5). The
               // key is boxed like any Object-erased argument; a primitive key
-              // (e.g. `Map[Int, V]`) must be boxed before the call.
+              // (e.g. `Map[Int, V]`) must be boxed before the call. The
+              // erased `Object` VALUE narrows to the receiver's recorded
+              // declared `V` when known (#5451 — `self.sessions[id]` on a
+              // `Map[String, SessionData]` field, mirroring the List-style
+              // arm below's element narrowing) instead of staying an
+              // unconditional erased `Object` regardless of what a coarser,
+              // unrelated `Map[String, Long]` elsewhere in the same bundle
+              // happens to look like.
               val kTy = lowerExpr(ctx, insns, indices[0])
               boxIfNeeded(insns, kTy)
               emitMapGet(insns)
-              JRef(className = "java/lang/Object")
+              applyIndexedElemOverride(insns, elemOverride)
             } else {
               // List-style indexing via ArrayList.get(int).  The erased
               // `Object` element narrows to the receiver's recorded concrete
@@ -2182,7 +2501,8 @@ func lowerCmpExpr(ctx: in FuncCtx, insns: in List[LInsn], op: in BinOp, lhs: in 
   // doesn't match stackmap"), since the StackMapTable declares an empty stack
   // at every branch target (see lowerIfExpr).
   val rslot = allocSlot(ctx, "__cmp_r_" + afterL, JInt)
-  lowerCmp(ctx, insns, op, lhsTy, trueL, afterL)
+  val isUnsigned = isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs)
+  lowerCmp(ctx, insns, op, lhsTy, trueL, afterL, isUnsigned)
   // fall-through: comparison was false
   insns.add(LIconst(v = 0))
   emitStore(insns, rslot, JInt)
@@ -2207,11 +2527,22 @@ func lowerCmpExpr(ctx: in FuncCtx, insns: in List[LInsn], op: in BinOp, lhs: in 
 // lowerCmpFail:       emit the branch-on-failure comparison for lowerBoolCond.
 // ─────────────────────────────────────────────────────────────────────────────
 // Branch to failLabel if the comparison encoded by `op` is NOT satisfied.
-// Both operands must already be on the stack; both are consumed.
-func lowerCmpFail(insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLabel: in String): Unit {
+// Both operands must already be on the stack; both are consumed.  `isUnsigned`
+// (#6748) mirrors `lowerCmp`'s parameter of the same name.
+func lowerCmpFail(
+  insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLabel: in String, isUnsigned: in Bool
+): Unit {
   match lhsTy {
     case JLong -> {
-      insns.add(LLcmp)
+      if isUnsigned {
+        match op {
+          case BEq -> insns.add(LLcmp)
+          case BNeq -> insns.add(LLcmp)
+          case _ -> emitLongCompareUnsigned(insns)
+        }
+      } else {
+        insns.add(LLcmp)
+      }
       match op {
         case BEq -> insns.add(LIfne(label = failLabel))
         case BNeq -> insns.add(LIfeq(label = failLabel))
@@ -2306,14 +2637,39 @@ func lowerCmpFail(insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLa
       }
     }
     case _ -> {
-      match op {
-        case BEq -> insns.add(LIfIcmpne(label = failLabel))
-        case BNeq -> insns.add(LIfIcmpeq(label = failLabel))
-        case BLt -> insns.add(LIfIcmpge(label = failLabel))
-        case BLte -> insns.add(LIfIcmpgt(label = failLabel))
-        case BGt -> insns.add(LIfIcmple(label = failLabel))
-        case BGte -> insns.add(LIfIcmplt(label = failLabel))
-        case _ -> insns.add(LNop)
+      // #6748: see `lowerCmp`'s matching `case _` arm.
+      if isUnsigned {
+        match op {
+          case BEq -> insns.add(LIfIcmpne(label = failLabel))
+          case BNeq -> insns.add(LIfIcmpeq(label = failLabel))
+          case BLt -> {
+            emitIntCompareUnsigned(insns)
+            insns.add(LIfge(label = failLabel))
+          }
+          case BLte -> {
+            emitIntCompareUnsigned(insns)
+            insns.add(LIfgt(label = failLabel))
+          }
+          case BGt -> {
+            emitIntCompareUnsigned(insns)
+            insns.add(LIfle(label = failLabel))
+          }
+          case BGte -> {
+            emitIntCompareUnsigned(insns)
+            insns.add(LIflt(label = failLabel))
+          }
+          case _ -> insns.add(LNop)
+        }
+      } else {
+        match op {
+          case BEq -> insns.add(LIfIcmpne(label = failLabel))
+          case BNeq -> insns.add(LIfIcmpeq(label = failLabel))
+          case BLt -> insns.add(LIfIcmpge(label = failLabel))
+          case BLte -> insns.add(LIfIcmpgt(label = failLabel))
+          case BGt -> insns.add(LIfIcmple(label = failLabel))
+          case BGte -> insns.add(LIfIcmplt(label = failLabel))
+          case _ -> insns.add(LNop)
+        }
       }
     }
   }
@@ -2339,37 +2695,37 @@ func lowerBoolCond(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, failLa
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmpFail(insns, BEq, lhsTy, failLabel)
+          lowerCmpFail(insns, BEq, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BNeq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmpFail(insns, BNeq, lhsTy, failLabel)
+          lowerCmpFail(insns, BNeq, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BLt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmpFail(insns, BLt, lhsTy, failLabel)
+          lowerCmpFail(insns, BLt, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BLte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmpFail(insns, BLte, lhsTy, failLabel)
+          lowerCmpFail(insns, BLte, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BGt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmpFail(insns, BGt, lhsTy, failLabel)
+          lowerCmpFail(insns, BGt, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BGte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmpFail(insns, BGte, lhsTy, failLabel)
+          lowerCmpFail(insns, BGte, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case _ -> {
           // Coerce before the test (#5563 item 2): `cond` may lower to an
@@ -2428,37 +2784,37 @@ func lowerBoolCondTrue(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, su
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmp(ctx, insns, BEq, lhsTy, succeedLabel, "")
+          lowerCmp(ctx, insns, BEq, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BNeq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmp(ctx, insns, BNeq, lhsTy, succeedLabel, "")
+          lowerCmp(ctx, insns, BNeq, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BLt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmp(ctx, insns, BLt, lhsTy, succeedLabel, "")
+          lowerCmp(ctx, insns, BLt, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BLte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmp(ctx, insns, BLte, lhsTy, succeedLabel, "")
+          lowerCmp(ctx, insns, BLte, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BGt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmp(ctx, insns, BGt, lhsTy, succeedLabel, "")
+          lowerCmp(ctx, insns, BGt, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BGte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
-          lowerCmp(ctx, insns, BGte, lhsTy, succeedLabel, "")
+          lowerCmp(ctx, insns, BGte, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case _ -> {
           // Coerce before the test (#5563 item 2): see the matching comment
@@ -2739,7 +3095,8 @@ func lowerInterpolated(ctx: in FuncCtx, insns: in List[LInsn], segments: in List
     match segments[pi] {
       case ISExpr(e) -> {
         val eTy = lowerExpr(ctx, insns, e)
-        coerceToStringForConcat(ctx, insns, eTy)
+        // #6748: an interpolated `UInt`/`ULong` segment (`"${uintVal}"`).
+        coerceToStringForConcat(ctx, insns, eTy, isUnsignedExpr(ctx, e))
         val eSlot = allocSlot(ctx, "__interp_" + freshLabel(ctx), JRef(className = "java/lang/String"))
         emitStore(insns, eSlot, JRef(className = "java/lang/String"))
         exprSlots.add(eSlot)
@@ -2794,8 +3151,12 @@ func lowerInterpolated(ctx: in FuncCtx, insns: in List[LInsn], segments: in List
 // a String is left as-is; any other reference (an erased `Object` slice
 // element, an extern value) calls `Object.toString`; a primitive goes through
 // `String.valueOf(<primitive>)` (no boxing).  `JVoid` (nothing on the stack)
-// is a type-checker/lowering bug and panics (#4685).
-func coerceToStringForConcat(ctx: in FuncCtx, insns: in List[LInsn], ty: in JvmType): Unit {
+// is a type-checker/lowering bug and panics (#4685).  `isUnsigned` (#6748):
+// a `UInt`/`ULong` operand (erased to `JInt`/`JLong`) renders via
+// `Integer`/`Long.toUnsignedString` instead — `String.valueOf(int)` would
+// print a sign-bit-set value as a negative number, e.g. `3000000000u32`
+// (a valid `UInt`) as `"-1294967296"`.
+func coerceToStringForConcat(ctx: in FuncCtx, insns: in List[LInsn], ty: in JvmType, isUnsigned: in Bool): Unit {
   match ty {
     case JRef(c) -> {
       if not (c == "java/lang/String") {
@@ -2838,16 +3199,28 @@ func coerceToStringForConcat(ctx: in FuncCtx, insns: in List[LInsn], ty: in JvmT
       }
       // String.valueOf(<primitive>) — no boxing, unlike Object.toString on a
       // boxed wrapper (keeps the closure zero-overhead boxing gate flat).
-      val voPs: List[JvmType] = newList()
-      voPs.add(stringValueOfParam(ty))
-      insns.add(
-        LInvokestatic(
-          owner = "java/lang/String",
-          name = "valueOf",
-          params = voPs,
-          ret = JRef(className = "java/lang/String")
+      // #6748: a `UInt`/`ULong` operand renders via `Integer`/
+      // `Long.toUnsignedString` instead — see this function's doc comment.
+      val isUnsignedIntOrLong = isUnsigned and (match ty { case JInt -> true; case JLong -> true; case _ -> false })
+      if isUnsignedIntOrLong {
+        val uPs: List[JvmType] = newList()
+        uPs.add(ty)
+        val uOwner = match ty { case JLong -> "java/lang/Long"; case _ -> "java/lang/Integer" }
+        insns.add(
+          LInvokestatic(owner = uOwner, name = "toUnsignedString", params = uPs, ret = JRef(className = "java/lang/String"))
         )
-      )
+      } else {
+        val voPs: List[JvmType] = newList()
+        voPs.add(stringValueOfParam(ty))
+        insns.add(
+          LInvokestatic(
+            owner = "java/lang/String",
+            name = "valueOf",
+            params = voPs,
+            ret = JRef(className = "java/lang/String")
+          )
+        )
+      }
       // #4688: Java's Double.toString always renders a fractional digit
       // ("1500.0") where .NET's default ToString() omits it for whole values
       // ("1500").  Normalize the JVM target onto the already-established
@@ -2874,37 +3247,128 @@ func stringValueOfParam(ty: in JvmType): JvmType {
   }
 }
 
-// #4688: strip a trailing ".0" from the `String.valueOf(double)` /
-// `Double.toString` result already on the stack, so a whole-valued Double
-// stringifies as "1500" on the JVM target instead of Java's "1500.0" —
-// matching .NET's default `Double.ToString()` ("G" format), which never
-// emits a trailing ".0".  Values with a genuine fractional part (e.g.
-// "1500.5") are left untouched.  Stack in: [String]; stack out: [String].
-//
-// This codegen's StackMapTable frames (`lowering.l`'s per-function
-// `full_frame` emission) declare an EMPTY operand stack at every branch
-// target — every other branchy path in this file stores its result to a
-// local before a `goto`/label and reloads after the merge, never leaving a
-// value on the stack across one.  Both arms below store the (unchanged or
-// stripped) String back into `sSlot` before falling into `endLabel`, then
-// reload it once, after the merge, for the caller.
-func emitNormalizeDoubleString(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared bytecode-construction helpers for the Double normalizer below: every
+// branch stores its result to a slot rather than leaving it on the stack (see
+// the StackMapTable note on `emitNormalizeDoubleString`), so these operate on
+// slot numbers rather than composing on the stack.
+// ─────────────────────────────────────────────────────────────────────────────
+// Push a String literal and store it to a fresh slot; returns the slot.
+func emitLiteralSlot(ctx: in FuncCtx, insns: in List[LInsn], s: in String): Int {
   val strTy = JRef(className = "java/lang/String")
-  val sSlot = allocSlot(ctx, "__dblstr_s_" + freshLabel(ctx), strTy)
-  emitStore(insns, sSlot, strTy)
+  insns.add(LPushString(s = s))
+  val slot = allocSlot(ctx, "__dblstr_lit_" + freshLabel(ctx), strTy)
+  emitStore(insns, slot, strTy)
+  slot
+}
+
+// Join the Strings held in `slots` (in order) via StringBuilder, leaving the
+// joined String on the stack.  Stack in: empty; stack out: [String].
+func emitConcatSlots(ctx: in FuncCtx, insns: in List[LInsn], slots: in List[Int]): Unit {
+  val strTy = JRef(className = "java/lang/String")
+  insns.add(LNew(className = "java/lang/StringBuilder"))
+  insns.add(LDup)
+  val initPs: List[JvmType] = newList()
+  insns.add(LInvokespecial(owner = "java/lang/StringBuilder", name = "<init>", params = initPs, ret = JVoid))
+  val appPs: List[JvmType] = newList()
+  appPs.add(strTy)
+  var i = 0
+  while i < slots.count {
+    emitLoad(insns, slots[i], strTy)
+    insns.add(
+      LInvokevirtual(
+        owner = "java/lang/StringBuilder",
+        name = "append",
+        params = appPs,
+        ret = JRef(className = "java/lang/StringBuilder")
+      )
+    )
+    i = i + 1
+  }
+  val tsPs: List[JvmType] = newList()
+  insns.add(LInvokevirtual(owner = "java/lang/StringBuilder", name = "toString", params = tsPs, ret = strTy))
+}
+
+// `String.length()` on the String already on the stack.  Stack: [String] -> [Int].
+func emitStrLen(insns: in List[LInsn]): Unit {
+  val ps: List[JvmType] = newList()
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "length", params = ps, ret = JInt))
+}
+
+// `String.substring(int)` — receiver + start index already on the stack.
+// Stack: [String, Int] -> [String].
+func emitStrSubstringFrom(insns: in List[LInsn]): Unit {
+  val ps: List[JvmType] = newList()
+  ps.add(JInt)
+  insns.add(
+    LInvokevirtual(
+      owner = "java/lang/String",
+      name = "substring",
+      params = ps,
+      ret = JRef(className = "java/lang/String")
+    )
+  )
+}
+
+// `String.substring(int, int)` — receiver + begin + end already on the stack.
+// Stack: [String, Int, Int] -> [String].
+func emitStrSubstringRange(insns: in List[LInsn]): Unit {
+  val ps: List[JvmType] = newList()
+  ps.add(JInt)
+  ps.add(JInt)
+  insns.add(
+    LInvokevirtual(
+      owner = "java/lang/String",
+      name = "substring",
+      params = ps,
+      ret = JRef(className = "java/lang/String")
+    )
+  )
+}
+
+// If `negSlot` (a JBoolean local) is true, prefix `bodySlot`'s String with
+// "-"; otherwise copy it unchanged.  Result written to `outSlot` (may alias
+// `bodySlot`).  Stack in/out: empty.
+func emitApplyNegPrefix(
+  ctx: in FuncCtx, insns: in List[LInsn], negSlot: in Int, bodySlot: in Int, outSlot: in Int
+): Unit {
+  val strTy = JRef(className = "java/lang/String")
+  emitLoad(insns, negSlot, JBoolean)
+  val posLabel = freshLabel(ctx)
+  val doneLabel = freshLabel(ctx)
+  insns.add(LIfeq(label = posLabel))
+  val dashSlot = emitLiteralSlot(ctx, insns, "-")
+  val pieces: List[Int] = newList()
+  pieces.add(dashSlot)
+  pieces.add(bodySlot)
+  emitConcatSlots(ctx, insns, pieces)
+  emitStore(insns, outSlot, strTy)
+  insns.add(LGoto(label = doneLabel))
+  insns.add(LLabel(name = posLabel))
+  emitLoad(insns, bodySlot, strTy)
+  emitStore(insns, outSlot, strTy)
+  insns.add(LLabel(name = doneLabel))
+}
+
+// #4688: strip a trailing ".0" from the fixed-point Double string held in
+// `sSlot`, so a whole-valued Double stringifies as "1500" instead of Java's
+// "1500.0" — matching .NET's default `Double.ToString()`, which never emits a
+// trailing ".0".  A genuine fractional part (e.g. "1500.5") is left
+// untouched.  Mutates `sSlot`; stack in/out: empty.
+func emitStripTrailingDotZero(ctx: in FuncCtx, insns: in List[LInsn], sSlot: in Int): Unit {
+  val strTy = JRef(className = "java/lang/String")
   emitLoad(insns, sSlot, strTy)
   insns.add(LPushString(s = ".0"))
   val ewPs: List[JvmType] = newList()
   ewPs.add(strTy)
   insns.add(LInvokevirtual(owner = "java/lang/String", name = "endsWith", params = ewPs, ret = JBoolean))
   val skipLabel = freshLabel(ctx)
-  val endLabel = freshLabel(ctx)
+  val doneLabel = freshLabel(ctx)
   insns.add(LIfeq(label = skipLabel))
   // Strip: substring(0, s.length() - 2), then overwrite sSlot so the
   // operand stack is empty again before the `goto` to the merge point.
   emitLoad(insns, sSlot, strTy)
-  val lenPs: List[JvmType] = newList()
-  insns.add(LInvokevirtual(owner = "java/lang/String", name = "length", params = lenPs, ret = JInt))
+  emitStrLen(insns)
   insns.add(LIconst(v = 2))
   insns.add(LIsub)
   val lenSlot = allocSlot(ctx, "__dblstr_len_" + freshLabel(ctx), JInt)
@@ -2912,13 +3376,352 @@ func emitNormalizeDoubleString(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
   emitLoad(insns, sSlot, strTy)
   insns.add(LIconst(v = 0))
   emitLoad(insns, lenSlot, JInt)
-  val subPs: List[JvmType] = newList()
-  subPs.add(JInt)
-  subPs.add(JInt)
-  insns.add(LInvokevirtual(owner = "java/lang/String", name = "substring", params = subPs, ret = strTy))
+  emitStrSubstringRange(insns)
   emitStore(insns, sSlot, strTy)
-  insns.add(LGoto(label = endLabel))
+  insns.add(LGoto(label = doneLabel))
   insns.add(LLabel(name = skipLabel))
+  insns.add(LLabel(name = doneLabel))
+}
+
+// #4688 / #5660: normalize the `String.valueOf(double)` / `Double.toString`
+// result already on the stack onto .NET's default `Double.ToString()`
+// rendering.  Java and .NET agree on the digits (both use a shortest
+// round-trippable decimal expansion) but disagree on (a) whether a whole
+// value keeps a trailing ".0" (#4688) and (b) the magnitude thresholds for
+// switching to scientific ("E") notation (#5660): Java switches at
+// |value| >= 1e7 or < 1e-3, .NET at |value| >= 1e17 or < 1e-4.  So a value
+// can land in three different regimes:
+//   1. Neither target uses scientific notation — Java's fixed-point range is
+//      a strict subset of .NET's, so the #4688 trailing-".0" strip is the
+//      only work needed.
+//   2. Java uses scientific notation but the magnitude is still within
+//      .NET's (wider) fixed-point range (1e-4 <= |value| < 1e17) — Java's
+//      "D.DDDEn" digits are re-laid-out into plain decimal by shifting the
+//      point per the exponent.
+//   3. The magnitude is outside .NET's fixed-point range too — both targets
+//      use scientific notation, but .NET's format differs from Java's (no
+//      forced ".0" mantissa suffix, an explicit "+"/"-" exponent sign, and
+//      the exponent zero-padded to at least 2 digits), so the digits are
+//      re-assembled into .NET's own spelling.
+//
+// Stack in: [String]; stack out: [String].
+//
+// This codegen's StackMapTable frames (`lowering.l`'s per-function
+// `full_frame` emission) declare an EMPTY operand stack at every branch
+// target — every branchy path below stores its result to a slot before a
+// `goto`/label and reloads after the merge, never leaving a value on the
+// stack across one.
+func emitNormalizeDoubleString(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
+  val strTy = JRef(className = "java/lang/String")
+  val objTy = JRef(className = "java/lang/Object")
+
+  val sSlot = allocSlot(ctx, "__dblstr_s_" + freshLabel(ctx), strTy)
+  emitStore(insns, sSlot, strTy)
+
+  // Locate Java's exponent marker 'E' (always uppercase, always present when
+  // Java rendered scientific notation).
+  emitLoad(insns, sSlot, strTy)
+  insns.add(LIconst(v = 69)) // 'E'
+  val idxPs: List[JvmType] = newList()
+  idxPs.add(JInt)
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "indexOf", params = idxPs, ret = JInt))
+  val eIdxSlot = allocSlot(ctx, "__dblstr_eidx_" + freshLabel(ctx), JInt)
+  emitStore(insns, eIdxSlot, JInt)
+
+  val sciSourceLabel = freshLabel(ctx)
+  val endLabel = freshLabel(ctx)
+  emitLoad(insns, eIdxSlot, JInt)
+  insns.add(LIconst(v = 0))
+  insns.add(LIfIcmpge(label = sciSourceLabel))
+
+  // ── Regime 1: Java gave fixed-point notation. ──
+  emitStripTrailingDotZero(ctx, insns, sSlot)
+  insns.add(LGoto(label = endLabel))
+
+  // ── Java gave scientific notation: parse the "[-]D.DDD" mantissa and the
+  // exponent, then re-derive .NET's own rendering from the digits. ──
+  insns.add(LLabel(name = sciSourceLabel))
+
+  // mantissaStr = s.substring(0, eIdx); expStr = s.substring(eIdx + 1)
+  emitLoad(insns, sSlot, strTy)
+  insns.add(LIconst(v = 0))
+  emitLoad(insns, eIdxSlot, JInt)
+  emitStrSubstringRange(insns)
+  val mantissaSlot = allocSlot(ctx, "__dblstr_mant_" + freshLabel(ctx), strTy)
+  emitStore(insns, mantissaSlot, strTy)
+
+  emitLoad(insns, sSlot, strTy)
+  emitLoad(insns, eIdxSlot, JInt)
+  insns.add(LIconst(v = 1))
+  insns.add(LIadd)
+  emitStrSubstringFrom(insns)
+  val expStrSlot = allocSlot(ctx, "__dblstr_expstr_" + freshLabel(ctx), strTy)
+  emitStore(insns, expStrSlot, strTy)
+
+  // exp = Integer.parseInt(expStr)
+  emitLoad(insns, expStrSlot, strTy)
+  val parsePs: List[JvmType] = newList()
+  parsePs.add(strTy)
+  insns.add(LInvokestatic(owner = "java/lang/Integer", name = "parseInt", params = parsePs, ret = JInt))
+  val expSlot = allocSlot(ctx, "__dblstr_exp_" + freshLabel(ctx), JInt)
+  emitStore(insns, expSlot, JInt)
+
+  // isNeg = mantissaStr.startsWith("-")
+  emitLoad(insns, mantissaSlot, strTy)
+  insns.add(LPushString(s = "-"))
+  val swPs: List[JvmType] = newList()
+  swPs.add(strTy)
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "startsWith", params = swPs, ret = JBoolean))
+  val negSlot = allocSlot(ctx, "__dblstr_neg_" + freshLabel(ctx), JBoolean)
+  emitStore(insns, negSlot, JBoolean)
+
+  // digitsMantissa = isNeg ? mantissaStr.substring(1) : mantissaStr
+  val digitsMantissaSlot = allocSlot(ctx, "__dblstr_dm_" + freshLabel(ctx), strTy)
+  emitLoad(insns, negSlot, JBoolean)
+  val notNegLabel = freshLabel(ctx)
+  val dmDoneLabel = freshLabel(ctx)
+  insns.add(LIfeq(label = notNegLabel))
+  emitLoad(insns, mantissaSlot, strTy)
+  insns.add(LIconst(v = 1))
+  emitStrSubstringFrom(insns)
+  emitStore(insns, digitsMantissaSlot, strTy)
+  insns.add(LGoto(label = dmDoneLabel))
+  insns.add(LLabel(name = notNegLabel))
+  emitLoad(insns, mantissaSlot, strTy)
+  emitStore(insns, digitsMantissaSlot, strTy)
+  insns.add(LLabel(name = dmDoneLabel))
+
+  // intDigitStr = digitsMantissa.substring(0, 1); fracPart = digitsMantissa.substring(2)
+  emitLoad(insns, digitsMantissaSlot, strTy)
+  insns.add(LIconst(v = 0))
+  insns.add(LIconst(v = 1))
+  emitStrSubstringRange(insns)
+  val intDigitSlot = allocSlot(ctx, "__dblstr_d0_" + freshLabel(ctx), strTy)
+  emitStore(insns, intDigitSlot, strTy)
+
+  emitLoad(insns, digitsMantissaSlot, strTy)
+  insns.add(LIconst(v = 2))
+  emitStrSubstringFrom(insns)
+  val fracPartSlot = allocSlot(ctx, "__dblstr_frac_" + freshLabel(ctx), strTy)
+  emitStore(insns, fracPartSlot, strTy)
+
+  // sigDigits = fracPart.equals("0") ? intDigitStr : (intDigitStr + fracPart)
+  // (Java's shortest round-trip mantissa never carries a trailing zero
+  // beyond this single mandatory placeholder digit, so no further trimming
+  // of `fracPart` is needed once it is known to be non-"0".)
+  emitLoad(insns, fracPartSlot, strTy)
+  insns.add(LPushString(s = "0"))
+  val eqPs: List[JvmType] = newList()
+  eqPs.add(objTy)
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs, ret = JBoolean))
+  val sigDigitsSlot = allocSlot(ctx, "__dblstr_sig_" + freshLabel(ctx), strTy)
+  val fracNonZeroLabel = freshLabel(ctx)
+  val sigDoneLabel = freshLabel(ctx)
+  insns.add(LIfeq(label = fracNonZeroLabel))
+  emitLoad(insns, intDigitSlot, strTy)
+  emitStore(insns, sigDigitsSlot, strTy)
+  insns.add(LGoto(label = sigDoneLabel))
+  insns.add(LLabel(name = fracNonZeroLabel))
+  val sigPieces: List[Int] = newList()
+  sigPieces.add(intDigitSlot)
+  sigPieces.add(fracPartSlot)
+  emitConcatSlots(ctx, insns, sigPieces)
+  emitStore(insns, sigDigitsSlot, strTy)
+  insns.add(LLabel(name = sigDoneLabel))
+
+  // nSig = sigDigits.length()
+  emitLoad(insns, sigDigitsSlot, strTy)
+  emitStrLen(insns)
+  val nSigSlot = allocSlot(ctx, "__dblstr_nsig_" + freshLabel(ctx), JInt)
+  emitStore(insns, nSigSlot, JInt)
+
+  // .NET's fixed-point range is -4 <= exp <= 16; outside it, .NET also uses
+  // scientific notation (but in its own spelling — see the "sci" arm below).
+  val sciTargetLabel = freshLabel(ctx)
+  emitLoad(insns, expSlot, JInt)
+  insns.add(LIconst(v = -4))
+  insns.add(LIfIcmplt(label = sciTargetLabel))
+  emitLoad(insns, expSlot, JInt)
+  insns.add(LIconst(v = 16))
+  insns.add(LIfIcmpgt(label = sciTargetLabel))
+
+  // ── Regime 2: reformat as plain fixed-point decimal. ──
+  val bodySlot = allocSlot(ctx, "__dblstr_body_" + freshLabel(ctx), strTy)
+  val negExpLabel = freshLabel(ctx)
+  val fixedBodyDoneLabel = freshLabel(ctx)
+  emitLoad(insns, expSlot, JInt)
+  insns.add(LIconst(v = 0))
+  insns.add(LIfIcmplt(label = negExpLabel))
+
+  // exp >= 0: pointPos = exp + 1 digits precede the decimal point.
+  emitLoad(insns, expSlot, JInt)
+  insns.add(LIconst(v = 1))
+  insns.add(LIadd)
+  val pointPosSlot = allocSlot(ctx, "__dblstr_pp_" + freshLabel(ctx), JInt)
+  emitStore(insns, pointPosSlot, JInt)
+
+  val wholeNumLabel = freshLabel(ctx)
+  val posExpDoneLabel = freshLabel(ctx)
+  emitLoad(insns, pointPosSlot, JInt)
+  emitLoad(insns, nSigSlot, JInt)
+  insns.add(LIfIcmpge(label = wholeNumLabel))
+  // pointPos < nSig: a genuine fractional part remains.
+  emitLoad(insns, sigDigitsSlot, strTy)
+  insns.add(LIconst(v = 0))
+  emitLoad(insns, pointPosSlot, JInt)
+  emitStrSubstringRange(insns)
+  val fracHeadSlot = allocSlot(ctx, "__dblstr_p1_" + freshLabel(ctx), strTy)
+  emitStore(insns, fracHeadSlot, strTy)
+  emitLoad(insns, sigDigitsSlot, strTy)
+  emitLoad(insns, pointPosSlot, JInt)
+  emitStrSubstringFrom(insns)
+  val fracTailSlot = allocSlot(ctx, "__dblstr_p2_" + freshLabel(ctx), strTy)
+  emitStore(insns, fracTailSlot, strTy)
+  val dotLitSlot = emitLiteralSlot(ctx, insns, ".")
+  val fracPieces: List[Int] = newList()
+  fracPieces.add(fracHeadSlot)
+  fracPieces.add(dotLitSlot)
+  fracPieces.add(fracTailSlot)
+  emitConcatSlots(ctx, insns, fracPieces)
+  emitStore(insns, bodySlot, strTy)
+  insns.add(LGoto(label = posExpDoneLabel))
+  insns.add(LLabel(name = wholeNumLabel))
+  // pointPos >= nSig: pad with trailing zeros, no decimal point.
+  emitLoad(insns, pointPosSlot, JInt)
+  emitLoad(insns, nSigSlot, JInt)
+  insns.add(LIsub)
+  val zerosNeededSlot = allocSlot(ctx, "__dblstr_zn_" + freshLabel(ctx), JInt)
+  emitStore(insns, zerosNeededSlot, JInt)
+  insns.add(LPushString(s = "0"))
+  emitLoad(insns, zerosNeededSlot, JInt)
+  val repeatPs: List[JvmType] = newList()
+  repeatPs.add(JInt)
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "repeat", params = repeatPs, ret = strTy))
+  val zerosSlot = allocSlot(ctx, "__dblstr_zeros_" + freshLabel(ctx), strTy)
+  emitStore(insns, zerosSlot, strTy)
+  val wholePieces: List[Int] = newList()
+  wholePieces.add(sigDigitsSlot)
+  wholePieces.add(zerosSlot)
+  emitConcatSlots(ctx, insns, wholePieces)
+  emitStore(insns, bodySlot, strTy)
+  insns.add(LLabel(name = posExpDoneLabel))
+  insns.add(LGoto(label = fixedBodyDoneLabel))
+
+  insns.add(LLabel(name = negExpLabel))
+  // exp in [-4, -1]: "0." followed by (-exp - 1) zeros, then the digits.
+  emitLoad(insns, expSlot, JInt)
+  insns.add(LIneg)
+  insns.add(LIconst(v = 1))
+  insns.add(LIsub)
+  val zerosNeeded2Slot = allocSlot(ctx, "__dblstr_zn2_" + freshLabel(ctx), JInt)
+  emitStore(insns, zerosNeeded2Slot, JInt)
+  insns.add(LPushString(s = "0"))
+  emitLoad(insns, zerosNeeded2Slot, JInt)
+  val repeatPs2: List[JvmType] = newList()
+  repeatPs2.add(JInt)
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "repeat", params = repeatPs2, ret = strTy))
+  val zeros2Slot = allocSlot(ctx, "__dblstr_zeros2_" + freshLabel(ctx), strTy)
+  emitStore(insns, zeros2Slot, strTy)
+  val zeroDotSlot = emitLiteralSlot(ctx, insns, "0.")
+  val negExpPieces: List[Int] = newList()
+  negExpPieces.add(zeroDotSlot)
+  negExpPieces.add(zeros2Slot)
+  negExpPieces.add(sigDigitsSlot)
+  emitConcatSlots(ctx, insns, negExpPieces)
+  emitStore(insns, bodySlot, strTy)
+  insns.add(LLabel(name = fixedBodyDoneLabel))
+
+  emitApplyNegPrefix(ctx, insns, negSlot, bodySlot, sSlot)
+  insns.add(LGoto(label = endLabel))
+
+  // ── Regime 3: outside .NET's fixed-point range too — rebuild .NET's own
+  // scientific spelling ("D[.DDD]E[+-]NN", exponent zero-padded to >= 2
+  // digits, no forced ".0" mantissa suffix). ──
+  insns.add(LLabel(name = sciTargetLabel))
+  val mantissaOutSlot = allocSlot(ctx, "__dblstr_mout_" + freshLabel(ctx), strTy)
+  val multiDigitLabel = freshLabel(ctx)
+  val mantissaDoneLabel = freshLabel(ctx)
+  emitLoad(insns, nSigSlot, JInt)
+  insns.add(LIconst(v = 1))
+  insns.add(LIfIcmpgt(label = multiDigitLabel))
+  emitLoad(insns, sigDigitsSlot, strTy)
+  emitStore(insns, mantissaOutSlot, strTy)
+  insns.add(LGoto(label = mantissaDoneLabel))
+  insns.add(LLabel(name = multiDigitLabel))
+  emitLoad(insns, sigDigitsSlot, strTy)
+  insns.add(LIconst(v = 0))
+  insns.add(LIconst(v = 1))
+  emitStrSubstringRange(insns)
+  val firstDigitSlot = allocSlot(ctx, "__dblstr_fd_" + freshLabel(ctx), strTy)
+  emitStore(insns, firstDigitSlot, strTy)
+  emitLoad(insns, sigDigitsSlot, strTy)
+  insns.add(LIconst(v = 1))
+  emitStrSubstringFrom(insns)
+  val restDigitsSlot = allocSlot(ctx, "__dblstr_rest_" + freshLabel(ctx), strTy)
+  emitStore(insns, restDigitsSlot, strTy)
+  val mantDotSlot = emitLiteralSlot(ctx, insns, ".")
+  val mantPieces: List[Int] = newList()
+  mantPieces.add(firstDigitSlot)
+  mantPieces.add(mantDotSlot)
+  mantPieces.add(restDigitsSlot)
+  emitConcatSlots(ctx, insns, mantPieces)
+  emitStore(insns, mantissaOutSlot, strTy)
+  insns.add(LLabel(name = mantissaDoneLabel))
+
+  // expAbs = Math.abs(exp); expDigits = String.valueOf(expAbs), left-padded
+  // with "0" to at least 2 digits.
+  emitLoad(insns, expSlot, JInt)
+  val absPs: List[JvmType] = newList()
+  absPs.add(JInt)
+  insns.add(LInvokestatic(owner = "java/lang/Math", name = "abs", params = absPs, ret = JInt))
+  val expAbsSlot = allocSlot(ctx, "__dblstr_eabs_" + freshLabel(ctx), JInt)
+  emitStore(insns, expAbsSlot, JInt)
+  emitLoad(insns, expAbsSlot, JInt)
+  val voPs: List[JvmType] = newList()
+  voPs.add(JInt)
+  insns.add(LInvokestatic(owner = "java/lang/String", name = "valueOf", params = voPs, ret = strTy))
+  val expDigitsSlot = allocSlot(ctx, "__dblstr_edig_" + freshLabel(ctx), strTy)
+  emitStore(insns, expDigitsSlot, strTy)
+  val noPadLabel = freshLabel(ctx)
+  emitLoad(insns, expDigitsSlot, strTy)
+  emitStrLen(insns)
+  insns.add(LIconst(v = 1))
+  insns.add(LIfIcmpne(label = noPadLabel))
+  val zeroPadSlot = emitLiteralSlot(ctx, insns, "0")
+  val padPieces: List[Int] = newList()
+  padPieces.add(zeroPadSlot)
+  padPieces.add(expDigitsSlot)
+  emitConcatSlots(ctx, insns, padPieces)
+  emitStore(insns, expDigitsSlot, strTy)
+  insns.add(LLabel(name = noPadLabel))
+
+  // sign = exp >= 0 ? "+" : "-"
+  val signSlot = allocSlot(ctx, "__dblstr_sign_" + freshLabel(ctx), strTy)
+  val negSignLabel = freshLabel(ctx)
+  val signDoneLabel = freshLabel(ctx)
+  emitLoad(insns, expSlot, JInt)
+  insns.add(LIconst(v = 0))
+  insns.add(LIfIcmplt(label = negSignLabel))
+  insns.add(LPushString(s = "+"))
+  emitStore(insns, signSlot, strTy)
+  insns.add(LGoto(label = signDoneLabel))
+  insns.add(LLabel(name = negSignLabel))
+  insns.add(LPushString(s = "-"))
+  emitStore(insns, signSlot, strTy)
+  insns.add(LLabel(name = signDoneLabel))
+
+  val eLitSlot = emitLiteralSlot(ctx, insns, "E")
+  val body2Slot = allocSlot(ctx, "__dblstr_body2_" + freshLabel(ctx), strTy)
+  val sciPieces: List[Int] = newList()
+  sciPieces.add(mantissaOutSlot)
+  sciPieces.add(eLitSlot)
+  sciPieces.add(signSlot)
+  sciPieces.add(expDigitsSlot)
+  emitConcatSlots(ctx, insns, sciPieces)
+  emitStore(insns, body2Slot, strTy)
+
+  emitApplyNegPrefix(ctx, insns, negSlot, body2Slot, sSlot)
+
   insns.add(LLabel(name = endLabel))
   emitLoad(insns, sSlot, strTy)
 }
@@ -2944,13 +3747,44 @@ func boxIfNeeded(insns: in List[LInsn], ty: in JvmType): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §5j. Lambda / closure lowering (J2b, #2665).
 // ─────────────────────────────────────────────────────────────────────────────
-// The shared functional interface every lambda in a package implements.  A
+// The shared functional interface every lambda in every package implements.  A
 // uniform Object[]-packing ABI (`invoke([Ljava/lang/Object;)Ljava/lang/Object;`)
 // makes construction and invocation agree for any arity, with generics erased to
-// `Object` (J4) — primitives are boxed in and checkcast+unboxed out.  One such
-// interface is emitted per package (see `emitLambdaInterfaceIfNeeded`).
-pub func lambdaIfaceName(pkgName: in String): String {
-  pkgName + "/Lyric$Lambda"
+// `Object` (J4) — primitives are boxed in and checkcast+unboxed out.
+//
+// One SINGLE binary name is shared by the whole bundle (#5388/#5251): before
+// this fix, each package emitted its OWN nominally-distinct `<pkg>/Lyric$Lambda`
+// copy, so a closure literal written in package A and invoked through a
+// function-typed parameter in package B failed its `checkcast` at the call
+// site — `ClassCastException: class A$Lambda$0 cannot be cast to class
+// B.Lyric$Lambda` — because A's closure implements A's own interface, not B's.
+// `Std.Testing.assertPanicsWith`'s lambda-argument form hit this on every call
+// (the test file and `Std.Testing` are always different packages), surfacing
+// as a corrupted `Bug.message` (the CCE's own text, not the real panic
+// message) rather than the more obviously-wrong CCE itself, since `catch Bug`
+// maps broadly to `java/lang/Throwable` and happily caught it.
+//
+// The fixed name keeps a leading `Lyric/` package segment (rather than the
+// unqualified default package) so `Jvm.AutoFfi.isLyricLambdaDesc`'s
+// `.endsWith("/Lyric$Lambda;")` descriptor check — which recognizes a
+// Lyric-closure argument without knowing which package it came from — keeps
+// matching unchanged. `codegenPackageInto` (`bridge.l`) deduplicates the
+// resulting duplicate `LPInterface` entries (every package that needs the
+// interface still decides independently whether to emit one via
+// `fileNeedsLambdaIface`/`closureAcc`, so several packages in one bundle
+// legitimately try to emit the identical class) before writing the JAR.
+// Zero-arg rather than taking a `pkgName` it ignores: the binary name is
+// fixed (see the block comment above), so it never actually depended on a
+// `pkgName` argument — every call site used to pass one anyway (including
+// `bridge.l`'s `lambdaIfaceName("")`), which read as parameterized when it
+// wasn't (#6741 SUGGESTION). A `pub val` reads even more directly as "this
+// never varies," but a cross-package unqualified reference to a `pub val`
+// (`bridge.l`'s call site) is `T0020 unknown name` under this codebase's
+// current name resolution — unlike a `pub func`, which resolves fine
+// unqualified across an unaliased `import Jvm.Codegen` (every OTHER call
+// site here) — so this stays a function.
+pub func lambdaIfaceName(): String {
+  "Lyric/Lyric$Lambda"
 }
 
 pub func lambdaIfaceMethod(): String {
@@ -3553,7 +4387,7 @@ func lambdaCaptureNamesJvm(ctx: in FuncCtx, lparams: in List[LambdaParam], body:
 // then emit `new` + capture-load + `invokespecial <init>` so the closure object
 // is left on the stack.  Returns the closure's static type (the shared iface).
 func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[LambdaParam], body: in Block): JvmType {
-  val ifaceName = lambdaIfaceName(ctx.pkgName)
+  val ifaceName = lambdaIfaceName()
   val idx = ctx.closureAcc.count
   // Use `$Lambda$<n>` nesting under the package host class so the binary name is
   // unique and not mistaken for a user record/union.
@@ -3677,6 +4511,17 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
       }
     }
   }
+  // #6748: same propagation for a captured `UInt`/`ULong` local — a lambda
+  // body comparing/dividing/stringifying a captured unsigned var needs the
+  // same unsigned-aware codegen the enclosing function's own use of it gets.
+  for uvk in mapKeys(ctx.unsignedVars) {
+    if not closureParamNames.containsKey(uvk) {
+      match mapGet(ctx.unsignedVars, uvk) {
+        case Some(_) -> bodyCtx.unsignedVars.add(uvk, true)
+        case None -> ()
+      }
+    }
+  }
   // Reserve slot 0 (this) and slot 1 (Object[] args).
   allocSlot(bodyCtx, "__closure_this", JRef(className = closureClass))
   val argsSlot = allocSlot(bodyCtx, "__closure_args", JArray(elem = JRef(className = "java/lang/Object")))
@@ -3692,6 +4537,8 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
       case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes)
       case None -> JRef(className = "java/lang/Object")
     }
+    // #6748: a `UInt`/`ULong`-annotated lambda parameter.
+    recordUnsignedVar(bodyCtx, lp.name, lp.ty)
     val pslot = allocSlot(bodyCtx, lp.name, pty)
     bodyInsns.add(LAload(slot = argsSlot))
     bodyInsns.add(LIconst(v = pi))
@@ -4113,6 +4960,14 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
   for fvk in mapKeys(ctx.funcValRetTypes) {
     match mapGet(ctx.funcValRetTypes, fvk) {
       case Some(frt) -> bodyCtx.funcValRetTypes.add(fvk, frt)
+      case None -> ()
+    }
+  }
+  // #6748: same propagation for a captured `UInt`/`ULong` local — see the
+  // matching note in the lambda-closure builder above.
+  for uvk in mapKeys(ctx.unsignedVars) {
+    match mapGet(ctx.unsignedVars, uvk) {
+      case Some(_) -> bodyCtx.unsignedVars.add(uvk, true)
       case None -> ()
     }
   }

@@ -385,9 +385,15 @@ pub func parseDescriptorParams(descriptor: in String): List[String] {
       params.add(descriptor.substring(i, j - i + 1))
       i = j + 1
     } else if ch == '[' {
-      // Array: capture the bracket + element
+      // Array: capture every leading bracket (multi-dimensional arrays, e.g.
+      // "[[I" for int[][] or "[[Ljava/lang/String;" for String[][][], carry
+      // MULTIPLE leading '[' before the element-type character — JVMS §4.3.2's
+      // FieldType grammar allows unbounded array-dimension nesting) plus the
+      // element type.
       val start = i
-      i = i + 1
+      while i < len and descriptor[i] == '[' {
+        i = i + 1
+      }
       if i < len and descriptor[i] == 'L' {
         while i < len and descriptor[i] != ';' {
           i = i + 1
@@ -421,7 +427,15 @@ func isPrimitiveArrayDesc(desc: in String): Bool {
 // `isAssignableRef`.  Module-private: external callers must use `scoreParam` (which
 // layers the IS-A check on top), so a bare reference/reference pair here never
 // means "definitively incompatible".
-func scoreParamMatch(argDesc: in String, paramDesc: in String): Int {
+//
+// `argIsNarrowedSliceErasure` (#6745): true only when `argDesc` is a
+// SCORE-ONLY primitive-array descriptor that `ffiScoreDescFor` synthesized by
+// narrowing a `slice[T]` argument whose REAL runtime representation is
+// `[Ljava/lang/Object;` — never true for a genuinely primitive-array-typed
+// argument (e.g. a JDK method's real `char[]`/`int[]` return value flowing
+// straight into another call).  Gates the reverse-compatibility arm below:
+// see that arm's comment for why the distinction matters.
+func scoreParamMatch(argDesc: in String, paramDesc: in String, argIsNarrowedSliceErasure: in Bool): Int {
   if argDesc == paramDesc {
     return 10
   }
@@ -463,6 +477,63 @@ func scoreParamMatch(argDesc: in String, paramDesc: in String): Int {
     }
     return -1
   }
+  // byte/short/char widening (#6769, JLS §5.1.2): the JVM represents all four
+  // integral-below-int types (`byte`/`short`/`char`/`int`) on the same `int`
+  // operand-stack slot, so — unlike int→long/float/double above — no
+  // conversion bytecode is emitted for a byte/short/char argument reaching an
+  // `int` parameter; `emitFfiCoerce` already treats that case as a no-op.
+  // `char` widens directly to int/long/float/double (never to `short`, and
+  // never FROM `byte`/`short` — JLS's byte/short/char are mutually
+  // non-widening siblings). Scores decrease with each additional widening
+  // step, mirroring the int-widening arms above.
+  if argDesc == "B" {
+    if paramDesc == "S" {
+      return 8
+    }
+    if paramDesc == "I" {
+      return 7
+    }
+    if paramDesc == "J" {
+      return 6
+    }
+    if paramDesc == "F" {
+      return 5
+    }
+    if paramDesc == "D" {
+      return 4
+    }
+    return -1
+  }
+  if argDesc == "S" {
+    if paramDesc == "I" {
+      return 7
+    }
+    if paramDesc == "J" {
+      return 6
+    }
+    if paramDesc == "F" {
+      return 5
+    }
+    if paramDesc == "D" {
+      return 4
+    }
+    return -1
+  }
+  if argDesc == "C" {
+    if paramDesc == "I" {
+      return 7
+    }
+    if paramDesc == "J" {
+      return 6
+    }
+    if paramDesc == "F" {
+      return 5
+    }
+    if paramDesc == "D" {
+      return 4
+    }
+    return -1
+  }
   // Any reference type → java/lang/Object.  Also a REFERENCE-ELEMENT array
   // (`[L...;`) — arrays are objects in the JVM type system too (JLS §10.7),
   // so `Objects.isNull(File[])` or any other genuine JDK API's
@@ -491,6 +562,45 @@ func scoreParamMatch(argDesc: in String, paramDesc: in String): Int {
   // `_kernel_jvm` hosts to hand slices to JDK APIs such as
   // `java.security.MessageDigest.digest(byte[])` or `String(char[])`.
   if argDesc == "[Ljava/lang/Object;" and isPrimitiveArrayDesc(paramDesc) {
+    return 2
+  }
+  // Reverse-compatibility (#6696): `ffiScoreDescFor` narrows a `slice[T]`
+  // argument's SCORE-ONLY descriptor (never its actual runtime
+  // representation — see that function's header comment) to a primitive
+  // array shape when `T` is a JVM primitive, so a competing primitive-array
+  // overload (`int[] Arrays.copyOf(int[], int)`) outscores a same-named
+  // generic-array overload erased to `Object[]` (#6662/#5526). But some JDK
+  // methods declare `Object[]` — including a `T...` varargs parameter's
+  // erasure — as their ONLY sensible target (`Arrays.asList`, `Objects.hash`,
+  // `String.format`), and a Lyric slice's actual runtime representation is
+  // ALWAYS `Object[]` (boxed elements) regardless of its declared element
+  // type, so the narrowed primitive-array descriptor is still a genuinely
+  // valid — if low-priority — match against an `Object[]` parameter. This is
+  // a REFINEMENT, not a replacement: when a real primitive-array overload
+  // also exists for the same name, its exact match (10) still outscores this
+  // fallback (2), so `Arrays.copyOf`-shaped disambiguation is unaffected;
+  // this rule only becomes load-bearing when `Object[]` is the only
+  // candidate, where without it NO overload would score >= 0 and the call
+  // would panic at compile time instead of resolving.
+  //
+  // GATED on `argIsNarrowedSliceErasure` (#6745): a genuinely
+  // primitive-array-typed argument (real JDK metadata, e.g. a `char[]`
+  // returned by `Character.toChars` and passed straight into another call)
+  // is indistinguishable from a narrowed `slice[T]` descriptor by shape
+  // alone — both are e.g. `"[I"` — but its REAL runtime representation IS
+  // `"[I"`, not `[Ljava/lang/Object;`. `emitFfiCoerce` has no rule to box a
+  // real primitive array element-by-element into a fresh `Object[]` (only
+  // the reverse: unboxing an already-`Object[]`-erased slice into a
+  // primitive array), so accepting this match for a genuine primitive array
+  // emits no coercion at all — the real `int[]`/`char[]`/… reference is
+  // left on the stack where an `Object[]` is expected, which the JVM
+  // verifier correctly rejects at class load. Only a caller that already
+  // knows the argument's TRUE runtime shape is `[Ljava/lang/Object;` (i.e.
+  // `ffiScoreDescFor` narrowed it for scoring purposes only) may set this
+  // flag; every other caller must pass `false`, which correctly fails this
+  // arm and lets the call fall through to a compile-time
+  // "no matching overload" diagnostic instead of silently miscompiling.
+  if argIsNarrowedSliceErasure and isPrimitiveArrayDesc(argDesc) and paramDesc == "[Ljava/lang/Object;" {
     return 2
   }
   // Reference/reference pairs are not classified here: the descriptor strings
@@ -549,11 +659,13 @@ func isAssignableRef(ctx: in AutoFfiCtx, fromBin: in String, toBin: in String): 
   false
 }
 
-// True when `desc` is the reference descriptor of a package's synthesized
-// shared lambda interface (`L<pkg>/Lyric$Lambda;` — see
-// `Jvm.Codegen.lambdaIfaceName`).  `$` is not a Lyric identifier character,
-// so no user-declared type can produce this suffix; matching on it lets the
-// scorer recognize a lambda-typed argument without knowing the package name.
+// True when `desc` is the reference descriptor of the shared, bundle-wide
+// closure functional interface (`LLyric/Lyric$Lambda;` — see
+// `Jvm.Codegen.lambdaIfaceName`; unified to one binary name across every
+// package by #5388/#5251, previously `L<pkg>/Lyric$Lambda;` per package).
+// `$` is not a Lyric identifier character, so no user-declared type can
+// produce this suffix; matching on the suffix (rather than the exact fixed
+// name) keeps this check resilient to that naming history.
 func isLyricLambdaDesc(desc: in String): Bool {
   desc.startsWith("L") and desc.endsWith("/Lyric$Lambda;")
 }
@@ -648,9 +760,10 @@ pub func findSamMethod(ctx: in AutoFfiCtx, ifaceBin: in String): Option[ClassMet
 // otherwise-unmatched reference/reference pair, a verified IS-A match scores 4
 // (ranking above the blind fallback, below an exact match at 10) and an
 // unverifiable pair scores 1 (permissive — the JVM verifier enforces the true
-// constraint at class-load).
-func scoreParam(ctx: in AutoFfiCtx, argDesc: in String, paramDesc: in String): Int {
-  val base = scoreParamMatch(argDesc, paramDesc)
+// constraint at class-load).  `argIsNarrowedSliceErasure` is threaded straight
+// through to `scoreParamMatch` (#6745) — see that function's doc comment.
+func scoreParam(ctx: in AutoFfiCtx, argDesc: in String, paramDesc: in String, argIsNarrowedSliceErasure: in Bool): Int {
+  val base = scoreParamMatch(argDesc, paramDesc, argIsNarrowedSliceErasure)
   if base >= 0 {
     return base
   }
@@ -686,10 +799,45 @@ func scoreParam(ctx: in AutoFfiCtx, argDesc: in String, paramDesc: in String): I
   return -1
 }
 
+// True when position `i` of `narrowedFlags` is set.  `narrowedFlags` may be
+// shorter than the argument list (in particular, empty) for any caller that
+// never narrows a slice-erasure descriptor for scoring — those positions are
+// simply "not narrowed", never a bounds error.
+func narrowedAt(narrowedFlags: in List[Bool], i: in Int): Bool {
+  if i < narrowedFlags.count {
+    narrowedFlags[i]
+  } else {
+    false
+  }
+}
+
 // Score a method against a list of argument descriptor strings.
 // Returns -1 for incompatible, else the sum of per-parameter scores.
-func scoreMethod(ctx: in AutoFfiCtx, method: in ClassMethod, argDescs: in List[String], wantStatic: in Bool): Int {
+// `narrowedFlags[i]` (#6745) is true exactly when `argDescs[i]` is a
+// SCORE-ONLY primitive-array descriptor synthesized by `ffiScoreDescFor` from
+// a `slice[T]` argument's real `[Ljava/lang/Object;` erasure — see
+// `scoreParamMatch`'s doc comment.  Pass an empty list (or a list of `false`)
+// when `argDescs` are all genuine, unnarrowed descriptors.
+func scoreMethod(
+  ctx: in AutoFfiCtx,
+  method: in ClassMethod,
+  argDescs: in List[String],
+  wantStatic: in Bool,
+  narrowedFlags: in List[Bool],
+): Int {
   if wantStatic and not method.isStatic {
+    return -1
+  }
+  // Converse rejection (#6765): a STATIC method must never satisfy an
+  // instance-call site.  Without this, an instance lookup (wantStatic =
+  // false) could select a same-named static method that outscores every
+  // genuine instance overload (e.g. `Thread.sleep(long)` for `t.sleep(1000L)`
+  // against a `Thread`-typed receiver with no instance `sleep`), and the
+  // caller then unconditionally emits `invokevirtual`/`invokeinterface`
+  // against a static method's descriptor — invalid bytecode that fails
+  // verification (`IncompatibleClassChangeError`) at first execution instead
+  // of failing to resolve at compile time.
+  if not wantStatic and method.isStatic {
     return -1
   }
   val params = parseDescriptorParams(method.descriptor)
@@ -699,7 +847,7 @@ func scoreMethod(ctx: in AutoFfiCtx, method: in ClassMethod, argDescs: in List[S
   var total = 0
   var i = 0
   while i < params.count {
-    val s = scoreParam(ctx, argDescs[i], params[i])
+    val s = scoreParam(ctx, argDescs[i], params[i], narrowedAt(narrowedFlags, i))
     if s < 0 {
       return -1
     }
@@ -766,13 +914,17 @@ func checkPrimitiveArraySliceAmbiguity(
 
 /// Find the best-matching method in `ci` for the given name and argument
 /// descriptor strings.  Each element of `argDescs` is a JVM type descriptor
-/// produced by `jvmTypeToDescStr` in Jvm.Codegen.
+/// produced by `jvmTypeToDescStr` in Jvm.Codegen.  `narrowedFlags` (#6745) is
+/// the parallel slice-erasure-narrowing list `scoreMethod` expects — pass an
+/// empty list when `argDescs` are all genuine, unnarrowed descriptors (e.g.
+/// F0015-J signature verification).
 pub func findBestMethod(
   ctx: in AutoFfiCtx,
   ci: in ClassInfo,
   methodName: in String,
   argDescs: in List[String],
   wantStatic: in Bool,
+  narrowedFlags: in List[Bool],
 ): Option[ClassMethod] {
   val candidates: List[ClassMethod] = newList()
   val scores: List[Int] = newList()
@@ -782,7 +934,7 @@ pub func findBestMethod(
   while i < ci.methods.count {
     val m = ci.methods[i]
     if m.name == methodName {
-      val s = scoreMethod(ctx, m, argDescs, wantStatic)
+      val s = scoreMethod(ctx, m, argDescs, wantStatic, narrowedFlags)
       if s >= 0 {
         candidates.add(m)
         scores.add(s)
@@ -802,7 +954,13 @@ pub func findBestMethod(
 
 /// Find the best-matching constructor in `ci` for the given argument descriptor
 /// strings.  Searches the `constructors` list (public `<init>` entries).
-pub func findBestConstructor(ctx: in AutoFfiCtx, ci: in ClassInfo, argDescs: in List[String]): Option[ClassMethod] {
+/// `narrowedFlags` (#6745): see `findBestMethod`.
+pub func findBestConstructor(
+  ctx: in AutoFfiCtx,
+  ci: in ClassInfo,
+  argDescs: in List[String],
+  narrowedFlags: in List[Bool],
+): Option[ClassMethod] {
   val candidates: List[ClassMethod] = newList()
   val scores: List[Int] = newList()
   var best: Option[ClassMethod] = None
@@ -810,7 +968,7 @@ pub func findBestConstructor(ctx: in AutoFfiCtx, ci: in ClassInfo, argDescs: in 
   var i = 0
   while i < ci.constructors.count {
     val m = ci.constructors[i]
-    val s = scoreMethod(ctx, m, argDescs, false)
+    val s = scoreMethod(ctx, m, argDescs, false, narrowedFlags)
     // Explicit `s >= 0` mirrors `scoreAndGetSuper` / `findBestInstanceMethod`:
     // negative means "no match" per the `scoreMethod` convention.  The
     // initialisation of `bestScore = -1` provides an equivalent implicit guard
@@ -856,12 +1014,13 @@ func scoreAndGetSuper(
   argDescs: in List[String],
   allMethods: in List[ClassMethod],
   allScores: in List[Int],
+  narrowedFlags: in List[Bool],
 ): String {
   var j = 0
   while j < sci.methods.count {
     val m = sci.methods[j]
     if m.name == methodName {
-      val s = scoreMethod(ctx, m, argDescs, false)
+      val s = scoreMethod(ctx, m, argDescs, false, narrowedFlags)
       if s >= 0 {
         allMethods.add(m)
         allScores.add(s)
@@ -915,6 +1074,7 @@ func scoreInterfacesRec(
   allMethods: in List[ClassMethod],
   allScores: in List[Int],
   visited: in List[String],
+  narrowedFlags: in List[Bool],
 ): Unit {
   if binNameSeen(visited, ifaceBin) {
     return
@@ -930,7 +1090,7 @@ func scoreInterfacesRec(
   while j < ici.methods.count {
     val m = ici.methods[j]
     if m.name == methodName {
-      val s = scoreMethod(autoFfi, m, argDescs, false)
+      val s = scoreMethod(autoFfi, m, argDescs, false, narrowedFlags)
       if s >= 0 {
         allMethods.add(m)
         allScores.add(s)
@@ -940,7 +1100,7 @@ func scoreInterfacesRec(
   }
   var k = 0
   while k < ici.interfaces.count {
-    scoreInterfacesRec(autoFfi, ici.interfaces[k], methodName, argDescs, allMethods, allScores, visited)
+    scoreInterfacesRec(autoFfi, ici.interfaces[k], methodName, argDescs, allMethods, allScores, visited, narrowedFlags)
     k = k + 1
   }
 }
@@ -962,6 +1122,7 @@ pub func findBestInstanceMethod(
   ci: in ClassInfo,
   methodName: in String,
   argDescs: in List[String],
+  narrowedFlags: in List[Bool],
 ): Option[ClassMethod] {
   val allMethods: List[ClassMethod] = newList()
   val allScores: List[Int] = newList()
@@ -973,7 +1134,7 @@ pub func findBestInstanceMethod(
   while i < ci.methods.count {
     val m = ci.methods[i]
     if m.name == methodName {
-      val s = scoreMethod(autoFfi, m, argDescs, false)
+      val s = scoreMethod(autoFfi, m, argDescs, false, narrowedFlags)
       if s >= 0 {
         allMethods.add(m)
         allScores.add(s)
@@ -989,7 +1150,16 @@ pub func findBestInstanceMethod(
   // chain below (see `scoreInterfacesRec`).
   var ifI = 0
   while ifI < ci.interfaces.count {
-    scoreInterfacesRec(autoFfi, ci.interfaces[ifI], methodName, argDescs, allMethods, allScores, visitedIfaces)
+    scoreInterfacesRec(
+      autoFfi,
+      ci.interfaces[ifI],
+      methodName,
+      argDescs,
+      allMethods,
+      allScores,
+      visitedIfaces,
+      narrowedFlags
+    )
     ifI = ifI + 1
   }
 
@@ -1019,10 +1189,19 @@ pub func findBestInstanceMethod(
     var nextSuper = ""
     if superIdx >= 0 {
       val sci = autoFfi.cacheVals[superIdx]
-      nextSuper = scoreAndGetSuper(autoFfi, sci, methodName, argDescs, allMethods, allScores)
+      nextSuper = scoreAndGetSuper(autoFfi, sci, methodName, argDescs, allMethods, allScores, narrowedFlags)
       var siI = 0
       while siI < sci.interfaces.count {
-        scoreInterfacesRec(autoFfi, sci.interfaces[siI], methodName, argDescs, allMethods, allScores, visitedIfaces)
+        scoreInterfacesRec(
+          autoFfi,
+          sci.interfaces[siI],
+          methodName,
+          argDescs,
+          allMethods,
+          allScores,
+          visitedIfaces,
+          narrowedFlags
+        )
         siI = siI + 1
       }
     }
@@ -1099,36 +1278,53 @@ func superNameOf(ci: in ClassInfo): String {
   ci.superName
 }
 
-// Verify that a declared @externTarget signature has a matching overload in JDK
-// class metadata.  Returns true when the match succeeds or when the class is not
-// found in the JDK index (non-JDK types, or JDK not present — no false positive).
-// Returns false when the class IS found but no overload matches the declared arg
-// descriptors.
+// Outcome of resolving a declared `@externTarget` signature against real JDK
+// class metadata (F0015-J, #6745).  `classFound = false` means the target
+// class is absent from the metadata index (non-JDK type, or no JDK/Maven
+// metadata available at all) — the caller treats this as "pass, nothing to
+// verify" and keeps emitting the declared signature unchanged, same as
+// before.  `classFound = true` with `method = None` means the class WAS
+// found but no overload matches the declared descriptors — the caller panics
+// with an F0015-J diagnostic.  `classFound = true` with `method = Some(m)`
+// is a genuine match: `m.descriptor` is the ACTUAL resolved overload, which
+// the caller must emit the call against — `findBestMethod`/
+// `findBestConstructor` score with numeric-widening/Object-boxing tolerance,
+// so a declared `Int` parameter can validate against a real
+// `long`/`double`/`Object` overload; emitting the DECLARED (un-widened)
+// descriptor for such a call would encode a method reference nothing in the
+// JDK actually has, even though F0015-J just "verified" the signature.
+pub record ExternTargetResolution {
+  classFound: Bool
+  method: Option[ClassMethod]
+}
+
+// Resolve a declared @externTarget signature against JDK class metadata.
+// See `ExternTargetResolution` for how callers should interpret the result.
 //
 // Extracted as a top-level function so callers (lowerExternTargetBody in
 // jvm/codegen/04_calls.l) avoid the stage-0 `case Some(ci) -> { block }` binding
 // bug for cross-package record types: the Option[ClassInfo] match is kept inside
 // this function, which stage-0 compiles correctly when the bound value is passed
 // directly as a function argument rather than used in an outer block body.
-pub func verifyExternTargetJvm(
+pub func resolveExternTargetJvm(
   ctx: in AutoFfiCtx,
   javaFqn: in String,
   methodName: in String,
   argDescs: in List[String],
   wantStatic: in Bool,
-): Bool {
+): ExternTargetResolution {
   match loadClass(ctx, javaFqn) {
-    case None -> true
+    case None -> ExternTargetResolution(classFound = false, method = None)
     case Some(ci) -> {
+      // `argDescs` here are the DECLARED @externTarget descriptors, never a
+      // narrowed slice-erasure score descriptor, so `narrowedFlags` is empty
+      // (see `findBestMethod`/`findBestConstructor`'s doc comments).
       val resolved = if methodName == "new" {
-        findBestConstructor(ctx, ci, argDescs)
+        findBestConstructor(ctx, ci, argDescs, newList())
       } else {
-        findBestMethod(ctx, ci, methodName, argDescs, wantStatic)
+        findBestMethod(ctx, ci, methodName, argDescs, wantStatic, newList())
       }
-      match resolved {
-        case Some(_) -> true
-        case None -> false
-      }
+      ExternTargetResolution(classFound = true, method = resolved)
     }
   }
 }

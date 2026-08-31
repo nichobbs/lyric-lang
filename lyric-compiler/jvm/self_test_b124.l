@@ -34,7 +34,18 @@ func makePackageClasses(pool: in Pool): List[BuiltClass] {
   val pairRec = LRecord(className = "Pair", fields = pairFields, methods = newList(), implementsIfaces = newList())
 
   // LPDistinctType: Weight wrapping JInt
-  val weightDt = LDistinctType(wrapperClass = "Weight", underlyingType = JInt)
+  val weightDt = LDistinctType(
+    wrapperClass = "Weight",
+    underlyingType = JInt,
+    hasRange = false,
+    rangeIsFloat = false,
+    minI = 0i64,
+    maxI = 0i64,
+    minF = 0.0,
+    maxF = 0.0,
+    upperExclusive = false,
+    isUnsigned = false
+  )
 
   // LPFuncs: Utils with add(x, y) = x + y
   val addParams: List[JvmType] = newList()

@@ -169,7 +169,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   insns.add(LIconst(v = 0))
                   emitArrayLoad(insns, cellElemTy)
                   val cvTy = lowerExpr(ctx, insns, value)
-                  emitCompoundCombineJvm(ctx, insns, op, cellElemTy, cvTy)
+                  emitCompoundCombineJvm(ctx, insns, op, cellElemTy, cvTy, isUnsignedExpr(ctx, value))
                   val resultSlot = allocSlot(ctx, "__cell_result_" + freshLabel(ctx), cellElemTy)
                   emitStore(insns, resultSlot, cellElemTy)
                   emitLoad(insns, cellSlot, cellType)
@@ -208,7 +208,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   // erased-RHS coercion — see the helper's doc).
                   emitLoad(insns, slot, ty)
                   val cvTy = lowerExpr(ctx, insns, value)
-                  emitCompoundCombineJvm(ctx, insns, op, ty, cvTy)
+                  emitCompoundCombineJvm(ctx, insns, op, ty, cvTy, isUnsignedExpr(ctx, value))
                   emitStoreLocalWriteThrough(ctx, insns, slot, ty)
                 }
               }
@@ -261,7 +261,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   emitStore(insns, vSlot, vTy)
                   emitLoad(insns, curSlot, fty)
                   emitLoad(insns, vSlot, vTy)
-                  emitCompoundCombineJvm(ctx, insns, op, fty, vTy)
+                  emitCompoundCombineJvm(ctx, insns, op, fty, vTy, isUnsignedExpr(ctx, value))
                   val combSlot = allocSlot(ctx, "__sfassign_comb_" + freshLabel(ctx), fty)
                   emitStore(insns, combSlot, fty)
                   insns.add(LAload(slot = 0))
@@ -346,7 +346,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               emitStore(insns, vSlot, vTy)
               emitLoad(insns, curSlot, fty)
               emitLoad(insns, vSlot, vTy)
-              emitCompoundCombineJvm(ctx, insns, op, fty, vTy)
+              emitCompoundCombineJvm(ctx, insns, op, fty, vTy, isUnsignedExpr(ctx, value))
               val combSlot = allocSlot(ctx, "__fassign_comb_" + freshLabel(ctx), fty)
               emitStore(insns, combSlot, fty)
               emitLoad(insns, recvSlot, recvTy)
@@ -392,7 +392,19 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               emitLoad(insns, arrSlot, recvTy)
               emitLoad(insns, idxSlot, JInt)
               emitLoad(insns, rhsSlot, vTy)
-              coerceArgTo(insns, vTy, elem)
+              // The receiver's TRUE declared element type when resolvable
+              // (#6741): a plain `xs[i] = e` write used to box `e` at its OWN
+              // native width via a bare `coerceArgTo(insns, vTy, elem)` —
+              // `elem` here is the ERASED `slice[T]` element type (`Object`,
+              // #5257's uniform boxed-array ABI), not the receiver's real
+              // declared element type, so a `slice[Long]` ended up holding a
+              // mix of `Long`- and `Integer`-boxed elements exactly like the
+              // pre-#5257 `.append()` bug this mirrors — a later indexed read
+              // threw `ClassCastException`. `coerceScalarToSliceElem` (the
+              // SAME helper `.append()`'s `lowerSliceAppendJvm` already uses)
+              // widens first when the declared type is known and numeric,
+              // falling back to the prior erased-target boxing otherwise.
+              coerceScalarToSliceElem(insns, vTy, indexedElemTypeOverride(ctx, recv, false), elem)
               emitArrayStore(insns, elem)
             }
             case _ -> {
@@ -409,7 +421,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               emitLoad(insns, idxSlot, JInt)
               emitArrayLoad(insns, elem)
               val vTy = lowerExpr(ctx, insns, value)
-              emitCompoundCombineJvm(ctx, insns, op, elem, vTy)
+              emitCompoundCombineJvm(ctx, insns, op, elem, vTy, isUnsignedExpr(ctx, value))
               emitArrayStore(insns, elem)
             }
           }
@@ -433,7 +445,14 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 val keySlot = allocSlot(ctx, "__idxasn_k_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
                 emitStore(insns, keySlot, JRef(className = "java/lang/Object"))
                 val vTy = lowerExpr(ctx, insns, value)
-                boxIfNeeded(insns, vTy)
+                // The map's TRUE declared VALUE type when resolvable (#6741,
+                // mirrors the compound-assign arm below and `.append()`'s
+                // `coerceScalarToSliceElem`): a plain `m[k] = e` write used to
+                // box `e` at its own native width via a bare
+                // `boxIfNeeded(insns, vTy)`, so a `Map[K, Long]` ended up
+                // holding a mix of `Long`- and `Integer`-boxed values — a
+                // later indexed read threw `ClassCastException`.
+                coerceScalarToSliceElem(insns, vTy, indexedElemTypeOverride(ctx, recv, true), JRef(className = "java/lang/Object"))
                 val rhsSlot = allocSlot(ctx, "__idxasn_rhs_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
                 emitStore(insns, rhsSlot, JRef(className = "java/lang/Object"))
                 emitLoad(insns, mapSlot, recvTy)
@@ -469,12 +488,12 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 // (`indexedElemTypeOverride`, the same resolver the read-path
                 // `EIndex` arm uses), falling back to the prior `vTy`-inferred
                 // behavior when no static override is available.
-                val elemTy = match indexedElemTypeOverride(ctx, recv) {
+                val elemTy = match indexedElemTypeOverride(ctx, recv, true) {
                   case JVoid -> emitUnboxObjectTo(insns, vTy)
                   case overrideTy -> applyIndexedElemOverride(insns, overrideTy)
                 }
                 emitLoad(insns, rhsSlot, vTy)
-                emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy)
+                emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy, isUnsignedExpr(ctx, value))
                 boxIfNeeded(insns, elemTy)
                 emitMapPut(insns)
               }
@@ -495,7 +514,14 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 val idxSlot = allocSlot(ctx, "__idxasn_i_" + freshLabel(ctx), JInt)
                 emitStore(insns, idxSlot, JInt)
                 val vTy = lowerExpr(ctx, insns, value)
-                boxIfNeeded(insns, vTy)
+                // The list's TRUE declared element type when resolvable
+                // (#6741, mirrors the compound-assign arm below and
+                // `.append()`'s `coerceScalarToSliceElem`): a plain
+                // `xs[i] = e` write used to box `e` at its own native width
+                // via a bare `boxIfNeeded(insns, vTy)`, so a `List[Long]`
+                // ended up holding a mix of `Long`- and `Integer`-boxed
+                // elements — a later indexed read threw `ClassCastException`.
+                coerceScalarToSliceElem(insns, vTy, indexedElemTypeOverride(ctx, recv, true), JRef(className = "java/lang/Object"))
                 val rhsSlot = allocSlot(ctx, "__idxasn_rhs_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
                 emitStore(insns, rhsSlot, JRef(className = "java/lang/Object"))
                 emitLoad(insns, listSlot, recvTy)
@@ -523,12 +549,12 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 emitListGet(insns)
                 // The list's real declared element type (#5688) — see the
                 // matching HashMap-arm comment above.
-                val elemTy = match indexedElemTypeOverride(ctx, recv) {
+                val elemTy = match indexedElemTypeOverride(ctx, recv, true) {
                   case JVoid -> emitUnboxObjectTo(insns, vTy)
                   case overrideTy -> applyIndexedElemOverride(insns, overrideTy)
                 }
                 emitLoad(insns, rhsSlot, vTy)
-                emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy)
+                emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy, isUnsignedExpr(ctx, value))
                 boxIfNeeded(insns, elemTy)
                 emitListSet(insns)
               }
@@ -698,6 +724,7 @@ func emitCompoundCombineJvm(
   op: in AssignOp,
   targetTy: in JvmType,
   vTy: in JvmType,
+  isUnsignedRhs: in Bool,
 ): Unit {
   match targetTy {
     case JRef(cls) -> {
@@ -719,7 +746,8 @@ func emitCompoundCombineJvm(
             val lSlot = allocSlot(ctx, "__compcat_lhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
             emitStore(insns, lSlot, JRef(className = "java/lang/String"))
             emitLoad(insns, rawSlot, vTy)
-            coerceToStringForConcat(ctx, insns, vTy)
+            // #6748: `s += uintVal`.
+            coerceToStringForConcat(ctx, insns, vTy, isUnsignedRhs)
             val rSlot = allocSlot(ctx, "__compcat_rhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
             emitStore(insns, rSlot, JRef(className = "java/lang/String"))
             insns.add(LNew(className = "java/lang/StringBuilder"))
@@ -910,7 +938,7 @@ func emitCountingForJvm(
 func localAnnotatedJvmType(ctx: in FuncCtx, te: in TypeExpr): JvmType {
   val resolved = BareFuncRef.resolveFuncTypeAliasOrSelf(ctx.aliasTargets, te)
   match resolved.kind {
-    case TFunction(_, _) -> JRef(className = lambdaIfaceName(ctx.pkgName))
+    case TFunction(_, _) -> JRef(className = lambdaIfaceName())
     case _ -> typeExprToJvmExtern(resolved, ctx.pkgName, ctx.externTypes)
   }
 }
@@ -959,6 +987,9 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
                 case Some(te) -> recordDeclaredElemType(ctx, nm, te, newList())
                 case None -> ()
               }
+              // #6748: a `val x: UInt/ULong = …` binding needs unsigned-aware
+              // comparison/division/stringification downstream.
+              recordUnsignedVar(ctx, nm, tyOpt)
             }
             case _ -> ()
           }
@@ -985,6 +1016,8 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               case Some(te) -> recordDeclaredElemType(ctx, name, te, newList())
               case None -> ()
             }
+            // #6748: see the matching `LBVal` note above.
+            recordUnsignedVar(ctx, name, tyOpt)
           }
         }
         case LBVar(name, tyOpt, initOpt) -> {
@@ -1043,6 +1076,8 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
                 case Some(te) -> recordDeclaredElemType(ctx, name, te, newList())
                 case None -> ()
               }
+              // #6748: see the matching `LBVal` note above.
+              recordUnsignedVar(ctx, name, tyOpt)
             }
             case None -> {
               // No initialiser: an annotation is required to know the slot type;
@@ -1054,6 +1089,8 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
                 case Some(te2) -> recordDeclaredElemType(ctx, name, te2, newList())
                 case None -> ()
               }
+              // #6748: see the matching `LBVal` note above.
+              recordUnsignedVar(ctx, name, tyOpt)
               if isHoisted {
                 // Create an empty cell for the hoisted var
                 val cellType = JArray(elem = ty)
@@ -1229,7 +1266,15 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           // mis-resolves — e.g. `for name in mapKeys(...)` fed
           // `HttpString.new(name)` the `ByteBuffer` ctor overload instead of
           // `String` (VerifyError at class load).
-          val forElemOverride = indexedElemTypeOverride(ctx, iter)
+          // `allowMapValueArg = false` (#5451 regression during this fix's
+          // own development): a `for`-loop iterable's 2-arg entry is not
+          // reliably `Map[K, V]`'s `V` — `Std.CollectionsHost
+          // .MapKeyCollection[K, V]` (`java.util.Set`, iterates `K`) is a
+          // real 2-arg-generic iterable whose element is the FIRST arg, so
+          // guessing index 1 here silently miscompiled `mapKeys`'s own
+          // `for k in dictGetKeys(m)` loop. See `indexedElemTypeOverride`'s
+          // own comment (`jvm/codegen/02_exprs.l`) for the full rationale.
+          val forElemOverride = indexedElemTypeOverride(ctx, iter, false)
           // A nested `slice[...]`/`List[...]` element (`Validation.all`'s
           // `slice[slice[ValidationError]]`, JVM nested-slice `for` bug —
           // see the tracking issue): resolved once here and consumed by
