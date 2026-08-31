@@ -35426,3 +35426,219 @@ unsafe-format refusal).
 D-progress-822 (the two prior "bytes bounded, count unbounded" fixes
 this entry closes the third instance of).
 
+## D-progress-830 — Native: bare (same-file and cross-package) enum-case value reference resolved (#6589), closing the D-progress-823 item D workaround
+
+**Context.** D-progress-823 item D documented, but did not fix, a native
+codegen gap discovered while writing `_kernel_native/http_host.l`: "A bare
+nullary enum-case reference does not resolve, even within the same file —
+`func f(): MyEnum { A }` (instead of `MyEnum.A`) fails with 'unknown name
+A'. The same failure mode hits a record field's default value when the
+field is omitted at a construction site and that default is itself a bare
+enum case." That item's own workaround was to always fully-qualify enum
+cases. Issue #6589, filed independently while implementing the native
+`Std.HttpServer` twin (#6104, N9.3), reported the identical symptom in a
+CROSS-PACKAGE shape: `Std.HttpEngine`'s own source uses the idiom
+`var version: HttpVersion = Http1_1` pervasively (`HttpVersion`/`Http1_1`
+declared in `Std.HttpEngine`, referenced bare from a consuming package
+relying on the expected-type annotation to disambiguate), and this fails
+to compile for `--target native` with "unknown name 'Http1_1'" — not
+scopeable around within #6104 itself, since the idiom is used throughout
+the file N9.3 needs to compile.
+
+**Root cause — confirmed identical to D-progress-823 item D, not a
+distinct cross-package-specific bug.** `Lyric.LlvmCodegen`'s enum-case
+registry (`ctx.enumDefs`, populated once per bundle in
+`codegenNativeBundle`'s Phase A) only ever indexed a case under its
+*qualified* forms — `EnumName.CaseName` and `pkgName.EnumName.CaseName` —
+never the bare case name alone. `lowerExpr`'s `EPath` arm already had a
+bare-name lookup (`mapGet(ctx.enumDefs, joined)`, `joined` being the
+single-segment name for an unqualified reference) — but since no bare key
+was ever registered, that lookup could only ever succeed for an
+*already-qualified* multi-segment path, making it effectively dead code
+for the one case (a truly bare reference) it looks purpose-built for.
+Every unqualified case reference — same-file or cross-package, the two
+are handled by literally the same map lookup — fell through to
+`loadLocal`'s "unknown name" panic. The issue's own root-cause writeup
+("enums erase to bare NI32 too early") is directionally right but
+slightly overstates the fix's difficulty: no type information needs to
+survive to a later point, since the *case name itself* uniquely
+identifies its ordinal once bare names are indexed at all (modulo the
+same cross-bundle collision risk any bare-name index in this codebase
+already accepts — see below).
+
+**Fix — ported the existing MSIL pattern, not a new mechanism.** Per the
+issue's own suggestion to check how `Msil.Codegen` handles the same
+bare-name-against-expected-type case before inventing a native-only fix:
+`Msil.Codegen.registerEnumDeclMsil` already indexes an enum case under
+**three** keys — the pkg-qualified form, the type-qualified form
+(`EnumType.Case`), and the bare case name alone (`cn`) — with the bare key
+explicitly documented as "first-wins (cross-package collisions keep the
+first registration, like every other simple-name index here)". MSIL's own
+expression-lowering (`lowerExprMsil`'s `EPath` arm) then resolves a bare
+identifier's enum-case ordinal straight from that bare key, with no
+expected-type consultation at all — locals, then a module-level const,
+then the bare enum ordinal, then a nullary union case, then a module-level
+val, in that fixed order. The native fix mirrors this exactly: three lines
+added to the enum-registration loop in `codegenNativeBundle` register
+`ed.cases[eci].name` (the bare case name) into `ctx.enumDefs` alongside
+the two qualified keys already there, first-wins, guarded by the same
+`containsKey` check every other key in that loop already uses. No changes
+to `lowerExpr`, `lowerMember`, or `emitConstructorTest` were needed — the
+bare-`EPath` lookup and the `PConstructor`-pattern lookup (`case
+Http1_1(x) ->`, an enum-with-payload shape that cannot occur today but
+whose code path shares the same map) both already consult `ctx.enumDefs`
+by the joined path string, so a truly single-segment reference now
+resolves through the exact same branch a two-segment qualified reference
+already used. This also fixes the record-field-default sub-case
+D-progress-823 item D described for free: a defaulted field's initializer
+expression lowers via a plain `lowerExpr` call at the record-construction
+site (`lowerRecordConstruct`'s missing-field branch), with no dedicated
+bare-case handling of its own — it inherits the fix through the same
+`EPath` arm every other bare reference goes through.
+
+**Scope boundary — a *pattern*-position bare enum case is a separate,
+pre-existing gap, not touched here.** While tracing this fix,
+`emitPatternTest`'s `PBinding` arm (which decides whether `case Foo ->`
+is a nullary-constructor test or an ordinary catch-all bind — the parser
+can't tell the two apart, producing `PBinding(name, None)` either way)
+was found to consult `scrutineeHasCase`, which only ever checks
+`unionInfoOfType` — never `ctx.enumDefs`. Since an enum value erases to a
+bare `NI32` at the native IR level, `unionInfoOfType` always returns
+`None` for an enum scrutinee, so a bare-case `match` arm over an enum
+value is silently miscompiled today (the first arm becomes an
+unconditional catch-all, not a genuine equality test) — a materially
+worse failure mode (wrong answer, no error) than this entry's "unknown
+name" panic, but a different code path with its own, separate fix and its
+own regression surface (a real catch-all bind over a plain `Int` whose
+name happens to collide with an unrelated enum's case name must not
+regress into a bogus equality test). Filed as #6740 rather than folded
+into this fix; `llvm_enum_case_resolve_self_test.l`'s three cases
+deliberately use the fully-qualified `EnumType.Case` form in every `match`
+arm so they exercise only the value-position fix this entry makes, not
+#6740's separate pattern-position gap.
+
+**Verification (`llvm_enum_case_resolve_self_test.l`, 3 cases, run via
+native `lyric test` on `--target native`).** Item A is #6589's own
+reported shape verbatim: a program compiled through the bundled
+`Lyric.LlvmBridge.compileToNativeWithFlags` path (a genuinely separate
+package is needed for a real cross-package repro) that `import
+Std.HttpEngine` and assigns `var version: HttpVersion = Http1_1` /
+`var other: HttpVersion = Http1_0` — both bare, both cross-package — then
+classifies each through a same-file helper using fully-qualified match
+arms, asserting BOTH ordinals came back distinct and correct (not merely
+"didn't panic"; a fix that resolved every bare case to the same ordinal
+would still pass a same-value-only assertion). Item B is D-progress-823
+item D's first half: a same-file `enum Color { Red, Green, Blue }` with a
+function returning a bare case (`Red`/`Green`/`Blue`) as an `if`/`else
+if`/`else` branch's trailing block value, asserting all three distinct
+ordinals round-trip correctly. Item C is D-progress-823 item D's second
+half: a record field `level: Level = Info` (bare default) exercised both
+by omitting the field at one construction site (triggering the default)
+and by supplying a different bare case (`Warn`) explicitly at a second
+site, asserting both resolve to their correct, distinct ordinals.
+`make -C lyric-rt test` (clang) green; the three new cases pass via
+`LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/llvm_enum_case_resolve_self_test.l`;
+the full pre-existing native-backend self-test suite
+(`llvm_ir_self_test.l`, `llvm_codegen_self_test.l`, `llvm_heap_self_test.l`,
+`llvm_ffi_self_test.l`, `llvm_collections_self_test.l`,
+`llvm_stdlib_self_test.l`, `llvm_tls_self_test.l`,
+`llvm_http_client_self_test.l`, `llvm_self_test_n3.l`,
+`llvm_self_test_n34.l`, `llvm_self_test_async.l`, `llvm_self_test_defer.l`,
+`llvm_opaque_self_test.l`) re-run clean after the change — a fix touching
+the shared `ctx.enumDefs` registry has broad blast radius (every existing
+enum self-test uses the already-working qualified form, so this is a
+regression check that adding the bare key doesn't shadow anything those
+tests depend on), confirmed by a full clean run of all thirteen files plus
+the new one. `lyric fmt --write` applied clean (no refusals) to
+`llvm_codegen.l` and the new self-test file.
+
+**Related:** #6589 (this entry's fix), D-progress-823 item D (the
+same-file/record-default half of this bug, documented-but-unfixed there),
+#6740 (the separate pattern-position bare-enum-case gap filed, not fixed,
+during this investigation), `native/plan/08-work-items.md` N9.3 (the
+`Std.HttpServer` native twin this unblocks half of — N9.3 remains blocked
+on #6588, the native `String` method gaps, independently),
+`Msil.Codegen.registerEnumDeclMsil` (the shipped-MSIL pattern this fix
+ports rather than reinvents).
+
+**Addendum (review rounds on PR #6746, two further bugs found and fixed
+before merge — `llvm_enum_case_resolve_self_test.l` now ships 6 cases,
+not the 3 described above).**
+
+- **Item D — bare-name check ordering, enum before union.** A review
+  pass noticed `lowerExpr`'s `EPath` arm checked `ctx.caseRefs` (nullary
+  union case) *before* `ctx.enumDefs` (enum ordinal) for a bare
+  single-segment name — the opposite of `Msil.Codegen`'s order
+  (`enumCaseOrdinals` before `unionCaseCtorByName`). Before this entry's
+  fix the native enum-bare-name branch was unreachable, so the ordering
+  was moot; once reachable, a bundle with an enum case and a union case
+  sharing the exact same bare name would resolve differently on
+  `--target native` than on `--target dotnet` for identical unqualified
+  source. Reordered to match MSIL exactly (enum before union). Item D
+  covers this in *value* position: an enum `Status` and a union
+  `Wrapper` both declare a case named `Ready`; a bare `Ready` against an
+  explicit `Status`-typed annotation resolves to the enum.
+- **Item E — `emitConstructorTest` scrutinee-type gating.** A second
+  review pass (tracked as issue #6753) found that item D's own fix
+  exposed a genuine correctness regression: `emitConstructorTest`
+  consulted `ctx.enumDefs` for a bare case name unconditionally, before
+  any scrutinee-type check. It is also reached with a bare
+  single-segment head from `emitPatternTest`'s `PBinding` ->
+  `scrutineeHasCase` redirect — which only fires once the scrutinee is
+  already confirmed to be a **union** (a struct pointer, never `NI32`).
+  Once a bare enum-case key exists, a union `match` arm using a bare
+  case name that happened to collide with some unrelated enum's case
+  name anywhere in the bundle would wrongly take the enum branch,
+  emitting a type-mismatched `NICmp(ty=NI32, ...)` against what is
+  actually a struct pointer — a compile-time or runtime corruption for
+  a `match` that compiled and ran correctly before this entry's own
+  fix. Item D's own test never caught this because it deliberately used
+  fully-qualified `EnumType.Case` pattern forms throughout, per its
+  stated scope boundary against #6740. Fixed by gating the enum branch
+  in `emitConstructorTest` on `sv.ty == NI32` (the enum's actual runtime
+  representation), which correctly handles both call sites into the
+  function (the `PBinding` redirect and a direct `PConstructor`
+  pattern) with no caller-specific flag needed. Item E covers this in
+  *pattern* position: the same `Status`/`Wrapper` collision, but a
+  `match` arm using the bare `Ready`/`Pending` names against a
+  `Wrapper` scrutinee, asserting the union case still resolves
+  correctly.
+- **Item F — enum-vs-enum bare-name collision (first-wins).** Items D/E
+  cover enum-vs-union collisions; the bug class that originally
+  motivated this whole fix line also includes enum-vs-**enum**
+  collisions — the exact shape `lyric-stdlib/std/http_engine.l`'s own
+  module header documents as issue #5995 (`Std.Http.HttpVersion` and
+  `Std.HttpEngine.HttpVersion` both declaring a case named `Http11`,
+  resolving against the wrong package's enum on MSIL/JVM once both
+  compile into the same program — the reason `http_engine.l` renamed
+  its own cases to `Http1_0`/`Http1_1` rather than fix the underlying
+  resolver). Item F adds two enums, `First { case OnlyFirst; case
+  Shared }` and `Second { case Shared; case OnlySecond }`, declared in
+  that order in one file, and asserts a bare `Shared` reference against
+  an explicit `First`-typed annotation resolves to `First`'s `Shared`
+  ordinal (1) rather than `Second`'s (0) — the deterministic, documented
+  first-wins outcome (`Msil.Codegen`'s own "first-wins (cross-package
+  collisions keep the first registration...)" policy, now mirrored on
+  native), verified by round-tripping through a fully-qualified
+  `First.Case` match so a wrong-ordinal resolution fails the assertion
+  rather than merely not panicking. This test does not re-litigate
+  #5995 itself (a pre-existing MSIL/JVM behavior, out of scope for a
+  native-only PR) — it documents that native's first-wins semantics are
+  now deterministic and match the other two targets' for the same
+  unqualified-name-collision shape, so a future #5995-class bug report
+  against native has a baseline test to compare against.
+
+**Verification (updated).** All three additional fixes verified the
+same way as the original entry: the full native-backend self-test suite
+(all `llvm_*_self_test.l` files listed above) re-run clean after each
+change, `lyric fmt --write` applied clean, and `make lyric` succeeding
+end to end from source before each push. `llvm_enum_case_resolve_self_test.l`
+now has 6 cases (A–F), all passing.
+
+**Related (addendum):** #6753 (the `emitConstructorTest` REQUIRED
+finding, auto-closed once its fix landed in this same PR), #5995 (the
+pre-existing MSIL/JVM enum-vs-enum bare-name collision item F's test is
+modeled on, not fixed by this PR), `lyric-stdlib/std/http_engine.l`
+(the module header documenting #5995's real-world trigger and
+workaround).
+

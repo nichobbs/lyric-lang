@@ -1477,8 +1477,25 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
           return loadLocal(ctx, insns, path.segments[0])
         }
       }
-      // Nullary union case (`None`, `Option.None`) constructs an
-      // instance; enum case paths (`Color.Red`) are i32 discriminants.
+      // Enum case ordinal (`Red`) is checked BEFORE a nullary union case
+      // (`None`) for a bare single-segment name — matching
+      // `Msil.Codegen`'s bare-name resolution order exactly
+      // (`enumCaseOrdinals` before `unionCaseCtorByName`, ~codegen.l:8058
+      // vs :8080). Enum case paths (`Color.Red`) are i32 discriminants.
+      // This ordering only matters when a bundle has an enum case and a
+      // union case sharing the exact same bare name — pick the same
+      // winner MSIL/dotnet does for identical unqualified source, rather
+      // than an arbitrary native-only choice.
+      match mapGet(ctx.enumDefs, joined) {
+        case Some(idx) -> {
+          if not Str.endsWith(joined, ".__enum") {
+            return NVal(ty = NI32, value = NLitInt(v = intToLong(idx), ty = NI32))
+          }
+        }
+        case None -> {
+        }
+      }
+      // Nullary union case (`None`, `Option.None`) constructs an instance.
       match mapGet(ctx.caseRefs, joined) {
         case Some(cref) -> {
           val ui = match mapGet(ctx.unionDefs, cref.unionKey) {
@@ -1490,15 +1507,6 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
           }
           val noArgs: List[CallArg] = newList()
           return lowerUnionConstruct(ctx, insns, ui, cref.caseIdx, noArgs)
-        }
-        case None -> {
-        }
-      }
-      match mapGet(ctx.enumDefs, joined) {
-        case Some(idx) -> {
-          if not Str.endsWith(joined, ".__enum") {
-            return NVal(ty = NI32, value = NLitInt(v = intToLong(idx), ty = NI32))
-          }
         }
         case None -> {
         }
@@ -3195,6 +3203,23 @@ func registerHeapTypes(
         val qKey = u.pkgName + "." + caseKey
         if not ctx.enumDefs.containsKey(qKey) {
           ctx.enumDefs.add(qKey, eci)
+        }
+        // Bare case name (#6589): a reference with no qualifying prefix
+        // at all (`Http1_1` rather than `HttpVersion.Http1_1`), whether
+        // in the same file or a different package — the common idiom
+        // for a value assigned against an explicit type annotation
+        // (`var v: HttpVersion = Http1_1`) or returned as a function's
+        // trailing block value. Mirrors `Msil.Codegen.registerEnumDeclMsil`'s
+        // `cn` key exactly, including its first-wins collision policy
+        // across the whole bundle: whichever enum is scanned first claims
+        // a case name two different enums both use, so an ambiguous bare
+        // name must still be qualified at the use site. This lets the
+        // existing bare-`EPath` lookup in `lowerExpr` (previously only
+        // ever hit by an already-qualified multi-segment path) resolve a
+        // truly bare case reference too.
+        val bareKey = ed.cases[eci].name
+        if not ctx.enumDefs.containsKey(bareKey) {
+          ctx.enumDefs.add(bareKey, eci)
         }
         eci = eci + 1
       }
@@ -7226,15 +7251,31 @@ func emitConstructorTest(
   bindVals: in List[NVal],
 ): Unit {
   val joined = modulePathJoin(head.segments)
-  // Enum case pattern: scrutinee is the i32 discriminant itself.
-  match mapGet(ctx.enumDefs, joined) {
-    case Some(idx) -> {
-      val cmp = freshTmp(ctx)
-      insns.add(NICmp(dest = cmp, pred = IEq, ty = NI32, a = sv.value, b = NLitInt(v = intToLong(idx), ty = NI32)))
-      insns.add(NCondBr(cond = NLocal(name = cmp), thenLabel = okLabel, elseLabel = failLabel))
-      return
+  // Enum case pattern: scrutinee is the i32 discriminant itself. Gated on
+  // the scrutinee's actual runtime representation (`sv.ty == NI32`), not
+  // just a name match in `ctx.enumDefs` (#6753): this function is also
+  // reached with a BARE single-segment `head` from `emitPatternTest`'s
+  // `PBinding` -> `scrutineeHasCase` redirect once the scrutinee is
+  // already confirmed to be a union — a struct pointer, never NI32 — so
+  // without this guard an unrelated enum elsewhere in the bundle sharing
+  // the union case's bare name (now that bare enum-case names are
+  // registered, #6589) would hijack the test into a type-mismatched
+  // `NICmp` against a pointer value instead of falling through to the
+  // union-case check below.
+  match sv.ty {
+    case NI32 -> {
+      match mapGet(ctx.enumDefs, joined) {
+        case Some(idx) -> {
+          val cmp = freshTmp(ctx)
+          insns.add(NICmp(dest = cmp, pred = IEq, ty = NI32, a = sv.value, b = NLitInt(v = intToLong(idx), ty = NI32)))
+          insns.add(NCondBr(cond = NLocal(name = cmp), thenLabel = okLabel, elseLabel = failLabel))
+          return
+        }
+        case None -> {
+        }
+      }
     }
-    case None -> {
+    case _ -> {
     }
   }
   val ui = match unionInfoOfType(ctx, sv.ty) {

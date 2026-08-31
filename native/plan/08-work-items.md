@@ -1424,13 +1424,17 @@ surfaced two further, architectural native-backend gaps independent of
 this item's own scope: native `String` has no
 `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith`
 (#6588), and a bare cross-package enum-case value reference (`val v:
-HttpVersion = Http1_1`, used throughout `Std.HttpEngine`) fails to resolve
-(#6589). Both block `Std.HttpEngine`/`Std.String` from compiling for
-`--target native` at all — the draft kernel could not be made to compile,
-so it was **not committed**; neither `_kernel_native/http_server.l` nor a
-self-test for it exist anywhere in the repository. A future contributor
-picking up #6104/N9.3 starts from zero on the kernel itself once #6588 and
-#6589 are resolved. N9.3 remains open pending #6588/#6589.
+HttpVersion = Http1_1`, used throughout `Std.HttpEngine`) failed to
+resolve (#6589). Both blocked `Std.HttpEngine`/`Std.String` from compiling
+for `--target native` at all — the draft kernel could not be made to
+compile, so it was **not committed**; neither `_kernel_native/http_server.l`
+nor a self-test for it exist anywhere in the repository. **#6589 is now
+SHIPPED** (D-progress-830): `ctx.enumDefs` indexes a case's bare name too,
+mirroring `Msil.Codegen.registerEnumDeclMsil`, so `Http1_1` (and any other
+bare, unqualified enum-case reference — same-file or cross-package)
+resolves without requiring the `HttpVersion.Http1_1` workaround. N9.3
+remains open pending #6588 alone; a future contributor picking up
+#6104/N9.3 starts from zero on the kernel itself once #6588 is resolved.
 
 ### N9.4 — `Std.Http` native client twin (`_kernel_native/http_host.l`) — ✅ SHIPPED (D-progress-823, #6105)
 
