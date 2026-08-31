@@ -23,7 +23,7 @@ TLS support off-Windows and is HTTP/1.1-only by construction.
 | Server TLS (`Std.HttpServer`) | Shipped (phase 3.3, #5884): `startListenerTls` over the sans-IO `Std.HttpEngine` + `Std.TcpHost`/`SslStream` transport (identity + `minVersion` + ALPN `http/1.1` + callback-free mTLS); `HttpListener` retired | Shipped (phase 2.1, #5880): `HttpsServer` + `SSLContext` from `TlsServerConfig` (mTLS is #5930) |
 | Server TLS (`lyric-web`) | Shipped (phase 3.4, #5885): `Web.serveTls` terminates real TLS via `Std.HttpServer.startListenerTls`, mTLS supported | Shipped (phase 2.2, #5881): Undertow `addHttpsListener` + `ENABLE_HTTP2`, mTLS shipped (#6017) |
 | Server HTTP version | 1.1 (`HttpListener` cannot do h2) | 1.1 (`com.sun.net.httpserver` cannot; Undertow can but `ENABLE_HTTP2` is not set) |
-| native | Client TLS shipped (N9.4, #6105): `_kernel_native/http_host.l` over a hand-rolled HTTP/1.1 client + `Std.TcpHost`'s new `hostConnectTls`/`hostUpgradeClientTls`. No server yet (N9.3). | — |
+| native | Client TLS shipped (N9.4, #6105): `_kernel_native/http_host.l` over a hand-rolled HTTP/1.1 client + `Std.TcpHost`'s new `hostConnectTls`/`hostUpgradeClientTls`. Server shipped (N9.3, #6104): `_kernel_native/http_server.l` — thread-per-connection over `pthread_create`, driving the sans-IO `Std.HttpEngine` + `Std.TcpHost`; `startListenerTls` supports server identity + `minVersion` + mTLS. HTTP/1.1 only (no h2 yet — a negotiated-`h2` connection is closed rather than mis-parsed, tracked as N9.5/#6106); no `LYRIC_HTTP_MAX_CONNECTIONS` backpressure cap yet (`Std.Parse` has no native kernel). | — |
 
 HTTP/3 exists nowhere: on .NET it needs `libmsquic` plus explicit version
 policy; on JDK 21 it does not exist in `java.net.http` (JEP 517 is still in
@@ -861,8 +861,31 @@ items marked ∥ are independent and can proceed in parallel.
     dechunked back to the original text — with the server driving
     `Std.TcpHost.hostAcceptTls`/`hostRead`/`hostWrite` directly on a second
     pthread (a TLS handshake needs both peers actively driving I/O at once,
-    unlike a bare TCP `connect`). **N9.3** `Std.HttpServer` native twin
-    (thread-per-connection over the pthread kernel driving `Std.HttpEngine`);
+    unlike a bare TCP `connect`). **N9.3 — `Std.HttpServer` native twin —
+    shipped** (D-progress-850, #6104): `_kernel_native/http_server.l`, the
+    same twelve-function surface + `startListenerTls` as the dotnet/JVM
+    twins, following the dotnet twin's architecture (drive
+    `Std.HttpEngine`'s per-connection FSM over `Std.TcpHost`) rather than
+    the JVM twin's (bypass the engine via the JDK's own `HttpServer`).
+    Thread-per-connection over real `pthread_create`d OS threads (native
+    `spawn`/`scope` is a single-threaded coroutine scheduler, not genuine
+    concurrency), with the pull-model hand-off queue built directly from
+    `lyric_mutex_*`/`lyric_sem_*` (D-progress-809) since there is no BCL
+    `ConcurrentQueue`/`SemaphoreSlim` equivalent. `stopListener`
+    deterministically `pthread_join`s the accept thread and every spawned
+    connection thread before freeing the queue's buffers — a stronger,
+    blocking-until-drained shutdown contract than the dotnet/JVM twins'
+    fire-and-forget one, needed because native has no GC to defer the
+    cleanup to. HTTP/1.1 only in this v1 (no h2 codepath): since
+    `_kernel_native/tcp_host.l`'s TLS accept unconditionally advertises `h2`
+    ahead of `http/1.1`, a connection that actually negotiates `h2` is
+    closed immediately rather than fed to the HTTP/1.1 parser — native
+    ALPN-selected h2 is N9.5's job. No `LYRIC_HTTP_MAX_CONNECTIONS`
+    backpressure cap yet (`Std.Parse`, needed to read the override, has no
+    `_kernel_native/` twin). Verified by
+    `lyric-compiler/lyric/llvm_http_server_self_test.l` (three cases: a
+    plaintext round trip, a real concurrent TLS round trip via N9.4's
+    `hostConnectTls` on a second pthread, and the h2-rejection guard).
     **N9.5** lyric-web `serveTls` + ALPN h2. See
     `native/plan/08-work-items.md` Phase N9 for the full banding and
     prerequisites._

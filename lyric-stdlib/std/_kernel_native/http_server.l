@@ -1,0 +1,899 @@
+//! std/_kernel_native/http_server.l - native-target thread-per-connection
+//! HTTP/1.1 server assembly on the sans-IO `Std.HttpEngine` + `Std.TcpHost`
+//! transport (docs/61-https-tls-http-versions.md §7 item 5; N9.3 of epic
+//! #5874 phase 5, issue #6104).
+//!
+//! Mirrors the dotnet (`_kernel/http_server.l`) / JVM (`_kernel_jvm/
+//! http_server.l`) twins' twelve-function `Std.HttpServer` surface
+//! (`startListener` / `nextContext` / `stopListener` / `requestMethod` /
+//! `requestPath` / `requestBody` / `requestQuery` / `requestHeaders` /
+//! `urlDecode` / `respondText` / `respondJson` / `respondBytesWithHeaders`)
+//! plus `startListenerTls`, following the DOTNET twin's architecture (drive
+//! `Std.HttpEngine`'s per-connection FSM over `Std.TcpHost`'s transport),
+//! not the JVM twin's (which bypasses `Std.HttpEngine` entirely in favour of
+//! the JDK's own `com.sun.net.httpserver.HttpServer`). Concurrency is
+//! thread-per-connection over real `pthread_create`d OS threads (native
+//! `spawn`/`scope` compiles to a single-threaded coroutine scheduler today,
+//! D-N-022 — not the genuine OS concurrency this server needs; LLVM-coro
+//! async service is a later item, docs/61 §7 item 5's own final sentence).
+//!
+//! ## Scope: v1 is HTTP/1.1 only, no h2
+//!
+//! Unlike the dotnet twin (which ships full h2/ALPN support, docs/61 §6.4),
+//! this native twin implements ONLY the HTTP/1.1 half of `Std.HttpEngine` —
+//! matching this issue's own text ("driving the sans-IO Std.HttpEngine's
+//! FSM"; no h2 codepath is mentioned) and the JVM twin's precedent (which
+//! also lacks h2 today). `_kernel_native/tcp_host.l`'s `hostAcceptTls`
+//! unconditionally advertises `"h2,http/1.1"` as its ALPN preference (that
+//! constant, `alpnPreference`, is shared with `Std.HttpHost`'s client kernel
+//! and the TLS self-tests — narrowing it here would be a cross-cutting
+//! change out of this item's scope), so a real HTTP/2-capable TLS client
+//! that offers `h2` WOULD negotiate it even though this server cannot speak
+//! it. `onAccepted` below guards against this explicitly: any connection
+//! whose negotiated ALPN is `"h2"` is closed immediately rather than fed to
+//! the HTTP/1.1 parser (which would otherwise silently misinterpret h2's
+//! binary frame format as HTTP/1.1 text and either hang or emit garbage) —
+//! a loud, documented gap, not a silent miscompile. Native ALPN-selected h2
+//! is tracked as N9.5 (`native/plan/08-work-items.md`, issue #6106),
+//! already gated on this item.
+//!
+//! ## Concurrency: mutex + counting semaphore over `lyric_mutex_*`/
+//! `lyric_sem_*`, pointers stored as `Long`
+//!
+//! There is no BCL `ConcurrentQueue`/`SemaphoreSlim` equivalent on native, so
+//! the pull-model hand-off (a background thread parses a request and blocks
+//! until a puller thread responds to it, `_kernel/http_server.l`'s module
+//! header) is built directly from the two primitives
+//! D-progress-809/#6104 shipped for exactly this purpose:
+//! `lyric_mutex_*` (mutual exclusion) guards a plain `List[HttpContext]`
+//! FIFO queue, and `lyric_sem_*` (a counting semaphore — mutex+condvar
+//! backed, since POSIX `sem_init` is unimplemented on macOS) both signals
+//! "an item is available" (`ServerQueue.available`) and gives each request
+//! its own one-shot "response written" handshake (`HttpContext.done`,
+//! mirroring the dotnet twin's per-request `SemaphoreSlim`). Every raw
+//! buffer handle (`lyric_mutex_init`/`lyric_sem_init` write into a
+//! `malloc`'d block) is stored as `Long`, not `NativePtr[Byte]` — the exact
+//! "opaque handle as integer" trick `_kernel_native/tcp_host.l`'s own module
+//! header documents at length for `Conn.tlsConnHandle`: the mode checker's
+//! N0100 boundary rejects a `NativePtr[T]` record/union FIELD outright
+//! (heap storage outlives any frame), but `ServerQueue`/`HttpContext` must
+//! survive across many separate calls on many separate threads, so their
+//! raw handles are declared `Long` at both the extern's return position
+//! (`rtMutexSize`-sized `rtMalloc`) and its parameter position (every later
+//! `rtMutexLock`/`rtSemWait`/... call) — a pointer and an `i64` are the
+//! identical machine word on every `--target native` triple (x86-64/AArch64,
+//! both LP64), so nothing is lost by the reinterpretation.
+//!
+//! `List[HttpContext]`/`List[Long]` themselves are safe to share and mutate
+//! across threads through a `Long`-keyed-mutex-guarded record reference: per
+//! `native/plan/04-arc-design.md`, a Lyric `record` is a heap-allocated,
+//! ARC-refcounted object on this target (unlike the self-hosted MSIL
+//! emitter, which may lay out a generic record as a value type, docs/43) —
+//! refcount increments/decrements are atomic (`_Atomic int rc`), and a
+//! `lyric_mutex_lock`/`unlock` pair supplies the memory-visibility barrier a
+//! plain field/list mutation needs to be safely observed by another thread.
+//! `ServerQueue`/`HttpContext` are therefore ordinary (non-opaque) records
+//! with package-private fields, following the same "public type, private
+//! fields, explicit lifetime" discipline every other `_kernel_native/` file
+//! already uses for a raw resource (`tcp_host.l`'s `Listener`/`Conn`,
+//! `process_capture_host.l`'s `ProcessCaptureResult`).
+//!
+//! ## Shutdown: `stopListener` deterministically joins every spawned thread
+//!
+//! The dotnet twin's own `stopListener` doc comment is explicit that it does
+//! NOT wait for in-flight connections ("the accept loop ends when the
+//! stopped listener's next accept fails"; connection tasks finish
+//! independently, garbage-collected once idle). That fire-and-forget model
+//! is safe on a GC'd target but would leak this file's `malloc`'d
+//! mutex/semaphore buffers on native (and, worse, risks a use-after-free if
+//! a still-running connection thread later touched a queue whose backing
+//! buffer this function had already freed). `stopListener` here instead: (1)
+//! closes the transport, unblocking the accept thread's `hostAccept`/
+//! `hostAcceptTls` call with an error so its own loop ends; (2) `pthread_join`s
+//! the accept thread (a POSIX thread's own termination synchronizes-with its
+//! joiner, so by the time this returns, every `ServerQueue.workerTids.add`
+//! call the accept thread's own connection-spawning path could ever make has
+//! already happened and is visible here with no extra locking needed); (3)
+//! `pthread_join`s every handler thread the accept thread ever spawned; only
+//! then (4) frees the queue's mutex/semaphore. This makes `stopListener`
+//! BLOCK until every accepted connection has genuinely finished (a real
+//! behavioural difference from the dotnet/JVM twins, and stronger than
+//! either — a caller wanting a non-blocking stop can spawn its own thread to
+//! call it), the price of not having a GC to defer the cleanup to.
+//!
+//! No backpressure cap (the dotnet twin's `LYRIC_HTTP_MAX_CONNECTIONS`/
+//! `resolveMaxConcurrentConnections`, #6071) ships in this v1: it needs
+//! `Std.Parse.tryParseInt` to read the environment override, and
+//! `Std.Parse` has no `_kernel_native/parse_host.l` twin yet (confirmed:
+//! only `_kernel/parse_host.l` and `_kernel_jvm/parse_host.l` exist), so
+//! depending on it here would either fail to build or silently punch a new
+//! hole in the audited native stdlib-kernel boundary. A future
+//! `Std.Parse` native twin removes this gap; until then, an unbounded
+//! native listener is a disclosed, deliberate v1 scope decision, not a
+//! silent omission.
+//!
+//! String scanning avoids `String[i]` bracket indexing throughout (not a
+//! supported native codegen shape — `Lyric.LlvmCodegen.lowerCollectionIndex`
+//! only recognises List/slice/Map receivers, confirmed via direct repro,
+//! issue #6237) via two different idioms, chosen per call site: `.indexOf`/
+//! `.startsWith`/`.substring` (native `String` methods shipped by #6588 /
+//! D-progress-831, landed for this exact item) where a whole-needle search
+//! reads more clearly, and a local `rtByteAt`-backed `charCodeAt` helper
+//! (the same `lyric_string_byte_at` runtime accessor `Std.EncodingHost.
+//! hostCharCodeAt` wraps — redeclared here rather than imported, since that
+//! module's own header reserves it "only Std.Encoding should import this")
+//! where per-character numeric range checks (`urlDecode`'s hex-escape
+//! scanning, `parsePort`'s digit scanning) are the natural shape, matching
+//! `_kernel/http_server.l`'s original `toInt(s[i])`-based logic byte-for-byte
+//! once `s[i]` is replaced by `charCodeAt(s, i)`.
+@axiom("lyric_mutex_*/lyric_sem_* (lyric-rt/src/lyric_posix.c), pthread_create/pthread_join, and malloc/free conform to their documented POSIX/C99 contracts")
+package Std.HttpServer
+
+import Std.Core
+import Std.Collections
+import Std.Encoding
+import Std.Tls
+import Std.HttpEngine
+import Std.TcpHost
+
+// =====================================================================
+// Extern seam bindings.
+// =====================================================================
+extern func rtByteAt(s: String, idx: Int): Int = "lyric_string_byte_at"
+
+extern func rtMalloc(n: Long): Long = "malloc"
+
+extern func rtFree(p: Long): Unit = "free"
+
+extern func rtMutexSize(): Int = "lyric_mutex_size"
+
+extern func rtMutexInit(m: Long): Unit = "lyric_mutex_init"
+
+extern func rtMutexLock(m: Long): Unit = "lyric_mutex_lock"
+
+extern func rtMutexUnlock(m: Long): Unit = "lyric_mutex_unlock"
+
+extern func rtMutexDestroy(m: Long): Unit = "lyric_mutex_destroy"
+
+extern func rtSemSize(): Int = "lyric_sem_size"
+
+extern func rtSemInit(s: Long, initial: Int): Unit = "lyric_sem_init"
+
+extern func rtSemWait(s: Long): Unit = "lyric_sem_wait"
+
+extern func rtSemPost(s: Long): Unit = "lyric_sem_post"
+
+extern func rtSemDestroy(s: Long): Unit = "lyric_sem_destroy"
+
+extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = "pthread_create"
+
+extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = "pthread_join"
+
+func charCodeAt(s: in String, i: in Int): Int {
+  rtByteAt(s, i)
+}
+
+// =====================================================================
+// Public error type.
+// =====================================================================
+/// Failure returned by `startListenerTls`. `InvalidConfig` reports a
+/// mutual-TLS misconfiguration (`requireClientCert` without a `clientCa`)
+/// caught before binding, or a bind/thread-spawn failure. `NotSupportedOnTarget`
+/// is retained for cross-target API stability but is never constructed here.
+pub union TlsListenError {
+  case NotSupportedOnTarget(message: String)
+  case InvalidConfig(message: String)
+}
+
+/// Human-readable message for a `TlsListenError`.
+@pure
+pub func TlsListenError.message(e: in TlsListenError): String {
+  match e {
+    case NotSupportedOnTarget(m) -> m
+    case InvalidConfig(m) -> m
+  }
+}
+
+// =====================================================================
+// Concurrency primitives: mutex-guarded FIFO queue + per-request one-shot
+// semaphore (module header).
+// =====================================================================
+record ServerQueue {
+  mutex: Long
+  available: Long
+  items: List[HttpContext]
+  workerTids: List[Long]
+}
+
+func newServerQueue(): ServerQueue {
+  val m = rtMalloc(rtMutexSize().toLong())
+  rtMutexInit(m)
+  val s = rtMalloc(rtSemSize().toLong())
+  rtSemInit(s, 0)
+  val items: List[HttpContext] = newList()
+  val tids: List[Long] = newList()
+  ServerQueue(mutex = m, available = s, items = items, workerTids = tids)
+}
+
+func enqueueContext(q: in ServerQueue, ctx: in HttpContext): Unit {
+  rtMutexLock(q.mutex)
+  q.items.add(ctx)
+  rtMutexUnlock(q.mutex)
+  rtSemPost(q.available)
+}
+
+func dequeueContext(q: in ServerQueue): HttpContext {
+  rtSemWait(q.available)
+  rtMutexLock(q.mutex)
+  val ctx = q.items[0]
+  q.items.removeAt(0)
+  rtMutexUnlock(q.mutex)
+  ctx
+}
+
+func registerWorker(q: in ServerQueue, tid: in Long): Unit {
+  rtMutexLock(q.mutex)
+  q.workerTids.add(tid)
+  rtMutexUnlock(q.mutex)
+}
+
+func newOneShotSem(): Long {
+  val s = rtMalloc(rtSemSize().toLong())
+  rtSemInit(s, 0)
+  s
+}
+
+func freeOneShotSem(s: in Long): Unit {
+  rtSemDestroy(s)
+  rtFree(s)
+}
+
+// =====================================================================
+// Public types.
+// =====================================================================
+/// A running server: the bound transport, the accept thread's id (joined by
+/// `stopListener`), and the pull queue every spawned connection thread
+/// shares. Opaque to consumers: observe it only through `nextContext` /
+/// `stopListener`.
+pub record HttpListener {
+  transport: Listener
+  acceptTid: Long
+  queue: ServerQueue
+}
+
+/// One fully-parsed request plus the machinery to respond to it. `conn` is
+/// the live transport connection (owned by the connection thread; a
+/// `respond*` helper writes to it during the response phase, then releases
+/// `done` so the connection thread may read the next request or close).
+/// Treat the fields as private -- observe a context only through the
+/// `request*` accessors and construct a response only through `respond*`.
+pub record HttpContext {
+  conn: Conn
+  method: String
+  target: String
+  version: HttpVersion
+  headers: List[HeaderField]
+  body: slice[Byte]
+  keepAlive: Bool
+  done: Long
+}
+
+// =====================================================================
+// Prefix parsing (pure Lyric) — accepts the "http://host:port/path" shape
+// the dotnet/JVM twins' prefixes use. `https://` has no room for a TLS
+// config and is rejected loudly (use `startListenerTls`).
+// =====================================================================
+func isDigitCp(cp: in Int): Bool {
+  cp >= 48 and cp <= 57
+}
+
+func isHexDigitCp(cp: in Int): Bool {
+  (cp >= 48 and cp <= 57) or (cp >= 97 and cp <= 102) or (cp >= 65 and cp <= 70)
+}
+
+func hexDigitCpValue(cp: in Int): Int {
+  if cp >= 48 and cp <= 57 {
+    cp - 48
+  } else if cp >= 97 and cp <= 102 {
+    cp - 97 + 10
+  } else {
+    cp - 65 + 10
+  }
+}
+
+func parsePort(text: in String, prefix: in String): Int {
+  if text.length == 0 {
+    panic("Std.HttpServer: invalid listener prefix '" + prefix + "': empty port")
+  }
+  var value = 0
+  var i = 0
+  while i < text.length {
+    val cp = charCodeAt(text, i)
+    if not isDigitCp(cp) {
+      panic("Std.HttpServer: invalid listener prefix '" + prefix + "': non-numeric port '" + text + "'")
+    }
+    value = value * 10 + (cp - 48)
+    i = i + 1
+  }
+  if value < 1 or value > 65535 {
+    panic("Std.HttpServer: invalid listener prefix '" + prefix + "': port out of range")
+  }
+  value
+}
+
+record ParsedPrefix {
+  bindHost: String
+  port: Int
+}
+
+func parsePrefix(prefix: in String): ParsedPrefix {
+  if prefix.startsWith("https://") {
+    panic(
+      "Std.HttpServer: startListener's single-string prefix has no room for a TLS " +
+        "config; use startListenerTls(host, port, tls) for HTTPS listeners"
+    )
+  }
+  if not prefix.startsWith("http://") {
+    panic("Std.HttpServer: invalid listener prefix '" + prefix + "': expected \"http://host:port/\"")
+  }
+  val rest = prefix.substring(7, prefix.length - 7)
+  val slashAt = rest.indexOf("/")
+  val hostPort = if slashAt >= 0 { rest.substring(0, slashAt) } else { rest }
+  val colonAt = hostPort.indexOf(":")
+  val bindHost = if colonAt >= 0 { hostPort.substring(0, colonAt) } else { hostPort }
+  val port = if colonAt >= 0 {
+    parsePort(hostPort.substring(colonAt + 1, hostPort.length - colonAt - 1), prefix)
+  } else {
+    80
+  }
+  if bindHost.length == 0 {
+    panic("Std.HttpServer: invalid listener prefix '" + prefix + "': empty host")
+  }
+  ParsedPrefix(bindHost = bindHost, port = port)
+}
+
+// `Std.TcpHost.hostListen` binds an IP literal, not a DNS name. Map the
+// common non-literal binds the prefix convention uses.
+func resolveBindHost(host: in String): String {
+  if host == "*" or host == "+" {
+    "0.0.0.0"
+  } else if host == "localhost" {
+    "127.0.0.1"
+  } else {
+    host
+  }
+}
+
+// =====================================================================
+// Response status reason phrases (RFC 9110-legal blank reason for an
+// unlisted code, matching the dotnet/JVM twins).
+// =====================================================================
+func reasonForStatus(status: in Int): String {
+  if status == 100 {
+    "Continue"
+  } else if status == 200 {
+    "OK"
+  } else if status == 201 {
+    "Created"
+  } else if status == 202 {
+    "Accepted"
+  } else if status == 204 {
+    "No Content"
+  } else if status == 301 {
+    "Moved Permanently"
+  } else if status == 302 {
+    "Found"
+  } else if status == 304 {
+    "Not Modified"
+  } else if status == 400 {
+    "Bad Request"
+  } else if status == 401 {
+    "Unauthorized"
+  } else if status == 403 {
+    "Forbidden"
+  } else if status == 404 {
+    "Not Found"
+  } else if status == 405 {
+    "Method Not Allowed"
+  } else if status == 409 {
+    "Conflict"
+  } else if status == 413 {
+    "Content Too Large"
+  } else if status == 414 {
+    "URI Too Long"
+  } else if status == 431 {
+    "Request Header Fields Too Large"
+  } else if status == 500 {
+    "Internal Server Error"
+  } else if status == 501 {
+    "Not Implemented"
+  } else if status == 503 {
+    "Service Unavailable"
+  } else if status == 505 {
+    "HTTP Version Not Supported"
+  } else {
+    ""
+  }
+}
+
+// =====================================================================
+// Per-connection request reader (runs on the connection thread).
+// =====================================================================
+union ReqOutcome {
+  case RoClose
+  case RoRequest(method: String, target: String, version: HttpVersion, headers: List[HeaderField], body: slice[Byte], keepAlive: Bool)
+  case RoProtocolFail(status: Int)
+}
+
+func emptyBytes(): slice[Byte] {
+  val e: slice[Byte] = []
+  e
+}
+
+func appendBytes(acc: in List[Byte], bytes: in slice[Byte]): Unit {
+  var i = 0
+  while i < bytes.length {
+    acc.add(bytes[i])
+    i = i + 1
+  }
+}
+
+// Write an interim `100 Continue` head (no body) when the request carried
+// `Expect: 100-continue`; the client then sends the body.
+func writeInterimContinue(conn: in Conn, version: in HttpVersion): Unit {
+  val noHeaders: List[HeaderField] = newList()
+  val head = serializeResponseHead(version, 100, reasonForStatus(100), noHeaders)
+  val _ = hostWrite(conn, head)
+}
+
+// Read and parse exactly one request off `conn`, advancing the engine FSM.
+// Drains any already-buffered (pipelined) bytes before issuing a fresh read.
+func readOneRequest(conn: in Conn, engineConn: inout Connection): ReqOutcome {
+  var method = ""
+  var target = ""
+  var version: HttpVersion = Http1_1
+  var headers: List[HeaderField] = newList()
+  val body: List[Byte] = newList()
+  var first = true
+  while true {
+    var events: List[HttpEvent] = newList()
+    if first {
+      first = false
+      val fr0 = feed(engineConn, emptyBytes())
+      engineConn = fr0.conn
+      events = fr0.events
+    } else {
+      match hostRead(conn, 65536) {
+        case Err(_) -> return RoClose
+        case Ok(bytes) -> {
+          if bytes.length == 0 {
+            return RoClose
+          }
+          val fr1 = feed(engineConn, bytes)
+          engineConn = fr1.conn
+          events = fr1.events
+        }
+      }
+    }
+    var i = 0
+    while i < events.count {
+      val ev = events[i]
+      match ev {
+        case NeedMore -> ()
+        case RequestHead(m, t, v, hs) -> {
+          method = m
+          target = t
+          version = v
+          headers = hs
+        }
+        case ExpectContinue -> writeInterimContinue(conn, version)
+        case BodyChunk(b) -> appendBytes(body, b)
+        case RequestComplete -> {
+          return RoRequest(
+            method = method,
+            target = target,
+            version = version,
+            headers = headers,
+            body = body.toArray(),
+            keepAlive = not shouldClose(engineConn)
+          )
+        }
+        case ProtocolError(kind, _) -> return RoProtocolFail(status = protocolErrorStatus(kind))
+      }
+      i = i + 1
+    }
+  }
+  RoClose
+}
+
+// Write a minimal bodyless error response (used for a `ProtocolError` before
+// a context is ever handed to the puller) and always close the connection.
+func writeErrorResponse(conn: in Conn, status: in Int): Unit {
+  val headers: List[HeaderField] = newList()
+  headers.add(HeaderField(name = "Content-Length", value = "0"))
+  headers.add(HeaderField(name = "Connection", value = "close"))
+  val head = serializeResponseHead(Http1_1, status, reasonForStatus(status), headers)
+  val _ = hostWrite(conn, head)
+}
+
+// The per-connection thread body: parse a request, hand a ready context to
+// the puller, block until the puller responds, then either read the next
+// request (keep-alive) or close.
+func processConnection(conn: in Conn, queue: in ServerQueue, limits: in EngineLimits): Unit {
+  defer {
+    hostClose(conn)
+  }
+  var engineConn = newConnection(limits)
+  var open = true
+  while open {
+    val outcome = readOneRequest(conn, engineConn)
+    match outcome {
+      case RoClose -> {
+        open = false
+      }
+      case RoProtocolFail(status) -> {
+        writeErrorResponse(conn, status)
+        open = false
+      }
+      case RoRequest(method, target, version, headers, body, keepAlive) -> {
+        val doneSem = newOneShotSem()
+        val ctx = HttpContext(
+          conn = conn,
+          method = method,
+          target = target,
+          version = version,
+          headers = headers,
+          body = body,
+          keepAlive = keepAlive,
+          done = doneSem
+        )
+        enqueueContext(queue, ctx)
+        // Block until a respond helper releases `done`. A failed response
+        // write is not signalled here -- the next `readOneRequest` hits the
+        // broken socket and returns `RoClose`, closing the connection one
+        // iteration later (mirrors the dotnet twin's identical reasoning).
+        rtSemWait(doneSem)
+        freeOneShotSem(doneSem)
+        if not keepAlive {
+          open = false
+        }
+      }
+    }
+  };
+  ()
+}
+
+// Spawn one `pthread_create`d thread per accepted connection (module
+// header). A spawn failure closes the connection rather than leaking it.
+@unsafe_ffi
+func spawnHandler(conn: in Conn, queue: in ServerQueue, limits: in EngineLimits): Unit {
+  var tid: Long = 0
+  val worker: () -> NativePtr[Byte] = { -> processConnection(conn, queue, limits); nativeNullPtr() }
+  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)
+  if rc == 0 {
+    registerWorker(queue, tid)
+  } else {
+    hostClose(conn)
+  }
+}
+
+// Handle one accept result: on success, reject a negotiated-h2 connection
+// (module header's "Scope: v1 is HTTP/1.1 only" section) or spawn a
+// per-connection thread and keep looping; on a stopped listener
+// (`AcceptFailed`/`BindFailed`) end the loop; any other per-connection
+// failure (e.g. a TLS handshake that failed for one client) is skipped so
+// one bad peer never takes the listener down.
+func onAccepted(accepted: in Result[Conn, TcpError], queue: in ServerQueue, limits: in EngineLimits): Bool {
+  match accepted {
+    case Ok(conn) -> {
+      if hostAlpn(conn) == "h2" {
+        hostClose(conn)
+        true
+      } else {
+        spawnHandler(conn, queue, limits)
+        true
+      }
+    }
+    case Err(e) -> match e { case AcceptFailed(_) -> false; case BindFailed(_) -> false; case _ -> true }
+  }
+}
+
+func plainAcceptLoop(transport: in Listener, queue: in ServerQueue, limits: in EngineLimits): Unit {
+  var running = true
+  while running {
+    val accepted = hostAccept(transport)
+    running = onAccepted(accepted, queue, limits)
+  }
+}
+
+func tlsAcceptLoop(
+  transport: in Listener, queue: in ServerQueue, tls: in TlsServerConfig, limits: in EngineLimits
+): Unit {
+  var running = true
+  while running {
+    val accepted = hostAcceptTls(transport, tls)
+    running = onAccepted(accepted, queue, limits)
+  }
+}
+
+// =====================================================================
+// Public API.
+// =====================================================================
+/// Construct + bind + start the server for `prefix` (e.g.
+/// `"http://localhost:8080/"`). The caller owns it and must call
+/// `stopListener` on shutdown. A `"*"` / `"+"` host binds the wildcard
+/// address.
+@unsafe_ffi
+pub func startListener(prefix: in String): HttpListener {
+  val parsed = parsePrefix(prefix)
+  match hostListen(resolveBindHost(parsed.bindHost), parsed.port) {
+    case Ok(transport) -> {
+      val queue = newServerQueue()
+      val limits = EngineLimits.defaults()
+      var tid: Long = 0
+      val worker: () -> NativePtr[Byte] = { -> plainAcceptLoop(transport, queue, limits); nativeNullPtr() }
+      val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)
+      if rc != 0 {
+        panic("Std.HttpServer.startListener: failed to spawn the accept thread")
+      }
+      HttpListener(transport = transport, acceptTid = tid, queue = queue)
+    }
+    case Err(e) -> panic("Std.HttpServer.startListener: bind failed: " + TcpError.message(e))
+  }
+}
+
+/// TLS twin of `startListener` (docs/61 §6.3, issue #5884), using
+/// `EngineLimits.defaults()`. Binds `host`:`port` and terminates TLS on
+/// every connection using `tls` (server identity, `minVersion`, mTLS). `host`
+/// is an IP literal, `"*"`/`"+"` (wildcard), or `"localhost"`. Returns
+/// `Err(InvalidConfig(...))` for a mutual-TLS misconfiguration
+/// (`requireClientCert` with no `clientCa`) caught before binding, or a
+/// bind/thread-spawn failure; per-connection handshake failures are handled
+/// inside the accept loop, never fatal to the listener. A negotiated-h2
+/// connection is dropped rather than parsed as HTTP/1.1 (module header).
+@unsafe_ffi
+pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig): Result[HttpListener, TlsListenError] {
+  val mtlsMisconfigured = tls.requireClientCert and match tls.clientCa { case Some(_) -> false; case None -> true }
+  if mtlsMisconfigured {
+    return Err(
+      error = InvalidConfig(
+        message = "requireClientCert is set but no clientCa is configured; mutual TLS must pin trust to a client CA " +
+          "(refusing to bind a listener that would reject every connection)"
+      )
+    )
+  }
+  match hostListen(resolveBindHost(host), port) {
+    case Ok(transport) -> {
+      val queue = newServerQueue()
+      val limits = EngineLimits.defaults()
+      var tid: Long = 0
+      val worker: () -> NativePtr[Byte] = { -> tlsAcceptLoop(transport, queue, tls, limits); nativeNullPtr() }
+      val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)
+      if rc != 0 {
+        return Err(error = InvalidConfig(message = "failed to spawn the accept thread"))
+      }
+      Ok(value = HttpListener(transport = transport, acceptTid = tid, queue = queue))
+    }
+    case Err(e) -> Err(error = InvalidConfig(message = "bind failed: " + TcpError.message(e)))
+  }
+}
+
+/// Block until the next fully-parsed request is ready, returning its
+/// context.
+pub func nextContext(l: in HttpListener): HttpContext {
+  dequeueContext(l.queue)
+}
+
+/// Stop accepting connections, then block until every accepted connection
+/// has genuinely finished before releasing the queue's resources (module
+/// header's "Shutdown" section — a stronger guarantee than the dotnet/JVM
+/// twins', which never wait, because native has no GC to defer the cleanup
+/// to).
+@unsafe_ffi
+pub func stopListener(l: in HttpListener): Unit {
+  hostStopListener(l.transport)
+  var acceptOutp: NativePtr[Byte] = nativeNullPtr()
+  val _ = pthreadJoin(l.acceptTid, nativeAddrOf(acceptOutp))
+  rtMutexLock(l.queue.mutex)
+  val tids = l.queue.workerTids.toArray()
+  rtMutexUnlock(l.queue.mutex)
+  var i = 0
+  while i < tids.length {
+    var outp: NativePtr[Byte] = nativeNullPtr()
+    val _ = pthreadJoin(tids[i], nativeAddrOf(outp))
+    i = i + 1
+  }
+  rtMutexDestroy(l.queue.mutex)
+  rtFree(l.queue.mutex)
+  rtSemDestroy(l.queue.available)
+  rtFree(l.queue.available)
+}
+
+/// HTTP method (`"GET"`, `"POST"`, ...).
+pub func requestMethod(c: in HttpContext): String {
+  c.method
+}
+
+// Index of the first `?` in `target`, or -1.
+func queryStart(target: in String): Int {
+  target.indexOf("?")
+}
+
+/// Absolute path of the request target (everything before the first `?`).
+pub func requestPath(c: in HttpContext): String {
+  val q = queryStart(c.target)
+  if q >= 0 {
+    c.target.substring(0, q)
+  } else {
+    c.target
+  }
+}
+
+/// Raw query string with no leading `?` (e.g. `"a=1&b=2"`), still
+/// percent-escaped, or `""` if the target has none.
+pub func requestQuery(c: in HttpContext): String {
+  val q = queryStart(c.target)
+  if q >= 0 {
+    c.target.substring(q + 1, c.target.length - q - 1)
+  } else {
+    ""
+  }
+}
+
+/// Read the request body as a UTF-8 string (or `""` for an empty /
+/// non-UTF-8 body).
+pub func requestBody(c: in HttpContext): String {
+  match tryDecodeUtf8(c.body) {
+    case Some(s) -> s
+    case None -> ""
+  }
+}
+
+/// Every request header as a name/value map. Multi-valued headers are
+/// comma-joined (RFC 7230 §3.2.2), matching the dotnet/JVM twins. Names
+/// carry the case the client supplied.
+pub func requestHeaders(c: in HttpContext): Map[String, String] {
+  val result: Map[String, String] = newMap()
+  var i = 0
+  while i < c.headers.count {
+    val h = c.headers[i]
+    match mapGet(result, h.name) {
+      case Some(existing) -> result.add(h.name, existing + "," + h.value)
+      case None -> result.add(h.name, h.value)
+    }
+    i = i + 1
+  }
+  result
+}
+
+/// Percent-decode a URL-encoded string (query/path segment values): `%XX`
+/// runs decode as UTF-8 byte sequences (a multi-byte code point spans
+/// consecutive `%XX` escapes, so a whole run is collected before decoding),
+/// `+` is NOT treated as a space, and malformed escapes pass through
+/// literally.
+pub func urlDecode(s: in String): String {
+  var result = ""
+  val len = s.length
+  var i = 0
+  while i < len {
+    val cp = charCodeAt(s, i)
+    if cp == 37 and i + 2 < len and isHexDigitCp(charCodeAt(s, i + 1)) and isHexDigitCp(charCodeAt(s, i + 2)) {
+      val bytes: List[Byte] = newList()
+      var raw = ""
+      while i + 2 < len and charCodeAt(s, i) == 37 and isHexDigitCp(charCodeAt(s, i + 1)) and isHexDigitCp(charCodeAt(s, i + 2)) {
+        val hi = hexDigitCpValue(charCodeAt(s, i + 1))
+        val lo = hexDigitCpValue(charCodeAt(s, i + 2))
+        bytes.add((hi * 16 + lo).toByte())
+        raw = raw + s.substring(i, 3)
+        i = i + 3
+      }
+      match tryDecodeUtf8(bytes.toArray()) {
+        case Some(decoded) -> {
+          result = result + decoded
+        }
+        case None -> {
+          result = result + raw
+        }
+      }
+    } else {
+      result = result + s.substring(i, 1)
+      i = i + 1
+    }
+  }
+  result
+}
+
+// =====================================================================
+// Response writing (runs on the puller thread).
+// =====================================================================
+// Mirror of `Std.HttpEngine`'s (package-private) response-safe byte rule
+// (RFC 9110 §5.5 field-vchar / SP / HTAB, excluding CR/LF/NUL) --
+// pre-filtering to exactly this set keeps a hostile reflected header value
+// from tripping `serializeResponseHead`'s `requires:` and crashing the
+// connection thread.
+func responseHeaderSafe(s: in String): Bool {
+  var i = 0
+  while i < s.length {
+    val cp = charCodeAt(s, i)
+    if not ((cp >= 32 and cp <= 126) or cp == 9) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+func appendSafeHeader(headers: in List[HeaderField], name: in String, value: in String): Unit {
+  if name.length > 0 and responseHeaderSafe(name) and responseHeaderSafe(value) {
+    headers.add(HeaderField(name = name, value = value))
+  }
+}
+
+func appendExtraHeaders(headers: in List[HeaderField], extra: in Map[String, String]): Unit {
+  val names = mapKeys(extra).toArray()
+  var i = 0
+  while i < names.length {
+    val name = names[i]
+    match mapGet(extra, name) {
+      case Some(value) -> appendSafeHeader(headers, name, value)
+      case None -> ()
+    }
+    i = i + 1
+  }
+}
+
+// `Connection: close` when the exchange will not keep the connection alive;
+// `Connection: keep-alive` on an HTTP/1.0 keep-alive (HTTP/1.1's default
+// needs no header).
+func appendConnectionHeader(headers: in List[HeaderField], version: in HttpVersion, keepAlive: in Bool): Unit {
+  if not keepAlive {
+    headers.add(HeaderField(name = "Connection", value = "close"))
+  } else {
+    match version {
+      case Http1_0 -> headers.add(HeaderField(name = "Connection", value = "keep-alive"))
+      case Http1_1 -> ()
+    }
+  }
+}
+
+func respondBytesWith(
+  c: in HttpContext,
+  status: in Int,
+  contentType: in String,
+  body: in slice[Byte],
+  extra: in Map[String, String],
+): Unit {
+  val headers: List[HeaderField] = newList()
+  appendSafeHeader(headers, "Content-Type", contentType)
+  headers.add(HeaderField(name = "Content-Length", value = toString(body.length)))
+  appendConnectionHeader(headers, c.version, c.keepAlive)
+  appendExtraHeaders(headers, extra)
+  val head = serializeResponseHead(c.version, status, reasonForStatus(status), headers)
+  val _ = hostWrite(c.conn, head.concat(body))
+  rtSemPost(c.done)
+}
+
+/// Reply with a plaintext body; completes the exchange.
+pub func respondText(c: in HttpContext, status: in Int, body: in String): Unit {
+  val empty: Map[String, String] = newMap()
+  respondBytesWith(c, status, "text/plain; charset=utf-8", encodeUtf8(body), empty)
+}
+
+/// Reply with `application/json`; completes the exchange. The body is
+/// passed through verbatim.
+pub func respondJson(c: in HttpContext, status: in Int, body: in String): Unit {
+  val empty: Map[String, String] = newMap()
+  respondBytesWith(c, status, "application/json; charset=utf-8", encodeUtf8(body), empty)
+}
+
+/// Reply with a raw byte body plus extra response headers; completes the
+/// exchange.
+pub func respondBytesWithHeaders(
+  c: in HttpContext,
+  status: in Int,
+  contentType: in String,
+  body: in slice[Byte],
+  headers: in Map[String, String],
+): Unit {
+  respondBytesWith(c, status, contentType, body, headers)
+}

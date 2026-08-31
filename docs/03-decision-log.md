@@ -37176,3 +37176,224 @@ end to end, confirming the bare-call fast path is untouched.
 **Related:** #6712, PR #6631 (the `compiler-self-tests-jvm` required
 check this unblocks), `Msil.Codegen.hasQualifiedFuncOverrideMsil`
 (the pre-existing pattern this mirrors).
+## D-progress-850 — TLS phase 5 (native) N9.3: `Std.HttpServer` native twin — thread-per-connection over the pthread kernel driving `Std.HttpEngine` (issue #6104, epic #5874 phase 5)
+
+Implements `_kernel_native/http_server.l`: the native `Std.HttpServer` twin,
+the last of the four N9 stdlib-kernel items in this epic's phase 5 native
+band (N9.1 the C seam, N9.2 `Std.TcpHost`, N9.4 the HTTP client, this entry
+N9.3 the HTTP server; N9.5 lyric-web integration + ALPN h2 remains open).
+Both of N9.3's own prerequisite blockers — native `String` gaining
+`.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588,
+D-progress-831) and bare cross-package enum-case value resolution (#6589,
+D-progress-830) — shipped earlier in this same session, unblocking the
+kernel work this entry ships.
+
+**Architecture: follow the dotnet twin, not the JVM twin.** `_kernel/
+http_server.l` (dotnet) drives the sans-IO `Std.HttpEngine`'s
+per-connection FSM over `Std.TcpHost`'s transport; `_kernel_jvm/
+http_server.l` bypasses `Std.HttpEngine` entirely in favour of the JDK's
+own `com.sun.net.httpserver.HttpServer`. The issue's own text ("driving the
+sans-IO `Std.HttpEngine`'s FSM") and `native/plan/08-work-items.md`'s N9.3
+banding both point at the dotnet shape, so `_kernel_native/http_server.l`
+mirrors it: a real HTTP/1.1 parser/serializer (`Std.HttpEngine`, already
+native-buildable end to end since D-progress-830/831 fixed the two blockers
+above) driven by real transport I/O (`Std.TcpHost`'s N9.2 twin), not a
+from-scratch wire-protocol reimplementation the way N9.4's client kernel had
+to be (`Std.HttpEngine` is server-only; there was never a client FSM to
+reuse there).
+
+**Scope, matched exactly to the issue text: the twelve-function surface
+plus `startListenerTls`, nothing more.** Reading both existing twins in
+full before writing found the "twelve-function `Std.HttpServer` surface"
+the issue names is precisely `startListener`/`nextContext`/`stopListener`/
+`requestMethod`/`requestPath`/`requestBody`/`requestQuery`/
+`requestHeaders`/`urlDecode`/`respondText`/`respondJson`/
+`respondBytesWithHeaders` — the JVM twin implements exactly these twelve
+plus `startListenerTls` and nothing else (no h2, no chunked-streaming
+helpers, no `*WithLimits` variants); the dotnet twin additionally ships h2/
+ALPN, three chunked-streaming helpers, and `startListener{,Tls}WithLimits`,
+none of which the issue's text mentions. This entry ships the JVM twin's
+narrower *surface* over the dotnet twin's *architecture* — deliberately,
+not by omission — and documents every point where that narrows behaviour
+(no h2, no per-request size-limit override, no backpressure cap) in the
+kernel's own module header rather than silently.
+
+**Concurrency: a hand-built mutex+semaphore queue, not a BCL collection.**
+There is no `ConcurrentQueue`/`SemaphoreSlim` equivalent on native. The
+pull-model hand-off (a connection thread parses one request, hands a ready
+context to a shared queue, blocks until a puller thread responds via a
+per-request one-shot signal — `_kernel/http_server.l`'s own module header
+names this pattern) is built directly from D-progress-809's prerequisite
+primitives: `lyric_mutex_*` guards a plain `List[HttpContext]` FIFO
+(`ServerQueue`), and `lyric_sem_*` (mutex+condvar backed, not POSIX
+`sem_init`, since that is unimplemented on macOS) both signals "an item is
+available" and gives each request its own one-shot "response written"
+semaphore (`HttpContext.done`), mirroring the dotnet twin's per-request
+`SemaphoreSlim` exactly. Every raw buffer handle (`rtMalloc`'d, then
+`lyric_mutex_init`/`lyric_sem_init`'d) is declared `Long`, never
+`NativePtr[Byte]` — the identical "opaque handle as integer" trick
+`_kernel_native/tcp_host.l`'s own module header documents at length for
+`Conn.tlsConnHandle`: the mode checker's N0100 boundary rejects a
+`NativePtr[T]` record/union FIELD outright ("heap storage outlives any
+frame"), but `ServerQueue`/`HttpContext` must survive across many separate
+calls on many separate threads, so a pointer is reinterpreted as the `i64`
+it already is at the machine-word level (identical on every `--target
+native` triple, x86-64/AArch64, both LP64). `ServerQueue`/`HttpContext`
+themselves are plain (non-opaque) records — per `native/plan/
+04-arc-design.md`, a Lyric `record` is heap-allocated with atomically
+refcounted ARC on this target (unlike the self-hosted MSIL emitter, which
+may lay a generic record out as a value type, docs/43), and a
+`lyric_mutex_lock`/`unlock` pair supplies the memory-visibility barrier a
+plain field/list mutation needs to be safely observed cross-thread — so
+sharing a mutable `List[HttpContext]`/`List[Long]` through a mutex-guarded
+record reference is sound with no additional synchronisation mechanism
+needed.
+
+**Shutdown: `stopListener` blocks until every accepted connection has
+genuinely finished — stronger than either existing twin's contract, forced
+by the lack of a GC.** The dotnet twin's own `stopListener` doc comment is
+explicit that it does not wait for in-flight connections ("the accept loop
+ends when the stopped listener's next accept fails"; connection tasks
+finish independently, garbage-collected once idle). That fire-and-forget
+model is safe on a GC'd target but would either leak this kernel's
+`malloc`'d mutex/semaphore buffers on native, or — worse — risk a
+use-after-free if a still-running connection thread later touched a queue
+whose backing buffer `stopListener` had already freed. `stopListener` here
+instead: closes the transport (unblocking the accept thread's
+`hostAccept`/`hostAcceptTls` call with an error so its own loop ends),
+`pthread_join`s the accept thread (a POSIX thread's termination
+synchronizes-with its joiner, so every `ServerQueue.workerTids.add` call the
+accept thread's own connection-spawning path could ever make is already
+visible here with no extra locking needed), then `pthread_join`s every
+handler thread the accept thread ever spawned (tracked in
+`ServerQueue.workerTids`, appended by `spawnHandler` right after a
+successful `pthread_create`), and only then frees the queue's mutex/
+semaphore. This makes `stopListener` a genuinely blocking "drain everything,
+then free" call — a caller wanting a non-blocking stop can spawn its own
+thread to call it — traded deliberately against the dotnet/JVM twins'
+non-blocking-but-GC-dependent contract, since native has no GC to fall back
+on.
+
+**Two disclosed v1 scope gaps, neither silent.**
+
+1. **No h2.** `_kernel_native/tcp_host.l`'s `hostAcceptTls` unconditionally
+   advertises `"h2,http/1.1"` as its ALPN preference — that constant
+   (`alpnPreference`) is shared with `Std.HttpHost`'s client kernel and the
+   TLS self-tests, so narrowing it here would be a cross-cutting change out
+   of this item's scope. A TLS peer that actually negotiates `h2` would
+   otherwise have its binary frame format silently mis-parsed as HTTP/1.1
+   text by this kernel's engine-driving loop — `onAccepted` guards against
+   this explicitly: any connection whose negotiated ALPN is `"h2"` is closed
+   immediately, never handed to the HTTP/1.1 parser. A loud, tested gap
+   (item C of this entry's self-test), not a silent miscompile. Native
+   ALPN-selected h2 is already tracked as N9.5 (issue #6106), gated on this
+   item.
+2. **No `LYRIC_HTTP_MAX_CONNECTIONS` backpressure cap.** The dotnet twin's
+   #6071 hardening reads this environment override via
+   `Std.Parse.tryParseInt`; `Std.Parse` has no `_kernel_native/parse_host.l`
+   twin (confirmed: only `_kernel/parse_host.l` and `_kernel_jvm/
+   parse_host.l` exist), so depending on it here would either fail to build
+   or punch a new, unaudited hole in the native stdlib-kernel boundary. An
+   unbounded native listener is this v1's deliberate, disclosed scope
+   decision; a future `Std.Parse` native twin removes the gap without
+   touching this file's public surface.
+
+**Self-test (`lyric-compiler/lyric/llvm_http_server_self_test.l`).** Three
+cases compiled through `Lyric.LlvmBridge.compileToNativeWithFlags` with
+`-fsanitize=address`, mirroring `llvm_tls_self_test.l`'s and
+`llvm_http_client_self_test.l`'s harness shape:
+
+- **Item A** — a plaintext HTTP/1.1 round trip. The client
+  (`Std.TcpHost.hostConnect`) runs on the SAME thread as the assertions,
+  needing no second `pthread_create`d thread at all: a bare TCP `connect`
+  completes into the listen backlog before `accept` runs (the same
+  reasoning D-progress-712's own item C gives for its plain-TCP case),
+  and `nextContext` blocks correctly regardless of exactly when the
+  server's own background accept/connection threads get scheduled. Asserts
+  `requestMethod`/`requestPath`/`requestQuery`/`requestHeaders` all observe
+  a real `GET /hello?x=1` request with a custom header correctly, and reads
+  back a real response built via `respondText` + `urlDecode`.
+- **Item B** — a real loopback TLS round trip. Unlike item A, a TLS
+  handshake needs both peers actively exchanging handshake records at once,
+  so the client runs on a genuine second `pthread_create`d OS thread — the
+  same N4.5 callback-trampoline mechanism `llvm_ffi_self_test.l`'s pthread
+  case and `llvm_tls_self_test.l`'s item D already verify — but unlike
+  those two (which predate N9.4), this client drives N9.4's real, already-
+  shipped public `Std.TcpHost.hostConnectTls` API directly rather than a
+  hand-rolled raw `lyric_tls_*` driver: N9.4 postdates N9.2/D-progress-712's
+  own item D, so there is no need to re-derive what N9.4 already ships. The
+  server thread (`main`) drives the real N9.3 deliverable under test:
+  `startListenerTls` + `nextContext` + `requestMethod`/`requestPath`/
+  `requestBody` + `respondJson`, against the exact self-signed EC test
+  certificate `llvm_tls_self_test.l` already verified parses with real
+  OpenSSL and completes a real `openssl s_server`/`s_client` handshake
+  (reused verbatim, no new PKI fixture to verify).
+- **Item C** — the h2-rejection guard, exercised end to end rather than
+  merely asserted safe in prose: the client offers ONLY `"h2"` ALPN against
+  a real TLS handshake (so it genuinely negotiates `h2`, confirmed via
+  `hostAlpn` on the client's own connection, not merely claims to), then
+  asserts the server closed the connection (observed as either a
+  zero-length read or a read error — native has no exceptions to rely on as
+  an alternate "it broke" signal, D-N-003) rather than hanging or echoing
+  garbage back.
+
+**Sandbox/CI-validator boundary (same class as D-progress-712/809/823).**
+This session could not run `scripts/bootstrap.sh --stage 0`/`--stage 1`
+(GitHub release-artifact download is network-policy-blocked) and confirmed,
+by direct repro rather than assumption, that the already-installed NuGet
+`lyric` v0.5.1 global tool — the substitute D-progress-823 used successfully
+for its own change — cannot substitute here: it predates the `NativePtr`/
+`nativeAddrOf`/`nativeNullPtr` FFI surface entirely. Copying
+`llvm_ffi_self_test.l`'s own already-shipped, already-CI-green pthread idiom
+verbatim into a minimal repro and building it with this tool fails with
+`error[T0010] 10:21: unknown type name 'NativePtr'` at every local-variable
+`NativePtr[T]` type-annotation position (extern `func` parameter/return
+positions, the audited boundary, are unaffected) — confirming this specific
+tool build predates Phase N4's FFI work, independent of anything this entry
+changes. It also lacks `.indexOf`/`.startsWith` (#6588/D-progress-831) and
+the bare-enum-case fix (#6589/D-progress-830) this kernel's own code
+depends on, both verified by direct repro too. What WAS verified locally:
+`make -C lyric-rt test` and `make -C lyric-rt test-asan CC=gcc` pass
+(unchanged C runtime — this entry adds no new `lyric-rt` C code, only new
+`.l`-level `extern func` declarations against already-shipped
+`lyric_mutex_*`/`lyric_sem_*`/`malloc`/`free`/`lyric_string_byte_at`
+symbols); and a minimal standalone repro of `ServerQueue`'s exact
+single-thread shape (`rtMalloc`+`rtMutexInit`+`rtSemInit`, `rtMutexLock`/
+`List[Int].add`/`rtMutexUnlock`/`rtSemPost` to enqueue, `rtSemWait`/
+`rtMutexLock`/index-`0`+`removeAt(0)`/`rtMutexUnlock` to dequeue,
+`rtMutexDestroy`/`rtSemDestroy`/`rtFree` to tear down) compiled and ran
+correctly against the NuGet tool (5 enqueued values summed back out to the
+expected total, real exit code 0) — confirming the `Long`-typed extern
+handle codegen, `List[T]` as the shared mutable queue backing store, and
+the mutex/semaphore call sequence all work exactly as designed. The moment
+a repro adds `pthread_create` (needed to exercise the queue ACROSS threads,
+and needed by every accept-loop/connection-thread spawn this kernel makes),
+the tool's `NativePtr` gap blocks it, same as the FFI-idiom repro above —
+the cross-thread half of the design, the kernel file itself, and the
+self-test are therefore CI-verified only. CI's `native-backend-self-tests`
+job (real `clang`, real from-source `Lyric.LlvmCodegen`) is the load-bearing
+validator for every compiled-Lyric correctness claim in this entry, exactly
+as it was for N9.1/N9.2/N9.4's own equivalent claims.
+
+**Verification.** `make -C lyric-rt test` (clang + gcc) and `make -C
+lyric-rt test-asan CC=gcc` green locally (pre-existing, unmodified C suite).
+The `ServerQueue`-shape single-thread repro above green locally via the
+NuGet tool. `lyric fmt --write` could not be run locally either (needs
+`./bin/lyric`, itself blocked by the same GitHub-access wall) — every
+construct in the new `.l` files was written by cross-referencing an
+already-shipped, already-CI-verified self-test or kernel file (`_kernel/
+http_server.l`'s dotnet architecture, `_kernel_native/tcp_host.l`'s
+`Long`-as-pointer idiom and module-header conventions, `llvm_tls_self_test.l`/
+`llvm_http_client_self_test.l`'s pthread-client harness shape) rather than
+invented fresh syntax, and CI's own `lyric fmt --check` (or an explicit
+`lyric fmt --write` pass before merge, per this repo's standing convention)
+is the load-bearing formatting check, same as the compilation claims above.
+
+**Related:** #6104 (this entry's issue), `native/plan/08-work-items.md` N9.3,
+D-progress-809 (`lyric_sem_*`/`slice` prerequisites), D-progress-830/831
+(the two blockers this item's kernel depends on, both already shipped),
+D-progress-712/823 (N9.2/N9.4, whose `Long`-as-pointer idiom and
+`Std.TcpHost.hostConnectTls` API this entry reuses directly), issue #6106
+(N9.5, native ALPN h2 — the tracked follow-up for this entry's h2-rejection
+gap).
+

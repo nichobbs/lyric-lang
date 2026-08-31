@@ -2326,6 +2326,29 @@ jobs:
       # fresh TLS connection, and dechunks a two-chunk response body -- all
       # over a real loopback socket with the server on a second pthread.
       #
+      # llvm_http_server_self_test (N9.3, issue #6104: Std.HttpServer native
+      # twin -- thread-per-connection over pthread_create driving the
+      # sans-IO Std.HttpEngine FSM over Std.TcpHost, following the dotnet
+      # twin's architecture rather than the JVM twin's JDK-HttpServer
+      # bypass). The pull-model hand-off queue is built directly from
+      # lyric_mutex_*/lyric_sem_* (D-progress-809) since there is no BCL
+      # ConcurrentQueue/SemaphoreSlim equivalent; every raw buffer handle is
+      # stored as Long, mirroring tcp_host.l's Conn.tlsConnHandle idiom.
+      # stopListener deterministically pthread_joins the accept thread and
+      # every spawned connection thread before freeing the queue -- a
+      # stronger, blocking-until-drained shutdown than the dotnet/JVM
+      # twins' fire-and-forget one, since native has no GC to defer the
+      # malloc'd-buffer cleanup to. v1 is HTTP/1.1 only (a negotiated-h2
+      # connection is closed rather than mis-parsed -- N9.5/#6106 tracks
+      # native h2) with no LYRIC_HTTP_MAX_CONNECTIONS cap yet (Std.Parse has
+      # no native kernel). Item A is a plaintext round trip on a single
+      # thread (a bare TCP connect completes into the backlog before accept
+      # runs); item B is a real concurrent TLS round trip with the client
+      # on a second pthread driving N9.4's real hostConnectTls API; item C
+      # drives the h2-rejection guard end to end by having the client
+      # genuinely negotiate h2 ALPN and asserting the server closed the
+      # connection.
+      #
       # llvm_opaque (#6234 part 1: `opaque type` codegen -- construction,
       # field access, mutation, UFCS methods, and an opaque type nested in
       # a record all lower identically to a record on both the single-file
@@ -2402,6 +2425,7 @@ jobs:
             lyric-compiler/lyric/llvm_stdlib_self_test.l \
             lyric-compiler/lyric/llvm_tls_self_test.l \
             lyric-compiler/lyric/llvm_http_client_self_test.l \
+            lyric-compiler/lyric/llvm_http_server_self_test.l \
             lyric-compiler/lyric/llvm_self_test_n3.l \
             lyric-compiler/lyric/llvm_self_test_n34.l \
             lyric-compiler/lyric/llvm_self_test_async.l \

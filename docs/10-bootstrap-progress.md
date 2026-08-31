@@ -33174,3 +33174,66 @@ helper, not a runtime call), `range_subtype_unsigned_jvm_self_test.l`
 
 **Related:** #6712, `docs/03-decision-log.md` D-progress-849 (full
 account), PR #6631, `Msil.Codegen.hasQualifiedFuncOverrideMsil`.
+### `Std.HttpServer` native twin ships — thread-per-connection over the pthread kernel, TLS phase 5 band N9.3 (#6104)
+
+`_kernel_native/http_server.l` implements the native `Std.HttpServer` twin:
+the same twelve-function surface (`startListener`/`nextContext`/
+`stopListener`/`requestMethod`/`requestPath`/`requestBody`/`requestQuery`/
+`requestHeaders`/`urlDecode`/`respondText`/`respondJson`/
+`respondBytesWithHeaders`) plus `startListenerTls` as the dotnet/JVM twins,
+following the dotnet twin's architecture — drive `Std.HttpEngine`'s
+per-connection FSM over `Std.TcpHost`'s transport, not the JVM twin's (which
+bypasses the engine entirely for the JDK's own `HttpServer`). Both of N9.3's
+prerequisite blockers (#6588 native `String` methods, #6589 bare
+cross-package enum-case resolution) already shipped; this closes N9.3
+itself.
+
+Concurrency is thread-per-connection over real `pthread_create`d OS threads
+(native `spawn`/`scope` is a single-threaded coroutine scheduler, not
+genuine concurrency yet). There is no BCL `ConcurrentQueue`/`SemaphoreSlim`
+equivalent on native, so the pull-model hand-off queue (a connection thread
+parses a request and blocks until a puller thread responds) is built
+directly from `lyric_mutex_*`/`lyric_sem_*` (D-progress-809): a
+mutex-guarded `List[HttpContext]` FIFO plus a counting semaphore for
+"available", and a per-request one-shot semaphore mirroring the dotnet
+twin's per-request `SemaphoreSlim`. Every raw buffer handle is stored as
+`Long`, not `NativePtr[Byte]` — the same "opaque handle as integer" trick
+`_kernel_native/tcp_host.l`'s `Conn.tlsConnHandle` already established,
+required because the mode checker's N0100 boundary rejects a `NativePtr[T]`
+record/union field outright. `stopListener` deterministically
+`pthread_join`s the accept thread and every spawned connection thread
+before freeing the queue's buffers — native has no GC to defer that cleanup
+to, so this is a stronger, blocking-until-fully-drained shutdown contract
+than the dotnet/JVM twins' fire-and-forget one.
+
+Scope: HTTP/1.1 only in this v1 — `_kernel_native/tcp_host.l`'s TLS accept
+path unconditionally advertises `h2` ahead of `http/1.1`, so a connection
+that actually negotiates `h2` is closed immediately rather than fed to the
+HTTP/1.1 parser (native ALPN-selected h2 is N9.5's job); no
+`LYRIC_HTTP_MAX_CONNECTIONS` backpressure cap (`Std.Parse`, needed to read
+the override, has no `_kernel_native/` twin yet) — both disclosed v1 scope
+decisions, not silent omissions.
+
+Verified by `lyric-compiler/lyric/llvm_http_server_self_test.l` (three
+cases, ASan-compiled): a plaintext HTTP/1.1 round trip; a real concurrent
+TLS round trip with the client on a second `pthread_create`d thread driving
+N9.4's real `Std.TcpHost.hostConnectTls` public API; and the h2-rejection
+guard, exercised by having the client genuinely negotiate `h2` ALPN and
+asserting the server closed the connection.
+
+Boundary (same class as N9.1/N9.2/N9.4/D-progress-809): this session could
+not build `./bin/lyric` from source (GitHub release-artifact download is
+network-policy-blocked) and confirmed the already-installed NuGet `lyric`
+v0.5.1 tool cannot substitute for this change either — it predates the
+`NativePtr` FFI surface entirely, confirmed by a direct repro of
+`llvm_ffi_self_test.l`'s own already-shipped pthread idiom failing
+verbatim. The single-thread half of the queue design (mutex+semaphore+
+`List[T]` as `ServerQueue`'s shape) DID verify locally via a standalone
+repro against that tool (real compile + real run, exit code 0); the
+cross-thread half (anything touching `pthread_create`) is CI-verified only.
+`make -C lyric-rt test`/`test-asan` pass locally (unchanged C runtime).
+
+**Related:** `docs/03-decision-log.md` D-progress-850 (full account), #6104,
+`native/plan/08-work-items.md` N9.3, D-progress-809 (the `lyric_sem_*`
+prerequisite), D-progress-830/831 (the two blockers this item's own kernel
+depends on).
