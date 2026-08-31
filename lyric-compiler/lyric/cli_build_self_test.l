@@ -1407,7 +1407,7 @@ func mkMiniWorkspace(label: in String): String {
 test "resolveWorkspaceImportDeps: package-key fallback maps import to member (#6503)" {
   val root = mkMiniWorkspace("wsimp-fallback")
   val noSeen: List[String] = newList()
-  val deps = Cli.resolveWorkspaceImportDeps("package T\n\nimport LibX\n", root, noSeen)
+  val deps = Cli.resolveWorkspaceImportDeps("package T\n\nimport LibX\n", root, noSeen, Emitter.Dotnet)
   assertEqualInt(deps.restoredDlls.count, 1, "one member resolved via [project.packages] key")
   assertTrue(Str.startsWith(deps.restoredDlls[0], "Lyric.LibX\t"), "entry carries the member name")
   assertTrue(Str.endsWith(deps.restoredDlls[0], "LibX.dll"), "entry carries the member DLL path")
@@ -1419,7 +1419,7 @@ test "resolveWorkspaceImportDeps: package-key fallback maps import to member (#6
 test "resolveWorkspaceImportDeps: exact member-name match works for reserved-head members (#6503)" {
   val root = mkMiniWorkspace("wsimp-exact")
   val noSeen: List[String] = newList()
-  val deps = Cli.resolveWorkspaceImportDeps("package T\n\nimport Lyric.LibX\n", root, noSeen)
+  val deps = Cli.resolveWorkspaceImportDeps("package T\n\nimport Lyric.LibX\n", root, noSeen, Emitter.Dotnet)
   assertEqualInt(deps.restoredDlls.count, 1, "exact member-name match resolves despite the Lyric.* head")
   cleanup(root)
 }
@@ -1428,13 +1428,14 @@ test "resolveWorkspaceImportDeps: unbuilt member fails loudly, compiler/stdlib h
   val root = mkMiniWorkspace("wsimp-unbuilt")
   val _ = File.deleteFile(Path.join(Path.join(Path.join(root, "libx"), "bin"), "LibX.dll"))
   val noSeen: List[String] = newList()
-  val deps = Cli.resolveWorkspaceImportDeps("package T\n\nimport LibX\n", root, noSeen)
+  val deps = Cli.resolveWorkspaceImportDeps("package T\n\nimport LibX\n", root, noSeen, Emitter.Dotnet)
   assertEqualInt(deps.restoredDlls.count, 0, "unbuilt member restores nothing")
   assertTrue(deps.hadUnbuiltMember, "unbuilt member is flagged for the loud failure")
   val deps2 = Cli.resolveWorkspaceImportDeps(
     "package T\n\nimport Std.Json\nimport Lyric.Parser\nimport Msil.Bridge\n",
     root,
-    noSeen
+    noSeen,
+    Emitter.Dotnet
   )
   assertEqualInt(deps2.restoredDlls.count, 0, "bundle-resolved heads never match members")
   assertFalse(deps2.hadUnbuiltMember, "bundle-resolved heads are not flagged")
@@ -1445,8 +1446,36 @@ test "resolveWorkspaceImportDeps: alreadySeen dep names are not double-restored 
   val root = mkMiniWorkspace("wsimp-seen")
   val seen: List[String] = newList()
   seen.add("Lyric.LibX")
-  val deps = Cli.resolveWorkspaceImportDeps("package T\n\nimport LibX\n", root, seen)
+  val deps = Cli.resolveWorkspaceImportDeps("package T\n\nimport LibX\n", root, seen, Emitter.Dotnet)
   assertEqualInt(deps.restoredDlls.count, 0, "a manifest-resolved dep is not restored again")
   assertFalse(deps.hadUnbuiltMember, "no unbuilt flag for an alreadySeen dep")
+  cleanup(root)
+}
+
+// ─── Regression for #6771: `resolveWorkspaceImportDeps` on Jvm must never
+// require the matched member's DLL to exist — it only needs the member's
+// SOURCE, collected into `depTemplateSrcs` regardless of DLL bookkeeping.
+test "resolveWorkspaceImportDeps: --target jvm never restores a DLL and tolerates an unbuilt member (#6771)" {
+  val root = mkMiniWorkspace("wsimp-jvm-built")
+  val noSeen: List[String] = newList()
+  val deps = Cli.resolveWorkspaceImportDeps("package T\n\nimport LibX\n", root, noSeen, Emitter.Jvm)
+  assertEqualInt(deps.restoredDlls.count, 0, "--target jvm never adds the member's DLL to restoredDlls")
+  assertEqualInt(deps.depTemplateSrcs.count, 1, "--target jvm still collects the member's source")
+  assertFalse(deps.hadUnbuiltMember, "--target jvm does not require the DLL to exist")
+  cleanup(root)
+}
+
+test "resolveWorkspaceImportDeps: --target jvm tolerates a NEVER-built member (no DLL at all) (#6771)" {
+  val root = mkMiniWorkspace("wsimp-jvm-unbuilt")
+  val _ = File.deleteFile(Path.join(Path.join(Path.join(root, "libx"), "bin"), "LibX.dll"))
+  val noSeen: List[String] = newList()
+  val deps = Cli.resolveWorkspaceImportDeps("package T\n\nimport LibX\n", root, noSeen, Emitter.Jvm)
+  assertEqualInt(deps.restoredDlls.count, 0, "--target jvm never adds a DLL entry, built or not")
+  assertEqualInt(
+    deps.depTemplateSrcs.count,
+    1,
+    "--target jvm still collects the member's source when its DLL is absent"
+  )
+  assertFalse(deps.hadUnbuiltMember, "an absent DLL is not fatal on --target jvm")
   cleanup(root)
 }

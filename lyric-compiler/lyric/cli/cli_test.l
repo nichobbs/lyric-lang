@@ -1226,27 +1226,43 @@ func cmdTestManifest(
     }
   }
 
-  // Build each dep in topo order; skip those already built.
-  var topoIdx = 0
-  while topoIdx < topoOrder.count {
-    val buildToml = topoOrder[topoIdx]
-    match resolveDepDllPath(buildToml, testExt) {
-      case Ok(info) -> {
-        if not File.fileExists(info.dllPath) {
-          Console.println("test: building dep '" + info.pkgName + "' ...")
-          val buildRc = buildProject(buildToml, None, testTarget, newList(), false, false, false, None, None, newList())
-          if buildRc != 0 {
-            printErr("test: failed to build dep '" + info.pkgName + "'")
-            return 1
+  // Build each dep in topo order; skip those already built.  Skipped
+  // entirely on Jvm — mirrors `buildWorkspaceDeps`'s Jvm early-return
+  // (#5571): a JVM test run never reads a dependency's `bin/<name>.dll`
+  // (the `dllMatters` gate below, #6750/#6697); it compiles the
+  // dependency's SOURCE straight into the bundle via `depTemplatePkgsList`.
+  // Building it anyway would run codegen for `testTarget = Jvm` while
+  // writing to whatever filename `[project].output_assembly` names — for
+  // every real path-dep manifest in this repo (lyric-web et al.) that is a
+  // plain `.dll`, since `resolveDepDllPath` honors `output_assembly`
+  // verbatim regardless of the `ext` passed in. A JVM run building first
+  // would silently overwrite that dependency's `bin/<name>.dll` with real
+  // JVM bytecode, breaking the next `--target dotnet` build/test that
+  // expects an MSIL PE there (#6770). It would also make a dependency that
+  // cannot build for Jvm fatal here, contradicting #6264's "an absent
+  // path-dep .dll must not be fatal on Jvm" decision.
+  if not targetJvm {
+    var topoIdx = 0
+    while topoIdx < topoOrder.count {
+      val buildToml = topoOrder[topoIdx]
+      match resolveDepDllPath(buildToml, testExt) {
+        case Ok(info) -> {
+          if not File.fileExists(info.dllPath) {
+            Console.println("test: building dep '" + info.pkgName + "' ...")
+            val buildRc = buildProject(buildToml, None, testTarget, newList(), false, false, false, None, None, newList())
+            if buildRc != 0 {
+              printErr("test: failed to build dep '" + info.pkgName + "'")
+              return 1
+            }
           }
         }
+        case Err(e) -> {
+          printErr("test: " + e)
+          return 1
+        }
       }
-      case Err(e) -> {
-        printErr("test: " + e)
-        return 1
-      }
+      topoIdx += 1
     }
-    topoIdx += 1
   }
 
   // Resolve local-path dependencies to DLL paths, matching buildProject.

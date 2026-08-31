@@ -779,11 +779,16 @@ func emitSingleFileWithWorkspaceMembers(req: in EmitRequest, sourcePath: in Stri
     Path.join(Environment.currentDirectory(), sourcePath)
   }
   val noSeen: List[String] = newList()
-  val wsDeps = resolveWorkspaceImportDeps(req.source, Path.dirname(absSource), noSeen)
+  val wsDeps = resolveWorkspaceImportDeps(req.source, Path.dirname(absSource), noSeen, req.target)
   if wsDeps.hadUnbuiltMember {
     return failedEmitOutcome(sourcePath + ": build failed (an import names an unbuilt workspace member; see above)")
   }
-  if wsDeps.restoredDlls.count == 0 {
+  // On Jvm a matched member never contributes to `restoredDlls` (#6771) —
+  // its SOURCE in `depTemplateSrcs` is what the JVM bundle needs, so check
+  // both rather than just `restoredDlls`, or a JVM single-file build with a
+  // workspace-member import would fall through to `noContributionOutcome`
+  // and compile the import as an unresolved-call fallback (#6503).
+  if wsDeps.restoredDlls.count == 0 and wsDeps.depTemplateSrcs.count == 0 {
     return noContributionOutcome(req)
   }
   val pkgNameRaw = Release.packageNameOf(req.source)

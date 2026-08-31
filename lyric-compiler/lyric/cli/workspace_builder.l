@@ -1057,8 +1057,18 @@ func buildMemberPackageIndex(ctx: in Ws.WorkspaceContext): Map[String, Int] {
 /// which is strictly better than the silent runtime-invalid output it
 /// replaces.  `alreadySeen` carries dep names the nearby manifest already
 /// resolved so a declared dependency is never double-restored.
+///
+/// `target` gates the DLL bookkeeping the same way `resolveManifestDependencies`'s
+/// `dllMatters` does (#6697/#6750/#6771): a matched member's `bin/<name>.dll`
+/// is always an MSIL PE, never a JVM-compatible JAR, so on Jvm it is never
+/// added to `restoredDlls` and its absence (or dotnet-only staleness) is not
+/// fatal — the member's SOURCE (collected into `depTemplateSrcs` unconditionally)
+/// is compiled straight into the bundle instead, matching the manifest leg.
 pub func resolveWorkspaceImportDeps(
-  sourceText: in String, sourceDir: in String, alreadySeen: in List[String]
+  sourceText: in String,
+  sourceDir: in String,
+  alreadySeen: in List[String],
+  target: in Emitter.CompileTarget,
 ): WorkspaceImportDeps {
   val ctx = match Ws.findWorkspaceRoot(sourceDir) { case None -> return emptyWorkspaceImportDeps(); case Some(c) -> c }
   val restored: List[String] = newList()
@@ -1070,6 +1080,7 @@ pub func resolveWorkspaceImportDeps(
     seen.add(alreadySeen[ai])
     ai += 1
   }
+  val dllMatters = match target { case Jvm -> false; case _ -> true }
   val importNames = importedPackageNames(sourceText)
   // Lazily built on the first fallback-eligible import: exact member-name
   // matches never need it, and most single-file builds import nothing that
@@ -1102,25 +1113,34 @@ pub func resolveWorkspaceImportDeps(
         case None -> ()
         case Some(member) -> {
           if not stringListContains(seen, member.name) {
-            val mToml = Path.join(member.dir, "lyric.toml")
-            val dllName = match File.readText(mToml) {
-              case Err(_) -> member.name + ".dll"
-              case Ok(mText) -> match Mf.parseManifest(mText, mToml) { case Err(_) -> member.name + ".dll"; case Ok(mMf) -> match mMf.project { case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }; case None -> mMf.packageSection.name + ".dll" } }
-            }
-            val dllPath = Path.join(Path.join(member.dir, "bin"), dllName)
-            if File.fileExists(dllPath) {
-              restored.add(member.name + "\t" + dllPath)
-              seen.add(member.name)
-              collectTransitiveDepDlls(member.dir, Some(value = ctx), seen, restored)
-              collectDepTemplateSources(member.dir, member.name, templates)
+            if dllMatters {
+              val mToml = Path.join(member.dir, "lyric.toml")
+              val dllName = match File.readText(mToml) {
+                case Err(_) -> member.name + ".dll"
+                case Ok(mText) -> match Mf.parseManifest(mText, mToml) { case Err(_) -> member.name + ".dll"; case Ok(mMf) -> match mMf.project { case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }; case None -> mMf.packageSection.name + ".dll" } }
+              }
+              val dllPath = Path.join(Path.join(member.dir, "bin"), dllName)
+              if File.fileExists(dllPath) {
+                restored.add(member.name + "\t" + dllPath)
+                seen.add(member.name)
+                collectTransitiveDepDlls(member.dir, Some(value = ctx), seen, restored)
+                collectDepTemplateSources(member.dir, member.name, templates)
+              } else {
+                printErr(
+                  "build: import '" + name + "' names workspace member '" + member.name + "' but its DLL is not built (" + dllPath +
+                    "). Run `lyric build --manifest " +
+                    mToml +
+                    "` first — single-file builds never build members implicitly (D123)."
+                )
+                hadUnbuilt = true
+              }
             } else {
-              printErr(
-                "build: import '" + name + "' names workspace member '" + member.name + "' but its DLL is not built (" + dllPath +
-                  "). Run `lyric build --manifest " +
-                  mToml +
-                  "` first — single-file builds never build members implicitly (D123)."
-              )
-              hadUnbuilt = true
+              // Jvm: the member's `bin/<name>.dll` (if any) is an MSIL PE,
+              // never a JVM-compatible artifact, so it is neither restored
+              // nor required to exist — only the member's SOURCE matters,
+              // compiled straight into the bundle by the caller (#6771).
+              seen.add(member.name)
+              collectDepTemplateSources(member.dir, member.name, templates)
             }
           }
         }
