@@ -2466,12 +2466,7 @@ pub func buildProjectFromManifest(
   var mavenJarColonSep = ""
   var savedFfiJars: Option[String] = None
   match target {
-    case Native -> {
-      printErr(
-        "build: --target native does not yet support manifest (multi-package) builds; compile the entry file directly: lyric build <main.l> --target native"
-      )
-      return 1
-    }
+    case Native -> ()
     case Jvm -> {
       val injection = injectMavenClasspathForJvm(mfDir, manifest)
       mavenJarColonSep = injection.classpathColonSep
@@ -2480,7 +2475,46 @@ pub func buildProjectFromManifest(
     case Dotnet -> ()
   }
 
-  val result = Emitter.emitProject(projReq)
+  // `--target native` project builds (#6809): resolve the project's own
+  // `[project.packages]` — already collected into `pkgs` above, in manifest
+  // declaration order — through the native bridge directly, bypassing
+  // `EmitProjectRequest`/`Emitter.emitProject` (which native does not
+  // implement — see its own doc comment) since native carries no
+  // restored-DLL / feature-flag axes that record was designed for.  Only
+  // the manifest's own `[native]` table configures triple/opt-level/extra
+  // libs here; `--triple`/`--opt` CLI-flag threading into project-mode
+  // native builds is a documented follow-up (see the decision log) — this
+  // function's signature has no such parameters today and widening it
+  // would also require widening the `BuildProj` watch-loop union in
+  // cli_run.l, which is out of scope for the #6809 slice.
+  var isNativeTargetP = false
+  match target {
+    case Native -> {
+      isNativeTargetP = true
+    }
+    case _ -> ()
+  }
+  var effTripleP = ""
+  var effOptP = ""
+  val effLibsP: List[String] = newList()
+  if isNativeTargetP {
+    match manifest.native {
+      case Some(nc) -> {
+        effTripleP = nc.triple
+        effOptP = nc.optLevel
+        for lib in nc.extraLibs {
+          effLibsP.add(lib)
+        }
+      }
+      case None -> ()
+    }
+  }
+
+  val result = if isNativeTargetP {
+    Emitter.emitNativeProject(pkgs, outPath, effTripleP, effOptP, effLibsP, projReq.defines)
+  } else {
+    Emitter.emitProject(projReq)
+  }
 
   // Restore LYRIC_FFI_JARS immediately — before any early return — so
   // subsequent buildProject calls in the same process start clean (#3554).
@@ -2538,8 +2572,8 @@ pub func buildProjectFromManifest(
         case Ok(_) -> ()
       }
     }
-    // Unreachable: project-mode native builds are rejected before the
-    // emit loop.
+    // A native build produces a self-contained POSIX binary directly (no
+    // runtimeconfig.json / module-path.txt companion artifact needed).
     case Native -> ()
   }
   val elapsedMs = Time.totalMillis(Time.since(Time.now(), buildStart))

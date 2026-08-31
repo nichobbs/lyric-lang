@@ -2067,10 +2067,16 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
   match req.target {
     case Dotnet -> emitProjectInProcess(mergedReq)
     case Jvm -> emitProjectJvmInProcess(mergedReq)
-    // Manifest-driven native project builds are follow-up work; the
-    // single-file path (`lyric build main.l --target native`) is the
-    // Phase N1 surface.
-    case Native -> failResult("--target native does not yet support manifest (multi-package) builds; compile the entry file directly: lyric build <main.l> --target native")
+    // `EmitProjectRequest`'s restored-DLL / feature-flag axes don't apply to
+    // native (no restored-binary concept, #6809), so a native project build
+    // never routes through this record — the CLI's manifest-driven project
+    // path (`lyric build --manifest ... --target native`,
+    // `Lyric.Cli.buildProjectFromManifest`) resolves its own
+    // `[project.packages]` into a plain package list and calls
+    // `emitNativeProject` directly instead.  This branch stays reachable
+    // only for a caller that constructs an `EmitProjectRequest` with
+    // `target = Native` directly, which was never a supported entry point.
+    case Native -> failResult("Emitter.emitProject does not support --target native; use Emitter.emitNativeProject for a multi-package native build, or lyric build <main.l> --target native for a single file")
   }
 }
 
@@ -2703,6 +2709,70 @@ func emitNativeInProcess(
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
   } else {
     failResult("native compilation failed (see stderr)")
+  }
+}
+
+/// Multi-package native project emit (#6809): the native analog of
+/// `emitProject`'s Dotnet/Jvm dispatch for a project's own
+/// `[project.packages]` — direct call into
+/// `Lyric.LlvmBridge.compileProjectToNativeWithFlags`.  `pkgs` is in
+/// manifest declaration order (the entry package first, matching every
+/// other native/CLI convention).  Each multi-file package's sources are
+/// merged into one compilation unit via `mergePackageSources` first —
+/// mirroring `emitProject`'s own pre-dispatch merge step — since the native
+/// bridge (like the MSIL/JVM bridges) expects one valid `package` unit per
+/// entry, not raw per-file concatenation.
+///
+/// `[dependencies]` on other restored Lyric packages (NuGet/Maven-style
+/// prebuilt binaries) are NOT threaded here: native has no restored-binary
+/// concept, so a caller resolving those is out of scope for this entry
+/// point (see the decision log for the tracked follow-up).
+pub func emitNativeProject(
+  pkgs: in List[ProjectPackage],
+  outputPath: in String,
+  triple: in String,
+  optLevel: in String,
+  extraLibs: in List[String],
+  defines: in List[String],
+): EmitResult {
+  val outDir = Path.dirname(outputPath)
+  if Str.isNotEmpty(outDir) {
+    match File.createDir(outDir) {
+      case Ok(_) -> ()
+      case Err(_) -> ()
+    }
+  }
+  if pkgs.count == 0 {
+    return failResult("native project build received no packages")
+  }
+  val noFeatures: List[String] = newList()
+  val nativePkgs: List[LlvmBridge.NativeSourcePackage] = newList()
+  var pi = 0
+  while pi < pkgs.count {
+    val pkg = pkgs[pi]
+    val merged = mergePackageSources(pkg.name, pkg.sources, noFeatures, noFeatures)
+    nativePkgs.add(LlvmBridge.NativeSourcePackage(name = pkg.name, source = merged))
+    pi = pi + 1
+  }
+  val stdlibSources = findStdlibSourcesNative()
+  val clangFlags: List[String] = newList()
+  for lib in extraLibs {
+    clangFlags.add("-l" + lib)
+  }
+  val ok = LlvmBridge.compileProjectToNativeWithFlags(
+    nativePkgs,
+    outputPath,
+    stdlibSources,
+    triple,
+    optLevel,
+    clangFlags,
+    defines
+  )
+  if ok {
+    val okDiags: List[Diagnostic] = newList()
+    EmitResult(outputPath = Some(value = outputPath), diagnostics = okDiags)
+  } else {
+    failResult("native project compilation failed (see stderr)")
   }
 }
 

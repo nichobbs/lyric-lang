@@ -706,12 +706,14 @@ pub func resolveManifestDependencies(
                   // the DLL to exist (#6264).
                   // Explicit `Native` arm (rather than folding it into the
                   // wildcard) so this reads as a deliberate choice, not an
-                  // accident of the wildcard: `--target native` path deps are
-                  // out of scope here (`buildProjectFromManifest` already
-                  // refuses `native` for manifest/multi-package builds
-                  // elsewhere in this file), so Native inherits Dotnet's
-                  // "DLL matters" behavior rather than silently absorbing
-                  // whatever the Jvm case does as targets are added later.
+                  // accident of the wildcard: a `path`/`workspace` dependency
+                  // on `--target native` is out of scope (#6809 — native has
+                  // no restored-binary concept, so `Emitter.emitNativeProject`
+                  // never reads `restoredDlls`/`depTemplateSrcs` at all; only
+                  // a project's OWN `[project.packages]` compiles for
+                  // native), so Native inherits Dotnet's "DLL matters"
+                  // behavior rather than silently absorbing whatever the Jvm
+                  // case does as targets are added later.
                   val dllMatters = match target { case Jvm -> false; case Native -> true; case _ -> true }
                   // #6697: `dllMatters` also gates whether an EXISTING `.dll`
                   // is added to `restoredDlls` at all — not just whether a
