@@ -1680,76 +1680,7 @@ jobs:
       - name: Auto-FFI F0015 signature-mismatch negative test
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping F0015 negative test"
-            exit 1
-          fi
-          bin_abs="$(pwd)/$lyric_bin"
-          work="$(mktemp -d)"
-          trap 'rm -rf "$work"' EXIT
-          cat > "$work/f0015_fixture.l" <<'LYR'
-          package F0015Fixture
-
-          @externStatic
-          @externTarget("System.Math.Max")
-          func badMax(a: in Int): Int = ()
-
-          func main(): Int {
-            badMax(1)
-          }
-          LYR
-          rc=0
-          ( cd "$work" && "$bin_abs" build f0015_fixture.l ) > "$work/build.out" 2>&1 || rc=$?
-          echo "--- build output (rc=$rc) ---"; cat "$work/build.out"
-          if [ "$rc" -eq 0 ]; then
-            echo "::error::expected non-zero exit for a mismatched @externTarget signature"
-            exit 1
-          fi
-          grep -q "F0015" "$work/build.out" || {
-            echo "::error::build failed but did not report F0015"; exit 1; }
-          echo "F0015 signature-mismatch negative test passed (rc=$rc)"
-
-          # F0027 (#5704, D-progress-671): a hint-less @externTarget whose
-          # calling convention can't be metadata-verified must WARN (not fail —
-          # option A is warning-first), and an explicit @externStatic/
-          # @externInstance must silence it.  Task.Run's delegate parameter is
-          # unscoreable, so it is a stable unverifiable case.
-          cat > "$work/f0027_pos.l" <<'LYR'
-          package F0027Pos
-          extern type BclTask = "System.Threading.Tasks.Task"
-          @externTarget("System.Threading.Tasks.Task.Run")
-          func hintlessTaskRun(action: in () -> Unit): BclTask = ()
-          func main(): Int { 0 }
-          LYR
-          rc=0
-          ( cd "$work" && "$bin_abs" build f0027_pos.l ) > "$work/f0027_pos.out" 2>&1 || rc=$?
-          echo "--- F0027 positive fixture (rc=$rc) ---"; cat "$work/f0027_pos.out"
-          if [ "$rc" -ne 0 ]; then
-            echo "::error::F0027 is warning-first (option A) but the hint-less fixture failed the build"; exit 1
-          fi
-          grep -q "F0027" "$work/f0027_pos.out" || {
-            echo "::error::hint-less unverifiable @externTarget did not warn F0027"; exit 1; }
-          cat > "$work/f0027_neg.l" <<'LYR'
-          package F0027Neg
-          extern type BclTask = "System.Threading.Tasks.Task"
-          @externStatic
-          @externTarget("System.Threading.Tasks.Task.Run")
-          func annotatedTaskRun(action: in () -> Unit): BclTask = ()
-          func main(): Int { 0 }
-          LYR
-          rc=0
-          ( cd "$work" && "$bin_abs" build f0027_neg.l ) > "$work/f0027_neg.out" 2>&1 || rc=$?
-          echo "--- F0027 negative fixture (rc=$rc) ---"; cat "$work/f0027_neg.out"
-          if [ "$rc" -ne 0 ]; then
-            echo "::error::annotated @externStatic fixture failed to build"; exit 1
-          fi
-          if grep -q "F0027" "$work/f0027_neg.out"; then
-            echo "::error::explicit @externStatic did not silence F0027"; exit 1
-          fi
-          echo "F0027 hint-less-extern warning test passed"
+        run: bash scripts/ci/ffi-f0015-negative-test.sh
 
       # D105 Phase 2: F0020–F0023 external-interface impl conformance negative
       # tests.  Phase 1 (PR #3851) wired `impl ExternInterface for Record` end
@@ -2388,53 +2319,7 @@ jobs:
       - name: Native backend self-tests (lyric-rt + llvm via native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping native backend self-tests"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping native backend self-tests"
-            exit 1
-          fi
-          command -v clang >/dev/null || { echo "::error::clang not found on the runner"; exit 1; }
-          # ASan preflight: the heap self-test links -fsanitize=address.
-          # Use $TMPDIR (redirected to runner.temp above), not a hardcoded
-          # /tmp, so this step doesn't bypass the SIGBUS/resource-pressure
-          # mitigation the rest of this job relies on (#4975).
-          echo 'int main(void){return 0;}' > "$TMPDIR/asan_preflight.c"
-          if ! clang -fsanitize=address "$TMPDIR/asan_preflight.c" -o "$TMPDIR/asan_preflight" 2>/dev/null; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq "libclang-rt-$(clang -dumpversion | cut -d. -f1)-dev"
-            clang -fsanitize=address "$TMPDIR/asan_preflight.c" -o "$TMPDIR/asan_preflight"
-          fi
-          make -C lyric-rt test
-          make -C lyric-rt clean && make -C lyric-rt test CC=gcc
-          # ASan run of the TLS transport seam (real loopback OpenSSL
-          # handshakes) under gcc's reliably-present libasan — a leaked
-          # SSL_CTX/SSL/fd or a use-after-free in a handshake round-trip
-          # fails the run (issue #5890, docs/61 §7).
-          make -C lyric-rt test-asan CC=gcc
-          for t in \
-            lyric-compiler/lyric/llvm_ir_self_test.l \
-            lyric-compiler/lyric/llvm_codegen_self_test.l \
-            lyric-compiler/lyric/llvm_heap_self_test.l \
-            lyric-compiler/lyric/llvm_ffi_self_test.l \
-            lyric-compiler/lyric/llvm_collections_self_test.l \
-            lyric-compiler/lyric/llvm_stdlib_self_test.l \
-            lyric-compiler/lyric/llvm_tls_self_test.l \
-            lyric-compiler/lyric/llvm_http_client_self_test.l \
-            lyric-compiler/lyric/llvm_http_server_self_test.l \
-            lyric-compiler/lyric/llvm_self_test_n3.l \
-            lyric-compiler/lyric/llvm_self_test_n34.l \
-            lyric-compiler/lyric/llvm_self_test_async.l \
-            lyric-compiler/lyric/llvm_self_test_defer.l \
-            lyric-compiler/lyric/llvm_opaque_self_test.l \
-            lyric-compiler/lyric/llvm_enum_case_resolve_self_test.l ; do
-            echo "=== $t ==="
-            LYRIC_LOAD_COMPILER=1 "$lyric_bin" test "$t"
-          done
+        run: bash scripts/ci/native-backend-self-tests.sh
 
       # `lyric test --target native` smoke test (N7.2): an ordinary
       # `@test_module` (no compiler-package imports, unlike the llvm_self_test_n*
@@ -2447,51 +2332,7 @@ jobs:
       # future change that silently swallows the failure (exit 0) is caught.
       - name: Native lyric test --target native smoke test (N7.2)
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          # The "Native backend self-tests" step above is `background: true`
-          # and does not block, so it can run concurrently with this step —
-          # and it does `make -C lyric-rt clean && make -C lyric-rt test
-          # CC=gcc` partway through its own run, which deletes and rebuilds
-          # the SHARED lyric-rt/build/ directory out from under any other
-          # step reading lyric_rt.a from that same path at the same time
-          # (observed: a clang link failure because the .a was mid-`rm -rf`
-          # when this step tried to read it). Building into a private
-          # directory and pointing the CLI at it via LYRIC_RT_PATH avoids
-          # sharing mutable state with the background step entirely.
-          rt_build_dir="$(mktemp -d)/lyric-rt-build"
-          make -C lyric-rt BUILD="$rt_build_dir"
-          export LYRIC_RT_PATH="$rt_build_dir/lyric_rt.a"
-          work="$(mktemp -d)"
-          cat > "$work/pass_test.l" <<'LYR'
-          @test_module
-          package NativeTestSmoke
-
-          import Std.Testing
-
-          test "addition" {
-            assertEqualInt(2 + 2, 4, "2+2==4")
-          }
-          LYR
-          "$lyric_bin" test "$work/pass_test.l" --target native
-          cat > "$work/fail_test.l" <<'LYR'
-          @test_module
-          package NativeTestSmokeFail
-
-          import Std.Testing
-
-          test "deliberately wrong" {
-            assertEqualInt(2 + 2, 5, "2+2==5")
-          }
-          LYR
-          if "$lyric_bin" test "$work/fail_test.l" --target native; then
-            echo "::error::expected a nonzero exit for a failing --target native test"
-            exit 1
-          fi
-          echo "Native lyric test --target native smoke test passed"
-          "$lyric_bin" test lyric-compiler/lyric/indexof_native_self_test.l --target native
-          echo "Native indexof_native_self_test.l (--target native) passed"
+        run: bash scripts/ci/native-target-smoke-test.sh
 
       # `lyric build --target native --define` end-to-end (docs/60 #5977): with
       # both native-codegen gaps closed (list literals + module-level `val`
@@ -2500,46 +2341,7 @@ jobs:
       # substituted value (--define) in the actual native binary.
       - name: Native --define build (docs/60 #5977)
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping native --define build"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin"
-            exit 1
-          fi
-          command -v clang >/dev/null || { echo "::error::clang not found on the runner"; exit 1; }
-          rt_build_dir="$(mktemp -d)/lyric-rt-build"
-          make -C lyric-rt BUILD="$rt_build_dir"
-          export LYRIC_RT_PATH="$rt_build_dir/lyric_rt.a"
-          work="$(mktemp -d)"
-          cat > "$work/greet.l" <<'LYR'
-          package greetprobe
-
-          import Std.Console
-
-          @build_const("greeting")
-          val GREETING: String = "default"
-
-          func main(): Int {
-            println(GREETING)
-            0
-          }
-          LYR
-          echo "=== --target native, no --define (expect default) ==="
-          "$lyric_bin" build --target native "$work/greet.l" -o "$work/greet1"
-          out1="$("$work/greet1")"
-          echo "native no-define: $out1"
-          [ "$out1" = "default" ] || { echo "::error::native @build_const fallback wrong: '$out1'"; exit 1; }
-          echo "=== --target native --define greeting=hello-native (expect hello-native) ==="
-          "$lyric_bin" build --target native "$work/greet.l" --define greeting=hello-native -o "$work/greet2"
-          out2="$("$work/greet2")"
-          echo "native --define: $out2"
-          [ "$out2" = "hello-native" ] || { echo "::error::native --define did not substitute @build_const: '$out2'"; exit 1; }
-          echo "Native --define build passed (fallback default + substitution hello-native)" >> "$GITHUB_STEP_SUMMARY"
+        run: bash scripts/ci/native-define-build.sh
 
       - name: Wait for native backend self-tests
         wait-all: true

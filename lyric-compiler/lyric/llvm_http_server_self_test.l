@@ -5,7 +5,7 @@
 //! native`) and run, mirroring `llvm_tls_self_test.l`'s and
 //! `llvm_http_client_self_test.l`'s harness shape.
 //!
-//! Three cases:
+//! Five cases:
 //!   - item A: a plaintext HTTP/1.1 round trip. A real client
 //!     (`Std.TcpHost.hostConnect`, plain TCP) on the SAME thread as the
 //!     server's own pull loop — a bare TCP `connect` completes into the
@@ -39,6 +39,25 @@
 //!     frame format as HTTP/1.1 text (D-N-003 has no exceptions/hangs to
 //!     rely on as an alternate "it broke" signal, so this checks for an
 //!     explicit close/EOF or read error instead).
+//!   - item D: a keep-alive round trip — two requests over the SAME
+//!     connection, neither one carrying `Connection: close`, so both stay
+//!     open under HTTP/1.1's default keep-alive semantics
+//!     (`Std.HttpEngine.newConnection`'s `keepAlive = true`). Asserts both
+//!     requests are individually observable via `nextContext` (i.e. the
+//!     SAME connection-handler thread genuinely loops back to parse a
+//!     second request rather than closing after the first) and both
+//!     responses arrive correctly on the client's single, still-open
+//!     socket.
+//!   - item E: the regression case for #6791 — `stopListener` must not
+//!     hang when a keep-alive connection is genuinely idle (one request
+//!     answered, no `Connection: close`, client sends nothing further and
+//!     does not close its own socket). Before the fix, the connection's
+//!     handler thread parks forever in `hostRead` waiting for a next
+//!     request that never comes, and `stopListener`'s `pthread_join` on
+//!     that thread never returns; this case's own pass/fail signal IS
+//!     `stopListener` returning at all — the harness's `Process.runCapture`
+//!     60-second timeout turns a reintroduced deadlock into a real,
+//!     visible test failure rather than a silently-hanging CI job.
 //!
 //! Every scenario compiles with `-fsanitize=address`, so a leaked
 //! `malloc`'d mutex/semaphore buffer, a leaked fd, a double-release, or a
@@ -47,7 +66,8 @@
 //! before freeing the queue" design (its own module header's "Shutdown"
 //! section).
 //!
-//! Every connection-oriented case binds a FIXED port (19720/19721/19722),
+//! Every connection-oriented case binds a FIXED port (19720/19721/19722/
+//! 19723/19724),
 //! matching `lyric-stdlib/tests/http_server_dotnet_tests.l`'s own
 //! established convention for testing this exact API — `Std.HttpServer`'s
 //! public surface (unlike `Std.TcpHost`'s) has no `hostLocalPort`-style
@@ -417,4 +437,175 @@ test "native Std.HttpServer rejects a negotiated-h2 TLS connection rather than m
     "}\n"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "Std.HttpServer native h2-rejection guard (item C)")
+}
+
+test "native Std.HttpServer keep-alive round trip: two requests over one connection (item D)" {
+  val src = "package D\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Encoding\n" +
+    "import Std.HttpServer\n" +
+    "import Std.TcpHost\n" +
+    "func joined(parts: in List[String]): String {\n" +
+    "  var s = \"\"\n" +
+    "  var i = 0\n" +
+    "  while i < parts.count {\n" +
+    "    s = s + parts[i]\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  s\n" +
+    "}\n" +
+    "func readInto(conn: in Conn, acc: in List[String], marker: in String): Bool {\n" +
+    "  var tries = 0\n" +
+    "  var done = false\n" +
+    "  while tries < 400 and not done {\n" +
+    "    match hostRead(conn, 4096) {\n" +
+    "      case Ok(b) -> {\n" +
+    "        if b.length == 0 {\n" +
+    "          done = true\n" +
+    "        }\n" +
+    "        match tryDecodeUtf8(b) {\n" +
+    "          case Some(s) -> acc.add(s)\n" +
+    "          case None -> ()\n" +
+    "        }\n" +
+    "      }\n" +
+    "      case Err(_) -> {\n" +
+    "        done = true\n" +
+    "      }\n" +
+    "    }\n" +
+    "    if joined(acc).contains(marker) {\n" +
+    "      done = true\n" +
+    "    }\n" +
+    "    tries = tries + 1\n" +
+    "  }\n" +
+    "  joined(acc).contains(marker)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val listener = startListener(\"http://127.0.0.1:19723/\")\n" +
+    "  val clientConn = match hostConnect(\"127.0.0.1\", 19723) {\n" +
+    "    case Ok(c) -> c\n" +
+    "    case Err(_) -> return 1\n" +
+    "  }\n" +
+    "  val req1 = \"GET /first HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n\"\n" +
+    "  match hostWrite(clientConn, encodeUtf8(req1)) {\n" +
+    "    case Ok(_) -> ()\n" +
+    "    case Err(_) -> return 2\n" +
+    "  }\n" +
+    "  val ctx1 = nextContext(listener)\n" +
+    "  var exitCode = 0\n" +
+    "  if requestMethod(ctx1) != \"GET\" {\n" +
+    "    exitCode = 3\n" +
+    "  } else if requestPath(ctx1) != \"/first\" {\n" +
+    "    exitCode = 4\n" +
+    "  }\n" +
+    "  respondText(ctx1, 200, \"resp-one\")\n" +
+    "  val acc1: List[String] = newList()\n" +
+    "  val got1 = readInto(clientConn, acc1, \"resp-one\")\n" +
+    "  if exitCode == 0 and not got1 {\n" +
+    "    exitCode = 5\n" +
+    "  }\n" +
+    "  if exitCode == 0 and not joined(acc1).startsWith(\"HTTP/1.1 200\") {\n" +
+    "    exitCode = 6\n" +
+    "  }\n" +
+    "  val req2 = \"GET /second HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n\"\n" +
+    "  match hostWrite(clientConn, encodeUtf8(req2)) {\n" +
+    "    case Ok(_) -> ()\n" +
+    "    case Err(_) -> {\n" +
+    "      if exitCode == 0 {\n" +
+    "        exitCode = 7\n" +
+    "      }\n" +
+    "    }\n" +
+    "  }\n" +
+    "  val ctx2 = nextContext(listener)\n" +
+    "  if exitCode == 0 and requestPath(ctx2) != \"/second\" {\n" +
+    "    exitCode = 8\n" +
+    "  }\n" +
+    "  respondText(ctx2, 200, \"resp-two\")\n" +
+    "  val acc2: List[String] = newList()\n" +
+    "  val got2 = readInto(clientConn, acc2, \"resp-two\")\n" +
+    "  if exitCode == 0 and not got2 {\n" +
+    "    exitCode = 9\n" +
+    "  }\n" +
+    "  hostClose(clientConn)\n" +
+    "  stopListener(listener)\n" +
+    "  if exitCode != 0 {\n" +
+    "    return exitCode\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpServer native keep-alive round trip (item D)")
+}
+
+test "native Std.HttpServer stopListener does not hang on an idle keep-alive connection (item E, #6791 regression)" {
+  val src = "package E\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Encoding\n" +
+    "import Std.HttpServer\n" +
+    "import Std.TcpHost\n" +
+    "func joined(parts: in List[String]): String {\n" +
+    "  var s = \"\"\n" +
+    "  var i = 0\n" +
+    "  while i < parts.count {\n" +
+    "    s = s + parts[i]\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  s\n" +
+    "}\n" +
+    "func readInto(conn: in Conn, acc: in List[String], marker: in String): Bool {\n" +
+    "  var tries = 0\n" +
+    "  var done = false\n" +
+    "  while tries < 400 and not done {\n" +
+    "    match hostRead(conn, 4096) {\n" +
+    "      case Ok(b) -> {\n" +
+    "        if b.length == 0 {\n" +
+    "          done = true\n" +
+    "        }\n" +
+    "        match tryDecodeUtf8(b) {\n" +
+    "          case Some(s) -> acc.add(s)\n" +
+    "          case None -> ()\n" +
+    "        }\n" +
+    "      }\n" +
+    "      case Err(_) -> {\n" +
+    "        done = true\n" +
+    "      }\n" +
+    "    }\n" +
+    "    if joined(acc).contains(marker) {\n" +
+    "      done = true\n" +
+    "    }\n" +
+    "    tries = tries + 1\n" +
+    "  }\n" +
+    "  joined(acc).contains(marker)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val listener = startListener(\"http://127.0.0.1:19724/\")\n" +
+    "  val clientConn = match hostConnect(\"127.0.0.1\", 19724) {\n" +
+    "    case Ok(c) -> c\n" +
+    "    case Err(_) -> return 1\n" +
+    "  }\n" +
+    "  val reqText = \"GET /idle HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n\"\n" +
+    "  match hostWrite(clientConn, encodeUtf8(reqText)) {\n" +
+    "    case Ok(_) -> ()\n" +
+    "    case Err(_) -> return 2\n" +
+    "  }\n" +
+    "  val ctx = nextContext(listener)\n" +
+    "  var exitCode = 0\n" +
+    "  if requestPath(ctx) != \"/idle\" {\n" +
+    "    exitCode = 3\n" +
+    "  }\n" +
+    "  respondText(ctx, 200, \"idle-response\")\n" +
+    "  val acc: List[String] = newList()\n" +
+    "  val got = readInto(clientConn, acc, \"idle-response\")\n" +
+    "  if not got {\n" +
+    "    exitCode = 4\n" +
+    "  }\n" +
+    "  // The client deliberately never sends another request and never\n" +
+    "  // closes its own socket here -- an idle keep-alive connection, the\n" +
+    "  // #6791 repro. stopListener must return promptly rather than hang\n" +
+    "  // forever pthread_join-ing the still-blocked-in-hostRead handler\n" +
+    "  // thread.\n" +
+    "  stopListener(listener)\n" +
+    "  hostClose(clientConn)\n" +
+    "  if exitCode != 0 {\n" +
+    "    return exitCode\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpServer native stopListener idle-keep-alive regression (item E, #6791)")
 }

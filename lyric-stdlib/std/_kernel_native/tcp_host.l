@@ -223,6 +223,15 @@ extern func rtSockLocalPort(fd: Int): Int = "lyric_sock_local_port"
 
 extern func rtSockClose(fd: Int): Int = "lyric_sock_close"
 
+// POSIX shutdown(2): interrupts a blocking read/write on `fd` from ANOTHER
+// thread without invalidating the descriptor itself (unlike close(2), which
+// would race a concurrent owner-thread close on the same fd if a stale
+// reference to it survived — the classic fd-reuse hazard). `how = 2` is
+// `SHUT_RDWR` on every POSIX platform this project targets (Linux/macOS),
+// so no platform table is needed the way `_kernel_native/libc.l`'s
+// `oRdonly`/`oCreat`/etc. need one for open(2) flags.
+extern func rtShutdown(fd: Int, how: Int): Int = "shutdown"
+
 extern func rtSockReadBytes(fd: Int, maxBytes: Long, okOut: NativePtr[Int]): slice[Byte] = "lyric_sock_read_bytes"
 
 extern func rtSockWriteBytes(fd: Int, bytes: slice[Byte]): Long = "lyric_sock_write_bytes"
@@ -492,6 +501,32 @@ pub func hostClose(c: in Conn): Unit {
     rtTlsFree(c.tlsConnHandle)
   }
   val _ = rtSockClose(c.fd)
+}
+
+/// The raw file descriptor backing this connection. Exposed for a caller
+/// (e.g. `Std.HttpServer`'s native twin) that needs to identify a specific
+/// live `Conn` in its own registry -- matching by fd -- without holding the
+/// whole `Conn` value past the point its natural owner (the thread that
+/// will eventually `hostClose` it) still needs it.
+pub func hostFd(c: in Conn): Int {
+  c.fd
+}
+
+/// Interrupt a blocking `hostRead`/`hostWrite` in progress on this
+/// connection FROM ANOTHER THREAD, without releasing the underlying
+/// descriptor (that stays the owning thread's job, via `hostClose`). A raw
+/// `shutdown(fd, SHUT_RDWR)`: works for both a plain and a TLS connection,
+/// since it interrupts the underlying socket syscall a blocked
+/// `recv()`/`SSL_read()` (etc.) is itself waiting on, regardless of any TLS
+/// layered on top. The descriptor itself remains valid and must still be
+/// `hostClose`'d by its owner -- this is a wake-up, not a close. Callers
+/// coordinating a concurrent shutdown must ensure the fd has not ALREADY
+/// been `hostClose`'d before calling this (a `shutdown()` racing a `close()`
+/// on an already-reused fd is not safe); a mutex-protected active-connection
+/// registry that the owning thread removes itself from strictly BEFORE its
+/// own `hostClose` call (never after) gives exactly that guarantee.
+pub func hostShutdown(c: in Conn): Unit {
+  val _ = rtShutdown(c.fd, 2)
 }
 
 // =====================================================================

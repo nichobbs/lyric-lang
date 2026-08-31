@@ -91,15 +91,58 @@
 //! closes the transport, unblocking the accept thread's `hostAccept`/
 //! `hostAcceptTls` call with an error so its own loop ends; (2) `pthread_join`s
 //! the accept thread (a POSIX thread's own termination synchronizes-with its
-//! joiner, so by the time this returns, every `ServerQueue.workerTids.add`
-//! call the accept thread's own connection-spawning path could ever make has
-//! already happened and is visible here with no extra locking needed); (3)
-//! `pthread_join`s every handler thread the accept thread ever spawned; only
-//! then (4) frees the queue's mutex/semaphore. This makes `stopListener`
-//! BLOCK until every accepted connection has genuinely finished (a real
-//! behavioural difference from the dotnet/JVM twins, and stronger than
-//! either — a caller wanting a non-blocking stop can spawn its own thread to
-//! call it), the price of not having a GC to defer the cleanup to.
+//! joiner, so by the time this returns, every `ServerQueue.workerTids.add`/
+//! `activeConns.add` call the accept thread's own connection-spawning path
+//! could ever make has already happened and is visible here with no extra
+//! locking needed); (3) `hostShutdown`s every still-registered connection
+//! (see below); (4) `pthread_join`s every handler thread the accept thread
+//! ever spawned; only then (5) frees the queue's mutex/semaphore. This makes
+//! `stopListener` BLOCK until every accepted connection has genuinely
+//! finished (a real behavioural difference from the dotnet/JVM twins, and
+//! stronger than either — a caller wanting a non-blocking stop can spawn its
+//! own thread to call it), the price of not having a GC to defer the cleanup
+//! to.
+//!
+//! **Step (3) exists to fix a real deadlock (#6791), not a hypothetical
+//! one.** `Std.HttpEngine.newConnection` defaults `keepAlive = true`, and
+//! HTTP/1.1 keeps a connection open unless a request explicitly carries
+//! `Connection: close` — so an ORDINARY, well-behaved HTTP/1.1 client that
+//! is simply idle between requests leaves its handler thread parked in
+//! `readOneRequest`'s `hostRead` indefinitely. Before this fix,
+//! `stopListener` only ever closed the LISTENING socket
+//! (`hostStopListener`), which does nothing to unblock a thread already
+//! reading from an already-accepted connection — `pthread_join` on that
+//! thread then never returns, and `stopListener` hangs forever. Every
+//! accepted `Conn` is now tracked in `ServerQueue.activeConns` (added in
+//! `registerWorker` alongside its handler thread's tid, removed in
+//! `unregisterConn` — called strictly BEFORE, never after, that thread's own
+//! `hostClose`, so `stopListener`'s shutdown loop can never touch an
+//! already-closed, possibly fd-reused connection). `stopListener` calls
+//! `Std.TcpHost.hostShutdown` (a raw `shutdown(fd, SHUT_RDWR)`, #6791 —
+//! interrupts a blocked read/write from another thread WITHOUT releasing
+//! the descriptor, unlike `hostClose`) on every still-registered connection
+//! once the accept thread has fully joined (so no later-accepted connection
+//! can be missed); the blocked `hostRead` then returns an error/EOF,
+//! `readOneRequest` reports `RoClose`, and the handler thread exits through
+//! its normal `defer` cleanup path.
+//!
+//! **What this does NOT fix, and why not: a context dequeued via
+//! `nextContext` and never answered.** A handler thread can also be parked
+//! in `rtSemWait(doneSem)` inside `processConnection`, waiting for a
+//! `respond*` call on a context the CALLER has already pulled off the queue.
+//! Interrupting the connection's SOCKET does nothing for a thread blocked on
+//! a SEMAPHORE — the two are unrelated primitives. Force-`rtSemPost`ing such
+//! a semaphore from `stopListener` was considered and rejected: nothing
+//! prevents the caller's own puller thread from ALSO calling `respond*` on
+//! that same context after `stopListener` force-posted and the connection
+//! thread already ran `freeOneShotSem` — a genuine use-after-free on the
+//! `malloc`'d semaphore buffer, trading a hang for memory corruption. This
+//! is not a native-specific gap either: the dotnet twin's `stopListener`
+//! does not wait for in-flight connections at all, so an abandoned
+//! dequeued context hangs there too (forever, on a threadpool thread) — on
+//! every target, "call `respond*` for whatever `nextContext` returns before
+//! shutting down" is the caller's own obligation, not something the pull
+//! queue can enforce or safely undo after the fact.
 //!
 //! No backpressure cap (the dotnet twin's `LYRIC_HTTP_MAX_CONNECTIONS`/
 //! `resolveMaxConcurrentConnections`, #6071) ships in this v1: it needs
@@ -203,6 +246,15 @@ record ServerQueue {
   available: Long
   items: List[HttpContext]
   workerTids: List[Long]
+  // Every currently-accepted, not-yet-closed connection (#6791): tracked so
+  // `stopListener` can interrupt a handler thread idling in `hostRead` on a
+  // keep-alive connection (Std.HttpEngine defaults `keepAlive = true`, so an
+  // ordinary HTTP/1.1 client that never sends `Connection: close` leaves its
+  // thread blocked here forever otherwise). A connection is registered the
+  // moment its handler thread is spawned and unregistered strictly BEFORE
+  // that thread's own `hostClose` call (never after) -- see
+  // `unregisterConn`'s doc comment for why that ordering is load-bearing.
+  activeConns: List[Conn]
 }
 
 func newServerQueue(): ServerQueue {
@@ -212,7 +264,8 @@ func newServerQueue(): ServerQueue {
   rtSemInit(s, 0)
   val items: List[HttpContext] = newList()
   val tids: List[Long] = newList()
-  ServerQueue(mutex = m, available = s, items = items, workerTids = tids)
+  val conns: List[Conn] = newList()
+  ServerQueue(mutex = m, available = s, items = items, workerTids = tids, activeConns = conns)
 }
 
 func enqueueContext(q: in ServerQueue, ctx: in HttpContext): Unit {
@@ -231,9 +284,36 @@ func dequeueContext(q: in ServerQueue): HttpContext {
   ctx
 }
 
-func registerWorker(q: in ServerQueue, tid: in Long): Unit {
+func registerWorker(q: in ServerQueue, tid: in Long, conn: in Conn): Unit {
   rtMutexLock(q.mutex)
   q.workerTids.add(tid)
+  q.activeConns.add(conn)
+  rtMutexUnlock(q.mutex)
+}
+
+// Remove `conn` from the active-connection registry. MUST be called by
+// `conn`'s own owning (connection-handler) thread strictly BEFORE that same
+// thread's `hostClose(conn)` call, never after: `stopListener`'s shutdown
+// loop only ever calls `hostShutdown` (never `hostClose`) on a registry
+// entry, but `hostShutdown` racing a `hostClose` on an ALREADY-CLOSED,
+// possibly fd-reused connection is not safe (module header's "Shutdown"
+// section, #6791) -- unregistering first guarantees this file's own
+// `stopListener` can never observe (and therefore never touch) a
+// connection whose fd this same thread is about to invalidate.
+func unregisterConn(q: in ServerQueue, conn: in Conn): Unit {
+  rtMutexLock(q.mutex)
+  val targetFd = hostFd(conn)
+  var idx = 0 - 1
+  var i = 0
+  while i < q.activeConns.count {
+    if hostFd(q.activeConns[i]) == targetFd {
+      idx = i
+    }
+    i = i + 1
+  }
+  if idx >= 0 {
+    q.activeConns.removeAt(idx)
+  }
   rtMutexUnlock(q.mutex)
 }
 
@@ -521,6 +601,11 @@ func writeErrorResponse(conn: in Conn, status: in Int): Unit {
 // request (keep-alive) or close.
 func processConnection(conn: in Conn, queue: in ServerQueue, limits: in EngineLimits): Unit {
   defer {
+    // Order is load-bearing (#6791, `unregisterConn`'s doc comment):
+    // unregister BEFORE closing, never after, so `stopListener`'s shutdown
+    // loop can never touch this connection's fd once this thread has begun
+    // invalidating it.
+    unregisterConn(queue, conn)
     hostClose(conn)
   }
   var engineConn = newConnection(limits)
@@ -571,7 +656,7 @@ func spawnHandler(conn: in Conn, queue: in ServerQueue, limits: in EngineLimits)
   val worker: () -> NativePtr[Byte] = { -> processConnection(conn, queue, limits); nativeNullPtr() }
   val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)
   if rc == 0 {
-    registerWorker(queue, tid)
+    registerWorker(queue, tid, conn)
   } else {
     hostClose(conn)
   }
@@ -692,8 +777,30 @@ pub func nextContext(l: in HttpListener): HttpContext {
 @unsafe_ffi
 pub func stopListener(l: in HttpListener): Unit {
   hostStopListener(l.transport)
+  // Join the accept thread FIRST, before touching `activeConns`: its own
+  // loop only ends once `hostAccept`/`hostAcceptTls` fails against the now-
+  // closed listener, and every connection it accepts along the way is
+  // registered synchronously (spawnHandler -> registerWorker) before the
+  // loop's next iteration. Joining it first therefore guarantees the
+  // `activeConns` snapshot taken below is the COMPLETE, final set -- no
+  // connection accepted "too late" can be missed (#6791).
   var acceptOutp: NativePtr[Byte] = nativeNullPtr()
   val _ = pthreadJoin(l.acceptTid, nativeAddrOf(acceptOutp))
+  // Interrupt every still-open connection's blocking hostRead (the common
+  // case: an idle HTTP/1.1 keep-alive connection whose client hasn't sent
+  // another request -- Std.HttpEngine defaults keepAlive = true, so this is
+  // the default behavior for any well-behaved client, not an edge case,
+  // #6791). hostShutdown wakes the blocked read with an error/EOF without
+  // invalidating the fd, so the connection's own thread still safely
+  // hostClose's it in its own defer block.
+  rtMutexLock(l.queue.mutex)
+  val liveConns = l.queue.activeConns.toArray()
+  rtMutexUnlock(l.queue.mutex)
+  var k = 0
+  while k < liveConns.length {
+    hostShutdown(liveConns[k])
+    k = k + 1
+  }
   rtMutexLock(l.queue.mutex)
   val tids = l.queue.workerTids.toArray()
   rtMutexUnlock(l.queue.mutex)
