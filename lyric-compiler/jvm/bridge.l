@@ -618,6 +618,41 @@ func builtClassNameExists(acc: in List[BuiltClass], name: in String): Bool {
   false
 }
 
+// Snapshot the keys currently in `m`, as a `Map[String, Bool]` set — pairs
+// with `rollbackNewKeys` below to undo whatever a package's signature
+// registration contributes to a bundle-wide registry (`registry` / `caseReg`
+// / `ctorReg`) when its subsequent codegen panics and is J003-skipped
+// (#6766).
+func snapshotKeySet[V](m: in Map[String, V]): Map[String, Bool] {
+  val keys: Map[String, Bool] = newMap()
+  for k in mapKeys(m) {
+    keys.add(k, true)
+  }
+  keys
+}
+
+// Remove every key from `m` that is absent from `before` (a `snapshotKeySet`
+// taken earlier) — i.e. undo every addition made to `m` since the snapshot.
+// Used to roll back the bundle-wide registry/caseReg/ctorReg entries a
+// package's signature registration contributed when its codegen
+// subsequently panics and the package is skipped as unreached (J003):
+// without this, the entries survive and a LATER bundled package's
+// `importAwareRegistry` lookup can still resolve a bare call into a class
+// that was never written to the JAR, producing a runtime
+// `NoClassDefFoundError`/`NoSuchMethodError` on an otherwise-successful
+// build (#6766).  Every one of `collectAspectWovenSigs` /
+// `collectBModeWovenSigs` / `collectMonoSpecializedSigs` /
+// `collectFileCasesExtern` / `collectFileCtors` is first-wins (guarded by
+// `into.containsKey`), so a key present in `before` was never overwritten by
+// this package's registration and is safe to leave untouched.
+func rollbackNewKeys[V](m: in Map[String, V], before: in Map[String, Bool]): Unit {
+  for k in mapKeys(m) {
+    if not before.containsKey(k) {
+      m.remove(k)
+    }
+  }
+}
+
 // Codegen one (already middle-ended) file against `registry` and append its
 // class files to `out`.  Uses an isolated constant pool per package.
 func codegenPackageInto(
@@ -1811,13 +1846,21 @@ pub func compileProjectToJarBundledWithRestored(
   // codegen failure to a silent skip and the build error to a runtime
   // NoClassDefFoundError.
   val userOwner = pkgJvmOwner(userFile.packageDecl.path)
+  // Resolve bare call names through the SAME import-aware view of the
+  // registry `codegenPackageInto` uses (`importAwareRegistry` above).
+  // Otherwise a bare name two bundled packages both export (e.g.
+  // `Std.Process` / `Std.ProcessCapture` both exporting `runCapture`,
+  // #2535) can resolve to a different owner here than codegen resolves it
+  // to, marking the wrong package "reachable" and shipping a JAR missing
+  // the class actually invoked at runtime (#6767).
+  val userRegistry = importAwareRegistry(userFile, registry)
   var gi = 0
   while gi < userFile.items.count {
     match userFile.items[gi].kind {
       case IFunc(decl) -> {
         val selfKey = userOwner + "/" + decl.name
         if not callGraph.containsKey(selfKey) {
-          callGraph.add(selfKey, collectFuncCallKeys(decl, registry))
+          callGraph.add(selfKey, collectFuncCallKeys(decl, userRegistry))
         }
         if not reachableFns.containsKey(selfKey) {
           reachableFns.add(selfKey, true)
@@ -1828,7 +1871,7 @@ pub func compileProjectToJarBundledWithRestored(
         match aspDecl.around {
           case Some(ar) -> {
             val adviceCallees: List[String] = newList()
-            collectBlockNames(ar.body, adviceCallees, registry)
+            collectBlockNames(ar.body, adviceCallees, userRegistry)
             var aci = 0
             while aci < adviceCallees.count {
               val callee = adviceCallees[aci]
@@ -1859,17 +1902,21 @@ pub func compileProjectToJarBundledWithRestored(
   }
 
   // Bundled packages: index their functions' outgoing calls (not roots).
+  // Each package gets its OWN import-aware registry view (its own bare-name
+  // resolution can differ from every other package's, and from the user
+  // package's — same rationale as `userRegistry` above, #6767).
   var bgi = 0
   while bgi < toBundle.count {
     val bf = toBundle[bgi]
     val bOwner = pkgJvmOwner(bf.packageDecl.path)
+    val bfRegistry = importAwareRegistry(bf, registry)
     var bii = 0
     while bii < bf.items.count {
       match bf.items[bii].kind {
         case IFunc(decl) -> {
           val selfKey = bOwner + "/" + decl.name
           if not callGraph.containsKey(selfKey) {
-            callGraph.add(selfKey, collectFuncCallKeys(decl, registry))
+            callGraph.add(selfKey, collectFuncCallKeys(decl, bfRegistry))
           }
         }
         case _ -> ()
@@ -2064,6 +2111,20 @@ pub func compileProjectToJarBundledWithRestored(
     // fatally, unlike bundled stdlib files.
     val isProjectPkg = projectOwners.containsKey(pkgJvmOwner(f.packageDecl.path))
     val reachable = referencedPkgs.containsKey(pkgJvmOwner(f.packageDecl.path)) or isProjectPkg
+    // A codegen panic for a REACHABLE package is always fatal (see the catch
+    // below) and aborts the whole build, so no rollback is ever needed for
+    // it — only take the snapshot for an unreached package, where a panic
+    // gets silently J003-skipped and must not leave this package's
+    // signatures/cases/ctors behind for a later package to resolve into
+    // (#6766).
+    var registryBefore: Map[String, Bool] = newMap()
+    var caseRegBefore: Map[String, Bool] = newMap()
+    var ctorRegBefore: Map[String, Bool] = newMap()
+    if not reachable {
+      registryBefore = snapshotKeySet(registry)
+      caseRegBefore = snapshotKeySet(caseReg)
+      ctorRegBefore = snapshotKeySet(ctorReg)
+    }
     val ok = try {
       match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, allTemplates, isProjectPkg, pkgName) {
         case Some(ff) -> {
@@ -2121,6 +2182,16 @@ pub func compileProjectToJarBundledWithRestored(
         // bytecode is never invoked, but counted (with the package name and the
         // panic's own message) so the J003 note below names exactly what was
         // dropped and why instead of an anonymous count.
+        //
+        // Roll back whatever this package's signature registration
+        // contributed to the bundle-wide registry/caseReg/ctorReg before it
+        // panicked — otherwise a LATER bundled package could still resolve a
+        // bare call into a class that was never written to the JAR, since
+        // those registrations happened unconditionally above regardless of
+        // whether codegen itself then succeeded (#6766).
+        rollbackNewKeys(registry, registryBefore)
+        rollbackNewKeys(caseReg, caseRegBefore)
+        rollbackNewKeys(ctorReg, ctorRegBefore)
         skippedCount = skippedCount + 1
         skippedNames.add(pkgName + " (" + b.message + ")")
         true
