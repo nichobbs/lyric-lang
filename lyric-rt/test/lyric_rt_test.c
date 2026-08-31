@@ -68,6 +68,17 @@ static void test_alloc_retain_release(void) {
     lyric_release(&stat);
     CHECK(atomic_load(&stat.rc) == INT32_MAX);
     CHECK(dtor_calls == 0);
+
+    /* lyric_ptr_to_long / lyric_long_to_ptr: a pure bit-identical
+     * round-trip, no dereference — the conversion a retained closure's
+     * environment pointer needs to survive as a `Long` field
+     * (_kernel_native/http_server.l's #6797 fix). */
+    void* rawp = lyric_alloc(8);
+    int64_t asLong = lyric_ptr_to_long(rawp);
+    CHECK(lyric_long_to_ptr(asLong) == rawp);
+    CHECK(lyric_ptr_to_long(NULL) == 0);
+    CHECK(lyric_long_to_ptr(0) == NULL);
+    lyric_free(rawp);
 }
 
 /* lyric_free frees a raw (non-ARC-header) buffer, e.g. a protected type's
@@ -972,6 +983,23 @@ static void test_semaphore(void) {
     CHECK(pthread_join(tid, NULL) == 0);
     CHECK(ctx.posted == 1);
     lyric_sem_destroy(sem_buf2);
+
+    /* lyric_sem_trywait: never blocks. Reports 0 immediately against an
+     * empty semaphore (the shape stopListener's abandoned-queue drain
+     * relies on to never wait on a post nothing will ever send, #6796),
+     * and correctly drains exactly as many credits as were posted,
+     * leaving it empty again afterward. */
+    char sem_buf3[256];
+    CHECK(lyric_sem_size() <= (int32_t)sizeof(sem_buf3));
+    lyric_sem_init(sem_buf3, 0);
+    CHECK(lyric_sem_trywait(sem_buf3) == 0);
+    CHECK(lyric_sem_trywait(sem_buf3) == 0); /* still empty: repeatable, not one-shot */
+    lyric_sem_post(sem_buf3);
+    lyric_sem_post(sem_buf3);
+    CHECK(lyric_sem_trywait(sem_buf3) == 1);
+    CHECK(lyric_sem_trywait(sem_buf3) == 1);
+    CHECK(lyric_sem_trywait(sem_buf3) == 0); /* both credits already drained */
+    lyric_sem_destroy(sem_buf3);
 }
 
 static void test_uuid_v4(void) {

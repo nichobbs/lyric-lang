@@ -57,6 +57,25 @@ void lyric_release(void* obj) {
     }
 }
 
+/* Reinterpret a raw pointer as its bit-identical 64-bit integer value and
+ * back — pure `ptrtoint`/`inttoptr`, no dereference. Lets a `.l` file
+ * store a pointer it does not otherwise own the layout of (e.g. a
+ * retained closure's environment pointer) as the `Long` this codebase's
+ * own "Long-as-pointer-handle" idiom already uses for every other
+ * long-lived native handle (`ServerQueue.mutex`, `Conn.tlsConnHandle`,
+ * etc., all documented in `_kernel_native/tcp_host.l`'s module header):
+ * the N0100 mode-checker rule rejects a `NativePtr[T]` record/union
+ * field unconditionally ("heap storage outlives any frame"), so a
+ * pointer that must survive past the frame that produced it has nowhere
+ * else to live. */
+int64_t lyric_ptr_to_long(void* p) {
+    return (int64_t)(intptr_t)p;
+}
+
+void* lyric_long_to_ptr(int64_t v) {
+    return (void*)(intptr_t)v;
+}
+
 _Noreturn void lyric_panic_msg(const char* msg, const char* file, int32_t line) {
     fprintf(stderr, "lyric panic at %s:%d: %s\n",
             file ? file : "<unknown>", line, msg ? msg : "");

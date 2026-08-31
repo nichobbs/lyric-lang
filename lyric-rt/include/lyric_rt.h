@@ -61,6 +61,15 @@ void lyric_retain(void* obj);
  * allocation.  No-op on NULL and on static objects. */
 void lyric_release(void* obj);
 
+/* Pure ptrtoint/inttoptr, no dereference — lets a `.l` file stash a
+ * pointer it must retain past its own frame (e.g. a retained closure
+ * environment handed to `pthread_create`) as the `Long` this codebase's
+ * "Long-as-pointer-handle" idiom already stores every other long-lived
+ * native handle as, since a bare `NativePtr[T]` record/union field is
+ * rejected outright by the N0100 mode-checker rule. */
+int64_t lyric_ptr_to_long(void* p);
+void* lyric_long_to_ptr(int64_t v);
+
 /* Writes "lyric panic at <file>:<line>: <msg>" to stderr and aborts. */
 _Noreturn void lyric_panic_msg(const char* msg, const char* file, int32_t line);
 
@@ -278,9 +287,14 @@ int32_t lyric_sem_size(void);
 /* Counting-semaphore wrappers. `s` points at a buffer of at least
  * lyric_sem_size() bytes. lyric_sem_wait blocks until the count is
  * positive, then decrements it; lyric_sem_post increments the count and
- * wakes one waiter. */
+ * wakes one waiter. lyric_sem_trywait is the non-blocking variant:
+ * decrements and returns 1 only if the count is already positive right
+ * now, otherwise returns 0 immediately without waiting — used to drain
+ * exactly the currently-unclaimed credits without ever blocking on a
+ * post that will never come (#6796). */
 void lyric_sem_init(void* s, int32_t initial);
 void lyric_sem_wait(void* s);
+int32_t lyric_sem_trywait(void* s);
 void lyric_sem_post(void* s);
 void lyric_sem_destroy(void* s);
 

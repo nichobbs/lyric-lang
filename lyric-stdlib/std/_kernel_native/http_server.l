@@ -157,7 +157,21 @@
 //! in `rtSemWait(doneSem)` forever (its own socket being `hostShutdown`'d
 //! above does nothing for a thread blocked on a semaphore, not a socket
 //! read), hanging the `tid`-join loop on a thread that could now never
-//! finish.
+//! finish. This drain pops one item at a time through `rtSemTryWait` (a
+//! non-blocking credit check) followed by a locked pop, the exact same
+//! protocol `dequeueContext` itself uses, rather than an
+//! `items.toArray()`+`clear()` snapshot: the snapshot form cleared every
+//! entry unconditionally without consuming the matching number of
+//! `ServerQueue.available` credits, so a `nextContext` caller racing this
+//! drain (past its own `rtSemWait`, not yet holding `q.mutex`) could
+//! index `items[0]` on a list this drain had just emptied out from under
+//! it — an out-of-bounds access (#6796). `rtSemTryWait` fixes this
+//! without needing a blocking `rtSemWait` here (which would risk a
+//! genuine deadlock against that same racing caller stuck waiting on
+//! `q.mutex`): a credit a racing caller's `rtSemWait` already consumed
+//! simply is not there to try-wait, so this loop stops instead of either
+//! stealing that caller's item or blocking on a post that thread was
+//! never going to send.
 //!
 //! **What this does NOT fix, and why not: a context dequeued via
 //! `nextContext` and never answered.** A handler thread can also be parked
@@ -178,6 +192,59 @@
 //! for whatever `nextContext` returns before shutting down" is the
 //! caller's own obligation, not something the pull queue can enforce or
 //! safely undo after the fact.
+//!
+//! **A request that finishes parsing AFTER the one-shot abandoned-queue
+//! drain runs is force-completed too, via a `ServerQueue.stopping` flag
+//! (#6798).** The drain above only handles requests already sitting in
+//! `items` at the moment `stopListener` reaches it; a handler thread that
+//! finishes parsing a real, already-in-flight request slightly LATER
+//! (`hostShutdown` interrupts a BLOCKED read, not one that already
+//! returned complete bytes) would otherwise `enqueueContext` successfully
+//! into a queue nobody will ever drain again, parking in
+//! `rtSemWait(doneSem)` forever — the same deadlock class #6791 closed,
+//! through a narrower timing window on the far side of the drain.
+//! `stopListener` sets `l.queue.stopping = true` under `q.mutex` before
+//! any other shutdown work begins; `enqueueContext` checks the same flag
+//! under the same lock and, if set, posts the context's `done` directly
+//! instead of adding it to `items` — mirroring the drain's own handling
+//! of an already-queued context, so a handler thread's own `rtSemWait`
+//! always returns promptly either way.
+//!
+//! **Every `pthread_create`d closure in this file is retained before the
+//! call and released once its thread is joined (#6797).** `spawnHandler`
+//! and the accept-loop spawns in `startListener`/`startListenerTls` all
+//! hand a closure to `pthread_create` and return without joining in the
+//! same scope (unlike this codebase's only other `pthread_create`
+//! precedent, `llvm_ffi_self_test.l`, which always joins immediately —
+//! see `native/plan/05-ffi-design.md`'s "Callback trampolines" ARC
+//! contract). Without an explicit retain, the spawning function's own
+//! scope-exit release could free the closure's backing memory before the
+//! new OS thread has finished reading its function pointer/environment
+//! out of it. The retained pointer is stored as `Long` (via
+//! `rtPtrToLong`/`rtLongToPtr`, since a bare `NativePtr[T]` record field
+//! is rejected by N0100) alongside the tid that owns it —
+//! `HttpListener.acceptWorkerHandle` for the accept thread,
+//! `ServerQueue.workerClosures` (index-paired with `workerTids`) for
+//! every spawned connection handler — and released the moment
+//! `stopListener`'s own `pthreadJoin` on that same thread returns.
+//! `startListenerTls`'s `pthread_create` failure path additionally frees
+//! the bound socket and the queue's `malloc`'d mutex/semaphore buffers
+//! before returning `Err` (#6799): unlike `startListener`'s `panic()` on
+//! the same failure (whose leak is moot — the process aborts), this
+//! function can return gracefully to a caller that goes on to create
+//! further listeners in the same long-running process, and nothing else
+//! will ever run `stopListener`'s teardown for a listener that never got
+//! handed back.
+//!
+//! **`HttpListener`/`HttpContext` each carry a one-shot guard against
+//! being reused after their single valid use.** `HttpListener.stopped`
+//! rejects a second `stopListener` call on the same listener (which would
+//! otherwise `pthread_join` an already-joined tid — POSIX undefined
+//! behaviour — and double-free the queue's mutex/semaphore buffers);
+//! `HttpContext.responded` rejects a second `respond*` call on the same
+//! context (which would otherwise `rtSemPost` a `done` semaphore the
+//! connection thread already `freeOneShotSem`'d, a use-after-free). Both
+//! panic loudly rather than silently corrupting memory.
 //!
 //! No backpressure cap (the dotnet twin's `LYRIC_HTTP_MAX_CONNECTIONS`/
 //! `resolveMaxConcurrentConnections`, #6071) ships in this v1: it needs
@@ -251,6 +318,14 @@ extern func rtSemInit(s: Long, initial: Int): Unit = "lyric_sem_init"
 
 extern func rtSemWait(s: Long): Unit = "lyric_sem_wait"
 
+// Non-blocking: returns 1 and consumes one credit if the count is
+// already positive, 0 and consumes nothing otherwise. `stopListener`'s
+// abandoned-queue drain needs this rather than `rtSemWait` so it can
+// stop the instant there is genuinely nothing left to drain, instead of
+// blocking forever on a post that will never come (#6796) — see
+// `stopListener`'s own doc comment on the drain loop below.
+extern func rtSemTryWait(s: Long): Int = "lyric_sem_trywait"
+
 extern func rtSemPost(s: Long): Unit = "lyric_sem_post"
 
 extern func rtSemDestroy(s: Long): Unit = "lyric_sem_destroy"
@@ -258,6 +333,37 @@ extern func rtSemDestroy(s: Long): Unit = "lyric_sem_destroy"
 extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = "pthread_create"
 
 extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = "pthread_join"
+
+// ARC retain/release for a `pthread_create`d closure (#6797, `native/plan/
+// 05-ffi-design.md`'s "Callback trampolines" section: "If the C function
+// holds the callback across multiple calls ... the closure must be
+// retained before passing and released when the C API signals it is
+// done ... the `_kernel_native/` wrapper is responsible for this"). Every
+// `pthreadCreate` call site in this file passes a closure the OS thread
+// keeps using for the thread's entire lifetime -- clearly outliving the
+// `pthreadCreate` call itself -- but none of them join in the same scope
+// (the codebase's only other precedent, `llvm_ffi_self_test.l`'s pthread
+// cases, always does, so the closure's own `val` binding simply never
+// gets released before the thread is done with it; that precedent does
+// not apply here). Without an explicit retain, the spawning function's
+// own scope-exit `lyric_release` on the closure can free it while the new
+// thread is still reading its function pointer/environment out of it --
+// a load-dependent use-after-free, most likely to surface under the
+// concurrent-connection load `llvm_http_server_self_test.l`'s item F/G
+// already stress.
+extern func rtRetain(p: NativePtr[Byte]): Unit = "lyric_retain"
+
+extern func rtRelease(p: NativePtr[Byte]): Unit = "lyric_release"
+
+// Pure ptrtoint/inttoptr, no dereference -- lets a retained closure's
+// pointer survive past the frame that retained it as the `Long` this
+// file's own "Long-as-pointer-handle" idiom already stores every other
+// long-lived native handle as (module header), since a bare
+// `NativePtr[T]` record/union field is rejected outright by the N0100
+// mode-checker rule.
+extern func rtPtrToLong(p: NativePtr[Byte]): Long = "lyric_ptr_to_long"
+
+extern func rtLongToPtr(v: Long): NativePtr[Byte] = "lyric_long_to_ptr"
 
 func charCodeAt(s: in String, i: in Int): Int {
   rtByteAt(s, i)
@@ -293,6 +399,17 @@ record ServerQueue {
   available: Long
   items: List[HttpContext]
   workerTids: List[Long]
+  // The retained closure-environment pointer for each `workerTids` entry
+  // (same index), stored as `Long` via `rtPtrToLong` -- released via
+  // `rtRelease`/`rtLongToPtr` once `stopListener` has joined that same
+  // index's thread (#6797). `spawnHandler` retains the closure it hands to
+  // `pthreadCreate` before the call (the thread's own use of it clearly
+  // outlives the call, so ARC's normal scope-exit release on the spawning
+  // function's return would otherwise be a use-after-free race against the
+  // new thread reading its function pointer/environment); this list is
+  // simply where that retain's matching release is deferred to, since
+  // `spawnHandler` itself returns immediately without joining.
+  workerClosures: List[Long]
   // Every currently-accepted, not-yet-closed connection (#6791): tracked so
   // `stopListener` can interrupt a handler thread idling in `hostRead` on a
   // keep-alive connection (Std.HttpEngine defaults `keepAlive = true`, so an
@@ -302,6 +419,16 @@ record ServerQueue {
   // that thread's own `hostClose` call (never after) -- see
   // `unregisterConn`'s doc comment for why that ordering is load-bearing.
   activeConns: List[Conn]
+  // Set once, under `mutex`, at the very start of `stopListener`, before any
+  // shutdown/drain work begins (#6798). `enqueueContext` checks this under
+  // the same lock: a request that finishes parsing to `RoRequest` AFTER
+  // `stopListener`'s one-shot abandoned-queue drain has already run would
+  // otherwise `enqueueContext` successfully and then park forever in
+  // `rtSemWait(doneSem)` inside `processConnection` (nobody will ever drain
+  // the queue again), hanging `stopListener`'s own `workerTids` join loop on
+  // that thread indefinitely -- the exact deadlock class #6791 closed, via a
+  // narrower timing window on the other side of the one-shot drain.
+  var stopping: Bool
 }
 
 func newServerQueue(): ServerQueue {
@@ -311,12 +438,36 @@ func newServerQueue(): ServerQueue {
   rtSemInit(s, 0)
   val items: List[HttpContext] = newList()
   val tids: List[Long] = newList()
+  val closures: List[Long] = newList()
   val conns: List[Conn] = newList()
-  ServerQueue(mutex = m, available = s, items = items, workerTids = tids, activeConns = conns)
+  ServerQueue(
+    mutex = m,
+    available = s,
+    items = items,
+    workerTids = tids,
+    workerClosures = closures,
+    activeConns = conns,
+    stopping = false
+  )
 }
 
+// A late-arriving request -- one that finishes parsing to `RoRequest` after
+// `stopListener` has already begun (`q.stopping` set) -- is immediately
+// force-completed exactly like the one-shot abandoned-queue drain handles a
+// request already sitting in `items` (#6798): its `done` semaphore is
+// posted directly, without ever adding it to `items` or posting
+// `q.available`, so the connection thread's own `rtSemWait(doneSem)` in
+// `processConnection` returns right away instead of blocking on a queue
+// nothing will ever pull from again. No response is written to the wire for
+// it -- the same disclosed scope as the drain step's own handling of a
+// context already queued when shutdown began (module header).
 func enqueueContext(q: in ServerQueue, ctx: in HttpContext): Unit {
   rtMutexLock(q.mutex)
+  if q.stopping {
+    rtMutexUnlock(q.mutex)
+    rtSemPost(ctx.done)
+    return
+  }
   q.items.add(ctx)
   rtMutexUnlock(q.mutex)
   rtSemPost(q.available)
@@ -354,16 +505,20 @@ func registerConn(q: in ServerQueue, conn: in Conn): Unit {
   rtMutexUnlock(q.mutex)
 }
 
-// Record a spawned handler thread's tid for `stopListener` to join. Safe to
-// call any time after `pthread_create` returns successfully, including
+// Record a spawned handler thread's tid, and its retained worker closure's
+// pointer (as `Long`, #6797), for `stopListener` to join and release. Safe
+// to call any time after `pthread_create` returns successfully, including
 // after the thread has already finished (`pthread_join` on an
 // already-terminated, not-yet-joined thread still succeeds per POSIX) --
 // unlike `registerConn`, there is no "stays stale forever" failure mode
-// here to order against, since nothing ever re-removes a workerTids entry
-// early the way `unregisterConn` does for `activeConns`.
-func registerTid(q: in ServerQueue, tid: in Long): Unit {
+// here to order against, since nothing ever re-removes a workerTids/
+// workerClosures entry early the way `unregisterConn` does for
+// `activeConns`. Both lists are appended in the SAME locked section so
+// their indices always stay paired.
+func registerTid(q: in ServerQueue, tid: in Long, workerHandle: in Long): Unit {
   rtMutexLock(q.mutex)
   q.workerTids.add(tid)
+  q.workerClosures.add(workerHandle)
   rtMutexUnlock(q.mutex)
 }
 
@@ -416,6 +571,16 @@ pub record HttpListener {
   transport: Listener
   acceptTid: Long
   queue: ServerQueue
+  // The accept-loop worker closure's retained pointer (`Long`, #6797),
+  // released once `stopListener` has joined `acceptTid`.
+  acceptWorkerHandle: Long
+  // Set once, at the very start of `stopListener` (checked BEFORE anything
+  // else runs). A second `stopListener` call on the same listener would
+  // otherwise `pthread_join` an already-joined tid (POSIX undefined
+  // behaviour) and double-`rtMutexDestroy`/`rtSemDestroy`/`rtFree` the
+  // queue's already-freed buffers (a double-free) -- both loud invariant
+  // violations, not silently tolerated.
+  var stopped: Bool
 }
 
 /// One fully-parsed request plus the machinery to respond to it. `conn` is
@@ -433,6 +598,12 @@ pub record HttpContext {
   body: slice[Byte]
   keepAlive: Bool
   done: Long
+  // Set the first time a `respond*` call completes on this context. A
+  // second `respond*` call on the same context would otherwise
+  // `rtSemPost` a `done` semaphore the connection thread has already
+  // `freeOneShotSem`'d (a use-after-free), possibly after that same
+  // buffer has been reused for an unrelated request's `HttpContext`.
+  var responded: Bool
 }
 
 // =====================================================================
@@ -734,7 +905,8 @@ func processConnection(conn: in Conn, queue: in ServerQueue, limits: in EngineLi
           headers = headers,
           body = body,
           keepAlive = keepAlive,
-          done = doneSem
+          done = doneSem,
+          responded = false
         )
         enqueueContext(queue, ctx)
         // Block until a respond helper releases `done`. A failed response
@@ -761,14 +933,23 @@ func spawnHandler(conn: in Conn, queue: in ServerQueue, limits: in EngineLimits)
   registerConn(queue, conn)
   var tid: Long = 0
   val worker: () -> NativePtr[Byte] = { -> processConnection(conn, queue, limits); nativeNullPtr() }
+  // Retain BEFORE pthreadCreate, matching the ARC contract for a callback
+  // the C API holds beyond the initiating call (#6797, extern-decl comment
+  // above): this function returns immediately without joining, so nothing
+  // else keeps `worker` alive for the spawned thread's own use of it.
+  rtRetain(worker)
+  val workerHandle = rtPtrToLong(worker)
   val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)
   if rc == 0 {
-    registerTid(queue, tid)
+    registerTid(queue, tid, workerHandle)
   } else {
     // The thread never started, so processConnection's own
     // unregisterConn/hostClose will never run for this connection --
     // undo the registration and close it here instead, or it would leak
     // into activeConns forever with no thread ever coming to remove it.
+    // The retain above is likewise undone immediately: no thread will
+    // ever release it.
+    rtRelease(worker)
     unregisterConn(queue, conn)
     hostClose(conn)
   }
@@ -829,11 +1010,24 @@ pub func startListener(prefix: in String): HttpListener {
       val limits = EngineLimits.defaults()
       var tid: Long = 0
       val worker: () -> NativePtr[Byte] = { -> plainAcceptLoop(transport, queue, limits); nativeNullPtr() }
+      // Retained before `pthreadCreate` (#6797, extern-decl comment above);
+      // released once `stopListener` has joined `acceptTid`. On the `rc !=
+      // 0` panic branch below the retain is orphaned, but the process is
+      // about to `abort()` anyway (D-N-003 has no unwinding to run a
+      // release through regardless).
+      rtRetain(worker)
+      val workerHandle = rtPtrToLong(worker)
       val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)
       if rc != 0 {
         panic("Std.HttpServer.startListener: failed to spawn the accept thread")
       }
-      HttpListener(transport = transport, acceptTid = tid, queue = queue)
+      HttpListener(
+        transport = transport,
+        acceptTid = tid,
+        queue = queue,
+        acceptWorkerHandle = workerHandle,
+        stopped = false
+      )
     }
     case Err(e) -> panic("Std.HttpServer.startListener: bind failed: " + TcpError.message(e))
   }
@@ -865,11 +1059,37 @@ pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig
       val limits = EngineLimits.defaults()
       var tid: Long = 0
       val worker: () -> NativePtr[Byte] = { -> tlsAcceptLoop(transport, queue, tls, limits); nativeNullPtr() }
+      // Retained before `pthreadCreate` (#6797, extern-decl comment above).
+      rtRetain(worker)
+      val workerHandle = rtPtrToLong(worker)
       val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)
       if rc != 0 {
+        // Unlike `startListener`'s `panic()` on this same failure (whose
+        // orphaned retain is moot -- the process aborts), this function
+        // returns `Err` to a caller that may go on to create further
+        // listeners in the same process, so every allocation `newServerQueue`
+        // made above must be torn down here too (#6799): the retain, the
+        // bound socket, and the queue's `malloc`'d mutex/semaphore buffers
+        // -- mirroring `stopListener`'s own teardown sequence exactly,
+        // since nothing else will ever run it for a listener that never
+        // got handed back to a caller.
+        rtRelease(worker)
+        hostStopListener(transport)
+        rtMutexDestroy(queue.mutex)
+        rtFree(queue.mutex)
+        rtSemDestroy(queue.available)
+        rtFree(queue.available)
         return Err(error = InvalidConfig(message = "failed to spawn the accept thread"))
       }
-      Ok(value = HttpListener(transport = transport, acceptTid = tid, queue = queue))
+      Ok(
+        value = HttpListener(
+          transport = transport,
+          acceptTid = tid,
+          queue = queue,
+          acceptWorkerHandle = workerHandle,
+          stopped = false
+        )
+      )
     }
     case Err(e) -> Err(error = InvalidConfig(message = "bind failed: " + TcpError.message(e)))
   }
@@ -888,6 +1108,25 @@ pub func nextContext(l: in HttpListener): HttpContext {
 /// to).
 @unsafe_ffi
 pub func stopListener(l: in HttpListener): Unit {
+  // Guards against a second `stopListener` call on the same listener
+  // (SUGGESTION, PR #6789 review): without this, it would `pthread_join`
+  // an already-joined tid (POSIX undefined behaviour) and
+  // double-`rtMutexDestroy`/`rtSemDestroy`/`rtFree` the queue's
+  // already-freed buffers (a double-free under ASan).
+  if l.stopped {
+    panic("Std.HttpServer.stopListener: called more than once on the same HttpListener (invariant violation)")
+  }
+  l.stopped = true
+  // Set BEFORE any other shutdown/drain work begins (#6798): a request
+  // that finishes parsing to `RoRequest` AFTER this point sees
+  // `q.stopping` in `enqueueContext` and is force-completed immediately
+  // instead of being added to `items`, so it can never park forever in
+  // `rtSemWait(doneSem)` waiting for a drain that has already happened
+  // once and will not run again (see `ServerQueue.stopping`'s and
+  // `enqueueContext`'s own doc comments).
+  rtMutexLock(l.queue.mutex)
+  l.queue.stopping = true
+  rtMutexUnlock(l.queue.mutex)
   hostStopListener(l.transport)
   // Join the accept thread FIRST, before touching `activeConns`: its own
   // loop only ends once `hostAccept`/`hostAcceptTls` fails against the now-
@@ -898,6 +1137,11 @@ pub func stopListener(l: in HttpListener): Unit {
   // connection accepted "too late" can be missed (#6791).
   var acceptOutp: NativePtr[Byte] = nativeNullPtr()
   val _ = pthreadJoin(l.acceptTid, nativeAddrOf(acceptOutp))
+  // The accept thread is now guaranteed finished with its own worker
+  // closure (POSIX join synchronizes-with thread termination) -- release
+  // the retain `startListener`/`startListenerTls` took before spawning it
+  // (#6797).
+  rtRelease(rtLongToPtr(l.acceptWorkerHandle))
   // Interrupt every still-open connection's blocking hostRead (the common
   // case: an idle HTTP/1.1 keep-alive connection whose client hasn't sent
   // another request -- Std.HttpEngine defaults keepAlive = true, so this is
@@ -943,22 +1187,55 @@ pub func stopListener(l: in HttpListener): Unit {
   // being `hostShutdown`'d above does nothing for a thread blocked on a
   // semaphore, not a socket read), hanging the `tid`-join loop below on a
   // thread that can now never finish.
-  rtMutexLock(l.queue.mutex)
-  val abandoned = l.queue.items.toArray()
-  l.queue.items.clear()
-  rtMutexUnlock(l.queue.mutex)
-  var j = 0
-  while j < abandoned.length {
-    rtSemPost(abandoned[j].done)
-    j = j + 1
+  //
+  // Drains one item at a time through the EXACT same protocol
+  // `dequeueContext` itself uses -- `rtSemTryWait` (a credit, outside the
+  // mutex) then a locked pop of `items[0]` -- rather than the earlier
+  // `items.toArray()`+`clear()` snapshot, which desynced
+  // `ServerQueue.available`'s count from `items`' length: that snapshot
+  // cleared every entry unconditionally without consuming the matching
+  // number of credits, so a `nextContext` caller racing this drain (past
+  // its own `rtSemWait`, not yet holding `q.mutex`, when this drain won
+  // the mutex race first) would go on to index `items[0]` on a list this
+  // drain had just emptied -- an out-of-bounds access (#6796). Using
+  // `rtSemTryWait` instead of a blocking `rtSemWait` matters just as
+  // much as using the mutex correctly: a credit a racing caller's OWN
+  // `rtSemWait` has ALREADY consumed (it just hasn't reached the mutex
+  // yet) is not available to try-wait here, so this loop simply reports
+  // "nothing right now" for it and stops rather than either stealing an
+  // item that caller legitimately owns or blocking forever on a post
+  // that thread was never going to send (it is going to pop and finish
+  // normally instead). The loop naturally terminates once every
+  // genuinely un-consumed credit is drained, with no risk of the
+  // deadlock a blocking `rtSemWait` here would create (a caller stuck
+  // waiting on `q.mutex` for the very lock this drain would be holding
+  // while itself blocked waiting on a credit only that caller could ever
+  // supply).
+  var draining = true
+  while draining {
+    if rtSemTryWait(l.queue.available) == 1 {
+      rtMutexLock(l.queue.mutex)
+      val ctx = l.queue.items[0]
+      l.queue.items.removeAt(0)
+      rtMutexUnlock(l.queue.mutex)
+      rtSemPost(ctx.done)
+    } else {
+      draining = false
+    }
   }
   rtMutexLock(l.queue.mutex)
   val tids = l.queue.workerTids.toArray()
+  val workerHandles = l.queue.workerClosures.toArray()
   rtMutexUnlock(l.queue.mutex)
   var i = 0
   while i < tids.length {
     var outp: NativePtr[Byte] = nativeNullPtr()
     val _ = pthreadJoin(tids[i], nativeAddrOf(outp))
+    // `tids`/`workerHandles` are appended in lockstep by `registerTid`
+    // under one lock, so index `i` always names the SAME connection's
+    // thread and closure -- release the retain `spawnHandler` took now
+    // that this join proves the thread is done using it (#6797).
+    rtRelease(rtLongToPtr(workerHandles[i]))
     i = i + 1
   }
   rtMutexDestroy(l.queue.mutex)
@@ -1087,33 +1364,34 @@ func appendSafeHeader(headers: in List[HeaderField], name: in String, value: in 
   }
 }
 
-// `extra` is rebound to a freshly-annotated local (`m`) before either
-// generic call: `Lyric.LlvmCodegen`'s generic-argument inference reads a
-// literal or an explicitly-annotated local variable's type, not a
-// function PARAMETER's own declared type, so `mapKeys(extra)`/
-// `mapGet(extra, name)` (both keyed off `extra`'s parameter type alone)
-// failed with "cannot infer type argument 'K'" on `--target native`
-// (confirmed via direct repro) even though `extra: in Map[String, String]`
-// is fully concrete at this call site. `requestHeaders` above already
-// relies on the same "explicitly-annotated local" shape for its own
-// `mapGet` call (`val result: Map[String, String] = newMap()`), proven to
-// compile on native, so this mirrors an already-working pattern rather
-// than introducing an untested one -- explicit type-argument application
-// (`mapKeys[String, String](extra)`) was tried first but produces an
-// `InvalidProgramException` on `--target dotnet` for this exact stdlib
-// generic pair (a separate, MSIL-backend-specific bug in the explicit
-// type-application path, not something to depend on here).
+// Iterates `extra` via `dictGetKeys`, NOT `Std.Collections.mapKeys`: two
+// earlier attempts at this call site both failed on real
+// `native-backend-self-tests` CI (this file's own local sandbox has no
+// native toolchain, so neither was actually verified before landing --
+// `mapKeys(extra)` panicked with "cannot infer type argument 'K'" even
+// after rebinding `extra` to an explicitly-annotated local, and the
+// explicit-type-argument spelling `mapKeys[String, String](extra)`
+// produced an unrelated `InvalidProgramException` on `--target dotnet`).
+// `mapKeys[K, V]` is an ordinary Lyric-defined generic function
+// (`Std.Collections.mapKeys`, `collections.l`) that itself goes through
+// the SAME general call-site type inference this file's own two attempts
+// hit, so no spelling of a call to IT was ever going to sidestep the gap.
+// `dictGetKeys(m)`/`mapGet(m, key)`, by contrast, are both reserved
+// `--target native` BUILTINS (`Lyric.LlvmCodegen.lowerCallByName`
+// special-cases the bare names "dictGetKeys" and "mapGet" directly,
+// bypassing generic-function dispatch and its inference entirely) --
+// `mapKeys[K, V]`'s OWN body is written in exactly this shape
+// (`for k in dictGetKeys(m) { result.add(k) }`), and
+// `llvm_collections_self_test.l`'s own ASan-verified, CI-passing "map
+// with String keys, mapGet, key iteration" case uses this identical
+// `val ks = dictGetKeys(m); for k in ks { ... }` idiom already -- real,
+// already-passing native precedent, not a fresh guess.
 func appendExtraHeaders(headers: in List[HeaderField], extra: in Map[String, String]): Unit {
-  val m: Map[String, String] = extra
-  val names = mapKeys(m).toArray()
-  var i = 0
-  while i < names.length {
-    val name = names[i]
-    match mapGet(m, name) {
+  for name in dictGetKeys(extra) {
+    match mapGet(extra, name) {
       case Some(value) -> appendSafeHeader(headers, name, value)
       case None -> ()
     }
-    i = i + 1
   }
 }
 
@@ -1138,6 +1416,16 @@ func respondBytesWith(
   body: in slice[Byte],
   extra: in Map[String, String],
 ): Unit {
+  // Guards against a second `respond*` call on the same context
+  // (SUGGESTION, PR #6789 review): without this, the second call's
+  // `rtSemPost(c.done)` below would post a semaphore the connection
+  // thread has already `freeOneShotSem`'d after the FIRST call woke it --
+  // a use-after-free, potentially on a buffer already reused for an
+  // unrelated request's `HttpContext.done` by the time it happens.
+  if c.responded {
+    panic("Std.HttpServer: respond* called more than once on the same HttpContext (invariant violation)")
+  }
+  c.responded = true
   val headers: List[HeaderField] = newList()
   appendSafeHeader(headers, "Content-Type", contentType)
   headers.add(HeaderField(name = "Content-Length", value = toString(body.length)))
