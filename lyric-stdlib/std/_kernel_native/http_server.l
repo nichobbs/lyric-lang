@@ -126,23 +126,58 @@
 //! `readOneRequest` reports `RoClose`, and the handler thread exits through
 //! its normal `defer` cleanup path.
 //!
+//! **The `hostShutdown` loop holds `q.mutex` for its entire duration, not
+//! just the snapshot (#6795).** A connection can also finish NATURALLY and
+//! concurrently with `stopListener` — an ordinary `Connection: close`
+//! exchange completing while an operator asks the server to stop is the
+//! common graceful-shutdown case under real load, not an edge case. Its
+//! `processConnection` thread reaches its own `defer` block
+//! (`unregisterConn` then `hostClose`) independently of `stopListener`, and
+//! `unregisterConn` needs the SAME `q.mutex` to remove its entry.
+//! Releasing the mutex between "read the snapshot" and "call
+//! `hostShutdown` on each entry" (the original, buggy shape) left a window
+//! where a connection captured in the snapshot could be unregistered AND
+//! `hostClose`'d by its own thread before this loop's `hostShutdown` call
+//! for it ran — shutting down an already-closed, possibly fd-reused
+//! descriptor (exactly the hazard class #6791/#6792 already close for
+//! their own narrower windows). Holding the mutex across the whole loop
+//! makes that interleaving impossible: every entry this loop touches is
+//! guaranteed still-registered (i.e. not yet `hostClose`'d) at the moment
+//! of the call, not merely at the moment of an earlier, already-released
+//! snapshot.
+//!
+//! **Before joining handler threads, `stopListener` also force-completes
+//! any request that was `enqueueContext`'d but never pulled via
+//! `nextContext`.** Unlike a context `nextContext` has ALREADY handed to
+//! the caller (next paragraph), nothing outside the queue holds a
+//! reference to a still-queued one, so draining `queue.items` and
+//! releasing each entry's `done` semaphore here is safe — no later
+//! `respond*` call can ever reach it once it is removed from the list.
+//! Without this, the connection thread that enqueued it would stay parked
+//! in `rtSemWait(doneSem)` forever (its own socket being `hostShutdown`'d
+//! above does nothing for a thread blocked on a semaphore, not a socket
+//! read), hanging the `tid`-join loop on a thread that could now never
+//! finish.
+//!
 //! **What this does NOT fix, and why not: a context dequeued via
 //! `nextContext` and never answered.** A handler thread can also be parked
 //! in `rtSemWait(doneSem)` inside `processConnection`, waiting for a
-//! `respond*` call on a context the CALLER has already pulled off the queue.
-//! Interrupting the connection's SOCKET does nothing for a thread blocked on
-//! a SEMAPHORE — the two are unrelated primitives. Force-`rtSemPost`ing such
-//! a semaphore from `stopListener` was considered and rejected: nothing
-//! prevents the caller's own puller thread from ALSO calling `respond*` on
-//! that same context after `stopListener` force-posted and the connection
-//! thread already ran `freeOneShotSem` — a genuine use-after-free on the
-//! `malloc`'d semaphore buffer, trading a hang for memory corruption. This
-//! is not a native-specific gap either: the dotnet twin's `stopListener`
-//! does not wait for in-flight connections at all, so an abandoned
-//! dequeued context hangs there too (forever, on a threadpool thread) — on
-//! every target, "call `respond*` for whatever `nextContext` returns before
-//! shutting down" is the caller's own obligation, not something the pull
-//! queue can enforce or safely undo after the fact.
+//! `respond*` call on a context the CALLER has already pulled off the queue
+//! (as opposed to the still-queued case just above, which this file DOES
+//! now force-complete). Interrupting the connection's SOCKET does nothing
+//! for a thread blocked on a SEMAPHORE — the two are unrelated primitives.
+//! Force-`rtSemPost`ing such a semaphore from `stopListener` was considered
+//! and rejected: nothing prevents the caller's own puller thread from ALSO
+//! calling `respond*` on that same context after `stopListener`
+//! force-posted and the connection thread already ran `freeOneShotSem` —
+//! a genuine use-after-free on the `malloc`'d semaphore buffer, trading a
+//! hang for memory corruption. This is not a native-specific gap either:
+//! the dotnet twin's `stopListener` does not wait for in-flight
+//! connections at all, so an abandoned dequeued context hangs there too
+//! (forever, on a threadpool thread) — on every target, "call `respond*`
+//! for whatever `nextContext` returns before shutting down" is the
+//! caller's own obligation, not something the pull queue can enforce or
+//! safely undo after the fact.
 //!
 //! No backpressure cap (the dotnet twin's `LYRIC_HTTP_MAX_CONNECTIONS`/
 //! `resolveMaxConcurrentConnections`, #6071) ships in this v1: it needs
@@ -349,6 +384,7 @@ func unregisterConn(q: in ServerQueue, conn: in Conn): Unit {
   while i < q.activeConns.count {
     if hostFd(q.activeConns[i]) == targetFd {
       idx = i
+      break
     }
     i = i + 1
   }
@@ -869,13 +905,52 @@ pub func stopListener(l: in HttpListener): Unit {
   // #6791). hostShutdown wakes the blocked read with an error/EOF without
   // invalidating the fd, so the connection's own thread still safely
   // hostClose's it in its own defer block.
+  //
+  // The mutex is held across the ENTIRE snapshot-then-shutdown sequence,
+  // not just the snapshot (#6795): a connection can also finish NATURALLY
+  // and concurrently with `stopListener` (an ordinary `Connection: close`
+  // exchange completing while an operator asks the server to stop is the
+  // common graceful-shutdown case, not an edge case) -- its own
+  // `processConnection` thread reaches its `defer` block
+  // (`unregisterConn` then `hostClose`) independently of this function.
+  // `unregisterConn` needs the SAME `q.mutex` to remove its entry, so
+  // holding it here for the whole loop makes that removal impossible
+  // while this loop is running: every entry this loop calls
+  // `hostShutdown` on is therefore GUARANTEED to still be registered
+  // (i.e. not yet `hostClose`'d, so its fd cannot have been reused
+  // elsewhere in the process) at the moment of the call, not merely at
+  // the moment of an earlier, since-released snapshot. `hostShutdown` is
+  // a single syscall per entry, so holding the mutex for this bounded
+  // loop is cheap.
   rtMutexLock(l.queue.mutex)
   val liveConns = l.queue.activeConns.toArray()
-  rtMutexUnlock(l.queue.mutex)
   var k = 0
   while k < liveConns.length {
     hostShutdown(liveConns[k])
     k = k + 1
+  }
+  rtMutexUnlock(l.queue.mutex)
+  // Force-complete any request that was fully parsed and `enqueueContext`'d
+  // but never pulled via `nextContext` before shutdown began. Unlike a
+  // context `nextContext` has ALREADY handed to the caller (module
+  // header's "What this does NOT fix" section -- force-completing THAT
+  // one is unsafe, since the caller might still call `respond*` on it),
+  // nothing outside this queue holds a reference to a still-queued
+  // context, so draining it here and releasing its `done` semaphore is
+  // safe: no later `respond*` call can ever reach it once it is removed
+  // from `items`. Without this, the connection thread that enqueued it
+  // would stay parked in `rtSemWait(doneSem)` forever (its own socket
+  // being `hostShutdown`'d above does nothing for a thread blocked on a
+  // semaphore, not a socket read), hanging the `tid`-join loop below on a
+  // thread that can now never finish.
+  rtMutexLock(l.queue.mutex)
+  val abandoned = l.queue.items.toArray()
+  l.queue.items.clear()
+  rtMutexUnlock(l.queue.mutex)
+  var j = 0
+  while j < abandoned.length {
+    rtSemPost(abandoned[j].done)
+    j = j + 1
   }
   rtMutexLock(l.queue.mutex)
   val tids = l.queue.workerTids.toArray()

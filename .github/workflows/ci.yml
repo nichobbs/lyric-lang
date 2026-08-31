@@ -2272,7 +2272,7 @@ jobs:
       # malloc'd-buffer cleanup to. v1 is HTTP/1.1 only (a negotiated-h2
       # connection is closed rather than mis-parsed -- N9.5/#6106 tracks
       # native h2) with no LYRIC_HTTP_MAX_CONNECTIONS cap yet (Std.Parse has
-      # no native kernel). Six cases: item A is a plaintext round trip on
+      # no native kernel). Seven cases: item A is a plaintext round trip on
       # a single thread (a bare TCP connect completes into the backlog
       # before accept runs); item B is a real concurrent TLS round trip
       # with the client on a second pthread driving N9.4's real
@@ -2292,7 +2292,19 @@ jobs:
       # enough (a connect-then-immediate-disconnect scan), which could
       # leave a permanently stale, already-closed entry behind -- fixed by
       # registering BEFORE spawning, so the child thread's own start is
-      # always ordered after its registration.
+      # always ordered after its registration; item G is the #6795
+      # regression -- stopListener snapshotted activeConns under the queue
+      # mutex, released it, then called hostShutdown on each entry with no
+      # further synchronization, so a connection finishing NATURALLY and
+      # concurrently (an ordinary Connection: close exchange completing
+      # while stopListener runs -- the common graceful-shutdown case, not
+      # an edge case) could be unregisterConn'd and hostClose'd by its own
+      # thread between the snapshot and its hostShutdown call, shutting
+      # down an already-closed/reused fd -- fixed by holding the mutex
+      # across the entire snapshot-then-shutdown sequence, making the race
+      # impossible by construction; item G spawns twenty concurrent clients
+      # each sending a real Connection: close request to prove stopListener
+      # still completes cleanly and promptly under that concurrent load.
       #
       # llvm_opaque (#6234 part 1: `opaque type` codegen -- construction,
       # field access, mutation, UFCS methods, and an opaque type nested in

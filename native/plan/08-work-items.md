@@ -1445,7 +1445,7 @@ tryParseInt` to read the environment override, and `Std.Parse` has no
 `_kernel_native/parse_host.l` twin yet — a disclosed v1 scope decision, not
 a silent omission.
 
-Verified by `lyric-compiler/lyric/llvm_http_server_self_test.l` (six
+Verified by `lyric-compiler/lyric/llvm_http_server_self_test.l` (seven
 cases, ASan-compiled): item A is a plaintext HTTP/1.1 round trip (client and
 server on the same process, no second thread needed — a bare TCP `connect`
 completes into the listen backlog before `accept` runs); item B is a real
@@ -1474,7 +1474,20 @@ enough (a connect-then-immediate-disconnect health-check/scan pattern),
 which could leave a permanently stale, already-closed (and potentially
 fd-reused) entry behind for a later `stopListener` to `hostShutdown` —
 fixed by registering BEFORE spawning the thread, so the child's own start
-is always ordered after its registration exists.
+is always ordered after its registration exists; item G is the
+**#6795 regression**: `stopListener` snapshotted `activeConns` under the
+queue mutex, released it, then called `hostShutdown` on each entry with
+no further synchronization, so a connection finishing NATURALLY and
+concurrently (an ordinary `Connection: close` exchange completing while
+`stopListener` runs — the common graceful-shutdown case under real load,
+not an edge case) could be `unregisterConn`'d and `hostClose`'d by its
+own thread between the snapshot and its `hostShutdown` call, shutting
+down an already-closed, potentially fd-reused descriptor — fixed by
+holding `q.mutex` across the ENTIRE snapshot-then-shutdown sequence
+(not just the snapshot), which makes the race impossible by
+construction rather than merely unlikely; item G's own role is to prove
+`stopListener` still completes cleanly and promptly against twenty
+concurrent real connections racing their own natural completion.
 
 **Sandbox/CI-validator boundary (same class as D-progress-712/809/823).**
 This session could not run `scripts/bootstrap.sh --stage 0`/`--stage 1`

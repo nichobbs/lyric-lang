@@ -5,7 +5,7 @@
 //! native`) and run, mirroring `llvm_tls_self_test.l`'s and
 //! `llvm_http_client_self_test.l`'s harness shape.
 //!
-//! Six cases:
+//! Seven cases:
 //!   - item A: a plaintext HTTP/1.1 round trip. A real client
 //!     (`Std.TcpHost.hostConnect`, plain TCP) on the SAME thread as the
 //!     server's own pull loop — a bare TCP `connect` completes into the
@@ -78,6 +78,25 @@
 //!     connection would have `stopListener` shut down THIS connection out
 //!     from under it), and finally asserts `stopListener` itself still
 //!     returns promptly.
+//!   - item G: the regression case for #6795 — `stopListener` snapshotted
+//!     `ServerQueue.activeConns` under the queue mutex, released it, then
+//!     called `hostShutdown` on each snapshot entry with no further
+//!     synchronization, so a connection finishing NATURALLY and
+//!     concurrently (an ordinary `Connection: close` exchange completing
+//!     while an operator asks the server to stop — the common graceful-
+//!     shutdown case under real load, not an edge case) could be
+//!     `unregisterConn`'d and `hostClose`'d by its own thread between the
+//!     snapshot and this loop's `hostShutdown` call for it, shutting down
+//!     an already-closed, potentially fd-reused descriptor. Also inherently
+//!     timing-dependent, so this case spawns twenty concurrent
+//!     `pthread_create`d clients, each a real connection sending a real
+//!     `Connection: close` request and disconnecting, serves every one of
+//!     their requests, then calls `stopListener` while several of those
+//!     twenty connections may still be mid-close — the fix (holding the
+//!     queue mutex across the entire snapshot-then-shutdown sequence, not
+//!     just the snapshot) makes the race impossible by construction rather
+//!     than merely unlikely, so this case's role is to prove `stopListener`
+//!     still completes cleanly and promptly under that concurrent load.
 //!
 //! Every scenario compiles with `-fsanitize=address`, so a leaked
 //! `malloc`'d mutex/semaphore buffer, a leaked fd, a double-release, or a
@@ -87,7 +106,7 @@
 //! section).
 //!
 //! Every connection-oriented case binds a FIXED port (19720/19721/19722/
-//! 19723/19724/19725),
+//! 19723/19724/19725/19726),
 //! matching `lyric-stdlib/tests/http_server_dotnet_tests.l`'s own
 //! established convention for testing this exact API — `Std.HttpServer`'s
 //! public surface (unlike `Std.TcpHost`'s) has no `hostLocalPort`-style
@@ -732,4 +751,80 @@ test "native Std.HttpServer registry does not go stale under a fast connect-disc
     "}\n"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "Std.HttpServer native connection-registry race regression (item F, #6792)")
+}
+
+test "native Std.HttpServer stopListener does not shutdown() a closed/reused fd racing a connection's natural completion (item G, #6795 regression)" {
+  val src = "package G\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Encoding\n" +
+    "import Std.HttpServer\n" +
+    "import Std.TcpHost\n" +
+    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
+    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "@unsafe_ffi\n" +
+    "func clientRoundtrip(dummy: in Int): NativePtr[Byte] {\n" +
+    "  match hostConnect(\"127.0.0.1\", 19726) {\n" +
+    "    case Ok(conn) -> {\n" +
+    "      val reqText = \"GET /race HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n\"\n" +
+    "      val _ = hostWrite(conn, encodeUtf8(reqText))\n" +
+    "      var tries = 0\n" +
+    "      var done = false\n" +
+    "      while tries < 400 and not done {\n" +
+    "        match hostRead(conn, 4096) {\n" +
+    "          case Ok(b) -> {\n" +
+    "            if b.length == 0 {\n" +
+    "              done = true\n" +
+    "            }\n" +
+    "          }\n" +
+    "          case Err(_) -> {\n" +
+    "            done = true\n" +
+    "          }\n" +
+    "        }\n" +
+    "        tries = tries + 1\n" +
+    "      }\n" +
+    "      hostClose(conn)\n" +
+    "      nativeNullPtr()\n" +
+    "    }\n" +
+    "    case Err(_) -> nativeNullPtr()\n" +
+    "  }\n" +
+    "}\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  val listener = startListener(\"http://127.0.0.1:19726/\")\n" +
+    "  // Twenty concurrent clients, each a real connection sending a real\n" +
+    "  // Connection: close request and disconnecting -- several connections\n" +
+    "  // naturally completing (their own processConnection thread running\n" +
+    "  // unregisterConn then hostClose) around the same time stopListener\n" +
+    "  // below runs, maximizing the chance of the #6795 race window if the\n" +
+    "  // mutex-holding fix were ever reverted.\n" +
+    "  val tids: List[Long] = newList()\n" +
+    "  var s = 0\n" +
+    "  while s < 20 {\n" +
+    "    var tid: Long = 0\n" +
+    "    val worker: () -> NativePtr[Byte] = { -> clientRoundtrip(s) }\n" +
+    "    val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "    if rc == 0 {\n" +
+    "      tids.add(tid)\n" +
+    "    }\n" +
+    "    s = s + 1\n" +
+    "  }\n" +
+    "  var served = 0\n" +
+    "  while served < tids.count {\n" +
+    "    val ctx = nextContext(listener)\n" +
+    "    respondText(ctx, 200, \"race-ok\")\n" +
+    "    served = served + 1\n" +
+    "  }\n" +
+    "  // The regression check (#6795): some clients may still be reading\n" +
+    "  // their response or in the middle of hostClose right now. stopListener\n" +
+    "  // must never shutdown() an already-closed/reused fd, and must still\n" +
+    "  // return promptly and cleanly.\n" +
+    "  stopListener(listener)\n" +
+    "  var i = 0\n" +
+    "  while i < tids.count {\n" +
+    "    var outp: NativePtr[Byte] = nativeNullPtr()\n" +
+    "    val _ = pthreadJoin(tids[i], nativeAddrOf(outp))\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpServer native shutdown-vs-natural-completion race regression (item G, #6795)")
 }

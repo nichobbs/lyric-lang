@@ -883,18 +883,25 @@ items marked ∥ are independent and can proceed in parallel.
     ALPN-selected h2 is N9.5's job. No `LYRIC_HTTP_MAX_CONNECTIONS`
     backpressure cap yet (`Std.Parse`, needed to read the override, has no
     `_kernel_native/` twin). Verified by
-    `lyric-compiler/lyric/llvm_http_server_self_test.l` (six cases: a
+    `lyric-compiler/lyric/llvm_http_server_self_test.l` (seven cases: a
     plaintext round trip, a real concurrent TLS round trip via N9.4's
     `hostConnectTls` on a second pthread, the h2-rejection guard, a
     keep-alive round trip over one connection, the #6791 regression
     — `stopListener` must not hang on a genuinely idle keep-alive
     connection, fixed by tracking every accepted `Conn` and
-    `hostShutdown`-ing each one before joining its handler thread — and
-    the #6792 regression — `spawnHandler` must register a connection
+    `hostShutdown`-ing each one before joining its handler thread — the
+    #6792 regression — `spawnHandler` must register a connection
     into the active-connection registry BEFORE spawning its handler
     thread, not after, or a connection that finishes fast enough (a
     connect-then-immediate-disconnect scan) can race its own
-    unregistration and leave a stale, already-closed entry behind).
+    unregistration and leave a stale, already-closed entry behind — and
+    the #6795 regression — `stopListener` must hold the queue mutex
+    across its ENTIRE snapshot-then-`hostShutdown` sequence, not just
+    the snapshot, or a connection finishing naturally and concurrently
+    (an ordinary `Connection: close` exchange completing while
+    `stopListener` runs) can be unregistered and closed by its own
+    thread in between, so `hostShutdown` ends up acting on an
+    already-closed, potentially fd-reused descriptor).
     **N9.5** lyric-web `serveTls` + ALPN h2. See
     `native/plan/08-work-items.md` Phase N9 for the full banding and
     prerequisites._

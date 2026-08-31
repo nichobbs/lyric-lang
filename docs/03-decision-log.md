@@ -37588,3 +37588,126 @@ no refusals.
 fix does not attempt), the CI failure this addendum documents (all six
 `llvm_http_server_self_test.l` cases, `native-backend-self-tests` job).
 
+**Addendum 3 (2026-08-31, review finding #6795 — a third, un-hardened
+instance of the same fd-reuse hazard class #6791/#6792 already close,
+this time a connection racing its own NATURAL completion against
+`stopListener` rather than one stuck in `hostRead` or racing
+registration — `llvm_http_server_self_test.l` now ships seven cases, not
+the six described in addendum 2.)**
+
+**Root cause.** `stopListener`'s `hostShutdown` loop read the
+`activeConns` snapshot under `l.queue.mutex`, released the mutex, and
+only THEN iterated the snapshot calling `hostShutdown` on each entry:
+
+```
+rtMutexLock(l.queue.mutex)
+val liveConns = l.queue.activeConns.toArray()
+rtMutexUnlock(l.queue.mutex)
+var k = 0
+while k < liveConns.length {
+  hostShutdown(liveConns[k])
+  k = k + 1
+}
+```
+
+Meanwhile, any connection that finishes ON ITS OWN — an ordinary
+request carrying `Connection: close`, or simply the natural end of a
+non-keep-alive exchange — runs `processConnection`'s `defer` block
+(`unregisterConn` then `hostClose`) concurrently and independently of
+`stopListener`. `unregisterConn` is itself mutex-guarded, so it cannot
+corrupt the list — but nothing synchronized "a connection is included
+in the snapshot" against "that connection's owning thread naturally
+unregisters and closes its own fd" a moment later. A connection
+captured in the snapshot the instant before its thread ran
+`unregisterConn`+`hostClose` would have `stopListener`'s loop later call
+`hostShutdown` on that entry's fd AFTER the real fd had already been
+closed — and, per `hostShutdown`'s own doc comment in `tcp_host.l`, a
+closed fd number can be reused elsewhere in the process, so this is a
+real "shut down the wrong resource" hazard, not merely a harmless
+`EBADF`. This is exactly the fd-reuse hazard class #6791/#6792 already
+went to considerable lengths to close, but neither of those fixes
+addresses a connection that is actively, legitimately finishing
+concurrently with a `stopListener` call — the common case for a
+graceful shutdown under real production load, where in-flight requests
+are naturally completing at the same moment an operator asks the server
+to stop.
+
+**Fix — hold the mutex across the entire snapshot-then-shutdown
+sequence, not just the snapshot** (the reviewer's own first suggested
+direction, verified against this file's design before taking it):
+`rtMutexUnlock` moved from immediately after the snapshot to after the
+`hostShutdown` loop finishes. Since `unregisterConn` needs the SAME
+`q.mutex` to remove its entry, holding it here for the whole loop makes
+that removal impossible while the loop runs — every entry the loop
+calls `hostShutdown` on is therefore GUARANTEED to still be registered
+(i.e. not yet `hostClose`'d, so its fd cannot have been reused) at the
+moment of the call, not merely at the moment of an earlier,
+since-released snapshot. This closes the race by construction rather
+than narrowing its window: `hostShutdown` is a single syscall per
+entry, so holding the mutex for this bounded loop costs nothing
+meaningful. The alternative direction the reviewer offered (a
+per-connection "already closing" flag) was not needed once the simpler
+fix was verified sufficient — the flag approach would have added a new
+piece of shared state to reason about for no additional safety here.
+
+**A related gap surfaced while auditing this: a request `enqueueContext`'d
+but never pulled via `nextContext` would hang the `tid`-join loop, not
+merely leak a semaphore (SUGGESTION 2 on the same review).** The
+reviewer's suggestion described this as a semaphore leak; tracing it
+further found the actual consequence is worse — the connection thread
+that enqueued such a context stays parked in `rtSemWait(doneSem)`
+forever (its own socket being `hostShutdown`'d does nothing for a
+thread blocked on a semaphore, not a socket read), so `stopListener`'s
+own `tid`-join loop would hang waiting for a thread that can now never
+finish — the same deadlock CLASS as #6791, just triggered by an
+abandoned QUEUE entry instead of an idle READ. Unlike a context
+`nextContext` has already handed to the caller (the module header's
+pre-existing, deliberately-NOT-fixed "dequeued and never answered"
+disclosure — force-completing that one is unsafe, since the caller
+might still call `respond*` on it), nothing outside the queue holds a
+reference to a still-queued context, so it is safe to force-complete:
+`stopListener` now drains `queue.items` and `rtSemPost`s each entry's
+`done` semaphore (after clearing the list, so no later `nextContext`
+call can ever hand the same context to a caller) before joining handler
+threads. This is a genuine bug fix enabled by investigating a
+"non-blocking" suggestion, not merely the cosmetic cleanup the
+suggestion described.
+
+**SUGGESTION 1 (trivial, fixed alongside): `unregisterConn`'s linear
+scan kept overwriting `idx` on every match instead of stopping at the
+first one.** Not a correctness bug on its own (duplicate registrations
+should never occur, per this file's own invariants), but needless O(n)
+work on every unregister. Added a `break` on the first match.
+
+**Self-test (item G, `llvm_http_server_self_test.l`).** Like items
+F/#6792, this race has no deterministic single-shot repro without an
+injected synchronization point this file has no access to, so item G
+follows the same stress approach: twenty concurrent `pthread_create`d
+clients, each a real connection sending a real `Connection: close`
+request and disconnecting, served via the normal `nextContext`/
+`respondText` pull loop, then `stopListener` called while several of
+those twenty connections may still be mid-close. Because the fix
+eliminates the race by construction rather than merely reducing its
+probability, item G's role is to prove `stopListener` still completes
+cleanly and promptly under that concurrent load (no crash, no hang) —
+not to probabilistically catch the specific interleaving the way a
+weaker fix would need a test to.
+
+**Verification.** The `List[Item].clear()` (record element type) +
+prior-`toArray()`-snapshot-unaffected interaction this fix's queue-drain
+step depends on was verified with a minimal standalone repro: real
+compile, real run, exit code 0. The full file re-verified to type-check
+completely via the local NuGet tool (same sandbox boundary as every
+other verification pass on this file — panics only at the pre-existing,
+unrelated `--target native` `.indexOf` codegen gap). `lyric fmt --write`
+applied cleanly, no refusals. Synced the "six cases" → "seven cases"
+count across `docs/61-https-tls-http-versions.md`,
+`native/plan/08-work-items.md`, `docs/10-bootstrap-progress.md`, and
+`.github/workflows/ci.yml`'s job comment alongside this addendum, rather
+than leaving them for a follow-up review round the way addendum 1's
+"three cases" mentions initially were (issue #6793).
+
+**Related (addendum 3):** #6795 (this addendum's fix), #6791/#6792
+(the same fd-reuse hazard class, narrower windows), #6793 (the stale-
+doc-count pattern this addendum avoided repeating).
+
