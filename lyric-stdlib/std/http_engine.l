@@ -187,6 +187,7 @@ package Std.HttpEngine
 import Std.Core
 import Std.Collections
 import Std.String
+import Std.Char as Char
 import Std.Encoding
 
 // =============================================================================
@@ -856,7 +857,7 @@ func parseDigitsToInt(raw: in String): Option[Int] {
   while i < s.length {
     match charAt(s, i) {
       case None -> return None
-      case Some(c) -> match digitValue(c) { case None -> return None; case Some(d) -> { n = n * 10 + d } }
+      case Some(c) -> match Char.digitValue(c) { case None -> return None; case Some(d) -> { n = n * 10 + d } }
     }
     i = i + 1
   }
