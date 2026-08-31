@@ -36870,3 +36870,120 @@ verified green: `jvm_path_dependency_self_test.l` (7/7, including the new
 **Related:** #6750, #6697, D-progress-817 (the fix this mirrors),
 D-progress-811 (#3094, the JVM restored-dep loader that made this a
 regression), #6264, #6136.
+
+## D-progress-844 — JVM: `println`/`print` still signed for `UInt`/`ULong`, `isUnsignedExpr` widened to calls/indexed reads, `unsignedVars` scope-undo (#6754, review findings on #6748/#6631)
+
+**Status:** Shipped.
+
+**Context.** A review of the D-progress-842 (#6748) fix — which taught
+relational comparison, `/`, `%`, and stringification to dispatch through
+`Integer`/`Long`'s `*Unsigned` static methods for a statically-known
+`UInt`/`ULong` operand — found two residual gaps and a correctness bug
+in the tracking mechanism itself:
+
+1. **`println`/`print` never consulted `isUnsignedExpr` at all.**
+   `lowerBuiltinOrStaticCall`'s `println`/`print` arms
+   (`jvm/codegen/04_calls.l`) pushed the argument straight into
+   `PrintStream.println(int)`/`.print(long)` — the exact SIGNED overload
+   `coerceToStringForConcat`'s `isUnsigned` parameter exists to route
+   AROUND for every other stringification site (interpolation, `+`
+   concatenation, `.toString()`). `println(3_000_000_000u32)` printed
+   `"-1294967296"`, confirmed with a real `PrintStream` redirect before
+   the fix.
+
+2. **`isUnsignedExpr` was purely syntactic.** It recognized a bare name
+   previously recorded in `ctx.unsignedVars` or a `u32`/`u64`-suffixed
+   literal, but a `UInt`/`ULong`-returning function CALL, a record/opaque
+   FIELD read, or an indexed read off a `slice[UInt]`/`List[ULong]`/
+   `Map[K, UInt]` all reported `false`, silently reverting that one
+   expression to signed codegen even though the runtime value is
+   genuinely unsigned.
+
+3. **`ctx.unsignedVars` was never scope-restored and never explicitly
+   evicted on a same-name non-unsigned rebind** — the gap the field's own
+   doc comment already flagged as "a pre-existing acknowledged gap, not
+   one this fix introduces." A `UInt` shadowed by a plain `Int` of the
+   same name inside a nested block kept the OUTER unsigned tracking for
+   the INNER (signed) value; naively fixing only the eviction half would
+   then leak the eviction past the block, losing the OUTER `UInt`
+   binding's own tracking once the block exits.
+
+**Fix.**
+
+1. `lowerBuiltinOrStaticCall`'s `println`/`print` arms now run a new
+   `normalizeUnsignedPrintArg` (mirrors `coerceToStringForConcat`'s
+   `isUnsignedIntOrLong` branch) on the lowered argument, checking
+   `isUnsignedExpr(ctx, callArgExpr(args[0]))`, BEFORE the existing
+   `normalizeDoublePrintArg` double-normalization — a `UInt`/`ULong`
+   value is never `JDouble`, so the two normalizations never both fire.
+
+2. `isUnsignedExpr` (`01_types.l`) gained two new arms:
+   - **`ECall(EPath(name), args)`** (a bare, single-segment call):
+     resolved through `ctx.funcSigs` with the SAME `<name>@<arity>`-
+     then-bare-name lookup `closureInvokeRetType` already uses, against
+     a new `JvmFuncSig.retIsUnsigned: Bool` field — computed from the
+     function's actual declared return type at every registration site
+     reachable by a bare key (the plain free-function registration in
+     `collectFileSigsSeeded`, and the derive/aspect-woven/mono-
+     specialised registrations in `bridge.l`); every `<class>#<method>`/
+     `<class>.<method>`/`elem:`/`field:`/`val:`/`enum:`-keyed
+     registration (only reachable through `EMember`/`EIndex` shapes this
+     arm never matches) passes `false`, correct because unreachable, not
+     merely unused.
+   - **`EIndex(EPath(name), _)`** (a bare-name indexed read): resolved
+     through the EXISTING `ctx.varGenericArgs` declared-element-type
+     registry `indexedElemTypeOverride` already consults (same "last
+     list element is the narrowed one" convention
+     `recordDeclaredElemType` documents) — no new tracking added.
+
+   A record/opaque FIELD read (`EMember`) is explicitly OUT OF SCOPE,
+   documented in `isUnsignedExpr`'s own doc comment: the field's owning
+   class is only knowable by fully LOWERING the receiver expression
+   first (`lowerExpr`'s `EMember` arm does this to discover `recvTy`
+   before it can index `caseFields`), and `isUnsignedExpr` is called
+   from many side-effect-free sites that must never themselves emit
+   bytecode — resolving this would need either duplicating `EMember`
+   lowering or threading a real static-type-inference pass through every
+   call site, out of scope for this fix.
+
+3. `FuncCtx` gained a SEPARATE change-log, `unsignedUndo: List
+   [UnsignedScopeUndo]`, mirroring `scopeUndo`/`ScopeUndo` exactly (own
+   record, own log, own `BlockScope.unsignedUndoMark`, replayed by
+   `exitBlockScope`) rather than folding into the existing `ScopeUndo`
+   entry: `unsignedVars` mutates at a DIFFERENT call site
+   (`recordUnsignedVarTy`, once the binding's declared type is known)
+   than `slots`/`types` (`allocSlot`, from the initialiser alone), so a
+   shared entry format would mean whichever of the two calls ran second
+   overwrites the OTHER's restore action. `recordUnsignedVarTy` also now
+   explicitly EVICTS a same-named entry when the new declared type is
+   NOT `UInt`/`ULong` (previously a no-op, leaving a stale `true` from an
+   outer `UInt` binding of the same name).
+
+Both `println`'s and `print`'s codegen arms are fixed identically for
+symmetry, but `print`'s fix is unreachable through type-checked Lyric
+source with a non-`String` argument: `Std.Console.print` is declared
+`(s: in String): Unit` and, unlike `println`, is NOT in the type
+checker's `isCodegenBuiltinName` polymorphic-builtin list
+(`typechecker_checker.l`) — `print(<UInt/ULong>)` is a `T0043` type
+error before it ever reaches codegen. Verification below covers
+`UInt`/`ULong` through the two reachable `println` cases instead.
+
+**Verification.** A real `PrintStream` redirect (`System.setOut` to a
+temp-file-backed `PrintStream`, read back via `Std.File.readText`) proved
+`println` wrong before the fix (`"-1294967296"`) and correct after
+(`"3000000000"`), for both `UInt` and `ULong`. New cases in
+`lyric-compiler/jvm/unsigned_int_ops_jvm_self_test.l` cover a
+`UInt`-returning function call in comparison/`.toString()` position, an
+indexed read off a declared `slice[UInt]`, and an A/B-verified
+scope-undo regression (an inner `Int` shadow reads signed; the outer
+`UInt` binding is still correctly unsigned after the shadowing block
+exits) — all 11 pre-existing #6748 cases plus the new ones pass on
+`--target jvm`. A broader regression sweep (`silent_miscompile_guard`,
+`bitwise`, `range_subtype_unsigned`, `generic_uint_erasure`,
+`subscript_assign`, `block_shadow`, `closure` self-tests) re-verified
+unaffected, confirming the new `unsignedUndo` log — which touches the
+same shared block/scope-entry codegen paths `block_shadow_self_test.l`
+covers — introduced no regression.
+
+**Related:** #6754, #6748, D-progress-842 (the fix this follows up on),
+#6631 (the umbrella PR both review passes are against).

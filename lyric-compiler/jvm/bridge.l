@@ -985,7 +985,12 @@ func collectDeriveFreeSigs(
             closureRetTy = None,
             recordRetClass = None,
             // Derive-synthesized free functions never return `Self`.
-            retIsSelf = false
+            retIsSelf = false,
+            // #6754 (finding 1.2a): computed from the real declared return —
+            // registered under the qualified key only, so unreachable from a
+            // bare single-segment `ECall(EPath, …)` in practice, but cheap
+            // and correct to compute here regardless.
+            retIsUnsigned = match decl.ret { case Some(te) -> isUnsignedTypeExpr(te); case None -> false }
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -1051,7 +1056,13 @@ func collectWovenSigsMatching(
             // the checkcast narrowing to `registerInstanceSigErased`'s
             // impl/record/protected methods only) — conservative `false`
             // leaves any such call erased, same as before this fix.
-            retIsSelf = false
+            retIsSelf = false,
+            // #6754 (finding 1.2a): a bare key IS registered below
+            // (`proceed()`/B'-mode call sites are unqualified `ECall(EPath,
+            // …)`), so this one matters — computed from the woven/specialised
+            // function's own declared return, which keeps the original
+            // function's type (the weaver/mono renaming never changes it).
+            retIsUnsigned = match decl.ret { case Some(te) -> isUnsignedTypeExpr(te); case None -> false }
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -1187,7 +1198,11 @@ func collectMonoSpecializedSigs(
             // Mono-specialised functions are free functions (monomorphized
             // from a generic `func`), never impl/record methods — no `Self`
             // return possible.
-            retIsSelf = false
+            retIsSelf = false,
+            // #6754 (finding 1.2a): a bare key IS registered below
+            // (specialised copies are called by bare name) — computed from
+            // the specialised function's own declared return.
+            retIsUnsigned = match decl.ret { case Some(te) -> isUnsignedTypeExpr(te); case None -> false }
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {

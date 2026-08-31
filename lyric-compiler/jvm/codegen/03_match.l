@@ -238,6 +238,9 @@ func recordVarGenericArgs(ctx: in FuncCtx, name: in String, init: in Expr, tyOpt
       case None -> newList()
     }
   }
+  // #6759: capture the prior entry BEFORE the mutation, so `exitBlockScope`
+  // can restore an enclosing binding this rebind shadows.
+  recordVarGenericArgsScopeUndo(ctx, name)
   if ctx.varGenericArgs.containsKey(name) {
     ctx.varGenericArgs.remove(name)
   }
@@ -324,6 +327,9 @@ func recordParamGenericArgs(ctx: in FuncCtx, name: in String, ty: in TypeExpr, t
   }
   val args = eagerlyResolveGenericArgs(rawArgs, ctx.pkgName, ctx.externTypes)
   if args.count > 0 {
+    // #6759: capture the prior entry BEFORE the mutation, so `exitBlockScope`
+    // can restore an enclosing binding this rebind shadows.
+    recordVarGenericArgsScopeUndo(ctx, name)
     if ctx.varGenericArgs.containsKey(name) {
       ctx.varGenericArgs.remove(name)
     }
@@ -1569,6 +1575,10 @@ func bindCaseField(
           match te.kind {
             case TGenericApp(_, targs) -> {
               val inner = typeArgsToTypeExprs(targs)
+              // #6759: capture the prior entry BEFORE the mutation, so
+              // `exitBlockScope` can restore an enclosing binding this
+              // match-arm field bind shadows.
+              recordVarGenericArgsScopeUndo(ctx, fname)
               if ctx.varGenericArgs.containsKey(fname) {
                 ctx.varGenericArgs.remove(fname)
               }
@@ -1586,6 +1596,9 @@ func bindCaseField(
               // the override lookup).
               val sliceInner: List[TypeExpr] = newList()
               sliceInner.add(sliceElem)
+              // #6759: same scope-undo capture as the `TGenericApp` arm
+              // above.
+              recordVarGenericArgsScopeUndo(ctx, fname)
               if ctx.varGenericArgs.containsKey(fname) {
                 ctx.varGenericArgs.remove(fname)
               }

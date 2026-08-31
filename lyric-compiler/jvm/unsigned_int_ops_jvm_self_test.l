@@ -29,11 +29,32 @@
 //!   lyric test --target jvm lyric-compiler/jvm/unsigned_int_ops_jvm_self_test.l
 //!
 //! Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1` is needed.
+//!
+//! #6754 (review findings on #6748/#6631) extended this file with three
+//! more cases: `println`/`print` never consulted `isUnsignedExpr` at all
+//! (they always pushed the raw signed `int`/`long` into
+//! `PrintStream.println`/`.print`, unlike every OTHER stringification site
+//! this file already covers); `isUnsignedExpr` was purely syntactic, missing
+//! a `UInt`/`ULong`-returning function CALL and an indexed read off a
+//! declared `slice[UInt]`/`slice[ULong]`; and `ctx.unsignedVars` was never
+//! scope-restored, so a `UInt` shadowed by a same-named `Int` inside a
+//! nested block leaked the wrong tracking in both directions. The
+//! `println` cases below declare two extra `extern type`s
+//! (`java.io.PrintStream` / `java.lang.System`) to redirect `System.out` to
+//! a temp file and read the captured bytes back via `Std.File` — the only
+//! way to assert what `println` actually WRITES, not a proxy for it.
+//! `print`'s own codegen arm is fixed identically (mirrors `println`'s
+//! shape) but is unreachable with a non-`String` argument through
+//! type-checked Lyric source — `Std.Console.print` is declared `(s: in
+//! String): Unit` and, unlike `println`, is NOT in the type checker's
+//! polymorphic-builtin list — so there is no runtime case to assert for it;
+//! see the comment on the second `println` test below.
 @test_module
 package Jvm.UnsignedIntOpsJvmSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.File
 
 // ── UInt: comparison ─────────────────────────────────────────────────────────
 //
@@ -149,4 +170,157 @@ test "ULong string interpolation renders the unsigned decimal value (#6748)" {
   val base: ULong = 9223372036854775807u64
   val a: ULong = base + 4u64
   assertEqual("value=${a}", "value=9223372036854775811", "interpolation is unsigned")
+}
+
+// ── println/print builtin (#6754 finding 1.1) ─────────────────────────────────
+//
+// `println`/`print` never consulted `isUnsignedExpr` at all — they always
+// pushed the raw (possibly sign-bit-set) `int`/`long` straight into
+// `PrintStream.println(int)`/`.print(long)`, which always renders the
+// SIGNED decimal (`println(3_000_000_000u32)` printed `"-1294967296"`).
+// Captured via a real `PrintStream` redirect (`System.setOut`) so this
+// asserts the ACTUAL bytes `println`/`print` write, not a proxy for it.
+extern type JPS = "java.io.PrintStream"
+
+extern type JSys = "java.lang.System"
+
+val printCapturePath: String = "/tmp/lyric_unsigned_print_jvm_self_test_6754.txt"
+
+test "println renders the unsigned decimal value for a UInt above 2^31 (#6754 finding 1.1)" {
+  deleteFile(printCapturePath)
+  val capture = JPS.new(printCapturePath)
+  JSys.setOut(capture)
+  val a: UInt = 3000000000u32
+  println(a)
+  capture.flush()
+  JSys.setOut(JPS.new("/dev/stdout"))
+  val content = match readText(printCapturePath) { case Ok(s) -> s; case Err(_) -> "<read failed>" }
+  deleteFile(printCapturePath)
+  assertEqual(
+    content,
+    "3000000000\n",
+    "println(UInt) must render the unsigned decimal (not the signed \"-1294967296\"); got: " + content
+  )
+}
+
+// `Std.Console.print`'s DECLARED signature is `(s: in String): Unit`
+// (`lyric-stdlib/std/console.l`) — unlike `println`, `print` is NOT in the
+// type checker's `isCodegenBuiltinName` polymorphic-builtin list
+// (`typechecker_checker.l`), so `print(<UInt/ULong>)` is a T0043 type error
+// and can never reach `lowerBuiltinOrStaticCall`'s `funcName == "print"`
+// codegen arm with a non-`String` argument through type-checked Lyric
+// source. That arm's `normalizeUnsignedPrintArg` call is still fixed (it
+// mirrors `println`'s arm exactly and would matter if `print`'s signature
+// ever widens), but there is no reachable runtime case to assert here — a
+// second `println` case below covers `ULong` instead, through the path
+// that IS reachable.
+test "println renders the unsigned decimal value for a ULong above 2^63 (#6754 finding 1.1)" {
+  deleteFile(printCapturePath)
+  val capture = JPS.new(printCapturePath)
+  JSys.setOut(capture)
+  val base: ULong = 9223372036854775807u64
+  val a: ULong = base + 4u64
+  println(a)
+  capture.flush()
+  JSys.setOut(JPS.new("/dev/stdout"))
+  val content = match readText(printCapturePath) { case Ok(s) -> s; case Err(_) -> "<read failed>" }
+  deleteFile(printCapturePath)
+  assertEqual(content, "9223372036854775811\n", "println(ULong) must render the unsigned decimal; got: " + content)
+}
+
+// ── isUnsignedExpr widening (#6754 finding 1.2) ────────────────────────────────
+//
+// `isUnsignedExpr` was purely syntactic: only a bare name previously
+// recorded in `unsignedVars`, or a `u32`/`u64`-suffixed literal, reported
+// `true`. A `UInt`/`ULong`-returning function CALL, or an indexed read off
+// a declared `slice[UInt]`/`slice[ULong]`, silently reverted to signed
+// codegen for that one expression.
+func bigUIntValue(): UInt {
+  3000000000u32
+}
+
+test "isUnsignedExpr recognizes a UInt-returning function call (#6754 finding 1.2a)" {
+  val threshold: UInt = 1000000000u32
+  assertTrue(bigUIntValue() > threshold, "bigUIntValue() > threshold must be unsigned-compared")
+  assertFalse(bigUIntValue() < threshold, "bigUIntValue() < threshold must be false (unsigned)")
+  assertEqual(bigUIntValue().toString(), "3000000000", "toString() on a UInt-returning call result is unsigned")
+}
+
+test "isUnsignedExpr recognizes an indexed read from a declared slice[UInt] (#6754 finding 1.2c)" {
+  val xs: slice[UInt] = [3000000000u32, 1000000000u32]
+  val threshold: UInt = 1000000000u32
+  assertTrue(xs[0] > threshold, "xs[0] > threshold must be unsigned-compared")
+  assertFalse(xs[0] < threshold, "xs[0] < threshold must be false (unsigned)")
+  assertEqual(xs[0].toString(), "3000000000", "toString() on an indexed UInt element is unsigned")
+}
+
+// ── unsignedVars scope save/restore (#6754 finding 2) ──────────────────────────
+//
+// `recordUnsignedVarTy` only ever ADDED an entry to `ctx.unsignedVars`; it
+// never evicted one for a non-unsigned rebind, and the map was never
+// threaded through the block-scope undo log `slots`/`types` already use
+// (#5191). A `UInt` shadowed by a plain `Int` of the same name inside a
+// nested block kept the OUTER unsigned tracking for the INNER (signed)
+// value — and a naive fix that only added eviction, without also
+// scope-restoring, would then leak the eviction past the block, losing the
+// OUTER `UInt` binding's own unsigned tracking once the block exits. This
+// case exercises both directions in one A/B-verified test.
+test "unsignedVars scope-undo: nested Int shadow is signed, outer UInt survives the block (#6754 finding 2)" {
+  val x: UInt = 3000000000u32
+  val threshold: UInt = 1000000000u32
+  val enterShadow = x > threshold
+  if enterShadow {
+    val x: Int = -1
+    assertTrue(x < 0, "the INNER shadow x is a plain signed Int (must not inherit the outer UInt tracking)")
+  }
+  assertTrue(x > threshold, "the OUTER x is still UInt after the shadowing block exits (unsigned compare)")
+  assertFalse(x < threshold, "the OUTER x < threshold must be false (unsigned) after the block exits")
+  assertEqual(x.toString(), "3000000000", "the OUTER x's toString is still unsigned after the block exits")
+}
+
+// ── ctx.varGenericArgs scope save/restore (issue #6759, a SIBLING bug in the
+//    same class, unrelated to UInt/ULong) ──────────────────────────────────
+//
+// A code-review pass on #6754 found the exact same "never scope-restored"
+// shape in a DIFFERENT `Jvm.Codegen.FuncCtx` map: `ctx.varGenericArgs`
+// (`String -> List[TypeExpr]`, the declared/inferred generic-instantiation
+// registry `scrutineeGenericArgs`/`indexedElemTypeOverride` consult so a
+// `match`/indexed read on a variable recovers its erased payload's real
+// type). Every mutation site (`recordVarGenericArgs`,
+// `recordParamGenericArgs`, `recordDeclaredElemType`, and the two
+// match-arm field-binding sites in `lowerPatternBind`) used a bare
+// remove-then-add with no scope awareness at all — a nested block/`if`
+// binding that shadowed an outer name with a DIFFERENT (or no) generic
+// instantiation permanently overwrote the outer entry; once the block
+// exited, the outer binding's own `match` no longer recovered ITS args.
+// Fixed with the identical `unsignedUndo`-shaped mechanism above, applied
+// to this map (`FuncCtx.varGenericArgsUndo` / `VarGenericArgsUndo`,
+// replayed by the same `exitBlockScope`). This is genuinely NOT a proxy
+// assertion: before the fix, this exact shape threw a real
+// `ClassCastException` (`Integer cannot be cast to String`) at runtime —
+// the OUTER `Result[Int, String]` binding's `match` incorrectly reused the
+// INNER shadow's `Result[String, String]` args to `checkcast` an `Ok`
+// payload that was actually a boxed `Integer`.
+func makeIntResultUnrelatedToUint(): Result[Int, String] {
+  Ok(value = 5)
+}
+
+func makeStrResultUnrelatedToUint(): Result[String, String] {
+  Ok(value = "hi")
+}
+
+test "varGenericArgs scope-undo: inner Result[String,String] shadow doesn't corrupt the outer Result[Int,String]'s match (#6759)" {
+  val r = makeIntResultUnrelatedToUint()
+  val enterShadow = true
+  if enterShadow {
+    val r = makeStrResultUnrelatedToUint()
+    match r {
+      case Ok(s) -> assertEqual(s, "hi", "the INNER shadow r unboxes as its own Result[String,String]")
+      case Err(_) -> assertTrue(false, "inner r must be Ok")
+    }
+  }
+  match r {
+    case Ok(n) -> assertEqualInt(n + 1, 6, "the OUTER r is still Result[Int,String] after the shadowing block exits")
+    case Err(_) -> assertTrue(false, "outer r must be Ok")
+  }
 }

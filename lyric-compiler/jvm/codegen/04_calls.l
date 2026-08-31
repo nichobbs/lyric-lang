@@ -905,11 +905,18 @@ func lowerBuiltinOrStaticCall(
     // lowered argument to a temp, then push the receiver and reload.
     if args.count > 0 {
       val rawTy = lowerCallArg(ctx, insns, args[0])
+      // #6754 (finding 1.1): a `UInt`/`ULong` argument, stringified via
+      // `Integer`/`Long.toUnsignedString` BEFORE the double-normalization
+      // below — `PrintStream.println(int)`/`(long)` always renders the
+      // SIGNED decimal, same class of bug `coerceToStringForConcat`'s
+      // `isUnsigned` parameter fixes for interpolation/`+`/`.toString()`
+      // (this builtin never routed through that helper at all).
+      val unsignedTy = normalizeUnsignedPrintArg(insns, rawTy, isUnsignedExpr(ctx, callArgExpr(args[0])))
       // #4688: PrintStream.println(double) would hand off to Java's
       // Double.toString directly ("1500.0" for a whole value) — normalize
       // to a String first so println matches the interpolation/toString()
       // rendering ("1500", matching .NET's Double.ToString()).
-      val argTy = normalizeDoublePrintArg(ctx, insns, rawTy)
+      val argTy = normalizeDoublePrintArg(ctx, insns, unsignedTy)
       val aSlot = allocSlot(ctx, "__println_a_" + freshLabel(ctx), argTy)
       emitStore(insns, aSlot, argTy)
       insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
@@ -927,8 +934,10 @@ func lowerBuiltinOrStaticCall(
     // Same receiver-after-argument discipline as println above.
     if args.count > 0 {
       val rawTy = lowerCallArg(ctx, insns, args[0])
+      // #6754 (finding 1.1): same unsigned normalization as println above.
+      val unsignedTy = normalizeUnsignedPrintArg(insns, rawTy, isUnsignedExpr(ctx, callArgExpr(args[0])))
       // #4688: same Double normalization as println above.
-      val argTy = normalizeDoublePrintArg(ctx, insns, rawTy)
+      val argTy = normalizeDoublePrintArg(ctx, insns, unsignedTy)
       val aSlot = allocSlot(ctx, "__print_a_" + freshLabel(ctx), argTy)
       emitStore(insns, aSlot, argTy)
       insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
@@ -4296,6 +4305,33 @@ func lowerMethodCall(
           "' cannot be called on a primitive-typed receiver"
       )
     }
+  }
+}
+
+// #6754 (finding 1.1): `println`/`print`'s already-lowered argument, on the
+// stack as `rawTy`, stringified via `Integer`/`Long.toUnsignedString` when
+// `isUnsigned` is true and `rawTy` is `JInt`/`JLong` — mirrors
+// `coerceToStringForConcat`'s `isUnsignedIntOrLong` branch (02_exprs.l),
+// which `println`/`print` never routed through: `PrintStream.println(int)`/
+// `(long)` always renders the SIGNED decimal
+// (`println(3_000_000_000u32)` -> "-1294967296"), the exact miscompile this
+// ticket describes. Runs BEFORE `normalizeDoublePrintArg` below — a
+// `UInt`/`ULong` value is never `JDouble`, so at most one of the two
+// normalizations ever fires. Non-unsigned/non-Int/Long args pass through
+// unchanged. Shared by both `println` and `print` in
+// `lowerBuiltinOrStaticCall` above.
+func normalizeUnsignedPrintArg(insns: in List[LInsn], rawTy: in JvmType, isUnsigned: in Bool): JvmType {
+  val isUnsignedIntOrLong = isUnsigned and (match rawTy { case JInt -> true; case JLong -> true; case _ -> false })
+  if isUnsignedIntOrLong {
+    val uPs: List[JvmType] = newList()
+    uPs.add(rawTy)
+    val uOwner = match rawTy { case JLong -> "java/lang/Long"; case _ -> "java/lang/Integer" }
+    insns.add(
+      LInvokestatic(owner = uOwner, name = "toUnsignedString", params = uPs, ret = JRef(className = "java/lang/String"))
+    )
+    JRef(className = "java/lang/String")
+  } else {
+    rawTy
   }
 }
 

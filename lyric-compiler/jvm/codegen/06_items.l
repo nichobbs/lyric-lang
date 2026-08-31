@@ -97,7 +97,9 @@ func makeFuncCtx(
     scopeUndo = newList(),
     ctorExpectStack = newList(),
     aliasTargets = aliasTargets,
-    unsignedVars = newMap()
+    unsignedVars = newMap(),
+    unsignedUndo = newList(),
+    varGenericArgsUndo = newList()
   )
 }
 
@@ -148,7 +150,9 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     scopeUndo = ctx.scopeUndo,
     ctorExpectStack = ctx.ctorExpectStack,
     aliasTargets = ctx.aliasTargets,
-    unsignedVars = ctx.unsignedVars
+    unsignedVars = ctx.unsignedVars,
+    unsignedUndo = ctx.unsignedUndo,
+    varGenericArgsUndo = ctx.varGenericArgsUndo
   )
 }
 
@@ -222,7 +226,9 @@ func makeFuncCtxForGenerator(
     // #6393: a generator body has no reachable file-scoped alias table at
     // this call site — out of scope for now (see `FuncCtx.aliasTargets`).
     aliasTargets = newMap(),
-    unsignedVars = newMap()
+    unsignedVars = newMap(),
+    unsignedUndo = newList(),
+    varGenericArgsUndo = newList()
   )
 }
 
@@ -299,7 +305,9 @@ func makeFuncCtxInstance(
     // impl method) has no reachable file-scoped alias table at this call
     // site — out of scope for now (see `FuncCtx.aliasTargets`).
     aliasTargets = newMap(),
-    unsignedVars = newMap()
+    unsignedVars = newMap(),
+    unsignedUndo = newList(),
+    varGenericArgsUndo = newList()
   )
 }
 
@@ -3141,6 +3149,18 @@ pub func collectFileSigsSeeded(
         } else {
           recordRetClassOf(decl.ret, owner, localRecordNames)
         }
+        // #6754 (finding 1.2a): same async-generator exclusion as
+        // `sigClosureRetTy`/`sigRecordRetClass` above — the synthesised
+        // generator object is never `UInt`/`ULong`, only `resolvedRet` (the
+        // ACTUAL declared return, alias-resolved) is.
+        val sigRetIsUnsigned: Bool = if decl.isAsync and funcBodyContainsYield(decl) {
+          false
+        } else {
+          match resolvedRet {
+            case Some(te) -> isUnsignedTypeExpr(te)
+            case None -> false
+          }
+        }
         val sig = JvmFuncSig(
           owner = owner,
           params = params,
@@ -3158,7 +3178,8 @@ pub func collectFileSigsSeeded(
           recordRetClass = sigRecordRetClass,
           // A free function's return type is never `Self` (only legal on an
           // interface/impl/record method signature) — always false here.
-          retIsSelf = false
+          retIsSelf = false,
+          retIsUnsigned = sigRetIsUnsigned
         )
         // Qualified key (`Std/Testing/assertEqualInt`) is unique across the
         // bundle, so two packages exporting the same short name (e.g.
@@ -3340,7 +3361,10 @@ pub func collectFileSigsSeeded(
           retGenericArgs = newList(),
           closureRetTy = None,
           recordRetClass = None,
-          retIsSelf = false
+          retIsSelf = false,
+          // `Type.from(x)` is `ECall(EMember(…), …)` — never matches
+          // `isUnsignedExpr`'s `ECall(EPath, …)`-only arm.
+          retIsUnsigned = false
         )
         if not into.containsKey(fromKey) {
           into.add(fromKey, fromSig)
@@ -3372,7 +3396,9 @@ pub func collectFileSigsSeeded(
           retGenericArgs = eagerlyResolveGenericArgs(rawArgs, owner, externTypes),
           closureRetTy = None,
           recordRetClass = None,
-          retIsSelf = false
+          retIsSelf = false,
+          // `Type.tryFrom(x)` is `ECall(EMember(…), …)` — same as `fromSig`.
+          retIsUnsigned = false
         )
         if not into.containsKey(tryFromKey) {
           into.add(tryFromKey, tryFromSig)
@@ -3460,7 +3486,10 @@ pub func collectFileSigsSeeded(
                       closureRetTy = None,
                       recordRetClass = None,
                       // An opaque field accessor's declared type is never `Self`.
-                      retIsSelf = false
+                      retIsSelf = false,
+                      // Field read is `EMember`, not `ECall` — out of scope
+                      // for `isUnsignedExpr` (finding 1.2b, see its doc).
+                      retIsUnsigned = false
                     )
                   )
                 }
@@ -3546,7 +3575,11 @@ pub func collectFileSigsSeeded(
                   closureRetTy = None,
                   recordRetClass = None,
                   // A module-level `val`'s type is never `Self`.
-                  retIsSelf = false
+                  retIsSelf = false,
+                  // Keyed `val:`-prefixed, never a bare name — unreachable
+                  // from `isUnsignedExpr`'s `ECall` arm, and a val read is
+                  // `EMember` anyway, never `ECall`.
+                  retIsUnsigned = false
                 )
                 val vqkey = owner + "/val:" + vname
                 if not into.containsKey(vqkey) {
@@ -3598,7 +3631,10 @@ pub func collectFileSigsSeeded(
             closureRetTy = None,
             recordRetClass = None,
             // An enum case value's type is never `Self`.
-            retIsSelf = false
+            retIsSelf = false,
+            // Keyed `enum:`/`enumcase:`-prefixed, never a bare name, and a
+            // nullary case reference is `EMember`, never `ECall`.
+            retIsUnsigned = false
           )
           val etkey = "enum:" + decl.name + "." + ecn
           if not into.containsKey(etkey) {
@@ -3743,7 +3779,11 @@ func registerInstanceSigErased(
         retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, typeParams), owner, externTypes),
         closureRetTy = closureRetTypeOf(retOpt, owner, typeParams, externTypes),
         recordRetClass = None,
-        retIsSelf = retIsSelf
+        retIsSelf = retIsSelf,
+        // Keyed `<class>#<method>` — an instance-method call is
+        // `ECall(EMember(…), …)`, never matches `isUnsignedExpr`'s
+        // `ECall(EPath, …)`-only arm.
+        retIsUnsigned = false
       )
     )
   }
@@ -3840,7 +3880,12 @@ func registerFieldElemSig(
       closureRetTy = None,
       recordRetClass = None,
       // A field's declared element type is never `Self`.
-      retIsSelf = false
+      retIsSelf = false,
+      // Keyed `elem:<class>#<field>`, consulted only by
+      // `indexedElemTypeOverride`'s field-receiver arm — not the bare-name
+      // `varGenericArgs` path `isUnsignedExpr`'s `EIndex` arm consults
+      // (finding 1.2c is scoped to a bare-name receiver; see its doc).
+      retIsUnsigned = false
     )
   )
 }
@@ -3903,7 +3948,10 @@ func registerIfaceSig(
         retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, typeParams), owner, externTypes),
         closureRetTy = closureRetTypeOf(retOpt, owner, typeParams, externTypes),
         recordRetClass = None,
-        retIsSelf = retIsSelf
+        retIsSelf = retIsSelf,
+        // Keyed `<ifaceClass>#<method>` — interface method calls are
+        // `ECall(EMember(…), …)`, same as `registerInstanceSigErased`.
+        retIsUnsigned = false
       )
     )
   }
@@ -3935,7 +3983,11 @@ func registerStaticWireSig(
         closureRetTy = None,
         recordRetClass = None,
         // A wire's static factory/accessor return is never `Self`.
-        retIsSelf = false
+        retIsSelf = false,
+        // Keyed `<wireShortName>.<method>` — called `EMember`-form
+        // (`AppWire.bootstrap()`), and `ret` here is already an erased
+        // `JvmType` with no declared `TypeExpr` on hand to check.
+        retIsUnsigned = false
       )
     )
   }
@@ -4762,7 +4814,9 @@ pub func registerProjectableViews(
                 recordRetClass = None,
                 // A synthesised `toView()` accessor's return is the view
                 // class itself, never `Self`.
-                retIsSelf = false
+                retIsSelf = false,
+                // Keyed `<class>#toView` — called `EMember`-form.
+                retIsUnsigned = false
               )
             )
           }
@@ -4785,7 +4839,9 @@ pub func registerProjectableViews(
                   recordRetClass = None,
                   // A synthesised `tryInto()` accessor's return is
                   // `Std.Core.Result`, never `Self`.
-                  retIsSelf = false
+                  retIsSelf = false,
+                  // Keyed `<class>#tryInto` — called `EMember`-form.
+                  retIsUnsigned = false
                 )
               )
             }
