@@ -510,17 +510,7 @@ pub func compileToNativeWithFlags(
   // bundled package's reachable slice.
   val units: List[CodegenUnit] = newList()
   units.add(unitOf(userFile, reachable, true))
-  var bi3 = 0
-  while bi3 < toBundle.count {
-    val u = unitOf(toBundle[bi3], reachable, false)
-    // A unit with no reachable functions still contributes its type
-    // declarations (e.g. Std.Core's Result/Option are referenced by
-    // other packages' signatures without any Std.Core call).
-    if u.fns.count > 0 or u.externs.count > 0 or u.records.count > 0 or u.unions.count > 0 or u.enums.count > 0 or u.distincts.count > 0 {
-      units.add(u)
-    }
-    bi3 = bi3 + 1
-  }
+  appendBundledUnits(toBundle, reachable, units)
 
   linkAndEmitNative(units, outputPath, triple, optLevel, extraClangFlags)
 }
@@ -550,9 +540,11 @@ pub record NativeSourcePackage {
 }
 
 /// Compile a project's own packages (`packages`, in manifest declaration
-/// order — the FIRST entry is conventionally the entry package, matching
-/// `emitProject`'s "source's own package goes first" convention) plus the
-/// bundled stdlib closure into one native binary.
+/// order — list position does NOT determine the entry point; the package
+/// declaring a top-level `func main` is auto-detected via
+/// `fileHasTopLevelMain` and always emitted first, regardless of where it
+/// falls in `packages`) plus the bundled stdlib closure into one native
+/// binary.
 ///
 /// Every entry in `packages` is always fully lowered (`lowerAll = true` in
 /// `unitOf` terms) — exactly like the single-source path's own package —
@@ -829,19 +821,28 @@ pub func compileProjectToNativeWithFlags(
     }
     uoi = uoi + 1
   }
-  var bi3 = 0
-  while bi3 < toBundle.count {
-    val u = unitOf(toBundle[bi3], reachable, false)
-    // A unit with no reachable functions still contributes its type
-    // declarations (e.g. Std.Core's Result/Option are referenced by other
-    // packages' signatures without any Std.Core call).
+  appendBundledUnits(toBundle, reachable, units)
+
+  linkAndEmitNative(units, outputPath, triple, optLevel, extraClangFlags)
+}
+
+// Appends one `CodegenUnit` per bundled (stdlib) package in `toBundle` whose
+// reachable slice is non-empty, mutating `units` in place. A unit with no
+// reachable functions still contributes its type declarations (e.g.
+// Std.Core's Result/Option are referenced by other packages' signatures
+// without any Std.Core call). Shared by the single-source and multi-package
+// native entry points (#6817).
+func appendBundledUnits(
+  toBundle: in List[SourceFile], reachable: in Map[String, Bool], units: in List[CodegenUnit]
+): Unit {
+  var bi = 0
+  while bi < toBundle.count {
+    val u = unitOf(toBundle[bi], reachable, false)
     if u.fns.count > 0 or u.externs.count > 0 or u.records.count > 0 or u.unions.count > 0 or u.enums.count > 0 or u.distincts.count > 0 {
       units.add(u)
     }
-    bi3 = bi3 + 1
+    bi = bi + 1
   }
-
-  linkAndEmitNative(units, outputPath, triple, optLevel, extraClangFlags)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

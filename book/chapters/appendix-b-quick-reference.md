@@ -929,9 +929,10 @@ lyric build --target native <file.l>   # writes a self-contained POSIX executabl
                                        # Not yet lowered (build fails naming the construct):
                                        # interface default/generic methods, generic protected
                                        # types, when: barriers, invariant re-checking,
-                                       # list literals, module-level val, async generators (yield
-                                       # in async func), a defer that must run during
-                                       # a panic, manifest builds
+                                       # async generators (yield in async func), a defer that
+                                       # must run during a panic; a manifest's cross-project
+                                       # [dependencies] (native has no restored-binary concept —
+                                       # a project's own [project.packages] DOES build, below)
 lyric build -o <dir> <file.l>          # write output files to <dir>
 lyric build --manifest lyric.toml      # build from project manifest
                                        # (with [project] output = "single", bundles every
@@ -939,6 +940,13 @@ lyric build --manifest lyric.toml      # build from project manifest
                                        # Lyric.Contract.<Pkg> resource per package)
                                        # auto-restores [dependencies] when lyric.lock is missing/stale
                                        # ([nuget]/[maven] edits aren't detected — run `lyric restore`)
+                                       # --target native (N9.7, #6809) compiles a project's own
+                                       # [project.packages] from source too, reordering units so
+                                       # whichever package declares main drives C-main synthesis
+                                       # regardless of manifest order; cross-project [dependencies]
+                                       # are NOT resolved for native (no restored-binary concept —
+                                       # #6815), and --triple/--opt/lyric run/lyric test manifest
+                                       # modes stay single-file-only for native (#6815).
 lyric build <file.l>                   # single-file mode also resolves dependencies from a nearby
                                        # lyric.toml (--target dotnet/jvm): explicit --manifest wins,
                                        # else discovered by walking up from <file.l>'s OWN directory
@@ -955,9 +963,10 @@ lyric build --define KEY=VALUE <file.l>  # inject a compile-time String into a @
                                        # module-level val (docs/60). Repeatable. Substituted before
                                        # type-check as a String literal (no source re-parse). An
                                        # unsupplied key keeps the val's in-source fallback literal.
-                                       # v1: single-file (--target dotnet/jvm/native) AND project
-                                       # (--manifest / lyric.toml, --target dotnet/jvm — native is
-                                       # single-file only). On a project build the manifest
+                                       # v1: single-file AND project (--manifest / lyric.toml),
+                                       # all three targets (native project builds shipped in N9.7,
+                                       # #6809 — a side effect of gaining a project build path at
+                                       # all). On a project build the manifest
                                        # [package].version is the well-known `version` fallback an
                                        # explicit --define version=… overrides. The active backend
                                        # (dotnet/jvm/native) is auto-injected as the well-known
