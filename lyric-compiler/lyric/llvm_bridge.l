@@ -504,6 +504,377 @@ pub func compileToNativeWithFlags(
     indexFileFns(toBundle[bi2], bodyIndex, pkgOfId)
     bi2 = bi2 + 1
   }
+  walkReachableFns(fnWorklist, canonical, bareTrailing, bodyIndex, pkgOfId, reachable)
+
+  // Assemble the codegen units: the user package in full, then each
+  // bundled package's reachable slice.
+  val units: List[CodegenUnit] = newList()
+  units.add(unitOf(userFile, reachable, true))
+  appendBundledUnits(toBundle, reachable, units)
+
+  linkAndEmitNative(units, outputPath, triple, optLevel, extraClangFlags)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §2.35. Multi-package native project build (#6809): the native analog of
+// `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion` /
+// `Jvm.Bridge.compileProjectToJarBundledWithRestored` for a project's OWN
+// `[project.packages]` — a manifest's `[dependencies]` on OTHER restored
+// Lyric packages (NuGet/Maven-style prebuilt binaries, or another project's
+// own DLL/JAR) stay explicitly out of scope: native has no restored-binary
+// concept (unlike dotnet/jvm, it always compiles the whole reachable world
+// from source, mirroring how `Std.*` stdlib sources are bundled today), and
+// a workspace/path dependency is itself just another `[project.packages]`
+// tree the CALLER can feed in as more `NativeSourcePackage` entries once a
+// follow-up teaches the CLI to resolve that graph (`docs/03-decision-log.md`
+// tracks the exact cut).
+// ─────────────────────────────────────────────────────────────────────────────
+/// One own-package's pre-merged source for a native project build.
+/// `Lyric.Emitter.emitNativeProject` merges a multi-file package's sources
+/// into one compilation unit (the same `mergePackageSources` step the
+/// MSIL/JVM project bridges use) before constructing these, so by the time a
+/// package reaches here it is always exactly one valid `package` unit.
+pub record NativeSourcePackage {
+  name: String
+  source: String
+}
+
+/// True when `file` declares a top-level `func main` — the project entry
+/// package marker for a multi-package native build.  Mirrors
+/// `Jvm.Bridge.fileHasTopLevelMain` (package-private there too; duplicated
+/// rather than cross-imported to avoid a `Lyric.LlvmBridge` -> `Jvm.Bridge`
+/// layering dependency for four lines of logic).
+func fileHasTopLevelMain(file: in SourceFile): Bool {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(decl) -> {
+        if decl.name == "main" {
+          return true
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// Compile a project's own packages (`packages`, in manifest declaration
+/// order — list position does NOT determine the entry point; the package
+/// declaring a top-level `func main` is auto-detected via
+/// `fileHasTopLevelMain` and always emitted first, regardless of where it
+/// falls in `packages`) plus the bundled stdlib closure into one native
+/// binary.
+///
+/// Every entry in `packages` is always fully lowered (`lowerAll = true` in
+/// `unitOf` terms) — exactly like the single-source path's own package —
+/// because a project's own packages are the "user code" whose declared
+/// functions must all be available to each other and to the entry point,
+/// not a stdlib dependency whose unreached functions can be pruned.
+/// Reachability gating still applies to the bundled STDLIB closure only, so
+/// an unreached stdlib construct the Phase N1+ codegen cannot yet lower
+/// never blocks a project build that never calls it — parity with the
+/// single-source path's own bundling model.
+///
+/// Every own package sees every OTHER own package's public surface as an
+/// `ImportedPackage`, resolved the identical way a bundled stdlib package's
+/// cross-package items are (`pipeIsCrossPackageItem`), so `Web.OpenApi`
+/// importing `Web` (a same-manifest import cycle, per the JVM bridge's
+/// `compileProjectToJarBundledWithRestored` precedent for the identical
+/// shape) resolves cleanly.  `triple` / `optLevel` / `extraClangFlags`
+/// forward to `linkAndEmitNative` unchanged.
+pub func compileProjectToNativeWithFlags(
+  packages: in List[NativeSourcePackage],
+  outputPath: in String,
+  stdlibSources: in List[String],
+  triple: in String,
+  optLevel: in String,
+  extraClangFlags: in List[String],
+  defines: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  packageVersion: in String,
+): Bool {
+  if packages.count == 0 {
+    Console.error("error[N0005]: native project build received no packages")
+    return false
+  }
+
+  val noFeatures: List[String] = newList()
+  val nativeFeatures = Cfg.withTargetFeature(noFeatures, "native")
+  // Layer the manifest's `[package].version` in as the well-known `version`
+  // define's fallback (#6821), matching
+  // `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`'s identical
+  // `BD.decodeDefines(BD.withWellKnownDefines(packageVersion, defines))`
+  // call — an explicit `--define version=…` (already present in `defines`)
+  // still wins, since `withWellKnownDefines` prepends the fallback and
+  // `decodeDefines` is last-wins.
+  val nativeDefines = BD.decodeDefines(BD.withWellKnownDefines(packageVersion, defines))
+
+  // Parse + `@cfg` erasure for every own package (per-package repeat of the
+  // single-source path's first pipeline stage) — threading the real
+  // `activeFeatures`/`declaredFeatures` (#6818), matching
+  // `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`'s identical
+  // call.  Own packages get the caller's real feature set; the bundled
+  // stdlib closure below still erases against `noFeatures` (a stdlib
+  // package's own `@cfg(feature = ...)` items are never user-feature-gated
+  // on any target, same as the single-source path).
+  val cfgFiles: List[SourceFile] = newList()
+  var ppi = 0
+  while ppi < packages.count {
+    val cfgFile = match pipeParseAndErase(packages[ppi].source, "native", activeFeatures, declaredFeatures, nativeDefines) {
+      case Some(f) -> f
+      case None -> return false
+    }
+    cfgFiles.add(cfgFile)
+    ppi = ppi + 1
+  }
+
+  // Pre-typecheck rewrite chain: alias rewrite only, matching the
+  // single-source path (docs/59 §9.2 divergence flag — no wire/config
+  // template expansion or `@stubbable` synthesis on native yet).
+  val noWires: Map[String, CollectedWireTemplate] = newMap()
+  val noConfigs: Map[String, CollectedConfigTemplate] = newMap()
+  val ownFiles0: List[SourceFile] = newList()
+  var owi = 0
+  while owi < cfgFiles.count {
+    val f0 = match pipeExpandAndRewrite(cfgFiles[owi], noWires, noConfigs, false, false, false) {
+      case Some(f) -> f
+      case None -> return false
+    }
+    ownFiles0.add(f0)
+    owi = owi + 1
+  }
+
+  // Parse the stdlib once (identical to the single-source path).
+  val importedPkgs: List[ImportedPackage] = newList()
+  val stdlibByPkg: Map[String, SourceFile] = newMap()
+  var si = 0
+  while si < stdlibSources.count {
+    val pr = parse(stdlibSources[si])
+    val stdCfg = Cfg.applyCfgErasure(nativeFeatures, noFeatures, pr.file)
+    val stdFile = Aliases.rewriteFile(stdCfg.file)
+    val pkgItems: List[Item] = newList()
+    var ii = 0
+    while ii < stdFile.items.count {
+      if pipeIsCrossPackageItem(stdFile.items[ii]) {
+        pkgItems.add(stdFile.items[ii])
+      }
+      ii = ii + 1
+    }
+    val pn = dottedPath(stdFile.packageDecl.path)
+    importedPkgs.add(ImportedPackage(name = pn, items = pkgItems, imports = collectImportNames(stdFile.imports)))
+    if pn.length > 0 and not stdlibByPkg.containsKey(pn) {
+      stdlibByPkg.add(pn, stdFile)
+    }
+    si = si + 1
+  }
+
+  // Every own package also contributes its cross-package items to the SAME
+  // `importedPkgs` pool every OTHER own package (and itself) type-checks
+  // against — mirroring `Jvm.Bridge.compileProjectToJarBundledWithRestored`'s
+  // #6024 fix, which found that excluding a project's own entry package from
+  // its sibling-visible surface broke same-manifest import cycles (a kernel
+  // package importing back the package that imports it).  Including a
+  // package's own items in its own `importedPkgs` is harmless: the type
+  // checker resolves `Pkg.Type` references identically whether the name came
+  // from the file's own declarations or a same-named `ImportedPackage` entry.
+  var oipi = 0
+  while oipi < ownFiles0.count {
+    val f = ownFiles0[oipi]
+    val pkgItems: List[Item] = newList()
+    var ii = 0
+    while ii < f.items.count {
+      if pipeIsCrossPackageItem(f.items[ii]) {
+        pkgItems.add(f.items[ii])
+      }
+      ii = ii + 1
+    }
+    val pn = dottedPath(f.packageDecl.path)
+    importedPkgs.add(ImportedPackage(name = pn, items = pkgItems, imports = collectImportNames(f.imports)))
+    oipi = oipi + 1
+  }
+
+  // Middle-end every own file against the shared stdlib+sibling pool.
+  val ownFiles: List[SourceFile] = newList()
+  val noImportedGenFuncs: List[FunctionDecl] = newList()
+  val noDeriveImports: List[Item] = newList()
+  val noTemplates: Map[String, CollectedTemplate] = newMap()
+  val importedItemsForMono = flattenImportedItems(importedPkgs)
+  val importedInterfaceDecls = pipeInterfaceDecls(importedItemsForMono)
+  val importedRecordDecls = pipeRecordDecls(importedItemsForMono)
+  var mei = 0
+  while mei < ownFiles0.count {
+    val opts = MiddleEndOptions(tcFatal = false, tcReport = true, pkgLabel = "")
+    val checked = match pipeMiddleEnd(ownFiles0[mei], importedPkgs, noDeriveImports, noImportedGenFuncs, importedInterfaceDecls, importedRecordDecls, noTemplates, opts) {
+      case Some(f) -> f
+      case None -> return false
+    }
+    ownFiles.add(checked)
+    mei = mei + 1
+  }
+
+  // Transitive stdlib import closure across every own package's imports.
+  val toBundle: List[SourceFile] = newList()
+  val seen: Map[String, Bool] = newMap()
+  val worklist: List[String] = newList()
+  var ofi = 0
+  while ofi < ownFiles.count {
+    var ui = 0
+    while ui < ownFiles[ofi].imports.count {
+      worklist.add(dottedPath(ownFiles[ofi].imports[ui].path))
+      ui = ui + 1
+    }
+    ofi = ofi + 1
+  }
+  var wi = 0
+  while wi < worklist.count {
+    val pkg = worklist[wi]
+    wi = wi + 1
+    if not seen.containsKey(pkg) {
+      seen.add(pkg, true)
+      match mapGet(stdlibByPkg, pkg) {
+        case Some(f) -> {
+          toBundle.add(elaborateFile(f))
+          var fi = 0
+          while fi < f.imports.count {
+            worklist.add(dottedPath(f.imports[fi].path))
+            fi = fi + 1
+          }
+        }
+        case None -> {
+        }
+      }
+    }
+  }
+
+  // Function-granularity reachability, rooted at EVERY own package's own
+  // functions (every own package is fully lowered — see the doc comment
+  // above), walking into the bundled stdlib closure.
+  val canonical: Map[String, String] = newMap()
+  val bareTrailing: Map[String, List[String]] = newMap()
+  var rfi = 0
+  while rfi < ownFiles.count {
+    registerFileFns(ownFiles[rfi], canonical, bareTrailing)
+    rfi = rfi + 1
+  }
+  var bi = 0
+  while bi < toBundle.count {
+    registerFileFns(toBundle[bi], canonical, bareTrailing)
+    bi = bi + 1
+  }
+
+  val reachable: Map[String, Bool] = newMap()
+  val fnWorklist: List[String] = newList()
+  var sfi = 0
+  while sfi < ownFiles.count {
+    val pkgName = dottedPath(ownFiles[sfi].packageDecl.path)
+    var gi = 0
+    while gi < ownFiles[sfi].items.count {
+      match ownFiles[sfi].items[gi].kind {
+        case IFunc(decl) -> {
+          val selfId = pkgName + "." + decl.name + "/" + decl.params.count.toString()
+          if not reachable.containsKey(selfId) {
+            reachable.add(selfId, true)
+            fnWorklist.add(selfId)
+          }
+        }
+        case _ -> {
+        }
+      }
+      gi = gi + 1
+    }
+    sfi = sfi + 1
+  }
+
+  // Bodies indexed by canonical id so the walk can chase callees.
+  val bodyIndex: Map[String, FunctionDecl] = newMap()
+  val pkgOfId: Map[String, String] = newMap()
+  var ifi = 0
+  while ifi < ownFiles.count {
+    indexFileFns(ownFiles[ifi], bodyIndex, pkgOfId)
+    ifi = ifi + 1
+  }
+  var bi2 = 0
+  while bi2 < toBundle.count {
+    indexFileFns(toBundle[bi2], bodyIndex, pkgOfId)
+    bi2 = bi2 + 1
+  }
+
+  walkReachableFns(fnWorklist, canonical, bareTrailing, bodyIndex, pkgOfId, reachable)
+
+  // Assemble the codegen units: the package declaring a top-level `func
+  // main` goes FIRST — `Lyric.LlvmCodegen`'s C-`main` synthesis only scans
+  // `units[0]` for a zero-arg `main` (a carry-over single-file assumption:
+  // the single-source path's own package is always unit 0), so a manifest's
+  // `[project.packages]` table — which has no guaranteed declaration order
+  // relative to which package holds `main` — must be reordered here rather
+  // than in the codegen itself.  Mirrors
+  // `Jvm.Bridge.compileProjectToJarBundledWithRestored`'s identical
+  // "entry package is the one declaring func main" convention.  Falls back
+  // to declaration order when no own package declares one (a library-only
+  // project with no runnable entry point).
+  var mainOwnIdx = -1
+  var moi = 0
+  while moi < ownFiles.count and mainOwnIdx < 0 {
+    if fileHasTopLevelMain(ownFiles[moi]) {
+      mainOwnIdx = moi
+    }
+    moi = moi + 1
+  }
+  val units: List[CodegenUnit] = newList()
+  if mainOwnIdx >= 0 {
+    units.add(unitOf(ownFiles[mainOwnIdx], reachable, true))
+  }
+  var uoi = 0
+  while uoi < ownFiles.count {
+    if uoi != mainOwnIdx {
+      units.add(unitOf(ownFiles[uoi], reachable, true))
+    }
+    uoi = uoi + 1
+  }
+  appendBundledUnits(toBundle, reachable, units)
+
+  linkAndEmitNative(units, outputPath, triple, optLevel, extraClangFlags)
+}
+
+// Appends one `CodegenUnit` per bundled (stdlib) package in `toBundle` whose
+// reachable slice is non-empty, mutating `units` in place. A unit with no
+// reachable functions still contributes its type declarations (e.g.
+// Std.Core's Result/Option are referenced by other packages' signatures
+// without any Std.Core call). Shared by the single-source and multi-package
+// native entry points (#6817).
+func appendBundledUnits(
+  toBundle: in List[SourceFile], reachable: in Map[String, Bool], units: in List[CodegenUnit]
+): Unit {
+  var bi = 0
+  while bi < toBundle.count {
+    val u = unitOf(toBundle[bi], reachable, false)
+    if u.fns.count > 0 or u.externs.count > 0 or u.records.count > 0 or u.unions.count > 0 or u.enums.count > 0 or u.distincts.count > 0 {
+      units.add(u)
+    }
+    bi = bi + 1
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §2.4. Function-granularity reachability walk, shared by the single-source
+// and multi-package native entry points (#6809): chases every call-key a
+// worklist function's body names, resolving through `canonical` (exact
+// package-qualified id) and `bareTrailing` (multi-valued UFCS fallback),
+// mutating `reachable` and appending newly-discovered ids to `fnWorklist` in
+// place — verbatim extraction of `compileToNativeWithFlags`'s original inline
+// loop, no behavior change.
+// ─────────────────────────────────────────────────────────────────────────────
+func walkReachableFns(
+  fnWorklist: in List[String],
+  canonical: in Map[String, String],
+  bareTrailing: in Map[String, List[String]],
+  bodyIndex: in Map[String, FunctionDecl],
+  pkgOfId: in Map[String, String],
+  reachable: in Map[String, Bool],
+): Unit {
   var wfi = 0
   while wfi < fnWorklist.count {
     val cur = fnWorklist[wfi]
@@ -587,23 +958,22 @@ pub func compileToNativeWithFlags(
       }
     }
   }
+}
 
-  // Assemble the codegen units: the user package in full, then each
-  // bundled package's reachable slice.
-  val units: List[CodegenUnit] = newList()
-  units.add(unitOf(userFile, reachable, true))
-  var bi3 = 0
-  while bi3 < toBundle.count {
-    val u = unitOf(toBundle[bi3], reachable, false)
-    // A unit with no reachable functions still contributes its type
-    // declarations (e.g. Std.Core's Result/Option are referenced by
-    // other packages' signatures without any Std.Core call).
-    if u.fns.count > 0 or u.externs.count > 0 or u.records.count > 0 or u.unions.count > 0 or u.enums.count > 0 or u.distincts.count > 0 {
-      units.add(u)
-    }
-    bi3 = bi3 + 1
-  }
-
+// ─────────────────────────────────────────────────────────────────────────────
+// §2.5. Codegen -> IR -> clang link, shared by the single-source
+// (`compileToNativeWithFlags`) and multi-package (`compileProjectToNativeWithFlags`)
+// entry points (#6809): everything downstream of "here are the codegen units"
+// is target-triple/clang-invocation plumbing that neither cares how many
+// source packages contributed the units.
+// ─────────────────────────────────────────────────────────────────────────────
+func linkAndEmitNative(
+  units: in List[CodegenUnit],
+  outputPath: in String,
+  triple: in String,
+  optLevel: in String,
+  extraClangFlags: in List[String],
+): Bool {
   // Resolve the target triple before codegen (the datalayout depends
   // on it).
   var effTriple = triple

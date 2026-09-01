@@ -216,7 +216,7 @@ deferred to Phase 3 by design.
 | docs/60 well-known `target` (M1f) — `BD.withWellKnownTarget` auto-injects the active backend name (`dotnet`/`jvm`/`native`) as a fallback `target` define in `pipeParseAndErase` (the one pass carrying `targetName` on every backend and both single-file and project paths), so `@build_const("target")` populates on every build without an explicit `--define`. Deterministic per invocation (reproducibility-safe, docs/60 §8) and a fallback (explicit `--define target=…` wins). `build_profile` well-known (needs `--release` wiring) + manifest `[build.define]` remain follow-ups (#5852) | **Shipped (M1f)** | docs/60 §3.3 |
 | docs/60 manifest `[build.define]` (M1g) — `manifest.l` parses the `[build.define]` table into `BuildSection.defines` (`"KEY=VALUE"` strings via `getManifestBuildDefines`); a `[build.define]`-only manifest defaults `kind = "lib"`, a non-string value is an `InvalidField` error (§4). `buildProject` layers them beneath CLI `--define`s (`BD.withManifestDefines` → CLI wins over a same-key manifest define, both over the well-known `version` fallback) on `--target dotnet`/`jvm`. Rejected up front (no silent drop) on `--target native` (#5977), `--release`, and `[build] kind = "aot"` (the AOT-packaging path threads no defines). `build_profile` well-known (needs `--release` wiring) remains the last follow-up (#5852) | **Shipped (M1g)** | docs/60 §3.1 |
 | docs/60 well-known `build_profile` (M1h) — `BD.withWellKnownProfile` injects `build_profile=debug` in `pipeParseAndErase` as a fallback on every compile; the release paths (`buildReleaseProject`/`buildReleaseSingle`) inject `build_profile=release` into their staging compile upstream, so `decodeDefines` last-wins reports `release` there. `@build_const("build_profile")` and `Std.BuildInfo.profile` now report `debug`/`release` with no explicit `--define`, without touching the user-define release gates (still rejected; the profile define is compiler-injected). Completes the auto-injected well-known set (`version`/`target`/`build_profile`); only native `--define` (blocked on #5977) remains under #5852 | **Shipped (M1h)** | docs/60 §3.3 |
-| docs/60 native `--define` (#5977) — the native LLVM backend now consumes defines: `Lyric.LlvmCodegen` lowers `[...]` list literals (`lyric_list_new` + `lyric_list_push`, part 1) so `Std.BuildInfo` works on native, and resolves module-level `val` references by inlining a literal initializer at the use site (part 2, self-package-qualified then bare-name resolution mirroring `buildSigs`). The CLI gate is then lifted (part 3): `defineBuildGateError`/`manifestDefineGateError` no longer reject `--target native`, so `lyric build --target native <file.l> --define KEY=VALUE` substitutes correctly. Native is single-file only (a native manifest build is rejected by `buildProject`), so native `--define` is single-file; project-scoped `version`/`build_profile` well-known + manifest `[build.define]` stay MSIL/JVM. `--define` now works on all three targets (single-file); only `--watch`/`--release`/`[build] kind = "aot"` stay gated. **#5977 closed** | **Shipped** | docs/60 |
+| docs/60 native `--define` (#5977) — the native LLVM backend now consumes defines: `Lyric.LlvmCodegen` lowers `[...]` list literals (`lyric_list_new` + `lyric_list_push`, part 1) so `Std.BuildInfo` works on native, and resolves module-level `val` references by inlining a literal initializer at the use site (part 2, self-package-qualified then bare-name resolution mirroring `buildSigs`). The CLI gate is then lifted (part 3): `defineBuildGateError`/`manifestDefineGateError` no longer reject `--target native`, so `lyric build --target native <file.l> --define KEY=VALUE` substitutes correctly. Native was single-file only at the time this shipped (a native manifest build was rejected by `buildProject`), so native `--define` was single-file; project-scoped `version`/`build_profile` well-known + manifest `[build.define]` were MSIL/JVM-only until native project builds shipped (N9.7/#6809, below), which threads the same `EmitProjectRequest.defines` and lifts all three to native project builds too. `--define` now works on all three targets, single-file and (as of N9.7) project. **#5977 closed** | **Shipped** | docs/60 |
 | docs/63 build profiles + output shapes (band B0) — `--release` no longer selects a packaging mode. Two independent axes: **profile** (`--debug`/`--release`, default debug) and **shape** (`--shape portable|standalone|aot` with `--aot`/`--standalone` sugar, default portable), both orthogonal to `--target` and resolved CLI-over-manifest-over-default from new `[build] shape` / `[build] profile` keys. `[build] kind = "aot"` **removed** — a hard `F0042` error naming `shape = "aot"`, never a silent remap. New diagnostics `F0040` (`--debug`+`--release`), `F0041` (conflicting shape spellings), `F0042`, `F0043` (shape invalid for target — `--target native` is AOT by construction), `F0044` (shape unimplemented). The `--define`/`--watch`/`--rid` gates are **re-scoped off `--release` onto the shape axis** (docs/63 §5.3): it is the packaging path that threads no defines, so `--release --shape portable --define K=V` now works where it was previously rejected for a reason that did not apply. `build_profile` is sourced from the profile axis, so a `--release --shape portable` build reports `release`. Unlocks two previously unreachable artifacts: an optimized framework-dependent DLL (the `lyric publish` artifact) and a debuggable AOT binary. Bare `--release` with no explicit shape prints a one-line migration note. Follow-ups: `--shape standalone` unimplemented (`F0044`, #6262); the profile does not yet reach codegen, so `--release` performs no optimization and does not relax overflow checking (#6263) | **Shipped (B0)** | docs/63 |
 | docs/63 debug information (band B2, line-table slice) — the self-hosted JVM backend now emits a JVMS §4.7.12 `LineNumberTable` for every method body, mapping bytecode offsets back to Lyric source lines. A zero-byte `LLineMarker` `LInsn` is appended per statement by `lowerStmt` and resolved to a `start_pc` by the existing two-pass assembler, so no new offset machinery was needed; the `Code` attribute's sub-attribute count is now counted for real instead of hardcoded to "`StackMapTable` or nothing". Rows collapse to one per line transition, and the first row is pinned to offset 0 so the local-zeroing prologue is attributed to the first statement rather than to nothing. Verified exactly (not as a smoke test) by `scripts/assert-jvm-line-numbers.sh` via `javap -l`, wired into CI as `jvm-line-numbers`. **Known gap:** no `SourceFile` attribute, so JVM stack traces still print `(Unknown Source)` — `classfile.l` has the builder but no filename reaches the backend (`codegenPackage` takes a path-less `SourceFile` AST node; the real path is dropped in `cli_build.l`). The same gap blocks MSIL `Document` and native `DIFile`, so it is fixed once in band B1. Multi-file packages additionally inherit #6282's merged-blob line numbers | **Shipped (B2 line tables); `SourceFile` + `LocalVariableTable` pending B1** | docs/63 §9.2, D-progress-714 |
 | docs/63 span fidelity (band B1, slice A) — synthesized contract asserts are now anchored at the `requires:` / `ensures:` clause the user wrote, instead of at the function's opening brace (requires) or whichever `return` happened to enclose them (ensures). `CCRequires`/`CCEnsures` already carried a per-clause span; `collectRequires`/`collectEnsures` discarded it and returned a bare `List[Expr]`. They now return `List[SpannedExpr]`, a record pairing each clause expression with its own span (record rather than tuple, following `lexer.l`'s `SpannedToken` and `llvm_ir.l`'s deliberate move away from tuples for values threaded through many match sites). Contained to `elaborator.l` — all four functions are private with no callers elsewhere. Makes reality match `book/chapters/08-contracts.md` §8.7, which already documented violations reporting the clause's position. Verified two ways: a ~2s assertion in `contract_elaborator_self_test.l` that two `requires:` clauses on different lines produce asserts on *different* lines (unsatisfiable under the old shared-span code), and end to end via `scripts/assert-jvm-line-numbers.sh` (`clamped -> 47,48,50,51`, where 47/48 are the contract lines). **JVM-only for now** — MSIL emits no debug information until band B3. The weaver's `synSpan()` sites are *not* in this slice: docs/63 §9.5's "~24 drop-in substitutions" claim is corrected here, since five construct `Statement` nodes whose spans feed the JVM line table and would reintroduce #6285 | **Shipped (B1 slice A)** | docs/63 §9.5, D-progress-716 |
@@ -33362,3 +33362,64 @@ trail), #6794 (closed by this fix), #6808 (partially unblocked — its
 remaining h2-stack blocker), D-progress-852 (the investigation that filed
 #6794/#6808), `native/plan/08-work-items.md` N9.6,
 `docs/61-https-tls-http-versions.md` §6.4/§7 item 5.
+
+## Native multi-package project builds ship, TLS phase 5 band N9.7 (#6809)
+
+`lyric build --manifest ... --target native` no longer refuses a
+multi-package manifest outright. `Lyric.LlvmBridge.compileProjectToNativeWithFlags`
+(the native analog of `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`
+/ `Jvm.Bridge.compileProjectToJarBundledWithRestored`) resolves and compiles
+a project's own `[project.packages]` multi-file structure — the same
+manifest table `lyric-web/lyric.toml` itself uses for `Web`/`Web.OpenApi`/
+`Web.Aspects`/`Web.Kernel.Runtime` — merging every own package's sources via
+the existing `mergePackageSources` and registering every own package's
+cross-package items into one shared `importedPkgs` pool alongside the
+bundled stdlib closure.
+
+A real bug was found and fixed along the way: native codegen's C-`main`
+synthesis only ever scanned the FIRST assembled compilation unit for a
+top-level `func main` — a carry-over single-source assumption with no
+consequence while native only ever compiled one file. A manifest's
+`[project.packages]` has no guaranteed declaration order relative to which
+package declares `main`, so the first real multi-package attempt (a
+synthetic 2-package repro) silently produced a `main`-less binary that
+failed to link. Fixed by reordering the assembled units so the
+`main`-declaring package always drives C-`main` synthesis, confined to the
+new project path (not `llvm_codegen.l` itself, to avoid colliding with
+N9.6's concurrent `out`/`inout` landing in that file).
+
+Since `EmitProjectRequest.defines` now threads through `emitNativeProject`
+the same way it already threaded to the MSIL/JVM project bridges,
+`--define`/manifest `[build.define]`/the well-known `version`/`target`/
+`build_profile` defines all now work on native project builds too (see
+docs/60's native `--define` entry, updated above) — this was a side
+effect of gaining a project build path at all, not separate work.
+
+**Deliberately deferred, filed as issue #6815** per this repo's "smaller,
+fully-finished slice" standard: cross-project `[dependencies]`
+(workspace/path — native has no restored-binary concept, and
+`resolveManifestDependencies` was found to still attempt building one
+for native and surface an unhandled exception rather than a clean skip);
+`--triple`/`--opt` CLI-flag threading into project-mode native builds
+(only the manifest's own `[native]` table is honoured); and `lyric run`/
+`lyric test`'s manifest/project mode for native (both still hard-refuse).
+
+Verified with a real `--target native` build (`LYRIC_BOOTSTRAP_VERSION=0.5.1`
+stage-0 seed): a synthetic 2-package project built and ran end-to-end
+(the repro that surfaced the main-detection bug); `lyric-web`'s real
+4-package manifest (dependencies stripped to isolate the mechanism) parses,
+cross-package-type-checks, and reaches native codegen, failing only on
+lyric-web's own already-tracked per-file native-readiness gaps (no
+`native` feature, `pathGetFullPath`/`StaticFiles`/`WebTls` unsupported) —
+exactly as #6809's own investigation predicted; the full existing native
+self-test suite (12 files, 166 cases) and the dotnet/JVM manifest-project
+paths were re-verified unaffected; a new `llvm_project_self_test.l`
+(4 cases, including the exact "entry package declared second" shape that
+triggered the main-detection bug) passes and is wired into
+`scripts/ci/native-backend-self-tests.sh`.
+
+**Related:** `docs/03-decision-log.md` D-progress-854 (full account),
+#6809 (fixed by this PR), #6815 (new, the three deferred slices),
+D-progress-852 (the investigation that filed #6809),
+`native/plan/08-work-items.md` N9.7, `docs/20-project-as-dll.md`
+(the dotnet/jvm design this is the native analog of).

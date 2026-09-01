@@ -1370,11 +1370,11 @@ func cmdBuild(argv: in slice[String]): Int {
     printErr("build: warning: --no-restore has no effect without a project manifest")
   }
   // docs/60 build defines: all three backends can now consume a `--define` —
-  // MSIL/JVM on single-file and project builds (#5852), and native on
+  // MSIL/JVM on single-file and project builds (#5852), and native on both
   // single-file builds (#5977 — list-literal lowering + module-level `val`
-  // inlining make `@build_const`/`Std.BuildInfo` work; native has no
-  // multi-package/project build path, so `buildProject` rejects a native
-  // manifest build separately).
+  // inlining make `@build_const`/`Std.BuildInfo` work) and project builds
+  // (#6818 — `buildProjectFromManifest`'s native branch threads
+  // `projReq.defines` through `Emitter.emitNativeProject`).
   //
   // The `--define` gate itself now runs *after* the shape axis is resolved
   // (docs/63 §5.3), inside each branch below — it keys off the packaging shape,
@@ -1487,6 +1487,26 @@ func cmdBuild(argv: in slice[String]): Int {
     match ridArg {
       case Some(_) -> printErr(ridNoEffectWarning(target))
       case None -> ()
+    }
+    // `--triple`/`--opt` project-mode threading into native project builds
+    // is a documented follow-up (#6815 item 2) — `buildProjectFromManifest`'s
+    // native branch only ever reads the manifest's own `[native]` table.
+    // Warn rather than silently drop, matching this function's own
+    // convention for every other CLI flag that has no effect in a given
+    // mode (`ridNoEffectWarning` above, the `--no-restore` /
+    // `--release-from-dll` warnings elsewhere in this file).
+    var isNativeManifestTarget = false
+    match target {
+      case Native -> {
+        isNativeManifestTarget = true
+      }
+      case _ -> ()
+    }
+    if isNativeManifestTarget and (Str.isNotEmpty(tripleArg) or Str.isNotEmpty(optArg)) {
+      printErr(
+        "build: warning: --triple/--opt have no effect on a native project build " +
+          "(--manifest ... --target native) — only the manifest's own [native] table is honored (#6815)"
+      )
     }
     // Reuse the manifest already parsed above when it parsed cleanly (the
     // common case); fall back to `buildProject`'s own re-parse otherwise so a
@@ -2466,12 +2486,7 @@ pub func buildProjectFromManifest(
   var mavenJarColonSep = ""
   var savedFfiJars: Option[String] = None
   match target {
-    case Native -> {
-      printErr(
-        "build: --target native does not yet support manifest (multi-package) builds; compile the entry file directly: lyric build <main.l> --target native"
-      )
-      return 1
-    }
+    case Native -> ()
     case Jvm -> {
       val injection = injectMavenClasspathForJvm(mfDir, manifest)
       mavenJarColonSep = injection.classpathColonSep
@@ -2480,7 +2495,58 @@ pub func buildProjectFromManifest(
     case Dotnet -> ()
   }
 
-  val result = Emitter.emitProject(projReq)
+  // `--target native` project builds (#6809): resolve the project's own
+  // `[project.packages]` — already collected into `pkgs` above, in manifest
+  // declaration order — through the native bridge directly, bypassing
+  // `EmitProjectRequest`/`Emitter.emitProject` (which native does not
+  // implement — see its own doc comment) since native carries no
+  // restored-DLL axis that record was designed for (defines and
+  // `[features]`/`@cfg` gating ARE threaded through, via `projReq.defines`/
+  // `activeFeatures`/`mfDeclared` below — #6818). Only the manifest's own
+  // `[native]` table configures triple/opt-level/extra libs here;
+  // `--triple`/`--opt` CLI-flag threading into project-mode native builds
+  // is a documented follow-up (see the decision log) — this function's
+  // signature has no such parameters today and widening it would also
+  // require widening the `BuildProj` watch-loop union in cli_run.l, which
+  // is out of scope for the #6809 slice.
+  var isNativeTarget = false
+  match target {
+    case Native -> {
+      isNativeTarget = true
+    }
+    case _ -> ()
+  }
+  var effTriple = ""
+  var effOpt = ""
+  val effLibs: List[String] = newList()
+  if isNativeTarget {
+    match manifest.native {
+      case Some(nc) -> {
+        effTriple = nc.triple
+        effOpt = nc.optLevel
+        for lib in nc.extraLibs {
+          effLibs.add(lib)
+        }
+      }
+      case None -> ()
+    }
+  }
+
+  val result = if isNativeTarget {
+    Emitter.emitNativeProject(
+      pkgs,
+      outPath,
+      effTriple,
+      effOpt,
+      effLibs,
+      projReq.defines,
+      activeFeatures,
+      mfDeclared,
+      projReq.packageVersion
+    )
+  } else {
+    Emitter.emitProject(projReq)
+  }
 
   // Restore LYRIC_FFI_JARS immediately — before any early return — so
   // subsequent buildProject calls in the same process start clean (#3554).
@@ -2538,8 +2604,8 @@ pub func buildProjectFromManifest(
         case Ok(_) -> ()
       }
     }
-    // Unreachable: project-mode native builds are rejected before the
-    // emit loop.
+    // A native build produces a self-contained POSIX binary directly (no
+    // runtimeconfig.json / module-path.txt companion artifact needed).
     case Native -> ()
   }
   val elapsedMs = Time.totalMillis(Time.since(Time.now(), buildStart))

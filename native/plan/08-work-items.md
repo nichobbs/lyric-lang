@@ -1824,6 +1824,61 @@ plus a zero-regression run of the full existing native self-test suite.
 
 ---
 
+### N9.7 — Native multi-package project build support (`[project.packages]`) — ✅ SHIPPED (D-progress-854, #6809); cross-project `[dependencies]` deferred (#6815)
+
+Closes blocker 2 of N9.5 (D-progress-852): `--target native` could only
+ever compile ONE `.l` entry file plus its transitive `Std.*` import
+closure — `buildOneNativeWithFeatures` hardcoded the single-file
+`Emitter.emitNative` path, and `buildProjectFromManifest` (the manifest
+project-build entry point) hard-refused `--target native` outright. This
+blocked EVERY `lyric-*/` root ecosystem library from being `import`ed
+into a native build, not just `lyric-web`.
+
+**Shipped:** `Lyric.LlvmBridge.compileProjectToNativeWithFlags` (compiles
+N own packages, each fully lowered, plus the reachability-gated bundled
+stdlib closure — mirroring the dotnet/jvm project bridges'
+"own-packages-see-each-other" cross-registration, `Jvm.Bridge`'s #6024
+precedent), `Lyric.Emitter.emitNativeProject` (merges multi-file packages
+via the existing `mergePackageSources`, resolves the native stdlib
+sources, dispatches into the bridge), and
+`Lyric.Cli.buildProjectFromManifest`'s native branch (resolves `[native]`
+triple/opt-level/extra-libs from the manifest, calls `emitNativeProject`
+with the same `pkgs` list dotnet/jvm already build from
+`[project.packages]`). Also fixed a real bug found during this work: the
+native codegen's C-`main` synthesis only scans `units[0]`, a carry-over
+single-source assumption — a manifest's `[project.packages]` has no
+guaranteed declaration order relative to which package declares `main`,
+so `compileProjectToNativeWithFlags` now reorders the assembled units so
+the `func main`-declaring package is always first.
+
+**Verified**: a synthetic 2-package project builds and runs end-to-end;
+`lyric-web/lyric.toml`'s own 4-package `[project.packages]` (with its
+`[dependencies]` stripped to isolate the mechanism) parses,
+cross-package-type-checks, and reaches native codegen — failing only on
+lyric-web's own already-tracked per-file native-readiness gaps (no
+`native` feature, `pathGetFullPath`/`StaticFiles`/`WebTls` have no native
+lowering yet), exactly as this item's task description predicted. Full
+existing native self-test suite (12 files, 166 cases) passes unmodified;
+new `llvm_project_self_test.l` (4 cases) added.
+
+**Deferred, filed as #6815:** cross-project `[dependencies]`
+(`workspace = true` / `path = "..."`) are not resolved into the native
+bundle — `emitNativeProject` only ever consumes a project's OWN
+`[project.packages]`, since native has no restored-binary concept the
+way dotnet/jvm's NuGet/Maven restore does. A real sharp edge was found
+(not silently accepted): `resolveManifestDependencies` still
+unconditionally attempts to BUILD a `{ workspace = true }` dependency for
+`--target native` even though the result goes unused, which surfaced as
+an unhandled exception (routing through the pre-existing #6237
+bare-`String`-indexing gap in `lyric-auth`'s own source) rather than a
+clean skip/refusal when validating against `lyric-web`. `--triple`/
+`--opt` CLI-flag threading into project-mode native builds, and `lyric
+run`/`lyric test`'s manifest/project modes for native, are also deferred
+to #6815 — only `lyric build --manifest ... --target native` shipped
+here.
+
+---
+
 ## Dependency graph summary
 
 ```

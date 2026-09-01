@@ -87,8 +87,22 @@ pub func buildWorkspaceDeps(
   // `--target dotnet` build of any consumer then failed to load as a
   // restored dep ("no Lyric.Contract resource") until the file was deleted
   // by hand (#5571).
+  //
+  // `--target native` has no restored-binary concept at all (#6809/#6818's
+  // decision-log entry) — `Emitter.emitNativeProject` never consumes
+  // `restoredDlls`/`depTemplateSrcs` either, so a workspace dep built here
+  // for a native consumer is the same pure-waste JVM case, PLUS a real
+  // crash risk: `buildWorkspaceDep` drives a genuine native compile of the
+  // dependency's own source, and any not-yet-lowered construct in it
+  // surfaces as an unhandled CLI panic rather than a clean diagnostic
+  // (#6820) — worse than JVM's mere DLL/JAR-naming collision. Skip
+  // unconditionally, matching Jvm, until resolving dependency source into
+  // the native bundle is designed (tracked in #6815 item 1).
   match target {
     case Jvm -> {
+      return (result, false, wsCtxOpt)
+    }
+    case Native -> {
       return (result, false, wsCtxOpt)
     }
     case _ -> ()
@@ -706,12 +720,14 @@ pub func resolveManifestDependencies(
                   // the DLL to exist (#6264).
                   // Explicit `Native` arm (rather than folding it into the
                   // wildcard) so this reads as a deliberate choice, not an
-                  // accident of the wildcard: `--target native` path deps are
-                  // out of scope here (`buildProjectFromManifest` already
-                  // refuses `native` for manifest/multi-package builds
-                  // elsewhere in this file), so Native inherits Dotnet's
-                  // "DLL matters" behavior rather than silently absorbing
-                  // whatever the Jvm case does as targets are added later.
+                  // accident of the wildcard: a `path`/`workspace` dependency
+                  // on `--target native` is out of scope (#6809 — native has
+                  // no restored-binary concept, so `Emitter.emitNativeProject`
+                  // never reads `restoredDlls`/`depTemplateSrcs` at all; only
+                  // a project's OWN `[project.packages]` compiles for
+                  // native), so Native inherits Dotnet's "DLL matters"
+                  // behavior rather than silently absorbing whatever the Jvm
+                  // case does as targets are added later.
                   val dllMatters = match target { case Jvm -> false; case Native -> true; case _ -> true }
                   // #6697: `dllMatters` also gates whether an EXISTING `.dll`
                   // is added to `restoredDlls` at all — not just whether a
