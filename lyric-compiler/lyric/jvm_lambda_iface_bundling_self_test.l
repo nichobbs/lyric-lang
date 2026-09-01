@@ -285,6 +285,12 @@ test "a lambda literal from one package invoked through another package's functi
   val noFeatures: List[String] = newList()
   val noDepTemplateSrcs: List[String] = newList()
   val noDefines: List[String] = newList()
+  val noPaths: List[String] = newList()
+  var pi = 0
+  while pi < pkgSrcs.count {
+    noPaths.add("")
+    pi += 1
+  }
   val ok = compileProjectToJarBundledWithFeatures(
     pkgSrcs,
     jarPath,
@@ -294,7 +300,8 @@ test "a lambda literal from one package invoked through another package's functi
     noFeatures,
     noDepTemplateSrcs,
     noDefines,
-    "0.1.0"
+    "0.1.0",
+    noPaths
   )
   assertTrue(ok, "cross-package closure fixture: compilation must succeed")
   val args: List[String] = newList()
