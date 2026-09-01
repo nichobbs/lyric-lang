@@ -790,12 +790,7 @@ test "multi-segment qualified call resolves correctly" {
 // `lowerGeneralStaticCall` already have for constructors.
 test "fully qualified record construction resolves to the exact qualifier" {
   val packages: List[ProjectPackagePayload] = newList()
-  packages.add(
-    mkPkg(
-      "QualCtor.Sub",
-      "package QualCtor.Sub\n" + "\n" + "pub record Err { message: String }\n"
-    )
-  )
+  packages.add(mkPkg("QualCtor.Sub", "package QualCtor.Sub\n" + "\n" + "pub record Err { message: String }\n"))
   packages.add(
     mkPkg(
       "QualCtor.IfaceDecoy",
@@ -807,7 +802,9 @@ test "fully qualified record construction resolves to the exact qualifier" {
     mkPkg(
       "QualCtor.App",
       "package QualCtor.App\n" + "\n" + "import QualCtor.Sub\n" + "import QualCtor.IfaceDecoy\n" + "\n" +
-        "func main(): Unit {\n" + "  val e = QualCtor.Sub.Err(message = \"boom\")\n" + "  println(e.message)\n" +
+        "func main(): Unit {\n" +
+        "  val e = QualCtor.Sub.Err(message = \"boom\")\n" +
+        "  println(e.message)\n" +
         "}\n"
     )
   )

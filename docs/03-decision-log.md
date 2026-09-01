@@ -38997,3 +38997,80 @@ regressions.
 
 **Related (addendum 5):** #6821 (this fix).
 
+---
+
+## D-progress-855 — MSIL codegen: a fully qualified cross-package record/union construction could spuriously panic with T0123
+
+**Context.** A downstream project reported a regression: an ordinary,
+already-shipping construction (`Err(value = Pkg.Sub.DbError(message =
+"..."))`, written with the constructor's full dotted path) started failing
+`--target dotnet` builds on a newer released compiler with `error[T0123]:
+unresolved call to 'DbError' (arity 1) imported as 'Pkg.Sub.DbError' … no
+function token could be resolved for this callee. This means the callee
+legitimately type-checked but codegen's own resolver disagrees.` D-progress-815
+turned this fallback from a silent best-effort guess into a hard panic
+precisely so a resolver disagreement like this would surface loudly instead
+of miscompiling — the disagreement it exposed here was real, not a false
+positive: `lowerBuiltinOrStaticCallMsil`'s cross-package record/union ctor
+resolution (`lyric-compiler/msil/codegen.l`) never tried the EXACT qualifier
+written at the call site. It fell straight to `resolveTypeFqn`, a heuristic
+keyed purely on the callee's bare simple name (`funcName`, e.g. `DbError`)
+that walks every registered candidate for that name in reverse registration
+order and returns the first one whose owning package merely appears
+SOMEWHERE in the caller's import list — not necessarily the package actually
+named in the qualified call. When a same-named type from a different
+imported package registers later (so the reverse scan reaches it first), or
+when the resolved candidate isn't itself a constructible record (e.g. an
+interface or union sharing the bare name, which has no `recordCtorTokens`
+entry), the heuristic mis-resolves or fails outright — exactly the "codegen's
+own resolver disagrees" panic text describes. The function-call path in the
+very same file (`qualifiedFqn`/`cctx.funcTokens`, a few hundred lines below)
+and the JVM backend's `lowerGeneralStaticCall` (`lyric-compiler/jvm/codegen/04_calls.l`,
+`ctx.ctors[joinSegments(path.segments, ".")]`, fixed for the identical
+class of bug under #5455) both already try the full written path FIRST,
+before any heuristic; only the MSIL record/union ctor site was missing this.
+The type checker's own `constructorSymbolOf` (`typechecker_exprs.l`)
+resolves a qualified constructor call the same way — against the exact
+qualifier — which is why the callee "legitimately type-checked" while
+codegen's separate resolver disagreed.
+
+**Fix.** `lowerBuiltinOrStaticCallMsil`'s ctor-key resolution now tries
+`modulePathJoin(path.segments)` (the exact dotted path as written) against
+`cctx.recordCtorTokens` immediately after the same-package key, before
+falling through to the union-case-candidate lookup and `resolveTypeFqn`'s
+import-heuristic. This mirrors the JVM backend and the type checker exactly
+and only ADDS a resolution tier ahead of the existing ones — every call that
+resolved correctly before still does, and a call whose exact FQN is a
+registered ctor key now resolves to it unconditionally, independent of
+import-list membership or registration order.
+
+**Verification.** Added a regression test to `msil_project_bridge_self_test.l`
+("fully qualified record construction resolves to the exact qualifier")
+reproducing the exact failure shape: package `QualCtor.Sub` declares
+`record Err`, a second imported package `QualCtor.IfaceDecoy` declares an
+`interface` also named `Err` (registered after `Sub` so the old reverse
+scan reaches it first), and the caller writes `QualCtor.Sub.Err(message =
+...)` fully qualified. Confirmed the test reproduces the identical
+`error[T0123] ... unresolved call to 'Err' ... imported as
+'QualCtor.Sub.Err'` panic when built against the pre-fix compiler (verified
+by temporarily reverting the codegen change and rebuilding the full
+self-hosted toolchain), and passes cleanly with the fix applied. The full
+`msil_project_bridge_self_test.l` suite (46 cases covering the rest of the
+cross-package call/construction surface) and a full `make lyric` self-build
+(the self-hosted compiler compiling itself and the entire stdlib bundle
+through this exact resolution path) both stayed green.
+
+**Files changed:** `lyric-compiler/msil/codegen.l`
+(`lowerBuiltinOrStaticCallMsil`'s ctor-key resolution),
+`lyric-compiler/lyric/msil_project_bridge_self_test.l` (new regression
+test).
+
+**Related:** D-progress-815 (the T0123 loud-failure diagnostic this
+disagreement surfaces through), #5177/D-progress-599/D-progress-600 (the
+broader cross-package MSIL-bundler token-resolution bug family this
+belongs to), #5455 (the JVM backend's prior fix for the identical
+full-qualified-construction-path class of bug), #6338 (the type checker's
+`resolveTypePath` qualifier-tier precedent this codegen fix mirrors on the
+construction side), docs/41 (self-hosted compiler gap analysis, §9 Band 4
+cross-package resolution).
+
