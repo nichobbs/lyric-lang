@@ -2480,38 +2480,40 @@ pub func buildProjectFromManifest(
   // declaration order — through the native bridge directly, bypassing
   // `EmitProjectRequest`/`Emitter.emitProject` (which native does not
   // implement — see its own doc comment) since native carries no
-  // restored-DLL / feature-flag axes that record was designed for.  Only
-  // the manifest's own `[native]` table configures triple/opt-level/extra
-  // libs here; `--triple`/`--opt` CLI-flag threading into project-mode
-  // native builds is a documented follow-up (see the decision log) — this
-  // function's signature has no such parameters today and widening it
-  // would also require widening the `BuildProj` watch-loop union in
-  // cli_run.l, which is out of scope for the #6809 slice.
-  var isNativeTargetP = false
+  // restored-DLL axis that record was designed for (defines and
+  // `[features]`/`@cfg` gating ARE threaded through, via `projReq.defines`/
+  // `activeFeatures`/`mfDeclared` below — #6818). Only the manifest's own
+  // `[native]` table configures triple/opt-level/extra libs here;
+  // `--triple`/`--opt` CLI-flag threading into project-mode native builds
+  // is a documented follow-up (see the decision log) — this function's
+  // signature has no such parameters today and widening it would also
+  // require widening the `BuildProj` watch-loop union in cli_run.l, which
+  // is out of scope for the #6809 slice.
+  var isNativeTarget = false
   match target {
     case Native -> {
-      isNativeTargetP = true
+      isNativeTarget = true
     }
     case _ -> ()
   }
-  var effTripleP = ""
-  var effOptP = ""
-  val effLibsP: List[String] = newList()
-  if isNativeTargetP {
+  var effTriple = ""
+  var effOpt = ""
+  val effLibs: List[String] = newList()
+  if isNativeTarget {
     match manifest.native {
       case Some(nc) -> {
-        effTripleP = nc.triple
-        effOptP = nc.optLevel
+        effTriple = nc.triple
+        effOpt = nc.optLevel
         for lib in nc.extraLibs {
-          effLibsP.add(lib)
+          effLibs.add(lib)
         }
       }
       case None -> ()
     }
   }
 
-  val result = if isNativeTargetP {
-    Emitter.emitNativeProject(pkgs, outPath, effTripleP, effOptP, effLibsP, projReq.defines, activeFeatures, mfDeclared)
+  val result = if isNativeTarget {
+    Emitter.emitNativeProject(pkgs, outPath, effTriple, effOpt, effLibs, projReq.defines, activeFeatures, mfDeclared)
   } else {
     Emitter.emitProject(projReq)
   }
