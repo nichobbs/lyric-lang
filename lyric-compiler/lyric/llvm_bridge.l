@@ -594,6 +594,7 @@ pub func compileProjectToNativeWithFlags(
   defines: in List[String],
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
+  packageVersion: in String,
 ): Bool {
   if packages.count == 0 {
     Console.error("error[N0005]: native project build received no packages")
@@ -602,7 +603,14 @@ pub func compileProjectToNativeWithFlags(
 
   val noFeatures: List[String] = newList()
   val nativeFeatures = Cfg.withTargetFeature(noFeatures, "native")
-  val nativeDefines = BD.decodeDefines(defines)
+  // Layer the manifest's `[package].version` in as the well-known `version`
+  // define's fallback (#6821), matching
+  // `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`'s identical
+  // `BD.decodeDefines(BD.withWellKnownDefines(packageVersion, defines))`
+  // call — an explicit `--define version=…` (already present in `defines`)
+  // still wins, since `withWellKnownDefines` prepends the fallback and
+  // `decodeDefines` is last-wins.
+  val nativeDefines = BD.decodeDefines(BD.withWellKnownDefines(packageVersion, defines))
 
   // Parse + `@cfg` erasure for every own package (per-package repeat of the
   // single-source path's first pipeline stage) — threading the real

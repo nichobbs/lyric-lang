@@ -2738,6 +2738,7 @@ pub func emitNativeProject(
   defines: in List[String],
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
+  packageVersion: in String,
 ): EmitResult {
   val outDir = Path.dirname(outputPath)
   if Str.isNotEmpty(outDir) {
@@ -2771,7 +2772,8 @@ pub func emitNativeProject(
     clangFlags,
     defines,
     activeFeatures,
-    declaredFeatures
+    declaredFeatures,
+    packageVersion
   )
   if ok {
     val okDiags: List[Diagnostic] = newList()

@@ -38953,3 +38953,47 @@ either flag is set on a native manifest build.
 unchanged in scope, just now loudly disclosed at the CLI layer instead
 of one crashing silently).
 
+**Addendum 5 (2026-09-01, review finding #6821, REQUIRED — a docs/code
+mismatch):** this PR's own doc updates (`docs/01-language-reference.md`,
+this decision-log entry above) claimed the well-known `version` define
+fallback now applies to project builds "on all three targets," but
+`compileProjectToNativeWithFlags`/`Lyric.Emitter.emitNativeProject`
+never received or applied `packageVersion` via `BD.withWellKnownDefines`
+— unlike the MSIL (`msil/bridge.l:565`,
+`compileProjectToMsilWithRestoredAndVersion`) and JVM (`emitter.l`'s
+`emitProject` dispatch) project paths, which both do
+`BD.decodeDefines(BD.withWellKnownDefines(packageVersion, defines))`
+before compiling. A native project build's `Std.BuildInfo.version`/
+`@build_const("version")` reported the hardcoded `"0.0.0"` fallback
+regardless of the manifest's real `[package].version` — contradicting
+the shipped docs, and untested by any of the prior `llvm_project_self_test.l`
+cases.
+
+Fixed by adding a `packageVersion: in String` parameter end to end:
+`compileProjectToNativeWithFlags` (applies
+`BD.decodeDefines(BD.withWellKnownDefines(packageVersion, defines))`,
+identical to the MSIL call), `Emitter.emitNativeProject` (threads it
+through), and `Lyric.Cli.buildProjectFromManifest`'s native branch
+(passes `projReq.packageVersion` — already computed a few lines away
+for the dotnet/jvm `EmitProjectRequest`, from `packageVersionOverride`
+or the manifest's `[package].version` fallback — no new computation
+needed, only forwarding).
+
+**Regression test:** a new case in `llvm_project_self_test.l`, "project
+build injects the manifest's `[package].version` as the well-known
+`version` define (#6821)" — a single-package program with a
+`@build_const("version")`-annotated `val` that prints its own value,
+compiled with `packageVersion = "1.2.3"`, asserting the binary's stdout
+contains `"1.2.3"`. Also verified against a real CLI manifest build
+(`[package] version = "9.9.9"` in a fresh synthetic manifest) printing
+`9.9.9` at runtime, confirming the fix end to end through the actual
+`lyric build --manifest ... --target native` path, not just the
+bridge-level self-test.
+
+Verified against a real `--target native` build
+(`LYRIC_BOOTSTRAP_VERSION=0.5.1`): `llvm_project_self_test.l` now 7/7,
+full existing native self-test suite (13 files) re-run green with zero
+regressions.
+
+**Related (addendum 5):** #6821 (this fix).
+

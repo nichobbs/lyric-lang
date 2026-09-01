@@ -2533,7 +2533,17 @@ pub func buildProjectFromManifest(
   }
 
   val result = if isNativeTarget {
-    Emitter.emitNativeProject(pkgs, outPath, effTriple, effOpt, effLibs, projReq.defines, activeFeatures, mfDeclared)
+    Emitter.emitNativeProject(
+      pkgs,
+      outPath,
+      effTriple,
+      effOpt,
+      effLibs,
+      projReq.defines,
+      activeFeatures,
+      mfDeclared,
+      projReq.packageVersion
+    )
   } else {
     Emitter.emitProject(projReq)
   }

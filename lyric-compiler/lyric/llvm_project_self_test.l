@@ -22,7 +22,11 @@
 //! `[project.packages]` entry through `Emitter.emitNativeProject`'s own
 //! `mergePackageSources` call (every other case here calls
 //! `compileProjectToNativeWithFlags` directly with one file per package,
-//! bypassing the merge step); and the empty-package-list failure path.
+//! bypassing the merge step); the manifest's `[package].version` being
+//! injected as the well-known `version` define (#6821 —
+//! `compileProjectToNativeWithFlags` never applied
+//! `BD.withWellKnownDefines`, unlike the MSIL/JVM project bridges); and
+//! the empty-package-list failure path.
 //!
 //! Requires `clang` on PATH and a built runtime (`make -C lyric-rt`).
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1:
@@ -65,7 +69,7 @@ func compileAndRunProject(packages: in List[NativeSourcePackage]): RunOutcome {
   val flags: List[String] = newList()
   flags.add("-fsanitize=address")
   val noFeatures: List[String] = newList()
-  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", flags, newList(), noFeatures, noFeatures) {
+  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", flags, newList(), noFeatures, noFeatures, "") {
     panic("native project compilation failed")
   }
   val noArgs: List[String] = newList()
@@ -93,7 +97,7 @@ func compileAndRunProjectWithFeatures(
   val flags: List[String] = newList()
   flags.add("-fsanitize=address")
   val noDeclared: List[String] = newList()
-  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", flags, newList(), activeFeatures, noDeclared) {
+  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", flags, newList(), activeFeatures, noDeclared, "") {
     return None
   }
   val noArgs: List[String] = newList()
@@ -242,7 +246,7 @@ test "a genuinely multi-file [project.packages] entry merges through Emitter.emi
   val noLibs: List[String] = newList()
   val noDefines: List[String] = newList()
   val noFeatures: List[String] = newList()
-  val result = Emitter.emitNativeProject(pkgs, stem, "", "0", noLibs, noDefines, noFeatures, noFeatures)
+  val result = Emitter.emitNativeProject(pkgs, stem, "", "0", noLibs, noDefines, noFeatures, noFeatures, "")
   match result.outputPath {
     case None -> panic("multi-file package project compilation failed")
     case Some(_) -> ()
@@ -250,6 +254,51 @@ test "a genuinely multi-file [project.packages] entry merges through Emitter.emi
   val noArgs: List[String] = newList()
   match Process.runCapture(stem, noArgs, 60000) {
     case Ok(res) -> assertEqualInt(res.exitCode, 42, "merged two-file package's two functions summed (10 + 32 == 42)")
+    case Err(e) -> panic("binary could not be started: " + e)
+  }
+}
+
+test "project build injects the manifest's [package].version as the well-known version define (#6821)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj6.App",
+      source = "package Proj6.App\n" + "import Std.Console as Console\n" + "@build_const(\"version\")\n" +
+        "val VERSION: String = \"unset\"\n" +
+        "func main(): Int {\n" +
+        "  Console.println(VERSION)\n" +
+        "  0\n" +
+        "}\n"
+    )
+  )
+  val stdlib = findStdlibSourcesNative()
+  if stdlib.count == 0 {
+    panic("native stdlib sources not found (run from the repo root or set LYRIC_STD_PATH)")
+  }
+  val dir = Path.join(tempBase(), "lyric-llvm-project-selftest")
+  val _ = File.createDir(dir)
+  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val flags: List[String] = newList()
+  flags.add("-fsanitize=address")
+  val noFeatures: List[String] = newList()
+  val ok = compileProjectToNativeWithFlags(
+    pkgs,
+    stem,
+    stdlib,
+    "",
+    "0",
+    flags,
+    newList(),
+    noFeatures,
+    noFeatures,
+    "1.2.3"
+  )
+  if not ok {
+    panic("native project compilation failed")
+  }
+  val noArgs: List[String] = newList()
+  match Process.runCapture(stem, noArgs, 60000) {
+    case Ok(res) -> assertTrue(Str.contains(res.stdout, "1.2.3"), "manifest version \"1.2.3\" substituted into @build_const(\"version\"), got: " + res.stdout)
     case Err(e) -> panic("binary could not be started: " + e)
   }
 }
@@ -262,6 +311,6 @@ test "project build with no packages fails loudly rather than compiling an empty
   val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
   val noFlags: List[String] = newList()
   val noFeatures: List[String] = newList()
-  val ok = compileProjectToNativeWithFlags(pkgs, stem, stdlib, "", "0", noFlags, newList(), noFeatures, noFeatures)
+  val ok = compileProjectToNativeWithFlags(pkgs, stem, stdlib, "", "0", noFlags, newList(), noFeatures, noFeatures, "")
   assertFalse(ok, "an empty package list must fail rather than silently produce an empty binary")
 }
