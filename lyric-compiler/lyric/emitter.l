@@ -2716,12 +2716,14 @@ func emitNativeInProcess(
 /// `emitProject`'s Dotnet/Jvm dispatch for a project's own
 /// `[project.packages]` — direct call into
 /// `Lyric.LlvmBridge.compileProjectToNativeWithFlags`.  `pkgs` is in
-/// manifest declaration order (the entry package first, matching every
-/// other native/CLI convention).  Each multi-file package's sources are
-/// merged into one compilation unit via `mergePackageSources` first —
-/// mirroring `emitProject`'s own pre-dispatch merge step — since the native
-/// bridge (like the MSIL/JVM bridges) expects one valid `package` unit per
-/// entry, not raw per-file concatenation.
+/// manifest declaration order; the entry point is auto-detected by
+/// `fileHasTopLevelMain` regardless of position (see that function's own
+/// doc comment).  Each multi-file package's sources are merged into one
+/// compilation unit via `mergePackageSources` first — mirroring
+/// `emitProject`'s own pre-dispatch merge step, INCLUDING its
+/// `activeFeatures`/`declaredFeatures` `@cfg(feature = ...)` gating
+/// (#6818) — since the native bridge (like the MSIL/JVM bridges) expects
+/// one valid `package` unit per entry, not raw per-file concatenation.
 ///
 /// `[dependencies]` on other restored Lyric packages (NuGet/Maven-style
 /// prebuilt binaries) are NOT threaded here: native has no restored-binary
@@ -2734,6 +2736,8 @@ pub func emitNativeProject(
   optLevel: in String,
   extraLibs: in List[String],
   defines: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
 ): EmitResult {
   val outDir = Path.dirname(outputPath)
   if Str.isNotEmpty(outDir) {
@@ -2745,12 +2749,11 @@ pub func emitNativeProject(
   if pkgs.count == 0 {
     return failResult("native project build received no packages")
   }
-  val noFeatures: List[String] = newList()
   val nativePkgs: List[LlvmBridge.NativeSourcePackage] = newList()
   var pi = 0
   while pi < pkgs.count {
     val pkg = pkgs[pi]
-    val merged = mergePackageSources(pkg.name, pkg.sources, noFeatures, noFeatures)
+    val merged = mergePackageSources(pkg.name, pkg.sources, activeFeatures, declaredFeatures)
     nativePkgs.add(LlvmBridge.NativeSourcePackage(name = pkg.name, source = merged))
     pi = pi + 1
   }
@@ -2766,7 +2769,9 @@ pub func emitNativeProject(
     triple,
     optLevel,
     clangFlags,
-    defines
+    defines,
+    activeFeatures,
+    declaredFeatures
   )
   if ok {
     val okDiags: List[Diagnostic] = newList()

@@ -38776,3 +38776,82 @@ D-progress-853/#6794 (the concurrent `out`/`inout` native codegen work
 this branch rebased cleanly onto, confirmed by a zero-regression
 re-run of the full native self-test suite post-rebase).
 
+**Addendum (2026-09-01, review finding #6817, docs sync):** the initial PR
+description's own "Docs synced" list omitted three CLAUDE.md-required
+surfaces — `docs/01-language-reference.md` (two call-out sites still said
+"manifest (multi-package) native builds are not yet supported" and
+"`--target native` has no multi-package/project build path... so native
+`--define` is single-file only", both now false), `docs/10-bootstrap-progress.md`
+(the docs/60 native `--define` entry, same stale claim, plus this being
+the entry's own first mention in this file — added alongside), and
+`book/chapters/appendix-b-quick-reference.md` (the native "Not yet
+lowered" bullet still listed "manifest builds", and the `--define`
+reference block repeated the single-file-only claim). Fixed by updating
+all three to describe the shipped state. A related SUGGESTION from the
+same review round — a duplicated ~15-line bundled-package unit-assembly
+loop between `compileToNativeWithFlags` and `compileProjectToNativeWithFlags`
+— was also addressed by extracting a shared `appendBundledUnits` helper,
+and `compileProjectToNativeWithFlags`'s doc comment (which incorrectly
+implied list position determines the entry package) was corrected to
+describe the actual `fileHasTopLevelMain` auto-detection.
+
+**Addendum 2 (2026-09-01, review finding #6818, a real regression found
+in the SAME review round — REQUIRED, not a doc gap):** `Lyric.Emitter.emitNativeProject`
+hardcoded empty `activeFeatures`/`declaredFeatures` into its
+`mergePackageSources` call, and — more significantly — `Lyric.LlvmBridge.compileProjectToNativeWithFlags`
+itself hardcoded empty `noFeatures`/`noFeatures` into its OWN `pipeParseAndErase`
+call for every own package, unconditionally erasing every
+`@cfg(feature = "X")`-gated item regardless of the caller's real feature
+set. This is the identical shape `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`
+already threads correctly (`pipeParseAndErase(pkg.source, "dotnet", activeFeatures, declaredFeatures, projDefines)`)
+— native's project bridge was the only one of the three not doing so.
+
+Fixed by adding `activeFeatures`/`declaredFeatures` parameters end to
+end: `compileProjectToNativeWithFlags` (uses them for every own
+package's `pipeParseAndErase` call; the bundled stdlib closure still
+erases against `noFeatures`, matching every other native path — a
+stdlib package's own `@cfg(feature = ...)` items are never
+user-feature-gated on any target), `Lyric.Emitter.emitNativeProject`
+(threads them into both `mergePackageSources` and the bridge call), and
+`Lyric.Cli.buildProjectFromManifest`'s native branch (passes the
+already-resolved `activeFeatures`/`mfDeclared` — computed once, shared
+with the dotnet/jvm `EmitProjectRequest` construction a few lines away
+— instead of nothing).
+
+**A verification pitfall worth recording:** the first manual CLI repro of
+this fix (`lyric build --manifest ... --target native --features extra`
+vs. without) appeared to show the fix NOT working — both with and
+without the flag, a `@cfg(feature = "extra")`-gated function's caller
+compiled and ran successfully. Re-running in a FRESH output directory
+(rather than reusing the same `-o` path across successive invocations)
+immediately produced the correct behavior (compile failure without the
+flag, success with it) — the earlier result was `dotnet`'s own assembly/
+process-level caching picking up a stale prior build sharing the same
+output stem, not a defect in the fix. The same false trail was checked
+against `--target dotnet` project-mode builds in the same reused
+directory before the stale-output explanation was found, which
+momentarily suggested a wider pre-existing cross-target bug; a clean
+directory showed dotnet gating correctly too. Recorded here so a future
+investigator hits this shortcut instead of re-deriving it: **always use
+a fresh, uniquely-named output path per manifest-build verification
+attempt**, never reuse one across a same/different-flags comparison.
+
+**Regression test:** a new case in `llvm_project_self_test.l`, "project
+build honors `[features]`/`@cfg(feature = ...)` gating on a sibling
+package's item (#6818)" — a two-package project where the entry calls a
+`@cfg(feature = "extra")`-gated sibling function, asserting the call
+fails to compile (via `assertPanicsWith`, since native codegen's own
+resolution failures raise a hard panic rather than a clean `Bool`
+`false` — a pre-existing characteristic of the single-source native
+path too, not something this fix changed) when `"extra"` is inactive,
+and succeeds with the correct return value when active. Verified against
+a real `--target native` build (`LYRIC_BOOTSTRAP_VERSION=0.5.1`):
+`llvm_project_self_test.l` 5/5 (four pre-existing cases plus this one),
+full existing native self-test suite (12 files) re-run green with zero
+regressions, and the real CLI manifest-build repro (a fresh 2-package
+project, feature on/off) confirmed correct end to end.
+
+**Related (addendum 2):** #6817 (addendum 1, the docs-sync round from
+the same review), #6818 (this fix), `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`
+(the precedent this fix now matches).
+

@@ -595,6 +595,8 @@ pub func compileProjectToNativeWithFlags(
   optLevel: in String,
   extraClangFlags: in List[String],
   defines: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
 ): Bool {
   if packages.count == 0 {
     Console.error("error[N0005]: native project build received no packages")
@@ -606,11 +608,17 @@ pub func compileProjectToNativeWithFlags(
   val nativeDefines = BD.decodeDefines(defines)
 
   // Parse + `@cfg` erasure for every own package (per-package repeat of the
-  // single-source path's first pipeline stage).
+  // single-source path's first pipeline stage) — threading the real
+  // `activeFeatures`/`declaredFeatures` (#6818), matching
+  // `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`'s identical
+  // call.  Own packages get the caller's real feature set; the bundled
+  // stdlib closure below still erases against `noFeatures` (a stdlib
+  // package's own `@cfg(feature = ...)` items are never user-feature-gated
+  // on any target, same as the single-source path).
   val cfgFiles: List[SourceFile] = newList()
   var ppi = 0
   while ppi < packages.count {
-    val cfgFile = match pipeParseAndErase(packages[ppi].source, "native", noFeatures, noFeatures, nativeDefines) {
+    val cfgFile = match pipeParseAndErase(packages[ppi].source, "native", activeFeatures, declaredFeatures, nativeDefines) {
       case Some(f) -> f
       case None -> return false
     }

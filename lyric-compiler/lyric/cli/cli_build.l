@@ -2511,7 +2511,7 @@ pub func buildProjectFromManifest(
   }
 
   val result = if isNativeTargetP {
-    Emitter.emitNativeProject(pkgs, outPath, effTripleP, effOptP, effLibsP, projReq.defines)
+    Emitter.emitNativeProject(pkgs, outPath, effTripleP, effOptP, effLibsP, projReq.defines, activeFeatures, mfDeclared)
   } else {
     Emitter.emitProject(projReq)
   }
