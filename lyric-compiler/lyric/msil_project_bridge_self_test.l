@@ -766,21 +766,29 @@ test "multi-segment qualified call resolves correctly" {
   assertEqual(Str.trim(result.stdout), "21", "multi_segment_qualified_call: stdout=21")
 }
 
-// ─── Regression: fully qualified cross-package record construction without
-// an `import` (T0123) ─────────────────────────────────────────────────────
-// A consumer constructs a library record via its FULL dotted path
-// (`Lib.Sub.Record(field = ...)`) without ever importing the declaring
-// package — legal per the type checker's `constructorSymbolOf` tier (a),
-// which resolves an explicitly qualified constructor call against the
-// symbol table directly (`symTableTryFindInPackage`), independent of the
-// referencing package's import list. Codegen's cross-package record ctor
-// resolver mirrored the wrong tier — it fell back to an import-list-gated
-// heuristic (`resolveTypeFqn`) that never consults the explicit qualifier
-// written at the call site, so a fully qualified construction whose owning
-// package the caller doesn't import previously either mis-resolved to an
-// unrelated candidate or panicked with a spurious "error[T0123] unresolved
-// call" even though the callee legitimately type-checked.
-test "fully qualified record construction resolves without an import" {
+// ─── Regression: fully qualified cross-package record construction (T0123) ──
+// A consumer constructs an imported library record via its FULL dotted path
+// (`Lib.Sub.Record(field = ...)`) instead of the bare imported name — a
+// common disambiguation idiom when two packages declare a same-named type.
+// Codegen's cross-package record ctor resolver never tried the exact
+// qualifier written at the call site — it went straight to
+// `resolveTypeFqn`'s import-aware heuristic, which resolves by the bare
+// simple name only: it walks every registered candidate named `Err` in
+// REVERSE registration order and returns the first one whose owning
+// package is (merely) SOMEWHERE in the caller's import list — not
+// necessarily the one actually named at the call site. Here a second
+// package (`QualCtor.IfaceDecoy`, registered AFTER `QualCtor.Sub` so it is
+// tried FIRST by that reverse scan) declares an INTERFACE also named
+// `Err` and is imported too; the old heuristic picks the interface's FQN
+// (which the type checker did NOT resolve this call to), and an interface
+// has no `recordCtorTokens` entry, so codegen falls all the way through to
+// the "unresolved call" fallback — the spurious "error[T0123] unresolved
+// call" this fix closes, even though `QualCtor.Sub.Err(...)` legitimately
+// type-checked as a construction of `QualCtor.Sub`'s record. Mirrors the
+// full-qualified-path-first check the function-call path
+// (`qualifiedFqn`/`cctx.funcTokens`, above) and the JVM backend's
+// `lowerGeneralStaticCall` already have for constructors.
+test "fully qualified record construction resolves to the exact qualifier" {
   val packages: List[ProjectPackagePayload] = newList()
   packages.add(
     mkPkg(
@@ -790,10 +798,16 @@ test "fully qualified record construction resolves without an import" {
   )
   packages.add(
     mkPkg(
+      "QualCtor.IfaceDecoy",
+      "package QualCtor.IfaceDecoy\n" + "\n" + "pub interface Err {\n" + "  func describe(self: in Self): String\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
       "QualCtor.App",
-      "package QualCtor.App\n" + "\n" + "func main(): Unit {\n" +
-        "  val e = QualCtor.Sub.Err(message = \"boom\")\n" +
-        "  println(e.message)\n" +
+      "package QualCtor.App\n" + "\n" + "import QualCtor.Sub\n" + "import QualCtor.IfaceDecoy\n" + "\n" +
+        "func main(): Unit {\n" + "  val e = QualCtor.Sub.Err(message = \"boom\")\n" + "  println(e.message)\n" +
         "}\n"
     )
   )
@@ -801,12 +815,12 @@ test "fully qualified record construction resolves without an import" {
   assertEqualInt(
     result.exitCode,
     0,
-    "fully_qualified_record_construction_without_import: exit 0 (stderr=" + result.stderr + ")"
+    "fully_qualified_record_construction_exact_qualifier: exit 0 (stderr=" + result.stderr + ")"
   )
   assertEqual(
     Str.trim(result.stdout),
     "boom",
-    "fully_qualified_record_construction_without_import: stdout matches expected"
+    "fully_qualified_record_construction_exact_qualifier: stdout matches expected"
   )
 }
 
