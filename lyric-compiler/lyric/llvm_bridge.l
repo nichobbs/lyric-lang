@@ -630,7 +630,7 @@ pub func compileProjectToNativeWithFlags(
   val cfgFiles: List[SourceFile] = newList()
   var ppi = 0
   while ppi < packages.count {
-    val cfgFile = match pipeParseAndErase(packages[ppi].source, "native", activeFeatures, declaredFeatures, nativeDefines) {
+    val cfgFile = match pipeParseAndErase(packages[ppi].source, "native", activeFeatures, declaredFeatures, nativeDefines, packages[ppi].name) {
       case Some(f) -> f
       case None -> return false
     }
