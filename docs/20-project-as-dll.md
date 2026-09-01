@@ -141,6 +141,23 @@ reference another Lyric project on the local file-system:
   found" warning and implies the user carries the stdlib source tree beside
   their project, which is not the intended layout.
 
+**Native (`--target native`) scope note (D-progress-854, issue #6809).**
+This document's pipeline was designed for — and, until #6809, only ever
+implemented against — the dotnet/jvm targets, which restore prebuilt
+DLLs/JARs for `[dependencies]`. Native has no restored-binary concept: it
+always compiles the whole reachable world from source, the same way
+`Std.*` stdlib sources are bundled into every native build already.
+`[project.packages]` (§3, this document's core subject) now works
+identically for native as of #6809 — `Lyric.Emitter.emitNativeProject`
+resolves the SAME `pkgs: List[ProjectPackage]` list §4 below describes,
+merged the same way (`mergePackageSources`), through
+`Lyric.LlvmBridge.compileProjectToNativeWithFlags` instead of
+`Msil.Bridge`/`Jvm.Bridge`. Cross-project `[dependencies]` (§3.1) are
+NOT yet resolved for native — tracked as a follow-up in issue #6815, since
+unlike a restored binary, a Lyric dependency's SOURCE is always available
+locally and the natural fix is compiling it into the same bundle rather
+than inventing a native restored-binary format.
+
 ## 4. Compilation pipeline
 
 The `output = "single"` driver:
