@@ -766,6 +766,61 @@ test "multi-segment qualified call resolves correctly" {
   assertEqual(Str.trim(result.stdout), "21", "multi_segment_qualified_call: stdout=21")
 }
 
+// ─── Regression: fully qualified cross-package record construction (T0123) ──
+// A consumer constructs an imported library record via its FULL dotted path
+// (`Lib.Sub.Record(field = ...)`) instead of the bare imported name — a
+// common disambiguation idiom when two packages declare a same-named type.
+// Codegen's cross-package record ctor resolver never tried the exact
+// qualifier written at the call site — it went straight to
+// `resolveTypeFqn`'s import-aware heuristic, which resolves by the bare
+// simple name only: it walks every registered candidate named `Err` in
+// REVERSE registration order and returns the first one whose owning
+// package is (merely) SOMEWHERE in the caller's import list — not
+// necessarily the one actually named at the call site. Here a second
+// package (`QualCtor.IfaceDecoy`, registered AFTER `QualCtor.Sub` so it is
+// tried FIRST by that reverse scan) declares an INTERFACE also named
+// `Err` and is imported too; the old heuristic picks the interface's FQN
+// (which the type checker did NOT resolve this call to), and an interface
+// has no `recordCtorTokens` entry, so codegen falls all the way through to
+// the "unresolved call" fallback — the spurious "error[T0123] unresolved
+// call" this fix closes, even though `QualCtor.Sub.Err(...)` legitimately
+// type-checked as a construction of `QualCtor.Sub`'s record. Mirrors the
+// full-qualified-path-first check the function-call path
+// (`qualifiedFqn`/`cctx.funcTokens`, above) and the JVM backend's
+// `lowerGeneralStaticCall` already have for constructors.
+test "fully qualified record construction resolves to the exact qualifier" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("QualCtor.Sub", "package QualCtor.Sub\n" + "\n" + "pub record Err { message: String }\n"))
+  packages.add(
+    mkPkg(
+      "QualCtor.IfaceDecoy",
+      "package QualCtor.IfaceDecoy\n" + "\n" + "pub interface Err {\n" + "  func describe(self: in Self): String\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "QualCtor.App",
+      "package QualCtor.App\n" + "\n" + "import QualCtor.Sub\n" + "import QualCtor.IfaceDecoy\n" + "\n" +
+        "func main(): Unit {\n" +
+        "  val e = QualCtor.Sub.Err(message = \"boom\")\n" +
+        "  println(e.message)\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("qualctor", packages, "QualCtor")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "fully_qualified_record_construction_exact_qualifier: exit 0 (stderr=" + result.stderr + ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    "boom",
+    "fully_qualified_record_construction_exact_qualifier: stdout matches expected"
+  )
+}
+
 // ─── Regression: multi-segment qualified static val access (#5258) ──────────
 // A consumer references a library's non-literal `pub val` with the
 // fully-qualified two-segment path `Lib.Pkg.NAME` (not the bare unqualified

@@ -13895,8 +13895,26 @@ func lowerBuiltinOrStaticCallMsil(
     // For qualified calls like `Color.CaseName(...)` the qualifier names
     // the parent union; prefer the matching candidate (#3349).
     val callQualifier = if path.segments.count >= 2 { path.segments[path.segments.count - 2] } else { "" }
+    // An EXPLICITLY qualified constructor call (`Pkg.Sub.Type(...)`) names its
+    // declaring package directly in the call syntax — try that full dotted
+    // path FIRST, independent of whether `fctx.pkgName` imports it. Mirrors
+    // the JVM backend's full-path-first check in `lowerGeneralStaticCall`
+    // (`lyric-compiler/jvm/codegen/04_calls.l`, #5455) and the type checker's
+    // own `constructorSymbolOf` tier (a) (`symTableTryFindInPackage`), both of
+    // which honour the WRITTEN qualifier over import-list membership.
+    // Without this, a fully qualified construction whose owning package
+    // isn't found in `cctx.pkgImports[fctx.pkgName]` fell through to
+    // `resolveTypeFqn`'s import-aware heuristic and, with no matching import,
+    // its last-registered-wins fallback — mis-resolving to an unrelated
+    // same-named record, or (when that wrong candidate had no ctor token
+    // under the guessed key) surfacing as a spurious T0123 "unresolved call"
+    // panic even though the callee legitimately type-checked (T0123
+    // cross-package qualified-constructor regression).
+    val fullQualifiedCtorKey = modulePathJoin(path.segments)
     val ctorKey = if cctx.recordCtorTokens.containsKey(localCtorKey) {
       localCtorKey
+    } else if path.segments.count >= 2 and cctx.recordCtorTokens.containsKey(fullQualifiedCtorKey) {
+      fullQualifiedCtorKey
     } else {
       match mapGet(cctx.unionCaseCtorByName, funcName) {
         case Some(candidates) -> pickCaseFqnByQualifier(cctx, fctx, candidates, callQualifier)
