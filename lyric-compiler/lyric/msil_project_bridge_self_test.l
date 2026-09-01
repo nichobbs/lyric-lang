@@ -766,6 +766,50 @@ test "multi-segment qualified call resolves correctly" {
   assertEqual(Str.trim(result.stdout), "21", "multi_segment_qualified_call: stdout=21")
 }
 
+// ─── Regression: fully qualified cross-package record construction without
+// an `import` (T0123) ─────────────────────────────────────────────────────
+// A consumer constructs a library record via its FULL dotted path
+// (`Lib.Sub.Record(field = ...)`) without ever importing the declaring
+// package — legal per the type checker's `constructorSymbolOf` tier (a),
+// which resolves an explicitly qualified constructor call against the
+// symbol table directly (`symTableTryFindInPackage`), independent of the
+// referencing package's import list. Codegen's cross-package record ctor
+// resolver mirrored the wrong tier — it fell back to an import-list-gated
+// heuristic (`resolveTypeFqn`) that never consults the explicit qualifier
+// written at the call site, so a fully qualified construction whose owning
+// package the caller doesn't import previously either mis-resolved to an
+// unrelated candidate or panicked with a spurious "error[T0123] unresolved
+// call" even though the callee legitimately type-checked.
+test "fully qualified record construction resolves without an import" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "QualCtor.Sub",
+      "package QualCtor.Sub\n" + "\n" + "pub record Err { message: String }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "QualCtor.App",
+      "package QualCtor.App\n" + "\n" + "func main(): Unit {\n" +
+        "  val e = QualCtor.Sub.Err(message = \"boom\")\n" +
+        "  println(e.message)\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("qualctor", packages, "QualCtor")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "fully_qualified_record_construction_without_import: exit 0 (stderr=" + result.stderr + ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    "boom",
+    "fully_qualified_record_construction_without_import: stdout matches expected"
+  )
+}
+
 // ─── Regression: multi-segment qualified static val access (#5258) ──────────
 // A consumer references a library's non-literal `pub val` with the
 // fully-qualified two-segment path `Lib.Pkg.NAME` (not the bare unqualified
