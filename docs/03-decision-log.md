@@ -38897,3 +38897,59 @@ regressions.
 
 **Related (addendum 3):** #6819 (this fix).
 
+**Addendum 4 (2026-09-01, review finding #6820, REQUIRED — a real crash
+on the common case, plus one SUGGESTION from the same round):** the
+previous blanket refusal of `--target native` manifest builds was the
+thing accidentally masking a real bug: `Lyric.Cli.buildWorkspaceDeps`
+(`cli/workspace_builder.l`) already early-returns for `--target jvm`
+before attempting to build a `{ workspace = true }` dependency (the JVM
+bundled compile consumes cross-package code from source, never
+`restoredDllPaths`, so building the dep's DLL there is pure waste — see
+the existing comment, #5571/#6697), but had no equivalent `Native` arm.
+Since `Emitter.emitNativeProject` never consumes `restoredDlls`/
+`depTemplateSrcs` either (this same decision-log entry, above), a native
+consumer's workspace dependency was *also* pure waste to build — except
+worse than JVM's mere DLL/JAR-naming collision: `buildWorkspaceDep`
+drives a genuine native compile of the dependency's own source, and any
+not-yet-lowered construct in it surfaces as an unhandled CLI panic
+rather than a clean diagnostic. Since most real ecosystem libraries
+declare `[dependencies]` (this PR's own "Real-world validation" section
+had to strip `lyric-web`'s `[dependencies]` from a copy of the manifest
+just to demonstrate the underlying mechanism working), this meant the
+headline "a project's own `[project.packages]` now builds for native"
+story crashed on the common case, not the edge case.
+
+Fixed by mirroring the existing `Jvm` early-return with a `Native` arm
+in `buildWorkspaceDeps` — skip unconditionally, exactly like `Jvm`, until
+resolving dependency source into the native bundle is designed (tracked
+in #6815 item 1, unchanged in scope by this fix).
+
+**Verification:** re-ran this PR's own `lyric-web/lyric.toml` real-world
+validation case (real `[dependencies]` intact, not stripped) against a
+real `--target native` build. The crash inside `buildWorkspaceDeps` is
+gone — the build now proceeds past dependency resolution entirely and
+fails at a *different*, pre-existing, already-disclosed point: `lyric-web`'s
+own per-file native-readiness gaps (`StaticFiles`/`WebTls` types,
+`pathGetFullPath`, `serve` — exactly the "bounded, mechanical addition
+once the project-level gap is closed" work issue #6809's own body
+already scoped out as separate future work, not something #6820 or this
+PR needs to fix). A from-scratch synthetic workspace-dependency repro
+was also attempted but hit an unrelated workspace-member-resolution
+setup issue in the test harness itself (not a compiler bug) and was
+abandoned in favor of the real `lyric-web` validation, which is the
+exact scenario #6820 described.
+
+Also addressed the same round's SUGGESTION: `--triple`/`--opt` were
+silently ignored on `lyric build --manifest ... --target native`
+(only the manifest's own `[native]` table configures the native
+project path — #6815 item 2, unchanged in scope), inconsistent with
+this file's own "never silently drop a flag" convention
+(`ridNoEffectWarning`, the `--no-restore` and `--release-from-dll`
+warnings elsewhere in `cli_build.l`). Added a one-line warning when
+either flag is set on a native manifest build.
+
+**Related (addendum 4):** #6820 (this fix), #6815 (both deferred slices
+— dependency source resolution and CLI flag threading — remain
+unchanged in scope, just now loudly disclosed at the CLI layer instead
+of one crashing silently).
+

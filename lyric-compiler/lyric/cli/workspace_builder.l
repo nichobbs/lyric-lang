@@ -87,8 +87,22 @@ pub func buildWorkspaceDeps(
   // `--target dotnet` build of any consumer then failed to load as a
   // restored dep ("no Lyric.Contract resource") until the file was deleted
   // by hand (#5571).
+  //
+  // `--target native` has no restored-binary concept at all (#6809/#6818's
+  // decision-log entry) — `Emitter.emitNativeProject` never consumes
+  // `restoredDlls`/`depTemplateSrcs` either, so a workspace dep built here
+  // for a native consumer is the same pure-waste JVM case, PLUS a real
+  // crash risk: `buildWorkspaceDep` drives a genuine native compile of the
+  // dependency's own source, and any not-yet-lowered construct in it
+  // surfaces as an unhandled CLI panic rather than a clean diagnostic
+  // (#6820) — worse than JVM's mere DLL/JAR-naming collision. Skip
+  // unconditionally, matching Jvm, until resolving dependency source into
+  // the native bundle is designed (tracked in #6815 item 1).
   match target {
     case Jvm -> {
+      return (result, false, wsCtxOpt)
+    }
+    case Native -> {
       return (result, false, wsCtxOpt)
     }
     case _ -> ()

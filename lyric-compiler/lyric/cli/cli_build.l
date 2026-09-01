@@ -1488,6 +1488,26 @@ func cmdBuild(argv: in slice[String]): Int {
       case Some(_) -> printErr(ridNoEffectWarning(target))
       case None -> ()
     }
+    // `--triple`/`--opt` project-mode threading into native project builds
+    // is a documented follow-up (#6815 item 2) — `buildProjectFromManifest`'s
+    // native branch only ever reads the manifest's own `[native]` table.
+    // Warn rather than silently drop, matching this function's own
+    // convention for every other CLI flag that has no effect in a given
+    // mode (`ridNoEffectWarning` above, the `--no-restore` /
+    // `--release-from-dll` warnings elsewhere in this file).
+    var isNativeManifestTarget = false
+    match target {
+      case Native -> {
+        isNativeManifestTarget = true
+      }
+      case _ -> ()
+    }
+    if isNativeManifestTarget and (Str.isNotEmpty(tripleArg) or Str.isNotEmpty(optArg)) {
+      printErr(
+        "build: warning: --triple/--opt have no effect on a native project build " +
+          "(--manifest ... --target native) — only the manifest's own [native] table is honored (#6815)"
+      )
+    }
     // Reuse the manifest already parsed above when it parsed cleanly (the
     // common case); fall back to `buildProject`'s own re-parse otherwise so a
     // genuinely malformed manifest still gets a real diagnostic instead of a
