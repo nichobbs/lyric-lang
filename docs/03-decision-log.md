@@ -38855,3 +38855,45 @@ project, feature on/off) confirmed correct end to end.
 the same review), #6818 (this fix), `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`
 (the precedent this fix now matches).
 
+**Addendum 3 (2026-09-01, review finding #6819, REQUIRED — a misattached
+doc comment, plus two SUGGESTIONs from the same round):** `compileProjectToNativeWithFlags`'s
+own `///` doc comment ended up sitting directly above `fileHasTopLevelMain`
+instead (a mis-insertion from an earlier edit — `fileHasTopLevelMain` was
+added between the comment and its intended target), leaving the new
+public entry point with no doc comment of its own, while
+`fileHasTopLevelMain`'s own doc comment was a plain `//` block sitting
+inside its OWN parameter list rather than above its signature. Fixed by
+reordering: `fileHasTopLevelMain` now comes first with a proper `///`
+doc comment above its (single-line) signature, and the
+`compileProjectToNativeWithFlags` doc comment moved to sit directly
+above its own signature.
+
+Also addressed, same review round: `cli/cli_build.l`'s `--define`-gating
+comment still said "native has no multi-package/project build path, so
+`buildProject` rejects a native manifest build separately" — stale as of
+this PR's own N9.7 support; updated to describe the shipped
+`projReq.defines` threading (#6818). And a genuine test-coverage gap: no
+case exercised a truly multi-file `[project.packages]` entry (i.e.
+`ProjectPackage.sources.count > 1`, going through
+`Emitter.emitNativeProject`'s `mergePackageSources` call) — every prior
+case called `compileProjectToNativeWithFlags` directly with one file per
+`NativeSourcePackage`, bypassing the merge step the real `lyric-web`
+`Web.Kernel.Runtime` entry (`["src/_kernel/net/web_kernel.l",
+"src/_kernel/jvm/web_kernel.l"]`) actually needs. Added a new case
+("a genuinely multi-file `[project.packages]` entry merges through
+`Emitter.emitNativeProject`") that constructs a two-file `Proj5.Helper`
+package (`partOne`/`partTwo` in separate file bodies) and a sibling
+`Proj5.App` calling both, asserting `partOne() + partTwo() == 42` — this
+one is not ASan-compiled, since `emitNativeProject`'s `extraLibs`
+parameter only maps to `-l<name>` link flags (matching the CLI's own real
+usage) with no raw-flag hook for `-fsanitize=address`, unlike
+`compileProjectToNativeWithFlags`'s `extraClangFlags` every other case in
+the file uses directly.
+
+Verified against a real `--target native` build
+(`LYRIC_BOOTSTRAP_VERSION=0.5.1`): `llvm_project_self_test.l` now 6/6,
+full existing native self-test suite (13 files) re-run green with zero
+regressions.
+
+**Related (addendum 3):** #6819 (this fix).
+

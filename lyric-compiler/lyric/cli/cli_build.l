@@ -1370,11 +1370,11 @@ func cmdBuild(argv: in slice[String]): Int {
     printErr("build: warning: --no-restore has no effect without a project manifest")
   }
   // docs/60 build defines: all three backends can now consume a `--define` —
-  // MSIL/JVM on single-file and project builds (#5852), and native on
+  // MSIL/JVM on single-file and project builds (#5852), and native on both
   // single-file builds (#5977 — list-literal lowering + module-level `val`
-  // inlining make `@build_const`/`Std.BuildInfo` work; native has no
-  // multi-package/project build path, so `buildProject` rejects a native
-  // manifest build separately).
+  // inlining make `@build_const`/`Std.BuildInfo` work) and project builds
+  // (#6818 — `buildProjectFromManifest`'s native branch threads
+  // `projReq.defines` through `Emitter.emitNativeProject`).
   //
   // The `--define` gate itself now runs *after* the shape axis is resolved
   // (docs/63 §5.3), inside each branch below — it keys off the packaging shape,

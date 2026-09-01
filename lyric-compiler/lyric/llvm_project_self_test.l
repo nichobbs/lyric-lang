@@ -18,8 +18,11 @@
 //! `Proj3.Model` declares); `[features]`/`@cfg(feature = ...)` gating on a
 //! sibling package's item (#6818 — `compileProjectToNativeWithFlags` used
 //! to erase every `@cfg(feature = ...)`-gated item unconditionally,
-//! ignoring the caller's real `activeFeatures`); and the empty-package-list
-//! failure path.
+//! ignoring the caller's real `activeFeatures`); a genuinely multi-file
+//! `[project.packages]` entry through `Emitter.emitNativeProject`'s own
+//! `mergePackageSources` call (every other case here calls
+//! `compileProjectToNativeWithFlags` directly with one file per package,
+//! bypassing the merge step); and the empty-package-list failure path.
 //!
 //! Requires `clang` on PATH and a built runtime (`make -C lyric-rt`).
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1:
@@ -205,6 +208,49 @@ test "project build honors [features]/@cfg(feature = ...) gating on a sibling pa
   match withFeature {
     case Some(res) -> assertEqualInt(res.exitCode, 42, "activating \"extra\" includes the gated function (== 42)")
     case None -> panic("compilation must succeed once \"extra\" is active")
+  }
+}
+
+test "a genuinely multi-file [project.packages] entry merges through Emitter.emitNativeProject" {
+  // Exercises the `Emitter.emitNativeProject` -> `mergePackageSources` path
+  // directly (every other case in this file calls
+  // `LlvmBridge.compileProjectToNativeWithFlags` with one file per
+  // `NativeSourcePackage`, bypassing the merge step entirely) — the same
+  // multi-file-package shape `lyric-web/lyric.toml`'s `Web.Kernel.Runtime`
+  // entry uses (`["src/_kernel/net/web_kernel.l", "src/_kernel/jvm/web_kernel.l"]`).
+  // Not ASan-compiled: `emitNativeProject`'s `extraLibs` maps to `-l<name>`
+  // link flags only (matching the CLI's own real usage), with no raw-flag
+  // hook for `-fsanitize=address` — unlike `compileProjectToNativeWithFlags`'s
+  // `extraClangFlags`, which every other case in this file uses directly.
+  val helperPkg: List[String] = newList()
+  helperPkg.add("package Proj5.Helper\n" + "pub func partOne(): Int {\n" + "  10\n" + "}\n")
+  helperPkg.add("package Proj5.Helper\n" + "pub func partTwo(): Int {\n" + "  32\n" + "}\n")
+  val pkgs: List[ProjectPackage] = newList()
+  pkgs.add(ProjectPackage(name = "Proj5.Helper", sources = helperPkg))
+  val appSrc: List[String] = newList()
+  appSrc.add(
+    "package Proj5.App\n" + "import Proj5.Helper\n" + "func main(): Int {\n" + "  partOne() + partTwo()\n" + "}\n"
+  )
+  pkgs.add(ProjectPackage(name = "Proj5.App", sources = appSrc))
+  val stdlib = findStdlibSourcesNative()
+  if stdlib.count == 0 {
+    panic("native stdlib sources not found (run from the repo root or set LYRIC_STD_PATH)")
+  }
+  val dir = Path.join(tempBase(), "lyric-llvm-project-selftest")
+  val _ = File.createDir(dir)
+  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val noLibs: List[String] = newList()
+  val noDefines: List[String] = newList()
+  val noFeatures: List[String] = newList()
+  val result = Emitter.emitNativeProject(pkgs, stem, "", "0", noLibs, noDefines, noFeatures, noFeatures)
+  match result.outputPath {
+    case None -> panic("multi-file package project compilation failed")
+    case Some(_) -> ()
+  }
+  val noArgs: List[String] = newList()
+  match Process.runCapture(stem, noArgs, 60000) {
+    case Ok(res) -> assertEqualInt(res.exitCode, 42, "merged two-file package's two functions summed (10 + 32 == 42)")
+    case Err(e) -> panic("binary could not be started: " + e)
   }
 }
 

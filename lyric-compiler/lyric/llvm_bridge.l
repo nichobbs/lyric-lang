@@ -539,6 +539,27 @@ pub record NativeSourcePackage {
   source: String
 }
 
+/// True when `file` declares a top-level `func main` — the project entry
+/// package marker for a multi-package native build.  Mirrors
+/// `Jvm.Bridge.fileHasTopLevelMain` (package-private there too; duplicated
+/// rather than cross-imported to avoid a `Lyric.LlvmBridge` -> `Jvm.Bridge`
+/// layering dependency for four lines of logic).
+func fileHasTopLevelMain(file: in SourceFile): Bool {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(decl) -> {
+        if decl.name == "main" {
+          return true
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
 /// Compile a project's own packages (`packages`, in manifest declaration
 /// order — list position does NOT determine the entry point; the package
 /// declaring a top-level `func main` is auto-detected via
@@ -563,30 +584,6 @@ pub record NativeSourcePackage {
 /// `compileProjectToJarBundledWithRestored` precedent for the identical
 /// shape) resolves cleanly.  `triple` / `optLevel` / `extraClangFlags`
 /// forward to `linkAndEmitNative` unchanged.
-func fileHasTopLevelMain(
-
-  // True when `file` declares a top-level `func main` — the project entry
-  // package marker for a multi-package native build.  Mirrors
-  // `Jvm.Bridge.fileHasTopLevelMain` (package-private there too; duplicated
-  // rather than cross-imported to avoid a `Lyric.LlvmBridge` -> `Jvm.Bridge`
-  // layering dependency for four lines of logic).
-  file: in SourceFile,
-): Bool {
-  var i = 0
-  while i < file.items.count {
-    match file.items[i].kind {
-      case IFunc(decl) -> {
-        if decl.name == "main" {
-          return true
-        }
-      }
-      case _ -> ()
-    }
-    i = i + 1
-  }
-  false
-}
-
 pub func compileProjectToNativeWithFlags(
   packages: in List[NativeSourcePackage],
   outputPath: in String,
