@@ -406,17 +406,18 @@ test "single-file dotnet build routed through the project path (nearby [features
 }
 
 // #6282 regression coverage: a multi-file [project.packages] entry whose
-// SECOND file carries the error. This asserts the improvement this fix
-// actually ships (parse-phase diagnostics for a project package are now
-// labelled with the owning package name — `pipeParseAndErase` no longer
-// hardcodes `gate("", …)`, closing that half of the docs/63 §9.7 gap) —
-// it deliberately does NOT assert a correct file:line for the error,
-// because that part of #6282 (per-file parse + merge, replacing the
-// textual-concatenation `mergePackageSources`) is NOT fixed by this
-// change: the merged compilation unit is still one blob, so the line
-// number below is relative to that blob, not to `src/b.l`. See docs/63
-// §9.7 and the #6282 issue for the remaining work.
-test "multi-file project package: a parse error is labelled with the package name (line number still blob-relative, #6282 not fully closed)" {
+// SECOND file carries a parse error. Before this fix, `mergePackageSources`
+// textually concatenated every file's body into one synthetic blob before
+// parsing, so `Position.line` was relative to that blob, not to any file on
+// disk — the diagnostic named a line number that did not exist in `b.l` at
+// all (the issue's own repro: a 6-line file reported as "line 18") and
+// never named a file, only the bare package name. `mergePackageSourcesWithOrigins`
+// (`Lyric.Emitter`) now records, for every line of the merged blob, which
+// on-disk file and original line it came from; `Lyric.DiagnosticUtil
+// .diagFormatWithOrigin` consults that table when rendering a diagnostic
+// instead of the merged blob's own numbering, so this asserts the actual
+// file AND the actual line — not just the package label.
+test "multi-file project package: a parse error in the second file names that file and its real line (#6282)" {
   val dir = freshTempDir("mf")
   defer {
     cleanup(dir)
@@ -437,13 +438,19 @@ test "multi-file project package: a parse error is labelled with the package nam
     "func helperD(): Int {\n" +
     "  4\n" +
     "}\n"
-  // 6 lines, error on line 5 (a dangling `=`).
+  // 6 lines: a dangling `=` on line 5; the parser only realizes an
+  // expression is missing once it reaches the closing `}` on line 6 (the
+  // same line a single-file build of this exact text reports — verified
+  // directly against `brokenSource()`'s own single-file test above), so
+  // the diagnostic itself lands on line 6, not line 5.
   val bSrc = "package Mf\n" + "import Std.Core\n" + "\n" + "func main(): Unit {\n" + "  val x =\n" + "}\n"
-  match File.writeText(Path.join(srcDir, "a.l"), aSrc) {
+  val aPath = Path.join(srcDir, "a.l")
+  val bPath = Path.join(srcDir, "b.l")
+  match File.writeText(aPath, aSrc) {
     case Ok(_) -> ()
     case Err(e) -> panic("cannot write a.l: " + IOError.message(e))
   }
-  match File.writeText(Path.join(srcDir, "b.l"), bSrc) {
+  match File.writeText(bPath, bSrc) {
     case Ok(_) -> ()
     case Err(e) -> panic("cannot write b.l: " + IOError.message(e))
   }
@@ -471,8 +478,150 @@ test "multi-file project package: a parse error is labelled with the package nam
   val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
   assertTrue(result.exitCode != 0, "a broken source file must fail the build")
   assertTrue(
-    Str.contains(result.stderr, "Mf:"),
-    "expected the package label 'Mf:' in stderr (parse-phase diagnostics must not bypass pkgLabel), got:\n" +
+    Str.contains(result.stderr, bPath + ": error[P0050]"),
+    "expected the P0050 diagnostic to be labelled with b.l's own real path '" + bPath +
+      "' (not the bare package name 'Mf'), got:\n" +
+      result.stderr
+  )
+  assertTrue(
+    Str.contains(result.stderr, "] 6:"),
+    "expected the diagnostic to name b.l's own line 6 (the '}' where the parser realizes the '=' is dangling) — not a merged-blob-relative line number like 18, got:\n" +
+      result.stderr
+  )
+}
+
+// #6282's own literal repro: a type-check-phase (T0070) diagnostic on the
+// second file of a multi-file package, exactly the shape the issue's
+// "Observed" section reports as `Mf: error[T0070] 18:1: …` when the real
+// error is on `src/b.l:5`. Unlike the parse-phase test above, this exercises
+// `pipeCheckAndMono`'s `MiddleEndOptions.lineOrigins` path (via
+// `ParsedUserPkg.origins`), not just `pipeParseAndErase`'s.
+test "multi-file project package: a type error in the second file names that file and its real line (#6282 exact repro)" {
+  val dir = freshTempDir("mf-tc")
+  defer {
+    cleanup(dir)
+  }
+  val srcDir = Path.join(dir, "src")
+  match File.createDir(srcDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create src dir: " + IOError.message(e))
+  }
+  val aSrc = "package Mf\n" + "import Std.Core\n" + "\n" + "func helperA(): Int {\n" + "  1\n" + "}\n" +
+    "func helperB(): Int {\n" +
+    "  2\n" +
+    "}\n" +
+    "func helperC(): Int {\n" +
+    "  3\n" +
+    "}\n" +
+    "func helperD(): Int {\n" +
+    "  4\n" +
+    "}\n"
+  // 6 lines; line 5's trailing-expression type (String) mismatches the
+  // declared return type (Int) — a T0070 from the type checker, not parse.
+  // T0070 anchors on the enclosing function DECLARATION's own span (line
+  // 4, `func gamma(): Int {`), not the offending expression's own line —
+  // verified directly against an identical single-file build of this text.
+  val bSrc = "package Mf\n" + "import Std.Core\n" + "\n" + "func gamma(): Int {\n" + "  \"not an Int\"\n" + "}\n"
+  val aPath = Path.join(srcDir, "a.l")
+  val bPath = Path.join(srcDir, "b.l")
+  match File.writeText(aPath, aSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write a.l: " + IOError.message(e))
+  }
+  match File.writeText(bPath, bSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write b.l: " + IOError.message(e))
+  }
+  val manifest = "[package]\n" + "name = \"Mf\"\n" + "version = \"0.0.1\"\n" + "\n" + "[project]\n" + "name = \"Mf\"\n" +
+    "\n" +
+    "[project.packages]\n" +
+    "\"Mf\" = [\"src/a.l\", \"src/b.l\"]\n" +
+    "\n" +
+    "[dependencies]\n" +
+    "Std = \"*\"\n"
+  val mfPath = Path.join(dir, "lyric.toml")
+  match File.writeText(mfPath, manifest) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write lyric.toml: " + IOError.message(e))
+  }
+  val outPath = Path.join(dir, "out.dll")
+  val args: List[String] = newList()
+  args.add("build")
+  args.add("--manifest")
+  args.add(mfPath)
+  args.add("--target")
+  args.add("dotnet")
+  args.add("-o")
+  args.add(outPath)
+  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  assertTrue(result.exitCode != 0, "a trailing-expression type mismatch must fail the build")
+  assertTrue(
+    Str.contains(result.stderr, "T0070"),
+    "expected a T0070 diagnostic (type-check phase, not parse) in stderr, got:\n" + result.stderr
+  )
+  assertTrue(
+    Str.contains(result.stderr, bPath + ": error[T0070]"),
+    "expected the T0070 diagnostic to be labelled with b.l's own real path '" + bPath +
+      "' (not the bare package name 'Mf'), got:\n" +
+      result.stderr
+  )
+  assertTrue(
+    Str.contains(result.stderr, "] 4:"),
+    "expected the diagnostic to name b.l's own line 4 (the enclosing 'func gamma(): Int {' declaration T0070 anchors on), got:\n" +
+      result.stderr
+  )
+}
+
+// #6282's "Acceptance" bullet: single-file packages must be entirely
+// unaffected by the multi-file origin machinery — `mergePackageSourcesWithOrigins`
+// returns early with an empty origins list at `sources.count == 1`, so this
+// asserts the plain single-file project-routed case still reports the real
+// path with no behaviour change (mirrors the #6610 test above, but through
+// a genuine `[project.packages]` single-file entry rather than the
+// nearby-manifest auto-routing shape).
+test "single-file project package (one entry in [project.packages]): a parse error still names the real source path (#6282 unaffected-by-fix guard)" {
+  val dir = freshTempDir("mf-single")
+  defer {
+    cleanup(dir)
+  }
+  val srcDir = Path.join(dir, "src")
+  match File.createDir(srcDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create src dir: " + IOError.message(e))
+  }
+  val aPath = Path.join(srcDir, "a.l")
+  match File.writeText(aPath, brokenSource()) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write a.l: " + IOError.message(e))
+  }
+  val manifest = "[package]\n" + "name = \"MfSingle\"\n" + "version = \"0.0.1\"\n" + "\n" + "[project]\n" +
+    "name = \"MfSingle\"\n" +
+    "\n" +
+    "[project.packages]\n" +
+    "\"MfSingle\" = [\"src/a.l\"]\n" +
+    "\n" +
+    "[dependencies]\n" +
+    "Std = \"*\"\n"
+  val mfPath = Path.join(dir, "lyric.toml")
+  match File.writeText(mfPath, manifest) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write lyric.toml: " + IOError.message(e))
+  }
+  val outPath = Path.join(dir, "out.dll")
+  val args: List[String] = newList()
+  args.add("build")
+  args.add("--manifest")
+  args.add(mfPath)
+  args.add("--target")
+  args.add("dotnet")
+  args.add("-o")
+  args.add(outPath)
+  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  assertTrue(result.exitCode != 0, "a broken source file must fail the build")
+  assertTrue(
+    Str.contains(result.stderr, aPath + ": error[P0050]"),
+    "expected the P0050 diagnostic to be labelled with a.l's real path '" + aPath +
+      "' for a single-entry [project.packages] package, got:\n" +
       result.stderr
   )
 }

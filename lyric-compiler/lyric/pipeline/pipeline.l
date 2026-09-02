@@ -71,20 +71,27 @@ import Lyric.DiagnosticUtil as DiagUtil
 /// diagnostics (MSIL); when false, `tcReport` controls whether the advisory
 /// diagnostics are echoed at all (JVM bundled stdlib packages pass false).
 /// `pkgLabel` prefixes every gating diagnostic with the owning package name
-/// for multi-package builds; "" prints the bare diagnostic.
+/// for multi-package builds; "" prints the bare diagnostic.  `lineOrigins`
+/// (#6282) resolves a multi-file package's merged-blob line numbers back to
+/// their real on-disk file and line at every gate below; empty for every
+/// single-file build and for a project package whose provenance is unknown.
 pub record MiddleEndOptions {
   tcFatal: Bool
   tcReport: Bool
   pkgLabel: String
+  lineOrigins: List[DiagUtil.MergedLineOrigin]
 }
 
-// Report `diags` (package-labelled when `pkgLabel` is non-empty) and return
-// true when any is error-severity.
-func gate(pkgLabel: in String, diags: in List[Diagnostic]): Bool {
+// Report `diags` (package-labelled when `pkgLabel` is non-empty, further
+// resolved to a real per-line file/line via `origins` when non-empty — #6282)
+// and return true when any is error-severity.
+func gate(pkgLabel: in String, origins: in List[DiagUtil.MergedLineOrigin], diags: in List[Diagnostic]): Bool {
   if pkgLabel.length == 0 {
     DiagUtil.diagReportAndAbort(diags)
-  } else {
+  } else if origins.count == 0 {
     DiagUtil.diagReportAndAbortInPkg(pkgLabel, diags)
+  } else {
+    DiagUtil.diagReportAndAbortInPkgWithOrigins(pkgLabel, origins, diags)
   }
 }
 
@@ -102,6 +109,10 @@ func gate(pkgLabel: in String, diags: in List[Diagnostic]): Bool {
 /// via a hardcoded `gate("", …)`, bypassing the caller's label entirely —
 /// a syntax error printed with no file attribution at all, even for a
 /// single-file build.
+///
+/// `origins` (#6282) is a multi-file package's per-merged-line provenance
+/// table (`Lyric.Emitter.mergePackageSourcesWithOrigins`); empty for every
+/// single-file build, resolving every diagnostic straight to `label`.
 pub func pipeParseAndErase(
   source: in String,
   targetName: in String,
@@ -109,9 +120,10 @@ pub func pipeParseAndErase(
   declaredFeatures: in List[String],
   defines: in List[BD.Define],
   label: in String,
+  origins: in List[DiagUtil.MergedLineOrigin],
 ): Option[SourceFile] {
   val parseResult = parse(source)
-  if gate(label, parseResult.diagnostics) {
+  if gate(label, origins, parseResult.diagnostics) {
     return None
   }
   // Auto-inject the well-known `target` define (docs/60 §3.3) as a fallback
@@ -130,11 +142,11 @@ pub func pipeParseAndErase(
   // predicates cannot observe a define. Both are pure SourceFile -> SourceFile
   // AST transforms; substitution only ever inserts String-literal nodes.
   val bdRes = BD.applyBuildDefines(definesWk, parseResult.file)
-  if gate(label, bdRes.diagnostics) {
+  if gate(label, origins, bdRes.diagnostics) {
     return None
   }
   val cfgRes = Cfg.applyCfgErasure(Cfg.withTargetFeature(activeFeatures, targetName), declaredFeatures, bdRes.file)
-  if gate(label, cfgRes.diagnostics) {
+  if gate(label, origins, cfgRes.diagnostics) {
     return None
   }
   // Std.BuildInfo synthesis (docs/60 §9.2): if the file imports Std.BuildInfo,
@@ -165,10 +177,11 @@ pub func pipeExpandAndRewrite(
   runStubbable: in Bool,
   injectWeave: in Bool,
 ): Option[SourceFile] {
+  val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
   var f: SourceFile = file
   if runWireExpand {
     val weRes = WireExpand.expandFile(f, weWires, weConfigs)
-    if gate("", weRes.diagnostics) {
+    if gate("", noOrigins, weRes.diagnostics) {
       return None
     }
     f = weRes.file
@@ -178,7 +191,7 @@ pub func pipeExpandAndRewrite(
     f = Stubbable.stubbableRewriteFile(f)
   }
   val idRes = ImplDefaults.inheritDefaultsFile(f)
-  if gate("", idRes.diagnostics) {
+  if gate("", noOrigins, idRes.diagnostics) {
     return None
   }
   f = idRes.file
@@ -211,7 +224,7 @@ pub func pipeCheckAndMono(
 ): Option[SourceFile] {
   val tcRes = checkWithImportedPackages(file0, importedPkgs)
   if opts.tcFatal {
-    if gate(opts.pkgLabel, tcRes.diagnostics) {
+    if gate(opts.pkgLabel, opts.lineOrigins, tcRes.diagnostics) {
       return None
     }
   } else {
@@ -221,7 +234,7 @@ pub func pipeCheckAndMono(
   }
 
   val mcRes = checkFile(file0)
-  if gate(opts.pkgLabel, mcRes.diagnostics) {
+  if gate(opts.pkgLabel, opts.lineOrigins, mcRes.diagnostics) {
     return None
   }
 
@@ -231,14 +244,14 @@ pub func pipeCheckAndMono(
   // Runs after the elaborator so a propagated Err/None short-circuit is not
   // forced through the success-shaped `ensures:` rewrite.
   val propRes = lowerPropagateFile(elaborated)
-  if gate(opts.pkgLabel, propRes.diagnostics) {
+  if gate(opts.pkgLabel, opts.lineOrigins, propRes.diagnostics) {
     return None
   }
 
   val derived = deriveFileWithImports(propRes.file, deriveImports)
 
   val monoRes = monoFileWithImportsAndTypeDecls(derived, monoGenFuncs, monoIfaceDecls, monoRecordDecls)
-  if gate(opts.pkgLabel, monoRes.diagnostics) {
+  if gate(opts.pkgLabel, opts.lineOrigins, monoRes.diagnostics) {
     return None
   }
   Some(value = monoRes.file)
@@ -259,10 +272,13 @@ pub func pipeCheckAndMono(
 /// one tree all backends consume — keeps the MSIL async-SM pre-scan and
 /// emission in lockstep by construction.
 pub func pipeWeave(
-  file: in SourceFile, templates: in Map[String, CollectedTemplate], pkgLabel: in String
+  file: in SourceFile,
+  templates: in Map[String, CollectedTemplate],
+  pkgLabel: in String,
+  origins: in List[DiagUtil.MergedLineOrigin],
 ): Option[SourceFile] {
   val weaveRes = Weaver.weaveFileWithDiagsAndTemplates(file, templates)
-  if gate(pkgLabel, weaveRes.diagnostics) {
+  if gate(pkgLabel, origins, weaveRes.diagnostics) {
     return None
   }
   Some(value = AwaitHoist.hoistAwaitsFile(weaveRes.file))
@@ -285,7 +301,7 @@ pub func pipeMiddleEnd(
   opts: in MiddleEndOptions,
 ): Option[SourceFile] {
   match pipeCheckAndMono(file0, importedPkgs, deriveImports, monoGenFuncs, monoIfaceDecls, monoRecordDecls, opts) {
-    case Some(monoFile) -> pipeWeave(monoFile, templates, opts.pkgLabel)
+    case Some(monoFile) -> pipeWeave(monoFile, templates, opts.pkgLabel, opts.lineOrigins)
     case None -> None
   }
 }

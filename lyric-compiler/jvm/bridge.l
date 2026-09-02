@@ -206,7 +206,8 @@ pub func compileToJar(
   // off, matching a manifest with no `[features]` table).
   val noFeatures: List[String] = newList()
   val jvmDefines = BD.decodeDefines(newList())
-  val cfgFile = match pipeParseAndErase(source, "jvm", noFeatures, noFeatures, jvmDefines, "") {
+  val noLegacyOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  val cfgFile = match pipeParseAndErase(source, "jvm", noFeatures, noFeatures, jvmDefines, "", noLegacyOrigins) {
     case Some(f) -> f
     case None -> return false
   }
@@ -294,7 +295,8 @@ pub func compileToJar(
   val importedItems = flattenImportedItems(importedPkgs)
   val noDeriveImports: List[Item] = newList()
   val noTemplates: Map[String, CollectedTemplate] = newMap()
-  val opts = MiddleEndOptions(tcFatal = true, tcReport = false, pkgLabel = "")
+  val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  val opts = MiddleEndOptions(tcFatal = true, tcReport = false, pkgLabel = "", lineOrigins = noOrigins)
   val file = match pipeMiddleEnd(file0, importedPkgs, noDeriveImports, stdlibGenFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), noTemplates, opts) {
     case Some(f) -> f
     case None -> return false
@@ -417,9 +419,15 @@ func runMiddleEnd(
   templates: in Map[String, CollectedTemplate],
   tcFatalUserPkg: in Bool,
   pkgLabel: in String,
+  lineOrigins: in List[DiagUtil.MergedLineOrigin],
 ): Option[SourceFile] {
   val importedItems = flattenImportedItems(importedPkgs)
-  val opts = MiddleEndOptions(tcFatal = tcFatalUserPkg, tcReport = false, pkgLabel = pkgLabel)
+  val opts = MiddleEndOptions(
+    tcFatal = tcFatalUserPkg,
+    tcReport = false,
+    pkgLabel = pkgLabel,
+    lineOrigins = lineOrigins
+  )
   pipeMiddleEnd(
     file0,
     importedPkgs,
@@ -1340,6 +1348,7 @@ pub func compileToJarBundledWithFeatures(
   path: in String,
 ): Bool {
   val noRestored: List[SynthesisedArtifact] = newList()
+  val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
   compileToJarBundledWithRestored(
     source,
     outputPath,
@@ -1351,7 +1360,8 @@ pub func compileToJarBundledWithFeatures(
     defines,
     packageVersion,
     noRestored,
-    path
+    path,
+    noOrigins
   )
 }
 
@@ -1378,11 +1388,17 @@ pub func compileToJarBundledWithRestored(
   packageVersion: in String,
   restoredArtifacts: in List[SynthesisedArtifact],
   path: in String,
+  // Per-merged-line provenance for a multi-file package merged into
+  // `source` (#6282); empty when `source` is a single file (or its
+  // provenance is unknown).
+  origins: in List[DiagUtil.MergedLineOrigin],
 ): Bool {
   val one: List[String] = newList()
   one.add(source)
   val onePaths: List[String] = newList()
   onePaths.add(path)
+  val oneOrigins: List[DiagUtil.PackageLineOrigins] = newList()
+  oneOrigins.add(DiagUtil.PackageLineOrigins(origins = origins))
   compileProjectToJarBundledWithRestored(
     one,
     outputPath,
@@ -1394,7 +1410,8 @@ pub func compileToJarBundledWithRestored(
     defines,
     packageVersion,
     restoredArtifacts,
-    onePaths
+    onePaths,
+    oneOrigins
   )
 }
 
@@ -1453,6 +1470,7 @@ pub func compileProjectToJarBundledWithFeatures(
   pkgPaths: in List[String],
 ): Bool {
   val noRestored: List[SynthesisedArtifact] = newList()
+  val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
   compileProjectToJarBundledWithRestored(
     pkgSrcs,
     outputPath,
@@ -1464,7 +1482,8 @@ pub func compileProjectToJarBundledWithFeatures(
     defines,
     packageVersion,
     noRestored,
-    pkgPaths
+    pkgPaths,
+    noOriginsByPkg
   )
 }
 
@@ -1510,6 +1529,11 @@ pub func compileProjectToJarBundledWithRestored(
   // (docs/63 §9.7); see `compileProjectToJarBundledWithFeatures`'s own
   // `pkgPaths` doc comment.
   pkgPaths: in List[String],
+  // Per-merged-line provenance for a multi-file package, parallel to
+  // `pkgSrcs` by index (#6282): `originsByPkg[i]` translates `pkgSrcs[i]`'s
+  // merged-blob line numbers back to their real on-disk file and line.
+  // Empty (or an empty inner list) means no translation for that package.
+  originsByPkg: in List[DiagUtil.PackageLineOrigins],
 ): Bool {
   if pkgSrcs.count == 0 {
     Console.error("error[J001]: JVM project build received no packages")
@@ -1534,12 +1558,20 @@ pub func compileProjectToJarBundledWithRestored(
   // Package name -> on-disk path, keyed once every project package has
   // parsed far enough to know its own `package` declaration. Empty for a
   // package whose path is unknown (synthetic source) or that spans more
-  // than one file (#6282's multi-file case is not yet path-attributed).
+  // than one file — see `pkgOriginsByName` for that case's attribution.
   val pkgPathByName: Map[String, String] = newMap()
+  // Package name -> per-merged-line provenance table (#6282), keyed the
+  // same way and for the same reason as `pkgPathByName`.
+  val pkgOriginsByName: Map[String, List[DiagUtil.MergedLineOrigin]] = newMap()
   var psi = 0
   while psi < pkgSrcs.count {
     val psiPath = if psi < pkgPaths.count { pkgPaths[psi] } else { "" }
-    val uf = match pipeParseAndErase(pkgSrcs[psi], "jvm", activeFeatures, declaredFeatures, jvmProjDefines, psiPath) {
+    val psiOrigins: List[DiagUtil.MergedLineOrigin] = if psi < originsByPkg.count {
+      originsByPkg[psi].origins
+    } else {
+      newList()
+    }
+    val uf = match pipeParseAndErase(pkgSrcs[psi], "jvm", activeFeatures, declaredFeatures, jvmProjDefines, psiPath, psiOrigins) {
       case Some(f) -> f
       case None -> return false
     }
@@ -1547,10 +1579,15 @@ pub func compileProjectToJarBundledWithRestored(
       mainIdx = psi
       sawMain = true
     }
-    if psiPath.length > 0 {
+    if psiPath.length > 0 or psiOrigins.count > 0 {
       val psiPkgName = dottedPath(uf.packageDecl.path)
-      if psiPkgName.length > 0 and not pkgPathByName.containsKey(psiPkgName) {
-        pkgPathByName.add(psiPkgName, psiPath)
+      if psiPkgName.length > 0 {
+        if psiPath.length > 0 and not pkgPathByName.containsKey(psiPkgName) {
+          pkgPathByName.add(psiPkgName, psiPath)
+        }
+        if psiOrigins.count > 0 and not pkgOriginsByName.containsKey(psiPkgName) {
+          pkgOriginsByName.add(psiPkgName, psiOrigins)
+        }
       }
     }
     userFiles.add(uf)
@@ -2124,7 +2161,11 @@ pub func compileProjectToJarBundledWithRestored(
   // all, even though `--target dotnet` on the identical file already named
   // the real path.
   val userPkgLabel = match mapGet(pkgPathByName, userEntryPkgName) { case Some(p) -> p; case None -> userEntryPkgName }
-  match runMiddleEnd(userFile, importedPkgs, stdlibGenFuncs, allTemplates, true, userPkgLabel) {
+  val userPkgOrigins: List[DiagUtil.MergedLineOrigin] = match mapGet(pkgOriginsByName, userEntryPkgName) {
+    case Some(o) -> o
+    case None -> newList()
+  }
+  match runMiddleEnd(userFile, importedPkgs, stdlibGenFuncs, allTemplates, true, userPkgLabel, userPkgOrigins) {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -2229,8 +2270,12 @@ pub func compileProjectToJarBundledWithRestored(
     // the `SourceFile` attribute, and the same "path when known, else
     // name" fallback `Msil.Bridge` uses (#6610/#6643).
     val siblingPkgLabel = match mapGet(pkgPathByName, pkgName) { case Some(p) -> p; case None -> pkgName }
+    val siblingPkgOrigins: List[DiagUtil.MergedLineOrigin] = match mapGet(pkgOriginsByName, pkgName) {
+      case Some(o) -> o
+      case None -> newList()
+    }
     val ok = try {
-      match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, allTemplates, isProjectPkg, siblingPkgLabel) {
+      match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins) {
         case Some(ff) -> {
           collectAspectWovenSigs(ff, registry)
           collectBModeWovenSigs(ff, registry)

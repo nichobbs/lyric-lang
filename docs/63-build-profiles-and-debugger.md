@@ -637,6 +637,64 @@ per-*item* file attribution — for that, a boundary table of
 `(itemStartIndex, path)` recorded at merge time is far smaller than adding a
 path field to every `Item`.
 
+**Shipped design deviates from the survey above, deliberately (D-progress-868).**
+The per-file-parse-then-merge-ASTs approach was re-evaluated once actually
+attempted: it removes the string-splicing helpers' *content* risk, but on its
+own gives no *file* attribution at all — a diagnostic raised while
+type-checking a merged multi-item `SourceFile` has no notion of "which
+original file owns the item at fault" without also threading an item-index
+boundary table through every downstream phase (typecheck, modecheck, elaborate,
+weave, codegen) that touches `Diagnostic`s, none of which know about items or
+files today. That is a change to the shared `Lyric.Pipeline` gate on every
+target, not a merge-step change.
+
+The shipped fix instead keeps `mergePackageSources`'s textual-merge shape
+(so it stays a small, additive change) but has it also emit a **per-merged-line
+provenance table**: `Lyric.Emitter.mergePackageSourcesWithOrigins` returns,
+alongside the merged text, one `Lyric.DiagnosticUtil.MergedLineOrigin { path,
+originalLine }` per line of the merged blob (`""` for a line inside the
+synthesized `package`/import prelude, or a `"\n"`-join boundary after a
+`@cfg`-erased file — no single file owns those). This is exactly the "boundary
+table... far smaller than adding a path field to every `Item`" idea above,
+just keyed by **merged line number** instead of item index — cheaper to build
+(no re-parse, just tracking which kept line came from where inside the
+existing `stripPackageAndImports`-style line loop) and cheaper to consult (an
+O(1) array index at the diagnostic-print site, no need to know which item a
+diagnostic is "about").
+
+`Lyric.Pipeline.gate` (and `MiddleEndOptions.lineOrigins`, `pipeParseAndErase`'s
+`origins` parameter, `pipeWeave`'s `origins` parameter) thread this table
+through every diagnostic-reporting call already made along the shared
+parse → typecheck → modecheck → elaborate → propagate → derive → mono → weave
+pipeline, so **every phase** benefits automatically — not just parse-phase
+diagnostics. `Lyric.DiagnosticUtil.diagFormatWithOrigin` /
+`diagReportAndAbortInPkgWithOrigins` consult the table when non-empty, falling
+back to the pre-#6282 package-label behaviour otherwise (single-file packages,
+and native project packages — see below).
+
+A `List[List[MergedLineOrigin]]` (one table per project package) hit a
+self-hosted MSIL generic-specialization gap — confirmed via
+`ArrayTypeMismatchException` in `List<T>.AddWithResize` while building the
+stdlib bundle's own multi-package project build — so the per-package tables
+are carried as `List[Lyric.DiagnosticUtil.PackageLineOrigins]` (a
+single-field wrapper record) instead of a doubly-nested generic list; see that
+record's doc comment.
+
+Codegen-phase (F0xxx) diagnostics and the native backend's project-package
+path are **deliberately out of scope** for this slice: `Msil.Bridge`'s
+`abortOnCodegenDiagnosticsMsilInPkg` (and the JVM analog) still label by bare
+package name only, and `Lyric.LlvmBridge.compileProjectToNativeWithFlags` has
+no `origins` parameter at all — `Lyric.NativeSourcePackage` still has no path
+field, so native project-package diagnostics were already package-name-only
+before this change and stay that way; tracked as a follow-up (#6824) rather
+than folded into this fix. Single-file builds on every target, and the
+existing parse/typecheck/modecheck/weave gates on multi-file MSIL and JVM
+project packages, are the covered surface — see
+`source_path_diagnostics_self_test.l`'s `#6282` cases for the regression
+coverage (a parse-phase and a type-check-phase diagnostic, each on the
+*second* file of a two-file package, each asserting the real file **and**
+line).
+
 **The contract-elaborator fix is small and self-contained — do it first.**
 `CCRequires`/`CCEnsures` already carry a per-clause span; `collectRequires` and
 `collectEnsures` bind it to `_` and discard it, and the synthesized asserts are
@@ -875,15 +933,24 @@ argument mode.
    re-derive this plumbing. No user-visible behaviour; verified by call-site
    inspection.
 
-**Status (D-progress-804).** Slices 1 and 2 shipped as surveyed above:
+**Status (D-progress-868).** Slices 1, 2, and 3 have shipped; slice 4 was
+already satisfied. Slices 1 and 2 shipped as surveyed above:
 `pipeParseAndErase` takes the `label` parameter directly (no separate
 `gate("", …)` bypass to fix — the label threads straight through), and
 JVM `SourceFile` is keyed by package name off a `pkgPathByName` map
 built once each project package's own `package` declaration is known,
 exactly the refinement this section called out over the plain
-"sibling parameter" phrasing. Slice 3 (multi-file) is still open — see
-§9.5's "correct by construction" recommendation, not yet attempted;
-slice 4 (MSIL/native path confirmation) is now fully satisfied for
+"sibling parameter" phrasing. Slice 3 (multi-file) shipped for the MSIL
+and JVM project-build paths via §9.5's "Shipped design deviates from the
+survey above" note above (a per-merged-line provenance table, not the
+per-file-parse-then-merge-ASTs approach originally recommended) —
+`Msil.Bridge.compileProjectToMsilWithRestoredAndVersion(Diag)` and
+`Jvm.Bridge.compileProjectToJarBundledWithRestored` both take an
+`originsByPkg: List[Lyric.DiagnosticUtil.PackageLineOrigins]` parameter now,
+consulted by every `Lyric.Pipeline.gate` call along the shared middle end.
+The native project-build path and codegen-phase (F0xxx) diagnostics on a
+multi-file package are explicitly out of scope for this slice — see #6824.
+Slice 4 (MSIL/native path confirmation) is now fully satisfied for
 MSIL, JVM, and native — `compileToNativeWithFlags` takes a `path: in
 String` parameter and threads it into `pipeParseAndErase(source,
 "native", noFeatures, noFeatures, nativeDefines, path)` (verified by

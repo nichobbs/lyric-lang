@@ -163,7 +163,8 @@ pub func compileToMsilWithVersion(
   // no `[features]` table).
   val noCfgFeatures: List[String] = newList()
   val decodedDefines = BD.decodeDefines(defines)
-  val cfgFile = match pipeParseAndErase(source, "dotnet", noCfgFeatures, noCfgFeatures, decodedDefines, path) {
+  val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  val cfgFile = match pipeParseAndErase(source, "dotnet", noCfgFeatures, noCfgFeatures, decodedDefines, path, noOrigins) {
     case Some(f) -> f
     case None -> return false
   }
@@ -259,7 +260,13 @@ pub func compileToMsilWithVersion(
   val stdlibIfaces = collectStdlibInterfaceDecls(stdlibPkgs)
   val stdlibRecs = collectStdlibRecordDecls(stdlibPkgs)
   val noDeriveImports: List[Item] = newList()
-  val singleFileOpts = MiddleEndOptions(tcFatal = true, tcReport = false, pkgLabel = path)
+  val noSingleFileOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  val singleFileOpts = MiddleEndOptions(
+    tcFatal = true,
+    tcReport = false,
+    pkgLabel = path,
+    lineOrigins = noSingleFileOrigins
+  )
   val file = match pipeCheckAndMono(file0, importedPkgs, noDeriveImports, allMonoFuncs, stdlibIfaces, stdlibRecs, singleFileOpts) {
     case Some(f) -> f
     case None -> return false
@@ -329,7 +336,11 @@ pub func compileToMsilWithVersion(
   // dependency.
   val singleFileTemplates: Map[String, CollectedTemplate] = newMap()
   Weaver.collectAspectTemplates(file.items, pkgName, singleFileTemplates)
-  val weavedFile = match pipeWeave(file, singleFileTemplates, "") { case Some(f) -> f; case None -> return false }
+  val noWeaveOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  val weavedFile = match pipeWeave(file, singleFileTemplates, "", noWeaveOrigins) {
+    case Some(f) -> f
+    case None -> return false
+  }
 
   // #5362: synthesize a forwarding thunk for every bare top-level-function
   // value reference before lambda-lifting, so it flows through the same
@@ -423,6 +434,10 @@ record ParsedUserPkg {
   name: String
   file: SourceFile
   label: String
+  // Per-merged-line provenance for a multi-file package (#6282), carried
+  // alongside `label` the same way and for the same reason — see the doc
+  // comment above. Empty for a single-file package (or when unknown).
+  origins: List[DiagUtil.MergedLineOrigin]
 }
 
 /// Compile a list of packages into ONE bundled .NET PE DLL using the
@@ -521,6 +536,7 @@ pub func compileProjectToMsilWithFeaturesDiag(
   val noDepTemplatePkgs: List[ProjectPackagePayload] = newList()
   val noDefines: List[String] = newList()
   val noSourcePaths: List[String] = newList()
+  val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
   compileProjectToMsilWithRestoredAndVersionDiag(
     packages,
     assemblyName,
@@ -534,6 +550,7 @@ pub func compileProjectToMsilWithFeaturesDiag(
     noDepTemplatePkgs,
     noDefines,
     noSourcePaths,
+    noOriginsByPkg,
     outDiagnostics
   )
 }
@@ -555,6 +572,7 @@ pub func compileProjectToMsilWithRestored(
   val noDepTemplatePkgs: List[ProjectPackagePayload] = newList()
   val emptyNugetPaths: List[String] = newList()
   val noSourcePaths: List[String] = newList()
+  val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
   compileProjectToMsilWithRestoredAndVersion(
     packages,
     assemblyName,
@@ -567,7 +585,8 @@ pub func compileProjectToMsilWithRestored(
     "",
     noDepTemplatePkgs,
     newList(),
-    noSourcePaths
+    noSourcePaths,
+    noOriginsByPkg
   )
 }
 
@@ -599,6 +618,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   depTemplatePkgs: in List[ProjectPackagePayload],
   defines: in List[String],
   paths: in List[String],
+  originsByPkg: in List[DiagUtil.PackageLineOrigins],
 ): Bool {
   val noDiagOut: List[Diagnostic] = newList()
   compileProjectToMsilWithRestoredAndVersionDiag(
@@ -614,6 +634,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     depTemplatePkgs,
     defines,
     paths,
+    originsByPkg,
     noDiagOut
   )
 }
@@ -648,6 +669,12 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   depTemplatePkgs: in List[ProjectPackagePayload],
   defines: in List[String],
   paths: in List[String],
+  // Per-package merged-line provenance (#6282), parallel to `paths` by
+  // index: `originsByPkg[i]` translates package `i`'s merged-blob line
+  // numbers back to real on-disk files and lines. Empty (or an empty
+  // inner list) means no translation for that package — the pre-#6282
+  // behaviour (`paths[i]` labels every diagnostic verbatim).
+  originsByPkg: in List[DiagUtil.PackageLineOrigins],
   outDiagnostics: in List[Diagnostic],
 ): Bool {
   if packages.count == 0 {
@@ -722,11 +749,16 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // other single-path project package); fall back to the package name
     // — the previous behaviour — when the path is unknown.
     val pkgLabel = if pi < paths.count and paths[pi].length > 0 { paths[pi] } else { pkg.name }
-    val erased = match pipeParseAndErase(pkg.source, "dotnet", activeFeatures, declaredFeatures, projDefines, pkgLabel) {
+    val pkgOrigins: List[DiagUtil.MergedLineOrigin] = if pi < originsByPkg.count {
+      originsByPkg[pi].origins
+    } else {
+      newList()
+    }
+    val erased = match pipeParseAndErase(pkg.source, "dotnet", activeFeatures, declaredFeatures, projDefines, pkgLabel, pkgOrigins) {
       case Some(f) -> f
       case None -> return false
     }
-    parsedPkgs.add(ParsedUserPkg(name = pkg.name, file = erased, label = pkgLabel))
+    parsedPkgs.add(ParsedUserPkg(name = pkg.name, file = erased, label = pkgLabel, origins = pkgOrigins))
     pi = pi + 1
   }
 
@@ -782,7 +814,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // After template expansion, matching the JVM bridge — see the
     // single-file pipeline's placement comment.
     val rewritten = resolveTypeAliasesMsil(rewritten0)
-    parsedPkgs[wei] = ParsedUserPkg(name = wep.name, file = rewritten, label = wep.label)
+    parsedPkgs[wei] = ParsedUserPkg(name = wep.name, file = rewritten, label = wep.label, origins = wep.origins)
     wei = wei + 1
   }
 
@@ -973,7 +1005,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // (e.g. an unknown-name reference) names the real file exactly like a
     // parse-phase diagnostic for the same single-file project package
     // does, instead of falling back to the bare package name.
-    val projOpts = MiddleEndOptions(tcFatal = true, tcReport = false, pkgLabel = pp.label)
+    val projOpts = MiddleEndOptions(tcFatal = true, tcReport = false, pkgLabel = pp.label, lineOrigins = pp.origins)
     val monoFile = match pipeCheckAndMono(pp.file, importedPkgs, flattenImportedItems(importedPkgs), allImportedGenFuncs, allImportedIfaceDecls, allImportedRecordDecls, projOpts) {
       case Some(f) -> f
       case None -> return false
@@ -1157,7 +1189,11 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // cross-package `from`-instance aspects against the templates
     // collected above (#3414), and aborts on weave-time errors
     // (A0042 / A0043 / A0044).
-    val weaved = match pipeWeave(perPkgFiles[li], allTemplates, "") { case Some(f) -> f; case None -> return false }
+    val noBundleWeaveOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+    val weaved = match pipeWeave(perPkgFiles[li], allTemplates, "", noBundleWeaveOrigins) {
+      case Some(f) -> f
+      case None -> return false
+    }
     // #5362: see the matching single-file comment above.
     val fnRefPkgFile = synthesizeBareFuncRefThunksMsil(weaved)
     val lifted = liftLambdasMsil(fnRefPkgFile)
@@ -1360,6 +1396,7 @@ pub func compileProjectToMsilWithRestoredEncoded(
   val noDepTemplatePkgsEncoded: List[ProjectPackagePayload] = newList()
   val emptyNugetPaths: List[String] = newList()
   val noSourcePathsEncoded: List[String] = newList()
+  val noOriginsByPkgEncoded: List[DiagUtil.PackageLineOrigins] = newList()
   compileProjectToMsilWithRestoredAndVersion(
     packages,
     assemblyName,
@@ -1372,7 +1409,8 @@ pub func compileProjectToMsilWithRestoredEncoded(
     packageVersion,
     noDepTemplatePkgsEncoded,
     newList(),
-    noSourcePathsEncoded
+    noSourcePathsEncoded,
+    noOriginsByPkgEncoded
   )
 }
 
