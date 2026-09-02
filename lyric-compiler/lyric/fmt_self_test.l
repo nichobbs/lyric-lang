@@ -2032,6 +2032,21 @@ test "bare '..' range pattern round trips instead of being silently rewritten to
   )
 }
 
+// `patRangeStr`'s operator-selection chain (review suggestion on #6828) has
+// a third branch besides `bareDotDot`'s true/false: the inclusive `..=`
+// spelling, which short-circuits ahead of `bareDotDot` entirely (`incl`
+// is set independently by `RangeBound.RBClosed`/inclusive patterns, not by
+// this PR's new field). Cover it explicitly so a future reordering of that
+// chain that broke `..=` round-tripping wouldn't go undetected by only the
+// two half-open cases above.
+test "inclusive '..=' range pattern round trips (unaffected by the bareDotDot chain)" {
+  val src = "package P\n\nfunc classify(n: Int): Int {\n  match n {\n    case 0 ..= 10 -> 1\n    case _ -> 0\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "inclusive '..=' range pattern: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "case 0 ..= 10 ->"), "inclusive '..=' range pattern: preserved verbatim")
+}
+
 // A third, distinct call site for the same `rangeBoundStr` fix: a range
 // subtype declaration (`docs/01-language-reference.md`'s `TRefined`,
 // `type Age = Int range 0 .. 150`). `distinctDoc` renders `dt.rangeClause`
@@ -2045,4 +2060,16 @@ test "bare '..' range subtype bound round trips instead of being silently rewrit
   assertTrue(fmtCheckIsOk(c), "bare '..' range subtype: round-trips")
   val acc = format(parse(src))
   assertTrue(Str.contains(acc, "type Age = Int range 0 .. 150"), "bare '..' range subtype: preserved verbatim")
+}
+
+// The explicit '..<' counterpart on the same third reader (review
+// suggestion on #6828) — the for-loop and match-pattern tests above both
+// cover both spellings side by side; this closes the same gap for the
+// range-subtype declaration form.
+test "explicit '..<' range subtype bound is unaffected by the bare-'..' fix" {
+  val src = "package P\n\ntype Age = Int range 0 ..< 150\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "explicit '..<' range subtype: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "type Age = Int range 0 ..< 150"), "explicit '..<' range subtype: preserved verbatim")
 }

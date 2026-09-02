@@ -653,11 +653,12 @@ func checkDistinctType(tbl: in SymbolTable, diag: in List[Diagnostic], dt: in Di
               checkClosed(tbl, diag, dt.name, lo, hi, "..=", dt.span)
             }
           }
-          case RBHalfOpen(lo, hi, _) -> {
+          case RBHalfOpen(lo, hi, bareDotDot) -> {
+            val opStr = if bareDotDot { ".." } else { "..<" }
             if isFloatBase {
-              checkClosedFloat(diag, dt.name, lo, hi, "..<", dt.span)
+              checkClosedFloat(diag, dt.name, lo, hi, opStr, dt.span)
             } else {
-              checkClosed(tbl, diag, dt.name, lo, hi, "..<", dt.span)
+              checkClosed(tbl, diag, dt.name, lo, hi, opStr, dt.span)
             }
           }
           case _ -> {
