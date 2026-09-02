@@ -40227,8 +40227,9 @@ formatter's `rangeBoundStr`/`patRangeStr` now branch on the flag
 instead of hardcoding one spelling.
 
 Unlike the `legacyPrefixForm` field added to `GenericParams` (a
-*record*, D-progress-868's sibling fix in the same #2280 sweep, PR
-#6827), `RBHalfOpen` and `PRange` are *union cases*, so every one of
+*record*, the sibling fix in the same #2280 sweep, PR #6827 — not yet
+merged at the time of writing, so its own decision-log entry number
+isn't final), `RBHalfOpen` and `PRange` are *union cases*, so every one of
 their ~68 combined pattern-match sites across the compiler
 (`RBHalfOpen`: parser, formatter, hoist engine, alias rewriter, type
 alias resolver, monomorphizer, propagate, mode checker, both type
@@ -40261,15 +40262,19 @@ this fix's `bareDotDot` field could introduce or needs to touch — the
 match-arm range patterns both parse and round-trip correctly.
 
 **Verification.** New `fmt_self_test.l` cases: bare `..` for-loop
-round-trip, explicit `..<` regression guard, and a match-arm range
+round-trip, explicit `..<` regression guard, a match-arm range
 pattern case covering both spellings side by side (`case 0 .. 10 -> 1`
-/ `case 10 ..< 20 -> 2`) — 141/141. Full regression sweep against the
+/ `case 10 ..< 20 -> 2`), and (added in a follow-up commit responding
+to review) a range-subtype declaration round-trip (`type Age = Int
+range 0 .. 150`, `TRefined`/`distinctDoc`'s own reader of
+`rangeBoundStr`) — 142/142. Full regression sweep against the
 rebuilt self-hosted compiler, all green: `parser_self_test.l` 131/131,
 `typechecker_self_test.l` 412/412, `modechecker_self_test.l` 112/112,
 `mono_self_test.l` 82/82, `cfg_self_test.l` 12/12,
-`weaver_self_test.l` 46/46. `for_loop_slice_self_test.l` (the original
-repro) now round-trips byte-identical through `./bin/lyric fmt
---write` after a full `make lyric` self-host rebuild.
+`weaver_self_test.l` 46/46, `source_path_diagnostics_self_test.l`
+12/12. `for_loop_slice_self_test.l` (the original repro) now
+round-trips byte-identical through `./bin/lyric fmt --write` after a
+full `make lyric` self-host rebuild.
 
 **Files changed:** `lyric-compiler/lyric/parser/parser_ast.l`
 (`RangeBound.RBHalfOpen`, `PatternKind.PRange` field additions),
@@ -40277,7 +40282,7 @@ repro) now round-trips byte-identical through `./bin/lyric fmt
 `lyric-compiler/lyric/fmt/fmt_core.l` (`rangeBoundStr`,
 `patRangeStr`), plus the ~20 files listed above whose `RBHalfOpen`/
 `PRange` pattern matches needed a wildcarded or threaded third/fourth
-field to keep compiling. `lyric-compiler/lyric/fmt_self_test.l` (3 new
+field to keep compiling. `lyric-compiler/lyric/fmt_self_test.l` (4 new
 tests).
 
 **Related:** #2280 (tracking issue), the sibling `generic[T]`-prefix
