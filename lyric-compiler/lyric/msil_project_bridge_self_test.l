@@ -869,6 +869,71 @@ test "qualified record construction survives a local shadowing only the package'
   )
 }
 
+// ─── Regression: the fuller #6838 shape — a `?`-propagated cross-package call
+// followed by a qualified construction of that SAME error type, with a
+// shadowing local in scope — end to end ─────────────────────────────────────
+// Mirrors #6838's own reported snippet more closely than the minimal test
+// above: `findSession` propagates a cross-package call's (always-successful)
+// result via `?` (so the enclosing function's declared error type and the
+// later qualified construction's type are the SAME record, exactly like
+// #6838's `Result[Unit, CloudAgents.Sqlite.DbError]` around a `?`-chained
+// `CloudAgents.Sqlite.query(...)`), THEN constructs that record fully
+// qualified inside `Err(value = ...)` when a business-logic condition on the
+// propagated value fails — all while a local shadows the package's first
+// segment for the whole function. Exercises the shadow-defeat fix through a
+// real `?`-propagation site immediately preceding the qualified
+// construction, not just a bare qualified construction on its own.
+test "qualified record construction survives shadowing through a ?-propagated call to the same error type (#6838)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "QualErrProp.Sub",
+      "package QualErrProp.Sub\n" + "\n" + "import Std.Core\n" + "\n" + "pub record DbError { pub message: String }\n" +
+        "\n" +
+        "pub func query(n: in Int): Result[Int, DbError] {\n" +
+        "  Ok(value = n)\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "QualErrProp.App",
+      "package QualErrProp.App\n" + "\n" + "import Std.Core\n" + "import QualErrProp.Sub\n" + "\n" +
+        "func findSession(n: in Int): Result[Unit, QualErrProp.Sub.DbError] {\n" +
+        "  val QualErrProp = 0\n" +
+        "  val row = QualErrProp.Sub.query(n)?\n" +
+        "  if row == 0 {\n" +
+        "    return Err(value = QualErrProp.Sub.DbError(message = \"not found\"))\n" +
+        "  }\n" +
+        "  Ok(value = ())\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  match findSession(0) {\n" +
+        "    case Ok(_) -> println(\"ok\")\n" +
+        "    case Err(e) -> println(\"err: \" + e.message)\n" +
+        "  }\n" +
+        "  match findSession(5) {\n" +
+        "    case Ok(_) -> println(\"ok\")\n" +
+        "    case Err(e) -> println(\"err: \" + e.message)\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRunWithStdlib("qualerrprop", packages, "QualErrProp")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "qualified_record_construction_survives_shadowed_first_segment_via_propagation: exit 0 (stderr=" + result.stderr +
+      ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    "err: not found\nok",
+    "qualified_record_construction_survives_shadowed_first_segment_via_propagation: stdout matches expected"
+  )
+}
+
 // ─── Regression: multi-segment qualified static val access (#5258) ──────────
 // A consumer references a library's non-literal `pub val` with the
 // fully-qualified two-segment path `Lib.Pkg.NAME` (not the bare unqualified
