@@ -16139,23 +16139,16 @@ func lowerMethodCallMsil(
     // local's own name, so it must win) — a 2+-segment receiver is never a
     // bare local reference no matter what its first segment is spelled like,
     // so it carries no such guard here either, exactly as the union-case
-    // branch above already doesn't. The exact-FQN-registered-ctor check
-    // below is itself unambiguous and additive, so this only ever adds a new
-    // successful resolution tier for a call shape nothing previously handled.
-    val recvIsLocalQualRecord = recvSegs.count == 1 and fctx.slots.containsKey(recvSegs[0])
-    if not recvIsLocalQualRecord {
-      val qualRecordCtorFqn = joinSegsMsil(recvSegs, ".") + "." + memberName
-      if cctx.recordCtorTokens.containsKey(qualRecordCtorFqn) {
-        val recCtorSegs: List[String] = newList()
-        var rcsi = 0
-        while rcsi < recvSegs.count {
-          recCtorSegs.add(recvSegs[rcsi])
-          rcsi = rcsi + 1
-        }
-        recCtorSegs.add(memberName)
-        val recCtorPath = ModulePath(segments = recCtorSegs, span = recv.span)
-        return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, recCtorPath, args)
-      }
+    // branch above already doesn't. Reuses `recvIsLocalQual` and `callFqn`/
+    // `fqnSegs` (built above for the funcTokens tiers) rather than
+    // recomputing them: `callFqn` is already `joinSegsMsil(recvSegs, ".") +
+    // "." + memberName` and `fqnSegs` is already `recvSegs ++ [memberName]`.
+    // The exact-FQN-registered-ctor check below is itself unambiguous and
+    // additive, so this only ever adds a new successful resolution tier for
+    // a call shape nothing previously handled.
+    if not recvIsLocalQual and cctx.recordCtorTokens.containsKey(callFqn) {
+      val recCtorPath = ModulePath(segments = fqnSegs, span = recv.span)
+      return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, recCtorPath, args)
     }
   }
   val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
