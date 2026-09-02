@@ -40025,3 +40025,170 @@ diagnostic and `unionCaseSymbolForScrutinee` precedent this reuses),
 #6688/#6728 (the codegen-level call-argument enum/union-case hint this
 is the type-checker-level analog of), #6547 (the PR this was deferred
 out of, now landing separately).
+
+## D-progress-868 — Multi-file `[project.packages]` diagnostics report the
+real on-disk file and line, not a merged-blob-relative line number (#6282,
+#6284 slice 3)
+
+**Context.** `mergePackageSources` (`lyric-compiler/lyric/emitter.l`)
+textually concatenates a multi-file package's sources (stripping each
+file's `package`/`import` header, hoisting the imports into a synthesized
+preamble, and joining the bodies with `"\n"`) into one compilation unit
+before parsing — both `Msil.Bridge` and `Jvm.Bridge` require exactly one
+valid unit per package. Every `Position.line` in the merged unit is
+therefore relative to the synthetic blob, not to any file on disk, and
+neither `Span` nor `Diagnostic` carries a file identity — the finest
+attribution available for a multi-file package was the bare package name.
+`docs/03`'s own #6282 issue text captures the symptom exactly: a 6-line
+`src/b.l` with an error on its own line 5 was reported as
+`Mf: error[T0070] 18:1: …` — line 18 exists in no file at all.
+
+`docs/63` §9.5/§9.7 had already surveyed this (D-progress-804 shipped
+slices 1 and 2 — real-path labelling for single-file builds, and JVM
+`SourceFile` keyed by package name) and recommended, for slice 3, parsing
+each file separately and merging the resulting `SourceFile` ASTs — "correct
+by construction with no rebase arithmetic." Attempting that revealed a gap
+the survey didn't close: merging ASTs (rather than text) gives every item
+its own file's real line numbers, but item→file attribution is a SEPARATE
+problem it does not solve. `Diagnostic`s carry a line/column only, and
+diagnostics are gated once per phase across an entire package's flattened
+item list (`Lyric.Pipeline.gate`, called from `pipeParseAndErase`,
+`pipeCheckAndMono`, and `pipeWeave`) — there is no existing "which item is
+this diagnostic about" plumbing anywhere in the type checker, mode checker,
+contract elaborator, weaver, or three backend codegens to hang a boundary
+table off of, and retrofitting one would mean threading an item-index (or a
+`Diagnostic.path` field) through every diagnostic-emitting call site across
+the entire middle end and all three backends — a far larger, far riskier
+change than the multi-file merge itself, for marginal gain over a much
+cheaper alternative described below.
+
+**Fix.** Keep `mergePackageSources`'s textual-merge shape (so the change
+stays small and additive, and every existing caller of the plain
+`mergePackageSources` is untouched), but add a sibling function,
+`mergePackageSourcesWithOrigins`, that ALSO returns a **per-merged-line
+provenance table**: one `Lyric.DiagnosticUtil.MergedLineOrigin { path,
+originalLine }` per line of the merged blob, built by a
+line-number-tracking twin of the existing `stripPackageAndImports`
+(`stripPackageAndImportsWithLines`) that records, for every KEPT line, the
+real on-disk path and the line's 1-based position in ITS OWN file. A
+merged-blob line inside the synthesized `package`/import prelude, or a
+`"\n"`-join boundary the merge inserts after a `@cfg`-erased or otherwise
+empty file, carries `path = ""` (unattributable — no single file owns it).
+
+This is exactly the "boundary table… far smaller than adding a path field
+to every `Item`" idea `docs/63` §9.5 already named, just keyed by **merged
+line number** (an O(1) array index at the diagnostic PRINT site) instead of
+item index (which nothing downstream tracks). It requires zero changes to
+`Diagnostic`, `SourceFile`, `Span`, the type checker, the mode checker, the
+contract elaborator, the weaver, or any codegen: `Lyric.Pipeline.gate`
+(the ONE place every phase's diagnostics funnel through) is extended with
+an `origins` parameter, threaded via a new `MiddleEndOptions.lineOrigins`
+field and new `origins` parameters on `pipeParseAndErase` and `pipeWeave`;
+`Lyric.DiagnosticUtil.diagFormatWithOrigin` /
+`diagReportAndAbortInPkgWithOrigins` consult the table when non-empty
+(resolving a diagnostic's merged line to its real path+line, falling back
+to the existing package-label behaviour otherwise) and are otherwise
+identical to the pre-#6282 `diagFormat` / `diagReportAndAbortInPkg`. Every
+pre-existing call site that has no origin table to offer passes an empty
+list — behaviourally a no-op, verified by the full pre-existing test suite.
+
+`Lyric.Emitter.emitProject` (the ONE place that actually merges a
+package's `N > 1` sources into `1` before MSIL/JVM project dispatch — the
+downstream `mergePackageSources` calls in `emitProjectInProcess` /
+`emitProjectJvmInProcess` are pass-throughs by the time they run, since
+`emitProject` already pre-merged) now calls `mergePackageSourcesWithOrigins`
+and carries the resulting table alongside the merged `ProjectPackage`,
+parallel-by-index to `req.packages` (mirroring the existing `paths`
+parallel-list convention `#6610`/`#6643` established). `Msil.Bridge`'s
+`ParsedUserPkg` record gained an `origins` field alongside its existing
+`label` field (the SAME "resolved once at parse time, carried forward
+rather than re-derived" pattern `#6643`'s `pp.label` established);
+`Jvm.Bridge.compileProjectToJarBundledWithRestored` builds an analogous
+`pkgOriginsByName` map alongside its existing `pkgPathByName`.
+
+**A `List[List[X]]` generic-specialization trap, root-caused mid-fix.**
+The natural per-package-table type, `List[List[Lyric.DiagnosticUtil
+.MergedLineOrigin]]`, compiled cleanly through `stage1-fast` but crashed
+`make lyric` itself: `Lyric.Emitter.Program.emitProject` threw
+`System.ArrayTypeMismatchException` inside `List<T>.AddWithResize` while
+`scripts/stage-selfhosted-stdlib.sh` built the stdlib's own multi-package
+project bundle (the stdlib manifest's `[project.packages]` entries are
+exactly this multi-file shape) — a silent generic-specialization gap in the
+self-hosted MSIL bridge for a **doubly-nested** `List[List[X]]`
+instantiation where `X` is a record declared in a DIFFERENT package than
+the `List[List[X]]` usage site. Every other working `List[List[X]]` site in
+the tree (`msil/codegen.l`'s `List[List[MInsn]]`, `verifier/vcir.l`'s
+`List[List[Term]]`, `jvm/lowering.l`'s `List[List[VerifierType]]`, …) has
+`X` defined in the SAME package as the usage — `MergedLineOrigin` living in
+`Lyric.DiagnosticUtil` while `List[List[MergedLineOrigin]]` was
+instantiated from `Lyric.Emitter`/`Msil.Bridge`/`Jvm.Bridge` was the
+distinguishing (and untested) shape. Worked around by wrapping the inner
+list in a single-field record, `Lyric.DiagnosticUtil.PackageLineOrigins {
+origins: List[MergedLineOrigin] }`, and using `List[PackageLineOrigins]`
+everywhere instead — a single level of list nesting, the same shape as
+every working site. Filed as its own tracked issue (#6824, alongside two
+deliberate scope exclusions below) rather than root-caused here: the
+self-hosted MSIL bridge's generic-instantiation resolution is very likely
+the same root cause as the recurring `W0005: … MGenericInstByName
+'Std.Core.Result`2' … signature degraded to System.Object (#2494)`
+warnings printed on every self-hosted build, and deserves a dedicated
+investigation rather than a one-off workaround note.
+
+**Deliberately out of scope (tracked in #6824).** Two surfaces do NOT
+benefit from this fix, by design, to keep the change bounded:
+(1) codegen-phase (F0xxx) diagnostics — `Msil.Bridge
+.abortOnCodegenDiagnosticsMsilInPkg` and the JVM analog still label by bare
+package name only, since codegen diagnostics don't route through
+`Lyric.Pipeline.gate`; (2) the **native** project-build path —
+`Lyric.LlvmBridge.compileProjectToNativeWithFlags` / `NativeSourcePackage`
+never had a `path` field at all (unlike MSIL/JVM, which already had
+real-path threading for the single-file case pre-#6282), so native
+project-package diagnostics were ALREADY package-name-only before this fix
+and stay that way — not a regression, just a pre-existing, separate gap.
+`llvm_bridge.l`'s two `pipeParseAndErase` / two `MiddleEndOptions` call
+sites were updated only to keep compiling against the now-shared
+`Lyric.Pipeline` signatures (passing empty origins lists), not to gain the
+new capability.
+
+**Verification.**
+- New regression coverage in `source_path_diagnostics_self_test.l`: a
+  multi-file (`src/a.l` + `src/b.l`) `[project.packages]` entry with a
+  PARSE error on `b.l` (asserts the real path AND real line — verified
+  against an identical single-file build's own line number, which the
+  parser reports on the closing `}`, not the dangling `=`, so the test's
+  own first-draft expectation was corrected against that ground truth
+  rather than assumed); the issue's own literal repro (a T0070
+  trailing-expression type mismatch on `b.l`, asserting the real path AND
+  real line — T0070 anchors on the enclosing function DECLARATION's span,
+  again verified against an identical single-file build); and a
+  single-entry `[project.packages]` guard confirming the single-file case
+  stays byte-for-byte unaffected. 11/11 pass.
+- Manually verified the JVM project path reports the identical real
+  file:line for the same T0070 repro (`Jvm.Bridge
+  .compileProjectToJarBundledWithRestored`'s independent `pkgOriginsByName`
+  plumbing).
+- Manually verified the native project path still fails gracefully with
+  the pre-existing package-name label (no crash, no behaviour change) on a
+  parse error, confirming the native no-op call sites are wired correctly.
+- `lyric-compiler/lyric/type_checker/typechecker_self_test.l`: 412/412.
+- `lyric-compiler/lyric/enum_case_collision_self_test.l`: 13/13 (exercises
+  `compileProjectToMsilWithRestored` / `compileProjectToJarBundledWithFeatures`,
+  whose public signatures are unchanged by this fix).
+- `lyric-compiler/lyric/msil_restored_bridge_self_test.l`: 6/6.
+- `lyric-compiler/lyric/jvm_manifest_package_cycle_self_test.l`: 3/3
+  (exercises `compileProjectToJarBundledWithFeatures` and the
+  manifest-driven multi-package JVM/dotnet project paths directly).
+- `lyric-compiler/lyric/weaver_self_test.l`: 46/46.
+- `lyric-compiler/lyric/bitwise_self_test.l --target jvm`: 10/10.
+- Two full `make lyric` rebuilds (the second confirms the
+  `List[PackageLineOrigins]` fix): both succeed end to end, including the
+  self-hosted stdlib's own multi-package `[project.packages]` build via
+  `scripts/stage-selfhosted-stdlib.sh` and the self-hosted compiler DLL
+  staging via `scripts/stage-selfhosted-compiler.sh` — i.e. this fix's own
+  code path is exercised by the compiler building itself, on every build.
+
+**Related:** #6282, #6284 (this closes slice 3 of #6284's remaining work;
+slices 1/2/4 shipped in D-progress-804), #6824 (the two deliberate scope
+exclusions above, plus the `List[List[<cross-package-record>]]`
+generic-specialization gap), `docs/63-build-profiles-and-debugger.md` §9.5
+and §9.7 (updated alongside this entry).

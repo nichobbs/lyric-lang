@@ -44,6 +44,7 @@ import Lyric.WireExpand as WireExpand
 import Lyric.Mono
 import Lyric.Derives
 import Lyric.Pipeline
+import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.LlvmTypes
 import Lyric.LlvmIr
 import Lyric.LlvmCodegen
@@ -372,7 +373,8 @@ pub func compileToNativeWithFlags(
   val noFeatures: List[String] = newList()
   val nativeFeatures = Cfg.withTargetFeature(noFeatures, "native")
   val nativeDefines = BD.decodeDefines(defines)
-  val cfgFile = match pipeParseAndErase(source, "native", noFeatures, noFeatures, nativeDefines, path) {
+  val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  val cfgFile = match pipeParseAndErase(source, "native", noFeatures, noFeatures, nativeDefines, path, noOrigins) {
     case Some(f) -> f
     case None -> return false
   }
@@ -434,7 +436,8 @@ pub func compileToNativeWithFlags(
   val noImportedGenFuncs: List[FunctionDecl] = newList()
   val noDeriveImports: List[Item] = newList()
   val noTemplates: Map[String, CollectedTemplate] = newMap()
-  val opts = MiddleEndOptions(tcFatal = false, tcReport = true, pkgLabel = path)
+  val noSingleFileOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  val opts = MiddleEndOptions(tcFatal = false, tcReport = true, pkgLabel = path, lineOrigins = noSingleFileOrigins)
   val userFile = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts) {
     case Some(f) -> f
     case None -> return false
@@ -628,9 +631,15 @@ pub func compileProjectToNativeWithFlags(
   // package's own `@cfg(feature = ...)` items are never user-feature-gated
   // on any target, same as the single-source path).
   val cfgFiles: List[SourceFile] = newList()
+  // #6282: native project-package diagnostics stay package-name-labelled
+  // (no on-disk `path` field on `NativeSourcePackage` yet, tracked
+  // separately) — `noProjOrigins` keeps this call site compiling against
+  // `pipeParseAndErase`'s shared origins parameter without claiming
+  // per-file attribution native doesn't have.
+  val noProjOrigins: List[DiagUtil.MergedLineOrigin] = newList()
   var ppi = 0
   while ppi < packages.count {
-    val cfgFile = match pipeParseAndErase(packages[ppi].source, "native", activeFeatures, declaredFeatures, nativeDefines, packages[ppi].name) {
+    val cfgFile = match pipeParseAndErase(packages[ppi].source, "native", activeFeatures, declaredFeatures, nativeDefines, packages[ppi].name, noProjOrigins) {
       case Some(f) -> f
       case None -> return false
     }
@@ -711,9 +720,10 @@ pub func compileProjectToNativeWithFlags(
   val importedItemsForMono = flattenImportedItems(importedPkgs)
   val importedInterfaceDecls = pipeInterfaceDecls(importedItemsForMono)
   val importedRecordDecls = pipeRecordDecls(importedItemsForMono)
+  val noProjMiddleEndOrigins: List[DiagUtil.MergedLineOrigin] = newList()
   var mei = 0
   while mei < ownFiles0.count {
-    val opts = MiddleEndOptions(tcFatal = false, tcReport = true, pkgLabel = "")
+    val opts = MiddleEndOptions(tcFatal = false, tcReport = true, pkgLabel = "", lineOrigins = noProjMiddleEndOrigins)
     val checked = match pipeMiddleEnd(ownFiles0[mei], importedPkgs, noDeriveImports, noImportedGenFuncs, importedInterfaceDecls, importedRecordDecls, noTemplates, opts) {
       case Some(f) -> f
       case None -> return false

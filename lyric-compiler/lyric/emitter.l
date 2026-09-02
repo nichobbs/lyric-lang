@@ -53,6 +53,7 @@ import Lyric.BuildDefines as BD
 import Lyric.CliShell as CliShell
 import Lyric.ContractMeta as Meta
 import Lyric.RestoredPackages as RP
+import Lyric.DiagnosticUtil as DiagUtil
 import Msil.Bridge as MsilBridge
 import Jvm.Bridge as JvmBridge
 import Lyric.LlvmBridge as LlvmBridge
@@ -111,9 +112,14 @@ pub record ProjectPackage {
   /// On-disk path for each entry of `sources`, parallel by index (docs/63
   /// §9.7). "" marks an unknown/synthetic source (ad-hoc compiles, tests).
   /// A `ProjectPackage` with `sources.count > 1` is a genuinely multi-file
-  /// package; until #6282's per-file parse lands, `paths` for those is
-  /// conventionally `[""]` once `mergePackageSources` has collapsed the
-  /// files into one blob — emitting no attribution beats a guessed one.
+  /// package; `paths` for those is conventionally `[""]` once
+  /// `mergePackageSources`/`mergePackageSourcesWithOrigins` has collapsed
+  /// the files into one blob — no single on-disk path names the merged
+  /// blob as a whole. `emitProject`'s pre-merge carries the real per-file
+  /// attribution separately instead, via `mergePackageSourcesWithOrigins`'s
+  /// `MergedPackageSource.origins` table (#6282/D-progress-868) — `paths`
+  /// alone was never extended to cover the multi-file case, but the
+  /// merged package is no longer unattributed.
   paths: List[String]
 }
 
@@ -1112,6 +1118,149 @@ func mergePackageSources(
   header + Str.joinList("\n", imports) + "\n" + bodies
 }
 
+// Like `stripPackageAndImports`, but also appends one `MergedLineOrigin`
+// per KEPT line to `originsOut`, parallel to the returned text's own
+// lines (#6282): `path` is the file's (possibly empty) on-disk source
+// path, and `originalLine` is the 1-based line number the kept line
+// occupied in `source` itself — the SAME line it will keep once `parse`
+// lexes the file standalone, since only whole lines are ever dropped
+// here (never split, reordered, or merged).
+func stripPackageAndImportsWithLines(
+  source: in String, path: in String, originsOut: in List[DiagUtil.MergedLineOrigin]
+): String {
+  val lines: List[String] = newList()
+  var lineStart = 0
+  var pos = 0
+  var seenPackage = false
+  var lineNo = 1
+  while pos <= source.length {
+    val atEnd = pos == source.length
+    val isNewline = not atEnd and source.substring(pos, 1) == "\n"
+    if atEnd or isNewline {
+      val lineLen = pos - lineStart
+      val line = if lineLen > 0 { source.substring(lineStart, lineLen) } else { "" }
+      val isPackage = Str.startsWith(line, "package ")
+      val skip = isPackage or Str.startsWith(line, "import ") or Str.startsWith(line, "//!") or
+        (not seenPackage and Str.startsWith(line, "@"))
+      if isPackage {
+        seenPackage = true
+      }
+      if not skip {
+        lines.add(line)
+        originsOut.add(DiagUtil.MergedLineOrigin(path = path, originalLine = lineNo))
+      }
+      lineStart = pos + 1
+      lineNo = lineNo + 1
+    }
+    pos = pos + 1
+  }
+  Str.joinList("\n", lines)
+}
+
+/// A multi-file package's merged source, alongside a per-merged-line
+/// provenance table (#6282/#6284): `origins[n - 1]` names the real on-disk
+/// file and line that merged line `n` (1-based) came from.  A line that
+/// belongs to the synthesized `package`/import prelude — or to a
+/// "\n"-join boundary the merge inserted after a `@cfg`-erased or
+/// otherwise empty file — carries `path = ""`, since no single file owns
+/// it.
+pub record MergedPackageSource {
+  source: String
+  origins: List[DiagUtil.MergedLineOrigin]
+}
+
+/// Like `mergePackageSources`, but also returns the per-merged-line
+/// provenance table described on `MergedPackageSource` (#6282).  `paths`
+/// is `sources`' parallel on-disk path list ("" for a source with no
+/// known path); a shorter or empty `paths` list is treated as every entry
+/// unknown, matching `mergePackageSources`'s callers.
+///
+/// Diagnostic rendering (`Lyric.DiagnosticUtil.diagFormatWithOrigin`)
+/// consults this table instead of the merged blob's own line numbering,
+/// which is meaningless to a reader — it exists only so every file in the
+/// package can type-check against the others' declarations in one pass.
+pub func mergePackageSourcesWithOrigins(
+  fallbackName: in String,
+  sources: in List[String],
+  paths: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+): MergedPackageSource {
+  val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  if sources.count == 0 {
+    return MergedPackageSource(source = "", origins = noOrigins)
+  }
+  if sources.count == 1 {
+    return MergedPackageSource(source = sources[0], origins = noOrigins)
+  }
+  val declared = extractPackageName(sources[0])
+  val name = if Str.length(declared) > 0 { declared } else { fallbackName }
+  val ann = extractNonCfgFileLevelAnnotations(sources[0])
+  val imports: List[String] = newList()
+  var bodies = ""
+  val bodyOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  var i = 0
+  while i < sources.count {
+    val src = sources[i]
+    val srcPath = if i < paths.count { paths[i] } else { "" }
+    if not fileIsCfgErasedByFeatures(src, activeFeatures) {
+      collectImportLines(src, imports)
+      val fileOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+      val body = stripPackageAndImportsWithLines(src, srcPath, fileOrigins)
+      if Str.length(bodies) == 0 {
+        bodies = body
+      } else {
+        bodies = bodies + "\n" + body
+        // `bodies + "\n" + body` only inserts a genuinely NEW line (with
+        // no origin of its own) when `body` itself is empty — a
+        // non-empty `body`'s own first line absorbs the join directly.
+        if fileOrigins.count == 0 {
+          bodyOrigins.add(DiagUtil.MergedLineOrigin(path = "", originalLine = 0))
+        }
+      }
+      var oi = 0
+      while oi < fileOrigins.count {
+        bodyOrigins.add(fileOrigins[oi])
+        oi = oi + 1
+      }
+    }
+    i = i + 1
+  }
+  val header = if Str.length(ann) > 0 { ann + "\n" + "package " + name + "\n" } else { "package " + name + "\n" }
+  val headerText = header + Str.joinList("\n", imports) + "\n"
+  val allOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  var hi = 0
+  val headerLineCount = countLinesInText(headerText)
+  while hi < headerLineCount {
+    allOrigins.add(DiagUtil.MergedLineOrigin(path = "", originalLine = 0))
+    hi = hi + 1
+  }
+  var bi2 = 0
+  while bi2 < bodyOrigins.count {
+    allOrigins.add(bodyOrigins[bi2])
+    bi2 = bi2 + 1
+  }
+  MergedPackageSource(source = headerText + bodies, origins = allOrigins)
+}
+
+// Number of lines `text` occupies when concatenated directly onto more
+// text below it — i.e. the 1-based line number of the first character
+// AFTER `text` (assuming `text` itself starts at line 1), which is
+// exactly the count of "\n" bytes in `text` (a `text` that itself ends
+// with "\n", as `headerText` above always does, contributes no partial
+// trailing line to count separately).
+func countLinesInText(text: in String): Int {
+  var count = 0
+  var i = 0
+  while i < text.length {
+    if text.substring(i, 1) == "\n" {
+      count = count + 1
+    }
+    i = i + 1
+  }
+  count
+}
+
 // True when `pkg` is one of the self-hosted compiler namespaces that
 // `loadCompilerPayloads` discovers from disk (as opposed to a `Std.*`
 // package, which the bridge resolves from `lyric-stdlib/std/`).
@@ -2057,20 +2206,37 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
   // mid-unit and the parser rejects the bundle with a P0040 cascade
   // (#2575 — multi-file directory-form `[project.packages]` entries).
   val mergedPkgs: List[ProjectPackage] = newList()
+  // Per-package merged-line provenance (#6282/#6284), parallel to
+  // `mergedPkgs` by index: `pkgOrigins[i]` is empty for a single-file
+  // package (its real path already survives the merge below via
+  // `paths[0]`) and non-empty for a genuinely multi-file package, letting
+  // diagnostic rendering resolve the merged blob's line numbers back to
+  // their real on-disk file and line instead of falling back to the bare
+  // package name.
+  val pkgOrigins: List[DiagUtil.PackageLineOrigins] = newList()
   var mi = 0
   while mi < req.packages.count {
     val pkg = req.packages[mi]
     if pkg.sources.count > 1 {
+      val mergedRes = mergePackageSourcesWithOrigins(
+        pkg.name,
+        pkg.sources,
+        pkg.paths,
+        req.activeFeatures,
+        req.declaredFeatures
+      )
       val merged: List[String] = newList()
-      merged.add(mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures))
-      // Genuinely multi-file: no single on-disk path names the merged blob
-      // (docs/63 §9.7 policy — emit no attribution rather than a guessed
-      // one, pending #6282's per-file parse).
+      merged.add(mergedRes.source)
+      // No single on-disk path names the merged blob as a whole (it may
+      // draw from several files) — `mergedRes.origins` carries the real
+      // per-line attribution instead (#6282).
       val mergedPaths: List[String] = newList()
       mergedPaths.add("")
       mergedPkgs.add(ProjectPackage(name = pkg.name, sources = merged, paths = mergedPaths))
+      pkgOrigins.add(DiagUtil.PackageLineOrigins(origins = mergedRes.origins))
     } else {
       mergedPkgs.add(pkg)
+      pkgOrigins.add(DiagUtil.PackageLineOrigins(origins = newList()))
     }
     mi = mi + 1
   }
@@ -2089,8 +2255,8 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
   )
 
   match req.target {
-    case Dotnet -> emitProjectInProcess(mergedReq)
-    case Jvm -> emitProjectJvmInProcess(mergedReq)
+    case Dotnet -> emitProjectInProcess(mergedReq, pkgOrigins)
+    case Jvm -> emitProjectJvmInProcess(mergedReq, pkgOrigins)
     // `EmitProjectRequest`'s restored-DLL / feature-flag axes don't apply to
     // native (no restored-binary concept, #6809), so a native project build
     // never routes through this record — the CLI's manifest-driven project
@@ -2100,7 +2266,9 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
     // `emitNativeProject` directly instead.  This branch stays reachable
     // only for a caller that constructs an `EmitProjectRequest` with
     // `target = Native` directly, which was never a supported entry point.
-    case Native -> failResult("Emitter.emitProject does not support --target native; use Emitter.emitNativeProject for a multi-package native build, or lyric build <main.l> --target native for a single file")
+    case Native -> failResult(
+      "Emitter.emitProject does not support --target native; use Emitter.emitNativeProject for a multi-package native build, or lyric build <main.l> --target native for a single file"
+    )
   }
 }
 
@@ -2249,13 +2417,14 @@ func siblingTypeDecls(arts: in List[RestoredArtifact], selfPkg: in String): List
 // verbatim pass-through for that single source and a header-stripping merge
 // for any caller that bypasses the pre-merge.  Diagnostics from the bridge
 // land on stderr (same path as `compileToMsil`).
-func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
+func emitProjectInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUtil.PackageLineOrigins]): EmitResult {
   val payloads: List[ProjectPackagePayload] = newList()
   // #6610: parallel on-disk source path per package, matching
   // `emitProjectJvmInProcess`'s `pkgPaths` — a single-file package's real
   // path survives `emitProject`'s pre-merge (its `mergedPaths` comment);
   // a genuinely multi-file package has no single path (see there), so ""
-  // falls through to `Msil.Bridge`'s package-name label fallback.
+  // falls through to `Msil.Bridge`'s package-name label fallback — unless
+  // `pkgOrigins` (#6282) resolves individual lines back to their real file.
   val sourcePaths: List[String] = newList()
   var pi = 0
   while pi < req.packages.count {
@@ -2356,7 +2525,8 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
       req.packageVersion,
       depTemplatePkgs,
       req.defines,
-      sourcePaths
+      sourcePaths,
+      pkgOrigins
     )
   } catch Bug as b {
     panicDiags.add(msilBridgePanicDiagnostic(b.message))
@@ -2541,7 +2711,7 @@ func msilBridgePanicDiagnostic(message: in String): Diagnostic {
   }
 }
 
-func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
+func emitProjectJvmInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUtil.PackageLineOrigins]): EmitResult {
   if req.packages.count == 0 {
     return failResult("no packages specified in project build")
   }
@@ -2640,7 +2810,8 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
         projDefinesJvm,
         req.packageVersion,
         restoredArtifactsJvm,
-        pkgPaths
+        pkgPaths,
+        pkgOrigins
       )
     } catch Bug as b {
       diags.add(jvmBridgePanicDiagnostic(b.message))
@@ -2656,6 +2827,11 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
   val pkgName = pkg.name
   val source = if pkg.sources.count > 0 { pkg.sources[0] } else { "" }
   val singlePkgPath = if pkg.sources.count == 1 and pkg.paths.count == 1 { pkg.paths[0] } else { "" }
+  val singlePkgOrigins: List[DiagUtil.MergedLineOrigin] = if pkgOrigins.count > 0 {
+    pkgOrigins[0].origins
+  } else {
+    newList()
+  }
 
   // Auto-injected well-known `version` define (docs/60 §9.2) from the manifest
   // so `BuildInfo.version` populates on a single-package JVM project build. User
@@ -2673,7 +2849,8 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
       projDefinesJvm1,
       req.packageVersion,
       restoredArtifactsJvm,
-      singlePkgPath
+      singlePkgPath,
+      singlePkgOrigins
     )
   } catch Bug as b {
     diags.add(jvmBridgePanicDiagnostic(b.message))
@@ -2939,6 +3116,7 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
           api = api + 1
         }
         allPaths.add(req.path)
+        val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
         val panicDiagsP: List[Diagnostic] = newList()
         val ok = try {
           MsilBridge.compileProjectToMsilWithRestoredAndVersion(
@@ -2953,7 +3131,8 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
             req.packageVersion,
             noDepTemplatePkgsPerPkg,
             req.defines,
-            allPaths
+            allPaths,
+            noOriginsByPkg
           )
         } catch Bug as b {
           panicDiagsP.add(msilBridgePanicDiagnostic(b.message))
