@@ -40428,8 +40428,12 @@ addressing issue #6834, both valid modifier orderings round-trip for
 `pub` AND `internal` (`pub generic[T] func …`, `generic[T] pub func …`,
 `internal generic[T] func …`, `generic[U] internal func …`) — the
 `generic[T] pub func …` case is the exact repro that failed before this
-follow-up. 146/146 `fmt_self_test.l` cases pass (138 pre-existing + 8
-new), 131/131 `parser_self_test.l`. Manually verified against `./bin/
+follow-up; and (addressing a third review round's coverage-gap
+SUGGESTIONs) `generic[T] async func …` round-trips, and the pub/
+internal-before-vs-after-generics ordering fix is confirmed for a
+second item kind (`record`), not just `func`. 148/148 `fmt_self_test.l`
+cases pass (138 pre-existing + 10 new), 131/131 `parser_self_test.l`.
+Manually verified against `./bin/
 lyric fmt` directly (not just the self-test harness) for `func`, `pub
 func`, `record`, `union`, `impl … for …`, and (post-#6834-fix)
 `generic[T] pub func …` legacy-prefix declarations, and confirmed a
