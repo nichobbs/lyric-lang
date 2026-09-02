@@ -821,6 +821,54 @@ test "fully qualified record construction resolves to the exact qualifier" {
   )
 }
 
+// ─── Regression: qualified record construction survives a local that shadows
+// only the package's FIRST dotted segment (#6838) ───────────────────────────
+// `Lyric.AliasRewriter` normally collapses a fully qualified call callee
+// (`Pkg.Sub.Type(...)`, parsed as nested `EMember`s) into a flat `EPath`
+// ahead of codegen, so it reaches `lowerBuiltinOrStaticCallMsil`'s
+// exact-qualifier-first ctor resolution directly (the previous test). But
+// its shadowing guard (`filterAliasesExcludingLocals`) drops that whole
+// multi-segment package alias whenever ANY local/param in scope merely
+// matches the alias key's FIRST dotted segment — even though the call
+// site's receiver spells out the WHOLE qualified path, so the local can't
+// actually BE what's being referenced. When the collapse is defeated this
+// way, the call reaches `lowerMethodCallMsil` as a genuine `EMember` chain
+// with (before this fix) no record-specific fallback — unlike the
+// qualified union-case-construction form, which already had one — so it
+// fell through to generic value/member dispatch and either mis-lowered or
+// panicked, even though the callee legitimately type-checked. Here an
+// unrelated local named `QualRecShadow` (the package's own first segment)
+// sits in scope while the function still constructs
+// `QualRecShadow.Sub.Rec(...)` by its full qualified path.
+test "qualified record construction survives a local shadowing only the package's first segment" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg("QualRecShadow.Sub", "package QualRecShadow.Sub\n" + "\n" + "pub record Rec { message: String }\n")
+  )
+  packages.add(
+    mkPkg(
+      "QualRecShadow.App",
+      "package QualRecShadow.App\n" + "\n" + "import QualRecShadow.Sub\n" + "\n" + "func main(): Unit {\n" +
+        "  val QualRecShadow = 0\n" +
+        "  val e = QualRecShadow.Sub.Rec(message = \"boom\")\n" +
+        "  println(e.message)\n" +
+        "  println(QualRecShadow)\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("qualrecshadow", packages, "QualRecShadow")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "qualified_record_construction_survives_shadowed_first_segment: exit 0 (stderr=" + result.stderr + ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    "boom\n0",
+    "qualified_record_construction_survives_shadowed_first_segment: stdout matches expected"
+  )
+}
+
 // ─── Regression: multi-segment qualified static val access (#5258) ──────────
 // A consumer references a library's non-literal `pub val` with the
 // fully-qualified two-segment path `Lib.Pkg.NAME` (not the bare unqualified
