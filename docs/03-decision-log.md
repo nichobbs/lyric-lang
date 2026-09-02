@@ -40315,6 +40315,7 @@ tests total).
 **Related:** #2280 (tracking issue), the sibling `generic[T]`-prefix
 fix (PR #6827, same sweep) for the record-vs-union-case contrast noted
 above.
+
 ## D-progress-870 — Formatter preserves the legacy `generic[T]` prefix
 form instead of silently dropping it on reformat (#2280 item 4)
 
