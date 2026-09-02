@@ -641,6 +641,28 @@ pub func genLegacyPrefixStr(gps: in Option[GenericParams]): String {
   }
 }
 
+/// Combine a visibility prefix (`visStr`, e.g. `"pub "`/`"internal "`/`""`)
+/// with the legacy `generic[T] ` prefix in the order the source actually
+/// wrote them, instead of always rendering `visStr` first. The item-
+/// modifier collection loop (`parser_items.l`) accepts `generic[T]` before
+/// OR after `pub`/`internal` (e.g. both `generic[T] pub func …` and
+/// `pub generic[T] func …` are valid), but the AST only records the order
+/// via `GenericParams.legacyPrefixBeforeVis` — always rendering `visStr`
+/// first silently reordered the non-canonical spelling, which
+/// `formatSourceChecked`'s positional token comparison flags as a
+/// structural change (`lyric fmt --write` refuses to write), the same
+/// failure mode #2280 item 4 originally described (review finding on
+/// #6827, issue #6834).
+pub func visAndLegacyPrefixStr(visStr: in String, gps: in Option[GenericParams]): String {
+  val legacyGens = genLegacyPrefixStr(gps)
+  val beforeVis = match gps { case Some(g) -> g.legacyPrefixBeforeVis; case None -> false }
+  if beforeVis {
+    legacyGens + visStr
+  } else {
+    visStr + legacyGens
+  }
+}
+
 pub func constraintRefStr(cr: in ConstraintRef): String {
   if cr.args.count == 0 {
     pathStr(cr.head)

@@ -130,7 +130,7 @@ func parseGenericParam(st: inout ParseState): GenericParam {
   }
 }
 
-pub func parseGenericParamsOpt(st: inout ParseState): Option[GenericParams] {
+pub func parseGenericParamsOpt(st: inout ParseState, visAlreadyParsed: in Bool): Option[GenericParams] {
   // Two forms: bare-bracket `[T, U]` or legacy `generic[T, U]`.
   val isGenericKw = isKw(peekToken(st), KwGeneric)
   val isBracket = isPunct(peekToken(st), LBracket)
@@ -170,7 +170,14 @@ pub func parseGenericParamsOpt(st: inout ParseState): Option[GenericParams] {
         startTok.span
       }
     }
-    Some(value = GenericParams(params = xs, span = joinSpans(startTok.span, endSpan), legacyPrefixForm = isGenericKw))
+    Some(
+      value = GenericParams(
+        params = xs,
+        span = joinSpans(startTok.span, endSpan),
+        legacyPrefixForm = isGenericKw,
+        legacyPrefixBeforeVis = isGenericKw and not visAlreadyParsed
+      )
+    )
   }
 }
 

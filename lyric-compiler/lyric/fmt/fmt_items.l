@@ -167,7 +167,7 @@ pub func funcDoc(visStr: in String, fn: in FunctionDecl, ctx: inout FmtCtx): Lis
   val annoLines = annotationLines(fn.annotations)
   val fnDocLs = docLines(fn.docComments)
   val asyncStr = if fn.isAsync { "async " } else { "" }
-  val legacyGens = genLegacyPrefixStr(fn.generics)
+  val visLegacyGens = visAndLegacyPrefixStr(visStr, fn.generics)
   val gens = genParamsStr(fn.generics)
   val retStr = match fn.ret { case Some(t) -> ": " + typeStr(t); case None -> "" }
   // Width-driven multi-line signature: keep inline when budget +
@@ -176,7 +176,7 @@ pub func funcDoc(visStr: in String, fn: in FunctionDecl, ctx: inout FmtCtx): Lis
   // or 2 (member of a record/protected type body); we use 0 here as
   // the conservative default — funcs nested 1 level deep run a few
   // chars under budget rather than over.
-  val sigPrefix = visStr + legacyGens + asyncStr + "func " + fn.name + gens + "("
+  val sigPrefix = visLegacyGens + asyncStr + "func " + fn.name + gens + "("
   val sigSuffix = ")" + retStr
   val paramsCol = sigPrefix.length
   val paramsFiltered: List[Param] = newList()
@@ -667,7 +667,7 @@ pub func itemDoc(item: in Item, ctx: inout FmtCtx): List[String] {
     case IRecord(rd) -> concatDoc(
       header,
       recordDoc(
-        visStr + genLegacyPrefixStr(rd.generics),
+        visAndLegacyPrefixStr(visStr, rd.generics),
         "record",
         rd.name,
         rd.generics,
@@ -680,7 +680,7 @@ pub func itemDoc(item: in Item, ctx: inout FmtCtx): List[String] {
     case IExposedRec(rd) -> concatDoc(
       header,
       recordDoc(
-        visStr + genLegacyPrefixStr(rd.generics),
+        visAndLegacyPrefixStr(visStr, rd.generics),
         "exposed record",
         rd.name,
         rd.generics,
@@ -690,13 +690,13 @@ pub func itemDoc(item: in Item, ctx: inout FmtCtx): List[String] {
         ctx
       )
     )
-    case IUnion(ud) -> concatDoc(header, unionDoc(visStr + genLegacyPrefixStr(ud.generics), ud, ctx))
+    case IUnion(ud) -> concatDoc(header, unionDoc(visAndLegacyPrefixStr(visStr, ud.generics), ud, ctx))
     case IEnum(ed) -> concatDoc(header, enumDoc(visStr, ed, ctx))
-    case IOpaque(od) -> opaqueDoc(visStr + genLegacyPrefixStr(od.generics), item, od, ctx)
-    case IDistinctType(dt) -> concatDoc(header, distinctDoc(visStr + genLegacyPrefixStr(dt.generics), dt))
-    case ITypeAlias(ta) -> concatDoc(header, typeAliasDoc(visStr + genLegacyPrefixStr(ta.generics), ta))
-    case IProtected(pd) -> concatDoc(header, protectedTypeDoc(visStr + genLegacyPrefixStr(pd.generics), pd, ctx))
-    case IInterface(id) -> concatDoc(header, interfaceDoc(visStr + genLegacyPrefixStr(id.generics), id, ctx))
+    case IOpaque(od) -> opaqueDoc(visAndLegacyPrefixStr(visStr, od.generics), item, od, ctx)
+    case IDistinctType(dt) -> concatDoc(header, distinctDoc(visAndLegacyPrefixStr(visStr, dt.generics), dt))
+    case ITypeAlias(ta) -> concatDoc(header, typeAliasDoc(visAndLegacyPrefixStr(visStr, ta.generics), ta))
+    case IProtected(pd) -> concatDoc(header, protectedTypeDoc(visAndLegacyPrefixStr(visStr, pd.generics), pd, ctx))
+    case IInterface(id) -> concatDoc(header, interfaceDoc(visAndLegacyPrefixStr(visStr, id.generics), id, ctx))
     case IImpl(id) -> concatDoc(header, implDoc(id, ctx))
     case IWire(wd) -> concatDoc(header, wireDoc(visStr, wd, ctx))
     case IScopeKind(sd) -> concatDoc(header, singleLineDoc("scope_kind " + sd.name))
@@ -1177,7 +1177,7 @@ func externMemberLines(emd: in ExternMemberDecl, ctx: inout FmtCtx): List[String
     case EMExposedRec(r) -> appendDoc(
       acc,
       recordDoc(
-        visStr + genLegacyPrefixStr(r.generics),
+        visAndLegacyPrefixStr(visStr, r.generics),
         "exposed record",
         r.name,
         r.generics,
@@ -1190,7 +1190,7 @@ func externMemberLines(emd: in ExternMemberDecl, ctx: inout FmtCtx): List[String
     case EMRecord(r) -> appendDoc(
       acc,
       recordDoc(
-        visStr + genLegacyPrefixStr(r.generics),
+        visAndLegacyPrefixStr(visStr, r.generics),
         "record",
         r.name,
         r.generics,
@@ -1200,16 +1200,16 @@ func externMemberLines(emd: in ExternMemberDecl, ctx: inout FmtCtx): List[String
         ctx
       )
     )
-    case EMUnion(u) -> appendDoc(acc, unionDoc(visStr + genLegacyPrefixStr(u.generics), u, ctx))
+    case EMUnion(u) -> appendDoc(acc, unionDoc(visAndLegacyPrefixStr(visStr, u.generics), u, ctx))
     case EMEnum(e) -> appendDoc(acc, enumDoc(visStr, e, ctx))
     case EMOpaque(o) -> {
       // The parser models a `exposed type X` extern member as an opaque
       // decl carrying a synthetic "exposed" annotation tag; reverse it.
       val kw = if annotationsHaveExposedTag(o.annotations) { "exposed type " } else { "opaque type " }
-      acc.add(visStr + genLegacyPrefixStr(o.generics) + kw + o.name + genParamsStr(o.generics))
+      acc.add(visAndLegacyPrefixStr(visStr, o.generics) + kw + o.name + genParamsStr(o.generics))
     }
-    case EMTypeAlias(ta) -> appendDoc(acc, typeAliasDoc(visStr + genLegacyPrefixStr(ta.generics), ta))
-    case EMDistinctType(d) -> appendDoc(acc, distinctDoc(visStr + genLegacyPrefixStr(d.generics), d))
+    case EMTypeAlias(ta) -> appendDoc(acc, typeAliasDoc(visAndLegacyPrefixStr(visStr, ta.generics), ta))
+    case EMDistinctType(d) -> appendDoc(acc, distinctDoc(visAndLegacyPrefixStr(visStr, d.generics), d))
   }
   acc
 }

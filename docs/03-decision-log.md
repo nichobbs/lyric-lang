@@ -40369,35 +40369,79 @@ whose bare-bracket rendering site doesn't accept a `visStr`-style prefix
 parameter; `implDoc` was given a small local `legacyGens` variable
 instead of threading it through a caller.
 
-The formatter does not attempt to preserve which MODIFIER ORDER a
-legacy-form declaration used (`pub generic[T] func …` vs.
-`generic[T] pub func …` — the grammar's item-modifier loop, `parser_
-items.l`'s prefix-collection loop around line 3660, accepts either order
-and does not record which one was written). Every legacy-prefix
-declaration is now canonically rendered `pub generic[T] func …`
-(visibility, then the legacy prefix, then the keyword) regardless of the
-original order — a deliberate, harmless normalization, unlike the
-keyword-and-bracket-list DROP this fix closes.
+**Update (review finding, issue #6834).** The paragraph above originally
+claimed the formatter's canonical `pub generic[T] func …` rendering
+(visibility, then the legacy prefix, then the keyword) was "a
+deliberate, harmless normalization" applied "regardless of the original
+order." That was wrong: for source that wrote the OTHER valid ordering
+(`generic[T] pub func …` — the grammar's item-modifier loop,
+`parser_items.l`'s prefix-collection loop around line 3660, accepts
+`generic[T]` before OR after `pub`/`internal`), always rendering the
+canonical order silently reordered the token sequence, which
+`formatSourceChecked`'s POSITIONAL token comparison flags as a
+structural change — `lyric fmt --write` refused to write for exactly
+this ordering, the same failure mode this fix otherwise closes.
 
-**Verification.** Five new `fmt_self_test.l` cases: the exact
-`generic[T] func …` repro round-trips byte-for-byte instead of losing
-the keyword; `pub generic[T] func …` combines correctly; a record and an
-impl declaration (the two shapes whose legacy-prefix rendering differs
-most from `func`'s) round-trip; union/interface/alias declarations
-round-trip too (added on review, covering every remaining item kind
-`genLegacyPrefixStr` threads into); and the existing, far more common
-bare-bracket-after-name form is confirmed completely unaffected (no
-spurious `generic[` ever introduced). 143/143 `fmt_self_test.l` cases
-pass (138 pre-existing + 5 new), 131/131 `parser_self_test.l`. Manually
-verified against `./bin/lyric fmt` directly (not just the self-test
-harness) for `func`, `pub func`, `record`, `union`, and `impl … for …`
-legacy-prefix declarations, and confirmed a member-level `generic[U]`
-inside an `impl` body is rejected by the PARSER itself (pre-existing,
-unrelated to this fix — the legacy prefix is only accepted at
-`parser_items.l`'s top-level item-modifier loop, never inside a member
-body), so `funcDoc`'s unconditional self-prepend is a correctness-neutral
-no-op there. Two full `make lyric` rebuilds (stage1 + AOT) succeed end to
-end.
+Fixed by adding `GenericParams.legacyPrefixBeforeVis: Bool` (default
+`false`, meaningful only when `legacyPrefixForm` is true): set at the
+item-modifier loop's `KwGeneric` branch from whether `vis` had already
+been parsed at that point (`match vis { case Some(_) -> true; case
+None -> false }` — NOT `vis != None`; see the note below on why),
+threaded into `parseGenericParamsOpt` as a new `visAlreadyParsed`
+parameter (the one call site that can produce `legacyPrefixForm = true`
+passes the real value; the other eleven call sites — all bare-bracket
+suffix parses, which can never set `legacyPrefixForm` — pass `false`).
+`Lyric.Fmt` gained `visAndLegacyPrefixStr(visStr, gps)` (`fmt_core.l`),
+which renders `legacyGens + visStr` when the flag is set and
+`visStr + legacyGens` otherwise; every `visStr + genLegacyPrefixStr(...)`
+call site in `fmt_items.l` (`funcDoc`'s `sigPrefix`, `itemDoc`'s eight
+generics-bearing arms, and the six `extern package` member arms — the
+last group unreachable today per the original entry above, updated for
+parity/future-proofing anyway) now routes through it instead.
+
+**A second, unrelated bug found while implementing this fix (issue
+#6835).** The first attempt computed the ordering flag with
+`parseGenericParamsOpt(st, vis != None)` — syntactically fine, but
+`vis != None` (and `== None`) against an `Option[T]` value that IS
+`None` returns the WRONG boolean in this compiler (confirmed with a
+minimal standalone repro, `None == None` evaluates to `false`; only the
+`Some`-vs-`Some` case works correctly). This is a general, pre-existing
+equality-codegen bug, not something introduced here — filed separately
+as #6835 rather than root-caused in this PR, since it's out of scope for
+a formatter fix. The parser code here was rewritten to use the safe,
+already-idiomatic-in-this-codebase `match vis { case Some(_) -> …; case
+None -> … }` form instead, which a debug repro (`lyric run` printing the
+parsed field values directly) confirmed produces the correct flag.
+
+**Verification.** Eight new `fmt_self_test.l` cases across this entry's
+several commits: the exact `generic[T] func …` repro round-trips
+byte-for-byte instead of losing the keyword; `pub generic[T] func …`
+combines correctly; a record and an impl declaration (the two shapes
+whose legacy-prefix rendering differs most from `func`'s) round-trip;
+union/interface/alias declarations round-trip too (added on the first
+review round, covering every remaining item kind `genLegacyPrefixStr`
+threads into); opaque/distinct/protected type declarations round-trip
+(added addressing a second review round's coverage-gap SUGGESTION); the
+existing, far more common bare-bracket-after-name form is confirmed
+completely unaffected (no spurious `generic[` ever introduced); and,
+addressing issue #6834, both valid modifier orderings round-trip for
+`pub` AND `internal` (`pub generic[T] func …`, `generic[T] pub func …`,
+`internal generic[T] func …`, `generic[U] internal func …`) — the
+`generic[T] pub func …` case is the exact repro that failed before this
+follow-up. 146/146 `fmt_self_test.l` cases pass (138 pre-existing + 8
+new), 131/131 `parser_self_test.l`. Manually verified against `./bin/
+lyric fmt` directly (not just the self-test harness) for `func`, `pub
+func`, `record`, `union`, `impl … for …`, and (post-#6834-fix)
+`generic[T] pub func …` legacy-prefix declarations, and confirmed a
+member-level `generic[U]` inside an `impl` body is rejected by the
+PARSER itself (pre-existing, unrelated to this fix — the legacy prefix
+is only accepted at `parser_items.l`'s top-level item-modifier loop,
+never inside a member body), so `funcDoc`'s unconditional self-prepend
+is a correctness-neutral no-op there. A `lyric run` debug script
+directly printing `GenericParams.legacyPrefixForm`/`legacyPrefixBeforeVis`
+after parsing confirmed the field values before trusting the formatter
+output. Four full `make lyric` rebuilds (stage1 + AOT) succeed end to
+end across this entry's commits.
 
 **Related:** #2280 (tracking issue for the self-hosted formatter's
 remaining round-trip-losslessness gaps; this closes item 4 of 9 — items

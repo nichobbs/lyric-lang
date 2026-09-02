@@ -1960,17 +1960,55 @@ test "legacy 'generic[T] func' prefix form round trips instead of being silently
   assertTrue(Str.contains(acc, "generic[T] func identity"), "legacy generic[T] func prefix: preserved verbatim")
 }
 
-// `pub` combines with the legacy prefix as `pub generic[T] func …`
-// (visibility first, then the legacy prefix, then the item keyword) —
-// the canonical order this formatter always emits regardless of which
-// order the modifiers appeared in on disk (the parser accepts either
-// order for the legacy form and does not record which one was used).
-test "pub combined with the legacy 'generic[T]' prefix round trips" {
+// `pub` combines with the legacy prefix, and the item-modifier collection
+// loop (`parser_items.l`) accepts either order: `pub generic[T] func …`
+// or `generic[T] pub func …`. `GenericParams.legacyPrefixBeforeVis`
+// records which order the source used so the formatter can reproduce it
+// instead of always rendering `pub generic[T] func …` regardless — the
+// latter silently reordered the `generic[T] pub func …` spelling, which
+// `formatSourceChecked`'s positional token comparison flags as a
+// structural change (review finding on #6827, issue #6834: `lyric fmt
+// --write` refused to write for exactly this ordering).
+test "pub combined with the legacy 'generic[T]' prefix round trips (pub-before-generics order)" {
   val src = "package P\n\npub generic[T] func identity(x: T): T {\n  x\n}\n"
   val c = formatSourceChecked(src)
-  assertTrue(fmtCheckIsOk(c), "pub + legacy generic[T] prefix: round-trips")
+  assertTrue(fmtCheckIsOk(c), "pub + legacy generic[T] prefix (pub first): round-trips")
   val acc = format(parse(src))
-  assertTrue(Str.contains(acc, "pub generic[T] func identity"), "pub + legacy generic[T] prefix: preserved verbatim")
+  assertTrue(
+    Str.contains(acc, "pub generic[T] func identity"),
+    "pub + legacy generic[T] prefix (pub first): preserved verbatim"
+  )
+}
+
+// The other valid ordering (#6834): `generic[T]` written before `pub`.
+test "legacy 'generic[T]' prefix combined with pub round trips (generics-before-pub order, #6834)" {
+  val src = "package P\n\ngeneric[T] pub func identity(x: T): T {\n  x\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "legacy generic[T] prefix + pub (generics first): round-trips")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "generic[T] pub func identity"),
+    "legacy generic[T] prefix + pub (generics first): preserved verbatim"
+  )
+}
+
+// `internal` shares the same code path as `pub` (review suggestion on
+// #6828 — sic, filed against the same-shaped #6827 review): round out
+// coverage for the non-`pub` visibility keyword in both orderings.
+test "legacy 'generic[T]' prefix combined with internal round trips in both orderings" {
+  val src = "package P\n\ninternal generic[T] func identity(x: T): T {\n  x\n}\n\n" +
+    "generic[U] internal func identityTwo(x: U): U {\n  x\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "legacy generic[T] prefix + internal (both orderings): round-trips")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "internal generic[T] func identity"),
+    "legacy generic[T] prefix + internal (internal first): preserved verbatim"
+  )
+  assertTrue(
+    Str.contains(acc, "generic[U] internal func identityTwo"),
+    "legacy generic[T] prefix + internal (generics first): preserved verbatim"
+  )
 }
 
 // The legacy prefix form applies to every item kind the grammar lists
