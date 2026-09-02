@@ -331,13 +331,32 @@ func fieldMemberLines(field: in FieldDecl): List[String] {
     acc.add(docs[i])
     i = i + 1
   }
-  val annos = annotationLines(field.annotations)
+  // `field.annotations` is leading annotations followed by TRAILING ones
+  // (grammar's `FieldDecl`-final `[Annotation]`, e.g. `x: Int @hidden`) —
+  // `trailingAnnotationCount` marks the split. Leading render as their
+  // own lines above the field, same as before; trailing render inline
+  // after the field itself, or they'd be silently hoisted to a leading
+  // position on reformat (#2280).
+  val leadCount = field.annotations.count - field.trailingAnnotationCount
+  val leadAnnos: List[Annotation] = newList()
+  i = 0
+  while i < leadCount {
+    leadAnnos.add(field.annotations[i])
+    i = i + 1
+  }
+  val trailAnnos: List[Annotation] = newList()
+  i = leadCount
+  while i < field.annotations.count {
+    trailAnnos.add(field.annotations[i])
+    i = i + 1
+  }
+  val annos = annotationLines(leadAnnos)
   i = 0
   while i < annos.count {
     acc.add(annos[i])
     i = i + 1
   }
-  acc.add(fieldDeclStr(field))
+  acc.add(fieldDeclStr(field) + annotationsInlineSuffix(trailAnnos))
   acc
 }
 
@@ -733,15 +752,19 @@ func opaqueDoc(visStr: in String, item: in Item, od: in OpaqueTypeDecl, ctx: ino
   // `itemDoc` dispatches to `opaqueDoc` WITHOUT prepending the shared
   // `header` (unlike record/union/etc.), so the item's leading
   // annotations (`@stable`, …) must be emitted here or they are dropped.
-  // `od.annotations` is the distinct set of trailing annotations
-  // (`parseTrailingAnnotations`), so the two never overlap.
+  // `od.annotations` is the distinct set of TRAILING annotations the
+  // grammar places after the name/generics/where-clause (e.g.
+  // `@projectable` in `opaque type User @projectable { ... }`,
+  // `parseTrailingAnnotations`) — rendered inline on the header line via
+  // `annotationsInlineSuffix`, not as leading lines like `leadAnnos`
+  // (which would relocate them to BEFORE `opaque type`, #2280).
   val leadAnnos = annotationLines(item.annotations)
-  val odAnnos = annotationLines(od.annotations)
+  val odAnnosSuffix = annotationsInlineSuffix(od.annotations)
   val gens = genParamsStr(od.generics)
   val whereL = whereClauseLines(od.whereClause)
   val docL = docLines(item.docComments)
   if not od.hasBody {
-    concatDoc(concatDoc3(docL, leadAnnos, odAnnos), singleLineDoc(visStr + "opaque type " + od.name + gens))
+    concatDoc(concatDoc(docL, leadAnnos), singleLineDoc(visStr + "opaque type " + od.name + gens + odAnnosSuffix))
   } else {
     val mLines: List[String] = newList()
     var i = 0
@@ -774,12 +797,7 @@ func opaqueDoc(visStr: in String, item: in Item, od: in OpaqueTypeDecl, ctx: ino
       acc.add(leadAnnos[j])
       j = j + 1
     }
-    j = 0
-    while j < odAnnos.count {
-      acc.add(odAnnos[j])
-      j = j + 1
-    }
-    acc.add(visStr + "opaque type " + od.name + gens + " {")
+    acc.add(visStr + "opaque type " + od.name + gens + odAnnosSuffix + " {")
     j = 0
     while j < whereL.count {
       acc.add(whereL[j])
@@ -1323,11 +1341,20 @@ func fixtureDoc(fd: in FixtureDecl): List[String] {
 // D046 config block render.
 // ─────────────────────────────────────────────────────────────────────────────
 func configFieldLine(f: in ConfigField): String {
-  // Annotations on a config field render on their own preceding lines
-  // (emitted by `configDoc`); the field itself is one line with
-  // `name: T = default?`.
+  // Leading annotations render on their own preceding lines (emitted by
+  // `configDoc`); the field itself is one line with `name: T = default?`
+  // plus any TRAILING annotations (`f.trailingAnnotationCount`) inline,
+  // or they'd be silently hoisted to a leading position on reformat
+  // (#2280, same fix as `fieldMemberLines`).
   val dflt = match f.default { case Some(e) -> " = " + exprInline(0, e); case None -> "" }
-  f.name + ": " + typeStr(f.ty) + dflt
+  val leadCount = f.annotations.count - f.trailingAnnotationCount
+  val trailAnnos: List[Annotation] = newList()
+  var i = leadCount
+  while i < f.annotations.count {
+    trailAnnos.add(f.annotations[i])
+    i = i + 1
+  }
+  f.name + ": " + typeStr(f.ty) + dflt + annotationsInlineSuffix(trailAnnos)
 }
 
 func configDoc(visStr: in String, cd: in ConfigDecl, ctx: inout FmtCtx): List[String] {
@@ -1336,7 +1363,14 @@ func configDoc(visStr: in String, cd: in ConfigDecl, ctx: inout FmtCtx): List[St
   while i < cd.fields.count {
     val f = cd.fields[i]
     appendTriviaInto(mLines, ctx, f.span.startPos.offset, false)
-    val annLines = annotationLines(f.annotations)
+    val leadCount = f.annotations.count - f.trailingAnnotationCount
+    val leadAnnos: List[Annotation] = newList()
+    var lc = 0
+    while lc < leadCount {
+      leadAnnos.add(f.annotations[lc])
+      lc = lc + 1
+    }
+    val annLines = annotationLines(leadAnnos)
     var k = 0
     while k < annLines.count {
       mLines.add(annLines[k])

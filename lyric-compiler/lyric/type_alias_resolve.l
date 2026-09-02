@@ -936,7 +936,8 @@ func resolveFieldDecl(aliasTargets: in Map[String, TypeExpr], genericNames: in L
     name = f.name,
     ty = resolveTypeExpr(aliasTargets, genericNames, f.ty),
     dflt = d,
-    span = f.span
+    span = f.span,
+    trailingAnnotationCount = f.trailingAnnotationCount
   )
 }
 
@@ -1342,7 +1343,8 @@ func resolveConfigField(aliasTargets: in Map[String, TypeExpr], f: in ConfigFiel
     name = f.name,
     ty = resolveTypeExpr(aliasTargets, noGenerics, f.ty),
     default = d,
-    span = f.span
+    span = f.span,
+    trailingAnnotationCount = f.trailingAnnotationCount
   )
 }
 

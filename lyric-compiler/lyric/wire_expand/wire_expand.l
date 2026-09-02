@@ -614,7 +614,8 @@ func materializeConfigInstance(
         name = tf.name,
         ty = tf.ty,
         default = dflt,
-        span = tf.span
+        span = tf.span,
+        trailingAnnotationCount = tf.trailingAnnotationCount
       )
     )
     ti2 = ti2 + 1

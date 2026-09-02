@@ -116,7 +116,8 @@ func parseFieldDecl(st: inout ParseState): FieldDecl {
     name = ns.name,
     ty = ty,
     dflt = dflt,
-    span = joinSpans(startSpan, endSpan)
+    span = joinSpans(startSpan, endSpan),
+    trailingAnnotationCount = trailingAnns.count
   )
 }
 
@@ -2619,7 +2620,8 @@ func parseConfigField(st: inout ParseState): ConfigField {
     name = ns.name,
     ty = ty,
     default = dflt,
-    span = joinSpans(startSpan, endSpan)
+    span = joinSpans(startSpan, endSpan),
+    trailingAnnotationCount = trailingAnns.count
   )
 }
 

@@ -414,6 +414,14 @@ pub record Statement {
 
 pub record FieldDecl {
   docComments: List[DocComment]
+  // The LEADING annotations (`RecordMember`'s own `{ Annotation }`, before
+  // the field) and the TRAILING ones (grammar's `FieldDecl`-final
+  // `[Annotation]`, e.g. `passwordHash: String @hidden`, parsed by
+  // `parseSameLineTrailingAnnotations`) are concatenated into this one
+  // list — leading first, then trailing — with `trailingAnnotationCount`
+  // recording how many of the tail belong to the trailing position, so
+  // the formatter can render each group in its own place instead of
+  // treating every entry as leading (#2280).
   annotations: List[Annotation]
   visibility: Option[Visibility]
   // `true` when the field was declared `var` (a mutable record/opaque field,
@@ -423,6 +431,7 @@ pub record FieldDecl {
   ty: TypeExpr
   dflt: Option[Expr]
   span: Span
+  trailingAnnotationCount: Int = 0
 }
 
 pub union RecordMember {
@@ -822,11 +831,14 @@ pub union ItemKind {
 /// declared type otherwise.
 pub record ConfigField {
   docComments: List[DocComment]
+  // Leading then trailing, same shape and same reason as
+  // `FieldDecl.annotations`/`trailingAnnotationCount` (#2280).
   annotations: List[Annotation]
   name: String
   ty: TypeExpr
   default: Option[Expr]
   span: Span
+  trailingAnnotationCount: Int = 0
 }
 
 pub record ConfigDecl {

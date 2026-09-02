@@ -40833,3 +40833,128 @@ D-progress-872 (the MSIL/JVM fixes this completes platform parity with).
 The pre-existing, unrelated native multi-package `println` cross-package
 resolution gap D-progress-872 flagged is still open and untouched by this
 entry.
+
+## D-progress-874 — Formatter keeps item- and field-level trailing annotations on their own line instead of hoisting them to a leading position (#2280)
+
+Two instances of the same bug shape, found together via the same two
+repro files and fixed in the same change: the grammar places some
+annotations in a TRAILING position (after the thing they annotate,
+same line) rather than the ordinary leading position, and the formatter
+rendered them as leading lines anyway — silently relocating them.
+
+### Part 1 — opaque type's own trailing annotation (`@projectable`)
+
+**Problem.** `OpaqueTypeDecl`'s grammar (§ "opaque types") places its
+annotation list in a TRAILING position, unlike every other item kind:
+`'opaque' 'type' IDENT [GenericParams] [WhereClause] [Annotation...]
+[Body]` — so `@projectable` sits AFTER the name (and generics/where-clause,
+if present), on the same line as `opaque type`, e.g. `opaque type User
+@projectable { ... }`. `opaqueDoc` (`fmt/fmt_items.l`) already had a
+correctly-named `od.annotations` field distinct from the item's ordinary
+LEADING annotations (`item.annotations`, e.g. `@stable`), with a comment
+explicitly noting they're "the distinct set of trailing annotations" —
+but then rendered `od.annotations` through `annotationLines` and pushed
+each result as its own line BEFORE the `opaque type Name` header, exactly
+like `leadAnnos`. That silently relocated `@projectable` from after the
+name to before `opaque type` on every reformat — caught by the
+loss-checked `formatSourceChecked` guard (refuses to write rather than
+corrupt), but never actually fixed. Surfaced by
+`lyric-compiler/msil/msil_self_test_m87.l` and its JVM twin
+`lyric-compiler/jvm/projectable_jvm_self_test.l` (`token 15 changed:
+'opaque' -> '@'`) during the same repo-wide `lyric fmt` survey that found
+the range-operator and legacy-`generic[T]`-prefix bugs — same bug class
+(the formatter has the right data but renders it in the wrong position),
+different item kind and different position (trailing vs. spelling).
+
+**Fix.** Add `annotationsInlineSuffix(anns: List[Annotation]): String`
+next to `annotationLines` in `fmt/fmt_core.l` — joins each annotation's
+rendered form with a leading space, for annotations the grammar places
+after a declaration's header rather than before it. `opaqueDoc` now
+appends `annotationsInlineSuffix(od.annotations)` directly onto the
+`"opaque type " + od.name + gens` header string (both the bodyless
+extern-handle form and the with-body form), instead of emitting
+`od.annotations` as leading lines. `leadAnnos` (the genuine leading
+annotations like `@stable`) are untouched — still rendered as their own
+lines before the header, exactly as before.
+
+Two new `fmt_self_test.l` cases: `@projectable` stays on the header
+line for both the with-body and bodyless opaque-type forms; a combined
+case with a genuine leading `@stable(since = "0.1")` annotation
+alongside the trailing `@projectable` confirms the two positions the
+grammar distinguishes don't collide or swap.
+
+Fixing this alone still left `msil_self_test_m87.l` /
+`projectable_jvm_self_test.l` refusing to reformat — Part 2 below.
+
+### Part 2 — field-level trailing annotation (`@hidden`)
+
+**Problem.** `FieldDecl`'s own grammar is `[ 'var' ] IDENT ':' Type
+[ '=' Expr ] [ Annotation ]` — a trailing annotation AFTER the type/
+default, same line, e.g. `passwordHash: String @hidden`, distinct from
+a leading annotation on its own preceding line (`RecordMember`'s
+`{ Annotation }`, e.g. `@proto_field(1)\nid: Long`, already
+round-tripped correctly per the pre-existing "field annotations stay
+with their field" test, #2454). `parseFieldDecl` parses both positions
+(`parseItemAnnotations` for leading, `parseSameLineTrailingAnnotations`
+for trailing) but concatenates them into ONE `annotations` list with no
+marker distinguishing which came from where — worse than Part 1's bug,
+since there `od.annotations` was at least a separate, correctly-scoped
+field. `fieldMemberLines` (`fmt/fmt_items.l`) rendered every entry as a
+leading line, hoisting `@hidden` above the field it annotates on
+reformat. `ConfigField` (`config { }` block fields) has the identical
+grammar shape and the identical bug in `configDoc`/`configFieldLine`.
+This was the SECOND blocker in the two Part-1 repro files — fixing
+Part 1 alone advanced the token-diff from `opaque` -> `@` (token 15) to
+`passwordHash` -> `@` (token 37, the `@hidden` field two tests later in
+the same file).
+
+**Fix.** Add `trailingAnnotationCount: Int = 0` to both `FieldDecl` and
+`ConfigField` (both records, so the default keeps every non-parser
+construction site — pure-synthesis sites in `stubbable.l`, `weaver.l`
+— unaffected; `llvm_codegen.l`'s `protFieldsOf` reconstruction is
+explicitly documented as codegen-internal, annotations unused, never
+formatter-visible, so also left alone). `parseFieldDecl`/
+`parseConfigField` set it to the trailing-parse's own count. The
+formatter splits `annotations` at `count - trailingAnnotationCount`:
+the leading slice renders as before (its own lines), the trailing
+slice renders via Part 1's `annotationsInlineSuffix` appended to the
+field's own line. The AST-rewrite sites that reconstruct a `FieldDecl`/
+`ConfigField` from an existing one (`Lyric.AliasRewriter`,
+`Lyric.TypeAliasResolve`, one `Lyric.WireExpand` site copying a wire
+template's field) thread the count through so alias-rewritten or
+wire-expanded fields keep their split; a second `WireExpand` site
+synthesizes a brand-new field with no annotations at all, so its
+implicit `0` default is already correct. `fieldMemberLines` backs
+`RMField` (records, exposed records — same printer) and `OMField`
+(opaque-type fields), so one fix covers all three; protected-type
+`var`/`let` fields (`PFVar`/`PFLet`) were checked and confirmed NOT
+affected — their parser only ever calls `parseItemAnnotations` (leading
+only), no trailing form exists for them syntactically.
+
+**Verification.** Three more `fmt_self_test.l` cases: a record field's
+`@hidden` stays inline on its own line; a field combining a leading
+`@proto_field(1)` with its own trailing `@hidden` keeps both in their
+distinct positions; a `config { }` field's trailing `@sensitive` stays
+inline. 143/143 `fmt_self_test.l` (138 pre-existing + 5 new across both
+parts). Full regression sweep clean: `parser_self_test.l` 131/131,
+`typechecker_self_test.l` 412/412, `modechecker_self_test.l` 112/112,
+`mono_self_test.l` 82/82, `cfg_self_test.l` 12/12, `weaver_self_test.l`
+46/46. `msil_self_test_m87.l` and `projectable_jvm_self_test.l` (the
+two original repros) both round-trip byte-identical after a full `make
+lyric` self-host rebuild — confirming no third blocker remains in
+either file.
+
+**Files changed:** `lyric-compiler/lyric/parser/parser_ast.l`
+(`FieldDecl`/`ConfigField` field additions), `parser/parser_items.l`
+(`parseFieldDecl`/`parseConfigField`), `fmt/fmt_core.l`
+(`annotationsInlineSuffix`), `fmt/fmt_items.l` (`opaqueDoc`,
+`fieldMemberLines`, `configDoc`, `configFieldLine`),
+`alias_rewriter.l`, `type_alias_resolve.l`, `wire_expand/wire_expand.l`
+(reconstruction sites threading `trailingAnnotationCount` through).
+`lyric-compiler/lyric/fmt_self_test.l` (5 new tests total).
+
+**Related:** #2280 (tracking issue), the two sibling #2280 fixes landed
+in the same survey (legacy `generic[T]` prefix, PR #6827; bare `..`
+range operator, PR #6828) — all three (plus this entry's two parts) are
+the same "AST/rendering mismatch silently relocates or rewrites a
+token" bug shape, each in a different corner of the formatter.
