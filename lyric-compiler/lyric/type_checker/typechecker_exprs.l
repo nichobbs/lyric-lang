@@ -4637,12 +4637,14 @@ pub func inferExpr(
         case Some(rt) -> inferMemberBase(tbl, rt, memberName)
         case None -> inferExpr(sc, tbl, sigs, diag, fn)
       }
-      // A2 (docs/59 §5.1): lambda arguments with unannotated params are typed
-      // in two passes.  The first pass types them leniently (params `TyError`,
-      // diagnostics to a scratch list) so overload selection sees the same
-      // shape it always has; after the signature is selected, the second pass
-      // re-checks each such lambda body once — into the real diagnostic list —
-      // with the callee's parameter type as the expectation.  When no usable
+      // A2 (docs/59 §5.1): lambda arguments with unannotated params — and,
+      // per #6814, a bare union-case-constructor argument whose name is
+      // ambiguous across imported packages — are typed in two passes.  The
+      // first pass types them leniently (params `TyError`, diagnostics to a
+      // scratch list) so overload selection sees the same shape it always
+      // has; after the signature is selected, the second pass re-checks
+      // each such argument once — into the real diagnostic list — with the
+      // callee's parameter type as the expectation.  When no usable
       // expectation exists the second pass is identical to the historical
       // single pass, so nothing previously accepted is newly rejected.
       val argTypes: List[Type] = newList()
@@ -4650,7 +4652,7 @@ pub func inferExpr(
       var i = 0
       while i < args.count {
         val ae = callArgExpr(args[i])
-        if lambdaHasUnannotatedParam(ae) {
+        if lambdaHasUnannotatedParam(ae) or argIsAmbiguousUnionCaseCtor(tbl, ae) {
           val scratch: List[Diagnostic] = newList()
           argTypes.add(inferExpr(sc, tbl, sigs, scratch, ae))
           anyDeferredLambda = true
@@ -4687,11 +4689,11 @@ pub func inferExpr(
           case Some(_) -> directSig
           case None -> match methodPick { case Some(mp0) -> Some(value = mp0.sig); case None -> None }
         }
-        val expectedArgTys = expectedCallArgTypes(args, argTypes, lambdaSig, fnT)
+        val expectedArgTys = expectedCallArgTypes(tbl, args, argTypes, lambdaSig, fnT)
         var di = 0
         while di < args.count {
           val dae = callArgExpr(args[di])
-          if lambdaHasUnannotatedParam(dae) {
+          if lambdaHasUnannotatedParam(dae) or argIsAmbiguousUnionCaseCtor(tbl, dae) {
             argTypes[di] = inferExprExpected(sc, tbl, sigs, diag, dae, expectedArgTys[di])
           }
           di = di + 1
@@ -5106,6 +5108,47 @@ func lambdaHasUnannotatedParam(e: in Expr): Bool {
   }
 }
 
+// #6814: true for a call-argument expression that is itself a bare
+// union-case-constructor call whose callee name is ambiguous across 2+
+// imported packages (every `symTableTryFindAll` candidate is a
+// `DKUnionCase`) — the second expression shape (alongside
+// `lambdaHasUnannotatedParam`'s lambda literals) whose typing benefits from
+// a contextual expected type (A2).  A call whose bare name has fewer than 2
+// candidates, or whose candidates are not ALL union cases (so it might be a
+// record constructor / function call instead), is left on the eager path —
+// `inferExprExpected`'s `ECall` arm below falls back to `inferExpr` for any
+// shape this predicate doesn't defer, so nothing gets stricter.
+func argIsAmbiguousUnionCaseCtor(tbl: in SymbolTable, e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> argIsAmbiguousUnionCaseCtor(tbl, inner)
+    case ECall(fn, _) -> match fn.kind {
+      case EPath(p) -> if p.segments.count == 1 {
+        val candidates = symTableTryFindAll(tbl, p.segments[0])
+        if candidates.count < 2 {
+          false
+        } else {
+          var allUnionCase = true
+          var ci = 0
+          while ci < candidates.count {
+            match candidates[ci].kind {
+              case DKUnionCase(_, _) -> ()
+              case _ -> {
+                allUnionCase = false
+              }
+            }
+            ci = ci + 1
+          }
+          allUnionCase
+        }
+      } else {
+        false
+      }
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
 // A2: infer `e` under a contextual expected type.  Only lambda literals
 // consume the expectation (their unannotated params adopt the expected
 // function type's parameter types); every other expression shape — and any
@@ -5132,6 +5175,37 @@ pub func inferExprExpected(
         eps,
         Some(value = eret)
       )
+      case _ -> inferExpr(sc, tbl, sigs, diag, e)
+    }
+    // #6814: a bare union-case-constructor call whose name is ambiguous
+    // across imported packages (the shape `argIsAmbiguousUnionCaseCtor`
+    // defers) resolves directly against the expected type's own union via
+    // `unionCaseSymbolForScrutinee` — the same "scrutinee's own union wins"
+    // tiering #6287 Phase B already uses for a match-pattern head — instead
+    // of falling into `inferExpr`'s unconditional `checkBareNameAmbiguity`
+    // gate.  If the expected type can't disambiguate it,
+    // `unionCaseSymbolForScrutinee` itself falls through to the ordinary
+    // bare-name ambiguity check (for a genuinely bare, single-segment
+    // callee) and raises T0123 there — checked via `diag.count` so this
+    // arm never re-raises it a second time by falling into `inferExpr`.
+    case ECall(fn, cargs) -> match fn.kind {
+      case EPath(p) -> if p.segments.count == 1 {
+        val diagCountBefore = diag.count
+        match unionCaseSymbolForScrutinee(tbl, diag, fn, expected) {
+          case Some(caseSym) -> {
+            val cargTypes: List[Type] = newList()
+            var ci2 = 0
+            while ci2 < cargs.count {
+              cargTypes.add(inferExpr(sc, tbl, sigs, diag, callArgExpr(cargs[ci2])))
+              ci2 = ci2 + 1
+            }
+            inferUnionCaseConstruction(tbl, diag, caseSym, cargTypes, e.span)
+          }
+          case None -> if diag.count > diagCountBefore { TyError } else { inferExpr(sc, tbl, sigs, diag, e) }
+        }
+      } else {
+        inferExpr(sc, tbl, sigs, diag, e)
+      }
       case _ -> inferExpr(sc, tbl, sigs, diag, e)
     }
     case _ -> inferExpr(sc, tbl, sigs, diag, e)
@@ -5229,6 +5303,7 @@ func checkCallArgsAgainstSig(
 }
 
 func expectedCallArgTypes(
+  tbl: in SymbolTable,
   args: in List[CallArg],
   argTypes: in List[Type],
   directSig: in Option[ResolvedSignature],
@@ -5260,7 +5335,8 @@ func expectedCallArgTypes(
             val ai = srcIdx[k]
             var slotTy: Type = TyError
             if ai >= 0 and ai < argTypes.count {
-              if not lambdaHasUnannotatedParam(callArgExpr(args[ai])) {
+              val slotExpr = callArgExpr(args[ai])
+              if not lambdaHasUnannotatedParam(slotExpr) and not argIsAmbiguousUnionCaseCtor(tbl, slotExpr) {
                 slotTy = argTypes[ai]
               }
             }

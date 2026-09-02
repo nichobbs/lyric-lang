@@ -39926,3 +39926,102 @@ rebuild clean.
 #6699/#6684/#6600/#5629 (the `hzMemberChainBaseIsValue` precedent this
 fix extends), #6786, #6787 (residual MSIL codegen gaps found while
 validating this fix, filed separately).
+
+---
+
+## D-progress-867 — Type checker: a bare union-case constructor call in a
+disambiguating call-argument position no longer hard-fails T0123 (#6814)
+
+**Context.** `#6287`'s `checkBareNameAmbiguity` (`typechecker_resolver.l`)
+fires unconditionally on any bare name that resolves to 2+ imported
+packages, called from the bare-callee-position inference inside
+`inferExpr`'s `EPath` handling (`typechecker_exprs.l`, the single
+authoritative T0123 site for a value-position bare name). For
+`Rx.errorMessage(TimedOut(message = "a"))` where two imported packages
+each declare a `TimedOut` union case, the inner `TimedOut(...)` call's
+bare callee is genuinely ambiguous by name alone — but the outer call's
+own parameter type (`RegexSafeLikePkg.XError`) unambiguously picks out
+the right one. The type checker already had an "expected type from call
+argument position" mechanism (`inferExprExpected`, doc-commented "A2"),
+but it only special-cased `ELambda` against an expected `TyFunction`;
+every other argument expression fell through to plain, context-free
+`inferExpr`, hitting the unconditional ambiguity gate before the
+call's own parameter type ever entered the picture.
+
+An earlier narrow attempt — exempting any bare name whose every
+candidate is a `DKUnionCase` from the ambiguity check unconditionally —
+was tried and reverted (documented in the original #6814 filing): it
+broke `typechecker_self_test.l`'s own pinned regression ("bare union
+case constructor call ambiguous across two imported packages is
+T0123", `val s = Ping(code = 1)` with no enclosing call to disambiguate
+against). The two cases are only distinguishable by whether the call
+sits in a position with a real expected type — information the
+unconditional exemption didn't have, but `inferExprExpected`'s existing
+per-argument plumbing does.
+
+**Fix.** Two changes to `typechecker_exprs.l`, both scoped to the
+existing A2 deferred-argument machinery (previously lambda-only):
+
+1. `argIsAmbiguousUnionCaseCtor(tbl, e)` — a new predicate mirroring
+   `lambdaHasUnannotatedParam`: true for a call-argument expression that
+   is itself a bare (single-segment `EPath` callee), 2+-candidate,
+   all-`DKUnionCase` constructor call. The ECall argument-inference loop
+   (and its A2 second pass) now defers such an argument the same way it
+   already deferred an unannotated lambda literal — first pass infers it
+   leniently into a scratch diagnostic list (its placeholder type is
+   discarded, exactly like a deferred lambda's), second pass re-infers
+   it with the callee's resolved parameter type as the expectation.
+   `expectedCallArgTypes` gained a `tbl` parameter so its generic-arg
+   exclusion check can call the same predicate as the deferral loop.
+2. `inferExprExpected` gained an `ECall` arm: when the callee is a bare
+   single-segment path, it calls `unionCaseSymbolForScrutinee(tbl, diag,
+   fn, expected)` — the SAME helper `#6287` Phase B already uses to
+   resolve a match-pattern head against its scrutinee's own union before
+   falling back to the ambiguity check — passing the argument's expected
+   type as the "scrutinee." If the expected type's own union declares a
+   case with that name, it resolves directly via
+   `inferUnionCaseConstruction`, bypassing the ambiguity gate entirely.
+   If not, `unionCaseSymbolForScrutinee` itself falls through to the
+   ordinary bare-name ambiguity check (for a genuinely bare, unqualified
+   callee) and raises T0123 there exactly as before — guarded by a
+   `diag.count` snapshot so this arm never falls into `inferExpr` a
+   second time and duplicates that diagnostic.
+
+A call argument whose bare name has fewer than 2 candidates, or whose
+candidates aren't ALL union cases (so it might be a record constructor
+or function call instead), is left on the original eager `inferExpr`
+path entirely — this change only ever adds a *new* successful
+resolution tier ahead of the existing ambiguity gate for the one shape
+it targets; nothing previously accepted is newly rejected, and nothing
+outside a bare 2+-candidate all-union-case callee is touched.
+
+**Verification.** `jvm_cross_package_collision_self_test.l`'s
+"aliased calls into two same-simple-name colliding packages each
+resolve to their own package" (the original #6814 repro) now passes,
+6/6 in that file. `typechecker_self_test.l` 412/412 including the
+pinned "bare union case constructor call ambiguous across two imported
+packages is T0123" regression (`val s = Ping(code = 1)`, still
+correctly rejected — no enclosing call means no expected type reaches
+`inferExprExpected`, so it takes the same path as before this fix).
+Broader sweep, all clean: `enum_case_collision_self_test.l` 13/13,
+`await_hoist_self_test.l` 19/19, `propagate_hoist_self_test.l` 42/42,
+`propagate_hoist_entry_polarity_self_test.l` 4/4,
+`cross_package_generics_self_test.l` 10/10,
+`msil_project_bridge_self_test.l` 46/46,
+`generic_specialization_self_test.l` 8/8,
+`nested_constructor_pattern_self_test.l` 6/6,
+`pconstructor_typed_binding_self_test.l` 7/7. Full `make lyric`
+self-host rebuild (the self-hosted compiler compiling itself and the
+entire stdlib bundle through this exact call-argument inference path)
+clean, both before and after a `lyric fmt --write` pass.
+
+**Files changed:** `lyric-compiler/lyric/type_checker/typechecker_exprs.l`
+(`argIsAmbiguousUnionCaseCtor`, the ECall arm-loop deferral sites,
+`inferExprExpected`'s new `ECall` arm, `expectedCallArgTypes`'s new
+`tbl` parameter).
+
+**Related:** #6814 (closed by this fix), #6287 (the bare-name-ambiguity
+diagnostic and `unionCaseSymbolForScrutinee` precedent this reuses),
+#6688/#6728 (the codegen-level call-argument enum/union-case hint this
+is the type-checker-level analog of), #6547 (the PR this was deferred
+out of, now landing separately).
