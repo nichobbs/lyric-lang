@@ -40379,14 +40379,16 @@ declaration is now canonically rendered `pub generic[T] func …`
 original order — a deliberate, harmless normalization, unlike the
 keyword-and-bracket-list DROP this fix closes.
 
-**Verification.** Four new `fmt_self_test.l` cases: the exact
+**Verification.** Five new `fmt_self_test.l` cases: the exact
 `generic[T] func …` repro round-trips byte-for-byte instead of losing
 the keyword; `pub generic[T] func …` combines correctly; a record and an
 impl declaration (the two shapes whose legacy-prefix rendering differs
-most from `func`'s) round-trip; and the existing, far more common
+most from `func`'s) round-trip; union/interface/alias declarations
+round-trip too (added on review, covering every remaining item kind
+`genLegacyPrefixStr` threads into); and the existing, far more common
 bare-bracket-after-name form is confirmed completely unaffected (no
-spurious `generic[` ever introduced). 142/142 `fmt_self_test.l` cases
-pass (138 pre-existing + 4 new), 131/131 `parser_self_test.l`. Manually
+spurious `generic[` ever introduced). 143/143 `fmt_self_test.l` cases
+pass (138 pre-existing + 5 new), 131/131 `parser_self_test.l`. Manually
 verified against `./bin/lyric fmt` directly (not just the self-test
 harness) for `func`, `pub func`, `record`, `union`, and `impl … for …`
 legacy-prefix declarations, and confirmed a member-level `generic[U]`
