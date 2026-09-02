@@ -40315,3 +40315,95 @@ tests total).
 **Related:** #2280 (tracking issue), the sibling `generic[T]`-prefix
 fix (PR #6827, same sweep) for the record-vs-union-case contrast noted
 above.
+## D-progress-870 — Formatter preserves the legacy `generic[T]` prefix
+form instead of silently dropping it on reformat (#2280 item 4)
+
+**Context.** The grammar (§5.1) accepts two spellings for a generic
+declaration's type parameters: the preferred bare-bracket form
+immediately after the declared name (`func identity[T](x: T): T`,
+`record Box[T] { … }`) and a legacy `generic[T]` prefix before the
+item's own keyword (`generic[T] func identity(x: T): T`). Both parse to
+the identical `GenericParams` payload — `parseGenericParamsOpt`
+(`parser_exprs.l`) handles both forms in one function and
+`mergeGenericsInfo` (`parser_core.l`) picks whichever one appeared,
+discarding which spelling was used.
+
+`Lyric.Fmt`'s renderer (`genParamsStr`, `fmt_core.l`) always emitted the
+bare-bracket-after-name form regardless of which spelling the source
+used, so reformatting a legacy-prefix declaration silently dropped the
+`generic` keyword and its bracket list rather than moving them — caught
+by `formatSourceChecked`'s loss-check (`structuralSequenceDiff` compares
+code-token sequences positionally, so the reordering registered as a
+token-changed mismatch and the guard correctly refused to write), but
+never actually fixed. This is #2280's item 4 ("generic keyword dropped
+(e.g. std/core.l)").
+
+**Fix.** `GenericParams` (`parser_ast.l`) gained a `legacyPrefixForm:
+Bool` field, set at `parseGenericParamsOpt`'s single construction site
+(`isGenericKw`, the flag the parser already computed to decide whether
+to advance past a `generic` token — previously read once and discarded).
+Because `mergeGenericsInfo` is the SINGLE choke point every item kind's
+body-parsing function (`parseFunctionDeclBody`, `parseRecordBody`,
+`parseUnionBody`, `parseOpaqueTypeBody`, `parseDistinctTypeBody`,
+`parseTypeAliasBody`, `parseProtectedTypeBody`, `parseInterfaceBody`,
+`parseImplBody`, and the `extern package` member variants) already
+routes through to merge the prefix/suffix parses, the flag reaches every
+one of those kinds with no changes to any of them.
+
+On the formatter side: `genParamsStr` now returns `""` (suppressing the
+after-name suffix) when the flag is set, and a new sibling function,
+`genLegacyPrefixStr`, returns `"generic[T, …] "` (ready to prepend
+directly before the item's own keyword) when it is. `funcDoc` /
+`funcSigStr` self-prepend it internally (covering every context a
+function can appear in — top-level, record/interface/impl/protected
+member, `extern package` signature — from ONE fix, since every one of
+those already funnels through `funcDoc`/`funcSigStr`). Every other item
+kind (record, exposed record, union, opaque type, distinct type, type
+alias, protected type, interface, impl, and their `extern package`
+member equivalents) has exactly one call site each in `itemDoc`'s
+top-level dispatch or the `extern package` member dispatch, so the
+prefix is prepended to `visStr` at those call sites directly. `impl`
+(which has no declared name — the legacy form's bracket sits directly
+before the bare `impl` keyword, not after any name) is the one shape
+whose bare-bracket rendering site doesn't accept a `visStr`-style prefix
+parameter; `implDoc` was given a small local `legacyGens` variable
+instead of threading it through a caller.
+
+The formatter does not attempt to preserve which MODIFIER ORDER a
+legacy-form declaration used (`pub generic[T] func …` vs.
+`generic[T] pub func …` — the grammar's item-modifier loop, `parser_
+items.l`'s prefix-collection loop around line 3660, accepts either order
+and does not record which one was written). Every legacy-prefix
+declaration is now canonically rendered `pub generic[T] func …`
+(visibility, then the legacy prefix, then the keyword) regardless of the
+original order — a deliberate, harmless normalization, unlike the
+keyword-and-bracket-list DROP this fix closes.
+
+**Verification.** Four new `fmt_self_test.l` cases: the exact
+`generic[T] func …` repro round-trips byte-for-byte instead of losing
+the keyword; `pub generic[T] func …` combines correctly; a record and an
+impl declaration (the two shapes whose legacy-prefix rendering differs
+most from `func`'s) round-trip; and the existing, far more common
+bare-bracket-after-name form is confirmed completely unaffected (no
+spurious `generic[` ever introduced). 142/142 `fmt_self_test.l` cases
+pass (138 pre-existing + 4 new), 131/131 `parser_self_test.l`. Manually
+verified against `./bin/lyric fmt` directly (not just the self-test
+harness) for `func`, `pub func`, `record`, `union`, and `impl … for …`
+legacy-prefix declarations, and confirmed a member-level `generic[U]`
+inside an `impl` body is rejected by the PARSER itself (pre-existing,
+unrelated to this fix — the legacy prefix is only accepted at
+`parser_items.l`'s top-level item-modifier loop, never inside a member
+body), so `funcDoc`'s unconditional self-prepend is a correctness-neutral
+no-op there. Two full `make lyric` rebuilds (stage1 + AOT) succeed end to
+end.
+
+**Related:** #2280 (tracking issue for the self-hosted formatter's
+remaining round-trip-losslessness gaps; this closes item 4 of 9 — items
+0 (self-hosted MSIL bridge miscompile on reformat), 1 (extern-package
+corruption), 2 (numeric-literal spelling), 5 (`return` re-scoping), 6
+(dropped statement-internal comments), 7 (self-hosted parser gaps, ~20
+files), and 8 (keyword-as-identifier diagnostic) remain open; items 3
+(char-literal mangling) and this one (4) are now both fixed — item 3 was
+found already resolved by the time this session reached it, with no
+decision-log entry of its own since no code change was needed to verify
+it).

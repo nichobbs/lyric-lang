@@ -170,7 +170,7 @@ pub func parseGenericParamsOpt(st: inout ParseState): Option[GenericParams] {
         startTok.span
       }
     }
-    Some(value = GenericParams(params = xs, span = joinSpans(startTok.span, endSpan)))
+    Some(value = GenericParams(params = xs, span = joinSpans(startTok.span, endSpan), legacyPrefixForm = isGenericKw))
   }
 }
 

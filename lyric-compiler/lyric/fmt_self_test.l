@@ -1942,6 +1942,67 @@ test "width driven nested match arm threads the real absolute column (#6606 repr
   }
 }
 
+// #2280 item 4 repro: `genParamsStr` normalized every `generics` field to
+// the bare-bracket-after-name form (`func foo[T](...)`) regardless of
+// which spelling the source actually used, so a function declared with
+// the legacy `generic[T] func foo(...)` prefix (grammar §5.1: "Both
+// forms are accepted") silently lost its `generic` keyword and bracket
+// list on reformat — caught by the loss-check (`formatSourceChecked`
+// refused to write), but never actually fixed until now.
+// `GenericParams.legacyPrefixForm` (set by `parseGenericParamsOpt`) lets
+// the formatter reproduce whichever spelling was used instead of
+// normalizing it away.
+test "legacy 'generic[T] func' prefix form round trips instead of being silently dropped (#2280 item 4)" {
+  val src = "package P\n\ngeneric[T] func identity(x: T): T {\n  x\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "legacy generic[T] func prefix: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "generic[T] func identity"), "legacy generic[T] func prefix: preserved verbatim")
+}
+
+// `pub` combines with the legacy prefix as `pub generic[T] func …`
+// (visibility first, then the legacy prefix, then the item keyword) —
+// the canonical order this formatter always emits regardless of which
+// order the modifiers appeared in on disk (the parser accepts either
+// order for the legacy form and does not record which one was used).
+test "pub combined with the legacy 'generic[T]' prefix round trips" {
+  val src = "package P\n\npub generic[T] func identity(x: T): T {\n  x\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "pub + legacy generic[T] prefix: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "pub generic[T] func identity"), "pub + legacy generic[T] prefix: preserved verbatim")
+}
+
+// The legacy prefix form applies to every item kind the grammar lists
+// (RecordDecl, UnionDecl, OpaqueTypeDecl, ProtectedTypeDecl, FunctionDecl,
+// InterfaceDecl, ImplDecl) — not just `func`. Covers a record and an impl
+// block (the two shapes whose legacy-prefix rendering differs most from
+// `func`'s: a record's generics sit before "record NAME", an impl's sit
+// before the bare "impl" keyword with no name in between at all).
+test "legacy 'generic[T]' prefix form round trips for record and impl declarations" {
+  val src = "package P\n\ngeneric[T] record Box {\n  value: T\n}\n\n" + "interface Shape {\n  func area(): Int\n}\n\n" +
+    "generic[T] impl Shape for Box {\n  func area(): Int {\n    0\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "legacy generic[T] prefix (record/impl): round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "generic[T] record Box"), "legacy generic[T] prefix: record preserved verbatim")
+  assertTrue(Str.contains(acc, "generic[T] impl Shape for Box"), "legacy generic[T] prefix: impl preserved verbatim")
+}
+
+// The bare-bracket-after-name form (`func identity[T](...)`, the
+// "preferred" spelling per grammar §5.1) must be completely unaffected —
+// this is the FAR more common spelling in the tree today, so a
+// regression here would be much more damaging than the legacy-form bug
+// this fix targets.
+test "bare-bracket-after-name generic form is unaffected by the legacy-prefix fix" {
+  val src = "package P\n\nfunc identity[T](x: T): T {\n  x\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "bare-bracket generic form: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "func identity[T]"), "bare-bracket generic form: preserved verbatim")
+  assertTrue(not Str.contains(acc, "generic["), "bare-bracket generic form: no spurious legacy prefix introduced")
+}
+
 test "short nested match arm body under the same deep nesting stays inline (#6606 no over-splitting)" {
   // Same nesting depth as the repro above (a match arm's body is itself a
   // match, so `col` threading is exercised), but the SCRUTINEE is long

@@ -216,6 +216,14 @@ pub union GenericParam {
 pub record GenericParams {
   params: List[GenericParam]
   span: Span
+  /// True when the source spelled this as the legacy `generic[T, U]`
+  /// prefix form (before the declared name) rather than the preferred
+  /// bare-bracket form immediately after it (grammar §5.1: "Both forms
+  /// are accepted"). Carried so `lyric fmt` can reproduce the original
+  /// spelling instead of silently normalizing it — dropping the `generic`
+  /// keyword and its bracket list from the legacy form corrupted the
+  /// token sequence (#2280 item 4).
+  legacyPrefixForm: Bool
 }
 
 pub union ParamMode {
