@@ -2011,6 +2011,46 @@ test "legacy 'generic[T]' prefix combined with internal round trips in both orde
   )
 }
 
+// `async` combines with the legacy prefix too (review suggestion on
+// #6827): `funcSigStr`/`funcDoc` both prepend the vis+legacy-prefix
+// combinator before `asyncStr`, per the grammar's `[async] func`
+// ordering — lock that in with a dedicated round-trip test instead of
+// resting on the fact that it's the same code path as the non-async
+// cases above.
+test "legacy 'generic[T]' prefix combined with async round trips" {
+  val src = "package P\n\ngeneric[T] async func identity(x: T): T {\n  x\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "legacy generic[T] prefix + async: round-trips")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "generic[T] async func identity"),
+    "legacy generic[T] prefix + async: preserved verbatim"
+  )
+}
+
+// `visAndLegacyPrefixStr` (the shared vis/legacy-prefix ordering
+// combinator) is exercised above only via `func` declarations; every
+// other item kind's coverage exercises the bare `generic[T]` form
+// without a visibility modifier (review suggestion on #6827). Cover the
+// non-canonical `generic[T] pub`/`generic[T] internal` ordering for a
+// second item kind (record) to confirm the combinator's correctness
+// isn't just accidentally right for `func`.
+test "legacy 'generic[T]' prefix combined with pub/internal round trips for a record declaration" {
+  val src = "package P\n\ngeneric[T] pub record Box {\n  value: T\n}\n\n" +
+    "generic[U] internal record Cell {\n  value: U\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "legacy generic[T] prefix + pub/internal (record, generics first): round-trips")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "generic[T] pub record Box"),
+    "legacy generic[T] prefix + pub (record, generics first): preserved verbatim"
+  )
+  assertTrue(
+    Str.contains(acc, "generic[U] internal record Cell"),
+    "legacy generic[T] prefix + internal (record, generics first): preserved verbatim"
+  )
+}
+
 // The legacy prefix form applies to every item kind the grammar lists
 // (RecordDecl, UnionDecl, OpaqueTypeDecl, ProtectedTypeDecl, FunctionDecl,
 // InterfaceDecl, ImplDecl) — not just `func`. Covers a record and an impl
