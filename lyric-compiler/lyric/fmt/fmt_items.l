@@ -1144,7 +1144,20 @@ func externVisStr(vis: in Option[Visibility]): String = visibilityPrefixStr(vis)
 /// fidelity (visibility + signature + contracts for a func, the full body
 /// for a record).  Mirrors the order the source wrote them so the
 /// `FmtCtx` cursor advances monotonically.
-func externMemberLines(emd: in ExternMemberDecl, ctx: inout FmtCtx): List[String] {
+func externMemberLines(
+  // The `genLegacyPrefixStr(...)` calls below are always a no-op today:
+  // `parseExternMemberOpt` (parser_items.l) never pre-parses a `generic[...]`
+  // keyword prefix for an extern member — it calls `parseRecordBody` /
+  // `parseUnionBody` / `parseOpaqueTypeBody` / `parseTypeAliasBody` /
+  // `parseDistinctTypeBody` with a hardcoded `None` genericsPrefix — so
+  // `legacyPrefixForm` can never be `true` on a member's `GenericParams`
+  // and these calls always render `""`. Kept for parity with `itemDoc`'s
+  // top-level arms (same call shape, same eventual behavior if extern
+  // members ever gain their own legacy-prefix syntax) rather than as
+  // dead code to prune.
+  emd: in ExternMemberDecl,
+  ctx: inout FmtCtx,
+): List[String] {
   val acc: List[String] = newList()
   val pre = popTriviaBefore(ctx, emd.span.startPos.offset)
   appendDoc(acc, pre)

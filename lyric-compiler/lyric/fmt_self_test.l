@@ -2008,6 +2008,36 @@ test "legacy 'generic[T]' prefix form round trips for union, interface, and type
   assertTrue(Str.contains(acc, "generic[T] alias BoxAlias"), "legacy generic[T] prefix: alias preserved verbatim")
 }
 
+// The last three item kinds `genLegacyPrefixStr` covers at the top-level
+// item position (review suggestion on #6827): opaque type, distinct type,
+// and protected type. All three accept `[ GenericParams ]` right after
+// their name per the grammar (`docs/grammar.ebnf` §3.4/§3.7/§3.8), and the
+// shared prefix-collection loop in `parseItem` (parser_items.l) threads
+// `genericsPrefix` into `parseOpaqueTypeBody`/`parseDistinctTypeBody`/
+// `parseProtectedTypeBody` exactly like it does for record/union/func —
+// so the legacy `generic[T]` spelling is reachable for these three too,
+// each rendered by its own `itemDoc` arm (`IOpaque`/`IDistinctType`/
+// `IProtected`) in `fmt_items.l`.
+test "legacy 'generic[T]' prefix form round trips for opaque, distinct, and protected type declarations" {
+  val src = "package P\n\ngeneric[T] opaque type Box {\n  value: T\n}\n\n" + "generic[T] type Wrapper = List[T]\n\n" +
+    "generic[T] protected type Cell {\n  var value: T\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "legacy generic[T] prefix (opaque/distinct/protected): round-trips")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "generic[T] opaque type Box"),
+    "legacy generic[T] prefix: opaque type preserved verbatim"
+  )
+  assertTrue(
+    Str.contains(acc, "generic[T] type Wrapper ="),
+    "legacy generic[T] prefix: distinct type preserved verbatim"
+  )
+  assertTrue(
+    Str.contains(acc, "generic[T] protected type Cell"),
+    "legacy generic[T] prefix: protected type preserved verbatim"
+  )
+}
+
 // The bare-bracket-after-name form (`func identity[T](...)`, the
 // "preferred" spelling per grammar §5.1) must be completely unaffected —
 // this is the FAR more common spelling in the tree today, so a
