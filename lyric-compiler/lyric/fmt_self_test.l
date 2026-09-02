@@ -2031,3 +2031,18 @@ test "bare '..' range pattern round trips instead of being silently rewritten to
     "explicit '..<' range pattern: preserved verbatim alongside the bare form"
   )
 }
+
+// A third, distinct call site for the same `rangeBoundStr` fix: a range
+// subtype declaration (`docs/01-language-reference.md`'s `TRefined`,
+// `type Age = Int range 0 .. 150`). `distinctDoc` renders `dt.rangeClause`
+// through the same `rangeBoundStr` as the for-loop and match-pattern
+// forms above, so it shares the fix without any change of its own — this
+// test just confirms the third reader of `RBHalfOpen.bareDotDot` round-trips
+// too.
+test "bare '..' range subtype bound round trips instead of being silently rewritten to '..<' (#2280)" {
+  val src = "package P\n\ntype Age = Int range 0 .. 150\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "bare '..' range subtype: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "type Age = Int range 0 .. 150"), "bare '..' range subtype: preserved verbatim")
+}
