@@ -495,7 +495,7 @@ func hzHasHazard(cfg: in HoistConfig, e: in Expr): Bool {
     case ERange(bound) -> {
       match bound {
         case RBClosed(lo, hi) -> hzHasHazard(cfg, lo) or hzHasHazard(cfg, hi)
-        case RBHalfOpen(lo, hi) -> hzHasHazard(cfg, lo) or hzHasHazard(cfg, hi)
+        case RBHalfOpen(lo, hi, _) -> hzHasHazard(cfg, lo) or hzHasHazard(cfg, hi)
         case RBLowerOpen(hi) -> hzHasHazard(cfg, hi)
         case RBUpperOpen(lo) -> hzHasHazard(cfg, lo)
       }
@@ -780,7 +780,7 @@ func hzNeedsHoist(cfg: in HoistConfig, e: in Expr): Bool {
     case ERange(bound) -> {
       match bound {
         case RBClosed(lo, hi) -> hzNeedsHoist(cfg, lo) or hzNeedsHoist(cfg, hi)
-        case RBHalfOpen(lo, hi) -> hzNeedsHoist(cfg, lo) or hzNeedsHoist(cfg, hi)
+        case RBHalfOpen(lo, hi, _) -> hzNeedsHoist(cfg, lo) or hzNeedsHoist(cfg, hi)
         case RBLowerOpen(hi) -> hzNeedsHoist(cfg, hi)
         case RBUpperOpen(lo) -> hzNeedsHoist(cfg, lo)
       }
@@ -1142,12 +1142,12 @@ func hzHoistSpine(cfg: in HoistConfig, e: in Expr, acc: in List[Statement], st: 
             RBClosed(lo = hzHoistSpine(cfg, lo, acc, st), hi = hi)
           }
         }
-        case RBHalfOpen(lo, hi) -> {
+        case RBHalfOpen(lo, hi, bareDotDot) -> {
           if hzHasHazard(cfg, hi) {
             val lo2 = hzBind(cfg, hzHoistSpine(cfg, lo, acc, st), acc, st)
-            RBHalfOpen(lo = lo2, hi = hzHoistSpine(cfg, hi, acc, st))
+            RBHalfOpen(lo = lo2, hi = hzHoistSpine(cfg, hi, acc, st), bareDotDot = bareDotDot)
           } else {
-            RBHalfOpen(lo = hzHoistSpine(cfg, lo, acc, st), hi = hi)
+            RBHalfOpen(lo = hzHoistSpine(cfg, lo, acc, st), hi = hi, bareDotDot = bareDotDot)
           }
         }
         case RBLowerOpen(hi) -> RBLowerOpen(hi = hzHoistSpine(cfg, hi, acc, st))
@@ -1659,7 +1659,7 @@ func hzCollectMutableNamesExpr(e: in Expr, m: in Map[String, Bool], localM: in M
           hzCollectMutableNamesExpr(lo, m, localM)
           hzCollectMutableNamesExpr(hi, m, localM)
         }
-        case RBHalfOpen(lo, hi) -> {
+        case RBHalfOpen(lo, hi, _) -> {
           hzCollectMutableNamesExpr(lo, m, localM)
           hzCollectMutableNamesExpr(hi, m, localM)
         }

@@ -1985,3 +1985,106 @@ test "short nested match arm body under the same deep nesting stays inline (#660
     i = i + 1
   }
 }
+
+// `..` is a grammar-level synonym for `..<` (§4.2.1: half-open range,
+// hi excluded) but `RangeBound.RBHalfOpen` carried no field recording
+// which spelling the source used, so `rangeBoundStr` always rendered
+// `..<` — silently rewriting every bare `..` on reformat (caught by the
+// loss-check, never actually fixed until now; same bug shape as the
+// legacy `generic[T]` prefix above). `RBHalfOpen.bareDotDot` (set by
+// `parseRangeBound`) lets the formatter reproduce whichever spelling was
+// used. Covers the `for`-loop iterator form — the original repro, from
+// `for_loop_slice_self_test.l`'s `for i in 1i64 .. 6i64` case.
+test "bare '..' range operator round trips instead of being silently rewritten to '..<' (#2280)" {
+  val src = "package P\n\nfunc sumTo(n: Int): Int {\n  var total = 0\n  for i in 0 .. n {\n    total = total + i\n  }\n  total\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "bare '..' range operator: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "for i in 0 .. n"), "bare '..' range operator: for-loop form preserved verbatim")
+}
+
+// The explicit `..<` spelling (the canonical form `rangeBoundStr` always
+// emitted before this fix) must be completely unaffected — a regression
+// here would be far more damaging than the bare-`..` bug this fix targets,
+// since `..<` is the far more common spelling in the tree today.
+test "explicit '..<' range operator is unaffected by the bare-'..' fix" {
+  val src = "package P\n\nfunc sumTo(n: Int): Int {\n  var total = 0\n  for i in 0 ..< n {\n    total = total + i\n  }\n  total\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "explicit '..<' range operator: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "for i in 0 ..< n"), "explicit '..<' range operator: preserved verbatim")
+  assertTrue(not Str.contains(acc, "0 .. n"), "explicit '..<' range operator: no spurious bare '..' introduced")
+}
+
+// The same synonym pair also appears in match-arm range patterns
+// (`RangePattern`, grammar §5.1), backed by a distinct AST node
+// (`PatternKind.PRange`) with its own `bareDotDot` field — the same bug,
+// a second AST location, fixed the same way in `patRangeStr`.
+test "bare '..' range pattern round trips instead of being silently rewritten to '..<' (#2280)" {
+  val src = "package P\n\nfunc classify(n: Int): Int {\n  match n {\n    case 0 .. 10 -> 1\n    case 10 ..< 20 -> 2\n    case _ -> 0\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "bare '..' range pattern: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "case 0 .. 10 ->"), "bare '..' range pattern: preserved verbatim")
+  assertTrue(
+    Str.contains(acc, "case 10 ..< 20 ->"),
+    "explicit '..<' range pattern: preserved verbatim alongside the bare form"
+  )
+}
+
+// `patRangeStr`'s operator-selection chain (review suggestion on #6828) has
+// a third branch besides `bareDotDot`'s true/false: the inclusive `..=`
+// spelling, which short-circuits ahead of `bareDotDot` entirely (`incl`
+// is set independently by `RangeBound.RBClosed`/inclusive patterns, not by
+// this PR's new field). Cover it explicitly so a future reordering of that
+// chain that broke `..=` round-tripping wouldn't go undetected by only the
+// two half-open cases above.
+test "inclusive '..=' range pattern round trips (unaffected by the bareDotDot chain)" {
+  val src = "package P\n\nfunc classify(n: Int): Int {\n  match n {\n    case 0 ..= 10 -> 1\n    case _ -> 0\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "inclusive '..=' range pattern: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "case 0 ..= 10 ->"), "inclusive '..=' range pattern: preserved verbatim")
+}
+
+// A third, distinct call site for the same `rangeBoundStr` fix: a range
+// subtype declaration (`docs/01-language-reference.md`'s `TRefined`,
+// `type Age = Int range 0 .. 150`). `distinctDoc` renders `dt.rangeClause`
+// through the same `rangeBoundStr` as the for-loop and match-pattern
+// forms above, so it shares the fix without any change of its own — this
+// test just confirms the third reader of `RBHalfOpen.bareDotDot` round-trips
+// too.
+test "bare '..' range subtype bound round trips instead of being silently rewritten to '..<' (#2280)" {
+  val src = "package P\n\ntype Age = Int range 0 .. 150\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "bare '..' range subtype: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "type Age = Int range 0 .. 150"), "bare '..' range subtype: preserved verbatim")
+}
+
+// The explicit '..<' counterpart on the same third reader (review
+// suggestion on #6828) — the for-loop and match-pattern tests above both
+// cover both spellings side by side; this closes the same gap for the
+// range-subtype declaration form.
+test "explicit '..<' range subtype bound is unaffected by the bare-'..' fix" {
+  val src = "package P\n\ntype Age = Int range 0 ..< 150\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "explicit '..<' range subtype: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "type Age = Int range 0 ..< 150"), "explicit '..<' range subtype: preserved verbatim")
+}
+
+// A fourth reader of `rangeBoundStr` (review suggestion on #6828): an
+// INLINE type refinement (`TRefined`, `typeStr`'s own arm), distinct
+// from the named range-subtype *declaration* form covered above —
+// `Path range <bound>` is valid anywhere a `TypeExpr` is (see
+// `parser_exprs.l`'s `identStr(peekToken(st)) == "range"` branch), e.g.
+// as a parameter type. Confirms the bare `..` spelling round-trips
+// there too, not just in `distinctDoc`.
+test "bare '..' inline type-refinement bound round trips (fourth rangeBoundStr reader, #2280)" {
+  val src = "package P\n\nfunc clamp(x: Int range 0 .. 10): Int {\n  x\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "bare '..' inline type refinement: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "x: Int range 0 .. 10"), "bare '..' inline type refinement: preserved verbatim")
+}

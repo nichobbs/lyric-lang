@@ -40192,3 +40192,126 @@ slices 1/2/4 shipped in D-progress-804), #6824 (the two deliberate scope
 exclusions above, plus the `List[List[<cross-package-record>]]`
 generic-specialization gap), `docs/63-build-profiles-and-debugger.md` §9.5
 and §9.7 (updated alongside this entry).
+
+## D-progress-869 — Formatter preserves the bare `..` range-operator spelling instead of always normalizing to `..<` (#2280)
+
+**Problem.** Grammar §4.2.1 makes `..` a synonym for `..<` (both spell
+a half-open range, hi excluded), and §5.1's `RangePattern` accepts the
+same pair for match-arm range patterns. Neither
+`RangeBound.RBHalfOpen` (the range-*expression* AST node, used by
+`for i in lo .. hi` and standalone range expressions) nor
+`PatternKind.PRange` (the range-*pattern* AST node, used by
+`case lo .. hi -> …`) recorded which spelling the source actually
+used. `Lyric.Fmt`'s `rangeBoundStr`/`patRangeStr` always rendered the
+canonical `..<`/`..` form respectively, so reformatting any file using
+the *other* spelling silently rewrote it — caught by the loss-checked
+`formatSourceChecked` guard (which refuses to write rather than
+silently corrupt), but never actually fixed. Surfaced by
+`for_loop_slice_self_test.l`'s `for i in 1i64 .. 6i64` case
+(`token 584 changed: '..' -> '..<'`) during a repo-wide `lyric fmt`
+survey run to re-check #2280's remaining scope after D-progress-861
+(Class B) and the legacy `generic[T]` prefix fix landed. This is the
+same bug shape as the `generic[T]` prefix fix: an AST node that
+collapses two spellings of the same construct into one representation,
+so the formatter has no way to reproduce the original even in
+principle.
+
+**Fix.** Add `bareDotDot: Bool` to both `RangeBound.RBHalfOpen` and
+`PatternKind.PRange`, set at the parser's existing `DotDot`/`DotDotLt`
+branch points (`parseRangeBound` in `parser_exprs.l`'s three
+call-sites, the `for`-loop iterator's own inline range parse, and
+`parseLiteralOrRangePat`) — `true` for the bare `..` spelling, `false`
+for explicit `..<` (meaningless, and always `false`, on `PRange` when
+`inclusive` is set — `..=` has no bare/explicit distinction). The
+formatter's `rangeBoundStr`/`patRangeStr` now branch on the flag
+instead of hardcoding one spelling.
+
+Unlike the `legacyPrefixForm` field added to `GenericParams` (a
+*record*, the sibling fix in the same #2280 sweep, PR #6827 — not yet
+merged at the time of writing, so its own decision-log entry number
+isn't final), `RBHalfOpen` and `PRange` are *union cases*, so every one of
+their ~68 combined pattern-match sites across the compiler
+(`RBHalfOpen`: parser, formatter, hoist engine, alias rewriter, type
+alias resolver, monomorphizer, propagate, mode checker, both type
+checker files, native/MSIL/JVM codegen, contract elaborator, wire
+expander, verifier; `PRange`: JVM/MSIL/native codegen, alias rewriter,
+type alias resolver, monomorphizer, mode checker, type checker, plus
+one self-test asserting on the AST shape directly) needed the new
+positional field accounted for — either threaded through (the handful
+of sites that *reconstruct* a `RBHalfOpen`/`PRange` from its own
+matched `lo`/`hi`/`inclusive` fields, e.g. `Lyric.AliasRewriter`,
+`Lyric.TypeAliasResolve`, `Lyric.Mono`, `Lyric.Propagate`,
+`Lyric.ContractElaborator`, `Lyric.WireExpand`, and one spot in
+`Lyric.HoistEngine`) or wildcarded (the majority, which only ever read
+`lo`/`hi`/`inclusive` and never reconstruct the bound/pattern).
+
+**Correction (review finding, issue #6836): the flag's value IS read
+outside the parser and formatter.** This entry originally claimed "no
+site was found that needed the new flag's value outside the parser and
+formatter themselves" — every OTHER rewrite pass does thread it through
+opaquely, but the range-subtype empty-bounds check
+(`typechecker_checker.l`'s `checkDistinctType`) reads `bareDotDot` to
+build a display string (`opStr = if bareDotDot { ".." } else { "..<" }`)
+for its `T0090` diagnostic, and that display string was ALSO being used
+as the check's predicate selector (`checkClosed`/`checkClosedFloat`'s
+`sym: String` parameter did double duty: `if sym == "..=" {...} else if
+sym == "..<" {...} else { false }`). `".."` matched neither branch, so
+the empty-bounds check silently no-op'd for the bare-`..` spelling
+specifically — `type Bad = Int range 5 .. 5` type-checked clean while
+the equivalent `5 ..< 5` correctly failed, and since both backends emit
+`upperExclusive = true` for `RBHalfOpen` regardless of spelling, every
+attempted construction of `Bad` would have panicked at runtime instead
+of failing at compile time. Fixed by giving `checkClosed`/
+`checkClosedFloat` an explicit `inclusive: Bool` parameter for the
+predicate, decoupled from `sym`'s now purely-cosmetic display role.
+Added `type Bad = Int range 5 .. 5` / `5 ..< 5` / `Float range 1.0 ..
+1.0` cases to `typechecker_self_test.l` (the existing empty-bounds test
+only covered `..=`, which never exercised this code path) — 415/415
+`typechecker_self_test.l`.
+
+**A related but out-of-scope parser gap, noted for the record.**
+`0 .. 10` as a bare range expression outside a `for`-loop iterator
+position (e.g. as a `val` initializer or a call argument) fails to
+parse (`P0050: expected an expression`) on the self-hosted parser even
+though grammar §4.2.1 places `RangeExpr` at ordinary expression
+precedence. This is a pre-existing parser-completeness gap (item #7b
+in the #2280 ledger, "diverse parser-feature gaps"), not something
+this fix's `bareDotDot` field could introduce or needs to touch — the
+`for`-loop iterator position (this fix's actual, verified repro) and
+match-arm range patterns both parse and round-trip correctly.
+
+**Verification.** New `fmt_self_test.l` cases across this entry's
+several commits: bare `..` for-loop round-trip, explicit `..<`
+regression guard, a match-arm range pattern case covering both
+spellings side by side (`case 0 .. 10 -> 1` / `case 10 ..< 20 -> 2`),
+a range-subtype declaration round-trip (`type Age = Int range 0 .. 150`,
+`TRefined`/`distinctDoc`'s own reader of `rangeBoundStr`), and (added
+addressing a second review round's SUGGESTIONs) an inclusive `..=`
+range-pattern round-trip (covering `patRangeStr`'s `incl`-short-circuit
+branch, which the first four cases didn't exercise) plus the explicit
+`..<` counterpart on the range-subtype form — 144/144. Full regression
+sweep against the rebuilt self-hosted compiler, all green:
+`parser_self_test.l` 131/131, `typechecker_self_test.l` 415/415 (the
+range-subtype empty-bounds diagnostic message now threads `bareDotDot`
+too, per the same review round — see the #6836 correction below for
+the three regression cases that count includes), `modechecker_self_test.l` 112/112,
+`mono_self_test.l` 82/82, `cfg_self_test.l` 12/12,
+`weaver_self_test.l` 46/46, `source_path_diagnostics_self_test.l`
+12/12. `for_loop_slice_self_test.l` (the original repro) now
+round-trips byte-identical through `./bin/lyric fmt --write` after a
+full `make lyric` self-host rebuild.
+
+**Files changed:** `lyric-compiler/lyric/parser/parser_ast.l`
+(`RangeBound.RBHalfOpen`, `PatternKind.PRange` field additions),
+`lyric-compiler/lyric/parser/parser_exprs.l` (construction sites),
+`lyric-compiler/lyric/fmt/fmt_core.l` (`rangeBoundStr`,
+`patRangeStr`), `lyric-compiler/lyric/type_checker/typechecker_checker.l`
+(range-subtype empty-bounds diagnostic message, threaded on the second
+review round), plus the ~20 files listed above whose `RBHalfOpen`/
+`PRange` pattern matches needed a wildcarded or threaded third/fourth
+field to keep compiling. `lyric-compiler/lyric/fmt_self_test.l` (6 new
+tests total).
+
+**Related:** #2280 (tracking issue), the sibling `generic[T]`-prefix
+fix (PR #6827, same sweep) for the record-vs-union-case contrast noted
+above.

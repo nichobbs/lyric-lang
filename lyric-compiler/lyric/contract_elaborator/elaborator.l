@@ -292,7 +292,13 @@ func blockContainsResult(body: in Block): Bool {
     match body.statements[i].kind {
       case SExpr(e) -> if exprContainsResult(e) { return true }
       case SReturn(Some(e)) -> if exprContainsResult(e) { return true }
-      case SLocal(binding) -> match binding { case LBVal(_, _, init) -> if exprContainsResult(init) { return true }; case LBLet(_, _, init) -> if exprContainsResult(init) { return true }; case LBVar(_, _, Some(init)) -> if exprContainsResult(init) { return true }; case LBVar(_, _, None) -> {  } }
+      case SLocal(binding) -> match binding {
+        case LBVal(_, _, init) -> if exprContainsResult(init) { return true }
+        case LBLet(_, _, init) -> if exprContainsResult(init) { return true }
+        case LBVar(_, _, Some(init)) -> if exprContainsResult(init) { return true }
+        case LBVar(_, _, None) -> {
+        }
+      }
       case SFor(_, _, iter, bdy) -> {
         if exprContainsResult(iter) {
           return true
@@ -456,7 +462,10 @@ func substResult(e: in Expr, name: in String): Expr {
     case EPrefix(op, x) -> mkExpr(EPrefix(op = op, operand = substResult(x, name)), e.span)
     case EBinop(op, l, r) -> mkExpr(EBinop(op = op, lhs = substResult(l, name), rhs = substResult(r, name)), e.span)
     case ERange(bound) -> mkExpr(ERange(bound = substResultRange(bound, name)), e.span)
-    case EAssign(t, op, v) -> mkExpr(EAssign(target = substResult(t, name), op = op, value = substResult(v, name)), e.span)
+    case EAssign(t, op, v) -> mkExpr(
+      EAssign(target = substResult(t, name), op = op, value = substResult(v, name)),
+      e.span
+    )
     case EBlock(blk) -> mkExpr(EBlock(block = substResultBlock(blk, name)), e.span)
     case EUnsafe(blk) -> mkExpr(EUnsafe(block = substResultBlock(blk, name)), e.span)
     case EInterpolated(segs) -> {
@@ -494,7 +503,10 @@ func substResultBlock(blk: in Block, name: in String): Block {
 func substResultStmt(s: in Statement, name: in String): Statement {
   match s.kind {
     case SLocal(binding) -> mkStmt(SLocal(binding = substResultBinding(binding, name)), s.span)
-    case SAssign(t, op, v) -> mkStmt(SAssign(target = substResult(t, name), op = op, value = substResult(v, name)), s.span)
+    case SAssign(t, op, v) -> mkStmt(
+      SAssign(target = substResult(t, name), op = op, value = substResult(v, name)),
+      s.span
+    )
     case SReturn(valOpt) -> {
       val newVal: Option[Expr] = match valOpt { case Some(v) -> Some(value = substResult(v, name)); case None -> None }
       mkStmt(SReturn(value = newVal), s.span)
@@ -517,8 +529,23 @@ func substResultStmt(s: in Statement, name: in String): Statement {
     }
     case SDefer(body) -> mkStmt(SDefer(body = substResultBlock(body, name)), s.span)
     case SScope(label, body) -> mkStmt(SScope(binding = label, body = substResultBlock(body, name)), s.span)
-    case SFor(label, pat, iter, body) -> mkStmt(SFor(label = label, pat = pat, iter = substResult(iter, name), body = substResultBlock(body, name)), s.span)
-    case SWhile(label, cond, body) -> mkStmt(SWhile(label = label, cond = substResult(cond, name), body = substResultBlock(body, name)), s.span)
+    case SFor(label, pat, iter, body) -> mkStmt(
+      SFor(
+        label = label,
+        pat = pat,
+        iter = substResult(iter, name),
+        body = substResultBlock(body, name)
+      ),
+      s.span
+    )
+    case SWhile(label, cond, body) -> mkStmt(
+      SWhile(
+        label = label,
+        cond = substResult(cond, name),
+        body = substResultBlock(body, name)
+      ),
+      s.span
+    )
     case SLoop(label, body) -> mkStmt(SLoop(label = label, body = substResultBlock(body, name)), s.span)
     case SInvariant(x) -> mkStmt(SInvariant(expr = substResult(x, name)), s.span)
     case SExpr(x) -> mkStmt(SExpr(expr = substResult(x, name)), s.span)
@@ -541,7 +568,11 @@ func substResultBinding(b: in LocalBinding, name: in String): LocalBinding {
 func substResultRange(b: in RangeBound, name: in String): RangeBound {
   match b {
     case RBClosed(lo, hi) -> RBClosed(lo = substResult(lo, name), hi = substResult(hi, name))
-    case RBHalfOpen(lo, hi) -> RBHalfOpen(lo = substResult(lo, name), hi = substResult(hi, name))
+    case RBHalfOpen(lo, hi, bareDotDot) -> RBHalfOpen(
+      lo = substResult(lo, name),
+      hi = substResult(hi, name),
+      bareDotDot = bareDotDot
+    )
     case RBLowerOpen(hi) -> RBLowerOpen(hi = substResult(hi, name))
     case RBUpperOpen(lo) -> RBUpperOpen(lo = substResult(lo, name))
   }
@@ -671,7 +702,7 @@ func collectOldExprRange(b: in RangeBound, acc: inout List[Expr]) {
       collectOldExpr(lo, acc)
       collectOldExpr(hi, acc)
     }
-    case RBHalfOpen(lo, hi) -> {
+    case RBHalfOpen(lo, hi, _) -> {
       collectOldExpr(lo, acc)
       collectOldExpr(hi, acc)
     }
@@ -892,7 +923,11 @@ func replaceOldExprBlock(blk: in Block, counter: inout RenameCounter): Block {
 func replaceOldExprRange(b: in RangeBound, counter: inout RenameCounter): RangeBound {
   match b {
     case RBClosed(lo, hi) -> RBClosed(lo = replaceOldExpr(lo, counter), hi = replaceOldExpr(hi, counter))
-    case RBHalfOpen(lo, hi) -> RBHalfOpen(lo = replaceOldExpr(lo, counter), hi = replaceOldExpr(hi, counter))
+    case RBHalfOpen(lo, hi, bareDotDot) -> RBHalfOpen(
+      lo = replaceOldExpr(lo, counter),
+      hi = replaceOldExpr(hi, counter),
+      bareDotDot = bareDotDot
+    )
     case RBLowerOpen(hi) -> RBLowerOpen(hi = replaceOldExpr(hi, counter))
     case RBUpperOpen(lo) -> RBUpperOpen(lo = replaceOldExpr(lo, counter))
   }
@@ -1191,7 +1226,9 @@ func elaborateExprDeep(e: in Expr, ensuresExprs: in List[SpannedExpr], counter: 
     case EIf(cond, thenBranch, elseBranch, thenForm) -> {
       val newThen = elaborateExprOrBlockDeep(thenBranch, ensuresExprs, counter)
       val newElse: Option[ExprOrBlock] = match elseBranch {
-        case Some(eob) -> Some(value = elaborateExprOrBlockDeep(eob, ensuresExprs, counter))
+        case Some(eob) -> Some(
+          value = elaborateExprOrBlockDeep(eob, ensuresExprs, counter)
+        )
         case None -> None
       }
       mkExpr(EIf(cond = cond, thenBranch = newThen, elseBranch = newElse, thenForm = thenForm), e.span)
@@ -1251,9 +1288,33 @@ func elaborateStmtDeep(
       val newE = elaborateExprDeep(e, ensuresExprs, counter)
       acc.add(mkStmt(SExpr(expr = newE), s.span))
     }
-    case SFor(label, pat, iter, body) -> acc.add(mkStmt(SFor(label = label, pat = pat, iter = iter, body = elaborateBlockDeep(body, ensuresExprs, counter)), s.span))
-    case SWhile(label, cond, body) -> acc.add(mkStmt(SWhile(label = label, cond = cond, body = elaborateBlockDeep(body, ensuresExprs, counter)), s.span))
-    case SLoop(label, body) -> acc.add(mkStmt(SLoop(label = label, body = elaborateBlockDeep(body, ensuresExprs, counter)), s.span))
+    case SFor(label, pat, iter, body) -> acc.add(
+      mkStmt(
+        SFor(
+          label = label,
+          pat = pat,
+          iter = iter,
+          body = elaborateBlockDeep(body, ensuresExprs, counter)
+        ),
+        s.span
+      )
+    )
+    case SWhile(label, cond, body) -> acc.add(
+      mkStmt(
+        SWhile(
+          label = label,
+          cond = cond,
+          body = elaborateBlockDeep(body, ensuresExprs, counter)
+        ),
+        s.span
+      )
+    )
+    case SLoop(label, body) -> acc.add(
+      mkStmt(
+        SLoop(label = label, body = elaborateBlockDeep(body, ensuresExprs, counter)),
+        s.span
+      )
+    )
     case STry(body, catches, finally_) -> {
       val newBody = elaborateBlockDeep(body, ensuresExprs, counter)
       val newCatches: List[CatchClause] = newList()
@@ -1276,7 +1337,12 @@ func elaborateStmtDeep(
       }
       acc.add(mkStmt(STry(body = newBody, catches = newCatches, finally_ = newFinally), s.span))
     }
-    case SScope(label, body) -> acc.add(mkStmt(SScope(binding = label, body = elaborateBlockDeep(body, ensuresExprs, counter)), s.span))
+    case SScope(label, body) -> acc.add(
+      mkStmt(
+        SScope(binding = label, body = elaborateBlockDeep(body, ensuresExprs, counter)),
+        s.span
+      )
+    )
     case SInvariant(inv) -> acc.add(mkAssertCall(inv, s.span))
     // Loop `invariant:` (docs/41 §9 Band 4).  We lower to a runtime
     // `assert(inv)` so the check fires at the top of every iteration:
@@ -1576,8 +1642,35 @@ func canonicalizeUnitRetOpt(ret: in Option[TypeExpr], aliasName: in String): Opt
 
 func canonicalizeUnitAliasesInMember(m: in ProtectedMember, aliasName: in String): ProtectedMember {
   match m {
-    case PMEntry(ed) -> PMEntry(entryDecl = EntryDecl(docComments = ed.docComments, annotations = ed.annotations, visibility = ed.visibility, name = ed.name, params = ed.params, ret = canonicalizeUnitRetOpt(ed.ret, aliasName), contracts = ed.contracts, body = ed.body, span = ed.span))
-    case PMFunc(fn) -> PMFunc(fn = FunctionDecl(docComments = fn.docComments, annotations = fn.annotations, visibility = fn.visibility, isAsync = fn.isAsync, name = fn.name, generics = fn.generics, params = fn.params, ret = canonicalizeUnitRetOpt(fn.ret, aliasName), whereClause = fn.whereClause, contracts = fn.contracts, body = fn.body, span = fn.span))
+    case PMEntry(ed) -> PMEntry(
+      entryDecl = EntryDecl(
+        docComments = ed.docComments,
+        annotations = ed.annotations,
+        visibility = ed.visibility,
+        name = ed.name,
+        params = ed.params,
+        ret = canonicalizeUnitRetOpt(ed.ret, aliasName),
+        contracts = ed.contracts,
+        body = ed.body,
+        span = ed.span
+      )
+    )
+    case PMFunc(fn) -> PMFunc(
+      fn = FunctionDecl(
+        docComments = fn.docComments,
+        annotations = fn.annotations,
+        visibility = fn.visibility,
+        isAsync = fn.isAsync,
+        name = fn.name,
+        generics = fn.generics,
+        params = fn.params,
+        ret = canonicalizeUnitRetOpt(fn.ret, aliasName),
+        whereClause = fn.whereClause,
+        contracts = fn.contracts,
+        body = fn.body,
+        span = fn.span
+      )
+    )
     case other -> other
   }
 }
@@ -1587,22 +1680,85 @@ func canonicalizeUnitAliasesInMember(m: in ProtectedMember, aliasName: in String
 // need the same rewrite — mirrors `canonicalizeUnitAliasesInMember`.
 func canonicalizeUnitAliasesInImplMember(m: in ImplMember, aliasName: in String): ImplMember {
   match m {
-    case IMplFunc(fn) -> IMplFunc(fn = FunctionDecl(docComments = fn.docComments, annotations = fn.annotations, visibility = fn.visibility, isAsync = fn.isAsync, name = fn.name, generics = fn.generics, params = fn.params, ret = canonicalizeUnitRetOpt(fn.ret, aliasName), whereClause = fn.whereClause, contracts = fn.contracts, body = fn.body, span = fn.span))
+    case IMplFunc(fn) -> IMplFunc(
+      fn = FunctionDecl(
+        docComments = fn.docComments,
+        annotations = fn.annotations,
+        visibility = fn.visibility,
+        isAsync = fn.isAsync,
+        name = fn.name,
+        generics = fn.generics,
+        params = fn.params,
+        ret = canonicalizeUnitRetOpt(fn.ret, aliasName),
+        whereClause = fn.whereClause,
+        contracts = fn.contracts,
+        body = fn.body,
+        span = fn.span
+      )
+    )
     case other -> other
   }
 }
 
 func canonicalizeUnitAliasesInInterfaceMember(m: in InterfaceMember, aliasName: in String): InterfaceMember {
   match m {
-    case IMSig(sig) -> IMSig(sig = FunctionSig(docComments = sig.docComments, isAsync = sig.isAsync, name = sig.name, generics = sig.generics, params = sig.params, ret = canonicalizeUnitRetOpt(sig.ret, aliasName), whereClause = sig.whereClause, contracts = sig.contracts, span = sig.span))
-    case IMFunc(fn) -> IMFunc(fn = FunctionDecl(docComments = fn.docComments, annotations = fn.annotations, visibility = fn.visibility, isAsync = fn.isAsync, name = fn.name, generics = fn.generics, params = fn.params, ret = canonicalizeUnitRetOpt(fn.ret, aliasName), whereClause = fn.whereClause, contracts = fn.contracts, body = fn.body, span = fn.span))
+    case IMSig(sig) -> IMSig(
+      sig = FunctionSig(
+        docComments = sig.docComments,
+        isAsync = sig.isAsync,
+        name = sig.name,
+        generics = sig.generics,
+        params = sig.params,
+        ret = canonicalizeUnitRetOpt(sig.ret, aliasName),
+        whereClause = sig.whereClause,
+        contracts = sig.contracts,
+        span = sig.span
+      )
+    )
+    case IMFunc(fn) -> IMFunc(
+      fn = FunctionDecl(
+        docComments = fn.docComments,
+        annotations = fn.annotations,
+        visibility = fn.visibility,
+        isAsync = fn.isAsync,
+        name = fn.name,
+        generics = fn.generics,
+        params = fn.params,
+        ret = canonicalizeUnitRetOpt(fn.ret, aliasName),
+        whereClause = fn.whereClause,
+        contracts = fn.contracts,
+        body = fn.body,
+        span = fn.span
+      )
+    )
     case other -> other
   }
 }
 
 func canonicalizeUnitAliasesInItem(it: in Item, aliasName: in String): Item {
   match it.kind {
-    case IFunc(fn) -> Item(docComments = it.docComments, annotations = it.annotations, visibility = it.visibility, kind = IFunc(decl = FunctionDecl(docComments = fn.docComments, annotations = fn.annotations, visibility = fn.visibility, isAsync = fn.isAsync, name = fn.name, generics = fn.generics, params = fn.params, ret = canonicalizeUnitRetOpt(fn.ret, aliasName), whereClause = fn.whereClause, contracts = fn.contracts, body = fn.body, span = fn.span)), span = it.span)
+    case IFunc(fn) -> Item(
+      docComments = it.docComments,
+      annotations = it.annotations,
+      visibility = it.visibility,
+      kind = IFunc(
+        decl = FunctionDecl(
+          docComments = fn.docComments,
+          annotations = fn.annotations,
+          visibility = fn.visibility,
+          isAsync = fn.isAsync,
+          name = fn.name,
+          generics = fn.generics,
+          params = fn.params,
+          ret = canonicalizeUnitRetOpt(fn.ret, aliasName),
+          whereClause = fn.whereClause,
+          contracts = fn.contracts,
+          body = fn.body,
+          span = fn.span
+        )
+      ),
+      span = it.span
+    )
     case IImpl(decl) -> {
       val newMembers: List[ImplMember] = newList()
       var mi = 0
@@ -1772,7 +1928,24 @@ pub func elaborateFunction(fn: in FunctionDecl): FunctionDecl {
   var counter = newRenameCounter()
   val isVoid = isVoidReturnOpt(fn.ret)
   val newBody: FunctionBody = match fn.body {
-    case Some(b) -> match b { case FBBlock(blk) -> FBBlock(block = elaborateFunctionBody(fn.contracts, blk, counter, isVoid)); case FBExpr(e) -> FBBlock(block = elaborateFunctionBody(fn.contracts, wrapExprBody(e), counter, isVoid)) }
+    case Some(b) -> match b {
+      case FBBlock(blk) -> FBBlock(
+        block = elaborateFunctionBody(
+          fn.contracts,
+          blk,
+          counter,
+          isVoid
+        )
+      )
+      case FBExpr(e) -> FBBlock(
+        block = elaborateFunctionBody(
+          fn.contracts,
+          wrapExprBody(e),
+          counter,
+          isVoid
+        )
+      )
+    }
     case None -> FBExpr(expr = mkExpr(EError, fn.span))
   }
   // unreachable per the early return above
@@ -1816,8 +1989,17 @@ func elaborateProtectedMember(m: in ProtectedMember, invariantEnsures: in List[C
         var counter = newRenameCounter()
         val isVoid = isVoidReturnOpt(ed.ret)
         val newBody: FunctionBody = match ed.body {
-          case FBBlock(blk) -> FBBlock(block = elaborateFunctionBody(combined, blk, counter, isVoid))
-          case FBExpr(e) -> FBBlock(block = elaborateFunctionBody(combined, wrapExprBody(e), counter, isVoid))
+          case FBBlock(blk) -> FBBlock(
+            block = elaborateFunctionBody(combined, blk, counter, isVoid)
+          )
+          case FBExpr(e) -> FBBlock(
+            block = elaborateFunctionBody(
+              combined,
+              wrapExprBody(e),
+              counter,
+              isVoid
+            )
+          )
         }
         PMEntry(
           entryDecl = EntryDecl(
@@ -1841,7 +2023,13 @@ func elaborateProtectedMember(m: in ProtectedMember, invariantEnsures: in List[C
 
 func elaborateItem(it: in Item): Item {
   match it.kind {
-    case IFunc(fn) -> Item(docComments = it.docComments, annotations = it.annotations, visibility = it.visibility, kind = IFunc(decl = elaborateFunction(fn)), span = it.span)
+    case IFunc(fn) -> Item(
+      docComments = it.docComments,
+      annotations = it.annotations,
+      visibility = it.visibility,
+      kind = IFunc(decl = elaborateFunction(fn)),
+      span = it.span
+    )
     case IProtected(decl) -> {
       val invariantEnsures: List[ContractClause] = newList()
       var mi = 0
@@ -1892,7 +2080,15 @@ pub func elaborateFile(file: in SourceFile): SourceFile {
       // The verifier reads the original clauses from fn.contracts unchanged.
       val it = canonFile.items[i]
       match it.kind {
-        case IFunc(fn) -> newItems.add(Item(docComments = it.docComments, annotations = it.annotations, visibility = it.visibility, kind = IFunc(decl = fn), span = it.span))
+        case IFunc(fn) -> newItems.add(
+          Item(
+            docComments = it.docComments,
+            annotations = it.annotations,
+            visibility = it.visibility,
+            kind = IFunc(decl = fn),
+            span = it.span
+          )
+        )
         case _ -> newItems.add(it)
       }
     } else {

@@ -420,7 +420,13 @@ func rewriteExpr(e: in Expr, kind: in PropKind, st: in PropState): Expr {
     }
 
     // Lambdas carry their own return monad — switch to PropInLambda so a `?` inside surfaces the lambda-specific F0020 instead of the enclosing function's.
-    case ELambda(lambdaParams, body) -> mkExpr(ELambda(lambdaParams = lambdaParams, body = rewriteBlock(body, PropInLambda, st)), e.span)
+    case ELambda(lambdaParams, body) -> mkExpr(
+      ELambda(
+        lambdaParams = lambdaParams,
+        body = rewriteBlock(body, PropInLambda, st)
+      ),
+      e.span
+    )
 
     case ECall(fn, args) -> {
       val newArgs: List[CallArg] = newList()
@@ -437,17 +443,36 @@ func rewriteExpr(e: in Expr, kind: in PropKind, st: in PropState): Expr {
 
     case ETypeApp(fn, args) -> mkExpr(ETypeApp(fn = rewriteExpr(fn, kind, st), args = args), e.span)
 
-    case EIndex(receiver, indices) -> mkExpr(EIndex(receiver = rewriteExpr(receiver, kind, st), indices = rewriteExprList(indices, kind, st)), e.span)
+    case EIndex(receiver, indices) -> mkExpr(
+      EIndex(
+        receiver = rewriteExpr(receiver, kind, st),
+        indices = rewriteExprList(indices, kind, st)
+      ),
+      e.span
+    )
 
-    case EMember(receiver, memberName) -> mkExpr(EMember(receiver = rewriteExpr(receiver, kind, st), memberName = memberName), e.span)
+    case EMember(receiver, memberName) -> mkExpr(
+      EMember(receiver = rewriteExpr(receiver, kind, st), memberName = memberName),
+      e.span
+    )
 
     case EPrefix(op, operand) -> mkExpr(EPrefix(op = op, operand = rewriteExpr(operand, kind, st)), e.span)
 
-    case EBinop(op, lhs, rhs) -> mkExpr(EBinop(op = op, lhs = rewriteExpr(lhs, kind, st), rhs = rewriteExpr(rhs, kind, st)), e.span)
+    case EBinop(op, lhs, rhs) -> mkExpr(
+      EBinop(op = op, lhs = rewriteExpr(lhs, kind, st), rhs = rewriteExpr(rhs, kind, st)),
+      e.span
+    )
 
     case ERange(bound) -> mkExpr(ERange(bound = rewriteRangeBound(bound, kind, st)), e.span)
 
-    case EAssign(target, op, value) -> mkExpr(EAssign(target = rewriteExpr(target, kind, st), op = op, value = rewriteExpr(value, kind, st)), e.span)
+    case EAssign(target, op, value) -> mkExpr(
+      EAssign(
+        target = rewriteExpr(target, kind, st),
+        op = op,
+        value = rewriteExpr(value, kind, st)
+      ),
+      e.span
+    )
 
     case EBlock(block) -> mkExpr(EBlock(block = rewriteBlock(block, kind, st)), e.span)
     case EUnsafe(block) -> mkExpr(EUnsafe(block = rewriteBlock(block, kind, st)), e.span)
@@ -470,7 +495,11 @@ func rewriteExpr(e: in Expr, kind: in PropKind, st: in PropState): Expr {
 func rewriteRangeBound(b: in RangeBound, kind: in PropKind, st: in PropState): RangeBound {
   match b {
     case RBClosed(lo, hi) -> RBClosed(lo = rewriteExpr(lo, kind, st), hi = rewriteExpr(hi, kind, st))
-    case RBHalfOpen(lo, hi) -> RBHalfOpen(lo = rewriteExpr(lo, kind, st), hi = rewriteExpr(hi, kind, st))
+    case RBHalfOpen(lo, hi, bareDotDot) -> RBHalfOpen(
+      lo = rewriteExpr(lo, kind, st),
+      hi = rewriteExpr(hi, kind, st),
+      bareDotDot = bareDotDot
+    )
     case RBLowerOpen(hi) -> RBLowerOpen(hi = rewriteExpr(hi, kind, st))
     case RBUpperOpen(lo) -> RBUpperOpen(lo = rewriteExpr(lo, kind, st))
   }
@@ -497,7 +526,14 @@ func rewriteCatch(c: in CatchClause, kind: in PropKind, st: in PropState): Catch
 func rewriteStmt(s: in Statement, kind: in PropKind, st: in PropState): Statement {
   match s.kind {
     case SLocal(binding) -> mkStmt(SLocal(binding = rewriteBinding(binding, kind, st)), s.span)
-    case SAssign(target, op, value) -> mkStmt(SAssign(target = rewriteExpr(target, kind, st), op = op, value = rewriteExpr(value, kind, st)), s.span)
+    case SAssign(target, op, value) -> mkStmt(
+      SAssign(
+        target = rewriteExpr(target, kind, st),
+        op = op,
+        value = rewriteExpr(value, kind, st)
+      ),
+      s.span
+    )
     case SReturn(valOpt) -> {
       val newVal: Option[Expr] = match valOpt { case Some(e) -> Some(value = rewriteExpr(e, kind, st)); case None -> None }
       mkStmt(SReturn(value = newVal), s.span)
@@ -520,8 +556,23 @@ func rewriteStmt(s: in Statement, kind: in PropKind, st: in PropState): Statemen
     }
     case SDefer(body) -> mkStmt(SDefer(body = rewriteBlock(body, kind, st)), s.span)
     case SScope(binding, body) -> mkStmt(SScope(binding = binding, body = rewriteBlock(body, kind, st)), s.span)
-    case SFor(label, pat, iter, body) -> mkStmt(SFor(label = label, pat = pat, iter = rewriteExpr(iter, kind, st), body = rewriteBlock(body, kind, st)), s.span)
-    case SWhile(label, cond, body) -> mkStmt(SWhile(label = label, cond = rewriteExpr(cond, kind, st), body = rewriteBlock(body, kind, st)), s.span)
+    case SFor(label, pat, iter, body) -> mkStmt(
+      SFor(
+        label = label,
+        pat = pat,
+        iter = rewriteExpr(iter, kind, st),
+        body = rewriteBlock(body, kind, st)
+      ),
+      s.span
+    )
+    case SWhile(label, cond, body) -> mkStmt(
+      SWhile(
+        label = label,
+        cond = rewriteExpr(cond, kind, st),
+        body = rewriteBlock(body, kind, st)
+      ),
+      s.span
+    )
     case SLoop(label, body) -> mkStmt(SLoop(label = label, body = rewriteBlock(body, kind, st)), s.span)
     case SInvariant(ex) -> mkStmt(SInvariant(expr = rewriteExpr(ex, kind, st)), s.span)
     case SExpr(ex) -> mkStmt(SExpr(expr = rewriteExpr(ex, kind, st)), s.span)

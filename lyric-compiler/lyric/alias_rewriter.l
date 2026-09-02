@@ -234,9 +234,15 @@ func rewriteTypeExpr(aliases: in List[String], te: in TypeExpr): TypeExpr {
       }
       TGenericApp(head = rewritePath(aliases, head), args = args2)
     }
-    case TArray(size, element) -> TArray(size = rewriteTypeArg(aliases, size), element = rewriteTypeExpr(aliases, element))
+    case TArray(size, element) -> TArray(
+      size = rewriteTypeArg(aliases, size),
+      element = rewriteTypeExpr(aliases, element)
+    )
     case TSlice(element) -> TSlice(element = rewriteTypeExpr(aliases, element))
-    case TRefined(underlying, range) -> TRefined(underlying = rewritePath(aliases, underlying), range = rewriteRangeBound(aliases, range))
+    case TRefined(underlying, range) -> TRefined(
+      underlying = rewritePath(aliases, underlying),
+      range = rewriteRangeBound(aliases, range)
+    )
     case TTuple(types) -> {
       val xs: List[TypeExpr] = newList()
       var i = 0
@@ -282,8 +288,15 @@ func rewriteTypeArg(aliases: in List[String], a: in TypeArg): TypeArg {
 // bind a different local.
 func rewriteRangeBound(aliases: in List[String], rb: in RangeBound): RangeBound {
   match rb {
-    case RBClosed(lo, hi) -> RBClosed(lo = rewriteExpr(filterAliasesForExpr(aliases, lo), lo), hi = rewriteExpr(filterAliasesForExpr(aliases, hi), hi))
-    case RBHalfOpen(lo, hi) -> RBHalfOpen(lo = rewriteExpr(filterAliasesForExpr(aliases, lo), lo), hi = rewriteExpr(filterAliasesForExpr(aliases, hi), hi))
+    case RBClosed(lo, hi) -> RBClosed(
+      lo = rewriteExpr(filterAliasesForExpr(aliases, lo), lo),
+      hi = rewriteExpr(filterAliasesForExpr(aliases, hi), hi)
+    )
+    case RBHalfOpen(lo, hi, bareDotDot) -> RBHalfOpen(
+      lo = rewriteExpr(filterAliasesForExpr(aliases, lo), lo),
+      hi = rewriteExpr(filterAliasesForExpr(aliases, hi), hi),
+      bareDotDot = bareDotDot
+    )
     case RBLowerOpen(hi) -> RBLowerOpen(hi = rewriteExpr(filterAliasesForExpr(aliases, hi), hi))
     case RBUpperOpen(lo) -> RBUpperOpen(lo = rewriteExpr(filterAliasesForExpr(aliases, lo), lo))
   }
@@ -315,7 +328,19 @@ func flattenPathExpr(e: in Expr): Option[List[String]] {
       }
       Some(value = acc)
     }
-    case EMember(receiver, memberName) -> match flattenPathExpr(receiver) { case Some(segs) -> { val acc: List[String] = newList(); var i = 0; while i < segs.count { acc.add(segs[i]); i = i + 1 }; acc.add(memberName); Some(value = acc) }; case None -> None }
+    case EMember(receiver, memberName) -> match flattenPathExpr(receiver) {
+      case Some(segs) -> {
+        val acc: List[String] = newList()
+        var i = 0
+        while i < segs.count {
+          acc.add(segs[i])
+          i = i + 1
+        }
+        acc.add(memberName)
+        Some(value = acc)
+      }
+      case None -> None
+    }
     case _ -> None
   }
 }
@@ -554,7 +579,13 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
       // reference elsewhere keeps its existing, scope-aware resolution
       // untouched (see that arm's comment for the regression this avoids).
       val fn2 = match fn.kind {
-        case EMember(receiver, memberName) -> match flattenPathExpr(receiver) { case Some(recvSegs) -> match rewriteQualifiedMemberChain(aliases, recvSegs, memberName, receiver.span, fn.span) { case Some(rewritten) -> rewritten; case None -> rewriteExpr(aliases, fn) }; case None -> rewriteExpr(aliases, fn) }
+        case EMember(receiver, memberName) -> match flattenPathExpr(receiver) {
+          case Some(recvSegs) -> match rewriteQualifiedMemberChain(aliases, recvSegs, memberName, receiver.span, fn.span) {
+            case Some(rewritten) -> rewritten
+            case None -> rewriteExpr(aliases, fn)
+          }
+          case None -> rewriteExpr(aliases, fn)
+        }
         case _ -> rewriteExpr(aliases, fn)
       }
       return Expr(kind = ECall(fn = fn2, args = args2), span = e.span)
@@ -639,7 +670,11 @@ func rewritePattern(aliases: in List[String], p: in Pattern): Pattern {
       while i < fields.count {
         fs.add(
           match fields[i] {
-            case RPFNamed(name, pattern, span) -> RPFNamed(name = name, pattern = rewritePattern(aliases, pattern), span = span)
+            case RPFNamed(name, pattern, span) -> RPFNamed(
+              name = name,
+              pattern = rewritePattern(aliases, pattern),
+              span = span
+            )
             case RPFShort(name, span) -> RPFShort(name = name, span = span)
           }
         )
@@ -657,7 +692,10 @@ func rewritePattern(aliases: in List[String], p: in Pattern): Pattern {
       PTuple(patterns = ps)
     }
     case PParen(inner) -> PParen(inner = rewritePattern(aliases, inner))
-    case PTypeTest(inner, ty) -> PTypeTest(inner = rewritePattern(aliases, inner), ty = rewriteTypeExpr(aliases, ty))
+    case PTypeTest(inner, ty) -> PTypeTest(
+      inner = rewritePattern(aliases, inner),
+      ty = rewriteTypeExpr(aliases, ty)
+    )
     case POr(patterns) -> {
       val ps: List[Pattern] = newList()
       var i = 0
@@ -676,7 +714,12 @@ func rewritePattern(aliases: in List[String], p: in Pattern): Pattern {
     // the fully general `parseExpr`) and so can itself be a lambda
     // introducing its own shadowing locals, same as every other
     // standalone-expression position in this file.
-    case PRange(lo, inclusive, hi) -> PRange(lo = rewriteExpr(filterAliasesForExpr(aliases, lo), lo), inclusive = inclusive, hi = rewriteExpr(filterAliasesForExpr(aliases, hi), hi))
+    case PRange(lo, inclusive, hi, bareDotDot) -> PRange(
+      lo = rewriteExpr(filterAliasesForExpr(aliases, lo), lo),
+      inclusive = inclusive,
+      hi = rewriteExpr(filterAliasesForExpr(aliases, hi), hi),
+      bareDotDot = bareDotDot
+    )
     case PWildcard -> PWildcard
     case PLiteral(lit) -> PLiteral(lit = lit)
     case PConstRef(name) -> PConstRef(name = name)
@@ -858,7 +901,7 @@ func collectPatternLocalNames(p: in Pattern, acc: List[String]): Unit {
     // #6324 — a range pattern's `lo`/`hi` bound is an ordinary Expr and can
     // itself bind locals (e.g. a lambda), same as every other sub-Expr this
     // collector already descends into.
-    case PRange(lo, _, hi) -> {
+    case PRange(lo, _, hi, _) -> {
       collectExprLocalNames(lo, acc)
       collectExprLocalNames(hi, acc)
     }
@@ -992,7 +1035,7 @@ func collectExprLocalNames(e: in Expr, acc: List[String]): Unit {
           collectExprLocalNames(lo, acc)
           collectExprLocalNames(hi, acc)
         }
-        case RBHalfOpen(lo, hi) -> {
+        case RBHalfOpen(lo, hi, _) -> {
           collectExprLocalNames(lo, acc)
           collectExprLocalNames(hi, acc)
         }
@@ -1314,7 +1357,12 @@ func rewriteRecordDecl(aliases: in List[String], rd: in RecordDecl): RecordDecl 
         // #6321 SUGGESTION follow-up — see filterAliasesForExpr's comment:
         // an invariant clause's own expr can itself be a lambda introducing
         // its own shadowing locals, same as every other standalone position.
-        case RMInvariant(inv) -> RMInvariant(inv = InvariantClause(expr = rewriteExpr(filterAliasesForExpr(aliases, inv.expr), inv.expr), span = inv.span))
+        case RMInvariant(inv) -> RMInvariant(
+          inv = InvariantClause(
+            expr = rewriteExpr(filterAliasesForExpr(aliases, inv.expr), inv.expr),
+            span = inv.span
+          )
+        )
         case RMFunc(fn) -> RMFunc(fn = rewriteFunctionDecl(aliases, fn))
       }
     )
@@ -1754,7 +1802,13 @@ func rewriteIncludeAdjusts(aliases: in List[String], xs: in List[IncludeAdjust])
       // #6316 — see filterAliasesForExpr's comment: each of these `value`
       // exprs can itself be an arbitrary block/lambda introducing its own
       // shadowing locals.
-      case IAProvided(name, value, span) -> ys.add(IAProvided(name = name, value = rewriteExpr(filterAliasesForExpr(aliases, value), value), span = span))
+      case IAProvided(name, value, span) -> ys.add(
+        IAProvided(
+          name = name,
+          value = rewriteExpr(filterAliasesForExpr(aliases, value), value),
+          span = span
+        )
+      )
       case IAConfigOverride(name, fields, span) -> {
         val fs: List[ConfigFieldOverride] = newList()
         var j = 0
@@ -1771,7 +1825,13 @@ func rewriteIncludeAdjusts(aliases: in List[String], xs: in List[IncludeAdjust])
         }
         ys.add(IAConfigOverride(name = name, fields = fs, span = span))
       }
-      case IAReplace(name, value, span) -> ys.add(IAReplace(name = name, value = rewriteExpr(filterAliasesForExpr(aliases, value), value), span = span))
+      case IAReplace(name, value, span) -> ys.add(
+        IAReplace(
+          name = name,
+          value = rewriteExpr(filterAliasesForExpr(aliases, value), value),
+          span = span
+        )
+      )
       case IARemove(name, span) -> ys.add(IARemove(name = name, span = span))
       case IAReorder(name, ordering, span) -> ys.add(IAReorder(name = name, ordering = ordering, span = span))
     }
@@ -2046,7 +2106,14 @@ func rewriteItem(aliases: in List[String], it: in Item): Item {
     // own init can itself be a lambda (a bare `{ ... }`) introducing its own
     // shadowing locals, exactly like every other standalone-expression
     // position #6316/#6320 already cover.
-    case IConst(decl) -> IConst(decl = ConstDecl(name = decl.name, ty = rewriteTypeExpr(aliases, decl.ty), init = rewriteExpr(filterAliasesForExpr(aliases, decl.init), decl.init), span = decl.span))
+    case IConst(decl) -> IConst(
+      decl = ConstDecl(
+        name = decl.name,
+        ty = rewriteTypeExpr(aliases, decl.ty),
+        init = rewriteExpr(filterAliasesForExpr(aliases, decl.init), decl.init),
+        span = decl.span
+      )
+    )
     case IVal(decl) -> {
       val t = match decl.ty { case Some(te) -> Some(value = rewriteTypeExpr(aliases, te)); case None -> decl.ty }
       IVal(

@@ -282,8 +282,18 @@ func resolveTypeExprAt(
       }
       TGenericApp(head = head2, args = args2)
     }
-    case TArray(size, element) -> TArray(size = resolveTypeArgAt(aliasTargets, genericNames, size, depth + 1), element = resolveTypeExprAt(aliasTargets, genericNames, element, depth + 1))
-    case TSlice(element) -> TSlice(element = resolveTypeExprAt(aliasTargets, genericNames, element, depth + 1))
+    case TArray(size, element) -> TArray(
+      size = resolveTypeArgAt(aliasTargets, genericNames, size, depth + 1),
+      element = resolveTypeExprAt(
+        aliasTargets,
+        genericNames,
+        element,
+        depth + 1
+      )
+    )
+    case TSlice(element) -> TSlice(
+      element = resolveTypeExprAt(aliasTargets, genericNames, element, depth + 1)
+    )
     // `TRefined.underlying` is a bare `ModulePath`, not a `TypeExpr` — it
     // can only be replaced in place when the fully-resolved alias target is
     // itself a plain `TRef` (e.g. `alias Meters = Long; type Age = Meters
@@ -315,7 +325,9 @@ func resolveTypeExprAt(
       }
       TTuple(types = xs)
     }
-    case TNullable(inner) -> TNullable(inner = resolveTypeExprAt(aliasTargets, genericNames, inner, depth + 1))
+    case TNullable(inner) -> TNullable(
+      inner = resolveTypeExprAt(aliasTargets, genericNames, inner, depth + 1)
+    )
     case TFunction(parameters, retTy) -> {
       val ps: List[TypeExpr] = newList()
       var i = 0
@@ -442,7 +454,11 @@ func resolvePatternAt(
       while i < fields.count {
         fs.add(
           match fields[i] {
-            case RPFNamed(name, pattern, span) -> RPFNamed(name = name, pattern = resolvePatternAt(aliasTargets, genericNames, pattern, depth), span = span)
+            case RPFNamed(name, pattern, span) -> RPFNamed(
+              name = name,
+              pattern = resolvePatternAt(aliasTargets, genericNames, pattern, depth),
+              span = span
+            )
             case RPFShort(name, span) -> RPFShort(name = name, span = span)
           }
         )
@@ -460,7 +476,10 @@ func resolvePatternAt(
       PTuple(patterns = ps)
     }
     case PParen(inner) -> PParen(inner = resolvePatternAt(aliasTargets, genericNames, inner, depth))
-    case PTypeTest(inner, ty) -> PTypeTest(inner = resolvePatternAt(aliasTargets, genericNames, inner, depth), ty = resolveTypeExprAt(aliasTargets, genericNames, ty, depth))
+    case PTypeTest(inner, ty) -> PTypeTest(
+      inner = resolvePatternAt(aliasTargets, genericNames, inner, depth),
+      ty = resolveTypeExprAt(aliasTargets, genericNames, ty, depth)
+    )
     case POr(patterns) -> {
       val ps: List[Pattern] = newList()
       var i = 0
@@ -477,7 +496,12 @@ func resolvePatternAt(
       }
       PBinding(name = name, inner = inner2)
     }
-    case PRange(lo, inclusive, hi) -> PRange(lo = resolveExprAt(aliasTargets, genericNames, lo, depth), inclusive = inclusive, hi = resolveExprAt(aliasTargets, genericNames, hi, depth))
+    case PRange(lo, inclusive, hi, bareDotDot) -> PRange(
+      lo = resolveExprAt(aliasTargets, genericNames, lo, depth),
+      inclusive = inclusive,
+      hi = resolveExprAt(aliasTargets, genericNames, hi, depth),
+      bareDotDot = bareDotDot
+    )
     case PWildcard -> PWildcard
     case PLiteral(lit) -> PLiteral(lit = lit)
     case PConstRef(name) -> PConstRef(name = name)
@@ -527,7 +551,11 @@ func resolveLocalBindingAt(
   depth: in Int,
 ): LocalBinding {
   match lb {
-    case LBVal(pat, ty, init) -> LBVal(pat = resolvePatternAt(aliasTargets, genericNames, pat, depth), ty = resolveOptTypeAt(aliasTargets, genericNames, ty, depth), init = resolveExprAt(aliasTargets, genericNames, init, depth))
+    case LBVal(pat, ty, init) -> LBVal(
+      pat = resolvePatternAt(aliasTargets, genericNames, pat, depth),
+      ty = resolveOptTypeAt(aliasTargets, genericNames, ty, depth),
+      init = resolveExprAt(aliasTargets, genericNames, init, depth)
+    )
     case LBVar(name, ty, init) -> {
       val ni = match init {
         case Some(e) -> Some(value = resolveExprAt(aliasTargets, genericNames, e, depth))
@@ -535,7 +563,11 @@ func resolveLocalBindingAt(
       }
       LBVar(name = name, ty = resolveOptTypeAt(aliasTargets, genericNames, ty, depth), init = ni)
     }
-    case LBLet(name, ty, init) -> LBLet(name = name, ty = resolveOptTypeAt(aliasTargets, genericNames, ty, depth), init = resolveExprAt(aliasTargets, genericNames, init, depth))
+    case LBLet(name, ty, init) -> LBLet(
+      name = name,
+      ty = resolveOptTypeAt(aliasTargets, genericNames, ty, depth),
+      init = resolveExprAt(aliasTargets, genericNames, init, depth)
+    )
   }
 }
 
@@ -571,7 +603,11 @@ func resolveStatementAt(
 ): Statement {
   val k = match stmt.kind {
     case SLocal(binding) -> SLocal(binding = resolveLocalBindingAt(aliasTargets, genericNames, binding, depth))
-    case SAssign(target, op, value) -> SAssign(target = resolveExprAt(aliasTargets, genericNames, target, depth), op = op, value = resolveExprAt(aliasTargets, genericNames, value, depth))
+    case SAssign(target, op, value) -> SAssign(
+      target = resolveExprAt(aliasTargets, genericNames, target, depth),
+      op = op,
+      value = resolveExprAt(aliasTargets, genericNames, value, depth)
+    )
     case SReturn(value) -> {
       match value {
         case Some(e) -> SReturn(value = Some(value = resolveExprAt(aliasTargets, genericNames, e, depth)))
@@ -595,13 +631,31 @@ func resolveStatementAt(
       STry(body = resolveBlockAt(aliasTargets, genericNames, body, depth), catches = newCatches, finally_ = newFin)
     }
     case SDefer(body) -> SDefer(body = resolveBlockAt(aliasTargets, genericNames, body, depth))
-    case SScope(binding, body) -> SScope(binding = binding, body = resolveBlockAt(aliasTargets, genericNames, body, depth))
-    case SFor(label, pat, iter, body) -> SFor(label = label, pat = resolvePatternAt(aliasTargets, genericNames, pat, depth), iter = resolveExprAt(aliasTargets, genericNames, iter, depth), body = resolveBlockAt(aliasTargets, genericNames, body, depth))
-    case SWhile(label, cond, body) -> SWhile(label = label, cond = resolveExprAt(aliasTargets, genericNames, cond, depth), body = resolveBlockAt(aliasTargets, genericNames, body, depth))
-    case SLoop(label, body) -> SLoop(label = label, body = resolveBlockAt(aliasTargets, genericNames, body, depth))
+    case SScope(binding, body) -> SScope(
+      binding = binding,
+      body = resolveBlockAt(aliasTargets, genericNames, body, depth)
+    )
+    case SFor(label, pat, iter, body) -> SFor(
+      label = label,
+      pat = resolvePatternAt(aliasTargets, genericNames, pat, depth),
+      iter = resolveExprAt(aliasTargets, genericNames, iter, depth),
+      body = resolveBlockAt(aliasTargets, genericNames, body, depth)
+    )
+    case SWhile(label, cond, body) -> SWhile(
+      label = label,
+      cond = resolveExprAt(aliasTargets, genericNames, cond, depth),
+      body = resolveBlockAt(aliasTargets, genericNames, body, depth)
+    )
+    case SLoop(label, body) -> SLoop(
+      label = label,
+      body = resolveBlockAt(aliasTargets, genericNames, body, depth)
+    )
     case SInvariant(expr) -> SInvariant(expr = resolveExprAt(aliasTargets, genericNames, expr, depth))
     case SExpr(expr) -> SExpr(expr = resolveExprAt(aliasTargets, genericNames, expr, depth))
-    case SRule(lhs, rhs) -> SRule(lhs = resolveExprAt(aliasTargets, genericNames, lhs, depth), rhs = resolveExprAt(aliasTargets, genericNames, rhs, depth))
+    case SRule(lhs, rhs) -> SRule(
+      lhs = resolveExprAt(aliasTargets, genericNames, lhs, depth),
+      rhs = resolveExprAt(aliasTargets, genericNames, rhs, depth)
+    )
     case SItem(item) -> SItem(item = resolveItem(aliasTargets, item))
   }
   Statement(kind = k, span = stmt.span)
@@ -706,7 +760,13 @@ func resolveExprAt(
       while i < args.count {
         match args[i] {
           case CAPositional(e) -> na.add(CAPositional(expr = resolveExprAt(aliasTargets, genericNames, e, depth)))
-          case CANamed(n, e, span) -> na.add(CANamed(name = n, value = resolveExprAt(aliasTargets, genericNames, e, depth), span = span))
+          case CANamed(n, e, span) -> na.add(
+            CANamed(
+              name = n,
+              value = resolveExprAt(aliasTargets, genericNames, e, depth),
+              span = span
+            )
+          )
         }
         i = i + 1
       }
@@ -730,20 +790,46 @@ func resolveExprAt(
       }
       EIndex(receiver = resolveExprAt(aliasTargets, genericNames, receiver, depth), indices = ni)
     }
-    case EMember(receiver, memberName) -> EMember(receiver = resolveExprAt(aliasTargets, genericNames, receiver, depth), memberName = memberName)
+    case EMember(receiver, memberName) -> EMember(
+      receiver = resolveExprAt(
+        aliasTargets,
+        genericNames,
+        receiver,
+        depth
+      ),
+      memberName = memberName
+    )
     case EPropagate(inner) -> EPropagate(inner = resolveExprAt(aliasTargets, genericNames, inner, depth))
-    case EPrefix(op, operand) -> EPrefix(op = op, operand = resolveExprAt(aliasTargets, genericNames, operand, depth))
-    case EBinop(op, lhs, rhs) -> EBinop(op = op, lhs = resolveExprAt(aliasTargets, genericNames, lhs, depth), rhs = resolveExprAt(aliasTargets, genericNames, rhs, depth))
+    case EPrefix(op, operand) -> EPrefix(
+      op = op,
+      operand = resolveExprAt(aliasTargets, genericNames, operand, depth)
+    )
+    case EBinop(op, lhs, rhs) -> EBinop(
+      op = op,
+      lhs = resolveExprAt(aliasTargets, genericNames, lhs, depth),
+      rhs = resolveExprAt(aliasTargets, genericNames, rhs, depth)
+    )
     case ERange(bound) -> {
       val nb = match bound {
-        case RBClosed(lo, hi) -> RBClosed(lo = resolveExprAt(aliasTargets, genericNames, lo, depth), hi = resolveExprAt(aliasTargets, genericNames, hi, depth))
-        case RBHalfOpen(lo, hi) -> RBHalfOpen(lo = resolveExprAt(aliasTargets, genericNames, lo, depth), hi = resolveExprAt(aliasTargets, genericNames, hi, depth))
+        case RBClosed(lo, hi) -> RBClosed(
+          lo = resolveExprAt(aliasTargets, genericNames, lo, depth),
+          hi = resolveExprAt(aliasTargets, genericNames, hi, depth)
+        )
+        case RBHalfOpen(lo, hi, bareDotDot) -> RBHalfOpen(
+          lo = resolveExprAt(aliasTargets, genericNames, lo, depth),
+          hi = resolveExprAt(aliasTargets, genericNames, hi, depth),
+          bareDotDot = bareDotDot
+        )
         case RBLowerOpen(hi) -> RBLowerOpen(hi = resolveExprAt(aliasTargets, genericNames, hi, depth))
         case RBUpperOpen(lo) -> RBUpperOpen(lo = resolveExprAt(aliasTargets, genericNames, lo, depth))
       }
       ERange(bound = nb)
     }
-    case EAssign(target, op, value) -> EAssign(target = resolveExprAt(aliasTargets, genericNames, target, depth), op = op, value = resolveExprAt(aliasTargets, genericNames, value, depth))
+    case EAssign(target, op, value) -> EAssign(
+      target = resolveExprAt(aliasTargets, genericNames, target, depth),
+      op = op,
+      value = resolveExprAt(aliasTargets, genericNames, value, depth)
+    )
     case EBlock(block) -> EBlock(block = resolveBlockAt(aliasTargets, genericNames, block, depth))
     case EUnsafe(block) -> EUnsafe(block = resolveBlockAt(aliasTargets, genericNames, block, depth))
     case EInterpolated(segments) -> {
@@ -938,7 +1024,11 @@ func resolveUnionField(
   aliasTargets: in Map[String, TypeExpr], genericNames: in List[String], f: in UnionField
 ): UnionField {
   match f {
-    case UFNamed(name, ty, span) -> UFNamed(name = name, ty = resolveTypeExpr(aliasTargets, genericNames, ty), span = span)
+    case UFNamed(name, ty, span) -> UFNamed(
+      name = name,
+      ty = resolveTypeExpr(aliasTargets, genericNames, ty),
+      span = span
+    )
     case UFPos(ty, span) -> UFPos(ty = resolveTypeExpr(aliasTargets, genericNames, ty), span = span)
   }
 }
@@ -1042,7 +1132,13 @@ func resolveInterfaceDecl(aliasTargets: in Map[String, TypeExpr], d: in Interfac
       match d.members[i] {
         case IMSig(sig) -> IMSig(sig = resolveFunctionSig(aliasTargets, ownGenerics, sig))
         case IMFunc(fn) -> IMFunc(fn = resolveFunctionDecl(aliasTargets, ownGenerics, fn))
-        case IMAssoc(assoc) -> IMAssoc(assoc = AssociatedTypeDecl(name = assoc.name, dflt = resolveOptType(aliasTargets, ownGenerics, assoc.dflt), span = assoc.span))
+        case IMAssoc(assoc) -> IMAssoc(
+          assoc = AssociatedTypeDecl(
+            name = assoc.name,
+            dflt = resolveOptType(aliasTargets, ownGenerics, assoc.dflt),
+            span = assoc.span
+          )
+        )
       }
     )
     i = i + 1
@@ -1095,7 +1191,13 @@ func resolveImplDecl(aliasTargets: in Map[String, TypeExpr], d: in ImplDecl): Im
     ms.add(
       match d.members[i] {
         case IMplFunc(fn) -> IMplFunc(fn = resolveFunctionDecl(aliasTargets, ownGenerics, fn))
-        case IMplAssoc(assoc) -> IMplAssoc(assoc = AssociatedTypeDecl(name = assoc.name, dflt = resolveOptType(aliasTargets, ownGenerics, assoc.dflt), span = assoc.span))
+        case IMplAssoc(assoc) -> IMplAssoc(
+          assoc = AssociatedTypeDecl(
+            name = assoc.name,
+            dflt = resolveOptType(aliasTargets, ownGenerics, assoc.dflt),
+            span = assoc.span
+          )
+        )
       }
     )
     i = i + 1
@@ -1113,14 +1215,62 @@ func resolveImplDecl(aliasTargets: in Map[String, TypeExpr], d: in ImplDecl): Im
 func resolveWireMember(aliasTargets: in Map[String, TypeExpr], m: in WireMember): WireMember {
   val noGenerics: List[String] = newList()
   match m {
-    case WMProvided(name, ty, span) -> WMProvided(name = name, ty = resolveTypeExpr(aliasTargets, noGenerics, ty), span = span)
-    case WMSingleton(name, ty, init, span) -> WMSingleton(name = name, ty = resolveTypeExpr(aliasTargets, noGenerics, ty), init = resolveExpr(aliasTargets, noGenerics, init), span = span)
-    case WMScoped(scopeName, name, ty, init, span) -> WMScoped(scopeName = scopeName, name = name, ty = resolveTypeExpr(aliasTargets, noGenerics, ty), init = resolveExpr(aliasTargets, noGenerics, init), span = span)
-    case WMBind(iface, provider, span) -> WMBind(iface = resolveTypeExpr(aliasTargets, noGenerics, iface), provider = resolveExpr(aliasTargets, noGenerics, provider), span = span)
+    case WMProvided(name, ty, span) -> WMProvided(
+      name = name,
+      ty = resolveTypeExpr(aliasTargets, noGenerics, ty),
+      span = span
+    )
+    case WMSingleton(name, ty, init, span) -> WMSingleton(
+      name = name,
+      ty = resolveTypeExpr(aliasTargets, noGenerics, ty),
+      init = resolveExpr(aliasTargets, noGenerics, init),
+      span = span
+    )
+    case WMScoped(scopeName, name, ty, init, span) -> WMScoped(
+      scopeName = scopeName,
+      name = name,
+      ty = resolveTypeExpr(aliasTargets, noGenerics, ty),
+      init = resolveExpr(aliasTargets, noGenerics, init),
+      span = span
+    )
+    case WMBind(iface, provider, span) -> WMBind(
+      iface = resolveTypeExpr(aliasTargets, noGenerics, iface),
+      provider = resolveExpr(aliasTargets, noGenerics, provider),
+      span = span
+    )
     case WMExpose(name, span) -> WMExpose(name = name, span = span)
-    case WMLocal(name, ty, init, span) -> WMLocal(name = name, ty = resolveOptType(aliasTargets, noGenerics, ty), init = resolveExpr(aliasTargets, noGenerics, init), span = span)
-    case WMContributes(iface, name, init, ordering, isSealed, span) -> WMContributes(iface = resolveTypeExpr(aliasTargets, noGenerics, iface), name = name, init = resolveExpr(aliasTargets, noGenerics, init), ordering = ordering, isSealed = isSealed, span = span)
-    case WMInclude(path, aliasName, adjustments, hasBody, span) -> WMInclude(path = path, aliasName = aliasName, adjustments = resolveIncludeAdjusts(aliasTargets, adjustments), hasBody = hasBody, span = span)
+    case WMLocal(name, ty, init, span) -> WMLocal(
+      name = name,
+      ty = resolveOptType(aliasTargets, noGenerics, ty),
+      init = resolveExpr(aliasTargets, noGenerics, init),
+      span = span
+    )
+    case WMContributes(iface, name, init, ordering, isSealed, span) -> WMContributes(
+      iface = resolveTypeExpr(
+        aliasTargets,
+        noGenerics,
+        iface
+      ),
+      name = name,
+      init = resolveExpr(
+        aliasTargets,
+        noGenerics,
+        init
+      ),
+      ordering = ordering,
+      isSealed = isSealed,
+      span = span
+    )
+    case WMInclude(path, aliasName, adjustments, hasBody, span) -> WMInclude(
+      path = path,
+      aliasName = aliasName,
+      adjustments = resolveIncludeAdjusts(
+        aliasTargets,
+        adjustments
+      ),
+      hasBody = hasBody,
+      span = span
+    )
     case WMOverridable(names, span) -> WMOverridable(names = names, span = span)
     case WMConfigInst(decl, span) -> WMConfigInst(decl = resolveConfigDecl(aliasTargets, decl), span = span)
   }
@@ -1132,7 +1282,13 @@ func resolveIncludeAdjusts(aliasTargets: in Map[String, TypeExpr], xs: in List[I
   var i = 0
   while i < xs.count {
     match xs[i] {
-      case IAProvided(name, value, span) -> ys.add(IAProvided(name = name, value = resolveExpr(aliasTargets, noGenerics, value), span = span))
+      case IAProvided(name, value, span) -> ys.add(
+        IAProvided(
+          name = name,
+          value = resolveExpr(aliasTargets, noGenerics, value),
+          span = span
+        )
+      )
       case IAConfigOverride(name, fields, span) -> {
         val fs: List[ConfigFieldOverride] = newList()
         var j = 0
@@ -1148,7 +1304,13 @@ func resolveIncludeAdjusts(aliasTargets: in Map[String, TypeExpr], xs: in List[I
         }
         ys.add(IAConfigOverride(name = name, fields = fs, span = span))
       }
-      case IAReplace(name, value, span) -> ys.add(IAReplace(name = name, value = resolveExpr(aliasTargets, noGenerics, value), span = span))
+      case IAReplace(name, value, span) -> ys.add(
+        IAReplace(
+          name = name,
+          value = resolveExpr(aliasTargets, noGenerics, value),
+          span = span
+        )
+      )
       case IARemove(name, span) -> ys.add(IARemove(name = name, span = span))
       case IAReorder(name, ordering, span) -> ys.add(IAReorder(name = name, ordering = ordering, span = span))
     }
@@ -1316,11 +1478,38 @@ func resolveAspectDecl(aliasTargets: in Map[String, TypeExpr], d: in AspectDecl)
 pub func resolveItem(aliasTargets: in Map[String, TypeExpr], it: in Item): Item {
   val noGenerics: List[String] = newList()
   val k = match it.kind {
-    case IConst(decl) -> IConst(decl = ConstDecl(name = decl.name, ty = resolveTypeExpr(aliasTargets, noGenerics, decl.ty), init = resolveExpr(aliasTargets, noGenerics, decl.init), span = decl.span))
-    case IVal(decl) -> IVal(decl = ValDecl(pattern = resolvePattern(aliasTargets, noGenerics, decl.pattern), ty = resolveOptType(aliasTargets, noGenerics, decl.ty), init = resolveExpr(aliasTargets, noGenerics, decl.init), span = decl.span))
+    case IConst(decl) -> IConst(
+      decl = ConstDecl(
+        name = decl.name,
+        ty = resolveTypeExpr(aliasTargets, noGenerics, decl.ty),
+        init = resolveExpr(aliasTargets, noGenerics, decl.init),
+        span = decl.span
+      )
+    )
+    case IVal(decl) -> IVal(
+      decl = ValDecl(
+        pattern = resolvePattern(aliasTargets, noGenerics, decl.pattern),
+        ty = resolveOptType(aliasTargets, noGenerics, decl.ty),
+        init = resolveExpr(aliasTargets, noGenerics, decl.init),
+        span = decl.span
+      )
+    )
     case IFunc(decl) -> IFunc(decl = resolveFunctionDecl(aliasTargets, noGenerics, decl))
     case ITypeAlias(decl) -> ITypeAlias(decl = decl)
-    case IDistinctType(decl) -> IDistinctType(decl = DistinctTypeDecl(name = decl.name, generics = decl.generics, underlying = resolveTypeExpr(aliasTargets, genericParamNamesOf(decl.generics), decl.underlying), rangeClause = decl.rangeClause, derives = decl.derives, span = decl.span))
+    case IDistinctType(decl) -> IDistinctType(
+      decl = DistinctTypeDecl(
+        name = decl.name,
+        generics = decl.generics,
+        underlying = resolveTypeExpr(
+          aliasTargets,
+          genericParamNamesOf(decl.generics),
+          decl.underlying
+        ),
+        rangeClause = decl.rangeClause,
+        derives = decl.derives,
+        span = decl.span
+      )
+    )
     case IRecord(decl) -> IRecord(decl = resolveRecordDecl(aliasTargets, decl))
     case IExposedRec(decl) -> IExposedRec(decl = resolveRecordDecl(aliasTargets, decl))
     case IUnion(decl) -> IUnion(decl = resolveUnionDecl(aliasTargets, decl))

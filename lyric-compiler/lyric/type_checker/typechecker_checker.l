@@ -419,7 +419,11 @@ func registerImplsFromItems(
         val ifaceTy = resolveType(tbl, ctx, diag, mkTypeRef(decl.iface.head, decl.span))
         val targetTy = resolveType(tbl, ctx, diag, decl.target)
         match typeIdOfType(ifaceTy) {
-          case Some(ifaceId) -> match typeIdOfType(targetTy) { case Some(targetId) -> symTableAddImpl(tbl, targetId, ifaceId); case None -> {  } }
+          case Some(ifaceId) -> match typeIdOfType(targetTy) {
+            case Some(targetId) -> symTableAddImpl(tbl, targetId, ifaceId)
+            case None -> {
+            }
+          }
           case None -> {
           }
         }
@@ -509,13 +513,29 @@ func checkClosed(
   name: in String,
   lo: in Expr,
   hi: in Expr,
+  inclusive: in Bool,
   sym: in String,
   span: in Span,
 ): Unit {
   match foldOrErr(tbl, diag, name, lo) {
     case None -> {
     }
-    case Some(loV) -> match foldOrErr(tbl, diag, name, hi) { case None -> {  }; case Some(hiV) -> { val invalid = if sym == "..=" { loV > hiV } else if sym == "..<" { loV >= hiV } else { false }; if invalid { diag.add(errorDiagnostic("T0090", "range subtype '" + name + "' has empty bounds: " + toString(loV) + " " + sym + " " + toString(hiV), span)) } } }
+    case Some(loV) -> match foldOrErr(tbl, diag, name, hi) {
+      case None -> {
+      }
+      case Some(hiV) -> {
+        val invalid = if inclusive { loV > hiV } else { loV >= hiV }
+        if invalid {
+          diag.add(
+            errorDiagnostic(
+              "T0090",
+              "range subtype '" + name + "' has empty bounds: " + toString(loV) + " " + sym + " " + toString(hiV),
+              span
+            )
+          )
+        }
+      }
+    }
   }
 }
 
@@ -535,8 +555,18 @@ func checkClosed(
 func tryFoldFloat(e: in Expr): Option[Double] {
   match e.kind {
     case EParen(inner) -> tryFoldFloat(inner)
-    case ELiteral(lit) -> match lit { case LFloat(v, _, _) -> Some(value = v); case LInt(v, _, _) -> Some(value = v.toDouble()); case _ -> None }
-    case EPrefix(op, inner) -> match op { case PreNeg -> match tryFoldFloat(inner) { case Some(v) -> Some(value = 0.0 - v); case None -> None }; case _ -> None }
+    case ELiteral(lit) -> match lit {
+      case LFloat(v, _, _) -> Some(value = v)
+      case LInt(v, _, _) -> Some(value = v.toDouble())
+      case _ -> None
+    }
+    case EPrefix(op, inner) -> match op {
+      case PreNeg -> match tryFoldFloat(inner) {
+        case Some(v) -> Some(value = 0.0 - v)
+        case None -> None
+      }
+      case _ -> None
+    }
     case _ -> None
   }
 }
@@ -563,13 +593,29 @@ func checkClosedFloat(
   name: in String,
   lo: in Expr,
   hi: in Expr,
+  inclusive: in Bool,
   sym: in String,
   span: in Span,
 ): Unit {
   match foldOrErrFloat(diag, name, lo) {
     case None -> {
     }
-    case Some(loV) -> match foldOrErrFloat(diag, name, hi) { case None -> {  }; case Some(hiV) -> { val invalid = if sym == "..=" { loV > hiV } else if sym == "..<" { loV >= hiV } else { false }; if invalid { diag.add(errorDiagnostic("T0090", "range subtype '" + name + "' has empty bounds: " + toString(loV) + " " + sym + " " + toString(hiV), span)) } } }
+    case Some(loV) -> match foldOrErrFloat(diag, name, hi) {
+      case None -> {
+      }
+      case Some(hiV) -> {
+        val invalid = if inclusive { loV > hiV } else { loV >= hiV }
+        if invalid {
+          diag.add(
+            errorDiagnostic(
+              "T0090",
+              "range subtype '" + name + "' has empty bounds: " + toString(loV) + " " + sym + " " + toString(hiV),
+              span
+            )
+          )
+        }
+      }
+    }
   }
 }
 
@@ -601,7 +647,25 @@ func checkDistinctType(tbl: in SymbolTable, diag: in List[Diagnostic], dt: in Di
       match dt.rangeClause {
         case None -> {
         }
-        case Some(rb) -> match rb { case RBClosed(lo, hi) -> { if isFloatBase { checkClosedFloat(diag, dt.name, lo, hi, "..=", dt.span) } else { checkClosed(tbl, diag, dt.name, lo, hi, "..=", dt.span) } }; case RBHalfOpen(lo, hi) -> { if isFloatBase { checkClosedFloat(diag, dt.name, lo, hi, "..<", dt.span) } else { checkClosed(tbl, diag, dt.name, lo, hi, "..<", dt.span) } }; case _ -> {  } }
+        case Some(rb) -> match rb {
+          case RBClosed(lo, hi) -> {
+            if isFloatBase {
+              checkClosedFloat(diag, dt.name, lo, hi, true, "..=", dt.span)
+            } else {
+              checkClosed(tbl, diag, dt.name, lo, hi, true, "..=", dt.span)
+            }
+          }
+          case RBHalfOpen(lo, hi, bareDotDot) -> {
+            val opStr = if bareDotDot { ".." } else { "..<" }
+            if isFloatBase {
+              checkClosedFloat(diag, dt.name, lo, hi, false, opStr, dt.span)
+            } else {
+              checkClosed(tbl, diag, dt.name, lo, hi, false, opStr, dt.span)
+            }
+          }
+          case _ -> {
+          }
+        }
       }
     }
   }
@@ -795,7 +859,12 @@ func exprContainsYield(e: in Expr): Bool {
       }
       false
     }
-    case ERange(rb) -> match rb { case RBClosed(a, b) -> exprContainsYield(a) or exprContainsYield(b); case RBHalfOpen(a, b) -> exprContainsYield(a) or exprContainsYield(b); case RBLowerOpen(a) -> exprContainsYield(a); case RBUpperOpen(a) -> exprContainsYield(a) }
+    case ERange(rb) -> match rb {
+      case RBClosed(a, b) -> exprContainsYield(a) or exprContainsYield(b)
+      case RBHalfOpen(a, b, _) -> exprContainsYield(a) or exprContainsYield(b)
+      case RBLowerOpen(a) -> exprContainsYield(a)
+      case RBUpperOpen(a) -> exprContainsYield(a)
+    }
     case EIf(c, t, eOpt, _) -> {
       if exprContainsYield(c) {
         return true
@@ -874,7 +943,12 @@ func stmtContainsYield(stmt: in Statement): Bool {
     case SInvariant(_) -> false
     case SItem(_) -> false
     case SAssign(t, _, v) -> exprContainsYield(t) or exprContainsYield(v)
-    case SLocal(binding) -> match binding { case LBVal(_, _, e) -> exprContainsYield(e); case LBLet(_, _, e) -> exprContainsYield(e); case LBVar(_, _, Some(e)) -> exprContainsYield(e); case LBVar(_, _, None) -> false }
+    case SLocal(binding) -> match binding {
+      case LBVal(_, _, e) -> exprContainsYield(e)
+      case LBLet(_, _, e) -> exprContainsYield(e)
+      case LBVar(_, _, Some(e)) -> exprContainsYield(e)
+      case LBVar(_, _, None) -> false
+    }
     case STry(body, catches, finally_) -> {
       if blockContainsYield(body) {
         return true
@@ -1192,7 +1266,40 @@ func simpleTypeNameOf(t: in Type): String {
 
 func addRecordMethodSigs(tbl: in SymbolTable, pkgName: in String, decl: in RecordDecl): Unit {
   match symTableTryFindOne(tbl, decl.name) {
-    case Some(sym) -> match symbolTypeIdOpt(sym) { case Some(tid) -> { val ownerGen = recordDeclGenericNames(decl); var m = 0; while m < decl.members.count { match decl.members[m] { case RMFunc(fn) -> symTableAddMethodSig(tbl, MethodEntry(owner = tid, ownerName = decl.name, ownerGenerics = ownerGen, name = fn.name, sig = resolveMethodSigParts(tbl, pkgName, ownerGen, fn.generics, fn.params, fn.ret, fn.isAsync, fn.span))); case _ -> {  } }; m = m + 1 } }; case None -> {  } }
+    case Some(sym) -> match symbolTypeIdOpt(sym) {
+      case Some(tid) -> {
+        val ownerGen = recordDeclGenericNames(decl)
+        var m = 0
+        while m < decl.members.count {
+          match decl.members[m] {
+            case RMFunc(fn) -> symTableAddMethodSig(
+              tbl,
+              MethodEntry(
+                owner = tid,
+                ownerName = decl.name,
+                ownerGenerics = ownerGen,
+                name = fn.name,
+                sig = resolveMethodSigParts(
+                  tbl,
+                  pkgName,
+                  ownerGen,
+                  fn.generics,
+                  fn.params,
+                  fn.ret,
+                  fn.isAsync,
+                  fn.span
+                )
+              )
+            )
+            case _ -> {
+            }
+          }
+          m = m + 1
+        }
+      }
+      case None -> {
+      }
+    }
     case None -> {
     }
   }
@@ -1222,7 +1329,25 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
             var m = 0
             while m < decl.members.count {
               match decl.members[m] {
-                case IMplFunc(fn) -> symTableAddMethodSig(tbl, MethodEntry(owner = tid, ownerName = simpleTypeNameOf(targetTy), ownerGenerics = implGenerics, name = fn.name, sig = resolveMethodSigParts(tbl, pkgName, implGenerics, fn.generics, fn.params, fn.ret, fn.isAsync, fn.span)))
+                case IMplFunc(fn) -> symTableAddMethodSig(
+                  tbl,
+                  MethodEntry(
+                    owner = tid,
+                    ownerName = simpleTypeNameOf(targetTy),
+                    ownerGenerics = implGenerics,
+                    name = fn.name,
+                    sig = resolveMethodSigParts(
+                      tbl,
+                      pkgName,
+                      implGenerics,
+                      fn.generics,
+                      fn.params,
+                      fn.ret,
+                      fn.isAsync,
+                      fn.span
+                    )
+                  )
+                )
                 case _ -> {
                 }
               }
@@ -1235,7 +1360,59 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
       }
       case IInterface(decl) -> {
         match symTableTryFindOne(tbl, decl.name) {
-          case Some(sym) -> match sym.kind { case DKInterface(tid, _) -> { val ifaceGen = extractGenericNames(decl.generics); var m = 0; while m < decl.members.count { match decl.members[m] { case IMSig(sig) -> symTableAddMethodSig(tbl, MethodEntry(owner = tid, ownerName = decl.name, ownerGenerics = ifaceGen, name = sig.name, sig = resolveMethodSigParts(tbl, pkgName, ifaceGen, sig.generics, sig.params, sig.ret, sig.isAsync, sig.span))); case IMFunc(fn) -> symTableAddMethodSig(tbl, MethodEntry(owner = tid, ownerName = decl.name, ownerGenerics = ifaceGen, name = fn.name, sig = resolveMethodSigParts(tbl, pkgName, ifaceGen, fn.generics, fn.params, fn.ret, fn.isAsync, fn.span))); case _ -> {  } }; m = m + 1 } }; case _ -> {  } }
+          case Some(sym) -> match sym.kind {
+            case DKInterface(tid, _) -> {
+              val ifaceGen = extractGenericNames(decl.generics)
+              var m = 0
+              while m < decl.members.count {
+                match decl.members[m] {
+                  case IMSig(sig) -> symTableAddMethodSig(
+                    tbl,
+                    MethodEntry(
+                      owner = tid,
+                      ownerName = decl.name,
+                      ownerGenerics = ifaceGen,
+                      name = sig.name,
+                      sig = resolveMethodSigParts(
+                        tbl,
+                        pkgName,
+                        ifaceGen,
+                        sig.generics,
+                        sig.params,
+                        sig.ret,
+                        sig.isAsync,
+                        sig.span
+                      )
+                    )
+                  )
+                  case IMFunc(fn) -> symTableAddMethodSig(
+                    tbl,
+                    MethodEntry(
+                      owner = tid,
+                      ownerName = decl.name,
+                      ownerGenerics = ifaceGen,
+                      name = fn.name,
+                      sig = resolveMethodSigParts(
+                        tbl,
+                        pkgName,
+                        ifaceGen,
+                        fn.generics,
+                        fn.params,
+                        fn.ret,
+                        fn.isAsync,
+                        fn.span
+                      )
+                    )
+                  )
+                  case _ -> {
+                  }
+                }
+                m = m + 1
+              }
+            }
+            case _ -> {
+            }
+          }
           case None -> {
           }
         }
@@ -1252,7 +1429,60 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
       // through the locked public method is safe.
       case IProtected(decl) -> {
         match symTableTryFindOne(tbl, decl.name) {
-          case Some(sym) -> match sym.kind { case DKProtected(tid, _) -> { val protGen = extractGenericNames(decl.generics); val noGenerics: Option[GenericParams] = None; var m = 0; while m < decl.members.count { match decl.members[m] { case PMEntry(ed) -> symTableAddMethodSig(tbl, MethodEntry(owner = tid, ownerName = decl.name, ownerGenerics = protGen, name = ed.name, sig = resolveMethodSigParts(tbl, pkgName, protGen, noGenerics, ed.params, ed.ret, false, ed.span))); case PMFunc(fn) -> symTableAddMethodSig(tbl, MethodEntry(owner = tid, ownerName = decl.name, ownerGenerics = protGen, name = fn.name, sig = resolveMethodSigParts(tbl, pkgName, protGen, fn.generics, fn.params, fn.ret, fn.isAsync, fn.span))); case _ -> {  } }; m = m + 1 } }; case _ -> {  } }
+          case Some(sym) -> match sym.kind {
+            case DKProtected(tid, _) -> {
+              val protGen = extractGenericNames(decl.generics)
+              val noGenerics: Option[GenericParams] = None
+              var m = 0
+              while m < decl.members.count {
+                match decl.members[m] {
+                  case PMEntry(ed) -> symTableAddMethodSig(
+                    tbl,
+                    MethodEntry(
+                      owner = tid,
+                      ownerName = decl.name,
+                      ownerGenerics = protGen,
+                      name = ed.name,
+                      sig = resolveMethodSigParts(
+                        tbl,
+                        pkgName,
+                        protGen,
+                        noGenerics,
+                        ed.params,
+                        ed.ret,
+                        false,
+                        ed.span
+                      )
+                    )
+                  )
+                  case PMFunc(fn) -> symTableAddMethodSig(
+                    tbl,
+                    MethodEntry(
+                      owner = tid,
+                      ownerName = decl.name,
+                      ownerGenerics = protGen,
+                      name = fn.name,
+                      sig = resolveMethodSigParts(
+                        tbl,
+                        pkgName,
+                        protGen,
+                        fn.generics,
+                        fn.params,
+                        fn.ret,
+                        fn.isAsync,
+                        fn.span
+                      )
+                    )
+                  )
+                  case _ -> {
+                  }
+                }
+                m = m + 1
+              }
+            }
+            case _ -> {
+            }
+          }
           case None -> {
           }
         }
@@ -1372,7 +1602,13 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
         match ifaceDecl.members[i] {
           case IMSig(sig) -> {
             match findImplMethod(decl, sig.name) {
-              case None -> diag.add(errorDiagnostic("T0098", "impl of interface '" + ifaceName + "' is missing method '" + sig.name + "'", decl.span))
+              case None -> diag.add(
+                errorDiagnostic(
+                  "T0098",
+                  "impl of interface '" + ifaceName + "' is missing method '" + sig.name + "'",
+                  decl.span
+                )
+              )
               case Some(fn) -> {
                 if fn.params.count != sig.params.count {
                   diag.add(
@@ -1665,7 +1901,7 @@ func addPatternShadowNames(acc: in List[String], p: in Pattern): Unit {
     }
     case PLiteral(_) -> {
     }
-    case PRange(_, _, _) -> {
+    case PRange(_, _, _, _) -> {
     }
     case PConstRef(_) -> {
     }
@@ -1729,8 +1965,15 @@ func isSelfLikeExpr(e: in Expr, ctx: in DefaultBodyCtx): Bool {
   match e.kind {
     case ESelf -> true
     case EParen(inner) -> isSelfLikeExpr(inner, ctx)
-    case EPath(path) -> path.segments.count == 1 and listContains(ctx.selfNames, path.segments[0]) and not listContains(ctx.shadowed, path.segments[0])
-    case ECall(f, _) -> match f.kind { case EMember(recv, m) -> isSelfLikeExpr(recv, ctx) and listContains(ctx.selfReturningMembers, m); case EPath(path) -> path.segments.count == 1 and listContains(ctx.selfReturningMembers, path.segments[0]); case _ -> false }
+    case EPath(path) -> path.segments.count == 1 and listContains(ctx.selfNames, path.segments[0]) and
+      not listContains(ctx.shadowed, path.segments[0])
+    case ECall(f, _) -> match f.kind {
+      case EMember(recv, m) -> isSelfLikeExpr(recv, ctx) and
+        listContains(ctx.selfReturningMembers, m)
+      case EPath(path) -> path.segments.count == 1 and
+        listContains(ctx.selfReturningMembers, path.segments[0])
+      case _ -> false
+    }
     case _ -> false
   }
 }
@@ -1739,7 +1982,10 @@ func checkDefaultBodySelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyC
   match fn.body {
     case None -> {
     }
-    case Some(body) -> match body { case FBExpr(e) -> checkExprSelfMembers(diag, ctx, e); case FBBlock(b) -> checkBlockSelfMembers(diag, ctx, b) }
+    case Some(body) -> match body {
+      case FBExpr(e) -> checkExprSelfMembers(diag, ctx, e)
+      case FBBlock(b) -> checkBlockSelfMembers(diag, ctx, b)
+    }
   }
 }
 
@@ -1815,7 +2061,18 @@ func checkExprSelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyCtx, e: 
         i = i + 1
       }
     }
-    case ERange(rb) -> match rb { case RBClosed(a, b) -> { checkExprSelfMembers(diag, ctx, a); checkExprSelfMembers(diag, ctx, b) }; case RBHalfOpen(a, b) -> { checkExprSelfMembers(diag, ctx, a); checkExprSelfMembers(diag, ctx, b) }; case RBLowerOpen(a) -> checkExprSelfMembers(diag, ctx, a); case RBUpperOpen(a) -> checkExprSelfMembers(diag, ctx, a) }
+    case ERange(rb) -> match rb {
+      case RBClosed(a, b) -> {
+        checkExprSelfMembers(diag, ctx, a)
+        checkExprSelfMembers(diag, ctx, b)
+      }
+      case RBHalfOpen(a, b, _) -> {
+        checkExprSelfMembers(diag, ctx, a)
+        checkExprSelfMembers(diag, ctx, b)
+      }
+      case RBLowerOpen(a) -> checkExprSelfMembers(diag, ctx, a)
+      case RBUpperOpen(a) -> checkExprSelfMembers(diag, ctx, a)
+    }
     case EIf(c, t, eOpt, _) -> {
       checkExprSelfMembers(diag, ctx, c)
       checkExprOrBlockSelfMembers(diag, ctx, t)
@@ -1934,7 +2191,21 @@ func checkStmtSelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyCtx, stm
     // legitimately reference the outer name), then the bound name(s) are
     // pushed for the rest of the enclosing block (#6452 boundary 2) — popped
     // by the enclosing `checkBlockSelfMembers`'s own truncation on exit.
-    case SLocal(binding) -> match binding { case LBVal(pat, _, e) -> { checkExprSelfMembers(diag, ctx, e); addPatternShadowNames(ctx.shadowed, pat) }; case LBLet(name, _, e) -> { checkExprSelfMembers(diag, ctx, e); ctx.shadowed.add(name) }; case LBVar(name, _, Some(e)) -> { checkExprSelfMembers(diag, ctx, e); ctx.shadowed.add(name) }; case LBVar(name, _, None) -> ctx.shadowed.add(name) }
+    case SLocal(binding) -> match binding {
+      case LBVal(pat, _, e) -> {
+        checkExprSelfMembers(diag, ctx, e)
+        addPatternShadowNames(ctx.shadowed, pat)
+      }
+      case LBLet(name, _, e) -> {
+        checkExprSelfMembers(diag, ctx, e)
+        ctx.shadowed.add(name)
+      }
+      case LBVar(name, _, Some(e)) -> {
+        checkExprSelfMembers(diag, ctx, e)
+        ctx.shadowed.add(name)
+      }
+      case LBVar(name, _, None) -> ctx.shadowed.add(name)
+    }
     case STry(body, catches, finally_) -> {
       checkBlockSelfMembers(diag, ctx, body)
       var i = 0
@@ -2122,7 +2393,18 @@ func protectedFieldLocals(tbl: in SymbolTable, ctx: in GenericContext, decl: in 
 // `recordSelfType` (see its doc comment).
 func protectedSelfType(tbl: in SymbolTable, decl: in ProtectedTypeDecl, ownerGenerics: in List[String]): Type {
   match symTableTryFindOne(tbl, decl.name) {
-    case Some(sym) -> match symbolTypeIdOpt(sym) { case Some(tid) -> { val targs: List[Type] = newList(); var i = 0; while i < ownerGenerics.count { targs.add(TyVar(name = ownerGenerics[i])); i = i + 1 }; TyUser(id = tid, name = decl.name, args = targs) }; case None -> TyError }
+    case Some(sym) -> match symbolTypeIdOpt(sym) {
+      case Some(tid) -> {
+        val targs: List[Type] = newList()
+        var i = 0
+        while i < ownerGenerics.count {
+          targs.add(TyVar(name = ownerGenerics[i]))
+          i = i + 1
+        }
+        TyUser(id = tid, name = decl.name, args = targs)
+      }
+      case None -> TyError
+    }
     case None -> TyError
   }
 }
@@ -2271,7 +2553,18 @@ func recordFieldLocals(tbl: in SymbolTable, ctx: in GenericContext, decl: in Rec
 // (#6488 review nit).
 func recordSelfType(tbl: in SymbolTable, decl: in RecordDecl, ownerGenerics: in List[String]): Type {
   match symTableTryFindOne(tbl, decl.name) {
-    case Some(sym) -> match symbolTypeIdOpt(sym) { case Some(tid) -> { val targs: List[Type] = newList(); var i = 0; while i < ownerGenerics.count { targs.add(TyVar(name = ownerGenerics[i])); i = i + 1 }; TyUser(id = tid, name = decl.name, args = targs) }; case None -> TyError }
+    case Some(sym) -> match symbolTypeIdOpt(sym) {
+      case Some(tid) -> {
+        val targs: List[Type] = newList()
+        var i = 0
+        while i < ownerGenerics.count {
+          targs.add(TyVar(name = ownerGenerics[i]))
+          i = i + 1
+        }
+        TyUser(id = tid, name = decl.name, args = targs)
+      }
+      case None -> TyError
+    }
     case None -> TyError
   }
 }
@@ -2380,7 +2673,24 @@ func implTargetFieldLocals(tbl: in SymbolTable, selfTy: in Type): List[LocalBind
   val none: List[LocalBinding] = newList()
   match typeIdOfType(selfTy) {
     case None -> none
-    case Some(tid) -> match findRecordDeclByTypeId(tbl, tid) { case None -> none; case Some(rd) -> { val ownCtx = declGenericContext(rd.generics); val raw = recordFieldLocals(tbl, ownCtx, rd); val gnames = recordDeclGenericNames(rd); val targs = match unrefine(selfTy) { case TyUser(_, _, args) -> args; case _ -> newList() }; val substituted: List[LocalBinding] = newList(); var i = 0; while i < raw.count { substituted.add(LocalBinding(name = raw[i].name, ty = substituteTyVars(raw[i].ty, gnames, targs), isMutable = raw[i].isMutable)); i = i + 1 }; substituted } }
+    case Some(tid) -> match findRecordDeclByTypeId(tbl, tid) {
+      case None -> none
+      case Some(rd) -> {
+        val ownCtx = declGenericContext(rd.generics)
+        val raw = recordFieldLocals(tbl, ownCtx, rd)
+        val gnames = recordDeclGenericNames(rd)
+        val targs = match unrefine(selfTy) { case TyUser(_, _, args) -> args; case _ -> newList() }
+        val substituted: List[LocalBinding] = newList()
+        var i = 0
+        while i < raw.count {
+          substituted.add(
+            LocalBinding(name = raw[i].name, ty = substituteTyVars(raw[i].ty, gnames, targs), isMutable = raw[i].isMutable)
+          )
+          i = i + 1
+        }
+        substituted
+      }
+    }
   }
 }
 
@@ -2563,7 +2873,23 @@ func checkConfigBlock(diag: in List[Diagnostic], cd: in ConfigDecl): Unit {
         case Some(d) -> {
           val ok = match d.kind {
             case ELiteral(lit) -> configLiteralFitsType(lit, tyName)
-            case EPrefix(op, inner) -> match op { case PreNeg -> match inner.kind { case ELiteral(lit2) -> match lit2 { case LInt(_, _, _) -> configLiteralFitsType(lit2, tyName); case LFloat(_, _, _) -> configLiteralFitsType(lit2, tyName); case _ -> false }; case _ -> false }; case _ -> false }
+            case EPrefix(op, inner) -> match op {
+              case PreNeg -> match inner.kind {
+                case ELiteral(lit2) -> match lit2 {
+                  case LInt(_, _, _) -> configLiteralFitsType(
+                    lit2,
+                    tyName
+                  )
+                  case LFloat(_, _, _) -> configLiteralFitsType(
+                    lit2,
+                    tyName
+                  )
+                  case _ -> false
+                }
+                case _ -> false
+              }
+              case _ -> false
+            }
             case _ -> false
           }
           if not ok {
@@ -2865,7 +3191,21 @@ func checkWithImportedPackagesCore(
         val arityKey = decl.name + "/" + toString(decl.params.count)
         match mapGet(sigs, arityKey) {
           case Some(sig) -> checkFunctionBody(tbl, sigs, diag, decl, sig, noExtraLocals, noExtraLocals, false, TyError)
-          case None -> match mapGet(sigs, decl.name) { case Some(sig) -> checkFunctionBody(tbl, sigs, diag, decl, sig, noExtraLocals, noExtraLocals, false, TyError); case None -> {  } }
+          case None -> match mapGet(sigs, decl.name) {
+            case Some(sig) -> checkFunctionBody(
+              tbl,
+              sigs,
+              diag,
+              decl,
+              sig,
+              noExtraLocals,
+              noExtraLocals,
+              false,
+              TyError
+            )
+            case None -> {
+            }
+          }
         }
       }
       case IImpl(decl) -> {

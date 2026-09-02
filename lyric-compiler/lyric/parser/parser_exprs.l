@@ -325,10 +325,11 @@ pub func parseRangeBound(st: inout ParseState): RangeBound {
     val hi = parseExpr(st)
     RBLowerOpen(hi = hi)
   } else if isPunct(peekToken(st), DotDot) or isPunct(peekToken(st), DotDotLt) {
+    val bareDotDot = isPunct(peekToken(st), DotDot)
     val opTok = advance(st)
     val hi = parseExpr(st)
     val lo = mkExpr(ELiteral(lit = LInt(value = 0i64, suffix = NoIntSuffix, raw = "")), opTok.span)
-    RBHalfOpen(lo = lo, hi = hi)
+    RBHalfOpen(lo = lo, hi = hi, bareDotDot = bareDotDot)
   } else {
     val lo = parseExpr(st)
     if isPunct(peekToken(st), DotDotEq) {
@@ -338,7 +339,7 @@ pub func parseRangeBound(st: inout ParseState): RangeBound {
     } else if isPunct(peekToken(st), DotDotLt) {
       val _ = advance(st)
       val hi = parseExpr(st)
-      RBHalfOpen(lo = lo, hi = hi)
+      RBHalfOpen(lo = lo, hi = hi, bareDotDot = false)
     } else if isPunct(peekToken(st), DotDot) {
       val _ = advance(st)
       // `lo ..` (upper-open) or `lo .. hi` (half-open).
@@ -362,7 +363,7 @@ pub func parseRangeBound(st: inout ParseState): RangeBound {
         RBUpperOpen(lo = lo)
       } else {
         val hi = parseExpr(st)
-        RBHalfOpen(lo = lo, hi = hi)
+        RBHalfOpen(lo = lo, hi = hi, bareDotDot = true)
       }
     } else {
       emitErr(st, "P0060", "expected '..', '..<', or '..=' in range bound", peekSpan(st))
@@ -508,7 +509,7 @@ func parseAtomNonParenType(st: inout ParseState): TypeExpr {
           val bound = parseRangeBound(st)
           val endSpan = match bound {
             case RBClosed(_, hi) -> hi.span
-            case RBHalfOpen(_, hi) -> hi.span
+            case RBHalfOpen(_, hi, _) -> hi.span
             case RBLowerOpen(hi) -> hi.span
             case RBUpperOpen(lo) -> lo.span
           }
@@ -855,11 +856,12 @@ func parseLiteralOrRangePat(st: inout ParseState, firstExpr: in Expr): Pattern {
   if isPunct(peekToken(st), DotDotEq) {
     val _ = advance(st)
     val hi = parseExpr(st)
-    mkPat(PRange(lo = firstExpr, inclusive = true, hi = hi), joinSpans(firstExpr.span, hi.span))
+    mkPat(PRange(lo = firstExpr, inclusive = true, hi = hi, bareDotDot = false), joinSpans(firstExpr.span, hi.span))
   } else if isPunct(peekToken(st), DotDot) or isPunct(peekToken(st), DotDotLt) {
+    val bareDotDot = isPunct(peekToken(st), DotDot)
     val _ = advance(st)
     val hi = parseExpr(st)
-    mkPat(PRange(lo = firstExpr, inclusive = false, hi = hi), joinSpans(firstExpr.span, hi.span))
+    mkPat(PRange(lo = firstExpr, inclusive = false, hi = hi, bareDotDot = bareDotDot), joinSpans(firstExpr.span, hi.span))
   } else {
     match firstExpr.kind {
       case ELiteral(lit) -> mkPat(PLiteral(lit = lit), firstExpr.span)
@@ -2372,11 +2374,11 @@ func parseStatementInner(st: inout ParseState): Statement {
           } else if isPunct(peekToken(st), DotDotLt) {
             val _ = advance(st)
             val hi = parseExpr(st)
-            mkExpr(ERange(bound = RBHalfOpen(lo = iterLo, hi = hi)), joinSpans(iterLo.span, hi.span))
+            mkExpr(ERange(bound = RBHalfOpen(lo = iterLo, hi = hi, bareDotDot = false)), joinSpans(iterLo.span, hi.span))
           } else if isPunct(peekToken(st), DotDot) {
             val _ = advance(st)
             val hi = parseExpr(st)
-            mkExpr(ERange(bound = RBHalfOpen(lo = iterLo, hi = hi)), joinSpans(iterLo.span, hi.span))
+            mkExpr(ERange(bound = RBHalfOpen(lo = iterLo, hi = hi, bareDotDot = true)), joinSpans(iterLo.span, hi.span))
           } else {
             iterLo
           }

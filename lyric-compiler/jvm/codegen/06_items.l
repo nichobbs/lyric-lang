@@ -4658,7 +4658,7 @@ pub func mkJvmDistinctTypeIR(
     case Some(rb) -> {
       match rb {
         case RBClosed(loE, hiE) -> mkJvmDistinctRanged(wrapperClass, inner, loE, hiE, false, isUnsigned)
-        case RBHalfOpen(loE, hiE) -> mkJvmDistinctRanged(wrapperClass, inner, loE, hiE, true, isUnsigned)
+        case RBHalfOpen(loE, hiE, _) -> mkJvmDistinctRanged(wrapperClass, inner, loE, hiE, true, isUnsigned)
         case _ -> mkJvmDistinctNoRange(wrapperClass, inner, isUnsigned)
       }
     }

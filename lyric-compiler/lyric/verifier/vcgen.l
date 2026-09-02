@@ -1904,7 +1904,7 @@ func exprContainsYield(e: in Expr): Bool {
     case ERange(bound) -> {
       match bound {
         case RBClosed(lo, hi) -> exprContainsYield(lo) or exprContainsYield(hi)
-        case RBHalfOpen(lo, hi) -> exprContainsYield(lo) or exprContainsYield(hi)
+        case RBHalfOpen(lo, hi, _) -> exprContainsYield(lo) or exprContainsYield(hi)
         case RBLowerOpen(hi) -> exprContainsYield(hi)
         case RBUpperOpen(lo) -> exprContainsYield(lo)
       }

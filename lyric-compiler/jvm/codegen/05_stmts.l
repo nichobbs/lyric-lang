@@ -815,11 +815,68 @@ func emitCompoundArith(ctx: in FuncCtx, insns: in List[LInsn], op: in AssignOp, 
   // OPERANDS instead (unsigned division needs unsigned inputs, and their
   // results are then already in range).
   match op {
-    case AssPlus -> match ty { case JLong -> insns.add(LLadd); case JFloat -> insns.add(LFadd); case JDouble -> insns.add(LDadd); case JByte -> { insns.add(LIadd); maskByteUnsigned(insns) }; case _ -> insns.add(LIadd) }
-    case AssMinus -> match ty { case JLong -> insns.add(LLsub); case JFloat -> insns.add(LFsub); case JDouble -> insns.add(LDsub); case JByte -> { insns.add(LIsub); maskByteUnsigned(insns) }; case _ -> insns.add(LIsub) }
-    case AssStar -> match ty { case JLong -> insns.add(LLmul); case JFloat -> insns.add(LFmul); case JDouble -> insns.add(LDmul); case JByte -> { insns.add(LImul); maskByteUnsigned(insns) }; case _ -> insns.add(LImul) }
-    case AssSlash -> match ty { case JLong -> insns.add(LLdiv); case JFloat -> insns.add(LFdiv); case JDouble -> insns.add(LDdiv); case JByte -> { val rhsSlot = allocSlot(ctx, "__comp_rhs_" + freshLabel(ctx), JInt); emitStore(insns, rhsSlot, JInt); insns.add(LIconst(255)); insns.add(LIand); emitLoad(insns, rhsSlot, JInt); insns.add(LIconst(255)); insns.add(LIand); insns.add(LIdiv) }; case _ -> insns.add(LIdiv) }
-    case AssPercent -> match ty { case JLong -> insns.add(LLrem); case JFloat -> insns.add(LFrem); case JDouble -> insns.add(LDrem); case JByte -> { val rhsSlot = allocSlot(ctx, "__comp_rhs_" + freshLabel(ctx), JInt); emitStore(insns, rhsSlot, JInt); insns.add(LIconst(255)); insns.add(LIand); emitLoad(insns, rhsSlot, JInt); insns.add(LIconst(255)); insns.add(LIand); insns.add(LIrem) }; case _ -> insns.add(LIrem) }
+    case AssPlus -> match ty {
+      case JLong -> insns.add(LLadd)
+      case JFloat -> insns.add(LFadd)
+      case JDouble -> insns.add(LDadd)
+      case JByte -> {
+        insns.add(LIadd)
+        maskByteUnsigned(insns)
+      }
+      case _ -> insns.add(LIadd)
+    }
+    case AssMinus -> match ty {
+      case JLong -> insns.add(LLsub)
+      case JFloat -> insns.add(LFsub)
+      case JDouble -> insns.add(LDsub)
+      case JByte -> {
+        insns.add(LIsub)
+        maskByteUnsigned(insns)
+      }
+      case _ -> insns.add(LIsub)
+    }
+    case AssStar -> match ty {
+      case JLong -> insns.add(LLmul)
+      case JFloat -> insns.add(LFmul)
+      case JDouble -> insns.add(LDmul)
+      case JByte -> {
+        insns.add(LImul)
+        maskByteUnsigned(insns)
+      }
+      case _ -> insns.add(LImul)
+    }
+    case AssSlash -> match ty {
+      case JLong -> insns.add(LLdiv)
+      case JFloat -> insns.add(LFdiv)
+      case JDouble -> insns.add(LDdiv)
+      case JByte -> {
+        val rhsSlot = allocSlot(ctx, "__comp_rhs_" + freshLabel(ctx), JInt)
+        emitStore(insns, rhsSlot, JInt)
+        insns.add(LIconst(255))
+        insns.add(LIand)
+        emitLoad(insns, rhsSlot, JInt)
+        insns.add(LIconst(255))
+        insns.add(LIand)
+        insns.add(LIdiv)
+      }
+      case _ -> insns.add(LIdiv)
+    }
+    case AssPercent -> match ty {
+      case JLong -> insns.add(LLrem)
+      case JFloat -> insns.add(LFrem)
+      case JDouble -> insns.add(LDrem)
+      case JByte -> {
+        val rhsSlot = allocSlot(ctx, "__comp_rhs_" + freshLabel(ctx), JInt)
+        emitStore(insns, rhsSlot, JInt)
+        insns.add(LIconst(255))
+        insns.add(LIand)
+        emitLoad(insns, rhsSlot, JInt)
+        insns.add(LIconst(255))
+        insns.add(LIand)
+        insns.add(LIrem)
+      }
+      case _ -> insns.add(LIrem)
+    }
     case AssEq -> ()
   }
 }
@@ -975,7 +1032,11 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           // against the annotation's declared enum type — reuses the
           // existing #5976 call-argument expect-stack mechanism.
           val annEnumHintTy = match tyOpt {
-            case Some(te) -> typeExprToJvmExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(ctx.aliasTargets, te), ctx.pkgName, ctx.externTypes)
+            case Some(te) -> typeExprToJvmExtern(
+              BareFuncRef.resolveFuncTypeAliasOrSelf(ctx.aliasTargets, te),
+              ctx.pkgName,
+              ctx.externTypes
+            )
             case None -> JVoid
           }
           pushCtorExpect(ctx, annEnumHintTy)
@@ -1265,7 +1326,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
         case ERange(bound) -> {
           match bound {
             case RBClosed(lo, hi) -> emitCountingForJvm(ctx, insns, pat, lo, hi, true, body)
-            case RBHalfOpen(lo, hi) -> emitCountingForJvm(ctx, insns, pat, lo, hi, false, body)
+            case RBHalfOpen(lo, hi, _) -> emitCountingForJvm(ctx, insns, pat, lo, hi, false, body)
             case RBLowerOpen(_) -> {
               panic("Jvm.Codegen: an open-start range cannot drive a `for` loop — no lower bound to count from (#1478)")
             }
@@ -2532,7 +2593,9 @@ pub func lowerBlockExprWithDefer(ctx: in FuncCtx, insns: in List[LInsn], block: 
   }
   val deferBody = match stmts[deferIdx].kind {
     case SDefer(b) -> b
-    case _ -> panic("Jvm.Codegen: lowerBlockExprWithDefer: deferIdx does not point at an SDefer (unreachable)")
+    case _ -> panic(
+      "Jvm.Codegen: lowerBlockExprWithDefer: deferIdx does not point at an SDefer (unreachable)"
+    )
   }
   // A trailing `defer` (last statement of the value block — the block then yields
   // `Unit`) has an EMPTY protected region; emitting a catch-all for it produces an

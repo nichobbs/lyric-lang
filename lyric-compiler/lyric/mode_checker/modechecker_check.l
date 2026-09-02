@@ -292,7 +292,7 @@ func walkExprCalls(ctx: in WalkCtx, e: in Expr): Unit {
           walkExprCalls(ctx, lo)
           walkExprCalls(ctx, hi)
         }
-        case RBHalfOpen(lo, hi) -> {
+        case RBHalfOpen(lo, hi, _) -> {
           walkExprCalls(ctx, lo)
           walkExprCalls(ctx, hi)
         }
@@ -904,7 +904,7 @@ func walkExprAssume(diag: in List[Diagnostic], inUnsafe: in Bool, e: in Expr): U
           walkExprAssume(diag, inUnsafe, lo)
           walkExprAssume(diag, inUnsafe, hi)
         }
-        case RBHalfOpen(lo, hi) -> {
+        case RBHalfOpen(lo, hi, _) -> {
           walkExprAssume(diag, inUnsafe, lo)
           walkExprAssume(diag, inUnsafe, hi)
         }
@@ -1238,7 +1238,7 @@ func walkExprForAwaitInTry(ctx: in AwaitTryCtx, e: in Expr): Unit {
           walkExprForAwaitInTry(ctx, lo)
           walkExprForAwaitInTry(ctx, hi)
         }
-        case RBHalfOpen(lo, hi) -> {
+        case RBHalfOpen(lo, hi, _) -> {
           walkExprForAwaitInTry(ctx, lo)
           walkExprForAwaitInTry(ctx, hi)
         }
@@ -2195,7 +2195,7 @@ func walkExprForSpawn(ctx: in SpawnCtx, valuePos: in Bool, e: in Expr): Unit {
           walkExprForSpawn(ctx, true, lo)
           walkExprForSpawn(ctx, true, hi)
         }
-        case RBHalfOpen(lo, hi) -> {
+        case RBHalfOpen(lo, hi, _) -> {
           walkExprForSpawn(ctx, true, lo)
           walkExprForSpawn(ctx, true, hi)
         }
@@ -2724,7 +2724,7 @@ func fieldWriteCollectPatternNames(pat: in Pattern, acc: in List[String]): Unit 
     }
     case PLiteral(_) -> {
     }
-    case PRange(_, _, _) -> {
+    case PRange(_, _, _, _) -> {
     }
     case PConstRef(_) -> {
     }
@@ -3036,7 +3036,7 @@ func walkExprForFieldWrite(ctx: in FieldWriteCtx, e: in Expr): Unit {
           walkExprForFieldWrite(ctx, lo)
           walkExprForFieldWrite(ctx, hi)
         }
-        case RBHalfOpen(lo, hi) -> {
+        case RBHalfOpen(lo, hi, _) -> {
           walkExprForFieldWrite(ctx, lo)
           walkExprForFieldWrite(ctx, hi)
         }

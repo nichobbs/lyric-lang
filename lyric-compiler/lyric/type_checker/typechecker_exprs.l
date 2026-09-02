@@ -4339,7 +4339,7 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       val testTy = resolveType(tbl, ctx, diag, tyExpr)
       bindPatternTyped(sc, tbl, diag, inner, testTy)
     }
-    case PRange(_, _, _) -> {
+    case PRange(_, _, _, _) -> {
     }
     case PConstRef(_) -> {
     }

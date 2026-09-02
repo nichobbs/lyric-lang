@@ -516,7 +516,10 @@ func funcDeclArityMatches(state: in MonoState, name: in String, callArity: in In
       }
       false
     }
-    case None -> match mapGet(state.funcDecls, name) { case None -> true; case Some(decl) -> decl.params.count == callArity }
+    case None -> match mapGet(state.funcDecls, name) {
+      case None -> true
+      case Some(decl) -> decl.params.count == callArity
+    }
   }
 }
 
@@ -682,7 +685,13 @@ func substTypeExpr(subst: in Map[String, TypeExpr], valueSubst: in Map[String, E
     }
     case TNullable(inner) -> TypeExpr(kind = TNullable(inner = substTypeExpr(subst, valueSubst, inner)), span = s)
     case TSlice(elem) -> TypeExpr(kind = TSlice(element = substTypeExpr(subst, valueSubst, elem)), span = s)
-    case TArray(sz, elem) -> TypeExpr(kind = TArray(size = substTypeArg(subst, valueSubst, sz), element = substTypeExpr(subst, valueSubst, elem)), span = s)
+    case TArray(sz, elem) -> TypeExpr(
+      kind = TArray(
+        size = substTypeArg(subst, valueSubst, sz),
+        element = substTypeExpr(subst, valueSubst, elem)
+      ),
+      span = s
+    )
     case TFunction(ps, r) -> {
       val newPs: List[TypeExpr] = newList()
       var i = 0
@@ -733,9 +742,19 @@ func substExprValue(valueSubst: in Map[String, Expr], expr: in Expr): Expr {
       }
     }
     case EParen(inner) -> Expr(kind = EParen(inner = substExprValue(valueSubst, inner)), span = s)
-    case EBinop(op, lhs, rhs) -> Expr(kind = EBinop(op = op, lhs = substExprValue(valueSubst, lhs), rhs = substExprValue(valueSubst, rhs)), span = s)
+    case EBinop(op, lhs, rhs) -> Expr(
+      kind = EBinop(
+        op = op,
+        lhs = substExprValue(valueSubst, lhs),
+        rhs = substExprValue(valueSubst, rhs)
+      ),
+      span = s
+    )
     case EPrefix(op, operand) -> Expr(kind = EPrefix(op = op, operand = substExprValue(valueSubst, operand)), span = s)
-    case EMember(recv, name) -> Expr(kind = EMember(receiver = substExprValue(valueSubst, recv), memberName = name), span = s)
+    case EMember(recv, name) -> Expr(
+      kind = EMember(receiver = substExprValue(valueSubst, recv), memberName = name),
+      span = s
+    )
     case EIndex(recv, idxs) -> {
       val newIdxs: List[Expr] = newList()
       var i = 0
@@ -787,7 +806,14 @@ func substExprValue(valueSubst: in Map[String, Expr], expr: in Expr): Expr {
       }
       Expr(kind = ETypeApp(fn = substExprValue(valueSubst, fn), args = newTargs), span = s)
     }
-    case EAssign(target, op, value) -> Expr(kind = EAssign(target = substExprValue(valueSubst, target), op = op, value = substExprValue(valueSubst, value)), span = s)
+    case EAssign(target, op, value) -> Expr(
+      kind = EAssign(
+        target = substExprValue(valueSubst, target),
+        op = op,
+        value = substExprValue(valueSubst, value)
+      ),
+      span = s
+    )
     case EAwait(inner) -> Expr(kind = EAwait(inner = substExprValue(valueSubst, inner)), span = s)
     case EYield(inner) -> Expr(kind = EYield(inner = substExprValue(valueSubst, inner)), span = s)
     case ESpawn(inner) -> Expr(kind = ESpawn(inner = substExprValue(valueSubst, inner)), span = s)
@@ -838,7 +864,10 @@ func substExprValue(valueSubst: in Map[String, Expr], expr: in Expr): Expr {
     }
     case EBlock(blk) -> Expr(kind = EBlock(block = substBlockValue(valueSubst, blk)), span = s)
     case EUnsafe(blk) -> Expr(kind = EUnsafe(block = substBlockValue(valueSubst, blk)), span = s)
-    case ELambda(lparams, body) -> Expr(kind = ELambda(lambdaParams = lparams, body = substBlockValue(valueSubst, body)), span = s)
+    case ELambda(lparams, body) -> Expr(
+      kind = ELambda(lambdaParams = lparams, body = substBlockValue(valueSubst, body)),
+      span = s
+    )
     case EInterpolated(segs) -> {
       val newSegs: List[InterpolatedSegment] = newList()
       var i = 0
@@ -876,7 +905,14 @@ func substStmtValue(valueSubst: in Map[String, Expr], stmt: in Statement): State
   val s = stmt.span
   match stmt.kind {
     case SLocal(binding) -> Statement(kind = SLocal(binding = substBindingValue(valueSubst, binding)), span = s)
-    case SAssign(target, op, value) -> Statement(kind = SAssign(target = substExprValue(valueSubst, target), op = op, value = substExprValue(valueSubst, value)), span = s)
+    case SAssign(target, op, value) -> Statement(
+      kind = SAssign(
+        target = substExprValue(valueSubst, target),
+        op = op,
+        value = substExprValue(valueSubst, value)
+      ),
+      span = s
+    )
     case SReturn(opt) -> {
       // Typed `var` + assignment, not a two-arm match.
       var newOpt: Option[Expr] = None
@@ -891,13 +927,34 @@ func substStmtValue(valueSubst: in Map[String, Expr], stmt: in Statement): State
     }
     case SThrow(e) -> Statement(kind = SThrow(expr = substExprValue(valueSubst, e)), span = s)
     case SExpr(e) -> Statement(kind = SExpr(expr = substExprValue(valueSubst, e)), span = s)
-    case SWhile(lbl, cond, body) -> Statement(kind = SWhile(label = lbl, cond = substExprValue(valueSubst, cond), body = substBlockValue(valueSubst, body)), span = s)
-    case SFor(lbl, pat, iter, body) -> Statement(kind = SFor(label = lbl, pat = pat, iter = substExprValue(valueSubst, iter), body = substBlockValue(valueSubst, body)), span = s)
+    case SWhile(lbl, cond, body) -> Statement(
+      kind = SWhile(
+        label = lbl,
+        cond = substExprValue(valueSubst, cond),
+        body = substBlockValue(valueSubst, body)
+      ),
+      span = s
+    )
+    case SFor(lbl, pat, iter, body) -> Statement(
+      kind = SFor(
+        label = lbl,
+        pat = pat,
+        iter = substExprValue(valueSubst, iter),
+        body = substBlockValue(valueSubst, body)
+      ),
+      span = s
+    )
     case SLoop(lbl, body) -> Statement(kind = SLoop(label = lbl, body = substBlockValue(valueSubst, body)), span = s)
     case SDefer(body) -> Statement(kind = SDefer(body = substBlockValue(valueSubst, body)), span = s)
-    case SScope(lbl, body) -> Statement(kind = SScope(binding = lbl, body = substBlockValue(valueSubst, body)), span = s)
+    case SScope(lbl, body) -> Statement(
+      kind = SScope(binding = lbl, body = substBlockValue(valueSubst, body)),
+      span = s
+    )
     case SInvariant(e) -> Statement(kind = SInvariant(expr = substExprValue(valueSubst, e)), span = s)
-    case SRule(lhs, rhs) -> Statement(kind = SRule(lhs = substExprValue(valueSubst, lhs), rhs = substExprValue(valueSubst, rhs)), span = s)
+    case SRule(lhs, rhs) -> Statement(
+      kind = SRule(lhs = substExprValue(valueSubst, lhs), rhs = substExprValue(valueSubst, rhs)),
+      span = s
+    )
     case STry(body, catches, finally_) -> {
       val newBody = substBlockValue(valueSubst, body)
       val newCatches: List[CatchClause] = newList()
@@ -1201,7 +1258,12 @@ func inferLitTE(lit: in Literal, span: in Span): Option[TypeExpr] {
       Some(value = TypeExpr(kind = TRef(path = singleSegPath(name)), span = span))
     }
     case LBool(_) -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = span))
-    case LString(_) | LTripleString(_) | LRawString(_) -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("String")), span = span))
+    case LString(_) | LTripleString(_) | LRawString(_) -> Some(
+      value = TypeExpr(
+        kind = TRef(path = singleSegPath("String")),
+        span = span
+      )
+    )
     case LChar(_) -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Char")), span = span))
     case LUnit -> Some(value = TypeExpr(kind = TUnit, span = span))
   }
@@ -2428,7 +2490,12 @@ func substTypesPattern(subst: in Map[String, TypeExpr], valueSubst: in Map[Strin
   val k = match pat.kind {
     case PWildcard -> PWildcard
     case PLiteral(lit) -> PLiteral(lit = lit)
-    case PRange(lo, inclusive, hi) -> PRange(lo = substTypesExpr(subst, valueSubst, lo), inclusive = inclusive, hi = substTypesExpr(subst, valueSubst, hi))
+    case PRange(lo, inclusive, hi, bareDotDot) -> PRange(
+      lo = substTypesExpr(subst, valueSubst, lo),
+      inclusive = inclusive,
+      hi = substTypesExpr(subst, valueSubst, hi),
+      bareDotDot = bareDotDot
+    )
     case PBinding(name, inner) -> {
       val ni = match inner { case Some(p) -> Some(value = substTypesPattern(subst, valueSubst, p)); case None -> None }
       PBinding(name = name, inner = ni)
@@ -2447,7 +2514,13 @@ func substTypesPattern(subst: in Map[String, TypeExpr], valueSubst: in Map[Strin
       var i = 0
       while i < fields.count {
         match fields[i] {
-          case RPFNamed(fname, p, fspan) -> nf.add(RPFNamed(name = fname, pattern = substTypesPattern(subst, valueSubst, p), span = fspan))
+          case RPFNamed(fname, p, fspan) -> nf.add(
+            RPFNamed(
+              name = fname,
+              pattern = substTypesPattern(subst, valueSubst, p),
+              span = fspan
+            )
+          )
           case RPFShort(fname, fspan) -> nf.add(RPFShort(name = fname, span = fspan))
         }
         i = i + 1
@@ -2464,7 +2537,10 @@ func substTypesPattern(subst: in Map[String, TypeExpr], valueSubst: in Map[Strin
       PTuple(patterns = np)
     }
     case PParen(inner) -> PParen(inner = substTypesPattern(subst, valueSubst, inner))
-    case PTypeTest(inner, ty) -> PTypeTest(inner = substTypesPattern(subst, valueSubst, inner), ty = substTypeExpr(subst, valueSubst, ty))
+    case PTypeTest(inner, ty) -> PTypeTest(
+      inner = substTypesPattern(subst, valueSubst, inner),
+      ty = substTypeExpr(subst, valueSubst, ty)
+    )
     case POr(patterns) -> {
       val np: List[Pattern] = newList()
       var i = 0
@@ -2485,16 +2561,28 @@ func substTypesStmt(subst: in Map[String, TypeExpr], valueSubst: in Map[String, 
   val k = match stmt.kind {
     case SLocal(binding) -> {
       val nb = match binding {
-        case LBVal(pat, ty, init) -> LBVal(pat = pat, ty = substTypesOptTy(subst, valueSubst, ty), init = substTypesExpr(subst, valueSubst, init))
+        case LBVal(pat, ty, init) -> LBVal(
+          pat = pat,
+          ty = substTypesOptTy(subst, valueSubst, ty),
+          init = substTypesExpr(subst, valueSubst, init)
+        )
         case LBVar(name, ty, init) -> {
           val ni = match init { case Some(e) -> Some(value = substTypesExpr(subst, valueSubst, e)); case None -> None }
           LBVar(name = name, ty = substTypesOptTy(subst, valueSubst, ty), init = ni)
         }
-        case LBLet(name, ty, init) -> LBLet(name = name, ty = substTypesOptTy(subst, valueSubst, ty), init = substTypesExpr(subst, valueSubst, init))
+        case LBLet(name, ty, init) -> LBLet(
+          name = name,
+          ty = substTypesOptTy(subst, valueSubst, ty),
+          init = substTypesExpr(subst, valueSubst, init)
+        )
       }
       SLocal(binding = nb)
     }
-    case SAssign(target, op, value) -> SAssign(target = substTypesExpr(subst, valueSubst, target), op = op, value = substTypesExpr(subst, valueSubst, value))
+    case SAssign(target, op, value) -> SAssign(
+      target = substTypesExpr(subst, valueSubst, target),
+      op = op,
+      value = substTypesExpr(subst, valueSubst, value)
+    )
     case SReturn(value) -> {
       match value {
         case Some(e) -> SReturn(value = Some(value = substTypesExpr(subst, valueSubst, e)))
@@ -2524,12 +2612,24 @@ func substTypesStmt(subst: in Map[String, TypeExpr], valueSubst: in Map[String, 
     }
     case SDefer(body) -> SDefer(body = substTypesBlock(subst, valueSubst, body))
     case SScope(binding, body) -> SScope(binding = binding, body = substTypesBlock(subst, valueSubst, body))
-    case SFor(label, pat, iter, body) -> SFor(label = label, pat = substTypesPattern(subst, valueSubst, pat), iter = substTypesExpr(subst, valueSubst, iter), body = substTypesBlock(subst, valueSubst, body))
-    case SWhile(label, cond, body) -> SWhile(label = label, cond = substTypesExpr(subst, valueSubst, cond), body = substTypesBlock(subst, valueSubst, body))
+    case SFor(label, pat, iter, body) -> SFor(
+      label = label,
+      pat = substTypesPattern(subst, valueSubst, pat),
+      iter = substTypesExpr(subst, valueSubst, iter),
+      body = substTypesBlock(subst, valueSubst, body)
+    )
+    case SWhile(label, cond, body) -> SWhile(
+      label = label,
+      cond = substTypesExpr(subst, valueSubst, cond),
+      body = substTypesBlock(subst, valueSubst, body)
+    )
     case SLoop(label, body) -> SLoop(label = label, body = substTypesBlock(subst, valueSubst, body))
     case SInvariant(expr) -> SInvariant(expr = substTypesExpr(subst, valueSubst, expr))
     case SExpr(expr) -> SExpr(expr = substTypesExpr(subst, valueSubst, expr))
-    case SRule(lhs, rhs) -> SRule(lhs = substTypesExpr(subst, valueSubst, lhs), rhs = substTypesExpr(subst, valueSubst, rhs))
+    case SRule(lhs, rhs) -> SRule(
+      lhs = substTypesExpr(subst, valueSubst, lhs),
+      rhs = substTypesExpr(subst, valueSubst, rhs)
+    )
     case SItem(item) -> SItem(item = item)
   }
   Statement(kind = k, span = s)
@@ -2639,20 +2739,38 @@ func substTypesExpr(subst: in Map[String, TypeExpr], valueSubst: in Map[String, 
       }
       EIndex(receiver = substTypesExpr(subst, valueSubst, receiver), indices = ni)
     }
-    case EMember(receiver, memberName) -> EMember(receiver = substTypesExpr(subst, valueSubst, receiver), memberName = memberName)
+    case EMember(receiver, memberName) -> EMember(
+      receiver = substTypesExpr(subst, valueSubst, receiver),
+      memberName = memberName
+    )
     case EPropagate(inner) -> EPropagate(inner = substTypesExpr(subst, valueSubst, inner))
     case EPrefix(op, operand) -> EPrefix(op = op, operand = substTypesExpr(subst, valueSubst, operand))
-    case EBinop(op, lhs, rhs) -> EBinop(op = op, lhs = substTypesExpr(subst, valueSubst, lhs), rhs = substTypesExpr(subst, valueSubst, rhs))
+    case EBinop(op, lhs, rhs) -> EBinop(
+      op = op,
+      lhs = substTypesExpr(subst, valueSubst, lhs),
+      rhs = substTypesExpr(subst, valueSubst, rhs)
+    )
     case ERange(bound) -> {
       val nb = match bound {
-        case RBClosed(lo, hi) -> RBClosed(lo = substTypesExpr(subst, valueSubst, lo), hi = substTypesExpr(subst, valueSubst, hi))
-        case RBHalfOpen(lo, hi) -> RBHalfOpen(lo = substTypesExpr(subst, valueSubst, lo), hi = substTypesExpr(subst, valueSubst, hi))
+        case RBClosed(lo, hi) -> RBClosed(
+          lo = substTypesExpr(subst, valueSubst, lo),
+          hi = substTypesExpr(subst, valueSubst, hi)
+        )
+        case RBHalfOpen(lo, hi, bareDotDot) -> RBHalfOpen(
+          lo = substTypesExpr(subst, valueSubst, lo),
+          hi = substTypesExpr(subst, valueSubst, hi),
+          bareDotDot = bareDotDot
+        )
         case RBLowerOpen(hi) -> RBLowerOpen(hi = substTypesExpr(subst, valueSubst, hi))
         case RBUpperOpen(lo) -> RBUpperOpen(lo = substTypesExpr(subst, valueSubst, lo))
       }
       ERange(bound = nb)
     }
-    case EAssign(target, op, value) -> EAssign(target = substTypesExpr(subst, valueSubst, target), op = op, value = substTypesExpr(subst, valueSubst, value))
+    case EAssign(target, op, value) -> EAssign(
+      target = substTypesExpr(subst, valueSubst, target),
+      op = op,
+      value = substTypesExpr(subst, valueSubst, value)
+    )
     case EBlock(block) -> EBlock(block = substTypesBlock(subst, valueSubst, block))
     case EUnsafe(block) -> EUnsafe(block = substTypesBlock(subst, valueSubst, block))
     case EInterpolated(segments) -> {
@@ -4003,11 +4121,21 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
     }
 
     // ── Recursive sub-expression rewriting ───────────────────────────────
-    case EBinop(op, lhs, rhs) -> Expr(kind = EBinop(op = op, lhs = rewriteExpr(state, env, lhs), rhs = rewriteExpr(state, env, rhs)), span = s)
+    case EBinop(op, lhs, rhs) -> Expr(
+      kind = EBinop(
+        op = op,
+        lhs = rewriteExpr(state, env, lhs),
+        rhs = rewriteExpr(state, env, rhs)
+      ),
+      span = s
+    )
 
     case EPrefix(op, operand) -> Expr(kind = EPrefix(op = op, operand = rewriteExpr(state, env, operand)), span = s)
 
-    case EMember(recv, name) -> Expr(kind = EMember(receiver = rewriteExpr(state, env, recv), memberName = name), span = s)
+    case EMember(recv, name) -> Expr(
+      kind = EMember(receiver = rewriteExpr(state, env, recv), memberName = name),
+      span = s
+    )
 
     case EIndex(recv, idxs) -> {
       val newIdxs: List[Expr] = newList()
@@ -4097,7 +4225,14 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
       Expr(kind = EList(exprs = newEs), span = s)
     }
 
-    case EAssign(target, op, value) -> Expr(kind = EAssign(target = rewriteExpr(state, env, target), op = op, value = rewriteExpr(state, env, value)), span = s)
+    case EAssign(target, op, value) -> Expr(
+      kind = EAssign(
+        target = rewriteExpr(state, env, target),
+        op = op,
+        value = rewriteExpr(state, env, value)
+      ),
+      span = s
+    )
 
     case EInterpolated(segs) -> Expr(kind = EInterpolated(segments = rewriteInterpolSegs(state, env, segs)), span = s)
 
@@ -4188,7 +4323,14 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
   match stmt.kind {
     case SLocal(binding) -> Statement(kind = SLocal(binding = rewriteBinding(state, env, binding)), span = s)
 
-    case SAssign(target, op, value) -> Statement(kind = SAssign(target = rewriteExpr(state, env, target), op = op, value = rewriteExpr(state, env, value)), span = s)
+    case SAssign(target, op, value) -> Statement(
+      kind = SAssign(
+        target = rewriteExpr(state, env, target),
+        op = op,
+        value = rewriteExpr(state, env, value)
+      ),
+      span = s
+    )
 
     case SReturn(opt) -> {
       // Typed `var` + assignment, not a two-arm `None`/`Some` match — see the
@@ -4209,7 +4351,14 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
 
     case SExpr(e) -> Statement(kind = SExpr(expr = rewriteExpr(state, env, e)), span = s)
 
-    case SWhile(lbl, cond, body) -> Statement(kind = SWhile(label = lbl, cond = rewriteExpr(state, env, cond), body = rewriteBlockScoped(state, env, body)), span = s)
+    case SWhile(lbl, cond, body) -> Statement(
+      kind = SWhile(
+        label = lbl,
+        cond = rewriteExpr(state, env, cond),
+        body = rewriteBlockScoped(state, env, body)
+      ),
+      span = s
+    )
 
     case SFor(lbl, pat, iter, body) -> {
       // #6666: a `for` loop's pattern variable shadowing an outer binding of
@@ -4232,11 +4381,17 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
 
     case SDefer(body) -> Statement(kind = SDefer(body = rewriteBlockScoped(state, env, body)), span = s)
 
-    case SScope(lbl, body) -> Statement(kind = SScope(binding = lbl, body = rewriteBlockScoped(state, env, body)), span = s)
+    case SScope(lbl, body) -> Statement(
+      kind = SScope(binding = lbl, body = rewriteBlockScoped(state, env, body)),
+      span = s
+    )
 
     case SInvariant(e) -> Statement(kind = SInvariant(expr = rewriteExpr(state, env, e)), span = s)
 
-    case SRule(lhs, rhs) -> Statement(kind = SRule(lhs = rewriteExpr(state, env, lhs), rhs = rewriteExpr(state, env, rhs)), span = s)
+    case SRule(lhs, rhs) -> Statement(
+      kind = SRule(lhs = rewriteExpr(state, env, lhs), rhs = rewriteExpr(state, env, rhs)),
+      span = s
+    )
 
     case STry(body, catches, finally_) -> {
       // #6665: the `try` body, each `catch` body, and `finally` are each

@@ -562,6 +562,34 @@ test "range subtype empty bounds" {
   assertTrue(hasDiagCode(cr, "T0090"), "range-empty: T0090 emitted")
 }
 
+// #6836: `checkClosed`/`checkClosedFloat`'s `sym` parameter used to do
+// double duty as both the diagnostic's display string and the empty-
+// bounds predicate selector (`if sym == "..=" {...} else if sym ==
+// "..<" {...} else { false }`). Once the formatter's `bareDotDot` field
+// (#2280) let a range subtype's `..</..` spelling reach this check as
+// `sym == ".."`, that matched neither branch and silently skipped the
+// check for the bare-`..` spelling specifically — only `..=` and `..<`
+// were covered by the test above, so the gap went unnoticed. Both
+// half-open spellings (and a float-backed range) must report T0090
+// identically, since the grammar defines them as synonyms.
+test "range subtype empty bounds for explicit '..<' spelling" {
+  val src = "package P\ntype Bad = Int range 5 ..< 5\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0090"), "range-empty (..<): T0090 emitted")
+}
+
+test "range subtype empty bounds for bare '..' spelling (#6836)" {
+  val src = "package P\ntype Bad = Int range 5 .. 5\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0090"), "range-empty (bare ..): T0090 emitted")
+}
+
+test "range subtype empty bounds for a float-backed bare '..' spelling (#6836)" {
+  val src = "package P\ntype Bad = Float range 1.0 .. 1.0\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0090"), "range-empty (float, bare ..): T0090 emitted")
+}
+
 // #6661 residual (D-progress-840): `Short`/`UShort`/`UByte` are not real
 // Lyric surface types (no `PrimType` case, absent from docs/01 §2.1's
 // primitive table) — `isNumericPrimitiveName` used to wrongly admit them,

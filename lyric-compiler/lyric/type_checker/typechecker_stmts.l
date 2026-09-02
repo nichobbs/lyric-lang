@@ -109,7 +109,7 @@ func forRangeElemType(
       inferExpr(sc, tbl, sigs, diag, lo),
       inferExpr(sc, tbl, sigs, diag, hi)
     )
-    case RBHalfOpen(lo, hi) -> forRangeBoundsElemType(
+    case RBHalfOpen(lo, hi, _) -> forRangeBoundsElemType(
       inferExpr(sc, tbl, sigs, diag, lo),
       inferExpr(sc, tbl, sigs, diag, hi)
     )
@@ -614,7 +614,7 @@ func exprMayEscapeLoop(e: in Expr, label: in Option[String], nested: in Bool): B
     case ERange(rb) -> match rb {
       case RBClosed(a, b) -> exprMayEscapeLoop(a, label, nested) or
         exprMayEscapeLoop(b, label, nested)
-      case RBHalfOpen(a, b) -> exprMayEscapeLoop(a, label, nested) or
+      case RBHalfOpen(a, b, _) -> exprMayEscapeLoop(a, label, nested) or
         exprMayEscapeLoop(b, label, nested)
       case RBLowerOpen(a) -> exprMayEscapeLoop(a, label, nested)
       case RBUpperOpen(a) -> exprMayEscapeLoop(a, label, nested)

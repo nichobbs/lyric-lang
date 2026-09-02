@@ -88,7 +88,13 @@ pub func exprLiteralLong(e: in Expr): Option[Long] {
   match e.kind {
     case ELiteral(lit) -> match lit { case LInt(v, _, _) -> Some(value = v); case _ -> None }
     case EParen(inner) -> exprLiteralLong(inner)
-    case EPrefix(op, operand) -> match op { case PreNeg -> match exprLiteralLong(operand) { case Some(v) -> Some(value = 0i64 - v); case None -> None }; case _ -> None }
+    case EPrefix(op, operand) -> match op {
+      case PreNeg -> match exprLiteralLong(operand) {
+        case Some(v) -> Some(value = 0i64 - v)
+        case None -> None
+      }
+      case _ -> None
+    }
     case _ -> None
   }
 }
@@ -96,7 +102,7 @@ pub func exprLiteralLong(e: in Expr): Option[Long] {
 func rangeLo(rb: in RangeBound): Option[Long] {
   match rb {
     case RBClosed(lo, _) -> exprLiteralLong(lo)
-    case RBHalfOpen(lo, _) -> exprLiteralLong(lo)
+    case RBHalfOpen(lo, _, _) -> exprLiteralLong(lo)
     case RBLowerOpen(_) -> None
     case RBUpperOpen(lo) -> exprLiteralLong(lo)
   }
@@ -105,7 +111,7 @@ func rangeLo(rb: in RangeBound): Option[Long] {
 func rangeHi(rb: in RangeBound): Option[Long] {
   match rb {
     case RBClosed(_, hi) -> exprLiteralLong(hi)
-    case RBHalfOpen(_, hi) -> exprLiteralLong(hi)
+    case RBHalfOpen(_, hi, _) -> exprLiteralLong(hi)
     case RBLowerOpen(hi) -> exprLiteralLong(hi)
     case RBUpperOpen(_) -> None
   }
@@ -117,7 +123,7 @@ func rangeHi(rb: in RangeBound): Option[Long] {
 func rangeHiInclusive(rb: in RangeBound): Bool {
   match rb {
     case RBClosed(_, _) -> true
-    case RBHalfOpen(_, _) -> false
+    case RBHalfOpen(_, _, _) -> false
     case RBLowerOpen(_) -> true
     case RBUpperOpen(_) -> true
   }
@@ -144,7 +150,16 @@ func symbolToType(
       checkImportedVisibility(sym, span, diag)
       resolveAliasRhs(tbl, ctx, diag, decl, 0, args, span)
     }
-    case _ -> match symbolTypeIdOpt(sym) { case Some(tid) -> { checkImportedVisibility(sym, span, diag); TyUser(id = tid, name = sym.name, args = args) }; case None -> { diag.add(errorDiagnostic("T0013", "'" + sym.name + "' is not a type", span)); TyError } }
+    case _ -> match symbolTypeIdOpt(sym) {
+      case Some(tid) -> {
+        checkImportedVisibility(sym, span, diag)
+        TyUser(id = tid, name = sym.name, args = args)
+      }
+      case None -> {
+        diag.add(errorDiagnostic("T0013", "'" + sym.name + "' is not a type", span))
+        TyError
+      }
+    }
   }
 }
 
@@ -446,7 +461,14 @@ func checkImportedVisibility(sym: in Symbol, span: in Span, diag: in List[Diagno
         case Some(_) -> {
         }
         // pub or internal — visible cross-package in a project
-        case None -> diag.add(errorDiagnostic("T0097", "'" + sym.name + "' is package-private and cannot be referenced from " + "another package (mark it `pub` or `internal`)", span))
+        case None -> diag.add(
+          errorDiagnostic(
+            "T0097",
+            "'" + sym.name + "' is package-private and cannot be referenced from " +
+              "another package (mark it `pub` or `internal`)",
+            span
+          )
+        )
       }
     }
   }
