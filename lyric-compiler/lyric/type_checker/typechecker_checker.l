@@ -513,6 +513,7 @@ func checkClosed(
   name: in String,
   lo: in Expr,
   hi: in Expr,
+  inclusive: in Bool,
   sym: in String,
   span: in Span,
 ): Unit {
@@ -523,7 +524,7 @@ func checkClosed(
       case None -> {
       }
       case Some(hiV) -> {
-        val invalid = if sym == "..=" { loV > hiV } else if sym == "..<" { loV >= hiV } else { false }
+        val invalid = if inclusive { loV > hiV } else { loV >= hiV }
         if invalid {
           diag.add(
             errorDiagnostic(
@@ -592,6 +593,7 @@ func checkClosedFloat(
   name: in String,
   lo: in Expr,
   hi: in Expr,
+  inclusive: in Bool,
   sym: in String,
   span: in Span,
 ): Unit {
@@ -602,7 +604,7 @@ func checkClosedFloat(
       case None -> {
       }
       case Some(hiV) -> {
-        val invalid = if sym == "..=" { loV > hiV } else if sym == "..<" { loV >= hiV } else { false }
+        val invalid = if inclusive { loV > hiV } else { loV >= hiV }
         if invalid {
           diag.add(
             errorDiagnostic(
@@ -648,17 +650,17 @@ func checkDistinctType(tbl: in SymbolTable, diag: in List[Diagnostic], dt: in Di
         case Some(rb) -> match rb {
           case RBClosed(lo, hi) -> {
             if isFloatBase {
-              checkClosedFloat(diag, dt.name, lo, hi, "..=", dt.span)
+              checkClosedFloat(diag, dt.name, lo, hi, true, "..=", dt.span)
             } else {
-              checkClosed(tbl, diag, dt.name, lo, hi, "..=", dt.span)
+              checkClosed(tbl, diag, dt.name, lo, hi, true, "..=", dt.span)
             }
           }
           case RBHalfOpen(lo, hi, bareDotDot) -> {
             val opStr = if bareDotDot { ".." } else { "..<" }
             if isFloatBase {
-              checkClosedFloat(diag, dt.name, lo, hi, opStr, dt.span)
+              checkClosedFloat(diag, dt.name, lo, hi, false, opStr, dt.span)
             } else {
-              checkClosed(tbl, diag, dt.name, lo, hi, opStr, dt.span)
+              checkClosed(tbl, diag, dt.name, lo, hi, false, opStr, dt.span)
             }
           }
           case _ -> {

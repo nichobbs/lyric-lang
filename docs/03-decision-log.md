@@ -40243,12 +40243,31 @@ matched `lo`/`hi`/`inclusive` fields, e.g. `Lyric.AliasRewriter`,
 `Lyric.TypeAliasResolve`, `Lyric.Mono`, `Lyric.Propagate`,
 `Lyric.ContractElaborator`, `Lyric.WireExpand`, and one spot in
 `Lyric.HoistEngine`) or wildcarded (the majority, which only ever read
-`lo`/`hi`/`inclusive` and never reconstruct the bound/pattern). No
-site was found that needed the new flag's *value* outside the parser
-and formatter themselves — every rewrite pass threads it through
-opaquely, which is the expected shape for a purely-cosmetic field that
-carries no semantic weight for type-checking, codegen, or contract
-elaboration.
+`lo`/`hi`/`inclusive` and never reconstruct the bound/pattern).
+
+**Correction (review finding, issue #6836): the flag's value IS read
+outside the parser and formatter.** This entry originally claimed "no
+site was found that needed the new flag's value outside the parser and
+formatter themselves" — every OTHER rewrite pass does thread it through
+opaquely, but the range-subtype empty-bounds check
+(`typechecker_checker.l`'s `checkDistinctType`) reads `bareDotDot` to
+build a display string (`opStr = if bareDotDot { ".." } else { "..<" }`)
+for its `T0090` diagnostic, and that display string was ALSO being used
+as the check's predicate selector (`checkClosed`/`checkClosedFloat`'s
+`sym: String` parameter did double duty: `if sym == "..=" {...} else if
+sym == "..<" {...} else { false }`). `".."` matched neither branch, so
+the empty-bounds check silently no-op'd for the bare-`..` spelling
+specifically — `type Bad = Int range 5 .. 5` type-checked clean while
+the equivalent `5 ..< 5` correctly failed, and since both backends emit
+`upperExclusive = true` for `RBHalfOpen` regardless of spelling, every
+attempted construction of `Bad` would have panicked at runtime instead
+of failing at compile time. Fixed by giving `checkClosed`/
+`checkClosedFloat` an explicit `inclusive: Bool` parameter for the
+predicate, decoupled from `sym`'s now purely-cosmetic display role.
+Added `type Bad = Int range 5 .. 5` / `5 ..< 5` / `Float range 1.0 ..
+1.0` cases to `typechecker_self_test.l` (the existing empty-bounds test
+only covered `..=`, which never exercised this code path) — 415/415
+`typechecker_self_test.l`.
 
 **A related but out-of-scope parser gap, noted for the record.**
 `0 .. 10` as a bare range expression outside a `for`-loop iterator
