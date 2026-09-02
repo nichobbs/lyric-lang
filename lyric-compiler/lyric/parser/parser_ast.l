@@ -81,7 +81,11 @@ pub union Literal {
 
 pub union RangeBound {
   case RBClosed(lo: Expr, hi: Expr)
-  case RBHalfOpen(lo: Expr, hi: Expr)
+  /// `bareDotDot` records which of the two synonymous half-open spellings
+  /// (grammar §4.2.1: `..` is a synonym for `..<`) the source actually
+  /// used — true for `lo .. hi`, false for `lo ..< hi` — so the formatter
+  /// can reproduce it instead of always normalizing to `..<` (#2280).
+  case RBHalfOpen(lo: Expr, hi: Expr, bareDotDot: Bool)
   case RBLowerOpen(hi: Expr)
   case RBUpperOpen(lo: Expr)
 }
@@ -144,7 +148,13 @@ pub record Pattern {
 pub union PatternKind {
   case PWildcard
   case PLiteral(lit: Literal)
-  case PRange(lo: Expr, inclusive: Bool, hi: Expr)
+  /// `bareDotDot` records which of the two synonymous non-inclusive
+  /// spellings (grammar §5.1's RangePattern: `..` is a synonym for `..<`)
+  /// the source actually used — true for `lo .. hi`, false for
+  /// `lo ..< hi` — mirroring `RangeBound.RBHalfOpen`'s field of the same
+  /// name, so the formatter can reproduce it instead of always
+  /// normalizing to bare `..` (#2280). Meaningless when `inclusive`.
+  case PRange(lo: Expr, inclusive: Bool, hi: Expr, bareDotDot: Bool)
   case PBinding(name: String, inner: Option[Pattern])
   case PConstructor(head: ModulePath, args: List[Pattern])
   case PRecord(head: ModulePath, fields: List[RecordPatternField], ignoreRest: Bool)

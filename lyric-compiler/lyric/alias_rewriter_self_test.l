@@ -250,8 +250,15 @@ test "bare multi-segment import Foo.Bar registers implicit Bar=Foo.Bar alias (#2
                   match callExpr.kind {
                     case ECall(fn, _) -> {
                       match fn.kind {
-                        case EPath(p) -> assertEqualInt(p.segments.count, 3, "call fn is the fully-qualified Foo.Bar.baz path after rewrite")
-                        case EMember(_, _) -> assertTrue(false, "call fn is still EMember — rewrite did not collapse the multi-seg bare-import alias")
+                        case EPath(p) -> assertEqualInt(
+                          p.segments.count,
+                          3,
+                          "call fn is the fully-qualified Foo.Bar.baz path after rewrite"
+                        )
+                        case EMember(_, _) -> assertTrue(
+                          false,
+                          "call fn is still EMember — rewrite did not collapse the multi-seg bare-import alias"
+                        )
                         case _ -> assertTrue(false, "call fn is unexpected ExprKind after rewrite")
                       }
                     }
@@ -299,7 +306,22 @@ test "bare multi-segment import referenced by its full Foo.Bar.baz() form rewrit
   // node using too wide a span is a real (if currently inert) regression
   // risk for any diagnostic or LSP feature that keys off it directly.
   val origReceiverSpan = match pr.file.items[0].kind {
-    case IFunc(origDecl) -> match origDecl.body { case Some(origFb) -> match origFb { case FBBlock(origBlock) -> match origBlock.statements[0].kind { case SExpr(origCallExpr) -> match origCallExpr.kind { case ECall(origFn, _) -> match origFn.kind { case EMember(origReceiver, _) -> origReceiver.span; case _ -> origFn.span }; case _ -> origCallExpr.span }; case _ -> origBlock.span }; case FBExpr(origExpr) -> origExpr.span }; case None -> pointSpan(initialPosition()) }
+    case IFunc(origDecl) -> match origDecl.body {
+      case Some(origFb) -> match origFb {
+        case FBBlock(origBlock) -> match origBlock.statements[0].kind {
+          case SExpr(origCallExpr) -> match origCallExpr.kind {
+            case ECall(origFn, _) -> match origFn.kind {
+              case EMember(origReceiver, _) -> origReceiver.span
+              case _ -> origFn.span
+            }
+            case _ -> origCallExpr.span
+          }
+          case _ -> origBlock.span
+        }
+        case FBExpr(origExpr) -> origExpr.span
+      }
+      case None -> pointSpan(initialPosition())
+    }
     case _ -> pointSpan(initialPosition())
   }
   val firstItem = rewritten.items[0]
@@ -332,7 +354,10 @@ test "bare multi-segment import referenced by its full Foo.Bar.baz() form rewrit
                             "synthesized ModulePath span ends where the original Foo.Bar receiver ended (excludes .baz() entirely)"
                           )
                         }
-                        case EMember(_, _) -> assertTrue(false, "call fn is still a nested EMember — the full-path form was not collapsed (#6294)")
+                        case EMember(_, _) -> assertTrue(
+                          false,
+                          "call fn is still a nested EMember — the full-path form was not collapsed (#6294)"
+                        )
                         case _ -> assertTrue(false, "call fn is unexpected ExprKind after rewrite")
                       }
                     }
@@ -373,8 +398,15 @@ test "bare three-segment import referenced by its full Foo.Bar.Baz.qux() form re
                   match callExpr.kind {
                     case ECall(fn, _) -> {
                       match fn.kind {
-                        case EPath(p) -> assertEqualInt(p.segments.count, 4, "call fn is the fully-qualified Foo.Bar.Baz.qux path after rewrite")
-                        case EMember(_, _) -> assertTrue(false, "call fn is still a nested EMember — the three-segment full-path form was not collapsed (#6294)")
+                        case EPath(p) -> assertEqualInt(
+                          p.segments.count,
+                          4,
+                          "call fn is the fully-qualified Foo.Bar.Baz.qux path after rewrite"
+                        )
+                        case EMember(_, _) -> assertTrue(
+                          false,
+                          "call fn is still a nested EMember — the three-segment full-path form was not collapsed (#6294)"
+                        )
                         case _ -> assertTrue(false, "call fn is unexpected ExprKind after rewrite")
                       }
                     }
@@ -441,11 +473,17 @@ test "bare multi-segment import referenced by its full form as a non-call value 
                                 case _ -> assertTrue(false, "innermost receiver is not EPath — chain was rewritten (#6294 regression)")
                               }
                             }
-                            case EPath(_) -> assertTrue(false, "chain was flattened into EPath — non-call qualified reference must stay untouched (#6294 regression)")
+                            case EPath(_) -> assertTrue(
+                              false,
+                              "chain was flattened into EPath — non-call qualified reference must stay untouched (#6294 regression)"
+                            )
                             case _ -> assertTrue(false, "middle receiver is unexpected ExprKind")
                           }
                         }
-                        case EPath(_) -> assertTrue(false, "chain was flattened into EPath — non-call qualified reference must stay untouched (#6294 regression)")
+                        case EPath(_) -> assertTrue(
+                          false,
+                          "chain was flattened into EPath — non-call qualified reference must stay untouched (#6294 regression)"
+                        )
                         case _ -> assertTrue(false, "val initializer is unexpected ExprKind after rewrite")
                       }
                     }
@@ -595,7 +633,10 @@ test "explicit alias import is also callable via its original dotted name (#6294
                           assertEqual(p.segments[1], "Bar", "rewritten path keeps the real package's second segment")
                           assertEqual(p.segments[2], "baz", "rewritten path keeps the call's own member name")
                         }
-                        case EMember(_, _) -> assertTrue(false, "call fn is still EMember — calling via the original dotted name after aliasing was not collapsed (#6294)")
+                        case EMember(_, _) -> assertTrue(
+                          false,
+                          "call fn is still EMember — calling via the original dotted name after aliasing was not collapsed (#6294)"
+                        )
                         case _ -> assertTrue(false, "call fn is unexpected ExprKind after rewrite")
                       }
                     }
@@ -705,10 +746,16 @@ test "a local shadowing a bare-imported package's dotted name is left untouched,
                                 case _ -> assertTrue(false, "innermost receiver is not EPath — chain shape changed unexpectedly (#6311 regression)")
                               }
                             }
-                            case _ -> assertTrue(false, "receiver is not EMember — chain was flattened despite the local shadow (#6311 regression)")
+                            case _ -> assertTrue(
+                              false,
+                              "receiver is not EMember — chain was flattened despite the local shadow (#6311 regression)"
+                            )
                           }
                         }
-                        case EPath(_) -> assertTrue(false, "call fn was collapsed into a flat EPath — a local `Foo` should have suppressed the Foo.Bar package collapse (#6311 regression)")
+                        case EPath(_) -> assertTrue(
+                          false,
+                          "call fn was collapsed into a flat EPath — a local `Foo` should have suppressed the Foo.Bar package collapse (#6311 regression)"
+                        )
                         case _ -> assertTrue(false, "call fn is unexpected ExprKind after rewrite")
                       }
                     }
@@ -769,10 +816,16 @@ test "a module-level val shadowing a bare-imported package's dotted name is left
                                 case _ -> assertTrue(false, "innermost receiver is not EPath — chain shape changed unexpectedly (#6312 regression)")
                               }
                             }
-                            case _ -> assertTrue(false, "receiver is not EMember — chain was flattened despite the module-level val shadow (#6312 regression)")
+                            case _ -> assertTrue(
+                              false,
+                              "receiver is not EMember — chain was flattened despite the module-level val shadow (#6312 regression)"
+                            )
                           }
                         }
-                        case EPath(_) -> assertTrue(false, "call fn was collapsed into a flat EPath — a module-level val `Foo` should have suppressed the Foo.Bar package collapse (#6312 regression)")
+                        case EPath(_) -> assertTrue(
+                          false,
+                          "call fn was collapsed into a flat EPath — a module-level val `Foo` should have suppressed the Foo.Bar package collapse (#6312 regression)"
+                        )
                         case _ -> assertTrue(false, "call fn is unexpected ExprKind after rewrite")
                       }
                     }
@@ -830,10 +883,16 @@ test "a param shadowing a bare-imported package's dotted name is left untouched 
                             case _ -> assertTrue(false, "innermost receiver is not EPath — chain shape changed unexpectedly (#6313 regression)")
                           }
                         }
-                        case _ -> assertTrue(false, "receiver is not EMember — chain was flattened despite the param shadow (#6313 regression)")
+                        case _ -> assertTrue(
+                          false,
+                          "receiver is not EMember — chain was flattened despite the param shadow (#6313 regression)"
+                        )
                       }
                     }
-                    case EPath(_) -> assertTrue(false, "requires: call was collapsed into a flat EPath — a param `Foo` should have suppressed the Foo.Bar package collapse (#6313 regression)")
+                    case EPath(_) -> assertTrue(
+                      false,
+                      "requires: call was collapsed into a flat EPath — a param `Foo` should have suppressed the Foo.Bar package collapse (#6313 regression)"
+                    )
                     case _ -> assertTrue(false, "requires: call is unexpected ExprKind after rewrite")
                   }
                 }
@@ -882,10 +941,16 @@ test "a wire param shadowing a bare-imported package's dotted name is left untou
                         case _ -> assertTrue(false, "innermost receiver is not EPath — chain shape changed unexpectedly (#6316 regression)")
                       }
                     }
-                    case _ -> assertTrue(false, "receiver is not EMember — chain was flattened despite the wire param shadow (#6316 regression)")
+                    case _ -> assertTrue(
+                      false,
+                      "receiver is not EMember — chain was flattened despite the wire param shadow (#6316 regression)"
+                    )
                   }
                 }
-                case EPath(_) -> assertTrue(false, "singleton init was collapsed into a flat EPath — a wire param `Foo` should have suppressed the Foo.Bar package collapse (#6316 regression)")
+                case EPath(_) -> assertTrue(
+                  false,
+                  "singleton init was collapsed into a flat EPath — a wire param `Foo` should have suppressed the Foo.Bar package collapse (#6316 regression)"
+                )
                 case _ -> assertTrue(false, "singleton init is unexpected ExprKind after rewrite")
               }
             }
@@ -926,8 +991,14 @@ test "a local bound inside a config field's default lambda shadows a bare-import
                   match callExpr.kind {
                     case ECall(fn, _) -> {
                       match fn.kind {
-                        case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
-                        case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6316 regression)")
+                        case EMember(_, _) -> assertTrue(
+                          true,
+                          "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse"
+                        )
+                        case EPath(_) -> assertTrue(
+                          false,
+                          "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6316 regression)"
+                        )
                         case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
                       }
                     }
@@ -984,7 +1055,10 @@ test "an aspect's own requires: clause with an args-name colliding with a bare-i
                         case _ -> assertTrue(false, "receiver is not EMember — chain was flattened despite the args-name shadow")
                       }
                     }
-                    case EPath(_) -> assertTrue(false, "requires: call was collapsed into a flat EPath — the aspect's own args-name `Foo` should have suppressed the Foo.Bar package collapse")
+                    case EPath(_) -> assertTrue(
+                      false,
+                      "requires: call was collapsed into a flat EPath — the aspect's own args-name `Foo` should have suppressed the Foo.Bar package collapse"
+                    )
                     case _ -> assertTrue(false, "requires: call is unexpected ExprKind after rewrite")
                   }
                 }
@@ -1029,8 +1103,14 @@ test "an include adjustment's value binding its own local shadows a bare-importe
                       match callExpr.kind {
                         case ECall(fn, _) -> {
                           match fn.kind {
-                            case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
-                            case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6316 regression)")
+                            case EMember(_, _) -> assertTrue(
+                              true,
+                              "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse"
+                            )
+                            case EPath(_) -> assertTrue(
+                              false,
+                              "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6316 regression)"
+                            )
                             case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
                           }
                         }
@@ -1076,8 +1156,14 @@ test "a local bound inside a function param's default lambda shadows a bare-impo
                   match callExpr.kind {
                     case ECall(fn, _) -> {
                       match fn.kind {
-                        case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
-                        case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6320 regression)")
+                        case EMember(_, _) -> assertTrue(
+                          true,
+                          "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse"
+                        )
+                        case EPath(_) -> assertTrue(
+                          false,
+                          "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6320 regression)"
+                        )
                         case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
                       }
                     }
@@ -1120,8 +1206,14 @@ test "a local bound inside a record field's default lambda shadows a bare-import
                       match callExpr.kind {
                         case ECall(fn, _) -> {
                           match fn.kind {
-                            case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
-                            case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6320 regression)")
+                            case EMember(_, _) -> assertTrue(
+                              true,
+                              "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse"
+                            )
+                            case EPath(_) -> assertTrue(
+                              false,
+                              "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6320 regression)"
+                            )
                             case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
                           }
                         }
@@ -1168,8 +1260,14 @@ test "a local bound inside a wire singleton's init lambda shadows a bare-importe
                   match callExpr.kind {
                     case ECall(fn, _) -> {
                       match fn.kind {
-                        case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
-                        case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6320 regression)")
+                        case EMember(_, _) -> assertTrue(
+                          true,
+                          "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse"
+                        )
+                        case EPath(_) -> assertTrue(
+                          false,
+                          "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6320 regression)"
+                        )
                         case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
                       }
                     }
@@ -1209,8 +1307,14 @@ test "a local bound inside a module-level val's init lambda shadows a bare-impor
               match callExpr.kind {
                 case ECall(fn, _) -> {
                   match fn.kind {
-                    case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
-                    case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6321 regression)")
+                    case EMember(_, _) -> assertTrue(
+                      true,
+                      "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse"
+                    )
+                    case EPath(_) -> assertTrue(
+                      false,
+                      "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6321 regression)"
+                    )
                     case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
                   }
                 }
@@ -1257,8 +1361,14 @@ test "a local bound inside a record invariant's lambda shadows a bare-imported p
                   match callExpr.kind {
                     case ECall(fn, _) -> {
                       match fn.kind {
-                        case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
-                        case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6321 regression)")
+                        case EMember(_, _) -> assertTrue(
+                          true,
+                          "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse"
+                        )
+                        case EPath(_) -> assertTrue(
+                          false,
+                          "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6321 regression)"
+                        )
                         case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
                       }
                     }
@@ -1304,8 +1414,14 @@ test "a local bound inside a protected type's var-field init lambda shadows a ba
                           match callExpr.kind {
                             case ECall(fn, _) -> {
                               match fn.kind {
-                                case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
-                                case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6323 regression)")
+                                case EMember(_, _) -> assertTrue(
+                                  true,
+                                  "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse"
+                                )
+                                case EPath(_) -> assertTrue(
+                                  false,
+                                  "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6323 regression)"
+                                )
                                 case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
                               }
                             }
@@ -1355,7 +1471,7 @@ test "a local bound inside a range pattern's hi-bound lambda shadows a bare-impo
                     case EMatch(_, arms) -> {
                       assertEqualInt(arms.count, 2, "match has exactly the range arm plus the wildcard arm")
                       match arms[0].pattern.kind {
-                        case PRange(_, _, hi) -> {
+                        case PRange(_, _, hi, _) -> {
                           match hi.kind {
                             case ELambda(_, hiBlock) -> {
                               assertEqualInt(hiBlock.statements.count, 2, "hi-bound lambda body has the local decl plus the call statement")
@@ -1365,8 +1481,14 @@ test "a local bound inside a range pattern's hi-bound lambda shadows a bare-impo
                                   match callExpr.kind {
                                     case ECall(fn, _) -> {
                                       match fn.kind {
-                                        case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
-                                        case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6324 regression)")
+                                        case EMember(_, _) -> assertTrue(
+                                          true,
+                                          "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse"
+                                        )
+                                        case EPath(_) -> assertTrue(
+                                          false,
+                                          "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6324 regression)"
+                                        )
                                         case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
                                       }
                                     }
@@ -1423,8 +1545,14 @@ test "a local bound inside a range-subtype declaration's hi-bound lambda shadows
                       match callExpr.kind {
                         case ECall(fn, _) -> {
                           match fn.kind {
-                            case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
-                            case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6325 regression)")
+                            case EMember(_, _) -> assertTrue(
+                              true,
+                              "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse"
+                            )
+                            case EPath(_) -> assertTrue(
+                              false,
+                              "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6325 regression)"
+                            )
                             case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
                           }
                         }
@@ -1477,8 +1605,14 @@ test "a local bound inside an array-size type-arg's embedded lambda shadows a ba
                               match callExpr.kind {
                                 case ECall(fn, _) -> {
                                   match fn.kind {
-                                    case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
-                                    case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6325 regression)")
+                                    case EMember(_, _) -> assertTrue(
+                                      true,
+                                      "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse"
+                                    )
+                                    case EPath(_) -> assertTrue(
+                                      false,
+                                      "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6325 regression)"
+                                    )
                                     case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
                                   }
                                 }
@@ -1532,8 +1666,14 @@ test "a local bound inside a requires: clause's own lambda shadows a bare-import
                   match callExpr.kind {
                     case ECall(fn, _) -> {
                       match fn.kind {
-                        case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse")
-                        case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6326 regression)")
+                        case EMember(_, _) -> assertTrue(
+                          true,
+                          "callee stays a nested EMember — the lambda-local `Foo` suppressed the collapse"
+                        )
+                        case EPath(_) -> assertTrue(
+                          false,
+                          "callee was collapsed into a flat EPath — a lambda-local `Foo` should have suppressed the Foo.Bar package collapse (#6326 regression)"
+                        )
                         case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
                       }
                     }
@@ -1576,8 +1716,14 @@ test "a module-level config block's name shadowing a bare-imported package's dot
                   match callExpr.kind {
                     case ECall(fn, _) -> {
                       match fn.kind {
-                        case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the module-level `config Foo` name suppressed the collapse")
-                        case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — the module-level `config Foo` name should have suppressed the Foo.Bar package collapse (#6327 regression)")
+                        case EMember(_, _) -> assertTrue(
+                          true,
+                          "callee stays a nested EMember — the module-level `config Foo` name suppressed the collapse"
+                        )
+                        case EPath(_) -> assertTrue(
+                          false,
+                          "callee was collapsed into a flat EPath — the module-level `config Foo` name should have suppressed the Foo.Bar package collapse (#6327 regression)"
+                        )
                         case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
                       }
                     }
@@ -1632,7 +1778,10 @@ test "a local shadowing a bare-imported package's tail alias also leaves a non-c
                         case _ -> assertTrue(false, "receiver is not EPath — chain shape changed unexpectedly")
                       }
                     }
-                    case EPath(_) -> assertTrue(false, "value reference was collapsed into a flat EPath — a local `Bar` should have suppressed the Foo.Bar tail-alias collapse")
+                    case EPath(_) -> assertTrue(
+                      false,
+                      "value reference was collapsed into a flat EPath — a local `Bar` should have suppressed the Foo.Bar tail-alias collapse"
+                    )
                     case _ -> assertTrue(false, "value reference is unexpected ExprKind after rewrite")
                   }
                 }
@@ -1678,8 +1827,14 @@ test "a name bound only inside one branch still suppresses an unrelated call sit
                   match callExpr.kind {
                     case ECall(fn, _) -> {
                       match fn.kind {
-                        case EMember(_, _) -> assertTrue(true, "callee stays a nested EMember — the branch-local `Foo` conservatively suppressed the collapse here too")
-                        case EPath(_) -> assertTrue(false, "callee was collapsed into a flat EPath — the coarse-scoping tradeoff should have suppressed this")
+                        case EMember(_, _) -> assertTrue(
+                          true,
+                          "callee stays a nested EMember — the branch-local `Foo` conservatively suppressed the collapse here too"
+                        )
+                        case EPath(_) -> assertTrue(
+                          false,
+                          "callee was collapsed into a flat EPath — the coarse-scoping tradeoff should have suppressed this"
+                        )
                         case _ -> assertTrue(false, "callee is unexpected ExprKind after rewrite")
                       }
                     }

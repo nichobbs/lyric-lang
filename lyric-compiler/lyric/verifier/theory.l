@@ -194,7 +194,7 @@ func constFoldRangeBound(rb: in RangeBound): RangeBoundKind {
         case None -> RBKNone
       }
     }
-    case RBHalfOpen(lo, hi) -> {
+    case RBHalfOpen(lo, hi, _) -> {
       match foldExprToLong(lo) {
         case Some(a) -> {
           match foldExprToLong(hi) {

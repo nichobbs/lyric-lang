@@ -300,7 +300,11 @@ func substStmt(ctx: in SubstCtx, s: in Statement): Statement {
       }
       SLocal(binding = b2)
     }
-    case SAssign(target, op, value) -> SAssign(target = substExpr(ctx, target), op = op, value = substExpr(ctx, value))
+    case SAssign(target, op, value) -> SAssign(
+      target = substExpr(ctx, target),
+      op = op,
+      value = substExpr(ctx, value)
+    )
     case SReturn(value) -> SReturn(value = substExprOpt(ctx, value))
     case SThrow(expr) -> SThrow(expr = substExpr(ctx, expr))
     case STry(body, catches, finally_) -> {
@@ -315,8 +319,17 @@ func substStmt(ctx: in SubstCtx, s: in Statement): Statement {
     }
     case SDefer(body) -> SDefer(body = substBlock(ctx, body))
     case SScope(binding, body) -> SScope(binding = binding, body = substBlock(ctx, body))
-    case SFor(label, pat, iter, body) -> SFor(label = label, pat = pat, iter = substExpr(ctx, iter), body = substBlock(ctx, body))
-    case SWhile(label, cond, body) -> SWhile(label = label, cond = substExpr(ctx, cond), body = substBlock(ctx, body))
+    case SFor(label, pat, iter, body) -> SFor(
+      label = label,
+      pat = pat,
+      iter = substExpr(ctx, iter),
+      body = substBlock(ctx, body)
+    )
+    case SWhile(label, cond, body) -> SWhile(
+      label = label,
+      cond = substExpr(ctx, cond),
+      body = substBlock(ctx, body)
+    )
     case SLoop(label, body) -> SLoop(label = label, body = substBlock(ctx, body))
     case SInvariant(expr) -> SInvariant(expr = substExpr(ctx, expr))
     case SExpr(expr) -> SExpr(expr = substExpr(ctx, expr))
@@ -416,20 +429,31 @@ func substExpr(ctx: in SubstCtx, e: in Expr): Expr {
     case EOld(inner) -> EOld(inner = substExpr(ctx, inner))
     case ELambda(lambdaParams, body) -> ELambda(lambdaParams = lambdaParams, body = substBlock(ctx, body))
     case ETypeApp(fn, args) -> ETypeApp(fn = substExpr(ctx, fn), args = args)
-    case EIndex(receiver, indices) -> EIndex(receiver = substExpr(ctx, receiver), indices = substExprList(ctx, indices))
+    case EIndex(receiver, indices) -> EIndex(
+      receiver = substExpr(ctx, receiver),
+      indices = substExprList(ctx, indices)
+    )
     case EPropagate(inner) -> EPropagate(inner = substExpr(ctx, inner))
     case EPrefix(op, operand) -> EPrefix(op = op, operand = substExpr(ctx, operand))
     case EBinop(op, lhs, rhs) -> EBinop(op = op, lhs = substExpr(ctx, lhs), rhs = substExpr(ctx, rhs))
     case ERange(bound) -> {
       val b2 = match bound {
         case RBClosed(lo, hi) -> RBClosed(lo = substExpr(ctx, lo), hi = substExpr(ctx, hi))
-        case RBHalfOpen(lo, hi) -> RBHalfOpen(lo = substExpr(ctx, lo), hi = substExpr(ctx, hi))
+        case RBHalfOpen(lo, hi, bareDotDot) -> RBHalfOpen(
+          lo = substExpr(ctx, lo),
+          hi = substExpr(ctx, hi),
+          bareDotDot = bareDotDot
+        )
         case RBLowerOpen(hi) -> RBLowerOpen(hi = substExpr(ctx, hi))
         case RBUpperOpen(lo) -> RBUpperOpen(lo = substExpr(ctx, lo))
       }
       ERange(bound = b2)
     }
-    case EAssign(target, op, value) -> EAssign(target = substExpr(ctx, target), op = op, value = substExpr(ctx, value))
+    case EAssign(target, op, value) -> EAssign(
+      target = substExpr(ctx, target),
+      op = op,
+      value = substExpr(ctx, value)
+    )
     case EBlock(block) -> EBlock(block = substBlock(ctx, block))
     case EUnsafe(block) -> EUnsafe(block = substBlock(ctx, block))
     case EInterpolated(segments) -> {
@@ -795,7 +819,10 @@ func expandInclude(
   val emptyMembers: List[WireMember] = newList()
   val tmpl = match tmplOpt {
     case Some(t) -> t
-    case None -> CollectedWireTemplate(decl = WireDecl(name = "", params = emptyParams, members = emptyMembers, span = span), pkgName = "")
+    case None -> CollectedWireTemplate(
+      decl = WireDecl(name = "", params = emptyParams, members = emptyMembers, span = span),
+      pkgName = ""
+    )
   }
   val fqn = tmpl.pkgName + "." + tmpl.decl.name
   if listContainsWE(includeStack, fqn) {
@@ -1309,7 +1336,10 @@ func hoistConfigInstance(
   val emptyFields: List[ConfigField] = newList()
   val tmpl = match tmplOpt {
     case Some(t) -> t
-    case None -> CollectedConfigTemplate(decl = ConfigDecl(name = "", from = None, fields = emptyFields, span = span), pkgName = "")
+    case None -> CollectedConfigTemplate(
+      decl = ConfigDecl(name = "", from = None, fields = emptyFields, span = span),
+      pkgName = ""
+    )
   }
   // Declaration-site overrides first, include-body overrides on top.
   val overrides: List[ConfigField] = newList()
@@ -1605,10 +1635,36 @@ func expandWireDecl(
       }
       case WMExpose(n, mspan) -> sc.exposes.add(WMExpose(name = n, span = mspan))
       case WMProvided(n, ty, mspan) -> scopeAddPlain(sc, WMProvided(name = n, ty = ty, span = mspan), n, mspan)
-      case WMSingleton(n, ty, init, mspan) -> scopeAddPlain(sc, WMSingleton(name = n, ty = ty, init = init, span = mspan), n, mspan)
-      case WMLocal(n, ty, init, mspan) -> scopeAddPlain(sc, WMLocal(name = n, ty = ty, init = init, span = mspan), n, mspan)
-      case WMScoped(scopeName, n, ty, init, mspan) -> scopeAddPlain(sc, WMScoped(scopeName = scopeName, name = n, ty = ty, init = init, span = mspan), n, mspan)
-      case WMBind(iface, provider, mspan) -> scopeAddPlain(sc, WMBind(iface = iface, provider = provider, span = mspan), collectionNameOf(iface), mspan)
+      case WMSingleton(n, ty, init, mspan) -> scopeAddPlain(
+        sc,
+        WMSingleton(name = n, ty = ty, init = init, span = mspan),
+        n,
+        mspan
+      )
+      case WMLocal(n, ty, init, mspan) -> scopeAddPlain(
+        sc,
+        WMLocal(name = n, ty = ty, init = init, span = mspan),
+        n,
+        mspan
+      )
+      case WMScoped(scopeName, n, ty, init, mspan) -> scopeAddPlain(
+        sc,
+        WMScoped(
+          scopeName = scopeName,
+          name = n,
+          ty = ty,
+          init = init,
+          span = mspan
+        ),
+        n,
+        mspan
+      )
+      case WMBind(iface, provider, mspan) -> scopeAddPlain(
+        sc,
+        WMBind(iface = iface, provider = provider, span = mspan),
+        collectionNameOf(iface),
+        mspan
+      )
     }
     mi = mi + 1
   }
@@ -1696,10 +1752,30 @@ func expandWireDecl(
   while omi < sc.plainMembers.count {
     val pm = sc.plainMembers[omi].member
     val rewritten = match pm {
-      case WMSingleton(n, ty, init, mspan) -> WMSingleton(name = n, ty = ty, init = substExpr(finalSubst, init), span = mspan)
-      case WMLocal(n, ty, init, mspan) -> WMLocal(name = n, ty = ty, init = substExpr(finalSubst, init), span = mspan)
-      case WMBind(iface, provider, mspan) -> WMBind(iface = iface, provider = substExpr(finalSubst, provider), span = mspan)
-      case WMScoped(scopeName, n, ty, init, mspan) -> WMScoped(scopeName = scopeName, name = n, ty = ty, init = substExpr(finalSubst, init), span = mspan)
+      case WMSingleton(n, ty, init, mspan) -> WMSingleton(
+        name = n,
+        ty = ty,
+        init = substExpr(finalSubst, init),
+        span = mspan
+      )
+      case WMLocal(n, ty, init, mspan) -> WMLocal(
+        name = n,
+        ty = ty,
+        init = substExpr(finalSubst, init),
+        span = mspan
+      )
+      case WMBind(iface, provider, mspan) -> WMBind(
+        iface = iface,
+        provider = substExpr(finalSubst, provider),
+        span = mspan
+      )
+      case WMScoped(scopeName, n, ty, init, mspan) -> WMScoped(
+        scopeName = scopeName,
+        name = n,
+        ty = ty,
+        init = substExpr(finalSubst, init),
+        span = mspan
+      )
       case _ -> pm
     }
     outMembers.add(rewritten)

@@ -220,7 +220,7 @@ func visitExpr(e: in Expr, output: in List[CallRef]): Unit {
           visitExpr(a, output)
           visitExpr(b, output)
         }
-        case RBHalfOpen(a, b) -> {
+        case RBHalfOpen(a, b, _) -> {
           visitExpr(a, output)
           visitExpr(b, output)
         }

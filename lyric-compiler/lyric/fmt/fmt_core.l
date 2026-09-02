@@ -478,7 +478,8 @@ pub func typeArgsStr(args: in List[TypeArg]): String {
 pub func rangeBoundStr(rb: in RangeBound): String {
   match rb {
     case RBClosed(lo, hi) -> exprInline(0, lo) + " ..= " + exprInline(0, hi)
-    case RBHalfOpen(lo, hi) -> exprInline(0, lo) + " ..< " + exprInline(0, hi)
+    case RBHalfOpen(lo, hi, bareDotDot) -> exprInline(0, lo) + (if bareDotDot { " .. " } else { " ..< " }) +
+      exprInline(0, hi)
     case RBLowerOpen(hi) -> "..= " + exprInline(0, hi)
     case RBUpperOpen(lo) -> exprInline(0, lo) + " .."
   }
@@ -491,7 +492,7 @@ pub func patStr(p: in Pattern): String {
   match p.kind {
     case PWildcard -> "_"
     case PLiteral(l) -> litStr(l)
-    case PRange(lo, incl, hi) -> patRangeStr(lo, incl, hi)
+    case PRange(lo, incl, hi, bareDotDot) -> patRangeStr(lo, incl, hi, bareDotDot)
     case PBinding(n, innerP) -> patBindingStr(n, innerP)
     case PConstructor(head, args) -> patCtorStr(head, args)
     case PRecord(head, fs, rest) -> patRecordStr(head, fs, rest)
@@ -520,8 +521,8 @@ func patOrStr(ps: in List[Pattern]): String {
   patsStrSep(ps, " | ")
 }
 
-func patRangeStr(lo: in Expr, incl: in Bool, hi: in Expr): String {
-  val op = if incl { "..=" } else { ".." }
+func patRangeStr(lo: in Expr, incl: in Bool, hi: in Expr, bareDotDot: in Bool): String {
+  val op = if incl { "..=" } else if bareDotDot { ".." } else { "..<" }
   exprInline(0, lo) + " " + op + " " + exprInline(0, hi)
 }
 

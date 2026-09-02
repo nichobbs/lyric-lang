@@ -1985,3 +1985,49 @@ test "short nested match arm body under the same deep nesting stays inline (#660
     i = i + 1
   }
 }
+
+// `..` is a grammar-level synonym for `..<` (§4.2.1: half-open range,
+// hi excluded) but `RangeBound.RBHalfOpen` carried no field recording
+// which spelling the source used, so `rangeBoundStr` always rendered
+// `..<` — silently rewriting every bare `..` on reformat (caught by the
+// loss-check, never actually fixed until now; same bug shape as the
+// legacy `generic[T]` prefix above). `RBHalfOpen.bareDotDot` (set by
+// `parseRangeBound`) lets the formatter reproduce whichever spelling was
+// used. Covers the `for`-loop iterator form — the original repro, from
+// `for_loop_slice_self_test.l`'s `for i in 1i64 .. 6i64` case.
+test "bare '..' range operator round trips instead of being silently rewritten to '..<' (#2280)" {
+  val src = "package P\n\nfunc sumTo(n: Int): Int {\n  var total = 0\n  for i in 0 .. n {\n    total = total + i\n  }\n  total\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "bare '..' range operator: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "for i in 0 .. n"), "bare '..' range operator: for-loop form preserved verbatim")
+}
+
+// The explicit `..<` spelling (the canonical form `rangeBoundStr` always
+// emitted before this fix) must be completely unaffected — a regression
+// here would be far more damaging than the bare-`..` bug this fix targets,
+// since `..<` is the far more common spelling in the tree today.
+test "explicit '..<' range operator is unaffected by the bare-'..' fix" {
+  val src = "package P\n\nfunc sumTo(n: Int): Int {\n  var total = 0\n  for i in 0 ..< n {\n    total = total + i\n  }\n  total\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "explicit '..<' range operator: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "for i in 0 ..< n"), "explicit '..<' range operator: preserved verbatim")
+  assertTrue(not Str.contains(acc, "0 .. n"), "explicit '..<' range operator: no spurious bare '..' introduced")
+}
+
+// The same synonym pair also appears in match-arm range patterns
+// (`RangePattern`, grammar §5.1), backed by a distinct AST node
+// (`PatternKind.PRange`) with its own `bareDotDot` field — the same bug,
+// a second AST location, fixed the same way in `patRangeStr`.
+test "bare '..' range pattern round trips instead of being silently rewritten to '..<' (#2280)" {
+  val src = "package P\n\nfunc classify(n: Int): Int {\n  match n {\n    case 0 .. 10 -> 1\n    case 10 ..< 20 -> 2\n    case _ -> 0\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "bare '..' range pattern: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "case 0 .. 10 ->"), "bare '..' range pattern: preserved verbatim")
+  assertTrue(
+    Str.contains(acc, "case 10 ..< 20 ->"),
+    "explicit '..<' range pattern: preserved verbatim alongside the bare form"
+  )
+}

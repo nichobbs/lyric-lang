@@ -794,7 +794,7 @@ func patternIsRefutableJvm(ctx: in FuncCtx, pat: in Pattern): Bool {
     case PConstructor(_, _) -> true
     case PLiteral(_) -> true
     case PConstRef(_) -> true
-    case PRange(_, _, _) -> true
+    case PRange(_, _, _, _) -> true
     case PTypeTest(_, _) -> true
     case PTuple(elems) -> {
       var ti = 0
@@ -973,7 +973,11 @@ func lowerPatternTest(
           // call site, so this is a no-op there.
           val useLong = match numHint {
             case JLong -> true
-            case _ -> match suffix { case I64 -> true; case U64 -> true; case _ -> (v < -2147483648i64 or v > 2147483647i64) }
+            case _ -> match suffix {
+              case I64 -> true
+              case U64 -> true
+              case _ -> (v < -2147483648i64 or v > 2147483647i64)
+            }
           }
           emitLoad(insns, scrutSlot, scrutTy)
           if useLong {
@@ -1042,7 +1046,7 @@ func lowerPatternTest(
         }
       }
     }
-    case PRange(lo, inclusive, hi) -> {
+    case PRange(lo, inclusive, hi, _) -> {
       // Numeric range test: fail unless `lo <= scrut (<|<=) hi`.  The comparison
       // width is the scrutinee's own (int / long / double); for an erased
       // (boxed) scrutinee — e.g. a tuple element — it is taken from the range
@@ -1789,7 +1793,7 @@ func lowerPatternBind(
     }
     case PLiteral(_) -> insns.add(LNop)
     case PConstRef(_) -> insns.add(LNop)
-    case PRange(_, _, _) -> insns.add(LNop)
+    case PRange(_, _, _, _) -> insns.add(LNop)
     case PParen(inner) -> lowerPatternBind(ctx, insns, inner, scrutSlot, scrutTy, scrutTypeArgs)
     case PTypeTest(inner, ty) -> {
       // Narrow the scrutinee to the tested type, then bind the inner pattern at

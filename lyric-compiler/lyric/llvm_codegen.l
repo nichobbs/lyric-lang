@@ -1039,7 +1039,10 @@ func checkExternNoByRefParams(ef: in ExternFuncDecl): Unit {
     match ef.params[i].mode {
       case PMIn -> {
       }
-      case _ -> panic("Lyric.LlvmCodegen: extern func '" + ef.name + "' declares '" + ef.params[i].name + "' as out/inout, which is not supported for --target native extern declarations (use NativePtr[T] for C-ABI pointer parameters)")
+      case _ -> panic(
+        "Lyric.LlvmCodegen: extern func '" + ef.name + "' declares '" + ef.params[i].name +
+          "' as out/inout, which is not supported for --target native extern declarations (use NativePtr[T] for C-ABI pointer parameters)"
+      )
     }
     i = i + 1
   }
@@ -1307,7 +1310,10 @@ func loadLocal(ctx: in Ctx, insns: in List[NInsn], name: in String): NVal {
         case None -> {
           match mapGet(ctx.moduleVals, name) {
             case Some(mv) -> return lowerModuleVal(ctx, insns, mv)
-            case None -> panic("Lyric.LlvmCodegen: unknown name '" + name + "' (non-local references other than module-level val/const are not yet supported for --target native)")
+            case None -> panic(
+              "Lyric.LlvmCodegen: unknown name '" + name +
+                "' (non-local references other than module-level val/const are not yet supported for --target native)"
+            )
           }
         }
       }
@@ -1493,7 +1499,13 @@ func emitToString(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NVal {
       insns.add(NZExt(dest = wide, fromTy = NI8, value = v.value, toTy = NI64))
       callRuntime(ctx, insns, "lyric_string_from_int", lyricStringNType(), arg1(NI64, NLocal(name = wide)))
     }
-    case NI1 -> callRuntime(ctx, insns, "lyric_string_from_bool", lyricStringNType(), arg1(NI32, widenBoolToI32(ctx, insns, v.value)))
+    case NI1 -> callRuntime(
+      ctx,
+      insns,
+      "lyric_string_from_bool",
+      lyricStringNType(),
+      arg1(NI32, widenBoolToI32(ctx, insns, v.value))
+    )
     case NDouble -> callRuntime(ctx, insns, "lyric_string_from_float", lyricStringNType(), arg1(NDouble, v.value))
     case _ -> {
       if isStringNType(v.ty) {
@@ -1630,7 +1642,9 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
     }
     // `self` in a record-method body is the desugared receiver param.
     case ESelf -> loadLocal(ctx, insns, "self")
-    case ELambda(_, _) -> panic("Lyric.LlvmCodegen: a lambda here has no expected function type; bind it to an annotated val, a typed parameter, or a declared return type")
+    case ELambda(_, _) -> panic(
+      "Lyric.LlvmCodegen: a lambda here has no expected function type; bind it to an annotated val, a typed parameter, or a declared return type"
+    )
     case ETuple(exprs) -> {
       val elems: List[NVal] = newList()
       var ti = 0
@@ -1687,7 +1701,14 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
         case _ -> lowerExpr(ctx, insns, inner)
       }
     }
-    case _ -> panic("Lyric.LlvmCodegen: this expression form (" + describeExprKind(expr.kind) + ") is not yet supported for --target native (Phase N1) at [" + expr.span.startPos.line.toString() + ":" + expr.span.startPos.column.toString() + "]")
+    case _ -> panic(
+      "Lyric.LlvmCodegen: this expression form (" + describeExprKind(expr.kind) +
+        ") is not yet supported for --target native (Phase N1) at [" +
+        expr.span.startPos.line.toString() +
+        ":" +
+        expr.span.startPos.column.toString() +
+        "]"
+    )
   }
 }
 
@@ -1765,7 +1786,9 @@ func lowerPrefix(ctx: in Ctx, insns: in List[NInsn], op: in PrefixOp, operand: i
       insns.add(NXor(dest = dest, ty = NI1, a = v.value, b = NLitInt(v = 1i64, ty = NI1)))
       NVal(ty = NI1, value = NLocal(name = dest))
     }
-    case PreRef -> panic("Lyric.LlvmCodegen: function references (&f) are not yet supported for --target native (pass a lambda instead)")
+    case PreRef -> panic(
+      "Lyric.LlvmCodegen: function references (&f) are not yet supported for --target native (pass a lambda instead)"
+    )
   }
 }
 
@@ -2570,7 +2593,10 @@ func lowerByRefArg(ctx: in Ctx, insns: in List[NInsn], ex: in Expr, declTy: in N
         val name = path.segments[0]
         val slot = match mapGet(ctx.varSlots, name) {
           case Some(s) -> s
-          case None -> panic("Lyric.LlvmCodegen: out/inout argument '" + name + "' is not a local variable or parameter — module-level bindings are not yet supported as out/inout arguments for --target native")
+          case None -> panic(
+            "Lyric.LlvmCodegen: out/inout argument '" + name +
+              "' is not a local variable or parameter — module-level bindings are not yet supported as out/inout arguments for --target native"
+          )
         }
         return NVal(ty = NPtr(pointee = declTy), value = NLocal(name = slot))
       }
@@ -2583,7 +2609,10 @@ func lowerByRefArg(ctx: in Ctx, insns: in List[NInsn], ex: in Expr, declTy: in N
       val obj = lowerExpr(ctx, insns, recv)
       val ri = match recInfoOfType(ctx, obj.ty) {
         case Some(r) -> r
-        case None -> panic("Lyric.LlvmCodegen: out/inout argument '." + fieldName + "' is not a record field, which is required for --target native")
+        case None -> panic(
+          "Lyric.LlvmCodegen: out/inout argument '." + fieldName +
+            "' is not a record field, which is required for --target native"
+        )
       }
       val idx = recFieldIndex(ri, fieldName)
       if idx < 0 {
@@ -2598,7 +2627,9 @@ func lowerByRefArg(ctx: in Ctx, insns: in List[NInsn], ex: in Expr, declTy: in N
       insns.add(NGEP(dest = fieldPtr, ty = structTy, ptr = obj.value, indices = fArgs))
       NVal(ty = NPtr(pointee = fieldTy), value = NLocal(name = fieldPtr))
     }
-    case _ -> panic("Lyric.LlvmCodegen: this out/inout argument shape is not yet supported for --target native (only a local variable/parameter or a record field access is; index/element expressions and other l-value forms are not yet supported)")
+    case _ -> panic(
+      "Lyric.LlvmCodegen: this out/inout argument shape is not yet supported for --target native (only a local variable/parameter or a record field access is; index/element expressions and other l-value forms are not yet supported)"
+    )
   }
 }
 
@@ -2730,7 +2761,9 @@ func lowerCallEx(
           val m = lowerCallArgExpecting0Plain(ctx, insns, args)
           val kTy = match mapKeyOfType(ctx, m.ty) {
             case Some(t) -> t
-            case None -> panic("Lyric.LlvmCodegen: 'dictGetKeys' is reserved for Std.Collections maps on --target native")
+            case None -> panic(
+              "Lyric.LlvmCodegen: 'dictGetKeys' is reserved for Std.Collections maps on --target native"
+            )
           }
           return lowerMapSnapshotBuiltin(ctx, insns, m, "lyric_map_keys", kTy)
         }
@@ -2738,7 +2771,9 @@ func lowerCallEx(
           val m = lowerCallArgExpecting0Plain(ctx, insns, args)
           val vTy = match mapValOfType(ctx, m.ty) {
             case Some(t) -> t
-            case None -> panic("Lyric.LlvmCodegen: 'dictGetValues' is reserved for Std.Collections maps on --target native")
+            case None -> panic(
+              "Lyric.LlvmCodegen: 'dictGetValues' is reserved for Std.Collections maps on --target native"
+            )
           }
           return lowerMapSnapshotBuiltin(ctx, insns, m, "lyric_map_values", vTy)
         }
@@ -2877,7 +2912,10 @@ func lowerCallEx(
         val clos = loadLocal(ctx, insns, cpath.segments[0])
         match closureSigOfType(ctx, clos.ty) {
           case Some(cs) -> return lowerClosureCall(ctx, insns, clos, cs, args)
-          case None -> panic("Lyric.LlvmCodegen: '" + cpath.segments[0] + "' is not callable (only function-typed values support indirect calls)")
+          case None -> panic(
+            "Lyric.LlvmCodegen: '" + cpath.segments[0] +
+              "' is not callable (only function-typed values support indirect calls)"
+          )
         }
       }
     }
@@ -3200,7 +3238,14 @@ func lowerUfcsCall(
   }
   val sig = match sigOpt {
     case Some(s) -> s
-    case None -> panic("Lyric.LlvmCodegen: method '." + name + "' on this receiver is not yet supported for --target native (no matching function '" + name + "/" + arity + "' in the bundled import closure)")
+    case None -> panic(
+      "Lyric.LlvmCodegen: method '." + name +
+        "' on this receiver is not yet supported for --target native (no matching function '" +
+        name +
+        "/" +
+        arity +
+        "' in the bundled import closure)"
+    )
   }
   val callArgs = lowerCallArgsWithReceiver(ctx, insns, sig, recv, args)
   if ctx.curAsyncTask.count > 0 and sig.irName == "Std.Time.sleepMillis" and callArgs.count == 1 {
@@ -3569,7 +3614,7 @@ func registerDistinct(ctx: in Ctx, pkg: in String, dd: in DistinctTypeDecl, stri
           loExprOpt = Some(value = l)
           hiExprOpt = Some(value = h)
         }
-        case RBHalfOpen(l, h) -> {
+        case RBHalfOpen(l, h, _) -> {
           loExprOpt = Some(value = l)
           hiExprOpt = Some(value = h)
           hiInclusive = false
@@ -4144,7 +4189,10 @@ func externAdaptArg(ctx: in Ctx, insns: in List[NInsn], declTyExpr: in TypeExpr,
     case NFnPtr(_, _) -> {
       match closureSigOfType(ctx, v.ty) {
         case Some(_) -> return NVal(ty = declTy, value = NGlobal(name = trampolineFor(ctx, declTyExpr)))
-        case None -> panic("Lyric.LlvmCodegen: an extern function-typed parameter takes a Lyric closure argument; got " + nTypeToIrString(v.ty))
+        case None -> panic(
+          "Lyric.LlvmCodegen: an extern function-typed parameter takes a Lyric closure argument; got " +
+            nTypeToIrString(v.ty)
+        )
       }
     }
     case _ -> {
@@ -4629,7 +4677,10 @@ func slotOfVal(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NValue {
       insns.add(NZExt(dest = dest, fromTy = NI1, value = v.value, toTy = NI64))
       NLocal(name = dest)
     }
-    case _ -> panic("Lyric.LlvmCodegen: this element type cannot be stored in a List/Map slot for --target native: " + nTypeToIrString(v.ty))
+    case _ -> panic(
+      "Lyric.LlvmCodegen: this element type cannot be stored in a List/Map slot for --target native: " +
+        nTypeToIrString(v.ty)
+    )
   }
 }
 
@@ -4664,7 +4715,10 @@ func valOfSlot(ctx: in Ctx, insns: in List[NInsn], slot: in NValue, elemTy: in N
       insns.add(NTrunc(dest = dest, fromTy = NI64, value = slot, toTy = NI1))
       NVal(ty = NI1, value = NLocal(name = dest))
     }
-    case _ -> panic("Lyric.LlvmCodegen: this element type cannot be read from a List/Map slot for --target native: " + nTypeToIrString(elemTy))
+    case _ -> panic(
+      "Lyric.LlvmCodegen: this element type cannot be read from a List/Map slot for --target native: " +
+        nTypeToIrString(elemTy)
+    )
   }
 }
 
@@ -5052,7 +5106,11 @@ func i32ToBool(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NVal {
 func lowerMapGetBuiltin(ctx: in Ctx, insns: in List[NInsn], m: in NVal, args: in List[CallArg]): NVal {
   val kTy = match mapKeyOfType(ctx, m.ty) {
     case Some(t) -> t
-    case None -> panic("Lyric.LlvmCodegen: 'mapGet' is reserved for Std.Collections maps on --target native (got " + nTypeToIrString(m.ty) + ")")
+    case None -> panic(
+      "Lyric.LlvmCodegen: 'mapGet' is reserved for Std.Collections maps on --target native (got " +
+        nTypeToIrString(m.ty) +
+        ")"
+    )
   }
   val vTy = match mapValOfType(ctx, m.ty) {
     case Some(t) -> t
@@ -5060,7 +5118,9 @@ func lowerMapGetBuiltin(ctx: in Ctx, insns: in List[NInsn], m: in NVal, args: in
   }
   val optKey = match resolveGenericUnionKey(ctx, "Option", "Option") {
     case Some(kk) -> kk
-    case None -> panic("Lyric.LlvmCodegen: mapGet needs a generic union named 'Option' (with cases Some/None) in the import closure")
+    case None -> panic(
+      "Lyric.LlvmCodegen: mapGet needs a generic union named 'Option' (with cases Some/None) in the import closure"
+    )
   }
   val argTys: List[NType] = newList()
   argTys.add(vTy)
@@ -5208,14 +5268,19 @@ func lowerForOverList(ctx: in Ctx, insns: in List[NInsn], pat: in Pattern, iter:
   val it = lowerExpr(ctx, insns, iter)
   val elem = match listElemOfType(ctx, it.ty) {
     case Some(t) -> t
-    case None -> panic("Lyric.LlvmCodegen: 'for' on --target native iterates List[T] (slices land with the N5 stdlib port); got " + nTypeToIrString(it.ty))
+    case None -> panic(
+      "Lyric.LlvmCodegen: 'for' on --target native iterates List[T] (slices land with the N5 stdlib port); got " +
+        nTypeToIrString(it.ty)
+    )
   }
   var bindName = ""
   var haveBind = false
   match pat.kind {
     case PBinding(nm, inner) -> {
       match inner {
-        case Some(_) -> panic("Lyric.LlvmCodegen: this for-pattern is not yet supported for --target native (use a plain name)")
+        case Some(_) -> panic(
+          "Lyric.LlvmCodegen: this for-pattern is not yet supported for --target native (use a plain name)"
+        )
         case None -> {
           bindName = nm
           haveBind = true
@@ -5783,7 +5848,10 @@ func lowerGenericCaseConstruct(
   }
   val ui = match instantiateGenericUnionOpt(ctx, genericQualifiedKey(ctx, gkey), envTys) {
     case Some(u) -> u
-    case None -> panic("Lyric.LlvmCodegen: cannot instantiate generic union '" + gkey + "' for --target native (a field type is not yet lowerable)")
+    case None -> panic(
+      "Lyric.LlvmCodegen: cannot instantiate generic union '" + gkey +
+        "' for --target native (a field type is not yet lowerable)"
+    )
   }
   lowerUnionConstructVals(ctx, insns, ui, caseIdx, rawVals)
 }
@@ -5842,7 +5910,9 @@ func lowerGenericRecordConstruct(ctx: in Ctx, insns: in List[NInsn], gkey: in St
     } else {
       match fields[fi2].dflt {
         case Some(d) -> rawVals.add(lowerExpr(ctx, insns, d))
-        case None -> panic("Lyric.LlvmCodegen: missing field '" + fields[fi2].name + "' constructing record '" + rd.name + "'")
+        case None -> panic(
+          "Lyric.LlvmCodegen: missing field '" + fields[fi2].name + "' constructing record '" + rd.name + "'"
+        )
       }
     }
     fi2 = fi2 + 1
@@ -5878,7 +5948,10 @@ func lowerGenericRecordConstruct(ctx: in Ctx, insns: in List[NInsn], gkey: in St
   }
   val ri = match instantiateGenericRecordOpt(ctx, genericQualifiedKey(ctx, gkey), envTys) {
     case Some(r) -> r
-    case None -> panic("Lyric.LlvmCodegen: cannot instantiate generic record '" + gkey + "' for --target native (a field type is not yet lowerable)")
+    case None -> panic(
+      "Lyric.LlvmCodegen: cannot instantiate generic record '" + gkey +
+        "' for --target native (a field type is not yet lowerable)"
+    )
   }
   lowerRecordConstructVals(ctx, insns, ri, rawVals)
 }
@@ -6061,7 +6134,10 @@ func lowerGenericFnCall(
     while pt < nParams {
       match typeToNEnvOpt(ctx, fd.params[pt].ty, paramNames, envTys) {
         case Some(t) -> paramTys.add(t)
-        case None -> panic("Lyric.LlvmCodegen: cannot lower parameter type of generic function '" + fd.name + "' for --target native")
+        case None -> panic(
+          "Lyric.LlvmCodegen: cannot lower parameter type of generic function '" + fd.name +
+            "' for --target native"
+        )
       }
       pt = pt + 1
     }
@@ -6072,7 +6148,10 @@ func lowerGenericFnCall(
           case Some(t) -> {
             instRet = t
           }
-          case None -> panic("Lyric.LlvmCodegen: cannot lower return type of generic function '" + fd.name + "' for --target native")
+          case None -> panic(
+            "Lyric.LlvmCodegen: cannot lower return type of generic function '" + fd.name +
+              "' for --target native"
+          )
         }
       }
       case None -> {
@@ -6633,7 +6712,9 @@ func synthClosureDtor(
 func lowerWeakUpgrade(ctx: in Ctx, insns: in List[NInsn], recv: in NVal, target: in NType): NVal {
   val optKey = match resolveGenericUnionKey(ctx, "Option", "Option") {
     case Some(k) -> k
-    case None -> panic("Lyric.LlvmCodegen: NativeWeak.upgrade() needs a generic union named 'Option' (with cases Some/None) in the import closure")
+    case None -> panic(
+      "Lyric.LlvmCodegen: NativeWeak.upgrade() needs a generic union named 'Option' (with cases Some/None) in the import closure"
+    )
   }
   val argTys: List[NType] = newList()
   argTys.add(target)
@@ -7403,7 +7484,9 @@ func emitPatternTest(
     case PWildcard -> insns.add(NBr(label = okLabel))
     case PBinding(name, inner) -> {
       match inner {
-        case Some(_) -> panic("Lyric.LlvmCodegen: nested binding patterns (name @ pattern) are not yet supported for --target native")
+        case Some(_) -> panic(
+          "Lyric.LlvmCodegen: nested binding patterns (name @ pattern) are not yet supported for --target native"
+        )
         case None -> {
           // A bare identifier that names a case of the scrutinee's
           // union is a nullary constructor pattern, not a binding
@@ -7454,7 +7537,7 @@ func emitPatternTest(
         }
       }
     }
-    case PRange(lo, inclusive, hi) -> {
+    case PRange(lo, inclusive, hi, _) -> {
       val loV = coerceTo(ctx, insns, lowerExpr(ctx, insns, lo), sv.ty)
       val hiV = coerceTo(ctx, insns, lowerExpr(ctx, insns, hi), sv.ty)
       val geLo = freshTmp(ctx)
@@ -7466,7 +7549,17 @@ func emitPatternTest(
       insns.add(NAnd(dest = both, ty = NI1, a = NLocal(name = geLo), b = NLocal(name = leHi)))
       insns.add(NCondBr(cond = NLocal(name = both), thenLabel = okLabel, elseLabel = failLabel))
     }
-    case PConstructor(head, subpats) -> emitConstructorTest(ctx, insns, sv, head, subpats, okLabel, failLabel, bindNames, bindVals)
+    case PConstructor(head, subpats) -> emitConstructorTest(
+      ctx,
+      insns,
+      sv,
+      head,
+      subpats,
+      okLabel,
+      failLabel,
+      bindNames,
+      bindVals
+    )
     case PTuple(patterns) -> {
       val ri = match recInfoOfType(ctx, sv.ty) {
         case Some(r) -> r
@@ -7490,13 +7583,17 @@ func emitPatternTest(
           }
           case PWildcard -> {
           }
-          case _ -> panic("Lyric.LlvmCodegen: only bindings and wildcards are supported inside tuple patterns for --target native")
+          case _ -> panic(
+            "Lyric.LlvmCodegen: only bindings and wildcards are supported inside tuple patterns for --target native"
+          )
         }
         pi = pi + 1
       }
       insns.add(NBr(label = okLabel))
     }
-    case _ -> panic("Lyric.LlvmCodegen: this pattern form is not yet supported for --target native (Phase N2 lowers wildcard, binding, literal, range, and constructor patterns)")
+    case _ -> panic(
+      "Lyric.LlvmCodegen: this pattern form is not yet supported for --target native (Phase N2 lowers wildcard, binding, literal, range, and constructor patterns)"
+    )
   }
 }
 
@@ -7541,7 +7638,9 @@ func emitConstructorTest(
   }
   val ui = match unionInfoOfType(ctx, sv.ty) {
     case Some(u) -> u
-    case None -> panic("Lyric.LlvmCodegen: constructor pattern '" + joined + "' matched against a non-union value")
+    case None -> panic(
+      "Lyric.LlvmCodegen: constructor pattern '" + joined + "' matched against a non-union value"
+    )
   }
   // Resolve the case by name within the scrutinee's union: this covers
   // generic instantiations (whose cases have no caseRefs entries) and
@@ -7792,7 +7891,9 @@ func bindTuplePattern(ctx: in Ctx, insns: in List[NInsn], v: in NVal, patterns: 
       }
       case PWildcard -> {
       }
-      case _ -> panic("Lyric.LlvmCodegen: only bindings and wildcards are supported inside tuple patterns for --target native")
+      case _ -> panic(
+        "Lyric.LlvmCodegen: only bindings and wildcards are supported inside tuple patterns for --target native"
+      )
     }
     i = i + 1
   }
@@ -8116,7 +8217,9 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
     }
     case SLoop(_, _) -> panic("Lyric.LlvmCodegen: 'loop' is not yet supported for --target native (use 'while true')")
     case SThrow(_) -> panic("Lyric.LlvmCodegen: 'throw' is not supported for --target native (D-N-003: panics abort)")
-    case STry(_, _, _) -> panic("Lyric.LlvmCodegen: try/catch is not supported for --target native (D-N-003: no unwinding)")
+    case STry(_, _, _) -> panic(
+      "Lyric.LlvmCodegen: try/catch is not supported for --target native (D-N-003: no unwinding)"
+    )
     case SDefer(body) -> {
       // Registers into the innermost scope; runs via `runDeferredScopeAt` at scope exit, not inline here (D-N-020; a panic still bypasses it per D-N-003).
       ctx.deferStack[ctx.deferStack.count - 1].add(body)
@@ -8151,7 +8254,9 @@ func assignTargetName(target: in Expr): String {
       }
       panic("Lyric.LlvmCodegen: assignment to a qualified path is not yet supported for --target native")
     }
-    case _ -> panic("Lyric.LlvmCodegen: assignment to this target form is not yet supported for --target native (fields are Phase N2)")
+    case _ -> panic(
+      "Lyric.LlvmCodegen: assignment to this target form is not yet supported for --target native (fields are Phase N2)"
+    )
   }
 }
 
@@ -8415,7 +8520,10 @@ func lowerFunction(modCtx: in Ctx, pkg: in String, fn: in FunctionDecl, irName: 
 func funcBodyContainsYieldNative(fn: in FunctionDecl): Bool {
   match fn.body {
     case None -> false
-    case Some(body) -> match body { case FBExpr(e) -> exprContainsYieldNative(e); case FBBlock(b) -> blockContainsYieldNative(b) }
+    case Some(body) -> match body {
+      case FBExpr(e) -> exprContainsYieldNative(e)
+      case FBBlock(b) -> blockContainsYieldNative(b)
+    }
   }
 }
 
@@ -8478,7 +8586,12 @@ func exprContainsYieldNative(e: in Expr): Bool {
       }
       false
     }
-    case ERange(rb) -> match rb { case RBClosed(a, b) -> exprContainsYieldNative(a) or exprContainsYieldNative(b); case RBHalfOpen(a, b) -> exprContainsYieldNative(a) or exprContainsYieldNative(b); case RBLowerOpen(a) -> exprContainsYieldNative(a); case RBUpperOpen(a) -> exprContainsYieldNative(a) }
+    case ERange(rb) -> match rb {
+      case RBClosed(a, b) -> exprContainsYieldNative(a) or exprContainsYieldNative(b)
+      case RBHalfOpen(a, b, _) -> exprContainsYieldNative(a) or exprContainsYieldNative(b)
+      case RBLowerOpen(a) -> exprContainsYieldNative(a)
+      case RBUpperOpen(a) -> exprContainsYieldNative(a)
+    }
     case EIf(c, t, eOpt, _) -> {
       if exprContainsYieldNative(c) {
         return true
@@ -8492,7 +8605,10 @@ func exprContainsYieldNative(e: in Expr): Bool {
       }
       match eOpt {
         case None -> false
-        case Some(b) -> match b { case EOBExpr(ee) -> exprContainsYieldNative(ee); case EOBBlock(eb) -> blockContainsYieldNative(eb) }
+        case Some(b) -> match b {
+          case EOBExpr(ee) -> exprContainsYieldNative(ee)
+          case EOBBlock(eb) -> blockContainsYieldNative(eb)
+        }
       }
     }
     case EMatch(subj, arms) -> {
@@ -8563,7 +8679,12 @@ func stmtContainsYieldNative(stmt: in Statement): Bool {
     case SInvariant(_) -> false
     case SItem(_) -> false
     case SAssign(t, _, v) -> exprContainsYieldNative(t) or exprContainsYieldNative(v)
-    case SLocal(binding) -> match binding { case LBVal(_, _, e) -> exprContainsYieldNative(e); case LBLet(_, _, e) -> exprContainsYieldNative(e); case LBVar(_, _, Some(e)) -> exprContainsYieldNative(e); case LBVar(_, _, None) -> false }
+    case SLocal(binding) -> match binding {
+      case LBVal(_, _, e) -> exprContainsYieldNative(e)
+      case LBLet(_, _, e) -> exprContainsYieldNative(e)
+      case LBVar(_, _, Some(e)) -> exprContainsYieldNative(e)
+      case LBVar(_, _, None) -> false
+    }
     case STry(body, catches, finally_) -> {
       if blockContainsYieldNative(body) {
         return true
@@ -9540,7 +9661,9 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
       }
       case IExternType(_) -> {
       }
-      case _ -> panic("Lyric.LlvmCodegen: this item form is not yet supported for --target native (Phase N2/N3 lowers functions, extern funcs, records, unions, enums, distinct types, interfaces, impls, and protected types)")
+      case _ -> panic(
+        "Lyric.LlvmCodegen: this item form is not yet supported for --target native (Phase N2/N3 lowers functions, extern funcs, records, unions, enums, distinct types, interfaces, impls, and protected types)"
+      )
     }
     i = i + 1
   }
@@ -10359,7 +10482,11 @@ func registerProtectedMember(
     match params[mci].mode {
       case PMIn -> {
       }
-      case _ -> panic("Lyric.LlvmCodegen: protected type '" + pd.name + "' method '" + methodName + "' declares '" + params[mci].name + "' as out/inout, which is not yet supported for --target native on protected-type methods")
+      case _ -> panic(
+        "Lyric.LlvmCodegen: protected type '" + pd.name + "' method '" + methodName + "' declares '" +
+          params[mci].name +
+          "' as out/inout, which is not yet supported for --target native on protected-type methods"
+      )
     }
     mci = mci + 1
   }

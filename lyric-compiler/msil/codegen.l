@@ -12231,7 +12231,7 @@ func patternIsRefutableMsil(cctx: in CodegenCtx, fctx: in FuncCtx, pat: in Patte
     case PConstructor(_, _) -> true
     case PLiteral(_) -> true
     case PConstRef(_) -> true
-    case PRange(_, _, _) -> true
+    case PRange(_, _, _, _) -> true
     case PTypeTest(_, _) -> true
     case PTuple(elems) -> {
       var ti = 0
@@ -12851,7 +12851,7 @@ func lowerPatternTestMsil(
     case PParen(inner) -> {
       lowerPatternTestMsil(cctx, fctx, insns, inner, scrutSlot, scrutTy, failLabel, scrutEnumHint)
     }
-    case PRange(lo, inclusive, hi) -> {
+    case PRange(lo, inclusive, hi, _) -> {
       // Numeric range test: fail unless `lo <= scrut (<|<=) hi`.  `clt`/`cgt`
       // work for i4/i8/r8 alike, so no per-width branching is needed.  An erased
       // (boxed) scrutinee — e.g. a tuple element — is unboxed to the width the
@@ -13624,7 +13624,7 @@ func lowerPatternBindMsil(
     case PParen(inner) -> {
       lowerPatternBindMsil(cctx, fctx, insns, inner, scrutSlot, scrutTy)
     }
-    case PRange(_, _, _) -> {
+    case PRange(_, _, _, _) -> {
       // Range patterns bind nothing.
     }
     case PTypeTest(inner, ty) -> {
@@ -17465,7 +17465,7 @@ func lowerForMsil(
     case ERange(bound) -> {
       match bound {
         case RBClosed(lo, hi) -> emitCountingForMsil(cctx, fctx, insns, pat, lo, hi, true, body)
-        case RBHalfOpen(lo, hi) -> emitCountingForMsil(cctx, fctx, insns, pat, lo, hi, false, body)
+        case RBHalfOpen(lo, hi, _) -> emitCountingForMsil(cctx, fctx, insns, pat, lo, hi, false, body)
         case RBLowerOpen(_) -> panic(
           "Msil.Codegen: an open-start range (`..= b`) cannot drive a `for` loop — it has no lower bound to count from (#1478)."
         )
@@ -21146,7 +21146,7 @@ func countYieldsInExpr(e: in Expr): Int {
     case ERange(bound) -> {
       match bound {
         case RBClosed(lo, hi) -> countYieldsInExpr(lo) + countYieldsInExpr(hi)
-        case RBHalfOpen(lo, hi) -> countYieldsInExpr(lo) + countYieldsInExpr(hi)
+        case RBHalfOpen(lo, hi, _) -> countYieldsInExpr(lo) + countYieldsInExpr(hi)
         case RBLowerOpen(hi) -> countYieldsInExpr(hi)
         case RBUpperOpen(lo) -> countYieldsInExpr(lo)
       }
@@ -21322,7 +21322,7 @@ func exprContainsAwaitMsil(e: in Expr): Bool {
       false
     }
     case ERange(bound) -> match bound {
-      case RBHalfOpen(lo, hi) -> exprContainsAwaitMsil(lo) or exprContainsAwaitMsil(hi)
+      case RBHalfOpen(lo, hi, _) -> exprContainsAwaitMsil(lo) or exprContainsAwaitMsil(hi)
       case RBClosed(lo, hi) -> exprContainsAwaitMsil(lo) or exprContainsAwaitMsil(hi)
       case RBLowerOpen(hi) -> exprContainsAwaitMsil(hi)
       case RBUpperOpen(lo) -> exprContainsAwaitMsil(lo)
@@ -22323,7 +22323,7 @@ func collectAwaitTypesExprPB(
     }
     case ERange(bound) -> {
       match bound {
-        case RBHalfOpen(lo, hi) -> {
+        case RBHalfOpen(lo, hi, _) -> {
           collectAwaitTypesExprPB(cctx, pkgName, lo, acc, spawnNms, spawnTys, localNms, localTys)
           collectAwaitTypesExprPB(cctx, pkgName, hi, acc, spawnNms, spawnTys, localNms, localTys)
         }
@@ -22835,7 +22835,7 @@ func countPromotedLocalsExpr(
           countPromotedLocalsExpr(cctx, pkgName, hoistedNms, lo, seen)
           countPromotedLocalsExpr(cctx, pkgName, hoistedNms, hi, seen)
         }
-        case RBHalfOpen(lo, hi) -> {
+        case RBHalfOpen(lo, hi, _) -> {
           countPromotedLocalsExpr(cctx, pkgName, hoistedNms, lo, seen)
           countPromotedLocalsExpr(cctx, pkgName, hoistedNms, hi, seen)
         }
@@ -23097,7 +23097,7 @@ func countSpillsExpr(e: in Expr): Int {
     case ERange(bound) -> {
       match bound {
         case RBClosed(lo, hi) -> countSpillsExpr(lo) + countSpillsExpr(hi)
-        case RBHalfOpen(lo, hi) -> countSpillsExpr(lo) + countSpillsExpr(hi)
+        case RBHalfOpen(lo, hi, _) -> countSpillsExpr(lo) + countSpillsExpr(hi)
         case RBLowerOpen(hi) -> countSpillsExpr(hi)
         case RBUpperOpen(lo) -> countSpillsExpr(lo)
       }
@@ -23340,7 +23340,7 @@ func countGenLocalsExpr(e: in Expr): Int {
     case ERange(bound) -> {
       match bound {
         case RBClosed(lo, hi) -> countGenLocalsExpr(lo) + countGenLocalsExpr(hi)
-        case RBHalfOpen(lo, hi) -> countGenLocalsExpr(lo) + countGenLocalsExpr(hi)
+        case RBHalfOpen(lo, hi, _) -> countGenLocalsExpr(lo) + countGenLocalsExpr(hi)
         case RBLowerOpen(hi) -> countGenLocalsExpr(hi)
         case RBUpperOpen(lo) -> countGenLocalsExpr(lo)
       }
@@ -35464,7 +35464,7 @@ func mkDistinctTypeIR(
     case Some(rb) -> {
       match rb {
         case RBClosed(loE, hiE) -> mkDistinctRanged(className, namespace, inner, loE, hiE, false)
-        case RBHalfOpen(loE, hiE) -> mkDistinctRanged(className, namespace, inner, loE, hiE, true)
+        case RBHalfOpen(loE, hiE, _) -> mkDistinctRanged(className, namespace, inner, loE, hiE, true)
         // Unknown RangeBound variant: emit no-range guard so future variants
         // don't silently skip range validation (#3116).
         case _ -> noRange
