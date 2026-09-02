@@ -597,7 +597,10 @@ pub func genParamStr(gp: in GenericParam): String {
   }
 }
 
-pub func genParamsStr(gps: in Option[GenericParams]): String {
+// Just "[T, U]" (or "" for no generics) — no legacy-prefix-form
+// awareness.  Shared by `genParamsStr` (the bare-bracket-after-name form)
+// and `genLegacyPrefixStr` (the legacy `generic[...]`-before-name form).
+func genParamsBracketStr(gps: in Option[GenericParams]): String {
   match gps {
     case None -> ""
     case Some(g) -> {
@@ -609,6 +612,54 @@ pub func genParamsStr(gps: in Option[GenericParams]): String {
       }
       "[" + joinStrings(parts, ", ") + "]"
     }
+  }
+}
+
+/// The bare-bracket-after-name form: `"[T, U]"` immediately after the
+/// declared name, or `""` for no generics OR when `gps` used the legacy
+/// `generic[...]`-before-name form (that case's brackets are rendered by
+/// `genLegacyPrefixStr` instead, at the item's OWN call site — never
+/// both, which would duplicate the parameter list).
+pub func genParamsStr(gps: in Option[GenericParams]): String {
+  match gps {
+    case None -> ""
+    case Some(g) -> if g.legacyPrefixForm { "" } else { genParamsBracketStr(gps) }
+  }
+}
+
+/// The legacy `"generic[T, U] "` prefix (trailing space included, ready
+/// to prepend directly before the item's own keyword), or `""` when
+/// `gps` is absent or used the bare-bracket-after-name form instead.
+/// Reproduces whichever spelling the source actually used (grammar §5.1:
+/// "Both forms are accepted") instead of normalizing to the bare-bracket
+/// form — silently dropping the `generic` keyword and its bracket list
+/// corrupted the token sequence (#2280 item 4).
+pub func genLegacyPrefixStr(gps: in Option[GenericParams]): String {
+  match gps {
+    case None -> ""
+    case Some(g) -> if g.legacyPrefixForm { "generic" + genParamsBracketStr(gps) + " " } else { "" }
+  }
+}
+
+/// Combine a visibility prefix (`visStr`, e.g. `"pub "`/`"internal "`/`""`)
+/// with the legacy `generic[T] ` prefix in the order the source actually
+/// wrote them, instead of always rendering `visStr` first. The item-
+/// modifier collection loop (`parser_items.l`) accepts `generic[T]` before
+/// OR after `pub`/`internal` (e.g. both `generic[T] pub func …` and
+/// `pub generic[T] func …` are valid), but the AST only records the order
+/// via `GenericParams.legacyPrefixBeforeVis` — always rendering `visStr`
+/// first silently reordered the non-canonical spelling, which
+/// `formatSourceChecked`'s positional token comparison flags as a
+/// structural change (`lyric fmt --write` refuses to write), the same
+/// failure mode #2280 item 4 originally described (review finding on
+/// #6827, issue #6834).
+pub func visAndLegacyPrefixStr(visStr: in String, gps: in Option[GenericParams]): String {
+  val legacyGens = genLegacyPrefixStr(gps)
+  val beforeVis = match gps { case Some(g) -> g.legacyPrefixBeforeVis; case None -> false }
+  if beforeVis {
+    legacyGens + visStr
+  } else {
+    visStr + legacyGens
   }
 }
 

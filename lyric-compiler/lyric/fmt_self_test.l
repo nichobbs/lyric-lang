@@ -1942,6 +1942,194 @@ test "width driven nested match arm threads the real absolute column (#6606 repr
   }
 }
 
+// #2280 item 4 repro: `genParamsStr` normalized every `generics` field to
+// the bare-bracket-after-name form (`func foo[T](...)`) regardless of
+// which spelling the source actually used, so a function declared with
+// the legacy `generic[T] func foo(...)` prefix (grammar §5.1: "Both
+// forms are accepted") silently lost its `generic` keyword and bracket
+// list on reformat — caught by the loss-check (`formatSourceChecked`
+// refused to write), but never actually fixed until now.
+// `GenericParams.legacyPrefixForm` (set by `parseGenericParamsOpt`) lets
+// the formatter reproduce whichever spelling was used instead of
+// normalizing it away.
+test "legacy 'generic[T] func' prefix form round trips instead of being silently dropped (#2280 item 4)" {
+  val src = "package P\n\ngeneric[T] func identity(x: T): T {\n  x\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "legacy generic[T] func prefix: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "generic[T] func identity"), "legacy generic[T] func prefix: preserved verbatim")
+}
+
+// `pub` combines with the legacy prefix, and the item-modifier collection
+// loop (`parser_items.l`) accepts either order: `pub generic[T] func …`
+// or `generic[T] pub func …`. `GenericParams.legacyPrefixBeforeVis`
+// records which order the source used so the formatter can reproduce it
+// instead of always rendering `pub generic[T] func …` regardless — the
+// latter silently reordered the `generic[T] pub func …` spelling, which
+// `formatSourceChecked`'s positional token comparison flags as a
+// structural change (review finding on #6827, issue #6834: `lyric fmt
+// --write` refused to write for exactly this ordering).
+test "pub combined with the legacy 'generic[T]' prefix round trips (pub-before-generics order)" {
+  val src = "package P\n\npub generic[T] func identity(x: T): T {\n  x\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "pub + legacy generic[T] prefix (pub first): round-trips")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "pub generic[T] func identity"),
+    "pub + legacy generic[T] prefix (pub first): preserved verbatim"
+  )
+}
+
+// The other valid ordering (#6834): `generic[T]` written before `pub`.
+test "legacy 'generic[T]' prefix combined with pub round trips (generics-before-pub order, #6834)" {
+  val src = "package P\n\ngeneric[T] pub func identity(x: T): T {\n  x\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "legacy generic[T] prefix + pub (generics first): round-trips")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "generic[T] pub func identity"),
+    "legacy generic[T] prefix + pub (generics first): preserved verbatim"
+  )
+}
+
+// `internal` shares the same code path as `pub` (review suggestion on
+// #6828 — sic, filed against the same-shaped #6827 review): round out
+// coverage for the non-`pub` visibility keyword in both orderings.
+test "legacy 'generic[T]' prefix combined with internal round trips in both orderings" {
+  val src = "package P\n\ninternal generic[T] func identity(x: T): T {\n  x\n}\n\n" +
+    "generic[U] internal func identityTwo(x: U): U {\n  x\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "legacy generic[T] prefix + internal (both orderings): round-trips")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "internal generic[T] func identity"),
+    "legacy generic[T] prefix + internal (internal first): preserved verbatim"
+  )
+  assertTrue(
+    Str.contains(acc, "generic[U] internal func identityTwo"),
+    "legacy generic[T] prefix + internal (generics first): preserved verbatim"
+  )
+}
+
+// `async` combines with the legacy prefix too (review suggestion on
+// #6827): `funcSigStr`/`funcDoc` both prepend the vis+legacy-prefix
+// combinator before `asyncStr`, per the grammar's `[async] func`
+// ordering — lock that in with a dedicated round-trip test instead of
+// resting on the fact that it's the same code path as the non-async
+// cases above.
+test "legacy 'generic[T]' prefix combined with async round trips" {
+  val src = "package P\n\ngeneric[T] async func identity(x: T): T {\n  x\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "legacy generic[T] prefix + async: round-trips")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "generic[T] async func identity"),
+    "legacy generic[T] prefix + async: preserved verbatim"
+  )
+}
+
+// `visAndLegacyPrefixStr` (the shared vis/legacy-prefix ordering
+// combinator) is exercised above only via `func` declarations; every
+// other item kind's coverage exercises the bare `generic[T]` form
+// without a visibility modifier (review suggestion on #6827). Cover the
+// non-canonical `generic[T] pub`/`generic[T] internal` ordering for a
+// second item kind (record) to confirm the combinator's correctness
+// isn't just accidentally right for `func`.
+test "legacy 'generic[T]' prefix combined with pub/internal round trips for a record declaration" {
+  val src = "package P\n\ngeneric[T] pub record Box {\n  value: T\n}\n\n" +
+    "generic[U] internal record Cell {\n  value: U\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "legacy generic[T] prefix + pub/internal (record, generics first): round-trips")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "generic[T] pub record Box"),
+    "legacy generic[T] prefix + pub (record, generics first): preserved verbatim"
+  )
+  assertTrue(
+    Str.contains(acc, "generic[U] internal record Cell"),
+    "legacy generic[T] prefix + internal (record, generics first): preserved verbatim"
+  )
+}
+
+// The legacy prefix form applies to every item kind the grammar lists
+// (RecordDecl, UnionDecl, OpaqueTypeDecl, ProtectedTypeDecl, FunctionDecl,
+// InterfaceDecl, ImplDecl) — not just `func`. Covers a record and an impl
+// block (the two shapes whose legacy-prefix rendering differs most from
+// `func`'s: a record's generics sit before "record NAME", an impl's sit
+// before the bare "impl" keyword with no name in between at all).
+test "legacy 'generic[T]' prefix form round trips for record and impl declarations" {
+  val src = "package P\n\ngeneric[T] record Box {\n  value: T\n}\n\n" + "interface Shape {\n  func area(): Int\n}\n\n" +
+    "generic[T] impl Shape for Box {\n  func area(): Int {\n    0\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "legacy generic[T] prefix (record/impl): round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "generic[T] record Box"), "legacy generic[T] prefix: record preserved verbatim")
+  assertTrue(Str.contains(acc, "generic[T] impl Shape for Box"), "legacy generic[T] prefix: impl preserved verbatim")
+}
+
+// The remaining item kinds that thread `genLegacyPrefixStr` (review
+// suggestion on #6827): union, interface, and type alias. Each has its
+// own call-site shape in `fmt_items.l` (`itemDoc`'s IUnion/IInterface
+// arms, `typeAliasDoc`), distinct from the func/record/impl cases above.
+test "legacy 'generic[T]' prefix form round trips for union, interface, and type alias declarations" {
+  val src = "package P\n\ngeneric[T] union Boxed {\n  case Full(value: T)\n  case Blank\n}\n\n" +
+    "generic[T] interface Container {\n  func get(): T\n}\n\n" +
+    "generic[T] alias BoxAlias = Boxed[T]\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "legacy generic[T] prefix (union/interface/alias): round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "generic[T] union Boxed"), "legacy generic[T] prefix: union preserved verbatim")
+  assertTrue(
+    Str.contains(acc, "generic[T] interface Container"),
+    "legacy generic[T] prefix: interface preserved verbatim"
+  )
+  assertTrue(Str.contains(acc, "generic[T] alias BoxAlias"), "legacy generic[T] prefix: alias preserved verbatim")
+}
+
+// The last three item kinds `genLegacyPrefixStr` covers at the top-level
+// item position (review suggestion on #6827): opaque type, distinct type,
+// and protected type. All three accept `[ GenericParams ]` right after
+// their name per the grammar (`docs/grammar.ebnf` §3.4/§3.7/§3.8), and the
+// shared prefix-collection loop in `parseItem` (parser_items.l) threads
+// `genericsPrefix` into `parseOpaqueTypeBody`/`parseDistinctTypeBody`/
+// `parseProtectedTypeBody` exactly like it does for record/union/func —
+// so the legacy `generic[T]` spelling is reachable for these three too,
+// each rendered by its own `itemDoc` arm (`IOpaque`/`IDistinctType`/
+// `IProtected`) in `fmt_items.l`.
+test "legacy 'generic[T]' prefix form round trips for opaque, distinct, and protected type declarations" {
+  val src = "package P\n\ngeneric[T] opaque type Box {\n  value: T\n}\n\n" + "generic[T] type Wrapper = List[T]\n\n" +
+    "generic[T] protected type Cell {\n  var value: T\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "legacy generic[T] prefix (opaque/distinct/protected): round-trips")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "generic[T] opaque type Box"),
+    "legacy generic[T] prefix: opaque type preserved verbatim"
+  )
+  assertTrue(
+    Str.contains(acc, "generic[T] type Wrapper ="),
+    "legacy generic[T] prefix: distinct type preserved verbatim"
+  )
+  assertTrue(
+    Str.contains(acc, "generic[T] protected type Cell"),
+    "legacy generic[T] prefix: protected type preserved verbatim"
+  )
+}
+
+// The bare-bracket-after-name form (`func identity[T](...)`, the
+// "preferred" spelling per grammar §5.1) must be completely unaffected —
+// this is the FAR more common spelling in the tree today, so a
+// regression here would be much more damaging than the legacy-form bug
+// this fix targets.
+test "bare-bracket-after-name generic form is unaffected by the legacy-prefix fix" {
+  val src = "package P\n\nfunc identity[T](x: T): T {\n  x\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "bare-bracket generic form: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "func identity[T]"), "bare-bracket generic form: preserved verbatim")
+  assertTrue(not Str.contains(acc, "generic["), "bare-bracket generic form: no spurious legacy prefix introduced")
+}
+
 test "short nested match arm body under the same deep nesting stays inline (#6606 no over-splitting)" {
   // Same nesting depth as the repro above (a match arm's body is itself a
   // match, so `col` threading is exercised), but the SCRUTINEE is long

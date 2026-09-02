@@ -216,6 +216,26 @@ pub union GenericParam {
 pub record GenericParams {
   params: List[GenericParam]
   span: Span
+  /// True when the source spelled this as the legacy `generic[T, U]`
+  /// prefix form (before the declared name) rather than the preferred
+  /// bare-bracket form immediately after it (grammar §5.1: "Both forms
+  /// are accepted"). Carried so `lyric fmt` can reproduce the original
+  /// spelling instead of silently normalizing it — dropping the `generic`
+  /// keyword and its bracket list from the legacy form corrupted the
+  /// token sequence (#2280 item 4).
+  legacyPrefixForm: Bool
+  /// Meaningful only when `legacyPrefixForm` is true: true when the source
+  /// wrote the `generic[T]` prefix BEFORE `pub`/`internal` (e.g.
+  /// `generic[T] pub func foo() {…}`) rather than after (the canonical
+  /// `pub generic[T] func foo() {…}`). The item-modifier collection loop
+  /// (`parser_items.l`) accepts either order; without recording it the
+  /// formatter always rendered `pub generic[T] func …` regardless of the
+  /// source order, which `formatSourceChecked`'s positional token
+  /// comparison flags as a structural change for the non-canonical
+  /// ordering — `lyric fmt --write` refused to write, same failure mode
+  /// as the original #2280 item 4 bug, just for this one ordering
+  /// (review finding on #6827).
+  legacyPrefixBeforeVis: Bool = false
 }
 
 pub union ParamMode {

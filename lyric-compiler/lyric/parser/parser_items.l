@@ -125,7 +125,7 @@ func parseTypeAliasBody(st: inout ParseState, genericsPrefix: Option[GenericPara
   // 'alias'
   val ns = readIdent(st, "alias")
   val _ = skipStmtEnds(st)
-  val genericsSuffix = parseGenericParamsOpt(st)
+  val genericsSuffix = parseGenericParamsOpt(st, false)
   val generics = mergeGenericsInfo(st, genericsPrefix, genericsSuffix)
   match tryEatPunct(st, Eq) {
     case Some(_) -> {
@@ -170,7 +170,7 @@ func parseDistinctTypeBody(st: inout ParseState, genericsPrefix: Option[GenericP
   // 'type'
   val ns = readIdent(st, "type")
   val _ = skipStmtEnds(st)
-  val genericsSuffix = parseGenericParamsOpt(st)
+  val genericsSuffix = parseGenericParamsOpt(st, false)
   val generics = mergeGenericsInfo(st, genericsPrefix, genericsSuffix)
   match tryEatPunct(st, Eq) {
     case Some(_) -> {
@@ -335,7 +335,7 @@ func parseRecordBody(st: inout ParseState, genericsPrefix: Option[GenericParams]
   // 'record'
   val ns = readIdent(st, "record")
   val _ = skipStmtEnds(st)
-  val genericsSuffix = parseGenericParamsOpt(st)
+  val genericsSuffix = parseGenericParamsOpt(st, false)
   val generics = mergeGenericsInfo(st, genericsPrefix, genericsSuffix)
   val _ = skipStmtEnds(st)
   val whereClause = parseWhereClauseOpt(st)
@@ -470,7 +470,7 @@ func parseUnionBody(st: inout ParseState, genericsPrefix: Option[GenericParams])
   // 'union'
   val ns = readIdent(st, "union")
   val _ = skipStmtEnds(st)
-  val genericsSuffix = parseGenericParamsOpt(st)
+  val genericsSuffix = parseGenericParamsOpt(st, false)
   val generics = mergeGenericsInfo(st, genericsPrefix, genericsSuffix)
   val _ = skipStmtEnds(st)
   val whereClause = parseWhereClauseOpt(st)
@@ -627,7 +627,7 @@ func parseOpaqueTypeBody(st: inout ParseState, genericsPrefix: Option[GenericPar
   }
   val ns = readIdent(st, "opaque type")
   val _ = skipStmtEnds(st)
-  val genericsSuffix = parseGenericParamsOpt(st)
+  val genericsSuffix = parseGenericParamsOpt(st, false)
   val generics = mergeGenericsInfo(st, genericsPrefix, genericsSuffix)
   val _ = skipStmtEnds(st)
   val whereClause = parseWhereClauseOpt(st)
@@ -940,7 +940,7 @@ func parseFunctionDeclBody(st: inout ParseState, genericsPrefix: Option[GenericP
     i = i + 1
   }
   val _ = skipStmtEnds(st)
-  val genericsSuffix = parseGenericParamsOpt(st)
+  val genericsSuffix = parseGenericParamsOpt(st, false)
   val generics = mergeGenericsInfo(st, genericsPrefix, genericsSuffix)
   val _ = skipStmtEnds(st)
   val parameters = parseParamList(st)
@@ -1152,7 +1152,7 @@ func parseInterfaceBody(st: inout ParseState, genericsPrefix: Option[GenericPara
   // 'interface'
   val ns = readIdent(st, "interface")
   val _ = skipStmtEnds(st)
-  val genericsSuffix = parseGenericParamsOpt(st)
+  val genericsSuffix = parseGenericParamsOpt(st, false)
   val generics = mergeGenericsInfo(st, genericsPrefix, genericsSuffix)
   val _ = skipStmtEnds(st)
   val whereClause = parseWhereClauseOpt(st)
@@ -1301,7 +1301,7 @@ func parseImplMembers(st: inout ParseState): List[ImplMember] {
 func parseImplBody(st: inout ParseState, genericsPrefix: Option[GenericParams]): ImplDecl {
   val startTok = advance(st)
   // 'impl'
-  val suffixGenerics = parseGenericParamsOpt(st)
+  val suffixGenerics = parseGenericParamsOpt(st, false)
   val generics = mergeGenericsInfo(st, genericsPrefix, suffixGenerics)
   val iface = parseConstraintRef(st)
   match tryEatKw(st, KwFor) {
@@ -1643,7 +1643,7 @@ func parseProtectedTypeBody(st: inout ParseState, genericsPrefix: Option[Generic
   // 'type'
   val ns = readIdent(st, "protected type")
   val _ = skipStmtEnds(st)
-  val genericsSuffix = parseGenericParamsOpt(st)
+  val genericsSuffix = parseGenericParamsOpt(st, false)
   val generics = mergeGenericsInfo(st, genericsPrefix, genericsSuffix)
   val _ = skipStmtEnds(st)
   val whereClause = parseWhereClauseOpt(st)
@@ -2399,7 +2399,15 @@ func parseExternMemberOpt(st: inout ParseState): Option[ExternMemberDecl] {
     }
   }
   match kindOpt {
-    case Some(k) -> Some(ExternMemberDecl(docComments = docs, annotations = anns, visibility = vis, kind = k, span = startSp))
+    case Some(k) -> Some(
+      ExternMemberDecl(
+        docComments = docs,
+        annotations = anns,
+        visibility = vis,
+        kind = k,
+        span = startSp
+      )
+    )
     case None -> None
   }
 }
@@ -2465,7 +2473,7 @@ func parseExternTypeBody(st: inout ParseState): ExternTypeDecl {
   val _ = advance(st)
   // 'type'
   val ns = readIdent(st, "extern type")
-  val generics = parseGenericParamsOpt(st)
+  val generics = parseGenericParamsOpt(st, false)
   match tryEatPunct(st, Eq) {
     case Some(_) -> {
     }
@@ -3548,7 +3556,7 @@ func parseNestedImpl(
   prefixStart: in Span,
 ): List[Item] {
   val startTok = advance(st) // 'impl'
-  val suffixGenerics = parseGenericParamsOpt(st)
+  val suffixGenerics = parseGenericParamsOpt(st, false)
   val generics = mergeGenericsInfo(st, genericsPrefix, suffixGenerics)
 
   val target = parseTypeExpr(st)
@@ -3696,7 +3704,8 @@ func parseItemOpt(st: inout ParseState): Option[List[Item]] {
           case KwGeneric -> {
             match genericsPrefix {
               case None -> {
-                genericsPrefix = parseGenericParamsOpt(st)
+                val visAlreadySeen = match vis { case Some(_) -> true; case None -> false }
+                genericsPrefix = parseGenericParamsOpt(st, visAlreadySeen)
               }
               case Some(_) -> {
                 progress = false
