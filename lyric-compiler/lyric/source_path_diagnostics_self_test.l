@@ -689,3 +689,95 @@ test "lyric test: a compile error names the real line despite a multi-line modul
       result.stderr
   )
 }
+
+// #6826 (claude-review finding on #6825): the MSIL project bundle's weave
+// loop (`Msil.Bridge`'s Phase 3, split from `pipeCheckAndMono` so aspect
+// templates from every package's post-mono file are collected before any
+// package weaves) hardcoded `pipeWeave(perPkgFiles[li], allTemplates, "",
+// noBundleWeaveOrigins)` — an empty label AND an empty origins table —
+// even though `parsedPkgs[li].label` / `.origins` (the SAME pair the
+// typecheck phase a few lines earlier already resolved and used) were in
+// scope. A weave-time diagnostic (A0042/A0043/A0044) on a multi-file MSIL
+// project package therefore printed with NO file attribution at all,
+// unlike every other phase (#6282's own fix) and unlike the identical JVM
+// build (which routes weave through `Lyric.Pipeline.pipeMiddleEnd`,
+// threading `opts.pkgLabel`/`opts.lineOrigins` unconditionally). This
+// fixture's aspect config field has no default, mirroring
+// `weaver_ci_test.l`'s `testConfigNoDefaultEmitsA0044` fixture exactly
+// (A0044 is a WEAVE-phase diagnostic, not parse/typecheck/modecheck, so it
+// specifically exercises the loop this fix touches).
+test "multi-file project package (dotnet): a weave-time error (A0044) in the second file names that file and its real line (#6826)" {
+  val dir = freshTempDir("mf-weave")
+  defer {
+    cleanup(dir)
+  }
+  val srcDir = Path.join(dir, "src")
+  match File.createDir(srcDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create src dir: " + IOError.message(e))
+  }
+  val aSrc = "package WeaveMf\n" + "import Std.Core\n" + "func helperA(): Int {\n" + "  1\n" + "}\n" +
+    "func helperB(): Int {\n" +
+    "  2\n" +
+    "}\n"
+  // 11 lines; `config.undefaulted` (line 7) has no literal default, so
+  // A0044 fires at weave time when `d` (matched by `name like "d"`) is
+  // woven.
+  val bSrc = "package WeaveMf\n" + "import Std.Core\n" + "aspect Limit {\n" + "  config { undefaulted: Int }\n" +
+    "  matches: name like \"d\"\n" +
+    "  around(args) -> ret {\n" +
+    "    val v = config.undefaulted\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func d(): Int { 0 }\n" +
+    "func main(): Unit {}\n"
+  val aPath = Path.join(srcDir, "a.l")
+  val bPath = Path.join(srcDir, "b.l")
+  match File.writeText(aPath, aSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write a.l: " + IOError.message(e))
+  }
+  match File.writeText(bPath, bSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write b.l: " + IOError.message(e))
+  }
+  val manifest = "[package]\n" + "name = \"WeaveMf\"\n" + "version = \"0.0.1\"\n" + "\n" + "[project]\n" +
+    "name = \"WeaveMf\"\n" +
+    "\n" +
+    "[project.packages]\n" +
+    "\"WeaveMf\" = [\"src/a.l\", \"src/b.l\"]\n" +
+    "\n" +
+    "[dependencies]\n" +
+    "Std = \"*\"\n"
+  val mfPath = Path.join(dir, "lyric.toml")
+  match File.writeText(mfPath, manifest) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write lyric.toml: " + IOError.message(e))
+  }
+  val outPath = Path.join(dir, "out.dll")
+  val args: List[String] = newList()
+  args.add("build")
+  args.add("--manifest")
+  args.add(mfPath)
+  args.add("--target")
+  args.add("dotnet")
+  args.add("-o")
+  args.add(outPath)
+  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  assertTrue(result.exitCode != 0, "a config field with no default referenced by a matched aspect must fail the build")
+  assertTrue(
+    Str.contains(result.stderr, "A0044"),
+    "expected an A0044 diagnostic (weave phase, not parse/typecheck/modecheck) in stderr, got:\n" + result.stderr
+  )
+  assertTrue(
+    Str.contains(result.stderr, bPath + ": error[A0044]"),
+    "expected the A0044 diagnostic to be labelled with b.l's own real path '" + bPath +
+      "' (not an empty label) for a WEAVE-phase diagnostic on a multi-file MSIL project package (#6826), got:\n" +
+      result.stderr
+  )
+  assertTrue(
+    Str.contains(result.stderr, "] 7:"),
+    "expected the diagnostic to name b.l's own line 7 ('val v = config.undefaulted'), got:\n" + result.stderr
+  )
+}

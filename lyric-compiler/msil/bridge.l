@@ -336,8 +336,13 @@ pub func compileToMsilWithVersion(
   // dependency.
   val singleFileTemplates: Map[String, CollectedTemplate] = newMap()
   Weaver.collectAspectTemplates(file.items, pkgName, singleFileTemplates)
+  // #6826 fast-follow: label with the real on-disk `path` (already in
+  // scope, and already used by the parse phase above), matching every
+  // other phase's attribution for a single-file build — a weave-time
+  // diagnostic (A0042/A0043/A0044) previously printed with no file
+  // attribution at all even on the single-file path.
   val noWeaveOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  val weavedFile = match pipeWeave(file, singleFileTemplates, "", noWeaveOrigins) {
+  val weavedFile = match pipeWeave(file, singleFileTemplates, path, noWeaveOrigins) {
     case Some(f) -> f
     case None -> return false
   }
@@ -1189,8 +1194,22 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // cross-package `from`-instance aspects against the templates
     // collected above (#3414), and aborts on weave-time errors
     // (A0042 / A0043 / A0044).
-    val noBundleWeaveOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-    val weaved = match pipeWeave(perPkgFiles[li], allTemplates, "", noBundleWeaveOrigins) {
+    // #6826: label with the SAME `parsedPkgs[li].label`/`.origins` the
+    // typecheck phase above already resolved (mirroring `#6643`'s
+    // `pp.label` precedent) instead of a hardcoded `""`/empty pair — a
+    // weave-time diagnostic (A0042/A0043/A0044) in a multi-file MSIL
+    // project package must name the real file exactly like the JVM
+    // bridge's equivalent already does (JVM routes weave through
+    // `Lyric.Pipeline.pipeMiddleEnd`, which threads `opts.pkgLabel`/
+    // `opts.lineOrigins` unconditionally; this bundle's weave runs as a
+    // separate phase 3 loop, split from `pipeCheckAndMono` above so
+    // aspect templates from every package's post-mono file are collected
+    // first — see the comment on this loop above — so it must re-supply
+    // the label/origins pair itself). `perPkgFiles[li]` and
+    // `parsedPkgs[li]` are the SAME index by construction (the loop
+    // building `perPkgFiles` above iterates `parsedPkgs` 1:1 with no
+    // filtering).
+    val weaved = match pipeWeave(perPkgFiles[li], allTemplates, parsedPkgs[li].label, parsedPkgs[li].origins) {
       case Some(f) -> f
       case None -> return false
     }

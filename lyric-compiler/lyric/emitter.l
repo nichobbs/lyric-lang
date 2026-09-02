@@ -112,9 +112,14 @@ pub record ProjectPackage {
   /// On-disk path for each entry of `sources`, parallel by index (docs/63
   /// §9.7). "" marks an unknown/synthetic source (ad-hoc compiles, tests).
   /// A `ProjectPackage` with `sources.count > 1` is a genuinely multi-file
-  /// package; until #6282's per-file parse lands, `paths` for those is
-  /// conventionally `[""]` once `mergePackageSources` has collapsed the
-  /// files into one blob — emitting no attribution beats a guessed one.
+  /// package; `paths` for those is conventionally `[""]` once
+  /// `mergePackageSources`/`mergePackageSourcesWithOrigins` has collapsed
+  /// the files into one blob — no single on-disk path names the merged
+  /// blob as a whole. `emitProject`'s pre-merge carries the real per-file
+  /// attribution separately instead, via `mergePackageSourcesWithOrigins`'s
+  /// `MergedPackageSource.origins` table (#6282/D-progress-868) — `paths`
+  /// alone was never extended to cover the multi-file case, but the
+  /// merged package is no longer unattributed.
   paths: List[String]
 }
 
