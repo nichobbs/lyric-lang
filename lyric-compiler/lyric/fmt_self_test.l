@@ -2073,3 +2073,18 @@ test "explicit '..<' range subtype bound is unaffected by the bare-'..' fix" {
   val acc = format(parse(src))
   assertTrue(Str.contains(acc, "type Age = Int range 0 ..< 150"), "explicit '..<' range subtype: preserved verbatim")
 }
+
+// A fourth reader of `rangeBoundStr` (review suggestion on #6828): an
+// INLINE type refinement (`TRefined`, `typeStr`'s own arm), distinct
+// from the named range-subtype *declaration* form covered above —
+// `Path range <bound>` is valid anywhere a `TypeExpr` is (see
+// `parser_exprs.l`'s `identStr(peekToken(st)) == "range"` branch), e.g.
+// as a parameter type. Confirms the bare `..` spelling round-trips
+// there too, not just in `distinctDoc`.
+test "bare '..' inline type-refinement bound round trips (fourth rangeBoundStr reader, #2280)" {
+  val src = "package P\n\nfunc clamp(x: Int range 0 .. 10): Int {\n  x\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "bare '..' inline type refinement: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "x: Int range 0 .. 10"), "bare '..' inline type refinement: preserved verbatim")
+}

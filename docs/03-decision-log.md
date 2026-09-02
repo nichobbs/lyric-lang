@@ -40291,9 +40291,10 @@ range-pattern round-trip (covering `patRangeStr`'s `incl`-short-circuit
 branch, which the first four cases didn't exercise) plus the explicit
 `..<` counterpart on the range-subtype form — 144/144. Full regression
 sweep against the rebuilt self-hosted compiler, all green:
-`parser_self_test.l` 131/131, `typechecker_self_test.l` 412/412 (the
+`parser_self_test.l` 131/131, `typechecker_self_test.l` 415/415 (the
 range-subtype empty-bounds diagnostic message now threads `bareDotDot`
-too, per the same review round), `modechecker_self_test.l` 112/112,
+too, per the same review round — see the #6836 correction below for
+the three regression cases that count includes), `modechecker_self_test.l` 112/112,
 `mono_self_test.l` 82/82, `cfg_self_test.l` 12/12,
 `weaver_self_test.l` 46/46, `source_path_diagnostics_self_test.l`
 12/12. `for_loop_slice_self_test.l` (the original repro) now

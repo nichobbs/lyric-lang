@@ -2177,3 +2177,36 @@ test "record field named 'result' still parses (no regression, #6118)" {
   val pr = parse("package P\npub record R {\n  result: Int\n}\n")
   assertEqualInt(diagCount(pr), 0, "record-field-result: no diagnostics")
 }
+
+// `RangeBound.RBHalfOpen.bareDotDot` (#2280 / #6828) — a direct AST-shape
+// assertion pinning the parser contract independently of `Lyric.Fmt`'s
+// round-trip coverage (review suggestion on #6828: today the field is
+// only exercised indirectly via the formatter). Navigate: items[0] ->
+// IFunc -> body -> FBBlock -> statements[0] -> SFor -> iter -> ERange.
+func forLoopBareDotDot(pr: in ParseResult): Bool {
+  match pr.file.items[0].kind {
+    case IFunc(decl) -> match decl.body {
+      case Some(FBBlock(block)) -> match block.statements[0].kind {
+        case SFor(_, _, iter, _) -> match iter.kind {
+          case ERange(RBHalfOpen(_, _, bareDotDot)) -> bareDotDot
+          case _ -> false
+        }
+        case _ -> false
+      }
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
+test "parsed AST: bare '..' for-loop range sets RBHalfOpen.bareDotDot = true (#6828)" {
+  val pr = parse("package P\nfunc f(): Unit {\n  for i in 0 .. 10 {\n  }\n}\n")
+  assertEqualInt(diagCount(pr), 0, "bareDotDot AST (bare ..): no diagnostics")
+  assertTrue(forLoopBareDotDot(pr), "bareDotDot AST: bare '..' sets RBHalfOpen.bareDotDot = true")
+}
+
+test "parsed AST: explicit '..<' for-loop range sets RBHalfOpen.bareDotDot = false (#6828)" {
+  val pr = parse("package P\nfunc f(): Unit {\n  for i in 0 ..< 10 {\n  }\n}\n")
+  assertEqualInt(diagCount(pr), 0, "bareDotDot AST (..<): no diagnostics")
+  assertTrue(not forLoopBareDotDot(pr), "bareDotDot AST: explicit '..<' sets RBHalfOpen.bareDotDot = false")
+}
