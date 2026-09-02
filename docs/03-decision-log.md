@@ -40413,7 +40413,7 @@ already-idiomatic-in-this-codebase `match vis { case Some(_) -> …; case
 None -> … }` form instead, which a debug repro (`lyric run` printing the
 parsed field values directly) confirmed produces the correct flag.
 
-**Verification.** Eight new `fmt_self_test.l` cases across this entry's
+**Verification.** Ten new `fmt_self_test.l` cases across this entry's
 several commits: the exact `generic[T] func …` repro round-trips
 byte-for-byte instead of losing the keyword; `pub generic[T] func …`
 combines correctly; a record and an impl declaration (the two shapes
