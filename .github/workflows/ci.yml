@@ -1682,12 +1682,15 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/ffi-f0015-negative-test.sh
 
-      # D105 Phase 2: F0020–F0023 external-interface impl conformance negative
-      # tests.  Phase 1 (PR #3851) wired `impl ExternInterface for Record` end
-      # to end at the codegen layer; this phase adds metadata-direct signature
-      # validation so a mis-shaped impl fails at build time instead of at first
-      # use with `TypeLoadException`.  Each fixture targets one diagnostic.
-      - name: FFI iface impl F0020–F0023 + generic-iface negative tests
+      # D105 Phase 2: F0021–F0023, F0034 external-interface impl conformance
+      # negative tests.  Phase 1 (PR #3851) wired `impl ExternInterface for
+      # Record` end to end at the codegen layer; this phase adds
+      # metadata-direct signature validation so a mis-shaped impl fails at
+      # build time instead of at first use with `TypeLoadException`.  Each
+      # fixture targets one diagnostic.  The "not an interface" check is
+      # F0034, not F0020 — renumbered (#6648) to avoid colliding with
+      # propagate.l's pre-existing F0020 (`?` in a non-Result/Option function).
+      - name: FFI iface impl F0021–F0023, F0034 + generic-iface negative tests
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/ffi-iface-impl-negative-tests.sh
@@ -2439,6 +2442,18 @@ jobs:
       - name: Restore executable permissions
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
+      # source_path_diagnostics_self_test.l and jvm_sourcefile_attr_self_test.l
+      # (below) spawn `./bin/lyric` as a subprocess, resolved relative to CWD
+      # (repo root) -- the same `./bin/lyric` symlink `make lyric` creates for
+      # local dev (Makefile's `lyric` target: `ln -sf "../$(AOT_BIN)" bin/lyric`).
+      # This job downloads only the AOT binary's own nested path
+      # (bootstrap/src/Lyric.Cli.Aot/bin/...), never runs `make lyric`, and has
+      # no other step creating bin/lyric, so recreate the same symlink here.
+      - name: Create ./bin/lyric symlink for subprocess-spawning self-tests
+        run: |
+          mkdir -p bin
+          ln -sf "../bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric" bin/lyric
+
       # MSIL backend self-tests M2a-M2d (native lyric test, D-progress-474 / #66)
       # — replaces the deleted F# MsilSelfTestM2{a,b,c,d}.fs Expecto wrappers.
       # M2a pins the #3085 fix (short-name collision `Msil.Kernel.ByteWriter`
@@ -2833,6 +2848,32 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/msil_project_bridge_self_test.l
 
+      # Enum case-name collision self-test (#5995, plus #6638/#6639/#6640
+      # follow-ups and the #6650 real-stdlib-enum coverage) — compiles small
+      # multi-package fixtures through BOTH `Msil.Bridge.compileProjectToMsil`
+      # and `Jvm.Bridge.compileProjectToJarBundledWithFeatures` in-process
+      # (its own "dotnet: …" and "jvm: …" test bodies run both bridges from
+      # this single step; no separate `--target jvm` invocation needed), runs
+      # each produced binary, and asserts stdout — the same heavy in-process
+      # multi-package-build shape as `msil_project_bridge_self_test.l` above
+      # and `jvm_cross_package_collision_self_test.l`, so it rides the same
+      # non-background placement.  The #6650 case additionally links the REAL
+      # compiled stdlib (`Emitter.findStdlibSources()`), needing the same
+      # `dotnet`/Java 21 toolchain this job already sets up.
+      - name: Enum case-name collision self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/enum_case_collision_self_test.l
+
+      # MSIL codegen diagnostics self-test (#4898) — pins that the F0021-F0025, F0034
+      # external-interface-conformance and try-catch-as-expression codegen
+      # errors are reported as positioned CodegenCtx.diagnostics entries
+      # (gated by Msil.Bridge via Lyric.DiagnosticUtil.diagReportAndAbort)
+      # instead of an escaped panic().  Same in-process Msil.Bridge surface as
+      # msil_project_bridge_self_test.l above.
+      - name: MSIL codegen diagnostics self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/msil_codegen_diag_self_test.l
+
       # Emitter project self-test — exercises the Phase 4 in-process routing in
       # Lyric.Emitter.emitProject (multi-package DOTNET builds).  Covers aliased
       # imports, per-package isolation, @cfg erasure via emitProject, restored-dep
@@ -2884,6 +2925,26 @@ jobs:
       - name: Config-block required-field-missing self-test (native lyric test)
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/config_block_missing_required_self_test.l
+
+      # docs/63 §9.7 / #6284: single-file (dotnet + jvm) and manifest-project
+      # diagnostics now carry the real source path; multi-file project-package
+      # parse errors carry the package label (line number stays blob-relative
+      # pending #6282). Spawns the just-built ./bin/lyric as a subprocess per
+      # case (the only way to observe Lyric.Pipeline.gate's printed stderr),
+      # so it needs the same exclusive, non-background placement as the
+      # config-block step above.
+      - name: Source-path diagnostics self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/source_path_diagnostics_self_test.l
+
+      # docs/63 §9.7 / #6284: the JVM backend now emits a real JVMS §4.7.10
+      # SourceFile attribute naming the real path, for both the plain
+      # single-file build and the common single-package-project manifest
+      # shape. Shells out to unzip/javap (already a hard CI dependency for
+      # every JVM self-test that runs its JAR under `java`).
+      - name: JVM SourceFile attribute self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_sourcefile_attr_self_test.l
 
       - name: Init self-test (native lyric test)
         background: true
@@ -6459,25 +6520,7 @@ jobs:
       - name: Std.Http round-trip self-test (native lyric test)
         working-directory: ${{ github.workspace }}
         run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping Std.Http round-trip self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Http round-trip self-test"
-            exit 1
-          fi
-          if [ ! -f lyric-stdlib/bin/Lyric.Stdlib.dll ]; then
-            echo "::error::lyric-stdlib/bin/Lyric.Stdlib.dll missing — the 'Build full stdlib' step must run before this one"
-            exit 1
-          fi
-          rm -rf .bootstrap/httprt-lib
-          mkdir -p .bootstrap/httprt-lib
-          cp .bootstrap/stage1/*.dll .bootstrap/httprt-lib/
-          cp lyric-stdlib/bin/Lyric.Stdlib*.dll .bootstrap/httprt-lib/
-          LYRIC_STDLIB_BIN="$PWD/.bootstrap/httprt-lib" "$lyric_bin" test --target dotnet lyric-compiler/lyric/http_roundtrip_self_test.l
+          bash scripts/ci/httprt-self-test.sh "Std.Http round-trip" lyric-compiler/lyric/http_roundtrip_self_test.l
 
       # Std.Rest.RestClient.json live round trip (#1119): the same
       # child-process Std.HttpServer listener pattern as the step above, but
@@ -6501,25 +6544,7 @@ jobs:
       - name: Std.Rest RestClient.json round-trip self-test (native lyric test)
         working-directory: ${{ github.workspace }}
         run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping Std.Rest RestClient.json round-trip self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping Std.Rest RestClient.json round-trip self-test"
-            exit 1
-          fi
-          if [ ! -f lyric-stdlib/bin/Lyric.Stdlib.dll ]; then
-            echo "::error::lyric-stdlib/bin/Lyric.Stdlib.dll missing — the 'Build full stdlib' step must run before this one"
-            exit 1
-          fi
-          rm -rf .bootstrap/httprt-lib
-          mkdir -p .bootstrap/httprt-lib
-          cp .bootstrap/stage1/*.dll .bootstrap/httprt-lib/
-          cp lyric-stdlib/bin/Lyric.Stdlib*.dll .bootstrap/httprt-lib/
-          LYRIC_STDLIB_BIN="$PWD/.bootstrap/httprt-lib" "$lyric_bin" test --target dotnet lyric-compiler/lyric/rest_json_roundtrip_self_test.l
+          bash scripts/ci/httprt-self-test.sh "Std.Rest RestClient.json round-trip" lyric-compiler/lyric/rest_json_roundtrip_self_test.l
 
       # HttpVersion deterministic coverage (docs/61 §5.1, D128 decision 4;
       # #5879): the Http3-unsupported gate never touches the network (build()

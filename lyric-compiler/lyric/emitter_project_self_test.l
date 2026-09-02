@@ -80,11 +80,19 @@ func cleanup(dir: in String): Unit {
 func mkProjectPkg(name: in String, source: in String): Emitter.ProjectPackage {
   val srcs: List[String] = newList()
   srcs.add(source)
-  Emitter.ProjectPackage(name = name, sources = srcs)
+  val paths: List[String] = newList()
+  paths.add("")
+  Emitter.ProjectPackage(name = name, sources = srcs, paths = paths)
 }
 
 func mkProjectPkgMulti(name: in String, sources: in List[String]): Emitter.ProjectPackage {
-  Emitter.ProjectPackage(name = name, sources = sources)
+  val paths: List[String] = newList()
+  var i = 0
+  while i < sources.count {
+    paths.add("")
+    i = i + 1
+  }
+  Emitter.ProjectPackage(name = name, sources = sources, paths = paths)
 }
 
 func runEmitProjectOpts(
@@ -535,7 +543,7 @@ test "emitProject multi-file directory package" {
     case Err(e) -> panic("multi_file_dir_package: cannot read main: " + IOError.message(e))
   }
   val pkgs: List[Emitter.ProjectPackage] = newList()
-  pkgs.add(Emitter.ProjectPackage(name = "MDir", sources = sources))
+  pkgs.add(mkProjectPkgMulti("MDir", sources))
   val result = runEmitProject("mdir-2575-build", pkgs, "MDir")
   cleanup(fixtureDir)
   assertEqualInt(result.exitCode, 0, "multi_file_dir_package: exit 0 (stderr=" + result.stderr + ")")
@@ -575,7 +583,7 @@ test "emitProject multi-file directory package (JVM)" {
     case Err(e) -> panic("multi_file_dir_package_jvm: cannot read main: " + IOError.message(e))
   }
   val pkgs: List[Emitter.ProjectPackage] = newList()
-  pkgs.add(Emitter.ProjectPackage(name = "MDirJvm", sources = sources))
+  pkgs.add(mkProjectPkgMulti("MDirJvm", sources))
   val result = runEmitProjectJvmOpts("mdir-2575-jvm-build", pkgs, "MDirJvm")
   cleanup(fixtureDir)
   assertEqualInt(result.exitCode, 0, "multi_file_dir_package_jvm: exit 0 (stderr=" + result.stderr + ")")
@@ -604,7 +612,7 @@ test "emitProject multi-file package module docs and import union" {
   sources.add(fileOne)
   sources.add(fileTwo)
   val pkgs: List[Emitter.ProjectPackage] = newList()
-  pkgs.add(Emitter.ProjectPackage(name = "MDocs", sources = sources))
+  pkgs.add(mkProjectPkgMulti("MDocs", sources))
   val result = runEmitProject("mdocs-2575", pkgs, "MDocs")
   assertEqualInt(result.exitCode, 0, "multi_file_module_docs: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "42", "multi_file_module_docs: stdout matches expected")
@@ -1066,7 +1074,8 @@ test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure
     outputPath = Path.join(dir, "ContainJ007.jar"),
     target = Emitter.Jvm,
     packageVersion = "",
-    defines = noDefines
+    defines = noDefines,
+    path = ""
   )
   var threw = false
   val result = try {
@@ -1235,7 +1244,8 @@ test "unresolved diamond default conflict is rejected with T0117, not a backend 
     outputPath = Path.join(dir, "DiamondT0117.dll"),
     target = Emitter.Dotnet,
     packageVersion = "",
-    defines = noDefines
+    defines = noDefines,
+    path = ""
   )
   var threw = false
   val result = try {
@@ -1291,7 +1301,8 @@ test "unresolved diamond default conflict is rejected with T0117 on JVM too (#64
     outputPath = Path.join(dir, "DiamondT0117Jvm.jar"),
     target = Emitter.Jvm,
     packageVersion = "",
-    defines = noDefines
+    defines = noDefines,
+    path = ""
   )
   var threw = false
   val result = try {

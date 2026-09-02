@@ -58,19 +58,19 @@ test "errorMessage DatabaseError contains driver message" {
 //
 // Substring checks assume compact JSON (no space after ":").
 test "userToJson includes id" {
-  val u = User(id = 42, username = "alice", createdAt = "2024-01-01T00:00:00Z")
+  val u = Rbac.Store.User(id = 42, username = "alice", createdAt = "2024-01-01T00:00:00Z")
   val json = Rbac.Store.userToJson(u)
   assertTrue(json.indexOf("\"id\":42") >= 0, "id present")
 }
 
 test "userToJson includes username" {
-  val u = User(id = 1, username = "bob", createdAt = "2024-01-01T00:00:00Z")
+  val u = Rbac.Store.User(id = 1, username = "bob", createdAt = "2024-01-01T00:00:00Z")
   val json = Rbac.Store.userToJson(u)
   assertTrue(json.indexOf("bob") >= 0, "username present")
 }
 
 test "userToJson is wrapped in braces" {
-  val u = User(id = 1, username = "carol", createdAt = "2024-01-01T00:00:00Z")
+  val u = Rbac.Store.User(id = 1, username = "carol", createdAt = "2024-01-01T00:00:00Z")
   val json = Rbac.Store.userToJson(u)
   assertTrue(json.length > 0, "json non-empty")
   assertEqual(json.substring(0, 1), "{", "starts with {")

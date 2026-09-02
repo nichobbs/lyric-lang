@@ -180,7 +180,7 @@ pub func serializeUs(h: in UsHeap, w: in ByteWriter): Unit {
 // has index 1, the second has index 2, and so on.
 pub record GuidHeap {
   buf: ByteWriter
-  count: Int
+  var count: Int
 }
 
 pub func newGuidHeap(): GuidHeap {

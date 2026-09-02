@@ -1269,7 +1269,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0064` | `return` without value in non-Unit function |
 | `T0065` | Returned type does not match declared return type |
 | `T0066` | `while` condition is not Bool |
-| `T0067` | `if`/`match` guard or condition type error; value-position `try` handler type incompatible with the `try` body |
+| `T0067` | `if`/`match` guard or condition type error; incompatible `if`/`match` branch types (or value-position `try` handler type incompatible with the `try` body) — branch unification is position-aware: a `Unit`-vs-value branch mismatch is lenient in statement position but rejected in value position |
 | `T0070` | Function body type does not match declared return type |
 | `T0073` | `null` used in pattern position — Lyric has no null literal or null pattern; `case null -> ...` parses as an ordinary catch-all binding named `null`, not a null test |
 | `T0080` | `old(…)` used outside an `ensures` clause |
@@ -1295,6 +1295,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0118` | A default-method body references a non-member through a `Self`-typed value (`self.<field>`, or `<param>.<field>` where the parameter is typed `Self`) — including through a chain of calls to other `Self`-returning interface members (`self.withX().field`) and through a parenthesized receiver (`(other).field`). A default method's `Self` is the interface itself, which owns no fields — the body may only reference interface members (`self.<member>()` or bare `<member>()`). A body that needs a field must be overridden in the implementing `impl` block, where `Self` narrows to the concrete target type. A local binding that shadows a `Self`-typed parameter name inside a nested block is exempt for the extent of that block (block-scoped shadowing). |
 | `T0119` | `Alias.member` on an extern type does not resolve to a static property getter, a literal constant, a static field, or a zero-argument static method in .NET reference-assembly metadata (`Alias` names an `extern type`) — most often a typo, or a member the auto-FFI static-access probes don't cover (an argument-bearing method, an overload). Check the name for a typo, or declare an `@externTarget` wrapper for a custom binding. Raised at MSIL codegen time (`Msil.Codegen`) with the access expression's source span; `Lyric.Emitter`'s bridge boundary catches it, prints it as a normal diagnostic, and carries it in `EmitResult.diagnostics` instead of letting it reach the CLI as an uncaught exception (#6449). |
 | `T0120` | Generic fallback for an MSIL codegen failure that panicked without its own `error[T0NNN]:`-prefixed diagnostic — `Lyric.Emitter`'s bridge boundary catches every MSIL codegen panic (the same layer as the JVM target's `J008` catch-all; `Msil.Bridge` itself deliberately lets the panic escape as its library contract) so a build always ends in a printed diagnostic plus an `EmitResult.diagnostics` entry, never a raw uncaught exception with a .NET stack trace. The wrapped message names the underlying failure; treat it as a compiler-internal-error report (file an issue) unless the wrapped text itself points at a source-level mistake. |
+| `T0123` | A bare (unqualified) name — a function, `val`/`const`, or union/enum case constructor — is declared by two or more packages imported at the same use site; referencing it unqualified is an error naming every declaring package, rather than silently resolving to whichever package happened to register the name last. Fix by qualifying the reference (`Pkg.name`). Not flagged: a local declaration that shadows the ambiguous import, a name reachable through only one of the imports (no actual collision), a name reachable only transitively through another package's own imports (the kernel/host re-export idiom), or a pattern match against a scrutinee of statically known type (which resolves the case against the scrutinee's own union/enum directly, without needing qualification). |
 | `T0124` | A receiver structurally matches `Std.Core.Result[T, E]` / `Option[T]`'s reserved shape (bare name + matching arity) but is a *different* type declared outside `Std.Core`, and one of the six reserved accessor names (`.isOk`/`.isErr`/`.value`/`.error`/`.isSome`/`.isNone`) was accessed on it with no real matching member of its own. `Result`/`Option`'s accessor sugar is resolved by type identity, not by name, so a same-named foreign union never receives it (#6630); define your own member under that name, or call it through `Std.Core.Result`/`Option` if that was the intent. |
 
 ### Type checker warnings (W-series)
@@ -1325,6 +1326,26 @@ Warnings emitted by the MSIL emitter for constructs that compile but may not beh
 | Code | Severity | Meaning |
 |---|---|---|
 | `A0001` | warning | `async func` declares an `out` or `inout` parameter; the async state machine stores a value copy, not the byref — the caller's variable is not updated. Return a `Result` or record instead. |
+
+### MSIL codegen diagnostics (F-series)
+
+Compile-time-detectable codegen errors raised by the self-hosted MSIL
+backend (`msil/codegen.l`, #4898): reported as positioned
+`CodegenCtx.diagnostics` entries — the same convention the type-checker /
+mode-checker / cfg-erasure diagnostic lists use — instead of an escaped
+`panic`. The `F`-code prefix is shared with other, unrelated diagnostic
+families (`docs/24-build-features.md`'s cfg-erasure codes, `docs/60-build-
+defines.md`'s build-define codes, `docs/63-build-profiles-and-debugger.md`'s
+profile/shape codes); see those docs for their own F-series ranges.
+
+| Code | Meaning |
+|---|---|
+| `F0021` | External-interface `impl` block: an abstract interface method has no matching impl method. |
+| `F0022` | External-interface `impl` block: an impl method's parameter count, or its Nth parameter type, does not match the interface's declared signature. |
+| `F0023` | External-interface `impl` block: an impl method's return type does not match the interface's declared signature. |
+| `F0024` | External-interface `impl` block: the `extern type` FQN does not resolve to any type in an indexed reference-pack or restored-dependency assembly (typically a typo); silently skipped only when the metadata index itself could not be populated (an SDK-less build). |
+| `F0025` | `try`/`catch` used as an expression, where a catch arm yields `Unit` while the try body (or an earlier catch arm) already established a value-producing result type — the MSIL backend cannot route an absent value through the shared result slot (type-checker gap #2042; the JVM backend rejects the same shape at check time with `J004`). |
+| `F0034` | External-interface `impl` block: the target resolves through `extern type` / `import extern`, but its .NET metadata is not an interface (e.g. `impl Math for Foo` against the class `System.Math`). Numbered `F0034`, not `F0020`, to avoid colliding with `propagate.l`'s pre-existing `F0020` (`?` used in a function returning neither `Result` nor `Option`) — see issue #6648. |
 
 ### Stability (S-series)
 

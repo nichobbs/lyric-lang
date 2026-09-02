@@ -21,7 +21,7 @@ pub record NameAndSpan {
 
 pub record ParseState {
   tokens: List[SpannedToken]
-  pos: Int
+  var pos: Int
   diags: List[Diagnostic]
   /// Concrete-syntax-tree event log — see `parser_cst.l`.  Token
   /// indices in `CeStart` / `CeFinish` reference `tokens` directly,
@@ -32,14 +32,21 @@ pub record ParseState {
   /// #5646) in `parsePrimaryExpr`'s `LParen` case: while `true`, a
   /// parenthesised bare-identifier group immediately followed by `->`
   /// stays an ordinary `ParenExpr`/`TupleExpr` instead of becoming a
-  /// lambda literal. Owned for its entire duration by
-  /// `parseArrowSensitiveExpr` (#5667/#5668) — see that function's doc
-  /// for why a simple set-before/clear-after around one `parseExpr` call
-  /// isn't enough (it only protects the FIRST primary expression parsed,
-  /// not a later one reached after climbing through binary operators,
-  /// e.g. `flag and (cond) -> 1`). Plain callers of `parseExpr` elsewhere
-  /// should never touch this field directly.
-  suppressArrowLambda: Bool
+  /// lambda literal. Set for a retry parse's duration by
+  /// `parseArrowSensitiveExpr` / `parseStatementLeadExpr` (#5667/#5668)
+  /// — see `parseArrowSensitiveExpr`'s doc for why a simple set-before/
+  /// clear-after around one `parseExpr` call isn't enough (it only
+  /// protects the FIRST primary expression parsed, not a later one
+  /// reached after climbing through binary operators, e.g.
+  /// `flag and (cond) -> 1`). Only ever read at the top of
+  /// `parsePrimaryExpr` into a local `val` — never live-read again after
+  /// that point — so a nested `parseDelimitedExpr` call (see its doc)
+  /// clearing/restoring this field partway through that same primary's
+  /// recursive descendants can't retroactively change the decision this
+  /// primary already captured. `parseDelimitedExpr` is the only sanctioned
+  /// way for a plain `parseExpr` call site to touch this field; every
+  /// other caller must leave it alone.
+  var suppressArrowLambda: Bool
   /// True while parsing a `requires:`/`ensures:`/`when:` contract clause's
   /// expression body — the only position where bare `result` legitimately
   /// names the function's return value.  `parseContractClauseOptInner`
@@ -51,7 +58,7 @@ pub record ParseState {
   /// `EResult` node; unconditionally treating bare `result` as `EResult`
   /// broke exactly that case (#5735: a local named `result` could be
   /// declared but never referenced again by name).
-  inContractClauseExpr: Bool
+  var inContractClauseExpr: Bool
 }
 
 pub func makeParseState(tokens: in List[SpannedToken], diags: in List[Diagnostic]): ParseState {
@@ -285,7 +292,13 @@ pub func tryEatIdentOrContextual(st: inout ParseState): Option[NameAndSpan] {
           st.pos = st.pos + 1
           Some(value = NameAndSpan(name = "result", span = t.span))
         }
-        case _ -> match contextualIdentKeyword(k) { case Some(name) -> { st.pos = st.pos + 1; Some(value = NameAndSpan(name = name, span = t.span)) }; case None -> None }
+        case _ -> match contextualIdentKeyword(k) {
+          case Some(name) -> {
+            st.pos = st.pos + 1
+            Some(value = NameAndSpan(name = name, span = t.span))
+          }
+          case None -> None
+        }
       }
     }
     case _ -> None
@@ -689,7 +702,8 @@ pub func parsePackageDecl(st: inout ParseState): PackageDecl {
         // "expected 'package'" message (the package usually IS present, just
         // after the stray doc comment).
         val msg = match peekToken(st) {
-          case TDocComment(_) -> "a '///' doc comment before 'package' has no item to document; " + "use '//!' for a module-level doc comment"
+          case TDocComment(_) -> "a '///' doc comment before 'package' has no item to document; " +
+            "use '//!' for a module-level doc comment"
           case _ -> "expected 'package' declaration at the head of the file"
         }
         emitErr(st, "P0020", msg, peekSpan(st))

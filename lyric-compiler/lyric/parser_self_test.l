@@ -64,7 +64,10 @@ func firstFuncBodyStmtCount(pr: in ParseResult): Int {
     return -1
   }
   match pr.file.items[0].kind {
-    case IFunc(fd) -> match fd.body { case Some(b) -> match b { case FBBlock(blk) -> blk.statements.count; case FBExpr(_) -> -2 }; case None -> -3 }
+    case IFunc(fd) -> match fd.body {
+      case Some(b) -> match b { case FBBlock(blk) -> blk.statements.count; case FBExpr(_) -> -2 }
+      case None -> -3
+    }
     case _ -> -4
   }
 }
@@ -1405,6 +1408,97 @@ test "lambda: compound match-arm guard ending in a parenthesised identifier does
   assertEqualInt(diagCount(pr), 0, "guard `if flag and (cond) -> ...` parses clean")
 }
 
+// #5672: a guard that combines BOTH a legitimate nested bare-lambda call
+// argument (`xs.any((v) -> v > 0)`) AND a separately-ambiguous trailing
+// paren-group (`and (flag)`) in the SAME expression. The #5667/#5668 retry
+// held `suppressArrowLambda` as a single flag for the whole retry parse, so
+// fixing the trailing `(flag)` ambiguity also broke the nested `(v) -> ...`
+// lambda, producing a P0080/P0201/P0202/P0051 cascade. `parseDelimitedExpr`
+// scopes suppression to genuine tail position (clearing/restoring it around
+// the call-argument parse) so both are handled correctly at once.
+test "lambda: guard with both a nested lambda call argument and a trailing ambiguous paren-group parses clean" {
+  val pr = parse(
+    "package P\nfunc classify(y: Int, xs: List[Int], flag: Bool): Int {\n  match y {\n    case y if xs.any((v) -> v > 0) and (flag) -> 1\n    case _ -> 0\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(pr), 0, "guard `if xs.any((v) -> v > 0) and (flag) -> ...` parses clean")
+}
+
+// #6601: the #5672 fix scoped `suppressArrowLambda` to genuine tail position
+// only at the call-argument/list/tuple/interpolation-hole/`old(...)` sites
+// `parseDelimitedExpr` was applied to — NOT at `parseBlock`'s statements or
+// `parseIfExpr`/`parseMatchExpr`'s own bounded sub-expressions. A guard's
+// trailing ambiguous `(flag)` still triggers the suppressed retry, but this
+// time the ambiguous paren-group is reached via an `if`-expression instead
+// of a call argument: the retry's suppression used to leak into the block
+// statement `val f = (x) -> x > 0`, wrongly parsing `(x)` as a plain paren
+// group and leaving the guard's own `-> x > 0` dangling (a
+// P0080/P0201/P0202/P0051 cascade). `parseDelimitedStmt` (parseBlock) and
+// `parseDelimitedExpr` (parseMatchExpr's scrutinee) now clear suppression
+// for these bounded contexts too.
+test "lambda: guard containing an if-block statement with a nested lambda, plus a trailing ambiguous paren-group, parses clean" {
+  val pr = parse(
+    "package P\nfunc classify(y: Int, flag: Bool): Int {\n  match y {\n    case y if if flag { val f = (x) -> x > 0; f(y) } else { false } and (flag) -> 1\n    case _ -> 0\n  }\n}\n"
+  )
+  assertEqualInt(
+    diagCount(pr), 0,
+    "guard `if if flag { val f = (x) -> x > 0; f(y) } else { false } and (flag) -> ...` parses clean"
+  )
+}
+
+// #6601: same shape as the above parse-only check, but as REAL executable
+// code in this `@test_module` file — `lyric test` compiles and runs this
+// whole file, so a parser regression here fails the file's own compile,
+// and the `test` block below asserts the guard/nested-lambda actually
+// produce the right runtime values (not just a clean parse).
+//
+// `f` differs from the parse-only test's literal `(x) -> x > 0` in two
+// ways, both to dodge MSIL codegen limitations that are orthogonal to the
+// parser bug under test here (confirmed independently: neither reproduces
+// without a `val`-bound lambda, and both predate this change):
+//   - `x` is deliberately unused (the body reads the captured outer `y`
+//     instead). The bare-paren lambda reinterpretation this test targets
+//     (`parsePrimaryExpr`'s `LParen` case) never supports a `: Type`
+//     annotation on its param (only the `{ x: Int -> … }` bracket form
+//     does; see `exprAsLambdaParam`), and an un-annotated *used* param
+//     outside a direct higher-order-function call isn't yet supported by
+//     MSIL codegen (#1939) — propagation only triggers when a lambda
+//     LITERAL is itself a call argument, never through a `val`'s own type
+//     annotation, so there is no annotated-and-still-bare-paren escape
+//     hatch for a used param here.
+//   - `f`'s `val` carries an explicit `(Int) -> Bool` type annotation. A
+//     function-valued `val` relying on TYPE INFERENCE (no annotation) for
+//     a lambda-literal initializer never registers in codegen's
+//     `funcValRetTypes` (that registration only fires for a literal or
+//     alias-resolved `TFunction` annotation — see decision-log
+//     D-progress-738 / #5366, which fixed the bare-function-reference and
+//     alias-typed cases but not a plain unannotated lambda-literal `val`),
+//     so the later `f(y)` call's boxed `Func<...>.Invoke` result is never
+//     unboxed — silently truthy regardless of the lambda's real body
+//     (confirmed: even `val f = (x) -> false; f(y)` returns `true`).
+//     Tracked in #6690. The explicit annotation here registers `f`
+//     correctly and makes `f(y)` unbox to the real `Bool`.
+// Both are pre-existing MSIL codegen gaps, unrelated to the parser fix;
+// neither is addressed by this change (out of scope — see the PR/task
+// notes). What this shape still fully exercises is the parser fix itself:
+// a real local `val` binding whose initializer is the bare-paren lambda
+// form (`parsePrimaryExpr`'s `LParen` reinterpretation, reached through
+// `parseDelimitedStmt` around `parseBlock`'s statement loop), inside an
+// `if`-block, inside a match-arm guard whose own trailing `(flag)` triggers
+// the suppressed retry — plus a real call through the binding (`f(y)`)
+// whose result genuinely varies with runtime state.
+func classify6601(y: Int, flag: Bool): Int {
+  match y {
+    case y if if flag { val f: (Int) -> Bool = (x) -> y > 0; f(y) } else { false } and (flag) -> 1
+    case _ -> 0
+  }
+}
+
+test "lambda: #6601 repro runs correctly — guard picks the right arm and the nested lambda is invocable" {
+  assertEqualInt(classify6601(5, true), 1, "positive y, flag true: guard true, arm 1 selected")
+  assertEqualInt(classify6601(-5, true), 0, "non-positive y, flag true: nested lambda call returns false, arm 1 not selected")
+  assertEqualInt(classify6601(5, false), 0, "flag false: if-branch not taken, guard false, arm 1 not selected")
+}
+
 // Exact shape from the issue repro: a bare two-param lambda whose body is a
 // multi-line `{ ... }` block (not a single expression), as the second
 // positional call argument.
@@ -1413,6 +1507,31 @@ test "lambda: bare two-param form with block body parses clean (issue repro)" {
     "package P\nfunc f(): Int {\n  var total = 0\n  mapForEach(m, (k, v) -> {\n    total = total + v\n  })\n  return total\n}\n"
   )
   assertEqualInt(diagCount(pr), 0, "lambda: `(k, v) -> { ... }` block-body call argument parses clean")
+}
+
+// #6731: `parseIfExpr`'s ternary (`if … then … else …`) form deliberately
+// parses `elseExpr` via plain `parseExpr`, NOT `parseDelimitedExpr` — unlike
+// every other bounded sub-expression the #5672/#6601 fixes scoped
+// suppression around (call args, list/tuple items, `cond`/`thenExpr`, block
+// statements). The ternary else-branch has no closing token of its own, so
+// it must keep inheriting the ambient `suppressArrowLambda` state from an
+// enclosing guard/statement retry — delimiting it here would reintroduce
+// the #5667/#5668 misparse for this one remaining call site. These two
+// cases pin that invariant so a future "consistency fix" wrapping
+// `elseExpr` in `parseDelimitedExpr` (matching every other call site in the
+// same commit) fails loudly instead of silently regressing.
+test "ternary: guard's trailing ambiguous paren-group inside a ternary else-branch still ends the guard, not a lambda (#6731)" {
+  val pr = parse(
+    "package P\nfunc classify(y: Int, flag: Bool, p: Bool, cond: Bool): Int {\n  match y {\n    case y if flag and if p then true else (cond) -> 1\n    case _ -> 0\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(pr), 0, "guard `if flag and if p then true else (cond) -> ...` parses clean")
+}
+
+test "ternary: a legitimately-delimited nested lambda call argument inside a ternary else-branch parses clean (#6731)" {
+  val pr = parse(
+    "package P\nfunc classify(y: Int, xs: List[Int], flag: Bool, p: Bool): Int {\n  match y {\n    case y if flag and if p then true else xs.any((v) -> v > 0) -> 1\n    case _ -> 0\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(pr), 0, "guard `if flag and if p then true else xs.any((v) -> v > 0) -> ...` parses clean")
 }
 
 // A tuple expression that happens to contain bare identifiers but has no
@@ -1715,7 +1834,11 @@ func protectedMemberFirstAnnName(pm: in ProtectedMember): String {
       match pf {
         case PFVar(_, _, _, _, anns, _) -> if anns.count > 0 { modulePathJoin(anns[0].name.segments) } else { "<none>" }
         case PFLet(_, _, _, _, anns, _) -> if anns.count > 0 { modulePathJoin(anns[0].name.segments) } else { "<none>" }
-        case PFImmutable(fd) -> if fd.annotations.count > 0 { modulePathJoin(fd.annotations[0].name.segments) } else { "<none>" }
+        case PFImmutable(fd) -> if fd.annotations.count > 0 {
+          modulePathJoin(fd.annotations[0].name.segments)
+        } else {
+          "<none>"
+        }
       }
     }
     case PMEntry(ed) -> if ed.annotations.count > 0 { modulePathJoin(ed.annotations[0].name.segments) } else { "<none>" }

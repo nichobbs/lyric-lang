@@ -848,7 +848,7 @@ pub record MFunc {
   params: List[MsilType]
   ret: MsilType
   insns: List[MInsn]
-  maxStack: Int
+  var maxStack: Int
   locals: List[MsilType]   // local variable type list (in order)
 }
 

@@ -348,6 +348,132 @@ test "if unit branch no mismatch" {
   assertEqualInt(diagCount(parseCheck(src)), 0, "if-unit-branch: Int-vs-Unit branches are not a mismatch")
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// #3362: `unifyBranchTypes`'s Unit absorption was position-blind — it
+// collapsed an if/match to `Unit` whenever either branch was Unit-typed,
+// regardless of whether the if/match's own value was actually consumed
+// (value position) or discarded (statement position — the case the test
+// directly above, and #3262/#3361's `try` analog further below, cover).  In
+// value position a lone Unit branch beside a real value is now a genuine
+// T0067 mismatch instead of a silent `Unit` collapse; statement position
+// keeps the original lenient absorption unchanged.
+// ─────────────────────────────────────────────────────────────────────────────
+// Unannotated `val` has no declared type to check the initialiser against, so
+// pre-#3362 this silently bound `x : Unit` with zero diagnostics.
+test "if value position mixed unit rejected: unannotated val (#3362)" {
+  val bad = "package P\nfunc f(c: in Bool): Unit {\n  val x = if c { 1 } else { () }\n}\n"
+  assertTrue(
+    hasDiagCode(parseCheck(bad), "T0067"),
+    "if value-position: unannotated val with Int/Unit if branches now rejected"
+  )
+}
+
+test "match value position mixed unit rejected: unannotated val (#3362)" {
+  val bad = "package P\nfunc f(c: in Bool): Unit {\n  val x = match c { case true -> 1; case false -> () }\n}\n"
+  assertTrue(
+    hasDiagCode(parseCheck(bad), "T0067"),
+    "match value-position: unannotated val with Int/Unit match arms now rejected"
+  )
+}
+
+// The annotated-`val` form (the issue's own literal example) was already
+// accidentally caught before #3362 — not via `unifyBranchTypes`, but via the
+// separate strict `argSatisfiesParam` check (T0060) that ran after the
+// (wrongly Unit-typed) if-expression was bound, since `Unit` doesn't satisfy
+// a declared `Int`.  Post-#3362 the diagnostic source changes: the if itself
+// now raises T0067 directly (value position), yielding `TyError` — which
+// `argSatisfiesParam`'s `typeEquiv` treats as satisfying any declared type,
+// so the old T0060 no longer additionally fires.  Pinned here (asserting the
+// new T0067, and that T0060 does NOT double up) so a future refactor cannot
+// silently regress this back to leniency, and to confirm #3362's fix does
+// not merely re-derive an already-working path under a different code.
+test "if value position mixed unit rejected: annotated val (#3362)" {
+  val bad = "package P\nfunc f(c: in Bool): Unit {\n  val x: Int = if c { 42 } else { () }\n}\n"
+  val cr = parseCheck(bad)
+  assertTrue(
+    hasDiagCode(cr, "T0067"),
+    "if value-position: annotated val with Int/Unit branches rejected by the if itself (T0067)"
+  )
+  assertTrue(
+    not hasDiagCode(cr, "T0060"),
+    "if value-position: T0067 alone — TyError satisfies argSatisfiesParam, no redundant T0060"
+  )
+}
+
+// The sharper #3362 case: a function's trailing-expression return silently
+// skipped its own T0070 check whenever the *inferred* body type happened to
+// be `Unit` — comparing the body against itself instead of against the
+// declared return type.  Fixing `checkFunctionBody`'s guard alone would still
+// leave this uncaught without also fixing `unifyBranchTypes`: the if/match
+// itself must raise a diagnostic before the (now-unconditional) T0070 check
+// ever runs, and a mismatched-branch if/match unifies to the `TyError`
+// universal absorber, which `typeAssignable` accepts against any declared
+// return type (`typeEquiv` treats `TyError` as equivalent to everything,
+// #2099) — so T0067 alone is the diagnostic here, not a redundant T0070.
+test "if trailing return mixed unit rejected (#3362)" {
+  val bad = "package P\nfunc f(c: in Bool): Int {\n  if c { 42 } else { () }\n}\n"
+  val cr = parseCheck(bad)
+  assertTrue(hasDiagCode(cr, "T0067"), "if trailing-return: Int/Unit branches now rejected with T0067")
+  assertTrue(
+    not hasDiagCode(cr, "T0070"),
+    "if trailing-return: T0067 alone — TyError absorbs into the declared Int return, no redundant T0070"
+  )
+}
+
+test "match trailing return mixed unit rejected (#3362)" {
+  val bad = "package P\nfunc f(c: in Bool): Int {\n  match c { case true -> 42; case false -> () }\n}\n"
+  val cr = parseCheck(bad)
+  assertTrue(hasDiagCode(cr, "T0067"), "match trailing-return: Int/Unit arms now rejected with T0067")
+  assertTrue(not hasDiagCode(cr, "T0070"), "match trailing-return: T0067 alone, no redundant T0070")
+}
+
+// Statement-position regression guards: an if/match whose value is discarded
+// must stay exactly as lenient as before #3362, whether both branches are
+// Unit or one branch is a discarded non-Unit value.
+test "if statement position both unit accepted (#3362)" {
+  val ok = "package P\nfunc consume(n: in Int): Unit {}\nfunc f(c: in Bool): Unit {\n  if c { consume(1) } else { consume(2) }\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "if statement-position: both-Unit branches stay clean")
+}
+
+test "match statement position both unit accepted (#3362)" {
+  val ok = "package P\nfunc consume(n: in Int): Unit {}\nfunc f(c: in Bool): Unit {\n  match c { case true -> consume(1); case false -> consume(2) }\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "match statement-position: both-Unit arms stay clean")
+}
+
+test "if statement position unit vs value accepted (#3362)" {
+  val ok = "package P\nfunc f(c: in Bool): Unit {\n  if c { 1 } else { () }\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "if statement-position: Int-vs-Unit branches stay clean when discarded")
+}
+
+test "match statement position unit vs value accepted (#3362)" {
+  val ok = "package P\nfunc f(c: in Bool): Unit {\n  match c { case true -> 1; case false -> () }\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "match statement-position: Int-vs-Unit arms stay clean when discarded")
+}
+
+// #6730: an else-less `if` always yields Unit regardless of its then-branch,
+// even when the whole else-less `if` sits in value position (e.g. as the
+// initializer of a `val`). The then-branch's own value is provably
+// discarded either way, so a nested if/else inside it must be typed
+// leniently (statement position), not spuriously rejected as if the outer
+// `if`'s value position propagated all the way down.
+test "else-less if in value position types its then-branch leniently (#6730)" {
+  val ok = "package P\nfunc f(c: in Bool, d: in Bool): Unit {\n  val x = if c { if d { 1 } else { () } }\n}\n"
+  assertEqualInt(
+    diagCount(parseCheck(ok)),
+    0,
+    "else-less if: nested if/else Int-vs-Unit mismatch stays clean when the outer if has no else"
+  )
+}
+
+test "else-less if with a genuinely bad nested match statement stays clean too (#6730)" {
+  val ok = "package P\nfunc f(c: in Bool, d: in Bool): Unit {\n  val x = if c { match d { case true -> 1; case false -> () } }\n}\n"
+  assertEqualInt(
+    diagCount(parseCheck(ok)),
+    0,
+    "else-less if: nested match Int-vs-Unit mismatch stays clean when the outer if has no else"
+  )
+}
+
 // #2127/#2129: a bare UpperCamelCase member-call receiver that does not resolve
 // is treated as a module reference (e.g. a `Std.String as Str` alias that
 // survived rewriting), so it does NOT emit T0020 …
@@ -2831,6 +2957,150 @@ test "try non-trailing value-position block stays clean" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PR #6547 review findings #6602-#6605: four regressions introduced by the
+// #3362 value-position-aware `unifyBranchTypes` fix, all in the same
+// diverging-trailing-statement / value-position-threading area.  These pin
+// the fixes so a future revert of any one of them is caught by CI.
+// ─────────────────────────────────────────────────────────────────────────────
+// #3362 regression guard: the generalized else-if/braced-block Unit-absorption
+// shape stays diagnostic-free in both its sugared `else if` form and its
+// fully-braced `else { if ... }` twin.
+test "else if braced Unit absorption stays clean" {
+  val sugared = "package P\nfunc consume(n: in Int): Unit {}\nfunc f(c: in Bool, d: in Bool): Unit {\n  if c { consume(1) } else if d { 2 } else { () }\n}\n"
+  assertEqualInt(diagCount(parseCheck(sugared)), 0, "else-if sugar: mixed value/Unit arms absorbed, no diagnostics")
+  val braced = "package P\nfunc consume(n: in Int): Unit {}\nfunc f(c: in Bool, d: in Bool): Unit {\n  if c { consume(1) } else { if d { 2 } else { () } }\n}\n"
+  assertEqualInt(
+    diagCount(parseCheck(braced)),
+    0,
+    "else-if braced twin: mixed value/Unit arms absorbed, no diagnostics"
+  )
+}
+
+// #6602: an unconditional `do { }` loop (the language's unlabelled-`loop`
+// form) that only exits via `return` diverges — its type is `Never`, so it
+// satisfies a non-Unit declared return type instead of false-firing T0070.
+test "unconditional do loop diverges no T0070" {
+  val src = "package P\nfunc c(): Bool { true }\nfunc f(): Int {\n  do {\n    if c() { return 1 }\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "do-loop-only-return trailing statement: no spurious T0070")
+}
+
+// #6602: `while true { }` is the same unconditional-loop shape for divergence.
+test "while true diverges no T0070" {
+  val src = "package P\nfunc c(): Bool { true }\nfunc f(): Int {\n  while true {\n    if c() { return 1 }\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "while-true-only-return trailing statement: no spurious T0070")
+}
+
+// #6602 regression guard: a `do` loop that CAN exit via an escaping `break`
+// is not unconditionally-divergent — it can still fall through with `Unit`.
+// `checkFunctionBody`'s isUnit/isNever leniency absorbs a bare Unit-typed
+// trailing statement either way, so this is pinned through a value-position
+// consumer (a `val` binding) where Unit and Never are NOT interchangeable:
+// wrongly typing the loop as `Never` here would silently swallow a real
+// T0060 mismatch.
+test "do loop with escaping break not divergent" {
+  val src = "package P\nfunc f(c: in Bool): Unit {\n  val x: Int = {\n    do {\n      if c { break }\n    }\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0060"), "do-loop with an escaping break: still Unit-typed, T0060 fires")
+}
+
+// #6651: `breakTargetsLoop`'s `nested` parameter was threaded through
+// `blockMayEscapeLoop`/`exprMayEscapeLoop`/`stmtMayEscapeLoop` but never
+// actually consulted, so a bare `break` inside a NESTED inner loop was
+// misclassified as escaping the OUTER loop under analysis.  Here the outer
+// `do` loop's only `break` is scoped to the inner `for` loop, so the `do`
+// loop itself never escapes and diverges (its only way out is `return`, of
+// which there is none, so it's an infinite loop) — its type is `Never`,
+// satisfying the declared `Int` return without a spurious T0070.  Before the
+// fix, `breakTargetsLoop` ignored `nested` and unconditionally returned
+// `true`, so the inner `break` was wrongly counted as escaping the `do`
+// loop, typing it `Unit` and false-firing T0070.
+test "nested loop break does not escape outer loop diverges no T0070" {
+  val src = "package P\nfunc c(): Bool { true }\nfunc f(): Int {\n  do {\n    for i in 0 ..< 3 {\n      if c() { break }\n    }\n  }\n}\n"
+  assertEqualInt(
+    diagCount(parseCheck(src)),
+    0,
+    "do-loop whose only break is scoped to a nested for-loop: outer loop still diverges, no spurious T0070"
+  )
+}
+
+// #6651 correct-positive companion: a bare `break` that sits directly in the
+// OUTER loop's own body (beside, not inside, a nested inner loop) must still
+// be recognised as escaping that outer loop — confirms the `nested` fix
+// didn't overcorrect into never detecting a genuine escape.  Value-position
+// pinning matches "do loop with escaping break not divergent" above.
+test "outer loop direct break still escapes beside nested inner loop" {
+  val src = "package P\nfunc c(): Bool { true }\nfunc f(cond: in Bool): Unit {\n  val x: Int = {\n    do {\n      for i in 0 ..< 3 {\n        if c() { break }\n      }\n      if cond { break }\n    }\n  }\n}\n"
+  assertTrue(
+    hasDiagCode(parseCheck(src), "T0060"),
+    "do-loop with a direct escaping break beside a nested loop: still Unit-typed, T0060 fires"
+  )
+}
+
+// #6603: `scope { }`'s checked body type (`Never`, when every path through it
+// diverges) must propagate to the enclosing block instead of defaulting to
+// `Unit` — the trailing statement here is `SExpr(EIf)`, not `SReturn`, so
+// only capturing `checkBlock`'s actual result (not the syntax-only
+// `statementDiverges`) catches this.
+test "scope trailing if else diverges no T0070" {
+  val src = "package P\nfunc g(): Int { 1 }\nfunc f(c: in Bool): Int {\n  scope {\n    if c { return g() } else { return 0 }\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "scope with fully-diverging if/else body: no spurious T0070")
+}
+
+// #6603: the simpler single-statement `scope { return g() }` shape.
+test "scope return stays clean" {
+  val src = "package P\nfunc g(): Int { 1 }\nfunc f(): Int {\n  scope {\n    return g()\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "scope { return g() }: no spurious T0070")
+}
+
+// #6681: `scope { }` is a `Unit`-typed construct at runtime — its own
+// non-diverging trailing-expression value must never leak into the
+// enclosing block's checked type. Before the fix, `checkBlock`'s `SScope`
+// arm assigned `lastExprType` to the scope body's checked value type
+// unconditionally, so `scope { 42 }` inside an `Int`-returning function
+// passed `typeAssignable(Int, Int)` with zero diagnostics even though
+// codegen never materializes a value for `scope { }` (msil `lowerBlockMsil`,
+// jvm `05_stmts.l`) — an unverifiable-IL / garbage-return silent miscompile.
+test "trailing scope leaking its value type is rejected with T0070 (#6681)" {
+  val src = "package P\nfunc f(): Int {\n  scope {\n    42\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(
+    hasDiagCode(cr, "T0070"),
+    "scope { 42 } in an Int-returning function: T0070 (scope discards its value, is Unit)"
+  )
+}
+
+// Companion to #6681: a `Unit`-returning function with a trailing
+// `scope { 42 }` must still compile clean — once the fix correctly
+// discards the scope's leaked value type, only the enclosing `Unit`
+// return type is checked against the (now-Unit) scope type.
+test "trailing scope in a Unit function stays clean (#6681)" {
+  val src = "package P\nfunc f(): Unit {\n  scope {\n    42\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "scope { 42 } in a Unit-returning function: no spurious T0070")
+}
+
+// #6604: `inferLambda` threads the lambda's expected return type the same way
+// `checkFunctionBody` threads `bodyValuePos` — a `Unit`-expected lambda whose
+// trailing statement is a discarded mixed-type `if` must stay clean, not
+// reintroduce the leniency regression #3362 fixed one layer up.
+test "unit lambda mixed if body stays clean" {
+  val src = "package P\nfunc compute(): Int { 1 }\nfunc each(f: in (Bool) -> Unit): Unit { f(true) }\nfunc g(): Unit {\n  each((c) -> { if c { compute() } else { () } })\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "Unit-returning lambda with discarded mixed-type if: no spurious T0067")
+}
+
+// #6604 regression guard: a stronger pin that actually distinguishes
+// value-position from statement-position inside a lambda body (unlike the
+// mixed-`if` shape above, whose Unit-absorption is already position-blind) —
+// a trailing `try` whose non-Unit body sits beside a Unit handler is only
+// safe to absorb when the lambda's expected return type is `Unit`.  Reverting
+// `inferLambda`'s hardcoded `valuePos = true` reintroduces this exact T0067.
+test "unit lambda try unit handler stays clean" {
+  val src = "package P\nfunc each(f: in (Bool) -> Unit): Unit { f(true) }\nfunc g(): Unit {\n  each((c) -> {\n    try {\n      42\n    } catch Bug as b {\n      ()\n    }\n  })\n}\n"
+  assertTrue(
+    not hasDiagCode(parseCheck(src), "T0067"),
+    "Unit-expected lambda: try body/Unit handler absorbed in statement position, no T0067"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // #3187: a refutable `for` pattern is rejected by the type checker (T0112) —
 // codegen has no failure path for a non-matching element, so accepting it
 // produced a broken binary behind an F0021 println.  Irrefutable tuple
@@ -3898,4 +4168,184 @@ test "nested case null (inside a constructor pattern) still fires T0073 (#4775)"
 test "an ordinary identifier binding pattern does not fire T0073 (#4775)" {
   val src = "package P\nfunc f(x: in Int): Int {\n  match x {\n    case n -> n\n  }\n}\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0073"), "ordinary binding pattern: no T0073")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6287 Phase B: bare-name cross-package ambiguity (T0123) and
+// reject-unimported-resolution.
+// ─────────────────────────────────────────────────────────────────────────────
+// A bare (unqualified) `pub val` name declared by TWO imported packages is
+// genuinely ambiguous — before this fix `symTableTryFindOne` silently picked
+// whichever was registered last, with no diagnostic at all.
+test "bare val name ambiguous across two imported packages is T0123" {
+  val pkgA = parse("package PkgA\npub val GREETING: String = \"hi from A\"\n")
+  val pkgB = parse("package PkgB\npub val GREETING: String = \"hi from B\"\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
+  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  val src = "package App\nimport PkgA\nimport PkgB\nfunc f(): String { GREETING }\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, packages), "T0123"),
+    1,
+    "bare GREETING ambiguous between PkgA and PkgB: T0123 fires exactly once"
+  )
+}
+
+// Same ambiguity, but through a bare (unqualified) union-case CONSTRUCTOR
+// CALL — the shape the issue's own `Ping`/`Signal` example was framed around.
+// Reuses the PkgA/PkgB `Signal { case Ping }` collision fixture the qualified-
+// reference tests above already establish, but this time calls `Ping(...)`
+// with NO qualifier at all.
+test "bare union case constructor call ambiguous across two imported packages is T0123" {
+  val pkgA = parse("package PkgA\npub union Signal {\n  case Ping(code: Int)\n  case Halt\n}\n")
+  val pkgB = parse("package PkgB\npub union Signal {\n  case Ping(label: String)\n  case Halt\n}\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
+  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  val src = "package App\nimport PkgA\nimport PkgB\nfunc f(): Int {\n  val s = Ping(code = 1)\n  0\n}\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, packages), "T0123"),
+    1,
+    "bare Ping(...) ambiguous between PkgA's and PkgB's Signal: T0123 fires exactly once"
+  )
+}
+
+// Same ambiguity again, but through a bare (unqualified) FUNCTION reference —
+// #6652 review: `sigs`'s first-in-wins insertion policy for imported
+// functions (typechecker_checker.l, "Sig-map insertion policy") let a bare
+// function call resolve above the `checkBareNameAmbiguity` gate, silently
+// picking whichever package's `IFunc` was collected first, with no T0123 at
+// all — the exact last/first-registered-wins hazard #6287 was filed to
+// eliminate, just never closed for plain function names.
+test "bare function name ambiguous across two imported packages is T0123" {
+  val pkgA = parse("package PkgA\npub func helper(): Int { 1 }\n")
+  val pkgB = parse("package PkgB\npub func helper(): Int { 2 }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
+  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  val src = "package App\nimport PkgA\nimport PkgB\nfunc f(): Int { helper() }\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, packages), "T0123"),
+    1,
+    "bare helper() ambiguous between PkgA and PkgB: T0123 fires exactly once"
+  )
+}
+
+// Importing a colliding name from only ONE of the two packages is NOT
+// ambiguous — this is the ordinary single-import case the fix must leave
+// alone (no false positives).
+test "bare val name imported from only one package is not ambiguous" {
+  val pkgA = parse("package PkgA\npub val GREETING: String = \"hi from A\"\n")
+  val pkgB = parse("package PkgB\npub val GREETING: String = \"hi from B\"\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
+  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  val src = "package App\nimport PkgA\nfunc f(): String { GREETING }\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(src).file, packages)),
+    0,
+    "GREETING imported only via PkgA (App does not import PkgB): resolves cleanly, no T0123"
+  )
+}
+
+// A same-package (same-file) declaration always wins outright over any
+// import-level collision — declaring the SAME name locally must not trip
+// the ambiguity check even when two OTHER imported packages also collide
+// on it (tier 1 always wins, per `symTableAmbiguousImportPackages`'s guard).
+test "local declaration shadows an ambiguous import collision, no T0123" {
+  val pkgA = parse("package PkgA\npub val GREETING: String = \"hi from A\"\n")
+  val pkgB = parse("package PkgB\npub val GREETING: String = \"hi from B\"\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
+  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  val src = "package App\nimport PkgA\nimport PkgB\nval GREETING: String = \"local\"\nfunc f(): String { GREETING }\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(src).file, packages)),
+    0,
+    "App's own GREETING wins outright over the PkgA/PkgB collision: no T0123"
+  )
+}
+
+// #6287's "reject unimported resolution" item (a name from a package never
+// imported, even transitively, must not silently resolve) was ATTEMPTED as a
+// tier-3 restriction on `symTableTryFindOne` but reverted: a full audit build
+// of `lyric-stdlib/lyric.full.toml` and every ecosystem `lyric.toml` surfaced
+// `Option`/`Result` (`Std.Core`) referenced across wide swaths of the stdlib
+// with no `import Std.Core` at all — an implicit-prelude reliance far
+// broader than the kernel/host re-export idiom below, and not a bounded
+// change for this issue (see `symTableTryFindOne`'s doc comment for the full
+// writeup).  This test pins the CURRENT (unchanged) behaviour: a name from a
+// package that is part of the same multi-file build, but not on any import
+// path from the consumer, still resolves via last-registered-wins — a
+// deliberate scope decision, not an oversight; it is the tracked residual
+// gap from this issue (#6703).
+test "bare name from an unrelated sibling package still resolves (residual #6287 scope decision)" {
+  val pkgX = parse("package PkgX\npub func siblingHelper(): Int { 1 }\n")
+  val pkgY = parse("package PkgY\npub func fromY(): Int { 2 }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgX", items = pkgX.file.items, imports = collectImportNames(pkgX.file.imports)))
+  packages.add(ImportedPackage(name = "PkgY", items = pkgY.file.items, imports = collectImportNames(pkgY.file.imports)))
+  val src = "package App\nimport PkgY\nfunc f(): Int { siblingHelper() }\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(src).file, packages)),
+    0,
+    "siblingHelper (PkgX, never imported by App or PkgY) still resolves — tracked residual gap (#6703), not a regression"
+  )
+  // Control: a name PkgY directly imports resolves cleanly too.
+  val okSrc = "package App\nimport PkgY\nfunc f(): Int { fromY() }\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(okSrc).file, packages)),
+    0,
+    "fromY (PkgY, directly imported by App): resolves cleanly"
+  )
+}
+
+// The kernel/host re-export idiom used throughout `lyric-stdlib/std/_kernel/`
+// (e.g. `Std.Collections` importing `Std.CollectionsHost`, which declares
+// `List`/`Map`) depends on TRANSITIVE reachability: a consumer that only
+// imports the wrapper package (`PkgWrap`) must still resolve a name declared
+// by the wrapper's own import (`PkgHost`), even though the consumer never
+// names `PkgHost` in its own `import` list.  Reject-unimported-resolution
+// must not break this — only a package with NO import path at all (see the
+// test above) is out of scope.
+test "bare name reachable only via a transitive import still resolves (kernel/host idiom)" {
+  val pkgHost = parse("package PkgHost\npub func hostFn(): Int { 42 }\n")
+  val pkgWrap = parse("package PkgWrap\nimport PkgHost\npub func wrapFn(): Int { hostFn() }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(name = "PkgHost", items = pkgHost.file.items, imports = collectImportNames(pkgHost.file.imports))
+  )
+  packages.add(
+    ImportedPackage(name = "PkgWrap", items = pkgWrap.file.items, imports = collectImportNames(pkgWrap.file.imports))
+  )
+  val src = "package App\nimport PkgWrap\nfunc f(): Int { hostFn() }\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(src).file, packages)),
+    0,
+    "hostFn (PkgHost) resolves transitively through PkgWrap's own import of PkgHost, even though App never imports PkgHost directly"
+  )
+}
+
+// #6700: `unionCaseSymbolForScrutinee`'s fallback (reached when the scrutinee
+// type doesn't resolve — here, an unknown identifier types as `TyError`, so
+// the DKUnionCase/DKEnumCase scrutinee-based tiers above never fire) must NOT
+// treat an already-QUALIFIED pattern head as bare.  `pat2fnExpr` always wraps
+// the pattern head as a flat `EPath` regardless of segment count, so before
+// this fix the fallback took ONLY the last segment of `PkgA.Ping` (discarding
+// the `PkgA` qualifier) and ran it through `checkBareNameAmbiguity`, firing a
+// nonsensical T0123 ("'Ping' is ambiguous … qualify the reference, e.g.
+// 'PkgA.Ping'") even though the pattern was already qualified exactly that
+// way.  A qualified head must fall through unchecked here.
+test "qualified pattern head against an unresolvable scrutinee is not T0123 (#6700)" {
+  val pkgA = parse("package PkgA\npub union Signal {\n  case Ping(code: Int)\n  case Halt\n}\n")
+  val pkgB = parse("package PkgB\npub union Signal {\n  case Ping(label: String)\n  case Halt\n}\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
+  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  val src = "package App\nimport PkgA\nimport PkgB\nfunc f(): Int {\n  match undefinedScrutinee {\n    case PkgA.Ping(n) -> n\n    case _ -> 0\n  }\n}\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, packages), "T0123"),
+    0,
+    "PkgA.Ping is already qualified — falling through to the unresolvable-scrutinee fallback must not fire T0123 for 'Ping'"
+  )
 }

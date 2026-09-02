@@ -39074,3 +39074,954 @@ full-qualified-construction-path class of bug), #6338 (the type checker's
 construction side), docs/41 (self-hosted compiler gap analysis, §9 Band 4
 cross-package resolution).
 
+
+---
+
+## D-progress-808 — `unifyBranchTypes`'s Unit absorption is now position-aware; `checkFunctionBody`'s T0070 skip-guard compared the wrong type (#3362)
+
+**Bug.** `unifyBranchTypes` (`lyric-compiler/lyric/type_checker/typechecker_exprs.l`),
+the function that computes the unified type of an `if`/`match`'s branches,
+unconditionally absorbed the pair to `Unit` whenever either branch was
+`Unit`-typed — regardless of whether the `if`/`match`'s value was actually
+consumed (value position: bound to a `val`, returned, passed as an
+argument) or discarded (statement position). Two concrete, previously
+undiagnosed failure modes: an unannotated `val x = if cond { 42 } else { }`
+silently bound `x : Unit` with zero diagnostics (no declared type to check
+the initialiser against); and, sharper, `checkFunctionBody`
+(`typechecker_stmts.l`) skipped its own `T0070` "function body trailing
+expression has type X but declared return type is Y" check whenever the
+block's *inferred* body type happened to be `Unit` — checking whether the
+body matched itself (trivially true) instead of whether it matched the
+*declared* `sig.returnTy` — so `func f(): Int { if cond { 42 } else { } }`
+compiled cleanly despite one arm never producing the declared `Int`. The
+annotated-`val` form (`val x: Int = if cond { 42 } else { () }`, the
+issue's own literal example) was already accidentally caught before this
+fix — not via `unifyBranchTypes`, but via the separate strict
+`argSatisfiesParam`/`T0060` check that runs after the (wrongly Unit-typed)
+if-expression is bound — so it doesn't by itself demonstrate the bug is
+fixed; the unannotated-`val` and function-body-return cases are the ones
+that prove real progress.
+
+**Fix.** Threaded an `isValuePosition: Bool` parameter through
+`unifyBranchTypes`: in statement position (the existing, sound default)
+a lone `Unit` branch beside anything is still absorbed silently; in value
+position a lone `Unit` branch beside a non-`Unit` branch now raises the
+same `T0067` "incompatible branch types" diagnostic the function already
+raises for a genuine type mismatch, yielding `TyError` (both branches
+`Unit` is never an error, in either position). `EIf`'s and `EMatch`'s
+arm-folding bodies were extracted out of `inferExpr`'s giant match into two
+standalone functions, `inferIfExpr`/`inferMatchExpr`, each taking the same
+`isValuePosition` flag and forwarding it to `unifyBranchTypes` — mirroring
+the precedent `checkTryHandlerType`/`#3262`/`#3361` already established
+for `try`/`catch`. `inferExpr`'s own `EIf`/`EMatch` dispatch (reached from
+every ordinary expression-value context — call arguments, binop operands,
+a `val`/`let`/`var` initialiser, `return`/`throw` values, …) always passes
+`true`: a `plain inferExpr` call always means the caller wants a value.
+The one place an `if`/`match`'s value can be genuinely discarded is
+`checkBlock`'s `SExpr` statement dispatch (mirroring the special-casing
+that dispatch already gives a value-position brace/`unsafe` block, #3262)
+— extended with `EIf`/`EMatch` arms that call `inferIfExpr`/`inferMatchExpr`
+directly with `valuePos and isLast`, the same position expression already
+used for nested blocks.
+
+Separately, `checkFunctionBody`'s `FBBlock` arm's `T0070` guard dropped its
+`not isUnit` bypass entirely — it now compares `bodyType` against the
+declared `sig.returnTy` unconditionally (keeping the existing `isNever`
+bottom-type exception unchanged). `typeAssignable`'s `typeEquiv` already
+treats `TyError` as equivalent to any type (#2099), so a mismatched-branch
+`if`/`match` that now raises `T0067` and yields `TyError` does not also
+trip a redundant `T0070` — confirmed by dedicated self-test assertions
+that `T0070` does NOT additionally fire alongside the `T0067` these cases
+raise.
+
+**Fallout — a second, independent divergence-detection gap this surfaced.**
+Removing `checkFunctionBody`'s blanket Unit bypass exposed a genuinely
+separate, pre-existing bug: `statementDiverges` (the helper `checkBlock`'s
+tail uses to decide whether a block's last statement transfers control
+away, making the whole block's type `Never`) only recognized
+`SReturn`/`SThrow`/`SBreak`/`SContinue` — never `SScope(_, body)`. A
+function whose entire body is `scope { …; return x }` (the shape several
+`async_spawn_self_test.l` helpers use, e.g. `sumDoublesReturn`,
+`parenSpawnSum`, `nestedScopeSpawns`) types the outer block as `Unit`
+today (a `scope { }` is a bare statement, not an `SExpr`, so `checkBlock`'s
+generic catch-all types it as a plain `Unit` statement and never asks
+whether the scope's OWN body unconditionally returns) instead of `Never`.
+Before this fix that misclassification was invisible: the old
+`checkFunctionBody` bypass skipped `T0070` whenever the body type was
+`Unit`, silently accepting the wrong classification along with every
+genuine mismatch this fix targets. Discovered when the unconditional
+`T0070` check false-fired on eight `async_spawn_self_test.l` helpers
+declaring a non-`Unit` return whose body is solely such a scope. Fixed by
+adding an `SScope` case to `statementDiverges` that recurses on the
+scope's own body's trailing statement — mirroring exactly the divergence
+check `checkBlock`'s tail already applies to an ordinary block. This is
+the only call site of `statementDiverges`, so the fix is narrowly scoped.
+
+**Diagnostics.** No new diagnostic codes — reuses the existing `T0067`
+(incompatible branch types) and leaves `T0070`/`T0060` unchanged in
+wording. Only the conditions under which they fire changed.
+
+**Coverage.** `typechecker_self_test.l` gained 12 new cases: unannotated-
+`val` mixed-Unit rejection for both `if` and `match`; the annotated-`val`
+case re-pinned under its NEW diagnostic source (`T0067` from the `if`
+itself, not `T0060` — `TyError` satisfies `argSatisfiesParam` so `T0060`
+no longer additionally fires); function-trailing-return mixed-Unit
+rejection for both `if` and `match` (asserting `T0067` fires and `T0070`
+does NOT redundantly fire); and statement-position regression guards for
+both both-Unit and Unit-vs-value branch pairs, for both `if` and `match`,
+confirming the pre-existing lenient behaviour is unchanged when the value
+is discarded.
+
+**Verification.** `make self-test NAME=typechecker`: 376/376 (was
+375/376 before the annotated-`val` test's diagnostic-source correction).
+`async_spawn_self_test.l`: 26/26 on both `--target dotnet` and
+`--target jvm` (was failing to compile on `dotnet` with 8 spurious
+`T0070`s before the `statementDiverges` fix). Sibling compiler self-tests
+unaffected: `parser` (126/126), `modechecker` (92/92),
+`contract_elaborator` (36/36), `mono` (54/54), `derives` (49/49), `fmt`
+(131/131), `cfg` (12/12), `bitwise` (10/10), `aspect_weave` (8/8),
+`block_shadow` (20/20), `result_generic_specialization` (4/4),
+`stubbable` (9/9) — all still green against a from-scratch `make lyric`
+rebuild. Full ecosystem sweep: all 28 root `lyric-*/lyric.toml` manifests
+(`lyric-auth`, `lyric-aws-secrets`, `lyric-aws-xray`, `lyric-cache`,
+`lyric-db`, `lyric-docker`, `lyric-feature-flags`, `lyric-generator-sdk`,
+`lyric-grpc`, `lyric-health`, `lyric-i18n`, `lyric-jobs`, `lyric-jsonrpc`,
+`lyric-lambda`, `lyric-logging`, `lyric-mail`, `lyric-mcp`, `lyric-mq`,
+`lyric-otel`, `lyric-proto`, `lyric-resilience`, `lyric-search`,
+`lyric-session`, `lyric-storage`, `lyric-testing`, `lyric-validation`,
+`lyric-web`, `lyric-ws`) `lyric build --manifest <lib>/lyric.toml` clean
+— no in-tree code anywhere in the workspace relied on the unsound
+value-position leniency this fix removes.
+
+**Related:** issue #3362, #2099 (`TyError`-as-universal-absorber
+rationale), #3262/#3361 (the `try`/`catch` sibling this fix's
+value-position threading mirrors).
+---
+
+## D-progress-803 — #6155 / #1815 part 2: `inout`-param V0015 tracking + `initonly`/`ACC_FINAL` field enforcement
+
+**Date:** 2026-08-27
+**Status:** SHIPPED (both halves — 2b and 2a)
+
+D-progress-706 (#1815 part 1) shipped V0015 for `var`-local and `self`
+field writes but deliberately left `inout` parameters untracked: a naive
+"flag every `inout`-parameter field write" rule collided with a pervasive
+stdlib idiom (a cursor-style state record threaded through a chain of
+`st: inout StateRecord` helpers that mutate a field directly) across
+`Std.Xml`, `Std.Yaml`, `Std.Json`, `Std.HttpEngine`. A prior session's
+attempt at part 2 went straight to emitter enforcement (part 2a:
+`initonly`/`ACC_FINAL` on every non-`var` field) without first fixing that
+gap and had to be reverted: `scripts/ilverify-selfhosted.sh` surfaced 90+
+`[InitOnly]` verification errors across 11+ compiler DLLs, because
+compiler-internal state-threading records (`Lyric.Lexer.LexerState`,
+`Lyric.Parser.ParseState`, `Msil.Opcodes.MethodBody`,
+`Jvm.Codegen.FuncCtx`, …) use the identical `inout`-threaded-cursor idiom
+and mutate fields the parser never required `var` on (nothing consumed
+`isMutable` before D-progress-706, so no such field ever needed `var` to
+compile).
+
+**This entry re-sequences and ships both halves.**
+
+**Part 2b (mode checker).** `fieldWriteSeedParams` seeds `ctx.locals`
+(the same write-capable-binding map `var` locals populate) with each
+`inout` parameter whose declared type resolves to a same-file
+record/protected type — extending `checkFieldMutability`'s existing
+var/non-var rule to `inout` params instead of leaving them untracked
+entirely. This is the key design move: the rule that already governs
+`var`-local writes (a `var`-marked field write is allowed, a non-`var`
+one is V0015) turns out to be *exactly* what's needed for `inout` too —
+the cursor idiom is legitimate precisely because its mutated field is
+`var`, so tracking `inout` under this rule catches the actual #1815 bug
+class (a non-`var`-field write through an alias) without flagging the
+idiom itself, once the idiom's fields are actually marked `var`. `in`-mode
+parameters remain untracked (mirroring `val`/`let` locals — a pre-existing,
+separate gap), as does an `inout` parameter whose type doesn't resolve to
+a same-file record (mirroring the unresolved-type skip `var` locals
+already had).
+
+Landing this required a tree-wide audit for every field mutated through
+the `inout`-cursor idiom, adding `var` where it was missing (verified
+per-field by grepping for an actual `.field =`/`op=` write site, not by
+guessing): compiler-internal — `Lyric.Lexer.LexerState` (`pos`, `line`,
+`column`, `bracketDepth`, `newlinePending`, `prevSuppresses`,
+`prevWasStmtEnd`, `haveAnyToken`, `pendingTrivia`), `Lyric.Parser.ParseState`
+(`pos`, `suppressArrowLambda`, `inContractClauseExpr`),
+`Lyric.Manifest.Cursor` (`pos`, `line`, `col`),
+`Lyric.ContractElaborator.RenameCounter` (`next`), `Lyric.Fmt.FmtCtx`
+(`cursor`), `Msil.Opcodes.MethodBody` (`maxStack`, `localSig`, `nextLbl`
+— mutated directly by `Msil.Lowering.lowerMFunc`/`lowerMRecord`/etc.,
+*cross-package* from `MethodBody`'s own declaring package, the widest
+blast radius found), `Msil.Heaps.GuidHeap` (`count`), `Jvm.Codegen.FuncCtx`
+(`scopeBase`); stdlib — `Std.Xml.XmlState` (`pos`), `Std.Yaml.YamlState`
+(`pos`), `Std.HttpEngine.Connection` (`phase`, `buf`, `keepAlive`,
+`fatal`), `Std.HttpEngine.H2Connection`/`H2Stream`/`H2Settings`/
+`ContinuationState`/`H2ShutdownState` (the full HTTP/2 FSM — `dec`,
+`connSendWindow`, `connRecvWindow`, `cont`, `lastPeerStreamId`,
+`expectClientSettings`, `fatal`, `state`, `sendWindow`, `recvWindow`,
+`contFrames`, `goAwaySent`, `goAwayLastStreamId`, `goAwayReceived`,
+`rapidResetCount`, `serverCompletedCount`, plus every `H2Settings` field —
+mutated only through a *nested* `state.remoteSettings.field =` chain the
+mode-checker's single-segment-path pass can't itself see, but marked `var`
+anyway since they genuinely are mutated),
+`Std.HttpEngine.HpackDecoder`/`HpackEncoder` (`table`, `maxProtocolSize`,
+`pendingUpdate`), `Std.HttpEngine.FrameDecoder` (`buf`, `awaitingPreface`,
+`fatal`), and the `_kernel/http_server.l` HTTP/2 driver records
+(`HttpContext`, `H2Exchange`, `H2ReqAccum`, `H2RequestLine`, `H2ConnState`,
+`HttpChunkedStream`). Verified with `make lyric` (full stdlib + compiler
+rebuild) at zero V0015 regressions, plus five new
+`modechecker_self_test.l` cases: non-`var`-field-through-`inout` fires
+V0015 (direct and compound-assign forms); `var`-field-through-`inout` does
+not; an `in`-mode param's field write is not tracked; an `inout` param of
+an unresolved (not-in-file) type is not tracked. 96/96 mode-checker
+self-tests, 126/126 parser, 56/56 lexer, 131/131 fmt, 36/36 contract
+elaborator, 54/54 manifest.
+
+**Part 2a (emitter).** With 2b's `var` audit establishing that "non-`var`
+field" now genuinely means "never mutated, anywhere the tree currently
+mutates a field, including through `inout`," plumbed `FieldDecl.isMutable`
+through to the two sites issue #6155 named: MSIL `Msil.Codegen.lowerRecordMsil`'s
+`RMField` arm now emits `FDA_PUBLIC + FDA_INIT_ONLY` for a non-`var` field
+(previously hardcoded `0x0006`/`FDA_PUBLIC` alone); JVM
+`Jvm.Codegen.lowerRecord`'s `RMField` arm now emits `0x0001 + 0x0010`
+(public + final) for a non-`var` field, and — the second site #6155
+called out — `Jvm.Lowering.lowerRecord`'s `FieldInfo` build site was found
+to hardcode `ACC_PUBLIC` and silently ignore the `LField.flags` codegen
+had already computed; fixed to pass `fld.flags` through. Both synthesized
+`<init>`/`.ctor` constructors already store every field via a single
+`stfld`/`putfield` pass inside their own declaring type's constructor (no
+change needed there) — exactly the write CLR/JVM `initonly`/`final` verification
+permits. **This initial landing emitted `initonly`/`ACC_FINAL`
+unconditionally for every non-`var` field** — correct for every shape
+V0015 (2b) itself resolves, but 2b's same-file/single-segment-path
+tracking has known blind spots (a nested field-access chain, a write
+through a `val`-bound receiver, an unresolved `out`/`inout` call
+argument) that can genuinely mutate a field the mode checker never
+flagged. See D-progress-864 (#6596) for the whole-build write-safety
+audit gate added immediately after this landing to close that gap before
+it could reach `main`.
+
+**Validation (the acceptance bar, per the task brief).**
+`scripts/ilverify-selfhosted.sh` against the full self-hosted `Lyric.Cli`
+compiler closure: **121 DLLs verified, 0 IL-validity errors** (3
+pre-existing, unrelated `ClassLoadGeneral`/`FileLoadErrorGeneric`
+extern-FFI resolution findings on `Lyric.Jvm.Kernel.dll` /
+`Lyric.Stdlib.CollectionsHost.dll` — informational, not IL-validity, and
+untouched by this change). A full `make lyric` (stage 1 + AOT + the
+initonly/`ACC_FINAL`-emitting binary rebuilding the entire stdlib bundle,
+73 packages, + the entire compiler-DLL closure) completes cleanly — the
+compiler builds itself under the new restriction. Two ad hoc JVM smoke
+programs (a record with a mixed `var`/non-`var` field pair; a `Cursor`
+record with a `var pos` mutated through `advance(c: inout Cursor)`, the
+literal cursor-idiom shape) compile AND *run* correctly under
+`--target jvm`, confirming `ACC_FINAL` doesn't break the idiom at
+class-verification time (not just at compile time — a distinction that
+matters since a JVM class's `final`-field-outside-`<init>` violation is a
+class-load-time verifier check, not a javac-analog compile error).
+`ilverify`'s first run (before the `Msil.Opcodes.MethodBody` /
+`Msil.Heaps.GuidHeap` fixes above were added) is the artifact that
+actually *found* those two missed fields — 22 `[InitOnly]` errors across
+`Lyric.Msil.Heaps.dll`/`Lyric.Msil.Lowering.dll`/`Lyric.Msil.Opcodes.dll`,
+all tracing to `MethodBody.maxStack`/`localSig`/`nextLbl` and
+`GuidHeap.count` — confirming the tool catches exactly the class of bug
+the original revert was worried about, and that the fix-and-reverify loop
+closes it.
+
+**Cross-references:** #1815, #6155; D-progress-706 (part 1); docs/01
+§2.4 (updated); docs/10 (updated, corrects the stale "tracked as part 2"
+note).
+
+---
+
+## D-progress-804 — Source-path threading, slices 1–2: diagnostics name the real file; JVM single-file/single-package builds emit a real `SourceFile` attribute (#6284, docs/63 §9.7)
+
+**Context.** Issues #6282 and #6284 share one root cause: no on-disk
+source path ever reached a backend. `Diagnostic` printing
+(`Lyric.Pipeline.gate`) carried no file attribution for a single-file
+build — the finest attribution anywhere was the owning package name,
+and even that was bypassed for parse-phase diagnostics
+(`pipeParseAndErase` hardcoded `gate("", …)` at all three of its call
+sites). On the JVM target, `Jvm.Classfile.makeSourceFileAttr` existed
+with zero call sites — every class in every JAR carried no JVMS
+§4.7.10 `SourceFile` attribute, so `Throwable.printStackTrace` always
+printed `(Unknown Source)`. docs/63 §9.7 surveyed the fix and staged it
+into four slices; this entry ships slices 1 and 2.
+
+**Decision.** Thread the real path as a sibling parameter through the
+pipeline and both backends, per §9.7's "do not add a path to
+`SourceFile`/`parse()`" finding (hundreds of literal-source callers —
+self-tests, the LSP, `doc.l` — would all need updating for no benefit):
+
+- `Lyric.Pipeline.pipeParseAndErase` gained a `label: String` parameter
+  used at all three of its `gate()` calls (previously hardcoded `""`).
+  Single-file builds pass the real absolute path; project builds pass
+  the owning package name (`pkg.name` — already what `pipeCheckAndMono`
+  used for later passes, now applied consistently to the parse phase
+  too, closing that half of the gap for free).
+- `EmitRequest` gained a `path: String` field (no default — the
+  documented cross-package-construction-site risk applies to this
+  record already, so every construction site sets it explicitly, same
+  as `defines`); `ProjectPackage` gained a parallel `paths: List[String]`
+  field alongside `sources`. Both flow from the one place each path is
+  actually known: `cli_build.l`'s `File.readText` call sites and
+  `readProjectPackageSources` (which returns a new `PkgSourceRead`
+  record instead of a bare `List[String]`, carrying `paths` alongside
+  `sources`). ~30 construction sites across `cli_build.l`, `cli_main.l`,
+  `cli_test.l`, `cli_bench.l`, `cli_check.l`, `repl.l`,
+  `workspace_builder.l`, `emitter.l`, and self-tests were updated to set
+  the field explicitly (mechanical; "" for the handful of genuinely
+  synthetic/ad-hoc sources — REPL sessions, in-memory test fixtures).
+- `Msil.Bridge.compileToMsilWithVersion` and the JVM bridge's
+  `compileToJarBundledWithFeatures` / `compileProjectToJarBundledWithFeatures`
+  each gained a trailing path parameter (a `path`/`pkgPaths` sibling,
+  matching the codebase's own `WithX`-suffix idiom so the two back-compat
+  forwarders — `compileToMsil`, `compileToJarBundled` — keep their exact
+  existing signatures and pass `""` through).
+- JVM `SourceFile` emission: `Jvm.Bridge.codegenPackageInto` gained a
+  `fileName: String` parameter; when non-empty, every `ClassFile` it
+  produces gets `cf.attrs.add(makeSourceFileAttr(pool, fileName))`
+  before serialization (`ClassFile.attrs` is a `List[Attribute]`
+  mutated through an `in` binding — zero edits inside `lowering.l`'s 11
+  `ClassFile(` construction sites). The two call sites (user package,
+  bundled-package loop) resolve `fileName` from a `pkgPathByName: Map[String,
+  String]` keyed by package name, built once every project package has
+  parsed far enough to know its own `package` declaration. A package
+  whose path is unknown (multi-file, or genuinely synthetic) resolves to
+  `""` and gets no attribute — emitting nothing beats a wrong guess,
+  since JVMS §4.7.10 permits at most one `SourceFile` per class.
+
+**#6282 (multi-file per-file line numbers) is NOT closed by this
+entry.** §9.7 and §9.5 both recommend replacing `mergePackageSources`'s
+textual concatenation with a per-file parse + `SourceFile`-AST merge —
+correct by construction, and it deletes the scar-carrying
+`stripPackageAndImports`/`extractNonCfgFileLevelAnnotations` helpers.
+That rewrite touches the interface between `emitter.l` and both
+backend bridges (today: one merged source string in, `parse()` called
+internally; the AST-merge shape needs a parsed-`SourceFile`-in entry
+point instead) — genuinely the largest, riskiest piece of this family,
+and per the task's own explicit fallback clause it was intentionally
+descoped rather than risked against the self-hosting build (a mistake
+here can make the compiler unable to build itself, since
+`Lyric.Parser`/`Lyric.TypeChecker`/`Msil.Codegen`/etc. are themselves
+multi-file packages built through this exact path). A multi-file
+project package's parse-phase diagnostics now carry the **package
+name** (the `label` improvement above) but the **line number stays
+blob-relative** to `mergePackageSources`'s concatenated text — verified
+directly: a 2-file `Mf` package with the error on `src/b.l`'s line 5
+reports `Mf: error[...] 50:1: ...` (line 50 in the merged blob), not
+`src/b.l:5`. `docs/63` §9.7's own multi-file-`SourceFile` policy —
+"emit none for genuinely multi-file packages ... revisit when #6282's
+per-file parse lands" — is preserved unchanged: a `ProjectPackage` with
+`sources.count > 1` collapses to a single `paths = [""]` entry once
+merged, so no wrong filename is ever attached to a multi-file
+package's classes either.
+
+**Verification.** `make lyric` (full stage-1 + AOT rebuild, the
+self-hosting risk surface) succeeds end to end. Two new regression
+self-tests, both spawning the just-built `./bin/lyric` as a
+subprocess (the only way to observe `Lyric.Pipeline.gate`'s printed
+stderr, or a compiled JAR's real bytes):
+`source_path_diagnostics_self_test.l` (single-file dotnet, single-file
+jvm, and the 2-file `Mf` project-package case above — the last one
+explicitly documents the remaining blob-relative-line-number gap in
+its own assertion rather than claiming it's fixed) and
+`jvm_sourcefile_attr_self_test.l` (plain single-file jvm build, and the
+common single-package-manifest-project shape — both read the produced
+class back with `javap -v` and assert the `SourceFile` line names the
+real absolute path). `scripts/assert-jvm-line-numbers.sh` — the
+existing B2 line-table oracle — is fixed alongside: its own
+`SourceFile` check previously grepped `javap -l -p` output, which
+**never** prints the `SourceFile` attribute regardless of whether it
+exists (only `-v` does), so the script's long-standing "PENDING,
+SourceFile not emitted yet" state was partly a wrong-flag artifact on
+top of the real gap; it now runs a dedicated `javap -v` pass and
+asserts the real fixture path. All pre-existing self-tests that
+construct `EmitRequest`/`ProjectPackage` (`emitter_project_self_test.l`
+35/35, `jvm_cross_package_collision_self_test.l` 3/3,
+`config_block_missing_required_self_test.l` 2/2, plus
+`cross_package_generics_self_test.l`, `nat_cross_package_self_test.l`,
+`restored_slice_list_return_self_test.l`,
+`msil_restored_qualified_val_self_test.l`, `restored_async_self_test.l`,
+`generic_extern_valuetype_instance_self_test.l`,
+`http_version_self_test.l`, `http_roundtrip_self_test.l`,
+`bitwise_self_test.l`) still pass unchanged — single-file packages are
+provably unaffected in behavior, only in what they now report.
+
+**Coverage gap left open, matching item 4 of docs/63 §9.7's slice
+list.** MSIL's `compileToMsilWithVersion` and the native
+`compileToNativeWithFlags` bridge entry points do not yet consume the
+threaded path for `Document`/`DIFile` emission (B3/B4, explicitly out
+of scope per the assigning task) — but the path DATA now reaches
+`EmitRequest`/`ProjectPackage` on every target, including native, so a
+future B3/B4 slice has it available without re-plumbing.
+
+**Related:** #6282, #6284, `docs/63-build-profiles-and-debugger.md`
+§9.5, §9.7 (the surveys this entry implements slices 1–2 of).
+
+
+---
+
+## D-progress-809 — MSIL F0020–F0025 codegen-conformance diagnostics now go through `CodegenCtx.diagnostics`, not `panic()` (#4898)
+
+**Bug.** `Msil.Codegen`'s external-interface-conformance and try-catch-
+as-expression checks (F0020: `impl` target not a real .NET interface,
+F0021: missing interface method, F0022/F0023: parameter/return type
+mismatch, F0024: unresolvable extern-interface FQN, F0025: a `try`
+expression's catch arm yields `Unit` while the body/an earlier arm
+yields a value) reported these genuine, compile-time-detectable user
+errors by `panic()`ing — an F# `failwith`-style abrupt process exit
+with no structured diagnostic, no position information beyond whatever
+happened to be in the panic message, and no way for an in-process
+caller (a test harness, an IDE integration) to recover the failure as
+data rather than an uncaught exception.
+
+**Fix.** Added a `diagnostics: List[Diagnostic]` field to `CodegenCtx`
+and routed all six F0020–F0025 sites through it instead of `panic()`.
+`Msil.Bridge`'s single-file and project-build entry points gate on the
+accumulated list via `Lyric.DiagnosticUtil.diagReportAndAbort` (later
+widened to `diagReportAndAbortInPkg` for per-package attribution, see
+D-progress-804) immediately after codegen, printing every diagnostic
+and returning `false` — the same report-and-abort shape the
+type-checker and mode-checker error lists already use earlier in the
+pipeline — instead of proceeding to lower invalid IR or crashing the
+process outright.
+
+**Diagnostics.** New codes F0020, F0021, F0022, F0023, F0024, F0025,
+each carrying an exact `(code, line, column)` position and a message
+naming the offending `impl`/method/type.
+
+**Coverage.** `msil_codegen_diag_self_test.l` exercises all six codes
+against real bad-`impl` fixtures; wired into CI's build-and-test
+workflow (later hardened in this same PR batch, D-progress-862's
+sibling fixes, to assert the exact code and position via an
+in-process `outDiagnostics`-returning bridge entry point rather than a
+looser "did it fail" check).
+
+**Verification.** `make lyric` full self-host rebuild; `msil_codegen_diag_self_test.l`
+green; `msil_project_bridge_self_test.l` unaffected (existing `Bool`-only
+entry points kept their exact behavior via thin-forwarder wrapping).
+
+**Related:** #4898.
+
+---
+
+## D-progress-810 — `Lyric.HoistEngine` no longer re-reads a mutable receiver/index after a hoisted `await` (#5629)
+
+**Bug.** When compiling a call argument, an assignment target, or a
+receiver expression that contains an `await`, `Lyric.HoistEngine`
+hoists the surrounding subexpressions into temporaries evaluated
+*before* the awaited call, so their evaluation order matches source
+order despite the await's suspension point. The hoist pass's
+mutable-name analysis (deciding which subexpressions are safe to
+re-read *after* the await completes, versus which must be captured
+*before* it) walked most `ExprKind` variants but had no case for
+`EPropagate` (the `?` postfix operator) — a mutable receiver or index
+reached only through a `?`-propagated sub-expression (e.g.
+`obj.field?.method(await x)`) fell through to the default "safe to
+re-read" answer, so the hoist pass captured its value *after* the
+await instead of before. If the awaited call (or a concurrent sibling
+task) mutated that receiver/index in between, the post-await re-read
+observed the *mutated* value instead of the pre-await one — a stale
+data hazard masquerading as source-order-correct code.
+
+**Fix.** Added an `EPropagate(inner) -> hzCollectMutableNamesExpr(inner, m)`
+case to the mutable-name collector, recursing into the propagated
+inner expression exactly as every other single-child `ExprKind`
+variant already does. This is a strict widening (more names correctly
+recognized as mutable, never fewer), so it cannot regress an
+already-safe hoist decision.
+
+**Coverage.** `await_hoist_self_test.l` gained cases pinning a mutable
+receiver reached through `?` propagation to its pre-await value,
+alongside the pre-existing #5629 base-case coverage (a mutable
+receiver/index reassigned by the awaited call itself keeps its
+pre-await value).
+
+**Verification.** `make lyric` full self-host rebuild; `await_hoist_self_test.l`
+and `async_spawn_self_test.l` green on both `--target dotnet` and
+`--target jvm`.
+
+**Related:** #5629, #6555 (a related `?`-propagated-block mutable-receiver
+gap fixed in the same area later in this PR batch).
+
+---
+
+## D-progress-860 — Bare-paren-lambda arrow-suppression scoped to tail position instead of one global retry flag (#5672)
+
+**Bug.** Disambiguating `(x)` as a parenthesized expression versus the
+start of a bare-paren lambda literal `(x) -> body` (no `func`/`val`
+keyword announcing the lambda) required the parser to speculatively
+retry a failed parse. The retry was gated by a single global
+`suppressArrowLambda: Bool` flag on `ParseState`, set for the
+duration of parsing a call argument and cleared afterward — but a
+call argument can itself contain nested constructs (an `if`/`match`
+branch, a block) where a `->` arrow is legal and expected (e.g. a
+match arm inside a call argument), and the blanket suppression
+incorrectly carried into those nested, unrelated parse contexts too,
+misparsing legal arrow usage that happened to be lexically inside a
+call argument.
+
+**Fix.** Rescoped the suppression to genuine tail position — the
+exact call-argument-list position where a bare-paren lambda is
+actually ambiguous with a parenthesized expression — saving and
+restoring the flag around each nested construct that has its own
+legitimate arrow usage, instead of one flag held for an entire call
+argument's parse. (Later generalized further in this same PR batch,
+#6601, to cover the analogous ambiguity inside `parseBlock`/
+`parseIfExpr`/`parseMatchExpr` bodies, not just call-argument tail
+position.)
+
+**Coverage.** `parser_self_test.l` gained regression cases for the
+call-argument-nested-match/if-arrow shapes that previously misparsed,
+alongside the base bare-paren-lambda cases.
+
+**Verification.** `make lyric` full self-host rebuild; `parser_self_test.l`
+green, including every pre-existing bare-paren-lambda case.
+
+**Related:** #5672, #6553 (an unrelated pre-existing MSIL codegen gap
+filed while validating this fix), #6601 (this PR batch's further
+generalization).
+
+---
+
+## D-progress-861 — Formatter's `if`/`match` arm-body rendering respects the 120-column width budget before collapsing to one line (Class B, #2280)
+
+**Bug.** `Lyric.Fmt`'s layout for an `if`/`match` expression used as a
+match arm's body (or nested inside another arm) always rendered the
+arm inline on one line regardless of the resulting line's actual
+width, so a sufficiently long nested arm body produced a rendered
+line well past the formatter's own 120-column convention — a
+formatter that itself violates the width budget it enforces
+everywhere else.
+
+**Fix.** Added a width check (`exprFitsInline`) before collapsing a
+match arm's body to one line: when the arm body's rendered width
+(including its enclosing indentation and arrow prefix) would exceed
+120 columns, the formatter falls back to its existing multi-line call
+layout instead. (This first pass computed the check in a column
+space relative to the arm alone; a real absolute-column threading bug
+in that computation — silently undercounting the true rendered width
+at nested match/if depths — was found and fixed later in this same PR
+batch, #6606.)
+
+**Coverage.** `fmt_self_test.l` gained cases for a long inline match
+arm body forcing multi-line layout, alongside a companion case
+confirming a genuinely short arm body at the same nesting depth stays
+inline (no over-splitting).
+
+**Verification.** `make lyric` full self-host rebuild; `fmt_self_test.l`
+green; `lyric fmt --write` loss-checked clean on the changed files.
+
+**Related:** #2280, #6606 (this PR batch's follow-up fixing the
+absolute-column undercounting this entry's first pass left behind).
+
+---
+
+## D-progress-862 — Cross-package bare-name ambiguity now raises T0123 instead of silently resolving last-registered-wins (#6287 Phase B, item 1)
+
+**Bug.** When two or more packages imported at the same use site each
+declared something with the same bare (unqualified) name — a
+function, `val`/`const`, or union/enum case constructor — referencing
+that name unqualified silently resolved to whichever package's
+declaration happened to be registered last in the symbol table, with
+no diagnostic at all. This is a genuine correctness hazard: which
+package "wins" depends on registration order (import order, or even
+incidental processing order across a project's packages), not on
+anything visible in the source referencing the name, so the same
+source text could resolve differently depending on unrelated changes
+elsewhere in the build.
+
+**Fix.** Added `checkBareNameAmbiguity` (`lyric-compiler/lyric/type_checker/typechecker_exprs.l`),
+gating every bare-name resolution site (free-function/val calls,
+value references, and nullary union/enum-case constructor references)
+on whether more than one imported package declares the name. An
+ambiguous bare reference is now a hard error (**T0123**) naming every
+declaring package and suggesting the qualified form (`Pkg.name`). Not
+flagged: a local declaration that shadows the ambiguous import (the
+existing scope-shadowing precedent already applied elsewhere); a name
+reachable through only one import (no real collision); a name
+reachable only transitively through another package's own imports
+(the kernel/host re-export idiom several stdlib packages rely on); and
+a pattern match against a scrutinee of statically known type, which
+resolves the case against the scrutinee's own union/enum directly
+without ever falling through to the ambiguity check (mirrored for
+enum scrutinees in this same PR batch, closing a related false-positive
+gap the deep-review pass surfaced).
+
+Item 2 of the original Phase B scope — additionally *rejecting*
+resolution to a package not directly imported at the use site — was
+implemented, then reverted: it broke the stdlib's implicit `Std.Core`
+prelude convention (names conventionally available without an
+explicit `import Std.Core`) and a real ecosystem library that relied
+on the same transitive-resolution idiom. That narrower rejection is
+documented as an explicitly scoped-out follow-up, not silently
+dropped.
+
+**Diagnostics.** New code **T0123** — "'<name>' is ambiguous: it is
+declared by '<PkgA>', '<PkgB>', ... — qualify the reference".
+
+**Coverage.** `typechecker_self_test.l` gained cases for: a bare val
+name ambiguous across two imports (T0123); a bare union-case
+constructor call ambiguous across two imports (T0123); a bare name
+imported from only one package (not ambiguous); a local declaration
+shadowing an ambiguous import collision (no T0123); a bare name from
+an unrelated sibling package still resolving (the residual scope
+decision after item 2's revert); and a bare name reachable only via a
+transitive import still resolving (the kernel/host idiom).
+
+**Verification.** `make lyric` full self-host rebuild;
+`typechecker_self_test.l` green; a tree-wide audit qualifying every
+genuinely-ambiguous bare reference surfaced across the compiler,
+stdlib, and ecosystem libraries once the diagnostic went live
+(`examples/rbac`, `lyric-stdlib/tests/regex_safe_tests.l`,
+`lyric-grpc`'s test and kernel sources — each a real, previously
+silent last-registered-wins resolution the new diagnostic correctly
+caught).
+
+**Related:** #6287, #2899 (`pickCaseFqnByScope`, the pre-existing
+union-case qualified-resolution analog this diagnostic's scrutinee-typed
+exemption mirrors), #6703 (the reverted "reject unimported resolution"
+item 2, tracked separately as a deliberate scope decision, not part of
+this entry's shipped item 1).
+
+---
+
+## D-progress-863 — Cross-package enum bare-case-name collision fixed on both backends; package-scoped resolution follow-up (#5995)
+
+**Bug.** Two same-named enum cases declared by different packages
+(e.g. two distinct `HttpVersion` enums each declaring `Http11`) could
+be misrouted at a bare (unqualified) construction or pattern-match
+site: the MSIL/JVM backends resolved a bare case name through a flat,
+package-unaware lookup keyed only by the case's simple name, so
+whichever enum happened to register the name last "won" for every
+bare reference to it — the codegen-level analog of the type-checker's
+T0123 bare-name hazard (D-progress-862), but for *enum case*
+resolution specifically, and silent (no diagnostic; the construction
+simply picked the wrong ordinal).
+
+**Fix.** Added package-scoped enum-case ordinal resolution mirroring
+the pre-existing union-case analog (`pickCaseFqnByScope`, #2899): a
+bare case reference now resolves against the declaring package(s)
+actually reachable at the use site (the current package itself, or a
+package it imports), falling back to the single registered declarer
+when there is no genuine collision. A follow-up during validation
+found the fix's own first pass was *itself* first-registered-wins by
+bare *type* name at one further layer — confirmed live with a
+minimal repro: a user package's own `HttpVersion` enum collided with
+`Std.Http.HttpVersion` (always linked into every build, whether or
+not the program imports `Std.Http`), silently reproducing the exact
+class of bug the issue reported. Fixed by additionally scoping the
+ordinal lookup by declaring package at that layer too.
+
+A later deep-review pass in this same PR batch found and fixed two
+further latent bugs this area: an unguarded `Map.add` in
+`fctx.varEnumTypes` crashed on legal block-scope shadowing of an
+enum-typed binding (#6595), and a package-qualified enum-case
+*pattern* reference (`Pkg.Case`) reaching MSIL codegen as a flattened
+multi-segment path had its explicit qualifier discarded in favor of
+an ambiguous construction-context hint (#6607) — both fixed alongside
+proper scope-undo tracking and additional regression fixtures.
+
+**Coverage.** `enum_case_collision_self_test.l` covers bare
+enum-case construction and pattern matching resolving against each
+colliding enum's own package, on both `--target dotnet` and
+`--target jvm`, including the type-name-collision-with-a-stdlib-enum
+scenario and a third same-simple-name fixture package added by the
+#6607 follow-up. `block_shadow_self_test.l` covers the #6595
+duplicate-key crash and correct scope-undo for a differently-typed
+enum shadow.
+
+**Verification.** `make lyric` full self-host rebuild;
+`enum_case_collision_self_test.l`, `block_shadow_self_test.l`, and
+`msil_project_bridge_self_test.l` all green on both targets.
+
+**Related:** #5995, #6595, #6607, #2899 (`pickCaseFqnByScope`).
+
+---
+
+## D-progress-864 — Whole-build field-lock-safety audit gates MSIL `initonly`/JVM `ACC_FINAL` emission (#6596)
+
+**Date:** 2026-08-27
+**Status:** SHIPPED
+
+**Bug.** D-progress-803's Part 2a shipped MSIL `initonly`/JVM `ACC_FINAL`
+emission for every non-`var` field, gated only by Part 2b's mode-checker
+V0015 pass. That pass resolves three specific write shapes (a `var`-local
+receiver, an `inout`-parameter alias, a `self`/protected-type write) but
+has known, documented blind spots: a nested field-access chain
+(`c.inner.n = …`), a write through a `val`-bound receiver, and the field
+passed as an `out`/`inout` call argument in a call the mode checker can't
+resolve back to the checked `inout`-cursor idiom. A field mutated only
+through one of those unchecked shapes would be locked `initonly`/
+`ACC_FINAL` at the IL/bytecode level while genuinely-executing code still
+writes to it — invalid IL that CoreCLR tolerates silently at runtime
+(a correctness bug that never surfaces as a build or runtime error) but
+that the JVM verifier rejects outright with `IllegalAccessError` at
+class-load time — a silent cross-target divergence the initial Part 2a
+landing did not close.
+
+**Fix.** `Lyric.ModeChecker.computeFieldLockSafetyForBuild`
+(`lyric-compiler/lyric/mode_checker/modechecker_check.l`) runs once
+across every in-build package's source, before any package's codegen,
+and walks every item kind that can carry an executable body
+(`IRecord`/`IImpl`/`IProtected`, and — closing a follow-up gap found by a
+later review pass, see below — `IInterface` default methods and `ITest`
+bodies) looking for a write to a field NAME through any of the three
+unchecked shapes above, keyed by bare field name across the whole build.
+`msil/bridge.l` and `jvm/bridge.l` both call this audit once per build and
+thread its result into codegen as a `Set[String]`
+(`unsafeFieldLockNames`); `Msil.Codegen.lowerRecordMsil`'s `RMField` arm
+and `Jvm.Codegen.lowerRecord`'s `RMField` arm both check the field's bare
+name against that set before emitting `FDA_INIT_ONLY`/`ACC_FINAL` — a
+field the audit cannot prove safe is left unlocked (mutable at the
+IL/bytecode level) rather than risk emitting an invalid store. This is a
+conservative, sound-but-imprecise gate: keyed by bare name rather than
+per-record, so one unsafe write anywhere in the build disables locking
+for every same-named field across every record, trading precision for
+soundness given the audit runs once, whole-build, ahead of any
+per-package codegen decision.
+
+**Follow-up (same PR, #6641).** The initial `walkFileForFieldWriteChecks`
+walker had no arm for `IInterface`/`ITest` (both fell through a bare
+`case _ -> {}`), so a field written only inside an interface default
+method's body or a `@test_module` test block's body was invisible to the
+audit — closed by mirroring the exact pattern this file's own
+`checkSpawnConsumption` walker already used for both item kinds.
+
+**Diagnostics.** No new diagnostic code — this is a silent gate on
+emitter behavior, not a user-facing check (the field is simply left
+mutable at the IL level; no error or warning is produced either way,
+matching the "conservative fallback" framing above).
+
+**Coverage.** `modechecker_self_test.l`'s lock-safety block: a field never
+written anywhere is safe to lock; a field written only through a checked
+`var`-local/`inout`/`self` shape is safe to lock; a nested field-access
+chain write, a `val`-bound-receiver write, an `out`/`inout` call-argument
+write-back, and a plain by-value call argument are each exercised
+individually; a write reaching a record from a different file in the same
+build; a field written only through an interface default method body; an
+interface with only a body-less signature (must NOT mark anything
+unsafe); a field written only inside a test block body.
+
+**Verification.** `scripts/ilverify-selfhosted.sh` against the full
+self-hosted `Lyric.Cli` compiler closure: 121 DLLs, 0 IL-validity errors.
+Full `make lyric` (stage 1 + AOT, rebuilding the entire stdlib bundle and
+compiler-DLL closure under the gated emission) completes cleanly.
+
+**Related:** #1815, #6155, #6641; D-progress-803 (Part 2a, the initial
+unconditional-emission landing this entry gates); docs/01
+§2.4 (documents the gated behavior directly).
+
+## D-progress-865 — MSIL project-build token pre-scan keyed off the caller's label instead of the package's own declared name (#6547)
+
+**Symptom.** `msil_codegen_diag_self_test.l`'s F0025 test (a generic
+function's mono-specialized copy hitting the try-catch-as-expression
+Unit/value mismatch) started panicking instead of cleanly reporting
+`F0025`: `error[T0123] ... unresolved call to 'wrap__Int' (arity 1)
+imported as 'wrap__Int' in package 'F0025App' — no function token could
+be resolved for this callee`. This surfaced only after D-progress-864
+(this file, above) replaced a silent `MObject`-default fallback for an
+unresolved cross-package call token with a hard panic — the token-
+resolution gap was pre-existing and previously invisible.
+
+**Root cause.** `compileProjectToMsilWithRestoredAndVersionDiag`
+(`lyric-compiler/msil/bridge.l`) pre-registers every package's function/
+field tokens via `addPackageTokens(cctx, lifted, perPkgNames[li])`, where
+`perPkgNames[li]` is the caller-supplied `ProjectPackagePayload.name`
+label. Body codegen's own same-package call resolution
+(`fctx.pkgName + "." + funcName`, `msil/codegen.l`) instead derives
+`fctx.pkgName` from `codegenMPackage`'s reading of the package's own
+`package X` declaration (`file.packageDecl.path.segments`). Every real
+production caller keeps these two in sync (`extractPackageName`'s
+documented convention in `Lyric.Emitter`), so the mismatch was latent.
+`msil_codegen_diag_self_test.l`'s `compileDiag` test harness does not:
+it calls `mkPkg(label, source)` with a distinct `label` (e.g.
+`"F0025Bad"`) than the fixture's own `package F0025App` declaration —
+tokens registered under `F0025Bad.wrap__Int` never match a body-codegen
+lookup for `F0025App.wrap__Int`, so the call resolves to nothing.
+
+**Fix.** `addPackageTokens`'s registration key is now the package's own
+declared name (`segmentsToString(lifted.packageDecl.path.segments)`),
+matching what `codegenMPackage` derives independently — a no-op for
+every caller whose label already agrees with the declared package, and
+a real fix for a caller (test harness or otherwise) that lets them
+diverge.
+
+**Coverage.** `msil_codegen_diag_self_test.l` test 9 (previously
+panicking, now asserts the clean `F0025` diagnostic at its correct
+span); full `msil_project_bridge_self_test.l` (45/45),
+`emitter_project_self_test.l` (36/36), and `mono_self_test.l` (55/55)
+re-verified with no regression. Full `make lyric` rebuild completes
+cleanly.
+
+**Related:** #6547, D-progress-864 (the loud-failure change that
+surfaced this latent gap).
+
+## D-progress-866 — `Lyric.HoistEngine` recognizes a module-scope `val` as a real bound value for hoist-hazard receiver protection (#6734)
+
+**Symptom.** `hzMemberChainBaseIsValue` (`lyric-compiler/lyric/hoist_engine.l`)
+decides whether an `EMember` chain's ultimate base names a real bound
+value (needing hoist protection ahead of an `await`/`?` hazard, #5629/
+#6600/#6684/#6699) by checking `HoistState.mutableNames`/`selfFieldNames`/
+`localNames` — all built exclusively from the current function/entry's
+own params + body, or the enclosing type's own fields. A module-level
+`val` used as a receiver (`gCache.box.describe(await mutate(gCache))`,
+`gCache` a file-scope `val`) was invisible to all three, and therefore
+indistinguishable from an unbound package/type qualifier — never
+hoist-protecting a `var` field mutated through it during the hazard's
+evaluation. Filed as a known, scoped-out gap by the review pass that
+found #6729 (its item 1), tracked separately as #6734 pending a bigger
+change than the other two sibling gaps in that finding (module-callee
+hoisting, `SScope`/`SItem` collector exhaustiveness), which were fixed
+directly in #6547.
+
+**Fix.** `HoistState` gained a `moduleValNames: Map[String, Bool]` field,
+populated once per file by a new `hzModuleValNames(file)` (walks
+`file.items` for `IVal`/`IConst`, using the existing `hzCollectPatternNames`/
+`hzAddLocalName` helpers) and threaded — like `counter` already is —
+unchanged through every `HoistState` construction site
+(`hoistFile`'s top-level `st`, and `hzRewriteFunction`/`hzRewriteEntry`'s
+per-function/entry `fnSt`/`edSt`, via `moduleValNames = st.moduleValNames`).
+`hzMemberChainBaseIsValue` now also consults `st.moduleValNames`.
+
+**Verification note (residual gaps found while landing this).** Compiling
+and RUNNING the natural end-to-end MSIL regression (module `val` +
+mutated `var` field + `await`) surfaces two separate, pre-existing MSIL
+codegen defects unrelated to this fix's own AST-level correctness:
+
+- An unannotated module-level `val` initialized by a record-constructor
+  call gets `MObject` as its MSIL field type (`inferUntypedStaticValMsilType`
+  has no `ECall` case), which then mis-resolves a later field access
+  against the wrong same-named-field record — `InvalidCastException` at
+  runtime. Tracked as #6786.
+- Even with an explicit type annotation sidestepping that, the
+  async state-machine lowering does not preserve a hoisted local's
+  captured value across the awaited suspension when its initializer
+  reads a field off a module-level val — the front-end rewrite is
+  verified correct (see Coverage below) but the compiled-and-run program
+  still observes the stale value. Tracked as #6787.
+
+Both are scoped out of #6547 (unrelated to hoist-hazard tracking,
+discovered incidentally while validating this fix) — per the "smaller,
+fully-finished slice" standard, filed with concrete repro/root-cause
+detail rather than papered over.
+
+**Coverage.** Because of #6787, this fix cannot be pinned as an executed
+`--target dotnet` program the way its sibling receiver-kind cases in
+`await_hoist_self_test.l` are (#5629/#6600/#6684 all execute and assert
+the runtime value). Pinned at the AST level instead — same precedent as
+`propagate_hoist_entry_polarity_self_test.l`'s existing two cases, which
+hit their own unrelated pre-existing-bug blockers (#6475/#6476) the same
+way: parse a small source string with a module `val` receiver ahead of
+an `await` hazard, run it through `Lyric.AwaitHoist.hoistAwaitsFile` (the
+exact pass the compiler runs on every file), and assert the rewritten
+body gained the two hoisted `val` bindings and the call receiver/argument
+became bare paths. New test added to that file:
+"module-scope val receiver: a var field mutated during a hoisted await
+gets hoist-protected (#6734)" (4/4 passing in that file). Full regression
+sweep: `await_hoist_self_test.l` 19/19, `propagate_hoist_self_test.l`
+42/42, `typechecker_self_test.l` 409/409, `make lyric` full self-host
+rebuild clean.
+
+**Related:** #6547, #6729 (the finding this item was split from),
+#6699/#6684/#6600/#5629 (the `hzMemberChainBaseIsValue` precedent this
+fix extends), #6786, #6787 (residual MSIL codegen gaps found while
+validating this fix, filed separately).
+
+---
+
+## D-progress-867 — Type checker: a bare union-case constructor call in a
+disambiguating call-argument position no longer hard-fails T0123 (#6814)
+
+**Context.** `#6287`'s `checkBareNameAmbiguity` (`typechecker_resolver.l`)
+fires unconditionally on any bare name that resolves to 2+ imported
+packages, called from the bare-callee-position inference inside
+`inferExpr`'s `EPath` handling (`typechecker_exprs.l`, the single
+authoritative T0123 site for a value-position bare name). For
+`Rx.errorMessage(TimedOut(message = "a"))` where two imported packages
+each declare a `TimedOut` union case, the inner `TimedOut(...)` call's
+bare callee is genuinely ambiguous by name alone — but the outer call's
+own parameter type (`RegexSafeLikePkg.XError`) unambiguously picks out
+the right one. The type checker already had an "expected type from call
+argument position" mechanism (`inferExprExpected`, doc-commented "A2"),
+but it only special-cased `ELambda` against an expected `TyFunction`;
+every other argument expression fell through to plain, context-free
+`inferExpr`, hitting the unconditional ambiguity gate before the
+call's own parameter type ever entered the picture.
+
+An earlier narrow attempt — exempting any bare name whose every
+candidate is a `DKUnionCase` from the ambiguity check unconditionally —
+was tried and reverted (documented in the original #6814 filing): it
+broke `typechecker_self_test.l`'s own pinned regression ("bare union
+case constructor call ambiguous across two imported packages is
+T0123", `val s = Ping(code = 1)` with no enclosing call to disambiguate
+against). The two cases are only distinguishable by whether the call
+sits in a position with a real expected type — information the
+unconditional exemption didn't have, but `inferExprExpected`'s existing
+per-argument plumbing does.
+
+**Fix.** Two changes to `typechecker_exprs.l`, both scoped to the
+existing A2 deferred-argument machinery (previously lambda-only):
+
+1. `argIsAmbiguousUnionCaseCtor(tbl, e)` — a new predicate mirroring
+   `lambdaHasUnannotatedParam`: true for a call-argument expression that
+   is itself a bare (single-segment `EPath` callee), 2+-candidate,
+   all-`DKUnionCase` constructor call. The ECall argument-inference loop
+   (and its A2 second pass) now defers such an argument the same way it
+   already deferred an unannotated lambda literal — first pass infers it
+   leniently into a scratch diagnostic list (its placeholder type is
+   discarded, exactly like a deferred lambda's), second pass re-infers
+   it with the callee's resolved parameter type as the expectation.
+   `expectedCallArgTypes` gained a `tbl` parameter so its generic-arg
+   exclusion check can call the same predicate as the deferral loop.
+2. `inferExprExpected` gained an `ECall` arm: when the callee is a bare
+   single-segment path, it calls `unionCaseSymbolForScrutinee(tbl, diag,
+   fn, expected)` — the SAME helper `#6287` Phase B already uses to
+   resolve a match-pattern head against its scrutinee's own union before
+   falling back to the ambiguity check — passing the argument's expected
+   type as the "scrutinee." If the expected type's own union declares a
+   case with that name, it resolves directly via
+   `inferUnionCaseConstruction`, bypassing the ambiguity gate entirely.
+   If not, `unionCaseSymbolForScrutinee` itself falls through to the
+   ordinary bare-name ambiguity check (for a genuinely bare, unqualified
+   callee) and raises T0123 there exactly as before — guarded by a
+   `diag.count` snapshot so this arm never falls into `inferExpr` a
+   second time and duplicates that diagnostic.
+
+A call argument whose bare name has fewer than 2 candidates, or whose
+candidates aren't ALL union cases (so it might be a record constructor
+or function call instead), is left on the original eager `inferExpr`
+path entirely — this change only ever adds a *new* successful
+resolution tier ahead of the existing ambiguity gate for the one shape
+it targets; nothing previously accepted is newly rejected, and nothing
+outside a bare 2+-candidate all-union-case callee is touched.
+
+**Verification.** `jvm_cross_package_collision_self_test.l`'s
+"aliased calls into two same-simple-name colliding packages each
+resolve to their own package" (the original #6814 repro) now passes,
+6/6 in that file. `typechecker_self_test.l` 412/412 including the
+pinned "bare union case constructor call ambiguous across two imported
+packages is T0123" regression (`val s = Ping(code = 1)`, still
+correctly rejected — no enclosing call means no expected type reaches
+`inferExprExpected`, so it takes the same path as before this fix).
+Broader sweep, all clean: `enum_case_collision_self_test.l` 13/13,
+`await_hoist_self_test.l` 19/19, `propagate_hoist_self_test.l` 42/42,
+`propagate_hoist_entry_polarity_self_test.l` 4/4,
+`cross_package_generics_self_test.l` 10/10,
+`msil_project_bridge_self_test.l` 46/46,
+`generic_specialization_self_test.l` 8/8,
+`nested_constructor_pattern_self_test.l` 6/6,
+`pconstructor_typed_binding_self_test.l` 7/7. Full `make lyric`
+self-host rebuild (the self-hosted compiler compiling itself and the
+entire stdlib bundle through this exact call-argument inference path)
+clean, both before and after a `lyric fmt --write` pass.
+
+**Files changed:** `lyric-compiler/lyric/type_checker/typechecker_exprs.l`
+(`argIsAmbiguousUnionCaseCtor`, the ECall arm-loop deferral sites,
+`inferExprExpected`'s new `ECall` arm, `expectedCallArgTypes`'s new
+`tbl` parameter).
+
+**Related:** #6814 (closed by this fix), #6287 (the bare-name-ambiguity
+diagnostic and `unionCaseSymbolForScrutinee` precedent this reuses),
+#6688/#6728 (the codegen-level call-argument enum/union-case hint this
+is the type-checker-level analog of), #6547 (the PR this was deferred
+out of, now landing separately).

@@ -451,3 +451,47 @@ func checkImportedVisibility(sym: in Symbol, span: in Span, diag: in List[Diagno
     }
   }
 }
+
+func joinPackageNames(pkgs: in List[String]): String {
+  var result = ""
+  var i = 0
+  while i < pkgs.count {
+    if i > 0 {
+      result = result + ", "
+    }
+    result = result + "'" + pkgs[i] + "'"
+    i = i + 1
+  }
+  result
+}
+
+// #6287 (bare-name ambiguity): a bare reference to `name` that resolves
+// against two or more distinct imported packages' `pub`/`internal`
+// declarations is genuinely ambiguous — silently picking the last-registered
+// one hid a real collision (the issue's headline symptom). Call at every
+// authoritative bare-name resolution site (never from an internal helper
+// that merely probes whether a name exists, to avoid double-emitting the
+// same diagnostic for one source reference). Returns `true` (and emits
+// T0123) when ambiguous, so the caller can short-circuit to `TyError`/`None`
+// instead of also reporting a misleading downstream error against whichever
+// candidate it would otherwise have picked.
+pub func checkBareNameAmbiguity(tbl: in SymbolTable, diag: in List[Diagnostic], name: in String, span: in Span): Bool {
+  val pkgs = symTableAmbiguousImportPackages(tbl, name)
+  if pkgs.count >= 2 {
+    diag.add(
+      errorDiagnostic(
+        "T0123",
+        "'" + name + "' is ambiguous: it is declared by " + joinPackageNames(pkgs) +
+          ", all imported here — qualify the reference (e.g. '" +
+          pkgs[0] +
+          "." +
+          name +
+          "')",
+        span
+      )
+    )
+    true
+  } else {
+    false
+  }
+}

@@ -50,7 +50,7 @@ record Tok {
 }
 
 record St {
-  pos: Int
+  var pos: Int
 }
 
 func advance(st: inout St): Unit {

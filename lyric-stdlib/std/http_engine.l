@@ -411,10 +411,10 @@ union ConnPhase {
 @experimental
 pub record Connection {
   limits: EngineLimits
-  phase: ConnPhase
-  buf: slice[Byte]
-  keepAlive: Bool
-  fatal: Bool
+  var phase: ConnPhase
+  var buf: slice[Byte]
+  var keepAlive: Bool
+  var fatal: Bool
 }
 
 /// A fresh connection with no buffered input, ready to parse a request

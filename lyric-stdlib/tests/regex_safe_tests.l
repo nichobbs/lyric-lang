@@ -11,7 +11,7 @@ import Std.RegexSafe as Rx
 import Std.Testing
 
 func testErrorMessageTimedOut(): Unit {
-  val msg = Rx.errorMessage(TimedOut(message = "x"))
+  val msg = Rx.errorMessage(Rx.TimedOut(message = "x"))
   assertTrue(msg == "regex match timed out: x", "TimedOut renders")
 }
 

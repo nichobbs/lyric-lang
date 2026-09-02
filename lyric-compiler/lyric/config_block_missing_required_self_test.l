@@ -111,8 +111,10 @@ test "required field with no default and no env var exits 78 (subprocess, dotnet
   val dllPath = Path.join(dir, "ConfigMissingFixture.dll")
   val srcs: List[String] = newList()
   srcs.add(missingRequiredFixtureSource())
+  val paths: List[String] = newList()
+  paths.add("")
   val pkgs: List[Emitter.ProjectPackage] = newList()
-  pkgs.add(Emitter.ProjectPackage(name = "ConfigMissingFixture", sources = srcs))
+  pkgs.add(Emitter.ProjectPackage(name = "ConfigMissingFixture", sources = srcs, paths = paths))
   val req = Emitter.EmitProjectRequest(
     packages = pkgs,
     assemblyName = "ConfigMissingFixture",
@@ -159,8 +161,10 @@ test "required field with no default and no env var exits 78 (subprocess, jvm)" 
   val jarPath = Path.join(dir, "ConfigMissingFixture.jar")
   val srcs: List[String] = newList()
   srcs.add(missingRequiredFixtureSource())
+  val paths: List[String] = newList()
+  paths.add("")
   val pkgs: List[Emitter.ProjectPackage] = newList()
-  pkgs.add(Emitter.ProjectPackage(name = "ConfigMissingFixture", sources = srcs))
+  pkgs.add(Emitter.ProjectPackage(name = "ConfigMissingFixture", sources = srcs, paths = paths))
   val req = Emitter.EmitProjectRequest(
     packages = pkgs,
     assemblyName = "ConfigMissingFixture",

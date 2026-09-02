@@ -229,13 +229,18 @@ test "a genuinely multi-file [project.packages] entry merges through Emitter.emi
   val helperPkg: List[String] = newList()
   helperPkg.add("package Proj5.Helper\n" + "pub func partOne(): Int {\n" + "  10\n" + "}\n")
   helperPkg.add("package Proj5.Helper\n" + "pub func partTwo(): Int {\n" + "  32\n" + "}\n")
+  val helperPaths: List[String] = newList()
+  helperPaths.add("")
+  helperPaths.add("")
   val pkgs: List[ProjectPackage] = newList()
-  pkgs.add(ProjectPackage(name = "Proj5.Helper", sources = helperPkg))
+  pkgs.add(ProjectPackage(name = "Proj5.Helper", sources = helperPkg, paths = helperPaths))
   val appSrc: List[String] = newList()
   appSrc.add(
     "package Proj5.App\n" + "import Proj5.Helper\n" + "func main(): Int {\n" + "  partOne() + partTwo()\n" + "}\n"
   )
-  pkgs.add(ProjectPackage(name = "Proj5.App", sources = appSrc))
+  val appPaths: List[String] = newList()
+  appPaths.add("")
+  pkgs.add(ProjectPackage(name = "Proj5.App", sources = appSrc, paths = appPaths))
   val stdlib = findStdlibSourcesNative()
   if stdlib.count == 0 {
     panic("native stdlib sources not found (run from the repo root or set LYRIC_STD_PATH)")

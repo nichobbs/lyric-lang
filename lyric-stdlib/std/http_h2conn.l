@@ -168,12 +168,12 @@ import Std.HttpEngine.Hpack
 /// [2^14, 2^24-1], and the advisory sizes are clamped). `enablePush` is 0/1.
 @experimental
 pub record H2Settings {
-  headerTableSize: Int
-  enablePush: Int
-  maxConcurrentStreams: Int
-  initialWindowSize: Int
-  maxFrameSize: Int
-  maxHeaderListSize: Int
+  var headerTableSize: Int
+  var enablePush: Int
+  var maxConcurrentStreams: Int
+  var initialWindowSize: Int
+  var maxFrameSize: Int
+  var maxHeaderListSize: Int
 }
 
 /// The default settings a server advertises: RFC-default header table (4096)
@@ -315,9 +315,9 @@ pub union H2SendError {
 @experimental
 record H2Stream {
   id: Int
-  state: H2StreamState
-  sendWindow: Int
-  recvWindow: Int
+  var state: H2StreamState
+  var sendWindow: Int
+  var recvWindow: Int
 }
 
 /// In-progress HEADERS + CONTINUATION reassembly (§6.10). `accepted` is false
@@ -333,7 +333,7 @@ record ContinuationState {
   buffer: List[Byte]
   endStream: Bool
   accepted: Bool
-  contFrames: Int
+  var contFrames: Int
 }
 
 /// The connection's shutdown / abuse-mitigation bookkeeping, grouped into a
@@ -350,11 +350,11 @@ record ContinuationState {
 /// Filed as #6089.
 @experimental
 record H2ShutdownState {
-  goAwaySent: Bool
-  goAwayLastStreamId: Int
-  goAwayReceived: Bool
-  rapidResetCount: Int
-  serverCompletedCount: Int
+  var goAwaySent: Bool
+  var goAwayLastStreamId: Int
+  var goAwayReceived: Bool
+  var rapidResetCount: Int
+  var serverCompletedCount: Int
 }
 
 /// Per-connection FSM state. A reference value threaded through `feed` and the
@@ -363,18 +363,18 @@ record H2ShutdownState {
 /// lifecycle contract.
 @experimental
 pub record H2Connection {
-  dec: FrameDecoder
+  var dec: FrameDecoder
   hpackDec: HpackDecoder
   hpackEnc: HpackEncoder
   localSettings: H2Settings
   remoteSettings: H2Settings
-  connSendWindow: Int
-  connRecvWindow: Int
-  streams: List[H2Stream]
-  cont: Option[ContinuationState]
-  lastPeerStreamId: Int
-  expectClientSettings: Bool
-  fatal: Bool
+  var connSendWindow: Int
+  var connRecvWindow: Int
+  var streams: List[H2Stream]
+  var cont: Option[ContinuationState]
+  var lastPeerStreamId: Int
+  var expectClientSettings: Bool
+  var fatal: Bool
   shutdown: H2ShutdownState
 }
 
@@ -1396,7 +1396,13 @@ func handleContinuation(
   endHeaders: in Bool,
 ): Unit {
   match state.cont {
-    case None -> connFail(state, events, outb, H2ProtocolError, "CONTINUATION with no preceding HEADERS (RFC 9113 section 6.10)")
+    case None -> connFail(
+      state,
+      events,
+      outb,
+      H2ProtocolError,
+      "CONTINUATION with no preceding HEADERS (RFC 9113 section 6.10)"
+    )
     case Some(c) -> {
       // Typed local before any field access — the erased-receiver JVM fix (see
       // `markEndStreamReceived`). Do not inline `cs` back to `c`.
@@ -1502,15 +1508,43 @@ func dispatchDuringContinuation(
         )
       }
     }
-    case _ -> connFail(state, events, outb, H2ProtocolError, "expected CONTINUATION for the open HEADERS block (RFC 9113 section 6.10)")
+    case _ -> connFail(
+      state,
+      events,
+      outb,
+      H2ProtocolError,
+      "expected CONTINUATION for the open HEADERS block (RFC 9113 section 6.10)"
+    )
   }
 }
 
 func dispatchNormal(state: inout H2Connection, events: in List[H2Event], outb: in List[Byte], frame: in H2Frame): Unit {
   match frame {
-    case DataFrame(streamId, data, endStream, wireLength) -> handleData(state, events, outb, streamId, data, endStream, wireLength)
-    case HeadersFrame(streamId, fragment, endStream, endHeaders, _) -> handleHeaders(state, events, outb, streamId, fragment, endStream, endHeaders)
-    case ContinuationFrame(_, _, _) -> connFail(state, events, outb, H2ProtocolError, "CONTINUATION with no preceding HEADERS (RFC 9113 section 6.10)")
+    case DataFrame(streamId, data, endStream, wireLength) -> handleData(
+      state,
+      events,
+      outb,
+      streamId,
+      data,
+      endStream,
+      wireLength
+    )
+    case HeadersFrame(streamId, fragment, endStream, endHeaders, _) -> handleHeaders(
+      state,
+      events,
+      outb,
+      streamId,
+      fragment,
+      endStream,
+      endHeaders
+    )
+    case ContinuationFrame(_, _, _) -> connFail(
+      state,
+      events,
+      outb,
+      H2ProtocolError,
+      "CONTINUATION with no preceding HEADERS (RFC 9113 section 6.10)"
+    )
     case PriorityFrame(_, _) -> ()
     case RstStreamFrame(streamId, errorCode) -> handleRstStream(state, events, outb, streamId, errorCode)
     case SettingsFrame(settings, ack) -> handleSettings(state, events, outb, settings, ack)

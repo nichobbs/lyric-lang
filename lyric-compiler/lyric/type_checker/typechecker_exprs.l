@@ -25,7 +25,10 @@ pub func isStringPlusVarAssign(target: in Expr, op: in AssignOp, targetType: in 
   }
   targetIsWidenableShape and
     match op {
-      case AssPlus -> match targetType { case TyPrim(pt) -> match pt { case PtString -> true; case _ -> false }; case _ -> false }
+      case AssPlus -> match targetType {
+        case TyPrim(pt) -> match pt { case PtString -> true; case _ -> false }
+        case _ -> false
+      }
       case _ -> false
     }
 }
@@ -35,8 +38,22 @@ pub func isStringPlusVarAssign(target: in Expr, op: in AssignOp, targetType: in 
 // ─────────────────────────────────────────────────────────────────────────────
 pub func typeOfLiteral(lit: in Literal): Type {
   match lit {
-    case LInt(_, sfx, _) -> match sfx { case NoIntSuffix -> TyPrim(pt = PtInt); case I8 -> TyPrim(pt = PtByte); case I16 -> TyPrim(pt = PtInt); case I32 -> TyPrim(pt = PtInt); case I64 -> TyPrim(pt = PtLong); case U8 -> TyPrim(pt = PtByte); case U16 -> TyPrim(pt = PtUInt); case U32 -> TyPrim(pt = PtUInt); case U64 -> TyPrim(pt = PtULong) }
-    case LFloat(_, sfx, _) -> match sfx { case NoFloatSuffix -> TyPrim(pt = PtDouble); case F32 -> TyPrim(pt = PtFloat); case F64 -> TyPrim(pt = PtDouble) }
+    case LInt(_, sfx, _) -> match sfx {
+      case NoIntSuffix -> TyPrim(pt = PtInt)
+      case I8 -> TyPrim(pt = PtByte)
+      case I16 -> TyPrim(pt = PtInt)
+      case I32 -> TyPrim(pt = PtInt)
+      case I64 -> TyPrim(pt = PtLong)
+      case U8 -> TyPrim(pt = PtByte)
+      case U16 -> TyPrim(pt = PtUInt)
+      case U32 -> TyPrim(pt = PtUInt)
+      case U64 -> TyPrim(pt = PtULong)
+    }
+    case LFloat(_, sfx, _) -> match sfx {
+      case NoFloatSuffix -> TyPrim(pt = PtDouble)
+      case F32 -> TyPrim(pt = PtFloat)
+      case F64 -> TyPrim(pt = PtDouble)
+    }
     case LChar(_) -> TyPrim(pt = PtChar)
     case LString(_) -> TyPrim(pt = PtString)
     case LTripleString(_) -> TyPrim(pt = PtString)
@@ -132,7 +149,17 @@ func codegenBuiltinType(name: in String): Option[Type] {
 // ─────────────────────────────────────────────────────────────────────────────
 func isNumericType(t: in Type): Bool {
   match t {
-    case TyPrim(pt) -> match pt { case PtByte -> true; case PtInt -> true; case PtLong -> true; case PtUInt -> true; case PtULong -> true; case PtNat -> true; case PtFloat -> true; case PtDouble -> true; case _ -> false }
+    case TyPrim(pt) -> match pt {
+      case PtByte -> true
+      case PtInt -> true
+      case PtLong -> true
+      case PtUInt -> true
+      case PtULong -> true
+      case PtNat -> true
+      case PtFloat -> true
+      case PtDouble -> true
+      case _ -> false
+    }
     // A range subtype is numeric/ordered when its underlying representation is —
     // otherwise arithmetic / comparison on a range-typed value would spuriously fail T0030/T0033.
     case TyRefined(u, _, _, _) -> isNumericType(u)
@@ -359,7 +386,10 @@ func finiteCaseNames(tbl: in SymbolTable, t: in Type): Option[List[String]] {
 func patternIsCatchAll(p: in Pattern, caseNames: in List[String]): Bool {
   match p.kind {
     case PWildcard -> true
-    case PBinding(name, inner) -> match inner { case Some(ip) -> patternIsCatchAll(ip, caseNames); case None -> not listContainsStr(caseNames, name) }
+    case PBinding(name, inner) -> match inner {
+      case Some(ip) -> patternIsCatchAll(ip, caseNames)
+      case None -> not listContainsStr(caseNames, name)
+    }
     case PParen(ip) -> patternIsCatchAll(ip, caseNames)
     case POr(ps) -> {
       var any = false
@@ -379,7 +409,12 @@ func patternIsCatchAll(p: in Pattern, caseNames: in List[String]): Bool {
 // Add to `covered` any top-level constructor case names this pattern matches.
 func collectCoveredCases(p: in Pattern, caseNames: in List[String], covered: in List[String]): Unit {
   match p.kind {
-    case PBinding(name, inner) -> match inner { case Some(ip) -> collectCoveredCases(ip, caseNames, covered); case None -> if listContainsStr(caseNames, name) and not listContainsStr(covered, name) { covered.add(name) } }
+    case PBinding(name, inner) -> match inner {
+      case Some(ip) -> collectCoveredCases(ip, caseNames, covered)
+      case None -> if listContainsStr(caseNames, name) and not listContainsStr(covered, name) {
+        covered.add(name)
+      }
+    }
     case PConstructor(head, _) -> {
       if head.segments.count > 0 {
         val nm = head.segments[head.segments.count - 1]
@@ -557,7 +592,11 @@ func constBoolOfExpr(e: in Expr): Option[Bool] {
 func tryResolveConstBool(tbl: in SymbolTable, name: in String): Option[Bool] {
   match symTableTryFindOne(tbl, name) {
     case None -> None
-    case Some(sym) -> match sym.kind { case DKConst(cd) -> constBoolOfExpr(cd.init); case DKVal(vd) -> constBoolOfExpr(vd.init); case _ -> None }
+    case Some(sym) -> match sym.kind {
+      case DKConst(cd) -> constBoolOfExpr(cd.init)
+      case DKVal(vd) -> constBoolOfExpr(vd.init)
+      case _ -> None
+    }
   }
 }
 
@@ -588,7 +627,20 @@ func checkMatchExhaustive(
               match arms[i].guard {
                 case Some(_) -> {
                 }
-                case None -> match arms[i].pattern.kind { case PLiteral(lit) -> match lit { case LBool(b) -> if b { sawTrue = true } else { sawFalse = true }; case _ -> {  } }; case PConstRef(cn) -> match tryResolveConstBool(tbl, cn) { case Some(b) -> if b { sawTrue = true } else { sawFalse = true }; case None -> {  } }; case _ -> {  } }
+                case None -> match arms[i].pattern.kind {
+                  case PLiteral(lit) -> match lit {
+                    case LBool(b) -> if b { sawTrue = true } else { sawFalse = true }
+                    case _ -> {
+                    }
+                  }
+                  case PConstRef(cn) -> match tryResolveConstBool(tbl, cn) {
+                    case Some(b) -> if b { sawTrue = true } else { sawFalse = true }
+                    case None -> {
+                    }
+                  }
+                  case _ -> {
+                  }
+                }
               }
               i = i + 1
             }
@@ -610,10 +662,49 @@ func checkMatchExhaustive(
             }
           }
         }
-        case _ -> if isUnboundedScalar(pt) { val noNames: List[String] = newList(); if not armsHaveCatchAll(arms, noNames) { diag.add(errorDiagnostic("T0016", "non-exhaustive match on " + renderType(st) + ": add a wildcard `_` arm", span)) } }
+        case _ -> if isUnboundedScalar(pt) {
+          val noNames: List[String] = newList()
+          if not armsHaveCatchAll(arms, noNames) {
+            diag.add(errorDiagnostic("T0016", "non-exhaustive match on " + renderType(st) + ": add a wildcard `_` arm", span))
+          }
+        }
       }
     }
-    case _ -> match finiteCaseNames(tbl, st) { case None -> {  }; case Some(caseNames) -> { if not armsHaveCatchAll(arms, caseNames) { val covered: List[String] = newList(); var i = 0; while i < arms.count { match arms[i].guard { case None -> collectCoveredCases(arms[i].pattern, caseNames, covered); case Some(_) -> {  } }; i = i + 1 }; val missing: List[String] = newList(); var c = 0; while c < caseNames.count { if not listContainsStr(covered, caseNames[c]) { missing.add(caseNames[c]) }; c = c + 1 }; if missing.count > 0 { diag.add(errorDiagnostic("T0016", "non-exhaustive match on " + renderType(st) + ": missing case(s) " + joinStrs(missing, ", "), span)) } } } }
+    case _ -> match finiteCaseNames(tbl, st) {
+      case None -> {
+      }
+      case Some(caseNames) -> {
+        if not armsHaveCatchAll(arms, caseNames) {
+          val covered: List[String] = newList()
+          var i = 0
+          while i < arms.count {
+            match arms[i].guard {
+              case None -> collectCoveredCases(arms[i].pattern, caseNames, covered)
+              case Some(_) -> {
+              }
+            }
+            i = i + 1
+          }
+          val missing: List[String] = newList()
+          var c = 0
+          while c < caseNames.count {
+            if not listContainsStr(covered, caseNames[c]) {
+              missing.add(caseNames[c])
+            }
+            c = c + 1
+          }
+          if missing.count > 0 {
+            diag.add(
+              errorDiagnostic(
+                "T0016",
+                "non-exhaustive match on " + renderType(st) + ": missing case(s) " + joinStrs(missing, ", "),
+                span
+              )
+            )
+          }
+        }
+      }
+    }
   }
   // not a finite-case type — skip
 }
@@ -625,7 +716,10 @@ func checkMatchExhaustive(
 // (#2514).
 func isUnsuffixedIntLit(e: in Expr): Bool {
   match e.kind {
-    case ELiteral(lit) -> match lit { case LInt(_, sfx, _) -> match sfx { case NoIntSuffix -> true; case _ -> false }; case _ -> false }
+    case ELiteral(lit) -> match lit {
+      case LInt(_, sfx, _) -> match sfx { case NoIntSuffix -> true; case _ -> false }
+      case _ -> false
+    }
     case _ -> false
   }
 }
@@ -634,7 +728,15 @@ func isUnsuffixedIntLit(e: in Expr): Bool {
 // primitive — the set an unsuffixed literal may adopt.
 func isConcreteIntType(t: in Type): Bool {
   match unrefine(t) {
-    case TyPrim(pt) -> match pt { case PtByte -> true; case PtInt -> true; case PtLong -> true; case PtUInt -> true; case PtULong -> true; case PtNat -> true; case _ -> false }
+    case TyPrim(pt) -> match pt {
+      case PtByte -> true
+      case PtInt -> true
+      case PtLong -> true
+      case PtUInt -> true
+      case PtULong -> true
+      case PtNat -> true
+      case _ -> false
+    }
     case _ -> false
   }
 }
@@ -1011,7 +1113,18 @@ func builtinMember(recvRaw: in Type, name: in String): Option[Type] {
       }
       None
     }
-    case TyPrim(pt) -> match pt { case PtString -> { if name == "length" { return Some(value = TyPrim(pt = PtInt)) }; if name == "isEmpty" { return Some(value = TyPrim(pt = PtBool)) }; None }; case _ -> None }
+    case TyPrim(pt) -> match pt {
+      case PtString -> {
+        if name == "length" {
+          return Some(value = TyPrim(pt = PtInt))
+        }
+        if name == "isEmpty" {
+          return Some(value = TyPrim(pt = PtBool))
+        }
+        None
+      }
+      case _ -> None
+    }
     case TyException -> {
       if name == "message" {
         return Some(value = TyPrim(pt = PtString))
@@ -1236,7 +1349,14 @@ func numericConvTarget(name: in String): Option[PrimType] {
 // support, not a checker-only claim.
 func isNumericOrCharType(t: in Type): Bool {
   match unrefine(t) {
-    case TyPrim(pt) -> match pt { case PtByte -> true; case PtInt -> true; case PtLong -> true; case PtDouble -> true; case PtChar -> true; case _ -> false }
+    case TyPrim(pt) -> match pt {
+      case PtByte -> true
+      case PtInt -> true
+      case PtLong -> true
+      case PtDouble -> true
+      case PtChar -> true
+      case _ -> false
+    }
     case _ -> false
   }
 }
@@ -1412,16 +1532,67 @@ func isNeverType(t: in Type): Bool {
 // Type an `ExprOrBlock` (an `if`/`match` branch body): a bare expression via
 // `inferExpr`, a brace block via the divergence-aware `checkBlock` (D081), which
 // threads the enclosing function's `returnTy`/`genericNames` off the scope.
+// #3362 follow-up (#6559): both arms below used to hardcode value position
+// (`true`/an implicit always-value `inferExpr` dispatch) regardless of the
+// caller's real position. That's fine when the `ExprOrBlock` genuinely is
+// the value (a match arm body, an if used as a value, ...), but an
+// `EOBExpr` wrapping a bare `EIf`/`EMatch` is an "else if"/chained-match
+// continuation of the SAME construct the caller is already
+// unifying — not an independently value-consumed sub-expression — and an
+// `EOBBlock` whose own trailing statement is an `EIf`/`EMatch` is the exact
+// same shape one level of braces removed. Either hardcoding `true` here
+// silently re-escalates a statement-position (discarded) if/match chain
+// back to value position one level down, raising a spurious T0067 on a
+// Unit-vs-non-Unit branch pair that is actually discarded. `checkBlock`
+// already threads `valuePos and isLast` correctly for a block's OWN
+// trailing statement, so the `EOBBlock` arm just needs the caller's real
+// `isValuePosition` instead of a hardcoded `true`; the `EOBExpr` arm needs
+// the same forwarding since `inferExpr`'s own generic `EIf`/`EMatch` cases
+// hardcode `true` for use OUTSIDE this chaining context.
 pub func inferExprOrBlock(
   sc: in Scope,
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
   diag: in List[Diagnostic],
   eob: in ExprOrBlock,
+  isValuePosition: in Bool,
 ): Type {
   match eob {
-    case EOBExpr(ex) -> inferExpr(sc, tbl, sigs, diag, ex)
-    case EOBBlock(bl) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, sc.returnTyExpr, diag, bl, true)
+    case EOBExpr(ex) -> match ex.kind {
+      case EIf(cond, thenBranch, elseBranch, _) -> inferIfExpr(
+        sc,
+        tbl,
+        sigs,
+        diag,
+        ex,
+        cond,
+        thenBranch,
+        elseBranch,
+        isValuePosition
+      )
+      case EMatch(scrutinee, arms) -> inferMatchExpr(
+        sc,
+        tbl,
+        sigs,
+        diag,
+        ex,
+        scrutinee,
+        arms,
+        isValuePosition
+      )
+      case _ -> inferExpr(sc, tbl, sigs, diag, ex)
+    }
+    case EOBBlock(bl) -> checkBlock(
+      sc,
+      tbl,
+      sigs,
+      sc.genericNames,
+      sc.returnTy,
+      sc.returnTyExpr,
+      diag,
+      bl,
+      isValuePosition
+    )
   }
 }
 
@@ -1489,12 +1660,52 @@ func mergeIntWiden(a: in Type, b: in Type): Option[Type] {
     return Some(value = a)
   }
   match unrefine(a) {
-    case TyUser(aid, an, aargs) -> match unrefine(b) { case TyUser(bid, _, bargs) -> { if typeIdEq(aid, bid) and aargs.count == bargs.count { val merged: List[Type] = newList(); var allOk = true; var i = 0; while i < aargs.count { if typeEquiv(aargs[i], bargs[i]) { merged.add(aargs[i]) } else { match mergeIntWiden(aargs[i], bargs[i]) { case Some(m) -> merged.add(m); case None -> { allOk = false; merged.add(aargs[i]) } } }; i = i + 1 }; if allOk { return Some(value = TyUser(id = aid, name = an, args = merged)) }; return None }; None }; case _ -> None }
+    case TyUser(aid, an, aargs) -> match unrefine(b) {
+      case TyUser(bid, _, bargs) -> {
+        if typeIdEq(aid, bid) and aargs.count == bargs.count {
+          val merged: List[Type] = newList()
+          var allOk = true
+          var i = 0
+          while i < aargs.count {
+            if typeEquiv(aargs[i], bargs[i]) {
+              merged.add(aargs[i])
+            } else {
+              match mergeIntWiden(aargs[i], bargs[i]) {
+                case Some(m) -> merged.add(m)
+                case None -> {
+                  allOk = false
+                  merged.add(aargs[i])
+                }
+              }
+            }
+            i = i + 1
+          }
+          if allOk {
+            return Some(value = TyUser(id = aid, name = an, args = merged))
+          }
+          return None
+        }
+        None
+      }
+      case _ -> None
+    }
     case _ -> None
   }
 }
 
-func unifyBranchTypes(a: in Type, b: in Type, span: in Span, diag: in List[Diagnostic]): Type {
+// #3362: `isValuePosition` distinguishes an if/match whose result is
+// actually consumed (bound to a `val`/`let`/`var`, returned, passed as an
+// argument, …) from one used purely as a statement (its value discarded).
+// In statement position, two Unit-typed branches (or a Unit branch beside
+// one that never runs) is the routine, sound case — absorb silently, as
+// before. In value position, one branch producing Unit while the other
+// produces a real value is a genuine mismatch (the caller can't use
+// "sometimes nothing" as a value), so it raises the same T0067 the general
+// incompatible-branch-types case raises rather than silently collapsing to
+// `Unit`. Both branches being Unit is never an error, in either position —
+// it's the *lone* Unit branch beside a non-Unit branch that value position
+// must catch.
+func unifyBranchTypes(a: in Type, b: in Type, span: in Span, diag: in List[Diagnostic], isValuePosition: in Bool): Type {
   if isNeverType(a) {
     return b
   }
@@ -1515,9 +1726,23 @@ func unifyBranchTypes(a: in Type, b: in Type, span: in Span, diag: in List[Diagn
     case _ -> {
     }
   }
-  // Position-blind Unit absorption — unsound for value-position if/match; fix tracked in #3362.
-  if isUnitType(a) or isUnitType(b) {
+  val aUnit = isUnitType(a)
+  val bUnit = isUnitType(b)
+  if aUnit and bUnit {
     return TyPrim(pt = PtUnit)
+  }
+  if aUnit or bUnit {
+    if not isValuePosition {
+      return TyPrim(pt = PtUnit)
+    }
+    diag.add(
+      errorDiagnostic(
+        "T0067",
+        "incompatible branch types: one branch has type " + renderType(a) + ", the other " + renderType(b),
+        span
+      )
+    )
+    return TyError
   }
   if typeEquiv(a, b) {
     a
@@ -1559,7 +1784,14 @@ func stringIndexOfMember(tbl: in SymbolTable, name: in String): Option[Type] {
   ps.add(TyPrim(pt = PtString))
   if listContainsStr(tbl.scopeImports, "Std.String") {
     match symTableTryFindOne(tbl, "Option") {
-      case Some(sym) -> match symbolTypeIdOpt(sym) { case Some(tid) -> { val targs: List[Type] = newList(); targs.add(TyPrim(pt = PtInt)); return Some(value = TyFunction(params = ps, ret = TyUser(id = tid, name = "Option", args = targs), isAsync = false)) }; case None -> () }
+      case Some(sym) -> match symbolTypeIdOpt(sym) {
+        case Some(tid) -> {
+          val targs: List[Type] = newList()
+          targs.add(TyPrim(pt = PtInt))
+          return Some(value = TyFunction(params = ps, ret = TyUser(id = tid, name = "Option", args = targs), isAsync = false))
+        }
+        case None -> ()
+      }
       case None -> ()
     }
     // Std.String is imported but `Option` is not resolvable from the item
@@ -1600,7 +1832,13 @@ func inferMemberBase(tbl: in SymbolTable, recvRaw: in Type, name: in String): Ty
       // before the generic builtin table because the result depends on the
       // file's imports, which `builtinMember` does not see.
       match recv {
-        case TyPrim(mbPt) -> match mbPt { case PtString -> match stringIndexOfMember(tbl, name) { case Some(sit) -> return sit; case None -> () }; case _ -> () }
+        case TyPrim(mbPt) -> match mbPt {
+          case PtString -> match stringIndexOfMember(tbl, name) {
+            case Some(sit) -> return sit
+            case None -> ()
+          }
+          case _ -> ()
+        }
         case _ -> ()
       }
       match builtinMember(recv, name) {
@@ -1965,7 +2203,16 @@ func isOpaqueOwnFieldName(tbl: in SymbolTable, tid: in TypeId, name: in String):
   var i = 0
   while i < tbl.symbols.count {
     match tbl.symbols[i].kind {
-      case DKOpaque(did, _) -> if typeIdEq(did, tid) and not tbl.symbols[i].isImported { val fields = ctorAllFields(tbl.symbols[i]); var j = 0; while j < fields.count { if fields[j].name == name { return true }; j = j + 1 } }
+      case DKOpaque(did, _) -> if typeIdEq(did, tid) and not tbl.symbols[i].isImported {
+        val fields = ctorAllFields(tbl.symbols[i])
+        var j = 0
+        while j < fields.count {
+          if fields[j].name == name {
+            return true
+          }
+          j = j + 1
+        }
+      }
       case _ -> {
       }
     }
@@ -2165,6 +2412,18 @@ func resolveExprPath(
   }
   match mapGet(sigs, name) {
     case Some(sig) -> {
+      // #6652: `sigs`'s first-in-wins insertion policy for imported functions
+      // (typechecker_checker.l, "Sig-map insertion policy") means a bare
+      // function name reaching here can silently resolve to whichever
+      // package's `IFunc` was collected first, hiding a genuine cross-package
+      // collision — the same hazard #6287 closed for bare vals/consts/union
+      // cases below. Gate it with the same helper, before consulting `sigs`
+      // for a type, so this stays the single authoritative T0123 site for a
+      // bare callee name (see `constructorSymbolOf`'s comment above, which
+      // depends on that being true).
+      if checkBareNameAmbiguity(tbl, diag, name, span) {
+        return TyError
+      }
       // #1484: a function resolves via `sigs` (no visibility there) — consult
       // the symbol table for the same name to enforce cross-package visibility.
       match symTableTryFindOne(tbl, name) {
@@ -2187,6 +2446,13 @@ func resolveExprPath(
     case Some(t) -> return t
     case None -> {
     }
+  }
+  // #6287: a bare non-function name (union case / const / val — the function
+  // case above is checked separately since `sigs` resolves it earlier)
+  // ambiguous across two-or-more imported packages must be qualified, not
+  // silently resolved to whichever package's symbol was registered last.
+  if checkBareNameAmbiguity(tbl, diag, name, span) {
+    return TyError
   }
   match symTableTryFindOne(tbl, name) {
     case Some(sym) -> {
@@ -2271,7 +2537,14 @@ func callArgExpr(arg: in CallArg): Expr {
 func argIsValidByRefTarget(sc: in Scope, e: in Expr): Bool {
   match e.kind {
     case EParen(inner) -> argIsValidByRefTarget(sc, inner)
-    case EPath(p) -> if p.segments.count == 1 { match scopeTryFind(sc, p.segments[0]) { case Some(b) -> b.isMutable; case None -> true } } else { true }
+    case EPath(p) -> if p.segments.count == 1 {
+      match scopeTryFind(sc, p.segments[0]) {
+        case Some(b) -> b.isMutable
+        case None -> true
+      }
+    } else {
+      true
+    }
     // a local binding must be mutable
     // not a local (global / unknown) — accept
     // qualified path — accept
@@ -3021,6 +3294,13 @@ func inferConstruction(
 // `fnWasFlatPath`, same EMember-chain-misrouting hazard `unionCaseSymbolOf`
 // documents — a value-receiver method chain like `x.Foo(...)` must not
 // mis-route into constructor typing via the bare-name fallback).
+// A bare (unqualified) `ctorName` reaching the final fallback below is
+// resolved leniently (no ambiguity check here): the ECall caller already
+// invoked `resolveExprPath` on this same flat-`EPath` callee to type `fnT`
+// (#6287's `checkBareNameAmbiguity` gate lives there, the single
+// authoritative site for a bare callee name — adding a second check here
+// would double-emit T0123 for one source reference, the exact hazard #6539
+// fixed for the pattern-head path).
 func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
   val flatSegs: List[String] = newList()
   if not flattenCalleePathSegs(fn, flatSegs) or flatSegs.count == 0 {
@@ -3037,7 +3317,12 @@ func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
     }
     val fullQual = modulePathJoin(quals)
     match symTableTryFindInPackage(tbl, fullQual, ctorName) {
-      case Some(pkgSym) -> match pkgSym.kind { case DKRecord(_, _) -> return Some(value = pkgSym); case DKExposedRec(_, _) -> return Some(value = pkgSym); case DKOpaque(_, _) -> return Some(value = pkgSym); case _ -> () }
+      case Some(pkgSym) -> match pkgSym.kind {
+        case DKRecord(_, _) -> return Some(value = pkgSym)
+        case DKExposedRec(_, _) -> return Some(value = pkgSym)
+        case DKOpaque(_, _) -> return Some(value = pkgSym)
+        case _ -> ()
+      }
       case None -> ()
     }
   }
@@ -3045,7 +3330,12 @@ func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
     return None
   }
   match symTableTryFindOne(tbl, ctorName) {
-    case Some(sym) -> match sym.kind { case DKRecord(_, _) -> Some(value = sym); case DKExposedRec(_, _) -> Some(value = sym); case DKOpaque(_, _) -> Some(value = sym); case _ -> None }
+    case Some(sym) -> match sym.kind {
+      case DKRecord(_, _) -> Some(value = sym)
+      case DKExposedRec(_, _) -> Some(value = sym)
+      case DKOpaque(_, _) -> Some(value = sym)
+      case _ -> None
+    }
     case None -> None
   }
 }
@@ -3186,7 +3476,7 @@ func unionCaseSymbolForScrutinee(
   tbl: in SymbolTable, diag: in List[Diagnostic], fn: in Expr, scrutineeTy: in Type
 ): Option[Symbol] {
   match unrefine(scrutineeTy) {
-    case TyUser(sid, _, _) -> {
+    case TyUser(sid, sname, _) -> {
       val flatSegs: List[String] = newList()
       val hasSegs = flattenCalleePathSegs(fn, flatSegs) and flatSegs.count > 0
       val scrCaseName = if hasSegs { flatSegs[flatSegs.count - 1] } else { "" }
@@ -3235,6 +3525,58 @@ func unionCaseSymbolForScrutinee(
                 return Some(value = scrCands[sci])
               }
             }
+            // Enum-case analog of the DKUnionCase branch above (#6608): a
+            // qualified nullary-case pattern matched against a known enum
+            // scrutinee (`case GrpcStatusCode.Ok -> ...`) must resolve
+            // against the SCRUTINEE's own enum, not fall through to the
+            // bare-name ambiguity check below — `pat2fnExpr` always wraps
+            // the pattern head as a flat `EPath` regardless of how many
+            // segments it has, so an unguarded fallthrough treats an
+            // explicitly-qualified enum-case name as if it were bare and
+            // spuriously fires T0123 when some other package happens to
+            // export a same-named case (e.g. `Std.Core.Ok`).  There is no
+            // `enumDeclIndex` mirroring `unionDeclIndex`, so tier B reuses
+            // the scrutinee's own `TyUser` name (`sname`) instead of a
+            // separate enum-decl lookup.
+            case DKEnumCase(scrParent, _) -> {
+              if typeIdEq(scrParent, sid) {
+                if flatSegs.count >= 2 {
+                  val quals: List[String] = newList()
+                  var qi = 0
+                  while qi < flatSegs.count - 1 {
+                    quals.add(flatSegs[qi])
+                    qi = qi + 1
+                  }
+                  val fullQual = modulePathJoin(quals)
+                  val tierA = scrCands[sci].originPackage == fullQual
+                  val enumName = quals[quals.count - 1]
+                  val pkgSegs: List[String] = newList()
+                  var pj = 0
+                  while pj < quals.count - 1 {
+                    pkgSegs.add(quals[pj])
+                    pj = pj + 1
+                  }
+                  val pkgPrefix = modulePathJoin(pkgSegs)
+                  val tierB = sname == enumName and (pkgPrefix.length == 0 or scrCands[sci].originPackage == pkgPrefix)
+                  if not (tierA or tierB) {
+                    diag.add(
+                      errorDiagnostic(
+                        "T0122",
+                        "pattern qualifier '" + fullQual + "' does not match the scrutinee's own enum '" + scrCands[sci].originPackage +
+                          "." +
+                          sname +
+                          "' — this pattern is matched against a value of that enum, not '" +
+                          fullQual +
+                          "'",
+                        fn.span
+                      )
+                    )
+                    return None
+                  }
+                }
+                return Some(value = scrCands[sci])
+              }
+            }
             case _ -> ()
           }
           sci = sci - 1
@@ -3242,6 +3584,35 @@ func unionCaseSymbolForScrutinee(
       }
     }
     case _ -> ()
+  }
+  // #6287: the scrutinee's own union didn't resolve the case name (unknown/
+  // `TyError` scrutinee, or no case of the scrutinee's own union matches) —
+  // falling through to a pure name-based lookup is ambiguous when two or
+  // more imported packages export a case with this name.  Gated on a flat
+  // `EPath` head the same way `unionCaseSymbolOf`'s own bare fallback is,
+  // so a qualified head (already handled above, or an `EMember` receiver
+  // chain) never reaches this check.
+  //
+  // #6700: `pat2fnExpr` always wraps the pattern head as a flat `EPath`
+  // regardless of how many segments it has (see the `DKEnumCase` comment
+  // above), so `fnWasFlatPath` alone does NOT mean "bare" — a fully
+  // qualified pattern head like `PkgA.Ping` is an `EPath` too.  Without
+  // also checking `flatSegs2.count == 1`, a qualified head whose scrutinee
+  // tiers above failed to resolve (unknown/`TyError` scrutinee) had ONLY
+  // its last segment checked for ambiguity, firing a nonsensical T0123
+  // telling the user to qualify a reference they already qualified.  Only
+  // a genuinely bare (single-segment) head reaches the ambiguity check;
+  // a qualified head falls through to `unionCaseSymbolOf` below unchecked
+  // here, same as before this fix for the count == 1 case.
+  val fnWasFlatPath = match fn.kind { case EPath(_) -> true; case _ -> false }
+  if fnWasFlatPath {
+    val flatSegs2: List[String] = newList()
+    if flattenCalleePathSegs(fn, flatSegs2) and flatSegs2.count == 1 {
+      val bareName = flatSegs2[flatSegs2.count - 1]
+      if checkBareNameAmbiguity(tbl, diag, bareName, fn.span) {
+        return None
+      }
+    }
   }
   unionCaseSymbolOf(tbl, fn)
 }
@@ -3317,7 +3688,15 @@ func inferUnionCaseConstruction(
   span: in Span,
 ): Type {
   match caseSym.kind {
-    case DKUnionCase(parentId, uc) -> match parentUnionDeclOf(tbl, parentId) { case Some(decl) -> { val gnames = unionDeclGenericNames(decl); val ftypes = unionCaseFieldTypes(tbl, diag, uc, gnames); val targs = inferGenericArgs(gnames, ftypes, argTypes); TyUser(id = parentId, name = decl.name, args = targs) }; case None -> TyError }
+    case DKUnionCase(parentId, uc) -> match parentUnionDeclOf(tbl, parentId) {
+      case Some(decl) -> {
+        val gnames = unionDeclGenericNames(decl)
+        val ftypes = unionCaseFieldTypes(tbl, diag, uc, gnames)
+        val targs = inferGenericArgs(gnames, ftypes, argTypes)
+        TyUser(id = parentId, name = decl.name, args = targs)
+      }
+      case None -> TyError
+    }
     case _ -> TyError
   }
 }
@@ -3394,13 +3773,25 @@ func findGenericInPair(name: in String, paramTy: in Type, argTy: in Type): Optio
       findGenericInPairs(name, pargs, aargs)
     }
     case TySlice(pe) -> match unrefine(argTy) { case TySlice(ae) -> findGenericInPair(name, pe, ae); case _ -> None }
-    case TyArray(_, pe) -> match unrefine(argTy) { case TyArray(_, ae) -> findGenericInPair(name, pe, ae); case _ -> None }
-    case TyNullable(pi) -> match unrefine(argTy) { case TyNullable(ai) -> findGenericInPair(name, pi, ai); case _ -> None }
+    case TyArray(_, pe) -> match unrefine(argTy) {
+      case TyArray(_, ae) -> findGenericInPair(name, pe, ae)
+      case _ -> None
+    }
+    case TyNullable(pi) -> match unrefine(argTy) {
+      case TyNullable(ai) -> findGenericInPair(name, pi, ai)
+      case _ -> None
+    }
     case TyTuple(pes) -> {
       val aes = match unrefine(argTy) { case TyTuple(a) -> a; case _ -> newList() }
       findGenericInPairs(name, pes, aes)
     }
-    case TyFunction(pps, pr, _) -> match unrefine(argTy) { case TyFunction(aps, ar, _) -> match findGenericInPairs(name, pps, aps) { case Some(v) -> Some(value = v); case None -> findGenericInPair(name, pr, ar) }; case _ -> None }
+    case TyFunction(pps, pr, _) -> match unrefine(argTy) {
+      case TyFunction(aps, ar, _) -> match findGenericInPairs(name, pps, aps) {
+        case Some(v) -> Some(value = v)
+        case None -> findGenericInPair(name, pr, ar)
+      }
+      case _ -> None
+    }
     case _ -> None
   }
 }
@@ -3446,7 +3837,14 @@ func inferOneGenericArg(name: in String, paramTys: in List[Type], argTys: in Lis
   var i = 0
   while i < paramTys.count and i < argTys.count {
     match findGenericInPair(name, paramTys[i], argTys[i]) {
-      case Some(v) -> if not haveBinding { bound = v; haveBinding = true } else { if not typeEquiv(bound, v) { return TyError } }
+      case Some(v) -> if not haveBinding {
+        bound = v
+        haveBinding = true
+      } else {
+        if not typeEquiv(bound, v) {
+          return TyError
+        }
+      }
       case None -> {
       }
     }
@@ -3521,7 +3919,19 @@ func checkBoundsSatisfied(
               satisfied = hasDerive(tbl, cname, concreteTy)
             } else {
               match symTableTryFindOne(tbl, cname) {
-                case Some(ifaceSym) -> match ifaceSym.kind { case DKInterface(ifaceId, _) -> match typeIdOfType(concreteTy) { case Some(concreteId) -> { satisfied = symTableTypeImplements(tbl, concreteId, ifaceId) }; case None -> { satisfied = true } }; case _ -> { satisfied = true } }
+                case Some(ifaceSym) -> match ifaceSym.kind {
+                  case DKInterface(ifaceId, _) -> match typeIdOfType(concreteTy) {
+                    case Some(concreteId) -> {
+                      satisfied = symTableTypeImplements(tbl, concreteId, ifaceId)
+                    }
+                    case None -> {
+                      satisfied = true
+                    }
+                  }
+                  case _ -> {
+                    satisfied = true
+                  }
+                }
                 case None -> {
                   // Unknown constraint names are treated as satisfied to preserve
                   // cross-package leniency, but emit T0111 so typos are visible.
@@ -3563,7 +3973,21 @@ func caseFieldTypesInstantiated(
   tbl: in SymbolTable, diag: in List[Diagnostic], caseSym: in Symbol, scrutTy: in Type
 ): List[Type] {
   match caseSym.kind {
-    case DKUnionCase(parentId, uc) -> match parentUnionDeclOf(tbl, parentId) { case Some(decl) -> { val gnames = unionDeclGenericNames(decl); val ftypes = unionCaseFieldTypes(tbl, diag, uc, gnames); val targs = match unrefine(scrutTy) { case TyUser(_, _, a) -> a; case _ -> newList() }; val result: List[Type] = newList(); var i = 0; while i < ftypes.count { result.add(substituteTyVars(ftypes[i], gnames, targs)); i = i + 1 }; result }; case None -> newList() }
+    case DKUnionCase(parentId, uc) -> match parentUnionDeclOf(tbl, parentId) {
+      case Some(decl) -> {
+        val gnames = unionDeclGenericNames(decl)
+        val ftypes = unionCaseFieldTypes(tbl, diag, uc, gnames)
+        val targs = match unrefine(scrutTy) { case TyUser(_, _, a) -> a; case _ -> newList() }
+        val result: List[Type] = newList()
+        var i = 0
+        while i < ftypes.count {
+          result.add(substituteTyVars(ftypes[i], gnames, targs))
+          i = i + 1
+        }
+        result
+      }
+      case None -> newList()
+    }
     case _ -> newList()
   }
 }
@@ -3590,7 +4014,10 @@ func isLiteralInit(e: in Expr): Bool {
   match e.kind {
     case ELiteral(_) -> true
     case EParen(inner) -> isLiteralInit(inner)
-    case EPrefix(op, operand) -> match op { case PreNeg -> match operand.kind { case ELiteral(_) -> true; case _ -> false }; case _ -> false }
+    case EPrefix(op, operand) -> match op {
+      case PreNeg -> match operand.kind { case ELiteral(_) -> true; case _ -> false }
+      case _ -> false
+    }
     case _ -> false
   }
 }
@@ -3608,6 +4035,12 @@ func checkConstRefPattern(
 ): Unit {
   match pat.kind {
     case PConstRef(name) -> {
+      // #6287: a const pattern `@Ident` ambiguous across imported packages
+      // must be qualified rather than silently binding to whichever
+      // same-named const/val was registered last.
+      if checkBareNameAmbiguity(tbl, diag, name, pat.span) {
+        return
+      }
       match symTableTryFindOne(tbl, name) {
         case None -> {
           diag.add(errorDiagnostic("T0072", "'" + name + "' is not defined; use a val or const for a const pattern", pat.span))
@@ -3823,8 +4256,23 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
           )
         )
       }
-      if name != "_" and not isConstructorPatternName(tbl, name) {
-        scopeAdd(sc, LocalBinding(name = name, ty = eraseTyVars(ty), isMutable = false))
+      if name != "_" {
+        if isConstructorPatternName(tbl, name) {
+          // #6287: a bare nullary-case pattern (`case Halt ->`, no parens)
+          // ambiguous across imported packages must be qualified — UNLESS
+          // the scrutinee is a known concrete type (`TyUser`).  Matching
+          // against a resolved union/enum type already gives the reader
+          // (and the rest of the type checker) the disambiguating context a
+          // `PConstructor` pattern gets from `unionCaseSymbolForScrutinee`;
+          // only an unresolved (`TyError`) scrutinee leaves a bare nullary
+          // name genuinely ambiguous.
+          val scrutineeIsKnown = match unrefine(ty) { case TyUser(_, _, _) -> true; case _ -> false }
+          if not scrutineeIsKnown {
+            val _ = checkBareNameAmbiguity(tbl, diag, name, pat.span)
+          }
+        } else {
+          scopeAdd(sc, LocalBinding(name = name, ty = eraseTyVars(ty), isMutable = false))
+        }
       }
       match inner {
         case None -> {
@@ -3906,6 +4354,122 @@ func pat2fnExpr(head: in ModulePath, span: in Span): Expr {
   Expr(kind = EPath(path = head), span = span)
 }
 
+// #3362: extracted from `inferExpr`'s `EIf` case so `checkBlock` can also
+// invoke it directly for a statement-position `if` (`SExpr` case), passing
+// the enclosing block's actual value-position instead of the `inferExpr`
+// dispatch's implicit "always value position" default.
+func inferIfExpr(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  e: in Expr,
+  cond: in Expr,
+  thenBranch: in ExprOrBlock,
+  elseBranch: in Option[ExprOrBlock],
+  isValuePosition: in Bool,
+): Type {
+  val condT = inferExpr(sc, tbl, sigs, diag, cond)
+  match condT {
+    case TyError -> {
+    }
+    case TyPrim(pt) -> match pt {
+      case PtBool -> {
+      }
+      case PtNever -> {
+      }
+      case _ -> diag.add(
+        errorDiagnostic(
+          "T0066",
+          "if-condition must be Bool (got " + renderType(condT) + ")",
+          cond.span
+        )
+      )
+    }
+    case _ -> diag.add(errorDiagnostic("T0066", "if-condition must be Bool (got " + renderType(condT) + ")", cond.span))
+  }
+  // An else-less `if` always yields `Unit` regardless of what the
+  // then-branch itself produces, so the then-branch's own value is
+  // discarded here even when the whole `if` is used in value position —
+  // type it accordingly (statement position), or a discarded branch
+  // mismatch spuriously fires T0067 one level down (#6730).
+  val thenIsValuePosition = isValuePosition and (match elseBranch { case Some(_) -> true; case None -> false })
+  val tt = inferExprOrBlock(sc, tbl, sigs, diag, thenBranch, thenIsValuePosition)
+  match elseBranch {
+    case None -> TyPrim(pt = PtUnit)
+    case Some(eb) -> {
+      val et = inferExprOrBlock(sc, tbl, sigs, diag, eb, isValuePosition)
+      unifyBranchTypes(tt, et, e.span, diag, isValuePosition)
+    }
+  }
+}
+
+// #3362: extracted from `inferExpr`'s `EMatch` case for the same reason as
+// `inferIfExpr` above — `checkBlock` needs to pass the real value-position
+// for a statement-position `match`.
+func inferMatchExpr(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  e: in Expr,
+  scrutinee: in Expr,
+  arms: in List[MatchArm],
+  isValuePosition: in Bool,
+): Type {
+  val st = inferExpr(sc, tbl, sigs, diag, scrutinee)
+  checkMatchExhaustive(tbl, diag, st, arms, e.span)
+  checkOpaquePatternHiding(tbl, diag, st, arms)
+  // Branch-type unification (#2142): a `match` used as a value takes the
+  // unified type of its arm bodies.  Each arm is checked in a fresh scope
+  // with its pattern variables bound to their destructured types
+  // (`bindPatternTyped` — `Some(ns)` on `Option[T]` binds `ns : T`), then the
+  // bodies fold through `unifyBranchTypes` (Never/TyError absorbed;
+  // Unit absorbed only in statement position, #3362; T0067 on a genuine
+  // value mismatch).  Guards are inferred for diagnostics but do not
+  // contribute to the branch type.
+  var acc: Type = TyError
+  var ai = 0
+  while ai < arms.count {
+    scopePush(sc)
+    bindPatternTyped(sc, tbl, diag, arms[ai].pattern, st)
+    checkConstRefPattern(tbl, sigs, diag, arms[ai].pattern, st)
+    match arms[ai].guard {
+      case Some(g) -> {
+        val guardT = inferExpr(sc, tbl, sigs, diag, g)
+        match guardT {
+          case TyError -> {
+          }
+          case TyPrim(pt) -> match pt {
+            case PtBool -> {
+            }
+            case PtNever -> {
+            }
+            case _ -> diag.add(
+              errorDiagnostic(
+                "T0066",
+                "match-arm guard must be Bool (got " + renderType(guardT) + ")",
+                g.span
+              )
+            )
+          }
+          case _ -> diag.add(
+            errorDiagnostic("T0066", "match-arm guard must be Bool (got " + renderType(guardT) + ")", g.span)
+          )
+        }
+      }
+      case None -> {
+      }
+    }
+    val bt = inferExprOrBlock(sc, tbl, sigs, diag, arms[ai].body, isValuePosition)
+    val armSpan = match arms[ai].body { case EOBExpr(ae) -> ae.span; case EOBBlock(ab) -> ab.span }
+    scopePop(sc)
+    acc = unifyBranchTypes(acc, bt, armSpan, diag, isValuePosition)
+    ai = ai + 1
+  }
+  acc
+}
+
 pub func inferExpr(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -3980,7 +4544,28 @@ pub func inferExpr(
       // user-type receiver falls through to the general EMember path (#2700).
       var cachedRecvType: Option[Type] = None
       match fn.kind {
-        case EMember(recvE, mname) -> match numericConvTarget(mname) { case Some(target) -> if args.count == 0 { val rt = inferExpr(sc, tbl, sigs, diag, recvE); if isNumericOrCharType(rt) { return TyPrim(pt = target) }; if isNonConvertiblePrimitive(rt) { diag.add(errorDiagnostic("T0103", "conversion method '" + mname + "' is not applicable to " + renderType(rt), recvE.span)); return TyError }; match rt { case TyError -> return TyError; case _ -> {  } }; cachedRecvType = Some(value = rt) }; case None -> {  } }
+        case EMember(recvE, mname) -> match numericConvTarget(mname) {
+          case Some(target) -> if args.count == 0 {
+            val rt = inferExpr(sc, tbl, sigs, diag, recvE)
+            if isNumericOrCharType(rt) {
+              return TyPrim(pt = target)
+            }
+            if isNonConvertiblePrimitive(rt) {
+              diag.add(
+                errorDiagnostic("T0103", "conversion method '" + mname + "' is not applicable to " + renderType(rt), recvE.span)
+              )
+              return TyError
+            }
+            match rt {
+              case TyError -> return TyError
+              case _ -> {
+              }
+            }
+            cachedRecvType = Some(value = rt)
+          }
+          case None -> {
+          }
+        }
         case _ -> {
         }
       }
@@ -4002,7 +4587,12 @@ pub func inferExpr(
             }
             case None -> {
               val rt1 = match recvE2.kind {
-                case EPath(p2) -> if p2.segments.count == 1 and startsUppercase(p2.segments[0]) { val scratch2: List[Diagnostic] = newList(); inferExpr(sc, tbl, sigs, scratch2, recvE2) } else { inferExpr(sc, tbl, sigs, diag, recvE2) }
+                case EPath(p2) -> if p2.segments.count == 1 and startsUppercase(p2.segments[0]) {
+                  val scratch2: List[Diagnostic] = newList()
+                  inferExpr(sc, tbl, sigs, scratch2, recvE2)
+                } else {
+                  inferExpr(sc, tbl, sigs, diag, recvE2)
+                }
                 case _ -> inferExpr(sc, tbl, sigs, diag, recvE2)
               }
               memberRecvTy = Some(value = rt1)
@@ -4026,7 +4616,17 @@ pub func inferExpr(
             match scopeTryFind(sc, p3.segments[0]) {
               case Some(_) -> {
               }
-              case None -> match typeIdOfType(sc.selfType) { case Some(selfTid) -> { if symTableMethodSigs(tbl, selfTid, p3.segments[0]).count > 0 { isMemberCallee = true; memberName = p3.segments[0]; memberRecvTy = Some(value = sc.selfType) } }; case None -> {  } }
+              case None -> match typeIdOfType(sc.selfType) {
+                case Some(selfTid) -> {
+                  if symTableMethodSigs(tbl, selfTid, p3.segments[0]).count > 0 {
+                    isMemberCallee = true
+                    memberName = p3.segments[0]
+                    memberRecvTy = Some(value = sc.selfType)
+                  }
+                }
+                case None -> {
+                }
+              }
             }
           }
         }
@@ -4037,12 +4637,14 @@ pub func inferExpr(
         case Some(rt) -> inferMemberBase(tbl, rt, memberName)
         case None -> inferExpr(sc, tbl, sigs, diag, fn)
       }
-      // A2 (docs/59 §5.1): lambda arguments with unannotated params are typed
-      // in two passes.  The first pass types them leniently (params `TyError`,
-      // diagnostics to a scratch list) so overload selection sees the same
-      // shape it always has; after the signature is selected, the second pass
-      // re-checks each such lambda body once — into the real diagnostic list —
-      // with the callee's parameter type as the expectation.  When no usable
+      // A2 (docs/59 §5.1): lambda arguments with unannotated params — and,
+      // per #6814, a bare union-case-constructor argument whose name is
+      // ambiguous across imported packages — are typed in two passes.  The
+      // first pass types them leniently (params `TyError`, diagnostics to a
+      // scratch list) so overload selection sees the same shape it always
+      // has; after the signature is selected, the second pass re-checks
+      // each such argument once — into the real diagnostic list — with the
+      // callee's parameter type as the expectation.  When no usable
       // expectation exists the second pass is identical to the historical
       // single pass, so nothing previously accepted is newly rejected.
       val argTypes: List[Type] = newList()
@@ -4050,7 +4652,7 @@ pub func inferExpr(
       var i = 0
       while i < args.count {
         val ae = callArgExpr(args[i])
-        if lambdaHasUnannotatedParam(ae) {
+        if lambdaHasUnannotatedParam(ae) or argIsAmbiguousUnionCaseCtor(tbl, ae) {
           val scratch: List[Diagnostic] = newList()
           argTypes.add(inferExpr(sc, tbl, sigs, scratch, ae))
           anyDeferredLambda = true
@@ -4068,18 +4670,30 @@ pub func inferExpr(
       match directSig {
         case Some(_) -> {
         }
-        case None -> if isMemberCallee { match fnT { case TyError -> match memberRecvTy { case Some(rt3) -> { methodPick = resolveMethodCallPick(tbl, sigs, rt3, memberName, args.count, argTypes) }; case None -> {  } }; case _ -> {  } } }
+        case None -> if isMemberCallee {
+          match fnT {
+            case TyError -> match memberRecvTy {
+              case Some(rt3) -> {
+                methodPick = resolveMethodCallPick(tbl, sigs, rt3, memberName, args.count, argTypes)
+              }
+              case None -> {
+              }
+            }
+            case _ -> {
+            }
+          }
+        }
       }
       if anyDeferredLambda {
         val lambdaSig = match directSig {
           case Some(_) -> directSig
           case None -> match methodPick { case Some(mp0) -> Some(value = mp0.sig); case None -> None }
         }
-        val expectedArgTys = expectedCallArgTypes(args, argTypes, lambdaSig, fnT)
+        val expectedArgTys = expectedCallArgTypes(tbl, args, argTypes, lambdaSig, fnT)
         var di = 0
         while di < args.count {
           val dae = callArgExpr(args[di])
-          if lambdaHasUnannotatedParam(dae) {
+          if lambdaHasUnannotatedParam(dae) or argIsAmbiguousUnionCaseCtor(tbl, dae) {
             argTypes[di] = inferExprExpected(sc, tbl, sigs, diag, dae, expectedArgTys[di])
           }
           di = di + 1
@@ -4094,7 +4708,80 @@ pub func inferExpr(
           // category B) so `unwrapOr(opt, 0): T` yields `Int`, not `TyVar("T")`.
           instantiateReturnType(sig, argTypes)
         }
-        case None -> match unionCaseSymbolOf(tbl, fn) { case Some(caseSym) -> inferUnionCaseConstruction(tbl, diag, caseSym, argTypes, e.span); case None -> match constructorSymbolOf(tbl, fn) { case Some(ctorSym) -> inferConstruction(tbl, diag, ctorSym, args, argTypes, e.span); case None -> match methodPick { case Some(mp) -> { checkCallArgsAgainstSig(sc, tbl, diag, mp.sig, args, argTypes, e.span); checkBoundsSatisfied(tbl, diag, mp.sig, argTypes, e.span); match mp.fullSig { case Some(fullS) -> { val extArgs: List[Type] = newList(); match memberRecvTy { case Some(rt4) -> extArgs.add(rt4); case None -> extArgs.add(TyError) }; var xi = 0; while xi < argTypes.count { extArgs.add(argTypes[xi]); xi = xi + 1 }; instantiateReturnType(fullS, extArgs) }; case None -> instantiateReturnType(mp.sig, argTypes) } }; case None -> { if isMemberCallee { match fnT { case TyError -> match memberRecvTy { case Some(rt5) -> maybeUnknownMemberDiag(tbl, sigs, diag, rt5, memberName, fn.span, true); case None -> {  } }; case _ -> {  } } }; match fnT { case TyFunction(paramTypes, ret, _) -> { if paramTypes.count != argTypes.count { diag.add(errorDiagnostic("T0042", "expected " + toString(paramTypes.count) + " argument(s), got " + toString(argTypes.count), e.span)) } else { var k = 0; while k < paramTypes.count { if not argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) { diag.add(errorDiagnostic("T0043", "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(paramTypes[k]), e.span)) }; k = k + 1 } }; ret }; case TyError -> TyError; case _ -> { diag.add(errorDiagnostic("T0044", "called value of non-function type " + renderType(fnT), e.span)); TyError } } } } } }
+        case None -> match unionCaseSymbolOf(tbl, fn) {
+          case Some(caseSym) -> inferUnionCaseConstruction(tbl, diag, caseSym, argTypes, e.span)
+          case None -> match constructorSymbolOf(tbl, fn) {
+            case Some(ctorSym) -> inferConstruction(tbl, diag, ctorSym, args, argTypes, e.span)
+            case None -> match methodPick {
+              case Some(mp) -> {
+                checkCallArgsAgainstSig(sc, tbl, diag, mp.sig, args, argTypes, e.span)
+                checkBoundsSatisfied(tbl, diag, mp.sig, argTypes, e.span)
+                match mp.fullSig {
+                  case Some(fullS) -> {
+                    val extArgs: List[Type] = newList()
+                    match memberRecvTy {
+                      case Some(rt4) -> extArgs.add(rt4)
+                      case None -> extArgs.add(TyError)
+                    }
+                    var xi = 0
+                    while xi < argTypes.count {
+                      extArgs.add(argTypes[xi])
+                      xi = xi + 1
+                    }
+                    instantiateReturnType(fullS, extArgs)
+                  }
+                  case None -> instantiateReturnType(mp.sig, argTypes)
+                }
+              }
+              case None -> {
+                if isMemberCallee {
+                  match fnT {
+                    case TyError -> match memberRecvTy {
+                      case Some(rt5) -> maybeUnknownMemberDiag(tbl, sigs, diag, rt5, memberName, fn.span, true)
+                      case None -> {
+                      }
+                    }
+                    case _ -> {
+                    }
+                  }
+                }
+                match fnT {
+                  case TyFunction(paramTypes, ret, _) -> {
+                    if paramTypes.count != argTypes.count {
+                      diag.add(
+                        errorDiagnostic(
+                          "T0042",
+                          "expected " + toString(paramTypes.count) + " argument(s), got " + toString(argTypes.count),
+                          e.span
+                        )
+                      )
+                    } else {
+                      var k = 0
+                      while k < paramTypes.count {
+                        if not argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) {
+                          diag.add(
+                            errorDiagnostic(
+                              "T0043",
+                              "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(paramTypes[k]),
+                              e.span
+                            )
+                          )
+                        }
+                        k = k + 1
+                      }
+                    }
+                    ret
+                  }
+                  case TyError -> TyError
+                  case _ -> {
+                    diag.add(errorDiagnostic("T0044", "called value of non-function type " + renderType(fnT), e.span))
+                    TyError
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
 
@@ -4144,7 +4831,12 @@ pub func inferExpr(
       // shapes keep their diagnostics.  (This became reachable once `if`/block
       // branch bodies are type-checked, #1943.)
       val rt = match recv.kind {
-        case EPath(p) -> if p.segments.count == 1 and startsUppercase(p.segments[0]) { val scratch: List[Diagnostic] = newList(); inferExpr(sc, tbl, sigs, scratch, recv) } else { inferExpr(sc, tbl, sigs, diag, recv) }
+        case EPath(p) -> if p.segments.count == 1 and startsUppercase(p.segments[0]) {
+          val scratch: List[Diagnostic] = newList()
+          inferExpr(sc, tbl, sigs, scratch, recv)
+        } else {
+          inferExpr(sc, tbl, sigs, diag, recv)
+        }
         case _ -> inferExpr(sc, tbl, sigs, diag, recv)
       }
       inferMember(tbl, sigs, diag, rt, name, e.span)
@@ -4226,68 +4918,23 @@ pub func inferExpr(
     // call-argument and annotated-binding positions route through
     // `inferExprExpected` instead so unannotated params adopt the expected
     // function type's parameter types (docs/59 A2).
-    case ELambda(lambdaParams, body) -> inferLambda(sc, tbl, sigs, diag, lambdaParams, body, newList())
+    case ELambda(lambdaParams, body) -> {
+      val noExpectedRet: Option[Type] = None
+      inferLambda(sc, tbl, sigs, diag, lambdaParams, body, newList(), noExpectedRet)
+    }
     // An `if`/`else` expression takes the unified type of its branches.  An
     // `if` without an `else` produces no value on the false path, so it is
     // `Unit` (the parser desugars a statement-position brace-`if` so a trailing
     // operator does not glue — #1943).  Each branch is an `ExprOrBlock`: a block
     // branch is typed (divergence-aware) by `checkBlock` (D081), so an
-    // early-`return` branch is `Never` and unifies cleanly.
-    case EIf(cond, thenBranch, elseBranch, _) -> {
-      val condT = inferExpr(sc, tbl, sigs, diag, cond)
-      match condT {
-        case TyError -> {
-        }
-        case TyPrim(pt) -> match pt { case PtBool -> {  }; case PtNever -> {  }; case _ -> diag.add(errorDiagnostic("T0066", "if-condition must be Bool (got " + renderType(condT) + ")", cond.span)) }
-        case _ -> diag.add(errorDiagnostic("T0066", "if-condition must be Bool (got " + renderType(condT) + ")", cond.span))
-      }
-      val tt = inferExprOrBlock(sc, tbl, sigs, diag, thenBranch)
-      match elseBranch {
-        case None -> TyPrim(pt = PtUnit)
-        case Some(eb) -> {
-          val et = inferExprOrBlock(sc, tbl, sigs, diag, eb)
-          unifyBranchTypes(tt, et, e.span, diag)
-        }
-      }
-    }
-    case EMatch(scrutinee, arms) -> {
-      val st = inferExpr(sc, tbl, sigs, diag, scrutinee)
-      checkMatchExhaustive(tbl, diag, st, arms, e.span)
-      checkOpaquePatternHiding(tbl, diag, st, arms)
-      // Branch-type unification (#2142): a `match` used as a value takes the
-      // unified type of its arm bodies.  Each arm is checked in a fresh scope
-      // with its pattern variables bound to their destructured types
-      // (`bindPatternTyped` — `Some(ns)` on `Option[T]` binds `ns : T`), then the
-      // bodies fold through `unifyBranchTypes` (Never/TyError/Unit absorbed;
-      // T0067 on a genuine value mismatch).  Guards are inferred for diagnostics but
-      // do not contribute to the branch type.
-      var acc: Type = TyError
-      var ai = 0
-      while ai < arms.count {
-        scopePush(sc)
-        bindPatternTyped(sc, tbl, diag, arms[ai].pattern, st)
-        checkConstRefPattern(tbl, sigs, diag, arms[ai].pattern, st)
-        match arms[ai].guard {
-          case Some(g) -> {
-            val guardT = inferExpr(sc, tbl, sigs, diag, g)
-            match guardT {
-              case TyError -> {
-              }
-              case TyPrim(pt) -> match pt { case PtBool -> {  }; case PtNever -> {  }; case _ -> diag.add(errorDiagnostic("T0066", "match-arm guard must be Bool (got " + renderType(guardT) + ")", g.span)) }
-              case _ -> diag.add(errorDiagnostic("T0066", "match-arm guard must be Bool (got " + renderType(guardT) + ")", g.span))
-            }
-          }
-          case None -> {
-          }
-        }
-        val bt = inferExprOrBlock(sc, tbl, sigs, diag, arms[ai].body)
-        val armSpan = match arms[ai].body { case EOBExpr(ae) -> ae.span; case EOBBlock(ab) -> ab.span }
-        scopePop(sc)
-        acc = unifyBranchTypes(acc, bt, armSpan, diag)
-        ai = ai + 1
-      }
-      acc
-    }
+    // early-`return` branch is `Never` and unifies cleanly.  Reached only via
+    // a plain `inferExpr` dispatch, which always means the result is wanted
+    // as a value (a statement-position `if` is special-cased directly in
+    // `checkBlock`'s `SExpr` arm — #3362) — pass `true` for `isValuePosition`.
+    case EIf(cond, thenBranch, elseBranch, _) -> inferIfExpr(sc, tbl, sigs, diag, e, cond, thenBranch, elseBranch, true)
+    // Reached only via a plain `inferExpr` dispatch (see the `EIf` case
+    // above) — always value position (#3362).
+    case EMatch(scrutinee, arms) -> inferMatchExpr(sc, tbl, sigs, diag, e, scrutinee, arms, true)
     // A value-position brace block / `unsafe { … }` has the type of its trailing
     // expression (or `Unit` if it ends in a statement, or `Never` if it diverges)
     // — `checkBlock` walks the statements (binding locals) and returns that type.
@@ -4362,7 +5009,13 @@ pub func inferExpr(
         )
       }
       match target.kind {
-        case EPath(p) -> if p.segments.count == 1 { match scopeTryFind(sc, p.segments[0]) { case Some(b) -> if not b.isMutable { diag.add(errorDiagnostic("T0087", t0087Msg(p.segments[0]), target.span)) }; case None -> {  } } }
+        case EPath(p) -> if p.segments.count == 1 {
+          match scopeTryFind(sc, p.segments[0]) {
+            case Some(b) -> if not b.isMutable { diag.add(errorDiagnostic("T0087", t0087Msg(p.segments[0]), target.span)) }
+            case None -> {
+            }
+          }
+        }
         case _ -> {
         }
       }
@@ -4390,6 +5043,17 @@ pub func inferExpr(
 // annotations always win over the expectation.  Leftover generic `TyVar`s in
 // an expected param (a partially-inferred generic callee) are erased to
 // `TyError` so partially-known expectations still type what they can.
+// #6604: `expectedReturn` is the lambda's expected return type when the
+// surrounding context supplies one (a call argument's resolved `TFunction`
+// parameter type, or a binding's declared function type) — `None` when no
+// expectation is available (bare inference).  Mirrors `checkFunctionBody`'s
+// `bodyValuePos = not isUnitType(sig.returnTy)`: a known `Unit` expectation
+// checks the body in statement position (so a discarded mixed-type trailing
+// `if`/`match` is absorbed, not flagged), a known non-`Unit` expectation
+// checks it in value position, and an unknown expectation defaults to
+// statement position — the lenient direction, matching the historical
+// behaviour for lambdas with no contextual return type — rather than
+// defaulting to value position, which would be the unsound direction.
 func inferLambda(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -4398,6 +5062,7 @@ func inferLambda(
   lambdaParams: in List[LambdaParam],
   body: in Block,
   expectedParams: in List[Type],
+  expectedReturn: in Option[Type],
 ): Type {
   val useExpected = expectedParams.count == lambdaParams.count
   val lctx = newGenericContext()
@@ -4414,8 +5079,9 @@ func inferLambda(
     scopeAdd(sc, LocalBinding(name = lp.name, ty = pTy, isMutable = false))
     li = li + 1
   }
+  val bodyValuePos = match expectedReturn { case Some(rt) -> not isUnitType(rt); case None -> false }
   val noLambdaRte: Option[TypeExpr] = None
-  val bodyTy = checkBlock(sc, tbl, sigs, sc.genericNames, TyError, noLambdaRte, diag, body, true)
+  val bodyTy = checkBlock(sc, tbl, sigs, sc.genericNames, TyError, noLambdaRte, diag, body, bodyValuePos)
   scopePop(sc)
   TyFunction(params = paramTypes, ret = bodyTy, isAsync = false)
 }
@@ -4442,6 +5108,47 @@ func lambdaHasUnannotatedParam(e: in Expr): Bool {
   }
 }
 
+// #6814: true for a call-argument expression that is itself a bare
+// union-case-constructor call whose callee name is ambiguous across 2+
+// imported packages (every `symTableTryFindAll` candidate is a
+// `DKUnionCase`) — the second expression shape (alongside
+// `lambdaHasUnannotatedParam`'s lambda literals) whose typing benefits from
+// a contextual expected type (A2).  A call whose bare name has fewer than 2
+// candidates, or whose candidates are not ALL union cases (so it might be a
+// record constructor / function call instead), is left on the eager path —
+// `inferExprExpected`'s `ECall` arm below falls back to `inferExpr` for any
+// shape this predicate doesn't defer, so nothing gets stricter.
+func argIsAmbiguousUnionCaseCtor(tbl: in SymbolTable, e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> argIsAmbiguousUnionCaseCtor(tbl, inner)
+    case ECall(fn, _) -> match fn.kind {
+      case EPath(p) -> if p.segments.count == 1 {
+        val candidates = symTableTryFindAll(tbl, p.segments[0])
+        if candidates.count < 2 {
+          false
+        } else {
+          var allUnionCase = true
+          var ci = 0
+          while ci < candidates.count {
+            match candidates[ci].kind {
+              case DKUnionCase(_, _) -> ()
+              case _ -> {
+                allUnionCase = false
+              }
+            }
+            ci = ci + 1
+          }
+          allUnionCase
+        }
+      } else {
+        false
+      }
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
 // A2: infer `e` under a contextual expected type.  Only lambda literals
 // consume the expectation (their unannotated params adopt the expected
 // function type's parameter types); every other expression shape — and any
@@ -4457,7 +5164,50 @@ pub func inferExprExpected(
 ): Type {
   match e.kind {
     case EParen(inner) -> inferExprExpected(sc, tbl, sigs, diag, inner, expected)
-    case ELambda(ps, body) -> match unrefine(expected) { case TyFunction(eps, _, _) -> inferLambda(sc, tbl, sigs, diag, ps, body, eps); case _ -> inferExpr(sc, tbl, sigs, diag, e) }
+    case ELambda(ps, body) -> match unrefine(expected) {
+      case TyFunction(eps, eret, _) -> inferLambda(
+        sc,
+        tbl,
+        sigs,
+        diag,
+        ps,
+        body,
+        eps,
+        Some(value = eret)
+      )
+      case _ -> inferExpr(sc, tbl, sigs, diag, e)
+    }
+    // #6814: a bare union-case-constructor call whose name is ambiguous
+    // across imported packages (the shape `argIsAmbiguousUnionCaseCtor`
+    // defers) resolves directly against the expected type's own union via
+    // `unionCaseSymbolForScrutinee` — the same "scrutinee's own union wins"
+    // tiering #6287 Phase B already uses for a match-pattern head — instead
+    // of falling into `inferExpr`'s unconditional `checkBareNameAmbiguity`
+    // gate.  If the expected type can't disambiguate it,
+    // `unionCaseSymbolForScrutinee` itself falls through to the ordinary
+    // bare-name ambiguity check (for a genuinely bare, single-segment
+    // callee) and raises T0123 there — checked via `diag.count` so this
+    // arm never re-raises it a second time by falling into `inferExpr`.
+    case ECall(fn, cargs) -> match fn.kind {
+      case EPath(p) -> if p.segments.count == 1 {
+        val diagCountBefore = diag.count
+        match unionCaseSymbolForScrutinee(tbl, diag, fn, expected) {
+          case Some(caseSym) -> {
+            val cargTypes: List[Type] = newList()
+            var ci2 = 0
+            while ci2 < cargs.count {
+              cargTypes.add(inferExpr(sc, tbl, sigs, diag, callArgExpr(cargs[ci2])))
+              ci2 = ci2 + 1
+            }
+            inferUnionCaseConstruction(tbl, diag, caseSym, cargTypes, e.span)
+          }
+          case None -> if diag.count > diagCountBefore { TyError } else { inferExpr(sc, tbl, sigs, diag, e) }
+        }
+      } else {
+        inferExpr(sc, tbl, sigs, diag, e)
+      }
+      case _ -> inferExpr(sc, tbl, sigs, diag, e)
+    }
     case _ -> inferExpr(sc, tbl, sigs, diag, e)
   }
 }
@@ -4553,6 +5303,7 @@ func checkCallArgsAgainstSig(
 }
 
 func expectedCallArgTypes(
+  tbl: in SymbolTable,
   args: in List[CallArg],
   argTypes: in List[Type],
   directSig: in Option[ResolvedSignature],
@@ -4584,7 +5335,8 @@ func expectedCallArgTypes(
             val ai = srcIdx[k]
             var slotTy: Type = TyError
             if ai >= 0 and ai < argTypes.count {
-              if not lambdaHasUnannotatedParam(callArgExpr(args[ai])) {
+              val slotExpr = callArgExpr(args[ai])
+              if not lambdaHasUnannotatedParam(slotExpr) and not argIsAmbiguousUnionCaseCtor(tbl, slotExpr) {
                 slotTy = argTypes[ai]
               }
             }
@@ -4607,7 +5359,17 @@ func expectedCallArgTypes(
         }
       }
     }
-    case None -> match unrefine(fnT) { case TyFunction(pps, _, _) -> if pps.count == args.count { var k3 = 0; while k3 < pps.count { expected[k3] = pps[k3]; k3 = k3 + 1 } }; case _ -> {  } }
+    case None -> match unrefine(fnT) {
+      case TyFunction(pps, _, _) -> if pps.count == args.count {
+        var k3 = 0
+        while k3 < pps.count {
+          expected[k3] = pps[k3]
+          k3 = k3 + 1
+        }
+      }
+      case _ -> {
+      }
+    }
   }
   expected
 }
@@ -4649,7 +5411,15 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
   // runtime type; `[...]` literals type as TySlice but may be used wherever
   // a List[T] field or parameter is expected.
   match argTy {
-    case TySlice(elemTy) -> match paramTy { case TyUser(_, pName, pArgs) -> { if pName == "List" and pArgs.count == 1 and typeEquiv(pArgs[0], elemTy) { return true } }; case _ -> {  } }
+    case TySlice(elemTy) -> match paramTy {
+      case TyUser(_, pName, pArgs) -> {
+        if pName == "List" and pArgs.count == 1 and typeEquiv(pArgs[0], elemTy) {
+          return true
+        }
+      }
+      case _ -> {
+      }
+    }
     case _ -> {
     }
   }
@@ -4704,7 +5474,10 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
     }
   }
   match typeIdOfType(paramTy) {
-    case Some(ifaceId) -> match typeIdOfType(argTy) { case Some(argId) -> symTableTypeImplements(tbl, argId, ifaceId); case None -> false }
+    case Some(ifaceId) -> match typeIdOfType(argTy) {
+      case Some(argId) -> symTableTypeImplements(tbl, argId, ifaceId)
+      case None -> false
+    }
     case None -> false
   }
 }
@@ -4731,7 +5504,25 @@ pub func typeAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type)
   }
   match unrefine(expected) {
     // Assumes covariance in all type args; revisit if invariant/contravariant parameters are added.
-    case TyUser(eid, _, eargs) -> match unrefine(actual) { case TyUser(aid, _, aargs) -> { if typeIdEq(eid, aid) { if eargs.count != aargs.count { return false }; var i = 0; while i < eargs.count { if not typeAssignable(tbl, eargs[i], aargs[i]) { return false }; i = i + 1 }; return true }; symTableTypeImplements(tbl, aid, eid) }; case _ -> false }
+    case TyUser(eid, _, eargs) -> match unrefine(actual) {
+      case TyUser(aid, _, aargs) -> {
+        if typeIdEq(eid, aid) {
+          if eargs.count != aargs.count {
+            return false
+          }
+          var i = 0
+          while i < eargs.count {
+            if not typeAssignable(tbl, eargs[i], aargs[i]) {
+              return false
+            }
+            i = i + 1
+          }
+          return true
+        }
+        symTableTypeImplements(tbl, aid, eid)
+      }
+      case _ -> false
+    }
     case _ -> false
   }
 }

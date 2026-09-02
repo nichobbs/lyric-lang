@@ -105,8 +105,14 @@ func forRangeElemType(
   bound: in RangeBound,
 ): Type {
   match bound {
-    case RBClosed(lo, hi) -> forRangeBoundsElemType(inferExpr(sc, tbl, sigs, diag, lo), inferExpr(sc, tbl, sigs, diag, hi))
-    case RBHalfOpen(lo, hi) -> forRangeBoundsElemType(inferExpr(sc, tbl, sigs, diag, lo), inferExpr(sc, tbl, sigs, diag, hi))
+    case RBClosed(lo, hi) -> forRangeBoundsElemType(
+      inferExpr(sc, tbl, sigs, diag, lo),
+      inferExpr(sc, tbl, sigs, diag, hi)
+    )
+    case RBHalfOpen(lo, hi) -> forRangeBoundsElemType(
+      inferExpr(sc, tbl, sigs, diag, lo),
+      inferExpr(sc, tbl, sigs, diag, hi)
+    )
     case RBLowerOpen(hi) -> {
       val _ = inferExpr(sc, tbl, sigs, diag, hi)
       TyError
@@ -143,7 +149,19 @@ func forRangeBoundsElemType(loTy: in Type, hiTy: in Type): Type {
 // subtypes (`type Age = Int range …`) is Band-4 work and is not covered here.
 func checkRefinedLiteralBound(declT: in Type, init: in Expr, diag: in List[Diagnostic]): Unit {
   match declT {
-    case TyRefined(_, lo, hi, inc) -> match exprLiteralLong(init) { case None -> {  }; case Some(v) -> { val belowLo = match lo { case None -> false; case Some(l) -> v < l }; val aboveHi = match hi { case None -> false; case Some(h) -> if inc { v > h } else { v >= h } }; if belowLo or aboveHi { diag.add(errorDiagnostic("T0015", "literal " + toString(v) + " is out of range for type " + renderType(declT), init.span)) } } }
+    case TyRefined(_, lo, hi, inc) -> match exprLiteralLong(init) {
+      case None -> {
+      }
+      case Some(v) -> {
+        val belowLo = match lo { case None -> false; case Some(l) -> v < l }
+        val aboveHi = match hi { case None -> false; case Some(h) -> if inc { v > h } else { v >= h } }
+        if belowLo or aboveHi {
+          diag.add(
+            errorDiagnostic("T0015", "literal " + toString(v) + " is out of range for type " + renderType(declT), init.span)
+          )
+        }
+      }
+    }
     case _ -> {
     }
   }
@@ -168,7 +186,94 @@ pub func checkStatement(
     // with unannotated params (`val f: (Int) -> Bool = { x -> x > 0 }`) types
     // its params from the declaration.  Non-lambda initialisers and
     // unannotated bindings take the plain-inference path exactly as before.
-    case SLocal(binding) -> match binding { case LBVal(pat, tyOpt, init) -> match tyOpt { case None -> bindPattern(sc, pat, inferExpr(sc, tbl, sigs, diag, init)); case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0060", "val binding declared as " + renderTypeExpr(te, declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); bindPattern(sc, pat, declT) } }; case LBVar(name, tyOpt, initOpt) -> match tyOpt { case None -> { val initType = match initOpt { case None -> TyError; case Some(e) -> inferExpr(sc, tbl, sigs, diag, e) }; scopeAdd(sc, LocalBinding(name = name, ty = initType, isMutable = true)) }; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); match initOpt { case Some(initE) -> { val initType = inferExprExpected(sc, tbl, sigs, diag, initE, declT); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0061", "var binding declared as " + renderTypeExpr(te, declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, initE, diag) }; case None -> {  } }; scopeAdd(sc, LocalBinding(name = name, ty = declT, isMutable = true)) } }; case LBLet(name, tyOpt, init) -> match tyOpt { case None -> scopeAdd(sc, LocalBinding(name = name, ty = inferExpr(sc, tbl, sigs, diag, init), isMutable = false)); case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0062", "let binding declared as " + renderTypeExpr(te, declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); scopeAdd(sc, LocalBinding(name = name, ty = declT, isMutable = false)) } } }
+    case SLocal(binding) -> match binding {
+      case LBVal(pat, tyOpt, init) -> match tyOpt {
+        case None -> bindPattern(
+          sc,
+          pat,
+          inferExpr(sc, tbl, sigs, diag, init)
+        )
+        case Some(te) -> {
+          val ctx = newGenericContext()
+          gctxPush(ctx, genericNames)
+          val declT = resolveType(tbl, ctx, diag, te)
+          val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT)
+          if not argSatisfiesParam(tbl, declT, initType) {
+            diag.add(
+              errorDiagnostic(
+                "T0060",
+                "val binding declared as " + renderTypeExpr(te, declT) + " but initialiser has type " + renderType(initType),
+                stmt.span
+              )
+            )
+          }
+          checkRefinedLiteralBound(declT, init, diag)
+          bindPattern(sc, pat, declT)
+        }
+      }
+      case LBVar(name, tyOpt, initOpt) -> match tyOpt {
+        case None -> {
+          val initType = match initOpt { case None -> TyError; case Some(e) -> inferExpr(sc, tbl, sigs, diag, e) }
+          scopeAdd(sc, LocalBinding(name = name, ty = initType, isMutable = true))
+        }
+        case Some(te) -> {
+          val ctx = newGenericContext()
+          gctxPush(ctx, genericNames)
+          val declT = resolveType(tbl, ctx, diag, te)
+          match initOpt {
+            case Some(initE) -> {
+              val initType = inferExprExpected(sc, tbl, sigs, diag, initE, declT)
+              if not argSatisfiesParam(tbl, declT, initType) {
+                diag.add(
+                  errorDiagnostic(
+                    "T0061",
+                    "var binding declared as " + renderTypeExpr(te, declT) + " but initialiser has type " + renderType(initType),
+                    stmt.span
+                  )
+                )
+              }
+              checkRefinedLiteralBound(declT, initE, diag)
+            }
+            case None -> {
+            }
+          }
+          scopeAdd(sc, LocalBinding(name = name, ty = declT, isMutable = true))
+        }
+      }
+      case LBLet(name, tyOpt, init) -> match tyOpt {
+        case None -> scopeAdd(
+          sc,
+          LocalBinding(
+            name = name,
+            ty = inferExpr(
+              sc,
+              tbl,
+              sigs,
+              diag,
+              init
+            ),
+            isMutable = false
+          )
+        )
+        case Some(te) -> {
+          val ctx = newGenericContext()
+          gctxPush(ctx, genericNames)
+          val declT = resolveType(tbl, ctx, diag, te)
+          val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT)
+          if not argSatisfiesParam(tbl, declT, initType) {
+            diag.add(
+              errorDiagnostic(
+                "T0062",
+                "let binding declared as " + renderTypeExpr(te, declT) + " but initialiser has type " + renderType(initType),
+                stmt.span
+              )
+            )
+          }
+          checkRefinedLiteralBound(declT, init, diag)
+          scopeAdd(sc, LocalBinding(name = name, ty = declT, isMutable = false))
+        }
+      }
+    }
 
     case SAssign(target, op, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
@@ -193,13 +298,45 @@ pub func checkStatement(
       // assignment whose target is an immutable binding is rejected (T0087).
       // `var` locals and `out`/`inout` params are mutable and unaffected.
       match target.kind {
-        case EPath(p) -> if p.segments.count == 1 { match scopeTryFind(sc, p.segments[0]) { case Some(b) -> if not b.isMutable { diag.add(errorDiagnostic("T0087", t0087Msg(p.segments[0]), target.span)) }; case None -> {  } } }
+        case EPath(p) -> if p.segments.count == 1 {
+          match scopeTryFind(sc, p.segments[0]) {
+            case Some(b) -> if not b.isMutable { diag.add(errorDiagnostic("T0087", t0087Msg(p.segments[0]), target.span)) }
+            case None -> {
+            }
+          }
+        }
         case _ -> {
         }
       }
     }
 
-    case SReturn(valueOpt) -> match valueOpt { case None -> { if not typeEquiv(returnTy, TyPrim(pt = PtUnit)) { diag.add(errorDiagnostic("T0064", "return without value but enclosing function returns " + renderOptTypeExpr(returnTyExpr, returnTy), stmt.span)) } }; case Some(e) -> { val t = inferExpr(sc, tbl, sigs, diag, e); val isNever = match t { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isNever and not typeAssignable(tbl, returnTy, t) { diag.add(errorDiagnostic("T0065", "returned value of type " + renderType(t) + " does not match declared return type " + renderOptTypeExpr(returnTyExpr, returnTy), stmt.span)) } } }
+    case SReturn(valueOpt) -> match valueOpt {
+      case None -> {
+        if not typeEquiv(returnTy, TyPrim(pt = PtUnit)) {
+          diag.add(
+            errorDiagnostic(
+              "T0064",
+              "return without value but enclosing function returns " + renderOptTypeExpr(returnTyExpr, returnTy),
+              stmt.span
+            )
+          )
+        }
+      }
+      case Some(e) -> {
+        val t = inferExpr(sc, tbl, sigs, diag, e)
+        val isNever = match t { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }
+        if not isNever and not typeAssignable(tbl, returnTy, t) {
+          diag.add(
+            errorDiagnostic(
+              "T0065",
+              "returned value of type " + renderType(t) + " does not match declared return type " +
+                renderOptTypeExpr(returnTyExpr, returnTy),
+              stmt.span
+            )
+          )
+        }
+      }
+    }
 
     case SThrow(e) -> {
       val _ = inferExpr(sc, tbl, sigs, diag, e)
@@ -370,19 +507,263 @@ pub func checkStatement(
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Block checking.
 // ─────────────────────────────────────────────────────────────────────────────
+// Whether `label` (a loop's own label, if any) is targeted by `bl`, a
+// `break`'s label argument (`None` for a bare `break`), given whether this
+// break was reached by passing through a more-nested loop's own break scope
+// first (`nested`).  A bare `break` targets only the innermost enclosing
+// loop, so once `nested` is true it has already been "claimed" by that
+// nested loop and cannot also escape the outer loop being analyzed here.  A
+// labelled `break <label>` always identifies its exact target regardless of
+// nesting, so `nested` does not affect that case.
+func breakTargetsLoop(bl: in Option[String], label: in Option[String], nested: in Bool): Bool {
+  match bl {
+    case None -> not nested
+    case Some(l) -> match label { case Some(ll) -> l == ll; case None -> false }
+  }
+}
+
+// Whether `blk` — the body of a loop labelled `label` — can transfer control
+// out of *that* loop via a `break`: a bare `break` reached without first
+// passing through a more-nested loop's own break scope (`nested`), or a
+// labelled `break <label>` matching `label` at any depth.  Never descends
+// into a nested `ELambda` body (a `break` cannot cross a function boundary,
+// mirroring `exprContainsYield`'s treatment of `EYield`).  Used only to
+// decide whether an unconditional loop (`loop { }` / `while true { }`)
+// diverges when it is a block's trailing statement (#6602): the presence of
+// an escaping `break` means the loop can still fall through with `Unit`
+// rather than transferring control via `return`/`throw`/an outer `break`.
+func blockMayEscapeLoop(blk: in Block, label: in Option[String], nested: in Bool): Bool {
+  var i = 0
+  while i < blk.statements.count {
+    if stmtMayEscapeLoop(blk.statements[i], label, nested) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func listAnyExprMayEscapeLoop(es: in List[Expr], label: in Option[String], nested: in Bool): Bool {
+  var i = 0
+  while i < es.count {
+    if exprMayEscapeLoop(es[i], label, nested) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func exprMayEscapeLoop(e: in Expr, label: in Option[String], nested: in Bool): Bool {
+  match e.kind {
+    case ELambda(_, _) -> false
+    case ELiteral(_) -> false
+    case EPath(_) -> false
+    case ESelf -> false
+    case EResult -> false
+    case EError -> false
+    case EParen(inner) -> exprMayEscapeLoop(inner, label, nested)
+    case EAwait(inner) -> exprMayEscapeLoop(inner, label, nested)
+    case ESpawn(inner) -> exprMayEscapeLoop(inner, label, nested)
+    case EOld(inner) -> exprMayEscapeLoop(inner, label, nested)
+    case EPropagate(inner) -> exprMayEscapeLoop(inner, label, nested)
+    case ETry(inner) -> exprMayEscapeLoop(inner, label, nested)
+    case EYield(inner) -> exprMayEscapeLoop(inner, label, nested)
+    case EPrefix(_, inner) -> exprMayEscapeLoop(inner, label, nested)
+    case ETuple(elems) -> listAnyExprMayEscapeLoop(elems, label, nested)
+    case EList(elems) -> listAnyExprMayEscapeLoop(elems, label, nested)
+    case EInterpolated(segs) -> {
+      var found = false
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISExpr(se) -> {
+            if exprMayEscapeLoop(se, label, nested) {
+              found = true
+            }
+          }
+          case ISText(_) -> {
+          }
+        }
+        i = i + 1
+      }
+      found
+    }
+    case EBinop(_, l, r) -> exprMayEscapeLoop(l, label, nested) or exprMayEscapeLoop(r, label, nested)
+    case EAssign(t, _, v) -> exprMayEscapeLoop(t, label, nested) or exprMayEscapeLoop(v, label, nested)
+    case EMember(recv, _) -> exprMayEscapeLoop(recv, label, nested)
+    case ETypeApp(f, _) -> exprMayEscapeLoop(f, label, nested)
+    case EIndex(recv, idxs) -> exprMayEscapeLoop(recv, label, nested) or listAnyExprMayEscapeLoop(idxs, label, nested)
+    case ECall(f, args) -> {
+      if exprMayEscapeLoop(f, label, nested) {
+        return true
+      }
+      var i = 0
+      while i < args.count {
+        val found = match args[i] {
+          case CAPositional(v) -> exprMayEscapeLoop(v, label, nested)
+          case CANamed(_, v, _) -> exprMayEscapeLoop(v, label, nested)
+        }
+        if found {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case ERange(rb) -> match rb {
+      case RBClosed(a, b) -> exprMayEscapeLoop(a, label, nested) or
+        exprMayEscapeLoop(b, label, nested)
+      case RBHalfOpen(a, b) -> exprMayEscapeLoop(a, label, nested) or
+        exprMayEscapeLoop(b, label, nested)
+      case RBLowerOpen(a) -> exprMayEscapeLoop(a, label, nested)
+      case RBUpperOpen(a) -> exprMayEscapeLoop(a, label, nested)
+    }
+    case EIf(c, t, eOpt, _) -> {
+      if exprMayEscapeLoop(c, label, nested) {
+        return true
+      }
+      val inT = match t {
+        case EOBExpr(te) -> exprMayEscapeLoop(te, label, nested)
+        case EOBBlock(tb) -> blockMayEscapeLoop(tb, label, nested)
+      }
+      if inT {
+        return true
+      }
+      match eOpt {
+        case None -> false
+        case Some(b) -> match b {
+          case EOBExpr(ee) -> exprMayEscapeLoop(ee, label, nested)
+          case EOBBlock(eb) -> blockMayEscapeLoop(eb, label, nested)
+        }
+      }
+    }
+    case EMatch(subj, arms) -> {
+      if exprMayEscapeLoop(subj, label, nested) {
+        return true
+      }
+      var i = 0
+      while i < arms.count {
+        val arm = arms[i]
+        val inGuard = match arm.guard { case None -> false; case Some(g) -> exprMayEscapeLoop(g, label, nested) }
+        if inGuard {
+          return true
+        }
+        val inBody = match arm.body {
+          case EOBExpr(ae) -> exprMayEscapeLoop(ae, label, nested)
+          case EOBBlock(ab) -> blockMayEscapeLoop(ab, label, nested)
+        }
+        if inBody {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case EBlock(blk) -> blockMayEscapeLoop(blk, label, nested)
+    case EUnsafe(blk) -> blockMayEscapeLoop(blk, label, nested)
+    case EForall(_, w, body) -> {
+      val inW = match w { case None -> false; case Some(we) -> exprMayEscapeLoop(we, label, nested) }
+      inW or exprMayEscapeLoop(body, label, nested)
+    }
+    case EExists(_, w, body) -> {
+      val inW = match w { case None -> false; case Some(we) -> exprMayEscapeLoop(we, label, nested) }
+      inW or exprMayEscapeLoop(body, label, nested)
+    }
+  }
+}
+
+func stmtMayEscapeLoop(stmt: in Statement, label: in Option[String], nested: in Bool): Bool {
+  match stmt.kind {
+    case SBreak(bl) -> breakTargetsLoop(bl, label, nested)
+    case SContinue(_) -> false
+    case SReturn(_) -> false
+    case SThrow(e) -> exprMayEscapeLoop(e, label, nested)
+    case SInvariant(e) -> exprMayEscapeLoop(e, label, nested)
+    case SItem(_) -> false
+    case SExpr(e) -> exprMayEscapeLoop(e, label, nested)
+    case SAssign(t, _, v) -> exprMayEscapeLoop(t, label, nested) or exprMayEscapeLoop(v, label, nested)
+    case SRule(l, r) -> exprMayEscapeLoop(l, label, nested) or exprMayEscapeLoop(r, label, nested)
+    case SLocal(binding) -> match binding {
+      case LBVal(_, _, e) -> exprMayEscapeLoop(e, label, nested)
+      case LBLet(_, _, e) -> exprMayEscapeLoop(e, label, nested)
+      case LBVar(_, _, Some(e)) -> exprMayEscapeLoop(e, label, nested)
+      case LBVar(_, _, None) -> false
+    }
+    case STry(body, catches, finally_) -> {
+      if blockMayEscapeLoop(body, label, nested) {
+        return true
+      }
+      var i = 0
+      while i < catches.count {
+        if blockMayEscapeLoop(catches[i].body, label, nested) {
+          return true
+        }
+        i = i + 1
+      }
+      match finally_ {
+        case None -> false
+        case Some(fb) -> blockMayEscapeLoop(fb, label, nested)
+      }
+    }
+    case SDefer(b) -> blockMayEscapeLoop(b, label, nested)
+    case SScope(_, b) -> blockMayEscapeLoop(b, label, nested)
+    case SLoop(_, b) -> blockMayEscapeLoop(b, label, true)
+    case SFor(_, _, iter, body) -> exprMayEscapeLoop(iter, label, nested) or blockMayEscapeLoop(body, label, true)
+    case SWhile(_, cond, body) -> exprMayEscapeLoop(cond, label, nested) or blockMayEscapeLoop(body, label, true)
+  }
+}
+
+// Is `cond` the literal `true` (directly, or parenthesised)?  Used to
+// recognise `while true { }` as an unconditional loop for divergence
+// purposes; any other condition — including a `val` bound to `true` — is not
+// statically known here and is left alone (#6602).
+func isStaticallyTrueCond(cond: in Expr): Bool {
+  match cond.kind {
+    case ELiteral(lit) -> match lit { case LBool(v) -> v; case _ -> false }
+    case EParen(inner) -> isStaticallyTrueCond(inner)
+    case _ -> false
+  }
+}
+
 // A statement after which control never falls through to a block value: an
-// explicit `return`/`throw`, or a loop `break`/`continue` (which transfers out
-// of the enclosing loop).  A block whose last statement is one of these has type
-// `Never` (bottom), so it unifies cleanly as a branch — `if c { return x } else
-// { y }` is typed by its `else` branch rather than false-mismatching `Unit` vs
-// the value type.  A trailing `SExpr` of type `Never` (e.g. `panic(...)`) is
-// already captured by `lastExprType`, so it is not listed here.
+// explicit `return`/`throw`, a loop `break`/`continue` (which transfers out
+// of the enclosing loop), or an unconditional loop (`loop { }` / a
+// statically-`true` `while`) whose body has no `break` that could escape it —
+// such a loop only exits via `return`/`throw`/an outer `break`, so it never
+// falls through either (#6602).  A block whose last statement is one of these
+// has type `Never` (bottom), so it unifies cleanly as a branch — `if c {
+// return x } else { y }` is typed by its `else` branch rather than
+// false-mismatching `Unit` vs the value type.  A trailing `SExpr` of type
+// `Never` (e.g. `panic(...)`) is already captured by `lastExprType`, so it is
+// not listed here.
 func statementDiverges(stmt: in Statement): Bool {
   match stmt.kind {
     case SReturn(_) -> true
     case SThrow(_) -> true
     case SBreak(_) -> true
     case SContinue(_) -> true
+    // #3362 fallout: `scope { ... }` is a bare statement (not an `SExpr`), so
+    // `checkBlock`'s generic `case _ ->` catch-all types it as a plain `Unit`
+    // statement and never asks whether its OWN body unconditionally returns.
+    // Before #3362 that didn't matter: a function body ending in
+    // `scope { …; return x }` computed `bodyType = Unit`, and
+    // `checkFunctionBody`'s old (buggy) guard skipped T0070 whenever the
+    // *inferred* body type happened to be `Unit` — silently accepting the
+    // Unit misclassification along with every genuine mismatch #3362 fixes.
+    // Removing that blanket bypass exposed this: a function declared to
+    // return e.g. `Int` whose body is just such a scope now (correctly)
+    // needs the block to type as `Never`, not `Unit`, or T0070 false-fires.
+    // Recursing on the scope body's own trailing statement mirrors exactly
+    // the divergence check `checkBlock`'s tail already applies to an
+    // ordinary block, so a `scope { ...; return x }` — the shape several
+    // `async_spawn_self_test.l` helpers use — now correctly diverges.
+    case SScope(_, body) -> body.statements.count > 0 and statementDiverges(body.statements[body.statements.count - 1])
+    // #6602: an unconditional loop (`do { }`) or a statically-true `while`
+    // whose body has no `break` that could escape it only exits via
+    // `return`/`throw`/an outer `break`, so it never falls through either.
+    case SLoop(label, body) -> not blockMayEscapeLoop(body, label, false)
+    case SWhile(label, cond, body) -> isStaticallyTrueCond(cond) and not blockMayEscapeLoop(body, label, false)
     case _ -> false
   }
 }
@@ -473,8 +854,14 @@ pub func checkBlock(
         // A brace / `unsafe` block used as a statement-expression carries the
         // enclosing block's value-position only at the trailing statement;
         // route it through `checkBlock` directly so a non-trailing block's
-        // value is correctly treated as discarded (#3262).  All other
-        // expression forms type via `inferExpr`.
+        // value is correctly treated as discarded (#3262).  An `if`/`match`
+        // used as a statement-expression needs the same treatment (#3362):
+        // route through `inferIfExpr`/`inferMatchExpr` directly with the
+        // real value-position so a lone Unit-typed branch is absorbed
+        // silently when the value is discarded, matching the pre-#3362
+        // behaviour, but raises T0067 when this statement is actually the
+        // block's trailing (consumed) expression.  All other expression
+        // forms type via `inferExpr` (always value position — #3362).
         val isLast = i == blk.statements.count - 1
         match e.kind {
           case EBlock(innerBlk) -> {
@@ -482,6 +869,12 @@ pub func checkBlock(
           }
           case EUnsafe(innerBlk) -> {
             lastExprType = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, innerBlk, valuePos and isLast)
+          }
+          case EIf(cond, thenBranch, elseBranch, _) -> {
+            lastExprType = inferIfExpr(sc, tbl, sigs, diag, e, cond, thenBranch, elseBranch, valuePos and isLast)
+          }
+          case EMatch(scrutinee, arms) -> {
+            lastExprType = inferMatchExpr(sc, tbl, sigs, diag, e, scrutinee, arms, valuePos and isLast)
           }
           case _ -> {
             lastExprType = inferExpr(sc, tbl, sigs, diag, e)
@@ -529,6 +922,20 @@ pub func checkBlock(
           }
         }
         lastExprType = resultTy
+      }
+      // #6603: `scope { }`'s own value is always discarded (it is a
+      // structured-concurrency grouping construct, not a value-producing
+      // block — mirrors `checkStatement`'s `false` here), but the checked
+      // body type still carries `Never` when every path through it diverges
+      // (e.g. `scope { if c { return x } else { return y } }`).  Capturing
+      // that into `lastExprType` — instead of routing purely through the
+      // syntax-only `statementDiverges` check, which has no `SScope` case —
+      // lets a trailing `scope` correctly propagate divergence to the
+      // enclosing block instead of defaulting to `Unit`.
+      case SScope(_, body) -> {
+        val bodyTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false)
+        val isNever = match bodyTy { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }
+        lastExprType = if isNever { bodyTy } else { TyPrim(pt = PtUnit) }
       }
       case _ -> {
         checkStatement(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, stmt)
@@ -709,7 +1116,15 @@ func collectAssignedStmt(s: in Statement, acc: in List[String]): Unit {
       addAssignedTarget(t, acc)
       collectAssignedExpr(v, acc)
     }
-    case SLocal(b) -> match b { case LBVal(_, _, init) -> collectAssignedExpr(init, acc); case LBLet(_, _, init) -> collectAssignedExpr(init, acc); case LBVar(_, _, initOpt) -> match initOpt { case Some(e) -> collectAssignedExpr(e, acc); case None -> {  } } }
+    case SLocal(b) -> match b {
+      case LBVal(_, _, init) -> collectAssignedExpr(init, acc)
+      case LBLet(_, _, init) -> collectAssignedExpr(init, acc)
+      case LBVar(_, _, initOpt) -> match initOpt {
+        case Some(e) -> collectAssignedExpr(e, acc)
+        case None -> {
+        }
+      }
+    }
     case SReturn(vo) -> match vo { case Some(e) -> collectAssignedExpr(e, acc); case None -> {  } }
     case SThrow(e) -> collectAssignedExpr(e, acc)
     case SExpr(e) -> collectAssignedExpr(e, acc)
@@ -779,7 +1194,10 @@ func checkOutDefiniteAssignment(diag: in List[Diagnostic], fn: in FunctionDecl, 
     case None -> {
       bodyless = true
     }
-    case Some(b) -> match b { case FBBlock(blk) -> collectAssignedBlock(blk, assigned); case FBExpr(e) -> collectAssignedExpr(e, assigned) }
+    case Some(b) -> match b {
+      case FBBlock(blk) -> collectAssignedBlock(blk, assigned)
+      case FBExpr(e) -> collectAssignedExpr(e, assigned)
+    }
   }
   if bodyless {
     // body-less signatures (interface/extern decls): nothing to check; an empty
@@ -790,7 +1208,11 @@ func checkOutDefiniteAssignment(diag: in List[Diagnostic], fn: in FunctionDecl, 
   while k < sig.params.count {
     val p = sig.params[k]
     match p.mode {
-      case PMOut -> if not listContainsStr(assigned, p.name) { diag.add(errorDiagnostic("T0086", "`out` parameter '" + p.name + "' is never assigned before the function returns", fn.span)) }
+      case PMOut -> if not listContainsStr(assigned, p.name) {
+        diag.add(
+          errorDiagnostic("T0086", "`out` parameter '" + p.name + "' is never assigned before the function returns", fn.span)
+        )
+      }
       case _ -> {
       }
     }
@@ -890,7 +1312,10 @@ pub func checkFunctionBody(
   if returnNeedsBody {
     val bodyMissing = match fn.body {
       case None -> true
-      case Some(b0) -> match b0 { case FBBlock(blk0) -> blk0.statements.count == 0; case FBExpr(_) -> false }
+      case Some(b0) -> match b0 {
+        case FBBlock(blk0) -> blk0.statements.count == 0
+        case FBExpr(_) -> false
+      }
     }
     if bodyMissing {
       diag.add(
@@ -907,7 +1332,72 @@ pub func checkFunctionBody(
   match fn.body {
     case None -> {
     }
-    case Some(body) -> match body { case FBExpr(e) -> { val bodyType = inferExpr(sc, tbl, sigs, diag, e); val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) { diag.add(errorDiagnostic("T0070", "function body has type " + renderType(bodyType) + " but declared return type is " + declaredReturnTyStr, fn.span)) } }; case FBBlock(blk) -> { val bodyValuePos = not isUnitType(sig.returnTy); val bodyType = checkBlock(sc, tbl, sigs, sig.generics, sig.returnTy, fn.ret, diag, blk, bodyValuePos); val isUnit = match bodyType { case TyPrim(pt) -> match pt { case PtUnit -> true; case _ -> false }; case _ -> false }; val isNever = match bodyType { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }; if not isUnit and not isNever and not typeAssignable(tbl, sig.returnTy, bodyType) { diag.add(errorDiagnostic("T0070", "function body trailing expression has type " + renderType(bodyType) + " but declared return type is " + declaredReturnTyStr, fn.span)) } } }
+    case Some(body) -> match body {
+      case FBExpr(e) -> {
+        val bodyType = inferExpr(sc, tbl, sigs, diag, e)
+        val isNever = match bodyType {
+          case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }
+          case _ -> false
+        }
+        // #6641 fallout: see the matching FBBlock-case comment below — a
+        // generator's declared return type is its yielded element type,
+        // not what its body's own control flow must produce.
+        if not isNever and not sig.isGenerator and not typeAssignable(tbl, sig.returnTy, bodyType) {
+          diag.add(
+            errorDiagnostic(
+              "T0070",
+              "function body has type " + renderType(bodyType) + " but declared return type is " + declaredReturnTyStr,
+              fn.span
+            )
+          )
+        }
+      }
+      case FBBlock(blk) -> {
+        val bodyValuePos = not isUnitType(sig.returnTy)
+        val bodyType = checkBlock(sc, tbl, sigs, sig.generics, sig.returnTy, fn.ret, diag, blk, bodyValuePos)
+        val isNever = match bodyType {
+          case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }
+          case _ -> false
+        }
+        // #3362: compare `bodyType` against the DECLARED `sig.returnTy`
+        // unconditionally (modulo the `Never`/bottom-type exception above).
+        // This used to also skip whenever the *inferred* `bodyType` was
+        // Unit — but that checked the wrong type (whether the body matched
+        // itself, trivially true, instead of whether it matched the
+        // declared return type), so a function declared to return a
+        // non-Unit type whose trailing `if`/`match` produced Unit on one
+        // arm (and a real value on the other, itself now flagged by
+        // `unifyBranchTypes`'s value-position check) compiled with zero
+        // diagnostics. `typeAssignable` already accepts a genuinely
+        // Unit-returning function whose body is Unit, so removing the
+        // bypass does not regress that case.
+        //
+        // #6641 fallout (found by CI, not filed as a separate issue): an
+        // `async func`'s declared return type is the GENERATOR'S YIELDED
+        // ELEMENT type when `sig.isGenerator` (the body contains a `yield`),
+        // not the type its control-flow body must literally produce —
+        // `async func evens(n: Int): Int { var i = 0; while i < n { yield
+        // i * 2; i = i + 1 } }` never "returns" an `Int` via normal
+        // fall-through at all; each `yield` is separately checked against
+        // the element type by `EYield`'s own handling above. The old
+        // blanket Unit-body bypass this section's #3362 fix removed
+        // happened to also exempt generators (a `while`-loop body infers
+        // `Unit`); removing it without a principled generator exemption
+        // reopened this as a false-positive T0070 on every generator whose
+        // body's own control-flow type isn't the element type — check
+        // `sig.isGenerator` explicitly instead of relying on that accident.
+        if not isNever and not sig.isGenerator and not typeAssignable(tbl, sig.returnTy, bodyType) {
+          diag.add(
+            errorDiagnostic(
+              "T0070",
+              "function body trailing expression has type " + renderType(bodyType) + " but declared return type is " +
+                declaredReturnTyStr,
+              fn.span
+            )
+          )
+        }
+      }
+    }
   }
   checkOutDefiniteAssignment(diag, fn, sig)
 }

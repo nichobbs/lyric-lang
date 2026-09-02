@@ -242,8 +242,10 @@ func buildServerDll(tmpDir: in String): String {
   val dllPath = Path.join(tmpDir, "HttpRtServer.dll")
   val srcs: List[String] = newList()
   srcs.add(serverSource())
+  val paths: List[String] = newList()
+  paths.add("")
   val pkgs: List[Emitter.ProjectPackage] = newList()
-  pkgs.add(Emitter.ProjectPackage(name = "HttpRt.Server", sources = srcs))
+  pkgs.add(Emitter.ProjectPackage(name = "HttpRt.Server", sources = srcs, paths = paths))
   val req = Emitter.EmitProjectRequest(
     packages = pkgs,
     assemblyName = "HttpRtServer",

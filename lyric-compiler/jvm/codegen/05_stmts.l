@@ -971,7 +971,16 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
     case SLocal(binding) -> {
       match binding {
         case LBVal(pat, tyOpt, init) -> {
+          // #5995: a bare-case init (`val v: HttpVersion = Http11`) resolves
+          // against the annotation's declared enum type — reuses the
+          // existing #5976 call-argument expect-stack mechanism.
+          val annEnumHintTy = match tyOpt {
+            case Some(te) -> typeExprToJvmExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(ctx.aliasTargets, te), ctx.pkgName, ctx.externTypes)
+            case None -> JVoid
+          }
+          pushCtorExpect(ctx, annEnumHintTy)
           val initTy = lowerExpr(ctx, insns, init)
+          popCtorExpect(ctx)
           lowerLocalPatBind(ctx, insns, pat, initTy, tyOpt)
           // A simple `val r = <expr>` records `r`'s generic args so a later
           // `match r` unboxes an erased payload (#4938).  An explicit
@@ -1002,7 +1011,10 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             val slot0 = allocSlot(ctx, name, annTy)
             emitStore(insns, slot0, annTy)
           } else {
+            // #5995: see the matching LBVal comment above.
+            pushCtorExpect(ctx, annTy)
             val initTy = lowerExpr(ctx, insns, init)
+            popCtorExpect(ctx)
             val ty = match tyOpt { case Some(_) -> annTy; case None -> initTy }
             // `coerceValueTo` boxes a primitive array into an annotated
             // `slice[T]` local's erased slot type (#5572).
@@ -1034,7 +1046,10 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               if isDefaultCall(init) and pushPrimitiveZero(insns, annTy) {
                 ()
               } else {
+                // #5995: see the matching LBVal comment above.
+                pushCtorExpect(ctx, annTy)
                 val initTy = lowerExpr(ctx, insns, init)
+                popCtorExpect(ctx)
                 ty = match tyOpt { case Some(_) -> annTy; case None -> initTy }
                 // `coerceValueTo` boxes a primitive array into an annotated
                 // `slice[T]` var's erased slot type (#5572).
@@ -1171,7 +1186,12 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
     case SReturn(valOpt) -> {
       match valOpt {
         case Some(e) -> {
+          // #5995: a bare-case return (`return Http11`) resolves against
+          // THIS function's own declared enum return type — reuses the
+          // existing #5976 call-argument expect-stack mechanism.
+          pushCtorExpect(ctx, ctx.retTy)
           val ty = lowerExpr(ctx, insns, e)
+          popCtorExpect(ctx)
           // Coerce to the declared return type so the value matches the method
           // descriptor (e.g. a plain Double literal in a `: Float` function
           // narrows with d2f).  Skip for void / generator contexts where the

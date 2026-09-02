@@ -628,8 +628,18 @@ func synthesizeFor(source: in String, filter: in Option[String], nativeMode: in 
     case None -> {
     }
   }
-  var sb = slice(source, pf.file.packageDecl.span)
-  sb = sb + "\n"
+  // #6642: slicing just `packageDecl.span` drops everything the parser
+  // hoisted ahead of it into separate `SourceFile` fields — the module-level
+  // `//!` doc comments (`moduleDoc`) and any file-level annotations (e.g.
+  // `@test_module` itself) — because `packageDecl.span` starts at the
+  // `package` keyword, not at the top of the file. Losing that leading text
+  // shifted every line number in the rewritten (and then re-parsed) source
+  // by however many lines the header occupied, so a diagnostic reported
+  // during `lyric test` named the right file but the wrong line. Copying
+  // the raw byte range `[0, packageDecl end)` instead reproduces the
+  // original file's line numbering exactly for everything up to and
+  // including the `package` line, with no reconstruction from spans.
+  var sb = source.substring(0, pf.file.packageDecl.span.endPos.offset)
   // Native has no builtin-`println` prelude special case (unlike the dotnet/
   // jvm emitters) — the synthesised main below calls the real, already
   // native-compilable `Std.Console.println` instead, so it needs the
@@ -638,9 +648,14 @@ func synthesizeFor(source: in String, filter: in Option[String], nativeMode: in 
   // more natural `Console`, so injecting this import can never collide
   // with the user's own `import Std.Console [as X]` in the original file
   // (#4983) — two imports of the same path under different aliases are
-  // harmless, unlike two bindings fighting over the same alias name.
+  // harmless, unlike two bindings fighting over the same alias name.  It is
+  // inserted with a leading `\n` and no trailing one: the gap-copy below
+  // supplies the real newline that used to terminate the `package` line
+  // (or, with zero imports, the item-copy loop further down supplies it),
+  // so this synthetic line still gets a correct terminator without a
+  // second, doubled-up newline.
   if nativeMode {
-    sb = sb + "import Std.Console as __lyric_console\n"
+    sb = sb + "\nimport Std.Console as __lyric_console"
   }
   // #677: inject the two stdlib imports the synthesised property harness
   // needs, unaliased (referenced by full qualified name everywhere below,
@@ -649,23 +664,44 @@ func synthesizeFor(source: in String, filter: in Option[String], nativeMode: in 
   // only when the user hasn't already imported the path themselves.
   val needsPropertyStdlib = anyPropertyNeedsStdlibImports(pf.file.items, runProperties)
   if needsPropertyStdlib {
+    // Leading `\n`, no trailing one — same rule as the `__lyric_console`
+    // injection above: `sb` never ends with a newline at this point (the
+    // header slice and the native-mode injection both omit their trailing
+    // terminator by design), so each injected line must supply its own
+    // leading separator instead, leaving the real terminator for the
+    // gap-copy loop below to supply (#6724).
     if not hasImportOfPath(pf.file.imports, "Std.Random") {
-      sb = sb + "import Std.Random\n"
+      sb = sb + "\nimport Std.Random"
     }
     if not hasImportOfPath(pf.file.imports, "Std.Testing.Property") {
-      sb = sb + "import Std.Testing.Property\n"
+      sb = sb + "\nimport Std.Testing.Property"
     }
   }
+  // #6687: the header fix above (#6642) reproduces everything through the
+  // `package` line exactly, but the import section still has to reproduce
+  // it too.  Stitching each import's own span onto one synthetic `\n` (the
+  // prior approach) only kept line numbers correct by coincidence, for the
+  // single conventional shape "one blank line before the import block, one
+  // import per line, no trailing comment" — the moment a comment or an
+  // extra blank line separated the package line from the first import, or
+  // separated two imports, that trivia was silently discarded and every
+  // diagnostic reported below it landed on the wrong original line.  Copy
+  // the real gap bytes verbatim instead, mirroring the `gap = s - cursor`
+  // technique the item-copy loop below already uses — this reproduces the
+  // source's line layout exactly, with no synthetic-newline bookkeeping.
+  var cursor = pf.file.packageDecl.span.endPos.offset
   var ii = 0
   while ii < pf.file.imports.count {
-    sb = sb + slice(source, pf.file.imports[ii].span) + "\n"
+    val imp = pf.file.imports[ii]
+    val impStart = imp.span.startPos.offset
+    val impEnd = imp.span.endPos.offset
+    val importGap = impStart - cursor
+    if importGap > 0 {
+      sb = sb + source.substring(cursor, importGap)
+    }
+    sb = sb + slice(source, imp.span)
+    cursor = impEnd
     ii = ii + 1
-  }
-
-  var cursor = if pf.file.imports.count > 0 {
-    pf.file.imports[pf.file.imports.count - 1].span.endPos.offset
-  } else {
-    pf.file.packageDecl.span.endPos.offset
   }
 
   var tests: List[TestSlot] = newList()

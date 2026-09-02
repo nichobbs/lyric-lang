@@ -652,27 +652,27 @@ union Mode {
 /// without reconstructing the record.
 record LexerState {
   source: String
-  pos: Int
-  line: Int
-  column: Int
+  var pos: Int
+  var line: Int
+  var column: Int
   // Bracket-nesting depth (parens / square / brace) gates STMT_END
   // emission: a newline inside an unclosed bracket pair is a
   // continuation, never a terminator.
-  bracketDepth: Int
+  var bracketDepth: Int
   // A newline has been seen since the previous emit; the next emit
   // must consider STMT_END insertion.
-  newlinePending: Bool
+  var newlinePending: Bool
   // The last non-STMT_END emit cannot terminate a statement (a binary
   // operator, opening bracket, comma/dot/at/etc.).  Tracked as a
   // single Bool — the F# lexer carries the full token but only ever
   // queries `suppressesNewlineAfter`.
-  prevSuppresses: Bool
+  var prevSuppresses: Bool
   // The previous emit was a STMT_END (explicit `;` or synthesised);
   // a second one in a row collapses to one.
-  prevWasStmtEnd: Bool
+  var prevWasStmtEnd: Bool
   // True once the file has emitted at least one real token; used to
   // suppress STMT_END at start-of-file.
-  haveAnyToken: Bool
+  var haveAnyToken: Bool
   tokens: List[SpannedToken]
   diagnostics: List[Diagnostic]
   // String / interpolation mode stack.  Empty during plain top-
@@ -681,7 +681,7 @@ record LexerState {
   // Trivia accumulated since the previous emit; flushed onto the next
   // emitted token's `leadingTrivia` (the synthesised STMT_END if one
   // is inserted first, otherwise the real token).  Always non-null.
-  pendingTrivia: List[Trivia]
+  var pendingTrivia: List[Trivia]
 }
 
 func newState(source: in String): LexerState {

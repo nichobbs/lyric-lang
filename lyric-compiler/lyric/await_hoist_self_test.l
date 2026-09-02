@@ -47,6 +47,7 @@ package Lyric.AwaitHoistSelfTest
 
 import Std.Collections
 import Std.Core
+import Std.String
 import Std.Testing
 
 // Appends `tag` to `log`, then returns `value`. Used directly as a plain
@@ -296,3 +297,284 @@ test "await in operand position inside a loop invariant expression compiles (#64
   val result = await sumWithAwaitInvariant(5)
   assertEqualInt(result, 10, "0+1+2+3+4 = 10 with the await-bearing invariant expression present")
 }
+
+// ── #5629: a MUTABLE receiver/index re-read after a hoisted hazard must ─────
+// keep the value captured BEFORE the hazard ran, not whatever it holds
+// afterward. `AwaitHoist`'s name-like fast path used to leave ANY bare-name
+// receiver/index unbound once its awaited argument was hoisted out, on the
+// (unsound) assumption that re-reading a name after the hoisted hazard is
+// always equivalent to reading it before. That holds for an immutable
+// `val`/`let`/package-qualified name, but not for a `var` that the hazard's
+// OWN evaluation can reassign — here, via an `inout` argument threaded
+// through the awaited call, which reassigns the caller's variable SLOT
+// itself (not merely a field of the object it referenced) to a brand-new
+// value. `out`/`inout` params are supported on both targets (#1761 MSIL,
+// #1763 JVM), so this reproduces identically on `--target dotnet` and
+// `--target jvm`.
+record MutRecvBox {
+  tag: Int
+
+  func describe(self: in MutRecvBox, n: Int): Int {
+    self.tag * 1000 + n
+  }
+}
+
+// Reassigns the CALLER's variable SLOT (via `inout`) to a brand-new box —
+// not a field write on the box `cell` originally referenced. `MutRecvBox`
+// is a reference type, so only a slot reassignment (not a field mutation)
+// can make re-reading the caller's variable NAME after this call
+// observably differ from reading it before the call.
+func mutateBoxSlot(cell: inout MutRecvBox): Int {
+  cell = MutRecvBox(tag = 99)
+  5
+}
+
+async func receiverMutatedDuringAwaitArg(): Int {
+  var x = MutRecvBox(tag = 1)
+  // `x` (the method receiver) must be captured with tag=1 BEFORE the
+  // awaited call reassigns it to tag=99 through its `inout` argument.
+  return x.describe(await mutateBoxSlot(x))
+}
+
+test "#5629: a mutable receiver reassigned by the awaited call keeps its pre-await value" {
+  // Correct: describe(self=tag 1, n=5) = 1*1000+5 = 1005 — the receiver is
+  // captured before `mutateBoxSlot` reassigns `x` to tag=99. Before the
+  // fix, `x` was re-read AFTER the hoisted await, observing tag=99 and
+  // producing 99005 instead.
+  assertEqualInt(
+    await receiverMutatedDuringAwaitArg(),
+    1005,
+    "receiver must be captured before the mutating await, not after"
+  )
+}
+
+func mutateListSlot(cell: inout List[Int]): Int {
+  val fresh: List[Int] = newList()
+  fresh.add(999)
+  cell = fresh
+  0
+}
+
+async func indexMutatedDuringAwaitArg(): Int {
+  var xs: List[Int] = newList()
+  xs.add(11)
+  xs.add(22)
+  xs.add(33)
+  // `xs` (the index receiver) must be captured as the ORIGINAL list before
+  // the awaited call reassigns it to a brand-new list through its `inout`
+  // argument; the index (0) it returns is only meaningful against the
+  // pre-await list.
+  return xs[await mutateListSlot(xs)]
+}
+
+test "#5629: a mutable index receiver reassigned by the awaited call keeps its pre-await value" {
+  // Correct: original xs = [11, 22, 33] indexed at 0 = 11 — captured before
+  // `mutateListSlot` reassigns `xs` to a new [999] list. Before the fix,
+  // `xs` was re-read AFTER the hoisted await, observing the new list and
+  // producing 999 instead.
+  assertEqualInt(
+    await indexMutatedDuringAwaitArg(),
+    11,
+    "index receiver must be captured before the mutating await, not after"
+  )
+}
+
+// #6555 (review follow-up on #5629): `hzCollectMutableNamesExpr` recursed
+// into `EAwait`/`EYield`/`ESpawn`/`ETry`/`EOld` but not `EPropagate` — so a
+// `var` declared and used entirely INSIDE the inner expression of a `?`
+// (a hazard kind `hzHoistSpine` itself already recurses into) was invisible
+// to the mutability pre-walk and treated as safe-to-skip-binding, reopening
+// the exact #5629 stale-receiver bug one `?` deeper.
+async func receiverMutatedInsidePropagatedBlock(): Result[Int, String] {
+  val n = match true { case true -> { var y = MutRecvBox(tag = 1); Ok(value = y.describe(await mutateBoxSlot(y))) }; case false -> Err(error = "unreachable") }?
+  // `y` is declared AND used as a mutable receiver entirely inside this
+  // match-arm block, which is itself the inner expression of the outer
+  // `?` below — the collector must descend through EPropagate to see
+  // this `var`.
+  Ok(value = n)
+}
+
+test "#6555: a mutable receiver declared inside a ?-propagated block keeps its pre-await value" {
+  // Correct: describe(self=tag 1, n=5) = 1*1000+5 = 1005, same as #5629's
+  // non-propagated case. Before the EPropagate fix, `y` was missing from
+  // `mutableNames` (the collector never looked past the `?`), so it was
+  // re-read AFTER the hoisted await, observing tag=99 and producing 99005.
+  match await receiverMutatedInsidePropagatedBlock() {
+    case Ok(v) -> assertEqualInt(
+      v,
+      1005,
+      "receiver inside a ?-propagated block must be captured before the mutating await"
+    )
+    case Err(e) -> assertTrue(false, "unexpected Err: " + e)
+  }
+}
+
+// ── #6600 (review follow-up on #5629): a `var` RECORD FIELD mutated ─────────
+// through a member-write during the awaited call is invisible to the
+// base-name-only mutability check. `hzNameLikeMutable` used to recurse an
+// `EMember` receiver down to its base name only — so `h.box`, with `h` a
+// `val`, was treated as unconditionally safe to re-read after the hoisted
+// await even though `swapMemberBox` reassigns the FIELD (not `h` itself)
+// via a member-target write (`h.box = ...`), which the type checker's
+// T0087 mutability check does not catch either (it only fires for bare
+// `EPath` assignment targets — a member-target write is unchecked there
+// too). Records support `var` fields on both targets, so this reproduces
+// identically on `--target dotnet` and `--target jvm`.
+record Holder {
+  var box: MutRecvBox
+}
+
+func swapMemberBox(h: in Holder): Int {
+  h.box = MutRecvBox(tag = 99)
+  5
+}
+
+async func memberFieldMutatedDuringAwaitArg(): Int {
+  val h = Holder(box = MutRecvBox(tag = 1))
+  // `h.box` (the method receiver) must be captured with tag=1 BEFORE the
+  // awaited call reassigns the field through the member-write.
+  return h.box.describe(await swapMemberBox(h))
+}
+
+test "#6600: a var record field mutated via member-write during the awaited call keeps its pre-await value" {
+  // Correct: describe(self=tag 1, n=5) = 1*1000+5 = 1005 — h.box is
+  // captured before swapMemberBox's `h.box = ...` reassigns the field.
+  // Before the fix, `h.box` was re-read AFTER the hoisted await,
+  // observing tag=99 and producing 99005 instead.
+  assertEqualInt(
+    await memberFieldMutatedDuringAwaitArg(),
+    1005,
+    "member-field receiver must be captured before the mutating await, not after"
+  )
+}
+
+// The identical shape one level deeper: the receiver base is `self` itself
+// (`case ESelf -> false` was unconditional, so `self.box` was unreachable
+// by the base-name rule at all, not merely under-conservative like a plain
+// `EPath` base — #6600's other required fix).
+func swapCacheBox(c: in Cache): Int {
+  c.box = MutRecvBox(tag = 99)
+  5
+}
+
+record Cache {
+  var box: MutRecvBox
+
+  async func run(self: in Cache): Int {
+    return self.box.describe(await swapCacheBox(self))
+  }
+
+  // #6684 (review follow-up on #6600): the identical shape one spelling
+  // further still — `box` referenced BARE (implicit self) instead of
+  // `self.box`. Per docs/01 §2.12/2.4 (#6173/#6487, D-progress-774) a
+  // record/impl/protected-type member body may reference its own fields
+  // this way; `hzNameLikeMutable` had no case for a bare single-segment
+  // `EPath` field reference at all, so it fell through to
+  // `hzIsNameLikeSafe` returning `true` and reopened the exact
+  // #5629/#6600 stale-receiver-read bug one spelling later.
+  async func runBare(self: in Cache): Int {
+    return box.describe(await swapCacheBox(self))
+  }
+}
+
+test "#6600: a var field mutated via self.field member-write during the awaited call keeps its pre-await value" {
+  val c = Cache(box = MutRecvBox(tag = 1))
+  // Same expected value as the plain-record case: describe(self=tag 1,
+  // n=5) = 1005. Before the fix, `self.box` was re-read AFTER the hoisted
+  // await (the `ESelf -> false` base case made this unreachable by the
+  // conservative rule at all), observing tag=99 and producing 99005.
+  assertEqualInt(await c.run(), 1005, "self.box must be captured before the mutating await, not after")
+}
+
+test "#6684: a var field mutated via bare implicit-self field write during the awaited call keeps its pre-await value" {
+  val c = Cache(box = MutRecvBox(tag = 1))
+  // Same expected value again: describe(self=tag 1, n=5) = 1005 — bare
+  // `box` must be captured before `swapCacheBox`'s `c.box = ...` reassigns
+  // the field. Before the fix, `box` was re-read AFTER the hoisted await,
+  // observing tag=99 and producing 99005 instead.
+  assertEqualInt(await c.runBare(), 1005, "bare `box` must be captured before the mutating await, not after")
+}
+
+// The same #6684 shape one member-kind further: an `impl` method (not a
+// record-body method) referencing the target's field bare. `hzNameLikeMutable`
+// alone isn't enough here — `hzRewriteItem`'s `IImpl` case must ALSO resolve
+// the target's own field names via `hzImplTargetFieldNames` (a same-file
+// lookup by the target's simple name, since this file-scoped pass has no
+// symbol table), so this exercises that lookup, not just the mutability
+// check.
+interface CacheRunner6684 {
+  async func run(self: in Self): Int
+}
+
+record ImplCache6684 {
+  var box: MutRecvBox
+}
+
+func swapImplCacheBox6684(c: in ImplCache6684): Int {
+  c.box = MutRecvBox(tag = 99)
+  5
+}
+
+impl CacheRunner6684 for ImplCache6684 {
+  async func run(self: in ImplCache6684): Int {
+    return box.describe(await swapImplCacheBox6684(self))
+  }
+}
+
+test "#6684: impl method — a var field mutated via bare implicit-self field write during the awaited call keeps its pre-await value" {
+  val c = ImplCache6684(box = MutRecvBox(tag = 1))
+  assertEqualInt(await c.run(), 1005, "impl-method bare `box` must be captured before the mutating await, not after")
+}
+
+// ── #6699 (review follow-up on #6684): a PACKAGE-QUALIFIED call receiver ────
+// must never be routed through the hoist bind, even when it sits ahead of a
+// hazardous argument. #6684's fix made `hzNameLikeMutable`'s `EMember` case
+// check `st.selfFieldNames` for the bare-implicit-self-field spelling, but
+// it left the shared `case EMember(_, _) -> true` unconditional for every
+// OTHER `EMember` shape too — including a pure package/type qualifier
+// chain with no binding in scope at all. `Std.String.repeat("ab", await
+// ...)`'s call receiver is `Std.String`, itself `EMember(EPath(["Std"]),
+// "String")` (a two-level qualifier, matching the real in-repo
+// `Std.Json.encodeString(...)` call at `examples/ledger/src/transfers.l:87`
+// the review cited): before the fix this was wrongly treated as mutable and
+// hoist-bound, attempting to emit `val __lyric_hoist_N = Std.String` — not a
+// value at all, since a package/type qualifier can never be bound to a
+// local (`hzIsNameLike`'s own doc comment, "MUST NOT be bound to a local").
+async func hazardRepeatCount(log: in List[String]): Int {
+  log.add("count")
+  3
+}
+
+async func packageQualifiedReceiverAwait(log: in List[String]): String {
+  return Std.String.repeat("ab", await hazardRepeatCount(log))
+}
+
+test "#6699: a package-qualified call receiver ahead of a hazardous argument is never hoist-bound" {
+  val log: List[String] = newList()
+  val result = await packageQualifiedReceiverAwait(log)
+  assertEqual(result, "ababab", "Std.String.repeat(\"ab\", 3) must repeat the string 3 times")
+  assertEqual(joinLog(log), "count", "the hazard argument still runs exactly once")
+}
+
+// #6734 (review follow-up on #6729/#6600): a MODULE-SCOPE `val` used as a
+// receiver is the identical shape one scope further out still — before the
+// fix, `st.moduleValNames` didn't exist, so a module-level `val`'s name was
+// invisible to `hzMemberChainBaseIsValue` (which only consulted
+// `st.mutableNames`/`st.selfFieldNames`/`st.localNames`, all function/entry-
+// or type-scoped) and was therefore treated exactly like an unbound
+// package/type qualifier — never hoist-protecting a `var` field mutated
+// through it during an awaited call.
+//
+// This CANNOT be pinned as a runtime `test` here (the natural home, given
+// the identical shape to the #6600/#6684 cases just above): compiling and
+// running the equivalent module-`val` program hits a separate, unrelated
+// pre-existing MSIL codegen gap in async-SM local promotion — the hoisted
+// receiver's captured value does not survive the awaited suspension when
+// its initializer reads a field off a module-level val, even though the
+// front-end AST rewrite is verified correct (tracked as #6787; a second,
+// narrower gap in the same neighborhood — an UNANNOTATED module `val`
+// initialized by a record-constructor call getting the wrong MSIL field
+// type — is #6786). See `propagate_hoist_entry_polarity_self_test.l`'s
+// header for the precedent: this pin is added there instead, at the AST
+// level, the same way that file's own cases are pinned when the runtime
+// shape hits an unrelated blocker.

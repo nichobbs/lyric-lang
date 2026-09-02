@@ -512,11 +512,25 @@ func jvmSimpleName(cls: in String): String {
 }
 
 // Resolve the enum class to test a `case <Name> ->` pattern against, given the
-// scrutinee's static JVM type (docs/59 §4.4): a scrutinee whose class SIMPLE
-// name is a registered enum carrying variant `<Name>` resolves type-scoped —
-// the registered sig's owner is authoritative even when the static class is an
-// imported enum's in-package guess — while an erased `Object` scrutinee falls
-// back to the bare variant key (mirrors MSIL's unbox-then-ordinal-compare on a
+// scrutinee's static JVM type (docs/59 §4.4, cross-package collision fix
+// #5995, same-package two-enum collision fix #6640): a scrutinee whose class
+// names a registered enum resolves FULLY (package, TYPE, case)-scoped first
+// (`enumVariantClassByFullClass`, keyed on the scrutinee class's OWN full
+// class name) — always correct when `caseName` genuinely belongs to that
+// exact class, and the only tier that disambiguates two DIFFERENT enums
+// declared in the SAME package sharing a case name (`enum Status { case Ok
+// }` / `enum Health { case Ok }`), since the package-only tier below cannot
+// tell them apart (#6640). Falls back to PACKAGE-scoped
+// (`enumVariantClassByPkg`, keyed on the scrutinee class's own declaring
+// package) — unambiguous even when two DIFFERENT packages each declare an
+// enum with the SAME type name (the #5995 issue's literal repro: two
+// `HttpVersion` enums, each with an `Http11` case) — for the case where the
+// scrutinee's static class is an approximate in-package guess rather than
+// the exact declaring class, which the enum-simple-name-scoped
+// `enumVariantClass` fallback below cannot tell apart on its own. The
+// registered sig's owner is authoritative even when the static class is an
+// imported enum's in-package guess.  An erased `Object` scrutinee falls back
+// to the bare variant key (mirrors MSIL's unbox-then-ordinal-compare on a
 // boxed scrutinee).  A scrutinee of any OTHER known class (String, a record)
 // is never an enum test, so a variable binding that happens to share a name
 // with some enum's case keeps binding.
@@ -526,7 +540,13 @@ func enumPatternClass(ctx: in FuncCtx, scrutTy: in JvmType, caseName: in String)
       if cls == "java/lang/Object" {
         enumCaseClassBare(ctx, caseName)
       } else {
-        enumVariantClass(ctx, jvmSimpleName(cls), caseName)
+        match enumVariantClassByFullClass(ctx, cls.replace("/", "."), caseName) {
+          case Some(fcls) -> Some(value = fcls)
+          case None -> match enumVariantClassByPkg(ctx, jvmClassOwnerPkg(cls).replace("/", "."), caseName) {
+            case Some(pcls) -> Some(value = pcls)
+            case None -> enumVariantClass(ctx, jvmSimpleName(cls), caseName)
+          }
+        }
       }
     }
     case _ -> None
@@ -1110,30 +1130,60 @@ func lowerPatternTest(
         // Package-qualified enum-case pattern (`case Std.Http.GET ->`, or an
         // `import X as Y` alias already expanded to the real package by
         // `Lyric.AliasRewriter`): the check above only matches when the
-        // PENULTIMATE segment alone names the enum — true when the
-        // declaring package is a single segment, but `Std.Http.GET`'s
-        // penultimate segment is "Http", not the full package "Std.Http".
-        // `collectFileSigsSeeded` (06_items.l) registers the package-
-        // qualified case ordinal under the FULL dotted-package key
+        // PENULTIMATE segment alone names the enum TYPE — `Std.Http.GET`'s
+        // penultimate segment is "Http", the enum's declaring package, not
+        // its type name. `collectFileSigsSeeded` (06_items.l) registers the
+        // package-qualified case ordinal under the FULL dotted-package key
+        // (the `enumpkg:` tier, resolved via `enumVariantClassByPkg` below)
         // alongside the type-scoped one (#5769's VALUE-position fix); this
         // PATTERN path never consulted it (#5971, JVM parity gap for the
         // multi-segment-package case the #5769 fix's own 2-segment repro
-        // didn't exercise).
+        // didn't exercise). #6683: the check above and this one now query
+        // DISTINCT key tiers (`enumty:` vs `enumpkg:`), so a single-segment
+        // package name can no longer accidentally satisfy the TYPE-scoped
+        // check above via a shared key namespace — this package-scoped
+        // check runs for every segment count, single or multi.
         val pkgSegs: List[String] = newList()
         var pqi = 0
         while pqi < head.segments.count - 1 {
           pkgSegs.add(head.segments[pqi])
           pqi = pqi + 1
         }
+        // #6683: `enumVariantClassByPkg` (the `enumpkg:` tier), not
+        // `enumVariantClass` (the `enumty:` tier) — this branch is testing a
+        // PACKAGE-qualified reference, and the two tiers now carry distinct
+        // key prefixes so they no longer alias into one shared "enum:"
+        // namespace the way a single-segment package used to accidentally
+        // match through the TYPE-scoped lookup above.
         val pkgJoined = joinSegments(pkgSegs, ".")
-        match enumVariantClass(ctx, pkgJoined, lastSegment(head)) {
+        match enumVariantClassByPkg(ctx, pkgJoined, lastSegment(head)) {
           case Some(eqcls) -> {
             emitLoad(insns, scrutSlot, scrutTy)
             insns.add(LGetstatic(owner = eqcls, name = lastSegment(head), t = JRef(className = eqcls)))
             insns.add(LIfAcmpne(label = failLabel))
             return
           }
-          case None -> ()
+          case None -> {
+            // #6728: `enumVariantClassByPkg` returns `None` when the
+            // `enumpkg:` key is poisoned (the same package declares two
+            // DIFFERENT enums sharing this case name, #6640) — unlike
+            // `enumPatternClass` above, this package-qualified path had no
+            // further fallback, even though `scrutTy` is already in scope
+            // and is the only tier that can still disambiguate against the
+            // scrutinee's own exact declaring class.
+            val scrutCls = match scrutTy { case JRef(cls) -> cls; case _ -> "" }
+            if scrutCls.length > 0 {
+              match enumVariantClassByFullClass(ctx, scrutCls.replace("/", "."), lastSegment(head)) {
+                case Some(eqcls) -> {
+                  emitLoad(insns, scrutSlot, scrutTy)
+                  insns.add(LGetstatic(owner = eqcls, name = lastSegment(head), t = JRef(className = eqcls)))
+                  insns.add(LIfAcmpne(label = failLabel))
+                  return
+                }
+                case None -> ()
+              }
+            }
+          }
         }
       }
       // isinst test against the case class; fail if the scrutinee is not that
@@ -1265,7 +1315,10 @@ func lowerPatternTest(
       val constOwner = match importedSig { case Some(s) -> s.owner; case None -> ctx.pkgName }
       val vtyOpt: Option[JvmType] = match ownVty {
         case Some(t) -> Some(value = t)
-        case None -> match importedSig { case Some(s) -> Some(value = s.ret); case None -> None }
+        case None -> match importedSig {
+          case Some(s) -> Some(value = s.ret)
+          case None -> None
+        }
       }
       match vtyOpt {
         case Some(vty) -> {
@@ -1354,7 +1407,9 @@ func lowerPatternTest(
             }
           }
         }
-        case None -> panic("lowerPatternTest (JVM): PConstRef name not found in moduleVals (type checker should have validated)")
+        case None -> panic(
+          "lowerPatternTest (JVM): PConstRef name not found in moduleVals (type checker should have validated)"
+        )
       }
     }
     case PError -> insns.add(LNop)
@@ -1773,12 +1828,30 @@ func lowerPatternBind(
           bindPkgSegs.add(head.segments[bpqi])
           bpqi = bpqi + 1
         }
-        match enumVariantClass(ctx, joinSegments(bindPkgSegs, "."), lastSegment(head)) {
+        // #6683: `enumVariantClassByPkg` (the `enumpkg:` tier) — see the
+        // matching comment on the TEST-phase fallback above.
+        match enumVariantClassByPkg(ctx, joinSegments(bindPkgSegs, "."), lastSegment(head)) {
           case Some(_) -> {
             insns.add(LNop)
             return
           }
-          case None -> ()
+          case None -> {
+            // #6728: same poisoned-key gap as the TEST-phase fallback above
+            // — without this, a poisoned `enumpkg:` key wrongly falls
+            // through to the union-case checkcast path below instead of
+            // being recognised as (still) an enum-case pattern that binds
+            // nothing.
+            val scrutCls = match scrutTy { case JRef(cls) -> cls; case _ -> "" }
+            if scrutCls.length > 0 {
+              match enumVariantClassByFullClass(ctx, scrutCls.replace("/", "."), lastSegment(head)) {
+                case Some(_) -> {
+                  insns.add(LNop)
+                  return
+                }
+                case None -> ()
+              }
+            }
+          }
         }
       }
       val caseClass = resolveCaseClassJvm(ctx, head, scrutTy)
@@ -1871,7 +1944,17 @@ func lowerPatternBind(
               case None -> ()
             }
             match fields[fi] {
-              case RPFNamed(_, subPat, _) -> bindCaseField(ctx, insns, castSlot, recClass, fieldName, fty, concreteTy, concreteTypeExprOpt, subPat)
+              case RPFNamed(_, subPat, _) -> bindCaseField(
+                ctx,
+                insns,
+                castSlot,
+                recClass,
+                fieldName,
+                fty,
+                concreteTy,
+                concreteTypeExprOpt,
+                subPat
+              )
               case RPFShort(_, _) -> {
                 // `Point{x}` binds local `x` to field `x` — reuse `bindCaseField`'s
                 // `PBinding` leaf (unboxing/slice-normalizing against `concreteTy`)

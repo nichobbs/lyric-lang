@@ -307,8 +307,8 @@ pub record HttpContext {
 // mutation of the shared hpack encoder / flow windows).
 record H2Exchange {
   streamId: Int
-  status: Int
-  contentType: String
+  var status: Int
+  var contentType: String
   body: List[Byte]
   extra: Map[String, String]
 }
@@ -317,9 +317,9 @@ record H2Exchange {
 // request `headers` and the DATA-frame `body` gathered until END_STREAM, at
 // which point the stream is dispatched as an `HttpContext`.
 record H2ReqAccum {
-  headers: List[HeaderField]
+  var headers: List[HeaderField]
   body: List[Byte]
-  haveHeaders: Bool
+  var haveHeaders: Bool
 }
 
 // The request line + non-pseudo headers extracted from an h2 header block.
@@ -335,11 +335,11 @@ record H2RequestLine {
 // the connection's lifetime.
 record H2ConnState {
   conn: Conn
-  h2: H2Connection
+  var h2: H2Connection
   accums: Map[Int, H2ReqAccum]
   queue: ConcurrentQueue[HttpContext]
   available: Semaphore
-  open: Bool
+  var open: Bool
   // The same `EngineLimits` the HTTP/1.1 path enforces (`maxBodyBytes` in
   // particular): an h2 request body is capped identically, at parity.
   limits: EngineLimits
@@ -574,7 +574,7 @@ func readOneRequest(conn: in Conn, engineConn: inout Connection): ReqOutcome {
     var events: List[HttpEvent] = newList()
     if first {
       first = false
-      val fr0 = feed(engineConn, emptyBytes())
+      val fr0 = Std.HttpEngine.feed(engineConn, emptyBytes())
       engineConn = fr0.conn
       events = fr0.events
     } else {
@@ -584,7 +584,7 @@ func readOneRequest(conn: in Conn, engineConn: inout Connection): ReqOutcome {
           if bytes.length == 0 {
             return RoClose
           }
-          val fr1 = feed(engineConn, bytes)
+          val fr1 = Std.HttpEngine.feed(engineConn, bytes)
           engineConn = fr1.conn
           events = fr1.events
         }
@@ -1296,7 +1296,14 @@ func processH2Event(state: in H2ConnState, ev: in H2Event, work: in List[H2Event
       state.open = false
     }
     case H2RequestHeaders(streamId, headers, endStream) -> onH2Headers(state, streamId, headers, endStream, work)
-    case H2RequestData(streamId, data, endStream, wireLength) -> onH2Data(state, streamId, data, endStream, wireLength, work)
+    case H2RequestData(streamId, data, endStream, wireLength) -> onH2Data(
+      state,
+      streamId,
+      data,
+      endStream,
+      wireLength,
+      work
+    )
   }
 }
 
@@ -1759,7 +1766,10 @@ pub func streamWriteChunk(
       appendBytes(exchange.body, payload)
       Ok(value = ())
     }
-    case None -> match hostWrite(s.conn, serializeChunk(payload)) { case Ok(_) -> Ok(value = ()); case Err(e) -> Err(error = TcpError.message(e)) }
+    case None -> match hostWrite(s.conn, serializeChunk(payload)) {
+      case Ok(_) -> Ok(value = ())
+      case Err(e) -> Err(error = TcpError.message(e))
+    }
   }
 }
 

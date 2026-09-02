@@ -299,6 +299,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/defer_self_test.l \
 	lyric-compiler/lyric/derives_self_test.l \
 	lyric-compiler/lyric/emitter_project_self_test.l \
+	lyric-compiler/lyric/enum_case_collision_self_test.l \
 	lyric-compiler/lyric/enum_closure_pattern_bind_self_test.l \
 	lyric-compiler/lyric/ensures_self_test.l \
 	lyric-compiler/lyric/enum_msil_self_test.l \
@@ -321,6 +322,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/inout_field_self_reassign_self_test.l \
 	lyric-compiler/lyric/jvm_auto_ffi_bridge_self_test.l \
 	lyric-compiler/lyric/jvm_impl_extern_class_self_test.l \
+	lyric-compiler/lyric/jvm_sourcefile_attr_self_test.l \
 	lyric-compiler/lyric/jvm_trycatch_bridge_self_test.l \
 	lyric-compiler/lyric/lexer_self_test.l \
 	lyric-compiler/lyric/list_value_compare_self_test.l \
@@ -338,6 +340,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/module_val_self_test.l \
 	lyric-compiler/lyric/mono_self_test.l \
 	lyric-compiler/lyric/mono_shadow_self_test.l \
+	lyric-compiler/lyric/msil_codegen_diag_self_test.l \
 	lyric-compiler/lyric/msil_project_bridge_self_test.l \
 	lyric-compiler/lyric/multi_impl_iface_result_self_test.l \
 	lyric-compiler/lyric/named_arg_order_self_test.l \
@@ -365,6 +368,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/slice_array_abi_self_test.l \
 	lyric-compiler/lyric/slice_ops_self_test.l \
 	lyric-compiler/lyric/slice_string_self_test.l \
+	lyric-compiler/lyric/source_path_diagnostics_self_test.l \
 	lyric-compiler/lyric/stdlib_generic_iface_self_test.l \
 	lyric-compiler/lyric/stdlib_generic_mono_self_test.l \
 	lyric-compiler/lyric/stubbable_self_test.l \

@@ -102,8 +102,10 @@ test "instance-method extern on a value-type generic-declaring type fails the bu
   val dllPath = Path.join(dir, "ValueTaskInstanceFixture.dll")
   val srcs: List[String] = newList()
   srcs.add(valueTypeInstanceExternSource())
+  val paths: List[String] = newList()
+  paths.add("")
   val pkgs: List[Emitter.ProjectPackage] = newList()
-  pkgs.add(Emitter.ProjectPackage(name = "ValueTaskInstanceFixture", sources = srcs))
+  pkgs.add(Emitter.ProjectPackage(name = "ValueTaskInstanceFixture", sources = srcs, paths = paths))
   val req = Emitter.EmitProjectRequest(
     packages = pkgs,
     assemblyName = "ValueTaskInstanceFixture",

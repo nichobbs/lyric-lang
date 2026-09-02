@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# ffi-iface-impl-negative-tests.sh — D105 Phase 2 F0020–F0024 external-
-# interface impl conformance negative tests (impl-block-targets-non-
+# ffi-iface-impl-negative-tests.sh — D105 Phase 2 F0021–F0024, F0034
+# external-interface impl conformance negative tests (impl-block-targets-non-
 # interface, missing required method, parameter/return type mismatches,
 # generic-interface substitution, closed-generic-interface F0021, and the
 # F0024 typo-guard). Each fixture must fail the build and report its own
-# diagnostic code.
-# Extracted from ci.yml's "FFI iface impl F0020–F0023 + generic-iface
+# diagnostic code. The "not an interface" check is F0034, not F0020 —
+# renumbered (#6648) to avoid colliding with propagate.l's pre-existing
+# F0020 (`?` in a non-Result/Option function).
+# Extracted from ci.yml's "FFI iface impl F0021–F0023, F0034 + generic-iface
 # negative tests" step (#6387/check-workflow-size.sh — see
 # scripts/ci/self-test.sh's header).
 # ---------------------------------------------------------------------------
@@ -19,7 +21,7 @@ BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
 
 lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
 if [ ! -x "$lyric_bin" ]; then
-  echo "::error::AOT binary not found at $lyric_bin; skipping F0020–F0023 negative tests"
+  echo "::error::AOT binary not found at $lyric_bin; skipping F0021–F0023, F0034 negative tests"
   exit 1
 fi
 bin_abs="$(pwd)/$lyric_bin"
@@ -38,9 +40,9 @@ run_fixture() {
     echo "::error::$diag fixture failed but did not report $diag"; exit 1; }
   echo "$diag negative test passed (rc=$rc)"
 }
-# F0020: impl block targets a non-interface (System.Math is a class).
-cat > "$work/f0020_fixture.l" <<'LYR'
-package F0020Fixture
+# F0034: impl block targets a non-interface (System.Math is a class).
+cat > "$work/f0034_fixture.l" <<'LYR'
+package F0034Fixture
 
 extern type NotAnIface = "System.Math"
 
@@ -51,7 +53,7 @@ impl NotAnIface for R {
 
 func main(): Int { 0 }
 LYR
-run_fixture "F0020" "f0020_fixture.l"
+run_fixture "F0034" "f0034_fixture.l"
 # F0021: impl is missing a required interface method (IDisposable.Dispose).
 cat > "$work/f0021_fixture.l" <<'LYR'
 package F0021Fixture
@@ -157,5 +159,5 @@ impl ITypo[Int] for R {
 func main(): Int { 0 }
 LYR
 run_fixture "F0024" "f0024_fixture.l"
-echo "all F0020–F0024 negative tests passed"
+echo "all F0021–F0024, F0034 negative tests passed"
 

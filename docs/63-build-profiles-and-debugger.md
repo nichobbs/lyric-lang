@@ -348,8 +348,8 @@ note would be a lie.
 
 New codes in the `F` family. `F0040`+ is free: a sweep of quoted `"F00NN`
 literals across `lyric-compiler/` finds `F0002`, `F0012`–`F0013`,
-`F0015`, `F0020`–`F0027`, and `F0030`–`F0032` in use, and nothing above
-`F0032`.
+`F0015`, `F0020`–`F0027`, `F0030`–`F0032`, and `F0034` in use, and
+nothing above `F0034`.
 
 The family is worth looking at before extending it, because it is not one
 family:
@@ -359,18 +359,20 @@ family:
 | `F0002` | conflicting `@externStatic` / `@externInstance` hints | `typechecker_stmts.l:779` |
 | `F0012`–`F0013` | `@cfg` erasure: malformed predicate, undeclared feature | `cfg.l:76`, `cfg.l:94` |
 | `F0015` | `@externTarget` signature mismatch (JVM variant `F0015-J`) | `msil/codegen.l:17418`, `jvm/codegen/04_calls.l:314` |
-| `F0020` | **two meanings** — `?` in a non-`Result`/`Option` function, *and* FFI "not an interface" | `propagate.l:266`, `msil/codegen.l:28765` |
+| `F0020` | `?` in a non-`Result`/`Option` function | `propagate.l:266` |
 | `F0021` | **two meanings** — `for`-loop variable not irrefutable, *and* FFI missing impl method | `msil/codegen.l:14258`, `msil/codegen.l:28612` |
 | `F0022`–`F0024` | FFI interface validation: parameter, return, and shape mismatches (docs/51) | `msil/codegen.l:28641`, `:28670`, `:28744` |
 | `F0025` | try-catch-as-expression whose catch arm yields `Unit` (type-checker gap #2042) | `msil/codegen.l:15594` |
 | `F0026` | non-literal argument where a delegate-bridged parameter needs a lambda literal | `msil/codegen.l:12862` |
 | `F0027` | warning: hint-less `@externTarget` | `msil/codegen.l:28704` |
 | `F0030`–`F0032` | build defines: non-`String` `val`, non-module-level `val`, malformed define (docs/60) | `build_defines.l:486`, `:516`, `:479` |
+| `F0034` | FFI "not an interface" — `impl` target resolves through `extern type`/`import extern` but isn't a .NET interface (renumbered off `F0020` by #6648 to resolve the collision above) | `msil/codegen.l:32902` |
 
-Two observations that bear on where the new codes should go. First, `F0020`
-and `F0021` are each **already double-assigned** to unrelated diagnostics —
-a pre-existing numbering collision, out of scope here but evidence that the
-family is not being administered. Second, the remaining codes span FFI hints,
+Two observations that bear on where the new codes should go. First,
+`F0021` is **still double-assigned** to two unrelated diagnostics — a
+pre-existing numbering collision, out of scope here but evidence that the
+family is not being administered (`F0020`'s own double-assignment was
+split off to `F0034` by #6648). Second, the remaining codes span FFI hints,
 conditional compilation, pattern irrefutability, a type-checker gap, a lambda
 ABI restriction, and build defines. Proposed new codes:
 
@@ -385,7 +387,7 @@ ABI restriction, and build defines. Proposed new codes:
 Whether build-shape diagnostics deserve their own family letter rather than
 extending `F` is **Q-BP-004** — and the table above is the argument that they
 might. `F` is not a family so much as a default bucket, and it already contains
-two double-assigned codes. Adding a seventh unrelated concern to it is the path
+a double-assigned code. Adding a seventh unrelated concern to it is the path
 of least resistance, not obviously the right call.
 
 ---
@@ -872,6 +874,22 @@ argument mode.
    (`compileToMsilWithVersion`, `compileToNativeWithFlags`) so B3 and B4 do not
    re-derive this plumbing. No user-visible behaviour; verified by call-site
    inspection.
+
+**Status (D-progress-804).** Slices 1 and 2 shipped as surveyed above:
+`pipeParseAndErase` takes the `label` parameter directly (no separate
+`gate("", …)` bypass to fix — the label threads straight through), and
+JVM `SourceFile` is keyed by package name off a `pkgPathByName` map
+built once each project package's own `package` declaration is known,
+exactly the refinement this section called out over the plain
+"sibling parameter" phrasing. Slice 3 (multi-file) is still open — see
+§9.5's "correct by construction" recommendation, not yet attempted;
+slice 4 (MSIL/native path confirmation) is now fully satisfied for
+MSIL, JVM, and native — `compileToNativeWithFlags` takes a `path: in
+String` parameter and threads it into `pipeParseAndErase(source,
+"native", noFeatures, noFeatures, nativeDefines, path)` (verified by
+`source_path_diagnostics_self_test.l`'s native-build test case), so
+`EmitRequest.path` reaches every backend's parse-phase diagnostics
+with no re-plumbing needed when B3/B4 codegen starts consuming it.
 
 ---
 

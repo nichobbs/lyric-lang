@@ -10,6 +10,7 @@ import Std.Collections
 import Std.String
 import Lyric.Parser
 import Lyric.BareFuncRef as BareFuncRef
+import Lyric.ModeChecker
 import Jvm.Classfile
 import Jvm.Lowering
 import Jvm.AutoFfi
@@ -96,6 +97,7 @@ func makeFuncCtx(
     scopeBase = 0,
     scopeUndo = newList(),
     ctorExpectStack = newList(),
+    ctorExpectClassStack = newList(),
     aliasTargets = aliasTargets,
     unsignedVars = newMap(),
     unsignedUndo = newList(),
@@ -149,6 +151,7 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     scopeBase = ctx.scopeBase,
     scopeUndo = ctx.scopeUndo,
     ctorExpectStack = ctx.ctorExpectStack,
+    ctorExpectClassStack = ctx.ctorExpectClassStack,
     aliasTargets = ctx.aliasTargets,
     unsignedVars = ctx.unsignedVars,
     unsignedUndo = ctx.unsignedUndo,
@@ -223,6 +226,7 @@ func makeFuncCtxForGenerator(
     scopeBase = 0,
     scopeUndo = newList(),
     ctorExpectStack = newList(),
+    ctorExpectClassStack = newList(),
     // #6393: a generator body has no reachable file-scoped alias table at
     // this call site — out of scope for now (see `FuncCtx.aliasTargets`).
     aliasTargets = newMap(),
@@ -301,6 +305,7 @@ func makeFuncCtxInstance(
     scopeBase = 0,
     scopeUndo = newList(),
     ctorExpectStack = newList(),
+    ctorExpectClassStack = newList(),
     // #6393: an instance-method body (protected-type entry / record method /
     // impl method) has no reachable file-scoped alias table at this call
     // site — out of scope for now (see `FuncCtx.aliasTargets`).
@@ -972,7 +977,19 @@ pub func lowerFunc(
                   // mode `lowerBlock` here popped the tail, leaving the stack empty
                   // for the synthesised `ireturn` (VerifyError: operand stack
                   // underflow).
+                  // #6735: seed the enum-hint expect-stack from this
+                  // function's own declared return type before lowering
+                  // the implicit tail-return expression, exactly like
+                  // `SReturn` already does (05_stmts.l) — an implicit
+                  // bare-case tail return (`func mk(): T.Level { Debug }`)
+                  // is otherwise resolved with no expectation hint at all,
+                  // falling through to the current-package/bare tiers and
+                  // risking the same wrong-same-name-case resolution the
+                  // #6728 CrossHintA/CrossHintB fix closed for the
+                  // call-argument and pattern-match positions.
+                  pushCtorExpect(ctx, retTy)
                   val tailTy = lowerBlockExpr(ctx, insns, block)
+                  popCtorExpect(ctx)
                   // `try { … } finally { … }` in tail position now correctly
                   // propagates the try/catch result through the finally block
                   // via `lowerTryCatchFinallyExpr` (#2043; previously fell back
@@ -1009,7 +1026,11 @@ pub func lowerFunc(
               }
             }
             case FBExpr(e) -> {
+              // #6735: same enum-hint seeding as the FBBlock tail-return
+              // path above, for the `func f(): T = <expr>` body form.
+              pushCtorExpect(ctx, retTy)
               val ty = lowerExpr(ctx, insns, e)
+              popCtorExpect(ctx)
               // A `func f(): T = <Never-typed call>` body reports `JVoid`
               // (`Never` erases to `JVoid` same as `Unit`, #5378/#5651) with
               // nothing left on the operand stack; `emitReturnArrayCoerced`
@@ -1246,6 +1267,13 @@ pub func lowerRecord(
   // in-package class `<pkgName>/Handler` (`NoClassDefFoundError` at link
   // time).
   aliasTargets: in Map[String, TypeExpr],
+  // #6596: field NAMES the whole-build write-safety audit found written
+  // through a shape V0015 doesn't resolve — see `Msil.Codegen.lowerRecordMsil`'s
+  // matching comment and `Lyric.ModeChecker.computeFieldLockSafetyForBuild`'s
+  // doc comment for the full rationale.  Empty when the caller never ran the
+  // audit, so an un-audited caller locks every non-`var` field exactly as
+  // before this fix.
+  unsafeFieldLockNames: in Map[String, Bool],
 ): LRecord {
   val className = pkgName + "/" + decl.name
   // Generic type params erase to `Object` (docs/44 M-1 / Q-J001) so a `T`-typed
@@ -1257,10 +1285,23 @@ pub func lowerRecord(
   while i < decl.members.count {
     match decl.members[i] {
       case RMField(f) -> {
+        // A non-`var` field (`FieldDecl.isMutable == false`) additionally gets
+        // ACC_FINAL (0x0010, issue #1815 part 2a): the JVM verifier then
+        // rejects any `putfield` outside this class's own `<init>`,
+        // backstopping the mode checker's V0015 diagnostic at the bytecode
+        // level.  See the MSIL twin (`Msil.Codegen.lowerRecordMsil`'s
+        // `RMField` arm) for the full safety rationale (D-progress-706
+        // part 2b widened V0015 + added `var` to every genuinely-mutated
+        // `inout`-threaded field first).  #6596: a field the whole-build
+        // write-safety audit could not vouch for (a write shape V0015 can't
+        // resolve) is also left unlocked, rather than risk emitting a
+        // `putfield` the JVM verifier rejects with `IllegalAccessError`.
+        val skipLock = f.isMutable or unsafeFieldLockNames.containsKey(f.name)
+        val recordFieldFlags = if skipLock { 0x0001 } else { 0x0001 + 0x0010 }
+        // public [+ final]
         fields.add(
           LField(
-            flags = 0x0001,
-            // public
+            flags = recordFieldFlags,
             name = f.name,
             fieldType = typeExprToJvmErasedExtern(
               BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty),
@@ -1695,7 +1736,9 @@ func lowerImplMethod(
 ): LFunc {
   val body = match fn.body {
     case Some(b) -> b
-    case None -> panic("lowerImplMethod: impl method has no body — interface-only declaration reached codegen")
+    case None -> panic(
+      "lowerImplMethod: impl method has no body — interface-only declaration reached codegen"
+    )
   }
   // extern-resolving: an `impl <ExternInterface> for X` method returning an
   // extern-typed value (e.g. `Bool` from a JDK interface method, or another
@@ -1769,9 +1812,27 @@ func buildProtected(
     match decl.members[mi] {
       case PMField(pf) -> {
         match pf {
-          case PFVar(name, ty, _, _, _, _) -> fields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvmExtern(ty, pkgName, externTypes)))
-          case PFLet(name, ty, _, _, _, _) -> fields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvmExtern(ty, pkgName, externTypes)))
-          case PFImmutable(f) -> fields.add(LField(flags = 0x0001, name = f.name, fieldType = typeExprToJvmExtern(f.ty, pkgName, externTypes)))
+          case PFVar(name, ty, _, _, _, _) -> fields.add(
+            LField(
+              flags = 0x0001,
+              name = name,
+              fieldType = typeExprToJvmExtern(ty, pkgName, externTypes)
+            )
+          )
+          case PFLet(name, ty, _, _, _, _) -> fields.add(
+            LField(
+              flags = 0x0001,
+              name = name,
+              fieldType = typeExprToJvmExtern(ty, pkgName, externTypes)
+            )
+          )
+          case PFImmutable(f) -> fields.add(
+            LField(
+              flags = 0x0001,
+              name = f.name,
+              fieldType = typeExprToJvmExtern(f.ty, pkgName, externTypes)
+            )
+          )
         }
       }
       case PMEntry(ed) -> {
@@ -1942,7 +2003,10 @@ func wireStmtDepsJvm(s: in Statement, knownNames: in Map[String, Bool], acc: in 
       match binding {
         case LBVal(_, _, init) -> wireExprDepsJvm(init, knownNames, acc)
         case LBLet(_, _, init) -> wireExprDepsJvm(init, knownNames, acc)
-        case LBVar(_, _, initOpt) -> match initOpt { case Some(init) -> wireExprDepsJvm(init, knownNames, acc); case None -> () }
+        case LBVar(_, _, initOpt) -> match initOpt {
+          case Some(init) -> wireExprDepsJvm(init, knownNames, acc)
+          case None -> ()
+        }
       }
     }
     case SAssign(target, _, value) -> {
@@ -2819,7 +2883,12 @@ func typeExprToJvmClass(te: in TypeExpr, pkgName: in String): String {
         segmentsToJvmPath(path.segments)
       }
     }
-    case _ -> panic("Jvm.Codegen: `impl Y for X` target is not a TRef (path) — got an " + "unsupported TypeExpr shape; refusing to emit an unbindable JVM " + "class name.  Add a TypeExpr arm to typeExprToJvmClass if a new " + "impl-target shape is intended.")
+    case _ -> panic(
+      "Jvm.Codegen: `impl Y for X` target is not a TRef (path) — got an " +
+        "unsupported TypeExpr shape; refusing to emit an unbindable JVM " +
+        "class name.  Add a TypeExpr arm to typeExprToJvmClass if a new " +
+        "impl-target shape is intended."
+    )
   }
 }
 
@@ -3598,7 +3667,7 @@ pub func collectFileSigsSeeded(
       }
       case IEnum(decl) -> {
         // Enum-case value/pattern resolution (docs/59 §4.4): register each
-        // variant under the type-scoped `enum:<Enum>.<Case>` key and the bare
+        // variant under the type-scoped `enumty:<Enum>.<Case>` key and the bare
         // `enumcase:<Case>` key (plus its `<owner>/`-qualified form so the
         // bridge's import-aware overlay re-points the bare key per file), sig
         // owner = the declaring enum's JVM class.  Mirrors the MSIL
@@ -3606,8 +3675,8 @@ pub func collectFileSigsSeeded(
         // `public static final` singleton field `lowerEnum` emits, read via
         // `getstatic` and pattern-tested by reference identity.
         val enumCls = owner + "/" + decl.name
-        // Package-qualified key (`enum:<dotted package>.<Case>`, e.g.
-        // "enum:Std.Http.GET"), alongside the type-scoped `enum:<Enum>.<Case>`
+        // Package-qualified key (`enumpkg:<dotted package>.<Case>`, e.g.
+        // "enumpkg:Std.Http.GET"), alongside the type-scoped `enumty:<Enum>.<Case>`
         // key above: Lyric enum cases are conventionally referenced through
         // their declaring PACKAGE, not an explicit `<EnumType>.` segment
         // (`Std.Http.GET`, not `Std.Http.HttpMethod.GET`) — mirrors MSIL's
@@ -3636,13 +3705,51 @@ pub func collectFileSigsSeeded(
             // nullary case reference is `EMember`, never `ECall`.
             retIsUnsigned = false
           )
-          val etkey = "enum:" + decl.name + "." + ecn
+          // #6683: each tier below gets its OWN key prefix (`enumty:` /
+          // `enumfull:` / `enumpkg:`) so a type-scoped, package-scoped, or
+          // (package, TYPE)-scoped key can never alias one another just
+          // because `dottedPkg`/`decl.name` are ordinary user-controlled
+          // identifiers whose concatenation happens to collide (e.g.
+          // package `Std.Http` declaring `enum Status { case Ok }` — old
+          // epkey "enum:Std.Http.Ok" — versus package `Std` declaring
+          // `enum Http { case Ok }` — old efkey "enum:Std.Http.Ok" too).
+          // Sharing one flat "enum:" namespace meant the `not containsKey`
+          // guard on one tier could silently skip registering an unrelated
+          // entry in a DIFFERENT tier that happened to produce the same
+          // string, with no poison/ambiguity detection at all (the #6640
+          // poison mechanism only fires on a same-KEY-same-tier conflict).
+          val etkey = "enumty:" + decl.name + "." + ecn
           if not into.containsKey(etkey) {
             into.add(etkey, esig)
           }
-          val epkey = "enum:" + dottedPkg + "." + ecn
-          if not into.containsKey(epkey) {
-            into.add(epkey, esig)
+          // #6640: the package-scoped key below is (package, case) only —
+          // it omits the enum's own TYPE name — so two DIFFERENT enums
+          // declared in the SAME package sharing a case name (e.g. `enum
+          // Status { case Ok }` and `enum Health { case Ok }`) collide on
+          // it, and the `not containsKey` guard silently kept whichever
+          // enum registered first. Register the genuinely unambiguous
+          // (package, TYPE, case)-scoped key first — always safe, since
+          // `enumCls` bakes in the exact declaring class, so it can never
+          // collide with another enum's entry — then guard the
+          // (package, case)-only key: if it already names a DIFFERENT
+          // enum, poison it (`enumVariantClassByPkg` refuses a poisoned
+          // key) instead of leaving it pointed at whichever enum
+          // registered first.
+          val efkey = "enumfull:" + dottedPkg + "." + decl.name + "." + ecn
+          if not into.containsKey(efkey) {
+            into.add(efkey, esig)
+          }
+          val epkey = "enumpkg:" + dottedPkg + "." + ecn
+          match mapGet(into, epkey) {
+            case Some(existingSig) -> {
+              if existingSig.owner != enumCls {
+                val ambigKey = "enumpkgambig:" + dottedPkg + "." + ecn
+                if not into.containsKey(ambigKey) {
+                  into.add(ambigKey, esig)
+                }
+              }
+            }
+            case None -> into.add(epkey, esig)
           }
           val ebkey = "enumcase:" + ecn
           if not into.containsKey(ebkey) {
@@ -4052,8 +4159,32 @@ pub func collectFileCasesExtern(
             var fi = 0
             while fi < c.fields.count {
               match c.fields[fi] {
-                case UFNamed(name, ty, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmErasedExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty), owner, tps, externTypes), paramIdx = typeParamIndexOf(ty, tps), dflt = None))
-                case UFPos(ty, _) -> flds.add(JvmCaseField(name = "field" + toString(fi), ty = typeExprToJvmErasedExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty), owner, tps, externTypes), paramIdx = typeParamIndexOf(ty, tps), dflt = None))
+                case UFNamed(name, ty, _) -> flds.add(
+                  JvmCaseField(
+                    name = name,
+                    ty = typeExprToJvmErasedExtern(
+                      BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty),
+                      owner,
+                      tps,
+                      externTypes
+                    ),
+                    paramIdx = typeParamIndexOf(ty, tps),
+                    dflt = None
+                  )
+                )
+                case UFPos(ty, _) -> flds.add(
+                  JvmCaseField(
+                    name = "field" + toString(fi),
+                    ty = typeExprToJvmErasedExtern(
+                      BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty),
+                      owner,
+                      tps,
+                      externTypes
+                    ),
+                    paramIdx = typeParamIndexOf(ty, tps),
+                    dflt = None
+                  )
+                )
               }
               fi = fi + 1
             }
@@ -4070,7 +4201,19 @@ pub func collectFileCasesExtern(
           var mi = 0
           while mi < decl.members.count {
             match decl.members[mi] {
-              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty), owner, tps, externTypes), paramIdx = typeParamIndexOf(f.ty, tps), dflt = f.dflt))
+              case RMField(f) -> flds.add(
+                JvmCaseField(
+                  name = f.name,
+                  ty = typeExprToJvmErasedExtern(
+                    BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty),
+                    owner,
+                    tps,
+                    externTypes
+                  ),
+                  paramIdx = typeParamIndexOf(f.ty, tps),
+                  dflt = f.dflt
+                )
+              )
               case _ -> {
               }
             }
@@ -4093,7 +4236,19 @@ pub func collectFileCasesExtern(
           var mi = 0
           while mi < decl.members.count {
             match decl.members[mi] {
-              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty), owner, tps, externTypes), paramIdx = typeParamIndexOf(f.ty, tps), dflt = f.dflt))
+              case RMField(f) -> flds.add(
+                JvmCaseField(
+                  name = f.name,
+                  ty = typeExprToJvmErasedExtern(
+                    BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty),
+                    owner,
+                    tps,
+                    externTypes
+                  ),
+                  paramIdx = typeParamIndexOf(f.ty, tps),
+                  dflt = f.dflt
+                )
+              )
               case _ -> {
               }
             }
@@ -4115,9 +4270,30 @@ pub func collectFileCasesExtern(
             match decl.members[mi] {
               case PMField(pf) -> {
                 match pf {
-                  case PFVar(name, ty, init, _, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes), paramIdx = -1, dflt = init))
-                  case PFLet(name, ty, init, _, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmExtern(ty, owner, externTypes), paramIdx = -1, dflt = init))
-                  case PFImmutable(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmExtern(f.ty, owner, externTypes), paramIdx = -1, dflt = f.dflt))
+                  case PFVar(name, ty, init, _, _, _) -> flds.add(
+                    JvmCaseField(
+                      name = name,
+                      ty = typeExprToJvmExtern(ty, owner, externTypes),
+                      paramIdx = -1,
+                      dflt = init
+                    )
+                  )
+                  case PFLet(name, ty, init, _, _, _) -> flds.add(
+                    JvmCaseField(
+                      name = name,
+                      ty = typeExprToJvmExtern(ty, owner, externTypes),
+                      paramIdx = -1,
+                      dflt = init
+                    )
+                  )
+                  case PFImmutable(f) -> flds.add(
+                    JvmCaseField(
+                      name = f.name,
+                      ty = typeExprToJvmExtern(f.ty, owner, externTypes),
+                      paramIdx = -1,
+                      dflt = f.dflt
+                    )
+                  )
                 }
               }
               case _ -> ()
@@ -4144,7 +4320,14 @@ pub func collectFileCasesExtern(
                 // registers as a nonexistent `<pkg>/<Alias>` class, and every
                 // construction site checkcasts to it — NoClassDefFoundError at
                 // first call (the Std.Regex-on-JVM failure shape).
-                case OMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErasedExtern(f.ty, owner, genericParamNames(decl.generics), externTypes), paramIdx = -1, dflt = f.dflt))
+                case OMField(f) -> flds.add(
+                  JvmCaseField(
+                    name = f.name,
+                    ty = typeExprToJvmErasedExtern(f.ty, owner, genericParamNames(decl.generics), externTypes),
+                    paramIdx = -1,
+                    dflt = f.dflt
+                  )
+                )
                 case OMInvariant(_) -> ()
               }
               mi = mi + 1
@@ -5412,7 +5595,13 @@ pub func codegenPackage(file: in SourceFile): LPackage {
   collectFileProjectables(file, allProjFqns)
   registerProjectableViews(file, allProjFqns, cases, sigs)
   val autoFfi = buildAutoFfiCtx()
-  codegenPackageWithSigs(file, sigs, cases, ctors, autoFfi, allProjFqns)
+  // #6596: single-file entry point, so its "whole build" is just this file —
+  // see `Lyric.ModeChecker.computeFieldLockSafetyForBuild`'s doc comment.
+  val singleFileForAudit: List[SourceFile] = newList()
+  singleFileForAudit.add(file)
+  val unsafeFieldLockNames: Map[String, Bool] = newMap()
+  computeFieldLockSafetyForBuild(singleFileForAudit, unsafeFieldLockNames)
+  codegenPackageWithSigs(file, sigs, cases, ctors, autoFfi, allProjFqns, unsafeFieldLockNames)
 }
 
 // Codegen a package against a pre-built call registry `funcSigs` spanning the
@@ -5426,9 +5615,10 @@ pub func codegenPackageWithSigs(
   ctors: in Map[String, String],
   autoFfi: in AutoFfiCtx,
   allProjFqns: in Map[String, Bool],
+  unsafeFieldLockNames: in Map[String, Bool],
 ): LPackage {
   val emptySeed: Map[String, String] = newMap()
-  codegenPackageWithSigsSeeded(file, funcSigs, caseFields, ctors, autoFfi, allProjFqns, emptySeed)
+  codegenPackageWithSigsSeeded(file, funcSigs, caseFields, ctors, autoFfi, allProjFqns, emptySeed, unsafeFieldLockNames)
 }
 
 // As `codegenPackageWithSigs`, but resolving extern-type aliases against the
@@ -5446,6 +5636,10 @@ pub func codegenPackageWithSigsSeeded(
   // independent — the JVM counterpart of the MSIL `allProjFqns`.
   allProjFqns: in Map[String, Bool],
   externSeed: in Map[String, String],
+  // #6596: see `lowerRecord`'s matching parameter doc comment.  Defaults to
+  // an empty map at every existing caller below except the ones this fix
+  // updates to pass a real, whole-build-computed set.
+  unsafeFieldLockNames: in Map[String, Bool],
 ): LPackage {
   val pkgName = segmentsToJvmPath(file.packageDecl.path.segments)
   val funcsClass = pkgName
@@ -5696,7 +5890,8 @@ pub func codegenPackageWithSigsSeeded(
           closureAcc,
           usesLyricCount,
           importsStdString,
-          aliasTargets
+          aliasTargets,
+          unsafeFieldLockNames
         )
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
@@ -5754,7 +5949,8 @@ pub func codegenPackageWithSigsSeeded(
           closureAcc,
           usesLyricCount,
           importsStdString,
-          aliasTargets
+          aliasTargets,
+          unsafeFieldLockNames
         )
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
@@ -5856,7 +6052,17 @@ pub func codegenPackageWithSigsSeeded(
                 // Extern-alias + generic-erasure aware so the emitted field /
                 // `$<name>()` accessor descriptor names the real JVM class
                 // (matches the `collectFileCasesExtern` opaque arm).
-                case OMField(f) -> oFields.add(LOpaqueField(name = f.name, fieldType = typeExprToJvmErasedExtern(f.ty, pkgName, genericParamNames(decl.generics), externTypes)))
+                case OMField(f) -> oFields.add(
+                  LOpaqueField(
+                    name = f.name,
+                    fieldType = typeExprToJvmErasedExtern(
+                      f.ty,
+                      pkgName,
+                      genericParamNames(decl.generics),
+                      externTypes
+                    )
+                  )
+                )
                 case OMInvariant(_) -> ()
               }
               ofi = ofi + 1
@@ -6045,7 +6251,18 @@ pub func codegenPackageWithSigsSeeded(
                 case Some(defExpr) -> {
                   val lowered = match defExpr.kind {
                     case ELiteral(lit) -> emitConfigDefaultLiteralJvm(fTy, lit, false, defaultInsnsList)
-                    case EPrefix(op, inner) -> match op { case PreNeg -> match inner.kind { case ELiteral(lit2) -> emitConfigDefaultLiteralJvm(fTy, lit2, true, defaultInsnsList); case _ -> false }; case _ -> false }
+                    case EPrefix(op, inner) -> match op {
+                      case PreNeg -> match inner.kind {
+                        case ELiteral(lit2) -> emitConfigDefaultLiteralJvm(
+                          fTy,
+                          lit2,
+                          true,
+                          defaultInsnsList
+                        )
+                        case _ -> false
+                      }
+                      case _ -> false
+                    }
                     case _ -> false
                   }
                   if not lowered {
@@ -6111,8 +6328,12 @@ pub func codegenPackageWithSigsSeeded(
     // panics rather than J001.  See follow-up to widen
     // mainReturns2SlotType to the resolved slot type.
     match mainRet {
-      case JLong -> panic("Jvm.Codegen: `func main(): Long` is not supported on the JVM target — wrap the result in `Int` or `Unit`")
-      case JDouble -> panic("Jvm.Codegen: `func main(): Double` is not supported on the JVM target — wrap the result in `Int` or `Unit`")
+      case JLong -> panic(
+        "Jvm.Codegen: `func main(): Long` is not supported on the JVM target — wrap the result in `Int` or `Unit`"
+      )
+      case JDouble -> panic(
+        "Jvm.Codegen: `func main(): Double` is not supported on the JVM target — wrap the result in `Int` or `Unit`"
+      )
       case _ -> ()
     }
     val jvmMainParams: List[JvmType] = newList()

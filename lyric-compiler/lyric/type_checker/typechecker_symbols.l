@@ -488,6 +488,28 @@ pub func symTableTryFindAll(tbl: in SymbolTable, name: in String): List[Symbol] 
 // the newest candidate in each tier, returning early on a tier-1 hit.  With no
 // scope set every symbol's `originPackage` is empty, so only tier 3 fires —
 // byte-for-byte the historical behaviour.
+//
+// #6287 (reject-unimported resolution): a tier-3 restriction to
+// package-less (`originPackage == ""`) symbols was ATTEMPTED and reverted.
+// The stdlib's kernel/host re-export idiom (`Std.Collections` importing
+// `Std.CollectionsHost`, which declares `List`/`Map`) would need
+// `scopeImports` widened to its transitive closure to keep resolving under
+// such a restriction — but a full stdlib+ecosystem audit build surfaced a
+// second, much broader reliance even that widening does not cover:
+// `Option`/`Result` (`Std.Core`) are referenced across wide swaths of
+// `lyric-stdlib/std/` and the ecosystem with NO `import Std.Core` at all
+// (no explicit or transitive import path), i.e. treated as an implicit
+// prelude that predates any scoped-resolution tiering. Tightening tier 3 to
+// reject that is not a bounded, auditable fix for this issue — it would
+// require either auditing/adding `import Std.Core` across an unknown-sized
+// slice of the tree, or inventing a real prelude-injection mechanism.
+// Tier 3 stays fully permissive, unchanged; only the bare-name AMBIGUITY
+// diagnostic (`checkBareNameAmbiguity`, scoped to tier-2 imported-package
+// matches only, which does not touch tier 3 at all) ships from this issue's
+// "reject unimported" investigation. Tracked as a follow-up in #6703 (a
+// concrete two-option remediation plan: audit+widen imports tree-wide, or
+// a scoped Std.Core prelude exception). See docs/03-decision-log.md for
+// the full writeup.
 pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol] {
   val curPkg = symTableScopePkg(tbl)
   val hasScope = curPkg.length > 0
@@ -524,4 +546,57 @@ pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol
     case Some(_) -> best2
     case None -> best3
   }
+}
+
+// True when `sym` is reachable from another package (`pub` or `internal`) —
+// mirrors the visibility gate `checkImportedVisibility` (T0097) already
+// enforces post-resolution; a package-private symbol in some other imported
+// package was never a *legal* candidate, so it must not count toward an
+// ambiguity diagnosis either (#6287).
+func symIsCrossPackageVisible(sym: in Symbol): Bool {
+  match sym.visibility {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+// The distinct imported packages (in encounter order, each listed once) that
+// each contribute a cross-package-visible symbol named `name` under the
+// CURRENT resolution scope (#6287 — bare-name ambiguity).  Length 0 or 1
+// means `name` is not ambiguous; 2+ means a bare reference to `name` cannot
+// tell which package's declaration is meant and must be qualified.  Only
+// examines tier-2 candidates (an imported package match) — the current
+// package's own declaration (tier 1) always wins outright and is never
+// ambiguous with anything.
+pub func symTableAmbiguousImportPackages(tbl: in SymbolTable, name: in String): List[String] {
+  val pkgs: List[String] = newList()
+  if tbl.scopeImports.count == 0 {
+    return pkgs
+  }
+  val curPkg = symTableScopePkg(tbl)
+  // Tier 1 (current package) always wins outright over any import, so a
+  // same-named declaration in the CURRENT package makes any cross-import
+  // collision moot — it is never reachable via bare-name resolution.
+  if curPkg.length > 0 {
+    var ci = 0
+    while ci < tbl.symbols.count {
+      if tbl.symbols[ci].name == name and tbl.symbols[ci].originPackage == curPkg {
+        return pkgs
+      }
+      ci = ci + 1
+    }
+  }
+  val seen: Map[String, Bool] = newMap()
+  var i = 0
+  while i < tbl.symbols.count {
+    val s = tbl.symbols[i]
+    if s.name == name and s.originPackage != curPkg and symIsCrossPackageVisible(s) and symTableScopeAllows(tbl, s.originPackage) {
+      if not seen.containsKey(s.originPackage) {
+        seen.add(s.originPackage, true)
+        pkgs.add(s.originPackage)
+      }
+    }
+    i = i + 1
+  }
+  pkgs
 }

@@ -114,7 +114,8 @@ func cmdCheck(argv: in slice[String]): Int {
       outputPath = outPath,
       target = checkTarget,
       packageVersion = "",
-      defines = newList()
+      defines = newList(),
+      path = sourcePath
     )
     val result = Emitter.emit(req)
     var hadError = false

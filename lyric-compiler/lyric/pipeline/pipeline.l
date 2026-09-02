@@ -94,15 +94,24 @@ func gate(pkgLabel: in String, diags: in List[Diagnostic]): Bool {
 /// `@cfg(feature = "X")`-gated items behave identically on single-file and
 /// manifest builds (docs/59 §5.4, closed in D-progress-642).  Both passes
 /// gate fatally.  Returns the erased file, or None after reporting.
+///
+/// `label` prefixes every diagnostic from this call (docs/63 §9.7 slice 1):
+/// the real on-disk path for a single-file build, the owning package name
+/// (or "" when genuinely unknown, e.g. a multi-file package pre-merge) for
+/// a project build. Previously every parse-phase diagnostic was reported
+/// via a hardcoded `gate("", …)`, bypassing the caller's label entirely —
+/// a syntax error printed with no file attribution at all, even for a
+/// single-file build.
 pub func pipeParseAndErase(
   source: in String,
   targetName: in String,
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
   defines: in List[BD.Define],
+  label: in String,
 ): Option[SourceFile] {
   val parseResult = parse(source)
-  if gate("", parseResult.diagnostics) {
+  if gate(label, parseResult.diagnostics) {
     return None
   }
   // Auto-inject the well-known `target` define (docs/60 §3.3) as a fallback
@@ -121,11 +130,11 @@ pub func pipeParseAndErase(
   // predicates cannot observe a define. Both are pure SourceFile -> SourceFile
   // AST transforms; substitution only ever inserts String-literal nodes.
   val bdRes = BD.applyBuildDefines(definesWk, parseResult.file)
-  if gate("", bdRes.diagnostics) {
+  if gate(label, bdRes.diagnostics) {
     return None
   }
   val cfgRes = Cfg.applyCfgErasure(Cfg.withTargetFeature(activeFeatures, targetName), declaredFeatures, bdRes.file)
-  if gate("", cfgRes.diagnostics) {
+  if gate(label, cfgRes.diagnostics) {
     return None
   }
   // Std.BuildInfo synthesis (docs/60 §9.2): if the file imports Std.BuildInfo,

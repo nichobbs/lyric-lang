@@ -8,6 +8,18 @@
 //! and identical on MSIL and JVM: `val t = 7; if c { val t = 99 }; t` returned
 //! `99`, not `7`.
 //!
+//!
+//! Cases 21–22 (#6595, MSIL only) cover the same class of defect in a
+//! DIFFERENT per-block-scope map: `FuncCtx.varEnumTypes` (the enum-typed-
+//! local bookkeeping added by #5995 for bare-case `match` scrutinees).
+//! `varEnumTypes.add` was called unguarded, so re-binding a name already
+//! tracked there (legal shadowing) crashed with `Map.add`'s duplicate-key
+//! `ArgumentException`; and even once guarded, `varEnumTypes` was never
+//! wired into the `scopeUndoMsil` log the other per-scope maps use, so an
+//! inner block's enum-typed shadow of a DIFFERENT enum type permanently
+//! leaked past the block's exit, corrupting a later bare `match` against the
+//! OUTER binding.
+//!
 //! Run by the native `lyric test` on BOTH targets (like `bitwise_self_test.l`):
 //!   lyric test --target dotnet lyric-compiler/lyric/block_shadow_self_test.l
 //!   lyric test --target jvm    lyric-compiler/lyric/block_shadow_self_test.l
@@ -404,4 +416,64 @@ test "catch binding shadow of the same frame type leaves the outer binding intac
 
 test "catch binding shadow of a different frame type leaves the outer binding intact" {
   assertEqualInt(catchBindShadowDifferentType(), 42, "catchBindShadowDifferentType")
+}
+
+// 21. #6595: a nested block's enum-typed shadow of an outer binding of the
+//     SAME enum type — the duplicate-key crash repro.  Before the fix,
+//     `fctx.varEnumTypes.add("a", "Color")` was called unguarded for both the
+//     outer and the inner `val a: Color = …` binding, and `Map.add` throws
+//     `ArgumentException` on the duplicate key (same defect class as the
+//     weaver's #1296 duplicate-key crash).  Legal shadowing (#5191) must
+//     compile; a bare `match a { … }` must resolve against `Color` both
+//     inside the block and after it exits.
+enum Color {
+  case Red
+  case Blue
+}
+
+func colorShadowSameType(): String {
+  val a: Color = Red
+  if cond(1) {
+    val a: Color = Blue
+    val inner = match a { case Red -> "red"; case Blue -> "blue" }
+    assertEqual(inner, "blue", "inner a resolves as Blue")
+  }
+  match a {
+    case Red -> "red"
+    case Blue -> "blue"
+  }
+}
+
+// 22. #6595: a nested block's enum-typed shadow of an outer binding of a
+//     DIFFERENT enum type — the scope-undo defect.  `varEnumTypes` was never
+//     registered with the scope-undo log the way `slots`/`types` are
+//     (`recordScopeUndoMsil` / `exitBlockScopeMsil`), so the inner shadow's
+//     `Frame` mapping for `a` permanently overwrote the outer `Color`
+//     mapping past the inner block's exit: a bare `match a { case Red -> }`
+//     after the block would try to resolve `Red`/`Blue` against `Frame`'s
+//     case table instead of `Color`'s.
+enum Frame {
+  case Open
+  case Closed
+}
+
+func frameShadowDifferentType(): String {
+  val a: Color = Blue
+  if cond(1) {
+    val a: Frame = Open
+    val inner = match a { case Open -> "open"; case Closed -> "closed" }
+    assertEqual(inner, "open", "inner a resolves against Frame")
+  }
+  match a {
+    case Red -> "red"
+    case Blue -> "blue"
+  }
+}
+
+test "enum-typed shadow of the same enum type compiles and resolves both bindings" {
+  assertEqual(colorShadowSameType(), "red", "colorShadowSameType")
+}
+
+test "enum-typed shadow of a different enum type restores the outer enum's resolution on block exit" {
+  assertEqual(frameShadowDifferentType(), "blue", "frameShadowDifferentType")
 }

@@ -279,6 +279,7 @@ func collectDepTemplateSources(
               while pki < proj.packages.count {
                 val pkgEntry = proj.packages[pki]
                 val srcList: List[String] = newList()
+                val pathList: List[String] = newList()
                 if pkgEntry.paths.count > 0 {
                   var fi = 0
                   while fi < pkgEntry.paths.count {
@@ -288,7 +289,10 @@ func collectDepTemplateSources(
                       Path.join(depDir, pkgEntry.paths[fi])
                     }
                     match File.readText(srcPath) {
-                      case Ok(srcText) -> srcList.add(srcText)
+                      case Ok(srcText) -> {
+                        srcList.add(srcText)
+                        pathList.add(srcPath)
+                      }
                       case Err(e) -> printErr("build: workspace dep '" + depName + "': cannot read source '" + srcPath + "': " + IOError.message(e))
                     }
                     fi += 1
@@ -296,12 +300,15 @@ func collectDepTemplateSources(
                 } else {
                   val srcPath = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(depDir, pkgEntry.path) }
                   match File.readText(srcPath) {
-                    case Ok(srcText) -> srcList.add(srcText)
+                    case Ok(srcText) -> {
+                      srcList.add(srcText)
+                      pathList.add(srcPath)
+                    }
                     case Err(e) -> printErr("build: workspace dep '" + depName + "': cannot read source '" + srcPath + "': " + IOError.message(e))
                   }
                 }
                 if srcList.count > 0 {
-                  depTemplatePkgsList.add(ProjectPackage(name = pkgEntry.name, sources = srcList))
+                  depTemplatePkgsList.add(ProjectPackage(name = pkgEntry.name, sources = srcList, paths = pathList))
                 }
                 pki += 1
               }
@@ -785,12 +792,16 @@ pub func resolveManifestDependencies(
                       while pki < proj.packages.count {
                         val pkgEntry = proj.packages[pki]
                         val srcList: List[String] = newList()
+                        val pathList: List[String] = newList()
                         if pkgEntry.paths.count > 0 {
                           var fi = 0
                           while fi < pkgEntry.paths.count {
                             val srcPath = Path.join(depDir, pkgEntry.paths[fi])
                             match File.readText(srcPath) {
-                              case Ok(srcText) -> srcList.add(srcText)
+                              case Ok(srcText) -> {
+                                srcList.add(srcText)
+                                pathList.add(srcPath)
+                              }
                               case Err(e) -> {
                                 printErr("build: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
                                 if not dllMatters {
@@ -803,7 +814,10 @@ pub func resolveManifestDependencies(
                         } else {
                           val srcPath = Path.join(depDir, pkgEntry.path)
                           match File.readText(srcPath) {
-                            case Ok(srcText) -> srcList.add(srcText)
+                            case Ok(srcText) -> {
+                              srcList.add(srcText)
+                              pathList.add(srcPath)
+                            }
                             case Err(e) -> {
                               printErr("build: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
                               if not dllMatters {
@@ -813,7 +827,7 @@ pub func resolveManifestDependencies(
                           }
                         }
                         if srcList.count > 0 {
-                          depTemplatePkgsList.add(ProjectPackage(name = pkgEntry.name, sources = srcList))
+                          depTemplatePkgsList.add(ProjectPackage(name = pkgEntry.name, sources = srcList, paths = pathList))
                         }
                         pki += 1
                       }

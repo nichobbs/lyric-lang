@@ -943,6 +943,91 @@ pub func parsePattern(st: inout ParseState): Pattern {
 // ─────────────────────────────────────────────────────────────────────────────
 // Expressions — primary, postfix, prefix, binary precedence cascade.
 // ─────────────────────────────────────────────────────────────────────────────
+// Parses a sub-expression that is unambiguously delimited by its own
+// enclosing syntax — a call argument, a list/index element, a tuple or
+// parenthesised-group item, a string-interpolation hole, `old(...)`'s
+// operand, an `if`/`match`'s own cond/scrutinee/then-branch, or a match
+// arm's body — never by the arrow-sensitive guard/statement boundary that
+// `parseArrowSensitiveExpr`/`parseStatementLeadExpr` protect via
+// `suppressArrowLambda`. (Its statement-level counterpart,
+// `parseDelimitedStmt` below, covers the same class of caller-bounded
+// context for a `Statement` rather than an `Expr` — a block's own
+// statements, and a match arm's `return`/`throw`/`break`/`continue` body.)
+//
+// #5672: a global on/off `suppressArrowLambda` held for an entire retry
+// parse (the #5667/#5668 fix) correctly stops a trailing bare-paren-group
+// from swallowing the guard/statement's own `->`, but it also incorrectly
+// suppresses a LEGITIMATE nested lambda call argument reached along the
+// way (e.g. the `(v) -> v > 0` in `xs.any((v) -> v > 0) and (flag)`),
+// because `parsePrimaryExpr`'s `LParen` case reads the flag as a single
+// process-wide value with no notion of *where* in the expression it is.
+//
+// #6601: the same leak reaches any OTHER caller-bounded context too — not
+// just call-argument-shaped ones — e.g. a block's statements (`if flag {
+// val f = (x) -> x > 0; f(y) } else { false } and (flag) -> 1` as a guard:
+// the trailing `(flag)` swallows the arm's `->`, triggering a suppressed
+// retry, and without delimiting the block's own statements that suppression
+// wrongly reaches the legitimate `(x) -> x > 0` lambda inside `val f = …`).
+// `parseIfExpr`'s `cond`/ternary `thenExpr`, `parseMatchExpr`'s `scrutinee`,
+// and `parseMatchArmBody`'s bodies are the same shape: each stops at a
+// keyword/punct that is never a valid expression continuation (`then`/`{`
+// for `cond`; the mandatory `else` for `thenExpr`; `{` for `scrutinee`; the
+// arm separator/`}` for arm bodies), so none of them can themselves be the
+// tail-position paren-group an ancestor retry is suppressing. The ternary
+// `elseExpr` is the one exception left un-delimited on purpose — see the
+// comment at its call site in `parseIfExpr`.
+//
+// The fix: any recursive `parseExpr`/`parseStatement` call that parses
+// content the caller already bounds with its own terminator (a
+// `)`/`]`/`,`/`}`/keyword distinct from the guard/statement's `->`) is not
+// part of the ambiguity at all — the terminator resolves it regardless of
+// suppression — so entering such a context clears suppression for its
+// duration and restores the prior value afterward.  This scopes suppression
+// to genuine *tail* position (an unparenthesised operand reachable straight
+// from the guard/statement's start through binary/prefix operators only,
+// never through a bracketed/keyword-bounded sub-expression or statement)
+// without needing separate lookahead bookkeeping: the outer paren-group's
+// own reinterpretation decision (`parsePrimaryExpr`'s `LParen` case, `not
+// suppressArrowLambda` checks) already reads a `val` snapshotted at
+// function entry — before any nested `parseDelimitedExpr`/`parseDelimitedStmt`
+// call can mutate the live field — so clearing/restoring it around a
+// nested delimited parse never disturbs an enclosing tail-position
+// decision either.
+func parseDelimitedExpr(st: inout ParseState): Expr {
+  val saved = st.suppressArrowLambda
+  st.suppressArrowLambda = false
+  val e = parseExpr(st)
+  st.suppressArrowLambda = saved
+  e
+}
+
+// #6601: a block's statements sit in exactly the kind of caller-bounded
+// context `parseDelimitedExpr` already covers — each statement is
+// terminated by `TStmtEnd`/`;`/the block's own closing `}`, distinct from
+// any enclosing guard/statement's `->` — so a statement reached while an
+// OUTER `parseArrowSensitiveExpr`/`parseStatementLeadExpr` retry holds
+// `suppressArrowLambda` for its own tail-position ambiguity (e.g.
+// `if flag { val f = (x) -> x > 0; f(y) } else { false } and (flag) -> 1`
+// as a match-arm guard, where the trailing `(flag)` swallows the arm's
+// `->` and triggers the retry) must not have that suppression leak into a
+// LEGITIMATE nested lambda inside one of its own statements — the block's
+// `{`/`}` and each statement's own terminator resolve the block's content
+// regardless of an ancestor's suppression. Clearing/restoring around each
+// statement parse (mirroring `parseDelimitedExpr`) scopes suppression back
+// to genuine tail position the same way it already does for call
+// arguments/list items/tuple items/interpolation holes/`old(...)`. Any
+// arrow-sensitive construct nested inside the statement (a further guard,
+// or the statement's own `parseStatementLeadExpr`/SRule retry) manages its
+// own suppression save/restore independently, so clearing here can't
+// disturb it.
+func parseDelimitedStmt(st: inout ParseState): Statement {
+  val saved = st.suppressArrowLambda
+  st.suppressArrowLambda = false
+  val s = parseStatement(st)
+  st.suppressArrowLambda = saved
+  s
+}
+
 pub func parsePrimaryExpr(st: inout ParseState): Expr {
   // #5667/#5668: see the field doc on `ParseState.suppressArrowLambda` and
   // `parseArrowSensitiveExpr` for why this is a plain read, not a
@@ -1014,7 +1099,7 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
           }
           case TStringHoleStart -> {
             val _ = advance(st)
-            val inner = parseExpr(st)
+            val inner = parseDelimitedExpr(st)
             segs.add(ISExpr(expr = inner))
             match tryEatPunct(st, RBrace) {
               case Some(_) -> {
@@ -1075,7 +1160,7 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
                 mkExpr(ELiteral(lit = LUnit), joinSpans(tok.span, endTok.span))
               }
             } else {
-              val inner = parseExpr(st)
+              val inner = parseDelimitedExpr(st)
               if isPunct(peekToken(st), Comma) {
                 val items: List[Expr] = newList()
                 items.add(inner)
@@ -1084,7 +1169,7 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
                   if isPunct(peekToken(st), Comma) {
                     val _ = advance(st)
                     if not isPunct(peekToken(st), RParen) {
-                      items.add(parseExpr(st))
+                      items.add(parseDelimitedExpr(st))
                     }
                   } else {
                     keepGoing = false
@@ -1133,13 +1218,13 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
           val startTok = advance(st)
           val xs: List[Expr] = newList()
           if not isPunct(peekToken(st), RBracket) {
-            xs.add(parseExpr(st))
+            xs.add(parseDelimitedExpr(st))
             var keepGoing = true
             while keepGoing {
               if isPunct(peekToken(st), Comma) {
                 val _ = advance(st)
                 if not isPunct(peekToken(st), RBracket) {
-                  xs.add(parseExpr(st))
+                  xs.add(parseDelimitedExpr(st))
                 }
               } else {
                 keepGoing = false
@@ -1219,7 +1304,7 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
               emitErr(st, "P0190", "expected '(' after 'old'", peekSpan(st))
             }
           }
-          val inner = parseExpr(st)
+          val inner = parseDelimitedExpr(st)
           val endSpan = match tryEatPunct(st, RParen) {
             case Some(t) -> t.span
             case None -> {
@@ -1373,13 +1458,13 @@ pub func parsePostfixExpr(st: inout ParseState): Expr {
       val _ = advance(st)
       val xs: List[Expr] = newList()
       if not isPunct(peekToken(st), RBracket) {
-        xs.add(parseExpr(st))
+        xs.add(parseDelimitedExpr(st))
         var keepIdx = true
         while keepIdx {
           if isPunct(peekToken(st), Comma) {
             val _ = advance(st)
             if not isPunct(peekToken(st), RBracket) {
-              xs.add(parseExpr(st))
+              xs.add(parseDelimitedExpr(st))
             }
           } else {
             keepIdx = false
@@ -1408,23 +1493,30 @@ func parseCallArg(st: inout ParseState): CallArg {
       val nameTok = advance(st)
       if isPunct(peekToken(st), Eq) {
         val _ = advance(st)
-        val value = parseExpr(st)
+        val value = parseDelimitedExpr(st)
         CANamed(name = name, value = value, span = joinSpans(nameTok.span, value.span))
       } else {
         reset(st, saved)
-        CAPositional(expr = parseExpr(st))
+        CAPositional(expr = parseDelimitedExpr(st))
       }
     }
-    case _ -> CAPositional(expr = parseExpr(st))
+    case _ -> CAPositional(expr = parseDelimitedExpr(st))
   }
 }
 
 pub func parseIfExpr(st: inout ParseState): Expr {
   val startTok = advance(st)  // 'if'
-  val cond = parseExpr(st)
+  // #6601: `cond` is bounded by `then`/`{` (never a valid binary/postfix
+  // continuation), so a legitimate nested lambda reached here can never
+  // itself be the tail-position paren-group an ancestor retry is
+  // suppressing — clear suppression for `cond`'s duration, same reasoning
+  // as `parseDelimitedExpr`.
+  val cond = parseDelimitedExpr(st)
   if isKw(peekToken(st), KwThen) {
     val _ = advance(st)
-    val thenExpr = parseExpr(st)
+    // `thenExpr` is likewise bounded — it always stops at the mandatory
+    // `else` keyword, which isn't a valid expression continuation either.
+    val thenExpr = parseDelimitedExpr(st)
     match tryEatKw(st, KwElse) {
       case Some(_) -> {
       }
@@ -1432,6 +1524,17 @@ pub func parseIfExpr(st: inout ParseState): Expr {
         emitErr(st, "P0200", "expected 'else' in `if … then … else …` expression", peekSpan(st))
       }
     }
+    // `elseExpr` is deliberately left as a plain `parseExpr` (NOT
+    // `parseDelimitedExpr`): unlike `cond`/`thenExpr`, it has no closing
+    // token of its own — it's the last component of the ternary form, so
+    // it extends via ordinary precedence climbing exactly like the tail
+    // of an enclosing guard/statement would (e.g. `if a then b else c and
+    // (flag) -> 1`, where the ambiguous `(flag)` is parsed from INSIDE
+    // this very call). It must keep inheriting the ambient
+    // `suppressArrowLambda` so an enclosing `parseArrowSensitiveExpr`/
+    // `parseStatementLeadExpr` retry can still resolve its own trailing
+    // `->` correctly — delimiting it here would reintroduce the
+    // #5667/#5668 bug for the ternary-if-else tail position.
     val elseExpr = parseExpr(st)
     mkExpr(
       EIf(
@@ -1491,14 +1594,20 @@ pub func parseIfExpr(st: inout ParseState): Expr {
 // `)` naturally separates it from whatever follows). Only if the `->`
 // this function's caller needs turns out to be missing afterward — proof
 // some trailing paren-group swallowed it — reset to the start and re-parse
-// with suppression held for the ENTIRE expression this time (no nested
-// lambda reinterpretation anywhere), which correctly handles both the
-// original #5667 shape and the compound #5668 shape. This does not
-// recover the (much narrower, unencountered in practice) case where the
-// SAME expression contains both a legitimate nested lambda call AND a
-// later ambiguous trailing paren-group — that would need suppression to
-// track expression *position* rather than being a single on/off flag.
-// Tracked as #5672.
+// with suppression held for the retry.
+//
+// #5672: suppression alone would also break a legitimate nested lambda
+// call argument that happens to sit alongside a later ambiguous trailing
+// paren-group in the SAME expression (e.g.
+// `xs.any((v) -> v > 0) and (flag)`) — the retry needs `(v) -> v > 0` to
+// keep forming a lambda while `(flag)` does not. `suppressArrowLambda` is
+// still a single flag, but `parseDelimitedExpr` (see its doc) clears it
+// for the duration of any recursive parse the caller already bounds with
+// its own terminator — a call argument, list/index element, tuple item,
+// interpolation hole — so only a bare *tail-position* paren-group (one
+// reachable from this function's own top-level `parseExpr` call without
+// passing through such a delimiter) is ever affected by the retry's
+// suppression.
 func parseArrowSensitiveExpr(st: inout ParseState): Expr {
   val savedPos = mark(st)
   val savedDiagsCount = st.diags.count
@@ -1523,28 +1632,41 @@ func parseArrowSensitiveExpr(st: inout ParseState): Expr {
     while st.cstEvents.count > savedCstEventsCount {
       st.cstEvents.removeAt(st.cstEvents.count - 1)
     }
+    // Save/restore (not hardcode false) so a guard nested inside another
+    // guard's own retry (reachable only through a `parseDelimitedExpr`-
+    // cleared context, e.g. a call-argument lambda body) can't clobber an
+    // enclosing retry's suppression once this one finishes.
+    val savedSuppress = st.suppressArrowLambda
     st.suppressArrowLambda = true
     val e2 = parseExpr(st)
-    st.suppressArrowLambda = false
+    st.suppressArrowLambda = savedSuppress
     e2
   }
 }
 
+// #6601: every branch here is a match arm's BODY, reached only after the
+// arm's own `->` has already been consumed by `parseMatchArm` — none of
+// these forms carries a trailing-arrow ambiguity of its own, and each is
+// bounded by the arm separator (`TStmtEnd`/`,`) or the match's closing
+// `}`, exactly like the already-delimited call-argument/list-item sites.
+// So each is parsed with `parseDelimitedExpr`/`parseDelimitedStmt` to
+// stop an ancestor guard/statement's retry-held `suppressArrowLambda`
+// from leaking into a legitimate nested lambda inside the body.
 func parseMatchArmBody(st: inout ParseState): ExprOrBlock {
   if isPunct(peekToken(st), LBrace) {
     EOBBlock(block = parseBlock(st))
   } else if isKw(peekToken(st), KwReturn) or isKw(peekToken(st), KwThrow) {
-    val stmt = parseStatement(st)
+    val stmt = parseDelimitedStmt(st)
     val stmts: List[Statement] = newList()
     stmts.add(stmt)
     EOBBlock(block = Block(statements = stmts, span = stmt.span))
   } else if identStr(peekToken(st)) == "break" or identStr(peekToken(st)) == "continue" {
-    val stmt = parseStatement(st)
+    val stmt = parseDelimitedStmt(st)
     val stmts: List[Statement] = newList()
     stmts.add(stmt)
     EOBBlock(block = Block(statements = stmts, span = stmt.span))
   } else {
-    EOBExpr(expr = parseExpr(st))
+    EOBExpr(expr = parseDelimitedExpr(st))
   }
 }
 
@@ -1582,7 +1704,11 @@ func parseMatchArm(st: inout ParseState): MatchArm {
 
 pub func parseMatchExpr(st: inout ParseState): Expr {
   val startTok = advance(st)  // 'match'
-  val scrutinee = parseExpr(st)
+  // #6601: `scrutinee` is bounded by the mandatory `{` that starts the arm
+  // list (never a valid expression continuation), so — like `parseIfExpr`'s
+  // `cond` — it can't itself be the tail-position paren-group an ancestor
+  // retry is suppressing. Clear suppression for its duration.
+  val scrutinee = parseDelimitedExpr(st)
   match tryEatPunct(st, LBrace) {
     case Some(_) -> {
     }
@@ -1824,7 +1950,7 @@ pub func parseLambdaExpr(st: inout ParseState): Expr {
   val _ = skipStmtEnds(st)
   while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
     val before = mark(st)
-    stmts.add(parseStatement(st))
+    stmts.add(parseDelimitedStmt(st))
     match peekToken(st) {
       case TStmtEnd -> {
         val _ = advance(st)
@@ -1870,7 +1996,25 @@ pub func parseLambdaExpr(st: inout ParseState): Expr {
 // earlier unrelated L0010 in place.
 func cancelMinValueDiagIfWrapped(st: inout ParseState, inner: in Expr): Unit {
   match inner.kind {
-    case ELiteral(lit) -> match lit { case LInt(v, _, _) -> { if v == -9223372036854775808i64 { val innerEnd = inner.span.endPos.offset; var i = st.diags.count - 1; var done = false; while not done and i >= 0 { val d = st.diags[i]; if d.code == "L0010" and d.span.endPos.offset == innerEnd { st.diags.removeAt(i); done = true }; i = i - 1 } } }; case _ -> {  } }
+    case ELiteral(lit) -> match lit {
+      case LInt(v, _, _) -> {
+        if v == -9223372036854775808i64 {
+          val innerEnd = inner.span.endPos.offset
+          var i = st.diags.count - 1
+          var done = false
+          while not done and i >= 0 {
+            val d = st.diags[i]
+            if d.code == "L0010" and d.span.endPos.offset == innerEnd {
+              st.diags.removeAt(i)
+              done = true
+            }
+            i = i - 1
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
     case _ -> {
     }
   }
@@ -2087,7 +2231,7 @@ pub func parseBlock(st: inout ParseState): Block {
       val stmts: List[Statement] = newList()
       while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
         val before = mark(st)
-        stmts.add(parseStatement(st))
+        stmts.add(parseDelimitedStmt(st))
         match peekToken(st) {
           case TStmtEnd -> {
             val _ = advance(st)
@@ -2318,6 +2462,13 @@ func parseStatementInner(st: inout ParseState): Statement {
 // block-form lambda statement round-trips through the retry unaffected,
 // since `suppressArrowLambda` only affects the `LParen` case, not
 // `parseLambdaExpr`'s `{ }` form.
+//
+// #5672: this condition already can't misfire on a nested lambda call
+// argument (`list.forEach((x) -> print(x))` parses to a top-level `ECall`,
+// not `ELambda`, so no retry triggers), but the retry itself still used a
+// single process-wide `suppressArrowLambda` flag — see `parseDelimitedExpr`
+// and the matching note on `parseArrowSensitiveExpr` for why that flag is
+// now scoped to genuine tail position rather than the whole retry parse.
 func parseStatementLeadExpr(st: inout ParseState): Expr {
   val savedPos = mark(st)
   val savedDiagsCount = st.diags.count
@@ -2334,9 +2485,10 @@ func parseStatementLeadExpr(st: inout ParseState): Expr {
       while st.cstEvents.count > savedCstEventsCount {
         st.cstEvents.removeAt(st.cstEvents.count - 1)
       }
+      val savedSuppress = st.suppressArrowLambda
       st.suppressArrowLambda = true
       val e2 = parseExpr(st)
-      st.suppressArrowLambda = false
+      st.suppressArrowLambda = savedSuppress
       e2
     }
     case _ -> e

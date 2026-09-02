@@ -254,7 +254,7 @@ record Counter {
 }
 ```
 
-The `var` prefix is accepted by the parser, which carries it into `FieldDecl.isMutable`. The mode checker (`lyric-compiler/lyric/mode_checker/`) enforces it for the shapes it can resolve without a symbol table. Two receiver forms are checked: a write to `r.field` (or `r.field op= …`) after construction, where `r` is a `var` local of a record or protected type declared in the same file and `field` is not marked `var`; and a write to `self.field` (or `self.field op= …`) inside a method/entry body whose enclosing type is known — a record's own inherent method, an `impl` block method, or a protected type's `entry`/`func` member. Both are rejected with **V0015** ("cannot reassign immutable field"). Construction (`Rec(field = x)`) is never flagged. This is deliberately narrow (issue #1815 part 1, widened for `self`/protected types by #6203/#6181): write access through an `inout` parameter is not tracked (a pervasive stdlib idiom threads a cursor-style state record through `inout` helpers that mutate fields directly, e.g. `XmlState.pos` in `Std.Xml` — tracking `inout` here would flag the existing stdlib), nor is a write through an immutable (`val`/`let`/`in`) binding, nor a write through a type declared in a different file, nor a **bare** implicit-self write (`field = x` with no `self.` prefix) inside a method body — distinguishing that shape from an ordinary local-variable reassignment of the same name requires tracking every declared local/parameter name in scope, not just `var`-record-typed ones, and is left for future work. An aspect's `around` advice body is walked for the local/`var`-record-typed-receiver form above, but has no enclosing `self` (aspect advice is not a method on a type), so the `self.field` form does not apply there. Emitter-level enforcement (`initonly`/`ACC_FINAL` so the field is also locked at the IL/bytecode level, and widening the mode-checker rule to `inout` parameters, cross-file types, and bare implicit-self writes) is tracked as follow-up work (issue #1815 part 2). The syntax is intentionally similar to local `var` declarations so that the intention is clear in code review.
+The `var` prefix is accepted by the parser, which carries it into `FieldDecl.isMutable`. The mode checker (`lyric-compiler/lyric/mode_checker/`) enforces it for the shapes it can resolve without a symbol table. Three receiver forms are checked: a write to `r.field` (or `r.field op= …`) after construction, where `r` is a `var` local of a record or protected type declared in the same file and `field` is not marked `var`; a write to `c.field` (or `c.field op= …`) through an `inout` parameter `c` whose declared type is likewise a same-file record or protected type (issue #1815 part 2, #6155) — under the SAME rule: a write to a `var` field through the `inout` alias is allowed (the correct, safe idiom cursor-style state-threading records rely on, e.g. `Std.Xml.XmlState.pos`, once the mutated field itself carries `var`), a write to a non-`var` field is V0015; and a write to `self.field` (or `self.field op= …`) inside a method/entry body whose enclosing type is known — a record's own inherent method, an `impl` block method, or a protected type's `entry`/`func` member. All three are rejected with **V0015** ("cannot reassign immutable field"). Construction (`Rec(field = x)`) is never flagged. This is deliberately narrow (issue #1815 parts 1–2, widened for `self`/protected types by #6203/#6181): a write through an immutable (`val`/`let`/`in`) binding, or an `in`-mode parameter, is not tracked; nor is a write through a type declared in a different file; nor a **bare** implicit-self write (`field = x` with no `self.` prefix) inside a method body — distinguishing that shape from an ordinary local-variable reassignment of the same name requires tracking every declared local/parameter name in scope, not just `var`-record-typed ones, and is left for future work. An aspect's `around` advice body is walked for the local/`var`-record-typed-receiver form above, but has no enclosing `self` (aspect advice is not a method on a type), so the `self.field` form does not apply there. Emitter-level enforcement ships (issue #1815 part 2, #6596): the MSIL and JVM backends mark a non-`var` field `initonly`/`ACC_FINAL` — but ONLY when a whole-build write-safety audit (`Lyric.ModeChecker.computeFieldLockSafetyForBuild`, run once across every in-build package's source before any package's codegen) finds no write to that field NAME anywhere in the build through a shape V0015 above does not resolve — a nested field-access chain (`c.inner.n = …`), a write through a `val`-bound receiver, or the field passed as an `out`/`inout` call argument in a call the mode checker itself cannot resolve as the checked `inout`-cursor idiom above. A field caught by any of those unchecked shapes is left unlocked at the IL/bytecode level rather than risk emitting a store that violates `initonly`/`ACC_FINAL` (invalid IL CoreCLR tolerates at runtime but the JVM verifier rejects with `IllegalAccessError` — a silent cross-target divergence otherwise). The audit is keyed by bare field name, not per-record, so it is sound but occasionally more conservative than a fully precise per-record analysis; a record imported from a separately restored/precompiled dependency is outside what it can see, the same residual gap V0015 itself already discloses for cross-file writes. Widening the mode-checker rule itself to cross-file types and bare implicit-self writes is tracked as further follow-up work. The syntax is intentionally similar to local `var` declarations so that the intention is clear in code review.
 
 **Record-body method bodies are type-checked.** A `func` declared inside a `record { }` body (D037's in-body method form, §2.12 below covers `impl` methods) has its BODY — not just its parameter/return types — fully type-checked like an ordinary function (D-progress-774, #6487): both field-access spellings resolve — `self.field` (the explicit-receiver form) and a bare `field` reference (the same implicit-`self` fallback protected types get, #6173) — against the record's own declared fields, substituted through the record's own generic parameters for a generic record. An unknown name in either spelling is **T0020**, a write-type mismatch is **T0063**, and an ill-typed trailing expression is **T0070**. A bare call to another method of the SAME record (`dup()` with no receiver, #1722/#6435) also dispatches on the implicit `self` — and when a free function of the same bare name is also visible at the call site, the sibling method wins, identically on both targets (#6489; a qualified call `Pkg.f()` always resolves the free function).
 
@@ -496,6 +496,8 @@ By default, declarations are package-private (visible only within the same packa
 
 Visibility is enforced at use sites: referencing a package-private declaration (no modifier) from another package is a compile error (**T0097**). `pub` and `internal` declarations are both referenceable across packages within a project; the cross-*project* hiding of `internal` is enforced by the publish/restore layer, which only includes `pub` declarations in a package's external contract. Extern types / extern packages (FFI host-binding declarations, e.g. the `List`/`Map` aliases) are not subject to these tiers — their cross-package use is governed by the kernel-boundary convention.
 
+**Cross-package bare-name ambiguity (#6287):** when a bare (unqualified) name — a function, `val`/`const`, or union/enum case constructor — is declared by two or more packages imported at the same use site, referencing it unqualified is a compile error (**T0123**), rather than silently resolving to whichever package happened to register the name last. The fix is to qualify the reference with its declaring package (`Pkg.name`) or, for a pattern match against a scrutinee of known type, the compiler already resolves the case against the scrutinee's own union/enum without needing qualification. A local declaration that shadows the ambiguous import (a same-named `val`/parameter/function in the current scope) takes priority and is never flagged; a name reachable through only one of the imports (no actual collision), or reachable only transitively through another package's own imports (the kernel/host re-export idiom), is likewise not ambiguous. This diagnostic does not widen to reject resolution through packages not directly imported at the use site — that narrower, harsher rule was evaluated and reverted (it broke the stdlib's implicit `Std.Core` prelude convention and a real ecosystem library); a name reachable only via a transitive import continues to resolve as before.
+
 A public function that exposes an **imported nested** host extern type (a CLR FQN containing `+`, e.g. `System.Text.Json.JsonElement+ArrayEnumerator`) in its signature emits a warning (**W0006**): these are host implementation-detail structs whose FFI boundary is meant to stay in the `_kernel/` layer. A kernel file that *declares* the extern type locally is exempt; the fix for a consumer is to wrap the host type in an opaque Lyric type (as `Std.Json` does with `JsonArrayCursor` / `JsonObjectCursor`). Top-level domain extern types (e.g. `JsonElement` itself) are deliberately re-exposable and are not flagged.
 
 ```
@@ -687,6 +689,22 @@ branch that diverges (`return`/`throw`/`break`/`continue`/`panic`) has the botto
 type and does not constrain the other arm, so `if c { x } else { return d }` is
 typed by its `then` branch. An `if` *without* an `else` produces no value on the
 false path and so has type `Unit`.
+
+Branch-type unification (`if`/`else` and `match` arms alike) is
+**position-aware**: a lone `Unit` branch beside a value-producing branch
+(e.g. one `if`/`match` arm ending `println(x)` and the other `y`) unifies
+cleanly — and is rejected as a mismatch (**T0067**) — depending on
+whether the whole `if`/`match` is itself in **value position** (bound to
+a `val`/`var`, returned, or otherwise consumed as an operand) or
+**statement position** (its result is discarded). In statement position,
+a `Unit`-vs-value branch mismatch is accepted leniently (the discarded
+branch's real type never surfaces); in value position, it is T0067,
+since silently coercing the value branch away would lose data the
+caller asked for. An **else-less** `if` always yields `Unit` regardless
+of the outer expression's own position, since its then-branch's value is
+unconditionally discarded either way — so a nested `if`/`match` inside
+an else-less `if`'s then-branch is always checked leniently (statement
+position), even when the else-less `if` itself sits in value position.
 ```
 val x = if cond then a else b
 ```
@@ -1229,6 +1247,15 @@ program is rejected at compile time (**T0067**). Diverging handlers (a body
 of type `Never` — e.g. a re-`throw` or `panic`) are exempt, as are
 statement-position `try` blocks whose value is discarded (`Unit`).
 
+On `--target dotnet`, one shape of this mismatch survives past T0067 to the
+MSIL backend: a catch arm that yields `Unit` while the try body (or an
+earlier, non-diverging catch arm) already established a value-producing
+result type. The backend cannot route an absent value through the shared
+result slot, so it is rejected at codegen time as **F0025** rather than
+silently leaving the slot at its zero-initialised default (a type-checker
+gap, #2042). The JVM backend rejects the same source shape earlier, at
+check time, with **J004**.
+
 ### 8.3 Result and panics
 
 ```
@@ -1703,6 +1730,18 @@ func useExternalClass(): Unit {
   obj.someInstanceMethod()         // invokevirtual via instance auto-FFI
 }
 ```
+
+**Implementing external interfaces.** An `impl <ExternInterface> for Record { … }` block (`docs/51-ffi-interfaces-proposal.md`) implements a .NET interface resolved through `extern type` / `import extern`, emitting an `InterfaceImpl` metadata row against the interface's `TypeRef` (or a closed-generic `TypeSpec`, for `IEquatable<T>`-shaped interfaces). On `--target dotnet` the self-hosted MSIL backend validates the impl against the interface's real reference-assembly metadata at build time and reports a mismatch as one of:
+
+| Code | Condition |
+|---|---|
+| `F0021` | An abstract interface method has no matching impl method. |
+| `F0022` | An impl method's parameter count, or its Nth parameter type, does not match the interface's declared signature. |
+| `F0023` | An impl method's return type does not match the interface's declared signature. |
+| `F0024` | The `extern type` FQN does not resolve to any type in an indexed reference-pack or restored-dependency assembly — typically a typo. Silently skipped, without a diagnostic, when the metadata index itself could not be populated at all (an SDK-less build with no reference pack on disk). |
+| `F0034` | The `impl` block's target resolves through `extern type` / `import extern`, but the resolved .NET metadata is not an interface (e.g. `impl Math for Foo` against the class `System.Math`). Numbered `F0034` rather than `F0020` to avoid colliding with §4.5's pre-existing `F0020` (`?` used in a function returning neither `Result` nor `Option`). |
+
+Validation is otherwise skipped, without a diagnostic, when an interface method's signature mentions a shape the structural comparison cannot yet represent (a method-level generic parameter, a pointer, a function pointer, or an array of rank greater than one) — the CLR still catches a genuine mismatch there at first use, as a `TypeLoadException`.
 
 ### 11.5 AOT compatibility
 

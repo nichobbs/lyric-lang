@@ -1697,3 +1697,291 @@ test "protected type annotated entry and var field round trip (#5815)" {
   val twice = format(parse(once))
   assertEqual(once, twice, "protected type annotated members: idempotent")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #2280 Class B: width-aware match-arm expression bodies.
+//
+// `matchLines`'s `EOBExpr` arm-body branch (fmt/fmt_core.l) used to decide
+// between the flat single-line rendering and the ctx-aware `exprAtCol`
+// multi-line printer purely on whether the body's source span contained a
+// comment — never on whether the rendering actually fit the 120-column
+// budget.  A nested `match`/`if` arm body with no interior comment was
+// therefore always flattened onto one line via `exprInline`, no matter how
+// long the result.  The fix folds the width check into the same
+// `exprFitsInline` helper the rest of the width-driven printer family
+// already uses, so an overflowing body falls back to its own recursive
+// multi-line layout instead of being collapsed.
+// ─────────────────────────────────────────────────────────────────────────────
+test "width driven nested match arm breaks (#2280 Class B repro)" {
+  // The exact repro from the umbrella issue: an outer match arm whose body
+  // is itself a match, with no comments anywhere, previously collapsed to
+  // a single ~191-column line.
+  val src = "package P\n\nfunc parseDbValueLong(elem: in Int): Int {\n" +
+    "  match tryGetIntegerValueFromElement(elem) {\n" +
+    "    case Some(intermediateResultValue) -> intermediateResultValue\n" +
+    "    case None ->\n" +
+    "      match tryGetLongIntegerValueFromElement(elem) {\n" +
+    "        case Some(longIntermediateResultValue) -> longIntermediateResultValue\n" +
+    "        case None -> computeDefaultFallbackIntegerValue(elem)\n" +
+    "      }\n" +
+    "  }\n" +
+    "}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "nested-match width: round-trips losslessly")
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "nested-match width: idempotent")
+  // The outer arm's body must NOT be flattened onto the "case None ->"
+  // line: the nested match's head still attaches to the arrow (matching
+  // the existing if-expression convention), but its arms and closing
+  // brace break onto their own lines instead of being crammed in too.
+  assertTrue(
+    Str.contains(once, "case None -> match tryGetLongIntegerValueFromElement(elem) {\n"),
+    "nested-match width: nested match opens its own brace layout right after the arrow"
+  )
+  assertTrue(
+    Str.contains(once, "case Some(longIntermediateResultValue) -> longIntermediateResultValue\n"),
+    "nested-match width: nested arm rendered on its own line"
+  )
+  assertTrue(
+    Str.contains(once, "case None -> computeDefaultFallbackIntegerValue(elem)\n"),
+    "nested-match width: nested fallback arm rendered on its own line"
+  )
+  val lines = Str.split(once, "\n")
+  var i = 0
+  while i < lines.count {
+    assertTrue(lines[i].length <= 120, "nested-match width: no output line exceeds the 120-column budget")
+    i = i + 1
+  }
+}
+
+test "width driven doubly nested match breaks at every level" {
+  // Three levels deep: an outer match arm's body is a match whose OWN arm
+  // body is yet another (long) match.  Every level must independently
+  // width-check and break — the recursion runs through `exprAtCol` calling
+  // back into `matchLines` at each level, so a fix scoped to only the
+  // outermost call would leave the innermost still flattened.
+  val src = "package P\n\nfunc resolveDeep(a: in Int, b: in Int, c: in Int): Int {\n" + "  match lookupOuter(a) {\n" +
+    "    case None -> -1\n" +
+    "    case Some(_) ->\n" +
+    "      match lookupMiddle(b) {\n" +
+    "        case None -> -2\n" +
+    "        case Some(_) ->\n" +
+    "          match lookupInnerLongEnoughToOverflowOnItsOwnLine(c) {\n" +
+    "            case Some(deeplyNestedInnerResultValue) -> deeplyNestedInnerResultValue\n" +
+    "            case None -> computeDeeplyNestedFallbackValueForTheInnermostMatch(c)\n" +
+    "          }\n" +
+    "      }\n" +
+    "  }\n" +
+    "}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "doubly-nested match width: round-trips losslessly")
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "doubly-nested match width: idempotent")
+  assertTrue(
+    Str.contains(once, "match lookupInnerLongEnoughToOverflowOnItsOwnLine(c) {\n"),
+    "doubly-nested match width: innermost match opens its own brace layout"
+  )
+  assertTrue(
+    Str.contains(once, "case Some(deeplyNestedInnerResultValue) -> deeplyNestedInnerResultValue\n"),
+    "doubly-nested match width: innermost arm rendered on its own line"
+  )
+  val lines = Str.split(once, "\n")
+  var i = 0
+  while i < lines.count {
+    assertTrue(lines[i].length <= 120, "doubly-nested match width: no output line exceeds the 120-column budget")
+    i = i + 1
+  }
+}
+
+test "width driven if-else match-arm body breaks" {
+  // `matchLines`'s `EOBExpr` branch is shared by every expression-kind arm
+  // body, not just nested matches: a brace-form `if/else` arm body that
+  // overflows must also fall back to its recursive multi-line layout
+  // (`ifBlockLines`) instead of being flattened.
+  val src = "package P\n\nfunc classify(value: in Int): String {\n" + "  match Some(value) {\n" +
+    "    case Some(v) -> if aVeryLongConditionThatWillForceThisIfElseArmBodyToOverflowTheLineWidthBudget(v) {\n" +
+    "      \"first-result-value\"\n" +
+    "    } else {\n" +
+    "      \"second-result-value\"\n" +
+    "    }\n" +
+    "    case None -> \"none\"\n" +
+    "  }\n" +
+    "}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "if-else match-arm body width: round-trips losslessly")
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "if-else match-arm body width: idempotent")
+  assertTrue(
+    Str.contains(once, "aVeryLongConditionThatWillForceThisIfElseArmBodyToOverflowTheLineWidthBudget(v) {\n"),
+    "if-else match-arm body width: if-condition opens its own brace layout"
+  )
+  assertTrue(Str.contains(once, "} else {\n"), "if-else match-arm body width: else clause on its own line")
+  val lines = Str.split(once, "\n")
+  var i = 0
+  while i < lines.count {
+    assertTrue(lines[i].length <= 120, "if-else match-arm body width: no output line exceeds the 120-column budget")
+    i = i + 1
+  }
+}
+
+test "width driven multi-arm match stays one-arm-per-line without over-splitting" {
+  // Four arms, each individually short, whose combined single-line
+  // rendering overflows — the OUTER match must go multi-line (as it
+  // already did before this fix), but each individual arm body must stay
+  // on its own single line rather than being needlessly broken down
+  // further.
+  val src = "package P\n\nfunc describe(code: in Int): String {\n" +
+    "  match classifyErrorCodeWithAVeryDescriptiveNameThatIsQuiteLong(code) {\n" +
+    "    case 1 -> \"one\"\n" +
+    "    case 2 -> \"two\"\n" +
+    "    case 3 -> \"three\"\n" +
+    "    case _ -> \"other\"\n" +
+    "  }\n" +
+    "}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "multi-arm match width: round-trips losslessly")
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "multi-arm match width: idempotent")
+  assertTrue(Str.contains(once, "case 1 -> \"one\"\n"), "multi-arm match width: arm 1 stays on one line")
+  assertTrue(Str.contains(once, "case 2 -> \"two\"\n"), "multi-arm match width: arm 2 stays on one line")
+  assertTrue(Str.contains(once, "case 3 -> \"three\"\n"), "multi-arm match width: arm 3 stays on one line")
+  assertTrue(Str.contains(once, "case _ -> \"other\"\n"), "multi-arm match width: arm 4 stays on one line")
+}
+
+test "short nested match arm body stays inline (no over-splitting)" {
+  // A match arm whose body is itself a match must stay on one line when
+  // the whole thing comfortably fits the width budget — the fix must not
+  // force every nested match onto multiple lines regardless of length.
+  val src = "package P\n\nfunc pick(o: in Option[Int], x: in Int): Int {\n" + "  match o {\n" +
+    "    case None -> match x { case 0 -> 1; case _ -> 2 }\n" +
+    "    case Some(v) -> v\n" +
+    "  }\n" +
+    "}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "short nested match: round-trips losslessly")
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "short nested match: idempotent")
+  assertTrue(
+    Str.contains(once, "case None -> match x { case 0 -> 1; case _ -> 2 }\n"),
+    "short nested match: stays inline on a single line"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6606: `matchLines`'s width check threads the real absolute column.
+//
+// The #2280 Class B fix above folded a width check into `matchLines`'s
+// `EOBExpr` arm-body branch, but computed it in a *relative* coordinate
+// space starting at column 0 (`exprFitsInline(arrow.length, ...)`) — it was
+// never given a base `col`, so the check never accounted for the arm's own
+// indentation (the enclosing match's column, its arm indent, and any outer
+// arrow prefix). A body whose `arrow.length + inlineBody.length` undercounted
+// to <= 120 from column 0 could still overflow once real indentation applied,
+// exactly the class of bug #2280 exists to eliminate — just one level less
+// severe.  `matchLines` now takes a `col` parameter (threaded the same way
+// `exprCallMulti`/`bareExprDoc` thread theirs) and checks width at
+// `armCol + arrow.length`, where `armCol = col + 2` mirrors the arm's own
+// `indentDoc(2, armLines)`.
+// ─────────────────────────────────────────────────────────────────────────────
+test "width driven nested match arm threads the real absolute column (#6606 repro)" {
+  // The inner arm's body is a 96-char call name; its inline rendering
+  // (`name(v)`) is 99 chars. The inner arrow ("case Some(v) -> ") is 16
+  // chars, so the PRE-FIX relative check (`arrow.length + inlineBody.length`)
+  // computes 16 + 99 = 115 <= 120 — it would have wrongly kept this arm on
+  // one line, producing a real ~121-column line once the arm's actual
+  // indentation (two match levels plus the outer arrow) is accounted for.
+  // With `col` threaded through, `matchLines` now measures against the
+  // arm's real column instead, so the call correctly opens its own
+  // multi-line layout — and every resulting line, including the call's own
+  // opening line, still fits the 120-column budget.
+  val longName = "computeIntermediateResultValueFromMatchedOptionForTheInnerNestedMatchArmBodyExtraExtraExtraExtra"
+  assertEqualInt(longName.length, 96, "repro setup: inner call name is exactly 96 chars")
+  val inlineBody = longName + "(v)"
+  assertEqualInt(inlineBody.length, 99, "repro setup: inner call inline rendering is exactly 99 chars")
+  val innerArrow = "case Some(v) -> "
+  assertEqualInt(innerArrow.length, 16, "repro setup: inner arrow is exactly 16 chars")
+  assertTrue(
+    innerArrow.length + inlineBody.length <= 120,
+    "repro setup: pre-fix relative check (arrow.length + inlineBody.length) undercounts to <= 120"
+  )
+  val src = "package P\n\nfunc classifyNested(x: in Int): Int {\n" + "  match x {\n" + "    case 0 -> 0\n" +
+    "    case _ ->\n" +
+    "      match lookupOptionalValueForNestedWidthBoundaryCase(x) {\n" +
+    "        case Some(v) -> " +
+    inlineBody +
+    "\n" +
+    "        case None -> 0\n" +
+    "      }\n" +
+    "  }\n" +
+    "}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "nested-column boundary: round-trips losslessly")
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "nested-column boundary: idempotent")
+  // The inner arm's call body must NOT be flattened onto the
+  // "case Some(v) -> " line: it must open its own multi-line call layout.
+  assertTrue(
+    not Str.contains(once, innerArrow + inlineBody),
+    "nested-column boundary: inner arm no longer collapses onto one over-budget line"
+  )
+  assertTrue(
+    Str.contains(once, innerArrow + longName + "(\n"),
+    "nested-column boundary: inner arm call opens its own multi-line layout"
+  )
+  val lines = Str.split(once, "\n")
+  var i = 0
+  while i < lines.count {
+    assertTrue(lines[i].length <= 120, "nested-column boundary: no output line exceeds the 120-column budget")
+    i = i + 1
+  }
+}
+
+test "short nested match arm body under the same deep nesting stays inline (#6606 no over-splitting)" {
+  // Same nesting depth as the repro above (a match arm's body is itself a
+  // match, so `col` threading is exercised), but the SCRUTINEE is long
+  // enough on its own to force the inner match into a multi-line layout
+  // while both of its own arm bodies ("v" and "0") stay short — confirming
+  // `col` threading doesn't over-correct and needlessly split arms that
+  // genuinely fit at their real column once the construct is already
+  // multi-line for an unrelated reason.
+  val src = "package P\n\nfunc classifyNestedShort(x: in Int): Int {\n" + "  match x {\n" + "    case 0 -> 0\n" +
+    "    case _ ->\n" +
+    "      match lookupOptionalValueForNestedWidthBoundaryCaseWithAMuchLongerScrutineeNameToForceTheOuterBreak(x) {\n" +
+    "        case Some(v) -> v\n" +
+    "        case None -> 0\n" +
+    "      }\n" +
+    "  }\n" +
+    "}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "short deep-nested arm: round-trips losslessly")
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "short deep-nested arm: idempotent")
+  assertTrue(
+    Str.contains(
+      once,
+      "match lookupOptionalValueForNestedWidthBoundaryCaseWithAMuchLongerScrutineeNameToForceTheOuterBreak(x) {\n"
+    ),
+    "short deep-nested arm: outer scrutinee length alone forces the inner match into a multi-line layout"
+  )
+  assertTrue(
+    Str.contains(once, "case Some(v) -> v\n"),
+    "short deep-nested arm: first arm stays inline on a single line despite deep nesting"
+  )
+  assertTrue(
+    Str.contains(once, "case None -> 0\n"),
+    "short deep-nested arm: second arm stays inline on a single line despite deep nesting"
+  )
+  val lines = Str.split(once, "\n")
+  var i = 0
+  while i < lines.count {
+    assertTrue(lines[i].length <= 120, "short deep-nested arm: no output line exceeds the 120-column budget")
+    i = i + 1
+  }
+}
