@@ -750,8 +750,9 @@ GenericParams =
  * immediately after the declared name (e.g. `func id[T](x: T): T`,
  * `record Box[T] { ... }`).  The legacy `generic[...]` prefix may
  * also appear before a top-level Item, accepted as a head modifier on
- * RecordDecl, UnionDecl, OpaqueTypeDecl, ProtectedTypeDecl,
- * FunctionDecl, InterfaceDecl, and ImplDecl. *)
+ * RecordDecl (including the exposed-record form), UnionDecl,
+ * OpaqueTypeDecl, ProtectedTypeDecl, FunctionDecl, InterfaceDecl,
+ * ImplDecl, TypeAliasDecl, and DistinctTypeDecl. *)
 
 GenericParam =
       IDENT [ ':' Type ]                      (* value generic: 'N: Nat' *)

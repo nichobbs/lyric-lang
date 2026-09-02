@@ -1989,6 +1989,25 @@ test "legacy 'generic[T]' prefix form round trips for record and impl declaratio
   assertTrue(Str.contains(acc, "generic[T] impl Shape for Box"), "legacy generic[T] prefix: impl preserved verbatim")
 }
 
+// The remaining item kinds that thread `genLegacyPrefixStr` (review
+// suggestion on #6827): union, interface, and type alias. Each has its
+// own call-site shape in `fmt_items.l` (`itemDoc`'s IUnion/IInterface
+// arms, `typeAliasDoc`), distinct from the func/record/impl cases above.
+test "legacy 'generic[T]' prefix form round trips for union, interface, and type alias declarations" {
+  val src = "package P\n\ngeneric[T] union Boxed {\n  case Full(value: T)\n  case Blank\n}\n\n" +
+    "generic[T] interface Container {\n  func get(): T\n}\n\n" +
+    "generic[T] alias BoxAlias = Boxed[T]\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "legacy generic[T] prefix (union/interface/alias): round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "generic[T] union Boxed"), "legacy generic[T] prefix: union preserved verbatim")
+  assertTrue(
+    Str.contains(acc, "generic[T] interface Container"),
+    "legacy generic[T] prefix: interface preserved verbatim"
+  )
+  assertTrue(Str.contains(acc, "generic[T] alias BoxAlias"), "legacy generic[T] prefix: alias preserved verbatim")
+}
+
 // The bare-bracket-after-name form (`func identity[T](...)`, the
 // "preferred" spelling per grammar §5.1) must be completely unaffected —
 // this is the FAR more common spelling in the tree today, so a
