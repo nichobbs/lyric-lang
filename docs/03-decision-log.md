@@ -40568,3 +40568,83 @@ generalizes to the `EMember`-chain path), D-progress-867/#6814 (the other
 T0123-adjacent fix #6838 was compared against and confirmed distinct from),
 `docs/41` (self-hosted compiler gap analysis, §9 Band 4 cross-package
 resolution).
+
+---
+
+## D-progress-872 — JVM codegen: the same qualified-record-construction shadow-defeat gap as D-progress-871, on `--target jvm` (#6838 parity)
+
+**Context.** A `claude-review` pass on the PR that landed D-progress-871
+(MSIL's fix, #6838) flagged that `Lyric.AliasRewriter` — whose
+`filterAliasesExcludingLocals`/`aliasKeyFirstSegment` shadow-defeat gap is
+that entry's actual root cause — is shared between the MSIL and JVM
+pipelines (`lyric-compiler/lyric/pipeline/pipeline.l` and
+`lyric-compiler/jvm/bridge.l` both import it), so the same defeat could in
+principle reach JVM's own qualified-construction call lowering too. This
+entry confirms it does, and fixes it, closing the platform-parity gap the
+project's own standard treats as a hard requirement (docs' "no
+one-platform implementations without a tracked, dated issue" rule).
+
+**Root cause.** `Jvm.Codegen.lowerMethodCall`
+(`lyric-compiler/jvm/codegen/04_calls.l`) is the JVM analogue of
+`lowerMethodCallMsil`: reached for any call whose callee is a genuine
+`EMember` chain (i.e. `Lyric.AliasRewriter` did not collapse it to a flat
+`EPath`). It already has a qualified UNION-CASE construction fallback
+(`ctx.ctors[unionTy + "$" + memberName]`, #5943) but, exactly like MSIL
+before D-progress-871, no fallback for a plain qualified RECORD
+constructor — so a record construction whose flattening was defeated by
+the shared shadow-defeat bug fell through to evaluating the receiver
+package prefix as a value, panicking `J011: member '<X>' cannot be read
+from a primitive-typed receiver` (the JVM-side sibling of MSIL's `T0121`/
+`T0123`).
+
+A second, JVM-specific wrinkle surfaced while fixing this: JVM's existing
+local-shadow guard (`match lookupSlot(ctx, qualSegs[0]) { case Some(_) ->
+() ... }`) disqualifies its ENTIRE fallback block — union-case construction
+included — whenever `qualSegs[0]` names a local, at ANY segment count. MSIL's
+equivalent guard (`recvIsLocalQual`) is scoped to single-segment receivers
+only (a real local can BE a 1-segment receiver; it can never BE a 2+-segment
+one). Reusing JVM's existing (broader) guard for the new record-construction
+tier reproduced the exact same failure the fix was meant to close — the
+local-shadow guard itself blocked the new fallback from ever running for a
+2+-segment receiver, which is precisely the shape #6838 needs. Left the
+existing, broader guard's scope on the union-case tier unchanged (untouched,
+pre-existing, separately tested behavior); the new record-construction check
+uses its OWN single-segment-scoped guard, matching MSIL's `recvIsLocalQual`
+precedent, and sits OUTSIDE the existing `lookupSlot` gate rather than
+inside it.
+
+**Fix.** `lowerMethodCall` gains a qualified-record-construction fallback,
+placed immediately after (structurally outside) the existing
+`lookupSlot(ctx, qualSegs[0])`-gated block: guarded by a fresh
+single-segment-only local check (`qualSegs.count == 1 and
+lookupSlot(ctx, qualSegs[0]).isSome`), it looks up the flattened receiver's
+dotted FQN plus the trailing member name directly in `ctx.ctors` — the
+exact key `lowerGeneralStaticCall`'s own flat-`EPath` tier already probes
+(`joinSegments(path.segments, ".")`, confirming records really do register
+under this dotted form, not just union cases under their `$`-separated
+one) — and routes to the existing `lowerConstruction` on a hit. Purely
+additive: it only ever fires on an exact registered-ctor match.
+
+**Verification.** Added `jvm_cross_package_collision_self_test.l`'s
+"qualified record construction survives a local shadowing only the
+package's first segment (JVM parity, #6838)" — the direct JVM analogue of
+D-progress-871's MSIL regression test, same shape (a local named after the
+imported package's own first segment, full-path qualified record
+construction). Confirmed it fails with `J011` against the pre-fix
+`lowerMethodCall` (the guard-scope mistake described above was caught this
+way, mid-fix) and passes with the fix. Full `jvm_cross_package_collision_self_test.l`
+(7/7), `msil_project_bridge_self_test.l` (48/48, unaffected — MSIL-only
+change untouched here), and `qualified_enum_case_self_test.l` (11/11,
+exercises the sibling union-case tier on both targets) all green.
+
+**Files changed:** `lyric-compiler/jvm/codegen/04_calls.l`
+(`lowerMethodCall`'s new qualified-record-construction fallback),
+`lyric-compiler/lyric/jvm_cross_package_collision_self_test.l` (new
+regression test).
+
+**Related:** #6838, D-progress-871 (the MSIL sibling this extends to JVM),
+D-progress-855/#6822 (the original flat-`EPath` fix on MSIL), #5943 (the
+JVM union-case construction fallback this record-construction fallback
+mirrors), #5455/#5976 (the `ctx.ctors` exact-FQN-first precedent
+`lowerGeneralStaticCall` already established for JVM record/union
+construction on the flat-`EPath` path).
