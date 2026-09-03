@@ -40316,6 +40316,8 @@ tests total).
 fix (PR #6827, same sweep) for the record-vs-union-case contrast noted
 above.
 
+---
+
 ## D-progress-870 — Formatter preserves the legacy `generic[T]` prefix
 form instead of silently dropping it on reformat (#2280 item 4)
 
@@ -40458,3 +40460,222 @@ files), and 8 (keyword-as-identifier diagnostic) remain open; items 3
 found already resolved by the time this session reached it, with no
 decision-log entry of its own since no code change was needed to verify
 it).
+
+---
+
+## D-progress-871 — MSIL codegen: qualified record construction had no fallback when `Lyric.AliasRewriter`'s EMember-chain collapse was defeated by first-segment shadowing (#6838)
+
+**Context.** #6838 reported a regression: a package-qualified, cross-package
+record constructor whose type is also the enclosing function's own declared
+error type (`return Err(value = Pkg.Sub.DbError(message = "…")))`) failed
+`--target dotnet` codegen with `error[T0123] … unresolved call to 'DbError'
+… no function token could be resolved for this callee`, on a large
+(~40-package) real project, while the exact same *shape* of source compiled
+cleanly in a minimized 2-package repro. D-progress-855 (#6822) had already
+fixed the closely related case where this same qualified constructor call
+DOES reach `lowerBuiltinOrStaticCallMsil`'s flat-`EPath` ctor resolution —
+confirmed still present and working (regression test intact). #6838's
+report could not be reproduced byte-for-byte against the real project (not
+available to this session), but investigating why a *minimized* repro of
+the identical shape wouldn't fail surfaced a second, independent gap in the
+same bug class.
+
+**Root cause.** A qualified call callee (`Pkg.Sub.Type(...)`) parses as
+nested `EMember`s, not a multi-segment `EPath` (`lyric-compiler/lyric/parser/parser_exprs.l`'s
+`parsePostfixExpr` always wraps a `.member` in `EMember`, regardless of
+what the receiver already is). `Lyric.AliasRewriter`'s `rewriteExpr` `ECall`
+arm normally collapses such a chain into a flat `EPath` ahead of codegen
+(via `rewriteQualifiedMemberChain`), which is what lets D-progress-855's
+fix ever see a `path.segments`-carrying `ModulePath` in the first place.
+That collapse only fires when the receiver chain's FULL dotted text exactly
+matches a self-mapped package-alias entry (`collectAliases`, #6294) — and
+`filterAliasesExcludingLocals` strips any alias entry whose key's FIRST
+dotted segment collides with a local/param name in scope
+(`aliasKeyFirstSegment`), even for a multi-segment self-mapped key like
+`"Pkg.Sub"` (first segment `"Pkg"`). So a local/param anywhere in scope
+whose name equals just the package's root segment — plausible in a large,
+real, deeply-nested-package project sharing one org prefix — silently
+defeats the collapse for every call qualified under that prefix, even
+though the call site spells out the WHOLE path and the type checker's own
+qualified-path resolution (independent of `AliasRewriter`) still accepts
+it as a legitimate cross-package reference. Once defeated, the call reaches
+`lowerMethodCallMsil` (`lyric-compiler/msil/codegen.l`) as a genuine
+`EMember` chain. That function already has an exact-FQN fallback for
+qualified UNION-CASE construction (`StoreError.UserNotFound(id = 7)`,
+#3840) but had NONE for a plain qualified RECORD constructor — the one
+shape #6838 reports — so it fell through to generic value/member dispatch:
+the receiver package prefix got evaluated as if it were a real value,
+producing either a confusing `T0121` ("member could not be resolved on its
+receiver") or, via a different fallback branch, the `T0123` "unresolved
+call" panic #6838 reports — both symptoms of the same "callee legitimately
+type-checked, codegen's separate resolver disagrees" class the panic text
+itself describes.
+
+**Fix.** `lowerMethodCallMsil` gained a qualified-record-construction
+fallback mirroring the existing qualified-union-case one exactly, including
+its local-shadow guard scope: a genuinely bare (single-segment) receiver
+still defers to a same-named local (the receiver name IS the local), but a
+2+-segment receiver — never itself a bare local reference — carries no such
+guard, matching the union-case branch's existing behavior precisely. When
+the receiver's flattened segments plus the trailing member name exactly
+match a REGISTERED `cctx.recordCtorTokens` key, the call is routed to
+`lowerBuiltinOrStaticCallMsil` with a synthesized `ModulePath`, which then
+resolves it via its own exact-qualifier-first tier (D-progress-855) — an
+unambiguous, purely additive resolution tier: it only ever fires when the
+exact FQN is already a registered ctor, so no call this function previously
+resolved correctly changes behavior.
+
+**Verification.** Added `msil_project_bridge_self_test.l`'s "qualified
+record construction survives a local shadowing only the package's first
+segment" — a 2-package repro with a local literally named after the
+imported package's own first segment (`QualRecShadow`) still in scope
+while the function constructs `QualRecShadow.Sub.Rec(...)` by its full
+path; confirmed it reproduces the `T0121` failure against the pre-fix
+compiler (reverted the codegen change, rebuilt, reran) and passes cleanly
+with the fix. Also reproduced and re-verified a fuller shape mirroring
+#6838's own snippet (a `?`-propagated call into a same-error-typed cross-
+package function, immediately followed by a qualified construction of that
+same error record, with an unrelated same-named local in scope) end-to-end
+via `lyric build` + running the produced DLL. Full `msil_project_bridge_self_test.l`
+(47/47), `msil_codegen_diag_self_test.l` (14/14), `qualified_enum_case_self_test.l`
+(11/11), `enum_case_collision_self_test.l` (13/13), and
+`cross_package_generics_self_test.l` (10/10) all pass with no regressions.
+This session could not build `./bin/lyric` via the normal `make lyric`
+release-download path (network-policy-blocked), so verification instead
+bootstrapped stage 1 from source using the published `lyric` 0.6.1 NuGet
+global tool as the seed compiler — a one-off substitution for this
+session's verification only, not a change to the project's bootstrap
+process.
+
+**What this does NOT do.** #6838's own real-project repro (~40 packages,
+not available to this session) was not reproduced byte-for-byte, so this
+fix cannot be pinned as *the* confirmed root cause the way D-progress-599/
+600's `PEReader`-verified fixes were — only as a genuine, independently
+verified gap in the identical bug class (qualified cross-package
+construction whose codegen resolution disagrees with a type checker that
+"legitimately type-checked" the call), closed the same way D-progress-855
+closed the sibling gap in the flat-`EPath` path. If #6838 recurs against a
+build carrying this fix, the next step is a `PEReader`/diagnostic-level
+repro directly against the reporting project, per the D-progress-599/600
+precedent.
+
+**Files changed:** `lyric-compiler/msil/codegen.l` (`lowerMethodCallMsil`'s
+new qualified-record-construction fallback), `lyric-compiler/lyric/msil_project_bridge_self_test.l`
+(new regression test).
+
+**Related:** #6838, D-progress-855/#6822 (the sibling flat-`EPath` fix this
+generalizes to the `EMember`-chain path), D-progress-867/#6814 (the other
+T0123-adjacent fix #6838 was compared against and confirmed distinct from),
+`docs/41` (self-hosted compiler gap analysis, §9 Band 4 cross-package
+resolution).
+
+---
+
+## D-progress-872 — JVM codegen: the same qualified-record-construction shadow-defeat gap as D-progress-871, on `--target jvm` (#6838 parity)
+
+**Context.** A `claude-review` pass on the PR that landed D-progress-871
+(MSIL's fix, #6838) flagged that `Lyric.AliasRewriter` — whose
+`filterAliasesExcludingLocals`/`aliasKeyFirstSegment` shadow-defeat gap is
+that entry's actual root cause — is shared between the MSIL and JVM
+pipelines (`lyric-compiler/lyric/pipeline/pipeline.l` and
+`lyric-compiler/jvm/bridge.l` both import it), so the same defeat could in
+principle reach JVM's own qualified-construction call lowering too. This
+entry confirms it does, and fixes it, closing the platform-parity gap the
+project's own standard treats as a hard requirement (docs' "no
+one-platform implementations without a tracked, dated issue" rule).
+
+**Root cause.** `Jvm.Codegen.lowerMethodCall`
+(`lyric-compiler/jvm/codegen/04_calls.l`) is the JVM analogue of
+`lowerMethodCallMsil`: reached for any call whose callee is a genuine
+`EMember` chain (i.e. `Lyric.AliasRewriter` did not collapse it to a flat
+`EPath`). It already has a qualified UNION-CASE construction fallback
+(`ctx.ctors[unionTy + "$" + memberName]`, #5943) but, exactly like MSIL
+before D-progress-871, no fallback for a plain qualified RECORD
+constructor — so a record construction whose flattening was defeated by
+the shared shadow-defeat bug fell through to evaluating the receiver
+package prefix as a value, panicking `J011: member '<X>' cannot be read
+from a primitive-typed receiver` (the JVM-side sibling of MSIL's `T0121`/
+`T0123`).
+
+A second, JVM-specific wrinkle surfaced while fixing this: JVM's existing
+local-shadow guard (`match lookupSlot(ctx, qualSegs[0]) { case Some(_) ->
+() ... }`) disqualifies its ENTIRE fallback block — union-case construction
+included — whenever `qualSegs[0]` names a local, at ANY segment count. MSIL's
+equivalent guard (`recvIsLocalQual`) is scoped to single-segment receivers
+only (a real local can BE a 1-segment receiver; it can never BE a 2+-segment
+one). Reusing JVM's existing (broader) guard for the new record-construction
+tier reproduced the exact same failure the fix was meant to close — the
+local-shadow guard itself blocked the new fallback from ever running for a
+2+-segment receiver, which is precisely the shape #6838 needs. Left the
+existing, broader guard's scope on the union-case tier unchanged (untouched,
+pre-existing, separately tested behavior); the new record-construction check
+uses its OWN single-segment-scoped guard, matching MSIL's `recvIsLocalQual`
+precedent, and sits OUTSIDE the existing `lookupSlot` gate rather than
+inside it.
+
+**Fix.** `lowerMethodCall` gains a qualified-record-construction fallback,
+placed immediately after (structurally outside) the existing
+`lookupSlot(ctx, qualSegs[0])`-gated block: guarded by a fresh
+single-segment-only local check (`qualSegs.count == 1 and
+lookupSlot(ctx, qualSegs[0]).isSome`), it looks up the flattened receiver's
+dotted FQN plus the trailing member name directly in `ctx.ctors` — the
+exact key `lowerGeneralStaticCall`'s own flat-`EPath` tier already probes
+(`joinSegments(path.segments, ".")`, confirming records really do register
+under this dotted form, not just union cases under their `$`-separated
+one) — and routes to the existing `lowerConstruction` on a hit. Purely
+additive: it only ever fires on an exact registered-ctor match.
+
+**Verification.** Added `jvm_cross_package_collision_self_test.l`'s
+"qualified record construction survives a local shadowing only the
+package's first segment (JVM parity, #6838)" — the direct JVM analogue of
+D-progress-871's MSIL regression test, same shape (a local named after the
+imported package's own first segment, full-path qualified record
+construction). Confirmed it fails with `J011` against the pre-fix
+`lowerMethodCall` (the guard-scope mistake described above was caught this
+way, mid-fix) and passes with the fix. Full `jvm_cross_package_collision_self_test.l`
+(7/7), `msil_project_bridge_self_test.l` (48/48, unaffected — MSIL-only
+change untouched here), and `qualified_enum_case_self_test.l` (11/11,
+exercises the sibling union-case tier on both targets) all green.
+
+**Files changed:** `lyric-compiler/jvm/codegen/04_calls.l`
+(`lowerMethodCall`'s new qualified-record-construction fallback),
+`lyric-compiler/lyric/jvm_cross_package_collision_self_test.l` (new
+regression test).
+
+**Related:** #6838, D-progress-871 (the MSIL sibling this extends to JVM),
+D-progress-855/#6822 (the original flat-`EPath` fix on MSIL), #5943 (the
+JVM union-case construction fallback this record-construction fallback
+mirrors), #5455/#5976 (the `ctx.ctors` exact-FQN-first precedent
+`lowerGeneralStaticCall` already established for JVM record/union
+construction on the flat-`EPath` path).
+
+**`--target native` confirmed also affected — NOT fixed here.** A
+`claude-review` pass on the PR that carries this entry additionally asked
+whether `--target native` (`lyric-compiler/lyric/llvm_codegen.l` /
+`llvm_bridge.l`, which also imports `Lyric.AliasRewriter`) shares this
+gap. Built a minimal 2-package repro directly against `lyric build
+--target native` (clang 18 available in this session): the exact
+shadowed-local shape (`val Pkg = 0; val e = Pkg.Sub.Rec(message = "…")`)
+throws an UNHANDLED .NET exception — `Lyric.LlvmCodegen: member access
+'.Sub' is not yet supported for --target native (this receiver has no
+such field)` — confirming native is susceptible to the same underlying
+`AliasRewriter` shadow-defeat, with an even worse failure mode (a process
+crash, not even a structured diagnostic). The SAME construction WITHOUT
+the shadowing local got past the `.Sub` access cleanly, then hit an
+UNRELATED, pre-existing native multi-package immaturity (`cannot resolve
+call target 'println/1' for --target native`) — native's multi-package
+bundling has rough edges well beyond this one bug class, consistent with
+`native/plan/`'s framing of native multi-package linking as an earlier-
+phase, less mature axis than MSIL/JVM. `lowerCallEx`'s `EMember` handling
+(`llvm_codegen.l` ~line 2828, `case EMember(receiver, memberName) -> { if
+not isPackagePathExpr(ctx, receiver) { ... } }`) has no visible fallback
+for the `isPackagePathExpr(...) == true` case at all — unlike MSIL/JVM,
+there is no obvious analogous "try the exact registered ctor FQN" tier to
+mirror without first understanding how native's package-path/member
+resolution is *supposed* to work end-to-end, a materially larger
+investigation than the JVM parity fix above. Deliberately NOT attempted
+in this PR — the properly-scoped fix is the `Lyric.AliasRewriter` root-
+cause fix already recommended above (D-progress-871's "what this does NOT
+do" / the PR's own follow-up comment), which would close this for native
+too without touching `llvm_codegen.l` at all. Tracked here rather than
+silently skipped, per the project's platform-parity standard.

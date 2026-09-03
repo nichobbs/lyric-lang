@@ -417,3 +417,41 @@ test "same-simple-name range subtype: each package's from() validates against it
     "range_subtype_collision: AgeLoPkg.classify(5) and AgeHiPkg.classify(150) each validate against their OWN range"
   )
 }
+
+// ─── Regression: qualified record construction survives a local shadowing
+// only the package's first segment — JVM parity (#6838) ────────────────────
+// The MSIL analogue of this fix (`msil_project_bridge_self_test.l`'s
+// "qualified record construction survives a local shadowing only the
+// package's first segment") closed a gap in `lowerMethodCallMsil`. Since
+// `Lyric.AliasRewriter` (whose shadow-defeat is the actual root cause — see
+// D-progress-871) is shared between the MSIL and JVM pipelines, and JVM's
+// own `lowerMethodCall` (`lyric-compiler/jvm/codegen/04_calls.l`) had the
+// identical gap (a union-case construction fallback but none for a plain
+// record), this pins the same fix on `--target jvm`: a local named
+// `QualRecShadow` (the imported package's own first segment) sits in scope
+// while the function still constructs `QualRecShadow.Sub.Rec(...)` by its
+// full qualified path.
+test "qualified record construction survives a local shadowing only the package's first segment (JVM parity, #6838)" {
+  val pkgSrcs: List[String] = newList()
+  pkgSrcs.add("package QualRecShadowJvm.Sub\n" + "\n" + "pub record Rec { message: String }\n")
+  pkgSrcs.add(
+    "package QualRecShadowJvm.App\n" + "\n" + "import QualRecShadowJvm.Sub\n" + "\n" + "func main(): Int {\n" +
+      "  val QualRecShadowJvm = 0\n" +
+      "  val e = QualRecShadowJvm.Sub.Rec(message = \"boom\")\n" +
+      "  println(e.message)\n" +
+      "  println(QualRecShadowJvm)\n" +
+      "  0\n" +
+      "}\n"
+  )
+  val result = compileAndRunJvm("qualrecshadow-jvm", pkgSrcs, "QualRecShadowJvm.App")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "qualified_record_construction_survives_shadowed_first_segment_jvm: exit 0 (stderr=" + result.stderr + ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    "boom\n0",
+    "qualified_record_construction_survives_shadowed_first_segment_jvm: stdout matches expected"
+  )
+}

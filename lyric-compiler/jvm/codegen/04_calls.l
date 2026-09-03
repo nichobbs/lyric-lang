@@ -365,7 +365,11 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
       // Actual Java return type (unwrapped from Result for the invoke descriptor).
       val javaRet = match decl.ret {
         case None -> JVoid
-        case Some(te) -> if wrapResult { extractResultValueType(te, ctx.pkgName) } else { typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes) }
+        case Some(te) -> if wrapResult {
+          extractResultValueType(te, ctx.pkgName)
+        } else {
+          typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes)
+        }
       }
 
       // F0015-J: verify the declared @externTarget signature against JDK class
@@ -733,7 +737,9 @@ func lowerCloseExecutorIntrinsic(ctx: in FuncCtx, insns: in List[LInsn], args: i
               )
             )
           }
-          case None -> panic("Jvm.Codegen: scope close intrinsic references unknown executor local '" + nm + "' (unreachable)")
+          case None -> panic(
+            "Jvm.Codegen: scope close intrinsic references unknown executor local '" + nm + "' (unreachable)"
+          )
         }
       }
       case _ -> panic("Jvm.Codegen: scope close intrinsic argument is not an executor local path (unreachable)")
@@ -2709,7 +2715,10 @@ func prepareHolderArg(
         hRecvSlot.add(0 - 1)
         hRecvCls.add("")
       }
-      case None -> panic("Jvm.Codegen: out/inout argument '" + name + "' to '" + calleeLabel + "' is not a local or parameter (the mode checker should have rejected this)")
+      case None -> panic(
+        "Jvm.Codegen: out/inout argument '" + name + "' to '" + calleeLabel +
+          "' is not a local or parameter (the mode checker should have rejected this)"
+      )
     }
     return
   }
@@ -2740,10 +2749,16 @@ func prepareHolderArg(
           hRecvSlot.add(rSlot)
           hRecvCls.add(cls)
         }
-        case _ -> panic("Jvm.Codegen: out/inout argument " + toString(bi) + " to '" + calleeLabel + "' is a field access on a non-reference receiver (the mode checker should have rejected this)")
+        case _ -> panic(
+          "Jvm.Codegen: out/inout argument " + toString(bi) + " to '" + calleeLabel +
+            "' is a field access on a non-reference receiver (the mode checker should have rejected this)"
+        )
       }
     }
-    case _ -> panic("Jvm.Codegen: out/inout argument " + toString(bi) + " to '" + calleeLabel + "' is not an assignable variable or field (the mode checker should have rejected this)")
+    case _ -> panic(
+      "Jvm.Codegen: out/inout argument " + toString(bi) + " to '" + calleeLabel +
+        "' is not an assignable variable or field (the mode checker should have rejected this)"
+    )
   }
 }
 
@@ -3783,48 +3798,73 @@ func lowerMethodCall(
   // the normal value-receiver path (same guard `tryQualifiedEnumClassJvm`
   // uses).
   val qualSegs = flattenPathExprSegsJvm(recv)
-  if qualSegs.count > 0 {
-    match lookupSlot(ctx, qualSegs[0]) {
-      case Some(_) -> ()
-      case None -> {
-        val qualKey = joinSegments(qualSegs, "/") + "/" + memberName
-        val qualArgcKey = qualKey + "@" + toString(args.count)
-        val qualSigOpt = match mapGet(ctx.funcSigs, qualArgcKey) {
-          case Some(sig) -> Some(value = sig)
-          case None -> mapGet(ctx.funcSigs, qualKey)
+  val qualHeadIsLocal = qualSegs.count > 0 and
+    match lookupSlot(ctx, qualSegs[0]) { case Some(_) -> true; case None -> false }
+  if qualSegs.count > 0 and not qualHeadIsLocal {
+    val qualKey = joinSegments(qualSegs, "/") + "/" + memberName
+    val qualArgcKey = qualKey + "@" + toString(args.count)
+    val qualSigOpt = match mapGet(ctx.funcSigs, qualArgcKey) {
+      case Some(sig) -> Some(value = sig)
+      case None -> mapGet(ctx.funcSigs, qualKey)
+    }
+    match qualSigOpt {
+      case Some(_) -> {
+        val qualFqnSegs: List[String] = newList()
+        var qi = 0
+        while qi < qualSegs.count {
+          qualFqnSegs.add(qualSegs[qi])
+          qi = qi + 1
         }
-        match qualSigOpt {
-          case Some(_) -> {
-            val qualFqnSegs: List[String] = newList()
-            var qi = 0
-            while qi < qualSegs.count {
-              qualFqnSegs.add(qualSegs[qi])
-              qi = qi + 1
-            }
-            qualFqnSegs.add(memberName)
-            val qualPath = ModulePath(segments = qualFqnSegs, span = recv.span)
-            return lowerBuiltinOrStaticCall(ctx, insns, memberName, qualPath, args)
-          }
-          case None -> {
-            // Qualified union-case CONSTRUCTION (#5943): `Std.Errors.ParseError.
-            // InvalidFormat(input = ..., expected = ...)` (package-qualified) and
-            // the same-package `StoreError.UserNotFound(id = 7)` (type-qualified,
-            // MSIL's #3840 shape) both flatten to a receiver whose LAST segment
-            // names the parent union, with `memberName` the case. Neither is a
-            // registered free function (the `qualSigOpt` probe above just missed),
-            // so without this the receiver falls through to `lowerExpr` and
-            // panics evaluating the package/union-type prefix as a value. The
-            // `collectFileCtors` `IUnion` branch already registers every case
-            // under the union-name-qualified key `<Union>$<Case>` (#4802) —
-            // reuse that single registry lookup instead of adding a new one.
-            val unionTy = qualSegs[qualSegs.count - 1]
-            match mapGet(ctx.ctors, unionTy + "$" + memberName) {
-              case Some(cls) -> return lowerConstruction(ctx, insns, cls, args)
-              case None -> ()
-            }
-          }
+        qualFqnSegs.add(memberName)
+        val qualPath = ModulePath(segments = qualFqnSegs, span = recv.span)
+        return lowerBuiltinOrStaticCall(ctx, insns, memberName, qualPath, args)
+      }
+      case None -> {
+        // Qualified union-case CONSTRUCTION (#5943): `Std.Errors.ParseError.
+        // InvalidFormat(input = ..., expected = ...)` (package-qualified) and
+        // the same-package `StoreError.UserNotFound(id = 7)` (type-qualified,
+        // MSIL's #3840 shape) both flatten to a receiver whose LAST segment
+        // names the parent union, with `memberName` the case. Neither is a
+        // registered free function (the `qualSigOpt` probe above just missed),
+        // so without this the receiver falls through to `lowerExpr` and
+        // panics evaluating the package/union-type prefix as a value. The
+        // `collectFileCtors` `IUnion` branch already registers every case
+        // under the union-name-qualified key `<Union>$<Case>` (#4802) —
+        // reuse that single registry lookup instead of adding a new one.
+        val unionTy = qualSegs[qualSegs.count - 1]
+        match mapGet(ctx.ctors, unionTy + "$" + memberName) {
+          case Some(cls) -> return lowerConstruction(ctx, insns, cls, args)
+          case None -> ()
         }
       }
+    }
+  }
+  // Qualified RECORD construction (MSIL parity, #6838/PR #6840): this
+  // `EMember` chain's own package-qualified receiver never collapsed to a
+  // flat `EPath` — `Lyric.AliasRewriter` is shared between the MSIL and JVM
+  // pipelines, and its shadow-defeat gap (a local/param merely matching the
+  // alias key's FIRST dotted segment drops the WHOLE multi-segment alias,
+  // however many segments the call site actually wrote) applies identically
+  // here. Deliberately OUTSIDE the `qualHeadIsLocal` gate just above (which
+  // the union-case fallback there sits inside): that gate disqualifies the
+  // WHOLE block whenever `qualSegs[0]` names a local, at ANY segment count —
+  // sound for a single-segment receiver (the receiver literally IS that
+  // local), but for 2+ segments the local can't possibly BE the whole
+  // flattened chain, so a genuine local named the same as the package's
+  // first segment must not block this. Mirrors `lowerMethodCallMsil`'s
+  // `recvIsLocalQual` guard scope exactly (single-segment-only) — reusing
+  // `qualHeadIsLocal` (computed once above) rather than a second
+  // `lookupSlot` call. `ctx.ctors` registers a record's ctor under its
+  // exact dotted FQN (the same key `lowerGeneralStaticCall`'s flat-`EPath`
+  // tier above probes, `joinSegments(path.segments, ".")`, line ~3152) —
+  // try that exact key before falling through to `lowerExpr`, which would
+  // otherwise evaluate the package prefix as a bogus value.
+  val recvIsLocalQualRecordJvm = qualSegs.count == 1 and qualHeadIsLocal
+  if qualSegs.count > 0 and not recvIsLocalQualRecordJvm {
+    val qualRecordFqn = joinSegments(qualSegs, ".") + "." + memberName
+    match mapGet(ctx.ctors, qualRecordFqn) {
+      case Some(cls) -> return lowerConstruction(ctx, insns, cls, args)
+      case None -> ()
     }
   }
   val recvTy = lowerExpr(ctx, insns, recv)

@@ -16112,6 +16112,44 @@ func lowerMethodCallMsil(
         case None -> ()
       }
     }
+    // Qualified RECORD construction whose callee never reached the flat-`EPath`
+    // exact-match tier in `lowerBuiltinOrStaticCallMsil` (#6838): a fully
+    // qualified record constructor (`Pkg.Sub.Type(field = …)`) parses as
+    // nested `EMember`s exactly like the union-case form just above, and
+    // normally `Lyric.AliasRewriter` collapses that chain into a flat `EPath`
+    // ahead of codegen so it reaches `lowerBuiltinOrStaticCallMsil`'s own
+    // exact-qualifier-first ctor resolution (#6822/D-progress-855) directly.
+    // When that collapse does not fire for any reason — the rewriter's
+    // shadowing guard (`filterAliasesExcludingLocals`) drops a multi-segment
+    // package alias whenever any local/param/module-level name merely
+    // matches its FIRST dotted segment, even though the call site's receiver
+    // spells out the WHOLE package path — this `EMember` chain reaches
+    // `lowerMethodCallMsil` with no record-specific handling at all (only
+    // the union-case form above had one), and falls through to generic
+    // value/member dispatch: the receiver package "Pkg.Sub" gets evaluated as
+    // if it were a real value, so `.Type(…)` becomes a bogus instance-method
+    // call. Depending on which downstream guard trips first this either
+    // mis-lowers silently or panics with a confusing "member could not be
+    // resolved"/T0123 "unresolved call" diagnostic even though the callee
+    // legitimately type-checked (the type checker's own qualified-path
+    // resolution is unaffected by the alias rewriter's local-shadowing
+    // guard). Mirrors the union-case branch immediately above, INCLUDING its
+    // local-shadow guard scope: only a genuinely bare (single-segment)
+    // receiver defers to a same-named local (the receiver IS just that
+    // local's own name, so it must win) — a 2+-segment receiver is never a
+    // bare local reference no matter what its first segment is spelled like,
+    // so it carries no such guard here either, exactly as the union-case
+    // branch above already doesn't. Reuses `recvIsLocalQual` and `callFqn`/
+    // `fqnSegs` (built above for the funcTokens tiers) rather than
+    // recomputing them: `callFqn` is already `joinSegsMsil(recvSegs, ".") +
+    // "." + memberName` and `fqnSegs` is already `recvSegs ++ [memberName]`.
+    // The exact-FQN-registered-ctor check below is itself unambiguous and
+    // additive, so this only ever adds a new successful resolution tier for
+    // a call shape nothing previously handled.
+    if not recvIsLocalQual and cctx.recordCtorTokens.containsKey(callFqn) {
+      val recCtorPath = ModulePath(segments = fqnSegs, span = recv.span)
+      return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, recCtorPath, args)
+    }
   }
   val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
   // Auto-FFI instance dispatch: an extern class-ref receiver (e.g. the result
