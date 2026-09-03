@@ -40648,3 +40648,34 @@ JVM union-case construction fallback this record-construction fallback
 mirrors), #5455/#5976 (the `ctx.ctors` exact-FQN-first precedent
 `lowerGeneralStaticCall` already established for JVM record/union
 construction on the flat-`EPath` path).
+
+**`--target native` confirmed also affected — NOT fixed here.** A
+`claude-review` pass on the PR that carries this entry additionally asked
+whether `--target native` (`lyric-compiler/lyric/llvm_codegen.l` /
+`llvm_bridge.l`, which also imports `Lyric.AliasRewriter`) shares this
+gap. Built a minimal 2-package repro directly against `lyric build
+--target native` (clang 18 available in this session): the exact
+shadowed-local shape (`val Pkg = 0; val e = Pkg.Sub.Rec(message = "…")`)
+throws an UNHANDLED .NET exception — `Lyric.LlvmCodegen: member access
+'.Sub' is not yet supported for --target native (this receiver has no
+such field)` — confirming native is susceptible to the same underlying
+`AliasRewriter` shadow-defeat, with an even worse failure mode (a process
+crash, not even a structured diagnostic). The SAME construction WITHOUT
+the shadowing local got past the `.Sub` access cleanly, then hit an
+UNRELATED, pre-existing native multi-package immaturity (`cannot resolve
+call target 'println/1' for --target native`) — native's multi-package
+bundling has rough edges well beyond this one bug class, consistent with
+`native/plan/`'s framing of native multi-package linking as an earlier-
+phase, less mature axis than MSIL/JVM. `lowerCallEx`'s `EMember` handling
+(`llvm_codegen.l` ~line 2828, `case EMember(receiver, memberName) -> { if
+not isPackagePathExpr(ctx, receiver) { ... } }`) has no visible fallback
+for the `isPackagePathExpr(...) == true` case at all — unlike MSIL/JVM,
+there is no obvious analogous "try the exact registered ctor FQN" tier to
+mirror without first understanding how native's package-path/member
+resolution is *supposed* to work end-to-end, a materially larger
+investigation than the JVM parity fix above. Deliberately NOT attempted
+in this PR — the properly-scoped fix is the `Lyric.AliasRewriter` root-
+cause fix already recommended above (D-progress-871's "what this does NOT
+do" / the PR's own follow-up comment), which would close this for native
+too without touching `llvm_codegen.l` at all. Tracked here rather than
+silently skipped, per the project's platform-parity standard.
