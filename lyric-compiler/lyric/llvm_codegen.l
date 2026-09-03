@@ -1146,26 +1146,49 @@ func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
   sigs
 }
 
+/// Recursively flattens an `EPath`, or a chain of `EMember`s over an
+/// `EPath` base, into its full dotted segment list at any depth — e.g.
+/// `Pkg.Sub.Type` (always parsed as nested `EMember`s over an `EPath`,
+/// per `parsePostfixExpr`) flattens to `["Pkg", "Sub", "Type"]` whether
+/// or not `Lyric.AliasRewriter` collapsed it into a flat `EPath` ahead of
+/// codegen. `None` for any other expression shape (a call, index,
+/// literal, etc. anywhere in the chain).
+func flattenMemberPathSegs(e: in Expr): Option[List[String]] {
+  match e.kind {
+    case EPath(path) -> {
+      if path.segments.count == 0 {
+        None
+      } else {
+        Some(value = path.segments)
+      }
+    }
+    case EMember(recv, memberName) -> {
+      match flattenMemberPathSegs(recv) {
+        case Some(segs) -> {
+          val built: List[String] = newList()
+          var i = 0
+          while i < segs.count {
+            built.add(segs[i])
+            i = i + 1
+          }
+          built.add(memberName)
+          Some(value = built)
+        }
+        case None -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
 /// The registry key for a call target, or "" when the callee shape is
 /// not a static function reference.  Exported so the bridge's
 /// reachability walk resolves call sites identically to the codegen.
 pub func callKeyOf(fnExpr: in Expr, argc: in Int): String {
   val inner = match fnExpr.kind { case ETypeApp(f, _) -> f; case _ -> fnExpr }
-  match inner.kind {
-    case EPath(path) -> {
-      if path.segments.count == 0 {
-        ""
-      } else {
-        modulePathJoin(path.segments) + "/" + argc.toString()
-      }
-    }
-    case EMember(recv, memberName) -> {
-      match recv.kind {
-        case EPath(rpath) -> modulePathJoin(rpath.segments) + "." + memberName + "/" + argc.toString()
-        case _ -> ""
-      }
-    }
-    case _ -> ""
+  match flattenMemberPathSegs(inner) {
+    case Some(segs) -> modulePathJoin(segs) + "/" + argc.toString()
+    case None -> ""
   }
 }
 
@@ -2827,6 +2850,22 @@ func lowerCallEx(
     }
     case EMember(receiver, memberName) -> {
       if not isPackagePathExpr(ctx, receiver) {
+        // `isPackagePathExpr` only recognizes a flat `EPath` receiver, so a
+        // multi-segment qualified callee (`Pkg.Sub.Thing(...)`) that
+        // `Lyric.AliasRewriter` left uncollapsed — because a local/param in
+        // scope happens to share the callee's head segment — reaches here
+        // still nested, and looks exactly like a local-value receiver.  The
+        // type checker's own call resolution tries the qualified package
+        // path first regardless of that shadowing (`constructorSymbolOf` /
+        // `unionCaseSymbolOf` / `directSig` in `typechecker_exprs.l`), only
+        // falling back to the receiver's method space when no
+        // package-qualified match exists — mirror that order here (#6841,
+        // #6842) before committing to the local-receiver interpretation.
+        match tryLowerQualifiedCallee(ctx, insns, fnExpr, args, line, wantTask) {
+          case Some(v) -> return v
+          case None -> {
+          }
+        }
         val recvVal = lowerExpr(ctx, insns, receiver)
         match lowerScalarMethodCall(ctx, insns, recvVal, memberName, args, line) {
           case Some(v) -> return v
@@ -2941,47 +2980,7 @@ func lowerCallEx(
     }
   }
   match sigOpt {
-    case Some(sig) -> {
-      val callArgs = lowerCallArgs(ctx, insns, sig, args)
-      if ctx.curAsyncTask.count > 0 and sig.irName == "Std.Time.sleepMillis" and callArgs.count == 1 {
-        return emitAsyncSleep(ctx, insns, callArgs)
-      }
-      // The async process leaf (D-N-023).  Only for awaited-in-place calls:
-      // a direct `spawn runCapture(...)` keeps the blocking sync path (spawn
-      // an async wrapper function to overlap captures).  Arity-coupled to
-      // `Std.Process.runCapture/3`, `Std.Process.runCaptureWithInput/4`,
-      // and the seam's /4 — if any signature changes, update this intercept
-      // AND the llvm_bridge.l reachability walk together, or the redirect
-      // silently disables (#5108).
-      if ctx.curAsyncTask.count > 0 and not wantTask {
-        val isRunCapture = sig.irName == "Std.Process.runCapture" and callArgs.count == 3
-        val isRunCaptureWithInput = sig.irName == "Std.Process.runCaptureWithInput" and callArgs.count == 4
-        if isRunCapture or isRunCaptureWithInput {
-          match emitAsyncRunCapture(ctx, insns, sig, callArgs) {
-            case Some(v) -> return v
-            case None -> {
-            }
-          }
-        }
-      }
-      if sig.isAsync {
-        return emitAsyncCall(ctx, insns, sig.irName, callArgs, retTypeToN(ctx, sig.retTy), wantTask)
-      }
-      val retTy = retTypeToN(ctx, sig.retTy)
-      match retTy {
-        case NVoid -> {
-          insns.add(NCallVoid(fn = NGlobal(name = sig.irName), args = callArgs))
-          NVal(ty = NVoid, value = NUndef(ty = NVoid))
-        }
-        case _ -> {
-          val dest = freshTmp(ctx)
-          insns.add(NCall(dest = dest, retTy = retTy, fn = NGlobal(name = sig.irName), args = callArgs))
-          val outV = NVal(ty = retTy, value = NLocal(name = dest))
-          registerTemp(ctx, outV)
-          outV
-        }
-      }
-    }
+    case Some(sig) -> lowerResolvedSigCall(ctx, insns, sig, args, line, wantTask)
     case None -> {
       // Generic functions instantiate per call site (N3.1).
       val noPre: List[NVal] = newList()
@@ -2996,6 +2995,113 @@ func lowerCallEx(
   }
 }
 
+/// Lowers a call to an already-resolved static function signature: arg
+/// binding, the `Std.Time.sleepMillis` / `Std.Process.runCapture*` async
+/// leaf intercepts, and the direct/task call emission.  Shared by the
+/// registry lookup above and `tryLowerQualifiedCallee`'s AliasRewriter
+/// shadow-defeat fallback (#6841/#6842), which resolves the same
+/// `ctx.sigs` registry from a callee AST shape the plain lookup above
+/// can't key (a still-nested `EMember` chain).
+func lowerResolvedSigCall(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  sig: in NFuncSig,
+  args: in List[CallArg],
+  line: in Int,
+  wantTask: in Bool,
+): NVal {
+  val callArgs = lowerCallArgs(ctx, insns, sig, args)
+  if ctx.curAsyncTask.count > 0 and sig.irName == "Std.Time.sleepMillis" and callArgs.count == 1 {
+    return emitAsyncSleep(ctx, insns, callArgs)
+  }
+  // The async process leaf (D-N-023).  Only for awaited-in-place calls:
+  // a direct `spawn runCapture(...)` keeps the blocking sync path (spawn
+  // an async wrapper function to overlap captures).  Arity-coupled to
+  // `Std.Process.runCapture/3`, `Std.Process.runCaptureWithInput/4`,
+  // and the seam's /4 — if any signature changes, update this intercept
+  // AND the llvm_bridge.l reachability walk together, or the redirect
+  // silently disables (#5108).
+  if ctx.curAsyncTask.count > 0 and not wantTask {
+    val isRunCapture = sig.irName == "Std.Process.runCapture" and callArgs.count == 3
+    val isRunCaptureWithInput = sig.irName == "Std.Process.runCaptureWithInput" and callArgs.count == 4
+    if isRunCapture or isRunCaptureWithInput {
+      match emitAsyncRunCapture(ctx, insns, sig, callArgs) {
+        case Some(v) -> return v
+        case None -> {
+        }
+      }
+    }
+  }
+  if sig.isAsync {
+    return emitAsyncCall(ctx, insns, sig.irName, callArgs, retTypeToN(ctx, sig.retTy), wantTask)
+  }
+  val retTy = retTypeToN(ctx, sig.retTy)
+  match retTy {
+    case NVoid -> {
+      insns.add(NCallVoid(fn = NGlobal(name = sig.irName), args = callArgs))
+      NVal(ty = NVoid, value = NUndef(ty = NVoid))
+    }
+    case _ -> {
+      val dest = freshTmp(ctx)
+      insns.add(NCall(dest = dest, retTy = retTy, fn = NGlobal(name = sig.irName), args = callArgs))
+      val outV = NVal(ty = retTy, value = NLocal(name = dest))
+      registerTemp(ctx, outV)
+      outV
+    }
+  }
+}
+
+/// AliasRewriter shadow-defeat fallback (#6841/#6842): a fully qualified
+/// call callee (`Pkg.Sub.Thing(...)`, parsed as nested `EMember`s per
+/// `parsePostfixExpr`) whose head segment happens to share a name with a
+/// local/param in scope reaches codegen still nested — `AliasRewriter`
+/// deliberately leaves it uncollapsed (`alias_rewriter.l` §6b) so a
+/// genuine local-value method chain still resolves — but the type
+/// checker's own call resolution tries the qualified package path first,
+/// unconditionally, and only falls back to the receiver's method space
+/// when no package-qualified match exists (`constructorSymbolOf` /
+/// `unionCaseSymbolOf` / `directSig` in `typechecker_exprs.l`).  Mirror
+/// that order here: try the full flattened path as a free function or a
+/// record/union/generic/distinct construction; `None` when nothing
+/// matches, so the caller falls back to the local-receiver interpretation.
+func tryLowerQualifiedCallee(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  fnExpr: in Expr,
+  args: in List[CallArg],
+  line: in Int,
+  wantTask: in Bool,
+): Option[NVal] {
+  val segs = match flattenMemberPathSegs(fnExpr) { case Some(s) -> s; case None -> return None }
+  if segs.count < 2 {
+    return None
+  }
+  val plainName = modulePathJoin(segs)
+  val key = plainName + "/" + args.count.toString()
+  val selfKey = ctx.curPkg[0] + "." + key
+  var sigOpt = mapGet(ctx.sigs, selfKey)
+  match sigOpt {
+    case Some(_) -> {
+    }
+    case None -> {
+      sigOpt = mapGet(ctx.sigs, key)
+    }
+  }
+  match sigOpt {
+    case Some(sig) -> return Some(value = lowerResolvedSigCall(ctx, insns, sig, args, line, wantTask))
+    case None -> {
+    }
+  }
+  val noPre: List[NVal] = newList()
+  if ctx.genericFnDefs.containsKey(selfKey) {
+    return Some(value = lowerGenericFnCall(ctx, insns, selfKey, noPre, args, line, wantTask))
+  }
+  if ctx.genericFnDefs.containsKey(key) {
+    return Some(value = lowerGenericFnCall(ctx, insns, key, noPre, args, line, wantTask))
+  }
+  tryLowerConstruct(ctx, insns, plainName, args, line)
+}
+
 /// Constructor-call fallback for `lowerCall`: record construction,
 /// union-case construction, and distinct-type conversion.
 func lowerConstructCall(
@@ -3007,16 +3113,7 @@ func lowerConstructCall(
   line: in Int,
 ): NVal {
   val inner = match fnExpr.kind { case ETypeApp(f, _) -> f; case _ -> fnExpr }
-  val name = match inner.kind {
-    case EPath(path) -> modulePathJoin(path.segments)
-    case EMember(recv, memberName) -> {
-      match recv.kind {
-        case EPath(rpath) -> modulePathJoin(rpath.segments) + "." + memberName
-        case _ -> ""
-      }
-    }
-    case _ -> ""
-  }
+  val name = match flattenMemberPathSegs(inner) { case Some(segs) -> modulePathJoin(segs); case None -> "" }
   if name.length > 0 {
     // Bare `toString(x)` (the prelude free-function spelling the type
     // checker admits alongside the `.toString()` method form, D-N-003's
@@ -3063,53 +3160,9 @@ func lowerConstructCall(
       registerTemp(ctx, weakVal)
       return weakVal
     }
-    match mapGet(ctx.recordDefs, name) {
-      case Some(ri) -> {
-        if ctx.protectedRecNames.containsKey(ri.irName) {
-          return lowerProtectedConstructArgs(ctx, insns, ri, args)
-        }
-        return lowerRecordConstructArgs(ctx, insns, ri, args)
-      }
+    match tryLowerConstruct(ctx, insns, name, args, line) {
+      case Some(v) -> return v
       case None -> {
-      }
-    }
-    match mapGet(ctx.caseRefs, name) {
-      case Some(cref) -> {
-        val ui = match mapGet(ctx.unionDefs, cref.unionKey) {
-          case Some(u) -> u
-          case None -> panic("Lyric.LlvmCodegen: internal — case '" + name + "' references unregistered union")
-        }
-        return lowerUnionConstruct(ctx, insns, ui, cref.caseIdx, args)
-      }
-      case None -> {
-      }
-    }
-    // Generic union case (`Some(5)`): infer type args, instantiate,
-    // construct (N3.1).
-    match mapGet(ctx.caseToGenericUnion, name) {
-      case Some(gkey) -> {
-        val dotIdx = lastDotIndex(name)
-        val caseName = if dotIdx >= 0 { Str.substring(name, dotIdx + 1, name.length - dotIdx - 1) } else { name }
-        return lowerGenericCaseConstruct(ctx, insns, gkey, caseName, args)
-      }
-      case None -> {
-      }
-    }
-    if ctx.genericRecordDefs.containsKey(name) {
-      return lowerGenericRecordConstruct(ctx, insns, genericQualifiedKey(ctx, name), args)
-    }
-    match mapGet(ctx.distinctDefs, name) {
-      case Some(di) -> return lowerDistinctConstruct(ctx, insns, name, di, args, line)
-      case None -> {
-      }
-    }
-    // `X.From(v)` distinct-conversion spelling.
-    if Str.endsWith(name, ".From") {
-      val baseName = Str.substring(name, 0, name.length - 5)
-      match mapGet(ctx.distinctDefs, baseName) {
-        case Some(di) -> return lowerDistinctConstruct(ctx, insns, baseName, di, args, line)
-        case None -> {
-        }
       }
     }
   }
@@ -3117,6 +3170,68 @@ func lowerConstructCall(
     "Lyric.LlvmCodegen: cannot resolve call target '" + key +
       "' for --target native (the callee may be outside the bundled import closure)"
   )
+}
+
+/// Registry lookup shared by `lowerConstructCall` (the `ctx.sigs`-miss
+/// fallback for a callee already reduced to a flat qualified name) and
+/// `tryLowerQualifiedCallee` (the AliasRewriter shadow-defeat fallback,
+/// #6841/#6842): resolves `name` — a fully dot-joined callee path —
+/// against the record / union-case / generic-record / generic-union-case
+/// / distinct-type construction registries.  `None` when `name` matches
+/// none of them.
+func tryLowerConstruct(
+  ctx: in Ctx, insns: in List[NInsn], name: in String, args: in List[CallArg], line: in Int
+): Option[NVal] {
+  match mapGet(ctx.recordDefs, name) {
+    case Some(ri) -> {
+      if ctx.protectedRecNames.containsKey(ri.irName) {
+        return Some(value = lowerProtectedConstructArgs(ctx, insns, ri, args))
+      }
+      return Some(value = lowerRecordConstructArgs(ctx, insns, ri, args))
+    }
+    case None -> {
+    }
+  }
+  match mapGet(ctx.caseRefs, name) {
+    case Some(cref) -> {
+      val ui = match mapGet(ctx.unionDefs, cref.unionKey) {
+        case Some(u) -> u
+        case None -> panic("Lyric.LlvmCodegen: internal — case '" + name + "' references unregistered union")
+      }
+      return Some(value = lowerUnionConstruct(ctx, insns, ui, cref.caseIdx, args))
+    }
+    case None -> {
+    }
+  }
+  // Generic union case (`Some(5)`): infer type args, instantiate,
+  // construct (N3.1).
+  match mapGet(ctx.caseToGenericUnion, name) {
+    case Some(gkey) -> {
+      val dotIdx = lastDotIndex(name)
+      val caseName = if dotIdx >= 0 { Str.substring(name, dotIdx + 1, name.length - dotIdx - 1) } else { name }
+      return Some(value = lowerGenericCaseConstruct(ctx, insns, gkey, caseName, args))
+    }
+    case None -> {
+    }
+  }
+  if ctx.genericRecordDefs.containsKey(name) {
+    return Some(value = lowerGenericRecordConstruct(ctx, insns, genericQualifiedKey(ctx, name), args))
+  }
+  match mapGet(ctx.distinctDefs, name) {
+    case Some(di) -> return Some(value = lowerDistinctConstruct(ctx, insns, name, di, args, line))
+    case None -> {
+    }
+  }
+  // `X.From(v)` distinct-conversion spelling.
+  if Str.endsWith(name, ".From") {
+    val baseName = Str.substring(name, 0, name.length - 5)
+    match mapGet(ctx.distinctDefs, baseName) {
+      case Some(di) -> return Some(value = lowerDistinctConstruct(ctx, insns, baseName, di, args, line))
+      case None -> {
+      }
+    }
+  }
+  None
 }
 
 /// UFCS method-call resolution: `recv.name(args)` calls the function

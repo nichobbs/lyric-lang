@@ -40679,3 +40679,157 @@ cause fix already recommended above (D-progress-871's "what this does NOT
 do" / the PR's own follow-up comment), which would close this for native
 too without touching `llvm_codegen.l` at all. Tracked here rather than
 silently skipped, per the project's platform-parity standard.
+
+## D-progress-873 — `--target native` qualified-call shadow-defeat fix (#6841); the `Lyric.AliasRewriter` "root cause" fix recommended in D-progress-872/#6842 was investigated and found unsafe, NOT implemented
+
+**Context.** Two follow-ups were filed from the PR that landed
+D-progress-871/D-progress-872 (#6838's MSIL + JVM fix): #6841 (the
+`--target native` crash D-progress-872 confirmed but deliberately left
+unfixed) and #6842, which proposed that the real, one-place fix was in
+`Lyric.AliasRewriter` itself — `filterAliasesExcludingLocals`/
+`aliasKeyFirstSegment` (`lyric-compiler/lyric/alias_rewriter.l`) should
+compare a shadowing local's name against an alias key's WHOLE dotted path,
+not just its first segment, and #6842 predicted this would close #6841 too
+"as a side effect, since native shares the same `AliasRewriter` pass."
+
+**#6842's premise was tested empirically and found false.** Before
+touching `alias_rewriter.l`, its own §6b section header and the pinned
+`alias_rewriter_self_test.l` regression tests for #6311/#6312/#6313/#6316
+were re-read: they exist specifically because a local's OWN field-access
+call chain (`val Foo = ...; Foo.Bar.handle()`) can coincidentally spell
+out a real imported package's full dotted name, and the local must win
+there. Real 2-package builds (`lyric build --target dotnet`, MSIL, in
+`/tmp/t6311*` during this investigation) established the actual end-to-end
+resolution rule, independent of what `AliasRewriter` itself decides to
+collapse:
+
+- When a package-qualified interpretation of the FULL call chain
+  resolves (a real function or record/union constructor at that exact
+  dotted path), it wins — REGARDLESS of a local sharing the chain's head
+  segment. (`val Foo = 0; import Foo.Bar; Foo.Bar.baz()` against a real
+  `Foo.Bar.baz(): Int` prints the package's `42`, not any local
+  interpretation.)
+- When it does NOT resolve (no such package member), the local/UFCS-method
+  interpretation is tried and wins. (Same shape, but `Foo.Bar` has no
+  `baz` — only a local `BarBox` value with a UFCS `.baz()` method — prints
+  `777`.)
+
+This matches `typechecker_exprs.l`'s own `ECall` dispatch order
+(`directSig` → `unionCaseSymbolOf` → `constructorSymbolOf`, all of which
+flatten the WHOLE callee chain and try package-qualified resolution
+unconditionally, before ever falling back to `methodPick` on the
+receiver's inferred type) — and it does not depend on whether
+`AliasRewriter` collapsed the callee into a flat `EPath` ahead of time;
+each backend's construct-registry lookup re-flattens the AST itself.
+
+**Conclusion: `AliasRewriter`'s shadow guard is doing its job correctly
+and must stay first-segment-scoped.** If it were changed to compare whole
+keys (per #6842's literal proposal), a multi-segment self-mapped alias key
+like `"Foo.Bar"` would no longer be filtered out by a local named `Foo`
+(since `"Foo"` never equals the whole key `"Foo.Bar"`), so
+`rewriteQualifiedMemberChain` would ALWAYS collapse `Foo.Bar.baz()` into a
+flat `EPath` whenever a real package `Foo.Bar` is in scope — even when
+that package doesn't actually declare the member being called. A flat
+`EPath` call has no receiver expression at all, so there is nothing left
+for the type checker to fall back to when package resolution fails: the
+second bullet above (local-fallback-when-package-lookup-fails) would
+regress from a working call to a hard compile error. `filterAliasesExcludingLocals`/`aliasKeyFirstSegment` were left
+UNCHANGED; #6842's proposed fix was not implemented, and the full
+`alias_rewriter_self_test.l` suite (37/37, unchanged from before this
+investigation) confirms nothing here needed to move.
+
+**Where the actual `--target native` gap was.** Not in `AliasRewriter` —
+in `llvm_codegen.l`'s codegen itself, which (unlike MSIL after
+D-progress-871 and JVM after D-progress-872) had NO fallback tier at all
+for a shadow-defeated multi-segment qualified callee:
+
+- `isPackagePathExpr` only recognizes a flat `EPath` receiver
+  (`case EPath(path) -> not ctx.varTypes.containsKey(path.segments[0]);
+  case _ -> false`) — a still-nested `EMember` receiver (exactly what
+  `AliasRewriter`'s shadow guard deliberately leaves behind) always reads
+  as "not a package path," so `lowerCallEx`'s `EMember` arm always took
+  the local-receiver branch, calling `lowerExpr` on the receiver. For the
+  #6841 repro (`val NativeShadow = 0; NativeShadow.Sub.Rec(message =
+  "boom")`), that recursed into `lowerMember(ctx, insns, EPath(["NativeShadow"]),
+  "Sub")` trying to read a `.Sub` field off the local `Int` — the reported
+  unhandled `System.Exception`.
+- Separately, `callKeyOf` (the registry-key deriver, also used by
+  `llvm_bridge.l`'s reachability walk) and `lowerConstructCall`'s own
+  `name` derivation each only handled ONE level of `EMember` whose
+  receiver is itself a flat `EPath` — i.e. exactly a 2-segment qualified
+  call. A 3+-segment chain reaching either function un-collapsed (which
+  only happens under shadow-defeat, since `AliasRewriter` normally
+  collapses these to a flat `EPath` first) derived an empty key/name and
+  fell through to a panic, or — for `callKeyOf` specifically — silently
+  excluded the call from the reachability walk entirely (`key.length ==
+  0` skips `acc.add(key)`), a latent multi-package-bundling correctness
+  gap independent of this bug's crash symptom.
+
+**Fix.** Added `flattenMemberPathSegs(e: Expr): Option[List[String]]`
+(`llvm_codegen.l`), a recursive `EMember`/`EPath` flattener with no depth
+limit. `callKeyOf` and `lowerConstructCall`'s `name` derivation now both
+route through it (generalizing both to arbitrary depth; unchanged
+behavior for every previously-working shape, since a flat `EPath` or a
+2-segment `EMember` flattens identically to before). Added
+`tryLowerQualifiedCallee` — called from `lowerCallEx`'s `EMember` arm
+BEFORE it commits to the local-receiver interpretation — which flattens
+the WHOLE callee chain, and, mirroring the type checker's own resolution
+order, tries (in order) a `ctx.sigs` free-function match (self-package-
+qualified, then as-written), a generic-function match, then the
+record/union/generic-record/generic-union-case/distinct-type construction
+registries (factored out of `lowerConstructCall` into a new shared
+`tryLowerConstruct`, non-panicking, returning `Option[NVal]`); `None` when
+nothing matches, so the caller falls through unchanged to the existing
+local-receiver/UFCS lowering. The `ctx.sigs`-hit arg-binding + async-leaf-
+intercept logic (`Std.Time.sleepMillis`, `Std.Process.runCapture*`) was
+factored out of the original bottom-of-`lowerCallEx` registry lookup into
+a shared `lowerResolvedSigCall`, used by both the pre-existing path and
+the new fallback — purely a dedup, no behavior change on the pre-existing
+path.
+
+**Verification.** Bootstrapped from the published NuGet `lyric` 0.6.1 tool
+as a stage-0 seed (this sandbox's network policy blocks the normal
+release-download bootstrap) through `./scripts/bootstrap.sh --stage 1` and
+a full AOT `make lyric` build of the modified source. Three real
+`lyric build --target native` + run repros, each asserting via process
+exit code (native has no working cross-package `println` yet — see
+below):
+- The exact #6841 repro (`val NativeShadow = 0; val e =
+  NativeShadow.Sub.Rec(message = "boom")`) — previously an unhandled
+  `System.Exception` crash — now builds and runs, exit `42` (both the
+  package construction AND the shadowing local's own value of `0` resolve
+  correctly, confirming the local is not silently miscompiled by the new
+  tier).
+- The same shape with a qualified FREE FUNCTION call instead of record
+  construction (`val FnShadow = 0; FnShadow.Sub.qux()` against a real
+  `FnShadow.Sub.qux(): Int`) — previously the same crash class, not
+  covered by #6838/#6840's construction-only fix on any backend — now
+  resolves to the package function, exit `7`.
+- A genuine local-value UFCS method chain with NO real matching package
+  member (`val FbShadow = FbShadow(Sub = FbBox(tag = 1)); FbShadow.Sub.qux()`
+  resolving a local UFCS `.qux()` method, no `FbShadow.Sub` package
+  exists) — confirms the new fallback correctly returns `None` and falls
+  through to local resolution unchanged, exit `3`.
+
+`alias_rewriter_self_test.l` (37/37, confirming the "leave AliasRewriter
+alone" conclusion above didn't regress anything) and `llvm_heap_self_test.l`
+(22/35, unchanged from the pre-fix baseline — all 13 failures are this
+sandbox's pre-existing missing ASan runtime libraries at link time,
+`cannot find .../libclang_rt.asan-x86_64.a`, unrelated to this change)
+both re-run clean after `lyric fmt --write`.
+
+**Files changed:** `lyric-compiler/lyric/llvm_codegen.l`
+(`flattenMemberPathSegs`, `tryLowerQualifiedCallee`, `tryLowerConstruct`,
+`lowerResolvedSigCall`, and the `callKeyOf`/`lowerConstructCall`/
+`lowerCallEx` call sites updated to use them).
+
+**Closes:** #6841 (the tracked native crash) and #6842 (the "root cause"
+follow-up — investigated, and its literal proposal rejected with evidence
+in favor of this per-backend fallback, completing the same additive-tier
+pattern D-progress-871/D-progress-872 already established for MSIL/JVM).
+
+**Related:** #6838, PR #6840, D-progress-855, D-progress-871,
+D-progress-872 (the MSIL/JVM fixes this completes platform parity with).
+The pre-existing, unrelated native multi-package `println` cross-package
+resolution gap D-progress-872 flagged is still open and untouched by this
+entry.
