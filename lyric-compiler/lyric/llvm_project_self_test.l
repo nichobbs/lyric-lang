@@ -303,9 +303,105 @@ test "project build injects the manifest's [package].version as the well-known v
   }
   val noArgs: List[String] = newList()
   match Process.runCapture(stem, noArgs, 60000) {
-    case Ok(res) -> assertTrue(Str.contains(res.stdout, "1.2.3"), "manifest version \"1.2.3\" substituted into @build_const(\"version\"), got: " + res.stdout)
+    case Ok(res) -> assertTrue(
+      Str.contains(res.stdout, "1.2.3"),
+      "manifest version \"1.2.3\" substituted into @build_const(\"version\"), got: " + res.stdout
+    )
     case Err(e) -> panic("binary could not be started: " + e)
   }
+}
+
+test "qualified record construction survives a local shadowing the head segment (--target native, #6841)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj7.Sub",
+      source = "package Proj7.Sub\n" + "pub record Rec {\n" + "  pub message: String\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj7.App",
+      source = "package Proj7.App\n" + "import Proj7.Sub\n" + "func main(): Int {\n" + "  val Proj7 = 0\n" +
+        "  val e = Proj7.Sub.Rec(message = \"boom\")\n" +
+        "  if e.message == \"boom\" and Proj7 == 0 {\n" +
+        "    return 42\n" +
+        "  }\n" +
+        "  1\n" +
+        "}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(
+    outcome.exitCode,
+    42,
+    "qualified record construction resolves to the package despite the shadowing local (#6841)"
+  )
+}
+
+test "qualified free function call survives a local shadowing the head segment (--target native, #6841)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj8.Sub",
+      source = "package Proj8.Sub\n" + "pub func qux(): Int {\n" + "  99\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj8.App",
+      source = "package Proj8.App\n" + "import Proj8.Sub\n" + "func main(): Int {\n" + "  val Proj8 = 0\n" +
+        "  val v = Proj8.Sub.qux()\n" +
+        "  if v == 99 and Proj8 == 0 {\n" +
+        "    return 7\n" +
+        "  }\n" +
+        "  1\n" +
+        "}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(
+    outcome.exitCode,
+    7,
+    "qualified free function call resolves to the package despite the shadowing local (#6841)"
+  )
+}
+
+test "a genuine local-value UFCS chain with no matching package member still resolves locally (--target native, #6841 regression guard)" {
+  // A real sibling package `Proj9.Sub` is in scope (so the fallback added
+  // for #6841 has something to probe), but it declares no `qux` — the new
+  // tier must return `None` and fall through to the pre-existing
+  // local-receiver/UFCS lowering unchanged, not misresolve or drop the
+  // local `Proj9` record's own field access.
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj9.Sub",
+      source = "package Proj9.Sub\n" + "pub func other(): Int {\n" + "  1\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj9.App",
+      source = "package Proj9.App\n" + "import Proj9.Sub\n" + "pub record FbBox {\n" + "  pub tag: Int\n" + "}\n" +
+        "pub func FbBox.qux(self: in FbBox): Int {\n" +
+        "  55\n" +
+        "}\n" +
+        "pub record Proj9 {\n" +
+        "  pub Sub: FbBox\n" +
+        "}\n" +
+        "func main(): Int {\n" +
+        "  val Proj9 = Proj9(Sub = FbBox(tag = 1))\n" +
+        "  val v = Proj9.Sub.qux()\n" +
+        "  if v == 55 {\n" +
+        "    return 3\n" +
+        "  }\n" +
+        "  1\n" +
+        "}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 3, "local UFCS method chain still resolves when no package match exists")
 }
 
 test "project build with no packages fails loudly rather than compiling an empty binary" {
