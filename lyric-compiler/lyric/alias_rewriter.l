@@ -1343,7 +1343,8 @@ func rewriteFieldDecl(aliases: in List[String], f: in FieldDecl): FieldDecl {
     name = f.name,
     ty = rewriteTypeExpr(aliases, f.ty),
     dflt = d,
-    span = f.span
+    span = f.span,
+    trailingAnnotationCount = f.trailingAnnotationCount
   )
 }
 
@@ -1971,7 +1972,8 @@ func rewriteConfigField(aliases: in List[String], f: in ConfigField): ConfigFiel
     name = f.name,
     ty = rewriteTypeExpr(aliases, f.ty),
     default = rewriteOptExprSelfFiltered(aliases, f.default),
-    span = f.span
+    span = f.span,
+    trailingAnnotationCount = f.trailingAnnotationCount
   )
 }
 

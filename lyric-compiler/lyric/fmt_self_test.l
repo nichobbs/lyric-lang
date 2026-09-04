@@ -2276,3 +2276,99 @@ test "bare '..' inline type-refinement bound round trips (fourth rangeBoundStr r
   val acc = format(parse(src))
   assertTrue(Str.contains(acc, "x: Int range 0 .. 10"), "bare '..' inline type refinement: preserved verbatim")
 }
+
+// `OpaqueTypeDecl.annotations` (grammar: `'opaque' 'type' IDENT
+// [GenericParams] [WhereClause] [Annotation...] [Body]`) is a TRAILING
+// annotation position — `@projectable` sits AFTER the name, on the same
+// line, e.g. `opaque type User @projectable { ... }`. `opaqueDoc` was
+// rendering these as their own LEADING lines (the position every other
+// item kind's annotations use), which relocated `@projectable` to
+// BEFORE `opaque type` on reformat — corrupting the token sequence
+// (caught by the loss-check, never actually fixed until now; same bug
+// shape as the other #2280 losslessness gaps). `annotationsInlineSuffix`
+// renders them inline on the header line instead. Covers both the
+// with-body and bodyless (extern-handle) forms.
+test "opaque type's trailing annotation stays on the header line instead of being hoisted before it (#2280)" {
+  val src = "package P\n\nopaque type User @projectable {\n  id: Int\n}\n\nopaque type Handle @projectable\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "opaque trailing annotation: round-trips")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "opaque type User @projectable {"),
+    "opaque trailing annotation: with-body form stays inline on the header line"
+  )
+  assertTrue(
+    Str.contains(acc, "opaque type Handle @projectable"),
+    "opaque trailing annotation: bodyless form stays inline on the header line"
+  )
+}
+
+// An opaque type combines a genuine LEADING annotation (`item.annotations`
+// — `@stable`, rendered as its own line before `opaque type`, unaffected
+// by this fix) with the TRAILING `od.annotations` (`@projectable`,
+// rendered inline) — confirms the two annotation positions the grammar
+// distinguishes don't collide or get swapped.
+test "opaque type combines a leading annotation with the trailing one correctly" {
+  val src = "package P\n\n@stable(since = \"0.1\")\npub opaque type User @projectable {\n  id: Int\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "leading + trailing opaque annotations: round-trips")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "@stable(since = \"0.1\")\npub opaque type User @projectable {"),
+    "leading + trailing opaque annotations: both preserved in their own distinct positions"
+  )
+}
+
+// `FieldDecl`'s grammar (`[ 'var' ] IDENT ':' Type [ '=' Expr ]
+// [ Annotation ]`) places its OWN trailing annotation after the type
+// (and default, if any) on the same line, e.g. `passwordHash: String
+// @hidden` — distinct from a leading annotation written on the
+// preceding line, e.g. `@proto_field(1)\nid: Long` (already covered by
+// the "field annotations stay with their field" test above).
+// `parseFieldDecl` concatenates both positions into one `annotations`
+// list with no marker, so `fieldMemberLines` rendered every entry as a
+// leading line — hoisting `@hidden` up before the field it annotates on
+// reformat. `FieldDecl.trailingAnnotationCount` records the split so the
+// formatter can render each group in its own place (same bug shape as
+// the opaque-type-level fix above, one AST layer down). Covers a record
+// field (which `fieldMemberLines` also backs for exposed records,
+// opaque-type fields, and `config { }` fields).
+test "record field's trailing annotation stays on the field's own line instead of being hoisted above it (#2280)" {
+  val src = "package P\n\nrecord Account {\n  accountId: Int\n  passwordHash: String @hidden\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "field trailing annotation: round-trips")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "passwordHash: String @hidden"),
+    "field trailing annotation: stays inline on the field's own line"
+  )
+}
+
+// A field combines a genuine LEADING annotation with its own TRAILING
+// one — confirms the split doesn't collide or reorder either position,
+// mirroring the opaque-type-level combined test above.
+test "field combines a leading annotation with its own trailing one correctly" {
+  val src = "package P\n\nrecord Account {\n  @proto_field(1)\n  passwordHash: String @hidden\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "leading + trailing field annotations: round-trips")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "@proto_field(1)\n  passwordHash: String @hidden"),
+    "leading + trailing field annotations: both preserved in their own distinct positions"
+  )
+}
+
+// `config { }` fields (`ConfigField`) support the identical leading +
+// trailing split via the same `parseSameLineTrailingAnnotations` parser
+// helper — `configDoc`/`configFieldLine` had the same bug, fixed the
+// same way.
+test "config field's trailing annotation stays on the field's own line instead of being hoisted above it (#2280)" {
+  val src = "package P\n\nconfig AppConfig {\n  port: Int = 8080 @sensitive\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "config field trailing annotation: round-trips")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "port: Int = 8080 @sensitive"),
+    "config field trailing annotation: stays inline on the field's own line"
+  )
+}

@@ -862,6 +862,23 @@ pub func annotationLines(anns: in List[Annotation]): List[String] {
   acc
 }
 
+/// Renders annotations that the grammar places AFTER a declaration's
+/// name/generics/where-clause instead of before it (e.g.
+/// `OpaqueTypeDecl`'s `[Annotation...]` between `[WhereClause]` and the
+/// body, as in `opaque type User @projectable { ... }`) as a
+/// space-prefixed suffix for the header line, rather than as their own
+/// leading lines — which would silently relocate them to BEFORE the
+/// declaration keyword on reformat (#2280).
+pub func annotationsInlineSuffix(anns: in List[Annotation]): String {
+  var s = ""
+  var i = 0
+  while i < anns.count {
+    s = s + " " + annotationStr(anns[i])
+    i = i + 1
+  }
+  s
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §7a. Width-driven pretty-printer infrastructure (Phase 5 §M5.3 stage 9,
 // D-progress-145).
