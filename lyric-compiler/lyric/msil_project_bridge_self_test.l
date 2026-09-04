@@ -270,6 +270,49 @@ test "bare call to a facade-transitive function resolves bundle-wide" {
   )
 }
 
+// Issue #6849: the MULTI-candidate path of the bundle-wide fallback — two
+// packages (`SubA`, `SubB`) each declare `pub func helper`, and `App` imports
+// ONLY the facade that imports both, then calls `helper` bare. Neither
+// declarer is `App`'s own package nor a DIRECT import of it, so codegen's
+// local-FQN and direct-import tiers both miss and `findBundleFqnByName` runs
+// with `candidates.count > 1` — the branch the single-declarer test above
+// never reaches. This pins that a bare call with multiple bundle-wide
+// declarers still resolves (no T0123 panic) and runs, exercising the count>1
+// path.
+//
+// It deliberately does NOT assert WHICH declarer wins: both `helper`s return
+// their argument, so the result is 42 regardless. `findBundleFqnByName`'s
+// own-package and direct-import tie-break tiers are not reachable through this
+// call site (an own-package declarer resolves earlier via `localFqn`/
+// `funcTokens`; a directly-imported declarer resolves earlier via
+// `findImportedFqn`), so the only reachable multi-candidate case is two
+// mutually-unimported transitive declarers, whose winner is the pre-existing
+// first-vs-last-registered imprecision tracked under #4424 — pinning a
+// specific winner here would cement behavior that issue may change.
+test "bare call with multiple bundle-wide declarers resolves without panic" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("XMulti.SubA", "package XMulti.SubA\n" + "\n" + "pub func helper(x: in Int): Int { x }\n"))
+  packages.add(mkPkg("XMulti.SubB", "package XMulti.SubB\n" + "\n" + "pub func helper(x: in Int): Int { x }\n"))
+  packages.add(
+    mkPkg(
+      "XMulti.Facade",
+      "package XMulti.Facade\n" + "\n" + "import XMulti.SubA\n" + "import XMulti.SubB\n" + "\n" +
+        "pub func facadeFn(): Int { XMulti.SubA.helper(0) + XMulti.SubB.helper(0) }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XMulti.App",
+      "package XMulti.App\n" + "\n" + "import XMulti.Facade\n" + "\n" + "func main(): Unit {\n" +
+        "  println(helper(42))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xmulti", packages, "XMulti")
+  assertEqualInt(result.exitCode, 0, "bare_call_multi_declarer_resolves: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "bare_call_multi_declarer_resolves: stdout matches expected")
+}
+
 // Chained cross-package Int calls.
 test "cross-package chained Int calls" {
   val packages: List[ProjectPackagePayload] = newList()
