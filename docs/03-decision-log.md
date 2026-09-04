@@ -41055,3 +41055,133 @@ shadow-defeat fixes under the same issue number, unaffected by this change.
 The `T0123` codegen panic (D-progress-656/658, #5621/#5516) stays exactly as
 it is — a genuine "checker and codegen disagree" guard; this fix removes the
 one path that reached it without a real compiler bug behind it.
+
+
+## D-progress-876 — MSIL codegen: a bare call to a function reachable only *transitively* through a facade package's own imports now resolves via a bundle-wide fallback instead of panicking T0123 (#6849)
+
+**Context.** A bare (unqualified) call to a `pub func` that is reachable at
+the use-site only *transitively* — the caller imports a facade package, the
+facade imports the package that actually declares the function, and the caller
+calls the re-exported name with no qualifier and without importing the
+declaring package directly — panicked at emit time on 0.6.x:
+
+```
+error[T0123] … unresolved call to 'helper' … no function token could be
+resolved for this callee
+```
+
+This is the "facade re-export" / "kernel-host re-export" idiom (a facade
+surfaces names from its sub-packages; a consumer imports only the facade). It
+is the shape Testamur's package facades use, and it blocked building that
+project against a current compiler.
+
+**Root cause — not a resolution regression; a resolution *gap* that predates
+0.5.0.** MSIL codegen's bare-call resolver
+(`lowerBuiltinOrStaticCallMsil`'s static-call branch, `msil/codegen.l`)
+resolves a bare callee against only (a) the current package's own FQN and
+(b) its **direct** imports (`cctx.pkgImports[pkg]`, populated solely from
+`file.imports`), via `findImportedFqn`/`findImportedFqnWithHint`. It has no
+bundle-wide fallback. The self-hosted **type checker**, by contrast, resolves
+the same bare name through a deliberately unscoped last-resort match
+(`symTableTryFindOne`'s tier 3, `typechecker_symbols.l`) that ignores the
+import graph entirely — kept permissive on purpose to support the pervasive
+`Std.Core` implicit-prelude idiom (`Some`/`None`/`Ok`/`Err` used with no
+`import Std.Core`). So the callee legitimately type-checks via a path codegen
+never mirrored — for plain **function** calls only. Record/union **constructor**
+calls already had the analogous bundle-wide fallback (`unionCaseCtorByName`,
+populated per-package unconditionally, disambiguated by `pickCaseFqnByScope`) —
+which is exactly why the `Std.Core` prelude (all constructor calls) never
+tripped this. A `pub func` was the one call-kind missing it.
+
+`findImportedFqn`/`cctx.pkgImports` are byte-identical between v0.5.0
+(`44a5259`) and HEAD — the resolution logic never regressed. What changed is
+*detection*: #6629 (`cc9ce5e4`, between 0.6.1 and 0.6.2) replaced this branch's
+prior silent defensive default (push the args, yield `MObject` — the
+D-progress-656/658 / #5621/#5516 silent-drop class: builds clean, emits corrupt
+IL) with the loud `T0123` panic. On 0.5.0 the same call was **silently
+miscompiled**, not correctly resolved; #6629 unmasked a latent gap that has
+existed since cross-package FQN calls first landed.
+
+**Fix.** Give ordinary function calls the same bundle-wide, import-independent
+last-resort fallback constructors already have. A new
+`cctx.bundleFuncFqnByName: Map[String, List[String]]` is populated bundle-wide
+(in `preSeedBundleAsyncRetTypesMsil`'s `IFunc` seeding arm, beside the existing
+`bundleFuncFqns` seeding, so every package's functions are registered before
+any package's own codegen pass) and consulted by a new `findBundleFqnByName`
+tie-break only after the existing local-package and direct-import resolution
+both miss. The tie-break mirrors `pickCaseFqnByScope`'s order exactly: a
+candidate in the caller's own package wins; else the first direct import (in
+declared order) that matches; else the first bundle-registered candidate;
+`""` (→ the unchanged `T0123` panic) if none. Single-file compiles never run
+the bundle seeding, so a genuinely-unresolved bare call there stays a real
+error. The `T0123` panic itself is untouched and still fires for genuine gaps
+(mono not specialising, `@cfg` erasure dropping a definition) — it simply stops
+firing when a real bundle-wide declaration exists that the caller never
+directly imported.
+
+**Visibility filter (#6851).** The by-name map is seeded ONLY with functions
+carrying an explicit `pub`/`internal` modifier (`decl.visibility == Some(_)`);
+package-private functions (`None`) are never registered. Every candidate
+`findBundleFqnByName` can return is in a package OTHER than the caller's (the
+own-package path is resolved earlier via `localFqn`/`funcTokens`), so a
+package-private candidate is by definition not a legal cross-package target —
+and, crucially, codegen's tie-break order is independent of the type checker's
+tier-3 (last-registered-wins), so without this filter a bare call the checker
+validated against a legitimate `pub` target could silently codegen a call to a
+same-named package-private function in an unrelated, unimported package (which
+the checker's own `checkImportedVisibility`/T0097 gate would have rejected) —
+a silent cross-package privacy bypass, exactly the miscompile class this entry
+says the fallback must never introduce. This gate mirrors T0097 and is
+strictly stronger than the #4424 first-vs-last-registered imprecision, which is
+only ever between equally-legal `pub` candidates.
+
+**Async SM field-count pre-scan gets the same tier (#6852).** MSIL emits async
+functions as a state machine whose awaiter-field count is predicted by a
+pre-scan (`countSmFieldsMsil` → `collectAwaitTypesExprPB` →
+`inferCallReturnTypePB` → `resolveQualifiedFreeCallRetTypePB`) *separately* from
+real emission. Teaching only the emission resolver the bundle-wide tier would
+make an `await` of a facade-transitive bare async call resolve at emission
+(allocating an awaiter field) while the pre-scan still typed it `MObject` and
+skipped it — under-counting SM fields and shifting every later `FieldDef`/
+`MethodDef` token (the #5177-class silent IL corruption; before this PR the
+call safely hit the loud T0123 instead). So `resolveQualifiedFreeCallRetTypePB`
+gets the identical bare-only, after-local/direct-miss bundle tier via the same
+`findBundleFqnByName` (refactored to take a package name rather than a
+`FuncCtx`, its only prior use). It resolves the bundle FQN against
+`funcRetTypes` — NOT `pbFuncRetTypes`, which is deliberately the *bare* declared
+return, never `Task`-wrapped — because `preSeedBundleAsyncRetTypesMsil` seeds a
+`Task`/`Task[T]` placeholder for every async function into `funcRetTypes`
+bundle-wide before any package pass, so an async candidate is correctly
+`Task`-typed there regardless of visitation order (sidestepping the #5606 caveat
+that applies only to plain functions). A regression test awaits a
+facade-transitive bare async call sandwiched between two same-package awaits and
+asserts the value threaded through the last await is uncorrupted.
+
+**#6287 ambiguity diagnostic — untouched.** `checkBareNameAmbiguity` is scoped
+to tier-2 (direct-import) collisions and runs in the type checker, before
+codegen; a bare name declared by 2+ *directly-imported* packages is rejected
+there and never reaches this fallback. The residual case the fallback resolves
+is exactly the class the checker's own tier 3 also leaves permissive; the
+tie-break resolves it the same deterministic way `pickCaseFqnByScope` already
+does for union cases — no new ambiguity semantics. The pre-existing
+first-vs-last-registered imprecision in the truly-ambiguous
+mutually-unimported case (the principled fix is threading the checker's
+resolved FQN through to codegen) is unchanged and remains tracked under #4424.
+
+**JVM parity — no gap.** The self-hosted JVM backend's `resolveGeneralFuncSig`
+(`jvm/codegen/04_calls.l`) already performs an unscoped bundle-wide bare-name
+lookup (`mapGet(ctx.funcSigs, funcName)`) as its final fallback with no
+import-list restriction — confirmed empirically: the repro builds clean on
+`--target jvm` with zero `jvm/*.l` changes. So this is an MSIL-only fix that
+brings MSIL to parity with an already-correct JVM path, not a one-platform
+implementation of a cross-target construct.
+
+**Verification.** The 3-package facade-chain repro builds clean on both
+`--target dotnet` and `--target jvm` (was `T0123` on dotnet). New self-test in
+`msil_project_bridge_self_test.l` ("bare call to a facade-transitive function
+resolves bundle-wide", exit 0, stdout `42`) → `msil_project_bridge` 49/49;
+`cross_package_generics` 10/10 (no resolution regression). A negative "still
+panics T0123" self-test was deliberately not added: a genuinely
+bundle-wide-undeclared bare call fails earlier at type-check (`T0020` unknown
+name) and never reaches codegen's `T0123`, so no constructible negative case
+remains for a plain function post-fix.

@@ -32240,6 +32240,28 @@ which addressed a *valid* qualified record/union-case construction.
 
 **Related:** `docs/03-decision-log.md` D-progress-875 (full account), #6838.
 
+### MSIL: a bare call reachable only transitively through a facade's imports resolves via a bundle-wide fallback (#6849)
+
+A bare (unqualified) call to a `pub func` reachable at the use-site only
+*transitively* — the caller imports a facade package, the facade imports the
+declaring package, and the caller calls the re-exported name without importing
+the declarer directly (the facade re-export idiom) — panicked
+`error[T0123] … no function token could be resolved` on 0.6.x. MSIL codegen
+resolved bare callees against only the current package + its **direct** imports,
+while the type checker resolves the same name via an unscoped bundle-wide
+last-resort match (kept permissive for the `Std.Core` implicit-prelude idiom).
+Constructor calls already had the analogous bundle-wide fallback
+(`unionCaseCtorByName`); plain functions were the one call-kind missing it. Not
+a regression — the gap predates 0.5.0 (which silently *miscompiled* the call);
+#6629 turned that silent drop into the loud panic. Fixed by a new
+`cctx.bundleFuncFqnByName` bundle-wide map + `findBundleFqnByName` tie-break
+(own-package → direct-import order → first), consulted only after local and
+direct-import resolution both miss; the `T0123` panic still fires for genuine
+gaps. The JVM backend already had this fallback (`resolveGeneralFuncSig`), so
+this is MSIL-brought-to-parity, not a one-platform construct.
+
+**Related:** `docs/03-decision-log.md` D-progress-876 (full account), #6849.
+
 ### Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
 
 `native/plan/08-work-items.md`'s N9.3 (`Std.HttpServer` native twin,

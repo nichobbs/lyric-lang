@@ -230,6 +230,172 @@ test "cross-package qualified call" {
   assertEqual(Str.trim(result.stdout), "42", "cross_package_qualified_call: stdout matches expected")
 }
 
+// Issue #6849: a bare (unqualified) call to a `pub func` reachable only
+// TRANSITIVELY through a facade package's own imports — the App package
+// imports ONLY the Facade package, which itself imports (and uses) the Sub
+// package, but never re-declares `helper`. Codegen's bare-call resolver
+// previously consulted only the current package's own FQN + its DIRECT
+// imports (`App` never directly imports `Sub`), so this hit an unresolved-
+// callee T0123 panic even though the typechecker's unscoped bundle-wide
+// resolution had already accepted the call (#6849 fix: bundle-wide fallback
+// mirroring `unionCaseCtorByName`'s existing constructor resolution).
+test "bare call to a facade-transitive function resolves bundle-wide" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("XFacade.Sub", "package XFacade.Sub\n" + "\n" + "pub func helper(x: in Int): Int { x }\n"))
+  packages.add(
+    mkPkg(
+      "XFacade.Facade",
+      "package XFacade.Facade\n" + "\n" + "import XFacade.Sub\n" + "\n" +
+        "pub func facadeFn(): Int { XFacade.Sub.helper(0) }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XFacade.App",
+      "package XFacade.App\n" + "\n" + "import XFacade.Facade\n" + "\n" + "func main(): Unit {\n" +
+        "  println(helper(42))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xfacade", packages, "XFacade")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "bare_call_facade_transitive_resolves_bundle_wide: exit 0 (stderr=" + result.stderr + ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    "42",
+    "bare_call_facade_transitive_resolves_bundle_wide: stdout matches expected"
+  )
+}
+
+// Issue #6849: the MULTI-candidate path of the bundle-wide fallback — two
+// packages (`SubA`, `SubB`) each declare `pub func helper`, and `App` imports
+// ONLY the facade that imports both, then calls `helper` bare. Neither
+// declarer is `App`'s own package nor a DIRECT import of it, so codegen's
+// local-FQN and direct-import tiers both miss and `findBundleFqnByName` runs
+// with `candidates.count > 1` — the branch the single-declarer test above
+// never reaches. This pins that a bare call with multiple bundle-wide
+// declarers still resolves (no T0123 panic) and runs, exercising the count>1
+// path.
+//
+// It deliberately does NOT assert WHICH declarer wins: both `helper`s return
+// their argument, so the result is 42 regardless. `findBundleFqnByName`'s
+// own-package and direct-import tie-break tiers are not reachable through this
+// call site (an own-package declarer resolves earlier via `localFqn`/
+// `funcTokens`; a directly-imported declarer resolves earlier via
+// `findImportedFqn`), so the only reachable multi-candidate case is two
+// mutually-unimported transitive declarers, whose winner is the pre-existing
+// first-vs-last-registered imprecision tracked under #4424 — pinning a
+// specific winner here would cement behavior that issue may change.
+test "bare call with multiple bundle-wide declarers resolves without panic" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("XMulti.SubA", "package XMulti.SubA\n" + "\n" + "pub func helper(x: in Int): Int { x }\n"))
+  packages.add(mkPkg("XMulti.SubB", "package XMulti.SubB\n" + "\n" + "pub func helper(x: in Int): Int { x }\n"))
+  packages.add(
+    mkPkg(
+      "XMulti.Facade",
+      "package XMulti.Facade\n" + "\n" + "import XMulti.SubA\n" + "import XMulti.SubB\n" + "\n" +
+        "pub func facadeFn(): Int { XMulti.SubA.helper(0) + XMulti.SubB.helper(0) }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XMulti.App",
+      "package XMulti.App\n" + "\n" + "import XMulti.Facade\n" + "\n" + "func main(): Unit {\n" +
+        "  println(helper(42))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xmulti", packages, "XMulti")
+  assertEqualInt(result.exitCode, 0, "bare_call_multi_declarer_resolves: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "bare_call_multi_declarer_resolves: stdout matches expected")
+}
+
+// Issue #6851: the bundle-wide fallback must NEVER select a package-private
+// function in an unrelated, unimported package. `XPriv.Priv` (registered
+// FIRST) declares a package-private `func helper` returning -999; `XPriv.Sub`
+// declares the legitimate `pub func helper` returning its argument; the app
+// imports only the facade that imports `Sub`, and calls `helper` bare. The
+// package-private declarer is not `pub`/`internal`, so it must be excluded
+// from `bundleFuncFqnByName` at seeding — leaving `Sub.helper` the only
+// candidate, so the call resolves to it (stdout 42), never to the private
+// -999. Without the visibility filter, the private declarer (seeded first)
+// would win codegen's `candidates[0]` tie-break and the program would print
+// -999 — a silent cross-package privacy bypass the type checker's own T0097
+// gate would have rejected. Stronger than the #4424 first-vs-last-registered
+// imprecision (which is between equally-legal `pub` candidates): here the
+// excluded candidate was never a legal target at all.
+test "bundle-wide fallback never selects a package-private function (#6851)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  // Registered FIRST so it would win a visibility-blind candidates[0] tie-break.
+  packages.add(mkPkg("XPriv.Priv", "package XPriv.Priv\n" + "\n" + "func helper(x: in Int): Int { 0 - 999 }\n"))
+  packages.add(mkPkg("XPriv.Sub", "package XPriv.Sub\n" + "\n" + "pub func helper(x: in Int): Int { x }\n"))
+  packages.add(
+    mkPkg(
+      "XPriv.Facade",
+      "package XPriv.Facade\n" + "\n" + "import XPriv.Sub\n" + "\n" +
+        "pub func facadeFn(): Int { XPriv.Sub.helper(0) }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XPriv.App",
+      "package XPriv.App\n" + "\n" + "import XPriv.Facade\n" + "\n" + "func main(): Unit {\n" +
+        "  println(helper(42))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xpriv", packages, "XPriv")
+  assertEqualInt(result.exitCode, 0, "bare_call_skips_package_private: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "bare_call_skips_package_private: resolves pub target, not private -999")
+}
+
+// Issue #6850 review follow-up: `findBundleFqnByName`'s same-package /
+// direct-import tie-break tiers must key on EXACT package identity, not a
+// string prefix. `XNest.App.Inner` is a nested SUB-package of the caller
+// (`XNest.App`) — a DIFFERENT package whose name merely starts with
+// `XNest.App.`. It declares a `pub helper` returning -999; `XNest.Deep`
+// declares the intended `pub helper` returning its argument and is registered
+// FIRST (so it is `candidates[0]`). `App` imports only `Facade` (which imports
+// both), so neither declarer is App's own package or a direct import — the
+// call reaches `findBundleFqnByName` with both candidates. A prefix-based
+// tier-1 test (`startsWith(cand, "XNest.App.")`) would wrongly classify
+// `XNest.App.Inner.helper` as "same package" and emit the -999 call; the exact
+// test (`cand == "XNest.App.helper"`) correctly skips it, falling through to
+// `candidates[0]` = `XNest.Deep.helper` → 42. Same silent-mis-resolution class
+// as #6851/#6852.
+test "bundle-wide tie-break keys on exact package identity, not a name prefix (#6850)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  // Registered FIRST → candidates[0], so the exact-match fix resolves here.
+  packages.add(mkPkg("XNest.Deep", "package XNest.Deep\n" + "\n" + "pub func helper(x: in Int): Int { x }\n"))
+  packages.add(
+    mkPkg("XNest.App.Inner", "package XNest.App.Inner\n" + "\n" + "pub func helper(x: in Int): Int { 0 - 999 }\n")
+  )
+  packages.add(
+    mkPkg(
+      "XNest.Facade",
+      "package XNest.Facade\n" + "import XNest.Deep\n" + "import XNest.App.Inner\n" + "\n" +
+        "pub func facadeFn(): Int { XNest.Deep.helper(0) + XNest.App.Inner.helper(0) }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XNest.App",
+      "package XNest.App\n" + "import XNest.Facade\n" + "\n" + "func main(): Unit {\n" + "  println(helper(42))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xnest", packages, "XNest")
+  assertEqualInt(result.exitCode, 0, "bundle_tie_break_exact_pkg: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "42",
+    "bundle_tie_break_exact_pkg: nested sub-package not treated as same package"
+  )
+}
+
 // Chained cross-package Int calls.
 test "cross-package chained Int calls" {
   val packages: List[ProjectPackagePayload] = newList()
@@ -408,6 +574,64 @@ test "async func awaiting a call into a LATER package does not corrupt an unrela
     "failed: boom",
     "async_forward_await_does_not_corrupt_later_package: stdout matches expected"
   )
+}
+
+// Issue #6852 (sibling to #6849/#6850): the SM awaiter-field-count PRE-SCAN
+// (`resolveQualifiedFreeCallRetTypePB`, consumed by `countSmFieldsMsil` via
+// `collectAwaitTypesExprPB`/`inferCallReturnTypePB`) was never given the
+// bundle-wide facade-transitive fallback the real emission resolver got in
+// #6850. `App` imports ONLY `Facade`, which imports (and uses) `Sub`; `App`
+// never imports `Sub` directly, yet its async `caller` awaits `Sub`'s
+// `computeMiddle` BARE. Before the fix, the pre-scan sees an unresolved
+// (`MObject`) return for that await, `isTaskTypeMsil` rejects it, and
+// `caller`'s predicted SM field count comes up one short of what real codegen
+// (which DOES resolve the call, via `findBundleFqnByName`) emits — shifting
+// the FieldDef token allocated to the THIRD await's resume value within the
+// same SM class. Sandwiching the facade-transitive bare await between two
+// ordinary same-package awaits and checking the value threaded through the
+// LAST await is still correct proves no field/token shift occurred.
+test "async facade-transitive bare await does not corrupt a later await in the same SM (#6852)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "XAsyncFacade.Sub",
+      "package XAsyncFacade.Sub\n" + "import Std.Core\n" + "\n" +
+        "pub async func computeMiddle(x: in Int): Int { x + 100 }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XAsyncFacade.Facade",
+      "package XAsyncFacade.Facade\n" + "import Std.Core\n" + "import XAsyncFacade.Sub\n" + "\n" +
+        "pub async func facadeFn(): Int {\n" +
+        "  await XAsyncFacade.Sub.computeMiddle(0)\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XAsyncFacade.App",
+      "package XAsyncFacade.App\n" + "import Std.Core\n" + "import XAsyncFacade.Facade\n" + "\n" +
+        "async func first(x: in Int): Int { x + 1 }\n" +
+        "\n" +
+        "async func third(x: in Int): Int { x * 10 }\n" +
+        "\n" +
+        "async func caller(n: in Int): Int {\n" +
+        "  val a = await first(n)\n" +
+        "  val b = await computeMiddle(a)\n" +
+        "  val c = await third(b)\n" +
+        "  c\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val result = await caller(1)\n" +
+        "  println(toString(result))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xasyncfacade", packages, "XAsyncFacade")
+  assertEqualInt(result.exitCode, 0, "async_facade_transitive_bare_await: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "1020", "async_facade_transitive_bare_await: later await value not corrupted")
 }
 
 // ─── Phase 3: cross-package record and union round-trips ─────────────────────
