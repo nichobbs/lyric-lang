@@ -230,6 +230,46 @@ test "cross-package qualified call" {
   assertEqual(Str.trim(result.stdout), "42", "cross_package_qualified_call: stdout matches expected")
 }
 
+// Issue #6849: a bare (unqualified) call to a `pub func` reachable only
+// TRANSITIVELY through a facade package's own imports — the App package
+// imports ONLY the Facade package, which itself imports (and uses) the Sub
+// package, but never re-declares `helper`. Codegen's bare-call resolver
+// previously consulted only the current package's own FQN + its DIRECT
+// imports (`App` never directly imports `Sub`), so this hit an unresolved-
+// callee T0123 panic even though the typechecker's unscoped bundle-wide
+// resolution had already accepted the call (#6849 fix: bundle-wide fallback
+// mirroring `unionCaseCtorByName`'s existing constructor resolution).
+test "bare call to a facade-transitive function resolves bundle-wide" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("XFacade.Sub", "package XFacade.Sub\n" + "\n" + "pub func helper(x: in Int): Int { x }\n"))
+  packages.add(
+    mkPkg(
+      "XFacade.Facade",
+      "package XFacade.Facade\n" + "\n" + "import XFacade.Sub\n" + "\n" +
+        "pub func facadeFn(): Int { XFacade.Sub.helper(0) }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XFacade.App",
+      "package XFacade.App\n" + "\n" + "import XFacade.Facade\n" + "\n" + "func main(): Unit {\n" +
+        "  println(helper(42))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xfacade", packages, "XFacade")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "bare_call_facade_transitive_resolves_bundle_wide: exit 0 (stderr=" + result.stderr + ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    "42",
+    "bare_call_facade_transitive_resolves_bundle_wide: stdout matches expected"
+  )
+}
+
 // Chained cross-package Int calls.
 test "cross-package chained Int calls" {
   val packages: List[ProjectPackagePayload] = newList()

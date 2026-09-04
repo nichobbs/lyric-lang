@@ -264,6 +264,21 @@ pub record CodegenCtx {
   // LATER package purely because that package hasn't been visited yet (#5177).
   // Never used for the token's numeric VALUE — only checked via containsKey.
   bundleFuncFqns: Map[String, Bool]
+  // Bundle-wide fallback for a bare (unqualified) call to a `pub func`
+  // reachable only TRANSITIVELY through a facade package's own imports —
+  // the plain-function analog of `unionCaseCtorByName` (issue #6849).
+  // Keyed by the function's SIMPLE name (e.g. "helper"), value is every FQN
+  // in the bundle declaring that name (e.g. ["Trepro.Sub.helper"]).
+  // `funcTokens`/`bundleFuncFqns` alone only resolve current-package +
+  // DIRECT imports (`cctx.pkgImports[pkg]`, from `file.imports` only); the
+  // typechecker resolves the same bare name via an unscoped bundle-wide
+  // tier-3 match, so a facade that imports a sub-package and a caller that
+  // imports only the facade previously hit an unresolved-callee T0123 panic
+  // even though the typechecker had already accepted the call. Populated
+  // bundle-wide in `preSeedBundleAsyncRetTypesMsil`'s `IFunc` arm (mirrors
+  // `bundleFuncFqns`'s own seeding there); disambiguated at each lookup site
+  // by `findBundleFqnByName`, mirroring `pickCaseFqnByScope`.
+  bundleFuncFqnByName: Map[String, List[String]]
   // Bundle-stable declared-type registries for the async-SM await pre-scan
   // (#5606 sibling fix, the lyric-docker `emitPhaseBAwait` count crash).
   // `inferCallReturnTypePB` types method-call receivers through these maps;
@@ -1974,6 +1989,7 @@ pub func newCodegenCtx(
     fieldFuncBareKeyArity = newMap(),
     funcTokens = funcToks,
     bundleFuncFqns = newMap(),
+    bundleFuncFqnByName = newMap(),
     pbFieldTypes = newMap(),
     pbMethodRetTypes = newMap(),
     pbFuncRetTypes = newMap(),
@@ -2687,6 +2703,18 @@ pub func preSeedBundleAsyncRetTypesMsil(
           val fqn = pkgName + "." + decl.name
           if not cctx.bundleFuncFqns.containsKey(fqn) {
             cctx.bundleFuncFqns.add(fqn, true)
+          }
+          match mapGet(cctx.bundleFuncFqnByName, decl.name) {
+            case Some(lst) -> {
+              if not lst.contains(fqn) {
+                lst.add(fqn)
+              }
+            }
+            case None -> {
+              val l: List[String] = newList()
+              l.add(fqn)
+              cctx.bundleFuncFqnByName.add(decl.name, l)
+            }
           }
           seedAsyncFuncRetTypePlaceholderMsil(cctx, pkgName, decl)
         }
@@ -12090,6 +12118,80 @@ func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in Li
   candidates[0]
 }
 
+// Bundle-wide fallback for a bare (unqualified) call to a `pub func` whose
+// only path to the caller's package is TRANSITIVE — reachable through a
+// facade package's own imports, not a DIRECT import of the caller (issue
+// #6849). The plain-function analog of `pickCaseFqnByScope`, over
+// `cctx.bundleFuncFqnByName` instead of `cctx.unionCaseCtorByName`.
+//
+// Candidates are first filtered to ones with a real resolvable token
+// (`funcTokens` — this package's own pass has run — or `bundleFuncFqns` —
+// pre-seeded bundle-wide, #5177) so this never returns a FQN the caller
+// below can't actually look up. Resolution order among the survivors:
+//   1. A candidate whose FQN starts with the current package name (a
+//      same-package declaration the direct-import/local-FQN checks above
+//      this call site already missed for some other reason).
+//   2. A candidate in one of the packages imported by the current package,
+//      in declared order (first import wins, matching the type checker's
+//      shadowing rule) — this is the #6849 case: the current package imports
+//      only a facade, and the facade (not the current package) imports the
+//      package that actually declares `funcName`, so this only fires when
+//      tier 1/2 above (direct local/import match) already missed.
+//   3. First resolvable candidate (deterministic fallback, matching
+//      `pickCaseFqnByScope`'s own final fallback).
+// Returns "" when `funcName` isn't in `bundleFuncFqnByName` at all, or none
+// of its candidates have a resolvable token — the call site's existing
+// T0123 panic still fires for a genuinely undeclared callee.
+func findBundleFqnByName(cctx: in CodegenCtx, fctx: in FuncCtx, funcName: in String): String {
+  match mapGet(cctx.bundleFuncFqnByName, funcName) {
+    case None -> ""
+    case Some(all) -> {
+      val candidates: List[String] = newList()
+      var ci = 0
+      while ci < all.count {
+        val cand = all[ci]
+        if cctx.funcTokens.containsKey(cand) or cctx.bundleFuncFqns.containsKey(cand) {
+          candidates.add(cand)
+        }
+        ci = ci + 1
+      }
+      if candidates.count == 0 {
+        return ""
+      }
+      if candidates.count == 1 {
+        return candidates[0]
+      }
+      val currentPkg = fctx.pkgName
+      val prefix1 = currentPkg + "."
+      var i = 0
+      while i < candidates.count {
+        if startsWith(candidates[i], prefix1) {
+          return candidates[i]
+        }
+        i = i + 1
+      }
+      match mapGet(cctx.pkgImports, currentPkg) {
+        case Some(imps) -> {
+          var ii = 0
+          while ii < imps.count {
+            val prefix2 = imps[ii] + "."
+            var j = 0
+            while j < candidates.count {
+              if startsWith(candidates[j], prefix2) {
+                return candidates[j]
+              }
+              j = j + 1
+            }
+            ii = ii + 1
+          }
+        }
+        case None -> ()
+      }
+      candidates[0]
+    }
+  }
+}
+
 // Qualifier-aware variant: when a case is written as `UnionName.CaseName`
 // (path.segments.count >= 2), `qualifier` is the penultimate segment
 // (e.g. `"Color"` in `Color.Same`).  Prefers the candidate whose
@@ -15055,6 +15157,20 @@ func lowerBuiltinOrStaticCallMsil(
               case Some(imps) -> findImportedFqnWithHint(cctx, imps, funcName, args.count, importRetHint)
               case None -> ""
             }
+            // Bundle-wide fallback (#6849): a bare call to a `pub func`
+            // reachable only TRANSITIVELY through a facade package's own
+            // imports — no DIRECT import of the declaring package from
+            // `fctx.pkgName` — falls through local-FQN and direct-import
+            // resolution above and would otherwise hit the T0123 panic
+            // below even though the typechecker's unscoped bundle-wide
+            // tier-3 match already accepted the call. Only consulted when
+            // both prior tiers missed, so it never overrides a real
+            // local/direct-import hit. See `findBundleFqnByName`'s doc.
+            val bundleFqn = if importedFqn.length == 0 and not cctx.funcTokens.containsKey(localFqn) {
+              findBundleFqnByName(cctx, fctx, funcName)
+            } else {
+              ""
+            }
             // A BARE (single-segment) call inside an instance method body
             // prefers a same-named sibling method over any free function —
             // matching the JVM backend's `ctx.selfClass` arm (which is
@@ -15076,6 +15192,8 @@ func lowerBuiltinOrStaticCallMsil(
               localFqn
             } else if importedFqn.length > 0 {
               importedFqn
+            } else if bundleFqn.length > 0 {
+              bundleFqn
             } else {
               ""
             }
