@@ -12124,10 +12124,16 @@ func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in Li
 // #6849). The plain-function analog of `pickCaseFqnByScope`, over
 // `cctx.bundleFuncFqnByName` instead of `cctx.unionCaseCtorByName`.
 //
-// Candidates are first filtered to ones with a real resolvable token
-// (`funcTokens` — this package's own pass has run — or `bundleFuncFqns` —
-// pre-seeded bundle-wide, #5177) so this never returns a FQN the caller
-// below can't actually look up. Resolution order among the survivors:
+// Candidates are filtered to ones with a real resolvable token (`funcTokens`
+// — this package's own pass has run — or `bundleFuncFqns` — pre-seeded
+// bundle-wide, #5177). Today this filter never actually drops a candidate:
+// `bundleFuncFqnByName` and `bundleFuncFqns` are populated together at the
+// same seeding site (`preSeedBundleAsyncRetTypesMsil`), so every candidate
+// is already in `bundleFuncFqns`. It is kept as a deliberate guard so a
+// future change that seeds the by-name map from a different (or wider) source
+// than `bundleFuncFqns` can't make this return an FQN the caller below can't
+// look up (mirrors `findImportedFqn`'s own containsKey guard).
+// Resolution order among the survivors:
 //   1. A candidate whose FQN starts with the current package name (a
 //      same-package declaration the direct-import/local-FQN checks above
 //      this call site already missed for some other reason).
@@ -15166,7 +15172,17 @@ func lowerBuiltinOrStaticCallMsil(
             // tier-3 match already accepted the call. Only consulted when
             // both prior tiers missed, so it never overrides a real
             // local/direct-import hit. See `findBundleFqnByName`'s doc.
-            val bundleFqn = if importedFqn.length == 0 and not cctx.funcTokens.containsKey(localFqn) {
+            //
+            // Gated to BARE calls (`qualifiedFqn.length == 0`, i.e.
+            // `path.segments.count < 2`): a bundle-wide same-name search is
+            // only ever correct for an unqualified callee. A written-qualified
+            // call (`Pkg.helper()`) that reached here with its `qualifiedFqn`
+            // not in `funcTokens` is a genuinely unresolved qualified callee —
+            // it must keep hitting the loud T0123 below, never silently
+            // re-resolve to some other package's same-named `helper` (that
+            // would reintroduce exactly the silent mis-resolution #6629 set out
+            // to eliminate).
+            val bundleFqn = if qualifiedFqn.length == 0 and importedFqn.length == 0 and not cctx.funcTokens.containsKey(localFqn) {
               findBundleFqnByName(cctx, fctx, funcName)
             } else {
               ""
