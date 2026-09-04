@@ -32224,6 +32224,22 @@ closed by a new, narrowly-scoped T0124 diagnostic
 **Related:** `docs/03-decision-log.md` D-progress-817 (full account),
 #6576, #6583, #6587, #6630.
 
+### Constructing a union/enum by its type name is a T0125 type error (#6838)
+
+Calling a `union`/`enum` **type** name as a constructor
+(`DbError(message = …)` where `DbError` is a union with cases `OpenFailed`/
+`ExecFailed`) has no constructor — a value is built through a case. The type
+checker used to accept this silently (the callee typed as `TyError`, swallowed
+by the `ECall` fallback), so it reached codegen as an unresolved call: lyric
+≤0.5.0 miscompiled it to a bogus `(DbError)(object)<arg>` cast, and ≥0.6.x
+surfaced the internal `T0123` panic. It is now a clear, early **T0125**
+naming the constructible cases (`docs/01-language-reference.md` §generics
+construction; `book/chapters/appendix-b-quick-reference.md`). Distinct from
+the sibling D-progress-871/872/873 codegen fixes under the same issue number,
+which addressed a *valid* qualified record/union-case construction.
+
+**Related:** `docs/03-decision-log.md` D-progress-875 (full account), #6838.
+
 ### Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
 
 `native/plan/08-work-items.md`'s N9.3 (`Std.HttpServer` native twin,
