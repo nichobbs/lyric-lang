@@ -313,6 +313,45 @@ test "bare call with multiple bundle-wide declarers resolves without panic" {
   assertEqual(Str.trim(result.stdout), "42", "bare_call_multi_declarer_resolves: stdout matches expected")
 }
 
+// Issue #6851: the bundle-wide fallback must NEVER select a package-private
+// function in an unrelated, unimported package. `XPriv.Priv` (registered
+// FIRST) declares a package-private `func helper` returning -999; `XPriv.Sub`
+// declares the legitimate `pub func helper` returning its argument; the app
+// imports only the facade that imports `Sub`, and calls `helper` bare. The
+// package-private declarer is not `pub`/`internal`, so it must be excluded
+// from `bundleFuncFqnByName` at seeding — leaving `Sub.helper` the only
+// candidate, so the call resolves to it (stdout 42), never to the private
+// -999. Without the visibility filter, the private declarer (seeded first)
+// would win codegen's `candidates[0]` tie-break and the program would print
+// -999 — a silent cross-package privacy bypass the type checker's own T0097
+// gate would have rejected. Stronger than the #4424 first-vs-last-registered
+// imprecision (which is between equally-legal `pub` candidates): here the
+// excluded candidate was never a legal target at all.
+test "bundle-wide fallback never selects a package-private function (#6851)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  // Registered FIRST so it would win a visibility-blind candidates[0] tie-break.
+  packages.add(mkPkg("XPriv.Priv", "package XPriv.Priv\n" + "\n" + "func helper(x: in Int): Int { 0 - 999 }\n"))
+  packages.add(mkPkg("XPriv.Sub", "package XPriv.Sub\n" + "\n" + "pub func helper(x: in Int): Int { x }\n"))
+  packages.add(
+    mkPkg(
+      "XPriv.Facade",
+      "package XPriv.Facade\n" + "\n" + "import XPriv.Sub\n" + "\n" +
+        "pub func facadeFn(): Int { XPriv.Sub.helper(0) }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XPriv.App",
+      "package XPriv.App\n" + "\n" + "import XPriv.Facade\n" + "\n" + "func main(): Unit {\n" +
+        "  println(helper(42))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xpriv", packages, "XPriv")
+  assertEqualInt(result.exitCode, 0, "bare_call_skips_package_private: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "bare_call_skips_package_private: resolves pub target, not private -999")
+}
+
 // Chained cross-package Int calls.
 test "cross-package chained Int calls" {
   val packages: List[ProjectPackagePayload] = newList()

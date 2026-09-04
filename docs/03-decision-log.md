@@ -41119,6 +41119,22 @@ error. The `T0123` panic itself is untouched and still fires for genuine gaps
 firing when a real bundle-wide declaration exists that the caller never
 directly imported.
 
+**Visibility filter (#6851).** The by-name map is seeded ONLY with functions
+carrying an explicit `pub`/`internal` modifier (`decl.visibility == Some(_)`);
+package-private functions (`None`) are never registered. Every candidate
+`findBundleFqnByName` can return is in a package OTHER than the caller's (the
+own-package path is resolved earlier via `localFqn`/`funcTokens`), so a
+package-private candidate is by definition not a legal cross-package target —
+and, crucially, codegen's tie-break order is independent of the type checker's
+tier-3 (last-registered-wins), so without this filter a bare call the checker
+validated against a legitimate `pub` target could silently codegen a call to a
+same-named package-private function in an unrelated, unimported package (which
+the checker's own `checkImportedVisibility`/T0097 gate would have rejected) —
+a silent cross-package privacy bypass, exactly the miscompile class this entry
+says the fallback must never introduce. This gate mirrors T0097 and is
+strictly stronger than the #4424 first-vs-last-registered imprecision, which is
+only ever between equally-legal `pub` candidates.
+
 **#6287 ambiguity diagnostic — untouched.** `checkBareNameAmbiguity` is scoped
 to tier-2 (direct-import) collisions and runs in the type checker, before
 codegen; a bare name declared by 2+ *directly-imported* packages is rejected

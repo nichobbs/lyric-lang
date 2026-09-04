@@ -2704,16 +2704,32 @@ pub func preSeedBundleAsyncRetTypesMsil(
           if not cctx.bundleFuncFqns.containsKey(fqn) {
             cctx.bundleFuncFqns.add(fqn, true)
           }
-          match mapGet(cctx.bundleFuncFqnByName, decl.name) {
-            case Some(lst) -> {
-              if not lst.contains(fqn) {
-                lst.add(fqn)
+          // Seed the bare-name bundle-wide fallback map ONLY with functions
+          // that are legally callable from another package — i.e. those
+          // carrying an explicit `pub`/`internal` modifier (#6851). A
+          // package-private function (`visibility == None`) is reachable only
+          // within its own declaring package, and that same-package path is
+          // resolved earlier via `localFqn`/`funcTokens` — it must never be a
+          // candidate for `findBundleFqnByName`, whose only reachable
+          // candidates are in OTHER packages. Registering it here would let a
+          // bare call silently resolve to a package-private function in an
+          // unrelated, unimported package (a candidate the type checker's own
+          // `checkImportedVisibility`/T0097 gate would have rejected) — a
+          // silent cross-package privacy bypass / miscompile, exactly the
+          // class D-progress-876 says this fallback must never introduce.
+          val bundleCallable = match decl.visibility { case Some(_) -> true; case None -> false }
+          if bundleCallable {
+            match mapGet(cctx.bundleFuncFqnByName, decl.name) {
+              case Some(lst) -> {
+                if not lst.contains(fqn) {
+                  lst.add(fqn)
+                }
               }
-            }
-            case None -> {
-              val l: List[String] = newList()
-              l.add(fqn)
-              cctx.bundleFuncFqnByName.add(decl.name, l)
+              case None -> {
+                val l: List[String] = newList()
+                l.add(fqn)
+                cctx.bundleFuncFqnByName.add(decl.name, l)
+              }
             }
           }
           seedAsyncFuncRetTypePlaceholderMsil(cctx, pkgName, decl)
