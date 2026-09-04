@@ -201,9 +201,18 @@ jobs:
         working-directory: ${{ github.workspace }}
         env:
           LYRIC_STDLIB_BIN: ${{ github.workspace }}/.bootstrap/stage2/lib
+        # auto_ffi_jvm_self_test.l resolves the #6662 overload-scoring
+        # fixture class (lyric.autoffi.fixture.AutoFfiOverloadFixture)
+        # through auto-FFI at COMPILE time, so its jar must be built and on
+        # LYRIC_FFI_JARS before that file is compiled — the same
+        # build-auto-ffi-fixture.sh + LYRIC_FFI_JARS pairing ci.yml's
+        # "Auto-FFI metadata self-test on JVM" step uses. Scoped to that one
+        # test rather than exported for the whole loop so the other tests
+        # keep resolving against the JDK alone, exactly as ci.yml runs them.
         run: |
           set -euo pipefail
           lyric_bin="$PWD/.bootstrap/stage2/bin/lyric"
+          fixture_jar="$(bash scripts/ci/build-auto-ffi-fixture.sh)"
           for t in \
             lyric-compiler/lyric/bitwise_self_test.l \
             lyric-compiler/lyric/aspect_weave_self_test.l \
@@ -213,7 +222,12 @@ jobs:
             lyric-compiler/lyric/auto_ffi_jvm_self_test.l \
             lyric-compiler/lyric/hash_jvm_self_test.l ; do
             echo "=== $t (jvm) ==="
-            "$lyric_bin" test --target jvm "$t"
+            case "$t" in
+              lyric-compiler/lyric/auto_ffi_jvm_self_test.l)
+                LYRIC_FFI_JARS="$fixture_jar" "$lyric_bin" test --target jvm "$t" ;;
+              *)
+                "$lyric_bin" test --target jvm "$t" ;;
+            esac
           done
           echo "Stage-2 JVM self-tests ran (representative subset; see workflow comments for what is excluded)." >> "$GITHUB_STEP_SUMMARY"
 
