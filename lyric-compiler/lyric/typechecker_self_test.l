@@ -4377,3 +4377,51 @@ test "qualified pattern head against an unresolvable scrutinee is not T0123 (#67
     "PkgA.Ping is already qualified — falling through to the unresolvable-scrutinee fallback must not fire T0123 for 'Ping'"
   )
 }
+
+// #6838: constructing a union by its TYPE NAME (`DbError(message = "…")`)
+// rather than through one of its cases has no constructor. The type checker
+// used to accept it silently (the callee `DbError` types as `TyError`, and the
+// ECall fallback's `case TyError -> TyError` arm swallowed the call with no
+// diagnostic), leaving codegen to either miscompile it to a bogus
+// `(DbError)(object)<arg>` conversion (≤0.5.0) or panic with a baffling T0123
+// "no function token" at emit time (≥0.6.x, once codegen stopped papering over
+// unresolved callees). It is now a clear, early T0125 type error.
+test "constructing a union by its type name is a T0125 error (#6838)" {
+  val src = "package P\nunion DbError {\n  case OpenFailed(message: String)\n  case ExecFailed(sql: String, message: String)\n}\nfunc f(): DbError { DbError(message = \"x\") }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0125"), "union-by-type-name construction fires T0125")
+  assertEqualInt(countDiagCode(cr, "T0123"), 0, "and never the codegen-level T0123")
+  val m = diagMessageFor(cr, "T0125")
+  assertTrue(Str.contains(m, "OpenFailed"), "T0125 lists the constructible cases: " + m)
+  assertTrue(Str.contains(m, "ExecFailed"), "T0125 lists every case: " + m)
+}
+
+// The exact #6838 shape: a QUALIFIED, cross-package union-type-name construction
+// (`Pkg.DbError(message = "…")`) — the form the cloud-agents project hit at
+// scale. Must be the same clear T0125, never the T0123 codegen panic.
+test "constructing a qualified cross-package union by its type name is T0125, not T0123 (#6838)" {
+  val lib = parse(
+    "package Lib\npub union DbError {\n  case OpenFailed(message: String)\n  case ExecFailed(sql: String, message: String)\n}\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "Lib", items = lib.file.items, imports = collectImportNames(lib.file.imports)))
+  val src = "package App\nimport Lib\nfunc f(): Lib.DbError { Lib.DbError(message = \"x\") }\n"
+  val cr = checkWithImportedPackages(parse(src).file, packages)
+  assertTrue(hasDiagCode(cr, "T0125"), "qualified union-by-type-name construction fires T0125")
+  assertEqualInt(countDiagCode(cr, "T0123"), 0, "and never the codegen-level T0123 panic")
+}
+
+// Regression guard: constructing an actual union CASE (the correct spelling)
+// stays clean — the new T0125 arm runs only after `unionCaseSymbolOf` misses.
+test "constructing a real union case is still clean (#6838 guard)" {
+  val src = "package P\nunion DbError {\n  case OpenFailed(message: String)\n  case ExecFailed(sql: String, message: String)\n}\nfunc f(): DbError { OpenFailed(message = \"x\") }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "OpenFailed(message = …) is a valid case construction")
+}
+
+// The same guard extends to enums: constructing an enum by its type name is
+// T0125 too (an enum value is a case, not the type).
+test "constructing an enum by its type name is a T0125 error (#6838)" {
+  val src = "package P\nenum Color {\n  case Red\n  case Green\n}\nfunc f(): Color { Color(x = 1) }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0125"), "enum-by-type-name construction fires T0125")
+}

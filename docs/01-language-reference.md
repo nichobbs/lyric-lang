@@ -421,6 +421,15 @@ An unrecognised or unresolvable constraint name in a `where` clause is diagnosed
 
 Type arguments in instantiations (e.g. `Box[Int]`) must be type expressions. Writing a value expression where a type argument is expected is a compile error (**T0109**). Generic record and union constructors infer their type arguments from the supplied field values when every type parameter appears in at least one field (named arguments may be given in any order); `Pair(first = 1, second = "x")` types as `Pair[Int, String]` with no annotation. When one or more type parameters cannot be inferred — a phantom parameter that appears in no field, or an uninferable argument shape — the constructor call is a compile error (**T0110**) naming the unresolved parameter(s); supply explicit type arguments (`Tagged[Int, Meters](value = 1)`) to resolve it. A missing required field is reported as a missing-field error (**T0105**), not T0110.
 
+A union or enum value is constructed through one of its **cases**
+(`OpenFailed(message = …)`), never through the union/enum **type name**
+itself: a union type has no constructor of its own. Calling the type name as
+if it were a constructor (`DbError(message = …)` where `DbError` is a `union`)
+is a compile error (**T0125**) that names the constructible cases. This is
+reported at type-check time — the mistake is caught early with a clear
+message rather than degrading to an unresolved-callee failure at code
+generation (D-progress-875).
+
 Value generics:
 
 ```
