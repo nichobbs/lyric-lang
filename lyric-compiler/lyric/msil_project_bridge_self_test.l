@@ -352,6 +352,50 @@ test "bundle-wide fallback never selects a package-private function (#6851)" {
   assertEqual(Str.trim(result.stdout), "42", "bare_call_skips_package_private: resolves pub target, not private -999")
 }
 
+// Issue #6850 review follow-up: `findBundleFqnByName`'s same-package /
+// direct-import tie-break tiers must key on EXACT package identity, not a
+// string prefix. `XNest.App.Inner` is a nested SUB-package of the caller
+// (`XNest.App`) — a DIFFERENT package whose name merely starts with
+// `XNest.App.`. It declares a `pub helper` returning -999; `XNest.Deep`
+// declares the intended `pub helper` returning its argument and is registered
+// FIRST (so it is `candidates[0]`). `App` imports only `Facade` (which imports
+// both), so neither declarer is App's own package or a direct import — the
+// call reaches `findBundleFqnByName` with both candidates. A prefix-based
+// tier-1 test (`startsWith(cand, "XNest.App.")`) would wrongly classify
+// `XNest.App.Inner.helper` as "same package" and emit the -999 call; the exact
+// test (`cand == "XNest.App.helper"`) correctly skips it, falling through to
+// `candidates[0]` = `XNest.Deep.helper` → 42. Same silent-mis-resolution class
+// as #6851/#6852.
+test "bundle-wide tie-break keys on exact package identity, not a name prefix (#6850)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  // Registered FIRST → candidates[0], so the exact-match fix resolves here.
+  packages.add(mkPkg("XNest.Deep", "package XNest.Deep\n" + "\n" + "pub func helper(x: in Int): Int { x }\n"))
+  packages.add(
+    mkPkg("XNest.App.Inner", "package XNest.App.Inner\n" + "\n" + "pub func helper(x: in Int): Int { 0 - 999 }\n")
+  )
+  packages.add(
+    mkPkg(
+      "XNest.Facade",
+      "package XNest.Facade\n" + "import XNest.Deep\n" + "import XNest.App.Inner\n" + "\n" +
+        "pub func facadeFn(): Int { XNest.Deep.helper(0) + XNest.App.Inner.helper(0) }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XNest.App",
+      "package XNest.App\n" + "import XNest.Facade\n" + "\n" + "func main(): Unit {\n" + "  println(helper(42))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xnest", packages, "XNest")
+  assertEqualInt(result.exitCode, 0, "bundle_tie_break_exact_pkg: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "42",
+    "bundle_tie_break_exact_pkg: nested sub-package not treated as same package"
+  )
+}
+
 // Chained cross-package Int calls.
 test "cross-package chained Int calls" {
   val packages: List[ProjectPackagePayload] = newList()

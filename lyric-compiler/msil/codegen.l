@@ -12183,10 +12183,22 @@ func findBundleFqnByName(cctx: in CodegenCtx, currentPkg: in String, funcName: i
       if candidates.count == 1 {
         return candidates[0]
       }
-      val prefix1 = currentPkg + "."
+      // Every candidate is an FQN of the form `<pkg>.<funcName>` for the SAME
+      // `funcName` (the map key), so a candidate is in package P exactly when
+      // it equals `P + "." + funcName` — an EXACT match, not a string prefix.
+      // A prefix test (`startsWith(cand, P + ".")`) would wrongly classify a
+      // candidate in a nested SUB-package `P.Sub` (FQN `P.Sub.funcName`) as
+      // "in P", since Lyric package names are dot-hierarchical but `P.Sub` is a
+      // distinct package from `P`. That could silently resolve a bare call to a
+      // same-named function in an unrelated nested package over the intended
+      // direct-import/transitive target — the same silent-mis-resolution class
+      // #6851/#6852 closed elsewhere in this fallback. (pickCaseFqnByScope still
+      // uses the looser prefix form for union cases; keying it by exact package
+      // identity is the tracked #4424 follow-up.)
+      val ownFqn = currentPkg + "." + funcName
       var i = 0
       while i < candidates.count {
-        if startsWith(candidates[i], prefix1) {
+        if candidates[i] == ownFqn {
           return candidates[i]
         }
         i = i + 1
@@ -12195,10 +12207,10 @@ func findBundleFqnByName(cctx: in CodegenCtx, currentPkg: in String, funcName: i
         case Some(imps) -> {
           var ii = 0
           while ii < imps.count {
-            val prefix2 = imps[ii] + "."
+            val impFqn = imps[ii] + "." + funcName
             var j = 0
             while j < candidates.count {
-              if startsWith(candidates[j], prefix2) {
+              if candidates[j] == impFqn {
                 return candidates[j]
               }
               j = j + 1
