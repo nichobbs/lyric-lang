@@ -40958,3 +40958,100 @@ in the same survey (legacy `generic[T]` prefix, PR #6827; bare `..`
 range operator, PR #6828) — all three (plus this entry's two parts) are
 the same "AST/rendering mismatch silently relocates or rewrites a
 token" bug shape, each in a different corner of the formatter.
+
+
+## D-progress-875 — Type checker: constructing a union/enum by its TYPE NAME now fails with a clear T0125 instead of degrading to `TyError` and reaching codegen as an unresolved call (#6838)
+
+**Context.** #6838 kept recurring against builds carrying D-progress-871
+(MSIL), D-progress-872 (JVM), and D-progress-873 (native) — all three of
+which fixed a *different*, genuinely-valid scenario under the same issue
+number: a qualified cross-package **record** (or union-case) construction
+whose `Lyric.AliasRewriter` EMember-chain collapse was defeated by
+first-segment shadowing, leaving codegen unable to resolve a ctor that *does*
+exist. The reporting project (cloud-agents, ~40 packages) still failed on
+0.6.1 **and** 0.6.2 with `error[T0123] … unresolved call to 'DbError' …
+imported as 'CloudAgents.Sqlite.DbError' … no function token could be
+resolved`. This entry root-causes that residual failure — it is a *distinct*
+bug from D-progress-871/872/873, and their fixes remain correct for the
+scenario they addressed.
+
+**Root cause — the source is invalid, and the checker accepted it silently.**
+The failing call was `CloudAgents.Sqlite.DbError(message = "…")`, where
+`DbError` is a **union type**:
+
+```
+pub union DbError {
+  case OpenFailed(message: String)
+  case ExecFailed(sql: String, message: String)
+}
+```
+
+There is no `DbError` constructor — a union value is built through a *case*
+(`OpenFailed(…)` / `ExecFailed(…)`), never through the union type name. This
+is not valid Lyric. But the type checker never rejected it. In the `ECall`
+resolution chain (`typechecker_exprs.l`), for `directSig = None`:
+`unionCaseSymbolOf` returns None (`DbError` is not a case),
+`constructorSymbolOf` returns None (it matches only `DKRecord`/`DKExposedRec`/
+`DKOpaque`, never a union), `methodPick` is None, and the callee `DbError`
+— a bare union *type name* used in value position — infers to `TyError`. The
+final fallback's `case TyError -> TyError` arm then swallows the whole call
+with **no diagnostic**, and `Err(value = <TyError>)` type-checks against any
+declared error type via error-recovery leniency.
+
+The call therefore reaches codegen with no resolvable callee token. What
+happened next depended only on the codegen generation:
+- **≤ 0.5.0** silently lowered it to a bogus conversion — decompiling the
+  0.5.0 MSIL shows `new Result_Err<object, DbError>((DbError)(object)"…")`,
+  i.e. a raw `String` cast to the abstract union base. That is the
+  #5621/#5516 silent-drop class (D-progress-656/658): it "builds clean" but
+  throws `InvalidCastException` the instant the value is pattern-matched (the
+  non-exhaustive-match path), a latent runtime landmine.
+- **≥ 0.6.x**, once codegen stopped papering over unresolved cross-package
+  callees and started failing loud (the D-progress-656/658 hardening),
+  raises the `T0123` "no function token" panic at emit time — correct to
+  refuse, but with a diagnostic that points at codegen internals, not at the
+  real mistake.
+
+So the "0.6.x regression" was codegen correctly refusing to miscompile code
+the **type checker should never have accepted**. Confirmed with a 2-package
+minimal repro (a union with non-eponymous cases, constructed by its type
+name, cross-package qualified): clean build on 0.5.0, `T0123` on 0.6.1/0.6.2;
+ILSpy on the 0.5.0 output shows the `(DbError)(object)…` miscompile.
+
+**Fix.** Reject it in the type checker, where the mistake actually is. A new
+`unionOrEnumTypeSymbolOf` (mirroring `constructorSymbolOf`'s qualifier-first
+/ flat-path resolution exactly, but matching the `DKUnion`/`DKEnum` type
+kinds it deliberately skips) is consulted in the `ECall` chain immediately
+after `constructorSymbolOf` misses. When the callee resolves to a union/enum
+*type* symbol, the checker emits **T0125** — "cannot construct '<Type>' by
+its type name; a union or enum is built through one of its cases, not the
+type itself (cases: …)" — listing the constructible case names, and yields
+`TyError`. Purely additive: it runs only after `unionCaseSymbolOf` and
+`constructorSymbolOf` have both returned None, so no valid case, record, or
+opaque construction is ever intercepted; a value-receiver method chain
+(`x.Foo(...)`) cannot mis-route here for the same reason `constructorSymbolOf`
+can't (the flat-path / qualifier guards are copied verbatim).
+
+This does **not** make the cloud-agents source compile — that source was
+genuinely wrong (three `DbError(message = …)` sites in `branchSession`) and
+is corrected on the cloud-agents side to a real union case. The compiler's
+job here is to diagnose the mistake clearly and early instead of miscompiling
+it (≤0.5.0) or surfacing an internal codegen panic (≥0.6.x).
+
+**Verification.** Four new `typechecker_self_test.l` cases: a same-package
+union-type-name construction fires T0125 (and never T0123) with a message
+listing `OpenFailed, ExecFailed`; the exact #6838 shape — a qualified,
+cross-package union-type-name construction — is the same clear T0125, never
+the T0123 codegen panic; a real union-case construction
+(`OpenFailed(message = …)`) stays clean (the additive-arm regression guard);
+and an enum-type-name construction is T0125 too. `make stage1` + `make lyric`
++ `make self-test NAME=typechecker` all green. Separately confirmed the
+reporting project: with the invalid source fixed to a real union case, the
+full 46-package cloud-agents build passes on 0.6.2.
+
+**Related:** #6838; D-progress-871 (MSIL), D-progress-872 (JVM),
+D-progress-873 (native) — the sibling qualified-*valid*-construction
+shadow-defeat fixes under the same issue number, unaffected by this change.
+The `T0123` codegen panic (D-progress-656/658, #5621/#5516) stays exactly as
+it is — a genuine "checker and codegen disagree" guard; this fix removes the
+one path that reached it without a real compiler bug behind it.

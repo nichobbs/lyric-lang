@@ -3340,6 +3340,87 @@ func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
   }
 }
 
+// The union/enum TYPE symbol for a callee path — the shape behind #6838: a
+// call whose callee names a union or enum *type* itself
+// (`Pkg.Sub.DbError(message = "…")`) rather than one of its cases. There is no
+// such constructor — a union/enum value is built through a case
+// (`OpenFailed(message = "…")`) — so this callee never resolves to a function
+// token. `unionCaseSymbolOf` and `constructorSymbolOf` have both already
+// returned None (it is neither a case nor a record/opaque ctor) by the time
+// this runs. Mirrors `constructorSymbolOf`'s qualifier-first / flat-path
+// resolution exactly, matching the two TYPE kinds it deliberately skips, so a
+// value-receiver method chain (`x.Foo(...)`) can never mis-route here.
+func unionOrEnumTypeSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
+  val flatSegs: List[String] = newList()
+  if not flattenCalleePathSegs(fn, flatSegs) or flatSegs.count == 0 {
+    return None
+  }
+  val fnWasFlatPath = match fn.kind { case EPath(_) -> true; case _ -> false }
+  val typeName = flatSegs[flatSegs.count - 1]
+  if flatSegs.count >= 2 {
+    val quals: List[String] = newList()
+    var qi = 0
+    while qi < flatSegs.count - 1 {
+      quals.add(flatSegs[qi])
+      qi = qi + 1
+    }
+    val fullQual = modulePathJoin(quals)
+    match symTableTryFindInPackage(tbl, fullQual, typeName) {
+      case Some(pkgSym) -> match pkgSym.kind {
+        case DKUnion(_, _) -> return Some(value = pkgSym)
+        case DKEnum(_, _) -> return Some(value = pkgSym)
+        case _ -> ()
+      }
+      case None -> ()
+    }
+  }
+  if not fnWasFlatPath {
+    return None
+  }
+  match symTableTryFindOne(tbl, typeName) {
+    case Some(sym) -> match sym.kind {
+      case DKUnion(_, _) -> Some(value = sym)
+      case DKEnum(_, _) -> Some(value = sym)
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
+// A human hint listing the constructible cases of a union/enum type symbol
+// (e.g. "OpenFailed, ExecFailed"), appended to the T0125 message so the fix
+// — name a case — is obvious. Empty string for a caseless type.
+func unionOrEnumCaseNamesHint(sym: in Symbol): String {
+  val names: List[String] = newList()
+  match sym.kind {
+    case DKUnion(_, udecl) -> {
+      var ui = 0
+      while ui < udecl.cases.count {
+        names.add(udecl.cases[ui].name)
+        ui = ui + 1
+      }
+    }
+    case DKEnum(_, edecl) -> {
+      var ei = 0
+      while ei < edecl.cases.count {
+        names.add(edecl.cases[ei].name)
+        ei = ei + 1
+      }
+    }
+    case _ -> ()
+  }
+  var acc = ""
+  var j = 0
+  while j < names.count {
+    if j > 0 {
+      acc = acc + ", "
+    }
+    acc = acc + names[j]
+    j = j + 1
+  }
+  return acc
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §5b. Union-case constructor typing (#2142 prerequisite).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4712,70 +4793,91 @@ pub func inferExpr(
           case Some(caseSym) -> inferUnionCaseConstruction(tbl, diag, caseSym, argTypes, e.span)
           case None -> match constructorSymbolOf(tbl, fn) {
             case Some(ctorSym) -> inferConstruction(tbl, diag, ctorSym, args, argTypes, e.span)
-            case None -> match methodPick {
-              case Some(mp) -> {
-                checkCallArgsAgainstSig(sc, tbl, diag, mp.sig, args, argTypes, e.span)
-                checkBoundsSatisfied(tbl, diag, mp.sig, argTypes, e.span)
-                match mp.fullSig {
-                  case Some(fullS) -> {
-                    val extArgs: List[Type] = newList()
-                    match memberRecvTy {
-                      case Some(rt4) -> extArgs.add(rt4)
-                      case None -> extArgs.add(TyError)
-                    }
-                    var xi = 0
-                    while xi < argTypes.count {
-                      extArgs.add(argTypes[xi])
-                      xi = xi + 1
-                    }
-                    instantiateReturnType(fullS, extArgs)
-                  }
-                  case None -> instantiateReturnType(mp.sig, argTypes)
-                }
+            // #6838: the callee names a union/enum TYPE itself, not one of its
+            // cases (`Pkg.DbError(message = "…")`). No such constructor exists,
+            // so it never resolves to a function token. Diagnose it here
+            // (T0125) as a clear, early type error — left undiagnosed it
+            // degraded to `TyError` in the fnT fallback below and reached
+            // codegen as an unresolved call (a silent bogus
+            // `(DbError)(object)<arg>` conversion on ≤0.5.0, a baffling T0123
+            // emit-time panic once codegen stopped papering over unresolved
+            // callees). Runs only after `unionCaseSymbolOf` and
+            // `constructorSymbolOf` both missed, so a valid case/record ctor is
+            // never intercepted.
+            case None -> match unionOrEnumTypeSymbolOf(tbl, fn) {
+              case Some(uSym) -> {
+                val ctorHint = unionOrEnumCaseNamesHint(uSym)
+                val baseMsg = "cannot construct '" + uSym.name +
+                  "' by its type name; a union or enum is built through one of its cases, not the type itself"
+                val fullMsg = if ctorHint == "" { baseMsg } else { baseMsg + " (cases: " + ctorHint + ")" }
+                diag.add(errorDiagnostic("T0125", fullMsg, e.span))
+                TyError
               }
-              case None -> {
-                if isMemberCallee {
-                  match fnT {
-                    case TyError -> match memberRecvTy {
-                      case Some(rt5) -> maybeUnknownMemberDiag(tbl, sigs, diag, rt5, memberName, fn.span, true)
-                      case None -> {
+              case None -> match methodPick {
+                case Some(mp) -> {
+                  checkCallArgsAgainstSig(sc, tbl, diag, mp.sig, args, argTypes, e.span)
+                  checkBoundsSatisfied(tbl, diag, mp.sig, argTypes, e.span)
+                  match mp.fullSig {
+                    case Some(fullS) -> {
+                      val extArgs: List[Type] = newList()
+                      match memberRecvTy {
+                        case Some(rt4) -> extArgs.add(rt4)
+                        case None -> extArgs.add(TyError)
                       }
+                      var xi = 0
+                      while xi < argTypes.count {
+                        extArgs.add(argTypes[xi])
+                        xi = xi + 1
+                      }
+                      instantiateReturnType(fullS, extArgs)
                     }
-                    case _ -> {
-                    }
+                    case None -> instantiateReturnType(mp.sig, argTypes)
                   }
                 }
-                match fnT {
-                  case TyFunction(paramTypes, ret, _) -> {
-                    if paramTypes.count != argTypes.count {
-                      diag.add(
-                        errorDiagnostic(
-                          "T0042",
-                          "expected " + toString(paramTypes.count) + " argument(s), got " + toString(argTypes.count),
-                          e.span
-                        )
-                      )
-                    } else {
-                      var k = 0
-                      while k < paramTypes.count {
-                        if not argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) {
-                          diag.add(
-                            errorDiagnostic(
-                              "T0043",
-                              "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(paramTypes[k]),
-                              e.span
-                            )
-                          )
+                case None -> {
+                  if isMemberCallee {
+                    match fnT {
+                      case TyError -> match memberRecvTy {
+                        case Some(rt5) -> maybeUnknownMemberDiag(tbl, sigs, diag, rt5, memberName, fn.span, true)
+                        case None -> {
                         }
-                        k = k + 1
+                      }
+                      case _ -> {
                       }
                     }
-                    ret
                   }
-                  case TyError -> TyError
-                  case _ -> {
-                    diag.add(errorDiagnostic("T0044", "called value of non-function type " + renderType(fnT), e.span))
-                    TyError
+                  match fnT {
+                    case TyFunction(paramTypes, ret, _) -> {
+                      if paramTypes.count != argTypes.count {
+                        diag.add(
+                          errorDiagnostic(
+                            "T0042",
+                            "expected " + toString(paramTypes.count) + " argument(s), got " + toString(argTypes.count),
+                            e.span
+                          )
+                        )
+                      } else {
+                        var k = 0
+                        while k < paramTypes.count {
+                          if not argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) {
+                            diag.add(
+                              errorDiagnostic(
+                                "T0043",
+                                "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(paramTypes[k]),
+                                e.span
+                              )
+                            )
+                          }
+                          k = k + 1
+                        }
+                      }
+                      ret
+                    }
+                    case TyError -> TyError
+                    case _ -> {
+                      diag.add(errorDiagnostic("T0044", "called value of non-function type " + renderType(fnT), e.span))
+                      TyError
+                    }
                   }
                 }
               }
