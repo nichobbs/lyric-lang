@@ -41135,6 +41135,28 @@ says the fallback must never introduce. This gate mirrors T0097 and is
 strictly stronger than the #4424 first-vs-last-registered imprecision, which is
 only ever between equally-legal `pub` candidates.
 
+**Async SM field-count pre-scan gets the same tier (#6852).** MSIL emits async
+functions as a state machine whose awaiter-field count is predicted by a
+pre-scan (`countSmFieldsMsil` → `collectAwaitTypesExprPB` →
+`inferCallReturnTypePB` → `resolveQualifiedFreeCallRetTypePB`) *separately* from
+real emission. Teaching only the emission resolver the bundle-wide tier would
+make an `await` of a facade-transitive bare async call resolve at emission
+(allocating an awaiter field) while the pre-scan still typed it `MObject` and
+skipped it — under-counting SM fields and shifting every later `FieldDef`/
+`MethodDef` token (the #5177-class silent IL corruption; before this PR the
+call safely hit the loud T0123 instead). So `resolveQualifiedFreeCallRetTypePB`
+gets the identical bare-only, after-local/direct-miss bundle tier via the same
+`findBundleFqnByName` (refactored to take a package name rather than a
+`FuncCtx`, its only prior use). It resolves the bundle FQN against
+`funcRetTypes` — NOT `pbFuncRetTypes`, which is deliberately the *bare* declared
+return, never `Task`-wrapped — because `preSeedBundleAsyncRetTypesMsil` seeds a
+`Task`/`Task[T]` placeholder for every async function into `funcRetTypes`
+bundle-wide before any package pass, so an async candidate is correctly
+`Task`-typed there regardless of visitation order (sidestepping the #5606 caveat
+that applies only to plain functions). A regression test awaits a
+facade-transitive bare async call sandwiched between two same-package awaits and
+asserts the value threaded through the last await is uncorrupted.
+
 **#6287 ambiguity diagnostic — untouched.** `checkBareNameAmbiguity` is scoped
 to tier-2 (direct-import) collisions and runs in the type checker, before
 codegen; a bare name declared by 2+ *directly-imported* packages is rejected

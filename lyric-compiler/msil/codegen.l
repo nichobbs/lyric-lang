@@ -12164,7 +12164,7 @@ func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in Li
 // Returns "" when `funcName` isn't in `bundleFuncFqnByName` at all, or none
 // of its candidates have a resolvable token — the call site's existing
 // T0123 panic still fires for a genuinely undeclared callee.
-func findBundleFqnByName(cctx: in CodegenCtx, fctx: in FuncCtx, funcName: in String): String {
+func findBundleFqnByName(cctx: in CodegenCtx, currentPkg: in String, funcName: in String): String {
   match mapGet(cctx.bundleFuncFqnByName, funcName) {
     case None -> ""
     case Some(all) -> {
@@ -12183,7 +12183,6 @@ func findBundleFqnByName(cctx: in CodegenCtx, fctx: in FuncCtx, funcName: in Str
       if candidates.count == 1 {
         return candidates[0]
       }
-      val currentPkg = fctx.pkgName
       val prefix1 = currentPkg + "."
       var i = 0
       while i < candidates.count {
@@ -15199,7 +15198,7 @@ func lowerBuiltinOrStaticCallMsil(
             // would reintroduce exactly the silent mis-resolution #6629 set out
             // to eliminate).
             val bundleFqn = if qualifiedFqn.length == 0 and importedFqn.length == 0 and not cctx.funcTokens.containsKey(localFqn) {
-              findBundleFqnByName(cctx, fctx, funcName)
+              findBundleFqnByName(cctx, fctx.pkgName, funcName)
             } else {
               ""
             }
@@ -21903,6 +21902,41 @@ func resolveQualifiedFreeCallRetTypePB(
         }
       }
       ci2 = ci2 + 1
+    }
+  }
+  // Bundle-wide bare-call fallback (#6852, sibling to the #6849 emission fix):
+  // a BARE call (`segments.count == 1`) to a `pub`/`internal` function
+  // reachable only TRANSITIVELY through a facade package's imports falls
+  // through every candidate above (same-package + direct import, tried against
+  // both `funcRetTypes` and `pbFuncRetTypes`), leaving `result == MObject` —
+  // which `isTaskTypeMsil` rejects, so the await's SM awaiter field goes
+  // UNCOUNTED even though the emission resolver now DOES resolve the call (via
+  // `findBundleFqnByName`, #6849/#6850) and allocates the field. That
+  // asymmetry shifts every later FieldDef/MethodDef token in the state machine
+  // — the #5177-class silent IL corruption this pre-scan exists to prevent.
+  //
+  // Consults `funcRetTypes`, NOT `pbFuncRetTypes`: the latter is always the
+  // BARE declared return, never Task-wrapped (see `pbSeedRetTy`'s doc), so a
+  // bundle-resolved async function looked up there would type as e.g. `Int`
+  // instead of `Task[Int]` and still be rejected. `funcRetTypes` is safe here
+  // even though this pre-scan can run before the callee's own package pass:
+  // `preSeedBundleAsyncRetTypesMsil` seeds a Task/Task[T] placeholder for
+  // EVERY async function bundle-wide, once, before any package's pass runs, so
+  // an async bundle candidate's `funcRetTypes` entry already has the correct
+  // Task-wrapped shape by the time this runs. That sidesteps the #5606 caveat
+  // above (which is about a PLAIN function's entry not existing yet — async
+  // entries always exist bundle-wide before Pass 1). Gated exactly like
+  // emission's `bundleFqn`: bare calls only, and only after the same-package +
+  // direct-import candidates all missed.
+  if result == MObject and segments.count == 1 {
+    val bundleFqn = findBundleFqnByName(cctx, pkgName, lastSeg)
+    if bundleFqn.length > 0 {
+      match mapGet(cctx.funcRetTypes, bundleFqn + "/" + toString(cnt)) {
+        case Some(ty3) -> {
+          result = ty3
+        }
+        case None -> match mapGet(cctx.funcRetTypes, bundleFqn) { case Some(ty4) -> { result = ty4 }; case None -> () }
+      }
     }
   }
   result

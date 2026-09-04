@@ -532,6 +532,64 @@ test "async func awaiting a call into a LATER package does not corrupt an unrela
   )
 }
 
+// Issue #6852 (sibling to #6849/#6850): the SM awaiter-field-count PRE-SCAN
+// (`resolveQualifiedFreeCallRetTypePB`, consumed by `countSmFieldsMsil` via
+// `collectAwaitTypesExprPB`/`inferCallReturnTypePB`) was never given the
+// bundle-wide facade-transitive fallback the real emission resolver got in
+// #6850. `App` imports ONLY `Facade`, which imports (and uses) `Sub`; `App`
+// never imports `Sub` directly, yet its async `caller` awaits `Sub`'s
+// `computeMiddle` BARE. Before the fix, the pre-scan sees an unresolved
+// (`MObject`) return for that await, `isTaskTypeMsil` rejects it, and
+// `caller`'s predicted SM field count comes up one short of what real codegen
+// (which DOES resolve the call, via `findBundleFqnByName`) emits — shifting
+// the FieldDef token allocated to the THIRD await's resume value within the
+// same SM class. Sandwiching the facade-transitive bare await between two
+// ordinary same-package awaits and checking the value threaded through the
+// LAST await is still correct proves no field/token shift occurred.
+test "async facade-transitive bare await does not corrupt a later await in the same SM (#6852)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "XAsyncFacade.Sub",
+      "package XAsyncFacade.Sub\n" + "import Std.Core\n" + "\n" +
+        "pub async func computeMiddle(x: in Int): Int { x + 100 }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XAsyncFacade.Facade",
+      "package XAsyncFacade.Facade\n" + "import Std.Core\n" + "import XAsyncFacade.Sub\n" + "\n" +
+        "pub async func facadeFn(): Int {\n" +
+        "  await XAsyncFacade.Sub.computeMiddle(0)\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XAsyncFacade.App",
+      "package XAsyncFacade.App\n" + "import Std.Core\n" + "import XAsyncFacade.Facade\n" + "\n" +
+        "async func first(x: in Int): Int { x + 1 }\n" +
+        "\n" +
+        "async func third(x: in Int): Int { x * 10 }\n" +
+        "\n" +
+        "async func caller(n: in Int): Int {\n" +
+        "  val a = await first(n)\n" +
+        "  val b = await computeMiddle(a)\n" +
+        "  val c = await third(b)\n" +
+        "  c\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val result = await caller(1)\n" +
+        "  println(toString(result))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xasyncfacade", packages, "XAsyncFacade")
+  assertEqualInt(result.exitCode, 0, "async_facade_transitive_bare_await: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "1020", "async_facade_transitive_bare_await: later await value not corrupted")
+}
+
 // ─── Phase 3: cross-package record and union round-trips ─────────────────────
 // Cross-package RECORD value round-trip.  Pkg A defines a `pub record
 // Point` plus pub funcs that produce and consume one; pkg B imports A,
