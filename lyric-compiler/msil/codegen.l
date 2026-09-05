@@ -4855,11 +4855,26 @@ func inferUntypedStaticValMsilType(
     // arm, but for the runtime type rather than literal-foldability.
     // Multi-segment paths (cross-package qualified refs) are out of scope —
     // MObject is a safe fallback there, matching prior behaviour.
+    //
+    // #6878: `cctx.staticValMsilTypes` is consulted FIRST, ahead of `env`.
+    // `env` (`valTypeEnv`, built by `addPackageTokens`' Pass 0 loop) is
+    // frozen the first time each name is predicted — for an `ECall`
+    // initializer processed in Pass 0, that is BEFORE Pass 1 has populated
+    // `cctx.recordCtorTokens`, so a record-constructor val's Pass-0 entry in
+    // `env` is permanently `MObject` even though Pass 1b later recomputes
+    // the correct type into the authoritative `cctx.staticValMsilTypes` map.
+    // A later `val alias = gCache` resolved only against the stale `env`
+    // entry would silently inherit that wrong `MObject` prediction one hop
+    // removed — reproducing #6786's exact defect through an alias.
+    // `cctx.staticValMsilTypes` is populated in file-declaration order (same
+    // ordering guarantee `env` documents), so checking it first can only
+    // recover a MORE precise, already-corrected type — it never regresses a
+    // lookup `env` would otherwise have answered.
     case EPath(path) -> {
       if path.segments.count == 1 {
-        match mapGet(env, path.segments[0]) {
+        match mapGet(cctx.staticValMsilTypes, path.segments[0]) {
           case Some(t) -> t
-          case None -> MObject
+          case None -> match mapGet(env, path.segments[0]) { case Some(t) -> t; case None -> MObject }
         }
       } else {
         MObject
@@ -4917,16 +4932,27 @@ func inferUntypedStaticValMsilType(
         }
       }
     }
-    // Record/union-case constructor call (#6786), e.g. `val gCache =
-    // Cache(box = ...)`.  Resolves the callee the same way real ECall codegen
-    // does (`cctx.recordCtorTokens`, local package key first, then a fully
+    // Record constructor call (#6786), e.g. `val gCache = Cache(box = ...)`.
+    // Resolves the callee the same way real ECall codegen does
+    // (`cctx.recordCtorTokens`, local package key first, then a fully
     // qualified callee), but limited to a simple/qualified `EPath` callee and
-    // to the NON-generic case — a generic record/union case needs inferred
-    // type args this single-expression pass can't compute without a full
-    // symbol table, so it falls back to `MObject` rather than risk a wrong
-    // instantiation.  A union case's constructed value is statically typed as
-    // its PARENT union (mirroring the real ECall lowering's
-    // `caseParentFqnMsil` result), not the case's own class.
+    // to the NON-generic case — a generic record needs inferred type args
+    // this single-expression pass can't compute without a full symbol
+    // table, so it falls back to `MObject` rather than risk a wrong
+    // instantiation.
+    //
+    // Scoped to PLAIN RECORDS only, not union cases (#6786 review,
+    // "SUGGESTION"): a local union case's ctor token is registered under
+    // the MANGLED key `<pkg>.<UnionName>_<CaseName>` (see the `IUnion`
+    // registration pass' `caseName` construction above), never the bare
+    // `<pkg>.<CaseName>` this arm builds — so `localCtorKey`/
+    // `fullQualifiedCtorKey` can never match a union case's real key, and
+    // this arm's `ctorKeyOpt` is always `None` for one. Resolving a union
+    // case correctly would need the same `unionCaseCtorByName`-keyed,
+    // qualifier-disambiguated lookup real `ECall` codegen uses — a
+    // separate, untested path this fix does not add; a union-case-literal
+    // module-level val stays a documented `MObject` fallback, no worse
+    // than before this fix.
     case ECall(fn, _) -> match fn.kind {
       case EPath(path) -> {
         val funcName = lastSegmentMsil(path)
@@ -4943,15 +4969,16 @@ func inferUntypedStaticValMsilType(
           case Some(ctorKey) -> {
             if cctx.genericTypeArity.containsKey(ctorKey) {
               MObject
+            } else if cctx.caseParentUnion.containsKey(ctorKey) {
+              // A union case's ctor token happens to be registered under
+              // this arm's key format only via a cross-package path this
+              // arm doesn't reach (see the scoping note above) — kept as a
+              // defensive `MObject` guard rather than mistyping the value
+              // as the case's OWN class (real codegen always types a
+              // constructed case as its PARENT union).
+              MObject
             } else {
-              match mapGet(cctx.caseParentUnion, ctorKey) {
-                case Some(parentFqn) -> if cctx.genericTypeArity.containsKey(parentFqn) {
-                  MObject
-                } else {
-                  MClass(className = parentFqn)
-                }
-                case None -> MClass(className = ctorKey)
-              }
+              MClass(className = ctorKey)
             }
           }
           case None -> MObject
