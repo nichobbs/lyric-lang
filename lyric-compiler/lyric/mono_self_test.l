@@ -2484,3 +2484,36 @@ test "opaque argument to an imported generic with a slice-shaped param still def
   )
   assertEqualInt(diagCountCode(res.diagnostics, "M0004"), 0, "no M0004 for the erasure-safe slice shape")
 }
+
+// #6940: a slice NESTED as a type argument INSIDE an already erasure-unsafe
+// generic (`ResLike[slice[T], String]`, mirroring the pervasive
+// `Result[slice[...], ...]` idiom in `http_hpack.l`/`directory.l`/`tls.l`)
+// must NOT inherit the top-level array-covariance exemption that makes a
+// bare `slice[T]` parameter safe (the preceding test). Array covariance only
+// makes `Object[]` accept a real `Foo[]` when the array IS the parameter's
+// own static type -- it does not make `ResLike<Object[], String>` accept a
+// real `ResLike<Int[], String>`, since closed generic types are invariant
+// over ALL of their type arguments on both MSIL and JVM. Before the fix,
+// `typeArgOccursUnsafely`'s fallback re-applied the top-level exemption to
+// this nested slice (via `typeExprUnsafeUnderErasure`'s `TSlice` arm), so
+// `found` stayed `false` and `firstOkLike__Object` was wrongly emitted --
+// reproducing the #5970 `InvalidCastException`/"match not exhaustive" crash
+// class one level of nesting away from the shapes the other tests cover.
+test "opaque argument to an imported generic with a Result[slice[T], String]-shaped param raises M0004 (nested slice, #6940)" {
+  val callerSrc = "package Caller\n" +
+    "func caller(getRes: in () -> ResLike[slice[Int], String]): Bool { firstOkLike(getRes()) }\n"
+  val libSrc = "package Lib\n" + "pub union ResLike[T, E] { case MkOk2(v: T)\n case MkErr2(e: E) }\n" +
+    "pub func firstOkLike[T](r: in ResLike[slice[T], String]): Bool { match r { case MkOk2(_) -> true\n case MkErr2(_) -> false } }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
+  assertFalse(
+    hasFunc(res.file, "firstOkLike__Object"),
+    "must not emit the Object-defaulted specialisation -- a real ResLike<Int[], String> is not ResLike<Object[], String> under generic invariance"
+  )
+  assertEqualInt(
+    diagCountCode(res.diagnostics, "M0004"),
+    1,
+    "an opaque argument against a Result[slice[T], String]-shaped param must raise M0004, not silently specialise against a phantom instantiation"
+  )
+}
