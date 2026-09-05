@@ -256,7 +256,7 @@ try_bootstrap_from_release() {
       # asserts this pin matches the newest published release at every
       # release cut (#6501), so it cannot silently drift more than one
       # release behind.  Override per-run with LYRIC_BOOTSTRAP_VERSION.
-      local fallback_version="${LYRIC_BOOTSTRAP_FALLBACK_VERSION:-0.6.1}"
+      local fallback_version="${LYRIC_BOOTSTRAP_FALLBACK_VERSION:-0.6.2}"
       info "  Falling back to pinned seed version v${fallback_version}"
       latest_release="$fallback_version"
     fi
