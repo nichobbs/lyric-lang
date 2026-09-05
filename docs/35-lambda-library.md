@@ -725,34 +725,47 @@ After `close()` returns, further `write()` calls return
 ## 12. JVM target (feature = "jvm")
 
 All three libraries (`lyric-lambda`, `lyric-aws-secrets`, `lyric-aws-xray`)
-support the `jvm` feature.  Build with `lyric build --features jvm` to target
-the AWS Java managed runtime.
+support the `jvm` feature.  Build with `lyric build --features jvm`.
+
+**`lyric-lambda` deploys as an AWS Lambda *custom runtime*
+(`provided.al2`/`provided.al2023`), not the managed `java21` runtime** — see
+§8.4 for the resolved decision and rationale.  `lyric-aws-secrets` and
+`lyric-aws-xray` are plain library dependencies consumed from within
+whichever runtime hosts the handler (custom or managed); their own JVM
+kernels bind directly to the AWS SDK for Java and carry no Lambda
+entry-point concerns of their own.
 
 ### 12.1 Build output
 
 The Lyric JVM emitter (complete at `lyric-compiler/jvm/`, see
-`docs/18-jvm-emission.md`) produces Java 21 class files.  For Lambda, the
-emitter generates a class `<RootPackage>$LambdaHandler` implementing
-`com.amazonaws.services.lambda.runtime.RequestStreamHandler`.
+`docs/18-jvm-emission.md`) produces Java 21 class files bundled into a
+runnable JAR (`compileToJarBundled`).  `lyric-lambda`'s `serve()` (per §8.4)
+runs `Lambda.Dispatch.runAwsCustomRuntimeLoop` — the same HTTP long-polling
+loop against `$AWS_LAMBDA_RUNTIME_API` as the `aws` (.NET) feature — inside
+a plain `main()`, not a host-invoked `RequestStreamHandler` class. No
+Lambda-runtime-specific class shape is emitted or required.
 
-### 12.2 Lambda handler configuration
+### 12.2 Lambda deployment configuration
 
-Set the handler in the Lambda function configuration to:
-```
-<assembly-name>.<RootPackage>$LambdaHandler::handleRequest
-```
-
-For example, if the root package is `MyApp` and the assembly is `MyService`,
-set the handler to `MyService.MyApp$LambdaHandler::handleRequest`.
+Deploy as a custom runtime: package the bundled JAR alongside a `bootstrap`
+executable (a small wrapper script invoking `java -jar <bundled-jar>`) at
+the root of the deployment package or layer — the same packaging shape the
+`.NET` custom runtime (`feature = "aws"`) already requires. Set the Lambda
+function's runtime to `provided.al2` or `provided.al2023`; no
+`<assembly>.<Class>::method` handler string is configured, since the
+custom runtime's `bootstrap` entry point is fixed.
 
 ### 12.3 Dependencies
 
 Dependencies are resolved from the `[maven]` table in `lyric.toml`.
 When `feature = "jvm"`:
 
-**lyric-lambda:**
-- `com.amazonaws:aws-lambda-java-core:1.2.3`
-- `com.amazonaws:aws-lambda-java-events:3.11.4`
+**lyric-lambda:** no Maven dependency is declared — the custom-runtime
+protocol is plain HTTP against `Std.Http`/`Std.HttpServer`'s real JVM
+kernels (docs/59 Wave 4), with no AWS Lambda Java SDK involved (see §8.4;
+the managed-runtime `com.amazonaws:aws-lambda-java-core`/
+`aws-lambda-java-events` dependency this section used to list was for the
+JVM entry-point design that was evaluated and **not** chosen).
 
 **lyric-aws-secrets:**
 - `software.amazon.awssdk:secretsmanager:2.25.70`
@@ -764,8 +777,11 @@ When `feature = "jvm"`:
 ### 12.4 Feature parity
 
 The JVM kernel implements the same event-detection and dispatch logic as the
-.NET kernel.  `Lambda.Direct` function-reference registration is supported.
-Streaming writes directly to the Java `OutputStream` passed to `handleRequest`.
+.NET kernel (`Lambda.Dispatch`, shared by both). `Lambda.Direct`
+function-reference registration is supported. `Lambda.Stream` (§11) is a
+pure-Lyric wrapper over `Web`/HTTP streaming primitives and is not part of
+this PR's scope; its per-target kernel behavior is unchanged by the
+custom-runtime decision above.
 
 ---
 

@@ -182,7 +182,8 @@ pub opaque type LambdaRouter {
 /// `internal`): a cross-package bare-name reference to an `internal` free
 /// function did not resolve from `Lambda.Kernel.WebBridge` in practice
 /// (`error[T0020] unknown name`) even though the language reference
-/// documents `internal` as cross-package-visible within a project — the
+/// documents `internal` as cross-package-visible within a project
+/// (tracked as a compiler bug in #6886) — the
 /// one working precedent for cross-package `internal` in this codebase
 /// (`Std.Tls.Identity.rawHandle`, `Std.HttpServer.ServerSslContext.rawContext`)
 /// is always called via UFCS method syntax on a receiver value
