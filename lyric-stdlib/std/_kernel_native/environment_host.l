@@ -19,7 +19,8 @@
 //! C surface, deliberately deferred rather than bundled into this
 //! kernel-focused audit pass — `Std.Environment.appBaseDirectory`'s own
 //! `@stable(since = "0.1")` marks it the oldest, least-used probe of
-//! the four).
+//! the four — tracked as issue #6937, since #4752 itself closes with
+//! this PR).
 //!
 //! `hostRuntimeDirectory`/`hostRuntimeIdentifier` both return `""`
 //! unconditionally: `Std.Environment`'s own public doc comments already
