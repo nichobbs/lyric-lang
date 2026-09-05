@@ -41544,7 +41544,7 @@ spec-first direction.
 CLI-command gap this surfaced, left open), `lyric-web/src/openapi.l`
 module header.
 
-## D-progress-877 — JVM codegen: three `group:jvm-generics-erasure` gaps fixed at their shared root cause (generic-record instantiations erasing to `Object` outside List/Map) (#6691, #6708, #6586)
+## D-progress-883 — JVM codegen: three `group:jvm-generics-erasure` gaps fixed at their shared root cause (generic-record instantiations erasing to `Object` outside List/Map) (#6691, #6708, #6586)
 
 **Context.** Three related self-hosted JVM backend issues, all filed under
 the `group:jvm-generics-erasure` label, traced back to the same underlying
@@ -41686,4 +41686,5 @@ this needs either re-ordering `Jvm.Bridge`'s registration passes (all
 `collectFileCtors` calls before any `collectFileSigsSeeded` call) or a late
 enrichment pass over `registry` once `ctorReg` is complete — both a larger,
 riskier change to the shared bridge pipeline than this fix's scope, and
-deferred as a separate follow-up rather than folded in here.
+deferred as a separate follow-up rather than folded in here. Tracked as
+#6929.
