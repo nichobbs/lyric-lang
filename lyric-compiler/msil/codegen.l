@@ -3083,7 +3083,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
             if not valTypeEnv.containsKey(valName) {
               val predictedTy = match decl.ty {
                 case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
-                case None -> inferUntypedStaticValMsilType(decl.init, valTypeEnv)
+                case None -> inferUntypedStaticValMsilType(decl.init, valTypeEnv, cctx, pkgName)
               }
               valTypeEnv.add(valName, predictedTy)
             }
@@ -4242,7 +4242,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           val fieldTok = 0x04000000 + fieldDefRow
           val valTy = match decl.ty {
             case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
-            case None -> inferUntypedStaticValMsilType(decl.init, valTypeEnv)
+            case None -> inferUntypedStaticValMsilType(decl.init, valTypeEnv, cctx, pkgName)
           }
           cctx.staticValTokens.add(valName, fieldTok)
           cctx.staticValMsilTypes.add(valName, valTy)
@@ -4777,9 +4777,14 @@ func isLiteralI4ExprMsilWithEnv(e: in Expr, env: in Map[String, Bool]): Bool {
 // literal forms whose runtime type is knowable without full expression
 // lowering — most importantly string literals, which previously defaulted
 // to `MObject` and then mis-dispatched `.length` through the List/IList
-// fallback (`InvalidCastException: String -> IList`).  Anything else
-// (calls, records, collections, …) still falls back to `MObject`; an
-// explicit type annotation is required to type those precisely.
+// fallback (`InvalidCastException: String -> IList`).  A record-constructor
+// `ECall` (#6786) resolves through `cctx.recordCtorTokens` the same way real
+// codegen does, but only for the NON-generic case: a generic record/union
+// case needs inferred type args this pass can't compute without a full
+// symbol table, so it still falls back to `MObject` rather than guess wrong.
+// Everything else (collections, arbitrary function calls, …) still falls
+// back to `MObject`; an explicit type annotation is required to type those
+// precisely.
 //
 // `env` (#5955) maps every earlier same-package `val`/`const`'s bare name to
 // its already-predicted MSIL type (built by the caller in declaration order —
@@ -4790,17 +4795,24 @@ func isLiteralI4ExprMsilWithEnv(e: in Expr, env: in Map[String, Bool]): Bool {
 // processed *after* this one in the same file — see the codegen ctx pass
 // that populates `constValues`).  The actual field's MSIL type, though, is
 // whatever `lowerExprMsil` infers when Phase 4 really lowers `decl.init` —
-// so an expression form unhandled here (previously: `EPath`, `EBinop`) that
-// `lowerExprMsil` DOES resolve to a concrete type produces a predicted type
-// that silently diverges from the real field signature. A `ldsfld` read
-// under the wrong predicted type crashes at runtime (observed as
-// `InvalidProgramException`/`NullReferenceException` depending on the JIT):
-// e.g. `pub val base = 40; pub val derived = base + 2` used to predict
-// `derived: MObject` (the `EBinop` catch-all) while the field was actually
-// emitted as `Int32`.
-func inferUntypedStaticValMsilType(e: in Expr, env: in Map[String, MsilType]): MsilType {
+// so an expression form unhandled here (previously: `EPath`, `EBinop`,
+// `ECall`) that `lowerExprMsil` DOES resolve to a concrete type produces a
+// predicted type that silently diverges from the real field signature. A
+// `ldsfld` read under the wrong predicted type crashes at runtime (observed
+// as `InvalidProgramException`/`NullReferenceException` depending on the
+// JIT, or — for the `ECall` gap — a wrong-record `castclass` on a later
+// field read, #6786): e.g. `pub val base = 40; pub val derived = base + 2`
+// used to predict `derived: MObject` (the `EBinop` catch-all) while the
+// field was actually emitted as `Int32`.
+//
+// `cctx`/`pkgName` (#6786) are needed only for the `ECall` record-ctor arm's
+// `cctx.recordCtorTokens`/`cctx.caseParentUnion`/`cctx.genericTypeArity`
+// lookups; every other arm ignores them.
+func inferUntypedStaticValMsilType(
+  e: in Expr, env: in Map[String, MsilType], cctx: in CodegenCtx, pkgName: in String
+): MsilType {
   match e.kind {
-    case EParen(inner) -> inferUntypedStaticValMsilType(inner, env)
+    case EParen(inner) -> inferUntypedStaticValMsilType(inner, env, cctx, pkgName)
     // LBool/LChar/LUnit are unreachable here in practice: the caller only
     // reaches this function when isLiteralI4ExprMsilWithEnv(decl.init, ...)
     // returned false, and that function unconditionally returns true for
@@ -4834,9 +4846,9 @@ func inferUntypedStaticValMsilType(e: in Expr, env: in Map[String, MsilType]): M
     // PreNot always produces MBool regardless of operand type; PreRef is a
     // bare passthrough of the operand's type. Both mirror lowerExprMsil too.
     case EPrefix(op, inner) -> match op {
-      case PreNeg -> inferUntypedStaticValMsilType(inner, env)
+      case PreNeg -> inferUntypedStaticValMsilType(inner, env, cctx, pkgName)
       case PreNot -> MBool
-      case PreRef -> inferUntypedStaticValMsilType(inner, env)
+      case PreRef -> inferUntypedStaticValMsilType(inner, env, cctx, pkgName)
     }
     // A bare reference to an earlier module-level `val`/`const` (#5955):
     // resolve through `env` — mirrors `isLiteralI4ExprMsilWithEnv`'s EPath
@@ -4862,7 +4874,7 @@ func inferUntypedStaticValMsilType(e: in Expr, env: in Map[String, MsilType]): M
       match op {
         case BEq | BNeq | BLt | BLte | BGt | BGte | BAnd | BOr | BImplies -> MBool
         case BAdd -> {
-          match inferUntypedStaticValMsilType(lhs, env) {
+          match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
             case MString -> MString
             case MLong -> MLong
             case MDouble -> MDouble
@@ -4870,14 +4882,14 @@ func inferUntypedStaticValMsilType(e: in Expr, env: in Map[String, MsilType]): M
           }
         }
         case BSub | BMul -> {
-          match inferUntypedStaticValMsilType(lhs, env) {
+          match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
             case MLong -> MLong
             case MDouble -> MDouble
             case _ -> MInt
           }
         }
         case BDiv -> {
-          match inferUntypedStaticValMsilType(lhs, env) {
+          match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
             case MLong -> MLong
             case MDouble -> MDouble
             case MByte -> MByte
@@ -4890,7 +4902,7 @@ func inferUntypedStaticValMsilType(e: in Expr, env: in Map[String, MsilType]): M
         // NOT widen to MDouble here, or it reintroduces the exact
         // predicted-vs-actual `ldsfld` divergence #5955 eliminates.
         case BMod -> {
-          match inferUntypedStaticValMsilType(lhs, env) {
+          match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
             case MLong -> MLong
             case MByte -> MByte
             case _ -> MInt
@@ -4898,12 +4910,54 @@ func inferUntypedStaticValMsilType(e: in Expr, env: in Map[String, MsilType]): M
         }
         case BXor -> MInt
         case BCoalesce -> {
-          match inferUntypedStaticValMsilType(lhs, env) {
-            case MObject -> inferUntypedStaticValMsilType(rhs, env)
+          match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
+            case MObject -> inferUntypedStaticValMsilType(rhs, env, cctx, pkgName)
             case t -> t
           }
         }
       }
+    }
+    // Record/union-case constructor call (#6786), e.g. `val gCache =
+    // Cache(box = ...)`.  Resolves the callee the same way real ECall codegen
+    // does (`cctx.recordCtorTokens`, local package key first, then a fully
+    // qualified callee), but limited to a simple/qualified `EPath` callee and
+    // to the NON-generic case — a generic record/union case needs inferred
+    // type args this single-expression pass can't compute without a full
+    // symbol table, so it falls back to `MObject` rather than risk a wrong
+    // instantiation.  A union case's constructed value is statically typed as
+    // its PARENT union (mirroring the real ECall lowering's
+    // `caseParentFqnMsil` result), not the case's own class.
+    case ECall(fn, _) -> match fn.kind {
+      case EPath(path) -> {
+        val funcName = lastSegmentMsil(path)
+        val localCtorKey = pkgName + "." + funcName
+        val fullQualifiedCtorKey = if path.segments.count >= 2 { modulePathJoin(path.segments) } else { "" }
+        val ctorKeyOpt = if cctx.recordCtorTokens.containsKey(localCtorKey) {
+          Some(value = localCtorKey)
+        } else if fullQualifiedCtorKey.length > 0 and cctx.recordCtorTokens.containsKey(fullQualifiedCtorKey) {
+          Some(value = fullQualifiedCtorKey)
+        } else {
+          None
+        }
+        match ctorKeyOpt {
+          case Some(ctorKey) -> {
+            if cctx.genericTypeArity.containsKey(ctorKey) {
+              MObject
+            } else {
+              match mapGet(cctx.caseParentUnion, ctorKey) {
+                case Some(parentFqn) -> if cctx.genericTypeArity.containsKey(parentFqn) {
+                  MObject
+                } else {
+                  MClass(className = parentFqn)
+                }
+                case None -> MClass(className = ctorKey)
+              }
+            }
+          }
+          case None -> MObject
+        }
+      }
+      case _ -> MObject
     }
     case _ -> MObject
   }
