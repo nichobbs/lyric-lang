@@ -1885,8 +1885,8 @@ String `==` / `!=` compare by value (not reference identity). An empty-string
 check is the `Std.String.isEmpty(s)` free function (`s.length == 0`), not a
 method-syntax form.
 
-**`--target native` coverage note (#6588, #6778):** the six methods
-`.trim()`/`.toLower()`/`.indexOf()`/`.startsWith()`/`.contains()`/
+**`--target native` coverage note (#6588, #6778, #6237):** the six
+methods `.trim()`/`.toLower()`/`.indexOf()`/`.startsWith()`/`.contains()`/
 `.endsWith()` above are implemented for `--target native` (`lyric-rt/src/lyric_string.c`),
 matching the dotnet/JVM semantics documented here, with two exceptions.
 `s.toLower()` on native applies a genuine Unicode simple-case fold, but
@@ -1896,11 +1896,26 @@ Database `ToLowerInvariant`/`toLowerCase` use on the other two targets;
 every other cased script (e.g. Armenian, Georgian, Deseret) passes
 through unchanged on native today. Widening this is tracked in #6779.
 `s.toUpper()` has no native implementation at all yet (`.toString()`/
-`.substring()`/the six methods above are the only String scalar methods
-native currently lowers). Native's indices are byte offsets into the
-UTF-8 representation rather than the UTF-16 code-unit offsets `.length`/
-`s[i]` use on dotnet/JVM (D-N-006) — a pre-existing target divergence,
-unrelated to #6588/#6778, not newly introduced by these methods.
+`.substring()`/the six methods above, plus `s[i]` bracket indexing and
+`String + Char` concatenation below, are the only String scalar
+operations native currently lowers). Native's indices are byte offsets
+into the UTF-8 representation rather than the UTF-16 code-unit offsets
+`.length`/`s[i]` use on dotnet/JVM (D-N-006) — a pre-existing target
+divergence, unrelated to #6588/#6778, not newly introduced by these
+methods.
+
+**`s[i]` on `--target native` (#6237):** `i` is a byte offset (matching
+`.length`/`.substring`'s existing byte-indexed model), but the character
+produced is the full Unicode scalar value decoded via UTF-8 iteration
+starting at that offset — never a raw byte — so `s[i]` still always
+yields a genuine `Char`. For ASCII text (where byte offset and codepoint
+index coincide) this matches dotnet/JVM element-for-element; for
+non-ASCII text a caller must still iterate by codepoint-start byte
+offsets, exactly as `.substring` already requires. An out-of-range byte
+offset panics, mirroring `.substring`'s bounds check. `String + Char`
+concatenation and `Char.toString()` are also implemented for
+`--target native`, converting the `Char` via the same UTF-8 encoder
+`s[i]`'s decode inverts (`lyric_string_from_char`).
 
 ## 13. Tooling
 
