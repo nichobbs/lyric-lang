@@ -221,3 +221,68 @@ test "Byte >= 128 renders as its unsigned value" {
   val b: Byte = 200.toByte()
   assertEqual("v=" + b.toString(), "v=200", "Byte 200 stringifies as 200")
 }
+
+// ── Hoisted Byte closure cell, ESCAPING closure, wraps on overflow (#6524) ────
+// The existing "hoisted closure variables wrap on overflow" test above (#5520)
+// only covers a closure that stays in the SAME function's scope (called
+// directly, never returned out) — a comment on that test explicitly calls out
+// this narrower shape. #6524 tracked whether a hoisted Byte cell shared by
+// TWO closures that both ESCAPE their declaring function (via a returned
+// record — the exact shape a real callback-pair/observer idiom uses) still
+// wraps correctly on overflow: the cell must be heap-allocated (the
+// declaring function's stack frame is gone by the time either closure runs),
+// which is a different codegen path than a non-escaping closure's cell.
+record BytePair6524 {
+  setter: () -> Unit
+  getter: () -> Int
+}
+
+func makeByteAdder6524(): BytePair6524 {
+  var b: Byte = 200.toByte()
+  BytePair6524(setter = { -> b += 100.toByte() }, getter = { -> b.toInt() })
+}
+
+func makeByteMul6524(): BytePair6524 {
+  var b: Byte = 100.toByte()
+  BytePair6524(setter = { -> b *= 3.toByte() }, getter = { -> b.toInt() })
+}
+
+func makeByteSub6524(): BytePair6524 {
+  var b: Byte = 10.toByte()
+  BytePair6524(setter = { -> b -= 20.toByte() }, getter = { -> b.toInt() })
+}
+
+test "hoisted Byte cell shared by an escaping closure pair wraps on overflow, += (#6524)" {
+  val p = makeByteAdder6524()
+  val doSet = p.setter
+  val doGet = p.getter
+  doSet()
+  assertEqualInt(doGet(), 44, "escaping-closure hoisted b += 100 on 200 wraps unsigned to 44, not 300")
+}
+
+test "hoisted Byte cell shared by an escaping closure pair wraps on overflow, *= (#6524)" {
+  val p = makeByteMul6524()
+  val doSet = p.setter
+  val doGet = p.getter
+  doSet()
+  assertEqualInt(doGet(), 44, "escaping-closure hoisted b *= 3 on 100 wraps unsigned to 44, not 300")
+}
+
+test "hoisted Byte cell shared by an escaping closure pair wraps on overflow, -= (#6524)" {
+  val p = makeByteSub6524()
+  val doSet = p.setter
+  val doGet = p.getter
+  doSet()
+  assertEqualInt(doGet(), 246, "escaping-closure hoisted b -= 20 on 10 wraps unsigned to 246, not -10")
+}
+
+test "hoisted Byte cell shared by an escaping closure pair: repeated get/set stays correct (#6524)" {
+  val p = makeByteAdder6524()
+  val doSet = p.setter
+  val doGet = p.getter
+  assertEqualInt(doGet(), 200, "getter before any setter call reads the initial value")
+  doSet()
+  assertEqualInt(doGet(), 44, "first setter call wraps 200+100 to 44")
+  doSet()
+  assertEqualInt(doGet(), 144, "second setter call adds 100 to 44 -> 144, no overflow")
+}
