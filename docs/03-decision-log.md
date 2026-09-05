@@ -41270,3 +41270,53 @@ server hosting/unary/streaming remain unimplemented, tracked at #6581), #6581
 this session's group:ecosystem-lib-kernels scope), D-progress-815 (the
 interim honest-failure fix this session builds on), D-progress-252 (original
 `lyric-grpc` ship, corrected here).
+## D-progress-878 — `coverage-smoke-test.sh` re-added with a bounded, self-diagnosing hang path; root cause of the #6659 JVM hang still open
+
+**Context.** #6659 (filed while landing #5294/D135 in PR #6627) documented
+`lyric test --target jvm --coverage` hanging for 2+ hours on real GitHub
+Actions runners under the JaCoCo `-javaagent` instrumentation, while the
+identical non-instrumented test file runs fine in the same job. The CI step
+was removed outright (`scripts/ci/coverage-smoke-test.sh` kept as a working,
+directly-invokable script) rather than shipped hanging. No live-debugging
+access to a real GitHub Actions runner is available from this environment,
+so the actual root cause (the issue's leading hypothesis: `dumponexit=true`'s
+JVM shutdown-hook path racing the compiled program's own explicit
+`System.exit()` call, a documented class of JaCoCo/agent interaction) could
+not be confirmed or fixed here.
+
+**What shipped instead.** `coverage-smoke-test.sh`'s external bound used to
+be a plain `timeout --signal=KILL 900 <cmd>` — the SIGKILL destroys the
+JVM's thread state instantly, so a real hang left nothing to diagnose beyond
+"force-killed after 900s". The script now launches the command in the
+background and polls it (2s interval) against the same 900s deadline; on a
+timeout it finds the live `java` process by its distinctive
+`-javaagent:...jacocoagent...` argument and runs `jcmd Thread.print`
+(falling back to `jstack`) against it — dumping every thread's stack into
+the step's own CI log — *before* killing the process tree. This does not fix
+the hang; it exists so the next real occurrence on a GitHub Actions runner
+leaves the one artifact (#6659 itself asked for: "capture a thread dump on
+timeout to find the block") that can actually root-cause it.
+
+**Re-added to CI, `continue-on-error: true`.** The step (`Coverage smoke test
+on JVM`, `compiler-self-tests-jvm` job, right after the plain `Bitwise
+self-test on JVM` step) runs on every CI job now instead of sitting
+unexercised on a developer's own machine. `continue-on-error: true` keeps it
+from blocking merges while #6659 is open — the previous unbounded hang was
+the actual production risk, not "this step is sometimes red" — but the
+step's own pass/fail is real and visible in the UI (unlike the old F#-era
+`coverage` job's `|| echo "::warning::…; continuing"`, which made a
+permanently-broken step look green). Flip to a blocking step once a run
+with the underlying hang genuinely fixed is observed.
+
+**Not done here:** the `output=tcpserver` + explicit `jacococli.jar dump`
+redesign #6659 names as the most promising avenue (it sidesteps the
+shutdown-hook path entirely, at the cost of needing to pull a coverage
+snapshot from the still-running JVM before it exits rather than relying on
+JaCoCo's own exit-time dump) was not attempted: it requires a real hang
+reproduction to verify against, which this environment cannot produce, and
+implementing an unverified redesign of the coverage collection path would
+itself be exactly the kind of unverified speculative fix CLAUDE.md's
+production-readiness standard warns against. The next session with either
+(a) a thread dump from this step's next real-CI hang, or (b) direct GitHub
+Actions runner access, should use whichever it has to close out #6659 for
+real.
