@@ -6,6 +6,7 @@
 @runtime_checked
 package Std.Stream
 
+import Std.Core
 import Std.Errors
 
 @stable(since = "1.0")
