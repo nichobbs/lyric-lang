@@ -83,16 +83,11 @@ extern type JSecretsManagerClient = "software.amazon.awssdk.services.secretsmana
 
 extern type JGetSecretValueRequest = "software.amazon.awssdk.services.secretsmanager.model.GetSecretValueRequest"
 
-extern type JGetSecretValueRequestBuilder =
-  "software.amazon.awssdk.services.secretsmanager.model.GetSecretValueRequest$Builder"
-
 extern type JGetSecretValueResponse = "software.amazon.awssdk.services.secretsmanager.model.GetSecretValueResponse"
 
 extern type JSsmClient = "software.amazon.awssdk.services.ssm.SsmClient"
 
 extern type JGetParameterRequest = "software.amazon.awssdk.services.ssm.model.GetParameterRequest"
-
-extern type JGetParameterRequestBuilder = "software.amazon.awssdk.services.ssm.model.GetParameterRequest$Builder"
 
 extern type JGetParameterResponse = "software.amazon.awssdk.services.ssm.model.GetParameterResponse"
 
@@ -244,7 +239,6 @@ pub func classifyParameterError(path: in String, message: in String): AwsSecrets
 // =====================================================================
 // Public entry points.
 // =====================================================================
-
 /// NOT_IMPLEMENTED: scanning compiled JVM class metadata for
 /// @secretsManager/@parameterStore annotations at runtime has no
 /// supporting compiler capability today. See the file header.
@@ -260,6 +254,33 @@ pub func initFromAnnotations(ttlSeconds: in Int): Result[Unit, AwsSecrets.Secret
   )
 }
 
+// Pure — no network/client dependency, so it's directly unit-testable
+// (see `secrets_tests.l`'s "extractSecretField" cases) independent of a
+// live/mocked AWS endpoint.
+pub func extractSecretField(
+  name: in String, key: in Option[String], secretString: in String
+): Result[String, AwsSecrets.SecretsError] {
+  match key {
+    case None -> Ok(value = secretString)
+    case Some(k) -> {
+      match Std.Json.tryParseJson(secretString) {
+        case Err(msg) -> Err(error = ParseError(name = name, key = k, message = msg))
+        case Ok(doc) -> {
+          val root = Std.Json.rootElement(doc)
+          match Std.Json.tryGetProperty(root, k) {
+            case None -> Err(error = ParseError(name = name, key = k, message = "field '" + k + "' not present in secret JSON"))
+            case Some(field) -> try {
+              Ok(value = Std.Json.getString(field))
+            } catch Bug as b {
+              Err(error = ParseError(name = name, key = k, message = "field '" + k + "' is not a string: " + b.message))
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 @stable(since = "0.1")
 pub func fetchSecret(
   name: in String, key: in Option[String], ttlSeconds: in Int
@@ -267,10 +288,7 @@ pub func fetchSecret(
   requires: name.length > 0
   requires: ttlSeconds >= 0
 {
-  val cacheKey = match key {
-    case Some(k) -> name + " " + k
-    case None -> name
-  }
+  val cacheKey = match key { case Some(k) -> name + " " + k; case None -> name }
 
   var cached: CacheEntry = default()
   if ttlSeconds > 0 and cdTryGetValue(secretCache, cacheKey, cached) {
@@ -290,36 +308,20 @@ pub func fetchSecret(
 
   val result: Result[String, AwsSecrets.SecretsError] = match responseResult {
     case Err(e) -> Err(error = e)
-    case Ok(response) -> {
-      val secretString: String = response.secretString()
-      match key {
-        case None -> Ok(value = secretString)
-        case Some(k) -> {
-          match Std.Json.tryParseJson(secretString) {
-            case Err(msg) -> Err(error = ParseError(name = name, key = k, message = msg))
-            case Ok(doc) -> {
-              val root = Std.Json.rootElement(doc)
-              match Std.Json.tryGetProperty(root, k) {
-                case None ->
-                  Err(
-                    error = ParseError(
-                      name = name,
-                      key = k,
-                      message = "field '" + k + "' not present in secret JSON"
-                    )
-                  )
-                case Some(field) -> Ok(value = Std.Json.getString(field))
-              }
-            }
-          }
-        }
-      }
-    }
+    case Ok(response) -> extractSecretField(
+      name,
+      key,
+      response.secretString()
+    )
   }
 
   if ttlSeconds > 0 {
     match result {
-      case Ok(v) -> cdPut(secretCache, cacheKey, CacheEntry(value = v, expiresAtMs = currentTimeMillis() + ttlSeconds.toLong() * 1000i64))
+      case Ok(v) -> cdPut(
+        secretCache,
+        cacheKey,
+        CacheEntry(value = v, expiresAtMs = currentTimeMillis() + ttlSeconds.toLong() * 1000i64)
+      )
       case Err(_) -> ()
     }
   }
@@ -332,7 +334,7 @@ pub func fetchParameter(path: in String, decrypt: in Bool, ttlSeconds: in Int): 
   requires: path.length > 0
   requires: ttlSeconds >= 0
 {
-  val cacheKey = path + " " + decrypt.toString()
+  val cacheKey = path + " " + decrypt.toString()
 
   var cached: CacheEntry = default()
   if ttlSeconds > 0 and cdTryGetValue(parameterCache, cacheKey, cached) {
@@ -360,7 +362,11 @@ pub func fetchParameter(path: in String, decrypt: in Bool, ttlSeconds: in Int): 
 
   if ttlSeconds > 0 {
     match result {
-      case Ok(v) -> cdPut(parameterCache, cacheKey, CacheEntry(value = v, expiresAtMs = currentTimeMillis() + ttlSeconds.toLong() * 1000i64))
+      case Ok(v) -> cdPut(
+        parameterCache,
+        cacheKey,
+        CacheEntry(value = v, expiresAtMs = currentTimeMillis() + ttlSeconds.toLong() * 1000i64)
+      )
       case Err(_) -> ()
     }
   }
