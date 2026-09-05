@@ -560,16 +560,23 @@ test "interface-typed function parameter/return dispatch with a Self return type
 // ── Lambda literal inside a match-arm guard (#6553) ───────────────────────────
 // `liftLambdasMsil`'s `collectLambdasBfsExpr` walked a match arm's scrutinee
 // and body but never its `guard` expression, so a lambda literal living only
-// inside a guard (e.g. `case y if any(xs, (v) -> v > 0) -> ...`) had no
+// inside a guard (e.g. `case y if any(xs, { v -> v > 0 }) -> ...`) had no
 // lifted `__lambda_*` token and codegen panicked with "lambda token missing
 // ... liftLambdasMsil pre-pass was not run". Fixed (as a side effect of the
 // #6601 parser generalization making such guards parse at all — previously
 // the parser itself mis-parsed a guard containing a nested block-statement
 // lambda) by adding a guard-expression visit, before the arm's body, to
 // `collectLambdasBfsExpr`'s `EMatch` case.
+//
+// Uses the brace-lambda form `{ v -> v > 0 }` rather than the bare-paren
+// sugar `(v) -> v > 0`: the two are equivalent for an untyped single param,
+// but the bare-paren form trips an unrelated `lyric fmt` bug (#6869 — any
+// file containing a bare-paren lambda literal is refused with "formatting
+// would change the code-token sequence"). The brace form formats cleanly
+// and still exercises the same `collectLambdasBfsExpr` guard-visit path.
 func classifyIfAnyPositive(n: Int, xs: in slice[Int]): Int {
   match n {
-    case y if any(xs, (v) -> v > 0) -> y + 100
+    case y if any(xs, { v -> v > 0 }) -> y + 100
     case _ -> 0
   }
 }
