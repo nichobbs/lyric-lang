@@ -41347,3 +41347,139 @@ suite re-run: 37/37 (34 pre-existing + 3 new), no regressions.
 `NativeWeak` ARC two-count design this builds on), `native/plan/08-work-items.md`
 N9.8, `native/plan/04-arc-design.md`'s "Weak references: `NativeWeak[T]`"
 section.
+
+## D-progress-878 — lyric-web: `Web.addWorker`'s registered worker actually fires on `--target dotnet` (#5359)
+
+**Status:** Shipped on `--target dotnet`; `--target jvm` still registers only (pre-existing, unrelated compile blockers).
+
+**The gap.** `WorkerRegistration.handlerName: String` was a leftover from the
+DLL-reflection dispatch design D099 rejected outright — `Web.serve`/
+`serveStreaming`/`serveTls` never read `router.workers` at all, so a
+registered worker never fired.
+
+**Investigation: is a real background loop even possible on `--target
+dotnet` today?** The issue itself flagged two paths: full MSIL structured
+concurrency (`spawn` is degenerate-synchronous on this target, D119/D120 —
+out of scope, a much larger cross-cutting fix) or a hand-rolled
+`Thread`/`Timer` extern boundary using the bounded FFI delegate-bridging
+support D122 shipped (docs/50). Verified empirically, both directions:
+
+- `System.Threading.Thread`'s constructor takes `ThreadStart`, a *named*
+  delegate type — D122's bridging only targets `System.Action`N`/`Func`N
+  (`Msil.Codegen.typeExprToMsilCtx`'s `TFunction` case,
+  `lyric-compiler/msil/codegen.l:7007`), never an arbitrary named delegate,
+  so `Thread(ThreadStart)`/`Timer(TimerCallback)` both fail to bind
+  (`MissingMethodException`, confirmed with a minimal single-file repro).
+- `System.Threading.Tasks.Task.Run(Action)` **does** bind (`Action` is one
+  of the two targeted shapes) — and, contrary to `_kernel/task.l`'s own
+  documented finding that this exact overload "never actually invokes the
+  passed closure on this backend" (confirmed there via
+  `Std.Task.scopeSpawn`'s two-argument `Task.Run(Action,
+  CancellationToken)` overload), a plain one-argument `Task.Run(Action)`
+  call **does** invoke its closure and runs concurrently with the caller —
+  confirmed with an isolated repro (a `Task.Run`-backed loop mutating a
+  shared field while the caller sleeps, observed to run genuinely
+  concurrently) and independently corroborated: `serve_tls_tests.l` and
+  `serve_crash_isolation_tests.l` already drive `Web.serve`/`serveTls` on a
+  background `Task.Run(Action)` in existing, passing tests. The
+  `_kernel/task.l` finding is not wrong so much as scoped to a different
+  overload/call shape (the 2-arg `CancellationToken` form, or a
+  `scopeSpawn`-specific interaction) — this fix does not touch
+  `Std.Task`/`scopeSpawn` at all, and that gap remains exactly as
+  documented there.
+- A second, independent codegen gap surfaced along the way: invoking a
+  captured `() -> Unit` closure-typed VALUE from inside another closure
+  panics at codegen (`T0123: unresolved call ... no function token could
+  be resolved`), reproduced in complete isolation with a single-package,
+  no-FFI repro (a function taking a closure parameter, closing over it in
+  a nested closure, calling it there) — a real gap independent of #5363's
+  cross-package case. Invoking an **interface method** from inside a
+  closure does not hit this (confirmed with the same isolation
+  methodology), which is why the fix below routes worker dispatch through
+  a `Worker` interface value rather than a raw closure parameter.
+
+**The fix.** `Web.Worker` is a new interface (`func tick(): Unit`),
+mirroring `Handler`/`Middleware` (#5363's precedent: interfaces, not
+closures, for anything invoked across the record/package boundary).
+`WorkerRegistration.handlerName: String` → `handler: Worker`;
+`addWorker(router, name, intervalMs, handler: Worker)` — a documented
+breaking signature change to a `@stable(since = "0.1")` function, bumped
+to `"0.3"` (`WorkerRegistration` and `Worker` alongside it). `Web.Kernel.Runtime`'s
+dotnet kernel (`_kernel/net/web_kernel.l`) gains `startWorkerLoop(intervalMs,
+worker: Web.Worker)`: a single `Task.Run(Action)` whose closure loops
+`sleepMillis(intervalMs); worker.tick()` forever, fire-and-forget (the
+returned `Task` is never joined — `Web.serve`'s own accept loop already
+blocks for the life of the process). `Web.serveStreaming`/`serveTls`
+(dotnet) call a shared `startWorkers(router)` right after logging
+"Listening on ...", once, before entering the accept loop — one
+background task per registered worker.
+
+**JVM scope cut.** `Web.serve`'s jvm branch delegates entirely to
+`Web.Kernel.Runtime`'s separate Undertow-backed implementation
+(`_kernel/jvm/web_kernel.l`), which has no `startWorkerLoop` twin — not
+implemented here. `lyric-web`'s JVM test suite does not compile today for
+unrelated, pre-existing reasons (#5443 workaround in place, #5458 open),
+so a JVM implementation could not be verified in this change; adding
+unverified JVM codegen would violate this repo's production-readiness
+standard. Tracked as a follow-up once #5444/#5458 are fixed and the JVM
+suite compiles again — JVM's own `spawn`/`scope` are genuinely concurrent
+there (D120), so the natural JVM implementation is structured concurrency
+rather than a hand-rolled thread, once it's testable.
+
+**Call-site fallout.** `examples/jobqueue` (the one real consumer) gains a
+`JobPollerWorker` adapter record (`src/worker.l`) wrapping
+`workerTick(): Result[Unit, String]` into `Worker.tick(): Unit` (the
+`Err` case is already logged via `OTel.setSpanError` inside `workerTick`
+itself); `main.l`'s `addWorker` call updated to pass the record instead of
+a handler-name string.
+
+**Verification.** New `lyric-web/tests/worker_dispatch_tests.l` (added to
+`lyric-web/lyric.toml`'s `[project.tests]` — no new CI step, the existing
+`lyric test --manifest lyric-web/lyric.toml` step picks it up) drives a
+real `Web.serve` listener on a background task (same pattern as
+`serve_tls_tests.l`/`serve_crash_isolation_tests.l`) with a worker
+registered at a 30ms interval, polls a `/ticks` route backed by a shared
+counter the worker increments, and asserts the count **increases** between
+two polls 200ms apart — proving the loop fires repeatedly, not just once.
+✅ 1/1, whole-suite `lyric-web/lyric.toml` run: 8/8. `examples/jobqueue`
+rebuilt clean (`lyric build --manifest examples/jobqueue/lyric.toml
+--target dotnet`) after its dependencies (`lyric-db`, `lyric-health`,
+`lyric-otel`) were built.
+
+**Related:** #5359 (this issue), #5363 (the interface-not-closure
+precedent), D119/D120 (structured concurrency, still degenerate-sync on
+dotnet — unaffected by this fix), `_kernel/task.l` (the separately-scoped,
+still-open `scopeSpawn`/`Task.Run(Action, CancellationToken)` finding this
+fix does not touch), #5443/#5458 (the pre-existing JVM compile blockers
+this fix's JVM scope cut is gated on).
+
+## D-progress-879 — lyric-web: isolate a panicking `Web.Worker.tick()` instead of silently killing its background loop (#6935)
+
+**The gap.** `Web.Kernel.Runtime.startWorkerLoop` (D-progress-878) runs
+`while true { sleepMillis(intervalMs); worker.tick() }` inside a
+fire-and-forget `Task.Run(Action)` whose `Task` is never observed. An
+uncaught `Bug` raised by a single `tick()` call therefore silently and
+permanently stopped that worker's loop forever — no log line, no crash,
+the server keeps running normally as if the worker were still ticking.
+This is exactly the failure mode `serve`/`serveStreaming`'s own accept
+loops are already hardened against (#5261): a caught `Bug` there is
+logged and the loop keeps going (or, for a listener-level failure,
+surfaced loudly and the process exits non-zero — never a silent hang).
+
+**The fix.** Wrap the `worker.tick()` call in `try { ... } catch Bug as e
+{ Console.error(...) }` inside the loop body, so a failing tick is logged
+and the loop continues on its next `intervalMs` interval rather than
+dying. `Std.Console` added to `_kernel/net/web_kernel.l`'s imports.
+
+**Verification.** New case in `lyric-web/tests/worker_dispatch_tests.l`:
+a `FlakyWorker` whose first `tick()` panics, then increments a counter on
+every subsequent tick; the test asserts the counter still rises after
+that first, crashing tick. Reverting only the kernel fix (keeping the
+new test) reproduces the pre-fix failure — the counter never advances
+past the state left by the panicking first tick. Whole-suite
+`lyric-web/lyric.toml` run: 8/8 (2 cases in `worker_dispatch_tests.l`).
+
+**Related:** #6935 (this issue, filed by a `claude-review` pass on the
+D-progress-878 PR before merge), D-progress-878 (`startWorkerLoop`
+itself), #5261 (the precedent this fix brings worker dispatch in line
+with).

@@ -204,6 +204,31 @@ backpressure guarantee). Unlike the `LYRIC_CONFIG_WEB_*` knobs, this one is
 read by the lower-level `Std.HttpServer` transport, so it applies to any
 server built on it.
 
+## Background workers
+
+`Web.addWorker(router, name, intervalMs, worker)` registers a `Web.Worker`
+(an interface — `func tick(): Unit` — not a stored closure or a name
+string) fired every `intervalMs` once the server starts:
+
+```lyric
+record PollWorker {}
+
+impl Web.Worker for PollWorker {
+  func tick(): Unit {
+    // runs on a background thread every intervalMs
+  }
+}
+
+router = Web.addWorker(router, "poller", 2000, PollWorker())
+```
+
+On `--target dotnet` this runs on a real background thread-pool task,
+independent of the accept loop. `--target jvm` registers a worker but does
+not yet fire it (`lyric-web/README.md`'s "Known gaps").
+
+A `tick()` that panics is isolated to that tick — logged, and the loop
+keeps running on its next interval rather than dying silently.
+
 ## OpenAPI: code-first and spec-first
 
 `Web.OpenApi` is a hand-built spec vocabulary, decoupled from `Router` at
