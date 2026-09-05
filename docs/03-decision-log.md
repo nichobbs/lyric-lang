@@ -42160,13 +42160,32 @@ exposed this call site's independent, latent cast bug.
    risk.
 3. The bare-call `f()` invoke site (where `f` is a local/param resolved via
    `fctx.slots`): checks the slot's own registered `fctx.types` entry first;
-   for the confirmed-affected shape (zero-arg, a real `MClass("System.Action")`)
-   it emits a direct `callvirt` against the PRE-EXISTING (already interned,
-   previously never wired to any call site) `cctx.tokActionInvoke` token
-   instead of the uniform-ABI cast-and-invoke path. Every other function-value
-   shape (the erased/generic-HOF case, still the overwhelming majority) is
-   completely unaffected — detected structurally from the slot's own
-   registered type, never a source-level annotation guess.
+   for any REAL void-returning delegate shape — `MClass("System.Action")`
+   (zero-arg) or `MGenericInstByName("System.Action`N", …)` for N ≥ 1 — it
+   pushes the (boxed) arguments and emits a direct `callvirt` against
+   `cctx.tokActionInvoke` (zero-arg, pre-existing but previously never wired
+   to any call site) or the new `buildActionNInvokeTok(cctx, N)` (N ≥ 1,
+   mirrors the pre-existing `buildActionNCtorTok`, sharing its TypeSpec
+   cache key) instead of the uniform-ABI cast-and-invoke path. Every other
+   function-value shape — including every NON-void `TFunction`, which is
+   ALWAYS `Func`(N+1)<object,...,object>` regardless of arity and therefore
+   identical to the uniform ABI's own erasure — is completely unaffected,
+   detected structurally from the slot's own registered type, never a
+   source-level annotation guess or an arity special-case.
+
+   **This item was originally shipped zero-arg-only** (`args.count == 0`
+   hard-coded) and widened to arbitrary arity only after CI caught two
+   further regressions on the pushed commit: `Std.Iter.forEach`'s
+   monomorphized `(T) -> Unit` callback (arity 1, `stdlib-builds` job:
+   `InvalidCastException: … 'System.Action`1[System.Object]' … 'System.Func`2…'`)
+   and `Std.Collections.mapForEach`'s `(K, V) -> Unit` callback (arity 2,
+   `map_enhancements_self_test.l` via `compiler-self-tests-dotnet-a`) — both
+   monomorphized generic stdlib functions reaching `registerStdlibFunc`
+   already non-generic, so item 2 above applied to them too and (correctly)
+   started constructing real `Action`N` values the ORIGINAL zero-arg-only
+   invoke fix didn't yet handle. The general N-ary fix closes the SAME bug
+   class at every arity in one pass rather than patching arity-by-arity as
+   CI finds them.
 
 **Scope — what this fixes and what it doesn't.** #5329 listed five findings;
 this closes two:
@@ -42222,7 +42241,14 @@ file is dual-wired): `closure_correctness_self_test.l` 8/8 (dotnet + jvm),
 `aspect_weave_self_test.l` 13/13, `msil_codegen_diag_self_test.l` 0 fail (its
 printed `F00NN` lines are the diagnostic-firing negative cases the test
 itself asserts), `msil_project_bridge_self_test.l` 53/53,
-`cross_package_generics_self_test.l` 10/10.
+`cross_package_generics_self_test.l` 10/10. After the N-arity widening of
+item 3 above (prompted by CI's own `stdlib-builds`/`compiler-self-tests-
+dotnet-a` failures on the pushed commit): `iter_tests.l` (`Std.Iter.forEach`,
+arity 1) and `map_enhancements_self_test.l` (`Std.Collections.mapForEach`,
+arity 2, 22/22) both re-verified passing, plus a broader stdlib spot-check
+(`core_tests.l`, `collections_tests.l`, `string_tests.l`, `set_tests.l`,
+`sort_tests.l`, `testing_tests.l`, `mocking_tests.l`, `json_tests.l`,
+`regex_tests.l`, `format_tests.l`) all green.
 
 **Follow-up (not done here, out of scope).** Several downstream test files
 and one library README carry `#5329` workaround notes (e.g.
