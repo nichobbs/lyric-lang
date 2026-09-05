@@ -398,7 +398,10 @@ test "Std.HttpHost native redirect strips Authorization on a cross-authority hop
     "  val client = hostDefaultClient()\n" +
     "  val url = \"http://127.0.0.1:\" + port1.toString() + \"/start\"\n" +
     "  val baseRequest = hostMakeRequest(\"GET\", url)\n" +
-    "  val request = hostWithHeader(baseRequest, \"Authorization\", \"Bearer secret-token\")\n" +
+    "  val request = match hostWithHeader(baseRequest, \"Authorization\", \"Bearer secret-token\") {\n" +
+    "    case Ok(r) -> r\n" +
+    "    case Err(_) -> baseRequest\n" +
+    "  }\n" +
     "  var finalStatus = 0\n" +
     "  var sendOk = false\n" +
     "  match await hostSendSafe(client, request) {\n" +
@@ -672,7 +675,10 @@ test "Std.HttpHost native redirect strips Authorization on an https-to-http down
     // before fixing the host mismatch here).
     "  val url = \"https://127.0.0.1:\" + port.toString() + \"/start\"\n" +
     "  val baseRequest = hostMakeRequest(\"GET\", url)\n" +
-    "  val request = hostWithHeader(baseRequest, \"Authorization\", \"Bearer secret-token\")\n" +
+    "  val request = match hostWithHeader(baseRequest, \"Authorization\", \"Bearer secret-token\") {\n" +
+    "    case Ok(r) -> r\n" +
+    "    case Err(_) -> baseRequest\n" +
+    "  }\n" +
     "  var finalStatus = 0\n" +
     "  var sendOk = false\n" +
     "  match await hostSendSafe(client, request) {\n" +

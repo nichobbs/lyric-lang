@@ -333,9 +333,29 @@ pub func hostMakeRequest(httpMethod: in String, url: in String): HttpRequestMess
   newRequest(newHttpMethod(httpMethod), url)
 }
 
-pub func hostWithHeader(request: in HttpRequestMessage, key: in String, value: in String): HttpRequestMessage {
+/// Framing headers `hostMakeRequest`/`hostWithStringBody` and the BCL's own
+/// `HttpClient` pipeline generate automatically (`Host`, `Connection` on the
+/// request; `Content-Type`/`Content-Length` on the content once a body is
+/// attached). Letting a caller add one of these via `hostWithHeader`
+/// produces a duplicate header line on the wire once the automatic one is
+/// appended — request-smuggling-adjacent, since which of two duplicate
+/// headers a peer honors is implementation-defined (RFC 9112 §5.1) — so
+/// `hostWithHeader` rejects them instead (#6658). Case-insensitive per RFC
+/// 9110 §5.1 (header field names are case-insensitive). Mirrored verbatim
+/// in `_kernel_jvm/http_host.l` and `_kernel_native/http_host.l`.
+func isReservedFramingHeader(name: in String): Bool {
+  val lower = name.toLower()
+  lower == "host" or lower == "connection" or lower == "content-type" or lower == "content-length"
+}
+
+pub func hostWithHeader(
+  request: in HttpRequestMessage, key: in String, value: in String
+): Result[HttpRequestMessage, String] {
+  if isReservedFramingHeader(key) {
+    return Err(error = key)
+  }
   val _ = headersTryAdd(requestHeaders(request), key, value)
-  request
+  return Ok(value = request)
 }
 
 pub func hostWithStringBody(request: in HttpRequestMessage, contentType: in String, body: in String): HttpRequestMessage {
@@ -681,13 +701,12 @@ pub enum TlsCaMode {
 /// `Std.Http`; extracted here (rather than left inline in
 /// `applyTlsOptions`) so the rule itself is directly testable.
 @pure
-pub func resolveCaMode(caCertificate: in Option[Tls.Certificate], exclusiveCaCertificate: in Option[Tls.Certificate]): TlsCaMode {
+pub func resolveCaMode(
+  caCertificate: in Option[Tls.Certificate], exclusiveCaCertificate: in Option[Tls.Certificate]
+): TlsCaMode {
   match exclusiveCaCertificate {
     case Some(_) -> ExclusiveCa
-    case None -> match caCertificate {
-      case Some(_) -> AdditiveCa
-      case None -> NoCaConfigured
-    }
+    case None -> match caCertificate { case Some(_) -> AdditiveCa; case None -> NoCaConfigured }
   }
 }
 
@@ -735,18 +754,8 @@ pub func resolveTlsValidationDecision(
   } else {
     match caMode {
       case ExclusiveCa -> TryCustomChain
-      case AdditiveCa ->
-        if chainAlreadyOk {
-          AcceptWithoutCustomChain
-        } else {
-          TryCustomChain
-        }
-      case NoCaConfigured ->
-        if chainAlreadyOk {
-          AcceptWithoutCustomChain
-        } else {
-          RejectImmediately
-        }
+      case AdditiveCa -> if chainAlreadyOk { AcceptWithoutCustomChain } else { TryCustomChain }
+      case NoCaConfigured -> if chainAlreadyOk { AcceptWithoutCustomChain } else { RejectImmediately }
     }
   }
 }
@@ -804,10 +813,7 @@ func applyTlsOptions(
   insecureSkipVerify: in Bool,
 ): Unit {
   match minTlsVersion {
-    case Some(v) -> match v {
-      case Tls13 -> handlerSetSslProtocols(handler, sslProtocolsTls13())
-      case Tls12 -> ()
-    }
+    case Some(v) -> match v { case Tls13 -> handlerSetSslProtocols(handler, sslProtocolsTls13()); case Tls12 -> () }
     case None -> ()
   }
   match clientIdentity {
@@ -821,26 +827,25 @@ func applyTlsOptions(
   if needsCallback {
     handlerSetValidationCallback(
       handler,
-      {
-        request: HttpRequestMessage, cert: TlsHost.CertHandle, chain: X509Chain, sslPolicyErrors: SslPolicyErrors ->
-          if insecureSkipVerify {
-            true
-          } else {
-            val hostnameAndAvailabilityOk =
-              sslPolicyErrors == sslPolicyErrorsNone() or sslPolicyErrors == sslPolicyErrorsChainErrorsOnly()
-            val chainAlreadyOk = sslPolicyErrors == sslPolicyErrorsNone()
-            match resolveTlsValidationDecision(hostnameAndAvailabilityOk, chainAlreadyOk, caMode) {
-              case RejectImmediately -> false
-              case AcceptWithoutCustomChain -> true
-              case TryCustomChain -> match exclusiveCaCertificate {
+      { request: HttpRequestMessage, cert: TlsHost.CertHandle, chain: X509Chain, sslPolicyErrors: SslPolicyErrors ->
+        if insecureSkipVerify {
+          true
+        } else {
+          val hostnameAndAvailabilityOk = sslPolicyErrors == sslPolicyErrorsNone() or
+            sslPolicyErrors == sslPolicyErrorsChainErrorsOnly()
+          val chainAlreadyOk = sslPolicyErrors == sslPolicyErrorsNone()
+          match resolveTlsValidationDecision(hostnameAndAvailabilityOk, chainAlreadyOk, caMode) {
+            case RejectImmediately -> false
+            case AcceptWithoutCustomChain -> true
+            case TryCustomChain -> match exclusiveCaCertificate {
+              case Some(ca) -> buildCustomChain(cert, ca)
+              case None -> match caCertificate {
                 case Some(ca) -> buildCustomChain(cert, ca)
-                case None -> match caCertificate {
-                  case Some(ca) -> buildCustomChain(cert, ca)
-                  case None -> false
-                }
+                case None -> false
               }
             }
           }
+        }
       }
     )
   }

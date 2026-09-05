@@ -97,12 +97,23 @@ pub func RestClient.withAuth(client: in RestClient, auth: in RestAuth): RestClie
 // ---------------------------------------------------------------------------
 // Internal helpers.
 // ---------------------------------------------------------------------------
-func applyAuth(req: in HttpRequest, auth: in RestAuth): HttpRequest {
+func toRestResult(r: in Result[HttpRequest, HttpError]): Result[HttpRequest, RestError] {
+  match r {
+    case Ok(v) -> Ok(value = v)
+    case Err(e) -> Err(error = Http(error = e))
+  }
+}
+
+// `Authorization` is never a reserved framing header, so these calls
+// cannot fail on the `Bearer`/`Basic` arms; `ApiKey` carries a
+// caller-chosen name, so its `Err` is propagated rather than assumed
+// away.
+func applyAuth(req: in HttpRequest, auth: in RestAuth): Result[HttpRequest, RestError] {
   match auth {
-    case None_ -> req
-    case Bearer(token) -> withHeader(req, "Authorization", "Bearer " + token)
-    case Basic(credentials) -> withHeader(req, "Authorization", "Basic " + credentials)
-    case ApiKey(headerName, headerValue) -> withHeader(req, headerName, headerValue)
+    case None_ -> return Ok(value = req)
+    case Bearer(token) -> return toRestResult(withHeader(req, "Authorization", "Bearer " + token))
+    case Basic(credentials) -> return toRestResult(withHeader(req, "Authorization", "Basic " + credentials))
+    case ApiKey(headerName, headerValue) -> return toRestResult(withHeader(req, headerName, headerValue))
   }
 }
 
@@ -124,22 +135,23 @@ func fullUrl(client: in RestClient, path: in String): String {
 }
 
 async func sendRequest(
-  client: in RestClient,
-  method: in HttpMethod,
-  path: in String,
-  body: in Option[String],
-  contentType: in String,
+  client: in RestClient, method: in HttpMethod, path: in String, body: in Option[String]
 ): Result[HttpResponse, RestError] {
   val url = fullUrl(client, path)
   match Url.tryFrom(url) {
     case Err(e) -> return Err(error = Http(error = e))
     case Ok(parsed) -> {
-      var req = request(method, parsed)
-      req = applyAuth(req, client.auth)
+      var req = match applyAuth(request(method, parsed), client.auth) {
+        case Ok(r) -> r
+        case Err(e) -> return Err(error = e)
+      }
+      // `withJsonBody` sets `Content-Type: application/json`
+      // unconditionally, so there is no separate content-type header to
+      // set here (and, since #6658, `withHeader(req, "Content-Type",
+      // ...)` would reject it as a reserved framing header anyway).
       match body {
         case None -> ()
         case Some(json) -> {
-          req = withHeader(req, "Content-Type", contentType)
           req = withJsonBody(req, json)
         }
       }
@@ -160,19 +172,19 @@ async func sendRequest(
 /// relative to the base URL (e.g. `/users/42`).
 @stable(since = "1.0")
 pub async func RestClient.get(client: in RestClient, path: in String): Result[HttpResponse, RestError] {
-  return await sendRequest(client, GET, path, None, "")
+  return await sendRequest(client, GET, path, None)
 }
 
 /// Send a POST with a JSON body to `path`.
 @stable(since = "1.0")
 pub async func RestClient.post(client: in RestClient, path: in String, body: in String): Result[HttpResponse, RestError] {
-  return await sendRequest(client, POST, path, Some(value = body), "application/json")
+  return await sendRequest(client, POST, path, Some(value = body))
 }
 
 /// Send a PUT with a JSON body to `path`.
 @stable(since = "1.0")
 pub async func RestClient.put(client: in RestClient, path: in String, body: in String): Result[HttpResponse, RestError] {
-  return await sendRequest(client, PUT, path, Some(value = body), "application/json")
+  return await sendRequest(client, PUT, path, Some(value = body))
 }
 
 /// Send a PATCH with a JSON body to `path`.
@@ -180,13 +192,13 @@ pub async func RestClient.put(client: in RestClient, path: in String, body: in S
 pub async func RestClient.patch(
   client: in RestClient, path: in String, body: in String
 ): Result[HttpResponse, RestError] {
-  return await sendRequest(client, PATCH, path, Some(value = body), "application/json")
+  return await sendRequest(client, PATCH, path, Some(value = body))
 }
 
 /// Send a DELETE to `path`.
 @stable(since = "1.0")
 pub async func RestClient.delete(client: in RestClient, path: in String): Result[HttpResponse, RestError] {
-  return await sendRequest(client, DELETE, path, None, "")
+  return await sendRequest(client, DELETE, path, None)
 }
 
 // ---------------------------------------------------------------------------
