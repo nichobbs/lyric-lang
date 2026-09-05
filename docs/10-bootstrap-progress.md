@@ -32276,6 +32276,21 @@ this is MSIL-brought-to-parity, not a one-platform construct.
 
 **Related:** `docs/03-decision-log.md` D-progress-876 (full account), #6849.
 
+### MSIL: confirmed hoisted Byte closure cells wrap on overflow for an ESCAPING closure pair too; added the missing regression coverage (#6524)
+
+#6524 (a #5520 follow-up) tracked whether a `Byte` cell shared by two closures
+that both escape their declaring function (returned via a record, the
+setter/getter callback-pair idiom) still wraps correctly on compound-assignment
+overflow — the existing test only covered a closure staying within its
+declaring function's own scope. Reproducing the issue's exact repro against
+current `main` showed it already works correctly (prints the wrapped `44`,
+not `300`) for all three compound operators, with no corruption of the
+`lyric-mq` test a prior fix attempt had mysteriously broken. No specific
+fixing commit was isolated. Added the missing coverage to
+`byte_arithmetic_self_test.l` (dual-target).
+
+**Related:** `docs/03-decision-log.md` D-progress-877 (full account), #6524.
+
 ### Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
 
 `native/plan/08-work-items.md`'s N9.3 (`Std.HttpServer` native twin,
