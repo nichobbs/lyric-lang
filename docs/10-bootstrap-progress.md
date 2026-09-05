@@ -25721,13 +25721,16 @@ defects fixed along the way:
   `get_Message`.
 
 Nullable-BCL FFI (D107): `@externTarget` functions returning `Option[T]` (T a
-reference type) bind the MemberRef to the BCL's real nullable `T` and coerce
-null → `None` / value → `Some(value)` at the call boundary, so no `null` literal
-or nullable type enters the language. Phase 1 (this entry) ships the MSIL
-emitter convention + `extern_option_self_test.l` (wired into CI); Phase 2
-migrates the `_kernel/` nullable externs and removes `case null` once a release
-carrying the convention becomes the bootstrap seed. JVM emitter parity (Phase 1
-is MSIL-only) is tracked in #3932.
+reference type) bind the MemberRef/method reference to the host's real
+nullable `T` and coerce null → `None` / value → `Some(value)` at the call
+boundary, so no `null` literal or nullable type enters the language. Phase 1
+(this entry) shipped the MSIL emitter convention + `extern_option_self_test.l`
+(wired into CI). JVM emitter parity (#3932, D-progress-882) has since shipped
+too — `extern_option_self_test.l` now carries `@cfg(target = ...)`-gated
+variants and runs on both `--target dotnet` and `--target jvm` in CI. Phase 2
+(migrating the `_kernel/` nullable externs and removing `case null` on both
+targets, once a release carrying both conventions becomes the bootstrap seed)
+remains open.
 
 **Release cutover to fully self-hosted builds — COMPLETED (#4387).** The
 interim mint-seeded release plan described above was the plan; it is now done.
@@ -27177,9 +27180,10 @@ pure layer becomes a thin target-neutral delegation.
   `verifier_env_host.l` routes through the seam instead of its own
   `?? ""` (which conflated empty-set with unset), and
   `environment_tests.l` gains the present-variable round-trip that
-  would have caught all of this.  Remaining `String?` kernel
-  surfaces (console, path, io), JVM D107 parity (#3932), and a
-  null-pattern rejection diagnostic are tracked in #4775.
+  would have caught all of this.  JVM D107 parity shipped in
+  D-progress-882 (#3932).  Remaining `String?` kernel surfaces
+  (console, path, io) and a null-pattern rejection diagnostic are
+  tracked in #4775.
 - **lyric-rt**: `lyric_env_cwd_ok` (status-returning getcwd seam,
   mirroring `lyric_env_get_ok`), with a C unit test.
 - **Verification** — `llvm_stdlib_self_test.l` (5 cases, wired into

@@ -7748,8 +7748,9 @@ docs/41 §R7, `scripts/bootstrap.sh` stage-2/3 comments.
 
 ## D107 — `@externTarget` functions returning `Option[T]` coerce a nullable BCL reference to `None`/`Some` at the call boundary
 
-**Status:** Accepted (Phase 1: MSIL emitter convention shipped; Phase 2:
-stdlib migration + `case null` removal deferred).
+**Status:** Accepted (Phase 1: MSIL emitter convention shipped. JVM emitter
+parity shipped in D-progress-882 (#3932). Phase 2: stdlib `_kernel/` migration
++ `case null` removal — on both targets — still deferred.)
 
 **Context.** Many BCL methods return a nullable reference (e.g.
 `System.Environment.GetEnvironmentVariable: string?`,
@@ -7781,11 +7782,13 @@ behaviour lives entirely in the self-hosted emitter and is bootstrap-safe.
 
 **Phasing.** Phase 1 (this entry) ships the emitter convention plus a wired
 self-test (`lyric-compiler/lyric/extern_option_self_test.l`); the stdlib is
-unchanged so the current seed keeps building it. Phase 2 — after a release
-carrying this convention becomes the seed — migrates the `_kernel/` nullable
-externs (`environment_host`, `console_host`, `path_host`) to `Option[T]` returns
-and removes the `case null` usages, completing the null-free FFI boundary. JVM
-emitter parity is tracked in #3932 (Phase 1 is MSIL-only).
+unchanged so the current seed keeps building it. JVM emitter parity (tracked
+in #3932, MSIL-only at the time this entry was written) shipped in
+D-progress-882. Phase 2 — after a release carrying both backends' conventions
+becomes the seed — migrates the `_kernel/` nullable externs
+(`environment_host`, `console_host`, `path_host`) to `Option[T]` returns and
+removes the `case null` usages, completing the null-free FFI boundary on both
+targets.
 
 The convention is matched in the emitter via the codegen's own `MsilType` union
 (an `MVoid` "no coercion" sentinel), **not** a locally-constructed
@@ -41543,3 +41546,66 @@ spec-first direction.
 `docs/57-stdlib-ecosystem-library-review.md` §7 (the `lyric web spec`
 CLI-command gap this surfaced, left open), `lyric-web/src/openapi.l`
 module header.
+---
+
+## D-progress-882 — JVM emitter parity for `@externTarget` `Option[T]` null-coercion, D107 Phase 2 (#3932)
+
+**Context.** D107 (Phase 1, MSIL-only) lets an `@externTarget` function
+(non-ctor, non-async) declare its return as `Option[T]` (`T` a reference type)
+and have the emitter bind the MemberRef to the host method's real nullable
+reference return, coercing `null -> None` / value `-> Some(value)` at the call
+boundary. The self-hosted JVM backend (`lyric-compiler/jvm/`) had no
+counterpart: `typeExprToJvm`'s `TGenericApp` arm erases every non-`List`/`Map`
+generic head — `Option[T]` included — to `Ljava/lang/Object;`, so the invoke
+descriptor built for e.g. `@externTarget("java.lang.System.getenv"):
+Option[String]` bound to `Object getenv(String)` instead of the JDK's real
+`String getenv(String)`. Bytecode verification/linking rejects the mismatched
+descriptor outright (`NoSuchMethodError: 'java.lang.Object
+java.lang.System.getenv(java.lang.String)'` at the first call) — the JVM path
+was not merely missing the coercion, it did not compile to a runnable call at
+all.
+
+**Decision.** Ported the MSIL convention to `lowerExternTargetBody`
+(`jvm/codegen/04_calls.l`): a new `externOptionCoerceInnerJvm` helper mirrors
+MSIL's `externOptionCoerceInner`/`externOptionCoerces` pair, pattern-matching
+`decl.ret`'s raw `TGenericApp` for a bare `Option` head with one type argument
+(the same `lastSegment(head) == "..."` idiom `isResultJvmException` already
+uses for `Result[T, JvmException]`, so no type-checked/resolved type is
+needed) and returning the coercion inner `JvmType` only when it is a JVM
+*reference* type (`not isJvmPrimitiveElemType(inner)` — reusing the existing
+primitive-descriptor predicate rather than adding a duplicate one; `Option[T]`
+over a JVM primitive never needs coercion, since a primitive return can never
+be null). `isAsync` short-circuits to `None`, mirroring MSIL's exclusion
+(neither backend's `@externTarget` async path composes with this convention).
+When the convention applies, `javaRet` (which feeds both the F0015-J metadata
+verification and the actual `invokestatic`/`invokevirtual` descriptor) is
+overridden to the coercion inner type instead of the erased `Object`, and the
+post-call sequence stashes the (possibly null) result to a local, `ifnull`
+branches to construct `Std/Core/Option$None`, otherwise
+`Std/Core/Option$Some` from the stashed value — the same `LNew`/`LDup`/
+`LInvokespecial(<init>)`/`LAstoreAs` shape `lowerBuiltinOrStaticCall`'s
+`mapGet` lowering already uses for its `containsKey`-gated Option
+construction, so no new construction idiom was introduced. Static-field-typed
+`@externTarget`s (`decl.params.count == 0` resolving to a `getstatic`, not a
+method call) are explicitly out of scope, matching Phase 1's field exclusion
+(`msil/codegen.l`'s field-read branch also never applies `externOptionCoerceInner`).
+
+**Verification.** `extern_option_self_test.l` extended with `@cfg(target =
+"dotnet")` / `@cfg(target = "jvm")` variants of `getEnvOpt` (dotnet:
+`System.Environment.GetEnvironmentVariable`; jvm: `java.lang.System.getenv`)
+sharing one set of target-agnostic test cases — an unset, guaranteed-unique
+env var name coerces to `None`, and `PATH` (set in every real process on both
+targets) coerces to `Some` — so no per-target setter extern was needed to
+exercise either branch. `lyric test --target dotnet
+extern_option_self_test.l`: 2/2 (unchanged from Phase 1). `lyric test
+--target jvm extern_option_self_test.l`: 2/2 (new; both cases failed with the
+`NoSuchMethodError` above before this fix). `auto_ffi_jvm_self_test.l`: 52/52
+(no regression — confirms `isResultJvmException`'s `Result[T, JvmException]`
+convention, which shares the `wrapResult`/`javaRet` computation this change
+touches, is unaffected since the two conventions are mutually exclusive by
+generic head name).
+
+**Related:** D107 (MSIL Phase 1), docs/01-language-reference.md §11.3
+(`@externTarget` reference), docs/18-jvm-emission.md, `jvm/codegen/04_calls.l`
+(`lowerExternTargetBody`, `externOptionCoerceInnerJvm`), `msil/codegen.l`
+(`externOptionCoerceInner`, the ported convention).
