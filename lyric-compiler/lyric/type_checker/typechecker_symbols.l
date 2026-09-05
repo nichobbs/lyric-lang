@@ -119,6 +119,28 @@ pub func symTableIsExternDelegateType(tbl: in SymbolTable, id: in TypeId): Bool 
   }
 }
 
+// #6720: is `id` the TypeId of a `DKExternType` (an `extern type` binding,
+// e.g. `Set[T]`/`JHttpStringCollection[T]`)?  Used by `SFor`'s single-type-
+// param generic element-typing fallback (D-progress-818) to distinguish a
+// genuine extern collection (the phantom-type-param FFI idiom this fallback
+// exists for) from a Lyric-native single-param generic that merely happens
+// to have one type parameter (e.g. `Option[T]`) but isn't iterable.  A
+// linear scan — called once per `for` statement, not per element access —
+// so no side index is warranted (contrast `externDelegateFlags`, consulted
+// per call argument).
+pub func symTableIsExternTypeId(tbl: in SymbolTable, id: in TypeId): Bool {
+  var i = 0
+  while i < tbl.symbols.count {
+    match tbl.symbols[i].kind {
+      case DKExternType(tid, _) -> if tid.id == id.id { return true }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  false
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. SymbolTable — package-level symbol store (bootstrap: linear scan).
 // ─────────────────────────────────────────────────────────────────────────────

@@ -400,7 +400,7 @@ pub func checkStatement(
           match iterType {
             case TySlice(e) -> e
             case TyArray(_, e) -> e
-            case TyUser(_, iterName, iterArgs) -> {
+            case TyUser(iterId, iterName, iterArgs) -> {
               // List[T] iterates over T; MapKeyCollection[K,V] over K;
               // MapValueCollection[K,V] over V.  A bare `Map[K,V]` iterator has
               // no runtime lowering on either backend (iteration goes through
@@ -412,25 +412,44 @@ pub func checkStatement(
                 iterArgs[0]
               } else if iterName == "MapValueCollection" and iterArgs.count == 2 {
                 iterArgs[1]
-              } else if iterArgs.count == 1 {
-                // Any other single-type-parameter generic collection follows
-                // the same List[T] convention: the sole type parameter IS the
-                // element type.  This covers extern generic collections
-                // (e.g. `extern type JHttpStringCollection[T] = "java.util.Collection"`,
+              } else if iterArgs.count == 1 and symTableIsExternTypeId(tbl, iterId) {
+                // Any other single-type-parameter EXTERN generic collection
+                // follows the same List[T] convention: the sole type
+                // parameter IS the element type.  This covers extern generic
+                // collections (e.g.
+                // `extern type JHttpStringCollection[T] = "java.util.Collection"`,
                 // the phantom-type-param idiom `Web.Kernel.Runtime`'s
                 // `headerNamesOf` uses to expose a JDK `Collection<HttpString>`)
-                // as well as any other Lyric-native single-param generic
-                // (`Set[T]`, a user-defined wrapper, …) — before this arm,
-                // only the literal name `List` got a typed element and
+                // as well as Lyric's own extern-backed `Set[T]` — before this
+                // arm, only the literal name `List` got a typed element and
                 // everything else fell through to `TyError`, silently
                 // erasing the loop variable to `Object` and breaking any
                 // extension-method call chained on it downstream (JVM
                 // auto-FFI resolving against `java.lang.Object` instead of
-                // the real element type, #6565).  A type that isn't actually
-                // iterable at runtime is still not separately rejected here
-                // — as with the `Map[K,V]` case above, codegen owns that
-                // rejection.
+                // the real element type, #6565).  Scoped to extern types
+                // only (#6720): a Lyric-native single-param generic that
+                // happens not to be `List` (e.g. `Option[T]`) is not a
+                // collection at all, and used to reach this arm with no
+                // diagnostic — see the T0126 branch below.
                 iterArgs[0]
+              } else if iterArgs.count == 1 {
+                // #6720: a Lyric-native single-param generic that isn't
+                // `List` (the case above already claimed extern generics via
+                // the phantom-type-param idiom, e.g. `Set[T]`) is never
+                // actually iterable — `Option[T]` is the concrete repro.
+                // Reject at type-check time instead of silently typing the
+                // loop element and letting codegen's index-loop protocol
+                // (`emitCollectionForMsil`'s `case _` fallback, which assumes
+                // `.Count`/`get_Item`) fail at runtime with a cast/member
+                // exception.
+                diag.add(
+                  errorDiagnostic(
+                    "T0126",
+                    "cannot iterate over '" + renderType(iterType) + "': not a recognized iterable type",
+                    iter.span
+                  )
+                )
+                TyError
               } else {
                 TyError
               }
