@@ -2,15 +2,33 @@
 
 AWS Secrets Manager and Parameter Store integration for [Lyric](https://github.com/nichobbs/lyric-lang). Fetches secrets at application startup and injects them into config blocks, with TTL-based caching and local development support.
 
-> **Status**: Library source is complete. Production-ready for `.NET` and JVM targets.
+> **Status**: `local` and `jvm` are production-ready. `aws` (.NET) is
+> **NOT_IMPLEMENTED** — see "Platform parity" below.
 
 ## Platform parity
 
 | Feature flag | Backend | Status |
 |---|---|---|
-| `aws` | AWS SDK for .NET v3 | Available |
-| `local` | Local stub (no-op) | Available |
-| `jvm` | AWS SDK for Java v2 | Available |
+| `aws` | AWS SDK for .NET v3 | **NOT_IMPLEMENTED** — every call returns a typed `NetworkError` explaining why (see below) |
+| `local` | Local stub (no-op) | Available — no AWS SDK calls; env var overrides only |
+| `jvm` | AWS SDK for Java v2 | Available — real `SecretsManagerClient`/`SsmClient` calls (`getSecretField`/`getParameterRaw`'s `initFromAnnotations` config-block path is also NOT_IMPLEMENTED, see below) |
+
+`initFromAnnotations()` (the `@secretsManager`/`@parameterStore` config-block
+scanning `AwsSecrets.init()` calls) is **NOT_IMPLEMENTED on every feature
+except `local`**: the compiler has no capability to read custom annotations
+off a compiled config-block field at runtime (tracked in issue #6866).
+`getSecret`/`getSecretField`/`getParameter`/`getParameterRaw`
+are unaffected by this and work normally on `jvm`.
+
+The `aws` (.NET) feature is blocked on a different, larger decision: the
+AWS .NET SDK's client methods (`GetSecretValueAsync`/`GetParameterAsync`)
+return `Task<T>` and the ONLY way to bind them is to make `AwsSecrets`'s
+own public API `async` (the async-`Task<T>`-FFI mechanism itself is real
+and already shipped — see `Std.HttpHost`'s `HttpClient.SendAsync`
+binding — this is not a missing compiler capability). That is a
+deliberate API-shape decision affecting every caller
+(`lyric-lambda`'s handlers are all synchronous today), tracked in issue
+#6864 rather than forced through here.
 
 ## Packages
 
@@ -210,23 +228,28 @@ match AwsSecrets.getParameter("/my-service/signing-key") {
 
 ```lyric
 union SecretsError {
-  case NotFound
-  case AccessDenied
-  case InvalidJson
-  case DecryptionFailed
-  case NetworkError
-  case InternalError
+  case NotFound(name: String)
+  case AccessDenied(name: String, message: String)
+  case DecryptionError(name: String, message: String)
+  case ParseError(name: String, key: String, message: String)
+  case NetworkError(name: String, message: String)
 }
 ```
 
 | Error | Meaning | Action |
 |---|---|---|
-| `NotFound` | Secret or parameter does not exist | Check the name/path |
-| `AccessDenied` | Lambda role lacks IAM permission | Grant `secretsmanager:GetSecretValue` or `ssm:GetParameter` |
-| `InvalidJson` | Secret is not valid JSON (for field extraction) | Check secret format |
-| `DecryptionFailed` | SecureString decryption failed | Verify KMS permissions |
-| `NetworkError` | AWS API unreachable | Check network / VPC / NAT |
-| `InternalError` | AWS SDK error | Check AWS console for service issues |
+| `NotFound` | Secret or parameter does not exist, or is not accessible with the current IAM role | Check the name/path |
+| `AccessDenied` | IAM role lacks permission | Grant `secretsmanager:GetSecretValue` or `ssm:GetParameter` |
+| `DecryptionError` | KMS decryption of a SecureString/secret failed | Verify KMS permissions |
+| `ParseError` | Secret is JSON but the requested key is absent or the value is not valid JSON | Check the secret's JSON shape and key name |
+| `NetworkError` | A transient network/service error, or (on `jvm`) any AWS error the best-effort message classifier didn't recognise, or (on any feature) a NOT_IMPLEMENTED call | Retry, or read `errorMessage` for detail |
+
+On the `jvm` feature, classification into `NotFound`/`AccessDenied`/
+`DecryptionError` is **best-effort substring matching** on the AWS SDK's
+own exception messages — Lyric's `catch Bug` boundary only exposes a
+flattened message string, not the exception's real type, so an
+unrecognised message always falls back to `NetworkError` rather than
+misclassifying. See `secrets_kernel_jvm.l`'s header for the full rationale.
 
 ### `errorMessage(err)`
 
@@ -352,9 +375,9 @@ lyric-aws-secrets/
   src/
     secrets.l                 AwsSecrets  (annotations, init, fetch API)
     _kernel/
-      secrets_kernel_aws.l    AwsSecrets.Kernel.Net @cfg(feature="aws")
+      secrets_kernel_aws.l    AwsSecrets.Kernel.Net @cfg(feature="aws")   — NOT_IMPLEMENTED
       secrets_kernel_local.l  AwsSecrets.Kernel.Net @cfg(feature="local")
-      secrets_kernel_jvm.l    AwsSecrets.Kernel.Jvm @cfg(feature="jvm")
+      secrets_kernel_jvm.l    AwsSecrets.Kernel.Net @cfg(feature="jvm")
   tests/
     *_tests.l                 test modules
 ```
