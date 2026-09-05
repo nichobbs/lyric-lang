@@ -23,23 +23,30 @@
 #                            Not implemented (no working transport).
 #   Lambda.Aspects         — pub aspect templates: EventLogging, DeadlineGuard.
 #   Lambda.Kernel.Runtime  — extern boundary to the Lambda runtime loop.
-#                            Exactly one file is compiled per build:
-#                              aws   feature → Lambda.Dispatch's HTTP long-polling
-#                                              loop against $AWS_LAMBDA_RUNTIME_API
-#                              local feature → Lambda.Dispatch's Std.HttpServer
-#                                              test-server transport
-#                              jvm   feature → not implemented (needs a
-#                                              deployment-model decision)
+#                            Exactly one file is compiled per build; all
+#                            three feature variants are thin wrappers over
+#                            Lambda.Dispatch's HTTP long-polling loop
+#                            against $AWS_LAMBDA_RUNTIME_API — aws and jvm
+#                            target the real Runtime API (jvm deploys as a
+#                            provided.al2/provided.al2023 custom runtime,
+#                            not the managed java21 runtime; see
+#                            _kernel/lambda_kernel_jvm.l), local targets a
+#                            Std.HttpServer test-server transport instead.
 #
 # Feature flags:
 #   aws, local, jvm  — runtime target (exactly one should be active per build).
 #   web              — enables Lambda.withRouter() for lyric-web Router integration.
 #                      Consumers must also declare Lyric.Web in their [dependencies].
-#                      Not implemented (Lambda.Kernel.Net needs a feasibility spike).
+#                      The LambdaRouter <-> Web.Router registry is real (see
+#                      Lambda.Kernel.WebBridge); routing an API Gateway/ALB
+#                      event through the resolved router is separate,
+#                      larger work not done yet (Lambda.Dispatch's header).
 #
 # Composition modes (may be combined in the same LambdaApp):
 #   1. lyric-web router reuse — attach a Web.Router with Lambda.withRouter().
-#      Not implemented — see Lambda.Kernel.WebBridge.
+#      The router-token registry works (Lambda.Kernel.WebBridge); actually
+#      routing an API Gateway/ALB event through it does not yet (see
+#      Lambda.Dispatch's header comment).
 #   2. Streaming HTTP handler — Lambda.withStreamingHandler(handlerName).
 #      Not implemented — see Lambda.Stream.
 #   3. Custom event handlers — onSqs / onSns / onS3 / onEventBridge /
@@ -67,7 +74,10 @@ license     = "Apache-2.0"
 aws   = []
 # Local development: lightweight HTTP test server (no AWS credentials needed).
 local = []
-# JVM: AWS Java managed runtime (com.amazonaws:aws-lambda-java-core).
+# JVM production: HTTP long-polling custom runtime loop (Lambda.Dispatch),
+# deployed as a provided.al2/provided.al2023 custom runtime — same protocol
+# as `aws`, not the managed java21 runtime's RequestStreamHandler. No Maven
+# dependency needed (see _kernel/lambda_kernel_jvm.l's header comment).
 jvm   = []
 # lyric-web router integration (withRouter).  Requires Lyric.Web as a dep.
 web   = []
@@ -99,19 +109,31 @@ output_assembly = "Lambda.dll"
 # Extern boundary — exactly one file is compiled per build (selected by feature):
 #   aws   → thin wrapper over Lambda.Dispatch's HTTP long-polling loop
 #   local → thin wrapper over Lambda.Dispatch's Std.HttpServer test server
-#   jvm   → not implemented (needs a deployment-model decision)
+#   jvm   → thin wrapper over the SAME Lambda.Dispatch HTTP long-polling
+#           loop as aws, deployed as a custom runtime (see that file's
+#           header comment for the deployment-model decision)
 "Lambda.Kernel.Runtime" = [
   "src/_kernel/lambda_kernel_aws.l",
   "src/_kernel/lambda_kernel_local.l",
   "src/_kernel/lambda_kernel_jvm.l",
 ]
-# Web bridge extern (compiled only when feature = "web").
-# BCL impl: Lambda.Kernel.Net assembly; ConditionalWeakTable<LambdaRouter, Router>.
+# Web bridge (compiled only when feature = "web"): real Lyric-level
+# ConditionalWeakTable<LambdaRouter, Web.Router> registry (extern type +
+# @externInstance Add/TryGetValue), no F#/host shim.
 "Lambda.Kernel.WebBridge" = "src/_kernel/lambda_kernel_web.l"
 
 [project.tests]
 "Lambda.LambdaTests" = "tests/lambda_tests.l"
 "Lambda.DispatchTests" = "tests/lambda_dispatch_tests.l"
+# tests/lambda_webbridge_tests.l (needs --features web) and
+# tests/lambda_runtime_loop_tests.l (needs --target jvm --features jvm)
+# are real, complete, manually-verified tests deliberately NOT registered
+# here: this manifest's [project.tests] entries all run together under
+# whatever single --features/--target combination a `lyric test` invocation
+# picks, and there is currently no way to opt one entry out of a build
+# where it doesn't apply without hitting #6868 (a lyric test / @cfg
+# interaction bug found while trying) -- see each file's own header
+# comment for the manual-run recipe and the full explanation.
 
 [dependencies]
 "Lyric.Web"    = { workspace = true }
@@ -121,7 +143,11 @@ output_assembly = "Lambda.dll"
 # implemented. Lambda.Dispatch's HTTP long-polling loop needs no NuGet dependency —
 # it is pure Lyric over the already-real Std.Http client.
 
-[maven]
-# JVM managed runtime — included when feature = "jvm".
-"com.amazonaws:aws-lambda-java-core"   = { version = "1.2.3", features = ["jvm"] }
-"com.amazonaws:aws-lambda-java-events" = { version = "3.11.4", features = ["jvm"] }
+# No [maven] table either: the jvm feature previously declared
+# com.amazonaws:aws-lambda-java-core / aws-lambda-java-events for the AWS
+# Java *managed*-runtime entry point (a RequestStreamHandler class the
+# platform reflectively instantiates). That design was not chosen (see
+# src/_kernel/lambda_kernel_jvm.l's header comment) — the jvm feature now
+# reuses Lambda.Dispatch's pure-Lyric-over-Std.Http custom-runtime loop,
+# deployed as a provided.al2/provided.al2023 custom runtime, which needs no
+# AWS Lambda Java SDK at all.

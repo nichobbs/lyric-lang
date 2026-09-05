@@ -33547,3 +33547,42 @@ scope, leak-free in every case; full suite 37/37, no regressions.
 **Related:** `docs/03-decision-log.md` D-progress-879 (full account),
 #5545 (fixed by this PR), `native/plan/08-work-items.md` N9.8,
 `native/plan/04-arc-design.md`'s `NativeWeak[T]` section.
+
+## lyric-lambda: JVM custom-runtime decision, proven WebBridge registry, mock Runtime API server test (#5412)
+
+`Lambda.Kernel.Runtime`'s `jvm` feature variant is now real: it calls the
+same `Lambda.Dispatch.runAwsCustomRuntimeLoop` the `aws` (.NET) kernel
+does, deployed as a `provided.al2`/`provided.al2023` custom runtime rather
+than the AWS Java managed runtime — a resolved deployment-model decision
+(no new JVM-emitter codegen needed), replacing the `panic`-only stub. The
+now-dead `aws-lambda-java-core`/`aws-lambda-java-events` Maven entries
+(declared for the managed-runtime design that was not chosen) are removed.
+
+`Lambda.Kernel.WebBridge`'s `ConditionalWeakTable<LambdaRouter,
+Web.Router>` router-token registry — previously an unproven feasibility
+spike — is real: `createRouterToken`/`lookupRouter` round-trip correctly
+(`tests/lambda_webbridge_tests.l`, 3/3 under `--features web`). Full API
+Gateway/ALB event dispatch through the resolved router remains separate,
+un-scoped follow-up work; `Lambda.Dispatch.dispatchHttp` fails closed
+naming that specific gap now, not the (now-closed) registry gap.
+
+`tests/lambda_runtime_loop_tests.l` adds the concrete "local mock-server
+test" this library's kernels lacked: a `Std.HttpServer` mock Runtime API,
+spawned via `scope`/`spawn` (D120 real virtual-thread concurrency),
+verifies `Lambda.Dispatch.pollAndDispatchOnce`'s GET-next/POST-
+response(-or-error) HTTP round trip end to end (2/2 under `--target jvm
+--features jvm` — the only target where the required concurrency is
+genuine, not degenerate-synchronous).
+
+Neither new test is registered in `lyric-lambda/lyric.toml`'s
+`[project.tests]`: doing so, whether `@cfg`-gated or not, was found to
+either crash or hang the manifest's default (`--features` unset /
+`local`) `lyric test` invocation, tracing to a new, filed-not-fixed
+compiler bug (#6868 — `Lyric.TestSynth` synthesises test calls before
+`@cfg` erasure runs). Both files carry manual-run instructions in their
+headers and were verified that way.
+
+**Related:** `docs/03-decision-log.md` D-progress-882 (full account),
+`docs/35-lambda-library.md` §4.2/§8 (updated), `lyric-lambda/README.md`
+(support matrix updated), #5412 (closed), #6868 (new, filed not fixed),
+#5600/#5578/#6548 (the prior `Lambda.Dispatch` work this builds on).

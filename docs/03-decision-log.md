@@ -41543,3 +41543,125 @@ spec-first direction.
 `docs/57-stdlib-ecosystem-library-review.md` §7 (the `lyric web spec`
 CLI-command gap this surfaced, left open), `lyric-web/src/openapi.l`
 module header.
+
+## D-progress-882 — lyric-lambda: real `Lambda.Dispatch` reuse for the JVM custom runtime, a proven `ConditionalWeakTable` router registry, and a mock Runtime API server test (#5412)
+
+**Context.** #5412 tracked the remaining scope on `lyric-lambda` after an
+earlier pass (D-progress-... via PRs #5578/#6548) already replaced the
+never-implemented `extern package` runtime-loop kernels with a real
+pure-Lyric `Lambda.Dispatch` (event-source detection, JSON marshalling,
+and the `aws`/`local` HTTP transport loops over `Std.Http`/
+`Std.HttpServer`). What remained: a JVM deployment-model decision, a
+feasibility spike for the `Lambda.Kernel.WebBridge` router-token registry,
+and a local mock-server test for the runtime loop.
+
+**JVM deployment-model decision.** Two designs were live candidates: (a)
+new self-hosted JVM emitter codegen synthesizing a host-invoked entry-point
+class implementing `com.amazonaws.services.lambda.runtime.
+RequestStreamHandler` for AWS's *managed* `java21` runtime (host-calls-
+into-Lyric — the reverse of what `extern type`/auto-FFI/docs/51's
+`impl <ExternInterface>` solve, and a genuinely new compiler feature with
+no existing analog on either target); (b) redesign the JVM target onto the
+same HTTP long-polling custom-runtime protocol `Lambda.Dispatch` already
+implements for `aws`/`local`, deployed as a `provided.al2`/
+`provided.al2023` **custom runtime** instead. **Decision: (b).** The
+custom-runtime protocol is language-agnostic, so `lambda_kernel_jvm.l`'s
+`serve()` becomes a one-line call to the exact same
+`Lambda.Dispatch.runAwsCustomRuntimeLoop` the `aws` kernel calls — zero new
+JVM-emitter codegen, and the `[maven]` table's now-dead
+`aws-lambda-java-core`/`aws-lambda-java-events` entries (declared for
+design (a), never implemented) are removed. Verified in isolation: a
+standalone `Std.*`-only spike (a plain, non-`async`-declared function
+calling `await getAsync(...)`/`await HttpResponse.bodyText(...)` — the
+exact shape `Lambda.Dispatch.getNextInvocation`/`postJson` use —
+concurrent with a `scope`/`spawn`ed `Std.HttpServer` mock, D120's real
+virtual-thread concurrency) passes end-to-end on `--target jvm`. Full
+`lyric-lambda` project verification on `--target jvm` is blocked in this
+sandbox by two pre-existing, unrelated gaps confirmed to predate this PR:
+no `lyric-resolver.jar` (Maven resolution) available to fetch
+`lyric-web`'s `io.undertow:undertow-core` dependency (`Lambda`
+unconditionally imports `Web`), and a pre-existing `J007` erased-receiver
+bug in `lambda_dispatch_tests.l` unrelated to this change (`--target jvm`
+compilation of the *existing*, pre-PR test suite already failed on it
+before any of this PR's edits).
+
+**`Lambda.Kernel.WebBridge` feasibility spike: proven.** The issue flagged
+`ConditionalWeakTable<LambdaRouter, Web.Router>` — a closed BCL generic
+with two Lyric-native type arguments — as unproven in this codebase. A
+near-identical precedent already existed (`Std.Collections.Map` over
+`System.Collections.Generic.Dictionary\`2`); the one real difference is
+`ConditionalWeakTable`'s CLR `where K, V : class` constraint, which
+mattered only if `LambdaRouter` (a zero-field `opaque type`) compiled to a
+value type. It doesn't: the self-hosted MSIL backend has no implementation
+of docs/09's struct-vs-class-by-size heuristic (confirmed absent from
+`msil/codegen.l`), so opaque types and records are uniformly reference
+types today. `createRouterToken`/`lookupRouter` (`extern type` +
+`@externInstance` `Add`/`TryGetValue`, no F#/host shim) are real and
+verified: `tests/lambda_webbridge_tests.l` (3 cases — self-resolve,
+no-collision between two tokens, and `Lambda.withRouter` wiring the same
+registry) passes 3/3 under `--features web` on `--target dotnet`
+(`ConditionalWeakTable` is .NET-only). Opaque-type construction is
+restricted to its declaring package (T0100), so `LambdaRouter`'s
+constructor needed a same-package seam (`Lambda.newLambdaRouter`); marked
+`pub` rather than `internal` after `internal`'s bare-name cross-package
+reference failed to resolve in practice (`error[T0020] unknown name`) —
+the one working `internal` cross-package precedent in this codebase
+(`Std.Tls.Identity.rawHandle`) is always invoked via UFCS method syntax on
+a receiver, never as a bare free-function call, so this may be a narrower
+gap than the language reference's blanket "`internal` is cross-package
+visible" claim; not chased further here. Registering the token now
+resolves back to its router does NOT by itself wire full API Gateway/ALB
+event dispatch (method/path/header/body extraction, match-and-dispatch,
+`ApiGwResponse` encoding, CORS) — that remains separate, larger, un-scoped
+work; `Lambda.Dispatch.dispatchHttp` still fails closed, now naming the
+precise remaining gap instead of the (now-closed) registry one.
+
+**Mock Runtime API server test.** `tests/lambda_runtime_loop_tests.l`
+spawns a real `Std.HttpServer` mock Runtime API (via `scope`/`spawn`,
+D120's genuine virtual-thread concurrency) and drives
+`Lambda.Dispatch.pollAndDispatchOnce` against it over a live loopback
+connection: one case feeds a synthetic `aws:sqs` event through the mock's
+`next` endpoint and asserts the batch-success response lands on the
+mock's `response` endpoint; a second case (no handler registered) asserts
+the AWS `{"errorMessage","errorType"}` JSON lands on the mock's `error`
+endpoint instead, with `pollAndDispatchOnce` still reporting the transport
+itself healthy (`Ok`) — matching its own doc comment that a handler-level
+failure is not a transport failure. Both pass under `--target jvm
+--features jvm` (concurrency is only genuinely non-blocking on that
+target; a `--target dotnet` attempt was confirmed to fail immediately with
+an MSIL `InvalidProgramException` rather than hang, so no CI-hang risk
+even if someone mis-registers it).
+
+**A new compiler bug found and filed, not fixed here (#6868).**
+`Lyric.TestSynth` synthesises a `@test_module`'s `main()` (with calls to
+every `test {}` block) *before* `Lyric.Cfg`'s `@cfg` erasure pass runs.
+Gating a whole test file (or one `test {}` block among several) behind an
+inactive feature was the natural way to keep the two feature-specific
+tests above out of CI's default `lyric test --manifest
+lyric-lambda/lyric.toml` / `--features local` invocations — both were
+tried and both are broken: file-level `@cfg` compiles clean but crashes at
+runtime with `System.MissingMethodException: Entry point not found` once
+everything (including the synthesised `main`) erases; item-level `@cfg`
+on one test among several produces a **compile** error (`T0020 unknown
+name`) because `main()`'s call to the erased test's synthesised function
+survives erasure. Confirmed via two isolated single-file repros (see
+#6868), independent of anything specific to `lyric-lambda`. Until fixed,
+`tests/lambda_webbridge_tests.l` and `tests/lambda_runtime_loop_tests.l`
+are real, complete, and manually verified (see above) but **not
+registered** in `lyric-lambda/lyric.toml`'s `[project.tests]` — each
+file's header carries the manual-run recipe.
+
+**Verification.** `lyric test --manifest lyric-lambda/lyric.toml` (no
+features), `--features local`, `--features aws`, and `--features web` are
+all 40/40 (2/2 modules) green — no regression from the JVM kernel rewrite,
+the `LambdaRouter` constructor seam, or the `dispatchHttp` error-message
+update. `tests/lambda_webbridge_tests.l` (3/3) and
+`tests/lambda_runtime_loop_tests.l` (2/2) both pass when manually
+registered and run with their required `--features`/`--target`
+combination (see each file's header). Every changed `.l` file is
+`lyric fmt --write` clean.
+
+**Related:** #5412 (closed by this entry's PR); #5600, #5578, #6548
+(prior `Lambda.Dispatch` work this builds on); #6868 (new `TestSynth`/
+`@cfg` bug, filed not fixed); D062/D063/D064/D099 (original `lyric-lambda`
+design decisions).

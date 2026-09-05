@@ -171,8 +171,29 @@ pub union DirectHandler {
 /// metadata, so consumers without lyric-web compile successfully.
 @stable(since = "0.1")
 pub opaque type LambdaRouter {
-  // kernel-held Web.Router reference managed by Lambda.Kernel.Net via
+  // kernel-held Web.Router reference managed by Lambda.Kernel.WebBridge via
   // ConditionalWeakTable<LambdaRouter, Router>; zero visible Lyric fields.
+}
+
+/// Construct a fresh `LambdaRouter` identity token. Opaque-type construction
+/// is restricted to the type's declaring package (T0100), so
+/// `Lambda.Kernel.WebBridge` (a different package) cannot call
+/// `LambdaRouter()` directly — it calls this instead. Marked `pub` (not
+/// `internal`): a cross-package bare-name reference to an `internal` free
+/// function did not resolve from `Lambda.Kernel.WebBridge` in practice
+/// (`error[T0020] unknown name`) even though the language reference
+/// documents `internal` as cross-package-visible within a project — the
+/// one working precedent for cross-package `internal` in this codebase
+/// (`Std.Tls.Identity.rawHandle`, `Std.HttpServer.ServerSslContext.rawContext`)
+/// is always called via UFCS method syntax on a receiver value
+/// (`identity.rawHandle()`), never as a bare zero-argument free-function
+/// call — this constructor has no receiver to hang UFCS off, so `pub` is
+/// used instead pending investigation of that gap. A user can call this
+/// directly, but it only produces an unregistered token — pointless
+/// outside `Lambda.Kernel.WebBridge.createRouterToken`, so this is
+/// documented but not `@stable`-advertised.
+pub func newLambdaRouter(): LambdaRouter {
+  return LambdaRouter()
 }
 
 // ─── LambdaContext ────────────────────────────────────────────────────────────

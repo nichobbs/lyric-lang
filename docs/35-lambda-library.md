@@ -186,6 +186,19 @@ deserialising:
 
 ### 4.2 HTTP event → Web.Router dispatch
 
+**Status:** `Lambda.Kernel.WebBridge`'s `ConditionalWeakTable<LambdaRouter,
+Web.Router>` token registry is real and proven (`createRouterToken`/
+`lookupRouter`, verified by `tests/lambda_webbridge_tests.l`) — a
+`LambdaRouter` token returned by `Lambda.withRouter` resolves back to the
+exact `Web.Router` registered under it. The steps below (extracting
+method/path/headers/body per event shape, running the match-and-dispatch
+logic, encoding the result as `ApiGwResponse`, applying CORS) are the
+*separate*, larger feature of actually routing a live event through the
+resolved router — not implemented yet; `Lambda.Dispatch.dispatchHttp`
+fails closed with `LambdaError.InternalError` naming this gap specifically
+(distinct from the now-closed registry gap). See
+`_kernel/lambda_kernel_web.l`'s header comment for the full write-up.
+
 When an HTTP event arrives and `LambdaApp.httpRouter` is `Some(router)`:
 
 1. Extract `method`, `path`, `headers`, `query`, and `body` from the event
@@ -466,37 +479,62 @@ The Lambda execution role must have:
 
 ## 8. Kernel design
 
+**Update:** §8.1–8.4 originally speced three independent kernel
+implementations (a NuGet-backed `Amazon.Lambda.RuntimeSupport` extern
+package for `aws`, an unspecified `Lambda.LocalServer` extern package for
+`local`, and JVM managed-runtime `RequestStreamHandler` codegen for `jvm`)
+that were never actually built — grepping the repository turned up zero
+code backing any of them (issue #5412). The real implementation is
+`Lambda.Dispatch` (`src/dispatch.l`): a single, pure-Lyric event-source
+detector + JSON marshaller + dispatcher, built once and reused by three
+one-line kernel wrappers that differ only in *transport*. This section
+now describes what actually ships.
+
 ### 8.1 Feature flag convention
 
-Multiple source files declare the same package name, each gated on a different
-feature.  Exactly one is compiled per build:
+Multiple source files declare the same package name (`Lambda.Kernel.Runtime`),
+each gated on a different feature. Exactly one is compiled per build, and
+each is a thin wrapper delegating to `Lambda.Dispatch`:
 
-| File | Feature | Description |
-|---|---|---|
-| `lambda_kernel_aws.l` | `aws` | .NET custom runtime (Amazon.Lambda.RuntimeSupport) |
-| `lambda_kernel_local.l` | `local` | Lightweight local test HTTP server |
-| `lambda_kernel_jvm.l` | `jvm` | Java managed runtime (RequestStreamHandler) |
-| `secrets_kernel_aws.l` | `aws` | AWS SDK for .NET v3 |
-| `secrets_kernel_local.l` | `local` | No-op local backend |
-| `secrets_kernel_jvm.l` | `jvm` | AWS SDK for Java v2 |
-| `xray_kernel_aws.l` | `aws` | Amazon.XRay.Recorder.Core (.NET) |
-| `xray_kernel_jvm.l` | `jvm` | aws-xray-recorder-sdk-core (Java) |
-| `xray_kernel_local.l` | `local` | No-op (subsegments silently dropped) |
+| File | Feature | Transport | Dispatch logic |
+|---|---|---|---|
+| `lambda_kernel_aws.l` | `aws` | `Lambda.Dispatch.runAwsCustomRuntimeLoop`: HTTP long-polling against `$AWS_LAMBDA_RUNTIME_API` via `Std.Http` | shared |
+| `lambda_kernel_local.l` | `local` | `Lambda.Dispatch.runLocalServer`: a `Std.HttpServer` test server on `localhost:{port}` | shared |
+| `lambda_kernel_jvm.l` | `jvm` | the SAME `Lambda.Dispatch.runAwsCustomRuntimeLoop` as `aws` — deployed as a `provided.al2`/`provided.al2023` custom runtime, not the managed `java21` runtime (§8.4) | shared |
+| `secrets_kernel_aws.l` | `aws` | AWS SDK for .NET v3 | (lyric-aws-secrets, unrelated) |
+| `secrets_kernel_local.l` | `local` | No-op local backend | (lyric-aws-secrets, unrelated) |
+| `secrets_kernel_jvm.l` | `jvm` | AWS SDK for Java v2 | (lyric-aws-secrets, unrelated) |
+| `xray_kernel_aws.l` | `aws` | Amazon.XRay.Recorder.Core (.NET) | (lyric-aws-xray, unrelated) |
+| `xray_kernel_jvm.l` | `jvm` | aws-xray-recorder-sdk-core (Java) | (lyric-aws-xray, unrelated) |
+| `xray_kernel_local.l` | `local` | No-op (subsegments silently dropped) | (lyric-aws-xray, unrelated) |
 
-### 8.2 Production Lambda runtime — .NET (feature = "aws")
+### 8.2 Production Lambda runtime — .NET and JVM (features "aws" / "jvm")
 
-The extern boundary calls `Amazon.Lambda.RuntimeSupport` 1.x, which handles
-the HTTP polling loop, context extraction, and runtime API posting.  Authorizer
-events are detected in the same dispatch pass as event source handlers.
+Both the `aws` and `jvm` feature variants of `Lambda.Kernel.Runtime` call
+`Lambda.Dispatch.runAwsCustomRuntimeLoop`, which implements the AWS custom
+runtime protocol directly over `Std.Http` (no SDK, no NuGet/Maven
+dependency): it reads `$AWS_LAMBDA_RUNTIME_API`, then loops
+`GET .../runtime/invocation/next` → `Lambda.Dispatch.dispatchInvocation` →
+`POST .../runtime/invocation/{id}/response` (or `/error`, with the AWS
+`{"errorMessage","errorType"}` JSON shape and the
+`Lambda-Runtime-Function-Error-Type` header) — until the transport itself
+fails, at which point it posts `/init/error` best-effort and exits
+non-zero so AWS recycles the execution environment. Authorizer events are
+detected in the same dispatch pass as event source handlers
+(`Lambda.Dispatch.detectEventSource`).
 
 ### 8.3 Local test server (feature = "local")
 
-`Lambda.LocalServer` starts a single-threaded HTTP server on
-`localhost:{localPort}`.  Each `POST /2015-03-31/functions/function/invocations`
-is processed synchronously and returns the Lambda response JSON.  Compatible
-with `sam local invoke` and `aws lambda invoke --endpoint-url`.
+The `local` feature variant calls `Lambda.Dispatch.runLocalServer`, which
+starts a single-threaded `Std.HttpServer` listener on
+`localhost:{localPort}`. Each request (any method/path — this is a
+single-purpose test server) is treated as one Lambda invocation whose body
+is the raw event JSON; the response is the Lambda response JSON (always
+HTTP 200 — the real Invoke API's contract reports handler failure in the
+body/`X-Amz-Function-Error` header, not the status line). Compatible with
+`sam local invoke` and `aws lambda invoke --endpoint-url`.
 
-Synthetic `LambdaContext`:
+Synthetic `LambdaContext` (`Lambda.Dispatch.buildLocalContext`):
 
 | Field | Value |
 |---|---|
@@ -507,26 +545,44 @@ Synthetic `LambdaContext`:
 | `requestId` | random UUID |
 | `remainingTimeMs` | `30000` (override via `LYRIC_LOCAL_TIMEOUT_MS`) |
 
-### 8.4 JVM managed runtime (feature = "jvm")
+### 8.4 JVM deployment model (feature = "jvm") — resolved decision
 
-On the JVM target, the Lyric JVM emitter generates a class
-`<RootPackage>$LambdaHandler` implementing
-`com.amazonaws.services.lambda.runtime.RequestStreamHandler`.
+Two designs were live candidates (issue #5412):
 
-Set the Lambda function handler in the configuration to:
-```
-<assembly-name>.<RootPackage>$LambdaHandler::handleRequest
-```
+  (a) New self-hosted JVM emitter codegen synthesizing a host-invoked
+      entry-point class implementing
+      `com.amazonaws.services.lambda.runtime.RequestStreamHandler`,
+      deployed on AWS's *managed* Java runtime (`java21`/`java17`), which
+      reflectively instantiates that class and calls `handleRequest(...)`
+      on it. This is host-calls-into-Lyric — the reverse of what
+      `extern type`/auto-FFI/docs/51's `impl <ExternInterface>` solve —
+      and would need a genuinely new compiler feature with no existing
+      analog on either target.
+  (b) Redesign the JVM target onto the same HTTP long-polling
+      custom-runtime protocol `Lambda.Dispatch` already implements for
+      `aws`/`local`, deployed as a **custom runtime**
+      (`provided.al2`/`provided.al2023`, including as a container image
+      using that base) instead of the managed `java21` runtime.
 
-Dispatch is identical to the .NET kernel (event-source detection → typed
-dispatch → serialised JSON response) but the OutputStream is used in place of
-the Runtime API response endpoint.  Streaming handlers write directly to the
-OutputStream without buffering; Function URL `InvokeMode` must be set to
-`RESPONSE_STREAM`.
+**Decision: (b).** The custom-runtime protocol is language-agnostic —
+plain HTTP GET/POST against `$AWS_LAMBDA_RUNTIME_API` — so the JVM target
+reuses `Lambda.Dispatch.runAwsCustomRuntimeLoop` verbatim; the `jvm`
+feature variant of `Lambda.Kernel.Runtime` is a one-line call, identical
+to the `aws` variant. This needs zero new JVM-emitter codegen and no
+AWS Lambda Java SDK dependency (`Std.Http`/`Std.HttpServer` already have
+real, non-phantom JVM kernels — docs/59 Wave 4). The trade-off accepted:
+a custom runtime does not get the managed runtime's automatic
+handler-class wiring — deployment instead ships a `bootstrap` executable
+(a small wrapper invoking `java -jar <bundled-jar>`) at the root of the
+deployment package/layer, the same packaging step the `.NET` custom
+runtime already requires. Verified end to end by
+`tests/lambda_runtime_loop_tests.l`'s mock Runtime API server
+(`--target jvm --features jvm`), which drives a real HTTP round trip
+through `pollAndDispatchOnce` on a spawned virtual thread (D120).
 
-Maven dependencies added automatically when `feature = "jvm"`:
-- `com.amazonaws:aws-lambda-java-core:1.2.3`
-- `com.amazonaws:aws-lambda-java-events:3.11.4`
+No Maven dependency is declared for `feature = "jvm"` — it needed
+`com.amazonaws:aws-lambda-java-core`/`aws-lambda-java-events` only under
+design (a), which was not chosen.
 
 ---
 
