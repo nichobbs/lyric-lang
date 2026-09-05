@@ -91,3 +91,39 @@ test "nested: comparison inside an inner call's argument list (#6346)" {
   val n = 3
   assertEqual(take3(take3("i", n > 2, true), n > 1, true), "i-yes-yes", "inner call arg branches under outer args")
 }
+
+// #6578: `val (a, b): (T1, T2) = match { ... }` destructuring a tuple whose
+// two match arms build it via DIFFERENTLY-shaped expressions (one arm a
+// block with an intermediate `val` then a trailing tuple literal, the other
+// a bare inline tuple literal). `lowerLocalPatBind`'s `PTuple` fallback
+// always bound each element as `Object` — ignoring the `(JStringBuilder,
+// String)` annotation entirely — so a later use of the extern-typed element
+// (`sb.append(...)`) emitted no `checkcast` and the StackMapTable's local
+// slot stayed typed `java/lang/Object`: `VerifyError: Bad type on operand
+// stack` at that later use. Fixed by resolving each element against the
+// annotation's own tuple element type when the arities line up.
+extern type JStringBuilder = "java.lang.StringBuilder"
+
+func buildFromBlock(): JStringBuilder {
+  val sb = JStringBuilder.new()
+  sb.append("A")
+  sb
+}
+
+func buildInline(): JStringBuilder {
+  JStringBuilder.new()
+}
+
+test "tuple destructuring with an extern-typed element across divergent match-arm shapes (#6578)" {
+  val cond = true
+  val (sb, tag): (JStringBuilder, String) = match cond {
+    case true -> {
+      val x = buildFromBlock()
+      (x, "block-arm")
+    }
+    case false -> (buildInline(), "inline-arm")
+  }
+  sb.append("Z")
+  assertEqual(sb.toString(), "AZ", "destructured extern-typed element usable without a VerifyError")
+  assertEqual(tag, "block-arm", "second tuple element correctly bound")
+}
