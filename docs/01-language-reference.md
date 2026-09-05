@@ -1872,6 +1872,8 @@ form with the import in scope call the explicit
 | `s.substring(start)` | `String` | from `start` to end |
 | `s.substring(start, count)` | `String` | `count` units from `start` |
 | `s.trim()` | `String` | leading/trailing whitespace removed |
+| `s.trimStart()` | `String` | leading whitespace removed |
+| `s.trimEnd()` | `String` | trailing whitespace removed |
 | `s.replace(old, new)` | `String` | all occurrences |
 | `s.indexOf(sub)` | `Option[Int]` with `import Std.String` (either form); else `Int` | first index; `None` / `-1` if absent |
 | `s.lastIndexOf(sub)` | `Option[Int]` with `import Std.String` (either form); else `Int` | last index; `None` / `-1` if absent |
@@ -1885,9 +1887,10 @@ String `==` / `!=` compare by value (not reference identity). An empty-string
 check is the `Std.String.isEmpty(s)` free function (`s.length == 0`), not a
 method-syntax form.
 
-**`--target native` coverage note (#6588, #6778):** the six methods
-`.trim()`/`.toLower()`/`.indexOf()`/`.startsWith()`/`.contains()`/
-`.endsWith()` above are implemented for `--target native` (`lyric-rt/src/lyric_string.c`),
+**`--target native` coverage note (#6588, #6778, #6240):** the nine
+methods `.trim()`/`.trimStart()`/`.trimEnd()`/`.replace()`/`.toLower()`/
+`.indexOf()`/`.startsWith()`/`.contains()`/`.endsWith()` above are
+implemented for `--target native` (`lyric-rt/src/lyric_string.c`),
 matching the dotnet/JVM semantics documented here, with two exceptions.
 `s.toLower()` on native applies a genuine Unicode simple-case fold, but
 only across five scripts — Basic Latin, Latin-1 Supplement, Latin
@@ -1895,12 +1898,20 @@ Extended-A, Greek, and Cyrillic — rather than the full Unicode Character
 Database `ToLowerInvariant`/`toLowerCase` use on the other two targets;
 every other cased script (e.g. Armenian, Georgian, Deseret) passes
 through unchanged on native today. Widening this is tracked in #6779.
-`s.toUpper()` has no native implementation at all yet (`.toString()`/
-`.substring()`/the six methods above are the only String scalar methods
-native currently lowers). Native's indices are byte offsets into the
-UTF-8 representation rather than the UTF-16 code-unit offsets `.length`/
-`s[i]` use on dotnet/JVM (D-N-006) — a pre-existing target divergence,
-unrelated to #6588/#6778, not newly introduced by these methods.
+`s.replace(old, new)` on native treats an empty `old` as a no-op —
+dotnet's `String.Replace` throws `ArgumentException` on an empty old
+value and JVM's `String.replace` instead interleaves `new` between every
+character; this runtime has no exception mechanism to surface the
+dotnet behavior and neither host quirk is a clearly better default to
+copy, so native picks the same input back unchanged. `s.toUpper()` has
+no native implementation at all yet (`.toString()`/`.substring()`/the
+nine methods above are the only String scalar methods native currently
+lowers as of this note; `s[i]` bracket indexing and `String + Char`
+concatenation are tracked separately in #6237). Native's indices are
+byte offsets into the UTF-8 representation rather than the UTF-16
+code-unit offsets `.length`/`s[i]` use on dotnet/JVM (D-N-006) — a
+pre-existing target divergence, unrelated to #6588/#6778, not newly
+introduced by these methods.
 
 ## 13. Tooling
 
