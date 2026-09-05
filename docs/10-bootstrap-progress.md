@@ -33547,3 +33547,40 @@ scope, leak-free in every case; full suite 37/37, no regressions.
 **Related:** `docs/03-decision-log.md` D-progress-879 (full account),
 #5545 (fixed by this PR), `native/plan/08-work-items.md` N9.8,
 `native/plan/04-arc-design.md`'s `NativeWeak[T]` section.
+
+## Native `String` gains `.trimStart`, `.trimEnd`, and `.replace` (#6240)
+
+Closes out the broader native `String` search-method audit issue that
+#6588/D-progress-831 was split from. `.trimStart()`/`.trimEnd()` are new
+one-sided variants of the existing `.trim()` C primitive
+(`lyric-rt/src/lyric_string.c`), refactored to share a `trim_bounds`
+helper that finds the leading/trailing non-whitespace byte range in one
+forward UTF-8 scan (the same `White_Space` code-point set `.trim()`
+already used, unchanged). `.replace(old, new)` replaces all
+non-overlapping occurrences left to right via a two-pass count-then-build
+strategy (exact output allocation, no realloc churn); an empty `old`
+value is a deliberate native-specific no-op — dotnet's `String.Replace`
+throws `ArgumentException` on an empty old value while JVM's
+`String.replace` instead interleaves `new` between every character, two
+host-specific quirks with nothing in common, and this runtime has no
+exception mechanism to surface the dotnet behavior.
+
+The rest of `Std.String`'s surface — `.repeat`, `.split`, `.join`,
+`.joinList`, `.compare`, `.equals`, `.equalsCaseInsensitive` — turned out
+to already be native-compatible with no codegen change needed: each is
+pure Lyric composed from primitives (`+` concatenation, `<`/`>`
+comparison, `==`, `.substring`, `.indexOf`, list/slice indexing) this
+backend already lowered before this fix.
+
+Verified by new cases in `lyric-rt/test/lyric_rt_test.c` (trimStart/
+trimEnd across padded, all-whitespace, unpadded, and NBSP inputs;
+replace across growing, shrinking, no-match, and empty-`old` cases) and
+two new end-to-end ASan-compiled cases in `llvm_codegen_self_test.l`.
+`make -C lyric-rt test` and the full native-backend self-test list pass
+with zero regressions.
+
+**Related:** `docs/03-decision-log.md` D-progress-831 (the #6588 fix
+this closes out), #6240, #6779 (native `.toLower`/`.toUpper` script-
+coverage widening, out of scope here), #6237 (native `s[i]`/`String +
+Char`), #6755 (native `.lastIndexOf`) — all four native `String` gaps
+from the same audit, shipped as separate PRs.

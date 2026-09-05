@@ -223,41 +223,64 @@ static int cp_is_lyric_whitespace(uint32_t cp) {
     return 0;
 }
 
-LyricString* lyric_string_trim(LyricString* s) {
-    int64_t len = s ? s->len : 0;
-    const uint8_t* data = len > 0 ? LYRIC_STRING_DATA(s) : NULL;
-
+/* Shared by `.trim()`/`.trimStart()`/`.trimEnd()` (#6240): finds the byte
+ * range `[*start, *end)` with leading/trailing Unicode `White_Space` code
+ * points stripped. `*start == *end == len` when the whole string is
+ * whitespace (or empty). `end` tracks the byte offset just past the last
+ * non-whitespace code point seen so far during the SAME forward pass that
+ * finds `start` — a single forward scan avoids needing to decode UTF-8
+ * backwards from the end of the string. */
+static void trim_bounds(const uint8_t* data, int64_t len, int64_t* out_start, int64_t* out_end) {
     int64_t start = len;
+    int64_t end = len;
     int64_t i = 0;
     while (i < len) {
         uint32_t cp;
         int valid;
         int n = utf8_decode_at(data, len, i, &cp, &valid);
         if (!(valid && cp_is_lyric_whitespace(cp))) {
-            start = i;
-            break;
+            if (start == len) start = i;
+            i += n;
+            end = i;
+        } else {
+            i += n;
         }
-        i += n;
     }
+    *out_start = start;
+    *out_end = start == len ? len : end;
+}
+
+LyricString* lyric_string_trim(LyricString* s) {
+    int64_t len = s ? s->len : 0;
+    const uint8_t* data = len > 0 ? LYRIC_STRING_DATA(s) : NULL;
+    int64_t start, end;
+    trim_bounds(data, len, &start, &end);
     if (start == len) {
         return lyric_string_from_literal((const uint8_t*)"", 0);
     }
-
-    /* `end` tracks the byte offset just past the last non-whitespace code
-     * point seen so far; a single forward pass avoids needing to decode
-     * UTF-8 backwards from the end of the string. */
-    int64_t end = start;
-    i = start;
-    while (i < len) {
-        uint32_t cp;
-        int valid;
-        int n = utf8_decode_at(data, len, i, &cp, &valid);
-        i += n;
-        if (!(valid && cp_is_lyric_whitespace(cp))) {
-            end = i;
-        }
-    }
     return lyric_string_from_literal(data + start, end - start);
+}
+
+LyricString* lyric_string_trim_start(LyricString* s) {
+    int64_t len = s ? s->len : 0;
+    const uint8_t* data = len > 0 ? LYRIC_STRING_DATA(s) : NULL;
+    int64_t start, end;
+    trim_bounds(data, len, &start, &end);
+    if (start == len) {
+        return lyric_string_from_literal((const uint8_t*)"", 0);
+    }
+    return lyric_string_from_literal(data + start, len - start);
+}
+
+LyricString* lyric_string_trim_end(LyricString* s) {
+    int64_t len = s ? s->len : 0;
+    const uint8_t* data = len > 0 ? LYRIC_STRING_DATA(s) : NULL;
+    int64_t start, end;
+    trim_bounds(data, len, &start, &end);
+    if (start == len) {
+        return lyric_string_from_literal((const uint8_t*)"", 0);
+    }
+    return lyric_string_from_literal(data, end);
 }
 
 /* Unicode *simple* lowercase mapping (no context-sensitive
@@ -387,6 +410,61 @@ int32_t lyric_string_ends_with(LyricString* s, LyricString* suffix) {
     if (xlen == 0) return 1;
     if (xlen > slen) return 0;
     return memcmp(LYRIC_STRING_DATA(s) + (slen - xlen), LYRIC_STRING_DATA(suffix), (size_t)xlen) == 0 ? 1 : 0;
+}
+
+/* Replace all non-overlapping occurrences of `oldValue` with `newValue`,
+ * scanning left to right (#6240) — ordinal byte comparison, consistent
+ * with every other search method in this file.  An empty `oldValue` is a
+ * no-op: the dotnet twin (`String.Replace`) throws `ArgumentException` on
+ * an empty old value, and the JVM twin (`String.replace`) instead
+ * interleaves `newValue` between every character — two host-specific
+ * quirks with nothing in common, and this runtime has no exception
+ * mechanism to surface the dotnet behavior, so a safe no-op is the
+ * deliberate native-specific choice rather than copying either quirk.
+ * Two passes: the first counts occurrences so the output is allocated at
+ * its exact final size (no realloc churn), the second builds it. */
+LyricString* lyric_string_replace(LyricString* s, LyricString* oldValue, LyricString* newValue) {
+    int64_t slen = s ? s->len : 0;
+    int64_t oldLen = oldValue ? oldValue->len : 0;
+    int64_t newLen = newValue ? newValue->len : 0;
+    const uint8_t* data = slen > 0 ? LYRIC_STRING_DATA(s) : NULL;
+    const uint8_t* oldData = oldLen > 0 ? LYRIC_STRING_DATA(oldValue) : NULL;
+    const uint8_t* newData = newLen > 0 ? LYRIC_STRING_DATA(newValue) : NULL;
+
+    if (oldLen == 0) {
+        return lyric_string_from_literal(data, slen);
+    }
+
+    int64_t count = 0;
+    int64_t i = 0;
+    while (i <= slen - oldLen) {
+        if (memcmp(data + i, oldData, (size_t)oldLen) == 0) {
+            count++;
+            i += oldLen;
+        } else {
+            i++;
+        }
+    }
+    if (count == 0) {
+        return lyric_string_from_literal(data, slen);
+    }
+
+    LyricString* out = string_alloc(slen + count * (newLen - oldLen));
+    uint8_t* dst = LYRIC_STRING_DATA(out);
+    int64_t o = 0;
+    i = 0;
+    while (i < slen) {
+        if (i <= slen - oldLen && memcmp(data + i, oldData, (size_t)oldLen) == 0) {
+            if (newLen > 0) memcpy(dst + o, newData, (size_t)newLen);
+            o += newLen;
+            i += oldLen;
+        } else {
+            dst[o] = data[i];
+            o += 1;
+            i += 1;
+        }
+    }
+    return out;
 }
 
 const char* lyric_string_to_cstring(LyricString* s) {

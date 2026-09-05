@@ -166,7 +166,8 @@ static void test_strings(void) {
 }
 
 /* Trim / lowercase / search intrinsics behind `.trim()`, `.toLower()`,
- * `.indexOf()`, `.startsWith()`, `.contains()`, `.endsWith()` (#6588). */
+ * `.indexOf()`, `.startsWith()`, `.contains()`, `.endsWith()` (#6588), plus
+ * `.trimStart()`, `.trimEnd()`, and `.replace()` (#6240). */
 static void test_string_trim_case_search(void) {
     LyricString* padded = lyric_string_from_literal((const uint8_t*)"  hi there  ", 12);
     LyricString* trimmed = lyric_string_trim(padded);
@@ -192,6 +193,31 @@ static void test_string_trim_case_search(void) {
     LyricString* nbspTrimmed = lyric_string_trim(nbsp);
     CHECK(lyric_string_len(nbspTrimmed) == 1);
     CHECK(memcmp(LYRIC_STRING_DATA(nbspTrimmed), "x", 1) == 0);
+
+    /* .trimStart() / .trimEnd() (#6240): one-sided variants sharing
+     * .trim()'s White_Space set and Unicode-aware nbsp handling. */
+    LyricString* trimStarted = lyric_string_trim_start(padded);
+    CHECK(lyric_string_len(trimStarted) == 10);
+    CHECK(memcmp(LYRIC_STRING_DATA(trimStarted), "hi there  ", 10) == 0);
+    LyricString* trimEnded = lyric_string_trim_end(padded);
+    CHECK(lyric_string_len(trimEnded) == 10);
+    CHECK(memcmp(LYRIC_STRING_DATA(trimEnded), "  hi there", 10) == 0);
+    LyricString* allSpaceStart = lyric_string_trim_start(allSpace);
+    CHECK(lyric_string_len(allSpaceStart) == 0);
+    LyricString* allSpaceEnd = lyric_string_trim_end(allSpace);
+    CHECK(lyric_string_len(allSpaceEnd) == 0);
+    LyricString* noPadStart = lyric_string_trim_start(noPad);
+    CHECK(lyric_string_len(noPadStart) == 5);
+    CHECK(memcmp(LYRIC_STRING_DATA(noPadStart), "clean", 5) == 0);
+    LyricString* noPadEnd = lyric_string_trim_end(noPad);
+    CHECK(lyric_string_len(noPadEnd) == 5);
+    CHECK(memcmp(LYRIC_STRING_DATA(noPadEnd), "clean", 5) == 0);
+    LyricString* nbspTrimStart = lyric_string_trim_start(nbsp);
+    CHECK(lyric_string_len(nbspTrimStart) == 3);
+    CHECK(memcmp(LYRIC_STRING_DATA(nbspTrimStart), "x\xC2\xA0", 3) == 0);
+    LyricString* nbspTrimEnd = lyric_string_trim_end(nbsp);
+    CHECK(lyric_string_len(nbspTrimEnd) == 3);
+    CHECK(memcmp(LYRIC_STRING_DATA(nbspTrimEnd), "\xC2\xA0x", 3) == 0);
 
     /* .toLower(): ASCII, then three non-Latin/accented scripts proving this
      * is not a naive ASCII-only implementation. */
@@ -276,6 +302,27 @@ static void test_string_trim_case_search(void) {
     CHECK(!lyric_string_ends_with(haystack, tooLong));
     CHECK(lyric_string_ends_with(haystack, empty0));
 
+    /* .replace() (#6240): all non-overlapping occurrences, left to right;
+     * shrinking/growing replacements, no match, and the empty-oldValue
+     * no-op (this runtime's own deliberate choice — see lyric_string.c). */
+    LyricString* repl = lyric_string_from_literal((const uint8_t*)"aXbXcX", 6);
+    LyricString* replOld = lyric_string_from_literal((const uint8_t*)"X", 1);
+    LyricString* replNewLonger = lyric_string_from_literal((const uint8_t*)"YY", 2);
+    LyricString* replaced = lyric_string_replace(repl, replOld, replNewLonger);
+    CHECK(lyric_string_len(replaced) == 9);
+    CHECK(memcmp(LYRIC_STRING_DATA(replaced), "aYYbYYcYY", 9) == 0);
+    LyricString* replNewEmpty = lyric_string_from_literal((const uint8_t*)"", 0);
+    LyricString* replacedShrink = lyric_string_replace(repl, replOld, replNewEmpty);
+    CHECK(lyric_string_len(replacedShrink) == 3);
+    CHECK(memcmp(LYRIC_STRING_DATA(replacedShrink), "abc", 3) == 0);
+    LyricString* replMissing = lyric_string_from_literal((const uint8_t*)"Z", 1);
+    LyricString* replacedNoMatch = lyric_string_replace(repl, replMissing, replNewLonger);
+    CHECK(lyric_string_len(replacedNoMatch) == 6);
+    CHECK(memcmp(LYRIC_STRING_DATA(replacedNoMatch), "aXbXcX", 6) == 0);
+    LyricString* replacedEmptyOld = lyric_string_replace(repl, empty0, replNewLonger);
+    CHECK(lyric_string_len(replacedEmptyOld) == 6);
+    CHECK(memcmp(LYRIC_STRING_DATA(replacedEmptyOld), "aXbXcX", 6) == 0);
+
     lyric_release(padded);
     lyric_release(trimmed);
     lyric_release(allSpace);
@@ -286,6 +333,23 @@ static void test_string_trim_case_search(void) {
     lyric_release(trimmedEmpty0);
     lyric_release(nbsp);
     lyric_release(nbspTrimmed);
+    lyric_release(trimStarted);
+    lyric_release(trimEnded);
+    lyric_release(allSpaceStart);
+    lyric_release(allSpaceEnd);
+    lyric_release(noPadStart);
+    lyric_release(noPadEnd);
+    lyric_release(nbspTrimStart);
+    lyric_release(nbspTrimEnd);
+    lyric_release(repl);
+    lyric_release(replOld);
+    lyric_release(replNewLonger);
+    lyric_release(replaced);
+    lyric_release(replNewEmpty);
+    lyric_release(replacedShrink);
+    lyric_release(replMissing);
+    lyric_release(replacedNoMatch);
+    lyric_release(replacedEmptyOld);
     lyric_release(asciiUp);
     lyric_release(asciiLow);
     lyric_release(cafeUp);
