@@ -216,3 +216,43 @@ test "impl ExternInterface for Record with a slice[ExternType] return compiles a
   assertEqualInt(issuers.length, 0, "getAcceptedIssuers returns the empty slice built in the impl body")
   assertEqualInt(tm.tag, 3, "SliceIfaceTrustManager field still readable after the slice-return method call")
 }
+
+// #6977 (review follow-up on #5931/#6970): `implTypeExprToJvm`'s own doc
+// comment says a PRIMITIVE slice element needs the real primitive array too
+// ("not just an extern one"), but the type-resolution side (`TSlice(elem) ->
+// JArray(elem = implTypeExprToJvm(elem, ...))`) was already correct — the
+// gap was on the CODEGEN side: `coerceArgTo`'s `ArrayList` -> array
+// conversion always used the no-arg `toArray()` overload (erasing to
+// `Object[]`), which is not assignable where a `byte[]` (or any other
+// primitive array) is required by the narrowed descriptor. Uses a real JDK
+// interface with a `byte[]`-returning method: `java.security.Key.
+// getEncoded()`.
+extern type JKey = "java.security.Key"
+
+record SliceIfacePrimitiveKey {
+  tag: Int
+}
+
+impl JKey for SliceIfacePrimitiveKey {
+  func getAlgorithm(): String {
+    "NONE"
+  }
+
+  func getFormat(): String {
+    "RAW"
+  }
+
+  func getEncoded(): slice[Byte] {
+    [1.toByte(), 2.toByte(), 3.toByte()]
+  }
+}
+
+test "impl ExternInterface for Record with a slice[Byte] (primitive-element) return compiles and dispatches on the concrete type (#5931 / #6977)" {
+  val k = SliceIfacePrimitiveKey(tag = 7)
+  val encoded = k.getEncoded()
+  assertEqualInt(encoded.length, 3, "getEncoded returns the 3-byte slice built in the impl body")
+  assertEqualInt(encoded[0].toInt(), 1, "first byte round-trips")
+  assertEqualInt(encoded[1].toInt(), 2, "second byte round-trips")
+  assertEqualInt(encoded[2].toInt(), 3, "third byte round-trips")
+  assertEqualInt(k.tag, 7, "SliceIfacePrimitiveKey field still readable after the primitive-slice-return method call")
+}

@@ -1557,7 +1557,7 @@ func lowerInstanceMethodBody(ctx: in FuncCtx, insns: in List[LInsn], body: in Fu
             match tailTy {
               case JVoid -> emitNeverTailReturn(insns, retTy)
               case _ -> {
-                coerceArgTo(insns, tailTy, retTy)
+                coerceArgToCtx(ctx, insns, tailTy, retTy)
                 emitReturn(insns, retTy)
               }
             }
@@ -1574,7 +1574,7 @@ func lowerInstanceMethodBody(ctx: in FuncCtx, insns: in List[LInsn], body: in Fu
       match ty {
         case JVoid -> emitNeverTailReturn(insns, retTy)
         case _ -> {
-          coerceArgTo(insns, ty, retTy)
+          coerceArgToCtx(ctx, insns, ty, retTy)
           emitReturn(insns, retTy)
         }
       }
