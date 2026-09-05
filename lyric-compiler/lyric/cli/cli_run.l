@@ -164,10 +164,16 @@ pub func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in
 val WATCH_POLL_MS: Int = 400
 
 // The deferred action a watch loop re-runs on each detected change.
-union WatchAction {
+// `pub` (following the `buildProject`/`runProjectOnce` precedent, #5819) so
+// `cli_run_native_project_self_test.l` can drive `runWatchAction` directly
+// and pin that a `--watch --manifest ... --target native` build's
+// `--triple`/`--opt` CLI flags actually reach codegen (#6899 review finding
+// — `BuildProj` used to carry neither field at all, so they were silently
+// dropped under `--watch` even when explicitly passed).
+pub union WatchAction {
   case RunFile(sourcePath: String, userArgs: List[String], target: CompileTarget)
   case RunProj(mfPath: String, userArgs: List[String], target: CompileTarget)
-  case BuildProj(mfPath: String, outArg: Option[String], target: CompileTarget, feats: List[String], noDef: Bool, allF: Bool, noRestore: Bool, pkgVer: Option[String], profile: BuildProfile)
+  case BuildProj(mfPath: String, outArg: Option[String], target: CompileTarget, feats: List[String], noDef: Bool, allF: Bool, noRestore: Bool, pkgVer: Option[String], profile: BuildProfile, nativeTriple: String, nativeOpt: String)
   case BuildFile(sourcePath: String, outArg: String, target: CompileTarget, manifest: Option[String], nativeTriple: String, nativeOpt: String, feats: List[String], noDef: Bool, allF: Bool, profile: BuildProfile)
 }
 
@@ -250,11 +256,11 @@ func runOnce(sourcePath: in String, userArgs: in List[String], target: in Compil
   }
 }
 
-func runWatchAction(a: in WatchAction): Int {
+pub func runWatchAction(a: in WatchAction): Int {
   match a {
     case RunFile(sp, ua, t) -> runOnce(sp, ua, t)
     case RunProj(mp, ua, t) -> runProjectOnce(mp, ua, t)
-    case BuildProj(mf, o, t, f, nd, af, nr, pv, prof) -> buildProject(
+    case BuildProj(mf, o, t, f, nd, af, nr, pv, prof, ntr, nop) -> buildProjectWithNativeFlags(
       mf,
       o,
       t,
@@ -264,7 +270,9 @@ func runWatchAction(a: in WatchAction): Int {
       nr,
       pv,
       None,
-      withProfileDefine(newList(), prof)
+      withProfileDefine(newList(), prof),
+      ntr,
+      nop
     )
     case BuildFile(sp, o, t, m, tr, op, f, nd, af, prof) -> {
       val runDefines: List[String] = withProfileDefine(newList(), prof)

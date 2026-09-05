@@ -1562,6 +1562,13 @@ func cmdBuild(argv: in slice[String]): Int {
         return 1
       }
     }
+    // Same profile-aware native `-O` default the single-file branch applies
+    // below (`resolveNativeOptDefault`, #6263) — a project-mode `--target
+    // native` build under the default `--debug` profile used to fall through
+    // to `linkAndEmitNative`'s old hardcoded `-O2`, inconsistent with the
+    // single-file path this same PR fixes (review finding on #6899). A no-op
+    // on Dotnet/Jvm or when `--opt`/`[native] opt_level` already supply one.
+    val effOptArgProj = resolveNativeOptDefault(optArg, Some(value = mfPath), target, axes.profile)
     // docs/60 §3.1: manifest `[build.define]` is threaded through `buildProject`.
     // Reject up front (no silent drop, #6139) on any shape that cannot consume
     // it. `--watch` is fine — `buildProject` reapplies the manifest defines on
@@ -1623,7 +1630,9 @@ func cmdBuild(argv: in slice[String]): Int {
           allF = allFeatures,
           noRestore = noRestore,
           pkgVer = packageVersionArg,
-          profile = axes.profile
+          profile = axes.profile,
+          nativeTriple = tripleArg,
+          nativeOpt = effOptArgProj
         )
       )
     }
@@ -1661,7 +1670,7 @@ func cmdBuild(argv: in slice[String]): Int {
           None,
           withProfileDefine(cliDefines, axes.profile),
           tripleArg,
-          optArg
+          effOptArgProj
         )
       }
       case None -> {
@@ -1677,7 +1686,7 @@ func cmdBuild(argv: in slice[String]): Int {
           None,
           withProfileDefine(cliDefines, axes.profile),
           tripleArg,
-          optArg
+          effOptArgProj
         )
       }
     }

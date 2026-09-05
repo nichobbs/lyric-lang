@@ -154,6 +154,49 @@ test "buildProjectWithNativeFlags: a bogus --triple CLI override reaches native 
   )
 }
 
+test "runWatchAction: --watch --manifest --target native threads --triple/--opt too, not just the non-watch path (#6899 review finding)" {
+  val root = freshTempDir("watch-triple-bogus")
+  defer {
+    cleanup(root)
+  }
+  val mfPath = writeOnePkgNativeProject(
+    root,
+    "Fixture.WatchTripleBogus",
+    "package Fixture.WatchTripleBogus\n\nfunc main(): Int {\n  0\n}\n"
+  )
+  val noFeatures: List[String] = newList()
+  val noOut: Option[String] = None
+  val noPkgVer: Option[String] = None
+  // Before this fix, `WatchAction.BuildProj` carried no `nativeTriple`/
+  // `nativeOpt` fields at all and `runWatchAction`'s arm called plain
+  // `buildProject` (which always passes empty triple/opt) instead of
+  // `buildProjectWithNativeFlags` — so a `--watch --manifest ... --target
+  // native` invocation silently dropped `--triple`/`--opt` on every
+  // rebuild, even though the exact same flags worked on the non-watch path
+  // (the sibling test above). This action carries a bogus triple; if it
+  // were still being dropped, the build would succeed using the host
+  // default instead of failing at clang.
+  val rc = Cli.runWatchAction(
+    Cli.BuildProj(
+      mfPath = mfPath,
+      outArg = noOut,
+      target = Emitter.Native,
+      feats = noFeatures,
+      noDef = false,
+      allF = false,
+      noRestore = false,
+      pkgVer = noPkgVer,
+      profile = Cli.ProfDebug,
+      nativeTriple = "bogus-target-triple-xyz",
+      nativeOpt = ""
+    )
+  )
+  assertTrue(
+    rc != 0,
+    "a bogus --triple must reach codegen and fail the build under --watch too, not be silently dropped"
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Item 3(a): `lyric run --manifest ... --target native` executes the binary.
 // ─────────────────────────────────────────────────────────────────────────────

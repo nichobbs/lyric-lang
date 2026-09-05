@@ -42132,6 +42132,42 @@ binary's real exit code instead of the old hard-refusal; and forwarded
 `argv[0]`, per `lyric_rt.h`'s `lyric_args_get` convention, so 2 forwarded
 args plus argv[0] is 3).
 
+**Addendum (post-review, same PR #6899).** Two `claude-review` SUGGESTION
+findings on this PR's own diff exposed real gaps in this entry's scope,
+fixed in the same PR rather than filed as follow-ups:
+
+1. `WatchAction.BuildProj` carried no `nativeTriple`/`nativeOpt` fields at
+   all, and `runWatchAction`'s arm called plain `buildProject` (always
+   empty triple/opt) instead of `buildProjectWithNativeFlags` — so item 2
+   was fixed for the non-watch dispatch only; `--watch --manifest ...
+   --target native --triple ...`/`--opt ...` silently dropped both flags on
+   every rebuild. Fixed by adding the two fields to `BuildProj` and routing
+   `runWatchAction`'s arm through `buildProjectWithNativeFlags`. New
+   self-test: `runWatchAction` driven directly with a bogus triple under
+   `--watch`, confirming it now reaches `clang` and fails exactly like the
+   non-watch case (both `WatchAction` and `runWatchAction` made `pub` for
+   this, following the `runProjectOnce`/#5819 precedent already used
+   elsewhere in this same PR).
+2. The project-mode branch (`positional.count == 0` in `cmdBuild`) passed
+   the raw `optArg` straight through to `buildProjectFromManifest`/
+   `buildProjectWithNativeFlags` without ever calling
+   `resolveNativeOptDefault` (D-progress-879's fix, landed in the SAME PR) —
+   so a project-mode `--target native` build under the default `--debug`
+   profile still fell through to `linkAndEmitNative`'s old hardcoded `-O2`,
+   inconsistent with the single-file path this same PR fixes for #6263.
+   Fixed by computing `effOptArgProj = resolveNativeOptDefault(optArg,
+   Some(mfPath), target, axes.profile)` once, right after `axes` is
+   resolved, and threading it (instead of raw `optArg`) into all three
+   downstream call sites (`BuildProj` construction,
+   `buildProjectFromManifest`, `buildProjectWithNativeFlags`). Not
+   independently self-tested beyond `resolveNativeOptDefault`'s own
+   precedence-table tests (D-progress-879) plus code inspection — `cmdBuild`
+   itself is not `pub` (unlike `runWatchAction`/`runProjectOnce`/
+   `buildProject`, none of the `cmdXxx` dispatchers in this codebase are,
+   `cmdVersion`/`cmdUpgrade` aside), and observing a successful build's
+   resolved `-O` level from outside would need new instrumentation broader
+   than this fix warrants.
+
 **Related:** #6815, #6809, D-progress-854, D-progress-852,
 `docs/20-project-as-dll.md` §"Native scope note",
 `docs/10-bootstrap-progress.md`'s #6815 items 1(a)/2/3(a) entry,
