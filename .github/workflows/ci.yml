@@ -3658,6 +3658,21 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/bitwise_self_test.l
 
+      # #6926 (review finding on #6874): `cmdTest` derives its output path
+      # from the source stem alone (`cli_test.l`), independent of
+      # `--coverage` — so the coverage smoke test below and the background
+      # "Bitwise self-test on JVM" step above compile the SAME source file
+      # to the SAME `.jar` path. Without this barrier the two `lyric test`
+      # invocations race to write that path via a non-atomic `writeBytes`
+      # (`jvm/driver.l`), risking a torn/corrupt JAR read by whichever
+      # `java -jar` loses the race — exactly the flakiness this whole
+      # #6659/#5294/D135 saga is otherwise working to eliminate. This barrier
+      # only drains the one background step above (nothing else has started
+      # a background step yet in this job), so it doesn't disturb the
+      # job's later `Wait for parallel tests (JVM batch N)` batching.
+      - name: Wait for bitwise self-test before coverage smoke test (#6926)
+        wait-all: true
+
       # Coverage smoke test (docs/03-decision-log.md D135, #5294, #6659).
       # `lyric test --target jvm --coverage` previously hung for 2+ hours on
       # real GitHub Actions runners. Root cause (#6659): `cmdTest`'s argv
@@ -3670,7 +3685,9 @@ jobs:
       # `coverage-smoke-test.sh` also runs the command in the background
       # and polls it instead of a plain blocking `timeout --signal=KILL`,
       # capturing a `jcmd`/`jstack` thread dump before killing it on any
-      # future timeout — defense in depth, not the fix itself.
+      # future timeout — defense in depth, not the fix itself. The barrier
+      # above (#6926) keeps this from racing the bitwise self-test's own
+      # compile of the identical source file to the identical output path.
       - name: Coverage smoke test on JVM (lyric test --target jvm --coverage, #6659)
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/coverage-smoke-test.sh lyric-compiler/lyric/bitwise_self_test.l
