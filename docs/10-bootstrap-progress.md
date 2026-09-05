@@ -12623,6 +12623,7 @@ Supports unary calls (`callUnary`) and server-streaming (`openServerStream` /
 `nextMessage` / `closeStream`).  Call options carry an optional deadline and
 per-call metadata headers.  The JVM kernel (`Grpc.Kernel.Jvm`) is a Phase 6
 stub mirroring the .NET API using `io.grpc.ManagedChannel`.
+
 **Correction (2026-09-05, group:ecosystem-lib-kernels):** the above described
 the intended design, not the shipped reality — every one of these functions
 was declared as a body-less `extern package { ... }` block, a form the
