@@ -33609,3 +33609,44 @@ failing before the fix and passing after. Full re-verification:
 **Related:** `docs/03-decision-log.md` D-progress-879 (full account),
 #6969 (fixed here), D-progress-878/#6740 (the fix this closes a gap in),
 `native/plan/08-work-items.md` N9.8.
+
+## Native codegen: the #6969 fix's "empty hint" rule dropped #6740's coverage for hint-less scrutinees; fixed with a three-way sentinel (#6976)
+
+A third `claude-review` pass found that the #6969 fix (above) went too
+far: treating an empty scrutinee hint as "conclusively not an enum"
+silently dropped #6740's own fix for any scrutinee shape
+`inferScrutineeEnumHint` can't produce a hint for — an untyped local, a
+direct call-result match, a field access — reproducing #6740's original
+unconditional-bind defect for those shapes. A naive "fall back to the
+bundle-wide check when hint is empty" fix regressed the #6969 test in
+the other direction: a plain `Int` PARAMETER also has an empty hint
+(since it's concretely not an enum, not because its type is unknown),
+so the naive fallback re-enabled the exact collision hazard #6969
+closed. Two different scrutinee shapes both mapped to `enumHint == ""`
+needing opposite behavior — the empty string can't represent both
+"concretely not an enum" and "truly unknown type."
+
+Fixed by making the hint three-way: a new sentinel `nonEnumScrutHint =
+"#nonenum"` (never collides with a real enum name — identifiers can't
+start with `#`) is returned for a scrutinee declared as literally `Int`
+or `Char`. `scrutineeHasCase`'s `NI32` branch now reads three cases: a
+real enum name scopes the check to that enum (#6969's fix, unchanged);
+the sentinel means unconditionally `false` (never falls back); an empty
+hint (truly unknown) falls back to the pre-#6969 bundle-wide check,
+matching `Msil.Codegen`'s own accepted trade-off (#5995). New item I in
+`llvm_enum_case_resolve_self_test.l`: a `Version`-returning function's
+result matched directly (never bound to a local, so no hint is ever
+recorded) must still gate correctly via the fallback. Confirmed items H
+(#6969) and I (#6976) pass simultaneously — the naive single-fallback
+fix could satisfy only one at a time. Also factored the four `SLocal`
+binding arms' near-duplicated hint-registration code into one helper
+per the review's SUGGESTION. Full re-verification:
+`llvm_enum_case_resolve_self_test.l` 9/9, `llvm_inout_self_test.l`
+12/12, `llvm_codegen_self_test.l` 35/35, `llvm_stdlib_self_test.l`
+18/18, `llvm_http_client_self_test.l` 13/13, `llvm_project_self_test.l`
+10/10 — no regressions.
+
+**Related:** `docs/03-decision-log.md` D-progress-880 (full account),
+#6976 (fixed here), D-progress-879/#6969 (the fix this corrects),
+D-progress-878/#6740 (the original fix both are follow-ups to),
+`native/plan/08-work-items.md` N9.8.

@@ -1879,7 +1879,7 @@ here.
 
 ---
 
-### N9.8 — Three native-codegen review-finding fixes: bare enum-case patterns, out/inout width mismatches, over-inclusive UFCS reachability — ✅ SHIPPED (D-progress-878/D-progress-879, #6740, #6813, #6625, #6969)
+### N9.8 — Three native-codegen review-finding fixes: bare enum-case patterns, out/inout width mismatches, over-inclusive UFCS reachability — ✅ SHIPPED (D-progress-878/D-progress-879/D-progress-880, #6740, #6813, #6625, #6969, #6976)
 
 Three independent review-finding follow-ups from N9.4/N9.6, all real
 correctness gaps confirmed against current `main`:
@@ -1965,13 +1965,39 @@ correctness gaps confirmed against current `main`:
   bundle-wide bare-name check. An empty hint falls through to a plain
   bind, the pre-#6740 safe default. New item H in
   `llvm_enum_case_resolve_self_test.l`.
+- **Review fix (#6976) — the #6969 fix's "empty hint" rule dropped
+  #6740's coverage for hint-less scrutinees.** A third `claude-review`
+  pass: `inferScrutineeEnumHint` only ever produces a hint for a bare
+  local/param reference with a KNOWN declared type, so an untyped
+  local, a direct call-result match, or a field-access scrutinee all
+  yield `""` — and #6969's fix treated `""` as "conclusively not an
+  enum," silently reproducing #6740's original unconditional-bind
+  defect for those shapes. A naive "fall back to the bundle-wide check
+  when hint is empty" fix regressed #6969's own test the other way: a
+  plain `Int` PARAMETER also has an empty hint (concretely not an
+  enum, not unknown), so the naive fallback re-enabled #6969's
+  collision hazard. Fixed by making the hint three-way instead of
+  two-way: a new sentinel `nonEnumScrutHint = "#nonenum"` (identifiers
+  can't start with `#`, so it never collides with a real enum name) is
+  returned for a scrutinee declared literally `Int`/`Char`.
+  `scrutineeHasCase`'s `NI32` branch now reads three cases: a real enum
+  name scopes the check to that enum (unchanged); the sentinel means
+  unconditionally `false` (never falls back); a truly-empty hint falls
+  back to the pre-#6969 bundle-wide check, matching `Msil.Codegen`'s own
+  accepted trade-off (#5995). New item I in
+  `llvm_enum_case_resolve_self_test.l` (a call-result enum scrutinee
+  with no hint); confirmed items H and I pass simultaneously, which the
+  naive single-fallback fix could not satisfy at once. Also factored
+  the four `SLocal` binding arms' near-duplicated hint-registration
+  code into one `registerVarEnumTypeFromOpt` helper per the review's
+  SUGGESTION.
 
 **Verified:** full existing native self-test suite re-run after the
-original fixes, the #6952 review fix, and the #6969 review fix
-(`llvm_codegen_self_test.l` 35/35, `llvm_enum_case_resolve_self_test.l`
-8/8, `llvm_inout_self_test.l` 12/12, `llvm_project_self_test.l` 10/10,
-`llvm_stdlib_self_test.l` 18/18, `llvm_http_client_self_test.l` 13/13),
-no regressions.
+original fixes, the #6952 review fix, the #6969 review fix, and the
+#6976 review fix (`llvm_codegen_self_test.l` 35/35,
+`llvm_enum_case_resolve_self_test.l` 9/9, `llvm_inout_self_test.l`
+12/12, `llvm_project_self_test.l` 10/10, `llvm_stdlib_self_test.l`
+18/18, `llvm_http_client_self_test.l` 13/13), no regressions.
 
 ---
 

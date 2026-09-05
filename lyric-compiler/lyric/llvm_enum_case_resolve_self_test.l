@@ -88,6 +88,16 @@
 //!     OWN enum — rather than any bare-name match in the whole bundle.
 //!     An `Int` scrutinee has no enum hint, so it always falls through
 //!     to a plain bind, exactly as it did before item G's fix existed.
+//!   - item I (#6976, fixed): item H's fix required a declared-enum-type
+//!     HINT to recognise a bare-case-name pattern at all — dropping the
+//!     #6740 fix's coverage entirely for any scrutinee shape with no
+//!     hint (an untyped local, a direct call-result match, a field
+//!     access). Fixed by falling back to the pre-#6969 bundle-wide
+//!     `ctx.enumDefs.containsKey(name)` check when no hint is available,
+//!     mirroring `Msil.Codegen`'s own accepted trade-off (#5995: prefer
+//!     the type-scoped key when known, fall back to the ambiguous bare
+//!     key otherwise) instead of dropping enum-case pattern support for
+//!     those shapes.
 //!
 //! Items A-D and F's `match` arms use the fully-qualified `EnumType.Case`
 //! pattern form deliberately, to isolate the value-position fix from the
@@ -503,5 +513,43 @@ test "a bare catch-all bind over a plain Int scrutinee is never reinterpreted as
     r.exitCode,
     42,
     "an Int scrutinee's catch-all bind is unaffected by an unrelated enum's same-named case (#6969)"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Item I (#6976): #6969's fix required a declared-enum-type HINT
+// (`inferScrutineeEnumHint`, only ever populated for a bare local/param
+// reference) to recognise a bare-case-name pattern at all, dropping the
+// #6740 fix's coverage entirely for a scrutinee shape with no hint — a
+// direct call-result match (`match toVersion(1) { ... }`), never bound
+// to a local first. `scrutineeHasCase` must fall back to the pre-#6969
+// bundle-wide `ctx.enumDefs.containsKey(name)` check when no hint is
+// available, exactly matching `Msil.Codegen`'s own accepted trade-off
+// (#5995), so THIS shape doesn't regress back to #6740's unconditional
+// catch-all bind.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a bare pattern-position case name against a call-result ENUM scrutinee (no declared-type hint) still gates on the value (#6976)" {
+  val src = "package T\n" + "enum Version {\n" + "  case Http1_0\n" + "  case Http1_1\n" + "}\n" +
+    "func toVersion(n: Int): Version {\n" +
+    "  if n == 1 { Http1_1 } else { Http1_0 }\n" +
+    "}\n" +
+    "func toInt(n: Int): Int {\n" +
+    "  match toVersion(n) {\n" +
+    "    case Http1_1 -> 1\n" +
+    "    case Http1_0 -> 0\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  if toInt(1) == 1 and toInt(0) == 0 {\n" +
+    "    42\n" +
+    "  } else {\n" +
+    "    1\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(
+    r.exitCode,
+    42,
+    "a hint-less call-result enum scrutinee still falls back to the bundle-wide enum-case check (#6976)"
   )
 }

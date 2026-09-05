@@ -41442,6 +41442,76 @@ no regressions. `lyric fmt --write` applied clean (no refusals) to
 entry closes a soundness gap in), `Msil.Codegen.inferScrutineeEnumHintMsil`
 (#5995, the mirrored mechanism), `native/plan/08-work-items.md` N9.8.
 
+## D-progress-880 — Native codegen: D-progress-879's #6969 fix dropped #6740's coverage for any scrutinee shape lacking a declared-type hint (#6976)
+
+**Context.** A third `claude-review` pass on the same PR (this time
+against the commit shipping D-progress-879's #6969 fix) found that
+fix's own "empty hint means never an enum case" rule went too far:
+`inferScrutineeEnumHint` only ever produces a hint for a bare local/
+param reference with a KNOWN declared type — a `val` with no type
+annotation, a direct call-result scrutinee (`match toVersion(n) { ... }`),
+or a field-access scrutinee all yield `""`. Treating `""` as
+"conclusively not an enum" (D-progress-879's fix) silently dropped
+#6740's own fix for every one of those shapes, reproducing #6740's
+original defect (unconditional first-arm catch-all bind) for anything
+that wasn't a directly-typed parameter or annotated local. The
+suggested fix mirrors `Msil.Codegen.lowerPatternTestMsil`'s own already-
+shipped trade-off (#5995): fall back to the pre-#6969 bundle-wide
+`ctx.enumDefs.containsKey(name)` check when no hint is available, rather
+than dropping enum-case pattern support for hint-less scrutinees.
+
+**The naive fallback reintroduces #6969 for a different shape.** A
+first attempt (plain "if hint empty, use the bundle-wide check")
+regressed D-progress-879's own item-H regression test: an `Int`
+PARAMETER (`n: Int`) has a perfectly well-known declared type — it's
+concretely NOT an enum — but `enumNameOfTypeExpr` returned `""` for it
+(same as truly unknown), so the naive fallback wrongly re-enabled the
+bundle-wide collision hazard D-progress-879 had just closed. Two
+different scrutinee shapes both map to `enumHint == ""` under the
+old two-way design, needing OPPOSITE behavior: a concretely-`Int`
+scrutinee must NEVER fall back (D-progress-879's fix), while a
+call-result/field-access scrutinee of TRULY unknown type must fall
+back (this issue's fix) — the empty string can't represent both.
+
+**Fix.** Made the hint three-way instead of two-way. A new reserved
+sentinel `nonEnumScrutHint = "#nonenum"` (never collides with a real
+enum's bare name — enum names are lexer-restricted identifiers, which
+can't start with `#`) is what `enumNameOfTypeExpr` now returns for a
+`TRef` naming literally `Int` or `Char` (the only two types that erase
+to `NI32` besides an enum). `scrutineeHasCase`'s `NI32` branch now
+reads three cases: a real enum name -> scope the check to that enum
+(conclusive either way, D-progress-879's fix, unchanged); the sentinel
+-> unconditionally `false` (concretely known non-enum, never falls
+back); `""` -> the pre-#6969 bundle-wide `ctx.enumDefs.containsKey(name)`
+check (truly unknown, this issue's fix). `registerVarEnumType`/
+`registerVarEnumTypeFromOpt` needed no changes — they already store
+whatever hint string is passed, sentinel included.
+
+Also applied the review's SUGGESTION: the four `SLocal` binding arms'
+near-duplicated `enumHint`/`registerVarEnumType` computation in
+`lowerStmt` is now the one-line `registerVarEnumTypeFromOpt(ctx, name,
+tyOpt)` helper.
+
+**Verification.** New item I in `llvm_enum_case_resolve_self_test.l`:
+a `Version`-returning function's result matched DIRECTLY (never bound
+to a local first, so no hint is ever recorded for it) must still gate
+correctly on the enum's cases via the bundle-wide fallback. Confirmed
+BOTH item H (#6969, the concretely-`Int`-scrutinee case) and item I
+(#6976, the truly-unknown-scrutinee case) pass simultaneously — the
+naive single-fallback fix could not satisfy both at once, only the
+three-way sentinel design can. Full re-run of the affected native
+self-test suite: `llvm_enum_case_resolve_self_test.l` 9/9,
+`llvm_inout_self_test.l` 12/12, `llvm_codegen_self_test.l` 35/35,
+`llvm_stdlib_self_test.l` 18/18, `llvm_http_client_self_test.l` 13/13,
+`llvm_project_self_test.l` 10/10 — no regressions. `lyric fmt --write`
+applied clean (no refusals) to both changed `.l` files.
+
+**Related:** #6976 (fixed here), D-progress-879 (#6969, the fix this
+entry corrects), D-progress-878 (#6740, the original fix both #6969 and
+#6976 are follow-ups to), `Msil.Codegen.inferScrutineeEnumHintMsil`
+(#5995, the mirrored mechanism and accepted fallback trade-off),
+`native/plan/08-work-items.md` N9.8.
+
 ## D-progress-877 — `lyric-grpc`: server hosting confirmed blocked by the same #6581 gap as unary/streaming; no bindable non-generic subset found (#6592, #5409)
 
 **Context.** #6592/#5409 track `Grpc.Kernel.Net`'s real implementation.

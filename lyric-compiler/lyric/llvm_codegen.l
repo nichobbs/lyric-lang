@@ -651,11 +651,25 @@ func lookupHeapType(ctx: in Ctx, joined: in String, bare: in String): Option[NTy
   None
 }
 
-/// `te`'s bare enum type name, when `te` is a `TRef` naming a known
-/// enum (#6969), or `""` otherwise. Used to populate `Ctx.varEnumTypes`
-/// so a match scrutinee's enum-erased `NI32` can be told apart from an
-/// ordinary `Int`/`Char` at pattern-test time (see `varEnumTypes`'s doc
-/// comment and `inferScrutineeEnumHint`).
+/// The reserved `Ctx.varEnumTypes`/`scrutineeHasCase` sentinel meaning
+/// "this scrutinee's declared type is `Int` or `Char` — concretely
+/// known NOT to be any enum." Never collides with a real enum's bare
+/// name: enum names are identifiers (lexer-restricted to XID_Start/
+/// XID_Continue), which can't start with `#`.
+val nonEnumScrutHint = "#nonenum"
+
+/// `te`'s SCRUTINEE HINT for `Ctx.varEnumTypes`/`scrutineeHasCase`'s
+/// NI32 disambiguation (#6740/#6969/#6976): the bare enum type name
+/// when `te` is a `TRef` naming a known enum; `nonEnumScrutHint` when
+/// `te` is concretely `Int` or `Char` (never any enum, by construction);
+/// `""` (truly unknown — no declared type, or a type this function
+/// doesn't classify) otherwise. Three-way, not two-way, because
+/// `scrutineeHasCase` needs to tell "positively not an enum" (#6969:
+/// never fall back to a bundle-wide guess) apart from "no information
+/// at all" (#6976: fall back to the pre-#6969 bundle-wide check, same
+/// as `Msil.Codegen`'s own accepted trade-off, rather than dropping
+/// enum-case pattern support for hint-less scrutinees like a direct
+/// call-result match).
 func enumNameOfTypeExpr(ctx: in Ctx, te: in TypeExpr): String {
   match te.kind {
     case TRef(path) -> {
@@ -663,6 +677,8 @@ func enumNameOfTypeExpr(ctx: in Ctx, te: in TypeExpr): String {
       val bare = lastSeg(path)
       if ctx.enumDefs.containsKey(joined + ".__enum") or ctx.enumDefs.containsKey(bare + ".__enum") {
         bare
+      } else if bare == "Int" or bare == "Char" {
+        nonEnumScrutHint
       } else {
         ""
       }
@@ -672,19 +688,29 @@ func enumNameOfTypeExpr(ctx: in Ctx, te: in TypeExpr): String {
   }
 }
 
-/// Record (or clear) `name`'s declared enum type in `ctx.varEnumTypes` —
-/// remove-then-add so a rebind of an already-tracked name never throws
-/// `Map.add`'s duplicate-key error, mirroring `bindLocal`'s `varTypes`
-/// bookkeeping exactly (same flat, last-write-wins lifetime — no scope-
-/// undo in this backend for `varTypes` either, so this introduces no new
-/// shadowing behavior).
-func registerVarEnumType(ctx: in Ctx, name: in String, enumName: in String): Unit {
+/// Record (or clear) `name`'s scrutinee hint in `ctx.varEnumTypes`
+/// (an enum's bare name, `nonEnumScrutHint`, or no entry for "unknown")
+/// — remove-then-add so a rebind of an already-tracked name never
+/// throws `Map.add`'s duplicate-key error, mirroring `bindLocal`'s
+/// `varTypes` bookkeeping exactly (same flat, last-write-wins lifetime
+/// — no scope-undo in this backend for `varTypes` either, so this
+/// introduces no new shadowing behavior).
+func registerVarEnumType(ctx: in Ctx, name: in String, scrutHint: in String): Unit {
   if ctx.varEnumTypes.containsKey(name) {
     ctx.varEnumTypes.remove(name)
   }
-  if enumName.length > 0 {
-    ctx.varEnumTypes.add(name, enumName)
+  if scrutHint.length > 0 {
+    ctx.varEnumTypes.add(name, scrutHint)
   }
+}
+
+/// `registerVarEnumType` from an `SLocal` binding's OPTIONAL type
+/// annotation — a bare `val x = ...` (no annotation) clears any prior
+/// enum-type mapping for `name`, since there's no declared type to
+/// derive a hint from.
+func registerVarEnumTypeFromOpt(ctx: in Ctx, name: in String, tyOpt: in Option[TypeExpr]): Unit {
+  val enumHint = match tyOpt { case Some(te) -> enumNameOfTypeExpr(ctx, te); case None -> "" }
+  registerVarEnumType(ctx, name, enumHint)
 }
 
 func distinctUnderlying(di: in NDistinctInfo): NType {
@@ -7633,17 +7659,27 @@ func unionInfoOfType(ctx: in Ctx, t: in NType): Option[NUnionInfo] {
 /// `true` when `name` names one of `t`'s cases — a union case (`t` is a
 /// heap struct pointer) OR an enum case (`t` erases to bare `NI32` at
 /// the native IR level, so an enum-typed scrutinee is distinguished from
-/// a real `Int`/`Char` only via `enumHint`, the scrutinee's declared
-/// enum type SIMPLE NAME from `inferScrutineeEnumHint` — never by `t`
-/// itself, #6740). `enumHint` scopes the enum-case check to THAT
-/// specific enum (`enumHint + "." + name` in `ctx.enumDefs`, the same
-/// key `registerEnumDecl`-equivalent registration uses) rather than
-/// `ctx.enumDefs.containsKey(name)`'s bundle-wide bare-name check, which
-/// wrongly reinterpreted an ordinary `Int`/`Char` catch-all bind as an
-/// equality test whenever its bind name collided with ANY unrelated
-/// enum's case name anywhere in the compiled bundle (#6969). An empty
-/// `enumHint` (scrutinee type unknown/not tracked) means "never an enum
-/// case" — the pre-#6740 safe default of "just bind".
+/// a real `Int`/`Char` only via `enumHint`, the scrutinee's SCRUTINEE
+/// HINT from `inferScrutineeEnumHint` — never by `t` itself, #6740).
+/// Three-way on `enumHint` (see `enumNameOfTypeExpr`'s doc comment):
+///   - a real enum's bare name -> scope the check to THAT specific enum
+///     (`enumHint + "." + name` in `ctx.enumDefs`), fixing the #6969
+///     hazard where an ordinary `Int`/`Char` catch-all bind was wrongly
+///     reinterpreted as an equality test merely because its name
+///     collided with an UNRELATED enum's case name elsewhere in the
+///     bundle. A miss here is conclusive (never falls through to the
+///     bundle-wide check below) — the scrutinee's REAL type is known,
+///     and `name` isn't one of its cases, so it's just a bind.
+///   - `nonEnumScrutHint` -> `false`, unconditionally: the scrutinee is
+///     concretely `Int`/`Char`, never any enum, so `name` is always a
+///     plain bind no matter what it happens to spell.
+///   - `""` (truly unknown, #6976) -> falls back to the pre-#6969
+///     bundle-wide `ctx.enumDefs.containsKey(name)` check, mirroring
+///     `Msil.Codegen.lowerPatternTestMsil`'s own accepted trade-off
+///     (#5995: prefer the type-scoped key when known, fall back to the
+///     ambiguous bare key otherwise) rather than dropping enum-case
+///     pattern support entirely for a hint-less scrutinee shape (an
+///     untyped local, a direct call-result match, a field access).
 func scrutineeHasCase(ctx: in Ctx, t: in NType, name: in String, enumHint: in String): Bool {
   match unionInfoOfType(ctx, t) {
     case Some(ui) -> {
@@ -7658,19 +7694,28 @@ func scrutineeHasCase(ctx: in Ctx, t: in NType, name: in String, enumHint: in St
     }
     case None -> {
       match t {
-        case NI32 -> enumHint.length > 0 and ctx.enumDefs.containsKey(enumHint + "." + name)
+        case NI32 -> {
+          if enumHint == nonEnumScrutHint {
+            false
+          } else if enumHint.length > 0 {
+            ctx.enumDefs.containsKey(enumHint + "." + name)
+          } else {
+            ctx.enumDefs.containsKey(name)
+          }
+        }
         case _ -> false
       }
     }
   }
 }
 
-/// The declared enum type SIMPLE NAME of a match scrutinee expression,
-/// when it's a bare local/param reference (`EPath` with one segment)
-/// registered in `ctx.varEnumTypes`, or `""` otherwise. Mirrors
-/// `Msil.Codegen.inferScrutineeEnumHintMsil` (#5995) so a bare-case-name
-/// pattern (`case Http1_1 ->`) resolves against the scrutinee's OWN enum
-/// instead of colliding with another in-bundle enum's same-named case.
+/// The SCRUTINEE HINT (see `enumNameOfTypeExpr`'s doc comment) of a
+/// match scrutinee expression, when it's a bare local/param reference
+/// (`EPath` with one segment) registered in `ctx.varEnumTypes`, or `""`
+/// (unknown) otherwise. Mirrors `Msil.Codegen.inferScrutineeEnumHintMsil`
+/// (#5995) so a bare-case-name pattern (`case Http1_1 ->`) resolves
+/// against the scrutinee's OWN enum instead of colliding with another
+/// in-bundle enum's same-named case.
 func inferScrutineeEnumHint(ctx: in Ctx, e: in Expr): String {
   match e.kind {
     case EParen(inner) -> inferScrutineeEnumHint(ctx, inner)
@@ -8313,8 +8358,7 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
                 case Some(_) -> panic("Lyric.LlvmCodegen: nested binding patterns are not yet supported for --target native")
                 case None -> {
                   bindLocal(ctx, insns, name, v)
-                  val enumHint = match tyOpt { case Some(te) -> enumNameOfTypeExpr(ctx, te); case None -> "" }
-                  registerVarEnumType(ctx, name, enumHint)
+                  registerVarEnumTypeFromOpt(ctx, name, tyOpt)
                 }
               }
             }
@@ -8330,8 +8374,7 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
             case None -> lowerExpr(ctx, insns, init)
           }
           bindLocal(ctx, insns, name, v)
-          val enumHint = match tyOpt { case Some(te) -> enumNameOfTypeExpr(ctx, te); case None -> "" }
-          registerVarEnumType(ctx, name, enumHint)
+          registerVarEnumTypeFromOpt(ctx, name, tyOpt)
         }
         case LBVar(name, tyOpt, initOpt) -> {
           match initOpt {
@@ -8341,8 +8384,7 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
                 case None -> lowerExpr(ctx, insns, init)
               }
               bindLocal(ctx, insns, name, v)
-              val enumHint = match tyOpt { case Some(te) -> enumNameOfTypeExpr(ctx, te); case None -> "" }
-              registerVarEnumType(ctx, name, enumHint)
+              registerVarEnumTypeFromOpt(ctx, name, tyOpt)
             }
             case None -> {
               match tyOpt {
@@ -8350,7 +8392,7 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
                   val ty = typeToN(ctx, te)
                   val zero = zeroValueOf(ty)
                   bindLocal(ctx, insns, name, NVal(ty = ty, value = zero))
-                  registerVarEnumType(ctx, name, enumNameOfTypeExpr(ctx, te))
+                  registerVarEnumTypeFromOpt(ctx, name, tyOpt)
                 }
                 case None -> panic("Lyric.LlvmCodegen: 'var' without initializer needs a type annotation")
               }
