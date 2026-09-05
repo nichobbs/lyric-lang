@@ -32276,6 +32276,29 @@ this is MSIL-brought-to-parity, not a one-platform construct.
 
 **Related:** `docs/03-decision-log.md` D-progress-876 (full account), #6849.
 
+### `for` over a non-iterable single-type-param generic is a T0126 type error (#6720)
+
+D-progress-818 broadened `SFor`'s single-type-param generic element-typing
+fallback to type ANY single-param generic's element, motivated by the
+extern phantom-type-param collection idiom (`Set[T]`, `JHttpStringCollection[T]`,
+#6565). That widening also silently typed the loop element for a genuinely
+non-iterable single-param generic that merely happens to have one type
+parameter — `Option[T]` is the concrete case — with zero diagnostics;
+codegen's index-loop fallback (assumes `.Count`/`get_Item`) then failed at
+*runtime* instead of the build failing at compile time. The fallback now
+requires the type be `List`/`Map[K, V]`'s key/value collections (unchanged)
+or a genuine `extern type` (`symTableIsExternTypeId`, covers the #6565
+motivating case); any other single-param generic emits a clear, early
+**T0126** (`docs/01-language-reference.md` §control flow;
+`book/chapters/appendix-b-quick-reference.md`), mirroring `SWhile`'s
+condition-type check. Scoped to single-type-parameter generics only — a
+`for` over a non-generic non-collection type or a non-Map 2+-arity generic
+still silently resolves to `TyError` with no diagnostic, a pre-existing,
+documented, out-of-scope gap this fix doesn't attempt to close.
+
+**Related:** `docs/03-decision-log.md` D-progress-878 (full account), #6720,
+#6565 (D-progress-818, the motivating widening this narrows).
+
 ### Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
 
 `native/plan/08-work-items.md`'s N9.3 (`Std.HttpServer` native twin,
