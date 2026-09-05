@@ -41553,10 +41553,14 @@ module header.
 `hzNameLikeMutable`'s bare-implicit-self-field case (#6684) can tell a `var`
 field write from an immutable local — by scanning the SAME `SourceFile` being
 hoisted for a matching `record`/`exposed record`/`protected type`
-declaration. When `Target` is declared in a DIFFERENT file (the ordinary
-shape for a multi-file package, docs/19, or any library `impl` targeting a
-consumer-declared or sibling-package record), the scan found nothing and
-silently returned an empty field set — the same #5629/#6600/#6684
+declaration. When `Target` is declared in a DIFFERENT PACKAGE — a sibling
+in-bundle package, a restored dependency, or a stdlib record — the scan
+found nothing and silently returned an empty field set. (A *multi-file*
+package's own files are concatenated into one `SourceFile` before
+`pipeCheckAndMono`/`pipeWeave` ever run, per docs/19 — so a record and an
+`impl` in two files of the SAME package were already found by the original
+same-file scan; that shape was never the gap.) This was the same
+#5629/#6600/#6684
 stale-receiver-read bug one file boundary further out: a bare field mutated
 by an awaited (or `?`-propagated) call during the hazard was never
 hoist-protected, so the read after the hazard observed the POST-mutation
@@ -41593,7 +41597,9 @@ shared engine fix is available to close it too whenever that's prioritized.
 **Verification.** New AST-level regression test in
 `propagate_hoist_entry_polarity_self_test.l` — a genuine two-`SourceFile`
 simulation (a record declared in one parsed source, never merged into the
-`impl`'s own parsed source, exactly the multi-file-package shape) proves both
+`impl`'s own parsed source — the genuine cross-PACKAGE shape, distinct from a
+multi-file package's own files, which are merged before this pass ever runs)
+proves both
 directions: with `extraRecords` empty the `impl` method's body stays at 2
 statements (only the hazard hoists; the receiver stays an unprotected bare
 read — the pre-fix gap, reproduced), and with the library's `RecordDecl`
