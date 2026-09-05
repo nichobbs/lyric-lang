@@ -256,3 +256,47 @@ test "impl ExternInterface for Record with a slice[Byte] (primitive-element) ret
   assertEqualInt(encoded[2].toInt(), 3, "third byte round-trips")
   assertEqualInt(k.tag, 7, "SliceIfacePrimitiveKey field still readable after the primitive-slice-return method call")
 }
+
+// #6977 parameter-side follow-up: an ordinary Lyric caller builds a
+// `slice[Byte]` value (`ArrayList`-backed under the erased ABI, per the
+// PR's own scoping) and passes it as an argument to an extern-interface
+// impl method whose parameter narrows to `byte[]` — the call-argument
+// coercion path (`coerceArgToCtx`, wired into every `coerceArgTo(insns,
+// aTy, sig.params[i])` call site in `04_calls.l`), not the return path
+// `#6977`'s first fix (D-progress-880) already covered. Uses
+// `java.util.zip.Checksum`, a real JDK interface with a `byte[]`-taking
+// method (`update(byte[] b, int off, int len)`).
+extern type JChecksum = "java.util.zip.Checksum"
+
+record SliceIfacePrimitiveChecksum {
+  var sum: Int
+}
+
+impl JChecksum for SliceIfacePrimitiveChecksum {
+  func update(b: in slice[Byte], off: Int, len: Int): Unit {
+    self.sum = self.sum + b.length
+  }
+
+  func update(b: Int): Unit {
+    self.sum = self.sum + 1
+  }
+
+  func getValue(): Long {
+    self.sum.toLong()
+  }
+
+  func reset(): Unit {
+    self.sum = 0
+  }
+}
+
+func passPrimitiveSliceParam(c: in SliceIfacePrimitiveChecksum, data: in slice[Byte]): Unit {
+  c.update(data, 0, data.length)
+}
+
+test "extern-interface impl method with a slice[Byte] (primitive-element) PARAMETER accepts an ordinary Lyric slice value (#5931 / #6977 param-side)" {
+  val c = SliceIfacePrimitiveChecksum(sum = 0)
+  val data: slice[Byte] = [10.toByte(), 20.toByte(), 30.toByte(), 40.toByte()]
+  passPrimitiveSliceParam(c, data)
+  assertEqualInt(c.sum, 4, "update(byte[], int, int) received the real 4-element array, not a truncated/erased one")
+}
