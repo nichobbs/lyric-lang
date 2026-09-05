@@ -1660,8 +1660,8 @@ pub func serveTls(
 /// startup on a loop that never returns. `Task.Run` is genuinely
 /// concurrent here (confirmed empirically; `Std.Task.scopeSpawn`'s own
 /// `Task.Run(Action, CancellationToken)` binding was separately documented
-/// as never invoking its closure on `--target dotnet`, `_kernel/task.l`
-/// D-progress-598 — that finding predates an unrelated MSIL fix and no
+/// as never invoking its closure on `--target dotnet`, in `_kernel/task.l`'s
+/// own header comment — that finding predates an unrelated MSIL fix and no
 /// longer reproduces with a plain `Task.Run(Action)`, verified directly
 /// against this exact call shape).
 @cfg(feature = "dotnet")
