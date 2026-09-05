@@ -8,7 +8,7 @@
 //! lets the audited _kernel/ boundary consume nullable host APIs without any
 //! `null` literal or nullable type in the language.
 //!
-//! Phase 1 (MSIL, D107) and Phase 2 (JVM, #3932, D-progress-877) both bind an
+//! Phase 1 (MSIL, D107) and Phase 2 (JVM, #3932, D-progress-883) both bind an
 //! environment-variable read: `System.Environment.GetEnvironmentVariable` on
 //! dotnet, `java.lang.System.getenv` on the JVM.  Both targets share the same
 //! two test cases — an env var that's guaranteed unset coerces to None, and
