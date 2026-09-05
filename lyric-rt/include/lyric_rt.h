@@ -56,9 +56,10 @@ void lyric_free(void* p);
 
 /* Mark a raw malloc'd/lyric_alloc'd block (`p` must be the exact pointer
  * returned by the allocator) as a deliberate, provably-safe retention
- * LeakSanitizer should not report as a leak (issue #6802) -- see
- * lyric_rt.c's own doc comment on this function for the full reasoning
- * (`_kernel_native/http_server.l`'s `stopListener` is the one caller).
+ * LeakSanitizer should not report as a leak -- see lyric_rt.c's own doc
+ * comment on this function for the full reasoning (`_kernel_native/
+ * http_server.l`'s `stopListener`, issue #6802, and
+ * `lyric_process_piped_close`, issue #6975, are the two callers).
  * A no-op in a non-ASan build. No-op on NULL. */
 void lyric_lsan_ignore_leak(void* p);
 
