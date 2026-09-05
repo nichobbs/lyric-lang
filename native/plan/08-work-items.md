@@ -1879,7 +1879,7 @@ here.
 
 ---
 
-### N9.8 — Fix `and`/`or` short-circuit ARC temp release crossing a non-dominating block (#6645, #6719, #6722) — ✅ SHIPPED (D-progress-877)
+### N9.8 — Fix `and`/`or` short-circuit ARC temp release crossing a non-dominating block (#6645, #6719, #6722) — ✅ SHIPPED (D-progress-878)
 
 Root-caused the heap-corruption bug N9.4's own review found and worked
 around (#6645), which then blocked two further real fixes surfaced
@@ -1925,7 +1925,7 @@ client hammering `Std.HttpHost.hostGetSafe` in a 50,000-iteration loop
 against a local server runs clean, and a 1,500-iteration run under
 `valgrind` reports zero errors (this sandbox has no working
 `clang`-ABI-compatible ASan runtime, so `valgrind` substitutes for the
-project's usual ASan self-test verification — see D-progress-877 for
+project's usual ASan self-test verification — see D-progress-878 for
 the exact commands). Two dedicated cases in
 `llvm_heap_self_test.l` (`-fsanitize=address`, CI-verified) cover the
 `and` and `or` forms directly, each exercising both the skip edge and
