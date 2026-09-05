@@ -33764,8 +33764,17 @@ woke via the pipe alone), items A–I unregressed.
 documented `poll(2)`/`pipe(2)` POSIX semantics but was not machine-verified
 on real macOS/BSD hardware — this project's CI remains Linux-only.
 
+**Addendum (#6883, found in review before merge):** an earlier version of
+`hostStopListener` signaled the wake pipe AND closed it (plus the
+listening socket) all in one call, immediately — a TOCTOU fd-reuse race,
+since `Std.HttpServer.stopListener` only `pthreadJoin`s the accept thread
+AFTERWARD. `hostStopListener` now only signals; a new `hostCloseListener`
+does the actual close, called only after the join confirms the accept
+thread has exited. See D-progress-885's addendum for the full account.
+
 **Related:** `docs/03-decision-log.md` D-progress-885 (full account),
 #6806 (fixed by this PR), #6804 (the original disclosed gap, now closed),
+#6883 (the TOCTOU fd-reuse race, also fixed by this PR),
 D-progress-850 (N9.3, where the gap was found and filed),
 `native/plan/08-work-items.md` N9.2's follow-up subsection,
 `docs/61-https-tls-http-versions.md` §7's N9.3 item.
