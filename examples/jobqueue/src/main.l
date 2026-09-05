@@ -42,7 +42,16 @@ func liveness(): CheckStatus {
 func readiness(): CheckStatus {
   match Db.connectFromEnv() {
     case Err(e) -> Health.fail("database unreachable: " + e.message)
-    case Ok(conn) -> match conn.query("SELECT 1 AS ok", []) { case Err(e) -> { conn.close(); Health.fail("database ping failed: " + e.message) }; case Ok(_) -> { conn.close(); Health.pass() } }
+    case Ok(conn) -> match conn.query("SELECT 1 AS ok", []) {
+      case Err(e) -> {
+        conn.close()
+        Health.fail("database ping failed: " + e.message)
+      }
+      case Ok(_) -> {
+        conn.close()
+        Health.pass()
+      }
+    }
   }
 }
 
@@ -94,11 +103,14 @@ pub func main(): Unit {
   var router = JobQueue.Api.routes()
 
   // Register the background worker poller.  Fires every
-  // Worker.pollIntervalMs milliseconds (default 2 s) — NOTE: registered
-  // workers are not yet actually invoked by Web.serve (issue #5359);
-  // run JobQueue.Worker's poll loop as a separate process/entry point
-  // until that ships.
-  val router = Web.addWorker(router, "job-poller", JobQueue.Worker.Worker.pollIntervalMs, "JobQueue.Worker.workerTick")
+  // Worker.pollIntervalMs milliseconds (default 2 s) on a real background
+  // loop (issue #5359).
+  val router = Web.addWorker(
+    router,
+    "job-poller",
+    JobQueue.Worker.Worker.pollIntervalMs,
+    JobQueue.Worker.JobPollerWorker()
+  )
 
   val router = Web.addGet(router, "/health/live", HealthLiveHandler())
   val router = Web.addGet(router, "/health/ready", HealthReadyHandler())

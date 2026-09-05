@@ -33513,7 +33513,7 @@ D-progress-852 (the investigation that filed #6809),
 `native/plan/08-work-items.md` N9.7, `docs/20-project-as-dll.md`
 (the dotnet/jvm design this is the native analog of).
 
-## Three native-codegen review-finding fixes ship, TLS phase 5 band N9.8 (#6740, #6813, #6625)
+## Three native-codegen review-finding fixes ship, TLS phase 5 band N9.9 (#6740, #6813, #6625)
 
 Three independent review-finding follow-ups from N9.4/N9.6, all
 confirmed still present against current `main` before fixing:
@@ -33568,10 +33568,10 @@ ASan, after both the original fixes and the #6952 review fix:
 `llvm_stdlib_self_test.l` 18/18, `llvm_http_client_self_test.l` 13/13 —
 no regressions.
 
-**Related:** `docs/03-decision-log.md` D-progress-878 (full account,
+**Related:** `docs/03-decision-log.md` D-progress-882 (full account,
 including the #6952 review fix),
 #6740/#6813/#6625 (fixed by this PR), `native/plan/08-work-items.md`
-N9.8, `native/plan/04-arc-design.md` Rule 5 (the by-ref-argument-ownership
+N9.9, `native/plan/04-arc-design.md` Rule 5 (the by-ref-argument-ownership
 rule #6813's fix protects).
 
 ## Native codegen: #6740's fix scoped to the scrutinee's own enum type, closing a bundle-wide `Int`/`Char` collision hazard (#6969)
@@ -33606,9 +33606,9 @@ failing before the fix and passing after. Full re-verification:
 12/12, `llvm_codegen_self_test.l` 35/35, `llvm_stdlib_self_test.l`
 18/18, `llvm_http_client_self_test.l` 13/13 — no regressions.
 
-**Related:** `docs/03-decision-log.md` D-progress-879 (full account),
-#6969 (fixed here), D-progress-878/#6740 (the fix this closes a gap in),
-`native/plan/08-work-items.md` N9.8.
+**Related:** `docs/03-decision-log.md` D-progress-883 (full account),
+#6969 (fixed here), D-progress-882/#6740 (the fix this closes a gap in),
+`native/plan/08-work-items.md` N9.9.
 
 ## Native codegen: the #6969 fix's "empty hint" rule dropped #6740's coverage for hint-less scrutinees; fixed with a three-way sentinel (#6976)
 
@@ -33646,7 +33646,42 @@ per the review's SUGGESTION. Full re-verification:
 18/18, `llvm_http_client_self_test.l` 13/13, `llvm_project_self_test.l`
 10/10 — no regressions.
 
-**Related:** `docs/03-decision-log.md` D-progress-880 (full account),
-#6976 (fixed here), D-progress-879/#6969 (the fix this corrects),
-D-progress-878/#6740 (the original fix both are follow-ups to),
-`native/plan/08-work-items.md` N9.8.
+**Related:** `docs/03-decision-log.md` D-progress-884 (full account),
+#6976 (fixed here), D-progress-883/#6969 (the fix this corrects),
+D-progress-882/#6740 (the original fix both are follow-ups to),
+`native/plan/08-work-items.md` N9.9.
+
+## Weak-aware List/Map/Task kernels ship, TLS phase 5 band N9.8 (#5545)
+
+The native List/Map/Task runtime kernels were strong-refcount-only:
+storing a `NativeWeak[T]` in a collection or returning one from an
+`async func` would strong-retain it (reintroducing the leak/cycle class
+`NativeWeak` exists to break) or strong-release it (a use-after-free).
+#5539 made `Lyric.LlvmCodegen.refFlagOf` reject this combination at
+compile time to stay fail-closed, with this issue tracking the proper
+fix.
+
+The single boolean element/value/result-is-ref flag
+(`lyric_list_new`/`lyric_map_new`/`lyric_task_complete`) becomes a
+tri-state: 0 scalar, 1 strong ref, 2 weak ref. `lyric-rt`'s List/Map
+kernels gain shared `elem_retain`/`elem_release` dispatch helpers used
+by every push/set/remove/dtor call site; the Task kernel's destructor
+gets the same three-way dispatch inline. `refFlagOf` now returns 2 for
+a weak type instead of panicking — checked before the `isRefNType` test,
+since a `NativeWeak[T]` value IS ref-typed by that predicate's own
+definition. No codegen call-site branching changes were needed: every
+consumer already forwarded `refFlagOf`'s result opaquely to the runtime.
+The issue's own parser prerequisite (`List[NativeWeak[T]]` failing to
+parse) no longer reproduces on current `main`.
+
+Verified: `lyric-rt`'s existing C unit tests pass unmodified after the
+runtime change; three new ASan cases in `llvm_heap_self_test.l` (an
+`async func` result, a `List[NativeWeak[T]]` element, a
+`Map[K, NativeWeak[T]]` value) each confirm both halves of the
+contract — upgrades to `Some` while the target is alive, and does NOT
+keep the target strongly alive once its only strong owner goes out of
+scope, leak-free in every case; full suite 37/37, no regressions.
+
+**Related:** `docs/03-decision-log.md` D-progress-879 (full account),
+#5545 (fixed by this PR), `native/plan/08-work-items.md` N9.8,
+`native/plan/04-arc-design.md`'s `NativeWeak[T]` section.

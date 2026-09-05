@@ -1879,7 +1879,7 @@ here.
 
 ---
 
-### N9.8 — Three native-codegen review-finding fixes: bare enum-case patterns, out/inout width mismatches, over-inclusive UFCS reachability — ✅ SHIPPED (D-progress-878/D-progress-879/D-progress-880, #6740, #6813, #6625, #6969, #6976)
+### N9.9 — Three native-codegen review-finding fixes: bare enum-case patterns, out/inout width mismatches, over-inclusive UFCS reachability — ✅ SHIPPED (D-progress-882/D-progress-883/D-progress-884, #6740, #6813, #6625, #6969, #6976)
 
 Three independent review-finding follow-ups from N9.4/N9.6, all real
 correctness gaps confirmed against current `main`:
@@ -1998,6 +1998,25 @@ original fixes, the #6952 review fix, the #6969 review fix, and the
 `llvm_enum_case_resolve_self_test.l` 9/9, `llvm_inout_self_test.l`
 12/12, `llvm_project_self_test.l` 10/10, `llvm_stdlib_self_test.l`
 18/18, `llvm_http_client_self_test.l` 13/13), no regressions.
+
+### N9.8 — Weak-aware List/Map/Task kernels: `NativeWeak[T]` as a collection element or async result — ✅ SHIPPED (D-progress-879, #5545)
+
+`lyric_list_new`/`lyric_map_new`/`lyric_task_complete`'s single boolean
+element/value/result-is-ref flag becomes a tri-state (0 scalar, 1 strong
+ref, 2 weak ref); `lyric-rt/src/lyric_collections.c` gains shared
+`elem_retain`/`elem_release` dispatch helpers used by every List/Map
+push/set/remove/dtor site, and `lyric_async.c`'s `lyric_task_dtor` gains
+the same three-way dispatch inline. `Lyric.LlvmCodegen.refFlagOf` now
+returns 2 for a weak type (checked before `isRefNType`, since
+`NativeWeak[T]` IS ref-typed by that predicate) instead of the #5539
+compile-time rejection. No codegen call-site branching changes needed —
+every consumer already forwarded `refFlagOf`'s result opaquely. The
+issue's own prerequisite (`List[NativeWeak[T]]` failing to parse) no
+longer reproduces on current `main`. Verified: `lyric-rt`'s C unit
+tests pass; three new ASan cases in `llvm_heap_self_test.l` (async
+result, `List[NativeWeak[T]]`, `Map[K, NativeWeak[T]]`) each confirm
+correct upgrade-while-alive AND "does not keep the target strongly
+alive," leak-free; full suite 37/37, no regressions.
 
 ---
 

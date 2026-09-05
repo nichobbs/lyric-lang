@@ -769,41 +769,94 @@ test "arc: reassigning a var NativeWeak releases the old weak and retains the ne
   assertEqualInt(r.exitCode, 3, "var weak reassignment across calls upgrades to the new target, leak-free (ASan)")
 }
 
-test "arc: a NativeWeak in an async-function result is rejected at codegen (#5543)" {
-  // The C List/Map/Task kernels are strong-refcount-only, so a NativeWeak in a
-  // collection or async result would be strong-retained/released — a leak or a
-  // reintroduced UAF. `refFlagOf` rejects it fail-closed (#5545). This drives
-  // codegen directly (a rejected program never reaches clang) and asserts the
-  // Bug carries the tracking-issue reference so the guard can't silently pass.
+test "arc: a NativeWeak async-function result upgrades correctly and is leak-free (#5545)" {
+  // Was rejected at codegen (#5543) until the List/Map/Task kernels
+  // gained tri-state (scalar/strong/weak) element-ownership dispatch
+  // (#5545): `refFlagOf` now returns 2 for a weak type instead of
+  // panicking, and `lyric_task_dtor` releases a weak result via
+  // `lyric_weak_release` instead of the strong `lyric_release`. `a`
+  // stays alive in `main`'s own scope through the upgrade, so this
+  // exercises the "upgrades to Some while alive" half of the contract;
+  // the sibling list/map tests below exercise "does not keep the
+  // target strongly alive".
   val src = "package T\n" + "union Option[T] {\n" + "  case Some(value: T)\n" + "  case None\n" + "}\n" +
     "record Node {\n" +
     "  name: String\n" +
     "}\n" +
-    "async func f(): NativeWeak[Node] {\n" +
-    "  val n = Node(name = \"x\")\n" +
+    "async func wrapWeak(n: in Node): NativeWeak[Node] {\n" +
     "  NativeWeak(n)\n" +
     "}\n" +
     "func main(): Int {\n" +
-    "  0\n" +
+    "  val a = Node(name = \"asyncnode\")\n" +
+    "  val w = await wrapWeak(a)\n" +
+    "  match w.upgrade() {\n" +
+    "    case Some(n) -> n.name.length\n" +
+    "    case None -> 0\n" +
+    "  }\n" +
     "}\n"
-  val pr = parse(src)
-  assertEqualInt(pr.diagnostics.count, 0, "the source itself parses")
-  var rejected = false
-  var msg = ""
-  try {
-    val pkg = codegenNativePackage(pr.file, "")
-    val _ = lowerNativePackage(pkg)
-  } catch Bug as b {
-    rejected = true
-    msg = b.message
-  }
-  assertTrue(rejected, "a NativeWeak async result must be rejected at native codegen, not silently miscompiled")
-  // The weak result slot is rejected by the strong-only slot encoder; a weak
-  // List/Map element is rejected earlier by refFlagOf (#5545). Either way the
-  // rejection names the weak marker, so the guard can't vacuously pass.
-  assertTrue(
-    Str.contains(msg, "weak") or Str.contains(msg, "Weak"),
-    "the rejection is due to the NativeWeak type (got: " + msg + ")"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 9, "async NativeWeak result upgrades to Some while its target is alive, leak-free (ASan)")
+}
+
+test "arc: List[NativeWeak[T]] does not keep its target strongly alive, and is leak-free (#5545)" {
+  // stashWeak's OWN local `a` is the sole STRONG owner; once it returns,
+  // `a` is released and (nothing else strongly holding it) freed. If the
+  // list wrongly treated its element as a STRONG ref (retaining it on
+  // push), `a` would stay alive and upgrade() would wrongly return
+  // Some; if the list wrongly treated it as a plain scalar (no
+  // retain/release at all), the list's own destruction would never
+  // drop the weak count, a leak ASan's LeakSanitizer catches. Correct
+  // tri-state weak dispatch: exit 0 (None) AND leak-free.
+  val src = "package T\n" + "union Option[T] {\n" + "  case Some(value: T)\n" + "  case None\n" + "}\n" +
+    "record Node {\n" +
+    "  name: String\n" +
+    "}\n" +
+    "func stashWeak(xs: in List[NativeWeak[Node]]): Unit {\n" +
+    "  val a = Node(name = \"temp\")\n" +
+    "  xs.add(NativeWeak(a))\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  var xs: List[NativeWeak[Node]] = newList()\n" +
+    "  stashWeak(xs)\n" +
+    "  match xs[0].upgrade() {\n" +
+    "    case Some(_) -> 1\n" +
+    "    case None -> 0\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(
+    r.exitCode,
+    0,
+    "a List[NativeWeak[T]] element does not keep its target strongly alive, leak-free (ASan)"
+  )
+}
+
+test "arc: Map[K, NativeWeak[T]] does not keep its target strongly alive, and is leak-free (#5545)" {
+  // Mirror of the List case above for Map values.
+  val src = "package T\n" + "union Option[T] {\n" + "  case Some(value: T)\n" + "  case None\n" + "}\n" +
+    "record Node {\n" +
+    "  name: String\n" +
+    "}\n" +
+    "func stashWeak(m: in Map[String, NativeWeak[Node]]): Unit {\n" +
+    "  val a = Node(name = \"temp2\")\n" +
+    "  m.add(\"k\", NativeWeak(a))\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  var m: Map[String, NativeWeak[Node]] = newMap()\n" +
+    "  stashWeak(m)\n" +
+    "  match mapGet(m, \"k\") {\n" +
+    "    case Some(w) -> match w.upgrade() {\n" +
+    "      case Some(_) -> 1\n" +
+    "      case None -> 0\n" +
+    "    }\n" +
+    "    case None -> 2\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(
+    r.exitCode,
+    0,
+    "a Map[K, NativeWeak[T]] value does not keep its target strongly alive, leak-free (ASan)"
   )
 }
 
