@@ -74,8 +74,19 @@ help: ## Show this help
 STAGE1_SRCS := $(shell find lyric-compiler lyric-stdlib -name '*.l') scripts/bootstrap.sh
 
 stage1: ## Build the full self-hosted compiler + CLI bundle (.bootstrap/stage1)
+	@mkdir -p .bootstrap
+	@touch .bootstrap/stage1.stamp.start
 	./scripts/bootstrap.sh --stage 1
-	@touch .bootstrap/stage1.stamp
+	@# #5611 part 2: stamp with the BUILD-START time (`touch -r`), not "now" at
+	@# completion. A `.l` source edited WHILE this build was running has an
+	@# mtime after start but before completion; stamping at completion would
+	@# make that edit look older than the stamp (falsely "already compiled")
+	@# even though this run's `bootstrap.sh` invocation read the file before
+	@# the edit landed. Stamping at start means any such edit is correctly
+	@# newer than the stamp, so the next `make lyric`/`make aot` rebuilds
+	@# instead of silently embedding stale DLLs.
+	@touch -r .bootstrap/stage1.stamp.start .bootstrap/stage1.stamp
+	@rm -f .bootstrap/stage1.stamp.start
 
 stage1-fast: ## Stage 1 without the CLI bundle -- fastest loop for one package; leaves ./bin/lyric on the OLD compiler (#6331, see WARNING above)
 	SKIP_CLI_BUNDLE=1 ./scripts/bootstrap.sh --stage 1
