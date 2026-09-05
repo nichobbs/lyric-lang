@@ -42085,22 +42085,41 @@ instance of the right-hand record — `InvalidCastException` at runtime, with a
 clean build (silent miscompile).
 
 **Fix.** Add an `ECall` arm to `inferUntypedStaticValMsilType` that resolves a
-record/union-case constructor call the same way real `ECall` codegen does —
+record constructor call the same way real `ECall` codegen does —
 `cctx.recordCtorTokens` keyed by `<pkg>.<name>` first, then the fully
 qualified callee — but only for a simple/qualified `EPath` callee and only
-for the **non-generic** case: a generic record/union case needs inferred type
+for the **non-generic** case: a generic record needs inferred type
 arguments this single-expression pass has no symbol table to compute, so it
 still falls back to `MObject` there (documented, matching the existing
 "no symbol table at this pass" caveats elsewhere in this function and in
-`hoist_engine.l`) rather than risk guessing a wrong instantiation. A resolved
-union case is typed as its PARENT union (`cctx.caseParentUnion`), mirroring
-what the real `ECall` lowering's `caseParentFqnMsil` returns for a
-constructed case value — not the case's own class, which is never the field's
-declared/observed type. Threading this through required adding `cctx: in
-CodegenCtx` and `pkgName: in String` parameters to
+`hoist_engine.l`) rather than risk guessing a wrong instantiation. Scoped to
+PLAIN RECORDS only, not union cases (review SUGGESTION): a local union
+case's ctor token is registered under the mangled key
+`<pkg>.<UnionName>_<CaseName>`, never the bare `<pkg>.<CaseName>` this arm
+builds, so the arm's key lookup is always a miss for a union case — it
+falls back to the documented `MObject`, same as before this fix, rather
+than mistyping the value as the case's own class (defensively guarded via
+`cctx.caseParentUnion.containsKey`). Threading this through required adding
+`cctx: in CodegenCtx` and `pkgName: in String` parameters to
 `inferUntypedStaticValMsilType` (used only by the new `ECall` arm; every other
 arm ignores them) and its two call sites, both already inside
 `addPackageTokens` where `cctx`/`pkgName` are in scope.
+
+**Follow-up fix (#6878, review REQUIRED).** The `EPath` arm's `env`
+(`valTypeEnv`) is frozen the first time each name is predicted, during
+`addPackageTokens`' Pass 0 loop — which runs BEFORE Pass 1 populates
+`cctx.recordCtorTokens`. So a record-constructor val processed in Pass 0
+still gets `MObject` written into `env` at that point, even though Pass 1b
+(after Pass 1) correctly recomputes the type into the authoritative
+`cctx.staticValMsilTypes` map once `cctx.recordCtorTokens` exists. A later
+`val alias = gCache` resolved only against the stale `env` entry inherited
+that wrong `MObject` — reproducing this same issue's defect one alias hop
+removed, undetected by the added test (which never aliases `gCache`). Fixed
+by having the `EPath` arm consult `cctx.staticValMsilTypes` FIRST, falling
+back to `env` only when absent there — `cctx.staticValMsilTypes` is
+populated in the same file-declaration order `env` documents, so this can
+only recover a more precise, already-corrected type, never regress a
+lookup `env` would otherwise have answered.
 
 **Regression coverage.** Extended `module_val_deps_self_test.l` (already
 wired into CI on both `--target dotnet` and `--target jvm`) with the issue's
