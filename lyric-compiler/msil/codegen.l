@@ -15176,7 +15176,7 @@ func lowerBuiltinOrStaticCallMsil(
         // `typeExprToMsilCtx`'s `TFunction` rule builds UNCONDITIONALLY (Epic
         // #1877 Phase 3) for every `(T1,...,TN) -> Unit`-typed parameter at ANY
         // arity, regardless of `@externTarget`-ness (#5329 follow-up,
-        // D-progress-878). Before #5329's fix this branch's blind `MCastclass`
+        // D-progress-882). Before #5329's fix this branch's blind `MCastclass`
         // to the uniform `FuncN` TypeSpec (`lowerFuncValueInvokeMsil`) was a
         // silent no-op FOR THIS SHAPE ONLY: every such parameter's ACTUAL
         // value was always (wrongly) `Func<object,...>`, matching the cast, so
@@ -15209,7 +15209,7 @@ func lowerBuiltinOrStaticCallMsil(
             // untracked return type leaves the boxed `object` placeholder.
             emitLoadSlot(insns, slot, fctx.paramCount)
             val slotTy = match mapGet(fctx.types, funcName) { case Some(t) -> t; case None -> MObject }
-            // #5329 follow-up (D-progress-878): a real `Action`/`Action`N`
+            // #5329 follow-up (D-progress-882): a real `Action`/`Action`N`
             // value (never the uniform boxed `Func`(N+1)` ABI) needs a direct
             // typed invoke — see `buildActionNInvokeTok`'s doc comment for why.
             val realActionArity = match slotTy {
@@ -19234,7 +19234,7 @@ func buildActionNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
 
 // Build a callvirt token for System.Action`N<object,...>::Invoke(object,...): void
 // (N ≥ 1). Mirrors `buildFuncNInvokeTok`, but for a REAL (non-boxed-ABI)
-// `Action`N` value — #5329 follow-up (D-progress-878): a stdlib/restored
+// `Action`N` value — #5329 follow-up (D-progress-882): a stdlib/restored
 // function's `(T1,...,TN) -> Unit`-typed parameter, or any same-package one,
 // constructs a genuine `Action`N<object,...>` via `buildActionNCtorTok`'s
 // exact TypeSpec (same "ActionSpec_ctor_<N>" cache key, so this shares the
