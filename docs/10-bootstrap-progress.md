@@ -33619,3 +33619,17 @@ any decision can be made responsibly. #6263 stays open for that half.
 
 **Related:** #6263, D-progress-883 (full account), `docs/63-build-profiles-and-debugger.md`
 §3.1/§5.2/Q-BP-003.
+
+## #5611 closed: workspace-dep feature/target staleness stamp; `stage1.stamp` keyed on build start
+
+`cli/workspace_builder.l::checkDllIsStale` (workspace-dep cache staleness)
+now also checks a sidecar `<dllPath>.featurestamp` file recording the
+`(target, noDefaultFeatures, sorted --features)` tuple the DLL was built
+with — a dependency DLL built under a different `--features` selection or
+`--target` is now correctly detected as stale even though nothing on disk
+under its own source tree changed. `make stage1`'s stamp now copies its
+mtime from a marker touched BEFORE `bootstrap.sh` runs (`touch -r`), not
+"now" at completion, closing the race where a `.l` source edited mid-build
+looked older than the stamp that (falsely) claimed to have compiled it.
+
+**Related:** #5611, D-progress-880 (full account).
