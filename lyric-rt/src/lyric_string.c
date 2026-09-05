@@ -204,6 +204,30 @@ static int utf8_decode_at(const uint8_t* data, int64_t len, int64_t i, uint32_t*
     return 1;
 }
 
+/* `s[i]` bracket indexing (#6237).  `i` is a BYTE offset — consistent with
+ * this runtime's existing byte-indexed `.length`/`.substring` model
+ * (D-N-006) — but the character returned is the full Unicode scalar value
+ * decoded starting at that byte offset via genuine UTF-8 iteration, not
+ * the raw byte at that offset: `native/plan/03-type-mapping.md` is
+ * explicit that "converting between Char and a position in a string
+ * buffer requires UTF-8 iteration, not byte indexing" (native's `Char` is
+ * a full Unicode scalar value, unlike dotnet/JVM's UTF-16 code unit — see
+ * that doc's `Char` note).  A byte offset that lands on a malformed or
+ * truncated UTF-8 sequence (including a continuation byte mid-sequence)
+ * decodes to that raw byte's value, mirroring `.trim()`/`.toLower()`'s
+ * existing lenient handling of invalid encoding elsewhere in this file —
+ * only an out-of-range offset panics. */
+int32_t lyric_string_char_at(LyricString* s, int64_t idx) {
+    int64_t len = s ? s->len : 0;
+    if (!s || idx < 0 || idx >= len) {
+        lyric_panic_msg("string index out of bounds", "lyric_string.c", __LINE__);
+    }
+    uint32_t cp;
+    int valid;
+    utf8_decode_at(LYRIC_STRING_DATA(s), len, idx, &cp, &valid);
+    return (int32_t)cp;
+}
+
 /* The exact Unicode White_Space code-point set used by
  * `lyric-stdlib/std/char.l::isWhiteSpace` — kept byte-for-byte in sync by
  * hand (this runtime does not depend on the self-hosted stdlib) so

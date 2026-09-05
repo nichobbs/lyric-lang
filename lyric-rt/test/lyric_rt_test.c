@@ -106,6 +106,21 @@ static void test_strings(void) {
     CHECK(lyric_string_byte_at(a, 0) == 'h');
     CHECK(lyric_string_byte_at(a, 4) == 'o');
 
+    /* `s[i]` (#6237): byte-offset indexing that decodes the full Unicode
+     * scalar value via UTF-8 iteration, not the raw byte. ASCII: byte
+     * offset and codepoint coincide. */
+    CHECK(lyric_string_char_at(a, 0) == 'h');
+    CHECK(lyric_string_char_at(a, 4) == 'o');
+
+    /* Multi-byte: "h\xC3\xA9llo" = "héllo" ("héllo"). Byte offset 1
+     * is where the 2-byte U+00E9 (é) sequence starts; offset 3 is "l"
+     * (the byte right after the 2-byte sequence, not offset 2). */
+    LyricString* accented = lyric_string_from_literal((const uint8_t*)"h\xC3\xA9llo", 6);
+    CHECK(lyric_string_char_at(accented, 0) == 'h');
+    CHECK(lyric_string_char_at(accented, 1) == 0xE9);
+    CHECK(lyric_string_char_at(accented, 3) == 'l');
+    lyric_release(accented);
+
     LyricString* ab = lyric_string_concat(a, b);
     CHECK(lyric_string_len(ab) == 12);
     CHECK(memcmp(LYRIC_STRING_DATA(ab), "hello, world", 12) == 0);
@@ -587,6 +602,30 @@ static void test_list_slice_oob_aborts(void) {
     run_forked_slice_oob(0, 5);  /* stop > len */
     run_forked_slice_oob(-1, 1); /* start < 0 */
     run_forked_slice_oob(1, 0);  /* stop < start */
+}
+
+/* `s[i]` (#6237) out-of-bounds must panic, mirroring `lyric_string_byte_at`'s
+ * existing bounds check; forked so the abort leaves no residue in the
+ * parent (same pattern as `run_forked_slice_oob`). */
+static void run_forked_char_at_oob(int64_t idx) {
+    pid_t pid = fork();
+    CHECK(pid >= 0);
+    if (pid == 0) {
+        if (!freopen("/dev/null", "w", stderr)) _exit(9);
+        LyricString* s = lyric_string_from_literal((const uint8_t*)"hi", 2);
+        int32_t bad = lyric_string_char_at(s, idx);
+        (void)bad;
+        _exit(0); /* not reached */
+    }
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+}
+
+static void test_string_char_at_oob_aborts(void) {
+    run_forked_char_at_oob(-1); /* idx < 0 */
+    run_forked_char_at_oob(2);  /* idx == len */
+    run_forked_char_at_oob(99); /* idx > len */
 }
 
 static void test_read_bytes(void) {
@@ -1984,6 +2023,7 @@ int main(void) {
     test_list_copy();
     test_list_slice_concat_append();
     test_list_slice_oob_aborts();
+    test_string_char_at_oob_aborts();
     test_read_bytes();
     test_write_bytes();
     test_dir_list2();
