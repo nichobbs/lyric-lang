@@ -6546,6 +6546,44 @@ pub func registerTypeFqnCandidate(cctx: in CodegenCtx, typeName: in String, type
   }
 }
 
+// #6689: a genuinely QUALIFIED type reference (`Pkg.Item`, already expanded
+// to its full dotted owner by `Lyric.AliasRewriter.rewritePath` by the time
+// this runs — even a bare `import Pkg` alias-expands `Pkg.Item` to
+// `Owner.Sub.Pkg.Item`) must resolve to the type declared in the EXPLICITLY
+// NAMED owning package, never through `resolveTypeFqn`'s scope-priority walk
+// (which is keyed by the REFERENCING package's own imports and knows
+// nothing about which import the user actually qualified with). Without
+// this, `path`'s qualifier segments were discarded entirely — every caller
+// computed `seg` via `lastSegmentMsil(path)` (the bare tail name only) and
+// called `resolveTypeFqn(cctx, pkgName, seg)`, so `List[PkgA.Item]` written
+// in a package that imports BOTH `PkgA` and an unrelated `PkgB` (also
+// declaring `Item`) resolved to whichever candidate happened to win
+// `resolveTypeFqn`'s scope-priority walk over the REFERENCING package's
+// imports (last-registered-wins among "any imported package"), not
+// necessarily `PkgA` — silently building a `List<PkgB.Item>`-shaped
+// generic instantiation and miscompiling every read/write of it into an
+// `ArrayTypeMismatchException`/`InvalidCastException` at runtime. Falls
+// back to the ordinary scope-priority `resolveTypeFqn` for a genuinely bare
+// (single-segment) reference, unchanged.
+func resolveTypeFqnQualified(cctx: in CodegenCtx, pkgName: in String, path: in ModulePath, seg: in String): String {
+  if path.segments.count > 1 {
+    val quals: List[String] = newList()
+    var qi = 0
+    while qi < path.segments.count - 1 {
+      quals.add(path.segments[qi])
+      qi = qi + 1
+    }
+    val qualPkg = modulePathJoin(quals)
+    val qualFqn = qualPkg + "." + seg
+    match mapGet(cctx.typeFqnCandidates, seg) {
+      case Some(cands) -> if cands.contains(qualFqn) { return qualFqn }
+      case None -> {
+      }
+    }
+  }
+  resolveTypeFqn(cctx, pkgName, seg)
+}
+
 func resolveTypeFqn(cctx: in CodegenCtx, pkgName: in String, seg: in String): String {
   // Scope-tier resolution over every registered candidate, mirroring the
   // type checker's `symTableTryFindOne` (#3085): (1) the referencing
@@ -6850,7 +6888,7 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
                   MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = clrFqn)
                 }
               }
-              case None -> MClass(className = resolveTypeFqn(cctx, pkgName, seg))
+              case None -> MClass(className = resolveTypeFqnQualified(cctx, pkgName, path, seg))
             }
           }
         }
