@@ -33724,3 +33724,74 @@ headers and were verified that way.
 `docs/35-lambda-library.md` §4.2/§8 (updated), `lyric-lambda/README.md`
 (support matrix updated), #5412 (closed), #6868 (new, filed not fixed),
 #5600/#5578/#6548 (the prior `Lambda.Dispatch` work this builds on).
+## #6815 items 1(a)/2/3(a): native project builds stop crashing on cross-project deps, `--triple`/`--opt` project-mode threading, `lyric run --manifest --target native`
+
+Of #6815's three tracked follow-ups, this closes item 1(a) and 2, and item
+3's `lyric run` half (3a):
+
+- **Item 1(a) (already landed alongside #6809/#6816, verified here):**
+  `resolveManifestDependencies`/`buildWorkspaceDeps`
+  (`cli/workspace_builder.l`) skip a `{ workspace = true }` or `path`
+  dependency's own native build unconditionally for `--target native`,
+  matching the pre-existing `Jvm` skip, rather than attempting (and
+  potentially crashing on) an unused compile of the dependency's source.
+  `lyric build --manifest lyric-web/lyric.toml --target native` no longer
+  raises the unhandled `Lyric.LlvmCodegen` exception the issue reported;
+  it now reaches the project's own `[project.packages]` codegen exactly
+  as a dependency-free manifest would (the dependency's own symbols are
+  simply absent — item 1(b), compiling the dependency's source into the
+  native bundle, remains open).
+- **Item 2:** `buildProjectFromManifest` gained `nativeTriple`/`nativeOpt`
+  parameters; `--triple`/`--opt` CLI flags now override a native project
+  build's `[native]` table exactly like the single-file path
+  (`buildOneNativeWithFeatures`'s existing precedence rule). The
+  ~20 existing `buildProject` call sites are unaffected — a new
+  `buildProjectWithNativeFlags` wrapper (used only by `cmdBuild`'s
+  manifest branch) carries the two extra params so `buildProject` itself
+  keeps its old signature.
+- **Item 3(a):** `runProjectOnce` (`cli/cli_run.l`) no longer refuses
+  `--target native` after a successful build — `buildProject` already
+  produces a real, directly-runnable native executable at
+  `projectBinOutputPath`'s extensionless path; the `Native` case now
+  executes it via `Std.Process.run`, mirroring `runOnce`'s single-file
+  `Native` case exactly. `lyric run --manifest ... --target native` (and
+  its `lyric.toml`-auto-discovery no-source-file form) work end-to-end.
+
+**Still open, item 3(b):** `lyric test --manifest ... --target native`
+(multi-package test suites) is unchanged — `cmdTestManifest`'s
+restored-DLL-centric dotnet/jvm machinery has no native analog yet, and
+building that out (compiling `[project.tests]` entries together with
+`[project.packages]` through `emitNativeProject`, one binary per test
+target, TAP-output parsing with native's no-unwinding constraint) is a
+separate, larger slice than items 1(a)/2/3(a) above. Left for a follow-up
+PR against #6815.
+
+**Related:** #6815, D-progress-854, D-progress-852, this file's own
+"Native multi-package project builds ship" entry above.
+
+## #6263 (partial): native clang `-O` level now defaults from the build profile axis
+
+`Lyric.Cli.resolveNativeOptDefault` (`cli/cli_build.l`) defaults a
+`--target native` build's clang `-O` level from the resolved `BuildProfile`
+when neither `--opt` nor the manifest's `[native] opt_level` supply one:
+`release` → `-O2` (the pre-existing hardcoded default, unchanged), `debug`
+(the default profile) → `-O0` (Q-BP-003, resolved — see docs/63). Resolved
+once at `cmdBuild`'s single-file dispatch, threaded into both the immediate
+build and the `--watch` loop. `Lyric.LlvmBridge.linkAndEmitNative`'s own
+hardcoded `"2"` fallback is untouched and now only reached by callers that
+bypass `cmdBuild` entirely (every existing native self-test, which calls
+`buildOneNative`/`buildOneNativeWithFeatures` directly) — so this ships
+without touching any of the ~166 existing native self-test cases.
+
+**Still open (this is a partial fix):** `--target dotnet`/`--target jvm`
+still perform no optimization under `--release` (Lyric has no IL/bytecode
+optimizer to gate). More importantly, #6263's overflow-semantics question —
+whether `--release` should relax overflow checking to wrapping, per
+`docs/01-language-reference.md` §2, or the reference should instead say
+overflow always panics — remains **undecided**. A quick empirical probe
+(`Int64.MaxValue + 1` on `--target dotnet`) produced neither a clean wrap
+nor a panic, an inconclusive result that needs dedicated root-causing before
+any decision can be made responsibly. #6263 stays open for that half.
+
+**Related:** #6263, D-progress-883 (full account), `docs/63-build-profiles-and-debugger.md`
+§3.1/§5.2/Q-BP-003.

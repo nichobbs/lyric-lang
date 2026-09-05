@@ -17,8 +17,11 @@ import Lyric.Emitter as Emitter
 import Lyric.AppHost as AppHost
 import Lyric.Discovery as Disc
 
-// Build a project and run its output artifact.
-func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in CompileTarget): Int {
+// Build a project and run its output artifact. `pub` so
+// `cli_run_native_self_test.l` can drive the `--target native` project-run
+// path directly (#6815 item 3a), mirroring `cli_build.l`'s `buildProject`
+// (#5819's same "pub for self-test seam" precedent).
+pub func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in CompileTarget): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(t) -> t
     case Err(e) -> {
@@ -53,8 +56,21 @@ func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in Com
   }
   match target {
     case Native -> {
-      printErr("run: --target native does not yet support manifest (multi-package) projects")
-      return 1
+      // `buildProject` above already produced a real native executable at
+      // `outPath` (extensionless — `outputExt(Native, _)` — the binary IS
+      // the artifact); run it directly, mirroring `runOnce`'s single-file
+      // Native case (#6815 item 3a).
+      val execArgs: List[String] = newList()
+      for a in userArgs.toArray() {
+        execArgs.add(a)
+      }
+      match Process.run(outPath, execArgs) {
+        case Ok(code) -> code
+        case Err(e) -> {
+          printErr("run: failed to start " + outPath + ": " + IOError.message(e))
+          1
+        }
+      }
     }
     case Jvm -> {
       val execArgs: List[String] = newList()
@@ -238,7 +254,18 @@ func runWatchAction(a: in WatchAction): Int {
   match a {
     case RunFile(sp, ua, t) -> runOnce(sp, ua, t)
     case RunProj(mp, ua, t) -> runProjectOnce(mp, ua, t)
-    case BuildProj(mf, o, t, f, nd, af, nr, pv, prof) -> buildProject(mf, o, t, f, nd, af, nr, pv, None, withProfileDefine(newList(), prof))
+    case BuildProj(mf, o, t, f, nd, af, nr, pv, prof) -> buildProject(
+      mf,
+      o,
+      t,
+      f,
+      nd,
+      af,
+      nr,
+      pv,
+      None,
+      withProfileDefine(newList(), prof)
+    )
     case BuildFile(sp, o, t, m, tr, op, f, nd, af, prof) -> {
       val runDefines: List[String] = withProfileDefine(newList(), prof)
       buildOneNativeWithFeatures(sp, o, t, m, tr, op, f, nd, af, runDefines)
@@ -294,7 +321,30 @@ func projectWatchFiles(mfPath: in String): List[String] {
     case Err(_) -> {
       Console.error("watch: could not read manifest '" + mfPath + "' — watching manifest file only")
     }
-    case Ok(txt) -> match Mf.parseManifest(txt, mfPath) { case Err(_) -> { Console.error("watch: could not parse manifest '" + mfPath + "' — watching manifest file only") }; case Ok(m) -> match m.project { case None -> (); case Some(p) -> { var i = 0; while i < p.packages.count { val pkgEntry = p.packages[i]; if pkgEntry.paths.count > 0 { var fi = 0; while fi < pkgEntry.paths.count { files.add(Path.join(mfDir, pkgEntry.paths[fi])); fi += 1 } } else { files.add(Path.join(mfDir, pkgEntry.path)) }; i += 1 } } } }
+    case Ok(txt) -> match Mf.parseManifest(txt, mfPath) {
+      case Err(_) -> {
+        Console.error("watch: could not parse manifest '" + mfPath + "' — watching manifest file only")
+      }
+      case Ok(m) -> match m.project {
+        case None -> ()
+        case Some(p) -> {
+          var i = 0
+          while i < p.packages.count {
+            val pkgEntry = p.packages[i]
+            if pkgEntry.paths.count > 0 {
+              var fi = 0
+              while fi < pkgEntry.paths.count {
+                files.add(Path.join(mfDir, pkgEntry.paths[fi]))
+                fi += 1
+              }
+            } else {
+              files.add(Path.join(mfDir, pkgEntry.path))
+            }
+            i += 1
+          }
+        }
+      }
+    }
   }
   files
 }

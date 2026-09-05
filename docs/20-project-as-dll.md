@@ -153,10 +153,18 @@ resolves the SAME `pkgs: List[ProjectPackage]` list §4 below describes,
 merged the same way (`mergePackageSources`), through
 `Lyric.LlvmBridge.compileProjectToNativeWithFlags` instead of
 `Msil.Bridge`/`Jvm.Bridge`. Cross-project `[dependencies]` (§3.1) are
-NOT yet resolved for native — tracked as a follow-up in issue #6815, since
-unlike a restored binary, a Lyric dependency's SOURCE is always available
-locally and the natural fix is compiling it into the same bundle rather
-than inventing a native restored-binary format.
+NOT yet resolved for native — tracked as a follow-up in issue #6815 item
+1(b), since unlike a restored binary, a Lyric dependency's SOURCE is
+always available locally and the natural fix is compiling it into the
+same bundle rather than inventing a native restored-binary format. A
+`{ workspace = true }`/`path` dependency declared on a native project no
+longer attempts (and potentially crashes on) an unused native build of the
+dependency itself — `resolveManifestDependencies`/`buildWorkspaceDeps`
+skip it outright for `Native`, matching the pre-existing `Jvm` skip
+(#6815 item 1(a), fixed alongside #6809/#6816). `--triple`/`--opt` CLI
+overrides and `lyric run --manifest ... --target native` (item 3a) are
+also wired now; `lyric test --manifest ... --target native` (item 3b)
+remains rejected.
 
 ## 4. Compilation pipeline
 
