@@ -240,8 +240,13 @@ try_bootstrap_from_release() {
       # reachable through the exact API-listing incident (#6497) that
       # sends us down this path.  Quiet + `|| true` — a fetch failure
       # (offline, no remote) just leaves us with whatever tags are local,
-      # falling through to tier 2.
-      git -C "$REPO_ROOT" fetch --tags --quiet 2>/dev/null || true
+      # falling through to tier 2.  BOUNDED via git's own low-speed abort
+      # (portable — no external `timeout` binary, which isn't guaranteed on
+      # macOS): if throughput stays under 1000 B/s for 15s the fetch aborts
+      # so a stalled-but-not-failed connection during a partial outage falls
+      # through to tier 2 fast instead of hanging stage 0.
+      git -C "$REPO_ROOT" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=15 \
+        fetch --tags --quiet 2>/dev/null || true
       local newest_tag
       newest_tag="$(git -C "$REPO_ROOT" tag --list 'v[0-9]*' 2>/dev/null | sort -V | tail -1)"
       if [[ -n "$newest_tag" ]]; then
