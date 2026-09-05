@@ -20320,6 +20320,37 @@ func emitGenericExternMember(
                 val giRow = ctxAddTypeSpec(cctx.lctx, giKey, giBlob)
                 insns.add(MCastclass(typeToken = 0x1B000000 + giRow))
               }
+              // The value-type flavor of a GENERICINST-shaped param — a
+              // closed instantiation over the declaring type's own VAR whose
+              // HEAD is itself a struct (e.g. a hypothetical `KeyValuePair`2
+              // <K,V>`-shaped ctor param closed over a declaring type's own
+              // VARs), reported by real CLR metadata's `vt` bit (#6581 Gap 1
+              // follow-up, #6995). Unlike the reference-type case just
+              // above, this shape is deliberately UNIMPLEMENTED rather than
+              // best-effort-emitted: `castclass` is invalid for it (ECMA-335
+              // §III.4.6 requires a reference type; the correct instruction
+              // is `unbox.any`), but no currently-reachable real BCL API
+              // exercises it — the three independent Lyric-side mechanisms
+              // that populate a closed instantiation's type ARGS
+              // (`argFqnToMsil`, `buildValueTaskGenericMsilTypeFromClrFqn`'s
+              // inner-type handling, and `typeExprToMsilCtx`'s `TGenericApp`
+              // extern-generic-alias fallback) all unconditionally tag the
+              // result as reference-type-flavored, so this arm could not be
+              // verified against a real runtime repro. Panicking loudly here
+              // (matching the `isValType and isInstance` precedent just
+              // above, #5809) fails the build the moment this shape is
+              // actually reached, rather than emitting silently-wrong,
+              // never-tested `unbox.any` logic — see #6995 for the
+              // follow-up once a genuine repro exists.
+              case MValueTypeGenericInst(_, headFqn, _) -> {
+                panic(
+                  "Msil.Codegen: FFI extern '" + resolvedFqn + "." + r.memberName + "' on '" + decl.name +
+                    "' has a parameter that is a value-type-shaped closed generic instantiation ('" +
+                    headFqn +
+                    "') over the declaring type's own generic parameter — unsupported (no `unbox.any` path is " +
+                    "implemented for this shape yet, only the reference-type flavor). See issue #6995."
+                )
+              }
               case _ -> ()
             }
             // Box a value-type argument when the BCL position is a type
