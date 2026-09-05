@@ -1879,6 +1879,64 @@ here.
 
 ---
 
+### N9.9 — Fix `and`/`or` short-circuit ARC temp release crossing a non-dominating block (#6645, #6719, #6722) — ✅ SHIPPED (D-progress-882)
+
+Root-caused the heap-corruption bug N9.4's own review found and worked
+around (#6645), which then blocked two further real fixes surfaced
+reviewing the same code (#6719 protocol-relative `Location`, #6722
+request-line space injection + unbounded URL port).
+
+**Root cause.** `lowerShortCircuit` (`&&`/`||`) lowers the right operand
+directly into the enclosing temp scope instead of a scope of its own.
+That scope's `popTempScope` release call lands wherever `insns` happens
+to be positioned when the ENCLOSING construct (an outer `while`
+condition, an `if` test, a statement) finishes lowering — which, for a
+short-circuit expression, is the shared `sc.done` merge block. `sc.done`
+is reached by TWO edges: the right-operand-evaluated edge (`sc.rhs`,
+where the temp — e.g. a `.substring(...)` call's `String` result — was
+actually created) and the short-circuit-SKIP edge (straight from the
+condition test, where the right operand, and its temp, was never
+evaluated at all). Releasing the temp in `sc.done` unconditionally
+therefore releases an undefined SSA value whenever the skip edge is
+taken: `opt -passes=verify` reports "Instruction does not dominate all
+uses!" for exactly this shape, and `clang -O2`'s inliner crashes
+attempting to remap the resulting module (matching #6645's reported
+`DemandedBits`/`CloneAndPruneFunctionInto` segfault exactly). At `-O0`
+the same undefined release corrupts the heap allocator's free-list
+bookkeeping, surfacing later as a SEGV or `malloc(): unaligned tcache
+chunk` inside a completely unrelated call — exactly #6645's reported
+symptom, and exactly why #6719/#6722's minimal, logically-unrelated
+edits to `resolveRedirectUrl`/`parseUrl` (both already full of
+`and`/`or` chains testing `.substring(...)` results) shifted which
+later call the corruption surfaced in.
+
+**Fix.** `lowerShortCircuit` now pushes its own temp scope around
+lowering the right operand and pops it (releasing any ref-typed temps
+created while evaluating it) INSIDE the `sc.rhs` block, before branching
+to `sc.done` — mirroring the pattern `lowerIf`'s then/else branches
+already use for the same reason.
+
+**Verified.** `opt -passes=verify` no longer reports a dominance
+violation on any bundle compiled from `_kernel_native/http_host.l`
+(previously 7+ instances, `trimSpaces`'s two `and`-guarded
+`.substring()` trims among them); `clang -O2` compiles the resulting
+module without the inliner crash; a real (non-sandboxed) loopback HTTP
+client hammering `Std.HttpHost.hostGetSafe` in a 50,000-iteration loop
+against a local server runs clean, and a 1,500-iteration run under
+`valgrind` reports zero errors (this sandbox has no working
+`clang`-ABI-compatible ASan runtime, so `valgrind` substitutes for the
+project's usual ASan self-test verification — see D-progress-882 for
+the exact commands). Two dedicated cases in
+`llvm_heap_self_test.l` (`-fsanitize=address`, CI-verified) cover the
+`and` and `or` forms directly, each exercising both the skip edge and
+the evaluated edge in one loop. With the codegen fixed, `buildRequestBytes`
+went back to its natural `Result[slice[Byte], String]` signature (the
+`BuiltRequestBytes` plain-record workaround is gone), and #6719's
+protocol-relative `Location` handling and #6722's request-line space
+guard + 65535 port cap both landed as originally attempted, restructured
+branch chains included — with new item coverage in
+`llvm_http_client_self_test.l`.
+
 ### N9.8 — Weak-aware List/Map/Task kernels: `NativeWeak[T]` as a collection element or async result — ✅ SHIPPED (D-progress-879, #5545)
 
 `lyric_list_new`/`lyric_map_new`/`lyric_task_complete`'s single boolean

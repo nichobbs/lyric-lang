@@ -2013,7 +2013,19 @@ func lowerShortCircuit(ctx: in Ctx, insns: in List[NInsn], lhs: in Expr, rhs: in
     insns.add(NCondBr(cond = a.value, thenLabel = doneL, elseLabel = evalL))
   }
   insns.add(NLabel(name = evalL))
+  // The right operand's temps (e.g. a `String` from `.substring(...)`
+  // feeding a `==` test) must be released HERE, inside `evalL`, before
+  // branching to `doneL` — `doneL` is also reached directly from the
+  // short-circuit-skip edge (`lhs` decided the result without evaluating
+  // `rhs` at all), so a temp registered while lowering `rhs` does not
+  // dominate `doneL` and releasing it there is both a verifier-rejected
+  // IR shape and, worse, a release of a garbage/uninitialized value on
+  // the skip path (issue #6645: confirmed by `opt -passes=verify`
+  // reporting "Instruction does not dominate all uses!" for exactly this
+  // shape, and by a `-O2` clang inliner crash on the resulting module).
+  pushTempScope(ctx)
   val b = lowerExpr(ctx, insns, rhs)
+  popTempScope(ctx, insns)
   insns.add(NStore(ty = NI1, value = b.value, ptr = NLocal(name = slot)))
   insns.add(NBr(label = doneL))
   insns.add(NLabel(name = doneL))

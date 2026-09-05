@@ -33513,6 +33513,52 @@ D-progress-852 (the investigation that filed #6809),
 `native/plan/08-work-items.md` N9.7, `docs/20-project-as-dll.md`
 (the dotnet/jvm design this is the native analog of).
 
+## `and`/`or` short-circuit ARC temp-release codegen bug fixed, TLS phase 5 band N9.9 (#6645, #6719, #6722)
+
+Root-caused and fixed the native-codegen heap-corruption bug N9.4's own
+review found and worked around (#6645), which was also blocking two
+further real `_kernel_native/http_host.l` fixes (#6719 protocol-relative
+`Location`, #6722 request-line space injection + unbounded URL port).
+
+`Lyric.LlvmCodegen.lowerShortCircuit` (`&&`/`||`) lowered its right
+operand directly into the caller's enclosing temp scope instead of a
+scope of its own; that scope's release call lands in the shared
+`sc.done` merge block, which is ALSO reached by the short-circuit-skip
+edge where the right operand — and any ARC temp it created, e.g. a
+`.substring(...)` call's `String` result — was never evaluated at all.
+Releasing that temp unconditionally in `sc.done` is a dominance
+violation (`opt -passes=verify`: "Instruction does not dominate all
+uses!") that `clang -O2`'s inliner crashes on outright, and — at `-O0`,
+where the release still executes against an undefined SSA value —
+corrupts the heap allocator's free-list bookkeeping, surfacing later as
+a SEGV or `malloc(): unaligned tcache chunk` inside a totally unrelated
+call, exactly #6645's reported symptom. Fixed by pushing/popping a temp
+scope around the right operand's lowering inside its own block, before
+branching to the merge block — the same pattern `lowerIf`'s branches
+already use.
+
+With the codegen fixed, `buildRequestBytes` reverts to its natural
+`Result[slice[Byte], String]` return type (the `BuiltRequestBytes`
+plain-record workaround is gone), and #6719's protocol-relative
+`Location` handling and #6722's request-line space guard + 65535 port
+cap both land as originally attempted.
+
+Verified: `opt -passes=verify` reports zero dominance violations on a
+bundle built from the fixed `http_host.l` (previously 7+, `trimSpaces`'s
+own two `and`-guarded `.substring()` trims among them); `clang -O2`
+compiles without the inliner crash; a real loopback HTTP client hammering
+`hostGetSafe` 50,000 times against a local server, and a 1,500-iteration
+run under `valgrind` (this session's sandbox has no working
+clang-ABI-compatible ASan runtime), both report zero errors. Two
+dedicated `-fsanitize=address` cases in `llvm_heap_self_test.l` cover the
+`and`/`or` forms directly for CI; new items in
+`llvm_http_client_self_test.l` cover the three `_kernel_native/http_host.l`
+fixes.
+
+**Related:** `docs/03-decision-log.md` D-progress-882 (full account),
+#6645/#6719/#6722 (fixed by this PR), `native/plan/08-work-items.md` N9.9,
+`native/plan/04-arc-design.md` (the ARC temp-scope rules this bug violated).
+
 ## Weak-aware List/Map/Task kernels ship, TLS phase 5 band N9.8 (#5545)
 
 The native List/Map/Task runtime kernels were strong-refcount-only:

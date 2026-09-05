@@ -1454,3 +1454,150 @@ test "Std.HttpHost native client bounds the number of response header fields, no
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "Std.HttpHost native client bounds the number of response header fields")
 }
+
+test "Std.HttpHost native client follows a protocol-relative redirect Location to its intended host (item R, #6719)" {
+  // `resolveRedirectUrl` now recognizes a protocol-relative (RFC 3986
+  // §4.2 network-path) `Location: //host:port/path` value as switching
+  // authority to `host:port` while keeping the ORIGINAL request's scheme
+  // -- distinct from both the absolute-URL case (item F) and the
+  // same-authority relative-path case (item E's redirect). Two listeners
+  // so a wrong resolution (treating `//host:port/path` as a same-host
+  // relative path, per #6719's original bug) would connect back to
+  // listener1 instead of listener2 and this test would time out /fail on
+  // "accept2" rather than merely asserting the wrong status.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
+    "import Std.HttpHost\n" +
+    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
+    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
+    "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
+    "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  val listener1 = match hostListen(\"127.0.0.1\", 0) {\n" +
+    "    case Ok(l) -> l\n" +
+    "    case Err(_) -> return 1\n" +
+    "  }\n" +
+    "  val port1 = hostLocalPort(listener1)\n" +
+    "  val listener2 = match hostListen(\"127.0.0.1\", 0) {\n" +
+    "    case Ok(l) -> l\n" +
+    "    case Err(_) -> return 2\n" +
+    "  }\n" +
+    "  val port2 = hostLocalPort(listener2)\n" +
+    "  val worker: () -> NativePtr[Byte] = { ->\n" +
+    "    match hostAccept(listener1) {\n" +
+    "      case Err(_) -> toC(\"accept1_failed\")\n" +
+    "      case Ok(conn1) -> {\n" +
+    "        val _ = hostRead(conn1, 8192)\n" +
+    "        val loc = \"//127.0.0.1:\" + port2.toString() + \"/final\"\n" +
+    "        val resp1 = \"HTTP/1.1 302 Found\\r\\nLocation: \" + loc + \"\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n\"\n" +
+    "        val _ = hostWrite(conn1, encodeUtf8(resp1))\n" +
+    "        hostClose(conn1)\n" +
+    "        match hostAccept(listener2) {\n" +
+    "          case Err(_) -> toC(\"accept2_failed\")\n" +
+    "          case Ok(conn2) -> {\n" +
+    "            val _ = hostRead(conn2, 8192)\n" +
+    "            val resp2 = \"HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\nConnection: close\\r\\n\\r\\nOK\"\n" +
+    "            val _ = hostWrite(conn2, encodeUtf8(resp2))\n" +
+    "            hostClose(conn2)\n" +
+    "            toC(\"ok\")\n" +
+    "          }\n" +
+    "        }\n" +
+    "      }\n" +
+    "    }\n" +
+    "  }\n" +
+    "  var tid: Long = 0\n" +
+    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  if rc != 0 {\n" +
+    "    hostStopListener(listener1)\n" +
+    "    hostStopListener(listener2)\n" +
+    "    return 3\n" +
+    "  }\n" +
+    "  val client = hostDefaultClient()\n" +
+    "  val url = \"http://127.0.0.1:\" + port1.toString() + \"/start\"\n" +
+    "  val request = hostMakeRequest(\"GET\", url)\n" +
+    "  var finalStatus = 0\n" +
+    "  var sendOk = false\n" +
+    "  match await hostSendSafe(client, request) {\n" +
+    "    case Ok(response) -> {\n" +
+    "      finalStatus = hostStatusCode(response)\n" +
+    "      sendOk = true\n" +
+    "    }\n" +
+    "    case Err(_) -> ()\n" +
+    "  }\n" +
+    "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
+    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  var serverOk = false\n" +
+    "  if rj == 0 {\n" +
+    "    val n = cStrlen(outp)\n" +
+    "    if n == 2 {\n" +
+    "      serverOk = true\n" +
+    "    }\n" +
+    "    freeC(outp)\n" +
+    "  }\n" +
+    "  hostStopListener(listener1)\n" +
+    "  hostStopListener(listener2)\n" +
+    "  if not serverOk {\n" +
+    "    return 4\n" +
+    "  }\n" +
+    "  if not sendOk {\n" +
+    "    return 5\n" +
+    "  }\n" +
+    "  if finalStatus != 200 {\n" +
+    "    return 6\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(
+    r.exitCode,
+    42,
+    "Std.HttpHost native client follows a protocol-relative redirect to the right host:port"
+  )
+}
+
+test "Std.HttpHost native client rejects a request target containing a bare space (item S, #6722)" {
+  // No server thread needed (item G's reasoning): the request-line-only
+  // space guard runs client-side, in `validateRequestForWire`, before any
+  // bytes reach the socket, so a listener that never accepts is enough to
+  // prove local rejection.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.TcpHost\n" + "import Std.HttpHost\n" +
+    "func main(): Int {\n" +
+    "  val listener = match hostListen(\"127.0.0.1\", 0) {\n" +
+    "    case Ok(l) -> l\n" +
+    "    case Err(_) -> return 1\n" +
+    "  }\n" +
+    "  val port = hostLocalPort(listener)\n" +
+    "  val client = hostDefaultClient()\n" +
+    "  val url = \"http://127.0.0.1:\" + port.toString() + \"/a b\"\n" +
+    "  val request = hostMakeRequest(\"GET\", url)\n" +
+    "  var rejected = false\n" +
+    "  match await hostSendSafe(client, request) {\n" +
+    "    case Err(_) -> { rejected = true }\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "  }\n" +
+    "  hostStopListener(listener)\n" +
+    "  if not rejected {\n" +
+    "    return 2\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpHost native client rejects a bare space in the request target")
+}
+
+test "Std.HttpHost native client rejects a URL port number above 65535 (item T, #6722)" {
+  // parseUrl's port bound rejects before any connection attempt, so no
+  // listener is needed at all -- the URL itself is malformed.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.HttpHost\n" + "func main(): Int {\n" +
+    "  val client = hostDefaultClient()\n" +
+    "  val request = hostMakeRequest(\"GET\", \"http://127.0.0.1:70000/x\")\n" +
+    "  match await hostSendSafe(client, request) {\n" +
+    "    case Err(_) -> 42\n" +
+    "    case Ok(_) -> 1\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpHost native client rejects a URL port above 65535")
+}
