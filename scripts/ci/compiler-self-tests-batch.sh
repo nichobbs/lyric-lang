@@ -31,6 +31,7 @@ for t in \
   lyric-compiler/lyric/hof_type_propagation_self_test.l \
   lyric-compiler/lyric/typechecker_extern_dedup_self_test.l \
   lyric-compiler/lyric/generic_extern_self_test.l \
+  lyric-compiler/lyric/generic_extern_methodspec_self_test.l \
   lyric-compiler/lyric/enum_msil_self_test.l \
   lyric-compiler/lyric/contract_meta_self_test.l \
   lyric-compiler/lyric/restored_packages_self_test.l \
