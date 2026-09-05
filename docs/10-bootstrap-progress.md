@@ -32295,7 +32295,7 @@ falling back to `MObject` only for a generic record/union case (no symbol
 table at this pass to infer its type arguments) or an otherwise-unresolvable
 callee.
 
-**Related:** `docs/03-decision-log.md` D-progress-877 (full account), #6786.
+**Related:** `docs/03-decision-log.md` D-progress-878 (full account), #6786.
 
 ### Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
 

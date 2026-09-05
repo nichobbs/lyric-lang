@@ -41342,3 +41342,27 @@ affected (`prelowerModuleVals` derives every module val's field type from a
 real lowering pass in declaration order, so it never diverges from the
 initializer's real type) — the file already ran on both targets as a parity
 pin, and continues to.
+
+**Follow-up fix (#6966, review REQUIRED).** The `ECall` arm's `ctorKeyOpt`
+resolution only implemented the LOCAL-package and explicit-qualifier tiers
+of real `ECall` codegen's three-tier lookup, omitting the third
+(`resolveTypeFqn`'s import-aware cross-package resolution). An UNQUALIFIED
+reference to a record declared in a DIFFERENT, imported package (`import
+Other.Lib; val g = Cache(...)`, no `Other.Lib.` qualifier) matched neither
+implemented tier and fell back to `MObject`, reproducing this issue's exact
+defect class one package hop removed: `fieldTokensByName`'s fallback key is
+scoped to the READING package (`fctx.pkgName + "/" + memberName`, not the
+constructed value's real declaring package), so a same-named field on one of
+the consuming package's OWN records resolves in its place, `castclass`ing
+against the wrong type. Fixed by adding the same `resolveTypeFqn(cctx,
+pkgName, funcName)` tier real codegen uses, tried after the local/qualified
+tiers miss and before falling back to `MObject`; `resolveTypeFqn` only needs
+`cctx`/`pkgName` (both already threaded through this function) plus the
+callee's simple name. Regression-tested in
+`msil_project_bridge_self_test.l` (the established home for multi-package
+MSIL bridge scenarios `lyric test`'s single-file synthesis can't reach): a
+`Lib` package declaring `pub record Cache { box: Int }`, and an `App`
+package that imports it, declares its own colliding `record Holder { box:
+Int }`, and binds `val gCache = Cache(box = 42)` unqualified — pre-fix this
+throws `InvalidCastException` reading `gCache.box` (resolves through
+`App`'s own `Holder` field token); post-fix it correctly prints `42`.
