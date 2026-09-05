@@ -301,10 +301,13 @@ pub func fetchSecret(
     }
   }
 
-  val client = getSmClient()
-  val request: JGetSecretValueRequest = JGetSecretValueRequest.builder().secretId(name).build()
-
+  // Wraps client construction too, not just the SDK call: JSecretsManagerClient.builder().build()
+  // resolves the region/credentials chain eagerly and throws SdkClientException if it can't
+  // (e.g. no AWS_REGION and no instance profile outside a real Lambda environment) — that must
+  // come back as a typed Err like every other SDK failure path here, not panic uncaught (#6979).
   val responseResult: Result[JGetSecretValueResponse, AwsSecrets.SecretsError] = try {
+    val client = getSmClient()
+    val request: JGetSecretValueRequest = JGetSecretValueRequest.builder().secretId(name).build()
     Ok(value = client.getSecretValue(request))
   } catch Bug as b {
     Err(error = classifySecretsError(name, b.message))
@@ -347,10 +350,10 @@ pub func fetchParameter(path: in String, decrypt: in Bool, ttlSeconds: in Int): 
     }
   }
 
-  val client = getSsmClient()
-  val request: JGetParameterRequest = JGetParameterRequest.builder().name(path).withDecryption(boxBool(decrypt)).build()
-
+  // Wraps client construction too — see fetchSecret's identical comment above (#6979).
   val responseResult: Result[JGetParameterResponse, AwsSecrets.SecretsError] = try {
+    val client = getSsmClient()
+    val request: JGetParameterRequest = JGetParameterRequest.builder().name(path).withDecryption(boxBool(decrypt)).build()
     Ok(value = client.getParameter(request))
   } catch Bug as b {
     Err(error = classifyParameterError(path, b.message))
