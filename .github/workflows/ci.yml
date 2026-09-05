@@ -3041,17 +3041,26 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/bitwise_self_test.l
 
-      # Coverage smoke test — NOT wired into CI yet (docs/03-decision-log.md
-      # D135, #5294, #6659). `lyric test --target jvm --coverage` on this
-      # exact file works standalone (verified locally, both in the sandbox
-      # that built the feature and on the runner running this checkout via
-      # `scripts/ci/coverage-smoke-test.sh` directly), but the JVM process
-      # under the JaCoCo agent's `-javaagent` instrumentation hung for 2+
-      # hours on real GitHub Actions runners across multiple attempts (with
-      # curl/timeout hardening ruling out a network cause) — the plain,
-      # non-instrumented `Bitwise self-test on JVM` step above runs fine in
-      # this same job. Root cause not yet identified; see #6659 before
-      # re-enabling.
+      # Coverage smoke test (docs/03-decision-log.md D135, #5294, #6659).
+      # `lyric test --target jvm --coverage` on this exact file works
+      # standalone in a sandbox, but the JVM process under the JaCoCo
+      # agent's `-javaagent` instrumentation previously hung for 2+ hours on
+      # real GitHub Actions runners (root cause not yet identified — the
+      # plain, non-instrumented `Bitwise self-test on JVM` step above runs
+      # fine in this same job). `coverage-smoke-test.sh` now runs the
+      # command in the background and polls it instead of a plain blocking
+      # `timeout --signal=KILL`, so a hang no longer silently consumes hours:
+      # it fails within 900s and captures a `jcmd`/`jstack` thread dump of
+      # the live JVM into this step's own log before killing it — the
+      # diagnostic #6659 needs to find the real root cause. `continue-on-error`
+      # until a run with the underlying hang actually fixed is observed:
+      # this step's own pass/fail is real (not swallowed like the old
+      # F#-era coverage job's `|| echo warning`), it just doesn't block
+      # merges while #6659 is open.
+      - name: Coverage smoke test on JVM (lyric test --target jvm --coverage, #6659)
+        continue-on-error: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/coverage-smoke-test.sh lyric-compiler/lyric/bitwise_self_test.l
 
       # Aliased-import routing pin, JVM leg (#6496 resolution): both import
       # forms route the method spelling to the Option free functions on both
