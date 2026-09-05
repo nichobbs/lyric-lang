@@ -6,6 +6,7 @@
 @runtime_checked
 package Std.Directory
 
+import Std.Core
 import Std.Errors
 import Std.FileHost
 
