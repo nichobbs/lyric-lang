@@ -590,11 +590,27 @@ func cmdTest(argv: in slice[String]): Int {
       // simple (the F# stage-0 segment compiler chokes on a large
       // record-valued if-expression).
       val testLibDir = if targetJvm or targetNative { "" } else { findCompiledLibDir() }
-      val compilerDlls: List[String] = if targetJvm or targetNative {
-        newList()
+      val closureResult = if targetJvm or targetNative {
+        Emitter.CompilerClosureResult(dlls = newList(), missingPackages = newList())
       } else {
         Emitter.compilerClosureDllPaths(rewritten, testLibDir)
       }
+      // #6628: fail loudly, naming the gap, instead of silently linking (or
+      // silently recompiling against) an incomplete closure — a stale/
+      // partially-staged compiler-DLL set previously produced wrong runtime
+      // results rather than a build failure.
+      if closureResult.missingPackages.count > 0 {
+        printErr(
+          sourcePath + ": test: " + toString(closureResult.missingPackages.count) +
+            " compiler package(s) this test imports are not present in the staged " +
+            "compiler-DLL set (" +
+            Str.joinList(", ", closureResult.missingPackages) +
+            "). Run `make selfhosted-compiler` (or `make lyric`) to re-stage the " +
+            "compiler bundle before running this test."
+        )
+        return 1
+      }
+      val compilerDlls: List[String] = closureResult.dlls
       var manifestRestoredDlls: List[String] = newList()
       var manifestNugetPaths: List[String] = newList()
       var manifestNativePaths: List[String] = newList()
