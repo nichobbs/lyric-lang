@@ -41270,6 +41270,7 @@ server hosting/unary/streaming remain unimplemented, tracked at #6581), #6581
 this session's group:ecosystem-lib-kernels scope), D-progress-815 (the
 interim honest-failure fix this session builds on), D-progress-252 (original
 `lyric-grpc` ship, corrected here).
+
 ## D-progress-879 — Native List/Map/Task kernels gain weak-aware tri-state element/result ownership, unblocking `NativeWeak[T]` as a collection element or async result (#5545)
 
 **Context.** #5504 (PR #5539) made `NativeWeak[T]` participate in ARC via
@@ -41542,6 +41543,8 @@ spec-first direction.
 `docs/57-stdlib-ecosystem-library-review.md` §7 (the `lyric web spec`
 CLI-command gap this surfaced, left open), `lyric-web/src/openapi.l`
 module header.
+
+---
 
 ## D-progress-883 — `lyric test`'s compiler-DLL resolution verifies bundle *completeness*, not just existence, before linking (#6628)
 
