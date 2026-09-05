@@ -41648,7 +41648,10 @@ The new self-test's empty-slice-element-row case does surface a separate,
 pre-existing MSIL bug (`--target dotnet` throws "Attempted to access an
 element as a type incompatible with the array" on the same case) — filed
 as #6945 rather than folded into this fix, which is scoped to `--target
-jvm` per #6546.
+jvm` per #6546. Both fixes key off `scrutineeGenericArgs`, which does not
+resolve a receiver's generic instantiation for a plain field-access
+receiver (`someRecord.rows.add([1, 2, 3])`) — a pre-existing limitation,
+not a regression this PR introduces — tracked separately as #6957.
 
 **Verification.** New `@test_module`
 `lyric-compiler/jvm/list_of_slice_construction_jvm_self_test.l` (4 cases:
