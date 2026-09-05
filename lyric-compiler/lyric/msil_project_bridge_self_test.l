@@ -2320,3 +2320,58 @@ test "union case field type resolves to the exact package named, not the caller'
     "union case field (#6972): tag binds to Pkg6972Owner's Item, not Pkg6972Collide's (needsItem(tag) == 7)"
   )
 }
+
+// #6992 (found in review of #6689): a QUALIFIED generic type's own HEAD
+// (not just its type arguments) must resolve to the exact package named.
+// `resolveTypeFqnQualified` was wired into `typeExprToMsilCtx`'s bare
+// `TRef` case, but the `TGenericApp` fallback branch (reached when the
+// generic head itself, e.g. `Box` in `PkgA.Box[Int]`, isn't one of the
+// special-cased names `List`/`Map`/`Set`/`MapKeyCollection`/
+// `MapValueCollection`) still called the unqualified `resolveTypeFqn`,
+// leaving the identical hazard open one level up. `Pkg6992A` and
+// `Pkg6992B` each declare their OWN unrelated `Box[T]` union (different
+// case sets, so a wrong resolution can't coincidentally construct the
+// right shape); the qualified generic-head reference (`Pkg6992A.Box[Int]`)
+// must appear in the CALLER (`Main6992`, which imports both colliding
+// packages) for the bug to be reachable — a bare `Box[Int]` written
+// inside `Pkg6992A`'s own file never collides, since tier-1 (a package's
+// own declaration) always wins regardless of the bug. Uses a FUNCTION
+// PARAMETER type (not a `val` annotation, which codegen derives from the
+// initializer expression's own already-correct inferred type rather than
+// re-resolving the annotation text) so the qualified head genuinely feeds
+// the MSIL method signature — mirroring how #6972's fix was pinned via a
+// parameter type rather than a pattern-bound local.
+test "qualified generic type HEAD resolves to the exact package named, not scope-priority (#6992)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "Pkg6992A",
+      "package Pkg6992A\n" + "pub union Box[T] {\n" + "  case Full(value: T)\n" + "}\n" +
+        "pub func mk(x: in Int): Box[Int] {\n" +
+        "  Full(value = x)\n" +
+        "}\n"
+    )
+  )
+  packages.add(mkPkg("Pkg6992B", "package Pkg6992B\n" + "pub union Box[T] {\n" + "  case Nothing\n" + "}\n"))
+  packages.add(
+    mkPkg(
+      "Main6992",
+      "package Main6992\n" + "import Pkg6992A\n" + "import Pkg6992B\n" + "func unwrap(b: in Pkg6992A.Box[Int]): Int {\n" +
+        "  match b {\n" +
+        "    case Pkg6992A.Full(v) -> v\n" +
+        "  }\n" +
+        "}\n" +
+        "func main(): Int {\n" +
+        "  println(unwrap(Pkg6992A.mk(x = 42)))\n" +
+        "  0\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("qualified-generic-head-6992", packages, "QualifiedGenericHead6992")
+  assertEqualInt(result.exitCode, 0, "qualified generic head (#6992): exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "42",
+    "qualified generic head (#6992): Pkg6992A.Box[Int] resolves to Pkg6992A's Box, not Pkg6992B's"
+  )
+}
