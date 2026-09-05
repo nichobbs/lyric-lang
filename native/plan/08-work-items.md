@@ -1888,9 +1888,11 @@ were the rest of #6808's blocker: `List[T]`/`Map[K, V]` indexed assignment
 (`xs[i] = e`) had no native codegen (`Hpack.buildHuffTrie`'s `List[Int]`
 parallel-array mutation), and `?` silently failed to desugar for any
 `Std.*` stdlib function reachable across a package boundary from a native
-build's entry file (a general, previously-undiscovered gap generalizing
-the narrower symptom `_kernel_native/http_host.l` already worked around by
-hand, D-progress-823) — worked around, per that same precedent, by
+build's entry file (a general gap generalizing the narrower symptom
+`_kernel_native/http_host.l` already worked around by hand, D-progress-823
+— this is the third known occurrence, now tracked as **issue #6954**
+rather than hand-patched a fourth time in the future without a tracking
+issue) — worked around here, per that same precedent, by
 rewriting `Std.HttpEngine.Hpack`'s 14 `?` sites to explicit
 `match { case Ok(v) -> v; case Err(e) -> return Err(error = e) }`, verified
 as behavior-preserving on dotnet/JVM via the full existing

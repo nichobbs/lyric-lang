@@ -41345,11 +41345,18 @@ that defines it." Grepping the entire non-kernel `lyric-stdlib/std/` tree
 found exactly two files using `?` at all — `http_hpack.l` (14 sites) and
 one false-positive in `http_h2conn.l` (a `?` inside a doc-comment, not
 code) — meaning this gap has simply never been exercised by any other
-native-reachable stdlib code before now. Root-caused to the native
-compilation pipeline, not fixed at the compiler-internals level (out of
-this scope — belongs with the general native-backend work); worked around,
-per the `_kernel_native/http_host.l` precedent, by rewriting all 14 sites
-in `http_hpack.l` from `expr?` to the explicit
+native-reachable stdlib code before now. This is the THIRD known
+occurrence of this exact defect (D-progress-823's `_kernel_native/
+http_host.l` was the first; a second occurrence around the
+`Std.HttpEngine.parseRequestLine` investigation was hand-patched the same
+way) — filed as **issue #6954** so the general root cause (`Lyric.
+Pipeline`'s native path not applying `Lyric.Propagate.lowerPropagateFile`
+to bundled `Std.*` packages, only the entry file's own package) has a
+tracked home instead of a fourth hand-rewrite next time. Root-caused to
+the native compilation pipeline, not fixed at the compiler-internals level
+here (out of this scope — belongs with the general native-backend work,
+#6954); worked around, per the `_kernel_native/http_host.l` precedent, by
+rewriting all 14 sites in `http_hpack.l` from `expr?` to the explicit
 `match expr { case Ok(v) -> v; case Err(e) -> return Err(error = e) }` /
 `case Ok(_) -> {}` form. `http_hpack.l` is target-independent (compiled
 unchanged on all three targets), so this rewrite changes nothing observable
@@ -41357,22 +41364,41 @@ on dotnet/JVM — verified by the full existing `http_hpack_tests.l` (39/39)
 and `http_h2conn_tests.l` (73/73) suites passing unmodified on both
 `--target dotnet` and `--target jvm`.
 
-**Verification.** `llvm_stdlib_self_test.l` gained a new case exercising
-the `Std.Char` kernel's code-point bridge, every classification/
-case-conversion predicate, and a real `huffmanEncode`/`huffmanDecode`/
-`octetsToString` round-trip on `--target native` (ASan) — 19/19 passing.
-Direct hand-built repros (not wired into CI, used to isolate and confirm
-each fix) verified, with `--target dotnet` producing byte-identical
-results: `Std.HttpEngine.Hpack.decodeHeaderBlock`/`decodeStringLiteralAt`/
-`decodeIntegerAt`/`resolveIndex`/`decodeLiteralField` (the full HPACK
-*decode* path) compile and run correctly on native; and — the most
-significant check — a real `Std.HttpEngine.H2Conn.newServerConnection` +
-`feed()` call, given real wire bytes (connection preface + an empty
-SETTINGS frame + a static-table-indexed HEADERS frame), correctly decodes
-through the full FSM (38 `inout H2Connection` sites, the `inout
-FrameDecoder` chain, and the HPACK decoder together) to a
-`H2RequestHeaders(streamId = 1, headers = [":method": "GET"], endStream =
-true)` event, matching `--target dotnet` exactly.
+**Verification.** `llvm_stdlib_self_test.l` gained three new committed
+cases (21/21 passing, ASan): the `Std.Char` kernel's code-point bridge,
+every classification/case-conversion predicate, and a real
+`huffmanEncode`/`huffmanDecode`/`octetsToString` round-trip; a dedicated
+indexed-assignment case exercising every combination this PR's own review
+pass (see below) flagged as under-covered — `slice[Int]` `AssEq`,
+`List[Int]` under all four compound operators (`+=`/`-=`/`*=`/`/=`/`%=`),
+`List[String] +=` (the `lowerStringBinop` branch of
+`combineIndexedAssignValue`), `Map[String, Int]` `AssEq` and all five
+compound operators, and `Map[String, String] +=` (the map-side
+`lowerStringBinop` branch); and a dedicated panic case confirming a
+compound assignment against an absent map key (`m["missing"] += 1`)
+panics rather than silently inserting. A **second review pass flagged an
+evaluation-order divergence** from the JVM backend: `combineIndexedAssignValue`
+originally read the container's current value BEFORE lowering the RHS
+expression, while the JVM backend's `EIndex` compound-assign codegen
+(`jvm/codegen/05_stmts.l`) lowers the RHS first — for an RHS with a side
+effect that mutates the same container (`xs[i] += mutate(xs)`), the two
+orders can observe different states. Fixed by reordering: `rhs` is now
+evaluated at each `lowerIndexAssign` compound-branch call site BEFORE the
+`lyric_list_get`/`lyric_map_get` read, and `combineIndexedAssignValue`
+takes the pre-lowered `rhs: NVal` instead of the raw `Expr`, matching the
+JVM backend's order exactly. Direct hand-built repros (not wired into CI,
+used to isolate and confirm each fix during development) verified, with
+`--target dotnet` producing byte-identical results: `Std.HttpEngine.Hpack.
+decodeHeaderBlock`/`decodeStringLiteralAt`/`decodeIntegerAt`/
+`resolveIndex`/`decodeLiteralField` (the full HPACK *decode* path) compile
+and run correctly on native; and — the most significant check — a real
+`Std.HttpEngine.H2Conn.newServerConnection` + `feed()` call, given real
+wire bytes (connection preface + an empty SETTINGS frame + a
+static-table-indexed HEADERS frame), correctly decodes through the full
+FSM (38 `inout H2Connection` sites, the `inout FrameDecoder` chain, and
+the HPACK decoder together) to a `H2RequestHeaders(streamId = 1, headers =
+[":method": "GET"], endStream = true)` event, matching `--target dotnet`
+exactly.
 
 **Not fixed here, blocking the HPACK *encode* path (`encodeHeaderList`/
 `encodeHeaderField`) specifically:** `Std.HttpEngine.Hpack.stringToOctets`

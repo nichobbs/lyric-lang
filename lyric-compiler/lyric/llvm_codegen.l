@@ -8377,21 +8377,25 @@ func assignTargetName(target: in Expr): String {
 
 // Shared read-combine-write step for a compound index assignment
 // (`xs[i] += e`, `m[k] -= e`, …): `cur` is the element already read back
-// from the container, `value` is the RHS expression. Mirrors the
-// duplicated combine logic in `lowerAssign`/`lowerFieldAssign` above, kept
-// as its own small helper here (rather than factored into those two
-// already-shipped call sites) to keep this indexed-assignment addition
-// isolated from their existing, separately-verified codegen.
+// from the container, `rhs` is the already-lowered RHS value. Takes `rhs`
+// pre-lowered (rather than the raw `Expr`) so callers can evaluate the RHS
+// BEFORE reading the container's current value — matching the JVM
+// backend's `EIndex` compound-assign evaluation order
+// (`jvm/codegen/05_stmts.l`), so `xs[i] += e` where `e` itself mutates
+// `xs` behaves identically on native and JVM. Mirrors the duplicated
+// combine logic in `lowerAssign`/`lowerFieldAssign` above, kept as its own
+// small helper here (rather than factored into those two already-shipped
+// call sites) to keep this indexed-assignment addition isolated from
+// their existing, separately-verified codegen.
 func combineIndexedAssignValue(
   ctx: in Ctx,
   insns: in List[NInsn],
   op: in AssignOp,
   ty: in NType,
   cur: in NVal,
-  value: in Expr,
+  rhs: in NVal,
   line: in Int,
 ): NVal {
-  val rhs = lowerExpr(ctx, insns, value)
   val binOp = match op {
     case AssPlus -> BAdd
     case AssMinus -> BSub
@@ -8439,12 +8443,15 @@ func lowerIndexAssign(
       val newVal = match op {
         case AssEq -> lowerExprExpecting(ctx, insns, value, elem)
         case _ -> {
+          // RHS evaluated BEFORE the container read (matches the JVM
+          // backend's order, see combineIndexedAssignValue's header).
+          val rhs = lowerExpr(ctx, insns, value)
           val gArgs: List[NArg] = newList()
           gArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
           gArgs.add(NArg(ty = NI64, value = idx.value))
           val slot = callRuntime(ctx, insns, "lyric_list_get", NI64, gArgs)
           val cur = valOfSlot(ctx, insns, slot.value, elem)
-          combineIndexedAssignValue(ctx, insns, op, elem, cur, value, line)
+          combineIndexedAssignValue(ctx, insns, op, elem, cur, rhs, line)
         }
       }
       val sArgs: List[NArg] = newList()
@@ -8468,6 +8475,9 @@ func lowerIndexAssign(
       val newVal = match op {
         case AssEq -> lowerExprExpecting(ctx, insns, value, vTy)
         case _ -> {
+          // RHS evaluated BEFORE the container read (matches the JVM
+          // backend's order, see combineIndexedAssignValue's header).
+          val rhs = lowerExpr(ctx, insns, value)
           val outSlot = "mapidxasn.out." + freshTmp(ctx)
           ctx.allocas.add(NAlloca(dest = outSlot, ty = NI64))
           val gArgs: List[NArg] = newList()
@@ -8487,7 +8497,7 @@ func lowerIndexAssign(
           val raw = freshTmp(ctx)
           insns.add(NLoad(dest = raw, ty = NI64, ptr = NLocal(name = outSlot)))
           val cur = valOfSlot(ctx, insns, NLocal(name = raw), vTy)
-          combineIndexedAssignValue(ctx, insns, op, vTy, cur, value, line)
+          combineIndexedAssignValue(ctx, insns, op, vTy, cur, rhs, line)
         }
       }
       val sArgs: List[NArg] = newList()
