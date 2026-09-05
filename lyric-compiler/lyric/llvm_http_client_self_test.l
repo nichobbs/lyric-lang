@@ -400,7 +400,11 @@ test "Std.HttpHost native redirect strips Authorization on a cross-authority hop
     "  val baseRequest = hostMakeRequest(\"GET\", url)\n" +
     "  val request = match hostWithHeader(baseRequest, \"Authorization\", \"Bearer secret-token\") {\n" +
     "    case Ok(r) -> r\n" +
-    "    case Err(_) -> baseRequest\n" +
+    // \"Authorization\" is never a reserved framing header; a silent
+    // fallback to baseRequest here would drop it instead of surfacing
+    // the bug (the exact failure mode #6658 exists to avoid) -- return
+    // a distinct sentinel exit code instead.
+    "    case Err(_) -> return 97\n" +
     "  }\n" +
     "  var finalStatus = 0\n" +
     "  var sendOk = false\n" +
@@ -677,7 +681,11 @@ test "Std.HttpHost native redirect strips Authorization on an https-to-http down
     "  val baseRequest = hostMakeRequest(\"GET\", url)\n" +
     "  val request = match hostWithHeader(baseRequest, \"Authorization\", \"Bearer secret-token\") {\n" +
     "    case Ok(r) -> r\n" +
-    "    case Err(_) -> baseRequest\n" +
+    // \"Authorization\" is never a reserved framing header; a silent
+    // fallback to baseRequest here would drop it instead of surfacing
+    // the bug (the exact failure mode #6658 exists to avoid) -- return
+    // a distinct sentinel exit code instead.
+    "    case Err(_) -> return 97\n" +
     "  }\n" +
     "  var finalStatus = 0\n" +
     "  var sendOk = false\n" +
