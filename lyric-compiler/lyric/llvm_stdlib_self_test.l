@@ -251,6 +251,113 @@ test "Std.Process capture: argv passthrough, exec failure, stdin round-trip (ASa
   assertEqualInt(r.exitCode, 42, "process capture seams")
 }
 
+// Exercises `Std.ProcessPipedHost` directly (issue #6142), not the shared
+// `Std.Process.spawnPiped`/`pipedReadLine`/`pipedWriteLine` facade: those
+// three functions wrap the host call in `try { } catch Bug as b { }`,
+// which `Lyric.LlvmCodegen` unconditionally rejects for `--target native`
+// (D-N-003 — "try/catch is not supported ... no unwinding"), a real,
+// pre-existing, tracked-separately blocker independent of this kernel's
+// own correctness. `Std.Process.buildArgString` (also on that shared call
+// path) additionally calls `.replace()`, which has no native codegen
+// lowering yet either. Both gaps are documented, not silently routed
+// around — see this file's own header note and D-progress-883. The kernel
+// itself (spawn/read/write/kill/waitExit/exitCode/closeStdin/close) is
+// fully exercised here against a real `cat` child, matching the coverage
+// `lyric-compiler/jvm/piped_process_jvm_main.l` gives the JVM twin one
+// layer up (through `Std.Process`, which has no such blocker on that
+// target).
+test "Std.ProcessPipedHost native kernel: spawn/read/write/kill/waitExit/closeStdin over a real cat child (ASan)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.ProcessPipedHost\n" + "func main(): Int {\n" +
+    "  val p = hostSpawnPiped(\"/bin/cat\", \"\")\n" +
+    "  if not hostPipedIsAlive(p) {\n" +
+    "    return 1\n" +
+    "  }\n" +
+    "  hostPipedWriteLine(p, \"hello from lyric\")\n" +
+    "  match hostPipedReadLineOpt(p) {\n" +
+    "    case Some(line) -> {\n" +
+    "      if line != \"hello from lyric\" {\n" +
+    "        return 2\n" +
+    "      }\n" +
+    "    }\n" +
+    "    case None -> {\n" +
+    "      return 3\n" +
+    "    }\n" +
+    "  }\n" +
+    "  hostPipedWriteLine(p, \"one\")\n" +
+    "  hostPipedWriteLine(p, \"two\")\n" +
+    "  hostPipedWriteLine(p, \"three\")\n" +
+    "  var ordered = true\n" +
+    "  match hostPipedReadLineOpt(p) { case Some(l) -> { ordered = ordered and l == \"one\" }; case None -> { ordered = false } }\n" +
+    "  match hostPipedReadLineOpt(p) { case Some(l) -> { ordered = ordered and l == \"two\" }; case None -> { ordered = false } }\n" +
+    "  match hostPipedReadLineOpt(p) { case Some(l) -> { ordered = ordered and l == \"three\" }; case None -> { ordered = false } }\n" +
+    "  if not ordered {\n" +
+    "    return 4\n" +
+    "  }\n" +
+    "  hostPipedWriteLine(p, \"last line\")\n" +
+    "  hostPipedCloseStdin(p)\n" +
+    "  if not hostPipedWaitExit(p, 5000) {\n" +
+    "    return 5\n" +
+    "  }\n" +
+    "  if hostPipedExitCode(p) != 0 {\n" +
+    "    return 6\n" +
+    "  }\n" +
+    "  match hostPipedReadLineOpt(p) {\n" +
+    "    case Some(line) -> {\n" +
+    "      if line != \"last line\" {\n" +
+    "        return 7\n" +
+    "      }\n" +
+    "    }\n" +
+    "    case None -> {\n" +
+    "      return 8\n" +
+    "    }\n" +
+    "  }\n" +
+    "  match hostPipedReadLineOpt(p) {\n" +
+    "    case None -> {\n" +
+    "    }\n" +
+    "    case Some(_) -> {\n" +
+    "      return 9\n" +
+    "    }\n" +
+    "  }\n" +
+    "  hostPipedClose(p)\n" +
+    "  val p2 = hostSpawnPiped(\"/bin/sh\", \"\\\"-c\\\" \\\"sleep 30\\\"\")\n" +
+    "  if not hostPipedIsAlive(p2) {\n" +
+    "    return 10\n" +
+    "  }\n" +
+    "  if hostPipedWaitExit(p2, 50) {\n" +
+    "    return 11\n" +
+    "  }\n" +
+    "  hostPipedKill(p2)\n" +
+    "  if hostPipedIsAlive(p2) {\n" +
+    "    return 12\n" +
+    "  }\n" +
+    "  hostPipedClose(p2)\n" +
+    "  val p3 = hostSpawnPiped(\"/nonexistent-lyric-piped-n62\", \"\")\n" +
+    "  if not hostPipedWaitExit(p3, 5000) {\n" +
+    "    return 13\n" +
+    "  }\n" +
+    "  if hostPipedExitCode(p3) != 127 {\n" +
+    "    return 14\n" +
+    "  }\n" +
+    "  hostPipedClose(p3)\n" +
+    "  val p4 = hostSpawnPiped(\"/bin/echo\", \"\\\"hello world\\\"\")\n" +
+    "  match hostPipedReadLineOpt(p4) {\n" +
+    "    case Some(line) -> {\n" +
+    "      if line != \"hello world\" {\n" +
+    "        return 15\n" +
+    "      }\n" +
+    "    }\n" +
+    "    case None -> {\n" +
+    "      return 16\n" +
+    "    }\n" +
+    "  }\n" +
+    "  hostPipedWaitExit(p4, 5000)\n" +
+    "  hostPipedClose(p4)\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "piped process kernel seams")
+}
+
 test "Std.Time seams: epoch, monotonic, sleep (ASan)" {
   val src = "package T\n" + "import Std.Time\n" + "func main(): Int {\n" + "  val t0 = nowEpochMillis()\n" +
     "  if t0 < 1500000000000i64 {\n" +

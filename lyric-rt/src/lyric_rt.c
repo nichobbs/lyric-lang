@@ -45,24 +45,34 @@ void lyric_free(void* p) {
 }
 
 /* Mark a raw lyric_alloc/malloc'd block as a deliberate, provably-safe
- * "leak" LeakSanitizer should not report (issue #6802): used exactly once,
- * by _kernel_native/http_server.l's stopListener, for the queue mutex/
- * semaphore buffer when a caller-owned puller thread is still genuinely
- * parked inside a blocking wait on it. Freeing in that situation would be a
- * real use-after-free the instant that thread resumed; NOT freeing at all
- * is safe (that thread can never receive a legitimate item again once the
- * listener has fully torn down, so it stays parked for the rest of the
- * process's life without ever touching invalid memory) but is still, from
- * LeakSanitizer's pointer-reachability analysis, indistinguishable from an
- * accidental leak -- confirmed by direct repro, not assumed: a genuinely
- * still-blocked thread's own stack frame does NOT reliably keep this
- * project's condvar-backed semaphore's backing pointer in a form LSan's
- * scanner recognizes as reachable, so an unconditionally-leaked buffer
- * here fails the ASan+LSan build on the very code path meant to fix a
- * memory-safety bug. This is the sanctioned LeakSanitizer API for
- * exactly this situation -- a small, bounded, disclosed, PROVEN-safe
- * retention, not a suppression of an actual bug -- not a general-purpose
- * "hide a leak" escape hatch, and lyric-rt has exactly one caller of it.
+ * "leak" LeakSanitizer should not report. Two callers, each a small,
+ * bounded, disclosed, PROVEN-safe retention where the alternative is a
+ * real memory-safety bug, not a general-purpose "hide a leak" escape
+ * hatch:
+ *
+ * 1. (issue #6802) `_kernel_native/http_server.l`'s `stopListener`, for
+ *    the queue mutex/semaphore buffer when a caller-owned puller thread
+ *    is still genuinely parked inside a blocking wait on it. Freeing in
+ *    that situation would be a real use-after-free the instant that
+ *    thread resumed; NOT freeing at all is safe (that thread can never
+ *    receive a legitimate item again once the listener has fully torn
+ *    down, so it stays parked for the rest of the process's life without
+ *    ever touching invalid memory) but is still, from LeakSanitizer's
+ *    pointer-reachability analysis, indistinguishable from an accidental
+ *    leak -- confirmed by direct repro, not assumed: a genuinely
+ *    still-blocked thread's own stack frame does NOT reliably keep this
+ *    project's condvar-backed semaphore's backing pointer in a form
+ *    LSan's scanner recognizes as reachable.
+ * 2. (issue #6975) `lyric_process_piped_close` (`lyric_process.c`): a
+ *    genuinely idempotent close needs a `closed` guard flag to still be
+ *    valid, readable memory on a second call, which is incompatible with
+ *    actually free()'ing the handle struct on the first call -- there is
+ *    no way to test "was this pointer already freed" by dereferencing
+ *    that same pointer. The struct is small and fixed-size, so retaining
+ *    it once per piped-process handle for the rest of the process's life
+ *    is the bounded trade-off, not the fds/line-buffer it still fully
+ *    releases on first close.
+ *
  * A no-op in a non-ASan build (the interface only exists when linked in). */
 void lyric_lsan_ignore_leak(void* p) {
     if (p && __lsan_ignore_object) {
