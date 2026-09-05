@@ -2363,31 +2363,114 @@ func coerceArgTo(insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): U
         case _ -> boxIfNeeded(insns, fromTy)
       }
     }
-    case JArray(_) -> {
+    case JArray(elemTy) -> {
       // A list value (an `EList` literal or any List-typed expression) flowing
       // into an erased `slice[T]` parameter (`[Ljava/lang/Object;`) must be
       // converted: an ArrayList is not assignable to an array and fails
       // verification at class load (#4700).  `ArrayList.toArray()` yields the
       // `Object[]` the slice ABI expects.  A value already of array type
       // needs no conversion (JVM ref-array covariance).
+      //
+      // When `toTy`'s element type is narrower than `Object` (an extern-
+      // interface impl's slice[ExternType] return, #6970 review follow-up on
+      // #5931), the no-arg `toArray()` overload is not enough: its erased
+      // return type is always `Object[]`, which the JVM verifier will not
+      // accept where the narrower array type is required by the method
+      // descriptor. `Collection.toArray(T[])`'s erased descriptor is also
+      // `([Ljava/lang/Object;)[Ljava/lang/Object;`, but passing a real
+      // zero-length `T[]` makes the RUNTIME result actually be a `T[]`
+      // (the JDK allocates a fresh correctly-typed array whenever the
+      // supplied one is too small); a `checkcast` after the call narrows the
+      // verifier's STATIC tracked type to match what's truly on the heap.
       match fromTy {
         case JRef(fromCls) -> {
           if fromCls == "java/util/ArrayList" {
-            val taPs: List[JvmType] = newList()
-            insns.add(
-              LInvokevirtual(
-                owner = "java/util/ArrayList",
-                name = "toArray",
-                params = taPs,
-                ret = JArray(elem = JRef(className = "java/lang/Object"))
-              )
-            )
+            match elemTy {
+              case JRef(elemCls) -> {
+                if elemCls == "java/lang/Object" {
+                  val taPs: List[JvmType] = newList()
+                  insns.add(
+                    LInvokevirtual(
+                      owner = "java/util/ArrayList",
+                      name = "toArray",
+                      params = taPs,
+                      ret = JArray(elem = JRef(className = "java/lang/Object"))
+                    )
+                  )
+                } else {
+                  insns.add(LIconst(v = 0))
+                  insns.add(LAnewarray(className = elemCls))
+                  val taPs2: List[JvmType] = newList()
+                  taPs2.add(JArray(elem = JRef(className = "java/lang/Object")))
+                  insns.add(
+                    LInvokevirtual(
+                      owner = "java/util/ArrayList",
+                      name = "toArray",
+                      params = taPs2,
+                      ret = JArray(elem = JRef(className = "java/lang/Object"))
+                    )
+                  )
+                  insns.add(LCheckcast(className = "[L" + elemCls + ";"))
+                }
+              }
+              case _ -> {
+                val taPs3: List[JvmType] = newList()
+                insns.add(
+                  LInvokevirtual(
+                    owner = "java/util/ArrayList",
+                    name = "toArray",
+                    params = taPs3,
+                    ret = JArray(elem = JRef(className = "java/lang/Object"))
+                  )
+                )
+              }
+            }
           }
         }
         case _ -> ()
       }
     }
     case _ -> ()
+  }
+}
+
+// `coerceArgTo` with one addition it cannot make itself (no `FuncCtx` to
+// allocate loop-temp slots, see `emitArrayToArrayListJvm`'s comment on the
+// same constraint): converting an `ArrayList` value into a JVM PRIMITIVE
+// array (`byte[]`/`int[]`/…), needed when a `slice[Elem]` return/argument
+// narrows to a primitive-element array for an extern-interface `impl`
+// (`implTypeExprToJvm`'s own doc comment: "a primitive slice element needs
+// the real primitive array too" — #6977 review follow-up on #5931/#6970,
+// the primitive-element half `coerceArgTo`'s reference-type narrowing
+// didn't cover). Delegates to `coerceArgTo` for every other shape.
+func coerceArgToCtx(ctx: in FuncCtx, insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): Unit {
+  match fromTy {
+    case JRef(fromCls) -> {
+      if fromCls == "java/util/ArrayList" {
+        match toTy {
+          case JArray(elemTy) -> {
+            if isJvmPrimitiveElemType(elemTy) {
+              val taPs: List[JvmType] = newList()
+              insns.add(
+                LInvokevirtual(
+                  owner = "java/util/ArrayList",
+                  name = "toArray",
+                  params = taPs,
+                  ret = JArray(elem = JRef(className = "java/lang/Object"))
+                )
+              )
+              emitUnboxObjectArray(ctx, insns, elemTy)
+            } else {
+              coerceArgTo(insns, fromTy, toTy)
+            }
+          }
+          case _ -> coerceArgTo(insns, fromTy, toTy)
+        }
+      } else {
+        coerceArgTo(insns, fromTy, toTy)
+      }
+    }
+    case _ -> coerceArgTo(insns, fromTy, toTy)
   }
 }
 

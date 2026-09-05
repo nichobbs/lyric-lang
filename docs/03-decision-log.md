@@ -41270,3 +41270,181 @@ server hosting/unary/streaming remain unimplemented, tracked at #6581), #6581
 this session's group:ecosystem-lib-kernels scope), D-progress-815 (the
 interim honest-failure fix this session builds on), D-progress-252 (original
 `lyric-grpc` ship, corrected here).
+
+## D-progress-878 — JVM codegen: `impl <ExternInterface> for Record` with a `slice[ExternType]` param/return now resolves the real JVM array type, scoped to extern-interface impls only (#5931)
+
+**Context.** `impl JX509TrustManager for TrustAll { func checkServerTrusted(
+chain: in slice[JX509Certificate], authType: in String): Unit { ... } }` —
+implementing a real JDK interface with an array-shaped method (very common:
+`X509KeyManager`, `X509TrustManager`, many collection/listener SPIs) —
+compiled cleanly and even ran fine as long as nothing outside the impl's own
+code called the method, but `javap` showed every `slice[JX509Certificate]`
+param/return erased to `[Ljava/lang/Object;` instead of the interface's real
+`[Ljava/security/cert/X509Certificate;`. The moment anything dispatches
+through the interface type via `invokeinterface` — a real TLS handshake
+calling `checkServerTrusted`, or the JVM's own SPI machinery generally — the
+mismatched descriptor throws `AbstractMethodError`: a genuine binary-
+compatibility bug, not merely "unsupported."
+
+**Root cause.** `holderAwareParamTypes`'s `erase` branch (used for impl-
+method params) and `lowerImplMethod`'s return-type resolution both called
+`typeExprToJvmErasedExtern`/`typeExprToJvmExtern`, NEITHER of which has a
+`TSlice` case — both fall through their generic catch-all to
+`typeExprToJvm`'s `TSlice(_) -> JArray(elem = Object)`, which erases every
+slice element type uniformly and never consults `externTypes` for the
+element.
+
+**Fix — scoped, not a blanket change.** Per the issue's own framing, an
+ORDINARY (non-impl) Lyric function signature keeps the uniform, erased
+`Object[]` `slice[T]` ABI ON PURPOSE (every Lyric-to-Lyric slice call site
+agrees on it regardless of element type) — the shared `typeExprToJvmExtern`/
+`typeExprToJvmErasedExtern` functions those signatures resolve through were
+deliberately left untouched (an initial attempt to add a general `TSlice`
+case there was reverted after the type-parameter-aware `erase` path started
+resolving a truly generic `slice[T]` through `externTypes`/the in-package
+guess instead of erasing `T` to `Object`, and — more fundamentally — because
+widening the fix beyond impl methods risked the exact same descriptor-
+mismatch class of bug for a `slice[UserRecord]` in an ordinary signature,
+whose uniform `Object[]` erasure other call sites depend on). Instead, two
+new impl-scoped functions (`implTypeExprToJvm` / `implParamTypesToJvm`)
+recurse through a `TSlice` to the real element type UNCONDITIONALLY (an
+extern interface's descriptor is fixed and foreign — a primitive slice
+element needs the real primitive array too, not just an extern one) and are
+wired into `lowerImplMethod` (the method body) ONLY when the impl's
+interface is extern (`Lyric.ConstraintRef` resolves through `externTypes`,
+via the existing `implIfaceExternDottedFqn` helper) — a NEW `isExternIface`
+parameter selects between the impl-aware and ordinary resolution. The
+signature REGISTRATION side (`IImpl`'s `registerInstanceSig` call, used by
+`lowerMethodCall`'s J3 M-3 path for in-package Lyric callers) gets a parallel
+`registerInstanceSigImplExtern`, selected by the identical extern check, so
+the two never diverge. A plain (non-extern) Lyric interface impl is
+completely unaffected — its OWN interface method descriptor is independently
+registered via `registerIfaceSig`'s ordinary, uniform-erasure path, so
+narrowing only the impl body would have made the concrete method fail to
+override the interface's abstract one at all.
+
+**Verification.** `javap` on the emitted class confirms the fix: `impl
+JCallbackHandler for SliceIfaceHandler { func handle(callbacks: in
+slice[JCallback]): Unit }` now emits `public void handle(javax.security.
+auth.callback.Callback[]);` (was `(Ljava/lang/Object;)V`). A Lyric-authored
+call site through an interface-TYPED extern receiver resolves via auto-FFI
+rather than this impl's own registered signature — a separate, pre-existing
+auto-FFI limitation this fix does not touch — so the new
+`iface_dispatch_jvm_self_test.l` case instead pins construction and a direct
+call on the CONCRETE record (mirroring `ffi_iface_impl_jvm_self_test.l`'s
+pattern): `iface_dispatch_jvm_self_test` 7/7. No regression in
+`ffi_iface_impl_jvm_self_test`, `record_method_jvm_self_test`,
+`out_inout_jvm_self_test`, `out_inout_instance_jvm_self_test`,
+`control_flow_jvm_self_test`, `iface_default_method_out_inout_jvm_self_test`,
+`silent_miscompile_guard_jvm_self_test` (all green).
+
+## D-progress-879 — JVM codegen: `coerceArgTo`'s `ArrayList` → array conversion now narrows to the real element type instead of always producing `Object[]` (#5931 review follow-up, #6970)
+
+**Context.** Automated review of D-progress-878's PR found the new test
+coverage was one-sided: only the parameter-side narrowing
+(`implParamTypesToJvm`) had a regression test, while the sibling return-type
+narrowing (`lowerImplMethod`'s `retTy` path) had none. Adding a test using
+the PR's own motivating example — `impl X509TrustManager for Record { func
+getAcceptedIssuers(): slice[JX509Certificate] { [] } }` — immediately
+reproduced a real, distinct `VerifyError: Bad return type`: the method's
+declared descriptor was correctly narrowed to
+`[Ljava/security/cert/X509Certificate;`, but the body's `[]` literal builds
+an `ArrayList` (ordinary Lyric slice-value semantics), and nothing converted
+that `ArrayList` into the narrower array type before the `areturn`.
+
+**Root cause.** `Jvm.Codegen.coerceArgTo`'s `JArray` arm converts an
+`ArrayList` value to an array via the no-arg `Collection.toArray()`
+overload unconditionally — whose erased return type is always `Object[]`.
+That was sufficient for the pre-existing erased-`Object[]` slice ABI, but
+once `retTy`/`implParamTypesToJvm` can request a narrower `JArray(elem =
+SpecificType)` target, the no-arg overload's `Object[]` result is not
+assignable to it — the exact `VerifyError` class this whole fix exists to
+eliminate, now reached through the coercion helper the fix itself didn't
+touch.
+
+**Fix.** When `toTy`'s element type is a non-`Object` reference type,
+`coerceArgTo` now emits the typed `Collection.toArray(T[])` overload
+instead: `anewarray <elemClass>` with a zero-length count builds a real
+`T[]` to pass in (the JDK allocates a fresh correctly-typed array whenever
+the supplied one is too small, per `Collection.toArray`'s contract), then a
+`checkcast [Lclass;` after the call narrows the verifier's *static* tracked
+type to match what is genuinely on the heap at runtime (the call's own
+erased descriptor is still `([Ljava/lang/Object;)[Ljava/lang/Object;`, so
+without the `checkcast` the verifier would still see `Object[]`). The
+`elemTy == Object` case is untouched, preserving the exact prior behavior
+for the ordinary erased slice ABI.
+
+**Verification.** New `iface_dispatch_jvm_self_test.l` case (`impl
+X509TrustManager for SliceIfaceTrustManager`) reproduces the reported
+`VerifyError` before the fix and passes after it —
+`iface_dispatch_jvm_self_test` 8/8. No regression: `ffi_iface_impl_jvm_self_test`
+(2/2), `record_method_jvm_self_test` (19/19), `out_inout_jvm_self_test`
+(18/18), `control_flow_jvm_self_test` (17/17),
+`silent_miscompile_guard_jvm_self_test` (44/44).
+
+## D-progress-880 — JVM codegen: extern-interface `impl` methods now convert a `slice[Elem]` RETURN value into the real primitive array type, not just reference-element arrays (#5931 review follow-up, #6977)
+
+**Context.** Automated review of D-progress-879's PR found `implTypeExprToJvm`'s
+own doc comment ("a primitive slice element needs the real primitive array
+too, not just an extern one") was aspirational, not implemented: the TYPE
+resolution side (`TSlice(elem) -> JArray(elem = implTypeExprToJvm(elem,
+...))`) already correctly resolves a primitive element (`Byte` -> `JByte`),
+but the CODEGEN/coercion side (`coerceArgTo`'s `JArray` arm, fixed in
+D-progress-879 only for reference-typed elements) had no handling for a
+primitive target: its `case _ ->` fallback still emitted the old no-arg
+`ArrayList.toArray()` (erasing to `Object[]`), which is not assignable to
+e.g. `byte[]`.
+
+**Root cause.** `coerceArgTo` cannot allocate the loop-temp local slots a
+primitive-array conversion loop needs (no `FuncCtx` parameter — the same
+constraint `emitArrayToArrayListJvm`'s own comment documents for the
+opposite direction), so it never attempted a primitive-element narrowing at
+all.
+
+**Fix.** New `coerceArgToCtx(ctx, insns, fromTy, toTy)` in `04_calls.l`:
+delegates to `coerceArgTo` for every shape except `ArrayList -> JArray(elem)`
+where `elem` is a JVM primitive, in which case it calls the no-arg
+`toArray()` (giving `Object[]`) then reuses the EXISTING
+`emitUnboxObjectArray` helper (already used elsewhere for the ordinary
+Lyric-slice-argument-to-JDK-primitive-array FFI direction) to unbox each
+element into a freshly allocated primitive array. `lowerInstanceMethodBody`'s
+two return-coercion call sites (`FBBlock`'s implicit tail return, `FBExpr`)
+now call `coerceArgToCtx` instead of the plain `coerceArgTo` — this is the
+single body-lowering tail both `lowerImplMethod` (extern-interface impls)
+and `lowerProtectedMethod`/`lowerRecordMethod` (whose `retTy` is never
+narrower than the ordinary erased `Object[]` slice ABI, so the new branch
+is unreachable there — a safe no-op) share, per that function's own
+"prevent the two call-sites from drifting" design.
+
+**Known remaining gap (parameter side, not fixed here).** The reviewer's
+finding also named the PARAMETER-side narrowing
+(`implParamTypesToJvm`/`registerInstanceSigImplExtern`) as sharing this same
+primitive-element gap: an ordinary Lyric caller passing an `ArrayList`-backed
+`slice[Byte]` value as an argument to an extern-interface impl method whose
+parameter narrows to `byte[]` would hit the identical `VerifyError`. Unlike
+the return path (a single, well-defined call site in
+`lowerInstanceMethodBody`), the parameter path's argument-to-`sig.params[i]`
+coercion is duplicated across 6+ independent call-lowering functions in
+`04_calls.l` (static calls, instance calls, UFCS, holder-mode variants,
+etc.) — all of which pass `ctx` and could in principle reach an
+extern-interface impl call, since Lyric's call dispatch does not have a
+separate "impl method call" code path. A comprehensive fix requires
+auditing and updating every one of those call sites; given the currently
+severe CI/runner capacity constraints and the complete absence of any
+concrete failing repro or real ecosystem usage of a primitive-element
+`slice[T]` PARAMETER (as opposed to return) on an extern-interface impl,
+this is deliberately left as an open, precisely-scoped follow-up rather
+than risking an incomplete or under-tested sweep across every call site
+under time pressure. Concrete repro shape for whoever picks this up:
+`impl SomeExternIface for X { func consume(data: in slice[Byte]): Unit {
+... } }` called as `x.consume(someArrayListBackedByteSlice)`.
+
+**Verification.** New `iface_dispatch_jvm_self_test.l` case (`impl
+java.security.Key for SliceIfacePrimitiveKey { func getEncoded():
+slice[Byte] { [1, 2, 3] } }`) reproduces the reported `VerifyError: Bad
+return type` before the fix and passes after it, asserting all three byte
+values round-trip — `iface_dispatch_jvm_self_test` 9/9. No regression:
+`ffi_iface_impl_jvm_self_test` (2/2), `record_method_jvm_self_test`
+(19/19), `out_inout_jvm_self_test` (18/18),
+`out_inout_instance_jvm_self_test` (9/9), `control_flow_jvm_self_test`
+(17/17), `silent_miscompile_guard_jvm_self_test` (44/44).
