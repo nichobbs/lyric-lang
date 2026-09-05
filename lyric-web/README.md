@@ -427,12 +427,38 @@ Convert to a `Response` with `Web.errorResponse(err)`.
 
 ---
 
+## Background workers
+
+`Web.addWorker(router, name, intervalMs, worker)` registers a `Web.Worker` (an
+interface, `func tick(): Unit` — not a stored closure or a name string, same
+reason as `Handler`/`Middleware`) fired every `intervalMs` once the server
+starts:
+
+```lyric
+record PollWorker {}
+
+impl Web.Worker for PollWorker {
+  func tick(): Unit {
+    // runs on a background thread every intervalMs, for the life of the process
+  }
+}
+
+router = Web.addWorker(router, "poller", 2000, PollWorker())
+```
+
+On `--target dotnet` this runs on a real background thread-pool task
+(`System.Threading.Tasks.Task.Run`), independent of the accept loop — issue
+#5359. On `--target jvm` a worker is registered but does not yet fire (see
+[Known gaps](#known-gaps)).
+
+---
+
 ## Known gaps
 
 - **Single-threaded accept loop on `dotnet`.** `Web.serve`'s `dotnet` branch handles one request at a time — fine for the examples and moderate traffic, not a high-concurrency production server. Concurrent request handling needs either real MSIL structured concurrency (`spawn` currently lowers to a synchronous no-op on `--target dotnet`) or a hand-rolled thread pool; not yet implemented. The `jvm` branch does not share this limitation — Undertow's own XNIO I/O/worker threads handle concurrent requests natively.
 - **Streaming (`StreamingHandler`/`ResponseWriter`) is `dotnet`-only** (lyric-lang#5979). The JVM `serve` path delegates entirely to `Web.Kernel.Runtime`'s Undertow server, a different I/O model that doesn't yet expose a chunked-write path — a tracked follow-up, not a silent gap.
 - **Middleware that post-processes a response (rather than rejecting/short-circuiting it) has no effect on streaming responses** — tracked in lyric-lang#5985. `serveStreaming`/`startStreaming` run streaming requests through `router.middlewares` (so a middleware that rejects a request outright is fully honored), but a streaming response is already committed and sent to the wire by the time a wrapping middleware gets control back to inspect/modify it, so header additions like `Web.corsMiddleware`'s `Access-Control-Allow-Origin` on an allowed-origin request are silently dropped for streaming routes specifically (CORS preflight `OPTIONS` handling is unaffected).
-- **`Web.addWorker` background timers are registered but not invoked** — tracked in issue #5359.
+- **`Web.addWorker` fires on `--target dotnet`** (a real background `Task.Run`-backed loop per worker, started when the server starts, issue #5359) **but only registers, without firing, on `--target jvm`** — the jvm `serve`/`serveTls` path delegates entirely to `Web.Kernel.Runtime`'s Undertow binding, which has no worker-dispatch twin yet (blocked on the JVM compile failures below, #5444/#5458, which already keep this library's test suite from building on that target).
 - **Live OpenAPI JSON / Swagger UI serving is not implemented** — tracked in issue #5360. Use the build-time `lyric web spec` workflow instead.
 - **JVM target's test suite does not compile today**, for reasons entirely outside this library — distinct, newly-discovered JVM backend bugs, none of which is #1707 (that ticket is closed and covers an unrelated nested-generic-construction defect; an earlier draft of this work mischaracterized the blocker as #1707, corrected here after re-verifying end to end):
   - **#5443** (worked around) — the `[project.packages]` array form for one package built from two alternative files (`_kernel/net/web_kernel.l` / `_kernel/jvm/web_kernel.l`, selected by feature) leaks the non-selected file's `extern type` binding when both files reuse the same local alias name for genuinely different host types, producing a JVM class file with a dangling reference to the **.NET** type name. The general `[project.packages]` compiler bug is still open (a real risk for any future multi-file package reusing an alias name), but this library sidesteps it: the JVM file's alias was renamed from `ConcurrentDict[K, V]` to `JvmConcurrentDict[K, V]` so it no longer collides with the `.NET` file's `ConcurrentDict[K, V]`.

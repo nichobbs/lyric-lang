@@ -52,9 +52,13 @@
 //! Not yet implemented (tracked separately, not silently no-op'd):
 //!   - Live OpenAPI/Swagger UI serving (issue #5360) — use `lyric web spec`
 //!     to generate the spec at build time instead.
-//!   - `Web.addWorker` background timers are registered but not yet fired
-//!     (issue #5359) — the obvious implementation (structured-concurrency
-//!     `spawn`) is a synchronous no-op on `--target dotnet` today.
+//!   - `Web.addWorker`'s registered `Worker` fires on `--target dotnet`
+//!     (issue #5359) via a real background `Task.Run`-backed loop; on
+//!     `--target jvm` it still only registers — the jvm `serve`/`serveTls`
+//!     path delegates entirely to `Web.Kernel.Runtime`'s Undertow binding,
+//!     which has no worker-dispatch twin yet (blocked on the pre-existing
+//!     JVM compile failures #5444/#5458 that already keep this library's
+//!     test suite from building on that target).
 @runtime_checked
 package Web
 
@@ -393,6 +397,17 @@ pub interface Middleware {
   func wrap(req: in Request, next: Handler): Response
 }
 
+/// A background worker fired on an interval by `Web.serve`/`Web.start`
+/// (issue #5359) — an interface, not a stored closure/function-value or a
+/// name string meant for reflection-based lookup, for the same reason
+/// `Handler`/`Middleware` are interfaces (see `Handler`'s doc comment,
+/// issue #5363, and D099 for why reflection-based dispatch is rejected
+/// outright). Register with `Web.addWorker`.
+@stable(since = "0.3")
+pub interface Worker {
+  func tick(): Unit
+}
+
 // ─── Router ───────────────────────────────────────────────────────────────────
 /// A single registered route binding a method + URL pattern to a handler.
 ///
@@ -412,13 +427,14 @@ pub record Route {
   deprecated: Bool
 }
 
-/// A background worker registered with the server.  **Not yet dispatched**
-/// (issue #5359) — registered workers are not currently invoked.
-@stable(since = "0.1")
+/// A background worker registered with the server, fired every
+/// `intervalMs` on `--target dotnet` (issue #5359; `--target jvm` still
+/// registers but does not fire — see `Web.serve`'s jvm doc comment).
+@stable(since = "0.3")
 pub record WorkerRegistration {
   name: String
   intervalMs: Int
-  handlerName: String
+  handler: Worker
 }
 
 /// A collection of routes, background workers, and middleware.
@@ -494,15 +510,14 @@ pub func addPatch(router: in Router, pattern: in String, handler: in Handler): R
   return addRoute(router, "PATCH", pattern, handler)
 }
 
-/// Register a background worker.  **Not yet dispatched** — see
-/// `WorkerRegistration` and issue #5359.
-@stable(since = "0.1")
-pub func addWorker(router: in Router, name: in String, intervalMs: in Int, handlerName: in String): Router
+/// Register a background worker, fired every `intervalMs` once the server
+/// starts — see `WorkerRegistration` and issue #5359.
+@stable(since = "0.3")
+pub func addWorker(router: in Router, name: in String, intervalMs: in Int, handler: in Worker): Router
   requires: name.length > 0
   requires: intervalMs > 0
-  requires: handlerName.length > 0
 {
-  val w = WorkerRegistration(name = name, intervalMs = intervalMs, handlerName = handlerName)
+  val w = WorkerRegistration(name = name, intervalMs = intervalMs, handler = handler)
   return Router(
     routes = router.routes,
     workers = concat(router.workers, [w]),
@@ -1552,6 +1567,7 @@ pub func serveTls(
     }
   }
   Console.println("[lyric-web] Listening on https://" + host + ":" + port.toString() + "/")
+  startWorkers(router)
   while true {
     try {
       val ctx = nextContext(listener)
@@ -1635,6 +1651,26 @@ pub func serveTls(
 /// logged, the listener is stopped, and the process exits non-zero
 /// rather than looping forever unable to make progress.
 ///
+/// Fire every registered worker once, in the background, on a real
+/// thread-pool task per worker (issue #5359) — each loops
+/// `sleepMillis(intervalMs); handler.tick()` forever. Fire-and-forget by
+/// design: the returned `Task` is deliberately never awaited or held —
+/// `Web.serve`/`serveTls` block in their own accept loop for the life of
+/// the process, so there is nothing to join, and joining would block
+/// startup on a loop that never returns. `Task.Run` is genuinely
+/// concurrent here (confirmed empirically; `Std.Task.scopeSpawn`'s own
+/// `Task.Run(Action, CancellationToken)` binding was separately documented
+/// as never invoking its closure on `--target dotnet`, `_kernel/task.l`
+/// D-progress-598 — that finding predates an unrelated MSIL fix and no
+/// longer reproduces with a plain `Task.Run(Action)`, verified directly
+/// against this exact call shape).
+@cfg(feature = "dotnet")
+func startWorkers(router: in Router): Unit {
+  for w in router.workers {
+    HttpKernel.startWorkerLoop(w.intervalMs, w.handler)
+  }
+}
+
 /// dotnet-only (see `StreamingHandler`'s doc comment).
 @stable(since = "0.3")
 @cfg(feature = "dotnet")
@@ -1648,6 +1684,7 @@ pub func serveStreaming(router: in Router, streaming: in StreamingRoutes, host: 
   val listener = startListener(prefixStr)
   val suffix = if streaming.routes.length > 0 { " (streaming enabled)" } else { "" }
   Console.println("[lyric-web] Listening on " + prefixStr + suffix)
+  startWorkers(router)
   while true {
     try {
       val ctx = nextContext(listener)
