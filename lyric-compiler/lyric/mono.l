@@ -1182,9 +1182,33 @@ func typeExprUnsafeUnderErasure(te: in TypeExpr, unpinned: in List[String]): Boo
 // A bare occurrence of an unpinned type parameter (`T`) is unsafe exactly
 // when it is itself a type ARGUMENT to another generic (`Result[T, E]`,
 // `List[T]`); nested further inside another shape, recurse.
+//
+// `TSlice`/`TArray`/`TNullable`/`TParen` are handled directly HERE (#6940),
+// recursing through `typeArgOccursUnsafely` itself rather than falling
+// through to `typeExprUnsafeUnderErasure`: that function's own `TSlice`/
+// `TArray` arms delegate to `typeExprNestedUnsafe`, which re-applies the
+// top-level array-covariance exemption (a bare unpinned ref inside a slice/
+// array element is safe -- see `typeExprUnsafeUnderErasure`'s doc comment).
+// That exemption is sound only when the slice/array IS the parameter's own
+// static type; once a slice/array is itself nested as a type ARGUMENT to
+// another generic (`Result[slice[T], E]`, `Map[K, slice[T]]`), the exemption
+// must NOT be re-applied, because a closed generic type is invariant over
+// ALL of its type arguments on both MSIL and JVM regardless of whether one
+// of them happens to be an array -- `Result<Object[], E>` does not accept a
+// real `Result<Foo[], E>` the way a bare `Object[]` parameter accepts a real
+// `Foo[]` argument. Threading straight through `typeArgOccursUnsafely` here
+// (instead of `typeExprNestedUnsafe`) keeps a bare unpinned ref anywhere
+// along the slice/array/nullable/paren chain flagged unsafe once we're
+// already inside a type-argument position; only an unrelated shape (another
+// `TGenericApp`) falls through to `typeExprUnsafeUnderErasure`'s own
+// argument-list walk.
 func typeArgOccursUnsafely(te: in TypeExpr, unpinned: in List[String]): Bool {
   match te.kind {
     case TRef(path) -> path.segments.count == 1 and listContainsStr(unpinned, path.segments[0])
+    case TSlice(elem) -> typeArgOccursUnsafely(elem, unpinned)
+    case TArray(_, elem) -> typeArgOccursUnsafely(elem, unpinned)
+    case TNullable(inner) -> typeArgOccursUnsafely(inner, unpinned)
+    case TParen(inner) -> typeArgOccursUnsafely(inner, unpinned)
     case _ -> typeExprUnsafeUnderErasure(te, unpinned)
   }
 }
@@ -3537,20 +3561,11 @@ func noteUnsafeImportedFallback(
 }
 
 // The subset of `typeParams` that `subst` failed to bind, rendered as a
-// quoted comma-separated list for the M0002 message.
+// quoted comma-separated list for the M0002 message. Delegates to the same
+// `collectUnpinnedTypeParams` + `quotedStringList` pair the M0004 path
+// (#5970/#6940) uses, rather than re-walking `typeParams`/`subst` itself.
 func unresolvedTypeParamList(typeParams: in List[String], subst: in Map[String, TypeExpr]): String {
-  var acc = ""
-  var i = 0
-  while i < typeParams.count {
-    if not subst.containsKey(typeParams[i]) {
-      if acc.length > 0 {
-        acc = acc + ", "
-      }
-      acc = acc + "'" + typeParams[i] + "'"
-    }
-    i = i + 1
-  }
-  acc
+  quotedStringList(collectUnpinnedTypeParams(typeParams, subst))
 }
 
 func renderTypeExpr(te: in TypeExpr): String {
