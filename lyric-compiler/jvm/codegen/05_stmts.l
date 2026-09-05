@@ -1636,12 +1636,70 @@ func lowerLocalPatBind(
         case _ -> discardValue(insns, initTy)
       }
     }
+    case PTuple(patterns) -> {
+      // #6578: `val (a, b): (T1, T2) = <expr>` must bind each element at its
+      // OWN declared type, not the blanket `Object` `lowerPatternBind`'s
+      // `PTuple` arm uses for a match-arm tuple pattern (which has no
+      // annotation to consult).  Left at `Object`, a later use of `a`/`b`
+      // (e.g. passing `a` to a parameter declared `extern type`) emits no
+      // `checkcast` and the StackMapTable frame for `a`'s slot stays typed
+      // `java/lang/Object` — `VerifyError: Bad type on operand stack` at
+      // that use, regardless of how the tuple's arms were built.  Resolve
+      // each pattern against the annotation's own tuple element type when
+      // the arities line up; an absent/mismatched/non-tuple annotation
+      // falls through to the pre-existing blanket-`Object` binding.
+      val tmpSlot = allocSlot(ctx, "__tmp_" + freshLabel(ctx), initTy)
+      emitStore(insns, tmpSlot, initTy)
+      match resolvedTupleTypeExprs(tyOpt, patterns.count) {
+        case Some(elemTypeExprs) -> {
+          var pti = 0
+          while pti < patterns.count {
+            val declaredElemTy = typeExprToJvmExtern(elemTypeExprs[pti], ctx.pkgName, ctx.externTypes)
+            val objSlot = extractTupleElem(ctx, insns, tmpSlot, initTy, pti)
+            val objTy = JRef(className = "java/lang/Object")
+            emitLoad(insns, objSlot, objTy)
+            coerceArgTo(insns, objTy, declaredElemTy)
+            val typedSlot = allocSlot(ctx, "__tupelemty_" + toString(pti) + "_" + freshLabel(ctx), declaredElemTy)
+            emitStore(insns, typedSlot, declaredElemTy)
+            lowerPatternBind(ctx, insns, patterns[pti], typedSlot, declaredElemTy, newList())
+            pti = pti + 1
+          }
+        }
+        case None -> lowerPatternBind(ctx, insns, pat, tmpSlot, initTy, newList())
+      }
+    }
     case _ -> {
       // Complex pattern: store to a temp slot then bind.
       val tmpSlot = allocSlot(ctx, "__tmp_" + freshLabel(ctx), initTy)
       emitStore(insns, tmpSlot, initTy)
       lowerPatternBind(ctx, insns, pat, tmpSlot, initTy, newList())
     }
+  }
+}
+
+// Resolve `tyOpt` (peeling `TParen`) to its `TTuple` element type list when it
+// names a tuple type of exactly `arity` elements; `None` for anything else
+// (no annotation, a non-tuple annotation, or an arity mismatch the type
+// checker would already have rejected) — the caller's cue to fall back to
+// the pre-existing blanket-`Object` tuple binding.
+func resolvedTupleTypeExprs(tyOpt: in Option[TypeExpr], arity: in Int): Option[List[TypeExpr]] {
+  match tyOpt {
+    case Some(te) -> resolvedTupleTypeExprsTe(te, arity)
+    case None -> None
+  }
+}
+
+func resolvedTupleTypeExprsTe(te: in TypeExpr, arity: in Int): Option[List[TypeExpr]] {
+  match te.kind {
+    case TParen(inner) -> resolvedTupleTypeExprsTe(inner, arity)
+    case TTuple(types) -> {
+      if types.count == arity {
+        Some(value = types)
+      } else {
+        None
+      }
+    }
+    case _ -> None
   }
 }
 
