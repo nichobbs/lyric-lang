@@ -130,26 +130,17 @@ func abortOnCodegenDiagnosticsMsil(cctx: in CodegenCtx): Bool {
   DiagUtil.diagReportAndAbort(cctx.diagnostics)
 }
 
-// #6598/#6599: project-path variant of `abortOnCodegenDiagnosticsMsil` that
-// prefixes every reported diagnostic with the owning package name via
-// `DiagUtil.diagReportAndAbortInPkg` — the bare form is ambiguous once a
-// bundle compiles more than one file (`diagReportAndAbortInPkg`'s own doc
-// comment), and several F002x messages carry no type/package name in the
-// message body at all (e.g. F0025).
-func abortOnCodegenDiagnosticsMsilInPkg(cctx: in CodegenCtx, pkgName: in String): Bool {
-  DiagUtil.diagReportAndAbortInPkg(pkgName, cctx.diagnostics)
-}
-
-// #6824 item 2: like `abortOnCodegenDiagnosticsMsilInPkg`, but attributes
-// each F0021–F0025/F0034 codegen diagnostic to its real on-disk file and
-// line via `origins` — the same `PackageLineOrigins` table
-// `abortOnCodegenDiagnosticsMsilInPkg`'s caller already resolved for the
-// parse/typecheck/modecheck/elaborate/weave gates on this exact package
-// (`ParsedUserPkg.origins`), but never passed to the codegen-phase gate,
-// which routed through the origin-blind `diagReportAndAbortInPkg` even on a
-// multi-file project package.  `origins` empty (single-file packages, and
-// every pre-#6824 caller) reproduces `abortOnCodegenDiagnosticsMsilInPkg`
-// exactly.
+// #6598/#6599, widened by #6824 item 2: project-path variant of
+// `abortOnCodegenDiagnosticsMsil` that attributes each F0021–F0025/F0034
+// codegen diagnostic to its real on-disk file and line via `origins` — the
+// same `PackageLineOrigins` table the parse/typecheck/modecheck/elaborate/
+// weave gates on this exact package already use (`ParsedUserPkg.origins`),
+// now also threaded to the codegen-phase gate, which previously routed
+// through the origin-blind `diagReportAndAbortInPkg` even on a multi-file
+// project package (several F002x messages carry no type/package name in the
+// message body at all, e.g. F0025, so the bare form is ambiguous once a
+// bundle compiles more than one file). `origins` empty (single-file
+// packages) reproduces the pre-#6824 bare-package-label behaviour exactly.
 func abortOnCodegenDiagnosticsMsilInPkgWithOrigins(
   cctx: in CodegenCtx,
   pkgName: in String,
