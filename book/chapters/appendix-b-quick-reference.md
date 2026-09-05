@@ -400,7 +400,7 @@ wire ProductionApp {
 
 Bitwise ops are methods: `.and()` `.or()` `.xor()` `.shl()` `.shr()`. No `?:` ternary; use `if … then … else …`.
 
-Numeric / character conversions are explicit methods (no implicit widening): `.toByte()` `.toInt()` `.toLong()` `.toChar()` `.toDouble()` on `Byte`/`Int`/`Long`/`Double`/`Char`. Widening is lossless; narrowing truncates toward zero; `.toByte()` reduces modulo 256 (`Byte` is unsigned 0..255). Mix widths via `acc + b.toInt()`, never `acc + b`. (Unsigned `UInt`/`ULong`/`Nat` and `.toFloat()` reserved pending backend support; `.toX()` on `String`/`Bool`/`Unit` is a `T0103` error.)
+Numeric / character conversions are explicit methods (no implicit widening): `.toByte()` `.toInt()` `.toLong()` `.toChar()` `.toDouble()` on `Byte`/`Int`/`Long`/`Double`/`Char`. Widening is lossless; narrowing truncates toward zero; `.toByte()` reduces modulo 256 (`Byte` is unsigned 0..255). Mix widths via `acc + b.toInt()`, never `acc + b`. (Conversion methods on unsigned `UInt`/`ULong`/`Nat` are not yet implemented — both targets have a real erased representation for `UInt`/`ULong` now, so this is a remaining method-surface gap, tracked under #6913. `.toFloat()` is separately reserved pending backend support for `Float`. `.toX()` on `String`/`Bool`/`Unit` is a `T0103` error.)
 
 ### Pattern matching
 
