@@ -17832,6 +17832,46 @@ func registerFieldFuncValTypesMsil(cctx: in CodegenCtx, fctx: in FuncCtx, name: 
             }
           }
         }
+        // #6690: `val f = (x) -> false` — an unannotated lambda LITERAL
+        // init, distinct from every case handled above (not a
+        // record-field-read, bare-name alias, or call). Every lifted lambda
+        // is emitted through the uniform boxed `Func<object,...>` ABI
+        // (#1877): its synthesized `__lambda_N` function always declares
+        // return type `Object` (see `collectLambdasBfsExpr`'s `ELambda`
+        // arm), so without a registered `funcValRetTypes` entry,
+        // `lowerFuncValueInvokeMsil`'s `case None -> MObject` arm never
+        // materializes the boxed call result — `f(y)` stays an unboxed-
+        // looking but still-boxed `object` reference, which reads as
+        // truthy regardless of the lambda's real body. Infer the lambda's
+        // return type from its own body's trailing expression
+        // (`blockTrailingExprMsil` — `None` for a statement-only/`defer`-
+        // routed body, which really does return `null`/void per that
+        // synthesis comment, so `MVoid` is not a guess there) using the
+        // same no-symbol-table heuristic `inferUntypedStaticValMsilType`
+        // uses for module-level vals (literals, `EParen`, `EPrefix`,
+        // `EBinop`, and `EPath` — resolved here against the lambda's own
+        // EXPLICITLY annotated parameters, since nothing else is in scope),
+        // falling back to `MObject` for any other shape — identical to
+        // today's unregistered behaviour, never a regression.
+        case ELambda(lparams, body) -> {
+          val paramEnv: Map[String, MsilType] = newMap()
+          var lpi = 0
+          while lpi < lparams.count {
+            match lparams[lpi].ty {
+              case Some(te) -> paramEnv.add(lparams[lpi].name, typeExprToMsilBodyCtx(cctx, fctx, te))
+              case None -> ()
+            }
+            lpi = lpi + 1
+          }
+          match blockTrailingExprMsil(body) {
+            case Some(trailing) -> {
+              fctx.funcValRetTypes.add(name, inferUntypedStaticValMsilType(trailing, paramEnv))
+            }
+            case None -> {
+              fctx.funcValRetTypes.add(name, MVoid)
+            }
+          }
+        }
         case _ -> ()
       }
     }
