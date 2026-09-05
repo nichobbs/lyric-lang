@@ -42237,3 +42237,30 @@ under a manual ASan build of `lyric_rt_test.c` (no crash, no leak
 report — confirming the suppression actually works, not just that the
 code compiles). Re-verified: `llvm_stdlib_self_test.l` 19/19, all
 `lyric-rt` C tests (plain + ASan) green.
+
+**Addendum: NULL-deref in `lyric_process_piped_read_line` after
+`hostPipedClose` when a line was still buffered (#6993, found in
+review of this same PR before merge).** The #6975 addendum above
+freed `p->linebuf.data` and set it `NULL` on close, but never reset
+`p->linebuf.len` to `0`. Since the struct itself is deliberately
+retained after close (see the #6975 addendum), the pointer stays
+dereferenceable — but if a caller closed a handle while a second,
+not-yet-consumed line was still sitting in `linebuf` (`len > 0`), the
+NEXT `hostPipedReadLineOpt`/`lyric_process_piped_read_line` call would
+scan `p->linebuf.data[i]` for a newline with `data == NULL` and
+`len > 0`: a NULL-pointer read on the very first loop iteration. Fixed
+by also resetting `p->linebuf.len = 0` and `p->linebuf.cap = 0`
+alongside the existing `data = NULL`, so a post-close read correctly
+falls through to `linebuf.len > 0` being false and `stdout_rd < 0`
+(also set on close) and returns `0` ("no more lines") instead of
+dereferencing anything. New C-level regression test
+(`test_process_piped_read_after_close_with_buffered_line`,
+`lyric_rt_test.c`): spawns `printf "a\nb\n"` (both lines delivered in
+one `read(2)`, so the first `read_line` call buffers both and returns
+only `"a"`, leaving `"b\n"` in `linebuf`), closes the handle with that
+second line still buffered, then calls `read_line` again and asserts
+it returns `0` cleanly. Verified this test genuinely reproduces the
+bug on the pre-fix code (a real `AddressSanitizer: SEGV` inside
+`lyric_process_piped_read_line`, not a hypothetical) before confirming
+the fix resolves it. Re-verified: `llvm_stdlib_self_test.l` 19/19, all
+`lyric-rt` C tests (plain + ASan) green.

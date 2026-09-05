@@ -34191,9 +34191,20 @@ double-close regression test, verified clean under a manual ASan build.
 See `docs/decisions/D-progress-0909-process-piped-host-native-kernel.md`'s
 addendum for the full account.
 
+**Addendum (#6993, found in review before merge):** the #6975 fix above
+freed `linebuf.data` and NULL'd it on close but never reset `linebuf.len`,
+so a handle closed while a second line was still buffered (`len > 0`)
+NULL-deref'd on the next `read_line` call. Fixed by also resetting
+`linebuf.len`/`linebuf.cap` to `0`. New regression test
+(`test_process_piped_read_after_close_with_buffered_line`) reproduces a
+real ASan SEGV on the pre-fix code before confirming the fix. See
+`docs/decisions/D-progress-0909-process-piped-host-native-kernel.md`'s
+second addendum for the full account.
+
 **Related:** `docs/decisions/D-progress-0909-process-piped-host-native-kernel.md`
 (full account), #6142 (fixed by this entry), #6887/#6888 (new, the two
 blockers found and filed), #6237 (the bracket-indexing gap this entry's
-own `parseArgString` worked around), #6975 (the double-free fixed by the
-addendum above), `native/plan/08-work-items.md` N5.7,
+own `parseArgString` worked around), #6975/#6993 (the double-free/NULL-deref
+fixed by the addenda above),
+`native/plan/08-work-items.md` N5.7,
 `docs/62-jsonrpc-mcp.md` §5.2 (the motivating lyric-mcp stdio transport).
