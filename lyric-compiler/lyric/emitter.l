@@ -101,6 +101,20 @@ pub record EmitResult {
   diagnostics: List[Diagnostic]
 }
 
+/// Result of resolving a `@test_module`'s `Lyric.*` compiler-package import
+/// closure to restored-DLL entries (`compilerClosureDllPaths`, #6628).
+/// `missingPackages` names every closure package that no candidate DLL set
+/// (the self-hosted bundle, the self-hosted per-package set, or the
+/// F#-emitted per-package set) actually contains — non-empty here means
+/// `dlls` is incomplete and MUST NOT be linked, since the earlier
+/// "does a DLL exist at all" check silently accepted a bundle/per-package
+/// set that was missing a package the test source actually imports,
+/// producing wrong runtime results instead of a build failure (#6628).
+pub record CompilerClosureResult {
+  dlls: List[String]
+  missingPackages: List[String]
+}
+
 /// Per-package source feed for `emitProject`.  Each package's `sources` list
 /// holds the `.l` file contents in deterministic order; `emitProject` merges
 /// a multi-file package into one compilation unit (single `package` line,
@@ -1996,26 +2010,44 @@ pub func emitCompilerBundle(entrySource: in String, outPath: in String, target: 
   emitProject(req)
 }
 
+// Names in `payloads` that are not present in `have` (a resolved package-name
+// list for one candidate DLL source). Used by `compilerClosureDllPaths` to
+// detect an incomplete closure resolution (#6628) before trusting it.
+func missingPayloadNames(payloads: in List[ProjectPackagePayload], have: in List[String]): List[String] {
+  val missing: List[String] = newList()
+  var i = 0
+  while i < payloads.count {
+    if indexOfString(have, payloads[i].name) < 0 {
+      missing.add(payloads[i].name)
+    }
+    i = i + 1
+  }
+  missing
+}
+
 // #2364 Stage 5: compute the restored-DLL list for a `@test_module` that imports
 // `Lyric.*` compiler packages.  Reuses `loadCompilerPayloads` to resolve the
 // transitive compiler-package import closure from source, then maps each closure
 // package to its already-compiled DLL in `libDir` (the F#-built compiler DLLs are
 // named `Lyric.<package>.dll`, e.g. `Lyric.Lyric.Weaver.dll`).  Returns
-// "<pkg>\t<dllPath>" entries (the `restoredDllPaths` encoding); empty when the
-// test imports no compiler packages or the compiler source / libDir is absent.
-// This is the linked-DLL replacement for the `LYRIC_LOAD_COMPILER` recompile path:
-// the test links the compiler DLLs as restored deps instead of recompiling them.
-pub func compilerClosureDllPaths(testSource: in String, libDir: in String): List[String] {
+// "<pkg>\t<dllPath>" entries (the `restoredDllPaths` encoding) plus any
+// closure package that no candidate DLL source actually covers
+// (`missingPackages`, #6628) — empty when the test imports no compiler
+// packages or the compiler source / libDir is absent.  This is the linked-DLL
+// replacement for the `LYRIC_LOAD_COMPILER` recompile path: the test links the
+// compiler DLLs as restored deps instead of recompiling them.
+pub func compilerClosureDllPaths(testSource: in String, libDir: in String): CompilerClosureResult {
   val dlls: List[String] = newList()
+  val noMissing: List[String] = newList()
   if libDir.length == 0 {
-    return dlls
+    return CompilerClosureResult(dlls = dlls, missingPackages = noMissing)
   }
   var compilerDir = walkUpForCompilerDir(Environment.appBaseDirectory())
   if compilerDir.length == 0 {
     compilerDir = walkUpForCompilerDir(Environment.currentDirectory())
   }
   if compilerDir.length == 0 {
-    return dlls
+    return CompilerClosureResult(dlls = dlls, missingPackages = noMissing)
   }
   val payloads = loadCompilerPayloads(compilerDir, testSource)
   // #3086: when the TEST SOURCE references a module-level `pub val` constant
@@ -2058,8 +2090,31 @@ pub func compilerClosureDllPaths(testSource: in String, libDir: in String): List
   // N times and double-register every artifact.
   val bundle = Path.join(shDir, "Lyric.Compiler.dll")
   if payloads.count > 0 and File.fileExists(bundle) {
-    dlls.add("Lyric.Compiler\t" + bundle)
-    return dlls
+    // #6628: a bundle that merely EXISTS may still be a stale build from
+    // before one of the closure's packages was added or wired in — verify
+    // every closure package is actually embedded (as a `Lyric.Contract.<Pkg>`
+    // resource) before trusting the bundle wholesale.  Trusting existence
+    // alone silently produced wrong runtime results (a missing package's
+    // symbols resolve against whatever stale/partial state the bridge falls
+    // back to) instead of a build failure naming the gap.
+    val entries = Meta.readAllContractsFromFile(bundle)
+    val bundlePkgs: List[String] = newList()
+    var ei = 0
+    while ei < entries.count {
+      bundlePkgs.add(entries[ei].packageName)
+      ei = ei + 1
+    }
+    val bundleMissing = missingPayloadNames(payloads, bundlePkgs)
+    if bundleMissing.count == 0 {
+      dlls.add("Lyric.Compiler\t" + bundle)
+      return CompilerClosureResult(dlls = dlls, missingPackages = noMissing)
+    }
+    Console.error(
+      "test: warning: self-hosted compiler bundle '" + bundle + "' is missing " + toString(bundleMissing.count) +
+        " package(s) this test imports (" +
+        Str.joinList(", ", bundleMissing) +
+        "); it looks stale. Trying the per-package DLL sets instead of trusting it."
+    )
   }
   var shComplete = payloads.count > 0
   var shi = 0
@@ -2076,7 +2131,7 @@ pub func compilerClosureDllPaths(testSource: in String, libDir: in String): List
       dlls.add(shPkg + "\t" + Path.join(shDir, "Lyric." + shPkg + ".dll"))
       sj = sj + 1
     }
-    return dlls
+    return CompilerClosureResult(dlls = dlls, missingPackages = noMissing)
   }
   if payloads.count > 0 {
     Console.error(
@@ -2086,19 +2141,28 @@ pub func compilerClosureDllPaths(testSource: in String, libDir: in String): List
         "omits `pub val` constants (#3086). Run `make selfhosted-compiler` to stage the self-hosted set."
     )
   }
+  val gotPkgs: List[String] = newList()
   var i = 0
   while i < payloads.count {
     val pkg = payloads[i].name
     val dll = Path.join(libDir, "Lyric." + pkg + ".dll")
     if File.fileExists(dll) {
       dlls.add(pkg + "\t" + dll)
+      gotPkgs.add(pkg)
     }
     i = i + 1
   }
-  if dlls.count == 0 and payloads.count > 0 {
+  // #6628: the F#-emitted per-package fallback above silently skipped any
+  // package whose DLL doesn't exist, so a partially-stale `libDir` produced
+  // an incomplete `dlls` list that the caller would link anyway. Compute
+  // exactly what's still missing after ALL THREE candidate sources (bundle,
+  // self-hosted per-package, F#-emitted per-package) so the caller can fail
+  // the test run loudly instead of linking a closure with a gap in it.
+  val stillMissing = missingPayloadNames(payloads, gotPkgs)
+  if stillMissing.count > 0 {
     Console.error("test: warning: compiler DLLs not found in '" + libDir + "'; the test's Lyric.* imports may fail")
   }
-  dlls
+  CompilerClosureResult(dlls = dlls, missingPackages = stillMissing)
 }
 
 // Selection sort over a copy of `xs` — small inputs (the compiler-tree
