@@ -33779,7 +33779,7 @@ can bridge. Confirmed via `git stash` to reproduce identically against
 unmodified `origin/main`, ruling this PR out as the cause; tracked under
 #5800.
 
-**Related:** `docs/03-decision-log.md` D-progress-882 (full account),
+**Related:** `docs/03-decision-log.md` D-progress-883 (full account),
 #6581 (fixed by this PR), D-progress-877 (the independent
 re-verification), #5809 (pre-existing value-type-generic-member limitation,
 untouched), #5800 (the newly-surfaced, separately-tracked delegate-erasure
