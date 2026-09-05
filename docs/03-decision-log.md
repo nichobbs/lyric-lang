@@ -30454,6 +30454,15 @@ sugar), #5625 (original mis-binding).
 
 ## D-progress-784 — Bootstrap seed fallback: local-tag tier + release-cut pin assertion (#6501)
 
+**PARTIALLY SUPERSEDED by D-progress-882** (#6859): mechanism #2 below (the
+`create-release` release-cut pin-freshness assertion) is **removed** — it was
+structurally guaranteed to fail every cut immediately after a release (the pin
+is always one release behind at that moment), which blocked publish runs
+1812/1814/1816. Mechanism #1 (the local-tag fallback tier) is **kept and
+strengthened**: it now runs a bounded best-effort `git fetch --tags` first, so a
+shallow checkout self-heals during a `/releases`-listing outage without needing
+the assertion. See D-progress-882 for the reversal rationale.
+
 **Date:** 2026-08-18. **Resolves** #6501 (keeping the PR #6497
 last-resort pinned seed version current) with two mechanisms instead
 of trusting manual bumps:
@@ -41543,3 +41552,59 @@ spec-first direction.
 `docs/57-stdlib-ecosystem-library-review.md` §7 (the `lyric web spec`
 CLI-command gap this surfaced, left open), `lyric-web/src/openapi.l`
 module header.
+
+## D-progress-882 — Release infra: bootstrap seed-version resolution self-heals via `git fetch --tags`, and the #6501 pre-flight pin-freshness guard is removed (it blocked every release cut)
+
+**Status:** shipped (release automation only; no compiler/stdlib change).
+**Supersedes** D-progress-784 mechanism #2 (the `create-release` pin-freshness
+assertion), and evolves its mechanism #1 (the local-tag fallback tier).
+
+**The problem.** The publish workflow (`.github/workflows/publish.yml`,
+`create-release` job) carried a #6501 pre-flight guard, "Assert bootstrap seed
+fallback pin is current", which failed the release cut whenever
+`scripts/bootstrap.sh`'s `LYRIC_BOOTSTRAP_FALLBACK_VERSION` default did not
+equal the newest published release. That pin is *always* one release behind
+immediately after a release (the release that just shipped becomes "newest",
+the pin still names the prior one), so the guard failed **every** subsequent
+`workflow_dispatch` cut until a human landed a manual "bump the pin" commit
+first. A resilience fallback — a last-resort seed used only when the GitHub
+`/releases` listing API is down (the 2026-08-17 #6497 incident class) — had
+been turned into a hard release blocker. This is what failed publish runs
+1812/1814/1816: the guard, not the API, and not the fallback ever being
+exercised (the guard's own `gh release list` succeeded on each failing run,
+proving the listing API was up).
+
+**Why the guard existed.** `bootstrap.sh`'s seed resolution is tiered:
+(0) the `/releases` REST API (newest non-draft tag), (1) the newest local
+`v*` git tag, (2) the hardcoded `LYRIC_BOOTSTRAP_FALLBACK_VERSION` pin. Tier 2
+was reached only when tier 0 was down AND the checkout was too shallow to carry
+tags (tier 1 empty). The guard's job was to keep that pin fresh so a shallow
+checkout during an API outage would still seed against a recent-enough version.
+
+**The fix (tags-and-drop-the-guard).** Make tier 1 self-heal instead of
+asserting tier 2's freshness:
+
+1. `scripts/bootstrap.sh` tier 1 now runs a best-effort
+   `git fetch --tags --quiet 2>/dev/null || true` **before** reading local
+   `v*` tags. The git protocol is a *different* service from the `/releases`
+   REST API, so it stays reachable through exactly the API-listing incident
+   (#6497) that sends resolution down the fallback path. A shallow checkout
+   therefore recovers the full tag set and picks the true newest release with
+   no API round-trip. The fetch is quiet and `|| true`-guarded — a genuine
+   offline/no-remote failure just leaves the local tags as-is and falls
+   through to tier 2.
+
+2. With tier 1 covering the outage, the tier-2 pin is now **vestigial for CI**
+   — reached only when both the REST API and the git remote are unreachable
+   (fully offline). The #6501 pre-flight guard is deleted from
+   `publish.yml`; its freshness assertion is no longer needed, and it was the
+   sole reason a release cut required a manual pin bump. Bumping the pin is now
+   optional housekeeping, not a release prerequisite.
+
+**Blast radius.** Six workflows invoke `bootstrap.sh` (`ci.yml`, `publish.yml`,
+`seed-candidacy.yml`, `stage2-self-test.yml`, `book.yml`, `bench.yml`); the
+tier-1 change benefits all of them uniformly (the self-heal lives in the shared
+script, not per-workflow). The removed guard was in `publish.yml` alone. No
+change to the seed *format*, the three-stage reproducibility bootstrap, or any
+compiler behaviour. Reproducibility is unaffected: the byte-compare stages
+supply their own seed and never consult the fallback tier.

@@ -234,7 +234,24 @@ try_bootstrap_from_release() {
       # Fallback tier 1 (#6501): the newest local release tag.  A full
       # checkout already knows every published version via its `v*` tags —
       # no API round-trip, and never stale the way a hardcoded pin is.
-      # Shallow checkouts (fetch-depth 1, no tags) skip this tier.
+      # Best-effort `git fetch --tags` first so a shallow checkout
+      # (fetch-depth 1, no tags) still self-heals: the git protocol is a
+      # DIFFERENT service from the /releases REST API, so it stays
+      # reachable through the exact API-listing incident (#6497) that
+      # sends us down this path.  Quiet + `|| true` — a fetch failure
+      # (offline, no remote) just leaves us with whatever tags are local,
+      # falling through to tier 2.  Bounded via git's own low-speed abort
+      # for the HTTP(S) transport (`http.lowSpeedLimit`/`http.lowSpeedTime`
+      # are libcurl settings): if throughput stays under 1000 B/s for 15s the
+      # fetch aborts so a stalled-but-not-failed connection during a partial
+      # outage falls through to tier 2 fast instead of hanging stage 0.  Chosen
+      # over `timeout` because no external `timeout`/`gtimeout` binary is
+      # guaranteed (macOS).  This is the CI path — GitHub Actions checkouts are
+      # always HTTPS.  A local dev checkout with an SSH `origin` remote ignores
+      # these keys, so a stalled SSH fetch there is not bounded; acceptable
+      # since the dev path is interactive (Ctrl-C) and tier 1 is best-effort.
+      git -C "$REPO_ROOT" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=15 \
+        fetch --tags --quiet 2>/dev/null || true
       local newest_tag
       newest_tag="$(git -C "$REPO_ROOT" tag --list 'v[0-9]*' 2>/dev/null | sort -V | tail -1)"
       if [[ -n "$newest_tag" ]]; then
@@ -252,10 +269,18 @@ try_bootstrap_from_release() {
       # service) stayed reachable.  Rather than fail the whole build on the
       # LISTING being down, fall back to a known-good seed version.  The
       # seed only needs to be recent enough to compile current sources; if
-      # it ever grows too old, stage 1 fails loudly.  The publish workflow
-      # asserts this pin matches the newest published release at every
-      # release cut (#6501), so it cannot silently drift more than one
-      # release behind.  Override per-run with LYRIC_BOOTSTRAP_VERSION.
+      # it ever grows too old, stage 1 fails loudly.
+      #
+      # This pin is now VESTIGIAL for CI: tier 1's `git fetch --tags`
+      # covers the /releases-listing outage (git is a separate service),
+      # so this tier is only reached when BOTH the REST API and the git
+      # remote are unreachable (fully offline).  The publish workflow no
+      # longer asserts this pin matches the newest published release — the
+      # #6501 pre-flight guard was removed because it failed every release
+      # cut on a one-behind pin (the pin is always one release behind
+      # right after a release), and tier 1 makes the freshness assertion
+      # unnecessary.  Bumping it is optional housekeeping, not required to
+      # cut a release.  Override per-run with LYRIC_BOOTSTRAP_VERSION.
       local fallback_version="${LYRIC_BOOTSTRAP_FALLBACK_VERSION:-0.6.2}"
       info "  Falling back to pinned seed version v${fallback_version}"
       latest_release="$fallback_version"
