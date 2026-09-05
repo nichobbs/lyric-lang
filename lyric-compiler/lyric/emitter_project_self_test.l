@@ -77,6 +77,17 @@ func cleanup(dir: in String): Unit {
   }
 }
 
+func listContains(xs: in List[String], v: in String): Bool {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == v {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 func mkProjectPkg(name: in String, source: in String): Emitter.ProjectPackage {
   val srcs: List[String] = newList()
   srcs.add(source)
@@ -1170,7 +1181,12 @@ test "parsePanicSpan parses the J-code `]: Pkg.File:line:col:` shape (#6464)" {
 test "parsePanicSpan returns None for a message with no embedded location (#6464)" {
   val msg = "error[T0115]: cannot resolve qualified reference 'Foo.bar' — it does not name a value, function, type, or member this compilation can verify."
   match Emitter.parsePanicSpan(msg) {
-    case Some(sp) -> assertTrue(false, "T0115 carries no location; parsePanicSpan must return None, not a spurious match (got line " + toString(sp.startPos.line) + ")")
+    case Some(sp) -> assertTrue(
+      false,
+      "T0115 carries no location; parsePanicSpan must return None, not a spurious match (got line " +
+        toString(sp.startPos.line) +
+        ")"
+    )
     case None -> assertTrue(true, "no location found, as expected")
   }
 }
@@ -1475,4 +1491,92 @@ test "emitProject depTemplateSrcs: from-instance aspect resolved against a dep-p
   // proves the woven output isn't just "compiles", it actually RUNS the
   // template's advice body against the main package's matched function.
   assertEqual(Str.trim(captured.stdout), "12", "emitproj-deptpl: DoubleResult advice actually ran (5+1)*2=12")
+}
+
+// ─── #6628: compilerClosureDllPaths must verify bundle completeness ────────
+//
+// `Emitter.compilerClosureDllPaths` links a `@test_module`'s `Lyric.*`
+// compiler-package imports against a pre-staged self-hosted compiler bundle
+// (`<libDir>/selfhosted/Lyric.Compiler.dll`) when one exists. Before #6628's
+// fix, the function trusted the bundle's mere EXISTENCE — a bundle staged
+// before a package was added to a test's import closure (or before that
+// package existed at all) would silently be used anyway, producing wrong
+// runtime results instead of a build failure. These tests build a REAL
+// bundle via `Emitter.emitCompilerBundle` (the same emit path
+// `scripts/stage-selfhosted-compiler.sh` uses) covering exactly one small
+// leaf compiler package's closure, then probe `compilerClosureDllPaths`
+// against test sources that need a package the bundle does/doesn't cover.
+test "compilerClosureDllPaths: stale bundle missing an imported package is reported, not silently trusted (#6628)" {
+  val dir = freshTempDir("compilerclosure-stale")
+  val shDir = Path.join(dir, "selfhosted")
+  match File.createDir(shDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create " + shDir + ": " + IOError.message(e))
+  }
+  val bundlePath = Path.join(shDir, "Lyric.Compiler.dll")
+  // Bundle covers ONLY Lyric.CliShell's closure (a real, tiny, leaf
+  // compiler package: imports just Std.Core/Std.Collections/
+  // Std.Environment/Std.String, no other Lyric.* packages).
+  val bundleEntry = "package __bundle_entry__\nimport Lyric.CliShell\n"
+  val bundleResult = Emitter.emitCompilerBundle(bundleEntry, bundlePath, Emitter.Dotnet)
+  match bundleResult.outputPath {
+    case None -> {
+      cleanup(dir)
+      panic("compilerclosure-stale: failed to build the test bundle fixture (diagnostics on stderr)")
+    }
+    case Some(_) -> ()
+  }
+
+  // A test source that imports a DIFFERENT real compiler package (also a
+  // leaf w.r.t. Lyric.CliShell — Lyric.BuildDefines pulls in Lyric.Lexer/
+  // Lyric.Parser, none of which is Lyric.CliShell) the bundle above does
+  // NOT cover.
+  val testSrc = "package Consumer\nimport Lyric.BuildDefines\n"
+  val result = Emitter.compilerClosureDllPaths(testSrc, dir)
+  cleanup(dir)
+
+  assertTrue(
+    result.missingPackages.count > 0,
+    "stale bundle: missingPackages must be non-empty when the bundle doesn't cover the test's closure"
+  )
+  assertTrue(
+    listContains(result.missingPackages, "Lyric.BuildDefines"),
+    "stale bundle: missingPackages must name the actually-missing package 'Lyric.BuildDefines'"
+  )
+  assertTrue(
+    not listContains(result.dlls, "Lyric.Compiler\t" + bundlePath),
+    "stale bundle: an incomplete bundle must not be linked as if it were complete"
+  )
+}
+
+test "compilerClosureDllPaths: a bundle that covers the whole closure is used, no missing packages (#6628 control)" {
+  val dir = freshTempDir("compilerclosure-complete")
+  val shDir = Path.join(dir, "selfhosted")
+  match File.createDir(shDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create " + shDir + ": " + IOError.message(e))
+  }
+  val bundlePath = Path.join(shDir, "Lyric.Compiler.dll")
+  // Bundle and test source both need exactly Lyric.CliShell's closure.
+  val bundleEntry = "package __bundle_entry__\nimport Lyric.CliShell\n"
+  val bundleResult = Emitter.emitCompilerBundle(bundleEntry, bundlePath, Emitter.Dotnet)
+  match bundleResult.outputPath {
+    case None -> {
+      cleanup(dir)
+      panic("compilerclosure-complete: failed to build the test bundle fixture (diagnostics on stderr)")
+    }
+    case Some(_) -> ()
+  }
+
+  val testSrc = "package Consumer\nimport Lyric.CliShell\n"
+  val result = Emitter.compilerClosureDllPaths(testSrc, dir)
+  cleanup(dir)
+
+  assertEqualInt(result.missingPackages.count, 0, "complete bundle: no missing packages")
+  assertEqualInt(result.dlls.count, 1, "complete bundle: exactly one restored-dep entry (the whole bundle)")
+  assertEqual(
+    result.dlls[0],
+    "Lyric.Compiler\t" + bundlePath,
+    "complete bundle: the single entry points at the bundle DLL"
+  )
 }
