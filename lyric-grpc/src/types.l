@@ -22,35 +22,32 @@ import Std.Core
 /// `lyric-jobs` / `lyric-mq` kernels already use), and this type just wraps
 /// that key. `wrapChannelHandle` / `channelHandleId` are the "authoring
 /// functions" the language reference (docs/01 §2.8) calls for, reachable
-/// from `Grpc.Kernel.Net` / `Grpc.Kernel.Jvm` (same project). They are
-/// `pub` rather than the more precise `internal` (docs/01 §3.1) because of
-/// a compiler bug (#6580) — see their own doc comments.
+/// from `Grpc.Kernel.Net` / `Grpc.Kernel.Jvm` (same project).
 pub opaque type GrpcChannel {
   handle: Int
 }
 
 /// Wrap a platform kernel's registry key as a `GrpcChannel`. Kernel-only —
-/// two independent self-hosted-compiler bugs (#6580) force both a specific
-/// visibility and a specific call-site spelling here:
-///   1. Declared `pub`, not `internal`: a qualified cross-package call to
-///      an `internal` function fails to resolve at compile time
-///      (`T0020: unknown name`), even though docs/01-language-reference.md
-///      §3.1 documents `internal` as cross-package-within-project visible.
-///   2. Callers in `Grpc.Kernel.Net` must use qualified syntax
-///      (`Types.wrapChannelHandle(id)`), not UFCS (`id.wrapChannelHandle()`):
-///      the UFCS form compiles cleanly but fails at *runtime* with
-///      `unsupported method 'wrapChannelHandle' ...`, regardless of this
-///      function's visibility.
-/// Revert to `internal` once #6580 is fixed; UFCS remains a caller-side
-/// choice independent of that.
-pub func wrapChannelHandle(id: in Int): GrpcChannel {
+/// `internal` (docs/01-language-reference.md §3.1: cross-package-within-
+/// project visible), not `pub` (#6580: a same-project qualified cross-
+/// package call to an `internal` function used to fail T0020 "unknown
+/// name" — a bridge-level item-visibility bug, not a type-checker one;
+/// fixed by threading `pub`-OR-`internal` visibility into a project's own
+/// sibling-package item collection). Callers must use qualified syntax
+/// (`Types.wrapChannelHandle(id)`), not UFCS (`id.wrapChannelHandle()`):
+/// general free-function-via-receiver-dot-syntax is not a supported Lyric
+/// construct at all (confirmed via #6580 follow-up investigation — a
+/// record receiver rejects it at compile time with T0113, "no method ...
+/// on type ..."; only the D037 dot-named-method form, `func Type.method`,
+/// is real UFCS and already works cross-package). Qualified syntax is
+/// simply the correct spelling here, not a workaround for a bug.
+internal func wrapChannelHandle(id: in Int): GrpcChannel {
   GrpcChannel(handle = id)
 }
 
 /// Recover the platform kernel's registry key from a `GrpcChannel`.
-/// Kernel-only — see `wrapChannelHandle`'s doc comment for why this is
-/// `pub` and why callers must use qualified call syntax (#6580).
-pub func channelHandleId(ch: in GrpcChannel): Int {
+/// Kernel-only — see `wrapChannelHandle`'s doc comment.
+internal func channelHandleId(ch: in GrpcChannel): Int {
   ch.handle
 }
 

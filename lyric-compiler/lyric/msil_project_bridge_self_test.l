@@ -2179,3 +2179,39 @@ test "extern type alias in one package does not hijack a same-named Lyric union'
     "unrelated package's extern alias did not hijack the Lyric union's case reference"
   )
 }
+
+// #6580: `pipeIsCrossPackageItem` (the shared cross-package item-visibility
+// filter `Lyric.Pipeline` — and, before this fix, `Msil.Bridge`/`Jvm.Bridge`/
+// `Lyric.LlvmBridge` — used for a project's OWN sibling packages) only ever
+// admitted `pub` functions. `internal` is documented (docs/01 §3.1) as
+// visible across every package WITHIN THE SAME PROJECT, but a qualified
+// cross-package call to an `internal` function used to fail T0020 "unknown
+// name" on all three backends because the callee's OWN package never
+// contributed its `internal` items to a sibling's checked view at all.
+test "qualified call to an internal cross-package function resolves (#6580)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "Pkg6580A",
+      "package Pkg6580A\n" + "pub record Handle {\n" + "  id: Int\n" + "}\n" +
+        "internal func wrapHandle(id: in Int): Handle {\n" +
+        "  Handle(id = id)\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "Pkg6580B",
+      "package Pkg6580B\n" + "import Pkg6580A\n" + "func main(): Unit {\n" + "  val h = Pkg6580A.wrapHandle(id = 7)\n" +
+        "  println(h.id)\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("internal-qualified-call-6580", packages, "InternalQualifiedCall6580")
+  assertEqualInt(result.exitCode, 0, "internal_qualified_call_6580: exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "7",
+    "qualified call to an internal cross-package function returns the right value"
+  )
+}

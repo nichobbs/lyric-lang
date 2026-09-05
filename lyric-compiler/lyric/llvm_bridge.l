@@ -587,10 +587,11 @@ func fileHasTopLevelMain(file: in SourceFile): Bool {
 /// never blocks a project build that never calls it — parity with the
 /// single-source path's own bundling model.
 ///
-/// Every own package sees every OTHER own package's public surface as an
-/// `ImportedPackage`, resolved the identical way a bundled stdlib package's
-/// cross-package items are (`pipeIsCrossPackageItem`), so `Web.OpenApi`
-/// importing `Web` (a same-manifest import cycle, per the JVM bridge's
+/// Every own package sees every OTHER own package's `pub`-AND-`internal`
+/// surface as an `ImportedPackage` (`pipeIsCrossPackageItemProject`, #6580 —
+/// a bundled stdlib package's cross-package items stay pub-only via
+/// `pipeIsCrossPackageItem`), so `Web.OpenApi` importing `Web` (a
+/// same-manifest import cycle, per the JVM bridge's
 /// `compileProjectToJarBundledWithRestored` precedent for the identical
 /// shape) resolves cleanly.  `triple` / `optLevel` / `extraClangFlags`
 /// forward to `linkAndEmitNative` unchanged.
@@ -702,7 +703,11 @@ pub func compileProjectToNativeWithFlags(
     val pkgItems: List[Item] = newList()
     var ii = 0
     while ii < f.items.count {
-      if pipeIsCrossPackageItem(f.items[ii]) {
+      // #6580/#4900: these are the user's own project's sibling packages,
+      // so `internal` items must be visible too — matches the MSIL/JVM
+      // bridges' `pipeIsCrossPackageItemProject` for the identical
+      // own-project-sibling shape (stdlib above stays pub-only).
+      if pipeIsCrossPackageItemProject(f.items[ii]) {
         pkgItems.add(f.items[ii])
       }
       ii = ii + 1
