@@ -42130,7 +42130,7 @@ pattern): `iface_dispatch_jvm_self_test` 7/7. No regression in
 `control_flow_jvm_self_test`, `iface_default_method_out_inout_jvm_self_test`,
 `silent_miscompile_guard_jvm_self_test` (all green).
 
-## D-progress-879 — JVM codegen: `coerceArgTo`'s `ArrayList` → array conversion now narrows to the real element type instead of always producing `Object[]` (#5931 review follow-up, #6970)
+## D-progress-886 — JVM codegen: `coerceArgTo`'s `ArrayList` → array conversion now narrows to the real element type instead of always producing `Object[]` (#5931 review follow-up, #6970)
 
 **Context.** Automated review of D-progress-878's PR found the new test
 coverage was one-sided: only the parameter-side narrowing
@@ -42174,15 +42174,15 @@ X509TrustManager for SliceIfaceTrustManager`) reproduces the reported
 (18/18), `control_flow_jvm_self_test` (17/17),
 `silent_miscompile_guard_jvm_self_test` (44/44).
 
-## D-progress-880 — JVM codegen: extern-interface `impl` methods now convert a `slice[Elem]` RETURN value into the real primitive array type, not just reference-element arrays (#5931 review follow-up, #6977)
+## D-progress-887 — JVM codegen: extern-interface `impl` methods now convert a `slice[Elem]` RETURN value into the real primitive array type, not just reference-element arrays (#5931 review follow-up, #6977)
 
-**Context.** Automated review of D-progress-879's PR found `implTypeExprToJvm`'s
+**Context.** Automated review of D-progress-886's PR found `implTypeExprToJvm`'s
 own doc comment ("a primitive slice element needs the real primitive array
 too, not just an extern one") was aspirational, not implemented: the TYPE
 resolution side (`TSlice(elem) -> JArray(elem = implTypeExprToJvm(elem,
 ...))`) already correctly resolves a primitive element (`Byte` -> `JByte`),
 but the CODEGEN/coercion side (`coerceArgTo`'s `JArray` arm, fixed in
-D-progress-879 only for reference-typed elements) had no handling for a
+D-progress-886 only for reference-typed elements) had no handling for a
 primitive target: its `case _ ->` fallback still emitted the old no-arg
 `ArrayList.toArray()` (erasing to `Object[]`), which is not assignable to
 e.g. `byte[]`.
@@ -42241,20 +42241,20 @@ values round-trip — `iface_dispatch_jvm_self_test` 9/9. No regression:
 `out_inout_instance_jvm_self_test` (9/9), `control_flow_jvm_self_test`
 (17/17), `silent_miscompile_guard_jvm_self_test` (44/44).
 
-## D-progress-881 — JVM codegen: close the extern-interface impl parameter-side slice-narrowing gap left open by D-progress-880 (#5931 review follow-up, #6977 param-side)
+## D-progress-888 — JVM codegen: close the extern-interface impl parameter-side slice-narrowing gap left open by D-progress-887 (#5931 review follow-up, #6977 param-side)
 
-**Context.** Automated review of D-progress-880 (the return-side primitive-
+**Context.** Automated review of D-progress-887 (the return-side primitive-
 array-narrowing fix) noted that the PARAMETER-side half of #6977 was still
 open, and confirmed it wasn't fully resolved rather than auto-closing the
 finding. Writing a concrete regression test for it (an ordinary Lyric
 function forwarding a `slice[Byte]` PARAMETER into an extern-interface
 `impl`'s narrowed `byte[]` parameter — `java.util.zip.Checksum.update(byte[],
 int, int)`) surfaced that the actual gap is broader than the decision-log's
-own D-progress-880 entry assumed.
+own D-progress-887 entry assumed.
 
-**Root cause.** D-progress-880's `coerceArgToCtx` only handled a
+**Root cause.** D-progress-887's `coerceArgToCtx` only handled a
 `fromTy = JRef("java/util/ArrayList")` source — correct for a FRESHLY
-CONSTRUCTED slice value (a literal, matching every test D-progress-879/880
+CONSTRUCTED slice value (a literal, matching every test D-progress-886/887
 used), but a `slice[T]`-typed LOCAL or PARAMETER already stored in a JVM
 slot carries the ordinary erased ABI's OWN representation instead:
 `JArray(elem = Object)` (a real `Object[]` reference), not `ArrayList`. A
@@ -42276,9 +42276,9 @@ array): primitive targets reuse the existing `emitUnboxObjectArray`; a new
 reference-typed sibling of `emitUnboxObjectArray`) handles a narrower
 reference-array target. The `ArrayList`-source arm also gains the same
 reference-array case (it previously only narrowed a primitive target,
-matching the D-progress-880 gap's own oversight for non-primitive
+matching the D-progress-887 gap's own oversight for non-primitive
 reference-array literals). All 10 `coerceArgTo(insns, aTy, sig.params[...])`
-/ holder-arg call sites converted to `coerceArgToCtx` in the prior D-progress-880
+/ holder-arg call sites converted to `coerceArgToCtx` in the prior D-progress-887
 commit needed no further changes — the dispatch on `fromTy`'s shape lives
 entirely inside `coerceArgToCtx` itself.
 
