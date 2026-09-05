@@ -150,10 +150,10 @@ val parameterCache: JvmConcurrentDict[String, CacheEntry] = newConcurrentDict[St
 // unit") when the type argument is an `extern type` rather than a plain
 // Lyric record — `CacheEntry` above (a plain record) monomorphises fine
 // at the same call shape, so this is specific to instantiating the
-// generic over an extern-typed argument. Sidestepping it here with two
-// dedicated (non-generic) `ConcurrentHashMap` bindings, one per client
-// type, is a two-line-per-type workaround, not a design requirement —
-// worth revisiting once the monomorphiser handles this case.
+// generic over an extern-typed argument (tracked in #6891). Sidestepping
+// it here with two dedicated (non-generic) `ConcurrentHashMap` bindings,
+// one per client type, is a two-line-per-type workaround, not a design
+// requirement — worth revisiting once the monomorphiser handles this case.
 extern type SmClientCache = "java.util.concurrent.ConcurrentHashMap"
 
 @externTarget("java.util.concurrent.ConcurrentHashMap.<init>")
@@ -211,6 +211,10 @@ func getSsmClient(): JSsmClient {
 // exception messages (see the file header's "Error classification" note).
 // `.contains` is a builtin String method (also used bare in
 // `Std.String.contains`), so no extra import is needed here.
+//
+// `pub` (not `internal`) is for `secrets_tests.l`'s direct test access
+// only — intentionally not `@stable`-advertised, since this substring
+// classification is an implementation detail, not a committed public API.
 // =====================================================================
 pub func classifySecretsError(name: in String, message: in String): AwsSecrets.SecretsError {
   if message.contains("Secrets Manager can't find the specified secret") or message.contains("ResourceNotFoundException") {
