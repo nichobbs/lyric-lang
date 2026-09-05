@@ -6,14 +6,30 @@
 //! exception-free Option seam (issue #4752) that `Std.Environment`
 //! delegates to, over the audited lyric-rt helpers (`lyric_env_*`).
 //!
-//! Scope: variable get/set, the current working directory, and the
+//! Scope: variable get/set, the current working directory, the
 //! command-line arguments (`slice[String]` rides the shared list repr,
-//! D-N-015).  `hostExit` (needs the `Never` return lowering) and the
-//! .NET-specific probes (`hostAppBaseDirectory`,
-//! `hostRuntimeDirectory`, `hostRuntimeIdentifier`) are not available
-//! on the native target yet (issue #4752); the `Std.Environment`
-//! functions built on them stay compile-time-unreachable on native
-//! until then.
+//! D-N-015), and the two runtime-identity probes (below). Still
+//! missing (issue #4752's residual-seam audit, D-progress-878):
+//! `hostExit` (`extern func` with a `Never` return type has no native
+//! codegen lowering at all — `Lyric.LlvmCodegen: this type form is not
+//! yet supported for --target native (Phase N1)`, confirmed by direct
+//! repro; a compiler gap this kernel cannot work around, filed as
+//! issue #6901) and `hostAppBaseDirectory` (feasible via
+//! `readlink("/proc/self/exe")` on Linux, but genuinely new `lyric-rt`
+//! C surface, deliberately deferred rather than bundled into this
+//! kernel-focused audit pass — `Std.Environment.appBaseDirectory`'s own
+//! `@stable(since = "0.1")` marks it the oldest, least-used probe of
+//! the four).
+//!
+//! `hostRuntimeDirectory`/`hostRuntimeIdentifier` both return `""`
+//! unconditionally: `Std.Environment`'s own public doc comments already
+//! document empty string as a VALID, anticipated value for a target
+//! with no .NET-runtime-shared-framework concept — `runtimeDirectory`'s
+//! own comment says "May return an empty string in native-AOT
+//! scenarios", and `runtimeIdentifier`'s says the JVM twin already
+//! returns `""` for the identical "no .NET RID equivalent here" reason.
+//! Native is exactly that case, so this is a faithful implementation of
+//! an already-specified contract, not an ad hoc shortcut.
 @axiom("POSIX environment calls via lyric-rt conform to their documented contracts")
 package Std.EnvironmentHost
 
@@ -75,4 +91,20 @@ pub func hostCurrentDirectory(): String {
 
 pub func hostGetCommandLineArgs(): slice[String] {
   rtArgsGet()
+}
+
+/// See the module header: native has no .NET shared-framework concept,
+/// so this always returns `""` — a value `Std.Environment
+/// .runtimeDirectory`'s own doc comment already documents as valid for
+/// exactly this case.
+pub func hostRuntimeDirectory(): String {
+  ""
+}
+
+/// See the module header: native has no .NET runtime identifier, so
+/// this always returns `""` — the same "no equivalent here" contract
+/// the JVM twin already documents for `Std.Environment
+/// .runtimeIdentifier`.
+pub func hostRuntimeIdentifier(): String {
+  ""
 }
