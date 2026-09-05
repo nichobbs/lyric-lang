@@ -32289,7 +32289,7 @@ not `300`) for all three compound operators, with no corruption of the
 fixing commit was isolated. Added the missing coverage to
 `byte_arithmetic_self_test.l` (dual-target).
 
-**Related:** `docs/03-decision-log.md` D-progress-877 (full account), #6524.
+**Related:** `docs/03-decision-log.md` D-progress-878 (full account), #6524.
 
 ### Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
 
