@@ -70,7 +70,7 @@
 //! twin verbatim), which also has no native lowering (issue #6237) — the
 //! shipped version above uses `.substring(i, 1)` instead, so THIS
 //! blocker is already fixed here. See `docs/03-decision-log.md`
-//! D-progress-878 for the full investigation (including the exact
+//! D-progress-883 for the full investigation (including the exact
 //! compile-time panic each gap produces), issue #6887 (the
 //! `try/catch`-on-native blocker) and issue #6888 (the
 //! `String.replace`-on-native blocker).
