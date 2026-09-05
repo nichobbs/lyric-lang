@@ -30134,9 +30134,26 @@ different function throws `ClassCastException` across package boundaries.
 `lyric-stdlib/tests/task_tests.l` (new) verifies token/delay/cancellation
 behaviour on both targets (all pass); the two `Scope`-based assertions
 currently fail on both, pinned by the test with the reason documented.
+_[Update: the `Task.Run(Action, ...)` delegate-never-invokes bug (#5329
+bug 1) shipped later — a lambda passed directly to a REGULAR (non-
+`@externTarget`) function's `() -> Unit`/`(T1,...,TN) -> Unit` parameter
+built the wrong delegate type (`Func<object,...>` instead of a real
+`System.Action`/`Action`N`) at three independent sites (ELambda return-
+type inference, stdlib/restored cross-assembly function registration, and
+the bare-call invoke dispatch); fixed across all three at every arity, PR
+#6927 / D-progress-882. `testScopeNormalCompletionRunsEveryChild` and
+`testScopeWithNoChildrenCompletesImmediately` now pass on BOTH targets and
+were merged back into `task_tests.l`, closing the "currently fail on both"
+note above. The JVM `ClassCastException`-across-package-boundaries bug
+was independently fixed by D-progress-848 (per-package `Lyric$Lambda`
+interface unification). D119 slice S3 itself remains unshipped — it still
+needs the other two MSIL bugs (generic delegate erasure, `GetAwaiter()`/
+closure-registration ordering), tracked at issue #5329 (scoped down to
+those two) and #6949.]_
 
-**Related:** `docs/03-decision-log.md` D-progress-621 (full account) and
-D119 (the parent decision).
+**Related:** `docs/03-decision-log.md` D-progress-621 (full account),
+D-progress-882 (the `Task.Run`/`Action`-invoke fix), D-progress-848 (the
+JVM cross-package closure fix), and D119 (the parent decision).
 
 ---
 
