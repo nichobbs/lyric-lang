@@ -33724,3 +33724,63 @@ headers and were verified that way.
 `docs/35-lambda-library.md` §4.2/§8 (updated), `lyric-lambda/README.md`
 (support matrix updated), #5412 (closed), #6868 (new, filed not fixed),
 #5600/#5578/#6548 (the prior `Lambda.Dispatch` work this builds on).
+## MSIL: GENERICINST member params/returns + MethodSpec for generic BCL methods, unblocking `lyric-grpc` (#6581)
+
+Two self-hosted MSIL backend gaps in generic-member `@externTarget` handling
+are fixed. **Gap 1:** `genericMemberSigToMsil` had no arm for a member
+parameter/return that is itself a closed generic instantiation over the
+declaring type's own VAR (`List`1..ctor(IEnumerable`1<!0> source)`,
+`Marshaller`1..ctor(Func`2<!0,uint8[]> serializer)`) — the signature was
+silently discarded and the caller fell back to a MemberRef parented on the
+*open* generic-declaring TypeRef, an ECMA-335 §II.22.25 violation that faults
+with `TypeLoadException`. Fixed with a new `Mdr.STNamedGenericInst` arm
+(recursing so nested VAR/MVAR positions survive) plus a `castclass` to the
+TypeSpec-substituted closed type at the argument-loading site
+(`substituteDeclaringVarMsil`), since the Lyric argument there is statically
+only `object` while the substituted parameter is a real closed type. **Gap
+2:** a BCL method declared with its own generics on a non-generic-declaring
+type (`CallInvoker.BlockingUnaryCall<TRequest,TResponse>`) fell outside
+`emitGenericExternMember`'s generic-declaring-TYPE gate and had no MethodSpec
+(table 0x2B) emission path for a user `@externTarget` call at all. Fixed with
+`emitGenericMethodExternCall` + `buildOpenGenericMethodSigCtx`: an OPEN
+generic-method MemberRef preserving `!!n` (new `MMethodTypeVar` `MsilType`
+case, `Mdr.STMVar` arms in `resolvedSigToMsil`/`genericMemberSigToMsil`) plus
+a MethodSpec witnessing the method's own generic parameters with
+`System.Object`.
+
+A `.ctor`-arity scoring bug in `resolveExternMethodScoredIn` was found and
+fixed while landing Gap 1: a ctor candidate whose own arity didn't match the
+call's argument count fell through to instance-method scoring (which drops
+an implicit receiver a ctor never has in its argument list), silently
+outscoring the correct overload in a same-arity ctor overload set — a
+pre-existing silent-miscompile risk, latent until Gap 1 gave the resolver a
+reason to hit such a set for the first time.
+
+Both gaps were confirmed (independently, against real 2.65.0 reference-
+assembly metadata) to block `lyric-grpc`'s entire unary/streaming/server-
+hosting surface (D-progress-877). New self-test
+`generic_extern_methodspec_self_test.l` (2 cases, BCL-only shapes — `List`1`'s
+`IEnumerable<T>` ctor and `Enumerable.Empty<T>()`'s MethodSpec dispatch — so
+CI needs no gRPC package) plus a full regression sweep
+(`generic_extern_self_test.l`, `generic_extern_valuetype_instance_self_test.l`,
+`nested_generic_self_test.l`, `mono_self_test.l`,
+`cross_package_generics_self_test.l`, `msil_restored_bridge_self_test.l`,
+`msil_project_bridge_self_test.l`), all green. `ilverify` caught both the
+missing signature arm and the missing cast independently during development
+against a standalone repro.
+
+A related-but-separate bug was found and deliberately NOT folded into this
+fix: a generic `@externTarget` function's own TFunction-typed parameter,
+when called with a lambda literal whose delegate type the strongly-typed
+lambda ABI (docs/50/52) infers concretely at the call site (e.g.
+`Func<string,object>`), cannot satisfy the wrapper's own `Func<object,object>`
+erasure convention — a genuine CLR delegate-variance conflict no `castclass`
+can bridge. Confirmed via `git stash` to reproduce identically against
+unmodified `origin/main`, ruling this PR out as the cause; tracked under
+#5800.
+
+**Related:** `docs/03-decision-log.md` D-progress-882 (full account),
+#6581 (fixed by this PR), D-progress-877 (the independent
+re-verification), #5809 (pre-existing value-type-generic-member limitation,
+untouched), #5800 (the newly-surfaced, separately-tracked delegate-erasure
+bug), `docs/42-extern-metadata-resolution.md` §5 Phase 6.
