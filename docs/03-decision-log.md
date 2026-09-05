@@ -41655,3 +41655,23 @@ analogs) now run and print the correct value instead of crashing.
 **Related:** #6756, #6782, #6913 (bare-scalar unsigned-aware
 comparison/division/stringification follow-up), #6661/#6695/#6748 (the JVM
 backend's prior, now-mirrored fixes).
+
+**Follow-up (#6973, review REQUIRED).** #6782's own fix instructions
+specified two parts: fix `listLiteralElemTypeMsil`, then add an MSIL-target
+regression test — this entry's original text only did the first half,
+verifying the second by hand instead of with an automated test. Added
+`u16`/`u32`/`u64` cases to the dual-target `list_literal_index_self_test.l`
+(the established home for this defect family, alongside `#5620`'s original
+`Int` case and its siblings) rather than widening the JVM-directory
+`list_literal_uint_elem_jvm_self_test.l` cross-target; corrected that
+file's header, which still claimed "`UInt`/`ULong` have no MSIL
+representation at all... do not run this file with `--target dotnet`" —
+now false. Verified on both targets against a from-source `make lyric`
+build (7/7 in `list_literal_index_self_test.l` on `--target dotnet` and
+`--target jvm`). A `u32` case using a magnitude above `Int32.MaxValue`
+(exercising the `int32BitsOfUnsignedMsil` narrowing path specifically) was
+tried first but hit an unrelated, pre-existing JVM gap (`Jvm.Codegen`'s
+"`+` on two operands whose runtime type is fully erased to Object" guard)
+— narrowed to the same in-range magnitude the pre-existing JVM-only test
+already uses, since that MSIL-specific narrowing detail is already covered
+by `range_subtype_self_test.l`'s `UInt`-backed sign-bit-boundary case.
