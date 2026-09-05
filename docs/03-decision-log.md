@@ -41483,3 +41483,63 @@ past the state left by the panicking first tick. Whole-suite
 D-progress-878 PR before merge), D-progress-878 (`startWorkerLoop`
 itself), #5261 (the precedent this fix brings worker dispatch in line
 with).
+
+## D-progress-881 — lyric-web: live OpenAPI JSON + Swagger UI serving via `Web.withSpec` (#5360)
+
+**Status:** Shipped.
+
+**The gap.** `lyric-web`'s `Web.OpenApi` module was a code-first spec
+*builder* only: nothing rendered a populated `Spec` value to JSON, and
+`Router`/`Web.start` had no way to serve one at runtime — the README
+described a `LYRIC_CONFIG_WEB_SERVER_SWAGGERENABLED` env-var workflow that
+`Web.start`/`serve` parsed but never acted on (removed as dead
+env-var handling before this PR, per D099's "no silently-ignored config"
+precedent), and pointed at a `lyric web spec` CLI workflow that, on
+investigation, does not exist anywhere in `lyric-compiler/lyric/cli/` —
+only the reverse, spec-first `lyric generate openapi` command is
+implemented. That CLI gap is unrelated to this issue's scope (build-time
+spec generation, not live serving) and is left as a separately-discoverable
+gap rather than folded in here.
+
+**The fix.** Two additions to `lyric-web/src/openapi.l`:
+`specToJson(spec): String`, a hand-rolled OpenAPI 3.1 JSON serializer
+covering the module's full vocabulary (`Info`/`Contact`/`License`,
+`Schema` in both `$ref` and inline forms, `Parameter`, `MediaType`,
+`RequestBody`, `ApiResponse`, `Operation`, `PathItem`, top-level `Spec`
+with `servers`/`components.schemas`) — no JSON-building API exists in
+`Std.Json` (parsing/reading only), so this follows the same `+`-concatenation
++ `encodeString`-escaping idiom `Web.json`/`Web.jsonString` already use.
+And, in `lyric-web/src/web.l`: `withSpec(router, spec): Router`, which
+renders the spec once (at attach time, not per-request) and appends two
+ordinary `GET` routes — `<pathPrefix>/openapi.json` (the rendered JSON,
+served via the existing `json()` raw-passthrough, #5813) and
+`<pathPrefix>/swagger` (a minimal Swagger UI HTML page loading the
+`swagger-ui-dist` bundle from a CDN, pointed at the JSON route).
+
+**Design decision.** Synthesize ordinary routes rather than special-case
+dispatch: `withSpec` composes with the router the same way
+`withStaticFiles`/`withMiddleware` do, so the existing middleware pipeline
+(auth, CORS, rate limiting) applies to `/openapi.json`/`/swagger` exactly
+like any other route with no new dispatch-time branching. This also
+settles the issue's own open design question in favor of its first
+suggested direction (`Web.withSpec(router, spec)`) over re-wiring the
+removed env-var toggle: attaching a spec is an explicit, compile-time
+opt-in the developer controls in code, which is a clearer and safer gate
+than an environment variable a deploy configuration could flip
+accidentally, and it composes with the router value the same way every
+other `Router`-returning function in this module already does.
+
+**Verification.** `lyric-web/tests/dispatch_tests.l` (wired into CI via
+`lyric test --manifest lyric-web/lyric.toml`, no new CI step) gained two
+cases: `/openapi.json` and `/swagger` both serve with the right content
+type and body content, a pre-existing route is undisturbed, and
+`withSpec` respects a router's `pathPrefix`. `docs/57`'s dead-env-var
+observation and `lyric-web/README.md`'s known-gaps entry for #5360 are
+both closed out; the OpenAPI section now documents `withSpec`/`specToJson`
+as the code-first live/build-time paths, `lyric generate openapi` as the
+spec-first direction.
+
+**Related:** #5360 (this issue), D054/D057 (lyric-web's original design),
+`docs/57-stdlib-ecosystem-library-review.md` §7 (the `lyric web spec`
+CLI-command gap this surfaced, left open), `lyric-web/src/openapi.l`
+module header.

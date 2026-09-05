@@ -231,15 +231,21 @@ keeps running on its next interval rather than dying silently.
 
 ## OpenAPI: code-first and spec-first
 
-`Web.OpenApi` is a hand-built spec vocabulary, decoupled from `Router` at
-runtime — populate a `Spec` value in your package and run
-`lyric web spec` to emit `openapi.yaml`, or run
-`lyric generate openapi spec.yaml --out src/generated/` to scaffold
-record types and handler stubs from an existing spec. See
-`lyric-web/src/openapi.l`'s module doc comment for the full
+`Web.OpenApi` is a hand-built spec vocabulary — populate a `Spec` value in
+your package, then either:
+
+- Attach it to a running server with `Web.withSpec(router, spec)`, which
+  serves the live OpenAPI 3.1 JSON document at `<pathPrefix>/openapi.json`
+  and a Swagger UI page at `<pathPrefix>/swagger`. Both are ordinary
+  routes, so existing middleware (auth, CORS, rate limiting, …) applies to
+  them like any other route.
+- Render it to a file at build time with `Web.OpenApi.specToJson(spec)`.
+- Or run `lyric generate openapi spec.yaml --out src/generated/` to
+  scaffold record types and handler stubs from an *existing* spec file
+  (spec-first, the other direction).
+
+See `lyric-web/src/openapi.l`'s module doc comment for the full
 schema-to-Lyric-type mapping and the constraint-to-`requires:` table.
-Live OpenAPI JSON / Swagger UI serving is not implemented yet (tracked
-in issue #5360); `Router` doesn't carry a `Spec` at runtime.
 
 ## Aspects
 
