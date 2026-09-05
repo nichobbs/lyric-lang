@@ -25,6 +25,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -223,6 +224,148 @@ static void test_plain_roundtrip(void) {
 
     pthread_join(th, NULL);
     lyric_sock_close(listen_fd);
+}
+
+/* ── Portable accept() interrupt (issue #6806) ────────────────────────── */
+
+/* lyric_sock_accept_interruptible must still accept a real connection
+ * normally when nobody signals the wake pipe -- the interrupt path is an
+ * ADDITION to ordinary accept(), not a replacement of it. */
+static void test_accept_interruptible_normal(void) {
+    int listen_fd = lyric_sock_listen("127.0.0.1", 0, 16);
+    CHECK(listen_fd >= 0);
+    int port = lyric_sock_local_port(listen_fd);
+    CHECK(port > 0);
+
+    int wake_read = -1, wake_write = -1;
+    CHECK(lyric_sock_wake_pipe_new(&wake_read, &wake_write) == 0);
+    CHECK(wake_read >= 0 && wake_write >= 0);
+
+    pthread_t th;
+    pthread_create(&th, NULL, plain_server, &listen_fd); /* uses lyric_sock_accept, not this fn -- just needs a peer */
+
+    int cfd = lyric_sock_connect("127.0.0.1", port);
+    CHECK(cfd >= 0);
+    lyric_sock_close(cfd);
+    pthread_join(th, NULL);
+
+    /* Now exercise the interruptible variant directly against a second,
+     * fresh connection so this test proves ITS accept path, not just
+     * plain_server's. */
+    int listen_fd2 = lyric_sock_listen("127.0.0.1", 0, 16);
+    CHECK(listen_fd2 >= 0);
+    int port2 = lyric_sock_local_port(listen_fd2);
+    CHECK(port2 > 0);
+
+    int cfd2 = lyric_sock_connect("127.0.0.1", port2);
+    CHECK(cfd2 >= 0);
+    /* The connect() above lands in the listen backlog before accept runs
+     * (same reasoning test_plain_roundtrip's own single-thread server
+     * relies on for a same-thread accept), so this blocks only briefly. */
+    int accepted = lyric_sock_accept_interruptible(listen_fd2, wake_read);
+    CHECK(accepted >= 0);
+    lyric_sock_close(accepted);
+    lyric_sock_close(cfd2);
+    lyric_sock_close(listen_fd2);
+
+    lyric_sock_close(wake_read);
+    lyric_sock_close(wake_write);
+    lyric_sock_close(listen_fd);
+}
+
+typedef struct {
+    int listen_fd;
+    int wake_read_fd;
+    volatile int result; /* set once the blocked call returns */
+    volatile int done;
+} interrupt_arg;
+
+static void* blocked_acceptor(void* p) {
+    interrupt_arg* a = (interrupt_arg*)p;
+    a->result = lyric_sock_accept_interruptible(a->listen_fd, a->wake_read_fd);
+    /* Release-store ordering isn't the point here (this is a test, not the
+     * production kernel) -- a plain store is enough for pthread_join's own
+     * synchronizes-with edge to make it visible to the joining thread. */
+    a->done = 1;
+    return NULL;
+}
+
+/* The headline regression case: a listener with NO pending connection at
+ * all (the accept thread must be genuinely parked inside poll()), signaled
+ * purely via the wake pipe -- no socket-level shutdown()/close() involved.
+ * This is the exact call shape `Std.TcpHost.hostStopListener` will use on
+ * every target (Linux included, not just the previously-unverified macOS
+ * path) once the Lyric kernel switches to this seam. */
+static void test_accept_interruptible_wakeup(void) {
+    int listen_fd = lyric_sock_listen("127.0.0.1", 0, 16);
+    CHECK(listen_fd >= 0);
+
+    int wake_read = -1, wake_write = -1;
+    CHECK(lyric_sock_wake_pipe_new(&wake_read, &wake_write) == 0);
+    CHECK(wake_read >= 0 && wake_write >= 0);
+
+    interrupt_arg arg;
+    arg.listen_fd = listen_fd;
+    arg.wake_read_fd = wake_read;
+    arg.result = -999;
+    arg.done = 0;
+
+    pthread_t th;
+    pthread_create(&th, NULL, blocked_acceptor, &arg);
+
+    /* No deterministic way to observe "the other thread is now parked in
+     * poll()" from here; a short, generous sleep gives it every chance to
+     * get there before we signal -- if it hasn't, the signal still arrives
+     * in the pipe and poll() sees it as soon as the thread does call it, so
+     * this is a timing nicety, not a correctness requirement (unlike
+     * plain_server's connect-lands-in-backlog trick above, which IS load
+     * bearing). */
+    struct timespec ts = {0, 20 * 1000 * 1000}; /* 20ms */
+    nanosleep(&ts, NULL);
+
+    CHECK(lyric_sock_wake_pipe_signal(wake_write) == 0);
+    pthread_join(th, NULL);
+
+    CHECK(arg.done == 1);
+    CHECK(arg.result == -2); /* the interrupt sentinel, not an error and not a real fd */
+
+    lyric_sock_close(wake_read);
+    lyric_sock_close(wake_write);
+    lyric_sock_close(listen_fd);
+}
+
+/* A signal sent BEFORE the accept call ever runs must still wake it (no
+ * lost-wakeup race): the pipe buffer holds the byte until read, exactly
+ * like a POSIX semaphore's count, so ordering the signal first is just as
+ * valid as signaling a thread already parked in poll(). */
+static void test_accept_interruptible_presignaled(void) {
+    int listen_fd = lyric_sock_listen("127.0.0.1", 0, 16);
+    CHECK(listen_fd >= 0);
+
+    int wake_read = -1, wake_write = -1;
+    CHECK(lyric_sock_wake_pipe_new(&wake_read, &wake_write) == 0);
+    CHECK(wake_read >= 0 && wake_write >= 0);
+
+    CHECK(lyric_sock_wake_pipe_signal(wake_write) == 0);
+
+    int result = lyric_sock_accept_interruptible(listen_fd, wake_read);
+    CHECK(result == -2);
+
+    lyric_sock_close(wake_read);
+    lyric_sock_close(wake_write);
+    lyric_sock_close(listen_fd);
+}
+
+/* Signaling twice before the pipe is ever drained must not be treated as a
+ * failure (a full/duplicate write on a small pipe buffer hits EAGAIN on the
+ * non-blocking write end, which lyric_sock_wake_pipe_signal must swallow). */
+static void test_accept_interruptible_double_signal(void) {
+    int wake_read = -1, wake_write = -1;
+    CHECK(lyric_sock_wake_pipe_new(&wake_read, &wake_write) == 0);
+    CHECK(lyric_sock_wake_pipe_signal(wake_write) == 0);
+    CHECK(lyric_sock_wake_pipe_signal(wake_write) == 0);
+    lyric_sock_close(wake_read);
+    lyric_sock_close(wake_write);
 }
 
 /* ── TLS scenario harness ─────────────────────────────────────────────── */
@@ -839,6 +982,10 @@ int main(void) {
     test_alpn_string_null_conn();
     test_sock_bytes_roundtrip();
     test_sock_write_bytes_edge_cases();
+    test_accept_interruptible_normal();
+    test_accept_interruptible_wakeup();
+    test_accept_interruptible_presignaled();
+    test_accept_interruptible_double_signal();
 
     if (!lyric_tls_available()) {
         char err[256];

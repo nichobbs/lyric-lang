@@ -663,6 +663,43 @@ int32_t lyric_sock_accept_errno(void);
  *        fails the same way, so the caller should back off briefly first. */
 int32_t lyric_sock_accept_error_class(void);
 
+/* ── Portable accept() interrupt (issue #6806) ─────────────────────────
+ *
+ * `lyric_sock_accept` above blocks in accept(2) with no portable way to
+ * wake it from another thread: closing the listening fd from elsewhere
+ * races the accepting thread's own fd table, and shutdown(2) on a
+ * LISTENING socket only unblocks a concurrent accept() on Linux (it
+ * returns ENOTCONN and does nothing on macOS/BSD).  These three
+ * functions implement the standard self-pipe trick instead: a private
+ * pipe(2) multiplexed with the listening socket via poll(2), so a
+ * "wake up" is an ordinary byte write any thread can perform, portable
+ * to every POSIX target this project builds for.
+ */
+
+/* Create a private, non-blocking, close-on-exec pipe for use with
+ * `lyric_sock_accept_interruptible` below.  Writes the read end to
+ * `*read_fd_out` and the write end to `*write_fd_out`.  Returns 0 on
+ * success, -1 on failure (last_error set; neither fd is valid). */
+int32_t lyric_sock_wake_pipe_new(int32_t* read_fd_out, int32_t* write_fd_out);
+
+/* Wake every `lyric_sock_accept_interruptible` call currently blocked on
+ * the read end of this pipe.  Safe to call from any thread, safe to call
+ * more than once (a full pipe buffer is treated as "already signaled",
+ * not a failure).  Returns 0 on success, -1 on a genuine write failure. */
+int32_t lyric_sock_wake_pipe_signal(int32_t write_fd);
+
+/* Like `lyric_sock_accept(listen_fd)`, but also polls `wake_read_fd` (the
+ * read end of a `lyric_sock_wake_pipe_new` pipe) and returns -2 — a
+ * sentinel distinct from -1 — the instant that pipe becomes readable,
+ * WITHOUT calling accept() at all.  The caller (`lyric_sock_close`s the
+ * listening socket separately; this function never closes anything) is
+ * expected to treat -2 as "stop was requested", not as a socket error:
+ * `lyric_sock_accept_errno`/`lyric_sock_accept_error_class` are reset to
+ * 0 ("fatal: caller's accept loop should end") on this path, matching
+ * the existing convention for an unblocked accept() the caller intended.
+ * Retries internally on EINTR, exactly like `lyric_sock_accept`. */
+int32_t lyric_sock_accept_interruptible(int32_t listen_fd, int32_t wake_read_fd);
+
 /* Read up to `n` bytes into `buf`, blocking until at least one arrives.
  * Returns the count read, 0 on a clean peer close (EOF), or -1 on error.
  * Retries on EINTR. */

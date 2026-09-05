@@ -809,7 +809,10 @@ items marked ∥ are independent and can proceed in parallel.
     native twin — shipped (D-progress-712, #6103)**: `_kernel_native/
     tcp_host.l` (the seam `extern func`s, `hostListen`/`hostConnect`/
     `hostStopListener`/`hostAccept`/`hostAcceptTls`/`hostUpgradeServerTls`/
-    `hostAlpn`/`hostRead`/`hostWrite`/`hostClose`) plus its two gating
+    `hostAlpn`/`hostRead`/`hostWrite`/`hostClose`; this is the ship-time
+    enumeration — see the N9.3 addendum below for `hostCloseListener`,
+    added later and REQUIRED alongside `hostStopListener` for the
+    #6883 TOCTOU fix, not a one-call replacement for it) plus its two gating
     prerequisites, `_kernel_native/encoding_host.l` (`Std.Encoding`, porting
     the JVM twin's pure-Lyric accumulator — native's `lyric_rt` list kernel
     is genuinely byte-typed, so the .NET twin's `List<object>`-erasure
@@ -904,7 +907,7 @@ items marked ∥ are independent and can proceed in parallel.
     ALPN-selected h2 is N9.5's job. No `LYRIC_HTTP_MAX_CONNECTIONS`
     backpressure cap yet (`Std.Parse`, needed to read the override, has no
     `_kernel_native/` twin). Verified by
-    `lyric-compiler/lyric/llvm_http_server_self_test.l` (nine cases: a
+    `lyric-compiler/lyric/llvm_http_server_self_test.l` (ten cases: a
     plaintext round trip, a real concurrent TLS round trip via N9.4's
     `hostConnectTls` on a second pthread, the h2-rejection guard, a
     keep-alive round trip over one connection, the #6791 regression
@@ -931,7 +934,22 @@ items marked ∥ are independent and can proceed in parallel.
     regression — `enqueueContext` must post its availability credit
     before releasing the queue mutex, not after, or a handler thread
     preempted in between can have its already-queued context orphaned
-    by `stopListener`'s abandoned-queue drain).
+    by `stopListener`'s abandoned-queue drain — and the #6806 regression
+    — `stopListener` must wake an accept-loop thread that never accepted a
+    single connection using a purely portable mechanism (a self-pipe
+    multiplexed with the listening socket via `poll(2)`, replacing a
+    `shutdown()` call on the listening socket whose "unblock a concurrent
+    `accept()`" side effect is Linux-only — see #6804/#6806 and
+    `_kernel_native/tcp_host.l`'s `hostStopListener`/`hostAccept` doc
+    comments — and confirmed on Linux CI to still wake the accept loop
+    with no live connection ever having existed, across ten repeated
+    listener start/stop cycles). A follow-up review of this same fix
+    (#6883) found a TOCTOU fd-reuse race in closing the wake-pipe/
+    listening-socket fds immediately on signal rather than after the
+    accept thread's confirmed exit — fixed by splitting
+    `hostStopListener` (signal only) from a new `hostCloseListener`
+    (release only, called only after `pthreadJoin` on the accept
+    thread), per D-progress-882's addendum in `docs/03-decision-log.md`.
     **N9.5** lyric-web `serveTls` + ALPN h2 investigated and found ⛔
     BLOCKED on two independent structural gaps, neither a lyric-web nor an
     accept-loop wiring fix (D-progress-852): the h2 FSM is not actually
