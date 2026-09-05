@@ -41543,3 +41543,115 @@ spec-first direction.
 `docs/57-stdlib-ecosystem-library-review.md` §7 (the `lyric web spec`
 CLI-command gap this surfaced, left open), `lyric-web/src/openapi.l`
 module header.
+
+## D-progress-882 — MSIL: `UInt`/`ULong` gain a real representation (erasure to `Int`/`Long`, mirroring the JVM backend), fixing the CLR-loader crash and the downstream `u16`/`u32`/`u64` list-literal miscompile (#6756, #6782)
+
+**Context.** `UInt`/`ULong`-backed types (plain distinct types and range
+subtypes) worked correctly on `--target jvm` (erased to `int`/`long`, with
+unsigned-aware comparison/division/toString — #6661/#6695/#6748), but
+`--target dotnet` had no MSIL representation for `UInt`/`ULong` at all:
+`Msil.Codegen.typeExprToMsilCtx` had no `UInt`/`ULong` arm, so construction
+fell through to "user type in this package" (`MClass`) — a nonexistent
+class — and crashed the CLR loader with "Common Language Runtime detected
+an invalid program" at run time (#6756).
+
+**Fix — type-expression erasure.** Added `UInt -> MInt` / `ULong -> MLong`
+arms to `typeExprToMsilCtx`, mirroring the pre-existing `Nat -> MLong`
+precedent immediately above them and the JVM backend's identical
+`UInt -> JInt`/`ULong -> JLong` erasure: `UInt`/`ULong` occupy the SAME
+32-/64-bit slot a signed `Int`/`Long` uses, they just interpret the bit
+pattern differently for arithmetic that cares about sign. A new
+`isUnsignedTypeExprMsil` helper (mirroring JVM's `isUnsignedTypeExpr`)
+recognizes a `TRef`/`TRefined`/`TParen`-wrapped `UInt`/`ULong` type
+expression for callers that need to know a type is unsigned-flavored, since
+the erased `MsilType` alone can't distinguish it from a signed `Int`/`Long`.
+
+**Fix — literal lowering (`u32` specifically).** A `u16` literal already
+lowered correctly by luck (its magnitude always fits `Int32`'s positive
+range, so the pre-existing "does this fit Int32?" branch took the `MInt`
+path). A `u32` literal did NOT: `Msil.Codegen`'s five `LInt` suffix-match
+sites (the untyped-static-val predictor, the list-literal element-type
+predictor, the real `ELiteral` lowering, the literal-pattern-match lowering,
+and the literal-foldability check) all treated any `u32` value exceeding
+`Int32.MaxValue` (e.g. `2500000000u32`, a valid in-range `UInt`) as
+requiring 64-bit (`MLong`) storage — but `UInt`'s erased field/local/param
+slot is `Int32`, not `Int64`, so a value like `2500000000u32` bound to a
+`val x: UInt` pushed an 8-byte `ldc.i8` onto the stack against a 4-byte
+`Int32` slot, invalid IL. Added an explicit `U32` arm to all five sites:
+the literal always lowers to `MInt`, using a new `int32BitsOfUnsignedMsil`
+helper (`Msil.Lowering`, alongside `emitDistinctBoundsToFail` which needs
+the identical wrap) that takes the low 32 bits and reinterprets them as
+signed (mirroring C#'s `unchecked((int)v)`) rather than `longToInt`, whose
+`OverflowException`-on-out-of-Int32-range behaviour is correct for a
+genuinely out-of-range SIGNED value but would PANIC THE COMPILER ITSELF
+when narrowing a merely-large UNSIGNED one whose bit pattern already fits
+32 bits. `u64` needed no equivalent fix — `I64`/`U64` already share one
+`MLong`/`ldc.i8` arm at every site, and a raw 64-bit bit pattern is
+representation-agnostic between signed and unsigned interpretations.
+
+**Fix — distinct/range-subtype bounds checking.** Added `isUnsigned: Bool`
+to `MDistinctType` (mirroring JVM's `LDistinctType.isUnsigned`), threaded
+through `mkDistinctTypeIR`/`mkDistinctRanged` and set at the `IDistinctType`
+codegen site via `isUnsignedTypeExprMsil(decl.underlying)`.
+`emitDistinctBoundsToFail` (`Msil.Lowering`) now branches on it: the `MInt`
+bound-loading arm uses `int32BitsOfUnsignedMsil` instead of `longToInt` when
+unsigned (a `UInt` bound like `4000000000` exceeds `Int32.MaxValue` and
+would otherwise panic the COMPILER while building the very method that
+checks it), and the comparisons use the ALREADY-EXISTING-BUT-UNUSED
+`emitClt_Un`/`emitCgt_Un` opcode emitters (`Msil.Opcodes`) instead of the
+plain signed `emitClt`/`emitCgt` — a signed comparison misreads any
+in-range value at or above 2^31 (`UInt`) as negative, silently failing
+bounds checks for legitimate values whose sign bit happens to be set (the
+exact #6661 defect class JVM fixed, now closed on MSIL too).
+
+**#6782 (list literals) — resolved as a direct consequence.** `#6782`
+tracked `listLiteralElemTypeMsil` mis-inferring `u16`/`u32`/`u64` list
+literal element types (`[1u16, 2u16][0] + [1u16, 2u16][1]` crashed with
+`InvalidProgramException`, confirmed by reproduction). The root cause was
+the SAME predicted-vs-actual divergence this fix eliminates: the predictor
+returned `MObject` for `u16`/`u32`/`u64` (falling back to the "legacy"
+boxed `List<object>` path), while the REAL literal lowering pushed a raw
+unboxed `MInt`/`MLong` value with no `box` instruction — a stack-type
+mismatch. Once the literal lowering and the predictor both agree on
+`MInt`/`MLong` (this fix), `[1u16, 2u16]` naturally takes the SAME
+homogeneous-typed-array fast path a plain `[1, 2]` `Int` literal already
+did — no `listLiteralElemTypeMsil`-specific fix was needed beyond adding
+the `U16`/`U32`/`U64` arms (mirroring JVM's #6631/#6741 fix to
+`listLiteralElemTypeJvm`) once the underlying erasure existed.
+
+**Scope note — bare-scalar comparison/division/stringification stay
+signed.** This fix's `isUnsignedTypeExprMsil` is the seam a future
+`fctx.unsignedVars`-style side table (mirroring JVM's `ctx.unsignedVars`/
+`isUnsignedExpr`, #6754) would consult, but no such table exists on MSIL
+yet — only `MDistinctType.isUnsigned`-gated bounds-checking consumes
+"unsigned-ness" today. A BARE `val x: UInt = 2500000000u32; println(x)`
+now compiles and runs (no crash) but prints the SIGNED interpretation
+(`-1794967296`), and `x < y`/`x / y` on two bare `UInt` locals use plain
+signed `clt`/`div` rather than `.un` opcodes — both wrong for a genuinely
+sign-bit-set value, matching neither `UInt`'s declared semantics nor the
+JVM backend's behavior for the same program. This is a real, scoped gap,
+not a corner cut silently: general bare-scalar `UInt`/`ULong` comparison/
+division/stringification needs the FULL JVM-mirroring side-channel
+(`unsignedVars` populated at every param/`val`/`var`/`let` binding site,
+consulted by every `BLt`/`BGt`/`BLte`/`BGte`/`BDiv`/`BMod`/`println`/string-
+interpolation call site JVM's `isUnsignedExpr` covers) — a larger, separable
+follow-up filed as #6913, out of scope for this fix (which closes the
+crash-class bugs #6756/#6782 actually reported and is fully covered by
+regression tests).
+
+**Coverage.** Moved the `UInt`/`ULong` cases out of the now-JVM-only
+`range_subtype_unsigned_jvm_self_test.l` into the dual-target
+`range_subtype_self_test.l` (already wired on both `--target dotnet` and
+`--target jvm`); the former file, now containing only its unrelated
+`Float`-backed `.toFloat()` JVM-only case, is renamed
+`range_subtype_float_jvm_self_test.l` (`ci.yml`'s one JVM step for it
+updated to the new path — no new CI step added). Verified against a
+from-source `make lyric` build: `range_subtype_self_test.l` green on both
+targets (18/18), including the moved `UInt`/`ULong` cases; manual repros of
+both issues' exact reported crashes (`2500000000u32` construction,
+`[1u16, 2u16][0] + [1u16, 2u16][1]`, and the `u32`/`u64` list-literal
+analogs) now run and print the correct value instead of crashing.
+
+**Related:** #6756, #6782, #6913 (bare-scalar unsigned-aware
+comparison/division/stringification follow-up), #6661/#6695/#6748 (the JVM
+backend's prior, now-mirrored fixes).
