@@ -278,3 +278,59 @@ test "field read via a second function's return (#6399)" {
 test "field read directly on the call result, no intermediate local (#6399)" {
   assertEqualInt(makeBoxInt6399(3).value, 3, "makeBoxInt6399(3).value -> 3, no intermediate binding")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #4870: a generic union case field typed as ANOTHER generic instantiation
+// using the union's own type parameter — `Branch(left: Wrap[T], right:
+// Wrap[T])` inside `union Tree[T]`.  Distinct from the `paramIdx`-tracked
+// bare-`T` payload path (`Tagged[T].Payload(v: T)` above, and `Tree.Leaf`
+// below): `Wrap[T]` is a real generic record, not itself a type parameter, so
+// `typeExprToJvm`'s `TGenericApp` fallback must resolve it to the raw class
+// `Wrap` (Java-style raw-type erasure), never the universal `java/lang/Object`
+// every OTHER generic head erased to before the fix.  Before the fix, `left`/
+// `right` registered (and were emitted) as `Ljava/lang/Object;`, so a
+// match-bound `r`/`l` local stayed statically `Object` and a field read
+// (`r.item`) fell through the erased-`Object` bundle-wide `field:<name>`
+// fallback instead of a direct `Wrap.item` getfield — surfacing as a runtime
+// `ClassCastException` unboxing the whole `Wrap` object to the monomorphized
+// function's concrete return type.
+// ─────────────────────────────────────────────────────────────────────────────
+record Wrap[T] {
+  item: T
+}
+
+union Tree[T] {
+  case Leaf(value: T)
+  case Branch(left: Wrap[T], right: Wrap[T])
+}
+
+func rightItem[T](t: in Tree[T], d: in T): T {
+  match t {
+    case Leaf(v) -> v
+    case Branch(l, r) -> r.item
+  }
+}
+
+test "generic union case field typed as another generic instantiation, exact #4870 repro" {
+  val t: Tree[Int] = Branch(left = Wrap(item = 10), right = Wrap(item = 20))
+  val v = rightItem(t, 0)
+  assertEqualInt(v, 20, "Branch(Wrap(10), Wrap(20)) -> rightItem -> Branch.right.item -> 20")
+}
+
+test "generic union case field typed as another generic instantiation, left field" {
+  val t: Tree[Int] = Branch(left = Wrap(item = 7), right = Wrap(item = 8))
+  val v = match t { case Leaf(x) -> x; case Branch(l, _) -> l.item }
+  assertEqualInt(v, 7, "Branch(Wrap(7), Wrap(8)) -> Branch.left.item -> 7")
+}
+
+test "generic union case field typed as another generic instantiation, String payload" {
+  val t: Tree[String] = Branch(left = Wrap(item = "lo"), right = Wrap(item = "hi"))
+  val v = match t { case Leaf(x) -> x; case Branch(_, r) -> r.item }
+  assertEqual(v, "hi", "Branch(Wrap(lo), Wrap(hi)) -> Branch.right.item -> hi")
+}
+
+test "generic union Leaf case (bare type-param payload) still round-trips alongside Branch" {
+  val t: Tree[Int] = Leaf(value = 42)
+  val v = rightItem(t, 0)
+  assertEqualInt(v, 42, "Leaf(42) -> rightItem -> 42")
+}
