@@ -38,6 +38,7 @@
 @cfg(feature = "aws")
 package AwsSecrets.Kernel.Net
 
+import Std.Core
 import AwsSecrets
 
 @axiom("AWSSDK.SecretsManager + AWSSDK.SimpleSystemsManagement 3.7.x")
