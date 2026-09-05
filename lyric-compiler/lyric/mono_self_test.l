@@ -82,7 +82,23 @@ func findFunc(file: in SourceFile, name: in String): Option[FunctionDecl] {
 func lastStmtExprInFunc(file: in SourceFile, name: in String): Option[Expr] {
   match findFunc(file, name) {
     case None -> None
-    case Some(decl) -> match decl.body { case None -> None; case Some(fb) -> match fb { case FBExpr(e) -> Some(value = e); case FBBlock(blk) -> { if blk.statements.count == 0 { None } else { match blk.statements[blk.statements.count - 1].kind { case SExpr(e) -> Some(value = e); case SReturn(vOpt) -> vOpt; case _ -> None } } } } }
+    case Some(decl) -> match decl.body {
+      case None -> None
+      case Some(fb) -> match fb {
+        case FBExpr(e) -> Some(value = e)
+        case FBBlock(blk) -> {
+          if blk.statements.count == 0 {
+            None
+          } else {
+            match blk.statements[blk.statements.count - 1].kind {
+              case SExpr(e) -> Some(value = e)
+              case SReturn(vOpt) -> vOpt
+              case _ -> None
+            }
+          }
+        }
+      }
+    }
   }
 }
 
@@ -92,7 +108,16 @@ func lastStmtExprInFunc(file: in SourceFile, name: in String): Option[Expr] {
 // mangled `__`-suffixed name, so this only needs the single-segment case).
 func callFnBareName(e: in Expr): Option[String] {
   match e.kind {
-    case ECall(fn, _) -> match fn.kind { case EPath(p) -> { if p.segments.count == 1 { Some(value = p.segments[0]) } else { None } }; case _ -> None }
+    case ECall(fn, _) -> match fn.kind {
+      case EPath(p) -> {
+        if p.segments.count == 1 {
+          Some(value = p.segments[0])
+        } else {
+          None
+        }
+      }
+      case _ -> None
+    }
     case _ -> None
   }
 }
@@ -2325,7 +2350,14 @@ func matchArmTypeTestName(e: in Expr): Option[String] {
         None
       } else {
         match arms[0].pattern.kind {
-          case PTypeTest(_, ty) -> match ty.kind { case TRef(path) -> if path.segments.count > 0 { Some(value = path.segments[path.segments.count - 1]) } else { None }; case _ -> None }
+          case PTypeTest(_, ty) -> match ty.kind {
+            case TRef(path) -> if path.segments.count > 0 {
+              Some(value = path.segments[path.segments.count - 1])
+            } else {
+              None
+            }
+            case _ -> None
+          }
           case _ -> None
         }
       }
@@ -2367,4 +2399,88 @@ test "match-arm type-test pattern annotation is substituted into a specialised f
   }
   assertTrue(not hasFunc(res.file, "describe"), "generic describe removed from output")
   assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #5970: the Object-defaulted fallback specialisation for an IMPORTED
+// generic must not be emitted when it would crash at runtime against a real,
+// differently-instantiated argument. `getRes()` — a call through a
+// FUNCTION-TYPED PARAMETER — is the file's own documented "still falls
+// through to un-specialised" inference gap (see the header comment above
+// `package Lyric.Mono`): `inferReturnFromName` looks the callee up in
+// `state.funcDecls` by bare name, and a parameter is never registered there,
+// so it returns `None` exactly like the real #5970 repros (an untracked
+// `File.writeText` return, a match-bound `Dictionary` in #5422) — a
+// genuinely OPAQUE argument, not merely one mono hasn't gotten around to
+// tracking yet. `ResLike[T, E]`'s shape mirrors `Std.Core.Result` closely
+// enough to reproduce the crash: a real `ResLike<Int, String>` instance
+// passed where an `Object`-defaulted `isOkLike3__Object__Object` expects
+// `ResLike<Object, Object>` can never structurally match either `match` arm
+// (a closed `isinst` against the wrong instantiation) — `M0004` must fire
+// instead of emitting that specialisation.
+test "opaque argument to an imported generic with a Result-shaped param raises M0004 instead of an Object-defaulted specialisation that would crash (#5970)" {
+  val callerSrc = "package Caller\n" +
+    "func caller(getRes: in () -> ResLike[Int, String]): Bool { isOkLike3(getRes()) }\n"
+  val libSrc = "package Lib\n" + "pub union ResLike[T, E] { case MkOk2(v: T)\n case MkErr2(e: E) }\n" +
+    "pub func isOkLike3[T, E](r: in ResLike[T, E]): Bool { match r { case MkOk2(x) -> true\n case _ -> false } }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
+  assertFalse(
+    hasFunc(res.file, "isOkLike3__Object__Object"),
+    "must not emit the Object-defaulted specialisation -- its match arms could never accept a real ResLike[Int, String] argument"
+  )
+  assertEqualInt(
+    diagCountCode(res.diagnostics, "M0004"),
+    1,
+    "an opaque argument against a Result-shaped param must raise M0004 instead of silently crashing at runtime"
+  )
+}
+
+// Same opaque source, routed through an intermediate LOCAL BINDING first
+// (`val m = getRes()`) instead of a direct call argument -- exercises
+// `inferReturnFromName`'s mirror of the same guard (`hasOpaqueErasureUnsafeGenericParam`
+// gating its own Object-defaulting fallback), confirming the binding is not
+// left carrying a phantom `ResLike[Object, Object]` type that a later call
+// would trust.
+test "opaque binding fed into an imported generic with a Result-shaped param raises M0004 (#5970)" {
+  val callerSrc = "package Caller\n" + "func caller(getRes: in () -> ResLike[Int, String]): Bool {\n" +
+    "  val m = getRes()\n" +
+    "  isOkLike3(m)\n" +
+    "}\n"
+  val libSrc = "package Lib\n" + "pub union ResLike[T, E] { case MkOk2(v: T)\n case MkErr2(e: E) }\n" +
+    "pub func isOkLike3[T, E](r: in ResLike[T, E]): Bool { match r { case MkOk2(x) -> true\n case _ -> false } }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
+  assertFalse(
+    hasFunc(res.file, "isOkLike3__Object__Object"),
+    "the binding's own type could not be tracked either -- must not emit the crashing Object-defaulted specialisation"
+  )
+  assertEqualInt(
+    diagCountCode(res.diagnostics, "M0004"),
+    1,
+    "the untracked binding's use must raise M0004, not silently specialise against a phantom instantiation"
+  )
+}
+
+// Negative: the SAME opaque-argument shape against a `slice[T]`-parametered
+// imported generic (the `map`/`filter`-over-a-`List` idiom, #6141's reverted
+// diagnostic false positive) must keep specialising with the Object default
+// exactly as before -- `slice`/`Array` lower to a real CLR/JVM array, and
+// reference-type array covariance means an `Object[]`-typed parameter
+// genuinely tolerates any real reference-typed array argument. Confirms
+// #5970's fix is scoped to erasure-UNSAFE shapes and does not regress this
+// legitimate, pervasive usage.
+test "opaque argument to an imported generic with a slice-shaped param still defaults to Object (no regression, #5970)" {
+  val callerSrc = "package Caller\n" + "func caller(getXs: in () -> slice[Int]): Int { firstLike(getXs()) }\n"
+  val libSrc = "package Lib\n" + "pub func firstLike[T](xs: in slice[T]): T { xs[0] }\n"
+  val callerPr = parse(callerSrc)
+  val libPr = parse(libSrc)
+  val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
+  assertTrue(
+    hasFunc(res.file, "firstLike__Object"),
+    "a slice-shaped param must still default its opaque, unpinned T to Object -- array covariance makes this safe"
+  )
+  assertEqualInt(diagCountCode(res.diagnostics, "M0004"), 0, "no M0004 for the erasure-safe slice shape")
 }

@@ -101,12 +101,19 @@ pub record MonoResult {
   ///     diagnostic existed — docs/59 §5.2 B2).
   ///   • `M0003` — the specialisation worklist exhausted its budget
   ///     (unbounded recursive instantiation), formerly a compiler panic.
-  /// Inference gaps on calls to IMPORTED generics still fall back
-  /// silently to the un-specialised call (the emitter handles those via
-  /// real CLR generics / the native instantiation registry) — that's the
-  /// conservative behaviour by design.  The bridges route this list
-  /// through `reportAndAbort` so M-errors abort codegen the same way
-  /// parse/type-check/mode-check diagnostics do.
+  ///   • `M0004` — a call site targeting an IMPORTED generic (e.g. a stdlib
+  ///     `Result`/`Map`-consuming function) could not have its type
+  ///     argument(s) inferred, and the callee's parameter shape makes the
+  ///     usual Object-defaulted fallback specialisation unsafe (a runtime
+  ///     `InvalidCastException`/`ClassCastException` or "match not
+  ///     exhaustive" panic before this diagnostic existed — #5970).
+  /// Inference gaps on calls to IMPORTED generics whose parameter shape
+  /// tolerates the erased `Object` ABI (e.g. a plain `slice`/`Array`
+  /// parameter — real CLR/JVM array, reference-type covariance) still fall
+  /// back silently to an `Object`-defaulted specialisation, same as before
+  /// #5970 — that remains the conservative behaviour by design for those.
+  /// The bridges route this list through `reportAndAbort` so M-errors abort
+  /// codegen the same way parse/type-check/mode-check diagnostics do.
   diagnostics: List[Diagnostic]
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Internal state
@@ -1108,6 +1115,128 @@ func listContainsStr(xs: in List[String], s: in String): Bool {
   false
 }
 
+// The subset of `typeParams` `subst` has NOT yet bound, in declaration
+// order (#5970). Fed into `hasOpaqueErasureUnsafeGenericParam` right before
+// the imported-generic Object-defaulting fallback would otherwise fill them.
+func collectUnpinnedTypeParams(typeParams: in List[String], subst: in Map[String, TypeExpr]): List[String] {
+  val acc: List[String] = newList()
+  var i = 0
+  while i < typeParams.count {
+    if not subst.containsKey(typeParams[i]) {
+      acc.add(typeParams[i])
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// True when a still-unpinned type parameter occurs inside `te` in a
+// position whose CLR/JVM representation is instantiation-specific (#5970):
+// a same-package/imported `record`/`union` type or an `extern`-aliased BCL
+// generic class (`List[T]`, `Map[K, V]`, `Result[T, E]`, …) closes over a
+// concrete, non-covariant type at codegen — a reified closed generic
+// (docs/43) on MSIL, or a checked-cast BCL/JDK generic class instance on
+// both targets. Defaulting the missing argument(s) to `Object` and
+// specialising against that assumed shape produces a function whose
+// `isinst`/`castclass`/pattern-match sites can never structurally accept a
+// REAL argument closed over a genuinely different instantiation — an
+// `InvalidCastException`/`ClassCastException` or a "match not exhaustive"
+// panic at runtime (the #5970 crash mode) instead of a compile error.
+//
+// `slice[T]` / `Array[N, T]` are the deliberate exception: the self-hosted
+// backends lower `slice` to a real CLR/JVM array, and reference-type array
+// covariance means an `Object[]`-typed parameter genuinely accepts (and
+// reads back safely from) a real `SomeClass[]` argument with no cast
+// anywhere on the read path — this is the shape `map`/`filter`/`fold`-style
+// higher-order functions over a `List`/`slice` use, and it must keep
+// specialising exactly as before (the reverted PR #6141 diagnostic's false
+// positive on `examples/product-catalog`'s `map(rows, rowToProduct)`).
+// Only a NESTED unsafe shape inside the element position — `slice[Result[T,
+// E]]` — is flagged; see `typeExprNestedUnsafe`.
+func typeExprUnsafeUnderErasure(te: in TypeExpr, unpinned: in List[String]): Bool {
+  match te.kind {
+    case TGenericApp(_, args) -> {
+      var i = 0
+      var found = false
+      while i < args.count {
+        match args[i] {
+          case TAType(inner) -> {
+            if typeArgOccursUnsafely(inner, unpinned) {
+              found = true
+            }
+          }
+          case TAValue(_) -> ()
+        }
+        i = i + 1
+      }
+      found
+    }
+    case TSlice(elem) -> typeExprNestedUnsafe(elem, unpinned)
+    case TArray(_, elem) -> typeExprNestedUnsafe(elem, unpinned)
+    case TNullable(inner) -> typeExprUnsafeUnderErasure(inner, unpinned)
+    case TParen(inner) -> typeExprUnsafeUnderErasure(inner, unpinned)
+    case _ -> false
+  }
+}
+
+// A bare occurrence of an unpinned type parameter (`T`) is unsafe exactly
+// when it is itself a type ARGUMENT to another generic (`Result[T, E]`,
+// `List[T]`); nested further inside another shape, recurse.
+func typeArgOccursUnsafely(te: in TypeExpr, unpinned: in List[String]): Bool {
+  match te.kind {
+    case TRef(path) -> path.segments.count == 1 and listContainsStr(unpinned, path.segments[0])
+    case _ -> typeExprUnsafeUnderErasure(te, unpinned)
+  }
+}
+
+// Inside a `slice[...]`/`Array[N, ...]` element position, a BARE unpinned
+// type parameter is safe (array covariance — see
+// `typeExprUnsafeUnderErasure`'s doc comment); only a NESTED unsafe generic
+// shape is flagged.
+func typeExprNestedUnsafe(te: in TypeExpr, unpinned: in List[String]): Bool {
+  match te.kind {
+    case TRef(_) -> false
+    case _ -> typeExprUnsafeUnderErasure(te, unpinned)
+  }
+}
+
+// True when ANY of `decl`'s parameters is BOTH erasure-unsafe to specialise
+// with `unpinned`'s names defaulted to `Object` AND backed, at this call
+// site, by an OPAQUE argument — one `argOpaque` marks as having given
+// inference no evidence at all (index `i` with no corresponding entry, i.e.
+// `i >= argOpaque.count`, counts as opaque too — a missing/default-valued
+// argument carries no evidence either). A freshly-constructed argument (a
+// union-case ctor call, a lambda literal) is exempt even against an unsafe
+// shape: its unpinned slots are self-consistent with whatever gets
+// defaulted, since the value genuinely IS that instantiation (#5970).
+func hasOpaqueErasureUnsafeGenericParam(
+  decl: in FunctionDecl, unpinned: in List[String], argOpaque: in List[Bool]
+): Bool {
+  var i = 0
+  var found = false
+  while i < decl.params.count {
+    val isOpaqueArg = i >= argOpaque.count or argOpaque[i]
+    if isOpaqueArg and typeExprUnsafeUnderErasure(decl.params[i].ty, unpinned) {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+func quotedStringList(xs: in List[String]): String {
+  var acc = ""
+  var i = 0
+  while i < xs.count {
+    if acc.length > 0 {
+      acc = acc + ", "
+    }
+    acc = acc + "'" + xs[i] + "'"
+    i = i + 1
+  }
+  acc
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §7. Generic parameter name extraction
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1995,6 +2124,33 @@ func ctorSynthOfArg(state: in MonoState, e: in Expr): Option[FunctionDecl] {
   }
 }
 
+// True when `e` is a BARE (no-call-parens) reference to a nullary
+// inference-only union-case constructor (`NoneLike`, `None`, …) — the
+// zero-field counterpart of `ctorSynthOfArg`'s `MkOk(v = 7)` shape (#5970).
+// `ctorSynthOfArg` only matches `ECall`, so a bare nullary case reference
+// falls through as unrecognised; but it is exactly as "freshly constructed
+// at this call site, self-consistent with whatever gets Object-defaulted"
+// as a ctor CALL is — there is simply no field list to partially pin.
+// Consulted alongside `ctorSynthOfArg` when tracking argument opacity for
+// `hasOpaqueErasureUnsafeGenericParam`: without it, `isEmptyLike(NoneLike)`
+// would wrongly count as opaque and lose its (correct, safe) Object-defaulted
+// specialisation.
+func bareInferenceOnlyCtorRef(state: in MonoState, e: in Expr): Bool {
+  match unwrapParenExprMono(e).kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        match mapGet(state.funcDecls, path.segments[0]) {
+          case Some(d) -> annsInferenceOnlyMono(d.annotations)
+          case None -> false
+        }
+      } else {
+        false
+      }
+    }
+    case _ -> false
+  }
+}
+
 // Unify a union-case constructor ARGUMENT against its declared parameter
 // type, binding only the slots the constructor's fields actually PIN
 // (`isOk(Ok(value = 7))` binds T=Int and leaves E untouched).  A
@@ -2243,6 +2399,17 @@ func inferReturnFromName(
       val typeParams = extractTypeParamNames(decl.generics)
       val subst: Map[String, TypeExpr] = newMap()
       val valueSubst: Map[String, Expr] = newMap()
+      // Tracks, per processed argument index, whether that argument gave
+      // inference NO evidence at all (`lambdaShapeOfArg`/`ctorSynthOfArg`
+      // didn't match and `inferExprTE` returned `None`) — as opposed to a
+      // freshly-constructed value (a lambda literal, a union-case ctor call)
+      // or an already fully-typed expression that merely didn't happen to
+      // bind every slot. Consulted by `hasOpaqueErasureUnsafeGenericParam`
+      // below (#5970): a freshly-constructed argument's unpinned slots are
+      // self-consistent with whatever gets defaulted for them (the value
+      // genuinely IS that instantiation), but an OPAQUE argument's real
+      // runtime instantiation is unknown and may be anything.
+      val argOpaque: List[Bool] = newList()
       match explicitArgs {
         case Some(targs) -> {
           if targs.count == typeParams.count {
@@ -2260,10 +2427,14 @@ func inferReturnFromName(
           if typeParams.count > 0 {
             var i = 0
             while i < args.count and i < decl.params.count {
+              var evidenced = false
               match lambdaShapeOfArg(callArgExpr(args[i])) {
                 case Some(lamE) -> {
                   match lamE.kind {
-                    case ELambda(lps, lbody) -> unifyLambdaArgTE(state, env, typeParams, decl.params[i].ty, lps, lbody, subst)
+                    case ELambda(lps, lbody) -> {
+                      unifyLambdaArgTE(state, env, typeParams, decl.params[i].ty, lps, lbody, subst)
+                      evidenced = true
+                    }
                     case _ -> ()
                   }
                 }
@@ -2282,14 +2453,23 @@ func inferReturnFromName(
                     }
                     case None -> ()
                   }
-                  if not handled {
+                  if handled {
+                    evidenced = true
+                  } else {
                     match inferExprTE(state, env, callArgExpr(args[i])) {
-                      case Some(argTE) -> unifyTE(typeParams, decl.params[i].ty, argTE, subst)
+                      case Some(argTE) -> {
+                        unifyTE(typeParams, decl.params[i].ty, argTE, subst)
+                        evidenced = true
+                      }
                       case None -> ()
                     }
                   }
+                  if not evidenced and bareInferenceOnlyCtorRef(state, callArgExpr(args[i])) {
+                    evidenced = true
+                  }
                 }
               }
+              argOpaque.add(not evidenced)
               i = i + 1
             }
           }
@@ -2310,18 +2490,40 @@ func inferReturnFromName(
       //     Reporting `None` instead left the binding untyped, and a later
       //     `isOk(mapped)` specialised at `__Object__Object` — an
       //     instantiation the value never had, so its closed isinst missed
-      //     every arm.
+      //     every arm. But when the unpinned params are only reachable through
+      //     an OPAQUE argument (no lambda/ctor-synth/inferred-TE evidence at
+      //     all — `hasOpaqueErasureUnsafeGenericParam`) against a
+      //     `Result`/`Map`/user-union param (not a plain `slice`), the
+      //     rewriter refuses the Object-defaulted specialisation entirely
+      //     (#5970) — mirror that here and report `None` too, rather than
+      //     promising a binding type no specialisation will ever back. A
+      //     freshly-constructed argument (`Ok(value = 7)`, a lambda literal)
+      //     stays exempt: its unpinned slots are self-consistent with
+      //     whatever gets defaulted, since the value genuinely IS that
+      //     instantiation (see `partially-pinned union-ctor argument mixes
+      //     concrete and Object slots` in mono_self_test.l).
       // Same-package generics stay all-or-nothing: their uninferable call
       // sites raise M0002 at the rewriter, never a defaulted specialisation.
       val importedFill = (not state.droppedLocalGenerics.containsKey(fname)) and not annsHaveAxiomMono(decl.annotations)
-      val fillsUnpinned = annsInferenceOnlyMono(decl.annotations) or importedFill
-      if typeParams.count > 0 and fillsUnpinned {
-        var uf = 0
-        while uf < typeParams.count {
-          if not subst.containsKey(typeParams[uf]) {
-            subst.add(typeParams[uf], TypeExpr(kind = TRef(path = singleSegPath("Object")), span = decl.span))
+      val ctorFill = annsInferenceOnlyMono(decl.annotations)
+      if typeParams.count > 0 and ctorFill {
+        var cf = 0
+        while cf < typeParams.count {
+          if not subst.containsKey(typeParams[cf]) {
+            subst.add(typeParams[cf], TypeExpr(kind = TRef(path = singleSegPath("Object")), span = decl.span))
           }
-          uf = uf + 1
+          cf = cf + 1
+        }
+      } else if typeParams.count > 0 and importedFill {
+        val unpinnedNow = collectUnpinnedTypeParams(typeParams, subst)
+        if unpinnedNow.count > 0 and not hasOpaqueErasureUnsafeGenericParam(decl, unpinnedNow, argOpaque) {
+          var uf = 0
+          while uf < typeParams.count {
+            if not subst.containsKey(typeParams[uf]) {
+              subst.add(typeParams[uf], TypeExpr(kind = TRef(path = singleSegPath("Object")), span = decl.span))
+            }
+            uf = uf + 1
+          }
         }
       }
       if typeParams.count > 0 and not substIsComplete(typeParams, subst) {
@@ -3295,6 +3497,45 @@ func noteUnspecialisableLocalCall(
   )
 }
 
+// Emit `M0004` when a call to an IMPORTED generic function could not have
+// its type argument(s) inferred, AND those unpinned params are only reached
+// through an OPAQUE argument against a parameter shape that makes the usual
+// Object-defaulted fallback specialisation unsafe
+// (`hasOpaqueErasureUnsafeGenericParam`, #5970): a `Result`/`Map`/user-
+// `union`/`record` parameter closes over a non-covariant concrete
+// instantiation at codegen, so a specialisation built against `Object` can
+// never structurally accept a real argument closed over the actual,
+// different instantiation the value has at runtime — this crashes
+// (`InvalidCastException`/`ClassCastException`, or a "match not exhaustive"
+// panic) rather than merely producing an untyped binding. Diagnosing here
+// trades that runtime crash for a compile-time error, mirroring `M0002`'s
+// trade for same-package generics. A name shadowed by a typed local binding
+// in `env` is a lambda/function-value call, not a call to the generic — skip
+// it, same as `noteUnspecialisableLocalCall`.
+func noteUnsafeImportedFallback(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  fname: in String,
+  unpinned: in List[String],
+  callSpan: in Span,
+): Unit {
+  if env.containsKey(fname) {
+    return
+  }
+  state.diags.add(
+    errorDiagnostic(
+      "M0004",
+      "call to imported generic function '" + fname + "' could not infer type argument(s) " + quotedStringList(unpinned) +
+        " from the call's arguments; '" +
+        fname +
+        "' takes a parameter whose representation depends on the exact type argument (a record, union, or collection type — not a plain array), so defaulting the missing type argument(s) to 'Object' would emit a specialisation that crashes at runtime against the real argument's actual instantiation instead of compiling to a working call — make the argument types inferable (e.g. bind the argument to an explicitly-typed local) or supply the type argument(s) explicitly (e.g. '" +
+        fname +
+        "[...](...)')",
+      callSpan
+    )
+  )
+}
+
 // The subset of `typeParams` that `subst` failed to bind, rendered as a
 // quoted comma-separated list for the M0002 message.
 func unresolvedTypeParamList(typeParams: in List[String], subst: in Map[String, TypeExpr]): String {
@@ -3904,12 +4145,20 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                     // Pure type-generic call site: existing inference path
                     // (value generics require explicit `f[N]` type apps).
                     val subst: Map[String, TypeExpr] = newMap()
+                    // Tracks, per processed argument index, whether that
+                    // argument gave inference NO evidence at all — see the
+                    // matching comment in `inferReturnFromName` (#5970).
+                    val argOpaque: List[Bool] = newList()
                     var i = 0
                     while i < args.count and i < baseDecl.params.count {
+                      var evidenced = false
                       match lambdaShapeOfArg(callArgExpr(args[i])) {
                         case Some(lamE) -> {
                           match lamE.kind {
-                            case ELambda(lps, lbody) -> unifyLambdaArgTE(state, env, typeParams, baseDecl.params[i].ty, lps, lbody, subst)
+                            case ELambda(lps, lbody) -> {
+                              unifyLambdaArgTE(state, env, typeParams, baseDecl.params[i].ty, lps, lbody, subst)
+                              evidenced = true
+                            }
                             case _ -> ()
                           }
                         }
@@ -3927,16 +4176,23 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                             }
                             case None -> ()
                           }
-                          if not handled {
+                          if handled {
+                            evidenced = true
+                          } else {
                             match inferExprTE(state, env, callArgExpr(args[i])) {
                               case Some(argTE) -> {
                                 unifyTE(typeParams, baseDecl.params[i].ty, argTE, subst)
+                                evidenced = true
                               }
                               case None -> ()
                             }
                           }
+                          if not evidenced and bareInferenceOnlyCtorRef(state, callArgExpr(args[i])) {
+                            evidenced = true
+                          }
                         }
                       }
+                      argOpaque.add(not evidenced)
                       i = i + 1
                     }
                     // An IMPORTED generic whose declaration is erased from every
@@ -3952,14 +4208,42 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                     // generics keep the loud M0002 below: their declaration is
                     // still in the file, so the erased-default is never the
                     // user's intent there.
+                    //
+                    // BUT this Object-default is only sound when the unpinned
+                    // params are reached through an OPAQUE argument (no
+                    // lambda/ctor-synth/inferred-TE evidence at all) against a
+                    // parameter shape that can't tolerate an `Object`-erased
+                    // argument (#5970): a `slice`/`Array` parameter is safe (real
+                    // CLR/JVM array, reference-type covariance), but a `Result`/
+                    // `Map`/user-`union`/`record` parameter closes over a
+                    // non-covariant concrete instantiation at codegen — an
+                    // `Object`-defaulted specialisation's `isinst`/`castclass`/
+                    // pattern-match sites can never structurally accept a REAL
+                    // argument closed over a genuinely different instantiation
+                    // (observed as `InvalidCastException`/`ClassCastException` or
+                    // a "match not exhaustive" panic at runtime). A
+                    // freshly-constructed argument (a union-case ctor call, a
+                    // lambda literal) stays exempt — its unpinned slots are
+                    // self-consistent with whatever gets defaulted, since the
+                    // value genuinely IS that instantiation. When
+                    // `hasOpaqueErasureUnsafeGenericParam` flags an opaque
+                    // argument against an unsafe shape, refuse the default and
+                    // raise `M0004` instead of emitting a specialisation that
+                    // compiles clean and crashes later.
+                    var unsafeImportedFallback = false
                     if not substIsComplete(typeParams, subst) {
                       if not state.droppedLocalGenerics.containsKey(fname) and not annsHaveAxiomMono(baseDecl.annotations) {
-                        var du = 0
-                        while du < typeParams.count {
-                          if not subst.containsKey(typeParams[du]) {
-                            subst.add(typeParams[du], TypeExpr(kind = TRef(path = singleSegPath("Object")), span = fn.span))
+                        val unpinnedNow = collectUnpinnedTypeParams(typeParams, subst)
+                        if hasOpaqueErasureUnsafeGenericParam(baseDecl, unpinnedNow, argOpaque) {
+                          unsafeImportedFallback = true
+                        } else {
+                          var du = 0
+                          while du < typeParams.count {
+                            if not subst.containsKey(typeParams[du]) {
+                              subst.add(typeParams[du], TypeExpr(kind = TRef(path = singleSegPath("Object")), span = fn.span))
+                            }
+                            du = du + 1
                           }
-                          du = du + 1
                         }
                       }
                     }
@@ -3978,13 +4262,17 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                       val newFn = singleSegPathExpr(name, fn.span)
                       return Expr(kind = ECall(fn = newFn, args = newArgs), span = s)
                     }
-                    noteUnspecialisableLocalCall(
-                      state,
-                      env,
-                      fname,
-                      "could not infer type argument(s) " + unresolvedTypeParamList(typeParams, subst) + " from the call's arguments",
-                      fn.span
-                    )
+                    if unsafeImportedFallback {
+                      noteUnsafeImportedFallback(state, env, fname, collectUnpinnedTypeParams(typeParams, subst), fn.span)
+                    } else {
+                      noteUnspecialisableLocalCall(
+                        state,
+                        env,
+                        fname,
+                        "could not infer type argument(s) " + unresolvedTypeParamList(typeParams, subst) + " from the call's arguments",
+                        fn.span
+                      )
+                    }
                   }
                 } else {
                   // The arity guard above deliberately skips calls with MORE
