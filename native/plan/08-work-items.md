@@ -1879,7 +1879,7 @@ here.
 
 ---
 
-### N9.8 — Three native-codegen review-finding fixes: bare enum-case patterns, out/inout width mismatches, over-inclusive UFCS reachability — ✅ SHIPPED (D-progress-878, #6740, #6813, #6625)
+### N9.8 — Three native-codegen review-finding fixes: bare enum-case patterns, out/inout width mismatches, over-inclusive UFCS reachability — ✅ SHIPPED (D-progress-878/D-progress-879, #6740, #6813, #6625, #6969)
 
 Three independent review-finding follow-ups from N9.4/N9.6, all real
 correctness gaps confirmed against current `main`:
@@ -1947,11 +1947,29 @@ correctness gaps confirmed against current `main`:
   both. Also applied the review's two SUGGESTIONs: an `out Long`
   mode-symmetry case in `llvm_inout_self_test.l`, and a clearer
   `lowerByRefArg` panic message.
+- **Review fix (#6969) — #6740's own fix was reachable by an unrelated
+  `Int`/`Char` scrutinee.** Caught by a second `claude-review` pass:
+  `scrutineeHasCase`'s new `NI32` fallback checked
+  `ctx.enumDefs.containsKey(name)` bundle-wide, with no check that the
+  scrutinee is actually of that enum's type — since an enum, `Int`, and
+  `Char` all erase to the same `NI32`, an ordinary catch-all bind over a
+  real `Int`/`Char` whose bind name collided with ANY enum case anywhere
+  in the bundle was silently reinterpreted as an equality test instead of
+  binding, a hazard #6740's fix itself introduced. Fixed by mirroring
+  `Msil.Codegen`'s `scrutEnumHint`/`inferScrutineeEnumHintMsil` (#5995): a
+  new `Ctx.varEnumTypes` map records a local/param's declared enum type
+  simple name (from `bindLocal`'s binding sites and function-parameter
+  binding); `inferScrutineeEnumHint` reads it for a bare-`EPath` match
+  scrutinee; `scrutineeHasCase` now scopes its `NI32` check to
+  `enumHint + "." + name` — the scrutinee's OWN enum — instead of a
+  bundle-wide bare-name check. An empty hint falls through to a plain
+  bind, the pre-#6740 safe default. New item H in
+  `llvm_enum_case_resolve_self_test.l`.
 
-**Verified:** full existing native self-test suite re-run under real
-ASan after both the original fixes and the #6952 review fix
+**Verified:** full existing native self-test suite re-run after the
+original fixes, the #6952 review fix, and the #6969 review fix
 (`llvm_codegen_self_test.l` 35/35, `llvm_enum_case_resolve_self_test.l`
-7/7, `llvm_inout_self_test.l` 12/12, `llvm_project_self_test.l` 10/10,
+8/8, `llvm_inout_self_test.l` 12/12, `llvm_project_self_test.l` 10/10,
 `llvm_stdlib_self_test.l` 18/18, `llvm_http_client_self_test.l` 13/13),
 no regressions.
 

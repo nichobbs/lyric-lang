@@ -33573,3 +33573,39 @@ including the #6952 review fix),
 #6740/#6813/#6625 (fixed by this PR), `native/plan/08-work-items.md`
 N9.8, `native/plan/04-arc-design.md` Rule 5 (the by-ref-argument-ownership
 rule #6813's fix protects).
+
+## Native codegen: #6740's fix scoped to the scrutinee's own enum type, closing a bundle-wide `Int`/`Char` collision hazard (#6969)
+
+A second `claude-review` pass on the #6740/#6813/#6625 PR (above) found
+that #6740's own fix was itself unsound: `scrutineeHasCase`'s `NI32`
+fallback checked `ctx.enumDefs.containsKey(name)` bundle-wide, with no
+check that the scrutinee is actually of that enum's type — since an
+enum, `Int`, and `Char` all erase to the same native `NI32`, an ordinary
+catch-all bind over a real `Int`/`Char` whose bind name collided with
+ANY enum case anywhere in the bundle was silently reinterpreted as an
+equality test, instead of binding. This is a hazard #6740's own fix
+introduced (previously `Int`/`Char` bare-name binds were always safe on
+`--target native`).
+
+Fixed by mirroring `Msil.Codegen`'s `scrutEnumHint`/
+`inferScrutineeEnumHintMsil` mechanism (#5995): a new
+`Ctx.varEnumTypes: Map[String, String]` records a local/param's declared
+enum type SIMPLE NAME (populated at `bindLocal`'s three binding sites
+and at function-parameter binding); `inferScrutineeEnumHint` reads it
+for a bare-`EPath` match scrutinee; `scrutineeHasCase` now scopes its
+`NI32` check to `enumHint + "." + name` — the scrutinee's OWN enum —
+rather than a bundle-wide bare-name check. An empty hint (scrutinee type
+unknown, or genuinely not an enum) falls through to a plain bind, the
+pre-#6740 safe default.
+
+New item H in `llvm_enum_case_resolve_self_test.l`: a plain `Int`
+parameter matched against a bare pattern name colliding with an
+unrelated enum's case must echo the bind back unchanged, confirmed
+failing before the fix and passing after. Full re-verification:
+`llvm_enum_case_resolve_self_test.l` 8/8, `llvm_inout_self_test.l`
+12/12, `llvm_codegen_self_test.l` 35/35, `llvm_stdlib_self_test.l`
+18/18, `llvm_http_client_self_test.l` 13/13 — no regressions.
+
+**Related:** `docs/03-decision-log.md` D-progress-879 (full account),
+#6969 (fixed here), D-progress-878/#6740 (the fix this closes a gap in),
+`native/plan/08-work-items.md` N9.8.

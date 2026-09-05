@@ -249,6 +249,15 @@ record Ctx {
   // Current function state.
   varSlots: Map[String, String]
   varTypes: Map[String, NType]
+  // A local/param's declared enum type's bare name, when its type
+  // annotation names a known enum (#6969) — enums erase to bare `NI32`
+  // at the IR level, indistinguishable from a real `Int`/`Char` by
+  // `varTypes` alone, so a match scrutinee needs this SEPARATE hint to
+  // scope a bare-case-name pattern test to its own enum instead of any
+  // same-named case in the whole bundle. Absent (no entry) means "not
+  // known to be a specific enum" — never a `Map.add` duplicate-key
+  // panic on rebind, since every write site removes first.
+  varEnumTypes: Map[String, String]
   allocas: List[NInsn]
   loopBreak: List[String]
   loopCont: List[String]
@@ -640,6 +649,42 @@ func lookupHeapType(ctx: in Ctx, joined: in String, bare: in String): Option[NTy
     }
   }
   None
+}
+
+/// `te`'s bare enum type name, when `te` is a `TRef` naming a known
+/// enum (#6969), or `""` otherwise. Used to populate `Ctx.varEnumTypes`
+/// so a match scrutinee's enum-erased `NI32` can be told apart from an
+/// ordinary `Int`/`Char` at pattern-test time (see `varEnumTypes`'s doc
+/// comment and `inferScrutineeEnumHint`).
+func enumNameOfTypeExpr(ctx: in Ctx, te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> {
+      val joined = modulePathJoin(path.segments)
+      val bare = lastSeg(path)
+      if ctx.enumDefs.containsKey(joined + ".__enum") or ctx.enumDefs.containsKey(bare + ".__enum") {
+        bare
+      } else {
+        ""
+      }
+    }
+    case TParen(inner) -> enumNameOfTypeExpr(ctx, inner)
+    case _ -> ""
+  }
+}
+
+/// Record (or clear) `name`'s declared enum type in `ctx.varEnumTypes` —
+/// remove-then-add so a rebind of an already-tracked name never throws
+/// `Map.add`'s duplicate-key error, mirroring `bindLocal`'s `varTypes`
+/// bookkeeping exactly (same flat, last-write-wins lifetime — no scope-
+/// undo in this backend for `varTypes` either, so this introduces no new
+/// shadowing behavior).
+func registerVarEnumType(ctx: in Ctx, name: in String, enumName: in String): Unit {
+  if ctx.varEnumTypes.containsKey(name) {
+    ctx.varEnumTypes.remove(name)
+  }
+  if enumName.length > 0 {
+    ctx.varEnumTypes.add(name, enumName)
+  }
 }
 
 func distinctUnderlying(di: in NDistinctInfo): NType {
@@ -7588,12 +7633,18 @@ func unionInfoOfType(ctx: in Ctx, t: in NType): Option[NUnionInfo] {
 /// `true` when `name` names one of `t`'s cases — a union case (`t` is a
 /// heap struct pointer) OR an enum case (`t` erases to bare `NI32` at
 /// the native IR level, so an enum-typed scrutinee is distinguished from
-/// a real `Int` only by consulting `ctx.enumDefs`, never by `t` itself,
-/// #6740). The `NI32` gate keeps an ordinary catch-all bind over a real
-/// `Int` from regressing into an unconditional-equality test merely
-/// because its bind-name happens to collide with some unrelated enum's
-/// case name elsewhere in the bundle.
-func scrutineeHasCase(ctx: in Ctx, t: in NType, name: in String): Bool {
+/// a real `Int`/`Char` only via `enumHint`, the scrutinee's declared
+/// enum type SIMPLE NAME from `inferScrutineeEnumHint` — never by `t`
+/// itself, #6740). `enumHint` scopes the enum-case check to THAT
+/// specific enum (`enumHint + "." + name` in `ctx.enumDefs`, the same
+/// key `registerEnumDecl`-equivalent registration uses) rather than
+/// `ctx.enumDefs.containsKey(name)`'s bundle-wide bare-name check, which
+/// wrongly reinterpreted an ordinary `Int`/`Char` catch-all bind as an
+/// equality test whenever its bind name collided with ANY unrelated
+/// enum's case name anywhere in the compiled bundle (#6969). An empty
+/// `enumHint` (scrutinee type unknown/not tracked) means "never an enum
+/// case" — the pre-#6740 safe default of "just bind".
+func scrutineeHasCase(ctx: in Ctx, t: in NType, name: in String, enumHint: in String): Bool {
   match unionInfoOfType(ctx, t) {
     case Some(ui) -> {
       var i = 0
@@ -7607,10 +7658,33 @@ func scrutineeHasCase(ctx: in Ctx, t: in NType, name: in String): Bool {
     }
     case None -> {
       match t {
-        case NI32 -> ctx.enumDefs.containsKey(name)
+        case NI32 -> enumHint.length > 0 and ctx.enumDefs.containsKey(enumHint + "." + name)
         case _ -> false
       }
     }
+  }
+}
+
+/// The declared enum type SIMPLE NAME of a match scrutinee expression,
+/// when it's a bare local/param reference (`EPath` with one segment)
+/// registered in `ctx.varEnumTypes`, or `""` otherwise. Mirrors
+/// `Msil.Codegen.inferScrutineeEnumHintMsil` (#5995) so a bare-case-name
+/// pattern (`case Http1_1 ->`) resolves against the scrutinee's OWN enum
+/// instead of colliding with another in-bundle enum's same-named case.
+func inferScrutineeEnumHint(ctx: in Ctx, e: in Expr): String {
+  match e.kind {
+    case EParen(inner) -> inferScrutineeEnumHint(ctx, inner)
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        match mapGet(ctx.varEnumTypes, path.segments[0]) {
+          case Some(n) -> n
+          case None -> ""
+        }
+      } else {
+        ""
+      }
+    }
+    case _ -> ""
   }
 }
 
@@ -7646,6 +7720,7 @@ func emitPatternTest(
   failLabel: in String,
   bindNames: in List[String],
   bindVals: in List[NVal],
+  scrutEnumHint: in String,
 ): Unit {
   val p = stripPattern(pat)
   match p.kind {
@@ -7659,7 +7734,7 @@ func emitPatternTest(
           // A bare identifier that names a case of the scrutinee's
           // union is a nullary constructor pattern, not a binding
           // (`case Nada ->`): the parser cannot distinguish them.
-          if scrutineeHasCase(ctx, sv.ty, name) {
+          if scrutineeHasCase(ctx, sv.ty, name, scrutEnumHint) {
             val segs: List[String] = newList()
             segs.add(name)
             val noSubs: List[Pattern] = newList()
@@ -7914,7 +7989,10 @@ func emitConstructorTest(
         }
       }
       case _ -> {
-        emitPatternTest(ctx, insns, fieldVals[pi], sub, nextL, failLabel, bindNames, bindVals)
+        // "" — a nested field's bare-case-name test never reaches
+        // `scrutineeHasCase`'s enum branch (a `PBinding` sub-pattern is
+        // always a plain bind, handled above); the hint is unused here.
+        emitPatternTest(ctx, insns, fieldVals[pi], sub, nextL, failLabel, bindNames, bindVals, "")
         if not isLast {
           insns.add(NLabel(name = nextL))
         }
@@ -7943,6 +8021,10 @@ func lowerMatch(
   // Pin the scrutinee into a named local so every arm block can address
   // it (also keeps it alive across arms via the enclosing temp scope).
   val sv = sv0
+  // #6969: the scrutinee's declared enum type name (if recognisable), so
+  // a bare-case-name arm (`case Http1_1 ->`) resolves against it instead
+  // of colliding with another in-bundle enum's same-named case.
+  val scrutEnumHint = inferScrutineeEnumHint(ctx, scrutinee)
   val mergeL = freshLabel(ctx, "match.merge")
   var slotName = ""
   var slotTy = NVoid
@@ -7958,7 +8040,7 @@ func lowerMatch(
     match arm.guard {
       case Some(g) -> {
         val guardL = freshLabel(ctx, "match.guard")
-        emitPatternTest(ctx, insns, sv, arm.pattern, guardL, nextL, bindNames, bindVals)
+        emitPatternTest(ctx, insns, sv, arm.pattern, guardL, nextL, bindNames, bindVals, scrutEnumHint)
         insns.add(NLabel(name = guardL))
         pushVarScope(ctx)
         applyPatternBinds(ctx, insns, bindNames, bindVals)
@@ -7992,7 +8074,7 @@ func lowerMatch(
         insns.add(NBr(label = mergeL))
       }
       case None -> {
-        emitPatternTest(ctx, insns, sv, arm.pattern, armBodyL, nextL, bindNames, bindVals)
+        emitPatternTest(ctx, insns, sv, arm.pattern, armBodyL, nextL, bindNames, bindVals, scrutEnumHint)
         insns.add(NLabel(name = armBodyL))
         pushVarScope(ctx)
         applyPatternBinds(ctx, insns, bindNames, bindVals)
@@ -8229,7 +8311,11 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
             case PBinding(name, inner) -> {
               match inner {
                 case Some(_) -> panic("Lyric.LlvmCodegen: nested binding patterns are not yet supported for --target native")
-                case None -> bindLocal(ctx, insns, name, v)
+                case None -> {
+                  bindLocal(ctx, insns, name, v)
+                  val enumHint = match tyOpt { case Some(te) -> enumNameOfTypeExpr(ctx, te); case None -> "" }
+                  registerVarEnumType(ctx, name, enumHint)
+                }
               }
             }
             case PWildcard -> {
@@ -8244,6 +8330,8 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
             case None -> lowerExpr(ctx, insns, init)
           }
           bindLocal(ctx, insns, name, v)
+          val enumHint = match tyOpt { case Some(te) -> enumNameOfTypeExpr(ctx, te); case None -> "" }
+          registerVarEnumType(ctx, name, enumHint)
         }
         case LBVar(name, tyOpt, initOpt) -> {
           match initOpt {
@@ -8253,6 +8341,8 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
                 case None -> lowerExpr(ctx, insns, init)
               }
               bindLocal(ctx, insns, name, v)
+              val enumHint = match tyOpt { case Some(te) -> enumNameOfTypeExpr(ctx, te); case None -> "" }
+              registerVarEnumType(ctx, name, enumHint)
             }
             case None -> {
               match tyOpt {
@@ -8260,6 +8350,7 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
                   val ty = typeToN(ctx, te)
                   val zero = zeroValueOf(ty)
                   bindLocal(ctx, insns, name, NVal(ty = ty, value = zero))
+                  registerVarEnumType(ctx, name, enumNameOfTypeExpr(ctx, te))
                 }
                 case None -> panic("Lyric.LlvmCodegen: 'var' without initializer needs a type annotation")
               }
@@ -8621,6 +8712,7 @@ func lowerBlockValueW(ctx: in Ctx, insns: in List[NInsn], block: in Block, want:
 func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
   val slots: Map[String, String] = newMap()
   val types: Map[String, NType] = newMap()
+  val enumTypes: Map[String, String] = newMap()
   val curPkg: List[String] = newList()
   curPkg.add(pkg)
   val curRet: List[NType] = newList()
@@ -8632,6 +8724,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     strTicker = mod.strTicker,
     varSlots = slots,
     varTypes = types,
+    varEnumTypes = enumTypes,
     allocas = newList(),
     loopBreak = newList(),
     loopCont = newList(),
@@ -9023,6 +9116,7 @@ func lowerFunctionEnv(
     }
     val pty = typeToN(ctx, p.ty)
     val ptyIsVoid = match pty { case NVoid -> true; case _ -> false }
+    registerVarEnumType(ctx, p.name, enumNameOfTypeExpr(ctx, p.ty))
     if isByRefMode and not ptyIsVoid {
       val ptrTy = NPtr(pointee = pty)
       params.add(NParam(name = "arg." + p.name, ty = ptrTy))
@@ -9487,6 +9581,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   }
   val emptySlots: Map[String, String] = newMap()
   val emptyTypes: Map[String, NType] = newMap()
+  val emptyEnumTypes: Map[String, String] = newMap()
   val emptyRecs: Map[String, NRecInfo] = newMap()
   val emptyUnions: Map[String, NUnionInfo] = newMap()
   val emptyCases: Map[String, NCaseRef] = newMap()
@@ -9509,6 +9604,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     strTicker = newList(),
     varSlots = emptySlots,
     varTypes = emptyTypes,
+    varEnumTypes = emptyEnumTypes,
     allocas = newList(),
     loopBreak = newList(),
     loopCont = newList(),

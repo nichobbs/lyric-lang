@@ -41364,6 +41364,84 @@ native-codegen ARC bug this session also fixed, in a separate PR),
 `native/plan/08-work-items.md` N9.8, `native/plan/04-arc-design.md`
 (Rule 5, the by-ref-argument-ownership rule #6813's fix protects).
 
+## D-progress-879 — Native codegen: #6740's enum-case pattern fix was reachable by an unrelated `Int`/`Char` scrutinee sharing a bind name with any enum case in the bundle (#6969)
+
+**Context.** A `claude-review` pass on the PR shipping D-progress-878's
+#6740 fix flagged a REQUIRED soundness gap the fix itself introduced:
+`scrutineeHasCase`'s new `NI32` fallback (`llvm_codegen.l`) checked
+`ctx.enumDefs.containsKey(name)` — a global, bundle-wide bare-case-name
+registry — with no check that the scrutinee is actually of that
+specific enum's type. Since an enum, a plain `Int`, and a `Char` all
+erase to the SAME native `NI32` representation, an ordinary catch-all
+bind pattern over a real `Int`/`Char` value (`match n { case Foo -> ... }`
+where `n: Int`) whose bind name happened to match ANY enum case name
+anywhere in the compiled bundle was silently reinterpreted as an
+equality test against that unrelated enum's ordinal, instead of
+binding — a hazard #6740's fix newly introduced (previously
+`scrutineeHasCase` always returned `false` for a non-union scrutinee,
+so bare-name binds over `Int`/`Char` were always safe on
+`--target native`).
+
+**Fix.** Mirrors `Msil.Codegen`'s existing `scrutEnumHint`/
+`inferScrutineeEnumHintMsil` mechanism (#5995), scoped to what native
+actually needs:
+
+- `Ctx.varEnumTypes: Map[String, String]` — a local/param's declared
+  enum type SIMPLE NAME, populated at `bindLocal`'s three `SLocal`
+  binding sites (`LBVal`/`LBLet`/`LBVar`, from the binding's type
+  annotation) and at function-parameter binding (from the parameter's
+  declared type), via the new `registerVarEnumType`/`enumNameOfTypeExpr`
+  helpers. Same flat, last-write-wins lifetime as the pre-existing
+  `Ctx.varTypes` — this backend has no scope-undo mechanism for either
+  map, so no new shadowing behavior is introduced.
+- `inferScrutineeEnumHint` — mirrors `inferScrutineeEnumHintMsil`
+  exactly: a match scrutinee that's a bare local/param reference
+  (`EPath` with one segment) looks up its declared enum type in
+  `varEnumTypes`; anything else (a field access, a call, a literal)
+  yields `""` (no hint — the safe "never an enum case" default).
+- `scrutineeHasCase` now takes this hint and, for an `NI32` scrutinee,
+  checks `enumHint + "." + name` in `ctx.enumDefs` (the scrutinee's OWN
+  enum) instead of a bundle-wide bare-name check. An empty hint means
+  "not known to be a specific enum," which now correctly falls through
+  to a plain bind — the pre-#6740 behavior for `Int`/`Char` scrutinees.
+- `lowerMatch` computes the hint once from the top-level scrutinee
+  expression and threads it through `emitPatternTest`'s arm-testing
+  calls. `emitConstructorTest`'s own recursive `emitPatternTest` call
+  (for constructor sub-field patterns) passes `""`: a sub-field's bare
+  `PBinding` pattern is handled inline as a plain bind before reaching
+  `scrutineeHasCase` at all (unaffected by this fix's scope either way),
+  so the hint there is unused dead-code-path plumbing, kept only to
+  satisfy the now-required parameter.
+
+Blast radius is narrower than it might first appear: `emitConstructorTest`
+(the union/enum-by-qualified-name path, and the `PConstructor` parser
+shape for an already-disambiguated pattern) never called
+`scrutineeHasCase` at all — that function's own `NI32` branch already
+gated on the FULL qualified/bare case key via `ctx.enumDefs` directly,
+never the ambiguous "any enum in the bundle" check #6969 fixes. The bug
+was strictly confined to `emitPatternTest`'s top-level `PBinding` branch,
+reached only from `lowerMatch`'s own arm tests.
+
+**Verification.** New item H in `llvm_enum_case_resolve_self_test.l`:
+a plain `Int` parameter matched against a bare pattern name colliding
+with an unrelated enum's case (`Version.Http1_1`) must echo the bind
+back unchanged (99 → 99), not compare against the enum's ordinal and
+fall through to a wildcard arm. Confirmed failing before the fix
+(returns the wildcard arm's value instead of the bound `Int`) and
+passing after. Full re-run of the affected native self-test suite:
+`llvm_enum_case_resolve_self_test.l` 8/8 (item G's own #6740 regression
+still passes — an empty hint never fires for a genuinely enum-typed
+scrutinee, since `bindLocal`/function-parameter binding now always
+records the hint when the declared type is a known enum),
+`llvm_inout_self_test.l` 12/12, `llvm_codegen_self_test.l` 35/35,
+`llvm_stdlib_self_test.l` 18/18, `llvm_http_client_self_test.l` 13/13 —
+no regressions. `lyric fmt --write` applied clean (no refusals) to
+`llvm_codegen.l`.
+
+**Related:** #6969 (fixed here), D-progress-878 (#6740, the fix this
+entry closes a soundness gap in), `Msil.Codegen.inferScrutineeEnumHintMsil`
+(#5995, the mirrored mechanism), `native/plan/08-work-items.md` N9.8.
+
 ## D-progress-877 — `lyric-grpc`: server hosting confirmed blocked by the same #6581 gap as unary/streaming; no bindable non-generic subset found (#6592, #5409)
 
 **Context.** #6592/#5409 track `Grpc.Kernel.Net`'s real implementation.

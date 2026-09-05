@@ -73,6 +73,21 @@
 //!     the scrutinee's type is `NI32`, delegating to the SAME
 //!     `emitConstructorTest` enum branch item E's fix already gates on
 //!     `sv.ty == NI32`.
+//!   - item H (#6969, fixed): item G's own fix was reachable by a REAL
+//!     `Int` scrutinee too, since `ctx.enumDefs.containsKey(name)` is a
+//!     global, bundle-wide bare-case-name registry with no check that
+//!     the scrutinee is actually of that enum's type — an ordinary
+//!     catch-all bind pattern over a plain `Int` whose bind name happens
+//!     to match ANY enum case name anywhere in the compiled bundle was
+//!     silently reinterpreted as an equality test against that unrelated
+//!     enum's ordinal, instead of binding. Fixed by threading
+//!     `inferScrutineeEnumHint` (mirroring `Msil.Codegen`'s
+//!     `inferScrutineeEnumHintMsil`, #5995) from the match scrutinee's
+//!     own declared type through to `scrutineeHasCase`, which now scopes
+//!     the enum-case check to `enumHint + "." + name` — the scrutinee's
+//!     OWN enum — rather than any bare-name match in the whole bundle.
+//!     An `Int` scrutinee has no enum hint, so it always falls through
+//!     to a plain bind, exactly as it did before item G's fix existed.
 //!
 //! Items A-D and F's `match` arms use the fully-qualified `EnumType.Case`
 //! pattern form deliberately, to isolate the value-position fix from the
@@ -456,5 +471,37 @@ test "a bare case name in a match PATTERN against an ENUM scrutinee gates on the
     r.exitCode,
     42,
     "bare enum-case pattern gates correctly instead of always matching the first arm (#6740)"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Item H (#6969): item G's fix reinterpreted an ordinary Int catch-all
+// bind as an enum-case equality test whenever the bind name collided
+// with ANY enum case anywhere in the bundle — even though the scrutinee
+// here is a plain `Int`, never the `Version` enum whose case happens to
+// share the bind name. `classifyInt(99)` must echo 99 back (a plain
+// bind), not compare 99 against `Version.Http1_1`'s ordinal (1) and
+// fall through to the wildcard arm.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a bare catch-all bind over a plain Int scrutinee is never reinterpreted as an enum-case test merely because its name collides with an unrelated enum's case (#6969)" {
+  val src = "package T\n" + "enum Version {\n" + "  case Http1_0\n" + "  case Http1_1\n" + "}\n" +
+    "func classifyInt(n: Int): Int {\n" +
+    "  match n {\n" +
+    "    case Http1_1 -> Http1_1\n" +
+    "    case _ -> 0 - 1\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  if classifyInt(99) == 99 {\n" +
+    "    42\n" +
+    "  } else {\n" +
+    "    1\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(
+    r.exitCode,
+    42,
+    "an Int scrutinee's catch-all bind is unaffected by an unrelated enum's same-named case (#6969)"
   )
 }
