@@ -32,7 +32,11 @@
 //!      `Web.Middleware` below, and `docs/58-wire-templates-sketch.md` for
 //!      composing multiple mounts/middleware via `contributes[Middleware]`.
 //!   4. Call `Web.start(router)` from main().
-//!   5. Run `lyric web spec` to emit openapi.yaml from the compiled DLL.
+//!   5. Optionally build a `Web.OpenApi.Spec` and attach it with
+//!      `Web.withSpec(router, spec)` to serve it live at
+//!      `<pathPrefix>/openapi.json` plus a Swagger UI page at
+//!      `<pathPrefix>/swagger` — or render it to a file at build time with
+//!      `Web.OpenApi.specToJson(spec)`.
 //!
 //! `Web.dispatch(router, request): Response` is the pure routing core
 //! (method + path matching, path-param extraction, middleware
@@ -50,8 +54,6 @@
 //!   LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS     — preflight cache duration (default: 86400)
 //!
 //! Not yet implemented (tracked separately, not silently no-op'd):
-//!   - Live OpenAPI/Swagger UI serving (issue #5360) — use `lyric web spec`
-//!     to generate the spec at build time instead.
 //!   - `Web.addWorker`'s registered `Worker` fires on `--target dotnet`
 //!     (issue #5359) via a real background `Task.Run`-backed loop; on
 //!     `--target jvm` it still only registers — the jvm `serve`/`serveTls`
@@ -75,6 +77,7 @@ import Std.Tls
 import Std.File
 import Std.Encoding as Enc
 import Web.Kernel.Runtime as HttpKernel
+import Web.OpenApi
 
 // Canonical-path resolution for the static-files path-traversal guard
 // (`withinRoot`), target-split: these BCL/JDK externs previously sat
@@ -560,6 +563,85 @@ pub func merge(a: in Router, b: in Router): Router {
     workers = concat(a.workers, b.workers),
     middlewares = concat(a.middlewares, b.middlewares),
     pathPrefix = ""
+  )
+}
+
+// ─── Live OpenAPI spec + Swagger UI serving (#5360) ────────────────────────────
+// `withSpec` synthesizes two ordinary GET routes rather than special-casing
+// dispatch, so the existing middleware pipeline (auth, CORS, rate limiting,
+// …) applies to `/openapi.json`/`/swagger` exactly like any other route —
+// e.g. `withMiddleware(withSpec(router, spec), RequiresAuth)` gates both.
+// `specToJson` renders the spec once, at attach time, not per request.
+record OpenApiJsonHandler {
+  specJson: String
+}
+
+impl Handler for OpenApiJsonHandler {
+  func handle(req: in Request): Response {
+    return json(200, self.specJson)
+  }
+}
+
+record SwaggerUiHandler {
+  page: String
+}
+
+impl Handler for SwaggerUiHandler {
+  func handle(req: in Request): Response {
+    return html(200, self.page)
+  }
+}
+
+/// A minimal Swagger UI page pointed at `specUrl`. Loads the `swagger-ui`
+/// bundle from jsdelivr — nothing from the spec itself reaches the page
+/// except through the client's own request to `specUrl`.
+func swaggerUiPage(specUrl: in String): String {
+  return "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<title>API Docs</title>\n" +
+    "<link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css\">\n" +
+    "</head>\n<body>\n<div id=\"swagger-ui\"></div>\n" +
+    "<script src=\"https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js\"></script>\n" +
+    "<script>\nwindow.onload = function() {\n  window.ui = SwaggerUIBundle({ url: " +
+    webJsonStr(specUrl) +
+    ", dom_id: \"#swagger-ui\" });\n};\n</script>\n" +
+    "</body>\n</html>\n"
+}
+
+/// Attach an OpenAPI spec to `router`, serving the live JSON document at
+/// `<pathPrefix>/openapi.json` and a Swagger UI page at
+/// `<pathPrefix>/swagger`.
+///
+/// # Preconditions as data
+/// - Call after any `Web.prefix` that should scope these two routes; a
+///   later `prefix` call does not retroactively move them (same rule
+///   `addGet`/`addPost`/etc. already follow).
+@stable(since = "0.2")
+pub func withSpec(router: in Router, spec: in Spec): Router {
+  val specJson = specToJson(spec)
+  val jsonPath = router.pathPrefix + "/openapi.json"
+  val uiPath = router.pathPrefix + "/swagger"
+  val jsonHandler: Handler = OpenApiJsonHandler(specJson = specJson)
+  val uiHandler: Handler = SwaggerUiHandler(page = swaggerUiPage(jsonPath))
+  val jsonRoute = Route(
+    method = "GET",
+    pattern = jsonPath,
+    handler = jsonHandler,
+    summary = "",
+    tags = [],
+    deprecated = false
+  )
+  val uiRoute = Route(
+    method = "GET",
+    pattern = uiPath,
+    handler = uiHandler,
+    summary = "",
+    tags = [],
+    deprecated = false
+  )
+  return Router(
+    routes = concat(router.routes, [jsonRoute, uiRoute]),
+    workers = router.workers,
+    middlewares = router.middlewares,
+    pathPrefix = router.pathPrefix
   )
 }
 

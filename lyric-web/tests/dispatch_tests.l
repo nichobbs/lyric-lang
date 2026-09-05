@@ -27,6 +27,7 @@ import Std.Environment
 import Std.File
 import Std.Testing
 import Web
+import Web.OpenApi as OpenApi
 
 // Explicit @externTarget bindings rather than auto-FFI-resolved
 // `Encoding.get_UTF8().GetString(bytes)` call syntax — see web.l's
@@ -303,7 +304,11 @@ test "dispatch: middleware runs outermost-first around the route handler" {
   router = Web.withMiddleware(router, MarkerMiddleware(tag = "inner"))
   val resp = Web.dispatch(router, getRequest("/traced"))
   match mapGet(resp.headers, "X-Trace") {
-    case Some(trace) -> assertEqual(trace, "outer,inner,", "outer middleware's header wrap runs last (sees inner's result first)")
+    case Some(trace) -> assertEqual(
+      trace,
+      "outer,inner,",
+      "outer middleware's header wrap runs last (sees inner's result first)"
+    )
     case None -> assertTrue(false, "X-Trace header must be present")
   }
 }
@@ -535,4 +540,42 @@ test "withResponseHeader replaces an existing value rather than duplicating it" 
     case Some(v) -> assertEqual(v, "second", "second write wins, no duplicate entries")
     case None -> assertTrue(false, "header must be present")
   }
+}
+
+// #5360: `withSpec` attaches live `/openapi.json` and `/swagger` routes.
+test "withSpec serves /openapi.json and /swagger, and existing routes still work" {
+  var router = Web.create()
+  router = Web.addGet(router, "/ping", TextHandler(status = 200, body = "pong"))
+  val spec = OpenApi.newSpec("Demo API", "0.1.0", "")
+  router = Web.withSpec(router, spec)
+
+  val jsonResp = Web.dispatch(router, getRequest("/openapi.json"))
+  assertEqualInt(jsonResp.status, 200, "/openapi.json status")
+  assertEqual(jsonResp.contentType, "application/json; charset=utf-8", "/openapi.json content type")
+  val jsonBody = decodeUtf8(jsonResp.bodyBytes)
+  assertTrue(jsonBody.contains("\"openapi\":\"3.1.0\""), "/openapi.json body carries the openapi version")
+  assertTrue(jsonBody.contains("\"title\":\"Demo API\""), "/openapi.json body carries the spec title")
+
+  val uiResp = Web.dispatch(router, getRequest("/swagger"))
+  assertEqualInt(uiResp.status, 200, "/swagger status")
+  assertEqual(uiResp.contentType, "text/html; charset=utf-8", "/swagger content type")
+  val uiBody = decodeUtf8(uiResp.bodyBytes)
+  assertTrue(uiBody.contains("/openapi.json"), "/swagger page points at the JSON route")
+  assertTrue(uiBody.contains("swagger-ui"), "/swagger page loads the Swagger UI bundle")
+
+  // withSpec must not disturb routes registered before it.
+  val pingResp = Web.dispatch(router, getRequest("/ping"))
+  assertEqualInt(pingResp.status, 200, "pre-existing /ping route still dispatches")
+}
+
+test "withSpec scopes /openapi.json and /swagger under the router's pathPrefix" {
+  var router = Web.prefix(Web.create(), "/api")
+  val spec = OpenApi.newSpec("Demo API", "0.1.0", "")
+  router = Web.withSpec(router, spec)
+
+  val jsonResp = Web.dispatch(router, getRequest("/api/openapi.json"))
+  assertEqualInt(jsonResp.status, 200, "/api/openapi.json status")
+
+  val unprefixedResp = Web.dispatch(router, getRequest("/openapi.json"))
+  assertEqualInt(unprefixedResp.status, 404, "the unprefixed path does not match")
 }
