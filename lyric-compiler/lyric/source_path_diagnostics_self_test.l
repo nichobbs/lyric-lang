@@ -781,3 +781,342 @@ test "multi-file project package (dotnet): a weave-time error (A0044) in the sec
     "expected the diagnostic to name b.l's own line 7 ('val v = config.undefaulted'), got:\n" + result.stderr
   )
 }
+
+// #6824 item 1: native project-package diagnostics get the SAME real-path
+// attribution the MSIL/JVM project bridges already had — before this fix,
+// `Lyric.LlvmBridge.NativeSourcePackage` had no `path` field at all and
+// `compileProjectToNativeWithFlags` had no `origins` parameter, so a
+// multi-file `[project.packages]` entry (routed through `--target native`)
+// reported diagnostics under the bare package name only, with a merged-blob-
+// relative line number — the exact #6282 symptom, but never fixed for native
+// because native's own `NativeSourcePackage` predates #6282 with no path
+// field to build on. Mirrors the dotnet/jvm `#6282` parse-error test above
+// exactly, just routed through `--target native`.
+test "multi-file project package (native): a parse error in the second file names that file and its real line (#6824)" {
+  val dir = freshTempDir("mf-native")
+  defer {
+    cleanup(dir)
+  }
+  val srcDir = Path.join(dir, "src")
+  match File.createDir(srcDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create src dir: " + IOError.message(e))
+  }
+  val aSrc = "package MfNative\n" + "import Std.Core\n" + "\n" + "func helperA(): Int {\n" + "  1\n" + "}\n" +
+    "func helperB(): Int {\n" +
+    "  2\n" +
+    "}\n"
+  // Same dangling-`=` shape as the dotnet/jvm #6282 fixtures: the parser
+  // only realizes the expression is missing once it reaches the closing `}`
+  // on line 6.
+  val bSrc = "package MfNative\n" + "import Std.Core\n" + "\n" + "func main(): Unit {\n" + "  val x =\n" + "}\n"
+  val aPath = Path.join(srcDir, "a.l")
+  val bPath = Path.join(srcDir, "b.l")
+  match File.writeText(aPath, aSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write a.l: " + IOError.message(e))
+  }
+  match File.writeText(bPath, bSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write b.l: " + IOError.message(e))
+  }
+  val manifest = "[package]\n" + "name = \"MfNative\"\n" + "version = \"0.0.1\"\n" + "\n" + "[project]\n" +
+    "name = \"MfNative\"\n" +
+    "\n" +
+    "[project.packages]\n" +
+    "\"MfNative\" = [\"src/a.l\", \"src/b.l\"]\n" +
+    "\n" +
+    "[dependencies]\n" +
+    "Std = \"*\"\n"
+  val mfPath = Path.join(dir, "lyric.toml")
+  match File.writeText(mfPath, manifest) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write lyric.toml: " + IOError.message(e))
+  }
+  val outPath = Path.join(dir, "out")
+  val args: List[String] = newList()
+  args.add("build")
+  args.add("--manifest")
+  args.add(mfPath)
+  args.add("--target")
+  args.add("native")
+  args.add("-o")
+  args.add(outPath)
+  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  assertTrue(result.exitCode != 0, "a broken source file must fail the build")
+  assertTrue(
+    Str.contains(result.stderr, bPath + ": error[P0050]"),
+    "expected the P0050 diagnostic to be labelled with b.l's own real path '" + bPath +
+      "' (not the bare package name 'MfNative') on a multi-file NATIVE project package (#6824), got:\n" +
+      result.stderr
+  )
+  assertTrue(
+    Str.contains(result.stderr, "] 6:"),
+    "expected the diagnostic to name b.l's own line 6 — not a merged-blob-relative line number, got:\n" + result.stderr
+  )
+}
+
+// #6824 item 2: codegen-phase (F0xxx) diagnostics on a multi-file MSIL
+// project package resolve through the SAME `PackageLineOrigins` table the
+// parse/typecheck/modecheck/elaborate/weave gates already use, instead of
+// falling back to the bare package name. `Msil.Bridge`'s F0025 (try-catch
+// expression with a Unit-yielding, non-diverging catch arm beside a
+// value-yielding try body — `msil_codegen_diag_self_test.l`'s own single-file
+// repro) never routes through `Lyric.Pipeline.gate` (codegen diagnostics
+// accumulate on `CodegenCtx.diagnostics` directly), so #6282/#6824's earlier
+// items never touched it. `wrap[T]`'s bad try/catch and its `main()` caller
+// both live in the SECOND file so the origin table (not just the label) is
+// exercised.
+test "multi-file project package (dotnet): a codegen-phase error (F0025) in the second file names that file and its real line (#6824)" {
+  val dir = freshTempDir("mf-codegen")
+  defer {
+    cleanup(dir)
+  }
+  val srcDir = Path.join(dir, "src")
+  match File.createDir(srcDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create src dir: " + IOError.message(e))
+  }
+  val aSrc = "package CodegenMf\n" + "import Std.Core\n" + "func helperA(): Int {\n" + "  1\n" + "}\n" +
+    "func helperB(): Int {\n" +
+    "  2\n" +
+    "}\n"
+  // `wrap[T]`'s try body yields `T` (bound to `Int` at the `wrap(1)` call
+  // site below via `Lyric.Mono`) while its catch arm yields `Unit` — the
+  // F0025 shape from `msil_codegen_diag_self_test.l`. No blank line before
+  // `func wrap`, so the `catch` keyword lands on line 6, column 5, matching
+  // that file's own single-file fixture exactly.
+  val bSrc = "package CodegenMf\n" + "import Std.Core\n" + "func wrap[T](v: in T): T {\n" + "  val r = try {\n" +
+    "    v\n" +
+    "  } catch Bug as _ {\n" +
+    "    println(0)\n" +
+    "  }\n" +
+    "  r\n" +
+    "}\n" +
+    "func main(): Unit {\n" +
+    "  println(toString(wrap(1)))\n" +
+    "}\n"
+  val aPath = Path.join(srcDir, "a.l")
+  val bPath = Path.join(srcDir, "b.l")
+  match File.writeText(aPath, aSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write a.l: " + IOError.message(e))
+  }
+  match File.writeText(bPath, bSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write b.l: " + IOError.message(e))
+  }
+  val manifest = "[package]\n" + "name = \"CodegenMf\"\n" + "version = \"0.0.1\"\n" + "\n" + "[project]\n" +
+    "name = \"CodegenMf\"\n" +
+    "\n" +
+    "[project.packages]\n" +
+    "\"CodegenMf\" = [\"src/a.l\", \"src/b.l\"]\n" +
+    "\n" +
+    "[dependencies]\n" +
+    "Std = \"*\"\n"
+  val mfPath = Path.join(dir, "lyric.toml")
+  match File.writeText(mfPath, manifest) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write lyric.toml: " + IOError.message(e))
+  }
+  val outPath = Path.join(dir, "out.dll")
+  val args: List[String] = newList()
+  args.add("build")
+  args.add("--manifest")
+  args.add(mfPath)
+  args.add("--target")
+  args.add("dotnet")
+  args.add("-o")
+  args.add(outPath)
+  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  assertTrue(result.exitCode != 0, "a try-catch expression with mismatched branch types must fail the build")
+  assertTrue(
+    Str.contains(result.stderr, "F0025"),
+    "expected an F0025 diagnostic (codegen phase, not parse/typecheck/modecheck/weave) in stderr, got:\n" +
+      result.stderr
+  )
+  assertTrue(
+    Str.contains(result.stderr, bPath + ": error[F0025]"),
+    "expected the F0025 diagnostic to be labelled with b.l's own real path '" + bPath +
+      "' (not the bare package name 'CodegenMf') for a CODEGEN-phase diagnostic on a multi-file MSIL project package (#6824), got:\n" +
+      result.stderr
+  )
+  assertTrue(
+    Str.contains(result.stderr, "] 6:"),
+    "expected the diagnostic to name b.l's own line 6 (the 'catch' keyword) — not a merged-blob-relative line number, got:\n" +
+      result.stderr
+  )
+}
+
+// #6824 item 3: `pipeExpandAndRewrite`'s two gates (docs/58 wire/config-
+// template expansion, and same-file interface-default-method inheritance)
+// previously hardcoded `gate("", noOrigins, …)` unconditionally, even though
+// every bridge call site reaches this function AFTER already resolving a
+// real label/origins pair for the exact same package (`ParsedUserPkg.label`/
+// `.origins` on the MSIL side). `Lyric.ImplDefaults.inheritDefaultsFile`'s
+// T0117 (an unresolved diamond default-method conflict — two interfaces
+// defaulting the same method name onto one target, no override) is the
+// smallest available trigger for this specific gate: unlike A0044 above
+// (the WEAVE phase, a separate call further down the pipeline), T0117 fires
+// inside `pipeExpandAndRewrite` itself, before typecheck ever runs.
+test "multi-file project package (dotnet): an impl-default diamond conflict (T0117) in the second file names that file (#6824)" {
+  val dir = freshTempDir("mf-impldefault")
+  defer {
+    cleanup(dir)
+  }
+  val srcDir = Path.join(dir, "src")
+  match File.createDir(srcDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create src dir: " + IOError.message(e))
+  }
+  val aSrc = "package ImplDiamondMf\n" + "import Std.Core\n" + "interface Alpha {\n" +
+    "  func label(self: in Self): Int {\n" +
+    "    1\n" +
+    "  }\n" +
+    "}\n" +
+    "interface Beta {\n" +
+    "  func label(self: in Self): Int {\n" +
+    "    2\n" +
+    "  }\n" +
+    "}\n"
+  val bSrc = "package ImplDiamondMf\n" + "import Std.Core\n" + "record Thing {\n" + "  base: Int\n" + "}\n" +
+    "impl Alpha for Thing {\n" +
+    "}\n" +
+    "impl Beta for Thing {\n" +
+    "}\n" +
+    "func main(): Unit {\n" +
+    "  println(toString(Thing(base = 0).label()))\n" +
+    "}\n"
+  val aPath = Path.join(srcDir, "a.l")
+  val bPath = Path.join(srcDir, "b.l")
+  match File.writeText(aPath, aSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write a.l: " + IOError.message(e))
+  }
+  match File.writeText(bPath, bSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write b.l: " + IOError.message(e))
+  }
+  val manifest = "[package]\n" + "name = \"ImplDiamondMf\"\n" + "version = \"0.0.1\"\n" + "\n" + "[project]\n" +
+    "name = \"ImplDiamondMf\"\n" +
+    "\n" +
+    "[project.packages]\n" +
+    "\"ImplDiamondMf\" = [\"src/a.l\", \"src/b.l\"]\n" +
+    "\n" +
+    "[dependencies]\n" +
+    "Std = \"*\"\n"
+  val mfPath = Path.join(dir, "lyric.toml")
+  match File.writeText(mfPath, manifest) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write lyric.toml: " + IOError.message(e))
+  }
+  val outPath = Path.join(dir, "out.dll")
+  val args: List[String] = newList()
+  args.add("build")
+  args.add("--manifest")
+  args.add(mfPath)
+  args.add("--target")
+  args.add("dotnet")
+  args.add("-o")
+  args.add(outPath)
+  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  assertTrue(result.exitCode != 0, "an unresolved diamond default-method conflict must fail the build")
+  assertTrue(
+    Str.contains(result.stderr, "T0117"),
+    "expected a T0117 diagnostic (pipeExpandAndRewrite's impl-default-inheritance gate) in stderr, got:\n" +
+      result.stderr
+  )
+  assertTrue(
+    Str.contains(result.stderr, bPath + ": error[T0117]"),
+    "expected the T0117 diagnostic to be labelled with b.l's own real path '" + bPath +
+      "' (not the bare package name 'ImplDiamondMf' or an empty label) on a multi-file MSIL project package (#6824), got:\n" +
+      result.stderr
+  )
+}
+
+// #6824 item 4: the `--target jvm` sibling of the dotnet test above.
+// `Jvm.Bridge.compileProjectToJarBundledWithRestored`'s `pkgOriginsByName`
+// plumbing was manually verified working during #6825's own review response,
+// but had no automated regression coverage — unlike this repo's usual
+// convention of dual-target self-tests for cross-target changes (e.g.
+// `bitwise_self_test.l --target jvm`). Identical fixture to the dotnet case
+// above (a weave-time A0044 on the second file of a two-file project
+// package), just routed through `--target jvm`, so a real JVM regression in
+// `pkgOriginsByName`'s per-package lookup (keyed by package name, resolved
+// during the JVM bridge's own parse loop) fails CI instead of relying on a
+// one-off manual check.
+test "multi-file project package (jvm): a weave-time error (A0044) in the second file names that file and its real line (#6824)" {
+  val dir = freshTempDir("mf-weave-jvm")
+  defer {
+    cleanup(dir)
+  }
+  val srcDir = Path.join(dir, "src")
+  match File.createDir(srcDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create src dir: " + IOError.message(e))
+  }
+  val aSrc = "package WeaveMfJvm\n" + "import Std.Core\n" + "func helperA(): Int {\n" + "  1\n" + "}\n" +
+    "func helperB(): Int {\n" +
+    "  2\n" +
+    "}\n"
+  // Same shape as the dotnet fixture: `config.undefaulted` (line 7) has no
+  // literal default, so A0044 fires at weave time when `d` (matched by
+  // `name like "d"`) is woven.
+  val bSrc = "package WeaveMfJvm\n" + "import Std.Core\n" + "aspect Limit {\n" + "  config { undefaulted: Int }\n" +
+    "  matches: name like \"d\"\n" +
+    "  around(args) -> ret {\n" +
+    "    val v = config.undefaulted\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func d(): Int { 0 }\n" +
+    "func main(): Unit {}\n"
+  val aPath = Path.join(srcDir, "a.l")
+  val bPath = Path.join(srcDir, "b.l")
+  match File.writeText(aPath, aSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write a.l: " + IOError.message(e))
+  }
+  match File.writeText(bPath, bSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write b.l: " + IOError.message(e))
+  }
+  val manifest = "[package]\n" + "name = \"WeaveMfJvm\"\n" + "version = \"0.0.1\"\n" + "\n" + "[project]\n" +
+    "name = \"WeaveMfJvm\"\n" +
+    "\n" +
+    "[project.packages]\n" +
+    "\"WeaveMfJvm\" = [\"src/a.l\", \"src/b.l\"]\n" +
+    "\n" +
+    "[dependencies]\n" +
+    "Std = \"*\"\n"
+  val mfPath = Path.join(dir, "lyric.toml")
+  match File.writeText(mfPath, manifest) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write lyric.toml: " + IOError.message(e))
+  }
+  val outPath = Path.join(dir, "out.jar")
+  val args: List[String] = newList()
+  args.add("build")
+  args.add("--manifest")
+  args.add(mfPath)
+  args.add("--target")
+  args.add("jvm")
+  args.add("-o")
+  args.add(outPath)
+  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  assertTrue(result.exitCode != 0, "a config field with no default referenced by a matched aspect must fail the build")
+  assertTrue(
+    Str.contains(result.stderr, "A0044"),
+    "expected an A0044 diagnostic (weave phase, not parse/typecheck/modecheck) in stderr, got:\n" + result.stderr
+  )
+  assertTrue(
+    Str.contains(result.stderr, bPath + ": error[A0044]"),
+    "expected the A0044 diagnostic to be labelled with b.l's own real path '" + bPath +
+      "' (not an empty label) for a WEAVE-phase diagnostic on a multi-file JVM project package (#6824), got:\n" +
+      result.stderr
+  )
+  assertTrue(
+    Str.contains(result.stderr, "] 7:"),
+    "expected the diagnostic to name b.l's own line 7 ('val v = config.undefaulted'), got:\n" + result.stderr
+  )
+}

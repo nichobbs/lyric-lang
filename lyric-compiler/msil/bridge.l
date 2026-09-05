@@ -140,6 +140,24 @@ func abortOnCodegenDiagnosticsMsilInPkg(cctx: in CodegenCtx, pkgName: in String)
   DiagUtil.diagReportAndAbortInPkg(pkgName, cctx.diagnostics)
 }
 
+// #6824 item 2: like `abortOnCodegenDiagnosticsMsilInPkg`, but attributes
+// each F0021–F0025/F0034 codegen diagnostic to its real on-disk file and
+// line via `origins` — the same `PackageLineOrigins` table
+// `abortOnCodegenDiagnosticsMsilInPkg`'s caller already resolved for the
+// parse/typecheck/modecheck/elaborate/weave gates on this exact package
+// (`ParsedUserPkg.origins`), but never passed to the codegen-phase gate,
+// which routed through the origin-blind `diagReportAndAbortInPkg` even on a
+// multi-file project package.  `origins` empty (single-file packages, and
+// every pre-#6824 caller) reproduces `abortOnCodegenDiagnosticsMsilInPkg`
+// exactly.
+func abortOnCodegenDiagnosticsMsilInPkgWithOrigins(
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  origins: in List[DiagUtil.MergedLineOrigin],
+): Bool {
+  DiagUtil.diagReportAndAbortInPkgWithOrigins(pkgName, origins, cctx.diagnostics)
+}
+
 /// Variant of `compileToMsil` that accepts a `[package].version` string.
 /// Empty string means "no version threaded" — falls back to `0.0.0` for
 /// the Assembly row and the embedded `Lyric.Contract` resource, matching
@@ -211,7 +229,7 @@ pub func compileToMsilWithVersion(
     weWires,
     weConfigs
   )
-  val file0pre = match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, true, true, false) {
+  val file0pre = match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, true, true, false, path, noOrigins) {
     case Some(f) -> f
     case None -> return false
   }
@@ -812,7 +830,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   var wei = 0
   while wei < parsedPkgs.count {
     val wep: ParsedUserPkg = parsedPkgs[wei]
-    val rewritten0 = match pipeExpandAndRewrite(wep.file, weWires, weConfigs, true, true, false) {
+    val rewritten0 = match pipeExpandAndRewrite(wep.file, weWires, weConfigs, true, true, false, wep.label, wep.origins) {
       case Some(f) -> f
       case None -> return false
     }
@@ -1265,13 +1283,17 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // F0034 but `validateExternImplConformanceMsil` returns normally and
   // codegen proceeds to `lowerMImpl` the bad row anyway).  #6599: the
   // per-package gate labels every reported diagnostic with the owning
-  // package name via `abortOnCodegenDiagnosticsMsilInPkg`.
+  // package name via `abortOnCodegenDiagnosticsMsilInPkgWithOrigins`, which
+  // also resolves it to the real on-disk file and line for a multi-file
+  // project package (#6824 item 2) — `parsedPkgs[ci]` is the SAME index as
+  // `liftedFiles[ci]`/`perPkgNames[ci]` (both built 1:1 from `parsedPkgs`
+  // with no filtering; see the comment on the `li` loop above).
   val mpkgs: List[MPackage] = newList()
   var ci = 0
   while ci < liftedFiles.count {
     val mpkg = codegenMPackage(liftedFiles[ci], cctx)
     mpkgs.add(mpkg)
-    if abortOnCodegenDiagnosticsMsilInPkg(cctx, perPkgNames[ci]) {
+    if abortOnCodegenDiagnosticsMsilInPkgWithOrigins(cctx, perPkgNames[ci], parsedPkgs[ci].origins) {
       var cdi = 0
       while cdi < cctx.diagnostics.count {
         outDiagnostics.add(cctx.diagnostics[cdi])

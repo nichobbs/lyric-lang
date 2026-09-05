@@ -385,7 +385,7 @@ pub func compileToNativeWithFlags(
   // (docs/59 §9.2 divergence flag) instead of an invisible omission.
   val noWires: Map[String, CollectedWireTemplate] = newMap()
   val noConfigs: Map[String, CollectedConfigTemplate] = newMap()
-  val userFile0 = match pipeExpandAndRewrite(cfgFile, noWires, noConfigs, false, false, false) {
+  val userFile0 = match pipeExpandAndRewrite(cfgFile, noWires, noConfigs, false, false, false, path, noOrigins) {
     case Some(f) -> f
     case None -> return false
   }
@@ -551,9 +551,17 @@ pub func compileToNativeWithFlags(
 /// into one compilation unit (the same `mergePackageSources` step the
 /// MSIL/JVM project bridges use) before constructing these, so by the time a
 /// package reaches here it is always exactly one valid `package` unit.
+///
+/// `path` (#6824 item 1) is this package's real on-disk path when it is a
+/// single-file package (the MSIL/JVM `pkgPaths` parity field); "" for a
+/// genuinely multi-file package (no single on-disk path names the merged
+/// blob — see `originsByPkg` on `compileProjectToNativeWithFlags` for that
+/// case's per-line attribution) or a synthetic/ad-hoc source, matching
+/// `ProjectPackage.paths`' own "" convention for the identical case.
 pub record NativeSourcePackage {
   name: String
   source: String
+  path: String
 }
 
 /// True when `file` declares a top-level `func main` — the project entry
@@ -575,6 +583,32 @@ func fileHasTopLevelMain(file: in SourceFile): Bool {
     i = i + 1
   }
   false
+}
+
+// #6824 item 1: resolve package `i`'s diagnostic label — its real on-disk
+// path when known (single-file package), else its bare name (multi-file, or
+// a synthetic/ad-hoc source) — matching the MSIL/JVM bridges' identical
+// "path when known, else name" fallback (`Msil.Bridge`'s `pp.label` /
+// `Jvm.Bridge`'s `pkgPathByName` lookups).
+func nativePkgLabelAt(packages: in List[NativeSourcePackage], i: in Int): String {
+  val p = packages[i]
+  if p.path.length > 0 {
+    p.path
+  } else {
+    p.name
+  }
+}
+
+// Per-line provenance for package `i`, or empty when `originsByPkg` has no
+// entry for it (shorter than `packages`, or a single-file package with
+// nothing to translate) — mirrors `Jvm.Bridge`'s `originsByPkg[psi]`
+// bounds-checked lookup.
+func nativePkgOriginsAt(originsByPkg: in List[DiagUtil.PackageLineOrigins], i: in Int): List[DiagUtil.MergedLineOrigin] {
+  if i < originsByPkg.count {
+    originsByPkg[i].origins
+  } else {
+    newList()
+  }
 }
 
 /// Compile a project's own packages (`packages`, in manifest declaration
@@ -612,6 +646,19 @@ pub func compileProjectToNativeWithFlags(
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
   packageVersion: in String,
+  // Per-merged-line provenance for a genuinely multi-file own package,
+  // parallel to `packages` by index (#6824 item 1; mirrors
+  // `Msil.Bridge`/`Jvm.Bridge`'s `originsByPkg`/`pkgOriginsByName`
+  // parameters). `originsByPkg[i]` is empty for a single-file package (its
+  // real path already survives via `packages[i].path`) and non-empty for a
+  // multi-file package, letting diagnostic rendering — across parse,
+  // typecheck, modecheck, elaborate, propagate, mono, AND weave (all folded
+  // into `pipeMiddleEnd` below, unlike the MSIL/JVM bridges' separate weave
+  // phase) — resolve the merged blob's line numbers back to their real
+  // on-disk file and line.  Shorter than `packages` (including empty) is
+  // valid; missing entries resolve to no translation, matching the JVM
+  // bridge's own out-of-range fallback.
+  originsByPkg: in List[DiagUtil.PackageLineOrigins],
 ): Bool {
   if packages.count == 0 {
     Console.error("error[N0005]: native project build received no packages")
@@ -638,15 +685,14 @@ pub func compileProjectToNativeWithFlags(
   // package's own `@cfg(feature = ...)` items are never user-feature-gated
   // on any target, same as the single-source path).
   val cfgFiles: List[SourceFile] = newList()
-  // #6282: native project-package diagnostics stay package-name-labelled
-  // (no on-disk `path` field on `NativeSourcePackage` yet, tracked
-  // separately) — `noProjOrigins` keeps this call site compiling against
-  // `pipeParseAndErase`'s shared origins parameter without claiming
-  // per-file attribution native doesn't have.
-  val noProjOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  // #6824 item 1: label each own package's parse-phase diagnostics with its
+  // real on-disk path when known, and translate a multi-file package's
+  // merged-blob line numbers via `originsByPkg` — parity with the MSIL/JVM
+  // project bridges (previously always the bare package name, no per-line
+  // translation at all).
   var ppi = 0
   while ppi < packages.count {
-    val cfgFile = match pipeParseAndErase(packages[ppi].source, "native", activeFeatures, declaredFeatures, nativeDefines, packages[ppi].name, noProjOrigins) {
+    val cfgFile = match pipeParseAndErase(packages[ppi].source, "native", activeFeatures, declaredFeatures, nativeDefines, nativePkgLabelAt(packages, ppi), nativePkgOriginsAt(originsByPkg, ppi)) {
       case Some(f) -> f
       case None -> return false
     }
@@ -662,7 +708,11 @@ pub func compileProjectToNativeWithFlags(
   val ownFiles0: List[SourceFile] = newList()
   var owi = 0
   while owi < cfgFiles.count {
-    val f0 = match pipeExpandAndRewrite(cfgFiles[owi], noWires, noConfigs, false, false, false) {
+    // #6824 item 3: same label/origins attribution as the parse phase above
+    // for this package's wire/config-template and impl-default-inheritance
+    // diagnostics (`packages`/`originsByPkg` are 1:1 by index with
+    // `cfgFiles` — no filtering happens between the two loops).
+    val f0 = match pipeExpandAndRewrite(cfgFiles[owi], noWires, noConfigs, false, false, false, nativePkgLabelAt(packages, owi), nativePkgOriginsAt(originsByPkg, owi)) {
       case Some(f) -> f
       case None -> return false
     }
@@ -727,10 +777,20 @@ pub func compileProjectToNativeWithFlags(
   val importedItemsForMono = flattenImportedItems(importedPkgs)
   val importedInterfaceDecls = pipeInterfaceDecls(importedItemsForMono)
   val importedRecordDecls = pipeRecordDecls(importedItemsForMono)
-  val noProjMiddleEndOrigins: List[DiagUtil.MergedLineOrigin] = newList()
   var mei = 0
   while mei < ownFiles0.count {
-    val opts = MiddleEndOptions(tcFatal = false, tcReport = true, pkgLabel = "", lineOrigins = noProjMiddleEndOrigins)
+    // #6824 items 1/2: same label/origins attribution as the parse and
+    // rewrite phases above — covers typecheck, modecheck, contract
+    // elaboration, propagation, mono, AND weave in one place, since the
+    // native bridge folds all of them into `pipeMiddleEnd` (docs/63 §9.6:
+    // native has no separate weave phase the way `Msil.Bridge`/`Jvm.Bridge`
+    // do).  Previously always `pkgLabel = ""` with no line translation.
+    val opts = MiddleEndOptions(
+      tcFatal = false,
+      tcReport = true,
+      pkgLabel = nativePkgLabelAt(packages, mei),
+      lineOrigins = nativePkgOriginsAt(originsByPkg, mei)
+    )
     val checked = match pipeMiddleEnd(ownFiles0[mei], importedPkgs, noDeriveImports, noImportedGenFuncs, importedInterfaceDecls, importedRecordDecls, noTemplates, opts) {
       case Some(f) -> f
       case None -> return false
