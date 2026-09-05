@@ -451,6 +451,10 @@ On `--target dotnet` this runs on a real background thread-pool task
 #5359. On `--target jvm` a worker is registered but does not yet fire (see
 [Known gaps](#known-gaps)).
 
+A `tick()` that panics is isolated to that tick: the loop logs the failure
+and keeps running on its next `intervalMs` interval, rather than the
+background task silently and permanently dying (#6935).
+
 ---
 
 ## Known gaps

@@ -226,6 +226,9 @@ On `--target dotnet` this runs on a real background thread-pool task,
 independent of the accept loop. `--target jvm` registers a worker but does
 not yet fire it (`lyric-web/README.md`'s "Known gaps").
 
+A `tick()` that panics is isolated to that tick — logged, and the loop
+keeps running on its next interval rather than dying silently.
+
 ## OpenAPI: code-first and spec-first
 
 `Web.OpenApi` is a hand-built spec vocabulary, decoupled from `Router` at
