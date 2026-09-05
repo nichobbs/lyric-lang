@@ -1872,6 +1872,20 @@ static void test_process_piped_stderr_inherited(void) {
     CHECK(strstr(buf, "err-side") != NULL);
 }
 
+static void test_process_piped_double_close(void) {
+    /* Issue #6975: an earlier version of lyric_process_piped_close
+     * unconditionally free()'d the handle, so a second call on the same
+     * pointer -- exactly the "safe to call during best-effort cleanup"
+     * scenario the function's own doc comment invites -- was a real
+     * double-free/use-after-free. Calling it twice here must be a clean
+     * no-op the second time, verified under ASan (no heap corruption, no
+     * crash). */
+    void* p = lyric_process_piped_spawn("/bin/cat", NULL);
+    CHECK(p != NULL);
+    lyric_process_piped_close(p);
+    lyric_process_piped_close(p);
+}
+
 static void test_ok_variants(void) {
     char tmpl[] = "/tmp/lyric_rt_ok_XXXXXX";
     int fd = mkstemp(tmpl);
@@ -2214,6 +2228,7 @@ int main(void) {
     test_process_piped_kill();
     test_process_piped_spawn_failure();
     test_process_piped_stderr_inherited();
+    test_process_piped_double_close();
     test_async_hot_completion();
     test_async_block_on_sleep();
     test_async_interleave();

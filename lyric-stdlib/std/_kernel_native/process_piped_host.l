@@ -170,8 +170,13 @@ extern func rtPipedClose(p: Long): Unit = "lyric_process_piped_close"
 // ── Public handle + entry points ────────────────────────────────────────────
 /// Opaque handle to a running child process with piped stdin/stdout. See
 /// the module header for why this is a `Long`, not a `NativePtr[Byte]`.
+/// `closed` guards `hostPipedClose` against a second call on the same
+/// handle (issue #6975) the same way `Std.HttpServer`'s
+/// `HttpListener.stopped` guards `stopListener` — package-private so no
+/// consumer outside this file can read or mutate it directly.
 pub record PipedHandle {
   raw: Long
+  var closed: Bool
 }
 
 /// Spawn `fileName` with a pre-formed `arguments` string (see
@@ -191,7 +196,7 @@ pub func hostSpawnPiped(fileName: in String, arguments: in String): PipedHandle 
   if raw == 0i64 {
     panic("Std.ProcessPipedHost: failed to spawn piped process: " + fileName)
   } else {
-    PipedHandle(raw = raw)
+    PipedHandle(raw = raw, closed = false)
   }
 }
 
@@ -254,8 +259,17 @@ pub func hostPipedCloseStdin(p: in PipedHandle): Unit {
 }
 
 /// Close the child's stdin/stdout pipes and release the handle. Does not
-/// itself wait for or kill the child. Safe to call during best-effort
-/// cleanup.
+/// itself wait for or kill the child. Genuinely idempotent (issue #6975):
+/// a second call on the same handle is a no-op, guarded here so the
+/// common case never even reaches the extern boundary a second time —
+/// `rtPipedClose`/`lyric_process_piped_close` is itself also hardened
+/// against a direct repeated call (see that function's own doc comment),
+/// so this guard is defense in depth, not the only thing standing
+/// between a caller and a double-free.
 pub func hostPipedClose(p: in PipedHandle): Unit {
+  if p.closed {
+    return
+  }
+  p.closed = true
   rtPipedClose(p.raw)
 }
