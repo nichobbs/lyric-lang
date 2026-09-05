@@ -153,6 +153,26 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
           val viaInstance = instanceMethodRetGenericArgs(ctx, recv, memberName)
           if viaInstance.count > 0 {
             viaInstance
+          } else if memberName == "append" or memberName == "concat" or memberName == "slice" {
+            // #6586: `.append`/`.concat`/`.slice` are slice-builtin
+            // intrinsics (`Jvm.Codegen.lowerSliceAppendJvm`/
+            // `lowerSliceConcatJvm`/`lowerSliceSliceJvm`, 04_calls.l) that
+            // return a NEW slice holding the SAME element type as the
+            // receiver — never a registered `<class>#<method>` sig (they
+            // are never real functions), so `instanceMethodRetGenericArgs`
+            // always misses for them and the dot-named-function tier below
+            // would miss too (no function is ever named "<TypeName>.
+            // append" either). Recurse into the RECEIVER's own recorded
+            // args instead, so a bound local (`val cs2 = cs.append('z')`)
+            // inherits `cs`'s declared/recorded element type — without
+            // this, `cs2` carried no recorded args at all, so a later
+            // `cs2[i].toInt()` stayed erased `Object` (docs/59 §4.3 class)
+            // and fell through to JVM auto-FFI dispatch, which has no
+            // `toInt()` on `java.lang.Object`.  Only fires when no genuine
+            // user-defined instance method already claimed the name (the
+            // `viaInstance` check above), so a real `impl`'s own `.append`
+            // is unaffected.
+            scrutineeGenericArgs(ctx, recv)
           } else {
             // `s.indexOf(x)` / `s.lastIndexOf(x)` on a String receiver routes
             // to the UFCS `Std.String.<member>(s, x): Option[Int]` free
@@ -1550,6 +1570,34 @@ func resolveConcreteTypeExpr(ctx: in FuncCtx, te: in TypeExpr): JvmType {
         }
       } else {
         typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes)
+      }
+    }
+    // #6708: a nested generic-record instantiation (`MapEntry[K, V]`, itself
+    // over the ENCLOSING function's own type parameters) — resolve through
+    // `recordParamClassOf`'s `ctorClassFor`-backed lookup the SAME way #6691
+    // does for a parameter's own slot type, before falling to
+    // `typeExprToJvmExtern`'s blanket erasure. Without this, a
+    // `List[MapEntry[K, V]]`/`slice[MapEntry[K, V]]` element's arg is a bare
+    // `TGenericApp` naming a record — `typeExprToJvmExtern` erases every
+    // non-bare-List/Map `TGenericApp` to `java/lang/Object`, so
+    // `indexedElemTypeOverride` (its only caller reaching this arm with a
+    // record-shaped arg) saw no narrowing target and left the indexed
+    // element statically `Object`; a following field read then panicked
+    // with J007 ("member cannot be resolved on an erased Object receiver")
+    // since nothing else in the pipeline ever recovers the concrete class
+    // for a nested-generic container element.  Cross-package (the reported
+    // shape: `MapEntry` is `Std.Collections`, not the consuming package) —
+    // `ctorClassFor`'s bundle-global bare-key fallback is exactly why this
+    // works where a same-file-only pre-scan (`recordRetClassOf`'s #6399
+    // approach) would not.  Bounded to a bare single-segment head exactly
+    // like `recordParamClassOf` itself — a package-qualified head, or a
+    // generic head naming no constructible record/union case anywhere in
+    // the bundle (`Std.Core.Option`/`Result`), safely falls through to the
+    // pre-existing erased-`Object` behaviour.
+    case TGenericApp(_, _) -> {
+      match recordParamClassOf(te, ctx) {
+        case Some(cls) -> JRef(className = cls)
+        case None -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes)
       }
     }
     case _ -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes)
