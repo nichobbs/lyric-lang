@@ -31946,19 +31946,22 @@ runs alongside `cfg_gate_self_test.l` in the compiler self-tests job (same
 linking shape — a compiler-package import resolved via the staged
 `Lyric.Compiler.dll` bundle, no `LYRIC_LOAD_COMPILER=1`).
 
-**Re-added to CI as `continue-on-error` pending #6659 (2026-09-05).** The
-JVM-target end-to-end run previously hung on real GitHub Actions runners
-for 2+ hours (the identical file without `--coverage` runs fine in the
-same job) — root cause still not identified; see D135's addendum and
-#6659. `coverage-smoke-test.sh` now runs the command in the background and
-polls it instead of a plain blocking `timeout --signal=KILL`, so a
-recurrence fails within 900s and captures a `jcmd`/`jstack` thread dump of
-the live JVM into the step's own log before killing it, instead of only
-producing a "force-killed" message with no diagnostic power. The step
-(`Coverage smoke test on JVM`, `compiler-self-tests-jvm` job) is
-`continue-on-error: true` until a run with the hang genuinely fixed is
-observed — a real pass/fail, not swallowed like the old F#-era job's
-`|| echo warning`, it just doesn't block merges while #6659 stays open.
+**Re-added to CI, hang root-caused and fixed (#6659, D-progress-878,
+2026-09-05).** The JVM-target end-to-end run previously hung on real GitHub
+Actions runners for 2+ hours (the identical file without `--coverage` runs
+fine in the same job); the CI step had been removed pending investigation.
+Root cause: `cmdTest`'s argv parser (`cli_test.l`) had a `--coverage` branch
+missing its own `i += 1`, so ANY invocation with `--coverage` in argv spun
+forever re-processing the same argv slot — a busy-loop well upstream of the
+java/JaCoCo codegen the original investigation suspected, which is why
+neither of that codegen's own 600s/120s internal timeouts ever fired. Fixed
+by the missing `i += 1`; the exact previously-900s-hanging command now
+completes in ~4s with a real Cobertura report. `coverage-smoke-test.sh`
+additionally runs the command in the background and polls it (instead of a
+plain blocking `timeout --signal=KILL`), capturing a `jcmd`/`jstack` thread
+dump before killing it on any future, unrelated timeout — defense in depth,
+not the fix. The step (`Coverage smoke test on JVM`,
+`compiler-self-tests-jvm` job) is a normal blocking step again.
 
 Full option analysis (IL/bytecode counters built into the self-hosted
 emitters; a source-level statement-coverage AST pass), why JaCoCo was

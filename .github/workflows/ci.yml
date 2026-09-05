@@ -3659,23 +3659,19 @@ jobs:
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/bitwise_self_test.l
 
       # Coverage smoke test (docs/03-decision-log.md D135, #5294, #6659).
-      # `lyric test --target jvm --coverage` on this exact file works
-      # standalone in a sandbox, but the JVM process under the JaCoCo
-      # agent's `-javaagent` instrumentation previously hung for 2+ hours on
-      # real GitHub Actions runners (root cause not yet identified — the
-      # plain, non-instrumented `Bitwise self-test on JVM` step above runs
-      # fine in this same job). `coverage-smoke-test.sh` now runs the
-      # command in the background and polls it instead of a plain blocking
-      # `timeout --signal=KILL`, so a hang no longer silently consumes hours:
-      # it fails within 900s and captures a `jcmd`/`jstack` thread dump of
-      # the live JVM into this step's own log before killing it — the
-      # diagnostic #6659 needs to find the real root cause. `continue-on-error`
-      # until a run with the underlying hang actually fixed is observed:
-      # this step's own pass/fail is real (not swallowed like the old
-      # F#-era coverage job's `|| echo warning`), it just doesn't block
-      # merges while #6659 is open.
+      # `lyric test --target jvm --coverage` previously hung for 2+ hours on
+      # real GitHub Actions runners. Root cause (#6659): `cmdTest`'s argv
+      # parser (`cli_test.l`) had a `--coverage` branch that never advanced
+      # its loop index, so ANY invocation with `--coverage` in argv spun
+      # forever re-processing the same argv slot — a busy-loop well
+      # upstream of the java/JaCoCo codegen the original investigation
+      # suspected, which is why neither of that codegen's own 600s/120s
+      # internal timeouts ever fired. Fixed by the missing `i += 1`.
+      # `coverage-smoke-test.sh` also runs the command in the background
+      # and polls it instead of a plain blocking `timeout --signal=KILL`,
+      # capturing a `jcmd`/`jstack` thread dump before killing it on any
+      # future timeout — defense in depth, not the fix itself.
       - name: Coverage smoke test on JVM (lyric test --target jvm --coverage, #6659)
-        continue-on-error: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/coverage-smoke-test.sh lyric-compiler/lyric/bitwise_self_test.l
 
