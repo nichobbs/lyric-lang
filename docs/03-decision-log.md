@@ -41672,6 +41672,19 @@ narrowing sits alongside), `generic_uint_erasure_jvm_self_test.l` (5),
 `erased_element_checkcast_jvm_self_test.l` (16), and
 `generic_extern_jvm_self_test.l` (5) — 74 cases, all still green.
 
+**Two narrower limitations noted in `recordParamClassOf`'s own doc
+comment.** (1) Bounded to a BARE single-segment `TGenericApp` head: a
+package-qualified generic-record parameter type (`b: in Other.Box[Int]`)
+still erases to `Object` and keeps the original #6691 silent-miscompile
+behavior. (2) Resolves through the plain `ctorClassFor` (bundle-global,
+first-registered-wins bare-name fallback) rather than the more
+collision-resistant `ctorClassForExpecting` (#5976/#6640) this same file
+already uses elsewhere, so two same-named generic records in different
+packages could still resolve a parameter's `checkcast` to the wrong
+package's class — accepted as no worse than the existing risk a plain
+`RecordName(...)` construction call already carries, but a related
+bare-name-resolution-ordering gap worth keeping in view alongside #6929.
+
 **Known remaining gap, explicitly out of scope.** A field read directly on a
 plain local bound to a DIFFERENT generic function's call result across a
 call boundary, when the callee cannot be monomorphized (`val e =
