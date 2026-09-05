@@ -182,3 +182,37 @@ test "impl ExternInterface for Record with a slice[ExternType] param compiles an
   h.handle(cbs)
   assertEqualInt(h.tag, 9, "SliceIfaceHandler field still readable after the slice-param method call")
 }
+
+// #6970 (review follow-up on #5931): the parameter-side test above pins
+// `implParamTypesToJvm`; this pins the sibling `retTy` code path in
+// `lowerImplMethod`, which narrows a `slice[ExternType]` RETURN value the
+// same way. Uses the exact motivating example from the original #5931
+// report: `X509TrustManager.getAcceptedIssuers(): slice[X509Certificate]`.
+extern type JX509Certificate = "java.security.cert.X509Certificate"
+
+extern type JX509TrustManager = "javax.net.ssl.X509TrustManager"
+
+record SliceIfaceTrustManager {
+  tag: Int
+}
+
+impl JX509TrustManager for SliceIfaceTrustManager {
+  func checkClientTrusted(chain: in slice[JX509Certificate], authType: in String): Unit {
+    ()
+  }
+
+  func checkServerTrusted(chain: in slice[JX509Certificate], authType: in String): Unit {
+    ()
+  }
+
+  func getAcceptedIssuers(): slice[JX509Certificate] {
+    []
+  }
+}
+
+test "impl ExternInterface for Record with a slice[ExternType] return compiles and dispatches on the concrete type (#5931 / #6970)" {
+  val tm = SliceIfaceTrustManager(tag = 3)
+  val issuers = tm.getAcceptedIssuers()
+  assertEqualInt(issuers.length, 0, "getAcceptedIssuers returns the empty slice built in the impl body")
+  assertEqualInt(tm.tag, 3, "SliceIfaceTrustManager field still readable after the slice-return method call")
+}
