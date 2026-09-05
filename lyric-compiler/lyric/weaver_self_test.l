@@ -393,6 +393,14 @@ func exprMentionsPath(e: in Expr, name: in String): Bool {
       false
     }
     case ERange(bound) -> rangeBoundMentionsPath(bound, name)
+    case EForall(_, whereExpr, body) -> {
+      val whereHit = match whereExpr { case Some(e) -> exprMentionsPath(e, name); case None -> false }
+      whereHit or exprMentionsPath(body, name)
+    }
+    case EExists(_, whereExpr, body) -> {
+      val whereHit = match whereExpr { case Some(e) -> exprMentionsPath(e, name); case None -> false }
+      whereHit or exprMentionsPath(body, name)
+    }
     case _ -> false
   }
 }
@@ -705,6 +713,14 @@ func exprHasMemberAccess(e: in Expr, recv: in String, mem: in String): Bool {
       false
     }
     case ERange(bound) -> rangeBoundHasMemberAccess(bound, recv, mem)
+    case EForall(_, whereExpr, body) -> {
+      val whereHit = match whereExpr { case Some(e) -> exprHasMemberAccess(e, recv, mem); case None -> false }
+      whereHit or exprHasMemberAccess(body, recv, mem)
+    }
+    case EExists(_, whereExpr, body) -> {
+      val whereHit = match whereExpr { case Some(e) -> exprHasMemberAccess(e, recv, mem); case None -> false }
+      whereHit or exprHasMemberAccess(body, recv, mem)
+    }
     case _ -> false
   }
 }
@@ -1662,6 +1678,28 @@ test "C-mode from-instance is unaffected by B'-mode routing" {
   val wrapper = firstFunction(wr.file, "doWork")
   val body = functionBody(wrapper)
   assertTrue(not bodyHasMemberAccess(body, "args", "x"), "args.x rewritten away (C-mode inline path)")
+}
+
+// #6833 follow-up (review finding on PR #6863): `EForall`/`EExists` were
+// leaves in `rewriteExpr` alongside the just-fixed `ERange`, so an
+// `args.<field>` reference inside a `forall(...)`/`exists(...)`
+// binder's `where` clause or body — reachable via `requires:`/`ensures:`
+// through `rewriteContractClauseArgs` — never got substituted either.
+test "local aspect's requires: args.<field> inside a forall(...) where/body is rewritten" {
+  val src = "package P\n" + "aspect Guard {\n" + "  matches: name like \"handle*\"\n" +
+    "  requires: forall(i: Int) where i < args.limit implies i >= 0\n" +
+    "  around(args) -> ret {\n" +
+    "    ret = proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func handleOne(limit: in Int): Int { 1 }\n"
+  val pr = parse(src)
+  val wr = weaveFileWithDiags(pr.file)
+  assertTrue(wr.diagnostics.count == 0, "no diagnostics")
+  val wrapper = firstFunction(wr.file, "handleOne")
+  val body = functionBody(wrapper)
+  assertTrue(not bodyHasMemberAccess(body, "args", "limit"), "args.limit inside forall's where/body rewritten away")
+  assertTrue(bodyMentionsPath(body, "limit"), "the elaborated assert references the matched function's own parameter")
 }
 
 // docs/26 §5 specifies that an aspect's `requires:`/`ensures:` clauses are

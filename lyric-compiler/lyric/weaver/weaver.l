@@ -769,7 +769,36 @@ func rewriteExpr(ctx: in RewriteCtx, expr: in Expr): Expr {
       Expr(kind = EInterpolated(segments = newSegs), span = s)
     }
     case ERange(bound) -> Expr(kind = ERange(bound = rewriteRangeBound(ctx, bound)), span = s)
-    // Leaves: ELiteral, EPath, ESelf, EResult, EForall, EExists, EError
+    // #6833 follow-up (review finding on PR #6863): `EForall`/`EExists`
+    // were also leaves, so an aspect's `requires:`/`ensures:` clause
+    // referencing `args.<field>` inside a `forall(...)`/`exists(...)`
+    // binder's `whereExpr` or `body` never got the substitution —
+    // `rewriteContractClauseArgs` calls this same `rewriteExpr` on
+    // contract clauses. `PropertyBinder` carries no expression of its
+    // own (just a name + type), so only `whereExpr`/`body` need it.
+    case EForall(binders, whereExpr, body) -> Expr(
+      kind = EForall(
+        binders = binders,
+        whereExpr = match whereExpr {
+          case Some(e) -> Some(value = rewriteExpr(ctx, e))
+          case None -> None
+        },
+        body = rewriteExpr(ctx, body)
+      ),
+      span = s
+    )
+    case EExists(binders, whereExpr, body) -> Expr(
+      kind = EExists(
+        binders = binders,
+        whereExpr = match whereExpr {
+          case Some(e) -> Some(value = rewriteExpr(ctx, e))
+          case None -> None
+        },
+        body = rewriteExpr(ctx, body)
+      ),
+      span = s
+    )
+    // Leaves: ELiteral, EPath, ESelf, EResult, EError
     case _ -> expr
   }
 }
