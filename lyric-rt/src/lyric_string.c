@@ -10,6 +10,7 @@
 
 #include <inttypes.h>
 #include <math.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -260,91 +261,103 @@ LyricString* lyric_string_trim(LyricString* s) {
     return lyric_string_from_literal(data + start, end - start);
 }
 
-/* Unicode *simple* lowercase mapping (no context-sensitive
- * `SpecialCasing.txt` rules) across Basic Latin, Latin-1 Supplement, Latin
- * Extended-A, Greek, and Cyrillic.  Every mapped pair EXCEPT U+0130 (see
- * below) shares the same UTF-8 encoded length as its input, which is what
- * lets `lyric_string_to_lower` allocate the output buffer at the input's
- * byte length as an upper bound (never exceeded — see that function). */
-static uint32_t cp_to_lower(uint32_t cp) {
-    if (cp >= 'A' && cp <= 'Z') return cp + 32;
-    /* Latin-1 Supplement: À-Þ (0xC0-0xDE) -> à-þ, skipping × (0xD7). */
-    if (cp >= 0xC0 && cp <= 0xDE && cp != 0xD7) return cp + 32;
-    /* U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE has NO case partner in
-     * Latin Extended-A's otherwise-uniform even/odd pairing below: per
-     * UnicodeData.txt its unconditional simple lowercase mapping is
-     * U+0069 (plain ASCII "i"), not U+0131 (a wholly separate letter
-     * whose own uppercase is U+0049, not U+0130).  Falling through to the
-     * generic 0x100-0x137 range rule would wrongly return 0x131.  Checked
-     * — and excluded — before that rule; this is the one mapping in this
-     * table whose UTF-8 byte length shrinks (2 bytes -> 1), which
-     * `lyric_string_to_lower`'s write loop accounts for.  (This is
-     * distinct from — and not to be confused with — the locale-
-     * conditional "Turkish dotless-I" `SpecialCasing.txt` rule, which
-     * lowercases plain ASCII I/U+0049 to U+0131 only in tr/az locales:
-     * this codebase has no locale concept and correctly excludes that
-     * rule; U+0130's OWN unconditional mapping applies in every locale,
-     * including the root/invariant one this function implements.) */
-    if (cp == 0x130) return 0x69;
-    /* Latin Extended-A: three alternating upper/lower runs plus one
-     * standalone pair (Ÿ/ÿ straddles Latin-1 Supplement). */
-    if (cp >= 0x100 && cp <= 0x137 && (cp % 2) == 0) return cp + 1;
-    if (cp >= 0x139 && cp <= 0x148 && (cp % 2) == 1) return cp + 1;
-    if (cp >= 0x14A && cp <= 0x177 && (cp % 2) == 0) return cp + 1;
-    if (cp == 0x178) return 0xFF;
-    if (cp >= 0x179 && cp <= 0x17E && (cp % 2) == 1) return cp + 1;
-    /* Greek: Α-Ω (0x391-0x3A9, 0x3A2 unassigned) -> α-ω. */
-    if (cp >= 0x391 && cp <= 0x3A9 && cp != 0x3A2) return cp + 32;
-    /* Cyrillic: Ѐ-Џ (0x400-0x40F) -> ѐ-џ, А-Я (0x410-0x42F) -> а-я. */
-    if (cp >= 0x400 && cp <= 0x40F) return cp + 0x50;
-    if (cp >= 0x410 && cp <= 0x42F) return cp + 32;
+/* Full-Unicode-Character-Database *simple* case folding (#6779, widening
+ * D-progress-831's five-script hand-written table): `kLowerTable`/
+ * `kUpperTable` are generated from UnicodeData.txt's own "simple
+ * lowercase/uppercase mapping" columns by
+ * scripts/gen_unicode_case_tables.py — see
+ * lyric_unicode_case_tables.inc's own header. Deliberately still not the
+ * full `SpecialCasing.txt` rule set: no locale-conditional Turkish/Azeri
+ * dotless-I folding of plain ASCII "I", no German ß -> "SS" expansion, no
+ * final-sigma positional form — every mapping here is unconditional and
+ * every output is a single scalar value (this runtime has no locale
+ * concept and no 1-codepoint-to-N-codepoints case-conversion path). */
+#include "lyric_unicode_case_tables.inc"
+
+static uint32_t case_table_lookup(const CaseFoldEntry* table, size_t count, uint32_t cp) {
+    size_t lo = 0;
+    size_t hi = count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (table[mid].cp < cp) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if (lo < count && table[lo].cp == cp) return table[lo].mapped;
     return cp;
 }
 
-LyricString* lyric_string_to_lower(LyricString* s) {
-    int64_t len = s ? s->len : 0;
-    /* `len` bytes is an upper bound on the output: every mapping in
-     * `cp_to_lower` either preserves or shrinks (U+0130 only) a code
-     * point's UTF-8 length, never grows it.  `out` is written compactly
-     * (output position `o` trails input position `i` exactly when a
-     * shrink happened), then trimmed to the real length below. */
-    LyricString* out = string_alloc(len);
-    if (len == 0) return out;
+static uint32_t cp_to_lower(uint32_t cp) {
+    return case_table_lookup(kLowerTable, kLowerTable_count, cp);
+}
 
+static uint32_t cp_to_upper(uint32_t cp) {
+    return case_table_lookup(kUpperTable, kUpperTable_count, cp);
+}
+
+typedef uint32_t (*CaseMapFn)(uint32_t);
+
+/* Shared by `.toLower()`/`.toUpper()`.  Unlike the old five-script table
+ * (which only ever shrank, and only for U+0130), the full UCD table maps
+ * some code points to a DIFFERENT UTF-8 byte length in either direction,
+ * so a single "allocate at the input's length" pass is no longer safe.
+ * Two passes instead: the first computes the exact output byte length
+ * (decoding each input code point and re-measuring its mapped UTF-8
+ * length without writing anything), the second allocates exactly that
+ * size and writes it — no upper-bound guess, no panic-on-overflow guard
+ * needed. */
+static LyricString* string_case_map(LyricString* s, CaseMapFn mapFn) {
+    int64_t len = s ? s->len : 0;
+    if (len == 0) return string_alloc(0);
     const uint8_t* src = LYRIC_STRING_DATA(s);
-    uint8_t* dst = LYRIC_STRING_DATA(out);
+
+    int64_t outLen = 0;
     int64_t i = 0;
-    int64_t o = 0;
     while (i < len) {
         uint32_t cp;
         int valid;
         int n = utf8_decode_at(src, len, i, &cp, &valid);
-        uint32_t lower = valid ? cp_to_lower(cp) : cp;
-        if (lower == cp) {
+        uint32_t mapped = valid ? mapFn(cp) : cp;
+        if (mapped == cp) {
+            outLen += n;
+        } else {
+            uint8_t tmp[4];
+            outLen += utf8_encode(mapped, tmp);
+        }
+        i += n;
+    }
+
+    LyricString* out = string_alloc(outLen);
+    uint8_t* dst = LYRIC_STRING_DATA(out);
+    int64_t o = 0;
+    i = 0;
+    while (i < len) {
+        uint32_t cp;
+        int valid;
+        int n = utf8_decode_at(src, len, i, &cp, &valid);
+        uint32_t mapped = valid ? mapFn(cp) : cp;
+        if (mapped == cp) {
             memcpy(dst + o, src + i, (size_t)n);
             o += n;
         } else {
             uint8_t buf[4];
-            int m = utf8_encode(lower, buf);
-            if (m > n) {
-                /* Would only trip if a future script addition to
-                 * cp_to_lower grew a code point's UTF-8 length beyond
-                 * what `out`'s allocation (sized to the input's length)
-                 * can hold; the runtime would rather panic loudly than
-                 * silently overflow the buffer. */
-                lyric_panic_msg(
-                    "lyric_string_to_lower: case mapping grew UTF-8 byte length beyond the input's allocation",
-                    "lyric_string.c", __LINE__
-                );
-            }
+            int m = utf8_encode(mapped, buf);
             memcpy(dst + o, buf, (size_t)m);
             o += m;
         }
         i += n;
     }
-    out->len = o;
-    LYRIC_STRING_DATA(out)[o] = 0;
     return out;
+}
+
+LyricString* lyric_string_to_lower(LyricString* s) {
+    return string_case_map(s, cp_to_lower);
+}
+
+LyricString* lyric_string_to_upper(LyricString* s) {
+    return string_case_map(s, cp_to_upper);
 }
 
 /* Ordinal (byte-exact) substring search — matches this runtime's existing
