@@ -411,19 +411,21 @@ test "module-scope val receiver: a var field mutated during a hoisted await gets
 }
 
 // #6702: `HoistEngine.hzImplTargetFieldNames` resolved an `impl` block's
-// target type's own fields only from the SAME file, so a cross-file impl
-// target (the real "two-file package" shape, since a `RecordDecl`
-// declared in one file and `impl`ed for in another is exactly what
-// multi-file packages look like — see docs/19) silently fell back to an
-// empty field set: a bare (implicit-self) field mutated across a hoisted
-// await was never protected. `pipeWeave` supplies the fix via
-// `monoRecordDecls`, its own cross-package record list; this pin
-// simulates that by parsing the record's declaration into a SEPARATE
-// `SourceFile` (never merged into the `impl`'s own file) and passing its
-// `RecordDecl` through `hoistAwaitsFile`'s `extraRecords` parameter —
-// proving the fix end-to-end without needing a real two-file project
-// build (`await_hoist_self_test.l`'s single-file `@test_module` shape
-// can't construct a genuine cross-file scenario at all).
+// target type's own fields only from the SAME file, so a cross-PACKAGE impl
+// target (a `RecordDecl` declared in a sibling in-bundle package, a
+// restored dependency, or a stdlib package — NOT a multi-file package's own
+// files, which are concatenated into one `SourceFile` before this pass ever
+// runs, per docs/19, so a same-package cross-file `impl` was already found)
+// silently fell back to an empty field set: a bare (implicit-self) field
+// mutated across a hoisted await was never protected. `pipeWeave` supplies
+// the fix via `monoRecordDecls`, its own cross-package record list; this
+// pin simulates that by parsing the record's declaration into a SEPARATE
+// `SourceFile` (a different package, never merged into the `impl`'s own
+// file) and passing its `RecordDecl` through `hoistAwaitsFile`'s
+// `extraRecords` parameter — proving the fix end-to-end without needing a
+// real multi-package project build (`await_hoist_self_test.l`'s single-file
+// `@test_module` shape can't construct a genuine cross-package scenario at
+// all).
 func extractRecordDecls(file: in SourceFile): List[RecordDecl] {
   val acc: List[RecordDecl] = newList()
   var i = 0
