@@ -15171,26 +15171,32 @@ func lowerBuiltinOrStaticCallMsil(
         // Invoke a function-typed value (`f()` where `f` is a local/param holding
         // a lambda).  Lambdas use the uniform `Func`(N+1)<object,…,object>` ABI
         // (#1877) UNLESS the slot's own registered type (`registerParamsMsil`/
-        // the lambda-param arm) is already a REAL closed `System.Action` — the
-        // zero-arg, `Unit`-returning shape `typeExprToMsilCtx`'s `TFunction`
-        // rule builds UNCONDITIONALLY (Epic #1877 Phase 3), for every `()
-        // -> Unit`-typed parameter regardless of `@externTarget`-ness (#5329
-        // follow-up). Before #5329's fix this branch's blind `MCastclass` to
-        // the uniform `FuncN` TypeSpec (`lowerFuncValueInvokeMsil`) was a
+        // the lambda-param arm) is already a REAL closed `System.Action` /
+        // `System.Action`N<object,...>` — the VOID-returning shape
+        // `typeExprToMsilCtx`'s `TFunction` rule builds UNCONDITIONALLY (Epic
+        // #1877 Phase 3) for every `(T1,...,TN) -> Unit`-typed parameter at ANY
+        // arity, regardless of `@externTarget`-ness (#5329 follow-up,
+        // D-progress-878). Before #5329's fix this branch's blind `MCastclass`
+        // to the uniform `FuncN` TypeSpec (`lowerFuncValueInvokeMsil`) was a
         // silent no-op FOR THIS SHAPE ONLY: every such parameter's ACTUAL
-        // value was always (wrongly) a `Func<object>`, matching the cast, so
-        // the mismatch against the parameter's OWN declared `System.Action`
+        // value was always (wrongly) `Func<object,...>`, matching the cast, so
+        // the mismatch against the parameter's OWN declared `Action`/`Action`N`
         // signature type was never observed here. #5329 corrected value
         // construction to match the declared type — surfacing this call
-        // site's own pre-existing, independent gap
-        // (`InvalidCastException: Unable to cast … 'System.Action' to
-        // … 'System.Func`1[System.Object]'`, caught by `Std.Testing.runAndCapturePanic`'s
-        // `catch Bug as b` and reported as the panic's own message, e.g. in
-        // `assertPanicsWith(..., { -> panic(...) })`). Detected via the
+        // site's own pre-existing, independent gap at EVERY arity, first for
+        // arity 0 (`InvalidCastException: Unable to cast … 'System.Action' to
+        // … 'System.Func`1[System.Object]'`, caught by
+        // `Std.Testing.runAndCapturePanic`'s `catch Bug as b` and reported as
+        // the panic's own message, e.g. in `assertPanicsWith(...,
+        // { -> panic(...) })`), then for arity 1 (`Std.Iter.forEach`'s
+        // `(T) -> Unit` callback: `Action`1[Object]` vs `Func`2[Object,Object]`,
+        // confirmed by CI on the pushed fix's very next `stdlib-builds` run).
+        // Non-void `TFunction` shapes (`() -> R` / `(T1,...,TN) -> R`) are
+        // ALWAYS `Func`(N+1)<object,...,object>` regardless of this fix — the
+        // SAME erasure the uniform ABI already uses — so they were never
+        // mismatched and are completely unaffected here. Detected via the
         // slot's registered `fctx.types` entry — never a source-level
-        // annotation guess — so a genuinely erased/boxed function value
-        // (every other TFunction shape) is completely unaffected: it keeps
-        // the pre-existing `lowerFuncValueInvokeMsil` path exactly as before.
+        // annotation guess.
         match mapGet(fctx.slots, funcName) {
           case Some(slot) -> {
             // `emitLoadSlot` selects `ldarg` for a parameter and `ldloc` for a
@@ -15203,10 +15209,27 @@ func lowerBuiltinOrStaticCallMsil(
             // untracked return type leaves the boxed `object` placeholder.
             emitLoadSlot(insns, slot, fctx.paramCount)
             val slotTy = match mapGet(fctx.types, funcName) { case Some(t) -> t; case None -> MObject }
-            val isRealZeroArgAction = args.count == 0 and
-              match slotTy { case MClass(cn) -> cn == "System.Action"; case _ -> false }
-            if isRealZeroArgAction {
-              insns.add(MCallvirt(methodToken = cctx.tokActionInvoke))
+            // #5329 follow-up (D-progress-878): a real `Action`/`Action`N`
+            // value (never the uniform boxed `Func`(N+1)` ABI) needs a direct
+            // typed invoke — see `buildActionNInvokeTok`'s doc comment for why.
+            val realActionArity = match slotTy {
+              case MClass(cn) -> if cn == "System.Action" { 0 } else { -1 }
+              case MGenericInstByName(headFqn, tyArgs) -> if headFqn.startsWith("System.Action`") {
+                tyArgs.count
+              } else {
+                -1
+              }
+              case _ -> -1
+            }
+            if realActionArity >= 0 and args.count == realActionArity {
+              var argI = 0
+              while argI < args.count {
+                val argTy = lowerCallArgMsil(cctx, fctx, insns, args[argI])
+                boxIfNeededMsil(cctx, insns, argTy)
+                argI = argI + 1
+              }
+              val invokeTok = if realActionArity == 0 { cctx.tokActionInvoke } else { buildActionNInvokeTok(cctx, realActionArity) }
+              insns.add(MCallvirt(methodToken = invokeTok))
               MVoid
             } else {
               lowerFuncValueInvokeMsil(cctx, fctx, insns, args, mapGet(fctx.funcValRetTypes, funcName))
@@ -19206,6 +19229,46 @@ func buildActionNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
   ctorPs.add(MNativeInt)
   val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
   val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "action_ctor_" + toString(nparams), ctorSig)
+  0x0A000000 + mrRow
+}
+
+// Build a callvirt token for System.Action`N<object,...>::Invoke(object,...): void
+// (N ≥ 1). Mirrors `buildFuncNInvokeTok`, but for a REAL (non-boxed-ABI)
+// `Action`N` value — #5329 follow-up (D-progress-878): a stdlib/restored
+// function's `(T1,...,TN) -> Unit`-typed parameter, or any same-package one,
+// constructs a genuine `Action`N<object,...>` via `buildActionNCtorTok`'s
+// exact TypeSpec (same "ActionSpec_ctor_<N>" cache key, so this shares the
+// same TypeSpec row rather than duplicating it); invoking it through the
+// uniform `Func`(N+1)::Invoke` instead (the ONLY invoke path before this fix)
+// throws `InvalidCastException` at runtime since `Action`N` and `Func`(N+1)`
+// share no inheritance relationship, despite both deriving from
+// `MulticastDelegate` (reproduced by `Std.Iter.forEach`'s `(T) -> Unit`
+// callback: #5329's `registerStdlibFunc`/`registerRestoredFunc` fix started
+// constructing a real `Action`1<object>` at forEach's call sites, correctly
+// matching forEach's own declared parameter type, but forEach's OWN BODY
+// invoking that parameter via `fn(item)` still went through the unconditional
+// uniform-ABI cast — the exact same latent bug the zero-arg
+// `isRealZeroArgAction` fix closed for arity 0 only).
+func buildActionNInvokeTok(cctx: in CodegenCtx, nparams: in Int): Int {
+  val trN = internActionTypeRef(cctx, nparams)
+  val codedIdx = (trN * 4) + 1
+  val objArgs: List[MsilType] = newList()
+  var ai = 0
+  while ai < nparams {
+    objArgs.add(MObject)
+    ai = ai + 1
+  }
+  val gblob = buildGenericInstBlob(codedIdx, objArgs)
+  val specKey = "ActionSpec_ctor_" + toString(nparams)
+  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
+  val invokePs: List[MsilType] = newList()
+  var pi = 0
+  while pi < nparams {
+    invokePs.add(MTypeVar(index = pi))
+    pi = pi + 1
+  }
+  val invokeSig = buildInstanceMethodSig(invokePs, MVoid)
+  val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "Invoke", "action_invoke_" + toString(nparams), invokeSig)
   0x0A000000 + mrRow
 }
 
