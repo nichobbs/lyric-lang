@@ -32296,7 +32296,7 @@ condition-type check. Scoped to single-type-parameter generics only — a
 still silently resolves to `TyError` with no diagnostic, a pre-existing,
 documented, out-of-scope gap this fix doesn't attempt to close.
 
-**Related:** `docs/03-decision-log.md` D-progress-878 (full account), #6720,
+**Related:** `docs/03-decision-log.md` D-progress-886 (full account), #6720,
 #6565 (D-progress-818, the motivating widening this narrows).
 
 ### Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
