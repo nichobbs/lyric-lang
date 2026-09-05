@@ -122,3 +122,40 @@ test "two-level nesting projects transitively" {
   assertEqual(cv.companyName, "Acme", "company_name")
   assertEqual(cv.region.city.name, "Paris", "company_city_name")
 }
+
+// #5937: a PLAIN (non-`@projectable`) `pub opaque type` with a `var
+// buf: slice[Byte]` field, mutated through an `inout` parameter from WITHIN
+// the declaring package — legitimate same-package field access, not a
+// cross-package opacity violation. `Jvm.Lowering.lowerOpaqueType` marks every
+// opaque backing field `private` + `final`; before the fix a mutable field's
+// assignment lowered to a raw `putfield` under the UNMANGLED name (the real
+// field is `$buf`, `final`), which is either `NoSuchFieldError` (wrong name)
+// or verifier-rejected (writing a `final` field outside `<init>`) depending
+// on the exact shape. The fix adds a `$<name>(T)V` mutator for each mutable
+// field and routes same-package field WRITES (and compound-assignment
+// reads) through it, mirroring the existing `$<name>()T` getter routing.
+pub opaque type MutableHolder {
+  var buf: slice[Byte]
+  tag: Int
+}
+
+func appendByte(h: inout MutableHolder, b: Byte): Unit {
+  val combined = h.buf.concat([b])
+  h.buf = combined
+}
+
+pub func newMutableHolder(): MutableHolder {
+  MutableHolder(buf = [], tag = 1)
+}
+
+pub func mutableHolderBufLength(h: in MutableHolder): Int {
+  h.buf.length
+}
+
+test "same-package inout mutation of a plain opaque type's mutable slice field (#5937)" {
+  var h = newMutableHolder()
+  appendByte(h, 65.toByte())
+  appendByte(h, 66.toByte())
+  assertEqualInt(mutableHolderBufLength(h), 2, "mutable opaque slice field grew to length 2")
+  assertEqualInt(h.tag, 1, "immutable opaque field still readable after a sibling field's mutation")
+}

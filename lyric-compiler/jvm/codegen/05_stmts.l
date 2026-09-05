@@ -126,6 +126,42 @@ pub func emitNeverTailReturn(insns: in List[LInsn], retTy: in JvmType): Unit {
   emitReturn(insns, retTy)
 }
 
+// Store the top-of-stack value into receiver-then-value order (`[recv, val]`
+// already on the stack) through field `fieldName: fty` on `cls`. An opaque
+// type's backing field is `private` (`Jvm.Lowering.lowerOpaqueType`,
+// reflection-sealing) so a direct `putfield` from ANY other class — including
+// a same-package `inout` mutator — is `IllegalAccessError`; route through the
+// `$<name>(T)V` mutator `Jvm.Lowering.lowerOpaqueSet` emits for every mutable
+// opaque field instead (#5937). A plain record's fields carry no such
+// restriction and keep the direct `putfield`.
+func emitFieldStoreOpaqueAware(
+  ctx: in FuncCtx, insns: in List[LInsn], cls: in String, fieldName: in String, fty: in JvmType
+): Unit {
+  if ctx.opaqueTypes.containsKey(cls) {
+    val setPs: List[JvmType] = newList()
+    setPs.add(fty)
+    insns.add(LInvokevirtual(owner = cls, name = "$" + fieldName, params = setPs, ret = JVoid))
+  } else {
+    insns.add(LPutfield(owner = cls, name = fieldName, t = fty))
+  }
+}
+
+// Load field `fieldName: fty` off the receiver already on the stack — the
+// read-side counterpart of `emitFieldStoreOpaqueAware`, used by a compound
+// assignment's (`recv.field += e`) current-value read. Mirrors the opaque
+// getfield->accessor routing `lowerExpr`'s plain field-read path already
+// applies (02_exprs.l).
+func emitFieldLoadOpaqueAware(
+  ctx: in FuncCtx, insns: in List[LInsn], cls: in String, fieldName: in String, fty: in JvmType
+): Unit {
+  if ctx.opaqueTypes.containsKey(cls) {
+    val getPs: List[JvmType] = newList()
+    insns.add(LInvokevirtual(owner = cls, name = "$" + fieldName, params = getPs, ret = fty))
+  } else {
+    insns.add(LGetfield(owner = cls, name = fieldName, t = fty))
+  }
+}
+
 func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op: in AssignOp, value: in Expr): JvmType {
   match target.kind {
     case EPath(path) -> {
@@ -249,11 +285,11 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   // guaranteed now that both operands come from slots
                   // (#5609 item 2).
                   coerceValueToUnderReceiver(ctx, insns, JRef(className = selfCls), vTy, fty)
-                  insns.add(LPutfield(owner = selfCls, name = name, t = fty))
+                  emitFieldStoreOpaqueAware(ctx, insns, selfCls, name, fty)
                 }
                 case _ -> {
                   insns.add(LAload(slot = 0))
-                  insns.add(LGetfield(owner = selfCls, name = name, t = fty))
+                  emitFieldLoadOpaqueAware(ctx, insns, selfCls, name, fty)
                   val curSlot = allocSlot(ctx, "__sfassign_cur_" + freshLabel(ctx), fty)
                   emitStore(insns, curSlot, fty)
                   val vTy = lowerExpr(ctx, insns, value)
@@ -266,7 +302,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   emitStore(insns, combSlot, fty)
                   insns.add(LAload(slot = 0))
                   emitLoad(insns, combSlot, fty)
-                  insns.add(LPutfield(owner = selfCls, name = name, t = fty))
+                  emitFieldStoreOpaqueAware(ctx, insns, selfCls, name, fty)
                 }
               }
               JVoid
@@ -330,7 +366,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               // which reloading from slots (instead of keeping values live
               // across the RHS) already guarantees.
               coerceValueToUnderReceiver(ctx, insns, recvTy, vTy, fty)
-              insns.add(LPutfield(owner = cls, name = fieldName, t = fty))
+              emitFieldStoreOpaqueAware(ctx, insns, cls, fieldName, fty)
             }
             case _ -> {
               // Compound: read the current field value into a slot too, so
@@ -338,7 +374,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               // like the AssEq case above, then reload [current, rhs] for
               // the combine and [recv, combined] for the store.
               emitLoad(insns, recvSlot, recvTy)
-              insns.add(LGetfield(owner = cls, name = fieldName, t = fty))
+              emitFieldLoadOpaqueAware(ctx, insns, cls, fieldName, fty)
               val curSlot = allocSlot(ctx, "__fassign_cur_" + freshLabel(ctx), fty)
               emitStore(insns, curSlot, fty)
               val vTy = lowerExpr(ctx, insns, value)
@@ -351,7 +387,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               emitStore(insns, combSlot, fty)
               emitLoad(insns, recvSlot, recvTy)
               emitLoad(insns, combSlot, fty)
-              insns.add(LPutfield(owner = cls, name = fieldName, t = fty))
+              emitFieldStoreOpaqueAware(ctx, insns, cls, fieldName, fty)
             }
           }
           JVoid
