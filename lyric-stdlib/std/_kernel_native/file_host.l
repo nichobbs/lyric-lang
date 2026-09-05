@@ -10,9 +10,24 @@
 //! create/delete (files and recursive directory deletion), and
 //! directory enumeration (D-N-015: slices share the RC'd list repr, so
 //! the byte and path collections ride the ordinary list kernels).
-//! Still unavailable natively: file `stat` (needs an opaque timestamp
-//! twin) and the panicking `readTextOrPanic` / `readBytesOrPanic`
-//! variants (pure-layer try/catch) — issue #4752 tracks both.
+//!
+//! `hostReadAllBytes` (D-progress-878, #4752's residual-seam audit)
+//! backs `Std.File.readBytesOrPanic`, whose pure-layer body has NO
+//! `try`/`catch` around it on any target — its "panic on failure"
+//! contract is naturally satisfied here by panicking directly (native
+//! has no exceptions to propagate in the first place, D-N-003), reusing
+//! `hostReadBytesResult`'s own seam rather than a second extern call.
+//!
+//! Still unavailable natively: file `stat`/`fileStatIsNewer` (needs an
+//! opaque timestamp twin AND `Std.File.stat`'s own `try`/`catch`
+//! wrapper, which `Lyric.LlvmCodegen` unconditionally rejects for
+//! `--target native` per D-N-003 — the same root cause issue #6887
+//! tracks for `Std.Process`'s piped API, but scoped separately here as
+//! issue #6961 since #6887's own scope and suggested fix are specific
+//! to that facade) and `Std.File.readTextOrPanic` (its own `try`/`catch`
+//! wrapper hits the identical D-N-003 rejection, also #6961, unlike
+//! `readBytesOrPanic` above, which has none). Neither is fixable from
+//! this kernel file alone.
 @axiom("POSIX file-system calls via lyric-rt conform to their documented contracts")
 package Std.FileHost
 
@@ -186,6 +201,24 @@ pub func hostReadBytesResult(path: in String): Result[List[Byte], IOError] {
     Ok(value = bytes)
   } else {
     Err(error = IoError(path = path, message = "the file could not be read"))
+  }
+}
+
+// #4752 residual-seam audit (D-progress-878): `Std.File.readBytesOrPanic`
+// calls this directly with NO `try`/`catch` around it on any target
+// (unlike `readTextOrPanic`, which does) — its "panic on failure"
+// contract is naturally satisfied on native by panicking IN THE KERNEL
+// itself rather than throwing an exception for the pure layer to let
+// propagate uncaught, since native has no exceptions to propagate in
+// the first place (D-N-003). `slice[Byte]`/`List[Byte]` share the same
+// representation on this target (D-N-015), so this reuses
+// `hostReadBytesResult`'s own seam rather than a second `rtReadBytes`
+// call.
+@unsafe_ffi
+pub func hostReadAllBytes(path: in String): slice[Byte] {
+  match hostReadBytesResult(path) {
+    case Ok(bytes) -> bytes.toArray()
+    case Err(_) -> panic("Std.File.readBytesOrPanic: the file could not be read: " + path)
   }
 }
 

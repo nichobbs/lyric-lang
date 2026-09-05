@@ -33724,3 +33724,46 @@ headers and were verified that way.
 `docs/35-lambda-library.md` §4.2/§8 (updated), `lyric-lambda/README.md`
 (support matrix updated), #5412 (closed), #6868 (new, filed not fixed),
 #5600/#5578/#6548 (the prior `Lambda.Dispatch` work this builds on).
+
+## Native N5 slice B residual-seam audit closes out issue #4752
+
+Audited #4752 ("N5 slice B") against the current tree rather than its own
+(partly stale) text. All four of its originally-named deferrals —
+runCapture timeout/stdin, `Std.Uuid`, `Std.Time`'s calendar surface, and
+native `out`-mode parameter lowering — are confirmed already resolved by
+separate, earlier work (D-N-024, and the Uuid/Time/`out`-param kernels
+and compiler support that shipped since). A full function-level diff
+between every dotnet `_kernel/*.l` and its native `_kernel_native/*.l`
+twin, for `Std.File`/`Std.Environment`/`Std.Time`/`Std.Process`, found
+three more small, genuinely-missing seams and shipped them:
+`hostReadAllBytes` (backs `Std.File.readBytesOrPanic`, panicking directly
+on failure since native has no exceptions to propagate), and
+`hostRuntimeDirectory`/`hostRuntimeIdentifier` (both return `""`
+unconditionally — each function's own public doc comment already
+documents empty string as a valid value for a target with no .NET
+runtime-shared-framework concept).
+
+Two further gaps were found and precisely scoped, not fixed: `hostExit`
+needs a compiler fix (`extern func` with a `Never` return type has no
+native codegen lowering — filed as issue #6901, with a suggested fix);
+`hostAppBaseDirectory` needs new `lyric-rt` C surface (`readlink(
+"/proc/self/exe")`), deliberately deferred as a well-scoped follow-up
+rather than bundled into this audit pass and filed as issue #6937 (so
+closing #4752 doesn't leave it untracked). `Std.File.stat`/
+`fileStatIsNewer`/`readTextOrPanic` remain blocked by the same
+`try/catch`-on-native root cause issue #6887 tracks for `Std.Process`'s
+piped API — but #6887's own scope and suggested fix are specific to
+that facade, so the `Std.File` instances are tracked separately as
+issue #6961.
+
+**Verification.** `llvm_stdlib_self_test.l` gained two new cases
+(`readBytesOrPanic` round-trip + missing-path panic regression;
+`runtimeDirectory`/`runtimeIdentifier` empty-on-native), verified on real
+Linux CI (`--target native`, real `clang`) — 20/20 cases pass, no
+regressions.
+
+**Related:** `docs/03-decision-log.md` D-progress-887 (full account),
+#4752 (audited and recommended for closing by this entry), #6901 (new,
+the `Never`-typed-extern-func gap), #6937 (new, `hostAppBaseDirectory`'s
+tracking issue), #6961 (new, the `Std.File` try/catch-on-native gaps),
+`native/plan/08-work-items.md` N5.7.
