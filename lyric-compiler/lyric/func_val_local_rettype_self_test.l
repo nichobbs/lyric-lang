@@ -313,13 +313,19 @@ test "chained call to a Unit-returning closure factory leaves the stack balanced
 
 // #6690: unlike every case above (a `val` bound to a CALL whose result is
 // function-shaped), this is a `val` bound directly to a LAMBDA LITERAL with
-// no type annotation at all (`val f = (x) -> false`). `registerFieldFuncValTypesMsil`
+// no type annotation at all (`val f = { x -> false }`). `registerFieldFuncValTypesMsil`
 // had no `ELambda` arm, so `f`'s return type never registered and invoking
 // `f(y)` left the boxed `Func::Invoke` result un-unboxed — a non-null boxed
 // reference reads as truthy regardless of the lambda's real body, so `f(y)`
 // was silently `true` even though every lambda here always returns `false`.
+// Uses the brace-lambda form rather than the bare-paren-arrow sugar
+// (`(x) -> false`) shown in #6690's original repro: the two are equivalent
+// for an untyped single param, but the bare-paren form trips the unrelated
+// `lyric fmt` bug #6869 (any file containing one is refused with
+// "formatting would change the code-token sequence"); the brace form
+// formats cleanly and exercises the identical codegen path.
 test "un-annotated lambda-literal local, boolean body (#6690 exact repro)" {
-  val f = (x) -> false
+  val f = { x -> false }
   assertFalse(f(1), "f(1) must be false, not truthy-boxed-object")
   assertFalse(f(99), "f(99) must be false, not truthy-boxed-object")
 }
@@ -331,10 +337,11 @@ test "un-annotated lambda-literal local, boolean body (#6690 exact repro)" {
 // case is orthogonal to the pre-existing, deliberate #1939 diagnostic
 // ("a lambda that uses an un-annotated parameter … is not yet supported"),
 // which is unrelated to #6690 and fires only when an unannotated param's
-// VALUE itself needs unboxing.
+// VALUE itself needs unboxing. Brace-lambda form, same #6869 rationale as
+// the test above.
 test "un-annotated lambda-literal local, comparison body over a captured value (#6690)" {
   val threshold = 3
-  val exceeds = (x) -> threshold > 0
+  val exceeds = { x -> threshold > 0 }
   assertTrue(exceeds(999), "threshold(3) > 0 is true regardless of the unused param x")
 }
 
@@ -346,10 +353,94 @@ test "un-annotated lambda-literal local, comparison body over a captured value (
 // multi-statement block body, proving `blockTrailingExprMsil` picks the
 // LAST statement's value, not the first.
 test "un-annotated lambda-literal local, typed param + multi-statement block body (#6690)" {
-  val overTen = { x: Int ->
-    val doubled = x * 2
-    doubled > 10
-  }
+  val overTen = { x: Int -> val doubled = x * 2; doubled > 10 }
   assertTrue(overTen(6), "6*2 == 12 > 10")
   assertFalse(overTen(2), "2*2 == 4, not > 10")
+}
+
+// A bare-param trailing expression, `x` itself: exercises the fix's
+// `paramEnv` `EPath` lookup directly (the "typed param" test above only
+// covers `EPath` as an OPERAND of `>`, never as the ENTIRE trailing
+// expression) — review SUGGESTION on #6690's own PR.
+test "un-annotated lambda-literal local, bare typed-param trailing expression (#6690 review)" {
+  val identity = { x: Int -> x }
+  assertEqualInt(identity(41), 41, "identity(41) == 41 via paramEnv EPath lookup")
+}
+
+// #6932 (review REQUIRED on #6690's own PR — investigated, NOT reproducible
+// as described, see below): claimed that an unannotated-BINDING lambda
+// literal whose body's only statement is an explicit `return <value>` was
+// misclassified as `MVoid` by the original fix (its trailing-value search
+// found no `SExpr` last statement), and that calling it as a value would
+// corrupt the operand stack. Verified this does NOT compile as literally
+// described: a lambda body ending in `return <value>` types as `Never`
+// (`checkBlock`'s divergence rule, `typechecker_stmts.l`), and passing a
+// `Never`-typed call result as a plain call argument is rejected at compile
+// time (`error[T0043]: argument type Never does not match parameter type
+// …`) before codegen ever runs — confirmed with the issue's own exact
+// repro. A permissive consuming position (a `Never`-typed call used as a
+// function's own tail expression, where `Never` freely unifies) DOES
+// compile and DOES crash at runtime with `NullReferenceException` — but
+// verified that crash reproduces IDENTICALLY on `main` at 57b130e (the
+// commit immediately before this PR's own base) with `return` inside a
+// lambda passed DIRECTLY to a typed higher-order-function parameter (no
+// `val` binding, no `registerFieldFuncValTypesMsil` involvement at all) —
+// i.e. it is a pre-existing, unrelated "a `return` statement inside ANY
+// lambda-literal body panics at runtime regardless of how its return type
+// is registered" gap, not something this PR introduced or fixes. Filed
+// separately as #6947 (out of `group:msil-codegen-correctness` scope; a
+// materially different and much deeper bug than this PR's return-type-
+// inference fix). `lambdaBodyTrailingValueMsil` (below) still unwraps an
+// explicit trailing `return` as a value producer — a genuine, harmless
+// correctness improvement over the `MVoid` guess it replaces — but no
+// runtime regression test is added here: every reachable way to invoke such
+// a lambda hits #6947's crash regardless of this fix, so there is no
+// passing repro available to pin the type-inference improvement in
+// isolation.
+//
+// #6933 (review REQUIRED on #6690's own PR): arithmetic over a CAPTURED
+// (non-parameter) outer variable inside an unannotated-BINDING lambda
+// literal was silently mis-inferred as `MInt` regardless of the captured
+// variable's real type, because the original fix's arithmetic fallback
+// treated any unresolvable operand (anything not in the lambda's own
+// `paramEnv`, which covers only its explicitly-typed parameters — never a
+// capture) as `MInt`. The captured operand is placed as the ARITHMETIC
+// LEFT-HAND side (`rate + x`, not `x + rate`) since the underlying
+// heuristic — both before and after this fix — infers an `EBinop`'s result
+// type from its LHS alone; the captured-and-unresolvable operand must be
+// the side actually consulted to exercise the bug. Binding the call result
+// through an explicitly Double-ANNOTATED local (`val result: Double = ...`,
+// the same established `#5519` real-unboxing-at-a-typed-bind pattern used
+// elsewhere in this codebase) proves which type was actually registered: a
+// wrong `MInt` registration throws `InvalidCastException` INSIDE the call's
+// own invoke codegen (which unconditionally unboxes to the registered type
+// before the value ever reaches the bind site), while the fix's correct
+// `MObject` (unknown) registration defers the real unboxing to this bind,
+// which resolves it correctly.
+test "un-annotated lambda-literal local, arithmetic over a captured Double (#6933)" {
+  val rate = 1.5
+  val scale = { x: Double -> rate + x }
+  val result: Double = scale(2.0)
+  assertTrue(result == 3.5, "1.5 + 2.0 == 3.5 via a captured Double operand, not a wrong MInt guess")
+}
+
+// The captured operand is a `String` (BAdd's OTHER non-Int widening arm) —
+// proves the fix's fallback isn't narrowly patched for `Double` alone.
+test "un-annotated lambda-literal local, arithmetic over a captured String (#6933)" {
+  val suffix = "!"
+  val shout = { x: String -> suffix + x }
+  val result: String = shout("hi")
+  assertEqual(result, "!hi", "\"!\" + \"hi\" == \"!hi\" via a captured String operand")
+}
+
+// A comparison (`>`, always `MBool` regardless of either operand's type) over
+// a captured value must still resolve correctly and is NOT rejected by the
+// #6933 fix's more conservative arithmetic handling — this is the
+// pre-existing "comparison body over a captured value (#6690)" test's own
+// sibling, re-asserted here to pin that the #6933 fix does not regress the
+// always-safe comparison arms.
+test "un-annotated lambda-literal local, comparison over a captured Double is unaffected by #6933's fix" {
+  val threshold = 2.5
+  val exceeds = { x -> threshold > 1.0 }
+  assertTrue(exceeds(999), "threshold(2.5) > 1.0 is true regardless of the unused param x")
 }
