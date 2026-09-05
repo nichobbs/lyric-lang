@@ -101,6 +101,31 @@ want each package independently consumable as its own DLL — the same
 shape the bootstrap stdlib uses today. `output = "single"` is the
 new default for application projects.
 
+**Test-only packages (`test_only`, #6579).** A `[project.packages]` entry
+may use the inline-table form `{ path = "...", test_only = true }` instead
+of a bare path string:
+
+```toml
+[project.packages]
+"MyApp.Core"        = "src/core"
+"MyApp.TestFixtures" = { path = "src/test_fixtures", test_only = true }
+```
+
+A `test_only` package is still discovered and resolvable for import by
+`[project.tests]` entries and by `lyric test`'s `@test_module`
+auto-discovery (§13.5's `[project.tests]` fallback) — a shared test
+fixture package can import it exactly like any other package — but it is
+excluded from `buildProjectFromManifest`'s production bundle: neither
+`lyric build --manifest ...` (whole-project `output = "single"` builds)
+nor `lyric build --release`'s AOT entry-point scan considers a `test_only`
+package's source or its exported symbols. This closes the choice #6579
+described between duplicating a shared fixture into every consumer's
+`src/` tree (keeping it out of the shipped bundle, at the cost of drift
+between copies) and giving it a real `[project.packages]` entry (keeping
+one copy, at the cost of leaking test-only code and its dependencies into
+the shipped assembly). Defaults to `false` when the entry is a bare path
+string.
+
 ### 3.1 Local-path dependencies
 
 A `[dependencies]` entry may use the inline-table `{ path = "..." }` form to

@@ -680,6 +680,9 @@ output_assembly = "myapp.dll"
 [project.packages]
 "myapp.Core" = "src/core"
 "myapp.Web"  = "src/web"
+"myapp.TestFixtures" = { path = "src/test_fixtures", test_only = true }
+                                    # importable by [project.tests]/lyric test,
+                                    # excluded from the production bundle (#6579)
 ```
 
 ---
@@ -869,14 +872,20 @@ lyric build <file.l>                   # compile to .dll + .runtimeconfig.json
 lyric build --force <file.l>           # rebuild unconditionally (bypass incremental check)
                                        # PROFILE axis (optimization + debug symbols):
 lyric build --debug <file.l>           # unoptimized, debug info retained (the default)
-lyric build --release <file.l>         # optimized, debug info stripped (NOT YET: the profile does
-                                       # not reach codegen yet -- no optimization, no overflow-check
-                                       # or contract-elision change. See #6263)
+lyric build --release <file.l>         # optimized, debug info stripped. On --target native, the
+                                       # clang -O level now defaults from this axis (2 vs. 0, #6263
+                                       # partial); dotnet/jvm still perform no optimization, and
+                                       # overflow-check/contract-elision semantics stay undecided
+                                       # on every target (#6263 remains open for those two pieces).
                                        # NOTE: --release no longer implies AOT. Pass --aot too.
                                        # SHAPE axis (packaging), independent of profile and target:
 lyric build --shape portable <file.l>  # framework-dependent (default)
 lyric build --shape standalone <file.l>  # bundles a runtime (not implemented — F0044, #6262)
 lyric build --shape aot <file.l>       # native binary; --aot is sugar for this
+                                       # a manifest's own [build] shape = "portable"/"standalone" on
+                                       # --target native raises F0043 too (#6268) -- not silently
+                                       # upgraded to aot; only an UNDECLARED manifest shape defaults
+                                       # to aot on that target.
 lyric build --release --aot <file.l>   # single-file: self-contained Native AOT binary
 lyric build --release --aot            # project-mode: entry package auto-detected (func main())
 lyric build --release --aot --manifest lyric.toml  # explicit project manifest
