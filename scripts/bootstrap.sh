@@ -240,11 +240,16 @@ try_bootstrap_from_release() {
       # reachable through the exact API-listing incident (#6497) that
       # sends us down this path.  Quiet + `|| true` — a fetch failure
       # (offline, no remote) just leaves us with whatever tags are local,
-      # falling through to tier 2.  BOUNDED via git's own low-speed abort
-      # (portable — no external `timeout` binary, which isn't guaranteed on
-      # macOS): if throughput stays under 1000 B/s for 15s the fetch aborts
-      # so a stalled-but-not-failed connection during a partial outage falls
-      # through to tier 2 fast instead of hanging stage 0.
+      # falling through to tier 2.  Bounded via git's own low-speed abort
+      # for the HTTP(S) transport (`http.lowSpeedLimit`/`http.lowSpeedTime`
+      # are libcurl settings): if throughput stays under 1000 B/s for 15s the
+      # fetch aborts so a stalled-but-not-failed connection during a partial
+      # outage falls through to tier 2 fast instead of hanging stage 0.  Chosen
+      # over `timeout` because no external `timeout`/`gtimeout` binary is
+      # guaranteed (macOS).  This is the CI path — GitHub Actions checkouts are
+      # always HTTPS.  A local dev checkout with an SSH `origin` remote ignores
+      # these keys, so a stalled SSH fetch there is not bounded; acceptable
+      # since the dev path is interactive (Ctrl-C) and tier 1 is best-effort.
       git -C "$REPO_ROOT" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=15 \
         fetch --tags --quiet 2>/dev/null || true
       local newest_tag

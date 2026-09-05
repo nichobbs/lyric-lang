@@ -30454,6 +30454,15 @@ sugar), #5625 (original mis-binding).
 
 ## D-progress-784 — Bootstrap seed fallback: local-tag tier + release-cut pin assertion (#6501)
 
+**PARTIALLY SUPERSEDED by D-progress-885** (#6859): mechanism #2 below (the
+`create-release` release-cut pin-freshness assertion) is **removed** — it was
+structurally guaranteed to fail every cut immediately after a release (the pin
+is always one release behind at that moment), which blocked publish runs
+1812/1814/1816. Mechanism #1 (the local-tag fallback tier) is **kept and
+strengthened**: it now runs a bounded best-effort `git fetch --tags` first, so a
+shallow checkout self-heals during a `/releases`-listing outage without needing
+the assertion. See D-progress-885 for the reversal rationale.
+
 **Date:** 2026-08-18. **Resolves** #6501 (keeping the PR #6497
 last-resort pinned seed version current) with two mechanisms instead
 of trusting manual bumps:
@@ -41995,6 +42004,8 @@ design decisions).
 ## D-progress-885 — Release infra: bootstrap seed-version resolution self-heals via `git fetch --tags`, and the #6501 pre-flight pin-freshness guard is removed (it blocked every release cut)
 
 **Status:** shipped (release automation only; no compiler/stdlib change).
+**Supersedes** D-progress-784 mechanism #2 (the `create-release` pin-freshness
+assertion), and evolves its mechanism #1 (the local-tag fallback tier).
 
 **The problem.** The publish workflow (`.github/workflows/publish.yml`,
 `create-release` job) carried a #6501 pre-flight guard, "Assert bootstrap seed
