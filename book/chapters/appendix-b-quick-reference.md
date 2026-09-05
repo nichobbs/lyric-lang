@@ -901,9 +901,11 @@ lyric build --target jvm <file.l>      # writes a runnable foo.jar (NO runtimeco
                                        # `package` declaration; runs under `java -jar foo.jar`)
 lyric build --target native <file.l>   # writes a self-contained POSIX executable (no extension)
                                        # via the LLVM backend + clang; --triple cross-compiles,
-                                       # --opt 0|1|2|3|s sets the clang -O level (default 2).
-                                       # triple/opt default from the manifest [native] table
-                                       # (CLI flags override); [native].extra_libs adds -l<name>.
+                                       # --opt 0|1|2|3|s sets the clang -O level. triple/opt default
+                                       # from the manifest [native] table (CLI flags override); with
+                                       # neither, -O level now defaults from the PROFILE axis (#6263):
+                                       # 2 under --release, 0 under the default --debug profile.
+                                       # [native].extra_libs adds -l<name>.
                                        # ARC-managed (no GC; cycles need NativeWeak[T]). Surface:
                                        # scalars/strings, records, opaque types (share record
                                        # codegen — construction/field access/ARC release),
@@ -943,10 +945,14 @@ lyric build --manifest lyric.toml      # build from project manifest
                                        # --target native (N9.7, #6809) compiles a project's own
                                        # [project.packages] from source too, reordering units so
                                        # whichever package declares main drives C-main synthesis
-                                       # regardless of manifest order; cross-project [dependencies]
-                                       # are NOT resolved for native (no restored-binary concept —
-                                       # #6815), and --triple/--opt/lyric run/lyric test manifest
-                                       # modes stay single-file-only for native (#6815).
+                                       # regardless of manifest order; --triple/--opt override the
+                                       # manifest [native] table here too (#6815 item 2). A
+                                       # workspace/path dependency is skipped (not built) for
+                                       # --target native rather than crashing (#6815 item 1a) — its
+                                       # own SOURCE is still not compiled into the native bundle
+                                       # (no restored-binary concept, item 1b remains open). `lyric
+                                       # run --manifest --target native` works (item 3a); `lyric
+                                       # test`'s manifest mode stays native-unsupported (item 3b).
 lyric build <file.l>                   # single-file mode also resolves dependencies from a nearby
                                        # lyric.toml (--target dotnet/jvm): explicit --manifest wins,
                                        # else discovered by walking up from <file.l>'s OWN directory
