@@ -33513,7 +33513,6 @@ D-progress-852 (the investigation that filed #6809),
 `native/plan/08-work-items.md` N9.7, `docs/20-project-as-dll.md`
 (the dotnet/jvm design this is the native analog of).
 
-<<<<<<< HEAD
 ## Weak-aware List/Map/Task kernels ship, TLS phase 5 band N9.8 (#5545)
 
 The native List/Map/Task runtime kernels were strong-refcount-only:
