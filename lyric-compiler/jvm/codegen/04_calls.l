@@ -2434,6 +2434,46 @@ func coerceArgTo(insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): U
   }
 }
 
+// `coerceArgTo` with one addition it cannot make itself (no `FuncCtx` to
+// allocate loop-temp slots, see `emitArrayToArrayListJvm`'s comment on the
+// same constraint): converting an `ArrayList` value into a JVM PRIMITIVE
+// array (`byte[]`/`int[]`/…), needed when a `slice[Elem]` return/argument
+// narrows to a primitive-element array for an extern-interface `impl`
+// (`implTypeExprToJvm`'s own doc comment: "a primitive slice element needs
+// the real primitive array too" — #6977 review follow-up on #5931/#6970,
+// the primitive-element half `coerceArgTo`'s reference-type narrowing
+// didn't cover). Delegates to `coerceArgTo` for every other shape.
+func coerceArgToCtx(ctx: in FuncCtx, insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): Unit {
+  match fromTy {
+    case JRef(fromCls) -> {
+      if fromCls == "java/util/ArrayList" {
+        match toTy {
+          case JArray(elemTy) -> {
+            if isJvmPrimitiveElemType(elemTy) {
+              val taPs: List[JvmType] = newList()
+              insns.add(
+                LInvokevirtual(
+                  owner = "java/util/ArrayList",
+                  name = "toArray",
+                  params = taPs,
+                  ret = JArray(elem = JRef(className = "java/lang/Object"))
+                )
+              )
+              emitUnboxObjectArray(ctx, insns, elemTy)
+            } else {
+              coerceArgTo(insns, fromTy, toTy)
+            }
+          }
+          case _ -> coerceArgTo(insns, fromTy, toTy)
+        }
+      } else {
+        coerceArgTo(insns, fromTy, toTy)
+      }
+    }
+    case _ -> coerceArgTo(insns, fromTy, toTy)
+  }
+}
+
 // Push a benign default value of `ty` (only reached if a construction call is
 // missing an argument — the type-checker normally guarantees arity).
 func pushDefaultValue(insns: in List[LInsn], ty: in JvmType): Unit {
