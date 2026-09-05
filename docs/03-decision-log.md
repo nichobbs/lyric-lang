@@ -41612,6 +41612,7 @@ server hosting/unary/streaming remain unimplemented, tracked at #6581), #6581
 this session's group:ecosystem-lib-kernels scope), D-progress-815 (the
 interim honest-failure fix this session builds on), D-progress-252 (original
 `lyric-grpc` ship, corrected here).
+
 ## D-progress-879 — Native List/Map/Task kernels gain weak-aware tri-state element/result ownership, unblocking `NativeWeak[T]` as a collection element or async result (#5545)
 
 **Context.** #5504 (PR #5539) made `NativeWeak[T]` participate in ARC via
@@ -42062,6 +42063,8 @@ script, not per-workflow). The removed guard was in `publish.yml` alone. No
 change to the seed *format*, the three-stage reproducibility bootstrap, or any
 compiler behaviour. Reproducibility is unaffected: the byte-compare stages
 supply their own seed and never consult the fallback tier.
+---
+
 ## D-progress-883 — `lyric test`'s compiler-DLL resolution verifies bundle *completeness*, not just existence, before linking (#6628)
 
 **Context.** `lyric test`'s linked-DLL path for a `@test_module` that imports

@@ -77,17 +77,6 @@ func cleanup(dir: in String): Unit {
   }
 }
 
-func listContains(xs: in List[String], v: in String): Bool {
-  var i = 0
-  while i < xs.count {
-    if xs[i] == v {
-      return true
-    }
-    i = i + 1
-  }
-  false
-}
-
 func mkProjectPkg(name: in String, source: in String): Emitter.ProjectPackage {
   val srcs: List[String] = newList()
   srcs.add(source)
