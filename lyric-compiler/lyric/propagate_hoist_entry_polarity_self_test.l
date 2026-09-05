@@ -340,7 +340,8 @@ test "module-scope val receiver: a var field mutated during a hoisted await gets
     "}\n"
   val pr = parse(src)
   assertEqualInt(pr.diagnostics.count, 0, "the pinned source parses with no diagnostics")
-  val result = hoistAwaitsFile(pr.file)
+  val noExtraRecords4: List[RecordDecl] = newList()
+  val result = hoistAwaitsFile(pr.file, noExtraRecords4)
   // Items: [0] MutBox4, [1] Cache4, [2] swapCacheBox4, [3] gCache4 (IVal), [4] useGCache4.
   val fnItem = result.items[4]
   match fnItem.kind {
@@ -406,5 +407,152 @@ test "module-scope val receiver: a var field mutated during a hoisted await gets
       }
     }
     case _ -> assertTrue(false, "expected useGCache4 as the fifth parsed item")
+  }
+}
+
+// #6702: `HoistEngine.hzImplTargetFieldNames` resolved an `impl` block's
+// target type's own fields only from the SAME file, so a cross-PACKAGE impl
+// target (a `RecordDecl` declared in a sibling in-bundle package, a
+// restored dependency, or a stdlib package — NOT a multi-file package's own
+// files, which are concatenated into one `SourceFile` before this pass ever
+// runs, per docs/19, so a same-package cross-file `impl` was already found)
+// silently fell back to an empty field set: a bare (implicit-self) field
+// mutated across a hoisted await was never protected. `pipeWeave` supplies
+// the fix via `monoRecordDecls`, its own cross-package record list; this
+// pin simulates that by parsing the record's declaration into a SEPARATE
+// `SourceFile` (a different package, never merged into the `impl`'s own
+// file) and passing its `RecordDecl` through `hoistAwaitsFile`'s
+// `extraRecords` parameter — proving the fix end-to-end without needing a
+// real multi-package project build (`await_hoist_self_test.l`'s single-file
+// `@test_module` shape can't construct a genuine cross-package scenario at
+// all).
+func extractRecordDecls(file: in SourceFile): List[RecordDecl] {
+  val acc: List[RecordDecl] = newList()
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IRecord(decl) -> acc.add(decl)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  acc
+}
+
+test "cross-file impl target: a var field mutated during a hoisted await is UNPROTECTED with no extraRecords, PROTECTED once the target's declaring file's records are supplied (#6702)" {
+  // File A: declares the record `impl`ed against in file B. Never merged
+  // into file B's own `SourceFile` — this is the cross-file boundary.
+  val libSrc = "package Lib6702\n" + "record MutBox6702 {\n" + "  tag: Int\n" +
+    "  func describe(self: in MutBox6702, n: Int): Int {\n" +
+    "    self.tag * 1000 + n\n" +
+    "  }\n" +
+    "}\n" +
+    "record Cache6702 {\n" +
+    "  var box: MutBox6702\n" +
+    "}\n"
+  val libPr = parse(libSrc)
+  assertEqualInt(libPr.diagnostics.count, 0, "the library source parses with no diagnostics")
+  val libRecords = extractRecordDecls(libPr.file)
+  assertEqualInt(libRecords.count, 2, "the library file declares exactly two records")
+
+  // File B: an `impl` block targeting `Cache6702` (declared only in file
+  // A above) with a bare implicit-self field mutated across an await —
+  // the identical #6684 impl-method shape, one file boundary further out.
+  val consumerSrc = "package Consumer6702\n" + "interface CacheRunner6702 {\n" +
+    "  async func run(self: in Self): Int\n" +
+    "}\n" +
+    "func swapCacheBox6702(c: in Cache6702): Int {\n" +
+    "  c.box = MutBox6702(tag = 99)\n" +
+    "  5\n" +
+    "}\n" +
+    "impl CacheRunner6702 for Cache6702 {\n" +
+    "  async func run(self: in Cache6702): Int {\n" +
+    "    return box.describe(await swapCacheBox6702(self))\n" +
+    "  }\n" +
+    "}\n"
+  val consumerPr = parse(consumerSrc)
+  assertEqualInt(consumerPr.diagnostics.count, 0, "the consumer source parses with no diagnostics")
+
+  // Negative control: no cross-file record index supplied — the pre-fix
+  // behaviour. The `impl` block's target field set stays empty, so the
+  // bare `box` receiver is (wrongly) treated as immutable name-like-safe
+  // and stays unbound — only the hazard argument itself gets hoisted
+  // (any await in a stacked-operand call-argument position needs its own
+  // temp regardless of the receiver's mutability), so the body grows from
+  // 1 to 2 statements, not 3: the receiver never gets its OWN protecting
+  // bind, which is exactly the pre-#6702 stale-read gap (`box` re-read
+  // inline, after the hazard, observing the mutated value at runtime).
+  val noExtraRecords: List[RecordDecl] = newList()
+  val unfixedResult = hoistAwaitsFile(consumerPr.file, noExtraRecords)
+  val unfixedImplItem = unfixedResult.items[2]
+  match unfixedImplItem.kind {
+    case IImpl(decl) -> {
+      match decl.members[0] {
+        case IMplFunc(fn) -> {
+          val body = match fn.body { case Some(b) -> b; case None -> panic("expected run to have a body") }
+          match body {
+            case FBBlock(blk) -> {
+              assertEqualInt(
+                blk.statements.count,
+                2,
+                "with no extraRecords, the cross-file target's fields are unresolved so only the hazard argument is hoisted, not the receiver (the pre-#6702 gap)"
+              )
+              match blk.statements[1].kind {
+                case SReturn(valOpt) -> {
+                  val retExpr = match valOpt { case Some(e) -> e; case None -> panic("expected a return value") }
+                  match retExpr.kind {
+                    case ECall(fn2, _) -> match fn2.kind {
+                      case EMember(recv, _) -> match recv.kind {
+                        case EPath(path) -> assertEqual(
+                          path.segments[0],
+                          "box",
+                          "the receiver is still the raw (unprotected) bare `box` read, not a hoisted temp"
+                        )
+                        case _ -> assertTrue(
+                          false,
+                          "expected the receiver to stay a bare EPath"
+                        )
+                      }
+                      case _ -> assertTrue(false, "expected the callee to remain an EMember (....describe)")
+                    }
+                    case _ -> assertTrue(false, "expected the describe call as the return value")
+                  }
+                }
+                case _ -> assertTrue(false, "expected the rewritten return as the second statement")
+              }
+            }
+            case FBExpr(_) -> assertTrue(false, "expected an FBBlock function body")
+          }
+        }
+        case IMplAssoc(_) -> assertTrue(false, "expected the run method as the impl's first member")
+      }
+    }
+    case _ -> assertTrue(false, "expected the CacheRunner6702 impl as the consumer file's third item")
+  }
+
+  // Fix: the library's records are supplied via `extraRecords`, exactly
+  // as `pipeWeave` now threads `monoRecordDecls` through. The `impl`
+  // block's target field set now resolves `Cache6702.box`, so the bare
+  // `box` read is correctly recognised as hoist-worthy.
+  val fixedResult = hoistAwaitsFile(consumerPr.file, libRecords)
+  val fixedImplItem = fixedResult.items[2]
+  match fixedImplItem.kind {
+    case IImpl(decl) -> {
+      match decl.members[0] {
+        case IMplFunc(fn) -> {
+          val body = match fn.body { case Some(b) -> b; case None -> panic("expected run to have a body") }
+          match body {
+            case FBBlock(blk) -> assertEqualInt(
+              blk.statements.count,
+              3,
+              "with the library's records supplied via extraRecords, the cross-file impl target's fields resolve and the body gains hoisted receiver + hazard vals (#6702)"
+            )
+            case FBExpr(_) -> assertTrue(false, "expected an FBBlock function body")
+          }
+        }
+        case IMplAssoc(_) -> assertTrue(false, "expected the run method as the impl's first member")
+      }
+    }
+    case _ -> assertTrue(false, "expected the CacheRunner6702 impl as the consumer file's third item")
   }
 }

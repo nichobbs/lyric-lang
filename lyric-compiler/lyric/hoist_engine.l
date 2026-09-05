@@ -34,7 +34,11 @@
 //! `pipeline.l`. Each caller builds its own `HoistConfig`, threads its own
 //! fresh-name prefix (so async-SM field pre-scan naming assumptions hold —
 //! `__lyric_phoist_`/`__lyric_hoist_` stay distinct), and calls
-//! `hoistFile(cfg, file)`.
+//! `hoistFile(cfg, file, extraRecords)` — `extraRecords` is a cross-file/
+//! cross-package record-declaration list (e.g. `Lyric.Pipeline`'s
+//! `monoRecordDecls`) consulted ONLY to resolve an `impl` block's target
+//! type's own fields when the target isn't declared in `file` itself
+//! (#6702); pass an empty list when no such index is available.
 //!
 //! Scope boundaries (shared, unconditional):
 //!   * `ELambda` / `ESpawn` bodies are deferred computations — a hazard
@@ -119,7 +123,7 @@
 //!
 //! Public surface:
 //!
-//!   pub func hoistFile(cfg: in HoistConfig, file: in SourceFile): SourceFile
+//!   pub func hoistFile(cfg: in HoistConfig, file: in SourceFile, extraRecords: in List[RecordDecl]): SourceFile
 //!
 //!     Returns a new SourceFile with every qualifying hazard hoisted under
 //!     `cfg`. The input is not mutated; a file with nothing to hoist is
@@ -192,13 +196,11 @@ record HoistState {
   // `hzNameLikeMutable` previously had no case for at all, so it fell
   // through to `hzIsNameLikeSafe` returning `true` and reopened the exact
   // #5629/#6600 stale-receiver-read bug one spelling later. Empty for a
-  // non-member function/entry (no implicit-self scope to shadow) and,
-  // narrowly, for an `impl` method whose target type is declared in a
-  // DIFFERENT file: this pass runs per-file with no symbol table (unlike
-  // the type checker's whole-compilation-unit view), so a same-file impl
-  // target resolves exactly and a cross-file one quietly yields an empty
-  // map — a strictly narrower residual gap than the one this fix closes,
-  // not a new one.
+  // non-member function/entry (no implicit-self scope to shadow); a
+  // cross-file `impl` target resolves too, via `st.typeFieldIndex`, as long
+  // as the caller supplied the target's declaration through `extraRecords`
+  // (#6702) — see `HoistState.typeFieldIndex`'s doc comment for the
+  // narrower residual gaps that remain.
   selfFieldNames: Map[String, Bool]
   // #6699: every name bound ANYWHERE in the enclosing function/entry's own
   // params + body — `val`/`let`/`var` locals (including destructured
@@ -220,6 +222,22 @@ record HoistState {
   // `EMember` as mutable (the pre-#6699 approximation) over-approximates
   // it the other way by also catching pure qualifiers.
   localNames: Map[String, Bool]
+  // #6702: name -> own-field-name-set index for every record/exposed-
+  // record/protected-type visible to `hzImplTargetFieldNames`, built ONCE
+  // by `hoistFile` (`hzBuildTypeFieldIndex`) from `file`'s own top-level
+  // items plus the caller-supplied `extraRecords` cross-file/cross-package
+  // list, then threaded unchanged through every `fnSt`/`edSt` exactly like
+  // `moduleValNames` already is. Lets an `impl <Iface> for T { ... }`
+  // block's bare (implicit-self) field references resolve `T`'s fields
+  // even when `T` is declared in a DIFFERENT file — the same-file-only
+  // scan this replaced quietly returned an empty map for that case,
+  // silently reopening the #6600 stale-receiver-read bug one file
+  // boundary later. `extraRecords` only ever carries `RecordDecl`s (the
+  // monomorphizer's cross-package input shape), so a cross-file `impl`
+  // targeting a `protected type` still resolves only when that type is
+  // declared in THIS file — a narrower, pre-existing residual gap, not a
+  // new one introduced here.
+  typeFieldIndex: Map[String, Map[String, Bool]]
   // #6734: names bound by a module-level `val`/`const` item in the
   // enclosing `SourceFile` (`hzModuleValNames`), threaded once from
   // `hoistFile`'s top-level `st` through `hzRewriteFunction`/
@@ -1415,14 +1433,12 @@ func hzStmt(cfg: in HoistConfig, s: in Statement, dest: in List[Statement], st: 
       dest.add(mkStmt(STry(body = hzBlock(cfg, body, st), catches = newCatches, finally_ = newFinally), s.span))
     }
     case SItem(item) -> {
-      // No enclosing `SourceFile` is threaded this deep into the statement
-      // rewrite (#6684) — a nested `impl` here resolves its target's fields
-      // only when the target itself is ALSO declared locally inside this
-      // same nested item (self-contained in `hzRewriteRecord`/
-      // `hzProtectedFieldNames`, no `file` needed); see
-      // `hzImplTargetFieldNames`'s doc comment.
-      val noFile: Option[SourceFile] = None
-      dest.add(mkStmt(SItem(item = hzRewriteItem(cfg, item, st, noFile)), s.span))
+      // `st.typeFieldIndex` (#6702) is file-scoped state threaded down to
+      // this depth exactly like `moduleValNames` already is, so a nested
+      // `impl` here resolves its target's fields from the SAME index the
+      // top-level driver built — a top-level or `extraRecords`-supplied
+      // target, not just one declared locally inside this nested item.
+      dest.add(mkStmt(SItem(item = hzRewriteItem(cfg, item, st)), s.span))
     }
     case SInvariant(e) -> {
       val e2 = if hzNeedsHoist(cfg, e) { hzHoistTop(cfg, e, dest, st) } else { e }
@@ -1881,21 +1897,78 @@ func hzProtectedFieldNames(members: in List[ProtectedMember]): Map[String, Bool]
   names
 }
 
+// Builds the name -> own-field-name-set index `hzImplTargetFieldNames`
+// looks up (#6702). Same-file record/exposed-record/protected-type
+// declarations are indexed first; `extraRecords` (the caller's cross-file/
+// cross-package record list — e.g. `Lyric.Pipeline`'s `monoRecordDecls`)
+// then fills in any name this file does not itself declare. First-wins on
+// a name collision, matching this file's other first-registered-wins
+// tables — a same-file declaration is always correctly preferred over an
+// imported one of the same bare name.
+//
+// KNOWN LIMITATION (flagged in #6702's own review, not yet tracked as a
+// separate issue): `extraRecords` is keyed by BARE name only, with no
+// package qualification, and now spans the whole in-bundle + stdlib +
+// restored-dependency universe rather than just the same file. Two
+// record types sharing a bare name in different packages (e.g. two
+// in-bundle packages of a multi-package project each declaring `Config`)
+// collide under this same first-registered-wins order — silently
+// resolving `impl ... for Config` against whichever one was registered
+// first, which may be the WRONG record's field set rather than an empty
+// one. This is a new collision surface `extraRecords` introduces (the
+// pre-fix same-file-only scan couldn't collide this way, since a single
+// package can't declare two records with the same name): a genuinely
+// wrong (but confident) field set is worse than the pre-fix empty-set
+// fallback, which was merely under-protective. Not yet observed in
+// practice; would need real package-qualified keys to close properly.
+func hzBuildTypeFieldIndex(file: in SourceFile, extraRecords: in List[RecordDecl]): Map[String, Map[String, Bool]] {
+  val index: Map[String, Map[String, Bool]] = newMap()
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IRecord(decl) -> {
+        if not index.containsKey(decl.name) {
+          index.add(decl.name, hzRecordFieldNames(decl.members))
+        }
+      }
+      case IExposedRec(decl) -> {
+        if not index.containsKey(decl.name) {
+          index.add(decl.name, hzRecordFieldNames(decl.members))
+        }
+      }
+      case IProtected(decl) -> {
+        if not index.containsKey(decl.name) {
+          index.add(decl.name, hzProtectedFieldNames(decl.members))
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  var j = 0
+  while j < extraRecords.count {
+    val decl = extraRecords[j]
+    if not index.containsKey(decl.name) {
+      index.add(decl.name, hzRecordFieldNames(decl.members))
+    }
+    j = j + 1
+  }
+  index
+}
+
 // Resolves an `impl <Iface> for <target> { ... }` block's TARGET type's own
-// field names by scanning THIS SAME FILE for a matching record/exposed-
-// record/protected-type declaration. A same-file match is exact; a
-// cross-file target, OR an `impl` nested inside a statement block where no
-// top-level `SourceFile` is threaded (`fileOpt = None` — the `SItem` case
-// deep in the statement rewrite never carries one, see `hzRewriteItem`'s
-// doc comment), quietly returns an empty map — this pass has no cross-file
-// symbol table, unlike the type checker (see `HoistState.selfFieldNames`'s
-// doc comment), and neither residual case is new: both are narrower slices
-// of the gap this fix closes, not gaps it introduces. Tracked in #6702
-// (concrete plan: thread `pipeline.l`'s already-computed `monoRecordDecls`
-// into `pipeWeave`'s `HoistEngine` invocation).
-func hzImplTargetFieldNames(fileOpt: in Option[SourceFile], target: in TypeExpr): Map[String, Bool] {
+// field names via `st.typeFieldIndex` (`hzBuildTypeFieldIndex`, #6702) —
+// covers a same-file declaration AND a cross-file/cross-package one the
+// caller supplied via `extraRecords`. A target this index has no entry for
+// (an `impl` nested inside a statement block whose local record isn't a
+// top-level item at all, or a cross-file target that is a `protected type`
+// rather than a `record` — `extraRecords` only ever carries `RecordDecl`s)
+// quietly returns an empty map, a narrower residual gap than the one this
+// fix closes, not a new one — see `HoistState.typeFieldIndex`'s doc
+// comment.
+func hzImplTargetFieldNames(typeFieldIndex: in Map[String, Map[String, Bool]], target: in TypeExpr): Map[String, Bool] {
   val noNames: Map[String, Bool] = newMap()
-  val file = match fileOpt { case Some(f) -> f; case None -> return noNames }
   val targetName = match target.kind {
     case TRef(path) -> {
       if path.segments.count == 0 {
@@ -1909,30 +1982,10 @@ func hzImplTargetFieldNames(fileOpt: in Option[SourceFile], target: in TypeExpr)
   if targetName == "" {
     return noNames
   }
-  var i = 0
-  while i < file.items.count {
-    match file.items[i].kind {
-      case IRecord(decl) -> {
-        if decl.name == targetName {
-          return hzRecordFieldNames(decl.members)
-        }
-      }
-      case IExposedRec(decl) -> {
-        if decl.name == targetName {
-          return hzRecordFieldNames(decl.members)
-        }
-      }
-      case IProtected(decl) -> {
-        if decl.name == targetName {
-          return hzProtectedFieldNames(decl.members)
-        }
-      }
-      case _ -> {
-      }
-    }
-    i = i + 1
+  match mapGet(typeFieldIndex, targetName) {
+    case Some(fields) -> fields
+    case None -> noNames
   }
-  noNames
 }
 
 // Every name a module-level `val`/`const` item binds, for `hzMemberChainBaseIsValue`'s
@@ -2014,7 +2067,8 @@ func hzRewriteFunction(
     mutableNames = hzBuildMutableNames(fn.params, body, fnLocalNames),
     selfFieldNames = selfFieldNames,
     localNames = fnLocalNames,
-    moduleValNames = st.moduleValNames
+    moduleValNames = st.moduleValNames,
+    typeFieldIndex = st.typeFieldIndex
   )
   FunctionDecl(
     docComments = fn.docComments,
@@ -2057,7 +2111,8 @@ func hzRewriteEntry(
     mutableNames = hzBuildMutableNames(ed.params, ed.body, edLocalNames),
     selfFieldNames = selfFieldNames,
     localNames = edLocalNames,
-    moduleValNames = st.moduleValNames
+    moduleValNames = st.moduleValNames,
+    typeFieldIndex = st.typeFieldIndex
   )
   EntryDecl(
     docComments = ed.docComments,
@@ -2147,15 +2202,14 @@ func hzRecordNeedsHoist(cfg: in HoistConfig, decl: in RecordDecl): Bool {
   false
 }
 
-// `fileOpt` is the enclosing `SourceFile`, when one is threaded (#6684) —
-// needed only to resolve an `IImpl` block's target type's own fields via
-// `hzImplTargetFieldNames`; every other case's field-name set is
-// self-contained in `it.kind` itself. `hoistFile`'s top-level driver always
-// has one to pass; the `SItem` case deep in the statement rewrite (a LOCAL
-// item declared inside a function body) does not thread the outer file that
-// far and passes `None` — see `hzImplTargetFieldNames`'s doc comment for why
-// that residual gap is narrow and pre-existing in spirit.
-func hzRewriteItem(cfg: in HoistConfig, it: in Item, st: in HoistState, fileOpt: in Option[SourceFile]): Item {
+// `st.typeFieldIndex` (#6702) resolves an `IImpl` block's target type's own
+// fields via `hzImplTargetFieldNames`; every other case's field-name set is
+// self-contained in `it.kind` itself. Since the index is file-scoped state
+// threaded through `st` (like `moduleValNames`), the `SItem` case deep in
+// the statement rewrite (a LOCAL item declared inside a function body) sees
+// the SAME index as the top-level driver — a cross-file `impl` target
+// nested inside a function body now resolves too, not just a top-level one.
+func hzRewriteItem(cfg: in HoistConfig, it: in Item, st: in HoistState): Item {
   if not hzItemNeedsHoist(cfg, it) {
     return it
   }
@@ -2166,7 +2220,7 @@ func hzRewriteItem(cfg: in HoistConfig, it: in Item, st: in HoistState, fileOpt:
       // A non-member `IMFunc` default method never has fields of its own to
       // shadow (interfaces declare no fields at all), but an `impl` block's
       // methods DO — resolved once per block, not per method.
-      val implFields = hzImplTargetFieldNames(fileOpt, decl.target)
+      val implFields = hzImplTargetFieldNames(st.typeFieldIndex, decl.target)
       val newMembers: List[ImplMember] = newList()
       var i = 0
       while i < decl.members.count {
@@ -2268,7 +2322,7 @@ func hzRewriteRecord(cfg: in HoistConfig, decl: in RecordDecl, st: in HoistState
 // ─────────────────────────────────────────────────────────────────────────────
 // Public entry point.
 // ─────────────────────────────────────────────────────────────────────────────
-pub func hoistFile(cfg: in HoistConfig, file: in SourceFile): SourceFile {
+pub func hoistFile(cfg: in HoistConfig, file: in SourceFile, extraRecords: in List[RecordDecl]): SourceFile {
   var any = false
   var i = 0
   while i < file.items.count {
@@ -2285,22 +2339,22 @@ pub func hoistFile(cfg: in HoistConfig, file: in SourceFile): SourceFile {
   // `mutableNames`/`selfFieldNames`/`localNames` here are placeholders:
   // `hzRewriteFunction`/`hzRewriteEntry` build their own per-function/entry
   // maps (sharing this `counter`) before ever consulting them, so this
-  // file-level state's maps are never read. `moduleValNames` is the
-  // opposite: genuinely file-scoped (#6734), computed once here and
-  // threaded forward unchanged through every `fnSt`/`edSt`, the same way
-  // `counter` already is.
+  // file-level state's maps are never read. `moduleValNames`/
+  // `typeFieldIndex` are the opposite: genuinely file-scoped (#6734/#6702),
+  // computed once here and threaded forward unchanged through every
+  // `fnSt`/`edSt`, the same way `counter` already is.
   val st = HoistState(
     counter = newList(),
     mutableNames = newMap(),
     selfFieldNames = newMap(),
     localNames = newMap(),
-    moduleValNames = hzModuleValNames(file)
+    moduleValNames = hzModuleValNames(file),
+    typeFieldIndex = hzBuildTypeFieldIndex(file, extraRecords)
   )
-  val someFile: Option[SourceFile] = Some(value = file)
   val newItems: List[Item] = newList()
   var j = 0
   while j < file.items.count {
-    newItems.add(hzRewriteItem(cfg, file.items[j], st, someFile))
+    newItems.add(hzRewriteItem(cfg, file.items[j], st))
     j = j + 1
   }
   SourceFile(
