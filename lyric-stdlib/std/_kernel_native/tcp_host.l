@@ -370,8 +370,22 @@ pub func hostConnect(host: in String, port: in Int): Result[Conn, TcpError] {
   }
 }
 
-/// Stop listening and release the socket. Idempotent-safe: a redundant
-/// stop is swallowed rather than surfaced (matches the dotnet twin).
+/// Interrupt a blocked `hostAccept`/`hostAcceptTls` call on this
+/// `Listener`'s accept-loop thread. Idempotent-safe: signaling more than
+/// once is harmless (`rtSockWakePipeSignal`'s own doc comment).
+///
+/// **Does NOT close anything — see `hostCloseListener` below for that,
+/// and read this doc comment in full before calling either.** An earlier
+/// version of this function signaled AND closed the listening socket and
+/// the wake pipe all in one call, immediately, on the calling (stopping)
+/// thread. Review found a real TOCTOU fd-reuse race in that (issue
+/// #6883): the accept-loop thread's `poll()` waking up on the pipe
+/// becoming readable does not mean that thread has yet run its own
+/// drain `read()` — closing the pipe fds (or the listening socket) from
+/// this thread in the meantime can let an UNRELATED fd open elsewhere in
+/// the process reuse the just-freed fd number before the stale accept
+/// thread's read/next-`poll()` call runs, corrupting or stealing bytes
+/// from that unrelated resource instead of harmlessly no-op'ing.
 ///
 /// **Portable accept()-interrupt via a self-pipe (issue #6806), not
 /// `shutdown()` on the listening socket.** An earlier version of this
@@ -388,13 +402,18 @@ pub func hostConnect(host: in String, port: in Int): Result[Conn, TcpError] {
 /// alongside the read end of a private pipe (`Listener.wakeReadFd`,
 /// allocated in `hostListen`) and returns a `-2` sentinel the instant
 /// EITHER a connection arrives OR that pipe becomes readable, without ever
-/// calling `accept()` on the interrupt path. `hostStopListener` writes a
+/// calling `accept()` on the interrupt path. This function writes a
 /// single byte to `wakeWriteFd` (`rtSockWakePipeSignal`) to trigger that
 /// wakeup — an ordinary pipe write, portable to every POSIX target this
-/// project builds for, not a Linux-specific socket-state side effect. The
-/// pipe is closed only AFTER `rtSockClose`, so any handler that is (or
-/// races to be) still polling it sees a valid fd for the whole interrupt
-/// sequence.
+/// project builds for, not a Linux-specific socket-state side effect.
+///
+/// **Required calling convention (issue #6883):** a caller MUST join (or
+/// otherwise positively confirm the exit of) the accept-loop thread
+/// BEFORE calling `hostCloseListener` — never call it immediately after
+/// this function the way an earlier version of this file did internally.
+/// `Std.HttpServer.stopListener` is the reference caller: it calls this
+/// function, `pthreadJoin`s `acceptTid`, and only THEN calls
+/// `hostCloseListener`.
 ///
 /// **Note for callers on other threads:** this only wakes an
 /// `rtSockAcceptInterruptible` call that reads THIS `Listener`'s
@@ -403,6 +422,22 @@ pub func hostConnect(host: in String, port: in Int): Result[Conn, TcpError] {
 /// `hostShutdown` for that, per that function's own doc comment).
 pub func hostStopListener(l: in Listener): Unit {
   val _ = rtSockWakePipeSignal(l.wakeWriteFd)
+}
+
+/// Release a `Listener`'s OS resources (the listening socket and the wake
+/// pipe). Idempotent-safe: a redundant close is swallowed rather than
+/// surfaced (matches the dotnet twin's `Dispose`/`Close` contract).
+///
+/// **Call this only after the accept-loop thread has already exited** —
+/// see `hostStopListener`'s own doc comment (issue #6883) for why closing
+/// these fds while that thread might still be mid-wakeup is a TOCTOU
+/// fd-reuse hazard. A `Listener` whose accept-loop thread was NEVER
+/// spawned in the first place (e.g. a `pthreadCreate` failure during
+/// `startListener`/`startListenerTls`) has no such thread to wait for, so
+/// this may be called directly there with no preceding `hostStopListener`
+/// call at all — signaling an unused wake pipe would be harmless but
+/// serves no purpose either.
+pub func hostCloseListener(l: in Listener): Unit {
   val _ = rtSockClose(l.fd)
   val _ = rtSockClose(l.wakeReadFd)
   val _ = rtSockClose(l.wakeWriteFd)
