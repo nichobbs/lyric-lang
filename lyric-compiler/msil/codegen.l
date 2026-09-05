@@ -4935,24 +4935,25 @@ func inferUntypedStaticValMsilType(
     // Record constructor call (#6786), e.g. `val gCache = Cache(box = ...)`.
     // Resolves the callee the same way real ECall codegen does
     // (`cctx.recordCtorTokens`, local package key first, then a fully
-    // qualified callee), but limited to a simple/qualified `EPath` callee and
-    // to the NON-generic case — a generic record needs inferred type args
-    // this single-expression pass can't compute without a full symbol
-    // table, so it falls back to `MObject` rather than risk a wrong
-    // instantiation.
+    // qualified callee, then — #6966 review — the cross-package
+    // `resolveTypeFqn` tier for an unqualified reference to an IMPORTED
+    // record), but limited to a simple/qualified `EPath` callee and to the
+    // NON-generic case — a generic record needs inferred type args this
+    // single-expression pass can't compute without a full symbol table, so
+    // it falls back to `MObject` rather than risk a wrong instantiation.
     //
     // Scoped to PLAIN RECORDS only, not union cases (#6786 review,
     // "SUGGESTION"): a local union case's ctor token is registered under
     // the MANGLED key `<pkg>.<UnionName>_<CaseName>` (see the `IUnion`
     // registration pass' `caseName` construction above), never the bare
     // `<pkg>.<CaseName>` this arm builds — so `localCtorKey`/
-    // `fullQualifiedCtorKey` can never match a union case's real key, and
-    // this arm's `ctorKeyOpt` is always `None` for one. Resolving a union
-    // case correctly would need the same `unionCaseCtorByName`-keyed,
-    // qualifier-disambiguated lookup real `ECall` codegen uses — a
-    // separate, untested path this fix does not add; a union-case-literal
-    // module-level val stays a documented `MObject` fallback, no worse
-    // than before this fix.
+    // `fullQualifiedCtorKey`/`resolveTypeFqn` can never match a union case's
+    // real key, and this arm's `ctorKeyOpt` is always `None` for one.
+    // Resolving a union case correctly would need the same
+    // `unionCaseCtorByName`-keyed, qualifier-disambiguated lookup real
+    // `ECall` codegen uses — a separate, untested path this fix does not
+    // add; a union-case-literal module-level val stays a documented
+    // `MObject` fallback, no worse than before this fix.
     case ECall(fn, _) -> match fn.kind {
       case EPath(path) -> {
         val funcName = lastSegmentMsil(path)
@@ -4963,7 +4964,19 @@ func inferUntypedStaticValMsilType(
         } else if fullQualifiedCtorKey.length > 0 and cctx.recordCtorTokens.containsKey(fullQualifiedCtorKey) {
           Some(value = fullQualifiedCtorKey)
         } else {
-          None
+          // #6966: an unqualified reference to a record declared in a
+          // DIFFERENT, imported package (`import Other.Cache; val g =
+          // Cache(...)`) matches neither tier above (`localCtorKey` is
+          // wrong-package, and there's no explicit qualifier to build
+          // `fullQualifiedCtorKey` from) — mirrors real `ECall` codegen's
+          // own cross-package tier, which resolves exactly this shape via
+          // `resolveTypeFqn`'s import-aware scope search.
+          val crossPkgCtorFqn = resolveTypeFqn(cctx, pkgName, funcName)
+          if cctx.recordCtorTokens.containsKey(crossPkgCtorFqn) {
+            Some(value = crossPkgCtorFqn)
+          } else {
+            None
+          }
         }
         match ctorKeyOpt {
           case Some(ctorKey) -> {
