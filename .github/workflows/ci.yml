@@ -3371,6 +3371,13 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/lambda_bool_if_cond_self_test.l
 
+      # JVM leg of the D107 Option[T] null-coercion convention (#3932) — the
+      # dotnet leg runs in compiler-self-tests-dotnet (extern_option_self_test.l).
+      - name: Extern Option[T] null-coercion self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/extern_option_self_test.l
+
       # Extra barrier (JVM batch 0-split): the first JVM sub-batch (before the
       # "JVM batch 1-split" barrier below) had grown to ~18 concurrent
       # in-process JVM compilations — over the ~14-step cap (see #5913) at
