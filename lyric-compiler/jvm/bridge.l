@@ -37,21 +37,33 @@ import Jvm.AutoFfi
 import Jvm.Codegen
 import Jvm.Driver
 
-// Every P0051 in `diags` — "'<keyword>' is a reserved keyword and cannot be
-// used as a <X> name" (#5550).  Unlike other parser diagnostics that can be a
+// Every TRUE reserved-keyword diagnostic in `diags` — "'<keyword>' is a
+// reserved keyword and cannot be used as a <X> name/binding name/identifier
+// or value here" (#5550).  Unlike other parser diagnostics that can be a
 // self-hosted-parser-gap false positive against stdlib source (the reason
 // stdlib parse diagnostics are otherwise advisory, see the call site in
-// `compileProjectToJarBundledWithRestored`), P0051 is never a false positive:
-// it fires only when `readIdent`/pattern/expression parsing could not bind a
-// real identifier at all, so the offending AST node carries a synthetic
-// "<error>" name that is guaranteed to reach codegen malformed (e.g. as an
-// unsupported assignment-target shape) and panic with a message that does not
-// name the real cause.
+// `compileProjectToJarBundledWithRestored`), a genuine reserved-keyword
+// diagnostic is never a false positive: it fires only when
+// `readIdent`/pattern/expression parsing could not bind a real identifier at
+// all, so the offending AST node carries a synthetic "<error>" name that is
+// guaranteed to reach codegen malformed (e.g. as an unsupported
+// assignment-target shape) and panic with a message that does not name the
+// real cause.
+//
+// Correction (review finding #6953): code alone is NOT a safe filter.
+// `parser_exprs.l` reuses the P0051 code for three unrelated "expected ')' to
+// close a parenthesised/tuple/type expression" diagnostics that have nothing
+// to do with reserved keywords and CAN be a self-hosted-parser-gap false
+// positive against stdlib source — matching on code alone would hard-abort
+// the JVM bundle build for those too. All three genuine reserved-keyword call
+// sites (`parser_core.l`, `parser_exprs.l` pattern and expression position)
+// share the substring "reserved keyword" in their message; the three
+// unrelated sites do not. Filter on both.
 func reservedKeywordDiags(diags: in List[Diagnostic]): List[Diagnostic] {
   val matched: List[Diagnostic] = newList()
   var i = 0
   while i < diags.count {
-    if diags[i].code == "P0051" {
+    if diags[i].code == "P0051" and Str.contains(diags[i].message, "reserved keyword") {
       matched.add(diags[i])
     }
     i = i + 1
