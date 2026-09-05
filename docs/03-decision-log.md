@@ -41600,7 +41600,10 @@ in the project bundle's per-package codegen loop, passing
 `parsedPkgs[ci].origins` — the SAME `ParsedUserPkg.origins` table the
 typecheck/weave phases a few lines earlier already resolved for this exact
 package index (`liftedFiles`/`perPkgNames`/`parsedPkgs` are 1:1 by
-construction, per the pre-existing loop comment). **No JVM-side change**:
+construction, per the pre-existing loop comment). The now-unreachable
+`abortOnCodegenDiagnosticsMsilInPkg` function itself is deleted rather than
+left behind as dead code (flagged by review, addressed same-PR). **No
+JVM-side change**:
 the JVM backend has no codegen-phase diagnostics accumulator analogous to
 `CodegenCtx.diagnostics` at all (F0021–F0025/F0034 are MSIL-specific
 external-interface-conformance and try-catch-as-expression checks,
@@ -41629,7 +41632,7 @@ sandbox-seeding technique — the GitHub release-download bootstrap step is
 network-policy-blocked in this sandbox), so every assertion below ran
 against a toolchain that actually contains this entry's fixes, not the
 published tool's stale compiler:
-- `source_path_diagnostics_self_test.l`: 16/16, four new cases — "multi-file
+- `source_path_diagnostics_self_test.l`: 17/17, five new cases — "multi-file
   project package (native): a parse error in the second file names that
   file and its real line" (item 1; a `--target native` sibling of the
   existing dotnet/jvm #6282 multi-file parse-error tests), "multi-file
@@ -41638,13 +41641,17 @@ published tool's stale compiler:
   try-catch Unit/value mismatch specialised via `Lyric.Mono`, split so the
   trigger lives entirely in the second file), "multi-file project package
   (dotnet): an impl-default diamond conflict (T0117) in the second file
-  names that file" (item 3; two same-file-in-a.l interfaces defaulting one
-  method name onto a `b.l`-declared record with both `impl`s, unresolved),
-  and "multi-file project package (jvm): a weave-time error (A0044) in the
-  second file names that file and its real line" (#6824 item 4 — the
-  `--target jvm` sibling of D-progress-868's dotnet-only A0044 regression
-  test; `Jvm.Bridge`'s `pkgOriginsByName` plumbing was previously only
-  manually verified for this exact shape).
+  names that file" and its `--target native` sibling (item 3; two
+  same-file-in-a.l interfaces defaulting one method name onto a
+  `b.l`-declared record with both `impl`s, unresolved — the native case
+  confirms `pipeExpandAndRewrite`'s unconditional `ImplDefaults
+  .inheritDefaultsFile` gate attributes correctly via
+  `nativePkgLabelAt`/`nativePkgOriginsAt` too, not just the parse-phase
+  case item 1 already covered), and "multi-file project package (jvm): a
+  weave-time error (A0044) in the second file names that file and its real
+  line" (#6824 item 4 — the `--target jvm` sibling of D-progress-868's
+  dotnet-only A0044 regression test; `Jvm.Bridge`'s `pkgOriginsByName`
+  plumbing was previously only manually verified for this exact shape).
 - `llvm_project_self_test.l`: 10/10 (every `NativeSourcePackage`/
   `compileProjectToNativeWithFlags` construction site updated for the new
   `path` field / `originsByPkg` parameter; ASan-compiled, required
