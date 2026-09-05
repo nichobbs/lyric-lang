@@ -459,7 +459,13 @@ test "Std.HttpHost native client rejects a header value with an embedded CRLF (i
     "  val client = hostDefaultClient()\n" +
     "  val url = \"http://127.0.0.1:\" + port.toString() + \"/x\"\n" +
     "  val base = hostMakeRequest(\"GET\", url)\n" +
-    "  val poisoned = hostWithHeader(base, \"X-Evil\", \"value\\r\\nX-Injected: yes\")\n" +
+    "  val poisoned = match hostWithHeader(base, \"X-Evil\", \"value\\r\\nX-Injected: yes\") {\n" +
+    "    case Ok(r) -> r\n" +
+    // \"X-Evil\" is never a reserved framing header; a silent fallback to
+    // base here would drop the CRLF-poisoned header and this test would
+    // pass for the wrong reason -- return a distinct sentinel instead.
+    "    case Err(_) -> return 97\n" +
+    "  }\n" +
     "  var rejected = false\n" +
     "  match await hostSendSafe(client, poisoned) {\n" +
     "    case Err(_) -> { rejected = true }\n" +
