@@ -42194,3 +42194,21 @@ tried first but hit an unrelated, pre-existing JVM gap (`Jvm.Codegen`'s
 — narrowed to the same in-range magnitude the pre-existing JVM-only test
 already uses, since that MSIL-specific narrowing detail is already covered
 by `range_subtype_self_test.l`'s `UInt`-backed sign-bit-boundary case.
+
+**Follow-up (#6985/#6986, review REQUIRED).** A rebase-driven renumbering
+(this entry moved from D-progress-878 to D-progress-882 when it collided
+with an unrelated `lyric-web` entry already at 878 on `main`) left
+`docs/10-bootstrap-progress.md`'s own cross-reference pointing at the old,
+now-wrong number — corrected to D-progress-882 (#6985). Separately, three
+places outside this PR's own diff still asserted "`UInt`/`ULong` have no
+MSIL representation at all", directly contradicted by this fix: a
+production doc comment (`lyric-compiler/jvm/codegen/06_items.l`'s
+`mkJvmDistinctTypeIR`) and two JVM-only test file headers
+(`unsigned_int_ops_jvm_self_test.l`, `generic_uint_erasure_jvm_self_test.l`)
+— two of which cited the file this PR deletes
+(`range_subtype_unsigned_jvm_self_test.l`) as their own justification.
+Corrected all three: the first two now correctly scope their still-real
+JVM-only status to their OWN narrower defect classes (bare-scalar
+unsigned-aware arithmetic, `#6913`; a JVM-only generic-arg bookkeeping
+choke point with no MSIL analog since MSIL's generics aren't type-erased)
+rather than the now-false "no MSIL representation at all" claim (#6986).

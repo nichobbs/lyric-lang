@@ -22,9 +22,12 @@
 //! `toUnsignedString` for exactly those operands, leaving plain `Int`/`Long`
 //! on the native signed opcodes.
 //!
-//! `UInt`/`ULong` have no MSIL representation at all (docs/44,
-//! `range_subtype_unsigned_jvm_self_test.l`'s header), so this file — like
-//! that one — is JVM-only.
+//! JVM-only: MSIL now has a real `UInt`/`ULong` representation (erasure to
+//! `MInt`/`MLong`, #6756), but this file's own defect class — bare-scalar
+//! comparison/division/remainder/stringification bypassing an unsigned-aware
+//! opcode path outside the range-subtype bounds check — has no MSIL
+//! counterpart yet (no `fctx.unsignedVars`-style side channel exists on
+//! MSIL), tracked separately as #6913.
 //!
 //!   lyric test --target jvm lyric-compiler/jvm/unsigned_int_ops_jvm_self_test.l
 //!
