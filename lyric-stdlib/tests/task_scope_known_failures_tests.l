@@ -1,67 +1,51 @@
 //! `Std.Task.Scope` known-failure tracker — split out of `task_tests.l`
-//! (#5325) because these three assertions are pinned to pre-existing,
-//! separately-tracked bugs (issue #5329), not to anything fixable as part
-//! of a routine test-suite change. Deliberately **NOT** wired into any CI
-//! job (see the bottom of this header for why), unlike every other
-//! `lyric-stdlib/tests/*.l` file — mirrors the precedent already set by
-//! `contract_meta_emit_self_test.l` (tracked in #2580, also unwired) for a
-//! test that cannot cleanly pass yet.
+//! (#5325) because this test is pinned to D119 slice S3
+//! (sibling-cancel-on-first-fault), a separately-tracked, not-yet-shipped
+//! feature — not to a routine test-suite fix. Deliberately **NOT**
+//! wired into any CI job (see the bottom of this header for why), unlike
+//! every other `lyric-stdlib/tests/*.l` file — mirrors the precedent
+//! already set by `contract_meta_emit_self_test.l` (tracked in #2580,
+//! also unwired) for a test that cannot cleanly pass yet.
 //!
-//! Status (2026-07-06): all three `Scope`-based tests below FAIL on both
-//! targets, including `testScopeWithNoChildrenCompletesImmediately` (which
-//! spawns nothing) — a bare sequential `main()` previously masked this: the
-//! suite aborted at the first Scope failure, so this test's own status was
-//! never actually observed (#5323). Each test now runs in isolation via
-//! `runScopeTest` so the suite always completes and every test's real
-//! status is reported, and `main()` returns non-zero when a known failure
-//! fires — this file does not silently report success.
+//! Status (2026-09-05): this file originally carried THREE tests, all
+//! pinned to issue #5329 (`scopeSpawn`/`awaitAll` never actually ran a
+//! spawned closure — `Task.Run(Action[, CancellationToken])`'s delegate
+//! never invoked on `--target dotnet`, plus a separate null-dereference on
+//! an empty scope on both targets). #5329's fix (a lambda literal passed
+//! directly to a stdlib function's `() -> Unit`-typed parameter was
+//! building a `Func<object>` delegate instead of the `System.Action` that
+//! parameter's own signature requires — see `_kernel/task.l`'s module doc,
+//! "D119 slice S3" bug (3)) flipped `testScopeNormalCompletionRunsEveryChild`
+//! and `testScopeWithNoChildrenCompletesImmediately` green on BOTH targets;
+//! both were merged back into `task_tests.l` and are now CI-wired there,
+//! per this file's own prior exit condition.
 //!
-//! Not because `Scope`'s *public* logic in either kernel file
-//! (`lyric-stdlib/std/_kernel/task.l` / `_kernel_jvm/task.l`) is wrong —
-//! each was independently verified correct in isolation — but because each
-//! backend has its own pre-existing, deeper bug in the
-//! `awaitAll`/closure-invocation path beneath it, filed as **issue #5329**
-//! with full repros: on .NET, `Task.Run(Action[, CancellationToken])`'s
-//! delegate never invokes the passed closure; on JVM, a closure stored via
-//! `scopeSpawn` and later invoked via `spawn` inside `awaitAll` throws
-//! `ClassCastException` for non-empty scopes (calling package's
-//! `Lyric$Lambda` vs. `Std.Task`'s own) and a null-dereference for the
-//! empty-scope case specifically. Full writeup in
-//! `docs/03-decision-log.md` (D-progress-621).
+//! The ONE test remaining here, `testScopeSiblingObservesCancelOnFault`,
+//! was never actually about #5329's bugs — it tests D119 slice S3's EAGER
+//! cross-sibling cancel-on-fault guarantee, a separate feature the
+//! `_kernel/task.l` module doc documents as "investigated, NOT shipped",
+//! blocked on its OWN still-open bugs (1) `Task.ContinueWith(Action<Task>)`
+//! generic-delegate erasure and (2) a `TaskAwaiter`/closure MSIL lowering
+//! panic — neither touched by #5329's fix. It now passes on `--target jvm`
+//! (real virtual-thread cooperative cancellation) but still fails on
+//! `--target dotnet` (no eager cancel-on-fault there yet).
 //!
-//! **Why this file is not CI-wired:** wiring in a test with known,
-//! separately-tracked failures either breaks the build for a reason no
+//! **Why this file is not CI-wired:** wiring in a test that fails on one
+//! target but not the other either breaks the build for a reason no
 //! change in this repo can fix today (dishonest red) or requires catching
 //! the failure and reporting green anyway (dishonest green — the "Ignore-
-//! attributed tests" pattern `CLAUDE.md` explicitly forbids). Once #5329 is
-//! fixed, delete this header's caveats, merge these three tests back into
-//! `task_tests.l`, and wire the merged file into CI like every other
+//! attributed tests" pattern `CLAUDE.md` explicitly forbids). Once D119
+//! slice S3 ships on `--target dotnet` (a separate, larger effort than
+//! #5329 — tracked by the two open bugs above, not by #5329 itself),
+//! delete this header's caveat, merge this test back into `task_tests.l`,
+//! and wire the merged file into CI like every other
 //! `lyric-stdlib/tests/*.l` file.
 package Std.Task.Tests.ScopeKnownFailures
 
 import Std.Core
 import Std.Task
 import Std.Testing
-
-func testScopeNormalCompletionRunsEveryChild(): Unit {
-  val sc = makeScope()
-  var a = 0
-  var b = 0
-  scopeSpawn(sc, { -> a = 1 })
-  scopeSpawn(sc, { -> b = 2 })
-  val r = await awaitAll(sc)
-  cancelScope(sc)
-  disposeScope(sc)
-  assertEqualInt(a, 1, "first scopeSpawn'd action ran")
-  assertEqualInt(b, 2, "second scopeSpawn'd action ran")
-}
-
-func testScopeWithNoChildrenCompletesImmediately(): Unit {
-  val sc = makeScope()
-  val r = await awaitAll(sc)
-  cancelScope(sc)
-  disposeScope(sc)
-}
+import Std.Time
 
 // ─── Scope: D119 slice S3 sibling-cancel-on-first-fault ──────────────────────
 // One sibling panics; the other polls the scope's token in a loop.  awaitAll
@@ -101,31 +85,30 @@ func testScopeSiblingObservesCancelOnFault(): Unit {
   assertFalse(ranToCompletion, "the non-faulting sibling stopped early rather than running its full loop")
 }
 
-// Runs a Scope test in isolation and reports it, instead of letting a bare
-// sequential call abort the whole suite at the first `Bug` panic and leave
-// later tests unexercised and unreported (#5323).  Returns true when the
-// test's real assertions actually passed (i.e. issue #5329 has been fixed
-// for this case), false when it hit the still-open known failure.
+// Runs the D119 S3 test in isolation and reports it — the same
+// isolate-and-report shape #5323 established for this file, kept even
+// though there is only one test left, in case a future addition needs it
+// again.  Returns true when the test's real assertions passed (i.e. D119
+// slice S3 has shipped for this target), false when it hit the still-open
+// known failure.
 func runScopeTest(name: in String, test: () -> Unit): Bool {
   try {
     test()
     println("ok - " + name)
     true
   } catch Bug as bug {
-    println("KNOWN FAILURE (#5329) - " + name + ": " + bug.message)
+    println("KNOWN FAILURE (D119 slice S3) - " + name + ": " + bug.message)
     false
   }
 }
 
 func main(): Int {
-  val r1 = runScopeTest("testScopeNormalCompletionRunsEveryChild", testScopeNormalCompletionRunsEveryChild)
-  val r2 = runScopeTest("testScopeWithNoChildrenCompletesImmediately", testScopeWithNoChildrenCompletesImmediately)
-  val r3 = runScopeTest("testScopeSiblingObservesCancelOnFault", testScopeSiblingObservesCancelOnFault)
-  if r1 and r2 and r3 {
-    println("all Scope tests passed - #5329 appears fixed; merge this file back into task_tests.l and wire it into CI")
+  val r1 = runScopeTest("testScopeSiblingObservesCancelOnFault", testScopeSiblingObservesCancelOnFault)
+  if r1 {
+    println("D119 slice S3 passed - merge this file back into task_tests.l and wire it into CI")
     0
   } else {
-    println("known Scope failures reproduced (#5329) - see above; this file is intentionally not CI-wired")
+    println("known D119 slice S3 failure reproduced - see above; this file is intentionally not CI-wired")
     1
   }
 }
