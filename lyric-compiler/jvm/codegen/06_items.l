@@ -6335,7 +6335,8 @@ pub func codegenPackageWithSigsSeeded(
                       pkgName,
                       genericParamNames(decl.generics),
                       externTypes
-                    )
+                    ),
+                    isMutable = f.isMutable
                   )
                 )
                 case OMInvariant(_) -> ()
