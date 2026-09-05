@@ -17,6 +17,7 @@
 package Lyric.ImplMethodSelfTest
 
 import Std.Core
+import Std.Iter
 import Std.Testing
 
 func okIf(cond: in Bool, v: in Int, label: in String): Result[Int, String] {
@@ -554,4 +555,26 @@ test "direct call with a Self return type (#6417)" {
 test "interface-typed function parameter/return dispatch with a Self return type (#6417)" {
   val a = Box6417(v = 9)
   assertEqualInt(dupValue6417(a), 10, "Self-returning impl method call through a concrete-typed local")
+}
+
+// ── Lambda literal inside a match-arm guard (#6553) ───────────────────────────
+// `liftLambdasMsil`'s `collectLambdasBfsExpr` walked a match arm's scrutinee
+// and body but never its `guard` expression, so a lambda literal living only
+// inside a guard (e.g. `case y if any(xs, (v) -> v > 0) -> ...`) had no
+// lifted `__lambda_*` token and codegen panicked with "lambda token missing
+// ... liftLambdasMsil pre-pass was not run". Fixed (as a side effect of the
+// #6601 parser generalization making such guards parse at all — previously
+// the parser itself mis-parsed a guard containing a nested block-statement
+// lambda) by adding a guard-expression visit, before the arm's body, to
+// `collectLambdasBfsExpr`'s `EMatch` case.
+func classifyIfAnyPositive(n: Int, xs: in slice[Int]): Int {
+  match n {
+    case y if any(xs, (v) -> v > 0) -> y + 100
+    case _ -> 0
+  }
+}
+
+test "lambda literal inside a match-arm guard (#6553)" {
+  assertEqualInt(classifyIfAnyPositive(5, [-1, -2, 3]), 105, "guard true: an element is positive")
+  assertEqualInt(classifyIfAnyPositive(5, [-1, -2, -3]), 0, "guard false: no element is positive")
 }

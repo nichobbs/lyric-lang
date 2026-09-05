@@ -42063,3 +42063,43 @@ script, not per-workflow). The removed guard was in `publish.yml` alone. No
 change to the seed *format*, the three-stage reproducibility bootstrap, or any
 compiler behaviour. Reproducibility is unaffected: the byte-compare stages
 supply their own seed and never consult the fallback tier.
+## D-progress-885 — MSIL codegen: confirmed a lambda literal in a match-arm guard no longer hits "lambda token missing"; added the missing runtime regression test (#6553)
+
+**Context.** #6553 tracked `liftLambdasMsil`'s `collectLambdasBfsExpr` never
+walking a match arm's `guard` expression, so a lambda literal living only
+inside a guard (`case y if any(xs, (v) -> v > 0) -> 1`) had no lifted
+`__lambda_*` token and codegen panicked with `error[T0120] ... lambda token
+missing ... liftLambdasMsil pre-pass was not run`.
+
+**Already fixed.** D-progress-860 (#5672 batch, PR #6547) landed exactly this
+guard-walk case in `collectLambdasBfsExpr`'s `EMatch` arm (visiting
+`arms[ai].guard` before the arm body, matching every sibling BFS-style
+`EMatch` walker in this file) as part of the broader #6601 parser
+generalization — #6553 was cross-referenced there as "an unrelated
+pre-existing MSIL codegen gap filed while validating this fix", but that PR
+batch did not land a dedicated runtime self-test asserting the guard-lambda
+shape actually compiles AND executes correctly (only front-end parser
+coverage landed, in `parser_self_test.l`).
+
+**This change.** Adds the missing runtime coverage: a function whose `match`
+guard calls `Std.Iter.any` with a lambda literal predicate
+(`case y if any(xs, (v) -> v > 0) -> y + 100`), asserted for both the
+guard-true and guard-false paths, in `impl_method_self_test.l` (this
+repo's established home for `liftLambdasMsil` pre-pass gap regressions —
+see its #6119/#6119-follow-up sections for the impl-method and
+protected-type-member precedents). Confirmed green against a from-source
+`make lyric` build of current `main`.
+
+**Formatter note (#6869).** `lyric fmt --write` could not be run on
+`impl_method_self_test.l` after this addition: it aborts with "formatting
+would change the code-token sequence (formatter bug)" on ANY file
+containing an expression-bodied lambda literal (`(v) -> v > 0`), verified
+with a from-scratch minimal repro completely unrelated to this file's prior
+content (the file was fmt-clean before this change). Filed as a standalone
+tracked issue (#6869, out of `group:msil-codegen-correctness` scope) rather
+than fixed here; this file's addition is hand-formatted to match the file's
+pre-existing established style instead.
+
+**Related:** `docs/03-decision-log.md` D-progress-860 (the actual fix, #6547
+batch), #6601 (the parser generalization that made the guard shape parse at
+all), #6869 (the `lyric fmt` refusal filed while adding this test).
