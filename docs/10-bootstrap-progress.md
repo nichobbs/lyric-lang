@@ -32276,6 +32276,29 @@ this is MSIL-brought-to-parity, not a one-platform construct.
 
 **Related:** `docs/03-decision-log.md` D-progress-876 (full account), #6849.
 
+### MSIL: `UInt`/`ULong` gain a real representation, closing the CLR-loader crash and a downstream list-literal miscompile (#6756, #6782)
+
+MSIL had no representation for `UInt`/`ULong` at all — `typeExprToMsilCtx`
+had no arm for either, so construction fell through to "user type in this
+package" and crashed the CLR loader ("invalid program") at run time. Fixed
+by erasing `UInt -> MInt` / `ULong -> MLong` (the SAME slot a signed
+`Int`/`Long` uses), mirroring the JVM backend's identical erasure
+(#6661/#6695/#6748); a new `int32BitsOfUnsignedMsil` helper safely narrows a
+`u32` literal or distinct-type bound whose unsigned magnitude exceeds
+Int32.MaxValue (e.g. `2500000000u32`) without the `OverflowException`
+`longToInt` would throw; `MDistinctType` gained `isUnsigned` so a
+`UInt`/`ULong`-backed distinct/range subtype's bounds check uses
+`clt.un`/`cgt.un` instead of a signed comparison that misreads a sign-bit-set
+in-range value as out of range. #6782 (list literals silently miscompiling
+`u16`/`u32`/`u64` elements) turned out to be a direct consequence of the
+same predicted-vs-actual type divergence and needed no separate fix beyond
+adding matching `U16`/`U32`/`U64` arms to the list-literal element-type
+predictor. Bare-scalar comparison/division/stringification of an unsigned
+value still uses plain signed IL — a separate, scoped follow-up (#6913).
+
+**Related:** `docs/03-decision-log.md` D-progress-883 (full account),
+#6756, #6782, #6913.
+
 ### Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
 
 `native/plan/08-work-items.md`'s N9.3 (`Std.HttpServer` native twin,

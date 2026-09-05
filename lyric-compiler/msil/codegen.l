@@ -4748,6 +4748,10 @@ func isLiteralI4ExprMsilWithEnv(e: in Expr, env: in Map[String, Bool]): Bool {
     case ELiteral(lit) -> match lit {
       case LInt(v, suffix, _) -> match suffix {
         case I64 | U64 -> false
+        // `u32` (#6756) always produces a single MLdcI4 (the wrapped
+        // 32-bit pattern via `int32BitsOfUnsignedMsil`), regardless of
+        // whether its unsigned magnitude exceeds Int32.MaxValue.
+        case U32 -> true
         case _ -> v >= -2147483648i64 and v <= 2147483647i64
       }
       case LBool(_) -> true
@@ -4816,6 +4820,10 @@ func inferUntypedStaticValMsilType(e: in Expr, env: in Map[String, MsilType]): M
       case LFloat(_, _, _) -> MDouble
       case LInt(v, suffix, _) -> match suffix {
         case I64 | U64 -> MLong
+        // `u32` (#6756) is always `MInt` (the wrapped 32-bit pattern),
+        // matching what `lowerExprMsil`'s real ELiteral lowering now
+        // produces regardless of the literal's unsigned magnitude.
+        case U32 -> MInt
         case _ -> if v >= -2147483648i64 and v <= 2147483647i64 {
           MInt
         } else {
@@ -4947,9 +4955,12 @@ func listLiteralElemTypeMsil(fctx: in FuncCtx, e: in Expr): MsilType {
     // A literal takes the concrete-array path only with the element type the
     // checker would infer for it (`typeOfLiteral`), so the built array matches
     // the literal's `slice[e]` type.  `i8`/`u8` are `Byte` (not `Int`, #5703);
-    // `i64` is `Long`; the unsigned (`u16`/`u32`/`u64`) and `f32` suffixes have
-    // no simple-array element type here, and a no-suffix value that overflows
-    // Int32 is ambiguous, so those fall back to the legacy `List<object>` path.
+    // `i64`/`u64` are `Long`; `u16`/`u32` are `Int` (`UInt` erases to the same
+    // 32-bit slot a signed `Int` uses, #6756/#6782 — mirroring the JVM
+    // backend's identical fix, #6631/#6741), matching what `lowerExprMsil`'s
+    // real ELiteral lowering now produces for those suffixes; a no-suffix/
+    // `i16`/`i32` value that overflows Int32 is ambiguous (could widen to
+    // `Long` or stay erased) and falls back to the legacy `List<object>` path.
     case ELiteral(lit) -> match lit {
       case LInt(v, suffix, _) -> match suffix {
         case I8 -> MByte
@@ -4964,12 +4975,19 @@ func listLiteralElemTypeMsil(fctx: in FuncCtx, e: in Expr): MsilType {
         } else {
           MObject
         }
+        case U16 -> if v >= -2147483648i64 and v <= 2147483647i64 {
+          MInt
+        } else {
+          MObject
+        }
         case I32 -> if v >= -2147483648i64 and v <= 2147483647i64 {
           MInt
         } else {
           MObject
         }
+        case U32 -> MInt
         case I64 -> MLong
+        case U64 -> MLong
         case _ -> MObject
       }
       case LFloat(_, floatSuffix, _) -> match floatSuffix {
@@ -6737,6 +6755,28 @@ func internFfiTypeRefNested(cctx: in CodegenCtx, clrFqn: in String): Int {
   }
 }
 
+// True when `te` names `UInt`/`ULong` — the two Lyric primitives with no
+// distinct MSIL representation (`typeExprToMsilCtx`'s `UInt -> MInt` /
+// `ULong -> MLong` erasure, #6756).  Mirrors the JVM backend's identical
+// `isUnsignedTypeExpr` (`jvm/codegen/01_types.l`).  Consulted wherever a
+// declared type needs to select unsigned-aware IL (comparison/division/
+// stringification) rather than the plain signed instructions `MInt`/`MLong`
+// get by default.
+func isUnsignedTypeExprMsil(te: in TypeExpr): Bool {
+  match te.kind {
+    case TRef(path) -> {
+      val seg = lastSegmentMsil(path)
+      seg == "UInt" or seg == "ULong"
+    }
+    case TRefined(underlying, _) -> {
+      val seg = lastSegmentMsil(underlying)
+      seg == "UInt" or seg == "ULong"
+    }
+    case TParen(inner) -> isUnsignedTypeExprMsil(inner)
+    case _ -> false
+  }
+}
+
 pub func typeExprToMsilBodyCtx(cctx: in CodegenCtx, fctx: in FuncCtx, te: in TypeExpr): MsilType {
   if fctx.generics.count > 0 {
     typeExprToMsilGenBody(cctx, te, fctx.pkgName, fctx.generics)
@@ -6767,6 +6807,30 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         // reference-type class named "Nat"; a cross-package call against the
         // real (int64) signature the metadata reader decodes then mismatched
         // and crashed with InvalidProgramException.
+        MLong
+      } else if seg == "UInt" {
+        // `UInt` (32-bit unsigned, docs/01 §2.1) has no distinct MSIL
+        // representation any more than `Nat` above does — it erases to the
+        // SAME 32-bit `Int32` slot a signed `Int` uses (#6756), mirroring
+        // the JVM backend's identical `UInt -> JInt` erasure (#6661/#6695).
+        // Without this arm a `UInt`-typed field/param/local/return fell
+        // through to "user type in this package" (`MClass`), a nonexistent
+        // class that crashed the CLR loader with "Common Language Runtime
+        // detected an invalid program" at run time. This erasure alone
+        // fixes construction/storage/field-signature encoding; it does NOT
+        // by itself make a BARE `UInt`-typed value's comparison/division/
+        // stringification unsigned-aware (those still use plain signed IL,
+        // #6756 follow-up — `isUnsignedTypeExprMsil` exists as the seam a
+        // future `fctx.unsignedVars`-style side table would consult, but no
+        // such table exists yet). `emitDistinctBoundsToFail`
+        // (`Msil.Lowering`) DOES already use unsigned comparison for a
+        // `UInt`/`ULong`-backed distinct/range-subtype's bounds check via
+        // `MDistinctType.isUnsigned` — that narrower, fully-covered case is
+        // this fix's actual scope.
+        MInt
+      } else if seg == "ULong" {
+        // `ULong` (64-bit unsigned) mirrors `UInt`: erases to the same
+        // 64-bit `Int64` slot a signed `Long` uses (#6756/#6661).
         MLong
       } else if seg == "Double" {
         MDouble
@@ -8435,6 +8499,17 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             case I64 | U64 -> {
               insns.add(MLdcI8(v = v))
               MLong
+            }
+            // `u32` (#6756) always pushes the wrapped 32-bit pattern via
+            // `int32BitsOfUnsignedMsil` rather than `longToInt` — `UInt`
+            // erases to the SAME `Int32` slot a signed `Int` uses, so a
+            // literal whose unsigned magnitude exceeds Int32.MaxValue (e.g.
+            // `2500000000u32`) still fits the slot; `longToInt` would panic
+            // (`OverflowException`) at COMPILE time trying to narrow it as
+            // if it were an out-of-range SIGNED value.
+            case U32 -> {
+              insns.add(MLdcI4(v = int32BitsOfUnsignedMsil(v)))
+              MInt
             }
             case _ -> {
               if v >= -2147483648i64 and v <= 2147483647i64 {
@@ -12578,6 +12653,9 @@ func lowerPatternTestMsil(
           val isLongLit = match suffix {
             case I64 -> true
             case U64 -> true
+            // `u32` (#6756) stays `Int`-slotted even when its unsigned
+            // magnitude exceeds Int32.MaxValue — see `int32BitsOfUnsignedMsil`.
+            case U32 -> false
             case _ -> (v < -2147483648i64 or v > 2147483647i64)
           }
           if scrutBoxed {
@@ -12590,7 +12668,8 @@ func lowerPatternTestMsil(
           if isLongLit {
             insns.add(MLdcI8(v = v))
           } else {
-            insns.add(MLdcI4(v = longToInt(v)))
+            val i4v = match suffix { case U32 -> int32BitsOfUnsignedMsil(v); case _ -> longToInt(v) }
+            insns.add(MLdcI4(v = i4v))
           }
           insns.add(MCeq)
           insns.add(MBrFalse(label = failLabel))
@@ -33976,7 +34055,12 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
       }
       case IDistinctType(decl) -> {
         val inner = typeExprToMsilCtx(cctx, decl.underlying, pkgName)
-        items.add(MPDistinctType(d = mkDistinctTypeIR(pkgName + "." + decl.name, pkgName, inner, decl.rangeClause)))
+        val isUnsignedDistinct = isUnsignedTypeExprMsil(decl.underlying)
+        items.add(
+          MPDistinctType(
+            d = mkDistinctTypeIR(pkgName + "." + decl.name, pkgName, inner, decl.rangeClause, isUnsignedDistinct)
+          )
+        )
       }
       case IConst(decl) -> {
         // Module-level compile-time constant → static field on the host class.
@@ -35642,6 +35726,7 @@ func mkDistinctRanged(
   loE: in Expr,
   hiE: in Expr,
   upperExcl: in Bool,
+  isUnsigned: in Bool,
 ): MDistinctType {
   val lo = foldRangeBound(loE)
   val hi = foldRangeBound(hiE)
@@ -35659,7 +35744,8 @@ func mkDistinctRanged(
       maxI = hi.l,
       minF = loF,
       maxF = hiF,
-      upperExclusive = upperExcl
+      upperExclusive = upperExcl,
+      isUnsigned = isUnsigned
     )
   } else {
     MDistinctType(
@@ -35672,15 +35758,24 @@ func mkDistinctRanged(
       maxI = 0i64,
       minF = 0.0,
       maxF = 0.0,
-      upperExclusive = false
+      upperExclusive = false,
+      isUnsigned = isUnsigned
     )
   }
 }
 
 // Build the distinct-type IR item, folding any range clause to integer/float
-// bounds for the synthesised `from`/`tryFrom` validation.
+// bounds for the synthesised `from`/`tryFrom` validation.  `isUnsigned`
+// (#6756) is true when the DECLARED underlying type is `UInt`/`ULong` —
+// needed alongside `inner` (which erases both to the same `MInt`/`MLong` a
+// signed `Int`/`Long` underlying type uses) to select unsigned-aware bounds
+// checking in `emitDistinctBoundsToFail`.
 func mkDistinctTypeIR(
-  className: in String, namespace: in String, inner: in MsilType, rangeClause: in Option[RangeBound]
+  className: in String,
+  namespace: in String,
+  inner: in MsilType,
+  rangeClause: in Option[RangeBound],
+  isUnsigned: in Bool,
 ): MDistinctType {
   val noRange = MDistinctType(
     className = className,
@@ -35692,13 +35787,14 @@ func mkDistinctTypeIR(
     maxI = 0i64,
     minF = 0.0,
     maxF = 0.0,
-    upperExclusive = false
+    upperExclusive = false,
+    isUnsigned = isUnsigned
   )
   match rangeClause {
     case Some(rb) -> {
       match rb {
-        case RBClosed(loE, hiE) -> mkDistinctRanged(className, namespace, inner, loE, hiE, false)
-        case RBHalfOpen(loE, hiE, _) -> mkDistinctRanged(className, namespace, inner, loE, hiE, true)
+        case RBClosed(loE, hiE) -> mkDistinctRanged(className, namespace, inner, loE, hiE, false, isUnsigned)
+        case RBHalfOpen(loE, hiE, _) -> mkDistinctRanged(className, namespace, inner, loE, hiE, true, isUnsigned)
         // Unknown RangeBound variant: emit no-range guard so future variants
         // don't silently skip range validation (#3116).
         case _ -> noRange
