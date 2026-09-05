@@ -628,3 +628,340 @@ void lyric_process_free(void* raw) {
     free(op->errbuf.data);
     free(op);
 }
+
+/* ── Long-lived piped child stdio (issue #6142) ────────────────────────
+ *
+ * A different shape from both spawn_capture (batch: pipe stdout+stderr,
+ * drain to completion, then reap) and its async twin (same, nonblocking):
+ * this is a HELD handle a caller writes/reads on repeatedly for the
+ * child's whole lifetime, exactly matching the dotnet
+ * (`RedirectStandardInput`/`RedirectStandardOutput` only) and JVM
+ * (`Redirect.INHERIT` on stderr) kernel twins' documented contract
+ * (docs/62 §5.2; _kernel/process_piped_host.l's own module header) —
+ * only stdin and stdout are piped; stderr is left inherited from this
+ * process. A piped child that also had its stderr captured but never
+ * drained would risk blocking on a full OS pipe buffer the moment it
+ * logged enough output -- exactly the failure mode leaving stderr
+ * inherited avoids, and the entire reason this is a SEPARATE spawn
+ * helper rather than a 2-pipe call to spawn_capture. */
+
+/* Spawn `path` with `args`, wiring fresh pipes to ONLY the child's stdin
+ * and stdout (fd 2 / stderr is left completely untouched, so it stays
+ * inherited from this process). On success returns the child pid and
+ * stores the parent-side stdout READ end and stdin WRITE end; on
+ * failure returns -1 with nothing left open. Mirrors spawn_capture's
+ * fork/exec structure and its low-fd aliasing guard, minus the third
+ * (stderr) pipe. */
+static pid_t spawn_piped(const char* path, LyricList* args, int* out_rd, int* in_wr) {
+    int out_pipe[2];
+    int in_pipe[2];
+    if (pipe_cloexec(out_pipe) != 0) return -1;
+    if (pipe_cloexec(in_pipe) != 0) {
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        return -1;
+    }
+#if defined(__APPLE__)
+    /* See spawn_capture's identical guard: stdin_write's macOS arm
+     * relies on this flag being set on every piped stdin write end. */
+    if (fcntl(in_pipe[1], F_SETNOSIGPIPE, 1) < 0) {
+        lyric_panic_msg("cannot set F_SETNOSIGPIPE on the stdin pipe", "lyric_process.c", __LINE__);
+    }
+#endif
+
+    int64_t nargs = args ? lyric_list_len(args) : 0;
+    char** argv = (char**)malloc((size_t)(nargs + 2) * sizeof(char*));
+    if (!argv) {
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        close(in_pipe[0]);
+        close(in_pipe[1]);
+        return -1;
+    }
+    argv[0] = (char*)path; /* borrowed: never freed below */
+    for (int64_t i = 0; i < nargs; i++) {
+        LyricString* s = (LyricString*)(intptr_t)lyric_list_get(args, i);
+        argv[i + 1] = (char*)lyric_string_to_cstring(s);
+    }
+    argv[nargs + 1] = NULL;
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        for (int64_t i = 0; i < nargs; i++) lyric_cstring_free(argv[i + 1]);
+        free(argv);
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        close(in_pipe[0]);
+        close(in_pipe[1]);
+        return -1;
+    }
+
+    if (pid == 0) {
+        /* Child: own process group first (D-N-025 -- same
+         * kill-the-whole-tree rationale as spawn_capture), then wire
+         * stdin/stdout only and exec. Only async-signal-safe calls from
+         * here to exec (or _exit). Lift any source fd that collides
+         * with a dup2 TARGET (0/1) above the target range first -- the
+         * same guard spawn_capture documents at length -- so the two
+         * dup2 calls below cannot clobber one another. */
+        if (setpgid(0, 0) < 0) _exit(126);
+        close(out_pipe[0]);
+        close(in_pipe[1]);
+        int in_src = in_pipe[0];
+        int out_src = out_pipe[1];
+        if (in_src < 3) {
+            in_src = fcntl(in_src, F_DUPFD, 3);
+            if (in_src < 0) _exit(126);
+            close(in_pipe[0]);
+        }
+        if (out_src < 3) {
+            out_src = fcntl(out_src, F_DUPFD, 3);
+            if (out_src < 0) _exit(126);
+            close(out_pipe[1]);
+        }
+        if (dup2(in_src, STDIN_FILENO) < 0) _exit(126);
+        if (dup2(out_src, STDOUT_FILENO) < 0) _exit(126);
+        close(in_src);
+        close(out_src);
+        execvp(path, argv);
+        _exit(127); /* execvp failed (e.g. path not found) */
+    }
+
+    /* Parent: mirror the child's setpgid (see spawn_capture's identical
+     * comment) and close the child-side ends. */
+    (void)setpgid(pid, pid);
+    close(out_pipe[1]);
+    close(in_pipe[0]);
+    for (int64_t i = 0; i < nargs; i++) lyric_cstring_free(argv[i + 1]);
+    free(argv);
+    *out_rd = out_pipe[0];
+    *in_wr = in_pipe[1];
+    return pid;
+}
+
+/* The held handle itself. Both pipe fds are left BLOCKING (unlike
+ * spawn_capture's poll-multiplexed nonblocking pipes): a caller holds
+ * this handle across many separate top-level calls with no single loop
+ * driving both directions at once, so a plain blocking read/write per
+ * call -- the same model Std.TcpHost's hostRead/hostWrite already use
+ * for a connection -- is the natural fit, not a nonblocking pump. */
+typedef struct LyricPipedProc {
+    pid_t pid;
+    int stdin_wr;  /* -1 once closed */
+    int stdout_rd; /* -1 once EOF/closed */
+    ProcBuf linebuf; /* buffered, not-yet-returned stdout bytes */
+    int reaped;
+    int32_t exit_code;
+} LyricPipedProc;
+
+/* Spawn the child; returns the handle, or NULL if the OS spawn itself
+ * failed (no handle to free in that case -- unlike the async op above,
+ * there is no separate "spawn_failed" flag to thread through, since
+ * nothing is ever returned to the Lyric side to free). */
+void* lyric_process_piped_spawn(const char* path, LyricList* args) {
+    LyricPipedProc* p = (LyricPipedProc*)calloc(1, sizeof(LyricPipedProc));
+    if (!p) lyric_panic_msg("OOM starting piped process", "lyric_process.c", __LINE__);
+    p->stdin_wr = -1;
+    p->stdout_rd = -1;
+    p->exit_code = -1;
+    pid_t pid = spawn_piped(path, args, &p->stdout_rd, &p->stdin_wr);
+    if (pid < 0) {
+        free(p);
+        return NULL;
+    }
+    p->pid = pid;
+    return p;
+}
+
+/* Reads and buffers from the child's stdout until a complete line is
+ * available (blocking -- see the handle's own comment above), the child
+ * closes stdout, or a hard read error occurs. A trailing '\r'
+ * immediately before '\n' is stripped (CRLF -> LF, matching .NET's
+ * `StreamReader.ReadLine()` and the JVM twin's own byte-level line
+ * splitter). On end-of-stream, a final buffered partial line (no
+ * trailing newline) is returned once more, then this returns 0 (no more
+ * lines) on every subsequent call. Returns 1 with *out_line set on a
+ * line, 0 at true end-of-stream. */
+int32_t lyric_process_piped_read_line(void* raw, LyricString** out_line) {
+    LyricPipedProc* p = (LyricPipedProc*)raw;
+    for (;;) {
+        for (int64_t i = 0; i < p->linebuf.len; i++) {
+            if (p->linebuf.data[i] == '\n') {
+                int64_t end = i;
+                if (end > 0 && p->linebuf.data[end - 1] == '\r') end--;
+                *out_line = lyric_string_from_literal(p->linebuf.data, end);
+                int64_t rest = p->linebuf.len - (i + 1);
+                memmove(p->linebuf.data, p->linebuf.data + i + 1, (size_t)rest);
+                p->linebuf.len = rest;
+                return 1;
+            }
+        }
+        if (p->stdout_rd < 0) {
+            if (p->linebuf.len > 0) {
+                *out_line = lyric_string_from_literal(p->linebuf.data, p->linebuf.len);
+                p->linebuf.len = 0;
+                return 1;
+            }
+            return 0;
+        }
+        uint8_t chunk[4096];
+        ssize_t n;
+        do {
+            n = read(p->stdout_rd, chunk, sizeof(chunk));
+        } while (n < 0 && errno == EINTR);
+        if (n > 0) {
+            procbuf_append(&p->linebuf, chunk, n);
+            continue;
+        }
+        /* EOF (n == 0) or a hard read error: no more bytes will ever
+         * arrive on this fd. */
+        close(p->stdout_rd);
+        p->stdout_rd = -1;
+    }
+}
+
+/* Write one line (content + '\n') to the child's stdin, blocking until
+ * the whole line is accepted by the pipe. Returns 0 on success, -1 if
+ * stdin is already closed or the child is gone (broken pipe / hard
+ * write error) -- the caller (`Std.ProcessPipedHost.hostPipedWriteLine`)
+ * surfaces this as a panic, matching the dotnet/JVM twins' identical
+ * "an uncaught write exception propagates" contract for this same
+ * failure (neither twin's hostPipedWriteLine catches one). */
+int32_t lyric_process_piped_write_line(void* raw, LyricString* line) {
+    LyricPipedProc* p = (LyricPipedProc*)raw;
+    if (p->stdin_wr < 0) return -1;
+    int64_t len = line ? lyric_string_len(line) : 0;
+    const uint8_t* data = line ? LYRIC_STRING_DATA(line) : NULL;
+    int64_t off = 0;
+    while (off < len) {
+        ssize_t n = stdin_write(p->stdin_wr, data + off, (size_t)(len - off));
+        if (n > 0) {
+            off += n;
+        } else if (n < 0 && errno == EINTR) {
+            continue;
+        } else {
+            return -1; /* EPIPE or a hard error -- child gone */
+        }
+    }
+    uint8_t nl = (uint8_t)'\n';
+    ssize_t n;
+    do {
+        n = stdin_write(p->stdin_wr, &nl, 1);
+    } while (n < 0 && errno == EINTR);
+    return n == 1 ? 0 : -1;
+}
+
+/* True while the child has not yet been observed to exit (a
+ * nonblocking WNOHANG reap -- the same technique lyric_process_pump
+ * uses -- caches the exit status the first time it's seen so a later
+ * lyric_process_piped_exit_code/wait_exit call doesn't need to reap
+ * again, which would fail with ECHILD). */
+int32_t lyric_process_piped_is_alive(void* raw) {
+    LyricPipedProc* p = (LyricPipedProc*)raw;
+    if (p->reaped) return 0;
+    int status = 0;
+    pid_t w;
+    do {
+        w = waitpid(p->pid, &status, WNOHANG);
+    } while (w < 0 && errno == EINTR);
+    if (w == p->pid) {
+        p->exit_code = status_to_exit_code(status);
+        p->reaped = 1;
+        return 0;
+    }
+    return 1;
+}
+
+/* Forcibly terminate the child's whole process group (D-N-025, same
+ * rationale as lyric_process_kill) and reap it (blocking -- the child
+ * is dead or dying, so the reap completes promptly). Idempotent-safe:
+ * a no-op once the child is already reaped. Always returns 0 -- unlike
+ * lyric_process_kill, there is no timeout/#5107 "was it really our
+ * kill" distinction to report here, since this handle has no deadline
+ * concept the caller could confuse a natural exit with. */
+int32_t lyric_process_piped_kill(void* raw) {
+    LyricPipedProc* p = (LyricPipedProc*)raw;
+    if (p->reaped) return 0;
+    if (kill(-p->pid, SIGKILL) != 0) {
+        kill(p->pid, SIGKILL);
+    }
+    int status = 0;
+    pid_t w;
+    do {
+        w = waitpid(p->pid, &status, 0);
+    } while (w < 0 && errno == EINTR);
+    p->exit_code = w == p->pid ? status_to_exit_code(status) : -1;
+    p->reaped = 1;
+    return 0;
+}
+
+/* Block up to `timeout_ms` milliseconds (a negative value blocks with
+ * no deadline) for the child to exit. Returns 1 if it exited within
+ * the deadline (or had already exited), 0 on timeout. */
+int32_t lyric_process_piped_wait_exit(void* raw, int32_t timeout_ms) {
+    LyricPipedProc* p = (LyricPipedProc*)raw;
+    if (p->reaped) return 1;
+    if (timeout_ms < 0) {
+        int status = 0;
+        pid_t w;
+        do {
+            w = waitpid(p->pid, &status, 0);
+        } while (w < 0 && errno == EINTR);
+        if (w == p->pid) {
+            p->exit_code = status_to_exit_code(status);
+            p->reaped = 1;
+            return 1;
+        }
+        return 0;
+    }
+    int64_t deadline_ns = lyric_monotonic_nanos() + (int64_t)timeout_ms * 1000000;
+    for (;;) {
+        int status = 0;
+        pid_t w;
+        do {
+            w = waitpid(p->pid, &status, WNOHANG);
+        } while (w < 0 && errno == EINTR);
+        if (w == p->pid) {
+            p->exit_code = status_to_exit_code(status);
+            p->reaped = 1;
+            return 1;
+        }
+        if (lyric_monotonic_nanos() >= deadline_ns) return 0;
+        struct timespec sleep_ts = {0, 1000000}; /* 1ms */
+        nanosleep(&sleep_ts, NULL);
+    }
+}
+
+/* Only meaningful after lyric_process_piped_is_alive reports 0 (or
+ * lyric_process_piped_wait_exit returned 1) -- -1 otherwise (the child
+ * has not been reaped yet, so no real exit code exists to report). */
+int32_t lyric_process_piped_exit_code(void* raw) {
+    return ((LyricPipedProc*)raw)->exit_code;
+}
+
+/* Close only the child's stdin (signals EOF to the child without
+ * touching its stdout) -- useful for a batch-style child that reads
+ * until EOF, then writes its complete output and exits. Idempotent-safe
+ * (a no-op once already closed). */
+int32_t lyric_process_piped_close_stdin(void* raw) {
+    LyricPipedProc* p = (LyricPipedProc*)raw;
+    if (p->stdin_wr >= 0) {
+        close(p->stdin_wr);
+        p->stdin_wr = -1;
+    }
+    return 0;
+}
+
+/* Close the child's stdin/stdout pipes and free the handle. Does NOT
+ * itself wait for or kill the child (matching the dotnet/JVM twins'
+ * hostPipedClose contract exactly -- neither one reaps/kills either) --
+ * a caller that needs the child gone calls
+ * lyric_process_piped_kill/wait_exit first. Safe to call unconditionally
+ * as best-effort cleanup. */
+void lyric_process_piped_close(void* raw) {
+    LyricPipedProc* p = (LyricPipedProc*)raw;
+    if (p->stdin_wr >= 0) close(p->stdin_wr);
+    if (p->stdout_rd >= 0) close(p->stdout_rd);
+    free(p->linebuf.data);
+    free(p);
+}
