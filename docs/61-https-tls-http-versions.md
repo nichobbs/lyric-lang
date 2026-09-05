@@ -904,7 +904,7 @@ items marked ∥ are independent and can proceed in parallel.
     ALPN-selected h2 is N9.5's job. No `LYRIC_HTTP_MAX_CONNECTIONS`
     backpressure cap yet (`Std.Parse`, needed to read the override, has no
     `_kernel_native/` twin). Verified by
-    `lyric-compiler/lyric/llvm_http_server_self_test.l` (nine cases: a
+    `lyric-compiler/lyric/llvm_http_server_self_test.l` (ten cases: a
     plaintext round trip, a real concurrent TLS round trip via N9.4's
     `hostConnectTls` on a second pthread, the h2-rejection guard, a
     keep-alive round trip over one connection, the #6791 regression
@@ -931,7 +931,16 @@ items marked ∥ are independent and can proceed in parallel.
     regression — `enqueueContext` must post its availability credit
     before releasing the queue mutex, not after, or a handler thread
     preempted in between can have its already-queued context orphaned
-    by `stopListener`'s abandoned-queue drain).
+    by `stopListener`'s abandoned-queue drain — and the #6806 regression
+    — `stopListener` must wake an accept-loop thread that never accepted a
+    single connection using a purely portable mechanism (a self-pipe
+    multiplexed with the listening socket via `poll(2)`, replacing a
+    `shutdown()` call on the listening socket whose "unblock a concurrent
+    `accept()`" side effect is Linux-only — see #6804/#6806 and
+    `_kernel_native/tcp_host.l`'s `hostStopListener`/`hostAccept` doc
+    comments — and confirmed on Linux CI to still wake the accept loop
+    with no live connection ever having existed, across ten repeated
+    listener start/stop cycles).
     **N9.5** lyric-web `serveTls` + ALPN h2 investigated and found ⛔
     BLOCKED on two independent structural gaps, neither a lyric-web nor an
     accept-loop wiring fix (D-progress-852): the h2 FSM is not actually
