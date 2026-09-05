@@ -92,10 +92,15 @@
 //!
 //! Public surface:
 //!
-//!   pub func hoistAwaitsFile(file: in SourceFile): SourceFile
+//!   pub func hoistAwaitsFile(file: in SourceFile, extraRecords: in List[RecordDecl]): SourceFile
 //!
 //!     Returns the file with every qualifying await hoisted.  The input is
 //!     not mutated; items with nothing to hoist are returned as-is.
+//!     `extraRecords` is a cross-file/cross-package record-declaration list
+//!     (`Lyric.Pipeline.pipeWeave`'s caller passes `monoRecordDecls`) used
+//!     only to resolve an `impl` block's target type's own fields when the
+//!     target isn't declared in `file` itself (#6702) — pass an empty list
+//!     when no such index is available.
 package Lyric.AwaitHoist
 
 import Std.Core
@@ -144,6 +149,6 @@ func awaitHoistConfig(): HoistConfig {
 // ─────────────────────────────────────────────────────────────────────────────
 // Public entry point.
 // ─────────────────────────────────────────────────────────────────────────────
-pub func hoistAwaitsFile(file: in SourceFile): SourceFile {
-  hoistFile(awaitHoistConfig(), file)
+pub func hoistAwaitsFile(file: in SourceFile, extraRecords: in List[RecordDecl]): SourceFile {
+  hoistFile(awaitHoistConfig(), file, extraRecords)
 }
