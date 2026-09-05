@@ -1294,6 +1294,59 @@ func recordRetClassOfTe(te: in TypeExpr, owner: in String, localRecordNames: in 
   }
 }
 
+// Generic-record class recovery (#6691, #6708): resolve `ty` to
+// `Some("<owner>/<RecordName>")` when it is a bare `TGenericApp` naming a
+// CONSTRUCTIBLE record — via `ctorClassFor`, the SAME `ctx.ctors` registry
+// every `RecordName(field = value, …)` construction call already resolves
+// against (`collectFileCtors`, unconditional for records: generic or not,
+// same-package or cross-package/stdlib) — instead of leaving it to the
+// blanket `java/lang/Object` erasure `typeExprToJvmErasedExtern`/
+// `typeExprToJvmExtern` assign to any non-bare-List/Map `TGenericApp`.
+//
+// Two call sites:
+//   - a plain field read directly on a generic-record-typed function/method
+//     PARAMETER (`b: in Box[Int]`, `func unboxInt(b: in Box[Int]): Int {
+//     b.value }`, #6691) — without this, `EMember`'s record-field fallback
+//     saw `cls == "java/lang/Object"` and fell through to the
+//     erased-receiver fallback, which resolves the field by bare NAME
+//     across every bundled type's `field:<name>` registry entry — silently
+//     landing on an unrelated same-named field (e.g. `Std.Http`'s `opaque
+//     type Url { value: String }`) and `checkcast`-ing to the WRONG class,
+//     a silent miscompile rather than a compile-time diagnostic.
+//   - a NESTED generic-record instantiation as a container's own element
+//     arg (`List[MapEntry[K, V]]`/`slice[MapEntry[K, V]]`, #6708), via
+//     `resolveConcreteTypeExpr`'s matching `TGenericApp` arm — without
+//     this, `indexedElemTypeOverride` saw the same `Object` erasure for
+//     `MapEntry[K, V]` and left an indexed element statically `Object`, so
+//     a following field read panicked with J007 ("member cannot be
+//     resolved on an erased Object receiver").
+//
+// `ctorClassFor` over a fresh per-file `localRecordNames` pre-scan
+// (`recordRetClassOf`'s #6399 approach) specifically because #6708's
+// motivating case is a STDLIB record (`Std.Collections.MapEntry`) consumed
+// from an unrelated package — `localRecordNames`' same-file-only scope
+// cannot resolve that at all. `ctorClassFor` already carries this exact
+// same-package-first / bundle-global-bare-key-fallback precedent for
+// resolving a bare constructor name across packages (real object
+// construction has relied on it since before this fix), so reusing it here
+// introduces no new collision risk beyond what a `RecordName(...)`
+// constructor call already accepts. Bounded to a BARE single-segment head:
+// a package-qualified head (`Other.Box[Int]`) is left erased to `Object`
+// (`None`) — `ctorClassFor` itself only ever takes a bare short name.
+pub func recordParamClassOf(ty: in TypeExpr, ctx: in FuncCtx): Option[String] {
+  match ty.kind {
+    case TParen(inner) -> recordParamClassOf(inner, ctx)
+    case TGenericApp(head, _) -> {
+      if head.segments.count == 1 {
+        ctorClassFor(ctx, head.segments[0])
+      } else {
+        None
+      }
+    }
+    case _ -> None
+  }
+}
+
 // Drop a CLR-convention arity suffix (`` `N ``) from a host type name: the
 // parser canonicalises a GENERIC `extern type` alias's host name to
 // `Name`<arity>` for the MSIL backend's TypeRef encoding, but a JVM binary

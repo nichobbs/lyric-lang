@@ -12,20 +12,16 @@
 //! every test that derives `b` from `a` re-reads `a` afterward and
 //! asserts it is unchanged.
 //!
-//! **dotnet-only, not `--target jvm`** (unlike the sibling List-ops test
-//! file, which is CI-verified on both targets): reading a field off a
-//! generic-record element obtained by indexing a `List[MapEntry[K, V]]`
-//! returned from a generic function call — `pmapToList(m)[i].key` — hits
-//! a genuine, separate JVM self-hosted-backend generics-erasure gap
-//! (`error[J007]: member 'key' cannot be resolved on an erased
-//! (statically Object) receiver`), reproducible even with an explicit
-//! local-variable type annotation on the indexed element. This is
-//! unrelated to #6568/#6569 (both scoped to the self-hosted MSIL
-//! backend, and fixed) — it is a new, previously-undiscovered gap in the
-//! JVM backend's generic-function-return-type tracking, tracked
-//! separately in #6708; `PersistentMap` stays dotnet-only until that
-//! lands, per the "gap is a tracked, dated issue — not an undocumented
-//! silent skip" standard.
+//! CI-verified on BOTH `--target dotnet` and `--target jvm`, same as the
+//! sibling List-ops test file. Reading a field off a generic-record
+//! element obtained by indexing a `List[MapEntry[K, V]]` bound to a
+//! generic function's call result — `val asList: List[MapEntry[Int,
+//! String]] = pmapToList(m); asList[0].key` — used to hit a JVM
+//! self-hosted-backend generics-erasure gap (`error[J007]: member 'key'
+//! cannot be resolved on an erased (statically Object) receiver`),
+//! unrelated to #6568/#6569 (both scoped to the self-hosted MSIL backend).
+//! Fixed in #6708 (`Jvm.Codegen.recordParamClassOf`, resolving a bare
+//! generic-record head through the `ctx.ctors` construction registry).
 package Std.Collections.Persistent.MapTests
 
 import Std.Core
