@@ -38,6 +38,27 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# Runner pools (self-hosted opt-in).  The six long-running jobs
+# (compiler-self-tests-dotnet-a/-b, compiler-self-tests-jvm,
+# numbered-backend-self-tests, stdlib-builds, native-backend-self-tests) read
+# their `runs-on` from repository variables so they can be moved to a
+# self-hosted machine without a commit; every other job stays on
+# GitHub-hosted `ubuntu-latest` (macos-aot-smoke on `macos-latest`).
+#   CI_HEAVY_RUNNER   a single runner label for the five managed-runtime
+#                     jobs, e.g. `self-hosted` (a JSON list would need
+#                     fromJSON, so give the machine one distinctive label).
+#   CI_NATIVE_RUNNER  optional override for native-backend-self-tests, which
+#                     additionally needs clang, gcc and the LLVM ASan runtime
+#                     on the machine; falls back to CI_HEAVY_RUNNER.
+# Unset (the default) means `ubuntu-latest`, i.e. unchanged behaviour.  A
+# `runs-on` is fixed when the run is created, so runs already queued keep
+# their pool; register several runners on the box, since each registration
+# executes one job at a time and these jobs fan out in parallel.  The
+# self-hosted machine needs the same tools these jobs install or assume
+# (.NET SDK per bootstrap/global.json via setup-dotnet, Java 21 via
+# setup-java, passwordless sudo for `apt-get install z3`, and for the
+# native job clang/gcc/ASan).
+
 # Single build configuration shared across every dotnet build / test /
 # path-discovery step.  Changing it here flips the configuration for
 # every dependent path (bin/$BUILD_CONFIG/net10.0/...) at once — keeps
@@ -680,7 +701,7 @@ jobs:
             ${{ runner.os }}-nuget-
 
   compiler-self-tests-dotnet-a:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     needs: [build]
     permissions:
       contents: read
@@ -2179,7 +2200,7 @@ jobs:
   # behind unrelated self-tests, and keeps a slow native-backend run from
   # extending compiler-self-tests-dotnet-a's own `wait-all` barriers.
   native-backend-self-tests:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_NATIVE_RUNNER || vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
     needs: [build]
     permissions:
@@ -2405,7 +2426,7 @@ jobs:
         wait-all: true
 
   compiler-self-tests-dotnet-b:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     needs: [build]
     permissions:
       contents: read
@@ -3610,7 +3631,7 @@ jobs:
           echo "OK: Native AOT lyric CLI published on macOS (${size_kb} KB), built+ran an example and a restored-dependency build end-to-end." >> "$GITHUB_STEP_SUMMARY"
 
   compiler-self-tests-jvm:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     needs: [build, build-stage2]
     permissions:
       contents: read
@@ -5756,7 +5777,7 @@ jobs:
   # other self-test jobs on the 4-vCPU standard runners: msil is 83 files
   # (~60 CPU-min) in 2 shards, jvm is 132 files (~120 CPU-min) in 4 shards.
   numbered-backend-self-tests:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     needs: [build]
     permissions:
       contents: read
@@ -6183,7 +6204,7 @@ jobs:
 
   # Stdlib and ecosystem-library builds — runs in parallel with ecosystem-tests.
   stdlib-builds:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     needs: [build]
     permissions:
       contents: read
