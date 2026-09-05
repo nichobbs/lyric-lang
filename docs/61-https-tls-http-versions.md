@@ -577,7 +577,7 @@ items marked ∥ are independent and can proceed in parallel.
    `Std.Tls`'s top-level `tls.l`) was also tried for the `SSLContext`
    construction and found to break unrelated static-call resolution at JVM
    runtime — a fourth gap, filed as issue #5932 (**since fixed**, see
-   D-progress-878 in `docs/03-decision-log.md` — a first-wins `Jvm.Bridge`
+   D-progress-889 in `docs/03-decision-log.md` — a first-wins `Jvm.Bridge`
    registry map was silently dropping every bundled file but the first for
    a same-named package; new same-package splits are no longer blocked by
    this); the construction lives in `_kernel_jvm/http_server.l` instead,
