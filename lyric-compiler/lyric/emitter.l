@@ -2969,11 +2969,28 @@ pub func emitNativeProject(
     return failResult("native project build received no packages")
   }
   val nativePkgs: List[LlvmBridge.NativeSourcePackage] = newList()
+  // Per-package merged-line provenance (#6824 item 1), parallel to
+  // `nativePkgs` by index — mirroring `emitProject`'s identical
+  // `pkgOrigins`/`mergePackageSourcesWithOrigins` construction above: empty
+  // for a single-file package (its real path survives directly via
+  // `NativeSourcePackage.path`) and non-empty for a genuinely multi-file
+  // package.
+  val nativeOrigins: List[DiagUtil.PackageLineOrigins] = newList()
   var pi = 0
   while pi < pkgs.count {
     val pkg = pkgs[pi]
-    val merged = mergePackageSources(pkg.name, pkg.sources, activeFeatures, declaredFeatures)
-    nativePkgs.add(LlvmBridge.NativeSourcePackage(name = pkg.name, source = merged))
+    if pkg.sources.count > 1 {
+      val mergedRes = mergePackageSourcesWithOrigins(pkg.name, pkg.sources, pkg.paths, activeFeatures, declaredFeatures)
+      // No single on-disk path names the merged blob as a whole —
+      // `mergedRes.origins` carries the real per-line attribution instead.
+      nativePkgs.add(LlvmBridge.NativeSourcePackage(name = pkg.name, source = mergedRes.source, path = ""))
+      nativeOrigins.add(DiagUtil.PackageLineOrigins(origins = mergedRes.origins))
+    } else {
+      val merged = mergePackageSources(pkg.name, pkg.sources, activeFeatures, declaredFeatures)
+      val pkgPath = if pkg.paths.count > 0 { pkg.paths[0] } else { "" }
+      nativePkgs.add(LlvmBridge.NativeSourcePackage(name = pkg.name, source = merged, path = pkgPath))
+      nativeOrigins.add(DiagUtil.PackageLineOrigins(origins = newList()))
+    }
     pi = pi + 1
   }
   val stdlibSources = findStdlibSourcesNative()
@@ -2991,7 +3008,8 @@ pub func emitNativeProject(
     defines,
     activeFeatures,
     declaredFeatures,
-    packageVersion
+    packageVersion,
+    nativeOrigins
   )
   if ok {
     val okDiags: List[Diagnostic] = newList()

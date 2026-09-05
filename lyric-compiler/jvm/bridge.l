@@ -277,7 +277,7 @@ pub func compileToJar(
   val weConfigs: Map[String, CollectedConfigTemplate] = newMap()
   WireExpand.collectWireTemplates(cfgFile.items, dottedPath(cfgFile.packageDecl.path), weWires, weConfigs)
   val file0 = resolveTypeAliases(
-    match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, true, true, true) {
+    match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, true, true, true, "", noLegacyOrigins) {
       case Some(f) -> f
       case None -> return false
     }
@@ -1634,7 +1634,18 @@ pub func compileProjectToJarBundledWithRestored(
   }
   var wei = 0
   while wei < userFiles.count {
-    val rewritten = match pipeExpandAndRewrite(userFiles[wei], weWires, weConfigs, true, true, true) {
+    // #6824 item 3: label/attribute this package's wire/config-template and
+    // impl-default-inheritance diagnostics exactly like its parse-phase
+    // diagnostics already are (`pkgPathByName`/`pkgOriginsByName`, resolved
+    // per-package during the parse loop above) instead of the unconditional
+    // `""`/empty this call used to hardcode.
+    val weiPkgName = dottedPath(userFiles[wei].packageDecl.path)
+    val weiPkgLabel = match mapGet(pkgPathByName, weiPkgName) { case Some(p) -> p; case None -> weiPkgName }
+    val weiPkgOrigins: List[DiagUtil.MergedLineOrigin] = match mapGet(pkgOriginsByName, weiPkgName) {
+      case Some(o) -> o
+      case None -> newList()
+    }
+    val rewritten = match pipeExpandAndRewrite(userFiles[wei], weWires, weConfigs, true, true, true, weiPkgLabel, weiPkgOrigins) {
       case Some(f) -> f
       case None -> return false
     }
