@@ -151,6 +151,61 @@ test "Std.File seams: round-trip, classification, idempotent delete (ASan)" {
   assertEqualInt(r.exitCode, 42, "file seams")
 }
 
+// #4752 residual-seam audit (D-progress-884): readBytesOrPanic has no
+// try/catch on any target, so hostReadAllBytes was implementable on
+// native by panicking directly on failure -- unlike readTextOrPanic
+// (whose OWN try/catch wrapper remains blocked, tracked separately).
+test "Std.File readBytesOrPanic: round-trip, panics on a missing path (ASan)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.File\n" + "func main(): Int {\n" + "  val path = \"" +
+    tempBase() +
+    "/lyric-n59-readbytesorpanic.txt\"\n" +
+    "  match writeText(path, \"panic-seam\") {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 1\n" +
+    "    }\n" +
+    "  }\n" +
+    "  val bytes = readBytesOrPanic(path)\n" +
+    "  if bytes.length != 10 {\n" +
+    "    return 2\n" +
+    "  }\n" +
+    "  val _ = deleteFile(path)\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "readBytesOrPanic round-trip")
+
+  // A missing path panics -- the harness's non-zero-exit-on-crash
+  // convention means "did not exit 42" is the pass signal here, same as
+  // the calendar-arithmetic panic regression tests below.
+  val panicSrc = "package T\n" + "import Std.Core\n" + "import Std.File\n" + "func main(): Int {\n" +
+    "  val _ = readBytesOrPanic(\"/nonexistent-lyric-n59-readbytesorpanic\")\n" +
+    "  42\n" +
+    "}\n"
+  val panicResult = compileAndRunNative(panicSrc)
+  assertTrue(panicResult.exitCode != 42 and panicResult.exitCode != 0, "a non-panicking readBytesOrPanic would exit 42")
+}
+
+// #4752 residual-seam audit (D-progress-884): both return "" on native,
+// a value each function's own doc comment already documents as valid
+// (runtimeDirectory: "may return an empty string in native-AOT
+// scenarios"; runtimeIdentifier: the JVM twin's identical "no .NET RID
+// equivalent" contract).
+test "Std.Environment runtimeDirectory/runtimeIdentifier: empty on native, per their own documented contract (ASan)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Environment\n" + "func main(): Int {\n" +
+    "  if runtimeDirectory() != \"\" {\n" +
+    "    return 1\n" +
+    "  }\n" +
+    "  if runtimeIdentifier() != \"\" {\n" +
+    "    return 2\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "runtimeDirectory/runtimeIdentifier empty-on-native contract")
+}
+
 test "Std.Environment seams: set/get, missing key, cwd (ASan)" {
   val src = "package T\n" + "import Std.Core\n" + "import Std.Errors\n" + "import Std.Environment\n" +
     "func main(): Int {\n" +
