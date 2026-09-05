@@ -3379,6 +3379,7 @@ jobs:
       # unrelated PRs (#6021, #6033).  Split ~9 + ~9 so each sub-batch stays
       # under the cap.
       - name: Wait for parallel tests (JVM batch 0-split)
+        if: always()
         wait-all: true
 
       # Nested-constructor-pattern self-test on JVM (#4623) — the JVM half of
@@ -3391,6 +3392,7 @@ jobs:
       # lighter sub-batch rather than the pre-barrier batch, which already
       # exceeds the ~14-concurrent-step cap (#5913).
       - name: Nested-constructor-pattern self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/nested_constructor_pattern_self_test.l
@@ -3400,6 +3402,7 @@ jobs:
       # flattenPathExprSegsJvm/tryQualifiedEnumClassJvm; the dotnet half runs
       # in compiler-self-tests-dotnet-a.
       - name: Qualified enum-case self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/qualified_enum_case_self_test.l
@@ -3410,6 +3413,7 @@ jobs:
       # resolveBareCaseClassJvm). The dotnet half runs in
       # compiler-self-tests-dotnet-a.
       - name: Bare union-case match self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/qualified_union_case_self_test.l
@@ -3419,6 +3423,7 @@ jobs:
       # bound from a HOF call); verified immune by design (context-based
       # unbox in lowerLambdaInvoke), this pins it.
       - name: Func-val local rettype self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/func_val_local_rettype_self_test.l
@@ -3428,6 +3433,7 @@ jobs:
       # pins the mono ambiguity-eviction fix (mapOption + colliding toUpper)
       # on the JVM backend.
       - name: Stdlib-generic mono self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/stdlib_generic_mono_self_test.l
@@ -3436,6 +3442,7 @@ jobs:
       # step of the same name.  Pins the Object[]→ArrayList holder write-back
       # conversion on the JVM backend.
       - name: Inout-slice self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/inout_slice_self_test.l
@@ -3444,6 +3451,7 @@ jobs:
       # run (the VerifyError only reproduced on JVM's StackMapTable path); the
       # dotnet half is the parity control in the same-named dotnet-job step.
       - name: Inout-field self-reassign self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/inout_field_self_reassign_self_test.l
@@ -3457,6 +3465,7 @@ jobs:
       # today (a separate, pre-existing bug), and the #6168 defect itself is
       # JVM-specific.
       - name: Self-field reassign self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/self_field_reassign_jvm_self_test.l
@@ -3465,6 +3474,7 @@ jobs:
       # step of the same name.  Pins the Never-in-tail-position default-value
       # push (emitNeverTailReturn parity) on the JVM backend.
       - name: Never-tail self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/never_tail_self_test.l
@@ -3474,6 +3484,7 @@ jobs:
       # dependent-module-val bug (its prelowerModuleVals derives field types
       # from a real in-order pass); run for cross-target parity.
       - name: Module-val-deps self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/module_val_deps_self_test.l
@@ -3482,6 +3493,7 @@ jobs:
       # dotnet-job step of the same name (JVM acts as the parity control for
       # the MSIL unbox fix).
       - name: Annotated-binding unbox self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/annotated_binding_unbox_self_test.l
@@ -3494,6 +3506,7 @@ jobs:
       # the @test_module in-process through `Jvm.Bridge` `compileToJarBundled`
       # and runs it under `java` (JDK 21).  Imports only `Std.*`.
       - name: Async spawn/scope/await self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"async-spawn self-test ran: async_spawn_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/async_spawn_self_test.l"
@@ -3502,6 +3515,7 @@ jobs:
       # dotnet-job step of the same name.  Deterministic error-path dispatch,
       # no live listener needed.
       - name: Std.Http async-surface test coverage on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"Std.Http async-surface test ran: http_async_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/http_async_tests.l"
@@ -3516,6 +3530,7 @@ jobs:
       # post-barrier) sub-batch below rather than the first group, so it does
       # not add to the already-heavy pre-barrier batch (#5967).
       - name: Wait for parallel tests (JVM batch 1-split)
+        if: always()
         wait-all: true
 
       # JVM twin of the BuildInfo synthesis self-test (docs/60 §9.2): the
@@ -3523,6 +3538,7 @@ jobs:
       # constructed cross-package on the JVM target too. dotnet half runs in
       # the dotnet self-tests job above.
       - name: BuildInfo self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/buildinfo_self_test.l
@@ -3537,6 +3553,7 @@ jobs:
       # has drifted back over the ~14-concurrent-step cap; #5913) to keep the
       # runner's parallel-step status collection reliable.
       - name: Std.Tls test coverage on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"Std.Tls test ran: tls_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/tls_tests.l"
@@ -3550,6 +3567,7 @@ jobs:
       # docs/03-decision-log.md D-progress-689. The remaining explicit-fields
       # test is unaffected by either bug.
       - name: Std.Tls TlsServerConfig test coverage on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"Std.Tls TlsServerConfig test ran: tls_server_config_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/tls_server_config_tests.l"
@@ -3561,6 +3579,7 @@ jobs:
       # cap.  Deterministic — the Http3 gate never touches the network, so
       # no live listener is needed.
       - name: Std.Http HttpVersion test coverage on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"Std.Http HttpVersion test ran: http_version_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/http_version_tests.l"
@@ -3572,6 +3591,7 @@ jobs:
       # delete silently returned Ok until the JVM kernel surfaced it through
       # the catch Bug -> Err(IoError) seam.
       - name: Std.Directory test coverage on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-stdlib/tests/directory_tests.l
@@ -3586,6 +3606,7 @@ jobs:
       # boxing bug) does not affect this suite, which never appends to a
       # slice[Byte].
       - name: Std.File test coverage on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-stdlib/tests/file_tests.l
@@ -3596,6 +3617,7 @@ jobs:
       # on this target, D120) — no child-process harness needed, unlike the
       # dotnet leg (http_version_self_test.l, #5329).  Imports only Std.*.
       - name: Std.Http HttpVersion round-trip self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"Std.Http HttpVersion round-trip self-test ran: http_version_jvm_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/http_version_jvm_self_test.l"
@@ -3606,6 +3628,7 @@ jobs:
       # exercise). Placed alongside the other Std.Tls JVM steps above (same
       # sub-batch, same #5913 concurrent-step-cap reasoning).
       - name: Std.HttpServer TLS test coverage on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"Std.HttpServer TLS test ran: tls_server_jvm_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/tls_server_jvm_tests.l"
@@ -3616,6 +3639,7 @@ jobs:
       # pre-split batch above, which has drifted back over the
       # ~14-concurrent-step cap (#5913).
       - name: Std.HttpEngine test coverage on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"Std.HttpEngine test ran: http_engine_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/http_engine_tests.l"
@@ -3625,6 +3649,7 @@ jobs:
       # Appendix C byte vectors. Zero externs, so this and the dotnet step must
       # and do produce identical results.
       - name: Std.HttpEngine.Hpack test coverage on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"Std.HttpEngine.Hpack test ran: http_hpack_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/http_hpack_tests.l"
@@ -3635,6 +3660,7 @@ jobs:
       # vectors. Zero externs, so this and the dotnet step must and do produce
       # identical results.
       - name: Std.HttpEngine.H2Frame test coverage on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"Std.HttpEngine.H2Frame test ran: http_h2frame_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/http_h2frame_tests.l"
@@ -3646,6 +3672,7 @@ jobs:
       # Hpack calls. Zero externs, so this and the dotnet step must and do
       # produce identical results.
       - name: Std.HttpEngine.H2Conn test coverage on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"Std.HttpEngine.H2Conn test ran: http_h2conn_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/http_h2conn_tests.l"
@@ -3657,6 +3684,7 @@ jobs:
       # field-equal instances are the same `java.util.HashMap` key. Needs JDK
       # 21 (this job), unlike the dotnet job.
       - name: Map-key self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"map-key self-test ran: map_key_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/map_key_self_test.l"
@@ -3673,6 +3701,7 @@ jobs:
       # Placed in this (post-barrier) sub-batch, not the pre-split batch
       # above, per the same ~14-concurrent-step cap reasoning (#5913).
       - name: Bare-function-value self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"bare-func-ref self-test ran: bare_func_ref_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/bare_func_ref_self_test.l"
@@ -3685,6 +3714,7 @@ jobs:
       # failures on unrelated PRs (#6021, #6033).  Split ~10 + ~9 so each
       # sub-batch stays under the cap.
       - name: Wait for parallel tests (JVM batch 1a-split)
+        if: always()
         wait-all: true
 
       # Map-option self-test on JVM (#1727 MSIL / #5003 JVM) — the JVM half of
@@ -3695,6 +3725,7 @@ jobs:
       # internal branches lowered.  Needs JDK 21 (this job), unlike the
       # dotnet job.
       - name: Map-option self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"map-option self-test ran: map_option_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/map_option_self_test.l"
@@ -3709,6 +3740,7 @@ jobs:
       # `--target dotnet` runs in the .NET job (the #5021 MSIL wire ABI
       # shipped with D121). Needs JDK 21 (this job).
       - name: Wire-DI self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"wire-DI self-test ran: wire_di_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/wire_di_self_test.l"
@@ -3719,6 +3751,7 @@ jobs:
       # longer hits the `(…)Object` guess / NoSuchMethodError.  Needs JDK 21
       # (this job), unlike the dotnet job.  Imports only `Std.*`.
       - name: Aspect-weave self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"aspect-weave self-test ran: aspect_weave_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/aspect_weave_self_test.l"
@@ -3730,6 +3763,7 @@ jobs:
       # rather than MSIL's silent stack corruption, but was equally
       # unsupported.  Needs JDK 21 (this job).  Imports only `Std.*`.
       - name: Result/Option accessor self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"result/option accessor self-test ran: result_ensures_accessor_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/result_ensures_accessor_self_test.l"
@@ -3744,6 +3778,7 @@ jobs:
       # scripts/ci/check-foreign-result-accessor.sh (shared with the
       # dotnet step above).
       - name: Foreign Result/Option accessor fails loud, not a miscompile (native lyric build --target jvm, #6630)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/check-foreign-result-accessor.sh jvm
@@ -3755,6 +3790,7 @@ jobs:
       # this fix produced a compile-time `has no known field` panic and a
       # runtime `NoSuchMethodError`.  dotnet half runs in the dotnet job.
       - name: B'-mode runtime self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"B'-mode runtime self-test ran: bmode_runtime_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/bmode_runtime_self_test.l"
@@ -3764,6 +3800,7 @@ jobs:
       # construct but the guard previously ran dotnet-only; the monomorphizer
       # fix it pins is both-target, and the JVM path is confirmed green.
       - name: ensures self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"ensures self-test ran: ensures_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/ensures_self_test.l"
@@ -3773,6 +3810,7 @@ jobs:
       # parity for typed protected-constructor bindings; the JVM path is
       # confirmed green.
       - name: pconstructor typed-binding self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"pconstructor typed-binding self-test ran: pconstructor_typed_binding_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/pconstructor_typed_binding_self_test.l"
@@ -3788,6 +3826,7 @@ jobs:
       # own `varGenericArgs`, so a match-of-a-match recovers its inner arg.
       # Needs JDK 21 (this job), unlike the dotnet job.
       - name: Stdlib-generic-interface self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"stdlib-generic-iface self-test ran: stdlib_generic_iface_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/stdlib_generic_iface_self_test.l"
@@ -3795,6 +3834,7 @@ jobs:
       # Named-arg/default-param self-test on JVM — pins call-site reorder and
       # default fill on the JVM target (#1503).  Imports only `Std.*`.
       - name: Named-arg/default-param self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"named-arg/default-param self-test ran: func_default_args_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/func_default_args_self_test.l"
@@ -3807,6 +3847,7 @@ jobs:
       # unsigned 0..255 range to match MSIL's `conv.u1`).  Run on BOTH targets —
       # parity is asserted, not deferred.  Imports only `Std.*`.
       - name: Conversion-method self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/conv_methods_self_test.l
@@ -3819,6 +3860,7 @@ jobs:
       # coercion the JVM target needed to run them.  Run on BOTH targets:
       # parity is asserted, not deferred.  Imports only `Std.*`.
       - name: Pattern-lowering self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -3839,6 +3881,7 @@ jobs:
       # compile time, then executed with its runtime values asserted.  No new
       # F#.  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Auto-FFI metadata self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         # #6662's instance-method/constructor overload-scoring tests resolve
@@ -3858,6 +3901,7 @@ jobs:
       # (`cdTryGetValue[K, V]`, mirroring Web.Kernel.Jvm's rate limiter) resolves
       # against its real holder-typed descriptor instead of NoSuchMethodError.
       - name: Generic-declaring-type extern member self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/generic_extern_jvm_self_test.l
@@ -3868,6 +3912,7 @@ jobs:
       # used to box against the erased Object[] target (Integer) instead of
       # the receiver's declared element type (Long).  Imports only `Std.*`.
       - name: slice[T].append numeric-widening self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/slice_append_widening_self_test.l
@@ -3903,6 +3948,7 @@ jobs:
       # @test_module assertion -- asserted here as a `lyric build` failure
       # instead.
       - name: Ambiguous primitive-array overload fails loud on JVM (native lyric build --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -3959,6 +4005,7 @@ jobs:
       # the compiler process itself, not expressible as a @test_module
       # runtime assertion).
       - name: Genuine primitive-array argument rejected for an Object[]-only overload on JVM (native lyric build --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4008,6 +4055,7 @@ jobs:
       # split it into ~14-step batches so peak concurrency (and peak JVM memory)
       # stays bounded, stopping the intermittent concurrent-status flakes.
       - name: Wait for parallel tests (JVM batch 1)
+        if: always()
         wait-all: true
 
       # BuildInfo `--define` runtime path on JVM (docs/60 §5, #5852): the JVM
@@ -4019,10 +4067,12 @@ jobs:
       # imports only `Std.BuildInfo` + `Std.Console` (not `Std.Core`), guarding
       # the #5949 core-prelude resolution on the JVM target too.
       - name: BuildInfo --define runtime path on JVM (native lyric build --target jvm --define)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/buildinfo-define-jvm-runtime.sh
       - name: Hash self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/hash_jvm_self_test.l
@@ -4033,6 +4083,7 @@ jobs:
       # these four files crashed immediately on first call.  Imports only
       # `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Stdlib JVM kernels self-test (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/stdlib_jvm_kernels_self_test.l
@@ -4044,6 +4095,7 @@ jobs:
       # #1675) round-tripping through match, and named-argument record-construction
       # reorder (#1793).  Imports only `Std.*`.
       - name: Silent-miscompile guard self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4060,6 +4112,7 @@ jobs:
       # so field access / method dispatch / numeric intrinsics on the element
       # work instead of collapsing to java/lang/Object.  Imports only `Std.*`.
       - name: Erased-element checkcast self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4079,6 +4132,7 @@ jobs:
       # read-modify-write, nested inout forwarding, and mixed-mode signatures.
       # Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: out/inout parameter self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/out_inout_jvm_self_test.l
@@ -4092,6 +4146,7 @@ jobs:
       # `Result`/`Option` output awaits JVM generics in J4 before it can run
       # under `java`.)  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Middle-end-passes guard self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/middle_end_passes_jvm_self_test.l
@@ -4104,6 +4159,7 @@ jobs:
       # early-return, mirroring MSIL #1477) and module-level `val` as a
       # `static final` field.  Imports only `Std.*`.
       - name: J3 lowering self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4123,6 +4179,7 @@ jobs:
       # value-producing sub-block) now that the region-boundary StackMapTable and
       # empty-region/dead-nop fixes have landed.  Imports only `Std.*`.
       - name: Defer self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/defer_self_test.l
@@ -4131,6 +4188,7 @@ jobs:
       # cap (was 15) so the runner's parallel-step status collection doesn't
       # misreport a passing step as failed.
       - name: Wait for parallel tests (JVM batch 3-split)
+        if: always()
         wait-all: true
 
       # Range-for self-test on JVM (#4878 follow-up, band J4).  Range-driven `for`
@@ -4142,6 +4200,7 @@ jobs:
       # Int + Long, half-open + closed, empty, break/continue, nesting.  Imports
       # only `Std.*`.
       - name: Range-for self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/range_for_jvm_self_test.l
@@ -4153,6 +4212,7 @@ jobs:
       # `?`-propagation runtime runs on the JVM.  Imports only `Std.*`, so no
       # `LYRIC_LOAD_COMPILER=1`.
       - name: Generic-codegen self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/generic_jvm_self_test.l
@@ -4165,6 +4225,7 @@ jobs:
       # unrelated MSIL bug (#6529), so this is not a dual-target
       # `*_self_test.l`.
       - name: Exposed-record generic return-type self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/exposed_record_generic_ret_jvm_self_test.l
@@ -4178,6 +4239,7 @@ jobs:
       # its concrete primitive.  Covers Int/Long/Double payloads, a user generic
       # union, and both the `match` and `?` forms.  Imports only `Std.*`.
       - name: Erased-generic-arith self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/erased_generic_arith_jvm_self_test.l
@@ -4190,6 +4252,7 @@ jobs:
       # bug this fix addresses, so the JVM run alone covers it.  Imports only
       # `Std.*`.
       - name: Method-scrutinee self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/method_scrutinee_jvm_self_test.l
@@ -4205,6 +4268,7 @@ jobs:
       # lambda — all under `java`.  Imports only `Std.*`, so no
       # `LYRIC_LOAD_COMPILER=1`.
       - name: Closure-codegen self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/closure_jvm_self_test.l
@@ -4219,6 +4283,7 @@ jobs:
       # and throw `ClassCastException`, corrupting the caught `Bug.message`
       # into the exception's own text instead of the real panic message.
       - name: Closure-correctness self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/closure_correctness_self_test.l
@@ -4229,6 +4294,7 @@ jobs:
       # which regressed with VerifyError / NPE before this band — are caught
       # at runtime, not just by boxing-count inspection.
       - name: Zero-overhead closure self-test run on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/closure_zero_overhead_self_test.l
@@ -4244,6 +4310,7 @@ jobs:
       # method (J4 erased generics through an instance method) — all under `java`.
       # Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Record-method self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/record_method_jvm_self_test.l
@@ -4264,6 +4331,7 @@ jobs:
       # its own nested JVM programs via `java -jar`.  Uses `Lyric.Emitter`, so
       # `LYRIC_LOAD_COMPILER=1` is needed.
       - name: Cross-package generics self-test on JVM (native lyric test)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/jvm/cross_package_generics_jvm_self_test.l
@@ -4281,6 +4349,7 @@ jobs:
       # ~14-concurrent-step cap per #5913/#5917) to keep the runner's
       # parallel-step status collection reliable.
       - name: Std.Http TLS client configuration test coverage on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"Std.Http TLS client test ran: http_tls_client_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/http_tls_client_tests.l"
@@ -4296,9 +4365,11 @@ jobs:
       # prove the implicit-return path still works — all under `java`.  Imports
       # only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Wait for parallel tests (JVM batch 2)
+        if: always()
         wait-all: true
 
       - name: Control-flow terminator self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/control_flow_jvm_self_test.l
@@ -4313,6 +4384,7 @@ jobs:
       # (now a source-located `error[J004]` instead of an unlocated panic) and
       # must leave valid try-catch expressions untouched.  Imports only `Std.*`.
       - name: Try/catch-expression self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/try_catch_expr_jvm_self_test.l
@@ -4327,6 +4399,7 @@ jobs:
       # form failed JVM verification inside match-arm results).  Imports only
       # `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Projectable opaque-twin self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/projectable_jvm_self_test.l
@@ -4339,6 +4412,7 @@ jobs:
       # (`Point.equals` -> classfile method name `equals`) to satisfy JVMS §4.2.2
       # (unqualified names may not contain `.`).  Imports only `Std.*`.
       - name: Synthesized-method-resolution self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/synthesized_method_self_test.l
@@ -4351,6 +4425,7 @@ jobs:
       # compiled in-process through the self-hosted `Jvm.Bridge` and run under
       # `java`.  Imports only `Std.*`.
       - name: NaN-comparison self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4369,6 +4444,7 @@ jobs:
       # `java/lang/Object` -> VerifyError).  Compiled in-process through the
       # self-hosted `Jvm.Bridge` and run under `java`.  Imports only `Std.*`.
       - name: Extern-handle-across-loop self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/extern_loop_jvm_self_test.l
@@ -4380,6 +4456,7 @@ jobs:
       # through the self-hosted `Jvm.Bridge` and run under `java`.  Imports
       # only `Std.*`.
       - name: Extern-type parameter self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/extern_param_jvm_self_test.l
@@ -4393,6 +4470,7 @@ jobs:
       # through the self-hosted `Jvm.Bridge` and run under `java`.  Requires
       # POSIX utilities at /bin/echo, /bin/cat, /bin/sh, /bin/true, /bin/false.
       - name: ProcessCapture JVM self-test (native lyric test --target jvm, #1065)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/process_capture_jvm_self_test.l
@@ -4406,6 +4484,7 @@ jobs:
       # (Arg-forwarding + Int→exit-code on JVM are tracked in #3303; this step
       # covers the no-arg / output path that #674 asked for.)
       - name: lyric run --target jvm end-to-end smoke (#674)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4456,6 +4535,7 @@ jobs:
       # harness runs and reports its benchmark count.  (`bench --target jvm`
       # is blocked on Std.Time JVM support, tracked in #3302.)
       - name: lyric bench --target dotnet end-to-end smoke
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4508,12 +4588,14 @@ jobs:
       # Instance-method out/inout self-test on JVM (#1763 instance half) —
       # holder wrap/unwrap on record / impl / protected instance methods.
       - name: Instance out/inout self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/out_inout_instance_jvm_self_test.l
       # String instance-method self-test on JVM (#1585) — pins the precise
       # descriptors of the String intrinsics (trim/indexOf/startsWith/…).
       - name: String-methods self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/string_methods_jvm_self_test.l
@@ -4524,6 +4606,7 @@ jobs:
       # frame-pass operand-stack simulation (lowering.l B5c) and the
       # ArrayList receiver-slot typing.
       - name: Expression-branch stackmap self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/stackmap_expr_branch_jvm_self_test.l
@@ -4531,12 +4614,14 @@ jobs:
       # `infos[0].arguments[0].name` resolving through staticBaseClass's
       # EIndex arm + the elem:<class>#<field> registry.
       - name: Chained-element self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/chained_elem_jvm_self_test.l
       # Intra-impl dispatch self-tests on JVM (#1722) — `self.m(...)` and bare
       # `m(...)` sibling calls inside impl/record method bodies.
       - name: Intra-impl dispatch self-tests on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4554,6 +4639,7 @@ jobs:
       # resolves instead of panicking in the auto-FFI Object guess.  Imports
       # only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Aliased-import self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/alias_import_jvm_self_test.l
@@ -4563,9 +4649,11 @@ jobs:
       # funcSigs with isIface = true) instead of the class-format-invalid
       # `invokevirtual` guess.  Imports only `Std.*`.
       - name: Wait for parallel tests (JVM batch 3)
+        if: always()
         wait-all: true
 
       - name: Interface-dispatch self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/iface_dispatch_jvm_self_test.l
@@ -4575,6 +4663,7 @@ jobs:
       # epoch/ISO-8601 round-trips, calendar math, monotonic clock, and
       # sleepMillis.  Unblocks `lyric bench --target jvm` (#680).
       - name: Std.Time self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/time_jvm_self_test.l
@@ -4585,6 +4674,7 @@ jobs:
       # kernel-owned opaque `FileTime` boundary, and the static-field
       # auto-FFI underneath it.
       - name: Std.File self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/file_jvm_self_test.l
@@ -4594,6 +4684,7 @@ jobs:
       # process-shared BufferedReader).  A plain program because TAP tests
       # have no stdin.
       - name: Std.Console round-trip on JVM (lyric build --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4616,6 +4707,7 @@ jobs:
       # pure-Lyric parse kernel, and the generic-sig erasure +
       # __lyricUnwrapOr helper underneath unwrapOr-style call sites.
       - name: Std.Parse tests on JVM (lyric build --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4636,6 +4728,7 @@ jobs:
       # Pins the shared canonicalizer + the java.util.UUID kernel twin's
       # hostParseCanonicalGuid seam (#5201).
       - name: Std.Uuid tests on JVM (lyric build --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4654,6 +4747,7 @@ jobs:
       # contract (the dotnet leg runs via `lyric run` in the stdlib
       # coverage block; the native leg via llvm_stdlib_self_test).
       - name: Std.Time tests on JVM (lyric build --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4672,6 +4766,7 @@ jobs:
       # structured concurrency is intentionally NOT covered here — see
       # task_scope_known_failures_tests.l's header (issue #5329).
       - name: Std.Task tests on JVM (lyric build --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4691,6 +4786,7 @@ jobs:
       # cap (was 15) so the runner's parallel-step status collection doesn't
       # misreport a passing step as failed.
       - name: Wait for parallel tests (JVM batch 5-split)
+        if: always()
         wait-all: true
 
       # Std.Task ambient-cancellation-slot regression coverage (#5342):
@@ -4698,6 +4794,7 @@ jobs:
       # .NET twin crashes on its first call today, a separate pre-existing
       # bug tracked as #5330 — see task_ambient_jvm_tests.l's header).
       - name: Std.Task ambient-slot tests on JVM (lyric build --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4720,6 +4817,7 @@ jobs:
       # Storage.Kernel.Jvm (Base64 / MD5 / HexFormat / java.io), and the
       # Std.Json JVM kernel underneath the sidecar reads.
       - name: lyric-storage suite on JVM (lyric test --target jvm --features jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --manifest lyric-storage/lyric.toml --target jvm --no-default-features --features jvm
@@ -4729,6 +4827,7 @@ jobs:
       # the previous always-false/no-op stub) against the same
       # resilience_tests.l the .NET target already runs.
       - name: lyric-resilience suite on JVM (lyric test --target jvm --features jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4751,6 +4850,7 @@ jobs:
       # lyric-web Undertow smoke, tests/jvm_server_smoke.l, is wired as its
       # own step below now that #5610/#5444/#5458 landed).
       - name: lyric-auth manifest build on JVM without feature flags (#5571)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4792,6 +4892,7 @@ jobs:
       # same #5571 target-normalized feature-resolution path for the test
       # runner.
       - name: lyric-auth security regression suite on JVM (lyric test --target jvm, #6583)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4817,6 +4918,7 @@ jobs:
       # module-path.txt), and the bundle jar's manifest Class-Path carries
       # the restored Undertow jar paths, so `java -jar` needs no -cp.
       - name: lyric-web Undertow smoke on JVM (tests/jvm_server_smoke.l)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/lyric-web-undertow-jvm-smoke.sh
@@ -4828,6 +4930,7 @@ jobs:
       # call sites, plus the containsKey-gated Option-constructing mapGet
       # intrinsic and the mixed void/value match-arm lowering.
       - name: Map-iteration self-test on JVM (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/map_iteration_jvm_self_test.l
@@ -4837,6 +4940,7 @@ jobs:
       # and the process exit code (the synthesised `main(String[])` wrapper
       # forwards argv and routes the Int return through System.exit).
       - name: Entry-point argv/exit-code check on JVM (lyric build --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4868,6 +4972,7 @@ jobs:
       # pins the __LyricJvmRuntime holder-class capture (Jvm.Codegen's
       # hasMain synthesis + the hostGetCommandLineArgs call-site intrinsic).
       - name: Std.Environment.args() check on JVM (lyric build --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4888,6 +4993,7 @@ jobs:
       # Std.Environment.args() class-init ordering-hazard check on JVM
       # (#6587) — see scripts/ci/check-env-args-ordering.sh's header.
       - name: Std.Environment.args() class-init ordering-hazard check on JVM (lyric build --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/check-env-args-ordering.sh
@@ -4895,6 +5001,7 @@ jobs:
       # Std.Regex ReDoS-timeout enforcement on JVM (#330/#1103, throughput/
       # cap follow-up #6576) — see scripts/ci/check-regex-redos.sh's header.
       - name: Std.Regex ReDoS-timeout check on JVM (lyric build --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/check-regex-redos.sh
@@ -4902,6 +5009,7 @@ jobs:
       # matchSemaphore fault-path permit-release regression on JVM (#6711)
       # — see regex_jvm_semaphore_leak_self_test.l's header.
       - name: Regex JVM semaphore leak self-test (native lyric test --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/regex_jvm_semaphore_leak_self_test.l
@@ -4916,6 +5024,7 @@ jobs:
       # std/_kernel_jvm/process_piped_host.l's read side actually works —
       # the previous BufferedReader.readLine()-based version was unreliable.
       - name: Std.Process piped-spawn real cat round trip on JVM (lyric build --target jvm)
+        if: always()
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -4943,6 +5052,7 @@ jobs:
           grep -qx "failures=0" <<< "$out" || { echo "::error::piped_process_jvm_main reported failures (#6135 regression)"; exit 1; }
 
       - name: Wait for all parallel tests
+        if: always()
         wait-all: true
 
       # docs/58 (D121) wire-templates RUNTIME self-test on JVM — real
@@ -4959,6 +5069,7 @@ jobs:
       # once-off NRE ~65s in) — the #4486/#4841 batch-pressure flake class
       # this job's earlier comments document, and the same remediation.
       - name: Wire-templates self-test on JVM (native lyric test --target jvm)
+        if: always()
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"wire-templates self-test ran: wire_templates_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/wire_templates_self_test.l"
 
@@ -4966,6 +5077,7 @@ jobs:
       # pins invokeinterface-vs-invokevirtual selection for IMFunc default
       # bodies and holder-call sites through an interface-typed binding.
       - name: Interface default-method out/inout self-test on JVM (native lyric test --target jvm)
+        if: always()
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/iface_default_method_out_inout_jvm_self_test.l
 
@@ -4973,6 +5085,7 @@ jobs:
       # helper is only emitted when an erased-receiver .count/.length call
       # actually needs it.
       - name: Lazy __lyricCount self-test on JVM (native lyric test --target jvm)
+        if: always()
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/lazy_lyric_count_jvm_self_test.l
 
@@ -4980,6 +5093,7 @@ jobs:
       # collectFileCtors' own-package-scoped and union-qualified collision
       # keys via a real runtime construction/match.
       - name: Union-case collision self-test on JVM (native lyric test --target jvm)
+        if: always()
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/union_case_collision_jvm_self_test.l
 
@@ -4994,6 +5108,7 @@ jobs:
       # file's own declared type no longer being shadowed by a same-named type
       # it imports (#5976's `ownAwareExternTypes` fix).
       - name: Cross-package collision self-test (native lyric test)
+        if: always()
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_cross_package_collision_self_test.l
 
@@ -5007,6 +5122,7 @@ jobs:
       # now resolves the entry package's own qualified types instead of
       # `error[T0014] unknown qualified type`.
       - name: JVM manifest package-cycle self-test (native lyric test)
+        if: always()
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_manifest_package_cycle_self_test.l
 
@@ -5019,6 +5135,7 @@ jobs:
       # code — not just its aspect/wire templates — compiles into the JVM
       # bundle and the produced JAR runs correctly under `java`.
       - name: JVM path-dependency self-test (native lyric test)
+        if: always()
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_path_dependency_self_test.l
 
@@ -5079,8 +5196,29 @@ jobs:
       # `stdlibSourcesFromCompiledBundle`), then compiles a real consumer
       # against the reconstructed source.
       - name: JVM stdlib compiled-bundle fallback self-test (native lyric test)
+        if: always()
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_stdlib_compiled_bundle_self_test.l
+
+      # Explicit terminal gate (#6788): every step above from "Wait for
+      # parallel tests (JVM batch 0-split)" onward carries `if: always()` so a
+      # failure in one batch no longer silently skips ~40+ downstream steps
+      # (previously ~half the job's coverage never ran once any background
+      # batch failed, since GitHub Actions skips every subsequent step by
+      # default once one fails with no `if:` guard). A step failing still
+      # marks the job `failure` on its own, so this step is a belt-and-braces
+      # summary gate, not the only thing standing between a real regression
+      # and a green check: it re-checks `job.status` (already `failure` if
+      # any earlier step failed) so the job's overall conclusion is never
+      # accidentally masked by whatever the very last `if: always()` step's
+      # own exit code happens to be.
+      - name: Fail job if any batch failed
+        if: always()
+        run: |
+          if [ "${{ job.status }}" != "success" ]; then
+            echo "::error::compiler-self-tests-jvm: one or more self-test batches failed above (see the failing step for details)"
+            exit 1
+          fi
 
   # Numbered backend self-test corpus (docs/59 §9.5, H8) — the ~215 plain
   # `func main` regression programs (`lyric-compiler/msil/msil_self_test_m1..m84`
