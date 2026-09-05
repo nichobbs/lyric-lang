@@ -809,7 +809,10 @@ items marked ∥ are independent and can proceed in parallel.
     native twin — shipped (D-progress-712, #6103)**: `_kernel_native/
     tcp_host.l` (the seam `extern func`s, `hostListen`/`hostConnect`/
     `hostStopListener`/`hostAccept`/`hostAcceptTls`/`hostUpgradeServerTls`/
-    `hostAlpn`/`hostRead`/`hostWrite`/`hostClose`) plus its two gating
+    `hostAlpn`/`hostRead`/`hostWrite`/`hostClose`; this is the ship-time
+    enumeration — see the N9.3 addendum below for `hostCloseListener`,
+    added later and REQUIRED alongside `hostStopListener` for the
+    #6883 TOCTOU fix, not a one-call replacement for it) plus its two gating
     prerequisites, `_kernel_native/encoding_host.l` (`Std.Encoding`, porting
     the JVM twin's pure-Lyric accumulator — native's `lyric_rt` list kernel
     is genuinely byte-typed, so the .NET twin's `List<object>`-erasure
@@ -940,7 +943,13 @@ items marked ∥ are independent and can proceed in parallel.
     `_kernel_native/tcp_host.l`'s `hostStopListener`/`hostAccept` doc
     comments — and confirmed on Linux CI to still wake the accept loop
     with no live connection ever having existed, across ten repeated
-    listener start/stop cycles).
+    listener start/stop cycles). A follow-up review of this same fix
+    (#6883) found a TOCTOU fd-reuse race in closing the wake-pipe/
+    listening-socket fds immediately on signal rather than after the
+    accept thread's confirmed exit — fixed by splitting
+    `hostStopListener` (signal only) from a new `hostCloseListener`
+    (release only, called only after `pthreadJoin` on the accept
+    thread), per D-progress-878's addendum in `docs/03-decision-log.md`.
     **N9.5** lyric-web `serveTls` + ALPN h2 investigated and found ⛔
     BLOCKED on two independent structural gaps, neither a lyric-web nor an
     accept-loop wiring fix (D-progress-852): the h2 FSM is not actually
