@@ -32302,7 +32302,7 @@ materially different, entirely pre-existing crash (`return` inside ANY
 lambda body panics regardless of return-type registration) was discovered
 and filed separately as #6947.
 
-**Related:** `docs/03-decision-log.md` D-progress-877 (full account), #6690,
+**Related:** `docs/03-decision-log.md` D-progress-878 (full account), #6690,
 #6933, #6947.
 
 ### Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
