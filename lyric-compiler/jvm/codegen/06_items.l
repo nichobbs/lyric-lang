@@ -1274,6 +1274,13 @@ pub func lowerRecord(
   // audit, so an un-audited caller locks every non-`var` field exactly as
   // before this fix.
   unsafeFieldLockNames: in Map[String, Bool],
+  // #4870: same-file generic record/union names (`collectFileLocalGenericTypeNames`)
+  // so a field typed as ANOTHER same-file generic instantiation (`Box[T]`) is
+  // emitted with its raw erased class instead of the universal `Object`
+  // erasure — must match `collectFileCasesExtern`'s registry exactly, or the
+  // registered field type and the real field descriptor disagree
+  // (`NoSuchFieldError` at the getfield the registry drives).
+  localTypeNames: in Map[String, Bool],
 ): LRecord {
   val className = pkgName + "/" + decl.name
   // Generic type params erase to `Object` (docs/44 M-1 / Q-J001) so a `T`-typed
@@ -1303,11 +1310,12 @@ pub func lowerRecord(
           LField(
             flags = recordFieldFlags,
             name = f.name,
-            fieldType = typeExprToJvmErasedExtern(
+            fieldType = typeExprToJvmErasedExternL(
               BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty),
               pkgName,
               tps,
-              externTypes
+              externTypes,
+              localTypeNames
             )
           )
         )
@@ -1384,6 +1392,10 @@ pub func lowerUnion(
   pkgName: in String,
   externTypes: in Map[String, String],
   aliasTargets: in Map[String, TypeExpr],
+  // #4870: same-file generic record/union names — see `lowerRecord`'s matching
+  // parameter doc comment.  Must agree with `collectFileCasesExtern`'s
+  // registry exactly.
+  localTypeNames: in Map[String, Bool],
 ): LSealedUnion {
   val baseName = pkgName + "/" + decl.name
   // Generic type params erase to `Object` (no reified generics on the JVM —
@@ -1406,11 +1418,12 @@ pub func lowerUnion(
             LField(
               flags = 0x0001,
               name = name,
-              fieldType = typeExprToJvmErasedExtern(
+              fieldType = typeExprToJvmErasedExternL(
                 BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty),
                 pkgName,
                 tps,
-                externTypes
+                externTypes,
+                localTypeNames
               )
             )
           )
@@ -1420,11 +1433,12 @@ pub func lowerUnion(
             LField(
               flags = 0x0001,
               name = "field" + toString(fi),
-              fieldType = typeExprToJvmErasedExtern(
+              fieldType = typeExprToJvmErasedExternL(
                 BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty),
                 pkgName,
                 tps,
-                externTypes
+                externTypes,
+                localTypeNames
               )
             )
           )
@@ -4135,6 +4149,11 @@ pub func collectFileCasesExtern(
   externTypes: in Map[String, String],
 ): Unit {
   val owner = segmentsToJvmPath(file.packageDecl.path.segments)
+  // #4870: same-file generic record/union names, so a case/record field
+  // typed as ANOTHER same-file generic instantiation (`Box[T]`) registers its
+  // raw erased class instead of the universal `Object` erasure — see
+  // `typeExprToJvmErasedExternL`'s doc comment.
+  val localTypeNames = collectFileLocalGenericTypeNames(file)
   // #6393: same-file `alias X = ...` table so a function-type-aliased field
   // (`record Holder { h: Handler }`) registers its binding-site field type
   // as `Object` exactly like a literal `(Int) -> Int` field already does —
@@ -4162,11 +4181,12 @@ pub func collectFileCasesExtern(
                 case UFNamed(name, ty, _) -> flds.add(
                   JvmCaseField(
                     name = name,
-                    ty = typeExprToJvmErasedExtern(
+                    ty = typeExprToJvmErasedExternL(
                       BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty),
                       owner,
                       tps,
-                      externTypes
+                      externTypes,
+                      localTypeNames
                     ),
                     paramIdx = typeParamIndexOf(ty, tps),
                     dflt = None
@@ -4175,11 +4195,12 @@ pub func collectFileCasesExtern(
                 case UFPos(ty, _) -> flds.add(
                   JvmCaseField(
                     name = "field" + toString(fi),
-                    ty = typeExprToJvmErasedExtern(
+                    ty = typeExprToJvmErasedExternL(
                       BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty),
                       owner,
                       tps,
-                      externTypes
+                      externTypes,
+                      localTypeNames
                     ),
                     paramIdx = typeParamIndexOf(ty, tps),
                     dflt = None
@@ -4204,11 +4225,12 @@ pub func collectFileCasesExtern(
               case RMField(f) -> flds.add(
                 JvmCaseField(
                   name = f.name,
-                  ty = typeExprToJvmErasedExtern(
+                  ty = typeExprToJvmErasedExternL(
                     BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty),
                     owner,
                     tps,
-                    externTypes
+                    externTypes,
+                    localTypeNames
                   ),
                   paramIdx = typeParamIndexOf(f.ty, tps),
                   dflt = f.dflt
@@ -4239,11 +4261,12 @@ pub func collectFileCasesExtern(
               case RMField(f) -> flds.add(
                 JvmCaseField(
                   name = f.name,
-                  ty = typeExprToJvmErasedExtern(
+                  ty = typeExprToJvmErasedExternL(
                     BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty),
                     owner,
                     tps,
-                    externTypes
+                    externTypes,
+                    localTypeNames
                   ),
                   paramIdx = typeParamIndexOf(f.ty, tps),
                   dflt = f.dflt
@@ -4443,6 +4466,42 @@ pub func collectFileDeclaredTypeFqns(file: in SourceFile, into: in Map[String, S
     }
     i = i + 1
   }
+}
+
+// Collect this file's own record/exposed-record/union declaration names
+// (GENERIC or not, unlike `collectFileDeclaredTypeFqns` which deliberately
+// skips generics), keyed by bare short name.  Used by `typeExprToJvmErasedExternL`
+// (#4870) to resolve a same-file generic-record-typed union case / record
+// field (`Branch(left: Box[T], …)` inside `union Tree[T]`) to its raw erased
+// class instead of the universal `Object` erasure `typeExprToJvm`'s
+// `TGenericApp` arm otherwise falls back to.  Mirrors `recordRetClassOf`'s
+// `localRecordNames` pre-scan (#6399) — see that function's doc comment for
+// why this stays scoped to same-file declarations.
+pub func collectFileLocalGenericTypeNames(file: in SourceFile): Map[String, Bool] {
+  val into: Map[String, Bool] = newMap()
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IRecord(decl) -> {
+        if not into.containsKey(decl.name) {
+          into.add(decl.name, true)
+        }
+      }
+      case IExposedRec(decl) -> {
+        if not into.containsKey(decl.name) {
+          into.add(decl.name, true)
+        }
+      }
+      case IUnion(decl) -> {
+        if not into.containsKey(decl.name) {
+          into.add(decl.name, true)
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  into
 }
 
 func dottedPathOfSegments(segments: in List[String]): String {
@@ -5652,6 +5711,12 @@ pub func codegenPackageWithSigsSeeded(
   // Collect extern-type declarations: alias → Java FQN.
   val externTypes = ownAwareExternTypes(file, externSeed)
 
+  // #4870: same-file generic record/union names, threaded into `lowerRecord`/
+  // `lowerUnion` below so a case/record field typed as ANOTHER same-file
+  // generic instantiation (`Box[T]`) is emitted with its raw erased class —
+  // see `typeExprToJvmErasedExternL`'s doc comment.
+  val localTypeNames = collectFileLocalGenericTypeNames(file)
+
   // #6393: same-file `alias X = ...` table, threaded through every function /
   // module-val FuncCtx below (mirrors `externTypes`'s own threading a few
   // lines up) — see `Lyric.BareFuncRef`'s module doc §2. #6413 audit: kept
@@ -5891,7 +5956,8 @@ pub func codegenPackageWithSigsSeeded(
           usesLyricCount,
           importsStdString,
           aliasTargets,
-          unsafeFieldLockNames
+          unsafeFieldLockNames,
+          localTypeNames
         )
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
@@ -5950,7 +6016,8 @@ pub func codegenPackageWithSigsSeeded(
           usesLyricCount,
           importsStdString,
           aliasTargets,
-          unsafeFieldLockNames
+          unsafeFieldLockNames,
+          localTypeNames
         )
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
@@ -5972,7 +6039,7 @@ pub func codegenPackageWithSigsSeeded(
         )
       }
       case IUnion(decl) -> {
-        items.add(LPSealedUnion(su = lowerUnion(decl, pkgName, externTypes, aliasTargets)))
+        items.add(LPSealedUnion(su = lowerUnion(decl, pkgName, externTypes, aliasTargets, localTypeNames)))
       }
       case IConst(_) -> {
       }

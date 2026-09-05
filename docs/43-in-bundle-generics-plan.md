@@ -9,8 +9,30 @@ MemberRefs, reads fields through TypeSpec-parented `ldfld`, and (for unions)
 emits each case as a generic case class extending the open base instantiation
 `Maybe`1<!0>` (a TypeSpec), matched via closed-TypeSpec
 `isinst`/`castclass`/`ldfld`.  Exercised by
-`lyric-compiler/lyric/inbundle_generics_self_test.l` (native `lyric test`, 16
-cases).  **Q-GEN-001 resolved** (see below).
+`lyric-compiler/lyric/inbundle_generics_self_test.l` (native `lyric test`, 36
+cases as of this writing — the file has grown past the 16/28 counts earlier
+revisions of this doc cited; re-check with `grep -c '^test ' <file>` rather
+than trusting a stale count here).  **Q-GEN-001 resolved** (see below).
+
+**#4870 (nested generic instantiation inside a case field) resolved on both
+targets.** A union case field typed as ANOTHER generic instantiation using the
+enclosing type parameter (`Branch(left: Box[T], right: Box[T])` inside `union
+Tree[T]`) is a level-deeper shape than this doc's original slices 1–2 (a bare
+`T` field, or the union/record TYPE itself being generic) validated: the
+FIELD's own type is itself a parameterized generic application over the still-
+open enclosing `T`, not a closed instantiation. The **MSIL** half shipped in
+D-progress-736 (#6388): six coupled defects (nested-`TGenericApp` recursion in
+`typeExprToMsilG`, generics-aware field registration, deferred `MLdfldGeneric`
+FieldSig encoding, nested-position construction-site type-arg inference, a
+dangling-type-var-hint guard, and `Lyric.Mono` never synthesizing inference-
+only ctor decls for generic records) — 6 regression cases landed in
+`inbundle_generics_self_test.l`. The **JVM** half (a separate, foundational
+gap — `typeExprToJvm`'s `TGenericApp` arm erased every user-defined generic
+head unconditionally to `java/lang/Object`, with no raw-type-erasure arm at
+all) shipped in D-progress-886: see `docs/44-jvm-production-readiness-plan.md`
+M-1 for the JVM-side root cause and fix, verified by 4 new cases in
+`lyric-compiler/jvm/generic_jvm_self_test.l`. #4870 is now closed on both
+targets.
 
 **The stage-3 stdlib byte-match is deliberately NOT pursued** (decision recorded
 when #2362 was closed).  Two reasons, both grounded in what shipped:
