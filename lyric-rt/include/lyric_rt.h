@@ -580,6 +580,44 @@ LyricString* lyric_process_stdout(void* op);
 LyricString* lyric_process_stderr(void* op);
 void lyric_process_free(void* op);
 
+/* ── Long-lived piped child stdio (issue #6142) ────────────────────────
+ *
+ * A HELD handle for a child whose stdin/stdout a caller writes/reads on
+ * repeatedly across the child's whole lifetime -- as opposed to
+ * lyric_process_run/lyric_process_start's "capture everything, then
+ * reap" model. Only stdin and stdout are piped; stderr is left
+ * INHERITED from this process (matches the dotnet/JVM kernel twins'
+ * documented contract, `_kernel/process_piped_host.l`'s own module
+ * header) -- capturing-but-never-draining stderr here would risk the
+ * child blocking on a full OS pipe buffer the moment it logged enough.
+ * Both pipe fds are BLOCKING (unlike the batch ops above): a caller
+ * holds this handle across many separate top-level calls with no single
+ * loop driving both directions at once, the same model
+ * lyric_sock_read/lyric_sock_write already use for a TCP connection.
+ *
+ * Lifecycle: spawn (NULL on an OS-level spawn failure -- no handle
+ * exists to free in that case) -> read_line/write_line/is_alive any
+ * number of times in any order -> close (does not itself wait for or
+ * kill the child) or kill/wait_exit first if the caller needs the child
+ * gone. read_line blocks until a complete '\n'-terminated line is
+ * available (a '\r' immediately before it is stripped, matching .NET's
+ * `StreamReader.ReadLine()`), the child closes stdout (a final buffered
+ * partial line is returned once more, then this reports "no more lines"
+ * every subsequent call), or a hard read error occurs. write_line
+ * blocks until the whole line + a trailing '\n' is accepted by the
+ * pipe. is_alive/wait_exit/exit_code share one WNOHANG-then-blocking
+ * reap state (cached once observed, since a second waitpid on an
+ * already-reaped pid fails with ECHILD). */
+void* lyric_process_piped_spawn(const char* path, LyricList* args);
+int32_t lyric_process_piped_read_line(void* p, LyricString** out_line);
+int32_t lyric_process_piped_write_line(void* p, LyricString* line);
+int32_t lyric_process_piped_is_alive(void* p);
+int32_t lyric_process_piped_kill(void* p);
+int32_t lyric_process_piped_wait_exit(void* p, int32_t timeout_ms);
+int32_t lyric_process_piped_exit_code(void* p);
+int32_t lyric_process_piped_close_stdin(void* p);
+void lyric_process_piped_close(void* p);
+
 /* ── TCP sockets + TLS transport (lyric_tls.c) ─────────────────────────
  *
  * The native-target transport seam for the sans-IO `Std.HttpEngine`

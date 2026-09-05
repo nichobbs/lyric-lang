@@ -33547,3 +33547,55 @@ scope, leak-free in every case; full suite 37/37, no regressions.
 **Related:** `docs/03-decision-log.md` D-progress-879 (full account),
 #5545 (fixed by this PR), `native/plan/08-work-items.md` N9.8,
 `native/plan/04-arc-design.md`'s `NativeWeak[T]` section.
+
+## Native `Std.ProcessPipedHost` ships — real fork/pipe long-lived piped-child-stdio kernel (issue #6142)
+
+`_kernel_native/process_piped_host.l` — previously an unconditionally
+fail-fast stub — now implements the real long-lived piped-child-stdio
+contract over a new `lyric-rt` seam (`lyric_process_piped_spawn`/
+`_read_line`/`_write_line`/`_is_alive`/`_kill`/`_wait_exit`/
+`_exit_code`/`_close_stdin`/`_close`): only stdin and stdout are piped,
+stderr is left inherited from this process (matching the dotnet/JVM
+kernel twins' documented contract exactly), and the held handle rides as
+a `Long` (the same `Conn.tlsConnHandle`-style pointer-as-integer idiom
+`_kernel_native/tcp_host.l` already established), since it must survive
+across many separate top-level calls.
+
+Direct end-to-end verification (calling `hostSpawnPiped`/
+`hostPipedReadLineOpt`/etc. directly, not through `Std.Process`'s shared
+facade — see below) proved the kernel correct against real `/bin/cat`,
+`/bin/sh`, and `/bin/echo` children: single- and multi-line round trips,
+line ordering, `closeStdin`-then-clean-exit with a final buffered line,
+kill-mid-run, `waitExit` timeout vs. success, a nonexistent-executable
+spawn (exit 127, not a spawn failure — `execvp` failures inside the
+child are never spawn failures on any target), and real quote/escape
+handling in the re-materialized argv (`parseArgString`, ported from the
+JVM twin's own algorithm, adjusted for two native-specific gaps: no
+`String[i]` bracket indexing on native, issue #6237, worked around here
+with `.substring(i, 1)`; and no executable-prepend, since native's
+`rtPipedSpawn` takes the executable path as its own parameter).
+
+**Two gaps found and filed, not fixed here:** compiling a program that
+calls the ACTUAL caller-facing `Std.Process.spawnPiped` (rather than this
+kernel directly) fails before ever reaching this kernel, for two
+independent, pre-existing compiler reasons — `Std.Process.buildArgString`
+uses `String.replace`, unimplemented on `--target native` (issue #6888);
+and `spawnPiped`/`pipedReadLine`/`pipedWriteLine` each wrap their host
+call in `try/catch`, which `Lyric.LlvmCodegen` unconditionally rejects for
+native (D-N-003, issue #6887, with the Result-seam fix issue #4752
+already used for `runCapture` recommended as the template). Both are
+general compiler/stdlib gaps, not specific to this kernel's own
+correctness, and are out of this change's scope per this repo's "smaller,
+fully-finished slice" standard.
+
+**Verification.** `make -C lyric-rt test` (gcc, clang) green, including
+six new C-level cases, clean under ASan. On real Linux CI (`--target
+native`, real `clang`): `llvm_stdlib_self_test.l` gained a
+`Std.ProcessPipedHost native kernel` case; 19/19 cases in that file pass,
+no regressions.
+
+**Related:** `docs/03-decision-log.md` D-progress-883 (full account),
+#6142 (fixed by this entry), #6887/#6888 (new, the two blockers found and
+filed), #6237 (the bracket-indexing gap this entry's own `parseArgString`
+worked around), `native/plan/08-work-items.md` N5.7,
+`docs/62-jsonrpc-mcp.md` §5.2 (the motivating lyric-mcp stdio transport).
