@@ -791,8 +791,8 @@ output_assembly = "myapp.dll"
 | `Std.Logging` *(lyric-logging)* | Named loggers, six levels, structured fields, JSON/text output | `Logger`, `LogLevel`, `LogField`, `getLogger`, `info`, `warn`, `error`, `field` |
 | `Std.Logging.Aspects` *(lyric-logging)* | Aspect templates for logging | `CallLogging`, `SlowCallAlert`, `ErrorResultLogging` |
 | `OTel` *(lyric-otel)* | OpenTelemetry tracing, metrics, logging | `Tracing`, `Metrics`, `Logging` (pub aspects), `startSpan`, `endSpan` |
-| `Web` *(lyric-web)* | HTTP routing, static files, middleware, ApiError, server entry point | `Router`, `Request`, `Response`, `Handler`, `Middleware`, `ApiError`, `StaticFiles`, `create`, `addGet`, `addPost`, `withStaticFiles`, `withMiddleware`, `dispatch`, `start` |
-| `Web.OpenApi` *(lyric-web)* | OpenAPI 3.1 type vocabulary and builder | `Spec`, `Schema`, `Operation`, `PathItem`, `newSpec`, `addPath` |
+| `Web` *(lyric-web)* | HTTP routing, static files, middleware, background workers, ApiError, server entry point | `Router`, `Request`, `Response`, `Handler`, `Middleware`, `Worker`, `ApiError`, `StaticFiles`, `create`, `addGet`, `addPost`, `addWorker`, `withStaticFiles`, `withMiddleware`, `withSpec`, `dispatch`, `start` |
+| `Web.OpenApi` *(lyric-web)* | OpenAPI 3.1 type vocabulary, builder, and JSON serializer | `Spec`, `Schema`, `Operation`, `PathItem`, `newSpec`, `addPath`, `specToJson` |
 | `Web.Aspects` *(lyric-web)* | Auth and rate-limit aspect templates | `RequiresAuth`, `RateLimit` |
 | `Cache` *(lyric-cache)* | In-memory/disk TTL cache | `CacheBucket`, `inProcess`, `get`, `set`, `delete` |
 | `Db` *(lyric-db)* | Typed SQL query helpers | `DbConnection`, `DbParam`, `execute`, `query`, `queryOne`, `withTransaction` |

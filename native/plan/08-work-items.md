@@ -1879,7 +1879,7 @@ here.
 
 ---
 
-### N9.8 — Fix `and`/`or` short-circuit ARC temp release crossing a non-dominating block (#6645, #6719, #6722) — ✅ SHIPPED (D-progress-878)
+### N9.9 — Fix `and`/`or` short-circuit ARC temp release crossing a non-dominating block (#6645, #6719, #6722) — ✅ SHIPPED (D-progress-882)
 
 Root-caused the heap-corruption bug N9.4's own review found and worked
 around (#6645), which then blocked two further real fixes surfaced
@@ -1925,7 +1925,7 @@ client hammering `Std.HttpHost.hostGetSafe` in a 50,000-iteration loop
 against a local server runs clean, and a 1,500-iteration run under
 `valgrind` reports zero errors (this sandbox has no working
 `clang`-ABI-compatible ASan runtime, so `valgrind` substitutes for the
-project's usual ASan self-test verification — see D-progress-878 for
+project's usual ASan self-test verification — see D-progress-882 for
 the exact commands). Two dedicated cases in
 `llvm_heap_self_test.l` (`-fsanitize=address`, CI-verified) cover the
 `and` and `or` forms directly, each exercising both the skip edge and
@@ -1936,6 +1936,25 @@ protocol-relative `Location` handling and #6722's request-line space
 guard + 65535 port cap both landed as originally attempted, restructured
 branch chains included — with new item coverage in
 `llvm_http_client_self_test.l`.
+
+### N9.8 — Weak-aware List/Map/Task kernels: `NativeWeak[T]` as a collection element or async result — ✅ SHIPPED (D-progress-879, #5545)
+
+`lyric_list_new`/`lyric_map_new`/`lyric_task_complete`'s single boolean
+element/value/result-is-ref flag becomes a tri-state (0 scalar, 1 strong
+ref, 2 weak ref); `lyric-rt/src/lyric_collections.c` gains shared
+`elem_retain`/`elem_release` dispatch helpers used by every List/Map
+push/set/remove/dtor site, and `lyric_async.c`'s `lyric_task_dtor` gains
+the same three-way dispatch inline. `Lyric.LlvmCodegen.refFlagOf` now
+returns 2 for a weak type (checked before `isRefNType`, since
+`NativeWeak[T]` IS ref-typed by that predicate) instead of the #5539
+compile-time rejection. No codegen call-site branching changes needed —
+every consumer already forwarded `refFlagOf`'s result opaquely. The
+issue's own prerequisite (`List[NativeWeak[T]]` failing to parse) no
+longer reproduces on current `main`. Verified: `lyric-rt`'s C unit
+tests pass; three new ASan cases in `llvm_heap_self_test.l` (async
+result, `List[NativeWeak[T]]`, `Map[K, NativeWeak[T]]`) each confirm
+correct upgrade-while-alive AND "does not keep the target strongly
+alive," leak-free; full suite 37/37, no regressions.
 
 ---
 

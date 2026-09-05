@@ -204,17 +204,48 @@ backpressure guarantee). Unlike the `LYRIC_CONFIG_WEB_*` knobs, this one is
 read by the lower-level `Std.HttpServer` transport, so it applies to any
 server built on it.
 
+## Background workers
+
+`Web.addWorker(router, name, intervalMs, worker)` registers a `Web.Worker`
+(an interface — `func tick(): Unit` — not a stored closure or a name
+string) fired every `intervalMs` once the server starts:
+
+```lyric
+record PollWorker {}
+
+impl Web.Worker for PollWorker {
+  func tick(): Unit {
+    // runs on a background thread every intervalMs
+  }
+}
+
+router = Web.addWorker(router, "poller", 2000, PollWorker())
+```
+
+On `--target dotnet` this runs on a real background thread-pool task,
+independent of the accept loop. `--target jvm` registers a worker but does
+not yet fire it (`lyric-web/README.md`'s "Known gaps").
+
+A `tick()` that panics is isolated to that tick — logged, and the loop
+keeps running on its next interval rather than dying silently.
+
 ## OpenAPI: code-first and spec-first
 
-`Web.OpenApi` is a hand-built spec vocabulary, decoupled from `Router` at
-runtime — populate a `Spec` value in your package and run
-`lyric web spec` to emit `openapi.yaml`, or run
-`lyric generate openapi spec.yaml --out src/generated/` to scaffold
-record types and handler stubs from an existing spec. See
-`lyric-web/src/openapi.l`'s module doc comment for the full
+`Web.OpenApi` is a hand-built spec vocabulary — populate a `Spec` value in
+your package, then either:
+
+- Attach it to a running server with `Web.withSpec(router, spec)`, which
+  serves the live OpenAPI 3.1 JSON document at `<pathPrefix>/openapi.json`
+  and a Swagger UI page at `<pathPrefix>/swagger`. Both are ordinary
+  routes, so existing middleware (auth, CORS, rate limiting, …) applies to
+  them like any other route.
+- Render it to a file at build time with `Web.OpenApi.specToJson(spec)`.
+- Or run `lyric generate openapi spec.yaml --out src/generated/` to
+  scaffold record types and handler stubs from an *existing* spec file
+  (spec-first, the other direction).
+
+See `lyric-web/src/openapi.l`'s module doc comment for the full
 schema-to-Lyric-type mapping and the constraint-to-`requires:` table.
-Live OpenAPI JSON / Swagger UI serving is not implemented yet (tracked
-in issue #5360); `Router` doesn't carry a `Spec` at runtime.
 
 ## Aspects
 

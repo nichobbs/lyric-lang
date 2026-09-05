@@ -25,8 +25,10 @@ import Std.Core
 import Std.Collections
 import Std.Environment
 import Std.File
+import Std.Json
 import Std.Testing
 import Web
+import Web.OpenApi as OpenApi
 
 // Explicit @externTarget bindings rather than auto-FFI-resolved
 // `Encoding.get_UTF8().GetString(bytes)` call syntax — see web.l's
@@ -303,7 +305,11 @@ test "dispatch: middleware runs outermost-first around the route handler" {
   router = Web.withMiddleware(router, MarkerMiddleware(tag = "inner"))
   val resp = Web.dispatch(router, getRequest("/traced"))
   match mapGet(resp.headers, "X-Trace") {
-    case Some(trace) -> assertEqual(trace, "outer,inner,", "outer middleware's header wrap runs last (sees inner's result first)")
+    case Some(trace) -> assertEqual(
+      trace,
+      "outer,inner,",
+      "outer middleware's header wrap runs last (sees inner's result first)"
+    )
     case None -> assertTrue(false, "X-Trace header must be present")
   }
 }
@@ -535,4 +541,138 @@ test "withResponseHeader replaces an existing value rather than duplicating it" 
     case Some(v) -> assertEqual(v, "second", "second write wins, no duplicate entries")
     case None -> assertTrue(false, "header must be present")
   }
+}
+
+// #5360: `withSpec` attaches live `/openapi.json` and `/swagger` routes.
+test "withSpec serves /openapi.json and /swagger, and existing routes still work" {
+  var router = Web.create()
+  router = Web.addGet(router, "/ping", TextHandler(status = 200, body = "pong"))
+  val spec = OpenApi.newSpec("Demo API", "0.1.0", "")
+  router = Web.withSpec(router, spec)
+
+  val jsonResp = Web.dispatch(router, getRequest("/openapi.json"))
+  assertEqualInt(jsonResp.status, 200, "/openapi.json status")
+  assertEqual(jsonResp.contentType, "application/json; charset=utf-8", "/openapi.json content type")
+  val jsonBody = decodeUtf8(jsonResp.bodyBytes)
+  assertTrue(jsonBody.contains("\"openapi\":\"3.1.0\""), "/openapi.json body carries the openapi version")
+  assertTrue(jsonBody.contains("\"title\":\"Demo API\""), "/openapi.json body carries the spec title")
+
+  val uiResp = Web.dispatch(router, getRequest("/swagger"))
+  assertEqualInt(uiResp.status, 200, "/swagger status")
+  assertEqual(uiResp.contentType, "text/html; charset=utf-8", "/swagger content type")
+  val uiBody = decodeUtf8(uiResp.bodyBytes)
+  assertTrue(uiBody.contains("/openapi.json"), "/swagger page points at the JSON route")
+  assertTrue(uiBody.contains("swagger-ui"), "/swagger page loads the Swagger UI bundle")
+
+  // withSpec must not disturb routes registered before it.
+  val pingResp = Web.dispatch(router, getRequest("/ping"))
+  assertEqualInt(pingResp.status, 200, "pre-existing /ping route still dispatches")
+}
+
+test "withSpec scopes /openapi.json and /swagger under the router's pathPrefix" {
+  var router = Web.prefix(Web.create(), "/api")
+  val spec = OpenApi.newSpec("Demo API", "0.1.0", "")
+  router = Web.withSpec(router, spec)
+
+  val jsonResp = Web.dispatch(router, getRequest("/api/openapi.json"))
+  assertEqualInt(jsonResp.status, 200, "/api/openapi.json status")
+
+  val unprefixedResp = Web.dispatch(router, getRequest("/openapi.json"))
+  assertEqualInt(unprefixedResp.status, 404, "the unprefixed path does not match")
+}
+
+// #5360 review follow-up: exercise every rendering branch `specToJson` has
+// (schema `$ref` + inline forms, a parameter, a request body, a response,
+// tags/summary/description, servers) — the earlier test above only covered
+// an empty spec. Parses the rendered JSON back with `Std.Json` and reads
+// the fields structurally rather than substring-matching, so a comma or
+// quoting defect anywhere in the ~250 lines of per-type renderers would
+// fail this test even if it happened to still "look like" JSON.
+test "specToJson renders a fully-populated spec correctly" {
+  var spec = OpenApi.newSpec("Full API", "2.0.0", "a full example")
+  spec = OpenApi.addServer(spec, "https://api.example.com")
+  spec = OpenApi.addSchema(spec, "Widget", OpenApi.scalarSchema(OpenApi.SchemaString, "", "a widget name"))
+
+  val param = OpenApi.Parameter(
+    name = "id",
+    location = OpenApi.Query,
+    required = true,
+    description = "widget id",
+    deprecated = false,
+    schema = OpenApi.scalarSchema(OpenApi.SchemaInteger, "int32", "")
+  )
+  val resp = OpenApi.ApiResponse(
+    statusCode = 200,
+    description = "ok",
+    content = [OpenApi.MediaType(contentType = "application/json", schema = OpenApi.refSchema("Widget"))]
+  )
+  val op = OpenApi.Operation(
+    operationId = "getWidget",
+    summary = "Get a widget",
+    description = "",
+    tags = ["widgets"],
+    parameters = [param],
+    requestBody = None,
+    responses = [resp],
+    deprecated = false
+  )
+  val pathItem = OpenApi.PathItem(
+    pattern = "/widgets/{id}",
+    get = Some(value = op),
+    post = None,
+    put = None,
+    delete = None,
+    patch = None,
+    head = None,
+    options = None
+  )
+  spec = OpenApi.addPath(spec, pathItem)
+
+  val json = OpenApi.specToJson(spec)
+  val doc = parseJson(json)
+  val root = rootElement(doc)
+
+  assertEqual(getString(getProperty(root, "openapi")), "3.1.0", "openapi version")
+  val info = getProperty(root, "info")
+  assertEqual(getString(getProperty(info, "title")), "Full API", "info.title")
+  assertEqual(getString(getProperty(info, "version")), "2.0.0", "info.version")
+  assertEqual(getString(getProperty(info, "description")), "a full example", "info.description")
+
+  val serversCur = enumerateArray(getProperty(root, "servers"))
+  var serversCur2 = serversCur
+  assertTrue(arrayMoveNext(serversCur2), "servers has one entry")
+  assertEqual(getString(getProperty(arrayCurrent(serversCur2), "url")), "https://api.example.com", "servers[0].url")
+
+  val widgetSchema = getProperty(getProperty(getProperty(root, "components"), "schemas"), "Widget")
+  assertEqual(getString(getProperty(widgetSchema, "type")), "string", "components.schemas.Widget.type")
+  assertEqual(
+    getString(getProperty(widgetSchema, "description")),
+    "a widget name",
+    "components.schemas.Widget.description"
+  )
+
+  val pathObj = getProperty(getProperty(root, "paths"), "/widgets/{id}")
+  val getOp = getProperty(pathObj, "get")
+  assertEqual(getString(getProperty(getOp, "operationId")), "getWidget", "paths./widgets/{id}.get.operationId")
+  assertEqual(getString(getProperty(getOp, "summary")), "Get a widget", "paths./widgets/{id}.get.summary")
+
+  var tagsCur = enumerateArray(getProperty(getOp, "tags"))
+  assertTrue(arrayMoveNext(tagsCur), "get.tags has one entry")
+  assertEqual(getString(arrayCurrent(tagsCur)), "widgets", "get.tags[0]")
+
+  var paramsCur = enumerateArray(getProperty(getOp, "parameters"))
+  assertTrue(arrayMoveNext(paramsCur), "get.parameters has one entry")
+  val paramObj = arrayCurrent(paramsCur)
+  assertEqual(getString(getProperty(paramObj, "name")), "id", "parameters[0].name")
+  assertEqual(getString(getProperty(paramObj, "in")), "query", "parameters[0].in")
+  assertTrue(getBoolean(getProperty(paramObj, "required")), "parameters[0].required")
+  assertEqual(getString(getProperty(getProperty(paramObj, "schema"), "type")), "integer", "parameters[0].schema.type")
+  assertEqual(getString(getProperty(getProperty(paramObj, "schema"), "format")), "int32", "parameters[0].schema.format")
+
+  val responseObj = getProperty(getProperty(getOp, "responses"), "200")
+  assertEqual(getString(getProperty(responseObj, "description")), "ok", "responses.200.description")
+  val responseSchema = getProperty(getProperty(getProperty(responseObj, "content"), "application/json"), "schema")
+  assertEqual(getString(getProperty(responseSchema, "$ref")), "#/components/schemas/Widget", "responses.200 $ref")
+
+  disposeJson(doc)
 }

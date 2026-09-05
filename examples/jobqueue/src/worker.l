@@ -18,6 +18,7 @@ import JobQueue.Domain
 import JobQueue.Jobs
 import Db
 import OTel
+import Web
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 config Worker {
@@ -84,5 +85,20 @@ pub func workerTick(): Result[Unit, String] {
         }
       }
     }
+  }
+}
+
+// ─── Web.Worker adapter ─────────────────────────────────────────────────────
+/// Registered with `Web.addWorker` in main.l. `Web.Worker` is an interface
+/// (issue #5359), not a stored closure — see `Web.Handler`'s doc comment
+/// (#5363) for why — so `workerTick`'s `Result` is adapted to `Unit` here;
+/// a failed tick is already logged via `OTel.setSpanError` inside
+/// `workerTick` itself, so nothing further to do with the `Err` case.
+pub record JobPollerWorker {
+}
+
+impl Web.Worker for JobPollerWorker {
+  func tick(): Unit {
+    val _ = workerTick()
   }
 }
