@@ -285,6 +285,19 @@ val area = match shape {
 
 Adding a new variant to a `pub` union is a breaking change.
 
+Unions have structural equality by default (`==`/`!=`), unconditionally — no
+`@derive(Equals)` annotation is needed, and this applies equally to a generic
+union such as `Option[T]`/`Result[T, E]`. Two values compare equal iff they
+are the same case AND every field of that case compares equal (recursively,
+so a case field that is itself a record/union/nested `Option` is compared
+structurally too, provided that nested type also has real structural
+equality — see the `@derive(Equals)` caveat on records in §2.4). Before
+D-progress-888 this held only for `Some(x) == Some(x)` where both sides were
+the literal same expression evaluated twice (or coincided by reference); every
+other comparison — including `None == None` and two independently-constructed
+`Some` values with equal payloads — silently fell back to reference/tag
+identity (issues #6835, #6120).
+
 ### 2.6 Enums
 
 ```
