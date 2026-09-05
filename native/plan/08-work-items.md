@@ -1933,11 +1933,26 @@ correctness gaps confirmed against current `main`:
   import graph) since no stdlib pair currently has both a colliding
   trailing name AND a not-yet-lowerable body to regression-test the
   full walk end-to-end.
+- **Review fix (#6952) — `addPkgImports` first-file-wins dropped
+  multi-file package imports.** Caught by `claude-review`: `addPkgImports`
+  returned early once a package name was already a key in `pkgImports`,
+  so a package split across multiple files (first-class per
+  `docs/19-multi-file-packages.md`) only contributed the FIRST file's
+  imports — every later file's imports for that package were silently
+  dropped, which could wrongly narrow `pkgTransitiveClosure` away from a
+  package the package's own later file genuinely imports. Fixed by
+  merging into the existing list under `pkg` instead of skipping. New
+  test in `llvm_codegen_self_test.l` parses two `SourceFile`s sharing one
+  package with disjoint imports and asserts the merged closure contains
+  both. Also applied the review's two SUGGESTIONs: an `out Long`
+  mode-symmetry case in `llvm_inout_self_test.l`, and a clearer
+  `lowerByRefArg` panic message.
 
 **Verified:** full existing native self-test suite re-run under real
-ASan (`llvm_codegen_self_test.l` 34/34, `llvm_enum_case_resolve_self_test.l`
-7/7, `llvm_inout_self_test.l` 11/11, `llvm_project_self_test.l` 10/10,
-`llvm_stdlib_self_test.l` 18/18, `llvm_http_client_self_test.l` 16/16),
+ASan after both the original fixes and the #6952 review fix
+(`llvm_codegen_self_test.l` 35/35, `llvm_enum_case_resolve_self_test.l`
+7/7, `llvm_inout_self_test.l` 12/12, `llvm_project_self_test.l` 10/10,
+`llvm_stdlib_self_test.l` 18/18, `llvm_http_client_self_test.l` 13/13),
 no regressions.
 
 ---

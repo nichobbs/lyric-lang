@@ -672,3 +672,29 @@ test "pkgTransitiveClosure follows a diamond import graph without infinite loopi
   assertTrue(closure.containsKey("C"), "diamond closure includes C")
   assertTrue(closure.containsKey("D"), "diamond closure includes D (reached via both B and C)")
 }
+
+// A package can span multiple files (`docs/19-multi-file-packages.md`),
+// each declaring its own import list. `addPkgImports` used to skip every
+// file after the first one seen for a given package, silently dropping
+// that later file's imports — narrowing `pkgTransitiveClosure` away from
+// a package a multi-file package's later file genuinely reaches, which
+// could wrongly exclude the correct `bareTrailing` UFCS candidate (#6952).
+test "addPkgImports merges import lists across multiple files of the same package (#6952)" {
+  val fileA = parse("package Multi\n" + "import Std.Core\n" + "func fromFileA(): Int { 1 }\n").file
+  val fileB = parse("package Multi\n" + "import Std.Collections\n" + "func fromFileB(): Int { 2 }\n").file
+
+  val pkgImports: Map[String, List[String]] = newMap()
+  addPkgImports(pkgImports, fileA)
+  addPkgImports(pkgImports, fileB)
+
+  val closure = pkgTransitiveClosure(pkgImports, "Multi")
+  assertTrue(closure.containsKey("Multi"), "closure includes the root package itself")
+  assertTrue(
+    closure.containsKey("Std.Core"),
+    "closure includes the first file's import, not dropped by the second file"
+  )
+  assertTrue(
+    closure.containsKey("Std.Collections"),
+    "closure includes the second file's import, not shadowed by the first file"
+  )
+}

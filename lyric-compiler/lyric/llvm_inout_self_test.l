@@ -346,7 +346,24 @@ test "an Int local passed to an inout Long parameter is a loud diagnostic, not a
     "}\n"
   assertPanicsWith(
     "Int local against an inout Long parameter",
-    "must match the parameter's exactly",
+    "must match the parameter's declared type exactly",
+    { -> codegenOnly(src) }
+  )
+}
+
+test "an Int local passed to an out Long parameter is a loud diagnostic, not a silent width mismatch (#6813)" {
+  // Same width-mismatch hazard as the `inout Long` case above, but for
+  // `out` mode — `lowerByRefArg`'s panic guard applies identically to
+  // both by-ref parameter modes since neither copies a widened value.
+  val src = "package T\n" + "func setTo(x: out Long, v: in Long): Unit {\n" + "  x = v\n" + "}\n" +
+    "func main(): Int {\n" +
+    "  var n = 0\n" +
+    "  setTo(n, 5)\n" +
+    "  0\n" +
+    "}\n"
+  assertPanicsWith(
+    "Int local against an out Long parameter",
+    "must match the parameter's declared type exactly",
     { -> codegenOnly(src) }
   )
 }
@@ -362,7 +379,7 @@ test "a record field passed to a mismatched-type inout parameter is a loud diagn
     "}\n"
   assertPanicsWith(
     "Int field against an inout Long parameter",
-    "must match the parameter's exactly",
+    "must match the parameter's declared type exactly",
     { -> codegenOnly(src) }
   )
 }

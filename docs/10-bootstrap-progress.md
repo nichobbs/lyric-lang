@@ -33547,14 +33547,29 @@ confirmed still present against current `main` before fixing:
   never the correct one. Still over-inclusive when colliding packages
   ARE co-imported (the general case still needs type inference).
 
-Verified against the full existing native self-test suite under real
-ASan: `llvm_codegen_self_test.l` 34/34 (2 new `pkgTransitiveClosure`
-unit cases), `llvm_enum_case_resolve_self_test.l` 7/7 (1 new item),
-`llvm_inout_self_test.l` 11/11 (2 new cases),
-`llvm_project_self_test.l` 10/10, `llvm_stdlib_self_test.l` 18/18,
-`llvm_http_client_self_test.l` 16/16 — no regressions.
+A `claude-review` finding on this PR caught a real soundness gap in
+`addPkgImports` (#6952): it skipped once a package name was already a
+key in `pkgImports`, so a package split across multiple files
+(first-class per `docs/19-multi-file-packages.md`) only contributed its
+FIRST file's imports to the closure computation — every later file's
+imports were silently dropped, which could wrongly narrow
+`pkgTransitiveClosure` away from a package the package's own later file
+genuinely reaches. Fixed by merging into the existing list under `pkg`
+instead of skipping; a new test parses two `SourceFile`s sharing one
+package with disjoint imports and asserts the merged closure contains
+both.
 
-**Related:** `docs/03-decision-log.md` D-progress-878 (full account),
+Verified against the full existing native self-test suite under real
+ASan, after both the original fixes and the #6952 review fix:
+`llvm_codegen_self_test.l` 35/35 (3 new `pkgTransitiveClosure`/
+`addPkgImports` unit cases), `llvm_enum_case_resolve_self_test.l` 7/7
+(1 new item), `llvm_inout_self_test.l` 12/12 (3 new cases, incl. an
+`out Long` mode-symmetry case), `llvm_project_self_test.l` 10/10,
+`llvm_stdlib_self_test.l` 18/18, `llvm_http_client_self_test.l` 13/13 —
+no regressions.
+
+**Related:** `docs/03-decision-log.md` D-progress-878 (full account,
+including the #6952 review fix),
 #6740/#6813/#6625 (fixed by this PR), `native/plan/08-work-items.md`
 N9.8, `native/plan/04-arc-design.md` Rule 5 (the by-ref-argument-ownership
 rule #6813's fix protects).

@@ -41250,11 +41250,13 @@ and record field) when the argument's actual type doesn't exactly match
 the callee's declared by-ref parameter type — matching N9.6's own "loud
 diagnostic, never silent miscompile" policy for every other out/inout
 scope cut (extern funcs, protected types, async, unaddressable l-value
-shapes). Two new cases in `llvm_inout_self_test.l`: an `Int` local
-against an `inout Long` parameter, and an `Int` record field against the
-same — both asserted via `assertPanicsWith` to panic with a message
-containing "must match the parameter's exactly" before `lowerNativePackage`/
-clang ever run.
+shapes). Three cases in `llvm_inout_self_test.l`: an `Int` local against
+an `inout Long` parameter, the same shape against an `out Long`
+parameter (mode symmetry — `lowerByRefArg`'s guard applies identically
+to both by-ref modes), and an `Int` record field against an `inout
+Long` parameter — all asserted via `assertPanicsWith` to panic with a
+message containing "must match the parameter's declared type exactly"
+before `lowerNativePackage`/clang ever run.
 
 **#6625 — bare-name UFCS reachability fallback is over-inclusive across
 colliding trailing names.** #6103 item D (PR #6622) added a bare
@@ -41300,7 +41302,7 @@ co-imported by the same program (the general case genuinely needs type
 inference), so this is documented as a partial fix, not a closure of the
 underlying issue.
 
-Two new unit-level cases in `llvm_codegen_self_test.l` (new `import
+Two unit-level cases in `llvm_codegen_self_test.l` (new `import
 Lyric.LlvmBridge`) exercise `pkgTransitiveClosure` (now `pub`) directly
 against hand-built `pkgImports` adjacency maps — a root with a reachable
 direct import, a transitively-reachable import-of-an-import, and an
@@ -41313,23 +41315,54 @@ per the issue's own note, no such stdlib pair currently exists — so this
 tests the new closure computation directly rather than synthesizing an
 artificial unlowerable stdlib function.
 
+**Review fix (#6952) — `addPkgImports` first-file-wins dropped
+multi-file package imports.** `claude-review` on this PR's initial
+commit caught a real soundness gap in `addPkgImports`: it returned early
+once a package name was already a key in `pkgImports`
+(`if pkgImports.containsKey(pkg) { return }`), so for a package split
+across multiple files (multi-file packages are first-class,
+`docs/19-multi-file-packages.md` — e.g. this very repo's `Lyric.Parser`,
+whose `parser_cst.l` imports `Std.String` but `parser_core.l`/
+`parser_exprs.l` don't), only the FIRST file processed contributed its
+imports to the map; every later file's imports for that same package
+were silently dropped. Since `pkgTransitiveClosure`'s BFS only walks
+edges actually present in `pkgImports`, a multi-file package whose
+import-bearing file was processed second could wrongly exclude a
+genuinely-correct `bareTrailing` candidate — precisely the failure mode
+the PR's own soundness argument claimed could not happen. Fixed by
+merging into whatever list already sits under `pkg` (via `mapGet` +
+in-place `List.add`, the same accumulate-under-a-key idiom
+`registerBareTrailingSegment` already uses) instead of skipping after
+the first file; duplicate import entries across files are harmless since
+`pkgTransitiveClosure`'s BFS already dedupes via its own `seen` map. New
+test `"addPkgImports merges import lists across multiple files of the
+same package (#6952)"` in `llvm_codegen_self_test.l`: two parsed
+`SourceFile`s sharing one `package Multi` with disjoint import lists,
+asserting the merged closure contains both. Also applied the review's
+two SUGGESTIONs: an `out Long` mode-symmetry case alongside the existing
+`inout Long` one in `llvm_inout_self_test.l`, and reworded the
+`lowerByRefArg` panic message ("...must match the parameter's declared
+type exactly...") for clarity.
+
 **Verified.** Full existing native self-test suite re-run under real
 ASan (this sandbox's `libclang-rt-18-dev` gap from earlier native-backend
 sessions is resolved — `apt-get install` succeeded once network access
-was retried): `llvm_codegen_self_test.l` 34/34,
+was retried) after both the original fixes and the #6952 review fix:
+`llvm_codegen_self_test.l` 35/35 (incl. the new `addPkgImports` case),
 `llvm_enum_case_resolve_self_test.l` 7/7, `llvm_inout_self_test.l`
-11/11, `llvm_project_self_test.l` 10/10 (multi-package reachability
-path, unaffected since every own-package function is already an
-unconditional reachability root — #6625's narrowing only bites the
-BUNDLED STDLIB closure, reached purely via imports), `llvm_stdlib_self_test.l`
-18/18, `llvm_http_client_self_test.l` 16/16 — no regressions from either
-the reachability narrowing or the two new diagnostics.
+12/12 (incl. the new `out Long` case), `llvm_project_self_test.l` 10/10
+(multi-package reachability path, unaffected since every own-package
+function is already an unconditional reachability root — #6625's
+narrowing only bites the BUNDLED STDLIB closure, reached purely via
+imports), `llvm_stdlib_self_test.l` 18/18, `llvm_http_client_self_test.l`
+13/13 — no regressions from the reachability narrowing, the two new
+diagnostics, or the `addPkgImports` merge fix.
 
-**Related:** #6740, #6813, #6625 (all fixed here), D-progress-877
-(#6645, the sibling native-codegen ARC bug this session also fixed, in a
-separate PR), `native/plan/08-work-items.md` N9.8,
-`native/plan/04-arc-design.md` (Rule 5, the by-ref-argument-ownership
-rule #6813's fix protects).
+**Related:** #6740, #6813, #6625 (all fixed here), #6952 (review-finding
+follow-up, fixed here too), D-progress-877 (#6645, the sibling
+native-codegen ARC bug this session also fixed, in a separate PR),
+`native/plan/08-work-items.md` N9.8, `native/plan/04-arc-design.md`
+(Rule 5, the by-ref-argument-ownership rule #6813's fix protects).
 
 ## D-progress-877 — `lyric-grpc`: server hosting confirmed blocked by the same #6581 gap as unary/streaming; no bindable non-generic subset found (#6592, #5409)
 

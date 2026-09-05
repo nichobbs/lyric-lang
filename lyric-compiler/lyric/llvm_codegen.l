@@ -2643,7 +2643,7 @@ func lowerByRefArg(ctx: in Ctx, insns: in List[NInsn], ex: in Expr, declTy: in N
             "Lyric.LlvmCodegen: out/inout argument '" + name + "' has type '" + nTypeToIrString(actualTy) +
               "' but the parameter declares 'inout/out " +
               nTypeToIrString(declTy) +
-              "' — a by-ref argument's type must match the parameter's exactly for --target native " +
+              "' — a by-ref argument's type must match the parameter's declared type exactly for --target native " +
               "(no numeric widening across an out/inout boundary, since the callee aliases the caller's " +
               "storage directly rather than copying a widened value)"
           )
@@ -2677,7 +2677,7 @@ func lowerByRefArg(ctx: in Ctx, insns: in List[NInsn], ex: in Expr, declTy: in N
           "Lyric.LlvmCodegen: out/inout argument '." + fieldName + "' has type '" + nTypeToIrString(fieldTy) +
             "' but the parameter declares 'inout/out " +
             nTypeToIrString(declTy) +
-            "' — a by-ref argument's type must match the parameter's exactly for --target native " +
+            "' — a by-ref argument's type must match the parameter's declared type exactly for --target native " +
             "(no numeric widening across an out/inout boundary, since the callee aliases the caller's " +
             "storage directly rather than copying a widened value)"
         )

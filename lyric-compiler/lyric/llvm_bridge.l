@@ -898,18 +898,28 @@ func appendBundledUnits(
 /// declaring package (#6625): the per-package adjacency `bareTrailing`
 /// narrowing walks to approximate "could this call site's package
 /// actually reach that candidate's declaring package via imports."
-func addPkgImports(pkgImports: in Map[String, List[String]], f: in SourceFile): Unit {
+///
+/// A package can span multiple files (`docs/19-multi-file-packages.md`),
+/// each declaring its own import list, so this MERGES into whatever list
+/// already sits under `pkg` rather than skipping once one file has been
+/// seen — a first-file-wins skip silently dropped every later file's
+/// imports for the same package, which could wrongly narrow `bareTrailing`
+/// away from a genuinely-correct candidate (#6952).
+pub func addPkgImports(pkgImports: in Map[String, List[String]], f: in SourceFile): Unit {
   val pkg = dottedPath(f.packageDecl.path)
-  if pkgImports.containsKey(pkg) {
-    return
+  val imps: List[String] = match mapGet(pkgImports, pkg) {
+    case Some(existing) -> existing
+    case None -> {
+      val fresh: List[String] = newList()
+      pkgImports.add(pkg, fresh)
+      fresh
+    }
   }
-  val imps: List[String] = newList()
   var i = 0
   while i < f.imports.count {
     imps.add(dottedPath(f.imports[i].path))
     i = i + 1
   }
-  pkgImports.add(pkg, imps)
 }
 
 /// BFS transitive closure of packages reachable from `root` via imports
