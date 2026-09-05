@@ -41543,3 +41543,373 @@ spec-first direction.
 `docs/57-stdlib-ecosystem-library-review.md` §7 (the `lyric web spec`
 CLI-command gap this surfaced, left open), `lyric-web/src/openapi.l`
 module header.
+
+## D-progress-882 — #6815 items 2/3(a): `--triple`/`--opt` project-mode threading + `lyric run --manifest --target native`
+
+**Context.** #6809 shipped `--target native` support for a project's own
+`[project.packages]` (D-progress-854), explicitly scoping out three
+follow-ups tracked as #6815: (1) cross-project `[dependencies]` crashing
+rather than degrading cleanly, (2) `--triple`/`--opt` CLI flags having no
+effect on a manifest native build, and (3) `lyric run`/`lyric test`'s
+manifest modes still hard-refusing native outright.
+
+Verifying #6815 against `main` found item 1(a) (the crash → clean-skip
+half of item 1) already fixed, landed alongside #6809 itself
+(`workspace_builder.l`'s `buildWorkspaceDeps` skips `{ workspace = true }`
+dependencies unconditionally for `Native`, mirroring the pre-existing
+`Jvm` skip) — verified by re-reading `workspace_builder.l:101-109` and its
+`#6820`/`#6815 item 1` comments, no code change needed there. Item 1(b)
+(compiling a dependency's source into the native bundle) remains a
+separate, larger design task and is left open.
+
+**This entry covers items 2 and 3(a).**
+
+**Item 2.** `buildProjectFromManifest` (`cli/cli_build.l`) gained two
+trailing parameters, `nativeTriple`/`nativeOpt`, threaded from `cmdBuild`'s
+already-parsed `--triple`/`--opt` flags (`tripleArg`/`optArg`). The
+native-project branch's `effTriple`/`effOpt` resolution now starts from
+the CLI value and only falls back to the manifest's `[native]` table when
+it is empty — the exact precedence `buildOneNativeWithFeatures` already
+used for single-file native builds. Widening `buildProject` itself (the
+~20-call-site public entry point used throughout the CLI and self-test
+suite) was avoided: a new `buildProjectWithNativeFlags` wrapper carries
+the two extra parameters, used only by `cmdBuild`'s manifest branch, so
+every other `buildProject` caller (self-tests included) is untouched.
+
+**Item 3(a).** `runProjectOnce` (`cli/cli_run.l`) unconditionally refused
+`--target native` with "does not yet support manifest (multi-package)
+projects" — even though the `buildProject` call three lines above it had
+already succeeded and produced a real, directly-runnable native
+executable at `projectBinOutputPath`'s extensionless path. The `Native`
+match arm now runs that binary via `Std.Process.run`, forwarding
+`userArgs` and returning its real exit code, mirroring `runOnce`'s
+existing single-file `Native` case verbatim. `runProjectOnce` is now
+`pub`, following the `buildProject`/#5819 precedent, so
+`cli_run_native_project_self_test.l` can drive it directly.
+
+**Item 3(b) — deliberately deferred.** `lyric test --manifest ...
+--target native` (multi-package test suites) is unchanged.
+`cmdTestManifest`'s dotnet/jvm implementation is restored-DLL-centric
+(workspace/path dependency resolution, per-package DLL colocation) with
+no native analog — native has no restored-binary concept at all, so a
+native test-manifest path needs its own design (compiling
+`[project.tests]` entries together with `[project.packages]` through
+`emitNativeProject`, one binary per test target, and TAP-output handling
+under native's no-exception-unwinding constraint per D-N-003/D-N-018).
+That is a distinctly larger slice than items 2/3(a) above and is left
+open against #6815 rather than folded into this PR at reduced quality.
+
+**Verification.** `cli_run_native_project_self_test.l` (new,
+`lyric-compiler/lyric/`, wired into
+`scripts/ci/native-backend-self-tests.sh`) exercises both items at the
+exact CLI entry points a real `lyric build`/`lyric run` invocation drives:
+an empty `--triple`/`--opt` still builds via the host default; a bogus
+`--triple` CLI override (with no manifest `[native]` table to mask a
+silently-ignored value) now reaches `clang` and fails the build, proving
+the plumbing rather than merely that *some* build occurred; a
+single-package native project run through `runProjectOnce` returns the
+binary's real exit code instead of the old hard-refusal; and forwarded
+`userArgs` reach the binary's `Environment.args()` (which includes
+`argv[0]`, per `lyric_rt.h`'s `lyric_args_get` convention, so 2 forwarded
+args plus argv[0] is 3).
+
+**Addendum (post-review, same PR #6899).** Two `claude-review` SUGGESTION
+findings on this PR's own diff exposed real gaps in this entry's scope,
+fixed in the same PR rather than filed as follow-ups:
+
+1. `WatchAction.BuildProj` carried no `nativeTriple`/`nativeOpt` fields at
+   all, and `runWatchAction`'s arm called plain `buildProject` (always
+   empty triple/opt) instead of `buildProjectWithNativeFlags` — so item 2
+   was fixed for the non-watch dispatch only; `--watch --manifest ...
+   --target native --triple ...`/`--opt ...` silently dropped both flags on
+   every rebuild. Fixed by adding the two fields to `BuildProj` and routing
+   `runWatchAction`'s arm through `buildProjectWithNativeFlags`. New
+   self-test: `runWatchAction` driven directly with a bogus triple under
+   `--watch`, confirming it now reaches `clang` and fails exactly like the
+   non-watch case (both `WatchAction` and `runWatchAction` made `pub` for
+   this, following the `runProjectOnce`/#5819 precedent already used
+   elsewhere in this same PR).
+2. The project-mode branch (`positional.count == 0` in `cmdBuild`) passed
+   the raw `optArg` straight through to `buildProjectFromManifest`/
+   `buildProjectWithNativeFlags` without ever calling
+   `resolveNativeOptDefault` (D-progress-879's fix, landed in the SAME PR) —
+   so a project-mode `--target native` build under the default `--debug`
+   profile still fell through to `linkAndEmitNative`'s old hardcoded `-O2`,
+   inconsistent with the single-file path this same PR fixes for #6263.
+   Fixed by computing `effOptArgProj = resolveNativeOptDefault(optArg,
+   Some(mfPath), target, axes.profile)` once, right after `axes` is
+   resolved, and threading it (instead of raw `optArg`) into all three
+   downstream call sites (`BuildProj` construction,
+   `buildProjectFromManifest`, `buildProjectWithNativeFlags`). Not
+   independently self-tested beyond `resolveNativeOptDefault`'s own
+   precedence-table tests (D-progress-879) plus code inspection — `cmdBuild`
+   itself is not `pub` (unlike `runWatchAction`/`runProjectOnce`/
+   `buildProject`, none of the `cmdXxx` dispatchers in this codebase are,
+   `cmdVersion`/`cmdUpgrade` aside), and observing a successful build's
+   resolved `-O` level from outside would need new instrumentation broader
+   than this fix warrants.
+
+**Related:** #6815, #6809, D-progress-854, D-progress-852,
+`docs/20-project-as-dll.md` §"Native scope note",
+`docs/10-bootstrap-progress.md`'s #6815 items 1(a)/2/3(a) entry,
+`docs/01-language-reference.md` §13.1/13.4 (`lyric build`/`lyric run`
+native project entries).
+
+## D-progress-883 — #6263 (partial): native `-O` level now defaults from the build profile axis
+
+**Scope decision.** #6263 bundles two independent asks: (1) thread the
+resolved `BuildProfile` through to backend codegen so `--release` has *some*
+observable effect beyond the `build_profile` define, and (2) decide — as an
+explicit language-semantics call, not just plumbing — whether integer
+overflow should wrap under `--release` and panic under `--debug` (as
+`docs/01-language-reference.md` §2 currently describes) or whether the
+reference should be corrected to say overflow always panics regardless of
+profile.
+
+This entry closes (1) for the one target where it's a clean, safe,
+independently-testable change — native's clang `-O` level — and explicitly
+leaves (2) open rather than rushing it. Investigating the overflow claim
+empirically (a runtime `Int64.MaxValue + 1` on `--target dotnet`) produced an
+inconclusive/surprising result (neither a clean wrap to `Int64.MinValue` nor
+a panic) that needs dedicated root-causing before any decision-log entry
+about overflow semantics can be trusted — asserting a conclusion here off one
+quick probe would be worse than leaving the question open. **#6263 stays
+open** for the overflow half; do not close it on this entry alone.
+
+**What shipped.** `Lyric.LlvmBridge.linkAndEmitNative` has always defaulted
+an empty `optLevel` to a hardcoded `"2"`, with no profile input at all — a
+bare `lyric build --target native file.l` (implicit `--debug` profile) and
+`lyric build --release --target native file.l` produced identically
+optimized binaries. `cli/cli_build.l` gained `resolveNativeOptDefault`
+(`pub`, unit-tested directly): explicit `--opt` wins, then the manifest's
+`[native] opt_level`, then — only when neither says anything — the profile
+axis: `release` → `"2"` (unchanged from the old hardcoded default),
+`debug` (the default profile) → `"0"`. Resolved once at `cmdBuild`'s
+single-file dispatch (the only place with both a resolved `BuildProfile` and
+the native target check), threaded into both the immediate build call and
+the `--watch` loop's `BuildFile` record — `buildOneNativeWithFeatures`
+itself keeps its existing signature and its own internal `""`-passthrough
+behavior unchanged.
+
+**Why this is safe despite changing a default.** `lyric build --target
+native <file>` with no `--release`/`--opt`/manifest override now compiles at
+`-O0` instead of `-O2` — a genuine, intentional behavior change matching
+the language reference's already-designed profile axis (docs/63 §5.2
+Q-BP-003). It does not, however, touch any of this repo's ~166 existing
+native self-test cases: every one of them calls `Lyric.Cli.buildOneNative`/
+`buildOneNativeWithFeatures` directly with an explicit `""` opt string,
+never through `cmdBuild`'s argv-parsing layer — so they keep hitting the
+original hardcoded `linkAndEmitNative` default unchanged. Only a build that
+actually goes through the CLI's `--target native` dispatch is affected,
+which is exactly the surface `#6263` asks to fix.
+
+**Verification.** Five new `cli_build_self_test.l` cases pin
+`resolveNativeOptDefault`'s full precedence table (explicit `--opt` >
+manifest `[native] opt_level` > profile default; non-Native targets are a
+no-op) — pure-function tests, no clang/lyric-rt dependency, so they run in
+the standard `make self-test NAME=cli_build` loop rather than needing the
+native-backend CI job.
+
+**Related:** #6263 (stays open — overflow semantics undecided),
+`docs/63-build-profiles-and-debugger.md` §3.1/§5.2 (the profile axis this
+extends), `docs/01-language-reference.md` §13.1 (native build defaults),
+`lyric-compiler/lyric/llvm_bridge.l` (`linkAndEmitNative`'s pre-existing
+hardcoded default, now only reached when nothing upstream supplies a
+value).
+
+## D-progress-884 — #4638 closed: `scripts/patch_interface_impl.py` removed, stage-0 seed emits sorted InterfaceImpl natively
+
+**Context.** #4638 tracked a bootstrap-grade workaround: the stage-0 seed
+binary (an older self-hosted `lyric` release, downloaded by
+`scripts/bootstrap.sh` to bootstrap-compile the CURRENT source into
+`.bootstrap/stage1/Lyric.Stdlib.dll`) used to emit an unsorted
+`InterfaceImpl` (0x09) metadata table, which the CLR's loader rejects
+(`BadImageFormatException`, ECMA-335 §II.22.23). `scripts/patch_interface_impl.py`
+did binary surgery on the produced DLL to sort the table and set the
+`SortedTables` bit before `make aot` could link against it. The self-hosted
+emitter itself (`lyric-compiler/msil/tables.l:781`) has sorted
+`InterfaceImpl` at serialization time for a long while — the patcher only
+ever compensated for the SEED's stale ABI, never for current source.
+
+**Removal criteria (from #4638 itself).** "Close this issue only once a
+seed release built from post-fix source is in use and CI confirms the patch
+step is a no-op."
+
+**Verification.** Ran `scripts/patch_interface_impl.py` directly against a
+freshly-built `.bootstrap/stage1/Lyric.Stdlib.dll`, twice:
+
+1. Seeded from `v0.6.1` (`scripts/bootstrap.sh`'s hardcoded last-resort
+   fallback version, `LYRIC_BOOTSTRAP_FALLBACK_VERSION`) — output: `Already
+   sorted: True` / `Table already sorted and sorted bit set — no patch
+   needed.`
+2. Seeded from `v0.6.3` (the actual current latest GitHub release, fetched
+   directly via its `releases/download/` asset URL — the sandbox's own
+   `/releases` API LISTING is blocked by this session's network policy, but
+   direct asset downloads are not) — identical no-op result.
+
+Both the fallback pin and the real latest release are unambiguously built
+from post-tables.l-fix source (the fix has been in place since long before
+either), so the patcher has had nothing to do for a long time. Removed
+`scripts/patch_interface_impl.py` and its invocation in `Makefile`'s `aot`
+target (previously ran unconditionally whenever
+`.bootstrap/stage1/Lyric.Stdlib.dll` existed, immediately before the
+`dotnet build bootstrap/src/Lyric.Cli.Aot` step). `make lyric` was
+re-verified end-to-end after the removal (stage1 → AOT → `./bin/lyric
+--version` all succeeded) to confirm nothing implicitly depended on the
+patch step running.
+
+**#2444 (target-gating backend-bridge imports via `@cfg(target)`,
+D-N-013) — investigated alongside, left OPEN.** #2444's blocker was "barred
+by the no-new-F# rule until stage-0 retires" — F# has since been fully
+removed repo-wide (`CLAUDE.md`'s "No F# code allowed" section), so that
+specific historical blocker no longer applies. However, the issue is
+explicitly filed as a **lower-priority optimization** (smaller/faster
+type-check closure, not a correctness fix — the original correctness driver
+was independently fixed by #2426), and its implementation is a genuinely
+new PARSER FEATURE (annotations on `import` declarations — neither the AST
+nor the parser accepts `@…` before `import` today), plus `cfg.l` per-import
+erasure logic and multi-target unified-compiler build changes. That is
+substantially more design and implementation work than fits this session's
+scope alongside the other build-system-toolchain fixes in this PR. Leaving
+#2444 open with this status noted; a future session can pick up its
+"What it requires" list with the F#-retirement blocker crossed off.
+
+**Related:** #4638 (closed by this entry), #2444 (status updated, stays
+open), `lyric-compiler/msil/tables.l:781` (the emitter-side sort fix this
+patcher compensated for), `docs/23-fsharp-shim-elimination.md`.
+
+## D-progress-885 — #5611: workspace-dep feature/target staleness stamp; `stage1.stamp` keyed on build start, not completion
+
+**Part 1 — `checkDllIsStale` ignored the feature set.** A workspace
+dependency's compiled DLL was cached by mtime alone
+(`cli/workspace_builder.l::checkDllIsStale`): comparing the DLL's mtime
+against the manifest's and every `.l` source file's. Building the SAME
+dependency under a different `--features` selection (or `--target`) leaves
+every file on disk with the same mtime it had before — nothing was
+touched — so the stale check reported "fresh" and silently reused a DLL
+compiled with the wrong `@cfg`-gated code erased or kept.
+
+**Fix.** `checkDllIsStale` gained three parameters
+(`cliFeatures`/`noDefaultFeatures`/`target`) and now also checks a sidecar
+"feature stamp" file (`<dllPath>.featurestamp`) written by
+`writeFeatureStamp` right after `buildWorkspaceDep`'s `buildProject` call
+succeeds. The stamp records the exact `(target, noDefaultFeatures,
+sorted --features list)` tuple that produced the DLL — not the fully
+resolved active feature set, since that's a pure function of (manifest
+content, this tuple), and manifest-content staleness is already covered by
+the pre-existing mtime check. `featureStampContents` sorts the feature list
+before serializing so `--features a,b` and `--features b,a` compare equal.
+A MISSING stamp (a DLL built before this change shipped, or built by hand)
+is treated as stale, not trusted — one extra rebuild the first time a
+pre-existing dependency DLL is touched by this code, in keeping with the
+repo's "fail loud / rebuild rather than silently reuse" precedent (#5621).
+
+**Part 2 — `stage1.stamp` raced concurrent edits.** `make stage1`'s recipe
+ran `./scripts/bootstrap.sh --stage 1` then `touch .bootstrap/stage1.stamp`
+— stamping at build COMPLETION. A `.l` source edited WHILE that build was
+running has an mtime after the edit but the stamp gets an even-later mtime
+at completion, so a subsequent `make lyric`/`make aot` saw the stamp as
+newer than the edited file and skipped recompiling it — a false-green
+build that never actually contained the edit (the exact D-progress-651/#5605
+incident this issue cites: two independent agents had to manually `rm
+.bootstrap/stage1.stamp` to recover).
+
+**Fix.** `make stage1` now `touch`es a `.bootstrap/stage1.stamp.start`
+marker BEFORE running `bootstrap.sh`, then uses `touch -r
+.bootstrap/stage1.stamp.start .bootstrap/stage1.stamp` to copy that
+START timestamp onto the real stamp (removing the marker afterward) —
+the minimal fix the issue itself suggested ("at minimum comparing against
+build start time rather than stamp write time"), rather than a full
+content-hash of the `STAGE1_SRCS` glob. Any `.l` edit landing after the
+build starts (whether the build takes one second or twenty minutes) now
+has an mtime strictly after the stamp's, so `make`'s existing
+`.bootstrap/stage1.stamp: $(STAGE1_SRCS)` prerequisite rule correctly
+treats the stamp as stale and reruns `stage1` on the next invocation.
+`stage1-fast` already skips touching the stamp at all (a separate, already
+correct, pre-existing precaution — see its own recipe comment) and needed
+no change.
+
+**Verification.** Five new `cli_workspace_builder_self_test.l` cases pin
+part 1's precedence table directly against `checkDllIsStale`/
+`writeFeatureStamp` (both now `pub`): no stamp → stale; matching stamp with
+fresh mtimes → not stale; different `--features` → stale; reordered
+`--features` → still matches (order-independent); different
+`--no-default-features` → stale; different `--target` → stale. Part 2 was
+verified manually with `touch`/`touch -r`/`stat` (POSIX `touch -r` copies
+the reference file's mtime exactly) and by a full `make lyric` re-run
+confirming the stamp mechanism still functions end-to-end.
+
+**Related:** #5611, D-progress-651 (the original incident), #5605 (the
+`JsonEncodedText.Encode` false-green regression that surfaced it), #5621
+(the "fail loud, never silently degrade" precedent part 1 follows).
+
+## D-progress-886 — #6268 closed: manifest-declared `[build] shape` on `--target native` raises `F0043` instead of silent override
+
+**Context.** The shape axis's CLI path already raised the hard `F0043`
+("shape invalid for target") for `--target native --shape portable`, but a
+manifest's `[build] shape = "portable"` on a native project was silently
+upgraded to `"aot"` instead — the old `defaultShapeForTarget` pre-defaulted
+`Option[BuildShape]` to `Aot` for `Native` before the manifest's own value
+was ever consulted, so `resolveBuildAxesFromManifest` never saw the
+manifest's real declaration to check it against.
+
+**Fix.** `BuildSection` gained two new fields, `shapeDeclared`/
+`profileDeclared: Bool` (`manifest.l`), set when the `[build]` table's
+`shape`/`profile` keys are present in the source TOML — `shape`/`profile`
+alone cannot distinguish "the manifest said portable" from "the manifest
+said nothing," since both parse to the same default string. `cli_build.l`'s
+`defaultShapeForTarget` was replaced by `resolveShapeAxis(cliShape, section,
+target)`, called from both `resolveBuildAxes` (CLI-only path) and
+`resolveBuildAxesFromManifest` (CLI + manifest path) — a single shared
+resolution: an explicit CLI `--shape` wins outright (existing conflict
+diagnostics still apply); otherwise a manifest-declared shape
+(`shapeDeclared`) is checked against the target the same way a CLI flag
+would be, raising `F0043` if it's non-`aot` on `--target native`; only when
+NEITHER the CLI nor the manifest declares anything does the native default
+(`aot`) apply.
+
+**Verification.** New `cli_build_self_test.l` cases (6) and
+`manifest_self_test.l` cases (3, asserting `shapeDeclared`/`profileDeclared`
+directly) pin: a manifest-declared `shape = "portable"` on native → `F0043`;
+a manifest-declared `shape = "aot"` on native → accepted; no `[build]`
+table at all on native → defaults to `aot` unchanged; a CLI `--shape`
+conflicting with a manifest value still resolves CLI-first exactly as
+before.
+
+**Related:** #6268, `docs/01-language-reference.md` §3.6 (`[build]` table),
+`docs/63-build-profiles-and-debugger.md` (the shape axis, Q-BP-003 nearby),
+D-progress-883 (the sibling #6263 fix to the same axis, landed in the same
+PR).
+
+## D-progress-887 — #6579 closed: `test_only = true` packages for `[project.packages]`
+
+**Context.** `[project.packages]` had no way to mark an entry as
+test-support-only. A shared test fixture (the motivating case: a TLS
+private-key module used by several `lyric-*` test suites, D-progress-806)
+either had to be duplicated into every consumer's own source tree (keeping
+it out of the shipped bundle, at the cost of drift between copies), or
+given a real `[project.packages]` entry (one copy, but now shipped in the
+production assembly alongside whatever it pulls in).
+
+**Fix.** `PackageEntry` gained `testOnly: Bool`, set by a new inline-table
+parse form for `[project.packages]` values: `{ path = "...", test_only =
+true }` alongside the pre-existing bare-string and array forms (both of
+which always set `testOnly = false`). `buildProjectFromManifest`
+(`cli_build.l`) skips a `testOnly` entry entirely when assembling
+`proj.packages` into the production whole-project bundle — it is never
+read, never contributes source, and never appears in the release
+entry-point (`func main()`) scan. Import resolution for single-file
+manifest-local builds (`collectImportedOwnPackages`) and `cli_test.l`'s
+`libPkgs` construction both scan `[project.packages]` directly, unfiltered
+by `testOnly` — a `test_only` package remains fully importable from
+`[project.tests]` entries or a manifest-local single-file build, it just
+never ships in `lyric build`'s own bundle.
+
+**Verification.** Two new `manifest_self_test.l` cases cover the inline-
+table parse form and its `testOnly = false` default for bare-path entries;
+two new `cli_build_self_test.l` cases confirm a `test_only` package's
+symbols are absent from a built bundle while still being importable by a
+sibling `[project.tests]` file that references it.
+
+**Related:** #6579, D-progress-806 (the TLS-fixture case that motivated
+this), `docs/20-project-as-dll.md` §3 ("Test-only packages").

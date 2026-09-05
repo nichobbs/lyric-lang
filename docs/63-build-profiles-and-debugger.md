@@ -10,8 +10,13 @@ recorded as **settled** in §3.4, §4.4, and §8.1; the rest is open
 
 Deferred out of B0 with tracked follow-ups: `--shape standalone` has no
 toolchain path on any target and fails loud with `F0044` (#6262); the profile
-axis does not yet reach codegen, so `--release` performs no optimization and
-does not relax overflow checking as the language reference describes (#6263).
+axis reaches codegen only on `--target native` so far — `resolveNativeOptDefault`
+defaults the clang `-O` level from the profile (`2` under `--release`, `0`
+under `--debug`) when neither `--opt` nor `[native] opt_level` supply one
+(D-progress-883) — `--target dotnet`/`--target jvm` still perform no
+optimization under `--release`, and overflow-checking semantics remain
+undecided on every target, exactly as the language reference describes
+(#6263, still open for those two pieces).
 
 **Method.** The current-state findings in §2 were produced by auditing the code
 as source of truth. Every claim is grounded in a `file:line` reference, an
@@ -1047,7 +1052,13 @@ their update when the user-visible behaviour arrives with `SourceFile`.
   precedent).
 - **Q-BP-002:** Fully-static native linking (`-static`, musl) — a fourth shape,
   a `[native]` key, or out of scope?
-- **Q-BP-003:** Should `--debug --target native` use `-O0` or `-Og`?
+- **Q-BP-003 (resolved, D-progress-883):** `-O0`. `Lyric.Cli.resolveNativeOptDefault`
+  defaults the debug profile to `-O0` (matching a plain, unoptimized debug
+  build) rather than `-Og` (which still applies some optimizations aimed at
+  keeping debugging usable) — `-Og`'s tradeoff only pays off once B1–B4 land
+  real DWARF debug info to actually debug against; until then `-O0` is the
+  simpler, more predictable choice and the smaller change to revisit later
+  if a future band wants `-Og` instead.
 - **Q-BP-004:** Do build-shape diagnostics warrant their own family letter
   rather than extending `F`?
 - **Q-BP-005:** Ratify the §10.1 opaque-type resolution and amend docs/00.
