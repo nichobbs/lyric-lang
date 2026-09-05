@@ -41453,7 +41453,7 @@ still-open `scopeSpawn`/`Task.Run(Action, CancellationToken)` finding this
 fix does not touch), #5443/#5458 (the pre-existing JVM compile blockers
 this fix's JVM scope cut is gated on).
 
-## D-progress-879 — lyric-web: isolate a panicking `Web.Worker.tick()` instead of silently killing its background loop (#6935)
+## D-progress-880 — lyric-web: isolate a panicking `Web.Worker.tick()` instead of silently killing its background loop (#6935)
 
 **The gap.** `Web.Kernel.Runtime.startWorkerLoop` (D-progress-878) runs
 `while true { sleepMillis(intervalMs); worker.tick() }` inside a
