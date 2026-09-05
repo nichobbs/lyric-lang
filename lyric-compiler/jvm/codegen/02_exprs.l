@@ -192,7 +192,11 @@ func lowerCmp(
             emitObjectsEquals(insns)
             insns.add(LIfeq(label = trueLabel))
           }
-          case _ -> panic("Jvm.Codegen: unsupported reference comparison op: a relational operator (<, <=, >, >=) on operands of reference type '" + cls + "' — only String supports relational comparison; check whether an operand's declared type is a reference (e.g. Option[Int] from Std.String.indexOf) being compared like a number")
+          case _ -> panic(
+            "Jvm.Codegen: unsupported reference comparison op: a relational operator (<, <=, >, >=) on operands of reference type '" +
+              cls +
+              "' — only String supports relational comparison; check whether an operand's declared type is a reference (e.g. Option[Int] from Std.String.indexOf) being compared like a number"
+          )
         }
       }
     }
@@ -493,7 +497,11 @@ func listLiteralElemTypeJvm(ctx: in FuncCtx, e: in Expr): JvmType {
           match suffix {
             case I8 -> JByte
             case U8 -> JByte
-            case NoIntSuffix -> if v >= -2147483648i64 and v <= 2147483647i64 { JInt } else { JRef(className = "java/lang/Object") }
+            case NoIntSuffix -> if v >= -2147483648i64 and v <= 2147483647i64 {
+              JInt
+            } else {
+              JRef(className = "java/lang/Object")
+            }
             case I16 -> if v >= -2147483648i64 and v <= 2147483647i64 { JInt } else { JRef(className = "java/lang/Object") }
             case U16 -> if v >= -2147483648i64 and v <= 2147483647i64 { JInt } else { JRef(className = "java/lang/Object") }
             case I32 -> if v >= -2147483648i64 and v <= 2147483647i64 { JInt } else { JRef(className = "java/lang/Object") }
@@ -742,6 +750,59 @@ func forLoopNestedArrayElemTypeExpr(ctx: in FuncCtx, recv: in Expr): Option[Type
   match recv.kind {
     case EParen(inner) -> forLoopNestedArrayElemTypeExpr(ctx, inner)
     case _ -> None
+  }
+}
+
+// Combines `applyIndexedElemOverride` with the nested-array detection
+// `forLoopNestedArrayElemTypeExpr` already established for `for`-loop
+// iteration (#6541) — extends the SAME detection to `EIndex` itself (#6546
+// read-back half): `xs[i]` on a `slice[slice[Elem]]`/`List[slice[Elem]]`
+// receiver left the element an erased `Object` (the deliberate
+// `indexedElemTypeOverride` `JVoid` bail-out for exactly this shape — safe
+// for its OTHER callers, see that function's own comment), so a FURTHER
+// index into that element (`xs[i][j]`, or `val row = xs[i]; row[j]`) fell
+// through `EIndex`'s own "unknown JRef receiver → assume ArrayList" default
+// and threw `ClassCastException: [Ljava.lang.Object; cannot be cast to
+// class java.util.ArrayList` — the read-back normalization #6546's tracking
+// issue anticipated ("does the STORED value stay a real array after Bug 2
+// is fixed, or is a separate normalization step needed on read-back").
+//
+// Unlike the `for`-loop fix, this does NOT route through
+// `emitNormalizeErasedSlice`: that helper's dual real-primitive-array /
+// boxed-`Object[]` `instanceof` check exists because ITS consumer
+// (`SFor`'s `emitArrayLoad`) already dispatches every JVM primitive element
+// type correctly. `EIndex`'s OWN per-element dispatch (the `match elem`
+// a few lines below this function) only special-cases `JByte` and
+// `JRef` — every other primitive (`JInt`/`JLong`/…) falls to a bare
+// `aaload`, so a genuine `JArray(elem = JInt)` result here throws
+// `VerifyError: Bad type on operand stack in aaload` (confirmed by testing
+// this exact fix). Every producer that can reach a nested `slice[T]`
+// element the Lyric way — a bare slice literal, or a `slice[T]`-typed
+// function's return — flows through `coerceArgTo`'s `ArrayList.toArray()`
+// conversion (see Bug 1 of #6546), which ALWAYS yields the boxed
+// `Object[]` uniform representation, never a genuine primitive array; a
+// simple `checkcast [Ljava/lang/Object;` is therefore both sufficient and
+// correct here, with no need for the dual runtime check.
+func applyIndexedElemOverrideNormalizingSlice(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  recv: in Expr,
+  overrideTy: in JvmType,
+): JvmType {
+  match overrideTy {
+    case JVoid -> {
+      match forLoopNestedArrayElemTypeExpr(ctx, recv) {
+        case Some(_) -> {
+          insns.add(LCheckcast(className = "[Ljava/lang/Object;"))
+          JArray(elem = JRef(className = "java/lang/Object"))
+        }
+        case None -> JRef(className = "java/lang/Object")
+      }
+    }
+    case _ -> {
+      coerceArgTo(insns, JRef(className = "java/lang/Object"), overrideTy)
+      overrideTy
+    }
   }
 }
 
@@ -2264,7 +2325,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                 // docs/59 §4.3 formatFields shape).
                 insns.add(LAaload)
                 if elemCls == "java/lang/Object" {
-                  applyIndexedElemOverride(insns, elemOverride)
+                  applyIndexedElemOverrideNormalizingSlice(ctx, insns, recv, elemOverride)
                 } else {
                   JRef(className = elemCls)
                 }
@@ -2300,7 +2361,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               val kTy = lowerExpr(ctx, insns, indices[0])
               boxIfNeeded(insns, kTy)
               emitMapGet(insns)
-              applyIndexedElemOverride(insns, elemOverride)
+              applyIndexedElemOverrideNormalizingSlice(ctx, insns, recv, elemOverride)
             } else {
               // List-style indexing via ArrayList.get(int).  The erased
               // `Object` element narrows to the receiver's recorded concrete
@@ -2318,7 +2379,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                   ret = JRef(className = "java/lang/Object")
                 )
               )
-              applyIndexedElemOverride(insns, elemOverride)
+              applyIndexedElemOverrideNormalizingSlice(ctx, insns, recv, elemOverride)
             }
           }
           case _ -> {
@@ -2639,7 +2700,11 @@ func lowerCmpFail(
           // arms, reached only via THIS function, never `lowerCmp`) that the
           // `lowerCmp` twin above already panics on but this one silently
           // let through. Same descriptive message as that twin.
-          case _ -> panic("Jvm.Codegen: unsupported reference comparison op: a relational operator (<, <=, >, >=) on operands of reference type '" + cls + "' — only String supports relational comparison; check whether an operand's declared type is a reference (e.g. Option[Int] from Std.String.indexOf) being compared like a number")
+          case _ -> panic(
+            "Jvm.Codegen: unsupported reference comparison op: a relational operator (<, <=, >, >=) on operands of reference type '" +
+              cls +
+              "' — only String supports relational comparison; check whether an operand's declared type is a reference (e.g. Option[Int] from Std.String.indexOf) being compared like a number"
+          )
         }
       }
     }
@@ -3178,7 +3243,9 @@ func coerceToStringForConcat(ctx: in FuncCtx, insns: in List[LInsn], ty: in JvmT
         )
       }
     }
-    case JVoid -> panic("Jvm.Codegen: string-concatenation operand lowered to void — a Unit-typed operand should have been rejected by the type checker")
+    case JVoid -> panic(
+      "Jvm.Codegen: string-concatenation operand lowered to void — a Unit-typed operand should have been rejected by the type checker"
+    )
     // A void operand left nothing on the stack; silently pushing "" here
     // would mask a type-checker or lowering bug as wrong output (#4685).
     case JArray(_) -> {
@@ -3943,7 +4010,14 @@ func collectRefNamesBlock(b: in Block, acc: in List[String]): Unit {
 
 func collectRefNamesStmt(s: in Statement, acc: in List[String]): Unit {
   match s.kind {
-    case SLocal(binding) -> match binding { case LBVal(_, _, init) -> collectRefNamesExpr(init, acc); case LBLet(_, _, init) -> collectRefNamesExpr(init, acc); case LBVar(_, _, init) -> match init { case Some(ie) -> collectRefNamesExpr(ie, acc); case None -> () } }
+    case SLocal(binding) -> match binding {
+      case LBVal(_, _, init) -> collectRefNamesExpr(init, acc)
+      case LBLet(_, _, init) -> collectRefNamesExpr(init, acc)
+      case LBVar(_, _, init) -> match init {
+        case Some(ie) -> collectRefNamesExpr(ie, acc)
+        case None -> ()
+      }
+    }
     case SAssign(target, _, value) -> {
       collectRefNamesExpr(target, acc)
       collectRefNamesExpr(value, acc)
@@ -4039,7 +4113,11 @@ func collectBoundNamesBlock(b: in Block, acc: in List[String]): Unit {
 
 func collectBoundNamesStmt(s: in Statement, acc: in List[String]): Unit {
   match s.kind {
-    case SLocal(binding) -> match binding { case LBVal(pat, _, _) -> collectBoundNamesPattern(pat, acc); case LBLet(name, _, _) -> addNameOnceJvm(acc, name); case LBVar(name, _, _) -> addNameOnceJvm(acc, name) }
+    case SLocal(binding) -> match binding {
+      case LBVal(pat, _, _) -> collectBoundNamesPattern(pat, acc)
+      case LBLet(name, _, _) -> addNameOnceJvm(acc, name)
+      case LBVar(name, _, _) -> addNameOnceJvm(acc, name)
+    }
     case SFor(_, pat, _, body) -> {
       collectBoundNamesPattern(pat, acc)
       collectBoundNamesBlock(body, acc)
@@ -4108,7 +4186,10 @@ func collectBoundNamesExpr(e: in Expr, acc: in List[String]): Unit {
         case EOBBlock(tb) -> collectBoundNamesBlock(tb, acc)
       }
       match elseOpt {
-        case Some(eb) -> match eb { case EOBExpr(ee) -> collectBoundNamesExpr(ee, acc); case EOBBlock(eblk) -> collectBoundNamesBlock(eblk, acc) }
+        case Some(eb) -> match eb {
+          case EOBExpr(ee) -> collectBoundNamesExpr(ee, acc)
+          case EOBBlock(eblk) -> collectBoundNamesBlock(eblk, acc)
+        }
         case None -> ()
       }
     }
@@ -4449,7 +4530,10 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
           // `selfClass` names the outer CLOSURE — so the local's type wins.
           match lookupType(ctx, "self") {
             case Some(t) -> t
-            case None -> match ctx.selfClass { case Some(cls) -> JRef(className = cls); case None -> JRef(className = "java/lang/Object") }
+            case None -> match ctx.selfClass {
+              case Some(cls) -> JRef(className = cls)
+              case None -> JRef(className = "java/lang/Object")
+            }
           }
         } else {
           match lookupType(ctx, cn) {
