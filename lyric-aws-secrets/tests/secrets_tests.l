@@ -135,7 +135,11 @@ func localModeGetSecretScenario(): String {
   match AwsSecrets.getSecret("my-service/prod") {
     case Ok(_) -> "getSecret() must return Err in local mode"
     case Err(e) -> match e {
-      case NotFound(n) -> if n == "my-service/prod" { "OK" } else { "NotFound carried the wrong secret name: " + n }
+      case NotFound(n) -> if n == "my-service/prod" {
+        "OK"
+      } else {
+        "NotFound carried the wrong secret name: " + n
+      }
       case _ -> "expected NotFound"
     }
   }
@@ -160,7 +164,11 @@ func localModeGetSecretFieldScenario(): String {
   match AwsSecrets.getSecretField("my-service/prod", "dbPassword") {
     case Ok(_) -> "getSecretField() must return Err in local mode"
     case Err(e) -> match e {
-      case NotFound(n) -> if n == "my-service/prod" { "OK" } else { "NotFound carried the wrong secret name: " + n }
+      case NotFound(n) -> if n == "my-service/prod" {
+        "OK"
+      } else {
+        "NotFound carried the wrong secret name: " + n
+      }
       case _ -> "expected NotFound"
     }
   }
@@ -185,7 +193,11 @@ func localModeGetParameterScenario(): String {
   match AwsSecrets.getParameter("/my-service/signing-key") {
     case Ok(_) -> "getParameter() must return Err in local mode"
     case Err(e) -> match e {
-      case NotFound(n) -> if n == "/my-service/signing-key" { "OK" } else { "NotFound carried the wrong parameter path: " + n }
+      case NotFound(n) -> if n == "/my-service/signing-key" {
+        "OK"
+      } else {
+        "NotFound carried the wrong parameter path: " + n
+      }
       case _ -> "expected NotFound"
     }
   }
@@ -210,7 +222,11 @@ func localModeGetParameterRawScenario(): String {
   match AwsSecrets.getParameterRaw("/my-service/plain-param") {
     case Ok(_) -> "getParameterRaw() must return Err in local mode"
     case Err(e) -> match e {
-      case NotFound(n) -> if n == "/my-service/plain-param" { "OK" } else { "NotFound carried the wrong parameter path: " + n }
+      case NotFound(n) -> if n == "/my-service/plain-param" {
+        "OK"
+      } else {
+        "NotFound carried the wrong parameter path: " + n
+      }
       case _ -> "expected NotFound"
     }
   }
@@ -245,8 +261,14 @@ test "getParameterRaw(): always returns NotFound in local mode" {
 @cfg(feature = "jvm")
 func jvmClassifySecretsErrorScenario(): String {
   val notFound = SecretsKernel.classifySecretsError("my-secret", "Secrets Manager can't find the specified secret.")
-  val accessDenied = SecretsKernel.classifySecretsError("my-secret", "User is not authorized to perform: secretsmanager:GetSecretValue")
-  val decryption = SecretsKernel.classifySecretsError("my-secret", "DecryptionFailureException: Secrets Manager can't decrypt the protected secret text")
+  val accessDenied = SecretsKernel.classifySecretsError(
+    "my-secret",
+    "User is not authorized to perform: secretsmanager:GetSecretValue"
+  )
+  val decryption = SecretsKernel.classifySecretsError(
+    "my-secret",
+    "DecryptionFailureException: Secrets Manager can't decrypt the protected secret text"
+  )
   val unknown = SecretsKernel.classifySecretsError("my-secret", "Connection refused")
   match notFound {
     case NotFound(n) -> if n != "my-secret" { return "NotFound carried the wrong name: " + n } else { () }
@@ -257,11 +279,19 @@ func jvmClassifySecretsErrorScenario(): String {
     case _ -> return "expected AccessDenied classification for 'not authorized'"
   }
   match decryption {
-    case DecryptionError(n, _) -> if n != "my-secret" { return "DecryptionError carried the wrong name: " + n } else { () }
+    case DecryptionError(n, _) -> if n != "my-secret" {
+      return "DecryptionError carried the wrong name: " + n
+    } else {
+      ()
+    }
     case _ -> return "expected DecryptionError classification for 'DecryptionFailureException'"
   }
   match unknown {
-    case NetworkError(n, m) -> if n == "my-secret" and m == "Connection refused" { "OK" } else { "NetworkError carried the wrong fields" }
+    case NetworkError(n, m) -> if n == "my-secret" and m == "Connection refused" {
+      "OK"
+    } else {
+      "NetworkError carried the wrong fields"
+    }
     case _ -> "expected NetworkError fallback classification for an unrecognised message"
   }
 }
@@ -277,13 +307,20 @@ func jvmClassifySecretsErrorScenario(): String {
 }
 
 test "jvm kernel: classifySecretsError maps known AWS error messages to typed SecretsError variants" {
-  assertEqual(jvmClassifySecretsErrorScenario(), "OK", "classifySecretsError must classify NotFound/AccessDenied/DecryptionError and fall back to NetworkError")
+  assertEqual(
+    jvmClassifySecretsErrorScenario(),
+    "OK",
+    "classifySecretsError must classify NotFound/AccessDenied/DecryptionError and fall back to NetworkError"
+  )
 }
 
 @cfg(feature = "jvm")
 func jvmClassifyParameterErrorScenario(): String {
   val notFound = SecretsKernel.classifyParameterError("/my/param", "ParameterNotFound: /my/param")
-  val accessDenied = SecretsKernel.classifyParameterError("/my/param", "User is not authorized to perform: ssm:GetParameter")
+  val accessDenied = SecretsKernel.classifyParameterError(
+    "/my/param",
+    "User is not authorized to perform: ssm:GetParameter"
+  )
   val decryption = SecretsKernel.classifyParameterError("/my/param", "InvalidKeyId: the KMS key is disabled")
   val unknown = SecretsKernel.classifyParameterError("/my/param", "Request timed out")
   match notFound {
@@ -295,11 +332,19 @@ func jvmClassifyParameterErrorScenario(): String {
     case _ -> return "expected AccessDenied classification for 'not authorized'"
   }
   match decryption {
-    case DecryptionError(n, _) -> if n != "/my/param" { return "DecryptionError carried the wrong name: " + n } else { () }
+    case DecryptionError(n, _) -> if n != "/my/param" {
+      return "DecryptionError carried the wrong name: " + n
+    } else {
+      ()
+    }
     case _ -> return "expected DecryptionError classification for 'InvalidKeyId'"
   }
   match unknown {
-    case NetworkError(n, m) -> if n == "/my/param" and m == "Request timed out" { "OK" } else { "NetworkError carried the wrong fields" }
+    case NetworkError(n, m) -> if n == "/my/param" and m == "Request timed out" {
+      "OK"
+    } else {
+      "NetworkError carried the wrong fields"
+    }
     case _ -> "expected NetworkError fallback classification for an unrecognised message"
   }
 }
@@ -315,7 +360,11 @@ func jvmClassifyParameterErrorScenario(): String {
 }
 
 test "jvm kernel: classifyParameterError maps known AWS error messages to typed SecretsError variants" {
-  assertEqual(jvmClassifyParameterErrorScenario(), "OK", "classifyParameterError must classify NotFound/AccessDenied/DecryptionError and fall back to NetworkError")
+  assertEqual(
+    jvmClassifyParameterErrorScenario(),
+    "OK",
+    "classifyParameterError must classify NotFound/AccessDenied/DecryptionError and fall back to NetworkError"
+  )
 }
 
 // ─── AWS (.NET) kernel (feature = "aws") ───────────────────────────────────────
@@ -336,11 +385,19 @@ func awsNotImplementedScenario(): String {
   }
   match secretResult {
     case Ok(_) -> return "getSecret() must not silently succeed on the aws feature while NOT_IMPLEMENTED"
-    case Err(e) -> if AwsSecrets.errorMessage(e).contains("NOT_IMPLEMENTED") { () } else { return "getSecret()'s error must say NOT_IMPLEMENTED, got: " + AwsSecrets.errorMessage(e) }
+    case Err(e) -> if AwsSecrets.errorMessage(e).contains("NOT_IMPLEMENTED") {
+      ()
+    } else {
+      return "getSecret()'s error must say NOT_IMPLEMENTED, got: " + AwsSecrets.errorMessage(e)
+    }
   }
   match paramResult {
     case Ok(_) -> "getParameter() must not silently succeed on the aws feature while NOT_IMPLEMENTED"
-    case Err(e) -> if AwsSecrets.errorMessage(e).contains("NOT_IMPLEMENTED") { "OK" } else { "getParameter()'s error must say NOT_IMPLEMENTED, got: " + AwsSecrets.errorMessage(e) }
+    case Err(e) -> if AwsSecrets.errorMessage(e).contains("NOT_IMPLEMENTED") {
+      "OK"
+    } else {
+      "getParameter()'s error must say NOT_IMPLEMENTED, got: " + AwsSecrets.errorMessage(e)
+    }
   }
 }
 
@@ -355,5 +412,79 @@ func awsNotImplementedScenario(): String {
 }
 
 test "aws kernel: init/getSecret/getParameter honestly return NOT_IMPLEMENTED, never a silent Ok" {
-  assertEqual(awsNotImplementedScenario(), "OK", "the aws feature's kernel must fail every call with a documented NOT_IMPLEMENTED error")
+  assertEqual(
+    awsNotImplementedScenario(),
+    "OK",
+    "the aws feature's kernel must fail every call with a documented NOT_IMPLEMENTED error"
+  )
+}
+
+// ─── extractSecretField (jvm kernel) ───────────────────────────────────────
+// Pure JSON-field-extraction logic, independent of any network/client call
+// — exercises the panic-vs-Err fix for a non-string field value without
+// needing a live or mocked AWS endpoint.
+@cfg(feature = "jvm")
+func jvmExtractSecretFieldScenario(): String {
+  val noKey = SecretsKernel.extractSecretField("my-secret", None, "raw-string-value")
+  match noKey {
+    case Ok(v) -> if v != "raw-string-value" {
+      return "key=None must return the raw secret string unchanged"
+    } else {
+      ()
+    }
+    case Err(_) -> return "key=None must never fail"
+  }
+
+  val stringField = SecretsKernel.extractSecretField(
+    "my-secret",
+    Some("dbPassword"),
+    "{\"dbPassword\": \"hunter2\", \"dbPort\": 5432}"
+  )
+  match stringField {
+    case Ok(v) -> if v != "hunter2" { return "expected the dbPassword field's value, got: " + v } else { () }
+    case Err(e) -> return "expected Ok for a string field, got Err: " + AwsSecrets.errorMessage(e)
+  }
+
+  // The failure scenario from the review finding: a non-string field (an
+  // ordinary shape — AWS's own RDS-generated secrets include numeric
+  // fields like this) must return a typed ParseError, never panic.
+  val nonStringField = SecretsKernel.extractSecretField(
+    "my-secret",
+    Some("dbPort"),
+    "{\"dbPassword\": \"hunter2\", \"dbPort\": 5432}"
+  )
+  match nonStringField {
+    case Ok(v) -> return "expected ParseError for a non-string field, got Ok: " + v
+    case Err(ParseError(n, k, _)) -> if n != "my-secret" or k != "dbPort" {
+      return "ParseError carried the wrong name/key"
+    } else {
+      ()
+    }
+    case Err(e) -> return "expected ParseError for a non-string field, got a different error: " + AwsSecrets.errorMessage(e)
+  }
+
+  val missingField = SecretsKernel.extractSecretField("my-secret", Some("missing"), "{\"dbPassword\": \"hunter2\"}")
+  match missingField {
+    case Ok(v) -> "expected ParseError for a missing field, got Ok: " + v
+    case Err(ParseError(_, _, _)) -> "OK"
+    case Err(e) -> "expected ParseError for a missing field, got a different error: " + AwsSecrets.errorMessage(e)
+  }
+}
+
+@cfg(feature = "local")
+func jvmExtractSecretFieldScenario(): String {
+  "OK"
+}
+
+@cfg(feature = "aws")
+func jvmExtractSecretFieldScenario(): String {
+  "OK"
+}
+
+test "jvm kernel: extractSecretField returns ParseError (never panics) for a non-string or missing JSON field" {
+  assertEqual(
+    jvmExtractSecretFieldScenario(),
+    "OK",
+    "extractSecretField must convert a Std.Json.getString panic on a non-string field into a typed ParseError"
+  )
 }
