@@ -42205,4 +42205,5 @@ this needs either re-ordering `Jvm.Bridge`'s registration passes (all
 `collectFileCtors` calls before any `collectFileSigsSeeded` call) or a late
 enrichment pass over `registry` once `ctorReg` is complete — both a larger,
 riskier change to the shared bridge pipeline than this fix's scope, and
-deferred as a separate follow-up rather than folded in here.
+deferred as a separate follow-up rather than folded in here. Tracked as
+#6929.
