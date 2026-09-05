@@ -42207,3 +42207,16 @@ enrichment pass over `registry` once `ctorReg` is complete — both a larger,
 riskier change to the shared bridge pipeline than this fix's scope, and
 deferred as a separate follow-up rather than folded in here. Tracked as
 #6929.
+
+**Second, distinct residual gap found while writing this fix's own
+self-test.** `self.<genericRecordField>.<field>` on a record whose OWN
+FIELD (not a parameter or an indexed container element) is declared as a
+generic-record instantiation still erases to `Object` and hits the same
+bare-field-name fallback #6691 fixed for parameters. This fix's
+`recordParamClassOf` narrowing applies at the parameter-BIND site
+(`setupStaticParamSlotsAndHolders`/`setupInstanceParamSlotsAndHolders`)
+and at the indexed-element read site (`resolveConcreteTypeExpr`), neither
+of which covers a record's own field-DECLARATION-typing path
+(`collectFileCasesExtern`/`lowerRecord`'s field-type computation).
+Documented in `generic_param_field_read_jvm_self_test.l`'s header comment
+and tracked separately as #6959.

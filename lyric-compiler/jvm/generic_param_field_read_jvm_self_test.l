@@ -33,7 +33,8 @@
 //! here; it needs the field-DECLARATION-typing path (`collectFileCasesExtern`
 //! /`lowerRecord`'s own field-type computation), a different call site than
 //! `setupStaticParamSlotsAndHolders`/`setupInstanceParamSlotsAndHolders`.
-//! Tracked as a follow-up rather than folded into this fix's scope.
+//! Tracked as a follow-up rather than folded into this fix's scope — see
+//! #6959.
 //!
 //! Run in CI via native `lyric test --target jvm` (compiles this module
 //! in-process through the self-hosted `Jvm.Bridge` `compileToJarBundled` and
