@@ -241,8 +241,15 @@ func propagateHoistConfig(): HoistConfig {
 
 // Entry point: hoist every qualifying `?` in `file`, returning a new
 // SourceFile. Files with nothing to hoist are returned as-is (identity).
+// `?`-hoisting runs earlier in the pipeline than `AwaitHoist` (inside
+// `pipeCheckAndMono`, before mono) with no cross-file record index of its
+// own yet threaded to it, so an `impl` block's cross-file target still
+// resolves narrowly here (same-file only) — see `HoistEngine`'s
+// `typeFieldIndex` doc comment; #6702's fix targets `pipeWeave`'s
+// `AwaitHoist` call specifically.
 func hoistPropagateFile(file: in SourceFile): SourceFile {
-  hoistFile(propagateHoistConfig(), file)
+  val noExtraRecords: List[RecordDecl] = newList()
+  hoistFile(propagateHoistConfig(), file, noExtraRecords)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
