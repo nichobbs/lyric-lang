@@ -74,7 +74,7 @@ pub func IOError.message(e: in IOError): String {
 // ---------------------------------------------------------------------------
 // HttpError - network and HTTP errors.
 // ---------------------------------------------------------------------------
-@stable(since = "1.0")
+@stable(since = "1.2")
 pub union HttpError {
   case ConnectionFailed(url: String, message: String)
   case Timeout(url: String, durationMs: Long)
@@ -84,6 +84,11 @@ pub union HttpError {
   // because case constructors live at package scope, so a duplicate
   // `IoError` here would collide with `IOError.IoError`.
   case Transport(url: String, error: IOError)
+  // `withHeader` was given a name that collides with a framing header
+  // the kernel generates automatically (`Host`, `Connection`,
+  // `Content-Type`, `Content-Length`) — see #6658. `name` is the
+  // caller-supplied header name exactly as given (not case-normalized).
+  case ReservedHeader(url: String, name: String)
   // Human-readable message for an HttpError.
 }
 
@@ -96,5 +101,6 @@ pub func HttpError.message(e: in HttpError): String {
     case BadStatus(url, code) -> "HTTP " + code + " from " + url
     case InvalidUrl(url) -> "invalid URL: " + url
     case Transport(url, error) -> "I/O error for " + url + ": " + IOError.message(error)
+    case ReservedHeader(url, name) -> "header \"" + name + "\" is reserved (set automatically) for request to " + url
   }
 }

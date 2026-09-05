@@ -284,7 +284,10 @@ test "Std.Regex compile/isMatch/replace work over java.util.regex" {
 test "Std.Regex Result-shaped API classifies invalid patterns" {
   match Rx.tryCompile("(unclosed") {
     case Ok(_) -> panic("tryCompile should reject an unclosed group")
-    case Err(e) -> assertTrue(Rx.errorMessage(e).startsWith("invalid regex pattern"), "syntax error classified as InvalidPattern")
+    case Err(e) -> assertTrue(
+      Rx.errorMessage(e).startsWith("invalid regex pattern"),
+      "syntax error classified as InvalidPattern"
+    )
   }
   val r = Rx.compile("a+b")
   match Rx.tryIsMatch(r, "xxaab!") {
@@ -470,7 +473,10 @@ async func headerEchoSummary(port: in Int): String {
     case Ok(u) -> u
     case Err(_) -> return "bad url"
   }
-  val req = withHeader(request(GET, url), "X-Tag", "kernel-tag")
+  val req = match withHeader(request(GET, url), "X-Tag", "kernel-tag") {
+    case Ok(r) -> r
+    case Err(_) -> return "withHeader failed"
+  }
   val r = await sendWithTimeoutAsync(req, 10000)
   match r {
     case Err(e) -> return "send failed: " + HttpError.message(e)
