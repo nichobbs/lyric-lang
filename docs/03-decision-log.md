@@ -41186,7 +41186,92 @@ bundle-wide-undeclared bare call fails earlier at type-check (`T0020` unknown
 name) and never reaches codegen's `T0123`, so no constructible negative case
 remains for a plain function post-fix.
 
-## D-progress-877 — Native `Std.Char` kernel twin (#6811), `List`/`Map` indexed-assignment codegen, and a cross-package `?`-propagation gap (both new, found closing out #6811/#6808) — Hpack's decode path (and the full `Std.HttpEngine.H2Conn` FSM driving it) now compiles and runs correctly on `--target native`
+## D-progress-877 — `lyric-grpc`: server hosting confirmed blocked by the same #6581 gap as unary/streaming; no bindable non-generic subset found (#6592, #5409)
+
+**Context.** #6592/#5409 track `Grpc.Kernel.Net`'s real implementation.
+Channel lifecycle (`netOpenChannel`/`netCloseChannel`) and the sliding-window
+rate limiter (`checkRateLimit`) already shipped as real, tested
+`Grpc.Net.Client`/`System.Threading.RateLimiting` bindings. Unary calls and
+server-streaming were investigated and found blocked on two self-hosted MSIL
+backend gaps, split out as #6581: (1) `genericMemberSigToMsil`
+(`lyric-compiler/msil/codegen.l`) has no arm for a GENERICINST-shaped
+parameter, so no `Marshaller<T>` (or `Marshallers.Create<T>`) can be
+constructed without emitting an invalid MemberRef that faults at runtime with
+`TypeLoadException`; (2) there is no general `@externTarget`-generic-method →
+`MethodSpec` emission path, needed for `CallInvoker.BlockingUnaryCall<TReq,TResp>`
+and its siblings. This session's assignment (group:ecosystem-lib-kernels) was
+the remaining slice: server hosting (`serve`/`netStartHandle`/`netStopHandle`)
+and re-verifying unary/streaming, with an explicit ask to look for a
+non-generic escape hatch #6581's original writeup (client-side only) might
+have missed.
+
+**Findings.** `origin/main` (fetched immediately before this session started)
+is unchanged from #6581's description: `genericMemberSigToMsil` still has no
+GENERICINST arm (falls through its match to `_ -> None`), and
+`ctxAddMethodSpec` (`lyric-compiler/msil/lowering.l`) is still called only
+from the two compiler-internal async-state-machine sites, not from any
+`@externTarget`-generic-method path. Rather than trust the prior writeup's
+API-shape claims secondhand, this session downloaded the pinned
+`Grpc.Core.Api`/`Grpc.Net.Client`/`Grpc.AspNetCore.Server` 2.65.0 NuGet
+packages and decoded their reference-assembly metadata directly with
+`System.Reflection.Metadata` (the same byte-level technique the auto-FFI
+resolver uses), confirming every claim empirically rather than by inspection:
+
+- `Marshaller<T>`'s two constructors and `Marshallers.Create<T>`'s two static
+  overloads all take a GENERICINST parameter (`Func<T,byte[]>`/
+  `Func<byte[],T>`/`Action<T,SerializationContext>`/
+  `Func<DeserializationContext,T>`) — no non-generic marshaller factory
+  exists on this NuGet version (only `Marshallers.StringMarshaller`, a
+  `Marshaller<string>`, useless for a `byte[]` pass-through payload).
+- `CallInvoker.BlockingUnaryCall<TRequest,TResponse>` and its four
+  `Async*Call` siblings are all generic methods (MVAR, two type params) —
+  confirmed the metadata's generic-method-signature header bit is set.
+- Server hosting was the new ground covered this session. The high-level
+  `Microsoft.AspNetCore.Builder.GrpcEndpointRouteBuilderExtensions
+  .MapGrpcService<TService>` is a generic extension method (MVAR, one type
+  param). Its low-level equivalent — `ServerServiceDefinition.Builder
+  .AddMethod<TRequest,TResponse>` and `ServiceBinderBase
+  .AddMethod<TRequest,TResponse>`, the pair `MapGrpcService<T>` itself calls
+  — are equally generic (MVAR, two type params, four overloads each for
+  unary/client-streaming/server-streaming/duplex), and every overload takes
+  a `Method<TRequest,TResponse>` built from two `Marshaller<T>` instances —
+  hitting the GENERICINST-ctor gap a second, independent time.
+  `IServiceCollection.AddGrpc()` (the ASP.NET Core DI entry point) is itself
+  non-generic and would bind cleanly, but it only wires up gRPC's shared
+  middleware plumbing — with no generic-method path available to register
+  even one RPC route, a server built this way could never dispatch anything
+  `Grpc.addMethod` registered. So server hosting is not a third, independent
+  gap: it fails on exactly the same two generic-FFI gaps as unary/streaming,
+  and there is no partial-credit subset (e.g. "hosting works but calls
+  don't") to ship.
+
+**Change.** No functional code changes — nothing new was found bindable.
+Updated `lyric-grpc/src/_kernel/net/grpc_kernel.l`'s module doc comment and
+the `serve()`/`grpc.l` module doc comment with this session's verified
+findings (dated, attributed, citing the exact generic API members and their
+MVAR/GENERICINST shapes) so a future reader does not need to re-derive them;
+corrected `docs/10-bootstrap-progress.md`'s D-progress-252 entry, which still
+described `lyric-grpc`'s original *intended* design as if it were the shipped
+reality (the entire `extern package`-block era, #6592's root cause, predates
+that correction); refreshed `lyric-grpc/README.md`'s platform-parity banner
+to cite this investigation. `docs/37-grpc-proto-sketch.md` needed no change
+— it is a design sketch and none of its open questions (Q-G-001–Q-G-007)
+are affected by a compiler-implementation finding.
+
+**Verification.** `./bin/lyric test --manifest lyric-grpc/lyric.toml`
+(matching CI's invocation exactly) and `./bin/lyric fmt --write` on every
+`.l` file touched; both clean. No new tests were added — there is no new
+runtime behavior to test, only corrected documentation of an unchanged
+runtime behavior.
+
+**Related:** #6592, #5409 (this session's assigned issues, both left open —
+server hosting/unary/streaming remain unimplemented, tracked at #6581), #6581
+(the compiler-side blocker, independently re-verified, not fixed — out of
+this session's group:ecosystem-lib-kernels scope), D-progress-815 (the
+interim honest-failure fix this session builds on), D-progress-252 (original
+`lyric-grpc` ship, corrected here).
+
+## D-progress-878 — Native `Std.Char` kernel twin (#6811), `List`/`Map` indexed-assignment codegen, and a cross-package `?`-propagation gap (both new, found closing out #6811/#6808) — Hpack's decode path (and the full `Std.HttpEngine.H2Conn` FSM driving it) now compiles and runs correctly on `--target native`
 
 **#6811 — `Std.Char` had no `_kernel_native` twin.** Added
 `lyric-stdlib/std/_kernel_native/char_host.l`. The code-point bridge

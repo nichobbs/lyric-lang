@@ -1879,7 +1879,7 @@ here.
 
 ---
 
-### N9.8 — Native `Std.Char` kernel (#6811), `List`/`Map` indexed-assignment codegen, and a cross-package `?`-propagation fix — ✅ SHIPPED (D-progress-877); HPACK *decode* + full `H2Conn` FSM now verified working on native, HPACK *encode* stays blocked on #6237
+### N9.8 — Native `Std.Char` kernel (#6811), `List`/`Map` indexed-assignment codegen, and a cross-package `?`-propagation fix — ✅ SHIPPED (D-progress-878); HPACK *decode* + full `H2Conn` FSM now verified working on native, HPACK *encode* stays blocked on #6237
 
 Closes issue #6811 (`Std.Char` had no `_kernel_native` twin — see N9.5's
 D-progress-853 update above) and, in the process of verifying it against
@@ -1905,7 +1905,7 @@ check — a real `Std.HttpEngine.H2Conn.feed()` call (connection preface +
 SETTINGS + a static-table-indexed HEADERS frame) correctly decoding
 through the full FSM (all 38 `inout H2Connection` sites plus the `inout
 FrameDecoder` chain) to a `H2RequestHeaders` event, byte-for-byte matching
-`--target dotnet`. See D-progress-877 for the full bisection trail and
+`--target dotnet`. See D-progress-878 for the full bisection trail and
 exact repro commands.
 
 **Still blocked, narrower than before:** HPACK's *encode* path
