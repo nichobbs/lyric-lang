@@ -41270,3 +41270,80 @@ server hosting/unary/streaming remain unimplemented, tracked at #6581), #6581
 this session's group:ecosystem-lib-kernels scope), D-progress-815 (the
 interim honest-failure fix this session builds on), D-progress-252 (original
 `lyric-grpc` ship, corrected here).
+
+## D-progress-879 — Native List/Map/Task kernels gain weak-aware tri-state element/result ownership, unblocking `NativeWeak[T]` as a collection element or async result (#5545)
+
+**Context.** #5504 (PR #5539) made `NativeWeak[T]` participate in ARC via
+a two-count `LyricObjectHeader`, with codegen-emitted retain/release
+sites dispatching weak-typed values to `lyric_weak_retain`/
+`lyric_weak_release`. The generic C container/task kernels remained
+strong-refcount-only: `lyric_list_new`/`lyric_map_new`/`lyric_task_complete`
+took a boolean `elems_are_refs`/`vals_are_refs`/`result_is_ref` flag, and
+every push/set/remove/dtor/complete site unconditionally called the
+STRONG `lyric_retain`/`lyric_release`. Storing a `NativeWeak[T]` in a
+`List`/`Map`, or returning one from an `async func`, would therefore
+either strong-retain it (reintroducing the leak/cycle class `NativeWeak`
+exists to break) or strong-release it (a use-after-free — decrementing
+the target's strong `rc` without a matching increment). PR #5539 made
+`refFlagOf` reject a weak element/value/result type at codegen time to
+stay fail-closed until the kernels caught up, with this issue tracking
+that follow-up.
+
+**Fix — tri-state ownership flag.** The single boolean flag becomes a
+tri-state: `0` scalar (no-op), `1` strong ref
+(`lyric_retain`/`lyric_release`), `2` weak ref
+(`lyric_weak_retain`/`lyric_weak_release`). `lyric-rt/src/lyric_collections.c`
+gains two small dispatch helpers, `elem_retain`/`elem_release`, shared by
+every List and Map call site that used to gate on `elems_are_refs`/
+`vals_are_refs` truthiness alone (`lyric_list_dtor`, `lyric_list_push`,
+`lyric_list_set`, `lyric_list_remove_at`, `lyric_list_clear`,
+`lyric_map_dtor`, `lyric_map_set`, `lyric_map_remove` — `lyric_list_copy`/
+`lyric_list_slice`/`lyric_list_concat`/`lyric_list_append`/
+`lyric_map_keys`/`lyric_map_values` all route through `lyric_list_new`/
+`lyric_list_push` unchanged, so they inherit the fix for free). Map
+*keys* stay a plain boolean (`keys_are_strings`) — a weak reference is
+never itself a map key, only ever a value, in this design. `lyric_async.c`'s
+`lyric_task_dtor` gains the same three-way dispatch for `result_is_ref`
+inline (only one call site). `Lyric.LlvmCodegen.refFlagOf` now returns
+`2` for a weak type (checked BEFORE the `isRefNType` check, since a
+`NativeWeak[T]` value IS ref-typed by that predicate's own definition —
+ordering the weak check first is what makes the distinction reachable at
+all) instead of panicking; the codegen-side compile-time rejection from
+#5539 is removed.
+
+No `CodegenUnit`/signature plumbing was needed beyond `refFlagOf` itself:
+every call site that builds a list/map/task already just forwards
+`refFlagOf`'s result straight through as an opaque `i32` argument to the
+runtime kernel (`constructList`, `constructMap`, `emitTaskComplete`)
+without branching on its value, so widening the flag's own value space
+from {0,1} to {0,1,2} needed no codegen-side branching changes at all —
+only the RUNTIME's interpretation of that value changed.
+
+**Prerequisite re-verified, already resolved.** The issue's own
+prerequisite — `List[NativeWeak[T]]` failing to *parse*
+(`P0201`/`P0075`/`P0202` on the nested parametric type annotation) — no
+longer reproduces on current `main`; a `var xs: List[NativeWeak[Int]]`
+declaration parses cleanly today (confirmed directly), so no front-end
+parser change was needed here.
+
+**Verified.** `make -C lyric-rt` and `make -C lyric-rt test` (both
+existing C unit-test binaries) pass clean after the runtime change.
+Three new `-fsanitize=address` cases in `llvm_heap_self_test.l`: an
+`async func` returning `NativeWeak[T]` upgrades to `Some` while its
+target is alive (replacing the old #5543 "is rejected at codegen" case,
+which now correctly fails since rejection is no longer the expected
+behavior); a `List[NativeWeak[T]]` element does NOT keep its target
+strongly alive (the list-owning function returns and its only strong
+local goes out of scope; `upgrade()` on the stored weak element
+correctly returns `None`, leak-free); the identical case for
+`Map[K, NativeWeak[T]]` values. All three catch both wrong-direction
+regressions by construction: a kernel that wrongly treated the flag as
+strong would keep the target alive (wrong `upgrade()` result); one that
+wrongly treated it as scalar (no retain/release at all) would leak the
+weak count, caught by ASan's LeakSanitizer. Full `llvm_heap_self_test.l`
+suite re-run: 37/37 (34 pre-existing + 3 new), no regressions.
+
+**Related:** #5545 (fixed here), #5504/D-progress-… (the original
+`NativeWeak` ARC two-count design this builds on), `native/plan/08-work-items.md`
+N9.8, `native/plan/04-arc-design.md`'s "Weak references: `NativeWeak[T]`"
+section.

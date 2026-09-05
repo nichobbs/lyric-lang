@@ -1879,6 +1879,27 @@ here.
 
 ---
 
+### N9.8 — Weak-aware List/Map/Task kernels: `NativeWeak[T]` as a collection element or async result — ✅ SHIPPED (D-progress-879, #5545)
+
+`lyric_list_new`/`lyric_map_new`/`lyric_task_complete`'s single boolean
+element/value/result-is-ref flag becomes a tri-state (0 scalar, 1 strong
+ref, 2 weak ref); `lyric-rt/src/lyric_collections.c` gains shared
+`elem_retain`/`elem_release` dispatch helpers used by every List/Map
+push/set/remove/dtor site, and `lyric_async.c`'s `lyric_task_dtor` gains
+the same three-way dispatch inline. `Lyric.LlvmCodegen.refFlagOf` now
+returns 2 for a weak type (checked before `isRefNType`, since
+`NativeWeak[T]` IS ref-typed by that predicate) instead of the #5539
+compile-time rejection. No codegen call-site branching changes needed —
+every consumer already forwarded `refFlagOf`'s result opaquely. The
+issue's own prerequisite (`List[NativeWeak[T]]` failing to parse) no
+longer reproduces on current `main`. Verified: `lyric-rt`'s C unit
+tests pass; three new ASan cases in `llvm_heap_self_test.l` (async
+result, `List[NativeWeak[T]]`, `Map[K, NativeWeak[T]]`) each confirm
+correct upgrade-while-alive AND "does not keep the target strongly
+alive," leak-free; full suite 37/37, no regressions.
+
+---
+
 ## Dependency graph summary
 
 ```
