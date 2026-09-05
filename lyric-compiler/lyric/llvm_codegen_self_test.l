@@ -472,7 +472,8 @@ test "unit main and substring" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// String.trim/toLower/indexOf/startsWith/contains/endsWith (#6588).
+// String.trim/toLower/indexOf/lastIndexOf/startsWith/contains/endsWith
+// (#6588, #6755).
 // trim/toLower allocate a fresh heap String, so they run under ASan; the
 // boolean predicates and indexOf don't allocate but are included alongside
 // for a single coherent block covering every method the issue lists.
@@ -563,6 +564,32 @@ test "string indexOf: found offset, -1 sentinel, and empty-needle/-haystack" {
   val r = compileAndRun(shim)
   assertEqualInt(r.exitCode, 0, "indexOf exit")
   assertEqual(r.stdout, "6\n-1\n0\n0\n0\n", "indexOf: found, missing (-1), empty needle/haystack, offset 0")
+}
+
+test "string lastIndexOf: last occurrence, -1 sentinel, and empty-needle matches at length" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val s = \"hello world hello\"\n" +
+    "  println(s.lastIndexOf(\"hello\").toString())\n" +
+    "  println(s.indexOf(\"hello\").toString())\n" +
+    "  println(s.lastIndexOf(\"xyz\").toString())\n" +
+    "  println(s.lastIndexOf(\"\").toString())\n" +
+    "  println(\"\".lastIndexOf(\"\").toString())\n" +
+    "  println(s.lastIndexOf(\"world\").toString())\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRun(shim)
+  assertEqualInt(r.exitCode, 0, "lastIndexOf exit")
+  assertEqual(
+    r.stdout,
+    "12\n0\n-1\n17\n0\n6\n",
+    "lastIndexOf: last occurrence (vs indexOf's first), missing (-1), empty needle at length, offset"
+  )
 }
 
 test "string startsWith/contains/endsWith: match, mismatch, and empty-argument edge cases" {
