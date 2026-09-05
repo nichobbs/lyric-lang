@@ -83,10 +83,7 @@ test "toView exposes all fields of a basic projectable" {
 test "tryInto round-trips the opaque value" {
   val u = User(id = 7, name = "alice")
   val uv = u.toView()
-  val ok = match uv.tryInto() {
-    case Ok(u2) -> u2.id == 7 and u2.name == "alice"
-    case Err(_) -> false
-  }
+  val ok = match uv.tryInto() { case Ok(u2) -> u2.id == 7 and u2.name == "alice"; case Err(_) -> false }
   assertTrue(ok, "tryInto_ok")
 }
 
@@ -158,4 +155,41 @@ test "same-package inout mutation of a plain opaque type's mutable slice field (
   appendByte(h, 66.toByte())
   assertEqualInt(mutableHolderBufLength(h), 2, "mutable opaque slice field grew to length 2")
   assertEqualInt(h.tag, 1, "immutable opaque field still readable after a sibling field's mutation")
+}
+
+// #5937 review follow-up (#6944): an opaque type's mutable field passed
+// DIRECTLY as an out/inout call argument (`bumpInout(h.count)`) rather than
+// assigned (`h.count = ...`) takes a completely separate codegen path —
+// `Jvm.Codegen.prepareHolderArg`/`writeBackHolderArg` (04_calls.l), which
+// read/write the field with raw, unmangled-name `LGetfield`/`LPutfield`
+// unconditionally. For an opaque receiver the real backing field is named
+// `$count` (mangled) and, when immutable, `final` — the same two problems
+// the original fix solved for plain assignment, reached via a different
+// call shape. Fixed by routing both call sites through the same
+// `emitFieldLoadOpaqueAware`/`emitFieldStoreOpaqueAware` helpers `05_stmts.l`
+// already uses for plain assignment.
+pub opaque type MutableCounter {
+  var count: Int
+  label: String
+}
+
+func bumpInout(x: inout Int): Unit {
+  x = x + 1
+}
+
+pub func newMutableCounter(): MutableCounter {
+  MutableCounter(count = 0, label = "c")
+}
+
+pub func mutableCounterCount(h: in MutableCounter): Int {
+  h.count
+}
+
+test "opaque type's mutable field passed directly as an inout call argument (#5937 / #6944)" {
+  val h = newMutableCounter()
+  bumpInout(h.count)
+  bumpInout(h.count)
+  bumpInout(h.count)
+  assertEqualInt(mutableCounterCount(h), 3, "opaque field bumped 3 times through direct inout-argument passing")
+  assertEqual(h.label, "c", "immutable opaque field still readable after the holder-arg mutation")
 }
