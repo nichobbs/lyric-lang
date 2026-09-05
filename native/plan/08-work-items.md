@@ -1400,7 +1400,7 @@ and the kernel ports landed, `Std.Tls.Certificate.fromPem`/`Identity.fromPem`
 construct correctly end to end for `--target native`, verified by
 `llvm_tls_self_test.l`'s re-added item B.
 
-**Follow-up: portable accept() interrupt — ✅ SHIPPED (D-progress-878, #6806;
+**Follow-up: portable accept() interrupt — ✅ SHIPPED (D-progress-882, #6806;
 closes the macOS/BSD gap #6804 disclosed at N9.3 ship time).**
 `hostStopListener` originally interrupted a blocked `hostAccept` on another
 thread by calling `shutdown()` on the LISTENING socket before `close()`ing
