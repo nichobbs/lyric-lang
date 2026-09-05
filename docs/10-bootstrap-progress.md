@@ -33816,3 +33816,27 @@ Stage-0 binary genuinely compiles the real stdlib bundle in Stage 1.
 (full account), #7043 (this fix; also tracks the deferred release-pipeline
 portability follow-up), #7025/#7026/#7036 (the prior self-hosted-runner
 architecture-mismatch fixes this one follows).
+
+## lyric-aws-secrets: real JVM Secrets Manager/SSM bindings ship, aws-feature blocker corrected (#5411)
+
+`lyric-aws-secrets/src/_kernel/secrets_kernel_jvm.l` (`jvm` feature) is no
+longer a bare `extern package` no-op trap: it binds real
+`SecretsManagerClient`/`SsmClient` calls (`getSecretValue`/`getParameter`)
+against the actual AWS SDK for Java v2 2.25.70 JARs, with `Std.Json`-backed
+JSON-key extraction for `getSecretField` and a process-global TTL cache.
+`secrets_kernel_aws.l` (`aws`/.NET feature) is converted from the same
+`extern package` trap to a real pure-Lyric file that fails every call with a
+documented `NOT_IMPLEMENTED` error — the async-`Task<T>`-FFI mechanism this
+needs is real (`Std.HttpHost` already binds `HttpClient.SendAsync` the same
+way), but adopting it requires making `AwsSecrets`'s public API async, a
+larger API-shape decision tracked separately (issue #6864) rather than a
+compiler gap. `initFromAnnotations()` (`@secretsManager`/`@parameterStore`
+config-block scanning) stays `NOT_IMPLEMENTED` on every feature except
+`local` — confirmed no supporting compiler capability exists for reading
+custom annotations off a compiled field at runtime (issue #6866).
+`lyric-aws-secrets/README.md`'s support matrix is corrected to stop claiming
+"Production-ready for .NET and JVM targets" when the `aws` feature had never
+worked even once. See `docs/03-decision-log.md` D-progress-883 for the full
+investigation (including the two prior false blocker claims this corrects
+and the self-hosted-compiler monomorphisation gap found and worked around
+along the way).

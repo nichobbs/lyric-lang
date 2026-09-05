@@ -8571,6 +8571,32 @@ broad-sounding survived undetected (it required a *specific*,
 previously-untested combination: an opaque type's field read from a
 free function outside its own methods).
 
+**Addendum (2026-09-05, published NuGet `lyric` 0.6.2, `dotnet tool install
+-g lyric`):** a further divergence, found while formatting
+`lyric-aws-secrets/src/_kernel/secrets_kernel_jvm.l` for #5411's PR — worse
+than a style disagreement, this one is a **literal-content corruption**.
+`lyric fmt --write` on a file containing `name + " " + k` (a plain
+space-character string literal used as a cache-key separator) rewrote the
+formatted output to `name + "\u{0000}" + k` — silently changing a space
+character into a NUL byte, a different runtime value, not merely different
+formatting. The same run also reproduced the already-documented
+match-block-collapse divergence (a multi-line `match key { case Some(k) ->
+...; case None -> ... }` collapsed to single-line semicolon form) on the
+same file. Per this decision's condition 1 ("isolate a reformat run to
+code outside the actual diff" is the verification bar), the divergence
+here needs no such isolation — the tool's own output for a literal it was
+handed is provably wrong independent of surrounding context. Per the
+methodological lesson two paragraphs up, this has **not** been verified
+against a from-source `./bin/lyric` build in this sandbox (the same
+GitHub-access block that made the NuGet tool necessary here also blocks
+building `./bin/lyric` to check) — it may be a stale-published-tool
+artifact fixed on `main` already (as the 0.4.14 case above turned out to
+be), or a live `main` bug; a session that CAN build from source should
+verify which, the same way #5084/D-progress-596 did for the 0.4.14 case.
+Until verified, `lyric fmt --write` was not run on that PR's changed
+files — they were hand-formatted to match the surrounding kernel files'
+established style instead, per this decision's three conditions.
+
 ---
 
 ## D118 — Fixed aspect `requires:`/`ensures:` runtime enforcement gap; retired C-mode across every field-accessing ecosystem library aspect
@@ -42063,3 +42089,100 @@ script, not per-workflow). The removed guard was in `publish.yml` alone. No
 change to the seed *format*, the three-stage reproducibility bootstrap, or any
 compiler behaviour. Reproducibility is unaffected: the byte-compare stages
 supply their own seed and never consult the fallback tier.
+## D-progress-883 — lyric-aws-secrets: real JVM Secrets Manager/SSM bindings ship; the .NET `aws` async-FFI "blocker" is corrected (a real precedent exists) but stays NOT_IMPLEMENTED pending an API-shape decision (#5411)
+
+**Context.** #5411 (and three prior triage passes on it) treated
+`lyric-aws-secrets`'s `aws`/`jvm` `extern package` kernels as blocked on two
+hard prerequisites: (1) no `extern type` + auto-FFI precedent anywhere in the
+repo for binding a `Task<T>`-returning BCL/SDK async call, and (2) no
+compiler capability to read custom config-block annotations
+(`@secretsManager`/`@parameterStore`) at runtime. Both were re-investigated
+from scratch rather than re-asserted.
+
+**Finding 1 — the async-FFI claim was wrong.** `Std.HttpHost`
+(`lyric-stdlib/std/_kernel/http_host.l`) already binds
+`HttpClient.SendAsync`/`GetAsync`/`PostAsync` — real `Task<T>`-returning BCL
+methods — via `@externInstance @externTarget("...") async func ...(...): T
+= ()`, with callers `await`-ing the result. This is not blocked by #6581
+(generic-declaring-type ctors / generic-method MethodSpec emission; the AWS
+SDK calls in question are neither). The REAL blocker is that adopting this
+for `lyric-aws-secrets` would force its entire public API (`init()`,
+`getSecret()`, etc.) to become `async func`, cascading to every caller —
+`func main(): Int` and every `lyric-lambda` handler (`direct.l`'s
+`DirectHandler` family) are synchronous today. That is a deliberate
+API-shape decision, not a compiler gap, so `secrets_kernel_aws.l` stays
+NOT_IMPLEMENTED (converted from a bare `extern package` no-op trap to a real
+pure-Lyric file that fails loudly and honestly) with the corrected reasoning
+recorded in its header. Filed as issue #6864.
+
+**Finding 2 — the JVM v2 SDK's default clients are synchronous.** Unlike
+.NET, `SecretsManagerClient`/`SsmClient`'s `getSecretValue`/`getParameter`
+are plain blocking interface methods (`SecretsManagerAsyncClient` is a
+separate, unused type) — so the JVM feature has NO async-FFI prerequisite
+at all. Real bindings ship in `secrets_kernel_jvm.l`: client construction via
+the same static-factory + fluent-builder auto-FFI idiom `lyric-web`'s JVM
+kernel already proved (`JUndertow.builder()...build()`), request/response
+POJOs (`GetSecretValueRequest`/`Response`, `GetParameterRequest`/`Response`/
+`Parameter`) via the same pattern, `Std.Json` (pure Lyric, cross-platform
+since D-progress-555) for the `getSecretField` JSON-key-extraction path, and
+a process-global `ConcurrentHashMap`-backed TTL cache mirroring
+`lyric-web`/`lyric-resilience`'s existing JVM-kernel caching idiom. Class
+shapes were verified against the real
+`software.amazon.awssdk:secretsmanager`/`ssm` 2.25.70 JARs via `javap`
+before writing the bindings, not guessed.
+
+**Error classification is honestly best-effort.** Lyric's `catch Bug as b`
+boundary exposes only a flattened `b.message` string — there is no
+typed-exception-hierarchy pattern match across the FFI boundary — so
+`classifySecretsError`/`classifyParameterError` (both `pub`, so the test
+suite can exercise them directly) do substring matching on the AWS SDK's own
+exception messages, falling back to `NetworkError` for anything
+unrecognised. This is documented as a known limitation in the kernel's
+header and the README, not silently papered over.
+
+**A genuine self-hosted-compiler monomorphisation gap was found and worked
+around, not silently avoided.** A module-level
+`newConcurrentDict[String, JSecretsManagerClient]()` call (the generic
+`ConcurrentDict[K, V]` idiom already used elsewhere, instantiated over an
+`extern type` rather than a plain Lyric record) fails with "an explicit type
+argument does not resolve to a known type in this compilation unit" — the
+same call shape instantiated over a plain record (`CacheEntry`, used for the
+TTL cache two lines above) monomorphises fine, so this is specific to
+extern-typed generic arguments. Worked around with two dedicated
+non-generic `ConcurrentHashMap` bindings (one per client type) rather than
+forcing the generic path; documented in the kernel file as a two-line
+workaround worth revisiting, not a design requirement.
+
+**initFromAnnotations() stays NOT_IMPLEMENTED on every feature except
+`local`.** Re-confirmed via a repo-wide grep against current `main`: no
+capability to read custom user annotations off a compiled config-block
+field at runtime exists anywhere in the compiler or JVM/MSIL runtime hosts.
+Filed as issue #6866, with a menu of three candidate approaches (MSIL
+`CustomAttribute` + reflection, JVM `RuntimeVisibleAnnotations` + reflection
+mirroring the existing `@LyricTest` precedent from docs/32, or a
+compile-time-only synthesis of `initFromAnnotations()`'s body that avoids
+new runtime reflection surface entirely).
+
+**Verification.** `lyric test --manifest lyric-aws-secrets/lyric.toml`
+(bare, default `local` feature — the existing CI baseline per #5135) plus
+explicit `--features local`, `--no-default-features --features aws`, and
+`--target jvm --no-default-features --features jvm` all pass 16/16. The jvm
+run is a genuine `--target jvm` compile through the self-hosted `Jvm.Bridge`
+against the real Maven-resolved SDK JARs (not a stub) followed by a real
+`java` execution of the resulting JAR — this fails loudly if any binding is
+wrong, which is exactly how the try/catch value-position type-inference
+issue and the monomorphisation gap above were caught. What is NOT verified:
+a live or mocked AWS Secrets Manager/SSM network round-trip (no AWS account
+in this environment; both SDKs support an endpoint override for exactly this
+kind of local-mock testing, but standing one up was scoped out of this PR —
+see the kernel file headers and the PR description for the honest
+unverified-vs-verified split).
+
+**Related:** #5411 (parent issue, closed by this — three prior triage passes
+on it correctly identified the two blockers as real concerns worth
+re-investigating, but had not yet found the `Std.HttpHost` precedent or
+tried the JVM sync-client path), #6864 (new, the .NET async-API-shape
+decision), #6866 (new, the config-block annotation-reflection compiler
+gap), #6581 (a different, unrelated generic-BCL-binding gap — confirmed not
+the blocker here), #733/#783 (the original, incompletely-fixed secrets
+kernel restoration this traces back to).
