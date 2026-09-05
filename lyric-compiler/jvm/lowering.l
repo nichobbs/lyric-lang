@@ -3446,9 +3446,23 @@ func lowerClosureMethod(c: in LClosure, pool: in Pool): MethodInfo {
   // Lower the interface method through the full `lowerFuncForClass` path so the
   // body gets a real StackMapTable (branchy lambda bodies — `if` / `match` —
   // need branch-target frames) and slot pre-initialisation.  The receiver
-  // (slot 0) is typed as the closure class.  `maxStack = 0` lets the assembler
-  // infer the peak stack; `maxLocals` uses the codegen-supplied body count, with
-  // the param-only estimate as the floor for hand-built (async-path) bodies.
+  // (slot 0) is typed as the closure class.  `maxLocals` uses the codegen-
+  // supplied body count, with the param-only estimate as the floor for
+  // hand-built (async-path) bodies.
+  //
+  // `maxStack = 16` (#6714): `lowerFuncForClass` takes `max(maxStack,
+  // asm.peakStack)` — see its own comment on `actualMaxStack` — because
+  // `asm.peakStack`'s tracked simulation is a KNOWN under-count for a
+  // function containing `try`/`catch` (#6089 follow-up), and every
+  // TOP-LEVEL `func` already carries this exact `16` floor for that reason.
+  // A closure body lowers through the identical statement/`defer`/`try`
+  // machinery — `defer { … } try { … } catch … { … }` inside a lambda hit
+  // the same "Operand stack overflow" VerifyError the top-level-func floor
+  // exists to prevent, for a shape combining two captured extern-typed
+  // values, a captured closure parameter, and a call inside the `try`.
+  // Closures had no floor at all (bare `0`, i.e. "trust the peak exactly"),
+  // the one caller of `lowerFuncForClass` not covered by the established
+  // mitigation for this known gap.
   val paramSlots = 1 + slotSum(c.methodParams)
   val localCount = if c.bodyMaxLocals > paramSlots { c.bodyMaxLocals } else { paramSlots }
   val lf = LFunc(
@@ -3457,7 +3471,7 @@ func lowerClosureMethod(c: in LClosure, pool: in Pool): MethodInfo {
     params = c.methodParams,
     ret = c.methodRet,
     insns = c.bodyInsns,
-    maxStack = 0,
+    maxStack = 16,
     maxLocals = localCount
   )
   lowerFuncForClass(lf, c.closureClass, pool)
