@@ -20624,12 +20624,14 @@ func typeExprToMsilGenBodyOrCtx(
 // follows for shapes outside its scope.
 func emitGenericMethodExternCall(
   cctx: in CodegenCtx,
+  fctx: in FuncCtx,
   insns: in List[MInsn],
   decl: in FunctionDecl,
   r: in FfiResolved,
   parentRow: in Int,
   emitMember: in String,
   paramTypes: in List[MsilType],
+  lyricRetTy: in MsilType,
   msig: in Mdr.DecodedMethodSig,
 ): Bool {
   val mParams: List[MsilType] = newList()
@@ -20664,7 +20666,18 @@ func emitGenericMethodExternCall(
   }
   // Open generic-method MemberRef: HASTHIS? | GENERIC, preserving `!!n`.
   val openSig = buildOpenGenericMethodSigCtx(cctx, mParams, mRet, isInstance, msig.genParamCount)
-  val openKey = "openm_" + emitMember + "_" + toString(msig.genParamCount) + "_" + toString(mParams.count)
+  // `parentRow` (the resolved declaring type's own TypeRef row, unique per
+  // distinct type) is included so two DIFFERENT declaring types' same-named,
+  // same-arity, same-genParamCount generic methods (e.g. `Enumerable.
+  // Empty<T>()` vs `Array.Empty<T>()`, both static/0-param/1-genparam)
+  // never collide: `ctxInternBlob`/`internBlob` (lyric-compiler/msil/
+  // heaps.l) dedupes strictly by KEY STRING, returning whichever blob was
+  // interned FIRST under that key regardless of whether the actual bytes
+  // differ — without `parentRow` in the key, the second such method to
+  // compile would silently receive the first's MemberRef signature bytes
+  // (#6987).
+  val openKey = "openm_" + toString(parentRow) + "_" + emitMember + "_" + toString(msig.genParamCount) + "_" +
+    toString(mParams.count)
   val mrRow = ctxAddMemberRef(cctx.lctx, parentRow, emitMember, openKey, openSig)
   // MethodSpec witnessing every one of the method's own generic parameters
   // with `System.Object` (the erasure convention documented above).
@@ -20680,12 +20693,54 @@ func emitGenericMethodExternCall(
   var li = 0
   while li < decl.params.count {
     insns.add(MLdarg(slot = li))
+    // A method-own-generic parameter position (`mParams[pj] ==
+    // MMethodTypeVar`) is ALWAYS witnessed as `System.Object` by the
+    // MethodSpec above (the erasure convention), regardless of the Lyric
+    // wrapper's own declared type at that position. When the wrapper
+    // declares a genuine (non-erased) BCL VALUE type there — e.g. `x: Int`
+    // in a non-generic `@externTarget` wrapper around `Enumerable.
+    // Repeat<T>(T element, int count)` — the raw value-type bits pushed by
+    // `ldarg` must be boxed before the call, or the CLR verifier rejects
+    // passing an unboxed value type where the witnessed-Object parameter
+    // expects a reference (#6989). A wrapper whose OWN generics erase this
+    // position to `object` already (the common case) sees `isValueType ==
+    // false` here and this is a no-op, matching `emitGenericExternMember`'s
+    // parallel box-erased-slot logic.
+    val mpIdx = if isInstance { li - 1 } else { li }
+    if mpIdx >= 0 and mpIdx < mParams.count {
+      val isMethodVarPos = match mParams[mpIdx] { case MMethodTypeVar(_) -> true; case _ -> false }
+      if isMethodVarPos and isValueType(paramTypes[li]) {
+        boxIfNeededMsil(cctx, insns, paramTypes[li])
+      }
+    }
     li = li + 1
   }
   if isInstance {
     insns.add(MCallvirt(methodToken = tok))
   } else {
     insns.add(MCall(methodToken = tok))
+  }
+  // Mirror of `emitGenericExternMember`'s return-unboxing dance (#2972):
+  // when the BCL return is the method's own generic parameter (witnessed as
+  // `object` by the MethodSpec above) but the Lyric wrapper declares a
+  // genuine BCL value-type return, the erased `object` on the stack must be
+  // unboxed back to the concrete value type before `ret` — otherwise the
+  // CLR rejects a valuetype-returning MethodDef that leaves a reference on
+  // the stack. Null-guarded the same way: a witnessed-Object generic method
+  // can legitimately return a null reference for what would be `default(T)`
+  // on the real (unerased) instantiation.
+  val retIsMethodVar = match mRet { case MMethodTypeVar(_) -> true; case _ -> false }
+  if retIsMethodVar and isValueType(lyricRetTy) {
+    val haveLabel = freshLabelMsil(fctx)
+    val endLabel = freshLabelMsil(fctx)
+    insns.add(MDup)
+    insns.add(MBrTrue(label = haveLabel))
+    insns.add(MPop)
+    pushDefaultValueMsil(cctx, fctx, insns, lyricRetTy)
+    insns.add(MBr(label = endLabel))
+    insns.add(MLabel(id = haveLabel))
+    insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, lyricRetTy)))
+    insns.add(MLabel(id = endLabel))
   }
   insns.add(MRet)
   true
@@ -21065,7 +21120,7 @@ func emitExternTargetBody(
                   // metadata resolution found nothing) rather than falling
                   // into the plain-method path below with an `msig` it can't
                   // safely consume (#6581 Gap 2).
-                  if emitGenericMethodExternCall(cctx, insns, decl, r, memberParentRow, emitMember, paramTypes, msig) {
+                  if emitGenericMethodExternCall(cctx, fctx, insns, decl, r, memberParentRow, emitMember, paramTypes, retTy, msig) {
                     return true
                   }
                 } else {

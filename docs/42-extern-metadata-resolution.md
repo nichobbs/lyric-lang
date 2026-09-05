@@ -576,6 +576,26 @@ runtime gap.
     `generic_extern_methodspec_self_test.l` (BCL-only shapes — `List`1`'s
     `IEnumerable<T>` ctor and `Enumerable.Empty<T>()`'s MethodSpec dispatch —
     so CI needs no gRPC package).
+  - **Review follow-up (D-progress-883).** A genuine regression surfaced
+    post-review: the `scoreSigType` `STNamedGenericInst` arm above initially
+    matched every CLOSED generic instantiation unconditionally, not just the
+    open-VAR case it documents — spuriously admitting an unrelated overload
+    (`TextWriter.WriteLine(ReadOnlySpan<char>)`) into scoring for an
+    unrelated call, breaking `auto_ffi_self_test.l`'s inherited-member test.
+    Fixed by gating the arm on a new `sigIsOpenGeneric` recursive check
+    (still contains an unresolved VAR/MVAR somewhere) so a fully closed,
+    concrete BCL generic type scores by real structural compatibility like
+    any other named type. Two review-flagged gaps in
+    `emitGenericMethodExternCall` were also fixed: the `openKey` blob-
+    interning key omitted the declaring type (collided across e.g.
+    `Enumerable.Empty<T>()` vs `Array.Empty<T>()`, #6987 — fixed by
+    including `parentRow`), and neither a value-type argument was boxed nor
+    a value-type return unboxed at a method-own-generic
+    (witnessed-as-`Object`) position (#6989 — fixed by mirroring
+    `emitGenericExternMember`'s existing box/unbox dance), which also
+    surfaced a missing `STMVar` arm in `scoreSigType` (only `STVar` existed)
+    without which the scored resolver never found `Enumerable.Repeat<T>`'s
+    bare-MVAR parameter at all.
 
 ---
 
