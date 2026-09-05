@@ -41606,11 +41606,10 @@ accept loop" (`_kernel_native/http_server.l`'s `plainAcceptLoop`/
 `tlsAcceptLoop` needed ZERO changes as a result: the classification
 contract they already consume didn't change shape, only how it gets
 produced). `hostStopListener` no longer calls `rtShutdown` on the
-listening socket at all — it calls `rtSockWakePipeSignal(l.wakeWriteFd)`,
-then closes the listening socket, then closes both pipe ends (in that
-order: the signal always happens before either fd is closed, so a thread
-genuinely parked in `poll()` on either fd number sees the byte land before
-any close call on this thread could race it). `rtShutdown`/`shutdown(2)`
+listening socket at all — it calls `rtSockWakePipeSignal(l.wakeWriteFd)`
+and returns; it does NOT also close the listening socket or the pipe
+(see the TOCTOU addendum below for why that split exists and what calls
+the new, separate `hostCloseListener`). `rtShutdown`/`shutdown(2)`
 remains bound and in use for `hostShutdown` (interrupting an
 already-ACCEPTED connection's blocked read/write) — that function's own
 existing doc comment already establishes `shutdown()` as portable for a
@@ -41673,3 +41672,34 @@ claim than "verified," and is stated as such rather than papered over.
 now closed), D-progress-850 (N9.3, where the gap was first found and
 filed rather than silently shipped), D-progress-712 (N9.2, this file's own
 original `Listener`/`Conn` design this entry extends without changing).
+
+**Addendum: `hostStopListener`/`hostCloseListener` split fixes a TOCTOU
+fd-reuse race (#6883, found in review of this same change before merge).**
+The first version of this entry's `hostStopListener` signaled the wake
+pipe AND immediately closed the listening socket plus both pipe fds, all
+on the calling (stopping) thread, with no synchronization confirming the
+accept-loop thread had actually drained the signal. `Std.HttpServer.
+stopListener` only `pthreadJoin`s that thread AFTERWARD, so there was a
+real window where an unrelated fd opened elsewhere in the process could
+reuse one of the just-closed fd numbers before the still-in-flight accept
+thread's own wake-pipe drain `read()` ran — silently corrupting or
+stealing bytes from that unrelated resource instead of harmlessly
+no-op'ing, or hanging the accept thread if the reused fd happened to be
+blocking. Fix: `hostStopListener` now ONLY signals (see above); a new
+`hostCloseListener(l)` does the actual close, and is called ONLY after a
+caller has positively confirmed the accept-loop thread exited (a
+`pthreadJoin` return) — `Std.HttpServer.stopListener` is the reference
+caller, calling `hostStopListener`, then `pthreadJoin`, then
+`hostCloseListener`, in that order. The one call site with no accept
+thread to join (a `pthreadCreate` failure during `startListener`/
+`startListenerTls`, before any thread was ever spawned) calls
+`hostCloseListener` directly, with no preceding `hostStopListener` call —
+there is nothing to signal. `llvm_tls_self_test.l` and
+`llvm_http_client_self_test.l` call `Std.TcpHost` directly (no
+`Std.HttpServer` involved) and, in every case, already `pthreadJoin` (or
+never spawn) their own worker before their cleanup call — these were
+updated from the old single `hostStopListener` cleanup call to
+`hostCloseListener`, matching the same "no thread left to signal at this
+point" reasoning. Re-verified: `llvm_http_server_self_test.l` (10/10,
+including item J), `llvm_tls_self_test.l` (5/5), `llvm_http_client_self_test.l`
+(13/13), all `lyric-rt` C tests green.

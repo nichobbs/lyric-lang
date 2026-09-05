@@ -249,7 +249,7 @@ test "Std.HttpHost native HTTPS round trip: TLS handshake + redirect + chunked b
     "  var tid: Long = 0\n" +
     "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
     "  if rc != 0 {\n" +
-    "    hostStopListener(listener)\n" +
+    "    hostCloseListener(listener)\n" +
     "    return 2\n" +
     "  }\n" +
     "  val cert = match Certificate.fromPem(certPem) {\n" +
@@ -282,7 +282,7 @@ test "Std.HttpHost native HTTPS round trip: TLS handshake + redirect + chunked b
     "    }\n" +
     "    freeC(outp)\n" +
     "  }\n" +
-    "  hostStopListener(listener)\n" +
+    "  hostCloseListener(listener)\n" +
     "  if not serverOk {\n" +
     "    return 4\n" +
     "  }\n" +
@@ -391,8 +391,8 @@ test "Std.HttpHost native redirect strips Authorization on a cross-authority hop
     "  var tid: Long = 0\n" +
     "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
     "  if rc != 0 {\n" +
-    "    hostStopListener(listener1)\n" +
-    "    hostStopListener(listener2)\n" +
+    "    hostCloseListener(listener1)\n" +
+    "    hostCloseListener(listener2)\n" +
     "    return 3\n" +
     "  }\n" +
     "  val client = hostDefaultClient()\n" +
@@ -418,8 +418,8 @@ test "Std.HttpHost native redirect strips Authorization on a cross-authority hop
     "    }\n" +
     "    freeC(outp)\n" +
     "  }\n" +
-    "  hostStopListener(listener1)\n" +
-    "  hostStopListener(listener2)\n" +
+    "  hostCloseListener(listener1)\n" +
+    "  hostCloseListener(listener2)\n" +
     "  if not serverOk {\n" +
     "    return 4\n" +
     "  }\n" +
@@ -459,7 +459,7 @@ test "Std.HttpHost native client rejects a header value with an embedded CRLF (i
     "    case Ok(_) -> {\n" +
     "    }\n" +
     "  }\n" +
-    "  hostStopListener(listener)\n" +
+    "  hostCloseListener(listener)\n" +
     "  if not rejected {\n" +
     "    return 2\n" +
     "  }\n" +
@@ -521,7 +521,7 @@ test "Std.HttpHost native client rejects a response Content-Length beyond the si
     "  var tid: Long = 0\n" +
     "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
     "  if rc != 0 {\n" +
-    "    hostStopListener(listener)\n" +
+    "    hostCloseListener(listener)\n" +
     "    return 2\n" +
     "  }\n" +
     "  val client = hostDefaultClient()\n" +
@@ -549,7 +549,7 @@ test "Std.HttpHost native client rejects a response Content-Length beyond the si
     "    }\n" +
     "    freeC(outp)\n" +
     "  }\n" +
-    "  hostStopListener(listener)\n" +
+    "  hostCloseListener(listener)\n" +
     "  if not serverOk {\n" +
     "    return 3\n" +
     "  }\n" +
@@ -654,7 +654,7 @@ test "Std.HttpHost native redirect strips Authorization on an https-to-http down
     "  var tid: Long = 0\n" +
     "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
     "  if rc != 0 {\n" +
-    "    hostStopListener(listener)\n" +
+    "    hostCloseListener(listener)\n" +
     "    return 2\n" +
     "  }\n" +
     "  val cert = match Certificate.fromPem(certPem) {\n" +
@@ -692,7 +692,7 @@ test "Std.HttpHost native redirect strips Authorization on an https-to-http down
     "    }\n" +
     "    freeC(outp)\n" +
     "  }\n" +
-    "  hostStopListener(listener)\n" +
+    "  hostCloseListener(listener)\n" +
     "  if not serverOk {\n" +
     "    return 4\n" +
     "  }\n" +
@@ -750,7 +750,7 @@ test "Std.HttpHost native client rejects an overflowing hex chunk-size line rath
     "  var tid: Long = 0\n" +
     "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
     "  if rc != 0 {\n" +
-    "    hostStopListener(listener)\n" +
+    "    hostCloseListener(listener)\n" +
     "    return 2\n" +
     "  }\n" +
     "  val client = hostDefaultClient()\n" +
@@ -772,7 +772,7 @@ test "Std.HttpHost native client rejects an overflowing hex chunk-size line rath
     "    }\n" +
     "    freeC(outp)\n" +
     "  }\n" +
-    "  hostStopListener(listener)\n" +
+    "  hostCloseListener(listener)\n" +
     "  if not serverOk {\n" +
     "    return 3\n" +
     "  }\n" +
@@ -839,7 +839,7 @@ test "Std.HttpHost native client rejects a chunked body whose cumulative size ov
     "  var tid: Long = 0\n" +
     "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
     "  if rc != 0 {\n" +
-    "    hostStopListener(listener)\n" +
+    "    hostCloseListener(listener)\n" +
     "    return 2\n" +
     "  }\n" +
     "  val client = hostDefaultClient()\n" +
@@ -861,7 +861,7 @@ test "Std.HttpHost native client rejects a chunked body whose cumulative size ov
     "    }\n" +
     "    freeC(outp)\n" +
     "  }\n" +
-    "  hostStopListener(listener)\n" +
+    "  hostCloseListener(listener)\n" +
     "  if not serverOk {\n" +
     "    return 3\n" +
     "  }\n" +
@@ -915,7 +915,7 @@ test "Std.HttpHost native client treats a HEAD response as bodyless despite Cont
     "  var tid: Long = 0\n" +
     "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
     "  if rc != 0 {\n" +
-    "    hostStopListener(listener)\n" +
+    "    hostCloseListener(listener)\n" +
     "    return 2\n" +
     "  }\n" +
     "  val client = hostDefaultClient()\n" +
@@ -944,7 +944,7 @@ test "Std.HttpHost native client treats a HEAD response as bodyless despite Cont
     "    }\n" +
     "    freeC(outp)\n" +
     "  }\n" +
-    "  hostStopListener(listener)\n" +
+    "  hostCloseListener(listener)\n" +
     "  if not serverOk {\n" +
     "    return 3\n" +
     "  }\n" +
@@ -1000,7 +1000,7 @@ test "Std.HttpHost native client treats a 204 response as bodyless despite Conte
     "  var tid: Long = 0\n" +
     "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
     "  if rc != 0 {\n" +
-    "    hostStopListener(listener)\n" +
+    "    hostCloseListener(listener)\n" +
     "    return 2\n" +
     "  }\n" +
     "  val client = hostDefaultClient()\n" +
@@ -1029,7 +1029,7 @@ test "Std.HttpHost native client treats a 204 response as bodyless despite Conte
     "    }\n" +
     "    freeC(outp)\n" +
     "  }\n" +
-    "  hostStopListener(listener)\n" +
+    "  hostCloseListener(listener)\n" +
     "  if not serverOk {\n" +
     "    return 3\n" +
     "  }\n" +
@@ -1091,7 +1091,7 @@ test "Std.HttpHost native client skips an interim 100-Continue response and read
     "  var tid: Long = 0\n" +
     "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
     "  if rc != 0 {\n" +
-    "    hostStopListener(listener)\n" +
+    "    hostCloseListener(listener)\n" +
     "    return 2\n" +
     "  }\n" +
     "  val client = hostDefaultClient()\n" +
@@ -1120,7 +1120,7 @@ test "Std.HttpHost native client skips an interim 100-Continue response and read
     "    }\n" +
     "    freeC(outp)\n" +
     "  }\n" +
-    "  hostStopListener(listener)\n" +
+    "  hostCloseListener(listener)\n" +
     "  if not serverOk {\n" +
     "    return 3\n" +
     "  }\n" +
@@ -1221,7 +1221,7 @@ test "Std.HttpHost native client bounds the raw receive buffer against chunk-ext
     "  var tid: Long = 0\n" +
     "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
     "  if rc != 0 {\n" +
-    "    hostStopListener(listener)\n" +
+    "    hostCloseListener(listener)\n" +
     "    return 2\n" +
     "  }\n" +
     "  val client = hostDefaultClient()\n" +
@@ -1243,7 +1243,7 @@ test "Std.HttpHost native client bounds the raw receive buffer against chunk-ext
     "    }\n" +
     "    freeC(outp)\n" +
     "  }\n" +
-    "  hostStopListener(listener)\n" +
+    "  hostCloseListener(listener)\n" +
     "  if not serverOk {\n" +
     "    return 3\n" +
     "  }\n" +
@@ -1323,7 +1323,7 @@ test "Std.HttpHost native client bounds the number of interim 1xx responses it w
     "  var tid: Long = 0\n" +
     "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
     "  if rc != 0 {\n" +
-    "    hostStopListener(listener)\n" +
+    "    hostCloseListener(listener)\n" +
     "    return 2\n" +
     "  }\n" +
     "  val client = hostDefaultClient()\n" +
@@ -1345,7 +1345,7 @@ test "Std.HttpHost native client bounds the number of interim 1xx responses it w
     "    }\n" +
     "    freeC(outp)\n" +
     "  }\n" +
-    "  hostStopListener(listener)\n" +
+    "  hostCloseListener(listener)\n" +
     "  if not serverOk {\n" +
     "    return 3\n" +
     "  }\n" +
@@ -1420,7 +1420,7 @@ test "Std.HttpHost native client bounds the number of response header fields, no
     "  var tid: Long = 0\n" +
     "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
     "  if rc != 0 {\n" +
-    "    hostStopListener(listener)\n" +
+    "    hostCloseListener(listener)\n" +
     "    return 2\n" +
     "  }\n" +
     "  val client = hostDefaultClient()\n" +
@@ -1442,7 +1442,7 @@ test "Std.HttpHost native client bounds the number of response header fields, no
     "    }\n" +
     "    freeC(outp)\n" +
     "  }\n" +
-    "  hostStopListener(listener)\n" +
+    "  hostCloseListener(listener)\n" +
     "  if not serverOk {\n" +
     "    return 3\n" +
     "  }\n" +

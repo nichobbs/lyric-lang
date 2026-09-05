@@ -15,6 +15,14 @@
 //! no exceptions) — every fallible operation here is driven directly off
 //! the seam's -1/NULL return values plus `lyric_tls_last_error`.
 //!
+//! **One divergence from that mirrored surface (issue #6883):** the
+//! dotnet twin's `hostStopListener` still does stop-and-release in one
+//! call. This file splits that into `hostStopListener` (signal only) +
+//! `hostCloseListener` (release only) — see `hostStopListener`'s own
+//! doc comment for why. A caller porting code from the dotnet twin must
+//! add the paired `hostCloseListener` call; the two are NOT
+//! interchangeable single-call replacements for each other.
+//!
 //! **Client TLS (`hostConnectTls`/`hostUpgradeClientTls`) added for N9.4.**
 //! The N9.2 header below originally said "N9.2 has no client-TLS surface —
 //! that is Std.Http's job, N9.4/#6105"; this is that job. It lives HERE,
