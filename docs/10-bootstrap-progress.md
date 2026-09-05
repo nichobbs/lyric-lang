@@ -30725,12 +30725,12 @@ phase 1.2's dotnet client TLS, above).
 **Correction (2026-09-05, group:jvm-codegen-crashes):** #5932's underlying
 `Jvm.Bridge` root cause (a first-wins `stdlibByPkg` map silently dropping
 every bundled file but the first for a same-named package) is now fixed —
-see `docs/03-decision-log.md` D-progress-878. The additive-`_kernel_jvm/`-file
+see `docs/03-decision-log.md` D-progress-889. The additive-`_kernel_jvm/`-file
 workaround above is no longer architecturally required for new same-package
 splits, though the shipped `_kernel_jvm/http_server.l` placement itself was
 not reverted (no functional reason to move already-working code).
 
-**Related:** `docs/03-decision-log.md` D-progress-692, D-progress-878;
+**Related:** `docs/03-decision-log.md` D-progress-692, D-progress-889;
 #5880, #5874, #5884, #5930, #5931, #5932.
 
 ## lyric-web `Web.serveTls` ships on JVM — Undertow HTTPS listener + `ENABLE_HTTP2` + `WebTls` config template, non-mTLS (2026-07-18)
