@@ -293,7 +293,10 @@ func collectDepTemplateSources(
                         srcList.add(srcText)
                         pathList.add(srcPath)
                       }
-                      case Err(e) -> printErr("build: workspace dep '" + depName + "': cannot read source '" + srcPath + "': " + IOError.message(e))
+                      case Err(e) -> printErr(
+                        "build: workspace dep '" + depName + "': cannot read source '" + srcPath + "': " +
+                          IOError.message(e)
+                      )
                     }
                     fi += 1
                   }
@@ -304,7 +307,10 @@ func collectDepTemplateSources(
                       srcList.add(srcText)
                       pathList.add(srcPath)
                     }
-                    case Err(e) -> printErr("build: workspace dep '" + depName + "': cannot read source '" + srcPath + "': " + IOError.message(e))
+                    case Err(e) -> printErr(
+                      "build: workspace dep '" + depName + "': cannot read source '" + srcPath + "': " +
+                        IOError.message(e)
+                    )
                   }
                 }
                 if srcList.count > 0 {
@@ -385,7 +391,7 @@ func buildWorkspaceDep(
   // Check if DLL exists and is up-to-date (not stale).
   val dllExists = File.fileExists(dllPath)
   if dllExists {
-    val dllIsStale = checkDllIsStale(dllPath, depToml, depDir)
+    val dllIsStale = checkDllIsStale(dllPath, depToml, depDir, cliFeatures, noDefaultFeatures, target)
     if not dllIsStale {
       return Ok(value = dllPath)
     }
@@ -442,19 +448,43 @@ func buildWorkspaceDep(
     return Err(error = "build failed (exit code " + toString(buildExit) + ")")
   }
 
-  // After a successful build, the DLL should exist.
+  // After a successful build, the DLL should exist. Write its feature stamp
+  // (#5611 part 1) so the NEXT `checkDllIsStale` call can detect a
+  // `--features`/`--target` change even though nothing on disk under
+  // `depDir` was touched.
   if File.fileExists(dllPath) {
+    writeFeatureStamp(dllPath, cliFeatures, noDefaultFeatures, target)
     Ok(value = dllPath)
   } else {
     Err(error = "build succeeded but DLL not found at " + dllPath)
   }
 }
 
-/// Check if a DLL is stale by comparing its modification time to source files.
-/// Returns true if the DLL is older than the manifest or any source files.
-func checkDllIsStale(dllPath: in String, manifestPath: in String, sourceDir: in String): Bool {
+/// Check if a DLL is stale by comparing its modification time to source files,
+/// AND (#5611 part 1) whether it was built under a different `--features`
+/// selection or `--target`. mtime alone cannot see a feature-set change: a
+/// dependency DLL rebuilt with `--features a` then queried again with
+/// `--features b` looks fresh (nothing on disk touched a source file), but
+/// was compiled with the WRONG `@cfg`-gated code erased/kept. Returns true if
+/// the DLL is older than the manifest or any source files, or if its
+/// sidecar feature-stamp (`featureStampPath`) doesn't match the CURRENT
+/// invocation's resolved `(cliFeatures, noDefaultFeatures, target)` tuple —
+/// including when the stamp is simply absent (a DLL built before this stamp
+/// existed, or built by hand), which is treated as stale rather than trusted.
+pub func checkDllIsStale(
+  dllPath: in String,
+  manifestPath: in String,
+  sourceDir: in String,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  target: in Emitter.CompileTarget,
+): Bool {
   // Check if DLL exists.
   if not File.fileExists(dllPath) {
+    return true
+  }
+
+  if featureStampIsStale(dllPath, cliFeatures, noDefaultFeatures, target) {
     return true
   }
 
@@ -499,6 +529,73 @@ func checkDllIsStale(dllPath: in String, manifestPath: in String, sourceDir: in 
         }
       }
     }
+  }
+}
+
+// ─── #5611 part 1: feature/target staleness stamp ────────────────────────────
+// A small sidecar text file beside a workspace dependency's compiled DLL,
+// recording the `(cliFeatures, noDefaultFeatures, target)` tuple that
+// resolved its ACTIVE feature set (`resolveManifestFeatures`, called deep
+// inside the `buildProject` this stamp brackets) — not the resolved active
+// set itself, since that is a pure, deterministic function of
+// (manifest content, this tuple), and manifest content staleness is already
+// covered by `checkDllIsStale`'s separate mtime check above.
+func featureStampPath(dllPath: in String): String {
+  dllPath + ".featurestamp"
+}
+
+// Deterministic serialization: target name on its own line, then
+// `noDefaultFeatures` as "0"/"1", then each `--features` name on its own
+// line SORTED — so `--features a,b` and `--features b,a` produce an
+// identical stamp and never spuriously invalidate each other's cache.
+func featureStampContents(
+  cliFeatures: in List[String], noDefaultFeatures: in Bool, target: in Emitter.CompileTarget
+): String {
+  val sorted = sortFileList(cliFeatures)
+  val noDefFlag = if noDefaultFeatures { "1" } else { "0" }
+  var body = targetFeatureName(target) + "\n" + noDefFlag + "\n"
+  var i = 0
+  while i < sorted.count {
+    body = body + sorted[i] + "\n"
+    i += 1
+  }
+  body
+}
+
+/// Writes `dllPath`'s feature stamp. Called once, right after a workspace
+/// dependency's `buildProject` call succeeds — see `buildWorkspaceDep`.
+pub func writeFeatureStamp(
+  dllPath: in String,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  target: in Emitter.CompileTarget,
+): Unit {
+  match File.writeText(featureStampPath(dllPath), featureStampContents(cliFeatures, noDefaultFeatures, target)) {
+    case Ok(_) -> ()
+    // A stamp-write failure degrades to "always stale next time" (the stamp
+    // file stays absent/stale), never a build failure — writing a cache
+    // sidecar is not worth failing an otherwise-successful compile over.
+    case Err(_) -> ()
+  }
+}
+
+/// True when `dllPath` has no feature stamp, an unreadable one, or one that
+/// doesn't match the CURRENT `(cliFeatures, noDefaultFeatures, target)`
+/// tuple — any of which means the cached DLL cannot be trusted to carry the
+/// feature set this invocation actually wants.
+func featureStampIsStale(
+  dllPath: in String,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  target: in Emitter.CompileTarget,
+): Bool {
+  val stampPath = featureStampPath(dllPath)
+  if not File.fileExists(stampPath) {
+    return true
+  }
+  match File.readText(stampPath) {
+    case Err(_) -> true
+    case Ok(existing) -> existing != featureStampContents(cliFeatures, noDefaultFeatures, target)
   }
 }
 
@@ -1147,7 +1244,16 @@ pub func resolveWorkspaceImportDeps(
               val mToml = Path.join(member.dir, "lyric.toml")
               val dllName = match File.readText(mToml) {
                 case Err(_) -> member.name + ".dll"
-                case Ok(mText) -> match Mf.parseManifest(mText, mToml) { case Err(_) -> member.name + ".dll"; case Ok(mMf) -> match mMf.project { case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }; case None -> mMf.packageSection.name + ".dll" } }
+                case Ok(mText) -> match Mf.parseManifest(mText, mToml) {
+                  case Err(_) -> member.name + ".dll"
+                  case Ok(mMf) -> match mMf.project {
+                    case Some(p) -> match p.outputAssembly {
+                      case Some(asm) -> asm
+                      case None -> p.name + ".dll"
+                    }
+                    case None -> mMf.packageSection.name + ".dll"
+                  }
+                }
               }
               val dllPath = Path.join(Path.join(member.dir, "bin"), dllName)
               if File.fileExists(dllPath) {
