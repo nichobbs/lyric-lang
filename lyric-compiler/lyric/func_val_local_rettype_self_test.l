@@ -310,3 +310,46 @@ test "chained call to a Unit-returning closure factory leaves the stack balanced
   makeSideEffect6399()()
   assertEqualInt(1 + 1, 2, "computation after a chained Unit-closure invoke is unaffected")
 }
+
+// #6690: unlike every case above (a `val` bound to a CALL whose result is
+// function-shaped), this is a `val` bound directly to a LAMBDA LITERAL with
+// no type annotation at all (`val f = (x) -> false`). `registerFieldFuncValTypesMsil`
+// had no `ELambda` arm, so `f`'s return type never registered and invoking
+// `f(y)` left the boxed `Func::Invoke` result un-unboxed — a non-null boxed
+// reference reads as truthy regardless of the lambda's real body, so `f(y)`
+// was silently `true` even though every lambda here always returns `false`.
+test "un-annotated lambda-literal local, boolean body (#6690 exact repro)" {
+  val f = (x) -> false
+  assertFalse(f(1), "f(1) must be false, not truthy-boxed-object")
+  assertFalse(f(99), "f(99) must be false, not truthy-boxed-object")
+}
+
+// The lambda body is a comparison (`EBinop`) rather than a bare literal —
+// exercises `inferUntypedStaticValMsilType`'s `BGt` (always-`MBool`) arm via
+// the shared inference path. Compares a captured OUTER value rather than the
+// lambda's own param: the param stays genuinely unused/untyped so this
+// case is orthogonal to the pre-existing, deliberate #1939 diagnostic
+// ("a lambda that uses an un-annotated parameter … is not yet supported"),
+// which is unrelated to #6690 and fires only when an unannotated param's
+// VALUE itself needs unboxing.
+test "un-annotated lambda-literal local, comparison body over a captured value (#6690)" {
+  val threshold = 3
+  val exceeds = (x) -> threshold > 0
+  assertTrue(exceeds(999), "threshold(3) > 0 is true regardless of the unused param x")
+}
+
+// The lambda's parameter carries an EXPLICIT type annotation (only legal via
+// the brace `{ params -> body }` form — the bare-paren-arrow sugar accepts
+// untyped identifiers only, per grammar.ebnf §7.1.3.1) and the body returns
+// it directly (`EPath`) — exercises the fix's `paramEnv` lookup, not just
+// the literal/comparison arms the other cases here cover. Also exercises a
+// multi-statement block body, proving `blockTrailingExprMsil` picks the
+// LAST statement's value, not the first.
+test "un-annotated lambda-literal local, typed param + multi-statement block body (#6690)" {
+  val overTen = { x: Int ->
+    val doubled = x * 2
+    doubled > 10
+  }
+  assertTrue(overTen(6), "6*2 == 12 > 10")
+  assertFalse(overTen(2), "2*2 == 4, not > 10")
+}
