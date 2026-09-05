@@ -41663,3 +41663,38 @@ over-broadening the walk risks exactly the kind of false positive #6141
 already demonstrated; a future report of a crash through one of those
 shapes would extend `typeExprUnsafeUnderErasure` rather than requiring a
 new mechanism.
+
+**Addendum (2026-09-05, pre-merge review, #6940).** The shape check above had
+a gap: `typeArgOccursUnsafely`'s fallback (the function that decides whether
+a bare type ARGUMENT to another generic is unsafe) re-applied the
+`slice`/`Array`-covariance exemption even when the slice/array was itself
+nested as a type argument INSIDE an already-unsafe outer generic —
+`Result[slice[T], E]`, `Map[K, slice[T]]` — rather than being the
+parameter's own top-level type. Array covariance only makes `Object[]`
+accept a real `Foo[]` when the array IS the parameter's own static type; it
+does not make `Result<Object[], E>` accept a real `Result<Foo[], E>`, since
+closed generic types are invariant over ALL of their type arguments on both
+MSIL and JVM regardless of whether one of those arguments happens to be an
+array. Concretely, `firstOrErr[T](r: in ResLike[slice[T], String]): Bool`
+called with an opaque `ResLike[slice[Int], String]` argument passed
+`hasOpaqueErasureUnsafeGenericParam` (both type arguments came back "safe" —
+the bare `String` isn't unpinned, and the nested `slice[T]` wrongly re-hit
+the top-level exemption) and mono emitted the crashing
+`firstOrErr__Object`, reproducing the #5970 crash class one level of nesting
+away from the shapes the original three regression tests cover.
+`Result[slice[...], ...]` is a pervasive idiom in this codebase
+(`http_hpack.l`, `directory.l`, `tls.l`), so this was a live gap, not a
+theoretical one.
+
+Fixed by having `typeArgOccursUnsafely` handle `TSlice`/`TArray`/
+`TNullable`/`TParen` directly, recursing through itself (not through
+`typeExprUnsafeUnderErasure`/`typeExprNestedUnsafe`) — so once traversal has
+crossed into a type-ARGUMENT position, a bare unpinned ref anywhere along a
+slice/array/nullable/paren chain stays flagged unsafe, and the covariance
+exemption is only ever reachable from `hasOpaqueErasureUnsafeGenericParam`'s
+own direct, top-level call into `typeExprUnsafeUnderErasure` on the
+parameter's own declared type. A fourth `mono_self_test.l` case
+(`ResLike[slice[T], String]`, #6940) confirms `M0004` now fires and
+`firstOkLike__Object` is not emitted, while the three pre-existing #5970
+cases and the legitimate top-level `slice[T]`-parametered `map`/`filter`
+non-regression case (test 85) continue to pass unchanged.
