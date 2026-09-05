@@ -1723,8 +1723,60 @@ pub func compileProjectToJarBundledWithRestored(
     val pn = dottedPath(prFile.packageDecl.path)
     importedPkgs.add(ImportedPackage(name = pn, items = pkgItems, imports = collectImportNames(prFile.imports)))
     stdlibFiles.add(prFile)
-    if pn.length > 0 and not stdlibByPkg.containsKey(pn) {
-      stdlibByPkg.add(pn, prFile)
+    if pn.length > 0 {
+      // #5932: a package can be assembled from MORE THAN ONE bundled source
+      // file — e.g. a top-level `lyric-stdlib/std/<pkg>.l` (always loaded)
+      // plus an additive `lyric-stdlib/std/_kernel_jvm/<other>.l` declaring
+      // the SAME `package` (loaded only for `--target jvm`, additively,
+      // since its basename doesn't collide with anything under `_kernel/`).
+      // `stdlibByPkg` feeds BOTH the transitive-import worklist walk and the
+      // per-package codegen loop below (`toBundle`) — whichever file used to
+      // "win" this map entry was the ONLY one actually codegen'd into the
+      // bundle; the other file's functions type-checked fine (their
+      // declarations still reached `importedPkgs` above) but were silently
+      // absent from the emitted class, so any caller — including a
+      // pre-existing call inside the WINNING file itself — hit
+      // `NoSuchMethodError` at runtime for whichever file lost the race.
+      // Merge every same-package file's items/imports into ONE `SourceFile`
+      // so the reachability walk and codegen both see the package's full,
+      // combined surface.
+      match mapGet(stdlibByPkg, pn) {
+        case Some(existing) -> {
+          val mergedItems: List[Item] = newList()
+          var mii = 0
+          while mii < existing.items.count {
+            mergedItems.add(existing.items[mii])
+            mii = mii + 1
+          }
+          var mij = 0
+          while mij < prFile.items.count {
+            mergedItems.add(prFile.items[mij])
+            mij = mij + 1
+          }
+          val mergedImports: List[ImportDecl] = newList()
+          var mik = 0
+          while mik < existing.imports.count {
+            mergedImports.add(existing.imports[mik])
+            mik = mik + 1
+          }
+          var mil = 0
+          while mil < prFile.imports.count {
+            mergedImports.add(prFile.imports[mil])
+            mil = mil + 1
+          }
+          val merged = SourceFile(
+            moduleDoc = existing.moduleDoc,
+            fileAnnotations = existing.fileAnnotations,
+            packageDecl = existing.packageDecl,
+            imports = mergedImports,
+            items = mergedItems,
+            span = existing.span
+          )
+          stdlibByPkg.remove(pn)
+          stdlibByPkg.add(pn, merged)
+        }
+        case None -> stdlibByPkg.add(pn, prFile)
+      }
     }
     si = si + 1
   }

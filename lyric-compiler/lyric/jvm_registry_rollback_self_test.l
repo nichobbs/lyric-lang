@@ -131,3 +131,40 @@ test "a J003-skipped B'-mode package does not break another package sharing the 
     "bmode_rollback: VictimPkg.greet() runs correctly despite LeakPkg's J003-skip"
   )
 }
+
+// #5932: a package assembled from TWO bundled stdlib source files (mirroring
+// a top-level `lyric-stdlib/std/<pkg>.l` plus an additive
+// `lyric-stdlib/std/_kernel_jvm/<other>.l` declaring the SAME `package`)
+// must codegen as ONE class carrying every file's functions. Before the fix,
+// `Jvm.Bridge`'s `stdlibByPkg` map kept only the FIRST-parsed file for a
+// given package name; the second file's declarations still type-checked
+// (registered via `importedPkgs`) but its bytecode was silently absent from
+// the bundle, so calling into EITHER file's functions from a THIRD package
+// could hit `NoSuchMethodError` depending on which file's class won the
+// race. Both `first()` (from the first-listed source) and `second()` (from
+// the second) must be callable from the entry package.
+test "a package split across two bundled stdlib source files codegens both files' functions (#5932)" {
+  val stdlibSources: List[String] = newList()
+  stdlibSources.add("package SplitPkg\n" + "\n" + "pub func first(): Int {\n" + "  1\n" + "}\n")
+  stdlibSources.add("package SplitPkg\n" + "\n" + "pub func second(): Int {\n" + "  2\n" + "}\n")
+  val source = "package SplitEntryPkg\n" + "\n" + "import SplitPkg\n" + "\n" + "func main(): Int {\n" +
+    "  println(SplitPkg.first().toString())\n" + "  println(SplitPkg.second().toString())\n" + "  0\n" + "}\n"
+  val dir = freshTempDir("split-pkg")
+  val jarPath = Path.join(dir, "split-pkg.jar")
+  val ok = compileToJarBundled(source, jarPath, "split-pkg", stdlibSources, "0.1.0")
+  if not ok {
+    cleanup(dir)
+    panic("split-pkg: compileToJarBundled returned false")
+  }
+  val args: List[String] = newList()
+  args.add("-jar")
+  args.add(jarPath)
+  val result = Capture.runCaptureWithDiagnostics("java", args, "")
+  cleanup(dir)
+  assertEqualInt(result.exitCode, 0, "split_pkg: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "1\n2",
+    "split_pkg: both SplitPkg.first() and SplitPkg.second() are present in the bundled class"
+  )
+}
