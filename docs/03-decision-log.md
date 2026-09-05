@@ -41614,6 +41614,17 @@ incomplete for exotic shapes elsewhere in this backend: the common
 real-world idioms (an annotated or literal-initialized local, a typed
 parameter, direct bracket-index use) are exactly what #6237's own repro
 and the `lyric-auth`/`web.l` call sites needing this fix actually use.
+Two related gaps are explicitly OUT of this fix's scope, per review
+feedback on the PR: compound assignment (`s += someCharVar`) still
+routes through `lowerAssign`'s `+=` path (`coerceTo`, which has no
+Char->String widening arm) and hits the same pre-existing panic — this
+PR only widens the `+` binary operator, not `+=`; and `exprIsCharTyped`'s
+`s[i]`-is-Char derived rule only recognizes a String-typed *receiver*
+via `exprIsStringTyped`'s existing tracking, so e.g. a `Map[Int, Char]`
+value indexed inline (`"prefix: " + someMap[k]`) is not recognized
+either. Neither is a regression — both panicked identically before this
+PR — and both are consistent with the documented best-effort scope
+above, not separately tracked.
 
 **Verification.** New cases in `lyric-rt/test/lyric_rt_test.c`:
 `lyric_string_char_at` across an ASCII string and a multi-byte UTF-8
