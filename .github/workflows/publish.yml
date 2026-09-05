@@ -118,17 +118,6 @@ jobs:
           echo "Bumping ${RELEASE_TYPE}: v${BASE} -> v${NEW_VERSION}"
           echo "VERSION=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
 
-      # (Removed #6501 pre-flight guard that asserted bootstrap.sh's seed
-      # fallback pin matched the newest published release.  The pin is
-      # always one release behind right after a release, so the guard
-      # failed every subsequent cut until a manual bump commit landed —
-      # turning a resilience fallback into a release blocker.
-      # bootstrap.sh tier 1 now `git fetch --tags` before reading local
-      # tags, so an API-listing outage self-heals via the git service
-      # (a different service, up during the #6497 incident) with no
-      # freshness assertion needed.  The pin is a fully-offline last
-      # resort only.)
-
       # For dispatch runs, create and push the annotated git tag for the new
       # version. (Tag pushes already carry their tag.) Pushing with the default
       # GITHUB_TOKEN does NOT re-trigger the `push: tags` workflow, so there is
