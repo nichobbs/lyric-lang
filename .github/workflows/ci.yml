@@ -3379,7 +3379,6 @@ jobs:
       # unrelated PRs (#6021, #6033).  Split ~9 + ~9 so each sub-batch stays
       # under the cap.
       - name: Wait for parallel tests (JVM batch 0-split)
-        if: always()
         wait-all: true
 
       # Nested-constructor-pattern self-test on JVM (#4623) — the JVM half of
@@ -3530,7 +3529,6 @@ jobs:
       # post-barrier) sub-batch below rather than the first group, so it does
       # not add to the already-heavy pre-barrier batch (#5967).
       - name: Wait for parallel tests (JVM batch 1-split)
-        if: always()
         wait-all: true
 
       # JVM twin of the BuildInfo synthesis self-test (docs/60 §9.2): the
@@ -3714,7 +3712,6 @@ jobs:
       # failures on unrelated PRs (#6021, #6033).  Split ~10 + ~9 so each
       # sub-batch stays under the cap.
       - name: Wait for parallel tests (JVM batch 1a-split)
-        if: always()
         wait-all: true
 
       # Map-option self-test on JVM (#1727 MSIL / #5003 JVM) — the JVM half of
@@ -4055,7 +4052,6 @@ jobs:
       # split it into ~14-step batches so peak concurrency (and peak JVM memory)
       # stays bounded, stopping the intermittent concurrent-status flakes.
       - name: Wait for parallel tests (JVM batch 1)
-        if: always()
         wait-all: true
 
       # BuildInfo `--define` runtime path on JVM (docs/60 §5, #5852): the JVM
@@ -4188,7 +4184,6 @@ jobs:
       # cap (was 15) so the runner's parallel-step status collection doesn't
       # misreport a passing step as failed.
       - name: Wait for parallel tests (JVM batch 3-split)
-        if: always()
         wait-all: true
 
       # Range-for self-test on JVM (#4878 follow-up, band J4).  Range-driven `for`
@@ -4365,7 +4360,6 @@ jobs:
       # prove the implicit-return path still works — all under `java`.  Imports
       # only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Wait for parallel tests (JVM batch 2)
-        if: always()
         wait-all: true
 
       - name: Control-flow terminator self-test on JVM (native lyric test --target jvm)
@@ -4649,7 +4643,6 @@ jobs:
       # funcSigs with isIface = true) instead of the class-format-invalid
       # `invokevirtual` guess.  Imports only `Std.*`.
       - name: Wait for parallel tests (JVM batch 3)
-        if: always()
         wait-all: true
 
       - name: Interface-dispatch self-test on JVM (native lyric test --target jvm)
@@ -4786,7 +4779,6 @@ jobs:
       # cap (was 15) so the runner's parallel-step status collection doesn't
       # misreport a passing step as failed.
       - name: Wait for parallel tests (JVM batch 5-split)
-        if: always()
         wait-all: true
 
       # Std.Task ambient-cancellation-slot regression coverage (#5342):
@@ -5052,7 +5044,6 @@ jobs:
           grep -qx "failures=0" <<< "$out" || { echo "::error::piped_process_jvm_main reported failures (#6135 regression)"; exit 1; }
 
       - name: Wait for all parallel tests
-        if: always()
         wait-all: true
 
       # docs/58 (D121) wire-templates RUNTIME self-test on JVM — real
