@@ -71,8 +71,13 @@ static void lyric_task_dtor(void* obj) {
         lyric_coro_destroy(t->coro_handle);
         t->coro_handle = NULL;
     }
-    if (t->result_is_ref) {
+    /* Tri-state result ownership (#5545): 0 scalar, 1 strong ref, 2 weak
+     * ref — a weak task result must release via the weak-count variant
+     * so it never keeps its target strongly alive. */
+    if (t->result_is_ref == 1) {
         lyric_release((void*)(intptr_t)t->result);
+    } else if (t->result_is_ref == 2) {
+        lyric_weak_release((void*)(intptr_t)t->result);
     }
 }
 

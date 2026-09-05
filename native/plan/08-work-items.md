@@ -1879,7 +1879,26 @@ here.
 
 ---
 
-### N9.8 — Native `Std.Char` kernel (#6811), `List`/`Map` indexed-assignment codegen, and a cross-package `?`-propagation fix — ✅ SHIPPED (D-progress-878); HPACK *decode* + full `H2Conn` FSM now verified working on native, HPACK *encode* stays blocked on #6237
+### N9.8 — Weak-aware List/Map/Task kernels: `NativeWeak[T]` as a collection element or async result — ✅ SHIPPED (D-progress-879, #5545)
+
+`lyric_list_new`/`lyric_map_new`/`lyric_task_complete`'s single boolean
+element/value/result-is-ref flag becomes a tri-state (0 scalar, 1 strong
+ref, 2 weak ref); `lyric-rt/src/lyric_collections.c` gains shared
+`elem_retain`/`elem_release` dispatch helpers used by every List/Map
+push/set/remove/dtor site, and `lyric_async.c`'s `lyric_task_dtor` gains
+the same three-way dispatch inline. `Lyric.LlvmCodegen.refFlagOf` now
+returns 2 for a weak type (checked before `isRefNType`, since
+`NativeWeak[T]` IS ref-typed by that predicate) instead of the #5539
+compile-time rejection. No codegen call-site branching changes needed —
+every consumer already forwarded `refFlagOf`'s result opaquely. The
+issue's own prerequisite (`List[NativeWeak[T]]` failing to parse) no
+longer reproduces on current `main`. Verified: `lyric-rt`'s C unit
+tests pass; three new ASan cases in `llvm_heap_self_test.l` (async
+result, `List[NativeWeak[T]]`, `Map[K, NativeWeak[T]]`) each confirm
+correct upgrade-while-alive AND "does not keep the target strongly
+alive," leak-free; full suite 37/37, no regressions.
+
+### N9.9 — Native `Std.Char` kernel (#6811), `List`/`Map` indexed-assignment codegen, and a cross-package `?`-propagation fix — ✅ SHIPPED (D-progress-882); HPACK *decode* + full `H2Conn` FSM now verified working on native, HPACK *encode* stays blocked on #6237
 
 Closes issue #6811 (`Std.Char` had no `_kernel_native` twin — see N9.5's
 D-progress-853 update above) and, in the process of verifying it against
@@ -1907,7 +1926,7 @@ check — a real `Std.HttpEngine.H2Conn.feed()` call (connection preface +
 SETTINGS + a static-table-indexed HEADERS frame) correctly decoding
 through the full FSM (all 38 `inout H2Connection` sites plus the `inout
 FrameDecoder` chain) to a `H2RequestHeaders` event, byte-for-byte matching
-`--target dotnet`. See D-progress-878 for the full bisection trail and
+`--target dotnet`. See D-progress-882 for the full bisection trail and
 exact repro commands.
 
 **Still blocked, narrower than before:** HPACK's *encode* path

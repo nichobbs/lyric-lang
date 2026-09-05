@@ -17,8 +17,10 @@
 #                        file compiled per build, selected by feature).
 #
 # Both development workflows are supported:
-#   Code-first:  annotate handlers with @get / @post / etc., run
-#                `lyric web spec` to produce openapi.yaml.
+#   Code-first:  populate a Web.OpenApi.Spec value, then either attach it
+#                to a running server with Web.withSpec (serves live JSON +
+#                Swagger UI, #5360) or render it to a file at build time
+#                with Web.OpenApi.specToJson.
 #   Spec-first:  run `lyric generate openapi spec.yaml` to produce
 #                handler stubs + record types, then implement the bodies.
 #
@@ -70,6 +72,7 @@ output_assembly = "Web.dll"
 "Web.ServeTlsTests"    = "tests/serve_tls_tests.l"
 "Web.WebTlsConfigTests" = "tests/webtls_config_tests.l"
 "Web.ServeCrashIsolationTests" = "tests/serve_crash_isolation_tests.l"
+"Web.WorkerDispatchTests" = "tests/worker_dispatch_tests.l"
 
 [dependencies]
 "Lyric.Auth"         = { workspace = true }

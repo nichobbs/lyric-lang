@@ -41271,7 +41271,280 @@ this session's group:ecosystem-lib-kernels scope), D-progress-815 (the
 interim honest-failure fix this session builds on), D-progress-252 (original
 `lyric-grpc` ship, corrected here).
 
-## D-progress-878 — Native `Std.Char` kernel twin (#6811), `List`/`Map` indexed-assignment codegen, and a cross-package `?`-propagation gap (both new, found closing out #6811/#6808) — Hpack's decode path (and the full `Std.HttpEngine.H2Conn` FSM driving it) now compiles and runs correctly on `--target native`
+## D-progress-879 — Native List/Map/Task kernels gain weak-aware tri-state element/result ownership, unblocking `NativeWeak[T]` as a collection element or async result (#5545)
+
+**Context.** #5504 (PR #5539) made `NativeWeak[T]` participate in ARC via
+a two-count `LyricObjectHeader`, with codegen-emitted retain/release
+sites dispatching weak-typed values to `lyric_weak_retain`/
+`lyric_weak_release`. The generic C container/task kernels remained
+strong-refcount-only: `lyric_list_new`/`lyric_map_new`/`lyric_task_complete`
+took a boolean `elems_are_refs`/`vals_are_refs`/`result_is_ref` flag, and
+every push/set/remove/dtor/complete site unconditionally called the
+STRONG `lyric_retain`/`lyric_release`. Storing a `NativeWeak[T]` in a
+`List`/`Map`, or returning one from an `async func`, would therefore
+either strong-retain it (reintroducing the leak/cycle class `NativeWeak`
+exists to break) or strong-release it (a use-after-free — decrementing
+the target's strong `rc` without a matching increment). PR #5539 made
+`refFlagOf` reject a weak element/value/result type at codegen time to
+stay fail-closed until the kernels caught up, with this issue tracking
+that follow-up.
+
+**Fix — tri-state ownership flag.** The single boolean flag becomes a
+tri-state: `0` scalar (no-op), `1` strong ref
+(`lyric_retain`/`lyric_release`), `2` weak ref
+(`lyric_weak_retain`/`lyric_weak_release`). `lyric-rt/src/lyric_collections.c`
+gains two small dispatch helpers, `elem_retain`/`elem_release`, shared by
+every List and Map call site that used to gate on `elems_are_refs`/
+`vals_are_refs` truthiness alone (`lyric_list_dtor`, `lyric_list_push`,
+`lyric_list_set`, `lyric_list_remove_at`, `lyric_list_clear`,
+`lyric_map_dtor`, `lyric_map_set`, `lyric_map_remove` — `lyric_list_copy`/
+`lyric_list_slice`/`lyric_list_concat`/`lyric_list_append`/
+`lyric_map_keys`/`lyric_map_values` all route through `lyric_list_new`/
+`lyric_list_push` unchanged, so they inherit the fix for free). Map
+*keys* stay a plain boolean (`keys_are_strings`) — a weak reference is
+never itself a map key, only ever a value, in this design. `lyric_async.c`'s
+`lyric_task_dtor` gains the same three-way dispatch for `result_is_ref`
+inline (only one call site). `Lyric.LlvmCodegen.refFlagOf` now returns
+`2` for a weak type (checked BEFORE the `isRefNType` check, since a
+`NativeWeak[T]` value IS ref-typed by that predicate's own definition —
+ordering the weak check first is what makes the distinction reachable at
+all) instead of panicking; the codegen-side compile-time rejection from
+#5539 is removed.
+
+No `CodegenUnit`/signature plumbing was needed beyond `refFlagOf` itself:
+every call site that builds a list/map/task already just forwards
+`refFlagOf`'s result straight through as an opaque `i32` argument to the
+runtime kernel (`constructList`, `constructMap`, `emitTaskComplete`)
+without branching on its value, so widening the flag's own value space
+from {0,1} to {0,1,2} needed no codegen-side branching changes at all —
+only the RUNTIME's interpretation of that value changed.
+
+**Prerequisite re-verified, already resolved.** The issue's own
+prerequisite — `List[NativeWeak[T]]` failing to *parse*
+(`P0201`/`P0075`/`P0202` on the nested parametric type annotation) — no
+longer reproduces on current `main`; a `var xs: List[NativeWeak[Int]]`
+declaration parses cleanly today (confirmed directly), so no front-end
+parser change was needed here.
+
+**Verified.** `make -C lyric-rt` and `make -C lyric-rt test` (both
+existing C unit-test binaries) pass clean after the runtime change.
+Three new `-fsanitize=address` cases in `llvm_heap_self_test.l`: an
+`async func` returning `NativeWeak[T]` upgrades to `Some` while its
+target is alive (replacing the old #5543 "is rejected at codegen" case,
+which now correctly fails since rejection is no longer the expected
+behavior); a `List[NativeWeak[T]]` element does NOT keep its target
+strongly alive (the list-owning function returns and its only strong
+local goes out of scope; `upgrade()` on the stored weak element
+correctly returns `None`, leak-free); the identical case for
+`Map[K, NativeWeak[T]]` values. All three catch both wrong-direction
+regressions by construction: a kernel that wrongly treated the flag as
+strong would keep the target alive (wrong `upgrade()` result); one that
+wrongly treated it as scalar (no retain/release at all) would leak the
+weak count, caught by ASan's LeakSanitizer. Full `llvm_heap_self_test.l`
+suite re-run: 37/37 (34 pre-existing + 3 new), no regressions.
+
+**Related:** #5545 (fixed here), #5504/D-progress-… (the original
+`NativeWeak` ARC two-count design this builds on), `native/plan/08-work-items.md`
+N9.8, `native/plan/04-arc-design.md`'s "Weak references: `NativeWeak[T]`"
+section.
+
+## D-progress-878 — lyric-web: `Web.addWorker`'s registered worker actually fires on `--target dotnet` (#5359)
+
+**Status:** Shipped on `--target dotnet`; `--target jvm` still registers only (pre-existing, unrelated compile blockers).
+
+**The gap.** `WorkerRegistration.handlerName: String` was a leftover from the
+DLL-reflection dispatch design D099 rejected outright — `Web.serve`/
+`serveStreaming`/`serveTls` never read `router.workers` at all, so a
+registered worker never fired.
+
+**Investigation: is a real background loop even possible on `--target
+dotnet` today?** The issue itself flagged two paths: full MSIL structured
+concurrency (`spawn` is degenerate-synchronous on this target, D119/D120 —
+out of scope, a much larger cross-cutting fix) or a hand-rolled
+`Thread`/`Timer` extern boundary using the bounded FFI delegate-bridging
+support D122 shipped (docs/50). Verified empirically, both directions:
+
+- `System.Threading.Thread`'s constructor takes `ThreadStart`, a *named*
+  delegate type — D122's bridging only targets `System.Action`N`/`Func`N
+  (`Msil.Codegen.typeExprToMsilCtx`'s `TFunction` case,
+  `lyric-compiler/msil/codegen.l:7007`), never an arbitrary named delegate,
+  so `Thread(ThreadStart)`/`Timer(TimerCallback)` both fail to bind
+  (`MissingMethodException`, confirmed with a minimal single-file repro).
+- `System.Threading.Tasks.Task.Run(Action)` **does** bind (`Action` is one
+  of the two targeted shapes) — and, contrary to `_kernel/task.l`'s own
+  documented finding that this exact overload "never actually invokes the
+  passed closure on this backend" (confirmed there via
+  `Std.Task.scopeSpawn`'s two-argument `Task.Run(Action,
+  CancellationToken)` overload), a plain one-argument `Task.Run(Action)`
+  call **does** invoke its closure and runs concurrently with the caller —
+  confirmed with an isolated repro (a `Task.Run`-backed loop mutating a
+  shared field while the caller sleeps, observed to run genuinely
+  concurrently) and independently corroborated: `serve_tls_tests.l` and
+  `serve_crash_isolation_tests.l` already drive `Web.serve`/`serveTls` on a
+  background `Task.Run(Action)` in existing, passing tests. The
+  `_kernel/task.l` finding is not wrong so much as scoped to a different
+  overload/call shape (the 2-arg `CancellationToken` form, or a
+  `scopeSpawn`-specific interaction) — this fix does not touch
+  `Std.Task`/`scopeSpawn` at all, and that gap remains exactly as
+  documented there.
+- A second, independent codegen gap surfaced along the way: invoking a
+  captured `() -> Unit` closure-typed VALUE from inside another closure
+  panics at codegen (`T0123: unresolved call ... no function token could
+  be resolved`), reproduced in complete isolation with a single-package,
+  no-FFI repro (a function taking a closure parameter, closing over it in
+  a nested closure, calling it there) — a real gap independent of #5363's
+  cross-package case. Invoking an **interface method** from inside a
+  closure does not hit this (confirmed with the same isolation
+  methodology), which is why the fix below routes worker dispatch through
+  a `Worker` interface value rather than a raw closure parameter.
+
+**The fix.** `Web.Worker` is a new interface (`func tick(): Unit`),
+mirroring `Handler`/`Middleware` (#5363's precedent: interfaces, not
+closures, for anything invoked across the record/package boundary).
+`WorkerRegistration.handlerName: String` → `handler: Worker`;
+`addWorker(router, name, intervalMs, handler: Worker)` — a documented
+breaking signature change to a `@stable(since = "0.1")` function, bumped
+to `"0.3"` (`WorkerRegistration` and `Worker` alongside it). `Web.Kernel.Runtime`'s
+dotnet kernel (`_kernel/net/web_kernel.l`) gains `startWorkerLoop(intervalMs,
+worker: Web.Worker)`: a single `Task.Run(Action)` whose closure loops
+`sleepMillis(intervalMs); worker.tick()` forever, fire-and-forget (the
+returned `Task` is never joined — `Web.serve`'s own accept loop already
+blocks for the life of the process). `Web.serveStreaming`/`serveTls`
+(dotnet) call a shared `startWorkers(router)` right after logging
+"Listening on ...", once, before entering the accept loop — one
+background task per registered worker.
+
+**JVM scope cut.** `Web.serve`'s jvm branch delegates entirely to
+`Web.Kernel.Runtime`'s separate Undertow-backed implementation
+(`_kernel/jvm/web_kernel.l`), which has no `startWorkerLoop` twin — not
+implemented here. `lyric-web`'s JVM test suite does not compile today for
+unrelated, pre-existing reasons (#5443 workaround in place, #5458 open),
+so a JVM implementation could not be verified in this change; adding
+unverified JVM codegen would violate this repo's production-readiness
+standard. Tracked as a follow-up once #5444/#5458 are fixed and the JVM
+suite compiles again — JVM's own `spawn`/`scope` are genuinely concurrent
+there (D120), so the natural JVM implementation is structured concurrency
+rather than a hand-rolled thread, once it's testable.
+
+**Call-site fallout.** `examples/jobqueue` (the one real consumer) gains a
+`JobPollerWorker` adapter record (`src/worker.l`) wrapping
+`workerTick(): Result[Unit, String]` into `Worker.tick(): Unit` (the
+`Err` case is already logged via `OTel.setSpanError` inside `workerTick`
+itself); `main.l`'s `addWorker` call updated to pass the record instead of
+a handler-name string.
+
+**Verification.** New `lyric-web/tests/worker_dispatch_tests.l` (added to
+`lyric-web/lyric.toml`'s `[project.tests]` — no new CI step, the existing
+`lyric test --manifest lyric-web/lyric.toml` step picks it up) drives a
+real `Web.serve` listener on a background task (same pattern as
+`serve_tls_tests.l`/`serve_crash_isolation_tests.l`) with a worker
+registered at a 30ms interval, polls a `/ticks` route backed by a shared
+counter the worker increments, and asserts the count **increases** between
+two polls 200ms apart — proving the loop fires repeatedly, not just once.
+✅ 1/1, whole-suite `lyric-web/lyric.toml` run: 8/8. `examples/jobqueue`
+rebuilt clean (`lyric build --manifest examples/jobqueue/lyric.toml
+--target dotnet`) after its dependencies (`lyric-db`, `lyric-health`,
+`lyric-otel`) were built.
+
+**Related:** #5359 (this issue), #5363 (the interface-not-closure
+precedent), D119/D120 (structured concurrency, still degenerate-sync on
+dotnet — unaffected by this fix), `_kernel/task.l` (the separately-scoped,
+still-open `scopeSpawn`/`Task.Run(Action, CancellationToken)` finding this
+fix does not touch), #5443/#5458 (the pre-existing JVM compile blockers
+this fix's JVM scope cut is gated on).
+
+## D-progress-880 — lyric-web: isolate a panicking `Web.Worker.tick()` instead of silently killing its background loop (#6935)
+
+**The gap.** `Web.Kernel.Runtime.startWorkerLoop` (D-progress-878) runs
+`while true { sleepMillis(intervalMs); worker.tick() }` inside a
+fire-and-forget `Task.Run(Action)` whose `Task` is never observed. An
+uncaught `Bug` raised by a single `tick()` call therefore silently and
+permanently stopped that worker's loop forever — no log line, no crash,
+the server keeps running normally as if the worker were still ticking.
+This is exactly the failure mode `serve`/`serveStreaming`'s own accept
+loops are already hardened against (#5261): a caught `Bug` there is
+logged and the loop keeps going (or, for a listener-level failure,
+surfaced loudly and the process exits non-zero — never a silent hang).
+
+**The fix.** Wrap the `worker.tick()` call in `try { ... } catch Bug as e
+{ Console.error(...) }` inside the loop body, so a failing tick is logged
+and the loop continues on its next `intervalMs` interval rather than
+dying. `Std.Console` added to `_kernel/net/web_kernel.l`'s imports.
+
+**Verification.** New case in `lyric-web/tests/worker_dispatch_tests.l`:
+a `FlakyWorker` whose first `tick()` panics, then increments a counter on
+every subsequent tick; the test asserts the counter still rises after
+that first, crashing tick. Reverting only the kernel fix (keeping the
+new test) reproduces the pre-fix failure — the counter never advances
+past the state left by the panicking first tick. Whole-suite
+`lyric-web/lyric.toml` run: 8/8 (2 cases in `worker_dispatch_tests.l`).
+
+**Related:** #6935 (this issue, filed by a `claude-review` pass on the
+D-progress-878 PR before merge), D-progress-878 (`startWorkerLoop`
+itself), #5261 (the precedent this fix brings worker dispatch in line
+with).
+
+## D-progress-881 — lyric-web: live OpenAPI JSON + Swagger UI serving via `Web.withSpec` (#5360)
+
+**Status:** Shipped.
+
+**The gap.** `lyric-web`'s `Web.OpenApi` module was a code-first spec
+*builder* only: nothing rendered a populated `Spec` value to JSON, and
+`Router`/`Web.start` had no way to serve one at runtime — the README
+described a `LYRIC_CONFIG_WEB_SERVER_SWAGGERENABLED` env-var workflow that
+`Web.start`/`serve` parsed but never acted on (removed as dead
+env-var handling before this PR, per D099's "no silently-ignored config"
+precedent), and pointed at a `lyric web spec` CLI workflow that, on
+investigation, does not exist anywhere in `lyric-compiler/lyric/cli/` —
+only the reverse, spec-first `lyric generate openapi` command is
+implemented. That CLI gap is unrelated to this issue's scope (build-time
+spec generation, not live serving) and is left as a separately-discoverable
+gap rather than folded in here.
+
+**The fix.** Two additions to `lyric-web/src/openapi.l`:
+`specToJson(spec): String`, a hand-rolled OpenAPI 3.1 JSON serializer
+covering the module's full vocabulary (`Info`/`Contact`/`License`,
+`Schema` in both `$ref` and inline forms, `Parameter`, `MediaType`,
+`RequestBody`, `ApiResponse`, `Operation`, `PathItem`, top-level `Spec`
+with `servers`/`components.schemas`) — no JSON-building API exists in
+`Std.Json` (parsing/reading only), so this follows the same `+`-concatenation
++ `encodeString`-escaping idiom `Web.json`/`Web.jsonString` already use.
+And, in `lyric-web/src/web.l`: `withSpec(router, spec): Router`, which
+renders the spec once (at attach time, not per-request) and appends two
+ordinary `GET` routes — `<pathPrefix>/openapi.json` (the rendered JSON,
+served via the existing `json()` raw-passthrough, #5813) and
+`<pathPrefix>/swagger` (a minimal Swagger UI HTML page loading the
+`swagger-ui-dist` bundle from a CDN, pointed at the JSON route).
+
+**Design decision.** Synthesize ordinary routes rather than special-case
+dispatch: `withSpec` composes with the router the same way
+`withStaticFiles`/`withMiddleware` do, so the existing middleware pipeline
+(auth, CORS, rate limiting) applies to `/openapi.json`/`/swagger` exactly
+like any other route with no new dispatch-time branching. This also
+settles the issue's own open design question in favor of its first
+suggested direction (`Web.withSpec(router, spec)`) over re-wiring the
+removed env-var toggle: attaching a spec is an explicit, compile-time
+opt-in the developer controls in code, which is a clearer and safer gate
+than an environment variable a deploy configuration could flip
+accidentally, and it composes with the router value the same way every
+other `Router`-returning function in this module already does.
+
+**Verification.** `lyric-web/tests/dispatch_tests.l` (wired into CI via
+`lyric test --manifest lyric-web/lyric.toml`, no new CI step) gained two
+cases: `/openapi.json` and `/swagger` both serve with the right content
+type and body content, a pre-existing route is undisturbed, and
+`withSpec` respects a router's `pathPrefix`. `docs/57`'s dead-env-var
+observation and `lyric-web/README.md`'s known-gaps entry for #5360 are
+both closed out; the OpenAPI section now documents `withSpec`/`specToJson`
+as the code-first live/build-time paths, `lyric generate openapi` as the
+spec-first direction.
+
+**Related:** #5360 (this issue), D054/D057 (lyric-web's original design),
+`docs/57-stdlib-ecosystem-library-review.md` §7 (the `lyric web spec`
+CLI-command gap this surfaced, left open), `lyric-web/src/openapi.l`
+module header.
+
+## D-progress-882 — Native `Std.Char` kernel twin (#6811), `List`/`Map` indexed-assignment codegen, and a cross-package `?`-propagation gap (both new, found closing out #6811/#6808) — Hpack's decode path (and the full `Std.HttpEngine.H2Conn` FSM driving it) now compiles and runs correctly on `--target native`
 
 **#6811 — `Std.Char` had no `_kernel_native` twin.** Added
 `lyric-stdlib/std/_kernel_native/char_host.l`. The code-point bridge

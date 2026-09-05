@@ -181,11 +181,15 @@ void lyric_weak_init(void* obj);
 
 /* ── Collections (D-N-012) ─────────────────────────────────────────── */
 
-/* List: dynamic array.  Element ownership is declared at construction:
- * elems_are_refs != 0 means every element is an ARC pointer that the
- * list retains on push and releases on removal / destruction; 0 means
- * elements are scalar bit-patterns stored as-is (Int/Long/Float/Bool
- * widened to 64 bits by the codegen). */
+/* List: dynamic array.  Element ownership is declared at construction
+ * via a tri-state flag (#5545): 0 means elements are scalar
+ * bit-patterns stored as-is (Int/Long/Float/Bool widened to 64 bits by
+ * the codegen); 1 means every element is a STRONG ARC pointer that the
+ * list retains (lyric_retain) on push and releases (lyric_release) on
+ * removal / destruction; 2 means every element is a NativeWeak[T]
+ * pointer that the list retains/releases via the WEAK-count variants
+ * (lyric_weak_retain/lyric_weak_release) instead — holding a weak
+ * reference in a list must never keep its target strongly alive. */
 typedef struct {
     _Atomic int32_t rc;
     _Atomic int32_t weak;
@@ -193,7 +197,7 @@ typedef struct {
     int64_t*        data;  /* 8-byte slots: scalars or pointers */
     int64_t         len;
     int64_t         cap;
-    int32_t         elems_are_refs;
+    int32_t         elems_are_refs; /* 0 = scalar, 1 = strong ref, 2 = weak ref (#5545) */
 } LyricList;
 
 LyricList* lyric_list_new(int32_t elems_are_refs);
@@ -223,8 +227,10 @@ void       lyric_list_dtor(void* obj);
 
 /* Map: open-addressing hash map.  Keys are either LyricString* (hashed
  * with SipHash-2-4 over the UTF-8 data) or 64-bit scalars (Fibonacci
- * hashing), chosen at construction.  Values follow the same
- * refs-vs-scalars rule as lists. */
+ * hashing), chosen at construction — keys are never weak, so
+ * `keys_are_strings` stays a plain boolean. Values follow the same
+ * tri-state scalar/strong-ref/weak-ref rule as list elements (#5545):
+ * `vals_are_refs` is 0 (scalar), 1 (strong ref), or 2 (weak ref). */
 typedef struct LyricMap LyricMap;
 
 LyricMap* lyric_map_new(int32_t keys_are_strings, int32_t vals_are_refs);
@@ -490,7 +496,7 @@ typedef struct LyricTask {
     void* coro_handle;        /* LLVM coro frame; destroyed by the dtor  */
     int32_t state;            /* RUNNING/SLEEPING/WAITING/READY/COMPLETE */
     int64_t result;           /* 64-bit slot, valid when COMPLETE        */
-    int32_t result_is_ref;    /* task owns a ref on `result` when set    */
+    int32_t result_is_ref;    /* 0 scalar, 1 strong ref, 2 weak ref (#5545) */
     int64_t wake_deadline_ns; /* monotonic deadline while SLEEPING       */
     struct LyricTask* waiters; /* tasks parked on this task's completion */
     struct LyricTask* next;    /* intrusive link (ready/sleeper/waiter)  */

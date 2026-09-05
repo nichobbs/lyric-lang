@@ -33513,6 +33513,41 @@ D-progress-852 (the investigation that filed #6809),
 `native/plan/08-work-items.md` N9.7, `docs/20-project-as-dll.md`
 (the dotnet/jvm design this is the native analog of).
 
+## Weak-aware List/Map/Task kernels ship, TLS phase 5 band N9.8 (#5545)
+
+The native List/Map/Task runtime kernels were strong-refcount-only:
+storing a `NativeWeak[T]` in a collection or returning one from an
+`async func` would strong-retain it (reintroducing the leak/cycle class
+`NativeWeak` exists to break) or strong-release it (a use-after-free).
+#5539 made `Lyric.LlvmCodegen.refFlagOf` reject this combination at
+compile time to stay fail-closed, with this issue tracking the proper
+fix.
+
+The single boolean element/value/result-is-ref flag
+(`lyric_list_new`/`lyric_map_new`/`lyric_task_complete`) becomes a
+tri-state: 0 scalar, 1 strong ref, 2 weak ref. `lyric-rt`'s List/Map
+kernels gain shared `elem_retain`/`elem_release` dispatch helpers used
+by every push/set/remove/dtor call site; the Task kernel's destructor
+gets the same three-way dispatch inline. `refFlagOf` now returns 2 for
+a weak type instead of panicking — checked before the `isRefNType` test,
+since a `NativeWeak[T]` value IS ref-typed by that predicate's own
+definition. No codegen call-site branching changes were needed: every
+consumer already forwarded `refFlagOf`'s result opaquely to the runtime.
+The issue's own parser prerequisite (`List[NativeWeak[T]]` failing to
+parse) no longer reproduces on current `main`.
+
+Verified: `lyric-rt`'s existing C unit tests pass unmodified after the
+runtime change; three new ASan cases in `llvm_heap_self_test.l` (an
+`async func` result, a `List[NativeWeak[T]]` element, a
+`Map[K, NativeWeak[T]]` value) each confirm both halves of the
+contract — upgrades to `Some` while the target is alive, and does NOT
+keep the target strongly alive once its only strong owner goes out of
+scope, leak-free in every case; full suite 37/37, no regressions.
+
+**Related:** `docs/03-decision-log.md` D-progress-879 (full account),
+#5545 (fixed by this PR), `native/plan/08-work-items.md` N9.8,
+`native/plan/04-arc-design.md`'s `NativeWeak[T]` section.
+
 ## Native `Std.Char` kernel ships, plus two more native codegen fixes found verifying it — HPACK decode + the full `H2Conn` FSM now work on native (#6811)
 
 Closes #6811: `lyric-stdlib/std/_kernel_native/char_host.l`, the last
@@ -33546,15 +33581,19 @@ now compile and run correctly on `--target native`, verified byte-for-byte
 against `--target dotnet` via hand-built repros (a real client preface +
 SETTINGS + HEADERS byte stream decodes to the expected
 `H2RequestHeaders` event). `llvm_stdlib_self_test.l` gained a dedicated
-`Std.Char`-kernel + Huffman-round-trip case (19/19 passing, ASan). HPACK's
+`Std.Char`-kernel + Huffman-round-trip case, plus two more committed cases
+added on review (`List`/`Map`/`slice` indexed-assignment coverage across
+every `AssignOp` form, and the map-miss-key compound-assign panic case) —
+21/21 passing, ASan. HPACK's
 *encode* path (`encodeHeaderList`/`stringToOctets`) remains blocked on the
 pre-existing, separately-owned issue #6237 (`String` bracket indexing,
 `group:native-string-runtime`) — #6808 stays open, re-scoped to exactly
 that one remaining blocker.
 
-**Related:** `docs/03-decision-log.md` D-progress-878 (full account,
+**Related:** `docs/03-decision-log.md` D-progress-882 (full account,
 including the bisection trail that isolated the `?`-propagation gap),
 #6811 (closed by this PR), #6858 (new, non-ASCII Unicode follow-up), #6237
 (the remaining, separately-owned blocker), #6808 (re-scoped, not closed),
-`native/plan/08-work-items.md` N9.8, `docs/61-https-tls-http-versions.md`
-§6.4's N9.5/N9.6/N9.8 narrative.
+#6954 (new, the general `?`-propagation gap's tracked root cause),
+`native/plan/08-work-items.md` N9.9, `docs/61-https-tls-http-versions.md`
+§6.4's N9.5/N9.6/N9.9 narrative.

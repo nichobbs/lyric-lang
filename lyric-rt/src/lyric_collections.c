@@ -15,13 +15,33 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Tri-state element-ownership dispatch shared by List and Map (#5545):
+ * 0 = scalar (no-op), 1 = strong ref (lyric_retain/lyric_release),
+ * 2 = weak ref (lyric_weak_retain/lyric_weak_release) — a weak element
+ * must never keep its target strongly alive. */
+static void elem_retain(int32_t flag, int64_t val) {
+    if (flag == 1) {
+        lyric_retain((void*)(intptr_t)val);
+    } else if (flag == 2) {
+        lyric_weak_retain((void*)(intptr_t)val);
+    }
+}
+
+static void elem_release(int32_t flag, int64_t val) {
+    if (flag == 1) {
+        lyric_release((void*)(intptr_t)val);
+    } else if (flag == 2) {
+        lyric_weak_release((void*)(intptr_t)val);
+    }
+}
+
 /* ── List ──────────────────────────────────────────────────────────── */
 
 void lyric_list_dtor(void* obj) {
     LyricList* l = (LyricList*)obj;
     if (l->elems_are_refs) {
         for (int64_t i = 0; i < l->len; i++) {
-            lyric_release((void*)(intptr_t)l->data[i]);
+            elem_release(l->elems_are_refs, l->data[i]);
         }
     }
     free(l->data);
@@ -52,7 +72,7 @@ static void list_grow(LyricList* l, int64_t need) {
 
 void lyric_list_push(LyricList* list, int64_t val) {
     list_grow(list, list->len + 1);
-    if (list->elems_are_refs) lyric_retain((void*)(intptr_t)val);
+    elem_retain(list->elems_are_refs, val);
     list->data[list->len] = val;
     list->len++;
 }
@@ -69,8 +89,8 @@ void lyric_list_set(LyricList* list, int64_t idx, int64_t val) {
         lyric_panic_msg("list index out of bounds", "lyric_collections.c", __LINE__);
     }
     if (list->elems_are_refs) {
-        lyric_retain((void*)(intptr_t)val);
-        lyric_release((void*)(intptr_t)list->data[idx]);
+        elem_retain(list->elems_are_refs, val);
+        elem_release(list->elems_are_refs, list->data[idx]);
     }
     list->data[idx] = val;
 }
@@ -79,7 +99,7 @@ void lyric_list_remove_at(LyricList* list, int64_t idx) {
     if (idx < 0 || idx >= list->len) {
         lyric_panic_msg("list index out of bounds", "lyric_collections.c", __LINE__);
     }
-    if (list->elems_are_refs) lyric_release((void*)(intptr_t)list->data[idx]);
+    if (list->elems_are_refs) elem_release(list->elems_are_refs, list->data[idx]);
     memmove(&list->data[idx], &list->data[idx + 1],
             (size_t)(list->len - idx - 1) * sizeof(int64_t));
     list->len--;
@@ -92,7 +112,7 @@ int64_t lyric_list_len(LyricList* list) {
 void lyric_list_clear(LyricList* list) {
     if (list->elems_are_refs) {
         for (int64_t i = 0; i < list->len; i++) {
-            lyric_release((void*)(intptr_t)list->data[i]);
+            elem_release(list->elems_are_refs, list->data[i]);
         }
     }
     list->len = 0;
@@ -250,7 +270,7 @@ void lyric_map_dtor(void* obj) {
     for (int64_t i = 0; i < m->cap; i++) {
         if (m->slots[i].state == 1) {
             if (m->keys_are_strings) lyric_release((void*)(intptr_t)m->slots[i].key);
-            if (m->vals_are_refs) lyric_release((void*)(intptr_t)m->slots[i].val);
+            elem_release(m->vals_are_refs, m->slots[i].val);
         }
     }
     free(m->slots);
@@ -324,14 +344,14 @@ void lyric_map_set(LyricMap* map, int64_t key, int64_t val) {
     LyricMapSlot* s = &map->slots[i];
     if (s->state == 1) {
         if (map->vals_are_refs) {
-            lyric_retain((void*)(intptr_t)val);
-            lyric_release((void*)(intptr_t)s->val);
+            elem_retain(map->vals_are_refs, val);
+            elem_release(map->vals_are_refs, s->val);
         }
         s->val = val;
         return;
     }
     if (map->keys_are_strings) lyric_retain((void*)(intptr_t)key);
-    if (map->vals_are_refs) lyric_retain((void*)(intptr_t)val);
+    elem_retain(map->vals_are_refs, val);
     if (s->state == 0) map->used++;
     s->key = key;
     s->val = val;
@@ -358,7 +378,7 @@ int32_t lyric_map_remove(LyricMap* map, int64_t key) {
     LyricMapSlot* s = &map->slots[i];
     if (s->state != 1) return 0;
     if (map->keys_are_strings) lyric_release((void*)(intptr_t)s->key);
-    if (map->vals_are_refs) lyric_release((void*)(intptr_t)s->val);
+    elem_release(map->vals_are_refs, s->val);
     s->state = 2;
     map->len--;
     return 1;
