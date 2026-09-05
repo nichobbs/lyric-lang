@@ -4147,6 +4147,11 @@ pub func lowerInterface(i: in LInterface, pool: in Pool): ClassFile {
 pub record LOpaqueField {
   name: String
   fieldType: JvmType
+  // `true` when the source field was declared `var` (language reference
+  // §3.4). Only a mutable field gets a `$<name>(T)V` mutator (#5937) and a
+  // non-`final` backing field; an immutable one keeps the pre-existing
+  // getter-only, `final` shape.
+  isMutable: Bool
 }
 
 pub record LOpaqueType {
@@ -4263,6 +4268,45 @@ func lowerOpaqueAcc(className: in String, f: in LOpaqueField, pool: in Pool): Me
   makeMethodInfo(ACC_PUBLIC, mangledName, buildDescriptor(noPs, f.fieldType), attrs)
 }
 
+// One public `$<name>(T)V` mutator per MUTABLE field (#5937).  A `private`
+// field is inaccessible via a direct `putfield` from any OTHER class,
+// including a same-PACKAGE sibling — unlike a plain (non-opaque) record,
+// whose fields carry no such visibility restriction, an opaque type's
+// backing fields are deliberately `private` (reflection-sealing, language
+// reference §2.8), so legitimate same-package mutation through an `inout`
+// parameter needs a real accessor method, exactly like the read side
+// already has in `lowerOpaqueAcc`. Overloads the getter's method name with
+// a `(T)V` descriptor — a distinct, legal JVM method, not a collision.
+func lowerOpaqueSet(className: in String, f: in LOpaqueField, pool: in Pool): MethodInfo {
+  val mangledName = "$" + f.name
+  val desc = typeDescriptor(f.fieldType)
+  val fIdx = poolFieldref(pool, className, mangledName, desc)
+  val asm = newAssembler(pool)
+  emitAload(asm, 0)
+  match f.fieldType {
+    case JLong -> emitLload(asm, 1)
+    case JDouble -> emitDload(asm, 1)
+    case JFloat -> emitFload(asm, 1)
+    case JBoolean -> emitIload(asm, 1)
+    case JByte -> emitIload(asm, 1)
+    case JChar -> emitIload(asm, 1)
+    case JShort -> emitIload(asm, 1)
+    case JInt -> emitIload(asm, 1)
+    case JVoid -> ()
+    case JRef(_) -> emitAload(asm, 1)
+    case JArray(_) -> emitAload(asm, 1)
+  }
+  emitPutfield(asm, fIdx)
+  emitReturn(asm)
+  val paramSlots = fieldSlotSize(f.fieldType)
+  val code2 = assembleCode(asm, 2 + paramSlots, 1 + paramSlots)
+  val attrs2: List[Attribute] = newList()
+  attrs2.add(code2)
+  val ps: List[JvmType] = newList()
+  ps.add(f.fieldType)
+  makeMethodInfo(ACC_PUBLIC, mangledName, buildDescriptor(ps, JVoid), attrs2)
+}
+
 pub func lowerOpaqueType(o: in LOpaqueType, pool: in Pool): ClassFile {
   val fields: List[FieldInfo] = newList()
   val methods: List[MethodInfo] = newList()
@@ -4272,8 +4316,17 @@ pub func lowerOpaqueType(o: in LOpaqueType, pool: in Pool): ClassFile {
     val mangledName = "$" + f.name
     val desc = typeDescriptor(f.fieldType)
     val fAttrs: List[Attribute] = newList()
-    fields.add(makeFieldInfo(ACC_PRIVATE + ACC_FINAL + ACC_SYNTHETIC, mangledName, desc, fAttrs))
+    // #5937: a mutable (`var`) opaque field cannot carry `ACC_FINAL` — the
+    // verifier only allows a `putfield` on a final field from the declaring
+    // class's own `<init>`, and same-package `inout` mutation writes through
+    // the mutator method below instead. An immutable field keeps the
+    // original `final` shape.
+    val fieldFlags = if f.isMutable { ACC_PRIVATE + ACC_SYNTHETIC } else { ACC_PRIVATE + ACC_FINAL + ACC_SYNTHETIC }
+    fields.add(makeFieldInfo(fieldFlags, mangledName, desc, fAttrs))
     methods.add(lowerOpaqueAcc(o.className, f, pool))
+    if f.isMutable {
+      methods.add(lowerOpaqueSet(o.className, f, pool))
+    }
     i = i + 1
   }
   val ctor = lowerOpaqueCtor(o, pool)
@@ -4953,7 +5006,10 @@ pub func lowerProjectableType(p: in LProjectableType, pool: in Pool): List[Class
   // ── Opaque class: base form + toView() ────────────────────────────────────
   val allFields: List[LOpaqueField] = newList()
   for f in p.fields.toArray() {
-    allFields.add(LOpaqueField(name = f.name, fieldType = f.fieldType))
+    // Projectable-type field mutation is a separate, unimplemented feature
+    // (out of scope for #5937's plain-opaque fix); preserve the pre-existing
+    // getter-only, `final` shape here.
+    allFields.add(LOpaqueField(name = f.name, fieldType = f.fieldType, isMutable = false))
   }
   val opaqueCf = lowerOpaqueType(LOpaqueType(className = p.opaqueClassName, fields = allFields), pool)
 
@@ -6938,7 +6994,7 @@ pub func lowerPackage(pkg: in LPackage, pool: in Pool): List[ClassFile] {
         // Java-interop facade over the opaque, mirroring the plain-opaque arm.
         val pfFields: List[LOpaqueField] = newList()
         for f in pt.fields.toArray() {
-          pfFields.add(LOpaqueField(name = f.name, fieldType = f.fieldType))
+          pfFields.add(LOpaqueField(name = f.name, fieldType = f.fieldType, isMutable = false))
         }
         result.add(lowerOpaqueFacade(LOpaqueType(className = pt.opaqueClassName, fields = pfFields), pool))
       }

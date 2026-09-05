@@ -30,8 +30,8 @@ import Jvm.Kernel
 func makeOpaquePointBytes(): List[Byte] {
   val pool = poolNew()
   val flds: List[LOpaqueField] = newList()
-  flds.add(LOpaqueField(name = "x", fieldType = JInt))
-  flds.add(LOpaqueField(name = "y", fieldType = JInt))
+  flds.add(LOpaqueField(name = "x", fieldType = JInt, isMutable = false))
+  flds.add(LOpaqueField(name = "y", fieldType = JInt, isMutable = false))
   val cf = lowerOpaqueType(LOpaqueType(className = "OpaquePoint", fields = flds), pool)
   serializeClassWithPool(cf, pool)
 }
