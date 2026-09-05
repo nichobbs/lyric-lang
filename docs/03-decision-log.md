@@ -41665,3 +41665,168 @@ combination (see each file's header). Every changed `.l` file is
 (prior `Lambda.Dispatch` work this builds on); #6868 (new `TestSynth`/
 `@cfg` bug, filed not fixed); D062/D063/D064/D099 (original `lyric-lambda`
 design decisions).
+
+## D-progress-888 — Self-hosted compiler: qualified cross-package type references resolve to the exact package named, not scope-priority (#6689)
+
+**Context.** `List[T]`-of-record-typed cross-package constructor arguments
+could pick up an unrelated same-named record from a different package.
+Found while building the JVM restored-dependency pipeline (`Jvm.Driver.
+BuildRequest`'s `contractEntries: List[Jvm.Zip.ZipEntry]` field resolving to
+`Jvm.ZipReader.ZipEntry` instead — a `MissingMethodException`), worked
+around with a parallel-list representation there. Root-caused to TWO
+independent bugs, one type-checker-side and one MSIL-codegen-side; the JVM
+symptom was fixed by the first alone (JVM codegen resolves types through the
+checker's own resolved `Type`, not by re-deriving FQNs from raw source text
+at codegen time — confirmed empirically, a same-shaped repro runs correctly
+on `--target jvm` with zero JVM-side changes), but the family is broader on
+MSIL and affects any qualified type reference, not just constructor fields.
+
+**Bug 1 (type checker) — `collectCtorFields` resolves under the CALLER's
+scope.** A record/opaque's field types are resolved lazily, on every use
+(`collectCtorFields` → `resolveType`), rather than once at the type's own
+declaration and cached. Every call site ran this resolution with whatever
+`SymbolTable` scope happened to be active — the scope of the CALLING file's
+own package, not the field's DECLARING package. A field typed `List[Item]`
+in package A resolved `Item` against the CALLING file's imports: a caller
+that transitively imports an unrelated same-named `Item` from package B
+picked B's `Item` instead of A's, with zero diagnostics. Fixed by having
+`collectCtorFields` save the caller's scope, temporarily switch to the
+field-owning symbol's OWN declaring package + that package's own recorded
+imports (a new `packageImports: Map[String, List[String]]` side index,
+populated during T3 signature collection exactly where `symTableSetScope`
+already sets each package's own scope for `resolveFunctionSig`), run the
+resolution, then restore the caller's scope.
+
+**Bug 2 (MSIL codegen) — `typeExprToMsilCtx` discards a qualified type
+reference's owner entirely.** Independent of bug 1, and broader: affects
+ANY qualified type reference at codegen time, not just constructor fields
+(a `val` binding's type annotation, a function return type, …). `typeExprToMsilCtx`'s
+`TRef(path)` case computes `val seg = lastSegmentMsil(path)` — the bare
+tail name only — and resolves it via `resolveTypeFqn(cctx, pkgName, seg)`,
+a scope-priority walk keyed by the REFERENCING package's own imports. Even
+though `Lyric.AliasRewriter.rewritePath` fully expands a qualified
+reference's owner to its real dotted package (a bare `import Pkg.Sub`
+alias-expands `Sub.Item` to `Pkg.Sub.Item`) before codegen runs, that
+qualifier was discarded outright: `List[PkgA.Item]` written in a package
+that imports BOTH `PkgA` and an unrelated `PkgB` (also declaring `Item`)
+resolved to whichever candidate won `resolveTypeFqn`'s "last-registered
+package among ALL this file's imports" walk — not necessarily `PkgA` —
+silently building a `List<PkgB.Item>`-shaped generic instantiation.
+Confirmed via a minimal single-project repro (no restored dependencies
+needed): `ArrayTypeMismatchException`/`InvalidProgramException` at runtime,
+depending on exactly where the wrong instantiation surfaced. Fixed with a
+new `resolveTypeFqnQualified(cctx, pkgName, path, seg)` that, for a
+multi-segment `path`, tries the EXACT `<ownerFromPath>.<seg>` candidate
+first (mirroring the type checker's own #6338 exact-owner-match precedent
+for the identical hazard) before falling back to `resolveTypeFqn`'s
+scope-priority walk for a genuinely bare reference. `sliceElemMsilCtx`
+delegates straight into this same `TRef` case, so `List[T]`/`slice[T]`
+element-type resolution is fixed by the same change with no separate patch.
+
+**Verification.** New self-tests in `msil_project_bridge_self_test.l`: a
+`val` binding's qualified generic type argument (`List[Pkg.Item]`) resolves
+to the exact package named, not scope-priority, across two colliding
+same-named siblings; the same shape through a record CONSTRUCTOR FIELD
+(matching the original JVM-context repro's actual shape). Full
+`typechecker_self_test.l` suite (425/425) and `msil_project_bridge_self_test.l`
+pass with no regressions. `--target jvm` re-confirmed unaffected by either
+fix (already correct; no JVM-side change made). Following a `claude-review`
+SUGGESTION on the PR, a dedicated end-to-end JVM test was added to
+`jvm_cross_package_collision_self_test.l` ("qualified record field type
+resolves to the exact package named") pinning bug 1's shared type-checker
+fix on `--target jvm` too, not just confirming it by code inspection.
+
+## D-progress-884 — Self-hosted compiler: union case field types now resolve under the case's OWN declaring package, closing the #6972 gap left by D-progress-888's record-only fix
+
+**Context.** A `claude-review` REQUIRED finding on PR #6904 (D-progress-888)
+pointed out that its `collectCtorFields` fix only covered records/exposed-
+records/opaque constructor fields — `unionCaseFieldTypes` (backing both
+`inferUnionCaseConstruction`, the construction path, and
+`caseFieldTypesInstantiated`, the `match`-arm pattern-bind path) still
+resolved a union case's field types under whatever `SymbolTable` scope was
+active at the call site, leaving the identical cross-package same-name
+collision hazard open for union case fields.
+
+**Confirming the gap.** Debug instrumentation against the unfixed code
+(temporary `println`s in `unionCaseFieldTypes`, since neither backend's
+codegen observably diverges on a plain field READ through a pattern-bound
+union-case field — MSIL re-derives a pattern-bound local's CLR layout
+independently of this specific type-checker result at codegen time, and JVM
+does too for this construct) confirmed the field type genuinely resolves
+wrong: with a union declared in package `Pkg6972Owner` (`Full(tag: Item)`,
+`Item` also declared in `Pkg6972Owner`) destructured from a project's
+`Main6972` package that imports BOTH `Pkg6972Owner` and an unrelated
+`Pkg6972Collide` (which ALSO declares an `Item`), `tag`'s bound field type
+resolved to `Pkg6972Collide`'s `Item` — the last-registered candidate under
+tier-2 scope resolution — instead of `Pkg6972Owner`'s (the field's own
+declaring package). The resolution order is sensitive to package
+registration order in the project's package list / the caller's own import
+order, so the collision is timing-dependent, not deterministic either way.
+
+**Fix.** Centralized the scope save/switch-to-declaring-scope/restore
+(mirroring `collectCtorFields`'s established pattern) INSIDE
+`unionCaseFieldTypes` itself, adding an `originPackage: in String`
+parameter (both call sites already have it via `caseSym.originPackage`) —
+this closes the gap at both call sites (construction and pattern-bind) with
+one change instead of duplicating the scope-juggling boilerplate twice.
+
+**Verification.** A type-checker-only test (asserting on diagnostics from
+`checkWithImportedPackages`) turned out NOT to observe this defect: neither
+a member-access check (T0113 only covers types declared in the checking
+file, per docs/44's m-96 finding) nor, empirically, a nominal
+argument-type-mismatch check (T0043) fired differently with the bug present
+under that harness's own package-registration order. The regression test
+that DOES observe it lives in `msil_project_bridge_self_test.l`
+("union case field type resolves to the exact package named, not the
+caller's scope (#6972)"): a full `compileProjectToMsil` build (which uses
+the project bridge's own registration order, confirmed via the debug
+instrumentation above to reproduce the collision) passing the pattern-bound
+`tag` to a function requiring exactly `Pkg6972Owner.Item` — a wrong
+resolution is a hard T0043 that fails the whole compile (confirmed by
+reverting the fix and re-running: `error[T0043] 7:44: argument type Item
+does not match parameter type Item`); with the fix, it compiles and runs,
+printing the expected value. Full `msil_project_bridge_self_test.l` (56/56),
+`jvm_cross_package_collision_self_test.l` (7/7), and `typechecker_self_test.l`
+(419/419) all pass with no regressions.
+
+**Related:** #6972 (this fix), D-progress-888/#6689 (the record-only
+predecessor fix this closes the gap in), PR #6904.
+
+## D-progress-890 — MSIL codegen: a qualified generic type's own HEAD now resolves to the exact package named, closing the #6992 gap left by D-progress-888's `TRef`-only fix
+
+**Context.** A `claude-review` REQUIRED finding on PR #6904 (D-progress-888)
+pointed out that `resolveTypeFqnQualified` was wired into `typeExprToMsilCtx`'s
+bare `TRef` case only. The identical hazard applies to a qualified generic
+type's own HEAD, not just its type arguments or a bare reference: `PkgA.Box[Int]`
+where an unrelated `PkgB` also declares `Box[T]` still resolved `Box` via
+the unqualified `resolveTypeFqn(cctx, pkgName, headSeg)` in the `TGenericApp`
+fallback branch (reached whenever the generic head isn't one of the
+special-cased names `List`/`Map`/`Set`/`MapKeyCollection`/`MapValueCollection`)
+of **four** functions: `typeExprToMsilCtx`, `typeExprToMsilG`,
+`typeExprToMsilGenBody`, and `typeExprToMsilGenSig`.
+
+**Fix.** All four call sites now call `resolveTypeFqnQualified(cctx, pkgName,
+head, headSeg)` — the same helper D-progress-888 introduced — passing the
+generic application's own `head: ModulePath` (already in scope, used to
+compute `headSeg` via `lastSegmentMsil(head)` at each site) instead of just
+the bare tail segment.
+
+**Verification.** New self-test in `msil_project_bridge_self_test.l`:
+`Pkg6992A` and `Pkg6992B` each declare their own unrelated `Box[T]` union
+with DIFFERENT case sets (so a wrong resolution can't coincidentally
+construct the right shape); `Main6992` (which imports both) declares a
+function whose PARAMETER type is the qualified `Pkg6992A.Box[Int]` — a
+`val` type annotation was tried first and found NOT to observe the defect
+(codegen derives a local's slot type from the initializer expression's
+already-correct inferred type, not by re-resolving the annotation text),
+mirroring the D-progress-884 test-harness dead end for a different reason.
+Confirmed by reverting the fix and re-running: `error[T0115]: cannot
+resolve name 'v' to a value here (in Main6992.unwrap)` (the match arm's
+binding fails to type-check against whichever wrong `Box` instantiation
+the parameter signature actually named); with the fix, it compiles and
+runs, printing the expected value. Full `msil_project_bridge_self_test.l`
+(57/57), `jvm_cross_package_collision_self_test.l` (9/9), and
+`typechecker_self_test.l` (419/419) all pass with no regressions.
+
+**Related:** #6992 (this fix), D-progress-888/#6904 (the `TRef`-only
+predecessor fix this closes the gap in).

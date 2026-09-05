@@ -3000,12 +3000,35 @@ func collectCtorFieldsFromOpaque(
   }
 }
 
-// Fill `out` with the constructor fields of `sym`; returns true if `sym` is a
-// constructible type (record / exposed-record / opaque).
+// #6689: field types are resolved lazily, on every use (constructor call,
+// field read, …), rather than once at the record/opaque's own declaration —
+// so they must resolve under the DECLARING package's scope, not whatever
+// scope happens to be active at the (possibly cross-package) call site that
+// triggered this lookup.  Without this, `Pkg.Item` in `record R { xs:
+// List[Item] }` resolved `Item` against the CALLER's imports: a caller that
+// transitively imports an unrelated same-named `Item` from a different
+// package silently constructed `R` with the wrong `Item` type baked into its
+// field, compiling cleanly and failing at runtime (`MissingMethodException`
+// / similar member-lookup failure) rather than at the constructor call that
+// actually named the right `Item`.  Save/restore the caller's scope around
+// the temporary switch so this is transparent to the caller.
 func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorField]): Bool {
   val ctx = newGenericContext()
   val scratch: List[Diagnostic] = newList()
-  match sym.kind {
+  val savedPkg: List[String] = newList()
+  var spi = 0
+  while spi < tbl.scopePkg.count {
+    savedPkg.add(tbl.scopePkg[spi])
+    spi = spi + 1
+  }
+  val savedImports: List[String] = newList()
+  var sii = 0
+  while sii < tbl.scopeImports.count {
+    savedImports.add(tbl.scopeImports[sii])
+    sii = sii + 1
+  }
+  symTableSetScope(tbl, sym.originPackage, symTablePackageImportsOf(tbl, sym.originPackage))
+  val result = match sym.kind {
     case DKRecord(_, rd) -> {
       collectCtorFieldsFromRecord(tbl, ctx, scratch, rd.members, acc)
       true
@@ -3020,6 +3043,9 @@ func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorFie
     }
     case _ -> false
   }
+  val restorePkg = if savedPkg.count > 0 { savedPkg[0] } else { "" }
+  symTableSetScope(tbl, restorePkg, savedImports)
+  result
 }
 
 func ctorResultType(sym: in Symbol): Type {
@@ -3727,11 +3753,38 @@ func unionDeclGenericNames(decl: in UnionDecl): List[String] {
   names
 }
 
+// #6972: case field types are resolved lazily, on every use (construction,
+// pattern destructuring), exactly like `collectCtorFields` resolves a
+// record's field types — so the same cross-package same-name collision
+// hazard applies here too (a caller that transitively imports an unrelated
+// same-named type must not have it picked up in place of the union's OWN
+// declaring-package resolution). `originPackage` is the union's own
+// declaring package (both call sites have it via `caseSym.originPackage`);
+// mirrors `collectCtorFields`'s save/switch-to-declaring-scope/restore,
+// centralized here so both call sites (construction and pattern-bind) get
+// the fix without duplicating the scope juggling.
 func unionCaseFieldTypes(
-  tbl: in SymbolTable, diag: in List[Diagnostic], uc: in UnionCase, genericNames: in List[String]
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  uc: in UnionCase,
+  genericNames: in List[String],
+  originPackage: in String,
 ): List[Type] {
   val ctx = newGenericContext()
   gctxPush(ctx, genericNames)
+  val savedPkg: List[String] = newList()
+  var spi = 0
+  while spi < tbl.scopePkg.count {
+    savedPkg.add(tbl.scopePkg[spi])
+    spi = spi + 1
+  }
+  val savedImports: List[String] = newList()
+  var sii = 0
+  while sii < tbl.scopeImports.count {
+    savedImports.add(tbl.scopeImports[sii])
+    sii = sii + 1
+  }
+  symTableSetScope(tbl, originPackage, symTablePackageImportsOf(tbl, originPackage))
   val result: List[Type] = newList()
   var i = 0
   while i < uc.fields.count {
@@ -3742,6 +3795,8 @@ func unionCaseFieldTypes(
     result.add(fty)
     i = i + 1
   }
+  val restorePkg = if savedPkg.count > 0 { savedPkg[0] } else { "" }
+  symTableSetScope(tbl, restorePkg, savedImports)
   result
 }
 
@@ -3772,7 +3827,7 @@ func inferUnionCaseConstruction(
     case DKUnionCase(parentId, uc) -> match parentUnionDeclOf(tbl, parentId) {
       case Some(decl) -> {
         val gnames = unionDeclGenericNames(decl)
-        val ftypes = unionCaseFieldTypes(tbl, diag, uc, gnames)
+        val ftypes = unionCaseFieldTypes(tbl, diag, uc, gnames, caseSym.originPackage)
         val targs = inferGenericArgs(gnames, ftypes, argTypes)
         TyUser(id = parentId, name = decl.name, args = targs)
       }
@@ -4057,7 +4112,7 @@ func caseFieldTypesInstantiated(
     case DKUnionCase(parentId, uc) -> match parentUnionDeclOf(tbl, parentId) {
       case Some(decl) -> {
         val gnames = unionDeclGenericNames(decl)
-        val ftypes = unionCaseFieldTypes(tbl, diag, uc, gnames)
+        val ftypes = unionCaseFieldTypes(tbl, diag, uc, gnames, caseSym.originPackage)
         val targs = match unrefine(scrutTy) { case TyUser(_, _, a) -> a; case _ -> newList() }
         val result: List[Type] = newList()
         var i = 0
