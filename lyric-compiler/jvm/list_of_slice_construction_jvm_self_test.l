@@ -82,6 +82,10 @@ test "Bug 2: an explicitly slice[Int]-typed argument compiles and round-trips" {
   assertEqualInt(xs[0][1], 5, "nested index xs[0][1] reads the real array")
 }
 
+// JVM-only: on `--target dotnet` this same case throws "Attempted to
+// access an element as a type incompatible with the array" — a
+// pre-existing, unrelated MSIL bug in empty-slice-literal element-type
+// inference for `List[slice[T]].add()`, tracked separately in #6945.
 test "an empty slice element added to a List[slice[Int]] does not crash" {
   val xs: List[slice[Int]] = newList()
   xs.add([])
