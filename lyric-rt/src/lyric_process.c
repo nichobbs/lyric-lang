@@ -752,6 +752,7 @@ typedef struct LyricPipedProc {
     ProcBuf linebuf; /* buffered, not-yet-returned stdout bytes */
     int reaped;
     int32_t exit_code;
+    int closed; /* set by lyric_process_piped_close (issue #6975) */
 } LyricPipedProc;
 
 /* Spawn the child; returns the handle, or NULL if the OS spawn itself
@@ -952,16 +953,44 @@ int32_t lyric_process_piped_close_stdin(void* raw) {
     return 0;
 }
 
-/* Close the child's stdin/stdout pipes and free the handle. Does NOT
+/* Close the child's stdin/stdout pipes and release the handle. Does NOT
  * itself wait for or kill the child (matching the dotnet/JVM twins'
  * hostPipedClose contract exactly -- neither one reaps/kills either) --
  * a caller that needs the child gone calls
- * lyric_process_piped_kill/wait_exit first. Safe to call unconditionally
- * as best-effort cleanup. */
+ * lyric_process_piped_kill/wait_exit first.
+ *
+ * Genuinely idempotent (issue #6975), unlike an earlier version of this
+ * function that unconditionally free()'d `p`: a second call on the same
+ * handle then read-and-freed already-freed memory, a real double-free/
+ * use-after-free a caller following this function's own "safe to call
+ * during best-effort cleanup" doc comment could trigger directly. Fixed
+ * the same way lyric_process_piped_kill/is_alive/close_stdin above are
+ * already idempotent -- a guard flag checked before touching anything --
+ * but with one necessary difference: this function must NOT actually
+ * free(p) itself. Doing so would leave nothing left to safely check on a
+ * genuine second call (there is no way to test "was this pointer already
+ * freed" by dereferencing that same pointer -- that IS a use-after-free).
+ * So `p` (a small, fixed-size struct) is deliberately retained for the
+ * rest of the process's life once closed, exactly the same sanctioned,
+ * disclosed, bounded-and-proven-safe LeakSanitizer suppression pattern
+ * `lyric_lsan_ignore_leak`'s own doc comment already establishes for the
+ * analogous #6802 case -- not a general leak, a one-time few dozen bytes
+ * per piped-process handle traded for provable memory safety against a
+ * real double-free class of bug. The fds and line buffer -- the actually
+ * scarce resources -- are still fully released on first close. */
 void lyric_process_piped_close(void* raw) {
     LyricPipedProc* p = (LyricPipedProc*)raw;
-    if (p->stdin_wr >= 0) close(p->stdin_wr);
-    if (p->stdout_rd >= 0) close(p->stdout_rd);
+    if (p->closed) return;
+    p->closed = 1;
+    if (p->stdin_wr >= 0) {
+        close(p->stdin_wr);
+        p->stdin_wr = -1;
+    }
+    if (p->stdout_rd >= 0) {
+        close(p->stdout_rd);
+        p->stdout_rd = -1;
+    }
     free(p->linebuf.data);
-    free(p);
+    p->linebuf.data = NULL;
+    lyric_lsan_ignore_leak(p);
 }

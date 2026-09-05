@@ -41689,3 +41689,32 @@ filed here), #6888 (`String.replace`-on-native, filed here), #6237
 precedent #6887 recommends), D-progress-712 (`Conn.tlsConnHandle`'s
 identical `Long`-as-pointer-handle precedent), docs/62 §5.2 (the
 motivating lyric-mcp stdio transport).
+
+**Addendum: `lyric_process_piped_close`/`hostPipedClose` double-free/
+use-after-free fixed (#6975, found in review of this same change before
+merge).** An earlier version of `lyric_process_piped_close`
+unconditionally `free()`'d the handle struct; a second call on the same
+handle then read-and-freed already-freed memory — a real double-free the
+function's own "safe to call during best-effort cleanup" doc comment
+directly invited, unlike `lyric_process_piped_kill`/`_is_alive`/
+`_close_stdin` in the same file, which were already internally
+idempotent. Fixed with a `closed` guard flag, but — unlike those three
+functions — WITHOUT ever calling `free()` on the struct itself: there is
+no way to safely check "was this pointer already freed" by dereferencing
+that same pointer, so a genuinely idempotent close cannot also fully
+free the handle. The struct (small, fixed-size) is deliberately retained
+for the rest of the process's life once closed instead, using the same
+sanctioned, disclosed, bounded `lyric_lsan_ignore_leak` suppression this
+codebase already established for the analogous #6802 case (now
+documented as having two callers, not one) — the fds and line buffer,
+the actually scarce resources, are still fully released on first close.
+Also added the same `closed: Bool` guard at the Lyric level
+(`PipedHandle`, mirroring `Std.HttpServer`'s `HttpListener.stopped`
+precedent) as defense in depth, so the common case never even reaches
+the extern boundary a second time. New C-level regression test
+(`test_process_piped_double_close`, `lyric_rt_test.c`) calls
+`lyric_process_piped_close` twice on the same handle, verified clean
+under a manual ASan build of `lyric_rt_test.c` (no crash, no leak
+report — confirming the suppression actually works, not just that the
+code compiles). Re-verified: `llvm_stdlib_self_test.l` 19/19, all
+`lyric-rt` C tests (plain + ASan) green.
