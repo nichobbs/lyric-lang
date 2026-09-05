@@ -2266,3 +2266,57 @@ test "qualified generic type argument in a record field resolves to the exact pa
   )
   assertEqual(Str.trim(result.stdout), "1", "record field List[Item] resolved to Pkg6689C's Item, not Pkg6689D's")
 }
+
+// #6972 (found in review of #6689): a union case's field types are resolved
+// lazily on every use, exactly like a record's — `collectCtorFields` was
+// fixed to resolve field types under the field-owning symbol's DECLARING
+// package scope (#6689), but `unionCaseFieldTypes` (both its construction
+// AND pattern-bind call sites) still resolved under whatever scope was
+// active at the call site. Confirmed empirically (debug instrumentation)
+// that under the project bridge's own registration order this collides:
+// `tag`'s bound type resolves `Item` against `Pkg6972Collide` (registered
+// after `Pkg6972Owner` in the project's package list) instead of
+// `Pkg6972Owner` (the field's OWN declaring package). Neither MSIL nor JVM
+// codegen observably differ on a plain field READ here (both re-derive a
+// pattern-bound local's runtime layout independently of this particular
+// type-checker result) — the defect is only visible where something
+// nominally compares the bound type, so this passes `tag` to a function
+// requiring exactly `Pkg6972Owner.Item`: a wrong resolution is a hard
+// T0043 type-checker error that fails the whole compile.
+test "union case field type resolves to the exact package named, not the caller's scope (#6972)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "Pkg6972Owner",
+      "package Pkg6972Owner\n" + "pub record Item {\n" + "  x: Int\n" + "}\n" + "pub union Box {\n" +
+        "  case Full(tag: Item)\n" +
+        "}\n" +
+        "pub func mk(x: in Int): Box {\n" +
+        "  Full(tag = Item(x = x))\n" +
+        "}\n" +
+        "pub func needsItem(i: in Item): Int {\n" +
+        "  i.x\n" +
+        "}\n"
+    )
+  )
+  packages.add(mkPkg("Pkg6972Collide", "package Pkg6972Collide\n" + "pub record Item {\n" + "  name: String\n" + "}\n"))
+  packages.add(
+    mkPkg(
+      "Main6972",
+      "package Main6972\n" + "import Pkg6972Owner\n" + "import Pkg6972Collide\n" + "func main(): Int {\n" +
+        "  val b = Pkg6972Owner.mk(x = 7)\n" +
+        "  match b {\n" +
+        "    case Pkg6972Owner.Full(tag) -> println(Pkg6972Owner.needsItem(tag))\n" +
+        "  }\n" +
+        "  0\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("union-case-field-6972", packages, "UnionCaseField6972")
+  assertEqualInt(result.exitCode, 0, "union case field (#6972): exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "7",
+    "union case field (#6972): tag binds to Pkg6972Owner's Item, not Pkg6972Collide's (needsItem(tag) == 7)"
+  )
+}
