@@ -15,18 +15,19 @@
 //! (wrong for a genuine `int[]` runtime value — primitive arrays are NOT
 //! assignable to `Object[]`).
 //!
-//! The LIST-outer shape (`List[slice[T]]`) is exercised only at the
-//! DECLARATION/compile level here (`sumNestedListOfSlice`/
-//! `concatNestedListOfSlice` below, never called): constructing an actual
-//! `List[slice[T]]` VALUE on `--target jvm` today hits two separate,
-//! pre-existing bugs unrelated to this fix (`List.add()`'s auto-FFI
-//! resolution misfires for an array-typed argument, and a bare slice
-//! literal stored through `.add()` becomes a raw `ArrayList` instead of a
-//! real array on read-back) — filed as #6546.  The `for`-loop CODE fix
-//! itself unifies both codegen branches (array-outer and `Iterable`-outer)
-//! through the same `emitNormalizeErasedSlice` call so they can't diverge,
-//! but the `Iterable`-outer branch isn't RUNTIME-exercised by this file
-//! until #6546 unblocks constructing a value to feed it.
+//! The LIST-outer shape (`List[slice[T]]`) is now also runtime-verified
+//! below (`sumNestedListOfSlice`/`concatNestedListOfSlice`): constructing
+//! an actual `List[slice[T]]` VALUE on `--target jvm` used to hit two
+//! separate, pre-existing bugs unrelated to this fix (`List.add()`'s
+//! auto-FFI resolution misfired for an array-typed argument, and a bare
+//! slice literal stored through `.add()` became a raw `ArrayList` instead
+//! of a real array on read-back), filed and fixed as #6546 (see
+//! `lyric-compiler/jvm/list_of_slice_construction_jvm_self_test.l` for the
+//! dedicated construction/read-back coverage). The `for`-loop CODE fix here
+//! unifies both codegen branches (array-outer and `Iterable`-outer) through
+//! the same `emitNormalizeErasedSlice` call so they can't diverge — the
+//! cases below exercise the `Iterable`-outer branch at runtime now that
+//! #6546 unblocks constructing a value to feed it.
 //!
 //! Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1` is needed.  Run via
 //! native `lyric test` on both targets (mirrors `bitwise_self_test.l`):
@@ -115,4 +116,20 @@ test "array-outer, primitive inner: an empty outer slice short-circuits without 
 
 test "array-outer: an inner slice containing an empty slice does not crash" {
   assertEqualInt(sumNestedSlice([intRow([]), intRow([1, 2]), intRow([])]), 3, "sum skips empty inner slices correctly")
+}
+
+test "List-outer, primitive inner: List[slice[Int]] nested for-loop sums correctly (#6546)" {
+  val xs: List[slice[Int]] = newList()
+  xs.add(intRow([1, 2, 3]))
+  xs.add(intRow([4, 5]))
+  xs.add(intRow([6]))
+  assertEqualInt(sumNestedListOfSlice(xs), 21, "sum of a List of int slices")
+}
+
+test "List-outer, reference inner: List[slice[String]] nested for-loop concatenates correctly (#6546)" {
+  val xs: List[slice[String]] = newList()
+  xs.add(strRow(["a", "b"]))
+  xs.add(strRow(["c"]))
+  xs.add(strRow(["d", "e", "f"]))
+  assertEqual(concatNestedListOfSlice(xs), "abcdef", "concat of a List of string slices")
 }
