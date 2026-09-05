@@ -17,9 +17,13 @@
 //! `NoClassDefFoundError` at class-load time — the value itself was never
 //! unsound, only the generic-arg BOOKKEEPING used to read it back.
 //!
-//! `UInt`/`ULong` have no MSIL representation at all (`Msil.Codegen`'s
-//! `typeExprToMsilCtx` has no `UInt`/`ULong` arm, #6661/docs/44), so this
-//! file — like `range_subtype_unsigned_jvm_self_test.l` — is JVM-only.
+//! JVM-only: this pins a defect specific to `Jvm.Codegen`'s own generic-arg
+//! bookkeeping choke point (`eagerlyResolveGenericArg`'s non-primitive
+//! `else` branch guessing a phantom class name). MSIL now has a real
+//! `UInt`/`ULong` representation too (`Msil.Codegen.typeExprToMsilCtx`'s
+//! `UInt -> MInt` / `ULong -> MLong` erasure, #6756), but MSIL's generics
+//! are real (not type-erased the way the JVM backend's are), so this
+//! specific choke-point bug class has no MSIL analog to test.
 //!
 //!   lyric test --target jvm lyric-compiler/jvm/generic_uint_erasure_jvm_self_test.l
 //!
