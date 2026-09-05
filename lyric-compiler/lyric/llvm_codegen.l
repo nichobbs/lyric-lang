@@ -326,7 +326,13 @@ record Ctx {
   // qualified (`Pkg.Name`) and bare (`Name`) interface name to its
   // NIfaceInfo; `ifaceVtables` maps `<recordIrName>|<ifaceKey>` to the
   // emitted vtable-constant global name, resolved at upcast sites.
+  // `ifaceBareNameOwners` maps a bare interface name to the qualified name
+  // that currently owns it in `ifaceInfos`, so `registerIfaceInfo` (#4900)
+  // can detect two different in-scope interfaces sharing a bare name
+  // (reachable via a multi-package `--target native` build, #6809) and fail
+  // loudly instead of silently letting the second registration win.
   ifaceInfos: Map[String, NIfaceInfo]
+  ifaceBareNameOwners: Map[String, String]
   ifaceVtables: Map[String, String]
   // Protected-type record irNames (N3.4): marks which `recordDefs` entries
   // are protected types (a trailing `__mutex: i8*` field, construction
@@ -8796,6 +8802,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     mapKeyTys = mod.mapKeyTys,
     mapValTys = mod.mapValTys,
     ifaceInfos = mod.ifaceInfos,
+    ifaceBareNameOwners = mod.ifaceBareNameOwners,
     ifaceVtables = mod.ifaceVtables,
     protectedRecNames = mod.protectedRecNames,
     scopeRefs = newList(),
@@ -9676,6 +9683,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     mapKeyTys = newMap(),
     mapValTys = newMap(),
     ifaceInfos = newMap(),
+    ifaceBareNameOwners = newMap(),
     ifaceVtables = newMap(),
     protectedRecNames = newMap(),
     scopeRefs = newList(),
@@ -11126,6 +11134,31 @@ func registerIfaceInfo(ctx: in Ctx, pkg: in String, name: in String, info: in NI
     ctx.ifaceInfos.remove(qualified)
   }
   ctx.ifaceInfos.add(qualified, info)
+  // #4900: `typeToN`'s `TRef` case joins a single-segment type path to
+  // itself (`modulePathJoin` of one segment is that segment), so the bare
+  // name below is not a mere fallback — it is the ONLY key consulted for
+  // the overwhelmingly common unqualified interface reference (`x: in
+  // Shape`, not `x: in Pkg.Shape`).  Silently letting a second same-bare-
+  // name interface from a different package overwrite it (now reachable
+  // via a multi-package `--target native` build, `compileProjectToNativeWithFlags`
+  // fully lowers every own package, #6809) would route calls through the
+  // wrong vtable with no diagnostic.  Fail loudly at registration instead.
+  match mapGet(ctx.ifaceBareNameOwners, name) {
+    case Some(owner) -> {
+      if owner != qualified {
+        panic(
+          "Lyric.LlvmCodegen: ambiguous interface name '" + name + "' for --target native — both '" + owner + "' and '" +
+            qualified +
+            "' are interfaces in scope for this build, and an unqualified reference to '" +
+            name +
+            "' cannot tell them apart (#4900); rename one of them"
+        )
+      }
+    }
+    case None -> {
+      ctx.ifaceBareNameOwners.add(name, qualified)
+    }
+  }
   // Bare and box-struct-name keys are refreshed on every call so phase B's
   // full method signatures replace phase A's names-only placeholder.
   if ctx.ifaceInfos.containsKey(name) {
