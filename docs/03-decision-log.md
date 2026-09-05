@@ -42147,14 +42147,14 @@ multi-byte decode, plus an out-of-bounds panic case; `String + Char`/
 syntax (exercising the annotation-driven half of `charnessOfBinding`
 independent of literal inference), a `Char`-typed function parameter,
 and a direct `s[i]` used inline in a binop with no intervening binding
-at all. `make -C lyric-rt test` and the full `native-backend-self-tests`
-self-test list (via `make self-test NAME=llvm_codegen`, using the
-freshly staged `<libdir>/selfhosted/` compiler DLLs) both pass with zero
-regressions; the ASan-linked cases in that suite fail in this sandbox
-only because `libclang_rt.asan-x86_64.a` is not installed here — a
-pre-existing environment gap unrelated to this change (confirmed by
-their identical failure mode being present before any of this change's
-edits).
+at all. `make -C lyric-rt test`/`test-asan` and the full
+`native-backend-self-tests` self-test list (`llvm_ir_self_test.l`,
+`llvm_codegen_self_test.l`, `llvm_heap_self_test.l`,
+`llvm_ffi_self_test.l`, `llvm_collections_self_test.l`,
+`llvm_stdlib_self_test.l` — via `make self-test NAME=llvm_codegen` and
+direct `LYRIC_LOAD_COMPILER=1` runs, using the freshly staged
+`<libdir>/selfhosted/` compiler DLLs) pass with zero regressions,
+including every ASan-linked case in that list.
 
 **Related:** #6237, #6240 (the broader native `String` search-method
 audit this issue was split out of — #6588 already covered its other six
