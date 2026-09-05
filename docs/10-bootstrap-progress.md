@@ -33498,3 +33498,49 @@ triggered the main-detection bug) passes and is wired into
 D-progress-852 (the investigation that filed #6809),
 `native/plan/08-work-items.md` N9.7, `docs/20-project-as-dll.md`
 (the dotnet/jvm design this is the native analog of).
+
+## Native `Std.Char` kernel ships, plus two more native codegen fixes found verifying it — HPACK decode + the full `H2Conn` FSM now work on native (#6811)
+
+Closes #6811: `lyric-stdlib/std/_kernel_native/char_host.l`, the last
+`Std.Char` kernel twin missing. The code-point bridge is a zero-cost
+identity conversion (`Char`/`Int` are both `i32` on native), so it needs no
+extern at all; classification and case conversion ship as a genuinely
+complete ASCII-range slice in pure Lyric (no libc dependency, avoiding
+glibc/musl locale divergence) — full non-ASCII Unicode classification is a
+tracked follow-up, issue #6858, not a silent gap.
+
+Verifying the fix against its real motivating consumer
+(`Std.HttpEngine.Hpack`'s Huffman codec) surfaced two more,
+previously-undiscovered native codegen gaps, both fixed here and neither
+Hpack-specific: `List[T]`/`Map[K, V]` indexed assignment (`xs[i] = e`)
+had no native lowering at all, and `?` (Result propagation) silently
+failed to desugar for any `Std.*` stdlib function reached across a
+package boundary from a native build's entry file — a general gap that
+generalizes the narrower symptom `_kernel_native/http_host.l` already
+worked around by hand. The indexed-assignment gap is fixed at the codegen
+level (`Lyric.LlvmCodegen.lowerAssign` gains an `EIndex` arm mirroring the
+JVM backend's shape, over the existing `lyric_list_set`/`lyric_map_set`
+runtime calls). The `?`-propagation gap is root-caused but not fixed at
+the compiler-internals level (out of scope here); `Std.HttpEngine.Hpack`'s
+14 `?` sites are rewritten to the explicit `match`/early-return form
+instead, verified behavior-preserving on dotnet/JVM via the full existing
+`http_hpack_tests.l` (39/39) and `http_h2conn_tests.l` (73/73) suites.
+
+**Result:** the full HPACK *decode* path and the complete
+`Std.HttpEngine.H2Conn.feed()` FSM (all 38 `inout H2Connection` sites)
+now compile and run correctly on `--target native`, verified byte-for-byte
+against `--target dotnet` via hand-built repros (a real client preface +
+SETTINGS + HEADERS byte stream decodes to the expected
+`H2RequestHeaders` event). `llvm_stdlib_self_test.l` gained a dedicated
+`Std.Char`-kernel + Huffman-round-trip case (19/19 passing, ASan). HPACK's
+*encode* path (`encodeHeaderList`/`stringToOctets`) remains blocked on the
+pre-existing, separately-owned issue #6237 (`String` bracket indexing,
+`group:native-string-runtime`) — #6808 stays open, re-scoped to exactly
+that one remaining blocker.
+
+**Related:** `docs/03-decision-log.md` D-progress-877 (full account,
+including the bisection trail that isolated the `?`-propagation gap),
+#6811 (closed by this PR), #6858 (new, non-ASCII Unicode follow-up), #6237
+(the remaining, separately-owned blocker), #6808 (re-scoped, not closed),
+`native/plan/08-work-items.md` N9.8, `docs/61-https-tls-http-versions.md`
+§6.4's N9.5/N9.6/N9.8 narrative.
