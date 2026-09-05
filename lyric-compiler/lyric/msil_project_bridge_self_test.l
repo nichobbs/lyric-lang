@@ -2179,3 +2179,90 @@ test "extern type alias in one package does not hijack a same-named Lyric union'
     "unrelated package's extern alias did not hijack the Lyric union's case reference"
   )
 }
+
+// #6689: a QUALIFIED generic type argument (`List[PkgA.Item]`) resolved
+// through `typeExprToMsilCtx`'s bare-name-only `resolveTypeFqn` scope-
+// priority walk, discarding the qualifier entirely — so a package that
+// imports TWO packages each declaring a same-named type (`Item`) resolved
+// `List[PkgA.Item]` to whichever candidate happened to win the REFERENCING
+// package's own scope-priority tie-break, not necessarily `PkgA`. Silently
+// built a `List<PkgB.Item>`-shaped generic instantiation and miscompiled
+// every read/write into an `ArrayTypeMismatchException`/
+// `InvalidProgramException` at runtime, with no compile-time signal.
+test "qualified generic type argument resolves to the exact package named, not scope-priority (#6689)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "Pkg6689A",
+      "package Pkg6689A\n" + "pub record Item {\n" + "  x: Int\n" + "}\n" + "pub func mkA(x: in Int): Item {\n" +
+        "  Item(x = x)\n" +
+        "}\n"
+    )
+  )
+  packages.add(mkPkg("Pkg6689B", "package Pkg6689B\n" + "pub record Item {\n" + "  name: String\n" + "}\n"))
+  packages.add(
+    mkPkg(
+      "Main6689",
+      "package Main6689\n" + "import Pkg6689B\n" + "import Pkg6689A\n" + "\n" + "func main(): Unit {\n" +
+        "  val xs: List[Pkg6689A.Item] = newList()\n" +
+        "  xs.add(Pkg6689A.mkA(1))\n" +
+        "  println(xs[0].x)\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRunWithStdlib("qualified-generic-type-arg-6689", packages, "QualifiedGenericTypeArg6689")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "qualified generic type arg (#6689): exit 0 expected (stderr=" + result.stderr + ")"
+  )
+  assertEqual(Str.trim(result.stdout), "1", "List[Pkg6689A.Item] resolved to Pkg6689A's Item, not Pkg6689B's")
+}
+
+// Same shape as above, but the qualified type reference is a RECORD FIELD
+// type (the original #6689 repro's actual shape — `Jvm.Driver.BuildRequest`
+// carrying `List[Jvm.Zip.ZipEntry]`) rather than a local `val` annotation,
+// exercising `collectCtorFields`'s DECLARING-package scope fix
+// (`typechecker_exprs.l`) together with the codegen-side fix above.
+test "qualified generic type argument in a record field resolves to the exact package named (#6689)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "Pkg6689C",
+      "package Pkg6689C\n" + "pub record Item {\n" + "  x: Int\n" + "}\n" + "pub func mkA(x: in Int): Item {\n" +
+        "  Item(x = x)\n" +
+        "}\n"
+    )
+  )
+  packages.add(mkPkg("Pkg6689D", "package Pkg6689D\n" + "pub record Item {\n" + "  name: String\n" + "}\n"))
+  packages.add(
+    mkPkg(
+      "Pkg6689Wrapper",
+      "package Pkg6689Wrapper\n" + "import Pkg6689C\n" + "\n" + "pub record Wrapper {\n" + "  items: List[Item]\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "Main6689B",
+      "package Main6689B\n" + "import Pkg6689D\n" + "import Pkg6689Wrapper\n" + "import Pkg6689C\n" + "\n" +
+        "func mkList(): List[Pkg6689C.Item] {\n" +
+        "  val xs: List[Pkg6689C.Item] = newList()\n" +
+        "  xs.add(Pkg6689C.mkA(1))\n" +
+        "  xs\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val w = Pkg6689Wrapper.Wrapper(items = mkList())\n" +
+        "  println(w.items[0].x)\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRunWithStdlib("qualified-generic-ctor-field-6689", packages, "QualifiedGenericCtorField6689")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "qualified generic ctor field (#6689): exit 0 expected (stderr=" + result.stderr + ")"
+  )
+  assertEqual(Str.trim(result.stdout), "1", "record field List[Item] resolved to Pkg6689C's Item, not Pkg6689D's")
+}

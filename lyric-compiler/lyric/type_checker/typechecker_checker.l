@@ -3162,6 +3162,11 @@ func checkWithImportedPackagesCore(
     // Tier 2 sees the package's OWN declared imports, so a type it imports from
     // a sibling beats an unrelated same-named export elsewhere (#2282).
     symTableSetScope(tbl, ip2.name, ip2.imports)
+    // #6689: remember this package's own imports so a LATER cross-package
+    // field-type resolution (`collectCtorFields`, run during some other
+    // package's body-check) can temporarily re-enter this exact scope
+    // instead of resolving under whichever package is calling in.
+    symTableRegisterPackageImports(tbl, ip2.name, ip2.imports)
     addSigsFromItems(tbl, importedDiag, sigs, ip2.items, true, ip2.name)
     registerImplsFromItems(tbl, newGenericContext(), implDiag, ip2.items)
     addMethodSigsFromItems(tbl, ip2.items, ip2.name)
@@ -3170,6 +3175,7 @@ func checkWithImportedPackagesCore(
 
   // User signatures + bodies resolve under the user package's scope.
   symTableSetScope(tbl, userPkg, userImports)
+  symTableRegisterPackageImports(tbl, userPkg, userImports)
   addSigsFromItems(tbl, diag, sigs, file.items, false, userPkg)
   registerImplsFromItems(tbl, newGenericContext(), implDiag, file.items)
   addMethodSigsFromItems(tbl, file.items, userPkg)
