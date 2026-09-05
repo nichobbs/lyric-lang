@@ -32276,6 +32276,32 @@ this is MSIL-brought-to-parity, not a one-platform construct.
 
 **Related:** `docs/03-decision-log.md` D-progress-876 (full account), #6849.
 
+### Every union case class gets a real structural `Equals`/`GetHashCode` override — `Option[T]`/`Result[T,E]` `==` is no longer reference/tag identity (#6835, #6120)
+
+`None == None` returned `false`; `a != None` returned `true` when `a`
+genuinely was `None`; and two independently-constructed `Some(value = 1)`
+values compared `false` under `==` on `--target dotnet`. Records get real
+structural equality via `appendDeriveOverridesMsil`'s `Equals(object)`/
+`GetHashCode()` overrides on the record TypeDef, but that machinery was never
+extended to unions — no `IUnion` arm ever called it, so every union case
+class inherited `Object`'s identity-based `Equals`. A non-generic union
+occasionally masked this via its nullary-case singleton, but `Option`/`Result`
+are generic — their nullary cases have no singleton (`newobj` every time,
+docs/43 Q-GEN-001) — so the bug was fully exposed. Fixed by
+`buildUnionCaseEqualityOverridesMsil` (MSIL) and `buildUnionCaseEqualsFunc`/
+`buildUnionCaseHashCodeFunc` (JVM), synthesising `Equals`/`GetHashCode`
+inline on each union case using only the case's own already-reified type
+parameters, applied unconditionally to every union (no `@derive(Equals)`
+gate). Two latent MSIL bugs, exposed only by a *generic* case's new methods,
+were found and fixed alongside: a bare FieldDef-token field read against an
+open generic TypeDef throwing `TypeLoadException` at JIT time (new
+`MLdfldSelfOpen` instruction), and an `isinst`-target local declared as a
+bare `MClass` doing the same (fixed by declaring it as the closed-by-`!0`
+open self-instantiation instead).
+
+**Related:** `docs/03-decision-log.md` D-progress-888 (full account),
+#6835, #6120.
+
 ### Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
 
 `native/plan/08-work-items.md`'s N9.3 (`Std.HttpServer` native twin,
