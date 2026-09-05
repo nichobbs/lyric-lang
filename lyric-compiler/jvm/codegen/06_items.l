@@ -1718,6 +1718,50 @@ func emitSelfParamChecksJvm(
 // Call sites that dispatch through the registered `<targetClass>#<method>` sig
 // emit `invokevirtual targetClass.method`; bare sibling calls inside the body
 // (`m()` or `self.m()`) both reach here via `selfClass = Some(targetClass)`.
+// #5931: `impl <ExternInterface> for X` must match the extern interface's
+// REAL JVM method descriptor bind-for-bind (JVMS binary compatibility — an
+// override is recognized only when the descriptor matches exactly, or the
+// JVM's OWN dispatch through the interface throws `AbstractMethodError`
+// even though two Lyric-side call sites can silently agree with each
+// other). Unlike an ordinary Lyric function signature — which keeps the
+// uniform, erased `Object[]` `slice[T]` ABI ON PURPOSE, since every
+// Lyric-to-Lyric slice call site agrees on it regardless of element type —
+// a slice-shaped extern-impl parameter/return must resolve to the REAL
+// array type the FOREIGN, JVM-verified interface declares, whatever its
+// element type (a primitive slice element needs the real primitive array
+// too, not just an extern one). Used by both the method BODY
+// (`lowerImplMethod`) and its signature REGISTRATION (the `IImpl` arm's
+// `registerInstanceSigErased` call) so the two stay in lockstep — letting
+// them diverge breaks in-package Lyric callers even once the JVM-dispatch
+// side is fixed. Never applied to a plain (non-extern) Lyric interface impl,
+// whose OWN interface method descriptor is registered via the ordinary,
+// uniform-erasure path (`registerIfaceSig`) — diverging only the impl body
+// from that would make the concrete method fail to override the interface's
+// abstract one at all.
+func implTypeExprToJvm(te: in TypeExpr, pkgName: in String, externTypes: in Map[String, String]): JvmType {
+  match te.kind {
+    case TSlice(elem) -> JArray(elem = implTypeExprToJvm(elem, pkgName, externTypes))
+    case TParen(inner) -> implTypeExprToJvm(inner, pkgName, externTypes)
+    case _ -> typeExprToJvmExtern(te, pkgName, externTypes)
+  }
+}
+
+func implParamTypesToJvm(params: in List[Param], pkgName: in String, externTypes: in Map[String, String]): List[JvmType] {
+  val acc: List[JvmType] = newList()
+  var i = 0
+  while i < params.count {
+    val p = params[i]
+    val elemTy = implTypeExprToJvm(p.ty, pkgName, externTypes)
+    if isHolderMode(p.mode) {
+      acc.add(holderArrayType(elemTy))
+    } else {
+      acc.add(elemTy)
+    }
+    i = i + 1
+  }
+  acc
+}
+
 func lowerImplMethod(
   targetClass: in String,
   fn: in FunctionDecl,
@@ -1733,6 +1777,7 @@ func lowerImplMethod(
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
   importsStdString: in Bool,
+  isExternIface: in Bool,
 ): LFunc {
   val body = match fn.body {
     case Some(b) -> b
@@ -1743,8 +1788,15 @@ func lowerImplMethod(
   // extern-resolving: an `impl <ExternInterface> for X` method returning an
   // extern-typed value (e.g. `Bool` from a JDK interface method, or another
   // extern type) must match the real JVM descriptor, not the in-package
-  // `<pkg>/<Name>` guess plain `typeExprToJvm` would produce.
-  val retTy = match fn.ret { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
+  // `<pkg>/<Name>` guess plain `typeExprToJvm` would produce.  For an EXTERN
+  // interface, `implTypeExprToJvm` additionally resolves a `slice[Elem]`
+  // return to the real array type (#5931) — see its doc comment.
+  val retTy = match fn.ret {
+    case Some(te) -> {
+      if isExternIface { implTypeExprToJvm(te, pkgName, externTypes) } else { typeExprToJvmExtern(te, pkgName, externTypes) }
+    }
+    case None -> JVoid
+  }
   val ctxSelf = makeFuncCtxInstance(
     pkgName,
     targetClass,
@@ -1769,7 +1821,11 @@ func lowerImplMethod(
   // (`registerInstanceSigErased`) strips it — an unstripped emission here
   // disagreed with every registered descriptor (#5607).
   val implRealParams = stripLeadingSelfParam(fn.params)
-  val paramTypes = holderAwareParamTypes(implRealParams, pkgName, true, noTpsImpl, externTypes)
+  val paramTypes = if isExternIface {
+    implParamTypesToJvm(implRealParams, pkgName, externTypes)
+  } else {
+    holderAwareParamTypes(implRealParams, pkgName, true, noTpsImpl, externTypes)
+  }
   setupInstanceParamSlotsAndHolders(ctxSelf, insns, implRealParams, pkgName, noTpsImpl, externTypes)
   // #6426: a non-receiver `Self`-typed parameter (`other: in Self`) is
   // guaranteed by the type checker (D-progress-751/#6417) to be exactly
@@ -3482,11 +3538,23 @@ pub func collectFileSigsSeeded(
         // call sites (`lowerMethodCall` J3 M-3 path) emit a precisely-typed
         // `invokevirtual` rather than the `()Object` guess (#1722).
         val tgtClass = typeExprToJvmClass(decl.target, owner)
+        // #5931: an extern-interface impl registers through the impl-aware,
+        // slice-narrowing path so this registration stays in lockstep with
+        // what `lowerImplMethod` (below) actually emits for the SAME impl —
+        // see `implTypeExprToJvm`'s doc comment.
+        val isExternIfaceReg = match implIfaceExternDottedFqn(decl.iface, externTypes) {
+          case Some(_) -> true
+          case None -> false
+        }
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
             case IMplFunc(fn) -> {
-              registerInstanceSig(into, tgtClass, fn.name, fn.params, fn.ret, owner, externTypes)
+              if isExternIfaceReg {
+                registerInstanceSigImplExtern(into, tgtClass, fn.name, fn.params, fn.ret, owner, externTypes)
+              } else {
+                registerInstanceSig(into, tgtClass, fn.name, fn.params, fn.ret, owner, externTypes)
+              }
             }
             case IMplAssoc(_) -> ()
           }
@@ -3890,6 +3958,63 @@ func registerInstanceSigErased(
         // Keyed `<class>#<method>` — an instance-method call is
         // `ECall(EMember(…), …)`, never matches `isUnsignedExpr`'s
         // `ECall(EPath, …)`-only arm.
+        retIsUnsigned = false
+      )
+    )
+  }
+}
+
+// Like `registerInstanceSigErased`, but for an `impl <ExternInterface> for
+// X` method: resolves params/return through `implTypeExprToJvm` (#5931) so a
+// `slice[Elem]` narrows to the real array type, keeping this registration in
+// lockstep with what `lowerImplMethod` actually emits for the SAME `isExternIface
+// = true` case — see `implTypeExprToJvm`'s doc comment for why this must
+// never apply to a plain (non-extern) Lyric interface impl. An extern
+// interface is never itself generic on the Lyric side, so there is no
+// `typeParams` to erase against (unlike `registerInstanceSigErased`).
+func registerInstanceSigImplExtern(
+  into: in Map[String, JvmFuncSig],
+  className: in String,
+  methodName: in String,
+  params: in List[Param],
+  retOpt: in Option[TypeExpr],
+  owner: in String,
+  externTypes: in Map[String, String],
+): Unit {
+  val filteredParams = stripLeadingSelfParam(params)
+  val ps = implParamTypesToJvm(filteredParams, owner, externTypes)
+  val ret = match retOpt {
+    case Some(te) -> implTypeExprToJvm(te, owner, externTypes)
+    case None -> JVoid
+  }
+  val paramNames: List[String] = newList()
+  val paramDefs: List[Option[Expr]] = newList()
+  val modes: List[ParamMode] = newList()
+  var pi = 0
+  while pi < filteredParams.count {
+    paramNames.add(filteredParams[pi].name)
+    paramDefs.add(filteredParams[pi].dflt)
+    modes.add(filteredParams[pi].mode)
+    pi = pi + 1
+  }
+  val noTypeParams: List[String] = newList()
+  val retIsSelf = match retOpt { case Some(te) -> isSelfTypeExprJvm(te); case None -> false }
+  val key = className + "#" + methodName
+  if not into.containsKey(key) {
+    into.add(
+      key,
+      JvmFuncSig(
+        owner = className,
+        params = ps,
+        ret = ret,
+        paramNames = paramNames,
+        paramDefaults = paramDefs,
+        paramModes = modes,
+        isIface = false,
+        retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, noTypeParams), owner, externTypes),
+        closureRetTy = closureRetTypeOf(retOpt, owner, noTypeParams, externTypes),
+        recordRetClass = None,
+        retIsSelf = retIsSelf,
         retIsUnsigned = false
       )
     )
@@ -5739,6 +5864,12 @@ pub func codegenPackageWithSigsSeeded(
         validateImplTargetIsInterfaceJvm(decl, pkgName, externTypes, autoFfi)
         val targetClass = typeExprToJvmClass(decl.target, pkgName)
         val ifaceClass = constraintRefToJvmClass(decl.iface, pkgName, externTypes)
+        // #5931: see `implTypeExprToJvm`'s doc comment — only an EXTERN
+        // interface impl needs the slice-narrowing type resolution.
+        val isExternIfaceHere = match implIfaceExternDottedFqn(decl.iface, externTypes) {
+          case Some(_) -> true
+          case None -> false
+        }
         val implFuncs: List[LFunc] = newList()
         var mi2 = 0
         while mi2 < decl.members.count {
@@ -5765,7 +5896,8 @@ pub func codegenPackageWithSigsSeeded(
                   opaqueTypes,
                   closureAcc,
                   usesLyricCount,
-                  importsStdString
+                  importsStdString,
+                  isExternIfaceHere
                 )
               )
             }
@@ -6157,7 +6289,11 @@ pub func codegenPackageWithSigsSeeded(
                   opaqueTypes,
                   closureAcc,
                   usesLyricCount,
-                  importsStdString
+                  importsStdString,
+                  // A Lyric `interface`'s own default-method body is never an
+                  // extern-interface impl (#5931's `implTypeExprToJvm`
+                  // narrowing only applies to a real `impl <Extern> for X`).
+                  false
                 )
               )
             }

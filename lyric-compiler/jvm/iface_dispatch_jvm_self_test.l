@@ -143,3 +143,42 @@ test "explicit-self async interface dispatch (#5607)" {
   val r = await c.fetchSelf("yo")
   assertEqual(r, "yo?", "explicit-self async dispatch")
 }
+
+// #5931: `impl <ExternInterface> for Record` with a `slice[ExternType]`
+// parameter previously erased the array element to `Object` regardless of
+// the interface's real element type (`holderAwareParamTypes`'s `erase` arm
+// fell through to the generic slice erasure), so the emitted class's method
+// descriptor did not match the interface's — the JDK's own `Callback[]`
+// erased to `[Ljava/lang/Object;` here, a binary-incompatible override the
+// JVM accepts at class load but rejects at `invokeinterface` dispatch time
+// with `AbstractMethodError` (verified with `javap`: the fix changes the
+// emitted descriptor from `handle(Ljava/lang/Object;)V` to the real
+// `handle([Ljavax/security/auth/callback/Callback;)V`). A Lyric-authored
+// call site through an interface-TYPED extern receiver (`h: in
+// JCallbackHandler`) resolves via auto-FFI rather than this impl's own
+// registered signature — a separate, pre-existing auto-FFI limitation this
+// fix does not touch — so this test instead pins the descriptor-affecting
+// side directly: construction and a direct call on the CONCRETE record
+// compile and run (mirroring `ffi_iface_impl_jvm_self_test.l`'s pattern),
+// which is exactly what silently broke while codegen was still computing
+// `Object[]` internally for the slice-typed param under generic erasure.
+extern type JCallbackHandler = "javax.security.auth.callback.CallbackHandler"
+
+extern type JCallback = "javax.security.auth.callback.Callback"
+
+record SliceIfaceHandler {
+  tag: Int
+}
+
+impl JCallbackHandler for SliceIfaceHandler {
+  func handle(callbacks: in slice[JCallback]): Unit {
+    ()
+  }
+}
+
+test "impl ExternInterface for Record with a slice[ExternType] param compiles and dispatches on the concrete type (#5931)" {
+  val h = SliceIfaceHandler(tag = 9)
+  val cbs: slice[JCallback] = []
+  h.handle(cbs)
+  assertEqualInt(h.tag, 9, "SliceIfaceHandler field still readable after the slice-param method call")
+}
