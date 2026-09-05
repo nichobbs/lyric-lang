@@ -57,6 +57,47 @@ func workerRouter(): Web.Router {
   r
 }
 
+// A worker whose first tick panics, then ticks normally — proves
+// `startWorkerLoop`'s per-tick crash isolation (#6935): before that fix, an
+// uncaught `Bug` from `tick()` silently and permanently stopped this
+// worker's loop (the loop's `Task` is fire-and-forget and never observed),
+// so `flakyCounter.n` would stay at 0 forever after the first tick.
+record FlakyCounter {
+  var n: Int
+  var crashed: Bool
+}
+
+val flakyCounter: FlakyCounter = FlakyCounter(n = 0, crashed = false)
+
+record FlakyWorker {
+}
+
+impl Worker for FlakyWorker {
+  func tick(): Unit {
+    if not flakyCounter.crashed {
+      flakyCounter.crashed = true
+      panic("intentional crash for the worker crash-isolation test (#6935)")
+    }
+    flakyCounter.n = flakyCounter.n + 1
+  }
+}
+
+record FlakyTickCountHandler {
+}
+
+impl Web.Handler for FlakyTickCountHandler {
+  func handle(req: in Web.Request): Web.Response {
+    Web.text(200, flakyCounter.n.toString())
+  }
+}
+
+func flakyWorkerRouter(): Web.Router {
+  var r = Web.create()
+  r = Web.addGet(r, "/flaky-ticks", FlakyTickCountHandler())
+  r = Web.addWorker(r, "flaky", 30, FlakyWorker())
+  r
+}
+
 // Same background-server-thread pattern as `serve_crash_isolation_tests.l`
 // / `serve_tls_tests.l`: `Task.Run(Action)` gives real concurrency `spawn`
 // cannot on this target (D119/D120).
@@ -111,4 +152,23 @@ test "addWorker's registered Worker actually fires on a real background loop" {
   val second = getTickCount(client, ticksUrl, 5)
   assertTrue(second >= 0, "second /ticks request failed")
   assertTrue(second > first, "tick count did not increase — the worker is not firing on a real loop (#5359)")
+}
+
+test "a panicking tick is isolated: addWorker's loop survives a Bug and keeps ticking (#6935)" {
+  val port = 18951
+  val client = HttpClientBuilder.build(HttpClientBuilder.new())
+  val _ = taskRun({ -> runServeBg(flakyWorkerRouter(), port) })
+
+  val flakyUrl = "http://127.0.0.1:" + port.toString() + "/flaky-ticks"
+
+  // The first tick panics and increments nothing, so this just proves the
+  // server is up; the real assertion is that the count keeps rising after
+  // that first, crashing tick.
+  val first = getTickCount(client, flakyUrl, 60)
+  assertTrue(first >= 0, "server did not come up in time")
+
+  threadSleep(200)
+  val second = getTickCount(client, flakyUrl, 5)
+  assertTrue(second >= 0, "second /flaky-ticks request failed")
+  assertTrue(second > first, "worker loop did not survive its first tick's panic and keep going (#6935)")
 }

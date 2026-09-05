@@ -24,6 +24,7 @@
 @cfg(feature = "dotnet")
 package Web.Kernel.Runtime
 
+import Std.Console
 import Std.Core
 import Std.Time
 import Web
@@ -139,6 +140,25 @@ func taskRunAction(action: in () -> Unit): BclTask = ()
 /// single-package repro, independent of #5363's cross-package case) —
 /// invoking an interface method from inside a closure does not hit this,
 /// so the loop below calls `worker.tick()` directly.
+///
+/// Each `tick()` is crash-isolated (#6935): since this loop runs
+/// fire-and-forget with its `Task` never observed, an uncaught `Bug`
+/// would otherwise silently and permanently stop this worker's loop with
+/// no logging, while the server keeps running as if nothing happened —
+/// exactly the failure mode `serve`/`serveStreaming`'s accept loops are
+/// already hardened against (#5261). A failing tick is logged and the
+/// loop keeps going on its next interval.
 pub func startWorkerLoop(intervalMs: in Int, worker: in Web.Worker): Unit {
-  val _ = taskRunAction({ -> while true { sleepMillis(intervalMs); worker.tick() } })
+  val _ = taskRunAction(
+    { ->
+      while true {
+        sleepMillis(intervalMs)
+        try {
+          worker.tick()
+        } catch Bug as e {
+          Console.error("[lyric-web] worker tick failed: " + e.message)
+        }
+      }
+    }
+  )
 }
