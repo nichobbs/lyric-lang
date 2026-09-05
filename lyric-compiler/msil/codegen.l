@@ -34871,6 +34871,7 @@ func registerRestoredFunc(
   if cctx.funcTokens.containsKey(fqn) {
     return
   }
+  val isExternTargetFn = hasExternTargetMsil(fn.annotations)
 
   val asmRefRow = ensureAssemblyRefForArtifact(cctx, packageName)
   val hostRefRow = ensureHostClassTypeRefRow(cctx, packageName, asmRefRow)
@@ -34934,6 +34935,73 @@ func registerRestoredFunc(
   }
   if not cctx.funcParamTypes.containsKey(fqn) {
     cctx.funcParamTypes.add(fqn, hintParamTypes)
+  }
+  // #3273 item 4: mirror addPackageTokens' `funcParamFnInner`/`funcParamFnRetType`
+  // registration (in-bundle only, previously) for a RESTORED function's
+  // function-typed parameters too. Without this, a lambda literal passed
+  // *directly* to a restored function's `(...) -> T`-typed parameter never
+  // gets its declared inner/return types propagated (the #1939/#6511 call-site
+  // logic keys off these two maps, populated ONLY here and in addPackageTokens)
+  // — so the lifted lambda body falls back to the Uniform Func ABI's
+  // `declaredRetTy = Object`, and a bare union-case construction whose OTHER
+  // type-parameter slot isn't pinned by an argument (e.g. `E` in a bare
+  // `Ok(v)` closure body returning `Result[T, E]`) silently erases that slot
+  // to `object` — a mismatched TypeSpec instantiation that a later `match`
+  // inside the restored library rejects as "match not exhaustive" (or
+  // dispatches to the wrong arm). Scoped exactly like addPackageTokens: a
+  // non-generic restored function's `@externTarget`-ness decides whether the
+  // FFI delegate-bridging real-return-type resolution applies; every other
+  // TFunction param records the plain declared return type.
+  val arityKey = fqn + "/" + toString(fn.params.count)
+  var rpfi = 0
+  while rpfi < fn.params.count {
+    match fn.params[rpfi].ty.kind {
+      case TFunction(rFnParams, rFnRetTe) -> {
+        val rInner: List[MsilType] = newList()
+        var ripfi = 0
+        while ripfi < rFnParams.count {
+          rInner.add(typeExprToMsilCtx(cctx, rFnParams[ripfi], packageName))
+          ripfi = ripfi + 1
+        }
+        val raKey = arityKey + "#" + toString(rpfi)
+        val rfKey = fqn + "#" + toString(rpfi)
+        if not cctx.funcParamFnInner.containsKey(raKey) {
+          cctx.funcParamFnInner.add(raKey, rInner)
+        }
+        if not cctx.funcParamFnInner.containsKey(rfKey) {
+          cctx.funcParamFnInner.add(rfKey, rInner)
+        }
+        if isExternTargetFn {
+          val rFnRetMsil = match resolveValueTaskGenericMsilType(cctx, rFnRetTe) {
+            case Some(rt) -> rt
+            case None -> typeExprToMsilCtx(cctx, rFnRetTe, packageName)
+          }
+          if not cctx.funcParamFnRetType.containsKey(raKey) {
+            cctx.funcParamFnRetType.add(raKey, rFnRetMsil)
+          }
+          if not cctx.funcParamFnRetType.containsKey(rfKey) {
+            cctx.funcParamFnRetType.add(rfKey, rFnRetMsil)
+          }
+          if not cctx.funcParamIsExternTargetDelegate.containsKey(raKey) {
+            cctx.funcParamIsExternTargetDelegate.add(raKey, true)
+          }
+          if not cctx.funcParamIsExternTargetDelegate.containsKey(rfKey) {
+            cctx.funcParamIsExternTargetDelegate.add(rfKey, true)
+          }
+        } else {
+          val rPlainFnRetMsil = typeExprToMsilCtx(cctx, rFnRetTe, packageName)
+          if not cctx.funcParamFnRetType.containsKey(raKey) {
+            cctx.funcParamFnRetType.add(raKey, rPlainFnRetMsil)
+          }
+          if not cctx.funcParamFnRetType.containsKey(rfKey) {
+            cctx.funcParamFnRetType.add(rfKey, rPlainFnRetMsil)
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+    rpfi = rpfi + 1
   }
 }
 

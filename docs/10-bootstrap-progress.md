@@ -33513,6 +33513,7 @@ D-progress-852 (the investigation that filed #6809),
 `native/plan/08-work-items.md` N9.7, `docs/20-project-as-dll.md`
 (the dotnet/jvm design this is the native analog of).
 
+<<<<<<< HEAD
 ## Weak-aware List/Map/Task kernels ship, TLS phase 5 band N9.8 (#5545)
 
 The native List/Map/Task runtime kernels were strong-refcount-only:
@@ -33547,3 +33548,26 @@ scope, leak-free in every case; full suite 37/37, no regressions.
 **Related:** `docs/03-decision-log.md` D-progress-879 (full account),
 #5545 (fixed by this PR), `native/plan/08-work-items.md` N9.8,
 `native/plan/04-arc-design.md`'s `NativeWeak[T]` section.
+
+## MSIL: restored-function closures now propagate declared function-typed-parameter types, fixing stdlib `Result[T, E]` identity across the restored-package boundary (#3273 item 4) (2026-09-05)
+
+`registerRestoredFunc` never populated `funcParamFnInner`/`funcParamFnRetType`
+for a restored (cross-assembly) function's function-typed parameters — only
+`addPackageTokens`, for IN-BUNDLE ones, did. So a consumer closure literal
+passed directly to a restored library function's `() -> Result[T, E]`-typed
+parameter (e.g. `matchClosure({ -> Ok(42) })`) fell back to the Uniform Func
+ABI's `declaredRetTy = Object` inside the lifted lambda body, erasing the
+`Result` type parameter not covered by the payload (`E` in a bare `Ok(v)`)
+and constructing `Result_Ok<Int, Object>` instead of `Result_Ok<Int,
+String>` — an `InvalidCastException` unpacking the boxed return at the
+restored function's own `match`. Fixed by mirroring `addPackageTokens`'
+registration into `registerRestoredFunc`. Of #3273's original five-item
+batch, this closes the last open sub-item — items 1–3 (enum miscompile,
+payload-free/-bearing restored union match) were already fixed and
+re-verified in D-progress-720, and item 5 (bare top-level function
+references) in D-progress-738/747. #3273 (the parent issue) can now be
+closed. **JVM unaffected** — JVM generics are erased at the bytecode level
+(no reified `Result_Ok<Integer,Object>` vs `<Integer,String>` distinction),
+so this bug class cannot occur there; no JVM-side change needed or made.
+
+**Related:** `docs/03-decision-log.md` D-progress-883 (full account), #3273.
