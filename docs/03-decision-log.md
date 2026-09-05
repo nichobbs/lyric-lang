@@ -42163,6 +42163,11 @@ correct here.
 
 **Scope.** JVM-only, matching the tracking issue's own scope (MSIL's
 `List[T]` backing is not `ArrayList`-based and never hit either bug).
+The new self-test's empty-slice-element-row case does surface a separate,
+pre-existing MSIL bug (`--target dotnet` throws "Attempted to access an
+element as a type incompatible with the array" on the same case) — filed
+as #6945 rather than folded into this fix, which is scoped to `--target
+jvm` per #6546.
 
 **Verification.** New `@test_module`
 `lyric-compiler/jvm/list_of_slice_construction_jvm_self_test.l` (4 cases:
