@@ -17,6 +17,7 @@ import Std.String
 import Std.File
 import Std.Core
 import Std.Errors
+import Std.Environment
 
 // ── Internal diff helper ──────────────────────────────────────────────────────
 // Return a short human-readable description of the first difference between
@@ -41,6 +42,16 @@ func firstDiff(expected: in String, actual: in String): String {
 }
 
 // ── Core API ──────────────────────────────────────────────────────────────────
+// `lyric test --update-snapshots` (#678) sets this env var before running
+// the compiled test binary — an OS-level env var propagates to the child
+// process regardless of target (dotnet/jvm/native), so no CLI-to-runtime
+// plumbing beyond the env var itself is needed. Checked per-call (not
+// cached) so a single process that runs multiple snapshot assertions always
+// sees the current value.
+func updateSnapshotsRequested(): Bool {
+  getVarOrDefault("LYRIC_UPDATE_SNAPSHOTS", "") == "1"
+}
+
 /// Compare `actual` against the stored snapshot at `<dir>/<label>.txt`.
 ///
 /// Returns:
@@ -49,13 +60,16 @@ func firstDiff(expected: in String, actual: in String): String {
 ///   * `Ok(true)` if the file exists and its contents match `actual` exactly.
 ///   * `Ok(false)` if the file exists but differs from `actual`.
 ///   * `Err(_)` if any I/O call fails.
+///   * `Ok(true)` unconditionally when `LYRIC_UPDATE_SNAPSHOTS=1` is set
+///     (`lyric test --update-snapshots`): the file is (re)written to match
+///     `actual` regardless of whether it already existed or matched.
 ///
 /// `dir` is the snapshot directory (e.g. `"snapshots"` or `"tests/snapshots"`).
 /// Use `snapshot` for the conventional `"snapshots/"` default.
 @stable(since = "1.0")
 pub func snapshotIn(dir: in String, label: in String, actual: in String): Result[Bool, IOError] {
   val path = dir + "/" + label + ".txt"
-  if fileExists(path) {
+  if fileExists(path) and not updateSnapshotsRequested() {
     match readText(path) {
       case Ok(expected) -> Ok(value = actual == expected)
       case Err(e) -> Err(error = e)

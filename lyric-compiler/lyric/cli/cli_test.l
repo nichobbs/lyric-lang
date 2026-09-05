@@ -341,6 +341,7 @@ func cmdTest(argv: in slice[String]): Int {
   var failFast = false
   var runProperties = false
   var coverage = false
+  var updateSnapshots = false
   var noDefaultFeatures = false
   var allFeatures = false
   val cliFeatures: List[String] = newList()
@@ -420,6 +421,10 @@ func cmdTest(argv: in slice[String]): Int {
       i += 1
     } else if arg == "--coverage" {
       coverage = true
+      i += 1
+    } else if arg == "--update-snapshots" {
+      updateSnapshots = true
+      i += 1
     } else {
       positional.add(arg)
       i += 1
@@ -454,6 +459,16 @@ func cmdTest(argv: in slice[String]): Int {
       )
       return 1
     }
+  }
+
+  // `--update-snapshots` (#678): `Std.Testing.Snapshot.snapshotIn` checks
+  // this OS-level env var itself, so setting it here (before the compiled
+  // test binary is spawned as a child process, on whichever target) is all
+  // the plumbing needed — an env var set via `Environment.setVar` in this
+  // process is inherited by any child process regardless of language
+  // (dotnet exec / java -jar / a native binary all read it the same way).
+  if updateSnapshots {
+    Environment.setVar("LYRIC_UPDATE_SNAPSHOTS", "1")
   }
 
   // Dev-loop guard: warn once if the compiled stdlib bundle is older than the
