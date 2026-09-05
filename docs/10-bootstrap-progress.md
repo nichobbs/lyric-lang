@@ -33724,3 +33724,48 @@ headers and were verified that way.
 `docs/35-lambda-library.md` §4.2/§8 (updated), `lyric-lambda/README.md`
 (support matrix updated), #5412 (closed), #6868 (new, filed not fixed),
 #5600/#5578/#6548 (the prior `Lambda.Dispatch` work this builds on).
+
+## Native `Std.TcpHost` accept() interrupt made portable — closes the macOS/BSD gap disclosed at N9.3 ship time (#6806, closes #6804)
+
+`hostStopListener` no longer relies on `shutdown()` on the LISTENING
+socket to unblock a concurrent `hostAccept` — a mechanism Linux happens to
+support (delivering `EINVAL` to a blocked `accept()`) but macOS/BSD does
+not (`shutdown()` on a listening socket there returns `ENOTCONN` and does
+nothing), a gap D-progress-850 (N9.3) disclosed rather than silently
+shipped and tracked as #6804/#6806. Fixed with the standard self-pipe
+idiom: three new `lyric-rt` seam functions
+(`lyric_sock_wake_pipe_new`/`lyric_sock_wake_pipe_signal`/
+`lyric_sock_accept_interruptible`) implement a `poll(2)`-multiplexed
+accept over the listening socket and a private pipe, with `-2` a distinct
+sentinel for "interrupted by a signal, not a socket error"; `Listener`
+gained `wakeReadFd`/`wakeWriteFd`, `hostAccept` calls the new
+interruptible entry point, and `hostStopListener` signals the pipe instead
+of calling `shutdown()` on the listening socket (which remains in use,
+unchanged, for `hostShutdown`'s per-CONNECTION interrupt — only the
+listening-socket case had the platform divergence). No `_kernel_native/
+http_server.l` changes were needed: its `plainAcceptLoop`/`tlsAcceptLoop`
+already treat every accept failure through the typed `AcceptFailureKind`
+classification (#6805), and the interrupt path maps to the exact same
+`AcceptFatal` case the old Linux-`shutdown()` path produced.
+
+Verified locally: `lyric-rt/test/lyric_tls_test.c` gained four new C-level
+cases (ordinary accept still works through the interruptible entry point;
+a thread genuinely parked in `poll()` wakes on a cross-thread signal; a
+pre-signaled pipe wakes an accept that hasn't started yet; a double-signal
+before any drain is not a failure), green under `make -C lyric-rt
+test`/`test-asan CC=gcc`. Verified on CI (this session could not build
+`./bin/lyric` from source, same network-policy boundary as prior native
+entries): `llvm_http_server_self_test.l` gained item J (ten repeated
+`startListener`/`stopListener` cycles with no connection ever made — the
+direct proof the accept-loop thread was genuinely parked in `poll()` and
+woke via the pipe alone), items A–I unregressed.
+
+**Disclosed, not silently assumed:** macOS/BSD correctness follows
+documented `poll(2)`/`pipe(2)` POSIX semantics but was not machine-verified
+on real macOS/BSD hardware — this project's CI remains Linux-only.
+
+**Related:** `docs/03-decision-log.md` D-progress-885 (full account),
+#6806 (fixed by this PR), #6804 (the original disclosed gap, now closed),
+D-progress-850 (N9.3, where the gap was found and filed),
+`native/plan/08-work-items.md` N9.2's follow-up subsection,
+`docs/61-https-tls-http-versions.md` §7's N9.3 item.

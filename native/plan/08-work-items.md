@@ -1400,6 +1400,35 @@ and the kernel ports landed, `Std.Tls.Certificate.fromPem`/`Identity.fromPem`
 construct correctly end to end for `--target native`, verified by
 `llvm_tls_self_test.l`'s re-added item B.
 
+**Follow-up: portable accept() interrupt — ✅ SHIPPED (D-progress-885, #6806;
+closes the macOS/BSD gap #6804 disclosed at N9.3 ship time).**
+`hostStopListener` originally interrupted a blocked `hostAccept` on another
+thread by calling `shutdown()` on the LISTENING socket before `close()`ing
+it — Linux documents this delivering `EINVAL` to a concurrently-blocked
+`accept()`, but macOS/BSD return `ENOTCONN` from `shutdown()` on a
+listening socket and do NOT unblock a concurrent `accept()` at all, so
+`Std.HttpServer.stopListener` hung forever there. Fixed with the standard
+self-pipe idiom: `lyric-rt` gained `lyric_sock_wake_pipe_new`/
+`lyric_sock_wake_pipe_signal`/`lyric_sock_accept_interruptible` (`poll(2)`
+over the listening socket and a private pipe's read end, `-2` a distinct
+sentinel for "interrupted, not an error"); `Listener` gained
+`wakeReadFd`/`wakeWriteFd` (allocated in `hostListen`), `hostAccept` calls
+`rtSockAcceptInterruptible` instead of the bare blocking `rtSockAccept`,
+and `hostStopListener` signals the pipe instead of calling `shutdown()` on
+the listening socket. `rtShutdown`/`shutdown(2)` stays in use for
+`hostShutdown` (interrupting an already-ACCEPTED connection's blocked
+read/write, portable on every POSIX target this project builds for — only
+a LISTENING socket had the platform divergence). Verified by
+`lyric-rt/test/lyric_tls_test.c`'s four new C-level cases (normal accept
+still works through the interruptible entry point, a genuinely-parked
+`poll()` wakes on a signal from another thread, a pre-signaled pipe wakes
+an accept that hasn't started yet, and a double-signal before any drain is
+not an error) plus `llvm_http_server_self_test.l` item J (ten repeated
+listener start/stop cycles with no connection ever made, on real Linux CI
+— the load-bearing check, since this project's CI has no macOS runner;
+macOS/BSD behaviour follows documented POSIX `poll(2)`/`pipe(2)` semantics
+but was not machine-verified on real hardware).
+
 ### N9.3 — `Std.HttpServer` native twin — ✅ SHIPPED (D-progress-850, #6104)
 
 The thread-per-connection server model (docs/61 §7 item 5) over the existing
