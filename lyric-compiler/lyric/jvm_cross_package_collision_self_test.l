@@ -509,3 +509,50 @@ test "qualified record construction survives a local shadowing only the package'
     "qualified_record_construction_survives_shadowed_first_segment_jvm: stdout matches expected"
   )
 }
+
+// ─── #6972 JVM parity: a union case's field type must resolve under the
+// case's OWN declaring package, not the caller's ───────────────────────────
+// The MSIL analogue of this fix (`msil_project_bridge_self_test.l`'s
+// "union case field type resolves to the exact package named, not the
+// caller's scope (#6972)") closed a gap in the shared `Lyric.TypeChecker`'s
+// `unionCaseFieldTypes` — the same function both `Msil.Bridge` and
+// `Jvm.Bridge` type-check through. JVM codegen was already confirmed to
+// resolve a pattern-bound local's type through the checker's own resolved
+// `Type` (not by re-deriving it independently, unlike MSIL for this
+// construct), so this end-to-end JVM test pins the shared fix on this
+// target too, matching this file's existing JVM-parity precedent for the
+// sibling record-field fix above.
+test "union case field type resolves to the exact package named, not the caller's scope (JVM parity, #6972)" {
+  val pkgSrcs: List[String] = newList()
+  pkgSrcs.add(
+    "package Pkg6972OwnerJvm\n" + "\n" + "pub record Item {\n" + "  x: Int\n" + "}\n" + "\n" + "pub union Box {\n" +
+      "  case Full(tag: Item)\n" +
+      "}\n" +
+      "\n" +
+      "pub func mk(x: in Int): Box {\n" +
+      "  Full(tag = Item(x = x))\n" +
+      "}\n" +
+      "\n" +
+      "pub func needsItem(i: in Item): Int {\n" +
+      "  i.x\n" +
+      "}\n"
+  )
+  pkgSrcs.add("package Pkg6972CollideJvm\n" + "\n" + "pub record Item {\n" + "  name: String\n" + "}\n")
+  pkgSrcs.add(
+    "package Main6972Jvm\n" + "\n" + "import Pkg6972OwnerJvm\n" + "import Pkg6972CollideJvm\n" + "\n" +
+      "func main(): Int {\n" +
+      "  val b = Pkg6972OwnerJvm.mk(x = 7)\n" +
+      "  match b {\n" +
+      "    case Pkg6972OwnerJvm.Full(tag) -> println(Pkg6972OwnerJvm.needsItem(tag))\n" +
+      "  }\n" +
+      "  0\n" +
+      "}\n"
+  )
+  val result = compileAndRunJvm("union-case-field-6972-jvm", pkgSrcs, "Main6972Jvm")
+  assertEqualInt(result.exitCode, 0, "union_case_field_jvm_6972: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "7",
+    "union_case_field_jvm_6972: tag binds to Pkg6972OwnerJvm's Item, not Pkg6972CollideJvm's (needsItem(tag) == 7)"
+  )
+}

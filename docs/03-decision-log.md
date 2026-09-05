@@ -41736,9 +41736,9 @@ SUGGESTION on the PR, a dedicated end-to-end JVM test was added to
 resolves to the exact package named") pinning bug 1's shared type-checker
 fix on `--target jvm` too, not just confirming it by code inspection.
 
-## D-progress-884 — Self-hosted compiler: union case field types now resolve under the case's OWN declaring package, closing the #6972 gap left by D-progress-880's record-only fix
+## D-progress-884 — Self-hosted compiler: union case field types now resolve under the case's OWN declaring package, closing the #6972 gap left by D-progress-888's record-only fix
 
-**Context.** A `claude-review` REQUIRED finding on PR #6904 (D-progress-880)
+**Context.** A `claude-review` REQUIRED finding on PR #6904 (D-progress-888)
 pointed out that its `collectCtorFields` fix only covered records/exposed-
 records/opaque constructor fields — `unionCaseFieldTypes` (backing both
 `inferUnionCaseConstruction`, the construction path, and
@@ -41789,5 +41789,5 @@ printing the expected value. Full `msil_project_bridge_self_test.l` (56/56),
 `jvm_cross_package_collision_self_test.l` (7/7), and `typechecker_self_test.l`
 (419/419) all pass with no regressions.
 
-**Related:** #6972 (this fix), D-progress-880/#6689 (the record-only
+**Related:** #6972 (this fix), D-progress-888/#6689 (the record-only
 predecessor fix this closes the gap in), PR #6904.
