@@ -1083,10 +1083,32 @@ pub func hostMakeRequest(httpMethod: in String, url: in String): HttpRequestMess
   )
 }
 
-pub func hostWithHeader(request: in HttpRequestMessage, key: in String, value: in String): HttpRequestMessage {
+/// Framing headers `buildRequestBytes` (below) generates automatically
+/// (`Host`, `Connection`; `Content-Type`/`Content-Length` once a body is
+/// attached). Letting a caller add one of these via `hostWithHeader`
+/// produces a duplicate header line on the wire once the automatic one is
+/// appended — request-smuggling-adjacent, since which of two duplicate
+/// headers a peer honors is implementation-defined (RFC 9112 §5.1) — so
+/// `hostWithHeader` rejects them instead (#6658). Case-insensitive per RFC
+/// 9110 §5.1 (header field names are case-insensitive); uses the
+/// hand-rolled `asciiEqualsCaseInsensitive` (module header item 4: no
+/// `.toLower()` on this target). Mirrored verbatim in `_kernel/http_host.l`
+/// and `_kernel_jvm/http_host.l`.
+func isReservedFramingHeader(name: in String): Bool {
+  asciiEqualsCaseInsensitive(name, "Host") or asciiEqualsCaseInsensitive(name, "Connection") or
+    asciiEqualsCaseInsensitive(name, "Content-Type") or
+    asciiEqualsCaseInsensitive(name, "Content-Length")
+}
+
+pub func hostWithHeader(
+  request: in HttpRequestMessage, key: in String, value: in String
+): Result[HttpRequestMessage, String] {
+  if isReservedFramingHeader(key) {
+    return Err(error = key)
+  }
   request.headerNames.add(key)
   request.headerValues.add(value)
-  request
+  return Ok(value = request)
 }
 
 pub func hostWithStringBody(request: in HttpRequestMessage, contentType: in String, body: in String): HttpRequestMessage {
