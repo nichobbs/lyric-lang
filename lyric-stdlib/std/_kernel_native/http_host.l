@@ -880,7 +880,13 @@ func parseUrl(url: in String): Result[ParsedUrl, String] {
   val portStr = authority.substring(colonIdx + 1, authority.length - colonIdx - 1)
   match parseNonNegativeInt(portStr) {
     case None -> Err(error = "invalid port in URL: " + url)
-    case Some(p) -> Ok(value = ParsedUrl(isHttps = isHttps, host = host, port = p, target = target))
+    case Some(p) -> {
+      if p > 65535 {
+        Err(error = "port out of range (max 65535) in URL: " + url)
+      } else {
+        Ok(value = ParsedUrl(isHttps = isHttps, host = host, port = p, target = target))
+      }
+    }
   }
 }
 
@@ -1019,7 +1025,10 @@ func resolveTrust(
       // spelling does not resolve an `internal` cross-package function in
       // native's bundled import closure.
       case Some(cert) -> TlsTrustExclusive(caPem = Tls.Certificate.rawHandle(cert).certPem)
-      case None -> match caCertificate { case Some(cert2) -> TlsTrustAdditive(caPem = Tls.Certificate.rawHandle(cert2).certPem); case None -> TlsTrustSystemDefault }
+      case None -> match caCertificate {
+        case Some(cert2) -> TlsTrustAdditive(caPem = Tls.Certificate.rawHandle(cert2).certPem)
+        case None -> TlsTrustSystemDefault
+      }
     }
   }
 }
@@ -1109,16 +1118,31 @@ func hasForbiddenWireChar(s: in String): Bool {
   findSubstring(s, "\r", 0) >= 0 or findSubstring(s, "\n", 0) >= 0
 }
 
+/// `true` if `s` contains a bare space (#6722): a request-line-only check
+/// (method/target), since `hasForbiddenWireChar` alone can't reject spaces
+/// uniformly — header VALUES legitimately contain them (`"Bearer secret"`,
+/// `"text/html; charset=utf-8"`). An unchecked space in the method or
+/// target would splice an extra token into `method + " " + target +
+/// " HTTP/1.1\r\n"` that a lenient server might misparse.
+func hasForbiddenSpaceForRequestLine(s: in String): Bool {
+  findSubstring(s, " ", 0) >= 0
+}
+
 /// Validate every caller-controlled value `buildRequestBytes` splices into
 /// the request text (method, target, host, header names/values, and
 /// `Content-Type` when a body is present) for an embedded CR/LF before any
-/// of it reaches the socket (#6635).
+/// of it reaches the socket (#6635), plus a request-line-only bare-space
+/// guard on method/target (#6722).
 func validateRequestForWire(request: in HttpRequestMessage, parsed: in ParsedUrl): Result[Unit, String] {
   var err = ""
   if hasForbiddenWireChar(request.method) {
     err = "invalid request method: contains CR or LF"
+  } else if hasForbiddenSpaceForRequestLine(request.method) {
+    err = "invalid request method: contains a space"
   } else if hasForbiddenWireChar(parsed.target) {
     err = "invalid request target: contains CR or LF"
+  } else if hasForbiddenSpaceForRequestLine(parsed.target) {
+    err = "invalid request target: contains a space"
   } else if hasForbiddenWireChar(parsed.host) {
     err = "invalid request host: contains CR or LF"
   } else if request.hasBody and hasForbiddenWireChar(request.contentType) {
@@ -1141,31 +1165,6 @@ func validateRequestForWire(request: in HttpRequestMessage, parsed: in ParsedUrl
   }
 }
 
-/// `buildRequestBytes`'s return value: NOT `Result[slice[Byte], String]` —
-/// a genuine, narrowly-isolated native-codegen bug (found while writing
-/// this fix, #6637). Changing `buildRequestBytes`'s signature from
-/// returning `slice[Byte]` directly to `Result[slice[Byte], String]`
-/// (with its one call site in `doSendOnce` reading it via a `match` whose
-/// `Err` arm runs `Tcp.hostClose(conn)` before `return Err(...)`) corrupts
-/// the heap in a way that only surfaces later, as a SEGV inside
-/// `lyric_release` on an unrelated `String` release deep inside a LATER,
-/// otherwise-unrelated `parseUrl` call. Confirmed by bisection down to
-/// exactly this one signature change (reverting only the `Result`-wrapping
-/// — even leaving `validateRequestForWire` itself defined-but-uncalled —
-/// makes the crash disappear). This is NOT a blanket "`Result[slice[Byte],
-/// E]` is broken" bug: `readChunkedBody` below has that exact return type
-/// and works correctly, so whatever triggers this is specific to this
-/// particular call site/shape, not the type alone — see #6637 for the
-/// open question of the precise minimal trigger. This record sidesteps it
-/// by using a plain record instead, mirroring the same "wrap the
-/// problematic shape in a plain record" idiom module header item 4
-/// already documents for `slice[Byte]`'s missing `.slice()`/`.concat()`.
-record BuiltRequestBytes {
-  ok: Bool
-  bytes: slice[Byte]
-  errorMessage: String
-}
-
 /// Serialize `request` into wire bytes against the already-parsed target
 /// URL. Builds the head as one `String` (`+`-concatenated — cheap and
 /// simple; header counts are small) and encodes it once via `encodeUtf8`,
@@ -1173,9 +1172,9 @@ record BuiltRequestBytes {
 /// concatenation only ever applies to the text head, never to raw bytes,
 /// so a binary body is never subjected to UTF-8 (re-)encoding here (module
 /// header item 4: no `slice[Byte].concat`).
-func buildRequestBytes(request: in HttpRequestMessage, parsed: in ParsedUrl): BuiltRequestBytes {
+func buildRequestBytes(request: in HttpRequestMessage, parsed: in ParsedUrl): Result[slice[Byte], String] {
   match validateRequestForWire(request, parsed) {
-    case Err(e) -> return BuiltRequestBytes(ok = false, bytes = [], errorMessage = e)
+    case Err(e) -> return Err(error = e)
     case Ok(_) -> {
     }
   }
@@ -1206,7 +1205,7 @@ func buildRequestBytes(request: in HttpRequestMessage, parsed: in ParsedUrl): Bu
     acc.add(bodyBytes[bi])
     bi = bi + 1
   }
-  BuiltRequestBytes(ok = true, bytes = acc.toArray(), errorMessage = "")
+  Ok(value = acc.toArray())
 }
 
 func connectForUrl(client: in HttpClientHandle, parsed: in ParsedUrl): Result[Tcp.Conn, String] {
@@ -1298,7 +1297,26 @@ func readBody(
         Err(error = "unsupported Transfer-Encoding: " + te)
       }
     }
-    case None -> match findHeaderValue(headers.names, headers.values, "Content-Length") { case Some(clStr) -> match parseNonNegativeInt(trimSpaces(clStr)) { case None -> Err(error = "invalid Content-Length: " + clStr); case Some(len) -> { if len > maxResponseBodyBytes { Err(error = "response Content-Length exceeds the maximum allowed size") } else { val total = bodyStart + len; match readAtLeast(conn, buf, total) { case Ok(_) -> Ok(value = copyRange(buf, bodyStart, len)); case Err(e) -> Err(error = e) } } } }; case None -> match readUntilEof(conn, buf, bodyStart) { case Ok(_) -> Ok(value = copyRange(buf, bodyStart, buf.count - bodyStart)); case Err(e) -> Err(error = e) } }
+    case None -> match findHeaderValue(headers.names, headers.values, "Content-Length") {
+      case Some(clStr) -> match parseNonNegativeInt(trimSpaces(clStr)) {
+        case None -> Err(error = "invalid Content-Length: " + clStr)
+        case Some(len) -> {
+          if len > maxResponseBodyBytes {
+            Err(error = "response Content-Length exceeds the maximum allowed size")
+          } else {
+            val total = bodyStart + len
+            match readAtLeast(conn, buf, total) {
+              case Ok(_) -> Ok(value = copyRange(buf, bodyStart, len))
+              case Err(e) -> Err(error = e)
+            }
+          }
+        }
+      }
+      case None -> match readUntilEof(conn, buf, bodyStart) {
+        case Ok(_) -> Ok(value = copyRange(buf, bodyStart, buf.count - bodyStart))
+        case Err(e) -> Err(error = e)
+      }
+    }
   }
 }
 
@@ -1356,12 +1374,13 @@ func readResponse(conn: in Tcp.Conn, method: in String): Result[HttpResponseMess
 func doSendOnce(client: in HttpClientHandle, request: in HttpRequestMessage): Result[HttpResponseMessage, String] {
   val parsed = match parseUrl(request.url) { case Ok(p) -> p; case Err(e) -> return Err(error = e) }
   val conn = match connectForUrl(client, parsed) { case Ok(c) -> c; case Err(e) -> return Err(error = e) }
-  val built = buildRequestBytes(request, parsed)
-  if not built.ok {
-    Tcp.hostClose(conn)
-    return Err(error = built.errorMessage)
+  val bytes = match buildRequestBytes(request, parsed) {
+    case Ok(b) -> b
+    case Err(e) -> {
+      Tcp.hostClose(conn)
+      return Err(error = e)
+    }
   }
-  val bytes = built.bytes
   match Tcp.hostWrite(conn, bytes) {
     case Err(e) -> {
       Tcp.hostClose(conn)
@@ -1385,13 +1404,19 @@ func isRedirectStatus(status: in Int): Bool {
 
 /// Resolve a `Location` header value against the request it was received
 /// for. Absolute (`http://`/`https://`) locations pass through unchanged;
-/// anything else is treated as an absolute-path on the SAME scheme/host/
-/// port (module header: no `../`-relative resolution).
+/// a protocol-relative (network-path, RFC 3986 §4.2) `//host/path`
+/// location switches host/port to `location`'s while keeping `base`'s
+/// scheme (#6719); anything else is treated as an absolute-path on the
+/// SAME scheme/host/port (module header: no `../`-relative resolution).
 func resolveRedirectUrl(base: in ParsedUrl, location: in String): String {
   val isAbsolute = (location.length >= 7 and location.substring(0, 7) == "http://") or
     (location.length >= 8 and location.substring(0, 8) == "https://")
+  val isProtocolRelative = not isAbsolute and location.length >= 2 and location.substring(0, 2) == "//"
   if isAbsolute {
     location
+  } else if isProtocolRelative {
+    val scheme = if base.isHttps { "https://" } else { "http://" }
+    scheme + location.substring(2, location.length - 2)
   } else {
     val scheme = if base.isHttps { "https://" } else { "http://" }
     val isDefaultPort = (base.isHttps and base.port == 443) or (not base.isHttps and base.port == 80)
@@ -1455,7 +1480,10 @@ func nextRequestForRedirect(request: in HttpRequestMessage, status: in Int, newU
   } else {
     val sameAuthority = match parseUrl(request.url) {
       case Err(_) -> false
-      case Ok(fromParsed) -> match parseUrl(newUrl) { case Err(_) -> false; case Ok(toParsed) -> isSameRedirectAuthority(fromParsed, toParsed) }
+      case Ok(fromParsed) -> match parseUrl(newUrl) {
+        case Err(_) -> false
+        case Ok(toParsed) -> isSameRedirectAuthority(fromParsed, toParsed)
+      }
     }
     val filtered = if sameAuthority {
       FilteredHeaders(names = request.headerNames, values = request.headerValues)
@@ -1494,7 +1522,17 @@ func doSend(client: in HttpClientHandle, request: in HttpRequestMessage): Result
             case None -> {
               redirecting = false
             }
-            case Some(loc) -> match parseUrl(current.url) { case Err(_) -> { redirecting = false }; case Ok(parsedCurrent) -> { val newUrl = resolveRedirectUrl(parsedCurrent, loc); current = nextRequestForRedirect(current, response.status, newUrl); attempts = attempts + 1; result = doSendOnce(client, current) } }
+            case Some(loc) -> match parseUrl(current.url) {
+              case Err(_) -> {
+                redirecting = false
+              }
+              case Ok(parsedCurrent) -> {
+                val newUrl = resolveRedirectUrl(parsedCurrent, loc)
+                current = nextRequestForRedirect(current, response.status, newUrl)
+                attempts = attempts + 1
+                result = doSendOnce(client, current)
+              }
+            }
           }
         } else {
           redirecting = false
