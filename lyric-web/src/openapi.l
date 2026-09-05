@@ -92,11 +92,14 @@ pub union SchemaType {
 }
 
 /// A named property entry in an object schema.
-/// Uses a $ref string to reference the property's schema by name.
+/// `schemaRef` is always a fully-formed `$ref` value (e.g. the output of
+/// `refSchema`'s own `"#/components/schemas/" + name` construction) —
+/// `specToJson` renders it verbatim as `{"$ref": schemaRef}`, matching
+/// `Schema.ref`'s own contract.
 @stable(since = "0.1")
 pub record PropertyEntry {
   name: String
-  schemaRef: String    // "$ref" string or inline type name
+  schemaRef: String
 }
 
 /// OpenAPI 3.1 schema object (simplified — covers all types emitted by

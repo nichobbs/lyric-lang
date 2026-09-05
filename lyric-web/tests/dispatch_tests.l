@@ -25,6 +25,7 @@ import Std.Core
 import Std.Collections
 import Std.Environment
 import Std.File
+import Std.Json
 import Std.Testing
 import Web
 import Web.OpenApi as OpenApi
@@ -578,4 +579,100 @@ test "withSpec scopes /openapi.json and /swagger under the router's pathPrefix" 
 
   val unprefixedResp = Web.dispatch(router, getRequest("/openapi.json"))
   assertEqualInt(unprefixedResp.status, 404, "the unprefixed path does not match")
+}
+
+// #5360 review follow-up: exercise every rendering branch `specToJson` has
+// (schema `$ref` + inline forms, a parameter, a request body, a response,
+// tags/summary/description, servers) — the earlier test above only covered
+// an empty spec. Parses the rendered JSON back with `Std.Json` and reads
+// the fields structurally rather than substring-matching, so a comma or
+// quoting defect anywhere in the ~250 lines of per-type renderers would
+// fail this test even if it happened to still "look like" JSON.
+test "specToJson renders a fully-populated spec correctly" {
+  var spec = OpenApi.newSpec("Full API", "2.0.0", "a full example")
+  spec = OpenApi.addServer(spec, "https://api.example.com")
+  spec = OpenApi.addSchema(spec, "Widget", OpenApi.scalarSchema(OpenApi.SchemaString, "", "a widget name"))
+
+  val param = OpenApi.Parameter(
+    name = "id",
+    location = OpenApi.Query,
+    required = true,
+    description = "widget id",
+    deprecated = false,
+    schema = OpenApi.scalarSchema(OpenApi.SchemaInteger, "int32", "")
+  )
+  val resp = OpenApi.ApiResponse(
+    statusCode = 200,
+    description = "ok",
+    content = [OpenApi.MediaType(contentType = "application/json", schema = OpenApi.refSchema("Widget"))]
+  )
+  val op = OpenApi.Operation(
+    operationId = "getWidget",
+    summary = "Get a widget",
+    description = "",
+    tags = ["widgets"],
+    parameters = [param],
+    requestBody = None,
+    responses = [resp],
+    deprecated = false
+  )
+  val pathItem = OpenApi.PathItem(
+    pattern = "/widgets/{id}",
+    get = Some(value = op),
+    post = None,
+    put = None,
+    delete = None,
+    patch = None,
+    head = None,
+    options = None
+  )
+  spec = OpenApi.addPath(spec, pathItem)
+
+  val json = OpenApi.specToJson(spec)
+  val doc = parseJson(json)
+  val root = rootElement(doc)
+
+  assertEqual(getString(getProperty(root, "openapi")), "3.1.0", "openapi version")
+  val info = getProperty(root, "info")
+  assertEqual(getString(getProperty(info, "title")), "Full API", "info.title")
+  assertEqual(getString(getProperty(info, "version")), "2.0.0", "info.version")
+  assertEqual(getString(getProperty(info, "description")), "a full example", "info.description")
+
+  val serversCur = enumerateArray(getProperty(root, "servers"))
+  var serversCur2 = serversCur
+  assertTrue(arrayMoveNext(serversCur2), "servers has one entry")
+  assertEqual(getString(getProperty(arrayCurrent(serversCur2), "url")), "https://api.example.com", "servers[0].url")
+
+  val widgetSchema = getProperty(getProperty(getProperty(root, "components"), "schemas"), "Widget")
+  assertEqual(getString(getProperty(widgetSchema, "type")), "string", "components.schemas.Widget.type")
+  assertEqual(
+    getString(getProperty(widgetSchema, "description")),
+    "a widget name",
+    "components.schemas.Widget.description"
+  )
+
+  val pathObj = getProperty(getProperty(root, "paths"), "/widgets/{id}")
+  val getOp = getProperty(pathObj, "get")
+  assertEqual(getString(getProperty(getOp, "operationId")), "getWidget", "paths./widgets/{id}.get.operationId")
+  assertEqual(getString(getProperty(getOp, "summary")), "Get a widget", "paths./widgets/{id}.get.summary")
+
+  var tagsCur = enumerateArray(getProperty(getOp, "tags"))
+  assertTrue(arrayMoveNext(tagsCur), "get.tags has one entry")
+  assertEqual(getString(arrayCurrent(tagsCur)), "widgets", "get.tags[0]")
+
+  var paramsCur = enumerateArray(getProperty(getOp, "parameters"))
+  assertTrue(arrayMoveNext(paramsCur), "get.parameters has one entry")
+  val paramObj = arrayCurrent(paramsCur)
+  assertEqual(getString(getProperty(paramObj, "name")), "id", "parameters[0].name")
+  assertEqual(getString(getProperty(paramObj, "in")), "query", "parameters[0].in")
+  assertTrue(getBoolean(getProperty(paramObj, "required")), "parameters[0].required")
+  assertEqual(getString(getProperty(getProperty(paramObj, "schema"), "type")), "integer", "parameters[0].schema.type")
+  assertEqual(getString(getProperty(getProperty(paramObj, "schema"), "format")), "int32", "parameters[0].schema.format")
+
+  val responseObj = getProperty(getProperty(getOp, "responses"), "200")
+  assertEqual(getString(getProperty(responseObj, "description")), "ok", "responses.200.description")
+  val responseSchema = getProperty(getProperty(getProperty(responseObj, "content"), "application/json"), "schema")
+  assertEqual(getString(getProperty(responseSchema, "$ref")), "#/components/schemas/Widget", "responses.200 $ref")
+
+  disposeJson(doc)
 }

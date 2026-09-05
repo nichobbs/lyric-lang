@@ -594,12 +594,17 @@ impl Handler for SwaggerUiHandler {
 
 /// A minimal Swagger UI page pointed at `specUrl`. Loads the `swagger-ui`
 /// bundle from jsdelivr — nothing from the spec itself reaches the page
-/// except through the client's own request to `specUrl`.
+/// except through the client's own request to `specUrl`. Pinned to an
+/// exact version with a Subresource Integrity hash (rather than a
+/// floating `@5` major-version tag) so the CDN cannot silently serve
+/// different bytes than what was verified here.
 func swaggerUiPage(specUrl: in String): String {
   return "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<title>API Docs</title>\n" +
-    "<link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css\">\n" +
+    "<link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.15/swagger-ui.css\" " +
+    "integrity=\"sha384-fgyWYkUAamzuI8mJFu/xpRP0JWCJRwkwUwsYDoOYVHUJ8NQE5cENn8ib3ppwFFSX\" crossorigin=\"anonymous\">\n" +
     "</head>\n<body>\n<div id=\"swagger-ui\"></div>\n" +
-    "<script src=\"https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js\"></script>\n" +
+    "<script src=\"https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.15/swagger-ui-bundle.js\" " +
+    "integrity=\"sha384-m7zaGj7MPzU+G4lz2eyy73GxK9bbRDr9bB2CSdj8wodg2wu/Wnt6wsoLP3JD+RS9\" crossorigin=\"anonymous\"></script>\n" +
     "<script>\nwindow.onload = function() {\n  window.ui = SwaggerUIBundle({ url: " +
     webJsonStr(specUrl) +
     ", dom_id: \"#swagger-ui\" });\n};\n</script>\n" +
@@ -617,32 +622,14 @@ func swaggerUiPage(specUrl: in String): String {
 @stable(since = "0.2")
 pub func withSpec(router: in Router, spec: in Spec): Router {
   val specJson = specToJson(spec)
+  // The Swagger UI page's own client-side fetch needs the FULLY prefixed
+  // path; `addRoute` (below) prepends `pathPrefix` itself, so this is
+  // computed once here rather than re-derived from the route pattern.
   val jsonPath = router.pathPrefix + "/openapi.json"
-  val uiPath = router.pathPrefix + "/swagger"
   val jsonHandler: Handler = OpenApiJsonHandler(specJson = specJson)
   val uiHandler: Handler = SwaggerUiHandler(page = swaggerUiPage(jsonPath))
-  val jsonRoute = Route(
-    method = "GET",
-    pattern = jsonPath,
-    handler = jsonHandler,
-    summary = "",
-    tags = [],
-    deprecated = false
-  )
-  val uiRoute = Route(
-    method = "GET",
-    pattern = uiPath,
-    handler = uiHandler,
-    summary = "",
-    tags = [],
-    deprecated = false
-  )
-  return Router(
-    routes = concat(router.routes, [jsonRoute, uiRoute]),
-    workers = router.workers,
-    middlewares = router.middlewares,
-    pathPrefix = router.pathPrefix
-  )
+  val withJson = addRoute(router, "GET", "/openapi.json", jsonHandler)
+  return addRoute(withJson, "GET", "/swagger", uiHandler)
 }
 
 // ─── Static file serving ────────────────────────────────────────────────────────
