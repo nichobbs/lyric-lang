@@ -77,3 +77,74 @@ test "generic BCL method with its own generics resolves via MethodSpec" {
   val b = emptySeq[String]()
   assertTrue(ObjType.ReferenceEquals(a, b), "Enumerable.Empty<T>() returns the cached per-T singleton")
 }
+
+// ── Gap 2 review follow-up (#6987): distinct declaring types must not ──────
+// collide on the MethodSpec/MemberRef blob-interning key.
+//
+// `Array.Empty<T>(): T[]` is ALSO a zero-arg, one-genparam, non-generic-
+// declaring-type static generic method — the exact same
+// name-arity-genParamCount shape as `Enumerable.Empty<T>()` above, but on a
+// DIFFERENT declaring type (`System.Array`, not `System.Linq.Enumerable`).
+// `ctxInternBlob`/`internBlob` (lyric-compiler/msil/heaps.l) dedupes
+// strictly by KEY STRING: before this fix, `emitGenericMethodExternCall`'s
+// `openKey` omitted the declaring type entirely (`"openm_Empty_1_0"` for
+// BOTH), so whichever of these two functions compiled second would
+// silently receive the FIRST's MemberRef signature bytes (a `T[]`-shaped
+// signature reused for a call that needs `IEnumerable`1<T>`, or vice
+// versa) — a load-time `TypeLoadException`/`MissingMethodException`, not a
+// build-time error. Both being present and passing in the SAME compiled
+// module (they inevitably compile in declaration order) is the regression
+// test.
+@externTarget("System.Array.Empty")
+func emptyIntArr[T](): slice[T] = ()
+
+test "Array.Empty<T>() alongside Enumerable.Empty<T>() does not collide (#6987)" {
+  val arr = emptyIntArr[Int]()
+  assertEqualInt(arr.count, 0, "Array.Empty<Int>() returns a genuinely zero-length array")
+}
+
+// ── Gap 2 review follow-up (#6989): box a value-type argument, and unbox a ─
+// value-type return, at a method-own-generic (witnessed-as-Object) position.
+//
+// `System.Linq.Enumerable.Repeat<TResult>(TResult element, int count):
+// IEnumerable<TResult>` — the FIRST parameter is the method's own MVAR
+// (`TResult`), not the SECOND (`int count`, a fixed non-generic parameter).
+// A non-generic Lyric wrapper declaring `element: Int` for this position
+// (a genuine, non-erased Lyric value type) pushes the raw `int32` bits via
+// `ldarg` — the MethodSpec above always witnesses `TResult` as
+// `System.Object`, so the CLR verifier rejects the unboxed value where the
+// witnessed-Object parameter expects a reference unless it is `box`ed
+// first (a `box`-less miscompile fails to load at all,
+// `InvalidProgramException`).
+//
+// `System.Linq.Enumerable.First<TSource>(IEnumerable<TSource> source):
+// TSource` — the RETURN is the method's own bare MVAR, also witnessed as
+// `System.Object`. A non-generic Lyric wrapper declaring `Int` as its
+// return type must unbox that witnessed-Object result back to a real
+// `int32` before `ret`, or the CLR rejects a value-type-returning MethodDef
+// that leaves an object reference on the stack. Deliberately NOT tested
+// with `System.Activator.CreateInstance<T>(): T` — that method's BEHAVIOR
+// (not just its representation) depends on the real `T` identity
+// (`CreateInstance<T>` literally constructs a new `T`), so witnessing it as
+// `object` constructs a genuine `new object()` rather than `default(int)`
+// and any unboxing of that is correctly rejected at RUNTIME
+// (`InvalidCastException`) — a fix limitation, not a fix bug: `First<T>`
+// merely relays an ALREADY-BOXED element the caller-side list already
+// stores as `object` (this codebase's own generic-collection erasure
+// convention, #4601), so witnessing it as `object` changes nothing about
+// which value comes back.
+//
+// Chaining `firstOfInt` onto `repeatInt`'s own result (both declared with
+// the SAME extern type alias `IEnumerableOfT[Int]`, so no cross-alias
+// upcast is needed) verifies an actual VALUE round-trips through both the
+// box and the unbox correctly, not merely that neither crashes.
+@externTarget("System.Linq.Enumerable.Repeat")
+func repeatInt(element: Int, count: Int): IEnumerableOfT[Int] = ()
+
+@externTarget("System.Linq.Enumerable.First")
+func firstOfInt(source: in IEnumerableOfT[Int]): Int = ()
+
+test "Enumerable.Repeat<T>/First<T> box a value-type argument and unbox a value-type return (#6989)" {
+  val seq = repeatInt(42, 3)
+  assertEqualInt(firstOfInt(seq), 42, "the boxed Int argument round-trips through Repeat<T> and First<T> unchanged")
+}
