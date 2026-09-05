@@ -418,6 +418,60 @@ test "same-simple-name range subtype: each package's from() validates against it
   )
 }
 
+// ─── #6689 JVM parity: a record field's type must resolve under the
+// DECLARING package's own scope, not the caller's ───────────────────────────
+// The MSIL analogue of this fix (`msil_project_bridge_self_test.l`'s
+// "qualified generic type argument in a record field resolves to the exact
+// package named") closed two independent bugs: a type-checker
+// `collectCtorFields` scope bug (shared — `Lyric.TypeChecker` is the single
+// checker both backends call through) and an MSIL-only codegen bug in
+// `typeExprToMsilCtx`. JVM codegen was already confirmed unaffected by the
+// second bug (it resolves through the checker's own resolved `Type`, not by
+// re-deriving FQNs from source text), but there was no dedicated end-to-end
+// JVM test pinning the shared type-checker fix on this target — this closes
+// that gap. `Pkg6689EJvm` declares `Item`; `Pkg6689FJvm` declares an
+// unrelated same-named `Item`; `Wrapper.item: Item` (declared in
+// `Pkg6689EJvm`) must resolve `Item` against `Pkg6689EJvm`'s own scope even
+// when constructed from a caller that also imports the colliding package.
+// (A generic field type such as `List[Item]`/`Box[Item]` would exercise the
+// identical `collectCtorFields` code path — the field type is resolved the
+// same way regardless of arity — but hits an unrelated, pre-existing JVM
+// generics-erasure limitation on match-binding a hand-rolled generic
+// union's payload field without a real `Std.Collections` bundle available
+// to this file's `compileAndRunJvm`; a bare field keeps this test isolated
+// to the #6689 fix.)
+test "qualified record field type resolves to the exact package named (JVM parity, #6689)" {
+  val pkgSrcs: List[String] = newList()
+  pkgSrcs.add(
+    "package Pkg6689EJvm\n" + "\n" + "pub record Item {\n" + "  x: Int\n" + "}\n" + "\n" + "pub record Wrapper {\n" +
+      "  item: Item\n" +
+      "}\n" +
+      "\n" +
+      "pub func wrap(x: in Int): Wrapper {\n" +
+      "  Wrapper(item = Item(x = x))\n" +
+      "}\n" +
+      "\n" +
+      "pub func itemX(w: in Wrapper): Int {\n" +
+      "  w.item.x\n" +
+      "}\n"
+  )
+  pkgSrcs.add("package Pkg6689FJvm\n" + "\n" + "pub record Item {\n" + "  name: String\n" + "}\n")
+  pkgSrcs.add(
+    "package Main6689Jvm\n" + "\n" + "import Pkg6689FJvm\n" + "import Pkg6689EJvm\n" + "\n" + "func main(): Int {\n" +
+      "  val w = Pkg6689EJvm.wrap(x = 7)\n" +
+      "  println(Pkg6689EJvm.itemX(w))\n" +
+      "  0\n" +
+      "}\n"
+  )
+  val result = compileAndRunJvm("qualified-record-field-6689-jvm", pkgSrcs, "Main6689Jvm")
+  assertEqualInt(result.exitCode, 0, "qualified_record_field_jvm: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "7",
+    "qualified_record_field_jvm: record field Item resolved to Pkg6689EJvm's Item, not Pkg6689FJvm's"
+  )
+}
+
 // ─── Regression: qualified record construction survives a local shadowing
 // only the package's first segment — JVM parity (#6838) ────────────────────
 // The MSIL analogue of this fix (`msil_project_bridge_self_test.l`'s
