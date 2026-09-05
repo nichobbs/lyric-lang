@@ -519,6 +519,83 @@ runtime gap.
   when the class is absent from the JDK jmods / LYRIC_FFI_JARS index (non-JDK
   types with no configured JAR entry).  Tests in `auto_ffi_jvm_self_test.l`
   (`@externTarget with verified JVM signatures compile and run correctly`).
+- **Phase 6 — GENERICINST member params + MethodSpec for generic
+  `@externTarget` methods. _(SHIPPED — D-progress-877, #6581.)_** Phase 4 left
+  two gaps in the MSIL backend's generic-member handling, both required by
+  `lyric-grpc`'s unary-call kernel (`Grpc.Core.Marshaller<T>`'s ctor,
+  `CallInvoker.BlockingUnaryCall<TRequest,TResponse>`):
+  - **Gap 1 (GENERICINST member parameter/return).** A generic-declaring-type
+    member whose own parameter or return is itself a *closed generic
+    instantiation over the declaring type's VAR* (e.g.
+    `List`1..ctor(IEnumerable`1<!0> source)`, `Marshaller`1..ctor(Func`2<!0,
+    uint8[]> serializer)`) had no `Mdr.SigType` arm at all —
+    `genericMemberSigToMsil` silently discarded the whole signature and the
+    caller fell back to a MemberRef parented on the *open* generic-declaring
+    TypeRef, an ECMA-335 §II.22.25 violation that faults with
+    `TypeLoadException` at the `newobj`/`call` site. Fixed by adding an
+    `Mdr.STNamedGenericInst` arm (`genericMemberSigToMsil`) that recurses so a
+    nested `!0`/`!!0` is preserved, plus `substituteDeclaringVarMsil` +
+    an emitted `castclass` at the argument-loading site so the erased
+    `object`-typed Lyric argument is cast to the TypeSpec-substituted closed
+    type (`IEnumerable`1<object>` under the `<object,…>` erasure default)
+    before the call — required because the CLR verifier rejects the
+    unqualified `object` in that position.
+  - **Gap 2 (MethodSpec for a BCL method with its own generics).** A BCL
+    method declared with method-level generics on a *non*-generic-declaring
+    type (`CallInvoker.BlockingUnaryCall<TRequest,TResponse>`) falls outside
+    `emitGenericExternMember`'s `genericArityOfName` gate (specific to a
+    generic-declaring TYPE) and had no MethodSpec (table 0x2B) emission path
+    for a user `@externTarget` call at all. Fixed by
+    `emitGenericMethodExternCall` + `buildOpenGenericMethodSigCtx`: builds an
+    OPEN generic-method MemberRef preserving `!!n` (`MMethodTypeVar`, the new
+    `resolvedSigToMsil`/`genericMemberSigToMsil` `STMVar` arms), then a
+    MethodSpec witnessing every one of the method's own generic parameters
+    with `System.Object` (the same object-erasure convention
+    `emitGenericExternMember` already applies to a generic-declaring-type
+    instantiation) — exact when every witnessed parameter's only constraint
+    is `class`, the common case for message/DTO-shaped generic methods.
+    Value-type receivers decline (fall back to the pre-existing
+    `#5809` limitation) since the call sequence always emits
+    `ldarg` + `callvirt`.
+  - Also folded in while touching this code: a `.ctor`-arity scoring bug in
+    `resolveExternMethodScoredIn` (a nullary ctor could spuriously win a tie
+    against the correct overload because a ctor candidate whose own arity
+    didn't match `declArity` fell through to the instance-method branch,
+    which drops `fullArgTypes[0]` as an implicit receiver a ctor never has);
+    a `scoreSigType` arm scoring an `STNamedGenericInst` parameter 0 (weak
+    but non-negative, mirroring the existing `STVar` precedent) so the
+    scored resolver can disambiguate a same-arity overload set where only one
+    candidate takes a generic-instantiation-shaped parameter; and an
+    `argTyToSig` arm describing Lyric's own `List[T]`/`Map[K,V]` by their
+    base generic-arity FQN so the scored resolver can select among BCL
+    overloads that take a `List`/`Dictionary`-shaped parameter (#4601's
+    erasure ABI, applied uniformly through this one shared conversion site).
+  - Verified with `ilverify` against a standalone repro of the exact shape
+    (missing signature arm + missing cast, both caught independently) before
+    landing; regression coverage in
+    `generic_extern_methodspec_self_test.l` (BCL-only shapes — `List`1`'s
+    `IEnumerable<T>` ctor and `Enumerable.Empty<T>()`'s MethodSpec dispatch —
+    so CI needs no gRPC package).
+  - **Review follow-up (D-progress-883).** A genuine regression surfaced
+    post-review: the `scoreSigType` `STNamedGenericInst` arm above initially
+    matched every CLOSED generic instantiation unconditionally, not just the
+    open-VAR case it documents — spuriously admitting an unrelated overload
+    (`TextWriter.WriteLine(ReadOnlySpan<char>)`) into scoring for an
+    unrelated call, breaking `auto_ffi_self_test.l`'s inherited-member test.
+    Fixed by gating the arm on a new `sigIsOpenGeneric` recursive check
+    (still contains an unresolved VAR/MVAR somewhere) so a fully closed,
+    concrete BCL generic type scores by real structural compatibility like
+    any other named type. Two review-flagged gaps in
+    `emitGenericMethodExternCall` were also fixed: the `openKey` blob-
+    interning key omitted the declaring type (collided across e.g.
+    `Enumerable.Empty<T>()` vs `Array.Empty<T>()`, #6987 — fixed by
+    including `parentRow`), and neither a value-type argument was boxed nor
+    a value-type return unboxed at a method-own-generic
+    (witnessed-as-`Object`) position (#6989 — fixed by mirroring
+    `emitGenericExternMember`'s existing box/unbox dance), which also
+    surfaced a missing `STMVar` arm in `scoreSigType` (only `STVar` existed)
+    without which the scored resolver never found `Enumerable.Repeat<T>`'s
+    bare-MVAR parameter at all.
 
 ---
 

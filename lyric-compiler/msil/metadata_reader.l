@@ -1890,6 +1890,63 @@ pub func sigVarIndex(t: in SigType): Option[Int] {
   }
 }
 
+// The method-generic-parameter index of `t` when it is `STMVar` (`!!n`,
+// ECMA-335 §II.23.2.2), else `None`.  Counterpart of `sigVarIndex` for a
+// method that is itself declared with generics (e.g. BCL
+// `CallInvoker.BlockingUnaryCall<TRequest,TResponse>`) — #6581 Gap 2.
+pub func sigMVarIndex(t: in SigType): Option[Int] {
+  match t {
+    case STMVar(idx) -> Some(value = idx)
+    case _ -> None
+  }
+}
+
+// Whether `t` is, or transitively contains, an unresolved `STVar`/`STMVar`
+// position (a declaring-type or method generic parameter, `!n`/`!!n`) —
+// i.e. `t` is still "open" rather than a fully closed concrete type.  Used
+// by `scoreSigType`'s `STNamedGenericInst` arm (#6581 Gap 1) to distinguish
+// a generic-declaring-type member's parameter that is itself a closed
+// instantiation OVER THE DECLARING TYPE'S OWN VAR (e.g. `IEnumerable`1<!0>`
+// on `List`1..ctor(IEnumerable`1<!0>)`, `Func`2<!0,uint8[]>` on
+// `Marshaller`1..ctor`) — where the CLR truly does accept any argument once
+// the type is closed over a concrete instantiation, so scoring it 0 (weak
+// but non-negative) is correct — from a genuinely CLOSED, concrete generic
+// instantiation with no VAR/MVAR anywhere in it (e.g. `ReadOnlySpan`1<Char>`
+// on `TextWriter.WriteLine(ReadOnlySpan<char>)`), which is a real, ordinary
+// BCL parameter type that must be scored by actual structural compatibility
+// like any other named type, not blanket-accepted.  Without this
+// distinction, `STNamedGenericInst(_, _, _) -> 0` matched every closed
+// generic-instantiation parameter shape, letting an unrelated same-arity
+// overload (e.g. `WriteLine(ReadOnlySpan<char>)` scored 0 against a
+// `String` argument) spuriously score alongside the correct exact-match
+// overload — confirmed via `git stash`/isolated-worktree bisection to
+// reproduce `auto_ffi_self_test.l`'s "auto-FFI resolves inherited instance
+// members through the Extends chain" failure.
+pub func sigIsOpenGeneric(t: in SigType): Bool {
+  match t {
+    case STVar(_) -> true
+    case STMVar(_) -> true
+    case STSzArray(elem) -> sigIsOpenGeneric(elem)
+    case STArray(elem, _) -> sigIsOpenGeneric(elem)
+    case STByRef(inner) -> sigIsOpenGeneric(inner)
+    case STPtr(inner) -> sigIsOpenGeneric(inner)
+    case STGenericInst(_, _, args) -> sigArgsContainOpenGeneric(args)
+    case STNamedGenericInst(_, _, args) -> sigArgsContainOpenGeneric(args)
+    case _ -> false
+  }
+}
+
+func sigArgsContainOpenGeneric(args: in List[SigType]): Bool {
+  var i = 0
+  while i < args.count {
+    if sigIsOpenGeneric(args[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 // Construct an `STSzArray(elem)`.  Cross-package accessor used by D105 §A's
 // shape-lifting validation pass so callers can wrap a substituted element
 // type without touching the union internals.
@@ -2635,6 +2692,44 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
     // both scored -1 and `resolveExternMethodScoredIn` silently fell back to
     // whichever ctor happened to sit first in the Method table (D-progress-686).
     case STVar(_) -> 0
+    // A parameter that is the CALLED METHOD'S own generic parameter (`!!0`,
+    // e.g. `Enumerable.Repeat`1(!!0 element, int32 count)`) — the method-own
+    // counterpart of the `STVar` arm just above (a declaring-TYPE'S own `!0`).
+    // Without this arm, ANY generic method whose signature mentions its own
+    // MVAR directly as a bare parameter (not wrapped in a further generic
+    // instantiation) scored -1 for that parameter regardless of the actual
+    // argument, so the scored resolver (`resolveExternMethodScoredIn`) never
+    // found ANY match and silently fell back to the unscored hint-less path
+    // (F0027) even though `emitGenericMethodExternCall` (#6581 Gap 2) exists
+    // specifically to handle this call correctly — confirmed empirically:
+    // `Enumerable.Repeat<TResult>(TResult element, int count)`'s first
+    // parameter is exactly this shape (#6989).
+    case STMVar(_) -> 0
+    // A parameter that is a closed generic instantiation over the declaring
+    // type's OWN type parameter (e.g. `IEnumerable`1<!0>` on `List`1..ctor
+    // (IEnumerable`1<!0> collection)`, or `Func`2<!0,uint8[]>` on
+    // `Marshaller`1..ctor`) accepts any non-byref argument for the same
+    // reason a bare `STVar` param does (see above) — the CLR permits any
+    // type in that position once the type is closed over a concrete
+    // instantiation. Scored 0, matching `STVar`'s weak-but-nonnegative
+    // precedent: without this, a same-arity overload set where only one
+    // candidate takes a generic-instantiation-shaped parameter (e.g.
+    // `List`1..ctor(IEnumerable`1<!0>)` vs `..ctor(int capacity)`) scores
+    // every candidate -1 and the caller falls back to the unscored
+    // arity-only resolver, which cannot disambiguate them (#6581 Gap 1).
+    //
+    // Gated on `sigIsOpenGeneric` (still contains a VAR/MVAR somewhere) —
+    // NOT every closed `STNamedGenericInst`: a genuinely concrete BCL
+    // parameter type with no VAR anywhere (e.g. `ReadOnlySpan`1<Char>` on
+    // `TextWriter.WriteLine(ReadOnlySpan<char>)`) is an ordinary named type
+    // that must be scored by real structural compatibility like any other,
+    // not blanket-accepted. An earlier unconditional `-> 0` here matched
+    // every closed-generic-instantiation parameter shape, letting such an
+    // unrelated same-arity overload spuriously tie/compete against the
+    // correct exact-match overload — caught by a full-rebuild bisection
+    // reproducing `auto_ffi_self_test.l`'s inherited-member Extends-chain
+    // regression test.
+    case STNamedGenericInst(_, _, args) -> if sigArgsContainOpenGeneric(args) { 0 } else { -1 }
     case _ -> -1
   }
 }
@@ -3563,20 +3658,37 @@ pub func resolveExternMethodScoredIn(
           // unsupplied trailing optionals with their type defaults.
           val exactBonus = 1000000
           val nReal = normParams.count
-          // Constructors: hasThis is set in the CLR sig convention even though the
-          // receiver is implicitly allocated by newobj and is NOT listed as an
-          // explicit parameter.  Score against fullArgTypes directly (no head-drop)
-          // with nReal == declArity, before the generic instance branch which would
-          // compute nReal == declArity - 1 and always miss.
-          val score = if member == ".ctor" and nReal == declArity {
-            val sc = scoreParamsLenient(fullArgTypes, normParams)
-            if sc < 0 {
-              sc
+          // A constructor's `hasThis` bit is ALWAYS set in metadata (ECMA-335
+          // §II.15.4.1.5), even though `newobj` takes no explicit receiver
+          // argument — `fullArgTypes` already holds every ctor argument, none
+          // implicit.  Without gating the ctor branches into their own
+          // `member == ".ctor"` block, a `.ctor` candidate whose OWN arity
+          // does not match `declArity` (e.g. a nullary `.ctor()` when the
+          // caller supplies 1 argument) fell through to the `isInstance and
+          // nReal == declArity - 1` branch below — written for genuine
+          // instance METHODS, where `hasThis` really does mean "drop
+          // fullArgTypes[0] as the receiver" — and scored `tail` (here:
+          // `fullArgTypes[1..]`, accidentally EMPTY when declArity is 1)
+          // against the ctor's own (also empty) param list as a spurious
+          // exact match (+`exactBonus`).  That silently outscored — or tied,
+          // with the zero-arg ctor then winning ties by Method-table
+          // row order — the CORRECT overload whenever one existed, a
+          // silent-miscompile risk for any generic-declaring-type ctor set
+          // that includes both a nullary ctor and a same-name overload
+          // (#6581 Gap 1's `List`1..ctor(IEnumerable`1<!0>)` vs `.ctor()`).
+          val score = if member == ".ctor" {
+            if nReal == declArity {
+              val sc = scoreParamsLenient(fullArgTypes, normParams)
+              if sc < 0 {
+                sc
+              } else {
+                sc + exactBonus
+              }
+            } else if nReal > declArity and nReal - declArity <= methodTrailingOptionalCount(img, layout, th, mi, nReal) {
+              scoreParamsPrefix(fullArgTypes, normParams)
             } else {
-              sc + exactBonus
+              0 - 1
             }
-          } else if member == ".ctor" and nReal > declArity and nReal - declArity <= methodTrailingOptionalCount(img, layout, th, mi, nReal) {
-            scoreParamsPrefix(fullArgTypes, normParams)
           } else if isInstance and nReal == declArity - 1 {
             val sc = scoreParamsLenient(tail, normParams)
             if sc < 0 {
