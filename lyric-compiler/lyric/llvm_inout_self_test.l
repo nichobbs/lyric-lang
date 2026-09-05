@@ -333,3 +333,36 @@ test "an index-expression out/inout argument is a loud diagnostic, not a miscomp
     { -> codegenOnly(src) }
   )
 }
+
+test "an Int local passed to an inout Long parameter is a loud diagnostic, not a silent width mismatch (#6813)" {
+  // The type checker's `argSatisfiesParam` widens arithmetic uniformly
+  // across every parameter mode, so this type-checks; codegen must catch
+  // the width mismatch itself rather than alias an i32 alloca through an
+  // i64 by-ref pointer.
+  val src = "package T\n" + "func bump(x: inout Long): Unit {\n" + "  x = x + 1\n" + "}\n" + "func main(): Int {\n" +
+    "  var n = 5\n" +
+    "  bump(n)\n" +
+    "  0\n" +
+    "}\n"
+  assertPanicsWith(
+    "Int local against an inout Long parameter",
+    "must match the parameter's exactly",
+    { -> codegenOnly(src) }
+  )
+}
+
+test "a record field passed to a mismatched-type inout parameter is a loud diagnostic (#6813)" {
+  val src = "package T\n" + "record Box {\n" + "  var n: Int\n" + "}\n" + "func bump(x: inout Long): Unit {\n" +
+    "  x = x + 1\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val b = Box(n = 5)\n" +
+    "  bump(b.n)\n" +
+    "  0\n" +
+    "}\n"
+  assertPanicsWith(
+    "Int field against an inout Long parameter",
+    "must match the parameter's exactly",
+    { -> codegenOnly(src) }
+  )
+}

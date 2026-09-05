@@ -1879,6 +1879,69 @@ here.
 
 ---
 
+### N9.8 — Three native-codegen review-finding fixes: bare enum-case patterns, out/inout width mismatches, over-inclusive UFCS reachability — ✅ SHIPPED (D-progress-878, #6740, #6813, #6625)
+
+Three independent review-finding follow-ups from N9.4/N9.6, all real
+correctness gaps confirmed against current `main`:
+
+- **#6740 — bare enum-case pattern silently binds instead of testing
+  equality.** `emitPatternTest`'s `PBinding` arm only consults
+  `scrutineeHasCase`, which only ever checks `unionInfoOfType` — always
+  `None` for an enum (an enum erases to bare `NI32`, indistinguishable
+  from a real `Int` by type alone). So `match v { case Http1_1 -> ...;
+  case Http1_0 -> ... }` over an enum-typed `v` silently miscompiled: the
+  first arm always matched as an unconditional catch-all bind, no
+  diagnostic, just a wrong answer for every arm after the first. Fixed by
+  extending `scrutineeHasCase` to fall back to `ctx.enumDefs.containsKey(name)`
+  when the scrutinee's type is `NI32`, delegating to the SAME
+  `emitConstructorTest` enum branch (`sv.ty == NI32` gate) #6753 already
+  shipped. New item G in `llvm_enum_case_resolve_self_test.l`.
+- **#6813 — no defensive check for a numeric-widened by-ref argument.**
+  The type checker's `argSatisfiesParam` widens arithmetic uniformly
+  across every parameter mode, so an `Int` local (or record field)
+  type-checks against an `inout Long` parameter — but `lowerByRefArg`
+  forwarded the raw address tagged with the CALLEE's declared type with
+  no check against the argument's ACTUAL type, which would silently
+  alias a 4-byte alloca through an 8-byte pointer. Fixed with a named
+  panic (`"... must match the parameter's exactly ..."`) in both the
+  bare-local and record-field branches of `lowerByRefArg`, matching
+  N9.6's "loud diagnostic, never silent miscompile" scope-cut philosophy.
+  Two new cases in `llvm_inout_self_test.l`.
+- **#6625 — bare-name UFCS reachability fallback is over-inclusive
+  across colliding trailing names.** `Lyric.LlvmBridge`'s
+  `bareTrailing` fallback (added for #6103 item D — UFCS on a value
+  receiver has no resolvable key at the syntax-only reachability stage)
+  marks EVERY same-named/arity candidate in the whole bundle reachable,
+  so two unrelated types sharing a trailing name (e.g. `.message()` on
+  `TlsError`/`RestError`/`XmlError`/…) sweep each other in even when the
+  calling package can't reach one of them at all. A precise fix needs
+  receiver-type inference threaded into this syntax-only walk (larger,
+  future work); this ships a real, SOUND partial narrowing instead: each
+  bare-trailing candidate is now filtered to packages within the calling
+  function's OWN transitive import closure (`pkgTransitiveClosure`, a
+  new BFS over a `pkgImports` adjacency map built from every bundled/own
+  file's own `imports`). Sound because the type checker requires a
+  cross-package callee's package be imported (directly or transitively)
+  for the genuinely-correct call to have type-checked at all — so the
+  real target is always inside the closure; this can only narrow away
+  UNRELATED candidates, never the correct one. Still over-inclusive when
+  two colliding packages ARE co-imported (the general case still needs
+  type inference) — documented as a partial fix, not closing the
+  underlying issue's "what a real fix needs" scope. Two new unit-level
+  cases in `llvm_codegen_self_test.l` exercise `pkgTransitiveClosure`
+  directly (a linear closure with an unreachable sibling, and a diamond
+  import graph) since no stdlib pair currently has both a colliding
+  trailing name AND a not-yet-lowerable body to regression-test the
+  full walk end-to-end.
+
+**Verified:** full existing native self-test suite re-run under real
+ASan (`llvm_codegen_self_test.l` 34/34, `llvm_enum_case_resolve_self_test.l`
+7/7, `llvm_inout_self_test.l` 11/11, `llvm_project_self_test.l` 10/10,
+`llvm_stdlib_self_test.l` 18/18, `llvm_http_client_self_test.l` 16/16),
+no regressions.
+
+---
+
 ## Dependency graph summary
 
 ```

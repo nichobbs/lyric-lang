@@ -33498,3 +33498,49 @@ triggered the main-detection bug) passes and is wired into
 D-progress-852 (the investigation that filed #6809),
 `native/plan/08-work-items.md` N9.7, `docs/20-project-as-dll.md`
 (the dotnet/jvm design this is the native analog of).
+
+## Three native-codegen review-finding fixes ship, TLS phase 5 band N9.8 (#6740, #6813, #6625)
+
+Three independent review-finding follow-ups from N9.4/N9.6, all
+confirmed still present against current `main` before fixing:
+
+- **#6740** — a bare enum-case name in a `match` PATTERN
+  (`case Http1_1 ->`) silently bound the whole scrutinee instead of
+  testing equality, since `scrutineeHasCase` never recognised an enum
+  case (an enum erases to bare `NI32`, indistinguishable from `Int` by
+  type alone). Fixed with an `NI32`-gated fallback to
+  `ctx.enumDefs.containsKey(name)`, delegating to the same
+  `emitConstructorTest` enum branch #6753 already gated correctly.
+- **#6813** — an `Int` local (or record field) passed to an `inout Long`
+  parameter type-checks (the checker widens arithmetic uniformly across
+  parameter modes) but `lowerByRefArg` forwarded the raw address with no
+  width check, aliasing a narrower alloca through a wider pointer type.
+  Fixed with a named panic in both by-ref-argument branches, matching
+  N9.6's "loud diagnostic, never silent miscompile" scope-cut policy.
+- **#6625** — `Lyric.LlvmBridge`'s bare-name UFCS reachability fallback
+  (added for #6103 item D) marked every same-named/arity candidate in
+  the WHOLE bundle reachable, so two unrelated stdlib types sharing a
+  trailing name (`.message()` on seven different error types) could
+  sweep each other into the reachable set. A precise fix needs
+  receiver-type inference threaded into the syntax-only reachability
+  walk (future work); this ships a sound partial narrowing instead — a
+  new `pkgTransitiveClosure` BFS over each bundled/own file's own
+  imports restricts `bareTrailing` candidates to packages the CALLING
+  package can actually reach via imports. Sound in one direction: the
+  type checker requires a cross-package callee's package be imported for
+  the original call to have type-checked, so the real target is always
+  in this closure — the narrowing can only exclude unrelated candidates,
+  never the correct one. Still over-inclusive when colliding packages
+  ARE co-imported (the general case still needs type inference).
+
+Verified against the full existing native self-test suite under real
+ASan: `llvm_codegen_self_test.l` 34/34 (2 new `pkgTransitiveClosure`
+unit cases), `llvm_enum_case_resolve_self_test.l` 7/7 (1 new item),
+`llvm_inout_self_test.l` 11/11 (2 new cases),
+`llvm_project_self_test.l` 10/10, `llvm_stdlib_self_test.l` 18/18,
+`llvm_http_client_self_test.l` 16/16 — no regressions.
+
+**Related:** `docs/03-decision-log.md` D-progress-878 (full account),
+#6740/#6813/#6625 (fixed by this PR), `native/plan/08-work-items.md`
+N9.8, `native/plan/04-arc-design.md` Rule 5 (the by-ref-argument-ownership
+rule #6813's fix protects).

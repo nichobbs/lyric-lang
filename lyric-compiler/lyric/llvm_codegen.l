@@ -2621,6 +2621,33 @@ func lowerByRefArg(ctx: in Ctx, insns: in List[NInsn], ex: in Expr, declTy: in N
               "' is not a local variable or parameter — module-level bindings are not yet supported as out/inout arguments for --target native"
           )
         }
+        // #6813: the type checker's `argSatisfiesParam` applies
+        // `widenArithmetic` uniformly across every parameter mode, so an
+        // `Int` local type-checks against an `inout Long` parameter — but
+        // a by-ref argument forwards the local's OWN alloca pointer
+        // as-is (Rule 5: the callee never copies), tagged with the
+        // CALLEE's declared type below. A width/kind mismatch between
+        // the local's actual storage and `declTy` would alias an i32
+        // alloca through an i64 pointer (or similarly mismatched struct
+        // pointer types) — silently wrong at runtime if `clang` even
+        // accepts the mismatched-pointee GEP/load/store in the emitted
+        // `.ll`. Fail loudly here instead, matching #6812's "loud
+        // diagnostic, never silent miscompile" policy for every other
+        // out/inout scope cut.
+        val actualTy = match mapGet(ctx.varTypes, name) {
+          case Some(t) -> t
+          case None -> panic("Lyric.LlvmCodegen: no type recorded for out/inout argument '" + name + "'")
+        }
+        if nTypeToIrString(actualTy) != nTypeToIrString(declTy) {
+          panic(
+            "Lyric.LlvmCodegen: out/inout argument '" + name + "' has type '" + nTypeToIrString(actualTy) +
+              "' but the parameter declares 'inout/out " +
+              nTypeToIrString(declTy) +
+              "' — a by-ref argument's type must match the parameter's exactly for --target native " +
+              "(no numeric widening across an out/inout boundary, since the callee aliases the caller's " +
+              "storage directly rather than copying a widened value)"
+          )
+        }
         return NVal(ty = NPtr(pointee = declTy), value = NLocal(name = slot))
       }
       panic(
@@ -2642,6 +2669,19 @@ func lowerByRefArg(ctx: in Ctx, insns: in List[NInsn], ex: in Expr, declTy: in N
         panic("Lyric.LlvmCodegen: record '" + ri.irName + "' has no field '" + fieldName + "'")
       }
       val fieldTy = ri.fieldTys[idx]
+      // #6813: same widening hazard as the bare-local branch above — a
+      // narrower/differently-kinded field type must not alias through
+      // the callee's declared by-ref pointer type.
+      if nTypeToIrString(fieldTy) != nTypeToIrString(declTy) {
+        panic(
+          "Lyric.LlvmCodegen: out/inout argument '." + fieldName + "' has type '" + nTypeToIrString(fieldTy) +
+            "' but the parameter declares 'inout/out " +
+            nTypeToIrString(declTy) +
+            "' — a by-ref argument's type must match the parameter's exactly for --target native " +
+            "(no numeric widening across an out/inout boundary, since the callee aliases the caller's " +
+            "storage directly rather than copying a widened value)"
+        )
+      }
       val structTy = match obj.ty { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
       val fieldPtr = freshTmp(ctx)
       val fArgs: List[NArg] = newList()
@@ -7545,6 +7585,14 @@ func unionInfoOfType(ctx: in Ctx, t: in NType): Option[NUnionInfo] {
   }
 }
 
+/// `true` when `name` names one of `t`'s cases — a union case (`t` is a
+/// heap struct pointer) OR an enum case (`t` erases to bare `NI32` at
+/// the native IR level, so an enum-typed scrutinee is distinguished from
+/// a real `Int` only by consulting `ctx.enumDefs`, never by `t` itself,
+/// #6740). The `NI32` gate keeps an ordinary catch-all bind over a real
+/// `Int` from regressing into an unconditional-equality test merely
+/// because its bind-name happens to collide with some unrelated enum's
+/// case name elsewhere in the bundle.
 func scrutineeHasCase(ctx: in Ctx, t: in NType, name: in String): Bool {
   match unionInfoOfType(ctx, t) {
     case Some(ui) -> {
@@ -7557,7 +7605,12 @@ func scrutineeHasCase(ctx: in Ctx, t: in NType, name: in String): Bool {
       }
       false
     }
-    case None -> false
+    case None -> {
+      match t {
+        case NI32 -> ctx.enumDefs.containsKey(name)
+        case _ -> false
+      }
+    }
   }
 }
 

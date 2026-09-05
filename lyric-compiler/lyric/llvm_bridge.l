@@ -514,7 +514,14 @@ pub func compileToNativeWithFlags(
     indexFileFns(toBundle[bi2], bodyIndex, pkgOfId)
     bi2 = bi2 + 1
   }
-  walkReachableFns(fnWorklist, canonical, bareTrailing, bodyIndex, pkgOfId, reachable)
+  val pkgImports: Map[String, List[String]] = newMap()
+  addPkgImports(pkgImports, userFile)
+  var bi3 = 0
+  while bi3 < toBundle.count {
+    addPkgImports(pkgImports, toBundle[bi3])
+    bi3 = bi3 + 1
+  }
+  walkReachableFns(fnWorklist, canonical, bareTrailing, bodyIndex, pkgOfId, reachable, pkgImports)
 
   // Assemble the codegen units: the user package in full, then each
   // bundled package's reachable slice.
@@ -819,7 +826,19 @@ pub func compileProjectToNativeWithFlags(
     bi2 = bi2 + 1
   }
 
-  walkReachableFns(fnWorklist, canonical, bareTrailing, bodyIndex, pkgOfId, reachable)
+  val pkgImports: Map[String, List[String]] = newMap()
+  var pifi = 0
+  while pifi < ownFiles.count {
+    addPkgImports(pkgImports, ownFiles[pifi])
+    pifi = pifi + 1
+  }
+  var bi3 = 0
+  while bi3 < toBundle.count {
+    addPkgImports(pkgImports, toBundle[bi3])
+    bi3 = bi3 + 1
+  }
+
+  walkReachableFns(fnWorklist, canonical, bareTrailing, bodyIndex, pkgOfId, reachable, pkgImports)
 
   // Assemble the codegen units: the package declaring a top-level `func
   // main` goes FIRST — `Lyric.LlvmCodegen`'s C-`main` synthesis only scans
@@ -875,6 +894,60 @@ func appendBundledUnits(
   }
 }
 
+/// Each bundled/own file's OWN direct import package names, keyed by its
+/// declaring package (#6625): the per-package adjacency `bareTrailing`
+/// narrowing walks to approximate "could this call site's package
+/// actually reach that candidate's declaring package via imports."
+func addPkgImports(pkgImports: in Map[String, List[String]], f: in SourceFile): Unit {
+  val pkg = dottedPath(f.packageDecl.path)
+  if pkgImports.containsKey(pkg) {
+    return
+  }
+  val imps: List[String] = newList()
+  var i = 0
+  while i < f.imports.count {
+    imps.add(dottedPath(f.imports[i].path))
+    i = i + 1
+  }
+  pkgImports.add(pkg, imps)
+}
+
+/// BFS transitive closure of packages reachable from `root` via imports
+/// (`root` itself included). Used to narrow `bareTrailing` candidates to
+/// ones the calling package could plausibly have resolved unambiguously
+/// itself — the type checker requires a cross-package callee's package be
+/// imported (directly or transitively) for the ORIGINAL unambiguous call
+/// to have type-checked at all, so the genuinely-correct candidate is
+/// always inside this closure; this can only narrow away UNRELATED
+/// same-named/arity candidates, never the real target (#6625).
+pub func pkgTransitiveClosure(pkgImports: in Map[String, List[String]], root: in String): Map[String, Bool] {
+  val seen: Map[String, Bool] = newMap()
+  val worklist: List[String] = newList()
+  seen.add(root, true)
+  worklist.add(root)
+  var wi = 0
+  while wi < worklist.count {
+    val p = worklist[wi]
+    wi = wi + 1
+    match mapGet(pkgImports, p) {
+      case Some(imps) -> {
+        var i = 0
+        while i < imps.count {
+          val q = imps[i]
+          i = i + 1
+          if not seen.containsKey(q) {
+            seen.add(q, true)
+            worklist.add(q)
+          }
+        }
+      }
+      case None -> {
+      }
+    }
+  }
+  seen
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §2.4. Function-granularity reachability walk, shared by the single-source
 // and multi-package native entry points (#6809): chases every call-key a
@@ -883,6 +956,16 @@ func appendBundledUnits(
 // mutating `reachable` and appending newly-discovered ids to `fnWorklist` in
 // place — verbatim extraction of `compileToNativeWithFlags`'s original inline
 // loop, no behavior change.
+//
+// `pkgImports` (#6625) narrows `bareTrailing`'s otherwise-bundle-wide
+// candidate set per call site to the calling package's own transitive
+// import closure — over-inclusive across two co-imported (but otherwise
+// unrelated) packages that both happen to declare the same trailing
+// name/arity, but no longer sweeps in a same-named candidate from a
+// package the caller's own package can't even reach. A full precise fix
+// needs receiver-type inference threaded into this syntax-only walk (see
+// #6625) — this is a real, sound narrowing in the meantime, not a
+// complete one.
 // ─────────────────────────────────────────────────────────────────────────────
 func walkReachableFns(
   fnWorklist: in List[String],
@@ -891,7 +974,9 @@ func walkReachableFns(
   bodyIndex: in Map[String, FunctionDecl],
   pkgOfId: in Map[String, String],
   reachable: in Map[String, Bool],
+  pkgImports: in Map[String, List[String]],
 ): Unit {
+  val pkgClosureMemo: Map[String, Map[String, Bool]] = newMap()
   var wfi = 0
   while wfi < fnWorklist.count {
     val cur = fnWorklist[wfi]
@@ -934,14 +1019,34 @@ func walkReachableFns(
           // regardless of whether the ordinary single-valued `canonical`
           // lookup above already matched something (a different type's
           // same-named/arity method, per `registerBareTrailingSegment`'s
-          // header) — mark EVERY candidate reachable.
+          // header) — mark reachable every candidate whose OWN declaring
+          // package is within `curPkg`'s transitive import closure
+          // (#6625); an empty `curPkg` (should not occur in practice —
+          // every id in `pkgOfId` is registered with a real package name)
+          // falls back to the old bundle-wide behavior rather than risk
+          // silently under-including a genuine callee.
           match mapGet(bareTrailing, raw) {
             case Some(targets) -> {
+              val closure = if curPkg.length == 0 {
+                val none: Map[String, Bool] = newMap()
+                none
+              } else {
+                match mapGet(pkgClosureMemo, curPkg) {
+                  case Some(c) -> c
+                  case None -> {
+                    val c = pkgTransitiveClosure(pkgImports, curPkg)
+                    pkgClosureMemo.add(curPkg, c)
+                    c
+                  }
+                }
+              }
               var ti = 0
               while ti < targets.count {
                 val bt = targets[ti]
                 ti = ti + 1
-                if not reachable.containsKey(bt) {
+                val btPkg = match mapGet(pkgOfId, bt) { case Some(p) -> p; case None -> "" }
+                val inClosure = curPkg.length == 0 or btPkg == curPkg or closure.containsKey(btPkg)
+                if inClosure and not reachable.containsKey(bt) {
                   reachable.add(bt, true)
                   fnWorklist.add(bt)
                 }

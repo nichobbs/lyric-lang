@@ -25,6 +25,7 @@ import Lyric.LlvmTypes
 import Lyric.LlvmIr
 import Lyric.LlvmCodegen
 import Lyric.LlvmLowering
+import Lyric.LlvmBridge
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Harness: compile source text to a native binary and run it.
@@ -613,4 +614,61 @@ test "string trim().toLower() under repeated allocation (ASan)" {
   assertEqualInt(r.exitCode, 0, "repeated trim/toLower exit")
   // 200 * len("mixed case ") [11] + sum(len(str(i)) for i in 0..199) [10*1 + 90*2 + 100*3 = 490]
   assertEqual(r.stdout, "2690", "repeated trim/toLower: total length across 200 allocations")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `Lyric.LlvmBridge.pkgTransitiveClosure` (#6625): the per-call-site
+// `bareTrailing` UFCS-fallback narrowing `walkReachableFns` uses to avoid
+// sweeping in an unrelated, same-named/arity candidate from a package the
+// calling package can't even reach via imports. Unit-level (hand-built
+// `pkgImports` adjacency, no parsing/codegen) since a full end-to-end
+// regression needs two bundled stdlib packages that both declare a
+// colliding trailing name AND one has a currently-unlowerable body — no
+// such pair exists in the stdlib today (the issue's own "has not fired in
+// the current native self-test battery" note), so this exercises the BFS
+// closure computation directly instead.
+// ─────────────────────────────────────────────────────────────────────────────
+test "pkgTransitiveClosure includes root and every transitively-imported package (#6625)" {
+  val imports: Map[String, List[String]] = newMap()
+  val appImports: List[String] = newList()
+  appImports.add("Std.Tls")
+  imports.add("App", appImports)
+  val tlsImports: List[String] = newList()
+  tlsImports.add("Std.Core")
+  imports.add("Std.Tls", tlsImports)
+  val coreImports: List[String] = newList()
+  imports.add("Std.Core", coreImports)
+  // `Std.Xml` exists in the bundle (some OTHER package imports it) but
+  // `App` never does, directly or transitively.
+  val xmlImports: List[String] = newList()
+  imports.add("Std.Xml", xmlImports)
+
+  val closure = pkgTransitiveClosure(imports, "App")
+  assertTrue(closure.containsKey("App"), "closure includes the root package itself")
+  assertTrue(closure.containsKey("Std.Tls"), "closure includes a direct import")
+  assertTrue(closure.containsKey("Std.Core"), "closure includes a transitive (import-of-an-import) package")
+  assertTrue(not closure.containsKey("Std.Xml"), "closure excludes a package the root cannot reach via imports at all")
+}
+
+test "pkgTransitiveClosure follows a diamond import graph without infinite looping" {
+  val imports: Map[String, List[String]] = newMap()
+  val a: List[String] = newList()
+  a.add("B")
+  a.add("C")
+  imports.add("A", a)
+  val b: List[String] = newList()
+  b.add("D")
+  imports.add("B", b)
+  val c: List[String] = newList()
+  c.add("D")
+  imports.add("C", c)
+  val d: List[String] = newList()
+  d.add("A")
+  imports.add("D", d)
+
+  val closure = pkgTransitiveClosure(imports, "A")
+  assertTrue(closure.containsKey("A"), "diamond closure includes A")
+  assertTrue(closure.containsKey("B"), "diamond closure includes B")
+  assertTrue(closure.containsKey("C"), "diamond closure includes C")
+  assertTrue(closure.containsKey("D"), "diamond closure includes D (reached via both B and C)")
 }

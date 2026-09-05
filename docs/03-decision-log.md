@@ -41185,3 +41185,148 @@ panics T0123" self-test was deliberately not added: a genuinely
 bundle-wide-undeclared bare call fails earlier at type-check (`T0020` unknown
 name) and never reaches codegen's `T0123`, so no constructible negative case
 remains for a plain function post-fix.
+
+## D-progress-878 — Three native-codegen review-finding fixes: bare enum-case pattern miscompile, out/inout width-mismatch guard, over-inclusive UFCS reachability narrowing (#6740, #6813, #6625)
+
+**Context.** Three independently-filed review findings against the
+native backend, all confirmed still present against current `main`.
+
+**#6740 — bare enum-case pattern silently binds instead of testing
+equality.** `Lyric.LlvmCodegen.emitPatternTest`'s `PBinding(name, None)`
+arm treats a bare identifier pattern (`case Foo ->`) as a nullary
+constructor test only when `scrutineeHasCase(ctx, sv.ty, name)` returns
+true, and `scrutineeHasCase` only ever consulted `unionInfoOfType`. An
+enum value erases to bare `NI32` at the native IR level — indistinguishable
+from a real `Int` by type alone — so `unionInfoOfType` always returns
+`None` for an enum-typed scrutinee, and `scrutineeHasCase` always
+answered `false`. The parser cannot distinguish a bare-case pattern from
+an ordinary catch-all binding pattern (`PBinding(name, None)` either
+way), so `match version { case Http1_1 -> ...; case Http1_0 -> ... }`
+over an enum-typed `version` silently miscompiled: the FIRST arm always
+matched unconditionally as a catch-all bind, with no diagnostic — just a
+wrong answer for every case after the first.
+
+Fixed by extending `scrutineeHasCase` with an `NI32` fallback:
+
+```
+case None -> {
+  match t {
+    case NI32 -> ctx.enumDefs.containsKey(name)
+    case _ -> false
+  }
+}
+```
+
+narrowly gated on the scrutinee's actual runtime representation being
+`NI32` (never a real `Int`'s own catch-all binds, since `ctx.enumDefs`
+only ever contains registered enum-case names) — when matched, the
+`PBinding` arm's existing redirect delegates to `emitConstructorTest`
+exactly as the union-case branch already does, and `emitConstructorTest`'s
+OWN `sv.ty == NI32` gate (shipped for #6753) ensures the enum branch
+never misfires against a union scrutinee. New item G in
+`llvm_enum_case_resolve_self_test.l`: a `Version` enum matched with bare
+case names in both arms, asserting BOTH resolve correctly (not just that
+the first doesn't crash) — verified this fails without the fix (the
+`Http1_0` call would wrongly also return `Http1_1`'s value) and passes
+with it.
+
+**#6813 — no defensive check for a numeric-widened by-ref argument.**
+Follow-up from N9.6 (#6794/#6812)'s review: the type checker's
+`argSatisfiesParam` (`typechecker_exprs.l`) applies `widenArithmetic`
+uniformly across every parameter mode, so an `Int`-typed local (or
+record field) type-checks against an `inout Long` parameter today.
+Before #6812, any `out`/`inout` parameter panicked outright on native,
+so this combination could never reach codegen; now that native
+`out`/`inout` lowering is live, `lowerByRefArg` forwarded the raw local
+(or field) pointer tagged with the CALLEE's declared type with no check
+against the argument's OWN actual type — a hit would alias a narrower
+alloca (e.g. `alloca i32`) through the wider declared pointer type
+(`i64*`), a memory-unsafe width mismatch matching the `04-arc-design.md`
+Rule-violating class of bug D-progress-877 (#6645) found elsewhere in
+this backend.
+
+Fixed with a named panic in both `lowerByRefArg` branches (bare local
+and record field) when the argument's actual type doesn't exactly match
+the callee's declared by-ref parameter type — matching N9.6's own "loud
+diagnostic, never silent miscompile" policy for every other out/inout
+scope cut (extern funcs, protected types, async, unaddressable l-value
+shapes). Two new cases in `llvm_inout_self_test.l`: an `Int` local
+against an `inout Long` parameter, and an `Int` record field against the
+same — both asserted via `assertPanicsWith` to panic with a message
+containing "must match the parameter's exactly" before `lowerNativePackage`/
+clang ever run.
+
+**#6625 — bare-name UFCS reachability fallback is over-inclusive across
+colliding trailing names.** #6103 item D (PR #6622) added a bare
+member-name-only reachability fallback to `Lyric.LlvmBridge`'s
+function-granularity reachability walk (`collectCallKeys`/
+`registerFileFns`/`registerBareTrailingSegment`), needed because a UFCS
+call on a value receiver (`cfg.identity.rawHandle()`) produces no
+resolvable key at the syntax-only reachability stage (the receiver's
+static type isn't known yet). The fallback resolves a bare trailing
+segment (`"rawHandle/1"`) against EVERY same-named/arity
+extension-method-style declaration in the bundle via a multi-valued
+`bareTrailing: Map[String, List[String]]`. The stdlib already has
+several common trailing names declared on multiple, otherwise-unrelated
+types (`.message()` on `TlsError`/`RestError`/`ParseError`/`IOError`/
+`HttpError`/`YamlError`/`XmlError`) — if a program's transitive import
+closure pulls in two or more of these and calls `.message()` on any one
+via UFCS, ALL colliding implementations get swept into the reachable
+set together, so an unrelated, never-called implementation using a
+not-yet-lowerable construct could fail an otherwise-unrelated build.
+
+A precise fix needs receiver-type inference threaded into this
+syntax-only walk — out of scope here (tracked as the issue's own "what a
+real fix needs" open item). Shipped instead: a real, SOUND partial
+narrowing. `walkReachableFns` now takes a `pkgImports: Map[String,
+List[String]]` adjacency map (each bundled/own file's own direct
+`imports`, built once by a new `addPkgImports` helper at both native
+entry points — single-file `compileToNativeWithFlags` and multi-package
+`compileProjectToNativeWithFlags`) and, for each `bareTrailing`
+resolution, computes `curPkg`'s transitive import closure via a new
+`pkgTransitiveClosure` (BFS, memoized per `curPkg` for the walk's
+lifetime) — a `bareTrailing` candidate is marked reachable only when its
+OWN declaring package is inside that closure (or is `curPkg` itself). An
+empty/unregistered `curPkg` falls back to the old bundle-wide behavior
+rather than risk under-inclusion in an edge case never observed in
+practice. This narrowing is provably sound in one direction: the type
+checker requires a cross-package callee's declaring package be imported
+(directly or transitively) for the ORIGINAL unambiguous UFCS call to
+have type-checked at all, so the genuinely-correct candidate is always
+inside the caller's own import closure — this can only exclude UNRELATED
+candidates from packages the caller can't even reach, never the real
+target. It remains over-inclusive when two colliding packages ARE
+co-imported by the same program (the general case genuinely needs type
+inference), so this is documented as a partial fix, not a closure of the
+underlying issue.
+
+Two new unit-level cases in `llvm_codegen_self_test.l` (new `import
+Lyric.LlvmBridge`) exercise `pkgTransitiveClosure` (now `pub`) directly
+against hand-built `pkgImports` adjacency maps — a root with a reachable
+direct import, a transitively-reachable import-of-an-import, and an
+unrelated sibling package the root cannot reach at all; and a diamond
+import graph (`A -> {B, C} -> D -> A`) to confirm the BFS terminates and
+visits every node exactly once despite the cycle. A full end-to-end
+regression (two bundled stdlib packages colliding on a trailing name
+where one has a currently-unlowerable body) isn't constructible today —
+per the issue's own note, no such stdlib pair currently exists — so this
+tests the new closure computation directly rather than synthesizing an
+artificial unlowerable stdlib function.
+
+**Verified.** Full existing native self-test suite re-run under real
+ASan (this sandbox's `libclang-rt-18-dev` gap from earlier native-backend
+sessions is resolved — `apt-get install` succeeded once network access
+was retried): `llvm_codegen_self_test.l` 34/34,
+`llvm_enum_case_resolve_self_test.l` 7/7, `llvm_inout_self_test.l`
+11/11, `llvm_project_self_test.l` 10/10 (multi-package reachability
+path, unaffected since every own-package function is already an
+unconditional reachability root — #6625's narrowing only bites the
+BUNDLED STDLIB closure, reached purely via imports), `llvm_stdlib_self_test.l`
+18/18, `llvm_http_client_self_test.l` 16/16 — no regressions from either
+the reachability narrowing or the two new diagnostics.
+
+**Related:** #6740, #6813, #6625 (all fixed here), D-progress-877
+(#6645, the sibling native-codegen ARC bug this session also fixed, in a
+separate PR), `native/plan/08-work-items.md` N9.8,
+`native/plan/04-arc-design.md` (Rule 5, the by-ref-argument-ownership
+rule #6813's fix protects).
