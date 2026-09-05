@@ -6565,6 +6565,14 @@ pub func registerTypeFqnCandidate(cctx: in CodegenCtx, typeName: in String, type
 // `ArrayTypeMismatchException`/`InvalidCastException` at runtime. Falls
 // back to the ordinary scope-priority `resolveTypeFqn` for a genuinely bare
 // (single-segment) reference, unchanged.
+//
+// #6992: the identical hazard applies to a qualified generic type's own
+// HEAD, not just its type arguments — `PkgA.Box[Int]` where an unrelated
+// `PkgB` also declares `Box[T]` must resolve `Box` to `PkgA`'s declaration.
+// Every `TGenericApp` fallback branch (`typeExprToMsilCtx`,
+// `typeExprToMsilG`, `typeExprToMsilGenBody`, `typeExprToMsilGenSig`) now
+// calls this function with the generic application's own `head` path
+// instead of the bare-tail-only `resolveTypeFqn`.
 func resolveTypeFqnQualified(cctx: in CodegenCtx, pkgName: in String, path: in ModulePath, seg: in String): String {
   if path.segments.count > 1 {
     val quals: List[String] = newList()
@@ -6981,7 +6989,7 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         // / `registerRestoredArtifactTokens` before user code references them.
         // A registration-ordering shift would surface here as a silent miscompile;
         // a diagnostic-grade rejection is a tracked follow-up under epic #1622.
-        val headFqn = resolveTypeFqn(cctx, pkgName, headSeg)
+        val headFqn = resolveTypeFqnQualified(cctx, pkgName, head, headSeg)
         // In-bundle generic type (#2362): `Box[Int]` resolves to a by-name
         // GENERICINST over the in-bundle TypeDef (resolved at lowering), checked
         // BEFORE the cross-assembly `ffiTypeRefs` path so an in-bundle head wins.
@@ -26723,7 +26731,7 @@ func typeExprToMsilGApp(
     }
     MExternEnumerable(elemTy = valTy2)
   } else {
-    val headFqn = resolveTypeFqn(cctx, pkgName, headSeg)
+    val headFqn = resolveTypeFqnQualified(cctx, pkgName, head, headSeg)
     match mapGet(cctx.genericTypeArity, headFqn) {
       case Some(arity) -> {
         val inBundleArgs: List[MsilType] = newList()
@@ -26881,7 +26889,7 @@ func typeExprToMsilGenBody(
         }
         MExternEnumerable(elemTy = valTy)
       } else {
-        val headFqn = resolveTypeFqn(cctx, pkgName, headSeg)
+        val headFqn = resolveTypeFqnQualified(cctx, pkgName, head, headSeg)
         match mapGet(cctx.genericTypeArity, headFqn) {
           case Some(arity) -> {
             val inBundleArgs: List[MsilType] = newList()
@@ -26991,7 +26999,7 @@ func typeExprToMsilGenSig(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Stri
       } else if headSeg == "Map" {
         MMapOf(keyTy = MObject, valTy = MObject)
       } else {
-        val headFqn = resolveTypeFqn(cctx, pkgName, headSeg)
+        val headFqn = resolveTypeFqnQualified(cctx, pkgName, head, headSeg)
         match mapGet(cctx.genericTypeArity, headFqn) {
           case Some(arity) -> {
             val inBundleArgs: List[MsilType] = newList()
