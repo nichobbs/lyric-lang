@@ -1019,7 +1019,10 @@ func resolveTrust(
       // spelling does not resolve an `internal` cross-package function in
       // native's bundled import closure.
       case Some(cert) -> TlsTrustExclusive(caPem = Tls.Certificate.rawHandle(cert).certPem)
-      case None -> match caCertificate { case Some(cert2) -> TlsTrustAdditive(caPem = Tls.Certificate.rawHandle(cert2).certPem); case None -> TlsTrustSystemDefault }
+      case None -> match caCertificate {
+        case Some(cert2) -> TlsTrustAdditive(caPem = Tls.Certificate.rawHandle(cert2).certPem)
+        case None -> TlsTrustSystemDefault
+      }
     }
   }
 }
@@ -1074,10 +1077,32 @@ pub func hostMakeRequest(httpMethod: in String, url: in String): HttpRequestMess
   )
 }
 
-pub func hostWithHeader(request: in HttpRequestMessage, key: in String, value: in String): HttpRequestMessage {
+/// Framing headers `buildRequestBytes` (below) generates automatically
+/// (`Host`, `Connection`; `Content-Type`/`Content-Length` once a body is
+/// attached). Letting a caller add one of these via `hostWithHeader`
+/// produces a duplicate header line on the wire once the automatic one is
+/// appended — request-smuggling-adjacent, since which of two duplicate
+/// headers a peer honors is implementation-defined (RFC 9112 §5.1) — so
+/// `hostWithHeader` rejects them instead (#6658). Case-insensitive per RFC
+/// 9110 §5.1 (header field names are case-insensitive); uses the
+/// hand-rolled `asciiEqualsCaseInsensitive` (module header item 4: no
+/// `.toLower()` on this target). Mirrored verbatim in `_kernel/http_host.l`
+/// and `_kernel_jvm/http_host.l`.
+func isReservedFramingHeader(name: in String): Bool {
+  asciiEqualsCaseInsensitive(name, "Host") or asciiEqualsCaseInsensitive(name, "Connection") or
+    asciiEqualsCaseInsensitive(name, "Content-Type") or
+    asciiEqualsCaseInsensitive(name, "Content-Length")
+}
+
+pub func hostWithHeader(
+  request: in HttpRequestMessage, key: in String, value: in String
+): Result[HttpRequestMessage, String] {
+  if isReservedFramingHeader(key) {
+    return Err(error = key)
+  }
   request.headerNames.add(key)
   request.headerValues.add(value)
-  request
+  return Ok(value = request)
 }
 
 pub func hostWithStringBody(request: in HttpRequestMessage, contentType: in String, body: in String): HttpRequestMessage {
@@ -1298,7 +1323,26 @@ func readBody(
         Err(error = "unsupported Transfer-Encoding: " + te)
       }
     }
-    case None -> match findHeaderValue(headers.names, headers.values, "Content-Length") { case Some(clStr) -> match parseNonNegativeInt(trimSpaces(clStr)) { case None -> Err(error = "invalid Content-Length: " + clStr); case Some(len) -> { if len > maxResponseBodyBytes { Err(error = "response Content-Length exceeds the maximum allowed size") } else { val total = bodyStart + len; match readAtLeast(conn, buf, total) { case Ok(_) -> Ok(value = copyRange(buf, bodyStart, len)); case Err(e) -> Err(error = e) } } } }; case None -> match readUntilEof(conn, buf, bodyStart) { case Ok(_) -> Ok(value = copyRange(buf, bodyStart, buf.count - bodyStart)); case Err(e) -> Err(error = e) } }
+    case None -> match findHeaderValue(headers.names, headers.values, "Content-Length") {
+      case Some(clStr) -> match parseNonNegativeInt(trimSpaces(clStr)) {
+        case None -> Err(error = "invalid Content-Length: " + clStr)
+        case Some(len) -> {
+          if len > maxResponseBodyBytes {
+            Err(error = "response Content-Length exceeds the maximum allowed size")
+          } else {
+            val total = bodyStart + len
+            match readAtLeast(conn, buf, total) {
+              case Ok(_) -> Ok(value = copyRange(buf, bodyStart, len))
+              case Err(e) -> Err(error = e)
+            }
+          }
+        }
+      }
+      case None -> match readUntilEof(conn, buf, bodyStart) {
+        case Ok(_) -> Ok(value = copyRange(buf, bodyStart, buf.count - bodyStart))
+        case Err(e) -> Err(error = e)
+      }
+    }
   }
 }
 
@@ -1455,7 +1499,10 @@ func nextRequestForRedirect(request: in HttpRequestMessage, status: in Int, newU
   } else {
     val sameAuthority = match parseUrl(request.url) {
       case Err(_) -> false
-      case Ok(fromParsed) -> match parseUrl(newUrl) { case Err(_) -> false; case Ok(toParsed) -> isSameRedirectAuthority(fromParsed, toParsed) }
+      case Ok(fromParsed) -> match parseUrl(newUrl) {
+        case Err(_) -> false
+        case Ok(toParsed) -> isSameRedirectAuthority(fromParsed, toParsed)
+      }
     }
     val filtered = if sameAuthority {
       FilteredHeaders(names = request.headerNames, values = request.headerValues)
@@ -1494,7 +1541,17 @@ func doSend(client: in HttpClientHandle, request: in HttpRequestMessage): Result
             case None -> {
               redirecting = false
             }
-            case Some(loc) -> match parseUrl(current.url) { case Err(_) -> { redirecting = false }; case Ok(parsedCurrent) -> { val newUrl = resolveRedirectUrl(parsedCurrent, loc); current = nextRequestForRedirect(current, response.status, newUrl); attempts = attempts + 1; result = doSendOnce(client, current) } }
+            case Some(loc) -> match parseUrl(current.url) {
+              case Err(_) -> {
+                redirecting = false
+              }
+              case Ok(parsedCurrent) -> {
+                val newUrl = resolveRedirectUrl(parsedCurrent, loc)
+                current = nextRequestForRedirect(current, response.status, newUrl)
+                attempts = attempts + 1
+                result = doSendOnce(client, current)
+              }
+            }
           }
         } else {
           redirecting = false
