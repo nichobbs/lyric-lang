@@ -1684,7 +1684,11 @@ pub func compileProjectToJarBundledWithRestored(
   val userEntryItems: List[Item] = newList()
   var uei = 0
   while uei < userFile.items.count {
-    if pipeIsCrossPackageItem(userFile.items[uei]) {
+    // #6580: the entry package is the user's own project, so an `internal`
+    // item must be visible to sibling project packages too — see
+    // `pipeIsCrossPackageItemProject`'s doc comment for why this differs
+    // from the stdlib/restored-dependency loops below (still pub-only).
+    if pipeIsCrossPackageItemProject(userFile.items[uei]) {
       userEntryItems.add(userFile.items[uei])
     }
     uei = uei + 1
@@ -1746,7 +1750,9 @@ pub func compileProjectToJarBundledWithRestored(
       val sItems: List[Item] = newList()
       var sii = 0
       while sii < sf.items.count {
-        if pipeIsCrossPackageItem(sf.items[sii]) {
+        // #6580: a sibling PROJECT package (not stdlib/restored), so
+        // `internal` items must be visible too.
+        if pipeIsCrossPackageItemProject(sf.items[sii]) {
           sItems.add(sf.items[sii])
         }
         sii = sii + 1

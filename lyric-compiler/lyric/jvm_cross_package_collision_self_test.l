@@ -455,3 +455,35 @@ test "qualified record construction survives a local shadowing only the package'
     "qualified_record_construction_survives_shadowed_first_segment_jvm: stdout matches expected"
   )
 }
+
+// #6580: `pipeIsCrossPackageItem` (the shared cross-package item-visibility
+// filter `Lyric.Pipeline` — and, before this fix, `Jvm.Bridge`/`Msil.Bridge`/
+// `Lyric.LlvmBridge` — used for a project's OWN sibling packages) only ever
+// admitted `pub` functions. `internal` is documented (docs/01 §3.1) as
+// visible across every package WITHIN THE SAME PROJECT, but a qualified
+// cross-package call to an `internal` function used to fail T0020 "unknown
+// name" on all three backends because the callee's OWN package never
+// contributed its `internal` items to a sibling's checked view at all.
+test "qualified call to an internal cross-package function resolves (JVM, #6580)" {
+  val pkgSrcs: List[String] = newList()
+  pkgSrcs.add(
+    "package Pkg6580A\n" + "\n" + "pub record Handle {\n" + "  id: Int\n" + "}\n" + "\n" +
+      "internal func wrapHandle(id: in Int): Handle {\n" +
+      "  Handle(id = id)\n" +
+      "}\n"
+  )
+  pkgSrcs.add(
+    "package Pkg6580B\n" + "\n" + "import Pkg6580A\n" + "\n" + "func main(): Int {\n" +
+      "  val h = Pkg6580A.wrapHandle(id = 7)\n" +
+      "  println(h.id)\n" +
+      "  0\n" +
+      "}\n"
+  )
+  val result = compileAndRunJvm("internal-qualified-call-6580", pkgSrcs, "Pkg6580B")
+  assertEqualInt(result.exitCode, 0, "internal_qualified_call_6580: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "7",
+    "qualified call to an internal cross-package function returns the right value"
+  )
+}
