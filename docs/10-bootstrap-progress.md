@@ -32292,9 +32292,18 @@ heuristic (`inferUntypedStaticValMsilType`) already used for untyped
 module-level vals, resolved against a `paramEnv` built from any explicitly
 (brace-form) typed lambda parameters. Orthogonal to the pre-existing #1939
 diagnostic, which guards a different case (an UNANNOTATED parameter's own
-value needing unboxing inside the body).
+value needing unboxing inside the body). **Review follow-up:** a dedicated
+`inferLambdaBodyExprMsilType` now handles the lambda-body case instead of
+reusing the module-val heuristic directly for arithmetic — a captured
+(non-parameter) outer variable of unresolvable type no longer silently
+defaults to `MInt` (#6933); an explicit trailing `return` is now also
+recognized as a value producer instead of assuming `MVoid`. A related but
+materially different, entirely pre-existing crash (`return` inside ANY
+lambda body panics regardless of return-type registration) was discovered
+and filed separately as #6947.
 
-**Related:** `docs/03-decision-log.md` D-progress-877 (full account), #6690.
+**Related:** `docs/03-decision-log.md` D-progress-877 (full account), #6690,
+#6933, #6947.
 
 ### Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
 

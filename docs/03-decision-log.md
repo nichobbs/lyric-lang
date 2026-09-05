@@ -41330,15 +41330,80 @@ block body whose trailing statement is the value (exercises the `paramEnv`
 `EPath` lookup and `blockTrailingExprMsil` picking the LAST statement).
 Verified green on both targets against a from-source `make lyric` build.
 
-**Formatter note (#6869).** `func_val_local_rettype_self_test.l` could not be
-run through `lyric fmt --write` after this addition — it aborts on the
-file's PRE-EXISTING lambda-literal usage (`{ y: Int -> x + y }` etc.,
-present before this change), the same `lyric fmt` bug already filed as
-#6869 while fixing #6553. `msil/codegen.l`'s own change formatted cleanly
-with no diff (the new code was already written in the file's established
-style).
+**Formatter note (#6869), corrected below.** This entry originally claimed
+`lyric fmt --write` could not run on this file because of its PRE-EXISTING
+brace-lambda usage (`{ y: Int -> x + y }` etc.). That was a misdiagnosis:
+brace-form lambdas format fine (verified directly); #6869 is scoped
+specifically to the BARE-PAREN-ARROW SUGAR form (`(x) -> expr`), which this
+file's two `#6690` test cases used at the time. See the follow-up below,
+which converts both to the equivalent brace form and makes the file
+fmt-clean.
+
+**Follow-up (review, #6932/#6933).** `claude-review` raised two REQUIRED
+findings against this entry's own PR:
+
+- **#6932** claimed the `ELambda` arm's `case None -> MVoid` fallback
+  misclassifies a `return`-terminated lambda body, causing a stack-underflow
+  crash at the invoke site. Investigated and found NOT reproducible as
+  described: a lambda body ending in `return <value>` types as `Never`
+  (`checkBlock`'s divergence rule), and passing a `Never`-typed call result
+  as a plain call argument is rejected at COMPILE time (`error[T0043]`)
+  before codegen ever runs — confirmed against the issue's own exact repro.
+  A more permissive consuming position (the lambda passed DIRECTLY to a
+  typed HOF parameter, `Never` freely unifying there) does compile and does
+  crash with `NullReferenceException` — but that crash was verified to
+  reproduce IDENTICALLY on `main` at 57b130e (this PR's own base commit,
+  before any of its changes existed) via a lambda passed directly to a HOF
+  parameter with NO `val` binding and no `registerFieldFuncValTypesMsil`
+  involvement at all — i.e. a materially different, much deeper, entirely
+  pre-existing "a `return` statement inside ANY lambda-literal body panics
+  at runtime regardless of how its return type is registered" gap. Filed
+  separately as #6947 (out of `group:msil-codegen-correctness` scope).
+  `registerFieldFuncValTypesMsil`'s trailing-value search (renamed
+  `lambdaBodyTrailingValueMsil`) still now ALSO unwraps an explicit trailing
+  `return <expr>` as a value producer instead of assuming `MVoid` — a
+  genuine, harmless correctness improvement kept regardless of #6947's
+  unrelated crash — but no runtime regression test could be added for it:
+  every reachable way to actually invoke such a lambda hits #6947's crash
+  independent of this fix, leaving no passing repro to pin the
+  type-inference improvement in isolation.
+- **#6933** confirmed correct: `inferUntypedStaticValMsilType`'s arithmetic
+  `EBinop` arms (`BAdd`/`BSub`/`BMul`/`BDiv`/`BMod`) fall back to `MInt` when
+  an operand's type can't be resolved — sound for that function's original
+  module-level-val context (`env` covers every name in scope by
+  construction there) but NOT for a lambda body, which can reference an
+  outer CAPTURE `paramEnv` (the lambda's own explicitly-typed params only)
+  knows nothing about; a captured `Double`/`String` operand used in
+  arithmetic was silently mis-inferred as `MInt`, and the invoke site's
+  resulting `unbox.any int32` against a boxed `Double`/`String` throws
+  `InvalidCastException`. Fixed by a new `inferLambdaBodyExprMsilType`
+  (`msil/codegen.l`) that mirrors `inferUntypedStaticValMsilType`'s dispatch
+  for every shape that heuristic resolves WITHOUT depending on an operand's
+  own resolvability (literals, `EPath`, the comparison/boolean arms — always
+  `MBool` regardless of either operand's type — `BXor`, `EPrefix`), but
+  propagates `MObject` (unknown) through the arithmetic arms instead of
+  guessing `MInt` when the recursively-inferred operand type is itself
+  `MObject`. Verified with new regression cases: arithmetic over a captured
+  `Double` and a captured `String`, both bound through an explicitly-typed
+  local (the established `#5519` real-unboxing-at-a-typed-bind pattern) to
+  prove which type actually got registered — a wrong `MInt` registration
+  would throw INSIDE the call's own invoke codegen, before ever reaching the
+  bind; a companion case pins that the fix does not regress the
+  always-safe comparison arm over a captured value.
+
+Also converted this file's two pre-existing `#6690` bare-paren-arrow-sugar
+lambda literals (`(x) -> false` / `(x) -> threshold > 0`) to the equivalent
+brace form (`{ x -> false }` / `{ x -> threshold > 0 }` — both parameters
+are genuinely unused, so the type-erasure/#1939 semantics are unaffected):
+the two forms are identical for an untyped single param, but the bare-paren
+sugar trips #6869 while the brace form does not, so the file (with this
+follow-up's new cases, also written in brace form) is now fully
+`lyric fmt --write`-clean — the "Formatter note" above no longer applies.
 
 **Related:** #6690, #5511/#5366/D-progress-684 (the pre-existing
 `registerFieldFuncValTypesMsil` fallback this extends), #1939 (the
 unrelated, still-in-effect diagnostic this fix does not touch), #6869 (the
-`lyric fmt` refusal).
+bare-paren-sugar `lyric fmt` bug, now sidestepped in this file), #6932
+(review finding, not reproducible as described — closed in favor of #6947),
+#6933 (review finding, confirmed and fixed), #6947 (the newly-discovered,
+much deeper `return`-inside-any-lambda-body crash, unrelated to this PR).
