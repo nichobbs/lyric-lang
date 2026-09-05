@@ -356,7 +356,15 @@ int32_t lyric_sock_accept_interruptible(int32_t listen_fd, int32_t wake_read_fd)
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     /* Spurious wakeup (another thread on this same
                      * listening socket already accepted the pending
-                     * connection) -- poll again. */
+                     * connection) -- poll again. NOTE (issue #6962): this
+                     * assumes listen_fd is O_NONBLOCK, which it is not
+                     * today -- on the current blocking socket, a losing
+                     * thread's accept() call here blocks instead of
+                     * returning EAGAIN, and while blocked stops polling
+                     * the wake pipe. Not reachable via any caller in this
+                     * codebase (exactly one accept-loop thread per
+                     * Listener always), so left as a documented follow-up
+                     * rather than fixed here. */
                     continue;
                 }
                 g_sock_accept_errno = errno;

@@ -33566,10 +33566,14 @@ interruptible entry point, and `hostStopListener` signals the pipe instead
 of calling `shutdown()` on the listening socket (which remains in use,
 unchanged, for `hostShutdown`'s per-CONNECTION interrupt — only the
 listening-socket case had the platform divergence). No `_kernel_native/
-http_server.l` changes were needed: its `plainAcceptLoop`/`tlsAcceptLoop`
-already treat every accept failure through the typed `AcceptFailureKind`
-classification (#6805), and the interrupt path maps to the exact same
-`AcceptFatal` case the old Linux-`shutdown()` path produced.
+http_server.l` changes were needed for the interrupt classification
+itself: its `plainAcceptLoop`/`tlsAcceptLoop` already treat every accept
+failure through the typed `AcceptFailureKind` classification (#6805),
+and the interrupt path maps to the exact same `AcceptFatal` case the old
+Linux-`shutdown()` path produced. (The later #6883 TOCTOU addendum below
+DID touch this file's cleanup call sites — `hostCloseListener` calls in
+`stopListener` and the `startListenerTls` failure branch — a different,
+smaller change than the interrupt mechanism itself.)
 
 Verified locally: `lyric-rt/test/lyric_tls_test.c` gained four new C-level
 cases (ordinary accept still works through the interruptible entry point;
