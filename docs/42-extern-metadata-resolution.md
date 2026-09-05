@@ -576,7 +576,7 @@ runtime gap.
     `generic_extern_methodspec_self_test.l` (BCL-only shapes — `List`1`'s
     `IEnumerable<T>` ctor and `Enumerable.Empty<T>()`'s MethodSpec dispatch —
     so CI needs no gRPC package).
-  - **Review follow-up (D-progress-883).** A genuine regression surfaced
+  - **Review follow-up (D-progress-884).** A genuine regression surfaced
     post-review: the `scoreSigType` `STNamedGenericInst` arm above initially
     matched every CLOSED generic instantiation unconditionally, not just the
     open-VAR case it documents — spuriously admitting an unrelated overload
