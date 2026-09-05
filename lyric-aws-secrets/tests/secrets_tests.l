@@ -463,6 +463,20 @@ func jvmExtractSecretFieldScenario(): String {
     case Err(e) -> return "expected ParseError for a non-string field, got a different error: " + AwsSecrets.errorMessage(e)
   }
 
+  // Malformed JSON entirely (Std.Json.tryParseJson's own Err branch) must
+  // also come back as a typed ParseError, not propagate a raw parse-error
+  // string or panic.
+  val malformedJson = SecretsKernel.extractSecretField("my-secret", Some("dbPassword"), "{not valid json")
+  match malformedJson {
+    case Ok(v) -> return "expected ParseError for malformed JSON, got Ok: " + v
+    case Err(ParseError(n, k, _)) -> if n != "my-secret" or k != "dbPassword" {
+      return "ParseError carried the wrong name/key for malformed JSON"
+    } else {
+      ()
+    }
+    case Err(e) -> return "expected ParseError for malformed JSON, got a different error: " + AwsSecrets.errorMessage(e)
+  }
+
   val missingField = SecretsKernel.extractSecretField("my-secret", Some("missing"), "{\"dbPassword\": \"hunter2\"}")
   match missingField {
     case Ok(v) -> "expected ParseError for a missing field, got Ok: " + v
