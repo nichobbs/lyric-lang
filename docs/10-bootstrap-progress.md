@@ -12623,6 +12623,19 @@ Supports unary calls (`callUnary`) and server-streaming (`openServerStream` /
 `nextMessage` / `closeStream`).  Call options carry an optional deadline and
 per-call metadata headers.  The JVM kernel (`Grpc.Kernel.Jvm`) is a Phase 6
 stub mirroring the .NET API using `io.grpc.ManagedChannel`.
+**Correction (2026-09-05, group:ecosystem-lib-kernels):** the above described
+the intended design, not the shipped reality — every one of these functions
+was declared as a body-less `extern package { ... }` block, a form the
+self-hosted MSIL backend has always treated as a pure no-op (#6592/#5409).
+Channel lifecycle (`openChannel`/`closeChannel`) and the rate limiter
+(`checkRateLimit`) were made real against `Grpc.Net.Client.GrpcChannel` /
+`System.Threading.RateLimiting` in follow-up PRs. Unary calls, server
+streaming, and server hosting remain honest `Err`/`panic` stubs, blocked on
+a self-hosted-compiler generic-BCL-API gap (#6581) confirmed to have no
+non-generic workaround on either the client or server side — see
+`lyric-grpc/README.md`'s platform-parity table and
+`lyric-grpc/src/_kernel/net/grpc_kernel.l`'s doc comments for the verified
+API-surface evidence.
 
 **`lyric-otel/src/otlp.l`** (new package `OTel.Otlp`, D069) — OTLP exporter
 configuration API.  `configureOtlpTraces`, `configureOtlpMetrics`,

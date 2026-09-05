@@ -2,8 +2,10 @@
 //! Stability: @experimental. Real and tested today: channel lifecycle
 //! (openChannel/closeChannel, backed by Grpc.Net.Client.GrpcChannel) and
 //! checkRateLimit's sliding-window limiter. callUnary/openServerStream/
-//! start/startHandle remain unimplemented `extern package` stubs blocked
-//! on #6581 (a self-hosted-compiler generic-BCL-API gap) and have not
+//! start/startHandle honestly fail fast (Err/panic) rather than dispatch —
+//! blocked on #6581 (a self-hosted-compiler generic-BCL-API gap, confirmed
+//! to also block server hosting: no non-generic RPC-route-registration
+//! surface exists on Grpc.AspNetCore.Server 2.65.0 either) and have not
 //! been exercised against a real gRPC service in CI — see README.md's
 //! platform-parity table for the precise real-vs-blocked split.
 //!
