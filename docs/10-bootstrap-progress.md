@@ -33724,6 +33724,45 @@ headers and were verified that way.
 `docs/35-lambda-library.md` §4.2/§8 (updated), `lyric-lambda/README.md`
 (support matrix updated), #5412 (closed), #6868 (new, filed not fixed),
 #5600/#5578/#6548 (the prior `Lambda.Dispatch` work this builds on).
+## #6268 closed: manifest-declared `[build] shape` on `--target native` raises `F0043` instead of silent override
+
+A manifest naming `shape = "portable"`/`"standalone"` for a `--target
+native` project used to be silently upgraded to `"aot"` — the same
+CLI-flag conflict already raised the hard `F0043` error, but the
+manifest-key path bypassed that check entirely by pre-defaulting the
+shape via `defaultShapeForTarget` before the manifest was ever consulted.
+`Lyric.Cli.resolveShapeAxis` (`cli/cli_build.l`, replacing
+`defaultShapeForTarget`) now folds the native default into the SAME
+resolution path both `resolveBuildAxes` (CLI-only) and
+`resolveBuildAxesFromManifest` (CLI + manifest) share, so a manifest that
+explicitly names a non-`aot` shape for native hits `F0043` exactly like a
+conflicting `--shape` flag would; only a manifest that says nothing about
+`shape` still defaults to `"aot"` on that target. Added
+`BuildSection.shapeDeclared`/`profileDeclared` to the manifest parser to
+distinguish "the manifest said portable" from "the manifest said
+nothing" — mtime/text-presence alone couldn't tell those apart.
+
+**Related:** #6268, D-progress-886 (full account),
+`docs/01-language-reference.md` §3.6 (`[build] shape` manifest table),
+`docs/63-build-profiles-and-debugger.md` (the shape axis this closes a
+gap in).
+
+## #6579 closed: `test_only = true` packages for `[project.packages]`
+
+A `[project.packages]` entry can now use the inline-table form `{ path =
+"...", test_only = true }` instead of a bare path string. A `test_only`
+package is still resolvable by `[project.tests]` entries and by `lyric
+test`'s `@test_module` auto-discovery, but `buildProjectFromManifest`
+skips it entirely when assembling the production whole-project bundle —
+closing the gap #6579 described between duplicating a shared test
+fixture into every consumer's own `src/` tree (to keep it out of the
+shipped assembly) or giving it a real `[project.packages]` entry (leaking
+test-only code into what ships). `PackageEntry.testOnly: Bool` defaults
+to `false` for the pre-existing bare-string form.
+
+**Related:** #6579, D-progress-887 (full account),
+`docs/20-project-as-dll.md` §3 ("Test-only packages" subsection).
+
 ## #6815 items 1(a)/2/3(a): native project builds stop crashing on cross-project deps, `--triple`/`--opt` project-mode threading, `lyric run --manifest --target native`
 
 Of #6815's three tracked follow-ups, this closes item 1(a) and 2, and item
@@ -33808,4 +33847,4 @@ mtime from a marker touched BEFORE `bootstrap.sh` runs (`touch -r`), not
 "now" at completion, closing the race where a `.l` source edited mid-build
 looked older than the stamp that (falsely) claimed to have compiled it.
 
-**Related:** #5611, D-progress-880 (full account).
+**Related:** #5611, D-progress-885 (full account).
