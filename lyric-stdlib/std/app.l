@@ -5,6 +5,7 @@
 @runtime_checked
 package Std.App
 
+import Std.Core
 import Std.Errors
 import Std.File as File
 

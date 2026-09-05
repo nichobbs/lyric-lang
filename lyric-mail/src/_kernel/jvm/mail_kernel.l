@@ -19,6 +19,8 @@
 @cfg(feature = "jvm")
 package Mail.Kernel.Jvm
 
+import Std.Core
+
 // ─── SMTP provider (Jakarta Mail) ────────────────────────────────────────────
 @axiom("Jakarta Mail SMTP client for JVM")
 @cfg(feature = "smtp")
