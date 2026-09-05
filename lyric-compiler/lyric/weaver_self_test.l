@@ -392,7 +392,17 @@ func exprMentionsPath(e: in Expr, name: in String): Bool {
       }
       false
     }
+    case ERange(bound) -> rangeBoundMentionsPath(bound, name)
     case _ -> false
+  }
+}
+
+func rangeBoundMentionsPath(bound: in RangeBound, name: in String): Bool {
+  match bound {
+    case RBClosed(lo, hi) -> exprMentionsPath(lo, name) or exprMentionsPath(hi, name)
+    case RBHalfOpen(lo, hi, _) -> exprMentionsPath(lo, name) or exprMentionsPath(hi, name)
+    case RBLowerOpen(hi) -> exprMentionsPath(hi, name)
+    case RBUpperOpen(lo) -> exprMentionsPath(lo, name)
   }
 }
 
@@ -626,7 +636,10 @@ func exprHasMemberAccess(e: in Expr, recv: in String, mem: in String): Bool {
         return true
       }
       match el {
-        case Some(eb) -> match eb { case EOBExpr(e3) -> exprHasMemberAccess(e3, recv, mem); case EOBBlock(b3) -> blockHasMemberAccess(b3, recv, mem) }
+        case Some(eb) -> match eb {
+          case EOBExpr(e3) -> exprHasMemberAccess(e3, recv, mem)
+          case EOBBlock(b3) -> blockHasMemberAccess(b3, recv, mem)
+        }
         case None -> false
       }
     }
@@ -691,7 +704,17 @@ func exprHasMemberAccess(e: in Expr, recv: in String, mem: in String): Bool {
       }
       false
     }
+    case ERange(bound) -> rangeBoundHasMemberAccess(bound, recv, mem)
     case _ -> false
+  }
+}
+
+func rangeBoundHasMemberAccess(bound: in RangeBound, recv: in String, mem: in String): Bool {
+  match bound {
+    case RBClosed(lo, hi) -> exprHasMemberAccess(lo, recv, mem) or exprHasMemberAccess(hi, recv, mem)
+    case RBHalfOpen(lo, hi, _) -> exprHasMemberAccess(lo, recv, mem) or exprHasMemberAccess(hi, recv, mem)
+    case RBLowerOpen(hi) -> exprHasMemberAccess(hi, recv, mem)
+    case RBUpperOpen(lo) -> exprHasMemberAccess(lo, recv, mem)
   }
 }
 
@@ -1034,7 +1057,16 @@ test "call.annotations is a string slice of the function's annotation short-name
   // the empty-list case).
   val annTy = findValTy(body, "__lyric_call_annotations")
   match annTy {
-    case Some(te) -> match te.kind { case TSlice(elem) -> match elem.kind { case TRef(mp) -> { assertEqualInt(mp.segments.count, 1, "slice element type is a single-segment ref"); assertEqual(mp.segments[0], "String", "slice element type is `String`") }; case _ -> panic("annotations: slice element is not a TRef") }; case _ -> panic("annotations: declared type is not a TSlice") }
+    case Some(te) -> match te.kind {
+      case TSlice(elem) -> match elem.kind {
+        case TRef(mp) -> {
+          assertEqualInt(mp.segments.count, 1, "slice element type is a single-segment ref")
+          assertEqual(mp.segments[0], "String", "slice element type is `String`")
+        }
+        case _ -> panic("annotations: slice element is not a TRef")
+      }
+      case _ -> panic("annotations: declared type is not a TSlice")
+    }
     case None -> panic("annotations: val carries no explicit type annotation")
   }
 }
@@ -1334,6 +1366,29 @@ test "@inline_template rewrites args.<param> to bare <param>" {
   val body = functionBody(wrapper)
   assertTrue(not bodyHasMemberAccess(body, "args", "x"), "args.x rewritten away")
   assertTrue(bodyMentionsPath(body, "x"), "bare path 'x' present after rewrite")
+}
+
+// #6833: `ERange` was a leaf in `rewriteExpr`'s walk, so `args.<field>`
+// references inside a range expression's `lo`/`hi` bounds (e.g. a
+// `for`-loop iterator) never got substituted.
+test "@inline_template rewrites args.<field> inside a for-loop range's lo/hi bounds" {
+  val src = "package P\n" + "@inline_template\n" + "pub aspect RangeTap {\n" + "  matches: name like \"h\"\n" +
+    "  around(args) -> ret {\n" +
+    "    for i in args.start .. args.stop {\n" +
+    "      val a = i\n" +
+    "    }\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func h(start: in Int, stop: in Int): Int { start }\n"
+  val wr = parseWeaveDiags(src)
+  assertTrue(not diagsHaveCode(wr.diagnostics, "A0042"), "no A0042 for valid args.<field> range bounds")
+  val wrapper = firstFunction(wr.file, "h")
+  val body = functionBody(wrapper)
+  assertTrue(not bodyHasMemberAccess(body, "args", "start"), "args.start in range lo rewritten away")
+  assertTrue(not bodyHasMemberAccess(body, "args", "stop"), "args.stop in range hi rewritten away")
+  assertTrue(bodyMentionsPath(body, "start"), "bare path 'start' present after rewrite")
+  assertTrue(bodyMentionsPath(body, "stop"), "bare path 'stop' present after rewrite")
 }
 
 test "@inline_template emits A0042 for args.<missing>" {
