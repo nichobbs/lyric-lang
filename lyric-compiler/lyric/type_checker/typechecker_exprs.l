@@ -3000,12 +3000,35 @@ func collectCtorFieldsFromOpaque(
   }
 }
 
-// Fill `out` with the constructor fields of `sym`; returns true if `sym` is a
-// constructible type (record / exposed-record / opaque).
+// #6689: field types are resolved lazily, on every use (constructor call,
+// field read, …), rather than once at the record/opaque's own declaration —
+// so they must resolve under the DECLARING package's scope, not whatever
+// scope happens to be active at the (possibly cross-package) call site that
+// triggered this lookup.  Without this, `Pkg.Item` in `record R { xs:
+// List[Item] }` resolved `Item` against the CALLER's imports: a caller that
+// transitively imports an unrelated same-named `Item` from a different
+// package silently constructed `R` with the wrong `Item` type baked into its
+// field, compiling cleanly and failing at runtime (`MissingMethodException`
+// / similar member-lookup failure) rather than at the constructor call that
+// actually named the right `Item`.  Save/restore the caller's scope around
+// the temporary switch so this is transparent to the caller.
 func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorField]): Bool {
   val ctx = newGenericContext()
   val scratch: List[Diagnostic] = newList()
-  match sym.kind {
+  val savedPkg: List[String] = newList()
+  var spi = 0
+  while spi < tbl.scopePkg.count {
+    savedPkg.add(tbl.scopePkg[spi])
+    spi = spi + 1
+  }
+  val savedImports: List[String] = newList()
+  var sii = 0
+  while sii < tbl.scopeImports.count {
+    savedImports.add(tbl.scopeImports[sii])
+    sii = sii + 1
+  }
+  symTableSetScope(tbl, sym.originPackage, symTablePackageImportsOf(tbl, sym.originPackage))
+  val result = match sym.kind {
     case DKRecord(_, rd) -> {
       collectCtorFieldsFromRecord(tbl, ctx, scratch, rd.members, acc)
       true
@@ -3020,6 +3043,9 @@ func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorFie
     }
     case _ -> false
   }
+  val restorePkg = if savedPkg.count > 0 { savedPkg[0] } else { "" }
+  symTableSetScope(tbl, restorePkg, savedImports)
+  result
 }
 
 func ctorResultType(sym: in Symbol): Type {
