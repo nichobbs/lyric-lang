@@ -53,7 +53,7 @@ pub func writeJarFromClasses(req: in BuildRequest, classes: in List[BuiltClass])
 // `Jvm.ZipReader` — a DIFFERENT, same-named `ZipEntry` record — and a
 // qualified `Jvm.Zip.ZipEntry` reference at the `Jvm.Bridge` call site
 // resolved to the wrong one). Root-caused and fixed in #6689
-// (D-progress-880): `Msil.Codegen.typeExprToMsilCtx`'s `TRef` case
+// (D-progress-888): `Msil.Codegen.typeExprToMsilCtx`'s `TRef` case
 // discarded a qualified type reference's owner package entirely, resolving
 // purely by the referencing file's own scope-priority. This parallel-list
 // representation is kept regardless — it remains a legitimate, harmless
