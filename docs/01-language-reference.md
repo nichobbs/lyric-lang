@@ -749,6 +749,15 @@ as `Some(v)`, a record pattern, a literal, or a range) is a compile error
 element. Destructure refutable shapes with a `match` inside the loop body
 instead.
 
+The iterated expression's type must be recognized as iterable: `slice[T]`,
+`List[T]`, `Map[K, V]`'s key/value collections, a range, or a single-type-
+parameter `extern type` (the phantom-type-param idiom for a foreign
+collection, e.g. `extern type JHttpStringCollection[T] = "java.util.Collection"`).
+Iterating over any other type — including a Lyric-native single-param
+generic that merely happens to have one type parameter but isn't a
+collection, such as `Option[T]` — is a compile error (**T0126**), not a
+silent runtime failure (#6720).
+
 `do ... while` does not exist. Use `while true { ... if cond { break } }`.
 
 Loop control: `break`, `continue`. Both may take a label for nested loops:
