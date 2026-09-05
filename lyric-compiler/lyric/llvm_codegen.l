@@ -258,6 +258,18 @@ record Ctx {
   // known to be a specific enum" — never a `Map.add` duplicate-key
   // panic on rebind, since every write site removes first.
   varEnumTypes: Map[String, String]
+  // #6237: `Char` and `Int` both erase to `NI32` with no runtime tag
+  // (native/plan/03-type-mapping.md), so `NVal.ty` alone can never
+  // distinguish them. Local bindings with an explicit `Char` type
+  // annotation (or a `Char`-literal initializer) are recorded here so
+  // `.toString()` and `String + Char` concatenation — the two codegen
+  // shapes that must actually tell Char and Int apart — can consult the
+  // AST at the use site instead of the erased `NVal`. Best-effort: covers
+  // literals and one level of variable binding, not full type inference
+  // (an unannotated function parameter or a further-removed alias stays
+  // untracked, exactly like every other unannotated binding in this
+  // backend's varTypes/varSlots).
+  varIsChar: Map[String, Bool]
   allocas: List[NInsn]
   loopBreak: List[String]
   loopCont: List[String]
@@ -380,6 +392,99 @@ func isStringNType(t: in NType): Bool {
   match t {
     case NPtr(pointee) -> match pointee { case NStruct(name, _) -> name == "LyricString"; case _ -> false }
     case _ -> false
+  }
+}
+
+/// Whether a surface `TypeExpr` names `Char` (#6237's Char/Int erasure
+/// tracking — see `Ctx.varIsChar`'s header comment).
+func isCharTypeExpr(te: in TypeExpr): Bool {
+  match te.kind {
+    case TRef(path) -> path.segments.count == 1 and path.segments[0] == "Char"
+    case TParen(inner) -> isCharTypeExpr(inner)
+    case _ -> false
+  }
+}
+
+/// Best-effort static "is this expression a `Char`" check, consulted only
+/// where `NVal.ty` alone cannot tell (`Char` and `Int` both erase to
+/// `NI32` — see `Ctx.varIsChar`'s header comment): a `Char` literal, a
+/// parenthesised char expression, or a variable this backend recorded as
+/// char-typed at its binding site (`markVarChar`, called from `SLocal`
+/// lowering and parameter binding). Anything else — an unannotated
+/// parameter, a further call result, a record field — is conservatively
+/// `false`, exactly like this backend's other best-effort local tracking
+/// (`varTypes`/`varSlots` are equally incomplete for exotic shapes).
+func exprIsCharTyped(ctx: in Ctx, e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(lit) -> match lit { case LChar(_) -> true; case _ -> false }
+    case EParen(inner) -> exprIsCharTyped(ctx, inner)
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        match mapGet(ctx.varIsChar, path.segments[0]) {
+          case Some(v) -> v
+          case None -> false
+        }
+      } else {
+        false
+      }
+    }
+    // `s[i]` bracket indexing on a String receiver ALWAYS yields `Char`
+    // (`indexElementType`'s `TyPrim(PtString) -> Char` rule has no other
+    // outcome) — unlike a `List[T]`/`Map[K,V]` index, which could
+    // genuinely be `Int`. Recognising this needs to tell "the receiver is
+    // a String" apart from "the receiver is a List/Map", which — unlike
+    // Char vs Int — this backend's ordinary `varTypes`/literal shape
+    // already distinguishes (`exprIsStringTyped`).
+    case EIndex(recv, _) -> exprIsStringTyped(ctx, recv)
+    case _ -> false
+  }
+}
+
+/// Whether `e` is a plain String-typed expression, per this backend's
+/// existing (unambiguous) String tracking — used only to disambiguate
+/// `s[i]`'s receiver from a `List`/`Map` index in `exprIsCharTyped` above.
+func exprIsStringTyped(ctx: in Ctx, e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LString(_) -> true
+      case LTripleString(_) -> true
+      case LRawString(_) -> true
+      case _ -> false
+    }
+    case EInterpolated(_) -> true
+    case EParen(inner) -> exprIsStringTyped(ctx, inner)
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        match mapGet(ctx.varTypes, path.segments[0]) {
+          case Some(t) -> isStringNType(t)
+          case None -> false
+        }
+      } else {
+        false
+      }
+    }
+    case _ -> false
+  }
+}
+
+/// Records (or clears) `name`'s char-ness for `exprIsCharTyped`, mirroring
+/// the remove-then-add pattern `bindLocal` uses for `varTypes`/`varSlots`
+/// (a rebound name must not see its old entry).
+func markVarChar(ctx: in Ctx, name: in String, isChar: in Bool): Unit {
+  if ctx.varIsChar.containsKey(name) {
+    ctx.varIsChar.remove(name)
+  }
+  ctx.varIsChar.add(name, isChar)
+}
+
+/// Char-ness of a `val`/`let`/`var` binding: an explicit `Char` type
+/// annotation wins outright (it is authoritative regardless of the
+/// initializer's shape); otherwise fall back to the initializer
+/// expression's own char-ness (`exprIsCharTyped`).
+func charnessOfBinding(ctx: in Ctx, tyOpt: in Option[TypeExpr], init: in Expr): Bool {
+  match tyOpt {
+    case Some(te) -> isCharTypeExpr(te)
+    case None -> exprIsCharTyped(ctx, init)
   }
 }
 
@@ -1997,7 +2102,24 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
   val a = lowerExpr(ctx, insns, lhs)
   val b = lowerExpr(ctx, insns, rhs)
   if isStringNType(a.ty) or isStringNType(b.ty) {
-    return lowerStringBinop(ctx, insns, op, a, b)
+    // `String + Char` / `Char + String` concatenation (#6237): `Char`
+    // erases to the same `NI32` as `Int` with no runtime tag, so
+    // `lowerStringBinop`'s own operand-type check can't tell a bare Char
+    // apart from a bare Int — it must see a real `LyricString*` on both
+    // sides. Widen the non-string operand here, BEFORE that check, using
+    // the syntactic char-ness of the ORIGINAL (unlowered) expression
+    // (`exprIsCharTyped`) — the only place this backend can still tell.
+    var a2 = a
+    var b2 = b
+    if op == BAdd {
+      if not isStringNType(a.ty) and exprIsCharTyped(ctx, lhs) {
+        a2 = callRuntime(ctx, insns, "lyric_string_from_char", lyricStringNType(), arg1(NI32, a.value))
+      }
+      if not isStringNType(b.ty) and exprIsCharTyped(ctx, rhs) {
+        b2 = callRuntime(ctx, insns, "lyric_string_from_char", lyricStringNType(), arg1(NI32, b.value))
+      }
+    }
+    return lowerStringBinop(ctx, insns, op, a2, b2)
   }
   if isComparisonOp(op) {
     match unifyOperands(a, b) {
@@ -2234,6 +2356,7 @@ func lowerScalarMethodCall(
   name: in String,
   args: in List[CallArg],
   line: in Int,
+  recvExpr: in Option[Expr],
 ): Option[NVal] {
   if isStringNType(v.ty) {
     if name == "toString" and args.count == 0 {
@@ -2324,6 +2447,16 @@ func lowerScalarMethodCall(
     return None
   }
   if name == "toString" and args.count == 0 {
+    // `Char.toString()` (#6237): `Char` and `Int` both erase to `NI32`
+    // (`v.ty` alone can't tell them apart — see `Ctx.varIsChar`'s header
+    // comment), so `emitToString`'s `NI32` case would otherwise call
+    // `lyric_string_from_int` and print the codepoint's decimal digits
+    // instead of the character. Consult the original receiver expression's
+    // syntactic char-ness before falling back to `emitToString`.
+    val isChar = match recvExpr { case Some(e) -> exprIsCharTyped(ctx, e); case None -> false }
+    if isChar {
+      return Some(value = callRuntime(ctx, insns, "lyric_string_from_char", lyricStringNType(), arg1(NI32, v.value)))
+    }
     return Some(value = emitToString(ctx, insns, v))
   }
   if name == "toLong" and args.count == 0 {
@@ -2978,7 +3111,8 @@ func lowerCallEx(
           }
         }
         val recvVal = lowerExpr(ctx, insns, receiver)
-        match lowerScalarMethodCall(ctx, insns, recvVal, memberName, args, line) {
+        val someRecvExpr: Option[Expr] = Some(value = receiver)
+        match lowerScalarMethodCall(ctx, insns, recvVal, memberName, args, line, someRecvExpr) {
           case Some(v) -> return v
           case None -> {
           }
@@ -3237,6 +3371,10 @@ func lowerConstructCall(
     if name == "toString" and args.count == 1 {
       val tv = lowerPositionalArg(ctx, insns, args, 0)
       val noMethodArgs: List[CallArg] = newList()
+      val argExpr: Option[Expr] = match args[0] {
+        case CAPositional(ex) -> Some(value = ex)
+        case CANamed(_, value, _) -> Some(value = value)
+      }
       // `lowerScalarMethodCall`'s `None` arm is unreachable here: the type
       // checker only admits the prelude `toString(x)` call for a type that
       // supports string conversion, and every such type (String passthrough,
@@ -3247,7 +3385,7 @@ func lowerConstructCall(
       // construct forms (record/union/distinct) instead of surfacing a clear
       // "no toString for this type" diagnostic — worth revisiting if that
       // widening ever happens (#4984).
-      match lowerScalarMethodCall(ctx, insns, tv, "toString", noMethodArgs, line) {
+      match lowerScalarMethodCall(ctx, insns, tv, "toString", noMethodArgs, line, argExpr) {
         case Some(result) -> return result
         case None -> {
         }
@@ -5421,6 +5559,16 @@ func lowerCollectionIndex(
     panic("Lyric.LlvmCodegen: indexing takes exactly one index for --target native")
   }
   val recv = lowerExpr(ctx, insns, receiver)
+  if isStringNType(recv.ty) {
+    // `s[i]` (#6237): `i` is a byte offset, matching this backend's
+    // existing byte-indexed `.length`/`.substring` model (D-N-006); the
+    // runtime intrinsic decodes the full Unicode scalar value starting at
+    // that offset via UTF-8 iteration and returns it as `Char` (NI32) —
+    // see `lyric_string_char_at`'s own header comment for why a raw byte
+    // read would be wrong here.
+    val idx = lowerExprExpecting(ctx, insns, indices[0], NI64)
+    return callRuntime(ctx, insns, "lyric_string_char_at", NI32, arg2(lyricStringNType(), recv.value, NI64, idx.value))
+  }
   match listElemOfType(ctx, recv.ty) {
     case Some(elem) -> {
       val idx = lowerExprExpecting(ctx, insns, indices[0], NI64)
@@ -5466,7 +5614,7 @@ func lowerCollectionIndex(
     }
   }
   panic(
-    "Lyric.LlvmCodegen: indexing on this receiver is not yet supported for --target native (lists, maps, and slices index; String bracket indexing is a separate tracked gap, issue #6237) at line " +
+    "Lyric.LlvmCodegen: indexing on this receiver is not yet supported for --target native (lists, maps, slices, and Strings index) at line " +
       line.toString() +
       ": " +
       nTypeToIrString(recv.ty)
@@ -6828,6 +6976,12 @@ func synthLambdaBody(
     bodyInsns.add(NStore(ty = capTys[ci], value = NLocal(name = capVal), ptr = NLocal(name = slot)))
     ctx.varSlots.add(free[ci], slot)
     ctx.varTypes.add(free[ci], capTys[ci])
+    // #6237: propagate the enclosing function's char-ness for a captured
+    // variable into the closure body's own ctx (varIsChar is per-function
+    // state — freshFnCtx starts it empty, unlike varTypes/varSlots which
+    // are seeded here from the capture itself).
+    val capIsChar = match mapGet(modCtx.varIsChar, free[ci]) { case Some(v) -> v; case None -> false }
+    ctx.varIsChar.add(free[ci], capIsChar)
     ci = ci + 1
   }
   var pi = 0
@@ -6840,6 +6994,8 @@ func synthLambdaBody(
     bodyInsns.add(NStore(ty = pty, value = NLocal(name = "arg." + pn), ptr = NLocal(name = slot)))
     ctx.varSlots.add(pn, slot)
     ctx.varTypes.add(pn, pty)
+    val pnIsChar = match lambdaParams[pi].ty { case Some(te) -> isCharTypeExpr(te); case None -> false }
+    ctx.varIsChar.add(pn, pnIsChar)
     pi = pi + 1
   }
   pushVarScope(ctx)
@@ -8355,6 +8511,7 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
                 case None -> {
                   bindLocal(ctx, insns, name, v)
                   registerVarEnumTypeFromOpt(ctx, name, tyOpt)
+                  markVarChar(ctx, name, charnessOfBinding(ctx, tyOpt, init))
                 }
               }
             }
@@ -8371,6 +8528,7 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
           }
           bindLocal(ctx, insns, name, v)
           registerVarEnumTypeFromOpt(ctx, name, tyOpt)
+          markVarChar(ctx, name, charnessOfBinding(ctx, tyOpt, init))
         }
         case LBVar(name, tyOpt, initOpt) -> {
           match initOpt {
@@ -8381,6 +8539,7 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
               }
               bindLocal(ctx, insns, name, v)
               registerVarEnumTypeFromOpt(ctx, name, tyOpt)
+              markVarChar(ctx, name, charnessOfBinding(ctx, tyOpt, init))
             }
             case None -> {
               match tyOpt {
@@ -8389,6 +8548,7 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
                   val zero = zeroValueOf(ty)
                   bindLocal(ctx, insns, name, NVal(ty = ty, value = zero))
                   registerVarEnumTypeFromOpt(ctx, name, tyOpt)
+                  markVarChar(ctx, name, isCharTypeExpr(te))
                 }
                 case None -> panic("Lyric.LlvmCodegen: 'var' without initializer needs a type annotation")
               }
@@ -8751,6 +8911,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
   val slots: Map[String, String] = newMap()
   val types: Map[String, NType] = newMap()
   val enumTypes: Map[String, String] = newMap()
+  val isChar: Map[String, Bool] = newMap()
   val curPkg: List[String] = newList()
   curPkg.add(pkg)
   val curRet: List[NType] = newList()
@@ -8763,6 +8924,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     varSlots = slots,
     varTypes = types,
     varEnumTypes = enumTypes,
+    varIsChar = isChar,
     allocas = newList(),
     loopBreak = newList(),
     loopCont = newList(),
@@ -9155,6 +9317,7 @@ func lowerFunctionEnv(
     val pty = typeToN(ctx, p.ty)
     val ptyIsVoid = match pty { case NVoid -> true; case _ -> false }
     registerVarEnumType(ctx, p.name, enumNameOfTypeExpr(ctx, p.ty))
+    ctx.varIsChar.add(p.name, isCharTypeExpr(p.ty))
     if isByRefMode and not ptyIsVoid {
       val ptrTy = NPtr(pointee = pty)
       params.add(NParam(name = "arg." + p.name, ty = ptrTy))
@@ -9335,6 +9498,7 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl3("lyric_panic_msg", NVoid, NPtr(pointee = NI8), NPtr(pointee = NI8), NI32))
   decls.add(mkDecl2("lyric_string_concat", sTy, sTy, sTy))
   decls.add(mkDecl1("lyric_string_len", NI64, sTy))
+  decls.add(mkDecl2("lyric_string_char_at", NI32, sTy, NI64))
   decls.add(mkDecl2("lyric_string_eq", NI32, sTy, sTy))
   decls.add(mkDecl2("lyric_string_cmp", NI32, sTy, sTy))
   decls.add(mkDecl1("lyric_string_from_int", sTy, NI64))
@@ -9620,6 +9784,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   val emptySlots: Map[String, String] = newMap()
   val emptyTypes: Map[String, NType] = newMap()
   val emptyEnumTypes: Map[String, String] = newMap()
+  val emptyIsChar: Map[String, Bool] = newMap()
   val emptyRecs: Map[String, NRecInfo] = newMap()
   val emptyUnions: Map[String, NUnionInfo] = newMap()
   val emptyCases: Map[String, NCaseRef] = newMap()
@@ -9643,6 +9808,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     varSlots = emptySlots,
     varTypes = emptyTypes,
     varEnumTypes = emptyEnumTypes,
+    varIsChar = emptyIsChar,
     allocas = newList(),
     loopBreak = newList(),
     loopCont = newList(),
