@@ -37,6 +37,40 @@ import Jvm.AutoFfi
 import Jvm.Codegen
 import Jvm.Driver
 
+// Every TRUE reserved-keyword diagnostic in `diags` — "'<keyword>' is a
+// reserved keyword and cannot be used as a <X> name/binding name/identifier
+// or value here" (#5550).  Unlike other parser diagnostics that can be a
+// self-hosted-parser-gap false positive against stdlib source (the reason
+// stdlib parse diagnostics are otherwise advisory, see the call site in
+// `compileProjectToJarBundledWithRestored`), a genuine reserved-keyword
+// diagnostic is never a false positive: it fires only when
+// `readIdent`/pattern/expression parsing could not bind a real identifier at
+// all, so the offending AST node carries a synthetic "<error>" name that is
+// guaranteed to reach codegen malformed (e.g. as an unsupported
+// assignment-target shape) and panic with a message that does not name the
+// real cause.
+//
+// Correction (review finding #6953): code alone is NOT a safe filter.
+// `parser_exprs.l` reuses the P0051 code for three unrelated "expected ')' to
+// close a parenthesised/tuple/type expression" diagnostics that have nothing
+// to do with reserved keywords and CAN be a self-hosted-parser-gap false
+// positive against stdlib source — matching on code alone would hard-abort
+// the JVM bundle build for those too. All three genuine reserved-keyword call
+// sites (`parser_core.l`, `parser_exprs.l` pattern and expression position)
+// share the substring "reserved keyword" in their message; the three
+// unrelated sites do not. Filter on both.
+func reservedKeywordDiags(diags: in List[Diagnostic]): List[Diagnostic] {
+  val matched: List[Diagnostic] = newList()
+  var i = 0
+  while i < diags.count {
+    if diags[i].code == "P0051" and Str.contains(diags[i].message, "reserved keyword") {
+      matched.add(diags[i])
+    }
+    i = i + 1
+  }
+  matched
+}
+
 // Returns Some(typeName) if func main() has a 2-slot return type (Long or Double);
 // None otherwise.  These types require POP2 to discard, but the JVM main wrapper
 // only emits a single-slot POP — so they must be rejected before codegen rather
@@ -1702,6 +1736,22 @@ pub func compileProjectToJarBundledWithRestored(
     // here leaked self-hosted-parser-gap noise (e.g. `spawn`/`var` keyword
     // P0051s from std/process.l) onto every successful JVM build's output;
     // suppress it so a clean build stays clean.
+    //
+    // EXCEPTION (#5550): a P0051 ("reserved keyword used as a name") is never
+    // a self-hosted-parser-gap false positive — see `reservedKeywordDiags`.
+    // Left advisory, it silently hands codegen a malformed AST (a synthetic
+    // "<error>" identifier) that later panics with an unrelated-looking
+    // internal message (e.g. "unsupported assignment-target expression
+    // shape") instead of naming the real cause.  Promote it to a fatal build
+    // error here so a reserved-keyword-as-identifier bug in a bundled stdlib
+    // source produces the exact same diagnostic a user file would get,
+    // regardless of which package declares the file.
+    val reservedDiags = reservedKeywordDiags(pr.diagnostics)
+    if reservedDiags.count > 0 {
+      val stdPkgLabel = dottedPath(pr.file.packageDecl.path)
+      val _ = DiagUtil.diagReportAndAbortInPkg(stdPkgLabel, reservedDiags)
+      return false
+    }
     //
     // The alias rewrite must run here — before registry collection, the
     // call-graph walk, and codegen all consume the file — so that a
