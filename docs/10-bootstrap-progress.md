@@ -31940,17 +31940,28 @@ Lyric-side collector, not a host shim.
 never had: it runs `lyric test <file> --target jvm --coverage` and then
 inspects the produced report file itself — exists, non-empty, has a
 `<coverage ...>` root element, `lines-valid` is non-zero — rather than
-just checking the command's exit code. **Not currently wired into CI**:
-the JVM-target end-to-end run hangs on real GitHub Actions runners (the
-identical file without `--coverage` runs fine in the same job) — see D135's
-addendum and #6659 for the full incident and investigation. The script
-itself works correctly when run directly; the step was removed from
-`.github/workflows/ci.yml` rather than shipped hanging or red.
-`jacoco_cobertura_self_test.l` (the converter's own self-test, unaffected
-by the JVM-execution hang) runs alongside `cfg_gate_self_test.l` in the
-compiler self-tests job (same linking shape — a compiler-package import
-resolved via the staged `Lyric.Compiler.dll` bundle, no
-`LYRIC_LOAD_COMPILER=1`).
+just checking the command's exit code. `jacoco_cobertura_self_test.l` (the
+converter's own self-test, unaffected by the JVM-execution hang below)
+runs alongside `cfg_gate_self_test.l` in the compiler self-tests job (same
+linking shape — a compiler-package import resolved via the staged
+`Lyric.Compiler.dll` bundle, no `LYRIC_LOAD_COMPILER=1`).
+
+**Re-added to CI, hang root-caused and fixed (#6659, D-progress-878,
+2026-09-05).** The JVM-target end-to-end run previously hung on real GitHub
+Actions runners for 2+ hours (the identical file without `--coverage` runs
+fine in the same job); the CI step had been removed pending investigation.
+Root cause: `cmdTest`'s argv parser (`cli_test.l`) had a `--coverage` branch
+missing its own `i += 1`, so ANY invocation with `--coverage` in argv spun
+forever re-processing the same argv slot — a busy-loop well upstream of the
+java/JaCoCo codegen the original investigation suspected, which is why
+neither of that codegen's own 600s/120s internal timeouts ever fired. Fixed
+by the missing `i += 1`; the exact previously-900s-hanging command now
+completes in ~4s with a real Cobertura report. `coverage-smoke-test.sh`
+additionally runs the command in the background and polls it (instead of a
+plain blocking `timeout --signal=KILL`), capturing a `jcmd`/`jstack` thread
+dump before killing it on any future, unrelated timeout — defense in depth,
+not the fix. The step (`Coverage smoke test on JVM`,
+`compiler-self-tests-jvm` job) is a normal blocking step again.
 
 Full option analysis (IL/bytecode counters built into the self-hosted
 emitters; a source-level statement-coverage AST pass), why JaCoCo was

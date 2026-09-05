@@ -65,10 +65,48 @@ fi
 # did not prevent. Failing loudly within a bounded window, even if the
 # underlying cause turns out to be something this script can't see, beats
 # consuming an unbounded amount of CI runner time silently.
-rc=0
-timeout --signal=KILL 900 "$lyric_bin" test "$test_file" --target jvm --coverage || rc=$?
-if [ "$rc" -eq 137 ]; then
-  echo "::error::coverage-smoke-test.sh: '$lyric_bin test $test_file --target jvm --coverage' exceeded the 900s external timeout and was force-killed — this should never happen given the command's own internal 600s/120s timeouts; treat as a real bug in the coverage/compile path, not a fluke" >&2
+#
+# #6659: a plain `timeout --signal=KILL` (the previous version of this
+# script) SIGKILLs the whole process group the instant the bound fires,
+# which destroys the one thing that would explain the hang — the JVM's own
+# thread state. Run the command in the background instead so, if the 900s
+# bound is about to fire, we can `jcmd`/`jstack` the live `java` child
+# process FIRST (dumping every thread's stack to CI's own log output) and
+# only then kill it. This does not fix the hang by itself; it exists so the
+# next real occurrence on a GitHub Actions runner leaves a thread dump
+# behind instead of only a "force-killed" message with no diagnostic power.
+"$lyric_bin" test "$test_file" --target jvm --coverage &
+lyric_pid=$!
+
+deadline=$((SECONDS + 900))
+rc=124
+while [ $SECONDS -lt $deadline ]; do
+  if ! kill -0 "$lyric_pid" 2>/dev/null; then
+    rc=0
+    wait "$lyric_pid" || rc=$?
+    break
+  fi
+  sleep 2
+done
+
+if [ "$rc" -eq 124 ]; then
+  echo "::error::coverage-smoke-test.sh: '$lyric_bin test $test_file --target jvm --coverage' did not complete within 900s — capturing a thread dump of the JVM child before killing it (#6659)" >&2
+  # The instrumented JVM is a descendant of $lyric_pid, not $lyric_pid
+  # itself (the AOT binary shells out to `java -jar`); find it by its
+  # distinctive -javaagent argument rather than by PID tree walking, which
+  # would need `ps --ppid` chains that vary across runner images.
+  java_pid="$(pgrep -f "javaagent:.*jacocoagent.*-jar" | head -1 || true)"
+  if [ -n "$java_pid" ]; then
+    echo "::group::Thread dump of hung JVM (pid $java_pid)"
+    jcmd "$java_pid" Thread.print 2>&1 || jstack "$java_pid" 2>&1 || echo "::warning::neither jcmd nor jstack produced a dump for pid $java_pid"
+    echo "::endgroup::"
+  else
+    echo "::warning::coverage-smoke-test.sh: no java process matching -javaagent:...jacocoagent... found to dump; it may have already exited or not started" >&2
+  fi
+  kill -KILL "$lyric_pid" 2>/dev/null || true
+  # Best-effort: also reap any surviving java child so the runner doesn't
+  # keep a zombie JVM around after this script exits.
+  pkill -KILL -f "javaagent:.*jacocoagent" 2>/dev/null || true
   exit 1
 elif [ "$rc" -ne 0 ]; then
   echo "::error::coverage-smoke-test.sh: 'lyric test $test_file --target jvm --coverage' failed with exit code $rc" >&2
