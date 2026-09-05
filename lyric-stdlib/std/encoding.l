@@ -260,6 +260,20 @@ pub func encodeUtf8(s: in String): slice[Byte] {
   hostEncodeUtf8(hostGetUtf8Enc(), s)
 }
 
+/// Encode a single Unicode scalar value (0..0x10FFFF) as its UTF-8
+/// `String` representation — the cross-target-safe way to turn a code
+/// point into a `String`. Prefer this over `"" + Std.Char.fromInt(cp)`:
+/// `String + Char` concatenation has no `--target native` codegen
+/// (`Lyric.LlvmCodegen.lowerStringBinop` requires both operands to
+/// already be `String`), and `Char.toString()` is a separate,
+/// independently broken path on that backend too (issue #6237). See
+/// `tryDecodeUtf8`'s own use of this same kernel call below.
+@pure
+@stable(since = "1.0")
+pub func codepointToString(cp: in Int): String {
+  hostStringFromCodepoint(cp)
+}
+
 /// Decode a UTF-8 byte slice to a `String`.  Returns `Some(s)` when the
 /// bytes are valid UTF-8, `None` otherwise.  Rejects overlong sequences,
 /// lone surrogate code points, and code points above U+10FFFF.

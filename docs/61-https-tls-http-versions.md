@@ -950,6 +950,30 @@ items marked ∥ are independent and can proceed in parallel.
     native kernel (`_kernel_native/char_host.l` twin), a separate,
     newly-filed gap (issue #6811). N9.5 stays blocked on issue #6809
     (project/multi-package support) and #6811 (Std.Char native kernel)._
+    **N9.9 (D-progress-882, #6811)** ✅ SHIPPED: the `Std.Char` native
+    kernel twin (ASCII-range classification/case conversion, a zero-cost
+    code-point bridge; full non-ASCII Unicode classification deferred as a
+    tracked gap, issue #6858). Verifying it against Hpack's real Huffman
+    codec surfaced and fixed two more, previously-undiscovered native
+    codegen gaps, neither Hpack-specific: `List`/`Map` indexed-assignment
+    (`xs[i] = e`) had no native lowering at all (`Hpack.buildHuffTrie`'s
+    `List[Int]` mutation), and `?` silently failed to desugar for any
+    `Std.*` stdlib function reached across a package boundary from a
+    native build's entry file (generalizing the narrower symptom
+    `_kernel_native/http_host.l` already worked around by hand,
+    D-progress-823) — worked around the same way in `Std.HttpEngine.Hpack`
+    (14 sites rewritten to explicit `match`/early-return), verified
+    behavior-preserving on dotnet/JVM via the existing 39/39 + 73/73 test
+    suites. **Result: the full HPACK decode path AND the complete
+    `Std.HttpEngine.H2Conn.feed()` FSM (all 38 `inout H2Connection` sites)
+    now compile and run correctly on `--target native`, byte-for-byte
+    matching dotnet** — verified via `feed()` decoding a real client
+    preface + SETTINGS + HEADERS byte stream to the expected
+    `H2RequestHeaders` event. HPACK's *encode* path
+    (`encodeHeaderList`/`stringToOctets`) remains blocked on the
+    pre-existing, separately-owned **issue #6237** (`String` bracket
+    indexing, `group:native-string-runtime`) — #6808 stays open, re-scoped
+    to exactly that one remaining blocker.
 
 Every PR carries its own docs/book/progress-log sync per the working
 conventions; none lands with a silent one-target gap.

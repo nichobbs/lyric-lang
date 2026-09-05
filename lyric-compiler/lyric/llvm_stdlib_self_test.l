@@ -796,3 +796,120 @@ test "recursive delete does not traverse a directory symlink (#4833, ASan)" {
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "directory symlink is unlinked, not traversed")
 }
+
+test "Std.Char native kernel: code-point bridge, ASCII classification, case conversion, and Hpack Huffman round-trip (ASan) (#6811)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Char\n" + "import Std.HttpEngine.Hpack\n" +
+    "func main(): Int {\n" +
+    "  if toInt('A') != 65 {\n    return 1\n  }\n" +
+    "  if fromInt(97) != 'a' {\n    return 2\n  }\n" +
+    "  if not isLetter('Q') {\n    return 3\n  }\n" +
+    "  if isLetter('5') {\n    return 4\n  }\n" +
+    "  if not isDigit('7') {\n    return 5\n  }\n" +
+    "  if isDigit('x') {\n    return 6\n  }\n" +
+    "  if not isLetterOrDigit('9') {\n    return 7\n  }\n" +
+    "  if isLetterOrDigit('!') {\n    return 8\n  }\n" +
+    "  if not isUpper('Z') {\n    return 9\n  }\n" +
+    "  if isUpper('z') {\n    return 10\n  }\n" +
+    "  if not isLower('m') {\n    return 11\n  }\n" +
+    "  if isLower('M') {\n    return 12\n  }\n" +
+    "  if not isPunctuation('!') {\n    return 13\n  }\n" +
+    "  if not isPunctuation('_') {\n    return 14\n  }\n" +
+    "  if isPunctuation('|') {\n    return 15\n  }\n" +
+    "  if isPunctuation('+') {\n    return 16\n  }\n" +
+    "  if isPunctuation('$') {\n    return 17\n  }\n" +
+    "  if not isControl(fromInt(9)) {\n    return 18\n  }\n" +
+    "  if isControl('a') {\n    return 19\n  }\n" +
+    "  if toUpper('q') != 'Q' {\n    return 20\n  }\n" +
+    "  if toLower('Q') != 'q' {\n    return 21\n  }\n" +
+    "  if toUpper('9') != '9' {\n    return 22\n  }\n" +
+    "  if toLower('9') != '9' {\n    return 23\n  }\n" +
+    "  val bytes: List[Byte] = newList()\n" +
+    "  bytes.add(104.toByte())\n" +
+    "  bytes.add(101.toByte())\n" +
+    "  bytes.add(108.toByte())\n" +
+    "  bytes.add(108.toByte())\n" +
+    "  bytes.add(111.toByte())\n" +
+    "  val octets = bytes.toArray()\n" +
+    "  val encoded = huffmanEncode(octets)\n" +
+    "  if encoded.length != 4 {\n    return 24\n  }\n" +
+    "  match huffmanDecode(encoded) {\n" +
+    "    case Ok(decoded) -> {\n" +
+    "      if octetsToString(decoded) != \"hello\" {\n        return 25\n      }\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n      return 26\n    }\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(
+    r.exitCode,
+    42,
+    "Std.Char native kernel (code-point bridge + ASCII classification/case conversion) and Hpack's Huffman codec (its consumer) both work on --target native"
+  )
+}
+
+test "Native List/Map/slice indexed assignment: AssEq and all compound forms (#6811/#6951)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "func main(): Int {\n" +
+    "  val xs: slice[Int] = [10, 20, 30]\n" +
+    "  xs[1] = 99\n" +
+    "  if xs[1] != 99 {\n    return 1\n  }\n" +
+    "  val ys: List[Int] = newList()\n" +
+    "  ys.add(5)\n" +
+    "  ys.add(20)\n" +
+    "  ys.add(100)\n" +
+    "  ys.add(7)\n" +
+    "  ys.add(9)\n" +
+    "  ys[0] += 3\n" +
+    "  if ys[0] != 8 {\n    return 2\n  }\n" +
+    "  ys[1] -= 4\n" +
+    "  if ys[1] != 16 {\n    return 3\n  }\n" +
+    "  ys[2] *= 2\n" +
+    "  if ys[2] != 200 {\n    return 4\n  }\n" +
+    "  ys[3] /= 2\n" +
+    "  if ys[3] != 3 {\n    return 5\n  }\n" +
+    "  ys[4] %= 4\n" +
+    "  if ys[4] != 1 {\n    return 6\n  }\n" +
+    "  val ss: List[String] = newList()\n" +
+    "  ss.add(\"foo\")\n" +
+    "  ss[0] += \"bar\"\n" +
+    "  if ss[0] != \"foobar\" {\n    return 7\n  }\n" +
+    "  val m: Map[String, Int] = newMap()\n" +
+    "  m.add(\"a\", 1)\n" +
+    "  m[\"a\"] = 42\n" +
+    "  if m[\"a\"] != 42 {\n    return 8\n  }\n" +
+    "  m[\"a\"] += 8\n" +
+    "  if m[\"a\"] != 50 {\n    return 9\n  }\n" +
+    "  m[\"a\"] -= 20\n" +
+    "  if m[\"a\"] != 30 {\n    return 10\n  }\n" +
+    "  m[\"a\"] *= 2\n" +
+    "  if m[\"a\"] != 60 {\n    return 11\n  }\n" +
+    "  m[\"a\"] /= 3\n" +
+    "  if m[\"a\"] != 20 {\n    return 12\n  }\n" +
+    "  m[\"a\"] %= 7\n" +
+    "  if m[\"a\"] != 6 {\n    return 13\n  }\n" +
+    "  val sm: Map[String, String] = newMap()\n" +
+    "  sm.add(\"k\", \"hello\")\n" +
+    "  sm[\"k\"] += \" world\"\n" +
+    "  if sm[\"k\"] != \"hello world\" {\n    return 14\n  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(
+    r.exitCode,
+    42,
+    "slice[Int]/List[Int]/List[String]/Map[String, Int]/Map[String, String] all support AssEq and every compound AssignOp form on --target native"
+  )
+}
+
+test "Native Map indexed compound assignment against a missing key panics, not a silent insert (#6951)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "func main(): Int {\n" +
+    "  val m: Map[String, Int] = newMap()\n" +
+    "  m[\"missing\"] += 1\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(
+    r.exitCode != 42 and r.exitCode != 0,
+    "a compound assign against an absent map key must panic, not silently succeed"
+  )
+}

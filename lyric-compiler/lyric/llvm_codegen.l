@@ -8371,12 +8371,159 @@ func assignTargetName(target: in Expr): String {
   }
 }
 
+// Shared read-combine-write step for a compound index assignment
+// (`xs[i] += e`, `m[k] -= e`, …): `cur` is the element already read back
+// from the container, `rhs` is the already-lowered RHS value. Takes `rhs`
+// pre-lowered (rather than the raw `Expr`) so callers can evaluate the RHS
+// BEFORE reading the container's current value — matching the JVM
+// backend's `EIndex` compound-assign evaluation order
+// (`jvm/codegen/05_stmts.l`), so `xs[i] += e` where `e` itself mutates
+// `xs` behaves identically on native and JVM. Mirrors the duplicated
+// combine logic in `lowerAssign`/`lowerFieldAssign` above, kept as its own
+// small helper here (rather than factored into those two already-shipped
+// call sites) to keep this indexed-assignment addition isolated from
+// their existing, separately-verified codegen.
+func combineIndexedAssignValue(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  op: in AssignOp,
+  ty: in NType,
+  cur: in NVal,
+  rhs: in NVal,
+  line: in Int,
+): NVal {
+  val binOp = match op {
+    case AssPlus -> BAdd
+    case AssMinus -> BSub
+    case AssStar -> BMul
+    case AssSlash -> BDiv
+    case AssPercent -> BMod
+    case AssEq -> BAdd
+  }
+  if isStringNType(ty) {
+    lowerStringBinop(ctx, insns, binOp, cur, coerceTo(ctx, insns, rhs, ty))
+  } else {
+    val rhsC = coerceTo(ctx, insns, rhs, ty)
+    match ty {
+      case NDouble -> binFloatOp(ctx, insns, binOp, cur.value, rhsC.value)
+      case _ -> binIntOp(ctx, insns, binOp, ty, cur.value, rhsC.value, line)
+    }
+  }
+}
+
+/// `xs[i] = e` / `xs[i] op= e` on a `List[T]` (and, since `slice[T]` shares
+/// `List[T]`'s runtime representation, D-N-015, also `slice[T]`) or
+/// `Map[K, V]` receiver (issue #6811/#6808: `Std.HttpEngine.Hpack`'s
+/// Huffman trie builder mutates `List[Int]` parallel arrays by index).
+/// `lyric_list_set`/`lyric_map_set` already retain-new/release-old
+/// internally (see `lyric_collections.c`), so — unlike the plain-variable
+/// and field assignment paths above — no separate ARC dance is needed
+/// here.
+func lowerIndexAssign(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  receiver: in Expr,
+  indices: in List[Expr],
+  op: in AssignOp,
+  value: in Expr,
+  line: in Int,
+): Unit {
+  if indices.count != 1 {
+    panic("Lyric.LlvmCodegen: indexed assignment takes exactly one index for --target native")
+  }
+  val recv = lowerExpr(ctx, insns, receiver)
+  match listElemOfType(ctx, recv.ty) {
+    case Some(elem) -> {
+      val idx = lowerExprExpecting(ctx, insns, indices[0], NI64)
+      val recvP = collectionAsI8(ctx, insns, recv)
+      val newVal = match op {
+        case AssEq -> lowerExprExpecting(ctx, insns, value, elem)
+        case _ -> {
+          // RHS evaluated BEFORE the container read (matches the JVM
+          // backend's order, see combineIndexedAssignValue's header).
+          val rhs = lowerExpr(ctx, insns, value)
+          val gArgs: List[NArg] = newList()
+          gArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+          gArgs.add(NArg(ty = NI64, value = idx.value))
+          val slot = callRuntime(ctx, insns, "lyric_list_get", NI64, gArgs)
+          val cur = valOfSlot(ctx, insns, slot.value, elem)
+          combineIndexedAssignValue(ctx, insns, op, elem, cur, rhs, line)
+        }
+      }
+      val sArgs: List[NArg] = newList()
+      sArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+      sArgs.add(NArg(ty = NI64, value = idx.value))
+      sArgs.add(NArg(ty = NI64, value = slotOfVal(ctx, insns, newVal)))
+      val _ = callRuntime(ctx, insns, "lyric_list_set", NVoid, sArgs)
+      return
+    }
+    case None -> {
+    }
+  }
+  match mapKeyOfType(ctx, recv.ty) {
+    case Some(kTy) -> {
+      val vTy = match mapValOfType(ctx, recv.ty) {
+        case Some(t) -> t
+        case None -> panic("Lyric.LlvmCodegen: internal — map type without a value type")
+      }
+      val kv = lowerExprExpecting(ctx, insns, indices[0], kTy)
+      val recvP = collectionAsI8(ctx, insns, recv)
+      val newVal = match op {
+        case AssEq -> lowerExprExpecting(ctx, insns, value, vTy)
+        case _ -> {
+          // RHS evaluated BEFORE the container read (matches the JVM
+          // backend's order, see combineIndexedAssignValue's header).
+          val rhs = lowerExpr(ctx, insns, value)
+          val outSlot = "mapidxasn.out." + freshTmp(ctx)
+          ctx.allocas.add(NAlloca(dest = outSlot, ty = NI64))
+          val gArgs: List[NArg] = newList()
+          gArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+          gArgs.add(NArg(ty = NI64, value = slotOfVal(ctx, insns, kv)))
+          gArgs.add(NArg(ty = NPtr(pointee = NI64), value = NLocal(name = outSlot)))
+          val found = callRuntime(ctx, insns, "lyric_map_get", NI32, gArgs)
+          val hit = freshTmp(ctx)
+          insns.add(NICmp(dest = hit, pred = INe, ty = NI32, a = found.value, b = NLitInt(v = 0i64, ty = NI32)))
+          val okL = freshLabel(ctx, "mapidxasn.ok")
+          val missL = freshLabel(ctx, "mapidxasn.miss")
+          insns.add(NCondBr(cond = NLocal(name = hit), thenLabel = okL, elseLabel = missL))
+          insns.add(NLabel(name = missL))
+          emitPanicRaw(ctx, insns, "map key not found (use mapGet for an Option result)", line)
+          insns.add(NBr(label = okL))
+          insns.add(NLabel(name = okL))
+          val raw = freshTmp(ctx)
+          insns.add(NLoad(dest = raw, ty = NI64, ptr = NLocal(name = outSlot)))
+          val cur = valOfSlot(ctx, insns, NLocal(name = raw), vTy)
+          combineIndexedAssignValue(ctx, insns, op, vTy, cur, rhs, line)
+        }
+      }
+      val sArgs: List[NArg] = newList()
+      sArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+      sArgs.add(NArg(ty = NI64, value = slotOfVal(ctx, insns, kv)))
+      sArgs.add(NArg(ty = NI64, value = slotOfVal(ctx, insns, newVal)))
+      val _ = callRuntime(ctx, insns, "lyric_map_set", NVoid, sArgs)
+      return
+    }
+    case None -> {
+    }
+  }
+  panic(
+    "Lyric.LlvmCodegen: indexed assignment on this receiver is not yet supported for --target native (List[T], slice[T] — same runtime representation, D-N-015 — and Map[K, V] support element assignment; String bracket indexing is a separate tracked gap, issue #6237) at line " +
+      line.toString() +
+      ": " +
+      nTypeToIrString(recv.ty)
+  )
+}
+
 func lowerAssign(
   ctx: in Ctx, insns: in List[NInsn], target: in Expr, op: in AssignOp, value: in Expr, line: in Int
 ): Unit {
   match target.kind {
     case EMember(recv, fieldName) -> {
       lowerFieldAssign(ctx, insns, recv, fieldName, op, value, line)
+      return
+    }
+    case EIndex(receiver, indices) -> {
+      lowerIndexAssign(ctx, insns, receiver, indices, op, value, line)
       return
     }
     case _ -> {
