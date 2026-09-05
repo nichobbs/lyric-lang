@@ -3710,6 +3710,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           if c.fields.count == 0 and uArity == 0 {
             methodDefRow = methodDefRow + 1  // .cctor (non-generic nullary only)
           }
+          // Structural Equals(object)/GetHashCode() overrides (#6835/#6120):
+          // `buildUnionCaseEqualityOverridesMsil` always emits exactly these two,
+          // for every case, unconditionally — see that function's doc comment.
+          methodDefRow = methodDefRow + 2  // Equals(object) + GetHashCode()
           ci = ci + 1
         }
       }
@@ -7253,6 +7257,31 @@ func boxTypeRef(cctx: in CodegenCtx, ty: in MsilType): Int {
 func boxIfNeededMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType): Unit {
   if isValueType(ty) {
     insns.add(MBox(typeToken = boxTypeRef(cctx, ty)))
+  }
+}
+
+// Box a union case field for `Object.Equals(object,object)` / virtual
+// `GetHashCode()` dispatch (#6835/#6120).  `boxIfNeededMsil` alone is not
+// enough for a generic case's own type-parameter field (`MTypeVar`): whether
+// boxing is actually needed depends on the CALLER's concrete instantiation of
+// `T`, which is unknown inside a method body shared across every
+// instantiation.  `box` against a TypeSpec encoding the bare VAR element
+// (ECMA-335 §II.23.2.12) is universally correct instead — a real box for a
+// value-type instantiation, a no-op reference copy for a reference-type one —
+// so every generic case can share ONE `Equals`/`GetHashCode` body regardless
+// of what `T` turns out to be at each call site.  Every other (concrete)
+// field type defers to `boxIfNeededMsil` unchanged.
+func boxForUnionEqualityMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType): Unit {
+  match ty {
+    case MTypeVar(idx) -> {
+      val w = bufNew()
+      bufU1(w, 0x13)  // ELEMENT_TYPE_VAR
+      bufU1(w, idx)
+      val blob = bufToList(w)
+      val tsRow = ctxAddTypeSpec(cctx.lctx, "ts_box_var_" + toString(idx), blob)
+      insns.add(MBox(typeToken = 0x1B000000 + tsRow))
+    }
+    case _ -> boxIfNeededMsil(cctx, insns, ty)
   }
 }
 
@@ -18982,6 +19011,7 @@ func insnStackDelta(insn: in MInsn): Int {
     case MEHClause(_, _, _, _, _, _) -> 0
     case MLdfldByName(_, _) -> 0
     case MLdfldaByName(_, _) -> 0
+    case MLdfldSelfOpen(_, _, _, _) -> 0
     case MStfldByName(_, _) -> -2
     case MNewobjByName(_) -> 1
     case MCallAtmbStart(_, _, _) -> 1
@@ -27137,6 +27167,161 @@ pub func lowerRecordMsil(cctx: in CodegenCtx, decl: in RecordDecl, pkgName: in S
   )
 }
 
+// Build the `Equals(object): Bool` / `GetHashCode(): Int` instance overrides
+// every union case class gets, unconditionally — unions have structural
+// equality by default (language reference §2.4), with no `@derive(Equals)`
+// gate the way records have (#6835/#6120).  Delegating to a synthesised
+// `<Union>.equals` FREE function (the way `appendDeriveOverridesMsil` does for
+// records) is not viable here: `Option`/`Result` and any other GENERIC union
+// need the override reachable from every instantiation, but Lyric has no
+// reified GENERIC METHODS yet (only generic TYPES — docs/43 Q-GEN-002 /
+// docs/55's B-mode blocker is the exact same constraint), so a free function
+// would have to be a real `equals<T>` MethodDef, which isn't buildable. The
+// override below sidesteps that entirely: it is an ordinary (non-generic-
+// signature) INSTANCE method defined once on the case class's own already-
+// reified `!0.. !n` type parameters, doing the tag check and field-by-field
+// comparison inline — the same trick the case's `.ctor` already uses to
+// read/write `!0`-typed fields without needing a generic method.
+//
+// `Equals`: `isinst` against this SAME case (the open self-instantiation
+// `Case<!0,…>` for a generic case, matching `lowerCaseIsinstBoolMsil`'s
+// consumer-side idiom but with the class's OWN type params as the args
+// instead of a call site's concrete ones) doubles as the null AND
+// same-variant check in one op — this is exactly what fixes `None == None`
+// (previously reference identity on a fresh `newobj` every time for a
+// GENERIC nullary case, docs/43 Q-GEN-001) and `Some(x) == Some(y)` for two
+// independently-constructed equal payloads (previously bare
+// `Object.Equals` reference identity, #6120) — then each field is compared
+// via the same `Object.Equals(object,object)` static helper `BEq`'s fallback
+// already uses, boxing first via `boxForUnionEqualityMsil`.
+//
+// `GetHashCode`: an FNV-style `h = h*31 + fieldHash` fold seeded with the
+// case's 0-based index (mirrors `Lyric.Derives.synthesizeHashUnion`'s free-
+// function shape, kept in lock-step so a user-derived `@derive(Hash)` union
+// and this always-on override agree), needed alongside `Equals` so
+// `Map`/`HashSet` keys don't violate the hash/equals contract once `Equals`
+// is no longer reference identity.  Matches the existing `hashCode()`
+// builtin's convention (`boxIfNeededMsil` + `callvirt Object.GetHashCode()`,
+// no null guard) rather than inventing a different one for unions.
+func buildUnionCaseEqualityOverridesMsil(
+  cctx: in CodegenCtx,
+  caseFqn: in String,
+  caseFields: in List[MField],
+  generics: in List[String],
+  caseIndex: in Int,
+): List[MFunc] {
+  val arity = generics.count
+  val methods: List[MFunc] = newList()
+
+  val eqInsns: List[MInsn] = newList()
+  eqInsns.add(MLdarg(slot = 1))
+  if arity > 0 {
+    val selfTypeArgs: List[MsilType] = newList()
+    var gi = 0
+    while gi < arity {
+      selfTypeArgs.add(MTypeVar(index = gi))
+      gi = gi + 1
+    }
+    eqInsns.add(MIsinstGeneric(className = caseFqn, typeArgs = selfTypeArgs))
+  } else {
+    eqInsns.add(MIsinstByName(className = caseFqn))
+  }
+  val eqRetFalseL = 0
+  eqInsns.add(MStloc(slot = 0))
+  eqInsns.add(MLdloc(slot = 0))
+  eqInsns.add(MBrFalse(label = eqRetFalseL))
+  var fi = 0
+  while fi < caseFields.count {
+    val f = caseFields[fi]
+    eqInsns.add(MLdarg(slot = 0))
+    eqInsns.add(MLdfldSelfOpen(ownerFqn = caseFqn, fieldName = f.name, arity = arity, fieldType = f.fieldType))
+    boxForUnionEqualityMsil(cctx, eqInsns, f.fieldType)
+    eqInsns.add(MLdloc(slot = 0))
+    eqInsns.add(MLdfldSelfOpen(ownerFqn = caseFqn, fieldName = f.name, arity = arity, fieldType = f.fieldType))
+    boxForUnionEqualityMsil(cctx, eqInsns, f.fieldType)
+    eqInsns.add(MCall(methodToken = cctx.tokObjectStaticEquals))
+    eqInsns.add(MBrFalse(label = eqRetFalseL))
+    fi = fi + 1
+  }
+  eqInsns.add(MLdcI4(v = 1))
+  eqInsns.add(MRet)
+  eqInsns.add(MLabel(id = eqRetFalseL))
+  eqInsns.add(MLdcI4(v = 0))
+  eqInsns.add(MRet)
+  val eqParams: List[MsilType] = newList()
+  eqParams.add(MObject)
+  val eqLocals: List[MsilType] = newList()
+  // A bare `MClass(caseFqn)` local-var-sig entry emits `CLASS <TypeDefOrRef>`
+  // with NO type arguments (`buildLocalVarSigWithCtx`'s `MClass` arm) — valid
+  // for a non-generic case, but for a generic one that names an incomplete
+  // (uninstantiated) reference to an arity>0 TypeDef, which the CLR loader
+  // rejects with `TypeLoadException: Could not load type '<Case>`1'` the
+  // moment the isinst'd local's declared type is consulted (confirmed with a
+  // minimal repro — the record precedent `appendDeriveOverridesMsil` never
+  // hits this because @derive(Equals) is untested on a generic record).  The
+  // local must instead be the CLOSED-BY-`!0..!n` open self-instantiation
+  // (`Case<!0,…>`), matching what a real C# compiler emits for the identical
+  // `obj as Case<T>` pattern inside `Case<T>`'s own method.
+  if arity > 0 {
+    val eqLocalTypeArgs: List[MsilType] = newList()
+    var eli = 0
+    while eli < arity {
+      eqLocalTypeArgs.add(MTypeVar(index = eli))
+      eli = eli + 1
+    }
+    eqLocals.add(MGenericInstByName(headFqn = caseFqn, typeArgs = eqLocalTypeArgs))
+  } else {
+    eqLocals.add(MClass(className = caseFqn))
+  }
+  methods.add(
+    MFunc(
+      flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG,
+      name = "Equals",
+      params = eqParams,
+      ret = MBool,
+      insns = eqInsns,
+      maxStack = 8,
+      locals = eqLocals
+    )
+  )
+
+  val hInsns: List[MInsn] = newList()
+  hInsns.add(MLdcI4(v = caseIndex))
+  hInsns.add(MStloc(slot = 0))
+  var hi = 0
+  while hi < caseFields.count {
+    val hf = caseFields[hi]
+    hInsns.add(MLdloc(slot = 0))
+    hInsns.add(MLdcI4(v = 31))
+    hInsns.add(MMul)
+    hInsns.add(MLdarg(slot = 0))
+    hInsns.add(MLdfldSelfOpen(ownerFqn = caseFqn, fieldName = hf.name, arity = arity, fieldType = hf.fieldType))
+    boxForUnionEqualityMsil(cctx, hInsns, hf.fieldType)
+    hInsns.add(MCallvirt(methodToken = cctx.tokObjGetHashCode))
+    hInsns.add(MAdd)
+    hInsns.add(MStloc(slot = 0))
+    hi = hi + 1
+  }
+  hInsns.add(MLdloc(slot = 0))
+  hInsns.add(MRet)
+  val hParams: List[MsilType] = newList()
+  val hLocals: List[MsilType] = newList()
+  hLocals.add(MInt)
+  methods.add(
+    MFunc(
+      flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG,
+      name = "GetHashCode",
+      params = hParams,
+      ret = MInt,
+      insns = hInsns,
+      maxStack = 8,
+      locals = hLocals
+    )
+  )
+
+  methods
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §10. Union lowering.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -27173,7 +27358,8 @@ pub func lowerUnionMsil(cctx: in CodegenCtx, decl: in UnionDecl, pkgName: in Str
     // union's full type-parameter list (matching the F# emitter — `Option_Some`
     // and `Option_None` both carry `[T]`), and type-parameter fields lower to
     // VAR(n) via typeExprToMsilG.
-    cases.add(MUnionCase(name = caseName, fields = caseFields, generics = generics))
+    val caseEqMethods = buildUnionCaseEqualityOverridesMsil(cctx, caseName, caseFields, generics, i)
+    cases.add(MUnionCase(name = caseName, fields = caseFields, generics = generics, methods = caseEqMethods))
     i = i + 1
   }
 
