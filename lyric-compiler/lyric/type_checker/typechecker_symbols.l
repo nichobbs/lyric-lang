@@ -132,7 +132,7 @@ pub func symTableIsExternTypeId(tbl: in SymbolTable, id: in TypeId): Bool {
   var i = 0
   while i < tbl.symbols.count {
     match tbl.symbols[i].kind {
-      case DKExternType(tid, _) -> if tid.id == id.id { return true }
+      case DKExternType(tid, _) -> if typeIdEq(tid, id) { return true }
       case _ -> {
       }
     }
