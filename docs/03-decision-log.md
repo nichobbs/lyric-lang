@@ -41452,3 +41452,34 @@ dotnet — unaffected by this fix), `_kernel/task.l` (the separately-scoped,
 still-open `scopeSpawn`/`Task.Run(Action, CancellationToken)` finding this
 fix does not touch), #5443/#5458 (the pre-existing JVM compile blockers
 this fix's JVM scope cut is gated on).
+
+## D-progress-879 — lyric-web: isolate a panicking `Web.Worker.tick()` instead of silently killing its background loop (#6935)
+
+**The gap.** `Web.Kernel.Runtime.startWorkerLoop` (D-progress-878) runs
+`while true { sleepMillis(intervalMs); worker.tick() }` inside a
+fire-and-forget `Task.Run(Action)` whose `Task` is never observed. An
+uncaught `Bug` raised by a single `tick()` call therefore silently and
+permanently stopped that worker's loop forever — no log line, no crash,
+the server keeps running normally as if the worker were still ticking.
+This is exactly the failure mode `serve`/`serveStreaming`'s own accept
+loops are already hardened against (#5261): a caught `Bug` there is
+logged and the loop keeps going (or, for a listener-level failure,
+surfaced loudly and the process exits non-zero — never a silent hang).
+
+**The fix.** Wrap the `worker.tick()` call in `try { ... } catch Bug as e
+{ Console.error(...) }` inside the loop body, so a failing tick is logged
+and the loop continues on its next `intervalMs` interval rather than
+dying. `Std.Console` added to `_kernel/net/web_kernel.l`'s imports.
+
+**Verification.** New case in `lyric-web/tests/worker_dispatch_tests.l`:
+a `FlakyWorker` whose first `tick()` panics, then increments a counter on
+every subsequent tick; the test asserts the counter still rises after
+that first, crashing tick. Reverting only the kernel fix (keeping the
+new test) reproduces the pre-fix failure — the counter never advances
+past the state left by the panicking first tick. Whole-suite
+`lyric-web/lyric.toml` run: 8/8 (2 cases in `worker_dispatch_tests.l`).
+
+**Related:** #6935 (this issue, filed by a `claude-review` pass on the
+D-progress-878 PR before merge), D-progress-878 (`startWorkerLoop`
+itself), #5261 (the precedent this fix brings worker dispatch in line
+with).
