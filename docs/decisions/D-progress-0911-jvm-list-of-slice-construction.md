@@ -100,6 +100,13 @@ correct here.
 
 **Scope.** JVM-only, matching the tracking issue's own scope (MSIL's
 `List[T]` backing is not `ArrayList`-based and never hit either bug).
+Both the `.add()` interception and the `EIndex` read-back normalization key
+off `scrutineeGenericArgs`, which only resolves a receiver's generic
+instantiation for a bare local/parameter, an `EList` literal, or specific
+`ECall` shapes — a plain field-access receiver
+(`someRecord.rows.add([1, 2, 3])`) falls through with no override, a
+pre-existing `scrutineeGenericArgs` limitation (not a regression) tracked
+in #6957.
 
 **Verification.** New `@test_module`
 `lyric-compiler/jvm/list_of_slice_construction_jvm_self_test.l` (4 cases:
