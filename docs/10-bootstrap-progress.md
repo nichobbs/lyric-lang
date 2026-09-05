@@ -32276,6 +32276,26 @@ this is MSIL-brought-to-parity, not a one-platform construct.
 
 **Related:** `docs/03-decision-log.md` D-progress-876 (full account), #6849.
 
+### MSIL: an unannotated local bound directly to a lambda literal now registers its return type instead of leaving the invoke result boxed (#6690)
+
+`registerFieldFuncValTypesMsil` (the `#5511` fallback populating
+`funcValRetTypes` for a function-typed local with no literal `(A,...) -> R`
+annotation) recognized a record-field-read and a bare `EPath` naming an
+already-tracked function value, but had no case for `ELambda` — a lambda
+literal bound directly to the local (`val f = (x) -> false`). Every lifted
+lambda is emitted through the uniform boxed `Func<object,...>` ABI, so
+without a `funcValRetTypes` entry the invoke site never materialized the
+boxed result: `f(y)` stayed a non-null boxed `object`, which reads as truthy
+regardless of the lambda's real body. Fixed by inferring the lambda's return
+type from its body's trailing expression, reusing the same no-symbol-table
+heuristic (`inferUntypedStaticValMsilType`) already used for untyped
+module-level vals, resolved against a `paramEnv` built from any explicitly
+(brace-form) typed lambda parameters. Orthogonal to the pre-existing #1939
+diagnostic, which guards a different case (an UNANNOTATED parameter's own
+value needing unboxing inside the body).
+
+**Related:** `docs/03-decision-log.md` D-progress-883 (full account), #6690.
+
 ### Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
 
 `native/plan/08-work-items.md`'s N9.3 (`Std.HttpServer` native twin,
