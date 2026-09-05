@@ -165,8 +165,10 @@ static void test_strings(void) {
     lyric_release(ch);
 }
 
-/* Trim / lowercase / search intrinsics behind `.trim()`, `.toLower()`,
- * `.indexOf()`, `.startsWith()`, `.contains()`, `.endsWith()` (#6588). */
+/* Trim / case-conversion / search intrinsics behind `.trim()`,
+ * `.toLower()`, `.indexOf()`, `.startsWith()`, `.contains()`,
+ * `.endsWith()` (#6588), plus `.toUpper()` and the widened full-UCD
+ * `.toLower()`/`.toUpper()` script coverage (#6779). */
 static void test_string_trim_case_search(void) {
     LyricString* padded = lyric_string_from_literal((const uint8_t*)"  hi there  ", 12);
     LyricString* trimmed = lyric_string_trim(padded);
@@ -245,6 +247,59 @@ static void test_string_trim_case_search(void) {
     LyricString* emptyLower = lyric_string_to_lower(empty0);
     CHECK(lyric_string_len(emptyLower) == 0);
 
+    /* #6779: widened Unicode Character Database script coverage beyond the
+     * five scripts above (Basic Latin, Latin-1 Supplement, Latin
+     * Extended-A, Greek, Cyrillic) — Armenian and Georgian, neither of
+     * which existed in the pre-#6779 hand-written table at all. */
+    LyricString* armUp = lyric_string_from_literal((const uint8_t*)"\xD4\xB1\xD4\xB2", 4); /* Ա Բ */
+    LyricString* armLow = lyric_string_to_lower(armUp);
+    CHECK(lyric_string_len(armLow) == 4);
+    CHECK(memcmp(LYRIC_STRING_DATA(armLow), "\xD5\xA1\xD5\xA2", 4) == 0); /* ա բ */
+    /* Georgian Mkhedruli ა (U+10D0) uppercases to Mtavruli Ა (U+1C90, the
+     * Unicode 11.0+ case pairing) per UnicodeData.txt's own simple
+     * uppercase mapping field — NOT the historical Asomtavruli block
+     * (U+10A0), which has no case relationship encoded there. */
+    LyricString* geoLow = lyric_string_from_literal((const uint8_t*)"\xE1\x83\x90", 3); /* ა (Mkhedruli) */
+    LyricString* geoUp = lyric_string_to_upper(geoLow);
+    CHECK(lyric_string_len(geoUp) == 3);
+    CHECK(memcmp(LYRIC_STRING_DATA(geoUp), "\xE1\xB2\x90", 3) == 0); /* Ⴑ (Mtavruli, U+1C90) */
+
+    /* #6779: the full UCD table maps some pairs to a DIFFERENT UTF-8 byte
+     * length than the old five-script table ever produced (which only
+     * ever shrank, and only for U+0130) — in BOTH directions. U+212A
+     * KELVIN SIGN (3 bytes) lowercases to plain ASCII "k" (1 byte): a
+     * 3->1 shrink. U+023A Ⱥ (2 bytes) lowercases to U+2C65 ⱥ (3 bytes): a
+     * 2->3 GROW the old single-pass "allocate at input length" strategy
+     * could never have handled safely — the two-pass length computation
+     * in string_case_map exists specifically for cases like this one. */
+    LyricString* kelvin = lyric_string_from_literal((const uint8_t*)"\xE2\x84\xAA", 3);
+    LyricString* kelvinLow = lyric_string_to_lower(kelvin);
+    CHECK(lyric_string_len(kelvinLow) == 1);
+    CHECK(memcmp(LYRIC_STRING_DATA(kelvinLow), "k", 1) == 0);
+    LyricString* strokeAUp = lyric_string_from_literal((const uint8_t*)"\xC8\xBA", 2);
+    LyricString* strokeALow = lyric_string_to_lower(strokeAUp);
+    CHECK(lyric_string_len(strokeALow) == 3);
+    CHECK(memcmp(LYRIC_STRING_DATA(strokeALow), "\xE2\xB1\xA5", 3) == 0);
+    /* Roundtrip: uppercasing the grown lowercase form gives back the
+     * original 2-byte uppercase letter (a shrink in the .toUpper() direction). */
+    LyricString* strokeARound = lyric_string_to_upper(strokeALow);
+    CHECK(lyric_string_len(strokeARound) == 2);
+    CHECK(memcmp(LYRIC_STRING_DATA(strokeARound), "\xC8\xBA", 2) == 0);
+
+    /* .toUpper() (#6779, previously native-unimplemented entirely): ASCII,
+     * a no-op on an already-uppercase/no-case-partner input (U+0130 İ has
+     * no further uppercase mapping — its own uppercase IS itself), and
+     * empty. */
+    LyricString* upAsciiLow = lyric_string_from_literal((const uint8_t*)"hello 123!", 10);
+    LyricString* upAsciiUp = lyric_string_to_upper(upAsciiLow);
+    CHECK(lyric_string_len(upAsciiUp) == 10);
+    CHECK(memcmp(LYRIC_STRING_DATA(upAsciiUp), "HELLO 123!", 10) == 0);
+    LyricString* dottedIUpNoop = lyric_string_to_upper(dottedIUp);
+    CHECK(lyric_string_len(dottedIUpNoop) == 2);
+    CHECK(memcmp(LYRIC_STRING_DATA(dottedIUpNoop), "\xC4\xB0", 2) == 0);
+    LyricString* emptyUpper = lyric_string_to_upper(empty0);
+    CHECK(lyric_string_len(emptyUpper) == 0);
+
     /* .indexOf(): found, not-found (-1 sentinel), and empty-needle/-haystack. */
     LyricString* haystack = lyric_string_from_literal((const uint8_t*)"hello world", 11);
     LyricString* needleFound = lyric_string_from_literal((const uint8_t*)"world", 5);
@@ -301,6 +356,19 @@ static void test_string_trim_case_search(void) {
     lyric_release(alreadyLow);
     lyric_release(stillLow);
     lyric_release(emptyLower);
+    lyric_release(armUp);
+    lyric_release(armLow);
+    lyric_release(geoLow);
+    lyric_release(geoUp);
+    lyric_release(kelvin);
+    lyric_release(kelvinLow);
+    lyric_release(strokeAUp);
+    lyric_release(strokeALow);
+    lyric_release(strokeARound);
+    lyric_release(upAsciiLow);
+    lyric_release(upAsciiUp);
+    lyric_release(dottedIUpNoop);
+    lyric_release(emptyUpper);
     lyric_release(haystack);
     lyric_release(needleFound);
     lyric_release(needleMissing);
