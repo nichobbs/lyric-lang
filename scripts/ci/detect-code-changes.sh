@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
 # detect-code-changes.sh — determine whether the diff touches non-docs code,
-# compiler/runtime core, or JVM-ecosystem kernels, and emit the per-library
-# ecosystem-tests run map. Backs the "Detect code changes" step's
-# has_code_changes / has_core_changes / has_jvm_ecosystem_changes /
-# run_map outputs.
+# compiler/runtime core, one specific backend (MSIL/JVM/native), or
+# JVM-ecosystem kernels, and emit the per-library ecosystem-tests run map.
+# Backs the "Detect code changes" step's has_code_changes / has_core_changes
+# / has_msil_changes / has_jvm_changes / has_native_changes / run_map
+# outputs.
 #
 # Reads (set by the calling step's `env:` block from GitHub Actions
 # context expressions, since this script -- unlike an inline `run: |`
@@ -113,7 +114,9 @@ emit_run_map() {
 if [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
   echo "has_code_changes=true" >> "$GITHUB_OUTPUT"
   echo "has_core_changes=true" >> "$GITHUB_OUTPUT"
-  echo "has_jvm_ecosystem_changes=true" >> "$GITHUB_OUTPUT"
+  echo "has_msil_changes=true" >> "$GITHUB_OUTPUT"
+  echo "has_jvm_changes=true" >> "$GITHUB_OUTPUT"
+  echo "has_native_changes=true" >> "$GITHUB_OUTPUT"
   emit_run_map true ""
   echo "First push — assuming code changes."
   exit 0
@@ -180,27 +183,89 @@ else
   echo "No compiler/runtime-core changes — compiler/native/JVM/AOT test jobs skipped."
 fi
 
-# compiler-self-tests-jvm's own gate: a superset of has_core_changes.
-# Unlike the other 12 has_core_changes-gated jobs, this one also
-# contains the ONLY CI exercise of four ecosystem libraries' JVM
-# kernels/manifests — Storage.Kernel.Jvm, Resilience.Kernel.Jvm, the
-# Auth.Kernel.Jvm feature-resolution build, and the lyric-web
-# Undertow end-to-end smoke (tests/jvm_server_smoke.l) — none of
-# which the ecosystem-tests matrix duplicates (it only runs their
-# default/dotnet manifests). Folding lyric-web/storage/resilience/
-# auth into the shared has_core_changes pattern instead would have
-# over-broadened the OTHER 12 jobs' gates for libraries they never
-# touch, so this is a separate, job-specific signal.
-jvm_ecosystem_changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null \
-  | { grep -E "^(${CORE_INFRA_PATTERN}|lyric-web/|lyric-storage/|lyric-resilience/|lyric-auth/)" || true; } \
-  | head -1) || jvm_ecosystem_changed="yes"
+# Third signal, split three ways by backend: does the diff touch one
+# specific backend's OWN tree, or a SHARED front-/middle-end path
+# that every backend's self-tests actually exercise regardless of
+# which one it targets (the lexer, parser, type checker, mode
+# checker, mono, weaver, pipeline, the stdlib's public Std.* surface,
+# bootstrap/, resolver/, scripts/, Makefile, or this workflow file)?
+#
+#   MSIL   — lyric-compiler/msil/, lyric-stdlib/std/_kernel/
+#   JVM    — lyric-compiler/jvm/, lyric-stdlib/std/_kernel_jvm/, plus
+#            the same lyric-web/storage/resilience/auth condition the
+#            old has_jvm_ecosystem_changes carried (compiler-self-
+#            tests-jvm is the only CI exercise of those four
+#            libraries' JVM kernels/manifests — Storage.Kernel.Jvm,
+#            Resilience.Kernel.Jvm, Auth.Kernel.Jvm feature
+#            resolution, the lyric-web Undertow end-to-end smoke —
+#            none of which the ecosystem-tests matrix duplicates, so
+#            folding them into the plain backend-tree pattern instead
+#            would silently drop that coverage on a PR confined to
+#            just one of those four libraries)
+#   native — lyric-compiler/lyric/llvm_*.l, lyric-stdlib/std/
+#            _kernel_native/, lyric-rt/
+#
+# A diff confined to exactly one backend's own tree sets only that
+# backend's flag; a diff touching anything else CORE_INFRA_PATTERN
+# covers (i.e. a shared path) sets all three. That makes
+# has_msil_changes || has_jvm_changes || has_native_changes ==
+# has_core_changes always true — no coverage is lost overall, it is
+# only reordered onto the backend(s) actually affected. Deliberately
+# conservative at the file-NAME level: a handful of backend-specific
+# `*_msil_self_test.l` / `*_jvm_self_test.l` files live directly
+# inside the shared lyric-compiler/lyric/ directory by long-standing
+# convention (they also exercise shared front-end machinery); they
+# are treated as shared here rather than pattern-matched by filename,
+# so they keep running on every core change exactly as before this
+# split — same conservative-fallback shape as has_code_changes and
+# has_core_changes above: any ambiguity resolves to "true".
+MSIL_ONLY_PATTERN='lyric-compiler/msil/|lyric-stdlib/std/_kernel/'
+JVM_ONLY_PATTERN='lyric-compiler/jvm/|lyric-stdlib/std/_kernel_jvm/'
+NATIVE_ONLY_PATTERN='lyric-compiler/lyric/llvm_[^/]*\.l$|lyric-stdlib/std/_kernel_native/|lyric-rt/'
+BACKEND_ONLY_PATTERN="${MSIL_ONLY_PATTERN}|${JVM_ONLY_PATTERN}|${NATIVE_ONLY_PATTERN}"
 
-if [ -n "$jvm_ecosystem_changed" ]; then
-  echo "has_jvm_ecosystem_changes=true" >> "$GITHUB_OUTPUT"
-  echo "Compiler-core or web/storage/resilience/auth JVM-kernel changes detected — compiler-self-tests-jvm will run."
+backend_files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null) && backend_ok=1 || backend_ok=0
+
+if [ "$backend_ok" -eq 1 ]; then
+  shared_changed=$(printf '%s\n' "$backend_files" \
+    | { grep -E "^(${CORE_INFRA_PATTERN})" || true; } \
+    | { grep -vE "^(${BACKEND_ONLY_PATTERN})" || true; } \
+    | head -1)
+  msil_changed=$(printf '%s\n' "$backend_files" \
+    | { grep -E "^(${MSIL_ONLY_PATTERN})" || true; } | head -1)
+  jvm_changed=$(printf '%s\n' "$backend_files" \
+    | { grep -E "^(${JVM_ONLY_PATTERN}|lyric-web/|lyric-storage/|lyric-resilience/|lyric-auth/)" || true; } | head -1)
+  native_changed=$(printf '%s\n' "$backend_files" \
+    | { grep -E "^(${NATIVE_ONLY_PATTERN})" || true; } | head -1)
 else
-  echo "has_jvm_ecosystem_changes=false" >> "$GITHUB_OUTPUT"
-  echo "No compiler-core or web/storage/resilience/auth changes — compiler-self-tests-jvm skipped."
+  shared_changed="yes"
+  msil_changed="yes"
+  jvm_changed="yes"
+  native_changed="yes"
+fi
+
+if [ -n "$shared_changed" ] || [ -n "$msil_changed" ]; then
+  echo "has_msil_changes=true" >> "$GITHUB_OUTPUT"
+  echo "MSIL-relevant changes detected — MSIL-specific test jobs will run."
+else
+  echo "has_msil_changes=false" >> "$GITHUB_OUTPUT"
+  echo "No MSIL-relevant changes — MSIL-specific test jobs skipped."
+fi
+
+if [ -n "$shared_changed" ] || [ -n "$jvm_changed" ]; then
+  echo "has_jvm_changes=true" >> "$GITHUB_OUTPUT"
+  echo "JVM-relevant changes detected — JVM-specific test jobs will run."
+else
+  echo "has_jvm_changes=false" >> "$GITHUB_OUTPUT"
+  echo "No JVM-relevant changes — JVM-specific test jobs skipped."
+fi
+
+if [ -n "$shared_changed" ] || [ -n "$native_changed" ]; then
+  echo "has_native_changes=true" >> "$GITHUB_OUTPUT"
+  echo "Native-backend-relevant changes detected — native test jobs will run."
+else
+  echo "has_native_changes=false" >> "$GITHUB_OUTPUT"
+  echo "No native-backend-relevant changes — native test jobs skipped."
 fi
 
 # Finally, the per-library run map itself (a fresh `git diff` call,
