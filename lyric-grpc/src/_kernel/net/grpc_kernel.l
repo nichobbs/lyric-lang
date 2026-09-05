@@ -21,6 +21,40 @@
 //!   netOpenServerStream / netNextStreamMessage / netCloseStream  — server streaming
 //!   serve() / netStartHandle() / netStopHandle()                 — server hosting
 //!
+//! A follow-up investigation (2026-09-05, group:ecosystem-lib-kernels) asked
+//! whether #6581 still stands against `origin/main` and whether server
+//! hosting specifically has a non-generic escape hatch the original #6581
+//! writeup didn't consider (`AddGrpc`/`IServiceCollection`-shaped low-level
+//! registration, a non-generic `Marshallers` overload, etc). Both `main`'s
+//! `genericMemberSigToMsil` (`lyric-compiler/msil/codegen.l`) and
+//! `ctxAddMethodSpec`'s callers (`lyric-compiler/msil/lowering.l`) are
+//! unchanged from #6581's description — no GENERICINST arm, no general
+//! `@externTarget`-generic-method MethodSpec path — and decoding the actual
+//! `Grpc.Core.Api`/`Grpc.AspNetCore.Server` 2.65.0 reference-assembly
+//! metadata directly (the same byte-level read the auto-FFI resolver does)
+//! confirms server hosting has no such escape hatch either: every route
+//! from `IServiceCollection.AddGrpc()` (itself non-generic and bindable) to
+//! an actual registered RPC method is generic. The high-level
+//! `Microsoft.AspNetCore.Builder.GrpcEndpointRouteBuilderExtensions
+//! .MapGrpcService<TService>` is a generic extension method (MVAR, one type
+//! parameter). Its low-level equivalent —
+//! `Grpc.Core.ServerServiceDefinition.Builder.AddMethod<TRequest,TResponse>`
+//! and `Grpc.Core.ServiceBinderBase.AddMethod<TRequest,TResponse>`, the pair
+//! `MapGrpcService<T>` itself calls into — are equally generic (MVAR,
+//! two type parameters each, four overloads apiece for
+//! unary/client-streaming/server-streaming/duplex). And every one of those
+//! `AddMethod` overloads takes a `Grpc.Core.Method<TRequest,TResponse>`,
+//! whose only constructor takes two `Marshaller<T>` instances — hitting
+//! Gap 1 a second, independent time (`Marshallers.Create<T>`'s own two
+//! overloads were re-checked too: both still take a GENERICINST delegate
+//! parameter over `T`, confirming no non-generic factory exists there
+//! either). So `AddGrpc()` alone can wire up gRPC's ASP.NET Core middleware
+//! plumbing, but produces a server with zero registered RPC methods — not a
+//! partial win, since a route table with no routes cannot dispatch
+//! anything `Grpc.addMethod` registered. Server hosting therefore fails for
+//! the exact same two compiler gaps as unary/streaming, not a third,
+//! independent one — this investigation found no bindable subset to ship.
+//!
 //! JWT verification lives in Auth.Kernel.Net (lyric-auth).
 //!
 //! Only active when compiled with feature = "dotnet".
@@ -293,8 +327,18 @@ pub func netCloseStream(stream: in GrpcStream): Unit {
 }
 
 // ─── Server: hosting ────────────────────────────────────────────────────────────
-/// **BLOCKED** (#6581). `Grpc.serve` (`grpc.l`) declares this
-/// `Unit`-returning and blocking (it is meant to run the server host
+/// **BLOCKED** (#6581) — independently re-verified against
+/// `Grpc.AspNetCore.Server` 2.65.0's real metadata (group:ecosystem-lib-kernels,
+/// 2026-09-05; see this module's doc comment for the full chain).
+/// `IServiceCollection.AddGrpc()` itself is non-generic and would compile,
+/// but every path from there to an actually-dispatchable RPC route needs a
+/// MethodSpec-bound generic-method call (`MapGrpcService<TService>`, or the
+/// `ServerServiceDefinition.Builder.AddMethod<TRequest,TResponse>` /
+/// `ServiceBinderBase.AddMethod<TRequest,TResponse>` pair it wraps — Gap 2
+/// from `netCallUnary`'s comment) over a `Method<TRequest,TResponse>` that
+/// itself needs a `Marshaller<T>` (Gap 1). No non-generic registration
+/// surface exists on this NuGet version. `Grpc.serve` (`grpc.l`) declares
+/// this `Unit`-returning and blocking (it is meant to run the server host
 /// forever) — there is no `Result` in its signature to fail into, so a
 /// real implementation would only ever fail via an unhandled .NET
 /// exception anyway; `panic` matches that contract honestly rather than

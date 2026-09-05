@@ -2,13 +2,13 @@
 
 General-purpose gRPC client for [Lyric](https://github.com/nichobbs/lyric-lang). Ships low-level RPC invocation, message framing, and protocol handling for calling gRPC services from Lyric applications.
 
-> **Status**: @experimental. On `dotnet`: channel lifecycle (`openChannel`/`closeChannel`) and the in-process rate limiter (`checkRateLimit`) are real, `Grpc.Net.Client`-backed, and covered by real tests (no live gRPC service needed — a malformed/lazy-dialed address and local rate-limiter state are both verifiable without one). Unary calls, server streaming, and server hosting are **not implemented** — blocked on two self-hosted MSIL backend gaps (#6581), not a design choice; see `src/_kernel/net/grpc_kernel.l`'s `netCallUnary` doc comment for the root cause. `jvm` is Phase 6 (planned, not started).
+> **Status**: @experimental. On `dotnet`: channel lifecycle (`openChannel`/`closeChannel`) and the in-process rate limiter (`checkRateLimit`) are real, `Grpc.Net.Client`-backed, and covered by real tests (no live gRPC service needed — a malformed/lazy-dialed address and local rate-limiter state are both verifiable without one). Unary calls, server streaming, and server hosting are **not implemented** — blocked on two self-hosted MSIL backend gaps (#6581), not a design choice; see `src/_kernel/net/grpc_kernel.l`'s `netCallUnary` and `serve` doc comments for the root cause. A 2026-09-05 investigation re-verified both gaps against `origin/main` and decoded the real `Grpc.Core.Api`/`Grpc.AspNetCore.Server` 2.65.0 reference-assembly metadata directly: server hosting has no non-generic escape hatch either (`IServiceCollection.AddGrpc()` is bindable but every path to an actual registered RPC route — `MapGrpcService<T>`, or the lower-level `ServerServiceDefinition.Builder.AddMethod<TRequest,TResponse>` / `ServiceBinderBase.AddMethod<TRequest,TResponse>` it wraps — is a generic-method call over a `Marshaller<T>`-built `Method<TRequest,TResponse>`, hitting both gaps). `jvm` is Phase 6 (planned, not started).
 
 ## Platform parity
 
 | Feature flag | Backend | Status |
 |---|---|---|
-| `dotnet` | `Grpc.Net.Client` via `Grpc.Kernel.Net` | Channel lifecycle + rate limiting real and tested; unary/streaming/hosting blocked on #6581 |
+| `dotnet` | `Grpc.Net.Client` via `Grpc.Kernel.Net` | Channel lifecycle + rate limiting real and tested; unary/streaming/hosting blocked on #6581 (re-verified 2026-09-05, no bindable non-generic subset found) |
 | `jvm` | `io.grpc:grpc-netty-shaded` via `Grpc.Kernel.Jvm` | Phase 6 (planned) |
 
 ## Packages
