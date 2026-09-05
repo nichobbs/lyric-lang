@@ -1877,6 +1877,21 @@ run`/`lyric test`'s manifest/project modes for native, are also deferred
 to #6815 — only `lyric build --manifest ... --target native` shipped
 here.
 
+**Update — #6240 SHIPPED.** The broader native `String` search-method
+audit issue this section's own #6588 fix was split out of is closed:
+`.trimStart()`/`.trimEnd()` (one-sided variants sharing `.trim()`'s
+`White_Space` code-point set, refactored into a shared `trim_bounds`
+helper) and `.replace(old, new)` (all non-overlapping occurrences, left
+to right; an empty `old` is a deliberate native-specific no-op rather
+than copying either managed target's own quirk — dotnet throws,
+JVM interleaves) now lower for `--target native`. `.repeat`/`.split`/
+`.join`/`.joinList`/`.compare`/`.equals`/`.equalsCaseInsensitive` in
+`lyric-stdlib/std/string.l` were already native-compatible without any
+codegen change — they compose from primitives (`+`, `<`/`>`, `==`,
+`.substring`, `.indexOf`, list indexing) this backend already lowered.
+`.toUpper()` (and widening `.toLower()`'s script coverage) is out of
+scope here, tracked in #6779.
+
 ---
 
 ### N9.8 — Weak-aware List/Map/Task kernels: `NativeWeak[T]` as a collection element or async result — ✅ SHIPPED (D-progress-879, #5545)

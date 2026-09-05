@@ -2153,7 +2153,8 @@ func lowerStringPredicateCall(
 
 /// Scalar method-call receivers: `.and/.or/.xor/.shl/.shr`, the
 /// conversion family, `.toString()`, and String's `.substring`/`.trim`/
-/// `.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith`.
+/// `.trimStart`/`.trimEnd`/`.replace`/`.toLower`/`.indexOf`/`.startsWith`/
+/// `.contains`/`.endsWith`.
 /// Returns None when `name` is not a scalar method (the caller then
 /// resolves it as a UFCS function call).
 func lowerScalarMethodCall(
@@ -2185,6 +2186,38 @@ func lowerScalarMethodCall(
       return Some(
         value = callRuntime(ctx, insns, "lyric_string_trim", lyricStringNType(), arg1(lyricStringNType(), v.value))
       )
+    }
+    if name == "trimStart" and args.count == 0 {
+      return Some(
+        value = callRuntime(
+          ctx,
+          insns,
+          "lyric_string_trim_start",
+          lyricStringNType(),
+          arg1(lyricStringNType(), v.value)
+        )
+      )
+    }
+    if name == "trimEnd" and args.count == 0 {
+      return Some(
+        value = callRuntime(
+          ctx,
+          insns,
+          "lyric_string_trim_end",
+          lyricStringNType(),
+          arg1(lyricStringNType(), v.value)
+        )
+      )
+    }
+    if name == "replace" and args.count == 2 {
+      val a0 = lowerPositionalArg(ctx, insns, args, 0)
+      val a1 = lowerPositionalArg(ctx, insns, args, 1)
+      val sTy = lyricStringNType()
+      val callArgs: List[NArg] = newList()
+      callArgs.add(NArg(ty = sTy, value = v.value))
+      callArgs.add(NArg(ty = sTy, value = a0.value))
+      callArgs.add(NArg(ty = sTy, value = a1.value))
+      return Some(value = callRuntime(ctx, insns, "lyric_string_replace", sTy, callArgs))
     }
     if name == "toLower" and args.count == 0 {
       return Some(
@@ -9154,6 +9187,9 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl1("lyric_string_from_char", sTy, NI32))
   decls.add(mkDecl3("lyric_string_substring", sTy, sTy, NI64, NI64))
   decls.add(mkDecl1("lyric_string_trim", sTy, sTy))
+  decls.add(mkDecl1("lyric_string_trim_start", sTy, sTy))
+  decls.add(mkDecl1("lyric_string_trim_end", sTy, sTy))
+  decls.add(mkDecl3("lyric_string_replace", sTy, sTy, sTy, sTy))
   decls.add(mkDecl1("lyric_string_to_lower", sTy, sTy))
   decls.add(mkDecl2("lyric_string_index_of", NI64, sTy, sTy))
   decls.add(mkDecl2("lyric_string_starts_with", NI32, sTy, sTy))
