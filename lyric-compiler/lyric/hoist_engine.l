@@ -1903,9 +1903,24 @@ func hzProtectedFieldNames(members: in List[ProtectedMember]): Map[String, Bool]
 // cross-package record list — e.g. `Lyric.Pipeline`'s `monoRecordDecls`)
 // then fills in any name this file does not itself declare. First-wins on
 // a name collision, matching this file's other first-registered-wins
-// tables — there shouldn't be a genuine collision in practice, since a
-// same-file declaration should always be preferred over an imported one of
-// the same bare name.
+// tables — a same-file declaration is always correctly preferred over an
+// imported one of the same bare name.
+//
+// KNOWN LIMITATION (flagged in #6702's own review, not yet tracked as a
+// separate issue): `extraRecords` is keyed by BARE name only, with no
+// package qualification, and now spans the whole in-bundle + stdlib +
+// restored-dependency universe rather than just the same file. Two
+// record types sharing a bare name in different packages (e.g. two
+// in-bundle packages of a multi-package project each declaring `Config`)
+// collide under this same first-registered-wins order — silently
+// resolving `impl ... for Config` against whichever one was registered
+// first, which may be the WRONG record's field set rather than an empty
+// one. This is a new collision surface `extraRecords` introduces (the
+// pre-fix same-file-only scan couldn't collide this way, since a single
+// package can't declare two records with the same name): a genuinely
+// wrong (but confident) field set is worse than the pre-fix empty-set
+// fallback, which was merely under-protective. Not yet observed in
+// practice; would need real package-qualified keys to close properly.
 func hzBuildTypeFieldIndex(file: in SourceFile, extraRecords: in List[RecordDecl]): Map[String, Map[String, Bool]] {
   val index: Map[String, Map[String, Bool]] = newMap()
   var i = 0
