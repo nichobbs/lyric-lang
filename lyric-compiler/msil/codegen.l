@@ -4975,11 +4975,12 @@ func listLiteralElemTypeMsil(fctx: in FuncCtx, e: in Expr): MsilType {
         } else {
           MObject
         }
-        case U16 -> if v >= -2147483648i64 and v <= 2147483647i64 {
-          MInt
-        } else {
-          MObject
-        }
+        // A u16 literal's magnitude is always <= 65535, well within Int32's
+        // range, so this arm is unconditionally MInt (matching the U32 arm's
+        // own unconditional MInt below, and unlike I16's magnitude-checked
+        // arm above, which needs it since a signed I16 literal can be
+        // out-of-range for the suffix even before considering Int32 bounds).
+        case U16 -> MInt
         case I32 -> if v >= -2147483648i64 and v <= 2147483647i64 {
           MInt
         } else {
