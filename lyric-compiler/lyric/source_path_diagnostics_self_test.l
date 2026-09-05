@@ -1034,6 +1034,90 @@ test "multi-file project package (dotnet): an impl-default diamond conflict (T01
   )
 }
 
+// #6824 item 3, native sibling: the dotnet T0117 test above only exercises
+// `Msil.Bridge`'s call sites into `pipeExpandAndRewrite`. The native path
+// (`Lyric.LlvmBridge.compileProjectToNativeWithFlags`) reaches the exact same
+// unconditional `ImplDefaults.inheritDefaultsFile` gate via its own
+// `nativePkgLabelAt`/`nativePkgOriginsAt`-resolved call — `pipeExpandAndRewrite`
+// itself has no per-target branch — but that plumbing had no test of its own,
+// only the parse-phase P0050 case above (#6824 item 1) and manual code
+// inspection. Identical `ImplDiamondMf`-shaped fixture, routed through
+// `--target native`.
+test "multi-file project package (native): an impl-default diamond conflict (T0117) in the second file names that file (#6824)" {
+  val dir = freshTempDir("mf-impldefault-native")
+  defer {
+    cleanup(dir)
+  }
+  val srcDir = Path.join(dir, "src")
+  match File.createDir(srcDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create src dir: " + IOError.message(e))
+  }
+  val aSrc = "package ImplDiamondMfNative\n" + "import Std.Core\n" + "interface Alpha {\n" +
+    "  func label(self: in Self): Int {\n" +
+    "    1\n" +
+    "  }\n" +
+    "}\n" +
+    "interface Beta {\n" +
+    "  func label(self: in Self): Int {\n" +
+    "    2\n" +
+    "  }\n" +
+    "}\n"
+  val bSrc = "package ImplDiamondMfNative\n" + "import Std.Core\n" + "record Thing {\n" + "  base: Int\n" + "}\n" +
+    "impl Alpha for Thing {\n" +
+    "}\n" +
+    "impl Beta for Thing {\n" +
+    "}\n" +
+    "func main(): Unit {\n" +
+    "  println(toString(Thing(base = 0).label()))\n" +
+    "}\n"
+  val aPath = Path.join(srcDir, "a.l")
+  val bPath = Path.join(srcDir, "b.l")
+  match File.writeText(aPath, aSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write a.l: " + IOError.message(e))
+  }
+  match File.writeText(bPath, bSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write b.l: " + IOError.message(e))
+  }
+  val manifest = "[package]\n" + "name = \"ImplDiamondMfNative\"\n" + "version = \"0.0.1\"\n" + "\n" + "[project]\n" +
+    "name = \"ImplDiamondMfNative\"\n" +
+    "\n" +
+    "[project.packages]\n" +
+    "\"ImplDiamondMfNative\" = [\"src/a.l\", \"src/b.l\"]\n" +
+    "\n" +
+    "[dependencies]\n" +
+    "Std = \"*\"\n"
+  val mfPath = Path.join(dir, "lyric.toml")
+  match File.writeText(mfPath, manifest) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write lyric.toml: " + IOError.message(e))
+  }
+  val outPath = Path.join(dir, "out")
+  val args: List[String] = newList()
+  args.add("build")
+  args.add("--manifest")
+  args.add(mfPath)
+  args.add("--target")
+  args.add("native")
+  args.add("-o")
+  args.add(outPath)
+  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  assertTrue(result.exitCode != 0, "an unresolved diamond default-method conflict must fail the build")
+  assertTrue(
+    Str.contains(result.stderr, "T0117"),
+    "expected a T0117 diagnostic (pipeExpandAndRewrite's impl-default-inheritance gate) in stderr, got:\n" +
+      result.stderr
+  )
+  assertTrue(
+    Str.contains(result.stderr, bPath + ": error[T0117]"),
+    "expected the T0117 diagnostic to be labelled with b.l's own real path '" + bPath +
+      "' (not the bare package name 'ImplDiamondMfNative' or an empty label) on a multi-file NATIVE project package (#6824), got:\n" +
+      result.stderr
+  )
+}
+
 // #6824 item 4: the `--target jvm` sibling of the dotnet test above.
 // `Jvm.Bridge.compileProjectToJarBundledWithRestored`'s `pkgOriginsByName`
 // plumbing was manually verified working during #6825's own review response,
