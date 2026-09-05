@@ -103,7 +103,8 @@ pub record PropertyEntry {
 }
 
 /// OpenAPI 3.1 schema object (simplified — covers all types emitted by
-/// `lyric web spec` and consumed by `lyric generate openapi`).
+/// `Web.withSpec`/`specToJson`'s code-first path and consumed by
+/// `lyric generate openapi`'s spec-first path).
 /// Nested schemas (items, properties) are represented by $ref strings
 /// rather than inline schema objects to avoid recursive type definitions.
 @stable(since = "0.1")

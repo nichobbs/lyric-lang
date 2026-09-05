@@ -592,6 +592,26 @@ impl Handler for SwaggerUiHandler {
   }
 }
 
+// Escapes a `</` sequence inside an already-JSON-quoted string as `<\/` so
+// it cannot be read as a `</script>` close tag by an HTML parser scanning
+// through the surrounding inline `<script>` block. `specUrl` is developer-set
+// at compile time (derived from `router.pathPrefix`), not per-request input,
+// so this is defense-in-depth rather than a live vulnerability fix.
+func escapeForInlineScript(jsonQuoted: in String): String {
+  var r = ""
+  var i = 0
+  while i < jsonQuoted.length {
+    if jsonQuoted[i] == '<' and i + 1 < jsonQuoted.length and jsonQuoted[i + 1] == '/' {
+      r = r + "<\\/"
+      i = i + 2
+    } else {
+      r = r + jsonQuoted[i].toString()
+      i = i + 1
+    }
+  }
+  return r
+}
+
 /// A minimal Swagger UI page pointed at `specUrl`. Loads the `swagger-ui`
 /// bundle from jsdelivr — nothing from the spec itself reaches the page
 /// except through the client's own request to `specUrl`. Pinned to an
@@ -606,7 +626,7 @@ func swaggerUiPage(specUrl: in String): String {
     "<script src=\"https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.15/swagger-ui-bundle.js\" " +
     "integrity=\"sha384-m7zaGj7MPzU+G4lz2eyy73GxK9bbRDr9bB2CSdj8wodg2wu/Wnt6wsoLP3JD+RS9\" crossorigin=\"anonymous\"></script>\n" +
     "<script>\nwindow.onload = function() {\n  window.ui = SwaggerUIBundle({ url: " +
-    webJsonStr(specUrl) +
+    escapeForInlineScript(webJsonStr(specUrl)) +
     ", dom_id: \"#swagger-ui\" });\n};\n</script>\n" +
     "</body>\n</html>\n"
 }
