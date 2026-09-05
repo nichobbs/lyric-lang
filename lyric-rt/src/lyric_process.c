@@ -992,5 +992,7 @@ void lyric_process_piped_close(void* raw) {
     }
     free(p->linebuf.data);
     p->linebuf.data = NULL;
+    p->linebuf.len = 0;
+    p->linebuf.cap = 0;
     lyric_lsan_ignore_leak(p);
 }

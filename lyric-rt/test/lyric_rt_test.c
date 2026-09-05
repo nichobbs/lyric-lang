@@ -1886,6 +1886,42 @@ static void test_process_piped_double_close(void) {
     lyric_process_piped_close(p);
 }
 
+static void test_process_piped_read_after_close_with_buffered_line(void) {
+    /* Issue #6993: lyric_process_piped_close (the #6975 addendum) freed
+     * linebuf.data and NULL'd it, but never reset linebuf.len -- so a
+     * handle closed while a second, not-yet-consumed line was still
+     * buffered left linebuf.len > 0 with linebuf.data == NULL. The very
+     * next lyric_process_piped_read_line call on that handle then
+     * dereferenced a NULL pointer in its "scan for '\n'" loop instead of
+     * safely reporting "no more lines". `printf "a\nb\n"` writes both
+     * lines in one shot, so the first read_line call is expected to pull
+     * both into linebuf, return "a", and leave "b\n" buffered
+     * (linebuf.len > 0) -- exactly the state that reproduced the bug. */
+    LyricList* args = lyric_list_new(2);
+    LyricString* fmt = mk_str("%s");
+    LyricString* body = mk_str("a\nb\n");
+    lyric_list_push(args, (int64_t)(intptr_t)fmt);
+    lyric_list_push(args, (int64_t)(intptr_t)body);
+    lyric_release(fmt);
+    lyric_release(body);
+
+    void* p = lyric_process_piped_spawn("/usr/bin/printf", args);
+    lyric_release(args);
+    CHECK(p != NULL);
+
+    LyricString* got1 = NULL;
+    CHECK(lyric_process_piped_read_line(p, &got1) == 1);
+    CHECK(lyric_string_len(got1) == 1);
+    CHECK(memcmp(LYRIC_STRING_DATA(got1), "a", 1) == 0);
+    lyric_release(got1);
+
+    lyric_process_piped_close(p);
+
+    /* Must return 0 (no more lines) cleanly, not NULL-deref. */
+    LyricString* got2 = NULL;
+    CHECK(lyric_process_piped_read_line(p, &got2) == 0);
+}
+
 static void test_ok_variants(void) {
     char tmpl[] = "/tmp/lyric_rt_ok_XXXXXX";
     int fd = mkstemp(tmpl);
@@ -2229,6 +2265,7 @@ int main(void) {
     test_process_piped_spawn_failure();
     test_process_piped_stderr_inherited();
     test_process_piped_double_close();
+    test_process_piped_read_after_close_with_buffered_line();
     test_async_hot_completion();
     test_async_block_on_sleep();
     test_async_interleave();
