@@ -10131,13 +10131,47 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // `InvalidProgramException`/`InvalidCastException` at the call site
           // (masked for `Task.ContinueWith`-style targets because the mismatched
           // delegate is only invoked asynchronously and unobserved).
+          //
+          // #5329 (bug 1): the SAME mismatch exists one layer out for a lambda
+          // passed directly to a REGULAR (non-`@externTarget`) higher-order
+          // function's `() -> Unit`-typed parameter. `typeExprToMsilCtx`'s
+          // `TFunction` rule (`() -> Unit -> System.Action`, unconditional,
+          // not gated on `@externTarget`-ness) already commits that callee's
+          // OWN MethodDef signature to a real `System.Action` parameter — but
+          // `lambdaExternDelegateRetType` is populated ONLY for extern-target
+          // callees, so a call like `mySpawn({ -> action() })` (`mySpawn` an
+          // ordinary Lyric function declared `action: in () -> Unit`) fell
+          // through this match's `None` arm straight to the always-`MObject`
+          // `funcRetTypes` fallback, building a `Func<object>` — a delegate
+          // whose runtime type doesn't actually implement `System.Action` at
+          // all. `Task.Run(Action, CancellationToken)` internally pattern-
+          // matches its `action` parameter's RUNTIME type before invoking it;
+          // a `Func<object>` value stored through a statically-`Action`-typed
+          // slot fails that match silently — no cast exception (raw
+          // `ldftn`+`newobj`/`call` never verifies delegate-vs-target-method
+          // signature compatibility at this level), no thrown fault, the
+          // spawned closure's body simply never runs and the returned `Task`
+          // completes `RanToCompletion` immediately (confirmed with an
+          // isolated `Task.Run` reflection repro external to this compiler).
+          // `cctx.lambdaRetTypes` (`funcParamFnRetType`'s "ordinary (non-FFI)
+          // HOF" fallback further down this file, populated for ANY
+          // non-generic declaring function, extern-target or not) is
+          // populated with the SAME real, non-erased declared return type
+          // `lambdaExternDelegateRetType` would carry for an extern-target
+          // callee — checking it here, before falling back to `funcRetTypes`,
+          // closes the gap for the ordinary-HOF case too, matching the
+          // MethodDef signature `typeExprToMsilCtx` already committed to.
           val returnsVoid = match mapGet(cctx.lambdaExternDelegateRetType, lambdaKey) {
             case Some(MVoid) -> true
             case Some(_) -> false
-            case None -> match mapGet(cctx.funcRetTypes, lambdaKey) {
+            case None -> match mapGet(cctx.lambdaRetTypes, lambdaKey) {
               case Some(MVoid) -> true
-              case None -> true
-              case _ -> false
+              case Some(_) -> false
+              case None -> match mapGet(cctx.funcRetTypes, lambdaKey) {
+                case Some(MVoid) -> true
+                case None -> true
+                case _ -> false
+              }
             }
           }
           // Lambdas default to an all-object delegate TypeSpec so the ctor, castclass,
@@ -15136,9 +15170,33 @@ func lowerBuiltinOrStaticCallMsil(
       case None -> {
         // Invoke a function-typed value (`f()` where `f` is a local/param holding
         // a lambda).  Lambdas use the uniform `Func`(N+1)<object,…,object>` ABI
-        // (#1877), so load the delegate, push the (boxed) args, `callvirt
-        // Func::Invoke`, then materialise the boxed `object` result to the call's
-        // declared return type.
+        // (#1877) UNLESS the slot's own registered type (`registerParamsMsil`/
+        // the lambda-param arm) is already a REAL closed `System.Action` /
+        // `System.Action`N<object,...>` — the VOID-returning shape
+        // `typeExprToMsilCtx`'s `TFunction` rule builds UNCONDITIONALLY (Epic
+        // #1877 Phase 3) for every `(T1,...,TN) -> Unit`-typed parameter at ANY
+        // arity, regardless of `@externTarget`-ness (#5329 follow-up,
+        // D-progress-882). Before #5329's fix this branch's blind `MCastclass`
+        // to the uniform `FuncN` TypeSpec (`lowerFuncValueInvokeMsil`) was a
+        // silent no-op FOR THIS SHAPE ONLY: every such parameter's ACTUAL
+        // value was always (wrongly) `Func<object,...>`, matching the cast, so
+        // the mismatch against the parameter's OWN declared `Action`/`Action`N`
+        // signature type was never observed here. #5329 corrected value
+        // construction to match the declared type — surfacing this call
+        // site's own pre-existing, independent gap at EVERY arity, first for
+        // arity 0 (`InvalidCastException: Unable to cast … 'System.Action' to
+        // … 'System.Func`1[System.Object]'`, caught by
+        // `Std.Testing.runAndCapturePanic`'s `catch Bug as b` and reported as
+        // the panic's own message, e.g. in `assertPanicsWith(...,
+        // { -> panic(...) })`), then for arity 1 (`Std.Iter.forEach`'s
+        // `(T) -> Unit` callback: `Action`1[Object]` vs `Func`2[Object,Object]`,
+        // confirmed by CI on the pushed fix's very next `stdlib-builds` run).
+        // Non-void `TFunction` shapes (`() -> R` / `(T1,...,TN) -> R`) are
+        // ALWAYS `Func`(N+1)<object,...,object>` regardless of this fix — the
+        // SAME erasure the uniform ABI already uses — so they were never
+        // mismatched and are completely unaffected here. Detected via the
+        // slot's registered `fctx.types` entry — never a source-level
+        // annotation guess.
         match mapGet(fctx.slots, funcName) {
           case Some(slot) -> {
             // `emitLoadSlot` selects `ldarg` for a parameter and `ldloc` for a
@@ -15150,7 +15208,32 @@ func lowerBuiltinOrStaticCallMsil(
             // the boxed `object`; otherwise it is unboxed/cast to R; an
             // untracked return type leaves the boxed `object` placeholder.
             emitLoadSlot(insns, slot, fctx.paramCount)
-            lowerFuncValueInvokeMsil(cctx, fctx, insns, args, mapGet(fctx.funcValRetTypes, funcName))
+            val slotTy = match mapGet(fctx.types, funcName) { case Some(t) -> t; case None -> MObject }
+            // #5329 follow-up (D-progress-882): a real `Action`/`Action`N`
+            // value (never the uniform boxed `Func`(N+1)` ABI) needs a direct
+            // typed invoke — see `buildActionNInvokeTok`'s doc comment for why.
+            val realActionArity = match slotTy {
+              case MClass(cn) -> if cn == "System.Action" { 0 } else { -1 }
+              case MGenericInstByName(headFqn, tyArgs) -> if headFqn.startsWith("System.Action`") {
+                tyArgs.count
+              } else {
+                -1
+              }
+              case _ -> -1
+            }
+            if realActionArity >= 0 and args.count == realActionArity {
+              var argI = 0
+              while argI < args.count {
+                val argTy = lowerCallArgMsil(cctx, fctx, insns, args[argI])
+                boxIfNeededMsil(cctx, insns, argTy)
+                argI = argI + 1
+              }
+              val invokeTok = if realActionArity == 0 { cctx.tokActionInvoke } else { buildActionNInvokeTok(cctx, realActionArity) }
+              insns.add(MCallvirt(methodToken = invokeTok))
+              MVoid
+            } else {
+              lowerFuncValueInvokeMsil(cctx, fctx, insns, args, mapGet(fctx.funcValRetTypes, funcName))
+            }
           }
           case None -> {
             // Static call resolution.  Functions are registered FQN-keyed
@@ -19146,6 +19229,46 @@ func buildActionNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
   ctorPs.add(MNativeInt)
   val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
   val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, ".ctor", "action_ctor_" + toString(nparams), ctorSig)
+  0x0A000000 + mrRow
+}
+
+// Build a callvirt token for System.Action`N<object,...>::Invoke(object,...): void
+// (N ≥ 1). Mirrors `buildFuncNInvokeTok`, but for a REAL (non-boxed-ABI)
+// `Action`N` value — #5329 follow-up (D-progress-882): a stdlib/restored
+// function's `(T1,...,TN) -> Unit`-typed parameter, or any same-package one,
+// constructs a genuine `Action`N<object,...>` via `buildActionNCtorTok`'s
+// exact TypeSpec (same "ActionSpec_ctor_<N>" cache key, so this shares the
+// same TypeSpec row rather than duplicating it); invoking it through the
+// uniform `Func`(N+1)::Invoke` instead (the ONLY invoke path before this fix)
+// throws `InvalidCastException` at runtime since `Action`N` and `Func`(N+1)`
+// share no inheritance relationship, despite both deriving from
+// `MulticastDelegate` (reproduced by `Std.Iter.forEach`'s `(T) -> Unit`
+// callback: #5329's `registerStdlibFunc`/`registerRestoredFunc` fix started
+// constructing a real `Action`1<object>` at forEach's call sites, correctly
+// matching forEach's own declared parameter type, but forEach's OWN BODY
+// invoking that parameter via `fn(item)` still went through the unconditional
+// uniform-ABI cast — the exact same latent bug the zero-arg
+// `isRealZeroArgAction` fix closed for arity 0 only).
+func buildActionNInvokeTok(cctx: in CodegenCtx, nparams: in Int): Int {
+  val trN = internActionTypeRef(cctx, nparams)
+  val codedIdx = (trN * 4) + 1
+  val objArgs: List[MsilType] = newList()
+  var ai = 0
+  while ai < nparams {
+    objArgs.add(MObject)
+    ai = ai + 1
+  }
+  val gblob = buildGenericInstBlob(codedIdx, objArgs)
+  val specKey = "ActionSpec_ctor_" + toString(nparams)
+  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
+  val invokePs: List[MsilType] = newList()
+  var pi = 0
+  while pi < nparams {
+    invokePs.add(MTypeVar(index = pi))
+    pi = pi + 1
+  }
+  val invokeSig = buildInstanceMethodSig(invokePs, MVoid)
+  val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "Invoke", "action_invoke_" + toString(nparams), invokeSig)
   0x0A000000 + mrRow
 }
 
@@ -34881,6 +35004,37 @@ func registerRestoredFunc(
     paramTypes.add(typeExprToMsilCtx(cctx, fn.params[pi].ty, packageName))
     pi = pi + 1
   }
+  // #5329 (bug 1): mirror the matching `registerStdlibFunc` fix (see its own
+  // doc comment for the full failure mode) for RESTORED (path-dependency /
+  // NuGet) package functions — a synthesized restored `FunctionDecl`
+  // (`reprForFunc`'s bodyless head) still carries the real declared
+  // parameter TYPES, `TFunction` shapes included, even though it carries no
+  // body/asyncness. Restored functions register only under the bare `fqn`
+  // (no arity-keyed overload variant, unlike stdlib), matching the call
+  // site's own `tokKey` fallback when no arity-specific entry exists.
+  var tfPi = 0
+  while tfPi < fn.params.count {
+    match fn.params[tfPi].ty.kind {
+      case TFunction(fnInnerParams, fnInnerRetTe) -> {
+        val innerParamTys: List[MsilType] = newList()
+        var tfIpi = 0
+        while tfIpi < fnInnerParams.count {
+          innerParamTys.add(typeExprToMsilCtx(cctx, fnInnerParams[tfIpi], packageName))
+          tfIpi = tfIpi + 1
+        }
+        val fKey = fqn + "#" + toString(tfPi)
+        if not cctx.funcParamFnInner.containsKey(fKey) {
+          cctx.funcParamFnInner.add(fKey, innerParamTys)
+        }
+        val innerRetMsil = typeExprToMsilCtx(cctx, fnInnerRetTe, packageName)
+        if not cctx.funcParamFnRetType.containsKey(fKey) {
+          cctx.funcParamFnRetType.add(fKey, innerRetMsil)
+        }
+      }
+      case _ -> ()
+    }
+    tfPi = tfPi + 1
+  }
   val declRetType = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
   // Contract-metadata reprs do not carry asyncness (`reprForFunc` renders a
   // bodyless `pub func` head), so `fn.isAsync` is always false here — and
@@ -36878,6 +37032,57 @@ func registerStdlibFunc(cctx: in CodegenCtx, packageName: in String, hostRefRow:
   while pi < fn.params.count {
     paramTypes.add(typeExprToMsilCtx(cctx, fn.params[pi].ty, packageName))
     pi = pi + 1
+  }
+  // #5329 (bug 1): mirror `addPackageTokens`'s in-bundle "ordinary (non-FFI)
+  // HOF" `TFunction`-param registration (`funcParamFnInner`/
+  // `funcParamFnRetType`, keyed "<key>#<paramIdx>") for STDLIB functions too.
+  // Without this, a lambda literal passed directly to a stdlib function's
+  // `() -> Unit`-typed parameter (e.g. `Std.Task.scopeSpawn(s, action)`) had
+  // NO entry in either map — `registerStdlibFunc` never populated them, only
+  // the in-bundle pre-scan did — so the ELambda call-site codegen's
+  // `cctx.lambdaRetTypes` lookup (added for the in-bundle case, see the
+  // `returnsVoid` doc comment above) never fired either, and the call site
+  // built a `Func<object>` where the stdlib function's OWN parameter type
+  // (`paramTypes` above, correctly `System.Action` via `typeExprToMsilCtx`'s
+  // unconditional `TFunction` rule) expects a real `System.Action`. Runtime
+  // symptom: `Task.Run(Action, CancellationToken)` pattern-matches the
+  // mismatched `Func<object>` value against `Action` internally, fails the
+  // match silently (no exception — raw IL delegate construction never
+  // verifies the constructed delegate's runtime type against the receiving
+  // parameter's static type), and never invokes the spawned closure at all,
+  // while the returned `Task` still completes `RanToCompletion` immediately.
+  // `fnIsGeneric` already returned early above, so every stdlib function
+  // reaching here is non-generic — no `#5334`-style bare-type-variable risk,
+  // mirroring the in-bundle path's own `declIsGenericFn` guard.
+  var tfPi = 0
+  while tfPi < fn.params.count {
+    match fn.params[tfPi].ty.kind {
+      case TFunction(fnInnerParams, fnInnerRetTe) -> {
+        val innerParamTys: List[MsilType] = newList()
+        var tfIpi = 0
+        while tfIpi < fnInnerParams.count {
+          innerParamTys.add(typeExprToMsilCtx(cctx, fnInnerParams[tfIpi], packageName))
+          tfIpi = tfIpi + 1
+        }
+        val aKey = arityKey + "#" + toString(tfPi)
+        val fKey = fqn + "#" + toString(tfPi)
+        if not cctx.funcParamFnInner.containsKey(aKey) {
+          cctx.funcParamFnInner.add(aKey, innerParamTys)
+        }
+        if not cctx.funcParamFnInner.containsKey(fKey) {
+          cctx.funcParamFnInner.add(fKey, innerParamTys)
+        }
+        val innerRetMsil = typeExprToMsilCtx(cctx, fnInnerRetTe, packageName)
+        if not cctx.funcParamFnRetType.containsKey(aKey) {
+          cctx.funcParamFnRetType.add(aKey, innerRetMsil)
+        }
+        if not cctx.funcParamFnRetType.containsKey(fKey) {
+          cctx.funcParamFnRetType.add(fKey, innerRetMsil)
+        }
+      }
+      case _ -> ()
+    }
+    tfPi = tfPi + 1
   }
   val declRetType = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
   // An `async func` (no @externTarget, no yield) is emitted as a

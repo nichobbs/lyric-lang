@@ -5329,9 +5329,10 @@ jobs:
           out="$(java -jar "$work/time_tests.jar")"
           echo "$out" | tail -3
           grep -q "time: ok" <<< "$out" || { echo "::error::Std.Time JVM suite did not report success"; exit 1; }
-      # Std.Task cancellation-token/delay coverage on JVM.  Std.Task.Scope
-      # structured concurrency is intentionally NOT covered here — see
-      # task_scope_known_failures_tests.l's header (issue #5329).
+      # Std.Task cancellation-token/delay coverage on JVM, plus (as of
+      # #5329's fix) Std.Task.Scope structured-concurrency spawn/join.
+      # D119 slice S3 (sibling-cancel-on-fault) is the one Scope case still
+      # NOT covered here — see task_scope_known_failures_tests.l's header.
       - name: Std.Task tests on JVM (lyric build --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
@@ -6633,10 +6634,11 @@ jobs:
           fi
           "$lyric_bin" run lyric-stdlib/tests/time_tests.l
 
-      # Std.Task cancellation-token/delay coverage on the managed target;
-      # plain-main program, so `lyric run`.  Std.Task.Scope structured
-      # concurrency is intentionally NOT covered here — see
-      # task_scope_known_failures_tests.l's header (issue #5329).
+      # Std.Task cancellation-token/delay coverage on the managed target,
+      # plus (as of #5329's fix) Std.Task.Scope structured-concurrency
+      # spawn/join; plain-main program, so `lyric run`.  D119 slice S3
+      # (sibling-cancel-on-fault) is the one Scope case still NOT covered
+      # here — see task_scope_known_failures_tests.l's header.
       - name: Std.Task test coverage (lyric run)
         working-directory: ${{ github.workspace }}
         run: |
