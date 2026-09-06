@@ -31778,14 +31778,14 @@ func argCoercionInsns(cctx: in CodegenCtx, argTy: in MsilType, paramSig: in Mdr.
   // Array parameter (`byte[]`, `string[]`): a `slice[T]` argument passes by
   // reference with no coercion when its element type matches exactly.  CLR
   // arrays with value-type elements are invariant, so anything short of an
-  // exact element match (score 2) must not bind — the same rule the overload
-  // scorer applies (`scoreSigType`'s STSzArray case).
+  // exact element match (score 3, #7017's tier renumbering) must not bind —
+  // the same rule the overload scorer applies (`scoreSigType`'s STSzArray case).
   match Mdr.sigSzArrayElem(paramSig) {
     case Some(paramElem) -> {
       return match argTy {
         case MArray(argElem) -> {
           match argTyToSig(argElem) {
-            case Some(argElemSig) -> if Mdr.scoreSigType(argElemSig, paramElem) == 2 { Some(value = acc) } else { None }
+            case Some(argElemSig) -> if Mdr.scoreSigType(argElemSig, paramElem) == 3 { Some(value = acc) } else { None }
             case None -> None
           }
         }
