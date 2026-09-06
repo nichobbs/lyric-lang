@@ -9,7 +9,7 @@
 //! Scope: variable get/set, the current working directory, the
 //! command-line arguments (`slice[String]` rides the shared list repr,
 //! D-N-015), and the two runtime-identity probes (below). Still
-//! missing (issue #4752's residual-seam audit, D-progress-884):
+//! missing (issue #4752's residual-seam audit, D-progress-887):
 //! `hostExit` (`extern func` with a `Never` return type has no native
 //! codegen lowering at all — `Lyric.LlvmCodegen: this type form is not
 //! yet supported for --target native (Phase N1)`, confirmed by direct

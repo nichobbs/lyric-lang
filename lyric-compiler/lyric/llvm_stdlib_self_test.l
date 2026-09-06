@@ -151,7 +151,7 @@ test "Std.File seams: round-trip, classification, idempotent delete (ASan)" {
   assertEqualInt(r.exitCode, 42, "file seams")
 }
 
-// #4752 residual-seam audit (D-progress-884): readBytesOrPanic has no
+// #4752 residual-seam audit (D-progress-887): readBytesOrPanic has no
 // try/catch on any target, so hostReadAllBytes was implementable on
 // native by panicking directly on failure -- unlike readTextOrPanic
 // (whose OWN try/catch wrapper remains blocked, tracked separately).
@@ -187,7 +187,7 @@ test "Std.File readBytesOrPanic: round-trip, panics on a missing path (ASan)" {
   assertTrue(panicResult.exitCode != 42 and panicResult.exitCode != 0, "a non-panicking readBytesOrPanic would exit 42")
 }
 
-// #4752 residual-seam audit (D-progress-884): both return "" on native,
+// #4752 residual-seam audit (D-progress-887): both return "" on native,
 // a value each function's own doc comment already documents as valid
 // (runtimeDirectory: "may return an empty string in native-AOT
 // scenarios"; runtimeIdentifier: the JVM twin's identical "no .NET RID
