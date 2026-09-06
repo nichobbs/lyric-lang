@@ -148,3 +148,43 @@ test "Enumerable.Repeat<T>/First<T> box a value-type argument and unbox a value-
   val seq = repeatInt(42, 3)
   assertEqualInt(firstOfInt(seq), 42, "the boxed Int argument round-trips through Repeat<T> and First<T> unchanged")
 }
+
+// ── Gap 2 review follow-up (#7016): same declaring type, same name, same ──
+// genParamCount, same param COUNT, but different param TYPES must not
+// collide either.
+//
+// `System.Linq.Enumerable.ElementAt<TSource>(IEnumerable<TSource>, int)`
+// and the `System.Index`-taking overload
+// `ElementAt<TSource>(IEnumerable<TSource>, System.Index)` (added
+// alongside Ranges) are BOTH static, non-generic-declaring-type
+// (`Enumerable`), with genParamCount=1 and mParams.count=2 (source,
+// position) — the exact components #6987's fix (prepending `parentRow`)
+// already covers, since neither the declaring type, the name, the
+// genParamCount, nor the param COUNT differ between the two overloads;
+// only the second parameter's own TYPE (`Int32` vs the `System.Index`
+// value-type struct) does. Before this fix, whichever of the two wrapper
+// functions below compiled second silently reused the first's MemberRef
+// signature bytes regardless of the mismatch, faulting at CLR load time.
+@externTarget("System.Linq.Enumerable.Repeat")
+func repeatStr(element: in String, count: Int): IEnumerableOfT[String] = ()
+
+extern type SystemIndex = "System.Index"
+
+@externTarget("System.Index..ctor")
+func newSystemIndex(value: Int): SystemIndex = ()
+
+@externTarget("System.Linq.Enumerable.ElementAt")
+func elementAtInt(source: in IEnumerableOfT[String], index: Int): String = ()
+
+@externTarget("System.Linq.Enumerable.ElementAt")
+func elementAtIndex(source: in IEnumerableOfT[String], index: in SystemIndex): String = ()
+
+test "Enumerable.ElementAt<TSource>(int) vs ElementAt<TSource>(System.Index) overloads do not collide (#7016)" {
+  val src = repeatStr("z", 3)
+  assertEqual(elementAtInt(src, 0), "z", "int-index ElementAt<TSource> resolves to its own overload")
+  assertEqual(
+    elementAtIndex(src, newSystemIndex(0)),
+    "z",
+    "System.Index-typed ElementAt<TSource> resolves to its own overload's signature, not the int-index one's cached blob"
+  )
+}
