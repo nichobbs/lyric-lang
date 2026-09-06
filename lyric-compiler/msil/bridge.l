@@ -1273,18 +1273,25 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // state left behind by the bad package (e.g. an invalid `impl` records
   // F0034 but `validateExternImplConformanceMsil` returns normally and
   // codegen proceeds to `lowerMImpl` the bad row anyway).  #6599: the
-  // per-package gate labels every reported diagnostic with the owning
-  // package name via `abortOnCodegenDiagnosticsMsilInPkgWithOrigins`, which
+  // per-package gate labels every reported diagnostic with the real
+  // on-disk path when known (falling back to the bare package name
+  // otherwise) via `abortOnCodegenDiagnosticsMsilInPkgWithOrigins`, which
   // also resolves it to the real on-disk file and line for a multi-file
-  // project package (#6824 item 2) — `parsedPkgs[ci]` is the SAME index as
-  // `liftedFiles[ci]`/`perPkgNames[ci]` (both built 1:1 from `parsedPkgs`
-  // with no filtering; see the comment on the `li` loop above).
+  // project package (#6824 item 2, #7034 fix) — `parsedPkgs[ci]` is the
+  // SAME index as `liftedFiles[ci]`/`perPkgNames[ci]` (both built 1:1 from
+  // `parsedPkgs` with no filtering; see the comment on the `li` loop
+  // above), and `parsedPkgs[ci].label` is the SAME real-path-or-name field
+  // the middle-end gate above (`pkgLabel = pp.label`) already uses for
+  // this exact package index — using the bare `perPkgNames[ci]` here
+  // instead left a single-file package's F0021–F0025/F0034 diagnostics
+  // falling back to the bare package name even when the real path was
+  // already known.
   val mpkgs: List[MPackage] = newList()
   var ci = 0
   while ci < liftedFiles.count {
     val mpkg = codegenMPackage(liftedFiles[ci], cctx)
     mpkgs.add(mpkg)
-    if abortOnCodegenDiagnosticsMsilInPkgWithOrigins(cctx, perPkgNames[ci], parsedPkgs[ci].origins) {
+    if abortOnCodegenDiagnosticsMsilInPkgWithOrigins(cctx, parsedPkgs[ci].label, parsedPkgs[ci].origins) {
       var cdi = 0
       while cdi < cctx.diagnostics.count {
         outDiagnostics.add(cctx.diagnostics[cdi])
