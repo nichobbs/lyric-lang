@@ -421,6 +421,21 @@ the process-level config cache under the same key used by env vars
 (`LYRIC_CONFIG_<PACKAGE>_<FIELD>`).  The existing config-block access mechanism
 then reads from the cache unchanged.
 
+**This annotation-scanning path only works on `feature = "local"` today**
+(where it is correctly a no-op, since `local` mode relies entirely on env
+var overrides — see §7.3). On `aws` (.NET) and `jvm`, `init()` always
+returns a typed `NOT_IMPLEMENTED` error: no compiler/runtime capability
+exists yet to read a custom annotation off a compiled field at runtime
+(tracked in #6866). Building the "Startup wiring" example above with
+`--features aws` or `--features jvm` will fail this way on every deploy —
+see `lyric-aws-secrets/README.md`'s platform-parity table for the current,
+per-feature status of `init()`, `getSecret()`, `getSecretField()`,
+`getParameter()`, and `getParameterRaw()` (the last four take the
+secret/parameter name as an explicit runtime argument and need no
+annotation reflection, so they work normally on `jvm` wherever the
+underlying client binding is real — `aws`/.NET is tracked separately in
+#6864).
+
 ### 7.3 Env var override
 
 If `LYRIC_CONFIG_<PACKAGE>_<FIELD>` is set, `init()` skips the AWS fetch for
