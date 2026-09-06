@@ -333,3 +333,53 @@ test "an index-expression out/inout argument is a loud diagnostic, not a miscomp
     { -> codegenOnly(src) }
   )
 }
+
+test "an Int local passed to an inout Long parameter is a loud diagnostic, not a silent width mismatch (#6813)" {
+  // The type checker's `argSatisfiesParam` widens arithmetic uniformly
+  // across every parameter mode, so this type-checks; codegen must catch
+  // the width mismatch itself rather than alias an i32 alloca through an
+  // i64 by-ref pointer.
+  val src = "package T\n" + "func bump(x: inout Long): Unit {\n" + "  x = x + 1\n" + "}\n" + "func main(): Int {\n" +
+    "  var n = 5\n" +
+    "  bump(n)\n" +
+    "  0\n" +
+    "}\n"
+  assertPanicsWith(
+    "Int local against an inout Long parameter",
+    "must match the parameter's declared type exactly",
+    { -> codegenOnly(src) }
+  )
+}
+
+test "an Int local passed to an out Long parameter is a loud diagnostic, not a silent width mismatch (#6813)" {
+  // Same width-mismatch hazard as the `inout Long` case above, but for
+  // `out` mode — `lowerByRefArg`'s panic guard applies identically to
+  // both by-ref parameter modes since neither copies a widened value.
+  val src = "package T\n" + "func setTo(x: out Long, v: in Long): Unit {\n" + "  x = v\n" + "}\n" +
+    "func main(): Int {\n" +
+    "  var n = 0\n" +
+    "  setTo(n, 5)\n" +
+    "  0\n" +
+    "}\n"
+  assertPanicsWith(
+    "Int local against an out Long parameter",
+    "must match the parameter's declared type exactly",
+    { -> codegenOnly(src) }
+  )
+}
+
+test "a record field passed to a mismatched-type inout parameter is a loud diagnostic (#6813)" {
+  val src = "package T\n" + "record Box {\n" + "  var n: Int\n" + "}\n" + "func bump(x: inout Long): Unit {\n" +
+    "  x = x + 1\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val b = Box(n = 5)\n" +
+    "  bump(b.n)\n" +
+    "  0\n" +
+    "}\n"
+  assertPanicsWith(
+    "Int field against an inout Long parameter",
+    "must match the parameter's declared type exactly",
+    { -> codegenOnly(src) }
+  )
+}

@@ -12,7 +12,7 @@
 //! (`emitArrayLoad`) BEFORE lowering the RHS — every other arm (the `JRef`
 //! Map arm here, and MSIL's single unified List/Map/`slice[T]` path in
 //! `msil/codegen.l`, and the native `Lyric.LlvmCodegen.lowerIndexAssign`
-//! path, D-progress-883) evaluates the RHS first. For `xs[i] op= f()` where
+//! path, D-progress-886) evaluates the RHS first. For `xs[i] op= f()` where
 //! `f()` itself mutates `xs[i]`, the two orders are observably different:
 //! RHS-first sees `f()`'s write when it reads the container back (so the
 //! write is silently clobbered by the compound store); read-first captures

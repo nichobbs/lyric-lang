@@ -950,7 +950,7 @@ items marked ∥ are independent and can proceed in parallel.
     native kernel (`_kernel_native/char_host.l` twin), a separate,
     newly-filed gap (issue #6811). N9.5 stays blocked on issue #6809
     (project/multi-package support) and #6811 (Std.Char native kernel)._
-    **N9.9 (D-progress-883, #6811)** ✅ SHIPPED: the `Std.Char` native
+    **N9.10 (D-progress-886, #6811)** ✅ SHIPPED: the `Std.Char` native
     kernel twin (ASCII-range classification/case conversion, a zero-cost
     code-point bridge; full non-ASCII Unicode classification deferred as a
     tracked gap, issue #6858). Verifying it against Hpack's real Huffman

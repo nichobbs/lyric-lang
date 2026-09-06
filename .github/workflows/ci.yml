@@ -72,7 +72,9 @@ jobs:
     outputs:
       has_code_changes: ${{ steps.changes.outputs.has_code_changes }}
       has_core_changes: ${{ steps.changes.outputs.has_core_changes }}
-      has_jvm_ecosystem_changes: ${{ steps.changes.outputs.has_jvm_ecosystem_changes }}
+      has_msil_changes: ${{ steps.changes.outputs.has_msil_changes }}
+      has_jvm_changes: ${{ steps.changes.outputs.has_jvm_changes }}
+      has_native_changes: ${{ steps.changes.outputs.has_native_changes }}
       ecosystem_run_map: ${{ steps.changes.outputs.run_map }}
     permissions:
       contents: read
@@ -310,6 +312,18 @@ jobs:
       - name: Check ci.yml workflow-file size (#6387 guardrail)
         run: bash scripts/ci/check-workflow-size.sh
 
+      # Guardrail for #6997: the has_msil_changes/has_jvm_changes/
+      # has_native_changes backend-split regexes in
+      # scripts/ci/detect-code-changes.sh fail *silently* when wrong -- the
+      # affected job just doesn't run, no red X anywhere. This runs the
+      # split's pattern logic against a disposable git repo covering every
+      # backend tree, each `_kernel*` dir, the JVM-ecosystem carve-out
+      # (lyric-web/storage/resilience/auth), and the _kernel_native vs.
+      # _kernel_native_bogus near-miss, so a future edit to those patterns
+      # gets caught here instead of quietly under-testing some backend.
+      - name: Self-test detect-code-changes.sh backend-split logic
+        run: bash scripts/ci/detect-code-changes-self-test.sh
+
       # Two remaining known-benign findings are suppressed rather than
       # failing on them forever silently; both are tracked in #5638 with the
       # condition under which they should be revisited:
@@ -395,12 +409,13 @@ jobs:
       contents: read
     # Its only real consumer is compiler-self-tests-jvm (build-and-test's
     # `needs` on it is always()-gated and immune to cascade-skip) — shares
-    # that job's has_jvm_ecosystem_changes gate exactly, not the narrower
-    # has_core_changes, so a lyric-web/storage/resilience/auth-only change
-    # can't leave compiler-self-tests-jvm auto-skipped by GitHub's default
+    # that job's has_jvm_changes gate exactly, not the narrower has_core_
+    # changes or has_msil_changes/has_native_changes, so an MSIL-only or
+    # native-only (or lyric-web/storage/resilience/auth-only) change can't
+    # leave compiler-self-tests-jvm auto-skipped by GitHub's default
     # cascade-skip-on-skipped-need behavior despite its own `if:` wanting
     # to run.
-    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_ecosystem_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_changes == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -463,12 +478,17 @@ jobs:
   # that setting must be updated to `ilverify-required` (Settings → Branches →
   # main → required status checks) or PRs will show this check as perpetually
   # missing/blocked — repo-admin-only, not verifiable or fixable from here.
+  #
+  # Gated on has_msil_changes (not the broader has_core_changes): "IL" here
+  # is CIL/MSIL specifically — the JVM and native backends emit no IL for
+  # ilverify to check, so a PR confined to lyric-compiler/jvm/ or the native
+  # backend gains nothing from this job.
   ilverify-required:
     runs-on: ubuntu-latest
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_msil_changes == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -504,7 +524,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_msil_changes == 'true'
     continue-on-error: false  # Stage 2+: required gate — zero boxing must be maintained
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -542,7 +562,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_changes == 'true'
     continue-on-error: false  # Stage 2+: required gate — zero boxing must be maintained
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -585,7 +605,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_changes == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -1942,7 +1962,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_native_changes == 'true'
     steps:
       # Point TMPDIR at `runner.temp` before the concurrent `background: true`
       # self-test steps below start. Despite this step's old name, this is NOT
@@ -2976,12 +2996,13 @@ jobs:
     needs: [build, build-stage2]
     permissions:
       contents: read
-    # Broader than the other has_core_changes-gated jobs: this one also
-    # carries the only JVM-kernel coverage for lyric-web/storage/resilience/
-    # auth (see has_jvm_ecosystem_changes above) — has_core_changes alone
+    # has_jvm_changes (not has_core_changes): this job is the JVM-specific
+    # compiler self-test suite, and it also carries the only JVM-kernel
+    # coverage for lyric-web/storage/resilience/auth (folded into
+    # has_jvm_changes for exactly that reason — has_core_changes alone
     # would silently skip that coverage on a PR confined to just one of
-    # those four libraries.
-    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_ecosystem_changes == 'true'
+    # those four libraries; see scripts/ci/detect-code-changes.sh).
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_changes == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -5078,7 +5099,15 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
+    # Gated per matrix entry, not a single job-wide condition: the msil
+    # shards only need has_msil_changes and the jvm shards only need
+    # has_jvm_changes, so a PR confined to one backend skips the other
+    # backend's shards instead of running all six every time.
+    if: |
+      needs.build.outputs.has_code_changes == 'true' && (
+        (matrix.set == 'msil' && needs.build.outputs.has_msil_changes == 'true') ||
+        (matrix.set == 'jvm' && needs.build.outputs.has_jvm_changes == 'true')
+      )
     strategy:
       fail-fast: false
       matrix:

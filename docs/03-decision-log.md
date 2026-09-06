@@ -1,5 +1,12 @@
 # 03 — Decision Log
 
+> **FROZEN ARCHIVE — do not append here.** New design decisions are recorded as
+> **one file per entry** under [`docs/decisions/`](decisions/) (see its
+> `README.md`). This file holds the historical entries up to `D-progress-885`
+> (and the legacy `DNNN` / `D-N-NNN` decisions) for reference and cross-linking;
+> ids resolve across both. Per-file entries stop concurrent PRs from conflicting
+> on a shared end-of-file append. Everything below this notice is history.
+
 This document records every significant design decision, the alternatives considered, the rationale, and any subsequent revisions. It is the canonical record of *why* Lyric is the way it is.
 
 Format for each entry:
@@ -30454,6 +30461,15 @@ sugar), #5625 (original mis-binding).
 
 ## D-progress-784 — Bootstrap seed fallback: local-tag tier + release-cut pin assertion (#6501)
 
+**PARTIALLY SUPERSEDED by D-progress-885** (#6859): mechanism #2 below (the
+`create-release` release-cut pin-freshness assertion) is **removed** — it was
+structurally guaranteed to fail every cut immediately after a release (the pin
+is always one release behind at that moment), which blocked publish runs
+1812/1814/1816. Mechanism #1 (the local-tag fallback tier) is **kept and
+strengthened**: it now runs a bounded best-effort `git fetch --tags` first, so a
+shallow checkout self-heals during a `/releases`-listing outage without needing
+the assertion. See D-progress-885 for the reversal rationale.
+
 **Date:** 2026-08-18. **Resolves** #6501 (keeping the PR #6497
 last-resort pinned seed version current) with two mechanisms instead
 of trusting manual bumps:
@@ -41186,6 +41202,332 @@ bundle-wide-undeclared bare call fails earlier at type-check (`T0020` unknown
 name) and never reaches codegen's `T0123`, so no constructible negative case
 remains for a plain function post-fix.
 
+## D-progress-882 — Three native-codegen review-finding fixes: bare enum-case pattern miscompile, out/inout width-mismatch guard, over-inclusive UFCS reachability narrowing (#6740, #6813, #6625)
+
+**Context.** Three independently-filed review findings against the
+native backend, all confirmed still present against current `main`.
+
+**#6740 — bare enum-case pattern silently binds instead of testing
+equality.** `Lyric.LlvmCodegen.emitPatternTest`'s `PBinding(name, None)`
+arm treats a bare identifier pattern (`case Foo ->`) as a nullary
+constructor test only when `scrutineeHasCase(ctx, sv.ty, name)` returns
+true, and `scrutineeHasCase` only ever consulted `unionInfoOfType`. An
+enum value erases to bare `NI32` at the native IR level — indistinguishable
+from a real `Int` by type alone — so `unionInfoOfType` always returns
+`None` for an enum-typed scrutinee, and `scrutineeHasCase` always
+answered `false`. The parser cannot distinguish a bare-case pattern from
+an ordinary catch-all binding pattern (`PBinding(name, None)` either
+way), so `match version { case Http1_1 -> ...; case Http1_0 -> ... }`
+over an enum-typed `version` silently miscompiled: the FIRST arm always
+matched unconditionally as a catch-all bind, with no diagnostic — just a
+wrong answer for every case after the first.
+
+Fixed by extending `scrutineeHasCase` with an `NI32` fallback:
+
+```
+case None -> {
+  match t {
+    case NI32 -> ctx.enumDefs.containsKey(name)
+    case _ -> false
+  }
+}
+```
+
+narrowly gated on the scrutinee's actual runtime representation being
+`NI32` (never a real `Int`'s own catch-all binds, since `ctx.enumDefs`
+only ever contains registered enum-case names) — when matched, the
+`PBinding` arm's existing redirect delegates to `emitConstructorTest`
+exactly as the union-case branch already does, and `emitConstructorTest`'s
+OWN `sv.ty == NI32` gate (shipped for #6753) ensures the enum branch
+never misfires against a union scrutinee. New item G in
+`llvm_enum_case_resolve_self_test.l`: a `Version` enum matched with bare
+case names in both arms, asserting BOTH resolve correctly (not just that
+the first doesn't crash) — verified this fails without the fix (the
+`Http1_0` call would wrongly also return `Http1_1`'s value) and passes
+with it.
+
+**#6813 — no defensive check for a numeric-widened by-ref argument.**
+Follow-up from N9.6 (#6794/#6812)'s review: the type checker's
+`argSatisfiesParam` (`typechecker_exprs.l`) applies `widenArithmetic`
+uniformly across every parameter mode, so an `Int`-typed local (or
+record field) type-checks against an `inout Long` parameter today.
+Before #6812, any `out`/`inout` parameter panicked outright on native,
+so this combination could never reach codegen; now that native
+`out`/`inout` lowering is live, `lowerByRefArg` forwarded the raw local
+(or field) pointer tagged with the CALLEE's declared type with no check
+against the argument's OWN actual type — a hit would alias a narrower
+alloca (e.g. `alloca i32`) through the wider declared pointer type
+(`i64*`), a memory-unsafe width mismatch matching the `04-arc-design.md`
+Rule-violating class of bug #6645 (PR #6905) found elsewhere in this
+backend.
+
+Fixed with a named panic in both `lowerByRefArg` branches (bare local
+and record field) when the argument's actual type doesn't exactly match
+the callee's declared by-ref parameter type — matching N9.6's own "loud
+diagnostic, never silent miscompile" policy for every other out/inout
+scope cut (extern funcs, protected types, async, unaddressable l-value
+shapes). Three cases in `llvm_inout_self_test.l`: an `Int` local against
+an `inout Long` parameter, the same shape against an `out Long`
+parameter (mode symmetry — `lowerByRefArg`'s guard applies identically
+to both by-ref modes), and an `Int` record field against an `inout
+Long` parameter — all asserted via `assertPanicsWith` to panic with a
+message containing "must match the parameter's declared type exactly"
+before `lowerNativePackage`/clang ever run.
+
+**#6625 — bare-name UFCS reachability fallback is over-inclusive across
+colliding trailing names.** #6103 item D (PR #6622) added a bare
+member-name-only reachability fallback to `Lyric.LlvmBridge`'s
+function-granularity reachability walk (`collectCallKeys`/
+`registerFileFns`/`registerBareTrailingSegment`), needed because a UFCS
+call on a value receiver (`cfg.identity.rawHandle()`) produces no
+resolvable key at the syntax-only reachability stage (the receiver's
+static type isn't known yet). The fallback resolves a bare trailing
+segment (`"rawHandle/1"`) against EVERY same-named/arity
+extension-method-style declaration in the bundle via a multi-valued
+`bareTrailing: Map[String, List[String]]`. The stdlib already has
+several common trailing names declared on multiple, otherwise-unrelated
+types (`.message()` on `TlsError`/`RestError`/`ParseError`/`IOError`/
+`HttpError`/`YamlError`/`XmlError`) — if a program's transitive import
+closure pulls in two or more of these and calls `.message()` on any one
+via UFCS, ALL colliding implementations get swept into the reachable
+set together, so an unrelated, never-called implementation using a
+not-yet-lowerable construct could fail an otherwise-unrelated build.
+
+A precise fix needs receiver-type inference threaded into this
+syntax-only walk — out of scope here (tracked as the issue's own "what a
+real fix needs" open item). Shipped instead: a real, SOUND partial
+narrowing. `walkReachableFns` now takes a `pkgImports: Map[String,
+List[String]]` adjacency map (each bundled/own file's own direct
+`imports`, built once by a new `addPkgImports` helper at both native
+entry points — single-file `compileToNativeWithFlags` and multi-package
+`compileProjectToNativeWithFlags`) and, for each `bareTrailing`
+resolution, computes `curPkg`'s transitive import closure via a new
+`pkgTransitiveClosure` (BFS, memoized per `curPkg` for the walk's
+lifetime) — a `bareTrailing` candidate is marked reachable only when its
+OWN declaring package is inside that closure (or is `curPkg` itself). An
+empty/unregistered `curPkg` falls back to the old bundle-wide behavior
+rather than risk under-inclusion in an edge case never observed in
+practice. This narrowing is provably sound in one direction: the type
+checker requires a cross-package callee's declaring package be imported
+(directly or transitively) for the ORIGINAL unambiguous UFCS call to
+have type-checked at all, so the genuinely-correct candidate is always
+inside the caller's own import closure — this can only exclude UNRELATED
+candidates from packages the caller can't even reach, never the real
+target. It remains over-inclusive when two colliding packages ARE
+co-imported by the same program (the general case genuinely needs type
+inference), so this is documented as a partial fix, not a closure of the
+underlying issue.
+
+Two unit-level cases in `llvm_codegen_self_test.l` (new `import
+Lyric.LlvmBridge`) exercise `pkgTransitiveClosure` (now `pub`) directly
+against hand-built `pkgImports` adjacency maps — a root with a reachable
+direct import, a transitively-reachable import-of-an-import, and an
+unrelated sibling package the root cannot reach at all; and a diamond
+import graph (`A -> {B, C} -> D -> A`) to confirm the BFS terminates and
+visits every node exactly once despite the cycle. A full end-to-end
+regression (two bundled stdlib packages colliding on a trailing name
+where one has a currently-unlowerable body) isn't constructible today —
+per the issue's own note, no such stdlib pair currently exists — so this
+tests the new closure computation directly rather than synthesizing an
+artificial unlowerable stdlib function.
+
+**Review fix (#6952) — `addPkgImports` first-file-wins dropped
+multi-file package imports.** `claude-review` on this PR's initial
+commit caught a real soundness gap in `addPkgImports`: it returned early
+once a package name was already a key in `pkgImports`
+(`if pkgImports.containsKey(pkg) { return }`), so for a package split
+across multiple files (multi-file packages are first-class,
+`docs/19-multi-file-packages.md` — e.g. this very repo's `Lyric.Parser`,
+whose `parser_cst.l` imports `Std.String` but `parser_core.l`/
+`parser_exprs.l` don't), only the FIRST file processed contributed its
+imports to the map; every later file's imports for that same package
+were silently dropped. Since `pkgTransitiveClosure`'s BFS only walks
+edges actually present in `pkgImports`, a multi-file package whose
+import-bearing file was processed second could wrongly exclude a
+genuinely-correct `bareTrailing` candidate — precisely the failure mode
+the PR's own soundness argument claimed could not happen. Fixed by
+merging into whatever list already sits under `pkg` (via `mapGet` +
+in-place `List.add`, the same accumulate-under-a-key idiom
+`registerBareTrailingSegment` already uses) instead of skipping after
+the first file; duplicate import entries across files are harmless since
+`pkgTransitiveClosure`'s BFS already dedupes via its own `seen` map. New
+test `"addPkgImports merges import lists across multiple files of the
+same package (#6952)"` in `llvm_codegen_self_test.l`: two parsed
+`SourceFile`s sharing one `package Multi` with disjoint import lists,
+asserting the merged closure contains both. Also applied the review's
+two SUGGESTIONs: an `out Long` mode-symmetry case alongside the existing
+`inout Long` one in `llvm_inout_self_test.l`, and reworded the
+`lowerByRefArg` panic message ("...must match the parameter's declared
+type exactly...") for clarity.
+
+**Verified.** Full existing native self-test suite re-run under real
+ASan (this sandbox's `libclang-rt-18-dev` gap from earlier native-backend
+sessions is resolved — `apt-get install` succeeded once network access
+was retried) after both the original fixes and the #6952 review fix:
+`llvm_codegen_self_test.l` 35/35 (incl. the new `addPkgImports` case),
+`llvm_enum_case_resolve_self_test.l` 7/7, `llvm_inout_self_test.l`
+12/12 (incl. the new `out Long` case), `llvm_project_self_test.l` 10/10
+(multi-package reachability path, unaffected since every own-package
+function is already an unconditional reachability root — #6625's
+narrowing only bites the BUNDLED STDLIB closure, reached purely via
+imports), `llvm_stdlib_self_test.l` 18/18, `llvm_http_client_self_test.l`
+13/13 — no regressions from the reachability narrowing, the two new
+diagnostics, or the `addPkgImports` merge fix.
+
+**Related:** #6740, #6813, #6625 (all fixed here), #6952 (review-finding
+follow-up, fixed here too), #6645 (the sibling native-codegen ARC bug
+also fixed this session, in a separate PR, #6905),
+`native/plan/08-work-items.md` N9.9, `native/plan/04-arc-design.md`
+(Rule 5, the by-ref-argument-ownership rule #6813's fix protects).
+
+## D-progress-883 — Native codegen: #6740's enum-case pattern fix was reachable by an unrelated `Int`/`Char` scrutinee sharing a bind name with any enum case in the bundle (#6969)
+
+**Context.** A `claude-review` pass on the PR shipping D-progress-882's
+#6740 fix flagged a REQUIRED soundness gap the fix itself introduced:
+`scrutineeHasCase`'s new `NI32` fallback (`llvm_codegen.l`) checked
+`ctx.enumDefs.containsKey(name)` — a global, bundle-wide bare-case-name
+registry — with no check that the scrutinee is actually of that
+specific enum's type. Since an enum, a plain `Int`, and a `Char` all
+erase to the SAME native `NI32` representation, an ordinary catch-all
+bind pattern over a real `Int`/`Char` value (`match n { case Foo -> ... }`
+where `n: Int`) whose bind name happened to match ANY enum case name
+anywhere in the compiled bundle was silently reinterpreted as an
+equality test against that unrelated enum's ordinal, instead of
+binding — a hazard #6740's fix newly introduced (previously
+`scrutineeHasCase` always returned `false` for a non-union scrutinee,
+so bare-name binds over `Int`/`Char` were always safe on
+`--target native`).
+
+**Fix.** Mirrors `Msil.Codegen`'s existing `scrutEnumHint`/
+`inferScrutineeEnumHintMsil` mechanism (#5995), scoped to what native
+actually needs:
+
+- `Ctx.varEnumTypes: Map[String, String]` — a local/param's declared
+  enum type SIMPLE NAME, populated at `bindLocal`'s three `SLocal`
+  binding sites (`LBVal`/`LBLet`/`LBVar`, from the binding's type
+  annotation) and at function-parameter binding (from the parameter's
+  declared type), via the new `registerVarEnumType`/`enumNameOfTypeExpr`
+  helpers. Same flat, last-write-wins lifetime as the pre-existing
+  `Ctx.varTypes` — this backend has no scope-undo mechanism for either
+  map, so no new shadowing behavior is introduced.
+- `inferScrutineeEnumHint` — mirrors `inferScrutineeEnumHintMsil`
+  exactly: a match scrutinee that's a bare local/param reference
+  (`EPath` with one segment) looks up its declared enum type in
+  `varEnumTypes`; anything else (a field access, a call, a literal)
+  yields `""` (no hint — the safe "never an enum case" default).
+- `scrutineeHasCase` now takes this hint and, for an `NI32` scrutinee,
+  checks `enumHint + "." + name` in `ctx.enumDefs` (the scrutinee's OWN
+  enum) instead of a bundle-wide bare-name check. An empty hint means
+  "not known to be a specific enum," which now correctly falls through
+  to a plain bind — the pre-#6740 behavior for `Int`/`Char` scrutinees.
+- `lowerMatch` computes the hint once from the top-level scrutinee
+  expression and threads it through `emitPatternTest`'s arm-testing
+  calls. `emitConstructorTest`'s own recursive `emitPatternTest` call
+  (for constructor sub-field patterns) passes `""`: a sub-field's bare
+  `PBinding` pattern is handled inline as a plain bind before reaching
+  `scrutineeHasCase` at all (unaffected by this fix's scope either way),
+  so the hint there is unused dead-code-path plumbing, kept only to
+  satisfy the now-required parameter.
+
+Blast radius is narrower than it might first appear: `emitConstructorTest`
+(the union/enum-by-qualified-name path, and the `PConstructor` parser
+shape for an already-disambiguated pattern) never called
+`scrutineeHasCase` at all — that function's own `NI32` branch already
+gated on the FULL qualified/bare case key via `ctx.enumDefs` directly,
+never the ambiguous "any enum in the bundle" check #6969 fixes. The bug
+was strictly confined to `emitPatternTest`'s top-level `PBinding` branch,
+reached only from `lowerMatch`'s own arm tests.
+
+**Verification.** New item H in `llvm_enum_case_resolve_self_test.l`:
+a plain `Int` parameter matched against a bare pattern name colliding
+with an unrelated enum's case (`Version.Http1_1`) must echo the bind
+back unchanged (99 → 99), not compare against the enum's ordinal and
+fall through to a wildcard arm. Confirmed failing before the fix
+(returns the wildcard arm's value instead of the bound `Int`) and
+passing after. Full re-run of the affected native self-test suite:
+`llvm_enum_case_resolve_self_test.l` 8/8 (item G's own #6740 regression
+still passes — an empty hint never fires for a genuinely enum-typed
+scrutinee, since `bindLocal`/function-parameter binding now always
+records the hint when the declared type is a known enum),
+`llvm_inout_self_test.l` 12/12, `llvm_codegen_self_test.l` 35/35,
+`llvm_stdlib_self_test.l` 18/18, `llvm_http_client_self_test.l` 13/13 —
+no regressions. `lyric fmt --write` applied clean (no refusals) to
+`llvm_codegen.l`.
+
+**Related:** #6969 (fixed here), D-progress-882 (#6740, the fix this
+entry closes a soundness gap in), `Msil.Codegen.inferScrutineeEnumHintMsil`
+(#5995, the mirrored mechanism), `native/plan/08-work-items.md` N9.9.
+
+## D-progress-884 — Native codegen: D-progress-883's #6969 fix dropped #6740's coverage for any scrutinee shape lacking a declared-type hint (#6976)
+
+**Context.** A third `claude-review` pass on the same PR (this time
+against the commit shipping D-progress-883's #6969 fix) found that
+fix's own "empty hint means never an enum case" rule went too far:
+`inferScrutineeEnumHint` only ever produces a hint for a bare local/
+param reference with a KNOWN declared type — a `val` with no type
+annotation, a direct call-result scrutinee (`match toVersion(n) { ... }`),
+or a field-access scrutinee all yield `""`. Treating `""` as
+"conclusively not an enum" (D-progress-883's fix) silently dropped
+#6740's own fix for every one of those shapes, reproducing #6740's
+original defect (unconditional first-arm catch-all bind) for anything
+that wasn't a directly-typed parameter or annotated local. The
+suggested fix mirrors `Msil.Codegen.lowerPatternTestMsil`'s own already-
+shipped trade-off (#5995): fall back to the pre-#6969 bundle-wide
+`ctx.enumDefs.containsKey(name)` check when no hint is available, rather
+than dropping enum-case pattern support for hint-less scrutinees.
+
+**The naive fallback reintroduces #6969 for a different shape.** A
+first attempt (plain "if hint empty, use the bundle-wide check")
+regressed D-progress-883's own item-H regression test: an `Int`
+PARAMETER (`n: Int`) has a perfectly well-known declared type — it's
+concretely NOT an enum — but `enumNameOfTypeExpr` returned `""` for it
+(same as truly unknown), so the naive fallback wrongly re-enabled the
+bundle-wide collision hazard D-progress-883 had just closed. Two
+different scrutinee shapes both map to `enumHint == ""` under the
+old two-way design, needing OPPOSITE behavior: a concretely-`Int`
+scrutinee must NEVER fall back (D-progress-883's fix), while a
+call-result/field-access scrutinee of TRULY unknown type must fall
+back (this issue's fix) — the empty string can't represent both.
+
+**Fix.** Made the hint three-way instead of two-way. A new reserved
+sentinel `nonEnumScrutHint = "#nonenum"` (never collides with a real
+enum's bare name — enum names are lexer-restricted identifiers, which
+can't start with `#`) is what `enumNameOfTypeExpr` now returns for a
+`TRef` naming literally `Int` or `Char` (the only two types that erase
+to `NI32` besides an enum). `scrutineeHasCase`'s `NI32` branch now
+reads three cases: a real enum name -> scope the check to that enum
+(conclusive either way, D-progress-883's fix, unchanged); the sentinel
+-> unconditionally `false` (concretely known non-enum, never falls
+back); `""` -> the pre-#6969 bundle-wide `ctx.enumDefs.containsKey(name)`
+check (truly unknown, this issue's fix). `registerVarEnumType`/
+`registerVarEnumTypeFromOpt` needed no changes — they already store
+whatever hint string is passed, sentinel included.
+
+Also applied the review's SUGGESTION: the four `SLocal` binding arms'
+near-duplicated `enumHint`/`registerVarEnumType` computation in
+`lowerStmt` is now the one-line `registerVarEnumTypeFromOpt(ctx, name,
+tyOpt)` helper.
+
+**Verification.** New item I in `llvm_enum_case_resolve_self_test.l`:
+a `Version`-returning function's result matched DIRECTLY (never bound
+to a local first, so no hint is ever recorded for it) must still gate
+correctly on the enum's cases via the bundle-wide fallback. Confirmed
+BOTH item H (#6969, the concretely-`Int`-scrutinee case) and item I
+(#6976, the truly-unknown-scrutinee case) pass simultaneously — the
+naive single-fallback fix could not satisfy both at once, only the
+three-way sentinel design can. Full re-run of the affected native
+self-test suite: `llvm_enum_case_resolve_self_test.l` 9/9,
+`llvm_inout_self_test.l` 12/12, `llvm_codegen_self_test.l` 35/35,
+`llvm_stdlib_self_test.l` 18/18, `llvm_http_client_self_test.l` 13/13,
+`llvm_project_self_test.l` 10/10 — no regressions. `lyric fmt --write`
+applied clean (no refusals) to both changed `.l` files.
+
+**Related:** #6976 (fixed here), D-progress-883 (#6969, the fix this
+entry corrects), D-progress-882 (#6740, the original fix both #6969 and
+#6976 are follow-ups to), `Msil.Codegen.inferScrutineeEnumHintMsil`
+(#5995, the mirrored mechanism and accepted fallback trade-off),
+`native/plan/08-work-items.md` N9.9.
+
 ## D-progress-877 — `lyric-grpc`: server hosting confirmed blocked by the same #6581 gap as unary/streaming; no bindable non-generic subset found (#6592, #5409)
 
 **Context.** #6592/#5409 track `Grpc.Kernel.Net`'s real implementation.
@@ -41666,217 +42008,58 @@ combination (see each file's header). Every changed `.l` file is
 `@cfg` bug, filed not fixed); D062/D063/D064/D099 (original `lyric-lambda`
 design decisions).
 
-## D-progress-883 — Native `Std.Char` kernel twin (#6811), `List`/`Map` indexed-assignment codegen, and a cross-package `?`-propagation gap (both new, found closing out #6811/#6808) — Hpack's decode path (and the full `Std.HttpEngine.H2Conn` FSM driving it) now compiles and runs correctly on `--target native`
+## D-progress-885 — Release infra: bootstrap seed-version resolution self-heals via `git fetch --tags`, and the #6501 pre-flight pin-freshness guard is removed (it blocked every release cut)
 
-**#6811 — `Std.Char` had no `_kernel_native` twin.** Added
-`lyric-stdlib/std/_kernel_native/char_host.l`. The code-point bridge
-(`hostCharToInt`/`hostIntToChar`) needs no extern at all: `Char` and `Int`
-are both lowered to `i32` on native (`native/plan/03-type-mapping.md`), so
-the bridge is exactly the identity conversion the `.toInt()`/`.toChar()`
-numeric-conversion builtin methods (#1901) already perform — `c.toInt()` /
-`n.toChar()` compile to the same no-op the BCL/JDK twins need a real
-`Convert.ToInt32`/`Character.hashCode` call for. Classification
-(`isLetter`/`isDigit`/`isLetterOrDigit`/`isUpper`/`isLower`/
-`isPunctuation`/`isControl`) and case conversion (`toUpper`/`toLower`) ship
-as a genuinely complete ASCII-range (U+0000..U+007F) slice, matching
-`System.Char`'s Unicode-category verdict exactly in that range, in pure
-Lyric with **no** extern/libc dependency (avoids glibc/musl locale
-divergence entirely — `lyric-rt` has no ICU/Unicode-table dependency and
-building one is a substantial separate undertaking). Every code point above
-U+007F falls through to the conservative default per predicate (`false` for
-every `isX` check, identity for the case-conversion functions) — a real,
-tracked, dated gap, filed as **issue #6858** (full non-ASCII Unicode
-classification on native), not a silent divergence.
+**Status:** shipped (release automation only; no compiler/stdlib change).
+**Supersedes** D-progress-784 mechanism #2 (the `create-release` pin-freshness
+assertion), and evolves its mechanism #1 (the local-tag fallback tier).
 
-**Two more compiler-level gaps surfaced while verifying the fix against the
-real motivating consumer (`Std.HttpEngine.Hpack`'s Huffman codec and the
-full HPACK decode path), both fixed here — neither is Hpack-specific:**
+**The problem.** The publish workflow (`.github/workflows/publish.yml`,
+`create-release` job) carried a #6501 pre-flight guard, "Assert bootstrap seed
+fallback pin is current", which failed the release cut whenever
+`scripts/bootstrap.sh`'s `LYRIC_BOOTSTRAP_FALLBACK_VERSION` default did not
+equal the newest published release. That pin is *always* one release behind
+immediately after a release (the release that just shipped becomes "newest",
+the pin still names the prior one), so the guard failed **every** subsequent
+`workflow_dispatch` cut until a human landed a manual "bump the pin" commit
+first. A resilience fallback — a last-resort seed used only when the GitHub
+`/releases` listing API is down (the 2026-08-17 #6497 incident class) — had
+been turned into a hard release blocker. This is what failed publish runs
+1812/1814/1816: the guard, not the API, and not the fallback ever being
+exercised (the guard's own `gh release list` succeeded on each failing run,
+proving the listing API was up).
 
-**1. `List[T]`/`Map[K, V]` indexed assignment (`xs[i] = e`, `m[k] = e`,
-compound forms) had no native codegen at all.** `Hpack.buildHuffTrie`
-mutates `List[Int]` parallel arrays by index
-(`zero[node] = newIdx`) — `Lyric.LlvmCodegen.lowerAssign`'s fallback
-(`assignTargetName`) panics on any assignment target that isn't a bare
-name or `EMember` field access, so `EIndex` targets fell straight through
-to "assignment to this target form is not yet supported for --target
-native (fields are Phase N2)". Fixed by adding an `EIndex` arm to
-`lowerAssign` (`lowerIndexAssign` + a shared `combineIndexedAssignValue`
-compound-op helper, `llvm_codegen.l`) that mirrors the JVM backend's
-`EIndex`-assignment shape (`jvm/codegen/05_stmts.l`): `List[T]` lowers
-through the same `lyric_list_get`/`lyric_list_set` runtime calls the
-existing `.set(i, v)` method-call codegen already uses, `Map[K, V]`
-through `lyric_map_get`/`lyric_map_set` (panicking on a missing key for a
-compound `m[k] op= e`, matching the read-path `EIndex` panic message). No
-ARC dance is needed in the codegen itself: `lyric_list_set`/`lyric_map_set`
-already retain-new/release-old internally (`lyric-rt/src/lyric_collections.c`),
-unlike the plain-variable/field assignment paths, which must do that dance
-themselves since there is no runtime call to do it for them. Both `AssEq`
-and compound (`+=`/`-=`/`*=`/`/=`/`%=`) forms are supported, matching the
-JVM backend's coverage. Because the fix reuses `listElemOfType` (the same
-receiver-type test the pre-existing read-path `EIndex` and `.set(i, v)`
-codegen already use), it covers `slice[T]` too, not just `List[T]` —
-`slice[T]` shares `List[T]`'s runtime representation (D-N-015) — confirmed
-by direct repro (`xs[1] = 99` on a `slice[Int]`, matching `--target
-dotnet`).
+**Why the guard existed.** `bootstrap.sh`'s seed resolution is tiered:
+(0) the `/releases` REST API (newest non-draft tag), (1) the newest local
+`v*` git tag, (2) the hardcoded `LYRIC_BOOTSTRAP_FALLBACK_VERSION` pin. Tier 2
+was reached only when tier 0 was down AND the checkout was too shallow to carry
+tags (tier 1 empty). The guard's job was to keep that pin fresh so a shallow
+checkout during an API outage would still seed against a recent-enough version.
 
-**2. `?` (Result/Option propagation) silently failed to desugar for ANY
-`Std.*` stdlib package function reachable from a *different* package's
-entry point, when compiling for `--target native`.** Confirmed via
-extensive bisection (see below) that this is a genuine, general, previously
-undiscovered gap in `Lyric.Pipeline`'s native compilation path — not
-specific to Hpack, not related to `inout`, record shape, union arity,
-`slice[Byte]` payloads, or `?`-chaining depth (all individually ruled out
-by minimal repro). A `?` inside a function *reachable only via the stdlib
-bundle* (i.e. defined in a `Std.*` package other than the entry file's own
-package) reaches `Lyric.LlvmCodegen` as a raw, un-rewritten `EPropagate`
-node and panics ("this expression form (EPropagate) is not yet supported
-for --target native (Phase N1)") — even though the exact same code,
-compiled as a *single-file, single-package* program, desugars and runs
-correctly. This matches (and generalizes) the narrower symptom
-`_kernel_native/http_host.l`'s own header already documented and worked
-around by hand (D-progress-823): "the `?` operator fails specifically when
-the enclosing function is reachable from a different package than the one
-that defines it." Grepping the entire non-kernel `lyric-stdlib/std/` tree
-found exactly two files using `?` at all — `http_hpack.l` (14 sites) and
-one false-positive in `http_h2conn.l` (a `?` inside a doc-comment, not
-code) — meaning this gap has simply never been exercised by any other
-native-reachable stdlib code before now. This is the THIRD known
-occurrence of this exact defect (D-progress-823's `_kernel_native/
-http_host.l` was the first; a second occurrence around the
-`Std.HttpEngine.parseRequestLine` investigation was hand-patched the same
-way) — filed as **issue #6954** so the general root cause (`Lyric.
-Pipeline`'s native path not applying `Lyric.Propagate.lowerPropagateFile`
-to bundled `Std.*` packages, only the entry file's own package) has a
-tracked home instead of a fourth hand-rewrite next time. Root-caused to
-the native compilation pipeline, not fixed at the compiler-internals level
-here (out of this scope — belongs with the general native-backend work,
-#6954); worked around, per the `_kernel_native/http_host.l` precedent, by
-rewriting all 14 sites in `http_hpack.l` from `expr?` to the explicit
-`match expr { case Ok(v) -> v; case Err(e) -> return Err(error = e) }` /
-`case Ok(_) -> {}` form. `http_hpack.l` is target-independent (compiled
-unchanged on all three targets), so this rewrite changes nothing observable
-on dotnet/JVM — verified by the full existing `http_hpack_tests.l` (39/39)
-and `http_h2conn_tests.l` (73/73) suites passing unmodified on both
-`--target dotnet` and `--target jvm`.
+**The fix (tags-and-drop-the-guard).** Make tier 1 self-heal instead of
+asserting tier 2's freshness:
 
-**Verification.** `llvm_stdlib_self_test.l` gained three new committed
-cases (21/21 passing, ASan): the `Std.Char` kernel's code-point bridge,
-every classification/case-conversion predicate, and a real
-`huffmanEncode`/`huffmanDecode`/`octetsToString` round-trip; a dedicated
-indexed-assignment case exercising every combination this PR's own review
-pass (see below) flagged as under-covered — `slice[Int]` `AssEq`,
-`List[Int]` under all four compound operators (`+=`/`-=`/`*=`/`/=`/`%=`),
-`List[String] +=` (the `lowerStringBinop` branch of
-`combineIndexedAssignValue`), `Map[String, Int]` `AssEq` and all five
-compound operators, and `Map[String, String] +=` (the map-side
-`lowerStringBinop` branch); and a dedicated panic case confirming a
-compound assignment against an absent map key (`m["missing"] += 1`)
-panics rather than silently inserting. A **second review pass flagged an
-evaluation-order divergence** from the JVM backend: `combineIndexedAssignValue`
-originally read the container's current value BEFORE lowering the RHS
-expression, while the JVM backend's `EIndex` compound-assign codegen
-(`jvm/codegen/05_stmts.l`) lowers the RHS first — for an RHS with a side
-effect that mutates the same container (`xs[i] += mutate(xs)`), the two
-orders can observe different states. Fixed by reordering: `rhs` is now
-evaluated at each `lowerIndexAssign` compound-branch call site BEFORE the
-`lyric_list_get`/`lyric_map_get` read, and `combineIndexedAssignValue`
-takes the pre-lowered `rhs: NVal` instead of the raw `Expr`, matching the
-JVM backend's order exactly. Direct hand-built repros (not wired into CI,
-used to isolate and confirm each fix during development) verified, with
-`--target dotnet` producing byte-identical results: `Std.HttpEngine.Hpack.
-decodeHeaderBlock`/`decodeStringLiteralAt`/`decodeIntegerAt`/
-`resolveIndex`/`decodeLiteralField` (the full HPACK *decode* path) compile
-and run correctly on native; and — the most significant check — a real
-`Std.HttpEngine.H2Conn.newServerConnection` + `feed()` call, given real
-wire bytes (connection preface + an empty SETTINGS frame + a
-static-table-indexed HEADERS frame), correctly decodes through the full
-FSM (38 `inout H2Connection` sites, the `inout FrameDecoder` chain, and
-the HPACK decoder together) to a `H2RequestHeaders(streamId = 1, headers =
-[":method": "GET"], endStream = true)` event, matching `--target dotnet`
-exactly.
+1. `scripts/bootstrap.sh` tier 1 now runs a best-effort
+   `git fetch --tags --quiet 2>/dev/null || true` **before** reading local
+   `v*` tags. The git protocol is a *different* service from the `/releases`
+   REST API, so it stays reachable through exactly the API-listing incident
+   (#6497) that sends resolution down the fallback path. A shallow checkout
+   therefore recovers the full tag set and picks the true newest release with
+   no API round-trip. The fetch is quiet and `|| true`-guarded — a genuine
+   offline/no-remote failure just leaves the local tags as-is and falls
+   through to tier 2.
 
-**Not fixed here, blocking the HPACK *encode* path (`encodeHeaderList`/
-`encodeHeaderField`) specifically:** `Std.HttpEngine.Hpack.stringToOctets`
-calls `Std.String.charAt`, which bracket-indexes a `String` receiver
-(`s[index]`) — the pre-existing native gap already tracked (and owned by a
-different group) as **issue #6237** (`group:native-string-runtime`). This
-is out of scope here; #6808 stays open, re-scoped to exactly this one
-remaining blocker (decode-side HPACK/H2Conn is now verified working).
+2. With tier 1 covering the outage, the tier-2 pin is now **vestigial for CI**
+   — reached only when both the REST API and the git remote are unreachable
+   (fully offline). The #6501 pre-flight guard is deleted from
+   `publish.yml`; its freshness assertion is no longer needed, and it was the
+   sole reason a release cut required a manual pin bump. Bumping the pin is now
+   optional housekeeping, not a release prerequisite.
 
-**Also confirmed, not a regression:** three unrelated native self-tests
-(`llvm_tls_self_test.l` intermittently, `llvm_http_client_self_test.l`,
-`llvm_http_server_self_test.l`) fail with `unknown name 'nativeAddrOf'` /
-`unknown type name 'NativePtr'` type-check errors when run via `lyric test
-<file>` (no `--target` flag, i.e. compiled to the default `--target
-dotnet`) in this session's from-source sandbox build. Confirmed via
-`git stash` that this reproduces identically on an unmodified tree (before
-any of this entry's changes) — pre-existing and environment-specific to
-this build, not investigated further here (out of scope for #6811/#6808).
-
-**Addendum (issue #7005, found by a third review pass on this PR).** The
-review flagged that `slice[T]` compound index-assign on `--target jvm`
-evaluates the RHS AFTER reading the container's current element
-(`jvm/codegen/05_stmts.l`'s `JArray` arm — a real JVM array, distinct from
-`List[T]`'s `java.util.ArrayList`), the opposite of every other receiver
-kind (`List[T]`/`Map[K, V]` on JVM, and `slice[T]` itself on `--target
-dotnet` and `--target native`, all of which evaluate the RHS first). For
-`xs[i] op= f()` where `f()` mutates `xs[i]`, the two orders observably
-disagree — confirmed by writing the regression test below and watching it
-fail under the pre-fix order (`actual=15`) vs. pass under the fixed order
-(`expected=1004`). Fixed by reordering the `JArray` compound-assign arm to
-spill the RHS to a local BEFORE the array-load-plus-index sequence,
-mirroring the `JRef` Map arm immediately below it in the same match.
-
-**A second, previously-undiscovered bug surfaced while writing the
-regression test for the above:** `slice[T]`'s JVM type is UNCONDITIONALLY
-`JArray(elem = JRef("java/lang/Object"))` regardless of `T`
-(`jvm/codegen/01_types.l`'s `TSlice(_) ->` arm, #5257's uniform
-boxed-array ABI) — so a bare `xs[i] += e` on ANY `slice[T]` (not just the
-`slice[Int]` #7005 named) reached `emitCompoundCombineJvm` with a
-reference-typed (`Object`) target and panicked
-("`Jvm.Codegen: compound assignment on a reference-typed target
-('java/lang/Object')...`") for every element type except `String`,
-independent of evaluation order. Confirmed via direct testing: even
-`var xs: slice[Int] = [10, 20, 30]; xs[0] += 5` — no `inout`, no function
-call, the simplest possible shape — panics at compile time on
-unmodified `main`. The plain `AssEq` arm (`xs[i] = e`) already resolves
-the receiver's TRUE declared element type via
-`indexedElemTypeOverride`/`coerceScalarToSliceElem` (#6741) before storing;
-the compound arm never had the equivalent treatment. Fixed by applying the
-same `indexedElemTypeOverride`/`applyIndexedElemOverride` resolution the
-`JRef` Map arm already uses (including its no-override
-`emitUnboxObjectTo(vTy)` fallback) to narrow the loaded element to its
-real type before combining, and re-boxing before the store when the
-array's tracked storage is the erased `Object` shape.
-
-**Verification.** `slice_compound_assign_eval_order_self_test.l` (new
-`@test_module`, run via native `lyric test --target jvm`): a
-`slice[Int]` and a `slice[Long]` case, each calling an `inout`-mutating
-function as the RHS of `xs[0] += f(xs)` where `f` also writes `xs[0]`,
-asserting the RHS-first combined result (`1004`) rather than the
-read-first stale-combine result (`15`) the pre-fix order would produce —
-confirmed both ways by temporarily reverting only the ordering change
-(keeping the type-override fix) and watching both cases fail with
-`actual=15` before restoring the fix. No committed test attempts a
-reference-typed (`slice[String]`) compound-assign: `emitCompoundCombineJvm`
-still only combines a `String` target via `AssPlus`, and (independent of
-this fix) a `slice[String]`'s override resolution vs. the array's
-`Object`-erased storage was not exercised end-to-end here — left
-unattempted rather than guessed at. Full existing regression coverage
-re-run on `--target jvm` with zero new failures: `inout_slice_self_test.l`
-(4/4, `AssEq`-only slice writes across `Int`/`Long`/`Byte`/`String`
-elements, unaffected since only the compound arm changed),
-`list_value_compare_self_test.l` (10/10), `compound_string_assign_self_test.l`
-(8/8, the `JRef` String arm this fix's `elemTy != elem` guard leaves
-untouched). `llvm_stdlib_self_test.l` (21/21, native), `http_hpack_tests.l`
-(39/39, dotnet), `http_h2conn_tests.l` (73/73, dotnet) re-confirmed
-unaffected by the JVM-only change. `lyric fmt --write` clean on every
-changed `.l` file.
-
-**Related:** #7005 (this addendum, closed), the previously-undiscovered
-`slice[T]` compound-assign type-erasure panic (filed nowhere separately —
-fixed directly alongside #7005 in the same code region rather than split
-into its own tracked-not-fixed issue, since leaving it unfixed would have
-made #7005's own regression test uncompilable), #6741 (the
-`indexedElemTypeOverride` mechanism this reuses), #5257 (the uniform
-boxed-array ABI this is erased under).
+**Blast radius.** Six workflows invoke `bootstrap.sh` (`ci.yml`, `publish.yml`,
+`seed-candidacy.yml`, `stage2-self-test.yml`, `book.yml`, `bench.yml`); the
+tier-1 change benefits all of them uniformly (the self-heal lives in the shared
+script, not per-workflow). The removed guard was in `publish.yml` alone. No
+change to the seed *format*, the three-stage reproducibility bootstrap, or any
+compiler behaviour. Reproducibility is unaffected: the byte-compare stages
+supply their own seed and never consult the fallback tier.
