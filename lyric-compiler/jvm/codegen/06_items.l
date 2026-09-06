@@ -4644,10 +4644,11 @@ func mkJvmDistinctRanged(
 
 // Build the distinct-type IR item, folding any range clause to integer/float
 // bounds for the synthesised `from`/`tryFrom` validation.  Mirrors
-// `Msil.Codegen.mkDistinctTypeIR` exactly (same fold, same no-range fallback
-// for an unrecognised `RangeBound` variant, #3116) — MSIL has no `isUnsigned`
-// counterpart to thread since `UInt`/`ULong` have no MSIL representation at
-// all yet (#6661).
+// `Msil.Codegen.mkDistinctTypeIR` exactly, including the `isUnsigned` field
+// (same fold, same no-range fallback for an unrecognised `RangeBound`
+// variant, #3116) — MSIL's `MDistinctType.isUnsigned` mirrors this one now
+// that `UInt`/`ULong` have a real MSIL representation (`MInt`/`MLong`
+// erasure, #6756).
 pub func mkJvmDistinctTypeIR(
   wrapperClass: in String,
   inner: in JvmType,

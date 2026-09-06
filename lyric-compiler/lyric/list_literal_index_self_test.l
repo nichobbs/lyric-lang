@@ -22,6 +22,20 @@
 //! from erased `Object` to the real element type.  The runtime
 //! representation stays a plain `ArrayList` — only the compiler's own type
 //! tracking changed.
+//! #6782/#6973 addendum: `u16`/`u32`/`u64`-suffixed unannotated list literals
+//! hit a THIRD, independent instance of this same defect class on MSIL —
+//! `listLiteralElemTypeMsil` had no `U16`/`U32`/`U64` arms, so
+//! `[1u16, 2u16]` etc. fell back to the legacy `List<object>` path and
+//! `xs[0] + xs[1]` faulted with `InvalidProgramException` (a compile-time-
+//! adjacent panic on MSIL, unlike the JVM twin's `#5686`-era `Object`-erasure
+//! symptom). `Jvm.Codegen.listLiteralElemTypeJvm` already had the matching
+//! fix (`#6741`), exercised by the JVM-only
+//! `lyric-compiler/jvm/list_literal_uint_elem_jvm_self_test.l`; the cases
+//! below are its MSIL-target regression-test counterpart (`#6782`'s own
+//! fix instructions specified BOTH the codegen fix and this test), added
+//! here — the established dual-target home for this defect family — rather
+//! than widening that JVM-directory file to run cross-target.
+//!
 //! Runs on both `--target dotnet` and `--target jvm`.
 //!   lyric test --target dotnet lyric-compiler/lyric/list_literal_index_self_test.l
 //!   lyric test --target jvm lyric-compiler/lyric/list_literal_index_self_test.l
@@ -98,6 +112,21 @@ func litVars(): Int {
   xs[0] + xs[1]
 }
 
+func litU16(): Bool {
+  val xs = [1u16, 2u16]
+  xs[0] + xs[1] == 3u16
+}
+
+func litU32(): Bool {
+  val xs = [100000u32, 1u32]
+  xs[0] + xs[1] == 100001u32
+}
+
+func litU64(): Bool {
+  val xs = [1000000000000u64, 1u64]
+  xs[0] + xs[1] == 1000000000001u64
+}
+
 test "unannotated Int list literal indexes as Int, not garbage (#5620)" {
   assertEqualInt(litIndex0(), 9, "xs[0] == 9")
   assertEqualInt(litSum(), 16, "xs[0] + xs[1] == 16 (integer add, not object-ref garbage)")
@@ -125,4 +154,10 @@ test "unannotated list literals recover Double/Bool/Char/Long/Byte element types
 
 test "list literal over local variables recovers the element type (#5690)" {
   assertEqualInt(litVars(), 16, "[a, b] with Int locals indexes as Int")
+}
+
+test "unannotated U16/U32/U64 list literal elements infer for indexed arithmetic on MSIL (#6782/#6973)" {
+  assertTrue(litU16(), "u16: xs[0] + xs[1] == 3u16")
+  assertTrue(litU32(), "u32: xs[0] + xs[1] == 100001u32")
+  assertTrue(litU64(), "u64: xs[0] + xs[1] == 1000000000001u64")
 }

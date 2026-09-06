@@ -3114,13 +3114,17 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/range_subtype_self_test.l
 
-      # `UInt`/`ULong`-backed range-subtype self-test — JVM-ONLY (#6661):
-      # `UInt`/`ULong` have no MSIL representation at all, so this file (unlike
-      # range_subtype_self_test.l above) is never run on --target dotnet.
-      - name: Unsigned range-subtype self-test on JVM (native lyric test --target jvm)
+      # `Float`-backed range-subtype `.toFloat()` read-back self-test —
+      # JVM-ONLY: MSIL erases `Float` to `MDouble` in scalar position, so
+      # `.toFloat()` does not exist there (`.toDouble()` does instead,
+      # already covered by range_subtype_self_test.l above). The former
+      # `UInt`/`ULong` cases this file also hosted moved to the dual-target
+      # range_subtype_self_test.l once #6756 gave MSIL a real `UInt`/`ULong`
+      # representation.
+      - name: Float range-subtype toFloat() self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/range_subtype_unsigned_jvm_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/range_subtype_float_jvm_self_test.l
 
       # `UInt`/`ULong` generic-container erasure self-test — JVM-ONLY (#6695):
       # `isPrimitiveTypeKeyword` (`Jvm.Codegen`) had no `UInt`/`ULong` case, so
