@@ -1906,9 +1906,9 @@ func hzProtectedFieldNames(members: in List[ProtectedMember]): Map[String, Bool]
 // tables — a same-file declaration is always correctly preferred over an
 // imported one of the same bare name.
 //
-// KNOWN LIMITATION (flagged in #6702's own review, not yet tracked as a
-// separate issue): `extraRecords` is keyed by BARE name only, with no
-// package qualification, and now spans the whole in-bundle + stdlib +
+// KNOWN LIMITATION (flagged in #6702's own review; tracked in #7029):
+// `extraRecords` is keyed by BARE name only, with no package
+// qualification, and now spans the whole in-bundle + stdlib +
 // restored-dependency universe rather than just the same file. Two
 // record types sharing a bare name in different packages (e.g. two
 // in-bundle packages of a multi-package project each declaring `Config`)
@@ -1920,7 +1920,7 @@ func hzProtectedFieldNames(members: in List[ProtectedMember]): Map[String, Bool]
 // package can't declare two records with the same name): a genuinely
 // wrong (but confident) field set is worse than the pre-fix empty-set
 // fallback, which was merely under-protective. Not yet observed in
-// practice; would need real package-qualified keys to close properly.
+// practice; #7029 tracks closing it properly with package-qualified keys.
 func hzBuildTypeFieldIndex(file: in SourceFile, extraRecords: in List[RecordDecl]): Map[String, Map[String, Bool]] {
   val index: Map[String, Map[String, Bool]] = newMap()
   var i = 0
