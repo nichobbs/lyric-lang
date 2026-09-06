@@ -260,7 +260,7 @@ test "Std.Process capture: argv passthrough, exec failure, stdin round-trip (ASa
 // own correctness. `Std.Process.buildArgString` (also on that shared call
 // path) additionally calls `.replace()`, which has no native codegen
 // lowering yet either. Both gaps are documented, not silently routed
-// around — see this file's own header note and D-progress-883. The kernel
+// around — see this file's own header note and D-progress-887. The kernel
 // itself (spawn/read/write/kill/waitExit/exitCode/closeStdin/close) is
 // fully exercised here against a real `cat` child, matching the coverage
 // `lyric-compiler/jvm/piped_process_jvm_main.l` gives the JVM twin one

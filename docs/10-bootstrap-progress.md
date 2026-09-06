@@ -33780,7 +33780,7 @@ fixed-size) struct itself — the same sanctioned, disclosed
 #6802 case — plus the same guard at the Lyric level
 (`PipedHandle.closed`, mirroring `HttpListener.stopped`). New C-level
 double-close regression test, verified clean under a manual ASan build.
-See D-progress-886's addendum for the full account.
+See D-progress-887's addendum for the full account.
 
 **Addendum (#6993, found in review before merge):** the #6975 fix above
 freed `linebuf.data` and NULL'd it on close but never reset `linebuf.len`,
@@ -33789,9 +33789,9 @@ NULL-deref'd on the next `read_line` call. Fixed by also resetting
 `linebuf.len`/`linebuf.cap` to `0`. New regression test
 (`test_process_piped_read_after_close_with_buffered_line`) reproduces a
 real ASan SEGV on the pre-fix code before confirming the fix. See
-D-progress-886's second addendum for the full account.
+D-progress-887's second addendum for the full account.
 
-**Related:** `docs/03-decision-log.md` D-progress-886 (full account),
+**Related:** `docs/03-decision-log.md` D-progress-887 (full account),
 #6142 (fixed by this entry), #6887/#6888 (new, the two blockers found and
 filed), #6237 (the bracket-indexing gap this entry's own `parseArgString`
 worked around), #6975/#6993 (the double-free/NULL-deref fixed by the

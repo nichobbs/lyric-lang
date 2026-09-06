@@ -821,7 +821,7 @@ Implement `run(cmd, args)`, `capture(cmd, args)` using `posix_spawn`/`waitpid`/`
 
 `runCapture`/`runCaptureWithInput` (the batch capture half) shipped as part
 of issue #4752 (D-N-024, D-progress-557). `Std.ProcessPipedHost` (the
-long-lived piped-child-stdio half, issue #6142) shipped in D-progress-886:
+long-lived piped-child-stdio half, issue #6142) shipped in D-progress-887:
 a new `lyric-rt` seam (`lyric_process_piped_spawn`/`_read_line`/
 `_write_line`/`_is_alive`/`_kill`/`_wait_exit`/`_exit_code`/
 `_close_stdin`/`_close`, only stdin/stdout piped — stderr stays inherited,
@@ -833,7 +833,7 @@ the shared `Std.Process.spawnPiped`/`pipedReadLine`/`pipedWriteLine`
 facade remains unreachable on `--target native` today due to two
 independent, newly-filed gaps (issue #6887: `try/catch` unsupported per
 D-N-003; issue #6888: `String.replace` has no native lowering) — see
-D-progress-886 for the full account.
+D-progress-887 for the full account.
 
 ---
 
