@@ -42105,3 +42105,22 @@ that the second element binds correctly —
 `record_method_jvm_self_test`, `out_inout_jvm_self_test`,
 `control_flow_jvm_self_test`, `try_catch_expr_jvm_self_test`, and
 `silent_miscompile_guard_jvm_self_test` (all green).
+
+**Correction (CI follow-up).** This file's other nine cases are
+deliberately target-portable (per its own header comment: "the shapes are
+target-portable; the JVM run is the load-bearing one"), but this file is
+wired into CI on BOTH `--target jvm` and `--target dotnet`
+(`.github/workflows/ci.yml`). The `java.lang.StringBuilder` extern type
+above does not exist as a .NET reference-assembly type, so the
+`--target dotnet` run failed with `error[T0120]: auto-FFI call 'new' on
+extern type 'java.lang.StringBuilder' cannot be resolved`. Replaced with a
+plain Lyric `record TextBox { var text: String }`: the underlying bug is
+triggered by any non-`Object`-typed tuple element, not specifically an
+extern one, so a record reproduces the identical shape (confirmed by
+reverting the fix as a negative control — without it, the codegen's own
+erased-receiver check now rejects `box.text`/`appendToBox(box, ...)` with
+`error[J007]: member 'text' cannot be resolved on an erased (statically
+Object) receiver`, a compile-time rejection rather than the original
+runtime `VerifyError`, but an equally definite regression signal) while
+compiling cleanly on both targets — `stackmap_expr_branch_jvm_self_test`
+10/10 on both `--target dotnet` and `--target jvm`.
