@@ -1,14 +1,25 @@
-//! Std.Task tests — cancellation tokens and cancellable delay. Runs
+//! Std.Task tests — cancellation tokens, cancellable delay, and (as of
+//! #5329's fix) `Std.Task.Scope` structured-concurrency spawn/join. Runs
 //! unmodified on both targets (`lyric run lyric-stdlib/tests/task_tests.l`
 //! and `lyric run --target jvm lyric-stdlib/tests/task_tests.l`):
 //! `Std.Task`'s public surface is identical on `_kernel/task.l` (.NET) and
 //! `_kernel_jvm/task.l` (JVM), per D119. Every test below passes on both
 //! targets and is wired into CI.
 //!
-//! `Std.Task.Scope` structured concurrency is tested separately in
-//! `task_scope_known_failures_tests.l` — split out (#5325) because it
-//! currently has three known, separately-tracked failures (issue #5329)
-//! and is deliberately not CI-wired; see that file's header for why.
+//! `testScopeNormalCompletionRunsEveryChild` and
+//! `testScopeWithNoChildrenCompletesImmediately` were split out into
+//! `task_scope_known_failures_tests.l` (#5325) pending issue #5329's fix
+//! (`scopeSpawn`/`awaitAll` never actually ran a spawned closure on
+//! `--target dotnet`, and a separate null-dereference hit the empty-scope
+//! case on both targets). Both now pass on both targets and are merged
+//! back here per that file's own stated exit condition.
+//!
+//! `task_scope_known_failures_tests.l` still carries ONE remaining case
+//! (`testScopeSiblingObservesCancelOnFault`) — that one tests D119 slice
+//! S3's eager sibling-cancel-on-fault, a SEPARATE, not-yet-shipped feature
+//! (never part of #5329's own bug list) that passes on `--target jvm`
+//! today but not yet on `--target dotnet`; see that file's header and
+//! `_kernel/task.l`'s module doc ("D119 slice S3", bugs (1)/(2)) for why.
 package Std.Task.Tests
 
 import Std.Core
@@ -106,6 +117,35 @@ func testInstallTokenRoundTripsAndRestores(): Unit {
   restoreToken(outer)
 }
 
+// Regression test for #5329 (bug 1, the biggest of the reported failures):
+// `Task.Run(Action[, CancellationToken])`'s delegate never invoked the
+// passed closure on `--target dotnet` — a lambda literal passed directly to
+// a stdlib function's `() -> Unit`-typed parameter built a `Func<object>`
+// delegate instead of the `System.Action` that parameter's own signature
+// requires, so `Task.Run` silently never ran it. Fixed in `Msil.Codegen`
+// (ELambda's `returnsVoid` + `registerStdlibFunc`/`registerRestoredFunc`).
+func testScopeNormalCompletionRunsEveryChild(): Unit {
+  val sc = makeScope()
+  var a = 0
+  var b = 0
+  scopeSpawn(sc, { -> a = 1 })
+  scopeSpawn(sc, { -> b = 2 })
+  val r = await awaitAll(sc)
+  cancelScope(sc)
+  disposeScope(sc)
+  assertEqualInt(a, 1, "first scopeSpawn'd action ran")
+  assertEqualInt(b, 2, "second scopeSpawn'd action ran")
+}
+
+// Regression test for #5329 (bug 5): `awaitAll` on a scope with zero
+// spawned children null-dereferenced on both targets.
+func testScopeWithNoChildrenCompletesImmediately(): Unit {
+  val sc = makeScope()
+  val r = await awaitAll(sc)
+  cancelScope(sc)
+  disposeScope(sc)
+}
+
 func main(): Int {
   testNoCancellationNeverCancelled()
   testInstallTokenFirstCallDoesNotCrash()
@@ -117,6 +157,8 @@ func main(): Int {
   testDelayElapsesRoughlyRequestedDuration()
   testDelayWithCancelPanicsWhenAlreadyCancelled()
   testMakeCancelSourceTimeoutEventuallyCancels()
+  testScopeNormalCompletionRunsEveryChild()
+  testScopeWithNoChildrenCompletesImmediately()
   println("task tests: ok")
   return 0
 }
