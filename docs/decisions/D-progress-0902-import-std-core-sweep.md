@@ -26,10 +26,37 @@ disciplined). Also checked every `Std.Core` function beyond the `Option`/
 `mapOption`/`mapResult`/`andThen`/`orElse`/`unwrapResult`/`unwrapOption`) —
 zero additional gaps.
 
-**Verification.** `lyric-stdlib/lyric.full.toml` (73 packages) and
-`lyric-mail`/`lyric-aws-secrets` all build clean with the added imports
-(no behavior change — these are all real, already-reachable dependencies
-made explicit, not new functionality).
+**Correction (review round, #6998).** A `claude-review` pass on this PR
+caught a 9th genuine gap the original sweep missed: `lyric-lambda/src/
+_kernel/lambda_kernel_web.l` uses `Option[Web.Router]`/`Some(value = ...)`/
+`None` in real code with only `import Lambda`/`import Web` declared. This
+file was touched by a concurrent `main` commit (lyric-lambda JVM
+custom-runtime work, merged after this PR's original sweep ran) that
+introduced the gap, so it postdates the sweep's original scan rather than
+being an audit miss against the tree as it stood at sweep time. Fixed by
+adding `import Std.Core` to that file too, bringing the sweep's own
+running count to 9.
+
+**Correction 2 (rebase onto current `main`, #7078).** By the time this PR
+was rebased onto a much later `main`, an unrelated already-merged commit
+had independently added `import Std.Core` to both
+`lyric-aws-secrets/src/_kernel/secrets_kernel_jvm.l` and
+`secrets_kernel_aws.l` — 2 of the original 8 sweep hits. Those two files'
+edits are therefore no longer part of this PR's diff (they're no-ops
+against the new base). The PR's actual shipped diff is **7** files:
+`lyric-stdlib/std/{stream,app,directory,environment}.l`,
+`lyric-stdlib/std/_kernel/jvm.l`, `lyric-mail/src/_kernel/jvm/
+mail_kernel.l`, and `lyric-lambda/src/_kernel/lambda_kernel_web.l`. The
+sweep's total *findings* count (9, across both audit passes) is unchanged;
+only the count of files this specific PR still needed to touch, post-rebase,
+is smaller.
+
+**Verification.** `lyric-stdlib/lyric.full.toml` (73 packages), `lyric-mail`,
+and `lyric-lambda` (which pulls in `lyric-web`/`lyric-auth`/`lyric-resilience`
+as workspace deps) all build clean with the added imports (no behavior
+change — these are all real, already-reachable dependencies made explicit,
+not new functionality). `lyric-aws-secrets` also builds clean, independently
+of this PR's diff.
 
 **What's NOT done — landing #6287 item 2 itself.** This PR only covers
 `lyric-stdlib/` and the ecosystem libraries at the repo root. It does NOT
