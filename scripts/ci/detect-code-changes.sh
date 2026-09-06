@@ -190,7 +190,25 @@ fi
 # checker, mono, weaver, pipeline, the stdlib's public Std.* surface,
 # bootstrap/, resolver/, scripts/, Makefile, or this workflow file)?
 #
-#   MSIL   — lyric-compiler/msil/, lyric-stdlib/std/_kernel/
+#   MSIL   — lyric-compiler/msil/ only. lyric-stdlib/std/_kernel/ is
+#            deliberately NOT MSIL-exclusive (see #7015): the self-hosted
+#            stdlib loader (emitter.l's findStdlibSourcesForTarget /
+#            findStdlibSourcesNative) resolves `_kernel_jvm/`/
+#            `_kernel_native/` overrides by BASENAME, falling back to
+#            `_kernel/<basename>.l` whenever no target-specific override
+#            exists with that basename -- e.g. `_kernel/verifier_env_host.l`
+#            and `_kernel/tcp_host.l` have no `_kernel_jvm/` counterpart and
+#            compile into the JVM build via fallback; ~13 more basenames
+#            (`collections_host.l`, `hash_host.l`, `json_host.l`, …) have no
+#            `_kernel_native/` counterpart and feed the native build the
+#            same way. Classifying all of `_kernel/` as MSIL-only would set
+#            has_msil_changes without has_jvm_changes/has_native_changes for
+#            a PR touching only one of those fallback-only basenames,
+#            silently skipping compiler-self-tests-jvm/native-backend-self-
+#            tests/the JVM numbered shards for a file actually compiled into
+#            those targets. `_kernel/` therefore falls through to the
+#            shared-path bucket below (it already matches CORE_INFRA_PATTERN
+#            via lyric-stdlib/) instead of being pattern-matched here.
 #   JVM    — lyric-compiler/jvm/, lyric-stdlib/std/_kernel_jvm/, plus
 #            the same lyric-web/storage/resilience/auth condition the
 #            old has_jvm_ecosystem_changes carried (compiler-self-
@@ -225,7 +243,7 @@ fi
 # so they keep running on every core change exactly as before this
 # split — same conservative-fallback shape as has_code_changes and
 # has_core_changes above: any ambiguity resolves to "true".
-MSIL_ONLY_PATTERN='lyric-compiler/msil/|lyric-stdlib/std/_kernel/'
+MSIL_ONLY_PATTERN='lyric-compiler/msil/'
 JVM_ONLY_PATTERN='lyric-compiler/jvm/|lyric-stdlib/std/_kernel_jvm/'
 NATIVE_ONLY_PATTERN='lyric-compiler/lyric/llvm_[^/]*\.l$|lyric-stdlib/std/_kernel_native/|lyric-rt/'
 BACKEND_ONLY_PATTERN="${MSIL_ONLY_PATTERN}|${JVM_ONLY_PATTERN}|${NATIVE_ONLY_PATTERN}"

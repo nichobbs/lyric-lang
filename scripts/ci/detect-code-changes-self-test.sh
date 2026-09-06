@@ -53,10 +53,14 @@ BASE_SHA="$(git -C "$WORKDIR" rev-parse HEAD)"
 # name | changed file | expected msil,jvm,native,core (t/f each)
 CASES=(
   "msil-only|lyric-compiler/msil/foo.l|t,f,f,t"
-  "msil-kernel|lyric-stdlib/std/_kernel/foo.l|t,f,f,t"
+  "kernel-shared-not-msil-only|lyric-stdlib/std/_kernel/foo.l|t,t,t,t"
   "jvm-only|lyric-compiler/jvm/foo.l|f,t,f,t"
   "jvm-kernel|lyric-stdlib/std/_kernel_jvm/foo.l|f,t,f,t"
-  "kernel-disambiguation|lyric-stdlib/std/_kernel_jvm/foo.l|f,t,f,t"
+  # Regression guard for #7015: _kernel/ files with no per-target override
+  # (real example, not a synthetic basename) load into JVM/native builds
+  # via emitter.l's basename fallback, so a diff confined to one of them
+  # must NOT set has_msil_changes alone.
+  "kernel-asymmetric-basename-fallback|lyric-stdlib/std/_kernel/verifier_env_host.l|t,t,t,t"
   "native-only|lyric-compiler/lyric/llvm_foo.l|f,f,t,t"
   "native-kernel|lyric-stdlib/std/_kernel_native/foo.l|f,f,t,t"
   "native-rt|lyric-rt/foo.c|f,f,t,t"
@@ -106,9 +110,6 @@ for case in "${CASES[@]}"; do
   else
     echo "ok:   $name"
   fi
-
-  git -C "$WORKDIR" checkout -q "$BASE_SHA"
-  git -C "$WORKDIR" branch -D "$(git -C "$WORKDIR" rev-parse --abbrev-ref HEAD)" 2>/dev/null || true
 done
 
 if [ "$fail" -ne 0 ]; then
