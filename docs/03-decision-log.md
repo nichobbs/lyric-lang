@@ -42089,10 +42089,22 @@ disciplined). Also checked every `Std.Core` function beyond the `Option`/
 `mapOption`/`mapResult`/`andThen`/`orElse`/`unwrapResult`/`unwrapOption`) —
 zero additional gaps.
 
+**Correction (review round, #6998).** A `claude-review` pass on this PR
+caught a 9th genuine gap the original sweep missed: `lyric-lambda/src/
+_kernel/lambda_kernel_web.l` uses `Option[Web.Router]`/`Some(value = ...)`/
+`None` in real code with only `import Lambda`/`import Web` declared. This
+file was touched by a concurrent `main` commit (lyric-lambda JVM
+custom-runtime work, merged after this PR's original sweep ran) that
+introduced the gap, so it postdates the sweep's original scan rather than
+being an audit miss against the tree as it stood at sweep time. Fixed by
+adding `import Std.Core` to that file too — the sweep's true final count
+is **9** files, not 8.
+
 **Verification.** `lyric-stdlib/lyric.full.toml` (73 packages) and
 `lyric-mail`/`lyric-aws-secrets` all build clean with the added imports
 (no behavior change — these are all real, already-reachable dependencies
-made explicit, not new functionality).
+made explicit, not new functionality). `lyric-lambda` builds clean with
+the corrected import too.
 
 **What's NOT done — landing #6287 item 2 itself.** This PR only covers
 `lyric-stdlib/` and the ecosystem libraries at the repo root. It does NOT
