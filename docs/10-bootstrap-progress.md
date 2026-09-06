@@ -25725,7 +25725,7 @@ reference type) bind the MemberRef/method reference to the host's real
 nullable `T` and coerce null → `None` / value → `Some(value)` at the call
 boundary, so no `null` literal or nullable type enters the language. Phase 1
 (this entry) shipped the MSIL emitter convention + `extern_option_self_test.l`
-(wired into CI). JVM emitter parity (#3932, D-progress-883) has since shipped
+(wired into CI). JVM emitter parity (#3932, D-progress-886) has since shipped
 too — `extern_option_self_test.l` now carries `@cfg(target = ...)`-gated
 variants and runs on both `--target dotnet` and `--target jvm` in CI. Phase 2
 (migrating the `_kernel/` nullable externs and removing `case null` on both
@@ -27181,7 +27181,7 @@ pure layer becomes a thin target-neutral delegation.
   `?? ""` (which conflated empty-set with unset), and
   `environment_tests.l` gains the present-variable round-trip that
   would have caught all of this.  JVM D107 parity shipped in
-  D-progress-883 (#3932).  Remaining `String?` kernel surfaces
+  D-progress-886 (#3932).  Remaining `String?` kernel surfaces
   (console, path, io) and a null-pattern rejection diagnostic are
   tracked in #4775.
 - **lyric-rt**: `lyric_env_cwd_ok` (status-returning getcwd seam,
