@@ -17770,6 +17770,105 @@ func recordFieldFuncKeyMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in Expr
   }
 }
 
+// The trailing value-producing expression of a lambda-literal BODY, for the
+// `registerFieldFuncValTypesMsil` `ELambda` arm below (#6690). Differs from
+// `blockTrailingExprMsil` (which this function otherwise mirrors, including
+// the `defer`-disqualifies-the-block rule) in ALSO unwrapping an explicit
+// trailing `return <expr>` as a value producer: a lambda body can end in an
+// explicit `return`, unlike the module-level `val`/match-arm-body contexts
+// `blockTrailingExprMsil`'s other two call sites cover, where that shape
+// can't occur. A bare `return` (no value) or any other non-value-producing
+// last statement still yields `None` — the caller treats that as `MVoid`,
+// matching the synthesized lambda's real `null`/void behaviour in that case.
+func lambdaBodyTrailingValueMsil(blk: in Block): Option[Expr] {
+  var di = 0
+  while di < blk.statements.count {
+    match blk.statements[di].kind {
+      case SDefer(_) -> {
+        return None
+      }
+      case _ -> ()
+    }
+    di = di + 1
+  }
+  if blk.statements.count == 0 {
+    None
+  } else {
+    match blk.statements[blk.statements.count - 1].kind {
+      case SExpr(e) -> Some(value = e)
+      case SReturn(v) -> v
+      case _ -> None
+    }
+  }
+}
+
+// Infers a lambda-literal body's trailing-value type, for the
+// `registerFieldFuncValTypesMsil` `ELambda` arm below. Mirrors
+// `inferUntypedStaticValMsilType`'s dispatch (and delegates to it directly
+// for every shape that heuristic resolves WITHOUT depending on whether an
+// operand's own type is known — literals, `EPath`, the comparison/boolean
+// `EBinop` arms, which are unconditionally `MBool` regardless of either
+// operand's type, `BXor`, and `EPrefix`), but overrides the ARITHMETIC
+// `EBinop` arms (`BAdd`/`BSub`/`BMul`/`BDiv`/`BMod`/`BCoalesce`) that
+// heuristic resolves BY RECURSING INTO AN OPERAND'S TYPE (#6933 review): a
+// module-level val's `env` covers every name in scope by construction (a
+// module val has no captures), so that heuristic's "operand type
+// unresolved -> assume MInt" fallback is safe there — but a lambda body can
+// reference an outer local/capture `paramEnv` (which covers only the
+// lambda's OWN explicitly-typed parameters) knows nothing about, and
+// guessing `MInt` for e.g. a captured `Double` produces a wrong registered
+// return type, not just an imprecise one. This function instead propagates
+// `MObject` (unknown) through those arms unchanged, so the caller's overall
+// result is the safe `MObject` fallback whenever it truly can't resolve an
+// arithmetic operand's type — never a wrong guess.
+func inferLambdaBodyExprMsilType(e: in Expr, paramEnv: in Map[String, MsilType]): MsilType {
+  match e.kind {
+    case EParen(inner) -> inferLambdaBodyExprMsilType(inner, paramEnv)
+    case EPrefix(op, inner) -> match op {
+      case PreNeg -> inferLambdaBodyExprMsilType(inner, paramEnv)
+      case PreRef -> inferLambdaBodyExprMsilType(inner, paramEnv)
+      case PreNot -> MBool
+    }
+    case EBinop(op, lhs, rhs) -> match op {
+      case BAdd -> match inferLambdaBodyExprMsilType(lhs, paramEnv) {
+        case MString -> MString
+        case MLong -> MLong
+        case MDouble -> MDouble
+        case MObject -> MObject
+        case _ -> MInt
+      }
+      case BSub | BMul -> match inferLambdaBodyExprMsilType(lhs, paramEnv) {
+        case MLong -> MLong
+        case MDouble -> MDouble
+        case MObject -> MObject
+        case _ -> MInt
+      }
+      case BDiv -> match inferLambdaBodyExprMsilType(lhs, paramEnv) {
+        case MLong -> MLong
+        case MDouble -> MDouble
+        case MByte -> MByte
+        case MObject -> MObject
+        case _ -> MInt
+      }
+      case BMod -> match inferLambdaBodyExprMsilType(lhs, paramEnv) {
+        case MLong -> MLong
+        case MByte -> MByte
+        case MObject -> MObject
+        case _ -> MInt
+      }
+      case BCoalesce -> match inferLambdaBodyExprMsilType(lhs, paramEnv) {
+        case MObject -> inferLambdaBodyExprMsilType(rhs, paramEnv)
+        case t -> t
+      }
+      // Every other operator (comparisons, boolean, BXor) is unconditionally
+      // safe to delegate: its result type never depends on whether either
+      // operand's own type is resolvable.
+      case _ -> inferUntypedStaticValMsilType(e, paramEnv)
+    }
+    case _ -> inferUntypedStaticValMsilType(e, paramEnv)
+  }
+}
+
 // Register `funcValRetTypes`/`funcValParamTypes` for `name` from a
 // record-field function-type source (#5511), unless `name` is already
 // registered (an explicit literal `(A,...) -> R` annotation on the binding
@@ -17829,6 +17928,48 @@ func registerFieldFuncValTypesMsil(cctx: in CodegenCtx, fctx: in FuncCtx, name: 
                   }
                 }
               }
+            }
+          }
+        }
+        // #6690: `val f = (x) -> false` — an unannotated lambda LITERAL
+        // init, distinct from every case handled above (not a
+        // record-field-read, bare-name alias, or call). Every lifted lambda
+        // is emitted through the uniform boxed `Func<object,...>` ABI
+        // (#1877): its synthesized `__lambda_N` function always declares
+        // return type `Object` (see `collectLambdasBfsExpr`'s `ELambda`
+        // arm), so without a registered `funcValRetTypes` entry,
+        // `lowerFuncValueInvokeMsil`'s `case None -> MObject` arm never
+        // materializes the boxed call result — `f(y)` stays an unboxed-
+        // looking but still-boxed `object` reference, which reads as
+        // truthy regardless of the lambda's real body. Infer the lambda's
+        // return type from its own body's trailing value
+        // (`lambdaBodyTrailingValueMsil`, below — also unwraps an explicit
+        // trailing `return`, #6932 review) via `inferLambdaBodyExprMsilType`
+        // (below), a lambda-body-safe variant of the module-level-val
+        // heuristic `inferUntypedStaticValMsilType` (#6933 review: unlike a
+        // module val's `env`, which covers every name in scope by
+        // construction, a lambda body can reference an outer capture
+        // `paramEnv` — the lambda's own explicitly-typed params only — knows
+        // nothing about, so the arithmetic fallback must propagate unknown
+        // rather than guess `MInt`), falling back to `MObject` for any shape
+        // it can't resolve — identical to today's unregistered behaviour,
+        // never a regression.
+        case ELambda(lparams, body) -> {
+          val paramEnv: Map[String, MsilType] = newMap()
+          var lpi = 0
+          while lpi < lparams.count {
+            match lparams[lpi].ty {
+              case Some(te) -> paramEnv.add(lparams[lpi].name, typeExprToMsilBodyCtx(cctx, fctx, te))
+              case None -> ()
+            }
+            lpi = lpi + 1
+          }
+          match lambdaBodyTrailingValueMsil(body) {
+            case Some(trailing) -> {
+              fctx.funcValRetTypes.add(name, inferLambdaBodyExprMsilType(trailing, paramEnv))
+            }
+            case None -> {
+              fctx.funcValRetTypes.add(name, MVoid)
             }
           }
         }
