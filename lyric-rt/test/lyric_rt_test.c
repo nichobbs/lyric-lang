@@ -9,6 +9,7 @@
 
 #include "lyric_rt.h"
 
+#include <fcntl.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1677,6 +1678,250 @@ static void test_process_op_stdin(void) {
     lyric_process_free(op);
 }
 
+/* ── Long-lived piped child stdio (issue #6142) ──────────────────────── */
+
+static LyricString* mk_str(const char* s) {
+    return lyric_string_from_literal((const uint8_t*)s, (int64_t)strlen(s));
+}
+
+static void test_process_piped_line_roundtrip(void) {
+    /* `cat` echoes each written line back on stdout — the direct
+     * line-oriented round trip the MCP stdio transport needs. */
+    void* p = lyric_process_piped_spawn("/bin/cat", NULL);
+    CHECK(p != NULL);
+    CHECK(lyric_process_piped_is_alive(p) == 1);
+
+    LyricString* l1 = mk_str("hello");
+    CHECK(lyric_process_piped_write_line(p, l1) == 0);
+    lyric_release(l1);
+    LyricString* got1 = NULL;
+    CHECK(lyric_process_piped_read_line(p, &got1) == 1);
+    CHECK(got1 != NULL);
+    CHECK(lyric_string_len(got1) == 5);
+    CHECK(memcmp(LYRIC_STRING_DATA(got1), "hello", 5) == 0);
+    lyric_release(got1);
+
+    LyricString* l2 = mk_str("world again");
+    CHECK(lyric_process_piped_write_line(p, l2) == 0);
+    lyric_release(l2);
+    LyricString* got2 = NULL;
+    CHECK(lyric_process_piped_read_line(p, &got2) == 1);
+    CHECK(lyric_string_len(got2) == 11);
+    CHECK(memcmp(LYRIC_STRING_DATA(got2), "world again", 11) == 0);
+    lyric_release(got2);
+
+    CHECK(lyric_process_piped_close_stdin(p) == 0);
+    /* cat sees EOF on stdin, writes nothing more, and exits. */
+    CHECK(lyric_process_piped_wait_exit(p, 5000) == 1);
+    CHECK(lyric_process_piped_exit_code(p) == 0);
+    CHECK(lyric_process_piped_is_alive(p) == 0);
+    /* No more lines were ever written after l2 — read_line must report
+     * end-of-stream, not hang. */
+    LyricString* got3 = NULL;
+    CHECK(lyric_process_piped_read_line(p, &got3) == 0);
+    lyric_process_piped_close(p);
+}
+
+static void test_process_piped_final_line_without_newline(void) {
+    /* `printf` (no trailing newline) — the final-partial-line-at-EOF
+     * case: read_line must still return it once, then report
+     * end-of-stream on every call after. */
+    LyricList* args = lyric_list_new(2);
+    LyricString* fmt = mk_str("%s");
+    LyricString* body = mk_str("trailing");
+    lyric_list_push(args, (int64_t)(intptr_t)fmt);
+    lyric_list_push(args, (int64_t)(intptr_t)body);
+    lyric_release(fmt);
+    lyric_release(body);
+
+    void* p = lyric_process_piped_spawn("/usr/bin/printf", args);
+    lyric_release(args);
+    CHECK(p != NULL);
+
+    LyricString* got = NULL;
+    CHECK(lyric_process_piped_read_line(p, &got) == 1);
+    CHECK(lyric_string_len(got) == 8);
+    CHECK(memcmp(LYRIC_STRING_DATA(got), "trailing", 8) == 0);
+    lyric_release(got);
+
+    LyricString* got2 = NULL;
+    CHECK(lyric_process_piped_read_line(p, &got2) == 0);
+    CHECK(lyric_process_piped_wait_exit(p, 5000) == 1);
+    CHECK(lyric_process_piped_exit_code(p) == 0);
+    lyric_process_piped_close(p);
+}
+
+static void test_process_piped_crlf_stripped(void) {
+    /* A CRLF-terminated line (printf "a\r\nb\n") must have the \r
+     * stripped, matching .NET's StreamReader.ReadLine()/the JVM twin's
+     * documented CRLF convention. */
+    LyricList* args = lyric_list_new(2);
+    LyricString* fmt = mk_str("%s");
+    LyricString* body = mk_str("a\r\nb\n");
+    lyric_list_push(args, (int64_t)(intptr_t)fmt);
+    lyric_list_push(args, (int64_t)(intptr_t)body);
+    lyric_release(fmt);
+    lyric_release(body);
+
+    void* p = lyric_process_piped_spawn("/usr/bin/printf", args);
+    lyric_release(args);
+    CHECK(p != NULL);
+
+    LyricString* got1 = NULL;
+    CHECK(lyric_process_piped_read_line(p, &got1) == 1);
+    CHECK(lyric_string_len(got1) == 1);
+    CHECK(memcmp(LYRIC_STRING_DATA(got1), "a", 1) == 0);
+    lyric_release(got1);
+
+    LyricString* got2 = NULL;
+    CHECK(lyric_process_piped_read_line(p, &got2) == 1);
+    CHECK(lyric_string_len(got2) == 1);
+    CHECK(memcmp(LYRIC_STRING_DATA(got2), "b", 1) == 0);
+    lyric_release(got2);
+
+    LyricString* got3 = NULL;
+    CHECK(lyric_process_piped_read_line(p, &got3) == 0);
+    CHECK(lyric_process_piped_wait_exit(p, 5000) == 1);
+    lyric_process_piped_close(p);
+}
+
+static void test_process_piped_kill(void) {
+    /* A long-sleeping child, killed outright: is_alive flips to dead,
+     * exit code reports signal termination, and kill on an
+     * already-reaped handle is a harmless no-op (idempotent-safe, like
+     * lyric_process_kill). */
+    LyricList* argv = lyric_list_new(2);
+    LyricString* dash_c = mk_str("-c");
+    LyricString* script = mk_str("sleep 30");
+    lyric_list_push(argv, (int64_t)(intptr_t)dash_c);
+    lyric_list_push(argv, (int64_t)(intptr_t)script);
+    lyric_release(dash_c);
+    lyric_release(script);
+
+    void* p = lyric_process_piped_spawn("/bin/sh", argv);
+    lyric_release(argv);
+    CHECK(p != NULL);
+    CHECK(lyric_process_piped_is_alive(p) == 1);
+    /* Not yet exited: a short wait must time out, not block forever. */
+    CHECK(lyric_process_piped_wait_exit(p, 50) == 0);
+
+    CHECK(lyric_process_piped_kill(p) == 0);
+    CHECK(lyric_process_piped_is_alive(p) == 0);
+    CHECK(lyric_process_piped_exit_code(p) == 128 + SIGKILL);
+    CHECK(lyric_process_piped_kill(p) == 0); /* already reaped: no-op */
+    lyric_process_piped_close(p);
+}
+
+static void test_process_piped_spawn_failure(void) {
+    /* A nonexistent executable: spawn_piped's fork succeeds but execvp
+     * fails inside the child (exit 127) -- NOT a NULL handle, same
+     * "spawn failure is only a pipe/fork failure, never an execvp
+     * failure" contract lyric_process_run documents. */
+    void* p = lyric_process_piped_spawn("/nonexistent-lyric-rt-piped-exe", NULL);
+    CHECK(p != NULL);
+    CHECK(lyric_process_piped_wait_exit(p, 5000) == 1);
+    CHECK(lyric_process_piped_exit_code(p) == 127);
+    LyricString* got = NULL;
+    CHECK(lyric_process_piped_read_line(p, &got) == 0); /* no output, clean EOF */
+    lyric_process_piped_close(p);
+}
+
+static void test_process_piped_stderr_inherited(void) {
+    /* The headline contract this kernel exists to preserve (module
+     * header): stderr is NEVER piped here, so a child that writes a lot
+     * to stderr cannot deadlock against a full, undrained capture pipe
+     * the way a naive stdout+stderr+stdin piped model would. Route the
+     * child's stderr to a real fd (a temp file) via a shell redirection
+     * and confirm the bytes land there -- proving stderr was inherited
+     * from THIS process's fd table, not captured by the kernel. */
+    char tmpl[] = "/tmp/lyric_rt_piped_stderr_XXXXXX";
+    int fd = mkstemp(tmpl);
+    CHECK(fd >= 0);
+    int saved_stderr = dup(STDERR_FILENO);
+    CHECK(saved_stderr >= 0);
+    CHECK(dup2(fd, STDERR_FILENO) >= 0);
+    close(fd);
+
+    LyricList* argv = lyric_list_new(2);
+    LyricString* dash_c = mk_str("-c");
+    LyricString* script = mk_str("echo err-side 1>&2");
+    lyric_list_push(argv, (int64_t)(intptr_t)dash_c);
+    lyric_list_push(argv, (int64_t)(intptr_t)script);
+    lyric_release(dash_c);
+    lyric_release(script);
+    void* p = lyric_process_piped_spawn("/bin/sh", argv);
+    lyric_release(argv);
+    CHECK(p != NULL);
+    CHECK(lyric_process_piped_wait_exit(p, 5000) == 1);
+    CHECK(lyric_process_piped_exit_code(p) == 0);
+    /* Nothing was ever written to the piped stdout. */
+    LyricString* got = NULL;
+    CHECK(lyric_process_piped_read_line(p, &got) == 0);
+    lyric_process_piped_close(p);
+
+    CHECK(dup2(saved_stderr, STDERR_FILENO) >= 0);
+    close(saved_stderr);
+    char buf[64];
+    memset(buf, 0, sizeof(buf));
+    int rfd = open(tmpl, O_RDONLY);
+    CHECK(rfd >= 0);
+    ssize_t n = read(rfd, buf, sizeof(buf) - 1);
+    close(rfd);
+    unlink(tmpl);
+    CHECK(n > 0);
+    CHECK(strstr(buf, "err-side") != NULL);
+}
+
+static void test_process_piped_double_close(void) {
+    /* Issue #6975: an earlier version of lyric_process_piped_close
+     * unconditionally free()'d the handle, so a second call on the same
+     * pointer -- exactly the "safe to call during best-effort cleanup"
+     * scenario the function's own doc comment invites -- was a real
+     * double-free/use-after-free. Calling it twice here must be a clean
+     * no-op the second time, verified under ASan (no heap corruption, no
+     * crash). */
+    void* p = lyric_process_piped_spawn("/bin/cat", NULL);
+    CHECK(p != NULL);
+    lyric_process_piped_close(p);
+    lyric_process_piped_close(p);
+}
+
+static void test_process_piped_read_after_close_with_buffered_line(void) {
+    /* Issue #6993: lyric_process_piped_close (the #6975 addendum) freed
+     * linebuf.data and NULL'd it, but never reset linebuf.len -- so a
+     * handle closed while a second, not-yet-consumed line was still
+     * buffered left linebuf.len > 0 with linebuf.data == NULL. The very
+     * next lyric_process_piped_read_line call on that handle then
+     * dereferenced a NULL pointer in its "scan for '\n'" loop instead of
+     * safely reporting "no more lines". `printf "a\nb\n"` writes both
+     * lines in one shot, so the first read_line call is expected to pull
+     * both into linebuf, return "a", and leave "b\n" buffered
+     * (linebuf.len > 0) -- exactly the state that reproduced the bug. */
+    LyricList* args = lyric_list_new(2);
+    LyricString* fmt = mk_str("%s");
+    LyricString* body = mk_str("a\nb\n");
+    lyric_list_push(args, (int64_t)(intptr_t)fmt);
+    lyric_list_push(args, (int64_t)(intptr_t)body);
+    lyric_release(fmt);
+    lyric_release(body);
+
+    void* p = lyric_process_piped_spawn("/usr/bin/printf", args);
+    lyric_release(args);
+    CHECK(p != NULL);
+
+    LyricString* got1 = NULL;
+    CHECK(lyric_process_piped_read_line(p, &got1) == 1);
+    CHECK(lyric_string_len(got1) == 1);
+    CHECK(memcmp(LYRIC_STRING_DATA(got1), "a", 1) == 0);
+    lyric_release(got1);
+
+    lyric_process_piped_close(p);
+
+    /* Must return 0 (no more lines) cleanly, not NULL-deref. */
+    LyricString* got2 = NULL;
+    CHECK(lyric_process_piped_read_line(p, &got2) == 0);
+}
+
 static void test_ok_variants(void) {
     char tmpl[] = "/tmp/lyric_rt_ok_XXXXXX";
     int fd = mkstemp(tmpl);
@@ -2013,6 +2258,14 @@ int main(void) {
     test_process_sync_timeout_grandchild_writer();
     test_process_sync_timeout_setsid_escapee();
     test_process_op_stdin();
+    test_process_piped_line_roundtrip();
+    test_process_piped_final_line_without_newline();
+    test_process_piped_crlf_stripped();
+    test_process_piped_kill();
+    test_process_piped_spawn_failure();
+    test_process_piped_stderr_inherited();
+    test_process_piped_double_close();
+    test_process_piped_read_after_close_with_buffered_line();
     test_async_hot_completion();
     test_async_block_on_sleep();
     test_async_interleave();
