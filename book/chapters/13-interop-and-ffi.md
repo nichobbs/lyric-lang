@@ -136,6 +136,19 @@ This asymmetry is intentional. Lyric opaque types carry invariants that the comp
 
 For primitive types, there is no marshalling cost. `Int` and `int` have identical runtime representations; the compiler generates no conversion code.
 
+### §13.5.1 Nullable references: the `Option[T]` return convention
+
+Many host methods return a nullable reference — `System.Environment.GetEnvironmentVariable` on .NET, `java.lang.System.getenv` on the JVM — where a missing value is `null` rather than an exception. Lyric has no `null` literal and no nullable type, so an `@externTarget` function can declare its return as `Option[T]` (with `T` a reference type) instead:
+
+```lyric
+@externTarget("System.Environment.GetEnvironmentVariable")
+func getEnvOpt(key: in String): Option[String] = ()
+```
+
+The emitter binds the call to the host method's real nullable reference return, then coerces the result at the call boundary: a `null` reference becomes `None`, a non-null reference becomes `Some(value)`. Callers match on `Option[String]` with ordinary `case None` / `case Some(v)` — there is no `null` literal, no nullable type, and no unchecked `case null` pattern (the self-hosted front end has no nullable-match support, so a `String?` extern matched by `case null` would silently miscompile).
+
+The convention applies only to a non-constructor, non-async `@externTarget` function; constructors and async externs use their own return-shaping rules, and a static-field-typed extern (a bare constant read, not a method call) is unaffected. It is implemented identically on both targets — `--target dotnet` and `--target jvm` bind to the host's real reference return and construct `Std.Core.Option`'s `Some`/`None` cases the same way — so a `_kernel/` binding written once against this convention needs no per-target variation. See decision-log entry D107 for the full rationale and D-progress-886 for the JVM emitter parity that completed cross-target support.
+
 ## §13.6 AOT compatibility
 
 All Lyric code is AOT-compatible. The compiler generates no calls to `System.Reflection.Emit`, no `Type.GetType(...)`, no `Activator.CreateInstance`. Everything the compiler produces is statically known at build time.

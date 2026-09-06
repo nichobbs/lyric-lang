@@ -1574,9 +1574,11 @@ Callers above the kernel boundary match an ordinary `Option` (`case None` /
 `case Some(v)`) — no `null` handling is ever required.  The convention applies
 only when `T` is a reference type; value-type inners are not coerced.
 
-> **Target status.**  Phase 1 implements this convention in the MSIL backend
-> (`--target dotnet`).  JVM emitter parity (`--target jvm`) is tracked in #3932
-> and lands with D107 Phase 2.
+> **Target status.**  Implemented on both backends: the MSIL backend
+> (`--target dotnet`, Phase 1) binds the BCL's real nullable reference return;
+> the JVM backend (`--target jvm`, #3932, D-progress-886) binds the JDK
+> method's real nullable reference return the same way. Both coerce
+> `null -> None` / value `-> Some(value)` at the call boundary.
 
 **Static vs. instance call detection.**  Both backends need to know
 whether a `@externTarget` binding is a static or instance call.  The
