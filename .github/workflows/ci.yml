@@ -312,6 +312,18 @@ jobs:
       - name: Check ci.yml workflow-file size (#6387 guardrail)
         run: bash scripts/ci/check-workflow-size.sh
 
+      # Guardrail for #6997: the has_msil_changes/has_jvm_changes/
+      # has_native_changes backend-split regexes in
+      # scripts/ci/detect-code-changes.sh fail *silently* when wrong -- the
+      # affected job just doesn't run, no red X anywhere. This runs the
+      # split's pattern logic against a disposable git repo covering every
+      # backend tree, each `_kernel*` dir, the JVM-ecosystem carve-out
+      # (lyric-web/storage/resilience/auth), and the _kernel_native vs.
+      # _kernel_native_bogus near-miss, so a future edit to those patterns
+      # gets caught here instead of quietly under-testing some backend.
+      - name: Self-test detect-code-changes.sh backend-split logic
+        run: bash scripts/ci/detect-code-changes-self-test.sh
+
       # Two remaining known-benign findings are suppressed rather than
       # failing on them forever silently; both are tracked in #5638 with the
       # condition under which they should be revisited:
