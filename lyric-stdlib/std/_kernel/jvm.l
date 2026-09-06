@@ -10,6 +10,7 @@
         Java exception semantics per docs/31-maven-linking.md Q-J012")
 package Std.Jvm
 
+import Std.Core
 import Std.JvmExceptionHost
 
 // Wrap `action()` in a Java try-catch.  If `action` completes normally,

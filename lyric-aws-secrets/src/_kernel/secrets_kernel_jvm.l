@@ -40,6 +40,7 @@
 @cfg(feature = "jvm")
 package AwsSecrets.Kernel.Net
 
+import Std.Core
 import AwsSecrets
 
 @axiom("software.amazon.awssdk:secretsmanager + ssm 2.25.x (AWS SDK for Java v2)")

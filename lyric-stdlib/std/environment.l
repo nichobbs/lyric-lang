@@ -6,6 +6,7 @@
 @runtime_checked
 package Std.Environment
 
+import Std.Core
 import Std.Errors
 import Std.EnvironmentHost
 
