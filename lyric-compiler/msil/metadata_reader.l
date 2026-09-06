@@ -3150,7 +3150,8 @@ func trailingParamDefaults(
 // defaulted (which scores its supplied prefix only); among equal scores a
 // candidate synthesizing fewer defaults wins.  `argBases` (empty, or one
 // Extends-chain FQN list per argument) admits verified reference upcasts at
-// score 1 per param, below an exact type match's 2.
+// score 2 per param, below an exact type match's 3 (D-progress-891's tier
+// renumbering).
 pub func resolveOverloadInBases(
   img: in PeImage,
   layout: in TableLayout,
