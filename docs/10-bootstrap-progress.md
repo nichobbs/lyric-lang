@@ -33744,7 +33744,7 @@ config-block scanning) stays `NOT_IMPLEMENTED` on every feature except
 custom annotations off a compiled field at runtime (issue #6866).
 `lyric-aws-secrets/README.md`'s support matrix is corrected to stop claiming
 "Production-ready for .NET and JVM targets" when the `aws` feature had never
-worked even once. See `docs/03-decision-log.md` D-progress-883 for the full
+worked even once. See D-progress-886 (`docs/decisions/`) for the full
 investigation (including the two prior false blocker claims this corrects
 and the self-hosted-compiler monomorphisation gap found and worked around
 along the way).
