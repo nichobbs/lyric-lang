@@ -38,13 +38,18 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# Runner pools (self-hosted opt-in).  The six long-running jobs
+# Runner pools (self-hosted opt-in).  The seven long-running jobs
 # (compiler-self-tests-dotnet-a/-b, compiler-self-tests-jvm,
-# numbered-backend-self-tests, stdlib-builds, native-backend-self-tests) read
-# their `runs-on` from repository variables so they can be moved to a
-# self-hosted machine without a commit; every other job stays on
+# numbered-backend-self-tests, stdlib-builds, native-backend-self-tests,
+# build-stage2) read their `runs-on` from repository variables so they can be
+# moved to a self-hosted machine without a commit; every other job stays on
 # GitHub-hosted `ubuntu-latest` (macos-aot-smoke on `macos-latest`).
-#   CI_HEAVY_RUNNER   a single runner label for the five managed-runtime
+# build-stage2 has to move in lockstep with compiler-self-tests-jvm, its only
+# consumer: its stage-2 binary is a self-contained Native AOT executable with
+# no portable .dll fallback (unlike `build`'s framework-dependent artifact,
+# see the dotnet-wrapper note below), so producer and consumer must share an
+# architecture or the consumer hits "Exec format error" / exit 126 (#7025).
+#   CI_HEAVY_RUNNER   a single runner label for the six managed-runtime
 #                     jobs, e.g. `self-hosted` (a JSON list would need
 #                     fromJSON, so give the machine one distinctive label).
 #   CI_NATIVE_RUNNER  optional override for native-backend-self-tests, which
@@ -415,7 +420,14 @@ jobs:
   # independently in parallel with the other test jobs; only the handful of
   # `compiler-self-tests-jvm` steps that actually need it wait on this job.
   build-stage2:
-    runs-on: ubuntu-latest
+    # Matches compiler-self-tests-jvm's pool exactly (not just CI_HEAVY_RUNNER
+    # in spirit): its stage-2 binary is a true self-contained Native AOT
+    # executable (`lyric build --release-from-dll`, scripts/bootstrap.sh
+    # build_stage2), unlike the framework-dependent `build` job's artifact —
+    # there is no portable .dll counterpart a dotnet-wrapper could exec, so
+    # the only fix for cross-architecture "Exec format error" here is running
+    # this job on the same architecture as its consumer (#7025 follow-up).
+    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     needs: [build]
     permissions:
       contents: read
