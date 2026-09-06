@@ -1964,6 +1964,17 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_native_changes == 'true'
     steps:
+      # This job's clang/gcc/ASan requirement (see the CI_NATIVE_RUNNER doc
+      # comment above) is provisioned here rather than baked into a self-hosted
+      # runner's image, so a fresh/bare self-hosted machine works without any
+      # image customization -- mirrors the existing inline `sudo apt-get
+      # install -y z3` pattern used elsewhere in this file. Skipped on
+      # GitHub-hosted runners, which already ship clang/gcc/ASan, to avoid
+      # spending time on a no-op install every run.
+      - name: Install clang/gcc/ASan (self-hosted runners only)
+        if: runner.environment == 'self-hosted'
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends clang gcc build-essential lld
+
       # Point TMPDIR at `runner.temp` before the concurrent `background: true`
       # self-test steps below start. Despite this step's old name, this is NOT
       # about a "RAM disk" -- on a standard `ubuntu-latest` runner, `/tmp` and
