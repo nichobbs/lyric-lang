@@ -1503,7 +1503,9 @@ jobs:
       # `Std.String.join`).  Before the codegen.l `EList` `MArray` arm, the
       # literal was a `List`-backed value and mis-bound to the `T[]` parameter
       # (the same fork that made `Std.Sort` return unsorted).  Run via native
-      # `lyric test` (in-process `Msil.Bridge`); imports only `Std.*`.
+      # `lyric test` (in-process `Msil.Bridge`); imports only `Std.*`.  The
+      # `--target jvm` sibling run (#6586) lives in `compiler-self-tests-jvm`
+      # below, alongside the other JVM-target self-tests.
       - name: Slice array-ABI self-test (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
@@ -3227,6 +3229,38 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/generic_uint_erasure_jvm_self_test.l
+
+      # Generic-record PARAMETER field-read self-test (#6691): a field read
+      # on a generic-record-typed function/method PARAMETER used to resolve
+      # by bare field NAME across every bundled type instead of by the
+      # parameter's own class (a silent wrong-class `checkcast`).
+      - name: Generic-record parameter field-read self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/generic_param_field_read_jvm_self_test.l
+
+      # Generic-record indexed-ELEMENT field-read self-test (#6708): a field
+      # read on an indexed element of a `slice[Entry[K, V]]`/`List[Entry[K,
+      # V]]` container, where `Entry` is a generic record instantiated over
+      # the enclosing generic function's own type parameters, used to fail
+      # with `error[J007]` (erased-Object receiver) instead of resolving
+      # against the record's real class.
+      - name: Generic-record indexed-element field-read self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/generic_element_field_read_jvm_self_test.l
+
+      # Slice array-ABI self-test on JVM (#6586) — sibling of the `--target
+      # dotnet` step (`compiler-self-tests-dotnet-a`) covering the SAME
+      # `slice_array_abi_self_test.l`: `xs[i].toInt()` on a `slice[Char]`/
+      # `slice[Byte]` element (both a plain parameter and an
+      # `.append()`-derived local) used to resolve to erased
+      # `java.lang.Object` and fail JVM auto-FFI dispatch (`error[J008]`)
+      # instead of using the `Char`/`Byte` numeric-conversion intrinsic.
+      - name: Slice array-ABI self-test on JVM (native lyric test --target jvm, #6586)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/slice_array_abi_self_test.l
 
       # Subscript-assignment self-test (#1707, #6169, #6741) — dual-target,
       # never wired into CI before now: covers map/list/slice indexed read,
@@ -5847,8 +5881,8 @@ jobs:
       # (module-val dependent-initializer .cctor InvalidProgramException) was.
       # collections_persistent_tests (#684, #6575) joined covering the new
       # Std.Collections.Persistent list ops.  collections_persistent_map_tests
-      # (#6570) joined covering the new PersistentMap[K, V] ops -- dotnet-only
-      # (see that file's own header for why; #6708 tracks the JVM gap).
+      # (#6570) joined covering the new PersistentMap[K, V] ops -- both
+      # targets, since #6708's JVM generics-erasure gap was fixed.
       # Deliberately still excluded (tracked, not silent): metadata_reader_tests
       # (#5624 placeholder Param rows; also needs LYRIC_LOAD_COMPILER=1).  Each
       # suite exits non-zero on any assertion failure or runtime fault.
@@ -5876,17 +5910,16 @@ jobs:
             "$lyric_bin" run "lyric-stdlib/tests/$suite.l"
           done
 
-      # Std.Collections.Persistent (List ops) on JVM (#684, #6577 review
-      # follow-up): the module is pure Lyric with no BCL/JDK extern
-      # boundary, so unlike most of the dotnet-only suites above it runs
-      # unmodified under `--target jvm` — verified locally before wiring
-      # this in.  Runs the same `collections_persistent_tests.l` suite
-      # already covered on dotnet above, so both targets are exercised
-      # for every push.  Deliberately does NOT run
-      # `collections_persistent_map_tests.l` (the PersistentMap ops
-      # added in #6570) — that suite is dotnet-only pending #6708, a
-      # separate JVM-backend generics-erasure gap; see that test file's
-      # own header for the full explanation.
+      # Std.Collections.Persistent (List ops + PersistentMap ops) on JVM
+      # (#684, #6577 review follow-up; #6708 for the map suite): the module
+      # is pure Lyric with no BCL/JDK extern boundary, so unlike most of the
+      # dotnet-only suites above it runs unmodified under `--target jvm` —
+      # verified locally before wiring this in.  Runs the same
+      # `collections_persistent_tests.l`/`collections_persistent_map_tests.l`
+      # suites already covered on dotnet above, so both targets are
+      # exercised for every push.  `collections_persistent_map_tests.l` was
+      # JVM-blocked until #6708's generics-erasure fix landed (see that test
+      # file's own header for the shape that used to fail).
       # `lyric run --target jvm` shells out to `java` on PATH; this job has
       # no other JVM step, so it needs its own setup-java (#6585 — JVM-target
       # class files require 21, see "class files target major version 65"
@@ -5906,6 +5939,7 @@ jobs:
             exit 1
           fi
           "$lyric_bin" run --target jvm lyric-stdlib/tests/collections_persistent_tests.l
+          "$lyric_bin" run --target jvm lyric-stdlib/tests/collections_persistent_map_tests.l
 
       # Std.RegexSafe cross-package union-case/function collision on JVM
       # (#5976): `regex_safe_tests.l` imports both `Std.Regex as Re` and
