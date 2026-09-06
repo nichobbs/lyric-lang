@@ -1,4 +1,4 @@
-# D-progress-885 — #6537's two residual `externTypeNames` bare-name-collision sites confirmed already fixed by PR #6981; regression tests added
+# D-progress-888 — #6537's two residual `externTypeNames` bare-name-collision sites confirmed already fixed by PR #6981; regression tests added
 
 **Status:** shipped
 
@@ -10,7 +10,7 @@ scope for that PR): `resolveFfiClassTypeRef` (used by `bufFfiType` for
 `ValueTask<T>`-shaped extern return-type special case). Investigated while
 working the group's #6029/#5525/#3369/#4601 batch.
 
-**Found already fixed.** PR #6981's Gap 1 work (D-progress-883) had
+**Found already fixed.** PR #6981's Gap 1 work (D-progress-886) had
 independently added a `hasLyricTypeCandidateInScope` guard to both of
 these EXACT functions while hardening the GENERICINST-parameter path — the
 existing code comments even cite "#6537 residual site 1" and "#6537
@@ -46,6 +46,6 @@ lyric` — no compiler-source changes in this entry, only test additions,
 so no rebuild was needed).
 
 **Related:** #6537 (closed by this entry — code fix already shipped in PR
-#6981/D-progress-883, tests added here), #6041/#6536 (the original bug
+#6981/D-progress-886, tests added here), #6041/#6536 (the original bug
 class and its first-wave fix), D-progress-799 (the #6536 scope-boundary
 decision that deferred these two sites).

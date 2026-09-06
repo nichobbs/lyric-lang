@@ -1,12 +1,12 @@
-# D-progress-884 — #6581 follow-up: a genuine `auto_ffi_self_test.l` regression (over-broad `STNamedGenericInst` scoring) plus two review-flagged `emitGenericMethodExternCall` gaps (#6987, #6989)
+# D-progress-887 — #6581 follow-up: a genuine `auto_ffi_self_test.l` regression (over-broad `STNamedGenericInst` scoring) plus two review-flagged `emitGenericMethodExternCall` gaps (#6987, #6989)
 
 **Status:** shipped
 
-**Context.** After D-progress-883 landed as PR #6981, `claude-review` posted
+**Context.** After D-progress-886 landed as PR #6981, `claude-review` posted
 two REQUIRED findings against Gap 2's `emitGenericMethodExternCall`
 (#6987, #6989, both below). Independently, while investigating a THIRD
 issue in this same group (#6029/#5525/#3369/#4601), a genuine regression in
-D-progress-883's own `scoreSigType` change was discovered and fixed first.
+D-progress-886's own `scoreSigType` change was discovered and fixed first.
 
 **Regression 1 — `scoreSigType`'s `STNamedGenericInst(_, _, _) -> 0` arm
 matched every CLOSED generic instantiation, not just the declaring-type's-
@@ -22,14 +22,14 @@ confirmed empirically before committing to this method): `TextWriter`
 declares `WriteLine(ReadOnlySpan<char>)` among its 20-ish `WriteLine`
 overloads. `ReadOnlySpan<char>` decodes to a genuinely CLOSED
 `STNamedGenericInst("System.ReadOnlySpan\`1", true, [STPrim(Char)])` — no
-VAR/MVAR anywhere in it — yet D-progress-883's arm scored ANY argument
+VAR/MVAR anywhere in it — yet D-progress-886's arm scored ANY argument
 against it as `0` (the same weak-but-nonnegative score as the correct
 `WriteLine(string)` candidate's exact match minus the `1000000` exact-arity
 bonus each still carries separately), spuriously admitting an unrelated,
 type-incompatible overload into the scored candidate pool. In THIS specific
 case the correct candidate's higher total score (`1000002` vs `1000000`)
 still won, so the regression was not a wrong-overload pick here — but
-`resolveExtern`'s two-pass split (D-progress-883's own comment on
+`resolveExtern`'s two-pass split (D-progress-886's own comment on
 `scoreSigTypeWithBases` notwithstanding) requires the noBases pass to
 resolve unambiguously, and something in that broadened candidate pool caused
 the walk to come back empty instead. (The precise final trigger inside
@@ -114,7 +114,7 @@ assertable. This required extending `resolvedSigToMsil`'s existing
 to correctly resolve a nested `STMVar` inside `IEnumerable<TSource>`;
 empirically confirmed already correct (no code change needed there), since
 `resolvedSigToMsil` recurses into itself for generic-instantiation args and
-its own top-of-function `STMVar` arm (D-progress-883, this PR's Gap 2 base)
+its own top-of-function `STMVar` arm (D-progress-886, this PR's Gap 2 base)
 already covers the nested case.
 
 **Verification.** `make lyric` (full stage1 + AOT) after every change in
@@ -129,7 +129,7 @@ self_test.l` (4/4, all new + original cases), `generic_extern_self_test.l`
 `cross_package_generics_self_test.l` (10/10), `msil_restored_bridge_
 self_test.l` (6/6), `msil_project_bridge_self_test.l` (53/53).
 
-**Related:** #6581 (D-progress-883, this entry's base), #6987 (fixed),
+**Related:** #6581 (D-progress-886, this entry's base), #6987 (fixed),
 #6989 (fixed), `auto_ffi_self_test.l` (the regression this entry fixes,
 no tracking issue — caught before merge), PR #6981 (the claude-review
 findings this entry responds to).
