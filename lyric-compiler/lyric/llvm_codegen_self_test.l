@@ -545,6 +545,59 @@ test "string toLower maps U+0130 (İ) to plain ASCII i, not U+0131 dotless i (#6
   assertEqual(r.stdout, "istanbul", "toLower: U+0130 -> U+0069 (plain i), not U+0131 (dotless i)")
 }
 
+// .toUpper() (#6779): previously entirely unimplemented on native.
+test "string toUpper folds ASCII and leaves punctuation/digits unchanged (ASan)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "func main(): Int {\n" +
+    "  val s = \"hello, world! 123\"\n" +
+    "  consoleWriteFd(1, s.toUpper())\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRunAsan(shim)
+  assertEqualInt(r.exitCode, 0, "toUpper exit")
+  assertEqual(r.stdout, "HELLO, WORLD! 123", "toUpper: ASCII folds, punctuation/digits unchanged")
+}
+
+// #6779's widened script coverage: Armenian and Georgian, neither of which
+// existed in the pre-#6779 five-script table at all — a lower/upper
+// roundtrip through both directions.
+test "string toLower/toUpper cover Armenian and Georgian, beyond the original five scripts (ASan)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  println(\"\\u{0531}\\u{0532}\".toLower())\n" +
+    // Georgian Mkhedruli uppercases to the Unicode 11+ Mtavruli case pair
+    // (U+1C90), not the historical Asomtavruli block.
+    "  println(\"\\u{10D0}\".toUpper())\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRunAsan(shim)
+  assertEqualInt(r.exitCode, 0, "Armenian/Georgian exit")
+  assertEqual(r.stdout, "աբ\nᲐ\n", "Armenian toLower and Georgian toUpper")
+}
+
+// #6779: the full UCD table maps some pairs to a DIFFERENT UTF-8 byte
+// length in BOTH directions (the old five-script table only ever shrank,
+// and only for U+0130) — U+023A Ⱥ (2 bytes) lowercases to U+2C65 ⱥ
+// (3 bytes), exercising string_case_map's two-pass length computation for
+// a genuine growth case end to end, not just the shrink path #6758 covered.
+test "string toLower grows UTF-8 byte length for U+023A -> U+2C65 (ASan)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "func main(): Int {\n" +
+    "  val s = \"\\u{023A}\"\n" +
+    "  val lowered = s.toLower()\n" +
+    "  consoleWriteFd(1, lowered)\n" +
+    "  lowered.length\n" +
+    "}\n"
+  val r = compileAndRunAsan(shim)
+  assertEqualInt(r.exitCode, 3, "U+2C65 is 3 UTF-8 bytes (grown from U+023A's 2)")
+  assertEqual(r.stdout, "ⱥ", "toLower: U+023A -> U+2C65 (byte length grows 2 -> 3)")
+}
+
 test "string indexOf: found offset, -1 sentinel, and empty-needle/-haystack" {
   val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
     "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +

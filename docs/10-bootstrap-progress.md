@@ -33724,3 +33724,52 @@ headers and were verified that way.
 `docs/35-lambda-library.md` §4.2/§8 (updated), `lyric-lambda/README.md`
 (support matrix updated), #5412 (closed), #6868 (new, filed not fixed),
 #5600/#5578/#6548 (the prior `Lambda.Dispatch` work this builds on).
+
+## Native `String.toLower`/`.toUpper` widen to the full Unicode Character Database (#6779)
+
+Fast-follow to D-progress-831's five-script hand-written `.toLower()`
+table (Basic Latin, Latin-1 Supplement, Latin Extended-A, Greek,
+Cyrillic). A new checked-in generator, `scripts/gen_unicode_case_tables.py`,
+parses Unicode 17.0.0's own `UnicodeData.txt` "simple lowercase/uppercase
+mapping" columns into two sorted `{codepoint, mapped}` C tables
+(`lyric-rt/src/lyric_unicode_case_tables.inc`, ~1500 entries each) looked
+up via binary search — `lyric-rt` itself never needs network access to
+build; only regenerating the table for a newer Unicode version does.
+`.toUpper()`, entirely unimplemented on native until now, ships alongside
+the widened `.toLower()` using the mirror-image table.
+
+This is still a *simple* case fold, not full `SpecialCasing.txt`: no
+locale-conditional Turkish/Azeri dotless-I folding of plain ASCII "I", no
+German ß -> "SS" expansion, no final-sigma positional form — every
+mapping is unconditional and every output is a single scalar value,
+matching what `.NET`'s `ToLowerInvariant`/`ToUpperInvariant` and the
+JVM's locale-root `toLowerCase`/`toUpperCase` already do without a
+locale argument.
+
+A real correctness fix came with the widening: the old table only ever
+shrank a code point's UTF-8 byte length (and only for U+0130), so
+`lyric_string_to_lower` allocated its output at the input's byte length
+as a safe upper bound. The full UCD table has real GROWING pairs too
+(e.g. U+023A Ⱥ, 2 bytes, lowercases to U+2C65 ⱥ, 3 bytes) as well as more
+dramatic shrinks (U+212A KELVIN SIGN, 3 bytes, lowercases to plain ASCII
+"k", 1 byte) — an upper-bound allocation is no longer safe in general.
+`lyric_string_to_lower`/`lyric_string_to_upper` now share a
+`string_case_map` helper that computes the exact output byte length in a
+first pass, then allocates and writes it in a second — no guess, no
+panic-on-overflow guard needed.
+
+Verified by new cases in `lyric-rt/test/lyric_rt_test.c` (Armenian and
+Georgian — neither existed in the old table at all; the Georgian
+Mkhedruli-to-Mtavruli case pairing, a Unicode 11.0+ addition, distinct
+from the historical Asomtavruli block; the U+023A/U+2C65 grow case with
+an upper/lower roundtrip; the U+212A Kelvin-sign 3-byte-to-1-byte shrink;
+`.toUpper()` on ASCII and on U+0130, which has no further uppercase
+mapping) and four new ASan-compiled end-to-end cases in
+`llvm_codegen_self_test.l`. `make -C lyric-rt test` and the full
+native-backend self-test list pass with zero regressions.
+
+**Related:** `docs/03-decision-log.md` D-progress-831 (the #6588 fix
+this widens), #6779, #6240/#6755/#6237 (the other three native `String`
+gaps from the same audit, shipped as separate PRs),
+`scripts/gen_unicode_case_tables.py`,
+`lyric-rt/src/lyric_unicode_case_tables.inc`.

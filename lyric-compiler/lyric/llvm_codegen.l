@@ -2224,7 +2224,7 @@ func lowerStringPredicateCall(
 
 /// Scalar method-call receivers: `.and/.or/.xor/.shl/.shr`, the
 /// conversion family, `.toString()`, and String's `.substring`/`.trim`/
-/// `.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith`.
+/// `.toLower`/`.toUpper`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith`.
 /// Returns None when `name` is not a scalar method (the caller then
 /// resolves it as a UFCS function call).
 func lowerScalarMethodCall(
@@ -2263,6 +2263,17 @@ func lowerScalarMethodCall(
           ctx,
           insns,
           "lyric_string_to_lower",
+          lyricStringNType(),
+          arg1(lyricStringNType(), v.value)
+        )
+      )
+    }
+    if name == "toUpper" and args.count == 0 {
+      return Some(
+        value = callRuntime(
+          ctx,
+          insns,
+          "lyric_string_to_upper",
           lyricStringNType(),
           arg1(lyricStringNType(), v.value)
         )
@@ -9344,6 +9355,7 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl3("lyric_string_substring", sTy, sTy, NI64, NI64))
   decls.add(mkDecl1("lyric_string_trim", sTy, sTy))
   decls.add(mkDecl1("lyric_string_to_lower", sTy, sTy))
+  decls.add(mkDecl1("lyric_string_to_upper", sTy, sTy))
   decls.add(mkDecl2("lyric_string_index_of", NI64, sTy, sTy))
   decls.add(mkDecl2("lyric_string_starts_with", NI32, sTy, sTy))
   decls.add(mkDecl2("lyric_string_contains", NI32, sTy, sTy))

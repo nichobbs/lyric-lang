@@ -1878,29 +1878,31 @@ form with the import in scope call the explicit
 | `s.contains(sub)` | `Bool` | |
 | `s.startsWith(prefix)` | `Bool` | |
 | `s.endsWith(suffix)` | `Bool` | |
-| `s.toLower()` | `String` | culture-invariant fold (`String.ToLowerInvariant` on .NET); narrower on `--target native`, see below |
-| `s.toUpper()` | `String` | culture-invariant fold (`String.ToUpperInvariant` on .NET); not yet implemented on `--target native` |
+| `s.toLower()` | `String` | culture-invariant fold (`String.ToLowerInvariant` on .NET) |
+| `s.toUpper()` | `String` | culture-invariant fold (`String.ToUpperInvariant` on .NET) |
 
 String `==` / `!=` compare by value (not reference identity). An empty-string
 check is the `Std.String.isEmpty(s)` free function (`s.length == 0`), not a
 method-syntax form.
 
-**`--target native` coverage note (#6588, #6778):** the six methods
-`.trim()`/`.toLower()`/`.indexOf()`/`.startsWith()`/`.contains()`/
-`.endsWith()` above are implemented for `--target native` (`lyric-rt/src/lyric_string.c`),
-matching the dotnet/JVM semantics documented here, with two exceptions.
-`s.toLower()` on native applies a genuine Unicode simple-case fold, but
-only across five scripts — Basic Latin, Latin-1 Supplement, Latin
-Extended-A, Greek, and Cyrillic — rather than the full Unicode Character
-Database `ToLowerInvariant`/`toLowerCase` use on the other two targets;
-every other cased script (e.g. Armenian, Georgian, Deseret) passes
-through unchanged on native today. Widening this is tracked in #6779.
-`s.toUpper()` has no native implementation at all yet (`.toString()`/
-`.substring()`/the six methods above are the only String scalar methods
-native currently lowers). Native's indices are byte offsets into the
-UTF-8 representation rather than the UTF-16 code-unit offsets `.length`/
-`s[i]` use on dotnet/JVM (D-N-006) — a pre-existing target divergence,
-unrelated to #6588/#6778, not newly introduced by these methods.
+**`--target native` coverage note (#6588, #6778, #6779):** the seven
+methods `.trim()`/`.toLower()`/`.toUpper()`/`.indexOf()`/`.startsWith()`/
+`.contains()`/`.endsWith()` above are implemented for `--target native`
+(`lyric-rt/src/lyric_string.c`), matching the dotnet/JVM semantics
+documented here. `s.toLower()`/`s.toUpper()` on native apply a genuine
+Unicode *simple* case fold generated from the full Unicode Character
+Database's own `UnicodeData.txt` (`scripts/gen_unicode_case_tables.py`,
+checked-in output — no network access needed to build), not the narrower
+five-script hand-written table #6588 originally shipped. This is still
+not the complete `SpecialCasing.txt` rule set: no locale-conditional
+Turkish/Azeri dotless-I folding of plain ASCII "I", no German ß -> "SS"
+expansion, no final-sigma positional form — every mapping is
+unconditional and every output is a single scalar value, matching the
+other two targets' own simple-fold behavior when no locale is specified
+(`ToLowerInvariant`/`toLowerCase(Locale.ROOT)`-equivalent). Native's
+indices are byte offsets into the UTF-8 representation rather than the
+UTF-16 code-unit offsets `.length`/`s[i]` use on dotnet/JVM (D-N-006) —
+a pre-existing target divergence, unrelated to these methods.
 
 ## 13. Tooling
 

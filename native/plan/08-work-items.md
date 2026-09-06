@@ -1877,6 +1877,20 @@ run`/`lyric test`'s manifest/project modes for native, are also deferred
 to #6815 — only `lyric build --manifest ... --target native` shipped
 here.
 
+**Update — #6779 SHIPPED.** Native `.toLower()`'s five-script scope limit
+(hand-written Basic Latin/Latin-1/Latin-Ext-A/Greek/Cyrillic table, noted
+above) is closed, and `.toUpper()` (previously entirely unimplemented on
+native) now ships alongside it: both apply a genuine Unicode simple case
+fold generated from the FULL Unicode Character Database's own
+`UnicodeData.txt`, via a new checked-in generator
+(`scripts/gen_unicode_case_tables.py`) that produces a sorted
+binary-search table (`lyric-rt/src/lyric_unicode_case_tables.inc`) —
+no network access needed at build time, only when regenerating for a
+newer Unicode version. `lyric_string_to_lower`/`lyric_string_to_upper`
+now compute the exact output byte length in a first pass before
+allocating, since the full table (unlike the old five-script one) maps
+some code points to a UTF-8 length that GROWS, not just shrinks.
+
 ---
 
 ### N9.9 — Three native-codegen review-finding fixes: bare enum-case patterns, out/inout width mismatches, over-inclusive UFCS reachability — ✅ SHIPPED (D-progress-882/D-progress-883/D-progress-884, #6740, #6813, #6625, #6969, #6976)
