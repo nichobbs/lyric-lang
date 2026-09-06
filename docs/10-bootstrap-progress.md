@@ -33762,7 +33762,7 @@ issue #6961.
 Linux CI (`--target native`, real `clang`) — 20/20 cases pass, no
 regressions.
 
-**Related:** `docs/03-decision-log.md` D-progress-887 (full account),
+**Related:** `docs/03-decision-log.md` D-progress-888 (full account),
 #4752 (audited and recommended for closing by this entry), #6901 (new,
 the `Never`-typed-extern-func gap), #6937 (new, `hostAppBaseDirectory`'s
 tracking issue), #6961 (new, the `Std.File` try/catch-on-native gaps),

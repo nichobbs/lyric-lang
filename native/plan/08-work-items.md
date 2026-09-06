@@ -819,7 +819,7 @@ Implement `get(name)`, `set(name, val)`, `all()` using `getenv`/`setenv`/`enviro
 
 Implement `run(cmd, args)`, `capture(cmd, args)` using `posix_spawn`/`waitpid`/`pipe`.
 
-**N5 slice B (issue #4752) residual-seam audit — D-progress-887.** All four
+**N5 slice B (issue #4752) residual-seam audit — D-progress-888.** All four
 of #4752's originally-named deferrals (runCapture timeout/stdin, `Std.Uuid`,
 `Std.Time` calendar surface, `out`-mode parameter lowering) are confirmed
 already resolved by separate, earlier work. A full dotnet-vs-native
@@ -833,7 +833,7 @@ needs new `lyric-rt` C surface (deferred, not blocked, filed as issue
 blocked by the same `try/catch`-on-native root cause issue #6887 tracks
 for `Std.Process`'s piped API — but scoped separately as issue #6961,
 since #6887's own scope and suggested fix are specific to that facade.
-See D-progress-887 for the full account.
+See D-progress-888 for the full account.
 
 ---
 

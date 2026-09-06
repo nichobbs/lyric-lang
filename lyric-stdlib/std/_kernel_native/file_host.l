@@ -11,7 +11,7 @@
 //! directory enumeration (D-N-015: slices share the RC'd list repr, so
 //! the byte and path collections ride the ordinary list kernels).
 //!
-//! `hostReadAllBytes` (D-progress-887, #4752's residual-seam audit)
+//! `hostReadAllBytes` (D-progress-888, #4752's residual-seam audit)
 //! backs `Std.File.readBytesOrPanic`, whose pure-layer body has NO
 //! `try`/`catch` around it on any target — its "panic on failure"
 //! contract is naturally satisfied here by panicking directly (native
@@ -204,7 +204,7 @@ pub func hostReadBytesResult(path: in String): Result[List[Byte], IOError] {
   }
 }
 
-// #4752 residual-seam audit (D-progress-887): `Std.File.readBytesOrPanic`
+// #4752 residual-seam audit (D-progress-888): `Std.File.readBytesOrPanic`
 // calls this directly with NO `try`/`catch` around it on any target
 // (unlike `readTextOrPanic`, which does) — its "panic on failure"
 // contract is naturally satisfied on native by panicking IN THE KERNEL
