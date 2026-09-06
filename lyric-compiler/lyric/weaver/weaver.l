@@ -715,8 +715,14 @@ func rewriteExpr(ctx: in RewriteCtx, expr: in Expr): Expr {
     case EOld(inner) -> Expr(kind = EOld(inner = rewriteExpr(ctx, inner)), span = s)
     case EPropagate(inner) -> Expr(kind = EPropagate(inner = rewriteExpr(ctx, inner)), span = s)
     case EPrefix(op, operand) -> Expr(kind = EPrefix(op = op, operand = rewriteExpr(ctx, operand)), span = s)
-    case EBinop(op, l, r) -> Expr(kind = EBinop(op = op, lhs = rewriteExpr(ctx, l), rhs = rewriteExpr(ctx, r)), span = s)
-    case EAssign(t, op, v) -> Expr(kind = EAssign(target = rewriteExpr(ctx, t), op = op, value = rewriteExpr(ctx, v)), span = s)
+    case EBinop(op, l, r) -> Expr(
+      kind = EBinop(op = op, lhs = rewriteExpr(ctx, l), rhs = rewriteExpr(ctx, r)),
+      span = s
+    )
+    case EAssign(t, op, v) -> Expr(
+      kind = EAssign(target = rewriteExpr(ctx, t), op = op, value = rewriteExpr(ctx, v)),
+      span = s
+    )
     case EMember(recv, n) -> Expr(kind = EMember(receiver = rewriteExpr(ctx, recv), memberName = n), span = s)
     case EIndex(recv, idxs) -> {
       val newIdxs: List[Expr] = newList()
@@ -740,8 +746,14 @@ func rewriteExpr(ctx: in RewriteCtx, expr: in Expr): Expr {
         span = s
       )
     }
-    case EMatch(scrut, arms) -> Expr(kind = EMatch(scrutinee = rewriteExpr(ctx, scrut), arms = rewriteMatchArms(ctx, arms)), span = s)
-    case ELambda(lparams, body) -> Expr(kind = ELambda(lambdaParams = lparams, body = rewriteBlock(ctx, body)), span = s)
+    case EMatch(scrut, arms) -> Expr(
+      kind = EMatch(scrutinee = rewriteExpr(ctx, scrut), arms = rewriteMatchArms(ctx, arms)),
+      span = s
+    )
+    case ELambda(lparams, body) -> Expr(
+      kind = ELambda(lambdaParams = lparams, body = rewriteBlock(ctx, body)),
+      span = s
+    )
     case EBlock(blk) -> Expr(kind = EBlock(block = rewriteBlock(ctx, blk)), span = s)
     case EUnsafe(blk) -> Expr(kind = EUnsafe(block = rewriteBlock(ctx, blk)), span = s)
     case EInterpolated(segs) -> {
@@ -756,8 +768,57 @@ func rewriteExpr(ctx: in RewriteCtx, expr: in Expr): Expr {
       }
       Expr(kind = EInterpolated(segments = newSegs), span = s)
     }
-    // Leaves: ELiteral, EPath, ESelf, EResult, EForall, EExists, ERange, EError
+    case ERange(bound) -> Expr(kind = ERange(bound = rewriteRangeBound(ctx, bound)), span = s)
+    // #6833 follow-up (review finding on PR #6863): `EForall`/`EExists`
+    // were also leaves, so an aspect's `requires:`/`ensures:` clause
+    // referencing `args.<field>` inside a `forall(...)`/`exists(...)`
+    // binder's `whereExpr` or `body` never got the substitution —
+    // `rewriteContractClauseArgs` calls this same `rewriteExpr` on
+    // contract clauses. `PropertyBinder` carries no expression of its
+    // own (just a name + type), so only `whereExpr`/`body` need it.
+    case EForall(binders, whereExpr, body) -> Expr(
+      kind = EForall(
+        binders = binders,
+        whereExpr = match whereExpr {
+          case Some(e) -> Some(value = rewriteExpr(ctx, e))
+          case None -> None
+        },
+        body = rewriteExpr(ctx, body)
+      ),
+      span = s
+    )
+    case EExists(binders, whereExpr, body) -> Expr(
+      kind = EExists(
+        binders = binders,
+        whereExpr = match whereExpr {
+          case Some(e) -> Some(value = rewriteExpr(ctx, e))
+          case None -> None
+        },
+        body = rewriteExpr(ctx, body)
+      ),
+      span = s
+    )
+    // Leaves: ELiteral, EPath, ESelf, EResult, EError
     case _ -> expr
+  }
+}
+
+// #6833: `ERange` was a leaf in the walk above, so `args.<field>` never
+// got substituted into a range expression's `lo`/`hi` bounds (e.g. an
+// aspect template's advice writing `for i in args.start .. args.end`).
+// Pattern-side `PRange` bounds don't need the same treatment — the
+// grammar restricts them to constant forms post-parse (docs/grammar.ebnf
+// `RangePattern`), so `args.<field>` can never appear there.
+func rewriteRangeBound(ctx: in RewriteCtx, bound: in RangeBound): RangeBound {
+  match bound {
+    case RBClosed(lo, hi) -> RBClosed(lo = rewriteExpr(ctx, lo), hi = rewriteExpr(ctx, hi))
+    case RBHalfOpen(lo, hi, bareDotDot) -> RBHalfOpen(
+      lo = rewriteExpr(ctx, lo),
+      hi = rewriteExpr(ctx, hi),
+      bareDotDot = bareDotDot
+    )
+    case RBLowerOpen(hi) -> RBLowerOpen(hi = rewriteExpr(ctx, hi))
+    case RBUpperOpen(lo) -> RBUpperOpen(lo = rewriteExpr(ctx, lo))
   }
 }
 
@@ -968,10 +1029,28 @@ func rewriteStmt(ctx: in RewriteCtx, stmt: in Statement): Statement {
       Statement(kind = SReturn(value = newOpt), span = s)
     }
     case SLocal(binding) -> Statement(kind = SLocal(binding = rewriteBinding(ctx, binding)), span = s)
-    case SAssign(t, op, v) -> Statement(kind = SAssign(target = rewriteExpr(ctx, t), op = op, value = rewriteExpr(ctx, v)), span = s)
+    case SAssign(t, op, v) -> Statement(
+      kind = SAssign(target = rewriteExpr(ctx, t), op = op, value = rewriteExpr(ctx, v)),
+      span = s
+    )
     case SThrow(e) -> Statement(kind = SThrow(expr = rewriteExpr(ctx, e)), span = s)
-    case SFor(lbl, pat, iter, body) -> Statement(kind = SFor(label = lbl, pat = pat, iter = rewriteExpr(ctx, iter), body = rewriteBlock(ctx, body)), span = s)
-    case SWhile(lbl, cond, body) -> Statement(kind = SWhile(label = lbl, cond = rewriteExpr(ctx, cond), body = rewriteBlock(ctx, body)), span = s)
+    case SFor(lbl, pat, iter, body) -> Statement(
+      kind = SFor(
+        label = lbl,
+        pat = pat,
+        iter = rewriteExpr(ctx, iter),
+        body = rewriteBlock(ctx, body)
+      ),
+      span = s
+    )
+    case SWhile(lbl, cond, body) -> Statement(
+      kind = SWhile(
+        label = lbl,
+        cond = rewriteExpr(ctx, cond),
+        body = rewriteBlock(ctx, body)
+      ),
+      span = s
+    )
     case SLoop(lbl, body) -> Statement(kind = SLoop(label = lbl, body = rewriteBlock(ctx, body)), span = s)
     case SScope(b, body) -> Statement(kind = SScope(binding = b, body = rewriteBlock(ctx, body)), span = s)
     case STry(body, catches, finally_) -> {
@@ -1203,20 +1282,72 @@ func stripRetAssignmentsStmt(s: in Statement, name: in String): Statement {
       }
     }
     case SExpr(e) -> Statement(kind = SExpr(expr = stripRetAssignmentsExpr(e, name)), span = sp)
-    case SReturn(o) -> match o { case Some(e) -> Statement(kind = SReturn(value = Some(value = stripRetAssignmentsExpr(e, name))), span = sp); case None -> s }
+    case SReturn(o) -> match o {
+      case Some(e) -> Statement(
+        kind = SReturn(value = Some(value = stripRetAssignmentsExpr(e, name))),
+        span = sp
+      )
+      case None -> s
+    }
     case SLocal(b) -> {
       // The detection pass (`stmtAssignsToName`) descends into local-binding
       // initializers, so the strip pass must mirror it: a `ret = …` written
       // in expression position inside a `val`/`let`/`var` init (e.g.
       // `val x = (ret = proceed())`) is rewritten the same way (#3434).
       match b {
-        case LBVal(pat, ty, init) -> Statement(kind = SLocal(binding = LBVal(pat = pat, ty = ty, init = stripRetAssignmentsExpr(init, name))), span = sp)
-        case LBLet(nm, ty, init) -> Statement(kind = SLocal(binding = LBLet(name = nm, ty = ty, init = stripRetAssignmentsExpr(init, name))), span = sp)
-        case LBVar(nm, ty, optInit) -> match optInit { case Some(e) -> Statement(kind = SLocal(binding = LBVar(name = nm, ty = ty, init = Some(value = stripRetAssignmentsExpr(e, name)))), span = sp); case None -> s }
+        case LBVal(pat, ty, init) -> Statement(
+          kind = SLocal(
+            binding = LBVal(
+              pat = pat,
+              ty = ty,
+              init = stripRetAssignmentsExpr(init, name)
+            )
+          ),
+          span = sp
+        )
+        case LBLet(nm, ty, init) -> Statement(
+          kind = SLocal(
+            binding = LBLet(
+              name = nm,
+              ty = ty,
+              init = stripRetAssignmentsExpr(init, name)
+            )
+          ),
+          span = sp
+        )
+        case LBVar(nm, ty, optInit) -> match optInit {
+          case Some(e) -> Statement(
+            kind = SLocal(
+              binding = LBVar(
+                name = nm,
+                ty = ty,
+                init = Some(
+                  value = stripRetAssignmentsExpr(
+                    e,
+                    name
+                  )
+                )
+              )
+            ),
+            span = sp
+          )
+          case None -> s
+        }
       }
     }
-    case SFor(lbl, pat, iter, body) -> Statement(kind = SFor(label = lbl, pat = pat, iter = iter, body = stripRetAssignments(body, name)), span = sp)
-    case SWhile(lbl, cond, body) -> Statement(kind = SWhile(label = lbl, cond = cond, body = stripRetAssignments(body, name)), span = sp)
+    case SFor(lbl, pat, iter, body) -> Statement(
+      kind = SFor(
+        label = lbl,
+        pat = pat,
+        iter = iter,
+        body = stripRetAssignments(body, name)
+      ),
+      span = sp
+    )
+    case SWhile(lbl, cond, body) -> Statement(
+      kind = SWhile(label = lbl, cond = cond, body = stripRetAssignments(body, name)),
+      span = sp
+    )
     case SLoop(lbl, body) -> Statement(kind = SLoop(label = lbl, body = stripRetAssignments(body, name)), span = sp)
     case SScope(b, body) -> Statement(kind = SScope(binding = b, body = stripRetAssignments(body, name)), span = sp)
     case SDefer(body) -> Statement(kind = SDefer(body = stripRetAssignments(body, name)), span = sp)
@@ -1496,7 +1627,9 @@ func collectRefsExpr(e: in Expr, mode: in RefMatchMode, into: in Map[String, Boo
     }
     case RMBareFields(fields) -> {
       match e.kind {
-        case EPath(p) -> if p.segments.count == 1 and fields.containsKey(p.segments[0]) and not into.containsKey(p.segments[0]) { into.add(p.segments[0], true) }
+        case EPath(p) -> if p.segments.count == 1 and fields.containsKey(p.segments[0]) and not into.containsKey(p.segments[0]) {
+          into.add(p.segments[0], true)
+        }
         case _ -> ()
       }
     }
@@ -1711,7 +1844,13 @@ func buildWrapper(
   // `around` presence is verified by the caller.
   val around = match aspect.around {
     case Some(a) -> a
-    case None -> AspectAround(argsName = "args", retName = None, argsRow = None, body = Block(statements = newList(), span = synSpan()), span = synSpan())
+    case None -> AspectAround(
+      argsName = "args",
+      retName = None,
+      argsRow = None,
+      body = Block(statements = newList(), span = synSpan()),
+      span = synSpan()
+    )
   }
   val paramNames: List[String] = newList()
   var pi = 0
