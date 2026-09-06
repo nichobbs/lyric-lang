@@ -222,7 +222,7 @@ The BCL serves as runtime implementation support only; the stdlib's surface API 
    - `Http.getAsync(url: in String): Result[HttpResponse, HttpError]` ✅
    - `Http.postAsync(url: in String, body: in String): Result[HttpResponse, HttpError]` ✅
    - `Http.withJsonBody(request: in HttpRequest, json: in String): HttpRequest` ✅
-   - `Http.withHeader(request: in HttpRequest, key: in String, value: in String): HttpRequest` ✅
+   - `Http.withHeader(request: in HttpRequest, key: in String, value: in String): Result[HttpRequest, HttpError]` ✅ — rejects a reserved framing-header name (`Host`/`Connection`/`Content-Type`/`Content-Length`, case-insensitive) with `HttpError.ReservedHeader` instead of producing a duplicate header line on the wire (#6658)
 
 3. **Response parsing**
    - `HttpResponse.statusCode: Int` (accessor function) ✅
@@ -243,7 +243,9 @@ The BCL serves as runtime implementation support only; the stdlib's surface API 
      case ConnectionFailed(url: String, message: String)
      case Timeout(url: String, durationMs: Long)
      case BadStatus(url: String, statusCode: Int)
-     case IoError(url: String, error: IOError)
+     case InvalidUrl(url: String)
+     case Transport(url: String, error: IOError)
+     case ReservedHeader(url: String, name: String)  // #6658
    }
    ```
 
