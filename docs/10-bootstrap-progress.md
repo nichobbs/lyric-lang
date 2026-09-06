@@ -32296,7 +32296,7 @@ adding matching `U16`/`U32`/`U64` arms to the list-literal element-type
 predictor. Bare-scalar comparison/division/stringification of an unsigned
 value still uses plain signed IL — a separate, scoped follow-up (#6913).
 
-**Related:** `docs/03-decision-log.md` D-progress-883 (full account),
+**Related:** D-progress-890 (full account),
 #6756, #6782, #6913.
 
 ### Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
