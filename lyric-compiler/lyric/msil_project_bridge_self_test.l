@@ -2179,3 +2179,199 @@ test "extern type alias in one package does not hijack a same-named Lyric union'
     "unrelated package's extern alias did not hijack the Lyric union's case reference"
   )
 }
+
+// #6689: a QUALIFIED generic type argument (`List[PkgA.Item]`) resolved
+// through `typeExprToMsilCtx`'s bare-name-only `resolveTypeFqn` scope-
+// priority walk, discarding the qualifier entirely — so a package that
+// imports TWO packages each declaring a same-named type (`Item`) resolved
+// `List[PkgA.Item]` to whichever candidate happened to win the REFERENCING
+// package's own scope-priority tie-break, not necessarily `PkgA`. Silently
+// built a `List<PkgB.Item>`-shaped generic instantiation and miscompiled
+// every read/write into an `ArrayTypeMismatchException`/
+// `InvalidProgramException` at runtime, with no compile-time signal.
+test "qualified generic type argument resolves to the exact package named, not scope-priority (#6689)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "Pkg6689A",
+      "package Pkg6689A\n" + "pub record Item {\n" + "  x: Int\n" + "}\n" + "pub func mkA(x: in Int): Item {\n" +
+        "  Item(x = x)\n" +
+        "}\n"
+    )
+  )
+  packages.add(mkPkg("Pkg6689B", "package Pkg6689B\n" + "pub record Item {\n" + "  name: String\n" + "}\n"))
+  packages.add(
+    mkPkg(
+      "Main6689",
+      "package Main6689\n" + "import Pkg6689B\n" + "import Pkg6689A\n" + "\n" + "func main(): Unit {\n" +
+        "  val xs: List[Pkg6689A.Item] = newList()\n" +
+        "  xs.add(Pkg6689A.mkA(1))\n" +
+        "  println(xs[0].x)\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRunWithStdlib("qualified-generic-type-arg-6689", packages, "QualifiedGenericTypeArg6689")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "qualified generic type arg (#6689): exit 0 expected (stderr=" + result.stderr + ")"
+  )
+  assertEqual(Str.trim(result.stdout), "1", "List[Pkg6689A.Item] resolved to Pkg6689A's Item, not Pkg6689B's")
+}
+
+// Same shape as above, but the qualified type reference is a RECORD FIELD
+// type (the original #6689 repro's actual shape — `Jvm.Driver.BuildRequest`
+// carrying `List[Jvm.Zip.ZipEntry]`) rather than a local `val` annotation,
+// exercising `collectCtorFields`'s DECLARING-package scope fix
+// (`typechecker_exprs.l`) together with the codegen-side fix above.
+test "qualified generic type argument in a record field resolves to the exact package named (#6689)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "Pkg6689C",
+      "package Pkg6689C\n" + "pub record Item {\n" + "  x: Int\n" + "}\n" + "pub func mkA(x: in Int): Item {\n" +
+        "  Item(x = x)\n" +
+        "}\n"
+    )
+  )
+  packages.add(mkPkg("Pkg6689D", "package Pkg6689D\n" + "pub record Item {\n" + "  name: String\n" + "}\n"))
+  packages.add(
+    mkPkg(
+      "Pkg6689Wrapper",
+      "package Pkg6689Wrapper\n" + "import Pkg6689C\n" + "\n" + "pub record Wrapper {\n" + "  items: List[Item]\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "Main6689B",
+      "package Main6689B\n" + "import Pkg6689D\n" + "import Pkg6689Wrapper\n" + "import Pkg6689C\n" + "\n" +
+        "func mkList(): List[Pkg6689C.Item] {\n" +
+        "  val xs: List[Pkg6689C.Item] = newList()\n" +
+        "  xs.add(Pkg6689C.mkA(1))\n" +
+        "  xs\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val w = Pkg6689Wrapper.Wrapper(items = mkList())\n" +
+        "  println(w.items[0].x)\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRunWithStdlib("qualified-generic-ctor-field-6689", packages, "QualifiedGenericCtorField6689")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "qualified generic ctor field (#6689): exit 0 expected (stderr=" + result.stderr + ")"
+  )
+  assertEqual(Str.trim(result.stdout), "1", "record field List[Item] resolved to Pkg6689C's Item, not Pkg6689D's")
+}
+
+// #6972 (found in review of #6689): a union case's field types are resolved
+// lazily on every use, exactly like a record's — `collectCtorFields` was
+// fixed to resolve field types under the field-owning symbol's DECLARING
+// package scope (#6689), but `unionCaseFieldTypes` (both its construction
+// AND pattern-bind call sites) still resolved under whatever scope was
+// active at the call site. Confirmed empirically (debug instrumentation)
+// that under the project bridge's own registration order this collides:
+// `tag`'s bound type resolves `Item` against `Pkg6972Collide` (registered
+// after `Pkg6972Owner` in the project's package list) instead of
+// `Pkg6972Owner` (the field's OWN declaring package). Neither MSIL nor JVM
+// codegen observably differ on a plain field READ here (both re-derive a
+// pattern-bound local's runtime layout independently of this particular
+// type-checker result) — the defect is only visible where something
+// nominally compares the bound type, so this passes `tag` to a function
+// requiring exactly `Pkg6972Owner.Item`: a wrong resolution is a hard
+// T0043 type-checker error that fails the whole compile.
+test "union case field type resolves to the exact package named, not the caller's scope (#6972)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "Pkg6972Owner",
+      "package Pkg6972Owner\n" + "pub record Item {\n" + "  x: Int\n" + "}\n" + "pub union Box {\n" +
+        "  case Full(tag: Item)\n" +
+        "}\n" +
+        "pub func mk(x: in Int): Box {\n" +
+        "  Full(tag = Item(x = x))\n" +
+        "}\n" +
+        "pub func needsItem(i: in Item): Int {\n" +
+        "  i.x\n" +
+        "}\n"
+    )
+  )
+  packages.add(mkPkg("Pkg6972Collide", "package Pkg6972Collide\n" + "pub record Item {\n" + "  name: String\n" + "}\n"))
+  packages.add(
+    mkPkg(
+      "Main6972",
+      "package Main6972\n" + "import Pkg6972Owner\n" + "import Pkg6972Collide\n" + "func main(): Int {\n" +
+        "  val b = Pkg6972Owner.mk(x = 7)\n" +
+        "  match b {\n" +
+        "    case Pkg6972Owner.Full(tag) -> println(Pkg6972Owner.needsItem(tag))\n" +
+        "  }\n" +
+        "  0\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("union-case-field-6972", packages, "UnionCaseField6972")
+  assertEqualInt(result.exitCode, 0, "union case field (#6972): exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "7",
+    "union case field (#6972): tag binds to Pkg6972Owner's Item, not Pkg6972Collide's (needsItem(tag) == 7)"
+  )
+}
+
+// #6992 (found in review of #6689): a QUALIFIED generic type's own HEAD
+// (not just its type arguments) must resolve to the exact package named.
+// `resolveTypeFqnQualified` was wired into `typeExprToMsilCtx`'s bare
+// `TRef` case, but the `TGenericApp` fallback branch (reached when the
+// generic head itself, e.g. `Box` in `PkgA.Box[Int]`, isn't one of the
+// special-cased names `List`/`Map`/`Set`/`MapKeyCollection`/
+// `MapValueCollection`) still called the unqualified `resolveTypeFqn`,
+// leaving the identical hazard open one level up. `Pkg6992A` and
+// `Pkg6992B` each declare their OWN unrelated `Box[T]` union (different
+// case sets, so a wrong resolution can't coincidentally construct the
+// right shape); the qualified generic-head reference (`Pkg6992A.Box[Int]`)
+// must appear in the CALLER (`Main6992`, which imports both colliding
+// packages) for the bug to be reachable — a bare `Box[Int]` written
+// inside `Pkg6992A`'s own file never collides, since tier-1 (a package's
+// own declaration) always wins regardless of the bug. Uses a FUNCTION
+// PARAMETER type (not a `val` annotation, which codegen derives from the
+// initializer expression's own already-correct inferred type rather than
+// re-resolving the annotation text) so the qualified head genuinely feeds
+// the MSIL method signature — mirroring how #6972's fix was pinned via a
+// parameter type rather than a pattern-bound local.
+test "qualified generic type HEAD resolves to the exact package named, not scope-priority (#6992)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "Pkg6992A",
+      "package Pkg6992A\n" + "pub union Box[T] {\n" + "  case Full(value: T)\n" + "}\n" +
+        "pub func mk(x: in Int): Box[Int] {\n" +
+        "  Full(value = x)\n" +
+        "}\n"
+    )
+  )
+  packages.add(mkPkg("Pkg6992B", "package Pkg6992B\n" + "pub union Box[T] {\n" + "  case Nothing\n" + "}\n"))
+  packages.add(
+    mkPkg(
+      "Main6992",
+      "package Main6992\n" + "import Pkg6992A\n" + "import Pkg6992B\n" + "func unwrap(b: in Pkg6992A.Box[Int]): Int {\n" +
+        "  match b {\n" +
+        "    case Pkg6992A.Full(v) -> v\n" +
+        "  }\n" +
+        "}\n" +
+        "func main(): Int {\n" +
+        "  println(unwrap(Pkg6992A.mk(x = 42)))\n" +
+        "  0\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("qualified-generic-head-6992", packages, "QualifiedGenericHead6992")
+  assertEqualInt(result.exitCode, 0, "qualified generic head (#6992): exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "42",
+    "qualified generic head (#6992): Pkg6992A.Box[Int] resolves to Pkg6992A's Box, not Pkg6992B's"
+  )
+}
