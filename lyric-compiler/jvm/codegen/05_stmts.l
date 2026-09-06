@@ -408,20 +408,59 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               emitArrayStore(insns, elem)
             }
             case _ -> {
-              // Compound: spill arrayref + index to locals (no dup2 opcode), read
-              // the current element, combine with the RHS, store back.
+              // Compound: spill arrayref + index to locals (no dup2 opcode),
+              // evaluate the RHS BEFORE reading the current element — matching
+              // the Map/List compound-assign order above and the native
+              // backend's `lowerIndexAssign` (#7005): for `xs[i] += f()` where
+              // `f()` mutates `xs`, the RHS's side effects must run before the
+              // container is read back, or a same-container mutation inside
+              // the RHS observes a different pre/post-mutation value than the
+              // uniform RHS-first order every other receiver kind uses.
               val arrSlot = allocSlot(ctx, "__idxasn_arr_" + freshLabel(ctx), recvTy)
               emitStore(insns, arrSlot, recvTy)
               lowerExpr(ctx, insns, indices[0])
               val idxSlot = allocSlot(ctx, "__idxasn_i_" + freshLabel(ctx), JInt)
               emitStore(insns, idxSlot, JInt)
+              val vTy = lowerExpr(ctx, insns, value)
+              val rhsSlot = allocSlot(ctx, "__idxasn_rhs_" + freshLabel(ctx), vTy)
+              emitStore(insns, rhsSlot, vTy)
               emitLoad(insns, arrSlot, recvTy)
               emitLoad(insns, idxSlot, JInt)
               emitLoad(insns, arrSlot, recvTy)
               emitLoad(insns, idxSlot, JInt)
               emitArrayLoad(insns, elem)
-              val vTy = lowerExpr(ctx, insns, value)
-              emitCompoundCombineJvm(ctx, insns, op, elem, vTy, isUnsignedExpr(ctx, value))
+              // `slice[T]`'s tracked `elem` is UNCONDITIONALLY the erased
+              // `Object` (`01_types.l`'s `TSlice(_) -> JArray(elem =
+              // JRef("java/lang/Object"))`, #5257's uniform boxed-array
+              // ABI) regardless of `T` — so a bare `xs[i] += e` on ANY
+              // `slice[T]` reached `emitCompoundCombineJvm` with a
+              // reference-typed target and panicked ("compound assignment
+              // on a reference-typed target... needs an explicit type
+              // annotation") for every non-`String` element type, discovered
+              // while adding regression coverage for the eval-order fix
+              // above — a previously-undiscovered, general `slice[T]`
+              // compound-assign gap, not specific to any one element type.
+              // Resolve the receiver's TRUE declared element type the same
+              // way the `JRef` Map arm above does (mirrored exactly,
+              // including its no-override fallback): narrows/unboxes the
+              // just-loaded value to the real element type before
+              // combining, re-boxing before the store when the array's
+              // storage is the erased `Object` shape. When no static
+              // override is available, best-effort unbox against the RHS's
+              // own type (`vTy`) rather than leaving `elemTy` erased —
+              // `emitCompoundCombineJvm` panics on a bare `Object` target,
+              // so an un-narrowed fallback here would be strictly worse
+              // than the pre-fix behavior for the common case where the
+              // RHS's type IS the container's real element type.
+              val elemTy = match indexedElemTypeOverride(ctx, recv, false) {
+                case JVoid -> emitUnboxObjectTo(insns, vTy)
+                case overrideTy -> applyIndexedElemOverride(insns, overrideTy)
+              }
+              emitLoad(insns, rhsSlot, vTy)
+              emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy, isUnsignedExpr(ctx, value))
+              if elemTy != elem {
+                boxIfNeeded(insns, elemTy)
+              }
               emitArrayStore(insns, elem)
             }
           }

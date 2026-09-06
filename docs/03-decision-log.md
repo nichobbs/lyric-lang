@@ -41812,3 +41812,71 @@ dotnet`) in this session's from-source sandbox build. Confirmed via
 `git stash` that this reproduces identically on an unmodified tree (before
 any of this entry's changes) — pre-existing and environment-specific to
 this build, not investigated further here (out of scope for #6811/#6808).
+
+**Addendum (issue #7005, found by a third review pass on this PR).** The
+review flagged that `slice[T]` compound index-assign on `--target jvm`
+evaluates the RHS AFTER reading the container's current element
+(`jvm/codegen/05_stmts.l`'s `JArray` arm — a real JVM array, distinct from
+`List[T]`'s `java.util.ArrayList`), the opposite of every other receiver
+kind (`List[T]`/`Map[K, V]` on JVM, and `slice[T]` itself on `--target
+dotnet` and `--target native`, all of which evaluate the RHS first). For
+`xs[i] op= f()` where `f()` mutates `xs[i]`, the two orders observably
+disagree — confirmed by writing the regression test below and watching it
+fail under the pre-fix order (`actual=15`) vs. pass under the fixed order
+(`expected=1004`). Fixed by reordering the `JArray` compound-assign arm to
+spill the RHS to a local BEFORE the array-load-plus-index sequence,
+mirroring the `JRef` Map arm immediately below it in the same match.
+
+**A second, previously-undiscovered bug surfaced while writing the
+regression test for the above:** `slice[T]`'s JVM type is UNCONDITIONALLY
+`JArray(elem = JRef("java/lang/Object"))` regardless of `T`
+(`jvm/codegen/01_types.l`'s `TSlice(_) ->` arm, #5257's uniform
+boxed-array ABI) — so a bare `xs[i] += e` on ANY `slice[T]` (not just the
+`slice[Int]` #7005 named) reached `emitCompoundCombineJvm` with a
+reference-typed (`Object`) target and panicked
+("`Jvm.Codegen: compound assignment on a reference-typed target
+('java/lang/Object')...`") for every element type except `String`,
+independent of evaluation order. Confirmed via direct testing: even
+`var xs: slice[Int] = [10, 20, 30]; xs[0] += 5` — no `inout`, no function
+call, the simplest possible shape — panics at compile time on
+unmodified `main`. The plain `AssEq` arm (`xs[i] = e`) already resolves
+the receiver's TRUE declared element type via
+`indexedElemTypeOverride`/`coerceScalarToSliceElem` (#6741) before storing;
+the compound arm never had the equivalent treatment. Fixed by applying the
+same `indexedElemTypeOverride`/`applyIndexedElemOverride` resolution the
+`JRef` Map arm already uses (including its no-override
+`emitUnboxObjectTo(vTy)` fallback) to narrow the loaded element to its
+real type before combining, and re-boxing before the store when the
+array's tracked storage is the erased `Object` shape.
+
+**Verification.** `slice_compound_assign_eval_order_self_test.l` (new
+`@test_module`, run via native `lyric test --target jvm`): a
+`slice[Int]` and a `slice[Long]` case, each calling an `inout`-mutating
+function as the RHS of `xs[0] += f(xs)` where `f` also writes `xs[0]`,
+asserting the RHS-first combined result (`1004`) rather than the
+read-first stale-combine result (`15`) the pre-fix order would produce —
+confirmed both ways by temporarily reverting only the ordering change
+(keeping the type-override fix) and watching both cases fail with
+`actual=15` before restoring the fix. No committed test attempts a
+reference-typed (`slice[String]`) compound-assign: `emitCompoundCombineJvm`
+still only combines a `String` target via `AssPlus`, and (independent of
+this fix) a `slice[String]`'s override resolution vs. the array's
+`Object`-erased storage was not exercised end-to-end here — left
+unattempted rather than guessed at. Full existing regression coverage
+re-run on `--target jvm` with zero new failures: `inout_slice_self_test.l`
+(4/4, `AssEq`-only slice writes across `Int`/`Long`/`Byte`/`String`
+elements, unaffected since only the compound arm changed),
+`list_value_compare_self_test.l` (10/10), `compound_string_assign_self_test.l`
+(8/8, the `JRef` String arm this fix's `elemTy != elem` guard leaves
+untouched). `llvm_stdlib_self_test.l` (21/21, native), `http_hpack_tests.l`
+(39/39, dotnet), `http_h2conn_tests.l` (73/73, dotnet) re-confirmed
+unaffected by the JVM-only change. `lyric fmt --write` clean on every
+changed `.l` file.
+
+**Related:** #7005 (this addendum, closed), the previously-undiscovered
+`slice[T]` compound-assign type-erasure panic (filed nowhere separately —
+fixed directly alongside #7005 in the same code region rather than split
+into its own tracked-not-fixed issue, since leaving it unfixed would have
+made #7005's own regression test uncompilable), #6741 (the
+`indexedElemTypeOverride` mechanism this reuses), #5257 (the uniform
+boxed-array ABI this is erased under).
