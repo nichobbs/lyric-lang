@@ -1898,7 +1898,7 @@ result, `List[NativeWeak[T]]`, `Map[K, NativeWeak[T]]`) each confirm
 correct upgrade-while-alive AND "does not keep the target strongly
 alive," leak-free; full suite 37/37, no regressions.
 
-### N9.9 — Native `Std.Char` kernel (#6811), `List`/`Map` indexed-assignment codegen, and a cross-package `?`-propagation fix — ✅ SHIPPED (D-progress-882); HPACK *decode* + full `H2Conn` FSM now verified working on native, HPACK *encode* stays blocked on #6237
+### N9.9 — Native `Std.Char` kernel (#6811), `List`/`Map` indexed-assignment codegen, and a cross-package `?`-propagation fix — ✅ SHIPPED (D-progress-883); HPACK *decode* + full `H2Conn` FSM now verified working on native, HPACK *encode* stays blocked on #6237
 
 Closes issue #6811 (`Std.Char` had no `_kernel_native` twin — see N9.5's
 D-progress-853 update above) and, in the process of verifying it against
@@ -1926,7 +1926,7 @@ check — a real `Std.HttpEngine.H2Conn.feed()` call (connection preface +
 SETTINGS + a static-table-indexed HEADERS frame) correctly decoding
 through the full FSM (all 38 `inout H2Connection` sites plus the `inout
 FrameDecoder` chain) to a `H2RequestHeaders` event, byte-for-byte matching
-`--target dotnet`. See D-progress-882 for the full bisection trail and
+`--target dotnet`. See D-progress-883 for the full bisection trail and
 exact repro commands.
 
 **Still blocked, narrower than before:** HPACK's *encode* path

@@ -59,11 +59,14 @@
 //!   erroring. This is a pre-existing limitation of the `DynamoDbAttributeValue`
 //!   record itself (see its doc comment in `events.l`); flagged here too since
 //!   this file is what actually wires that decoder into live dispatch.
-//! - API Gateway v1/v2 and ALB (`Lambda.withRouter`) dispatch: blocked on
+//! - API Gateway v1/v2 and ALB (`Lambda.withRouter`) dispatch:
 //!   `Lambda.Kernel.WebBridge`'s `ConditionalWeakTable<LambdaRouter,
-//!   Web.Router>` feasibility spike (docs/35-lambda-library.md; that
-//!   kernel's own header comment) — there is no way to resolve a
-//!   `LambdaRouter` token back to the `Web.Router` it wraps yet.
+//!   Web.Router>` registry is proven (a `LambdaRouter` token now resolves
+//!   back to its `Web.Router` — see that kernel's header comment), but
+//!   mapping an API Gateway/ALB event through the resolved router (method/
+//!   path/header/body extraction, match-and-dispatch, `ApiGwResponse`
+//!   encoding, CORS) is separate, larger work, not done here
+//!   (docs/35-lambda-library.md §4).
 //! - Streaming (`Lambda.withStreamingHandler` / `Lambda.Direct.streamingHandler`):
 //!   `Lambda.Stream`'s `StreamWriter` has no working transport (see that
 //!   package's header comment).
@@ -658,7 +661,10 @@ func decodeDynamoDbAttributeMap(elem: in JsonElement): Map[String, DynamoDbAttri
 // silently dropping to None.
 func getOptEpochLongProp(elem: in JsonElement, name: in String): Option[Long] {
   match tryGetProperty(elem, name) {
-    case Some(v) -> match tryGetLong(v) { case Some(n) -> Some(value = n); case None -> match tryGetDouble(v) { case Some(d) -> Some(value = d.toLong()); case None -> None } }
+    case Some(v) -> match tryGetLong(v) {
+      case Some(n) -> Some(value = n)
+      case None -> match tryGetDouble(v) { case Some(d) -> Some(value = d.toLong()); case None -> None }
+    }
     case None -> None
   }
 }
@@ -683,11 +689,19 @@ func decodeDynamoDbStreamRecord(elem: in JsonElement): DynamoDbStreamRecord {
       case None -> newMap()
     },
     newImage = match tryGetProperty(elem, "NewImage") {
-      case Some(v) -> if valueKind(v) == 1 { Some(value = decodeDynamoDbAttributeMap(v)) } else { None }
+      case Some(v) -> if valueKind(v) == 1 {
+        Some(value = decodeDynamoDbAttributeMap(v))
+      } else {
+        None
+      }
       case None -> None
     },
     oldImage = match tryGetProperty(elem, "OldImage") {
-      case Some(v) -> if valueKind(v) == 1 { Some(value = decodeDynamoDbAttributeMap(v)) } else { None }
+      case Some(v) -> if valueKind(v) == 1 {
+        Some(value = decodeDynamoDbAttributeMap(v))
+      } else {
+        None
+      }
       case None -> None
     },
     sequenceNumber = getStringProp(elem, "SequenceNumber"),
@@ -1191,7 +1205,12 @@ func dispatchSqs(app: in LambdaApp, rawPayload: in String, ctx: in LambdaContext
         case Err(e) -> Err(error = e)
       }
     }
-    case _ -> Err(error = InternalError("no handler registered for aws:sqs; register one with Lambda.Direct.sqsHandler / " + "sqsBatchHandler and Lambda.withDirect"))
+    case _ -> Err(
+      error = InternalError(
+        "no handler registered for aws:sqs; register one with Lambda.Direct.sqsHandler / " +
+          "sqsBatchHandler and Lambda.withDirect"
+      )
+    )
   }
 }
 
@@ -1208,7 +1227,12 @@ func dispatchSns(app: in LambdaApp, rawPayload: in String, ctx: in LambdaContext
         case Err(e) -> Err(error = e)
       }
     }
-    case _ -> Err(error = InternalError("no handler registered for aws:sns; register one with Lambda.Direct.snsHandler " + "and Lambda.withDirect"))
+    case _ -> Err(
+      error = InternalError(
+        "no handler registered for aws:sns; register one with Lambda.Direct.snsHandler " +
+          "and Lambda.withDirect"
+      )
+    )
   }
 }
 
@@ -1225,7 +1249,12 @@ func dispatchS3(app: in LambdaApp, rawPayload: in String, ctx: in LambdaContext)
         case Err(e) -> Err(error = e)
       }
     }
-    case _ -> Err(error = InternalError("no handler registered for aws:s3; register one with Lambda.Direct.s3Handler " + "and Lambda.withDirect"))
+    case _ -> Err(
+      error = InternalError(
+        "no handler registered for aws:s3; register one with Lambda.Direct.s3Handler " +
+          "and Lambda.withDirect"
+      )
+    )
   }
 }
 
@@ -1242,7 +1271,12 @@ func dispatchDynamoDb(app: in LambdaApp, rawPayload: in String, ctx: in LambdaCo
         case Err(e) -> Err(error = e)
       }
     }
-    case _ -> Err(error = InternalError("no handler registered for aws:dynamodb; register one with Lambda.Direct.dynamoDbHandler " + "and Lambda.withDirect"))
+    case _ -> Err(
+      error = InternalError(
+        "no handler registered for aws:dynamodb; register one with Lambda.Direct.dynamoDbHandler " +
+          "and Lambda.withDirect"
+      )
+    )
   }
 }
 
@@ -1259,7 +1293,12 @@ func dispatchKinesis(app: in LambdaApp, rawPayload: in String, ctx: in LambdaCon
         case Err(e) -> Err(error = e)
       }
     }
-    case _ -> Err(error = InternalError("no handler registered for aws:kinesis; register one with Lambda.Direct.kinesisHandler " + "and Lambda.withDirect"))
+    case _ -> Err(
+      error = InternalError(
+        "no handler registered for aws:kinesis; register one with Lambda.Direct.kinesisHandler " +
+          "and Lambda.withDirect"
+      )
+    )
   }
 }
 
@@ -1276,7 +1315,12 @@ func dispatchEventBridge(app: in LambdaApp, rawPayload: in String, ctx: in Lambd
         case Err(e) -> Err(error = e)
       }
     }
-    case _ -> Err(error = InternalError("no handler registered for EventBridge events; register one with Lambda.Direct.eventBridgeHandler " + "and Lambda.withDirect"))
+    case _ -> Err(
+      error = InternalError(
+        "no handler registered for EventBridge events; register one with Lambda.Direct.eventBridgeHandler " +
+          "and Lambda.withDirect"
+      )
+    )
   }
 }
 
@@ -1288,7 +1332,12 @@ func dispatchRaw(app: in LambdaApp, rawPayload: in String, ctx: in LambdaContext
         case Err(e) -> Err(error = e)
       }
     }
-    case _ -> Err(error = InternalError("no handler registered for raw/unrecognised events; register one with " + "Lambda.Direct.rawHandler and Lambda.withDirect"))
+    case _ -> Err(
+      error = InternalError(
+        "no handler registered for raw/unrecognised events; register one with " +
+          "Lambda.Direct.rawHandler and Lambda.withDirect"
+      )
+    )
   }
 }
 
@@ -1307,7 +1356,12 @@ func dispatchTokenAuthorizer(
         case Err(e) -> Err(error = e)
       }
     }
-    case _ -> Err(error = InternalError("no handler registered for the TOKEN authorizer; register one with " + "Lambda.Direct.tokenAuthorizerHandler and Lambda.withDirect"))
+    case _ -> Err(
+      error = InternalError(
+        "no handler registered for the TOKEN authorizer; register one with " +
+          "Lambda.Direct.tokenAuthorizerHandler and Lambda.withDirect"
+      )
+    )
   }
 }
 
@@ -1326,7 +1380,12 @@ func dispatchRequestAuthorizer(
         case Err(e) -> Err(error = e)
       }
     }
-    case _ -> Err(error = InternalError("no handler registered for the REQUEST authorizer; register one with " + "Lambda.Direct.requestAuthorizerHandler and Lambda.withDirect"))
+    case _ -> Err(
+      error = InternalError(
+        "no handler registered for the REQUEST authorizer; register one with " +
+          "Lambda.Direct.requestAuthorizerHandler and Lambda.withDirect"
+      )
+    )
   }
 }
 
@@ -1345,7 +1404,12 @@ func dispatchHttpAuthorizer(
         case Err(e) -> Err(error = e)
       }
     }
-    case _ -> Err(error = InternalError("no handler registered for the HTTP API (v2) authorizer; register one with " + "Lambda.Direct.httpAuthorizerHandler and Lambda.withDirect"))
+    case _ -> Err(
+      error = InternalError(
+        "no handler registered for the HTTP API (v2) authorizer; register one with " +
+          "Lambda.Direct.httpAuthorizerHandler and Lambda.withDirect"
+      )
+    )
   }
 }
 
@@ -1353,10 +1417,13 @@ func dispatchHttp(app: in LambdaApp): Result[String, LambdaError] {
   match app.httpRouter {
     case Some(_) -> return Err(
       error = InternalError(
-        "HTTP dispatch via Lambda.withRouter is not implemented yet: the Lambda.Kernel.Net " +
-          "router-token registry (ConditionalWeakTable<LambdaRouter, Web.Router>) needs a " +
-          "feasibility spike before a LambdaRouter token can be resolved back to a Web.Router " +
-          "(see docs/35-lambda-library.md and Lambda.Kernel.WebBridge's header comment)"
+        "HTTP dispatch via Lambda.withRouter is not implemented yet: the LambdaRouter " +
+          "token now resolves back to its Web.Router (Lambda.Kernel.WebBridge's " +
+          "ConditionalWeakTable<LambdaRouter, Web.Router> registry is proven, see that file's " +
+          "header comment), but mapping an API Gateway v1/v2/ALB event through the resolved " +
+          "router (method/path/header/body extraction, match-and-dispatch, ApiGwResponse " +
+          "encoding, CORS) is separate, larger work not done here " +
+          "(see docs/35-lambda-library.md §4)"
       )
     )
     case None -> ()
@@ -1438,7 +1505,14 @@ func getNextInvocation(runtimeApi: in String): Result[Invocation, String] {
       }
       match await HttpResponse.bodyText(resp) {
         case Err(e) -> Err(error = "GET /invocation/next body read failed: " + IOError.message(e))
-        case Ok(body) -> Ok(value = Invocation(requestId = requestId, payload = body, deadlineMs = deadlineMs, invokedFunctionArn = invokedArn))
+        case Ok(body) -> Ok(
+          value = Invocation(
+            requestId = requestId,
+            payload = body,
+            deadlineMs = deadlineMs,
+            invokedFunctionArn = invokedArn
+          )
+        )
       }
     }
   }
@@ -1508,8 +1582,16 @@ pub func pollAndDispatchOnce(runtimeApi: in String, app: in LambdaApp): Result[U
     case Ok(inv) -> {
       val ctx = buildAwsContext(inv)
       match dispatchInvocation(app, inv.payload, ctx) {
-        case Ok(body) -> postJson("http://" + runtimeApi + "/2018-06-01/runtime/invocation/" + inv.requestId + "/response", body, "")
-        case Err(lambdaErr) -> postJson("http://" + runtimeApi + "/2018-06-01/runtime/invocation/" + inv.requestId + "/error", lambdaErrorJson(lambdaErr), lambdaErrorType(lambdaErr))
+        case Ok(body) -> postJson(
+          "http://" + runtimeApi + "/2018-06-01/runtime/invocation/" + inv.requestId + "/response",
+          body,
+          ""
+        )
+        case Err(lambdaErr) -> postJson(
+          "http://" + runtimeApi + "/2018-06-01/runtime/invocation/" + inv.requestId + "/error",
+          lambdaErrorJson(lambdaErr),
+          lambdaErrorType(lambdaErr)
+        )
       }
     }
   }
@@ -1594,7 +1676,13 @@ pub func handleOneLocalRequest(httpCtx: in HttpContext, app: in LambdaApp): Unit
   val ctx = buildLocalContext()
   match dispatchInvocation(app, body, ctx) {
     case Ok(responseBody) -> respondJson(httpCtx, 200, responseBody)
-    case Err(err) -> respondBytesWithHeaders(httpCtx, 200, "application/json", encodeUtf8(lambdaErrorJson(err)), functionErrorHeaders())
+    case Err(err) -> respondBytesWithHeaders(
+      httpCtx,
+      200,
+      "application/json",
+      encodeUtf8(lambdaErrorJson(err)),
+      functionErrorHeaders()
+    )
   }
 }
 
