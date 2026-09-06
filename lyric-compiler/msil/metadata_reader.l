@@ -1890,6 +1890,63 @@ pub func sigVarIndex(t: in SigType): Option[Int] {
   }
 }
 
+// The method-generic-parameter index of `t` when it is `STMVar` (`!!n`,
+// ECMA-335 §II.23.2.2), else `None`.  Counterpart of `sigVarIndex` for a
+// method that is itself declared with generics (e.g. BCL
+// `CallInvoker.BlockingUnaryCall<TRequest,TResponse>`) — #6581 Gap 2.
+pub func sigMVarIndex(t: in SigType): Option[Int] {
+  match t {
+    case STMVar(idx) -> Some(value = idx)
+    case _ -> None
+  }
+}
+
+// Whether `t` is, or transitively contains, an unresolved `STVar`/`STMVar`
+// position (a declaring-type or method generic parameter, `!n`/`!!n`) —
+// i.e. `t` is still "open" rather than a fully closed concrete type.  Used
+// by `scoreSigType`'s `STNamedGenericInst` arm (#6581 Gap 1) to distinguish
+// a generic-declaring-type member's parameter that is itself a closed
+// instantiation OVER THE DECLARING TYPE'S OWN VAR (e.g. `IEnumerable`1<!0>`
+// on `List`1..ctor(IEnumerable`1<!0>)`, `Func`2<!0,uint8[]>` on
+// `Marshaller`1..ctor`) — where the CLR truly does accept any argument once
+// the type is closed over a concrete instantiation, so scoring it 0 (weak
+// but non-negative) is correct — from a genuinely CLOSED, concrete generic
+// instantiation with no VAR/MVAR anywhere in it (e.g. `ReadOnlySpan`1<Char>`
+// on `TextWriter.WriteLine(ReadOnlySpan<char>)`), which is a real, ordinary
+// BCL parameter type that must be scored by actual structural compatibility
+// like any other named type, not blanket-accepted.  Without this
+// distinction, `STNamedGenericInst(_, _, _) -> 0` matched every closed
+// generic-instantiation parameter shape, letting an unrelated same-arity
+// overload (e.g. `WriteLine(ReadOnlySpan<char>)` scored 0 against a
+// `String` argument) spuriously score alongside the correct exact-match
+// overload — confirmed via `git stash`/isolated-worktree bisection to
+// reproduce `auto_ffi_self_test.l`'s "auto-FFI resolves inherited instance
+// members through the Extends chain" failure.
+pub func sigIsOpenGeneric(t: in SigType): Bool {
+  match t {
+    case STVar(_) -> true
+    case STMVar(_) -> true
+    case STSzArray(elem) -> sigIsOpenGeneric(elem)
+    case STArray(elem, _) -> sigIsOpenGeneric(elem)
+    case STByRef(inner) -> sigIsOpenGeneric(inner)
+    case STPtr(inner) -> sigIsOpenGeneric(inner)
+    case STGenericInst(_, _, args) -> sigArgsContainOpenGeneric(args)
+    case STNamedGenericInst(_, _, args) -> sigArgsContainOpenGeneric(args)
+    case _ -> false
+  }
+}
+
+func sigArgsContainOpenGeneric(args: in List[SigType]): Bool {
+  var i = 0
+  while i < args.count {
+    if sigIsOpenGeneric(args[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 // Construct an `STSzArray(elem)`.  Cross-package accessor used by D105 §A's
 // shape-lifting validation pass so callers can wrap a substituted element
 // type without touching the union internals.
@@ -2581,38 +2638,51 @@ func numericRank(elemByte: in Int): Int {
 
 // Score one argument against one parameter: 2 = exact, 1 = widening / boxes to
 // object, -1 = incompatible.
+// Score tiers (highest to lowest, `-1` reserved everywhere as the universal
+// "no match" sentinel — never repurpose it as a weak-but-admissible value):
+// 3 = exact match; 2 = widening/object-accepts-anything/Extends-chain upcast;
+// 1 = a bare declaring/method-own VAR (`STVar`/`STMVar`) accepting any
+// non-byref argument; 0 = a closed generic instantiation that still wraps an
+// open VAR/MVAR (`STNamedGenericInst`, #6581 Gap 1). The VAR tier must stay
+// strictly ABOVE the wrapped-open-generic tier: `ValueTask`1` has both a bare
+// `.ctor(TResult)` and a wrapped `.ctor(Task<TResult>)` at the same arity, and
+// scoring them equally (as an earlier revision of this scale did, both at 0)
+// let `Task<TResult>` win ties by Method-table row order for an argument that
+// doesn't even structurally resemble `Task<T>` (D-progress-686 regressed by
+// #6581 Gap 1's `STNamedGenericInst` arm below; D-progress-891 fixed by widening this
+// scale to give each tier its own rung instead of colliding two at 0).
 pub func scoreSigType(arg: in SigType, param: in SigType): Int {
   match param {
     case STPrim(pb) -> match arg {
       case STPrim(ab) -> {
         if ab == pb {
-          2
+          3
         } else if pb == 0x1C {
-          1
+          2
         } else {
           // object accepts anything
           val ra = numericRank(ab)
           val rp = numericRank(pb)
           if ra >= 0 and rp >= 0 and ra <= rp {
-            1
+            2
           } else {
             -1
           }
         }
       }
-      case _ -> if pb == 0x1C { 1 } else { -1 }          // object accepts references
+      case _ -> if pb == 0x1C { 2 } else { -1 }          // object accepts references
     }
-    case STClass(pt) -> match arg { case STClass(at) -> if at == pt { 2 } else { -1 }; case _ -> -1 }
-    case STValueType(pt) -> match arg { case STValueType(at) -> if at == pt { 2 } else { -1 }; case _ -> -1 }
+    case STClass(pt) -> match arg { case STClass(at) -> if at == pt { 3 } else { -1 }; case _ -> -1 }
+    case STValueType(pt) -> match arg { case STValueType(at) -> if at == pt { 3 } else { -1 }; case _ -> -1 }
     case STNamed(pfqn, pvt) -> match arg {
-      case STNamed(afqn, avt) -> if afqn == pfqn and avt == pvt { 2 } else { -1 }
+      case STNamed(afqn, avt) -> if afqn == pfqn and avt == pvt { 3 } else { -1 }
       case _ -> -1
     }
     case STSzArray(pe) -> match arg {
       // CLR arrays with value-type elements are invariant — `int[]` cannot be
       // passed where `long[]` is expected.  Only accept an exact element match
-      // (score 2); a 1 (widening) on the element kind would mis-bind at the JIT.
-      case STSzArray(ae) -> if scoreSigType(ae, pe) == 2 { 2 } else { -1 }
+      // (score 3); a 2 (widening) on the element kind would mis-bind at the JIT.
+      case STSzArray(ae) -> if scoreSigType(ae, pe) == 3 { 3 } else { -1 }
       case _ -> -1
     }
     // A by-ref / `out` / `ref` parameter matches a by-ref argument of the same
@@ -2624,17 +2694,66 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
     // A parameter that is the declaring generic type's OWN type parameter
     // (`!0`, e.g. `ValueTask`1..ctor(!0 value)`) accepts any non-byref
     // argument: the CLR permits any type in that position once the type is
-    // closed over a concrete instantiation. Scored 0 — strictly below both
-    // an exact (2) and a widening (1) match, since an unconstrained VAR slot
+    // closed over a concrete instantiation. Scored 1 — strictly below both
+    // an exact (3) and a widening (2) match, since an unconstrained VAR slot
     // is weaker evidence of the right overload than a concrete numeric
     // conversion — but still non-negative, so `scoreParamsLenient`'s `s < 0`
-    // reject test does not discard it. Without this, `scoreSigType` cannot
-    // disambiguate a same-arity overload set where one candidate takes the
-    // type's own VAR (e.g. `ValueTask`1.ctor(TResult)`) and another takes a
-    // concrete generic instantiation of it (`ValueTask`1.ctor(Task<TResult>)`):
-    // both scored -1 and `resolveExternMethodScoredIn` silently fell back to
-    // whichever ctor happened to sit first in the Method table (D-progress-686).
-    case STVar(_) -> 0
+    // reject test does not discard it, and strictly ABOVE the wrapped-open-
+    // generic tier (0, below) so a same-arity sibling ctor that wraps this
+    // same VAR inside another generic instantiation never outscores or ties
+    // it (D-progress-891 — see this VAR must stay above the wrapped tier). Without
+    // this, `scoreSigType` cannot disambiguate a same-arity overload set
+    // where one candidate takes the type's own VAR (e.g. `ValueTask`1.ctor
+    // (TResult)`) and another takes a concrete generic instantiation of it
+    // (`ValueTask`1.ctor(Task<TResult>)`): both scored -1 and
+    // `resolveExternMethodScoredIn` silently fell back to whichever ctor
+    // happened to sit first in the Method table (D-progress-686).
+    case STVar(_) -> 1
+    // A parameter that is the CALLED METHOD'S own generic parameter (`!!0`,
+    // e.g. `Enumerable.Repeat`1(!!0 element, int32 count)`) — the method-own
+    // counterpart of the `STVar` arm just above (a declaring-TYPE'S own `!0`).
+    // Without this arm, ANY generic method whose signature mentions its own
+    // MVAR directly as a bare parameter (not wrapped in a further generic
+    // instantiation) scored -1 for that parameter regardless of the actual
+    // argument, so the scored resolver (`resolveExternMethodScoredIn`) never
+    // found ANY match and silently fell back to the unscored hint-less path
+    // (F0027) even though `emitGenericMethodExternCall` (#6581 Gap 2) exists
+    // specifically to handle this call correctly — confirmed empirically:
+    // `Enumerable.Repeat<TResult>(TResult element, int count)`'s first
+    // parameter is exactly this shape (#6989). Same tier as `STVar` above,
+    // for the same reason (D-progress-891).
+    case STMVar(_) -> 1
+    // A parameter that is a closed generic instantiation over the declaring
+    // type's OWN type parameter (e.g. `IEnumerable`1<!0>` on `List`1..ctor
+    // (IEnumerable`1<!0> collection)`, or `Func`2<!0,uint8[]>` on
+    // `Marshaller`1..ctor`) accepts any non-byref argument for the same
+    // reason a bare `STVar` param does (see above) — the CLR permits any
+    // type in that position once the type is closed over a concrete
+    // instantiation. Scored 0 — the WEAKEST admissible tier, strictly BELOW
+    // `STVar`/`STMVar`'s bare-VAR match (1, above): without this it cannot
+    // disambiguate a same-arity overload set where only one candidate takes
+    // a generic-instantiation-shaped parameter (e.g. `List`1..ctor
+    // (IEnumerable`1<!0>)` vs `..ctor(int capacity)`, which scores -1 and
+    // loses regardless of this tier's exact value, #6581 Gap 1) — but it
+    // must stay BELOW the bare-VAR tier, not tied with it, because a type
+    // like `ValueTask`1` can have BOTH a bare `.ctor(TResult)` and a wrapped
+    // `.ctor(Task<TResult>)` at the same arity: tying them (as an earlier
+    // revision of this scale did, both at 0) let the wrapped candidate win
+    // ties by Method-table row order for an argument that doesn't even
+    // structurally resemble `Task<T>` (D-progress-891, regressing D-progress-686).
+    //
+    // Gated on `sigIsOpenGeneric` (still contains a VAR/MVAR somewhere) —
+    // NOT every closed `STNamedGenericInst`: a genuinely concrete BCL
+    // parameter type with no VAR anywhere (e.g. `ReadOnlySpan`1<Char>` on
+    // `TextWriter.WriteLine(ReadOnlySpan<char>)`) is an ordinary named type
+    // that must be scored by real structural compatibility like any other,
+    // not blanket-accepted. An earlier unconditional `-> 0` here matched
+    // every closed-generic-instantiation parameter shape, letting such an
+    // unrelated same-arity overload spuriously tie/compete against the
+    // correct exact-match overload — caught by a full-rebuild bisection
+    // reproducing `auto_ffi_self_test.l`'s inherited-member Extends-chain
+    // regression test.
+    case STNamedGenericInst(_, _, args) -> if sigArgsContainOpenGeneric(args) { 0 } else { -1 }
     case _ -> -1
   }
 }
@@ -2719,10 +2838,12 @@ func listContainsString(xs: in List[String], v: in String): Bool {
 // Like `scoreSigType`, but additionally accepts a NAMED reference argument
 // into a NAMED reference parameter that appears in the argument's Extends
 // chain (`bases`, computed by `externBaseChain`) — a VERIFIED implicit upcast
-// (e.g. MemoryStream → Stream), scored 1 so an exact match's 2 always wins
-// (#5605).  Unlike `scoreSigTypeLenient` (the `@externTarget` path, where the
-// user-declared wrapper signature is trusted), an upcast is only accepted
-// when the metadata chain actually reaches the parameter type.
+// (e.g. MemoryStream → Stream), scored 2 (the same tier as `scoreSigType`'s
+// widening match — D-progress-891's tier renumbering) so an exact match's 3 always
+// wins (#5605), while still landing above the bare-VAR tier (1). Unlike
+// `scoreSigTypeLenient` (the `@externTarget` path, where the user-declared
+// wrapper signature is trusted), an upcast is only accepted when the
+// metadata chain actually reaches the parameter type.
 func scoreSigTypeWithBases(arg: in SigType, param: in SigType, bases: in List[String]): Int {
   val s = scoreSigType(arg, param)
   if s >= 0 {
@@ -2734,7 +2855,7 @@ func scoreSigTypeWithBases(arg: in SigType, param: in SigType, bases: in List[St
         return -1
       }
       match arg {
-        case STNamed(_, avt) -> if not avt and listContainsString(bases, pfqn) { 1 } else { -1 }
+        case STNamed(_, avt) -> if not avt and listContainsString(bases, pfqn) { 2 } else { -1 }
         case _ -> -1
       }
     }
@@ -3029,7 +3150,8 @@ func trailingParamDefaults(
 // defaulted (which scores its supplied prefix only); among equal scores a
 // candidate synthesizing fewer defaults wins.  `argBases` (empty, or one
 // Extends-chain FQN list per argument) admits verified reference upcasts at
-// score 1 per param, below an exact type match's 2.
+// score 2 per param, below an exact type match's 3 (D-progress-891's tier
+// renumbering).
 pub func resolveOverloadInBases(
   img: in PeImage,
   layout: in TableLayout,
@@ -3388,10 +3510,14 @@ pub func decodeExternMethodSig(
 
 // Like `scoreSigType`, but additionally accepts:
 //  - a NAMED reference argument into a NAMED reference parameter of a different
-//    type (implicit upcast, e.g. CultureInfo → IFormatProvider), scored 1;
+//    type (implicit upcast, e.g. CultureInfo → IFormatProvider), scored 2;
 //  - an erased extern-type argument (MObject → STPrim(0x1C)) into any
-//    non-value-type NAMED parameter, scored 1.
-// Both are below an exact match's 2, so an exact overload always wins.
+//    non-value-type NAMED parameter, scored 2.
+// Both are the same tier as `scoreSigType`'s own widening/upcast match (2,
+// D-progress-891's tier renumbering), below an exact match's 3 so an exact overload
+// always wins, but above the bare-VAR tier (1) so this weak reference-
+// compatible match never ties (and loses by table order to) a same-arity
+// sibling overload that takes the declaring/method type's own bare VAR.
 // Value-type and primitive mismatches remain -1.
 pub func scoreSigTypeLenient(arg: in SigType, param: in SigType): Int {
   val s = scoreSigType(arg, param)
@@ -3405,7 +3531,7 @@ pub func scoreSigTypeLenient(arg: in SigType, param: in SigType): Int {
       val argIsObject = match arg { case STPrim(b) -> b == 0x1C; case _ -> false }
       val argIsRefNamed = match arg { case STNamed(_, vt) -> not vt; case _ -> false }
       if argIsObject or argIsRefNamed {
-        1
+        2
       } else {
         0 - 1
       }
@@ -3563,20 +3689,37 @@ pub func resolveExternMethodScoredIn(
           // unsupplied trailing optionals with their type defaults.
           val exactBonus = 1000000
           val nReal = normParams.count
-          // Constructors: hasThis is set in the CLR sig convention even though the
-          // receiver is implicitly allocated by newobj and is NOT listed as an
-          // explicit parameter.  Score against fullArgTypes directly (no head-drop)
-          // with nReal == declArity, before the generic instance branch which would
-          // compute nReal == declArity - 1 and always miss.
-          val score = if member == ".ctor" and nReal == declArity {
-            val sc = scoreParamsLenient(fullArgTypes, normParams)
-            if sc < 0 {
-              sc
+          // A constructor's `hasThis` bit is ALWAYS set in metadata (ECMA-335
+          // §II.15.4.1.5), even though `newobj` takes no explicit receiver
+          // argument — `fullArgTypes` already holds every ctor argument, none
+          // implicit.  Without gating the ctor branches into their own
+          // `member == ".ctor"` block, a `.ctor` candidate whose OWN arity
+          // does not match `declArity` (e.g. a nullary `.ctor()` when the
+          // caller supplies 1 argument) fell through to the `isInstance and
+          // nReal == declArity - 1` branch below — written for genuine
+          // instance METHODS, where `hasThis` really does mean "drop
+          // fullArgTypes[0] as the receiver" — and scored `tail` (here:
+          // `fullArgTypes[1..]`, accidentally EMPTY when declArity is 1)
+          // against the ctor's own (also empty) param list as a spurious
+          // exact match (+`exactBonus`).  That silently outscored — or tied,
+          // with the zero-arg ctor then winning ties by Method-table
+          // row order — the CORRECT overload whenever one existed, a
+          // silent-miscompile risk for any generic-declaring-type ctor set
+          // that includes both a nullary ctor and a same-name overload
+          // (#6581 Gap 1's `List`1..ctor(IEnumerable`1<!0>)` vs `.ctor()`).
+          val score = if member == ".ctor" {
+            if nReal == declArity {
+              val sc = scoreParamsLenient(fullArgTypes, normParams)
+              if sc < 0 {
+                sc
+              } else {
+                sc + exactBonus
+              }
+            } else if nReal > declArity and nReal - declArity <= methodTrailingOptionalCount(img, layout, th, mi, nReal) {
+              scoreParamsPrefix(fullArgTypes, normParams)
             } else {
-              sc + exactBonus
+              0 - 1
             }
-          } else if member == ".ctor" and nReal > declArity and nReal - declArity <= methodTrailingOptionalCount(img, layout, th, mi, nReal) {
-            scoreParamsPrefix(fullArgTypes, normParams)
           } else if isInstance and nReal == declArity - 1 {
             val sc = scoreParamsLenient(tail, normParams)
             if sc < 0 {

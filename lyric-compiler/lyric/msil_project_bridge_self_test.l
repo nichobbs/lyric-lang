@@ -2216,3 +2216,116 @@ test "extern type alias in one package does not hijack a same-named Lyric union'
     "unrelated package's extern alias did not hijack the Lyric union's case reference"
   )
 }
+
+// #6537 residual site 1: `resolveFfiClassTypeRef` (used by `bufFfiType` to
+// encode an `@externTarget` FFI method-signature blob) did its own unscoped
+// bare-name lookup into the bundle-global `cctx.externTypeNames`, the same
+// bug class #6536 fixed at 6 other call sites but out of scope for that PR.
+// `System.Console.WriteLine(object)`'s real parameter is `object`; a Lyric
+// wrapper declaring `Foo` (an unrelated package's plain record, sharing a
+// bare name with a THIRD package's `extern type Foo = "System.Text.
+// StringBuilder"` alias) for that position must still encode `object` —
+// before the fix, the bare-name collision made `resolveFfiClassTypeRef`
+// misresolve the position as `StringBuilder`, and the resulting MemberRef
+// matched no real `Console.WriteLine` overload (`MissingMethodException`
+// at runtime).
+test "extern type alias does not hijack an @externTarget parameter's Lyric record type (#6537 site 1)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "PkgA6537",
+      "package PkgA6537\n" + "\n" + "extern type Foo = \"System.Text.StringBuilder\"\n" + "\n" +
+        "@externTarget(\"System.Text.StringBuilder..ctor\")\n" +
+        "func newFoo(): Foo = ()\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "PkgB6537",
+      "package PkgB6537\n" + "\n" + "pub record Foo {\n" + "  n: Int\n" + "}\n" + "\n" + "@externStatic\n" +
+        "@externTarget(\"System.Console.WriteLine\")\n" +
+        "func printFoo(f: in Foo): Unit = ()\n" +
+        "\n" +
+        "pub func makeFoo(n: in Int): Foo {\n" +
+        "  Foo(n = n)\n" +
+        "}\n" +
+        "\n" +
+        "pub func callPrintFoo(f: in Foo): Unit {\n" +
+        "  printFoo(f)\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "Main6537A",
+      "package Main6537A\n" + "\n" + "import PkgB6537\n" + "\n" + "func main(): Unit {\n" +
+        "  PkgB6537.callPrintFoo(PkgB6537.makeFoo(7))\n" +
+        "  println(\"done\")\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("extern-alias-scope-ffi-sig-6537", packages, "ExternAliasScopeFfiSig6537")
+  assertEqualInt(result.exitCode, 0, "extern_alias_scope_ffi_sig: exit 0 expected (stderr=" + result.stderr + ")")
+  // `Console.WriteLine(object)` prints the record's default `ToString()`
+  // (its FQN) first — proving the real BCL overload was actually reached
+  // (a wrongly-StringBuilder-typed signature would match no overload and
+  // throw `MissingMethodException` instead) — then the program's own
+  // "done" on the next line.
+  assertEqual(
+    Str.trim(result.stdout),
+    "PkgB6537.Foo\ndone",
+    "unrelated package's extern alias did not hijack the @externTarget wrapper's own record parameter type"
+  )
+}
+
+// #6537 residual site 2: `lookupDeclaredClrFqnForTypeExpr` /
+// `resolveValueTaskGenericMsilType` (the `ValueTask<T>`-shaped extern
+// return-type special case) had the same unscoped bare-name lookup. A
+// plain (non-extern) Lyric function's OWN return type — a genuine record
+// whose bare name happens to collide with an unrelated package's `extern
+// type X = "System.Threading.Tasks.ValueTask`1[...]"` alias (used
+// elsewhere for real async-unwrap purposes) — must never have the
+// ValueTask-unwrap special case applied to it: before the fix, the
+// collision misrouted this function's ordinary record return through the
+// ValueTask-shaped codegen path.
+test "extern type alias does not hijack a same-named Lyric record used as an ordinary function's return type (#6537 site 2)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "PkgA6537B",
+      "package PkgA6537B\n" + "\n" + "extern type Handle = \"System.Threading.Tasks.ValueTask`1[System.Int32]\"\n" +
+        "\n" +
+        "@externTarget(\"System.Threading.Tasks.ValueTask`1..ctor\")\n" +
+        "func newHandle(n: in Int): Handle = ()\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "PkgB6537B",
+      "package PkgB6537B\n" + "\n" + "pub record Handle {\n" + "  n: Int\n" + "}\n" + "\n" +
+        "pub func makeHandle(n: in Int): Handle {\n" +
+        "  Handle(n = n)\n" +
+        "}\n" +
+        "\n" +
+        "pub func handleValue(h: in Handle): Int {\n" +
+        "  h.n\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "Main6537B",
+      "package Main6537B\n" + "\n" + "import PkgB6537B\n" + "\n" + "func main(): Unit {\n" +
+        "  val h = PkgB6537B.makeHandle(9)\n" +
+        "  println(PkgB6537B.handleValue(h))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("extern-alias-scope-valuetask-6537", packages, "ExternAliasScopeValueTask6537")
+  assertEqualInt(result.exitCode, 0, "extern_alias_scope_valuetask: exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "9",
+    "unrelated package's ValueTask-shaped extern alias did not hijack the Lyric record's own return-type handling"
+  )
+}

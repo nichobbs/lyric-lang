@@ -33724,3 +33724,107 @@ headers and were verified that way.
 `docs/35-lambda-library.md` §4.2/§8 (updated), `lyric-lambda/README.md`
 (support matrix updated), #5412 (closed), #6868 (new, filed not fixed),
 #5600/#5578/#6548 (the prior `Lambda.Dispatch` work this builds on).
+## MSIL: GENERICINST member params/returns + MethodSpec for generic BCL methods, unblocking `lyric-grpc` (#6581)
+
+Two self-hosted MSIL backend gaps in generic-member `@externTarget` handling
+are fixed. **Gap 1:** `genericMemberSigToMsil` had no arm for a member
+parameter/return that is itself a closed generic instantiation over the
+declaring type's own VAR (`List`1..ctor(IEnumerable`1<!0> source)`,
+`Marshaller`1..ctor(Func`2<!0,uint8[]> serializer)`) — the signature was
+silently discarded and the caller fell back to a MemberRef parented on the
+*open* generic-declaring TypeRef, an ECMA-335 §II.22.25 violation that faults
+with `TypeLoadException`. Fixed with a new `Mdr.STNamedGenericInst` arm
+(recursing so nested VAR/MVAR positions survive) plus a `castclass` to the
+TypeSpec-substituted closed type at the argument-loading site
+(`substituteDeclaringVarMsil`), since the Lyric argument there is statically
+only `object` while the substituted parameter is a real closed type. **Gap
+2:** a BCL method declared with its own generics on a non-generic-declaring
+type (`CallInvoker.BlockingUnaryCall<TRequest,TResponse>`) fell outside
+`emitGenericExternMember`'s generic-declaring-TYPE gate and had no MethodSpec
+(table 0x2B) emission path for a user `@externTarget` call at all. Fixed with
+`emitGenericMethodExternCall` + `buildOpenGenericMethodSigCtx`: an OPEN
+generic-method MemberRef preserving `!!n` (new `MMethodTypeVar` `MsilType`
+case, `Mdr.STMVar` arms in `resolvedSigToMsil`/`genericMemberSigToMsil`) plus
+a MethodSpec witnessing the method's own generic parameters with
+`System.Object`.
+
+A `.ctor`-arity scoring bug in `resolveExternMethodScoredIn` was found and
+fixed while landing Gap 1: a ctor candidate whose own arity didn't match the
+call's argument count fell through to instance-method scoring (which drops
+an implicit receiver a ctor never has in its argument list), silently
+outscoring the correct overload in a same-arity ctor overload set — a
+pre-existing silent-miscompile risk, latent until Gap 1 gave the resolver a
+reason to hit such a set for the first time.
+
+Both gaps were confirmed (independently, against real 2.65.0 reference-
+assembly metadata) to block `lyric-grpc`'s entire unary/streaming/server-
+hosting surface (D-progress-877). New self-test
+`generic_extern_methodspec_self_test.l` (2 cases, BCL-only shapes — `List`1`'s
+`IEnumerable<T>` ctor and `Enumerable.Empty<T>()`'s MethodSpec dispatch — so
+CI needs no gRPC package) plus a full regression sweep
+(`generic_extern_self_test.l`, `generic_extern_valuetype_instance_self_test.l`,
+`nested_generic_self_test.l`, `mono_self_test.l`,
+`cross_package_generics_self_test.l`, `msil_restored_bridge_self_test.l`,
+`msil_project_bridge_self_test.l`), all green. `ilverify` caught both the
+missing signature arm and the missing cast independently during development
+against a standalone repro.
+
+A related-but-separate bug was found and deliberately NOT folded into this
+fix: a generic `@externTarget` function's own TFunction-typed parameter,
+when called with a lambda literal whose delegate type the strongly-typed
+lambda ABI (docs/50/52) infers concretely at the call site (e.g.
+`Func<string,object>`), cannot satisfy the wrapper's own `Func<object,object>`
+erasure convention — a genuine CLR delegate-variance conflict no `castclass`
+can bridge. Confirmed via `git stash` to reproduce identically against
+unmodified `origin/main`, ruling this PR out as the cause; tracked under
+#5800.
+
+Five follow-up fixes landed in the same PR's review cycle. A genuine
+`auto_ffi_self_test.l` regression (`scoreSigType`'s `STNamedGenericInst`
+arm matched every closed generic instantiation, not just the open-VAR
+shape Gap 1 needed, spuriously admitting `TextWriter.WriteLine
+(ReadOnlySpan<char>)` into scoring) was found and fixed via isolated
+worktree bisection, alongside two review-flagged `emitGenericMethodExternCall`
+gaps: a blob-interning key collision across distinct declaring types sharing
+a same-arity generic method name (#6987), and missing box/unbox at a
+method-own-generic position for a value-type argument/return (#6989),
+which also surfaced a missing `STMVar` scoring arm (D-progress-887).
+#6537's two residual `externTypeNames` bare-name-collision sites were
+confirmed already fixed by this PR's Gap 1 hardening; regression tests
+were added to close the loop (D-progress-888). The Gap 1 `castclass`'s
+value-type flavor (`MValueTypeGenericInst`) was investigated and confirmed
+currently unreachable via any real BCL API, so it was declined loudly with
+a `panic` rather than shipped as untested `unbox.any` logic (D-progress-889,
+#6995). `emitGenericMethodExternCall`'s `openKey` still collided for two
+overloads on the SAME declaring type differing only in parameter types
+(e.g. `Enumerable.ElementAt<TSource>(int)` vs the `System.Index`-taking
+overload) after the #6987 fix only added the declaring-type discriminator;
+fixed by folding each parameter's and the return's full `msilTypeKeyStr`
+structural encoding into the key (D-progress-890, #7016). That same review
+round also caught a genuine `ValueTask<TResult>` ctor-ambiguity regression:
+the two new weak-but-nonnegative scoring arms (`STMVar`, `STNamedGenericInst`
+open-var) both scored `0`, tying `ValueTask<TResult>`'s bare `.ctor(TResult)`
+against its wrapped `.ctor(Task<TResult>)` sibling and letting the wrong one
+win by Method-table row order — fixed by renumbering `scoreSigType`'s entire
+tier scale (exact 2→3, widening/upcast 1→2, bare declaring/method-own VAR
+0→1, wrapped-open-generic stays the new floor at 0) so each tier gets its
+own rung instead of two colliding at the same value (D-progress-891).
+Finally, `emitExternTargetBody`'s `msig.isGeneric` branch never checked
+`decl.isAsync`, so an `async`-declared wrapper over a BCL method that is
+ALSO generic in its own right (e.g. `HttpContentJsonExtensions.
+ReadFromJsonAsync<T>`) took the MethodSpec-only path, which has no
+`Task<T>`/`ValueTask<T>`-unwrap machinery at all; a silent decline was
+tried first and found to still fail confusingly at runtime
+(`MissingMethodException`, since the plain-method fallback now succeeds at
+building an uninstantiated MemberRef instead of failing conversion
+outright), so the fix declines LOUDLY instead, matching the `#5809`/`#6995`
+precedent (D-progress-892, #7022; full Task/ValueTask-unwrap support for
+this combination is tracked separately under #7023).
+
+**Related:** D-progress-886 through 892 (full account, `docs/decisions/`),
+#6581/#6537 (fixed by this PR), #6987/#6989/#6995/#7016/#7022 (the
+review-flagged follow-ups fixed in the same PR), #7023 (the deferred
+full-support follow-up), D-progress-877 (the independent re-verification),
+#5809 (pre-existing value-type-generic-member limitation, untouched),
+#5800 (the newly-surfaced, separately-tracked delegate-erasure bug),
+`docs/42-extern-metadata-resolution.md` §5 Phase 6.
