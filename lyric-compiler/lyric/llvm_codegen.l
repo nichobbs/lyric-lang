@@ -2224,7 +2224,7 @@ func lowerStringPredicateCall(
 
 /// Scalar method-call receivers: `.and/.or/.xor/.shl/.shr`, the
 /// conversion family, `.toString()`, and String's `.substring`/`.trim`/
-/// `.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith`.
+/// `.toLower`/`.indexOf`/`.lastIndexOf`/`.startsWith`/`.contains`/`.endsWith`.
 /// Returns None when `name` is not a scalar method (the caller then
 /// resolves it as a UFCS function call).
 func lowerScalarMethodCall(
@@ -2268,22 +2268,23 @@ func lowerScalarMethodCall(
         )
       )
     }
-    if name == "indexOf" and args.count == 1 {
-      // #6588 review follow-up (#6752): `.indexOf` is import-sensitive
-      // (`Lyric.TypeChecker.stringIndexOfMember`) — with `import Std.String`
-      // in scope of the calling file, `s.indexOf(x)` type-checks as
-      // `Option[Int]`, the UFCS spelling of the real `Std.String.indexOf`
-      // free function; without the import it types as the raw `-1`-sentinel
-      // `Int`. Intercepting unconditionally here with the raw runtime
-      // intrinsic (as MSIL originally did before #6348, and as JVM's
+    if (name == "indexOf" or name == "lastIndexOf") and args.count == 1 {
+      // #6588 review follow-up (#6752): `.indexOf`/`.lastIndexOf` are
+      // import-sensitive (`Lyric.TypeChecker.stringIndexOfMember`) — with
+      // `import Std.String` in scope of the calling file, `s.indexOf(x)` /
+      // `s.lastIndexOf(x)` type-check as `Option[Int]`, the UFCS spelling of
+      // the real `Std.String.indexOf`/`.lastIndexOf` free functions; without
+      // the import they type as the raw `-1`-sentinel `Int`. Intercepting
+      // unconditionally here with the raw runtime intrinsic (as MSIL
+      // originally did before #6348, and as JVM's
       // `fileImportsStdString`/`importsStdString` gate exists to prevent)
       // would hand a raw i32 to a caller whose `match`/`isinst` expects a
       // real `Option[Int]` union value — memory corruption, not a type
       // error. `ctx.curPkg[0] != "Std.String"` mirrors the JVM gate's own
-      // defensive self-package exclusion (`Std.String`'s own `indexOf`
-      // wrapper body calls this raw form on purpose; routing it back
-      // through itself would recurse forever) even though `Std.String`
-      // does not import itself today.
+      // defensive self-package exclusion (`Std.String`'s own `indexOf`/
+      // `lastIndexOf` wrapper bodies call this raw form on purpose; routing
+      // it back through itself would recurse forever) even though
+      // `Std.String` does not import itself today.
       var importsStdStr = false
       if ctx.curPkg[0] != "Std.String" {
         match mapGet(ctx.pkgImportsStdString, ctx.curPkg[0]) {
@@ -2295,19 +2296,15 @@ func lowerScalarMethodCall(
         }
       }
       if importsStdStr {
-        // Fall through to `lowerUfcsCall`, which resolves `Std.String.indexOf`
-        // as an ordinary UFCS function call — the same path this call took
-        // before this scalar-method arm existed.
+        // Fall through to `lowerUfcsCall`, which resolves
+        // `Std.String.indexOf`/`.lastIndexOf` as an ordinary UFCS function
+        // call — the same path this call took before this scalar-method arm
+        // existed.
         return None
       }
+      val sym = if name == "indexOf" { "lyric_string_index_of" } else { "lyric_string_last_index_of" }
       val a0 = lowerPositionalArg(ctx, insns, args, 0)
-      val n = callRuntime(
-        ctx,
-        insns,
-        "lyric_string_index_of",
-        NI64,
-        arg2(lyricStringNType(), v.value, lyricStringNType(), a0.value)
-      )
+      val n = callRuntime(ctx, insns, sym, NI64, arg2(lyricStringNType(), v.value, lyricStringNType(), a0.value))
       val dest = freshTmp(ctx)
       insns.add(NTrunc(dest = dest, fromTy = NI64, value = n.value, toTy = NI32))
       return Some(value = NVal(ty = NI32, value = NLocal(name = dest)))
@@ -9345,6 +9342,7 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl1("lyric_string_trim", sTy, sTy))
   decls.add(mkDecl1("lyric_string_to_lower", sTy, sTy))
   decls.add(mkDecl2("lyric_string_index_of", NI64, sTy, sTy))
+  decls.add(mkDecl2("lyric_string_last_index_of", NI64, sTy, sTy))
   decls.add(mkDecl2("lyric_string_starts_with", NI32, sTy, sTy))
   decls.add(mkDecl2("lyric_string_contains", NI32, sTy, sTy))
   decls.add(mkDecl2("lyric_string_ends_with", NI32, sTy, sTy))
@@ -9882,14 +9880,15 @@ pub func opaqueToRecordDecl(od: in OpaqueTypeDecl): RecordDecl {
 }
 
 /// True when `file` has `import Std.String` (or `import Std.String as X`)
-/// in scope — the per-package gate `.indexOf`'s scalar-method arm
-/// consults (#6588 review follow-up, #6752), mirroring
+/// in scope — the per-package gate `.indexOf`'s and `.lastIndexOf`'s
+/// shared scalar-method arm consults (#6588 review follow-up, #6752;
+/// `.lastIndexOf` joined the same gate in #6755), mirroring
 /// `Jvm.Codegen.fileImportsStdString` / `Msil.Codegen`'s `pkgImports`
-/// check (both exist for the identical reason: routing `.indexOf`
-/// unconditionally through the raw host/runtime intrinsic when the
-/// caller's file imports `Std.String` — and therefore expects the real
-/// `Option[Int]`-returning `Std.String.indexOf` per
-/// `Lyric.TypeChecker.stringIndexOfMember` — reintroduces the #6348
+/// check (both exist for the identical reason: routing `.indexOf`/
+/// `.lastIndexOf` unconditionally through the raw host/runtime intrinsic
+/// when the caller's file imports `Std.String` — and therefore expects
+/// the real `Option[Int]`-returning `Std.String.indexOf`/`.lastIndexOf`
+/// per `Lyric.TypeChecker.stringIndexOfMember` — reintroduces the #6348
 /// class of memory corruption).
 pub func fileImportsStdString(file: in SourceFile): Bool {
   var i = 0

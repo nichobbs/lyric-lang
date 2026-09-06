@@ -1877,6 +1877,12 @@ run`/`lyric test`'s manifest/project modes for native, are also deferred
 to #6815 — only `lyric build --manifest ... --target native` shipped
 here.
 
+**Update — #6755 SHIPPED.** N9.3's own `.lastIndexOf` scope gap (noted
+above alongside the six #6588 methods it originally shipped without) is
+closed: `lyric_string_last_index_of` mirrors `.indexOf`'s forward
+`find_substring` backward, with the identical `ctx.pkgImportsStdString`
+import-sensitive gate applied to both.
+
 ---
 
 ### N9.9 — Three native-codegen review-finding fixes: bare enum-case patterns, out/inout width mismatches, over-inclusive UFCS reachability — ✅ SHIPPED (D-progress-882/D-progress-883/D-progress-884, #6740, #6813, #6625, #6969, #6976)

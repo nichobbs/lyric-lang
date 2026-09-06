@@ -33724,3 +33724,36 @@ headers and were verified that way.
 `docs/35-lambda-library.md` §4.2/§8 (updated), `lyric-lambda/README.md`
 (support matrix updated), #5412 (closed), #6868 (new, filed not fixed),
 #5600/#5578/#6548 (the prior `Lambda.Dispatch` work this builds on).
+
+## Native `String` gains `.lastIndexOf` (#6755)
+
+Fast-follow to D-progress-831's native `String` scalar-method work
+(#6588), which deliberately scoped out `.lastIndexOf` from its six
+shipped methods. `lyric_string_last_index_of`
+(`lyric-rt/src/lyric_string.c`) is the backward variant of the existing
+`.indexOf`'s `find_substring`: the byte offset of the LAST match, or -1;
+an empty needle matches at `haystack.length` (not 0), mirroring the
+dotnet/JVM twins' `LastIndexOf("")`/`lastIndexOf("")`. `Lyric.LlvmCodegen`'s
+`.indexOf`/`.lastIndexOf` scalar-method dispatch is now one shared
+code path keyed by method name, applying the exact same
+`ctx.pkgImportsStdString` import-sensitive gate `.indexOf`'s arm already
+used (#6752) to both: with `import Std.String` in scope, the method
+spelling is UFCS sugar for the `Option[Int]`-returning
+`Std.String.indexOf`/`.lastIndexOf` free functions; without it, the raw
+`-1`-sentinel `Int` form.
+
+Verified by a new `lyric_rt_test.c` case (a repeated-needle haystack
+distinguishing `.lastIndexOf`'s last-match result from `.indexOf`'s
+first-match result, plus the not-found and empty-needle-at-length
+cases), a new end-to-end case in `llvm_codegen_self_test.l`, and a new
+`.lastIndexOf` companion test in `indexof_native_self_test.l` mirroring
+its existing `.indexOf` import-gate coverage (both the `Option[Int]`
+method-spelling path and the explicit `lastIndexOfRaw` sentinel-int
+form). `make -C lyric-rt test` and the full native self-test list pass
+with zero regressions.
+
+**Related:** `docs/03-decision-log.md` D-progress-831 (the #6588 fix
+this extends), `native/plan/08-work-items.md`'s N9.3 write-up (updated
+above), #6755, #6240 (the broader native `String` search-method audit
+this issue was split out of), `docs/01-language-reference.md` §12.1
+(updated).
