@@ -819,6 +819,22 @@ Implement `get(name)`, `set(name, val)`, `all()` using `getenv`/`setenv`/`enviro
 
 Implement `run(cmd, args)`, `capture(cmd, args)` using `posix_spawn`/`waitpid`/`pipe`.
 
+**N5 slice B (issue #4752) residual-seam audit — D-progress-888.** All four
+of #4752's originally-named deferrals (runCapture timeout/stdin, `Std.Uuid`,
+`Std.Time` calendar surface, `out`-mode parameter lowering) are confirmed
+already resolved by separate, earlier work. A full dotnet-vs-native
+function-diff across `file_host.l`/`environment_host.l`/`time_host.l`/
+`process_capture_host.l` found and shipped three more small seams
+(`hostReadAllBytes`, `hostRuntimeDirectory` → `""`, `hostRuntimeIdentifier`
+→ `""`) and precisely scoped what remains: `hostExit` needs a compiler fix
+(`Never`-typed `extern func`, filed as issue #6901), `hostAppBaseDirectory`
+needs new `lyric-rt` C surface (deferred, not blocked, filed as issue
+#6937), and `Std.File.stat`/`fileStatIsNewer`/`readTextOrPanic` are
+blocked by the same `try/catch`-on-native root cause issue #6887 tracks
+for `Std.Process`'s piped API — but scoped separately as issue #6961,
+since #6887's own scope and suggested fix are specific to that facade.
+See D-progress-888 for the full account.
+
 ---
 
 ### N5.8 — `Std.Collections` native verification
