@@ -13,7 +13,7 @@ toolchain path on any target and fails loud with `F0044` (#6262); the profile
 axis reaches codegen only on `--target native` so far — `resolveNativeOptDefault`
 defaults the clang `-O` level from the profile (`2` under `--release`, `0`
 under `--debug`) when neither `--opt` nor `[native] opt_level` supply one
-(D-progress-883) — `--target dotnet`/`--target jvm` still perform no
+(D-progress-887) — `--target dotnet`/`--target jvm` still perform no
 optimization under `--release`, and overflow-checking semantics remain
 undecided on every target, exactly as the language reference describes
 (#6263, still open for those two pieces).
@@ -1052,7 +1052,7 @@ their update when the user-visible behaviour arrives with `SourceFile`.
   precedent).
 - **Q-BP-002:** Fully-static native linking (`-static`, musl) — a fourth shape,
   a `[native]` key, or out of scope?
-- **Q-BP-003 (resolved, D-progress-883):** `-O0`. `Lyric.Cli.resolveNativeOptDefault`
+- **Q-BP-003 (resolved, D-progress-887):** `-O0`. `Lyric.Cli.resolveNativeOptDefault`
   defaults the debug profile to `-O0` (matching a plain, unoptimized debug
   build) rather than `-Og` (which still applies some optimizations aimed at
   keeping debugging usable) — `-Og`'s tradeoff only pays off once B1–B4 land
