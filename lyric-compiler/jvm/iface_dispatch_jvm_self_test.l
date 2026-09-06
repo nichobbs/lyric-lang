@@ -300,3 +300,67 @@ test "extern-interface impl method with a slice[Byte] (primitive-element) PARAME
   passPrimitiveSliceParam(c, data)
   assertEqualInt(c.sum, 4, "update(byte[], int, int) received the real 4-element array, not a truncated/erased one")
 }
+
+// #7004 (review follow-up on #5931/#6970/#6977): the fixes above narrow the
+// TAIL-position return of an extern-interface impl method (via
+// `lowerInstanceMethodBody`'s direct `coerceArgToCtx` calls), but an
+// explicit `return expr;` statement is lowered separately by `SReturn`
+// (`05_stmts.l`), which routes through the shared `coerceValueTo` helper
+// (`06_items.l`) — its non-primitive-array-widening fallback still called
+// the ctx-LESS `coerceArgTo`, so an early/explicit `return` inside an
+// extern-interface impl method reproduced the identical VerifyError this
+// PR already fixed for the implicit-tail shape. Both narrowing branches
+// (reference-element via `JX509TrustManager`, primitive-element via
+// `JKey`) are covered here using `return` instead of a bare tail
+// expression.
+record SliceIfaceTrustManagerReturn {
+  tag: Int
+}
+
+impl JX509TrustManager for SliceIfaceTrustManagerReturn {
+  func checkClientTrusted(chain: in slice[JX509Certificate], authType: in String): Unit {
+    ()
+  }
+
+  func checkServerTrusted(chain: in slice[JX509Certificate], authType: in String): Unit {
+    ()
+  }
+
+  func getAcceptedIssuers(): slice[JX509Certificate] {
+    return []
+  }
+}
+
+test "explicit `return` inside an extern-interface impl method narrows a slice[ExternType] return (#5931 / #7004)" {
+  val tm = SliceIfaceTrustManagerReturn(tag = 11)
+  val issuers = tm.getAcceptedIssuers()
+  assertEqualInt(issuers.length, 0, "explicit-return getAcceptedIssuers returns the empty slice built via `return`")
+  assertEqualInt(tm.tag, 11, "SliceIfaceTrustManagerReturn field still readable after the explicit-return method call")
+}
+
+record SliceIfacePrimitiveKeyReturn {
+  tag: Int
+}
+
+impl JKey for SliceIfacePrimitiveKeyReturn {
+  func getAlgorithm(): String {
+    "NONE"
+  }
+
+  func getFormat(): String {
+    "RAW"
+  }
+
+  func getEncoded(): slice[Byte] {
+    return [9.toByte(), 8.toByte()]
+  }
+}
+
+test "explicit `return` inside an extern-interface impl method narrows a slice[Byte] (primitive) return (#5931 / #7004)" {
+  val k = SliceIfacePrimitiveKeyReturn(tag = 13)
+  val encoded = k.getEncoded()
+  assertEqualInt(encoded.length, 2, "explicit-return getEncoded returns the 2-byte slice built via `return`")
+  assertEqualInt(encoded[0].toInt(), 9, "first byte round-trips")
+  assertEqualInt(encoded[1].toInt(), 8, "second byte round-trips")
+  assertEqualInt(k.tag, 13, "SliceIfacePrimitiveKeyReturn field still readable after the explicit-return method call")
+}
