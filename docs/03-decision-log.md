@@ -1,5 +1,12 @@
 # 03 — Decision Log
 
+> **FROZEN ARCHIVE — do not append here.** New design decisions are recorded as
+> **one file per entry** under [`docs/decisions/`](decisions/) (see its
+> `README.md`). This file holds the historical entries up to `D-progress-885`
+> (and the legacy `DNNN` / `D-N-NNN` decisions) for reference and cross-linking;
+> ids resolve across both. Per-file entries stop concurrent PRs from conflicting
+> on a shared end-of-file append. Everything below this notice is history.
+
 This document records every significant design decision, the alternatives considered, the rationale, and any subsequent revisions. It is the canonical record of *why* Lyric is the way it is.
 
 Format for each entry:
