@@ -648,7 +648,7 @@ func prim(b: in Int): SigType {
 func testScoreSigTypeArrayInvariance(): Unit {
   val i4Arr = STSzArray(elem = prim(0x08))   // int32[]
   val i8Arr = STSzArray(elem = prim(0x0A))   // int64[]
-  assertEqualInt(scoreSigType(i4Arr, i4Arr), 2, "score: int[] vs int[] is exact (2)")
+  assertEqualInt(scoreSigType(i4Arr, i4Arr), 3, "score: int[] vs int[] is exact (3, D-progress-891's tier renumbering)")
   assertEqualInt(scoreSigType(i4Arr, i8Arr), -1, "score: int[] vs long[] is reject (-1) — arrays invariant")
   assertEqualInt(scoreSigType(i8Arr, i4Arr), -1, "score: long[] vs int[] is reject (-1) — arrays invariant")
 }
@@ -732,7 +732,10 @@ func testOverloadResolveBcl(): Unit {
       i8i8.add(prim(0x0A))
       match resolveOverload(rt, "System.Math", "Max", i8i8) {
         case None -> panic("overload-bcl: Math.Max(long,long) not resolved")
-        case Some(m) -> match m.returnType { case STPrim(e) -> assertEqualInt(e, 0x0A, "overload-bcl: Max(long,long) returns Long"); case _ -> panic("overload-bcl: Max(long,long) return not primitive") }
+        case Some(m) -> match m.returnType {
+          case STPrim(e) -> assertEqualInt(e, 0x0A, "overload-bcl: Max(long,long) returns Long")
+          case _ -> panic("overload-bcl: Max(long,long) return not primitive")
+        }
       }
     }
   }
@@ -989,7 +992,10 @@ func findKernelDirFrom(start: in String): Option[String] {
 func findKernelDir(): String {
   match findKernelDirFrom(Environment.currentDirectory()) {
     case Some(d) -> d
-    case None -> match findKernelDirFrom(Environment.appBaseDirectory()) { case Some(d) -> d; case None -> panic("vt-audit: lyric-stdlib/std/_kernel not found above cwd or app base") }
+    case None -> match findKernelDirFrom(Environment.appBaseDirectory()) {
+      case Some(d) -> d
+      case None -> panic("vt-audit: lyric-stdlib/std/_kernel not found above cwd or app base")
+    }
   }
 }
 
