@@ -42063,7 +42063,7 @@ script, not per-workflow). The removed guard was in `publish.yml` alone. No
 change to the seed *format*, the three-stage reproducibility bootstrap, or any
 compiler behaviour. Reproducibility is unaffected: the byte-compare stages
 supply their own seed and never consult the fallback tier.
-## D-progress-884 — JVM codegen: `val (a, b): (T1, T2) = <expr>` tuple destructuring now binds each element at its declared type instead of blanket `Object` (#6578)
+## D-progress-886 — JVM codegen: `val (a, b): (T1, T2) = <expr>` tuple destructuring now binds each element at its declared type instead of blanket `Object` (#6578)
 
 **Context.** `val (sslContext, authMode): (JSSLContext, Option[JSslClientAuthMode])
 = match tls.clientCa { case Some(ca) -> { ...; (ctx, Some(value = mode)) }; case
