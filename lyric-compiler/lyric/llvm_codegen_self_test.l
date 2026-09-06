@@ -680,6 +680,97 @@ test "String + Char concatenation and Char.toString(), across literal/annotated-
   )
 }
 
+// #7010 (claude-review REQUIRED finding on #6237): `Ctx.varIsChar` is
+// populated at `val`/`let`/`var` binding sites via `markVarChar`, but the
+// for-loop element bind, `bindTuplePattern`, and `applyPatternBinds`
+// (match-arm binds) never called it — so a name previously marked `Char`
+// left a STALE `true` entry when one of those three sites later rebinds
+// the SAME name to a non-Char value, silently misrouting it through
+// `lyric_string_from_char` (e.g. printing "A" for 65 instead of "65").
+// Each case below shadows a `Char`-typed name with a non-Char value via
+// one of the three previously-unguarded sites and asserts the CORRECT
+// (non-Char) formatting survives the shadow.
+test "varIsChar does not leak across a for-loop shadow of a Char-typed name (#7010)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val c: Char = 'X'\n" +
+    "  println(\"before: \" + c.toString())\n" +
+    "  val nums: List[Int] = newList()\n" +
+    "  nums.add(65)\n" +
+    "  nums.add(66)\n" +
+    "  for c in nums {\n" +
+    "    println(\"loop: \" + c.toString())\n" +
+    "  }\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRun(shim)
+  assertEqualInt(r.exitCode, 0, "for-loop shadow exit")
+  assertEqual(
+    r.stdout,
+    "before: X\nloop: 65\nloop: 66\n",
+    "the for-loop's Int element must format as a decimal number, not the stale Char codepoint glyph"
+  )
+}
+
+test "varIsChar does not leak across a tuple-destructure shadow of a Char-typed name (#7010)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val c: Char = 'X'\n" +
+    "  println(\"before: \" + c.toString())\n" +
+    "  val pair = (65, 66)\n" +
+    "  val (c, _) = pair\n" +
+    "  println(\"tuple: \" + c.toString())\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRun(shim)
+  assertEqualInt(r.exitCode, 0, "tuple-destructure shadow exit")
+  assertEqual(
+    r.stdout,
+    "before: X\ntuple: 65\n",
+    "the tuple-destructured Int field must format as a decimal number, not the stale Char codepoint glyph"
+  )
+}
+
+test "varIsChar does not leak across a match-arm shadow of a Char-typed name (#7010)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    "union Box {\n" +
+    "  case Full(v: Int)\n" +
+    "  case Empty\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val c: Char = 'X'\n" +
+    "  println(\"before: \" + c.toString())\n" +
+    "  val b: Box = Full(v = 65)\n" +
+    "  match b {\n" +
+    "    case Full(c) -> println(\"match: \" + c.toString())\n" +
+    "    case Empty -> println(\"none\")\n" +
+    "  }\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRun(shim)
+  assertEqualInt(r.exitCode, 0, "match-arm shadow exit")
+  assertEqual(
+    r.stdout,
+    "before: X\nmatch: 65\n",
+    "the match-bound Int payload must format as a decimal number, not the stale Char codepoint glyph"
+  )
+}
+
 test "string trim().toLower() under repeated allocation (ASan)" {
   val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
     "func main(): Int {\n" +

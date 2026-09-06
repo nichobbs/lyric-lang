@@ -5706,6 +5706,13 @@ func lowerForOverList(ctx: in Ctx, insns: in List[NInsn], pat: in Pattern, iter:
   if haveBind {
     val elemV = valOfSlot(ctx, insns, slot.value, elem)
     bindLocal(ctx, insns, bindName, elemV)
+    // #7010: clear any stale varIsChar entry from an earlier binding of
+    // this name (e.g. a prior `val bindName: Char = ...` in scope) — the
+    // loop-element type isn't tracked as Char here (a real gap, #6237's
+    // own follow-up), but an unconditional `false` at least prevents the
+    // old entry from silently surviving the rebind and misrouting this
+    // (non-Char) value through lyric_string_from_char.
+    markVarChar(ctx, bindName, false)
   }
   lowerBlockStmts(ctx, insns, body)
   popVarScope(ctx, insns)
@@ -8333,6 +8340,12 @@ func bindTuplePattern(ctx: in Ctx, insns: in List[NInsn], v: in NVal, patterns: 
           case None -> {
             val fv = lowerRecordFieldLoad(ctx, insns, ri, v, ri.fieldNames[i])
             bindLocal(ctx, insns, name, fv)
+            // #7010: clear any stale varIsChar entry from an earlier
+            // binding of this name — the tuple field's surface type
+            // isn't tracked as Char here (a real gap), but clearing to
+            // `false` prevents a stale `true` entry from silently
+            // misrouting this value through lyric_string_from_char.
+            markVarChar(ctx, name, false)
           }
         }
       }
@@ -8354,6 +8367,12 @@ func applyPatternBinds(ctx: in Ctx, insns: in List[NInsn], bindNames: in List[St
   var i = 0
   while i < bindNames.count {
     bindLocal(ctx, insns, bindNames[i], bindVals[i])
+    // #7010: clear any stale varIsChar entry from an earlier binding of
+    // this name — a match-arm payload's surface type isn't tracked as
+    // Char here (a real gap), but clearing to `false` prevents a stale
+    // `true` entry from silently misrouting this value through
+    // lyric_string_from_char.
+    markVarChar(ctx, bindNames[i], false)
     i = i + 1
   }
 }
