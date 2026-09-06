@@ -75,6 +75,7 @@
 @cfg(feature = "web")
 package Lambda.Kernel.WebBridge
 
+import Std.Core
 import Lambda
 import Web
 
