@@ -1214,6 +1214,52 @@ pub func typeExprToJvmErasedExtern(
   }
 }
 
+// As `typeExprToJvmErasedExtern`, but ALSO resolving a bare `TGenericApp` head
+// that names a record/union declared in THIS FILE (`localTypeNames`) to its
+// raw erased class (`<pkgName>/<Head>`), mirroring Java's own raw-type erasure
+// instead of the universal `java/lang/Object` `typeExprToJvm`'s `TGenericApp`
+// arm otherwise falls back to (#4870).
+//
+// Without this, a generic union case field typed as ANOTHER generic
+// instantiation using the enclosing type parameter (`Branch(left: Box[T], …)`
+// inside `union Tree[T]`) registered — and was actually EMITTED, since
+// `lowerRecord`/`lowerUnion` call the identical erasure helper — as
+// `Ljava/lang/Object;`.  A match-bound field of a truly erased type parameter
+// (`Ok(value: T)`) is CORRECTLY `Object` (no reified generics on the JVM,
+// docs/44 M-1); but `Box[T]` is not itself a type parameter — it is a
+// concrete, locally-declared generic record, and Java's own raw-type erasure
+// resolves such a reference to the RAW CLASS (`Box`, type args erased), not
+// `Object`.  Binding the field's raw class lets a subsequent field read
+// (`r.item`) resolve through the ordinary (non-erased) member-access path
+// instead of the erased-`Object` bundle-wide fallback.
+//
+// Scoped to same-FILE declarations only (mirrors `recordRetClassOf`'s
+// `localRecordNames`, #6399): resolving a cross-package generic type (e.g. a
+// bare `Result`/`Option` used unqualified) would require knowing its
+// DECLARING package, which this per-file pass does not have — guessing wrong
+// would silently corrupt an otherwise-working cross-package field. Those stay
+// on the pre-existing `Object` erasure fallback.
+pub func typeExprToJvmErasedExternL(
+  te: in TypeExpr,
+  pkgName: in String,
+  typeParams: in List[String],
+  externTypes: in Map[String, String],
+  localTypeNames: in Map[String, Bool],
+): JvmType {
+  match te.kind {
+    case TGenericApp(head, _) -> {
+      val isBareLocal = head.segments.count == 1 and localTypeNames.containsKey(head.segments[0])
+      if isBareLocal {
+        JRef(className = pkgName + "/" + head.segments[0])
+      } else {
+        typeExprToJvmErasedExtern(te, pkgName, typeParams, externTypes)
+      }
+    }
+    case TParen(inner) -> typeExprToJvmErasedExternL(inner, pkgName, typeParams, externTypes, localTypeNames)
+    case _ -> typeExprToJvmErasedExtern(te, pkgName, typeParams, externTypes)
+  }
+}
+
 // A function's declared return type may itself be function-shaped
 // (`func makeAdder(x: Int): (Int) -> Int { ... }`). Peel one layer of
 // `TFunction`/`TParen` to recover the INNER return type invoking the
