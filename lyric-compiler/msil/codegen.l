@@ -20707,8 +20707,26 @@ func emitGenericMethodExternCall(
   // differ — without `parentRow` in the key, the second such method to
   // compile would silently receive the first's MemberRef signature bytes
   // (#6987).
+  // `parentRow`/`emitMember`/`genParamCount`/`mParams.count` alone are not
+  // enough to disambiguate two overloads on the SAME declaring type that
+  // share all four (e.g. `Enumerable.Select<TSource,TResult>(IEnumerable<
+  // TSource>, Func<TSource,TResult>)` vs the indexed-selector overload
+  // `Select<TSource,TResult>(IEnumerable<TSource>, Func<TSource,int,
+  // TResult>)` — both static, 2 genparams, 2 params) — so fold each
+  // parameter's and the return's full structural `msilTypeKeyStr` into the
+  // key too, mirroring the Gap 1 `castclass` cache key (`ts_genarg_` +
+  // `msilTypeKeyStr`) elsewhere in this file (#7016).
+  var openParamKey = ""
+  var opki = 0
+  while opki < mParams.count {
+    openParamKey = openParamKey + "_" + msilTypeKeyStr(mParams[opki])
+    opki = opki + 1
+  }
   val openKey = "openm_" + toString(parentRow) + "_" + emitMember + "_" + toString(msig.genParamCount) + "_" +
-    toString(mParams.count)
+    toString(mParams.count) +
+    openParamKey +
+    "_ret_" +
+    msilTypeKeyStr(mRet)
   val mrRow = ctxAddMemberRef(cctx.lctx, parentRow, emitMember, openKey, openSig)
   // MethodSpec witnessing every one of the method's own generic parameters
   // with `System.Object` (the erasure convention documented above).
