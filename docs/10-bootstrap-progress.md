@@ -30714,16 +30714,24 @@ Record` methods with `slice[ExternType]` params/returns emit a mismatched
 `Object[]` descriptor (#5931), and the JVM auto-FFI cannot pass a
 reference-typed array as a call argument at all (unfiled as its own issue;
 same root cause as #5931's fix direction). A fourth gap (#5932) was found
-and avoided by architecture: a same-package split across a top-level
-stdlib file and an additional `_kernel_jvm/`-only file breaks unrelated
-static-call resolution at JVM runtime, so the `SSLContext` construction
-lives in `_kernel_jvm/http_server.l` instead of a new `Std.Tls`-package
-file, reached through the existing `internal Identity.rawHandle`
-kernel-boundary accessor on `tls.l` (shipped with phase 1.2's dotnet
-client TLS, above).
+and avoided by architecture at the time: a same-package split across a
+top-level stdlib file and an additional `_kernel_jvm/`-only file broke
+unrelated static-call resolution at JVM runtime, so the `SSLContext`
+construction lives in `_kernel_jvm/http_server.l` instead of a new
+`Std.Tls`-package file, reached through the existing `internal
+Identity.rawHandle` kernel-boundary accessor on `tls.l` (shipped with
+phase 1.2's dotnet client TLS, above).
 
-**Related:** `docs/03-decision-log.md` D-progress-692; #5880, #5874, #5884,
-#5930, #5931, #5932.
+**Correction (2026-09-05, group:jvm-codegen-crashes):** #5932's underlying
+`Jvm.Bridge` root cause (a first-wins `stdlibByPkg` map silently dropping
+every bundled file but the first for a same-named package) is now fixed —
+see `docs/03-decision-log.md` D-progress-889. The additive-`_kernel_jvm/`-file
+workaround above is no longer architecturally required for new same-package
+splits, though the shipped `_kernel_jvm/http_server.l` placement itself was
+not reverted (no functional reason to move already-working code).
+
+**Related:** `docs/03-decision-log.md` D-progress-692, D-progress-889;
+#5880, #5874, #5884, #5930, #5931, #5932.
 
 ## lyric-web `Web.serveTls` ships on JVM — Undertow HTTPS listener + `ENABLE_HTTP2` + `WebTls` config template, non-mTLS (2026-07-18)
 
