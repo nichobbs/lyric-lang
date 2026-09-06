@@ -31946,7 +31946,7 @@ runs alongside `cfg_gate_self_test.l` in the compiler self-tests job (same
 linking shape — a compiler-package import resolved via the staged
 `Lyric.Compiler.dll` bundle, no `LYRIC_LOAD_COMPILER=1`).
 
-**Re-added to CI, hang root-caused and fixed (#6659, D-progress-878,
+**Re-added to CI, hang root-caused and fixed (#6659, D-progress-884,
 2026-09-05).** The JVM-target end-to-end run previously hung on real GitHub
 Actions runners for 2+ hours (the identical file without `--coverage` runs
 fine in the same job); the CI step had been removed pending investigation.
