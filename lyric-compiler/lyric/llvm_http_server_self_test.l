@@ -5,7 +5,7 @@
 //! native`) and run, mirroring `llvm_tls_self_test.l`'s and
 //! `llvm_http_client_self_test.l`'s harness shape.
 //!
-//! Nine cases:
+//! Ten cases:
 //!   - item A: a plaintext HTTP/1.1 round trip. A real client
 //!     (`Std.TcpHost.hostConnect`, plain TCP) on the SAME thread as the
 //!     server's own pull loop — a bare TCP `connect` completes into the
@@ -147,6 +147,27 @@
 //!     joined, so this case's pass/fail signal is the same as item F/G's:
 //!     `stopListener` (and every client `pthreadJoin`) must still return
 //!     promptly and cleanly.
+//!   - item J: the headline regression case for #6806 — `stopListener`
+//!     must not hang on a listener that NEVER accepted a single
+//!     connection (the accept-loop thread genuinely parked in
+//!     `rtSockAcceptInterruptible`'s `poll(2)` with only the listening
+//!     socket and the wake pipe to watch, nothing else). Before the fix,
+//!     `hostStopListener` relied on `shutdown()` on the LISTENING socket,
+//!     which Linux happens to deliver as an `EINVAL` to a blocked
+//!     `accept()` but macOS/BSD do not (issue #6804) — this case is the
+//!     direct proof that the NEW portable interrupt (a self-pipe
+//!     multiplexed via `poll(2)`, issue #6806) wakes the accept thread on
+//!     its own, with no reliance on any Linux-specific `shutdown()` side
+//!     effect: `startListener` is called and `stopListener` immediately
+//!     follows, with no client ever dialing in between. Repeated ten
+//!     times in one process (a fresh listener each time) to make a
+//!     reintroduced race — the wake-pipe signal arriving before the
+//!     accept thread has actually entered `poll()` — visible rather than
+//!     surviving on a lucky first iteration; the wake pipe's own
+//!     semantics (a byte sitting in the pipe buffer wakes the very next
+//!     `poll()` call, whenever it happens) make this safe by construction,
+//!     not merely likely, so ten iterations exists to prove that in
+//!     practice, not to work around nondeterminism.
 //!
 //! Every scenario compiles with `-fsanitize=address`, so a leaked
 //! `malloc`'d mutex/semaphore buffer, a leaked fd, a double-release, or a
@@ -162,7 +183,8 @@
 //! choice safe rather than a leak.
 //!
 //! Every connection-oriented case binds a FIXED port (19720/19721/19722/
-//! 19723/19724/19725/19726/19727/19728),
+//! 19723/19724/19725/19726/19727/19728/19729 — item J binds a port too,
+//! even though it never accepts a connection on it),
 //! matching `lyric-stdlib/tests/http_server_dotnet_tests.l`'s own
 //! established convention for testing this exact API — `Std.HttpServer`'s
 //! public surface (unlike `Std.TcpHost`'s) has no `hostLocalPort`-style
@@ -1021,4 +1043,24 @@ test "native Std.HttpServer stopListener drains concurrently-enqueued contexts w
     "}\n"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "Std.HttpServer native enqueue-vs-drain race regression (item I, #6803)")
+}
+
+test "native Std.HttpServer stopListener wakes an accept loop that never received a connection, portably (item J, #6806 regression)" {
+  val src = "package J\n" + "import Std.Core\n" + "import Std.HttpServer\n" + "func main(): Int {\n" + "  var i = 0\n" +
+    "  while i < 10 {\n" +
+    "    // No client EVER connects here -- the accept-loop thread must be\n" +
+    "    // genuinely blocked inside rtSockAcceptInterruptible's poll(2) with\n" +
+    "    // only the listening socket and the wake pipe to watch, so the ONLY\n" +
+    "    // way stopListener's pthreadJoin below can return is the portable\n" +
+    "    // wake-pipe interrupt (#6806) actually working -- there is no\n" +
+    "    // socket-level shutdown()/close() side effect on the listening fd\n" +
+    "    // to fall back on this time.\n" +
+    "    val listener = startListener(\"http://127.0.0.1:19729/\")\n" +
+    "    stopListener(listener)\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpServer native portable accept-interrupt regression (item J, #6806)")
 }

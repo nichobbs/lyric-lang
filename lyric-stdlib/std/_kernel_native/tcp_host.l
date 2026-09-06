@@ -15,6 +15,14 @@
 //! no exceptions) — every fallible operation here is driven directly off
 //! the seam's -1/NULL return values plus `lyric_tls_last_error`.
 //!
+//! **One divergence from that mirrored surface (issue #6883):** the
+//! dotnet twin's `hostStopListener` still does stop-and-release in one
+//! call. This file splits that into `hostStopListener` (signal only) +
+//! `hostCloseListener` (release only) — see `hostStopListener`'s own
+//! doc comment for why. A caller porting code from the dotnet twin must
+//! add the paired `hostCloseListener` call; the two are NOT
+//! interchangeable single-call replacements for each other.
+//!
 //! **Client TLS (`hostConnectTls`/`hostUpgradeClientTls`) added for N9.4.**
 //! The N9.2 header below originally said "N9.2 has no client-TLS surface —
 //! that is Std.Http's job, N9.4/#6105"; this is that job. It lives HERE,
@@ -146,10 +154,9 @@ import Std.TlsHost as TlsHost
 /// identical to the caller and had to be treated as fatal.
 pub union AcceptFailureKind {
   // The listening socket itself is gone: the intentional
-  // `hostStopListener` shutdown()+close() path (Linux delivers `EINVAL` to
-  // a concurrently-blocked accept() for this, see that function's own doc
-  // comment), or a genuine unexpected socket-level fault. The caller's
-  // accept loop should end.
+  // `hostStopListener` wake-pipe interrupt (see that function's own doc
+  // comment, issue #6806), or a genuine unexpected socket-level fault. The
+  // caller's accept loop should end.
   case AcceptFatal
   // An already-pending network error on the NEW connection, not the
   // listening socket -- `ECONNABORTED` and the handful of related codes
@@ -195,8 +202,12 @@ pub func TcpError.message(e: in TcpError): String {
 
 /// A bound, listening TCP socket. See the module header for why this is
 /// a plain record (not `opaque type`) with package-private fields.
+/// `wakeReadFd`/`wakeWriteFd` back the portable accept()-interrupt seam
+/// (issue #6806) -- see `hostStopListener`'s doc comment.
 pub record Listener {
   fd: Int
+  wakeReadFd: Int
+  wakeWriteFd: Int
 }
 
 /// One accepted connection. `tlsConnHandle` is `0i64` for a plain
@@ -248,14 +259,21 @@ extern func rtSockConnect(host: NativePtr[Byte], port: Int): Int = "lyric_sock_c
 
 extern func rtSockListen(ip: NativePtr[Byte], port: Int, backlog: Int): Int = "lyric_sock_listen"
 
-extern func rtSockAccept(listenFd: Int): Int = "lyric_sock_accept"
-
 // Diagnostic detail + portable classification for the most recent
-// rtSockAccept failure ON THIS THREAD (issue #6805) -- see
+// rtSockAcceptInterruptible failure ON THIS THREAD (issue #6805) -- see
 // AcceptFailureKind's own doc comment for what the classification means.
 extern func rtSockAcceptErrno(): Int = "lyric_sock_accept_errno"
 
 extern func rtSockAcceptErrorClass(): Int = "lyric_sock_accept_error_class"
+
+// Portable accept()-interrupt seam (issue #6806) -- see hostStopListener's
+// doc comment below for why this replaces a bare rtSockAccept in
+// hostAccept.
+extern func rtSockWakePipeNew(readFdOut: NativePtr[Int], writeFdOut: NativePtr[Int]): Int = "lyric_sock_wake_pipe_new"
+
+extern func rtSockWakePipeSignal(writeFd: Int): Int = "lyric_sock_wake_pipe_signal"
+
+extern func rtSockAcceptInterruptible(listenFd: Int, wakeReadFd: Int): Int = "lyric_sock_accept_interruptible"
 
 extern func rtSockLocalPort(fd: Int): Int = "lyric_sock_local_port"
 
@@ -268,10 +286,12 @@ extern func rtSockClose(fd: Int): Int = "lyric_sock_close"
 // `SHUT_RDWR`'s numeric value, which is the same constant on every POSIX
 // platform this project targets (Linux/macOS), so no platform table is
 // needed the way `_kernel_native/libc.l`'s `oRdonly`/`oCreat`/etc. need one
-// for open(2) flags. This is ONLY a claim about the `how` VALUE being
-// portable — see `hostStopListener`'s own doc comment below for a
-// platform difference in what calling `shutdown()` on a LISTENING socket
-// actually accomplishes (issue #6804).
+// for open(2) flags. Used ONLY by `hostShutdown` below, for an already-
+// ACCEPTED connection's fd -- `shutdown()` reliably interrupts a blocked
+// read/write on a CONNECTED socket on every POSIX platform this project
+// targets (unlike its behaviour on a LISTENING socket, which is Linux-only
+// and is why `hostStopListener` below uses the wake-pipe seam instead;
+// issue #6806).
 extern func rtShutdown(fd: Int, how: Int): Int = "shutdown"
 
 extern func rtSockReadBytes(fd: Int, maxBytes: Long, okOut: NativePtr[Int]): slice[Byte] = "lyric_sock_read_bytes"
@@ -316,14 +336,27 @@ val alpnPreference: String = "h2,http/1.1"
 /// (e.g. `"127.0.0.1"` / `"0.0.0.0"` / `"::"`), not a DNS name — the
 /// transport does not resolve names (matches the dotnet twin). A bind
 /// failure (port in use, permission denied, malformed address) is
-/// `Err(BindFailed(...))`.
+/// `Err(BindFailed(...))`. Also allocates the wake pipe `hostAccept`/
+/// `hostStopListener` use to implement a portable accept() interrupt
+/// (issue #6806); a failure to allocate it closes the just-bound socket
+/// and reports `BindFailed` too, since a `Listener` this kernel cannot
+/// later interrupt is not safely usable.
 @unsafe_ffi
 pub func hostListen(host: in String, port: in Int): Result[Listener, TcpError] {
   val c = toC(host)
   val fd = rtSockListen(c, port, 128)
   freeC(c)
   if fd >= 0 {
-    Ok(value = Listener(fd = fd))
+    var wakeRead: Int = -1
+    var wakeWrite: Int = -1
+    val pipeRc = rtSockWakePipeNew(nativeAddrOf(wakeRead), nativeAddrOf(wakeWrite))
+    if pipeRc == 0 {
+      Ok(value = Listener(fd = fd, wakeReadFd = wakeRead, wakeWriteFd = wakeWrite))
+    } else {
+      val msg = rtLastErrorString()
+      val _ = rtSockClose(fd)
+      Err(error = BindFailed(message = msg))
+    }
   } else {
     Err(error = BindFailed(message = rtLastErrorString()))
   }
@@ -345,43 +378,77 @@ pub func hostConnect(host: in String, port: in Int): Result[Conn, TcpError] {
   }
 }
 
-/// Stop listening and release the socket. Idempotent-safe: a redundant
-/// stop is swallowed rather than surfaced (matches the dotnet twin).
+/// Interrupt a blocked `hostAccept`/`hostAcceptTls` call on this
+/// `Listener`'s accept-loop thread. Idempotent-safe: signaling more than
+/// once is harmless (`rtSockWakePipeSignal`'s own doc comment).
 ///
-/// `rtShutdown` BEFORE `rtSockClose` (confirmed via direct repro; the
-/// accept-loop thread hangs in the blocking `accept()` inside `hostAccept`
-/// forever without it — `Std.HttpServer.stopListener`'s `pthreadJoin` on
-/// that thread then never returns). A bare `close()` on the listening fd
-/// from another thread does not reliably unblock a concurrent, already-
-/// blocked `accept()` call on this fd — unlike `shutdown()`, which Linux
-/// documents as delivering an error (`EINVAL`) to a blocked `accept()` on
-/// the same socket. This mirrors `hostShutdown`'s identical use of
-/// `rtShutdown` to interrupt a connection's blocked `hostRead` (see that
-/// function's doc comment) — the same POSIX interrupt-then-close pattern,
-/// applied to the listening socket instead of a connection socket.
+/// **Does NOT close anything — see `hostCloseListener` below for that,
+/// and read this doc comment in full before calling either.** An earlier
+/// version of this function signaled AND closed the listening socket and
+/// the wake pipe all in one call, immediately, on the calling (stopping)
+/// thread. Review found a real TOCTOU fd-reuse race in that (issue
+/// #6883): the accept-loop thread's `poll()` waking up on the pipe
+/// becoming readable does not mean that thread has yet run its own
+/// drain `read()` — closing the pipe fds (or the listening socket) from
+/// this thread in the meantime can let an UNRELATED fd open elsewhere in
+/// the process reuse the just-freed fd number before the stale accept
+/// thread's read/next-`poll()` call runs, corrupting or stealing bytes
+/// from that unrelated resource instead of harmlessly no-op'ing.
 ///
-/// **This interrupt mechanism is LINUX-ONLY (issue #6804, disclosed, not
-/// silently assumed portable).** The paragraph above deliberately says
-/// "Linux documents" and nothing broader: on macOS/BSD, `shutdown()` on a
-/// LISTENING socket returns `ENOTCONN` and does NOT unblock a concurrently
-/// -blocked `accept()` call the way it does on Linux — a real, confirmed
-/// POSIX portability wrinkle, not a hypothetical one (this project's own
-/// `lyric_posix.c` already special-cases macOS elsewhere, e.g. its counting
-/// semaphore uses a condvar instead of `sem_init` specifically because
-/// `sem_init` is unimplemented there). Concretely: on macOS, with no
-/// connection pending, `rtShutdown` above returns `-1` (its result is
-/// discarded), `rtSockClose` closes the fd anyway, and
-/// `Std.HttpServer.stopListener`'s `pthreadJoin` on the accept thread —
-/// still blocked inside `accept()` on the now-closed fd — never returns.
-/// This project's CI is Linux-only, so this ships without a verified
-/// macOS-safe interrupt path; a portable fix (a self-pipe or `pipe(2)`
-/// FD woken by `write(2)`, multiplexed with the listening socket via
-/// `poll(2)`/`select(2)` instead of a bare blocking `accept()`) is a
-/// materially larger rework of this file's accept-loop model and is
-/// tracked, not silently shipped as if it worked, in issue #6806.
+/// **Portable accept()-interrupt via a self-pipe (issue #6806), not
+/// `shutdown()` on the listening socket.** An earlier version of this
+/// function called `rtShutdown(l.fd, 2)` before `rtSockClose` to unblock a
+/// concurrent, already-blocked `hostAccept` on the accept-loop thread —
+/// Linux documents `shutdown()` on a LISTENING socket delivering an error
+/// (`EINVAL`) to a blocked `accept()` on the same fd, which worked, but
+/// ONLY on Linux: on macOS/BSD, `shutdown()` on a listening socket returns
+/// `ENOTCONN` and does not unblock a concurrently-blocked `accept()` at
+/// all, so `Std.HttpServer.stopListener`'s `pthreadJoin` on that thread
+/// hung forever there. `hostAccept` below no longer calls the bare
+/// blocking `rtSockAccept` seam at all — it calls
+/// `rtSockAcceptInterruptible`, which `poll(2)`s the listening socket
+/// alongside the read end of a private pipe (`Listener.wakeReadFd`,
+/// allocated in `hostListen`) and returns a `-2` sentinel the instant
+/// EITHER a connection arrives OR that pipe becomes readable, without ever
+/// calling `accept()` on the interrupt path. This function writes a
+/// single byte to `wakeWriteFd` (`rtSockWakePipeSignal`) to trigger that
+/// wakeup — an ordinary pipe write, portable to every POSIX target this
+/// project builds for, not a Linux-specific socket-state side effect.
+///
+/// **Required calling convention (issue #6883):** a caller MUST join (or
+/// otherwise positively confirm the exit of) the accept-loop thread
+/// BEFORE calling `hostCloseListener` — never call it immediately after
+/// this function the way an earlier version of this file did internally.
+/// `Std.HttpServer.stopListener` is the reference caller: it calls this
+/// function, `pthreadJoin`s `acceptTid`, and only THEN calls
+/// `hostCloseListener`.
+///
+/// **Note for callers on other threads:** this only wakes an
+/// `rtSockAcceptInterruptible` call that reads THIS `Listener`'s
+/// `wakeReadFd` — i.e. `hostAccept`/`hostAcceptTls` on the SAME `Listener`
+/// value. It does not touch any already-accepted `Conn` (use
+/// `hostShutdown` for that, per that function's own doc comment).
 pub func hostStopListener(l: in Listener): Unit {
-  val _ = rtShutdown(l.fd, 2)
+  val _ = rtSockWakePipeSignal(l.wakeWriteFd)
+}
+
+/// Release a `Listener`'s OS resources (the listening socket and the wake
+/// pipe). Idempotent-safe: a redundant close is swallowed rather than
+/// surfaced (matches the dotnet twin's `Dispose`/`Close` contract).
+///
+/// **Call this only after the accept-loop thread has already exited** —
+/// see `hostStopListener`'s own doc comment (issue #6883) for why closing
+/// these fds while that thread might still be mid-wakeup is a TOCTOU
+/// fd-reuse hazard. A `Listener` whose accept-loop thread was NEVER
+/// spawned in the first place (e.g. a `pthreadCreate` failure during
+/// `startListener`/`startListenerTls`) has no such thread to wait for, so
+/// this may be called directly there with no preceding `hostStopListener`
+/// call at all — signaling an unused wake pipe would be harmless but
+/// serves no purpose either.
+pub func hostCloseListener(l: in Listener): Unit {
   val _ = rtSockClose(l.fd)
+  val _ = rtSockClose(l.wakeReadFd)
+  val _ = rtSockClose(l.wakeWriteFd)
 }
 
 /// The port `l` is actually bound to (`getsockname` under the hood) —
@@ -410,15 +477,30 @@ func acceptFailureKindFromClass(classCode: in Int): AcceptFailureKind {
   }
 }
 
-/// Block until a client connects, returning a plain (non-TLS) connection.
-/// `alpn` is always `""` for a plain connection. A failure carries a
-/// classified `AcceptFailureKind` (issue #6805) so a caller's own accept
-/// loop can retry a transient or resource-exhaustion failure instead of
-/// treating every accept() error as fatal to the whole listener.
+/// Block until a client connects, returning a plain (non-TLS) connection,
+/// OR until `hostStopListener` is called on this same `Listener` from
+/// another thread (issue #6806). `alpn` is always `""` for a plain
+/// connection. A failure carries a classified `AcceptFailureKind` (issue
+/// #6805) so a caller's own accept loop can retry a transient or
+/// resource-exhaustion failure instead of treating every accept() error as
+/// fatal to the whole listener; an interrupt from `hostStopListener`
+/// always classifies as `AcceptFatal` (the caller's accept loop should
+/// end), same as the fatal case ever was.
+///
+/// Uses `rtSockAcceptInterruptible`, NOT the bare blocking `rtSockAccept`
+/// — see `hostStopListener`'s doc comment for why (issue #6806: the prior
+/// `rtSockAccept`-based design relied on a Linux-only `shutdown()` side
+/// effect to unblock this call, which macOS/BSD do not share).
 pub func hostAccept(l: in Listener): Result[Conn, TcpError] {
-  val fd = rtSockAccept(l.fd)
+  val fd = rtSockAcceptInterruptible(l.fd, l.wakeReadFd)
   if fd >= 0 {
     Ok(value = Conn(fd = fd, tlsConnHandle = 0i64, alpn = ""))
+  } else if fd == -2 {
+    // The portable interrupt sentinel (hostStopListener was called on this
+    // Listener from another thread) -- always AcceptFatal, matching the
+    // classification a caller's accept loop already treats as "end the
+    // loop" (acceptFailureKindFromClass's own default arm, below).
+    Err(error = AcceptFailed(message = rtLastErrorString(), errno = 0, kind = AcceptFatal))
   } else {
     val rawErrno = rtSockAcceptErrno()
     val kind = acceptFailureKindFromClass(rtSockAcceptErrorClass())
@@ -438,7 +520,12 @@ pub func hostAccept(l: in Listener): Result[Conn, TcpError] {
 func validateServerConfig(cfg: in Tls.TlsServerConfig): Option[TcpError] {
   if cfg.requireClientCert {
     match cfg.clientCa {
-      case None -> Some(value = TlsConfigInvalid(message = "requireClientCert is set but no clientCa is configured; mutual TLS must pin trust to a client CA " + "(refusing to fall back to the system trust store, which would accept any publicly-trusted client certificate)"))
+      case None -> Some(
+        value = TlsConfigInvalid(
+          message = "requireClientCert is set but no clientCa is configured; mutual TLS must pin trust to a client CA " +
+            "(refusing to fall back to the system trust store, which would accept any publicly-trusted client certificate)"
+        )
+      )
       case Some(_) -> None
     }
   } else {
@@ -748,6 +835,28 @@ pub func hostUpgradeClientTls(
       val _ = rtSockClose(conn.fd)
       Err(error = e)
     }
-    case Ok(ctx) -> match applyClientIdentity(ctx, clientIdentity) { case Err(e) -> { rtTlsCtxFree(ctx); val _ = rtSockClose(conn.fd); Err(error = e) }; case Ok(_) -> { val sniC = toC(sniHost); val alpnC = toC(alpnCsv); val tlsConn = rtTlsClientConnect(ctx, conn.fd, sniC, alpnC); freeC(alpnC); freeC(sniC); rtTlsCtxFree(ctx); if tlsConn == 0i64 { val msg = rtLastErrorString(); val _ = rtSockClose(conn.fd); Err(error = TlsHandshakeFailed(message = msg)) } else { val alpn = rtTlsAlpnString(tlsConn); Ok(value = Conn(fd = conn.fd, tlsConnHandle = tlsConn, alpn = alpn)) } } }
+    case Ok(ctx) -> match applyClientIdentity(ctx, clientIdentity) {
+      case Err(e) -> {
+        rtTlsCtxFree(ctx)
+        val _ = rtSockClose(conn.fd)
+        Err(error = e)
+      }
+      case Ok(_) -> {
+        val sniC = toC(sniHost)
+        val alpnC = toC(alpnCsv)
+        val tlsConn = rtTlsClientConnect(ctx, conn.fd, sniC, alpnC)
+        freeC(alpnC)
+        freeC(sniC)
+        rtTlsCtxFree(ctx)
+        if tlsConn == 0i64 {
+          val msg = rtLastErrorString()
+          val _ = rtSockClose(conn.fd)
+          Err(error = TlsHandshakeFailed(message = msg))
+        } else {
+          val alpn = rtTlsAlpnString(tlsConn)
+          Ok(value = Conn(fd = conn.fd, tlsConnHandle = tlsConn, alpn = alpn))
+        }
+      }
+    }
   }
 }
