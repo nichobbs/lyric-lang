@@ -20716,13 +20716,23 @@ func emitGenericMethodExternCall(
   // parameter's and the return's full structural `msilTypeKeyStr` into the
   // key too, mirroring the Gap 1 `castclass` cache key (`ts_genarg_` +
   // `msilTypeKeyStr`) elsewhere in this file (#7016).
+  //
+  // `isInstance` (the HASTHIS bit) is folded in too: a static and an
+  // instance generic method on the same declaring type could otherwise
+  // share every other component of this key (same name, genParamCount,
+  // and structurally-identical erased param/return types) and collide on
+  // the same MemberRef signature bytes despite needing different calling
+  // conventions (claude-review follow-up on this PR).
   var openParamKey = ""
   var opki = 0
   while opki < mParams.count {
     openParamKey = openParamKey + "_" + msilTypeKeyStr(mParams[opki])
     opki = opki + 1
   }
-  val openKey = "openm_" + toString(parentRow) + "_" + emitMember + "_" + toString(msig.genParamCount) + "_" +
+  val hasThisKey = if isInstance { "inst" } else { "static" }
+  val openKey = "openm_" + toString(parentRow) + "_" + emitMember + "_" + hasThisKey + "_" +
+    toString(msig.genParamCount) +
+    "_" +
     toString(mParams.count) +
     openParamKey +
     "_ret_" +
