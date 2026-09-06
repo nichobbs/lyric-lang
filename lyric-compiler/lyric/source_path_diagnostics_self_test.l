@@ -948,6 +948,82 @@ test "multi-file project package (dotnet): a codegen-phase error (F0025) in the 
   )
 }
 
+// #7034: the multi-file F0025 case above only exercises a package whose
+// `origins` table is populated (`origins.count > 0`), which never hits
+// `DiagUtil.resolveLineOrigin`'s empty-`origins` fallback branch — the one
+// that uses whatever label string was passed in verbatim. A single-file
+// entry in `[project.packages]` (the #6282-unaffected-by-fix-guard shape
+// from the parse-phase test above) has an empty `origins` table, so it's
+// the one case that actually exercises the fallback label
+// `abortOnCodegenDiagnosticsMsilInPkgWithOrigins` is given — and the
+// codegen-phase call site was passing the bare `perPkgNames[ci]` package
+// name there instead of `parsedPkgs[ci].label` (the real-path-or-name field
+// the middle-end gate a few lines above already uses for the same index),
+// so a single-file package's F0021–F0025/F0034 diagnostics fell back to the
+// bare package name even though the real path was already known.
+test "single-file project package (one entry in [project.packages]): a codegen-phase error (F0025) still names the real source path (#7034)" {
+  val dir = freshTempDir("mf-codegen-single")
+  defer {
+    cleanup(dir)
+  }
+  val srcDir = Path.join(dir, "src")
+  match File.createDir(srcDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create src dir: " + IOError.message(e))
+  }
+  // Same F0025 shape as the multi-file case above (`wrap[T]`'s try body
+  // yields `T` while its catch arm yields `Unit`), but as a single file so
+  // this package's `origins` table is empty and the fallback label path is
+  // actually exercised. No blank line before `func wrap`, so `catch` lands
+  // on line 6, column 5, matching `msil_codegen_diag_self_test.l`'s own
+  // single-file fixture.
+  val aSrc = "package CodegenSingle\n" + "import Std.Core\n" + "func wrap[T](v: in T): T {\n" + "  val r = try {\n" +
+    "    v\n" +
+    "  } catch Bug as _ {\n" +
+    "    println(0)\n" +
+    "  }\n" +
+    "  r\n" +
+    "}\n" +
+    "func main(): Unit {\n" +
+    "  println(toString(wrap(1)))\n" +
+    "}\n"
+  val aPath = Path.join(srcDir, "a.l")
+  match File.writeText(aPath, aSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write a.l: " + IOError.message(e))
+  }
+  val manifest = "[package]\n" + "name = \"CodegenSingle\"\n" + "version = \"0.0.1\"\n" + "\n" + "[project]\n" +
+    "name = \"CodegenSingle\"\n" +
+    "\n" +
+    "[project.packages]\n" +
+    "\"CodegenSingle\" = [\"src/a.l\"]\n" +
+    "\n" +
+    "[dependencies]\n" +
+    "Std = \"*\"\n"
+  val mfPath = Path.join(dir, "lyric.toml")
+  match File.writeText(mfPath, manifest) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write lyric.toml: " + IOError.message(e))
+  }
+  val outPath = Path.join(dir, "out.dll")
+  val args: List[String] = newList()
+  args.add("build")
+  args.add("--manifest")
+  args.add(mfPath)
+  args.add("--target")
+  args.add("dotnet")
+  args.add("-o")
+  args.add(outPath)
+  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  assertTrue(result.exitCode != 0, "a try-catch expression with mismatched branch types must fail the build")
+  assertTrue(
+    Str.contains(result.stderr, aPath + ": error[F0025]"),
+    "expected the F0025 diagnostic to be labelled with a.l's own real path '" + aPath +
+      "' (not the bare package name 'CodegenSingle') for a CODEGEN-phase diagnostic on a single-file [project.packages] entry (#7034), got:\n" +
+      result.stderr
+  )
+}
+
 // #6824 item 3: `pipeExpandAndRewrite`'s two gates (docs/58 wire/config-
 // template expansion, and same-file interface-default-method inheritance)
 // previously hardcoded `gate("", noOrigins, …)` unconditionally, even though
