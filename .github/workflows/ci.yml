@@ -58,6 +58,18 @@ concurrency:
 # (.NET SDK per bootstrap/global.json via setup-dotnet, Java 21 via
 # setup-java, passwordless sudo for `apt-get install z3`, and for the
 # native job clang/gcc/ASan).
+#
+# Every job that downloads the `build-artifacts` artifact's "Restore
+# executable permissions" step also replaces the downloaded `lyric` apphost
+# stub with a thin `dotnet lyric.dll` wrapper at the same path (#7025: a
+# self-hosted runner of a different CPU architecture than the GitHub-hosted
+# runner that built it gets "cannot execute binary file: Exec format error"
+# trying to run the stub directly). This is safe everywhere, not just
+# self-hosted: `dotnet build` (unlike `dotnet publish -p:PublishAot=true`,
+# see Lyric.Cli.Aot.csproj's PublishAot comment) always produces a portable
+# managed lyric.dll beside the stub, and the stub itself is nothing more
+# than a native launcher that immediately hands off to that same managed
+# runtime — so going through `dotnet` directly changes nothing observable.
 
 # Single build configuration shared across every dotnet build / test /
 # path-discovery step.  Changing it here flips the configuration for
@@ -503,7 +515,15 @@ jobs:
         with:
           name: build-artifacts
       - name: Restore executable permissions
-        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+        # Wraps the downloaded stub in a dotnet-invoking shim; see the
+        # runner-pools comment near the top of this file for why.
+        run: |
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
+          cat > "$lyric_bin" <<'WRAPPER'
+          #!/usr/bin/env bash
+          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          WRAPPER
+          chmod +x "$lyric_bin"
       - name: ilverify self-hosted emitter IL (required gate, #3943)
         working-directory: ${{ github.workspace }}
         run: |
@@ -540,8 +560,16 @@ jobs:
         with:
           name: build-artifacts
       - name: Restore executable permissions
+        # Wraps the downloaded stub in a dotnet-invoking shim; see the
+        # runner-pools comment near the top of this file for why.
         shell: bash
-        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+        run: |
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
+          cat > "$lyric_bin" <<'WRAPPER'
+          #!/usr/bin/env bash
+          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          WRAPPER
+          chmod +x "$lyric_bin"
       - name: Install dotnet-ildasm tool
         run: dotnet tool install --tool-path .tools dotnet-ildasm || true
       - name: Measure MSIL BOX instructions (epic #1877 Stage 2+ zero-overhead gate)
@@ -583,7 +611,15 @@ jobs:
         with:
           name: build-artifacts
       - name: Restore executable permissions
-        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+        # Wraps the downloaded stub in a dotnet-invoking shim; see the
+        # runner-pools comment near the top of this file for why.
+        run: |
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
+          cat > "$lyric_bin" <<'WRAPPER'
+          #!/usr/bin/env bash
+          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          WRAPPER
+          chmod +x "$lyric_bin"
       - name: Measure JVM boxing calls (epic #1877 Stage 2+ zero-overhead gate)
         working-directory: ${{ github.workspace }}
         run: |
@@ -625,7 +661,15 @@ jobs:
         with:
           name: build-artifacts
       - name: Restore executable permissions
-        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+        # Wraps the downloaded stub in a dotnet-invoking shim; see the
+        # runner-pools comment near the top of this file for why.
+        run: |
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
+          cat > "$lyric_bin" <<'WRAPPER'
+          #!/usr/bin/env bash
+          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          WRAPPER
+          chmod +x "$lyric_bin"
       - name: Assert JVM LineNumberTable correctness (docs/63 band B2)
         working-directory: ${{ github.workspace }}
         run: |
@@ -710,7 +754,15 @@ jobs:
         with:
           name: build-artifacts
       - name: Restore executable permissions
-        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+        # Wraps the downloaded stub in a dotnet-invoking shim; see the
+        # runner-pools comment near the top of this file for why.
+        run: |
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
+          cat > "$lyric_bin" <<'WRAPPER'
+          #!/usr/bin/env bash
+          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          WRAPPER
+          chmod +x "$lyric_bin"
       - name: Install Z3 (verifier_self_test's protected-entry range goal needs a real solver)
         run: sudo apt-get update && sudo apt-get install -y z3
 
@@ -1999,7 +2051,15 @@ jobs:
         with:
           name: build-artifacts
       - name: Restore executable permissions
-        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+        # Wraps the downloaded stub in a dotnet-invoking shim; see the
+        # runner-pools comment near the top of this file for why.
+        run: |
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
+          cat > "$lyric_bin" <<'WRAPPER'
+          #!/usr/bin/env bash
+          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          WRAPPER
+          chmod +x "$lyric_bin"
 
       # Builds lyric-rt (C unit tests under both clang and gcc), then runs the
       # three llvm self-tests: llvm_ir (serializer), llvm_codegen (N1 scalar
@@ -2229,7 +2289,15 @@ jobs:
         with:
           name: build-artifacts
       - name: Restore executable permissions
-        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+        # Wraps the downloaded stub in a dotnet-invoking shim; see the
+        # runner-pools comment near the top of this file for why.
+        run: |
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
+          cat > "$lyric_bin" <<'WRAPPER'
+          #!/usr/bin/env bash
+          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          WRAPPER
+          chmod +x "$lyric_bin"
 
       # source_path_diagnostics_self_test.l and jvm_sourcefile_attr_self_test.l
       # (below) spawn `./bin/lyric` as a subprocess, resolved relative to CWD
@@ -2836,7 +2904,15 @@ jobs:
         with:
           name: build-artifacts
       - name: Restore executable permissions
-        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+        # Wraps the downloaded stub in a dotnet-invoking shim; see the
+        # runner-pools comment near the top of this file for why.
+        run: |
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
+          cat > "$lyric_bin" <<'WRAPPER'
+          #!/usr/bin/env bash
+          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          WRAPPER
+          chmod +x "$lyric_bin"
 
       # ILCompiler package cache — keyed on the .NET SDK version so the
       # ~200 MB compiler package is not re-downloaded on every run.
@@ -3033,7 +3109,15 @@ jobs:
         with:
           name: build-artifacts
       - name: Restore executable permissions
-        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+        # Wraps the downloaded stub in a dotnet-invoking shim; see the
+        # runner-pools comment near the top of this file for why.
+        run: |
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
+          cat > "$lyric_bin" <<'WRAPPER'
+          #!/usr/bin/env bash
+          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          WRAPPER
+          chmod +x "$lyric_bin"
       # Stage-2 binary: needed only by the handful of steps below that
       # exercise a compiler-internal `@externTarget` signature-encoding fix
       # (System.Single `bufMsilType`, D125 follow-up) — such a fix only takes
@@ -5159,10 +5243,18 @@ jobs:
         with:
           name: build-artifacts
       - name: Restore executable permissions
+        # Wraps the downloaded stub in a dotnet-invoking shim; see the
+        # runner-pools comment near the top of this file for why.
         if: |
           (matrix.set == 'msil' && needs.build.outputs.has_msil_changes == 'true') ||
           (matrix.set == 'jvm' && needs.build.outputs.has_jvm_changes == 'true')
-        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+        run: |
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
+          cat > "$lyric_bin" <<'WRAPPER'
+          #!/usr/bin/env bash
+          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          WRAPPER
+          chmod +x "$lyric_bin"
       - name: Run numbered ${{ matrix.set }} self-tests (shard ${{ matrix.shard }})
         if: |
           (matrix.set == 'msil' && needs.build.outputs.has_msil_changes == 'true') ||
@@ -5286,10 +5378,17 @@ jobs:
         # `env:` key at the job level (the same pitfall that once made
         # bench.yml fail validation with zero jobs dispatched, #6247).
         # Written to $GITHUB_ENV so every later step in this job sees it
-        # as a real environment variable.
+        # as a real environment variable. Also wraps the downloaded stub
+        # in a dotnet-invoking shim; see the runner-pools comment near
+        # the top of this file for why.
         run: |
-          echo "LYRIC_CLI_PATH=bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" >> "$GITHUB_ENV"
-          chmod +x "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          echo "LYRIC_CLI_PATH=$lyric_bin" >> "$GITHUB_ENV"
+          cat > "$lyric_bin" <<'WRAPPER'
+          #!/usr/bin/env bash
+          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          WRAPPER
+          chmod +x "$lyric_bin"
 
       - name: Stage stdlib DLLs + local-dep resolver setup
         run: bash scripts/ci/stage-stdlib-dlls-localdep-resolver.sh
@@ -5534,7 +5633,15 @@ jobs:
         with:
           name: build-artifacts
       - name: Restore executable permissions
-        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+        # Wraps the downloaded stub in a dotnet-invoking shim; see the
+        # runner-pools comment near the top of this file for why.
+        run: |
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
+          cat > "$lyric_bin" <<'WRAPPER'
+          #!/usr/bin/env bash
+          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          WRAPPER
+          chmod +x "$lyric_bin"
 
       # Full self-hosted stdlib bundle (#2592, stage-2 milestone) — builds
       # the entire public Std.* surface through the self-hosted MSIL backend
@@ -6046,7 +6153,15 @@ jobs:
         with:
           name: build-artifacts
       - name: Restore executable permissions
-        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+        # Wraps the downloaded stub in a dotnet-invoking shim; see the
+        # runner-pools comment near the top of this file for why.
+        run: |
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
+          cat > "$lyric_bin" <<'WRAPPER'
+          #!/usr/bin/env bash
+          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          WRAPPER
+          chmod +x "$lyric_bin"
 
       # See compiler-self-tests-dotnet-a's "Parallel step execution" comment above
       # for how `background: true` / `wait-all: true` work.
@@ -6640,7 +6755,15 @@ jobs:
         with:
           name: build-artifacts
       - name: Restore executable permissions
-        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+        # Wraps the downloaded stub in a dotnet-invoking shim; see the
+        # runner-pools comment near the top of this file for why.
+        run: |
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
+          cat > "$lyric_bin" <<'WRAPPER'
+          #!/usr/bin/env bash
+          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          WRAPPER
+          chmod +x "$lyric_bin"
 
       # clang and zlib1g-dev are required by the ILCompiler linker pass used by
       # `lyric build --release --aot` (the trampoline-elimination pipeline, #4139).
