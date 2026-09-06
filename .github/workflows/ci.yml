@@ -701,7 +701,7 @@ jobs:
         with:
           global-json-file: bootstrap/global.json
       - name: Set up Java 21 (jvm_lambda_iface_bundling_self_test.l's last case runs `java -jar` on this dotnet-target job — #6671)
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c  # v6.0.0
         with:
           distribution: temurin
           java-version: '21'
@@ -1964,6 +1964,17 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_native_changes == 'true'
     steps:
+      # This job's clang/gcc/ASan requirement (see the CI_NATIVE_RUNNER doc
+      # comment above) is provisioned here rather than baked into a self-hosted
+      # runner's image, so a fresh/bare self-hosted machine works without any
+      # image customization -- mirrors the existing inline `sudo apt-get
+      # install -y z3` pattern used elsewhere in this file. Skipped on
+      # GitHub-hosted runners, which already ship clang/gcc/ASan, to avoid
+      # spending time on a no-op install every run.
+      - name: Install clang/gcc/ASan (self-hosted runners only)
+        if: runner.environment == 'self-hosted'
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends clang gcc build-essential lld
+
       # Point TMPDIR at `runner.temp` before the concurrent `background: true`
       # self-test steps below start. Despite this step's old name, this is NOT
       # about a "RAM disk" -- on a standard `ubuntu-latest` runner, `/tmp` and
@@ -5102,12 +5113,11 @@ jobs:
     # Gated per matrix entry, not a single job-wide condition: the msil
     # shards only need has_msil_changes and the jvm shards only need
     # has_jvm_changes, so a PR confined to one backend skips the other
-    # backend's shards instead of running all six every time.
-    if: |
-      needs.build.outputs.has_code_changes == 'true' && (
-        (matrix.set == 'msil' && needs.build.outputs.has_msil_changes == 'true') ||
-        (matrix.set == 'jvm' && needs.build.outputs.has_jvm_changes == 'true')
-      )
+    # backend's shards instead of running all six every time. `matrix` is
+    # only available in step contexts (not jobs.<id>.if, which is evaluated
+    # before matrix expansion), so the job-level if only gates the matrix-
+    # independent precondition and each step re-checks the per-entry part.
+    if: needs.build.outputs.has_code_changes == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -5121,27 +5131,42 @@ jobs:
     name: numbered-self-tests (${{ matrix.set }} ${{ matrix.shard }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: |
+          (matrix.set == 'msil' && needs.build.outputs.has_msil_changes == 'true') ||
+          (matrix.set == 'jvm' && needs.build.outputs.has_jvm_changes == 'true')
         with:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
+        if: |
+          (matrix.set == 'msil' && needs.build.outputs.has_msil_changes == 'true') ||
+          (matrix.set == 'jvm' && needs.build.outputs.has_jvm_changes == 'true')
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
         with:
           global-json-file: bootstrap/global.json
       # self_test_b13.l compiles its own probe fixture with the host javac.
       - name: Set up Java 21 (jvm set only)
-        if: matrix.set == 'jvm'
+        if: matrix.set == 'jvm' && needs.build.outputs.has_jvm_changes == 'true'
         uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c  # v6.0.0
         with:
           distribution: temurin
           java-version: '21'
       - name: Download build artifacts
+        if: |
+          (matrix.set == 'msil' && needs.build.outputs.has_msil_changes == 'true') ||
+          (matrix.set == 'jvm' && needs.build.outputs.has_jvm_changes == 'true')
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: build-artifacts
       - name: Restore executable permissions
+        if: |
+          (matrix.set == 'msil' && needs.build.outputs.has_msil_changes == 'true') ||
+          (matrix.set == 'jvm' && needs.build.outputs.has_jvm_changes == 'true')
         run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
       - name: Run numbered ${{ matrix.set }} self-tests (shard ${{ matrix.shard }})
+        if: |
+          (matrix.set == 'msil' && needs.build.outputs.has_msil_changes == 'true') ||
+          (matrix.set == 'jvm' && needs.build.outputs.has_jvm_changes == 'true')
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail

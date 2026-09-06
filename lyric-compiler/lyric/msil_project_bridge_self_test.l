@@ -634,6 +634,43 @@ test "async facade-transitive bare await does not corrupt a later await in the s
   assertEqual(Str.trim(result.stdout), "1020", "async_facade_transitive_bare_await: later await value not corrupted")
 }
 
+// A generic function's own type-parameter name (`V`) must not be confused,
+// via bare last-path-segment name matching, with an unrelated concrete type
+// sharing that same bare name when referenced via a fully-qualified
+// cross-package path (`NC5771.Lib.V`). The async Phase-B pre-scan
+// (`collectAwaitTypesPhaseBMsil`, populating `cctx.pbGenerics`) used to erase
+// ANY `TRef` whose last path segment textually matched an active generic-
+// parameter name, regardless of how many segments qualified it, silently
+// mistyping a local binding of the wrong (but same-bare-named) concrete type
+// spilled across an `await` suspension point (#5771).
+test "generic type parameter name does not collide with a same-named qualified type across an await (#5771)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("NC5771.Lib", "package NC5771.Lib\n" + "import Std.Core\n" + "\n" + "pub record V { n: Int }\n"))
+  packages.add(
+    mkPkg(
+      "NC5771.App",
+      "package NC5771.App\n" + "import Std.Core\n" + "import NC5771.Lib\n" + "\n" + "async func noop(): Int { 0 }\n" +
+        "\n" +
+        "async func identity[V](x: in V): V {\n" +
+        "  val marker: NC5771.Lib.V = NC5771.Lib.V(n = 42)\n" +
+        "  await noop()\n" +
+        "  if marker.n != 42 {\n" +
+        "    panic(\"marker corrupted by generic name collision\")\n" +
+        "  }\n" +
+        "  x\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val r = await identity(7)\n" +
+        "  println(toString(r))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("nc5771", packages, "NC5771")
+  assertEqualInt(result.exitCode, 0, "name_collision_5771: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "7", "name_collision_5771: identity round-trips and marker not corrupted")
+}
+
 // ─── Phase 3: cross-package record and union round-trips ─────────────────────
 // Cross-package RECORD value round-trip.  Pkg A defines a `pub record
 // Point` plus pub funcs that produce and consume one; pkg B imports A,

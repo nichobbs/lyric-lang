@@ -6752,7 +6752,14 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
     case TNever -> MVoid
     case TRef(path) -> {
       val seg = lastSegmentMsil(path)
-      if nameListContains(cctx.pbGenerics, seg) {
+      // A bare, single-segment reference is the only shape a genuine
+      // type-parameter reference can take (there is no dotted-path syntax
+      // for naming one) — gating on `segments.count == 1` here prevents a
+      // fully-qualified reference to an unrelated concrete type whose bare
+      // name happens to collide with an active generic parameter (e.g.
+      // `Std.CollectionsHost.V` colliding with a `func f[V](...)`) from
+      // being erased to `MObject` too (#5771).
+      if path.segments.count == 1 and nameListContains(cctx.pbGenerics, seg) {
         return MObject
       }
       if seg == "Int" {
@@ -26542,7 +26549,11 @@ func typeExprToMsilG(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, g
   match te.kind {
     case TRef(path) -> {
       val seg = lastSegmentMsil(path)
-      val idx = genericIndexOf(generics, seg)
+      // Single-segment gate (#5771): a qualified path can never denote a
+      // bare type-parameter reference, so only a lone unqualified segment
+      // may resolve against `generics` — see the matching comment on
+      // `typeExprToMsilCtx`'s `cctx.pbGenerics` check.
+      val idx = if path.segments.count == 1 { genericIndexOf(generics, seg) } else { -1 }
       if idx >= 0 {
         MTypeVar(index = idx)
       } else {
@@ -26734,7 +26745,10 @@ func typeExprToMsilGApp(
 // erased generic-slice representation (#2557).
 func isGenericTypeVar(te: in TypeExpr, generics: in List[String]): Bool {
   match te.kind {
-    case TRef(path) -> genericIndexOf(generics, lastSegmentMsil(path)) >= 0
+    // Single-segment gate: see the matching comment on `typeExprToMsilCtx`'s
+    // `cctx.pbGenerics` check (#5771) — a qualified path can never denote a
+    // bare type-parameter reference.
+    case TRef(path) -> path.segments.count == 1 and genericIndexOf(generics, lastSegmentMsil(path)) >= 0
     case TParen(inner) -> isGenericTypeVar(inner, generics)
     case _ -> false
   }
