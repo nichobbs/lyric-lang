@@ -694,7 +694,7 @@ regression coverage (a parse-phase and a type-check-phase diagnostic, each
 on the *second* file of a two-file package, each asserting the real file
 **and** line).
 
-**#6824 (closed in D-progress-883) folds in the three surfaces above, plus a
+**#6824 (closed in D-progress-886) folds in the three surfaces above, plus a
 fourth found in review.** `NativeSourcePackage` now carries a `path: String`
 field and `compileProjectToNativeWithFlags` a trailing
 `originsByPkg: List[Lyric.DiagnosticUtil.PackageLineOrigins]` parameter,
@@ -970,7 +970,7 @@ per-file-parse-then-merge-ASTs approach originally recommended) —
 consulted by every `Lyric.Pipeline.gate` call along the shared middle end.
 The native project-build path and codegen-phase (F0xxx) diagnostics on a
 multi-file package were explicitly out of scope for this slice, closed by
-#6824/D-progress-883 (see the note at the end of §9.5): `NativeSourcePackage`
+#6824/D-progress-886 (see the note at the end of §9.5): `NativeSourcePackage`
 now carries a real path and `compileProjectToNativeWithFlags` an
 `originsByPkg` parameter, and the MSIL codegen-phase gate now consults the
 same per-package origins table the earlier phases already resolved.
