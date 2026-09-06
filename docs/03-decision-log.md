@@ -41186,6 +41186,332 @@ bundle-wide-undeclared bare call fails earlier at type-check (`T0020` unknown
 name) and never reaches codegen's `T0123`, so no constructible negative case
 remains for a plain function post-fix.
 
+## D-progress-882 — Three native-codegen review-finding fixes: bare enum-case pattern miscompile, out/inout width-mismatch guard, over-inclusive UFCS reachability narrowing (#6740, #6813, #6625)
+
+**Context.** Three independently-filed review findings against the
+native backend, all confirmed still present against current `main`.
+
+**#6740 — bare enum-case pattern silently binds instead of testing
+equality.** `Lyric.LlvmCodegen.emitPatternTest`'s `PBinding(name, None)`
+arm treats a bare identifier pattern (`case Foo ->`) as a nullary
+constructor test only when `scrutineeHasCase(ctx, sv.ty, name)` returns
+true, and `scrutineeHasCase` only ever consulted `unionInfoOfType`. An
+enum value erases to bare `NI32` at the native IR level — indistinguishable
+from a real `Int` by type alone — so `unionInfoOfType` always returns
+`None` for an enum-typed scrutinee, and `scrutineeHasCase` always
+answered `false`. The parser cannot distinguish a bare-case pattern from
+an ordinary catch-all binding pattern (`PBinding(name, None)` either
+way), so `match version { case Http1_1 -> ...; case Http1_0 -> ... }`
+over an enum-typed `version` silently miscompiled: the FIRST arm always
+matched unconditionally as a catch-all bind, with no diagnostic — just a
+wrong answer for every case after the first.
+
+Fixed by extending `scrutineeHasCase` with an `NI32` fallback:
+
+```
+case None -> {
+  match t {
+    case NI32 -> ctx.enumDefs.containsKey(name)
+    case _ -> false
+  }
+}
+```
+
+narrowly gated on the scrutinee's actual runtime representation being
+`NI32` (never a real `Int`'s own catch-all binds, since `ctx.enumDefs`
+only ever contains registered enum-case names) — when matched, the
+`PBinding` arm's existing redirect delegates to `emitConstructorTest`
+exactly as the union-case branch already does, and `emitConstructorTest`'s
+OWN `sv.ty == NI32` gate (shipped for #6753) ensures the enum branch
+never misfires against a union scrutinee. New item G in
+`llvm_enum_case_resolve_self_test.l`: a `Version` enum matched with bare
+case names in both arms, asserting BOTH resolve correctly (not just that
+the first doesn't crash) — verified this fails without the fix (the
+`Http1_0` call would wrongly also return `Http1_1`'s value) and passes
+with it.
+
+**#6813 — no defensive check for a numeric-widened by-ref argument.**
+Follow-up from N9.6 (#6794/#6812)'s review: the type checker's
+`argSatisfiesParam` (`typechecker_exprs.l`) applies `widenArithmetic`
+uniformly across every parameter mode, so an `Int`-typed local (or
+record field) type-checks against an `inout Long` parameter today.
+Before #6812, any `out`/`inout` parameter panicked outright on native,
+so this combination could never reach codegen; now that native
+`out`/`inout` lowering is live, `lowerByRefArg` forwarded the raw local
+(or field) pointer tagged with the CALLEE's declared type with no check
+against the argument's OWN actual type — a hit would alias a narrower
+alloca (e.g. `alloca i32`) through the wider declared pointer type
+(`i64*`), a memory-unsafe width mismatch matching the `04-arc-design.md`
+Rule-violating class of bug #6645 (PR #6905) found elsewhere in this
+backend.
+
+Fixed with a named panic in both `lowerByRefArg` branches (bare local
+and record field) when the argument's actual type doesn't exactly match
+the callee's declared by-ref parameter type — matching N9.6's own "loud
+diagnostic, never silent miscompile" policy for every other out/inout
+scope cut (extern funcs, protected types, async, unaddressable l-value
+shapes). Three cases in `llvm_inout_self_test.l`: an `Int` local against
+an `inout Long` parameter, the same shape against an `out Long`
+parameter (mode symmetry — `lowerByRefArg`'s guard applies identically
+to both by-ref modes), and an `Int` record field against an `inout
+Long` parameter — all asserted via `assertPanicsWith` to panic with a
+message containing "must match the parameter's declared type exactly"
+before `lowerNativePackage`/clang ever run.
+
+**#6625 — bare-name UFCS reachability fallback is over-inclusive across
+colliding trailing names.** #6103 item D (PR #6622) added a bare
+member-name-only reachability fallback to `Lyric.LlvmBridge`'s
+function-granularity reachability walk (`collectCallKeys`/
+`registerFileFns`/`registerBareTrailingSegment`), needed because a UFCS
+call on a value receiver (`cfg.identity.rawHandle()`) produces no
+resolvable key at the syntax-only reachability stage (the receiver's
+static type isn't known yet). The fallback resolves a bare trailing
+segment (`"rawHandle/1"`) against EVERY same-named/arity
+extension-method-style declaration in the bundle via a multi-valued
+`bareTrailing: Map[String, List[String]]`. The stdlib already has
+several common trailing names declared on multiple, otherwise-unrelated
+types (`.message()` on `TlsError`/`RestError`/`ParseError`/`IOError`/
+`HttpError`/`YamlError`/`XmlError`) — if a program's transitive import
+closure pulls in two or more of these and calls `.message()` on any one
+via UFCS, ALL colliding implementations get swept into the reachable
+set together, so an unrelated, never-called implementation using a
+not-yet-lowerable construct could fail an otherwise-unrelated build.
+
+A precise fix needs receiver-type inference threaded into this
+syntax-only walk — out of scope here (tracked as the issue's own "what a
+real fix needs" open item). Shipped instead: a real, SOUND partial
+narrowing. `walkReachableFns` now takes a `pkgImports: Map[String,
+List[String]]` adjacency map (each bundled/own file's own direct
+`imports`, built once by a new `addPkgImports` helper at both native
+entry points — single-file `compileToNativeWithFlags` and multi-package
+`compileProjectToNativeWithFlags`) and, for each `bareTrailing`
+resolution, computes `curPkg`'s transitive import closure via a new
+`pkgTransitiveClosure` (BFS, memoized per `curPkg` for the walk's
+lifetime) — a `bareTrailing` candidate is marked reachable only when its
+OWN declaring package is inside that closure (or is `curPkg` itself). An
+empty/unregistered `curPkg` falls back to the old bundle-wide behavior
+rather than risk under-inclusion in an edge case never observed in
+practice. This narrowing is provably sound in one direction: the type
+checker requires a cross-package callee's declaring package be imported
+(directly or transitively) for the ORIGINAL unambiguous UFCS call to
+have type-checked at all, so the genuinely-correct candidate is always
+inside the caller's own import closure — this can only exclude UNRELATED
+candidates from packages the caller can't even reach, never the real
+target. It remains over-inclusive when two colliding packages ARE
+co-imported by the same program (the general case genuinely needs type
+inference), so this is documented as a partial fix, not a closure of the
+underlying issue.
+
+Two unit-level cases in `llvm_codegen_self_test.l` (new `import
+Lyric.LlvmBridge`) exercise `pkgTransitiveClosure` (now `pub`) directly
+against hand-built `pkgImports` adjacency maps — a root with a reachable
+direct import, a transitively-reachable import-of-an-import, and an
+unrelated sibling package the root cannot reach at all; and a diamond
+import graph (`A -> {B, C} -> D -> A`) to confirm the BFS terminates and
+visits every node exactly once despite the cycle. A full end-to-end
+regression (two bundled stdlib packages colliding on a trailing name
+where one has a currently-unlowerable body) isn't constructible today —
+per the issue's own note, no such stdlib pair currently exists — so this
+tests the new closure computation directly rather than synthesizing an
+artificial unlowerable stdlib function.
+
+**Review fix (#6952) — `addPkgImports` first-file-wins dropped
+multi-file package imports.** `claude-review` on this PR's initial
+commit caught a real soundness gap in `addPkgImports`: it returned early
+once a package name was already a key in `pkgImports`
+(`if pkgImports.containsKey(pkg) { return }`), so for a package split
+across multiple files (multi-file packages are first-class,
+`docs/19-multi-file-packages.md` — e.g. this very repo's `Lyric.Parser`,
+whose `parser_cst.l` imports `Std.String` but `parser_core.l`/
+`parser_exprs.l` don't), only the FIRST file processed contributed its
+imports to the map; every later file's imports for that same package
+were silently dropped. Since `pkgTransitiveClosure`'s BFS only walks
+edges actually present in `pkgImports`, a multi-file package whose
+import-bearing file was processed second could wrongly exclude a
+genuinely-correct `bareTrailing` candidate — precisely the failure mode
+the PR's own soundness argument claimed could not happen. Fixed by
+merging into whatever list already sits under `pkg` (via `mapGet` +
+in-place `List.add`, the same accumulate-under-a-key idiom
+`registerBareTrailingSegment` already uses) instead of skipping after
+the first file; duplicate import entries across files are harmless since
+`pkgTransitiveClosure`'s BFS already dedupes via its own `seen` map. New
+test `"addPkgImports merges import lists across multiple files of the
+same package (#6952)"` in `llvm_codegen_self_test.l`: two parsed
+`SourceFile`s sharing one `package Multi` with disjoint import lists,
+asserting the merged closure contains both. Also applied the review's
+two SUGGESTIONs: an `out Long` mode-symmetry case alongside the existing
+`inout Long` one in `llvm_inout_self_test.l`, and reworded the
+`lowerByRefArg` panic message ("...must match the parameter's declared
+type exactly...") for clarity.
+
+**Verified.** Full existing native self-test suite re-run under real
+ASan (this sandbox's `libclang-rt-18-dev` gap from earlier native-backend
+sessions is resolved — `apt-get install` succeeded once network access
+was retried) after both the original fixes and the #6952 review fix:
+`llvm_codegen_self_test.l` 35/35 (incl. the new `addPkgImports` case),
+`llvm_enum_case_resolve_self_test.l` 7/7, `llvm_inout_self_test.l`
+12/12 (incl. the new `out Long` case), `llvm_project_self_test.l` 10/10
+(multi-package reachability path, unaffected since every own-package
+function is already an unconditional reachability root — #6625's
+narrowing only bites the BUNDLED STDLIB closure, reached purely via
+imports), `llvm_stdlib_self_test.l` 18/18, `llvm_http_client_self_test.l`
+13/13 — no regressions from the reachability narrowing, the two new
+diagnostics, or the `addPkgImports` merge fix.
+
+**Related:** #6740, #6813, #6625 (all fixed here), #6952 (review-finding
+follow-up, fixed here too), #6645 (the sibling native-codegen ARC bug
+also fixed this session, in a separate PR, #6905),
+`native/plan/08-work-items.md` N9.9, `native/plan/04-arc-design.md`
+(Rule 5, the by-ref-argument-ownership rule #6813's fix protects).
+
+## D-progress-883 — Native codegen: #6740's enum-case pattern fix was reachable by an unrelated `Int`/`Char` scrutinee sharing a bind name with any enum case in the bundle (#6969)
+
+**Context.** A `claude-review` pass on the PR shipping D-progress-882's
+#6740 fix flagged a REQUIRED soundness gap the fix itself introduced:
+`scrutineeHasCase`'s new `NI32` fallback (`llvm_codegen.l`) checked
+`ctx.enumDefs.containsKey(name)` — a global, bundle-wide bare-case-name
+registry — with no check that the scrutinee is actually of that
+specific enum's type. Since an enum, a plain `Int`, and a `Char` all
+erase to the SAME native `NI32` representation, an ordinary catch-all
+bind pattern over a real `Int`/`Char` value (`match n { case Foo -> ... }`
+where `n: Int`) whose bind name happened to match ANY enum case name
+anywhere in the compiled bundle was silently reinterpreted as an
+equality test against that unrelated enum's ordinal, instead of
+binding — a hazard #6740's fix newly introduced (previously
+`scrutineeHasCase` always returned `false` for a non-union scrutinee,
+so bare-name binds over `Int`/`Char` were always safe on
+`--target native`).
+
+**Fix.** Mirrors `Msil.Codegen`'s existing `scrutEnumHint`/
+`inferScrutineeEnumHintMsil` mechanism (#5995), scoped to what native
+actually needs:
+
+- `Ctx.varEnumTypes: Map[String, String]` — a local/param's declared
+  enum type SIMPLE NAME, populated at `bindLocal`'s three `SLocal`
+  binding sites (`LBVal`/`LBLet`/`LBVar`, from the binding's type
+  annotation) and at function-parameter binding (from the parameter's
+  declared type), via the new `registerVarEnumType`/`enumNameOfTypeExpr`
+  helpers. Same flat, last-write-wins lifetime as the pre-existing
+  `Ctx.varTypes` — this backend has no scope-undo mechanism for either
+  map, so no new shadowing behavior is introduced.
+- `inferScrutineeEnumHint` — mirrors `inferScrutineeEnumHintMsil`
+  exactly: a match scrutinee that's a bare local/param reference
+  (`EPath` with one segment) looks up its declared enum type in
+  `varEnumTypes`; anything else (a field access, a call, a literal)
+  yields `""` (no hint — the safe "never an enum case" default).
+- `scrutineeHasCase` now takes this hint and, for an `NI32` scrutinee,
+  checks `enumHint + "." + name` in `ctx.enumDefs` (the scrutinee's OWN
+  enum) instead of a bundle-wide bare-name check. An empty hint means
+  "not known to be a specific enum," which now correctly falls through
+  to a plain bind — the pre-#6740 behavior for `Int`/`Char` scrutinees.
+- `lowerMatch` computes the hint once from the top-level scrutinee
+  expression and threads it through `emitPatternTest`'s arm-testing
+  calls. `emitConstructorTest`'s own recursive `emitPatternTest` call
+  (for constructor sub-field patterns) passes `""`: a sub-field's bare
+  `PBinding` pattern is handled inline as a plain bind before reaching
+  `scrutineeHasCase` at all (unaffected by this fix's scope either way),
+  so the hint there is unused dead-code-path plumbing, kept only to
+  satisfy the now-required parameter.
+
+Blast radius is narrower than it might first appear: `emitConstructorTest`
+(the union/enum-by-qualified-name path, and the `PConstructor` parser
+shape for an already-disambiguated pattern) never called
+`scrutineeHasCase` at all — that function's own `NI32` branch already
+gated on the FULL qualified/bare case key via `ctx.enumDefs` directly,
+never the ambiguous "any enum in the bundle" check #6969 fixes. The bug
+was strictly confined to `emitPatternTest`'s top-level `PBinding` branch,
+reached only from `lowerMatch`'s own arm tests.
+
+**Verification.** New item H in `llvm_enum_case_resolve_self_test.l`:
+a plain `Int` parameter matched against a bare pattern name colliding
+with an unrelated enum's case (`Version.Http1_1`) must echo the bind
+back unchanged (99 → 99), not compare against the enum's ordinal and
+fall through to a wildcard arm. Confirmed failing before the fix
+(returns the wildcard arm's value instead of the bound `Int`) and
+passing after. Full re-run of the affected native self-test suite:
+`llvm_enum_case_resolve_self_test.l` 8/8 (item G's own #6740 regression
+still passes — an empty hint never fires for a genuinely enum-typed
+scrutinee, since `bindLocal`/function-parameter binding now always
+records the hint when the declared type is a known enum),
+`llvm_inout_self_test.l` 12/12, `llvm_codegen_self_test.l` 35/35,
+`llvm_stdlib_self_test.l` 18/18, `llvm_http_client_self_test.l` 13/13 —
+no regressions. `lyric fmt --write` applied clean (no refusals) to
+`llvm_codegen.l`.
+
+**Related:** #6969 (fixed here), D-progress-882 (#6740, the fix this
+entry closes a soundness gap in), `Msil.Codegen.inferScrutineeEnumHintMsil`
+(#5995, the mirrored mechanism), `native/plan/08-work-items.md` N9.9.
+
+## D-progress-884 — Native codegen: D-progress-883's #6969 fix dropped #6740's coverage for any scrutinee shape lacking a declared-type hint (#6976)
+
+**Context.** A third `claude-review` pass on the same PR (this time
+against the commit shipping D-progress-883's #6969 fix) found that
+fix's own "empty hint means never an enum case" rule went too far:
+`inferScrutineeEnumHint` only ever produces a hint for a bare local/
+param reference with a KNOWN declared type — a `val` with no type
+annotation, a direct call-result scrutinee (`match toVersion(n) { ... }`),
+or a field-access scrutinee all yield `""`. Treating `""` as
+"conclusively not an enum" (D-progress-883's fix) silently dropped
+#6740's own fix for every one of those shapes, reproducing #6740's
+original defect (unconditional first-arm catch-all bind) for anything
+that wasn't a directly-typed parameter or annotated local. The
+suggested fix mirrors `Msil.Codegen.lowerPatternTestMsil`'s own already-
+shipped trade-off (#5995): fall back to the pre-#6969 bundle-wide
+`ctx.enumDefs.containsKey(name)` check when no hint is available, rather
+than dropping enum-case pattern support for hint-less scrutinees.
+
+**The naive fallback reintroduces #6969 for a different shape.** A
+first attempt (plain "if hint empty, use the bundle-wide check")
+regressed D-progress-883's own item-H regression test: an `Int`
+PARAMETER (`n: Int`) has a perfectly well-known declared type — it's
+concretely NOT an enum — but `enumNameOfTypeExpr` returned `""` for it
+(same as truly unknown), so the naive fallback wrongly re-enabled the
+bundle-wide collision hazard D-progress-883 had just closed. Two
+different scrutinee shapes both map to `enumHint == ""` under the
+old two-way design, needing OPPOSITE behavior: a concretely-`Int`
+scrutinee must NEVER fall back (D-progress-883's fix), while a
+call-result/field-access scrutinee of TRULY unknown type must fall
+back (this issue's fix) — the empty string can't represent both.
+
+**Fix.** Made the hint three-way instead of two-way. A new reserved
+sentinel `nonEnumScrutHint = "#nonenum"` (never collides with a real
+enum's bare name — enum names are lexer-restricted identifiers, which
+can't start with `#`) is what `enumNameOfTypeExpr` now returns for a
+`TRef` naming literally `Int` or `Char` (the only two types that erase
+to `NI32` besides an enum). `scrutineeHasCase`'s `NI32` branch now
+reads three cases: a real enum name -> scope the check to that enum
+(conclusive either way, D-progress-883's fix, unchanged); the sentinel
+-> unconditionally `false` (concretely known non-enum, never falls
+back); `""` -> the pre-#6969 bundle-wide `ctx.enumDefs.containsKey(name)`
+check (truly unknown, this issue's fix). `registerVarEnumType`/
+`registerVarEnumTypeFromOpt` needed no changes — they already store
+whatever hint string is passed, sentinel included.
+
+Also applied the review's SUGGESTION: the four `SLocal` binding arms'
+near-duplicated `enumHint`/`registerVarEnumType` computation in
+`lowerStmt` is now the one-line `registerVarEnumTypeFromOpt(ctx, name,
+tyOpt)` helper.
+
+**Verification.** New item I in `llvm_enum_case_resolve_self_test.l`:
+a `Version`-returning function's result matched DIRECTLY (never bound
+to a local first, so no hint is ever recorded for it) must still gate
+correctly on the enum's cases via the bundle-wide fallback. Confirmed
+BOTH item H (#6969, the concretely-`Int`-scrutinee case) and item I
+(#6976, the truly-unknown-scrutinee case) pass simultaneously — the
+naive single-fallback fix could not satisfy both at once, only the
+three-way sentinel design can. Full re-run of the affected native
+self-test suite: `llvm_enum_case_resolve_self_test.l` 9/9,
+`llvm_inout_self_test.l` 12/12, `llvm_codegen_self_test.l` 35/35,
+`llvm_stdlib_self_test.l` 18/18, `llvm_http_client_self_test.l` 13/13,
+`llvm_project_self_test.l` 10/10 — no regressions. `lyric fmt --write`
+applied clean (no refusals) to both changed `.l` files.
+
+**Related:** #6976 (fixed here), D-progress-883 (#6969, the fix this
+entry corrects), D-progress-882 (#6740, the original fix both #6969 and
+#6976 are follow-ups to), `Msil.Codegen.inferScrutineeEnumHintMsil`
+(#5995, the mirrored mechanism and accepted fallback trade-off),
+`native/plan/08-work-items.md` N9.9.
+
 ## D-progress-877 — `lyric-grpc`: server hosting confirmed blocked by the same #6581 gap as unary/streaming; no bindable non-generic subset found (#6592, #5409)
 
 **Context.** #6592/#5409 track `Grpc.Kernel.Net`'s real implementation.

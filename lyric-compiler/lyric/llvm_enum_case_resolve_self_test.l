@@ -62,16 +62,48 @@
 //!     itself (a pre-existing MSIL/JVM behavior); documents that
 //!     native's collision semantics are deterministic and match the
 //!     other two targets'.
+//!   - item G (#6740, fixed): a bare pattern-position case name against
+//!     an ENUM scrutinee. `scrutineeHasCase` only ever consulted
+//!     `unionInfoOfType`, which is always `None` for an enum (an enum
+//!     erases to bare `NI32`, indistinguishable from a real `Int` by
+//!     type alone), so a bare-case `match` arm over an enum value always
+//!     matched unconditionally as a catch-all bind — silently, no
+//!     diagnostic, just a wrong answer for every arm after the first.
+//!     Fixed by falling back to `ctx.enumDefs.containsKey(name)` when
+//!     the scrutinee's type is `NI32`, delegating to the SAME
+//!     `emitConstructorTest` enum branch item E's fix already gates on
+//!     `sv.ty == NI32`.
+//!   - item H (#6969, fixed): item G's own fix was reachable by a REAL
+//!     `Int` scrutinee too, since `ctx.enumDefs.containsKey(name)` is a
+//!     global, bundle-wide bare-case-name registry with no check that
+//!     the scrutinee is actually of that enum's type — an ordinary
+//!     catch-all bind pattern over a plain `Int` whose bind name happens
+//!     to match ANY enum case name anywhere in the compiled bundle was
+//!     silently reinterpreted as an equality test against that unrelated
+//!     enum's ordinal, instead of binding. Fixed by threading
+//!     `inferScrutineeEnumHint` (mirroring `Msil.Codegen`'s
+//!     `inferScrutineeEnumHintMsil`, #5995) from the match scrutinee's
+//!     own declared type through to `scrutineeHasCase`, which now scopes
+//!     the enum-case check to `enumHint + "." + name` — the scrutinee's
+//!     OWN enum — rather than any bare-name match in the whole bundle.
+//!     An `Int` scrutinee has no enum hint, so it always falls through
+//!     to a plain bind, exactly as it did before item G's fix existed.
+//!   - item I (#6976, fixed): item H's fix required a declared-enum-type
+//!     HINT to recognise a bare-case-name pattern at all — dropping the
+//!     #6740 fix's coverage entirely for any scrutinee shape with no
+//!     hint (an untyped local, a direct call-result match, a field
+//!     access). Fixed by falling back to the pre-#6969 bundle-wide
+//!     `ctx.enumDefs.containsKey(name)` check when no hint is available,
+//!     mirroring `Msil.Codegen`'s own accepted trade-off (#5995: prefer
+//!     the type-scoped key when known, fall back to the ambiguous bare
+//!     key otherwise) instead of dropping enum-case pattern support for
+//!     those shapes.
 //!
 //! Items A-D and F's `match` arms use the fully-qualified `EnumType.Case`
-//! pattern form deliberately, to isolate the value-position fix from a
-//! separate, still-open, pre-existing gap: a bare pattern-position case
-//! name against an ENUM scrutinee (`emitPatternTest`'s `scrutineeHasCase`
-//! only recognises union cases, not enum cases, so a bare pattern name
-//! over an enum scrutinee silently binds instead of testing equality;
-//! filed as #6740, not fixed here). Item E's bare pattern deliberately
-//! targets a UNION scrutinee instead — a different, now-fixed path
-//! (#6753), unrelated to #6740's still-open enum-scrutinee gap.
+//! pattern form deliberately, to isolate the value-position fix from the
+//! pattern-position gap item G covers directly. Item E's bare pattern
+//! deliberately targets a UNION scrutinee instead — a different path
+//! (#6753), unrelated to item G's enum-scrutinee case.
 //!
 //! Requires `clang` on PATH and a built runtime (`make -C lyric-rt`) for
 //! items B/C; item A additionally needs the native stdlib source tree
@@ -417,5 +449,107 @@ test "an enum-vs-enum bare-name collision resolves via first-wins, matching Msil
     r.exitCode,
     42,
     "enum-vs-enum bare-name collision resolves to the first-declared enum's case (#5995 shape)"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Item G (#6740): a bare pattern-position case name against an ENUM
+// scrutinee. Before the fix, `case Http1_1 -> 1` (the FIRST arm) always
+// matched unconditionally (an ordinary catch-all bind, since
+// `scrutineeHasCase` never recognised an enum case) — so `toInt(Http1_0)`
+// would wrongly also return 1 instead of falling through to the second
+// arm's `0`. Both calls are asserted so an unconditional-first-arm-match
+// regression fails, not just a "did it panic" check.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a bare case name in a match PATTERN against an ENUM scrutinee gates on the value, not an unconditional bind (#6740)" {
+  val src = "package T\n" + "enum Version {\n" + "  case Http1_0\n" + "  case Http1_1\n" + "}\n" +
+    "func toInt(v: in Version): Int {\n" +
+    "  match v {\n" +
+    "    case Http1_1 -> 1\n" +
+    "    case Http1_0 -> 0\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  if toInt(Http1_1) == 1 and toInt(Http1_0) == 0 {\n" +
+    "    42\n" +
+    "  } else {\n" +
+    "    1\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(
+    r.exitCode,
+    42,
+    "bare enum-case pattern gates correctly instead of always matching the first arm (#6740)"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Item H (#6969): item G's fix reinterpreted an ordinary Int catch-all
+// bind as an enum-case equality test whenever the bind name collided
+// with ANY enum case anywhere in the bundle — even though the scrutinee
+// here is a plain `Int`, never the `Version` enum whose case happens to
+// share the bind name. `classifyInt(99)` must echo 99 back (a plain
+// bind), not compare 99 against `Version.Http1_1`'s ordinal (1) and
+// fall through to the wildcard arm.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a bare catch-all bind over a plain Int scrutinee is never reinterpreted as an enum-case test merely because its name collides with an unrelated enum's case (#6969)" {
+  val src = "package T\n" + "enum Version {\n" + "  case Http1_0\n" + "  case Http1_1\n" + "}\n" +
+    "func classifyInt(n: Int): Int {\n" +
+    "  match n {\n" +
+    "    case Http1_1 -> Http1_1\n" +
+    "    case _ -> 0 - 1\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  if classifyInt(99) == 99 {\n" +
+    "    42\n" +
+    "  } else {\n" +
+    "    1\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(
+    r.exitCode,
+    42,
+    "an Int scrutinee's catch-all bind is unaffected by an unrelated enum's same-named case (#6969)"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Item I (#6976): #6969's fix required a declared-enum-type HINT
+// (`inferScrutineeEnumHint`, only ever populated for a bare local/param
+// reference) to recognise a bare-case-name pattern at all, dropping the
+// #6740 fix's coverage entirely for a scrutinee shape with no hint — a
+// direct call-result match (`match toVersion(1) { ... }`), never bound
+// to a local first. `scrutineeHasCase` must fall back to the pre-#6969
+// bundle-wide `ctx.enumDefs.containsKey(name)` check when no hint is
+// available, exactly matching `Msil.Codegen`'s own accepted trade-off
+// (#5995), so THIS shape doesn't regress back to #6740's unconditional
+// catch-all bind.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a bare pattern-position case name against a call-result ENUM scrutinee (no declared-type hint) still gates on the value (#6976)" {
+  val src = "package T\n" + "enum Version {\n" + "  case Http1_0\n" + "  case Http1_1\n" + "}\n" +
+    "func toVersion(n: Int): Version {\n" +
+    "  if n == 1 { Http1_1 } else { Http1_0 }\n" +
+    "}\n" +
+    "func toInt(n: Int): Int {\n" +
+    "  match toVersion(n) {\n" +
+    "    case Http1_1 -> 1\n" +
+    "    case Http1_0 -> 0\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  if toInt(1) == 1 and toInt(0) == 0 {\n" +
+    "    42\n" +
+    "  } else {\n" +
+    "    1\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(
+    r.exitCode,
+    42,
+    "a hint-less call-result enum scrutinee still falls back to the bundle-wide enum-case check (#6976)"
   )
 }
