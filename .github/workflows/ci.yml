@@ -3402,6 +3402,19 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/nested_slice_for_jvm_self_test.l
 
+      # List[slice[T]] construction self-test on JVM (#6546) — two
+      # pre-existing bugs blocked constructing a List whose elements are
+      # arrays at all: a bare slice-literal `.add()` argument stored a raw
+      # `ArrayList` instead of a real array (read-back crashed with
+      # `ClassCastException`), and routing the same value through a
+      # `slice[Int]`-typed helper failed EARLIER at compile time (JVM
+      # auto-FFI scored no matching `ArrayList.add` overload for an
+      # array-typed argument). JVM-only per the tracking issue's own scope.
+      - name: List[slice[T]] construction self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/list_of_slice_construction_jvm_self_test.l
+
       # JVM-trio self-test on JVM (#6122/#6123/#6124) — the JVM half of the
       # dotnet-job step of the same name, and the load-bearing target for all
       # three fixes: a `while`+`match` with mixed loop-continuing/loop-ending
