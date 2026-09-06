@@ -21158,7 +21158,7 @@ func emitExternTargetBody(
             match Mdr.resolveExternMethodScoredCached(cctx.metadataParsedPaths, cctx.metadataParsedAssemblies, asmPath, resolvedFqn, r.memberName, argSigs) {
               case None -> ()
               case Some(msig) -> {
-                if msig.isGeneric {
+                if msig.isGeneric and not decl.isAsync {
                   // A BCL method declared with its own generics (e.g.
                   // `CallInvoker.BlockingUnaryCall<TRequest,TResponse>`) needs a
                   // MethodSpec-instantiated OPEN MemberRef, not the plain
@@ -21172,6 +21172,42 @@ func emitExternTargetBody(
                   if emitGenericMethodExternCall(cctx, fctx, insns, decl, r, memberParentRow, emitMember, paramTypes, retTy, msig) {
                     return true
                   }
+                } else if msig.isGeneric and decl.isAsync {
+                  // An `async`-declared @externTarget wrapper over a BCL
+                  // method that is ALSO generic in its own right (e.g.
+                  // `HttpContentJsonExtensions.ReadFromJsonAsync<T>`) needs
+                  // BOTH the MethodSpec instantiation `emitGenericMethodExternCall`
+                  // builds AND the Task<T>/ValueTask<T>-unwrap machinery the
+                  // plain (non-generic) `decl.isAsync` branch below relies on
+                  // (`bclRetTy` kept as the real Task-shaped return, unwrap
+                  // callvirt appended later in `emitExternTargetBody`) —
+                  // neither path alone is correct here.
+                  // `emitGenericMethodExternCall` has no Task-unwrap logic at
+                  // all (always emits a synchronous ret), and simply leaving
+                  // resolvedMethodParams/resolvedMethodRet unset does NOT
+                  // decline cleanly here the way it does for other unscored
+                  // shapes: falling through lets the plain-method branch
+                  // below build a syntactically valid but UNINSTANTIATED
+                  // MemberRef for the generic method (no MethodSpec witness)
+                  // — the build succeeds, but the CLR can't resolve the real
+                  // method at that signature, faulting with a confusing
+                  // `MissingMethodException` at RUNTIME instead of a clear
+                  // build-time diagnostic (confirmed empirically: a
+                  // `Task.FromResult<T>`-wrapping async extern compiles and
+                  // then throws exactly this at execution). Decline LOUDLY
+                  // instead — mirroring the `#5809`/`#6995` precedent of a
+                  // clear build-time panic (contained by `Lyric.Emitter`'s
+                  // `msilBridgePanicDiagnostic` boundary into a structured
+                  // diagnostic, never thrown to the caller) over a silent
+                  // fallback to a shape that compiles clean and faults later
+                  // — until real Task/ValueTask-unwrap support for a
+                  // method-own-generic BCL call is implemented (#7023).
+                  panic(
+                    "Msil.Codegen: @externTarget '" + target + "' on '" + decl.name +
+                      "' is an async wrapper over a BCL method that is itself declared with its own generics — " +
+                      "unsupported (no Task<T>/ValueTask<T>-unwrap path exists for a MethodSpec-instantiated call yet). " +
+                      "Only a synchronous (non-async) wrapper is currently supported for this shape; see #7023."
+                  )
                 } else {
                   val mParams: List[MsilType] = newList()
                   var convOk = true

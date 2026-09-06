@@ -188,3 +188,12 @@ test "Enumerable.ElementAt<TSource>(int) vs ElementAt<TSource>(System.Index) ove
     "System.Index-typed ElementAt<TSource> resolves to its own overload's signature, not the int-index one's cached blob"
   )
 }
+
+// Gap 2 review follow-up #7022 (an `async`-declared wrapper over a BCL
+// method that is ALSO generic in its own right must not silently emit a
+// non-unwrapped body) is covered by a dedicated build-time-decline test in
+// `generic_extern_valuetype_instance_self_test.l`, which already carries the
+// `Lyric.Emitter`-based harness this negative test needs (a bad extern like
+// this can't be declared at THIS file's own top level: the panic fires
+// during codegen of the whole test module and would abort the entire
+// `lyric test` run rather than fail one assertion).
