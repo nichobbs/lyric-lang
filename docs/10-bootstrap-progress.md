@@ -30141,7 +30141,7 @@ built the wrong delegate type (`Func<object,...>` instead of a real
 `System.Action`/`Action`N`) at three independent sites (ELambda return-
 type inference, stdlib/restored cross-assembly function registration, and
 the bare-call invoke dispatch); fixed across all three at every arity, PR
-#6927 / D-progress-882. `testScopeNormalCompletionRunsEveryChild` and
+#6927 / D-progress-883. `testScopeNormalCompletionRunsEveryChild` and
 `testScopeWithNoChildrenCompletesImmediately` now pass on BOTH targets and
 were merged back into `task_tests.l`, closing the "currently fail on both"
 note above. The JVM `ClassCastException`-across-package-boundaries bug
@@ -30152,7 +30152,7 @@ closure-registration ordering), tracked at issue #5329 (scoped down to
 those two) and #6949.]_
 
 **Related:** `docs/03-decision-log.md` D-progress-621 (full account),
-D-progress-882 (the `Task.Run`/`Action`-invoke fix), D-progress-848 (the
+D-progress-883 (the `Task.Run`/`Action`-invoke fix), D-progress-848 (the
 JVM cross-package closure fix), and D119 (the parent decision).
 
 ---
