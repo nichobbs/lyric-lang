@@ -2018,6 +2018,49 @@ result, `List[NativeWeak[T]]`, `Map[K, NativeWeak[T]]`) each confirm
 correct upgrade-while-alive AND "does not keep the target strongly
 alive," leak-free; full suite 37/37, no regressions.
 
+### N9.10 — Native `Std.Char` kernel (#6811), `List`/`Map` indexed-assignment codegen, and a cross-package `?`-propagation fix — ✅ SHIPPED (D-progress-886); HPACK *decode* + full `H2Conn` FSM now verified working on native, HPACK *encode* stays blocked on #6237
+
+Closes issue #6811 (`Std.Char` had no `_kernel_native` twin — see N9.5's
+D-progress-853 update above) and, in the process of verifying it against
+the real motivating consumer, found and fixed two more compiler gaps that
+were the rest of #6808's blocker: `List[T]`/`Map[K, V]` indexed assignment
+(`xs[i] = e`) had no native codegen (`Hpack.buildHuffTrie`'s `List[Int]`
+parallel-array mutation), and `?` silently failed to desugar for any
+`Std.*` stdlib function reachable across a package boundary from a native
+build's entry file (a general gap generalizing the narrower symptom
+`_kernel_native/http_host.l` already worked around by hand, D-progress-823
+— this is the third known occurrence, now tracked as **issue #6954**
+rather than hand-patched a fourth time in the future without a tracking
+issue) — worked around here, per that same precedent, by
+rewriting `Std.HttpEngine.Hpack`'s 14 `?` sites to explicit
+`match { case Ok(v) -> v; case Err(e) -> return Err(error = e) }`, verified
+as behavior-preserving on dotnet/JVM via the full existing
+`http_hpack_tests.l` (39/39) and `http_h2conn_tests.l` (73/73) suites.
+
+**Verified working on `--target native`** (hand-built repros, not yet
+wired into CI as dedicated files beyond the `llvm_stdlib_self_test.l`
+Std.Char case): the full HPACK *decode* path
+(`decodeHeaderBlock`/`decodeStringLiteralAt`/`decodeIntegerAt`/
+`resolveIndex`/`decodeLiteralField`), and — the significant end-to-end
+check — a real `Std.HttpEngine.H2Conn.feed()` call (connection preface +
+SETTINGS + a static-table-indexed HEADERS frame) correctly decoding
+through the full FSM (all 38 `inout H2Connection` sites plus the `inout
+FrameDecoder` chain) to a `H2RequestHeaders` event, byte-for-byte matching
+`--target dotnet`. See D-progress-886 for the full bisection trail and
+exact repro commands.
+
+**Still blocked, narrower than before:** HPACK's *encode* path
+(`encodeHeaderList`/`encodeHeaderField`) calls `stringToOctets`, which
+calls `Std.String.charAt` — a `String` bracket-index (`s[index]`), the
+pre-existing native gap tracked separately as **issue #6237**
+(`group:native-string-runtime`), out of scope here. This means a native
+`H2Connection` can decode incoming requests but cannot yet encode outgoing
+responses — #6808 stays open, re-scoped to exactly this one remaining
+blocker. N9.5 (lyric-web `serveTls` + ALPN h2 end-to-end) additionally
+still needs #6809's project/multi-package native build support wired
+through lyric-web's own per-file native-readiness gaps (see N9.5's own
+entry above) before it can be attempted.
+
 ---
 
 ## Dependency graph summary
