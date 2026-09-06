@@ -38,6 +38,27 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# Runner pools (self-hosted opt-in).  The six long-running jobs
+# (compiler-self-tests-dotnet-a/-b, compiler-self-tests-jvm,
+# numbered-backend-self-tests, stdlib-builds, native-backend-self-tests) read
+# their `runs-on` from repository variables so they can be moved to a
+# self-hosted machine without a commit; every other job stays on
+# GitHub-hosted `ubuntu-latest` (macos-aot-smoke on `macos-latest`).
+#   CI_HEAVY_RUNNER   a single runner label for the five managed-runtime
+#                     jobs, e.g. `self-hosted` (a JSON list would need
+#                     fromJSON, so give the machine one distinctive label).
+#   CI_NATIVE_RUNNER  optional override for native-backend-self-tests, which
+#                     additionally needs clang, gcc and the LLVM ASan runtime
+#                     on the machine; falls back to CI_HEAVY_RUNNER.
+# Unset (the default) means `ubuntu-latest`, i.e. unchanged behaviour.  A
+# `runs-on` is fixed when the run is created, so runs already queued keep
+# their pool; register several runners on the box, since each registration
+# executes one job at a time and these jobs fan out in parallel.  The
+# self-hosted machine needs the same tools these jobs install or assume
+# (.NET SDK per bootstrap/global.json via setup-dotnet, Java 21 via
+# setup-java, passwordless sudo for `apt-get install z3`, and for the
+# native job clang/gcc/ASan).
+
 # Single build configuration shared across every dotnet build / test /
 # path-discovery step.  Changing it here flips the configuration for
 # every dependent path (bin/$BUILD_CONFIG/net10.0/...) at once — keeps
@@ -51,7 +72,9 @@ jobs:
     outputs:
       has_code_changes: ${{ steps.changes.outputs.has_code_changes }}
       has_core_changes: ${{ steps.changes.outputs.has_core_changes }}
-      has_jvm_ecosystem_changes: ${{ steps.changes.outputs.has_jvm_ecosystem_changes }}
+      has_msil_changes: ${{ steps.changes.outputs.has_msil_changes }}
+      has_jvm_changes: ${{ steps.changes.outputs.has_jvm_changes }}
+      has_native_changes: ${{ steps.changes.outputs.has_native_changes }}
       ecosystem_run_map: ${{ steps.changes.outputs.run_map }}
     permissions:
       contents: read
@@ -155,53 +178,7 @@ jobs:
       - name: Build AOT entry-point + smoke-test the examples
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; AOT smoke test cannot run"
-            exit 1
-          fi
-          dotnet build bootstrap/src/Lyric.Cli.Aot --configuration $BUILD_CONFIG
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT entry-point binary not found at $lyric_bin"
-            exit 1
-          fi
-          # Stage the stdlib packages the F# stage-0 emitter cannot build
-          # (#2592: Std.Sort et al.) into the toolchain lib dir(s) via the
-          # self-hosted emitter, so user programs importing them resolve at
-          # run time.  Runs once after the AOT build; later steps in this job
-          # reuse the populated lib dir.
-          bash scripts/stage-selfhosted-stdlib.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
-          # Post-collapse (D111) every Std.* reference resolves to the single
-          # Lyric.Stdlib bundle deployed above, so the per-package userlib/ stdlib
-          # staging is no longer needed (and would shadow the bundle via
-          # copyRuntimeDepsBeside) — removed.
-          # #6503: single-file builds inside the workspace now resolve
-          # imports of workspace members against ALREADY-BUILT member DLLs
-          # (and fail loudly on unbuilt ones).  examples/docker_client.l
-          # imports Lyric.Docker, so build that member first — this also
-          # upgrades the example from leniently-compiled (runtime-invalid,
-          # the pre-#6503 state) to genuinely type-checked against the
-          # real library.
-          "$lyric_bin" build --manifest lyric-docker/lyric.toml
-          for ex in examples/*.l; do
-            # `@proof_required` files are verifier-only — they have no
-            # `func main` so `lyric build` doesn't apply.  The AOT
-            # binary's `lyric prove` path needs `Lyric.Emitter.dll`
-            # in its resolution context (the F# emitter is what
-            # `Std.VerifierEnvHost.hostGetEnv` chains through); the
-            # AOT csproj doesn't carry the F# emitter today, so skip
-            # them for now.  Tracked as a follow-up to Track A.
-            if head -n 1 "$ex" | grep -q '^@proof_required'; then
-              echo "=== skip proof-only $ex (AOT prove path: follow-up) ==="
-              continue
-            fi
-            echo "=== build $ex ==="
-            out="/tmp/$(basename "$ex" .l).dll"
-            "$lyric_bin" build "$ex" -o "$out" --force
-          done
-
+        run: bash scripts/ci/aot-smoke-build.sh
       # NOTE: the self-hosted-emitter IL-validity check (`ilverify`) runs in
       # the standalone `ilverify-required` job below and is required by
       # `build-and-test` — it is a hard gate.  Developers run it on demand
@@ -335,6 +312,18 @@ jobs:
       - name: Check ci.yml workflow-file size (#6387 guardrail)
         run: bash scripts/ci/check-workflow-size.sh
 
+      # Guardrail for #6997: the has_msil_changes/has_jvm_changes/
+      # has_native_changes backend-split regexes in
+      # scripts/ci/detect-code-changes.sh fail *silently* when wrong -- the
+      # affected job just doesn't run, no red X anywhere. This runs the
+      # split's pattern logic against a disposable git repo covering every
+      # backend tree, each `_kernel*` dir, the JVM-ecosystem carve-out
+      # (lyric-web/storage/resilience/auth), and the _kernel_native vs.
+      # _kernel_native_bogus near-miss, so a future edit to those patterns
+      # gets caught here instead of quietly under-testing some backend.
+      - name: Self-test detect-code-changes.sh backend-split logic
+        run: bash scripts/ci/detect-code-changes-self-test.sh
+
       # Two remaining known-benign findings are suppressed rather than
       # failing on them forever silently; both are tracked in #5638 with the
       # condition under which they should be revisited:
@@ -420,12 +409,13 @@ jobs:
       contents: read
     # Its only real consumer is compiler-self-tests-jvm (build-and-test's
     # `needs` on it is always()-gated and immune to cascade-skip) — shares
-    # that job's has_jvm_ecosystem_changes gate exactly, not the narrower
-    # has_core_changes, so a lyric-web/storage/resilience/auth-only change
-    # can't leave compiler-self-tests-jvm auto-skipped by GitHub's default
+    # that job's has_jvm_changes gate exactly, not the narrower has_core_
+    # changes or has_msil_changes/has_native_changes, so an MSIL-only or
+    # native-only (or lyric-web/storage/resilience/auth-only) change can't
+    # leave compiler-self-tests-jvm auto-skipped by GitHub's default
     # cascade-skip-on-skipped-need behavior despite its own `if:` wanting
     # to run.
-    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_ecosystem_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_changes == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -488,12 +478,17 @@ jobs:
   # that setting must be updated to `ilverify-required` (Settings → Branches →
   # main → required status checks) or PRs will show this check as perpetually
   # missing/blocked — repo-admin-only, not verifiable or fixable from here.
+  #
+  # Gated on has_msil_changes (not the broader has_core_changes): "IL" here
+  # is CIL/MSIL specifically — the JVM and native backends emit no IL for
+  # ilverify to check, so a PR confined to lyric-compiler/jvm/ or the native
+  # backend gains nothing from this job.
   ilverify-required:
     runs-on: ubuntu-latest
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_msil_changes == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -529,7 +524,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_msil_changes == 'true'
     continue-on-error: false  # Stage 2+: required gate — zero boxing must be maintained
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -567,7 +562,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_changes == 'true'
     continue-on-error: false  # Stage 2+: required gate — zero boxing must be maintained
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -610,7 +605,7 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_changes == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -680,7 +675,7 @@ jobs:
             ${{ runner.os }}-nuget-
 
   compiler-self-tests-dotnet-a:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     needs: [build]
     permissions:
       contents: read
@@ -783,78 +778,7 @@ jobs:
       - name: Compiler self-tests (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping compiler self-tests"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping compiler self-tests"
-            exit 1
-          fi
-          ran=""
-          for t in \
-            lyric-compiler/lyric/lexer_self_test.l \
-            lyric-compiler/lyric/parser_self_test.l \
-            lyric-compiler/lyric/typechecker_self_test.l \
-            lyric-compiler/lyric/modechecker_self_test.l \
-            lyric-compiler/lyric/contract_elaborator_self_test.l \
-            lyric-compiler/lyric/cfg_self_test.l \
-            lyric-compiler/lyric/cfg_single_file_self_test.l \
-            lyric-compiler/lyric/build_defines_self_test.l \
-            lyric-compiler/lyric/derives_self_test.l \
-            lyric-compiler/lyric/mono_self_test.l \
-            lyric-compiler/lyric/result_generic_specialization_self_test.l \
-            lyric-compiler/lyric/alias_impl_self_test.l \
-            lyric-compiler/lyric/quantifier_ident_self_test.l \
-            lyric-compiler/lyric/range_subtype_self_test.l \
-            lyric-compiler/lyric/fmt_self_test.l \
-            lyric-compiler/lyric/async_generator_self_test.l \
-            lyric-compiler/lyric/class_encoding_self_test.l \
-            lyric-compiler/lyric/hof_type_propagation_self_test.l \
-            lyric-compiler/lyric/typechecker_extern_dedup_self_test.l \
-            lyric-compiler/lyric/generic_extern_self_test.l \
-            lyric-compiler/lyric/enum_msil_self_test.l \
-            lyric-compiler/lyric/contract_meta_self_test.l \
-            lyric-compiler/lyric/restored_packages_self_test.l \
-            lyric-compiler/lyric/test_synth_self_test.l \
-            lyric-compiler/lyric/manifest_self_test.l \
-            lyric-compiler/lyric/cli_restore_self_test.l \
-            lyric-compiler/lyric/cli_version_self_test.l \
-            lyric-compiler/lyric/version_self_test.l \
-            lyric-compiler/lyric/cli_workspace_builder_self_test.l \
-            lyric-compiler/lyric/cli_build_self_test.l \
-            lyric-compiler/lyric/native_image_self_test.l \
-            lyric-compiler/lyric/cli_shared_self_test.l \
-            lyric-compiler/lyric/cli_copydll_self_test.l \
-            lyric-compiler/lyric/cli_publish_self_test.l \
-            lyric-compiler/lyric/verifier_self_test.l \
-            lyric-compiler/lyric/closure_correctness_self_test.l \
-            lyric-compiler/lyric/func_val_local_rettype_self_test.l \
-            lyric-compiler/lyric/bare_func_ref_self_test.l \
-            lyric-compiler/lyric/qualified_enum_case_self_test.l \
-            lyric-compiler/lyric/qualified_union_case_self_test.l \
-            lyric-compiler/lyric/slice_append_widening_self_test.l \
-            lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
-            lyric-compiler/lyric/nested_constructor_pattern_self_test.l \
-            lyric-compiler/lyric/record_omitted_default_self_test.l \
-            lyric-compiler/lyric/slice_byte_lambda_arg_self_test.l \
-            lyric-compiler/lyric/app_host_self_test.l \
-            lyric-compiler/lyric/deflate_zip_self_test.l \
-            lyric-compiler/lyric/jvm_lambda_iface_bundling_self_test.l \
-            lyric-compiler/lyric/generator/generator_self_test.l \
-            lyric-compiler/lyric/jvm_trycatch_bridge_self_test.l \
-            lyric-compiler/lyric/jvm_impl_extern_class_self_test.l \
-            lyric-compiler/lyric/lsp_self_test.l \
-            lyric-compiler/lyric/doc_self_test.l ; do
-            echo "=== $t ==="
-            bash scripts/ci-retry-on-signal.sh "$lyric_bin" test "$t"
-            ran="$ran $t"
-          done
-          echo "Compiler self-tests ran:$ran" >> "$GITHUB_STEP_SUMMARY"
-
+        run: bash scripts/ci/compiler-self-tests-batch.sh
       # CfgGate self-test — exercises `Lyric.CfgGate` via native `lyric test`.
       # Compiler-package imports are resolved by linking the stage-1 bundle
       # DLLs (#2364); no `LYRIC_LOAD_COMPILER=1` recompile.  Covers #1123
@@ -1990,86 +1914,7 @@ jobs:
       - name: Function-value invocation (#1877)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping function-value invocation test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping function-value invocation test"
-            exit 1
-          fi
-          dir="$(mktemp -d)"
-          pos="$dir/hof.l"
-          cat > "$pos" <<'LYRIC'
-          package Hof
-          import Std.Core
-          func apply0(f: in () -> Int): Int { f() }
-          func twice(f: in () -> Int): Int { f() + f() }
-          func applyS(f: in () -> String): String { f() }
-          func runV(f: in () -> Unit): Unit { f() }
-          func five(): Int { 5 }
-          func main(): Int {
-            println("a0=" + toString(apply0({ -> 42 })))
-            println("tw=" + toString(twice({ -> five() })))
-            println("aS=" + applyS({ -> "hi" }))
-            runV({ -> println("voidcb") })
-            0
-          }
-          LYRIC
-          out="$("$lyric_bin" run "$pos" 2>&1)" || { echo "::error::function-value HOF program failed to run"; echo "$out"; exit 1; }
-          for expect in "a0=42" "tw=10" "aS=hi" "voidcb"; do
-            if ! grep -qx "$expect" <<< "$out"; then
-              echo "::error::expected '$expect' in function-value HOF output"; echo "$out"; exit 1
-            fi
-          done
-          echo "OK: zero-argument function-value invocation produces correct results."
-          # Parameter-taking lambdas (#1939): a lambda passed directly to a typed
-          # `(…) -> R` parameter has its boxed args unboxed — both an explicit
-          # annotation and an un-annotated param (type propagated from the HOF
-          # signature) must run and produce correct results.
-          ann="$dir/ann.l"
-          cat > "$ann" <<'LYRIC'
-          package Ann
-          import Std.Core
-          func apply1(f: in (Int) -> Int, x: in Int): Int { f(x) }
-          func apply2(f: in (Int, Int) -> Int, a: in Int, b: in Int): Int { f(a, b) }
-          func applyB(f: in (Int) -> Bool, x: in Int): Bool { f(x) }
-          func main(): Int {
-            println("a1=" + toString(apply1({ x: Int -> x + 1 }, 10)))
-            println("u1=" + toString(apply1({ x -> x + 1 }, 10)))
-            println("u2=" + toString(apply2({ a, b -> a * b }, 6, 7)))
-            println("uB=" + toString(applyB({ x -> x > 5 }, 3)))
-            0
-          }
-          LYRIC
-          aout="$("$lyric_bin" run "$ann" 2>&1)" || { echo "::error::param-taking HOF program failed to run"; echo "$aout"; exit 1; }
-          # #5552: Bool.toString() is pinned to lowercase "true"/"false" now
-          # (was the BCL Boolean.ToString() default, "True").
-          for expect in "a1=11" "u1=11" "u2=42" "uB=false"; do
-            if ! grep -qx "$expect" <<< "$aout"; then
-              echo "::error::expected '$expect' in param-taking HOF output"; echo "$aout"; exit 1
-            fi
-          done
-          echo "OK: annotated and propagated parameter-taking lambdas produce correct results."
-          # An un-annotated param-using lambda NOT passed directly to a HOF (so no
-          # type can be propagated) must fail loud (#1939), not read garbage.
-          neg="$dir/pneg.l"
-          cat > "$neg" <<'LYRIC'
-          package PNeg
-          import Std.Core
-          func main(): Int { val f = { x -> x + 1 }; println("made"); 0 }
-          LYRIC
-          if "$lyric_bin" build --target dotnet "$neg" > "$dir/pneg.out" 2>&1; then
-            echo "::error::un-typed param-using lambda compiled — the #1939 diagnostic did not fire"; cat "$dir/pneg.out"; exit 1
-          fi
-          if ! grep -qi "un-annotated parameter" "$dir/pneg.out"; then
-            echo "::error::un-typed param-using lambda failed without the expected #1939 diagnostic"; cat "$dir/pneg.out"; exit 1
-          fi
-          echo "OK: un-typed param-using lambda (no annotation, no HOF propagation) fails loud (#1939)."
-
+        run: bash scripts/ci/function-value-invocation-self-test.sh
       # Capturing closures (#1479 v1+v2) — a lambda that captures an immutable
       # enclosing binding is captured by value into an object[] bound as the
       # delegate target (v1); a captured `var` is hoisted to a shared heap cell
@@ -2078,74 +1923,7 @@ jobs:
       - name: Capturing closures (#1479 v1+v2)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping capturing-closures test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping capturing-closures test"
-            exit 1
-          fi
-          dir="$(mktemp -d)"
-          pos="$dir/cap.l"
-          cat > "$pos" <<'LYRIC'
-          package Cap
-          import Std.Core
-          func apply0(f: in () -> Int): Int { f() }
-          func applyS(f: in () -> String): String { f() }
-          func apply1(f: in (Int) -> Int, x: in Int): Int { f(x) }
-          func main(): Int {
-            val a = 3
-            val b = 4
-            println("c1=" + toString(apply0({ -> a * b + 1 })))
-            val name = "world"
-            println("c2=" + applyS({ -> "hi " + name }))
-            val base = 100
-            println("c3=" + toString(apply1({ x -> x + base }, 5)))
-            0
-          }
-          LYRIC
-          out="$("$lyric_bin" run "$pos" 2>&1)" || { echo "::error::capturing-closure program failed to run"; echo "$out"; exit 1; }
-          for expect in "c1=13" "c2=hi world" "c3=105"; do
-            if ! grep -qx "$expect" <<< "$out"; then
-              echo "::error::expected '$expect' in capturing-closure output"; echo "$out"; exit 1
-            fi
-          done
-          echo "OK: by-value capture of immutable bindings produces correct results."
-          # By-reference capture of a `var` (#1479 v2): a hoisted heap cell is
-          # shared, so a mutation inside the closure is visible outside (m1=2) and
-          # an external mutation is visible inside a closure captured earlier
-          # (m2=10).
-          ref="$dir/capref.l"
-          cat > "$ref" <<'LYRIC'
-          package CapRef
-          import Std.Core
-          func run(f: in () -> Unit): Unit { f() }
-          func apply0(f: in () -> Int): Int { f() }
-          func main(): Int {
-            var count = 0
-            run({ -> count = count + 1 })
-            run({ -> count = count + 1 })
-            println("m1=" + toString(count))
-            var n = 1
-            val get = { -> n + 0 }
-            n = 10
-            println("m2=" + toString(apply0(get)))
-            0
-          }
-          LYRIC
-          rout="$("$lyric_bin" run "$ref" 2>&1)" || { echo "::error::by-ref capturing closure failed to run"; echo "$rout"; exit 1; }
-          for expect in "m1=2" "m2=10"; do
-            if ! grep -qx "$expect" <<< "$rout"; then
-              echo "::error::expected '$expect' in by-ref capture output"; echo "$rout"; exit 1
-            fi
-          done
-          echo "OK: by-reference (\`var\`) capture shares a mutable cell across the closure boundary."
-
-
+        run: bash scripts/ci/capturing-closures-self-test.sh
   # Second half of compiler self-tests (.NET target), running in parallel with job -a.
 
       - name: Wait for all parallel tests
@@ -2179,12 +1957,12 @@ jobs:
   # behind unrelated self-tests, and keeps a slow native-backend run from
   # extending compiler-self-tests-dotnet-a's own `wait-all` barriers.
   native-backend-self-tests:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_NATIVE_RUNNER || vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_native_changes == 'true'
     steps:
       # Point TMPDIR at `runner.temp` before the concurrent `background: true`
       # self-test steps below start. Despite this step's old name, this is NOT
@@ -2405,7 +2183,7 @@ jobs:
         wait-all: true
 
   compiler-self-tests-dotnet-b:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     needs: [build]
     permissions:
       contents: read
@@ -3070,46 +2848,7 @@ jobs:
       #   lyric build → F# emit → staging DLL → dotnet publish -p:PublishAot=true → native ELF
       - name: Release Native AOT smoke test (lyric build --release --aot, #1975)
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; native AOT smoke test cannot run"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin"
-            exit 1
-          fi
-          dir="$(mktemp -d)"
-          src="$dir/hello.l"
-          # Also asserts the well-known `build_profile` define (docs/60 M1h,
-          # #5852): a real --release --aot build injects build_profile=release into
-          # the staging compile, so BuildInfo.profile reports "release" in the
-          # native binary. This is the load-bearing guard for the release-path
-          # injection, and this job (unlike `build`) has clang/ILCompiler.
-          cat > "$src" <<'LYRIC'
-          package Hello
-          import Std.Core
-          import Std.BuildInfo
-          func main(): Int {
-            println("hello-aot")
-            println("profile=" + buildInfo().profile)
-            0
-          }
-          LYRIC
-          native_bin="$dir/hello"
-          "$lyric_bin" build --release --aot "$src" -o "$native_bin"
-          if [ ! -x "$native_bin" ]; then
-            echo "::error::native binary not produced at $native_bin"
-            exit 1
-          fi
-          out="$("$native_bin" 2>&1)"
-          echo "native AOT output: $out"
-          echo "$out" | grep -qx "hello-aot" || { echo "::error::native AOT smoke test did not print hello-aot; got: '$out'"; exit 1; }
-          echo "$out" | grep -qx "profile=release" || { echo "::error::--release --aot build did not inject build_profile=release (#5852 M1h); got: '$out'"; exit 1; }
-          echo "OK: native AOT binary produced and executed correctly (hello-aot + build_profile=release)." >> "$GITHUB_STEP_SUMMARY"
-
+        run: bash scripts/ci/release-native-aot-smoke.sh
       # Regression test for #5782: `buildReleaseProject` (the manifest/
       # multi-package `lyric build --release --aot` path, as opposed to the
       # single-file smoke test above) silently dropped every `[nuget]`
@@ -3122,75 +2861,7 @@ jobs:
       # call into it correctly.
       - name: Release Native AOT smoke test — manifest project with [nuget] dep (#5782)
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; native AOT smoke test cannot run"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin"
-            exit 1
-          fi
-          dir="$(mktemp -d)"
-          mkdir -p "$dir/src/app" "$dir/src/helper"
-          cat > "$dir/lyric.toml" <<'TOML'
-          [package]
-          name = "ReleaseNugetSmoke"
-          version = "0.1.0"
-          [project]
-          name = "ReleaseNugetSmoke"
-          output = "single"
-          output_assembly = "ReleaseNugetSmoke.dll"
-          [project.packages]
-          "ReleaseNugetSmoke" = "src/app/main.l"
-          "ReleaseNugetSmoke.Helper" = "src/helper/helper.l"
-          [nuget]
-          "Newtonsoft.Json" = "13.0.3"
-          TOML
-          cat > "$dir/src/helper/helper.l" <<'LYRIC'
-          package ReleaseNugetSmoke.Helper
-          pub func addOne(x: Int): Int {
-            x + 1
-          }
-          LYRIC
-          # `main.l` also asserts the well-known `build_profile` define on the
-          # MULTI-PACKAGE release path (`buildReleaseProject`, docs/60 M1h #5852):
-          # its staging compile injects build_profile=release, so BuildInfo.profile
-          # reports "release" in the native binary (the single-file path is guarded
-          # by the hello-world smoke test above; this covers buildReleaseProject).
-          cat > "$dir/src/app/main.l" <<'LYRIC'
-          package ReleaseNugetSmoke
-          import Std.Core
-          import Std.BuildInfo
-          import ReleaseNugetSmoke.Helper
-          extern type JsonConvert = "Newtonsoft.Json.JsonConvert"
-          pub func main(): Int {
-            println(JsonConvert.SerializeObject("hi"))
-            println(addOne(41).toString())
-            println("profile=" + buildInfo().profile)
-            0
-          }
-          LYRIC
-          (cd "$dir" && "$OLDPWD/$lyric_bin" restore)
-          (cd "$dir" && "$OLDPWD/$lyric_bin" build --release --aot --rid linux-x64)
-          native_bin="$dir/ReleaseNugetSmoke"
-          if [ ! -x "$native_bin" ]; then
-            echo "::error::native binary not produced at $native_bin"
-            exit 1
-          fi
-          out="$("$native_bin" 2>&1)"
-          echo "native AOT output: $out"
-          expected='"hi"
-          42
-          profile=release'
-          if [ "$out" != "$expected" ]; then
-            echo "::error::manifest+[nuget] native AOT smoke test produced unexpected output: '$out'"
-            exit 1
-          fi
-          echo "OK: manifest project with a [nuget] dependency built and ran correctly under Native AOT (incl. build_profile=release)." >> "$GITHUB_STEP_SUMMARY"
-
+        run: bash scripts/ci/release-native-aot-manifest-nuget-smoke.sh
       # Regression test for #5787: the #5782 fix above only exercised a
       # third-party NuGet assembly (`nugetThirdPartyPaths`). It never covered
       # a restored LYRIC package reaching ILC via `resolved.restoredDlls` —
@@ -3204,86 +2875,7 @@ jobs:
       # native binary can call into the restored dependency correctly.
       - name: Release Native AOT smoke test — manifest project with local path dependency (#5787)
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; native AOT smoke test cannot run"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin"
-            exit 1
-          fi
-          dir="$(mktemp -d)"
-          mkdir -p "$dir/dep/src" "$dir/app/src"
-          cat > "$dir/dep/lyric.toml" <<'TOML'
-          [package]
-          name = "releasepathdep"
-          version = "0.1.0"
-          [project]
-          name = "ReleasePathDep"
-          output_assembly = "Lyric.ReleasePathDep.dll"
-          [project.packages]
-          "ReleasePathDep" = "src"
-          TOML
-          cat > "$dir/dep/src/dep.l" <<'LYRIC'
-          package ReleasePathDep
-          pub func tripleIt(x: Int): Int {
-            x * 3
-          }
-          LYRIC
-          cat > "$dir/app/lyric.toml" <<'TOML'
-          [package]
-          name = "releasepathsmoke"
-          version = "0.1.0"
-          [project]
-          name = "ReleasePathSmoke"
-          output = "single"
-          output_assembly = "ReleasePathSmoke.dll"
-          [project.packages]
-          "ReleasePathSmoke" = "src/app.l"
-          [dependencies]
-          pathdep = { path = "../dep" }
-          TOML
-          # Also asserts build_profile=release on the SAME `buildReleaseProject`
-          # path as the [nuget] step above; this step's load-bearing assertion is
-          # `tripleIt(14) == 42`, which only resolves if the dependency's DLL
-          # (built below, never rebuilt by `resolveManifestDependencies` — see
-          # its doc comment: "Never triggers a restore") is actually threaded
-          # into the app's ILC reference list.
-          cat > "$dir/app/src/app.l" <<'LYRIC'
-          package ReleasePathSmoke
-          import Std.Core
-          import Std.BuildInfo
-          import ReleasePathDep
-          pub func main(): Int {
-            println(tripleIt(14).toString())
-            println("profile=" + buildInfo().profile)
-            0
-          }
-          LYRIC
-          (cd "$dir/dep" && "$OLDPWD/$lyric_bin" build)
-          if [ ! -f "$dir/dep/bin/Lyric.ReleasePathDep.dll" ]; then
-            echo "::error::local path dependency did not produce bin/Lyric.ReleasePathDep.dll"
-            exit 1
-          fi
-          (cd "$dir/app" && "$OLDPWD/$lyric_bin" build --release --aot --rid linux-x64)
-          native_bin="$dir/app/ReleasePathSmoke"
-          if [ ! -x "$native_bin" ]; then
-            echo "::error::native binary not produced at $native_bin"
-            exit 1
-          fi
-          out="$("$native_bin" 2>&1)"
-          echo "native AOT output: $out"
-          expected='42
-          profile=release'
-          if [ "$out" != "$expected" ]; then
-            echo "::error::manifest+path-dependency native AOT smoke test produced unexpected output: '$out'"
-            exit 1
-          fi
-          echo "OK: manifest project with a local path dependency built and ran correctly under Native AOT (resolved.restoredDlls reaches ILC, incl. build_profile=release)." >> "$GITHUB_STEP_SUMMARY"
-
+        run: bash scripts/ci/release-native-aot-manifest-localdep-smoke.sh
       # Native AOT publish of the `lyric` CLI itself (#1494 / Band 5).
       # `dotnet publish` honours the csproj's `<PublishAot>true</PublishAot>`,
       # producing a self-contained native ELF that AOT-compiles the whole
@@ -3298,90 +2890,7 @@ jobs:
       # AOT where the IL loader is unavailable (#3201 / docs/45 / docs/42).
       - name: Native AOT publish of the lyric CLI (#1494)
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          publish_dir="$(mktemp -d)"
-          dotnet publish bootstrap/src/Lyric.Cli.Aot -c Release -r linux-x64 -o "$publish_dir"
-          native_cli="$publish_dir/lyric"
-          if [ ! -x "$native_cli" ]; then
-            echo "::error::native lyric CLI not produced at $native_cli"
-            exit 1
-          fi
-          file "$native_cli" | grep -q ELF || { echo "::error::published lyric CLI is not a native ELF"; exit 1; }
-          "$native_cli" --version
-          dir="$(mktemp -d)"
-          cat > "$dir/hello.l" <<'LYRIC'
-          package Hello
-          import Std.Core
-          func main(): Int {
-            println("hello-native-cli")
-            0
-          }
-          LYRIC
-          "$native_cli" build "$dir/hello.l" -o "$dir/bin/Hello.dll"
-          cp bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/Lyric.Stdlib*.dll "$dir/bin/"
-          out="$(cd "$dir/bin" && dotnet exec Hello.dll)"
-          echo "native CLI build output: $out"
-          if [ "$out" != "hello-native-cli" ]; then
-            echo "::error::lyric build through the native CLI produced unexpected output: '$out'"
-            exit 1
-          fi
-
-          # Restored-dependency build through the native binary (#3201).  A
-          # local-path `[dependencies]` entry threads the producer DLL as a
-          # restored dep; the consumer build must read the producer's embedded
-          # `Lyric.Contract` metadata to inline its `pub val ANSWER`.  Under
-          # Native AOT this previously threw `PlatformNotSupportedException`
-          # (no IL loader for `Assembly.Load(byte[])`); the metadata-direct
-          # reader makes it pure byte reading, so it now works.
-          work="$(mktemp -d)"
-          mkdir -p "$work/constdep/src" "$work/app/src"
-          cat > "$work/constdep/lyric.toml" <<'TOML'
-          [package]
-          name = "constdep"
-          version = "0.1.0"
-          [project]
-          name = "ConstDep"
-          output_assembly = "Lyric.ConstDep.dll"
-          [project.packages]
-          "ConstDep" = "src"
-          TOML
-          cat > "$work/constdep/src/constdep.l" <<'LYR'
-          package ConstDep
-          pub val ANSWER: Int = 0x002A
-          LYR
-          cat > "$work/app/lyric.toml" <<'TOML'
-          [package]
-          name = "app"
-          version = "0.1.0"
-          [project]
-          name = "App"
-          [project.packages]
-          "App" = "src"
-          [dependencies]
-          constdep = { path = "../constdep" }
-          TOML
-          cat > "$work/app/src/app.l" <<'LYR'
-          package App
-          import ConstDep
-          import Std.Console as Console
-          func main(): Unit {
-            Console.println(toString(ANSWER))
-          }
-          LYR
-          "$native_cli" build --manifest "$work/constdep/lyric.toml"
-          "$native_cli" build --manifest "$work/app/lyric.toml"
-          cp bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/Lyric.Stdlib*.dll "$work/app/bin/"
-          dep_out="$(cd "$work/app/bin" && dotnet exec App.dll | tr -d '\r\n')"
-          echo "restored-dep consumer printed: '$dep_out'"
-          if [ "$dep_out" != "42" ]; then
-            echo "::error::restored-dep build through the native CLI returned '$dep_out', expected '42' (metadata-direct contract read regressed under AOT)"
-            exit 1
-          fi
-
-          size_kb=$(du -k "$native_cli" | cut -f1)
-          echo "OK: Native AOT lyric CLI published (${size_kb} KB), built+ran an example and a restored-dependency build end-to-end." >> "$GITHUB_STEP_SUMMARY"
-
+        run: bash scripts/ci/native-aot-publish-lyric-cli.sh
       # IConfig (config block) lowering self-test (#2983, #2992, #2993).
       # Wires `lyric-compiler/msil/msil_self_test_m85.l` via `lyric run` (the
       # AOT binary routes through the self-hosted MSIL emitter, which supports
@@ -3396,51 +2905,7 @@ jobs:
       # G0009 unsupported-field-type diagnostic.  No new F# runner needed.
       - name: IConfig config-block lowering self-test (lyric run, #2983)
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping IConfig self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping IConfig self-test"
-            exit 1
-          fi
-          out="$("$lyric_bin" run lyric-compiler/msil/msil_self_test_m85.l 2>&1)"
-          for check in "port_default=true" "debug_default=true" "name_default=true" \
-                       "rate_default=true" "scale_default=true" "cap_default=true" \
-                       "timeout_default=true" "access_no_panic=true" \
-                       "eport_parsed=false" "erate_parsed=false" "ecap_parsed=false" \
-                       "eflag_parsed=false" "ename_parsed=false"; do
-            if ! grep -qx "$check" <<< "$out"; then
-              echo "::error::IConfig self-test (defaults run) missing expected line '$check'; full output:"; echo "$out"; exit 1
-            fi
-          done
-          out_env="$(LYRIC_CONFIG_MSIL_SELFTESTM85_ENVPROBE_EPORT=4242 \
-                     LYRIC_CONFIG_MSIL_SELFTESTM85_ENVPROBE_ERATE=2.5 \
-                     LYRIC_CONFIG_MSIL_SELFTESTM85_ENVPROBE_ECAP=8589934592 \
-                     LYRIC_CONFIG_MSIL_SELFTESTM85_ENVPROBE_EFLAG=true \
-                     LYRIC_CONFIG_MSIL_SELFTESTM85_ENVPROBE_ENAME=from-env \
-                     "$lyric_bin" run lyric-compiler/msil/msil_self_test_m85.l 2>&1)"
-          for check in "port_default=true" "rate_default=true" "cap_default=true" \
-                       "eport_parsed=true" "erate_parsed=true" "ecap_parsed=true" \
-                       "eflag_parsed=true" "ename_parsed=true"; do
-            if ! grep -qx "$check" <<< "$out_env"; then
-              echo "::error::IConfig self-test (env-parse run) missing expected line '$check'; full output:"; echo "$out_env"; exit 1
-            fi
-          done
-          bad_src="$(mktemp -d)/config_bad_type.l"
-          printf 'package ConfigBadType\n\nconfig Bad {\n  c: Char\n}\n\nfunc main(): Unit {\n  println("unreachable")\n}\n' > "$bad_src"
-          if bad_out="$("$lyric_bin" run "$bad_src" 2>&1)"; then
-            echo "::error::IConfig negative probe: unsupported Char config field compiled successfully; output:"; echo "$bad_out"; exit 1
-          else
-            if ! grep -q "G0009" <<< "$bad_out"; then
-              echo "::error::IConfig negative probe: expected G0009 in compile failure output:"; echo "$bad_out"; exit 1
-            fi
-          fi
-          echo "IConfig config-block lowering: defaults, env-parse, and G0009 negative checks pass (#2983, #2993)"
-
+        run: bash scripts/ci/iconfig-lowering-self-test.sh
   macos-aot-smoke:
     runs-on: macos-latest
     needs: [build]
@@ -3525,101 +2990,19 @@ jobs:
       # Native AOT publish of the lyric CLI itself on macOS.
       - name: Native AOT publish of the lyric CLI on macOS
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          publish_dir="$(mktemp -d)"
-          arch="$(uname -m)"
-          if [ "$arch" = "x86_64" ]; then
-            rid="osx-x64"
-          else
-            rid="osx-arm64"
-          fi
-          dotnet publish bootstrap/src/Lyric.Cli.Aot -c Release -r "$rid" -o "$publish_dir"
-          native_cli="$publish_dir/lyric"
-          if [ ! -x "$native_cli" ]; then
-            echo "::error::native lyric CLI not produced at $native_cli"
-            exit 1
-          fi
-          file "$native_cli" | grep -q Mach-O || { echo "::error::published lyric CLI is not a native Mach-O binary"; exit 1; }
-          "$native_cli" --version
-          dir="$(mktemp -d)"
-          cat > "$dir/hello.l" <<'LYRIC'
-          package Hello
-          import Std.Core
-          func main(): Int {
-            println("hello-native-cli")
-            0
-          }
-          LYRIC
-          "$native_cli" build "$dir/hello.l" -o "$dir/bin/Hello.dll"
-          cp bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/Lyric.Stdlib*.dll "$dir/bin/"
-          out="$(cd "$dir/bin" && dotnet exec Hello.dll)"
-          echo "native CLI build output: $out"
-          if [ "$out" != "hello-native-cli" ]; then
-            echo "::error::lyric build through the native CLI produced unexpected output: '$out'"
-            exit 1
-          fi
-
-          # Restored-dependency build through the native binary on macOS.
-          work="$(mktemp -d)"
-          mkdir -p "$work/constdep/src" "$work/app/src"
-          cat > "$work/constdep/lyric.toml" <<'TOML'
-          [package]
-          name = "constdep"
-          version = "0.1.0"
-          [project]
-          name = "ConstDep"
-          output_assembly = "Lyric.ConstDep.dll"
-          [project.packages]
-          "ConstDep" = "src"
-          TOML
-          cat > "$work/constdep/src/constdep.l" <<'LYR'
-          package ConstDep
-          pub val ANSWER: Int = 0x002A
-          LYR
-          cat > "$work/app/lyric.toml" <<'TOML'
-          [package]
-          name = "app"
-          version = "0.1.0"
-          [project]
-          name = "App"
-          [project.packages]
-          "App" = "src"
-          [dependencies]
-          constdep = { path = "../constdep" }
-          TOML
-          cat > "$work/app/src/app.l" <<'LYR'
-          package App
-          import ConstDep
-          import Std.Console as Console
-          func main(): Unit {
-            Console.println(toString(ANSWER))
-          }
-          LYR
-          "$native_cli" build --manifest "$work/constdep/lyric.toml"
-          "$native_cli" build --manifest "$work/app/lyric.toml"
-          cp bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/Lyric.Stdlib*.dll "$work/app/bin/"
-          dep_out="$(cd "$work/app/bin" && dotnet exec App.dll | tr -d '\r\n')"
-          echo "restored-dep consumer printed: '$dep_out'"
-          if [ "$dep_out" != "42" ]; then
-            echo "::error::restored-dep build through the native CLI returned '$dep_out', expected '42'"
-            exit 1
-          fi
-
-          size_kb=$(du -k "$native_cli" | cut -f1)
-          echo "OK: Native AOT lyric CLI published on macOS (${size_kb} KB), built+ran an example and a restored-dependency build end-to-end." >> "$GITHUB_STEP_SUMMARY"
-
+        run: bash scripts/ci/native-aot-publish-lyric-cli-macos.sh
   compiler-self-tests-jvm:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     needs: [build, build-stage2]
     permissions:
       contents: read
-    # Broader than the other has_core_changes-gated jobs: this one also
-    # carries the only JVM-kernel coverage for lyric-web/storage/resilience/
-    # auth (see has_jvm_ecosystem_changes above) — has_core_changes alone
+    # has_jvm_changes (not has_core_changes): this job is the JVM-specific
+    # compiler self-test suite, and it also carries the only JVM-kernel
+    # coverage for lyric-web/storage/resilience/auth (folded into
+    # has_jvm_changes for exactly that reason — has_core_changes alone
     # would silently skip that coverage on a PR confined to just one of
-    # those four libraries.
-    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_ecosystem_changes == 'true'
+    # those four libraries; see scripts/ci/detect-code-changes.sh).
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_changes == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -4638,51 +4021,7 @@ jobs:
       - name: BuildInfo --define runtime path on JVM (native lyric build --target jvm --define)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping BuildInfo JVM --define runtime test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping BuildInfo JVM --define runtime test"
-            exit 1
-          fi
-          work="$(mktemp -d)"
-          fixture="$work/bi_define_jvm_fixture.l"
-          cat > "$fixture" <<'LYR'
-          package BiDefineJvmFixture
-
-          import Std.Console
-          import Std.BuildInfo
-
-          func fmtOpt(o: in Option[String]): String {
-            match o {
-              case Some(s) -> s
-              case None -> "<none>"
-            }
-          }
-
-          func main(): Int {
-            val bi = buildInfo()
-            println("V=" + bi.version)
-            println("P=" + bi.profile)
-            println("T=" + bi.target)
-            println("G=" + fmtOpt(bi.gitHash))
-            0
-          }
-          LYR
-          out="$work/bi_define_jvm_fixture.jar"
-          "$lyric_bin" build --target jvm --define version=8.8.8 --define build_profile=release --define git_hash=beadfeed "$fixture" -o "$out" --force
-          result="$(java -jar "$out")"
-          echo "$result"
-          echo "$result" | grep -qx "V=8.8.8"   || { echo "::error::version define not injected into BuildInfo on JVM"; exit 1; }
-          echo "$result" | grep -qx "P=release"  || { echo "::error::build_profile define not injected into BuildInfo on JVM"; exit 1; }
-          echo "$result" | grep -qx "T=jvm"      || { echo "::error::BuildInfo.target is not jvm on the JVM build"; exit 1; }
-          echo "$result" | grep -qx "G=beadfeed" || { echo "::error::git_hash define not wrapped into BuildInfo.gitHash on JVM"; exit 1; }
-          echo "BuildInfo JVM --define runtime path OK (V=8.8.8 P=release T=jvm G=beadfeed)" >> "$GITHUB_STEP_SUMMARY"
-
+        run: bash scripts/ci/buildinfo-define-jvm-runtime.sh
       - name: Hash self-test on JVM (native lyric test --target jvm)
         background: true
         working-directory: ${{ github.workspace }}
@@ -5756,11 +5095,19 @@ jobs:
   # other self-test jobs on the 4-vCPU standard runners: msil is 83 files
   # (~60 CPU-min) in 2 shards, jvm is 132 files (~120 CPU-min) in 4 shards.
   numbered-backend-self-tests:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     needs: [build]
     permissions:
       contents: read
-    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
+    # Gated per matrix entry, not a single job-wide condition: the msil
+    # shards only need has_msil_changes and the jvm shards only need
+    # has_jvm_changes, so a PR confined to one backend skips the other
+    # backend's shards instead of running all six every time.
+    if: |
+      needs.build.outputs.has_code_changes == 'true' && (
+        (matrix.set == 'msil' && needs.build.outputs.has_msil_changes == 'true') ||
+        (matrix.set == 'jvm' && needs.build.outputs.has_jvm_changes == 'true')
+      )
     strategy:
       fail-fast: false
       matrix:
@@ -5920,47 +5267,7 @@ jobs:
           chmod +x "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
 
       - name: Stage stdlib DLLs + local-dep resolver setup
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; ecosystem tests cannot run"
-            exit 1
-          fi
-          if [ ! -x "$LYRIC_CLI_PATH" ]; then
-            echo "::error::AOT binary not found at $LYRIC_CLI_PATH"
-            exit 1
-          fi
-          # Stage 1 compiled all Lyric.Stdlib*.dll files into .bootstrap/stage1/.
-          # Copy them all to the canonical dep-resolution path so the test runner's
-          # local-path dep resolver finds it without re-running a manifest build.
-          # The main bundle (Lyric.Stdlib.dll) is required for compile-time dep
-          # resolution; the individual DLLs (e.g. Lyric.Stdlib.Testing.dll) are
-          # needed at runtime by compiled test DLLs.
-          shopt -s nullglob
-          stdlib_dlls=(.bootstrap/stage1/Lyric.Stdlib*.dll)
-          shopt -u nullglob
-          if (( ${#stdlib_dlls[@]} == 0 )); then
-            echo "::error::no Lyric.Stdlib*.dll found in .bootstrap/stage1"
-            exit 1
-          fi
-          mkdir -p lyric-stdlib/bin
-          cp "${stdlib_dlls[@]}" lyric-stdlib/bin/
-          # lyric-session no longer needs a host shim: Session.Kernel.Net
-          # binds StackExchange.Redis directly via @externTarget in native
-          # Lyric (#1777). lyric-auth likewise needs no shim (pure Lyric
-          # HMAC-SHA256 + constant-time comparison).
-          # Route emitProject subprocess calls to the F# bootstrap CLI, which
-          # handles --internal-project-build.  The AOT binary is a pure trampoline
-          # into the Lyric CLI dispatcher and does not handle internal flags
-          # (#1082 stripped the AOT entry point of its path-discovery shim).
-          # Written to $GITHUB_ENV (not `export`) so it also applies to the
-          # later "Build path dependencies" / "Run tests" steps in this job.
-          cli_dll="$(pwd)/bootstrap/src/Lyric.Cli/bin/${BUILD_CONFIG}/net10.0/lyric.dll"
-          if [ -f "$cli_dll" ]; then
-            echo "LYRIC_BIN=dotnet" >> "$GITHUB_ENV"
-            echo "LYRIC_CLI_DLL=$cli_dll" >> "$GITHUB_ENV"
-          fi
-
+        run: bash scripts/ci/stage-stdlib-dlls-localdep-resolver.sh
       - name: Build path dependencies (${{ matrix.deps }})
         if: matrix.deps != ''
         run: |
@@ -6183,7 +5490,7 @@ jobs:
 
   # Stdlib and ecosystem-library builds — runs in parallel with ecosystem-tests.
   stdlib-builds:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     needs: [build]
     permissions:
       contents: read
@@ -6678,72 +5985,7 @@ jobs:
       # path-dependency DLLs exist.  Fails CI if any package regresses.
       - name: Build example packages (lyric build --manifest)
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; example package build cannot run"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin"
-            exit 1
-          fi
-          # The self-hosted MSIL bridge resolves `import Std.X` from
-          # lyric-stdlib/std/*.l source, but each manifest also lists
-          # Lyric.Stdlib as a path dependency whose output DLL must exist;
-          # stage 1 already compiled it into .bootstrap/stage1/.
-          shopt -s nullglob
-          stdlib_dlls=(.bootstrap/stage1/Lyric.Stdlib*.dll)
-          shopt -u nullglob
-          if (( ${#stdlib_dlls[@]} == 0 )); then
-            echo "::error::no Lyric.Stdlib*.dll found in .bootstrap/stage1"
-            exit 1
-          fi
-          mkdir -p lyric-stdlib/bin
-          cp "${stdlib_dlls[@]}" lyric-stdlib/bin/
-          # Route emitProject subprocess hops to the F# bootstrap CLI (the
-          # AOT binary is a pure trampoline; same wiring as the steps above).
-          cli_dll="$(pwd)/bootstrap/src/Lyric.Cli/bin/${BUILD_CONFIG}/net10.0/lyric.dll"
-          if [ -f "$cli_dll" ]; then
-            export LYRIC_BIN=dotnet
-            export LYRIC_CLI_DLL="$cli_dll"
-          fi
-          # Build the dependency libraries bottom-up so each example's
-          # restored path deps resolve to an existing bin/<assembly>.dll.
-          # lyric-otel/lyric-db/lyric-web's plain `build` auto-resolves their
-          # own NuGet deps here (their manifests hit `lyric build`'s
-          # lyric.lock-missing auto-restore path). lyric-grpc's does not --
-          # confirmed on a real run (#6582) that its build fails here the
-          # same way it does everywhere else without an explicit restore
-          # first, so give it the same treatment as the "Test multi-package
-          # examples" / dedicated "Run tests (grpc)" steps.
-          libs=(lyric-logging lyric-auth lyric-resilience lyric-otel lyric-db lyric-web lyric-health lyric-grpc)
-          for lib in "${libs[@]}"; do
-            if [ "$lib" = "lyric-grpc" ]; then
-              echo "=== restore dependency $lib ==="
-              if ! "$lyric_bin" restore --manifest "$lib/lyric.toml"; then
-                echo "::error::failed to restore $lib NuGet dependencies"
-                exit 1
-              fi
-            fi
-            echo "=== build dependency $lib ==="
-            if ! "$lyric_bin" build --manifest "$lib/lyric.toml"; then
-              echo "::error::failed to build example dependency $lib"
-              exit 1
-            fi
-          done
-          # Build each example package end-to-end.
-          examples=(rbac ledger jobqueue product-catalog)
-          for ex in "${examples[@]}"; do
-            echo "=== build example $ex ==="
-            if ! "$lyric_bin" build --manifest "examples/$ex/lyric.toml"; then
-              echo "::error::example package $ex failed to build"
-              exit 1
-            fi
-          done
-          echo "all example packages built"
-
+        run: bash scripts/ci/build-example-packages.sh
       # Ecosystem library builds (#2530) — builds every lyric-* library in
       # topological order so regressions in any library are caught on every
       # push.  Libraries are grouped into three tiers by dependency depth.
@@ -6752,67 +5994,7 @@ jobs:
       # not re-compiled from scratch.
       - name: Ecosystem library builds (#2530)
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; ecosystem library builds cannot run"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin"
-            exit 1
-          fi
-          # Ensure stdlib DLLs are in the canonical dep-resolution path.
-          shopt -s nullglob
-          stdlib_dlls=(.bootstrap/stage1/Lyric.Stdlib*.dll)
-          shopt -u nullglob
-          if (( ${#stdlib_dlls[@]} == 0 )); then
-            echo "::error::no Lyric.Stdlib*.dll found in .bootstrap/stage1"
-            exit 1
-          fi
-          mkdir -p lyric-stdlib/bin
-          cp "${stdlib_dlls[@]}" lyric-stdlib/bin/
-          # Route emitProject subprocess hops to the F# bootstrap CLI.
-          cli_dll="$(pwd)/bootstrap/src/Lyric.Cli/bin/${BUILD_CONFIG}/net10.0/lyric.dll"
-          if [ -f "$cli_dll" ]; then
-            export LYRIC_BIN=dotnet
-            export LYRIC_CLI_DLL="$cli_dll"
-          fi
-          # Tier 0: libraries with no local path dependencies.
-          tier0=(
-            lyric-cache lyric-logging lyric-proto lyric-generator-sdk
-            lyric-mail lyric-storage lyric-auth lyric-resilience
-            lyric-validation lyric-i18n lyric-otel lyric-feature-flags
-            lyric-aws-xray lyric-aws-secrets lyric-db lyric-jsonrpc
-          )
-          for lib in "${tier0[@]}"; do
-            echo "=== build $lib (tier 0) ==="
-            if ! "$lyric_bin" build --manifest "$lib/lyric.toml"; then
-              echo "::error::$lib (tier 0) failed to build"
-              exit 1
-            fi
-          done
-          # Tier 1: libraries depending only on tier-0 libraries.
-          tier1=(lyric-mq lyric-session lyric-jobs lyric-search lyric-ws lyric-web lyric-grpc lyric-mcp)
-          for lib in "${tier1[@]}"; do
-            echo "=== build $lib (tier 1) ==="
-            if ! "$lyric_bin" build --manifest "$lib/lyric.toml"; then
-              echo "::error::$lib (tier 1) failed to build"
-              exit 1
-            fi
-          done
-          # Tier 2: libraries depending on tier-0 and tier-1 libraries.
-          tier2=(lyric-health lyric-testing lyric-lambda)
-          for lib in "${tier2[@]}"; do
-            echo "=== build $lib (tier 2) ==="
-            if ! "$lyric_bin" build --manifest "$lib/lyric.toml"; then
-              echo "::error::$lib (tier 2) failed to build"
-              exit 1
-            fi
-          done
-          echo "all ecosystem libraries built"
-
+        run: bash scripts/ci/ecosystem-library-builds.sh
       # Weaver self-test — exercises `Lyric.Weaver` via native `lyric test`.
       # The compiler-package imports (Lyric.Lexer / Lyric.Parser /
       # Lyric.Weaver) are resolved by LINKING the already-compiled stage-1
@@ -7023,66 +6205,7 @@ jobs:
       - name: Full self-hosted stdlib (#2592 all Std.* packages)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin"
-            exit 1
-          fi
-          work="$(mktemp -d)"
-          trap 'rm -rf "$work"' EXIT
-          mkdir -p "$work/out"
-          # Post-collapse (D111): the bundle packages self-host-compile into the
-          # single Lyric.Stdlib.dll; the HTTP/async surface self-host-compiles
-          # per-package (the #4030 hybrid).  Building both is the "all Std.*
-          # self-host-compile" guard.
-          "$lyric_bin" build --manifest lyric-stdlib/lyric.full.toml \
-            -o "$work/out/Lyric.Stdlib.dll" --target dotnet --no-restore
-          if [ ! -f "$work/out/Lyric.Stdlib.dll" ]; then
-            echo "::error::single stdlib bundle not produced"
-            exit 1
-          fi
-          printf 'package HttpAll\nimport Std.Http\nimport Std.HttpServer\nimport Std.Rest\nfunc main(): Unit { }\n' > "$work/http.l"
-          "$lyric_bin" --internal-perpackage-build "$work/http.l" "$work/httpout" --target dotnet
-          for dll in Lyric.Stdlib.Http.dll Lyric.Stdlib.Rest.dll Lyric.Stdlib.HttpServer.dll Lyric.Stdlib.Task.dll Lyric.Stdlib.HttpHost.dll; do
-            if [ ! -f "$work/httpout/$dll" ]; then
-              echo "::error::expected HTTP per-package DLL missing: $dll"
-              exit 1
-            fi
-          done
-          cat > "$work/sorttest.l" <<'LYR'
-          package SortTest
-          import Std.Console as Console
-          import Std.Sort as Sort
-          func main(): Unit {
-            val s = Sort.sortInts([5, 3, 1, 4, 2])
-            var acc = ""
-            var i = 0
-            while i < s.length {
-              acc = acc + toString(s[i])
-              if i < s.length - 1 { acc = acc + " " }
-              i = i + 1
-            }
-            Console.println(acc)
-          }
-          LYR
-          # Resolution note (#2787): the build below intentionally relies on the
-          # default stdlib resolution (walking up from the lyric binary to
-          # lyric-stdlib/std).  LYRIC_STD_PATH points at a stdlib *source*
-          # directory, so overriding it to $work/out (a DLL output dir) changes
-          # which artifacts get linked and miscompiles the program — making the
-          # emitted-DLL set the linked target needs first-class support, tracked
-          # in #2787.
-          "$lyric_bin" build "$work/sorttest.l" -o "$work/out/sorttest.dll"
-          got="$(cd "$work/out" && dotnet sorttest.dll | tr -d '\r\n')"
-          echo "self-hosted Std.Sort printed: '$got'"
-          if [ "$got" != "1 2 3 4 5" ]; then
-            echo "::error::self-hosted Std.Sort returned '$got', expected '1 2 3 4 5'"
-            exit 1
-          fi
-          echo "all Std.* packages self-host-compile; self-hosted Std.Sort sorts correctly"
-
+        run: bash scripts/ci/full-selfhosted-stdlib-build.sh
       # Whole compiler self-host-compiles (docs/41 §R7 front-end completeness).
       # Drives emitPerPackageClosure over the entire Lyric.Cli import closure —
       # all ~73 Lyric.* / Msil.* / Jvm.* compiler packages — and asserts every
@@ -7175,64 +6298,7 @@ jobs:
       - name: Cross-package record field encoding (D-progress-477)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin"
-            exit 1
-          fi
-          work="$(mktemp -d)"
-          mkdir -p "$work/dep/src" "$work/app/src"
-          cat > "$work/dep/lyric.toml" <<'TOML'
-          [package]
-          name = "recdep"
-          version = "0.1.0"
-          [project]
-          name = "RecDep"
-          output_assembly = "Lyric.RecDep.dll"
-          [project.packages]
-          "RecDep" = "src"
-          TOML
-          cat > "$work/dep/src/recdep.l" <<'LYR'
-          package RecDep
-          pub record Item { v: Int }
-          pub record Rec { ints: List[Int]; items: List[Item]; name: String }
-          pub func mkRec(): Rec { Rec(ints = [1, 2, 3], items = [Item(v = 9)], name = "hi") }
-          LYR
-          cat > "$work/app/lyric.toml" <<'TOML'
-          [package]
-          name = "recapp"
-          version = "0.1.0"
-          [project]
-          name = "RecApp"
-          [project.packages]
-          "RecApp" = "src"
-          [dependencies]
-          recdep = { path = "../dep" }
-          TOML
-          cat > "$work/app/src/app.l" <<'LYR'
-          package RecApp
-          import RecDep
-          import Std.Console as Console
-          func main(): Unit {
-            val r = mkRec()
-            Console.println(toString(r.ints.count) + " " + toString(r.items.count) + " " + r.name)
-          }
-          LYR
-          "$lyric_bin" build --manifest "$work/dep/lyric.toml"
-          "$lyric_bin" build --manifest "$work/app/lyric.toml"
-          # Stage the local-path dependency DLL beside the consumer so it loads
-          # at run time (the Rec type lives in Lyric.RecDep.dll).
-          cp "$work/dep/bin/Lyric.RecDep.dll" "$work/app/bin/"
-          got="$(cd "$work/app/bin" && dotnet RecApp.dll | tail -1 | tr -d '\r\n')"
-          echo "consumer printed: '$got'"
-          if [ "$got" != "3 1 hi" ]; then
-            echo "::error::cross-package record field read returned '$got', expected '3 1 hi'"
-            exit 1
-          fi
-          echo "cross-package non-generic record field binds concretely"
-
+        run: bash scripts/ci/crosspackage-record-field-encoding.sh
       # Cross-package non-generic FUNCTION PARAMETER encoding (D-progress-478 / facet 2).
       # The self-hosted PRODUCER (lowerFuncMsil) erased a reference-typed
       # parameter of a non-generic free function (a record, `slice[record]`,
@@ -7252,66 +6318,7 @@ jobs:
       - name: Cross-package function parameter encoding (D-progress-478)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin"
-            exit 1
-          fi
-          work="$(mktemp -d)"
-          mkdir -p "$work/dep/src" "$work/app/src"
-          cat > "$work/dep/lyric.toml" <<'TOML'
-          [package]
-          name = "fdep"
-          version = "0.1.0"
-          [project]
-          name = "FDep"
-          output_assembly = "Lyric.FDep.dll"
-          [project.packages]
-          "FDep" = "src"
-          TOML
-          cat > "$work/dep/src/fdep.l" <<'LYR'
-          package FDep
-          pub record Err { field: String; msg: String }
-          pub func mkErr(): Err { Err(field = "name", msg = "required") }
-          pub func describe(e: in Err): String { e.field + ":" + e.msg }
-          pub func combine(a: in Err, b: in Err): String { describe(a) + "|" + describe(b) }
-          LYR
-          cat > "$work/app/lyric.toml" <<'TOML'
-          [package]
-          name = "fapp"
-          version = "0.1.0"
-          [project]
-          name = "FApp"
-          [project.packages]
-          "FApp" = "src"
-          [dependencies]
-          fdep = { path = "../dep" }
-          TOML
-          cat > "$work/app/src/app.l" <<'LYR'
-          package FApp
-          import FDep
-          import Std.Console as Console
-          func main(): Unit {
-            val a = mkErr()
-            val b = mkErr()
-            Console.println(describe(a) + " " + combine(a, b))
-          }
-          LYR
-          "$lyric_bin" build --manifest "$work/dep/lyric.toml"
-          "$lyric_bin" build --manifest "$work/app/lyric.toml"
-          # Stage the local-path dependency DLL beside the consumer so it loads
-          # at run time (the Err type + functions live in Lyric.FDep.dll).
-          cp "$work/dep/bin/Lyric.FDep.dll" "$work/app/bin/"
-          got="$(cd "$work/app/bin" && dotnet FApp.dll | tail -1 | tr -d '\r\n')"
-          echo "consumer printed: '$got'"
-          if [ "$got" != "name:required name:required|name:required" ]; then
-            echo "::error::cross-package function param call returned '$got', expected 'name:required name:required|name:required'"
-            exit 1
-          fi
-          echo "cross-package non-generic function reference-typed params bind concretely"
-
+        run: bash scripts/ci/crosspackage-function-parameter-encoding.sh
       # Cross-package generic-return signature: reference-typed generic args.
       # A self-hosted-compiled call to a cross-package function whose return is a
       # generic instantiation with a REFERENCE-typed argument — e.g.
@@ -7470,61 +6477,7 @@ jobs:
       - name: Cross-package record construct-in-consumer (D-progress-481)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin"
-            exit 1
-          fi
-          work="$(mktemp -d)"
-          mkdir -p "$work/dep/src" "$work/app/src"
-          cat > "$work/dep/lyric.toml" <<'TOML'
-          [package]
-          name = "rdep"
-          version = "0.1.0"
-          [project]
-          name = "RDep3"
-          output_assembly = "Lyric.RDep3.dll"
-          [project.packages]
-          "RDep3" = "src"
-          TOML
-          cat > "$work/dep/src/rdep.l" <<'LYR'
-          package RDep3
-          pub record Box { tags: List[Int]; name: String }
-          pub func describe(b: in Box): String { toString(b.tags.count) + ":" + b.name }
-          LYR
-          cat > "$work/app/lyric.toml" <<'TOML'
-          [package]
-          name = "rapp"
-          version = "0.1.0"
-          [project]
-          name = "RApp3"
-          [project.packages]
-          "RApp3" = "src"
-          [dependencies]
-          rdep = { path = "../dep" }
-          TOML
-          cat > "$work/app/src/app.l" <<'LYR'
-          package RApp3
-          import RDep3
-          import Std.Console as Console
-          func main(): Unit {
-            val b = Box(tags = [1, 2, 3, 4], name = "hi")
-            Console.println(describe(b))
-          }
-          LYR
-          "$lyric_bin" build --manifest "$work/dep/lyric.toml"
-          "$lyric_bin" build --manifest "$work/app/lyric.toml"
-          cp "$work/dep/bin/Lyric.RDep3.dll" "$work/app/bin/"
-          got="$(cd "$work/app/bin" && dotnet RApp3.dll | tail -1 | tr -d '\r\n')"
-          echo "consumer printed: '$got'"
-          if [ "$got" != "4:hi" ]; then
-            echo "::error::cross-package record construct-in-consumer returned '$got' (expected '4:hi'); #2592 slice-2 regressed"
-            exit 1
-          fi
-          echo "cross-package record construct-in-consumer builds the concrete list"
-
+        run: bash scripts/ci/crosspackage-record-construct-in-consumer.sh
       # Cross-package union construct+match (#2897).  A PRODUCER package exports a
       # union with a `List[Int]` payload case; the CONSUMER constructs a case and
       # matches it across an assembly boundary.  Verifies that union-case construction
@@ -7533,74 +6486,7 @@ jobs:
       - name: Cross-package union construct+match (#2897)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin"
-            exit 1
-          fi
-          work="$(mktemp -d)"
-          mkdir -p "$work/udep/src" "$work/uapp/src"
-          cat > "$work/udep/lyric.toml" <<'TOML'
-          [package]
-          name = "udep"
-          version = "0.1.0"
-          [project]
-          name = "UDep"
-          output_assembly = "Lyric.UDep.dll"
-          [project.packages]
-          "UDep" = "src"
-          TOML
-          cat > "$work/udep/src/udep.l" <<'LYR'
-          package UDep
-          pub union Payload {
-            case Items(vals: List[Int])
-            case Empty
-          }
-          pub func sumPayload(p: in Payload): Int {
-            match p {
-              case Items(vals) -> {
-                var s = 0
-                var i = 0
-                while i < vals.count { s = s + vals[i]; i = i + 1 }
-                s
-              }
-              case Empty -> 0
-            }
-          }
-          LYR
-          cat > "$work/uapp/lyric.toml" <<'TOML'
-          [package]
-          name = "uapp"
-          version = "0.1.0"
-          [project]
-          name = "UApp"
-          [project.packages]
-          "UApp" = "src"
-          [dependencies]
-          udep = { path = "../udep" }
-          TOML
-          cat > "$work/uapp/src/uapp.l" <<'LYR'
-          package UApp
-          import UDep
-          import Std.Console as Console
-          func main(): Unit {
-            val p = Items(vals = [10, 20, 30])
-            Console.println(toString(sumPayload(p)))
-          }
-          LYR
-          "$lyric_bin" build --manifest "$work/udep/lyric.toml"
-          "$lyric_bin" build --manifest "$work/uapp/lyric.toml"
-          cp "$work/udep/bin/Lyric.UDep.dll" "$work/uapp/bin/"
-          got="$(cd "$work/uapp/bin" && dotnet UApp.dll | tail -1 | tr -d '\r\n')"
-          echo "cross-package union consumer printed: '$got'"
-          if [ "$got" != "60" ]; then
-            echo "::error::cross-package union construct+match returned '$got', expected '60' (#2897)"
-            exit 1
-          fi
-          echo "cross-package union construct+match with List[Int] payload works (#2897)"
-
+        run: bash scripts/ci/crosspackage-union-construct-match.sh
       # Construction-position collExpect coverage (#2592 slice 3, D-progress-482).
       # Verifies that the self-hosted `codegen.l` `collExpect` push at four positions
       # produces genuine concrete `List<T>` rather than `List<object>`:
@@ -7617,64 +6503,7 @@ jobs:
       - name: Construction-position collExpect coverage (#2592 slice 3, self-hosted)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping collExpect construction-position self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping collExpect construction-position self-test"
-            exit 1
-          fi
-          work="$(mktemp -d)"
-          # The self-hosted type checker treats `[...]` literals as `slice[T]`, not
-          # `List[T]`, so collExpect at function-return / call-arg / reassignment
-          # positions requires the record-field construction path where the emitter
-          # propagates the field's `List[T]` expected type into the literal
-          # (T0060/T0070/T0043 type errors block the direct List-position paths — a
-          # self-hosted type-checker gap tracked in #2394).  All four positions are
-          # validated here via record fields: construct, pass as field, reassign as
-          # field, and nest as inner field.
-          cat > "$work/c3.l" <<'LYR'
-          @test_module
-          package C3
-          import Std.Testing
-          record IntSeq { vals: List[Int] }
-          func makeSeq(): IntSeq { IntSeq(vals = [10, 20, 30]) }
-          func sumSeq(seq: in IntSeq): Int {
-            var s = 0
-            var i = 0
-            while i < seq.vals.count { s = s + seq.vals[i]; i = i + 1 }
-            s
-          }
-          test "record-field construction builds concrete List[Int]" {
-            val seq = makeSeq()
-            assertEqualInt(seq.vals.count, 3, "count")
-            assertEqualInt(seq.vals[0] + seq.vals[1] + seq.vals[2], 60, "sum")
-          }
-          test "record-field in call-arg position builds concrete List[Int]" {
-            assertEqualInt(sumSeq(IntSeq(vals = [100, 200, 300])), 600, "sum")
-          }
-          test "record-field reassignment builds concrete List[Int]" {
-            var seq = IntSeq(vals = [0])
-            seq = IntSeq(vals = [1, 2, 3])
-            assertEqualInt(seq.vals.count, 3, "count")
-            assertEqualInt(seq.vals[0] + seq.vals[2], 4, "sum-first-last")
-          }
-          test "nested record-field builds concrete List[Int] for inner" {
-            val a = IntSeq(vals = [10, 20])
-            val b = IntSeq(vals = [30, 40, 50])
-            assertEqualInt(a.vals.count, 2, "inner0 count")
-            assertEqualInt(b.vals.count, 3, "inner1 count")
-            assertEqualInt(a.vals[0] + a.vals[1], 30, "inner0 sum")
-          }
-          LYR
-          "$lyric_bin" test "$work/c3.l"
-          echo "collExpect propagates correctly via record-field construction positions (self-hosted)"
-          echo "record-field collExpect builds inner lists as concrete List<int32>"
-
+        run: bash scripts/ci/construction-position-collexpect.sh
       # `Sort.sortStrings(list.toArray())` end-to-end (#2592 slice 4, D-progress-483).
       # The #2592 headline bug: self-hosted callers passed a `List`-backed slice to
       # the F#-built `Std.Sort.sortStrings(String[])`, which returned the unsorted
@@ -7689,60 +6518,7 @@ jobs:
       - name: Sort.sortStrings(list.toArray()) end-to-end (#2592 slice 4)
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin"
-            exit 1
-          fi
-          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.dll" ]; then
-            echo "::error::Lyric.Stdlib.dll bundle not staged — slice-4 test cannot run"
-            exit 1
-          fi
-          work="$(mktemp -d)"
-          trap 'rm -rf "$work"' EXIT
-          cat > "$work/s4.l" <<'LYR'
-          package S4
-          import Std.Sort as Sort
-          import Std.Console as Console
-          func main(): Unit {
-            val files: List[String] = newList()
-            files.add("gamma.l")
-            files.add("alpha.l")
-            files.add("beta.l")
-            val sorted = Sort.sortStrings(files.toArray())
-            var acc = ""
-            var i = 0
-            while i < sorted.length {
-              if i > 0 { acc = acc + " " }
-              acc = acc + sorted[i]
-              i = i + 1
-            }
-            Console.println(acc)
-          }
-          LYR
-          # Capture stdout and stderr separately so a trailing compiler warning
-          # printed to stderr does not replace the program output in the comparison.
-          # `lyric run` also prints its "built <path> in <N>ms" progress line to
-          # stdout before the program output, so drop those lines explicitly
-          # (the old `tail -1` was filtering them implicitly).
-          s4_stderr="$work/s4.err"
-          if ! out="$("$lyric_bin" run "$work/s4.l" 2>"$s4_stderr")"; then
-            echo "::error::lyric run failed for slice-4 test"
-            cat "$s4_stderr" >&2
-            exit 1
-          fi
-          # Drop build-progress lines, then trim newlines to normalise output.
-          out="$(printf '%s\n' "$out" | grep -v '^built ' | tr -d '\r\n')"
-          echo "slice-4 program printed: '$out'"
-          if [ "$out" != "alpha.l beta.l gamma.l" ]; then
-            echo "::error::Sort.sortStrings(list.toArray()) returned '$out' (expected 'alpha.l beta.l gamma.l'); #2592 slice-4 regressed"
-            cat "$s4_stderr" >&2
-            exit 1
-          fi
-          echo "Sort.sortStrings(list.toArray()) returns lexicographically sorted result"
-
+        run: bash scripts/ci/sort-sortstrings-e2e.sh
       # NOTE (#2908): An implicit `List[T]`→`slice[T]` coercion test (passing a
       # concrete `List[T]` directly to a function expecting `slice[T]`, without
       # `.toArray()`) is not added here.  The self-hosted type checker rejects
@@ -7973,146 +6749,14 @@ jobs:
       # and only running without one proves it held.
       - name: Release JVM native-image e2e (lyric build --release --aot --target jvm)
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          bin_abs="$(pwd)/$lyric_bin"
-          work="$(mktemp -d)"
-          cat > "$work/hello.l" <<'LYR'
-          package HelloJvm
-          import Std.Core
-          import Std.Console as Console
-          import Std.Collections
-          pub func main(): Int {
-            val xs: List[Int] = newList()
-            xs.add(40); xs.add(2)
-            Console.println("jvm release: " + toString(xs[0] + xs[1]))
-            0
-          }
-          LYR
-          "$bin_abs" build --release --aot --target jvm "$work/hello.l"
-          test -x "$work/hello" || { echo "expected native binary $work/hello"; exit 1; }
-          # Prove it is not a fallback image (a launcher that still needs a
-          # JVM).  `env -i PATH=/usr/bin:/bin` would NOT prove this: the runner
-          # image ships /usr/bin/java, so a fallback launcher would find a JVM
-          # and the assertion would pass vacuously.  Run with a completely
-          # empty environment instead — no PATH, no JAVA_HOME, nothing for a
-          # launcher to locate a JVM with.
-          command -v java >/dev/null && echo "note: a JVM IS installed on this runner (that is what makes the empty-env run meaningful)"
-          out="$(env -i "$work/hello")"
-          echo "binary output: $out"
-          [ "$out" = "jvm release: 42" ] || { echo "unexpected output: $out"; exit 1; }
-          file "$work/hello" | grep -q ELF || { echo "expected a native ELF binary"; exit 1; }
-          # A fallback image links against libjvm; a real AOT image does not.
-          if ldd "$work/hello" | grep -qi 'libjvm\|libjli'; then
-            echo "binary links a JVM library — this is a fallback image, not a standalone AOT binary"
-            ldd "$work/hello"; exit 1
-          fi
-          echo "Release JVM native-image e2e passed"
-
-          # Project mode (multi-package, entry package auto-detected).
-          proj="$(mktemp -d)"
-          mkdir -p "$proj/src/app" "$proj/src/util"
-          cat > "$proj/lyric.toml" <<'TOML'
-          [package]
-          name = "NiProj"
-          version = "0.1.0"
-          [project]
-          name = "NiProj"
-          [project.packages]
-          "Util" = "src/util/util.l"
-          "App"  = "src/app/app.l"
-          TOML
-          printf 'package Util\nimport Std.Core\npub func double(x: in Int): Int { x * 2 }\n' > "$proj/src/util/util.l"
-          printf 'package App\nimport Std.Core\nimport Std.Console as Console\nimport Util\nfunc main(): Int { Console.println("project release: " + toString(double(21))); 0 }\n' > "$proj/src/app/app.l"
-          ( cd "$proj" && "$bin_abs" build --release --aot --target jvm )
-          test -x "$proj/NiProj" || { echo "expected native binary $proj/NiProj"; exit 1; }
-          pout="$(env -i "$proj/NiProj")"
-          echo "project binary output: $pout"
-          [ "$pout" = "project release: 42" ] || { echo "unexpected output: $pout"; exit 1; }
-          echo "Release JVM native-image project-mode e2e passed"
-
+        run: bash scripts/ci/release-jvm-native-image-e2e.sh
       # Auto-restore-on-build end-to-end — `lyric build` resolves dependencies
       # when lyric.lock is missing or stale, and `--no-restore` opts out (#1971).
       # Driven through the real binary because the staleness check reads the
       # filesystem (can't be a `lyric test` self-test, #2001).
       - name: Auto-restore-on-build e2e
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping auto-restore e2e"
-            exit 1
-          fi
-          bin_abs="$(pwd)/$lyric_bin"
-          work="$(mktemp -d)"
-          mkdir -p "$work/lib/src" "$work/app/src"
-          cat > "$work/lib/lyric.toml" <<'TOML'
-          [package]
-          name = "Lib"
-          version = "0.1.0"
-          [project]
-          name = "Lib"
-          output = "single"
-          output_assembly = "Lib.dll"
-          [project.packages]
-          "Lib" = "src/lib.l"
-          TOML
-          printf 'package Lib\nimport Std.Core\npub func answer(): Int { 42 }\n' > "$work/lib/src/lib.l"
-          cat > "$work/app/lyric.toml" <<'TOML'
-          [package]
-          name = "App"
-          version = "0.1.0"
-          [project]
-          name = "App"
-          output = "single"
-          output_assembly = "App.dll"
-          [project.packages]
-          "App" = "src/main.l"
-          [dependencies]
-          Lib = { path = "../lib" }
-          TOML
-          printf 'package App\nimport Std.Core\nimport Std.Console as Console\npub func main(): Int { Console.println("app built"); 0 }\n' > "$work/app/src/main.l"
-          # A second library, declared as a dependency only in the stale-lock
-          # case below so the lock written for the first build is out of date.
-          mkdir -p "$work/lib2/src"
-          cat > "$work/lib2/lyric.toml" <<'TOML'
-          [package]
-          name = "Lib2"
-          version = "0.1.0"
-          [project]
-          name = "Lib2"
-          output = "single"
-          output_assembly = "Lib2.dll"
-          [project.packages]
-          "Lib2" = "src/lib2.l"
-          TOML
-          printf 'package Lib2\nimport Std.Core\npub func two(): Int { 2 }\n' > "$work/lib2/src/lib2.l"
-          ( cd "$work/lib" && "$bin_abs" build )
-          ( cd "$work/lib2" && "$bin_abs" build )
-          # 1. No lock -> auto-restore writes it and the build succeeds.
-          ( cd "$work/app" && "$bin_abs" build 2>&1 | tee "$work/ar1.out" )
-          grep -q "resolving dependencies" "$work/ar1.out" || { echo "expected auto-restore message"; exit 1; }
-          test -f "$work/app/lyric.lock" || { echo "expected lyric.lock to be created"; exit 1; }
-          # 2. In-sync lock -> no re-restore.
-          ( cd "$work/app" && "$bin_abs" build 2>&1 | tee "$work/ar2.out" )
-          if grep -q "resolving dependencies" "$work/ar2.out"; then echo "should not re-restore an in-sync lock"; exit 1; fi
-          # 3. Stale lock -> a dependency added after the lock was written triggers
-          #    a re-restore (the new dep is absent from lyric.lock).
-          printf 'Lib2 = { path = "../lib2" }\n' >> "$work/app/lyric.toml"
-          ( cd "$work/app" && "$bin_abs" build 2>&1 | tee "$work/ar3.out" )
-          grep -q "resolving dependencies" "$work/ar3.out" || { echo "expected re-restore on a stale lock (new dep)"; exit 1; }
-          # 4. --no-restore after deleting the lock -> no restore, lock not recreated.
-          #    The build still succeeds (exit 0): both path deps are already built
-          #    above, so no resolution is needed to compile against them.
-          rm -f "$work/app/lyric.lock"
-          ( cd "$work/app" && "$bin_abs" build --no-restore ) > "$work/ar4.out" 2>&1; rc=$?
-          test "$rc" -eq 0 || { echo "--no-restore build should still succeed (exit 0), got $rc"; cat "$work/ar4.out"; exit 1; }
-          if grep -q "resolving dependencies" "$work/ar4.out"; then echo "--no-restore should skip restore"; exit 1; fi
-          test ! -f "$work/app/lyric.lock" || { echo "--no-restore should not recreate the lock"; exit 1; }
-          echo "Auto-restore-on-build e2e passed"
-
+        run: bash scripts/ci/auto-restore-on-build-e2e.sh
       # Git-dependency restore + manifest-error rendering regression (#2082).
       # The F# emitter mis-resolved `Str.fromInt` to `Std.Char.fromInt` (both
       # imported), so urlToHash crashed (Char.fromInt requires n<=65535 vs a
@@ -8122,75 +6766,7 @@ jobs:
       # parse error renders a real `:<line>:<col>:` location.
       - name: Git-dep / manifest-error regression e2e
         working-directory: ${{ github.workspace }}
-        run: |
-          set -uo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping git-dep regression"
-            exit 1
-          fi
-          bin_abs="$(pwd)/$lyric_bin"
-          work="$(mktemp -d)"
-          # (0) git dep -> successful resolution against a real local repo (#2126).
-          #     The parsed git ref (tag/rev/branch) must round-trip to the resolver;
-          #     it previously read back null and git deps never resolved.
-          gitc="git -c commit.gpgsign=false -c tag.gpgsign=false -c user.email=t@t -c user.name=t"
-          mkdir -p "$work/remote"
-          ( cd "$work/remote" && git init -q -b main . && echo seed > f && $gitc add -A && $gitc commit -q -m init --no-gpg-sign && $gitc tag v1.0 )
-          mkdir -p "$work/ok/src"
-          cat > "$work/ok/lyric.toml" <<TOML
-          [package]
-          name = "Ok"
-          version = "0.1.0"
-          [project]
-          name = "Ok"
-          output = "single"
-          output_assembly = "Ok.dll"
-          [project.packages]
-          "Ok" = "src/main.l"
-          [dependencies]
-          Dep = { git = "file://$work/remote", tag = "v1.0" }
-          TOML
-          printf 'package Ok\nimport Std.Core\npub func main(): Int { 0 }\n' > "$work/ok/src/main.l"
-          ( cd "$work/ok" && HOME="$work/home" timeout 120 "$bin_abs" restore ) > "$work/ok.out" 2>&1
-          okrc=$?
-          echo "--- ok restore (rc=$okrc) ---"; cat "$work/ok.out"
-          test "$okrc" -eq 0 || { echo "git-dep restore against a real repo should succeed"; exit 1; }
-          grep -q "git:file://" "$work/ok/lyric.lock" || { echo "expected a git: lock entry for the resolved dep"; cat "$work/ok/lyric.lock"; exit 1; }
-          # (a) git dep -> graceful failure, no crash.
-          mkdir -p "$work/app/src"
-          cat > "$work/app/lyric.toml" <<'TOML'
-          [package]
-          name = "App"
-          version = "0.1.0"
-          [project]
-          name = "App"
-          output = "single"
-          output_assembly = "App.dll"
-          [project.packages]
-          "App" = "src/main.l"
-          [dependencies]
-          Bar = { git = "https://example.invalid/bar.git", tag = "v1.0" }
-          TOML
-          printf 'package App\nimport Std.Core\npub func main(): Int { 0 }\n' > "$work/app/src/main.l"
-          # `|| rc=$?` keeps the (expected) non-zero restore from tripping the
-          # step's `bash -e` errexit before we can inspect the exit code.
-          rc=0
-          ( cd "$work/app" && timeout 90 "$bin_abs" restore ) > "$work/restore.out" 2>&1 || rc=$?
-          echo "--- restore output (rc=$rc) ---"; cat "$work/restore.out"
-          if grep -qiE "Unhandled exception|requires failed|fromInt|NullReferenceException" "$work/restore.out"; then
-            echo "git-dep restore crashed instead of failing gracefully"; exit 1
-          fi
-          test "$rc" -ne 0 || { echo "git-dep restore of an unreachable repo should exit non-zero"; exit 1; }
-          # (b) manifest parse error -> real :line:col: location, not garbled chars.
-          mkdir -p "$work/bad"
-          printf '[package]\nname = "X"\nversion = "0.1.0"\n[dependencies]\nFoo = { git = \n' > "$work/bad/lyric.toml"
-          ( cd "$work/bad" && "$bin_abs" restore ) > "$work/bad.out" 2>&1 || true
-          echo "--- manifest-error output ---"; cat "$work/bad.out"
-          grep -qE 'lyric\.toml:[0-9]+:[0-9]+:' "$work/bad.out" || {
-            echo "manifest parse error did not render a numeric :line:col: location"; exit 1; }
-          echo "Git-dep / manifest-error regression e2e passed"
-
+        run: bash scripts/ci/git-dep-manifest-error-e2e.sh
       # T0115 exhausted-tail backstop e2e (#6351 / PR #6504 review follow-up):
       # both diagnostic tiers as negative compiles + the dep-template
       # positive path at runtime.  Body lives in scripts/ci/ per this file's
@@ -8205,82 +6781,7 @@ jobs:
       # and writes the filesystem (can't be a `lyric test` self-test, #2001).
       - name: lyric add e2e
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping lyric add e2e"
-            exit 1
-          fi
-          bin_abs="$(pwd)/$lyric_bin"
-          work="$(mktemp -d)"
-          trap 'rm -rf "$work"' EXIT
-          mkdir -p "$work/lib/src" "$work/app/src"
-          cat > "$work/lib/lyric.toml" <<'TOML'
-          [package]
-          name = "Lib"
-          version = "0.1.0"
-          [project]
-          name = "Lib"
-          output = "single"
-          output_assembly = "Lib.dll"
-          [project.packages]
-          "Lib" = "src/lib.l"
-          TOML
-          printf 'package Lib\nimport Std.Core\npub func answer(): Int { 42 }\n' > "$work/lib/src/lib.l"
-          cat > "$work/app/lyric.toml" <<'TOML'
-          [package]
-          name = "App"
-          version = "0.1.0"
-          [project]
-          name = "App"
-          output = "single"
-          output_assembly = "App.dll"
-          [project.packages]
-          "App" = "src/main.l"
-          TOML
-          printf 'package App\nimport Std.Core\nimport Std.Console as Console\npub func main(): Int { Console.println("ok"); 0 }\n' > "$work/app/src/main.l"
-          ( cd "$work/lib" && "$bin_abs" build )
-          # registry @version (no restore — offline)
-          ( cd "$work/app" && "$bin_abs" add Foo@1.2.0 --no-restore )
-          grep -q '^Foo = "1.2.0"$' "$work/app/lyric.toml" || { echo "registry add missing"; cat "$work/app/lyric.toml"; exit 1; }
-          # idempotent update in place (no duplicate)
-          ( cd "$work/app" && "$bin_abs" add Foo@2.0.0 --no-restore )
-          [ "$(grep -c '^Foo = ' "$work/app/lyric.toml")" = "1" ] || { echo "re-add duplicated Foo"; exit 1; }
-          grep -q '^Foo = "2.0.0"$' "$work/app/lyric.toml" || { echo "re-add did not update Foo"; exit 1; }
-          # nuget table created
-          ( cd "$work/app" && "$bin_abs" add Newtonsoft.Json@13.0.3 --nuget --no-restore )
-          grep -q '^\[nuget\]$' "$work/app/lyric.toml" || { echo "nuget table not created"; exit 1; }
-          grep -q '^Newtonsoft.Json = "13.0.3"$' "$work/app/lyric.toml" || { echo "nuget entry missing"; exit 1; }
-          # git inline-table
-          ( cd "$work/app" && "$bin_abs" add Bar --git https://example.com/bar.git --tag v1.0 --no-restore )
-          grep -q '^Bar = { git = "https://example.com/bar.git", tag = "v1.0" }$' "$work/app/lyric.toml" || { echo "git entry missing"; cat "$work/app/lyric.toml"; exit 1; }
-          # restore + build round-trip on a CLEAN manifest: add a path dep that
-          # resolves offline and let the implicit restore run.  (The asserts
-          # above use --no-restore, so the bogus registry/nuget/git entries are
-          # never fetched — restoring them would hit the network.)
-          mkdir -p "$work/app2/src"
-          cat > "$work/app2/lyric.toml" <<'TOML'
-          [package]
-          name = "App2"
-          version = "0.1.0"
-          [project]
-          name = "App2"
-          output = "single"
-          output_assembly = "App2.dll"
-          [project.packages]
-          "App2" = "src/main.l"
-          TOML
-          printf 'package App2\nimport Std.Core\nimport Std.Console as Console\npub func main(): Int { Console.println("ok"); 0 }\n' > "$work/app2/src/main.l"
-          ( cd "$work/app2" && "$bin_abs" add Lib --path ../lib )
-          test -f "$work/app2/lyric.lock" || { echo "expected the implicit restore to write lyric.lock"; exit 1; }
-          ( cd "$work/app2" && "$bin_abs" build )
-          # validation: --tag without --git fails
-          if ( cd "$work/app" && "$bin_abs" add X --tag v1 --no-restore ); then
-            echo "expected failure for --tag without --git"; exit 1
-          fi
-          echo "lyric add e2e passed"
-
+        run: bash scripts/ci/lyric-add-e2e.sh
       # `lyric init` end-to-end — scaffold an app, run + build it, and check the
       # --lib / --force / bad-name / overwrite-refusal behaviours (#1972).
       - name: lyric init e2e

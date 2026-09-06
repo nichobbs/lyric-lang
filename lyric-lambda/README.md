@@ -2,16 +2,22 @@
 
 AWS Lambda runtime adapter for [Lyric](https://github.com/nichobbs/lyric-lang). Deploy services built with `lyric-web` to Lambda with zero handler-code changes, plus support for all major event sources (SQS, SNS, S3, EventBridge, DynamoDB, Kinesis) and Lambda authorizers.
 
-> **Status**: @experimental — the `aws`/`local` runtime loop (event-source
-> detection, JSON marshalling, `Lambda.Direct` dispatch, and the wire-level
-> HTTP transport) is real, pure-Lyric code, no longer an unbacked `extern
-> package` declaration. `aws:sqs`, `aws:sns`, `aws:s3`, `aws:dynamodb`,
-> `aws:kinesis`, EventBridge, the `raw` catch-all, and all three authorizer
-> types are fully wired; API Gateway/ALB dispatch via `Lambda.withRouter`
-> and response streaming are blocked on separate feasibility work (see
-> "Known gaps" below). The `jvm` feature is not implemented pending a
-> deployment-model decision. See `docs/35-lambda-library.md` and the
-> decision log (D062–D064, D099).
+> **Status**: @experimental — the `aws`/`local`/`jvm` runtime loop
+> (event-source detection, JSON marshalling, `Lambda.Direct` dispatch, and
+> the wire-level HTTP transport) is real, pure-Lyric code, no longer an
+> unbacked `extern package` declaration, and all three feature variants
+> share the identical `Lambda.Dispatch` implementation (`jvm` deploys as a
+> `provided.al2`/`provided.al2023` custom runtime — a resolved
+> deployment-model decision, see "Known gaps"). `aws:sqs`, `aws:sns`,
+> `aws:s3`, `aws:dynamodb`, `aws:kinesis`, EventBridge, the `raw`
+> catch-all, and all three authorizer types are fully wired; the
+> `Lambda.Kernel.WebBridge` router-token registry is real and proven
+> (`Lambda.withRouter`'s `LambdaRouter` token resolves back to its
+> `Web.Router`), but routing an API Gateway/ALB event *through* the
+> resolved router, and response streaming, are both separate, larger,
+> not-yet-implemented features (see "Known gaps" below). See
+> `docs/35-lambda-library.md` and the decision log (D062–D064, D099,
+> D-progress-882).
 
 ## Platform parity
 
@@ -19,7 +25,7 @@ AWS Lambda runtime adapter for [Lyric](https://github.com/nichobbs/lyric-lang). 
 |---|---|---|
 | `aws` | .NET custom runtime: HTTP long-polling against `$AWS_LAMBDA_RUNTIME_API` | Available — all six event sources (`aws:sqs`/`aws:sns`/`aws:s3`/`aws:dynamodb`/`aws:kinesis`/EventBridge), `raw`, and authorizers wired; HTTP/streaming not implemented (see "Known gaps") |
 | `local` | Local test server (compatible with `sam local invoke`) | Available — same dispatch logic and gaps as `aws`, different transport |
-| `jvm` | JVM managed runtime (`RequestStreamHandler`) | **Not implemented** — needs a product decision, see "Known gaps" |
+| `jvm` | JVM custom runtime (`provided.al2`/`provided.al2023`): the SAME `Lambda.Dispatch` HTTP long-polling loop as `aws` | Available — same dispatch logic and gaps as `aws`/`local`; verified in isolation (a standalone `Std.Http`+`Std.HttpServer`+`scope`/`spawn`/`await` spike passes on `--target jvm`) — full project-level `--target jvm` verification is blocked in this environment by an unrelated, pre-existing Maven-resolver gap (see "Known gaps") |
 
 ## Packages
 
@@ -43,9 +49,9 @@ AWS Lambda runtime adapter for [Lyric](https://github.com/nichobbs/lyric-lang). 
 "Lyric.Web" = { path = "../lyric-web" }       # optional, for HTTP handlers
 
 [features]
-aws = []    # production Lambda runtime
+aws = []    # production Lambda runtime (.NET custom runtime)
 local = []  # local test server
-jvm = []    # JVM managed runtime
+jvm = []    # production Lambda runtime (JVM custom runtime, provided.al2/al2023)
 ```
 
 ## Quick start
@@ -54,14 +60,17 @@ jvm = []    # JVM managed runtime
 > operator (tracked in #3520). The examples below use the equivalent nested
 > call form; re-express as a left-to-right pipeline once pipe support lands.
 
-### HTTP service (API Gateway / ALB) — not yet implemented
+### HTTP service (API Gateway / ALB) — dispatch not yet implemented
 
-`Lambda.withRouter` compiles and registers a `Web.Router`, but the runtime
-loop cannot resolve the resulting `LambdaRouter` token back to that router
-yet — dispatch fails closed with `LambdaError.InternalError` at runtime.
-This needs a `ConditionalWeakTable<LambdaRouter, Web.Router>` feasibility
-spike (see "Known gaps"). Use event-driven handlers (below) until that
-lands.
+`Lambda.withRouter` compiles, registers a `Web.Router`, and the resulting
+`LambdaRouter` token DOES resolve back to that exact router at runtime
+(`Lambda.Kernel.WebBridge`'s registry is real — see
+`tests/lambda_webbridge_tests.l`). What's still missing is routing a live
+API Gateway/ALB event *through* the resolved router (method/path/header/
+body extraction, match-and-dispatch, `ApiGwResponse` encoding, CORS) — a
+separate, larger feature; `dispatchInvocation` still fails closed with
+`LambdaError.InternalError` for these events, now naming this specific
+gap. Use event-driven handlers (below) until that lands.
 
 ### Event-driven handlers (SQS, SNS, etc.)
 
@@ -491,11 +500,11 @@ or a `panic` with an explanatory message) rather than pretending to work:
 
 | Gap | Where it fails | What's needed |
 |---|---|---|
-| API Gateway v1/v2/ALB dispatch (`Lambda.withRouter`) | `dispatchInvocation` returns `InternalError` | A feasibility spike for `Lambda.Kernel.Net`'s `ConditionalWeakTable<LambdaRouter, Web.Router>` registry — there is currently no `lookupRouter` to resolve a `LambdaRouter` token back to a `Web.Router` |
+| API Gateway v1/v2/ALB dispatch (`Lambda.withRouter`) | `dispatchInvocation` returns `InternalError` naming this gap specifically | Routing a live event through the now-resolvable `Web.Router` (method/path/header/body extraction, match-and-dispatch, `ApiGwResponse` encoding, CORS) — the router-token registry itself (`Lambda.Kernel.WebBridge.createRouterToken`/`lookupRouter`) is real and proven (`tests/lambda_webbridge_tests.l`) |
 | Response streaming (`Lambda.Stream`, `Lambda.withStreamingHandler`, `Lambda.Direct.streamingHandler`) | Every `Lambda.Stream` function panics; `streamingHandler` panics at registration time | A real streaming transport design (Function URL `RESPONSE_STREAM` uses a different invoke path than the GET-next/POST-response loop this library implements) |
-| `jvm` feature (AWS Java managed runtime) | `serve()` panics with a message pointing at this table | A product decision between (a) new JVM emitter codegen synthesizing a host-invoked `RequestStreamHandler` entry-point class, or (b) redesigning the JVM target onto the same custom-runtime HTTP polling protocol via a bootstrap executable — see `lambda_kernel_jvm.l`'s header comment |
-| `web` feature (`Lambda.Kernel.WebBridge`/`Lambda.Kernel.Net`) | Depends on the API Gateway gap above | Same `ConditionalWeakTable` feasibility spike; also not currently target-gated (compiles regardless of `--target`) despite naming a .NET-only BCL type |
+| `web` feature not target-gated | Compiles regardless of `--target`; `ConditionalWeakTable` (its extern boundary) is .NET-only | Target-gating, or a JVM-side registry (a plain `Map[LambdaRouter, Web.Router]` needs no weak table on that target) once a real JVM `feature = "web"` consumer exists |
 | String-based `on*`/`onTokenAuthorizer`/etc. registration | Registers successfully; dispatch fails closed if no `Lambda.Direct` handler also covers the same source | None planned — `Lambda.Direct` is the sanctioned replacement (D099) |
+| Full project-level `--target jvm` verification | Blocked in sandboxed CI-like environments without a `lyric-resolver.jar` (Maven resolution unavailable to fetch `lyric-web`'s `io.undertow:undertow-core`, which `Lambda`'s unconditional `import Web` pulls in transitively on JVM) | A `lyric-resolver.jar` (`make maven-resolver`) with network access to Maven Central; the JVM kernel logic itself is verified in isolation (a standalone `Std.Http`+`Std.HttpServer`+`scope`/`spawn`/`await` spike passes on `--target jvm`) |
 
 ## Package layout
 
@@ -515,10 +524,12 @@ lyric-lambda/
     _kernel/
       lambda_kernel_aws.l         Lambda.Kernel.Runtime @cfg(feature="aws")     — thin wrapper over Lambda.Dispatch
       lambda_kernel_local.l       Lambda.Kernel.Runtime @cfg(feature="local")   — thin wrapper over Lambda.Dispatch
-      lambda_kernel_jvm.l         Lambda.Kernel.Runtime @cfg(feature="jvm")     — not implemented
-      lambda_kernel_web.l         Lambda.Kernel.WebBridge @cfg(feature="web")  — not implemented (needs a spike)
+      lambda_kernel_jvm.l         Lambda.Kernel.Runtime @cfg(feature="jvm")     — thin wrapper over the SAME Lambda.Dispatch loop as aws (custom runtime)
+      lambda_kernel_web.l         Lambda.Kernel.WebBridge @cfg(feature="web")  — real ConditionalWeakTable<LambdaRouter, Web.Router> registry
   tests/
-    *_tests.l                     test modules
+    *_tests.l                          registered in [project.tests]
+    lambda_webbridge_tests.l           NOT registered (needs --features web; see file header)
+    lambda_runtime_loop_tests.l        NOT registered (needs --target jvm --features jvm; see file header)
 ```
 
 ## See also

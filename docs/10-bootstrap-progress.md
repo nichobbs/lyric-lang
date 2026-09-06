@@ -33513,7 +33513,7 @@ D-progress-852 (the investigation that filed #6809),
 `native/plan/08-work-items.md` N9.7, `docs/20-project-as-dll.md`
 (the dotnet/jvm design this is the native analog of).
 
-## `and`/`or` short-circuit ARC temp-release codegen bug fixed, TLS phase 5 band N9.9 (#6645, #6719, #6722)
+## `and`/`or` short-circuit ARC temp-release codegen bug fixed, TLS phase 5 band N9.10 (#6645, #6719, #6722)
 
 Root-caused and fixed the native-codegen heap-corruption bug N9.4's own
 review found and worked around (#6645), which was also blocking two
@@ -33555,9 +33555,148 @@ dedicated `-fsanitize=address` cases in `llvm_heap_self_test.l` cover the
 `llvm_http_client_self_test.l` cover the three `_kernel_native/http_host.l`
 fixes.
 
-**Related:** `docs/03-decision-log.md` D-progress-882 (full account),
-#6645/#6719/#6722 (fixed by this PR), `native/plan/08-work-items.md` N9.9,
-`native/plan/04-arc-design.md` (the ARC temp-scope rules this bug violated).
+**Related:** `docs/decisions/D-progress-0886-native-short-circuit-arc-temp-leak.md`
+(full account), #6645/#6719/#6722 (fixed by this PR),
+`native/plan/08-work-items.md` N9.10, `native/plan/04-arc-design.md`
+(the ARC temp-scope rules this bug violated).
+
+## Three native-codegen review-finding fixes ship, TLS phase 5 band N9.9 (#6740, #6813, #6625)
+
+Three independent review-finding follow-ups from N9.4/N9.6, all
+confirmed still present against current `main` before fixing:
+
+- **#6740** — a bare enum-case name in a `match` PATTERN
+  (`case Http1_1 ->`) silently bound the whole scrutinee instead of
+  testing equality, since `scrutineeHasCase` never recognised an enum
+  case (an enum erases to bare `NI32`, indistinguishable from `Int` by
+  type alone). Fixed with an `NI32`-gated fallback to
+  `ctx.enumDefs.containsKey(name)`, delegating to the same
+  `emitConstructorTest` enum branch #6753 already gated correctly.
+- **#6813** — an `Int` local (or record field) passed to an `inout Long`
+  parameter type-checks (the checker widens arithmetic uniformly across
+  parameter modes) but `lowerByRefArg` forwarded the raw address with no
+  width check, aliasing a narrower alloca through a wider pointer type.
+  Fixed with a named panic in both by-ref-argument branches, matching
+  N9.6's "loud diagnostic, never silent miscompile" scope-cut policy.
+- **#6625** — `Lyric.LlvmBridge`'s bare-name UFCS reachability fallback
+  (added for #6103 item D) marked every same-named/arity candidate in
+  the WHOLE bundle reachable, so two unrelated stdlib types sharing a
+  trailing name (`.message()` on seven different error types) could
+  sweep each other into the reachable set. A precise fix needs
+  receiver-type inference threaded into the syntax-only reachability
+  walk (future work); this ships a sound partial narrowing instead — a
+  new `pkgTransitiveClosure` BFS over each bundled/own file's own
+  imports restricts `bareTrailing` candidates to packages the CALLING
+  package can actually reach via imports. Sound in one direction: the
+  type checker requires a cross-package callee's package be imported for
+  the original call to have type-checked, so the real target is always
+  in this closure — the narrowing can only exclude unrelated candidates,
+  never the correct one. Still over-inclusive when colliding packages
+  ARE co-imported (the general case still needs type inference).
+
+A `claude-review` finding on this PR caught a real soundness gap in
+`addPkgImports` (#6952): it skipped once a package name was already a
+key in `pkgImports`, so a package split across multiple files
+(first-class per `docs/19-multi-file-packages.md`) only contributed its
+FIRST file's imports to the closure computation — every later file's
+imports were silently dropped, which could wrongly narrow
+`pkgTransitiveClosure` away from a package the package's own later file
+genuinely reaches. Fixed by merging into the existing list under `pkg`
+instead of skipping; a new test parses two `SourceFile`s sharing one
+package with disjoint imports and asserts the merged closure contains
+both.
+
+Verified against the full existing native self-test suite under real
+ASan, after both the original fixes and the #6952 review fix:
+`llvm_codegen_self_test.l` 35/35 (3 new `pkgTransitiveClosure`/
+`addPkgImports` unit cases), `llvm_enum_case_resolve_self_test.l` 7/7
+(1 new item), `llvm_inout_self_test.l` 12/12 (3 new cases, incl. an
+`out Long` mode-symmetry case), `llvm_project_self_test.l` 10/10,
+`llvm_stdlib_self_test.l` 18/18, `llvm_http_client_self_test.l` 13/13 —
+no regressions.
+
+**Related:** `docs/03-decision-log.md` D-progress-882 (full account,
+including the #6952 review fix),
+#6740/#6813/#6625 (fixed by this PR), `native/plan/08-work-items.md`
+N9.9, `native/plan/04-arc-design.md` Rule 5 (the by-ref-argument-ownership
+rule #6813's fix protects).
+
+## Native codegen: #6740's fix scoped to the scrutinee's own enum type, closing a bundle-wide `Int`/`Char` collision hazard (#6969)
+
+A second `claude-review` pass on the #6740/#6813/#6625 PR (above) found
+that #6740's own fix was itself unsound: `scrutineeHasCase`'s `NI32`
+fallback checked `ctx.enumDefs.containsKey(name)` bundle-wide, with no
+check that the scrutinee is actually of that enum's type — since an
+enum, `Int`, and `Char` all erase to the same native `NI32`, an ordinary
+catch-all bind over a real `Int`/`Char` whose bind name collided with
+ANY enum case anywhere in the bundle was silently reinterpreted as an
+equality test, instead of binding. This is a hazard #6740's own fix
+introduced (previously `Int`/`Char` bare-name binds were always safe on
+`--target native`).
+
+Fixed by mirroring `Msil.Codegen`'s `scrutEnumHint`/
+`inferScrutineeEnumHintMsil` mechanism (#5995): a new
+`Ctx.varEnumTypes: Map[String, String]` records a local/param's declared
+enum type SIMPLE NAME (populated at `bindLocal`'s three binding sites
+and at function-parameter binding); `inferScrutineeEnumHint` reads it
+for a bare-`EPath` match scrutinee; `scrutineeHasCase` now scopes its
+`NI32` check to `enumHint + "." + name` — the scrutinee's OWN enum —
+rather than a bundle-wide bare-name check. An empty hint (scrutinee type
+unknown, or genuinely not an enum) falls through to a plain bind, the
+pre-#6740 safe default.
+
+New item H in `llvm_enum_case_resolve_self_test.l`: a plain `Int`
+parameter matched against a bare pattern name colliding with an
+unrelated enum's case must echo the bind back unchanged, confirmed
+failing before the fix and passing after. Full re-verification:
+`llvm_enum_case_resolve_self_test.l` 8/8, `llvm_inout_self_test.l`
+12/12, `llvm_codegen_self_test.l` 35/35, `llvm_stdlib_self_test.l`
+18/18, `llvm_http_client_self_test.l` 13/13 — no regressions.
+
+**Related:** `docs/03-decision-log.md` D-progress-883 (full account),
+#6969 (fixed here), D-progress-882/#6740 (the fix this closes a gap in),
+`native/plan/08-work-items.md` N9.9.
+
+## Native codegen: the #6969 fix's "empty hint" rule dropped #6740's coverage for hint-less scrutinees; fixed with a three-way sentinel (#6976)
+
+A third `claude-review` pass found that the #6969 fix (above) went too
+far: treating an empty scrutinee hint as "conclusively not an enum"
+silently dropped #6740's own fix for any scrutinee shape
+`inferScrutineeEnumHint` can't produce a hint for — an untyped local, a
+direct call-result match, a field access — reproducing #6740's original
+unconditional-bind defect for those shapes. A naive "fall back to the
+bundle-wide check when hint is empty" fix regressed the #6969 test in
+the other direction: a plain `Int` PARAMETER also has an empty hint
+(since it's concretely not an enum, not because its type is unknown),
+so the naive fallback re-enabled the exact collision hazard #6969
+closed. Two different scrutinee shapes both mapped to `enumHint == ""`
+needing opposite behavior — the empty string can't represent both
+"concretely not an enum" and "truly unknown type."
+
+Fixed by making the hint three-way: a new sentinel `nonEnumScrutHint =
+"#nonenum"` (never collides with a real enum name — identifiers can't
+start with `#`) is returned for a scrutinee declared as literally `Int`
+or `Char`. `scrutineeHasCase`'s `NI32` branch now reads three cases: a
+real enum name scopes the check to that enum (#6969's fix, unchanged);
+the sentinel means unconditionally `false` (never falls back); an empty
+hint (truly unknown) falls back to the pre-#6969 bundle-wide check,
+matching `Msil.Codegen`'s own accepted trade-off (#5995). New item I in
+`llvm_enum_case_resolve_self_test.l`: a `Version`-returning function's
+result matched directly (never bound to a local, so no hint is ever
+recorded) must still gate correctly via the fallback. Confirmed items H
+(#6969) and I (#6976) pass simultaneously — the naive single-fallback
+fix could satisfy only one at a time. Also factored the four `SLocal`
+binding arms' near-duplicated hint-registration code into one helper
+per the review's SUGGESTION. Full re-verification:
+`llvm_enum_case_resolve_self_test.l` 9/9, `llvm_inout_self_test.l`
+12/12, `llvm_codegen_self_test.l` 35/35, `llvm_stdlib_self_test.l`
+18/18, `llvm_http_client_self_test.l` 13/13, `llvm_project_self_test.l`
+10/10 — no regressions.
+
+**Related:** `docs/03-decision-log.md` D-progress-884 (full account),
+#6976 (fixed here), D-progress-883/#6969 (the fix this corrects),
+D-progress-882/#6740 (the original fix both are follow-ups to),
+`native/plan/08-work-items.md` N9.9.
 
 ## Weak-aware List/Map/Task kernels ship, TLS phase 5 band N9.8 (#5545)
 
@@ -33593,3 +33732,42 @@ scope, leak-free in every case; full suite 37/37, no regressions.
 **Related:** `docs/03-decision-log.md` D-progress-879 (full account),
 #5545 (fixed by this PR), `native/plan/08-work-items.md` N9.8,
 `native/plan/04-arc-design.md`'s `NativeWeak[T]` section.
+
+## lyric-lambda: JVM custom-runtime decision, proven WebBridge registry, mock Runtime API server test (#5412)
+
+`Lambda.Kernel.Runtime`'s `jvm` feature variant is now real: it calls the
+same `Lambda.Dispatch.runAwsCustomRuntimeLoop` the `aws` (.NET) kernel
+does, deployed as a `provided.al2`/`provided.al2023` custom runtime rather
+than the AWS Java managed runtime — a resolved deployment-model decision
+(no new JVM-emitter codegen needed), replacing the `panic`-only stub. The
+now-dead `aws-lambda-java-core`/`aws-lambda-java-events` Maven entries
+(declared for the managed-runtime design that was not chosen) are removed.
+
+`Lambda.Kernel.WebBridge`'s `ConditionalWeakTable<LambdaRouter,
+Web.Router>` router-token registry — previously an unproven feasibility
+spike — is real: `createRouterToken`/`lookupRouter` round-trip correctly
+(`tests/lambda_webbridge_tests.l`, 3/3 under `--features web`). Full API
+Gateway/ALB event dispatch through the resolved router remains separate,
+un-scoped follow-up work; `Lambda.Dispatch.dispatchHttp` fails closed
+naming that specific gap now, not the (now-closed) registry gap.
+
+`tests/lambda_runtime_loop_tests.l` adds the concrete "local mock-server
+test" this library's kernels lacked: a `Std.HttpServer` mock Runtime API,
+spawned via `scope`/`spawn` (D120 real virtual-thread concurrency),
+verifies `Lambda.Dispatch.pollAndDispatchOnce`'s GET-next/POST-
+response(-or-error) HTTP round trip end to end (2/2 under `--target jvm
+--features jvm` — the only target where the required concurrency is
+genuine, not degenerate-synchronous).
+
+Neither new test is registered in `lyric-lambda/lyric.toml`'s
+`[project.tests]`: doing so, whether `@cfg`-gated or not, was found to
+either crash or hang the manifest's default (`--features` unset /
+`local`) `lyric test` invocation, tracing to a new, filed-not-fixed
+compiler bug (#6868 — `Lyric.TestSynth` synthesises test calls before
+`@cfg` erasure runs). Both files carry manual-run instructions in their
+headers and were verified that way.
+
+**Related:** `docs/03-decision-log.md` D-progress-882 (full account),
+`docs/35-lambda-library.md` §4.2/§8 (updated), `lyric-lambda/README.md`
+(support matrix updated), #5412 (closed), #6868 (new, filed not fixed),
+#5600/#5578/#6548 (the prior `Lambda.Dispatch` work this builds on).

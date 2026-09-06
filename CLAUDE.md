@@ -11,7 +11,7 @@ compiler is written in Lyric and lives in `lyric-compiler/lyric/`. The repositor
 - `docs/00-overview.md` — design philosophy, target audience.
 - `docs/01-language-reference.md` — authoritative language description (v0.1).
 - `docs/02-worked-examples.md` — non-trivial programs in proposed-Lyric.
-- `docs/03-decision-log.md` — every significant design decision with rationale.
+- `docs/decisions/` — the decision log, one file per entry (new decisions go here; see `docs/decisions/README.md`). `docs/03-decision-log.md` is the frozen historical archive of entries up to `D-progress-885` plus legacy `DNNN`/`D-N-NNN`; ids cross-reference across both.
 - `docs/04-out-of-scope.md` — what we deliberately don't do.
 - `docs/05-implementation-plan.md` — phased plan from v0.1 to self-hosting.
 - `docs/06-open-questions.md` — unresolved design questions for Phase 0.
@@ -174,8 +174,12 @@ ecosystem library at the repo root (`lyric-web/`, `lyric-mq/`,
 
 ### Edits to design documents
 
-- The decision log (`03`) is append-only. Reversed decisions are marked
-  `SUPERSEDED` with a forward link, not deleted.
+- The decision log is append-only and now **one file per entry** under
+  `docs/decisions/` (see its `README.md` for the naming + numbering
+  convention). `docs/03-decision-log.md` is the frozen historical archive — do
+  not append to it. A reversed decision is recorded as a *new* file that names
+  the superseded id with a forward link (`Supersedes D-progress-NNN`); the
+  archive's own entries stay byte-frozen.
 - Open questions (`06`) move to the decision log when resolved.
 - Out-of-scope (`04`) entries can move (rejected → deferred → included),
   but require justification per the document's own protocol.
