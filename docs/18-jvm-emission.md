@@ -2294,7 +2294,7 @@ whose wrapped method may throw `Error` subclasses as an unsafe boundary.
 
 ### Q-J010: `@externTarget` `Option[T]` null-coercion (D107 Phase 2) — RESOLVED
 
-**Resolution (#3932, D-progress-883):** the JVM backend implements the D107
+**Resolution (#3932, D-progress-886):** the JVM backend implements the D107
 convention: an `@externTarget` (non-ctor, non-async) function whose declared
 return is `Option[T]` (`T` a reference type) binds the `invokestatic`/
 `invokevirtual` descriptor to the JDK method's real nullable reference return
@@ -2400,7 +2400,7 @@ externs (`decl.isAsync` short-circuits, mirroring MSIL). See D107 in
 | Q-J007 | Test-runner integration            | §24 + D-progress-206: `@LyricTest` + `Jvm.TestEngine` shipped (B126); full `LyricTestEngine` deferred to B127+ |
 | Q-J008 | Maven Central dependency linking   | §24 + `docs/31-maven-linking.md`; specced in D053 |
 | Q-J009 | `@externTarget` catch scope        | §24: known limitation; `Exception` only; `Throwable` opt-in deferred |
-| Q-J010 | `@externTarget` `Option[T]` null-coercion (D107 Phase 2) | §24: **RESOLVED** — shipped in D-progress-883 (#3932) |
+| Q-J010 | `@externTarget` `Option[T]` null-coercion (D107 Phase 2) | §24: **RESOLVED** — shipped in D-progress-886 (#3932) |
 
 
 ## Appendix C. JVM-specific class-file attributes emitted by Lyric

@@ -1576,7 +1576,7 @@ only when `T` is a reference type; value-type inners are not coerced.
 
 > **Target status.**  Implemented on both backends: the MSIL backend
 > (`--target dotnet`, Phase 1) binds the BCL's real nullable reference return;
-> the JVM backend (`--target jvm`, #3932, D-progress-883) binds the JDK
+> the JVM backend (`--target jvm`, #3932, D-progress-886) binds the JDK
 > method's real nullable reference return the same way. Both coerce
 > `null -> None` / value `-> Some(value)` at the call boundary.
 
