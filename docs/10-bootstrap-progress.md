@@ -33742,7 +33742,7 @@ conflicting `--shape` flag would; only a manifest that says nothing about
 distinguish "the manifest said portable" from "the manifest said
 nothing" — mtime/text-presence alone couldn't tell those apart.
 
-**Related:** #6268, D-progress-886 (full account),
+**Related:** #6268, D-progress-890 (full account),
 `docs/01-language-reference.md` §3.6 (`[build] shape` manifest table),
 `docs/63-build-profiles-and-debugger.md` (the shape axis this closes a
 gap in).
@@ -33760,7 +33760,7 @@ shipped assembly) or giving it a real `[project.packages]` entry (leaking
 test-only code into what ships). `PackageEntry.testOnly: Bool` defaults
 to `false` for the pre-existing bare-string form.
 
-**Related:** #6579, D-progress-887 (full account),
+**Related:** #6579, D-progress-891 (full account),
 `docs/20-project-as-dll.md` §3 ("Test-only packages" subsection).
 
 ## #6815 items 1(a)/2/3(a): native project builds stop crashing on cross-project deps, `--triple`/`--opt` project-mode threading, `lyric run --manifest --target native`
@@ -33832,7 +33832,7 @@ overflow always panics — remains **undecided**. A quick empirical probe
 nor a panic, an inconclusive result that needs dedicated root-causing before
 any decision can be made responsibly. #6263 stays open for that half.
 
-**Related:** #6263, D-progress-883 (full account), `docs/63-build-profiles-and-debugger.md`
+**Related:** #6263, D-progress-887 (full account), `docs/63-build-profiles-and-debugger.md`
 §3.1/§5.2/Q-BP-003.
 
 ## #5611 closed: workspace-dep feature/target staleness stamp; `stage1.stamp` keyed on build start
@@ -33847,4 +33847,4 @@ mtime from a marker touched BEFORE `bootstrap.sh` runs (`touch -r`), not
 "now" at completion, closing the race where a `.l` source edited mid-build
 looked older than the stamp that (falsely) claimed to have compiled it.
 
-**Related:** #5611, D-progress-885 (full account).
+**Related:** #5611, D-progress-889 (full account).
