@@ -596,6 +596,181 @@ test "string startsWith/contains/endsWith: match, mismatch, and empty-argument e
   )
 }
 
+// String bracket indexing (#6237): `s[i]` is a BYTE offset (matching this
+// backend's byte-indexed `.length`/`.substring` model, D-N-006), but the
+// value produced is the full Unicode scalar value decoded via UTF-8
+// iteration starting at that offset, not the raw byte. `.toInt()` prints
+// the codepoint since `.toString()` on a Char isn't fixed by this issue
+// (a separate, still-open gap — #6237's own second item).
+test "string bracket indexing s[i]: ASCII byte offsets and a multi-byte UTF-8 decode" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val s = \"hi\"\n" +
+    // ASCII: byte offset and codepoint coincide.
+    "  println(s[0].toInt().toString())\n" +
+    "  println(s[1].toInt().toString())\n" +
+    // "h\u{00E9}llo" ("héllo"): byte offset 1 is the 2-byte U+00E9 (é)
+    // sequence's start; byte offset 3 lands on "l" right after it.
+    "  val accented = \"h\\u{00E9}llo\"\n" +
+    "  println(accented[0].toInt().toString())\n" +
+    "  println(accented[1].toInt().toString())\n" +
+    "  println(accented[3].toInt().toString())\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRun(shim)
+  assertEqualInt(r.exitCode, 0, "bracket indexing exit")
+  assertEqual(
+    r.stdout,
+    "104\n105\n104\n233\n108\n",
+    "s[i]: ASCII codepoints (h=104, i=105), then h/é(233)/l across a multi-byte sequence"
+  )
+}
+
+test "string bracket indexing s[i]: out-of-bounds byte offset panics" {
+  val shim = "package T\n" + "func main(): Int {\n" + "  val s = \"hi\"\n" + "  val c = s[5]\n" + "  c.toInt()\n" +
+    "}\n"
+  val r = compileAndRun(shim)
+  assertTrue(r.exitCode != 0, "out-of-bounds s[i] must abort, not return a garbage value")
+}
+
+// `String + Char` concatenation and `Char.toString()` (#6237, second item):
+// `Char` erases to the same NI32 as `Int` with no runtime tag, so both
+// shapes need the receiver/operand's syntactic char-ness (`exprIsCharTyped`)
+// tracked through `val`/`var` bindings, function params, and Char literals.
+test "String + Char concatenation and Char.toString(), across literal/annotated-val/param/bracket-index sources" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    // A Char-typed parameter, exercising `String + Char` and `.toString()`
+    // through the `varIsChar` param-binding path, not just a local `val`.
+    "func greet(c: Char): String {\n" +
+    "  \"[\" + c.toString() + \"]\"\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    // Char literal directly in the binop (no binding needed).
+    "  println(\"x\" + 'y')\n" +
+    // An explicit `Char` type annotation on a `val` whose initializer is
+    // itself untyped-as-Char syntax (`s[i]` bracket indexing) — exercises
+    // the annotation-driven half of `charnessOfBinding`, not just the
+    // literal-inference half.
+    "  val s = \"hi\"\n" +
+    "  val c: Char = s[0]\n" +
+    "  println(\"\" + c)\n" +
+    "  println(c.toString())\n" +
+    // Char-typed function parameter.
+    "  println(greet('Q'))\n" +
+    // `s[i]` used directly in a binop with no intervening binding at all.
+    "  println(\"got: \" + s[1])\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRun(shim)
+  assertEqualInt(r.exitCode, 0, "Char concat/toString exit")
+  assertEqual(
+    r.stdout,
+    "xy\nh\nh\n[Q]\ngot: i\n",
+    "literal, annotated val (s[0]='h'), param, and a direct s[i] all concatenate/format as characters"
+  )
+}
+
+// #7010 (claude-review REQUIRED finding on #6237): `Ctx.varIsChar` is
+// populated at `val`/`let`/`var` binding sites via `markVarChar`, but the
+// for-loop element bind, `bindTuplePattern`, and `applyPatternBinds`
+// (match-arm binds) never called it — so a name previously marked `Char`
+// left a STALE `true` entry when one of those three sites later rebinds
+// the SAME name to a non-Char value, silently misrouting it through
+// `lyric_string_from_char` (e.g. printing "A" for 65 instead of "65").
+// Each case below shadows a `Char`-typed name with a non-Char value via
+// one of the three previously-unguarded sites and asserts the CORRECT
+// (non-Char) formatting survives the shadow.
+test "varIsChar does not leak across a for-loop shadow of a Char-typed name (#7010)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val c: Char = 'X'\n" +
+    "  println(\"before: \" + c.toString())\n" +
+    "  val nums: List[Int] = newList()\n" +
+    "  nums.add(65)\n" +
+    "  nums.add(66)\n" +
+    "  for c in nums {\n" +
+    "    println(\"loop: \" + c.toString())\n" +
+    "  }\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRun(shim)
+  assertEqualInt(r.exitCode, 0, "for-loop shadow exit")
+  assertEqual(
+    r.stdout,
+    "before: X\nloop: 65\nloop: 66\n",
+    "the for-loop's Int element must format as a decimal number, not the stale Char codepoint glyph"
+  )
+}
+
+test "varIsChar does not leak across a tuple-destructure shadow of a Char-typed name (#7010)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val c: Char = 'X'\n" +
+    "  println(\"before: \" + c.toString())\n" +
+    "  val pair = (65, 66)\n" +
+    "  val (c, _) = pair\n" +
+    "  println(\"tuple: \" + c.toString())\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRun(shim)
+  assertEqualInt(r.exitCode, 0, "tuple-destructure shadow exit")
+  assertEqual(
+    r.stdout,
+    "before: X\ntuple: 65\n",
+    "the tuple-destructured Int field must format as a decimal number, not the stale Char codepoint glyph"
+  )
+}
+
+test "varIsChar does not leak across a match-arm shadow of a Char-typed name (#7010)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    "union Box {\n" +
+    "  case Full(v: Int)\n" +
+    "  case Empty\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val c: Char = 'X'\n" +
+    "  println(\"before: \" + c.toString())\n" +
+    "  val b: Box = Full(v = 65)\n" +
+    "  match b {\n" +
+    "    case Full(c) -> println(\"match: \" + c.toString())\n" +
+    "    case Empty -> println(\"none\")\n" +
+    "  }\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRun(shim)
+  assertEqualInt(r.exitCode, 0, "match-arm shadow exit")
+  assertEqual(
+    r.stdout,
+    "before: X\nmatch: 65\n",
+    "the match-bound Int payload must format as a decimal number, not the stale Char codepoint glyph"
+  )
+}
+
 test "string trim().toLower() under repeated allocation (ASan)" {
   val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
     "func main(): Int {\n" +

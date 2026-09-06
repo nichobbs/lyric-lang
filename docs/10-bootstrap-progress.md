@@ -33724,3 +33724,61 @@ headers and were verified that way.
 `docs/35-lambda-library.md` §4.2/§8 (updated), `lyric-lambda/README.md`
 (support matrix updated), #5412 (closed), #6868 (new, filed not fixed),
 #5600/#5578/#6548 (the prior `Lambda.Dispatch` work this builds on).
+
+## Native `String` gains `s[i]` bracket indexing and `String + Char` concatenation (#6237)
+
+Both were entirely unsupported codegen shapes on `--target native`
+(confirmed via direct repro), blocking any native code exercising the
+common `s[i]` character-access or `"" + someChar` idioms — real gaps
+that `_kernel_native/encoding_host.l` (N9.2) had to work around at the
+stdlib level rather than fix.
+
+`lyric_string_char_at(s, byteIdx)` decodes the full Unicode scalar
+value starting at `byteIdx` via genuine UTF-8 iteration — NOT the raw
+byte at that offset. `native/plan/03-type-mapping.md`'s own `Char` note
+is explicit that "converting between Char and a position in a string
+buffer requires UTF-8 iteration, not byte indexing," so a plain
+`lyric_string_byte_at` reuse would have been wrong for any non-ASCII
+input. The index itself stays a byte offset (matching `.length`/
+`.substring`'s existing byte-indexed model, D-N-006); only the decode
+step iterates. Wired into `lowerCollectionIndex` as a new String case
+alongside the existing List/Map cases.
+
+`String + Char` concatenation and `Char.toString()` needed a second,
+more structural fix: `Char` and `Int` both erase to the same `NI32`
+with no runtime tag anywhere in this backend (`NVal.ty` alone can never
+tell them apart — confirmed by `.toChar()`'s own no-op pass-through).
+`Lyric.LlvmCodegen.Ctx` gained a best-effort `varIsChar: Map[String,
+Bool]` side-table, populated at `val`/`let`/`var` bindings (explicit
+`Char` annotation wins outright; otherwise the initializer's own
+char-ness), function and lambda parameters, and `Char` literals — plus
+one derived rule: `s[i]` on a String receiver is unconditionally
+`Char` (per `indexElementType`), recognised without needing its own
+table entry. `lowerBinop` consults this (via `exprIsCharTyped`) to
+widen a bare Char operand to a real `LyricString*` (through
+`lyric_string_from_char`, previously declared but never actually
+called by this codegen) before `lowerStringBinop`'s own operand-type
+check runs; `lowerScalarMethodCall`'s `.toString()` arm consults it the
+same way instead of falling through to `emitToString`'s `NI32` case
+(which would have printed the codepoint's decimal digits, not the
+character). This is intentionally best-effort, not full type
+inference — an unannotated function-return-typed intermediate stays
+untracked, exactly like this backend's pre-existing `varTypes`/
+`varSlots` local tracking is for other exotic shapes.
+
+Verified by new cases in `lyric-rt/test/lyric_rt_test.c` (ASCII and a
+multi-byte UTF-8 `char_at` case, and a fork-based out-of-bounds panic
+test mirroring the existing `.slice` OOB pattern) and new end-to-end
+cases in `llvm_codegen_self_test.l` covering `s[i]` (ASCII + multi-byte
+decode + OOB panic) and `String + Char`/`Char.toString()` across a
+literal, an annotated `val` whose initializer is itself untyped-as-Char
+syntax, a function parameter, and direct bracket-index use with no
+intervening binding. The full existing native self-test suite passes
+unmodified alongside these additions.
+
+**Related:** `docs/03-decision-log.md` D-progress-831 (the #6588 fix
+these extend), `native/plan/03-type-mapping.md` (`Char`'s UTF-8-iteration
+note), `native/plan/08-work-items.md`'s N9.3/N9.6/N9.7 write-ups
+(updated above), #6237, #6240 (the broader native `String`
+search-method audit this issue was split out of), #6755 (native
+`.lastIndexOf`, unaffected by this change and shipped separately).
