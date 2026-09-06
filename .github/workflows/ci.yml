@@ -4834,6 +4834,16 @@ jobs:
           fi
           export LYRIC_STDLIB_BIN="$PWD/.bootstrap/stage2/lib"
           .bootstrap/stage2/bin/lyric test --manifest lyric-resilience/lyric.toml --target jvm --no-default-features --features jvm
+      # lyric-aws-secrets suite on JVM (#7033) — pins the real
+      # SecretsManagerClient/SsmClient bindings (secrets_kernel_jvm.l)
+      # against the actual AWS SDK for Java v2 JARs: classifySecretsError/
+      # classifyParameterError and extractSecretField's panic-to-Result
+      # fixes (#6875, #6979) now have automated regression coverage instead
+      # of having been exercised once, manually, in a sandbox session.
+      - name: lyric-aws-secrets suite on JVM (lyric test --target jvm --features jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --manifest lyric-aws-secrets/lyric.toml --target jvm --no-default-features --features jvm
       # lyric-auth manifest build on JVM with NO feature flags (#5571) — the
       # regression pin for target-normalized feature resolution: a plain
       # `--target jvm` build of a `default = ["dotnet"]` platform-split
@@ -5465,12 +5475,20 @@ jobs:
           "$LYRIC_CLI_PATH" test --manifest lyric-aws-xray/lyric.toml
 
       # --features local: exercises the no-op local kernel (init()/
-      # getSecret()/getParameter() always-NotFound contract). The AWS
-      # SDK backend needs live credentials and isn't tested here.
+      # getSecret()/getParameter() always-NotFound contract).
       - name: Run tests (aws-secrets, local feature)
         if: matrix.id == 'aws-secrets'
         run: |
           "$LYRIC_CLI_PATH" test --manifest lyric-aws-secrets/lyric.toml --features local
+
+      # --features aws: the .NET AWS SDK backend is a documented
+      # NOT_IMPLEMENTED contract (blocked on the async API-shape decision
+      # in #6864), not a live-credentials integration path — this pins
+      # every call honestly returning Err rather than a silent Ok (#7033).
+      - name: Run tests (aws-secrets, aws feature)
+        if: matrix.id == 'aws-secrets'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-aws-secrets/lyric.toml --no-default-features --features aws
 
       - name: Run tests (feature-flags)
         if: matrix.id == 'feature-flags'
