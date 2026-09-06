@@ -1,4 +1,4 @@
-# D-progress-883 — MSIL codegen: GENERICINST-shaped member params/returns on a generic-declaring type, and MethodSpec for a BCL method with its own generics, both now emit correctly (#6581)
+# D-progress-886 — MSIL codegen: GENERICINST-shaped member params/returns on a generic-declaring type, and MethodSpec for a BCL method with its own generics, both now emit correctly (#6581)
 
 **Status:** shipped
 

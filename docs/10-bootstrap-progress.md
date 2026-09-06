@@ -33779,8 +33779,52 @@ can bridge. Confirmed via `git stash` to reproduce identically against
 unmodified `origin/main`, ruling this PR out as the cause; tracked under
 #5800.
 
-**Related:** D-progress-883 (full account, `docs/decisions/`),
-#6581 (fixed by this PR), D-progress-877 (the independent
-re-verification), #5809 (pre-existing value-type-generic-member limitation,
-untouched), #5800 (the newly-surfaced, separately-tracked delegate-erasure
-bug), `docs/42-extern-metadata-resolution.md` §5 Phase 6.
+Five follow-up fixes landed in the same PR's review cycle. A genuine
+`auto_ffi_self_test.l` regression (`scoreSigType`'s `STNamedGenericInst`
+arm matched every closed generic instantiation, not just the open-VAR
+shape Gap 1 needed, spuriously admitting `TextWriter.WriteLine
+(ReadOnlySpan<char>)` into scoring) was found and fixed via isolated
+worktree bisection, alongside two review-flagged `emitGenericMethodExternCall`
+gaps: a blob-interning key collision across distinct declaring types sharing
+a same-arity generic method name (#6987), and missing box/unbox at a
+method-own-generic position for a value-type argument/return (#6989),
+which also surfaced a missing `STMVar` scoring arm (D-progress-887).
+#6537's two residual `externTypeNames` bare-name-collision sites were
+confirmed already fixed by this PR's Gap 1 hardening; regression tests
+were added to close the loop (D-progress-888). The Gap 1 `castclass`'s
+value-type flavor (`MValueTypeGenericInst`) was investigated and confirmed
+currently unreachable via any real BCL API, so it was declined loudly with
+a `panic` rather than shipped as untested `unbox.any` logic (D-progress-889,
+#6995). `emitGenericMethodExternCall`'s `openKey` still collided for two
+overloads on the SAME declaring type differing only in parameter types
+(e.g. `Enumerable.ElementAt<TSource>(int)` vs the `System.Index`-taking
+overload) after the #6987 fix only added the declaring-type discriminator;
+fixed by folding each parameter's and the return's full `msilTypeKeyStr`
+structural encoding into the key (D-progress-890, #7016). That same review
+round also caught a genuine `ValueTask<TResult>` ctor-ambiguity regression:
+the two new weak-but-nonnegative scoring arms (`STMVar`, `STNamedGenericInst`
+open-var) both scored `0`, tying `ValueTask<TResult>`'s bare `.ctor(TResult)`
+against its wrapped `.ctor(Task<TResult>)` sibling and letting the wrong one
+win by Method-table row order — fixed by renumbering `scoreSigType`'s entire
+tier scale (exact 2→3, widening/upcast 1→2, bare declaring/method-own VAR
+0→1, wrapped-open-generic stays the new floor at 0) so each tier gets its
+own rung instead of two colliding at the same value (D-progress-891).
+Finally, `emitExternTargetBody`'s `msig.isGeneric` branch never checked
+`decl.isAsync`, so an `async`-declared wrapper over a BCL method that is
+ALSO generic in its own right (e.g. `HttpContentJsonExtensions.
+ReadFromJsonAsync<T>`) took the MethodSpec-only path, which has no
+`Task<T>`/`ValueTask<T>`-unwrap machinery at all; a silent decline was
+tried first and found to still fail confusingly at runtime
+(`MissingMethodException`, since the plain-method fallback now succeeds at
+building an uninstantiated MemberRef instead of failing conversion
+outright), so the fix declines LOUDLY instead, matching the `#5809`/`#6995`
+precedent (D-progress-892, #7022; full Task/ValueTask-unwrap support for
+this combination is tracked separately under #7023).
+
+**Related:** D-progress-886 through 892 (full account, `docs/decisions/`),
+#6581/#6537 (fixed by this PR), #6987/#6989/#6995/#7016/#7022 (the
+review-flagged follow-ups fixed in the same PR), #7023 (the deferred
+full-support follow-up), D-progress-877 (the independent re-verification),
+#5809 (pre-existing value-type-generic-member limitation, untouched),
+#5800 (the newly-surfaced, separately-tracked delegate-erasure bug),
+`docs/42-extern-metadata-resolution.md` §5 Phase 6.

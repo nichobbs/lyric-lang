@@ -2649,7 +2649,7 @@ func numericRank(elemByte: in Int): Int {
 // scoring them equally (as an earlier revision of this scale did, both at 0)
 // let `Task<TResult>` win ties by Method-table row order for an argument that
 // doesn't even structurally resemble `Task<T>` (D-progress-686 regressed by
-// #6581 Gap 1's `STNamedGenericInst` arm below; #7017 fixed by widening this
+// #6581 Gap 1's `STNamedGenericInst` arm below; D-progress-891 fixed by widening this
 // scale to give each tier its own rung instead of colliding two at 0).
 pub func scoreSigType(arg: in SigType, param: in SigType): Int {
   match param {
@@ -2701,7 +2701,7 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
     // reject test does not discard it, and strictly ABOVE the wrapped-open-
     // generic tier (0, below) so a same-arity sibling ctor that wraps this
     // same VAR inside another generic instantiation never outscores or ties
-    // it (#7017 — see this VAR must stay above the wrapped tier). Without
+    // it (D-progress-891 — see this VAR must stay above the wrapped tier). Without
     // this, `scoreSigType` cannot disambiguate a same-arity overload set
     // where one candidate takes the type's own VAR (e.g. `ValueTask`1.ctor
     // (TResult)`) and another takes a concrete generic instantiation of it
@@ -2721,7 +2721,7 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
     // specifically to handle this call correctly — confirmed empirically:
     // `Enumerable.Repeat<TResult>(TResult element, int count)`'s first
     // parameter is exactly this shape (#6989). Same tier as `STVar` above,
-    // for the same reason (#7017).
+    // for the same reason (D-progress-891).
     case STMVar(_) -> 1
     // A parameter that is a closed generic instantiation over the declaring
     // type's OWN type parameter (e.g. `IEnumerable`1<!0>` on `List`1..ctor
@@ -2740,7 +2740,7 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
     // `.ctor(Task<TResult>)` at the same arity: tying them (as an earlier
     // revision of this scale did, both at 0) let the wrapped candidate win
     // ties by Method-table row order for an argument that doesn't even
-    // structurally resemble `Task<T>` (#7017, regressing D-progress-686).
+    // structurally resemble `Task<T>` (D-progress-891, regressing D-progress-686).
     //
     // Gated on `sigIsOpenGeneric` (still contains a VAR/MVAR somewhere) —
     // NOT every closed `STNamedGenericInst`: a genuinely concrete BCL
@@ -2839,7 +2839,7 @@ func listContainsString(xs: in List[String], v: in String): Bool {
 // into a NAMED reference parameter that appears in the argument's Extends
 // chain (`bases`, computed by `externBaseChain`) — a VERIFIED implicit upcast
 // (e.g. MemoryStream → Stream), scored 2 (the same tier as `scoreSigType`'s
-// widening match — #7017's tier renumbering) so an exact match's 3 always
+// widening match — D-progress-891's tier renumbering) so an exact match's 3 always
 // wins (#5605), while still landing above the bare-VAR tier (1). Unlike
 // `scoreSigTypeLenient` (the `@externTarget` path, where the user-declared
 // wrapper signature is trusted), an upcast is only accepted when the
@@ -3513,7 +3513,7 @@ pub func decodeExternMethodSig(
 //  - an erased extern-type argument (MObject → STPrim(0x1C)) into any
 //    non-value-type NAMED parameter, scored 2.
 // Both are the same tier as `scoreSigType`'s own widening/upcast match (2,
-// #7017's tier renumbering), below an exact match's 3 so an exact overload
+// D-progress-891's tier renumbering), below an exact match's 3 so an exact overload
 // always wins, but above the bare-VAR tier (1) so this weak reference-
 // compatible match never ties (and loses by table order to) a same-arity
 // sibling overload that takes the declaring/method type's own bare VAR.

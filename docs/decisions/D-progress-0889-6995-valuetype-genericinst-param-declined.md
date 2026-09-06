@@ -1,9 +1,9 @@
-# D-progress-886 — #6995: the value-type flavor of a Gap 1 GENERICINST member parameter is confirmed unreachable today; declined loudly rather than shipped untested
+# D-progress-889 — #6995: the value-type flavor of a Gap 1 GENERICINST member parameter is confirmed unreachable today; declined loudly rather than shipped untested
 
 **Status:** shipped
 
 **Context.** `claude-review`'s second pass on PR #6981 (#6581) flagged that
-`emitGenericExternMember`'s argument-loading `castclass` (D-progress-883's
+`emitGenericExternMember`'s argument-loading `castclass` (D-progress-886's
 Gap 1) only handles `MGenericInst` (the reference-type flavor of a
 GENERICINST-shaped member parameter closed over the declaring type's own
 VAR) — `MValueTypeGenericInst` (the value-type flavor, e.g. a hypothetical
@@ -20,7 +20,7 @@ the substituted parameter's shape:
   decodes to `MValueTypeGenericInst` from real metadata whenever a BCL
   member's parameter is directly (unwrapped) a struct-headed closed
   generic instantiation, via `genericMemberSigToMsil`'s existing
-  `STNamedGenericInst` arm (D-progress-883) — this part works today.
+  `STNamedGenericInst` arm (D-progress-886) — this part works today.
 - The blocker is finding a real, ordinarily-nameable BCL member with this
   exact shape. Every generic-declaring-type member considered that takes a
   struct like `KeyValuePair<TKey,TValue>` directly (not wrapped in
@@ -78,6 +78,6 @@ fix.
 any currently-reachable code path.
 
 **Related:** #6995 (addressed — declined loudly, tracked for a real fix
-once a prerequisite gap makes it reachable), #6581/D-progress-883 (Gap 1,
+once a prerequisite gap makes it reachable), #6581/D-progress-886 (Gap 1,
 this entry's base), #5809 (the precedent panic pattern this mirrors), PR
 #6981.
