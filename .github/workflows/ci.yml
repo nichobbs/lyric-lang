@@ -1326,6 +1326,20 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/inout_slice_self_test.l
 
+      # Slice compound-assign eval-order self-test (#7005/#7021). Pins two
+      # JVM `05_stmts.l` fixes discovered together: `slice[T]`'s `JArray`
+      # compound-assign arm read the container before lowering the RHS (the
+      # opposite of every other receiver kind), and separately panicked for
+      # any non-`String` element type on the erased `Object` array shape
+      # regardless of order. Both targets; MSIL was already correct
+      # (uniform RHS-first order across List/Map/slice) so this dotnet run
+      # is the parity control, the JVM half (below) is load-bearing.
+      # Imports only `Std.*`.
+      - name: Slice compound-assign eval-order self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/slice_compound_assign_eval_order_self_test.l
+
       # Inout-field self-reassign self-test (#5936).  `h.field = h.field.slice(...)`
       # on an inout record param, inline (RHS reads the field being assigned),
       # followed by a match — the receiver must be spilled to a temp before the
@@ -3527,6 +3541,16 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/buildinfo_self_test.l
 
+      # Slice compound-assign eval-order self-test on JVM (#7005/#7021) — the
+      # load-bearing run (both fixes are JVM `05_stmts.l`-only; the dotnet
+      # job step of the same name is the MSIL parity control). Placed in
+      # this second, lighter sub-batch rather than the pre-barrier batch,
+      # which already sits at the ~14-concurrent-step cap (#5913).
+      - name: Slice compound-assign eval-order self-test on JVM (native lyric test --target jvm)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/slice_compound_assign_eval_order_self_test.l
+
       # Std.Tls test coverage on JVM (#5876) — the JVM half of the
       # dotnet-job step of the same name (stdlib-builds). Certificate/
       # identity loading against real PEM fixtures, including the
@@ -3609,6 +3633,14 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"Std.HttpServer TLS test ran: tls_server_jvm_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/tls_server_jvm_tests.l"
+
+      # Extra barrier (JVM batch 1a-split-2, #7021): this sub-batch had
+      # drifted to 15 concurrent steps (one of #7005/#7021's own fixes
+      # pushed it there) — over the ~14-step cap the "JVM batch 1-split"
+      # barrier above was introduced to enforce. Splits into 7 + 8 rather
+      # than growing the batch further, per the header note above.
+      - name: Wait for parallel tests (JVM batch 1a-split-2)
+        wait-all: true
 
       # Std.HttpEngine test coverage on JVM (#5883) — the JVM half of the
       # dotnet-job step of the same name (stdlib-builds). Placed in this
