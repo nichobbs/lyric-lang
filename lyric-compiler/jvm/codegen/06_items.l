@@ -358,8 +358,15 @@ func coerceValueTo(ctx: in FuncCtx, insns: in List[LInsn], tailTy: in JvmType, r
   } else {
     // Numeric / reference coercion so the tail value matches the declared
     // return descriptor (e.g. a plain `1.5` Double tail in a `: Float`
-    // function narrows with d2f before `freturn`).
-    coerceArgTo(insns, tailTy, retTy)
+    // function narrows with d2f before `freturn`).  Ctx-aware so an
+    // extern-interface impl's narrowed slice[ExternType] return/binding
+    // (#7004) gets the same ArrayList/Object[] -> real-array narrowing the
+    // tail-position path in `lowerInstanceMethodBody` already applies via
+    // `coerceArgToCtx` directly — an explicit `return` (routed here via
+    // `SReturn`) previously fell through to the ctx-less `coerceArgTo` and
+    // reproduced the same VerifyError this file's D-progress-886/887/888
+    // fixed for the implicit-tail case.
+    coerceArgToCtx(ctx, insns, tailTy, retTy)
   }
 }
 
