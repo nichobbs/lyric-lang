@@ -808,6 +808,22 @@ pub union MInsn {
   case MLdfldaByName(ownerFqn: String, fieldName: String)
   // stfld variant.
   case MStfldByName(ownerFqn: String, fieldName: String)
+  // ldfld on a field of a case class that may be GENERIC (#6835/#6120's union
+  // Equals/GetHashCode overrides — built once, at Phase 3, for a case shared
+  // across every instantiation of its type parameters).  A bare FieldDef
+  // token (what `MLdfldByName` resolves to) only works when the accessing
+  // method's own `this`/local is the case's non-generic native form; when
+  // `arity > 0` the field must instead be reached through a Field MemberRef
+  // parented to the case's OWN open self-instantiation TypeSpec
+  // (`Case<!0,…>`) — exactly the rule `lowerMRecord`'s ctor already follows
+  // for `stfld` (its `selfTsRow`) — or the CLR throws `TypeLoadException`
+  // resolving the field from inside the generic method body (confirmed by a
+  // minimal repro; a bare FieldDef token there crashes, the TypeSpec-parented
+  // MemberRef a real C# compiler emits for the identical pattern does not).
+  // `arity` is the case's OWN generic parameter count (0 for a non-generic
+  // union); `fieldType` is needed to build the FieldSig blob for the
+  // TypeSpec-parented MemberRef when `arity > 0`.
+  case MLdfldSelfOpen(ownerFqn: String, fieldName: String, arity: Int, fieldType: MsilType)
   // newobj resolving the .ctor MemberRef token by class name at Phase 5.
   case MNewobjByName(className: String)
   // Emit `call ATMB[<T>].Start<SM>(ref SM)` — resolves the MethodSpec for
@@ -880,6 +896,13 @@ pub record MUnionCase {
   // `Option_None` each declare `[T]`), matching the F# emitter.  Empty for a
   // non-generic union's cases.
   generics: List[String]
+  // Structural `Equals(object)` / `GetHashCode()` overrides (#6835/#6120),
+  // built by `Msil.Codegen.buildUnionCaseEqualityOverridesMsil` and always
+  // present (unions have structural equality by default per the language
+  // reference, no `@derive(Equals)` gate).  Threaded into the per-case
+  // `MRecord.methods` by `lowerMUnion` so `lowerMRecord`/`lowerMNullaryUnionCase`
+  // emit them alongside the case's `.ctor`.
+  methods: List[MFunc]
 }
 
 pub record MUnion {
@@ -2482,7 +2505,17 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MLdftn(tok) -> emitLdftn(mb, tok)
     case MLeave(lbl) -> emitLeave(mb, lbl)
     case MEndfinally -> emitEndfinally(mb)
-    case MEHClause(f, ts, te, hs, he, ct) -> mbAddEHClause(mb, EHClause(flags = f, tryStart = ts, tryEnd = te, handlerStart = hs, handlerEnd = he, catchToken = ct))
+    case MEHClause(f, ts, te, hs, he, ct) -> mbAddEHClause(
+      mb,
+      EHClause(
+        flags = f,
+        tryStart = ts,
+        tryEnd = te,
+        handlerStart = hs,
+        handlerEnd = he,
+        catchToken = ct
+      )
+    )
 
     // ── Deferred-resolution instructions (async SM synthesis) ──────────────
 
@@ -2511,6 +2544,33 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         emitStfld(mb, 0x04000000 + fdRow)
       } else {
         panic("Msil.Lowering: MStfldByName could not resolve field '" + fieldName + "' on type '" + ownerFqn + "'")
+      }
+    }
+    case MLdfldSelfOpen(ownerFqn, fieldName, arity, fieldType) -> {
+      if arity <= 0 {
+        val tdRow = findTypeDefRowByName(ctx, ownerFqn)
+        val fdRow = findFieldDefRowOfType(ctx, tdRow, fieldName)
+        if fdRow > 0 {
+          emitLdfld(mb, 0x04000000 + fdRow)
+        } else {
+          panic("Msil.Lowering: MLdfldSelfOpen could not resolve field '" + fieldName + "' on type '" + ownerFqn + "'")
+        }
+      } else {
+        val tdRow2 = findTypeDefRowByName(ctx, ownerFqn)
+        if tdRow2 <= 0 {
+          panic("Msil.Lowering: MLdfldSelfOpen could not resolve TypeDef for '" + ownerFqn + "'")
+        }
+        val openArgs: List[MsilType] = newList()
+        var oi = 0
+        while oi < arity {
+          openArgs.add(MTypeVar(index = oi))
+          oi = oi + 1
+        }
+        val selfBlob = buildGenericInstBlobWithCtx(ctx, tdrTypeDef(tdRow2), openArgs)
+        val selfTs = ctxAddTypeSpec(ctx, "self_open_ts_" + ownerFqn, selfBlob)
+        val fSig = buildFieldSigWithCtx(fieldType, ctx)
+        val mrRow = ctxAddMemberRefForTypeSpec(ctx, selfTs, fieldName, "self_open_fld_" + ownerFqn + "_" + fieldName, fSig)
+        emitLdfld(mb, 0x0A000000 + mrRow)
       }
     }
     case MNewobjByName(className) -> {
@@ -3174,6 +3234,37 @@ pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
   )
   recordPredictedMethodRow(ctx, r.className, ".cctor", 0, mRow2)
 
+  // Explicit instance methods — the structural `Equals(object)` /
+  // `GetHashCode()` overrides `Msil.Codegen.lowerUnionMsil` always attaches
+  // (#6835/#6120).  Mirrors `lowerMRecord`'s identical method loop; a nullary
+  // case has no fields to reference, so no field-token lookups are needed.
+  var nmi = 0
+  while nmi < r.methods.count {
+    val nm = r.methods[nmi]
+    val mbNm = lowerMFunc(nm, ctx)
+    ctx.bodies.add(mbNm)
+    val rvasNm = methodBodyRvas(ctx.bodies)
+    val nmRva = rvasNm[ctx.bodies.count - 1]
+    val sNm = internString(sh, nm.name)
+    val nmSig = buildInstanceMethodSigWithCtx(nm.params, nm.ret, ctx)
+    val bNmSig = internBlob(bh, "meth_" + r.className + "_" + nm.name + "/" + toString(nm.params.count), nmSig)
+    val fpNm = t.params_.count + 1
+    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+    val mRowNm = addMethodDef(
+      t,
+      MethodDefRow(
+        rva = nmRva,
+        implFlags = 0,
+        flags = nm.flags,
+        name = sNm,
+        signature = bNmSig,
+        paramList = fpNm
+      )
+    )
+    recordPredictedMethodRow(ctx, r.className, nm.name, nm.params.count, mRowNm)
+    nmi = nmi + 1
+  }
+
   // TypeDef row — sealed class extending the union base class (or Object as
   // fallback when the base is not a local TypeDef, e.g. for cross-package use).
   val baseDefRow = if r.baseClass.length > 0 and r.baseClass != "System.Object" {
@@ -3316,7 +3407,7 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
       namespace = u.namespace,
       baseClass = baseClassFqn,
       fields = c.fields,
-      methods = newList(),
+      methods = c.methods,
       useDefaultCtor = false,
       generics = c.generics
     )
@@ -5638,7 +5729,10 @@ func lowerMConfig(
         case MBool -> cctorInsns.add(MCall(methodToken = configToks.tokBoolParse))
         case MString -> {
         }  // raw env-var string is already on the stack
-        case _ -> panic("Msil.Lowering ICE: config field '" + f.name + "' has an unsupported MsilType — the type checker (G0009) should have rejected this")
+        case _ -> panic(
+          "Msil.Lowering ICE: config field '" + f.name +
+            "' has an unsupported MsilType — the type checker (G0009) should have rejected this"
+        )
       }
       cctorInsns.add(MStsfld(fieldToken = fieldTok))
       cctorInsns.add(MLabel(id = doneLabel))

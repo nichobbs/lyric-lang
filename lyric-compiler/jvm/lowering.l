@@ -1207,12 +1207,36 @@ func vtIsCat2(t: in VerifierType): Bool {
 // panics loudly rather than emitting an unverifiable frame.
 func mergeVerifierType(a: in VerifierType, b: in VerifierType, site: in String): VerifierType {
   match a {
-    case VNull -> match b { case VNull -> VNull; case VObject(c) -> VObject(className = c); case _ -> panic("Jvm.Lowering: stackmap merge null-vs-primitive at " + site) }
-    case VObject(x) -> match b { case VNull -> VObject(className = x); case VObject(y) -> if x == y { VObject(className = x) } else { VObject(className = "java/lang/Object") }; case _ -> panic("Jvm.Lowering: stackmap merge ref-vs-primitive at " + site) }
-    case VInteger -> match b { case VInteger -> VInteger; case _ -> panic("Jvm.Lowering: stackmap merge int-vs-other at " + site) }
-    case VLong -> match b { case VLong -> VLong; case _ -> panic("Jvm.Lowering: stackmap merge long-vs-other at " + site) }
-    case VFloat -> match b { case VFloat -> VFloat; case _ -> panic("Jvm.Lowering: stackmap merge float-vs-other at " + site) }
-    case VDouble -> match b { case VDouble -> VDouble; case _ -> panic("Jvm.Lowering: stackmap merge double-vs-other at " + site) }
+    case VNull -> match b {
+      case VNull -> VNull
+      case VObject(c) -> VObject(className = c)
+      case _ -> panic("Jvm.Lowering: stackmap merge null-vs-primitive at " + site)
+    }
+    case VObject(x) -> match b {
+      case VNull -> VObject(className = x)
+      case VObject(y) -> if x == y {
+        VObject(className = x)
+      } else {
+        VObject(className = "java/lang/Object")
+      }
+      case _ -> panic("Jvm.Lowering: stackmap merge ref-vs-primitive at " + site)
+    }
+    case VInteger -> match b {
+      case VInteger -> VInteger
+      case _ -> panic("Jvm.Lowering: stackmap merge int-vs-other at " + site)
+    }
+    case VLong -> match b {
+      case VLong -> VLong
+      case _ -> panic("Jvm.Lowering: stackmap merge long-vs-other at " + site)
+    }
+    case VFloat -> match b {
+      case VFloat -> VFloat
+      case _ -> panic("Jvm.Lowering: stackmap merge float-vs-other at " + site)
+    }
+    case VDouble -> match b {
+      case VDouble -> VDouble
+      case _ -> panic("Jvm.Lowering: stackmap merge double-vs-other at " + site)
+    }
     case VTop -> VTop
   }
 }
@@ -1304,7 +1328,11 @@ func simStackEffect(
     case LDload(_) -> st.add(VDouble)
     case LAload(s) -> {
       match mapGet(slotTypes, s) {
-        case Some(vt) -> match vt { case VObject(c) -> st.add(VObject(className = c)); case VNull -> st.add(VNull); case _ -> st.add(VObject(className = "java/lang/Object")) }
+        case Some(vt) -> match vt {
+          case VObject(c) -> st.add(VObject(className = c))
+          case VNull -> st.add(VNull)
+          case _ -> st.add(VObject(className = "java/lang/Object"))
+        }
         case None -> st.add(VObject(className = "java/lang/Object"))
       }
     }
@@ -4446,6 +4474,166 @@ pub record LSealedUnion {
   cases: List[LSealedCase]
 }
 
+// `equals(Object): boolean` for a union case class (#6835/#6120): unions have
+// structural equality by default (language reference §2.4), unconditionally —
+// no `@derive(Equals)` gate the way records have (see
+// `Msil.Codegen.buildUnionCaseEqualityOverridesMsil`'s doc comment for the
+// MSIL twin and why a shared free-function can't be the mechanism here
+// either).  Same skeleton as `buildDeriveEqualsFunc` (same-instance fast
+// path, `instanceof` + cast doubling as the null-and-same-variant check,
+// primitive fields compared with the matching `if_*cmp*` opcode) but differs
+// in exactly the branch that matters for #6120: a reference-typed field
+// (a payload record, `String`, or nested union/`Option`) is compared via the
+// null-safe static `java.util.Objects.equals(Object,Object)`, not bare
+// `if_acmpeq` reference identity — `buildDeriveEqualsFunc`'s own reference
+// fallback IS `if_acmpeq`, which is exactly the #6120 bug shape (two
+// independently-constructed equal payloads compare unequal) and reusing it
+// unmodified here would silently reintroduce that bug for every union whose
+// payload is not a JVM primitive.
+pub func buildUnionCaseEqualsFunc(className: in String, fields: in List[LField]): LFunc {
+  val eqInsns: List[LInsn] = newList()
+
+  eqInsns.add(LAconstNull)
+  eqInsns.add(LAstoreAs(slot = 2, className = className))
+
+  eqInsns.add(LAload(slot = 0))
+  eqInsns.add(LAload(slot = 1))
+  eqInsns.add(LIfAcmpeq(label = "eq_same"))
+  eqInsns.add(LGoto(label = "eq_check_type"))
+  eqInsns.add(LLabel(name = "eq_same"))
+  eqInsns.add(LIconst(v = 1))
+  eqInsns.add(LIreturn)
+  eqInsns.add(LLabel(name = "eq_check_type"))
+
+  eqInsns.add(LAload(slot = 1))
+  eqInsns.add(LInstanceof(className = className))
+  eqInsns.add(LIfne(label = "eq_cast"))
+  eqInsns.add(LIconst(v = 0))
+  eqInsns.add(LIreturn)
+  eqInsns.add(LLabel(name = "eq_cast"))
+
+  eqInsns.add(LAload(slot = 1))
+  eqInsns.add(LCheckcast(className = className))
+  eqInsns.add(LAstoreAs(slot = 2, className = className))
+
+  for fld in fields.toArray() {
+    val skipLabel = "eq_skip_" + fld.name
+    eqInsns.add(LAload(slot = 0))
+    eqInsns.add(LGetfield(owner = className, name = fld.name, t = fld.fieldType))
+    eqInsns.add(LAload(slot = 2))
+    eqInsns.add(LGetfield(owner = className, name = fld.name, t = fld.fieldType))
+    match fld.fieldType {
+      case JInt -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+      case JBoolean -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+      case JByte -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+      case JChar -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+      case JShort -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+      case JLong -> {
+        eqInsns.add(LLcmp)
+        eqInsns.add(LIfeq(label = skipLabel))
+      }
+      case JDouble -> {
+        eqInsns.add(LDcmpl)
+        eqInsns.add(LIfeq(label = skipLabel))
+      }
+      case JFloat -> {
+        eqInsns.add(LFcmpl)
+        eqInsns.add(LIfeq(label = skipLabel))
+      }
+      case _ -> {
+        val objEqPs: List[JvmType] = newList()
+        objEqPs.add(JRef(className = "java/lang/Object"))
+        objEqPs.add(JRef(className = "java/lang/Object"))
+        eqInsns.add(LInvokestatic(owner = "java/util/Objects", name = "equals", params = objEqPs, ret = JBoolean))
+        eqInsns.add(LIfne(label = skipLabel))
+      }
+    }
+    eqInsns.add(LIconst(v = 0))
+    eqInsns.add(LIreturn)
+    eqInsns.add(LLabel(name = skipLabel))
+  }
+  eqInsns.add(LIconst(v = 1))
+  eqInsns.add(LIreturn)
+
+  val eqPs: List[JvmType] = newList()
+  eqPs.add(JRef(className = "java/lang/Object"))
+  LFunc(
+    flags = ACC_PUBLIC,
+    name = "equals",
+    params = eqPs,
+    ret = JBoolean,
+    insns = eqInsns,
+    maxStack = 4,
+    maxLocals = 3
+  )
+}
+
+// `hashCode(): int` for a union case class (#6835/#6120), seeded with the
+// case's 0-based ordinal (mirrors `Lyric.Derives.synthesizeHashUnion`'s
+// free-function shape, and the MSIL override, so a user's `@derive(Hash)`
+// union and this always-on override agree) then folded `h = h*31 +
+// fieldHash`.  Same reasoning as `buildUnionCaseEqualsFunc` above for why the
+// reference-typed-field branch is the null-safe static
+// `java.util.Objects.hashCode(Object)`, not `buildDeriveHashCodeFunc`'s
+// `invokevirtual Object.hashCode()` (which throws NPE on a null field and,
+// more to the point here, is besides the point once every reachable field is
+// already funnelled through the null-safe path for consistency).
+pub func buildUnionCaseHashCodeFunc(className: in String, fields: in List[LField], caseIndex: in Int): LFunc {
+  val hashInsns: List[LInsn] = newList()
+  hashInsns.add(LIconst(v = caseIndex))
+  hashInsns.add(LIstore(slot = 1))
+
+  for fld in fields.toArray() {
+    hashInsns.add(LIconst(v = 31))
+    hashInsns.add(LIload(slot = 1))
+    hashInsns.add(LImul)
+    hashInsns.add(LAload(slot = 0))
+    hashInsns.add(LGetfield(owner = className, name = fld.name, t = fld.fieldType))
+    match fld.fieldType {
+      case JInt -> ()
+      case JBoolean -> ()
+      case JByte -> ()
+      case JChar -> ()
+      case JShort -> ()
+      case JLong -> {
+        val hcPs: List[JvmType] = newList()
+        hcPs.add(JLong)
+        hashInsns.add(LInvokestatic(owner = "java/lang/Long", name = "hashCode", params = hcPs, ret = JInt))
+      }
+      case JDouble -> {
+        val hcPs: List[JvmType] = newList()
+        hcPs.add(JDouble)
+        hashInsns.add(LInvokestatic(owner = "java/lang/Double", name = "hashCode", params = hcPs, ret = JInt))
+      }
+      case JFloat -> {
+        val hcPs: List[JvmType] = newList()
+        hcPs.add(JFloat)
+        hashInsns.add(LInvokestatic(owner = "java/lang/Float", name = "hashCode", params = hcPs, ret = JInt))
+      }
+      case _ -> {
+        val hcPs: List[JvmType] = newList()
+        hcPs.add(JRef(className = "java/lang/Object"))
+        hashInsns.add(LInvokestatic(owner = "java/util/Objects", name = "hashCode", params = hcPs, ret = JInt))
+      }
+    }
+    hashInsns.add(LIadd)
+    hashInsns.add(LIstore(slot = 1))
+  }
+  hashInsns.add(LIload(slot = 1))
+  hashInsns.add(LIreturn)
+
+  val hashPs: List[JvmType] = newList()
+  LFunc(
+    flags = ACC_PUBLIC,
+    name = "hashCode",
+    params = hashPs,
+    ret = JInt,
+    insns = hashInsns,
+    maxStack = 4,
+    maxLocals = 2
+  )
+}
+
 /// Lower one sealed case class: a final class implementing the sealed interface.
 /// Includes a `$tag(): I` method returning the ordinal index of this case.
 func lowerSealedCase(baseName: in String, c: in LSealedCase, ordinal: in Int, pool: in Pool): ClassFile {
@@ -4490,9 +4678,19 @@ func lowerSealedCase(baseName: in String, c: in LSealedCase, ordinal: in Int, po
   val tagPs: List[JvmType] = newList()
   val tagMethod = makeMethodInfo(ACC_PUBLIC, "$tag", buildDescriptor(tagPs, JInt), tagAttrs)
 
+  // Structural `equals(Object)` / `hashCode()` overrides (#6835/#6120):
+  // unions have structural equality by default (language reference §2.4), no
+  // `@derive(Equals)` gate the way records have.  Uses
+  // `buildUnionCaseEqualsFunc`/`buildUnionCaseHashCodeFunc`, NOT the
+  // near-identical `buildDeriveEqualsFunc`/`buildDeriveHashCodeFunc` records
+  // use — those compare a reference-typed field by bare identity
+  // (`if_acmpeq`), which is exactly the #6120 bug shape; see the two
+  // builders' doc comments.
   val methods: List[MethodInfo] = newList()
   methods.add(ctorMethod)
   methods.add(tagMethod)
+  methods.add(lowerFuncForClass(buildUnionCaseEqualsFunc(fullName, c.fields), fullName, pool))
+  methods.add(lowerFuncForClass(buildUnionCaseHashCodeFunc(fullName, c.fields, ordinal), fullName, pool))
 
   makeCaseClassImplementing(fullName, "java/lang/Object", baseName, cfFields, methods)
 }
@@ -6854,14 +7052,32 @@ pub func lowerConfigBlock(ns: in String, blockName: in String, fields: in List[L
     val parsePs: List[JvmType] = newList()
     parsePs.add(strTy)
     match f.fieldType {
-      case JInt -> clinitInsns.add(LInvokestatic(owner = "java/lang/Integer", name = "parseInt", params = parsePs, ret = JInt))
-      case JLong -> clinitInsns.add(LInvokestatic(owner = "java/lang/Long", name = "parseLong", params = parsePs, ret = JLong))
-      case JFloat -> clinitInsns.add(LInvokestatic(owner = "java/lang/Float", name = "parseFloat", params = parsePs, ret = JFloat))
-      case JDouble -> clinitInsns.add(LInvokestatic(owner = "java/lang/Double", name = "parseDouble", params = parsePs, ret = JDouble))
-      case JBoolean -> clinitInsns.add(LInvokestatic(owner = "java/lang/Boolean", name = "parseBoolean", params = parsePs, ret = JBoolean))
+      case JInt -> clinitInsns.add(
+        LInvokestatic(owner = "java/lang/Integer", name = "parseInt", params = parsePs, ret = JInt)
+      )
+      case JLong -> clinitInsns.add(
+        LInvokestatic(owner = "java/lang/Long", name = "parseLong", params = parsePs, ret = JLong)
+      )
+      case JFloat -> clinitInsns.add(
+        LInvokestatic(owner = "java/lang/Float", name = "parseFloat", params = parsePs, ret = JFloat)
+      )
+      case JDouble -> clinitInsns.add(
+        LInvokestatic(owner = "java/lang/Double", name = "parseDouble", params = parsePs, ret = JDouble)
+      )
+      case JBoolean -> clinitInsns.add(
+        LInvokestatic(
+          owner = "java/lang/Boolean",
+          name = "parseBoolean",
+          params = parsePs,
+          ret = JBoolean
+        )
+      )
       case JRef(_) -> {
       }  // String field: the raw env-var value is already on the stack
-      case _ -> panic("Jvm.Lowering ICE: config field '" + f.name + "' has an unsupported JvmType — the type checker (G0009) should have rejected this")
+      case _ -> panic(
+        "Jvm.Lowering ICE: config field '" + f.name +
+          "' has an unsupported JvmType — the type checker (G0009) should have rejected this"
+      )
     }
     clinitInsns.add(LPutstatic(owner = className, name = f.name, t = f.fieldType))
     clinitInsns.add(LGoto(label = doneLabel))
