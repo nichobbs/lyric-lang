@@ -146,6 +146,17 @@ int32_t      lyric_string_starts_with(LyricString* s, LyricString* prefix);
 int32_t      lyric_string_contains(LyricString* haystack, LyricString* needle);
 int32_t      lyric_string_ends_with(LyricString* s, LyricString* suffix);
 
+/* One-sided variants of `lyric_string_trim` (#6240), sharing its
+ * `White_Space` code-point set. */
+LyricString* lyric_string_trim_start(LyricString* s);
+LyricString* lyric_string_trim_end(LyricString* s);
+
+/* Replace all non-overlapping occurrences of `oldValue` with `newValue`,
+ * left to right, ordinal byte comparison (#6240).  An empty `oldValue` is
+ * a no-op — see lyric_string.c for why (dotnet throws, JVM interleaves;
+ * this runtime copies neither host-specific quirk). */
+LyricString* lyric_string_replace(LyricString* s, LyricString* oldValue, LyricString* newValue);
+
 /* NUL-terminated copy of the string data (malloc'd; pair with
  * lyric_cstring_free).  For C APIs taking const char*. */
 const char* lyric_string_to_cstring(LyricString* s);

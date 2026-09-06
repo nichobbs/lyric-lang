@@ -473,7 +473,8 @@ test "unit main and substring" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// String.trim/toLower/indexOf/startsWith/contains/endsWith (#6588).
+// String.trim/toLower/indexOf/startsWith/contains/endsWith (#6588), plus
+// trimStart/trimEnd/replace (#6240).
 // trim/toLower allocate a fresh heap String, so they run under ASan; the
 // boolean predicates and indexOf don't allocate but are included alongside
 // for a single coherent block covering every method the issue lists.
@@ -593,6 +594,54 @@ test "string startsWith/contains/endsWith: match, mismatch, and empty-argument e
     r.stdout,
     "true\nfalse\ntrue\nfalse\ntrue\nfalse\ntrue\ntrue\nfalse\ntrue\n",
     "startsWith/contains/endsWith across match, mismatch, over-length, and empty-argument cases"
+  )
+}
+
+test "string trimStart/trimEnd: one-sided whitespace stripping (#6240, ASan)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val s = \"  hi there  \"\n" +
+    "  println(s.trimStart())\n" +
+    "  println(s.trimEnd())\n" +
+    "  println(\"clean\".trimStart())\n" +
+    "  println(\"clean\".trimEnd())\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRunAsan(shim)
+  assertEqualInt(r.exitCode, 0, "trimStart/trimEnd exit")
+  assertEqual(
+    r.stdout,
+    "hi there  \n  hi there\nclean\nclean\n",
+    "trimStart strips only leading whitespace, trimEnd only trailing; no-op on unpadded text"
+  )
+}
+
+test "string replace: all occurrences, shrink/grow, no match, and empty-oldValue no-op (#6240, ASan)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val s = \"aXbXcX\"\n" +
+    "  println(s.replace(\"X\", \"YY\"))\n" +
+    "  println(s.replace(\"X\", \"\"))\n" +
+    "  println(s.replace(\"Z\", \"YY\"))\n" +
+    "  println(s.replace(\"\", \"YY\"))\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRunAsan(shim)
+  assertEqualInt(r.exitCode, 0, "replace exit")
+  assertEqual(
+    r.stdout,
+    "aYYbYYcYY\nabc\naXbXcX\naXbXcX\n",
+    "replace: grow, shrink, no match unchanged, empty oldValue is a no-op"
   )
 }
 
