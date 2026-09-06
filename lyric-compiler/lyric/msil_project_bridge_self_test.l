@@ -821,6 +821,54 @@ test "cross-package pub val read (Public backing field)" {
   )
 }
 
+// #6966 (review REQUIRED on #6786's own PR): `inferUntypedStaticValMsilType`'s
+// `ECall` arm only resolved a record constructor through the LOCAL package
+// key (and an explicit qualifier), missing the cross-package tier real
+// `ECall` codegen also has (`resolveTypeFqn`'s import-aware resolution). An
+// UNQUALIFIED reference to an imported record — `import XPkgCtorFqn.Lib; val
+// gCache = Cache(box = ...)`, no `XPkgCtorFqn.Lib.` qualifier — matched
+// neither tier and predicted `MObject`. A field read off that val
+// (`gCache.box`) resolves through the app package's OWN
+// `fieldTokensByName["<app-pkg>/box"]` fallback (keyed by the READING
+// package, not the constructed value's real declaring package) — if the
+// consuming package ALSO declares a same-named field on one of its own
+// records (`Holder.box` below), that fallback resolves to `Holder`'s field
+// token/declaring class regardless of `gCache`'s real type, and the
+// `castclass Holder` against an actual `Lib.Cache` instance throws
+// `InvalidCastException` — reproducing #6786's exact defect class one
+// package hop removed.
+test "unqualified cross-package record-ctor module val types correctly, not via the wrong package's field token (#6966)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg("XPkgCtorFqn.Lib", "package XPkgCtorFqn.Lib\n" + "\n" + "pub record Cache {\n" + "  box: Int\n" + "}\n")
+  )
+  packages.add(
+    mkPkg(
+      "XPkgCtorFqn.App",
+      "package XPkgCtorFqn.App\n" + "import XPkgCtorFqn.Lib\n" + "\n" + "record Holder {\n" + "  box: Int\n" + "}\n" +
+        "\n" +
+        "val gCache = Cache(box = 42)\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  println(gCache.box)\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xpkg-ctor-fqn", packages, "XPkgCtorFqn")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "unqualified_cross_package_record_ctor_val: exit 0, not InvalidCastException against the wrong package's field token (stderr=" +
+      result.stderr +
+      ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    "42",
+    "unqualified_cross_package_record_ctor_val: gCache.box reads the real Lib.Cache field, not App.Holder's"
+  )
+}
+
 // `registerRestoredRecordCtor` populates `recordCtorTokens` for a record
 // from a restored (cross-assembly) package (#1284).
 test "restored record ctor token populated" {
