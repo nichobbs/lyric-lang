@@ -1,31 +1,11 @@
-* text=auto
-
-# Source code — always normalised to LF on checkout (eol=lf), not just in the
-# repo.  Without eol=lf a Windows checkout gets CRLF, and self-hosted parsers
-# that read these files as build inputs (e.g. the lyric.toml manifest parser)
-# fail on the stray '\r'.  `diff` forces text-mode diffing for files whose
-# bytes (e.g. F#/Lyric `'\x00'` char literals) trip git's binary heuristic.
-*.fs   text eol=lf diff
-*.fsi  text eol=lf diff
-*.fsx  text eol=lf diff
-*.fsproj text eol=lf diff
-
-*.cs   text eol=lf diff
-*.csproj text eol=lf diff
-
-*.l    text eol=lf diff
-*.toml text eol=lf diff
-*.md   text eol=lf diff
-*.yml  text eol=lf diff
-*.yaml text eol=lf diff
-*.sh   text eol=lf
-*.json text eol=lf diff
-
-# Binary
-*.png  binary
-*.jpg  binary
-*.jpeg binary
-*.gif  binary
-*.ico  binary
-*.dll  binary
-*.exe  binary
+# Append-only logs: use git's built-in `union` merge driver so two PRs that
+# each append a new entry at end-of-file merge by KEEPING BOTH sides instead of
+# producing a conflict. `docs/03-decision-log.md` is append-only (see CLAUDE.md
+# "Edits to design documents"), and every PR adds a `D-progress-N` entry at the
+# tail, so concurrent PRs collided there constantly and each had to rebase +
+# renumber + re-run the full (multi-hour) CI, which fast-moving `main` then
+# out-churned. `union` is a built-in driver GitHub honors on its own merges, so
+# the append stops being a conflict. Note: it does not renumber, so two entries
+# can share a `D-progress-N` number after an auto-merge — that is cosmetic
+# (numbers are not load-bearing); reconcile opportunistically or via a lint.
+docs/03-decision-log.md merge=union
