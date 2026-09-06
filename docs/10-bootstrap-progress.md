@@ -33774,9 +33774,9 @@ listening socket) all in one call, immediately — a TOCTOU fd-reuse race,
 since `Std.HttpServer.stopListener` only `pthreadJoin`s the accept thread
 AFTERWARD. `hostStopListener` now only signals; a new `hostCloseListener`
 does the actual close, called only after the join confirms the accept
-thread has exited. See D-progress-885's addendum for the full account.
+thread has exited. See D-progress-886's addendum for the full account.
 
-**Related:** `docs/03-decision-log.md` D-progress-885 (full account),
+**Related:** `docs/decisions/D-progress-0886-tcp-host-accept-interrupt.md` (full account),
 #6806 (fixed by this PR), #6804 (the original disclosed gap, now closed),
 #6883 (the TOCTOU fd-reuse race, also fixed by this PR),
 D-progress-850 (N9.3, where the gap was found and filed),

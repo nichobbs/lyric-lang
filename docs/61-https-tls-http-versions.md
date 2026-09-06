@@ -949,7 +949,7 @@ items marked ∥ are independent and can proceed in parallel.
     accept thread's confirmed exit — fixed by splitting
     `hostStopListener` (signal only) from a new `hostCloseListener`
     (release only, called only after `pthreadJoin` on the accept
-    thread), per D-progress-885's addendum in `docs/03-decision-log.md`.
+    thread), per D-progress-886's addendum in `docs/decisions/`.
     **N9.5** lyric-web `serveTls` + ALPN h2 investigated and found ⛔
     BLOCKED on two independent structural gaps, neither a lyric-web nor an
     accept-loop wiring fix (D-progress-852): the h2 FSM is not actually
