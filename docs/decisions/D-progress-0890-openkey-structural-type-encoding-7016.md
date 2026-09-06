@@ -1,8 +1,8 @@
-# D-progress-887 — `emitGenericMethodExternCall`'s `openKey` folds full structural type encoding, closing the intra-type overload-collision variant (#7016)
+# D-progress-890 — `emitGenericMethodExternCall`'s `openKey` folds full structural type encoding, closing the intra-type overload-collision variant (#7016)
 
 **Status:** shipped
 
-**Context.** D-progress-884 fixed #6987 by prepending `parentRow` (the
+**Context.** D-progress-887 fixed #6987 by prepending `parentRow` (the
 resolved declaring type's own TypeRef row) to `emitGenericMethodExternCall`'s
 `openKey`, so two DIFFERENT declaring types' same-named/same-arity/
 same-genParamCount generic methods no longer collide. `claude-review`'s
@@ -45,6 +45,6 @@ self_test.l`, `mono_self_test.l` (82/82), `generic_extern_self_test.l`
 `cross_package_generics_self_test.l` (10/10), `msil_restored_bridge_
 self_test.l` (6/6).
 
-**Related:** #6581/D-progress-883 (Gap 2, this entry's base), #6987/
-D-progress-884 (the cross-declaring-type variant of this same collision
+**Related:** #6581/D-progress-886 (Gap 2, this entry's base), #6987/
+D-progress-887 (the cross-declaring-type variant of this same collision
 class, fixed first), #7016 (fixed by this entry), PR #6981.

@@ -1,9 +1,9 @@
-# D-progress-889 — `emitGenericMethodExternCall`'s missing `decl.isAsync` handling declined loudly, not silently, after the silent fallback proved unsafe (#7022)
+# D-progress-892 — `emitGenericMethodExternCall`'s missing `decl.isAsync` handling declined loudly, not silently, after the silent fallback proved unsafe (#7022)
 
 **Status:** shipped
 
 **Context.** `claude-review`'s next pass on PR #6981 (#6581) flagged that
-`emitExternTargetBody`'s `msig.isGeneric` branch (Gap 2, D-progress-883)
+`emitExternTargetBody`'s `msig.isGeneric` branch (Gap 2, D-progress-886)
 never checked `decl.isAsync` — unlike its sibling non-generic branch, which
 deliberately keeps the real `Task<T>`/`Task` MemberRef return (`bclRetTy`)
 and appends an unwrap sequence for an async wrapper. An `async`-declared
@@ -28,7 +28,7 @@ This was verified NOT to fail cleanly. Before this PR, `resolvedSigToMsil`
 had no `STMVar` arm, so a bare `!!n` parameter/return failed conversion
 outright (`convOk = false`) and metadata-direct resolution for this whole
 combination was skipped, falling back further to the "legacy guess" path.
-But THIS PR added the `STMVar` arm (D-progress-883, Gap 2's own base) — so
+But THIS PR added the `STMVar` arm (D-progress-886, Gap 2's own base) — so
 routing an async+generic call into the plain-method branch now
 successfully (but incorrectly) converts the method's own generic positions
 and builds a syntactically valid but UNINSTANTIATED MemberRef (no
@@ -71,6 +71,6 @@ run with `LYRIC_LOAD_COMPILER=1`), `typed_ffi_delegate_self_test.l` (5/5),
 `nested_generic_self_test.l` (8/8), `cross_package_generics_self_test.l`
 (10/10), `msil_restored_bridge_self_test.l` (6/6).
 
-**Related:** #6581/D-progress-883 (Gap 2, this entry's base), #7022
+**Related:** #6581/D-progress-886 (Gap 2, this entry's base), #7022
 (fixed by this entry), #7023 (the real fix, tracked separately), `#5809`/
 `#6995` (the decline-loudly precedent this entry's fix mirrors), PR #6981.
