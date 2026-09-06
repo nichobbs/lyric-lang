@@ -96,34 +96,47 @@ test "nested: comparison inside an inner call's argument list (#6346)" {
 // two match arms build it via DIFFERENTLY-shaped expressions (one arm a
 // block with an intermediate `val` then a trailing tuple literal, the other
 // a bare inline tuple literal). `lowerLocalPatBind`'s `PTuple` fallback
-// always bound each element as `Object` — ignoring the `(JStringBuilder,
-// String)` annotation entirely — so a later use of the extern-typed element
-// (`sb.append(...)`) emitted no `checkcast` and the StackMapTable's local
-// slot stayed typed `java/lang/Object`: `VerifyError: Bad type on operand
-// stack` at that later use. Fixed by resolving each element against the
-// annotation's own tuple element type when the arities line up.
-extern type JStringBuilder = "java.lang.StringBuilder"
-
-func buildFromBlock(): JStringBuilder {
-  val sb = JStringBuilder.new()
-  sb.append("A")
-  sb
+// always bound each element as `Object` — ignoring the `(TextBox, String)`
+// annotation entirely — so a later use of the non-`Object`-typed element
+// (`appendToBox(box, ...)`, a call requiring the real `TextBox` JVM type)
+// emitted no `checkcast` and the StackMapTable's local slot stayed typed
+// `java/lang/Object`: `VerifyError: Bad type on operand stack` at that
+// later use. Fixed by resolving each element against the annotation's own
+// tuple element type when the arities line up. A plain Lyric `record`
+// reproduces the identical shape (any non-`Object` reference element type
+// triggers the bug, not just extern types) while staying compilable on
+// both targets — this file's other cases are deliberately target-portable
+// (the JVM run is the load-bearing one; see the header comment), and the
+// original repro's `java.lang.StringBuilder` extern type broke that
+// portability by not existing as a .NET reference-assembly type, failing
+// `--target dotnet` with T0120 auto-FFI resolution.
+record TextBox {
+  var text: String
 }
 
-func buildInline(): JStringBuilder {
-  JStringBuilder.new()
+func buildFromBlock(): TextBox {
+  val b = TextBox(text = "A")
+  b
 }
 
-test "tuple destructuring with an extern-typed element across divergent match-arm shapes (#6578)" {
+func buildInline(): TextBox {
+  TextBox(text = "A")
+}
+
+func appendToBox(b: in TextBox, s: in String): Unit {
+  b.text = b.text + s
+}
+
+test "tuple destructuring with a record-typed element across divergent match-arm shapes (#6578)" {
   val cond = true
-  val (sb, tag): (JStringBuilder, String) = match cond {
+  val (box, tag): (TextBox, String) = match cond {
     case true -> {
-      val x = buildFromBlock()
+      val x = buildFromBlock();
       (x, "block-arm")
     }
     case false -> (buildInline(), "inline-arm")
   }
-  sb.append("Z")
-  assertEqual(sb.toString(), "AZ", "destructured extern-typed element usable without a VerifyError")
+  appendToBox(box, "Z")
+  assertEqual(box.text, "AZ", "destructured record-typed element usable without a VerifyError")
   assertEqual(tag, "block-arm", "second tuple element correctly bound")
 }
