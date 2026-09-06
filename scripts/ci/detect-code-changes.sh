@@ -208,9 +208,15 @@ fi
 # A diff confined to exactly one backend's own tree sets only that
 # backend's flag; a diff touching anything else CORE_INFRA_PATTERN
 # covers (i.e. a shared path) sets all three. That makes
-# has_msil_changes || has_jvm_changes || has_native_changes ==
-# has_core_changes always true — no coverage is lost overall, it is
-# only reordered onto the backend(s) actually affected. Deliberately
+# has_msil_changes || has_jvm_changes || has_native_changes a
+# superset of has_core_changes — equal to it for any diff that
+# doesn't touch lyric-web/storage/resilience/auth, but has_jvm_changes
+# can independently be true from just those four ecosystem libraries
+# (the carried-over has_jvm_ecosystem_changes condition) even when
+# has_core_changes is false. No coverage is lost overall relative to
+# the old has_core_changes-gated jobs; it is only reordered onto the
+# backend(s) actually affected, plus that one pre-existing ecosystem
+# carve-out. Deliberately
 # conservative at the file-NAME level: a handful of backend-specific
 # `*_msil_self_test.l` / `*_jvm_self_test.l` files live directly
 # inside the shared lyric-compiler/lyric/ directory by long-standing
