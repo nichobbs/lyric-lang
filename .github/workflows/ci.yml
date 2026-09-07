@@ -531,9 +531,10 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
+          lyric_dir="$(cd "$(dirname "$lyric_bin")" && pwd)"
+          cat > "$lyric_bin" <<WRAPPER
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          exec dotnet "$lyric_dir/lyric.dll" "\$@"
           WRAPPER
           chmod +x "$lyric_bin"
       - name: ilverify self-hosted emitter IL (required gate, #3943)
@@ -577,9 +578,10 @@ jobs:
         shell: bash
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
+          lyric_dir="$(cd "$(dirname "$lyric_bin")" && pwd)"
+          cat > "$lyric_bin" <<WRAPPER
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          exec dotnet "$lyric_dir/lyric.dll" "\$@"
           WRAPPER
           chmod +x "$lyric_bin"
       - name: Install dotnet-ildasm tool
@@ -627,9 +629,10 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
+          lyric_dir="$(cd "$(dirname "$lyric_bin")" && pwd)"
+          cat > "$lyric_bin" <<WRAPPER
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          exec dotnet "$lyric_dir/lyric.dll" "\$@"
           WRAPPER
           chmod +x "$lyric_bin"
       - name: Measure JVM boxing calls (epic #1877 Stage 2+ zero-overhead gate)
@@ -677,9 +680,10 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
+          lyric_dir="$(cd "$(dirname "$lyric_bin")" && pwd)"
+          cat > "$lyric_bin" <<WRAPPER
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          exec dotnet "$lyric_dir/lyric.dll" "\$@"
           WRAPPER
           chmod +x "$lyric_bin"
       - name: Assert JVM LineNumberTable correctness (docs/63 band B2)
@@ -770,9 +774,10 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
+          lyric_dir="$(cd "$(dirname "$lyric_bin")" && pwd)"
+          cat > "$lyric_bin" <<WRAPPER
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          exec dotnet "$lyric_dir/lyric.dll" "\$@"
           WRAPPER
           chmod +x "$lyric_bin"
       - name: Install Z3 (verifier_self_test's protected-entry range goal needs a real solver)
@@ -2067,9 +2072,10 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
+          lyric_dir="$(cd "$(dirname "$lyric_bin")" && pwd)"
+          cat > "$lyric_bin" <<WRAPPER
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          exec dotnet "$lyric_dir/lyric.dll" "\$@"
           WRAPPER
           chmod +x "$lyric_bin"
 
@@ -2305,9 +2311,10 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
+          lyric_dir="$(cd "$(dirname "$lyric_bin")" && pwd)"
+          cat > "$lyric_bin" <<WRAPPER
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          exec dotnet "$lyric_dir/lyric.dll" "\$@"
           WRAPPER
           chmod +x "$lyric_bin"
 
@@ -2920,9 +2927,10 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
+          lyric_dir="$(cd "$(dirname "$lyric_bin")" && pwd)"
+          cat > "$lyric_bin" <<WRAPPER
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          exec dotnet "$lyric_dir/lyric.dll" "\$@"
           WRAPPER
           chmod +x "$lyric_bin"
 
@@ -3125,9 +3133,10 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
+          lyric_dir="$(cd "$(dirname "$lyric_bin")" && pwd)"
+          cat > "$lyric_bin" <<WRAPPER
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          exec dotnet "$lyric_dir/lyric.dll" "\$@"
           WRAPPER
           chmod +x "$lyric_bin"
       # Stage-2 binary: needed only by the handful of steps below that
@@ -5262,9 +5271,10 @@ jobs:
           (matrix.set == 'jvm' && needs.build.outputs.has_jvm_changes == 'true')
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
+          lyric_dir="$(cd "$(dirname "$lyric_bin")" && pwd)"
+          cat > "$lyric_bin" <<WRAPPER
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          exec dotnet "$lyric_dir/lyric.dll" "\$@"
           WRAPPER
           chmod +x "$lyric_bin"
       - name: Run numbered ${{ matrix.set }} self-tests (shard ${{ matrix.shard }})
@@ -5396,9 +5406,10 @@ jobs:
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           echo "LYRIC_CLI_PATH=$lyric_bin" >> "$GITHUB_ENV"
-          cat > "$lyric_bin" <<'WRAPPER'
+          lyric_dir="$(cd "$(dirname "$lyric_bin")" && pwd)"
+          cat > "$lyric_bin" <<WRAPPER
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          exec dotnet "$lyric_dir/lyric.dll" "\$@"
           WRAPPER
           chmod +x "$lyric_bin"
 
@@ -5649,9 +5660,10 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
+          lyric_dir="$(cd "$(dirname "$lyric_bin")" && pwd)"
+          cat > "$lyric_bin" <<WRAPPER
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          exec dotnet "$lyric_dir/lyric.dll" "\$@"
           WRAPPER
           chmod +x "$lyric_bin"
 
@@ -6169,9 +6181,10 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
+          lyric_dir="$(cd "$(dirname "$lyric_bin")" && pwd)"
+          cat > "$lyric_bin" <<WRAPPER
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          exec dotnet "$lyric_dir/lyric.dll" "\$@"
           WRAPPER
           chmod +x "$lyric_bin"
 
@@ -6771,9 +6784,10 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
+          lyric_dir="$(cd "$(dirname "$lyric_bin")" && pwd)"
+          cat > "$lyric_bin" <<WRAPPER
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          exec dotnet "$lyric_dir/lyric.dll" "\$@"
           WRAPPER
           chmod +x "$lyric_bin"
 
