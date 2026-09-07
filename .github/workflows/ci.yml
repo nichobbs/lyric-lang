@@ -313,7 +313,14 @@ jobs:
           path: |
             .bootstrap/stage1
             bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}
-          retention-days: 1
+          # 1 day was too short during the current CI runner-starvation
+          # incident: a run can now take 24h+ wall-clock to drain its own
+          # backlog, so by the time a downstream job runs (or
+          # rerun-failed-jobs retries one), this artifact had already
+          # expired -- "Artifact not found for name: build-artifacts" on a
+          # run whose own build step succeeded hours earlier (observed on
+          # PR #6905's re-run, ~25h after the original run started).
+          retention-days: 4
 
   # Static lint over every workflow file under .github/workflows/. Catches
   # structural bugs (bad expressions, unreachable jobs, invalid needs/if
@@ -505,7 +512,10 @@ jobs:
         with:
           name: stage2-artifacts
           path: .bootstrap/stage2
-          retention-days: 1
+          # See the build-artifacts upload's comment above: 1 day is too
+          # short while the fleet is CI-runner-starved and runs can span
+          # 24h+.
+          retention-days: 4
 
   # Self-hosted-emitter IL-validity gate (#3943).  Required by `build-and-test`.
   # Emits the whole Lyric.Cli closure with the self-hosted emitter and runs
