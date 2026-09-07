@@ -75,6 +75,16 @@ concurrency:
 # managed lyric.dll beside the stub, and the stub itself is nothing more
 # than a native launcher that immediately hands off to that same managed
 # runtime — so going through `dotnet` directly changes nothing observable.
+# The wrapper resolves its OWN path via `readlink -f "$0"` before taking
+# `dirname`, not a bare `dirname "$0"`: compiler-self-tests-dotnet-b (and any
+# other job that also creates the `./bin/lyric` dev-parity symlink, see that
+# step below) invokes the wrapper *through* that symlink, and bash sets `$0`
+# to the literal invocation path (`./bin/lyric`), not the symlink's resolved
+# target — so a bare `dirname "$0"` looked for `lyric.dll` next to the
+# symlink (`bin/lyric.dll`, which doesn't exist) instead of next to the real
+# wrapper script, failing with "Could not execute because the specified
+# command or file was not found." (#7025 follow-up, found via a repeatable —
+# not flaky — compiler-self-tests-dotnet-b failure).
 
 # Single build configuration shared across every dotnet build / test /
 # path-discovery step.  Changing it here flips the configuration for
@@ -533,7 +543,8 @@ jobs:
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
           cat > "$lyric_bin" <<'WRAPPER'
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
           WRAPPER
           chmod +x "$lyric_bin"
       - name: ilverify self-hosted emitter IL (required gate, #3943)
@@ -579,7 +590,8 @@ jobs:
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
           cat > "$lyric_bin" <<'WRAPPER'
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
           WRAPPER
           chmod +x "$lyric_bin"
       - name: Install dotnet-ildasm tool
@@ -629,7 +641,8 @@ jobs:
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
           cat > "$lyric_bin" <<'WRAPPER'
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
           WRAPPER
           chmod +x "$lyric_bin"
       - name: Measure JVM boxing calls (epic #1877 Stage 2+ zero-overhead gate)
@@ -679,7 +692,8 @@ jobs:
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
           cat > "$lyric_bin" <<'WRAPPER'
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
           WRAPPER
           chmod +x "$lyric_bin"
       - name: Assert JVM LineNumberTable correctness (docs/63 band B2)
@@ -772,7 +786,8 @@ jobs:
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
           cat > "$lyric_bin" <<'WRAPPER'
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
           WRAPPER
           chmod +x "$lyric_bin"
       - name: Install Z3 (verifier_self_test's protected-entry range goal needs a real solver)
@@ -2069,7 +2084,8 @@ jobs:
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
           cat > "$lyric_bin" <<'WRAPPER'
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
           WRAPPER
           chmod +x "$lyric_bin"
 
@@ -2307,7 +2323,8 @@ jobs:
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
           cat > "$lyric_bin" <<'WRAPPER'
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
           WRAPPER
           chmod +x "$lyric_bin"
 
@@ -2922,7 +2939,8 @@ jobs:
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
           cat > "$lyric_bin" <<'WRAPPER'
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
           WRAPPER
           chmod +x "$lyric_bin"
 
@@ -3127,7 +3145,8 @@ jobs:
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
           cat > "$lyric_bin" <<'WRAPPER'
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
           WRAPPER
           chmod +x "$lyric_bin"
       # Stage-2 binary: needed only by the handful of steps below that
@@ -5264,7 +5283,8 @@ jobs:
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
           cat > "$lyric_bin" <<'WRAPPER'
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
           WRAPPER
           chmod +x "$lyric_bin"
       - name: Run numbered ${{ matrix.set }} self-tests (shard ${{ matrix.shard }})
@@ -5398,7 +5418,8 @@ jobs:
           echo "LYRIC_CLI_PATH=$lyric_bin" >> "$GITHUB_ENV"
           cat > "$lyric_bin" <<'WRAPPER'
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
           WRAPPER
           chmod +x "$lyric_bin"
 
@@ -5651,7 +5672,8 @@ jobs:
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
           cat > "$lyric_bin" <<'WRAPPER'
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
           WRAPPER
           chmod +x "$lyric_bin"
 
@@ -6171,7 +6193,8 @@ jobs:
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
           cat > "$lyric_bin" <<'WRAPPER'
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
           WRAPPER
           chmod +x "$lyric_bin"
 
@@ -6773,7 +6796,8 @@ jobs:
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
           cat > "$lyric_bin" <<'WRAPPER'
           #!/usr/bin/env bash
-          exec dotnet "$(dirname "$0")/lyric.dll" "$@"
+          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
           WRAPPER
           chmod +x "$lyric_bin"
 
