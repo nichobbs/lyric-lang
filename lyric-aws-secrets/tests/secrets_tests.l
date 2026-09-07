@@ -71,6 +71,14 @@ test "SecretsError.ParseError: carries name, key, and message" {
   }
 }
 
+test "SecretsError.BinaryValueUnsupported: carries secret name" {
+  val e = BinaryValueUnsupported(name = "my-binary-secret")
+  match e {
+    case BinaryValueUnsupported(n) -> assertEqual(n, "my-binary-secret", "secret name")
+    case _ -> assertTrue(false, "expected BinaryValueUnsupported")
+  }
+}
+
 // ─── errorMessage ─────────────────────────────────────────────────────────────
 test "errorMessage: NotFound includes secret name" {
   val e = NotFound(name = "app/prod/jwt-secret")
@@ -97,6 +105,13 @@ test "errorMessage: ParseError includes both name and key" {
   val msg = AwsSecrets.errorMessage(e)
   assertTrue(msg.contains("structured-secret"), "message includes secret name")
   assertTrue(msg.contains("missingField"), "message includes missing key")
+}
+
+test "errorMessage: BinaryValueUnsupported includes secret name" {
+  val e = BinaryValueUnsupported(name = "my-binary-secret")
+  val msg = AwsSecrets.errorMessage(e)
+  assertTrue(msg.contains("my-binary-secret"), "message includes secret name")
+  assertTrue(msg.length > 0, "error message must be non-empty")
 }
 
 // ─── Local kernel (feature = "local") ──────────────────────────────────────────
@@ -577,5 +592,74 @@ test "jvm kernel: secretCacheKeyFor/parameterCacheKeyFor never collide across di
     jvmCacheKeyCollisionScenario(),
     "OK",
     "a wrong-secret-returned cache-key collision must be impossible regardless of what characters name/key/path contain"
+  )
+}
+
+// ─── extractSecretValue (jvm kernel) ────────────────────────────────────────
+// Pure binary-vs-string secret dispatch, independent of any network/client
+// call — regression coverage for the silent-Ok(null) bug (#7047): a binary
+// (SecretBinary) secret has no SecretString, so response.secretString()
+// returns Java null; that null must become a typed BinaryValueUnsupported
+// error, never an Ok(value = null) or an uncaught panic.
+@cfg(feature = "jvm")
+func jvmExtractSecretValueScenario(): String {
+  // The review-finding case: no secretString at all (binary secret),
+  // key = None (raw fetch) — must be a typed error, never Ok(null).
+  val noneKeyBinary = SecretsKernel.extractSecretValue("my-binary-secret", None, None)
+  match noneKeyBinary {
+    case Ok(v) -> return "a binary secret (key=None) must never return Ok, got Ok: " + v
+    case Err(BinaryValueUnsupported(n)) -> if n != "my-binary-secret" {
+      return "BinaryValueUnsupported carried the wrong secret name: " + n
+    } else {
+      ()
+    }
+    case Err(e) -> return "a binary secret (key=None) must return BinaryValueUnsupported, got a different error: " +
+      AwsSecrets.errorMessage(e)
+  }
+
+  // Same for the key=Some path — must not attempt JSON-parsing a null and
+  // must not panic.
+  val someKeyBinary = SecretsKernel.extractSecretValue("my-binary-secret", Some("field"), None)
+  match someKeyBinary {
+    case Ok(v) -> return "a binary secret (key=Some) must never return Ok, got Ok: " + v
+    case Err(BinaryValueUnsupported(n)) -> if n != "my-binary-secret" {
+      return "BinaryValueUnsupported carried the wrong secret name: " + n
+    } else {
+      ()
+    }
+    case Err(e) -> return "a binary secret (key=Some) must return BinaryValueUnsupported, got a different error: " +
+      AwsSecrets.errorMessage(e)
+  }
+
+  // A real (non-null) string secret must still flow through to
+  // extractSecretField normally — the fix must not break the happy path.
+  val realString = SecretsKernel.extractSecretValue("my-secret", None, Some("raw-string-value"))
+  match realString {
+    case Ok(v) -> if v != "raw-string-value" {
+      return "a string secret must pass through unchanged, got: " + v
+    } else {
+      ()
+    }
+    case Err(e) -> return "a string secret must never fail, got Err: " + AwsSecrets.errorMessage(e)
+  }
+
+  "OK"
+}
+
+@cfg(feature = "local")
+func jvmExtractSecretValueScenario(): String {
+  "OK"
+}
+
+@cfg(feature = "aws")
+func jvmExtractSecretValueScenario(): String {
+  "OK"
+}
+
+test "jvm kernel: extractSecretValue converts a binary (null SecretString) secret into BinaryValueUnsupported, never Ok(null) (#7047)" {
+  assertEqual(
+    jvmExtractSecretValueScenario(),
+    "OK",
+    "a binary secret must always come back as a typed BinaryValueUnsupported error, never a silent Ok(null)"
   )
 }

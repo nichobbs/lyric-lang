@@ -110,6 +110,11 @@ pub union SecretsError {
   /// A transient network or service error.  Retrying after a brief delay
   /// may succeed.
   case NetworkError(name: String, message: String)
+  /// The secret is stored as raw binary (Secrets Manager's SecretBinary)
+  /// rather than a UTF-8 string (SecretString). This API only supports
+  /// string-valued secrets — retrying will never succeed for a binary
+  /// secret, unlike NetworkError.
+  case BinaryValueUnsupported(name: String)
 }
 
 /// Human-readable message for logging.
@@ -121,6 +126,8 @@ pub func errorMessage(err: in SecretsError): String {
     case DecryptionError(name, msg) -> "Decryption failed for " + name + ": " + msg
     case ParseError(name, key, msg) -> "Parse error for " + name + "[" + key + "]: " + msg
     case NetworkError(name, msg) -> "Network error fetching " + name + ": " + msg
+    case BinaryValueUnsupported(name) -> "Secret '" + name +
+      "' is stored as binary (SecretBinary), not a string; this API only supports string-valued secrets"
   }
 }
 

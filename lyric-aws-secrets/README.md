@@ -233,6 +233,7 @@ union SecretsError {
   case DecryptionError(name: String, message: String)
   case ParseError(name: String, key: String, message: String)
   case NetworkError(name: String, message: String)
+  case BinaryValueUnsupported(name: String)
 }
 ```
 
@@ -243,6 +244,7 @@ union SecretsError {
 | `DecryptionError` | KMS decryption of a SecureString/secret failed | Verify KMS permissions |
 | `ParseError` | Secret is JSON but the requested key is absent or the value is not valid JSON | Check the secret's JSON shape and key name |
 | `NetworkError` | A transient network/service error, or (on `jvm`) any AWS error the best-effort message classifier didn't recognise, or (on any feature) a NOT_IMPLEMENTED call | Retry, or read `errorMessage` for detail |
+| `BinaryValueUnsupported` | (`jvm` only) The secret is stored as raw binary (Secrets Manager's `SecretBinary`) rather than a string (`SecretString`) — this API only supports string-valued secrets | Store the value as a `SecretString` instead, or base64-encode it as one |
 
 On the `jvm` feature, classification into `NotFound`/`AccessDenied`/
 `DecryptionError` is **best-effort substring matching** on the AWS SDK's

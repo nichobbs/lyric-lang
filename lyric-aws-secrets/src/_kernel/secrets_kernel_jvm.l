@@ -93,6 +93,13 @@ extern type JGetParameterResponse = "software.amazon.awssdk.services.ssm.model.G
 
 extern type JParameter = "software.amazon.awssdk.services.ssm.model.Parameter"
 
+// `case null -> ...` in pattern position parses as an unconditional
+// catch-all binding, not a null test (#4775) — the language has no null
+// literal or null pattern (D107). Test nullability of a raw JDK-API return
+// via `java.util.Objects.isNull`, the established idiom (`lyric-ws`'s JVM
+// kernel).
+extern type JObjects = "java.util.Objects"
+
 // `GetParameterRequest$Builder.withDecryption` takes a boxed
 // `java.lang.Boolean` (JVM bytecode has no implicit autoboxing at a call
 // site), so a raw Lyric `Bool` cannot be passed directly — box explicitly
@@ -285,6 +292,26 @@ pub func extractSecretField(
   }
 }
 
+// Pure — directly unit-testable (see `secrets_tests.l`'s
+// "extractSecretValue" cases) independent of a live/mocked AWS endpoint.
+//
+// A Secrets Manager secret stores its value as EITHER SecretString OR
+// SecretBinary, never both — `response.secretString()` returns Java `null`
+// for a binary-only secret (#7047). Rather than pass that null straight
+// into extractSecretField (which silently wraps it as `Ok(value = null)`
+// for the key=None path, and risks an uncaught NPE-turned-panic for the
+// key=Some path), the JVM-specific null check happens once at the call
+// site in fetchSecret and is converted to `None` here — this decision
+// logic itself then needs no JVM/FFI access to test.
+pub func extractSecretValue(
+  name: in String, key: in Option[String], secretStringOpt: in Option[String]
+): Result[String, AwsSecrets.SecretsError] {
+  match secretStringOpt {
+    case None -> Err(error = BinaryValueUnsupported(name = name))
+    case Some(secretString) -> extractSecretField(name, key, secretString)
+  }
+}
+
 // Pure — directly unit-testable (see `secrets_tests.l`'s "secretCacheKeyFor"
 // cases) independent of a live/mocked AWS endpoint.
 //
@@ -332,11 +359,11 @@ pub func fetchSecret(
 
   val result: Result[String, AwsSecrets.SecretsError] = match responseResult {
     case Err(e) -> Err(error = e)
-    case Ok(response) -> extractSecretField(
-      name,
-      key,
-      response.secretString()
-    )
+    case Ok(response) -> {
+      val rawSecretString = response.secretString()
+      val secretStringOpt: Option[String] = if JObjects.isNull(rawSecretString) { None } else { Some(rawSecretString) }
+      extractSecretValue(name, key, secretStringOpt)
+    }
   }
 
   if ttlSeconds > 0 {
