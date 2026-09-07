@@ -216,3 +216,65 @@ test "not applied to a lambda-invoke result used directly as an if condition" {
   }
   assertEqual(branch, "not-taken-true", "if not isPositive(-1) takes the true branch")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6714: `defer { … }` + `try { … } catch … { … }` inside a closure body,
+// capturing TWO extern-typed values plus a captured closure PARAMETER (not
+// just a captured local), with a call to a separate function inside the
+// `try` — hit `VerifyError: Operand stack overflow` at class load.
+// `lowerClosureMethod` passed `maxStack = 0` (trust the tracked peak
+// exactly) for a closure's synthesised `invoke` method, unlike a top-level
+// `func`'s deliberate floor of 16 — the SAME mitigation top-level funcs
+// already carry for `asm.peakStack`'s known under-count on a
+// `try`/`catch`-containing body (#6089 follow-up). Fixed by giving closures
+// the identical `maxStack = 16` floor.
+// ─────────────────────────────────────────────────────────────────────────────
+extern type JAtomicInteger6714 = "java.util.concurrent.atomic.AtomicInteger"
+
+extern type JAtomicBoolean6714 = "java.util.concurrent.atomic.AtomicBoolean"
+
+func maybeFault6714(shouldFault: in Bool): Unit {
+  if shouldFault {
+    panic("boom")
+  } else {
+    ()
+  }
+}
+
+func runDeferTryCatchClosure6714(shouldFault: Bool): Int {
+  val counter: JAtomicInteger6714 = JAtomicInteger6714.new(0)
+  val hasFault: JAtomicBoolean6714 = JAtomicBoolean6714.new(false)
+  val wrapped: () -> Unit = { ->
+    defer {
+      counter.incrementAndGet()
+    }
+    try {
+      maybeFault6714(shouldFault)
+    } catch Bug as b {
+      hasFault.set(true)
+    };
+    ()
+  }
+  wrapped()
+  if hasFault.get() {
+    counter.get() + 100
+  } else {
+    counter.get()
+  }
+}
+
+test "closure: defer + try/catch with two captured extern values and a captured param, no fault (#6714)" {
+  assertEqualInt(
+    runDeferTryCatchClosure6714(false),
+    1,
+    "no fault: defer incremented the captured counter once, hasFault stayed false"
+  )
+}
+
+test "closure: defer + try/catch with two captured extern values and a captured param, faulted (#6714)" {
+  assertEqualInt(
+    runDeferTryCatchClosure6714(true),
+    101,
+    "fault: catch set hasFault, defer still incremented the counter exactly once"
+  )
+}
