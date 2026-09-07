@@ -502,3 +502,80 @@ test "jvm kernel: extractSecretField returns ParseError (never panics) for a non
     "extractSecretField must convert a Std.Json.getString panic on a non-string field into a typed ParseError"
   )
 }
+
+// ─── secretCacheKeyFor / parameterCacheKeyFor (jvm kernel) ─────────────────
+// Pure cache-key-construction logic, independent of any network/client call
+// — regression coverage for the wrong-secret-returned collision bug (#7046):
+// a plain `name + " " + k` join let getSecret("foo bar") (key=None) and
+// getSecretField("foo", "bar") (name="foo", key=Some("bar")) both hash to
+// "foo bar", so a call for one could be served the other's cached secret.
+@cfg(feature = "jvm")
+func jvmCacheKeyCollisionScenario(): String {
+  // The exact review-finding collision: getSecret("foo bar") vs.
+  // getSecretField("foo", "bar") must no longer produce the same key.
+  val noneKey = SecretsKernel.secretCacheKeyFor("foo bar", None)
+  val someKey = SecretsKernel.secretCacheKeyFor("foo", Some("bar"))
+  if noneKey == someKey {
+    return "getSecret(\"foo bar\") and getSecretField(\"foo\", \"bar\") must not share a cache key, both produced: " +
+      noneKey
+  }
+
+  // The general form of the same bug: any (name, key) split that reassembles
+  // to the same characters must still be distinguished — a naive separator
+  // join can't tell "ab"/Some("cd") apart from "abc"/Some("d") once the
+  // parts are concatenated ("ab:cd" vs "abc:d" collide under any single
+  // fixed delimiter that could also appear inside `name`).
+  val split1 = SecretsKernel.secretCacheKeyFor("ab", Some("cd"))
+  val split2 = SecretsKernel.secretCacheKeyFor("abc", Some("d"))
+  if split1 == split2 {
+    return "differently-split (name, key) pairs must not share a cache key, both produced: " + split1
+  }
+
+  // Same name+key must still hit the cache (the fix must not break the
+  // happy path it's supposed to preserve).
+  if SecretsKernel.secretCacheKeyFor("my-secret", Some("field")) != SecretsKernel.secretCacheKeyFor("my-secret", Some("field")) {
+    return "identical (name, key) pairs must produce identical cache keys"
+  }
+  if SecretsKernel.secretCacheKeyFor("my-secret", None) != SecretsKernel.secretCacheKeyFor("my-secret", None) {
+    return "identical (name, None) pairs must produce identical cache keys"
+  }
+
+  // A None-keyed secret must never collide with any Some-keyed one, even
+  // when the Some name/key are chosen to try to reconstruct the None name.
+  val plainSecret = SecretsKernel.secretCacheKeyFor("my-secret", None)
+  val fieldOfSameName = SecretsKernel.secretCacheKeyFor("my-secret", Some(""))
+  if plainSecret == fieldOfSameName {
+    return "a None-keyed and a Some-keyed cache entry must never collide, both produced: " + plainSecret
+  }
+
+  // parameterCacheKeyFor must distinguish differently-split (path, decrypt)
+  // pairs the same way.
+  val paramKey1 = SecretsKernel.parameterCacheKeyFor("my-param", true)
+  val paramKey2 = SecretsKernel.parameterCacheKeyFor("my-param", false)
+  if paramKey1 == paramKey2 {
+    return "different decrypt flags must not share a parameter cache key, both produced: " + paramKey1
+  }
+  if SecretsKernel.parameterCacheKeyFor("/app/db/password", true) != SecretsKernel.parameterCacheKeyFor("/app/db/password", true) {
+    return "identical (path, decrypt) pairs must produce identical parameter cache keys"
+  }
+
+  "OK"
+}
+
+@cfg(feature = "local")
+func jvmCacheKeyCollisionScenario(): String {
+  "OK"
+}
+
+@cfg(feature = "aws")
+func jvmCacheKeyCollisionScenario(): String {
+  "OK"
+}
+
+test "jvm kernel: secretCacheKeyFor/parameterCacheKeyFor never collide across differently-split inputs (#7046)" {
+  assertEqual(
+    jvmCacheKeyCollisionScenario(),
+    "OK",
+    "a wrong-secret-returned cache-key collision must be impossible regardless of what characters name/key/path contain"
+  )
+}

@@ -285,6 +285,23 @@ pub func extractSecretField(
   }
 }
 
+// Pure — directly unit-testable (see `secrets_tests.l`'s "secretCacheKeyFor"
+// cases) independent of a live/mocked AWS endpoint.
+//
+// Length-prefixed, tag-disambiguated encoding (#7046): a plain `name + " " +
+// k` join let getSecret("foo bar") (key=None) and getSecretField("foo",
+// "bar") (name="foo", key=Some("bar")) both hash to "foo bar" in the shared
+// cache, so one call could be served the other's cached secret. Prefixing
+// the Some branch with name's own length pins exactly where `name` ends
+// regardless of what characters `name`/`k` contain, and the leading 'N'/'S'
+// tag keeps the two branches in disjoint namespaces.
+pub func secretCacheKeyFor(name: in String, key: in Option[String]): String {
+  match key {
+    case None -> "N:" + name
+    case Some(k) -> "S" + name.length.toString() + ":" + name + ":" + k
+  }
+}
+
 @stable(since = "0.1")
 pub func fetchSecret(
   name: in String, key: in Option[String], ttlSeconds: in Int
@@ -292,7 +309,7 @@ pub func fetchSecret(
   requires: name.length > 0
   requires: ttlSeconds >= 0
 {
-  val cacheKey = match key { case Some(k) -> name + " " + k; case None -> name }
+  val cacheKey = secretCacheKeyFor(name, key)
 
   var cached: CacheEntry = default()
   if ttlSeconds > 0 and cdTryGetValue(secretCache, cacheKey, cached) {
@@ -336,12 +353,21 @@ pub func fetchSecret(
   result
 }
 
+// Pure — directly unit-testable (see `secrets_tests.l`'s
+// "parameterCacheKeyFor" cases). Same length-prefixed encoding as
+// secretCacheKeyFor above (#7046): pins exactly where `path` ends regardless
+// of what characters it contains, so it can't collide with a
+// differently-split (path, decrypt) pair.
+pub func parameterCacheKeyFor(path: in String, decrypt: in Bool): String {
+  "P" + path.length.toString() + ":" + path + ":" + decrypt.toString()
+}
+
 @stable(since = "0.1")
 pub func fetchParameter(path: in String, decrypt: in Bool, ttlSeconds: in Int): Result[String, AwsSecrets.SecretsError]
   requires: path.length > 0
   requires: ttlSeconds >= 0
 {
-  val cacheKey = path + " " + decrypt.toString()
+  val cacheKey = parameterCacheKeyFor(path, decrypt)
 
   var cached: CacheEntry = default()
   if ttlSeconds > 0 and cdTryGetValue(parameterCache, cacheKey, cached) {
