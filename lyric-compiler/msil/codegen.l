@@ -4884,14 +4884,16 @@ func inferUntypedStaticValMsilType(e: in Expr, env: in Map[String, MsilType]): M
             case _ -> MInt
           }
         }
-        // BMod's real `lowerBinopMsil` arm has NO MDouble case (#5988): a
-        // Double lhs emits `rem` and is claimed as MInt (a pre-existing
-        // latent lowering quirk, tracked separately) — so the predictor must
-        // NOT widen to MDouble here, or it reintroduces the exact
-        // predicted-vs-actual `ldsfld` divergence #5955 eliminates.
+        // BMod mirrors BDiv (#7035): `rem` is type-preserving, so a Double
+        // lhs's real `lowerBinopMsil` arm now claims MDouble (fixed
+        // alongside this predictor arm — previously it claimed MInt for a
+        // Double lhs, corrupting the field). Widen to MDouble here to match,
+        // or this predictor reintroduces the exact predicted-vs-actual
+        // `ldsfld` divergence #5955 eliminates.
         case BMod -> {
           match inferUntypedStaticValMsilType(lhs, env) {
             case MLong -> MLong
+            case MDouble -> MDouble
             case MByte -> MByte
             case _ -> MInt
           }
@@ -10815,6 +10817,20 @@ func lowerBinopMsil(
         case MLong -> {
           insns.add(MRem)
           MLong
+        }
+        // #5992/#7035: `rem` is type-preserving — a Double lhs leaves a real
+        // float64 on the stack, so the claimed result type must be MDouble
+        // (mirrors BDiv's MDouble arm below) or a consumer's `stsfld`/`ldsfld`
+        // under the wrong claimed type corrupts the value. This was missing
+        // until #7035: the fallback arm claimed MInt for a Double lhs while
+        // `rem` still produced a float64, so a module-level `pub val`'s field
+        // was declared Int32 in metadata while its .cctor pushed a float64
+        // before `stsfld` — an invalid-IL type mismatch that silently
+        // corrupted the stored value on real JIT tiers (reproduced
+        // consistently on CI, never under a local dev build's JIT tier).
+        case MDouble -> {
+          insns.add(MRem)
+          MDouble
         }
         case MByte -> {
           insns.add(MRemUn)
