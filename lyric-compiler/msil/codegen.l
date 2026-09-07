@@ -10820,7 +10820,7 @@ func lowerBinopMsil(
         }
         // #5992/#7035: `rem` is type-preserving — a Double lhs leaves a real
         // float64 on the stack, so the claimed result type must be MDouble
-        // (mirrors BDiv's MDouble arm below) or a consumer's `stsfld`/`ldsfld`
+        // (mirrors BDiv's MDouble arm above) or a consumer's `stsfld`/`ldsfld`
         // under the wrong claimed type corrupts the value. This was missing
         // until #7035: the fallback arm claimed MInt for a Double lhs while
         // `rem` still produced a float64, so a module-level `pub val`'s field
