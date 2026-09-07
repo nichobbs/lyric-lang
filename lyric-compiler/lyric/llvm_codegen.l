@@ -4365,7 +4365,7 @@ func trampolineFor(ctx: in Ctx, t: in TypeExpr): String {
           dest = "fn",
           fromTy = NPtr(pointee = NI8),
           value = NLocal(name = "fnraw"),
-          toTy = NPtr(pointee = NFnPtr(params = lyricParams, ret = rawRet))
+          toTy = NFnPtr(params = lyricParams, ret = rawRet)
         )
       )
       val callArgs: List[NArg] = newList()
@@ -6756,7 +6756,7 @@ func lowerLambda(
   insns.add(
     NBitcast(
       dest = fnPtrCast,
-      fromTy = NPtr(pointee = NFnPtr(params = fnParamTys, ret = sig.retTy)),
+      fromTy = NFnPtr(params = fnParamTys, ret = sig.retTy),
       value = NGlobal(name = bodyFnName),
       toTy = NPtr(pointee = NI8)
     )
@@ -7049,7 +7049,7 @@ func lowerClosureCall(
       dest = fnTyped,
       fromTy = NPtr(pointee = NI8),
       value = NLocal(name = fnRaw),
-      toTy = NPtr(pointee = NFnPtr(params = fnParamTys, ret = sig.retTy))
+      toTy = NFnPtr(params = fnParamTys, ret = sig.retTy)
     )
   )
   val envCast = freshTmp(ctx)
@@ -7381,7 +7381,7 @@ func emitHeapAlloc(ctx: in Ctx, insns: in List[NInsn], objTy: in NType, size: in
     insns.add(
       NBitcast(
         dest = cast,
-        fromTy = NPtr(pointee = NFnPtr(params = fnParams, ret = NVoid)),
+        fromTy = NFnPtr(params = fnParams, ret = NVoid),
         value = NGlobal(name = dtorName),
         toTy = NPtr(pointee = NI8)
       )
@@ -11494,7 +11494,7 @@ func lowerIfaceDispatch(
       dest = fnTyped,
       fromTy = NPtr(pointee = NI8),
       value = NLocal(name = fnRaw),
-      toTy = NPtr(pointee = NFnPtr(params = fnParamTys, ret = retTy))
+      toTy = NFnPtr(params = fnParamTys, ret = retTy)
     )
   )
   // Build call args: obj first, then the coerced declared arguments.
