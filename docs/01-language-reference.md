@@ -232,7 +232,9 @@ record Customer {
 }
 ```
 
-Records are value types (compile to .NET `readonly struct` for primitives, `record class` otherwise — see `docs/09-msil-emission.md` §5 for the selection rule). Records have structural equality by default. Construction:
+Records are value types (compile to .NET `readonly struct` for primitives, `record class` otherwise — see `docs/09-msil-emission.md` §5 for the selection rule). A `readonly struct` record (e.g. `Point` above, all-`Double` fields) gets structural equality for free from the CLR's own default value-type equality. A `record class` record (e.g. `Customer` above) does **not** — it needs an explicit `@derive(Equals)` annotation (e.g. `@derive(Equals) record Customer { … }`), which also synthesizes `GetHashCode()` kept consistent with it, to get real field-by-field structural `==`/`!=`; without it, a `record class` falls back to reference identity, unlike unions (§2.5), which have structural equality unconditionally regardless of backing representation.
+
+Construction:
 
 ```
 val p = Point(x = 1.0, y = 2.0)
