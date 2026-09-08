@@ -420,6 +420,7 @@ func cmdTest(argv: in slice[String]): Int {
       i += 1
     } else if arg == "--coverage" {
       coverage = true
+      i += 1
     } else {
       positional.add(arg)
       i += 1
