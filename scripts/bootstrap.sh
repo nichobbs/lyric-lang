@@ -81,6 +81,11 @@ TMP_BASE="${TMP_BASE%/}"   # strip any trailing slash so the glob is well-formed
 MAX_STAGE=2
 SKIP_VERIFY="${SKIP_VERIFY:-0}"
 SKIP_CLI_BUNDLE="${SKIP_CLI_BUNDLE:-0}"
+# Set by try_bootstrap_from_release() when LYRIC_BOOTSTRAP_USE_DOTNET_TOOL=1
+# acquires stage 0 via the NuGet global tool instead of the native release
+# download (#7043) -- stage0() reads this to skip the lib/ requirement that
+# only applies to the native-download layout.
+STAGE0_VIA_DOTNET_TOOL=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -292,6 +297,35 @@ try_bootstrap_from_release() {
   # latest_release is now the version without 'v' prefix (e.g., "0.3.0")
   info "Using bootstrap release: v${latest_release}"
 
+  # Prefer the published NuGet global tool over the native release download
+  # when explicitly requested (LYRIC_BOOTSTRAP_USE_DOTNET_TOOL=1): the tool's
+  # apphost shim is Microsoft's own portable native launcher (GLIBC floor
+  # ~2.16, docs/34-distribution-strategy.md's "NuGet global tool" channel)
+  # which execs into the managed CLI via the ALREADY-installed dotnet
+  # runtime -- unlike the release tarball's Native AOT binary, which is
+  # locally cross-compiled/linked at release-build time and inherits THAT
+  # build machine's glibc symbol versions (#7043: the linux-arm64 release
+  # requires GLIBC_2.34, cross-compiled on ubuntu-latest, while a self-hosted
+  # CI runner's older glibc can't run it -- confirmed via `readelf -V`
+  # against every release back to v0.4.13, so this is a structural
+  # release-host/runner mismatch, not a bad release to pin around).
+  # Linux-only: macOS/Windows don't have this glibc-floor problem, so leave
+  # them on the existing native-download path below.
+  if [[ "${LYRIC_BOOTSTRAP_USE_DOTNET_TOOL:-0}" == "1" ]] \
+      && { [[ "$platform" == "linux-x64" ]] || [[ "$platform" == "linux-arm64" ]]; } \
+      && command -v dotnet &>/dev/null; then
+    info "  LYRIC_BOOTSTRAP_USE_DOTNET_TOOL=1: installing the 'lyric' NuGet global tool (v${latest_release}) instead of downloading the native release"
+    if dotnet tool install --tool-path "$BUILD_DIR/stage0-publish" lyric --version "$latest_release"; then
+      info "  dotnet tool install successful"
+      STAGE0_VIA_DOTNET_TOOL=1
+      return 0
+    else
+      info "  dotnet tool install failed; falling back to native release download"
+      rm -rf "${BUILD_DIR:?}/stage0-publish"
+      mkdir -p "$BUILD_DIR/stage0-publish"
+    fi
+  fi
+
   # Construct the tag name with 'v' prefix for downloads
   local release_tag="v${latest_release}"
 
@@ -419,19 +453,29 @@ stage0() {
   # A partial/stale stage0-publish (e.g. an interrupted prior extraction) can
   # have a binary with no lib/; clear it and retry the download once before
   # giving up, so a stale cache doesn't leave the user stuck.
-  if [[ ! -d "$BUILD_DIR/stage0-publish/lib" ]]; then
-    info "  lib/ directory not found in stage0-publish; clearing cache and retrying download once"
-    rm -rf "${BUILD_DIR:?}/stage0-publish"
-    mkdir -p "$BUILD_DIR/stage0-publish"
-    try_bootstrap_from_release || die "Stage 0: release download failed on retry"
-  fi
-  if [[ -d "$BUILD_DIR/stage0-publish/lib" ]]; then
-    mkdir -p "$(dirname "$STAGE0_BIN")/lib"
-    cp -r "$BUILD_DIR/stage0-publish/lib/." "$(dirname "$STAGE0_BIN")/lib/" \
-      || die "Stage 0: failed to copy lib/ directory from stage0-publish"
-    info "  copied lib/ directory with runtime dependencies"
+  #
+  # This requirement is specific to the native-release-tarball layout. The
+  # dotnet-tool acquisition path (#7043, STAGE0_VIA_DOTNET_TOOL=1) has no
+  # lib/ directory at all -- Lyric.Stdlib.dll ships co-located with the CLI
+  # DLLs inside the tool's own .store/ layout, and invoke_stage0 (stage1())
+  # runs the shim directly from stage0-publish/, which resolves it there.
+  if [[ "$STAGE0_VIA_DOTNET_TOOL" == "1" ]]; then
+    info "  skipping lib/ copy: acquired via dotnet tool, which co-locates Lyric.Stdlib.dll internally"
   else
-    die "lib/ directory not found in stage0-publish after retry — the release archive appears to be missing lib/"
+    if [[ ! -d "$BUILD_DIR/stage0-publish/lib" ]]; then
+      info "  lib/ directory not found in stage0-publish; clearing cache and retrying download once"
+      rm -rf "${BUILD_DIR:?}/stage0-publish"
+      mkdir -p "$BUILD_DIR/stage0-publish"
+      try_bootstrap_from_release || die "Stage 0: release download failed on retry"
+    fi
+    if [[ -d "$BUILD_DIR/stage0-publish/lib" ]]; then
+      mkdir -p "$(dirname "$STAGE0_BIN")/lib"
+      cp -r "$BUILD_DIR/stage0-publish/lib/." "$(dirname "$STAGE0_BIN")/lib/" \
+        || die "Stage 0: failed to copy lib/ directory from stage0-publish"
+      info "  copied lib/ directory with runtime dependencies"
+    else
+      die "lib/ directory not found in stage0-publish after retry — the release archive appears to be missing lib/"
+    fi
   fi
 
   ok "Stage 0 complete — $STAGE0_BIN"

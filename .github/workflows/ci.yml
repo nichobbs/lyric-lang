@@ -476,8 +476,19 @@ jobs:
             ${{ runner.os }}-nuget-
 
       - name: Bootstrap stage 2 (download stage-0 release → self-hosted stage 1 → self-hosted stage 2)
+        # LYRIC_BOOTSTRAP_USE_DOTNET_TOOL (#7043): on the self-hosted runner,
+        # acquire stage 0 via the published NuGet global tool instead of the
+        # native release tarball. The tarball's linux-arm64 binary is Native
+        # AOT-linked at release-build time on ubuntu-latest and requires
+        # GLIBC_2.34; the self-hosted runner's glibc is older, so it can't
+        # execute it. The NuGet tool's apphost shim is Microsoft's own
+        # portable launcher (GLIBC floor ~2.16) that execs into the managed
+        # CLI via the already-installed dotnet runtime, sidestepping the
+        # floor entirely. GitHub-hosted ubuntu-latest doesn't have this
+        # problem, so it stays on the native path unchanged.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LYRIC_BOOTSTRAP_USE_DOTNET_TOOL: ${{ runner.environment == 'self-hosted' && '1' || '0' }}
         run: ./scripts/bootstrap.sh --stage 2
 
       - name: Verify stage-2 toolchain runs

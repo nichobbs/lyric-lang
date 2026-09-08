@@ -33724,3 +33724,33 @@ headers and were verified that way.
 `docs/35-lambda-library.md` §4.2/§8 (updated), `lyric-lambda/README.md`
 (support matrix updated), #5412 (closed), #6868 (new, filed not fixed),
 #5600/#5578/#6548 (the prior `Lambda.Dispatch` work this builds on).
+
+## Stage-0 acquisition can bypass a GLIBC floor via the NuGet global tool (#7043)
+
+`build-stage2` moved onto the self-hosted `CI_HEAVY_RUNNER` pool in
+D-progress-885 (#7036) to match its consumer's architecture. Its first real
+run there failed immediately in Stage 0 — before the `#7036` change's own
+architecture-matching logic ever came into play — because the downloaded
+`lyric-*-linux-arm64.tar.gz` release binary is Native AOT, cross-compiled on
+`ubuntu-latest`, and links that build machine's own glibc symbol versions
+(`GLIBC_2.34`) directly into the binary. `readelf -V` against every release
+back to v0.4.13 shows this floor has always been there; the self-hosted
+runner's older glibc just never had to run a downloaded release before now.
+
+`scripts/bootstrap.sh` gains a second, opt-in Stage-0 path:
+`LYRIC_BOOTSTRAP_USE_DOTNET_TOOL=1` (Linux only) installs the already-shipped
+`lyric` NuGet global tool (`docs/34-distribution-strategy.md`'s "NuGet global
+tool" channel) via `dotnet tool install --tool-path` instead of downloading
+the native tarball. The tool's apphost shim is a *different* artifact than
+the AOT binary — Microsoft's own portable native launcher (GLIBC floor ~2.16)
+that execs into the managed CLI via whatever `dotnet` runtime is already
+installed, the same runtime the `dotnet lyric.dll` wrapper jobs (#7025/#7026)
+already run fine on this exact pool. `ci.yml`'s `build-stage2` job sets the
+flag only when `runner.environment == 'self-hosted'`; the existing native path
+is untouched everywhere else. Verified locally end-to-end: the tool-acquired
+Stage-0 binary genuinely compiles the real stdlib bundle in Stage 1.
+
+**Related:** `docs/decisions/D-progress-0886-bootstrap-dotnet-tool-stage0-glibc.md`
+(full account), #7043 (this fix; also tracks the deferred release-pipeline
+portability follow-up), #7025/#7026/#7036 (the prior self-hosted-runner
+architecture-mismatch fixes this one follows).
