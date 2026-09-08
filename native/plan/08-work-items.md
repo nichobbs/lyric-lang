@@ -2020,7 +2020,7 @@ alive," leak-free; full suite 37/37, no regressions.
 
 ---
 
-### N9.10 — Native codegen: destructor/closure/trampoline/vtable function-pointer bitcasts over-wrapped in an extra `NPtr`, breaking under a stricter clang — ✅ SHIPPED (D-progress-886)
+### N9.10 — Native codegen: destructor/closure/trampoline/vtable function-pointer bitcasts over-wrapped in an extra `NPtr`, breaking under a stricter clang — ✅ SHIPPED (D-progress-887)
 
 `Lyric.LlvmCodegen`'s five call sites that bitcast a defined function
 symbol (or a raw-`i8*` value about to be called directly) to/from a

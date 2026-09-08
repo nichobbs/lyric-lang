@@ -1,4 +1,4 @@
-# D-progress-886 — Native codegen: destructor/closure/trampoline/vtable function-pointer bitcasts over-wrapped in an extra `NPtr`
+# D-progress-887 — Native codegen: destructor/closure/trampoline/vtable function-pointer bitcasts over-wrapped in an extra `NPtr`
 
 **Status:** shipped
 
