@@ -33719,8 +33719,8 @@ Verified: `llvm_heap_self_test.l` 37/37 (was 15/37); no regressions in
 or `llvm_self_test_n3.l` (10/10, exercising the vtable-dispatch path
 directly).
 
-**Related:** `docs/03-decision-log.md` D-progress-886 (full account),
-`native/plan/08-work-items.md` N9.10.
+**Related:** `docs/decisions/D-progress-0887-native-fnptr-double-indirection.md`
+(full account), `native/plan/08-work-items.md` N9.10.
 
 ## lyric-lambda: JVM custom-runtime decision, proven WebBridge registry, mock Runtime API server test (#5412)
 
