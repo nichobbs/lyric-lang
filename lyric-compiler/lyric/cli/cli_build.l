@@ -94,6 +94,39 @@ pub record ResolvedAxes {
   profile: BuildProfile
 }
 
+// Resolve the shape axis with CLI-over-manifest-DECLARED-over-target-default
+// precedence (#6268): a manifest's `[build] shape` is only defaulted OVER —
+// rather than treated as an explicit user choice worth validating — when it
+// was never declared at all. `BuildSection.shape` alone can't tell "the
+// manifest said portable" from "the manifest said nothing" (`resolveBuildShape`
+// in manifest.l parses both to the same `"portable"` string), which is exactly
+// why `BuildSection.shapeDeclared` exists. The target's bare default
+// (`aot` for native, since a native build is AOT by construction — docs/63
+// §5.1 — `portable` otherwise) applies ONLY when neither the CLI nor the
+// manifest declared a shape; a declared non-`aot` shape on `--target native`
+// (from either surface) survives to `resolveAxesChecked`'s `shapeTargetError`
+// check below, which raises `F0043` instead of silently upgrading it.
+func resolveShapeAxis(
+  cliShape: in Option[BuildShape], section: in Option[Mf.BuildSection], target: in CompileTarget
+): BuildShape {
+  match cliShape {
+    case Some(s) -> return s
+    case None -> ()
+  }
+  match section {
+    case Some(sec) -> {
+      if sec.shapeDeclared {
+        return match parseShapeName(sec.shape) { case Some(sh) -> sh; case None -> SPortable }
+      }
+    }
+    case None -> ()
+  }
+  match target {
+    case Native -> SAot
+    case _ -> SPortable
+  }
+}
+
 // Resolve the shape and profile axes with CLI-over-manifest-over-default
 // precedence (docs/63 §4.2 — the same precedence rule docs/60 uses for defines,
 // so the toolchain has one rule and not two), then run the compatibility checks
@@ -102,7 +135,10 @@ pub record ResolvedAxes {
 //
 // `cliShape`/`cliProfile` are `None` when the user named neither on the command
 // line, which is what lets a manifest value win over the default without the
-// default silently overriding the manifest.
+// default silently overriding the manifest. Callers pass the RAW `cliShape`
+// here (never pre-defaulted via a target check) — `resolveShapeAxis` above is
+// the only place the target-aware default is applied, and it applies after
+// consulting the manifest's `shapeDeclared` bit, not before (#6268).
 pub func resolveBuildAxes(
   cliShape: in Option[BuildShape],
   cliProfile: in Option[BuildProfile],
@@ -110,7 +146,7 @@ pub func resolveBuildAxes(
   target: in CompileTarget,
 ): Result[ResolvedAxes, String] {
   val section = readBuildSection(manifestOpt)
-  val shape = match cliShape { case Some(s) -> s; case None -> readBuildShapeFromSection(section) }
+  val shape = resolveShapeAxis(cliShape, section, target)
   val profile = match cliProfile { case Some(p) -> p; case None -> readBuildProfileFromSection(section) }
   resolveAxesChecked(shape, profile, target)
 }
@@ -132,7 +168,7 @@ pub func resolveBuildAxesFromManifest(
   // instead of the sibling arm's actual type (`Option[BuildSection]`).
   val absent: Option[Mf.BuildSection] = None
   val section = match manifest { case None -> absent; case Some(m) -> m.build }
-  val shape = match cliShape { case Some(s) -> s; case None -> readBuildShapeFromSection(section) }
+  val shape = resolveShapeAxis(cliShape, section, target)
   val profile = match cliProfile { case Some(p) -> p; case None -> readBuildProfileFromSection(section) }
   resolveAxesChecked(shape, profile, target)
 }
@@ -150,17 +186,6 @@ func resolveAxesChecked(
     case None -> ()
   }
   Ok(value = ResolvedAxes(shape = shape, profile = profile))
-}
-
-// `--target native` is AOT by construction (docs/63 §5.1), so a bare
-// `lyric build --target native` resolves to `SAot` rather than the `SPortable`
-// default. Applied before `resolveBuildAxes` so an explicit `--shape portable`
-// still reaches `F0043` instead of being silently upgraded.
-pub func defaultShapeForTarget(cliShape: in Option[BuildShape], target: in CompileTarget): Option[BuildShape] {
-  match cliShape {
-    case Some(_) -> cliShape
-    case None -> match target { case Native -> Some(value = SAot); case _ -> None }
-  }
 }
 
 // The `--rid` "has no effect" warning, worded for the actual target.
@@ -286,8 +311,62 @@ func resolveNativeConfig(manifestPath: in Option[String]): Result[Option[Mf.Nati
   // ilverify): every "no config" leaf returns this pinned value.
   val noneCfg: Option[Mf.NativeConfig] = None
   match manifestPath {
-    case Some(p) -> match File.readText(p) { case Err(e) -> Err(error = "build: cannot read manifest " + p + ": " + IOError.message(e)); case Ok(mfText) -> match Mf.parseManifest(mfText, p) { case Err(me) -> Err(error = "build: " + ManifestError.message(me)); case Ok(m) -> Ok(value = m.native) } }
-    case None -> match discoverManifest(None) { case None -> Ok(value = noneCfg); case Some(mf) -> match File.readText(mf) { case Err(_) -> Ok(value = noneCfg); case Ok(mfText) -> match Mf.parseManifest(mfText, mf) { case Err(_) -> Ok(value = noneCfg); case Ok(m) -> Ok(value = m.native) } } }
+    case Some(p) -> match File.readText(p) {
+      case Err(e) -> Err(error = "build: cannot read manifest " + p + ": " + IOError.message(e))
+      case Ok(mfText) -> match Mf.parseManifest(mfText, p) {
+        case Err(me) -> Err(error = "build: " + ManifestError.message(me))
+        case Ok(m) -> Ok(value = m.native)
+      }
+    }
+    case None -> match discoverManifest(None) {
+      case None -> Ok(value = noneCfg)
+      case Some(mf) -> match File.readText(mf) {
+        case Err(_) -> Ok(value = noneCfg)
+        case Ok(mfText) -> match Mf.parseManifest(mfText, mf) {
+          case Err(_) -> Ok(value = noneCfg)
+          case Ok(m) -> Ok(value = m.native)
+        }
+      }
+    }
+  }
+}
+
+// Default the `--target native` clang `-O` level from the resolved BUILD
+// PROFILE (docs/63 §5.2 Q-BP-003, #6263) when neither `--opt` nor the
+// manifest's `[native] opt_level` supply one: `release` gets `-O2` (matching
+// the pre-existing hardcoded default in `Lyric.LlvmBridge.linkAndEmitNative`),
+// `debug` gets `-O0`, matching `docs/01-language-reference.md`'s
+// `--opt`/`[native] opt_level` precedence note. Resolved HERE — one level up
+// from `buildOneNativeWithFeatures` — rather than by widening that function's
+// signature, so its existing ~35 direct self-test call sites (which pass an
+// explicit `""` opt and rely on the OLD unconditional `-O2` default deep in
+// `linkAndEmitNative`) are completely unaffected; only a real
+// `cmdBuild`/`cmdRun` CLI invocation, which alone has a resolved
+// `BuildProfile` in scope, goes through this. A non-Native target, or a
+// non-empty `cliOpt`, is returned unchanged — this function's only job is
+// filling in the "nobody said anything" case for native. `pub` so
+// `cli_build_self_test.l` can pin the precedence/defaulting behavior
+// directly (#6263).
+pub func resolveNativeOptDefault(
+  cliOpt: in String,
+  manifestPath: in Option[String],
+  target: in CompileTarget,
+  profile: in BuildProfile,
+): String {
+  if cliOpt != "" {
+    return cliOpt
+  }
+  match target {
+    case Native -> ()
+    case _ -> return cliOpt
+  }
+  match resolveNativeConfig(manifestPath) {
+    case Ok(ncOpt) -> match ncOpt { case Some(nc) -> { if nc.optLevel != "" { return nc.optLevel } }; case None -> () }
+    case Err(_) -> ()  // a malformed manifest is reported for real by the actual build call below
+  }
+  match profile {
+    case ProfRelease -> "2"
+    case ProfDebug -> "0"
   }
 }
 
@@ -454,8 +533,39 @@ func loadManifestForSingleFileBuild(
 ): Result[Option[LoadedManifest], String] {
   val noneLm: Option[LoadedManifest] = None
   match explicitManifest {
-    case Some(p) -> match File.readText(p) { case Err(e) -> Err(error = "build: cannot read manifest " + p + ": " + IOError.message(e)); case Ok(mfText) -> match Mf.parseManifest(mfText, p) { case Err(me) -> Err(error = "build: " + ManifestError.message(me)); case Ok(m) -> Ok(value = Some(value = LoadedManifest(manifest = m, mfPath = p, mfText = mfText))) } }
-    case None -> match discoverManifestForSourceFile(sourcePath) { case None -> Ok(value = noneLm); case Some(mf) -> match File.readText(mf) { case Err(_) -> Ok(value = noneLm); case Ok(mfText) -> match Mf.parseManifest(mfText, mf) { case Err(_) -> Ok(value = noneLm); case Ok(m) -> Ok(value = Some(value = LoadedManifest(manifest = m, mfPath = mf, mfText = mfText))) } } }
+    case Some(p) -> match File.readText(p) {
+      case Err(e) -> Err(error = "build: cannot read manifest " + p + ": " + IOError.message(e))
+      case Ok(mfText) -> match Mf.parseManifest(mfText, p) {
+        case Err(me) -> Err(error = "build: " + ManifestError.message(me))
+        case Ok(m) -> Ok(
+          value = Some(
+            value = LoadedManifest(
+              manifest = m,
+              mfPath = p,
+              mfText = mfText
+            )
+          )
+        )
+      }
+    }
+    case None -> match discoverManifestForSourceFile(sourcePath) {
+      case None -> Ok(value = noneLm)
+      case Some(mf) -> match File.readText(mf) {
+        case Err(_) -> Ok(value = noneLm)
+        case Ok(mfText) -> match Mf.parseManifest(mfText, mf) {
+          case Err(_) -> Ok(value = noneLm)
+          case Ok(m) -> Ok(
+            value = Some(
+              value = LoadedManifest(
+                manifest = m,
+                mfPath = mf,
+                mfText = mfText
+              )
+            )
+          )
+        }
+      }
+    }
   }
 }
 
@@ -678,7 +788,13 @@ func emitSingleFileOrProject(
 
   val noOwnPkgs: List[ProjectPackage] = newList()
   val ownPkgs = match lm.manifest.project {
-    case Some(proj) -> match collectImportedOwnPackages(proj, Path.dirname(lm.mfPath), lm.mfPath, req.source, pkgName) { case Some(ps) -> ps; case None -> return failedEmitOutcome(sourcePath + ": build failed (cannot read a [project.packages] source declared in " + lm.mfPath + "; see above)") }
+    case Some(proj) -> match collectImportedOwnPackages(proj, Path.dirname(lm.mfPath), lm.mfPath, req.source, pkgName) {
+      case Some(ps) -> ps
+      case None -> return failedEmitOutcome(
+        sourcePath + ": build failed (cannot read a [project.packages] source declared in " + lm.mfPath +
+          "; see above)"
+      )
+    }
     case None -> noOwnPkgs
   }
 
@@ -960,7 +1076,20 @@ pub func buildOneNativeWithFeatures(
         printErr(msg)
         return 1
       }
-      case Ok(ncOpt) -> match ncOpt { case Some(nc) -> { if effTriple == "" { effTriple = nc.triple }; if effOpt == "" { effOpt = nc.optLevel }; for lib in nc.extraLibs { effLibs.add(lib) } }; case None -> () }
+      case Ok(ncOpt) -> match ncOpt {
+        case Some(nc) -> {
+          if effTriple == "" {
+            effTriple = nc.triple
+          }
+          if effOpt == "" {
+            effOpt = nc.optLevel
+          }
+          for lib in nc.extraLibs {
+            effLibs.add(lib)
+          }
+        }
+        case None -> ()
+      }
     }
   }
   var resolvedRestoredDlls: List[String] = newList()
@@ -1238,7 +1367,13 @@ func cmdBuild(argv: in slice[String]): Int {
     }
   }
   match packageVersionArg {
-    case Some(v) -> match validatePackageVersionArg(v) { case Some(msg) -> { printErr("build: " + msg); return 1 }; case None -> () }
+    case Some(v) -> match validatePackageVersionArg(v) {
+      case Some(msg) -> {
+        printErr("build: " + msg)
+        return 1
+      }
+      case None -> ()
+    }
     case None -> ()
   }
   // docs/63 §4: validate the profile/shape spellings before anything reads a
@@ -1291,7 +1426,13 @@ func cmdBuild(argv: in slice[String]): Int {
   } else {
     None
   }
-  val effCliShape = defaultShapeForTarget(cliShape, target)
+  // `--target native`'s "AOT by construction" default (docs/63 §5.1) is no
+  // longer pre-applied here (#6268): `resolveBuildAxes`/
+  // `resolveBuildAxesFromManifest` below apply it themselves, AFTER
+  // consulting the manifest's `shapeDeclared` bit, so a manifest-declared
+  // non-`aot` shape on native reaches `F0043` instead of being silently
+  // overridden by a bare CLI default computed before the manifest was ever
+  // read. `cliShape` (raw, un-defaulted) is passed straight through.
   // `--release-from-dll` links a pre-built managed artifact; no source is
   // compiled, so the profile axis has nothing to apply to, and the shape is
   // `aot` by definition. Naming either is a request we cannot honour — reject
@@ -1414,13 +1555,20 @@ func cmdBuild(argv: in slice[String]): Int {
     // routes into the AOT-packaging pipeline exactly as an explicit `--aot` does
     // — the manifest is a default for the same axis, not a separate mechanism
     // (which is what `kind = "aot"` used to be).
-    val axes = match resolveBuildAxesFromManifest(effCliShape, cliProfile, manifestValOpt, target) {
+    val axes = match resolveBuildAxesFromManifest(cliShape, cliProfile, manifestValOpt, target) {
       case Ok(a) -> a
       case Err(msg) -> {
         printErr(msg)
         return 1
       }
     }
+    // Same profile-aware native `-O` default the single-file branch applies
+    // below (`resolveNativeOptDefault`, #6263) — a project-mode `--target
+    // native` build under the default `--debug` profile used to fall through
+    // to `linkAndEmitNative`'s old hardcoded `-O2`, inconsistent with the
+    // single-file path this same PR fixes (review finding on #6899). A no-op
+    // on Dotnet/Jvm or when `--opt`/`[native] opt_level` already supply one.
+    val effOptArgProj = resolveNativeOptDefault(optArg, Some(value = mfPath), target, axes.profile)
     // docs/60 §3.1: manifest `[build.define]` is threaded through `buildProject`.
     // Reject up front (no silent drop, #6139) on any shape that cannot consume
     // it. `--watch` is fine — `buildProject` reapplies the manifest defines on
@@ -1482,7 +1630,9 @@ func cmdBuild(argv: in slice[String]): Int {
           allF = allFeatures,
           noRestore = noRestore,
           pkgVer = packageVersionArg,
-          profile = axes.profile
+          profile = axes.profile,
+          nativeTriple = tripleArg,
+          nativeOpt = effOptArgProj
         )
       )
     }
@@ -1494,26 +1644,12 @@ func cmdBuild(argv: in slice[String]): Int {
       case Some(_) -> printErr(ridNoEffectWarning(target))
       case None -> ()
     }
-    // `--triple`/`--opt` project-mode threading into native project builds
-    // is a documented follow-up (#6815 item 2) — `buildProjectFromManifest`'s
-    // native branch only ever reads the manifest's own `[native]` table.
-    // Warn rather than silently drop, matching this function's own
-    // convention for every other CLI flag that has no effect in a given
-    // mode (`ridNoEffectWarning` above, the `--no-restore` /
-    // `--release-from-dll` warnings elsewhere in this file).
-    var isNativeManifestTarget = false
-    match target {
-      case Native -> {
-        isNativeManifestTarget = true
-      }
-      case _ -> ()
-    }
-    if isNativeManifestTarget and (Str.isNotEmpty(tripleArg) or Str.isNotEmpty(optArg)) {
-      printErr(
-        "build: warning: --triple/--opt have no effect on a native project build " +
-          "(--manifest ... --target native) — only the manifest's own [native] table is honored (#6815)"
-      )
-    }
+    // `--triple`/`--opt` CLI flags thread into a `--target native` project
+    // build via `buildProjectFromManifest`'s `nativeTriple`/`nativeOpt`
+    // params, overriding the manifest's own `[native]` table exactly like
+    // the single-file path (#6815 item 2). They're harmless no-ops on
+    // Dotnet/Jvm — `buildProjectFromManifest` only reads them when
+    // `target == Native`.
     // Reuse the manifest already parsed above when it parsed cleanly (the
     // common case); fall back to `buildProject`'s own re-parse otherwise so a
     // genuinely malformed manifest still gets a real diagnostic instead of a
@@ -1532,11 +1668,13 @@ func cmdBuild(argv: in slice[String]): Int {
           noRestore,
           packageVersionArg,
           None,
-          withProfileDefine(cliDefines, axes.profile)
+          withProfileDefine(cliDefines, axes.profile),
+          tripleArg,
+          effOptArgProj
         )
       }
       case None -> {
-        return buildProject(
+        return buildProjectWithNativeFlags(
           mfPath,
           explicitOut,
           target,
@@ -1546,7 +1684,9 @@ func cmdBuild(argv: in slice[String]): Int {
           noRestore,
           packageVersionArg,
           None,
-          withProfileDefine(cliDefines, axes.profile)
+          withProfileDefine(cliDefines, axes.profile),
+          tripleArg,
+          effOptArgProj
         )
       }
     }
@@ -1561,7 +1701,7 @@ func cmdBuild(argv: in slice[String]): Int {
   // docs/63: resolve both axes. A single-file build honours `[build] shape` /
   // `[build] profile` from an explicitly-passed `--manifest` only; there is no
   // manifest discovery on this path, matching `readBuildKindFromManifest`.
-  val axes = match resolveBuildAxes(effCliShape, cliProfile, manifestArg, target) {
+  val axes = match resolveBuildAxes(cliShape, cliProfile, manifestArg, target) {
     case Ok(a) -> a
     case Err(msg) -> {
       printErr(msg)
@@ -1622,6 +1762,11 @@ func cmdBuild(argv: in slice[String]): Int {
     }
   }
 
+  // #6263: default the native `-O` level from the resolved profile axis when
+  // neither `--opt` nor the manifest supply one — see `resolveNativeOptDefault`'s
+  // doc comment. A no-op on Dotnet/Jvm (returns `optArg` unchanged).
+  val effOptArg = resolveNativeOptDefault(optArg, manifestArg, target, axes.profile)
+
   if watch {
     val files: List[String] = newList()
     files.add(sourcePath)
@@ -1633,7 +1778,7 @@ func cmdBuild(argv: in slice[String]): Int {
         target = target,
         manifest = manifestArg,
         nativeTriple = tripleArg,
-        nativeOpt = optArg,
+        nativeOpt = effOptArg,
         feats = cliFeatures,
         noDef = noDefaultFeatures,
         allF = allFeatures,
@@ -1648,7 +1793,7 @@ func cmdBuild(argv: in slice[String]): Int {
     target,
     manifestArg,
     tripleArg,
-    optArg,
+    effOptArg,
     cliFeatures,
     noDefaultFeatures,
     allFeatures,
@@ -1866,11 +2011,18 @@ func buildReleaseProject(
   // Scan each package's sources to find the entry package — the one declaring
   // `func main()`.  Every entry candidate is collected before reporting so a
   // conflict lists all offending packages at once instead of one pair per
-  // rebuild (#3219).
+  // rebuild (#3219). A `test_only = true` entry (#6579) is skipped here too:
+  // it never reaches the actual release bundle (`buildProjectFromManifest`'s
+  // own `pkgEntry.testOnly` skip below it in `buildProject`), so it cannot be
+  // the real entry package regardless of what it declares.
   val entryPkgNames: List[String] = newList()
   var pi = 0
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
+    if pkgEntry.testOnly {
+      pi += 1
+      continue
+    }
     var combined = ""
     if pkgEntry.paths.count > 0 {
       // Explicit file list (TOML array form): read each file in order.
@@ -2273,6 +2425,40 @@ pub func buildProject(
   preResolvedDeps: in Option[ResolvedManifestDeps],
   cliDefines: in List[String],
 ): Int {
+  buildProjectWithNativeFlags(
+    mfPath,
+    explicitOut,
+    target,
+    cliFeatures,
+    noDefaultFeatures,
+    allFeatures,
+    noRestore,
+    packageVersionOverride,
+    preResolvedDeps,
+    cliDefines,
+    "",
+    ""
+  )
+}
+
+// Same as `buildProject`, but threads `--triple`/`--opt` CLI overrides into a
+// `--target native` project build (#6815 item 2). `buildProject` itself stays
+// the zero-native-flags entry point so its ~20 existing (non-native-flag)
+// call sites are unaffected.
+pub func buildProjectWithNativeFlags(
+  mfPath: in String,
+  explicitOut: in Option[String],
+  target: in CompileTarget,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
+  noRestore: in Bool,
+  packageVersionOverride: in Option[String],
+  preResolvedDeps: in Option[ResolvedManifestDeps],
+  cliDefines: in List[String],
+  nativeTriple: in String,
+  nativeOpt: in String,
+): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
     case Err(e) -> {
@@ -2299,7 +2485,9 @@ pub func buildProject(
     noRestore,
     packageVersionOverride,
     preResolvedDeps,
-    cliDefines
+    cliDefines,
+    nativeTriple,
+    nativeOpt
   )
 }
 
@@ -2322,6 +2510,8 @@ pub func buildProjectFromManifest(
   packageVersionOverride: in Option[String],
   preResolvedDeps: in Option[ResolvedManifestDeps],
   cliDefines: in List[String],
+  nativeTriple: in String,
+  nativeOpt: in String,
 ): Int {
   val buildStart = Time.now()
   val proj: ProjectSection = match manifest.project {
@@ -2408,19 +2598,28 @@ pub func buildProjectFromManifest(
   // single .l file or a directory of .l files; `Emitter.emitProject` merges
   // a multi-file package into one compilation unit (single `package` line,
   // union of import preambles, header-stripped bodies — #2575).
+  //
+  // A `test_only = true` entry (#6579) is skipped here — it never ships in
+  // this production whole-project bundle — but is still resolvable by
+  // `collectImportedOwnPackages`/`cli_test.l`'s `libPkgs`, both of which scan
+  // `proj.packages` directly rather than this filtered `pkgs` list, so a
+  // shared test-only fixture stays importable from `[project.tests]`/a
+  // manifest-local single-file build without ever reaching this bundle.
   val pkgs: List[ProjectPackage] = newList()
   var hadFatal = false
   var pi = 0
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
-    match readProjectPackageSources(pkgEntry, mfDir, mfPath) {
-      case Some(pkgRead) -> {
-        if pkgRead.sources.count > 0 {
-          pkgs.add(ProjectPackage(name = pkgEntry.name, sources = pkgRead.sources, paths = pkgRead.paths))
+    if not pkgEntry.testOnly {
+      match readProjectPackageSources(pkgEntry, mfDir, mfPath) {
+        case Some(pkgRead) -> {
+          if pkgRead.sources.count > 0 {
+            pkgs.add(ProjectPackage(name = pkgEntry.name, sources = pkgRead.sources, paths = pkgRead.paths))
+          }
         }
-      }
-      case None -> {
-        hadFatal = true
+        case None -> {
+          hadFatal = true
+        }
       }
     }
     pi += 1
@@ -2529,13 +2728,11 @@ pub func buildProjectFromManifest(
   // implement — see its own doc comment) since native carries no
   // restored-DLL axis that record was designed for (defines and
   // `[features]`/`@cfg` gating ARE threaded through, via `projReq.defines`/
-  // `activeFeatures`/`mfDeclared` below — #6818). Only the manifest's own
-  // `[native]` table configures triple/opt-level/extra libs here;
-  // `--triple`/`--opt` CLI-flag threading into project-mode native builds
-  // is a documented follow-up (see the decision log) — this function's
-  // signature has no such parameters today and widening it would also
-  // require widening the `BuildProj` watch-loop union in cli_run.l, which
-  // is out of scope for the #6809 slice.
+  // `activeFeatures`/`mfDeclared` below — #6818). `nativeTriple`/`nativeOpt`
+  // (non-empty) override the manifest's own `[native]` table triple/opt_level,
+  // matching `buildOneNativeWithFeatures`'s single-file precedence rule
+  // (#6815 item 2) — `extra_libs` stays manifest-only, same as the
+  // single-file path.
   var isNativeTarget = false
   match target {
     case Native -> {
@@ -2543,14 +2740,18 @@ pub func buildProjectFromManifest(
     }
     case _ -> ()
   }
-  var effTriple = ""
-  var effOpt = ""
+  var effTriple = nativeTriple
+  var effOpt = nativeOpt
   val effLibs: List[String] = newList()
   if isNativeTarget {
     match manifest.native {
       case Some(nc) -> {
-        effTriple = nc.triple
-        effOpt = nc.optLevel
+        if effTriple == "" {
+          effTriple = nc.triple
+        }
+        if effOpt == "" {
+          effOpt = nc.optLevel
+        }
         for lib in nc.extraLibs {
           effLibs.add(lib)
         }

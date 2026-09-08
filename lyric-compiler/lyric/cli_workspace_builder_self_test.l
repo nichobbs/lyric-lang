@@ -722,3 +722,119 @@ test "buildOne: --target jvm single-file import of a never-built workspace membe
   )
   assertTrue(File.fileExists(outJar), "buildOne: the Jvm build produced an output artifact")
 }
+
+// ─── #5611 part 1: checkDllIsStale detects a --features/--target change ──────
+// mtime alone cannot see that a cached dependency DLL was built under a
+// DIFFERENT `--features` selection or `--target`: nothing on disk under the
+// dependency's own source tree changes when the CONSUMER's invocation asks
+// for different features, so the old mtime-only check silently reused the
+// wrong build. `checkDllIsStale` now also compares a sidecar feature stamp
+// (`writeFeatureStamp`/`featureStampPath`, `<dll>.featurestamp`) written
+// after every successful workspace-dep build.
+func setupStaleFixture(label: in String): (String, String, String, String) {
+  val root = freshTempDir(label)
+  val mfPath = Path.join(root, "lyric.toml")
+  writeFileOrPanic(mfPath, "[package]\nname = \"App\"\nversion = \"0.1.0\"\n")
+  val srcDir = Path.join(root, "src")
+  match File.createDir(srcDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create src dir: " + IOError.message(e))
+  }
+  writeFileOrPanic(Path.join(srcDir, "a.l"), "package App\n")
+  // Written last, so it is >= the manifest/source mtimes (`fileStatIsNewer`
+  // is a strict `>`, so equal timestamps still count as fresh) — isolates
+  // the assertions below to the FEATURE-STAMP half of staleness, not mtime.
+  val binDir = Path.join(root, "bin")
+  match File.createDir(binDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create bin dir: " + IOError.message(e))
+  }
+  val dllPath = Path.join(binDir, "App.dll")
+  writeFileOrPanic(dllPath, "not a real DLL; checkDllIsStale never opens it");
+  (root, mfPath, srcDir, dllPath)
+}
+
+test "checkDllIsStale: an existing DLL with no feature stamp is stale even though mtimes are fresh (#5611)" {
+  val (root, mfPath, srcDir, dllPath) = setupStaleFixture("stale-no-stamp")
+  defer {
+    cleanup(root)
+  }
+  val noFeatures: List[String] = newList()
+  assertTrue(
+    Cli.checkDllIsStale(dllPath, mfPath, srcDir, noFeatures, false, Emitter.Dotnet),
+    "no feature stamp at all must be treated as stale, not silently trusted"
+  )
+}
+
+test "checkDllIsStale: a matching feature stamp with fresh mtimes is NOT stale" {
+  val (root, mfPath, srcDir, dllPath) = setupStaleFixture("stale-matching-stamp")
+  defer {
+    cleanup(root)
+  }
+  val noFeatures: List[String] = newList()
+  Cli.writeFeatureStamp(dllPath, noFeatures, false, Emitter.Dotnet)
+  assertFalse(
+    Cli.checkDllIsStale(dllPath, mfPath, srcDir, noFeatures, false, Emitter.Dotnet),
+    "identical (features, target) and fresh mtimes must resolve to NOT stale"
+  )
+}
+
+test "checkDllIsStale: a different --features selection invalidates the cache even though nothing on disk changed (#5611)" {
+  val (root, mfPath, srcDir, dllPath) = setupStaleFixture("stale-diff-features")
+  defer {
+    cleanup(root)
+  }
+  val builtWith: List[String] = newList()
+  builtWith.add("a")
+  Cli.writeFeatureStamp(dllPath, builtWith, false, Emitter.Dotnet)
+  val queriedWith: List[String] = newList()
+  queriedWith.add("b")
+  assertTrue(
+    Cli.checkDllIsStale(dllPath, mfPath, srcDir, queriedWith, false, Emitter.Dotnet),
+    "a DLL built with --features a must not be silently reused for --features b"
+  )
+}
+
+test "checkDllIsStale: --features order does not matter (the stamp comparison is order-independent)" {
+  val (root, mfPath, srcDir, dllPath) = setupStaleFixture("stale-feature-order")
+  defer {
+    cleanup(root)
+  }
+  val builtWith: List[String] = newList()
+  builtWith.add("a")
+  builtWith.add("b")
+  Cli.writeFeatureStamp(dllPath, builtWith, false, Emitter.Dotnet)
+  val queriedReordered: List[String] = newList()
+  queriedReordered.add("b")
+  queriedReordered.add("a")
+  assertFalse(
+    Cli.checkDllIsStale(dllPath, mfPath, srcDir, queriedReordered, false, Emitter.Dotnet),
+    "--features b,a must match a stamp written for --features a,b"
+  )
+}
+
+test "checkDllIsStale: --no-default-features changes the stamp key too" {
+  val (root, mfPath, srcDir, dllPath) = setupStaleFixture("stale-no-default-features")
+  defer {
+    cleanup(root)
+  }
+  val noFeatures: List[String] = newList()
+  Cli.writeFeatureStamp(dllPath, noFeatures, false, Emitter.Dotnet)
+  assertTrue(
+    Cli.checkDllIsStale(dllPath, mfPath, srcDir, noFeatures, true, Emitter.Dotnet),
+    "the stamp must distinguish --no-default-features from the default"
+  )
+}
+
+test "checkDllIsStale: a different --target invalidates the cache" {
+  val (root, mfPath, srcDir, dllPath) = setupStaleFixture("stale-diff-target")
+  defer {
+    cleanup(root)
+  }
+  val noFeatures: List[String] = newList()
+  Cli.writeFeatureStamp(dllPath, noFeatures, false, Emitter.Dotnet)
+  assertTrue(
+    Cli.checkDllIsStale(dllPath, mfPath, srcDir, noFeatures, false, Emitter.Jvm),
+    "a DLL stamped for --target dotnet must not be silently reused for --target jvm"
+  )
+}

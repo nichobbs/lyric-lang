@@ -680,6 +680,9 @@ output_assembly = "myapp.dll"
 [project.packages]
 "myapp.Core" = "src/core"
 "myapp.Web"  = "src/web"
+"myapp.TestFixtures" = { path = "src/test_fixtures", test_only = true }
+                                    # importable by [project.tests]/lyric test,
+                                    # excluded from the production bundle (#6579)
 ```
 
 ---
@@ -869,14 +872,20 @@ lyric build <file.l>                   # compile to .dll + .runtimeconfig.json
 lyric build --force <file.l>           # rebuild unconditionally (bypass incremental check)
                                        # PROFILE axis (optimization + debug symbols):
 lyric build --debug <file.l>           # unoptimized, debug info retained (the default)
-lyric build --release <file.l>         # optimized, debug info stripped (NOT YET: the profile does
-                                       # not reach codegen yet -- no optimization, no overflow-check
-                                       # or contract-elision change. See #6263)
+lyric build --release <file.l>         # optimized, debug info stripped. On --target native, the
+                                       # clang -O level now defaults from this axis (2 vs. 0, #6263
+                                       # partial); dotnet/jvm still perform no optimization, and
+                                       # overflow-check/contract-elision semantics stay undecided
+                                       # on every target (#6263 remains open for those two pieces).
                                        # NOTE: --release no longer implies AOT. Pass --aot too.
                                        # SHAPE axis (packaging), independent of profile and target:
 lyric build --shape portable <file.l>  # framework-dependent (default)
 lyric build --shape standalone <file.l>  # bundles a runtime (not implemented — F0044, #6262)
 lyric build --shape aot <file.l>       # native binary; --aot is sugar for this
+                                       # a manifest's own [build] shape = "portable"/"standalone" on
+                                       # --target native raises F0043 too (#6268) -- not silently
+                                       # upgraded to aot; only an UNDECLARED manifest shape defaults
+                                       # to aot on that target.
 lyric build --release --aot <file.l>   # single-file: self-contained Native AOT binary
 lyric build --release --aot            # project-mode: entry package auto-detected (func main())
 lyric build --release --aot --manifest lyric.toml  # explicit project manifest
@@ -901,9 +910,11 @@ lyric build --target jvm <file.l>      # writes a runnable foo.jar (NO runtimeco
                                        # `package` declaration; runs under `java -jar foo.jar`)
 lyric build --target native <file.l>   # writes a self-contained POSIX executable (no extension)
                                        # via the LLVM backend + clang; --triple cross-compiles,
-                                       # --opt 0|1|2|3|s sets the clang -O level (default 2).
-                                       # triple/opt default from the manifest [native] table
-                                       # (CLI flags override); [native].extra_libs adds -l<name>.
+                                       # --opt 0|1|2|3|s sets the clang -O level. triple/opt default
+                                       # from the manifest [native] table (CLI flags override); with
+                                       # neither, -O level now defaults from the PROFILE axis (#6263):
+                                       # 2 under --release, 0 under the default --debug profile.
+                                       # [native].extra_libs adds -l<name>.
                                        # ARC-managed (no GC; cycles need NativeWeak[T]). Surface:
                                        # scalars/strings, records, opaque types (share record
                                        # codegen — construction/field access/ARC release),
@@ -943,10 +954,14 @@ lyric build --manifest lyric.toml      # build from project manifest
                                        # --target native (N9.7, #6809) compiles a project's own
                                        # [project.packages] from source too, reordering units so
                                        # whichever package declares main drives C-main synthesis
-                                       # regardless of manifest order; cross-project [dependencies]
-                                       # are NOT resolved for native (no restored-binary concept —
-                                       # #6815), and --triple/--opt/lyric run/lyric test manifest
-                                       # modes stay single-file-only for native (#6815).
+                                       # regardless of manifest order; --triple/--opt override the
+                                       # manifest [native] table here too (#6815 item 2). A
+                                       # workspace/path dependency is skipped (not built) for
+                                       # --target native rather than crashing (#6815 item 1a) — its
+                                       # own SOURCE is still not compiled into the native bundle
+                                       # (no restored-binary concept, item 1b remains open). `lyric
+                                       # run --manifest --target native` works (item 3a); `lyric
+                                       # test`'s manifest mode stays native-unsupported (item 3b).
 lyric build <file.l>                   # single-file mode also resolves dependencies from a nearby
                                        # lyric.toml (--target dotnet/jvm): explicit --manifest wins,
                                        # else discovered by walking up from <file.l>'s OWN directory

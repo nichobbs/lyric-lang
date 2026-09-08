@@ -271,7 +271,11 @@ func testRegistrySection(): Unit {
     case None -> assertTrue(false, "registry: expected Some")
     case Some(rc) -> {
       match rc.dotnet {
-        case Some(url) -> assertEqual(url, "https://pkgs.dev.azure.com/my-org/_packaging/my-feed/nuget/v3/index.json", "registry: dotnet url")
+        case Some(url) -> assertEqual(
+          url,
+          "https://pkgs.dev.azure.com/my-org/_packaging/my-feed/nuget/v3/index.json",
+          "registry: dotnet url"
+        )
         case None -> assertTrue(false, "registry: expected dotnet url")
       }
     }
@@ -578,6 +582,12 @@ func testBuildAxesDefaults(): Unit {
       assertEqual(b.kind, "lib", "build-axes-defaults: kind defaults to lib")
       assertEqual(b.shape, "portable", "build-axes-defaults: shape defaults to portable")
       assertEqual(b.profile, "debug", "build-axes-defaults: profile defaults to debug")
+      // #6268: a `[build.define]`-only manifest declares neither axis, so both
+      // `*Declared` bits are false even though `shape`/`profile` carry their
+      // default strings — distinguishing "declared portable" from "said
+      // nothing" is the whole point of these two fields.
+      assertFalse(b.shapeDeclared, "build-axes-defaults: shape was never declared")
+      assertFalse(b.profileDeclared, "build-axes-defaults: profile was never declared")
     }
   }
 }
@@ -592,6 +602,8 @@ func testBuildAxesExplicit(): Unit {
       assertEqual(b.kind, "exe", "build-axes-explicit: kind")
       assertEqual(b.shape, "aot", "build-axes-explicit: shape")
       assertEqual(b.profile, "release", "build-axes-explicit: profile")
+      assertTrue(b.shapeDeclared, "build-axes-explicit: shape was declared")
+      assertTrue(b.profileDeclared, "build-axes-explicit: profile was declared")
     }
   }
 }
@@ -607,6 +619,26 @@ func testBuildShapeOnly(): Unit {
       assertEqual(b.kind, "lib", "build-shape-only: kind still defaults")
       assertEqual(b.shape, "standalone", "build-shape-only: shape set")
       assertEqual(b.profile, "debug", "build-shape-only: profile still defaults")
+      // #6268: the two `*Declared` bits are independent of each other, just
+      // like the two axes they describe.
+      assertTrue(b.shapeDeclared, "build-shape-only: shape was declared")
+      assertFalse(b.profileDeclared, "build-shape-only: profile was never declared")
+    }
+  }
+}
+
+// Symmetric to `testBuildShapeOnly`: declaring only `profile` leaves
+// `shapeDeclared` false (#6268).
+func testBuildProfileOnlyDeclared(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[build]\nprofile = \"release\"\n"
+  val m = parseOk(toml)
+  match m.build {
+    case None -> assertTrue(false, "build-profile-only: expected Some(BuildSection)")
+    case Some(b) -> {
+      assertEqual(b.shape, "portable", "build-profile-only: shape still defaults")
+      assertEqual(b.profile, "release", "build-profile-only: profile set")
+      assertFalse(b.shapeDeclared, "build-profile-only: shape was never declared")
+      assertTrue(b.profileDeclared, "build-profile-only: profile was declared")
     }
   }
 }
@@ -695,6 +727,38 @@ func testProjectMultiFilePkg(): Unit {
       assertEqualInt(p.packages[1].paths.count, 2, "multi-file pkg: pkg[1].paths count")
       assertEqual(p.packages[1].paths[0], "src/lambda.l", "multi-file pkg: pkg[1].paths[0]")
       assertEqual(p.packages[1].paths[1], "src/lambda_web.l", "multi-file pkg: pkg[1].paths[1]")
+    }
+  }
+}
+
+// #6579: `{ path = "...", test_only = true }` inline-table form.
+func testProjectTestOnlyPackage(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[project]\nname = \"MyApp\"\n\n[project.packages]\nCore = \"src/core.l\"\nFixture = { path = \"src/fixture.l\", test_only = true }\n"
+  val m = parseOk(toml)
+  match m.project {
+    case None -> assertTrue(false, "test-only pkg: expected Some project")
+    case Some(p) -> {
+      assertEqualInt(p.packages.count, 2, "test-only pkg: packages count")
+      assertEqual(p.packages[0].name, "Core", "test-only pkg: pkg[0].name")
+      assertFalse(p.packages[0].testOnly, "test-only pkg: a bare-string entry is never test_only")
+      assertEqual(p.packages[1].name, "Fixture", "test-only pkg: pkg[1].name")
+      assertEqual(p.packages[1].path, "src/fixture.l", "test-only pkg: pkg[1].path from the inline table")
+      assertTrue(p.packages[1].testOnly, "test-only pkg: pkg[1].testOnly is true")
+    }
+  }
+}
+
+// An inline-table entry with no `test_only` key defaults to false — the
+// table FORM alone doesn't imply test-only-ness, only the explicit key does.
+func testProjectTableFormWithoutTestOnly(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[project]\nname = \"MyApp\"\n\n[project.packages]\nCore = { path = \"src/core.l\" }\n"
+  val m = parseOk(toml)
+  match m.project {
+    case None -> assertTrue(false, "table-form-no-test-only: expected Some project")
+    case Some(p) -> {
+      assertEqualInt(p.packages.count, 1, "table-form-no-test-only: packages count")
+      assertEqual(p.packages[0].path, "src/core.l", "table-form-no-test-only: path from the inline table")
+      assertFalse(p.packages[0].testOnly, "table-form-no-test-only: defaults to false when the key is absent")
     }
   }
 }
@@ -948,6 +1012,10 @@ test "[build] shape alone leaves kind and profile at defaults" {
   testBuildShapeOnly()
 }
 
+test "[build] profile alone leaves shapeDeclared false (#6268)" {
+  testBuildProfileOnlyDeclared()
+}
+
 test "[build] kind = aot is a hard F0042 error (docs/63 clean break)" {
   testBuildKindAotRejected()
 }
@@ -974,6 +1042,14 @@ test "project section" {
 
 test "project multi-file package (VStrList)" {
   testProjectMultiFilePkg()
+}
+
+test "project [project.packages] test_only inline-table form (#6579)" {
+  testProjectTestOnlyPackage()
+}
+
+test "project [project.packages] table form without test_only defaults to false" {
+  testProjectTableFormWithoutTestOnly()
 }
 
 test "features section" {

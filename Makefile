@@ -74,8 +74,19 @@ help: ## Show this help
 STAGE1_SRCS := $(shell find lyric-compiler lyric-stdlib -name '*.l') scripts/bootstrap.sh
 
 stage1: ## Build the full self-hosted compiler + CLI bundle (.bootstrap/stage1)
+	@mkdir -p .bootstrap
+	@touch .bootstrap/stage1.stamp.start
 	./scripts/bootstrap.sh --stage 1
-	@touch .bootstrap/stage1.stamp
+	@# #5611 part 2: stamp with the BUILD-START time (`touch -r`), not "now" at
+	@# completion. A `.l` source edited WHILE this build was running has an
+	@# mtime after start but before completion; stamping at completion would
+	@# make that edit look older than the stamp (falsely "already compiled")
+	@# even though this run's `bootstrap.sh` invocation read the file before
+	@# the edit landed. Stamping at start means any such edit is correctly
+	@# newer than the stamp, so the next `make lyric`/`make aot` rebuilds
+	@# instead of silently embedding stale DLLs.
+	@touch -r .bootstrap/stage1.stamp.start .bootstrap/stage1.stamp
+	@rm -f .bootstrap/stage1.stamp.start
 
 stage1-fast: ## Stage 1 without the CLI bundle -- fastest loop for one package; leaves ./bin/lyric on the OLD compiler (#6331, see WARNING above)
 	SKIP_CLI_BUNDLE=1 ./scripts/bootstrap.sh --stage 1
@@ -112,11 +123,6 @@ check-lyric-stale: ## Warn if .bootstrap/stage1 DLLs are newer than ./bin/lyric 
 # The recipe keeps --no-incremental on purpose: the AOT trampoline embeds the
 # stage-1 DLLs, so a clean C# build is required whenever stage 1 has changed.
 aot: .bootstrap/stage1.stamp ## Build the AOT entry-point project (builds stage 1 first when stale)
-	@# ECMA-335 §II.22.23: seed binary may emit an unsorted InterfaceImpl table;
-	@# patch the full-bundle DLL so MSBuild copies it to the AOT output directory.
-	@if [ -f .bootstrap/stage1/Lyric.Stdlib.dll ]; then \
-	    python3 scripts/patch_interface_impl.py .bootstrap/stage1/Lyric.Stdlib.dll; \
-	fi
 	dotnet build bootstrap/src/Lyric.Cli.Aot --configuration $(BUILD_CONFIG) --no-incremental
 
 .bootstrap/stage1.stamp: $(STAGE1_SRCS)
