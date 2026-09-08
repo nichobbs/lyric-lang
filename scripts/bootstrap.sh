@@ -102,17 +102,32 @@ ok() { echo "[bootstrap] OK: $*"; }
 # Download and extract self-hosted binary from latest release
 # ---------------------------------------------------------------------------
 try_bootstrap_from_release() {
-  # Check if binary already exists (skip download if it does). A cache hit
-  # requires lib/ too — a binary with no lib/ can't locate Lyric.Stdlib at
-  # runtime, so a partial/stale cache from an interrupted extraction must
-  # not short-circuit here; clear it and fall through to a fresh download.
+  # Check if binary already exists (skip download if it does). What counts
+  # as a complete cache depends on the requested acquisition method (#7043):
+  # the native-download layout needs lib/ (a binary with no lib/ can't locate
+  # Lyric.Stdlib at runtime); the dotnet-tool layout needs .store/ instead (it
+  # has no lib/ at all -- see stage0()'s STAGE0_VIA_DOTNET_TOOL branch). A
+  # cache in the OTHER method's shape is treated as stale too, not reused --
+  # otherwise a rerun that flips LYRIC_BOOTSTRAP_USE_DOTNET_TOOL would either
+  # silently keep an incompatible native binary or never benefit from tool-
+  # path caching at all.
   mkdir -p "$BUILD_DIR/stage0-publish"
-  if { [[ -f "$BUILD_DIR/stage0-publish/lyric" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.exe" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; } \
-      && [[ -d "$BUILD_DIR/stage0-publish/lib" ]]; then
+  local want_dotnet_tool=0
+  [[ "${LYRIC_BOOTSTRAP_USE_DOTNET_TOOL:-0}" == "1" ]] && want_dotnet_tool=1
+  local have_bin=0
+  { [[ -f "$BUILD_DIR/stage0-publish/lyric" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.exe" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; } && have_bin=1
+  local cache_complete=0
+  if [[ "$want_dotnet_tool" == "1" ]]; then
+    [[ "$have_bin" == "1" ]] && [[ -d "$BUILD_DIR/stage0-publish/.store" ]] && cache_complete=1
+  else
+    [[ "$have_bin" == "1" ]] && [[ -d "$BUILD_DIR/stage0-publish/lib" ]] && cache_complete=1
+  fi
+  if [[ "$cache_complete" == "1" ]]; then
     info "  Using cached stage0-publish binary (skipping download)"
+    STAGE0_VIA_DOTNET_TOOL="$want_dotnet_tool"
     return 0
-  elif [[ -f "$BUILD_DIR/stage0-publish/lyric" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.exe" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; then
-    info "  Cached stage0-publish binary found but lib/ is missing (stale/partial cache); clearing and re-downloading"
+  elif [[ "$have_bin" == "1" ]]; then
+    info "  Cached stage0-publish binary found but incomplete or acquired via a different method (stale/partial cache); clearing and re-acquiring"
     rm -rf "${BUILD_DIR:?}/stage0-publish"
     mkdir -p "$BUILD_DIR/stage0-publish"
   fi
@@ -434,11 +449,22 @@ stage0() {
       cp "$BUILD_DIR/stage0-publish/lyric" "$STAGE0_BIN"
     fi
   elif [[ -f "$BUILD_DIR/stage0-publish/lyric" ]]; then
-    # Unix native executable
+    # Unix native executable, OR (#7043) the dotnet-tool apphost shim. Either
+    # way this copy is purely for the "Stage 0 complete" report below --
+    # invoke_stage0 (stage1()) always runs the binary from
+    # $STAGE0_PUBLISH_DIR directly, never from $STAGE0_BIN, so a tool-path
+    # shim copied here without its .store/ sibling (not copied: it's
+    # per-invocation scratch, not part of the stable STAGE0_BIN identity)
+    # can't run standalone from $STAGE0_BIN -- harmless, since nothing tries.
     mkdir -p "$(dirname "$STAGE0_BIN")"
     cp "$BUILD_DIR/stage0-publish/lyric" "$STAGE0_BIN"
-    # Copy runtime config if present (needed for self-contained apps)
-    if [[ -f "$BUILD_DIR/stage0-publish/lyric.runtimeconfig.json" ]]; then
+    # Copy runtime config if present (needed for self-contained apps). The
+    # dotnet-tool path (#7043) never has a top-level runtimeconfig.json --
+    # it lives inside .store/ instead -- so skip the check entirely there
+    # rather than logging a WARNING for expected behavior.
+    if [[ "$STAGE0_VIA_DOTNET_TOOL" == "1" ]]; then
+      :
+    elif [[ -f "$BUILD_DIR/stage0-publish/lyric.runtimeconfig.json" ]]; then
       cp "$BUILD_DIR/stage0-publish/lyric.runtimeconfig.json" "$STAGE0_BIN.runtimeconfig.json"
       info "  copied runtimeconfig.json"
     else
@@ -483,7 +509,12 @@ stage0() {
   # Verify the binary exists in one of its expected forms and runtimeconfig.json if needed
   if [[ -f "$STAGE0_BIN" ]]; then
     info "Stage 0 binary: $(ls -lh "$STAGE0_BIN")"
-    if [[ -f "$STAGE0_BIN.runtimeconfig.json" ]]; then
+    # The dotnet-tool path (#7043) never has a top-level runtimeconfig.json
+    # next to the shim -- it lives inside .store/ instead -- so this is
+    # expected, not a warning-worthy gap.
+    if [[ "$STAGE0_VIA_DOTNET_TOOL" == "1" ]]; then
+      :
+    elif [[ -f "$STAGE0_BIN.runtimeconfig.json" ]]; then
       info "  with runtimeconfig.json: $(ls -lh "$STAGE0_BIN.runtimeconfig.json")"
     else
       info "  WARNING: runtimeconfig.json NOT found at $STAGE0_BIN.runtimeconfig.json"
