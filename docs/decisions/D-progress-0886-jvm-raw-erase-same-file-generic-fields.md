@@ -101,6 +101,16 @@ own nested-unresolved-type-parameter cases, #6742), `method_scrutinee_jvm_self_t
 `projectable_jvm_self_test.l`, `silent_miscompile_guard_jvm_self_test.l`, and
 `iface_dispatch_jvm_self_test.l`.
 
-#4870 is now closed on both targets (MSIL: D-progress-736 / #6388; JVM: this
-entry). See `docs/43-in-bundle-generics-plan.md` (status header) and
+#4870 itself (a union/record case field typed as another same-file generic
+instantiation) is now closed on both targets (MSIL: D-progress-736 / #6388;
+JVM: this entry). See `docs/43-in-bundle-generics-plan.md` (status header) and
 `docs/44-jvm-production-readiness-plan.md` (M-1) for the per-target write-ups.
+
+**Scope note — generic opaque-type fields are NOT covered.** The identical
+erasure gap exists for a generic `opaque type` whose field is typed as another
+same-file generic instantiation: `collectFileCasesExtern`'s and
+`codegenPackageWithSigsSeeded`'s `IOpaque` arms (`jvm/codegen/06_items.l`
+~4349, ~6125) still call the un-suffixed `typeExprToJvmErasedExtern` rather
+than the new `typeExprToJvmErasedExternL`, so such a field still erases to
+`Object`. Out of scope for #4870 (which is specifically about union/record
+case fields) and left unfixed here; tracked as #7055.
