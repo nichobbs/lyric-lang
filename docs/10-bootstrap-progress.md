@@ -33863,3 +33863,22 @@ closed. **JVM unaffected** — JVM generics are erased at the bytecode level
 so this bug class cannot occur there; no JVM-side change needed or made.
 
 **Related:** `docs/decisions/D-progress-0887-msil-restored-func-closure-param-types.md` (full account), #3273.
+
+## Native: destructor/closure/trampoline/vtable function-pointer bitcasts no longer double-wrap `NPtr` (ported from #7048, #7030)
+
+Five call sites in `Lyric.LlvmCodegen` (`emitHeapAlloc`, `lowerLambda`,
+`trampolineFor`, `lowerClosureCall`, `lowerIfaceDispatch`) bitcast a defined
+function symbol to/from `NFnPtr(params, ret)` wrapped in an extra, spurious
+`NPtr(pointee = ...)` — `NFnPtr` already denotes the pointer-to-function
+type in this codebase's IR model, so the wrapper produced IR real `clang`
+rejects (`'@T.User.dtor' defined with type 'void (i8*)*' but expected
+'void (i8*)**'`), failing every record/union/tuple/generic ARC destructor,
+closure, and interface-dispatch case in `llvm_heap_self_test.l` (22 of 37).
+Base-branch-wide, unrelated to this PR's own MSIL-restored-closure fix
+above — unmasked once `native-backend-self-tests` started reaching this
+suite for real after the ARM64 self-hosted-runner CI infra fix (#7041)
+landed. Ported the five-line fix from an already-open, not-yet-merged
+sibling PR (#7048) directly onto this branch to unblock CI rather than
+waiting on it to merge separately.
+
+**Related:** `docs/decisions/D-progress-0888-port-native-fnptr-double-indirection-fix.md` (full account, including the sandbox limitation that prevented independent local re-verification), issue #7030, PR #7048.
