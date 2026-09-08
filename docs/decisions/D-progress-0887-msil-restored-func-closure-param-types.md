@@ -61,22 +61,49 @@ mirrors `addPackageTokens`' function-typed-parameter registration: for each
 of a restored function's params whose declared type is `TFunction(...)`, it
 records `cctx.funcParamFnInner`/`cctx.funcParamFnRetType` under both the
 arity-qualified and bare `fqn + "#" + paramIdx` keys — identical to the
-in-bundle logic, including the `@externTarget`-vs-plain branch (a restored
-FFI-bridging function's delegate parameter still resolves through
-`resolveValueTaskGenericMsilType` first). Restored generic functions are
-already excluded earlier in `registerRestoredFunc` (return before this
-point), matching `addPackageTokens`' own `declGenerics.count == 0` gate, so
-no additional guard was needed.
+in-bundle logic. Restored generic functions are already excluded earlier in
+`registerRestoredFunc` (return before this point), matching
+`addPackageTokens`' own `declGenerics.count == 0` gate, so no additional
+guard was needed.
 
-**Scope note (not fixed here, flagged for follow-up).** The identical gap
-exists in `registerRestoredRecordMethod`/`registerRestoredIfaceMethod` (a
-closure literal passed to a restored RECORD METHOD's or INTERFACE METHOD's
-function-typed parameter) — neither populates
-`funcParamFnInner`/`funcParamFnRetType` either. #3273's own repro is a bare
-top-level function, so fixing `registerRestoredFunc` alone closes this
-entry's scope; the record/interface-method variants are a distinct,
-unreported shape left as a tracked follow-up rather than folded in
-speculatively — filed as #7006.
+**Correction (review, #7063):** an earlier revision of this entry claimed
+the fix also mirrors addPackageTokens' `@externTarget`-vs-plain branch (a
+restored FFI-bridging function's delegate parameter resolving through
+`resolveValueTaskGenericMsilType`). That claim was wrong. A restored
+function's `fn` is reconstructed from contract metadata
+(`Lyric.ContractMeta.reprForFunc` → `Lyric.RestoredPackages.renderDecl`),
+which never round-trips annotations — `reprForFunc` renders only
+`pub [async ]func name(params): ret`, with no `@externTarget(...)` text —
+so `fn.annotations` is always empty for a restored function and
+`hasExternTargetMsil(fn.annotations)` can never be true. The `@externTarget`
+branch this entry originally added was therefore dead code; it has been
+removed, and `registerRestoredFunc` now always takes the plain
+declared-return-type path (the only path that was ever reachable). See
+"Scope note" below for the tracked gap this leaves.
+
+**Scope note (not fixed here, flagged for follow-up).** Two gaps, both left
+unfixed and tracked rather than folded in speculatively:
+
+- The identical gap exists in
+  `registerRestoredRecordMethod`/`registerRestoredIfaceMethod` (a closure
+  literal passed to a restored RECORD METHOD's or INTERFACE METHOD's
+  function-typed parameter) — neither populates
+  `funcParamFnInner`/`funcParamFnRetType` either. #3273's own repro is a
+  bare top-level function, so fixing `registerRestoredFunc` alone closes
+  this entry's scope; the record/interface-method variants are a distinct,
+  unreported shape — filed as #7006.
+- A restored `pub @externTarget` function with a delegate-typed (function
+  parameter) shape has no way to signal its `@externTarget`-ness to
+  `registerRestoredFunc` today (see "Correction" above): such a function's
+  restored consumer would fall back to the boxed uniform
+  `Func<object,...,object>` ABI instead of a real closed .NET delegate,
+  reproducing the `InvalidProgramException`-class bug this delegate-bridging
+  machinery exists to prevent. No current stdlib kernel function has this
+  shape, so this is latent rather than actively triggered. Fixing it
+  properly needs a metadata-based signal (the restored DLL's own method
+  metadata, the same way `dllTaskReturningFuncs` already resolves asyncness
+  for restored functions above) rather than trusting the lossy contract-repr
+  round-trip — filed as #7063.
 
 **A second, unrelated gap found and deliberately NOT fixed here.** While
 building this entry's regression test, a THIRD closure shape was tried: a
@@ -126,4 +153,5 @@ remainder of item 4), D-progress-738/747 (#5362/#5366, item 5), #6511 (the
 mechanism this entry extends to restored functions), #7006 (the
 record/interface-method scope gap noted above, tracked not fixed), #6877
 (the unrelated val-bound-closure gap found while building this entry's
-test), docs/44, docs/45.
+test), #7063 (the dead `@externTarget` branch this entry originally
+mis-claimed as reachable; corrected above), docs/44, docs/45.

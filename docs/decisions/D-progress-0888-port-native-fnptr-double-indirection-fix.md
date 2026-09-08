@@ -24,9 +24,9 @@ wrapper), serving as the counter-example that confirmed the bug.
 ...)` at all five sites so each bitcast's declared type exactly matches
 the value's real LLVM type. Byte-identical to #7048's fix commit,
 applied directly to this branch rather than waiting on #7048 to merge
-(same "port now, no-op on rebase later" approach already used for
-D-progress-886/887/891's earlier BMod-port disclosures on these sibling
-branches).
+(same "port now, no-op on rebase later" approach already used on the
+three sibling `group:compiler-mono-codegen` branches — #6882, #6902,
+#6921 — for this exact same disclosure).
 
 **Verification.** #7048's own author reports `llvm_heap_self_test.l`
 37/37 (was 15/37), plus no regressions on `llvm_ir_self_test.l` (14/14),

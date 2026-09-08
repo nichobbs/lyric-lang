@@ -35087,7 +35087,6 @@ func registerRestoredFunc(
   if cctx.funcTokens.containsKey(fqn) {
     return
   }
-  val isExternTargetFn = hasExternTargetMsil(fn.annotations)
 
   val asmRefRow = ensureAssemblyRefForArtifact(cctx, packageName)
   val hostRefRow = ensureHostClassTypeRefRow(cctx, packageName, asmRefRow)
@@ -35164,10 +35163,16 @@ func registerRestoredFunc(
   // `Ok(v)` closure body returning `Result[T, E]`) silently erases that slot
   // to `object` — a mismatched TypeSpec instantiation that a later `match`
   // inside the restored library rejects as "match not exhaustive" (or
-  // dispatches to the wrong arm). Scoped exactly like addPackageTokens: a
-  // non-generic restored function's `@externTarget`-ness decides whether the
-  // FFI delegate-bridging real-return-type resolution applies; every other
-  // TFunction param records the plain declared return type.
+  // dispatches to the wrong arm). Unlike addPackageTokens, a restored
+  // function's `@externTarget`-ness is NOT resolvable here: the contract
+  // metadata that reconstructs `fn` (`Lyric.ContractMeta.reprForFunc` /
+  // `Lyric.RestoredPackages.renderDecl`) never round-trips annotations, so
+  // `fn.annotations` is always empty and `hasExternTargetMsil` can never
+  // return true for a restored function. Every TFunction param therefore
+  // always takes the plain declared-return-type path below (never the FFI
+  // delegate-bridging `resolveValueTaskGenericMsilType` resolution
+  // addPackageTokens applies for a same-package `@externTarget` function) —
+  // tracked as a known gap, #7063.
   val arityKey = fqn + "/" + toString(fn.params.count)
   var rpfi = 0
   while rpfi < fn.params.count {
@@ -35187,31 +35192,12 @@ func registerRestoredFunc(
         if not cctx.funcParamFnInner.containsKey(rfKey) {
           cctx.funcParamFnInner.add(rfKey, rInner)
         }
-        if isExternTargetFn {
-          val rFnRetMsil = match resolveValueTaskGenericMsilType(cctx, rFnRetTe) {
-            case Some(rt) -> rt
-            case None -> typeExprToMsilCtx(cctx, rFnRetTe, packageName)
-          }
-          if not cctx.funcParamFnRetType.containsKey(raKey) {
-            cctx.funcParamFnRetType.add(raKey, rFnRetMsil)
-          }
-          if not cctx.funcParamFnRetType.containsKey(rfKey) {
-            cctx.funcParamFnRetType.add(rfKey, rFnRetMsil)
-          }
-          if not cctx.funcParamIsExternTargetDelegate.containsKey(raKey) {
-            cctx.funcParamIsExternTargetDelegate.add(raKey, true)
-          }
-          if not cctx.funcParamIsExternTargetDelegate.containsKey(rfKey) {
-            cctx.funcParamIsExternTargetDelegate.add(rfKey, true)
-          }
-        } else {
-          val rPlainFnRetMsil = typeExprToMsilCtx(cctx, rFnRetTe, packageName)
-          if not cctx.funcParamFnRetType.containsKey(raKey) {
-            cctx.funcParamFnRetType.add(raKey, rPlainFnRetMsil)
-          }
-          if not cctx.funcParamFnRetType.containsKey(rfKey) {
-            cctx.funcParamFnRetType.add(rfKey, rPlainFnRetMsil)
-          }
+        val rPlainFnRetMsil = typeExprToMsilCtx(cctx, rFnRetTe, packageName)
+        if not cctx.funcParamFnRetType.containsKey(raKey) {
+          cctx.funcParamFnRetType.add(raKey, rPlainFnRetMsil)
+        }
+        if not cctx.funcParamFnRetType.containsKey(rfKey) {
+          cctx.funcParamFnRetType.add(rfKey, rPlainFnRetMsil)
         }
       }
       case _ -> {
