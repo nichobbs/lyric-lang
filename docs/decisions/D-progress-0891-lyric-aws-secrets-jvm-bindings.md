@@ -1,4 +1,4 @@
-# D-progress-886 — lyric-aws-secrets: real JVM Secrets Manager/SSM bindings ship; the .NET `aws` async-FFI "blocker" is corrected (a real precedent exists) but stays NOT_IMPLEMENTED pending an API-shape decision (#5411)
+# D-progress-891 — lyric-aws-secrets: real JVM Secrets Manager/SSM bindings ship; the .NET `aws` async-FFI "blocker" is corrected (a real precedent exists) but stays NOT_IMPLEMENTED pending an API-shape decision (#5411)
 
 **Status:** shipped
 

@@ -1,4 +1,4 @@
-# D-progress-887 — Addendum to D-progress-543: published NuGet `lyric` 0.6.2's `lyric fmt --write` corrupted a space-character string literal to a NUL byte
+# D-progress-892 — Addendum to D-progress-543: published NuGet `lyric` 0.6.2's `lyric fmt --write` corrupted a space-character string literal to a NUL byte
 
 **Status:** shipped
 
@@ -8,7 +8,7 @@ without a from-source `./bin/lyric` build to fall back to the published NuGet
 `lyric fmt` output as untrustworthy (isolate a reformat run to code outside
 the actual diff). This addendum records a further divergence found while
 formatting `lyric-aws-secrets/src/_kernel/secrets_kernel_jvm.l` for #5411's
-PR (see D-progress-886) — worse than a style disagreement, this one is a
+PR (see D-progress-891) — worse than a style disagreement, this one is a
 **literal-content corruption**.
 
 **Finding.** `lyric fmt --write` (NuGet `lyric` 0.6.2, `dotnet tool install -g
@@ -38,6 +38,6 @@ investigation; noted here for the historical record per D-progress-543's own
 convention of tracking sandbox-tooling divergences.
 
 **Related:** D-progress-543 (the sandbox exception and verification-bar
-convention this addends), D-progress-886 (the PR this was found during),
+convention this addends), D-progress-891 (the PR this was found during),
 #5084/D-progress-596 (the analogous 0.4.14 stale-artifact precedent this
 addendum's resolution mirrors).
