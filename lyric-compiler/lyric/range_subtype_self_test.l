@@ -1,6 +1,9 @@
 //! range_subtype_self_test.l — executable regression test for distinct- and
 //! range-subtype construction in the **self-hosted** MSIL and JVM backends
-//! (#1501, JVM parity in #5956).
+//! (#1501, JVM parity in #5956). `UInt`/`ULong`-backed cases (#6756, moved
+//! here from the formerly JVM-only `range_subtype_unsigned_jvm_self_test.l`
+//! once MSIL gained a real `UInt`/`ULong` representation) run on both
+//! targets — see the `Population`/`BigId` section below.
 //!
 //! Why this lives here and not in `lyric-stdlib/tests/*_tests.l`: those
 //! `_tests.l` files are compiled and run by the **F# stage-0** emitter, which
@@ -325,12 +328,70 @@ test "Float-backed range subtype: from() constructs in-range and panics out-of-r
 // targets this file runs on. The JVM-only `.toFloat()` round-trip (the
 // #6661-followup gap where `jvmDistinctConvName` had no `JFloat` case at all,
 // so a constructed `Weight` could never be read back on JVM) lives in
-// `range_subtype_unsigned_jvm_self_test.l`.
-// `UInt`/`ULong`-backed range subtypes are JVM-ONLY today: MSIL's
-// `typeExprToMsilCtx` has no `UInt`/`ULong` arm at all (unlike `Float`,
-// which erases to `MDouble` there) — a `UInt`/`ULong`-backed distinct type
-// falls through to "user type in this package" on `--target dotnet` and
-// crashes the CLR loader ("invalid program"), so those cases live in the
-// JVM-only `range_subtype_unsigned_jvm_self_test.l` instead of here (this
-// file runs on BOTH targets). Extending MSIL is tracked separately —
-// out of scope for #6661, which is specifically about the JVM backend.
+// `range_subtype_float_jvm_self_test.l`.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// #6756 — `UInt`/`ULong`-backed range subtypes, moved here (dual-target) now
+// that MSIL has a real `UInt`/`ULong` representation. Before the fix,
+// `Msil.Codegen.typeExprToMsilCtx` had no `UInt`/`ULong` arm at all (unlike
+// `Float`, which already erased to `MDouble`), so a `UInt`/`ULong`-backed
+// distinct type fell through to "user type in this package" on
+// `--target dotnet` and crashed the CLR loader ("Common Language Runtime
+// detected an invalid program"). Fixed by erasing `UInt -> MInt` /
+// `ULong -> MLong` (the SAME 32-/64-bit slot a signed `Int`/`Long` uses,
+// mirroring the JVM backend's identical `UInt -> JInt`/`ULong -> JLong`
+// erasure, #6661/#6695) plus unsigned-aware (`clt.un`/`cgt.un`) bounds
+// checking in `emitDistinctBoundsToFail` — a plain SIGNED comparison
+// misreads any in-range value at or above 2^31 (`UInt`) as negative,
+// silently failing the bounds check for a legitimate value.
+// ─────────────────────────────────────────────────────────────────────────────
+type Population = UInt range 1000 ..= 4000000000
+
+func populationIsOk(r: in Result[Population, String]): Bool {
+  match r {
+    case Ok(_) -> true
+    case Err(_) -> false
+  }
+}
+
+test "UInt-backed range subtype: values with the sign bit set are still in range (#6756)" {
+  assertTrue(populationIsOk(Population.tryFrom(1000u32)), "1000 lower bound inclusive")
+  assertTrue(
+    populationIsOk(Population.tryFrom(2500000000u32)),
+    "2500000000 (>2^31, in range) must not read as negative"
+  )
+  assertTrue(populationIsOk(Population.tryFrom(4000000000u32)), "4000000000 upper bound inclusive (>2^31)")
+  assertFalse(populationIsOk(Population.tryFrom(999u32)), "999 below lower bound")
+  assertFalse(populationIsOk(Population.tryFrom(4000000001u32)), "4000000001 above upper bound (>2^31)")
+}
+
+func populationValue(r: in Result[Population, String]): Int {
+  match r {
+    case Ok(p) -> p.toInt()
+    case Err(_) -> -1
+  }
+}
+
+test "UInt-backed range subtype: toInt() projection round-trips for a small value (#6756)" {
+  assertEqualInt(populationValue(Population.tryFrom(5000u32)), 5000, "tryFrom(5000).toInt() round-trips")
+}
+
+// `ULong` (64-bit unsigned) — a bound exercising the sign bit would need to
+// exceed `Long.MAX_VALUE` (9223372036854775807), which the shared Int64-based
+// range-literal fold (`foldRangeBound`) cannot represent — same pre-existing
+// limitation the `Cents` case above lives with, orthogonal to #6756.
+type BigId = ULong range 0 ..= 9000000000000000000
+
+func bigIdIsOk(r: in Result[BigId, String]): Bool {
+  match r {
+    case Ok(_) -> true
+    case Err(_) -> false
+  }
+}
+
+test "ULong-backed range subtype: construction and bounds (#6756)" {
+  assertTrue(bigIdIsOk(BigId.tryFrom(0u64)), "0 lower bound inclusive")
+  assertTrue(bigIdIsOk(BigId.tryFrom(123456789012345u64)), "a large in-range value")
+  assertTrue(bigIdIsOk(BigId.tryFrom(9000000000000000000u64)), "9000000000000000000 upper bound inclusive")
+  assertEqualLong(BigId.from(42u64).toLong(), 42i64, "from(42).toLong() round-trips")
+}

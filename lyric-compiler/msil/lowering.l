@@ -1022,6 +1022,15 @@ pub record MDistinctType {
   minF: Double
   maxF: Double
   upperExclusive: Bool
+  // #6756: true when the DECLARED underlying type is `UInt`/`ULong` (which
+  // erase to the SAME `MInt`/`MLong` a signed `Int`/`Long` underlying type
+  // uses — `inner` alone can't distinguish them). The bounds check in
+  // `emitDistinctBoundsToFail` consults this to select `clt.un`/`cgt.un`
+  // over the plain signed `clt`/`cgt`, and to wrap `minI`/`maxI` to their
+  // 32-bit bit pattern (rather than `longToInt`, which would panic) when a
+  // `UInt` bound's magnitude exceeds Int32.MaxValue. Mirrors the JVM
+  // backend's identical `LDistinctType.isUnsigned` (#6661).
+  isUnsigned: Bool
 }
 
 pub record MRangeType {
@@ -2482,7 +2491,17 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MLdftn(tok) -> emitLdftn(mb, tok)
     case MLeave(lbl) -> emitLeave(mb, lbl)
     case MEndfinally -> emitEndfinally(mb)
-    case MEHClause(f, ts, te, hs, he, ct) -> mbAddEHClause(mb, EHClause(flags = f, tryStart = ts, tryEnd = te, handlerStart = hs, handlerEnd = he, catchToken = ct))
+    case MEHClause(f, ts, te, hs, he, ct) -> mbAddEHClause(
+      mb,
+      EHClause(
+        flags = f,
+        tryStart = ts,
+        tryEnd = te,
+        handlerStart = hs,
+        handlerEnd = he,
+        catchToken = ct
+      )
+    )
 
     // ── Deferred-resolution instructions (async SM synthesis) ──────────────
 
@@ -3383,10 +3402,41 @@ func addSynthMethodDef(
   recordPredictedMethodRow(ctx, classFqn, name, paramCount, mRow)
 }
 
+// The Int32 bit pattern to push via `ldc.i4` for a `UInt`-backed value
+// (#6756): `UInt` erases to the SAME 32-bit slot a signed `Int` uses, so a
+// value whose unsigned MAGNITUDE exceeds Int32.MaxValue (e.g. the
+// `4000000000` upper bound of `UInt range 1000 ..= 4000000000`, or a
+// `2500000000u32` literal) still fits the slot bit-for-bit — only its
+// arithmetic INTERPRETATION differs (unsigned; `MDistinctType.isUnsigned`
+// selects `.un` comparison below), not its storage width. Wraps to the low
+// 32 bits and reinterprets as signed (mirroring C#'s `unchecked((int)v)`)
+// rather than `longToInt`, whose OverflowException-on-out-of-Int32-range
+// behaviour is correct for a genuinely out-of-range SIGNED value but wrong
+// for a merely-large UNSIGNED one whose bit pattern already fits 32 bits.
+pub func int32BitsOfUnsignedMsil(v: in Long): Int {
+  val m = v % 4294967296i64
+  val u = if m < 0i64 { m + 4294967296i64 } else { m }
+  val signed = if u >= 2147483648i64 { u - 4294967296i64 } else { u }
+  longToInt(signed)
+}
+
 // Emit the range bounds test for a distinct type into `mb`, branching to
 // `failLabel` on any violation (value below min, or above/at max).  Operates on
 // the value in arg 0 (the static `from`/`tryFrom` factories take the underlying
 // value as their sole argument).  No-op when the type carries no range (#1501).
+//
+// `d.isUnsigned` (#6756: `UInt`/`ULong` underlying types, which erase to the
+// SAME `MInt`/`MLong` a signed `Int`/`Long` underlying type uses) selects
+// TWO changes from the plain signed path: the `MInt` bound-loading arm uses
+// `int32BitsOfUnsignedMsil` instead of `longToInt` (a `UInt` bound like
+// `4000000000` exceeds Int32.MaxValue and would otherwise panic the
+// COMPILER itself with an OverflowException while building this very
+// method), and the comparisons use `clt.un`/`cgt.un` instead of the plain
+// signed `clt`/`cgt` (mirroring the JVM backend's identical
+// `Integer.compareUnsigned`/`Long.compareUnsigned` dispatch, #6661) — a
+// signed comparison misreads any in-range value at or above 2^31 (`UInt`)
+// or 2^63 (`ULong`) as negative, silently failing bounds checks for
+// legitimate values whose sign bit happens to be set.
 func emitDistinctBoundsToFail(mb: in MethodBody, d: in MDistinctType, failLabel: in Int): Unit {
   if not d.hasRange {
     return
@@ -3397,11 +3447,19 @@ func emitDistinctBoundsToFail(mb: in MethodBody, d: in MDistinctType, failLabel:
     emitLdc_R8(mb, d.minF)
   } else {
     match d.inner {
-      case MInt -> emitLdc_I4(mb, longToInt(d.minI))
+      case MInt -> if d.isUnsigned {
+        emitLdc_I4(mb, int32BitsOfUnsignedMsil(d.minI))
+      } else {
+        emitLdc_I4(mb, longToInt(d.minI))
+      }
       case _ -> emitLdc_I8(mb, d.minI)
     }
   }
-  emitClt(mb)
+  if d.isUnsigned {
+    emitClt_Un(mb)
+  } else {
+    emitClt(mb)
+  }
   emitBrtrue(mb, failLabel)
   // max check: closed (`..=`) fails if value > max; half-open (`..<`) fails if
   // value >= max ⟺ not(value < max).
@@ -3410,15 +3468,27 @@ func emitDistinctBoundsToFail(mb: in MethodBody, d: in MDistinctType, failLabel:
     emitLdc_R8(mb, d.maxF)
   } else {
     match d.inner {
-      case MInt -> emitLdc_I4(mb, longToInt(d.maxI))
+      case MInt -> if d.isUnsigned {
+        emitLdc_I4(mb, int32BitsOfUnsignedMsil(d.maxI))
+      } else {
+        emitLdc_I4(mb, longToInt(d.maxI))
+      }
       case _ -> emitLdc_I8(mb, d.maxI)
     }
   }
   if d.upperExclusive {
-    emitClt(mb)
+    if d.isUnsigned {
+      emitClt_Un(mb)
+    } else {
+      emitClt(mb)
+    }
     emitBrfalse(mb, failLabel)
   } else {
-    emitCgt(mb)
+    if d.isUnsigned {
+      emitCgt_Un(mb)
+    } else {
+      emitCgt(mb)
+    }
     emitBrtrue(mb, failLabel)
   }
 }
@@ -5638,7 +5708,10 @@ func lowerMConfig(
         case MBool -> cctorInsns.add(MCall(methodToken = configToks.tokBoolParse))
         case MString -> {
         }  // raw env-var string is already on the stack
-        case _ -> panic("Msil.Lowering ICE: config field '" + f.name + "' has an unsupported MsilType — the type checker (G0009) should have rejected this")
+        case _ -> panic(
+          "Msil.Lowering ICE: config field '" + f.name +
+            "' has an unsupported MsilType — the type checker (G0009) should have rejected this"
+        )
       }
       cctorInsns.add(MStsfld(fieldToken = fieldTok))
       cctorInsns.add(MLabel(id = doneLabel))

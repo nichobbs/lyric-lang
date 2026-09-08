@@ -25,13 +25,14 @@
 //! numeric opcode.
 //!
 //! JVM-only: this fixes a JVM-backend-only codegen helper
-//! (`Jvm.Codegen.listLiteralElemTypeJvm`) with no MSIL counterpart — MSIL's
-//! own list-literal homogeneity inference (`listLiteralElemTypeMsil`,
-//! `msil/codegen.l`) has a separate, pre-existing, unrelated bug for
-//! `u16`/`u32`-suffixed list literals (confirmed by hand:
-//! `[1u16, 2u16][0] + [1u16, 2u16][1]` yields a garbage value on
-//! `--target dotnet`, not even a compile failure) — tracked as #6761,
-//! out of scope for this fix; do not run this file with `--target dotnet`.
+//! (`Jvm.Codegen.listLiteralElemTypeJvm`) with no MSIL counterpart — this
+//! file exercises the JVM lowering specifically (`Jvm.ListLiteralUintElem-
+//! JvmSelfTest`, `lyric-compiler/jvm/`). MSIL's own list-literal homogeneity
+//! inference (`listLiteralElemTypeMsil`, `msil/codegen.l`) had a separate,
+//! now-fixed `U16`/`U32`/`U64` gap (#6782, fixed alongside #6756's MSIL
+//! `UInt`/`ULong` representation) — its regression coverage lives in the
+//! dual-target `lyric-compiler/lyric/list_literal_index_self_test.l`
+//! instead of being folded into this JVM-directory file.
 //!
 //!   lyric test --target jvm lyric-compiler/jvm/list_literal_uint_elem_jvm_self_test.l
 //!
