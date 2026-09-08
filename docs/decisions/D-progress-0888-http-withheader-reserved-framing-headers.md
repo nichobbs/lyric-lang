@@ -1,4 +1,4 @@
-# D-progress-886 — `Std.Http.withHeader` rejects reserved framing headers instead of producing a duplicate header line on the wire (#6658)
+# D-progress-888 — `Std.Http.withHeader` rejects reserved framing headers instead of producing a duplicate header line on the wire (#6658)
 
 **Status:** Shipped, all three kernels (dotnet, JVM, native).
 
