@@ -29,7 +29,7 @@ only ctor decls for generic records) — 6 regression cases landed in
 `inbundle_generics_self_test.l`. The **JVM** half (a separate, foundational
 gap — `typeExprToJvm`'s `TGenericApp` arm erased every user-defined generic
 head unconditionally to `java/lang/Object`, with no raw-type-erasure arm at
-all) shipped in D-progress-886: see `docs/44-jvm-production-readiness-plan.md`
+all) shipped in D-progress-891: see `docs/44-jvm-production-readiness-plan.md`
 M-1 for the JVM-side root cause and fix, verified by 4 new cases in
 `lyric-compiler/jvm/generic_jvm_self_test.l`. #4870 is now closed on both
 targets.

@@ -1,4 +1,4 @@
-# D-progress-886 — JVM codegen: a generic union case / record field typed as ANOTHER same-file generic instantiation now erases to its raw class instead of universal `Object` (#4870)
+# D-progress-891 — JVM codegen: a generic union case / record field typed as ANOTHER same-file generic instantiation now erases to its raw class instead of universal `Object` (#4870)
 
 **Status:** shipped.
 
