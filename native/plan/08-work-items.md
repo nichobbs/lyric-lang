@@ -2020,6 +2020,49 @@ alive," leak-free; full suite 37/37, no regressions.
 
 ---
 
+### N9.10 — Native codegen: destructor/closure/trampoline/vtable function-pointer bitcasts over-wrapped in an extra `NPtr`, breaking under a stricter clang — ✅ SHIPPED (D-progress-886)
+
+`Lyric.LlvmCodegen`'s five call sites that bitcast a defined function
+symbol (or a raw-`i8*` value about to be called directly) to/from a
+`NFnPtr` type each wrapped it in an extra `NPtr(pointee = ...)`. Since
+`NFnPtr` already denotes the pointer-to-function type in this
+codebase's convention (`nTypeToIrString(NFnPtr(...))` renders with a
+trailing `*`, confirmed by `llvm_ir_self_test.l`), the extra `NPtr`
+produced a spurious second level of indirection — `void (i8*)**`
+where the value genuinely had type `void (i8*)*`. `clang` (the
+project's IR-verifying backend) rejected this outright:
+`'@T.User.dtor' defined with type 'void (i8*)*' but expected 'void
+(i8*)**'`, or, for a `call` through a locally-bitcast value, `'%t5'
+defined with type 'i32 (i8*, i32)**' but expected 'i32 (i8*,
+i32)*'`.
+
+Affected sites: `emitHeapAlloc`'s ARC-header dtor-pointer store (every
+heap-allocated record/union/tuple/generic instantiation with ref
+fields), `lowerLambda`'s closure-environment function-pointer store,
+`lowerClosureCall`'s call-through-a-closure-value dispatch,
+`lowerIfaceDispatch`'s vtable-slot call dispatch, and `trampolineFor`'s
+FFI-callback trampoline body. `registerImplVtables`'s vtable-constant
+emission (which builds the bitcast as a plain IR string via
+`nTypeToIrString(NFnPtr(...))` directly, no `NPtr` wrapper) was
+already correct and served as the confirming counter-example.
+
+Masked until now by `native-backend-self-tests`' own recurring
+`lyric_rt_test.c:1642` infra flake (a pre-existing setsid-escapee
+process-drain-budget race, unrelated to this bug) dying before the job
+ever reached `llvm_heap_self_test.l` in CI — one run finally got past
+it and surfaced 22/37 failures there, all sharing this exact clang
+diagnostic shape. Fixed by dropping the outer `NPtr(pointee = ...)` at
+all five sites so the bitcast's declared type matches the value's real
+type. Verified: `llvm_heap_self_test.l` 37/37 (was 15/37), plus
+`llvm_ir_self_test.l` 14/14, `llvm_codegen_self_test.l` 35/35,
+`llvm_ffi_self_test.l` 6/6 (exercises the trampoline path directly:
+"closure trampoline runs on a pthread", "trampolines dedup by callback
+signature"), and `llvm_self_test_n3.l` 10/10 (exercises the vtable
+dispatch path directly) — no regressions, all previously-passing
+non-dtor-touching cases stayed green throughout.
+
+---
+
 ## Dependency graph summary
 
 ```

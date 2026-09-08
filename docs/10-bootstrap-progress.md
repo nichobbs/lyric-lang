@@ -33686,6 +33686,42 @@ scope, leak-free in every case; full suite 37/37, no regressions.
 #5545 (fixed by this PR), `native/plan/08-work-items.md` N9.8,
 `native/plan/04-arc-design.md`'s `NativeWeak[T]` section.
 
+## Native codegen function-pointer double-indirection bitcast fix ships, TLS phase 5 band N9.10
+
+`native-backend-self-tests`' own recurring `lyric_rt_test.c:1642` infra
+flake (a pre-existing setsid-escapee process-drain-budget race,
+unrelated to this fix) has been dying before the job ever reached the
+`--target native` Lyric self-test suite for the duration of a severe
+CI-runner-starvation incident. One run finally got past it, and
+`llvm_heap_self_test.l` failed 22 of its 37 cases with a real `clang`
+diagnostic: `'@T.User.dtor' defined with type 'void (i8*)*' but
+expected 'void (i8*)**'` — every ARC-destructor test (records, unions,
+tuples, generics), every closure test, and every interface-dispatch
+call.
+
+Root cause: `Lyric.LlvmCodegen`'s `NFnPtr(params, ret)` case already
+denotes the pointer-to-function type (confirmed by
+`llvm_ir_self_test.l`: `nTypeToIrString(NFnPtr(...))` renders with a
+trailing `*`), but five call sites — `emitHeapAlloc`'s dtor-pointer
+store, `lowerLambda`'s closure-environment function-pointer store,
+`trampolineFor`'s FFI-callback trampoline, `lowerClosureCall`'s
+call-through-a-closure dispatch, and `lowerIfaceDispatch`'s
+vtable-slot dispatch — wrapped it in an extra `NPtr(pointee = ...)`,
+producing a spurious second level of indirection that a real `clang`
+rejects outright. `registerImplVtables`'s own vtable-constant emission
+built the identical cast correctly (no `NPtr` wrapper), serving as the
+confirming counter-example.
+
+Fixed by dropping the outer `NPtr(pointee = ...)` at all five sites.
+Verified: `llvm_heap_self_test.l` 37/37 (was 15/37); no regressions in
+`llvm_ir_self_test.l` (14/14), `llvm_codegen_self_test.l` (35/35),
+`llvm_ffi_self_test.l` (6/6, exercising the trampoline path directly),
+or `llvm_self_test_n3.l` (10/10, exercising the vtable-dispatch path
+directly).
+
+**Related:** `docs/03-decision-log.md` D-progress-886 (full account),
+`native/plan/08-work-items.md` N9.10.
+
 ## lyric-lambda: JVM custom-runtime decision, proven WebBridge registry, mock Runtime API server test (#5412)
 
 `Lambda.Kernel.Runtime`'s `jvm` feature variant is now real: it calls the
