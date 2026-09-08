@@ -473,6 +473,28 @@ func resolveTypeAliases(file: in SourceFile): SourceFile {
 // already-parsed `SourceFile`s this bridge holds.  No `requirePub` — all
 // stdlib items are implicitly public; `excludeIntrinsics` keeps `mapGet`
 // with its codegen intrinsic.
+//
+// Also feeds every stdlib union's inference-only case-constructor synths
+// (`Lyric.Mono.unionCtorInferenceDecls` — `Some`/`None`/`Ok`/`Err`/…) into
+// the SAME list, mirroring `Msil.Bridge.collectStdlibUnionCtorDecls`
+// (#5970 CI follow-up): without these, `Lyric.Mono.bindPatternEnvMono`'s
+// `PConstructor` arm finds `state.ctorCandidates` empty for every stdlib
+// union case on the JVM target, so it can never trust exactly-one-candidate
+// and evicts the match-bound pattern variable's type from `env` instead of
+// tracking it — e.g. `case Some(mm) -> mapKeys(mm)` never learns `mm : Map[K,
+// V]`. Pre-#5970 this stayed invisible: mono's Object-defaulted fallback
+// applied unconditionally, and the JVM backend's own full generic erasure
+// happens to make an `Object`-defaulted specialisation just as runtime-safe
+// as a properly-typed one there. #5970's opacity-vs-erasure-unsafe-shape
+// check now refuses that fallback and raises `M0004` for the very call sites
+// this JVM-only inference gap starves of evidence — the compile-time
+// counterpart of the crash the check exists to prevent, and a real
+// same-source parity break with `Msil.Bridge`'s call sites, which have fed
+// `collectStdlibUnionCtorDecls` since #5604. Fixing the collection gap makes
+// `env` carry the match-bound type correctly on both targets, exactly as
+// `Msil.Bridge` already does, so inference succeeds before the M0004 guard
+// is ever consulted — `match_bound_pattern_type_self_test.l`'s `--target
+// jvm` run is the regression coverage.
 func collectStdlibGenericFuncsJvm(files: in List[SourceFile]): List[FunctionDecl] {
   val genFuncs: List[FunctionDecl] = newList()
   var fi = 0
@@ -480,6 +502,22 @@ func collectStdlibGenericFuncsJvm(files: in List[SourceFile]): List[FunctionDecl
     val f = files[fi]
     pipeAddGenericFuncs(f.items, dottedPath(f.packageDecl.path), false, true, genFuncs)
     fi = fi + 1
+  }
+  // Inference-only union-case ctor decls (`Lyric.Mono.unionCtorInferenceDecls`),
+  // appended AFTER every real generic function so a real function always wins
+  // the monomorphizer's first-wins name merge (mirrors
+  // `Msil.Bridge.collectStdlibUnionCtorDecls`'s ordering, #5604) but BEFORE
+  // the inference-only `mapGet` intrinsic stub below, which must stay last.
+  var uci = 0
+  while uci < files.count {
+    val uf = files[uci]
+    val synths = unionCtorInferenceDecls(uf.items)
+    var si = 0
+    while si < synths.count {
+      genFuncs.add(synths[si])
+      si = si + 1
+    }
+    uci = uci + 1
   }
   // `mapGet`'s inference-only stub (`Lyric.Pipeline.pipeAddInferenceOnlyIntrinsicFuncs`),
   // appended LAST.  This JVM path has no separate in-bundle collector of
