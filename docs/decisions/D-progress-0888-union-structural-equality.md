@@ -1,5 +1,7 @@
 # D-progress-888 — every union case class gets a real structural `Equals`/`GetHashCode` override, unconditionally — `Option[T]`/`Result[T,E]` `==` is no longer reference/tag identity (#6835, #6120)
 
+**Status:** shipped.
+
 **Context.** `None == None` returned `false`; `a != None` returned `true` when
 `a` genuinely was `None`; and two independently-constructed `Some(value = 1)`
 values compared `false` under `==` on `--target dotnet` (#6120, triaged
