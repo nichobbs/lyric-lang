@@ -32299,8 +32299,8 @@ open generic TypeDef throwing `TypeLoadException` at JIT time (new
 bare `MClass` doing the same (fixed by declaring it as the closed-by-`!0`
 open self-instantiation instead).
 
-**Related:** `docs/03-decision-log.md` D-progress-888 (full account),
-#6835, #6120.
+**Related:** `docs/decisions/D-progress-0888-union-structural-equality.md`
+(full account), #6835, #6120.
 
 ### Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
 
