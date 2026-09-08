@@ -330,3 +330,78 @@ test "lyric test --properties: rejected on --target native" {
   val realRc = Cli.main(argv(args))
   assertEqualInt(realRc, 1, "--properties is rejected outright on --target native")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #678: `lyric test --update-snapshots`.
+// ─────────────────────────────────────────────────────────────────────────────
+// This test runs BEFORE the `--update-snapshots` one below on purpose: both
+// run in-process via `Cli.main` in this same test binary, and
+// `Environment.setVar` (which `--update-snapshots` uses to signal
+// `Std.Testing.Snapshot`) is a real, persistent OS-level env var with no
+// automatic per-call scoping — the "without the flag" case must run first,
+// before anything in this process has ever set `LYRIC_UPDATE_SNAPSHOTS`.
+test "lyric test (no --update-snapshots): a stale snapshot still fails the run and is left untouched" {
+  val root = freshTempDir("snap-noupdate")
+  defer {
+    cleanup(root)
+  }
+  val snapDir = Path.join(root, "snapshots")
+  match File.createDir(snapDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create dir: " + IOError.message(e))
+  }
+  val snapPath = Path.join(snapDir, "greeting.txt")
+  writeFileOrPanic(snapPath, "old-hello")
+
+  val testFile = Path.join(root, "snap_test.l")
+  writeFileOrPanic(
+    testFile,
+    "@test_module\npackage SnapNoUpdateTest\n\nimport Std.Testing.Snapshot\nimport Std.Testing\n\ntest \"greeting matches\" {\n  Snapshot.snapshotMatchIn(\"" +
+      snapDir +
+      "\", \"greeting\", \"new-hello\")\n}\n"
+  )
+
+  val rc = mainWith("test", testFile)
+  assertEqualInt(rc, 1, "a real mismatch against a stale snapshot still fails the run without --update-snapshots")
+
+  val afterContent = match File.readText(snapPath) {
+    case Ok(s) -> s
+    case Err(e) -> panic("cannot read " + snapPath + ": " + IOError.message(e))
+  }
+  assertEqual(afterContent, "old-hello", "without --update-snapshots the stale snapshot file is left untouched")
+}
+
+test "lyric test --update-snapshots: rewrites a stale snapshot instead of failing the run (#678)" {
+  val root = freshTempDir("snap-update")
+  defer {
+    cleanup(root)
+    // Reset for hygiene: this is a real OS-level env var in this
+    // long-lived in-process test binary, and nothing else in this file
+    // should ever see LYRIC_UPDATE_SNAPSHOTS=1 leak forward.
+    Environment.setVar("LYRIC_UPDATE_SNAPSHOTS", "")
+  }
+  val snapDir = Path.join(root, "snapshots")
+  match File.createDir(snapDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create dir: " + IOError.message(e))
+  }
+  val snapPath = Path.join(snapDir, "greeting.txt")
+  writeFileOrPanic(snapPath, "old-hello")
+
+  val testFile = Path.join(root, "snap_test.l")
+  writeFileOrPanic(
+    testFile,
+    "@test_module\npackage SnapUpdateTest\n\nimport Std.Testing.Snapshot\nimport Std.Testing\n\ntest \"greeting matches\" {\n  Snapshot.snapshotMatchIn(\"" +
+      snapDir +
+      "\", \"greeting\", \"new-hello\")\n}\n"
+  )
+
+  val rc = mainWith3("test", testFile, "--update-snapshots")
+  assertEqualInt(rc, 0, "--update-snapshots rewrites the stale snapshot instead of failing the run")
+
+  val afterContent = match File.readText(snapPath) {
+    case Ok(s) -> s
+    case Err(e) -> panic("cannot read " + snapPath + ": " + IOError.message(e))
+  }
+  assertEqual(afterContent, "new-hello", "--update-snapshots overwrote the stale snapshot file with the actual value")
+}

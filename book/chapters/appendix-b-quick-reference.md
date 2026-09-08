@@ -1055,15 +1055,19 @@ lyric test <file.l> --target jvm \
                                        # (+ <stem>-jacoco.xml); single-file JVM-target only
                                        # for now (D135). Needs jacocoagent.jar/jacococli.jar
                                        # via LYRIC_JACOCO_AGENT/LYRIC_JACOCO_CLI or `make jacoco`.
+lyric test <file.l> --update-snapshots # (#678) rewrite every Std.Testing.Snapshot baseline this
+                                       # test file touches to match its actual output instead of
+                                       # failing on mismatch; commit the rewritten snapshot files.
 lyric test                             # project mode: run every [project.tests] entry;
                                        # falls back to scanning [project.packages] for
                                        # @test_module files when [project.tests] is empty
 lyric test --fail-fast                 # project mode: stop after first failing test entry
 lyric test --properties                # project mode: also run `property` declarations in
                                        # every test entry (composes with --fail-fast/--filter)
+lyric test --update-snapshots          # project mode: rewrite snapshot baselines across every
+                                       # [project.tests] entry
 lyric test --manifest <lyric.toml>     # project mode: override manifest discovery
-                                       # (v2: --doctests, --update-snapshots, cross-package
-                                       # non-pub access)
+                                       # (v2: --doctests, cross-package non-pub access)
 lyric test --features a,b              # project mode: activate manifest [features]
                                        # (same grammar/precedence as lyric build)
 lyric test --no-default-features       # suppress the manifest's default feature set
