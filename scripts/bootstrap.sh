@@ -81,6 +81,11 @@ TMP_BASE="${TMP_BASE%/}"   # strip any trailing slash so the glob is well-formed
 MAX_STAGE=2
 SKIP_VERIFY="${SKIP_VERIFY:-0}"
 SKIP_CLI_BUNDLE="${SKIP_CLI_BUNDLE:-0}"
+# Set by try_bootstrap_from_release() when LYRIC_BOOTSTRAP_USE_DOTNET_TOOL=1
+# acquires stage 0 via the NuGet global tool instead of the native release
+# download (#7043) -- stage0() reads this to skip the lib/ requirement that
+# only applies to the native-download layout.
+STAGE0_VIA_DOTNET_TOOL=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -97,17 +102,32 @@ ok() { echo "[bootstrap] OK: $*"; }
 # Download and extract self-hosted binary from latest release
 # ---------------------------------------------------------------------------
 try_bootstrap_from_release() {
-  # Check if binary already exists (skip download if it does). A cache hit
-  # requires lib/ too — a binary with no lib/ can't locate Lyric.Stdlib at
-  # runtime, so a partial/stale cache from an interrupted extraction must
-  # not short-circuit here; clear it and fall through to a fresh download.
+  # Check if binary already exists (skip download if it does). What counts
+  # as a complete cache depends on the requested acquisition method (#7043):
+  # the native-download layout needs lib/ (a binary with no lib/ can't locate
+  # Lyric.Stdlib at runtime); the dotnet-tool layout needs .store/ instead (it
+  # has no lib/ at all -- see stage0()'s STAGE0_VIA_DOTNET_TOOL branch). A
+  # cache in the OTHER method's shape is treated as stale too, not reused --
+  # otherwise a rerun that flips LYRIC_BOOTSTRAP_USE_DOTNET_TOOL would either
+  # silently keep an incompatible native binary or never benefit from tool-
+  # path caching at all.
   mkdir -p "$BUILD_DIR/stage0-publish"
-  if { [[ -f "$BUILD_DIR/stage0-publish/lyric" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.exe" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; } \
-      && [[ -d "$BUILD_DIR/stage0-publish/lib" ]]; then
+  local want_dotnet_tool=0
+  [[ "${LYRIC_BOOTSTRAP_USE_DOTNET_TOOL:-0}" == "1" ]] && want_dotnet_tool=1
+  local have_bin=0
+  { [[ -f "$BUILD_DIR/stage0-publish/lyric" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.exe" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; } && have_bin=1
+  local cache_complete=0
+  if [[ "$want_dotnet_tool" == "1" ]]; then
+    [[ "$have_bin" == "1" ]] && [[ -d "$BUILD_DIR/stage0-publish/.store" ]] && cache_complete=1
+  else
+    [[ "$have_bin" == "1" ]] && [[ -d "$BUILD_DIR/stage0-publish/lib" ]] && cache_complete=1
+  fi
+  if [[ "$cache_complete" == "1" ]]; then
     info "  Using cached stage0-publish binary (skipping download)"
+    STAGE0_VIA_DOTNET_TOOL="$want_dotnet_tool"
     return 0
-  elif [[ -f "$BUILD_DIR/stage0-publish/lyric" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.exe" ]] || [[ -f "$BUILD_DIR/stage0-publish/lyric.dll" ]]; then
-    info "  Cached stage0-publish binary found but lib/ is missing (stale/partial cache); clearing and re-downloading"
+  elif [[ "$have_bin" == "1" ]]; then
+    info "  Cached stage0-publish binary found but incomplete or acquired via a different method (stale/partial cache); clearing and re-acquiring"
     rm -rf "${BUILD_DIR:?}/stage0-publish"
     mkdir -p "$BUILD_DIR/stage0-publish"
   fi
@@ -292,6 +312,35 @@ try_bootstrap_from_release() {
   # latest_release is now the version without 'v' prefix (e.g., "0.3.0")
   info "Using bootstrap release: v${latest_release}"
 
+  # Prefer the published NuGet global tool over the native release download
+  # when explicitly requested (LYRIC_BOOTSTRAP_USE_DOTNET_TOOL=1): the tool's
+  # apphost shim is Microsoft's own portable native launcher (GLIBC floor
+  # ~2.16, docs/34-distribution-strategy.md's "NuGet global tool" channel)
+  # which execs into the managed CLI via the ALREADY-installed dotnet
+  # runtime -- unlike the release tarball's Native AOT binary, which is
+  # locally cross-compiled/linked at release-build time and inherits THAT
+  # build machine's glibc symbol versions (#7043: the linux-arm64 release
+  # requires GLIBC_2.34, cross-compiled on ubuntu-latest, while a self-hosted
+  # CI runner's older glibc can't run it -- confirmed via `readelf -V`
+  # against every release back to v0.4.13, so this is a structural
+  # release-host/runner mismatch, not a bad release to pin around).
+  # Linux-only: macOS/Windows don't have this glibc-floor problem, so leave
+  # them on the existing native-download path below.
+  if [[ "${LYRIC_BOOTSTRAP_USE_DOTNET_TOOL:-0}" == "1" ]] \
+      && { [[ "$platform" == "linux-x64" ]] || [[ "$platform" == "linux-arm64" ]]; } \
+      && command -v dotnet &>/dev/null; then
+    info "  LYRIC_BOOTSTRAP_USE_DOTNET_TOOL=1: installing the 'lyric' NuGet global tool (v${latest_release}) instead of downloading the native release"
+    if dotnet tool install --tool-path "$BUILD_DIR/stage0-publish" lyric --version "$latest_release"; then
+      info "  dotnet tool install successful"
+      STAGE0_VIA_DOTNET_TOOL=1
+      return 0
+    else
+      info "  dotnet tool install failed; falling back to native release download"
+      rm -rf "${BUILD_DIR:?}/stage0-publish"
+      mkdir -p "$BUILD_DIR/stage0-publish"
+    fi
+  fi
+
   # Construct the tag name with 'v' prefix for downloads
   local release_tag="v${latest_release}"
 
@@ -400,11 +449,22 @@ stage0() {
       cp "$BUILD_DIR/stage0-publish/lyric" "$STAGE0_BIN"
     fi
   elif [[ -f "$BUILD_DIR/stage0-publish/lyric" ]]; then
-    # Unix native executable
+    # Unix native executable, OR (#7043) the dotnet-tool apphost shim. Either
+    # way this copy is purely for the "Stage 0 complete" report below --
+    # invoke_stage0 (stage1()) always runs the binary from
+    # $STAGE0_PUBLISH_DIR directly, never from $STAGE0_BIN, so a tool-path
+    # shim copied here without its .store/ sibling (not copied: it's
+    # per-invocation scratch, not part of the stable STAGE0_BIN identity)
+    # can't run standalone from $STAGE0_BIN -- harmless, since nothing tries.
     mkdir -p "$(dirname "$STAGE0_BIN")"
     cp "$BUILD_DIR/stage0-publish/lyric" "$STAGE0_BIN"
-    # Copy runtime config if present (needed for self-contained apps)
-    if [[ -f "$BUILD_DIR/stage0-publish/lyric.runtimeconfig.json" ]]; then
+    # Copy runtime config if present (needed for self-contained apps). The
+    # dotnet-tool path (#7043) never has a top-level runtimeconfig.json --
+    # it lives inside .store/ instead -- so skip the check entirely there
+    # rather than logging a WARNING for expected behavior.
+    if [[ "$STAGE0_VIA_DOTNET_TOOL" == "1" ]]; then
+      :
+    elif [[ -f "$BUILD_DIR/stage0-publish/lyric.runtimeconfig.json" ]]; then
       cp "$BUILD_DIR/stage0-publish/lyric.runtimeconfig.json" "$STAGE0_BIN.runtimeconfig.json"
       info "  copied runtimeconfig.json"
     else
@@ -419,19 +479,29 @@ stage0() {
   # A partial/stale stage0-publish (e.g. an interrupted prior extraction) can
   # have a binary with no lib/; clear it and retry the download once before
   # giving up, so a stale cache doesn't leave the user stuck.
-  if [[ ! -d "$BUILD_DIR/stage0-publish/lib" ]]; then
-    info "  lib/ directory not found in stage0-publish; clearing cache and retrying download once"
-    rm -rf "${BUILD_DIR:?}/stage0-publish"
-    mkdir -p "$BUILD_DIR/stage0-publish"
-    try_bootstrap_from_release || die "Stage 0: release download failed on retry"
-  fi
-  if [[ -d "$BUILD_DIR/stage0-publish/lib" ]]; then
-    mkdir -p "$(dirname "$STAGE0_BIN")/lib"
-    cp -r "$BUILD_DIR/stage0-publish/lib/." "$(dirname "$STAGE0_BIN")/lib/" \
-      || die "Stage 0: failed to copy lib/ directory from stage0-publish"
-    info "  copied lib/ directory with runtime dependencies"
+  #
+  # This requirement is specific to the native-release-tarball layout. The
+  # dotnet-tool acquisition path (#7043, STAGE0_VIA_DOTNET_TOOL=1) has no
+  # lib/ directory at all -- Lyric.Stdlib.dll ships co-located with the CLI
+  # DLLs inside the tool's own .store/ layout, and invoke_stage0 (stage1())
+  # runs the shim directly from stage0-publish/, which resolves it there.
+  if [[ "$STAGE0_VIA_DOTNET_TOOL" == "1" ]]; then
+    info "  skipping lib/ copy: acquired via dotnet tool, which co-locates Lyric.Stdlib.dll internally"
   else
-    die "lib/ directory not found in stage0-publish after retry — the release archive appears to be missing lib/"
+    if [[ ! -d "$BUILD_DIR/stage0-publish/lib" ]]; then
+      info "  lib/ directory not found in stage0-publish; clearing cache and retrying download once"
+      rm -rf "${BUILD_DIR:?}/stage0-publish"
+      mkdir -p "$BUILD_DIR/stage0-publish"
+      try_bootstrap_from_release || die "Stage 0: release download failed on retry"
+    fi
+    if [[ -d "$BUILD_DIR/stage0-publish/lib" ]]; then
+      mkdir -p "$(dirname "$STAGE0_BIN")/lib"
+      cp -r "$BUILD_DIR/stage0-publish/lib/." "$(dirname "$STAGE0_BIN")/lib/" \
+        || die "Stage 0: failed to copy lib/ directory from stage0-publish"
+      info "  copied lib/ directory with runtime dependencies"
+    else
+      die "lib/ directory not found in stage0-publish after retry — the release archive appears to be missing lib/"
+    fi
   fi
 
   ok "Stage 0 complete — $STAGE0_BIN"
@@ -439,7 +509,12 @@ stage0() {
   # Verify the binary exists in one of its expected forms and runtimeconfig.json if needed
   if [[ -f "$STAGE0_BIN" ]]; then
     info "Stage 0 binary: $(ls -lh "$STAGE0_BIN")"
-    if [[ -f "$STAGE0_BIN.runtimeconfig.json" ]]; then
+    # The dotnet-tool path (#7043) never has a top-level runtimeconfig.json
+    # next to the shim -- it lives inside .store/ instead -- so this is
+    # expected, not a warning-worthy gap.
+    if [[ "$STAGE0_VIA_DOTNET_TOOL" == "1" ]]; then
+      :
+    elif [[ -f "$STAGE0_BIN.runtimeconfig.json" ]]; then
       info "  with runtimeconfig.json: $(ls -lh "$STAGE0_BIN.runtimeconfig.json")"
     else
       info "  WARNING: runtimeconfig.json NOT found at $STAGE0_BIN.runtimeconfig.json"
