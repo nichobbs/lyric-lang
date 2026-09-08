@@ -486,7 +486,7 @@ test "Std.TcpHost native plain round-trip: listen/connect/accept/read/write/clos
     "  }\n" +
     "  hostClose(clientConn)\n" +
     "  hostClose(serverConn)\n" +
-    "  hostStopListener(listener)\n" +
+    "  hostCloseListener(listener)\n" +
     "  if not gotPong {\n" +
     "    return 8\n" +
     "  }\n" +
@@ -606,7 +606,7 @@ test "Std.TcpHost native TLS handshake: real concurrent client/server loopback (
     "  val worker: () -> NativePtr[Byte] = { -> clientHandshake(port, certPem) }\n" +
     "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
     "  if rc != 0 {\n" +
-    "    hostStopListener(listener)\n" +
+    "    hostCloseListener(listener)\n" +
     "    return 3\n" +
     "  }\n" +
     "  var exitCode = 0\n" +
@@ -647,7 +647,7 @@ test "Std.TcpHost native TLS handshake: real concurrent client/server loopback (
     "      hostClose(c)\n" +
     "    }\n" +
     "  }\n" +
-    "  hostStopListener(listener)\n" +
+    "  hostCloseListener(listener)\n" +
     "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
     "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
     "  if rj != 0 {\n" +

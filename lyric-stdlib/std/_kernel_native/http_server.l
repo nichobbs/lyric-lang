@@ -1032,7 +1032,18 @@ func onAccepted(accepted: in Result[Conn, TcpError], queue: in ServerQueue, limi
         true
       }
     }
-    case Err(e) -> match e { case AcceptFailed(_, _, kind) -> match kind { case AcceptFatal -> false; case AcceptTransient -> true; case AcceptOverloaded -> { sleepMillis(acceptOverloadBackoffMs); true } }; case BindFailed(_) -> false; case _ -> true }
+    case Err(e) -> match e {
+      case AcceptFailed(_, _, kind) -> match kind {
+        case AcceptFatal -> false
+        case AcceptTransient -> true
+        case AcceptOverloaded -> {
+          sleepMillis(acceptOverloadBackoffMs)
+          true
+        }
+      }
+      case BindFailed(_) -> false
+      case _ -> true
+    }
   }
 }
 
@@ -1134,7 +1145,12 @@ pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig
         // since nothing else will ever run it for a listener that never
         // got handed back to a caller.
         rtRelease(worker)
-        hostStopListener(transport)
+        // No accept-loop thread was ever spawned (pthreadCreate itself
+        // failed), so there is no join to wait for and no TOCTOU hazard
+        // (issue #6883) in closing directly -- hostCloseListener alone
+        // is the correct cleanup here, not hostStopListener (which only
+        // signals a thread that in this path never existed).
+        hostCloseListener(transport)
         rtMutexDestroy(queue.mutex)
         rtFree(queue.mutex)
         rtSemDestroy(queue.available)
@@ -1189,12 +1205,13 @@ pub func stopListener(l: in HttpListener): Unit {
   rtMutexUnlock(l.queue.mutex)
   hostStopListener(l.transport)
   // Join the accept thread FIRST, before touching `activeConns`: its own
-  // loop only ends once `hostAccept`/`hostAcceptTls` fails against the now-
-  // closed listener, and every connection it accepts along the way is
-  // registered synchronously (spawnHandler -> registerWorker) before the
-  // loop's next iteration. Joining it first therefore guarantees the
-  // `activeConns` snapshot taken below is the COMPLETE, final set -- no
-  // connection accepted "too late" can be missed (#6791).
+  // loop only ends once `hostAccept`/`hostAcceptTls` observes the wake-pipe
+  // interrupt `hostStopListener` just signaled, and every connection it
+  // accepts along the way is registered synchronously (spawnHandler ->
+  // registerWorker) before the loop's next iteration. Joining it first
+  // therefore guarantees the `activeConns` snapshot taken below is the
+  // COMPLETE, final set -- no connection accepted "too late" can be
+  // missed (#6791).
   var acceptOutp: NativePtr[Byte] = nativeNullPtr()
   val _ = pthreadJoin(l.acceptTid, nativeAddrOf(acceptOutp))
   // The accept thread is now guaranteed finished with its own worker
@@ -1203,6 +1220,13 @@ pub func stopListener(l: in HttpListener): Unit {
   // (#6797).
   val acceptWorkerPtr = rtLongToPtr(l.acceptWorkerHandle)
   rtRelease(acceptWorkerPtr)
+  // Only NOW -- after the join above proves the accept thread has
+  // actually exited -- is it safe to release the listening socket and
+  // wake-pipe fds (issue #6883): closing them any earlier risks an
+  // unrelated fd opened elsewhere in the process reusing one of these
+  // numbers before the (possibly still momentarily in-flight) accept
+  // thread's own wake-pipe drain read runs.
+  hostCloseListener(l.transport)
   // Interrupt every still-open connection's blocking hostRead (the common
   // case: an idle HTTP/1.1 keep-alive connection whose client hasn't sent
   // another request -- Std.HttpEngine defaults keepAlive = true, so this is
