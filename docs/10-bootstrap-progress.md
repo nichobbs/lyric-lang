@@ -33864,7 +33864,7 @@ so this bug class cannot occur there; no JVM-side change needed or made.
 
 **Related:** `docs/03-decision-log.md` D-progress-887 (full account), #3273.
 
-## MSIL: `BMod` predicts `MInt` for a `Double` lhs, corrupting a module-level field (#5992, ported from #7041/#7035)
+## MSIL: `BMod` predicts `MInt` for a `Double` lhs, corrupting a module-level field (#7035, ported from #7041)
 
 `lowerBinopMsil`'s `BMod` arm had no `MDouble` case: `rem` is
 type-preserving, but the fallback claimed the result type was `MInt`
@@ -33880,9 +33880,13 @@ mirroring `BDiv`'s existing `MDouble` handling in both places.
 Ported (cherry-picked, unmodified) into the four `group:compiler-mono-codegen`
 PRs from the still-open, unmerged PR #7041 after `module_val_deps_self_test.l`
 test 8 failed on CI for reasons confirmed unrelated to any of those PRs' own
-diffs — a pre-existing bug on `main`, not a regression any of them introduced.
+diffs — a pre-existing bug on `main` (tracked in #7035), not a regression any
+of them introduced. #7035's own hypothesis (a cross-type static-initializer
+race) is ruled out: every module-level `val` in a package shares one `.cctor`
+run sequentially, so the real cause is the invalid-IL `Int32`-field/`float64`-
+store bug this fix addresses.
 
 **Related:** `docs/decisions/D-progress-0890-port-bmod-double-fix.md` (full
-account of the port), #5992/#7035 (original root cause and fix), #7041
+account of the port), #7035 (the tracking issue this fix resolves), #7041
 (the unmerged PR this was ported from — will carry its own canonical
 decision-log entry when it lands).

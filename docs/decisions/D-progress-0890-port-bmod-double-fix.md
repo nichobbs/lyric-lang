@@ -1,4 +1,4 @@
-# D-progress-890 — port: `BMod` codegen claims `MInt` for a `Double` lhs, corrupting the field (#5992/#7035)
+# D-progress-890 — port: `BMod` codegen claims `MInt` for a `Double` lhs, corrupting the field (#7035)
 
 **Status:** ported into this PR from the unmerged PR #7041.
 
@@ -7,7 +7,22 @@ identity). While rebasing onto `main` after the base branch's `ci.yml` was
 fixed (a separate, unrelated CI infra issue, see the PR's own comment
 thread), CI's compiler-self-tests job failed on `module_val_deps_self_test.l`
 test 8 ("Double-lhs BMod/BDiv dependent module vals predict the right field
-type", #5992) — a failure entirely unrelated to this PR's own diff.
+type") — a failure entirely unrelated to this PR's own diff, and already
+tracked as **#7035** ("`module_val_deps_self_test.l`: 'Double-lhs BMod/BDiv'
+case (#5992) intermittently fails on CI, passes locally on the identical
+commit", reproduced independently on two other unrelated PRs, #6895 and
+#6927). (#5992 is a separate, already-closed, older review-finding issue
+that only added the `Double`-lhs test case exercising this bug; #7035 is
+the actual open tracking issue for the failure itself.)
+
+**Reconciling #7035's own hypothesis.** #7035's issue body proposes, as an
+explicitly unconfirmed hypothesis, a cross-type static-initializer-ordering
+race between `doubleBase` and `doubleModResult`. PR #7041 investigated this
+and ruled it out: every module-level `val` in one Lyric package is emitted
+as a field of the SAME CLR type, whose single `.cctor` executes its field
+initializers sequentially in declaration order — there is no cross-type
+ordering for this hazard to occur across. The real, confirmed root cause
+(below) is unrelated to initialization ordering.
 
 **Root cause (not this PR's, ported as-is).** `lowerBinopMsil`'s `BMod` arm
 had no `MDouble` case. `rem` is type-preserving (a `Double` lhs leaves a real
@@ -17,7 +32,9 @@ except `BDiv` already had the `MDouble` case `BMod` was missing. For a
 module-level `pub val`, that claimed type becomes the field's declared MSIL
 type: the field was declared `Int32` in metadata while the `.cctor` pushed a
 `float64` before `stsfld` — invalid IL that different JIT tiers handle
-differently, corrupting the stored value on some.
+differently, corrupting the stored value on some (explaining the
+"intermittent, CI-only, passes locally" symptom #7035 reported: different
+JIT tiering/warm-up behavior between environments, not a race).
 
 **Fix (ported verbatim).** Cherry-picked commits `ca0a05f` ("fix(msil): BMod
 codegen claims MInt for a Double lhs, corrupting the field (#7035)") and
