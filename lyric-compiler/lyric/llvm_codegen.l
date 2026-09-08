@@ -4365,7 +4365,12 @@ func trampolineFor(ctx: in Ctx, t: in TypeExpr): String {
           dest = "fn",
           fromTy = NPtr(pointee = NI8),
           value = NLocal(name = "fnraw"),
-          toTy = NPtr(pointee = NFnPtr(params = lyricParams, ret = rawRet))
+          // `fn` is called directly below (`NCall`/`NCallVoid`), which needs a
+          // plain function-pointer value; `NFnPtr` already denotes a pointer
+          // type (see `nTypeToIrString`), so wrapping it in another `NPtr`
+          // produced a double-indirected type the LLVM verifier rejected
+          // (#7043 follow-up).
+          toTy = NFnPtr(params = lyricParams, ret = rawRet)
         )
       )
       val callArgs: List[NArg] = newList()
@@ -6756,7 +6761,12 @@ func lowerLambda(
   insns.add(
     NBitcast(
       dest = fnPtrCast,
-      fromTy = NPtr(pointee = NFnPtr(params = fnParamTys, ret = sig.retTy)),
+      // `bodyFnName` names a real defined function, whose LLVM type is
+      // already `<ret> (<params>)*`; `NFnPtr` renders that single pointer
+      // level (see `nTypeToIrString`), so wrapping it in another `NPtr`
+      // made `fromTy` a double pointer the actual global's type didn't
+      // match (#7043 follow-up).
+      fromTy = NFnPtr(params = fnParamTys, ret = sig.retTy),
       value = NGlobal(name = bodyFnName),
       toTy = NPtr(pointee = NI8)
     )
@@ -7049,7 +7059,10 @@ func lowerClosureCall(
       dest = fnTyped,
       fromTy = NPtr(pointee = NI8),
       value = NLocal(name = fnRaw),
-      toTy = NPtr(pointee = NFnPtr(params = fnParamTys, ret = sig.retTy))
+      // `fnTyped` is called directly below; see the `trampolineFor` cast
+      // above for why this must be a single-pointer `NFnPtr`, not
+      // `NPtr(pointee = NFnPtr(...))` (#7043 follow-up).
+      toTy = NFnPtr(params = fnParamTys, ret = sig.retTy)
     )
   )
   val envCast = freshTmp(ctx)
@@ -7381,7 +7394,10 @@ func emitHeapAlloc(ctx: in Ctx, insns: in List[NInsn], objTy: in NType, size: in
     insns.add(
       NBitcast(
         dest = cast,
-        fromTy = NPtr(pointee = NFnPtr(params = fnParams, ret = NVoid)),
+        // `dtorName` names a real defined `void (i8*)` function; see the
+        // closure-dtor cast above for why this must be a single-pointer
+        // `NFnPtr`, not `NPtr(pointee = NFnPtr(...))` (#7043 follow-up).
+        fromTy = NFnPtr(params = fnParams, ret = NVoid),
         value = NGlobal(name = dtorName),
         toTy = NPtr(pointee = NI8)
       )
@@ -11494,7 +11510,9 @@ func lowerIfaceDispatch(
       dest = fnTyped,
       fromTy = NPtr(pointee = NI8),
       value = NLocal(name = fnRaw),
-      toTy = NPtr(pointee = NFnPtr(params = fnParamTys, ret = retTy))
+      // `fnTyped` is called directly below; see `lowerClosureCall`'s cast
+      // for why this must be a single-pointer `NFnPtr` (#7043 follow-up).
+      toTy = NFnPtr(params = fnParamTys, ret = retTy)
     )
   )
   // Build call args: obj first, then the coerced declared arguments.
