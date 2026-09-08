@@ -41,7 +41,19 @@ val p2 = p.copy(x = 3.0)        // p.y is preserved; p is unchanged
 val inactive = c.copy(isActive = false)
 ```
 
-**Structural equality.** Two records are equal if and only if all their fields are equal. You do not implement `equals` or override `hashCode`. For a `Point`, `Point(x = 1.0, y = 2.0) == Point(x = 1.0, y = 2.0)` is always `true`.
+**Structural equality.** A record compiled to a `readonly struct` (all-primitive fields, like `Point` above) gets structural equality for free from the CLR's own default value-type equality: `Point(x = 1.0, y = 2.0) == Point(x = 1.0, y = 2.0)` is always `true`, with no annotation needed. A record compiled to a `record class` (like `Customer`, which holds reference-typed fields) does **not** get this for free — it needs an explicit `@derive(Equals)` annotation to get real field-by-field `==`/`!=` (this also synthesizes a consistent `hashCode`):
+
+```lyric
+@derive(Equals)
+record Customer {
+  id: CustomerId
+  email: Email
+  joinedAt: Instant
+  isActive: Bool
+}
+```
+
+Without `@derive(Equals)`, a `record class`-backed record falls back to reference identity — two independently-constructed `Customer` values with identical fields would compare `false`. Unions (§3.2) are different: they get structural equality unconditionally, with no annotation required, regardless of backing representation.
 
 **Visibility.** By default, all fields are visible within the package. `pub` on the record itself makes the record type visible to other packages. `pub` on an individual field makes that field accessible outside the package:
 
@@ -126,6 +138,17 @@ union Option[T] {
 ```
 
 There is nothing special about them from the language's perspective. They are generic unions, exactly like `Shape`. Generics are covered in Chapter 6.
+
+**Structural equality.** Unlike records (§3.1), unions get structural equality unconditionally — no `@derive(Equals)` annotation is needed, and this holds regardless of backing representation or whether the union is generic. Two case values are equal if and only if they are the same case with equal payloads:
+
+```lyric
+val a: Option[Int] = None
+val b: Option[Int] = None
+a == b                              // true
+
+Some(value = 1) == Some(value = 1)  // true, even for independently-constructed values
+Some(value = 1) == None             // false
+```
 
 **Public unions and breaking changes.** When you mark a union `pub`, its case list becomes part of your package's public contract. Adding a new case to a `pub` union is a breaking change — every `match` in every caller must handle the new case, and the compiler will refuse to compile them until they do. This is intentional. A new case represents a genuinely new possibility that callers must handle. Silently ignoring it would be a bug.
 

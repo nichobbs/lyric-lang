@@ -232,7 +232,9 @@ record Customer {
 }
 ```
 
-Records are value types (compile to .NET `readonly struct` for primitives, `record class` otherwise — see `docs/09-msil-emission.md` §5 for the selection rule). Records have structural equality by default. Construction:
+Records are value types (compile to .NET `readonly struct` for primitives, `record class` otherwise — see `docs/09-msil-emission.md` §5 for the selection rule). A `readonly struct` record (e.g. `Point` above, all-`Double` fields) gets structural equality for free from the CLR's own default value-type equality. A `record class` record (e.g. `Customer` above) does **not** — it needs an explicit `@derive(Equals)` annotation (e.g. `@derive(Equals) record Customer { … }`), which also synthesizes `GetHashCode()` kept consistent with it, to get real field-by-field structural `==`/`!=`; without it, a `record class` falls back to reference identity, unlike unions (§2.5), which have structural equality unconditionally regardless of backing representation.
+
+Construction:
 
 ```
 val p = Point(x = 1.0, y = 2.0)
@@ -284,6 +286,19 @@ val area = match shape {
 ```
 
 Adding a new variant to a `pub` union is a breaking change.
+
+Unions have structural equality by default (`==`/`!=`), unconditionally — no
+`@derive(Equals)` annotation is needed, and this applies equally to a generic
+union such as `Option[T]`/`Result[T, E]`. Two values compare equal iff they
+are the same case AND every field of that case compares equal (recursively,
+so a case field that is itself a record/union/nested `Option` is compared
+structurally too, provided that nested type also has real structural
+equality — see the `@derive(Equals)` caveat on records in §2.4). Before
+D-progress-888 this held only for `Some(x) == Some(x)` where both sides were
+the literal same expression evaluated twice (or coincided by reference); every
+other comparison — including `None == None` and two independently-constructed
+`Some` values with equal payloads — silently fell back to reference/tag
+identity (issues #6835, #6120).
 
 ### 2.6 Enums
 
