@@ -33724,3 +33724,77 @@ headers and were verified that way.
 `docs/35-lambda-library.md` §4.2/§8 (updated), `lyric-lambda/README.md`
 (support matrix updated), #5412 (closed), #6868 (new, filed not fixed),
 #5600/#5578/#6548 (the prior `Lambda.Dispatch` work this builds on).
+
+## Native `Std.ProcessPipedHost` ships — real fork/pipe long-lived piped-child-stdio kernel (issue #6142)
+
+`_kernel_native/process_piped_host.l` — previously an unconditionally
+fail-fast stub — now implements the real long-lived piped-child-stdio
+contract over a new `lyric-rt` seam (`lyric_process_piped_spawn`/
+`_read_line`/`_write_line`/`_is_alive`/`_kill`/`_wait_exit`/
+`_exit_code`/`_close_stdin`/`_close`): only stdin and stdout are piped,
+stderr is left inherited from this process (matching the dotnet/JVM
+kernel twins' documented contract exactly), and the held handle rides as
+a `Long` (the same `Conn.tlsConnHandle`-style pointer-as-integer idiom
+`_kernel_native/tcp_host.l` already established), since it must survive
+across many separate top-level calls.
+
+Direct end-to-end verification (calling `hostSpawnPiped`/
+`hostPipedReadLineOpt`/etc. directly, not through `Std.Process`'s shared
+facade — see below) proved the kernel correct against real `/bin/cat`,
+`/bin/sh`, and `/bin/echo` children: single- and multi-line round trips,
+line ordering, `closeStdin`-then-clean-exit with a final buffered line,
+kill-mid-run, `waitExit` timeout vs. success, a nonexistent-executable
+spawn (exit 127, not a spawn failure — `execvp` failures inside the
+child are never spawn failures on any target), and real quote/escape
+handling in the re-materialized argv (`parseArgString`, ported from the
+JVM twin's own algorithm, adjusted for two native-specific gaps: no
+`String[i]` bracket indexing on native, issue #6237, worked around here
+with `.substring(i, 1)`; and no executable-prepend, since native's
+`rtPipedSpawn` takes the executable path as its own parameter).
+
+**Two gaps found and filed, not fixed here:** compiling a program that
+calls the ACTUAL caller-facing `Std.Process.spawnPiped` (rather than this
+kernel directly) fails before ever reaching this kernel, for two
+independent, pre-existing compiler reasons — `Std.Process.buildArgString`
+uses `String.replace`, unimplemented on `--target native` (issue #6888);
+and `spawnPiped`/`pipedReadLine`/`pipedWriteLine` each wrap their host
+call in `try/catch`, which `Lyric.LlvmCodegen` unconditionally rejects for
+native (D-N-003, issue #6887, with the Result-seam fix issue #4752
+already used for `runCapture` recommended as the template). Both are
+general compiler/stdlib gaps, not specific to this kernel's own
+correctness, and are out of this change's scope per this repo's "smaller,
+fully-finished slice" standard.
+
+**Verification.** `make -C lyric-rt test` (gcc, clang) green, including
+six new C-level cases, clean under ASan. On real Linux CI (`--target
+native`, real `clang`): `llvm_stdlib_self_test.l` gained a
+`Std.ProcessPipedHost native kernel` case; 19/19 cases in that file pass,
+no regressions.
+
+**Addendum (#6975, found in review before merge):** an earlier version of
+`lyric_process_piped_close` unconditionally `free()`'d the handle, so a
+second call on the same handle was a real double-free/use-after-free.
+Fixed with a `closed` guard that deliberately never frees the (small,
+fixed-size) struct itself — the same sanctioned, disclosed
+`lyric_lsan_ignore_leak` bounded-retention pattern already used for the
+#6802 case — plus the same guard at the Lyric level
+(`PipedHandle.closed`, mirroring `HttpListener.stopped`). New C-level
+double-close regression test, verified clean under a manual ASan build.
+See D-progress-887's addendum for the full account.
+
+**Addendum (#6993, found in review before merge):** the #6975 fix above
+freed `linebuf.data` and NULL'd it on close but never reset `linebuf.len`,
+so a handle closed while a second line was still buffered (`len > 0`)
+NULL-deref'd on the next `read_line` call. Fixed by also resetting
+`linebuf.len`/`linebuf.cap` to `0`. New regression test
+(`test_process_piped_read_after_close_with_buffered_line`) reproduces a
+real ASan SEGV on the pre-fix code before confirming the fix. See
+D-progress-887's second addendum for the full account.
+
+**Related:** `docs/03-decision-log.md` D-progress-887 (full account),
+#6142 (fixed by this entry), #6887/#6888 (new, the two blockers found and
+filed), #6237 (the bracket-indexing gap this entry's own `parseArgString`
+worked around), #6975/#6993 (the double-free/NULL-deref fixed by the
+addenda above),
+`native/plan/08-work-items.md` N5.7,
+`docs/62-jsonrpc-mcp.md` §5.2 (the motivating lyric-mcp stdio transport).
