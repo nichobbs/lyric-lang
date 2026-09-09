@@ -268,6 +268,7 @@ pub func encodeUtf8(s: in String): slice[Byte] {
 /// already be `String`), and `Char.toString()` is a separate,
 /// independently broken path on that backend too (issue #6237). See
 /// `tryDecodeUtf8`'s own use of this same kernel call below.
+@pure
 @stable(since = "1.0")
 pub func codepointToString(cp: in Int): String {
   hostStringFromCodepoint(cp)

@@ -847,3 +847,69 @@ test "Std.Char native kernel: code-point bridge, ASCII classification, case conv
     "Std.Char native kernel (code-point bridge + ASCII classification/case conversion) and Hpack's Huffman codec (its consumer) both work on --target native"
   )
 }
+
+test "Native List/Map/slice indexed assignment: AssEq and all compound forms (#6811/#6951)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "func main(): Int {\n" +
+    "  val xs: slice[Int] = [10, 20, 30]\n" +
+    "  xs[1] = 99\n" +
+    "  if xs[1] != 99 {\n    return 1\n  }\n" +
+    "  val ys: List[Int] = newList()\n" +
+    "  ys.add(5)\n" +
+    "  ys.add(20)\n" +
+    "  ys.add(100)\n" +
+    "  ys.add(7)\n" +
+    "  ys.add(9)\n" +
+    "  ys[0] += 3\n" +
+    "  if ys[0] != 8 {\n    return 2\n  }\n" +
+    "  ys[1] -= 4\n" +
+    "  if ys[1] != 16 {\n    return 3\n  }\n" +
+    "  ys[2] *= 2\n" +
+    "  if ys[2] != 200 {\n    return 4\n  }\n" +
+    "  ys[3] /= 2\n" +
+    "  if ys[3] != 3 {\n    return 5\n  }\n" +
+    "  ys[4] %= 4\n" +
+    "  if ys[4] != 1 {\n    return 6\n  }\n" +
+    "  val ss: List[String] = newList()\n" +
+    "  ss.add(\"foo\")\n" +
+    "  ss[0] += \"bar\"\n" +
+    "  if ss[0] != \"foobar\" {\n    return 7\n  }\n" +
+    "  val m: Map[String, Int] = newMap()\n" +
+    "  m.add(\"a\", 1)\n" +
+    "  m[\"a\"] = 42\n" +
+    "  if m[\"a\"] != 42 {\n    return 8\n  }\n" +
+    "  m[\"a\"] += 8\n" +
+    "  if m[\"a\"] != 50 {\n    return 9\n  }\n" +
+    "  m[\"a\"] -= 20\n" +
+    "  if m[\"a\"] != 30 {\n    return 10\n  }\n" +
+    "  m[\"a\"] *= 2\n" +
+    "  if m[\"a\"] != 60 {\n    return 11\n  }\n" +
+    "  m[\"a\"] /= 3\n" +
+    "  if m[\"a\"] != 20 {\n    return 12\n  }\n" +
+    "  m[\"a\"] %= 7\n" +
+    "  if m[\"a\"] != 6 {\n    return 13\n  }\n" +
+    "  val sm: Map[String, String] = newMap()\n" +
+    "  sm.add(\"k\", \"hello\")\n" +
+    "  sm[\"k\"] += \" world\"\n" +
+    "  if sm[\"k\"] != \"hello world\" {\n    return 14\n  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(
+    r.exitCode,
+    42,
+    "slice[Int]/List[Int]/List[String]/Map[String, Int]/Map[String, String] all support AssEq and every compound AssignOp form on --target native"
+  )
+}
+
+test "Native Map indexed compound assignment against a missing key panics, not a silent insert (#6951)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "func main(): Int {\n" +
+    "  val m: Map[String, Int] = newMap()\n" +
+    "  m[\"missing\"] += 1\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(
+    r.exitCode != 42 and r.exitCode != 0,
+    "a compound assign against an absent map key must panic, not silently succeed"
+  )
+}
