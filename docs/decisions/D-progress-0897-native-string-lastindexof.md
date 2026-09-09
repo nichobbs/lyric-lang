@@ -1,5 +1,7 @@
 # D-progress-0897 — Native `String` gains `.lastIndexOf` (#6755, fast-follow to #6588)
 
+**Status:** shipped
+
 **Context.** D-progress-831 (#6588) shipped native (`--target native`)
 `String.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith`,
 deliberately scoping out `.lastIndexOf` — the issue's own ask list only
