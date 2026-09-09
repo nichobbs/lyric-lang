@@ -1883,6 +1883,21 @@ closed: `lyric_string_last_index_of` mirrors `.indexOf`'s forward
 `find_substring` backward, with the identical `ctx.pkgImportsStdString`
 import-sensitive gate applied to both.
 
+**Update — #6240 SHIPPED.** The broader native `String` search-method
+audit issue this section's own #6588 fix was split out of is closed:
+`.trimStart()`/`.trimEnd()` (one-sided variants sharing `.trim()`'s
+`White_Space` code-point set, refactored into a shared `trim_bounds`
+helper) and `.replace(old, new)` (all non-overlapping occurrences, left
+to right; an empty `old` is a deliberate native-specific no-op rather
+than copying either managed target's own quirk — dotnet throws,
+JVM interleaves) now lower for `--target native`. `.repeat`/`.split`/
+`.join`/`.joinList`/`.compare`/`.equals`/`.equalsCaseInsensitive` in
+`lyric-stdlib/std/string.l` were already native-compatible without any
+codegen change — they compose from primitives (`+`, `<`/`>`, `==`,
+`.substring`, `.indexOf`, list indexing) this backend already lowered.
+`.toUpper()` (and widening `.toLower()`'s script coverage) is out of
+scope here, tracked in #6779.
+
 ---
 
 ### N9.9 — Three native-codegen review-finding fixes: bare enum-case patterns, out/inout width mismatches, over-inclusive UFCS reachability — ✅ SHIPPED (D-progress-882/D-progress-883/D-progress-884, #6740, #6813, #6625, #6969, #6976)
