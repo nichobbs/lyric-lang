@@ -84,6 +84,32 @@ func testUtf8Invalid(): Unit {
   assertTrue(isNone(bad), "invalid utf8 byte returns None")
 }
 
+func testCodepointToStringValid(): Unit {
+  assertEqual(codepointToString(65), "A", "codepointToString ASCII")
+  assertEqual(codepointToString(128512), "😀", "codepointToString astral (U+1F600 GRINNING FACE)")
+}
+
+// #7031: codepointToString must reject an invalid Unicode scalar value
+// rather than silently diverging per-target (native's kernel twin, unlike
+// .NET's and JVM's, performed no validation at all before this fix).
+func testCodepointToStringRejectsInvalid(): Unit {
+  assertPanicsWith(
+    "negative code point panics",
+    "not a valid Unicode scalar value",
+    { -> val ignored = codepointToString(-1) }
+  )
+  assertPanicsWith(
+    "code point above U+10FFFF panics",
+    "not a valid Unicode scalar value",
+    { -> val ignored = codepointToString(1114112) }
+  )
+  assertPanicsWith(
+    "lone surrogate code point panics",
+    "not a valid Unicode scalar value",
+    { -> val ignored = codepointToString(55296) }
+  )
+}
+
 // ─── Numeric conversion opcodes (#2337) ──────────────────────────────────────
 // The stage-0 emitter added Conv_I4 / Conv_I8 / Conv_R8 / Conv_U1 / Conv_U2
 // to handle .toInt() / .toLong() / .toDouble() / .toByte() / .toChar() on
@@ -142,6 +168,8 @@ func main(): Unit {
   testUtf8RoundTrip()
   testUtf8Empty()
   testUtf8Invalid()
+  testCodepointToStringValid()
+  testCodepointToStringRejectsInvalid()
   testToIntConversion()
   testToLongConversion()
   testToDoubleConversion()

@@ -260,17 +260,30 @@ pub func encodeUtf8(s: in String): slice[Byte] {
   hostEncodeUtf8(hostGetUtf8Enc(), s)
 }
 
-/// Encode a single Unicode scalar value (0..0x10FFFF) as its UTF-8
-/// `String` representation — the cross-target-safe way to turn a code
-/// point into a `String`. Prefer this over `"" + Std.Char.fromInt(cp)`:
-/// `String + Char` concatenation has no `--target native` codegen
-/// (`Lyric.LlvmCodegen.lowerStringBinop` requires both operands to
-/// already be `String`), and `Char.toString()` is a separate,
-/// independently broken path on that backend too (issue #6237). See
-/// `tryDecodeUtf8`'s own use of this same kernel call below.
+/// Encode a single Unicode scalar value (0..0x10FFFF, excluding the
+/// surrogate range U+D800..U+DFFF) as its UTF-8 `String` representation —
+/// the cross-target-safe way to turn a code point into a `String`. Prefer
+/// this over `"" + Std.Char.fromInt(cp)`: `String + Char` concatenation has
+/// no `--target native` codegen (`Lyric.LlvmCodegen.lowerStringBinop`
+/// requires both operands to already be `String`), and `Char.toString()` is
+/// a separate, independently broken path on that backend too (issue #6237).
+/// See `tryDecodeUtf8`'s own use of this same kernel call below.
+///
+/// Panics on an invalid scalar value rather than delegating straight to
+/// `hostStringFromCodepoint`: the three kernel twins disagree on invalid
+/// input — `NetChar.ConvertFromUtf32` throws on out-of-range and surrogate
+/// code points, `JChar.toString` only rejects out-of-range (not surrogates),
+/// and native's `rtStrFromChar` performs no validation at all, silently
+/// UTF-8-encoding the raw bits of an out-of-range or surrogate `cp` into
+/// malformed output (#7031). Validating once here, before any kernel call,
+/// gives all three targets the same total-vs-partial behaviour instead of
+/// three different divergent ones.
 @pure
 @stable(since = "1.0")
 pub func codepointToString(cp: in Int): String {
+  if cp < 0 or cp > 1114111 or (cp >= 55296 and cp <= 57343) {
+    panic("Std.Encoding.codepointToString: not a valid Unicode scalar value: " + toString(cp))
+  }
   hostStringFromCodepoint(cp)
 }
 
