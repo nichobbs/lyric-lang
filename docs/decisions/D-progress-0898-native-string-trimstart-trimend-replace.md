@@ -1,5 +1,7 @@
 # D-progress-0898 — Native `String` gains `.trimStart`, `.trimEnd`, and `.replace` (#6240)
 
+**Status:** shipped
+
 **Context.** #6240 audited every method in the language reference's
 `String` table against `--target native`, following on from #6588's six
 shipped methods. `Std.String.trimStart`/`.trimEnd` call the builtin
