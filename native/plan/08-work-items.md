@@ -1912,6 +1912,24 @@ now compute the exact output byte length in a first pass before
 allocating, since the full table (unlike the old five-script one) maps
 some code points to a UTF-8 length that GROWS, not just shrinks.
 
+**Update — #6237 SHIPPED.** The bare-`String`-indexing gap referenced
+above (the `lyric-auth`/`web.l` sites this section's evidence trail
+found) is closed: `lyric_string_char_at` (`lyric-rt/src/lyric_string.c`)
+decodes the full Unicode scalar value starting at a byte offset via
+genuine UTF-8 iteration (never a raw byte — `03-type-mapping.md`'s
+`Char` note is explicit that byte indexing alone is wrong here), wired
+into `lowerCollectionIndex`'s new String case. `String + Char`
+concatenation and `Char.toString()` needed a second piece: `Char` and
+`Int` both erase to the same `NI32` with no runtime tag, so
+`Lyric.LlvmCodegen` gained a best-effort `Ctx.varIsChar` side-table
+(populated at `val`/`let`/`var` bindings, function/lambda parameters,
+and `Char` literals) so `lowerBinop`/`lowerScalarMethodCall` can consult
+the ORIGINAL expression's syntactic char-ness at the two call sites that
+actually need to tell Char and Int apart, instead of the erased `NVal`.
+Bracket indexing on a String receiver (`s[i]`) is itself unambiguous
+(always `Char` per `indexElementType`) and is recognised as such even
+through one level of indexing syntax.
+
 ---
 
 ### N9.9 — Three native-codegen review-finding fixes: bare enum-case patterns, out/inout width mismatches, over-inclusive UFCS reachability — ✅ SHIPPED (D-progress-882/D-progress-883/D-progress-884, #6740, #6813, #6625, #6969, #6976)

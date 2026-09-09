@@ -98,6 +98,11 @@ LyricString* lyric_string_from_literal(const uint8_t* data, int64_t len);
 LyricString* lyric_string_concat(LyricString* a, LyricString* b);
 int64_t      lyric_string_len(LyricString* s);
 uint8_t      lyric_string_byte_at(LyricString* s, int64_t idx);
+/* `s[i]` bracket indexing (#6237): `idx` is a byte offset (matching
+ * `.length`/`.substring`'s byte-indexed model, D-N-006); the return value
+ * is the full Unicode scalar value decoded via UTF-8 iteration starting at
+ * that offset, not the raw byte — see lyric_string.c for the rationale. */
+int32_t      lyric_string_char_at(LyricString* s, int64_t idx);
 int32_t      lyric_string_eq(LyricString* a, LyricString* b);
 int32_t      lyric_string_cmp(LyricString* a, LyricString* b);
 void         lyric_string_dtor(void* obj);
