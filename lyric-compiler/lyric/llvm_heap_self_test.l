@@ -500,6 +500,64 @@ test "arc: early return and break unwind scopes" {
   assertEqualInt(r.exitCode, 0, "early-exit unwinding leak-free (ASan)")
 }
 
+test "arc: short-circuit 'and' releases the right operand's temps inside its own branch, not the shared merge block (#6645)" {
+  // `lowerShortCircuit` used to lower the right operand directly into the
+  // enclosing temp scope, whose `popTempScope` release lands in the
+  // shared `sc.done` merge block — reached ALSO by the short-circuit-skip
+  // edge, where the right operand (and its temp, here a `.substring(...)`
+  // result) was never evaluated at all. That releases an undefined SSA
+  // value on the skip path: an LLVM dominance violation caught by
+  // `opt -passes=verify`, and a real heap corruption at runtime (the
+  // `--target native` HTTP client's `resolveRedirectUrl`/`parseUrl`
+  // callers hit exactly this shape, #6645/#6719/#6722). `countLeadingX`
+  // exercises all three cases in one loop: "xxxxx" runs the condition's
+  // left operand (`i < n`) to false, taking the skip edge without ever
+  // evaluating `.substring(...)` on the last iteration; "xxxabc" and
+  // "abc" both evaluate the right operand (matching, then failing).
+  val src = "package T\n" + "func countLeadingX(s: in String): Int {\n" + "  var i = 0\n" + "  val n = s.length\n" +
+    "  while i < n and s.substring(i, 1) == \"x\" {\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  i\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  var total = 0\n" +
+    "  var k = 0\n" +
+    "  while k < 3000 {\n" +
+    "    total = total + countLeadingX(\"xxxxx\")\n" +
+    "    total = total + countLeadingX(\"xxxabc\")\n" +
+    "    total = total + countLeadingX(\"abc\")\n" +
+    "    k = k + 1\n" +
+    "  }\n" +
+    "  if total == 3000 * 8 { 0 } else { 1 }\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 0, "short-circuit 'and' rhs temp release stays leak/UAF-free (ASan)")
+}
+
+test "arc: short-circuit 'or' releases the right operand's temps inside its own branch, not the shared merge block (#6645)" {
+  // Mirror of the 'and' case above for 'or': the skip edge is the LEFT
+  // operand being true (rhs never evaluated), taken by "yes" below; the
+  // evaluated-rhs edge is taken by "no" (left false, rhs — a
+  // `.substring` comparison — decides the result).
+  val src = "package T\n" + "func startsWithYOrIsShort(s: in String): Bool {\n" +
+    "  s.length == 0 or s.substring(0, 1) == \"y\"\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  var trueCount = 0\n" +
+    "  var k = 0\n" +
+    "  while k < 3000 {\n" +
+    "    if startsWithYOrIsShort(\"\") { trueCount = trueCount + 1 }\n" +
+    "    if startsWithYOrIsShort(\"yabc\") { trueCount = trueCount + 1 }\n" +
+    "    if startsWithYOrIsShort(\"nabc\") { trueCount = trueCount + 1 }\n" +
+    "    k = k + 1\n" +
+    "  }\n" +
+    "  if trueCount == 3000 * 2 { 0 } else { 1 }\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 0, "short-circuit 'or' rhs temp release stays leak/UAF-free (ASan)")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Generic type monomorphization (N3.1).
 // ─────────────────────────────────────────────────────────────────────────────
