@@ -66,6 +66,7 @@ import Std.Core
 import Std.Collections
 import Std.String
 import Std.Char as Char
+import Std.Encoding
 import Std.HttpEngine
 
 // =============================================================================
@@ -364,7 +365,7 @@ pub func decodeStringLiteralAt(bytes: in slice[Byte], offset: in Int): Result[St
     return Err(error = IncompleteInput)
   }
   val huffman = bytes[offset].toInt() >= 128
-  val ir = decodeIntegerAt(bytes, offset, 7)?
+  val ir = match decodeIntegerAt(bytes, offset, 7) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
   val len = ir.value
   val start = ir.offset
   if start + len > bytes.length {
@@ -372,7 +373,7 @@ pub func decodeStringLiteralAt(bytes: in slice[Byte], offset: in Int): Result[St
   }
   val raw = bytes.slice(start, start + len)
   if huffman {
-    val decoded = huffmanDecode(raw)?
+    val decoded = match huffmanDecode(raw) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
     Ok(value = StrResult(octets = decoded, offset = start + len))
   } else {
     Ok(value = StrResult(octets = raw, offset = start + len))
@@ -383,13 +384,17 @@ pub func decodeStringLiteralAt(bytes: in slice[Byte], offset: in Int): Result[St
 // §6. Octet <-> String (Latin-1) bridge.
 // =============================================================================
 /// Interpret an octet string as a Latin-1 `String` (code point i == octet i).
+///
+/// Built via `Std.Encoding.codepointToString` rather than
+/// `"" + Char.fromInt(octet)`: `String + Char` concatenation has no
+/// `--target native` codegen (issue #6237; see that function's own header).
 @pure
 @experimental
 pub func octetsToString(octets: in slice[Byte]): String {
   var acc = ""
   var i = 0
   while i < octets.length {
-    acc = acc + ("" + Char.fromInt(octets[i].toInt()))
+    acc = acc + codepointToString(octets[i].toInt())
     i = i + 1
   }
   acc
@@ -756,29 +761,35 @@ pub func decodeHeaderBlock(decoder: inout HpackDecoder, block: in slice[Byte]): 
   while offset < block.length {
     val b0 = block[offset].toInt()
     if b0 >= 128 {
-      val ir = decodeIntegerAt(block, offset, 7)?
+      val ir = match decodeIntegerAt(block, offset, 7) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
       if ir.value == 0 {
         return Err(error = InvalidIndex(index = 0))
       }
-      val hf = resolveIndex(decoder.table, ir.value)?
+      val hf = match resolveIndex(decoder.table, ir.value) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
       outList.add(hf)
       offset = ir.offset
       sawHeader = true
     } else if b0 >= 64 {
-      offset = decodeLiteralField(decoder, block, offset, 6, true, outList)?
+      offset = match decodeLiteralField(decoder, block, offset, 6, true, outList) {
+        case Ok(v) -> v
+        case Err(e) -> return Err(error = e)
+      }
       sawHeader = true
     } else if b0 >= 32 {
       if sawHeader {
         return Err(error = SizeUpdateAfterHeader)
       }
-      val ir = decodeIntegerAt(block, offset, 5)?
+      val ir = match decodeIntegerAt(block, offset, 5) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
       if ir.value > decoder.maxProtocolSize {
         return Err(error = TableSizeUpdateTooLarge(requested = ir.value, maxAllowed = decoder.maxProtocolSize))
       }
       decoder.table = dynamicTableResize(decoder.table, ir.value)
       offset = ir.offset
     } else {
-      offset = decodeLiteralField(decoder, block, offset, 4, false, outList)?
+      offset = match decodeLiteralField(decoder, block, offset, 4, false, outList) {
+        case Ok(v) -> v
+        case Err(e) -> return Err(error = e)
+      }
       sawHeader = true
     }
   }
@@ -793,19 +804,19 @@ func decodeLiteralField(
   addToTable: in Bool,
   outList: in List[HeaderField],
 ): Result[Int, HpackError] {
-  val ir = decodeIntegerAt(block, offset, prefixBits)?
+  val ir = match decodeIntegerAt(block, offset, prefixBits) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
   val nameIndex = ir.value
   var nameStr = ""
   var noff = ir.offset
   if nameIndex == 0 {
-    val sr = decodeStringLiteralAt(block, noff)?
+    val sr = match decodeStringLiteralAt(block, noff) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
     nameStr = octetsToString(sr.octets)
     noff = sr.offset
   } else {
-    val hf = resolveIndex(decoder.table, nameIndex)?
+    val hf = match resolveIndex(decoder.table, nameIndex) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
     nameStr = hf.name
   }
-  val vr = decodeStringLiteralAt(block, noff)?
+  val vr = match decodeStringLiteralAt(block, noff) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
   val valueStr = octetsToString(vr.octets)
   outList.add(HeaderField(name = nameStr, value = valueStr))
   if addToTable {
@@ -874,15 +885,19 @@ pub func encodeHeaderList(encoder: inout HpackEncoder, headers: in List[HeaderFi
   var i = 0
   while i < headers.count {
     val h = headers[i]
-    encodeHeaderField(encoder, acc, h)?
+    match encodeHeaderField(encoder, acc, h) {
+      case Ok(_) -> {
+      }
+      case Err(e) -> return Err(error = e)
+    }
     i = i + 1
   }
   Ok(value = acc.toArray())
 }
 
 func encodeHeaderField(encoder: inout HpackEncoder, acc: in List[Byte], h: in HeaderField): Result[Unit, HpackError] {
-  val nameOctets = stringToOctets(h.name)?
-  val valueOctets = stringToOctets(h.value)?
+  val nameOctets = match stringToOctets(h.name) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
+  val valueOctets = match stringToOctets(h.value) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
   match findExactIndex(encoder.table, h.name, h.value) {
     case Some(idx) -> {
       appendSlice(acc, encodeIndexedField(idx))

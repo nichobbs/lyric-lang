@@ -796,3 +796,54 @@ test "recursive delete does not traverse a directory symlink (#4833, ASan)" {
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "directory symlink is unlinked, not traversed")
 }
+
+test "Std.Char native kernel: code-point bridge, ASCII classification, case conversion, and Hpack Huffman round-trip (ASan) (#6811)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Char\n" + "import Std.HttpEngine.Hpack\n" +
+    "func main(): Int {\n" +
+    "  if toInt('A') != 65 {\n    return 1\n  }\n" +
+    "  if fromInt(97) != 'a' {\n    return 2\n  }\n" +
+    "  if not isLetter('Q') {\n    return 3\n  }\n" +
+    "  if isLetter('5') {\n    return 4\n  }\n" +
+    "  if not isDigit('7') {\n    return 5\n  }\n" +
+    "  if isDigit('x') {\n    return 6\n  }\n" +
+    "  if not isLetterOrDigit('9') {\n    return 7\n  }\n" +
+    "  if isLetterOrDigit('!') {\n    return 8\n  }\n" +
+    "  if not isUpper('Z') {\n    return 9\n  }\n" +
+    "  if isUpper('z') {\n    return 10\n  }\n" +
+    "  if not isLower('m') {\n    return 11\n  }\n" +
+    "  if isLower('M') {\n    return 12\n  }\n" +
+    "  if not isPunctuation('!') {\n    return 13\n  }\n" +
+    "  if not isPunctuation('_') {\n    return 14\n  }\n" +
+    "  if isPunctuation('|') {\n    return 15\n  }\n" +
+    "  if isPunctuation('+') {\n    return 16\n  }\n" +
+    "  if isPunctuation('$') {\n    return 17\n  }\n" +
+    "  if not isControl(fromInt(9)) {\n    return 18\n  }\n" +
+    "  if isControl('a') {\n    return 19\n  }\n" +
+    "  if toUpper('q') != 'Q' {\n    return 20\n  }\n" +
+    "  if toLower('Q') != 'q' {\n    return 21\n  }\n" +
+    "  if toUpper('9') != '9' {\n    return 22\n  }\n" +
+    "  if toLower('9') != '9' {\n    return 23\n  }\n" +
+    "  val bytes: List[Byte] = newList()\n" +
+    "  bytes.add(104.toByte())\n" +
+    "  bytes.add(101.toByte())\n" +
+    "  bytes.add(108.toByte())\n" +
+    "  bytes.add(108.toByte())\n" +
+    "  bytes.add(111.toByte())\n" +
+    "  val octets = bytes.toArray()\n" +
+    "  val encoded = huffmanEncode(octets)\n" +
+    "  if encoded.length != 4 {\n    return 24\n  }\n" +
+    "  match huffmanDecode(encoded) {\n" +
+    "    case Ok(decoded) -> {\n" +
+    "      if octetsToString(decoded) != \"hello\" {\n        return 25\n      }\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n      return 26\n    }\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(
+    r.exitCode,
+    42,
+    "Std.Char native kernel (code-point bridge + ASCII classification/case conversion) and Hpack's Huffman codec (its consumer) both work on --target native"
+  )
+}
