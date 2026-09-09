@@ -35151,6 +35151,60 @@ func registerRestoredFunc(
   if not cctx.funcParamTypes.containsKey(fqn) {
     cctx.funcParamTypes.add(fqn, hintParamTypes)
   }
+  // #3273 item 4: mirror addPackageTokens' `funcParamFnInner`/`funcParamFnRetType`
+  // registration (in-bundle only, previously) for a RESTORED function's
+  // function-typed parameters too. Without this, a lambda literal passed
+  // *directly* to a restored function's `(...) -> T`-typed parameter never
+  // gets its declared inner/return types propagated (the #1939/#6511 call-site
+  // logic keys off these two maps, populated ONLY here and in addPackageTokens)
+  // — so the lifted lambda body falls back to the Uniform Func ABI's
+  // `declaredRetTy = Object`, and a bare union-case construction whose OTHER
+  // type-parameter slot isn't pinned by an argument (e.g. `E` in a bare
+  // `Ok(v)` closure body returning `Result[T, E]`) silently erases that slot
+  // to `object` — a mismatched TypeSpec instantiation that a later `match`
+  // inside the restored library rejects as "match not exhaustive" (or
+  // dispatches to the wrong arm). Unlike addPackageTokens, a restored
+  // function's `@externTarget`-ness is NOT resolvable here: the contract
+  // metadata that reconstructs `fn` (`Lyric.ContractMeta.reprForFunc` /
+  // `Lyric.RestoredPackages.renderDecl`) never round-trips annotations, so
+  // `fn.annotations` is always empty and `hasExternTargetMsil` can never
+  // return true for a restored function. Every TFunction param therefore
+  // always takes the plain declared-return-type path below (never the FFI
+  // delegate-bridging `resolveValueTaskGenericMsilType` resolution
+  // addPackageTokens applies for a same-package `@externTarget` function) —
+  // tracked as a known gap, #7063.
+  val arityKey = fqn + "/" + toString(fn.params.count)
+  var rpfi = 0
+  while rpfi < fn.params.count {
+    match fn.params[rpfi].ty.kind {
+      case TFunction(rFnParams, rFnRetTe) -> {
+        val rInner: List[MsilType] = newList()
+        var ripfi = 0
+        while ripfi < rFnParams.count {
+          rInner.add(typeExprToMsilCtx(cctx, rFnParams[ripfi], packageName))
+          ripfi = ripfi + 1
+        }
+        val raKey = arityKey + "#" + toString(rpfi)
+        val rfKey = fqn + "#" + toString(rpfi)
+        if not cctx.funcParamFnInner.containsKey(raKey) {
+          cctx.funcParamFnInner.add(raKey, rInner)
+        }
+        if not cctx.funcParamFnInner.containsKey(rfKey) {
+          cctx.funcParamFnInner.add(rfKey, rInner)
+        }
+        val rPlainFnRetMsil = typeExprToMsilCtx(cctx, rFnRetTe, packageName)
+        if not cctx.funcParamFnRetType.containsKey(raKey) {
+          cctx.funcParamFnRetType.add(raKey, rPlainFnRetMsil)
+        }
+        if not cctx.funcParamFnRetType.containsKey(rfKey) {
+          cctx.funcParamFnRetType.add(rfKey, rPlainFnRetMsil)
+        }
+      }
+      case _ -> {
+      }
+    }
+    rpfi = rpfi + 1
+  }
 }
 
 // Erase a value-type scalar parameter MsilType to MObject for the cross-package

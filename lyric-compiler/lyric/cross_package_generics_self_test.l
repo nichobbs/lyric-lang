@@ -513,3 +513,109 @@ test "cross-package generic function over List[consumer-defined type] (#6364)" {
   assertEqual(lines[0], "gizmo", "cpgen_fn_list: firstOrDefault(non-empty) = first element")
   assertEqual(lines[1], "fallback", "cpgen_fn_list: firstOrDefault(empty) = default")
 }
+
+// Like `buildAndRunConsumer` but also copies the compiled `Lyric.Stdlib.dll`
+// beside the consumer output, so a consumer that constructs/matches a
+// STDLIB generic union (`Result[T, E]`, `Option[T]`) directly — not merely a
+// user-defined one — resolves its cross-assembly type references at run
+// time. Every other test in this file exercises USER-defined generics (Box,
+// Maybe) or a mono-specialised stdlib FUNCTION call (whose body is inlined,
+// so it never touches the DLL at run time) — this is the first to construct
+// a real stdlib generic case class across the restored boundary.
+func buildAndRunConsumerWithStdlib(
+  tmpDir: in String,
+  consumerPkgName: in String,
+  consumerSource: in String,
+  consumerAsmName: in String,
+  producerPkgName: in String,
+  producerDllPath: in String,
+): Capture.CaptureResult {
+  val dllPath = Path.join(tmpDir, consumerAsmName + ".dll")
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkPkg(consumerPkgName, consumerSource))
+  val restored: List[String] = newList()
+  restored.add(producerPkgName + "\t" + producerDllPath)
+  val req = Emitter.EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = consumerAsmName,
+    outputPath = dllPath,
+    target = Emitter.Dotnet,
+    restoredDllPaths = restored,
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = newList(),
+    nugetAssemblyPaths = newList(),
+    defines = newList()
+  )
+  val result = Emitter.emitProject(req)
+  match result.outputPath {
+    case None -> panic("buildAndRunConsumerWithStdlib(" + consumerAsmName + "): compilation failed")
+    case Some(_) -> ()
+  }
+  Emitter.copyStdlibDllsBeside(dllPath, Emitter.findCompiledStdlibDir())
+  writeRuntimeConfig(dllPath)
+  val args: List[String] = newList()
+  args.add("exec")
+  args.add(dllPath)
+  Capture.runCaptureWithDiagnostics("dotnet", args, "")
+}
+
+// #3273 item 4: a consumer closure LITERAL passed DIRECTLY as a call
+// argument, invoked and matched INSIDE a restored library, must construct
+// the stdlib `Result[T, E]` union case with BOTH type parameters pinned
+// correctly, not just the one an argument happens to cover.
+// `matchClosure`'s function-typed parameter is restored (cross-assembly),
+// so the lambda literal `{ -> Ok(42) }` passed directly at the call site
+// has no in-bundle `addPackageTokens` registration to inherit its declared
+// `() -> Result[Int, String]` return type from — before the fix,
+// `registerRestoredFunc` never populated
+// `funcParamFnInner`/`funcParamFnRetType` for a restored function's
+// function-typed parameters (only `addPackageTokens`, for in-bundle ones,
+// did), so the lifted lambda body fell back to the Uniform Func ABI's
+// `declaredRetTy = Object`: `Ok(42)` built a `Result_Ok<Int, Object>` (the
+// `E` slot, unreachable from the `Ok` payload alone, erased) instead of
+// `Result_Ok<Int, String>` — an `InvalidCastException` unpacking the boxed
+// return at the restored `matchClosure`'s `f()` call site. `Err(...)` is
+// unaffected by this precise erasure (its own payload pins `E` directly)
+// but was exercised too for symmetry.
+//
+// NOT covered here (confirmed a SEPARATE, pre-existing, non-restored-
+// specific bug, out of #3273's restored-boundary scope): a closure bound to
+// a `val` FIRST and passed BY NAME (`val g: () -> Result[Int, String] = {
+// -> Ok(7) }; matchClosure(g)`) still panics identically — reproduced with
+// zero restored-dependency plumbing at all (single in-bundle file, no
+// import). The direct-argument detection this fix extends
+// (`cctx.lambdaParamTypes`/`lambdaRetTypes`, #1939/#6511) only fires when
+// `unwrapParenExpr(callArgExpr(...)).kind` is literally `ELambda` at the
+// call site; a call argument that's an `EPath` reference to a previously-
+// bound closure never reaches it, restored callee or not. Filed as #6877
+// rather than folded in speculatively.
+test "cross-package Result identity: consumer closure literal passed to a restored function's function-typed parameter (#3273)" {
+  val tmpDir = freshTempDir("cpgen-result-closure")
+  val producerSrc = "package CpGen.ResultLib\n" + "\n" + "pub func matchClosure(f: () -> Result[Int, String]): Int {\n" +
+    "  match f() {\n" +
+    "    case Ok(v) -> v\n" +
+    "    case Err(_) -> -1\n" +
+    "  }\n" +
+    "}\n"
+  val producerDll = buildDll(tmpDir, "CpGen.ResultLib", producerSrc, "CpGen.ResultLib")
+  val consumerSrc = "package CpGen.ResultApp\n" + "\n" + "import CpGen.ResultLib\n" + "\n" + "func main(): Unit {\n" +
+    "  println(matchClosure({ -> Ok(42) }))\n" +
+    "  println(matchClosure({ -> Err(\"boom\") }))\n" +
+    "}\n"
+  val captured = buildAndRunConsumerWithStdlib(
+    tmpDir,
+    "CpGen.ResultApp",
+    consumerSrc,
+    "CpGen.ResultApp",
+    "CpGen.ResultLib",
+    producerDll
+  )
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cpgen_result_closure: exit 0 (stderr=" + captured.stderr + ")")
+  val lines = Str.split(Str.trim(captured.stdout), "\n")
+  assertEqualInt(lines.count, 2, "cpgen_result_closure: two output lines")
+  assertEqual(lines[0], "42", "cpgen_result_closure: direct Ok(42) literal dispatches to the Ok arm")
+  assertEqual(lines[1], "-1", "cpgen_result_closure: direct Err(\"boom\") literal dispatches to the Err arm")
+}
