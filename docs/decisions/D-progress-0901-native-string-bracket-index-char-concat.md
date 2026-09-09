@@ -70,6 +70,17 @@ incomplete for exotic shapes elsewhere in this backend: the common
 real-world idioms (an annotated or literal-initialized local, a typed
 parameter, direct bracket-index use) are exactly what #6237's own repro
 and the `lyric-auth`/`web.l` call sites needing this fix actually use.
+Two related gaps are explicitly OUT of this fix's scope, per review
+feedback on the PR: compound assignment (`s += someCharVar`) still
+routes through `lowerAssign`'s `+=` path (`coerceTo`, which has no
+Char->String widening arm) and hits the same pre-existing panic — this
+PR only widens the `+` binary operator, not `+=`; and `exprIsCharTyped`'s
+`s[i]`-is-Char derived rule only recognizes a String-typed *receiver*
+via `exprIsStringTyped`'s existing tracking, so e.g. a `Map[Int, Char]`
+value indexed inline (`"prefix: " + someMap[k]`) is not recognized
+either. Neither is a regression — both panicked identically before this
+PR — and both are consistent with the documented best-effort scope
+above, not separately tracked.
 
 **Verification.** New cases in `lyric-rt/test/lyric_rt_test.c`:
 `lyric_string_char_at` across an ASCII string and a multi-byte UTF-8
@@ -84,14 +95,14 @@ multi-byte decode, plus an out-of-bounds panic case; `String + Char`/
 syntax (exercising the annotation-driven half of `charnessOfBinding`
 independent of literal inference), a `Char`-typed function parameter,
 and a direct `s[i]` used inline in a binop with no intervening binding
-at all. `make -C lyric-rt test` and the full `native-backend-self-tests`
-self-test list (via `make self-test NAME=llvm_codegen`, using the
-freshly staged `<libdir>/selfhosted/` compiler DLLs) both pass with zero
-regressions; the ASan-linked cases in that suite fail in this sandbox
-only because `libclang_rt.asan-x86_64.a` is not installed here — a
-pre-existing environment gap unrelated to this change (confirmed by
-their identical failure mode being present before any of this change's
-edits).
+at all. `make -C lyric-rt test`/`test-asan` and the full
+`native-backend-self-tests` self-test list (`llvm_ir_self_test.l`,
+`llvm_codegen_self_test.l`, `llvm_heap_self_test.l`,
+`llvm_ffi_self_test.l`, `llvm_collections_self_test.l`,
+`llvm_stdlib_self_test.l` — via `make self-test NAME=llvm_codegen` and
+direct `LYRIC_LOAD_COMPILER=1` runs, using the freshly staged
+`<libdir>/selfhosted/` compiler DLLs) pass with zero regressions,
+including every ASan-linked case in that list.
 
 **Related:** #6237, #6240 (the broader native `String` search-method
 audit this issue was split out of — #6588 already covered its other six
@@ -100,3 +111,41 @@ and shipped separately), D-progress-831 (the #6588 fix this extends),
 `native/plan/03-type-mapping.md` (`Char`'s UTF-8-iteration note),
 `native/plan/08-work-items.md` (N9.3/N9.6/N9.7 write-ups updated),
 `docs/01-language-reference.md` §12.1 (updated).
+
+**Addendum (#7010) — `Ctx.varIsChar` leaked stale entries across a name
+shadow at three of `bindLocal`'s eight call sites.** `claude-review`
+found this PR's `markVarChar` bookkeeping was applied at only 4 of the
+8 places `bindLocal` binds a name: the `for`-loop element bind, the
+tuple-destructure bind (`bindTuplePattern`'s `PBinding` arm), and the
+match-arm pattern bind (`applyPatternBinds`) all bound a new value
+without clearing or re-setting any prior `varIsChar` entry for that
+name. Since `Map[String, Bool]` keys purely by name, not by scope
+depth, a `val c: Char = 'X'` followed by a `for c in someIntList { ... }`
+(or a tuple/match rebind of `c` to a non-Char value) left the stale
+`true` entry in place — `c.toString()` inside the new scope would then
+silently route through `emitToString`'s Char arm instead of the correct
+`Int` arm, printing the wrong output with no diagnostic.
+
+Fixed by adding `markVarChar(ctx, name, false)` immediately after each
+of the three previously-unguarded `bindLocal` calls, matching the
+remove-then-add convention `bindLocal` itself already uses for
+`varTypes`/`varSlots`. The `false` is unconditional at these three
+sites — this fix closes the staleness bug (an old `true` surviving a
+rebind) without attempting genuine Char-detection for a `for`-loop
+element, tuple-destructured field, or match-bound payload; a value that
+is genuinely a `Char` at one of these three sites still hits this
+backend's pre-existing untracked-Char panic, which is a documented,
+separate best-effort-scope gap (see above), not a new regression.
+
+**Verification.** Three new regression cases in
+`llvm_codegen_self_test.l`, each shadowing a `val c: Char = 'X'` with a
+non-Char rebind through one of the three fixed sites and asserting
+`c.toString()` on the new binding formats as the correct decimal
+number rather than the stale Char glyph: a `for`-loop shadow (iterating
+a `List[Int]`), a tuple-destructure shadow (`val (c, _) = (65, 66)`),
+and a match-arm shadow (a non-generic `union Box { case Full(v: Int)
+case Empty }`, since `--target native` does not yet support generic
+types per Phase N1 — `Option[Int]` was not usable here). All three
+failed against the pre-fix compiler and pass against the fix. Full
+`llvm_codegen_self_test.l` (38 cases, including every pre-existing ASan
+case) passes with zero regressions.
