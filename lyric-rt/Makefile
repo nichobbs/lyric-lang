@@ -28,6 +28,10 @@ all: $(BUILD)/lyric_rt.a
 $(BUILD)/%.o: src/%.c include/lyric_rt.h | $(BUILD)
 	$(CC) $(CFLAGS) -Iinclude -c $< -o $@
 
+# lyric_string.c #includes the generated Unicode case-folding tables
+# (#6779); list it explicitly so editing the .inc alone triggers a rebuild.
+$(BUILD)/lyric_string.o: src/lyric_unicode_case_tables.inc
+
 $(BUILD)/lyric_rt.a: $(OBJS)
 	$(AR) rcs $@ $(OBJS)
 
