@@ -1895,40 +1895,42 @@ form with the import in scope call the explicit
 | `s.contains(sub)` | `Bool` | |
 | `s.startsWith(prefix)` | `Bool` | |
 | `s.endsWith(suffix)` | `Bool` | |
-| `s.toLower()` | `String` | culture-invariant fold (`String.ToLowerInvariant` on .NET); narrower on `--target native`, see below |
-| `s.toUpper()` | `String` | culture-invariant fold (`String.ToUpperInvariant` on .NET); not yet implemented on `--target native` |
+| `s.toLower()` | `String` | culture-invariant fold (`String.ToLowerInvariant` on .NET) |
+| `s.toUpper()` | `String` | culture-invariant fold (`String.ToUpperInvariant` on .NET) |
 
 String `==` / `!=` compare by value (not reference identity). An empty-string
 check is the `Std.String.isEmpty(s)` free function (`s.length == 0`), not a
 method-syntax form.
 
-**`--target native` coverage note (#6588, #6778, #6755, #6240):** the ten
-methods `.trim()`/`.trimStart()`/`.trimEnd()`/`.replace()`/`.toLower()`/
-`.indexOf()`/`.lastIndexOf()`/`.startsWith()`/`.contains()`/`.endsWith()`
-above are implemented for `--target native` (`lyric-rt/src/lyric_string.c`),
-matching the dotnet/JVM semantics documented here (including
-`.lastIndexOf()`'s same import-sensitive `Option[Int]` gate), with two
-exceptions.
-`s.toLower()` on native applies a genuine Unicode simple-case fold, but
-only across five scripts — Basic Latin, Latin-1 Supplement, Latin
-Extended-A, Greek, and Cyrillic — rather than the full Unicode Character
-Database `ToLowerInvariant`/`toLowerCase` use on the other two targets;
-every other cased script (e.g. Armenian, Georgian, Deseret) passes
-through unchanged on native today. Widening this is tracked in #6779.
+**`--target native` coverage note (#6588, #6778, #6755, #6240, #6779):** the
+eleven methods `.trim()`/`.trimStart()`/`.trimEnd()`/`.replace()`/
+`.toLower()`/`.toUpper()`/`.indexOf()`/`.lastIndexOf()`/`.startsWith()`/
+`.contains()`/`.endsWith()` above are implemented for `--target native`
+(`lyric-rt/src/lyric_string.c`), matching the dotnet/JVM semantics
+documented here (including `.lastIndexOf()`'s same import-sensitive
+`Option[Int]` gate).
+`s.toLower()`/`s.toUpper()` on native apply a genuine Unicode *simple* case
+fold generated from the full Unicode Character Database's own
+`UnicodeData.txt` (`scripts/gen_unicode_case_tables.py`, checked-in
+output — no network access needed to build), not the narrower five-script
+hand-written table `.toLower()` originally shipped with. This is still
+not the complete `SpecialCasing.txt` rule set: no locale-conditional
+Turkish/Azeri dotless-I folding of plain ASCII "I", no German ß -> "SS"
+expansion, no final-sigma positional form — every mapping is
+unconditional and every output is a single scalar value, matching the
+other two targets' own simple-fold behavior when no locale is specified
+(`ToLowerInvariant`/`toLowerCase(Locale.ROOT)`-equivalent).
 `s.replace(old, new)` on native treats an empty `old` as a no-op —
 dotnet's `String.Replace` throws `ArgumentException` on an empty old
 value and JVM's `String.replace` instead interleaves `new` between every
 character; this runtime has no exception mechanism to surface the
 dotnet behavior and neither host quirk is a clearly better default to
-copy, so native picks the same input back unchanged. `s.toUpper()` has
-no native implementation at all yet (`.toString()`/`.substring()`/the
-ten methods above are the only String scalar methods native currently
-lowers as of this note; `s[i]` bracket indexing and `String + Char`
-concatenation are tracked separately in #6237). Native's indices are
-byte offsets into the UTF-8 representation rather than the UTF-16
-code-unit offsets `.length`/`s[i]` use on dotnet/JVM (D-N-006) — a
-pre-existing target divergence, unrelated to #6588/#6778, not newly
-introduced by these methods.
+copy, so native picks the same input back unchanged. `s[i]` bracket
+indexing and `String + Char` concatenation remain unimplemented on
+native, tracked separately in #6237. Native's indices are byte offsets
+into the UTF-8 representation rather than the UTF-16 code-unit offsets
+`.length`/`s[i]` use on dotnet/JVM (D-N-006) — a pre-existing target
+divergence, unrelated to these methods.
 
 ## 13. Tooling
 
