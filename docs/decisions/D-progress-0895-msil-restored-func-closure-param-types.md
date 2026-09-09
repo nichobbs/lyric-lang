@@ -1,4 +1,4 @@
-# D-progress-887 — MSIL codegen: a consumer closure literal passed to a restored function's function-typed parameter now propagates the declared inner/return types, fixing stdlib `Result[T, E]` identity across the restored-package boundary (#3273 item 4)
+# D-progress-895 — MSIL codegen: a consumer closure literal passed to a restored function's function-typed parameter now propagates the declared inner/return types, fixing stdlib `Result[T, E]` identity across the restored-package boundary (#3273 item 4)
 
 **Status:** Shipped.
 
