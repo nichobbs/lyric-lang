@@ -166,7 +166,8 @@ static void test_strings(void) {
 }
 
 /* Trim / lowercase / search intrinsics behind `.trim()`, `.toLower()`,
- * `.indexOf()`, `.startsWith()`, `.contains()`, `.endsWith()` (#6588). */
+ * `.indexOf()`, `.lastIndexOf()`, `.startsWith()`, `.contains()`,
+ * `.endsWith()` (#6588, #6755). */
 static void test_string_trim_case_search(void) {
     LyricString* padded = lyric_string_from_literal((const uint8_t*)"  hi there  ", 12);
     LyricString* trimmed = lyric_string_trim(padded);
@@ -262,6 +263,22 @@ static void test_string_trim_case_search(void) {
     CHECK(!lyric_string_contains(haystack, needleMissing));
     CHECK(lyric_string_contains(haystack, empty0));
 
+    /* .lastIndexOf(): a repeated needle finds the LAST occurrence (unlike
+     * .indexOf()'s first), not-found (-1 sentinel), and the empty-needle
+     * case matches at haystack.length (not 0), mirroring the dotnet/JVM
+     * twins' LastIndexOf("")/lastIndexOf(""). */
+    LyricString* repeated = lyric_string_from_literal((const uint8_t*)"hello world hello", 17);
+    LyricString* helloNeedle = lyric_string_from_literal((const uint8_t*)"hello", 5);
+    CHECK(lyric_string_last_index_of(repeated, helloNeedle) == 12);
+    CHECK(lyric_string_index_of(repeated, helloNeedle) == 0);
+    CHECK(lyric_string_last_index_of(repeated, empty0) == (int64_t)lyric_string_len(repeated));
+    CHECK(lyric_string_last_index_of(haystack, needleFound) == 6);
+    CHECK(lyric_string_last_index_of(haystack, needleMissing) == -1);
+    CHECK(lyric_string_last_index_of(haystack, empty0) == (int64_t)lyric_string_len(haystack));
+    CHECK(lyric_string_last_index_of(empty0, needleFound) == -1);
+    CHECK(lyric_string_last_index_of(empty0, empty0) == 0);
+    CHECK(lyric_string_last_index_of(haystack, helloOnly) == 0);
+
     /* .startsWith() / .endsWith(): match, mismatch, over-length needle, and
      * the empty-prefix/-suffix edge case (always true). */
     LyricString* worldSuffix = lyric_string_from_literal((const uint8_t*)"world", 5);
@@ -308,6 +325,8 @@ static void test_string_trim_case_search(void) {
     lyric_release(worldSuffix);
     lyric_release(wrongPrefix);
     lyric_release(tooLong);
+    lyric_release(repeated);
+    lyric_release(helloNeedle);
 }
 
 static void test_weak(void) {

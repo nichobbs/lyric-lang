@@ -138,10 +138,14 @@ LyricString* lyric_string_substring(LyricString* s, int64_t start, int64_t len);
  * (D-N-006).  An empty needle/prefix/suffix matches everywhere, mirroring
  * the dotnet/JVM twins.  `_index_of` returns the byte offset of the first
  * match, or -1 when absent (the sentinel `Std.String.indexOf` wraps into
- * `Option[Int]`). */
+ * `Option[Int]`).  `_last_index_of` is the backward variant: the byte
+ * offset of the LAST match, or -1 when absent; an empty needle matches at
+ * `haystack.length` (not 0), mirroring the dotnet/JVM twins'
+ * `LastIndexOf("")`/`lastIndexOf("")`. */
 LyricString* lyric_string_trim(LyricString* s);
 LyricString* lyric_string_to_lower(LyricString* s);
 int64_t      lyric_string_index_of(LyricString* haystack, LyricString* needle);
+int64_t      lyric_string_last_index_of(LyricString* haystack, LyricString* needle);
 int32_t      lyric_string_starts_with(LyricString* s, LyricString* prefix);
 int32_t      lyric_string_contains(LyricString* haystack, LyricString* needle);
 int32_t      lyric_string_ends_with(LyricString* s, LyricString* suffix);

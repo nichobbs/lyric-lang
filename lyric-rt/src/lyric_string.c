@@ -373,6 +373,27 @@ int32_t lyric_string_contains(LyricString* haystack, LyricString* needle) {
     return lyric_string_index_of(haystack, needle) >= 0 ? 1 : 0;
 }
 
+/* Backward variant of `find_substring`: the LAST matching byte offset, or
+ * -1.  An empty needle matches at `haystack.length` (not offset 0),
+ * mirroring the dotnet/JVM twins' `String.LastIndexOf("")` /
+ * `String.lastIndexOf("")`. */
+static int64_t find_substring_last(const uint8_t* hay, int64_t hlen, const uint8_t* needle, int64_t nlen) {
+    if (nlen == 0) return hlen;
+    if (nlen > hlen) return -1;
+    for (int64_t i = hlen - nlen; i >= 0; i--) {
+        if (memcmp(hay + i, needle, (size_t)nlen) == 0) return i;
+    }
+    return -1;
+}
+
+int64_t lyric_string_last_index_of(LyricString* haystack, LyricString* needle) {
+    int64_t hlen = haystack ? haystack->len : 0;
+    int64_t nlen = needle ? needle->len : 0;
+    const uint8_t* hay = hlen > 0 ? LYRIC_STRING_DATA(haystack) : NULL;
+    const uint8_t* nee = nlen > 0 ? LYRIC_STRING_DATA(needle) : NULL;
+    return find_substring_last(hay, hlen, nee, nlen);
+}
+
 int32_t lyric_string_starts_with(LyricString* s, LyricString* prefix) {
     int64_t slen = s ? s->len : 0;
     int64_t plen = prefix ? prefix->len : 0;
