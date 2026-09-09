@@ -1902,13 +1902,13 @@ String `==` / `!=` compare by value (not reference identity). An empty-string
 check is the `Std.String.isEmpty(s)` free function (`s.length == 0`), not a
 method-syntax form.
 
-**`--target native` coverage note (#6588, #6778, #6755, #6240, #6779):** the
-eleven methods `.trim()`/`.trimStart()`/`.trimEnd()`/`.replace()`/
-`.toLower()`/`.toUpper()`/`.indexOf()`/`.lastIndexOf()`/`.startsWith()`/
-`.contains()`/`.endsWith()` above are implemented for `--target native`
-(`lyric-rt/src/lyric_string.c`), matching the dotnet/JVM semantics
-documented here (including `.lastIndexOf()`'s same import-sensitive
-`Option[Int]` gate).
+**`--target native` coverage note (#6588, #6778, #6755, #6240, #6779,
+#6237):** the eleven methods `.trim()`/`.trimStart()`/`.trimEnd()`/
+`.replace()`/`.toLower()`/`.toUpper()`/`.indexOf()`/`.lastIndexOf()`/
+`.startsWith()`/`.contains()`/`.endsWith()` above are implemented for
+`--target native` (`lyric-rt/src/lyric_string.c`), matching the
+dotnet/JVM semantics documented here (including `.lastIndexOf()`'s same
+import-sensitive `Option[Int]` gate).
 `s.toLower()`/`s.toUpper()` on native apply a genuine Unicode *simple* case
 fold generated from the full Unicode Character Database's own
 `UnicodeData.txt` (`scripts/gen_unicode_case_tables.py`, checked-in
@@ -1925,12 +1925,25 @@ dotnet's `String.Replace` throws `ArgumentException` on an empty old
 value and JVM's `String.replace` instead interleaves `new` between every
 character; this runtime has no exception mechanism to surface the
 dotnet behavior and neither host quirk is a clearly better default to
-copy, so native picks the same input back unchanged. `s[i]` bracket
-indexing and `String + Char` concatenation remain unimplemented on
-native, tracked separately in #6237. Native's indices are byte offsets
-into the UTF-8 representation rather than the UTF-16 code-unit offsets
-`.length`/`s[i]` use on dotnet/JVM (D-N-006) — a pre-existing target
-divergence, unrelated to these methods.
+copy, so native picks the same input back unchanged. Native's indices are
+byte offsets into the UTF-8 representation rather than the UTF-16
+code-unit offsets `.length`/`s[i]` use on dotnet/JVM (D-N-006) — a
+pre-existing target divergence, unrelated to these methods.
+
+**`s[i]` on `--target native` (#6237):** `i` is a byte offset (matching
+`.length`/`.substring`'s existing byte-indexed model), but the character
+produced is the full Unicode scalar value decoded via UTF-8 iteration
+starting at that offset — never a raw byte — so `s[i]` still always
+yields a genuine `Char`. For ASCII text (where byte offset and codepoint
+index coincide) this matches dotnet/JVM element-for-element; for
+non-ASCII text a caller must still iterate by codepoint-start byte
+offsets, exactly as `.substring` already requires. An out-of-range byte
+offset panics, mirroring `.substring`'s bounds check. `String + Char`
+concatenation and `Char.toString()` are also implemented for
+`--target native`, converting the `Char` via the same UTF-8 encoder
+`s[i]`'s decode inverts (`lyric_string_from_char`). Every `String`
+scalar operation and `s[i]` documented in this section is now implemented
+on `--target native`.
 
 ## 13. Tooling
 
