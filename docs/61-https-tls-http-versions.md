@@ -973,7 +973,7 @@ items marked ∥ are independent and can proceed in parallel.
     (`encodeHeaderList`/`stringToOctets`) remains blocked on the
     pre-existing, separately-owned **issue #6237** (`String` bracket
     indexing, `group:native-string-runtime`) — #6808 stays open, re-scoped
-    to exactly that one remaining blocker._
+    to exactly that one remaining blocker.
 
 Every PR carries its own docs/book/progress-log sync per the working
 conventions; none lands with a silent one-target gap.
