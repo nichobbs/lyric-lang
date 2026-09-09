@@ -1,4 +1,4 @@
-# D-progress-886 — Type checker: T0126 rejects a `for` loop over a non-iterable single-type-param generic (#6720)
+# D-progress-903 — Type checker: T0126 rejects a `for` loop over a non-iterable single-type-param generic (#6720)
 
 **Status:** shipped
 
