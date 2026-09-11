@@ -807,8 +807,6 @@ test "String + Char concatenation and Char.toString(), across literal/annotated-
     "literal, annotated val (s[0]='h'), param, and a direct s[i] all concatenate/format as characters"
   )
 }
-  )
-}
 
 // #7010 (claude-review REQUIRED finding on #6237): `Ctx.varIsChar` is
 // populated at `val`/`let`/`var` binding sites via `markVarChar`, but the
