@@ -2096,12 +2096,23 @@ jobs:
       # (llvm_heap_self_test.l's #5545 test passes 39/39 there) -- so a plain
       # `apt-get install clang` here was silently pinning every native
       # codegen test to an unsupported, ancient LLVM. `update-alternatives`
-      # makes the bare `clang`/`lld`/`ld.lld` names -- the only names this
-      # compiler's `Process.runCapture("clang", ...)` call sites ever invoke,
-      # see `llvm_bridge.l` -- resolve to the pinned version instead of
-      # whatever the distro's default metapackages point at. Guarded by
-      # `command -v clang-18` so a persistent self-hosted runner only pays
-      # this cost once, not on every job run.
+      # makes the bare `clang`/`clang++` names -- the only ones this
+      # compiler's `Process.runCapture("clang", ...)` call sites in
+      # `llvm_bridge.l` actually invoke -- resolve to the pinned version
+      # instead of whatever the distro's default metapackage points at;
+      # `lld`/`ld.lld` are pinned alongside for consistency in case clang's
+      # own default-linker resolution reaches for them, though nothing here
+      # invokes either by name directly. `llvm.sh`'s installed package set
+      # can vary by version/distro, so the explicit `apt-get install` below
+      # guarantees the `-18`-suffixed binaries these `update-alternatives`
+      # calls target actually exist, rather than assuming the script's
+      # default package list includes them. Guarded by `command -v clang-18`
+      # so a persistent self-hosted runner only pays the install cost once,
+      # not on every job run. `llvm.sh` is LLVM's own official installer,
+      # fetched over HTTPS and run as root -- a reasonable, widely-used
+      # pattern, though worth noting this runner is persistent (unlike
+      # GitHub-hosted runners), so unlike an ephemeral runner a compromised
+      # script here could in principle persist across future jobs.
       - name: Install clang/gcc/ASan (self-hosted runners only)
         if: runner.environment == 'self-hosted'
         run: |
@@ -2114,6 +2125,7 @@ jobs:
             chmod +x /tmp/llvm.sh
             sudo /tmp/llvm.sh 18
           fi
+          sudo apt-get install -y --no-install-recommends clang-18 clang++-18 lld-18
           sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
           sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 100
           sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-18 100

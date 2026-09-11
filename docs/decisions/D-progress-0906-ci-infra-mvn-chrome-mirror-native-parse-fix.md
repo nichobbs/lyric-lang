@@ -86,17 +86,30 @@ CI-infrastructure problems, none caused by their own diffs:
    Lyric compiler regression; it's an unpinned toolchain version on one
    machine. Fixed by replacing the plain `apt-get install clang lld`
    with apt.llvm.org's official `llvm.sh` installer pinned to LLVM 18,
-   plus `update-alternatives` so the bare `clang`/`clang++`/`lld`/
-   `ld.lld` names — the only names this compiler's
-   `Process.runCapture("clang", …)` call sites in `llvm_bridge.l` ever
-   invoke — resolve to the pinned version instead of the distro
-   default. Guarded by `command -v clang-18` so a persistent self-hosted
-   runner only pays the install cost once. **Not verified against the
-   real ARM64/focal runner** (unavailable from this environment) —
+   followed by an explicit `apt-get install clang-18 clang++-18 lld-18`
+   (`llvm.sh`'s default package set isn't guaranteed to include every
+   one of these across script/distro versions, so this guarantees the
+   `-18`-suffixed binaries the next step targets actually exist rather
+   than assuming), then `update-alternatives` so the bare `clang`/
+   `clang++` names — the only ones this compiler's
+   `Process.runCapture("clang", …)` call sites in `llvm_bridge.l`
+   actually invoke — resolve to the pinned version instead of the
+   distro default (`lld`/`ld.lld` are pinned alongside for consistency
+   in case clang's own default-linker resolution reaches for them,
+   though nothing here invokes either by name directly — corrected
+   wording per review, the original comment overclaimed this). Guarded
+   by `command -v clang-18` so a persistent self-hosted runner only
+   pays the install cost once. **Not verified against the real
+   ARM64/focal runner** (unavailable from this environment) —
    correctness of the `llvm.sh 18`/focal/arm64 combination will be
    confirmed by this PR's own CI run; if apt.llvm.org lacks arm64
    packages for LLVM 18 on focal specifically, a follow-up pinning a
-   different LLVM major version is the fallback.
+   different LLVM major version is the fallback. Running `llvm.sh` as
+   root over HTTPS is LLVM's own official install method and a
+   reasonable pattern, but worth noting explicitly: unlike an ephemeral
+   GitHub-hosted runner, this self-hosted box is persistent, so a
+   compromised script here could in principle persist across future
+   jobs.
 
 **Verification.** `.github/workflows/ci.yml` parses clean
 (`python3 -c "import yaml; yaml.safe_load(...)"`); the six `apt-get`
@@ -111,6 +124,9 @@ file-local to `llvm_codegen_self_test.l` alone); CI's own
 the same investigation: the self-hosted runner *capacity* problem
 (jobs stuck `queued` for a full 24h then auto-cancelled, tracked
 separately as #7087) is a fleet-capacity issue, not something a
-workflow-file change can fix. It's also not a full audit of every
-`apt-get`/toolchain-install step against every possible transient
-mirror flake — just the two concretely observed here.
+workflow-file change can fix. The Chrome-apt-mirror fix (#2 above) is
+also only applied to `ci.yml`'s 7 sites — `publish.yml`,
+`manual-test.yml`, `seed-candidacy.yml`, and `stage2-self-test.yml`
+all also run `apt-get update` on the same hosted-runner image and are
+presumably susceptible to the identical flake, tracked as a follow-up
+in #7090 rather than bundled into this PR.
