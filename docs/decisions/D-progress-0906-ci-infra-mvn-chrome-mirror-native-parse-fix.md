@@ -32,16 +32,25 @@ CI-infrastructure problems, none caused by their own diffs:
 1. **Maven**: added a self-hosted-only install step to
    `compiler-self-tests-jvm` (`.github/workflows/ci.yml`, right before
    the "JVM auto-FFI bridge self-test" step that calls
-   `make maven-resolver`), mirroring the exact
+   `make maven-resolver`), mirroring the
    `if: runner.environment == 'self-hosted'` pattern
    `native-backend-self-tests` already uses for its clang/gcc install,
    and matching the explicit Maven install `manual-test.yml` already
-   uses for the same JVM-dependency-resolution need.
+   uses for the same JVM-dependency-resolution need. Unlike that
+   clang/gcc step — which is the first step in its job — this one sits
+   after ~40 `background: true` steps in `compiler-self-tests-jvm`, so
+   it also needs `if: always()` (combined as
+   `always() && runner.environment == 'self-hosted'`) or an earlier
+   background step's failure skips it by default (#6712/#6788), which
+   would reproduce the exact #7038 failure this fix exists to close.
+   Caught by review as a REQUIRED finding on the first pass (#7089) and
+   fixed before merge.
 2. **Chrome apt mirror**: prefixed every `apt-get update` invocation in
    `ci.yml` (the three z3 installs, the self-hosted clang/gcc/ASan
    install, the native-AOT-linker clang install, and the Native-AOT-e2e
-   clang install — six sites total, including the new Maven step above)
-   with `sudo rm -f /etc/apt/sources.list.d/google-chrome.list*`. This
+   clang install — six pre-existing sites, plus the new Maven step
+   above, seven total) with
+   `sudo rm -f /etc/apt/sources.list.d/google-chrome.list*`. This
    is a safe, no-op-if-absent removal of an apt source none of these
    steps need, not a checksum bypass — package authentication for
    everything actually being installed is unaffected. Rejected
