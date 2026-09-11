@@ -171,7 +171,7 @@ jobs:
 
       - name: Install Z3 (for the Phase 4 verifier smoke tests)
         if: steps.changes.outputs.has_code_changes == 'true'
-        run: sudo apt-get update && sudo apt-get install -y z3
+        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update && sudo apt-get install -y z3
 
       - name: Cache NuGet packages
         if: steps.changes.outputs.has_code_changes == 'true'
@@ -756,7 +756,7 @@ jobs:
           distribution: temurin
           java-version: '21'
       - name: Install Z3 (for the Phase 4 verifier smoke tests)
-        run: sudo apt-get update && sudo apt-get install -y z3
+        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update && sudo apt-get install -y z3
       - name: Cache NuGet packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -812,7 +812,7 @@ jobs:
           WRAPPER
           chmod +x "$lyric_bin"
       - name: Install Z3 (verifier_self_test's protected-entry range goal needs a real solver)
-        run: sudo apt-get update && sudo apt-get install -y z3
+        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update && sudo apt-get install -y z3
 
       # Parallel step execution — `background: true` / `wait-all: true`
       # ---------------------------------------------------------------
@@ -2085,9 +2085,52 @@ jobs:
       # install -y z3` pattern used elsewhere in this file. Skipped on
       # GitHub-hosted runners, which already ship clang/gcc/ASan, to avoid
       # spending time on a no-op install every run.
+      #
+      # Version-pinned via apt.llvm.org's official installer (#7072): this
+      # self-hosted runner's default distro apt repo resolves the bare
+      # `clang`/`lld` packages to LLVM 10.0 (2020) -- 8 major versions behind
+      # every other environment in this project (clang 18 on GitHub-hosted
+      # `ubuntu-latest`, clang 18 in local dev). LLVM 10 rejects this
+      # compiler's coroutine (`presplitcoroutine`) IR for an async function
+      # returning a generic type -- confirmed NOT reproducible on clang 18
+      # (llvm_heap_self_test.l's #5545 test passes 39/39 there) -- so a plain
+      # `apt-get install clang` here was silently pinning every native
+      # codegen test to an unsupported, ancient LLVM. `update-alternatives`
+      # makes the bare `clang`/`clang++` names -- the only ones this
+      # compiler's `Process.runCapture("clang", ...)` call sites in
+      # `llvm_bridge.l` actually invoke -- resolve to the pinned version
+      # instead of whatever the distro's default metapackage points at;
+      # `lld`/`ld.lld` are pinned alongside for consistency in case clang's
+      # own default-linker resolution reaches for them, though nothing here
+      # invokes either by name directly. `llvm.sh`'s installed package set
+      # can vary by version/distro, so the explicit `apt-get install` below
+      # guarantees the `-18`-suffixed binaries these `update-alternatives`
+      # calls target actually exist, rather than assuming the script's
+      # default package list includes them. Guarded by `command -v clang-18`
+      # so a persistent self-hosted runner only pays the install cost once,
+      # not on every job run. `llvm.sh` is LLVM's own official installer,
+      # fetched over HTTPS and run as root -- a reasonable, widely-used
+      # pattern, though worth noting this runner is persistent (unlike
+      # GitHub-hosted runners), so unlike an ephemeral runner a compromised
+      # script here could in principle persist across future jobs.
       - name: Install clang/gcc/ASan (self-hosted runners only)
         if: runner.environment == 'self-hosted'
-        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends clang gcc build-essential lld
+        run: |
+          set -euo pipefail
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc build-essential lsb-release wget software-properties-common gnupg
+          if ! command -v clang-18 >/dev/null 2>&1; then
+            curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
+            chmod +x /tmp/llvm.sh
+            sudo /tmp/llvm.sh 18
+          fi
+          sudo apt-get install -y --no-install-recommends clang-18 clang++-18 lld-18
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 100
+          sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-18 100
+          sudo update-alternatives --install /usr/bin/lld lld /usr/bin/lld-18 100
+          clang --version
 
       # Point TMPDIR at `runner.temp` before the concurrent `background: true`
       # self-test steps below start. Despite this step's old name, this is NOT
@@ -2993,7 +3036,7 @@ jobs:
 
       # clang and zlib1g-dev are required by the ILCompiler linker pass on Linux.
       - name: Install native-AOT linker prerequisites
-        run: sudo apt-get update -qq && sudo apt-get install -y clang zlib1g-dev
+        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update -qq && sudo apt-get install -y clang zlib1g-dev
 
       # Build a minimal hello-world Lyric program to a native binary, then run
       # it and assert the output.  This exercises the full pipeline:
@@ -5230,6 +5273,28 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_registry_rollback_self_test.l
 
+      # Maven is preinstalled on GitHub-hosted `ubuntu-latest` images but not
+      # on the self-hosted runner image, so `make maven-resolver` below fails
+      # with `mvn: Command not found` whenever this job lands on a self-hosted
+      # runner (#7038). Mirrors the existing self-hosted-only
+      # `sudo apt-get install -y ... clang gcc ...` step in
+      # `native-backend-self-tests`, and the explicit Maven install already
+      # used in `manual-test.yml` for the same JVM dependency-resolution need.
+      #
+      # `always()` (#7089, claude-review REQUIRED finding on #7088): unlike
+      # the clang/gcc install this step is modeled on -- which is the FIRST
+      # step in its job and so has nothing upstream that could skip it --
+      # this step sits after ~40 `background: true` steps, any one of which
+      # can fail and skip every subsequent unguarded step by default (#6712,
+      # #6788, same reasoning as the three `always()`-guarded steps just
+      # above). Without it, this step (and so the auto-FFI bridge step right
+      # after it, which actually needs `mvn`) could still be skipped on a
+      # self-hosted runner whenever an earlier background step fails,
+      # reproducing the exact #7038 failure this PR exists to fix.
+      - name: Install Maven (self-hosted runners only)
+        if: always() && runner.environment == 'self-hosted'
+        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends maven
+
       # JVM auto-FFI bridge self-test (#6565, #6765, #6768) — was only
       # reachable via the local-only `make test-emitter` target, which CI
       # never invokes (#6783).
@@ -6879,7 +6944,7 @@ jobs:
       # PATH before linking -- without it the release e2e step fails at that
       # preflight check instead of building.
       - name: Install clang for Native AOT e2e
-        run: sudo apt-get update -qq && sudo apt-get install -y clang zlib1g-dev binutils
+        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update -qq && sudo apt-get install -y clang zlib1g-dev binutils
 
       - name: CLI project-aware-defaults e2e smoke test
         working-directory: ${{ github.workspace }}
