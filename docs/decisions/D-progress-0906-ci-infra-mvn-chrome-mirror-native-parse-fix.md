@@ -1,4 +1,4 @@
-# D-progress-906 — CI infra: Maven on self-hosted `compiler-self-tests-jvm`, avoid the Chrome apt-mirror flake, and fix the `llvm_codegen_self_test.l` parse error hiding native-backend test results (#7038, #7080, #7081)
+# D-progress-906 — CI infra: Maven on self-hosted `compiler-self-tests-jvm`, avoid the Chrome apt-mirror flake, fix the `llvm_codegen_self_test.l` parse error hiding native-backend test results, and pin a modern clang on the self-hosted native runner (#7038, #7080, #7081, #7072)
 
 **Status:** shipped
 
@@ -69,6 +69,34 @@ CI-infrastructure problems, none caused by their own diffs:
    features #7080 worried might be broken (`lastIndexOf`,
    `trimStart`/`trimEnd`/`replace`, String bracket indexing, String+Char
    concat, and all three #7010 `varIsChar`-shadow-leak cases).
+4. **Ancient clang on the self-hosted native runner (#7072)**: fixing
+   #3 above let `native-backend-self-tests` run far enough for the first
+   time to hit a second masked failure — `llvm_heap_self_test.l` test 35
+   ("a NativeWeak async-function result upgrades correctly and is
+   leak-free (#5545)") failed in CI with `clang: error: expected '{' in
+   function body` on a generated `presplitcoroutine` coroutine function.
+   Investigation of the actual failing job log (not just the error
+   text) found the self-hosted runner (`coolify-runner-…`, ARM64) is
+   still running **clang/lld 10.0** from its distro's default apt repo
+   (Ubuntu 20.04 "focal", inferred from the exact package version
+   strings in the job log — no `/etc/os-release` dump exists to read
+   directly) — 8 major versions behind clang 18 on GitHub-hosted
+   `ubuntu-latest` and in local dev. Reproduced the *opposite* result
+   locally on clang 18.1.3: the same test passes 39/39. This is not a
+   Lyric compiler regression; it's an unpinned toolchain version on one
+   machine. Fixed by replacing the plain `apt-get install clang lld`
+   with apt.llvm.org's official `llvm.sh` installer pinned to LLVM 18,
+   plus `update-alternatives` so the bare `clang`/`clang++`/`lld`/
+   `ld.lld` names — the only names this compiler's
+   `Process.runCapture("clang", …)` call sites in `llvm_bridge.l` ever
+   invoke — resolve to the pinned version instead of the distro
+   default. Guarded by `command -v clang-18` so a persistent self-hosted
+   runner only pays the install cost once. **Not verified against the
+   real ARM64/focal runner** (unavailable from this environment) —
+   correctness of the `llvm.sh 18`/focal/arm64 combination will be
+   confirmed by this PR's own CI run; if apt.llvm.org lacks arm64
+   packages for LLVM 18 on focal specifically, a follow-up pinning a
+   different LLVM major version is the fallback.
 
 **Verification.** `.github/workflows/ci.yml` parses clean
 (`python3 -c "import yaml; yaml.safe_load(...)"`); the six `apt-get`

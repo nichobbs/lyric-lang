@@ -2085,9 +2085,40 @@ jobs:
       # install -y z3` pattern used elsewhere in this file. Skipped on
       # GitHub-hosted runners, which already ship clang/gcc/ASan, to avoid
       # spending time on a no-op install every run.
+      #
+      # Version-pinned via apt.llvm.org's official installer (#7072): this
+      # self-hosted runner's default distro apt repo resolves the bare
+      # `clang`/`lld` packages to LLVM 10.0 (2020) -- 8 major versions behind
+      # every other environment in this project (clang 18 on GitHub-hosted
+      # `ubuntu-latest`, clang 18 in local dev). LLVM 10 rejects this
+      # compiler's coroutine (`presplitcoroutine`) IR for an async function
+      # returning a generic type -- confirmed NOT reproducible on clang 18
+      # (llvm_heap_self_test.l's #5545 test passes 39/39 there) -- so a plain
+      # `apt-get install clang` here was silently pinning every native
+      # codegen test to an unsupported, ancient LLVM. `update-alternatives`
+      # makes the bare `clang`/`lld`/`ld.lld` names -- the only names this
+      # compiler's `Process.runCapture("clang", ...)` call sites ever invoke,
+      # see `llvm_bridge.l` -- resolve to the pinned version instead of
+      # whatever the distro's default metapackages point at. Guarded by
+      # `command -v clang-18` so a persistent self-hosted runner only pays
+      # this cost once, not on every job run.
       - name: Install clang/gcc/ASan (self-hosted runners only)
         if: runner.environment == 'self-hosted'
-        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends clang gcc build-essential lld
+        run: |
+          set -euo pipefail
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc build-essential lsb-release wget software-properties-common gnupg
+          if ! command -v clang-18 >/dev/null 2>&1; then
+            curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
+            chmod +x /tmp/llvm.sh
+            sudo /tmp/llvm.sh 18
+          fi
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 100
+          sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-18 100
+          sudo update-alternatives --install /usr/bin/lld lld /usr/bin/lld-18 100
+          clang --version
 
       # Point TMPDIR at `runner.temp` before the concurrent `background: true`
       # self-test steps below start. Despite this step's old name, this is NOT
