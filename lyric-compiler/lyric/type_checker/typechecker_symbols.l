@@ -204,6 +204,17 @@ pub record SymbolTable {
   /// package shape).
   externBlockPackages: Map[String, Bool]
   // One `impl Iface for Target` conformance, by resolved `TypeId`.
+  /// `<originPackage>` -> the dotted import names that package's own file
+  /// declared (#6689).  Populated once, per package, during signature
+  /// collection (mirroring `symTableSetScope`'s `ip2.name`/`ip2.imports`
+  /// pair). Consulted by `collectCtorFields` so a record/opaque's field
+  /// TYPES resolve under the DECLARING package's own scope, not whatever
+  /// scope happens to be active at the call site that triggered the lookup
+  /// (a constructor call, field read, …) — without this, a field typed
+  /// `List[Item]` in package A resolves `Item` against the CALLING file's
+  /// imports, so a caller that transitively imports an unrelated same-named
+  /// `Item` from package B silently picks B's `Item` instead of A's.
+  packageImports: Map[String, List[String]]
 }
 
 pub record ImplPair {
@@ -243,8 +254,30 @@ pub func newSymbolTable(): SymbolTable {
     externBlockMembers = newMap(),
     externBlockPackages = newMap(),
     symbolPackages = newMap(),
-    symbolPackageMembers = newMap()
+    symbolPackageMembers = newMap(),
+    packageImports = newMap()
   )
+}
+
+// #6689: record `pkg`'s own declared import list, so a later cross-package
+// field-type resolution (`collectCtorFields`) can temporarily resolve under
+// `pkg`'s scope instead of the caller's. Idempotent — the first registration
+// for a given `pkg` wins (mirrors `addSigsFromItems`'s imported-first-wins
+// policy; a package's import list does not change mid-build).
+pub func symTableRegisterPackageImports(tbl: in SymbolTable, pkg: in String, imports: in List[String]): Unit {
+  if not tbl.packageImports.containsKey(pkg) {
+    tbl.packageImports.add(pkg, imports)
+  }
+}
+
+// The import list registered for `pkg` via `symTableRegisterPackageImports`,
+// or an empty list if `pkg` was never registered (e.g. a synthesised/
+// contract-surface check that never ran the T3 signature-collection pass).
+pub func symTablePackageImportsOf(tbl: in SymbolTable, pkg: in String): List[String] {
+  match mapGet(tbl.packageImports, pkg) {
+    case Some(imports) -> imports
+    case None -> newList()
+  }
 }
 
 // Record that `name` is a member of an `extern package { ... }` block
