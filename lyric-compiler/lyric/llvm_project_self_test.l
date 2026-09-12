@@ -215,6 +215,62 @@ test "project build honors [features]/@cfg(feature = ...) gating on a sibling pa
   }
 }
 
+test "two-package project: same-bare-name interfaces from different packages panic with a clear ambiguity error (#4900)" {
+  // Every own project package is fully lowered (`lowerAll = true`, #6809),
+  // so two DIFFERENT packages each declaring an interface named `Shape`
+  // both register with `registerIfaceInfo` — this was previously
+  // unreachable (native multi-package builds didn't exist, and even a
+  // single-package native build never had two same-bare-name interfaces in
+  // scope at once) but is now a real possibility. `typeToN`'s `TRef` case
+  // joins a single-segment type path to itself, so an unqualified `Shape`
+  // reference is resolved ENTIRELY by the bare-name key — silently
+  // overwriting it with whichever interface registers last would route
+  // calls through the wrong vtable with no diagnostic. Assert this fails
+  // loudly at registration instead.
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj6.Shapes1",
+      source = "package Proj6.Shapes1\n" + "pub interface Shape {\n" + "  func area(self: in Self): Int\n" + "}\n" +
+        "pub record Square {\n" +
+        "  side: Int\n" +
+        "}\n" +
+        "impl Shape for Square {\n" +
+        "  func area(self: in Self): Int {\n" +
+        "    self.side * self.side\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj6.Shapes2",
+      source = "package Proj6.Shapes2\n" + "pub interface Shape {\n" + "  func area(self: in Self): Int\n" + "}\n" +
+        "pub record Circle {\n" +
+        "  radius: Int\n" +
+        "}\n" +
+        "impl Shape for Circle {\n" +
+        "  func area(self: in Self): Int {\n" +
+        "    self.radius\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj6.App",
+      source = "package Proj6.App\n" + "import Proj6.Shapes1\n" + "import Proj6.Shapes2\n" + "func main(): Int {\n" +
+        "  0\n" +
+        "}\n"
+    )
+  )
+  assertPanicsWith(
+    "two same-bare-name interfaces from different own-project packages must fail to compile, not silently pick one",
+    "ambiguous interface name",
+    { -> val _ = compileAndRunProject(pkgs) }
+  )
+}
+
 test "a genuinely multi-file [project.packages] entry merges through Emitter.emitNativeProject" {
   // Exercises the `Emitter.emitNativeProject` -> `mergePackageSources` path
   // directly (every other case in this file calls
