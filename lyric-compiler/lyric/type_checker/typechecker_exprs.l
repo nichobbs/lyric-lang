@@ -3022,6 +3022,75 @@ func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorFie
   }
 }
 
+// #6739: shared missing-required-field check, used by both the generic and
+// non-generic constructor paths in `inferConstruction` (originally #3156,
+// scoped to the generic path only — a non-generic record omitting a required
+// field type-checked silently and codegen emitted invalid IL).  Only runs
+// when all supplied args are named: mixed positional/named under-application
+// is rare and out of scope, same as before.  Emits one T0105 per missing
+// field and returns true iff at least one was reported.
+func reportMissingCtorFields(
+  fields: in List[CtorField],
+  args: in List[CallArg],
+  sym: in Symbol,
+  span: in Span,
+  diag: in List[Diagnostic],
+): Bool {
+  var hasPositional = false
+  var hasUnknownName = false
+  var ani = 0
+  while ani < args.count {
+    match args[ani] {
+      case CAPositional(_) -> {
+        hasPositional = true
+      }
+      case CANamed(nm, _, _) -> if not fieldHasName(fields, nm) { hasUnknownName = true }
+    }
+    ani = ani + 1
+  }
+  // #6739 regression guard: `Point(z = 3)` for `Point { x: Int; y: Int }`
+  // supplies only an unrecognized field name — every REAL field looks
+  // "missing" by construction. Reporting T0105 for x/y here would bury the
+  // actual defect (T0101 "no field 'z'") under two confusing, unrelated
+  // diagnostics; defer entirely to the ordinary per-arg T0101 validation
+  // when any supplied name isn't a real field.
+  val missing: List[String] = newList()
+  if not hasPositional and not hasUnknownName {
+    var mfi = 0
+    while mfi < fields.count {
+      val f = fields[mfi]
+      if not f.hasDefault {
+        var supplied = false
+        var si = 0
+        while si < args.count {
+          match args[si] {
+            case CANamed(nm, _, _) -> if nm == f.name { supplied = true }
+            case CAPositional(_) -> {
+            }
+          }
+          si = si + 1
+        }
+        if not supplied {
+          missing.add(f.name)
+        }
+      }
+      mfi = mfi + 1
+    }
+  }
+  if missing.count > 0 {
+    var mi = 0
+    while mi < missing.count {
+      diag.add(
+        errorDiagnostic("T0105", "constructor '" + sym.name + "' is missing required field '" + missing[mi] + "'", span)
+      )
+      mi = mi + 1
+    }
+    true
+  } else {
+    false
+  }
+}
+
 func ctorResultType(sym: in Symbol): Type {
   if ctorIsGeneric(sym) {
     return TyError
@@ -3051,53 +3120,7 @@ func inferConstruction(
     // than the confusing "cannot infer type arguments" T0110.
     val prelimFields: List[CtorField] = newList()
     val _ = collectCtorFields(tbl, sym, prelimFields)
-    // Only perform the missing-field check when all supplied args are named
-    // (no positional args).  Positional args cover fields by declaration index
-    // and the interaction with named args is complex; mixed-mode under-application
-    // is rare and falls through to T0110 as before.
-    var hasPositional = false
-    var ani = 0
-    while ani < args.count {
-      match args[ani] {
-        case CAPositional(_) -> {
-          hasPositional = true
-        }
-        case CANamed(_, _, _) -> {
-        }
-      }
-      ani = ani + 1
-    }
-    val missing: List[String] = newList()
-    if not hasPositional {
-      var mfi = 0
-      while mfi < prelimFields.count {
-        val f = prelimFields[mfi]
-        if not f.hasDefault {
-          var supplied = false
-          var si = 0
-          while si < args.count {
-            match args[si] {
-              case CANamed(nm, _, _) -> if nm == f.name { supplied = true }
-              case CAPositional(_) -> {
-              }
-            }
-            si = si + 1
-          }
-          if not supplied {
-            missing.add(f.name)
-          }
-        }
-        mfi = mfi + 1
-      }
-    }
-    if missing.count > 0 {
-      var mi = 0
-      while mi < missing.count {
-        diag.add(
-          errorDiagnostic("T0105", "constructor '" + sym.name + "' is missing required field '" + missing[mi] + "'", span)
-        )
-        mi = mi + 1
-      }
+    if reportMissingCtorFields(prelimFields, args, sym, span, diag) {
       return TyError
     }
     // Collect field types with generic names in context so type-param fields
@@ -3219,6 +3242,13 @@ func inferConstruction(
   }
   val fields: List[CtorField] = newList()
   val _ = collectCtorFields(tbl, sym, fields)
+  // #6739: generalizes the #3156 missing-required-field check (originally
+  // scoped to the generic-constructor path only) to non-generic records —
+  // omitting a required field from an all-named-args construction used to
+  // type-check silently and emit invalid IL at the MSIL/JVM boundary.
+  if reportMissingCtorFields(fields, args, sym, span, diag) {
+    return TyError
+  }
   // C2: validate argument names, arity, and value types.
   // First pass: named-arg field-name and value-type check.
   // Second pass: positional args against fields in declaration order.

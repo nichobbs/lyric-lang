@@ -2878,6 +2878,28 @@ test "generic ctor missing required field emits T0105 not T0110" {
   assertTrue(not hasDiagCode(cr, "T0110"), "missing required field: not T0110")
 }
 
+// #6739: the #3156 missing-field check above was scoped only to the generic
+// constructor path — a non-generic record silently type-checked an
+// all-named-args construction that omitted a required (no-default) field,
+// then emitted invalid IL at codegen (InvalidProgramException at runtime).
+test "non-generic ctor missing required field emits T0105" {
+  val src = "package P\nrecord Three { a: String; b: String; c: String }\nfunc f(): Unit { val _ = Three(a = \"x\", b = \"y\") }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0105"), "non-generic missing required field: T0105")
+}
+
+test "non-generic ctor missing field with default is not reported" {
+  val src = "package P\nrecord Three { a: String; b: String; c: String = \"z\" }\nfunc f(): Unit { val _ = Three(a = \"x\", b = \"y\") }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0105"), "non-generic missing defaulted field: no T0105")
+}
+
+test "non-generic ctor all required fields supplied is clean" {
+  val src = "package P\nrecord Three { a: String; b: String; c: String }\nfunc f(): Unit { val _ = Three(a = \"x\", b = \"y\", c = \"z\") }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "non-generic all fields supplied: no errors")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // #3066: function-call named args are validated against their named parameter,
 // not positionally.  `foo(b = 2, a = "x")` for `foo(a: String, b: Int = 0)`
