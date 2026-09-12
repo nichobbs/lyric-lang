@@ -53,8 +53,12 @@ concurrency:
 #                     jobs, e.g. `self-hosted` (a JSON list would need
 #                     fromJSON, so give the machine one distinctive label).
 #   CI_NATIVE_RUNNER  optional override for native-backend-self-tests, which
-#                     additionally needs clang, gcc and the LLVM ASan runtime
-#                     on the machine; falls back to CI_HEAVY_RUNNER.
+#                     additionally needs clang, gcc, the LLVM ASan runtime,
+#                     and OpenSSL 3.x's shared libraries (libssl.so.3 /
+#                     libcrypto.so.3, dlopen'd at runtime by lyric_tls.c --
+#                     see that job's own OpenSSL step for why a bare distro
+#                     package can't be assumed) on the machine; falls back
+#                     to CI_HEAVY_RUNNER.
 # Unset (the default) means `ubuntu-latest`, i.e. unchanged behaviour.  A
 # `runs-on` is fixed when the run is created, so runs already queued keep
 # their pool; register several runners on the box, since each registration
@@ -2131,6 +2135,66 @@ jobs:
           sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-18 100
           sudo update-alternatives --install /usr/bin/lld lld /usr/bin/lld-18 100
           clang --version
+
+      # lyric_tls.c (the native runtime's TLS seam) dlopen's OpenSSL at
+      # RUNTIME, never links it at compile time -- so a missing libssl.so.3/
+      # libcrypto.so.3 doesn't fail the native compile at all, it silently
+      # degrades: `lyric_tls_test`'s own C-level tests print "OpenSSL 3.x
+      # unavailable ... TLS scenarios skipped" and keep going, and every
+      # Lyric-level test that actually exercises cert/TLS logic
+      # (llvm_tls_self_test.l items B/B'/D: Std.Tls PEM loading, the
+      # Std.TlsHost kernel-boundary variant, and the real TLS handshake)
+      # fails at runtime instead, with no compiler error to point at
+      # (confirmed by reproducing against a real job log: the T0010/T0020
+      # "unknown type name NativePtr" noise nearby is unrelated
+      # advisory-typecheck output -- the native target's typecheck is
+      # non-fatal by design, `llvm_bridge.l`'s `tcFatal = false` -- items A
+      # and C, which don't touch TLS, show the identical noise and still
+      # pass). This self-hosted runner's distro (Ubuntu 20.04 "focal", per
+      # the clang-18 finding above) predates OpenSSL 3.0 becoming the
+      # default (Ubuntu 22.04+); its own apt repo has no `libssl3` package
+      # to install, so -- mirroring the clang-18 fix's choice of the
+      # project's own official upstream distribution over a third-party
+      # backport/PPA -- this builds OpenSSL straight from its official
+      # source tarball, sha256-verified against the checksum openssl.org
+      # publishes alongside it (matching this workflow's existing
+      # pinned-checksum download pattern, e.g. the GraalVM install below).
+      # Only the shared libraries are needed (not the `openssl` CLI or
+      # docs), so `make build_libs` + `make install_sw` (OpenSSL's own
+      # documented lightweight targets) skip the slow parts. OpenSSL keeps
+      # one stable `.so.3` SONAME across the entire 3.x series by design
+      # (that guarantee is the whole point of the 3.x ABI promise), so the
+      # exact patch version pinned here doesn't need to track whatever 3.x
+      # release is newest -- 3.0.13 is the LTS branch. Guarded by an
+      # `ldconfig` check so a persistent self-hosted runner only pays the
+      # build cost once. Built as the runner user (installed as root only
+      # via `sudo make install_sw`) -- same persistent-runner caveat as the
+      # clang.sh install above applies. Not verified against the real
+      # runner (no self-hosted access from this environment); this job's
+      # next run is the first real test.
+      - name: Install OpenSSL 3.x shared libraries (self-hosted runners only)
+        if: runner.environment == 'self-hosted'
+        run: |
+          set -euo pipefail
+          if ! ldconfig -p | grep -q 'libssl\.so\.3'; then
+            sudo apt-get install -y --no-install-recommends perl make
+            ver="3.0.13"
+            sha="88525753f79d3bec27d2fa7c66aa0b92b3aa9498dafd93d7cfa4b3780cdae313"
+            tarball="$(mktemp -d)/openssl.tar.gz"
+            curl -fsSL "https://www.openssl.org/source/openssl-${ver}.tar.gz" -o "$tarball"
+            echo "${sha}  ${tarball}" | sha256sum -c -
+            srcdir="$(mktemp -d)"
+            tar -xzf "$tarball" -C "$srcdir" --strip-components=1
+            (
+              cd "$srcdir"
+              ./config --prefix=/usr/local --openssldir=/usr/local/ssl shared
+              make -j"$(nproc)" build_libs
+              sudo make install_sw
+            )
+            sudo ldconfig
+            rm -rf "$tarball" "$srcdir"
+          fi
+          ldconfig -p | grep -q 'libssl\.so\.3' && ldconfig -p | grep -q 'libcrypto\.so\.3'
 
       # Point TMPDIR at `runner.temp` before the concurrent `background: true`
       # self-test steps below start. Despite this step's old name, this is NOT
