@@ -127,7 +127,7 @@ func countJsonArrayElements(jsonArray: in String): Int {
   var braceDepth = 0
 
   while i < slice.length {
-    val ch = slice.charAt(i)
+    val ch = slice[i]
     if ch == '{' {
       braceDepth += 1
     } else if ch == '}' {
