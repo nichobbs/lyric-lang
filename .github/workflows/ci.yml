@@ -2194,7 +2194,7 @@ jobs:
             sudo ldconfig
             rm -rf "$tarball" "$srcdir"
           fi
-          ldconfig -p | grep 'libssl\.so\.3\|libcrypto\.so\.3'
+          ldconfig -p | grep -q 'libssl\.so\.3' && ldconfig -p | grep -q 'libcrypto\.so\.3'
 
       # Point TMPDIR at `runner.temp` before the concurrent `background: true`
       # self-test steps below start. Despite this step's old name, this is NOT
