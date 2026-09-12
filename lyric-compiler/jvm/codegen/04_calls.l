@@ -4345,6 +4345,33 @@ func lowerMethodCall(
   }
   match recvTy {
     case JRef(cls) -> {
+      // #7099: `java/lang/String`'s member surface is always fully known
+      // (hardcoded above: `contains`/`startsWith`/`endsWith`/`trim`/
+      // `trimStart`/`trimEnd`/`toUpper`/`toLower`/`length`/`indexOf`/
+      // `lastIndexOf`/`replace`/`substring`, plus whatever resolved via a
+      // real `Std.String` UFCS signature or the generic auto-FFI/in-package
+      // paths above, and — just below — the `toString()`/`hashCode()`/
+      // `equals(Object)` trio every reference type gets for free) — unlike
+      // an ecosystem/Maven extern type, there is no "JAR not on the
+      // classpath yet" excuse for a miss here. Letting a nonexistent method
+      // (a typo like `.toLowerInvariant()`) fall through to the
+      // `()Object`-guess degrade below would still compile, then fail at
+      // JVM class-load time with a raw `NoSuchMethodError` instead of a
+      // clear Lyric diagnostic. Fail the build now instead — the same
+      // contained-panic-to-diagnostic treatment the MSIL backend's mirror
+      // fix gives this exact case. Gated to exclude the Object trio (checked
+      // first, matching the fallback logic just below) since those three ARE
+      // legitimately reachable here for a plain String receiver.
+      val isStringObjectMethod = (memberName == "toString" and args.count == 0) or
+        (memberName == "hashCode" and args.count == 0) or
+        (memberName == "equals" and args.count == 1)
+      if cls == "java/lang/String" and not isStringObjectMethod {
+        panic(
+          "Jvm.Codegen: no method '" + memberName +
+            "' on type 'String' at this call site (no matching Std.String function, built-in accessor, or " +
+            "intrinsic — check for a typo or an unimplemented method)"
+        )
+      }
       // Every reference type declares `toString()`/`hashCode()`/`equals(Object)`
       // via `java.lang.Object`, with a signature fixed by the JVM spec no
       // matter what the receiver's OWN class is — so when this generic
