@@ -992,4 +992,10 @@ conventions; none lands with a silent one-target gap.
 - **Q-TLS-005** — JVM engine-convergence bar: what load-test harness and
   threshold constitutes "performance evidence" for §6.5(c)?
 - **Q-TLS-006** — PKCS#12 import in `Std.Tls` for Windows-centric consumers:
-  needed, or does PEM-only hold?
+  needed, or does PEM-only hold? The compiler-level blocker this previously
+  implied (`X509CertificateLoader.LoadPkcs12`'s `X509KeyStorageFlags`
+  parameter needs bitwise-composable extern enum values, which Lyric could
+  not express) is resolved and verified — see docs/42 §5's 2026-09 status
+  update and `lyric-compiler/lyric/extern_enum_flags_self_test.l`. Whether
+  to actually wire PKCS#12 loading into `Std.Tls` remains open; nothing
+  about it is blocked on the compiler anymore.

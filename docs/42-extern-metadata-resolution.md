@@ -347,6 +347,30 @@ runtime gap.
 > runtime) and excluded extern type names from the nullary-union-case
 > shortcut (`Alias.None` no longer mis-binds to `Std.Core.Option_None`).
 
+> **Status update (2026-09): `[Flags]` enum bitwise composition verified.**
+> A BCL `[Flags]` enum (e.g. `X509KeyStorageFlags`) can now be read *and
+> composed* through `extern type` with no `@externTarget` wrapper and no
+> codegen change of its own: an enum constant already resolved to its real
+> `MValueTypeRef` (the "literal constants" line above), and Lyric's
+> `.and`/`.or`/`.xor`/`.shl`/`.shr` bitwise methods (`#1610`) turned out to
+> already be dispatched by `Msil.Codegen.lowerMethodCallMsil` purely by
+> member name with no receiver-type gate — the CIL `and`/`or`/`xor`/`shl`/
+> `shr` opcodes operate on whatever integral value is already on the stack
+> (an enum is exactly its underlying integer there), and the arm returns
+> `recvTy` unchanged, so a composed value keeps its enum type rather than
+> widening to `Int`. The one interaction worth documenting: a `MValueTypeRef`
+> receiver first probes real-CLR-instance-method auto-FFI dispatch
+> (Phase 3c step 4b) for a member named `and`/`or`/etc; an enum has no such
+> instance method, so that probe misses, the receiver's address is dropped,
+> its value reloaded, and codegen falls through to the generic bitwise arm
+> exactly as it does for `Int`/`Long`. Verified end-to-end (constant reads,
+> `.or`/`.and`/`.xor` composition, all boxed through `System.Convert.ToInt32`
+> as the oracle) by `lyric-compiler/lyric/extern_enum_flags_self_test.l`.
+> This was the concrete blocker for X.509 cert-chain verification against a
+> pinned CA needing `X509CertificateLoader.LoadPkcs12`'s `X509KeyStorageFlags`
+> parameter (docs/61 Q-TLS-006); wiring PKCS#12 support into `Std.Tls` itself
+> is tracked separately, not part of this compiler-capability slice.
+
 - **Phase 1 — byte-read foundation + PE/metadata-root reader. _(SHIPPED.)_**
   `Std.File.readBytesOrPanic(path): slice[Byte]` added over the existing
   `hostReadAllBytes` kernel extern. `Msil.MetadataReader`
