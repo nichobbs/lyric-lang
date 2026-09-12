@@ -55,10 +55,16 @@ test ".or composes two extern enum flags into their combined bit pattern" {
   assertEqualInt(Convert.ToInt32(combined), 36, "EphemeralKeySet | Exportable == 32 | 4")
 }
 
-test ".or is associative/commutative over three extern enum flags" {
-  val a = KeyStorageFlags.UserKeySet.or(KeyStorageFlags.Exportable)
-  val b = a.or(KeyStorageFlags.PersistKeySet)
-  assertEqualInt(Convert.ToInt32(b), 21, "UserKeySet | Exportable | PersistKeySet == 1 | 4 | 16")
+test ".or composes three extern enum flags regardless of grouping order" {
+  val ab = KeyStorageFlags.UserKeySet.or(KeyStorageFlags.Exportable)
+  val abc = ab.or(KeyStorageFlags.PersistKeySet)
+  assertEqualInt(Convert.ToInt32(abc), 21, "UserKeySet | Exportable | PersistKeySet == 1 | 4 | 16")
+
+  // Same three flags, different starting pair and order -- demonstrates the
+  // result doesn't depend on which two get OR'd together first.
+  val pu = KeyStorageFlags.PersistKeySet.or(KeyStorageFlags.UserKeySet)
+  val pue = pu.or(KeyStorageFlags.Exportable)
+  assertEqualInt(Convert.ToInt32(pue), 21, "PersistKeySet | UserKeySet | Exportable == 21 (different grouping)")
 }
 
 test ".and isolates a set bit out of a combined extern enum value" {
@@ -73,5 +79,20 @@ test ".xor toggles a bit in an extern enum value" {
     Convert.ToInt32(combined.xor(KeyStorageFlags.Exportable)),
     32,
     "toggling off Exportable leaves EphemeralKeySet"
+  )
+}
+
+// `.shl`/`.shr` have no real-world use on a `[Flags]` enum (you shift bit
+// *positions*, not named flag values), but they share the exact same
+// name-only codegen dispatch as `.and`/`.or`/`.xor` (this file's header),
+// so covering them here closes that claim's last gap. The shifted results
+// are deliberately chosen to land on other real named constants of the
+// same enum, not arbitrary numbers.
+test ".shl and .shr shift an extern enum value's bit pattern" {
+  assertEqualInt(Convert.ToInt32(KeyStorageFlags.UserKeySet.shl(2)), 4, "UserKeySet << 2 == Exportable's value")
+  assertEqualInt(
+    Convert.ToInt32(KeyStorageFlags.EphemeralKeySet.shr(1)),
+    16,
+    "EphemeralKeySet >> 1 == PersistKeySet's value"
   )
 }
