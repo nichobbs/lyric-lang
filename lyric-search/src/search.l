@@ -619,7 +619,12 @@ func buildRequest(
     case Ok(parsed) -> {
       var req = request(method, parsed)
       if cfg.authHeaderName.length > 0 {
-        req = withHeader(req, cfg.authHeaderName, cfg.authHeaderValue)
+        match withHeader(req, cfg.authHeaderName, cfg.authHeaderValue) {
+          case Ok(r) -> {
+            req = r
+          }
+          case Err(e) -> return Err(error = toSearchError(e, "INVALID_AUTH_HEADER"))
+        }
       }
       match body {
         case Some(json) -> {
@@ -640,12 +645,7 @@ func sendCatching(client: in HttpClient, req: in HttpRequest, url: in String): R
   return try {
     await client.send(req)
   } catch Bug as bug {
-    Err(
-      error = ConnectionFailed(
-        url = url,
-        message = bug.message
-      )
-    )
+    Err(error = ConnectionFailed(url = url, message = bug.message))
   }
 }
 
@@ -664,7 +664,10 @@ pub func sendRequest(
       val url = joinUrl(cfg.baseUrl, path)
       match sendCatching(cfg.client, req, url) {
         case Err(e) -> return Err(error = toSearchError(e, code))
-        case Ok(response) -> match HttpResponse.ensureSuccess(response) { case Err(e) -> return Err(error = toSearchError(e, code)); case Ok(ok) -> return Ok(value = ok) }
+        case Ok(response) -> match HttpResponse.ensureSuccess(response) {
+          case Err(e) -> return Err(error = toSearchError(e, code))
+          case Ok(ok) -> return Ok(value = ok)
+        }
       }
     }
   }

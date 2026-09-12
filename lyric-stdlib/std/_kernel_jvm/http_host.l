@@ -461,7 +461,9 @@ func findMethodByNameArityAndParamType(
   }
   match found {
     case Some(m) -> m
-    case None -> panic("Std.HttpHost: reflective method lookup failed for " + name + " with param type " + paramClassName)
+    case None -> panic(
+      "Std.HttpHost: reflective method lookup failed for " + name + " with param type " + paramClassName
+    )
   }
 }
 
@@ -644,7 +646,9 @@ func buildClientIdentityKeyStore(identity: in Identity): JKeyStore {
   val cert: JCertificate = handle.cert
   val privateKey: JPrivateKey = match handle.key {
     case Some(k) -> k
-    case None -> panic("Std.HttpHost: client Identity has no private key (invariant violation)")
+    case None -> panic(
+      "Std.HttpHost: client Identity has no private key (invariant violation)"
+    )
   }
   val ks = newEmptyPkcs12KeyStore()
   val certChainArr = makeTypedArray1("java.security.cert.Certificate", cert)
@@ -808,8 +812,18 @@ func buildClientSslContext(
     makeTypedArray1("javax.net.ssl.TrustManager", buildAllTrustingTrustManager())
   } else {
     val tmf = match resolveCaMode(caCertificate, exclusiveCaCertificate) {
-      case ExclusiveCa -> match exclusiveCaCertificate { case Some(cert) -> trustManagerFactoryFor(buildExclusiveTrustKeyStore(Certificate.rawHandle(cert).cert)); case None -> defaultTrustManagerFactory() }
-      case AdditiveCa -> match caCertificate { case Some(cert) -> trustManagerFactoryFor(buildAdditiveTrustKeyStore(Certificate.rawHandle(cert).cert)); case None -> defaultTrustManagerFactory() }
+      case ExclusiveCa -> match exclusiveCaCertificate {
+        case Some(cert) -> trustManagerFactoryFor(
+          buildExclusiveTrustKeyStore(Certificate.rawHandle(cert).cert)
+        )
+        case None -> defaultTrustManagerFactory()
+      }
+      case AdditiveCa -> match caCertificate {
+        case Some(cert) -> trustManagerFactoryFor(
+          buildAdditiveTrustKeyStore(Certificate.rawHandle(cert).cert)
+        )
+        case None -> defaultTrustManagerFactory()
+      }
       case NoCaConfigured -> defaultTrustManagerFactory()
     }
     val tmObj: JObject = tmf.getTrustManagers()
@@ -857,7 +871,13 @@ func buildClientSslParameters(
   val params: JSSLParameters = ctx.getDefaultSSLParameters()
   val protocolValues: List[String] = newList()
   match minVersion {
-    case Some(v) -> match v { case Tls13 -> protocolValues.add("TLSv1.3"); case Tls12 -> { protocolValues.add("TLSv1.2"); protocolValues.add("TLSv1.3") } }
+    case Some(v) -> match v {
+      case Tls13 -> protocolValues.add("TLSv1.3")
+      case Tls12 -> {
+        protocolValues.add("TLSv1.2")
+        protocolValues.add("TLSv1.3")
+      }
+    }
     case None -> {
       protocolValues.add("TLSv1.2")
       protocolValues.add("TLSv1.3")
@@ -933,10 +953,35 @@ pub func hostMakeRequest(httpMethod: in String, url: in String): HttpRequestMess
   )
 }
 
-pub func hostWithHeader(request: in HttpRequestMessage, key: in String, value: in String): HttpRequestMessage {
+/// Framing headers `hostMakeRequest`/`hostWithStringBody` and this kernel's
+/// own request builder (below) generate automatically (`Host`, `Connection`
+/// on the request; `Content-Type`/`Content-Length` on the content once a
+/// body is attached). Letting a caller add one of these via
+/// `hostWithHeader` produces a duplicate header line on the wire once the
+/// automatic one is appended — request-smuggling-adjacent, since which of
+/// two duplicate headers a peer honors is implementation-defined (RFC 9112
+/// §5.1) — so `hostWithHeader` rejects them instead (#6658). Case-
+/// insensitive per RFC 9110 §5.1 (header field names are case-
+/// insensitive). Mirrored verbatim in `_kernel/http_host.l` and
+/// `_kernel_native/http_host.l`. (`java.net.http.HttpRequest.Builder.header`
+/// already throws `IllegalArgumentException` for a subset of these
+/// — connection/content-length/expect/host/upgrade — but rejecting here
+/// gives a typed `Result` uniformly across all three kernels instead of an
+/// unhandled exception on this target alone.)
+func isReservedFramingHeader(name: in String): Bool {
+  val lower = name.toLower()
+  lower == "host" or lower == "connection" or lower == "content-type" or lower == "content-length"
+}
+
+pub func hostWithHeader(
+  request: in HttpRequestMessage, key: in String, value: in String
+): Result[HttpRequestMessage, String] {
+  if isReservedFramingHeader(key) {
+    return Err(error = key)
+  }
   request.headerNames.add(key)
   request.headerValues.add(value)
-  request
+  return Ok(value = request)
 }
 
 pub func hostWithStringBody(request: in HttpRequestMessage, contentType: in String, body: in String): HttpRequestMessage {

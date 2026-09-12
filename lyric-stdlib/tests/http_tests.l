@@ -53,7 +53,10 @@ test "request/withHeader/withJsonBody/withTextBody construct without a live conn
     case Err(e) -> panic("unexpected InvalidUrl: " + HttpError.message(e))
   }
   val getReq = request(GET, url)
-  val withAuth = withHeader(getReq, "Authorization", "Bearer token")
+  val withAuth = match withHeader(getReq, "Authorization", "Bearer token") {
+    case Ok(r) -> r
+    case Err(e) -> panic("unexpected ReservedHeader: " + HttpError.message(e))
+  }
   val _ = withAuth
 
   val postReq = request(POST, url)
@@ -65,6 +68,54 @@ test "request/withHeader/withJsonBody/withTextBody construct without a live conn
   val _ = withText
 
   assertTrue(true, "request construction completed without panicking")
+}
+
+// #6658: `withHeader` must reject the framing headers the kernel sets
+// automatically (`Host`, `Connection`, `Content-Type`, `Content-Length`),
+// case-insensitively per RFC 9110 §5.1 — accepting one here would produce
+// a duplicate header line on the wire.
+test "withHeader rejects reserved framing headers, case-insensitively" {
+  val url = match Url.tryFrom("https://example.com") {
+    case Ok(u) -> u
+    case Err(e) -> panic("unexpected InvalidUrl: " + HttpError.message(e))
+  }
+  val reserved: slice[String] = [
+    "Host",
+    "host",
+    "Connection",
+    "CONNECTION",
+    "Content-Type",
+    "content-type",
+    "Content-Length",
+    "CONTENT-LENGTH"
+  ]
+  var i = 0
+  while i < reserved.length {
+    val name = reserved[i]
+    match withHeader(request(GET, url), name, "x") {
+      case Ok(_) -> panic("expected ReservedHeader for \"" + name + "\", got Ok")
+      case Err(ReservedHeader(errUrl, errName)) -> {
+        assertEqual(errUrl, "https://example.com", "ReservedHeader carries the request URL")
+        assertEqual(errName, name, "ReservedHeader carries the caller-supplied name verbatim (not case-normalized)")
+      }
+      case Err(other) -> panic(
+        "expected ReservedHeader for \"" + name + "\", got a different HttpError case: " +
+          HttpError.message(other)
+      )
+    }
+    i = i + 1
+  }
+}
+
+test "withHeader still accepts an ordinary (non-reserved) header" {
+  val url = match Url.tryFrom("https://example.com") {
+    case Ok(u) -> u
+    case Err(e) -> panic("unexpected InvalidUrl: " + HttpError.message(e))
+  }
+  match withHeader(request(GET, url), "X-Request-Id", "abc-123") {
+    case Ok(_) -> ()
+    case Err(e) -> panic("unexpected ReservedHeader for a non-reserved name: " + HttpError.message(e))
+  }
 }
 
 test "HttpClientBuilder.new starts with TCP defaults" {
@@ -121,5 +172,9 @@ test "HttpError.message renders each variant" {
   assertTrue(
     HttpError.message(ConnectionFailed(url = "https://example.com", message = "refused")).contains("refused"),
     "ConnectionFailed message contains the detail"
+  )
+  assertTrue(
+    HttpError.message(ReservedHeader(url = "https://example.com", name = "Content-Length")).contains("Content-Length"),
+    "ReservedHeader message contains the offending header name"
   )
 }

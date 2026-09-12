@@ -1552,7 +1552,21 @@ func postJson(urlStr: in String, body: in String, errorType: in String): Result[
     case Err(e) -> Err(error = HttpError.message(e))
     case Ok(url) -> {
       val base = withJsonBody(request(POST, url), body)
-      val req = if errorType.length > 0 { withHeader(base, "Lambda-Runtime-Function-Error-Type", errorType) } else { base }
+      // "Lambda-Runtime-Function-Error-Type" is never a reserved framing
+      // header, so this can only take the `Ok` branch — a silent fallback
+      // to `base` here would drop the header instead of surfacing the bug,
+      // exactly what #6658 exists to avoid.
+      val req = if errorType.length > 0 {
+        match withHeader(base, "Lambda-Runtime-Function-Error-Type", errorType) {
+          case Ok(r) -> r
+          case Err(e) -> panic(
+            "Lambda-Runtime-Function-Error-Type unexpectedly rejected as a reserved header: " +
+              HttpError.message(e)
+          )
+        }
+      } else {
+        base
+      }
       match await sendAsync(req) {
         case Err(e) -> Err(error = HttpError.message(e))
         case Ok(resp) -> {

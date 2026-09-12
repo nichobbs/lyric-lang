@@ -37,6 +37,15 @@
 //!
 //! Wired into CI on both targets in `.github/workflows/ci.yml`, alongside
 //! `http_async_tests.l`.
+//!
+//! The final section below (`withHeader` reserved-framing-header rejection,
+//! #6658) is unrelated to `HttpVersion` — it lives here rather than in
+//! `lyric-stdlib/tests/http_tests.l` (its natural home, dotnet-only in CI)
+//! purely to get JVM coverage for a target-independent `Std.Http` behavior
+//! without adding a new CI step (`.github/workflows/ci.yml` is near its
+//! byte-size ceiling, #6781): this is the closest existing `Std.Http`
+//! test file already wired on both targets that dispatches without a live
+//! listener.
 @test_module
 package Std.Http.VersionTests
 
@@ -66,8 +75,10 @@ func expectHttp3Unsupported(r: in Result[HttpResponse, HttpError], label: in Str
   match r {
     case Ok(_) -> panic(label + ": expected the Http3-unsupported error")
     case Err(e) -> match e {
-      case ConnectionFailed(_, message) ->
-        assertTrue(contains(message, http3Marker), label + ": message should name HTTP/3, got: " + message)
+      case ConnectionFailed(_, message) -> assertTrue(
+        contains(message, http3Marker),
+        label + ": message should name HTTP/3, got: " + message
+      )
       case other -> panic(label + ": expected ConnectionFailed, got a different HttpError case")
     }
   }
@@ -84,10 +95,7 @@ test "Http3 gates get/post/put/delete/patch deterministically" {
 }
 
 test "Http3 gates HttpClient.send and sendWithCancel" {
-  val url = match Url.tryFrom(deadUrl) {
-    case Ok(u) -> u
-    case Err(e) -> panic("Url.tryFrom failed unexpectedly")
-  }
+  val url = match Url.tryFrom(deadUrl) { case Ok(u) -> u; case Err(e) -> panic("Url.tryFrom failed unexpectedly") }
   val c = HttpClientBuilder.build(HttpClientBuilder.new().withHttpVersion(Http3))
   expectHttp3Unsupported(await c.send(request(GET, url)), "Http3 send")
   val src = makeCancelSource()
@@ -108,13 +116,40 @@ test "Http3 still validates URLs before the version gate" {
 
 // ─── Http3 gate is independent of the other builder knobs ───────────────────
 test "Http3 gates regardless of redirect configuration" {
-  val withRedirects = HttpClientBuilder.build(
-    HttpClientBuilder.new().withRedirects(3).withHttpVersion(Http3)
-  )
+  val withRedirects = HttpClientBuilder.build(HttpClientBuilder.new().withRedirects(3).withHttpVersion(Http3))
   expectHttp3Unsupported(await withRedirects.get(deadUrl), "Http3 + withRedirects")
 
-  val withNoRedirects = HttpClientBuilder.build(
-    HttpClientBuilder.new().withNoRedirects().withHttpVersion(Http3)
-  )
+  val withNoRedirects = HttpClientBuilder.build(HttpClientBuilder.new().withNoRedirects().withHttpVersion(Http3))
   expectHttp3Unsupported(await withNoRedirects.get(deadUrl), "Http3 + withNoRedirects")
+}
+
+// ─── #6658: withHeader rejects reserved framing headers, on every target ───
+test "withHeader rejects reserved framing headers case-insensitively (dual-target)" {
+  val url = match Url.tryFrom("https://example.com") { case Ok(u) -> u; case Err(e) -> panic("unexpected InvalidUrl") }
+  val reserved: slice[String] = [
+    "Host",
+    "host",
+    "Connection",
+    "CONNECTION",
+    "Content-Type",
+    "content-type",
+    "Content-Length",
+    "CONTENT-LENGTH"
+  ]
+  var i = 0
+  while i < reserved.length {
+    val name = reserved[i]
+    match withHeader(request(GET, url), name, "x") {
+      case Ok(_) -> panic("expected ReservedHeader for \"" + name + "\", got Ok")
+      case Err(e) -> match e {
+        case ReservedHeader(_, _) -> ()
+        case other -> panic("expected ReservedHeader for \"" + name + "\", got a different HttpError case")
+      }
+    }
+    i = i + 1
+  }
+  match withHeader(request(GET, url), "X-Request-Id", "abc-123") {
+    case Ok(_) -> ()
+    case Err(e) -> panic("unexpected ReservedHeader for a non-reserved name")
+  }
 }

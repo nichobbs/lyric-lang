@@ -235,11 +235,7 @@ impl HttpClient for HttpClientImpl {
           case None -> ()
         }
         val req = HttpRequest(
-          handle = HostHttp.hostWithStringBody(
-            HostHttp.hostMakeRequest("PUT", parsed.value),
-            "text/plain",
-            body
-          ),
+          handle = HostHttp.hostWithStringBody(HostHttp.hostMakeRequest("PUT", parsed.value), "text/plain", body),
           url = parsed.value
         )
         val result = await HostHttp.hostSendSafe(self.handle, req.handle)
@@ -278,11 +274,7 @@ impl HttpClient for HttpClientImpl {
           case None -> ()
         }
         val req = HttpRequest(
-          handle = HostHttp.hostWithStringBody(
-            HostHttp.hostMakeRequest("PATCH", parsed.value),
-            "text/plain",
-            body
-          ),
+          handle = HostHttp.hostWithStringBody(HostHttp.hostMakeRequest("PATCH", parsed.value), "text/plain", body),
           url = parsed.value
         )
         val result = await HostHttp.hostSendSafe(self.handle, req.handle)
@@ -573,11 +565,8 @@ pub func tlsConfigSupported(): Bool {
 }
 
 func hasTlsOptions(b: in HttpClientBuilder): Bool {
-  isSome(b.caCertificate)
-    or isSome(b.exclusiveCaCertificate)
-    or isSome(b.clientIdentity)
-    or isSome(b.minTlsVersion)
-    or b.insecureSkipVerify
+  isSome(b.caCertificate) or isSome(b.exclusiveCaCertificate) or isSome(b.clientIdentity) or isSome(b.minTlsVersion) or
+    b.insecureSkipVerify
 }
 
 /// Outcome of resolving the dual-key insecure-verify policy (docs/61 §4,
@@ -640,15 +629,8 @@ pub func HttpClientBuilder.build(b: in HttpClientBuilder): HttpClient {
   // already-unwrapped value one level down keeps every case match a plain
   // top-level `HttpVersion` match, the same shape used everywhere else in
   // this file.
-  val version = match b.httpVersion {
-    case Some(v) -> v
-    case None -> Http2
-  }
-  val pinHttp11 = match version {
-    case Http11 -> true
-    case Http2 -> false
-    case Http3 -> false
-  }
+  val version = match b.httpVersion { case Some(v) -> v; case None -> Http2 }
+  val pinHttp11 = match version { case Http11 -> true; case Http2 -> false; case Http3 -> false }
 
   // Dual-key insecure-verify policy (docs/61 §4) — resolved once, here,
   // before any kernel construction.
@@ -695,60 +677,49 @@ pub func HttpClientBuilder.build(b: in HttpClientBuilder): HttpClient {
     )
   } else {
     match b.socketPath {
-      case Some(path) ->
-        if b.noRedirects {
-          if pinHttp11 {
-            HostHttp.hostClientWithUnixSocketNoRedirectsHttp11(path)
-          } else {
-            HostHttp.hostClientWithUnixSocketNoRedirects(path)
-          }
+      case Some(path) -> if b.noRedirects {
+        if pinHttp11 {
+          HostHttp.hostClientWithUnixSocketNoRedirectsHttp11(path)
         } else {
-          match b.maxRedirects {
-            case Some(n) ->
-              if pinHttp11 {
-                HostHttp.hostClientWithUnixSocketAndRedirectsHttp11(path, n)
-              } else {
-                HostHttp.hostClientWithUnixSocketAndRedirects(path, n)
-              }
-            case None ->
-              if pinHttp11 {
-                HostHttp.hostClientWithUnixSocketHttp11(path)
-              } else {
-                HostHttp.hostClientWithUnixSocket(path)
-              }
+          HostHttp.hostClientWithUnixSocketNoRedirects(path)
+        }
+      } else {
+        match b.maxRedirects {
+          case Some(n) -> if pinHttp11 {
+            HostHttp.hostClientWithUnixSocketAndRedirectsHttp11(path, n)
+          } else {
+            HostHttp.hostClientWithUnixSocketAndRedirects(path, n)
+          }
+          case None -> if pinHttp11 {
+            HostHttp.hostClientWithUnixSocketHttp11(path)
+          } else {
+            HostHttp.hostClientWithUnixSocket(path)
           }
         }
-      case None ->
-        if b.noRedirects {
-          if pinHttp11 {
-            HostHttp.hostClientNoRedirectsHttp11()
-          } else {
-            HostHttp.hostClientNoRedirects()
-          }
+      }
+      case None -> if b.noRedirects {
+        if pinHttp11 {
+          HostHttp.hostClientNoRedirectsHttp11()
         } else {
-          match b.maxRedirects {
-            case Some(n) ->
-              if pinHttp11 {
-                HostHttp.hostClientWithRedirectsHttp11(n)
-              } else {
-                HostHttp.hostClientWithRedirects(n)
-              }
-            case None ->
-              if pinHttp11 {
-                HostHttp.hostClientHttp11()
-              } else {
-                HostHttp.hostDefaultClient()
-              }
-          }
+          HostHttp.hostClientNoRedirects()
         }
+      } else {
+        match b.maxRedirects {
+          case Some(n) -> if pinHttp11 {
+            HostHttp.hostClientWithRedirectsHttp11(n)
+          } else {
+            HostHttp.hostClientWithRedirects(n)
+          }
+          case None -> if pinHttp11 { HostHttp.hostClientHttp11() } else { HostHttp.hostDefaultClient() }
+        }
+      }
     }
   }
 
   val http3UnsupportedReason = match version {
-    case Http3 ->
-      Some(
-        value = "HTTP/3 is not supported on this target yet (see #5874 / docs/61-https-tls-http-versions.md Q-TLS-002)"
-      )
+    case Http3 -> Some(
+      value = "HTTP/3 is not supported on this target yet (see #5874 / docs/61-https-tls-http-versions.md Q-TLS-002)"
+    )
     case Http11 -> None
     case Http2 -> None
   }
@@ -840,11 +811,23 @@ pub func request(method: in HttpMethod, url: in Url): HttpRequest {
 ///
 /// # Preconditions
 /// - `key` must be non-empty. Empty header names are caller bugs.
-@stable(since = "1.0")
-pub func withHeader(request: in HttpRequest, key: in String, value: in String): HttpRequest
+///
+/// # Errors
+/// - `ReservedHeader`: `key` (case-insensitively) names a framing header
+///   this library sets automatically — `Host`, `Connection`,
+///   `Content-Type`, or `Content-Length`. Setting one of these directly
+///   would produce a duplicate header line on the wire once the automatic
+///   one is appended (#6658); use `withJsonBody`/`withTextBody` to set the
+///   content type, or a request-shaping option on `HttpClientBuilder` for
+///   `Host`/`Connection`.
+@stable(since = "1.2")
+pub func withHeader(request: in HttpRequest, key: in String, value: in String): Result[HttpRequest, HttpError]
   requires: key.length > 0
 {
-  return HttpRequest(handle = HostHttp.hostWithHeader(request.handle, key, value), url = request.url)
+  match HostHttp.hostWithHeader(request.handle, key, value) {
+    case Err(name) -> return Err(error = ReservedHeader(url = request.url, name = name))
+    case Ok(handle) -> return Ok(value = HttpRequest(handle = handle, url = request.url))
+  }
 }
 
 /// Attach a JSON string body and set the request content type.
@@ -859,10 +842,7 @@ pub func withJsonBody(request: in HttpRequest, json: in String): HttpRequest {
 /// Attach a plain UTF-8 text body.
 @stable(since = "1.0")
 pub func withTextBody(request: in HttpRequest, text: in String): HttpRequest {
-  return HttpRequest(
-    handle = HostHttp.hostWithStringBody(request.handle, "text/plain", text),
-    url = request.url
-  )
+  return HttpRequest(handle = HostHttp.hostWithStringBody(request.handle, "text/plain", text), url = request.url)
 }
 
 // ---------------------------------------------------------------------------
