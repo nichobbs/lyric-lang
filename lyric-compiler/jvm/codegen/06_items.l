@@ -565,10 +565,17 @@ pub func setupStaticParamSlotsAndHolders(
   // Pass 1: allocate the ABI slot for every parameter, in order.  A holder
   // parameter's ABI slot holds the incoming array; it is bound under a hidden
   // name so the visible parameter name can later map to the unwrapped value
-  // slot.
+  // slot.  `rawSlots`/`rawTypes`/`narrowCls` (#6691) are index-aligned with
+  // `params`, carrying enough for pass 3 (below) to run strictly AFTER every
+  // parameter's real ABI slot is allocated — slots 0..paramCount-1 must stay
+  // contiguous and gap-free, matching the JVM calling convention, so nothing
+  // may allocate a slot in between two params' own ABI slots.
   val holderIdx: List[Int] = newList()
   val holderSlots: List[Int] = newList()
   val holderElems: List[JvmType] = newList()
+  val rawSlots: List[Int] = newList()
+  val rawTypes: List[JvmType] = newList()
+  val narrowCls: List[Option[String]] = newList()
   var pi = 0
   while pi < params.count {
     val p = params[pi]
@@ -578,8 +585,14 @@ pub func setupStaticParamSlotsAndHolders(
       holderIdx.add(pi)
       holderSlots.add(hs)
       holderElems.add(elemTy)
+      rawSlots.add(-1)
+      rawTypes.add(elemTy)
+      narrowCls.add(None)
     } else {
-      allocSlot(ctx, p.name, elemTy)
+      val slot = allocSlot(ctx, p.name, elemTy)
+      rawSlots.add(slot)
+      rawTypes.add(elemTy)
+      narrowCls.add(recordParamClassOf(p.ty, ctx))
     }
     pi = pi + 1
   }
@@ -600,6 +613,34 @@ pub func setupStaticParamSlotsAndHolders(
     emitHolderElemLoad(insns, elemTy)
     emitStore(insns, valueSlot, elemTy)
     hi = hi + 1
+  }
+  // Pass 3 (#6691): for every plain `in`-mode parameter whose declared type
+  // names a constructible generic record (`recordParamClassOf`, backed by
+  // `ctx.ctors` — `b: in Box[Int]`), rebind its name to a FRESH local slot
+  // holding the value narrowed via `checkcast` — mirrors the "narrow at
+  // the bind site" idiom
+  // `narrowStaticCallResult` (#6399) already uses for a return value bound
+  // to a local, extended here to a parameter's own entry binding.  Emitted
+  // strictly after passes 1/2 so the fresh slot's index is >= every ABI
+  // param/holder slot: its class is then tracked via the ordinary
+  // `LAstoreAs`-driven `storeTypes` path (`Jvm.Lowering.lowerFuncImpl`)
+  // rather than the method's real (still-erased, ABI-matching) parameter
+  // descriptor — robust across branches, unlike narrowing the SAME ABI slot
+  // in place would be (the descriptor's own frame type wins at every
+  // StackMapTable branch-target frame, since `frameLocals` for a param slot
+  // index always comes from `f.params`, never from a store instruction).
+  var npi = 0
+  while npi < params.count {
+    match narrowCls[npi] {
+      case Some(cls) -> {
+        emitLoad(insns, rawSlots[npi], rawTypes[npi])
+        insns.add(LCheckcast(className = cls))
+        val freshSlot = allocSlot(ctx, params[npi].name, JRef(className = cls))
+        emitStore(insns, freshSlot, JRef(className = cls))
+      }
+      case None -> ()
+    }
+    npi = npi + 1
   }
 }
 
@@ -629,6 +670,12 @@ pub func setupInstanceParamSlotsAndHolders(
   val holderIdx: List[Int] = newList()
   val holderSlots: List[Int] = newList()
   val holderElems: List[JvmType] = newList()
+  // #6691: see `setupStaticParamSlotsAndHolders`'s matching pass 3 — same
+  // index-aligned bookkeeping so the narrow-and-rebind prologue runs strictly
+  // after every parameter's real ABI slot is allocated.
+  val rawSlots: List[Int] = newList()
+  val rawTypes: List[JvmType] = newList()
+  val narrowCls: List[Option[String]] = newList()
   var pi = 0
   while pi < params.count {
     val p = params[pi]
@@ -638,8 +685,14 @@ pub func setupInstanceParamSlotsAndHolders(
       holderIdx.add(pi)
       holderSlots.add(hs)
       holderElems.add(elemTy)
+      rawSlots.add(-1)
+      rawTypes.add(elemTy)
+      narrowCls.add(None)
     } else {
-      allocSlot(ctx, p.name, elemTy)
+      val slot = allocSlot(ctx, p.name, elemTy)
+      rawSlots.add(slot)
+      rawTypes.add(elemTy)
+      narrowCls.add(recordParamClassOf(p.ty, ctx))
     }
     pi = pi + 1
   }
@@ -656,6 +709,22 @@ pub func setupInstanceParamSlotsAndHolders(
     emitHolderElemLoad(insns, elemTy)
     emitStore(insns, valueSlot, elemTy)
     hi = hi + 1
+  }
+  // #6691: see `setupStaticParamSlotsAndHolders`'s matching pass 3 — a
+  // generic-record-typed `in` parameter on an instance method/impl gets the
+  // identical narrow-and-rebind treatment as a free function's.
+  var npi = 0
+  while npi < params.count {
+    match narrowCls[npi] {
+      case Some(cls) -> {
+        emitLoad(insns, rawSlots[npi], rawTypes[npi])
+        insns.add(LCheckcast(className = cls))
+        val freshSlot = allocSlot(ctx, params[npi].name, JRef(className = cls))
+        emitStore(insns, freshSlot, JRef(className = cls))
+      }
+      case None -> ()
+    }
+    npi = npi + 1
   }
   // Record each parameter's declared slice/List element type so an indexed
   // element read narrows to its concrete class (docs/59 §4.3 #5439 class);
