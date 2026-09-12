@@ -1069,6 +1069,26 @@ test "generate(Json) round-trips scalar/slice/nested-record fields at runtime (#
   }
 }
 
+// #7098: non-JSON input must produce `Err(...)`, not crash with an
+// uncaught host `JsonException`/`JsonReaderException`. Before the fix,
+// `synthesizeFromJsonRecord` spliced in the raw throwing `Std.Json.parseJson`
+// instead of the `Result`-returning `tryParseJson`, so this call would
+// terminate the process instead of returning per its own `Result[T, String]`
+// signature.
+test "generate(Json) fromJson returns Err (not a crash) on non-JSON input (#7098)" {
+  match JsonPerson.fromJson("not json at all") {
+    case Ok(_) -> assertTrue(false, "json-malformed: expected Err for non-JSON input, got Ok")
+    case Err(_) -> ()
+  }
+}
+
+test "generate(Json) fromJson returns Err (not a crash) on empty input (#7098)" {
+  match JsonPerson.fromJson("") {
+    case Ok(_) -> assertTrue(false, "json-empty: expected Err for empty input, got Ok")
+    case Err(_) -> ()
+  }
+}
+
 test "mono retains derived helpers" {
   val src = "package P\n" + "@derive(Equals)\n@derive(Hash)\n@derive(Show)\n" + "record Point { x: Int; y: Int }\n" +
     "func gid[T](v: in T): T { v }\n"
