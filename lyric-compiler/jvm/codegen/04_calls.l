@@ -2737,7 +2737,7 @@ func prepareHolderArg(
           insns.add(LDup)
           insns.add(LIconst(v = 0))
           emitLoad(insns, rSlot, JRef(className = cls))
-          insns.add(LGetfield(owner = cls, name = fieldName, t = fty))
+          emitFieldLoadOpaqueAware(ctx, insns, cls, fieldName, fty)
           coerceArgTo(insns, fty, elemTy)
           emitHolderElemStore(insns, elemTy)
           val tmpSlot = allocSlot(ctx, "__holderarg$" + calleeLabel + "$" + toString(bi), holderArrayType(elemTy))
@@ -2846,7 +2846,7 @@ func writeBackHolderArg(
     insns.add(LIconst(v = 0))
     emitHolderElemLoad(insns, elemTy)
     coerceHolderWriteBack(ctx, insns, elemTy, fty, name + "$" + toString(ts))
-    insns.add(LPutfield(owner = recvCls, name = name, t = fty))
+    emitFieldStoreOpaqueAware(ctx, insns, recvCls, name, fty)
     return
   }
   match lookupSlot(ctx, name) {
