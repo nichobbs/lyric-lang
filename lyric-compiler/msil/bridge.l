@@ -342,7 +342,10 @@ pub func compileToMsilWithVersion(
   // diagnostic (A0042/A0043/A0044) previously printed with no file
   // attribution at all even on the single-file path.
   val noWeaveOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  val weavedFile = match pipeWeave(file, singleFileTemplates, path, noWeaveOrigins) {
+  // #6702: `stdlibRecs` is the same cross-file record list already threaded
+  // into `pipeCheckAndMono` above, reused here so an `impl` block targeting
+  // a stdlib record resolves its target's own fields in the await-hoist.
+  val weavedFile = match pipeWeave(file, singleFileTemplates, path, noWeaveOrigins, stdlibRecs) {
     case Some(f) -> f
     case None -> return false
   }
@@ -1209,7 +1212,13 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // `parsedPkgs[li]` are the SAME index by construction (the loop
     // building `perPkgFiles` above iterates `parsedPkgs` 1:1 with no
     // filtering).
-    val weaved = match pipeWeave(perPkgFiles[li], allTemplates, parsedPkgs[li].label, parsedPkgs[li].origins) {
+    // #6702: `allImportedRecordDecls` is the same cross-file/cross-package
+    // record list already threaded into `pipeCheckAndMono` above (it
+    // includes in-bundle sibling packages via `inBundleRecs`), reused here
+    // so a bundle package's `impl` block targeting a record declared in a
+    // DIFFERENT package resolves its target's own fields in the
+    // await-hoist.
+    val weaved = match pipeWeave(perPkgFiles[li], allTemplates, parsedPkgs[li].label, parsedPkgs[li].origins, allImportedRecordDecls) {
       case Some(f) -> f
       case None -> return false
     }
