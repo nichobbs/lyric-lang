@@ -60,8 +60,13 @@ exercised or asserted for a real BCL `[Flags]` enum.
 (`System.Security.Cryptography.X509Certificates.X509KeyStorageFlags`),
 declared via a bare `extern type` with no `@externTarget` wrapper —
 single-constant reads, `.or` composing two flags, `.or` chained across
-three flags, `.and` isolating a set/unset bit, and `.xor` toggling a bit —
-each verified numerically via `System.Convert.ToInt32(object)` as the
+three flags (in two different groupings, to actually back an
+order-doesn't-matter claim rather than just assert it), `.and` isolating a
+set/unset bit, `.xor` toggling a bit, and `.shl`/`.shr` shifting the bit
+pattern (included even though shifting a *named* flag has no real-world
+use, since it shares the exact same name-only codegen dispatch as the
+other four and the file's own header discusses all five) — six `test`
+blocks in total, each verified numerically via `System.Convert.ToInt32(object)` as the
 oracle (an enum value boxes into `object` like any other value type,
 docs/59 §6's boxing fix; Lyric has no direct enum→`Int` cast, so boxing
 through the one BCL overload that accepts any value type is the read-back
