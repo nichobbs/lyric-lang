@@ -392,7 +392,25 @@ func exprMentionsPath(e: in Expr, name: in String): Bool {
       }
       false
     }
+    case ERange(bound) -> rangeBoundMentionsPath(bound, name)
+    case EForall(_, whereExpr, body) -> {
+      val whereHit = match whereExpr { case Some(e) -> exprMentionsPath(e, name); case None -> false }
+      whereHit or exprMentionsPath(body, name)
+    }
+    case EExists(_, whereExpr, body) -> {
+      val whereHit = match whereExpr { case Some(e) -> exprMentionsPath(e, name); case None -> false }
+      whereHit or exprMentionsPath(body, name)
+    }
     case _ -> false
+  }
+}
+
+func rangeBoundMentionsPath(bound: in RangeBound, name: in String): Bool {
+  match bound {
+    case RBClosed(lo, hi) -> exprMentionsPath(lo, name) or exprMentionsPath(hi, name)
+    case RBHalfOpen(lo, hi, _) -> exprMentionsPath(lo, name) or exprMentionsPath(hi, name)
+    case RBLowerOpen(hi) -> exprMentionsPath(hi, name)
+    case RBUpperOpen(lo) -> exprMentionsPath(lo, name)
   }
 }
 
@@ -626,7 +644,10 @@ func exprHasMemberAccess(e: in Expr, recv: in String, mem: in String): Bool {
         return true
       }
       match el {
-        case Some(eb) -> match eb { case EOBExpr(e3) -> exprHasMemberAccess(e3, recv, mem); case EOBBlock(b3) -> blockHasMemberAccess(b3, recv, mem) }
+        case Some(eb) -> match eb {
+          case EOBExpr(e3) -> exprHasMemberAccess(e3, recv, mem)
+          case EOBBlock(b3) -> blockHasMemberAccess(b3, recv, mem)
+        }
         case None -> false
       }
     }
@@ -691,7 +712,25 @@ func exprHasMemberAccess(e: in Expr, recv: in String, mem: in String): Bool {
       }
       false
     }
+    case ERange(bound) -> rangeBoundHasMemberAccess(bound, recv, mem)
+    case EForall(_, whereExpr, body) -> {
+      val whereHit = match whereExpr { case Some(e) -> exprHasMemberAccess(e, recv, mem); case None -> false }
+      whereHit or exprHasMemberAccess(body, recv, mem)
+    }
+    case EExists(_, whereExpr, body) -> {
+      val whereHit = match whereExpr { case Some(e) -> exprHasMemberAccess(e, recv, mem); case None -> false }
+      whereHit or exprHasMemberAccess(body, recv, mem)
+    }
     case _ -> false
+  }
+}
+
+func rangeBoundHasMemberAccess(bound: in RangeBound, recv: in String, mem: in String): Bool {
+  match bound {
+    case RBClosed(lo, hi) -> exprHasMemberAccess(lo, recv, mem) or exprHasMemberAccess(hi, recv, mem)
+    case RBHalfOpen(lo, hi, _) -> exprHasMemberAccess(lo, recv, mem) or exprHasMemberAccess(hi, recv, mem)
+    case RBLowerOpen(hi) -> exprHasMemberAccess(hi, recv, mem)
+    case RBUpperOpen(lo) -> exprHasMemberAccess(lo, recv, mem)
   }
 }
 
@@ -1034,7 +1073,16 @@ test "call.annotations is a string slice of the function's annotation short-name
   // the empty-list case).
   val annTy = findValTy(body, "__lyric_call_annotations")
   match annTy {
-    case Some(te) -> match te.kind { case TSlice(elem) -> match elem.kind { case TRef(mp) -> { assertEqualInt(mp.segments.count, 1, "slice element type is a single-segment ref"); assertEqual(mp.segments[0], "String", "slice element type is `String`") }; case _ -> panic("annotations: slice element is not a TRef") }; case _ -> panic("annotations: declared type is not a TSlice") }
+    case Some(te) -> match te.kind {
+      case TSlice(elem) -> match elem.kind {
+        case TRef(mp) -> {
+          assertEqualInt(mp.segments.count, 1, "slice element type is a single-segment ref")
+          assertEqual(mp.segments[0], "String", "slice element type is `String`")
+        }
+        case _ -> panic("annotations: slice element is not a TRef")
+      }
+      case _ -> panic("annotations: declared type is not a TSlice")
+    }
     case None -> panic("annotations: val carries no explicit type annotation")
   }
 }
@@ -1336,6 +1384,29 @@ test "@inline_template rewrites args.<param> to bare <param>" {
   assertTrue(bodyMentionsPath(body, "x"), "bare path 'x' present after rewrite")
 }
 
+// #6833: `ERange` was a leaf in `rewriteExpr`'s walk, so `args.<field>`
+// references inside a range expression's `lo`/`hi` bounds (e.g. a
+// `for`-loop iterator) never got substituted.
+test "@inline_template rewrites args.<field> inside a for-loop range's lo/hi bounds" {
+  val src = "package P\n" + "@inline_template\n" + "pub aspect RangeTap {\n" + "  matches: name like \"h\"\n" +
+    "  around(args) -> ret {\n" +
+    "    for i in args.start .. args.stop {\n" +
+    "      val a = i\n" +
+    "    }\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func h(start: in Int, stop: in Int): Int { start }\n"
+  val wr = parseWeaveDiags(src)
+  assertTrue(not diagsHaveCode(wr.diagnostics, "A0042"), "no A0042 for valid args.<field> range bounds")
+  val wrapper = firstFunction(wr.file, "h")
+  val body = functionBody(wrapper)
+  assertTrue(not bodyHasMemberAccess(body, "args", "start"), "args.start in range lo rewritten away")
+  assertTrue(not bodyHasMemberAccess(body, "args", "stop"), "args.stop in range hi rewritten away")
+  assertTrue(bodyMentionsPath(body, "start"), "bare path 'start' present after rewrite")
+  assertTrue(bodyMentionsPath(body, "stop"), "bare path 'stop' present after rewrite")
+}
+
 test "@inline_template emits A0042 for args.<missing>" {
   val src = "package P\n" + "@inline_template\n" + "pub aspect Tap {\n" + "  matches: name like \"h\"\n" +
     "  around(args) -> ret {\n" +
@@ -1346,6 +1417,50 @@ test "@inline_template emits A0042 for args.<missing>" {
     "func h(x: in Int): Int { x }\n"
   val wr = parseWeaveDiags(src)
   assertTrue(diagsHaveCode(wr.diagnostics, "A0042"), "A0042 emitted for args.unknownField")
+}
+
+// #7093 (claude-review REQUIRED finding on PR #6863): `collectRefsExpr`
+// (backing `buildConfigPrelude`/`buildCallPrelude`'s "does the body
+// reference this field" pre-scan) had the identical `ERange`/`EForall`/
+// `EExists` leaf gap `rewriteExpr` had before D-progress-887 — a
+// `config.<field>`/`call.<field>` reference reachable only through a
+// range bound or a `forall`/`exists` binder wasn't detected as "used",
+// so no prelude local got materialised for it.
+test "config.<field> referenced only inside a for-loop range bound still materialises its prelude local" {
+  val src = "package P\n" + "aspect Limit {\n" + "  config { max: Int = 3 }\n" + "  matches: name like \"r\"\n" +
+    "  around(args) -> ret {\n" +
+    "    for i in 0 .. config.max {\n" +
+    "      val a = i\n" +
+    "    }\n" +
+    "    ret = proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func r(): Unit { }\n"
+  val wr = parseWeaveDiags(src)
+  assertTrue(wr.diagnostics.count == 0, "no diagnostics")
+  val wrapper = firstFunction(wr.file, "r")
+  val body = functionBody(wrapper)
+  assertTrue(
+    isValBinding(body.statements[0], "__aspect_cfg_max"),
+    "config.max reachable only via a range bound still materialises __aspect_cfg_max"
+  )
+  val initExpr = findValInit(body, "__aspect_cfg_max")
+  assertTrue(literalIntValue(initExpr) == 3i64, "default 3 captured")
+}
+
+test "call.<field> referenced only inside a forall(...) where/body still materialises its prelude local" {
+  val src = "package P\n" + "aspect Trace {\n" + "  matches: name like \"handle*\"\n" +
+    "  around(args) -> ret {\n" +
+    "    val ok = forall(i: Int) where i < 10 implies call.shortName.length > 0\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func handleX(): Int { 1 }\n"
+  val woven = parseWeave(src)
+  val wrapper = firstFunction(woven, "handleX")
+  val body = functionBody(wrapper)
+  val sn = findValInit(body, "__lyric_call_shortName")
+  assertEqual(literalStringValue(sn), "handleX", "call.shortName reachable only via forall's body still materialises __lyric_call_shortName")
 }
 
 test "non-template aspects leave args.<field> alone" {
@@ -1607,6 +1722,28 @@ test "C-mode from-instance is unaffected by B'-mode routing" {
   val wrapper = firstFunction(wr.file, "doWork")
   val body = functionBody(wrapper)
   assertTrue(not bodyHasMemberAccess(body, "args", "x"), "args.x rewritten away (C-mode inline path)")
+}
+
+// #6833 follow-up (review finding on PR #6863): `EForall`/`EExists` were
+// leaves in `rewriteExpr` alongside the just-fixed `ERange`, so an
+// `args.<field>` reference inside a `forall(...)`/`exists(...)`
+// binder's `where` clause or body — reachable via `requires:`/`ensures:`
+// through `rewriteContractClauseArgs` — never got substituted either.
+test "local aspect's requires: args.<field> inside a forall(...) where/body is rewritten" {
+  val src = "package P\n" + "aspect Guard {\n" + "  matches: name like \"handle*\"\n" +
+    "  requires: forall(i: Int) where i < args.limit implies i >= 0\n" +
+    "  around(args) -> ret {\n" +
+    "    ret = proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func handleOne(limit: in Int): Int { 1 }\n"
+  val pr = parse(src)
+  val wr = weaveFileWithDiags(pr.file)
+  assertTrue(wr.diagnostics.count == 0, "no diagnostics")
+  val wrapper = firstFunction(wr.file, "handleOne")
+  val body = functionBody(wrapper)
+  assertTrue(not bodyHasMemberAccess(body, "args", "limit"), "args.limit inside forall's where/body rewritten away")
+  assertTrue(bodyMentionsPath(body, "limit"), "the elaborated assert references the matched function's own parameter")
 }
 
 // docs/26 §5 specifies that an aspect's `requires:`/`ensures:` clauses are

@@ -50,7 +50,7 @@ func typeStr(te: in TypeExpr): String {
     case TGenericApp(head, args) -> pathStr(head) + "[" + typeArgsStr(args) + "]"
     case TArray(_, elem) -> "array[..., " + typeStr(elem) + "]"
     case TSlice(elem) -> "slice[" + typeStr(elem) + "]"
-    case TRefined(under, _) -> pathStr(under) + " range ..."
+    case TRefined(under, range) -> pathStr(under) + " range " + rangeBoundStr(range)
     case TTuple(types) -> "(" + typesStr(types) + ")"
     case TNullable(inner) -> typeStr(inner) + "?"
     case TFunction(params, retTy) -> "(" + typesStr(params) + ") -> " + typeStr(retTy)
@@ -130,9 +130,35 @@ func functionSignature(fn: in FunctionDecl): String {
   asyncTok + "pub func " + fn.name + genericsStr(fn.generics) + "(" + paramsStr(fn.params) + ")" + ret
 }
 
+// `f.annotations` is leading annotations followed by TRAILING ones (the
+// grammar's `FieldDecl`-final `[Annotation]`, e.g. `x: Int @hidden`) —
+// `f.trailingAnnotationCount` marks the split (mirrors `Lyric.Fmt`'s
+// `fieldMemberLines`, #6832). Leading annotations render as their own
+// line(s) above the field; trailing ones render inline after it — either
+// group was previously dropped from `lyric doc` output entirely.
 func fieldStr(f: in FieldDecl): String {
   val vis = visibilityPrefixStr(f.visibility)
-  "  " + vis + f.name + ": " + typeStr(f.ty)
+  val leadCount = f.annotations.count - f.trailingAnnotationCount
+  val leadAnnos: List[Annotation] = newList()
+  var i = 0
+  while i < leadCount {
+    leadAnnos.add(f.annotations[i])
+    i = i + 1
+  }
+  val trailAnnos: List[Annotation] = newList()
+  i = leadCount
+  while i < f.annotations.count {
+    trailAnnos.add(f.annotations[i])
+    i = i + 1
+  }
+  val leadLines = annotationLines(leadAnnos)
+  var leadPrefix = ""
+  var j = 0
+  while j < leadLines.count {
+    leadPrefix = leadPrefix + "  " + leadLines[j] + "\n"
+    j = j + 1
+  }
+  leadPrefix + "  " + vis + f.name + ": " + typeStr(f.ty) + annotationsInlineSuffix(trailAnnos)
 }
 
 func recordSignature(kind: in String, rd: in RecordDecl): String {
@@ -190,15 +216,13 @@ func enumSignature(ed: in EnumDecl): String {
   "pub enum " + ed.name + " {\n" + Str.joinList("\n", cases) + "\n}"
 }
 
+// `od.annotations` is the TRAILING annotation set the grammar places
+// after the name/generics (e.g. `@projectable` in
+// `opaque type User @projectable { ... }`) — rendered inline on the
+// header line via `annotationsInlineSuffix`, not as leading lines before
+// `opaque type` (mirrors `Lyric.Fmt.opaqueDoc`, #6832).
 func opaqueSignature(od: in OpaqueTypeDecl): String {
-  val parts: List[String] = newList()
-  var ai = 0
-  while ai < od.annotations.count {
-    parts.add("@" + pathStr(od.annotations[ai].name))
-    ai = ai + 1
-  }
-  val prefix = if parts.count == 0 { "" } else { Str.joinList(" ", parts) + "\n" }
-  prefix + "pub opaque type " + od.name + genericsStr(od.generics)
+  "pub opaque type " + od.name + genericsStr(od.generics) + annotationsInlineSuffix(od.annotations)
 }
 
 func interfaceMethodStr(m: in InterfaceMember): String {
@@ -224,9 +248,14 @@ func interfaceSignature(id: in InterfaceDecl): String {
   "pub interface " + id.name + genericsStr(id.generics) + " {\n" + Str.joinList("\n", methods) + "\n}"
 }
 
+// `dt.rangeClause` (e.g. `type Age = Int range 0 .. 150`) is a separate
+// field from `dt.underlying` — the parser unwraps a `TRefined` type
+// expression into `underlying: TRef` + `rangeClause` specifically for
+// `DistinctTypeDecl` (mirrors `Lyric.Fmt.distinctDoc`, #6833).
 func distinctSignature(dt: in DistinctTypeDecl): String {
+  val rangeStr = match dt.rangeClause { case Some(rb) -> " range " + rangeBoundStr(rb); case None -> "" }
   val derives = if dt.derives.count == 0 { "" } else { " derives " + Str.joinList(", ", dt.derives) }
-  "pub distinct type " + dt.name + genericsStr(dt.generics) + " = " + typeStr(dt.underlying) + derives
+  "pub distinct type " + dt.name + genericsStr(dt.generics) + " = " + typeStr(dt.underlying) + rangeStr + derives
 }
 
 func typeAliasSignature(ta: in TypeAliasDecl): String {
