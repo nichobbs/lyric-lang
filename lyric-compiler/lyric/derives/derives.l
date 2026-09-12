@@ -908,15 +908,32 @@ func jsonBuildFieldChain(typeName: in String, fields: in List[FieldDecl], idx: i
 }
 
 // `pub func TypeName.fromJson(json: in String): Result[TypeName, String]`
+//
+// #7098: non-JSON input must produce `Err(...)`, not crash. `parseJson`
+// (a thin `hostParseJson` trampoline) throws the host's raw
+// `JsonException`/`JsonReaderException` on malformed input; before this
+// fix that call was spliced in uncaught, so a synthesized `fromJson`
+// propagated the exception straight out of the caller instead of
+// returning the `Result` its own signature promises. `tryParseJson`
+// already exists for exactly this (`Std.Json`'s hand-written `try {
+// Ok(hostParseJson(s)) } catch Bug as b { Err(b.message) }` wrapper) —
+// the same defect class fixed for `Lyric.ContractMeta`'s JSON readers,
+// which never call the raw throwing parser either.
 func synthesizeFromJsonRecord(typeName: in String, decl: in RecordDecl, vis: in Option[Visibility]): Item {
   val fields = collectFields(decl)
-  val stmts: List[Statement] = newList()
-  stmts.add(stmtVal("__doc", None, jsonCall1("parseJson", pathExpr("json"))))
-  stmts.add(
+  val okStmts: List[Statement] = newList()
+  okStmts.add(
     mkStmt(SDefer(body = blockOf(oneStmtList(stmtExprOnly(jsonCall1("disposeJson", pathExpr("__doc")))))), sp())
   )
-  stmts.add(stmtVal("__root", None, jsonCall1("rootElement", pathExpr("__doc"))))
-  val body = blockStmtsReturn(stmts, jsonBuildFieldChain(typeName, fields, 0))
+  okStmts.add(stmtVal("__root", None, jsonCall1("rootElement", pathExpr("__doc"))))
+  val okArm = mkArmBlock(
+    ctorPat("Ok", oneList(bindingPat("__doc"))),
+    blockValue(okStmts, jsonBuildFieldChain(typeName, fields, 0))
+  )
+  val errArm = mkArm(ctorPat("Err", oneList(bindingPat("__json_perr"))), call1("Err", pathExpr("__json_perr")))
+  val parseMatch = mkMatchExpr(jsonCall1("tryParseJson", pathExpr("json")), matchArmPair(errArm, okArm))
+  val stmts: List[Statement] = newList()
+  val body = blockStmtsReturn(stmts, parseMatch)
   val params: List[Param] = newList()
   params.add(makeParam("json", typeRef("String")))
   val retTy = mkType(
@@ -1065,8 +1082,22 @@ func synthesizeOrdUnion(
     var fwi = 0
     while fwi < sc.fields.count {
       val fwTyName = match sc.fields[fwi] {
-        case UFNamed(_, fty, _) -> match fty.kind { case TRef(p) -> if p.segments.count > 0 { p.segments[p.segments.count - 1] } else { "" }; case _ -> "" }
-        case UFPos(fty, _) -> match fty.kind { case TRef(p) -> if p.segments.count > 0 { p.segments[p.segments.count - 1] } else { "" }; case _ -> "" }
+        case UFNamed(_, fty, _) -> match fty.kind {
+          case TRef(p) -> if p.segments.count > 0 {
+            p.segments[p.segments.count - 1]
+          } else {
+            ""
+          }
+          case _ -> ""
+        }
+        case UFPos(fty, _) -> match fty.kind {
+          case TRef(p) -> if p.segments.count > 0 {
+            p.segments[p.segments.count - 1]
+          } else {
+            ""
+          }
+          case _ -> ""
+        }
       }
       val fwHops = ordValueHops(fwTyName, distincts)
       if fwHops < 0 {
@@ -1477,7 +1508,11 @@ func collectDistinctsFromItems(items: in List[Item], distincts: inout Map[String
     match items[di].kind {
       case IDistinctType(decl) -> {
         val underlyingName = match decl.underlying.kind {
-          case TRef(path) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "" }
+          case TRef(path) -> if path.segments.count > 0 {
+            path.segments[path.segments.count - 1]
+          } else {
+            ""
+          }
           case _ -> ""
         }
         if not distincts.containsKey(decl.name) {

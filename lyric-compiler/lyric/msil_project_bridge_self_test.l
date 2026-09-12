@@ -966,6 +966,56 @@ test "same-named consts across packages resolve per package" {
   assertEqual(Str.trim(result.stdout), "10\n20", "same_named_consts: each package inlines its own LIMIT")
 }
 
+// Same-named PRIVATE module-level `val`s with a NON-literal initializer
+// across two packages in one project (#7097): `LIMIT: Int = 10` above is a
+// literal Int, so its registration goes through the already-guarded
+// `constValues` map. A `String` (or any non-literal-foldable) module-level
+// `val` instead registers into `staticValTokens`, which used an unguarded
+// `.add` on the bare (package-unqualified) name — `Map.add` throws on a
+// duplicate key rather than overwriting, so compiling a project where two
+// packages each declare a same-named private `val label: String = ...`
+// crashed the whole build with a contained `error[T0120]` codegen panic
+// instead of producing a working DLL. Neither `val` here is `pub`, so this
+// also regresses the "private" half of the report (the qualified-key path
+// already handled `pub` collisions per #5258; this is the bare-name
+// first-wins fallback, which both `pub` and private module vals share).
+test "same-named private non-literal module vals across packages do not crash MSIL codegen" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "ValDup.A",
+      "package ValDup.A\n" + "\n" + "val label: String = \"from-A\"\n" + "\n" + "pub func labelA(): String { label }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "ValDup.B",
+      "package ValDup.B\n" + "\n" + "val label: String = \"from-B\"\n" + "\n" + "pub func labelB(): String { label }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "ValDup.App",
+      "package ValDup.App\n" + "import ValDup.A\n" + "import ValDup.B\n" + "\n" + "func main(): Unit {\n" +
+        "  println(labelA())\n" +
+        "  println(labelB())\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("val-dup", packages, "ValDup")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "same_named_private_vals: exit 0, not a T0120 codegen crash (stderr=" + result.stderr + " stdout=" + result.stdout +
+      ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    "from-A\nfrom-B",
+    "same_named_private_vals: each package reads its own field, not a shared/collided one"
+  )
+}
+
 // ─── Cfg-erasure diagnostics via the bridge ───────────────────────────────────
 // F0012 fires for a malformed @cfg (literal argument instead of
 // `feature = "X"`).  The bridge returns false.

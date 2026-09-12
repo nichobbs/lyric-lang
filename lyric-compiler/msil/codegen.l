@@ -4218,8 +4218,16 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         if not isLit {
           val fieldTok = 0x04000000 + fieldDefRow
           val constTy = typeExprToMsilCtx(cctx, decl.ty, pkgName)
-          cctx.staticValTokens.add(decl.name, fieldTok)
-          cctx.staticValMsilTypes.add(decl.name, constTy)
+          // Bare-name key is a first-wins cross-package fallback, guarded by
+          // `containsKey`: `Map.add` (Dictionary.Add) throws on a duplicate
+          // key rather than overwriting, so an unguarded `.add` here would
+          // crash MSIL codegen the moment two packages in one project each
+          // declare a same-named module-level `val`/`const` (even a private
+          // one) — mirrors the native backend's `#6224` fix.
+          if not cctx.staticValTokens.containsKey(decl.name) {
+            cctx.staticValTokens.add(decl.name, fieldTok)
+            cctx.staticValMsilTypes.add(decl.name, constTy)
+          }
           // Package-qualified key too (mirrors `funcTokens`'/`constValues`'s
           // FQN convention) so a cross-package qualified reference
           // (`Other.Pkg.name`, which the parser leaves as nested `EMember`s —
@@ -4248,8 +4256,13 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
             case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
             case None -> inferUntypedStaticValMsilType(decl.init, valTypeEnv)
           }
-          cctx.staticValTokens.add(valName, fieldTok)
-          cctx.staticValMsilTypes.add(valName, valTy)
+          // Bare-name key guarded by `containsKey` — see the matching IConst
+          // comment above (first-wins fallback; unguarded `.add` throws on a
+          // same-named `val` declared by another package).
+          if not cctx.staticValTokens.containsKey(valName) {
+            cctx.staticValTokens.add(valName, fieldTok)
+            cctx.staticValMsilTypes.add(valName, valTy)
+          }
           // Package-qualified key too — see the matching IConst comment above (#5258).
           cctx.staticValTokens.add(pkgName + "." + valName, fieldTok)
           cctx.staticValMsilTypes.add(pkgName + "." + valName, valTy)
@@ -8785,9 +8798,21 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 case Some(ctorTok) -> lowerNullaryCaseValueMsil(cctx, fctx, insns, ctorKey, ctorTok)
                 case None -> {
                   // Module-level val: load from the static field emitted for this IVal.
-                  match mapGet(cctx.staticValTokens, name) {
+                  // Package-qualified key first (#7097, mirroring `constValues`'s
+                  // #2627 read-side convention just above): the consuming
+                  // package's own `val` always wins, so a same-named
+                  // (even non-`pub`) module-level `val` declared in another
+                  // package can never silently shadow this read via the
+                  // first-wins bare-name fallback `addPackageTokens` registers.
+                  val selfQualValKey = fctx.pkgName + "." + name
+                  val staticValHit = match mapGet(cctx.staticValTokens, selfQualValKey) {
+                    case Some(qt) -> Some(value = qt)
+                    case None -> mapGet(cctx.staticValTokens, name)
+                  }
+                  match staticValHit {
                     case Some(fieldTok) -> {
-                      val ty = match mapGet(cctx.staticValMsilTypes, name) { case Some(t) -> t; case None -> MObject }
+                      val tyKey = if cctx.staticValMsilTypes.containsKey(selfQualValKey) { selfQualValKey } else { name }
+                      val ty = match mapGet(cctx.staticValMsilTypes, tyKey) { case Some(t) -> t; case None -> MObject }
                       insns.add(MLdsfld(fieldToken = fieldTok))
                       ty
                     }
@@ -12731,7 +12756,16 @@ func lowerPatternTestMsil(
         }
         case None -> {
           // Non-integer const: load from static field (String, Float, Long, etc.)
-          match mapGet(cctx.staticValTokens, constName) {
+          // Package-qualified key first (#7097, same convention as the intVal
+          // lookup above and the bare-`EPath` static-val read): the enclosing
+          // package's own const/val always wins over a same-named one
+          // registered by another package under the first-wins bare key.
+          val qConstStaticKey = fctx.pkgName + "." + constName
+          val constStaticHit = match mapGet(cctx.staticValTokens, qConstStaticKey) {
+            case Some(qt) -> Some(value = qt)
+            case None -> mapGet(cctx.staticValTokens, constName)
+          }
+          match constStaticHit {
             case Some(fieldTok) -> {
               insns.add(MLdsfld(fieldToken = fieldTok))
               // For String types, use Object.Equals (value equality) instead of
@@ -17149,21 +17183,45 @@ func lowerMethodCallMsil(
   } else if memberName == "slice" and args.count == 2 and isSliceRecvMsil(recvTy) {
     lowerSliceSliceMsil(cctx, fctx, insns, recvTy, args)
   } else {
-    // Unrecognised method on this receiver.  Previously this popped the
-    // receiver/args and pushed `null` — a silent miscompile: the call appeared
-    // to succeed and yielded a bogus null.  Instead emit a stub that throws a
-    // clear error at this call site if it is ever reached, mirroring the
-    // unresolved auto-FFI / @externTarget pattern above (#1041) and honouring
-    // the language reference's "never silently mis-bound" guarantee.  Lowering
-    // a runtime throw rather than a compile-time abort keeps programs whose
-    // unreachable paths mention such a call compilable, while any path that
-    // actually executes it fails loudly and located.  #1481 item 4.
-    val msg = "unsupported method '" + memberName + "' on the receiver type at this call site (no matching user method, " +
-      "extern binding, or built-in intrinsic)"
-    insns.add(MLdStr(token = ctxInternUs(cctx.lctx, msg)))
-    insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
-    insns.add(MThrow)
-    MObject
+    match recvTy {
+      case MString -> {
+        // #7099: every String method name this backend implements (the
+        // `contains`/`toString`/`substring`/`replace`/`isNormalized`/
+        // `normalize`/`trim`/`trimStart`/`trimEnd`/`indexOf`/`lastIndexOf`/
+        // `startsWith`/`endsWith`/`split`/`toLower`/`toUpper` branches above,
+        // plus `length`/`isEmpty` via field-style `EMember` access) has
+        // already been tried and missed by the time this branch runs, so a
+        // String receiver landing here names a method that never exists —
+        // not a "might resolve dynamically" case the #1481-item-4 runtime
+        // stub below exists for. A typo like `.toLowerInvariant()` used to
+        // pass `lyric check`/`lyric build` clean and only blow up when the
+        // program actually ran; fail the build now instead, the same
+        // contained-panic-to-diagnostic treatment the MClassRef auto-FFI
+        // miss above already gets (#5562).
+        panic(
+          "Msil.Codegen: no method '" + memberName +
+            "' on type 'String' at this call site (no matching Std.String function, built-in accessor, or " +
+            "intrinsic — check for a typo or an unimplemented method)"
+        )
+      }
+      case _ -> {
+        // Unrecognised method on this receiver.  Previously this popped the
+        // receiver/args and pushed `null` — a silent miscompile: the call appeared
+        // to succeed and yielded a bogus null.  Instead emit a stub that throws a
+        // clear error at this call site if it is ever reached, mirroring the
+        // unresolved auto-FFI / @externTarget pattern above (#1041) and honouring
+        // the language reference's "never silently mis-bound" guarantee.  Lowering
+        // a runtime throw rather than a compile-time abort keeps programs whose
+        // unreachable paths mention such a call compilable, while any path that
+        // actually executes it fails loudly and located.  #1481 item 4.
+        val msg = "unsupported method '" + memberName + "' on the receiver type at this call site (no matching user method, " +
+          "extern binding, or built-in intrinsic)"
+        insns.add(MLdStr(token = ctxInternUs(cctx.lctx, msg)))
+        insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+        insns.add(MThrow)
+        MObject
+      }
+    }
   }
 }
 
