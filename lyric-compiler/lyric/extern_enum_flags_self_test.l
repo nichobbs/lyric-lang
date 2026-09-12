@@ -69,5 +69,9 @@ test ".and isolates a set bit out of a combined extern enum value" {
 
 test ".xor toggles a bit in an extern enum value" {
   val combined = KeyStorageFlags.EphemeralKeySet.or(KeyStorageFlags.Exportable)
-  assertEqualInt(Convert.ToInt32(combined.xor(KeyStorageFlags.Exportable)), 32, "toggling off Exportable leaves EphemeralKeySet")
+  assertEqualInt(
+    Convert.ToInt32(combined.xor(KeyStorageFlags.Exportable)),
+    32,
+    "toggling off Exportable leaves EphemeralKeySet"
+  )
 }
