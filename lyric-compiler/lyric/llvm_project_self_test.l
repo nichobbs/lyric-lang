@@ -133,6 +133,32 @@ test "two-package project: entry package first, imports a sibling function (ASan
   assertTrue(Str.contains(outcome.stdout, "hi native"), "sibling package function output made it to stdout")
 }
 
+// #6580 (native parity): a qualified call to an `internal` (not `pub`)
+// function declared in a sibling own-project package must resolve. Before
+// the fix, `pipeIsCrossPackageItemProject`'s pub-only predecessor
+// (`pipeIsCrossPackageItem`) excluded `internal` items from every own-project
+// sibling package's `ImportedPackage` surface — the identical bug fixed on
+// MSIL/JVM in this same PR, mirrored here as a SUGGESTION from `claude-review`
+// asking for native-target coverage to match.
+test "two-package project: qualified call to an internal sibling-package function resolves (#6580)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj5.App",
+      source = "package Proj5.App\n" + "import Proj5.Lib\n" + "func main(): Int {\n" + "  Proj5.Lib.helper(40)\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj5.Lib",
+      source = "package Proj5.Lib\n" + "internal func helper(n: in Int): Int {\n" + "  n + 2\n" + "}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 42, "qualified call to a sibling package's internal function resolves and runs")
+}
+
 test "two-package project: entry package declared SECOND still becomes the binary's main (ASan, #6809)" {
   val pkgs: List[NativeSourcePackage] = newList()
   pkgs.add(
