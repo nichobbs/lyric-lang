@@ -169,6 +169,17 @@ pub func pipeParseAndErase(
 /// then (JVM only) `Weaver.injectWeaveImports`.  Wire-expansion diagnostics
 /// gate fatally.  `weWires` / `weConfigs` carry the templates collected
 /// across the compilation (own file only for single-file builds).
+///
+/// `label` / `origins` (#6824 item 3) attribute the two gates above to the
+/// real on-disk file exactly like `pipeParseAndErase`'s and `pipeWeave`'s
+/// own `label`/`origins` parameters do — before this, both gates hardcoded
+/// `gate("", noOrigins, …)`, so a wire/config-template or impl-default-
+/// inheritance diagnostic on a multi-file project package fell back to no
+/// attribution at all even when the caller had already resolved a real
+/// path-or-package-name label and a `MergedLineOrigin` table for this exact
+/// file (every bridge call site reaches this function AFTER the parse-phase
+/// `pp.label`/`pp.origins` resolution). "" / empty reproduces the prior
+/// behaviour unchanged.
 pub func pipeExpandAndRewrite(
   file: in SourceFile,
   weWires: in Map[String, CollectedWireTemplate],
@@ -176,12 +187,13 @@ pub func pipeExpandAndRewrite(
   runWireExpand: in Bool,
   runStubbable: in Bool,
   injectWeave: in Bool,
+  label: in String,
+  origins: in List[DiagUtil.MergedLineOrigin],
 ): Option[SourceFile] {
-  val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
   var f: SourceFile = file
   if runWireExpand {
     val weRes = WireExpand.expandFile(f, weWires, weConfigs)
-    if gate("", noOrigins, weRes.diagnostics) {
+    if gate(label, origins, weRes.diagnostics) {
       return None
     }
     f = weRes.file
@@ -191,7 +203,7 @@ pub func pipeExpandAndRewrite(
     f = Stubbable.stubbableRewriteFile(f)
   }
   val idRes = ImplDefaults.inheritDefaultsFile(f)
-  if gate("", noOrigins, idRes.diagnostics) {
+  if gate(label, origins, idRes.diagnostics) {
     return None
   }
   f = idRes.file

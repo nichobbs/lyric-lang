@@ -681,19 +681,39 @@ single-field wrapper record) instead of a doubly-nested generic list; see that
 record's doc comment.
 
 Codegen-phase (F0xxx) diagnostics and the native backend's project-package
-path are **deliberately out of scope** for this slice: `Msil.Bridge`'s
-`abortOnCodegenDiagnosticsMsilInPkg` (and the JVM analog) still label by bare
-package name only, and `Lyric.LlvmBridge.compileProjectToNativeWithFlags` has
-no `origins` parameter at all — `Lyric.NativeSourcePackage` still has no path
-field, so native project-package diagnostics were already package-name-only
-before this change and stay that way; tracked as a follow-up (#6824) rather
-than folded into this fix. Single-file builds on every target, and the
-existing parse/typecheck/modecheck/weave gates on multi-file MSIL and JVM
-project packages, are the covered surface — see
-`source_path_diagnostics_self_test.l`'s `#6282` cases for the regression
-coverage (a parse-phase and a type-check-phase diagnostic, each on the
-*second* file of a two-file package, each asserting the real file **and**
-line).
+path were **deliberately out of scope** for this slice: `Msil.Bridge`'s
+`abortOnCodegenDiagnosticsMsilInPkg` labelled by bare package name only, and
+`Lyric.LlvmBridge.compileProjectToNativeWithFlags` had no `origins`
+parameter at all — `Lyric.LlvmBridge.NativeSourcePackage` had no path field,
+so native project-package diagnostics were already package-name-only before
+this change and stayed that way; tracked as a follow-up in #6824. Single-file
+builds on every target, and the existing parse/typecheck/modecheck/weave
+gates on multi-file MSIL and JVM project packages, were the covered
+surface — see `source_path_diagnostics_self_test.l`'s `#6282` cases for the
+regression coverage (a parse-phase and a type-check-phase diagnostic, each
+on the *second* file of a two-file package, each asserting the real file
+**and** line).
+
+**#6824 (closed in D-progress-886) folds in the three surfaces above, plus a
+fourth found in review.** `NativeSourcePackage` now carries a `path: String`
+field and `compileProjectToNativeWithFlags` a trailing
+`originsByPkg: List[Lyric.DiagnosticUtil.PackageLineOrigins]` parameter,
+resolved the same "real path when known, else bare name" / "origins entry,
+or empty" way as MSIL/JVM; since native folds typecheck/modecheck/elaborate/
+propagate/mono/weave into one `pipeMiddleEnd` call (no separate weave phase
+the way MSIL/JVM have — see §9.6), fixing `MiddleEndOptions.pkgLabel`/
+`.lineOrigins` in that one call site covers weave attribution on native too.
+`Msil.Bridge`'s codegen-phase gate now has an `abortOnCodegenDiagnosticsMsil
+InPkgWithOrigins` variant consulting the same `ParsedUserPkg.origins` table
+the earlier phases already resolved for that package (confirmed the JVM
+backend has no codegen-phase diagnostics accumulator to fix — F0021–F0025/
+F0034 are MSIL-specific checks, D-progress-809 — so "and the JVM analog" in
+the issue's original framing did not name a real gap). `Lyric.Pipeline
+.pipeExpandAndRewrite`'s two gates (docs/58 wire/config-template expansion,
+and interface-default-method inheritance) gained `label`/`origins`
+parameters threaded from every one of its six call sites across the three
+bridges, instead of the hardcoded `""`/empty pair every one of them
+previously passed regardless of what the caller already knew.
 
 **The contract-elaborator fix is small and self-contained — do it first.**
 `CCRequires`/`CCEnsures` already carry a per-clause span; `collectRequires` and
@@ -949,7 +969,11 @@ per-file-parse-then-merge-ASTs approach originally recommended) —
 `originsByPkg: List[Lyric.DiagnosticUtil.PackageLineOrigins]` parameter now,
 consulted by every `Lyric.Pipeline.gate` call along the shared middle end.
 The native project-build path and codegen-phase (F0xxx) diagnostics on a
-multi-file package are explicitly out of scope for this slice — see #6824.
+multi-file package were explicitly out of scope for this slice, closed by
+#6824/D-progress-886 (see the note at the end of §9.5): `NativeSourcePackage`
+now carries a real path and `compileProjectToNativeWithFlags` an
+`originsByPkg` parameter, and the MSIL codegen-phase gate now consults the
+same per-package origins table the earlier phases already resolved.
 Slice 4 (MSIL/native path confirmation) is now fully satisfied for
 MSIL, JVM, and native — `compileToNativeWithFlags` takes a `path: in
 String` parameter and threads it into `pipeParseAndErase(source,
