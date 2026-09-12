@@ -1720,7 +1720,41 @@ func collectRefsExpr(e: in Expr, mode: in RefMatchMode, into: in Map[String, Boo
         i = i + 1
       }
     }
+    // #7093 (claude-review REQUIRED finding on PR #6863): `ERange`/
+    // `EForall`/`EExists` were leaves here too, the same gap `rewriteExpr`
+    // had before D-progress-887 — `PropertyBinder` carries no expression
+    // of its own, so only `whereExpr`/`body` need recursing into.
+    case ERange(bound) -> collectRefsRangeBound(bound, mode, into)
+    case EForall(_, whereExpr, body) -> {
+      match whereExpr {
+        case Some(e) -> collectRefsExpr(e, mode, into)
+        case None -> ()
+      }
+      collectRefsExpr(body, mode, into)
+    }
+    case EExists(_, whereExpr, body) -> {
+      match whereExpr {
+        case Some(e) -> collectRefsExpr(e, mode, into)
+        case None -> ()
+      }
+      collectRefsExpr(body, mode, into)
+    }
     case _ -> ()
+  }
+}
+
+func collectRefsRangeBound(bound: in RangeBound, mode: in RefMatchMode, into: in Map[String, Bool]): Unit {
+  match bound {
+    case RBClosed(lo, hi) -> {
+      collectRefsExpr(lo, mode, into)
+      collectRefsExpr(hi, mode, into)
+    }
+    case RBHalfOpen(lo, hi, _) -> {
+      collectRefsExpr(lo, mode, into)
+      collectRefsExpr(hi, mode, into)
+    }
+    case RBLowerOpen(hi) -> collectRefsExpr(hi, mode, into)
+    case RBUpperOpen(lo) -> collectRefsExpr(lo, mode, into)
   }
 }
 

@@ -66,10 +66,10 @@ test "generated docs keep a field's trailing annotation instead of dropping it" 
 test "generated docs render a refined field type's actual range bound" {
   val src = "package P\n\npub record Person {\n  age: Int range 0 .. 150\n}\n"
   val docStr = generate(src)
-  assertTrue(
-    Str.contains(docStr, "0 .. 150") or Str.contains(docStr, "0 ..< 150"),
-    "doc: refined field type shows its real range bound"
-  )
+  // A bare `..` range renders back deterministically as "0 .. 150" (never
+  // "0 ..< 150") — see fmt_self_test.l's identical-source coverage — so
+  // this asserts the exact string rather than hedging between forms.
+  assertTrue(Str.contains(docStr, "0 .. 150"), "doc: refined field type shows its real range bound")
   assertFalse(Str.contains(docStr, "range ..."), "doc: refined field type must not render the '...' placeholder")
 }
 

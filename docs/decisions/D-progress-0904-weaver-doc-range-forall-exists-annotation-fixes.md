@@ -109,3 +109,33 @@ sibling parser fix from the same session (#6861; renumbered from its
 original D-progress-886 — that number was independently claimed by an
 unrelated already-merged entry, `D-progress-0886-bootstrap-dotnet-tool-
 stage0-glibc.md`, by the time both PRs rebased onto current `main`).
+
+**Addendum (#7093, claude-review REQUIRED finding on this PR).**
+`weaver.l`'s `collectRefsExpr` — the pre-scan `buildCallPrelude`,
+`buildConfigPrelude`, `aspectTemplateIsCMode`, and
+`aspectArgsFullyRowCovered` all share to decide "does this `around`
+body reference `call.<field>` / `config.<field>` / `args.<field>`" —
+had the identical `ERange`/`EForall`/`EExists`-as-leaf gap `rewriteExpr`
+had before the fix above, over the exact same AST shapes. Since
+`rewriteExpr` now correctly substitutes a member reference reached only
+through a range bound or a `forall`/`exists` binder, but the collector
+that decides whether a prelude local should be materialised (or whether
+a B'-mode template's row clause fully covers its `args.<field>` usage)
+still didn't look there, a `call.<field>`/`config.<field>` reference
+reachable only that way produced a real bug: no prelude local
+materialised for it (an unresolved-name error downstream), or a
+B'-mode template's row-coverage check silently missing a field it
+should have flagged with A0046. Fixed by adding matching `ERange`
+(via a new `collectRefsRangeBound` helper mirroring `rewriteRangeBound`)
+and `EForall`/`EExists` cases to `collectRefsExpr`, same shape as the
+`rewriteExpr` fix above.
+
+**Verification (addendum).** Two new `weaver_self_test.l` cases: a
+`config.max` reference reachable only via a `for i in 0 .. config.max`
+range bound still materialises `__aspect_cfg_max`; a `call.shortName`
+reference reachable only via `forall(i: Int) where i < 10 implies
+call.shortName.length > 0`'s body still materialises
+`__lyric_call_shortName`. Same sandbox build limitation as above —
+verified by inspection against the mirrored `rewriteExpr`/
+`rewriteRangeBound` shapes and the existing `collectRefsExpr` call
+graph; CI's from-source `lyric test` run is the real verification.

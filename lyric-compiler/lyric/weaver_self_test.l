@@ -1419,6 +1419,50 @@ test "@inline_template emits A0042 for args.<missing>" {
   assertTrue(diagsHaveCode(wr.diagnostics, "A0042"), "A0042 emitted for args.unknownField")
 }
 
+// #7093 (claude-review REQUIRED finding on PR #6863): `collectRefsExpr`
+// (backing `buildConfigPrelude`/`buildCallPrelude`'s "does the body
+// reference this field" pre-scan) had the identical `ERange`/`EForall`/
+// `EExists` leaf gap `rewriteExpr` had before D-progress-887 — a
+// `config.<field>`/`call.<field>` reference reachable only through a
+// range bound or a `forall`/`exists` binder wasn't detected as "used",
+// so no prelude local got materialised for it.
+test "config.<field> referenced only inside a for-loop range bound still materialises its prelude local" {
+  val src = "package P\n" + "aspect Limit {\n" + "  config { max: Int = 3 }\n" + "  matches: name like \"r\"\n" +
+    "  around(args) -> ret {\n" +
+    "    for i in 0 .. config.max {\n" +
+    "      val a = i\n" +
+    "    }\n" +
+    "    ret = proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func r(): Unit { }\n"
+  val wr = parseWeaveDiags(src)
+  assertTrue(wr.diagnostics.count == 0, "no diagnostics")
+  val wrapper = firstFunction(wr.file, "r")
+  val body = functionBody(wrapper)
+  assertTrue(
+    isValBinding(body.statements[0], "__aspect_cfg_max"),
+    "config.max reachable only via a range bound still materialises __aspect_cfg_max"
+  )
+  val initExpr = findValInit(body, "__aspect_cfg_max")
+  assertTrue(literalIntValue(initExpr) == 3i64, "default 3 captured")
+}
+
+test "call.<field> referenced only inside a forall(...) where/body still materialises its prelude local" {
+  val src = "package P\n" + "aspect Trace {\n" + "  matches: name like \"handle*\"\n" +
+    "  around(args) -> ret {\n" +
+    "    val ok = forall(i: Int) where i < 10 implies call.shortName.length > 0\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func handleX(): Int { 1 }\n"
+  val woven = parseWeave(src)
+  val wrapper = firstFunction(woven, "handleX")
+  val body = functionBody(wrapper)
+  val sn = findValInit(body, "__lyric_call_shortName")
+  assertEqual(literalStringValue(sn), "handleX", "call.shortName reachable only via forall's body still materialises __lyric_call_shortName")
+}
+
 test "non-template aspects leave args.<field> alone" {
   // Without @inline_template, args.<field> must pass through unchanged
   // — no rewrite, no A0042 (parity with the F# weaver's contract).
