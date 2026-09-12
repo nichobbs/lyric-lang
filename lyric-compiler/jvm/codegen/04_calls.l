@@ -160,6 +160,52 @@ func extractResultValueType(te: in TypeExpr, pkgName: in String): JvmType {
   }
 }
 
+// D107 Phase 2 (#3932): when an `@externTarget` (non-ctor, non-async)
+// function declares `Option[T]` with `T` a reference type, the underlying
+// Java method actually returns a nullable reference `T` (e.g.
+// `System.getenv(String): String`). Mirrors the MSIL
+// `externOptionCoerceInner`/`externOptionCoerces` convention
+// (`msil/codegen.l`, docs/03 D107): the invoke descriptor binds to the real
+// `T`, and the possibly-null result is coerced to `Option[T]` at the call
+// boundary — `null -> None`, value -> `Some(value)`. Returns the coercion
+// inner JVM type when the convention applies; `None` for a non-`Option`
+// return, an `Option[T]` over a JVM primitive `T` (never null, no coercion
+// needed), or an async extern (Task/Future unwrap is a separate, not yet
+// supported concern on this backend — ctors never reach this function at
+// all, they return before `javaRet` is computed).
+func externOptionCoerceInnerJvm(
+  decl: in FunctionDecl, pkgName: in String, externTypes: in Map[String, String]
+): Option[JvmType] {
+  if decl.isAsync {
+    return None
+  }
+  match decl.ret {
+    case None -> None
+    case Some(te) -> {
+      match te.kind {
+        case TGenericApp(head, args) -> {
+          if lastSegment(head) == "Option" and args.count == 1 {
+            match args[0] {
+              case TAType(inner) -> {
+                val innerJvm = typeExprToJvmExtern(inner, pkgName, externTypes)
+                if isJvmPrimitiveElemType(innerJvm) {
+                  None
+                } else {
+                  Some(value = innerJvm)
+                }
+              }
+              case _ -> None
+            }
+          } else {
+            None
+          }
+        }
+        case _ -> None
+      }
+    }
+  }
+}
+
 // Maven-generated static externs follow the `TypeName_methodName` convention
 // (PascalCase prefix before the first underscore).  Returns true for those.
 func isStaticExternByName(name: in String): Bool {
@@ -352,6 +398,11 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
         case None -> isStaticExternByName(decl.name)
       }
       val wrapResult = isResultJvmException(decl.ret)
+      // D107 Phase 2 (#3932): `Option[T]` (T a reference type) return convention.
+      // Mutually exclusive with `wrapResult` by construction (`Result[...]` vs
+      // `Option[...]` heads).
+      val optCoerceInner = externOptionCoerceInnerJvm(decl, ctx.pkgName, ctx.externTypes)
+      val optCoerces = match optCoerceInner { case Some(_) -> true; case None -> false }
       val startParam = if isStatic { 0 } else { 1 }
 
       // Java arg types: for instance calls, skip the first param (receiver).
@@ -362,13 +413,18 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
         ai = ai + 1
       }
 
-      // Actual Java return type (unwrapped from Result for the invoke descriptor).
+      // Actual Java return type (unwrapped from Result/Option for the invoke
+      // descriptor — under the Option[T] convention the invoke must bind to
+      // the real (nullable) reference T, not the erased Std/Core/Option).
       val javaRet = match decl.ret {
         case None -> JVoid
         case Some(te) -> if wrapResult {
           extractResultValueType(te, ctx.pkgName)
         } else {
-          typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes)
+          match optCoerceInner {
+            case Some(inner) -> inner
+            case None -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes)
+          }
         }
       }
 
@@ -525,6 +581,45 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
 
         emitReturn(insns, JRef(className = "java/lang/Object"))
         JRef(className = "java/lang/Object")
+      } else if optCoerces {
+        // D107 Phase 2 (#3932): the invoke left a (possibly null) `inner`
+        // reference on the stack; wrap it into `Option[inner]` — null ->
+        // `None`, else `Some(value)`. Stashed to a local first (mirrors
+        // `mapGet`'s identical discipline above): `ifnull` pops its operand,
+        // so the value is needed twice — once for the null test, once for
+        // the `Some` constructor arg — and the StackMapTable declares an
+        // empty operand stack at every branch target.
+        val inner = match optCoerceInner { case Some(t) -> t; case None -> JRef(className = "java/lang/Object") }
+        if isStatic {
+          insns.add(LInvokestatic(owner = javaClass, name = methodName, params = extArgTypes, ret = javaRet))
+        } else {
+          insns.add(LInvokevirtual(owner = javaClass, name = methodName, params = extArgTypes, ret = javaRet))
+        }
+        val valSlot = allocSlot(ctx, "__ext_opt_v_" + freshLabel(ctx), inner)
+        emitStore(insns, valSlot, inner)
+        val resultSlot = allocSlot(ctx, "__ext_opt_r_" + freshLabel(ctx), JRef(className = "Std/Core/Option"))
+        val noneL = freshLabel(ctx)
+        val afterOptL = freshLabel(ctx)
+        emitLoad(insns, valSlot, inner)
+        insns.add(LIfnull(label = noneL))
+        insns.add(LNew(className = "Std/Core/Option$Some"))
+        insns.add(LDup)
+        emitLoad(insns, valSlot, inner)
+        val someCtorPs: List[JvmType] = newList()
+        someCtorPs.add(JRef(className = "java/lang/Object"))
+        insns.add(LInvokespecial(owner = "Std/Core/Option$Some", name = "<init>", params = someCtorPs, ret = JVoid))
+        insns.add(LAstoreAs(slot = resultSlot, className = "Std/Core/Option"))
+        insns.add(LGoto(label = afterOptL))
+        insns.add(LLabel(name = noneL))
+        insns.add(LNew(className = "Std/Core/Option$None"))
+        insns.add(LDup)
+        val noneCtorPs: List[JvmType] = newList()
+        insns.add(LInvokespecial(owner = "Std/Core/Option$None", name = "<init>", params = noneCtorPs, ret = JVoid))
+        insns.add(LAstoreAs(slot = resultSlot, className = "Std/Core/Option"))
+        insns.add(LLabel(name = afterOptL))
+        insns.add(LAload(slot = resultSlot))
+        emitReturn(insns, JRef(className = "Std/Core/Option"))
+        JRef(className = "Std/Core/Option")
       } else {
         if isStatic {
           insns.add(LInvokestatic(owner = javaClass, name = methodName, params = extArgTypes, ret = javaRet))

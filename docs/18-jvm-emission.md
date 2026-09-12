@@ -2292,6 +2292,30 @@ parameter on `@externTarget(...)` so kernel authors can widen the catch
 scope on a per-binding basis.  Until then, document each kernel extern
 whose wrapped method may throw `Error` subclasses as an unsafe boundary.
 
+### Q-J010: `@externTarget` `Option[T]` null-coercion (D107 Phase 2) — RESOLVED
+
+**Resolution (#3932, D-progress-886):** the JVM backend implements the D107
+convention: an `@externTarget` (non-ctor, non-async) function whose declared
+return is `Option[T]` (`T` a reference type) binds the `invokestatic`/
+`invokevirtual` descriptor to the JDK method's real nullable reference return
+`T` — not the erased `Ljava/lang/Object;` every other generic head falls back
+to (see Appendix A's `T?` row for the closest existing analog) — and coerces
+the result at the call boundary: `null -> Std/Core/Option$None`, a non-null
+reference `-> Std/Core/Option$Some(value)`. Implemented in
+`lowerExternTargetBody` (`jvm/codegen/04_calls.l`) via a new
+`externOptionCoerceInnerJvm` helper (mirrors MSIL's
+`externOptionCoerceInner`/`externOptionCoerces`) and the same `LNew`/`LDup`/
+`LInvokespecial(<init>)`/`LAstoreAs` construction shape `lowerBuiltinOrStaticCall`'s
+`mapGet` lowering already uses. Before this fix the JVM backend did not merely
+skip the coercion — the mis-bound `Object`-returning descriptor made the call
+unresolvable at class-link time (`NoSuchMethodError`), so no
+`@externTarget ... : Option[T]` binding was callable on `--target jvm` at all.
+Excluded, matching Phase 1's MSIL scope: static-field-typed
+`@externTarget`s (resolved via `getstatic`, never a method call) and async
+externs (`decl.isAsync` short-circuits, mirroring MSIL). See D107 in
+`docs/03-decision-log.md` for the cross-target decision and
+`docs/01-language-reference.md` §11.3 for the language-level contract.
+
 ## 25. References
 
 - **JVMS**: *The Java Virtual Machine Specification*, Java SE 21
@@ -2376,6 +2400,7 @@ whose wrapped method may throw `Error` subclasses as an unsafe boundary.
 | Q-J007 | Test-runner integration            | §24 + D-progress-206: `@LyricTest` + `Jvm.TestEngine` shipped (B126); full `LyricTestEngine` deferred to B127+ |
 | Q-J008 | Maven Central dependency linking   | §24 + `docs/31-maven-linking.md`; specced in D053 |
 | Q-J009 | `@externTarget` catch scope        | §24: known limitation; `Exception` only; `Throwable` opt-in deferred |
+| Q-J010 | `@externTarget` `Option[T]` null-coercion (D107 Phase 2) | §24: **RESOLVED** — shipped in D-progress-886 (#3932) |
 
 
 ## Appendix C. JVM-specific class-file attributes emitted by Lyric
