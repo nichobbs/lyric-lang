@@ -1690,6 +1690,13 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/auto_ffi_self_test.l
 
+      # .NET-only: `[Flags]` enums are a C#/BCL idiom with no JVM equivalent,
+      # so there is no JVM counterpart to run (see the file's own header).
+      - name: Extern enum flags bitwise-composition self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/extern_enum_flags_self_test.l
+
       - name: Extern Option[T] null-coercion self-test (native lyric test)
         background: true
         working-directory: ${{ github.workspace }}
