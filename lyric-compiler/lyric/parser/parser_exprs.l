@@ -130,8 +130,13 @@ func parseGenericParam(st: inout ParseState): GenericParam {
   }
 }
 
-pub func parseGenericParamsOpt(st: inout ParseState, visAlreadyParsed: in Bool): Option[GenericParams] {
-  // Two forms: bare-bracket `[T, U]` or legacy `generic[T, U]`.
+pub func parseGenericParamsOpt(
+  st: inout ParseState, visAlreadyParsed: in Bool, allowLegacyKw: in Bool
+): Option[GenericParams] {
+  // Two forms: bare-bracket `[T, U]` or legacy `generic[T, U]`. The legacy
+  // `generic` keyword spelling is grammar-scoped to the prefix (head-modifier)
+  // position only (docs/grammar.ebnf); suffix (after-name) call sites pass
+  // `allowLegacyKw = false` so `record Foo generic[T] { ... }` is rejected.
   val isGenericKw = isKw(peekToken(st), KwGeneric)
   val isBracket = isPunct(peekToken(st), LBracket)
   if not isGenericKw and not isBracket {
@@ -139,6 +144,14 @@ pub func parseGenericParamsOpt(st: inout ParseState, visAlreadyParsed: in Bool):
   } else {
     val startTok = peek(st)
     if isGenericKw {
+      if not allowLegacyKw {
+        emitErr(
+          st,
+          "P0096",
+          "the legacy 'generic[...]' keyword form is only allowed before the item's declaration keyword, not after its name; use '[T]' here",
+          startTok.span
+        )
+      }
       val _ = advance(st)
     }
     match tryEatPunct(st, LBracket) {

@@ -1711,6 +1711,98 @@ test "wire-body config without from is P0343" {
   assertTrue(saw, "wire-body config without from raises P0343")
 }
 
+// #6839: the legacy `generic[...]` keyword spelling is grammar-scoped
+// (docs/grammar.ebnf §5.1) to the prefix (head-modifier) position only —
+// `generic[T] record Foo { ... }`, not the suffix (after-name) position
+// `record Foo generic[T] { ... }`. `parseGenericParamsOpt`'s 11 suffix
+// call sites now pass `allowLegacyKw = false` and reject `KwGeneric`
+// with P0096 instead of silently accepting the reordered spelling (which
+// used to reach the formatter as `legacyPrefixForm = true` and either
+// get silently reordered to prefix position, or — for `extern type`,
+// which has no legacy-prefix rendering path — dropped the generic
+// parameter list entirely).
+test "suffix-position 'generic[T]' after a record name is rejected as P0096" {
+  val pr = parse("package P\nrecord Foo generic[T] {\n  value: T\n}\n")
+  assertTrue(hasDiagCode(pr, "P0096"), "P0096: suffix generic[T] after record name is rejected")
+}
+
+test "suffix-position 'generic[T]' after a function name is rejected as P0096" {
+  val pr = parse("package P\nfunc identity generic[T](x: T): T {\n  x\n}\n")
+  assertTrue(hasDiagCode(pr, "P0096"), "P0096: suffix generic[T] after func name is rejected")
+}
+
+// `extern type` is explicitly excluded from the grammar's legacy-prefix
+// supported-kinds list (it has no head-modifier position to put
+// `generic[...]` before), so the suffix position is its ONLY generics
+// syntax — confirm the bare-bracket form still parses clean here and the
+// legacy spelling is rejected rather than silently eating the generic
+// parameter list.
+test "suffix-position 'generic[T]' after an extern type name is rejected as P0096" {
+  val pr = parse("package P\nextern type Foo generic[T] = \"System.Collections.Generic.List\"\n")
+  assertTrue(hasDiagCode(pr, "P0096"), "P0096: suffix generic[T] after extern type name is rejected")
+  val clean = parse("package P\nextern type Foo[T] = \"System.Collections.Generic.List\"\n")
+  assertTrue(not hasDiagCode(clean, "P0096"), "P0096: bare-bracket extern type generics still parse clean")
+}
+
+// The remaining 8 of the 11 suffix call sites (review suggestion on
+// #6861): union, opaque type, interface, impl, protected type, type
+// alias, distinct type, and the nested-impl (`impl T { satisfies ... }`)
+// form. Each is a one-line mechanical change to `allowLegacyKw = false`
+// at its own call site, but exercised independently so a stray
+// typo'd `true`/`false` at any one of them would be caught.
+test "suffix-position 'generic[T]' after a union name is rejected as P0096" {
+  val pr = parse("package P\nunion Foo generic[T] {\n  case A(value: T)\n  case B\n}\n")
+  assertTrue(hasDiagCode(pr, "P0096"), "P0096: suffix generic[T] after union name is rejected")
+}
+
+test "suffix-position 'generic[T]' after an opaque type name is rejected as P0096" {
+  val pr = parse("package P\nopaque type Foo generic[T] {\n  value: T\n}\n")
+  assertTrue(hasDiagCode(pr, "P0096"), "P0096: suffix generic[T] after opaque type name is rejected")
+}
+
+test "suffix-position 'generic[T]' after an interface name is rejected as P0096" {
+  val pr = parse("package P\ninterface Foo generic[T] {\n  func get(): T\n}\n")
+  assertTrue(hasDiagCode(pr, "P0096"), "P0096: suffix generic[T] after interface name is rejected")
+}
+
+test "suffix-position 'generic[T]' after a flat 'impl ... for ...' is rejected as P0096" {
+  val pr = parse(
+    "package P\ninterface Shape {\n  func area(): Int\n}\nrecord Box {\n  value: Int\n}\n" +
+      "impl generic[T] Shape for Box {\n  func area(): Int {\n    0\n  }\n}\n"
+  )
+  assertTrue(hasDiagCode(pr, "P0096"), "P0096: suffix generic[T] after 'impl' (flat form) is rejected")
+}
+
+test "suffix-position 'generic[T]' after a nested 'impl T { satisfies ... }' is rejected as P0096" {
+  val pr = parse(
+    "package P\ninterface Shape {\n  func area(): Int\n}\nrecord Box {\n  value: Int\n}\n" +
+      "impl generic[T] Box {\n  satisfies Shape {\n    func area(): Int {\n      0\n    }\n  }\n}\n"
+  )
+  assertTrue(hasDiagCode(pr, "P0096"), "P0096: suffix generic[T] after 'impl' (nested-satisfies form) is rejected")
+}
+
+test "suffix-position 'generic[T]' after a protected type name is rejected as P0096" {
+  val pr = parse("package P\nprotected type Foo generic[T] {\n  var value: T\n}\n")
+  assertTrue(hasDiagCode(pr, "P0096"), "P0096: suffix generic[T] after protected type name is rejected")
+}
+
+test "suffix-position 'generic[T]' after a type alias name is rejected as P0096" {
+  val pr = parse("package P\nalias Foo generic[T] = List[T]\n")
+  assertTrue(hasDiagCode(pr, "P0096"), "P0096: suffix generic[T] after type alias name is rejected")
+}
+
+test "suffix-position 'generic[T]' after a distinct type name is rejected as P0096" {
+  val pr = parse("package P\ntype Foo generic[T] = List[T]\n")
+  assertTrue(hasDiagCode(pr, "P0096"), "P0096: suffix generic[T] after distinct type name is rejected")
+}
+
+// The prefix (head-modifier) position must be unaffected by the suffix
+// tightening — `allowLegacyKw = true` there.
+test "prefix-position 'generic[T]' before a record declaration still parses clean" {
+  val pr = parse("package P\ngeneric[T] record Foo {\n  value: T\n}\n")
+  assertTrue(not hasDiagCode(pr, "P0096"), "P0096: prefix generic[T] before record is unaffected")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // #5572: a parenthesized expression opening the NEXT line is a new statement,
 // not the argument list of the previous line's value.  The lexer never inserts
