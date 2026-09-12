@@ -2363,31 +2363,223 @@ func coerceArgTo(insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): U
         case _ -> boxIfNeeded(insns, fromTy)
       }
     }
-    case JArray(_) -> {
+    case JArray(elemTy) -> {
       // A list value (an `EList` literal or any List-typed expression) flowing
       // into an erased `slice[T]` parameter (`[Ljava/lang/Object;`) must be
       // converted: an ArrayList is not assignable to an array and fails
       // verification at class load (#4700).  `ArrayList.toArray()` yields the
       // `Object[]` the slice ABI expects.  A value already of array type
       // needs no conversion (JVM ref-array covariance).
+      //
+      // When `toTy`'s element type is narrower than `Object` (an extern-
+      // interface impl's slice[ExternType] return, #6970 review follow-up on
+      // #5931), the no-arg `toArray()` overload is not enough: its erased
+      // return type is always `Object[]`, which the JVM verifier will not
+      // accept where the narrower array type is required by the method
+      // descriptor. `Collection.toArray(T[])`'s erased descriptor is also
+      // `([Ljava/lang/Object;)[Ljava/lang/Object;`, but passing a real
+      // zero-length `T[]` makes the RUNTIME result actually be a `T[]`
+      // (the JDK allocates a fresh correctly-typed array whenever the
+      // supplied one is too small); a `checkcast` after the call narrows the
+      // verifier's STATIC tracked type to match what's truly on the heap.
       match fromTy {
         case JRef(fromCls) -> {
           if fromCls == "java/util/ArrayList" {
-            val taPs: List[JvmType] = newList()
-            insns.add(
-              LInvokevirtual(
-                owner = "java/util/ArrayList",
-                name = "toArray",
-                params = taPs,
-                ret = JArray(elem = JRef(className = "java/lang/Object"))
-              )
-            )
+            match elemTy {
+              case JRef(elemCls) -> {
+                if elemCls == "java/lang/Object" {
+                  val taPs: List[JvmType] = newList()
+                  insns.add(
+                    LInvokevirtual(
+                      owner = "java/util/ArrayList",
+                      name = "toArray",
+                      params = taPs,
+                      ret = JArray(elem = JRef(className = "java/lang/Object"))
+                    )
+                  )
+                } else {
+                  insns.add(LIconst(v = 0))
+                  insns.add(LAnewarray(className = elemCls))
+                  val taPs2: List[JvmType] = newList()
+                  taPs2.add(JArray(elem = JRef(className = "java/lang/Object")))
+                  insns.add(
+                    LInvokevirtual(
+                      owner = "java/util/ArrayList",
+                      name = "toArray",
+                      params = taPs2,
+                      ret = JArray(elem = JRef(className = "java/lang/Object"))
+                    )
+                  )
+                  insns.add(LCheckcast(className = "[L" + elemCls + ";"))
+                }
+              }
+              case _ -> {
+                val taPs3: List[JvmType] = newList()
+                insns.add(
+                  LInvokevirtual(
+                    owner = "java/util/ArrayList",
+                    name = "toArray",
+                    params = taPs3,
+                    ret = JArray(elem = JRef(className = "java/lang/Object"))
+                  )
+                )
+              }
+            }
           }
         }
         case _ -> ()
       }
     }
     case _ -> ()
+  }
+}
+
+// Replace an erased Lyric slice (`[Ljava/lang/Object;`, top of stack) with a
+// freshly built `elemCls[]`, `checkcast`ing each element — the reference-typed
+// counterpart of `emitUnboxObjectArray`. Safe whenever every element genuinely
+// is (or is null): the elements of an `Object[]` backing a `slice[ExternType]`
+// are never further boxed/wrapped, so a per-element `checkcast` is a real type
+// narrowing, not a representation change. Needed for #6977's parameter-side
+// half: an ordinary Lyric caller's `slice[ExternType]` LOCAL/PARAMETER value
+// is `Object[]`-typed under the erased ABI (a fresh literal is `ArrayList`-
+// typed instead, `coerceArgToCtx`'s other branch), so passing it into an
+// extern-interface impl's narrowed reference-array parameter needs this same
+// copy-and-narrow treatment `coerceArgTo`'s `JRef(ArrayList)` branch already
+// applies to a fresh literal.
+func emitNarrowObjectArrayRef(ctx: in FuncCtx, insns: in List[LInsn], elemCls: in String): Unit {
+  val elemTy = JRef(className = elemCls)
+  val srcSlot = allocSlot(
+    ctx,
+    "__narrow_arr_src_" + freshLabel(ctx),
+    JArray(elem = JRef(className = "java/lang/Object"))
+  )
+  val dstSlot = allocSlot(ctx, "__narrow_arr_dst_" + freshLabel(ctx), JArray(elem = elemTy))
+  val idxSlot = allocSlot(ctx, "__narrow_arr_idx_" + freshLabel(ctx), JInt)
+  val lenSlot = allocSlot(ctx, "__narrow_arr_len_" + freshLabel(ctx), JInt)
+  val loopL = freshLabel(ctx)
+  val endL = freshLabel(ctx)
+  insns.add(LAstoreAs(slot = srcSlot, className = "[Ljava/lang/Object;"))
+  insns.add(LAload(slot = srcSlot))
+  insns.add(LArraylength)
+  insns.add(LAnewarray(className = elemCls))
+  insns.add(LAstoreAs(slot = dstSlot, className = jvmTypeToDescStr(JArray(elem = elemTy))))
+  insns.add(LAload(slot = srcSlot))
+  insns.add(LArraylength)
+  insns.add(LIstore(slot = lenSlot))
+  insns.add(LIconst(v = 0))
+  insns.add(LIstore(slot = idxSlot))
+  insns.add(LLabel(name = loopL))
+  insns.add(LIload(slot = idxSlot))
+  insns.add(LIload(slot = lenSlot))
+  insns.add(LIfIcmpge(label = endL))
+  insns.add(LAload(slot = dstSlot))
+  insns.add(LIload(slot = idxSlot))
+  insns.add(LAload(slot = srcSlot))
+  insns.add(LIload(slot = idxSlot))
+  insns.add(LAaload)
+  insns.add(LCheckcast(className = elemCls))
+  insns.add(LAastore)
+  insns.add(LIinc(slot = idxSlot, delta = 1))
+  insns.add(LGoto(label = loopL))
+  insns.add(LLabel(name = endL))
+  insns.add(LAload(slot = dstSlot))
+}
+
+// `coerceArgTo` with the additions it cannot make itself (no `FuncCtx` to
+// allocate loop-temp slots, see `emitArrayToArrayListJvm`'s comment on the
+// same constraint): narrowing an erased slice value into a JVM array whose
+// element type is narrower than `Object`, needed when a `slice[Elem]`
+// return/argument narrows for an extern-interface `impl`
+// (`implTypeExprToJvm`'s own doc comment: "a primitive slice element needs
+// the real primitive array too" — #6977 review follow-up on #5931/#6970).
+// Two source shapes carry the SAME erased slice value under Lyric's ABI and
+// both need narrowing:
+//   - `JRef("java/util/ArrayList")` — a freshly constructed slice value
+//     (a literal, or any List-typed expression) — narrowed via
+//     `ArrayList.toArray()` + a copy loop.
+//   - `JArray(elem = Object)` — an ALREADY-erased `Object[]`, the shape a
+//     `slice[Elem]`-typed LOCAL or PARAMETER carries once stored in a slot
+//     (the ordinary erased ABI, #6977's parameter-side gap: forwarding such
+//     a value into a narrowed impl parameter/return hit this untouched) —
+//     narrowed via the same copy loop directly, no `toArray()` needed since
+//     it is already an array.
+// Delegates to `coerceArgTo` for every other shape.
+func coerceArgToCtx(ctx: in FuncCtx, insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): Unit {
+  match fromTy {
+    case JRef(fromCls) -> {
+      if fromCls == "java/util/ArrayList" {
+        match toTy {
+          case JArray(elemTy) -> {
+            if isJvmPrimitiveElemType(elemTy) {
+              val taPs: List[JvmType] = newList()
+              insns.add(
+                LInvokevirtual(
+                  owner = "java/util/ArrayList",
+                  name = "toArray",
+                  params = taPs,
+                  ret = JArray(elem = JRef(className = "java/lang/Object"))
+                )
+              )
+              emitUnboxObjectArray(ctx, insns, elemTy)
+            } else {
+              match elemTy {
+                case JRef(elemCls) -> {
+                  if elemCls == "java/lang/Object" {
+                    coerceArgTo(insns, fromTy, toTy)
+                  } else {
+                    val taPs2: List[JvmType] = newList()
+                    insns.add(
+                      LInvokevirtual(
+                        owner = "java/util/ArrayList",
+                        name = "toArray",
+                        params = taPs2,
+                        ret = JArray(elem = JRef(className = "java/lang/Object"))
+                      )
+                    )
+                    emitNarrowObjectArrayRef(ctx, insns, elemCls)
+                  }
+                }
+                case _ -> coerceArgTo(insns, fromTy, toTy)
+              }
+            }
+          }
+          case _ -> coerceArgTo(insns, fromTy, toTy)
+        }
+      } else {
+        coerceArgTo(insns, fromTy, toTy)
+      }
+    }
+    case JArray(fromElemTy) -> {
+      match fromElemTy {
+        case JRef(fromElemCls) -> {
+          if fromElemCls == "java/lang/Object" {
+            match toTy {
+              case JArray(toElemTy) -> {
+                if isJvmPrimitiveElemType(toElemTy) {
+                  emitUnboxObjectArray(ctx, insns, toElemTy)
+                } else {
+                  match toElemTy {
+                    case JRef(toElemCls) -> {
+                      if toElemCls == "java/lang/Object" {
+                        coerceArgTo(insns, fromTy, toTy)
+                      } else {
+                        emitNarrowObjectArrayRef(ctx, insns, toElemCls)
+                      }
+                    }
+                    case _ -> coerceArgTo(insns, fromTy, toTy)
+                  }
+                }
+              }
+              case _ -> coerceArgTo(insns, fromTy, toTy)
+            }
+          } else {
+            coerceArgTo(insns, fromTy, toTy)
+          }
+        }
+        case _ -> coerceArgTo(insns, fromTy, toTy)
+      }
+    }
+    case _ -> coerceArgTo(insns, fromTy, toTy)
   }
 }
 
@@ -2702,7 +2894,7 @@ func prepareHolderArg(
         insns.add(LDup)
         insns.add(LIconst(v = 0))
         emitLoad(insns, srcSlot, srcTy)
-        coerceArgTo(insns, srcTy, elemTy)
+        coerceArgToCtx(ctx, insns, srcTy, elemTy)
         emitHolderElemStore(insns, elemTy)
         // Stash the array reference in a temp slot, typed precisely so the
         // StackMapTable verifies the later aload + element load.
@@ -2738,7 +2930,7 @@ func prepareHolderArg(
           insns.add(LIconst(v = 0))
           emitLoad(insns, rSlot, JRef(className = cls))
           insns.add(LGetfield(owner = cls, name = fieldName, t = fty))
-          coerceArgTo(insns, fty, elemTy)
+          coerceArgToCtx(ctx, insns, fty, elemTy)
           emitHolderElemStore(insns, elemTy)
           val tmpSlot = allocSlot(ctx, "__holderarg$" + calleeLabel + "$" + toString(bi), holderArrayType(elemTy))
           insns.add(LAstoreAs(slot = tmpSlot, className = holderArrayDescriptor(elemTy)))
@@ -2920,7 +3112,7 @@ func lowerStaticCallWithHolders(
             case _ -> ()
           }
         } else {
-          coerceArgTo(insns, aTy, sig.params[pvi])
+          coerceArgToCtx(ctx, insns, aTy, sig.params[pvi])
         }
         slotTy = sig.params[pvi]
       }
@@ -3056,7 +3248,7 @@ func lowerVirtualCallWithHolders(
     } else {
       val aTy = lowerCallArg(ctx, insns, args[ai])
       if ai < sig.params.count {
-        coerceArgTo(insns, aTy, sig.params[ai])
+        coerceArgToCtx(ctx, insns, aTy, sig.params[ai])
       }
     }
     ai = ai + 1
@@ -3196,7 +3388,7 @@ func lowerGeneralStaticCall(
           while ai < callArgs.count {
             val aTy = lowerCallArg(ctx, insns, callArgs[ai])
             if ai < sig.params.count {
-              coerceArgTo(insns, aTy, sig.params[ai])
+              coerceArgToCtx(ctx, insns, aTy, sig.params[ai])
             }
             ai = ai + 1
           }
@@ -3321,7 +3513,7 @@ func lowerGeneralStaticCall(
                 case _ -> ()
               }
             } else {
-              coerceArgTo(insns, aTy, sig.params[si])
+              coerceArgToCtx(ctx, insns, aTy, sig.params[si])
             }
             slotTy = sig.params[si]
           }
@@ -3353,7 +3545,7 @@ func lowerGeneralStaticCall(
         val aTy = lowerCallArg(ctx, insns, callArgs[ai])
         if ai < sig.params.count {
           popCtorExpect(ctx)
-          coerceArgTo(insns, aTy, sig.params[ai])
+          coerceArgToCtx(ctx, insns, aTy, sig.params[ai])
         }
         ai = ai + 1
       }
@@ -3753,7 +3945,7 @@ func lowerMethodCall(
           while wi < args.count {
             val aTy = lowerCallArg(ctx, insns, args[wi])
             if wi < sig.params.count {
-              coerceArgTo(insns, aTy, sig.params[wi])
+              coerceArgToCtx(ctx, insns, aTy, sig.params[wi])
             }
             wi = wi + 1
           }
@@ -4283,7 +4475,7 @@ func lowerMethodCall(
           while ai < args.count {
             val aTy = lowerCallArg(ctx, insns, args[ai])
             if ai < sig.params.count {
-              coerceArgTo(insns, aTy, sig.params[ai])
+              coerceArgToCtx(ctx, insns, aTy, sig.params[ai])
             }
             ai = ai + 1
           }
@@ -4323,7 +4515,7 @@ func lowerMethodCall(
           while ai < args.count {
             val aTy = lowerCallArg(ctx, insns, args[ai])
             if (ai + 1) < sig.params.count {
-              coerceArgTo(insns, aTy, sig.params[ai + 1])
+              coerceArgToCtx(ctx, insns, aTy, sig.params[ai + 1])
             }
             ai = ai + 1
           }
