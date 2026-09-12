@@ -4171,6 +4171,70 @@ func lowerMethodCall(
     }
   }
 
+  // `xs.add(row)` on a `List[slice[Elem]]` receiver (#6546): a bare slice
+  // literal argument (`xs.add([1, 2, 3])`) always lowers via `EList`'s
+  // codegen (02_exprs.l) to a `java/util/ArrayList` — a bracket literal is
+  // unconditionally built as an `ArrayList` first, and only a call site with
+  // a KNOWN DECLARED Lyric parameter type (`coerceArgTo`'s `JArray` arm)
+  // later converts it into a real array.  `List[T].add(value: T)` has no
+  // such declared param type of its own to consult here: it falls through to
+  // the generic JDK auto-FFI path below, whose only known signature is the
+  // REAL `java.util.ArrayList.add(Ljava/lang/Object;)Z` — genuinely opaque
+  // to Lyric's `slice[T]` vs `List[T]` distinction — so `emitFfiCoerce` sees
+  // an `ArrayList`-typed argument headed for an `Object` parameter and
+  // (correctly, for every OTHER `T`) leaves it untouched: an `ArrayList`
+  // IS-A `Object`, no coercion needed. The stored element is then a genuine
+  // `ArrayList`, not the real array every other `slice[T]` value in the
+  // codebase is, and a later `for v in row` crashes (`ClassCastException:
+  // ArrayList cannot be cast to [Ljava.lang.Object;`).
+  //
+  // Intercept `.add` here, before the generic auto-FFI dispatch, when the
+  // RECEIVER's own recorded generic instantiation (`scrutineeGenericArgs`,
+  // the same registry `indexedElemTypeOverride` itself consults) names a
+  // `slice[Elem]` element type (`sliceElemTypeExpr` on the single recorded
+  // type argument). `indexedElemTypeOverride` itself can't be reused
+  // directly here: for exactly this "element type is itself array-shaped"
+  // resolution it deliberately returns the safe `JVoid` "no override"
+  // sentinel instead of a `JArray` (see its own `case JArray(_) -> return
+  // JVoid` comment) — a defensive bail-out for its OTHER callers (plain
+  // element-type narrowing on read), not applicable to this write-side
+  // coercion decision. Convert the argument via the same `coerceArgTo`
+  // `JArray` arm a normal `slice[Elem]`-parameter call site would use, so a
+  // bare list-literal argument becomes a real array before it is boxed as
+  // the JDK `Object` parameter — and a genuine array argument (e.g.
+  // `intRow([1, 2, 3])`'s `slice[Int]` return) passes through unchanged
+  // (`coerceArgTo`'s `JArray`-to-`JArray` arm is a no-op). A `List[T]`
+  // whose `T` is not itself a slice keeps falling through to the auto-FFI
+  // path unchanged — that path already resolves plain-value `.add()`
+  // correctly (Bug 2 of #6546 fixed the one shape it didn't).
+  if memberName == "add" and args.count == 1 {
+    val isListRecvAdd = match recvTy {
+      case JRef(c) -> c == "java/lang/Object" or c == "java/util/ArrayList" or c == "java/util/List"
+      case _ -> false
+    }
+    if isListRecvAdd {
+      val recvGenArgs = scrutineeGenericArgs(ctx, recv)
+      val elemIsSlice = if recvGenArgs.count == 1 {
+        match sliceElemTypeExpr(recvGenArgs[0]) {
+          case Some(_) -> true
+          case None -> false
+        }
+      } else {
+        false
+      }
+      if elemIsSlice {
+        insns.add(LCheckcast(className = "java/util/ArrayList"))
+        val argTy = lowerCallArg(ctx, insns, args[0])
+        coerceArgTo(insns, argTy, JArray(elem = JRef(className = "java/lang/Object")))
+        val addPs: List[JvmType] = newList()
+        addPs.add(JRef(className = "java/lang/Object"))
+        insns.add(LInvokevirtual(owner = "java/util/ArrayList", name = "add", params = addPs, ret = JBoolean))
+        insns.add(LPop)
+        return JVoid
+      }
+    }
+  }
+
   // `xs.removeAt(i)` on a List receiver — including one erased to `Object`
   // (same erased-receiver leniency as `.toArray()` above).  Lyric's
   // `List[T].removeAt(index: Int): Unit` (MSIL: `List<object>.RemoveAt(int32)`)

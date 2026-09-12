@@ -603,6 +603,28 @@ func scoreParamMatch(argDesc: in String, paramDesc: in String, argIsNarrowedSlic
   if argIsNarrowedSliceErasure and isPrimitiveArrayDesc(argDesc) and paramDesc == "[Ljava/lang/Object;" {
     return 2
   }
+  // Same reverse-compatibility narrowing as the arm above, but for a bare
+  // `Object` parameter rather than `Object[]` (#6546): `List[slice[Int]].
+  // add(row)` narrows `row`'s score descriptor to `[I` (via
+  // `ffiScoreDescFor`/`indexedElemTypeOverride` resolving the argument's
+  // declared `slice[Int]` element type), and the only real overload is
+  // `java.util.ArrayList.add(Ljava/lang/Object;)Z` — a SINGLE boxed `Object`
+  // parameter, not an array parameter of any shape. The line-551 arm above
+  // already accepts the real (un-narrowed) `[Ljava/lang/Object;` erasure
+  // against a bare `Object` parameter (any array IS-A `Object`, JLS §10.7);
+  // this is the identical fact, reached through the narrowed descriptor
+  // instead — a Lyric `slice[T]`'s REAL runtime representation is always
+  // `Object[]`, which is `Object`-assignable regardless of which primitive
+  // element type `ffiScoreDescFor` narrowed it to for scoring. Gated on
+  // `argIsNarrowedSliceErasure` for the identical reason as the arm above: a
+  // genuinely primitive-array-typed argument's real runtime class is the
+  // primitive array itself, not `Object[]` — `emitFfiCoerce`'s
+  // "primitive → Object" arm treats any `JArray` as needing no coercion
+  // either way, so this scoring rule is what decides whether the call
+  // resolves at all, not how the value is later moved.
+  if argIsNarrowedSliceErasure and isPrimitiveArrayDesc(argDesc) and paramDesc == "Ljava/lang/Object;" {
+    return 3
+  }
   // Reference/reference pairs are not classified here: the descriptor strings
   // alone do not carry the class hierarchy.  `scoreParam` (which has the auto-FFI
   // context) resolves these via `isAssignableRef`, scoring a verified IS-A match
