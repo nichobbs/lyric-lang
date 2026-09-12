@@ -1930,6 +1930,76 @@ test "unresolvable extern static member access panics with the spanned T0119 cod
   )
 }
 
+// #7099: a nonexistent String method (a typo, or a BCL method the language
+// never implemented — `toLowerInvariant` has no `Std.String` counterpart and
+// no MSIL codegen intrinsic entry) used to compile clean, degrading to a
+// runtime-throw stub, and only failed once the program actually ran. Every
+// String method name `lowerMethodCallMsil` actually implements is handled
+// earlier in the same cascading dispatch, so a String receiver reaching the
+// final "unrecognised method" fallback names a method that can never
+// resolve — `compileProjectToMsil` must now panic at build time instead of
+// silently emitting the stub, mirroring the coded-refusal tests above.
+test "unknown method call on a String receiver panics at build time, not silently (#7099)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "UnknownStringMethod.Bad",
+      "package UnknownStringMethod.Bad\n" + "func main(): Unit {\n" + "  val s = \"Hello\"\n" +
+        "  println(s.toLowerInvariant())\n" +
+        "}\n"
+    )
+  )
+  val dir = freshTempDir("unknown_string_method")
+  val dllPath = Path.join(dir, "UnknownStringMethod.dll")
+  val stdlibSources: List[String] = newList()
+  var panicked = false
+  var panicMsg = ""
+  try {
+    compileProjectToMsil(packages, "UnknownStringMethod", dllPath, stdlibSources)
+  } catch Bug as b {
+    panicked = true
+    panicMsg = b.message
+  }
+  cleanup(dir)
+  assertTrue(panicked, "unknown String method: compileProjectToMsil panics instead of returning (#7099)")
+  assertTrue(
+    Str.contains(panicMsg, "no method 'toLowerInvariant'"),
+    "unknown String method: panic names the unresolved method (got: " + panicMsg + ")"
+  )
+  assertTrue(
+    Str.contains(panicMsg, "on type 'String'"),
+    "unknown String method: panic names the receiver type (got: " + panicMsg + ")"
+  )
+}
+
+// A real String method (handled by one of `lowerMethodCallMsil`'s
+// hardcoded branches) must still compile and run correctly — the #7099 fix
+// must not turn every String method call into a build failure.
+test "known String methods still compile and run correctly (#7099 regression guard)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "KnownStringMethods.App",
+      "package KnownStringMethods.App\n" + "func main(): Unit {\n" + "  val s = \"  Hello World  \"\n" +
+        "  println(s.trim())\n" +
+        "  println(s.toLower())\n" +
+        "  println(s.contains(\"World\"))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("known-string-methods", packages, "KnownStringMethods")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "known_string_methods: exit 0, no false-positive build failure (stderr=" + result.stderr + ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    "Hello World\n  hello world  \ntrue",
+    "known_string_methods: trim/toLower/contains all still work"
+  )
+}
+
 // #6390 regression: a MemberRefParent coded-index column (used by
 // MemberRef.class, ECMA-335 §II.24.2.6 tag table 3) switches from a 2-byte
 // to a 4-byte wire width the moment the largest table in its tag family
