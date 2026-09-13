@@ -3485,7 +3485,7 @@ func isNumericPrimitiveName(name: in String): Bool {
 }
 
 func isPrimitiveName(name: in String): Bool {
-  isNumericPrimitiveName(name) or name == "Bool" or name == "Char" or name == "String"
+  isNumericPrimitiveName(name) or name == "Bool" or name == "Char" or name == "String" or name == "Unit"
 }
 
 // Emit `M0002` when a call site targeting a same-package generic function
