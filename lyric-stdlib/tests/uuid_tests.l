@@ -8,6 +8,7 @@ package Std.Uuid.Tests
 
 import Std.Core
 import Std.Uuid
+import Std.UuidHost
 import Std.Testing
 
 func testNilUuid(): Unit {
@@ -39,14 +40,15 @@ func testTwoNewUuidsDistinct(): Unit {
 // its regression coverage.  `newUuid()` as the unwrapOr default can never
 // accidentally equal `expect`.
 func assertParsesTo(input: in String, expect: in String, label: in String): Unit {
-  val parsed = parseUuidOpt(input)
+  val parsed: Option[Uuid] = parseUuidOpt(input)
   assertTrue(isSome(parsed), label + " (parse succeeds)")
   assertEqual(uuidToString(unwrapOr(parsed, newUuid())), expect, label)
 }
 
 // Assert that `parseUuidOpt(input)` rejects the input.
 func assertRejects(input: in String, label: in String): Unit {
-  assertTrue(isNone(parseUuidOpt(input)), label)
+  val parsed: Option[Uuid] = parseUuidOpt(input)
+  assertTrue(isNone(parsed), label)
 }
 
 func testParseRoundTrip(): Unit {
