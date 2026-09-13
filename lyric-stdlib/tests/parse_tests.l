@@ -57,7 +57,7 @@ func testParseOptLongBasic(): Unit {
   assertTrue(isSome[Long](parseOptLong("0")), "long 0 parses")
   assertTrue(isSome[Long](parseOptLong("-1")), "long -1 parses")
 
-  assertEqualInt(unwrapOr[Int](parseOptInt("0"), -1), 0, "long 0 = 0")
+  assertEqualLong(unwrapOr[Long](parseOptLong("0"), -1i64), 0i64, "long 0 = 0")
 }
 
 func testParseOptLongBoundary(): Unit {
