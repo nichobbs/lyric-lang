@@ -1823,12 +1823,23 @@ static void test_process_sync_timeout_setsid_escapee(void) {
         lyric_release(argv);
         lyric_release(out);
         lyric_release(err);
-        if (escapee_ran) {
+        /* Non-empty stdout only proves the escapee wrote *something*
+         * before the group kill landed — not that it survived past it.
+         * setsid() has a brief window before it takes effect; a write
+         * emitted in that window can land in the pipe even though the
+         * writer dies with the rest of the group at the ~300 ms
+         * deadline, finishing the whole run in a few hundred ms. That
+         * is the same "scenario didn't materialize" case as the
+         * empty-output retry below, just with a stray byte already
+         * captured, so require the elapsed bound too before treating
+         * this as the drain-budget scenario (observed CI flake:
+         * escapee_ran true with elapsed_ms well under 1500 — the
+         * group-kill race, not a drain-budget regression). */
+        if (escapee_ran && elapsed_ms >= 1500) {
             /* The escapee kept the pipe alive past the kill, so the
              * drain ran to its budget: at least ~2 s elapsed, but
              * nowhere near the 30 s the writer would otherwise pin
              * the loop for. */
-            CHECK(elapsed_ms >= 1500);
             CHECK(elapsed_ms < 10000);
             return;
         }
