@@ -2309,6 +2309,22 @@ test "explicit type application whose type argument can't be resolved raises M00
   assertTrue(not hasFunc(res.file, "like__NoSuchType"), "no specialisation produced for the unresolvable type argument")
 }
 
+// #7106: `isPrimitiveName`'s whitelist was missing `Unit`, so `f[Unit](x)`
+// -- which parses as `ECall(EIndex(EPath([f]), [Unit]))`, never `ETypeApp`
+// -- failed `indexExprToTypeArgMono`'s primitive check like the union/distinct
+// gaps #6774 fixed, and fell through UNCHANGED with no diagnostic, leaving a
+// dangling `EIndex` callee that crashed JVM codegen at emission time trying
+// to lower `isOk`/`like` as a bare value reference.
+test "explicit type application with a Unit type argument specialises instead of leaving a dangling EIndex (#7106)" {
+  val src = "package P\n" + "func like[T](x: in T): T { x }\n" + "func caller(u: in Unit): Unit {\n" +
+    "  like[Unit](u)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "like__Unit"), "like__Unit specialised for the explicit Unit type argument")
+  assertTrue(not hasFunc(res.file, "like"), "generic like removed from output")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics -- the explicit type application resolved cleanly")
+}
+
 // #6775: `unifyLambdaArgTE`'s `case None ->` arm (an "unseedable" lambda
 // parameter, whose substituted declared type still mentions an unbound type
 // parameter) did NOTHING -- unlike the sibling `Some(sty)` arm, it never

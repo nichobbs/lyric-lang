@@ -94,17 +94,23 @@ test "isSafePrefix rejects traversal" {
 // route through the imported `StorageBucket` interface that the
 // emitter currently widens to `Object` cross-package — see #1140).
 test "connectLocal rejects empty basePath" {
-  assertTrue(isErr(connectLocal("", "bucket")), "must reject empty basePath")
+  assertTrue(isErr[StorageBucket, StorageError](connectLocal("", "bucket")), "must reject empty basePath")
 }
 
 test "connectLocal rejects empty bucketName" {
-  assertTrue(isErr(connectLocal("/tmp/lyric-storage-tests", "")), "must reject empty bucketName")
+  assertTrue(
+    isErr[StorageBucket, StorageError](connectLocal("/tmp/lyric-storage-tests", "")),
+    "must reject empty bucketName"
+  )
 }
 
 test "connectLocal succeeds for a fresh basePath" {
   val basePath = "/tmp/lyric-storage-tests"
   val bucketName = "fresh-" + Uuid.uuidToString(Uuid.newUuid())
-  assertTrue(isOk(connectLocal(basePath, bucketName)), "connectLocal must succeed for fresh bucket")
+  assertTrue(
+    isOk[StorageBucket, StorageError](connectLocal(basePath, bucketName)),
+    "connectLocal must succeed for fresh bucket"
+  )
 }
 
 // #5479: a NUL byte in the path makes Path.GetFullPath throw; the try/catch in
@@ -120,19 +126,28 @@ test "connectLocal returns Err(INVALID_ARGUMENT) when GetFullPath rejects a NUL 
 }
 
 test "connectS3 rejects empty region" {
-  assertTrue(isErr(connectS3("", "bucket", "k", "s", "")), "must reject empty region")
+  assertTrue(isErr[StorageBucket, StorageError](connectS3("", "bucket", "k", "s", "")), "must reject empty region")
 }
 
 test "connectS3 rejects empty bucket name" {
-  assertTrue(isErr(connectS3("us-east-1", "", "k", "s", "")), "must reject empty bucket name")
+  assertTrue(
+    isErr[StorageBucket, StorageError](connectS3("us-east-1", "", "k", "s", "")),
+    "must reject empty bucket name"
+  )
 }
 
 test "connectAzureBlob rejects empty connection string" {
-  assertTrue(isErr(connectAzureBlob("", "container")), "must reject empty connection string")
+  assertTrue(
+    isErr[StorageBucket, StorageError](connectAzureBlob("", "container")),
+    "must reject empty connection string"
+  )
 }
 
 test "connectAzureBlob rejects empty container name" {
-  assertTrue(isErr(connectAzureBlob("DefaultEndpointsProtocol=https;...", "")), "must reject empty container name")
+  assertTrue(
+    isErr[StorageBucket, StorageError](connectAzureBlob("DefaultEndpointsProtocol=https;...", "")),
+    "must reject empty container name"
+  )
 }
 
 // ─── LocalBucket data-plane smoke tests ───────────────────────────────────
@@ -155,52 +170,67 @@ func freshBucket(): Result[StorageBucket, StorageError] {
 
 test "put round-trips through get" {
   val bRes = freshBucket()
-  assertTrue(isOk(bRes), "fresh bucket must connect")
+  assertTrue(isOk[StorageBucket, StorageError](bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
   val payload = "aGVsbG8="  // "hello" in base64
-  assertTrue(isOk(put(bucket, "smoke/hello.txt", payload, "text/plain")), "put must succeed")
-  assertTrue(isOk(get(bucket, "smoke/hello.txt")), "get must succeed for previously-put key")
+  assertTrue(
+    isOk[StorageMetadata, StorageError](put(bucket, "smoke/hello.txt", payload, "text/plain")),
+    "put must succeed"
+  )
+  assertTrue(
+    isOk[StorageObject, StorageError](get(bucket, "smoke/hello.txt")),
+    "get must succeed for previously-put key"
+  )
 }
 
 test "exists returns Ok(false) for absent key" {
   val bRes = freshBucket()
-  assertTrue(isOk(bRes), "fresh bucket must connect")
+  assertTrue(isOk[StorageBucket, StorageError](bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
   // (using method-call form to avoid `exists` soft-keyword parser ambiguity; see #4674)
-  assertTrue(isOk(bucket.exists("never-put.txt")), "exists call must succeed regardless of presence")
+  assertTrue(
+    isOk[Bool, StorageError](bucket.exists("never-put.txt")),
+    "exists call must succeed regardless of presence"
+  )
 }
 
 test "exists returns Ok after put" {
   val bRes = freshBucket()
-  assertTrue(isOk(bRes), "fresh bucket must connect")
+  assertTrue(isOk[StorageBucket, StorageError](bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  assertTrue(isOk(put(bucket, "exists/probe.bin", "AAA=", "application/octet-stream")), "put must succeed")
+  assertTrue(
+    isOk[StorageMetadata, StorageError](put(bucket, "exists/probe.bin", "AAA=", "application/octet-stream")),
+    "put must succeed"
+  )
   // (using method-call form to avoid `exists` soft-keyword parser ambiguity; see #4674)
-  assertTrue(isOk(bucket.exists("exists/probe.bin")), "exists must succeed after put")
+  assertTrue(isOk[Bool, StorageError](bucket.exists("exists/probe.bin")), "exists must succeed after put")
 }
 
 test "delete returns Ok for previously-put key" {
   val bRes = freshBucket()
-  assertTrue(isOk(bRes), "fresh bucket must connect")
+  assertTrue(isOk[StorageBucket, StorageError](bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  assertTrue(isOk(put(bucket, "delete/me.bin", "AAA=", "application/octet-stream")), "put must succeed")
-  assertTrue(isOk(delete(bucket, "delete/me.bin")), "delete must succeed for known key")
+  assertTrue(
+    isOk[StorageMetadata, StorageError](put(bucket, "delete/me.bin", "AAA=", "application/octet-stream")),
+    "put must succeed"
+  )
+  assertTrue(isOk[Unit, StorageError](delete(bucket, "delete/me.bin")), "delete must succeed for known key")
 }
 
 test "list returns Ok on an empty bucket" {
   val bRes = freshBucket()
-  assertTrue(isOk(bRes), "fresh bucket must connect")
+  assertTrue(isOk[StorageBucket, StorageError](bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  assertTrue(isOk(list(bucket, "")), "list on empty bucket must succeed")
+  assertTrue(isOk[ListResult, StorageError](list(bucket, "")), "list on empty bucket must succeed")
 }
 
 test "list returns Ok after multiple puts" {
   val bRes = freshBucket()
-  assertTrue(isOk(bRes), "fresh bucket must connect")
+  assertTrue(isOk[StorageBucket, StorageError](bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  assertTrue(isOk(put(bucket, "list/a.txt", "QQ==", "text/plain")), "put a must succeed")
-  assertTrue(isOk(put(bucket, "list/b.txt", "Qg==", "text/plain")), "put b must succeed")
-  assertTrue(isOk(list(bucket, "list/")), "list with prefix must succeed after puts")
+  assertTrue(isOk[StorageMetadata, StorageError](put(bucket, "list/a.txt", "QQ==", "text/plain")), "put a must succeed")
+  assertTrue(isOk[StorageMetadata, StorageError](put(bucket, "list/b.txt", "Qg==", "text/plain")), "put b must succeed")
+  assertTrue(isOk[ListResult, StorageError](list(bucket, "list/")), "list with prefix must succeed after puts")
 }
 
 // Pagination cursor smoke test (#1460 / #1012) — exercises the
@@ -213,15 +243,15 @@ test "list returns Ok after multiple puts" {
 // looped forever.
 test "list paginates with continuation token" {
   val bRes = freshBucket()
-  assertTrue(isOk(bRes), "fresh bucket must connect")
+  assertTrue(isOk[StorageBucket, StorageError](bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  assertTrue(isOk(put(bucket, "pg/a.txt", "QQ==", "text/plain")), "put a must succeed")
-  assertTrue(isOk(put(bucket, "pg/b.txt", "Qg==", "text/plain")), "put b must succeed")
+  assertTrue(isOk[StorageMetadata, StorageError](put(bucket, "pg/a.txt", "QQ==", "text/plain")), "put a must succeed")
+  assertTrue(isOk[StorageMetadata, StorageError](put(bucket, "pg/b.txt", "Qg==", "text/plain")), "put b must succeed")
 
   // Page 1: maxKeys = 1 against two matching keys → truncated, with
   // a continuation token.
   val page1Res = bucket.list("pg/", "", 1)
-  assertTrue(isOk(page1Res), "page 1 list call must succeed")
+  assertTrue(isOk[ListResult, StorageError](page1Res), "page 1 list call must succeed")
   val emptyPage = ListResult(entries = [], nextContinuationToken = None, isTruncated = false)
   val page1 = unwrapResultOr(page1Res, emptyPage)
   assertTrue(page1.isTruncated, "page 1 must report isTruncated when total > maxKeys")
@@ -233,24 +263,27 @@ test "list paginates with continuation token" {
   val token = unwrapOr(page1.nextContinuationToken, "")
   assertTrue(token.length > 0, "unwrapped continuation token must be non-empty")
   val page2Res = bucket.list("pg/", token, 1)
-  assertTrue(isOk(page2Res), "page 2 list call must succeed when handed the cursor")
+  assertTrue(isOk[ListResult, StorageError](page2Res), "page 2 list call must succeed when handed the cursor")
 }
 
 test "put rejects unsafe key with path traversal" {
   val bRes = freshBucket()
-  assertTrue(isOk(bRes), "fresh bucket must connect")
+  assertTrue(isOk[StorageBucket, StorageError](bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
   assertTrue(
-    isErr(put(bucket, "../escape.txt", "AAA=", "text/plain")),
+    isErr[StorageMetadata, StorageError](put(bucket, "../escape.txt", "AAA=", "text/plain")),
     "put must reject `..` traversal at the safety gate"
   )
 }
 
 test "get rejects unsafe key with absolute path" {
   val bRes = freshBucket()
-  assertTrue(isOk(bRes), "fresh bucket must connect")
+  assertTrue(isOk[StorageBucket, StorageError](bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  assertTrue(isErr(get(bucket, "/etc/passwd")), "get must reject absolute key at the safety gate")
+  assertTrue(
+    isErr[StorageObject, StorageError](get(bucket, "/etc/passwd")),
+    "get must reject absolute key at the safety gate"
+  )
 }
 
 // ─── .meta.json key rejection (#1911) ────────────────────────────────────────
@@ -273,34 +306,37 @@ test "isSafeKey accepts keys that merely contain meta.json" {
 
 test "put rejects .meta.json-suffixed key" {
   val bRes = freshBucket()
-  assertTrue(isOk(bRes), "fresh bucket must connect")
+  assertTrue(isOk[StorageBucket, StorageError](bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
   assertTrue(
-    isErr(put(bucket, "archive.meta.json", "QQ==", "application/json")),
+    isErr[StorageMetadata, StorageError](put(bucket, "archive.meta.json", "QQ==", "application/json")),
     "put must reject .meta.json key at the isSafeKey contract gate"
   )
 }
 
 test "get rejects .meta.json-suffixed key" {
   val bRes = freshBucket()
-  assertTrue(isOk(bRes), "fresh bucket must connect")
+  assertTrue(isOk[StorageBucket, StorageError](bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
-  assertTrue(isErr(get(bucket, "archive.meta.json")), "get must reject .meta.json key at the isSafeKey contract gate")
+  assertTrue(
+    isErr[StorageObject, StorageError](get(bucket, "archive.meta.json")),
+    "get must reject .meta.json key at the isSafeKey contract gate"
+  )
 }
 
 test "exists rejects .meta.json-suffixed key" {
   val bRes = freshBucket()
-  assertTrue(isOk(bRes), "fresh bucket must connect")
+  assertTrue(isOk[StorageBucket, StorageError](bRes), "fresh bucket must connect")
   val bucket = unwrapResultOr(bRes, defaultBucket())
   // Use the method-call form to avoid the `exists` soft-keyword parse ambiguity (#4674).
   assertTrue(
-    isErr(bucket.exists("archive.meta.json")),
+    isErr[Bool, StorageError](bucket.exists("archive.meta.json")),
     "exists must reject .meta.json key at the isSafeKey contract gate"
   )
 }
 
 // Sentinel bucket used by `unwrapResultOr` fallbacks — never read
-// because every test gates on `isOk(bRes)` before calling the unwrap.
+// because every test gates on `isOk[StorageBucket, StorageError](bRes)` before calling the unwrap.
 // Concrete type is forced to `StorageBucket` via the interface, with a
 // distinct invalid bucket-name that would never collide with a real
 // freshBucket() output.
