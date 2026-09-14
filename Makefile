@@ -422,8 +422,8 @@ test-native: native-rt ## Run the native backend self-tests (needs clang and ./b
 # ── Maven resolver ──────────────────────────────────────────────────────────
 
 maven-resolver: ## Build resolver/pom.xml into resolver/target/lyric-resolver.jar
-	mvn package -q -DskipTests -f resolver/pom.xml
-	@echo "lyric-resolver.jar built: resolver/target/lyric-resolver.jar"
+	@[ -f resolver/target/lyric-resolver.jar ] && echo "lyric-resolver.jar already built: resolver/target/lyric-resolver.jar" || \
+	  ( mvn package -q -DskipTests -f resolver/pom.xml && echo "lyric-resolver.jar built: resolver/target/lyric-resolver.jar" )
 
 # ── JaCoCo (JVM-target `lyric test --coverage`, docs/03-decision-log.md) ────
 JACOCO_VERSION ?= 0.8.12
