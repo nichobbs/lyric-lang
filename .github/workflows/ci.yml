@@ -5064,6 +5064,18 @@ jobs:
       # "lyric-web Undertow smoke on JVM" and "JVM auto-FFI bridge
       # self-test") to avoid two `mvn package` builds racing into the same
       # `resolver/target/` output directory.
+      #
+      # `lyric-aws-secrets` is by far the largest Maven dependency set of
+      # any restore in this job (41 AWS SDK for Java artifacts, vs. 7 for
+      # lyric-auth/lyric-resilience/lyric-web) and the first CI consumer to
+      # ever exercise it — on this job's self-hosted runner, downloading
+      # all 41 artifacts has twice exceeded `lyric restore`'s hardcoded
+      # 300s internal timeout (`cli_restore.l`) with no other diagnostic,
+      # while every other (smaller) Maven restore in the same run completed
+      # in seconds. Retry up to 3 attempts specifically on that timeout
+      # message (never on a genuine restore error, which fails immediately
+      # with its own message) rather than widening the shared, repo-wide
+      # 300s constant every other manifest's restore also uses.
       - name: lyric-aws-secrets suite on JVM (lyric test --target jvm --features jvm)
         background: true
         working-directory: ${{ github.workspace }}
@@ -5080,7 +5092,24 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping lyric-aws-secrets JVM suite"
             exit 1
           fi
-          "$lyric_bin" restore --manifest lyric-aws-secrets/lyric.toml
+          restore_ok=0
+          for attempt in 1 2 3; do
+            if restore_out="$("$lyric_bin" restore --manifest lyric-aws-secrets/lyric.toml 2>&1)"; then
+              echo "$restore_out"
+              restore_ok=1
+              break
+            fi
+            echo "$restore_out"
+            if [[ "$restore_out" != *"Maven resolver timed out"* ]]; then
+              echo "::error::lyric-aws-secrets restore failed for a reason other than the known timeout; not retrying"
+              exit 1
+            fi
+            echo "::warning::lyric-aws-secrets Maven restore timed out (attempt $attempt/3); retrying"
+          done
+          if [ "$restore_ok" -ne 1 ]; then
+            echo "::error::lyric-aws-secrets Maven restore timed out on all 3 attempts"
+            exit 1
+          fi
           bash scripts/ci/self-test.sh --manifest lyric-aws-secrets/lyric.toml --target jvm --no-default-features --features jvm
       # lyric-auth manifest build on JVM with NO feature flags (#5571) — the
       # regression pin for target-normalized feature resolution: a plain
