@@ -5104,7 +5104,9 @@ jobs:
               echo "::error::lyric-aws-secrets restore failed for a reason other than the known timeout; not retrying"
               exit 1
             fi
-            echo "::warning::lyric-aws-secrets Maven restore timed out (attempt $attempt/3); retrying"
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::lyric-aws-secrets Maven restore timed out (attempt $attempt/3); retrying"
+            fi
           done
           if [ "$restore_ok" -ne 1 ]; then
             echo "::error::lyric-aws-secrets Maven restore timed out on all 3 attempts"
