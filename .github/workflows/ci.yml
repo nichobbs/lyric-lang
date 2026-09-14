@@ -5038,10 +5038,35 @@ jobs:
       # classifyParameterError and extractSecretField's panic-to-Result
       # fixes (#6875, #6979) now have automated regression coverage instead
       # of having been exercised once, manually, in a sandbox session.
+      #
+      # `--features jvm` needs the AWS SDK for Java v2 classpath resolved
+      # from lyric-aws-secrets's `[maven]` deps (`target/restore/
+      # jvm-classpath.txt`) before the JVM emitter's auto-FFI resolution can
+      # find `software.amazon.awssdk.services.secretsmanager.
+      # SecretsManagerClient` — without a prior `lyric restore` this failed
+      # with `error[J002]: ... class ... not found in JDK jmods or
+      # LYRIC_FFI_JARS`. This step is `background: true` with no ordering
+      # guarantee relative to the later "Install Maven (self-hosted runners
+      # only)" / "JVM auto-FFI bridge self-test" steps, so — mirroring the
+      # #6790 fix for the same race on the lyric-web Undertow classpath —
+      # make it self-contained: install Maven if missing, build the
+      # resolver, and restore before running the test, instead of depending
+      # on timing against unrelated steps elsewhere in this job.
       - name: lyric-aws-secrets suite on JVM (lyric test --target jvm --features jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --manifest lyric-aws-secrets/lyric.toml --target jvm --no-default-features --features jvm
+        run: |
+          set -euo pipefail
+          if ! command -v mvn >/dev/null 2>&1; then
+            sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends maven
+          fi
+          make maven-resolver
+          export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          "$lyric_bin" restore --manifest lyric-aws-secrets/lyric.toml
+          bash scripts/ci/self-test.sh --manifest lyric-aws-secrets/lyric.toml --target jvm --no-default-features --features jvm
       # lyric-auth manifest build on JVM with NO feature flags (#5571) — the
       # regression pin for target-normalized feature resolution: a plain
       # `--target jvm` build of a `default = ["dotnet"]` platform-split
