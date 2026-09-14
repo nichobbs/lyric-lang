@@ -5059,7 +5059,11 @@ jobs:
       # a dpkg-lock race. Both now serialize through the same `flock` on a
       # shared lock file so only one process installs at a time; the other
       # waits, then finds `mvn` already present (or performs a harmless
-      # redundant install/update).
+      # redundant install/update). `make maven-resolver` itself is
+      # similarly serialized (this job's third concurrent caller alongside
+      # "lyric-web Undertow smoke on JVM" and "JVM auto-FFI bridge
+      # self-test") to avoid two `mvn package` builds racing into the same
+      # `resolver/target/` output directory.
       - name: lyric-aws-secrets suite on JVM (lyric test --target jvm --features jvm)
         background: true
         working-directory: ${{ github.workspace }}
@@ -5069,7 +5073,7 @@ jobs:
             sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
             flock /tmp/lyric-ci-apt-maven.lock -c 'sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends maven'
           fi
-          make maven-resolver
+          flock /tmp/lyric-ci-maven-resolver-build.lock -c 'make maven-resolver'
           export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
@@ -5430,7 +5434,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          make maven-resolver
+          flock /tmp/lyric-ci-maven-resolver-build.lock -c 'make maven-resolver'
           export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           "$lyric_bin" restore --manifest "$PWD/lyric-web/lyric.toml"
