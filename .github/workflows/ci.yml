@@ -5038,10 +5038,81 @@ jobs:
       # classifyParameterError and extractSecretField's panic-to-Result
       # fixes (#6875, #6979) now have automated regression coverage instead
       # of having been exercised once, manually, in a sandbox session.
+      #
+      # `--features jvm` needs the AWS SDK for Java v2 classpath resolved
+      # from lyric-aws-secrets's `[maven]` deps (`target/restore/
+      # jvm-classpath.txt`) before the JVM emitter's auto-FFI resolution can
+      # find `software.amazon.awssdk.services.secretsmanager.
+      # SecretsManagerClient` — without a prior `lyric restore` this failed
+      # with `error[J002]: ... class ... not found in JDK jmods or
+      # LYRIC_FFI_JARS`. This step is `background: true` with no ordering
+      # guarantee relative to the later "Install Maven (self-hosted runners
+      # only)" / "JVM auto-FFI bridge self-test" steps, so — mirroring the
+      # #6790 fix for the same race on the lyric-web Undertow classpath —
+      # make it self-contained: install Maven if missing, build the
+      # resolver, and restore before running the test, instead of depending
+      # on timing against unrelated steps elsewhere in this job.
+      #
+      # #7108: the conditional `apt-get install maven` below can run at the
+      # same moment as the "Install Maven (self-hosted runners only)" step
+      # on a self-hosted runner, with no coordination between the two —
+      # a dpkg-lock race. Both now serialize through the same `flock` on a
+      # shared lock file so only one process installs at a time; the other
+      # waits, then finds `mvn` already present (or performs a harmless
+      # redundant install/update). `make maven-resolver` itself is
+      # similarly serialized (this job's third concurrent caller alongside
+      # "lyric-web Undertow smoke on JVM" and "JVM auto-FFI bridge
+      # self-test") to avoid two `mvn package` builds racing into the same
+      # `resolver/target/` output directory.
+      #
+      # `lyric-aws-secrets` is by far the largest Maven dependency set of
+      # any restore in this job (41 AWS SDK for Java artifacts, vs. 7 for
+      # lyric-auth/lyric-resilience/lyric-web) and the first CI consumer to
+      # ever exercise it — on this job's self-hosted runner, downloading
+      # all 41 artifacts has twice exceeded `lyric restore`'s hardcoded
+      # 300s internal timeout (`cli_restore.l`) with no other diagnostic,
+      # while every other (smaller) Maven restore in the same run completed
+      # in seconds. Retry up to 3 attempts specifically on that timeout
+      # message (never on a genuine restore error, which fails immediately
+      # with its own message) rather than widening the shared, repo-wide
+      # 300s constant every other manifest's restore also uses.
       - name: lyric-aws-secrets suite on JVM (lyric test --target jvm --features jvm)
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --manifest lyric-aws-secrets/lyric.toml --target jvm --no-default-features --features jvm
+        run: |
+          set -euo pipefail
+          if ! command -v mvn >/dev/null 2>&1; then
+            sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
+            flock /tmp/lyric-ci-apt-maven.lock -c 'sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends maven'
+          fi
+          flock /tmp/lyric-ci-maven-resolver-build.lock -c 'make maven-resolver'
+          export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping lyric-aws-secrets JVM suite"
+            exit 1
+          fi
+          restore_ok=0
+          for attempt in 1 2 3; do
+            if restore_out="$("$lyric_bin" restore --manifest lyric-aws-secrets/lyric.toml 2>&1)"; then
+              echo "$restore_out"
+              restore_ok=1
+              break
+            fi
+            echo "$restore_out"
+            if [[ "$restore_out" != *"Maven resolver timed out"* ]]; then
+              echo "::error::lyric-aws-secrets restore failed for a reason other than the known timeout; not retrying"
+              exit 1
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::lyric-aws-secrets Maven restore timed out (attempt $attempt/3); retrying"
+            fi
+          done
+          if [ "$restore_ok" -ne 1 ]; then
+            echo "::error::lyric-aws-secrets Maven restore timed out on all 3 attempts"
+            exit 1
+          fi
+          bash scripts/ci/self-test.sh --manifest lyric-aws-secrets/lyric.toml --target jvm --no-default-features --features jvm
       # lyric-auth manifest build on JVM with NO feature flags (#5571) — the
       # regression pin for target-normalized feature resolution: a plain
       # `--target jvm` build of a `default = ["dotnet"]` platform-split
@@ -5362,9 +5433,15 @@ jobs:
       # after it, which actually needs `mvn`) could still be skipped on a
       # self-hosted runner whenever an earlier background step fails,
       # reproducing the exact #7038 failure this PR exists to fix.
+      # #7108: serialized via the same `/tmp/lyric-ci-apt-maven.lock` flock
+      # the "lyric-aws-secrets suite on JVM" step's own conditional Maven
+      # install uses, so the two can never race on the dpkg lock — whichever
+      # runs first installs; the other waits, then finds `mvn` present.
       - name: Install Maven (self-hosted runners only)
         if: always() && runner.environment == 'self-hosted'
-        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends maven
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
+          flock /tmp/lyric-ci-apt-maven.lock -c 'sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends maven'
 
       # JVM auto-FFI bridge self-test (#6565, #6765, #6768) — was only
       # reachable via the local-only `make test-emitter` target, which CI
@@ -5388,7 +5465,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          make maven-resolver
+          flock /tmp/lyric-ci-maven-resolver-build.lock -c 'make maven-resolver'
           export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           "$lyric_bin" restore --manifest "$PWD/lyric-web/lyric.toml"

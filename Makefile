@@ -421,9 +421,14 @@ test-native: native-rt ## Run the native backend self-tests (needs clang and ./b
 
 # ── Maven resolver ──────────────────────────────────────────────────────────
 
+# Skips the rebuild once resolver/target/lyric-resolver.jar exists, with no
+# check against resolver/pom.xml or resolver/src mtimes -- a local checkout
+# that edits the resolver and re-runs this without `rm -rf resolver/target`
+# first keeps using the stale jar. Safe in CI: actions/checkout's default
+# `clean: true` wipes resolver/target/ at the start of every run.
 maven-resolver: ## Build resolver/pom.xml into resolver/target/lyric-resolver.jar
-	mvn package -q -DskipTests -f resolver/pom.xml
-	@echo "lyric-resolver.jar built: resolver/target/lyric-resolver.jar"
+	@[ -f resolver/target/lyric-resolver.jar ] && echo "lyric-resolver.jar already built: resolver/target/lyric-resolver.jar" || \
+	  ( mvn package -q -DskipTests -f resolver/pom.xml && echo "lyric-resolver.jar built: resolver/target/lyric-resolver.jar" )
 
 # ── JaCoCo (JVM-target `lyric test --coverage`, docs/03-decision-log.md) ────
 JACOCO_VERSION ?= 0.8.12

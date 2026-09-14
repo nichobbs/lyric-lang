@@ -23,7 +23,12 @@ if [ ! -x "$lyric_bin" ]; then
   echo "::error::AOT binary not found at $lyric_bin; skipping lyric-web JVM smoke"
   exit 1
 fi
-make maven-resolver
+# Serialized against ci.yml's other `make maven-resolver` callers in the
+# same compiler-self-tests-jvm job (the lyric-aws-secrets JVM suite and the
+# JVM auto-FFI bridge self-test) — this step runs `background: true`, so
+# without coordination two concurrent `mvn package` builds could race into
+# the same resolver/target/ output directory (#7108 follow-up).
+flock /tmp/lyric-ci-maven-resolver-build.lock -c 'make maven-resolver'
 export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
 "$lyric_bin" restore --manifest "$PWD/lyric-web/lyric.toml"
 (cd lyric-web && "../$lyric_bin" build --target jvm tests/jvm_server_smoke.l -o /tmp/jvm_server_smoke.jar)
