@@ -5052,6 +5052,14 @@ jobs:
       # make it self-contained: install Maven if missing, build the
       # resolver, and restore before running the test, instead of depending
       # on timing against unrelated steps elsewhere in this job.
+      #
+      # #7108: the conditional `apt-get install maven` below can run at the
+      # same moment as the "Install Maven (self-hosted runners only)" step
+      # on a self-hosted runner, with no coordination between the two —
+      # a dpkg-lock race. Both now serialize through the same `flock` on a
+      # shared lock file so only one process installs at a time; the other
+      # waits, then finds `mvn` already present (or performs a harmless
+      # redundant install/update).
       - name: lyric-aws-secrets suite on JVM (lyric test --target jvm --features jvm)
         background: true
         working-directory: ${{ github.workspace }}
@@ -5059,12 +5067,15 @@ jobs:
           set -euo pipefail
           if ! command -v mvn >/dev/null 2>&1; then
             sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends maven
+            flock /tmp/lyric-ci-apt-maven.lock -c 'sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends maven'
           fi
           make maven-resolver
           export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping lyric-aws-secrets JVM suite"
+            exit 1
+          fi
           "$lyric_bin" restore --manifest lyric-aws-secrets/lyric.toml
           bash scripts/ci/self-test.sh --manifest lyric-aws-secrets/lyric.toml --target jvm --no-default-features --features jvm
       # lyric-auth manifest build on JVM with NO feature flags (#5571) — the
@@ -5387,9 +5398,15 @@ jobs:
       # after it, which actually needs `mvn`) could still be skipped on a
       # self-hosted runner whenever an earlier background step fails,
       # reproducing the exact #7038 failure this PR exists to fix.
+      # #7108: serialized via the same `/tmp/lyric-ci-apt-maven.lock` flock
+      # the "lyric-aws-secrets suite on JVM" step's own conditional Maven
+      # install uses, so the two can never race on the dpkg lock — whichever
+      # runs first installs; the other waits, then finds `mvn` present.
       - name: Install Maven (self-hosted runners only)
         if: always() && runner.environment == 'self-hosted'
-        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends maven
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
+          flock /tmp/lyric-ci-apt-maven.lock -c 'sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends maven'
 
       # JVM auto-FFI bridge self-test (#6565, #6765, #6768) — was only
       # reachable via the local-only `make test-emitter` target, which CI
