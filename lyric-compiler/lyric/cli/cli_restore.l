@@ -640,7 +640,10 @@ func cmdAdd(argv: in slice[String]): Int {
   // Render the TOML right-hand side for the chosen source form.
   val rhs = match pathArg {
     case Some(p) -> "{ path = \"" + p + "\" }"
-    case None -> match gitArg { case Some(_) -> gitTomlRhs; case None -> "\"" + (if Str.length(version) > 0 { version } else { "*" }) + "\"" }
+    case None -> match gitArg {
+      case Some(_) -> gitTomlRhs
+      case None -> "\"" + (if Str.length(version) > 0 { version } else { "*" }) + "\""
+    }
   }
 
   val table = if isNuget { "nuget" } else { "dependencies" }
@@ -885,6 +888,13 @@ func restoreMavenJars(manifest: in Manifest, mfDir: in String): Int {
   javaArgs.add(resolverJar)
   val captureResult = ProcessCapture.runCaptureWithDiagnosticsTimeout("java", javaArgs, requestJson, 300000)
   if captureResult.timedOut {
+    // #7107: .github/workflows/ci.yml's "lyric-aws-secrets suite on JVM"
+    // step matches this exact "Maven resolver timed out" substring to
+    // decide whether a restore failure is the known large-manifest timeout
+    // (worth retrying) or a genuine error (fail fast, don't retry).
+    // Rewording this message without updating that CI step's retry
+    // condition silently turns every future timeout into an immediate,
+    // non-retried CI failure.
     printErr("restore: Maven resolver timed out after 300 seconds")
     return 1
   }
@@ -985,7 +995,13 @@ func runRestore(mfPath: in String, lockedMode: in Bool): Int {
         val nugetBase = "nuget:https://api.nuget.org/v3/index.json"
         val src = match dep.registry {
           case Some(url) -> "nuget:" + url
-          case None -> match manifest.registry { case Some(rc) -> match rc.dotnet { case Some(url) -> "nuget:" + url; case None -> nugetBase }; case None -> nugetBase }
+          case None -> match manifest.registry {
+            case Some(rc) -> match rc.dotnet {
+              case Some(url) -> "nuget:" + url
+              case None -> nugetBase
+            }
+            case None -> nugetBase
+          }
         }
         lf = LF.addOrUpdatePackage(
           lf,
@@ -1007,7 +1023,14 @@ func runRestore(mfPath: in String, lockedMode: in Bool): Int {
             exitCode = 1
             ""
           }
-          case Some(ctx) -> match Ws.resolveDep(dep.name, ctx) { case None -> { printErr("restore: '" + dep.name + "' declared workspace = true but not found in workspace"); exitCode = 1; "" }; case Some(dir) -> dir }
+          case Some(ctx) -> match Ws.resolveDep(dep.name, ctx) {
+            case None -> {
+              printErr("restore: '" + dep.name + "' declared workspace = true but not found in workspace")
+              exitCode = 1
+              ""
+            }
+            case Some(dir) -> dir
+          }
         }
         if resolvedDir != "" {
           // Optional version constraint check.
@@ -1017,7 +1040,19 @@ func runRestore(mfPath: in String, lockedMode: in Bool): Int {
               val memberToml = Path.join(resolvedDir, "lyric.toml")
               match File.readText(memberToml) {
                 case Err(_) -> ()
-                case Ok(memberText) -> match Mf.parseManifest(memberText, memberToml) { case Err(_) -> (); case Ok(memberMf) -> { if memberMf.packageSection.version != constraint { printErr("restore: workspace member '" + dep.name + "' version " + memberMf.packageSection.version + " does not satisfy constraint " + constraint); exitCode = 1 } } }
+                case Ok(memberText) -> match Mf.parseManifest(memberText, memberToml) {
+                  case Err(_) -> ()
+                  case Ok(memberMf) -> {
+                    if memberMf.packageSection.version != constraint {
+                      printErr(
+                        "restore: workspace member '" + dep.name + "' version " + memberMf.packageSection.version +
+                          " does not satisfy constraint " +
+                          constraint
+                      )
+                      exitCode = 1
+                    }
+                  }
+                }
               }
             }
           }
@@ -1200,7 +1235,10 @@ func runRestore(mfPath: in String, lockedMode: in Bool): Int {
             // to detect.
             match locked.sha512 {
               case None -> match resolved.sha512 {
-                case None -> printErr("restore: --locked: warning: '" + resolved.name + "' has no SHA-512 on either side; integrity check skipped (regenerate lyric.lock with 'lyric restore' to populate digests)")
+                case None -> printErr(
+                  "restore: --locked: warning: '" + resolved.name +
+                    "' has no SHA-512 on either side; integrity check skipped (regenerate lyric.lock with 'lyric restore' to populate digests)"
+                )
                 // Both None — soft-pass with a warning so the operator knows the integrity check was skipped (typical for pre-#738 lock files).
                 case Some(_) -> {
                   printErr(
@@ -1210,7 +1248,23 @@ func runRestore(mfPath: in String, lockedMode: in Bool): Int {
                   lockMismatch = true
                 }
               }
-              case Some(lockedHash) -> match resolved.sha512 { case None -> printErr("restore: --locked: warning: '" + resolved.name + "' could not be re-hashed; integrity check skipped (locked='" + lockedHash + "')"); case Some(resolvedHash) -> if lockedHash != resolvedHash { printErr("restore: --locked: '" + resolved.name + "' content changed: locked SHA-512 != resolved SHA-512"); printErr("  locked   : " + lockedHash); printErr("  resolved : " + resolvedHash); printErr("  (a registry-poisoning attack would surface here; if the package was legitimately updated, run 'lyric restore' to regenerate the lock)"); lockMismatch = true } }
+              case Some(lockedHash) -> match resolved.sha512 {
+                case None -> printErr(
+                  "restore: --locked: warning: '" + resolved.name +
+                    "' could not be re-hashed; integrity check skipped (locked='" +
+                    lockedHash +
+                    "')"
+                )
+                case Some(resolvedHash) -> if lockedHash != resolvedHash {
+                  printErr("restore: --locked: '" + resolved.name + "' content changed: locked SHA-512 != resolved SHA-512")
+                  printErr("  locked   : " + lockedHash)
+                  printErr("  resolved : " + resolvedHash)
+                  printErr(
+                    "  (a registry-poisoning attack would surface here; if the package was legitimately updated, run 'lyric restore' to regenerate the lock)"
+                  )
+                  lockMismatch = true
+                }
+              }
             }
           }
         }
