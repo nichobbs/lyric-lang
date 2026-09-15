@@ -143,3 +143,224 @@ test "explicit-self async interface dispatch (#5607)" {
   val r = await c.fetchSelf("yo")
   assertEqual(r, "yo?", "explicit-self async dispatch")
 }
+
+// #5931: `impl <ExternInterface> for Record` with a `slice[ExternType]`
+// parameter previously erased the array element to `Object` regardless of
+// the interface's real element type (`holderAwareParamTypes`'s `erase` arm
+// fell through to the generic slice erasure), so the emitted class's method
+// descriptor did not match the interface's — the JDK's own `Callback[]`
+// erased to `[Ljava/lang/Object;` here, a binary-incompatible override the
+// JVM accepts at class load but rejects at `invokeinterface` dispatch time
+// with `AbstractMethodError` (verified with `javap`: the fix changes the
+// emitted descriptor from `handle(Ljava/lang/Object;)V` to the real
+// `handle([Ljavax/security/auth/callback/Callback;)V`). A Lyric-authored
+// call site through an interface-TYPED extern receiver (`h: in
+// JCallbackHandler`) resolves via auto-FFI rather than this impl's own
+// registered signature — a separate, pre-existing auto-FFI limitation this
+// fix does not touch — so this test instead pins the descriptor-affecting
+// side directly: construction and a direct call on the CONCRETE record
+// compile and run (mirroring `ffi_iface_impl_jvm_self_test.l`'s pattern),
+// which is exactly what silently broke while codegen was still computing
+// `Object[]` internally for the slice-typed param under generic erasure.
+extern type JCallbackHandler = "javax.security.auth.callback.CallbackHandler"
+
+extern type JCallback = "javax.security.auth.callback.Callback"
+
+record SliceIfaceHandler {
+  tag: Int
+}
+
+impl JCallbackHandler for SliceIfaceHandler {
+  func handle(callbacks: in slice[JCallback]): Unit {
+    ()
+  }
+}
+
+test "impl ExternInterface for Record with a slice[ExternType] param compiles and dispatches on the concrete type (#5931)" {
+  val h = SliceIfaceHandler(tag = 9)
+  val cbs: slice[JCallback] = []
+  h.handle(cbs)
+  assertEqualInt(h.tag, 9, "SliceIfaceHandler field still readable after the slice-param method call")
+}
+
+// #6970 (review follow-up on #5931): the parameter-side test above pins
+// `implParamTypesToJvm`; this pins the sibling `retTy` code path in
+// `lowerImplMethod`, which narrows a `slice[ExternType]` RETURN value the
+// same way. Uses the exact motivating example from the original #5931
+// report: `X509TrustManager.getAcceptedIssuers(): slice[X509Certificate]`.
+extern type JX509Certificate = "java.security.cert.X509Certificate"
+
+extern type JX509TrustManager = "javax.net.ssl.X509TrustManager"
+
+record SliceIfaceTrustManager {
+  tag: Int
+}
+
+impl JX509TrustManager for SliceIfaceTrustManager {
+  func checkClientTrusted(chain: in slice[JX509Certificate], authType: in String): Unit {
+    ()
+  }
+
+  func checkServerTrusted(chain: in slice[JX509Certificate], authType: in String): Unit {
+    ()
+  }
+
+  func getAcceptedIssuers(): slice[JX509Certificate] {
+    []
+  }
+}
+
+test "impl ExternInterface for Record with a slice[ExternType] return compiles and dispatches on the concrete type (#5931 / #6970)" {
+  val tm = SliceIfaceTrustManager(tag = 3)
+  val issuers = tm.getAcceptedIssuers()
+  assertEqualInt(issuers.length, 0, "getAcceptedIssuers returns the empty slice built in the impl body")
+  assertEqualInt(tm.tag, 3, "SliceIfaceTrustManager field still readable after the slice-return method call")
+}
+
+// #6977 (review follow-up on #5931/#6970): `implTypeExprToJvm`'s own doc
+// comment says a PRIMITIVE slice element needs the real primitive array too
+// ("not just an extern one"), but the type-resolution side (`TSlice(elem) ->
+// JArray(elem = implTypeExprToJvm(elem, ...))`) was already correct — the
+// gap was on the CODEGEN side: `coerceArgTo`'s `ArrayList` -> array
+// conversion always used the no-arg `toArray()` overload (erasing to
+// `Object[]`), which is not assignable where a `byte[]` (or any other
+// primitive array) is required by the narrowed descriptor. Uses a real JDK
+// interface with a `byte[]`-returning method: `java.security.Key.
+// getEncoded()`.
+extern type JKey = "java.security.Key"
+
+record SliceIfacePrimitiveKey {
+  tag: Int
+}
+
+impl JKey for SliceIfacePrimitiveKey {
+  func getAlgorithm(): String {
+    "NONE"
+  }
+
+  func getFormat(): String {
+    "RAW"
+  }
+
+  func getEncoded(): slice[Byte] {
+    [1.toByte(), 2.toByte(), 3.toByte()]
+  }
+}
+
+test "impl ExternInterface for Record with a slice[Byte] (primitive-element) return compiles and dispatches on the concrete type (#5931 / #6977)" {
+  val k = SliceIfacePrimitiveKey(tag = 7)
+  val encoded = k.getEncoded()
+  assertEqualInt(encoded.length, 3, "getEncoded returns the 3-byte slice built in the impl body")
+  assertEqualInt(encoded[0].toInt(), 1, "first byte round-trips")
+  assertEqualInt(encoded[1].toInt(), 2, "second byte round-trips")
+  assertEqualInt(encoded[2].toInt(), 3, "third byte round-trips")
+  assertEqualInt(k.tag, 7, "SliceIfacePrimitiveKey field still readable after the primitive-slice-return method call")
+}
+
+// #6977 parameter-side follow-up: an ordinary Lyric caller builds a
+// `slice[Byte]` value (`ArrayList`-backed under the erased ABI, per the
+// PR's own scoping) and passes it as an argument to an extern-interface
+// impl method whose parameter narrows to `byte[]` — the call-argument
+// coercion path (`coerceArgToCtx`, wired into every `coerceArgTo(insns,
+// aTy, sig.params[i])` call site in `04_calls.l`), not the return path
+// `#6977`'s first fix (D-progress-880) already covered. Uses
+// `java.util.zip.Checksum`, a real JDK interface with a `byte[]`-taking
+// method (`update(byte[] b, int off, int len)`).
+extern type JChecksum = "java.util.zip.Checksum"
+
+record SliceIfacePrimitiveChecksum {
+  var sum: Int
+}
+
+impl JChecksum for SliceIfacePrimitiveChecksum {
+  func update(b: in slice[Byte], off: Int, len: Int): Unit {
+    self.sum = self.sum + b.length
+  }
+
+  func update(b: Int): Unit {
+    self.sum = self.sum + 1
+  }
+
+  func getValue(): Long {
+    self.sum.toLong()
+  }
+
+  func reset(): Unit {
+    self.sum = 0
+  }
+}
+
+func passPrimitiveSliceParam(c: in SliceIfacePrimitiveChecksum, data: in slice[Byte]): Unit {
+  c.update(data, 0, data.length)
+}
+
+test "extern-interface impl method with a slice[Byte] (primitive-element) PARAMETER accepts an ordinary Lyric slice value (#5931 / #6977 param-side)" {
+  val c = SliceIfacePrimitiveChecksum(sum = 0)
+  val data: slice[Byte] = [10.toByte(), 20.toByte(), 30.toByte(), 40.toByte()]
+  passPrimitiveSliceParam(c, data)
+  assertEqualInt(c.sum, 4, "update(byte[], int, int) received the real 4-element array, not a truncated/erased one")
+}
+
+// #7004 (review follow-up on #5931/#6970/#6977): the fixes above narrow the
+// TAIL-position return of an extern-interface impl method (via
+// `lowerInstanceMethodBody`'s direct `coerceArgToCtx` calls), but an
+// explicit `return expr;` statement is lowered separately by `SReturn`
+// (`05_stmts.l`), which routes through the shared `coerceValueTo` helper
+// (`06_items.l`) — its non-primitive-array-widening fallback still called
+// the ctx-LESS `coerceArgTo`, so an early/explicit `return` inside an
+// extern-interface impl method reproduced the identical VerifyError this
+// PR already fixed for the implicit-tail shape. Both narrowing branches
+// (reference-element via `JX509TrustManager`, primitive-element via
+// `JKey`) are covered here using `return` instead of a bare tail
+// expression.
+record SliceIfaceTrustManagerReturn {
+  tag: Int
+}
+
+impl JX509TrustManager for SliceIfaceTrustManagerReturn {
+  func checkClientTrusted(chain: in slice[JX509Certificate], authType: in String): Unit {
+    ()
+  }
+
+  func checkServerTrusted(chain: in slice[JX509Certificate], authType: in String): Unit {
+    ()
+  }
+
+  func getAcceptedIssuers(): slice[JX509Certificate] {
+    return []
+  }
+}
+
+test "explicit `return` inside an extern-interface impl method narrows a slice[ExternType] return (#5931 / #7004)" {
+  val tm = SliceIfaceTrustManagerReturn(tag = 11)
+  val issuers = tm.getAcceptedIssuers()
+  assertEqualInt(issuers.length, 0, "explicit-return getAcceptedIssuers returns the empty slice built via `return`")
+  assertEqualInt(tm.tag, 11, "SliceIfaceTrustManagerReturn field still readable after the explicit-return method call")
+}
+
+record SliceIfacePrimitiveKeyReturn {
+  tag: Int
+}
+
+impl JKey for SliceIfacePrimitiveKeyReturn {
+  func getAlgorithm(): String {
+    "NONE"
+  }
+
+  func getFormat(): String {
+    "RAW"
+  }
+
+  func getEncoded(): slice[Byte] {
+    return [9.toByte(), 8.toByte()]
+  }
+}
+
+test "explicit `return` inside an extern-interface impl method narrows a slice[Byte] (primitive) return (#5931 / #7004)" {
+  val k = SliceIfacePrimitiveKeyReturn(tag = 13)
+  val encoded = k.getEncoded()
+  assertEqualInt(encoded.length, 2, "explicit-return getEncoded returns the 2-byte slice built via `return`")
+  assertEqualInt(encoded[0].toInt(), 9, "first byte round-trips")
+  assertEqualInt(encoded[1].toInt(), 8, "second byte round-trips")
+  assertEqualInt(k.tag, 13, "SliceIfacePrimitiveKeyReturn field still readable after the explicit-return method call")
+}
