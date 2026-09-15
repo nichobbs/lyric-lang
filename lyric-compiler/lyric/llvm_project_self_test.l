@@ -45,6 +45,7 @@ import Std.String as Str
 import Std.Uuid as Uuid
 import Lyric.Emitter
 import Lyric.LlvmBridge
+import Lyric.DiagnosticUtil as DiagUtil
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Harness.
@@ -69,7 +70,8 @@ func compileAndRunProject(packages: in List[NativeSourcePackage]): RunOutcome {
   val flags: List[String] = newList()
   flags.add("-fsanitize=address")
   val noFeatures: List[String] = newList()
-  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", flags, newList(), noFeatures, noFeatures, "") {
+  val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
+  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", flags, newList(), noFeatures, noFeatures, "", noOriginsByPkg) {
     panic("native project compilation failed")
   }
   val noArgs: List[String] = newList()
@@ -97,7 +99,8 @@ func compileAndRunProjectWithFeatures(
   val flags: List[String] = newList()
   flags.add("-fsanitize=address")
   val noDeclared: List[String] = newList()
-  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", flags, newList(), activeFeatures, noDeclared, "") {
+  val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
+  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", flags, newList(), activeFeatures, noDeclared, "", noOriginsByPkg) {
     return None
   }
   val noArgs: List[String] = newList()
@@ -115,6 +118,7 @@ test "two-package project: entry package first, imports a sibling function (ASan
   pkgs.add(
     NativeSourcePackage(
       name = "Proj.App",
+      path = "",
       source = "package Proj.App\n" + "import Proj.Greeter\n" + "import Std.Console as Console\n" +
         "func main(): Int {\n" +
         "  Console.println(greet(\"native\"))\n" +
@@ -125,6 +129,7 @@ test "two-package project: entry package first, imports a sibling function (ASan
   pkgs.add(
     NativeSourcePackage(
       name = "Proj.Greeter",
+      path = "",
       source = "package Proj.Greeter\n" + "pub func greet(name: in String): String {\n" + "  \"hi \" + name\n" + "}\n"
     )
   )
@@ -138,12 +143,14 @@ test "two-package project: entry package declared SECOND still becomes the binar
   pkgs.add(
     NativeSourcePackage(
       name = "Proj2.Helper",
+      path = "",
       source = "package Proj2.Helper\n" + "pub func doubled(n: in Int): Int {\n" + "  n * 2\n" + "}\n"
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj2.App",
+      path = "",
       source = "package Proj2.App\n" + "import Proj2.Helper\n" + "func main(): Int {\n" + "  doubled(21)\n" + "}\n"
     )
   )
@@ -156,12 +163,14 @@ test "three-package project: a sibling package references another sibling's reco
   pkgs.add(
     NativeSourcePackage(
       name = "Proj3.Model",
+      path = "",
       source = "package Proj3.Model\n" + "pub record Point {\n" + "  x: Int\n" + "  y: Int\n" + "}\n"
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj3.Geo",
+      path = "",
       source = "package Proj3.Geo\n" + "import Proj3.Model\n" + "pub func sumCoords(p: in Point): Int {\n" +
         "  p.x + p.y\n" +
         "}\n"
@@ -170,6 +179,7 @@ test "three-package project: a sibling package references another sibling's reco
   pkgs.add(
     NativeSourcePackage(
       name = "Proj3.App",
+      path = "",
       source = "package Proj3.App\n" + "import Proj3.Model\n" + "import Proj3.Geo\n" + "func main(): Int {\n" +
         "  val p = Point(x = 10, y = 32)\n" +
         "  sumCoords(p)\n" +
@@ -185,6 +195,7 @@ test "project build honors [features]/@cfg(feature = ...) gating on a sibling pa
   pkgs.add(
     NativeSourcePackage(
       name = "Proj4.Extra",
+      path = "",
       source = "package Proj4.Extra\n" + "\n" + "@cfg(feature = \"extra\")\n" + "pub func value(): Int {\n" + "  42\n" +
         "}\n"
     )
@@ -192,6 +203,7 @@ test "project build honors [features]/@cfg(feature = ...) gating on a sibling pa
   pkgs.add(
     NativeSourcePackage(
       name = "Proj4.App",
+      path = "",
       source = "package Proj4.App\n" + "import Proj4.Extra\n" + "func main(): Int {\n" + "  value()\n" + "}\n"
     )
   )
@@ -268,6 +280,7 @@ test "project build injects the manifest's [package].version as the well-known v
   pkgs.add(
     NativeSourcePackage(
       name = "Proj6.App",
+      path = "",
       source = "package Proj6.App\n" + "import Std.Console as Console\n" + "@build_const(\"version\")\n" +
         "val VERSION: String = \"unset\"\n" +
         "func main(): Int {\n" +
@@ -286,6 +299,7 @@ test "project build injects the manifest's [package].version as the well-known v
   val flags: List[String] = newList()
   flags.add("-fsanitize=address")
   val noFeatures: List[String] = newList()
+  val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
   val ok = compileProjectToNativeWithFlags(
     pkgs,
     stem,
@@ -296,7 +310,8 @@ test "project build injects the manifest's [package].version as the well-known v
     newList(),
     noFeatures,
     noFeatures,
-    "1.2.3"
+    "1.2.3",
+    noOriginsByPkg
   )
   if not ok {
     panic("native project compilation failed")
@@ -316,12 +331,14 @@ test "qualified record construction survives a local shadowing the head segment 
   pkgs.add(
     NativeSourcePackage(
       name = "Proj7.Sub",
+      path = "",
       source = "package Proj7.Sub\n" + "pub record Rec {\n" + "  pub message: String\n" + "}\n"
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj7.App",
+      path = "",
       source = "package Proj7.App\n" + "import Proj7.Sub\n" + "func main(): Int {\n" + "  val Proj7 = 0\n" +
         "  val e = Proj7.Sub.Rec(message = \"boom\")\n" +
         "  if e.message == \"boom\" and Proj7 == 0 {\n" +
@@ -344,12 +361,14 @@ test "qualified free function call survives a local shadowing the head segment (
   pkgs.add(
     NativeSourcePackage(
       name = "Proj8.Sub",
+      path = "",
       source = "package Proj8.Sub\n" + "pub func qux(): Int {\n" + "  99\n" + "}\n"
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj8.App",
+      path = "",
       source = "package Proj8.App\n" + "import Proj8.Sub\n" + "func main(): Int {\n" + "  val Proj8 = 0\n" +
         "  val v = Proj8.Sub.qux()\n" +
         "  if v == 99 and Proj8 == 0 {\n" +
@@ -377,12 +396,14 @@ test "a genuine local-value UFCS chain with no matching package member still res
   pkgs.add(
     NativeSourcePackage(
       name = "Proj9.Sub",
+      path = "",
       source = "package Proj9.Sub\n" + "pub func other(): Int {\n" + "  1\n" + "}\n"
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj9.App",
+      path = "",
       source = "package Proj9.App\n" + "import Proj9.Sub\n" + "pub record FbBox {\n" + "  pub tag: Int\n" + "}\n" +
         "pub func FbBox.qux(self: in FbBox): Int {\n" +
         "  55\n" +
@@ -412,6 +433,19 @@ test "project build with no packages fails loudly rather than compiling an empty
   val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
   val noFlags: List[String] = newList()
   val noFeatures: List[String] = newList()
-  val ok = compileProjectToNativeWithFlags(pkgs, stem, stdlib, "", "0", noFlags, newList(), noFeatures, noFeatures, "")
+  val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
+  val ok = compileProjectToNativeWithFlags(
+    pkgs,
+    stem,
+    stdlib,
+    "",
+    "0",
+    noFlags,
+    newList(),
+    noFeatures,
+    noFeatures,
+    "",
+    noOriginsByPkg
+  )
   assertFalse(ok, "an empty package list must fail rather than silently produce an empty binary")
 }
