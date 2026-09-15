@@ -14,10 +14,10 @@
 //! (unlike `Std.Collections.List`, which is backed by a BCL/JDK
 //! collection type), and so contracts/proofs apply throughout (D038).
 //! `collections_persistent_tests.l` (the `PersistentList[T]` ops below)
-//! is CI-wired on BOTH `--target dotnet` and `--target jvm` (#6577 review
-//! follow-up) — the cross-target claim above is verified, not just
-//! structural.  `PersistentMap[K, V]` is dotnet-only for now — see its
-//! own section below and #6708.
+//! and `collections_persistent_map_tests.l` (`PersistentMap[K, V]`) are
+//! BOTH CI-wired on `--target dotnet` and `--target jvm` (#6577 review
+//! follow-up; #6708 for the map suite) — the cross-target claim above is
+//! verified, not just structural.
 //!
 //! Every function here is `@experimental`, not `@stable`, despite that
 //! CI verification: this module is brand new (#684) and, until #6568/#6569
@@ -68,18 +68,19 @@
 //!     specialization whose first parameter was erased to `Object`.
 //! `PersistentMap[K, V]` below exercises both previously-broken shapes
 //! directly (`pmapInsert`/`pmapDelete` invoke `eq` inside a loop over
-//! `slice[MapEntry[K, V]]`), verified end-to-end (`--target dotnet`) by
+//! `slice[MapEntry[K, V]]`), verified end-to-end on BOTH targets by
 //! `collections_persistent_map_tests.l`.  Building `PersistentMap` also
-//! surfaced a THIRD, separate, still-open generic-codegen gap — this one
-//! in the JVM backend, not MSIL: reading a field off an element indexed
-//! out of a `List[T]`/`slice[T]` returned from (or parameter to) a
-//! generic function, where `T` is itself a nested generic-record
-//! instantiation over the enclosing function's own type parameters
-//! (`MapEntry[K, V]`), fails to compile (`error[J007]`, an erased-
-//! `Object`-receiver diagnostic) — tracked in #6708.  `PersistentMap`
-//! ships dotnet-only until that lands; `PersistentList[T]` above is
-//! unaffected (no generic-record container shape) and stays verified on
-//! both targets.
+//! surfaced a THIRD generic-codegen gap — this one in the JVM backend, not
+//! MSIL: reading a field off an element indexed out of a `List[T]`/
+//! `slice[T]` returned from (or parameter to) a generic function, where `T`
+//! is itself a nested generic-record instantiation over the enclosing
+//! function's own type parameters (`MapEntry[K, V]`), failed to compile
+//! (`error[J007]`, an erased-`Object`-receiver diagnostic).  Fixed in #6708
+//! (`Jvm.Codegen.recordParamClassOf`, resolving a bare generic head through
+//! the `ctx.ctors` construction registry — cross-package aware, closing
+//! exactly this stdlib-record-consumed-from-another-package shape) —
+//! `PersistentMap` is now verified on both targets, same as
+//! `PersistentList[T]` above.
 @runtime_checked
 package Std.Collections.Persistent
 
