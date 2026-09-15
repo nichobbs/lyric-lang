@@ -330,7 +330,11 @@ test "GET round-trip: status and echoed request line" {
       assertTrue(resp.isSuccess(), "GET isSuccess")
       val bodyRes = await resp.bodyText()
       match bodyRes {
-        case Ok(body) -> assertEqual(body, "GET|/hello||", "server observed method GET, path /hello, no probe header, empty body")
+        case Ok(body) -> assertEqual(
+          body,
+          "GET|/hello||",
+          "server observed method GET, path /hello, no probe header, empty body"
+        )
         case Err(e) -> panic("bodyText failed: " + IOError.message(e))
       }
     }
@@ -351,7 +355,11 @@ test "POST round-trip: request body reaches the server and is echoed back" {
       assertTrue(resp.isSuccess(), "201 is a success status")
       val bodyRes = await resp.bodyText()
       match bodyRes {
-        case Ok(body) -> assertEqual(body, "POST|/submit||ping-42", "server observed method POST, path /submit, and the text body")
+        case Ok(body) -> assertEqual(
+          body,
+          "POST|/submit||ping-42",
+          "server observed method POST, path /submit, and the text body"
+        )
         case Err(e) -> panic("bodyText failed: " + IOError.message(e))
       }
     }
@@ -368,7 +376,10 @@ test "sendAsync round-trip: a custom request header reaches the server" {
     case Ok(u) -> u
     case Err(e) -> panic("unexpected InvalidUrl: " + HttpError.message(e))
   }
-  val req = withHeader(request(GET, url), "X-Probe", "probe-7")
+  val req = match withHeader(request(GET, url), "X-Probe", "probe-7") {
+    case Ok(r) -> r
+    case Err(e) -> panic("withHeader failed unexpectedly: " + HttpError.message(e))
+  }
   val result = await sendAsync(req)
   match result {
     case Err(e) -> panic("sendAsync " + urlStr + " failed: " + HttpError.message(e))
@@ -382,7 +393,10 @@ test "sendAsync round-trip: a custom request header reaches the server" {
         case None -> panic("X-Echo-Probe response header missing — HttpResponse.header read failed (#5568)")
       }
       match resp.header("Content-Type") {
-        case Some(ct) -> assertTrue(Str.startsWith(ct, "text/plain"), "Content-Type read through the content-header fall-through")
+        case Some(ct) -> assertTrue(
+          Str.startsWith(ct, "text/plain"),
+          "Content-Type read through the content-header fall-through"
+        )
         case None -> panic("Content-Type response header missing — content-header fall-through failed (#5568)")
       }
       match resp.header("X-Definitely-Not-Set") {
