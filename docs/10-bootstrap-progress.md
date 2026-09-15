@@ -34132,3 +34132,181 @@ note), `native/plan/08-work-items.md`'s N9.3/N9.6/N9.7 write-ups
 (updated above), #6237, #6240 (the broader native `String`
 search-method audit this issue was split out of), #6755 (native
 `.lastIndexOf`, unaffected by this change and shipped separately).
+
+## Native `Std.TcpHost` accept() interrupt made portable — closes the macOS/BSD gap disclosed at N9.3 ship time (#6806, closes #6804)
+
+`hostStopListener` no longer relies on `shutdown()` on the LISTENING
+socket to unblock a concurrent `hostAccept` — a mechanism Linux happens to
+support (delivering `EINVAL` to a blocked `accept()`) but macOS/BSD does
+not (`shutdown()` on a listening socket there returns `ENOTCONN` and does
+nothing), a gap D-progress-850 (N9.3) disclosed rather than silently
+shipped and tracked as #6804/#6806. Fixed with the standard self-pipe
+idiom: three new `lyric-rt` seam functions
+(`lyric_sock_wake_pipe_new`/`lyric_sock_wake_pipe_signal`/
+`lyric_sock_accept_interruptible`) implement a `poll(2)`-multiplexed
+accept over the listening socket and a private pipe, with `-2` a distinct
+sentinel for "interrupted by a signal, not a socket error"; `Listener`
+gained `wakeReadFd`/`wakeWriteFd`, `hostAccept` calls the new
+interruptible entry point, and `hostStopListener` signals the pipe instead
+of calling `shutdown()` on the listening socket (which remains in use,
+unchanged, for `hostShutdown`'s per-CONNECTION interrupt — only the
+listening-socket case had the platform divergence). No `_kernel_native/
+http_server.l` changes were needed for the interrupt classification
+itself: its `plainAcceptLoop`/`tlsAcceptLoop` already treat every accept
+failure through the typed `AcceptFailureKind` classification (#6805),
+and the interrupt path maps to the exact same `AcceptFatal` case the old
+Linux-`shutdown()` path produced. (The later #6883 TOCTOU addendum below
+DID touch this file's cleanup call sites — `hostCloseListener` calls in
+`stopListener` and the `startListenerTls` failure branch — a different,
+smaller change than the interrupt mechanism itself.)
+
+Verified locally: `lyric-rt/test/lyric_tls_test.c` gained four new C-level
+cases (ordinary accept still works through the interruptible entry point;
+a thread genuinely parked in `poll()` wakes on a cross-thread signal; a
+pre-signaled pipe wakes an accept that hasn't started yet; a double-signal
+before any drain is not a failure), green under `make -C lyric-rt
+test`/`test-asan CC=gcc`. Verified on CI (this session could not build
+`./bin/lyric` from source, same network-policy boundary as prior native
+entries): `llvm_http_server_self_test.l` gained item J (ten repeated
+`startListener`/`stopListener` cycles with no connection ever made — the
+direct proof the accept-loop thread was genuinely parked in `poll()` and
+woke via the pipe alone), items A–I unregressed.
+
+**Disclosed, not silently assumed:** macOS/BSD correctness follows
+documented `poll(2)`/`pipe(2)` POSIX semantics but was not machine-verified
+on real macOS/BSD hardware — this project's CI remains Linux-only.
+
+**Addendum (#6883, found in review before merge):** an earlier version of
+`hostStopListener` signaled the wake pipe AND closed it (plus the
+listening socket) all in one call, immediately — a TOCTOU fd-reuse race,
+since `Std.HttpServer.stopListener` only `pthreadJoin`s the accept thread
+AFTERWARD. `hostStopListener` now only signals; a new `hostCloseListener`
+does the actual close, called only after the join confirms the accept
+thread has exited. See `docs/decisions/D-progress-0908-tcp-host-accept-interrupt.md`'s
+addendum for the full account.
+
+**Related:** `docs/decisions/D-progress-0908-tcp-host-accept-interrupt.md`
+(full account), #6806 (fixed by this PR), #6804 (the original disclosed
+gap, now closed), #6883 (the TOCTOU fd-reuse race, also fixed by this PR),
+D-progress-850 (N9.3, where the gap was found and filed),
+`native/plan/08-work-items.md` N9.2's follow-up subsection,
+`docs/61-https-tls-http-versions.md` §7's N9.3 item.
+
+## Native `Std.ProcessPipedHost` ships — real fork/pipe long-lived piped-child-stdio kernel (issue #6142)
+
+`_kernel_native/process_piped_host.l` — previously an unconditionally
+fail-fast stub — now implements the real long-lived piped-child-stdio
+contract over a new `lyric-rt` seam (`lyric_process_piped_spawn`/
+`_read_line`/`_write_line`/`_is_alive`/`_kill`/`_wait_exit`/
+`_exit_code`/`_close_stdin`/`_close`): only stdin and stdout are piped,
+stderr is left inherited from this process (matching the dotnet/JVM
+kernel twins' documented contract exactly), and the held handle rides as
+a `Long` (the same `Conn.tlsConnHandle`-style pointer-as-integer idiom
+`_kernel_native/tcp_host.l` already established), since it must survive
+across many separate top-level calls.
+
+Direct end-to-end verification (calling `hostSpawnPiped`/
+`hostPipedReadLineOpt`/etc. directly, not through `Std.Process`'s shared
+facade — see below) proved the kernel correct against real `/bin/cat`,
+`/bin/sh`, and `/bin/echo` children: single- and multi-line round trips,
+line ordering, `closeStdin`-then-clean-exit with a final buffered line,
+kill-mid-run, `waitExit` timeout vs. success, a nonexistent-executable
+spawn (exit 127, not a spawn failure — `execvp` failures inside the
+child are never spawn failures on any target), and real quote/escape
+handling in the re-materialized argv (`parseArgString`, ported from the
+JVM twin's own algorithm, adjusted for two native-specific gaps: no
+`String[i]` bracket indexing on native, issue #6237, worked around here
+with `.substring(i, 1)`; and no executable-prepend, since native's
+`rtPipedSpawn` takes the executable path as its own parameter).
+
+**Two gaps found and filed, not fixed here:** compiling a program that
+calls the ACTUAL caller-facing `Std.Process.spawnPiped` (rather than this
+kernel directly) fails before ever reaching this kernel, for two
+independent, pre-existing compiler reasons — `Std.Process.buildArgString`
+uses `String.replace`, unimplemented on `--target native` (issue #6888);
+and `spawnPiped`/`pipedReadLine`/`pipedWriteLine` each wrap their host
+call in `try/catch`, which `Lyric.LlvmCodegen` unconditionally rejects for
+native (D-N-003, issue #6887, with the Result-seam fix issue #4752
+already used for `runCapture` recommended as the template). Both are
+general compiler/stdlib gaps, not specific to this kernel's own
+correctness, and are out of this change's scope per this repo's "smaller,
+fully-finished slice" standard.
+
+**Verification.** `make -C lyric-rt test` (gcc, clang) green, including
+six new C-level cases, clean under ASan. On real Linux CI (`--target
+native`, real `clang`): `llvm_stdlib_self_test.l` gained a
+`Std.ProcessPipedHost native kernel` case; 19/19 cases in that file pass,
+no regressions.
+
+**Addendum (#6975, found in review before merge):** an earlier version of
+`lyric_process_piped_close` unconditionally `free()`'d the handle, so a
+second call on the same handle was a real double-free/use-after-free.
+Fixed with a `closed` guard that deliberately never frees the (small,
+fixed-size) struct itself — the same sanctioned, disclosed
+`lyric_lsan_ignore_leak` bounded-retention pattern already used for the
+#6802 case — plus the same guard at the Lyric level
+(`PipedHandle.closed`, mirroring `HttpListener.stopped`). New C-level
+double-close regression test, verified clean under a manual ASan build.
+See `docs/decisions/D-progress-0909-process-piped-host-native-kernel.md`'s
+addendum for the full account.
+
+**Addendum (#6993, found in review before merge):** the #6975 fix above
+freed `linebuf.data` and NULL'd it on close but never reset `linebuf.len`,
+so a handle closed while a second line was still buffered (`len > 0`)
+NULL-deref'd on the next `read_line` call. Fixed by also resetting
+`linebuf.len`/`linebuf.cap` to `0`. New regression test
+(`test_process_piped_read_after_close_with_buffered_line`) reproduces a
+real ASan SEGV on the pre-fix code before confirming the fix. See
+`docs/decisions/D-progress-0909-process-piped-host-native-kernel.md`'s
+second addendum for the full account.
+
+**Related:** `docs/decisions/D-progress-0909-process-piped-host-native-kernel.md`
+(full account), #6142 (fixed by this entry), #6887/#6888 (new, the two
+blockers found and filed), #6237 (the bracket-indexing gap this entry's
+own `parseArgString` worked around), #6975/#6993 (the double-free/NULL-deref
+fixed by the addenda above),
+`native/plan/08-work-items.md` N5.7,
+`docs/62-jsonrpc-mcp.md` §5.2 (the motivating lyric-mcp stdio transport).
+
+## Native N5 slice B residual-seam audit closes out issue #4752
+
+Audited #4752 ("N5 slice B") against the current tree rather than its own
+(partly stale) text. All four of its originally-named deferrals —
+runCapture timeout/stdin, `Std.Uuid`, `Std.Time`'s calendar surface, and
+native `out`-mode parameter lowering — are confirmed already resolved by
+separate, earlier work (D-N-024, and the Uuid/Time/`out`-param kernels
+and compiler support that shipped since). A full function-level diff
+between every dotnet `_kernel/*.l` and its native `_kernel_native/*.l`
+twin, for `Std.File`/`Std.Environment`/`Std.Time`/`Std.Process`, found
+three more small, genuinely-missing seams and shipped them:
+`hostReadAllBytes` (backs `Std.File.readBytesOrPanic`, panicking directly
+on failure since native has no exceptions to propagate), and
+`hostRuntimeDirectory`/`hostRuntimeIdentifier` (both return `""`
+unconditionally — each function's own public doc comment already
+documents empty string as a valid value for a target with no .NET
+runtime-shared-framework concept).
+
+Two further gaps were found and precisely scoped, not fixed: `hostExit`
+needs a compiler fix (`extern func` with a `Never` return type has no
+native codegen lowering — filed as issue #6901, with a suggested fix);
+`hostAppBaseDirectory` needs new `lyric-rt` C surface (`readlink(
+"/proc/self/exe")`), deliberately deferred as a well-scoped follow-up
+rather than bundled into this audit pass and filed as issue #6937 (so
+closing #4752 doesn't leave it untracked). `Std.File.stat`/
+`fileStatIsNewer`/`readTextOrPanic` remain blocked by the same
+`try/catch`-on-native root cause issue #6887 tracks for `Std.Process`'s
+piped API — but #6887's own scope and suggested fix are specific to
+that facade, so the `Std.File` instances are tracked separately as
+issue #6961.
+
+**Verification.** `llvm_stdlib_self_test.l` gained two new cases
+(`readBytesOrPanic` round-trip + missing-path panic regression;
+`runtimeDirectory`/`runtimeIdentifier` empty-on-native), verified on real
+Linux CI (`--target native`, real `clang`) — 20/20 cases pass, no
+regressions.
+
+**Related:** `docs/decisions/D-progress-0910-n5-slice-b-closure.md`
+(full account), #4752 (audited and recommended for closing by this entry),
+#6901 (new, the `Never`-typed-extern-func gap), #6937 (new,
+`hostAppBaseDirectory`'s tracking issue), #6961 (new, the `Std.File`
+try/catch-on-native gaps), `native/plan/08-work-items.md` N5.7.

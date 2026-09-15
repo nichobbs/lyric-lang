@@ -28,6 +28,10 @@
 #if defined(__linux__)
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
+/* pipe2(2) is a Linux extension, not POSIX -- glibc gates its unistd.h
+ * declaration on _GNU_SOURCE specifically (_DEFAULT_SOURCE alone does not
+ * expose it), needed by lyric_sock_wake_pipe_new below (issue #6806). */
+#define _GNU_SOURCE
 #endif
 
 #include "lyric_rt.h"
@@ -42,7 +46,9 @@
 #include <string.h>
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -246,6 +252,144 @@ int32_t lyric_sock_accept_error_class(void) {
             return 2;
         default:
             return 0;
+    }
+}
+
+/* ── Portable accept() interrupt (issue #6806) ────────────────────────── */
+
+int32_t lyric_sock_wake_pipe_new(int32_t* read_fd_out, int32_t* write_fd_out) {
+    if (!read_fd_out || !write_fd_out) {
+        set_err("lyric_sock_wake_pipe_new: null out-param");
+        return -1;
+    }
+    int fds[2];
+#if defined(__linux__)
+    if (pipe2(fds, O_CLOEXEC | O_NONBLOCK) != 0) {
+        set_err("pipe2: %s", strerror(errno));
+        return -1;
+    }
+#else
+    if (pipe(fds) != 0) {
+        set_err("pipe: %s", strerror(errno));
+        return -1;
+    }
+    for (int i = 0; i < 2; i++) {
+        int flags = fcntl(fds[i], F_GETFD);
+        if (flags < 0 || fcntl(fds[i], F_SETFD, flags | FD_CLOEXEC) != 0) {
+            set_err("fcntl(FD_CLOEXEC): %s", strerror(errno));
+            close(fds[0]);
+            close(fds[1]);
+            return -1;
+        }
+        flags = fcntl(fds[i], F_GETFL);
+        if (flags < 0 || fcntl(fds[i], F_SETFL, flags | O_NONBLOCK) != 0) {
+            set_err("fcntl(O_NONBLOCK): %s", strerror(errno));
+            close(fds[0]);
+            close(fds[1]);
+            return -1;
+        }
+    }
+#endif
+    *read_fd_out = fds[0];
+    *write_fd_out = fds[1];
+    return 0;
+}
+
+int32_t lyric_sock_wake_pipe_signal(int32_t write_fd) {
+    if (write_fd < 0) return 0;
+    uint8_t b = 1;
+    ssize_t w;
+    do {
+        w = write(write_fd, &b, 1);
+    } while (w < 0 && errno == EINTR);
+    if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        /* The pipe buffer already holds an unread wake byte -- a previous
+         * signal (or this one, racing a concurrent caller) hasn't been
+         * drained yet.  Either way, whoever is blocked in
+         * lyric_sock_accept_interruptible will observe POLLIN and wake --
+         * this is success, not a failure to report. */
+        return 0;
+    }
+    if (w < 0) {
+        set_err("write (wake pipe): %s", strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+int32_t lyric_sock_accept_interruptible(int32_t listen_fd, int32_t wake_read_fd) {
+    struct pollfd fds[2];
+    fds[0].fd = listen_fd;
+    fds[0].events = POLLIN;
+    fds[1].fd = wake_read_fd;
+    fds[1].events = POLLIN;
+    for (;;) {
+        fds[0].revents = 0;
+        fds[1].revents = 0;
+        int rc = poll(fds, 2, -1);
+        if (rc < 0) {
+            if (errno == EINTR) continue;
+            g_sock_accept_errno = errno;
+            set_err("poll (accept): %s", strerror(errno));
+            return -1;
+        }
+        if (fds[1].revents & POLLIN) {
+            /* Stop requested. Drain whatever is buffered (idempotent-safe
+             * against multiple/racing hostStopListener signals) and return
+             * the sentinel -- never touch the listening socket here, that
+             * stays the caller's job. */
+            uint8_t drain[64];
+            ssize_t n;
+            do {
+                n = read(wake_read_fd, drain, sizeof(drain));
+            } while (n > 0 || (n < 0 && errno == EINTR));
+            g_sock_accept_errno = 0;
+            set_err("accept interrupted: listener stopped");
+            return -2;
+        }
+        if (fds[0].revents & POLLIN) {
+            int fd;
+            do {
+                fd = accept(listen_fd, NULL, NULL);
+            } while (fd < 0 && errno == EINTR);
+            if (fd < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    /* Spurious wakeup (another thread on this same
+                     * listening socket already accepted the pending
+                     * connection) -- poll again. NOTE (issue #6962): this
+                     * assumes listen_fd is O_NONBLOCK, which it is not
+                     * today -- on the current blocking socket, a losing
+                     * thread's accept() call here blocks instead of
+                     * returning EAGAIN, and while blocked stops polling
+                     * the wake pipe. Not reachable via any caller in this
+                     * codebase (exactly one accept-loop thread per
+                     * Listener always), so left as a documented follow-up
+                     * rather than fixed here. */
+                    continue;
+                }
+                g_sock_accept_errno = errno;
+                set_err("accept: %s", strerror(errno));
+                return -1;
+            }
+            g_sock_accept_errno = 0;
+            return (int32_t)fd;
+        }
+        if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            g_sock_accept_errno = 0;
+            set_err("accept: listening socket error");
+            return -1;
+        }
+        if (fds[1].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            /* The wake pipe itself faulted (e.g. its write end was closed
+             * without ever being signaled) -- treat this the same as a
+             * genuine stop request rather than spin-polling forever on a
+             * condition that will never clear. */
+            g_sock_accept_errno = 0;
+            set_err("accept interrupted: wake pipe closed");
+            return -2;
+        }
+        /* Neither fd signaled anything we recognise -- poll again rather
+         * than looping forever on a revents value we don't handle. */
     }
 }
 

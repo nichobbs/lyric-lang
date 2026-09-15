@@ -819,6 +819,38 @@ Implement `get(name)`, `set(name, val)`, `all()` using `getenv`/`setenv`/`enviro
 
 Implement `run(cmd, args)`, `capture(cmd, args)` using `posix_spawn`/`waitpid`/`pipe`.
 
+`runCapture`/`runCaptureWithInput` (the batch capture half) shipped as part
+of issue #4752 (D-N-024, D-progress-557). `Std.ProcessPipedHost` (the
+long-lived piped-child-stdio half, issue #6142) shipped in D-progress-909:
+a new `lyric-rt` seam (`lyric_process_piped_spawn`/`_read_line`/
+`_write_line`/`_is_alive`/`_kill`/`_wait_exit`/`_exit_code`/
+`_close_stdin`/`_close`, only stdin/stdout piped — stderr stays inherited,
+matching the dotnet/JVM twins) and the real `_kernel_native/
+process_piped_host.l` kernel (previously an unconditionally-panicking
+stub). Verified directly against a real `cat`/`sh`/`echo` child
+(`llvm_stdlib_self_test.l`'s `Std.ProcessPipedHost native kernel` case);
+the shared `Std.Process.spawnPiped`/`pipedReadLine`/`pipedWriteLine`
+facade remains unreachable on `--target native` today due to two
+independent, newly-filed gaps (issue #6887: `try/catch` unsupported per
+D-N-003; issue #6888: `String.replace` has no native lowering) — see
+D-progress-909 for the full account.
+
+**N5 slice B (issue #4752) residual-seam audit — D-progress-910.** All four
+of #4752's originally-named deferrals (runCapture timeout/stdin, `Std.Uuid`,
+`Std.Time` calendar surface, `out`-mode parameter lowering) are confirmed
+already resolved by separate, earlier work. A full dotnet-vs-native
+function-diff across `file_host.l`/`environment_host.l`/`time_host.l`/
+`process_capture_host.l` found and shipped three more small seams
+(`hostReadAllBytes`, `hostRuntimeDirectory` → `""`, `hostRuntimeIdentifier`
+→ `""`) and precisely scoped what remains: `hostExit` needs a compiler fix
+(`Never`-typed `extern func`, filed as issue #6901), `hostAppBaseDirectory`
+needs new `lyric-rt` C surface (deferred, not blocked, filed as issue
+#6937), and `Std.File.stat`/`fileStatIsNewer`/`readTextOrPanic` are
+blocked by the same `try/catch`-on-native root cause issue #6887 tracks
+for `Std.Process`'s piped API — but scoped separately as issue #6961,
+since #6887's own scope and suggested fix are specific to that facade.
+See D-progress-910 for the full account.
+
 ---
 
 ### N5.8 — `Std.Collections` native verification
@@ -1399,6 +1431,35 @@ and the kernel ports landed, `Std.Tls.Certificate.fromPem`/`Identity.fromPem`
 — the real public API, not a kernel-boundary stand-in — now compile and
 construct correctly end to end for `--target native`, verified by
 `llvm_tls_self_test.l`'s re-added item B.
+
+**Follow-up: portable accept() interrupt — ✅ SHIPPED (D-progress-908, #6806;
+closes the macOS/BSD gap #6804 disclosed at N9.3 ship time).**
+`hostStopListener` originally interrupted a blocked `hostAccept` on another
+thread by calling `shutdown()` on the LISTENING socket before `close()`ing
+it — Linux documents this delivering `EINVAL` to a concurrently-blocked
+`accept()`, but macOS/BSD return `ENOTCONN` from `shutdown()` on a
+listening socket and do NOT unblock a concurrent `accept()` at all, so
+`Std.HttpServer.stopListener` hung forever there. Fixed with the standard
+self-pipe idiom: `lyric-rt` gained `lyric_sock_wake_pipe_new`/
+`lyric_sock_wake_pipe_signal`/`lyric_sock_accept_interruptible` (`poll(2)`
+over the listening socket and a private pipe's read end, `-2` a distinct
+sentinel for "interrupted, not an error"); `Listener` gained
+`wakeReadFd`/`wakeWriteFd` (allocated in `hostListen`), `hostAccept` calls
+`rtSockAcceptInterruptible` instead of the bare blocking `rtSockAccept`,
+and `hostStopListener` signals the pipe instead of calling `shutdown()` on
+the listening socket. `rtShutdown`/`shutdown(2)` stays in use for
+`hostShutdown` (interrupting an already-ACCEPTED connection's blocked
+read/write, portable on every POSIX target this project builds for — only
+a LISTENING socket had the platform divergence). Verified by
+`lyric-rt/test/lyric_tls_test.c`'s four new C-level cases (normal accept
+still works through the interruptible entry point, a genuinely-parked
+`poll()` wakes on a signal from another thread, a pre-signaled pipe wakes
+an accept that hasn't started yet, and a double-signal before any drain is
+not an error) plus `llvm_http_server_self_test.l` item J (ten repeated
+listener start/stop cycles with no connection ever made, on real Linux CI
+— the load-bearing check, since this project's CI has no macOS runner;
+macOS/BSD behaviour follows documented POSIX `poll(2)`/`pipe(2)` semantics
+but was not machine-verified on real hardware).
 
 ### N9.3 — `Std.HttpServer` native twin — ✅ SHIPPED (D-progress-850, #6104)
 

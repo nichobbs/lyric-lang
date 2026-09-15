@@ -56,9 +56,10 @@ void lyric_free(void* p);
 
 /* Mark a raw malloc'd/lyric_alloc'd block (`p` must be the exact pointer
  * returned by the allocator) as a deliberate, provably-safe retention
- * LeakSanitizer should not report as a leak (issue #6802) -- see
- * lyric_rt.c's own doc comment on this function for the full reasoning
- * (`_kernel_native/http_server.l`'s `stopListener` is the one caller).
+ * LeakSanitizer should not report as a leak -- see lyric_rt.c's own doc
+ * comment on this function for the full reasoning (`_kernel_native/
+ * http_server.l`'s `stopListener`, issue #6802, and
+ * `lyric_process_piped_close`, issue #6975, are the two callers).
  * A no-op in a non-ASan build. No-op on NULL. */
 void lyric_lsan_ignore_leak(void* p);
 
@@ -599,6 +600,44 @@ LyricString* lyric_process_stdout(void* op);
 LyricString* lyric_process_stderr(void* op);
 void lyric_process_free(void* op);
 
+/* ── Long-lived piped child stdio (issue #6142) ────────────────────────
+ *
+ * A HELD handle for a child whose stdin/stdout a caller writes/reads on
+ * repeatedly across the child's whole lifetime -- as opposed to
+ * lyric_process_run/lyric_process_start's "capture everything, then
+ * reap" model. Only stdin and stdout are piped; stderr is left
+ * INHERITED from this process (matches the dotnet/JVM kernel twins'
+ * documented contract, `_kernel/process_piped_host.l`'s own module
+ * header) -- capturing-but-never-draining stderr here would risk the
+ * child blocking on a full OS pipe buffer the moment it logged enough.
+ * Both pipe fds are BLOCKING (unlike the batch ops above): a caller
+ * holds this handle across many separate top-level calls with no single
+ * loop driving both directions at once, the same model
+ * lyric_sock_read/lyric_sock_write already use for a TCP connection.
+ *
+ * Lifecycle: spawn (NULL on an OS-level spawn failure -- no handle
+ * exists to free in that case) -> read_line/write_line/is_alive any
+ * number of times in any order -> close (does not itself wait for or
+ * kill the child) or kill/wait_exit first if the caller needs the child
+ * gone. read_line blocks until a complete '\n'-terminated line is
+ * available (a '\r' immediately before it is stripped, matching .NET's
+ * `StreamReader.ReadLine()`), the child closes stdout (a final buffered
+ * partial line is returned once more, then this reports "no more lines"
+ * every subsequent call), or a hard read error occurs. write_line
+ * blocks until the whole line + a trailing '\n' is accepted by the
+ * pipe. is_alive/wait_exit/exit_code share one WNOHANG-then-blocking
+ * reap state (cached once observed, since a second waitpid on an
+ * already-reaped pid fails with ECHILD). */
+void* lyric_process_piped_spawn(const char* path, LyricList* args);
+int32_t lyric_process_piped_read_line(void* p, LyricString** out_line);
+int32_t lyric_process_piped_write_line(void* p, LyricString* line);
+int32_t lyric_process_piped_is_alive(void* p);
+int32_t lyric_process_piped_kill(void* p);
+int32_t lyric_process_piped_wait_exit(void* p, int32_t timeout_ms);
+int32_t lyric_process_piped_exit_code(void* p);
+int32_t lyric_process_piped_close_stdin(void* p);
+void lyric_process_piped_close(void* p);
+
 /* ── TCP sockets + TLS transport (lyric_tls.c) ─────────────────────────
  *
  * The native-target transport seam for the sans-IO `Std.HttpEngine`
@@ -681,6 +720,43 @@ int32_t lyric_sock_accept_errno(void);
  *        immediately would spin-loop burning CPU while every accept() call
  *        fails the same way, so the caller should back off briefly first. */
 int32_t lyric_sock_accept_error_class(void);
+
+/* ── Portable accept() interrupt (issue #6806) ─────────────────────────
+ *
+ * `lyric_sock_accept` above blocks in accept(2) with no portable way to
+ * wake it from another thread: closing the listening fd from elsewhere
+ * races the accepting thread's own fd table, and shutdown(2) on a
+ * LISTENING socket only unblocks a concurrent accept() on Linux (it
+ * returns ENOTCONN and does nothing on macOS/BSD).  These three
+ * functions implement the standard self-pipe trick instead: a private
+ * pipe(2) multiplexed with the listening socket via poll(2), so a
+ * "wake up" is an ordinary byte write any thread can perform, portable
+ * to every POSIX target this project builds for.
+ */
+
+/* Create a private, non-blocking, close-on-exec pipe for use with
+ * `lyric_sock_accept_interruptible` below.  Writes the read end to
+ * `*read_fd_out` and the write end to `*write_fd_out`.  Returns 0 on
+ * success, -1 on failure (last_error set; neither fd is valid). */
+int32_t lyric_sock_wake_pipe_new(int32_t* read_fd_out, int32_t* write_fd_out);
+
+/* Wake every `lyric_sock_accept_interruptible` call currently blocked on
+ * the read end of this pipe.  Safe to call from any thread, safe to call
+ * more than once (a full pipe buffer is treated as "already signaled",
+ * not a failure).  Returns 0 on success, -1 on a genuine write failure. */
+int32_t lyric_sock_wake_pipe_signal(int32_t write_fd);
+
+/* Like `lyric_sock_accept(listen_fd)`, but also polls `wake_read_fd` (the
+ * read end of a `lyric_sock_wake_pipe_new` pipe) and returns -2 — a
+ * sentinel distinct from -1 — the instant that pipe becomes readable,
+ * WITHOUT calling accept() at all.  The caller (`lyric_sock_close`s the
+ * listening socket separately; this function never closes anything) is
+ * expected to treat -2 as "stop was requested", not as a socket error:
+ * `lyric_sock_accept_errno`/`lyric_sock_accept_error_class` are reset to
+ * 0 ("fatal: caller's accept loop should end") on this path, matching
+ * the existing convention for an unblocked accept() the caller intended.
+ * Retries internally on EINTR, exactly like `lyric_sock_accept`. */
+int32_t lyric_sock_accept_interruptible(int32_t listen_fd, int32_t wake_read_fd);
 
 /* Read up to `n` bytes into `buf`, blocking until at least one arrives.
  * Returns the count read, 0 on a clean peer close (EOF), or -1 on error.

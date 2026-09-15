@@ -151,6 +151,61 @@ test "Std.File seams: round-trip, classification, idempotent delete (ASan)" {
   assertEqualInt(r.exitCode, 42, "file seams")
 }
 
+// #4752 residual-seam audit (D-progress-910): readBytesOrPanic has no
+// try/catch on any target, so hostReadAllBytes was implementable on
+// native by panicking directly on failure -- unlike readTextOrPanic
+// (whose OWN try/catch wrapper remains blocked, tracked separately).
+test "Std.File readBytesOrPanic: round-trip, panics on a missing path (ASan)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.File\n" + "func main(): Int {\n" + "  val path = \"" +
+    tempBase() +
+    "/lyric-n59-readbytesorpanic.txt\"\n" +
+    "  match writeText(path, \"panic-seam\") {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 1\n" +
+    "    }\n" +
+    "  }\n" +
+    "  val bytes = readBytesOrPanic(path)\n" +
+    "  if bytes.length != 10 {\n" +
+    "    return 2\n" +
+    "  }\n" +
+    "  val _ = deleteFile(path)\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "readBytesOrPanic round-trip")
+
+  // A missing path panics -- the harness's non-zero-exit-on-crash
+  // convention means "did not exit 42" is the pass signal here, same as
+  // the calendar-arithmetic panic regression tests below.
+  val panicSrc = "package T\n" + "import Std.Core\n" + "import Std.File\n" + "func main(): Int {\n" +
+    "  val _ = readBytesOrPanic(\"/nonexistent-lyric-n59-readbytesorpanic\")\n" +
+    "  42\n" +
+    "}\n"
+  val panicResult = compileAndRunNative(panicSrc)
+  assertTrue(panicResult.exitCode != 42 and panicResult.exitCode != 0, "a non-panicking readBytesOrPanic would exit 42")
+}
+
+// #4752 residual-seam audit (D-progress-910): both return "" on native,
+// a value each function's own doc comment already documents as valid
+// (runtimeDirectory: "may return an empty string in native-AOT
+// scenarios"; runtimeIdentifier: the JVM twin's identical "no .NET RID
+// equivalent" contract).
+test "Std.Environment runtimeDirectory/runtimeIdentifier: empty on native, per their own documented contract (ASan)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Environment\n" + "func main(): Int {\n" +
+    "  if runtimeDirectory() != \"\" {\n" +
+    "    return 1\n" +
+    "  }\n" +
+    "  if runtimeIdentifier() != \"\" {\n" +
+    "    return 2\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "runtimeDirectory/runtimeIdentifier empty-on-native contract")
+}
+
 test "Std.Environment seams: set/get, missing key, cwd (ASan)" {
   val src = "package T\n" + "import Std.Core\n" + "import Std.Errors\n" + "import Std.Environment\n" +
     "func main(): Int {\n" +
@@ -249,6 +304,113 @@ test "Std.Process capture: argv passthrough, exec failure, stdin round-trip (ASa
     "}\n"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "process capture seams")
+}
+
+// Exercises `Std.ProcessPipedHost` directly (issue #6142), not the shared
+// `Std.Process.spawnPiped`/`pipedReadLine`/`pipedWriteLine` facade: those
+// three functions wrap the host call in `try { } catch Bug as b { }`,
+// which `Lyric.LlvmCodegen` unconditionally rejects for `--target native`
+// (D-N-003 — "try/catch is not supported ... no unwinding"), a real,
+// pre-existing, tracked-separately blocker independent of this kernel's
+// own correctness. `Std.Process.buildArgString` (also on that shared call
+// path) additionally calls `.replace()`, which has no native codegen
+// lowering yet either. Both gaps are documented, not silently routed
+// around — see this file's own header note and D-progress-909. The kernel
+// itself (spawn/read/write/kill/waitExit/exitCode/closeStdin/close) is
+// fully exercised here against a real `cat` child, matching the coverage
+// `lyric-compiler/jvm/piped_process_jvm_main.l` gives the JVM twin one
+// layer up (through `Std.Process`, which has no such blocker on that
+// target).
+test "Std.ProcessPipedHost native kernel: spawn/read/write/kill/waitExit/closeStdin over a real cat child (ASan)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.ProcessPipedHost\n" + "func main(): Int {\n" +
+    "  val p = hostSpawnPiped(\"/bin/cat\", \"\")\n" +
+    "  if not hostPipedIsAlive(p) {\n" +
+    "    return 1\n" +
+    "  }\n" +
+    "  hostPipedWriteLine(p, \"hello from lyric\")\n" +
+    "  match hostPipedReadLineOpt(p) {\n" +
+    "    case Some(line) -> {\n" +
+    "      if line != \"hello from lyric\" {\n" +
+    "        return 2\n" +
+    "      }\n" +
+    "    }\n" +
+    "    case None -> {\n" +
+    "      return 3\n" +
+    "    }\n" +
+    "  }\n" +
+    "  hostPipedWriteLine(p, \"one\")\n" +
+    "  hostPipedWriteLine(p, \"two\")\n" +
+    "  hostPipedWriteLine(p, \"three\")\n" +
+    "  var ordered = true\n" +
+    "  match hostPipedReadLineOpt(p) { case Some(l) -> { ordered = ordered and l == \"one\" }; case None -> { ordered = false } }\n" +
+    "  match hostPipedReadLineOpt(p) { case Some(l) -> { ordered = ordered and l == \"two\" }; case None -> { ordered = false } }\n" +
+    "  match hostPipedReadLineOpt(p) { case Some(l) -> { ordered = ordered and l == \"three\" }; case None -> { ordered = false } }\n" +
+    "  if not ordered {\n" +
+    "    return 4\n" +
+    "  }\n" +
+    "  hostPipedWriteLine(p, \"last line\")\n" +
+    "  hostPipedCloseStdin(p)\n" +
+    "  if not hostPipedWaitExit(p, 5000) {\n" +
+    "    return 5\n" +
+    "  }\n" +
+    "  if hostPipedExitCode(p) != 0 {\n" +
+    "    return 6\n" +
+    "  }\n" +
+    "  match hostPipedReadLineOpt(p) {\n" +
+    "    case Some(line) -> {\n" +
+    "      if line != \"last line\" {\n" +
+    "        return 7\n" +
+    "      }\n" +
+    "    }\n" +
+    "    case None -> {\n" +
+    "      return 8\n" +
+    "    }\n" +
+    "  }\n" +
+    "  match hostPipedReadLineOpt(p) {\n" +
+    "    case None -> {\n" +
+    "    }\n" +
+    "    case Some(_) -> {\n" +
+    "      return 9\n" +
+    "    }\n" +
+    "  }\n" +
+    "  hostPipedClose(p)\n" +
+    "  val p2 = hostSpawnPiped(\"/bin/sh\", \"\\\"-c\\\" \\\"sleep 30\\\"\")\n" +
+    "  if not hostPipedIsAlive(p2) {\n" +
+    "    return 10\n" +
+    "  }\n" +
+    "  if hostPipedWaitExit(p2, 50) {\n" +
+    "    return 11\n" +
+    "  }\n" +
+    "  hostPipedKill(p2)\n" +
+    "  if hostPipedIsAlive(p2) {\n" +
+    "    return 12\n" +
+    "  }\n" +
+    "  hostPipedClose(p2)\n" +
+    "  val p3 = hostSpawnPiped(\"/nonexistent-lyric-piped-n62\", \"\")\n" +
+    "  if not hostPipedWaitExit(p3, 5000) {\n" +
+    "    return 13\n" +
+    "  }\n" +
+    "  if hostPipedExitCode(p3) != 127 {\n" +
+    "    return 14\n" +
+    "  }\n" +
+    "  hostPipedClose(p3)\n" +
+    "  val p4 = hostSpawnPiped(\"/bin/echo\", \"\\\"hello world\\\"\")\n" +
+    "  match hostPipedReadLineOpt(p4) {\n" +
+    "    case Some(line) -> {\n" +
+    "      if line != \"hello world\" {\n" +
+    "        return 15\n" +
+    "      }\n" +
+    "    }\n" +
+    "    case None -> {\n" +
+    "      return 16\n" +
+    "    }\n" +
+    "  }\n" +
+    "  hostPipedWaitExit(p4, 5000)\n" +
+    "  hostPipedClose(p4)\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "piped process kernel seams")
 }
 
 test "Std.Time seams: epoch, monotonic, sleep (ASan)" {
