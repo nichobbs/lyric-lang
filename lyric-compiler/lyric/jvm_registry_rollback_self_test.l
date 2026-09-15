@@ -131,3 +131,25 @@ test "a J003-skipped B'-mode package does not break another package sharing the 
     "bmode_rollback: VictimPkg.greet() runs correctly despite LeakPkg's J003-skip"
   )
 }
+
+// #5550: a reserved keyword used as a local name in a BUNDLED STDLIB source
+// file must produce the same P0051 parse-time failure a user file would get,
+// instead of silently proceeding into codegen (where the malformed AST
+// previously panicked with an unrelated-looking internal message). This
+// stdlib source is never even imported by the entry package — before the
+// fix, an unreached stdlib file's parse diagnostics were purely advisory, so
+// this exact program compiled "successfully" (silently dropping the broken
+// package). The fix makes P0051 fatal at parse time for EVERY bundled
+// source, reachable or not.
+test "a reserved keyword as a local name in a bundled (even unreached) stdlib source fails the build (#5550)" {
+  val stdlibSources: List[String] = newList()
+  stdlibSources.add(
+    "package ReservedKwPkg\n" + "\n" + "func useReserved(): Int {\n" + "  val end = 5\n" + "  end\n" + "}\n"
+  )
+  val source = "package ReservedEntryPkg\n" + "\n" + "func main(): Int {\n" + "  0\n" + "}\n"
+  val dir = freshTempDir("reserved-kw")
+  val jarPath = Path.join(dir, "reserved-kw.jar")
+  val ok = compileToJarBundled(source, jarPath, "reserved-kw", stdlibSources, "0.1.0")
+  cleanup(dir)
+  assertTrue(not ok, "reserved_kw: compileToJarBundled must fail (return false) for a P0051 in a bundled source")
+}
