@@ -22,7 +22,7 @@ import Jvm.Kernel
 // ── Build Temperature (projectable) + TemperatureView ────────────────────────
 func makeTemperatureClasses(pool: in Pool): List[BuiltClass] {
   val fields: List[LOpaqueField] = newList()
-  fields.add(LOpaqueField(name = "celsius", fieldType = JFloat))
+  fields.add(LOpaqueField(name = "celsius", fieldType = JFloat, isMutable = false))
 
   val p = LProjectable(opaqueTypeName = "Temperature", viewTypeName = "TemperatureView", fields = fields)
   val cfs = lowerProjectable(p, pool)
