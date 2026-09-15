@@ -3235,6 +3235,58 @@ test "for over List binds element type" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #6720: D-progress-818 broadened the `SFor` single-type-param generic
+// fallback to type ANY single-param generic's element (motivated by the
+// extern phantom-type-param collection idiom, e.g. `Set[T]`/
+// `JHttpStringCollection[T]`), but that also silently typed the loop element
+// for genuinely non-iterable single-param generics like a Lyric-native
+// `Option[T]`-shaped union, with no diagnostic — codegen's index-loop
+// fallback (`.Count`/`get_Item`) then fails at runtime.  T0126 rejects a
+// `for` over a single-type-param generic that is NOT `List`/an extern type.
+// ─────────────────────────────────────────────────────────────────────────────
+test "for over a non-iterable Lyric-native single-param generic emits T0126" {
+  val src = "package P\nunion Box[T] {\n  case Full(value: T)\n  case Empty\n}\nfunc f(b: in Box[Int]): Unit {\n  for x in b {\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0126"), "for over Box[T] (non-iterable union): T0126")
+}
+
+test "for over a non-iterable Lyric-native single-param generic record emits T0126" {
+  val src = "package P\nrecord Wrap[T] {\n  value: T\n}\nfunc f(w: in Wrap[Int]): Unit {\n  for x in w {\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0126"), "for over Wrap[T] (non-iterable record): T0126")
+}
+
+test "for over an extern single-param generic collection does not emit T0126" {
+  val src = "package P\nextern type Set[T] = \"System.Collections.Generic.HashSet`1\"\nfunc f(xs: in Set[String]): Int {\n  var n = 0\n  for s in xs {\n    n = n + s.length\n  }\n  n\n}\n"
+  assertTrue(
+    not hasDiagCode(parseCheck(src), "T0126"),
+    "for over extern Set[T]: no T0126 (phantom-type-param idiom, #6565)"
+  )
+}
+
+// #6565's actual motivating shape imports the extern generic collection from
+// a separate package rather than declaring it locally — pin down that
+// `symTableIsExternTypeId`'s linear scan over `tbl.symbols` sees imported
+// `DKExternType` symbols too, not just same-file ones.
+test "for over a cross-package imported extern single-param generic collection does not emit T0126" {
+  val pkgKernel = parse("package Web.Kernel\npub extern type JHttpStringCollection[T] = \"java.util.Collection\"\n")
+  val imports: List[ImportedPackage] = newList()
+  imports.add(
+    ImportedPackage(
+      name = "Web.Kernel",
+      items = pkgKernel.file.items,
+      imports = collectImportNames(pkgKernel.file.imports)
+    )
+  )
+  val app = parse(
+    "package App\nimport Web.Kernel\nfunc f(xs: in Web.Kernel.JHttpStringCollection[String]): Int {\n  var n = 0\n  for s in xs {\n    n = n + s.length\n  }\n  n\n}\n"
+  )
+  val cr = checkWithImportedPackages(app.file, imports)
+  assertTrue(
+    not hasDiagCode(cr, "T0126"),
+    "for over cross-package imported extern JHttpStringCollection[T]: no T0126 (#6565)"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // docs/59 A3: generic record field access keeps the receiver's instantiation —
 // `b.value` on `Box[Int]` is `Int`, mirroring the union path
 // (`caseFieldTypesInstantiated`).  Before this the field type resolved under an
