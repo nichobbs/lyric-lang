@@ -271,17 +271,24 @@ pub func pipeCheckAndMono(
 /// (left-to-right evaluation order is kept), and running it here — on the
 /// one tree all backends consume — keeps the MSIL async-SM pre-scan and
 /// emission in lockstep by construction.
+///
+/// `extraRecordDecls` (#6702) is a cross-file/cross-package record list —
+/// the caller's own `monoRecordDecls` — threaded into the await-hoist's
+/// `HoistEngine` invocation so an `impl` block's target type resolves its
+/// own fields even when declared outside `file`; an `impl` targeting a
+/// record declared in this SAME file already resolves without it.
 pub func pipeWeave(
   file: in SourceFile,
   templates: in Map[String, CollectedTemplate],
   pkgLabel: in String,
   origins: in List[DiagUtil.MergedLineOrigin],
+  extraRecordDecls: in List[RecordDecl],
 ): Option[SourceFile] {
   val weaveRes = Weaver.weaveFileWithDiagsAndTemplates(file, templates)
   if gate(pkgLabel, origins, weaveRes.diagnostics) {
     return None
   }
-  Some(value = AwaitHoist.hoistAwaitsFile(weaveRes.file))
+  Some(value = AwaitHoist.hoistAwaitsFile(weaveRes.file, extraRecordDecls))
 }
 
 /// The full per-file middle end: `pipeCheckAndMono` then `pipeWeave`.
@@ -301,7 +308,7 @@ pub func pipeMiddleEnd(
   opts: in MiddleEndOptions,
 ): Option[SourceFile] {
   match pipeCheckAndMono(file0, importedPkgs, deriveImports, monoGenFuncs, monoIfaceDecls, monoRecordDecls, opts) {
-    case Some(monoFile) -> pipeWeave(monoFile, templates, opts.pkgLabel, opts.lineOrigins)
+    case Some(monoFile) -> pipeWeave(monoFile, templates, opts.pkgLabel, opts.lineOrigins, monoRecordDecls)
     case None -> None
   }
 }
