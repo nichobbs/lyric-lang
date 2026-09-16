@@ -297,15 +297,15 @@ pub func compileToJar(
   val stdlibGenFuncs = collectStdlibGenericFuncsJvm(stdlibFiles)
   val stdlibNonGenFuncs = collectStdlibNonGenericFuncsJvm(stdlibFiles)
   val allMonoFuncs: List[FunctionDecl] = newList()
-  var amfi = 0
-  while amfi < stdlibNonGenFuncs.count {
-    allMonoFuncs.add(stdlibNonGenFuncs[amfi])
-    amfi = amfi + 1
-  }
   var amgi = 0
   while amgi < stdlibGenFuncs.count {
     allMonoFuncs.add(stdlibGenFuncs[amgi])
     amgi = amgi + 1
+  }
+  var amfi = 0
+  while amfi < stdlibNonGenFuncs.count {
+    allMonoFuncs.add(stdlibNonGenFuncs[amfi])
+    amfi = amfi + 1
   }
   val importedItems = flattenImportedItems(importedPkgs)
   val noDeriveImports: List[Item] = newList()
@@ -2216,15 +2216,15 @@ pub func compileProjectToJarBundledWithRestored(
   val stdlibGenFuncs = collectStdlibGenericFuncsJvm(stdlibFiles)
   val stdlibNonGenFuncs = collectStdlibNonGenericFuncsJvm(stdlibFiles)
   val allMonoFuncs: List[FunctionDecl] = newList()
-  var sgfi = 0
-  while sgfi < stdlibNonGenFuncs.count {
-    allMonoFuncs.add(stdlibNonGenFuncs[sgfi])
-    sgfi = sgfi + 1
-  }
   var sgfj = 0
   while sgfj < stdlibGenFuncs.count {
     allMonoFuncs.add(stdlibGenFuncs[sgfj])
     sgfj = sgfj + 1
+  }
+  var sgfi = 0
+  while sgfi < stdlibNonGenFuncs.count {
+    allMonoFuncs.add(stdlibNonGenFuncs[sgfi])
+    sgfi = sgfi + 1
   }
 
   // Collect cross-package aspect templates from every file in the bundle before
