@@ -1,4 +1,4 @@
-# D-progress-886 — Native project-package diagnostics get real-path/origins attribution; MSIL codegen-phase (F0xxx) diagnostics and `pipeExpandAndRewrite`'s two gates resolve through the origins table too (#6824)
+# D-progress-912 — Native project-package diagnostics get real-path/origins attribution; MSIL codegen-phase (F0xxx) diagnostics and `pipeExpandAndRewrite`'s two gates resolve through the origins table too (#6824)
 
 **Status:** shipped
 
