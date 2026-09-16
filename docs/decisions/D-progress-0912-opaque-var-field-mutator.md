@@ -1,4 +1,4 @@
-# D-progress-883 — JVM codegen: a mutable (`var`) opaque-type field now gets a `$<name>(T)V` mutator so same-package `inout` mutation works (#5937)
+# D-progress-912 — JVM codegen: a mutable (`var`) opaque-type field now gets a `$<name>(T)V` mutator so same-package `inout` mutation works (#5937)
 
 **Status:** shipped
 
