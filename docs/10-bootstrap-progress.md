@@ -32322,7 +32322,7 @@ open generic TypeDef throwing `TypeLoadException` at JIT time (new
 bare `MClass` doing the same (fixed by declaring it as the closed-by-`!0`
 open self-instantiation instead).
 
-**Related:** `docs/decisions/D-progress-0888-union-structural-equality.md`
+**Related:** `docs/decisions/D-progress-914-union-structural-equality.md`
 (full account), #6835, #6120.
 
 ### MSIL: an unannotated module-level `val` initialized by a record constructor is typed correctly instead of `MObject` (#6786)
@@ -33856,7 +33856,7 @@ Verified: `llvm_heap_self_test.l` 37/37 (was 15/37); no regressions in
 or `llvm_self_test_n3.l` (10/10, exercising the vtable-dispatch path
 directly).
 
-**Related:** `docs/decisions/D-progress-0887-native-fnptr-double-indirection.md`
+**Related:** `docs/decisions/D-progress-913-native-fnptr-double-indirection.md`
 (full account), `native/plan/08-work-items.md` N9.10.
 
 ## lyric-lambda: JVM custom-runtime decision, proven WebBridge registry, mock Runtime API server test (#5412)
@@ -33922,7 +33922,7 @@ flag only when `runner.environment == 'self-hosted'`; the existing native path
 is untouched everywhere else. Verified locally end-to-end: the tool-acquired
 Stage-0 binary genuinely compiles the real stdlib bundle in Stage 1.
 
-**Related:** `docs/decisions/D-progress-0886-bootstrap-dotnet-tool-stage0-glibc.md`
+**Related:** `docs/decisions/D-progress-912-bootstrap-dotnet-tool-stage0-glibc.md`
 (full account), #7043 (this fix; also tracks the deferred release-pipeline
 portability follow-up), #7025/#7026/#7036 (the prior self-hosted-runner
 architecture-mismatch fixes this one follows).
@@ -33946,7 +33946,7 @@ config-block scanning) stays `NOT_IMPLEMENTED` on every feature except
 custom annotations off a compiled field at runtime (issue #6866).
 `lyric-aws-secrets/README.md`'s support matrix is corrected to stop claiming
 "Production-ready for .NET and JVM targets" when the `aws` feature had never
-worked even once. See D-progress-891 (`docs/decisions/`) for the full
+worked even once. See D-progress-917 (`docs/decisions/`) for the full
 investigation (including the two prior false blocker claims this corrects
 and the self-hosted-compiler monomorphisation gap found and worked around
 along the way).
@@ -34610,19 +34610,19 @@ worktree bisection, alongside two review-flagged `emitGenericMethodExternCall`
 gaps: a blob-interning key collision across distinct declaring types sharing
 a same-arity generic method name (#6987), and missing box/unbox at a
 method-own-generic position for a value-type argument/return (#6989),
-which also surfaced a missing `STMVar` scoring arm (D-progress-887).
+which also surfaced a missing `STMVar` scoring arm (D-progress-913).
 #6537's two residual `externTypeNames` bare-name-collision sites were
 confirmed already fixed by this PR's Gap 1 hardening; regression tests
-were added to close the loop (D-progress-888). The Gap 1 `castclass`'s
+were added to close the loop (D-progress-914). The Gap 1 `castclass`'s
 value-type flavor (`MValueTypeGenericInst`) was investigated and confirmed
 currently unreachable via any real BCL API, so it was declined loudly with
-a `panic` rather than shipped as untested `unbox.any` logic (D-progress-889,
+a `panic` rather than shipped as untested `unbox.any` logic (D-progress-915,
 #6995). `emitGenericMethodExternCall`'s `openKey` still collided for two
 overloads on the SAME declaring type differing only in parameter types
 (e.g. `Enumerable.ElementAt<TSource>(int)` vs the `System.Index`-taking
 overload) after the #6987 fix only added the declaring-type discriminator;
 fixed by folding each parameter's and the return's full `msilTypeKeyStr`
-structural encoding into the key (D-progress-890, #7016). That same review
+structural encoding into the key (D-progress-916, #7016). That same review
 round also caught a genuine `ValueTask<TResult>` ctor-ambiguity regression:
 the two new weak-but-nonnegative scoring arms (`STMVar`, `STNamedGenericInst`
 open-var) both scored `0`, tying `ValueTask<TResult>`'s bare `.ctor(TResult)`
@@ -34630,7 +34630,7 @@ against its wrapped `.ctor(Task<TResult>)` sibling and letting the wrong one
 win by Method-table row order — fixed by renumbering `scoreSigType`'s entire
 tier scale (exact 2→3, widening/upcast 1→2, bare declaring/method-own VAR
 0→1, wrapped-open-generic stays the new floor at 0) so each tier gets its
-own rung instead of two colliding at the same value (D-progress-891).
+own rung instead of two colliding at the same value (D-progress-917).
 Finally, `emitExternTargetBody`'s `msig.isGeneric` branch never checked
 `decl.isAsync`, so an `async`-declared wrapper over a BCL method that is
 ALSO generic in its own right (e.g. `HttpContentJsonExtensions.
@@ -34640,10 +34640,10 @@ tried first and found to still fail confusingly at runtime
 (`MissingMethodException`, since the plain-method fallback now succeeds at
 building an uninstantiated MemberRef instead of failing conversion
 outright), so the fix declines LOUDLY instead, matching the `#5809`/`#6995`
-precedent (D-progress-892, #7022; full Task/ValueTask-unwrap support for
+precedent (D-progress-918, #7022; full Task/ValueTask-unwrap support for
 this combination is tracked separately under #7023).
 
-**Related:** D-progress-886 through 892 (full account, `docs/decisions/`),
+**Related:** D-progress-912 through 918 (full account, `docs/decisions/`),
 #6581/#6537 (fixed by this PR), #6987/#6989/#6995/#7016/#7022 (the
 review-flagged follow-ups fixed in the same PR), #7023 (the deferred
 full-support follow-up), D-progress-877 (the independent re-verification),
