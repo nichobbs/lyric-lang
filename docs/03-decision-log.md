@@ -42061,5 +42061,3 @@ asserting tier 2's freshness:
 tier-1 change benefits all of them uniformly (the self-heal lives in the shared
 script, not per-workflow). The removed guard was in `publish.yml` alone. No
 change to the seed *format*, the three-stage reproducibility bootstrap, or any
-compiler behaviour. Reproducibility is unaffected: the byte-compare stages
-supply their own seed and never consult the fallback tier.
