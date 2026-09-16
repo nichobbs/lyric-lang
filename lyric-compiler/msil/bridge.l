@@ -825,16 +825,17 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
 
   // Phase 1b: index each in-bundle package by name so the per-package
   // import filter can look its items up by `import <pkgName>` segment.
-  // Item lists are extracted via `pipeAddCrossPackageItems` (matches
-  // the historical flat-accumulation semantics: `pub func`s + every
-  // type-shaped item).
+  // Item lists are extracted via `pipeAddCrossPackageItemsProject` (#6580):
+  // these are the user's OWN project's sibling packages, so `internal` must
+  // be visible alongside `pub`, unlike the pub-only rule that governs a
+  // restored cross-project dependency or a bundled stdlib DLL.
   val inBundleItems: Map[String, List[Item]] = newMap()
   val inBundleImports: Map[String, List[ImportDecl]] = newMap()
   var bi = 0
   while bi < parsedPkgs.count {
     val pp: ParsedUserPkg = parsedPkgs[bi]
     val items: List[Item] = newList()
-    pipeAddCrossPackageItems(pp.file, items)
+    pipeAddCrossPackageItemsProject(pp.file, items)
     inBundleItems.add(pp.name, items)
     inBundleImports.add(pp.name, pp.file.imports)
     bi = bi + 1
