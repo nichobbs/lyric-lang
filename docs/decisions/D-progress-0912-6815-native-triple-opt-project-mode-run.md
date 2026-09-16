@@ -1,4 +1,4 @@
-# D-progress-886 — #6815 items 2/3(a): `--triple`/`--opt` project-mode threading + `lyric run --manifest --target native`
+# D-progress-912 — #6815 items 2/3(a): `--triple`/`--opt` project-mode threading + `lyric run --manifest --target native`
 
 **Status:** shipped
 

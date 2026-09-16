@@ -1,4 +1,4 @@
-# D-progress-889 — #5611: workspace-dep feature/target staleness stamp; `stage1.stamp` keyed on build start, not completion
+# D-progress-915 — #5611: workspace-dep feature/target staleness stamp; `stage1.stamp` keyed on build start, not completion
 
 **Status:** shipped
 

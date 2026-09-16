@@ -1,4 +1,4 @@
-# D-progress-890 — #6268 closed: manifest-declared `[build] shape` on `--target native` raises `F0043` instead of silent override
+# D-progress-916 — #6268 closed: manifest-declared `[build] shape` on `--target native` raises `F0043` instead of silent override
 
 **Status:** shipped
 
@@ -36,5 +36,5 @@ before.
 
 **Related:** #6268, `docs/01-language-reference.md` §3.6 (`[build]` table),
 `docs/63-build-profiles-and-debugger.md` (the shape axis, Q-BP-003 nearby),
-D-progress-887 (the sibling #6263 fix to the same axis, landed in the same
+D-progress-913 (the sibling #6263 fix to the same axis, landed in the same
 PR).

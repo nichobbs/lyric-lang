@@ -1,4 +1,4 @@
-# D-progress-891 — #6579 closed: `test_only = true` packages for `[project.packages]`
+# D-progress-917 — #6579 closed: `test_only = true` packages for `[project.packages]`
 
 **Status:** shipped
 

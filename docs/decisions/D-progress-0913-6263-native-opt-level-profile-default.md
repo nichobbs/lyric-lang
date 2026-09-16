@@ -1,4 +1,4 @@
-# D-progress-887 — #6263 (partial): native `-O` level now defaults from the build profile axis
+# D-progress-913 — #6263 (partial): native `-O` level now defaults from the build profile axis
 
 **Status:** shipped
 

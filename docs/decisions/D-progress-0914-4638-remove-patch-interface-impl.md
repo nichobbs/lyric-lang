@@ -1,4 +1,4 @@
-# D-progress-888 — #4638 closed: `scripts/patch_interface_impl.py` removed, stage-0 seed emits sorted InterfaceImpl natively
+# D-progress-914 — #4638 closed: `scripts/patch_interface_impl.py` removed, stage-0 seed emits sorted InterfaceImpl natively
 
 **Status:** shipped
 
