@@ -133,10 +133,14 @@ sweep with zero failures: `generic_extern_self_test.l` (7/7),
 value-type-receiver decline path unaffected), `nested_generic_self_test.l`
 (8/8), `mono_self_test.l` (82/82), `cross_package_generics_self_test.l`
 (10/10), `msil_restored_bridge_self_test.l` (6/6), `msil_project_bridge_self_test.l`
-(53/53), `auto_ffi_self_test.l` (pre-existing failure on this container,
-confirmed via `git stash` to reproduce identically against unmodified
-`origin/main` — an environment-specific reference-assembly-pack difference,
-not a regression from this change).
+(53/53), `auto_ffi_self_test.l` (failed on this container at the time; a
+`git stash` comparison against unmodified `origin/main` was read as
+reproducing the same failure and so was recorded here as an environment-
+specific reference-assembly-pack difference, not a regression from this
+change — **this was wrong**. D-progress-913's later three-way worktree
+bisection proved it a genuine regression introduced by this entry's own
+`scoreSigType` `STNamedGenericInst` arm, root-caused and fixed there via
+`sigIsOpenGeneric` gating; see that entry for the full account).
 
 **Scope note.** A test exercising a generic `@externTarget` function's own
 TFunction-typed parameter whose delegate argument is a lambda inferred with a
