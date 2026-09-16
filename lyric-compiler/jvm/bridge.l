@@ -411,8 +411,12 @@ func dottedPath(path: in ModulePath): String {
 // bundle before the weave loop; `weaveFileWithDiagsAndTemplates` resolves
 // from-instance aspects against it.  Pass an empty map for single-file builds.
 //
-// `stdlibGenFuncs` supplies the stdlib's pure-Lyric generic `pub func`s to the
-// monomorphizer so cross-package generic calls specialise into this bundle.
+// `stdlibGenFuncs` supplies the stdlib's pure-Lyric `pub func`s to the
+// monomorphizer so cross-package generic calls specialise into this bundle —
+// both the generic funcs themselves and, since #7084, the non-generic ones
+// too (inference evidence only; see `collectStdlibNonGenericFuncsJvm`'s doc
+// comment), each call site's `allMonoFuncs` merges both lists before calling
+// into here.
 //
 // `tcFatalUserPkg` selects the type-check gating policy.  The user's own
 // packages (the main file and sibling project packages) pass `true`:
@@ -2209,17 +2213,17 @@ pub func compileProjectToJarBundledWithRestored(
   // core every JVM build (single-file `emitJvmInProcess` and true
   // multi-package project builds) funnels through, so this is the one place
   // that must feed both lists.
-  val stdlibGenFuncsOnly = collectStdlibGenericFuncsJvm(stdlibFiles)
+  val stdlibGenFuncs = collectStdlibGenericFuncsJvm(stdlibFiles)
   val stdlibNonGenFuncs = collectStdlibNonGenericFuncsJvm(stdlibFiles)
-  val stdlibGenFuncs: List[FunctionDecl] = newList()
+  val allMonoFuncs: List[FunctionDecl] = newList()
   var sgfi = 0
   while sgfi < stdlibNonGenFuncs.count {
-    stdlibGenFuncs.add(stdlibNonGenFuncs[sgfi])
+    allMonoFuncs.add(stdlibNonGenFuncs[sgfi])
     sgfi = sgfi + 1
   }
   var sgfj = 0
-  while sgfj < stdlibGenFuncsOnly.count {
-    stdlibGenFuncs.add(stdlibGenFuncsOnly[sgfj])
+  while sgfj < stdlibGenFuncs.count {
+    allMonoFuncs.add(stdlibGenFuncs[sgfj])
     sgfj = sgfj + 1
   }
 
@@ -2267,7 +2271,7 @@ pub func compileProjectToJarBundledWithRestored(
     case Some(o) -> o
     case None -> newList()
   }
-  match runMiddleEnd(userFile, importedPkgs, stdlibGenFuncs, allTemplates, true, userPkgLabel, userPkgOrigins) {
+  match runMiddleEnd(userFile, importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgOrigins) {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -2377,7 +2381,7 @@ pub func compileProjectToJarBundledWithRestored(
       case None -> newList()
     }
     val ok = try {
-      match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins) {
+      match runMiddleEnd(f, importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins) {
         case Some(ff) -> {
           collectAspectWovenSigs(ff, registry)
           collectBModeWovenSigs(ff, registry)
