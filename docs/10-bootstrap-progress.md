@@ -32322,7 +32322,7 @@ open generic TypeDef throwing `TypeLoadException` at JIT time (new
 bare `MClass` doing the same (fixed by declaring it as the closed-by-`!0`
 open self-instantiation instead).
 
-**Related:** `docs/decisions/D-progress-888-union-structural-equality.md`
+**Related:** `docs/decisions/D-progress-0888-union-structural-equality.md`
 (full account), #6835, #6120.
 
 ### MSIL: an unannotated module-level `val` initialized by a record constructor is typed correctly instead of `MObject` (#6786)
@@ -33856,7 +33856,7 @@ Verified: `llvm_heap_self_test.l` 37/37 (was 15/37); no regressions in
 or `llvm_self_test_n3.l` (10/10, exercising the vtable-dispatch path
 directly).
 
-**Related:** `docs/decisions/D-progress-887-native-fnptr-double-indirection.md`
+**Related:** `docs/decisions/D-progress-0887-native-fnptr-double-indirection.md`
 (full account), `native/plan/08-work-items.md` N9.10.
 
 ## lyric-lambda: JVM custom-runtime decision, proven WebBridge registry, mock Runtime API server test (#5412)
@@ -33922,7 +33922,7 @@ flag only when `runner.environment == 'self-hosted'`; the existing native path
 is untouched everywhere else. Verified locally end-to-end: the tool-acquired
 Stage-0 binary genuinely compiles the real stdlib bundle in Stage 1.
 
-**Related:** `docs/decisions/D-progress-886-bootstrap-dotnet-tool-stage0-glibc.md`
+**Related:** `docs/decisions/D-progress-0886-bootstrap-dotnet-tool-stage0-glibc.md`
 (full account), #7043 (this fix; also tracks the deferred release-pipeline
 portability follow-up), #7025/#7026/#7036 (the prior self-hosted-runner
 architecture-mismatch fixes this one follows).
