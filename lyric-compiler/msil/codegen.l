@@ -18156,23 +18156,31 @@ func inferLambdaBodyExprMsilType(
       // operand's own type is resolvable.
       case _ -> inferUntypedStaticValMsilType(e, paramEnv, cctx, pkgName)
     }
-    // #7125: a bare name in a lambda body must resolve against `paramEnv`
-    // (the lambda's OWN parameters) FIRST, not `inferUntypedStaticValMsilType`'s
-    // `EPath` arm, which checks the cross-package `cctx.staticValMsilTypes`
-    // map before its `env` argument — correct in that function's original
+    // #7125/#7126: a bare name in a lambda body must resolve ONLY against
+    // `paramEnv` (the lambda's OWN explicitly-typed parameters) — never
+    // `inferUntypedStaticValMsilType`'s `EPath` arm, which checks the
+    // cross-package `cctx.staticValMsilTypes` map before its `env` argument.
+    // That priority is correct in `inferUntypedStaticValMsilType`'s original
     // module-val context (where `env` is ALSO a module-val namespace, so the
     // more-complete `cctx` map can only refine the same name's answer), but
-    // wrong here: `paramEnv` is lambda-LOCAL scope, which must shadow an
-    // unrelated module-level `val` of the same name declared anywhere else
-    // in the bundle, not lose to it. Falls back to `cctx.staticValMsilTypes`
-    // for a name that ISN'T one of the lambda's own parameters — a genuine
-    // reference to an outer module val from inside the lambda body, which
-    // resolving via the bundle-wide map is correct for.
+    // wrong here in TWO ways: a lambda PARAMETER of the same name must shadow
+    // an unrelated module-level `val` declared anywhere in the bundle (#7125,
+    // fixed by checking `paramEnv` first) — and a name that ISN'T a lambda
+    // parameter could just as easily be a CAPTURED outer local variable
+    // (#7126) as a genuine module-val reference; this pass has no symbol
+    // table to tell the two apart, so falling back to the bundle-wide
+    // `cctx.staticValMsilTypes` map risks silently resolving a captured
+    // local's name against an unrelated same-named module val instead of
+    // recognizing it as unresolvable. Any name not in `paramEnv` therefore
+    // falls back to `MObject` (unknown) unconditionally — matching #6933's
+    // established safe-default philosophy for this whole function (propagate
+    // "unknown" rather than risk a wrong guess) — never consulting
+    // `cctx.staticValMsilTypes` at all from inside a lambda body.
     case EPath(path) -> {
       if path.segments.count == 1 {
         match mapGet(paramEnv, path.segments[0]) {
           case Some(t) -> t
-          case None -> match mapGet(cctx.staticValMsilTypes, path.segments[0]) { case Some(t) -> t; case None -> MObject }
+          case None -> MObject
         }
       } else {
         MObject

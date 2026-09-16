@@ -451,16 +451,38 @@ test "un-annotated lambda-literal local, comparison over a captured Double is un
 }
 
 // #7125: `inferLambdaBodyExprMsilType`'s EPath resolution must check
-// `paramEnv` (the lambda's own parameters) BEFORE falling back to
-// `cctx.staticValMsilTypes` (module-level vals declared anywhere in the
-// bundle). The module-level `val shadowed = 42` above predicts `MInt`
-// bundle-wide; this lambda's own parameter of the SAME NAME is `Double`
-// and must win. Pre-fix, the lambda's registered return type was wrongly
-// `MInt` (the shadowed module val's type), and the boxed call result was
-// `unbox.any int32`'d against a real boxed `Double` — `InvalidCastException`
-// at runtime with a clean build.
+// `paramEnv` (the lambda's own parameters) — the module-level
+// `val shadowed = 42` above predicts `MInt` bundle-wide, but this lambda's
+// own parameter of the SAME NAME is `Double` and must win. Pre-fix, the
+// lambda's registered return type was wrongly `MInt` (the shadowed module
+// val's type), and the boxed call result was `unbox.any int32`'d against a
+// real boxed `Double` — `InvalidCastException` at runtime with a clean
+// build.
 test "un-annotated lambda-literal local, a parameter name shadowing a module-level val resolves to the parameter's own type (#7125)" {
   val identity = { shadowed: Double -> shadowed }
   val result: Double = identity(2.5)
   assertTrue(result == 2.5, "the lambda's own Double parameter wins over the unrelated Int module val of the same name")
+}
+
+// #7126: a CAPTURED outer local (not a lambda parameter) whose name
+// collides with a module-level val must NOT resolve against
+// `cctx.staticValMsilTypes` — this codegen pass has no symbol table to
+// tell "a genuine reference to the module val" apart from "an unrelated
+// capture that happens to share its bare name", so the only safe answer
+// for a non-parameter name is `MObject` (unknown), never a guess. Binding
+// the call result through an explicitly `String`-annotated local proves
+// which type was actually registered, matching the established #6933
+// unboxing-at-a-typed-bind pattern: a wrong `MInt` registration (the
+// module val's type) would throw `InvalidCastException` INSIDE the call's
+// own invoke codegen, while the fix's correct `MObject` registration
+// defers the real unboxing to this bind, which resolves it correctly.
+test "un-annotated lambda-literal local, a captured local shadowing a module-level val does not mis-infer as the val's type (#7126)" {
+  val shadowed = "captured, not the module val"
+  val greet = { -> shadowed }
+  val result: String = greet()
+  assertEqual(
+    result,
+    "captured, not the module val",
+    "the captured String local is read correctly, not misread as the module val's Int type"
+  )
 }
