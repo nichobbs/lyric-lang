@@ -18156,6 +18156,28 @@ func inferLambdaBodyExprMsilType(
       // operand's own type is resolvable.
       case _ -> inferUntypedStaticValMsilType(e, paramEnv, cctx, pkgName)
     }
+    // #7125: a bare name in a lambda body must resolve against `paramEnv`
+    // (the lambda's OWN parameters) FIRST, not `inferUntypedStaticValMsilType`'s
+    // `EPath` arm, which checks the cross-package `cctx.staticValMsilTypes`
+    // map before its `env` argument — correct in that function's original
+    // module-val context (where `env` is ALSO a module-val namespace, so the
+    // more-complete `cctx` map can only refine the same name's answer), but
+    // wrong here: `paramEnv` is lambda-LOCAL scope, which must shadow an
+    // unrelated module-level `val` of the same name declared anywhere else
+    // in the bundle, not lose to it. Falls back to `cctx.staticValMsilTypes`
+    // for a name that ISN'T one of the lambda's own parameters — a genuine
+    // reference to an outer module val from inside the lambda body, which
+    // resolving via the bundle-wide map is correct for.
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        match mapGet(paramEnv, path.segments[0]) {
+          case Some(t) -> t
+          case None -> match mapGet(cctx.staticValMsilTypes, path.segments[0]) { case Some(t) -> t; case None -> MObject }
+        }
+      } else {
+        MObject
+      }
+    }
     case _ -> inferUntypedStaticValMsilType(e, paramEnv, cctx, pkgName)
   }
 }

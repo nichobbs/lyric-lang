@@ -121,6 +121,11 @@ func makeMultiParam(scale: in Int): (Int, Int) -> Int {
   { a: Int, b: Int -> (a + b) * scale }
 }
 
+// #7125 (review REQUIRED on the integration PR consolidating #6690/#6786):
+// an unannotated module-level val whose name a lambda parameter below
+// deliberately shadows.
+val shadowed = 42
+
 test "un-annotated closure local, invoked and directly returned (#5774 exact repro)" {
   assertEqualInt(directReturn(), 15, "directReturn() == 15")
 }
@@ -443,4 +448,19 @@ test "un-annotated lambda-literal local, comparison over a captured Double is un
   val threshold = 2.5
   val exceeds = { x -> threshold > 1.0 }
   assertTrue(exceeds(999), "threshold(2.5) > 1.0 is true regardless of the unused param x")
+}
+
+// #7125: `inferLambdaBodyExprMsilType`'s EPath resolution must check
+// `paramEnv` (the lambda's own parameters) BEFORE falling back to
+// `cctx.staticValMsilTypes` (module-level vals declared anywhere in the
+// bundle). The module-level `val shadowed = 42` above predicts `MInt`
+// bundle-wide; this lambda's own parameter of the SAME NAME is `Double`
+// and must win. Pre-fix, the lambda's registered return type was wrongly
+// `MInt` (the shadowed module val's type), and the boxed call result was
+// `unbox.any int32`'d against a real boxed `Double` — `InvalidCastException`
+// at runtime with a clean build.
+test "un-annotated lambda-literal local, a parameter name shadowing a module-level val resolves to the parameter's own type (#7125)" {
+  val identity = { shadowed: Double -> shadowed }
+  val result: Double = identity(2.5)
+  assertTrue(result == 2.5, "the lambda's own Double parameter wins over the unrelated Int module val of the same name")
 }

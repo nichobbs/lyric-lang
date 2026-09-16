@@ -133,7 +133,7 @@ test "UInt string concatenation renders the unsigned decimal value (#6748)" {
 // A `ULong` literal is folded through the lexer's signed `Int64` field
 // (`Lyric.Lexer.LInt.value: Long`), so no LITERAL can directly express a
 // value at or above `2^63` (the same limitation
-// `range_subtype_unsigned_jvm_self_test.l`'s `BigId` header documents) —
+// `range_subtype_self_test.l`'s `BigId` case documents) —
 // `a` is built via `ULong` ADDITION instead (`ladd` wraps identically for
 // signed and unsigned two's-complement, so this is a faithful way to reach
 // a sign-bit-set `ULong` value at runtime): `Long.MAX_VALUE + 4 == 2^63 + 3`,
