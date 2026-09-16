@@ -189,6 +189,26 @@ test "Enumerable.ElementAt<TSource>(int) vs ElementAt<TSource>(System.Index) ove
   )
 }
 
+// ── Gap 2 review follow-up: a method-own-generic RETURN into a ─────────────
+// genuine (non-`Object`) REFERENCE-type wrapper return must be narrowed
+// back from the witnessed `object`, mirroring the value-type unbox dance
+// above (#6989) on the reference-type side.
+//
+// `System.Linq.Enumerable.First<TSource>(IEnumerable<TSource>): TSource`
+// again — but this time the wrapper declares `String` (a genuine BCL
+// reference type, not `Int`) as its return type. The MethodSpec above
+// always witnesses `TSource` as `System.Object`, so the erased `object` on
+// the stack must be `castclass`'d to `System.String` before `ret`, or the
+// CLR verifier rejects a `String`-returning MethodDef that leaves a plain
+// `object` reference on the stack.
+@externTarget("System.Linq.Enumerable.First")
+func firstOfStr(source: in IEnumerableOfT[String]): String = ()
+
+test "Enumerable.First<TSource>'s reference-type return is narrowed from the witnessed Object" {
+  val seq = repeatStr("hello", 3)
+  assertEqual(firstOfStr(seq), "hello", "the witnessed-Object return is castclass'd back to String before ret")
+}
+
 // Gap 2 review follow-up #7022 (an `async`-declared wrapper over a BCL
 // method that is ALSO generic in its own right must not silently emit a
 // non-unwrapped body) is covered by a dedicated build-time-decline test in

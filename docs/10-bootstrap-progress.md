@@ -32322,7 +32322,7 @@ open generic TypeDef throwing `TypeLoadException` at JIT time (new
 bare `MClass` doing the same (fixed by declaring it as the closed-by-`!0`
 open self-instantiation instead).
 
-**Related:** `docs/decisions/D-progress-914-union-structural-equality.md`
+**Related:** `docs/decisions/D-progress-888-union-structural-equality.md`
 (full account), #6835, #6120.
 
 ### MSIL: an unannotated module-level `val` initialized by a record constructor is typed correctly instead of `MObject` (#6786)
@@ -33856,7 +33856,7 @@ Verified: `llvm_heap_self_test.l` 37/37 (was 15/37); no regressions in
 or `llvm_self_test_n3.l` (10/10, exercising the vtable-dispatch path
 directly).
 
-**Related:** `docs/decisions/D-progress-913-native-fnptr-double-indirection.md`
+**Related:** `docs/decisions/D-progress-887-native-fnptr-double-indirection.md`
 (full account), `native/plan/08-work-items.md` N9.10.
 
 ## lyric-lambda: JVM custom-runtime decision, proven WebBridge registry, mock Runtime API server test (#5412)
@@ -33922,7 +33922,7 @@ flag only when `runner.environment == 'self-hosted'`; the existing native path
 is untouched everywhere else. Verified locally end-to-end: the tool-acquired
 Stage-0 binary genuinely compiles the real stdlib bundle in Stage 1.
 
-**Related:** `docs/decisions/D-progress-912-bootstrap-dotnet-tool-stage0-glibc.md`
+**Related:** `docs/decisions/D-progress-886-bootstrap-dotnet-tool-stage0-glibc.md`
 (full account), #7043 (this fix; also tracks the deferred release-pipeline
 portability follow-up), #7025/#7026/#7036 (the prior self-hosted-runner
 architecture-mismatch fixes this one follows).
@@ -33946,7 +33946,7 @@ config-block scanning) stays `NOT_IMPLEMENTED` on every feature except
 custom annotations off a compiled field at runtime (issue #6866).
 `lyric-aws-secrets/README.md`'s support matrix is corrected to stop claiming
 "Production-ready for .NET and JVM targets" when the `aws` feature had never
-worked even once. See D-progress-917 (`docs/decisions/`) for the full
+worked even once. See D-progress-891 (`docs/decisions/`) for the full
 investigation (including the two prior false blocker claims this corrects
 and the self-hosted-compiler monomorphisation gap found and worked around
 along the way).
@@ -34643,7 +34643,15 @@ outright), so the fix declines LOUDLY instead, matching the `#5809`/`#6995`
 precedent (D-progress-918, #7022; full Task/ValueTask-unwrap support for
 this combination is tracked separately under #7023).
 
-**Related:** D-progress-912 through 918 (full account, `docs/decisions/`),
+A later review pass caught one more gap in the same return-narrowing dance:
+the method-own-generic return handling only unboxed a BCL VALUE-type
+wrapper return, leaving a genuine (non-`Object`) REFERENCE-type wrapper
+return un-narrowed — reachable with the same `Enumerable.First<TSource>`
+API #6989 already used, just declaring `String` instead of `Int`. Fixed by
+adding a `castclass`-based branch alongside the existing `unbox.any` one,
+reusing the shared `castObjectToMsil` erasure-coercion helper (D-progress-919).
+
+**Related:** D-progress-912 through 919 (full account, `docs/decisions/`),
 #6581/#6537 (fixed by this PR), #6987/#6989/#6995/#7016/#7022 (the
 review-flagged follow-ups fixed in the same PR), #7023 (the deferred
 full-support follow-up), D-progress-877 (the independent re-verification),

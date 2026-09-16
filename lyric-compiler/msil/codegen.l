@@ -21256,6 +21256,20 @@ func emitGenericMethodExternCall(
     insns.add(MLabel(id = haveLabel))
     insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, lyricRetTy)))
     insns.add(MLabel(id = endLabel))
+  } else if retIsMethodVar {
+    // Same erasure gap, reference-type side: the Lyric wrapper can also
+    // declare a genuine (non-Object) reference type at this position — e.g.
+    // wrapping `Enumerable.First<TSource>(IEnumerable<TSource>): TSource`
+    // (a non-generic-declaring-type method whose OWN return is its own
+    // generic parameter) with a wrapper returning a specific record/class
+    // type instead of `object`. The CLR verifier rejects a `ret` whose
+    // static stack type (`object`, from the witnessed-Object MethodSpec
+    // above) doesn't match the declared return type, so the erased value
+    // needs narrowing first. `castclass` (unlike `unbox.any`) is null-safe
+    // per ECMA-335 §III.4.6, so no null-guard is needed here; a wrapper
+    // that genuinely declares `Object` as its return type hits
+    // `castObjectToMsil`'s own MObject no-op case and emits nothing extra.
+    castObjectToMsil(cctx, insns, lyricRetTy)
   }
   insns.add(MRet)
   true

@@ -544,8 +544,8 @@ runtime gap.
   types with no configured JAR entry).  Tests in `auto_ffi_jvm_self_test.l`
   (`@externTarget with verified JVM signatures compile and run correctly`).
 - **Phase 6 — GENERICINST member params + MethodSpec for generic
-  `@externTarget` methods. _(SHIPPED — D-progress-877, #6581; six review
-  follow-ups D-progress-913–918, see below.)_** Phase 4 left
+  `@externTarget` methods. _(SHIPPED — D-progress-877, #6581; seven review
+  follow-ups D-progress-913–919, see below.)_** Phase 4 left
   two gaps in the MSIL backend's generic-member handling, both required by
   `lyric-grpc`'s unary-call kernel (`Grpc.Core.Marshaller<T>`'s ctor,
   `CallInvoker.BlockingUnaryCall<TRequest,TResponse>`):
@@ -674,6 +674,16 @@ runtime gap.
     (a build-time `panic`, matching the `#5809`/`#6995` precedent); full
     `Task`/`ValueTask`-unwrap support for this combination is tracked
     separately under #7023.
+  - **Review follow-up (D-progress-919).** The method-own-generic return
+    narrowing above (#6989) only handled a BCL VALUE-type wrapper return
+    (`unbox.any`); a genuine (non-`Object`) REFERENCE-type wrapper return
+    left the erased `object` un-narrowed on the stack, rejected by the CLR
+    verifier against the declared return type — reachable with the same
+    `Enumerable.First<TSource>` API #6989 already used, just declaring
+    `String` instead of `Int`. Fixed with a `castclass`-based branch
+    alongside the existing `unbox.any` one, reusing the shared
+    `castObjectToMsil` erasure-coercion helper (null-safe per ECMA-335
+    §III.4.6, so unlike the value-type branch it needs no null-guard).
 
 ---
 
