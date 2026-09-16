@@ -88,17 +88,21 @@ sandbox-seeding technique — the GitHub release-download bootstrap step is
 network-policy-blocked in this sandbox), so every assertion below ran
 against a toolchain that actually contains this entry's fixes, not the
 published tool's stale compiler:
-- `source_path_diagnostics_self_test.l`: 17/17, five new cases — "multi-file
+- `source_path_diagnostics_self_test.l`: 18/18, six new cases — "multi-file
   project package (native): a parse error in the second file names that
   file and its real line" (item 1; a `--target native` sibling of the
   existing dotnet/jvm #6282 multi-file parse-error tests), "multi-file
   project package (dotnet): a codegen-phase error (F0025) in the second
   file names that file and its real line" (item 2; a `wrap[T]` generic
   try-catch Unit/value mismatch specialised via `Lyric.Mono`, split so the
-  trigger lives entirely in the second file), "multi-file project package
-  (dotnet): an impl-default diamond conflict (T0117) in the second file
-  names that file" and its `--target native` sibling (item 3; two
-  same-file-in-a.l interfaces defaulting one method name onto a
+  trigger lives entirely in the second file), "single-file project package
+  (one entry in `[project.packages]`): a codegen-phase error (F0025) still
+  names the real source path" (#7034 — a review-finding gap in item 2's own
+  fix: the codegen-phase gate's fallback label used the bare package name
+  instead of `parsedPkgs[ci].label` for a single-file entry), "multi-file
+  project package (dotnet): an impl-default diamond conflict (T0117) in the
+  second file names that file" and its `--target native` sibling (item 3;
+  two same-file-in-a.l interfaces defaulting one method name onto a
   `b.l`-declared record with both `impl`s, unresolved — the native case
   confirms `pipeExpandAndRewrite`'s unconditional `ImplDefaults
   .inheritDefaultsFile` gate attributes correctly via
@@ -145,6 +149,10 @@ technique this session's verification used).
 **Note on numbering.** This entry was originally drafted (during this PR's
 development) as D-progress-878, then renumbered to 882, then 883, each time
 displaced by another PR merging the same number to `main` first while the
-decision log was still a single append-only file. It landed here under 886
-once `docs/decisions/` (this per-file convention, D-progress-885's
-successor design) shipped, since a plain append no longer races.
+decision log was still a single append-only file. It moved to 886 once
+`docs/decisions/` (this per-file convention, D-progress-885's successor
+design) shipped, since a plain append no longer races — but a per-file
+number can still collide if two PRs claim it independently while neither's
+branch has seen the other's; that happened here too, twice over, while this
+PR's branch sat stale for about a week (a fleet-wide CI runner-stability
+issue paused it). It landed at its final number, 912, on rebase.
