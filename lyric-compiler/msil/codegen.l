@@ -18105,51 +18105,58 @@ func lambdaBodyTrailingValueMsil(blk: in Block): Option[Expr] {
 // `MObject` (unknown) through those arms unchanged, so the caller's overall
 // result is the safe `MObject` fallback whenever it truly can't resolve an
 // arithmetic operand's type — never a wrong guess.
-func inferLambdaBodyExprMsilType(e: in Expr, paramEnv: in Map[String, MsilType]): MsilType {
+func inferLambdaBodyExprMsilType(
+  e: in Expr, paramEnv: in Map[String, MsilType], cctx: in CodegenCtx, pkgName: in String
+): MsilType {
   match e.kind {
-    case EParen(inner) -> inferLambdaBodyExprMsilType(inner, paramEnv)
+    case EParen(inner) -> inferLambdaBodyExprMsilType(inner, paramEnv, cctx, pkgName)
     case EPrefix(op, inner) -> match op {
-      case PreNeg -> inferLambdaBodyExprMsilType(inner, paramEnv)
-      case PreRef -> inferLambdaBodyExprMsilType(inner, paramEnv)
+      case PreNeg -> inferLambdaBodyExprMsilType(inner, paramEnv, cctx, pkgName)
+      case PreRef -> inferLambdaBodyExprMsilType(inner, paramEnv, cctx, pkgName)
       case PreNot -> MBool
     }
     case EBinop(op, lhs, rhs) -> match op {
-      case BAdd -> match inferLambdaBodyExprMsilType(lhs, paramEnv) {
+      case BAdd -> match inferLambdaBodyExprMsilType(lhs, paramEnv, cctx, pkgName) {
         case MString -> MString
         case MLong -> MLong
         case MDouble -> MDouble
         case MObject -> MObject
         case _ -> MInt
       }
-      case BSub | BMul -> match inferLambdaBodyExprMsilType(lhs, paramEnv) {
+      case BSub | BMul -> match inferLambdaBodyExprMsilType(lhs, paramEnv, cctx, pkgName) {
         case MLong -> MLong
         case MDouble -> MDouble
         case MObject -> MObject
         case _ -> MInt
       }
-      case BDiv -> match inferLambdaBodyExprMsilType(lhs, paramEnv) {
+      case BDiv -> match inferLambdaBodyExprMsilType(lhs, paramEnv, cctx, pkgName) {
         case MLong -> MLong
         case MDouble -> MDouble
         case MByte -> MByte
         case MObject -> MObject
         case _ -> MInt
       }
-      case BMod -> match inferLambdaBodyExprMsilType(lhs, paramEnv) {
+      case BMod -> match inferLambdaBodyExprMsilType(lhs, paramEnv, cctx, pkgName) {
         case MLong -> MLong
         case MByte -> MByte
         case MObject -> MObject
         case _ -> MInt
       }
-      case BCoalesce -> match inferLambdaBodyExprMsilType(lhs, paramEnv) {
-        case MObject -> inferLambdaBodyExprMsilType(rhs, paramEnv)
+      case BCoalesce -> match inferLambdaBodyExprMsilType(lhs, paramEnv, cctx, pkgName) {
+        case MObject -> inferLambdaBodyExprMsilType(
+          rhs,
+          paramEnv,
+          cctx,
+          pkgName
+        )
         case t -> t
       }
       // Every other operator (comparisons, boolean, BXor) is unconditionally
       // safe to delegate: its result type never depends on whether either
       // operand's own type is resolvable.
-      case _ -> inferUntypedStaticValMsilType(e, paramEnv)
+      case _ -> inferUntypedStaticValMsilType(e, paramEnv, cctx, pkgName)
     }
-    case _ -> inferUntypedStaticValMsilType(e, paramEnv)
+    case _ -> inferUntypedStaticValMsilType(e, paramEnv, cctx, pkgName)
   }
 }
 
@@ -18250,7 +18257,7 @@ func registerFieldFuncValTypesMsil(cctx: in CodegenCtx, fctx: in FuncCtx, name: 
           }
           match lambdaBodyTrailingValueMsil(body) {
             case Some(trailing) -> {
-              fctx.funcValRetTypes.add(name, inferLambdaBodyExprMsilType(trailing, paramEnv))
+              fctx.funcValRetTypes.add(name, inferLambdaBodyExprMsilType(trailing, paramEnv, cctx, fctx.pkgName))
             }
             case None -> {
               fctx.funcValRetTypes.add(name, MVoid)
