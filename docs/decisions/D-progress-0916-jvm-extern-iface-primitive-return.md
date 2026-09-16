@@ -1,14 +1,14 @@
-# D-progress-887 — JVM codegen: extern-interface `impl` methods now convert a `slice[Elem]` RETURN value into the real primitive array type, not just reference-element arrays (#5931 review follow-up, #6977)
+# D-progress-916 — JVM codegen: extern-interface `impl` methods now convert a `slice[Elem]` RETURN value into the real primitive array type, not just reference-element arrays (#5931 review follow-up, #6977)
 
 **Status:** shipped
 
-**Context.** Automated review of D-progress-886's PR found `implTypeExprToJvm`'s
+**Context.** Automated review of D-progress-915's PR found `implTypeExprToJvm`'s
 own doc comment ("a primitive slice element needs the real primitive array
 too, not just an extern one") was aspirational, not implemented: the TYPE
 resolution side (`TSlice(elem) -> JArray(elem = implTypeExprToJvm(elem,
 ...))`) already correctly resolves a primitive element (`Byte` -> `JByte`),
 but the CODEGEN/coercion side (`coerceArgTo`'s `JArray` arm, fixed in
-D-progress-886 only for reference-typed elements) had no handling for a
+D-progress-915 only for reference-typed elements) had no handling for a
 primitive target: its `case _ ->` fallback still emitted the old no-arg
 `ArrayList.toArray()` (erasing to `Object[]`), which is not assignable to
 e.g. `byte[]`.

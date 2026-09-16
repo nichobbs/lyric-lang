@@ -1,4 +1,4 @@
-# D-progress-885 — JVM codegen: `impl <ExternInterface> for Record` with a `slice[ExternType]` param/return now resolves the real JVM array type, scoped to extern-interface impls only (#5931)
+# D-progress-914 — JVM codegen: `impl <ExternInterface> for Record` with a `slice[ExternType]` param/return now resolves the real JVM array type, scoped to extern-interface impls only (#5931)
 
 **Status:** shipped
 

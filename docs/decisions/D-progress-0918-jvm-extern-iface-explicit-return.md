@@ -1,11 +1,11 @@
-# D-progress-889 — JVM codegen: an explicit `return` inside an extern-interface impl method now narrows a `slice[Elem]` return the same way the implicit tail-position path does (#5931 review follow-up, #7004)
+# D-progress-918 — JVM codegen: an explicit `return` inside an extern-interface impl method now narrows a `slice[Elem]` return the same way the implicit tail-position path does (#5931 review follow-up, #7004)
 
 **Status:** shipped
 
-**Context.** Automated review of the D-progress-885/886/887/888 fix chain
+**Context.** Automated review of the D-progress-914/886/887/888 fix chain
 noted that `lowerInstanceMethodBody`'s tail-position return coercion was
 switched to the ctx-aware `coerceArgToCtx` (needed for the primitive-array
-copy-loop machinery D-progress-887/888 added), but an explicit `return
+copy-loop machinery D-progress-916/888 added), but an explicit `return
 expr;` statement anywhere else in the same method body is lowered by a
 separate code path that was never updated, leaving the identical bug
 reachable via a different statement shape.
@@ -17,10 +17,10 @@ widening fallback called the ctx-LESS `coerceArgTo` directly instead of
 FuncCtx` as a parameter for its own primitive-array-boxing branch. So an
 extern-interface impl method with an explicit early `return` (rather than a
 bare tail expression) narrowing a `slice[Byte]`-shaped return reproduced
-the exact `VerifyError: Bad return type` D-progress-887 fixed for the
+the exact `VerifyError: Bad return type` D-progress-916 fixed for the
 tail-position case. Empirically, only the PRIMITIVE-element narrowing
 actually reproduces this way: `coerceArgTo`'s own `ArrayList` -> reference-
-array narrowing (added in D-progress-886) needs no `FuncCtx`, so a
+array narrowing (added in D-progress-915) needs no `FuncCtx`, so a
 reference-typed `slice[ExternType]` explicit return already worked even
 through the ctx-less path — confirmed by writing both shapes as regression
 cases and reverting the fix as a negative control (only the primitive case

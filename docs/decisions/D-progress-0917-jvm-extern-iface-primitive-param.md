@@ -1,19 +1,19 @@
-# D-progress-888 — JVM codegen: close the extern-interface impl parameter-side slice-narrowing gap left open by D-progress-887 (#5931 review follow-up, #6977 param-side)
+# D-progress-917 — JVM codegen: close the extern-interface impl parameter-side slice-narrowing gap left open by D-progress-916 (#5931 review follow-up, #6977 param-side)
 
 **Status:** shipped
 
-**Context.** Automated review of D-progress-887 (the return-side primitive-
+**Context.** Automated review of D-progress-916 (the return-side primitive-
 array-narrowing fix) noted that the PARAMETER-side half of #6977 was still
 open, and confirmed it wasn't fully resolved rather than auto-closing the
 finding. Writing a concrete regression test for it (an ordinary Lyric
 function forwarding a `slice[Byte]` PARAMETER into an extern-interface
 `impl`'s narrowed `byte[]` parameter — `java.util.zip.Checksum.update(byte[],
 int, int)`) surfaced that the actual gap is broader than the decision-log's
-own D-progress-887 entry assumed.
+own D-progress-916 entry assumed.
 
-**Root cause.** D-progress-887's `coerceArgToCtx` only handled a
+**Root cause.** D-progress-916's `coerceArgToCtx` only handled a
 `fromTy = JRef("java/util/ArrayList")` source — correct for a FRESHLY
-CONSTRUCTED slice value (a literal, matching every test D-progress-886/887
+CONSTRUCTED slice value (a literal, matching every test D-progress-915/887
 used), but a `slice[T]`-typed LOCAL or PARAMETER already stored in a JVM
 slot carries the ordinary erased ABI's OWN representation instead:
 `JArray(elem = Object)` (a real `Object[]` reference), not `ArrayList`. A
@@ -35,9 +35,9 @@ array): primitive targets reuse the existing `emitUnboxObjectArray`; a new
 reference-typed sibling of `emitUnboxObjectArray`) handles a narrower
 reference-array target. The `ArrayList`-source arm also gains the same
 reference-array case (it previously only narrowed a primitive target,
-matching the D-progress-887 gap's own oversight for non-primitive
+matching the D-progress-916 gap's own oversight for non-primitive
 reference-array literals). All 10 `coerceArgTo(insns, aTy, sig.params[...])`
-/ holder-arg call sites converted to `coerceArgToCtx` in the prior D-progress-887
+/ holder-arg call sites converted to `coerceArgToCtx` in the prior D-progress-916
 commit needed no further changes — the dispatch on `fromTy`'s shape lives
 entirely inside `coerceArgToCtx` itself.
 

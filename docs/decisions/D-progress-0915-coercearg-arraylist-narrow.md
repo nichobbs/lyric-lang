@@ -1,8 +1,8 @@
-# D-progress-886 — JVM codegen: `coerceArgTo`'s `ArrayList` → array conversion now narrows to the real element type instead of always producing `Object[]` (#5931 review follow-up, #6970)
+# D-progress-915 — JVM codegen: `coerceArgTo`'s `ArrayList` → array conversion now narrows to the real element type instead of always producing `Object[]` (#5931 review follow-up, #6970)
 
 **Status:** shipped
 
-**Context.** Automated review of D-progress-885's PR found the new test
+**Context.** Automated review of D-progress-914's PR found the new test
 coverage was one-sided: only the parameter-side narrowing
 (`implParamTypesToJvm`) had a regression test, while the sibling return-type
 narrowing (`lowerImplMethod`'s `retTy` path) had none. Adding a test using
