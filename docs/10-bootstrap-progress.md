@@ -32306,6 +32306,27 @@ open self-instantiation instead).
 **Related:** `docs/decisions/D-progress-0888-union-structural-equality.md`
 (full account), #6835, #6120.
 
+### MSIL: an unannotated module-level `val` initialized by a record constructor is typed correctly instead of `MObject` (#6786)
+
+`inferUntypedStaticValMsilType` (predicts an untyped module-level `val`'s
+MSIL field type so other functions' `EPath`/`EMember` reads know what a bare
+`ldsfld` produces) had cases for `EPath` and `EBinop` (#5955/#5988/#5992) but
+fell through every `ECall` — including a record-constructor call like
+`val gCache = Cache(box = ...)` — to the `MObject` catch-all. A later
+`gCache.box` read off that wrongly-typed `MObject` receiver resolved the
+field by bare name across the file's declared records rather than by the
+receiver's real type; if another record in the same file declared a
+same-named field and was registered first, the read emitted `castclass
+<wrong record>` against the right-hand record's actual instance —
+`InvalidCastException` at runtime with a clean build (silent miscompile).
+Fixed by adding a non-generic record/union-case `ECall` arm that resolves the
+callee through `cctx.recordCtorTokens` the same way real codegen does,
+falling back to `MObject` only for a generic record/union case (no symbol
+table at this pass to infer its type arguments) or an otherwise-unresolvable
+callee.
+
+**Related:** `docs/decisions/D-progress-0888-module-val-record-ctor-type-inference.md` (full account), #6786.
+
 ### Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
 
 `native/plan/08-work-items.md`'s N9.3 (`Std.HttpServer` native twin,
