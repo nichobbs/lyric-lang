@@ -1170,6 +1170,9 @@ func endsWithReturn(insns: in List[LInsn]): Bool {
       case LLreturn -> {
         return true
       }
+      case LFreturn -> {
+        return true
+      }
       case LDreturn -> {
         return true
       }

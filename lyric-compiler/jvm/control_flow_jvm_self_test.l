@@ -33,6 +33,20 @@
 //!     try's value and returning the declared return type's zero/default
 //!     instead — a genuine miscompile (returned 0 instead of 42), not a
 //!     VerifyError.
+//!   - #5510: `endsWithReturn` (06_items.l) was missing an `LFreturn` case
+//!     that its structurally-identical sibling `lastInsnIsTerminator`
+//!     (05_stmts.l) already had. Every pre-existing case in this file
+//!     returns `Int`/`String`/a reference type, whose terminator opcodes
+//!     (`LIreturn`/`LAreturn`) WERE already covered — so the gap was
+//!     invisible here until a `Float`-returning arm was tried. A `match`
+//!     arm extracting a `Float` payload out of a union, with an explicit
+//!     `return`, was misjudged non-terminating: `lowerMatchExpr`
+//!     (03_match.l) then appended a dead store-to-result-slot + `goto`
+//!     after the arm's own `freturn`, landing the `goto` one byte past
+//!     the method's actual bytecode end — `VerifyError: StackMapTable
+//!     error: bad offset` at class load. The same `endsWithReturn` check
+//!     also gates `lowerIfExpr` (02_exprs.l), so an `if`/`else` where
+//!     both arms `return` a `Float` hit the identical bug.
 //!   - #5764: the try/catch/finally variant with a `catch` clause present
 //!     but not taken (the try body's own value must still win over the
 //!     untaken catch arm's).
@@ -203,6 +217,34 @@ func computeWithCatchTaken(c: in Counter): Int {
   }
 }
 
+// #5510: a union carrying a `Float` payload, extracted via `match` with an
+// explicit `return` on every arm — the exact reported repro shape.  Before
+// the fix, `endsWithReturn` did not recognize `LFreturn` as a terminator, so
+// the matched arm's `freturn` was followed by dead fallthrough code whose
+// `goto` target landed past the method's real bytecode end.
+union FloatBox {
+  case FBFloat(value: Float)
+  case FBInt(value: Int)
+}
+
+func unwrapFloat(v: in FloatBox, def: in Float): Float {
+  match v {
+    case FBFloat(x) -> return x
+    case _ -> return def
+  }
+}
+
+// #5510 sibling: `endsWithReturn` also gates `lowerIfExpr` (02_exprs.l) — an
+// `if`/`else` where both arms `return` a `Float` hits the identical
+// missing-`LFreturn` gap.
+func floatSign(n: Float, whenNeg: in Float, whenNonNeg: in Float): Float {
+  if n < 0.0f32 {
+    return whenNeg
+  } else {
+    return whenNonNeg
+  }
+}
+
 // A record with a method whose every arm `return`s — exercises the
 // `blockTerminates` check at the `lowerRecordMethod` call-site (#2877).
 // Both arms of the inner `if` return unconditionally, so the JVM verifier
@@ -306,6 +348,18 @@ test "Unit fall-off function still emits its implicit return" {
 test "if without else followed by a tail value still falls through" {
   assertEqualInt(clampLow(5), 5, "non-negative passes through")
   assertEqualInt(clampLow(-9), 0, "negative clamped to 0")
+}
+
+test "#5510: match arm extracting a Float union payload via explicit return" {
+  val boxed = FBFloat(value = 0.25f32)
+  val notBoxed = FBInt(value = 5)
+  assertEqual(unwrapFloat(boxed, 1.0f32).toString(), "0.25", "matched arm returns the extracted Float")
+  assertEqual(unwrapFloat(notBoxed, 1.5f32).toString(), "1.5", "fallback arm returns the default Float")
+}
+
+test "#5510: if/else where both arms return a Float" {
+  assertEqual(floatSign(-3.0f32, 0.25f32, 1.0f32).toString(), "0.25", "negative branch returns whenNeg")
+  assertEqual(floatSign(3.0f32, 0.25f32, 1.5f32).toString(), "1.5", "non-negative branch returns whenNonNeg")
 }
 
 test "record method with all-terminating if/else arms (blockTerminates at lowerRecordMethod)" {
