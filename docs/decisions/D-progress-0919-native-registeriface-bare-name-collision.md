@@ -1,4 +1,4 @@
-# D-progress-914 — Native codegen: `registerIfaceInfo` fails loudly on a bare-name interface collision instead of silently picking one (#4900)
+# D-progress-919 — Native codegen: `registerIfaceInfo` fails loudly on a bare-name interface collision instead of silently picking one (#4900)
 
 **Status:** shipped
 

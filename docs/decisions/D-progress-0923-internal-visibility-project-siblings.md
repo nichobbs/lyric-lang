@@ -1,4 +1,4 @@
-# D-progress-918 — Cross-package bridges: `internal` items now visible to a project's own sibling packages (#6580)
+# D-progress-923 — Cross-package bridges: `internal` items now visible to a project's own sibling packages (#6580)
 
 **Status:** shipped
 
