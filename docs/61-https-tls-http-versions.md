@@ -576,10 +576,15 @@ items marked ∥ are independent and can proceed in parallel.
    A same-package multi-file split (`_kernel_jvm/`-only file alongside
    `Std.Tls`'s top-level `tls.l`) was also tried for the `SSLContext`
    construction and found to break unrelated static-call resolution at JVM
-   runtime — a fourth gap, filed as issue #5932; the construction lives in
-   `_kernel_jvm/http_server.l` instead, reached through the minimal
-   `Identity.hostHandle` kernel-only accessor added to `tls.l`. Mutual TLS
-   remains tracked (issue #5930); dotnet server TLS shipped (#5884, D-progress-700).
+   runtime — a fourth gap, filed as issue #5932 (**since fixed**, see
+   D-progress-889 in `docs/03-decision-log.md` — a first-wins `Jvm.Bridge`
+   registry map was silently dropping every bundled file but the first for
+   a same-named package; new same-package splits are no longer blocked by
+   this); the construction lives in `_kernel_jvm/http_server.l` instead,
+   reached through the minimal `Identity.hostHandle` kernel-only accessor
+   added to `tls.l` (left as-is — no functional reason to move already-
+   working code now that the underlying gap is closed). Mutual TLS remains
+   tracked (issue #5930); dotnet server TLS shipped (#5884, D-progress-700).
    **Tls12-floor pinning (issue #5997):** `buildServerSslContext`'s
    `SSLContext.getInstance("TLS")` call for a `Tls12`-floor listener relies
    on this JVM's `jdk.tls.disabledAlgorithms` security property to keep
