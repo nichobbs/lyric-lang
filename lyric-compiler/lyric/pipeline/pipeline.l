@@ -371,6 +371,59 @@ pub func pipeAddCrossPackageItems(file: in SourceFile, dest: in List[Item]): Uni
   }
 }
 
+/// Same visibility rule as `pipeIsCrossPackageItem`, but also admits
+/// `internal` funcs/vals (#6580). Per the language reference §3.1, `internal`
+/// is visible across every package WITHIN THE SAME PROJECT — unlike `pub`,
+/// it is never exposed in a published contract for a separate consuming
+/// project. Correct ONLY for a build's own in-project sibling packages (the
+/// multi-package `[project.packages]` case on all three backends); a
+/// restored cross-project dependency or a bundled stdlib DLL must keep using
+/// `pipeIsCrossPackageItem` — an `internal` function there has no real
+/// cross-assembly binding to call through.
+pub func pipeIsCrossPackageItemProject(it: in Item): Bool {
+  val isType = match it.kind {
+    case IRecord(_) -> true
+    case IExposedRec(_) -> true
+    case IUnion(_) -> true
+    case IEnum(_) -> true
+    case IDistinctType(_) -> true
+    case IInterface(_) -> true
+    case ITypeAlias(_) -> true
+    case IOpaque(_) -> true
+    case IExternType(_) -> true
+    case IProtected(_) -> true
+    case IImpl(_) -> true
+    case IExtern(_) -> true
+    case _ -> false
+  }
+  if isType {
+    return true
+  }
+  val isVisibleFunc = match it.kind {
+    case IFunc(decl) -> match decl.visibility { case Some(_) -> true; case None -> false }
+    case _ -> false
+  }
+  if isVisibleFunc {
+    return true
+  }
+  match it.kind {
+    case IVal(_) -> match it.visibility { case Some(_) -> true; case None -> false }
+    case _ -> false
+  }
+}
+
+/// Append every same-PROJECT-visible item of `file` to `dest`
+/// (`pipeIsCrossPackageItemProject` filter — `pub` and `internal`).
+pub func pipeAddCrossPackageItemsProject(file: in SourceFile, dest: in List[Item]): Unit {
+  var i = 0
+  while i < file.items.count {
+    if pipeIsCrossPackageItemProject(file.items[i]) {
+      dest.add(file.items[i])
+    }
+    i = i + 1
+  }
+}
+
 /// True iff the annotation list carries a marker that makes a generic
 /// unsuitable for monomorphization-by-copy.  `@externTarget` is a kernel
 /// boundary whose body codegen synthesises from the BCL target (and
