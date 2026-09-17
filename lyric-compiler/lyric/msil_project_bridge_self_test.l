@@ -2532,6 +2532,7 @@ test "qualified generic type HEAD resolves to the exact package named, not scope
     "qualified generic head (#6992): Pkg6992A.Box[Int] resolves to Pkg6992A's Box, not Pkg6992B's"
   )
 }
+
 // #6580: `pipeIsCrossPackageItem` (the shared cross-package item-visibility
 // filter `Lyric.Pipeline` — and, before this fix, `Msil.Bridge`/`Jvm.Bridge`/
 // `Lyric.LlvmBridge` — used for a project's OWN sibling packages) only ever
