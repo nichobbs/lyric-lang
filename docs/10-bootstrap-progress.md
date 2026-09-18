@@ -33897,6 +33897,7 @@ headers and were verified that way.
 `docs/35-lambda-library.md` §4.2/§8 (updated), `lyric-lambda/README.md`
 (support matrix updated), #5412 (closed), #6868 (new, filed not fixed),
 #5600/#5578/#6548 (the prior `Lambda.Dispatch` work this builds on).
+
 ## Stage-0 acquisition can bypass a GLIBC floor via the NuGet global tool (#7043)
 
 `build-stage2` moved onto the self-hosted `CI_HEAVY_RUNNER` pool in
