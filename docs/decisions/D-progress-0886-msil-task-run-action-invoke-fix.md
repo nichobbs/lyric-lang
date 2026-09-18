@@ -50,14 +50,17 @@ inheritance relationship despite both deriving from `MulticastDelegate`.
 A SECOND, independent layer of the same gap: even after fixing the
 `returnsVoid` check itself, a call to a STDLIB function (the actual
 `Std.Task.scopeSpawn` case, as opposed to a same-source-tree `mySpawn`) still
-built `Func<object>`. `registerStdlibFunc`/`registerRestoredFunc` (the
-cross-assembly registration paths for stdlib and restored/NuGet/path
-dependencies respectively) compute a stdlib function's OWN parameter types
+built `Func<object>`. `registerStdlibFunc` (the cross-assembly registration
+path for stdlib functions) computes a stdlib function's OWN parameter types
 correctly (`paramTypes`, feeding the MemberRef signature — always
 `System.Action` for a `() -> Unit` param, matching the in-bundle case) but
 never populated `cctx.funcParamFnInner`/`funcParamFnRetType` — the maps the
 `returnsVoid` fix reads from — at all; only the IN-BUNDLE, same-compilation-
-unit token pre-scan (`addPackageTokens`) populated them.
+unit token pre-scan (`addPackageTokens`) populated them. `registerRestoredFunc`
+(the sibling path for restored/NuGet/path dependencies) already had this
+coverage via its own pre-existing "#3273 item 4" block further down the same
+function — confirmed by review (#7130) after an initial pass mistakenly
+duplicated it there; that duplicate has been removed.
 
 A THIRD, independent, PRE-EXISTING gap surfaced only once the first two were
 fixed (caught by the existing, CI-wired `closure_correctness_self_test.l`
@@ -86,13 +89,14 @@ exposed this call site's independent, latent cast bug.
    (non-FFI) HOF" fallback `funcParamFnRetType` write already had, just
    never consulted here) before falling back to the always-`MObject`
    `funcRetTypes` default.
-2. `registerStdlibFunc` and `registerRestoredFunc`: both now also populate
-   `funcParamFnInner`/`funcParamFnRetType` (keyed `"<arityKey|fqn>#<paramIdx>"`,
-   matching the in-bundle convention) for every `TFunction`-typed parameter,
-   mirroring the in-bundle "ordinary HOF" registration exactly. Both
-   functions already return early for a generic `fn`, so every function
-   reaching the new code is non-generic — no `#5334`-style bare-type-variable
-   risk.
+2. `registerStdlibFunc` now also populates `funcParamFnInner`/`funcParamFnRetType`
+   (keyed `"<arityKey|fqn>#<paramIdx>"`, matching the in-bundle convention) for
+   every `TFunction`-typed parameter, mirroring the in-bundle "ordinary HOF"
+   registration exactly. It already returns early for a generic `fn`, so every
+   function reaching the new code is non-generic — no `#5334`-style
+   bare-type-variable risk. (`registerRestoredFunc` needed no equivalent
+   change — its pre-existing "#3273 item 4" block already covers this; see
+   above.)
 3. The bare-call `f()` invoke site (where `f` is a local/param resolved via
    `fctx.slots`): checks the slot's own registered `fctx.types` entry first;
    for any REAL void-returning delegate shape — `MClass("System.Action")`

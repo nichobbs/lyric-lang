@@ -35635,37 +35635,11 @@ func registerRestoredFunc(
     paramTypes.add(typeExprToMsilCtx(cctx, fn.params[pi].ty, packageName))
     pi = pi + 1
   }
-  // #5329 (bug 1): mirror the matching `registerStdlibFunc` fix (see its own
-  // doc comment for the full failure mode) for RESTORED (path-dependency /
-  // NuGet) package functions — a synthesized restored `FunctionDecl`
-  // (`reprForFunc`'s bodyless head) still carries the real declared
-  // parameter TYPES, `TFunction` shapes included, even though it carries no
-  // body/asyncness. Restored functions register only under the bare `fqn`
-  // (no arity-keyed overload variant, unlike stdlib), matching the call
-  // site's own `tokKey` fallback when no arity-specific entry exists.
-  var tfPi = 0
-  while tfPi < fn.params.count {
-    match fn.params[tfPi].ty.kind {
-      case TFunction(fnInnerParams, fnInnerRetTe) -> {
-        val innerParamTys: List[MsilType] = newList()
-        var tfIpi = 0
-        while tfIpi < fnInnerParams.count {
-          innerParamTys.add(typeExprToMsilCtx(cctx, fnInnerParams[tfIpi], packageName))
-          tfIpi = tfIpi + 1
-        }
-        val fKey = fqn + "#" + toString(tfPi)
-        if not cctx.funcParamFnInner.containsKey(fKey) {
-          cctx.funcParamFnInner.add(fKey, innerParamTys)
-        }
-        val innerRetMsil = typeExprToMsilCtx(cctx, fnInnerRetTe, packageName)
-        if not cctx.funcParamFnRetType.containsKey(fKey) {
-          cctx.funcParamFnRetType.add(fKey, innerRetMsil)
-        }
-      }
-      case _ -> ()
-    }
-    tfPi = tfPi + 1
-  }
+  // NOTE: a restored function's `TFunction`-typed params get their
+  // `funcParamFnInner`/`funcParamFnRetType` entries populated below by the
+  // pre-existing "#3273 item 4" block (bare-`fqn`-keyed, same as stdlib's
+  // fallback lookup) — no separate population is needed here for #5329;
+  // see that block's doc comment.
   val declRetType = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
   // Contract-metadata reprs do not carry asyncness (`reprForFunc` renders a
   // bodyless `pub func` head), so `fn.isAsync` is always false here — and
