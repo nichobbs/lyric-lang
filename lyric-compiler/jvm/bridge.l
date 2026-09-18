@@ -277,7 +277,7 @@ pub func compileToJar(
   val weConfigs: Map[String, CollectedConfigTemplate] = newMap()
   WireExpand.collectWireTemplates(cfgFile.items, dottedPath(cfgFile.packageDecl.path), weWires, weConfigs)
   val file0 = resolveTypeAliases(
-    match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, true, true, true) {
+    match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, true, true, true, "", noLegacyOrigins) {
       case Some(f) -> f
       case None -> return false
     }
@@ -288,16 +288,31 @@ pub func compileToJar(
   // reports "built" ships a miscompiled program (#5609 item 1).  Mode
   // check, `?`-propagation, mono, and weave gate as before.  Mono is fed
   // the stdlib's pure-Lyric generic `pub func`s plus the imported
-  // interface / record decls (#3813).  This legacy path derives without
-  // imported items (`deriveImports` empty), matching its historical
-  // `deriveFile` call.
+  // interface / record decls (#3813), and the non-generic stdlib `pub
+  // func`s for inference only (parity with the MSIL bridge's
+  // `stdlibNonGenFuncs`, #5196/#5970 follow-up — see
+  // `collectStdlibNonGenericFuncsJvm`'s doc comment). This legacy path
+  // derives without imported items (`deriveImports` empty), matching its
+  // historical `deriveFile` call.
   val stdlibGenFuncs = collectStdlibGenericFuncsJvm(stdlibFiles)
+  val stdlibNonGenFuncs = collectStdlibNonGenericFuncsJvm(stdlibFiles)
+  val allMonoFuncs: List[FunctionDecl] = newList()
+  var amgi = 0
+  while amgi < stdlibGenFuncs.count {
+    allMonoFuncs.add(stdlibGenFuncs[amgi])
+    amgi = amgi + 1
+  }
+  var amfi = 0
+  while amfi < stdlibNonGenFuncs.count {
+    allMonoFuncs.add(stdlibNonGenFuncs[amfi])
+    amfi = amfi + 1
+  }
   val importedItems = flattenImportedItems(importedPkgs)
   val noDeriveImports: List[Item] = newList()
   val noTemplates: Map[String, CollectedTemplate] = newMap()
   val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
   val opts = MiddleEndOptions(tcFatal = true, tcReport = false, pkgLabel = "", lineOrigins = noOrigins)
-  val file = match pipeMiddleEnd(file0, importedPkgs, noDeriveImports, stdlibGenFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), noTemplates, opts) {
+  val file = match pipeMiddleEnd(file0, importedPkgs, noDeriveImports, allMonoFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), noTemplates, opts) {
     case Some(f) -> f
     case None -> return false
   }
@@ -396,8 +411,12 @@ func dottedPath(path: in ModulePath): String {
 // bundle before the weave loop; `weaveFileWithDiagsAndTemplates` resolves
 // from-instance aspects against it.  Pass an empty map for single-file builds.
 //
-// `stdlibGenFuncs` supplies the stdlib's pure-Lyric generic `pub func`s to the
-// monomorphizer so cross-package generic calls specialise into this bundle.
+// `stdlibGenFuncs` supplies the stdlib's pure-Lyric `pub func`s to the
+// monomorphizer so cross-package generic calls specialise into this bundle —
+// both the generic funcs themselves and, since #7084, the non-generic ones
+// too (inference evidence only; see `collectStdlibNonGenericFuncsJvm`'s doc
+// comment), each call site's `allMonoFuncs` merges both lists before calling
+// into here.
 //
 // `tcFatalUserPkg` selects the type-check gating policy.  The user's own
 // packages (the main file and sibling project packages) pass `true`:
@@ -531,6 +550,37 @@ func collectStdlibGenericFuncsJvm(files: in List[SourceFile]): List[FunctionDecl
     sfi = sfi + 1
   }
   genFuncs
+}
+
+// Counterpart of `collectStdlibGenericFuncsJvm` for non-generic stdlib
+// `pub func`s (parity with `Msil.Bridge.collectStdlibNonGenericFuncs`,
+// #5196/#5970 follow-up). These feed the monomorphizer's inference tables
+// only (never the specialisation worklist — `Lyric.Pipeline.
+// pipeAddNonGenericFuncs`'s filter excludes generics), so a generic call
+// whose type argument only flows through a stdlib function's return (e.g.
+// `unwrapOr(parseOptInt(s), -1)`, `isSome(parseOptInt(s))`) can resolve
+// `parseOptInt`'s declared `Option[Int]` return and specialise, instead of
+// leaving the argument opaque. This JVM bridge fed the MSIL-only half of
+// this pair (`collectStdlibGenericFuncsJvm`) but never called
+// `pipeAddNonGenericFuncs` at all, so every such call previously fell
+// through to `state.funcDecls` finding nothing for `parseOptInt` — silently
+// safe before #6902 (mono's own Object-defaulted fallback, harmless because
+// JVM backend generics are fully erased anyway), but a hard `M0004` compile
+// error after #6902 correctly refused to guess against a `Result`/`Option`
+// (non-covariant) parameter shape with zero evidence. Same failure mode as
+// #5970's stdlib union-ctor-synth gap just above, exposed by the same
+// `Lyric.Mono` safety check; `Std.Parse`/`Std.Uuid`'s JVM test suites are
+// the regression coverage (`lyric build --target jvm` on
+// `lyric-stdlib/tests/{parse,uuid}_tests.l`).
+func collectStdlibNonGenericFuncsJvm(files: in List[SourceFile]): List[FunctionDecl] {
+  val nonGenFuncs: List[FunctionDecl] = newList()
+  var fi = 0
+  while fi < files.count {
+    val f = files[fi]
+    pipeAddNonGenericFuncs(f.items, nonGenFuncs)
+    fi = fi + 1
+  }
+  nonGenFuncs
 }
 
 // Extern-type maps of every parsed package, keyed by dotted package name
@@ -1672,7 +1722,18 @@ pub func compileProjectToJarBundledWithRestored(
   }
   var wei = 0
   while wei < userFiles.count {
-    val rewritten = match pipeExpandAndRewrite(userFiles[wei], weWires, weConfigs, true, true, true) {
+    // #6824 item 3: label/attribute this package's wire/config-template and
+    // impl-default-inheritance diagnostics exactly like its parse-phase
+    // diagnostics already are (`pkgPathByName`/`pkgOriginsByName`, resolved
+    // per-package during the parse loop above) instead of the unconditional
+    // `""`/empty this call used to hardcode.
+    val weiPkgName = dottedPath(userFiles[wei].packageDecl.path)
+    val weiPkgLabel = match mapGet(pkgPathByName, weiPkgName) { case Some(p) -> p; case None -> weiPkgName }
+    val weiPkgOrigins: List[DiagUtil.MergedLineOrigin] = match mapGet(pkgOriginsByName, weiPkgName) {
+      case Some(o) -> o
+      case None -> newList()
+    }
+    val rewritten = match pipeExpandAndRewrite(userFiles[wei], weWires, weConfigs, true, true, true, weiPkgLabel, weiPkgOrigins) {
       case Some(f) -> f
       case None -> return false
     }
@@ -2214,8 +2275,26 @@ pub func compileProjectToJarBundledWithRestored(
   // Stdlib pure-Lyric generic `pub func`s, fed to each package's monomorphizer
   // so cross-package generic calls (`mapGet`, `unwrapOr`, …) specialise into
   // this bundle instead of erasing their generic return (M-5; parity with the
-  // MSIL bridge's `collectStdlibGenericFuncs`).
+  // MSIL bridge's `collectStdlibGenericFuncs`), plus the non-generic stdlib
+  // `pub func`s for inference only (parity with the MSIL bridge's
+  // `stdlibNonGenFuncs`, #5196/#5970 follow-up — see
+  // `collectStdlibNonGenericFuncsJvm`'s doc comment). This is the shared
+  // core every JVM build (single-file `emitJvmInProcess` and true
+  // multi-package project builds) funnels through, so this is the one place
+  // that must feed both lists.
   val stdlibGenFuncs = collectStdlibGenericFuncsJvm(stdlibFiles)
+  val stdlibNonGenFuncs = collectStdlibNonGenericFuncsJvm(stdlibFiles)
+  val allMonoFuncs: List[FunctionDecl] = newList()
+  var sgfj = 0
+  while sgfj < stdlibGenFuncs.count {
+    allMonoFuncs.add(stdlibGenFuncs[sgfj])
+    sgfj = sgfj + 1
+  }
+  var sgfi = 0
+  while sgfi < stdlibNonGenFuncs.count {
+    allMonoFuncs.add(stdlibNonGenFuncs[sgfi])
+    sgfi = sgfi + 1
+  }
 
   // Collect cross-package aspect templates from every file in the bundle before
   // the weave loop so that from-instance aspects in any package can resolve
@@ -2261,7 +2340,7 @@ pub func compileProjectToJarBundledWithRestored(
     case Some(o) -> o
     case None -> newList()
   }
-  match runMiddleEnd(userFile, importedPkgs, stdlibGenFuncs, allTemplates, true, userPkgLabel, userPkgOrigins) {
+  match runMiddleEnd(userFile, importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgOrigins) {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -2371,7 +2450,7 @@ pub func compileProjectToJarBundledWithRestored(
       case None -> newList()
     }
     val ok = try {
-      match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins) {
+      match runMiddleEnd(f, importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins) {
         case Some(ff) -> {
           collectAspectWovenSigs(ff, registry)
           collectBModeWovenSigs(ff, registry)

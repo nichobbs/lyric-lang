@@ -1,4 +1,4 @@
-# D-progress-912 — Type checker: T0105 missing-required-field check generalized to non-generic record/opaque constructors (#6739)
+# D-progress-924 — Type checker: T0105 missing-required-field check generalized to non-generic record/opaque constructors (#6739)
 
 **Status:** shipped
 

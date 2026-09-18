@@ -218,7 +218,7 @@ deferred to Phase 3 by design.
 | docs/60 well-known `build_profile` (M1h) — `BD.withWellKnownProfile` injects `build_profile=debug` in `pipeParseAndErase` as a fallback on every compile; the release paths (`buildReleaseProject`/`buildReleaseSingle`) inject `build_profile=release` into their staging compile upstream, so `decodeDefines` last-wins reports `release` there. `@build_const("build_profile")` and `Std.BuildInfo.profile` now report `debug`/`release` with no explicit `--define`, without touching the user-define release gates (still rejected; the profile define is compiler-injected). Completes the auto-injected well-known set (`version`/`target`/`build_profile`); only native `--define` (blocked on #5977) remains under #5852 | **Shipped (M1h)** | docs/60 §3.3 |
 | docs/60 native `--define` (#5977) — the native LLVM backend now consumes defines: `Lyric.LlvmCodegen` lowers `[...]` list literals (`lyric_list_new` + `lyric_list_push`, part 1) so `Std.BuildInfo` works on native, and resolves module-level `val` references by inlining a literal initializer at the use site (part 2, self-package-qualified then bare-name resolution mirroring `buildSigs`). The CLI gate is then lifted (part 3): `defineBuildGateError`/`manifestDefineGateError` no longer reject `--target native`, so `lyric build --target native <file.l> --define KEY=VALUE` substitutes correctly. Native was single-file only at the time this shipped (a native manifest build was rejected by `buildProject`), so native `--define` was single-file; project-scoped `version`/`build_profile` well-known + manifest `[build.define]` were MSIL/JVM-only until native project builds shipped (N9.7/#6809, below), which threads the same `EmitProjectRequest.defines` and lifts all three to native project builds too. `--define` now works on all three targets, single-file and (as of N9.7) project. **#5977 closed** | **Shipped** | docs/60 |
 | docs/63 build profiles + output shapes (band B0) — `--release` no longer selects a packaging mode. Two independent axes: **profile** (`--debug`/`--release`, default debug) and **shape** (`--shape portable|standalone|aot` with `--aot`/`--standalone` sugar, default portable), both orthogonal to `--target` and resolved CLI-over-manifest-over-default from new `[build] shape` / `[build] profile` keys. `[build] kind = "aot"` **removed** — a hard `F0042` error naming `shape = "aot"`, never a silent remap. New diagnostics `F0040` (`--debug`+`--release`), `F0041` (conflicting shape spellings), `F0042`, `F0043` (shape invalid for target — `--target native` is AOT by construction), `F0044` (shape unimplemented). The `--define`/`--watch`/`--rid` gates are **re-scoped off `--release` onto the shape axis** (docs/63 §5.3): it is the packaging path that threads no defines, so `--release --shape portable --define K=V` now works where it was previously rejected for a reason that did not apply. `build_profile` is sourced from the profile axis, so a `--release --shape portable` build reports `release`. Unlocks two previously unreachable artifacts: an optimized framework-dependent DLL (the `lyric publish` artifact) and a debuggable AOT binary. Bare `--release` with no explicit shape prints a one-line migration note. Follow-ups: `--shape standalone` unimplemented (`F0044`, #6262); the profile does not yet reach codegen, so `--release` performs no optimization and does not relax overflow checking (#6263) | **Shipped (B0)** | docs/63 |
-| docs/63 debug information (band B2, line-table slice) — the self-hosted JVM backend now emits a JVMS §4.7.12 `LineNumberTable` for every method body, mapping bytecode offsets back to Lyric source lines. A zero-byte `LLineMarker` `LInsn` is appended per statement by `lowerStmt` and resolved to a `start_pc` by the existing two-pass assembler, so no new offset machinery was needed; the `Code` attribute's sub-attribute count is now counted for real instead of hardcoded to "`StackMapTable` or nothing". Rows collapse to one per line transition, and the first row is pinned to offset 0 so the local-zeroing prologue is attributed to the first statement rather than to nothing. Verified exactly (not as a smoke test) by `scripts/assert-jvm-line-numbers.sh` via `javap -l`, wired into CI as `jvm-line-numbers`. A real JVM `SourceFile` attribute (keyed by package name off a `pkgPathByName` map) shipped as part of #6282/#6284, verified by `jvm_sourcefile_attr_self_test.l` — JVM stack traces now name the real source file instead of printing `(Unknown Source)`. MSIL `Document` and native `DIFile` remain open for band B1. #6282's multi-file merged-blob line numbers are now fixed too (D-progress-868, #6284 slice 3): `Lyric.Emitter.mergePackageSourcesWithOrigins` records a per-merged-line provenance table consulted by `Lyric.Pipeline.gate` on every phase (parse/typecheck/modecheck/elaborate/weave), on both the MSIL and JVM project-build paths — a multi-file `[project.packages]` entry now reports the real on-disk file and its real line, not a merged-blob-relative number. Codegen-phase (F0xxx) diagnostics and the native project-build path stay package-name-only, tracked in #6824 | **Shipped (B2 line tables, JVM `SourceFile`, and #6282 multi-file line numbers); `LocalVariableTable` and MSIL/native debug info pending B1** | docs/63 §9.2, §9.5, §9.7, D-progress-714, D-progress-804, D-progress-868 |
+| docs/63 debug information (band B2, line-table slice) — the self-hosted JVM backend now emits a JVMS §4.7.12 `LineNumberTable` for every method body, mapping bytecode offsets back to Lyric source lines. A zero-byte `LLineMarker` `LInsn` is appended per statement by `lowerStmt` and resolved to a `start_pc` by the existing two-pass assembler, so no new offset machinery was needed; the `Code` attribute's sub-attribute count is now counted for real instead of hardcoded to "`StackMapTable` or nothing". Rows collapse to one per line transition, and the first row is pinned to offset 0 so the local-zeroing prologue is attributed to the first statement rather than to nothing. Verified exactly (not as a smoke test) by `scripts/assert-jvm-line-numbers.sh` via `javap -l`, wired into CI as `jvm-line-numbers`. A real JVM `SourceFile` attribute (keyed by package name off a `pkgPathByName` map) shipped as part of #6282/#6284, verified by `jvm_sourcefile_attr_self_test.l` — JVM stack traces now name the real source file instead of printing `(Unknown Source)`. MSIL `Document` and native `DIFile` remain open for band B1. #6282's multi-file merged-blob line numbers are now fixed too (D-progress-868, #6284 slice 3): `Lyric.Emitter.mergePackageSourcesWithOrigins` records a per-merged-line provenance table consulted by `Lyric.Pipeline.gate` on every phase (parse/typecheck/modecheck/elaborate/weave), on both the MSIL and JVM project-build paths — a multi-file `[project.packages]` entry now reports the real on-disk file and its real line, not a merged-blob-relative number. Codegen-phase (F0xxx) diagnostics and the native project-build path were package-name-only, now fixed too (D-progress-912, #6824): `Lyric.LlvmBridge.NativeSourcePackage` carries a real `path` and `compileProjectToNativeWithFlags` an `originsByPkg` table (native folds typecheck/modecheck/elaborate/mono/weave into one `pipeMiddleEnd` call, so one fix covers all of them there), `Msil.Bridge`'s codegen-phase gate consults the same per-package origins table the earlier phases already resolved, and `Lyric.Pipeline.pipeExpandAndRewrite`'s two gates (wire/config-template expansion, impl-default inheritance) now thread `label`/`origins` instead of an unconditional empty pair. MSIL `Document` and native `DIFile` (full debug-info emission, not attribution) remain open for later B1/B3/B4 bands | **Shipped (B2 line tables, JVM `SourceFile`, #6282 multi-file line numbers, and #6824's native/codegen-phase/pipeExpandAndRewrite attribution); `LocalVariableTable` and MSIL/native debug info emission pending B1/B3/B4** | docs/63 §9.2, §9.5, §9.7, D-progress-714, D-progress-804, D-progress-868, D-progress-912 |
 | docs/63 span fidelity (band B1, slice A) — synthesized contract asserts are now anchored at the `requires:` / `ensures:` clause the user wrote, instead of at the function's opening brace (requires) or whichever `return` happened to enclose them (ensures). `CCRequires`/`CCEnsures` already carried a per-clause span; `collectRequires`/`collectEnsures` discarded it and returned a bare `List[Expr]`. They now return `List[SpannedExpr]`, a record pairing each clause expression with its own span (record rather than tuple, following `lexer.l`'s `SpannedToken` and `llvm_ir.l`'s deliberate move away from tuples for values threaded through many match sites). Contained to `elaborator.l` — all four functions are private with no callers elsewhere. Makes reality match `book/chapters/08-contracts.md` §8.7, which already documented violations reporting the clause's position. Verified two ways: a ~2s assertion in `contract_elaborator_self_test.l` that two `requires:` clauses on different lines produce asserts on *different* lines (unsatisfiable under the old shared-span code), and end to end via `scripts/assert-jvm-line-numbers.sh` (`clamped -> 47,48,50,51`, where 47/48 are the contract lines). **JVM-only for now** — MSIL emits no debug information until band B3. The weaver's `synSpan()` sites are *not* in this slice: docs/63 §9.5's "~24 drop-in substitutions" claim is corrected here, since five construct `Statement` nodes whose spans feed the JVM line table and would reintroduce #6285 | **Shipped (B1 slice A)** | docs/63 §9.5, D-progress-716 |
 
 ### Phase 2 — type system completion (complete)
@@ -31952,17 +31952,28 @@ Lyric-side collector, not a host shim.
 never had: it runs `lyric test <file> --target jvm --coverage` and then
 inspects the produced report file itself — exists, non-empty, has a
 `<coverage ...>` root element, `lines-valid` is non-zero — rather than
-just checking the command's exit code. **Not currently wired into CI**:
-the JVM-target end-to-end run hangs on real GitHub Actions runners (the
-identical file without `--coverage` runs fine in the same job) — see D135's
-addendum and #6659 for the full incident and investigation. The script
-itself works correctly when run directly; the step was removed from
-`.github/workflows/ci.yml` rather than shipped hanging or red.
-`jacoco_cobertura_self_test.l` (the converter's own self-test, unaffected
-by the JVM-execution hang) runs alongside `cfg_gate_self_test.l` in the
-compiler self-tests job (same linking shape — a compiler-package import
-resolved via the staged `Lyric.Compiler.dll` bundle, no
-`LYRIC_LOAD_COMPILER=1`).
+just checking the command's exit code. `jacoco_cobertura_self_test.l` (the
+converter's own self-test, unaffected by the JVM-execution hang below)
+runs alongside `cfg_gate_self_test.l` in the compiler self-tests job (same
+linking shape — a compiler-package import resolved via the staged
+`Lyric.Compiler.dll` bundle, no `LYRIC_LOAD_COMPILER=1`).
+
+**Re-added to CI, hang root-caused and fixed (#6659, D-progress-914,
+2026-09-05).** The JVM-target end-to-end run previously hung on real GitHub
+Actions runners for 2+ hours (the identical file without `--coverage` runs
+fine in the same job); the CI step had been removed pending investigation.
+Root cause: `cmdTest`'s argv parser (`cli_test.l`) had a `--coverage` branch
+missing its own `i += 1`, so ANY invocation with `--coverage` in argv spun
+forever re-processing the same argv slot — a busy-loop well upstream of the
+java/JaCoCo codegen the original investigation suspected, which is why
+neither of that codegen's own 600s/120s internal timeouts ever fired. Fixed
+by the missing `i += 1`; the exact previously-900s-hanging command now
+completes in ~4s with a real Cobertura report. `coverage-smoke-test.sh`
+additionally runs the command in the background and polls it (instead of a
+plain blocking `timeout --signal=KILL`), capturing a `jcmd`/`jstack` thread
+dump before killing it on any future, unrelated timeout — defense in depth,
+not the fix. The step (`Coverage smoke test on JVM`,
+`compiler-self-tests-jvm` job) is a normal blocking step again.
 
 Full option analysis (IL/bytecode counters built into the self-hosted
 emitters; a source-level statement-coverage AST pass), why JaCoCo was
@@ -32334,7 +32345,7 @@ condition-type check. Scoped to single-type-parameter generics only — a
 still silently resolves to `TyError` with no diagnostic, a pre-existing,
 documented, out-of-scope gap this fix doesn't attempt to close.
 
-**Related:** D-progress-913 (full account, `docs/decisions/`), #6720,
+**Related:** D-progress-925 (full account, `docs/decisions/`), #6720,
 #6565 (D-progress-818, the motivating widening this narrows).
 
 ### Native codegen: `registerIfaceInfo` fails loudly on a bare-name interface collision (#4900)
@@ -34420,3 +34431,128 @@ regressions.
 #6901 (new, the `Never`-typed-extern-func gap), #6937 (new,
 `hostAppBaseDirectory`'s tracking issue), #6961 (new, the `Std.File`
 try/catch-on-native gaps), `native/plan/08-work-items.md` N5.7.
+
+## #6268 closed: manifest-declared `[build] shape` on `--target native` raises `F0043` instead of silent override
+
+A manifest naming `shape = "portable"`/`"standalone"` for a `--target
+native` project used to be silently upgraded to `"aot"` — the same
+CLI-flag conflict already raised the hard `F0043` error, but the
+manifest-key path bypassed that check entirely by pre-defaulting the
+shape via `defaultShapeForTarget` before the manifest was ever consulted.
+`Lyric.Cli.resolveShapeAxis` (`cli/cli_build.l`, replacing
+`defaultShapeForTarget`) now folds the native default into the SAME
+resolution path both `resolveBuildAxes` (CLI-only) and
+`resolveBuildAxesFromManifest` (CLI + manifest) share, so a manifest that
+explicitly names a non-`aot` shape for native hits `F0043` exactly like a
+conflicting `--shape` flag would; only a manifest that says nothing about
+`shape` still defaults to `"aot"` on that target. Added
+`BuildSection.shapeDeclared`/`profileDeclared` to the manifest parser to
+distinguish "the manifest said portable" from "the manifest said
+nothing" — mtime/text-presence alone couldn't tell those apart.
+
+**Related:** #6268, D-progress-916 (full account),
+`docs/01-language-reference.md` §3.6 (`[build] shape` manifest table),
+`docs/63-build-profiles-and-debugger.md` (the shape axis this closes a
+gap in).
+
+## #6579 closed: `test_only = true` packages for `[project.packages]`
+
+A `[project.packages]` entry can now use the inline-table form `{ path =
+"...", test_only = true }` instead of a bare path string. A `test_only`
+package is still resolvable by `[project.tests]` entries and by `lyric
+test`'s `@test_module` auto-discovery, but `buildProjectFromManifest`
+skips it entirely when assembling the production whole-project bundle —
+closing the gap #6579 described between duplicating a shared test
+fixture into every consumer's own `src/` tree (to keep it out of the
+shipped assembly) or giving it a real `[project.packages]` entry (leaking
+test-only code into what ships). `PackageEntry.testOnly: Bool` defaults
+to `false` for the pre-existing bare-string form.
+
+**Related:** #6579, D-progress-917 (full account),
+`docs/20-project-as-dll.md` §3 ("Test-only packages" subsection).
+
+## #6815 items 1(a)/2/3(a): native project builds stop crashing on cross-project deps, `--triple`/`--opt` project-mode threading, `lyric run --manifest --target native`
+
+Of #6815's three tracked follow-ups, this closes item 1(a) and 2, and item
+3's `lyric run` half (3a):
+
+- **Item 1(a) (already landed alongside #6809/#6816, verified here):**
+  `resolveManifestDependencies`/`buildWorkspaceDeps`
+  (`cli/workspace_builder.l`) skip a `{ workspace = true }` or `path`
+  dependency's own native build unconditionally for `--target native`,
+  matching the pre-existing `Jvm` skip, rather than attempting (and
+  potentially crashing on) an unused compile of the dependency's source.
+  `lyric build --manifest lyric-web/lyric.toml --target native` no longer
+  raises the unhandled `Lyric.LlvmCodegen` exception the issue reported;
+  it now reaches the project's own `[project.packages]` codegen exactly
+  as a dependency-free manifest would (the dependency's own symbols are
+  simply absent — item 1(b), compiling the dependency's source into the
+  native bundle, remains open).
+- **Item 2:** `buildProjectFromManifest` gained `nativeTriple`/`nativeOpt`
+  parameters; `--triple`/`--opt` CLI flags now override a native project
+  build's `[native]` table exactly like the single-file path
+  (`buildOneNativeWithFeatures`'s existing precedence rule). The
+  ~20 existing `buildProject` call sites are unaffected — a new
+  `buildProjectWithNativeFlags` wrapper (used only by `cmdBuild`'s
+  manifest branch) carries the two extra params so `buildProject` itself
+  keeps its old signature.
+- **Item 3(a):** `runProjectOnce` (`cli/cli_run.l`) no longer refuses
+  `--target native` after a successful build — `buildProject` already
+  produces a real, directly-runnable native executable at
+  `projectBinOutputPath`'s extensionless path; the `Native` case now
+  executes it via `Std.Process.run`, mirroring `runOnce`'s single-file
+  `Native` case exactly. `lyric run --manifest ... --target native` (and
+  its `lyric.toml`-auto-discovery no-source-file form) work end-to-end.
+
+**Still open, item 3(b):** `lyric test --manifest ... --target native`
+(multi-package test suites) is unchanged — `cmdTestManifest`'s
+restored-DLL-centric dotnet/jvm machinery has no native analog yet, and
+building that out (compiling `[project.tests]` entries together with
+`[project.packages]` through `emitNativeProject`, one binary per test
+target, TAP-output parsing with native's no-unwinding constraint) is a
+separate, larger slice than items 1(a)/2/3(a) above. Left for a follow-up
+PR against #6815.
+
+**Related:** #6815, D-progress-854, D-progress-852, this file's own
+"Native multi-package project builds ship" entry above.
+
+## #6263 (partial): native clang `-O` level now defaults from the build profile axis
+
+`Lyric.Cli.resolveNativeOptDefault` (`cli/cli_build.l`) defaults a
+`--target native` build's clang `-O` level from the resolved `BuildProfile`
+when neither `--opt` nor the manifest's `[native] opt_level` supply one:
+`release` → `-O2` (the pre-existing hardcoded default, unchanged), `debug`
+(the default profile) → `-O0` (Q-BP-003, resolved — see docs/63). Resolved
+once at `cmdBuild`'s single-file dispatch, threaded into both the immediate
+build and the `--watch` loop. `Lyric.LlvmBridge.linkAndEmitNative`'s own
+hardcoded `"2"` fallback is untouched and now only reached by callers that
+bypass `cmdBuild` entirely (every existing native self-test, which calls
+`buildOneNative`/`buildOneNativeWithFeatures` directly) — so this ships
+without touching any of the ~166 existing native self-test cases.
+
+**Still open (this is a partial fix):** `--target dotnet`/`--target jvm`
+still perform no optimization under `--release` (Lyric has no IL/bytecode
+optimizer to gate). More importantly, #6263's overflow-semantics question —
+whether `--release` should relax overflow checking to wrapping, per
+`docs/01-language-reference.md` §2, or the reference should instead say
+overflow always panics — remains **undecided**. A quick empirical probe
+(`Int64.MaxValue + 1` on `--target dotnet`) produced neither a clean wrap
+nor a panic, an inconclusive result that needs dedicated root-causing before
+any decision can be made responsibly. #6263 stays open for that half.
+
+**Related:** #6263, D-progress-913 (full account), `docs/63-build-profiles-and-debugger.md`
+§3.1/§5.2/Q-BP-003.
+
+## #5611 closed: workspace-dep feature/target staleness stamp; `stage1.stamp` keyed on build start
+
+`cli/workspace_builder.l::checkDllIsStale` (workspace-dep cache staleness)
+now also checks a sidecar `<dllPath>.featurestamp` file recording the
+`(target, noDefaultFeatures, sorted --features)` tuple the DLL was built
+with — a dependency DLL built under a different `--features` selection or
+`--target` is now correctly detected as stale even though nothing on disk
+under its own source tree changed. `make stage1`'s stamp now copies its
+mtime from a marker touched BEFORE `bootstrap.sh` runs (`touch -r`), not
+"now" at completion, closing the race where a `.l` source edited mid-build
+looked older than the stamp that (falsely) claimed to have compiled it.
+
+**Related:** #5611, D-progress-915 (full account).

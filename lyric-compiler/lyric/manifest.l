@@ -85,6 +85,21 @@ pub record PackageEntry {
   /// (TOML array form: `"Pkg" = ["src/a.l", "src/b.l"]`).
   /// Mutually exclusive with `path`: exactly one of the two is non-empty.
   paths: List[String]
+  /// True for a `[project.packages]` entry declared with the inline-table
+  /// form `{ path = "...", test_only = true }` (#6579): the package is still
+  /// resolvable by `lyric test`/single-file manifest-local import resolution
+  /// (`collectImportedOwnPackages` in `cli_build.l`, `cli_test.l`'s `libPkgs`
+  /// construction — both scan `[project.packages]` unconditionally), but
+  /// `buildProjectFromManifest` skips it when assembling the production
+  /// whole-project bundle. Lets a shared test-only fixture (e.g. a TLS
+  /// private-key module, D-progress-806) be imported by multiple test files
+  /// without shipping in the production output, closing the gap that used to
+  /// force a choice between duplicating the fixture per consumer or leaking
+  /// it into the shipped assembly. Always `false` for the bare-string/array
+  /// forms, and meaningless (never read) on a `[project.tests]` entry, which
+  /// is already test-only by construction and never reaches
+  /// `buildProjectFromManifest`'s bundling step at all.
+  testOnly: Bool
 }
 
 pub record ProjectSection {
@@ -239,6 +254,19 @@ pub record BuildSection {
   shape: String
   profile: String
   defines: List[String]
+  /// True when this manifest's `[build]` table declared `shape` explicitly
+  /// (as opposed to `shape` carrying its `"portable"` default because the
+  /// key was absent). `shape`/`profile` alone cannot distinguish "the
+  /// manifest said portable" from "the manifest said nothing" — both parse
+  /// to the same default string — so `resolveBuildAxes` (`cli_build.l`)
+  /// needs this bit to decide whether `--target native`'s implicit `aot`
+  /// default may apply, or whether a declared non-`aot` shape must instead
+  /// raise `F0043` (#6268).
+  shapeDeclared: Bool
+  /// Same as `shapeDeclared`, for `profile` (kept for axis symmetry; no
+  /// target currently forces a profile default the way native forces
+  /// `shape`).
+  profileDeclared: Bool
 }
 
 /// Parsed form of a virtual workspace root (`lyric.toml` with `[workspace]`
@@ -801,6 +829,9 @@ func requireString(entries: in List[Entry], section: in String, key: in String):
 }
 
 // Collect all entries in a given section as (key, string-value) pairs.
+// `[project.packages]`'s `{ path = "...", test_only = true }` inline-table
+// form (#6579) is accepted here too — `[project.tests]` entries ignore the
+// resulting `testOnly` bit (it's simply never read for that section).
 func collectSectionPairs(entries: in List[Entry], section: in String): List[PackageEntry] {
   val pairs: List[PackageEntry] = newList()
   var i = 0
@@ -809,12 +840,27 @@ func collectSectionPairs(entries: in List[Entry], section: in String): List[Pack
     if e.section == section {
       val noPaths: List[String] = newList()
       match e.value {
-        case VStr(s) -> pairs.add(PackageEntry(name = e.key, path = s, paths = noPaths))
+        case VStr(s) -> pairs.add(PackageEntry(name = e.key, path = s, paths = noPaths, testOnly = false))
         case VStrList(items) -> {
           val emptyPath = ""
-          pairs.add(PackageEntry(name = e.key, path = emptyPath, paths = items))
+          pairs.add(PackageEntry(name = e.key, path = emptyPath, paths = items, testOnly = false))
         }
-        case _ -> ()  // non-string, non-list values are silently ignored
+        case VTable(tpairs) -> {
+          // A table entry with no `path` key has nothing to compile; silently
+          // ignored, matching the non-string/non-list default just below.
+          match findInlineStr(tpairs, "path") {
+            case Some(p) -> pairs.add(
+              PackageEntry(
+                name = e.key,
+                path = p,
+                paths = noPaths,
+                testOnly = findInlineBool(tpairs, "test_only", false)
+              )
+            )
+            case None -> ()
+          }
+        }
+        case _ -> ()  // non-string, non-list, non-table values are silently ignored
       }
     }
     i += 1
@@ -825,7 +871,27 @@ func collectSectionPairs(entries: in List[Entry], section: in String): List[Pack
 func assemblePackage(entries: in List[Entry]): Result[PackageSection, ManifestError] {
   match requireString(entries, "package", "name") {
     case Err(e) -> Err(error = e)
-    case Ok(name) -> match requireString(entries, "package", "version") { case Err(e) -> Err(error = e); case Ok(version) -> { val description = unwrapOr(findString(entries, "package", "description"), ""); val authors: List[String] = unwrapOr(findStringList(entries, "package", "authors"), newList()); val license = unwrapOr(findString(entries, "package", "license"), ""); val repository = findString(entries, "package", "repository"); val kind = findString(entries, "package", "kind"); Ok(value = PackageSection(name = name, version = version, description = description, authors = authors, license = license, repository = repository, kind = kind)) } }
+    case Ok(name) -> match requireString(entries, "package", "version") {
+      case Err(e) -> Err(error = e)
+      case Ok(version) -> {
+        val description = unwrapOr(findString(entries, "package", "description"), "")
+        val authors: List[String] = unwrapOr(findStringList(entries, "package", "authors"), newList())
+        val license = unwrapOr(findString(entries, "package", "license"), "")
+        val repository = findString(entries, "package", "repository")
+        val kind = findString(entries, "package", "kind")
+        Ok(
+          value = PackageSection(
+            name = name,
+            version = version,
+            description = description,
+            authors = authors,
+            license = license,
+            repository = repository,
+            kind = kind
+          )
+        )
+      }
+    }
   }
 }
 
@@ -897,9 +963,28 @@ func assembleBuild(entries: in List[Entry]): Result[Option[BuildSection], Manife
     case Ok(defines) -> {
       // Each axis defaults independently when its key (or `[build]` itself) is
       // absent — a `[build.define]`-only manifest gets all three defaults.
+      val shapeDeclared = match findString(entries, "build", "shape") { case Some(_) -> true; case None -> false }
+      val profileDeclared = match findString(entries, "build", "profile") { case Some(_) -> true; case None -> false }
       match resolveBuildKind(entries) {
         case Err(e) -> Err(error = e)
-        case Ok(kind) -> match resolveBuildShape(entries) { case Err(e) -> Err(error = e); case Ok(shape) -> match resolveBuildProfile(entries) { case Err(e) -> Err(error = e); case Ok(profile) -> Ok(value = Some(value = BuildSection(kind = kind, shape = shape, profile = profile, defines = defines))) } }
+        case Ok(kind) -> match resolveBuildShape(entries) {
+          case Err(e) -> Err(error = e)
+          case Ok(shape) -> match resolveBuildProfile(entries) {
+            case Err(e) -> Err(error = e)
+            case Ok(profile) -> Ok(
+              value = Some(
+                value = BuildSection(
+                  kind = kind,
+                  shape = shape,
+                  profile = profile,
+                  defines = defines,
+                  shapeDeclared = shapeDeclared,
+                  profileDeclared = profileDeclared
+                )
+              )
+            )
+          }
+        }
       }
     }
   }
@@ -1065,7 +1150,13 @@ func buildDepSource(
   // Explicit version key in inline table: { version = "1.0.0" }
   match findInlineStr(pairs, "version") {
     case Some(v) -> Ok(value = Registry(version = v))
-    case None -> Err(error = InvalidField(section = section, field = depName, message = "dep must have one of: version, workspace = true, path, git"))
+    case None -> Err(
+      error = InvalidField(
+        section = section,
+        field = depName,
+        message = "dep must have one of: version, workspace = true, path, git"
+      )
+    )
   }
 }
 
@@ -1080,7 +1171,9 @@ func assembleDeps(entries: in List[Entry]): Result[List[DependencyEntry], Manife
         case VTable(pairs) -> {
           match buildDepSource(e.key, pairs, "dependencies") {
             case Err(me) -> return Err(error = me)
-            case Ok(src) -> depList.add(DependencyEntry(name = e.key, source = src, registry = findInlineStr(pairs, "registry")))
+            case Ok(src) -> depList.add(
+              DependencyEntry(name = e.key, source = src, registry = findInlineStr(pairs, "registry"))
+            )
           }
         }
         case _ -> ()
@@ -1141,7 +1234,19 @@ func assembleFeatures(entries: in List[Entry]): Result[Option[FeaturesSection], 
     val e = entries[i]
     if e.section == "features" {
       match e.value {
-        case VStrList(items) -> if e.key == "default" { defaults = Some(value = items) } else if items.count > 0 { return Err(error = InvalidField(section = "features", field = e.key, message = "v1 requires an empty array (feature implications are deferred to v1.1)")) } else { declared.add(e.key) }
+        case VStrList(items) -> if e.key == "default" {
+          defaults = Some(value = items)
+        } else if items.count > 0 {
+          return Err(
+            error = InvalidField(
+              section = "features",
+              field = e.key,
+              message = "v1 requires an empty array (feature implications are deferred to v1.1)"
+            )
+          )
+        } else {
+          declared.add(e.key)
+        }
         case _ -> return Err(error = InvalidField(section = "features", field = e.key, message = "expected an array (use [] for v1)"))
       }
     }
@@ -1277,7 +1382,10 @@ func assembleMaven(entries: in List[Entry]): Result[Option[MavenSection], Manife
             message = "expected a version string or an inline table with a 'version' key"
           )
         )
-        case Some(v) -> match collectMavenEntry(mavenEntries, e.key, v) { case Some(err) -> return Err(error = err); case None -> () }
+        case Some(v) -> match collectMavenEntry(mavenEntries, e.key, v) {
+          case Some(err) -> return Err(error = err)
+          case None -> ()
+        }
       }
     }
     i += 1
@@ -1359,7 +1467,10 @@ func assembleWorkspace(entries: in List[Entry]): Option[WorkspaceSection] {
     val e = entries[i]
     if e.section == "workspace.overrides" {
       match e.value {
-        case VTable(pairs) -> match findInlineStr(pairs, "path") { case Some(dir) -> overrides.add(WorkspaceOverride(name = e.key, dir = dir)); case None -> () }
+        case VTable(pairs) -> match findInlineStr(pairs, "path") {
+          case Some(dir) -> overrides.add(WorkspaceOverride(name = e.key, dir = dir))
+          case None -> ()
+        }
         case VStr(dir) -> overrides.add(WorkspaceOverride(name = e.key, dir = dir))
         case _ -> ()
       }
@@ -1419,7 +1530,51 @@ pub func textHasPackageSection(text: in String): Bool {
 pub func parseManifest(text: in String, filePath: in String): Result[Manifest, ManifestError] {
   match collectEntries(text, filePath) {
     case Err(e) -> Err(error = e)
-    case Ok(entries) -> match assemblePackage(entries) { case Err(e) -> Err(error = e); case Ok(pkg) -> { val project = assembleProject(entries); val ws = assembleWorkspace(entries); val reg = assembleRegistry(entries); match assembleNuget(entries) { case Err(e) -> Err(error = e); case Ok(nuget) -> match assembleDeps(entries) { case Err(e) -> Err(error = e); case Ok(deps) -> match assembleFeatures(entries) { case Err(e) -> Err(error = e); case Ok(featuresOpt) -> match assembleMaven(entries) { case Err(e) -> Err(error = e); case Ok(mavenOpt) -> match assembleBuild(entries) { case Err(e) -> Err(error = e); case Ok(buildOpt) -> match assembleNative(entries) { case Err(e) -> Err(error = e); case Ok(nativeOpt) -> Ok(value = Manifest(filePath = filePath, packageSection = pkg, project = project, deps = deps, nuget = nuget, maven = mavenOpt, features = featuresOpt, build = buildOpt, workspace = ws, registry = reg, native = nativeOpt)) } } } } } } } }
+    case Ok(entries) -> match assemblePackage(entries) {
+      case Err(e) -> Err(error = e)
+      case Ok(pkg) -> {
+        val project = assembleProject(entries)
+        val ws = assembleWorkspace(entries)
+        val reg = assembleRegistry(entries)
+        match assembleNuget(entries) {
+          case Err(e) -> Err(error = e)
+          case Ok(nuget) -> match assembleDeps(entries) {
+            case Err(e) -> Err(error = e)
+            case Ok(deps) -> match assembleFeatures(entries) {
+              case Err(e) -> Err(error = e)
+              case Ok(featuresOpt) -> match assembleMaven(entries) {
+                case Err(e) -> Err(error = e)
+                case Ok(mavenOpt) -> match assembleBuild(entries) {
+                  case Err(e) -> Err(
+                    error = e
+                  )
+                  case Ok(buildOpt) -> match assembleNative(entries) {
+                    case Err(e) -> Err(
+                      error = e
+                    )
+                    case Ok(nativeOpt) -> Ok(
+                      value = Manifest(
+                        filePath = filePath,
+                        packageSection = pkg,
+                        project = project,
+                        deps = deps,
+                        nuget = nuget,
+                        maven = mavenOpt,
+                        features = featuresOpt,
+                        build = buildOpt,
+                        workspace = ws,
+                        registry = reg,
+                        native = nativeOpt
+                      )
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }
 
@@ -1431,7 +1586,18 @@ pub func parseManifest(text: in String, filePath: in String): Result[Manifest, M
 pub func parseWorkspaceRoot(text: in String, filePath: in String): Result[Option[WorkspaceRoot], ManifestError] {
   match collectEntries(text, filePath) {
     case Err(e) -> Err(error = e)
-    case Ok(entries) -> match assembleWorkspace(entries) { case None -> Ok(value = None); case Some(ws) -> Ok(value = Some(value = WorkspaceRoot(filePath = filePath, workspace = ws, registry = assembleRegistry(entries)))) }
+    case Ok(entries) -> match assembleWorkspace(entries) {
+      case None -> Ok(value = None)
+      case Some(ws) -> Ok(
+        value = Some(
+          value = WorkspaceRoot(
+            filePath = filePath,
+            workspace = ws,
+            registry = assembleRegistry(entries)
+          )
+        )
+      )
+    }
   }
 }
 
