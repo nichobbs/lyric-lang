@@ -28,8 +28,8 @@ import Jvm.Kernel
 
 func makeFlds(): List[LOpaqueField] {
   val flds: List[LOpaqueField] = newList()
-  flds.add(LOpaqueField(name = "x", fieldType = JInt))
-  flds.add(LOpaqueField(name = "y", fieldType = JInt))
+  flds.add(LOpaqueField(name = "x", fieldType = JInt, isMutable = false))
+  flds.add(LOpaqueField(name = "y", fieldType = JInt, isMutable = false))
   flds
 }
 
