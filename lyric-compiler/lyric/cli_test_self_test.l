@@ -78,6 +78,10 @@ func mainWith3(a0: in String, a1: in String, a2: in String): Int {
   Cli.main(argv(args))
 }
 
+func mainWithArgs(args: in List[String]): Int {
+  Cli.main(argv(args))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // #5341: single-file `lyric test` manifest dependency resolution.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -329,4 +333,39 @@ test "lyric test --properties: rejected on --target native" {
   args.add("native")
   val realRc = Cli.main(argv(args))
   assertEqualInt(realRc, 1, "--properties is rejected outright on --target native")
+}
+
+// #6659: `cmdTest`'s argv-parsing loop's `--coverage` branch was missing its
+// own `i += 1`, so ANY invocation with `--coverage` in argv spun forever
+// re-processing the same index instead of advancing — a busy-loop that
+// never reached the java/coverage codegen the original #6659 investigation
+// suspected, explaining why the internal 600s/120s timeouts inside that
+// codegen never fired. Places `--coverage` before `--target dotnet` (not
+// the last argv token) so a still-buggy parser would spin here forever
+// instead of ever reaching --target's own validation; a fixed parser
+// reaches the (fast, deterministic, no JaCoCo jars needed) "--coverage
+// requires --target jvm" rejection.
+test "lyric test --coverage: argv parser advances past --coverage to a later flag (regression, #6659)" {
+  val root = freshTempDir("coverage-argv-order")
+  defer {
+    cleanup(root)
+  }
+  val testFile = Path.join(root, "cov_test.l")
+  writeFileOrPanic(
+    testFile,
+    "@test_module\npackage CovArgvOrder\nimport Std.Testing\n\ntest \"trivial\" {\n  Std.Testing.assertTrue(true, \"ok\")\n}\n"
+  )
+
+  val args: List[String] = newList()
+  args.add("test")
+  args.add(testFile)
+  args.add("--coverage")
+  args.add("--target")
+  args.add("dotnet")
+  val rc = mainWithArgs(args)
+  assertEqualInt(
+    rc,
+    1,
+    "--coverage before --target dotnet reaches the --target-jvm-required rejection, proving the parser advanced past --coverage"
+  )
 }
