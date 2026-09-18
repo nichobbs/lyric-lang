@@ -3083,7 +3083,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
             if not valTypeEnv.containsKey(valName) {
               val predictedTy = match decl.ty {
                 case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
-                case None -> inferUntypedStaticValMsilType(decl.init, valTypeEnv)
+                case None -> inferUntypedStaticValMsilType(decl.init, valTypeEnv, cctx, pkgName)
               }
               valTypeEnv.add(valName, predictedTy)
             }
@@ -4254,7 +4254,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           val fieldTok = 0x04000000 + fieldDefRow
           val valTy = match decl.ty {
             case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
-            case None -> inferUntypedStaticValMsilType(decl.init, valTypeEnv)
+            case None -> inferUntypedStaticValMsilType(decl.init, valTypeEnv, cctx, pkgName)
           }
           // Bare-name key guarded by `containsKey` — see the matching IConst
           // comment above (first-wins fallback; unguarded `.add` throws on a
@@ -4765,6 +4765,10 @@ func isLiteralI4ExprMsilWithEnv(e: in Expr, env: in Map[String, Bool]): Bool {
     case ELiteral(lit) -> match lit {
       case LInt(v, suffix, _) -> match suffix {
         case I64 | U64 -> false
+        // `u32` (#6756) always produces a single MLdcI4 (the wrapped
+        // 32-bit pattern via `int32BitsOfUnsignedMsil`), regardless of
+        // whether its unsigned magnitude exceeds Int32.MaxValue.
+        case U32 -> true
         case _ -> v >= -2147483648i64 and v <= 2147483647i64
       }
       case LBool(_) -> true
@@ -4794,9 +4798,14 @@ func isLiteralI4ExprMsilWithEnv(e: in Expr, env: in Map[String, Bool]): Bool {
 // literal forms whose runtime type is knowable without full expression
 // lowering — most importantly string literals, which previously defaulted
 // to `MObject` and then mis-dispatched `.length` through the List/IList
-// fallback (`InvalidCastException: String -> IList`).  Anything else
-// (calls, records, collections, …) still falls back to `MObject`; an
-// explicit type annotation is required to type those precisely.
+// fallback (`InvalidCastException: String -> IList`).  A record-constructor
+// `ECall` (#6786) resolves through `cctx.recordCtorTokens` the same way real
+// codegen does, but only for the NON-generic case: a generic record/union
+// case needs inferred type args this pass can't compute without a full
+// symbol table, so it still falls back to `MObject` rather than guess wrong.
+// Everything else (collections, arbitrary function calls, …) still falls
+// back to `MObject`; an explicit type annotation is required to type those
+// precisely.
 //
 // `env` (#5955) maps every earlier same-package `val`/`const`'s bare name to
 // its already-predicted MSIL type (built by the caller in declaration order —
@@ -4807,17 +4816,24 @@ func isLiteralI4ExprMsilWithEnv(e: in Expr, env: in Map[String, Bool]): Bool {
 // processed *after* this one in the same file — see the codegen ctx pass
 // that populates `constValues`).  The actual field's MSIL type, though, is
 // whatever `lowerExprMsil` infers when Phase 4 really lowers `decl.init` —
-// so an expression form unhandled here (previously: `EPath`, `EBinop`) that
-// `lowerExprMsil` DOES resolve to a concrete type produces a predicted type
-// that silently diverges from the real field signature. A `ldsfld` read
-// under the wrong predicted type crashes at runtime (observed as
-// `InvalidProgramException`/`NullReferenceException` depending on the JIT):
-// e.g. `pub val base = 40; pub val derived = base + 2` used to predict
-// `derived: MObject` (the `EBinop` catch-all) while the field was actually
-// emitted as `Int32`.
-func inferUntypedStaticValMsilType(e: in Expr, env: in Map[String, MsilType]): MsilType {
+// so an expression form unhandled here (previously: `EPath`, `EBinop`,
+// `ECall`) that `lowerExprMsil` DOES resolve to a concrete type produces a
+// predicted type that silently diverges from the real field signature. A
+// `ldsfld` read under the wrong predicted type crashes at runtime (observed
+// as `InvalidProgramException`/`NullReferenceException` depending on the
+// JIT, or — for the `ECall` gap — a wrong-record `castclass` on a later
+// field read, #6786): e.g. `pub val base = 40; pub val derived = base + 2`
+// used to predict `derived: MObject` (the `EBinop` catch-all) while the
+// field was actually emitted as `Int32`.
+//
+// `cctx`/`pkgName` (#6786) are needed only for the `ECall` record-ctor arm's
+// `cctx.recordCtorTokens`/`cctx.caseParentUnion`/`cctx.genericTypeArity`
+// lookups; every other arm ignores them.
+func inferUntypedStaticValMsilType(
+  e: in Expr, env: in Map[String, MsilType], cctx: in CodegenCtx, pkgName: in String
+): MsilType {
   match e.kind {
-    case EParen(inner) -> inferUntypedStaticValMsilType(inner, env)
+    case EParen(inner) -> inferUntypedStaticValMsilType(inner, env, cctx, pkgName)
     // LBool/LChar/LUnit are unreachable here in practice: the caller only
     // reaches this function when isLiteralI4ExprMsilWithEnv(decl.init, ...)
     // returned false, and that function unconditionally returns true for
@@ -4833,6 +4849,10 @@ func inferUntypedStaticValMsilType(e: in Expr, env: in Map[String, MsilType]): M
       case LFloat(_, _, _) -> MDouble
       case LInt(v, suffix, _) -> match suffix {
         case I64 | U64 -> MLong
+        // `u32` (#6756) is always `MInt` (the wrapped 32-bit pattern),
+        // matching what `lowerExprMsil`'s real ELiteral lowering now
+        // produces regardless of the literal's unsigned magnitude.
+        case U32 -> MInt
         case _ -> if v >= -2147483648i64 and v <= 2147483647i64 {
           MInt
         } else {
@@ -4851,20 +4871,35 @@ func inferUntypedStaticValMsilType(e: in Expr, env: in Map[String, MsilType]): M
     // PreNot always produces MBool regardless of operand type; PreRef is a
     // bare passthrough of the operand's type. Both mirror lowerExprMsil too.
     case EPrefix(op, inner) -> match op {
-      case PreNeg -> inferUntypedStaticValMsilType(inner, env)
+      case PreNeg -> inferUntypedStaticValMsilType(inner, env, cctx, pkgName)
       case PreNot -> MBool
-      case PreRef -> inferUntypedStaticValMsilType(inner, env)
+      case PreRef -> inferUntypedStaticValMsilType(inner, env, cctx, pkgName)
     }
     // A bare reference to an earlier module-level `val`/`const` (#5955):
     // resolve through `env` — mirrors `isLiteralI4ExprMsilWithEnv`'s EPath
     // arm, but for the runtime type rather than literal-foldability.
     // Multi-segment paths (cross-package qualified refs) are out of scope —
     // MObject is a safe fallback there, matching prior behaviour.
+    //
+    // #6878: `cctx.staticValMsilTypes` is consulted FIRST, ahead of `env`.
+    // `env` (`valTypeEnv`, built by `addPackageTokens`' Pass 0 loop) is
+    // frozen the first time each name is predicted — for an `ECall`
+    // initializer processed in Pass 0, that is BEFORE Pass 1 has populated
+    // `cctx.recordCtorTokens`, so a record-constructor val's Pass-0 entry in
+    // `env` is permanently `MObject` even though Pass 1b later recomputes
+    // the correct type into the authoritative `cctx.staticValMsilTypes` map.
+    // A later `val alias = gCache` resolved only against the stale `env`
+    // entry would silently inherit that wrong `MObject` prediction one hop
+    // removed — reproducing #6786's exact defect through an alias.
+    // `cctx.staticValMsilTypes` is populated in file-declaration order (same
+    // ordering guarantee `env` documents), so checking it first can only
+    // recover a MORE precise, already-corrected type — it never regresses a
+    // lookup `env` would otherwise have answered.
     case EPath(path) -> {
       if path.segments.count == 1 {
-        match mapGet(env, path.segments[0]) {
+        match mapGet(cctx.staticValMsilTypes, path.segments[0]) {
           case Some(t) -> t
-          case None -> MObject
+          case None -> match mapGet(env, path.segments[0]) { case Some(t) -> t; case None -> MObject }
         }
       } else {
         MObject
@@ -4879,7 +4914,7 @@ func inferUntypedStaticValMsilType(e: in Expr, env: in Map[String, MsilType]): M
       match op {
         case BEq | BNeq | BLt | BLte | BGt | BGte | BAnd | BOr | BImplies -> MBool
         case BAdd -> {
-          match inferUntypedStaticValMsilType(lhs, env) {
+          match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
             case MString -> MString
             case MLong -> MLong
             case MDouble -> MDouble
@@ -4887,14 +4922,14 @@ func inferUntypedStaticValMsilType(e: in Expr, env: in Map[String, MsilType]): M
           }
         }
         case BSub | BMul -> {
-          match inferUntypedStaticValMsilType(lhs, env) {
+          match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
             case MLong -> MLong
             case MDouble -> MDouble
             case _ -> MInt
           }
         }
         case BDiv -> {
-          match inferUntypedStaticValMsilType(lhs, env) {
+          match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
             case MLong -> MLong
             case MDouble -> MDouble
             case MByte -> MByte
@@ -4908,7 +4943,7 @@ func inferUntypedStaticValMsilType(e: in Expr, env: in Map[String, MsilType]): M
         // or this predictor reintroduces the exact predicted-vs-actual
         // `ldsfld` divergence #5955 eliminates.
         case BMod -> {
-          match inferUntypedStaticValMsilType(lhs, env) {
+          match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
             case MLong -> MLong
             case MDouble -> MDouble
             case MByte -> MByte
@@ -4917,12 +4952,79 @@ func inferUntypedStaticValMsilType(e: in Expr, env: in Map[String, MsilType]): M
         }
         case BXor -> MInt
         case BCoalesce -> {
-          match inferUntypedStaticValMsilType(lhs, env) {
-            case MObject -> inferUntypedStaticValMsilType(rhs, env)
+          match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
+            case MObject -> inferUntypedStaticValMsilType(rhs, env, cctx, pkgName)
             case t -> t
           }
         }
       }
+    }
+    // Record constructor call (#6786), e.g. `val gCache = Cache(box = ...)`.
+    // Resolves the callee the same way real ECall codegen does
+    // (`cctx.recordCtorTokens`, local package key first, then a fully
+    // qualified callee, then — #6966 review — the cross-package
+    // `resolveTypeFqn` tier for an unqualified reference to an IMPORTED
+    // record), but limited to a simple/qualified `EPath` callee and to the
+    // NON-generic case — a generic record needs inferred type args this
+    // single-expression pass can't compute without a full symbol table, so
+    // it falls back to `MObject` rather than risk a wrong instantiation.
+    //
+    // Scoped to PLAIN RECORDS only, not union cases (#6786 review,
+    // "SUGGESTION"): a local union case's ctor token is registered under
+    // the MANGLED key `<pkg>.<UnionName>_<CaseName>` (see the `IUnion`
+    // registration pass' `caseName` construction above), never the bare
+    // `<pkg>.<CaseName>` this arm builds — so `localCtorKey`/
+    // `fullQualifiedCtorKey`/`resolveTypeFqn` can never match a union case's
+    // real key, and this arm's `ctorKeyOpt` is always `None` for one.
+    // Resolving a union case correctly would need the same
+    // `unionCaseCtorByName`-keyed, qualifier-disambiguated lookup real
+    // `ECall` codegen uses — a separate, untested path this fix does not
+    // add; a union-case-literal module-level val stays a documented
+    // `MObject` fallback, no worse than before this fix.
+    case ECall(fn, _) -> match fn.kind {
+      case EPath(path) -> {
+        val funcName = lastSegmentMsil(path)
+        val localCtorKey = pkgName + "." + funcName
+        val fullQualifiedCtorKey = if path.segments.count >= 2 { modulePathJoin(path.segments) } else { "" }
+        val ctorKeyOpt = if cctx.recordCtorTokens.containsKey(localCtorKey) {
+          Some(value = localCtorKey)
+        } else if fullQualifiedCtorKey.length > 0 and cctx.recordCtorTokens.containsKey(fullQualifiedCtorKey) {
+          Some(value = fullQualifiedCtorKey)
+        } else {
+          // #6966: an unqualified reference to a record declared in a
+          // DIFFERENT, imported package (`import Other.Cache; val g =
+          // Cache(...)`) matches neither tier above (`localCtorKey` is
+          // wrong-package, and there's no explicit qualifier to build
+          // `fullQualifiedCtorKey` from) — mirrors real `ECall` codegen's
+          // own cross-package tier, which resolves exactly this shape via
+          // `resolveTypeFqn`'s import-aware scope search.
+          val crossPkgCtorFqn = resolveTypeFqn(cctx, pkgName, funcName)
+          if cctx.recordCtorTokens.containsKey(crossPkgCtorFqn) {
+            Some(value = crossPkgCtorFqn)
+          } else {
+            None
+          }
+        }
+        match ctorKeyOpt {
+          case Some(ctorKey) -> {
+            if cctx.genericTypeArity.containsKey(ctorKey) {
+              MObject
+            } else if cctx.caseParentUnion.containsKey(ctorKey) {
+              // A union case's ctor token happens to be registered under
+              // this arm's key format only via a cross-package path this
+              // arm doesn't reach (see the scoping note above) — kept as a
+              // defensive `MObject` guard rather than mistyping the value
+              // as the case's OWN class (real codegen always types a
+              // constructed case as its PARENT union).
+              MObject
+            } else {
+              MClass(className = ctorKey)
+            }
+          }
+          case None -> MObject
+        }
+      }
+      case _ -> MObject
     }
     case _ -> MObject
   }
@@ -4966,9 +5068,12 @@ func listLiteralElemTypeMsil(fctx: in FuncCtx, e: in Expr): MsilType {
     // A literal takes the concrete-array path only with the element type the
     // checker would infer for it (`typeOfLiteral`), so the built array matches
     // the literal's `slice[e]` type.  `i8`/`u8` are `Byte` (not `Int`, #5703);
-    // `i64` is `Long`; the unsigned (`u16`/`u32`/`u64`) and `f32` suffixes have
-    // no simple-array element type here, and a no-suffix value that overflows
-    // Int32 is ambiguous, so those fall back to the legacy `List<object>` path.
+    // `i64`/`u64` are `Long`; `u16`/`u32` are `Int` (`UInt` erases to the same
+    // 32-bit slot a signed `Int` uses, #6756/#6782 — mirroring the JVM
+    // backend's identical fix, #6631/#6741), matching what `lowerExprMsil`'s
+    // real ELiteral lowering now produces for those suffixes; a no-suffix/
+    // `i16`/`i32` value that overflows Int32 is ambiguous (could widen to
+    // `Long` or stay erased) and falls back to the legacy `List<object>` path.
     case ELiteral(lit) -> match lit {
       case LInt(v, suffix, _) -> match suffix {
         case I8 -> MByte
@@ -4983,12 +5088,20 @@ func listLiteralElemTypeMsil(fctx: in FuncCtx, e: in Expr): MsilType {
         } else {
           MObject
         }
+        // A u16 literal's magnitude is always <= 65535, well within Int32's
+        // range, so this arm is unconditionally MInt (matching the U32 arm's
+        // own unconditional MInt below, and unlike I16's magnitude-checked
+        // arm above, which needs it since a signed I16 literal can be
+        // out-of-range for the suffix even before considering Int32 bounds).
+        case U16 -> MInt
         case I32 -> if v >= -2147483648i64 and v <= 2147483647i64 {
           MInt
         } else {
           MObject
         }
+        case U32 -> MInt
         case I64 -> MLong
+        case U64 -> MLong
         case _ -> MObject
       }
       case LFloat(_, floatSuffix, _) -> match floatSuffix {
@@ -6756,6 +6869,28 @@ func internFfiTypeRefNested(cctx: in CodegenCtx, clrFqn: in String): Int {
   }
 }
 
+// True when `te` names `UInt`/`ULong` — the two Lyric primitives with no
+// distinct MSIL representation (`typeExprToMsilCtx`'s `UInt -> MInt` /
+// `ULong -> MLong` erasure, #6756).  Mirrors the JVM backend's identical
+// `isUnsignedTypeExpr` (`jvm/codegen/01_types.l`).  Consulted wherever a
+// declared type needs to select unsigned-aware IL (comparison/division/
+// stringification) rather than the plain signed instructions `MInt`/`MLong`
+// get by default.
+func isUnsignedTypeExprMsil(te: in TypeExpr): Bool {
+  match te.kind {
+    case TRef(path) -> {
+      val seg = lastSegmentMsil(path)
+      seg == "UInt" or seg == "ULong"
+    }
+    case TRefined(underlying, _) -> {
+      val seg = lastSegmentMsil(underlying)
+      seg == "UInt" or seg == "ULong"
+    }
+    case TParen(inner) -> isUnsignedTypeExprMsil(inner)
+    case _ -> false
+  }
+}
+
 pub func typeExprToMsilBodyCtx(cctx: in CodegenCtx, fctx: in FuncCtx, te: in TypeExpr): MsilType {
   if fctx.generics.count > 0 {
     typeExprToMsilGenBody(cctx, te, fctx.pkgName, fctx.generics)
@@ -6793,6 +6928,30 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         // reference-type class named "Nat"; a cross-package call against the
         // real (int64) signature the metadata reader decodes then mismatched
         // and crashed with InvalidProgramException.
+        MLong
+      } else if seg == "UInt" {
+        // `UInt` (32-bit unsigned, docs/01 §2.1) has no distinct MSIL
+        // representation any more than `Nat` above does — it erases to the
+        // SAME 32-bit `Int32` slot a signed `Int` uses (#6756), mirroring
+        // the JVM backend's identical `UInt -> JInt` erasure (#6661/#6695).
+        // Without this arm a `UInt`-typed field/param/local/return fell
+        // through to "user type in this package" (`MClass`), a nonexistent
+        // class that crashed the CLR loader with "Common Language Runtime
+        // detected an invalid program" at run time. This erasure alone
+        // fixes construction/storage/field-signature encoding; it does NOT
+        // by itself make a BARE `UInt`-typed value's comparison/division/
+        // stringification unsigned-aware (those still use plain signed IL,
+        // #6756 follow-up — `isUnsignedTypeExprMsil` exists as the seam a
+        // future `fctx.unsignedVars`-style side table would consult, but no
+        // such table exists yet). `emitDistinctBoundsToFail`
+        // (`Msil.Lowering`) DOES already use unsigned comparison for a
+        // `UInt`/`ULong`-backed distinct/range-subtype's bounds check via
+        // `MDistinctType.isUnsigned` — that narrower, fully-covered case is
+        // this fix's actual scope.
+        MInt
+      } else if seg == "ULong" {
+        // `ULong` (64-bit unsigned) mirrors `UInt`: erases to the same
+        // 64-bit `Int64` slot a signed `Long` uses (#6756/#6661).
         MLong
       } else if seg == "Double" {
         MDouble
@@ -8486,6 +8645,17 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             case I64 | U64 -> {
               insns.add(MLdcI8(v = v))
               MLong
+            }
+            // `u32` (#6756) always pushes the wrapped 32-bit pattern via
+            // `int32BitsOfUnsignedMsil` rather than `longToInt` — `UInt`
+            // erases to the SAME `Int32` slot a signed `Int` uses, so a
+            // literal whose unsigned magnitude exceeds Int32.MaxValue (e.g.
+            // `2500000000u32`) still fits the slot; `longToInt` would panic
+            // (`OverflowException`) at COMPILE time trying to narrow it as
+            // if it were an out-of-range SIGNED value.
+            case U32 -> {
+              insns.add(MLdcI4(v = int32BitsOfUnsignedMsil(v)))
+              MInt
             }
             case _ -> {
               if v >= -2147483648i64 and v <= 2147483647i64 {
@@ -12655,6 +12825,9 @@ func lowerPatternTestMsil(
           val isLongLit = match suffix {
             case I64 -> true
             case U64 -> true
+            // `u32` (#6756) stays `Int`-slotted even when its unsigned
+            // magnitude exceeds Int32.MaxValue — see `int32BitsOfUnsignedMsil`.
+            case U32 -> false
             case _ -> (v < -2147483648i64 or v > 2147483647i64)
           }
           if scrutBoxed {
@@ -12667,7 +12840,8 @@ func lowerPatternTestMsil(
           if isLongLit {
             insns.add(MLdcI8(v = v))
           } else {
-            insns.add(MLdcI4(v = longToInt(v)))
+            val i4v = match suffix { case U32 -> int32BitsOfUnsignedMsil(v); case _ -> longToInt(v) }
+            insns.add(MLdcI4(v = i4v))
           }
           insns.add(MCeq)
           insns.add(MBrFalse(label = failLabel))
@@ -17880,6 +18054,142 @@ func recordFieldFuncKeyMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in Expr
   }
 }
 
+// The trailing value-producing expression of a lambda-literal BODY, for the
+// `registerFieldFuncValTypesMsil` `ELambda` arm below (#6690). Differs from
+// `blockTrailingExprMsil` (which this function otherwise mirrors, including
+// the `defer`-disqualifies-the-block rule) in ALSO unwrapping an explicit
+// trailing `return <expr>` as a value producer: a lambda body can end in an
+// explicit `return`, unlike the module-level `val`/match-arm-body contexts
+// `blockTrailingExprMsil`'s other two call sites cover, where that shape
+// can't occur. A bare `return` (no value) or any other non-value-producing
+// last statement still yields `None` — the caller treats that as `MVoid`,
+// matching the synthesized lambda's real `null`/void behaviour in that case.
+func lambdaBodyTrailingValueMsil(blk: in Block): Option[Expr] {
+  var di = 0
+  while di < blk.statements.count {
+    match blk.statements[di].kind {
+      case SDefer(_) -> {
+        return None
+      }
+      case _ -> ()
+    }
+    di = di + 1
+  }
+  if blk.statements.count == 0 {
+    None
+  } else {
+    match blk.statements[blk.statements.count - 1].kind {
+      case SExpr(e) -> Some(value = e)
+      case SReturn(v) -> v
+      case _ -> None
+    }
+  }
+}
+
+// Infers a lambda-literal body's trailing-value type, for the
+// `registerFieldFuncValTypesMsil` `ELambda` arm below. Mirrors
+// `inferUntypedStaticValMsilType`'s dispatch (and delegates to it directly
+// for every shape that heuristic resolves WITHOUT depending on whether an
+// operand's own type is known — literals, `EPath`, the comparison/boolean
+// `EBinop` arms, which are unconditionally `MBool` regardless of either
+// operand's type, `BXor`, and `EPrefix`), but overrides the ARITHMETIC
+// `EBinop` arms (`BAdd`/`BSub`/`BMul`/`BDiv`/`BMod`/`BCoalesce`) that
+// heuristic resolves BY RECURSING INTO AN OPERAND'S TYPE (#6933 review): a
+// module-level val's `env` covers every name in scope by construction (a
+// module val has no captures), so that heuristic's "operand type
+// unresolved -> assume MInt" fallback is safe there — but a lambda body can
+// reference an outer local/capture `paramEnv` (which covers only the
+// lambda's OWN explicitly-typed parameters) knows nothing about, and
+// guessing `MInt` for e.g. a captured `Double` produces a wrong registered
+// return type, not just an imprecise one. This function instead propagates
+// `MObject` (unknown) through those arms unchanged, so the caller's overall
+// result is the safe `MObject` fallback whenever it truly can't resolve an
+// arithmetic operand's type — never a wrong guess.
+func inferLambdaBodyExprMsilType(
+  e: in Expr, paramEnv: in Map[String, MsilType], cctx: in CodegenCtx, pkgName: in String
+): MsilType {
+  match e.kind {
+    case EParen(inner) -> inferLambdaBodyExprMsilType(inner, paramEnv, cctx, pkgName)
+    case EPrefix(op, inner) -> match op {
+      case PreNeg -> inferLambdaBodyExprMsilType(inner, paramEnv, cctx, pkgName)
+      case PreRef -> inferLambdaBodyExprMsilType(inner, paramEnv, cctx, pkgName)
+      case PreNot -> MBool
+    }
+    case EBinop(op, lhs, rhs) -> match op {
+      case BAdd -> match inferLambdaBodyExprMsilType(lhs, paramEnv, cctx, pkgName) {
+        case MString -> MString
+        case MLong -> MLong
+        case MDouble -> MDouble
+        case MObject -> MObject
+        case _ -> MInt
+      }
+      case BSub | BMul -> match inferLambdaBodyExprMsilType(lhs, paramEnv, cctx, pkgName) {
+        case MLong -> MLong
+        case MDouble -> MDouble
+        case MObject -> MObject
+        case _ -> MInt
+      }
+      case BDiv -> match inferLambdaBodyExprMsilType(lhs, paramEnv, cctx, pkgName) {
+        case MLong -> MLong
+        case MDouble -> MDouble
+        case MByte -> MByte
+        case MObject -> MObject
+        case _ -> MInt
+      }
+      case BMod -> match inferLambdaBodyExprMsilType(lhs, paramEnv, cctx, pkgName) {
+        case MLong -> MLong
+        case MByte -> MByte
+        case MObject -> MObject
+        case _ -> MInt
+      }
+      case BCoalesce -> match inferLambdaBodyExprMsilType(lhs, paramEnv, cctx, pkgName) {
+        case MObject -> inferLambdaBodyExprMsilType(
+          rhs,
+          paramEnv,
+          cctx,
+          pkgName
+        )
+        case t -> t
+      }
+      // Every other operator (comparisons, boolean, BXor) is unconditionally
+      // safe to delegate: its result type never depends on whether either
+      // operand's own type is resolvable.
+      case _ -> inferUntypedStaticValMsilType(e, paramEnv, cctx, pkgName)
+    }
+    // #7125/#7126: a bare name in a lambda body must resolve ONLY against
+    // `paramEnv` (the lambda's OWN explicitly-typed parameters) — never
+    // `inferUntypedStaticValMsilType`'s `EPath` arm, which checks the
+    // cross-package `cctx.staticValMsilTypes` map before its `env` argument.
+    // That priority is correct in `inferUntypedStaticValMsilType`'s original
+    // module-val context (where `env` is ALSO a module-val namespace, so the
+    // more-complete `cctx` map can only refine the same name's answer), but
+    // wrong here in TWO ways: a lambda PARAMETER of the same name must shadow
+    // an unrelated module-level `val` declared anywhere in the bundle (#7125,
+    // fixed by checking `paramEnv` first) — and a name that ISN'T a lambda
+    // parameter could just as easily be a CAPTURED outer local variable
+    // (#7126) as a genuine module-val reference; this pass has no symbol
+    // table to tell the two apart, so falling back to the bundle-wide
+    // `cctx.staticValMsilTypes` map risks silently resolving a captured
+    // local's name against an unrelated same-named module val instead of
+    // recognizing it as unresolvable. Any name not in `paramEnv` therefore
+    // falls back to `MObject` (unknown) unconditionally — matching #6933's
+    // established safe-default philosophy for this whole function (propagate
+    // "unknown" rather than risk a wrong guess) — never consulting
+    // `cctx.staticValMsilTypes` at all from inside a lambda body.
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        match mapGet(paramEnv, path.segments[0]) {
+          case Some(t) -> t
+          case None -> MObject
+        }
+      } else {
+        MObject
+      }
+    }
+    case _ -> inferUntypedStaticValMsilType(e, paramEnv, cctx, pkgName)
+  }
+}
+
 // Register `funcValRetTypes`/`funcValParamTypes` for `name` from a
 // record-field function-type source (#5511), unless `name` is already
 // registered (an explicit literal `(A,...) -> R` annotation on the binding
@@ -17939,6 +18249,48 @@ func registerFieldFuncValTypesMsil(cctx: in CodegenCtx, fctx: in FuncCtx, name: 
                   }
                 }
               }
+            }
+          }
+        }
+        // #6690: `val f = (x) -> false` — an unannotated lambda LITERAL
+        // init, distinct from every case handled above (not a
+        // record-field-read, bare-name alias, or call). Every lifted lambda
+        // is emitted through the uniform boxed `Func<object,...>` ABI
+        // (#1877): its synthesized `__lambda_N` function always declares
+        // return type `Object` (see `collectLambdasBfsExpr`'s `ELambda`
+        // arm), so without a registered `funcValRetTypes` entry,
+        // `lowerFuncValueInvokeMsil`'s `case None -> MObject` arm never
+        // materializes the boxed call result — `f(y)` stays an unboxed-
+        // looking but still-boxed `object` reference, which reads as
+        // truthy regardless of the lambda's real body. Infer the lambda's
+        // return type from its own body's trailing value
+        // (`lambdaBodyTrailingValueMsil`, below — also unwraps an explicit
+        // trailing `return`, #6932 review) via `inferLambdaBodyExprMsilType`
+        // (below), a lambda-body-safe variant of the module-level-val
+        // heuristic `inferUntypedStaticValMsilType` (#6933 review: unlike a
+        // module val's `env`, which covers every name in scope by
+        // construction, a lambda body can reference an outer capture
+        // `paramEnv` — the lambda's own explicitly-typed params only — knows
+        // nothing about, so the arithmetic fallback must propagate unknown
+        // rather than guess `MInt`), falling back to `MObject` for any shape
+        // it can't resolve — identical to today's unregistered behaviour,
+        // never a regression.
+        case ELambda(lparams, body) -> {
+          val paramEnv: Map[String, MsilType] = newMap()
+          var lpi = 0
+          while lpi < lparams.count {
+            match lparams[lpi].ty {
+              case Some(te) -> paramEnv.add(lparams[lpi].name, typeExprToMsilBodyCtx(cctx, fctx, te))
+              case None -> ()
+            }
+            lpi = lpi + 1
+          }
+          match lambdaBodyTrailingValueMsil(body) {
+            case Some(trailing) -> {
+              fctx.funcValRetTypes.add(name, inferLambdaBodyExprMsilType(trailing, paramEnv, cctx, fctx.pkgName))
+            }
+            case None -> {
+              fctx.funcValRetTypes.add(name, MVoid)
             }
           }
         }
@@ -34250,7 +34602,12 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
       }
       case IDistinctType(decl) -> {
         val inner = typeExprToMsilCtx(cctx, decl.underlying, pkgName)
-        items.add(MPDistinctType(d = mkDistinctTypeIR(pkgName + "." + decl.name, pkgName, inner, decl.rangeClause)))
+        val isUnsignedDistinct = isUnsignedTypeExprMsil(decl.underlying)
+        items.add(
+          MPDistinctType(
+            d = mkDistinctTypeIR(pkgName + "." + decl.name, pkgName, inner, decl.rangeClause, isUnsignedDistinct)
+          )
+        )
       }
       case IConst(decl) -> {
         // Module-level compile-time constant → static field on the host class.
@@ -35970,6 +36327,7 @@ func mkDistinctRanged(
   loE: in Expr,
   hiE: in Expr,
   upperExcl: in Bool,
+  isUnsigned: in Bool,
 ): MDistinctType {
   val lo = foldRangeBound(loE)
   val hi = foldRangeBound(hiE)
@@ -35987,7 +36345,8 @@ func mkDistinctRanged(
       maxI = hi.l,
       minF = loF,
       maxF = hiF,
-      upperExclusive = upperExcl
+      upperExclusive = upperExcl,
+      isUnsigned = isUnsigned
     )
   } else {
     MDistinctType(
@@ -36000,15 +36359,24 @@ func mkDistinctRanged(
       maxI = 0i64,
       minF = 0.0,
       maxF = 0.0,
-      upperExclusive = false
+      upperExclusive = false,
+      isUnsigned = isUnsigned
     )
   }
 }
 
 // Build the distinct-type IR item, folding any range clause to integer/float
-// bounds for the synthesised `from`/`tryFrom` validation.
+// bounds for the synthesised `from`/`tryFrom` validation.  `isUnsigned`
+// (#6756) is true when the DECLARED underlying type is `UInt`/`ULong` —
+// needed alongside `inner` (which erases both to the same `MInt`/`MLong` a
+// signed `Int`/`Long` underlying type uses) to select unsigned-aware bounds
+// checking in `emitDistinctBoundsToFail`.
 func mkDistinctTypeIR(
-  className: in String, namespace: in String, inner: in MsilType, rangeClause: in Option[RangeBound]
+  className: in String,
+  namespace: in String,
+  inner: in MsilType,
+  rangeClause: in Option[RangeBound],
+  isUnsigned: in Bool,
 ): MDistinctType {
   val noRange = MDistinctType(
     className = className,
@@ -36020,13 +36388,14 @@ func mkDistinctTypeIR(
     maxI = 0i64,
     minF = 0.0,
     maxF = 0.0,
-    upperExclusive = false
+    upperExclusive = false,
+    isUnsigned = isUnsigned
   )
   match rangeClause {
     case Some(rb) -> {
       match rb {
-        case RBClosed(loE, hiE) -> mkDistinctRanged(className, namespace, inner, loE, hiE, false)
-        case RBHalfOpen(loE, hiE, _) -> mkDistinctRanged(className, namespace, inner, loE, hiE, true)
+        case RBClosed(loE, hiE) -> mkDistinctRanged(className, namespace, inner, loE, hiE, false, isUnsigned)
+        case RBHalfOpen(loE, hiE, _) -> mkDistinctRanged(className, namespace, inner, loE, hiE, true, isUnsigned)
         // Unknown RangeBound variant: emit no-range guard so future variants
         // don't silently skip range validation (#3116).
         case _ -> noRange

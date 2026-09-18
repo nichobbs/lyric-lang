@@ -1,21 +1,28 @@
 //! module_val_deps_self_test.l — runtime regression test for module-level
 //! `pub val` chains where a later untyped `val`'s initializer reads an
-//! earlier module-level `val`/`const` by bare name (#5955).
+//! earlier module-level `val`/`const` by bare name (#5955), and for an
+//! untyped `val` initialized directly by a record-constructor call (#6786).
 //!
 //! On MSIL, the pre-scan that predicts each untyped `val`'s field type (used
 //! to register `cctx.staticValMsilTypes` so OTHER functions' `EPath` lowering
 //! knows what MSIL type a bare `ldsfld` read produces) fell back to `MObject`
 //! for any initializer shape it didn't recognise — including a plain `EPath`
-//! reference to an earlier val, or an arithmetic/string-concat `EBinop` over
-//! one.  The real field type, computed later by fully lowering the
-//! initializer in Phase 4, was often a concrete primitive (`Int`/`String`/…),
-//! so the predicted and actual field types silently diverged.  A consumer
-//! function's `ldsfld` under the wrong predicted type crashed at runtime
+//! reference to an earlier val, an arithmetic/string-concat `EBinop` over
+//! one, or an `ECall` record-constructor call.  The real field type, computed
+//! later by fully lowering the initializer in Phase 4, was often a concrete
+//! type (`Int`/`String`/the constructed record/…), so the predicted and
+//! actual field types silently diverged.  A consumer function's `ldsfld`
+//! under the wrong predicted type crashed at runtime
 //! (`InvalidProgramException` / `NullReferenceException` depending on the
-//! JIT).  Fixed by threading a `valTypeEnv: Map[String, MsilType]` through
-//! the pre-scan (mirroring the existing literal-foldability `constEnv`) and
-//! extending `inferUntypedStaticValMsilType` to resolve `EPath` and the
-//! common `EBinop` shapes against it.
+//! JIT); for the `ECall` gap specifically, a later `EMember` field read off
+//! the `MObject`-typed val resolved the field by bare name against whichever
+//! same-named-field record happened to be declared FIRST in the file,
+//! regardless of which record the val actually held — emitting `castclass
+//! <wrong record>` (#6786).  Fixed by threading a
+//! `valTypeEnv: Map[String, MsilType]` through the pre-scan (mirroring the
+//! existing literal-foldability `constEnv`) and extending
+//! `inferUntypedStaticValMsilType` to resolve `EPath`, the common `EBinop`
+//! shapes, and non-generic record/union-case `ECall`s against it.
 //!
 //! JVM was never affected: `prelowerModuleVals` derives every module val's
 //! field type from a REAL lowering pass, in declaration order, before any
@@ -142,4 +149,53 @@ test "Double-lhs BMod/BDiv dependent module vals predict the right field type (#
 test "independent module vals still work" {
   assertEqualInt(independentOne, 100, "independentOne")
   assertEqualInt(independentTwo, 200, "independentTwo")
+}
+
+// 8. #6786: an unannotated val initialized by a record-constructor ECall.
+//    `Holder` and `Cache` share a field name (`box`) and `Holder` is declared
+//    FIRST — a bare-field-name lookup that ignores the val's real predicted
+//    type would resolve `gCache.box` against `Holder` (wrong) instead of
+//    `Cache` (the record `gCache` actually holds), emitting `castclass
+//    Holder` against a `Cache` instance.
+record MutRecvBox {
+  tag: Int
+}
+
+record Holder {
+  var box: MutRecvBox
+}
+
+record Cache {
+  var box: MutRecvBox
+}
+
+val gCache = Cache(box = MutRecvBox(tag = 1))
+
+// A second such val, wrapped in EParen — exercises the ECall arm reached via
+// the predictor's existing EParen recursive delegation.
+val gCacheParen = (Cache(box = MutRecvBox(tag = 7)))
+
+// 9. #6878 (review REQUIRED on #6786's own PR): a bare `EPath` ALIAS of an
+//    ECall-initialized val.  `inferUntypedStaticValMsilType`'s `EPath` arm
+//    used to resolve ONLY against `env` (`valTypeEnv`), which is frozen
+//    during `addPackageTokens`' Pass 0 — BEFORE Pass 1 populates
+//    `cctx.recordCtorTokens` — so `gCache`'s Pass-0 `env` entry was still
+//    `MObject` even after Pass 1b later corrected the authoritative
+//    `cctx.staticValMsilTypes["gCache"]` to the real record type. `alias`,
+//    resolved only against the stale `env` entry, silently inherited the
+//    wrong `MObject` prediction — reproducing #6786's exact defect one
+//    alias hop removed. Fixed by having the `EPath` arm consult
+//    `cctx.staticValMsilTypes` first, falling back to `env` only when absent.
+val gCacheAlias = gCache
+
+test "unannotated module val from a record ctor types as the constructed record (#6786)" {
+  assertEqualInt(gCache.box.tag, 1, "gCache.box.tag")
+}
+
+test "parenthesized record-ctor module val also types correctly (#6786)" {
+  assertEqualInt(gCacheParen.box.tag, 7, "gCacheParen.box.tag")
+}
+
+test "a bare-EPath alias of a record-ctor module val also types correctly (#6878)" {
+  assertEqualInt(gCacheAlias.box.tag, 1, "gCacheAlias.box.tag")
 }

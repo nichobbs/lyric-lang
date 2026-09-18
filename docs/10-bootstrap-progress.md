@@ -32325,6 +32325,94 @@ open self-instantiation instead).
 **Related:** `docs/decisions/D-progress-0888-union-structural-equality.md`
 (full account), #6835, #6120.
 
+### MSIL: an unannotated module-level `val` initialized by a record constructor is typed correctly instead of `MObject` (#6786)
+
+`inferUntypedStaticValMsilType` (predicts an untyped module-level `val`'s
+MSIL field type so other functions' `EPath`/`EMember` reads know what a bare
+`ldsfld` produces) had cases for `EPath` and `EBinop` (#5955/#5988/#5992) but
+fell through every `ECall` — including a record-constructor call like
+`val gCache = Cache(box = ...)` — to the `MObject` catch-all. A later
+`gCache.box` read off that wrongly-typed `MObject` receiver resolved the
+field by bare name across the file's declared records rather than by the
+receiver's real type; if another record in the same file declared a
+same-named field and was registered first, the read emitted `castclass
+<wrong record>` against the right-hand record's actual instance —
+`InvalidCastException` at runtime with a clean build (silent miscompile).
+Fixed by adding a non-generic record/union-case `ECall` arm that resolves the
+callee through `cctx.recordCtorTokens` the same way real codegen does,
+falling back to `MObject` only for a generic record/union case (no symbol
+table at this pass to infer its type arguments) or an otherwise-unresolvable
+callee.
+
+**Related:** `docs/decisions/D-progress-0888-module-val-record-ctor-type-inference.md` (full account), #6786.
+
+### MSIL: an unannotated local bound directly to a lambda literal now registers its return type instead of leaving the invoke result boxed (#6690)
+
+`registerFieldFuncValTypesMsil` (the `#5511` fallback populating
+`funcValRetTypes` for a function-typed local with no literal `(A,...) -> R`
+annotation) recognized a record-field-read and a bare `EPath` naming an
+already-tracked function value, but had no case for `ELambda` — a lambda
+literal bound directly to the local (`val f = (x) -> false`). Every lifted
+lambda is emitted through the uniform boxed `Func<object,...>` ABI, so
+without a `funcValRetTypes` entry the invoke site never materialized the
+boxed result: `f(y)` stayed a non-null boxed `object`, which reads as truthy
+regardless of the lambda's real body. Fixed by inferring the lambda's return
+type from its body's trailing expression, reusing the same no-symbol-table
+heuristic (`inferUntypedStaticValMsilType`) already used for untyped
+module-level vals, resolved against a `paramEnv` built from any explicitly
+(brace-form) typed lambda parameters. Orthogonal to the pre-existing #1939
+diagnostic, which guards a different case (an UNANNOTATED parameter's own
+value needing unboxing inside the body). **Review follow-up:** a dedicated
+`inferLambdaBodyExprMsilType` now handles the lambda-body case instead of
+reusing the module-val heuristic directly for arithmetic — a captured
+(non-parameter) outer variable of unresolvable type no longer silently
+defaults to `MInt` (#6933); an explicit trailing `return` is now also
+recognized as a value producer instead of assuming `MVoid`. A related but
+materially different, entirely pre-existing crash (`return` inside ANY
+lambda body panics regardless of return-type registration) was discovered
+and filed separately as #6947.
+
+**Related:** `docs/decisions/D-progress-0887-lambda-literal-local-rettype.md` (full account), #6690,
+#6933, #6947.
+
+### MSIL: `UInt`/`ULong` gain a real representation, closing the CLR-loader crash and a downstream list-literal miscompile (#6756, #6782)
+
+MSIL had no representation for `UInt`/`ULong` at all — `typeExprToMsilCtx`
+had no arm for either, so construction fell through to "user type in this
+package" and crashed the CLR loader ("invalid program") at run time. Fixed
+by erasing `UInt -> MInt` / `ULong -> MLong` (the SAME slot a signed
+`Int`/`Long` uses), mirroring the JVM backend's identical erasure
+(#6661/#6695/#6748); a new `int32BitsOfUnsignedMsil` helper safely narrows a
+`u32` literal or distinct-type bound whose unsigned magnitude exceeds
+Int32.MaxValue (e.g. `2500000000u32`) without the `OverflowException`
+`longToInt` would throw; `MDistinctType` gained `isUnsigned` so a
+`UInt`/`ULong`-backed distinct/range subtype's bounds check uses
+`clt.un`/`cgt.un` instead of a signed comparison that misreads a sign-bit-set
+in-range value as out of range. #6782 (list literals silently miscompiling
+`u16`/`u32`/`u64` elements) turned out to be a direct consequence of the
+same predicted-vs-actual type divergence and needed no separate fix beyond
+adding matching `U16`/`U32`/`U64` arms to the list-literal element-type
+predictor. Bare-scalar comparison/division/stringification of an unsigned
+value still uses plain signed IL — a separate, scoped follow-up (#6913).
+
+**Related:** `docs/decisions/D-progress-0890-msil-uint-ulong-representation.md` (full account),
+#6756, #6782, #6913.
+
+### MSIL: confirmed hoisted Byte closure cells wrap on overflow for an ESCAPING closure pair too; added the missing regression coverage (#6524)
+
+#6524 (a #5520 follow-up) tracked whether a `Byte` cell shared by two closures
+that both escape their declaring function (returned via a record, the
+setter/getter callback-pair idiom) still wraps correctly on compound-assignment
+overflow — the existing test only covered a closure staying within its
+declaring function's own scope. Reproducing the issue's exact repro against
+current `main` showed it already works correctly (prints the wrapped `44`,
+not `300`) for all three compound operators, with no corruption of the
+`lyric-mq` test a prior fix attempt had mysteriously broken. No specific
+fixing commit was isolated. Added the missing coverage to
+`byte_arithmetic_self_test.l` (dual-target).
+
+**Related:** `docs/decisions/D-progress-0886-byte-closure-escaping-pair-overflow.md` (full account), #6524.
+
 ### Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
 
 `native/plan/08-work-items.md`'s N9.3 (`Std.HttpServer` native twin,
