@@ -1,8 +1,8 @@
-# D-progress-917 — `scoreSigType`'s tier scale renumbered after a real `ValueTask` ctor-ambiguity regression on PR #6981
+# D-progress-925 — `scoreSigType`'s tier scale renumbered after a real `ValueTask` ctor-ambiguity regression on PR #6981
 
 **Status:** shipped
 
-**Context.** PR #6981 (#6581, D-progress-912/913) added two new weak-but-
+**Context.** PR #6981 (#6581, D-progress-920/913) added two new weak-but-
 nonnegative `scoreSigType` arms — `STMVar` and `STNamedGenericInst` gated
 on `sigIsOpenGeneric` — both scored `0`, the same value the pre-existing
 `STVar` arm (D-progress-686) already used. The PR's own `build-and-test`
@@ -78,7 +78,7 @@ self_test.l` (7/7), `generic_extern_valuetype_instance_self_test.l`
 (8/8), `cross_package_generics_self_test.l` (10/10), `msil_restored_
 bridge_self_test.l` (6/6).
 
-**Related:** #6581/D-progress-912 (Gap 1's `STNamedGenericInst` arm,
-whose introduction created this collision), D-progress-913 (`STMVar`'s
+**Related:** #6581/D-progress-920 (Gap 1's `STNamedGenericInst` arm,
+whose introduction created this collision), D-progress-921 (`STMVar`'s
 introduction), D-progress-686 (the original `STVar` fix this regression
 undermined), PR #6981.
