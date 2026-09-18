@@ -101,6 +101,31 @@ want each package independently consumable as its own DLL — the same
 shape the bootstrap stdlib uses today. `output = "single"` is the
 new default for application projects.
 
+**Test-only packages (`test_only`, #6579).** A `[project.packages]` entry
+may use the inline-table form `{ path = "...", test_only = true }` instead
+of a bare path string:
+
+```toml
+[project.packages]
+"MyApp.Core"        = "src/core"
+"MyApp.TestFixtures" = { path = "src/test_fixtures", test_only = true }
+```
+
+A `test_only` package is still discovered and resolvable for import by
+`[project.tests]` entries and by `lyric test`'s `@test_module`
+auto-discovery (§13.5's `[project.tests]` fallback) — a shared test
+fixture package can import it exactly like any other package — but it is
+excluded from `buildProjectFromManifest`'s production bundle: neither
+`lyric build --manifest ...` (whole-project `output = "single"` builds)
+nor `lyric build --release`'s AOT entry-point scan considers a `test_only`
+package's source or its exported symbols. This closes the choice #6579
+described between duplicating a shared fixture into every consumer's
+`src/` tree (keeping it out of the shipped bundle, at the cost of drift
+between copies) and giving it a real `[project.packages]` entry (keeping
+one copy, at the cost of leaking test-only code and its dependencies into
+the shipped assembly). Defaults to `false` when the entry is a bare path
+string.
+
 ### 3.1 Local-path dependencies
 
 A `[dependencies]` entry may use the inline-table `{ path = "..." }` form to
@@ -153,10 +178,18 @@ resolves the SAME `pkgs: List[ProjectPackage]` list §4 below describes,
 merged the same way (`mergePackageSources`), through
 `Lyric.LlvmBridge.compileProjectToNativeWithFlags` instead of
 `Msil.Bridge`/`Jvm.Bridge`. Cross-project `[dependencies]` (§3.1) are
-NOT yet resolved for native — tracked as a follow-up in issue #6815, since
-unlike a restored binary, a Lyric dependency's SOURCE is always available
-locally and the natural fix is compiling it into the same bundle rather
-than inventing a native restored-binary format.
+NOT yet resolved for native — tracked as a follow-up in issue #6815 item
+1(b), since unlike a restored binary, a Lyric dependency's SOURCE is
+always available locally and the natural fix is compiling it into the
+same bundle rather than inventing a native restored-binary format. A
+`{ workspace = true }`/`path` dependency declared on a native project no
+longer attempts (and potentially crashes on) an unused native build of the
+dependency itself — `resolveManifestDependencies`/`buildWorkspaceDeps`
+skip it outright for `Native`, matching the pre-existing `Jvm` skip
+(#6815 item 1(a), fixed alongside #6809/#6816). `--triple`/`--opt` CLI
+overrides and `lyric run --manifest ... --target native` (item 3a) are
+also wired now; `lyric test --manifest ... --target native` (item 3b)
+remains rejected.
 
 ## 4. Compilation pipeline
 

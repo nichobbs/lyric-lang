@@ -32,6 +32,8 @@ import Std.Uuid
 import Std.Testing
 import Lyric.Cli as Cli
 import Lyric.Emitter as Emitter
+import Lyric.Manifest as Mf
+import Lyric.RestoredPackages as RP
 
 test "validatePackageVersionArg: empty string is rejected" {
   match Cli.validatePackageVersionArg("") {
@@ -147,14 +149,20 @@ test "defineBuildGateError: --shape aot is rejected and names the shape" {
 test "defineBuildGateError: --shape standalone is rejected" {
   match Cli.defineBuildGateError(true, true, false, Cli.SStandalone, Emitter.Dotnet, "") {
     case None -> assertTrue(false, "--shape standalone should reject --define")
-    case Some(msg) -> assertTrue(Str.contains(msg, "--shape standalone"), "standalone rejection names the shape, got: " + msg)
+    case Some(msg) -> assertTrue(
+      Str.contains(msg, "--shape standalone"),
+      "standalone rejection names the shape, got: " + msg
+    )
   }
 }
 
 test "defineBuildGateError: manifest-configured aot shape names the manifest path" {
   match Cli.defineBuildGateError(true, true, false, Cli.SAot, Emitter.Dotnet, "/proj/lyric.toml") {
     case None -> assertTrue(false, "manifest shape = aot should reject --define (#6139)")
-    case Some(msg) -> assertTrue(Str.contains(msg, "--shape aot") and Str.contains(msg, "/proj/lyric.toml"), "aot rejection names the shape and the manifest path, got: " + msg)
+    case Some(msg) -> assertTrue(
+      Str.contains(msg, "--shape aot") and Str.contains(msg, "/proj/lyric.toml"),
+      "aot rejection names the shape and the manifest path, got: " + msg
+    )
   }
 }
 
@@ -231,7 +239,10 @@ test "shapeFlagConflictError: --aot with --standalone is F0041" {
 test "shapeFlagConflictError: sugar disagreeing with --shape is F0041" {
   match Cli.shapeFlagConflictError("portable", true, false) {
     case None -> assertTrue(false, "--aot --shape portable should conflict")
-    case Some(msg) -> assertTrue(Str.contains(msg, "F0041") and Str.contains(msg, "portable"), "conflict names F0041 and the shape, got: " + msg)
+    case Some(msg) -> assertTrue(
+      Str.contains(msg, "F0041") and Str.contains(msg, "portable"),
+      "conflict names F0041 and the shape, got: " + msg
+    )
   }
   match Cli.shapeFlagConflictError("aot", false, true) {
     case None -> assertTrue(false, "--standalone --shape aot should conflict")
@@ -279,7 +290,10 @@ test "shapeTargetError: native accepts aot; managed targets accept every shape" 
 test "shapeUnsupportedError: standalone is F0044 until it is implemented (#6262)" {
   match Cli.shapeUnsupportedError(Cli.SStandalone, Emitter.Dotnet) {
     case None -> assertTrue(false, "standalone is not implemented and must fail loud")
-    case Some(msg) -> assertTrue(Str.contains(msg, "F0044") and Str.contains(msg, "6262"), "standalone names F0044 and the tracking issue, got: " + msg)
+    case Some(msg) -> assertTrue(
+      Str.contains(msg, "F0044") and Str.contains(msg, "6262"),
+      "standalone names F0044 and the tracking issue, got: " + msg
+    )
   }
   match Cli.shapeUnsupportedError(Cli.SPortable, Emitter.Dotnet) {
     case None -> assertTrue(true, "portable is implemented")
@@ -336,7 +350,10 @@ test "defineBuildGateError: a CLI-sourced shape never gets manifest advice (#627
   // never set. The call site passes "" for a CLI-named shape.
   match Cli.defineBuildGateError(true, true, false, Cli.SAot, Emitter.Dotnet, "") {
     case None -> assertTrue(false, "aot shape should still reject --define")
-    case Some(msg) -> assertTrue(Str.contains(msg, "--aot/--standalone") and (not Str.contains(msg, "in that manifest")), "CLI-sourced rejection names flags, not a manifest key, got: " + msg)
+    case Some(msg) -> assertTrue(
+      Str.contains(msg, "--aot/--standalone") and (not Str.contains(msg, "in that manifest")),
+      "CLI-sourced rejection names flags, not a manifest key, got: " + msg
+    )
   }
 }
 
@@ -346,7 +363,10 @@ test "defineBuildGateError: single-file --manifest shape is manifest-sourced too
   // the call site must pass the manifest path, not "".
   match Cli.defineBuildGateError(true, true, false, Cli.SAot, Emitter.Dotnet, "/p/custom.toml") {
     case None -> assertTrue(false, "aot shape should still reject --define")
-    case Some(msg) -> assertTrue(Str.contains(msg, "/p/custom.toml") and (not Str.contains(msg, "--aot/--standalone")), "single-file manifest-sourced shape points at the manifest, got: " + msg)
+    case Some(msg) -> assertTrue(
+      Str.contains(msg, "/p/custom.toml") and (not Str.contains(msg, "--aot/--standalone")),
+      "single-file manifest-sourced shape points at the manifest, got: " + msg
+    )
   }
 }
 
@@ -355,7 +375,11 @@ test "defineBuildGateError: manifest-sourced shape gets manifest-shaped advice" 
   // their manifest and no such flag was ever passed.
   match Cli.defineBuildGateError(true, true, false, Cli.SAot, Emitter.Dotnet, "/p/lyric.toml") {
     case None -> assertTrue(false, "manifest aot shape should still reject --define")
-    case Some(msg) -> assertTrue(Str.contains(msg, "/p/lyric.toml") and Str.contains(msg, "in that manifest") and (not Str.contains(msg, "--aot/--standalone")), "manifest-sourced rejection points at the manifest, not at flags, got: " + msg)
+    case Some(msg) -> assertTrue(
+      Str.contains(msg, "/p/lyric.toml") and Str.contains(msg, "in that manifest") and
+        (not Str.contains(msg, "--aot/--standalone")),
+      "manifest-sourced rejection points at the manifest, not at flags, got: " + msg
+    )
   }
 }
 
@@ -365,7 +389,10 @@ test "defineBuildGateError: the rejection never suggests a shape the target refu
   // It now names the flags to drop instead.
   match Cli.defineBuildGateError(true, true, false, Cli.SAot, Emitter.Dotnet, "") {
     case None -> assertTrue(false, "dotnet aot should still reject --define")
-    case Some(msg) -> assertTrue(Str.contains(msg, "--aot") and (not Str.contains(msg, "--shape portable")), "message tells the user which flag to drop, got: " + msg)
+    case Some(msg) -> assertTrue(
+      Str.contains(msg, "--aot") and (not Str.contains(msg, "--shape portable")),
+      "message tells the user which flag to drop, got: " + msg
+    )
   }
 }
 
@@ -401,34 +428,103 @@ test "withProfileDefine: a user define still wins under last-wins (#6267)" {
   assertEqual(defs[1], "build_profile=CUSTOM", "user define goes last so last-wins keeps it")
 }
 
-// ─── axis composition: resolveBuildAxes / defaultShapeForTarget ──────────
-// Both #6266 and #6267 were composition bugs: every individual predicate was
-// tested, but the function that combines CLI-over-manifest precedence with the
-// native shape default was only covered end-to-end by hand. These pin the
-// composition itself.
-test "defaultShapeForTarget: bare --target native defaults to aot" {
-  val noShape: Option[Cli.BuildShape] = None
-  match Cli.defaultShapeForTarget(noShape, Emitter.Native) {
-    case Some(s) -> assertEqual(Cli.shapeName(s), "aot", "native with no --shape defaults to aot")
-    case None -> assertTrue(false, "native must get a default shape")
+// ─── axis composition: resolveBuildAxes / resolveShapeAxis (#6268) ───────
+// #6266/#6267 were composition bugs where every individual predicate was
+// tested but the function combining CLI-over-manifest precedence with the
+// native shape default was only covered end-to-end by hand; #6268 was the
+// same class of bug one level up — the native default used to apply BEFORE
+// the manifest's own `[build] shape` was ever consulted (`defaultShapeForTarget`,
+// removed), so a manifest declaring `shape = "portable"` on `--target native`
+// was silently overridden to `aot` instead of reaching `F0043`. These pin the
+// three-way precedence (CLI > manifest-DECLARED > target-bare-default) via
+// `resolveBuildAxesFromManifest`, the manifest-value entry point that avoids
+// a throwaway temp file per case.
+func parseTestManifest(toml: in String): Mf.Manifest {
+  match Mf.parseManifest(toml, "test.toml") {
+    case Ok(m) -> m
+    case Err(e) -> panic("test manifest failed to parse: " + ManifestError.message(e))
   }
 }
 
-test "defaultShapeForTarget: managed targets get no default (manifest may still speak)" {
+test "resolveBuildAxesFromManifest: bare --target native with no manifest [build] table defaults to aot" {
   val noShape: Option[Cli.BuildShape] = None
-  match Cli.defaultShapeForTarget(noShape, Emitter.Dotnet) {
-    case None -> assertTrue(true, "dotnet defers to the manifest, then to portable")
-    case Some(s) -> assertTrue(false, "dotnet must not be forced to " + Cli.shapeName(s))
+  val noProfile: Option[Cli.BuildProfile] = None
+  val mf = parseTestManifest("[package]\nname = \"App\"\nversion = \"0.1.0\"\n")
+  match Cli.resolveBuildAxesFromManifest(noShape, noProfile, Some(value = mf), Emitter.Native) {
+    case Ok(a) -> assertEqual(Cli.shapeName(a.shape), "aot", "native with nothing declared anywhere defaults to aot")
+    case Err(m) -> assertTrue(false, "native with no declared shape must not fail, got: " + m)
   }
 }
 
-test "defaultShapeForTarget: an explicit CLI shape is never overridden" {
-  // Load-bearing for F0043: `--target native --shape portable` must survive to
-  // resolveBuildAxes so the error fires, rather than being silently upgraded.
+test "resolveBuildAxesFromManifest: managed targets get no forced default (manifest may still speak)" {
+  val noShape: Option[Cli.BuildShape] = None
+  val noProfile: Option[Cli.BuildProfile] = None
+  val mf = parseTestManifest("[package]\nname = \"App\"\nversion = \"0.1.0\"\n")
+  match Cli.resolveBuildAxesFromManifest(noShape, noProfile, Some(value = mf), Emitter.Dotnet) {
+    case Ok(a) -> assertEqual(
+      Cli.shapeName(a.shape),
+      "portable",
+      "dotnet with nothing declared falls to the bare portable default"
+    )
+    case Err(m) -> assertTrue(false, "dotnet defaults must resolve, got: " + m)
+  }
+}
+
+test "resolveBuildAxesFromManifest: an explicit CLI shape always wins over both the manifest and the native default" {
   val portable: Option[Cli.BuildShape] = Some(value = Cli.SPortable)
-  match Cli.defaultShapeForTarget(portable, Emitter.Native) {
-    case Some(s) -> assertEqual(Cli.shapeName(s), "portable", "explicit shape survives the native default")
-    case None -> assertTrue(false, "explicit shape must survive")
+  val noProfile: Option[Cli.BuildProfile] = None
+  val mf = parseTestManifest("[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[build]\nshape = \"aot\"\n")
+  match Cli.resolveBuildAxesFromManifest(portable, noProfile, Some(value = mf), Emitter.Native) {
+    case Ok(a) -> assertTrue(
+      false,
+      "CLI --shape portable on native must fail (F0043), resolved to " + Cli.shapeName(a.shape)
+    )
+    case Err(m) -> assertTrue(
+      Str.contains(m, "F0043"),
+      "CLI shape wins even over a manifest [build] shape = \"aot\", got: " + m
+    )
+  }
+}
+
+// ─── the #6268 bug itself: a manifest-DECLARED shape must be validated, not defaulted over ───
+test "resolveBuildAxesFromManifest: manifest [build] shape = \"portable\" + --target native raises F0043, not a silent upgrade (#6268)" {
+  val noShape: Option[Cli.BuildShape] = None
+  val noProfile: Option[Cli.BuildProfile] = None
+  val mf = parseTestManifest("[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[build]\nshape = \"portable\"\n")
+  match Cli.resolveBuildAxesFromManifest(noShape, noProfile, Some(value = mf), Emitter.Native) {
+    case Ok(a) -> assertTrue(
+      false,
+      "a manifest declaring shape = \"portable\" on --target native must fail loud, was silently upgraded to " +
+        Cli.shapeName(a.shape)
+    )
+    case Err(m) -> assertTrue(
+      Str.contains(m, "F0043"),
+      "manifest-declared portable shape on native names F0043, got: " + m
+    )
+  }
+}
+
+test "resolveBuildAxesFromManifest: manifest [build] shape = \"aot\" + --target native is an accepted no-op" {
+  val noShape: Option[Cli.BuildShape] = None
+  val noProfile: Option[Cli.BuildProfile] = None
+  val mf = parseTestManifest("[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[build]\nshape = \"aot\"\n")
+  match Cli.resolveBuildAxesFromManifest(noShape, noProfile, Some(value = mf), Emitter.Native) {
+    case Ok(a) -> assertEqual(Cli.shapeName(a.shape), "aot", "manifest-declared aot on native resolves cleanly")
+    case Err(m) -> assertTrue(false, "manifest shape = \"aot\" on native must not fail, got: " + m)
+  }
+}
+
+test "resolveBuildAxesFromManifest: a manifest [build] table with no shape key still defaults native to aot (#6268 non-regression)" {
+  // A `[build]` table exists (e.g. for `profile` or `[build.define]`) but never
+  // names `shape` — `BuildSection.shapeDeclared` must be false here, so the
+  // native bare default still applies exactly as when there's no [build]
+  // table at all (the first test above).
+  val noShape: Option[Cli.BuildShape] = None
+  val noProfile: Option[Cli.BuildProfile] = None
+  val mf = parseTestManifest("[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[build]\nprofile = \"release\"\n")
+  match Cli.resolveBuildAxesFromManifest(noShape, noProfile, Some(value = mf), Emitter.Native) {
+    case Ok(a) -> assertEqual(Cli.shapeName(a.shape), "aot", "shape-less [build] table still defaults native to aot")
+    case Err(m) -> assertTrue(false, "must not fail, got: " + m)
   }
 }
 
@@ -531,6 +627,83 @@ test "shouldPrintReleaseNote: silent when the shape was named, or resolves to ao
     "manifest shape = aot preserves the old artifact, so there is nothing to warn about"
   )
   assertFalse(Cli.shouldPrintReleaseNote(false, false, Cli.SPortable), "no --release -> no note")
+}
+
+// ─── resolveNativeOptDefault: profile-aware native -O level default (#6263) ──
+// The clang -O level didn't previously read the build profile at all — a bare
+// `lyric build --target native file.l` (implicit debug profile) and
+// `lyric build --release --target native file.l` both silently got the same
+// hardcoded -O2 deep in `Lyric.LlvmBridge.linkAndEmitNative`. These pin the
+// new precedence: explicit --opt > manifest [native] opt_level > profile
+// default (release=2, debug=0) > (never reached: the deep "2" fallback is
+// now dead code on any path that goes through this function).
+test "resolveNativeOptDefault: an explicit --opt always wins" {
+  val noMf: Option[String] = None
+  assertEqual(
+    Cli.resolveNativeOptDefault("3", noMf, Emitter.Native, Cli.ProfDebug),
+    "3",
+    "explicit --opt wins over the debug default"
+  )
+  assertEqual(
+    Cli.resolveNativeOptDefault("s", noMf, Emitter.Native, Cli.ProfRelease),
+    "s",
+    "explicit --opt wins over the release default too"
+  )
+}
+
+test "resolveNativeOptDefault: release defaults to -O2, debug defaults to -O0, with no --opt or manifest" {
+  val noMf: Option[String] = None
+  assertEqual(Cli.resolveNativeOptDefault("", noMf, Emitter.Native, Cli.ProfRelease), "2", "release profile default")
+  assertEqual(Cli.resolveNativeOptDefault("", noMf, Emitter.Native, Cli.ProfDebug), "0", "debug profile default")
+}
+
+test "resolveNativeOptDefault: a non-Native target is always a no-op" {
+  val noMf: Option[String] = None
+  assertEqual(
+    Cli.resolveNativeOptDefault("", noMf, Emitter.Dotnet, Cli.ProfRelease),
+    "",
+    "dotnet ignores the profile axis for -O level (it has none)"
+  )
+  assertEqual(Cli.resolveNativeOptDefault("", noMf, Emitter.Jvm, Cli.ProfRelease), "", "jvm likewise")
+}
+
+test "resolveNativeOptDefault: a manifest [native] opt_level wins over the profile default" {
+  val dir = freshTempDir("native-opt-default")
+  defer {
+    cleanup(dir)
+  }
+  val mfPath = Path.join(dir, "lyric.toml")
+  writeManifestOrPanic(
+    mfPath,
+    "[package]\n" + "name = \"App\"\n" + "version = \"0.1.0\"\n" + "\n" + "[native]\n" + "opt_level = \"1\"\n"
+  )
+  assertEqual(
+    Cli.resolveNativeOptDefault("", Some(value = mfPath), Emitter.Native, Cli.ProfRelease),
+    "1",
+    "manifest opt_level beats the release default of 2"
+  )
+  assertEqual(
+    Cli.resolveNativeOptDefault("", Some(value = mfPath), Emitter.Native, Cli.ProfDebug),
+    "1",
+    "manifest opt_level beats the debug default of 0 too"
+  )
+}
+
+test "resolveNativeOptDefault: --opt still wins over a manifest [native] opt_level" {
+  val dir = freshTempDir("native-opt-cli-wins")
+  defer {
+    cleanup(dir)
+  }
+  val mfPath = Path.join(dir, "lyric.toml")
+  writeManifestOrPanic(
+    mfPath,
+    "[package]\n" + "name = \"App\"\n" + "version = \"0.1.0\"\n" + "\n" + "[native]\n" + "opt_level = \"1\"\n"
+  )
+  assertEqual(
+    Cli.resolveNativeOptDefault("s", Some(value = mfPath), Emitter.Native, Cli.ProfRelease),
+    "s",
+    "--opt beats both the manifest and the profile default"
+  )
 }
 
 // ─── filterExtraRefs (#4282) ─────────────────────────────────────────
@@ -1308,6 +1481,110 @@ test "buildProject: preResolvedDeps = None re-resolves internally and a dependen
     0,
     "with preResolvedDeps = None, buildProject re-resolves internally; a dependency-free manifest has no real " +
       "workspace error so the build succeeds — the sibling test's failure is the sentinel, not a broken fixture"
+  )
+}
+
+// ─── test-only [project.packages] entries (#6579) ────────────────────────
+// A `{ path = "...", test_only = true }` entry must never ship in
+// `buildProjectFromManifest`'s production whole-project bundle, closing the
+// gap that previously forced a choice between duplicating a shared test
+// fixture per consumer or leaking it into the shipped assembly
+// (D-progress-806).
+test "buildProject: a test_only = true package is excluded from the production bundle" {
+  val dir = freshTempDir("testonly-excluded")
+  defer {
+    cleanup(dir)
+  }
+  writeManifestOrPanic(
+    Path.join(dir, "lyric.toml"),
+    "[package]\n" + "name = \"TestOnlyApp\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"TestOnlyApp\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"TestOnlyApp.Main\" = \"main.l\"\n" +
+      "\"TestOnlyApp.Fixture\" = { path = \"fixture.l\", test_only = true }\n"
+  )
+  writeFileOrPanic(Path.join(dir, "main.l"), "package TestOnlyApp.Main\n\nfunc main(): Unit {\n  println(1)\n}\n")
+  writeFileOrPanic(
+    Path.join(dir, "fixture.l"),
+    "package TestOnlyApp.Fixture\n\npub func secretTestKey(): String {\n  \"not-for-production\"\n}\n"
+  )
+
+  val noCliFeatures: List[String] = newList()
+  val exitCode = Cli.buildProject(
+    Path.join(dir, "lyric.toml"),
+    None,
+    Emitter.Dotnet,
+    noCliFeatures,
+    false,
+    false,
+    true,
+    None,
+    None,
+    newList()
+  )
+  assertEqualInt(exitCode, 0, "a test_only entry does not itself break the production build")
+
+  val dllPath = Path.join(Path.join(dir, "bin"), "TestOnlyApp.dll")
+  assertTrue(File.fileExists(dllPath), "the production DLL is still produced")
+
+  match RP.loadRestoredPackage(dllPath) {
+    case Err(e) -> assertTrue(
+      false,
+      "production DLL must still expose its normal Lyric.Contract resources, got: " + RP.errorMessage(e)
+    )
+    case Ok(artifacts) -> {
+      var sawMain = false
+      var sawFixture = false
+      var ai = 0
+      while ai < artifacts.count {
+        if artifacts[ai].packageName == "TestOnlyApp.Main" {
+          sawMain = true
+        }
+        if artifacts[ai].packageName == "TestOnlyApp.Fixture" {
+          sawFixture = true
+        }
+        ai += 1
+      }
+      assertTrue(sawMain, "the non-test_only entry package IS embedded in the production bundle")
+      assertTrue(not sawFixture, "the test_only entry package must NOT be embedded in the production bundle")
+    }
+  }
+}
+
+// A single-file build near the SAME manifest (mirroring `lyric test`'s own
+// manifest-local import resolution, which scans `[project.packages]`
+// unconditionally) can still import the test_only package directly — the
+// exclusion above is scoped to the whole-project PRODUCTION bundle only, not
+// to import resolution.
+test "buildOneNative: a single-file build near the manifest can still import a test_only package (#6579)" {
+  val dir = freshTempDir("testonly-importable")
+  defer {
+    cleanup(dir)
+  }
+  writeManifestOrPanic(
+    Path.join(dir, "lyric.toml"),
+    "[package]\n" + "name = \"TestOnlyImportApp\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"TestOnlyImportApp\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"TestOnlyImportApp.Fixture\" = { path = \"fixture.l\", test_only = true }\n"
+  )
+  writeFileOrPanic(
+    Path.join(dir, "fixture.l"),
+    "package TestOnlyImportApp.Fixture\n\npub func fixtureValue(): Int {\n  42\n}\n"
+  )
+  val looseSrcPath = Path.join(dir, "consumer_test.l")
+  writeFileOrPanic(
+    looseSrcPath,
+    "package TestOnlyImportApp.ConsumerTest\n\nimport TestOnlyImportApp.Fixture\n\nfunc main(): Int {\n  fixtureValue()\n}\n"
+  )
+  val outPath = Path.join(dir, "consumer_test.dll")
+  val exitCode = Cli.buildOneNative(looseSrcPath, outPath, Emitter.Dotnet, None, "", "")
+  assertEqualInt(
+    exitCode,
+    0,
+    "a single-file build resolves a test_only sibling package by import, unaffected by the production-bundle exclusion"
   )
 }
 
