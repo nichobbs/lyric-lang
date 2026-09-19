@@ -5683,12 +5683,13 @@ jobs:
       # `native-backend-self-tests`, and the explicit Maven install already
       # used in `manual-test.yml` for the same JVM dependency-resolution need.
       #
-      # `always()` (#7089, claude-review REQUIRED finding on #7088): unlike
+      # `!cancelled()` (#7089, claude-review REQUIRED finding on #7088, later
+      # aligned with #6788's `always()` -> `!cancelled()` swap): unlike
       # the clang/gcc install this step is modeled on -- which is the FIRST
       # step in its job and so has nothing upstream that could skip it --
       # this step sits after ~40 `background: true` steps, any one of which
       # can fail and skip every subsequent unguarded step by default (#6712,
-      # #6788, same reasoning as the three `always()`-guarded steps just
+      # #6788, same reasoning as the `!cancelled()`-guarded steps just
       # above). Without it, this step (and so the auto-FFI bridge step right
       # after it, which actually needs `mvn`) could still be skipped on a
       # self-hosted runner whenever an earlier background step fails,
@@ -5698,7 +5699,7 @@ jobs:
       # install uses, so the two can never race on the dpkg lock — whichever
       # runs first installs; the other waits, then finds `mvn` present.
       - name: Install Maven (self-hosted runners only)
-        if: always() && runner.environment == 'self-hosted'
+        if: ${{ !cancelled() && runner.environment == 'self-hosted' }}
         run: |
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
           flock /tmp/lyric-ci-apt-maven.lock -c 'sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends maven'
