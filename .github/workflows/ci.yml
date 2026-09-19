@@ -3380,6 +3380,7 @@ jobs:
       # above (#6926) keeps this from racing the bitwise self-test's own
       # compile of the identical source file to the identical output path.
       - name: Coverage smoke test on JVM (lyric test --target jvm --coverage, #6659)
+        if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/coverage-smoke-test.sh lyric-compiler/lyric/bitwise_self_test.l
 
