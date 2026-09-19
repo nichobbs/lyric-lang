@@ -3463,6 +3463,7 @@ jobs:
       # by bare field NAME across every bundled type instead of by the
       # parameter's own class (a silent wrong-class `checkcast`).
       - name: Generic-record parameter field-read self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/generic_param_field_read_jvm_self_test.l
@@ -3474,6 +3475,7 @@ jobs:
       # with `error[J007]` (erased-Object receiver) instead of resolving
       # against the record's real class.
       - name: Generic-record indexed-element field-read self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/generic_element_field_read_jvm_self_test.l
@@ -3486,6 +3488,7 @@ jobs:
       # `java.lang.Object` and fail JVM auto-FFI dispatch (`error[J008]`)
       # instead of using the `Char`/`Byte` numeric-conversion intrinsic.
       - name: Slice array-ABI self-test on JVM (native lyric test --target jvm, #6586)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/slice_array_abi_self_test.l
@@ -3691,6 +3694,7 @@ jobs:
       # auto-FFI scored no matching `ArrayList.add` overload for an
       # array-typed argument). JVM-only per the tracking issue's own scope.
       - name: List[slice[T]] construction self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/list_of_slice_construction_jvm_self_test.l
@@ -3795,6 +3799,7 @@ jobs:
       # Placed in this second, lighter sub-batch (not the pre-barrier batch,
       # which already exceeds the ~14-concurrent-step cap, #5913/#6867).
       - name: Extern Option[T] null-coercion self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/extern_option_self_test.l
@@ -3950,6 +3955,7 @@ jobs:
       # this second, lighter sub-batch rather than the pre-barrier batch,
       # which already sits at the ~14-concurrent-step cap (#5913).
       - name: Slice compound-assign eval-order self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/slice_compound_assign_eval_order_self_test.l
@@ -5296,6 +5302,7 @@ jobs:
       # with its own message) rather than widening the shared, repo-wide
       # 300s constant every other manifest's restore also uses.
       - name: lyric-aws-secrets suite on JVM (lyric test --target jvm --features jvm)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: |
