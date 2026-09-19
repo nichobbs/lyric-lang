@@ -32369,7 +32369,7 @@ message naming both interfaces when a second, different interface claims
 an already-owned bare name (re-registering the SAME interface across the
 names-only then full-signature passes is unaffected).
 
-**Related:** D-progress-919 (full account, `docs/decisions/`), #4900,
+**Related:** D-progress-926 (full account, `docs/decisions/`), #4900,
 #6809 (the multi-package native builds that made this reachable).
 
 ### Qualified cross-package type references resolve to the exact package named, not scope-priority (#6689, #6992, #6972)
@@ -32396,7 +32396,7 @@ falling back to scope-priority resolution for a genuinely bare reference.
 through the type checker's own already-correct resolved `Type`, never by
 re-deriving FQNs from raw source text.
 
-**Related:** D-progress-920/921/922 (full accounts, `docs/decisions/`),
+**Related:** D-progress-927/921/922 (full accounts, `docs/decisions/`),
 #6689, #6992, #6972, PR #6904.
 
 ### `internal` items are now visible to a project's own sibling packages, across all three backends (#6580)

@@ -1,4 +1,4 @@
-# D-progress-920 — Self-hosted compiler: qualified cross-package type references resolve to the exact package named, not scope-priority (#6689)
+# D-progress-927 — Self-hosted compiler: qualified cross-package type references resolve to the exact package named, not scope-priority (#6689)
 
 **Status:** shipped
 

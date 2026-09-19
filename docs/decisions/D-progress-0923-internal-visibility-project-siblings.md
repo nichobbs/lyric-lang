@@ -61,4 +61,4 @@ native-target regression test was added to `llvm_project_self_test.l`
 dedicated end-to-end test) — it type-checks and lowers to LLVM IR
 identically to the file's other ASan-linked tests, confirming the fix is
 exercised; this sandbox cannot execute it end-to-end (pre-existing missing
-`libclang_rt.asan-*.a`, same gap noted in D-progress-919/PR #6900).
+`libclang_rt.asan-*.a`, same gap noted in D-progress-926/PR #6900).

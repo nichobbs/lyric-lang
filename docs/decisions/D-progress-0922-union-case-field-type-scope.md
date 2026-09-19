@@ -1,8 +1,8 @@
-# D-progress-922 — Self-hosted compiler: union case field types now resolve under the case's OWN declaring package, closing the #6972 gap left by D-progress-920's record-only fix
+# D-progress-922 — Self-hosted compiler: union case field types now resolve under the case's OWN declaring package, closing the #6972 gap left by D-progress-927's record-only fix
 
 **Status:** shipped
 
-**Context.** A `claude-review` REQUIRED finding on PR #6904 (D-progress-920)
+**Context.** A `claude-review` REQUIRED finding on PR #6904 (D-progress-927)
 pointed out that its `collectCtorFields` fix only covered records/exposed-
 records/opaque constructor fields — `unionCaseFieldTypes` (backing both
 `inferUnionCaseConstruction`, the construction path, and
@@ -53,5 +53,5 @@ printing the expected value. Full `msil_project_bridge_self_test.l` (56/56),
 `jvm_cross_package_collision_self_test.l` (7/7), and `typechecker_self_test.l`
 (419/419) all pass with no regressions.
 
-**Related:** #6972 (this fix), D-progress-920/#6689 (the record-only
+**Related:** #6972 (this fix), D-progress-927/#6689 (the record-only
 predecessor fix this closes the gap in), PR #6904.

@@ -1,8 +1,8 @@
-# D-progress-921 — MSIL codegen: a qualified generic type's own HEAD now resolves to the exact package named, closing the #6992 gap left by D-progress-920's `TRef`-only fix
+# D-progress-921 — MSIL codegen: a qualified generic type's own HEAD now resolves to the exact package named, closing the #6992 gap left by D-progress-927's `TRef`-only fix
 
 **Status:** shipped
 
-**Context.** A `claude-review` REQUIRED finding on PR #6904 (D-progress-920)
+**Context.** A `claude-review` REQUIRED finding on PR #6904 (D-progress-927)
 pointed out that `resolveTypeFqnQualified` was wired into `typeExprToMsilCtx`'s
 bare `TRef` case only. The identical hazard applies to a qualified generic
 type's own HEAD, not just its type arguments or a bare reference: `PkgA.Box[Int]`
@@ -14,7 +14,7 @@ of **four** functions: `typeExprToMsilCtx`, `typeExprToMsilG`,
 `typeExprToMsilGenBody`, and `typeExprToMsilGenSig`.
 
 **Fix.** All four call sites now call `resolveTypeFqnQualified(cctx, pkgName,
-head, headSeg)` — the same helper D-progress-920 introduced — passing the
+head, headSeg)` — the same helper D-progress-927 introduced — passing the
 generic application's own `head: ModulePath` (already in scope, used to
 compute `headSeg` via `lastSegmentMsil(head)` at each site) instead of just
 the bare tail segment.
@@ -36,5 +36,5 @@ runs, printing the expected value. Full `msil_project_bridge_self_test.l`
 (57/57), `jvm_cross_package_collision_self_test.l` (9/9), and
 `typechecker_self_test.l` (419/419) all pass with no regressions.
 
-**Related:** #6992 (this fix), D-progress-920/#6904 (the `TRef`-only
+**Related:** #6992 (this fix), D-progress-927/#6904 (the `TRef`-only
 predecessor fix this closes the gap in).
