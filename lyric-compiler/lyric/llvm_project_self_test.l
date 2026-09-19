@@ -150,6 +150,7 @@ test "two-package project: qualified call to an internal sibling-package functio
   pkgs.add(
     NativeSourcePackage(
       name = "Proj5.App",
+      path = "",
       source = "package Proj5.App\n" + "import Proj5.Lib\n" + "func main(): Int {\n" + "  Proj5.Lib.helper(40)\n" +
         "}\n"
     )
@@ -157,6 +158,7 @@ test "two-package project: qualified call to an internal sibling-package functio
   pkgs.add(
     NativeSourcePackage(
       name = "Proj5.Lib",
+      path = "",
       source = "package Proj5.Lib\n" + "internal func helper(n: in Int): Int {\n" + "  n + 2\n" + "}\n"
     )
   )
