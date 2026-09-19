@@ -20541,6 +20541,33 @@ func emitGenericExternMember(
         )
       }
 
+      // A member that is BOTH on a generic-declaring type AND has its OWN
+      // method-level generic parameters (e.g. `List<T>.ConvertAll<TOutput>`)
+      // needs a MethodSpec (ECMA-335 §II.23.2.29) to instantiate the
+      // method's own `!!n` positions, on top of the TypeSpec this function
+      // already builds for the declaring type's `!n` positions. This
+      // function has no such MethodSpec-emission path — it only ever emits
+      // a plain `call`/`callvirt`/`newobj` against a bare MemberRef token,
+      // which is invalid IL once the signature still contains an
+      // uninstantiated `!!n` (the `Mdr.STMVar` arm above successfully
+      // converts such a signature rather than declining it, so this shape
+      // would otherwise compile clean and fault at load/verification time
+      // instead of surfacing a build-time error). `emitGenericMethodExternCall`
+      // (Gap 2, D-progress-929) implements exactly this MethodSpec witnessing,
+      // but only for a NON-generic-declaring type; combining both gaps is
+      // out of scope here. Decline loudly, matching the `isValType and
+      // isInstance` precedent immediately above and the `#5809`/`#6995`
+      // family of declined-rather-than-silently-broken shapes.
+      if sig.isGeneric {
+        panic(
+          "Msil.Codegen: FFI extern '" + resolvedFqn + "." + r.memberName + "' on '" + decl.name +
+            "' is a member of a generic-declaring type that ALSO has its own method-level generic " +
+            "parameters (e.g. List<T>.ConvertAll<TOutput>) — unsupported (no MethodSpec-emission path " +
+            "exists for this combination; the declaring-type TypeSpec alone cannot instantiate the " +
+            "method's own generic parameters). See #7138."
+        )
+      }
+
       // Closed GENERICINST TypeSpec.  A bracketed concrete instantiation supplies
       // the real type args (so a generic-invariant receiver `castclass` matches
       // the runtime instance); otherwise the args erase to `<object,…>` (valid

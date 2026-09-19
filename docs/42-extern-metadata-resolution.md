@@ -545,7 +545,7 @@ runtime gap.
   (`@externTarget with verified JVM signatures compile and run correctly`).
 - **Phase 6 — GENERICINST member params + MethodSpec for generic
   `@externTarget` methods. _(SHIPPED — D-progress-877, #6581; seven review
-  follow-ups D-progress-930–928, see below.)_** Phase 4 left
+  follow-ups D-progress-930–938, see below.)_** Phase 4 left
   two gaps in the MSIL backend's generic-member handling, both required by
   `lyric-grpc`'s unary-call kernel (`Grpc.Core.Marshaller<T>`'s ctor,
   `CallInvoker.BlockingUnaryCall<TRequest,TResponse>`):
@@ -695,6 +695,17 @@ runtime gap.
     instance method matching Gap 2's shape (most generic-method BCL APIs,
     including `DataRow.Field<T>` which was tried first, turn out to be
     static extension methods on inspection).
+  - **Review follow-up (D-progress-938, #7138).** The `Mdr.STMVar` arm added
+    for the above has a side effect on `emitGenericExternMember` (Gap 1's
+    own function, not Gap 2's): a member that is BOTH on a
+    generic-declaring type AND has its own method-level generic parameter
+    (`List<T>.ConvertAll<TOutput>`) now converts its signature
+    successfully where it previously declined, but `emitGenericExternMember`
+    has no MethodSpec-emission path for the method's own generic
+    parameter — reproduced as a real load-time `BadImageFormatException`.
+    Fixed with a loud `panic` guard mirroring the `isValType and
+    isInstance` precedent already in the same function; the full combined
+    TypeSpec-plus-MethodSpec implementation remains open under #7138.
 
 ---
 

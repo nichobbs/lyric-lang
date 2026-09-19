@@ -34663,7 +34663,19 @@ initially tried, is a static extension method); no code fix was needed, the
 existing instance branch already worked, only test coverage was missing
 (D-progress-937, #7137).
 
-**Related:** D-progress-929 through 937 (full account, `docs/decisions/`),
+A final review pass also found that the new `Mdr.STMVar` arm (added for the
+instance-path coverage above) has a side effect on `emitGenericExternMember`
+(Gap 1's own function, not Gap 2's): a member that is BOTH on a
+generic-declaring type AND has its own method-level generic parameter
+(e.g. `List<T>.ConvertAll<TOutput>`) now converts its signature
+successfully where it previously declined, but `emitGenericExternMember`
+has no MethodSpec-emission path for the method's own generic parameter —
+reproduced as a real load-time `BadImageFormatException` against a
+standalone repro. Fixed by adding a loud `panic` guard, mirroring the
+`isValType and isInstance` precedent already in the same function
+(D-progress-938, #7138).
+
+**Related:** D-progress-929 through 938 (full account, `docs/decisions/`),
 #6581/#6537 (fixed by this PR), #6987/#6989/#6995/#7016/#7022/#7137 (the
 review-flagged follow-ups fixed in the same PR), #7023 (the deferred
 full-support follow-up), D-progress-877 (the independent re-verification),

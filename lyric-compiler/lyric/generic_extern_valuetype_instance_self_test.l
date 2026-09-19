@@ -241,3 +241,90 @@ test "async extern wrapper over a BCL method with its own generics fails the bui
     "async generic-method extern: the diagnostic names the unsupported shape (got: " + diagText + ")"
   )
 }
+
+// #7138 (D-progress-938, review follow-up on #7137's `Mdr.STMVar` arm): a
+// member that is BOTH on a generic-declaring type AND has its own
+// method-level generic parameter (e.g. `List<T>.ConvertAll<TOutput>`) makes
+// `genericMemberSigToMsil`'s signature conversion SUCCEED (the `STMVar` arm
+// added for Gap 2 also converts a method-own MVAR reached through
+// `emitGenericExternMember`'s generic-declaring-type path), but
+// `emitGenericExternMember` has no MethodSpec-emission path to instantiate
+// that method-own generic parameter — it only ever emits a plain
+// `call`/`callvirt`/`newobj` against a bare MemberRef. Before the fix this
+// compiled clean and faulted at CLR LOAD time with
+// `BadImageFormatException` (confirmed by reproducing this exact shape
+// against the pre-fix compiler); the fix declines loudly instead.
+func genericDeclaringTypeOwnGenericMethodSource(): String {
+  "package ListConvertAllFixture\n\n" + "extern type ListOf[T] = \"System.Collections.Generic.List`1\"\n\n" +
+    "@externTarget(\"System.Collections.Generic.List`1..ctor\")\n" +
+    "func newListOf[T](): ListOf[T] = ()\n\n" +
+    "@externTarget(\"System.Collections.Generic.List`1.Add\")\n" +
+    "func listOfAdd[T](l: in ListOf[T], item: in T): Unit = ()\n\n" +
+    "@externTarget(\"System.Collections.Generic.List`1.ConvertAll\")\n" +
+    "func listOfConvertAll[T, TOutput](l: in ListOf[T], converter: in (T) -> TOutput): ListOf[TOutput] = ()\n\n" +
+    "func main(): Unit {\n" +
+    "  val l = newListOf[Int]()\n" +
+    "  listOfAdd(l, 42)\n" +
+    "  val converted = listOfConvertAll[Int, String](l, (x) -> \"n=\" + x.toString())\n" +
+    "  println(\"unreachable\")\n" +
+    "}\n"
+}
+
+test "generic-declaring-type member with its own method-level generic fails the build cleanly, not with a load-time BadImageFormatException (#7138)" {
+  val dir = freshTempDir("list-convertall")
+  defer {
+    cleanup(dir)
+  }
+  val dllPath = Path.join(dir, "ListConvertAllFixture.dll")
+  val srcs: List[String] = newList()
+  srcs.add(genericDeclaringTypeOwnGenericMethodSource())
+  val paths: List[String] = newList()
+  paths.add("")
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(Emitter.ProjectPackage(name = "ListConvertAllFixture", sources = srcs, paths = paths))
+  val req = Emitter.EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = "ListConvertAllFixture",
+    outputPath = dllPath,
+    target = Emitter.Dotnet,
+    restoredDllPaths = newList(),
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = newList(),
+    nugetAssemblyPaths = newList(),
+    defines = newList()
+  )
+  var threw = false
+  var produced = false
+  var diagText = ""
+  try {
+    val res = Emitter.emitProject(req)
+    match res.outputPath {
+      case Some(_) -> {
+        produced = true
+      }
+      case None -> ()
+    }
+    var di = 0
+    while di < res.diagnostics.count {
+      diagText = diagText + res.diagnostics[di].code + ": " + res.diagnostics[di].message + "\n"
+      di = di + 1
+    }
+  } catch Bug as b {
+    threw = true
+  }
+  assertFalse(
+    threw,
+    "generic-declaring-type own-generic-method extern: the codegen refusal must be contained inside emitProject, never thrown to the caller"
+  )
+  assertFalse(
+    produced,
+    "generic-declaring-type own-generic-method extern: emitProject reports build failure (no output artifact), not success"
+  )
+  assertTrue(
+    Str.contains(diagText, "generic-declaring type that ALSO has its own method-level generic parameters"),
+    "generic-declaring-type own-generic-method extern: the diagnostic names the unsupported shape (got: " + diagText +
+      ")"
+  )
+}
