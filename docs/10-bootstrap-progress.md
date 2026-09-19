@@ -34652,8 +34652,19 @@ API #6989 already used, just declaring `String` instead of `Int`. Fixed by
 adding a `castclass`-based branch alongside the existing `unbox.any` one,
 reusing the shared `castObjectToMsil` erasure-coercion helper (D-progress-927).
 
-**Related:** D-progress-920 through 927 (full account, `docs/decisions/`),
-#6581/#6537 (fixed by this PR), #6987/#6989/#6995/#7016/#7022 (the
+A final review pass found every existing Gap 2 test exercised only the
+STATIC method-own-generic path, leaving the INSTANCE-call path (receiver
+load, `MCallvirt`, `mpIdx` parameter-offset) — Gap 2's own motivating API,
+`CallInvoker.BlockingUnaryCall<TRequest,TResponse>`, is an instance method —
+completely untested. `System.Text.Json.Nodes.JsonNode.GetValue<T>(): T` is a
+genuine BCL-only instance method matching the shape (most generic-method
+BCL APIs turn out to be static on inspection, even `DataRow.Field<T>`,
+initially tried, is a static extension method); no code fix was needed, the
+existing instance branch already worked, only test coverage was missing
+(D-progress-928, #7137).
+
+**Related:** D-progress-920 through 928 (full account, `docs/decisions/`),
+#6581/#6537 (fixed by this PR), #6987/#6989/#6995/#7016/#7022/#7137 (the
 review-flagged follow-ups fixed in the same PR), #7023 (the deferred
 full-support follow-up), D-progress-877 (the independent re-verification),
 #5809 (pre-existing value-type-generic-member limitation, untouched),

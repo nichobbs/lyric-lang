@@ -545,7 +545,7 @@ runtime gap.
   (`@externTarget with verified JVM signatures compile and run correctly`).
 - **Phase 6 — GENERICINST member params + MethodSpec for generic
   `@externTarget` methods. _(SHIPPED — D-progress-877, #6581; seven review
-  follow-ups D-progress-921–927, see below.)_** Phase 4 left
+  follow-ups D-progress-921–928, see below.)_** Phase 4 left
   two gaps in the MSIL backend's generic-member handling, both required by
   `lyric-grpc`'s unary-call kernel (`Grpc.Core.Marshaller<T>`'s ctor,
   `CallInvoker.BlockingUnaryCall<TRequest,TResponse>`):
@@ -684,6 +684,17 @@ runtime gap.
     alongside the existing `unbox.any` one, reusing the shared
     `castObjectToMsil` erasure-coercion helper (null-safe per ECMA-335
     §III.4.6, so unlike the value-type branch it needs no null-guard).
+  - **Review follow-up (D-progress-928, #7137).** Every test above exercises
+    only the STATIC method-own-generic path; Gap 2's own motivating API,
+    `CallInvoker.BlockingUnaryCall<TRequest,TResponse>`, is an INSTANCE
+    method, so the receiver-load / `MCallvirt` / `mpIdx` parameter-offset
+    logic specific to the instance path was untested. No code fix was
+    needed — the existing instance branch already worked — only test
+    coverage was missing. Added coverage using
+    `System.Text.Json.Nodes.JsonNode.GetValue<T>(): T`, a genuine BCL-only
+    instance method matching Gap 2's shape (most generic-method BCL APIs,
+    including `DataRow.Field<T>` which was tried first, turn out to be
+    static extension methods on inspection).
 
 ---
 

@@ -2636,8 +2636,6 @@ func numericRank(elemByte: in Int): Int {
   }
 }
 
-// Score one argument against one parameter: 2 = exact, 1 = widening / boxes to
-// object, -1 = incompatible.
 // Score tiers (highest to lowest, `-1` reserved everywhere as the universal
 // "no match" sentinel — never repurpose it as a weak-but-admissible value):
 // 3 = exact match; 2 = widening/object-accepts-anything/Extends-chain upcast;

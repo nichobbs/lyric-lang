@@ -209,6 +209,59 @@ test "Enumerable.First<TSource>'s reference-type return is narrowed from the wit
   assertEqual(firstOfStr(seq), "hello", "the witnessed-Object return is castclass'd back to String before ret")
 }
 
+// ── Gap 2 review follow-up (#7137): the INSTANCE-call path through ────────
+// `emitGenericMethodExternCall` had no coverage — every test above uses a
+// STATIC method-own-generic BCL call (`Enumerable.Empty<T>`/`Repeat<T>`/
+// `First<T>`/`ElementAt<T>`), deliberately chosen so CI needs no
+// `lyric-grpc` package for Gap 2's actual motivating API,
+// `CallInvoker.BlockingUnaryCall<TRequest,TResponse>` — itself an INSTANCE
+// method. That left the receiver-load / `MCallvirt` (vs. plain `MCall`) /
+// `mpIdx` parameter-offset logic (an instance call's `this` occupies
+// argument slot 0, shifting every declared parameter's index by one
+// relative to the static path) completely unexercised.
+//
+// `System.Text.Json.Nodes.JsonNode.GetValue<T>(): T` is a real, always-
+// available (no extra package) BCL-only instance method matching Gap 2's
+// exact shape: `JsonNode` is a non-generic declaring type, `GetValue<T>`
+// is a genuine instance method (not a static extension, unlike most
+// generic-method BCL APIs) declared with its own method-level generic
+// parameter, witnessed as `System.Object` by the MethodSpec exactly like
+// the static-path methods above, with a bare (non-wrapped) MVAR return —
+// so both the box/unbox-at-witnessed-Object dance (#6989) and the
+// reference-type `castclass` narrowing (D-progress-927) get exercised on
+// the instance path too, not just the static one.
+extern type JsonNode = "System.Text.Json.Nodes.JsonNode"
+
+@externTarget("System.Text.Json.Nodes.JsonValue.Create")
+func jsonValueOfInt(v: Int): JsonNode = ()
+
+@externInstance
+@externTarget("System.Text.Json.Nodes.JsonNode.GetValue")
+func jsonGetValueInt(n: in JsonNode): Int = ()
+
+@externTarget("System.Text.Json.Nodes.JsonValue.Create")
+func jsonValueOfStr(v: in String): JsonNode = ()
+
+@externInstance
+@externTarget("System.Text.Json.Nodes.JsonNode.GetValue")
+func jsonGetValueStr(n: in JsonNode): String = ()
+
+test "JsonNode.GetValue<T>() exercises the INSTANCE-call path through emitGenericMethodExternCall (#7137)" {
+  val intNode = jsonValueOfInt(42)
+  assertEqualInt(
+    jsonGetValueInt(intNode),
+    42,
+    "instance call boxes the Int argument and unboxes the witnessed-Object Int return"
+  )
+
+  val strNode = jsonValueOfStr("hello")
+  assertEqual(
+    jsonGetValueStr(strNode),
+    "hello",
+    "instance call's witnessed-Object String return is castclass'd back to String"
+  )
+}
+
 // Gap 2 review follow-up #7022 (an `async`-declared wrapper over a BCL
 // method that is ALSO generic in its own right must not silently emit a
 // non-unwrapped body) is covered by a dedicated build-time-decline test in
