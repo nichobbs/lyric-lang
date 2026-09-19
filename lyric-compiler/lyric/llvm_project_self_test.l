@@ -150,6 +150,7 @@ test "two-package project: qualified call to an internal sibling-package functio
   pkgs.add(
     NativeSourcePackage(
       name = "Proj5.App",
+      path = "",
       source = "package Proj5.App\n" + "import Proj5.Lib\n" + "func main(): Int {\n" + "  Proj5.Lib.helper(40)\n" +
         "}\n"
     )
@@ -157,6 +158,7 @@ test "two-package project: qualified call to an internal sibling-package functio
   pkgs.add(
     NativeSourcePackage(
       name = "Proj5.Lib",
+      path = "",
       source = "package Proj5.Lib\n" + "internal func helper(n: in Int): Int {\n" + "  n + 2\n" + "}\n"
     )
   )
@@ -269,6 +271,7 @@ test "two-package project: same-bare-name interfaces from different packages pan
   pkgs.add(
     NativeSourcePackage(
       name = "Proj6.Shapes1",
+      path = "",
       source = "package Proj6.Shapes1\n" + "pub interface Shape {\n" + "  func area(self: in Self): Int\n" + "}\n" +
         "pub record Square {\n" +
         "  side: Int\n" +
@@ -283,6 +286,7 @@ test "two-package project: same-bare-name interfaces from different packages pan
   pkgs.add(
     NativeSourcePackage(
       name = "Proj6.Shapes2",
+      path = "",
       source = "package Proj6.Shapes2\n" + "pub interface Shape {\n" + "  func area(self: in Self): Int\n" + "}\n" +
         "pub record Circle {\n" +
         "  radius: Int\n" +
@@ -297,6 +301,7 @@ test "two-package project: same-bare-name interfaces from different packages pan
   pkgs.add(
     NativeSourcePackage(
       name = "Proj6.App",
+      path = "",
       source = "package Proj6.App\n" + "import Proj6.Shapes1\n" + "import Proj6.Shapes2\n" + "func main(): Int {\n" +
         "  0\n" +
         "}\n"
