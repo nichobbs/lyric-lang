@@ -842,6 +842,23 @@ jobs:
       # draft to ready-for-review by the CI gate workflow, which only fires after
       # every required check passes — confirming the runner honours both properties.
       #
+      # WARNING (#7110): never add an `if:` key to a bare `wait-all: true` step
+      # (one with no `run:`/`uses:`, i.e. every "Wait for parallel tests ..."
+      # barrier in this file). Verified empirically on commit `090d3a1`
+      # (#6788): the instant such a step carries any `if:` — `always()`,
+      # `!cancelled()`, anything — this repo's CI backend rejects the entire
+      # workflow outright, scheduling zero jobs, at every file size tested
+      # (not a size-ceiling issue). This is why the barrier steps below stay
+      # unguarded even though every `background: true` step between them
+      # carries `if: ${{ !cancelled() }}` — the asymmetry is deliberate, not
+      # an oversight (tracked as the one open item on #7110: once one barrier
+      # trips job status to `failure`, later unguarded barriers get skipped
+      # by GitHub's default `success()` condition too, so a real but separate
+      # failure in a later batch can go unreported). If you need to fix that
+      # gap, find a way that never puts `if:` on a `wait-all: true` step —
+      # e.g. routing batch results through job outputs/env instead of relying
+      # on each Wait step's own conditional execution.
+      #
       # Peak concurrency (#4486, #4841): each `background: true` step runs an
       # in-process self-hosted compilation (Msil.Bridge / Jvm.Bridge) via `lyric
       # test`.  This group was once a single ~36-38-step batch; PR #4810 hit the
