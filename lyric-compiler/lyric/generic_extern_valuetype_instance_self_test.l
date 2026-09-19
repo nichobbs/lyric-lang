@@ -160,3 +160,84 @@ test "instance-method extern on a value-type generic-declaring type fails the bu
     "value-type generic instance extern: the diagnostic names the unsupported shape (got: " + diagText + ")"
   )
 }
+
+// #7022/#7023: an `async`-declared `@externTarget` wrapper over a BCL
+// method that is ALSO generic in its own right (e.g. `Task.FromResult<T>`,
+// a non-generic-declaring-type static method with its own generic
+// parameter, returning `Task<T>`) needs BOTH the MethodSpec instantiation
+// `emitGenericMethodExternCall` builds AND the Task-unwrap machinery the
+// plain (non-generic) async path relies on — neither alone is correct.
+// Silently declining (leaving metadata resolution as if it found nothing)
+// was tried first and found NOT to fail cleanly: the plain-method fallback
+// path still builds a syntactically valid but uninstantiated MemberRef for
+// the generic method, so the build succeeds and the call then throws a
+// confusing `MissingMethodException` at RUNTIME instead of a clear
+// build-time diagnostic. Declined LOUDLY instead, mirroring the #5809
+// precedent this file already covers.
+func asyncGenericMethodExternSource(): String {
+  "package AsyncGenericMethodFixture\n\n" + "@externTarget(\"System.Threading.Tasks.Task.FromResult\")\n" +
+    "@externStatic\n" +
+    "async func fromResultAsync(value: Int): Int = ()\n\n" +
+    "func main(): Unit {\n" +
+    "  val r = await fromResultAsync(42)\n" +
+    "  println(r)\n" +
+    "}\n"
+}
+
+test "async extern wrapper over a BCL method with its own generics fails the build cleanly, no thrown Bug (#7022)" {
+  val dir = freshTempDir("async-generic-method")
+  defer {
+    cleanup(dir)
+  }
+  val dllPath = Path.join(dir, "AsyncGenericMethodFixture.dll")
+  val srcs: List[String] = newList()
+  srcs.add(asyncGenericMethodExternSource())
+  val paths: List[String] = newList()
+  paths.add("")
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(Emitter.ProjectPackage(name = "AsyncGenericMethodFixture", sources = srcs, paths = paths))
+  val req = Emitter.EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = "AsyncGenericMethodFixture",
+    outputPath = dllPath,
+    target = Emitter.Dotnet,
+    restoredDllPaths = newList(),
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = newList(),
+    nugetAssemblyPaths = newList(),
+    defines = newList()
+  )
+  var threw = false
+  var produced = false
+  var diagText = ""
+  try {
+    val res = Emitter.emitProject(req)
+    match res.outputPath {
+      case Some(_) -> {
+        produced = true
+      }
+      case None -> ()
+    }
+    var di = 0
+    while di < res.diagnostics.count {
+      diagText = diagText + res.diagnostics[di].code + ": " + res.diagnostics[di].message + "\n"
+      di = di + 1
+    }
+  } catch Bug as b {
+    threw = true
+  }
+  assertFalse(
+    threw,
+    "async generic-method extern: the codegen refusal must be contained inside emitProject, never thrown to the caller"
+  )
+  assertFalse(
+    produced,
+    "async generic-method extern: emitProject reports build failure (no output artifact), not success"
+  )
+  assertTrue(
+    Str.contains(diagText, "async wrapper over a BCL method that is itself declared with its own generics"),
+    "async generic-method extern: the diagnostic names the unsupported shape (got: " + diagText + ")"
+  )
+}
