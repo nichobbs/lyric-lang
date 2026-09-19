@@ -12,9 +12,10 @@ testing, fixtures, snapshot infrastructure beyond
 `Std.Testing.snapshot`, parallelism, JUnit XML output, doctests,
 and contract-based property auto-derivation are explicitly out of
 v1 scope and tracked for follow-up milestones.  (`lyric test
---properties` for Int/Bool/Double `forall` binders has since shipped
-as v1.x — see §5 Stage 3 below; every other property-testing item in
-this paragraph is still unimplemented.)
+--properties` for Int/Bool/Double `forall` binders and `lyric test
+--update-snapshots` have since shipped as v1.x — see §5 Stage 3 and
+the `--update-snapshots` bullet below; every other property-testing
+item in this paragraph is still unimplemented.)
 
 Background — why v1 was urgent: the panic-on-failure idiom
 (`assertEqual` panics → exit 0 = pass) used to couple the stdlib
@@ -215,6 +216,17 @@ driven discovery story.
   binder type still reports `# skip` (naming the unsupported type)
   under `--properties`, exactly as it does without the flag. Doctest
   harness for ` ```lyric ` blocks is unstarted (tracked under #678).
+* **`--update-snapshots`** _(shipped, #678)_ — `lyric test --update-snapshots`
+  sets the `LYRIC_UPDATE_SNAPSHOTS=1` env var (a real OS-level var, inherited
+  by whichever process the compiled test binary runs as on any target) before
+  compiling; `Std.Testing.Snapshot.snapshotIn` checks it directly and, when
+  set, (re)writes `<dir>/<label>.txt` to match the actual value unconditionally
+  instead of comparing — the same "first-run accept" path it already used for
+  a snapshot file that didn't exist yet, just unconditionally. No CLI-to-
+  runtime plumbing beyond the env var itself was needed. `--manifest`
+  multi-file discovery (shipped) already runs every `[project.tests]` entry
+  against the same env var, so `--update-snapshots` regenerates baselines
+  project-wide with no extra wiring.
 * **Stage 4** — fixture lifetimes, parallel runs, JUnit XML output,
   `--seed` for reproducible property runs.
 
