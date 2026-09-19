@@ -545,7 +545,7 @@ runtime gap.
   (`@externTarget with verified JVM signatures compile and run correctly`).
 - **Phase 6 — GENERICINST member params + MethodSpec for generic
   `@externTarget` methods. _(SHIPPED — D-progress-877, #6581; seven review
-  follow-ups D-progress-921–928, see below.)_** Phase 4 left
+  follow-ups D-progress-930–928, see below.)_** Phase 4 left
   two gaps in the MSIL backend's generic-member handling, both required by
   `lyric-grpc`'s unary-call kernel (`Grpc.Core.Marshaller<T>`'s ctor,
   `CallInvoker.BlockingUnaryCall<TRequest,TResponse>`):
@@ -601,7 +601,7 @@ runtime gap.
     `generic_extern_methodspec_self_test.l` (BCL-only shapes — `List`1`'s
     `IEnumerable<T>` ctor and `Enumerable.Empty<T>()`'s MethodSpec dispatch —
     so CI needs no gRPC package).
-  - **Review follow-up (D-progress-921).** A genuine regression surfaced
+  - **Review follow-up (D-progress-930).** A genuine regression surfaced
     post-review: the `scoreSigType` `STNamedGenericInst` arm above initially
     matched every CLOSED generic instantiation unconditionally, not just the
     open-VAR case it documents — spuriously admitting an unrelated overload
@@ -621,13 +621,13 @@ runtime gap.
     surfaced a missing `STMVar` arm in `scoreSigType` (only `STVar` existed)
     without which the scored resolver never found `Enumerable.Repeat<T>`'s
     bare-MVAR parameter at all.
-  - **Review follow-up (D-progress-922).** #6537's two residual
+  - **Review follow-up (D-progress-931).** #6537's two residual
     `externTypeNames` bare-name-collision sites (`resolveFfiClassTypeRef`,
     `lookupDeclaredClrFqnForTypeExpr`) turned out to already be fixed by
     Gap 1's `hasLyricTypeCandidateInScope` hardening above — no further code
     change, just dedicated regression tests added to
     `msil_project_bridge_self_test.l` to close the loop.
-  - **Review follow-up (D-progress-923, #6995).** Gap 1's `castclass` only
+  - **Review follow-up (D-progress-932, #6995).** Gap 1's `castclass` only
     handled the reference-type flavor of a GENERICINST member parameter
     (`MGenericInst`); the value-type flavor (`MValueTypeGenericInst`, e.g. a
     hypothetical `KeyValuePair<K,V>`-shaped ctor param) silently fell
@@ -638,7 +638,7 @@ runtime gap.
     rather than ship untested `unbox.any` logic it was declined loudly with
     a `panic` — mirroring the existing `#5809` value-type-receiver
     precedent.
-  - **Review follow-up (D-progress-924, #7016).** `emitGenericMethodExternCall`'s
+  - **Review follow-up (D-progress-933, #7016).** `emitGenericMethodExternCall`'s
     `openKey` blob-interning key still collided for two overloads on the
     SAME declaring type differing only in parameter types (e.g.
     `Enumerable.ElementAt<TSource>(int)` vs the `System.Index`-taking
@@ -647,7 +647,7 @@ runtime gap.
     each parameter's and the return's full `msilTypeKeyStr` structural
     encoding into the key, mirroring the Gap 1 `castclass` cache key's own
     structural serialization.
-  - **Review follow-up (D-progress-925).** That same review round caught a
+  - **Review follow-up (D-progress-934).** That same review round caught a
     genuine `ValueTask<TResult>` ctor-ambiguity regression: the `STMVar` and
     `STNamedGenericInst`-open-var scoring arms both scored `0`, tying
     `ValueTask<TResult>`'s bare `.ctor(TResult)` against its wrapped
@@ -660,7 +660,7 @@ runtime gap.
     via the same isolated-worktree bisection methodology (clean `main`
     passes the regressed test 5/5, this branch's pre-fix state failed it
     2/5).
-  - **Review follow-up (D-progress-926, #7022).** `emitExternTargetBody`'s
+  - **Review follow-up (D-progress-935, #7022).** `emitExternTargetBody`'s
     `msig.isGeneric` branch never checked `decl.isAsync`, so an
     `async`-declared wrapper over a BCL method that is ALSO generic in its
     own right (e.g. `HttpContentJsonExtensions.ReadFromJsonAsync<T>`) took
@@ -674,7 +674,7 @@ runtime gap.
     (a build-time `panic`, matching the `#5809`/`#6995` precedent); full
     `Task`/`ValueTask`-unwrap support for this combination is tracked
     separately under #7023.
-  - **Review follow-up (D-progress-927).** The method-own-generic return
+  - **Review follow-up (D-progress-936).** The method-own-generic return
     narrowing above (#6989) only handled a BCL VALUE-type wrapper return
     (`unbox.any`); a genuine (non-`Object`) REFERENCE-type wrapper return
     left the erased `object` un-narrowed on the stack, rejected by the CLR
@@ -684,7 +684,7 @@ runtime gap.
     alongside the existing `unbox.any` one, reusing the shared
     `castObjectToMsil` erasure-coercion helper (null-safe per ECMA-335
     §III.4.6, so unlike the value-type branch it needs no null-guard).
-  - **Review follow-up (D-progress-928, #7137).** Every test above exercises
+  - **Review follow-up (D-progress-937, #7137).** Every test above exercises
     only the STATIC method-own-generic path; Gap 2's own motivating API,
     `CallInvoker.BlockingUnaryCall<TRequest,TResponse>`, is an INSTANCE
     method, so the receiver-load / `MCallvirt` / `mpIdx` parameter-offset

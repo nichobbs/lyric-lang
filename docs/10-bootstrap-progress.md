@@ -34611,19 +34611,19 @@ worktree bisection, alongside two review-flagged `emitGenericMethodExternCall`
 gaps: a blob-interning key collision across distinct declaring types sharing
 a same-arity generic method name (#6987), and missing box/unbox at a
 method-own-generic position for a value-type argument/return (#6989),
-which also surfaced a missing `STMVar` scoring arm (D-progress-921).
+which also surfaced a missing `STMVar` scoring arm (D-progress-930).
 #6537's two residual `externTypeNames` bare-name-collision sites were
 confirmed already fixed by this PR's Gap 1 hardening; regression tests
-were added to close the loop (D-progress-922). The Gap 1 `castclass`'s
+were added to close the loop (D-progress-931). The Gap 1 `castclass`'s
 value-type flavor (`MValueTypeGenericInst`) was investigated and confirmed
 currently unreachable via any real BCL API, so it was declined loudly with
-a `panic` rather than shipped as untested `unbox.any` logic (D-progress-923,
+a `panic` rather than shipped as untested `unbox.any` logic (D-progress-932,
 #6995). `emitGenericMethodExternCall`'s `openKey` still collided for two
 overloads on the SAME declaring type differing only in parameter types
 (e.g. `Enumerable.ElementAt<TSource>(int)` vs the `System.Index`-taking
 overload) after the #6987 fix only added the declaring-type discriminator;
 fixed by folding each parameter's and the return's full `msilTypeKeyStr`
-structural encoding into the key (D-progress-924, #7016). That same review
+structural encoding into the key (D-progress-933, #7016). That same review
 round also caught a genuine `ValueTask<TResult>` ctor-ambiguity regression:
 the two new weak-but-nonnegative scoring arms (`STMVar`, `STNamedGenericInst`
 open-var) both scored `0`, tying `ValueTask<TResult>`'s bare `.ctor(TResult)`
@@ -34631,7 +34631,7 @@ against its wrapped `.ctor(Task<TResult>)` sibling and letting the wrong one
 win by Method-table row order — fixed by renumbering `scoreSigType`'s entire
 tier scale (exact 2→3, widening/upcast 1→2, bare declaring/method-own VAR
 0→1, wrapped-open-generic stays the new floor at 0) so each tier gets its
-own rung instead of two colliding at the same value (D-progress-925).
+own rung instead of two colliding at the same value (D-progress-934).
 Finally, `emitExternTargetBody`'s `msig.isGeneric` branch never checked
 `decl.isAsync`, so an `async`-declared wrapper over a BCL method that is
 ALSO generic in its own right (e.g. `HttpContentJsonExtensions.
@@ -34641,7 +34641,7 @@ tried first and found to still fail confusingly at runtime
 (`MissingMethodException`, since the plain-method fallback now succeeds at
 building an uninstantiated MemberRef instead of failing conversion
 outright), so the fix declines LOUDLY instead, matching the `#5809`/`#6995`
-precedent (D-progress-926, #7022; full Task/ValueTask-unwrap support for
+precedent (D-progress-935, #7022; full Task/ValueTask-unwrap support for
 this combination is tracked separately under #7023).
 
 A later review pass caught one more gap in the same return-narrowing dance:
@@ -34650,7 +34650,7 @@ wrapper return, leaving a genuine (non-`Object`) REFERENCE-type wrapper
 return un-narrowed — reachable with the same `Enumerable.First<TSource>`
 API #6989 already used, just declaring `String` instead of `Int`. Fixed by
 adding a `castclass`-based branch alongside the existing `unbox.any` one,
-reusing the shared `castObjectToMsil` erasure-coercion helper (D-progress-927).
+reusing the shared `castObjectToMsil` erasure-coercion helper (D-progress-936).
 
 A final review pass found every existing Gap 2 test exercised only the
 STATIC method-own-generic path, leaving the INSTANCE-call path (receiver
@@ -34661,9 +34661,9 @@ genuine BCL-only instance method matching the shape (most generic-method
 BCL APIs turn out to be static on inspection, even `DataRow.Field<T>`,
 initially tried, is a static extension method); no code fix was needed, the
 existing instance branch already worked, only test coverage was missing
-(D-progress-928, #7137).
+(D-progress-937, #7137).
 
-**Related:** D-progress-920 through 928 (full account, `docs/decisions/`),
+**Related:** D-progress-929 through 937 (full account, `docs/decisions/`),
 #6581/#6537 (fixed by this PR), #6987/#6989/#6995/#7016/#7022/#7137 (the
 review-flagged follow-ups fixed in the same PR), #7023 (the deferred
 full-support follow-up), D-progress-877 (the independent re-verification),

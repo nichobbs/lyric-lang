@@ -228,7 +228,7 @@ test "Enumerable.First<TSource>'s reference-type return is narrowed from the wit
 // parameter, witnessed as `System.Object` by the MethodSpec exactly like
 // the static-path methods above, with a bare (non-wrapped) MVAR return —
 // so both the box/unbox-at-witnessed-Object dance (#6989) and the
-// reference-type `castclass` narrowing (D-progress-927) get exercised on
+// reference-type `castclass` narrowing (D-progress-936) get exercised on
 // the instance path too, not just the static one.
 extern type JsonNode = "System.Text.Json.Nodes.JsonNode"
 

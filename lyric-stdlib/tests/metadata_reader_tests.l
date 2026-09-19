@@ -648,7 +648,7 @@ func prim(b: in Int): SigType {
 func testScoreSigTypeArrayInvariance(): Unit {
   val i4Arr = STSzArray(elem = prim(0x08))   // int32[]
   val i8Arr = STSzArray(elem = prim(0x0A))   // int64[]
-  assertEqualInt(scoreSigType(i4Arr, i4Arr), 3, "score: int[] vs int[] is exact (3, D-progress-925's tier renumbering)")
+  assertEqualInt(scoreSigType(i4Arr, i4Arr), 3, "score: int[] vs int[] is exact (3, D-progress-934's tier renumbering)")
   assertEqualInt(scoreSigType(i4Arr, i8Arr), -1, "score: int[] vs long[] is reject (-1) — arrays invariant")
   assertEqualInt(scoreSigType(i8Arr, i4Arr), -1, "score: long[] vs int[] is reject (-1) — arrays invariant")
 }

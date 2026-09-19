@@ -1,4 +1,4 @@
-# D-progress-920 — MSIL codegen: GENERICINST-shaped member params/returns on a generic-declaring type, and MethodSpec for a BCL method with its own generics, both now emit correctly (#6581)
+# D-progress-929 — MSIL codegen: GENERICINST-shaped member params/returns on a generic-declaring type, and MethodSpec for a BCL method with its own generics, both now emit correctly (#6581)
 
 **Status:** shipped
 
@@ -137,7 +137,7 @@ value-type-receiver decline path unaffected), `nested_generic_self_test.l`
 `git stash` comparison against unmodified `origin/main` was read as
 reproducing the same failure and so was recorded here as an environment-
 specific reference-assembly-pack difference, not a regression from this
-change — **this was wrong**. D-progress-921's later three-way worktree
+change — **this was wrong**. D-progress-930's later three-way worktree
 bisection proved it a genuine regression introduced by this entry's own
 `scoreSigType` `STNamedGenericInst` arm, root-caused and fixed there via
 `sigIsOpenGeneric` gating; see that entry for the full account).

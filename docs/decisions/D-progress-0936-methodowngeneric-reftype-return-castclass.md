@@ -1,9 +1,9 @@
-# D-progress-927 — `emitGenericMethodExternCall`'s method-own-generic return narrows a genuine reference-type wrapper return, not just the value-type case (review follow-up)
+# D-progress-936 — `emitGenericMethodExternCall`'s method-own-generic return narrows a genuine reference-type wrapper return, not just the value-type case (review follow-up)
 
 **Status:** shipped
 
 **Context.** A `claude-review` pass on PR #6981 flagged (SUGGESTION) that
-`emitGenericMethodExternCall`'s return-handling code (D-progress-920, Gap 2)
+`emitGenericMethodExternCall`'s return-handling code (D-progress-929, Gap 2)
 only narrowed a method-own-generic return (`MMethodTypeVar`, witnessed as
 `System.Object` by the MethodSpec) back to the wrapper's own declared type
 when that declared type was a BCL VALUE type (`unbox.any`, #6989). A wrapper
@@ -11,7 +11,7 @@ declaring a genuine (non-`Object`) REFERENCE type at that position had no
 corresponding `castclass` — the erased `object` was left on the stack and
 returned as-is.
 
-**Reachability.** Unlike D-progress-923's `MValueTypeGenericInst` parameter
+**Reachability.** Unlike D-progress-932's `MValueTypeGenericInst` parameter
 case (confirmed unreachable through every current Lyric-side mechanism),
 this shape is trivially reachable with a real, unremarkable BCL API:
 `System.Linq.Enumerable.First<TSource>(IEnumerable<TSource>): TSource` is
@@ -48,7 +48,7 @@ Full regression sweep (`generic_extern_methodspec_self_test.l` 6/6,
 6/6, `generic_extern_valuetype_instance_self_test.l` 2/2) plus `make ilverify`
 (123 DLLs, 0 IL-validity errors), all green.
 
-**Related:** #6581/D-progress-920 (Gap 2, this entry's base), D-progress-921
+**Related:** #6581/D-progress-929 (Gap 2, this entry's base), D-progress-930
 (#6989, the value-type side of this same return-narrowing dance),
-D-progress-923 (the contrasting *unreachable* parameter-side case, for
+D-progress-932 (the contrasting *unreachable* parameter-side case, for
 comparison), PR #6981.
