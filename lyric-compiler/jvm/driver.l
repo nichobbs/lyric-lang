@@ -53,9 +53,13 @@ pub func writeJarFromClasses(req: in BuildRequest, classes: in List[BuiltClass])
 // `Jvm.ZipReader` — a DIFFERENT, same-named `ZipEntry` record — and a
 // qualified `Jvm.Zip.ZipEntry` reference at the `Jvm.Bridge` call site
 // resolved to the wrong one). Root-caused and fixed in #6689
-// (D-progress-927): `Msil.Codegen.typeExprToMsilCtx`'s `TRef` case
-// discarded a qualified type reference's owner package entirely, resolving
-// purely by the referencing file's own scope-priority. This parallel-list
+// (D-progress-927): the type checker's `collectCtorFields` resolved a
+// constructor field's type under the CALLER's scope instead of the type's
+// own declaring package — the JVM symptom was fixed by this type-checker
+// change alone (JVM codegen resolves types through the checker's own
+// already-correct resolved `Type`, never by re-deriving FQNs from raw
+// source text as MSIL codegen's separate `typeExprToMsilCtx` fix does).
+// This parallel-list
 // representation is kept regardless — it remains a legitimate, harmless
 // representation on its own merits, not a workaround needed for the fix. A
 // separate entry point rather than widening `writeJarFromClasses` itself:
