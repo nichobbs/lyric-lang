@@ -40,7 +40,9 @@
 //!      `Action<Task>` — and no BCL `ContinueWith` overload matches;
 //!      both the metadata auto-FFI resolver and the table-driven
 //!      `@externTarget` resolver fall back to a guessed signature that
-//!      throws `MissingMethodException` at runtime.
+//!      throws `MissingMethodException` at runtime. **Still open** — not
+//!      part of #5329's own fixed scope (a different, generic-erasure
+//!      family of gap, unrelated to (3) below).
 //!   2. An alternative using `Task.GetAwaiter().OnCompleted(Action)`
 //!      (a *non-generic*, arity-0 delegate — the one shape already proven
 //!      to bind, per (3) below) compiles the call correctly, but as soon
@@ -53,19 +55,43 @@
 //!      over a `Task` and a `protected type` value (never over another
 //!      closure), so this is not the generic-erasure issue from (1) — it
 //!      is a second, independent gap in closure-class registration
-//!      ordering when `TaskAwaiter`/`GetAwaiter` participate.
-//!   3. Most significant: even the *existing*, already-shipped
+//!      ordering when `TaskAwaiter`/`GetAwaiter` participate. **Still
+//!      open** — not exercised by `scopeSpawn`'s shipped implementation
+//!      (which uses `Task.Run`, not `GetAwaiter`/`OnCompleted`).
+//!   3. **FIXED (issue #5329, bug 1).** Even the *existing*, already-shipped
 //!      `Task.Run(Action[, CancellationToken])` binding used by
-//!      `scopeSpawn` below never actually invokes the passed closure on
+//!      `scopeSpawn` below never actually invoked the passed closure on
 //!      this backend — confirmed with a minimal repro with no dependency
 //!      on this file at all (`taskRunPlain({ -> println(...) }); t.Wait()`
-//!      prints nothing and returns immediately).  This means
-//!      `Scope.scopeSpawn`'s concurrent-execution primitive itself does
-//!      not run user code on `--target dotnet` today, independent of
-//!      sibling-cancel — a materially bigger gap than the missing
-//!      cancel-on-fault feature this slice set out to restore, and out of
-//!      scope for this change to root-cause and fix.  Needs its own
-//!      dedicated investigation and issue.
+//!      printed nothing and returned immediately). Root cause: a lambda
+//!      literal passed *directly* to a REGULAR (non-`@externTarget`)
+//!      function's `() -> Unit`-typed parameter built a `Func<object>`
+//!      delegate instead of `System.Action` — the parameter's OWN
+//!      MethodDef signature (`typeExprToMsilCtx`'s unconditional
+//!      `TFunction` rule, Epic #1877 Phase 3) already committed to
+//!      `System.Action`, but the ELambda call-site codegen's
+//!      `returnsVoid` check only consulted the map populated for
+//!      `@externTarget` delegate-bridging targets, falling through to a
+//!      hardcoded "every lambda returns object" default for everything
+//!      else. `Task.Run(Action, CancellationToken)` pattern-matches its
+//!      `action` parameter's *runtime* type before invoking it; a
+//!      `Func<object>` value stored through a statically-`Action`-typed
+//!      slot fails that match silently (no exception — raw
+//!      `ldftn`+`newobj`/`call` never verifies delegate-vs-target-method
+//!      compatibility at this level) and the spawned closure's body
+//!      simply never runs, while the returned `Task` completes
+//!      `RanToCompletion` immediately. Fixed in `Msil.Codegen` (the
+//!      `ELambda` arm's `returnsVoid` computation, plus
+//!      `registerStdlibFunc`/`registerRestoredFunc` — neither populated
+//!      the maps the fix reads from for a cross-assembly stdlib/restored
+//!      function call, only the in-bundle same-source-tree path did).
+//!      `Scope.scopeSpawn`/`awaitAll` now run spawned closures correctly
+//!      on `--target dotnet`; `lyric-stdlib/tests/task_scope_known_failures_tests.l`'s
+//!      `testScopeNormalCompletionRunsEveryChild` and
+//!      `testScopeWithNoChildrenCompletesImmediately` cases were merged
+//!      back into `task_tests.l` and wired into CI on both targets.
+//!      D119 slice S3 itself remains unshipped — it also needs (1) and/or
+//!      (2) above, which this fix does not touch.
 //!
 //! What *did* ship from this investigation: `await` on any extern-declared
 //! `Task`-typed value (`delay`, `delayWithCancel`, `awaitAll` below) did not
@@ -209,10 +235,11 @@ func taskRunWithCancel(action: in () -> Unit, token: in CancellationToken): Task
 /// `Task.WhenAll(tasks)` — returns a task that completes when
 /// every element of `tasks` completes.  Throws the first failure
 /// exception when any child faults.
-/// stays @externTarget for now: every runtime path through this
-/// binding (`awaitAll`, even with an empty scope) is a documented
-/// known failure on both targets (#5329), so an auto-FFI migration
-/// cannot be runtime-verified until that is fixed.
+/// stays @externTarget for now: an auto-FFI migration has not yet been
+/// attempted post-#5329 (the runtime path through this binding, including
+/// the empty-scope case, is now verified working on both targets — see the
+/// module header's "D119 slice S3" bug (3) — but the migration itself is a
+/// separate, unattempted follow-up, not a currently-known failure).
 @externTarget("System.Threading.Tasks.Task.WhenAll")
 func taskWhenAll(tasks: in slice[Task]): Task = ()
 
