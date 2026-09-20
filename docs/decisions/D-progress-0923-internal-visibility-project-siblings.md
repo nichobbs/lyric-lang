@@ -1,4 +1,4 @@
-# D-progress-918 — Cross-package bridges: `internal` items now visible to a project's own sibling packages (#6580)
+# D-progress-923 — Cross-package bridges: `internal` items now visible to a project's own sibling packages (#6580)
 
 **Status:** shipped
 
@@ -61,4 +61,4 @@ native-target regression test was added to `llvm_project_self_test.l`
 dedicated end-to-end test) — it type-checks and lowers to LLVM IR
 identically to the file's other ASan-linked tests, confirming the fix is
 exercised; this sandbox cannot execute it end-to-end (pre-existing missing
-`libclang_rt.asan-*.a`, same gap noted in D-progress-887/PR #6900).
+`libclang_rt.asan-*.a`, same gap noted in D-progress-926/PR #6900).

@@ -48,11 +48,20 @@ pub func writeJarFromClasses(req: in BuildRequest, classes: in List[BuiltClass])
 // `extraNames[i]` / `extraDatas[i]` are parallel (same count): a ZIP entry
 // name and its raw byte content. Plain parallel lists rather than a
 // `Jvm.Zip.ZipEntry` list: passing that record across the `Jvm.Bridge` →
-// `Jvm.Driver` boundary hit a cross-file nominal-type-identity mismatch
-// (`Jvm.Bridge` also imports `Jvm.AutoFfi`, which imports `Jvm.ZipReader` —
-// a DIFFERENT, same-named `ZipEntry` record — and aliasing the import at
-// the `Jvm.Bridge` call site did not resolve the ambiguity the type checker
-// saw at this call; tracked as a self-hosted-compiler bug in #6689). A
+// `Jvm.Driver` boundary used to hit a cross-file nominal-type-identity
+// mismatch (`Jvm.Bridge` also imports `Jvm.AutoFfi`, which imports
+// `Jvm.ZipReader` — a DIFFERENT, same-named `ZipEntry` record — and a
+// qualified `Jvm.Zip.ZipEntry` reference at the `Jvm.Bridge` call site
+// resolved to the wrong one). Root-caused and fixed in #6689
+// (D-progress-927): the type checker's `collectCtorFields` resolved a
+// constructor field's type under the CALLER's scope instead of the type's
+// own declaring package — the JVM symptom was fixed by this type-checker
+// change alone (JVM codegen resolves types through the checker's own
+// already-correct resolved `Type`, never by re-deriving FQNs from raw
+// source text as MSIL codegen's separate `typeExprToMsilCtx` fix does).
+// This parallel-list
+// representation is kept regardless — it remains a legitimate, harmless
+// representation on its own merits, not a workaround needed for the fix. A
 // separate entry point rather than widening `writeJarFromClasses` itself:
 // that function has ~100 direct self-test call sites across
 // `jvm/self_test_b*.l`, none of which need resource embedding.

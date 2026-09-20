@@ -32342,6 +32342,104 @@ open self-instantiation instead).
 **Related:** `docs/decisions/D-progress-0888-union-structural-equality.md`
 (full account), #6835, #6120.
 
+### `for` over a non-iterable single-type-param generic is a T0126 type error (#6720)
+
+D-progress-818 broadened `SFor`'s single-type-param generic element-typing
+fallback to type ANY single-param generic's element, motivated by the
+extern phantom-type-param collection idiom (`Set[T]`, `JHttpStringCollection[T]`,
+#6565). That widening also silently typed the loop element for a genuinely
+non-iterable single-param generic that merely happens to have one type
+parameter — `Option[T]` is the concrete case — with zero diagnostics;
+codegen's index-loop fallback (assumes `.Count`/`get_Item`) then failed at
+*runtime* instead of the build failing at compile time. The fallback now
+requires the type be `List`/`Map[K, V]`'s key/value collections (unchanged)
+or a genuine `extern type` (`symTableIsExternTypeId`, covers the #6565
+motivating case); any other single-param generic emits a clear, early
+**T0126** (`docs/01-language-reference.md` §control flow;
+`book/chapters/appendix-b-quick-reference.md`), mirroring `SWhile`'s
+condition-type check. Scoped to single-type-parameter generics only — a
+`for` over a non-generic non-collection type or a non-Map 2+-arity generic
+still silently resolves to `TyError` with no diagnostic, a pre-existing,
+documented, out-of-scope gap this fix doesn't attempt to close.
+
+**Related:** D-progress-925 (full account, `docs/decisions/`), #6720,
+#6565 (D-progress-818, the motivating widening this narrows).
+
+### Native codegen: `registerIfaceInfo` fails loudly on a bare-name interface collision (#4900)
+
+`registerIfaceInfo` (`llvm_codegen.l`) registers each interface under a
+qualified key AND a bare-name key; if two interfaces from different
+packages share a bare name, the bare-name key silently gets overwritten by
+whichever registers last, producing wrong vtable dispatch with no
+diagnostic. Confirmed-but-unreachable three times (2026-07-03 through
+2026-07-29): native builds were single-package only, and even within one
+build the bridge only collected interfaces for the driver unit. #6809's
+multi-package native project builds (`lyric build --manifest ...
+--target native`) fully lower every own-project package, making the
+collision genuinely reachable for the first time. The bare-name key
+can't simply be dropped — `typeToN`'s `TRef` case joins a single-segment
+type path to itself, so it's the ONLY key consulted for the overwhelmingly
+common unqualified interface reference (`x: in Shape`). Fixed with a new
+`Ctx.ifaceBareNameOwners: Map[String, String]` tracking which qualified
+interface owns each bare name; `registerIfaceInfo` now panics with a clear
+message naming both interfaces when a second, different interface claims
+an already-owned bare name (re-registering the SAME interface across the
+names-only then full-signature passes is unaffected).
+
+**Related:** D-progress-926 (full account, `docs/decisions/`), #4900,
+#6809 (the multi-package native builds that made this reachable).
+
+### Qualified cross-package type references resolve to the exact package named, not scope-priority (#6689, #6992, #6972)
+
+A qualified cross-package type reference (`List[Pkg.Item]`, a constructor
+field's type, a generic type's own head, a union case's field type) could
+silently pick up an unrelated same-named type from a different imported
+package instead of the one actually named, miscompiling into
+`ArrayTypeMismatchException`/`InvalidProgramException`/a wrong-type T0043
+at runtime or a confusing later type error — root-caused to a family of
+independent bugs sharing one root pattern: type resolution running lazily,
+on every use, under whatever `SymbolTable` scope happened to be active at
+the call site rather than the type's own declaring package. Fixed across
+several call sites as the pattern kept recurring: `collectCtorFields`
+(constructor fields) and `unionCaseFieldTypes` (union case fields, both
+the construction and pattern-bind paths) now save/switch-to-the-owning-
+package's-scope/restore around field-type resolution; MSIL codegen's
+`typeExprToMsilCtx`/`typeExprToMsilG`/`typeExprToMsilGenBody`/
+`typeExprToMsilGenSig` gained a `resolveTypeFqnQualified` helper trying the
+exact `<owner>.<name>` candidate first for a multi-segment path (covering
+both a bare `TRef` and a qualified generic type's own HEAD), before
+falling back to scope-priority resolution for a genuinely bare reference.
+`--target jvm` was confirmed unaffected throughout — JVM codegen resolves
+through the type checker's own already-correct resolved `Type`, never by
+re-deriving FQNs from raw source text.
+
+**Related:** D-progress-927/921/922 (full accounts, `docs/decisions/`),
+#6689, #6992, #6972, PR #6904.
+
+### `internal` items are now visible to a project's own sibling packages, across all three backends (#6580)
+
+A qualified cross-package call to an `internal` (not `pub`) function
+failed to compile with `T0020: unknown name`, even though
+`docs/01-language-reference.md` §3.1 documents `internal` as visible
+across every package WITHIN THE SAME PROJECT. Root-caused to
+`Lyric.Pipeline.pipeIsCrossPackageItem` — the single shared cross-package
+item-visibility filter MSIL/JVM/native all use — conflating two distinct
+purposes: a restored cross-project dependency or bundled stdlib DLL, where
+`internal` genuinely has no cross-assembly binding (pub-only is correct),
+and a build's own in-project sibling packages, where `internal` is
+documented as visible. Every own-project-sibling call site on all three
+backends used the pub-only filter for both cases. Fixed with a new
+`pipeIsCrossPackageItemProject`/`pipeAddCrossPackageItemsProject`
+(pub-OR-internal) used by every own-project-sibling call site;
+stdlib/restored-dependency call sites are untouched. A second, textually
+similar report ("UFCS cross-package calls fail at runtime") was
+re-investigated and does NOT reproduce as a cross-package or compiler bug
+— it fails identically same-package and is rejected at compile time with
+a clean T0113 for a record receiver; Lyric's actual, documented UFCS
+mechanism (a D037 dot-named method) already works correctly cross-package.
+
+**Related:** D-progress-923 (full account, `docs/decisions/`), #6580.
+
 ### MSIL: an unannotated module-level `val` initialized by a record constructor is typed correctly instead of `MObject` (#6786)
 
 `inferUntypedStaticValMsilType` (predicts an untyped module-level `val`'s
