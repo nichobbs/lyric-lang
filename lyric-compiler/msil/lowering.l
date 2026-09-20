@@ -51,6 +51,13 @@ pub union MsilType {
   // Generic type parameter !n (ELEMENT_TYPE_VAR = 0x13 + index byte).
   // Used in MemberRef signatures on TypeSpecs per ECMA-335 §II.14.4.2.
   case MTypeVar(index: Int)
+  // Generic METHOD type parameter !!n (ELEMENT_TYPE_MVAR = 0x1E + index byte,
+  // ECMA-335 §II.23.2.2).  Distinct from MTypeVar (a declaring TYPE's own
+  // parameter): a BCL method declared with its OWN generics (e.g.
+  // `CallInvoker.BlockingUnaryCall<TRequest,TResponse>`) needs an OPEN
+  // MemberRef signature that references those positions directly so a
+  // MethodSpec (table 0x2B) can instantiate them per call site — #6581 Gap 2.
+  case MMethodTypeVar(index: Int)
   // Native integer (ELEMENT_TYPE_I = 0x18).
   // Used in delegate constructor signatures (second param is a method pointer).
   case MNativeInt
@@ -215,6 +222,7 @@ pub func msilArrayElemHasRealToken(e: in MsilType): Bool {
 func msilArrayElemIsTypeVar(e: in MsilType): Bool {
   match e {
     case MTypeVar(_) -> true
+    case MMethodTypeVar(_) -> true
     case _ -> false
   }
 }
@@ -279,6 +287,7 @@ pub func elementTypeByte(t: in MsilType): Int {
     case MObject -> 0x1C
     case MClass(_) -> 0x12
     case MTypeVar(_) -> 0x13  // prefix only; index byte emitted separately by bufMsilType
+    case MMethodTypeVar(_) -> 0x1E  // prefix only; index byte emitted separately by bufMsilType
     case MNativeInt -> 0x18
     case MGenericInst(_, _, _) -> 0x15  // prefix only; full encoding via bufMsilType
     case MListOf(_) -> 0x1C  // same as Object: runtime rep is List<object>
@@ -362,6 +371,10 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
   match t {
     case MTypeVar(idx) -> {
       bufU1(w, 0x13)
+      bufU1(w, idx)
+    }
+    case MMethodTypeVar(idx) -> {
+      bufU1(w, 0x1E)
       bufU1(w, idx)
     }
     case MClass(_) -> bufU1(w, 0x1C)   // Object: avoids malformed CLASS+TypeDefOrRef entry
@@ -1782,6 +1795,7 @@ pub func msilTypeKey(t: in MsilType): String {
     case MNativeInt -> "N"
     case MClass(name) -> "L" + name + ";"
     case MTypeVar(idx) -> "T" + toString(idx) + ";"
+    case MMethodTypeVar(idx) -> "M" + toString(idx) + ";"
     case MGenericInst(_, headFqn, typeArgs) -> {
       var key = "G" + headFqn + "<"
       var i = 0
@@ -1879,6 +1893,10 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
     }
     case MTypeVar(idx) -> {
       bufU1(w, 0x13)
+      bufU1(w, idx)
+    }
+    case MMethodTypeVar(idx) -> {
+      bufU1(w, 0x1E)
       bufU1(w, idx)
     }
     case MValueTypeRef(typeRefCode, _) -> {
