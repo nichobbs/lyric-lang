@@ -35761,7 +35761,7 @@ unknown-method case before codegen, so `compileProjectToMsil` returns
 cases). `docs/01-language-reference.md` and
 `book/chapters/appendix-b-quick-reference.md` updated.
 
-**Related:** D-progress-940 (full account, `docs/decisions/`), #7099.
+**Related:** D-progress-941 (full account, `docs/decisions/`), #7099.
 
 ## `internal` cross-package bare-name/zero-arg free-function calls confirmed fixed, `lyric-lambda` workaround reverted (#6886)
 

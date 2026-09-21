@@ -1,4 +1,4 @@
-# D-progress-940 — unknown `String` method call now caught at type-check time (T0113), plus `isNormalized`/`normalize` MSIL↔JVM parity (#7099)
+# D-progress-941 — unknown `String` method call now caught at type-check time (T0113), plus `isNormalized`/`normalize` MSIL↔JVM parity (#7099)
 
 **Status:** shipped
 
