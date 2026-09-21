@@ -35097,3 +35097,45 @@ dispatch may or may not need an equivalent fix; not confirmed either way.
 
 **Related:** #6533 (closed by this fix), D-progress-939 (full account),
 `docs/45-contract-metadata-direct-resolution.md`.
+
+## #5704 progress: ecosystem-wide F0027 audit clears; a real proto3 float encoding bug fixed
+
+Audited every `lyric-*/` package plus `lyric-stdlib` for the `F0027`
+hint-less-`@externTarget` warning (#5704's prerequisite before the warning
+can become a build-gating error). Found exactly two repeated root-cause
+patterns — hint-less `System.Threading.Monitor.Enter`/`Exit` in
+`lyric-web`/`lyric-mq`/`lyric-jobs`/`lyric-resilience`'s `_kernel/net/`
+files, and hint-less `System.BitConverter.SingleToInt32Bits` in
+`lyric-proto/src/proto_main.l` — and added the missing `@externStatic`
+hint to each (both BCL members are unambiguously static, so this is
+behavior-neutral). `lyric-lambda`/`lyric-testing`/`lyric-otel` inherited
+their own F0027 warnings transitively and needed no direct edit.
+
+Making `SingleToInt32Bits`'s hint explicit also enabled F0015 declared-
+signature verification on that extern for the first time, which
+immediately caught a real, pre-existing bug: `floatToInt32Bits` declared
+the extern directly against a Lyric `Float` (which erases to CLR
+`double`), producing a `(double) -> int32` signature matching no real
+`SingleToInt32Bits` overload — silently broken (`MissingMethodException`
+on any real call) the whole time, exactly as `proto_types_tests.l`'s own
+pre-existing comment already flagged. Fixed by narrowing through a real
+32-bit `System.Single` first (`System.Convert.ToSingle`), mirroring
+`Msil.Kernel.bufF4Le`'s identical, already-correct idiom. Replaced the
+stale "round-trip blocked, tracked separately" test comment with a real
+`floatField` round-trip test asserting the exact IEEE-754 binary32 bit
+pattern.
+
+**Verification.** `lyric-proto` test suite: 25/25 pass (new
+`floatField` round-trip test included). Full ecosystem build sweep after
+the fix: zero `F0027` warnings, zero build errors, across every
+`lyric-*/` package and `lyric-stdlib`. `lyric-web`/`lyric-mq`/
+`lyric-jobs`/`lyric-resilience` test suites (all use the
+`monitorEnter`/`monitorExit` lock helpers internally) re-run green.
+
+**Still open:** this closes the audit prerequisite but does not itself
+promote F0027 to a build-gating error, nor add the negative/SDK-less-
+harness test coverage #5704 additionally asks for — both remain open
+follow-up work on #5704.
+
+**Related:** #5704 (partially addressed), D-progress-941 (full account),
+D-progress-667 (the original F0027 warning).
