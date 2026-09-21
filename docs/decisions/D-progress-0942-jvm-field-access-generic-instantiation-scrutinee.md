@@ -86,4 +86,30 @@ Zero regressions in `list_of_slice_construction_jvm_self_test.l` (4,
 #6959), `generic_element_field_read_jvm_self_test.l` (4, #6708), and
 `jvm_cross_package_collision_self_test.l` (10).
 
-Closes #6957.
+**Review-cycle fix (#7176):** the first review round found that
+`JvmCaseField.genericArgs` was populated via unfiltered
+`returnTypeGenericArgs(...)`, without filtering out the declaring
+record/union's own generic type parameters — unlike the established
+sibling helper `returnTypeGenericArgsFiltered` used elsewhere in
+`06_items.l` for exactly this reason. For a generic record whose field
+type directly names its own type parameter (`record Box[T] { items:
+List[T] }`), this fed the bare `TRef("T")` into
+`resolveConcreteTypeExpr` → `sameTypeExprElemFallback` (`02_exprs.l`),
+which then emitted a `checkcast <pkg>/T` against a nonexistent class —
+`NoClassDefFoundError` at runtime, never a compile error. Fixed by
+threading the declaring type's own generic params (`tps`/`protTps`/
+`genericParamNames(decl.generics)`) through `returnTypeGenericArgsFiltered`
+at all 8 `JvmCaseField` construction sites. A third regression case
+("a generic record field typed as the record's OWN type parameter does
+not leak a bogus checkcast (#7176)") was added to
+`field_access_list_of_slice_add_jvm_self_test.l`, confirmed load-bearing
+the same way (reverting the fix reproduces the exact predicted
+`NoClassDefFoundError: OwnTypeParamField/T`). The test file was also
+wired into `.github/workflows/ci.yml` (a second review-round SUGGESTION)
+alongside `jvm_cross_package_collision_self_test.l`. A third SUGGESTION —
+`genericArgs` should wrap in `eagerlyResolveGenericArgs(..., owner,
+externTypes)` like every other `retGenericArgs` registration in this
+file, for caller-context-independent resolution of an extern-typed field
+— was not reproduced end-to-end and is tracked as a follow-up, #7184.
+
+Closes #6957 and #7176.
