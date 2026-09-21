@@ -37,6 +37,14 @@
 //! `Std.Core.unwrapOr`/`isSome` and `Std.Collections.mapKeys`/`mapValues`
 //! did when called against the restored, pre-compiled `Lyric.Stdlib.dll`.
 //!
+//! Also covers a SEPARATE, non-restored-specific bug in the same erasure
+//! family (#6877): a closure bound to a `val`/`var` first and then passed
+//! BY NAME to a higher-order call never propagated the binding's own
+//! declared `() -> T` return type into the lifted lambda body, so a bare
+//! union-case construction inside it erased an unconstrained type
+//! parameter to `object`.  These tests are entirely in-bundle (no
+//! restored package needed — see `buildAndRunSingle`).
+//!
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1 (required because
 //! the test imports `Lyric.Emitter`, a compiler package):
 //!   LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/cross_package_generics_self_test.l
@@ -130,6 +138,25 @@ func buildDll(tmpDir: in String, pkgName: in String, source: in String, asmName:
     case Some(_) -> ()
   }
   dllPath
+}
+
+// Build and run a single in-bundle package with NO restored dependency —
+// used by the #6877 regression tests below, which reproduce entirely
+// within one file (no cross-package plumbing needed).  Copies the compiled
+// stdlib DLLs alongside the output (like `buildAndRunConsumerWithStdlib`
+// above): a program that touches a stdlib generic case class (`Result`)
+// resolves it against a real `Lyric.Stdlib` assembly reference, not an
+// inlined copy.
+func buildAndRunSingle(
+  tmpDir: in String, pkgName: in String, source: in String, asmName: in String
+): Capture.CaptureResult {
+  val dllPath = buildDll(tmpDir, pkgName, source, asmName)
+  Emitter.copyStdlibDllsBeside(dllPath, Emitter.findCompiledStdlibDir())
+  writeRuntimeConfig(dllPath)
+  val args: List[String] = newList()
+  args.add("exec")
+  args.add(dllPath)
+  Capture.runCaptureWithDiagnostics("dotnet", args, "")
 }
 
 // Build and run a consumer DLL whose restoredDllPaths contains producerDllPath.
@@ -580,17 +607,19 @@ func buildAndRunConsumerWithStdlib(
 // unaffected by this precise erasure (its own payload pins `E` directly)
 // but was exercised too for symmetry.
 //
-// NOT covered here (confirmed a SEPARATE, pre-existing, non-restored-
-// specific bug, out of #3273's restored-boundary scope): a closure bound to
-// a `val` FIRST and passed BY NAME (`val g: () -> Result[Int, String] = {
-// -> Ok(7) }; matchClosure(g)`) still panics identically — reproduced with
-// zero restored-dependency plumbing at all (single in-bundle file, no
-// import). The direct-argument detection this fix extends
-// (`cctx.lambdaParamTypes`/`lambdaRetTypes`, #1939/#6511) only fires when
+// A SEPARATE, pre-existing, non-restored-specific bug (out of #3273's
+// restored-boundary scope, filed as #6877 and fixed by
+// `registerLocalLambdaLiteralFnTypesMsil`): a closure bound to a `val`
+// FIRST and passed BY NAME (`val g: () -> Result[Int, String] = { -> Ok(7)
+// }; matchClosure(g)`) panicked identically — reproducible with zero
+// restored-dependency plumbing at all (single in-bundle file, no import).
+// The direct-argument detection above (`cctx.lambdaParamTypes`/
+// `lambdaRetTypes`, #1939/#6511) only fires when
 // `unwrapParenExpr(callArgExpr(...)).kind` is literally `ELambda` at the
 // call site; a call argument that's an `EPath` reference to a previously-
-// bound closure never reaches it, restored callee or not. Filed as #6877
-// rather than folded in speculatively.
+// bound closure never reaches it, restored callee or not. Covered by the
+// `cpgen_val_bound_closure_*` tests below (in-bundle, no restored package
+// needed — the bug lives entirely in the LOCAL BINDING's own lowering).
 test "cross-package Result identity: consumer closure literal passed to a restored function's function-typed parameter (#3273)" {
   val tmpDir = freshTempDir("cpgen-result-closure")
   val producerSrc = "package CpGen.ResultLib\n" + "\n" + "pub func matchClosure(f: () -> Result[Int, String]): Int {\n" +
@@ -618,4 +647,84 @@ test "cross-package Result identity: consumer closure literal passed to a restor
   assertEqualInt(lines.count, 2, "cpgen_result_closure: two output lines")
   assertEqual(lines[0], "42", "cpgen_result_closure: direct Ok(42) literal dispatches to the Ok arm")
   assertEqual(lines[1], "-1", "cpgen_result_closure: direct Err(\"boom\") literal dispatches to the Err arm")
+}
+
+// #6877: the exact repro from the issue — a closure bound to a `val` FIRST
+// (with its own `() -> Result[Int, String]` annotation), then passed BY
+// NAME to a higher-order call. Entirely in-bundle, no restored package:
+// the bug lives in `LBVal`'s own lowering never seeding
+// `cctx.lambdaParamTypes`/`lambdaRetTypes` before the lambda-literal
+// initializer is lowered, so the lifted lambda body fell back to the
+// Uniform Func ABI's `declaredRetTy = Object` and `Ok(v)` erased `E` to
+// `object` — an `InvalidCastException` unpacking `f()`'s boxed return.
+test "in-bundle val-bound closure passed by name preserves Result's type params (#6877)" {
+  val tmpDir = freshTempDir("cpgen-valbound-result")
+  val src = "package Repro.ValBoundResult\n" + "\n" + "func matchClosure(f: () -> Result[Int, String]): Int {\n" +
+    "  match f() {\n" +
+    "    case Ok(v) -> v\n" +
+    "    case Err(_) -> -1\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  val g: () -> Result[Int, String] = { -> Ok(7) }\n" +
+    "  println(matchClosure(g))\n" +
+    "  val h: () -> Result[Int, String] = { -> Err(\"boom\") }\n" +
+    "  println(matchClosure(h))\n" +
+    "}\n"
+  val captured = buildAndRunSingle(tmpDir, "Repro.ValBoundResult", src, "Repro.ValBoundResult")
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cpgen_valbound_result: exit 0 (stderr=" + captured.stderr + ")")
+  val lines = Str.split(Str.trim(captured.stdout), "\n")
+  assertEqualInt(lines.count, 2, "cpgen_valbound_result: two output lines")
+  assertEqual(lines[0], "7", "cpgen_valbound_result: val-bound Ok(7) dispatches to the Ok arm")
+  assertEqual(lines[1], "-1", "cpgen_valbound_result: val-bound Err(\"boom\") dispatches to the Err arm")
+}
+
+// #6877 variant: a PARAMETERIZED val-bound closure (exercises
+// `lambdaParamTypes`, not just `lambdaRetTypes`) against a user-DEFINED
+// generic union (not the stdlib `Result`), to confirm the fix isn't
+// scoped to `Std.Core.Result` specifically.
+test "in-bundle val-bound parameterized closure preserves a user-defined generic union's type params (#6877)" {
+  val tmpDir = freshTempDir("cpgen-valbound-union")
+  val src = "package Repro.ValBoundUnion\n" + "\n" + "union Verdict[T, E] {\n" + "  case Good(value: T)\n" +
+    "  case Bad(err: E)\n" +
+    "}\n" +
+    "\n" +
+    "func matchVerdict(f: (Int) -> Verdict[Int, String]): Int {\n" +
+    "  match f(3) {\n" +
+    "    case Good(v) -> v\n" +
+    "    case Bad(_) -> -1\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  val g: (Int) -> Verdict[Int, String] = { x -> Good(value = x + 10) }\n" +
+    "  println(matchVerdict(g))\n" +
+    "}\n"
+  val captured = buildAndRunSingle(tmpDir, "Repro.ValBoundUnion", src, "Repro.ValBoundUnion")
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cpgen_valbound_union: exit 0 (stderr=" + captured.stderr + ")")
+  assertEqual(Str.trim(captured.stdout), "13", "cpgen_valbound_union: val-bound Good(13) dispatches to the Good arm")
+}
+
+// #6877 variant: `var`-bound (not `val`) closure passed by name — the fix
+// is applied to `LBVar`'s lowering too, not only `LBVal`'s.
+test "in-bundle var-bound closure passed by name preserves Result's type params (#6877)" {
+  val tmpDir = freshTempDir("cpgen-varbound-result")
+  val src = "package Repro.VarBoundResult\n" + "\n" + "func matchClosure(f: () -> Result[Int, String]): Int {\n" +
+    "  match f() {\n" +
+    "    case Ok(v) -> v\n" +
+    "    case Err(_) -> -1\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  var g: () -> Result[Int, String] = { -> Ok(21) }\n" +
+    "  println(matchClosure(g))\n" +
+    "}\n"
+  val captured = buildAndRunSingle(tmpDir, "Repro.VarBoundResult", src, "Repro.VarBoundResult")
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cpgen_varbound_result: exit 0 (stderr=" + captured.stderr + ")")
+  assertEqual(Str.trim(captured.stdout), "21", "cpgen_varbound_result: var-bound Ok(21) dispatches to the Ok arm")
 }
