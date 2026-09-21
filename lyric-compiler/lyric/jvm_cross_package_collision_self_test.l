@@ -588,3 +588,61 @@ test "qualified call to an internal cross-package function resolves (JVM, #6580)
     "qualified call to an internal cross-package function returns the right value"
   )
 }
+
+// Issue #6853: the bundle-wide bare-call fallback (`ctx.funcSigs`'s unscoped
+// bare-name keys, consulted by `resolveGeneralFuncSig`, `04_calls.l`) must
+// NEVER select a package-private function in an unrelated, unimported
+// package — the same privacy gap MSIL closed for its own bundle-wide
+// fallback in #6850/#6851. `XPriv.Priv` (registered FIRST, so it would win a
+// visibility-blind first-wins race) declares a package-private `func helper`
+// returning -999; `XPriv.Sub` declares the legitimate `pub func helper`
+// returning its argument; the entry package imports only the facade that
+// imports `Sub`, and calls `helper` bare. The private declarer must be
+// excluded from the bundle-wide bare keys at registration time, leaving
+// `Sub.helper` the only candidate.
+test "bundle-wide bare-call fallback never selects a package-private function (JVM, #6853)" {
+  val pkgSrcs: List[String] = newList()
+  // Registered FIRST so it would win a visibility-blind first-wins race.
+  pkgSrcs.add("package XPriv.Priv\n" + "\n" + "func helper(x: in Int): Int {\n" + "  0 - 999\n" + "}\n")
+  pkgSrcs.add("package XPriv.Sub\n" + "\n" + "pub func helper(x: in Int): Int {\n" + "  x\n" + "}\n")
+  pkgSrcs.add(
+    "package XPriv.Facade\n" + "\n" + "import XPriv.Sub\n" + "\n" +
+      "pub func facadeFn(): Int {\n" + "  XPriv.Sub.helper(x = 0)\n" + "}\n"
+  )
+  pkgSrcs.add(
+    "package XPriv.App\n" + "\n" + "import XPriv.Facade\n" + "\n" + "func main(): Int {\n" +
+      "  println(helper(x = 42))\n" +
+      "  0\n" +
+      "}\n"
+  )
+  val result = compileAndRunJvm("bare-call-skips-private-6853", pkgSrcs, "XPriv.App")
+  assertEqualInt(result.exitCode, 0, "bare_call_skips_package_private: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "42",
+    "bare_call_skips_package_private: resolves the pub target, never the private -999"
+  )
+}
+
+// A same-package bare call to a package-private function must keep working
+// after #6853's fix: package-private access is always legal from within its
+// own declaring package, and the new package-scoped key
+// (`owner::name`/`owner::name@arity`, `06_items.l`) covers that path since
+// the function is no longer registered under the plain bundle-wide bare key.
+test "same-package bare call to a package-private function still resolves (JVM, #6853)" {
+  val pkgSrcs: List[String] = newList()
+  pkgSrcs.add(
+    "package XPrivSame.App\n" + "\n" + "func helper(x: in Int): Int {\n" + "  x + 1\n" + "}\n" + "\n" +
+      "func main(): Int {\n" +
+      "  println(helper(x = 41))\n" +
+      "  0\n" +
+      "}\n"
+  )
+  val result = compileAndRunJvm("bare-call-same-package-private-6853", pkgSrcs, "XPrivSame.App")
+  assertEqualInt(result.exitCode, 0, "bare_call_same_package_private: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "42",
+    "bare_call_same_package_private: same-package bare call to a package-private function still resolves"
+  )
+}
