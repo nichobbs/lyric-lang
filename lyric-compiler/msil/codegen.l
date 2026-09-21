@@ -63,12 +63,29 @@ pub record CodegenCtx {
   trChar: Int  // System.Char
   trByte: Int  // System.Byte
   trException: Int  // System.Exception
+  // System.UInt32 / System.UInt64 (#6913): needed as a BOXING target for a
+  // bare `UInt`/`ULong`-flagged value (`fctx.unsignedSlots` /
+  // `isUnsignedExprMsil`) so `Object.ToString()` dispatches to
+  // `UInt32.ToString()`/`UInt64.ToString()` instead of the signed
+  // `Int32`/`Int64` override — the erased `MInt`/`MLong` stack value's bit
+  // pattern is identical either way (#6756's erasure), only the boxed
+  // TYPE IDENTITY differs, which is what `ToString()`'s virtual dispatch
+  // keys off.  Also the receiver type for the two extra
+  // `Console.WriteLine(uint32)`/`Console.WriteLine(uint64)` MemberRef rows
+  // below.
+  trUInt32: Int  // System.UInt32
+  trUInt64: Int  // System.UInt64
   // MemberRef tokens (0x0A000000 | 1-based row)
   tokWriteLineStr: Int  // Console.WriteLine(string)
   tokWriteLineInt: Int  // Console.WriteLine(int32)
   tokWriteLineLong: Int  // Console.WriteLine(int64)
   tokWriteLineDbl: Int  // Console.WriteLine(double)
   tokWriteLineChar: Int  // Console.WriteLine(char)
+  // #6913: unsigned-aware `println` counterparts, consulted at the
+  // `println` call site via `isUnsignedExprMsil` — see
+  // `FuncCtx.unsignedSlots`.
+  tokWriteLineUInt: Int  // Console.WriteLine(uint32)
+  tokWriteLineULong: Int  // Console.WriteLine(uint64)
   tokWriteStr: Int  // Console.Write(string)
   tokConcat2: Int  // String.Concat(string,string)
   tokExceptionCtor: Int  // Exception..ctor(string) — one-arg ctor (callers emit ldstr+newobj+throw and rely on this arity)
@@ -840,6 +857,10 @@ pub func newCodegenCtx(
   // `System.Object` and `unbox.any [Object]` was a no-op that leaked the
   // boxed reference (#2539 regression: garbage bytes broke HMAC verification).
   val trByte = ctxAddTypeRef(lctx, "System", "Byte", lctx.arRuntime)
+  // System.UInt32 / System.UInt64 (#6913) — see the matching `CodegenCtx`
+  // field doc comments above for why these TypeRefs are needed.
+  val trUInt32 = ctxAddTypeRef(lctx, "System", "UInt32", lctx.arRuntime)
+  val trUInt64 = ctxAddTypeRef(lctx, "System", "UInt64", lctx.arRuntime)
   val trException = ctxAddTypeRef(lctx, "System", "Exception", lctx.arRuntime)
   val trInvalidOpException = ctxAddTypeRef(lctx, "System", "InvalidOperationException", lctx.arRuntime)
 
@@ -1910,6 +1931,39 @@ pub func newCodegenCtx(
       buildStaticMethodSig(cfgDoubleParsePs, MDouble)
     )
 
+  // Console.WriteLine(uint32): void / Console.WriteLine(uint64): void
+  // (#6913) — the unsigned-aware `println` counterparts to `tokWLInt`/
+  // `tokWLLong` above.  Both overloads are real BCL members (marked
+  // `[CLSCompliant(false)]`, same as the Byte/SByte/Int16 family) that
+  // render the CLR native int32/int64 bit pattern unsigned — no boxing or
+  // conversion needed, `println` just picks this token instead of the
+  // signed one when `isUnsignedExprMsil` reports the argument as
+  // `UInt`/`ULong`-flagged.  Appended at the END of this static-token
+  // table (rather than inlined next to `tokWLInt`/`tokWLLong` above) so
+  // every earlier entry's row number — and its illustrative "→
+  // 0x0A0000NN" doc comment — stays unchanged.
+  //
+  // Hand-built signature blob rather than `buildStaticMethodSig`: `MsilType`
+  // has no distinct unsigned-int variant (#6756 erases `UInt`/`ULong` to
+  // `MInt`/`MLong`), so `buildStaticMethodSig(MInt, MVoid)` would encode
+  // the SAME signed I4 element-type byte `tokWLInt` above already uses —
+  // resolving to the SAME signed overload rather than the real unsigned
+  // one. ECMA-335 §II.23.2.1: CALLCONV(0x00 DEFAULT) + paramCount(1) +
+  // VOID rettype(0x01) + U4/U8 param (0x09 / 0x0B — `elementTypeByte`'s
+  // MInt/MLong rows use the signed 0x08/0x0A instead).
+  val wlUIntSigW = bufNew()
+  bufU1(wlUIntSigW, 0x00)
+  bufU1(wlUIntSigW, 1)
+  bufU1(wlUIntSigW, 0x01)
+  bufU1(wlUIntSigW, 0x09)
+  val tokWLUInt = 0x0A000000 + ctxAddMemberRef(lctx, trConsole, "WriteLine", "wl_uint", bufToList(wlUIntSigW))
+  val wlULongSigW = bufNew()
+  bufU1(wlULongSigW, 0x00)
+  bufU1(wlULongSigW, 1)
+  bufU1(wlULongSigW, 0x01)
+  bufU1(wlULongSigW, 0x0B)
+  val tokWLULong = 0x0A000000 + ctxAddMemberRef(lctx, trConsole, "WriteLine", "wl_ulong", bufToList(wlULongSigW))
+
   val recCtorToks: Map[String, Int] = newMap()
   val fieldToks: Map[String, Int] = newMap()
   val funcToks: Map[String, Int] = newMap()
@@ -1924,12 +1978,16 @@ pub func newCodegenCtx(
     trBoolean = trBoolean,
     trChar = trChar,
     trByte = trByte,
+    trUInt32 = trUInt32,
+    trUInt64 = trUInt64,
     trException = trException,
     tokWriteLineStr = tokWLStr,
     tokWriteLineInt = tokWLInt,
     tokWriteLineLong = tokWLLong,
     tokWriteLineDbl = tokWLDbl,
     tokWriteLineChar = tokWLChar,
+    tokWriteLineUInt = tokWLUInt,
+    tokWriteLineULong = tokWLULong,
     tokWriteStr = tokWStr,
     tokConcat2 = tokConcat2,
     tokExceptionCtor = tokExcCtor,
@@ -5365,6 +5423,49 @@ pub record FuncCtx {
   // `conv.u1`.  Keyed by slot index (not name) so shadowing stays precise.
   // Initialised `newMap()` at the construction site.
   byteSlots: Map[Int, Bool]
+  // Slots of params/locals DECLARED `UInt`/`ULong` (#6913, mirroring the JVM
+  // backend's `ctx.unsignedVars` — `jvm/codegen/01_types.l`). The MSIL type
+  // map erases both to the SAME `MInt`/`MLong` slot a signed `Int`/`Long`
+  // uses (#6756), so a bare scalar's comparison (`<`/`>`/`<=`/`>=`),
+  // division/remainder (`/`/`%`), and stringification (`println`, string
+  // interpolation, string concatenation) cannot otherwise tell an unsigned
+  // value from a signed one — and default to plain signed IL, which
+  // misrenders/miscompares/misdivides any value at or above the sign-bit
+  // boundary (2^31 for `UInt`, 2^63 for `ULong`).  Consulted via
+  // `isUnsignedExprMsil`.
+  //
+  // Keyed by SLOT INDEX, not name — mirroring `byteSlots` rather than the
+  // JVM backend's name-keyed `unsignedVars` (which needs its own
+  // `unsignedUndo` scope-undo log, #6754, to stay correct across
+  // shadowing). MSIL's `allocSlotMsil` already gives a shadowing bind a
+  // FRESH slot number whenever it doesn't fall in the current block's
+  // scope (the #5191 general-shadowing fix — see `FuncCtx.scopeBaseMsil`),
+  // so keying by slot makes an outer binding's unsigned-ness immune to an
+  // inner shadow by construction: the inner name reuses the outer SLOT
+  // only when both live in the same block scope and share the exact same
+  // `MsilType`, in which case re-marking (remove-then-add, same discipline
+  // as `markByteSlotMsil`) at the inner binding's own declaration site
+  // overwrites the entry with the inner binding's own signedness anyway —
+  // no separate undo log needed. Absence from the map means "not
+  // unsigned" (same "absence means no" shape `byteSlots` uses). No default
+  // per the MSIL-codegen no-defaulted-field rule; initialised `newMap()`
+  // at every construction site.
+  //
+  // NOT populated for a closure-hoisted `var` (a captured mutable local
+  // promoted to a heap cell, #1479 v2 — see the `isHoisted` branch of the
+  // `LBVar` statement arm): a hoisted cell has no local slot to key on.
+  // An unsigned closure-captured `var`'s comparison/division/
+  // stringification therefore still falls back to signed IL — a known,
+  // narrower gap than the one this ticket closes (tracked, not silently
+  // dropped: see the `isHoisted` branch's own comment).
+  //
+  // Scope, matching the issue's fix sketch exactly: a bare name previously
+  // marked here, or a `u32`/`u64`-suffixed integer literal — NOT a
+  // function call's declared return type or a container-element read
+  // (the JVM backend's later #6754/#6759 follow-on extensions past its
+  // OWN initial `unsignedVars`/`isUnsignedExpr` shape); see
+  // `isUnsignedExprMsil`'s own doc comment.
+  unsignedSlots: Map[Int, Bool]
   var generics: List[String]
   // Cross-package enum case-name collision fix (#5995).  A Lyric enum lowers
   // to a bare Int ordinal (no distinguishing CLR type), so two in-bundle
@@ -5452,6 +5553,16 @@ func isByteAnnotationMsil(tyOpt: in Option[TypeExpr]): Bool {
   }
 }
 
+// `Option[TypeExpr]` convenience for the local-binding call sites
+// (`LBVal`/`LBLet`/`LBVar`), mirroring `isByteAnnotationMsil` — see
+// `isUnsignedTypeExprMsil` (#6913).
+func isUnsignedAnnotationMsil(tyOpt: in Option[TypeExpr]): Bool {
+  match tyOpt {
+    case Some(te) -> isUnsignedTypeExprMsil(te)
+    case None -> false
+  }
+}
+
 // Record (or clear) `slot`'s Byte-declared marker — remove-then-add so a
 // reused slot never keeps a stale marker from an earlier binding.
 func markByteSlotMsil(fctx: in FuncCtx, slot: in Int, isByte: in Bool): Unit {
@@ -5469,6 +5580,20 @@ func markByteSlotMsil(fctx: in FuncCtx, slot: in Int, isByte: in Bool): Unit {
 func emitByteSlotNarrowMsil(fctx: in FuncCtx, insns: in List[MInsn], slot: in Int): Unit {
   if fctx.byteSlots.containsKey(slot) {
     insns.add(MConvU1)
+  }
+}
+
+// Record (or clear) `slot`'s UInt/ULong-declared marker (#6913) — same
+// remove-then-add discipline as `markByteSlotMsil` so a reused slot never
+// keeps a stale marker from an earlier (differently-signed) binding.  See
+// `FuncCtx.unsignedSlots` for why slot-keying alone (no separate scope-undo
+// log) is safe here.
+func markUnsignedSlotMsil(fctx: in FuncCtx, slot: in Int, isUnsigned: in Bool): Unit {
+  if fctx.unsignedSlots.containsKey(slot) {
+    fctx.unsignedSlots.remove(slot)
+  }
+  if isUnsigned {
+    fctx.unsignedSlots.add(slot, true)
   }
 }
 
@@ -6108,7 +6233,10 @@ func emitCompoundCombineMsil(
       }
       case _ -> {
         if isValueType(rTy) {
-          boxIfNeededMsil(cctx, insns, rTy)
+          // #6913: an unsigned-flagged box target for a bare `UInt`/
+          // `ULong` compound-assignment rhs (`s += x`) — see
+          // `isUnsignedExprMsil`.
+          boxIfNeededUnsignedMsil(cctx, insns, rTy, isUnsignedExprMsil(fctx, value))
         }
         insns.add(MCallvirt(methodToken = cctx.tokObjToString))
       }
@@ -6163,6 +6291,7 @@ func emitCompoundCombineSlotMsil(
   elemTy: in MsilType,
   rTy: in MsilType,
   rSlot: in Int,
+  isUnsignedRhs: in Bool,
 ): Unit {
   val isStringConcat = match op {
     case AssPlus -> match elemTy { case MString -> true; case _ -> false }
@@ -6176,7 +6305,13 @@ func emitCompoundCombineSlotMsil(
       case MBool -> emitBoolToStringMsil(cctx, fctx, insns)
       case _ -> {
         if isValueType(rTy) {
-          boxIfNeededMsil(cctx, insns, rTy)
+          // #6913: an unsigned-flagged box target for a bare `UInt`/
+          // `ULong` indexed compound-assignment rhs (`xs[i] += x`) — the
+          // rhs is pre-evaluated into `rSlot` by the caller (see this
+          // function's own header comment), so its unsigned-ness is
+          // computed from the source `Expr` at the call site and threaded
+          // through as `isUnsignedRhs` rather than re-derived here.
+          boxIfNeededUnsignedMsil(cctx, insns, rTy, isUnsignedRhs)
         }
         insns.add(MCallvirt(methodToken = cctx.tokObjToString))
       }
@@ -6937,6 +7072,45 @@ func isUnsignedTypeExprMsil(te: in TypeExpr): Bool {
   }
 }
 
+// True when `e` statically denotes a `UInt`/`ULong` value (#6913): a bare
+// name previously recorded in `fctx.unsignedSlots` by
+// `markUnsignedSlotMsil` (at a param/`val`/`var`/`let` binding site — see
+// `FuncCtx.unsignedSlots`), or a `u32`/`u64`-suffixed integer literal (the
+// suffix alone decides for a literal, independent of any variable it might
+// later be assigned to). Mirrors the JVM backend's `isUnsignedExpr`
+// (`jvm/codegen/01_types.l`) at its ORIGINAL scope, before that backend's
+// later #6754/#6759 follow-ons widened it to a function call's declared
+// return type and a container-element read — this issue's fix sketch asks
+// only for the bare-scalar-binding shape those follow-ons build on top of,
+// so a call result or a record/collection field/element read still
+// conservatively reports `false` here (same as an unsuffixed literal or an
+// arithmetic expression): comparison/division/stringification are
+// correct for every value that fits the signed range either way, so
+// understating "unsigned" only matters for the sign-bit-set values this
+// ticket exists to fix.
+func isUnsignedExprMsil(fctx: in FuncCtx, e: in Expr): Bool {
+  match e.kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        match mapGet(fctx.slots, path.segments[0]) {
+          case Some(slot) -> fctx.unsignedSlots.containsKey(slot)
+          case None -> false
+        }
+      } else {
+        false
+      }
+    }
+    case ELiteral(lit) -> {
+      match lit {
+        case LInt(_, suffix, _) -> match suffix { case U32 -> true; case U64 -> true; case _ -> false }
+        case _ -> false
+      }
+    }
+    case EParen(inner) -> isUnsignedExprMsil(fctx, inner)
+    case _ -> false
+  }
+}
+
 pub func typeExprToMsilBodyCtx(cctx: in CodegenCtx, fctx: in FuncCtx, te: in TypeExpr): MsilType {
   if fctx.generics.count > 0 {
     typeExprToMsilGenBody(cctx, te, fctx.pkgName, fctx.generics)
@@ -7484,6 +7658,39 @@ func boxTypeRef(cctx: in CodegenCtx, ty: in MsilType): Int {
 func boxIfNeededMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType): Unit {
   if isValueType(ty) {
     insns.add(MBox(typeToken = boxTypeRef(cctx, ty)))
+  }
+}
+
+// #6913: the boxing target for an `MInt`/`MLong` stack value flagged
+// `UInt`/`ULong` (`isUnsignedExprMsil`) — boxes as `System.UInt32`/
+// `System.UInt64` instead of `boxTypeRef`'s default `System.Int32`/
+// `System.Int64`.  The CLR native int32/int64 bit pattern `box` consumes
+// off the stack is identical either way (ECMA-335 §III.4.1's `box`
+// operand table treats `int32`/`int64` as compatible with BOTH the signed
+// and unsigned built-in value types of the same width — the same rule
+// that lets `MByte`/`(Byte)` box as `System.Byte` from a plain `int32`
+// stack value elsewhere in this file); only the boxed TYPE IDENTITY
+// differs, which is exactly what `Object.ToString()`'s virtual dispatch
+// keys off to reach `UInt32.ToString()`/`UInt64.ToString()` instead of
+// the signed override.
+func boxTypeRefUnsignedMsil(cctx: in CodegenCtx, ty: in MsilType): Int {
+  match ty {
+    case MInt -> 0x01000000 + cctx.trUInt32
+    case MLong -> 0x01000000 + cctx.trUInt64
+    case _ -> boxTypeRef(cctx, ty)
+  }
+}
+
+// Box a value type on the stack, using the UNSIGNED boxing target
+// (`boxTypeRefUnsignedMsil`) when `isUnsigned` is true. Does nothing for
+// reference types. Every stringification call site that boxes a bare
+// numeric operand for `Object.ToString()` routes through this instead of
+// `boxIfNeededMsil` directly so a `UInt`/`ULong`-flagged value renders
+// unsigned (#6913) — see `isUnsignedExprMsil`.
+func boxIfNeededUnsignedMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType, isUnsigned: in Bool): Unit {
+  if isValueType(ty) {
+    val tok = if isUnsigned { boxTypeRefUnsignedMsil(cctx, ty) } else { boxTypeRef(cctx, ty) }
+    insns.add(MBox(typeToken = tok))
   }
 }
 
@@ -10802,7 +11009,15 @@ func lowerBinopMsil(
           insns.add(MLdcI4(v = 0))
           insns.add(MClt)
         }
-        case _ -> insns.add(MClt)
+        // #6913: a bare `UInt`/`ULong` operand needs `clt.un`, not the
+        // default signed `clt` — see `isUnsignedExprMsil`.
+        case _ -> {
+          if isUnsignedExprMsil(fctx, lhs) or isUnsignedExprMsil(fctx, rhs) {
+            insns.add(MClt_Un)
+          } else {
+            insns.add(MClt)
+          }
+        }
       }
       MBool
     }
@@ -10841,7 +11056,15 @@ func lowerBinopMsil(
           insns.add(MLdcI4(v = 0))
           insns.add(MCgt)
         }
-        case _ -> insns.add(MCgt)
+        // #6913: a bare `UInt`/`ULong` operand needs `cgt.un`, not the
+        // default signed `cgt` — see `isUnsignedExprMsil`.
+        case _ -> {
+          if isUnsignedExprMsil(fctx, lhs) or isUnsignedExprMsil(fctx, rhs) {
+            insns.add(MCgt_Un)
+          } else {
+            insns.add(MCgt)
+          }
+        }
       }
       MBool
     }
@@ -10881,7 +11104,15 @@ func lowerBinopMsil(
           insns.add(MLdcI4(v = 0))
           insns.add(MCgt)
         }
-        case _ -> insns.add(MCgt)
+        // #6913: `!(a >_un b)` for a bare `UInt`/`ULong` operand — see
+        // `isUnsignedExprMsil`.
+        case _ -> {
+          if isUnsignedExprMsil(fctx, lhs) or isUnsignedExprMsil(fctx, rhs) {
+            insns.add(MCgt_Un)
+          } else {
+            insns.add(MCgt)
+          }
+        }
       }
       insns.add(MLdcI4(v = 1))
       insns.add(MXor)
@@ -10923,7 +11154,15 @@ func lowerBinopMsil(
           insns.add(MLdcI4(v = 0))
           insns.add(MClt)
         }
-        case _ -> insns.add(MClt)
+        // #6913: `!(a <_un b)` for a bare `UInt`/`ULong` operand — see
+        // `isUnsignedExprMsil`.
+        case _ -> {
+          if isUnsignedExprMsil(fctx, lhs) or isUnsignedExprMsil(fctx, rhs) {
+            insns.add(MClt_Un)
+          } else {
+            insns.add(MClt)
+          }
+        }
       }
       insns.add(MLdcI4(v = 1))
       insns.add(MXor)
@@ -10954,9 +11193,11 @@ func lowerBinopMsil(
               emitBoolToStringMsil(cctx, fctx, insns)
             }
             case _ -> {
-              // Convert non-string rhs to string: box value types, then call ToString().
+              // Convert non-string rhs to string: box value types, then call
+              // ToString(). #6913: an unsigned-flagged box target for a bare
+              // `UInt`/`ULong` rhs — see `isUnsignedExprMsil`.
               if isValueType(saddRhsTy) {
-                boxIfNeededMsil(cctx, insns, saddRhsTy)
+                boxIfNeededUnsignedMsil(cctx, insns, saddRhsTy, isUnsignedExprMsil(fctx, rhs))
               }
               insns.add(MCallvirt(methodToken = cctx.tokObjToString))
             }
@@ -11083,9 +11324,19 @@ func lowerBinopMsil(
         insns.add(MLdloc(slot = bdivSpillIdx))
         insns.add(MLdloc(slot = rS - fctx.paramCount))
       }
+      // #6913: a bare `UInt`/`ULong` operand needs `div.un`, not the default
+      // signed `div` — see `isUnsignedExprMsil`. Computed once and shared by
+      // the `MLong`/fallback (`MInt`) arms below; `MByte` already always
+      // divides unsigned (a Byte is unsigned 0..255 regardless of this
+      // flag) and `MDouble` has no unsigned form.
+      val bdivIsUnsigned = isUnsignedExprMsil(fctx, lhs) or isUnsignedExprMsil(fctx, rhs)
       match bdivLhsTy {
         case MLong -> {
-          insns.add(MDiv)
+          if bdivIsUnsigned {
+            insns.add(MDivUn)
+          } else {
+            insns.add(MDiv)
+          }
           MLong
         }
         case MDouble -> {
@@ -11097,7 +11348,11 @@ func lowerBinopMsil(
           MByte
         }
         case _ -> {
-          insns.add(MDiv)
+          if bdivIsUnsigned {
+            insns.add(MDivUn)
+          } else {
+            insns.add(MDiv)
+          }
           MInt
         }
       }
@@ -11117,9 +11372,17 @@ func lowerBinopMsil(
         insns.add(MLdloc(slot = bmodSpillIdx))
         insns.add(MLdloc(slot = rS - fctx.paramCount))
       }
+      // #6913: a bare `UInt`/`ULong` operand needs `rem.un`, not the default
+      // signed `rem` — see `isUnsignedExprMsil` and the matching `BDiv`
+      // comment above.
+      val bmodIsUnsigned = isUnsignedExprMsil(fctx, lhs) or isUnsignedExprMsil(fctx, rhs)
       match bmodLhsTy {
         case MLong -> {
-          insns.add(MRem)
+          if bmodIsUnsigned {
+            insns.add(MRemUn)
+          } else {
+            insns.add(MRem)
+          }
           MLong
         }
         // #5992/#7035: `rem` is type-preserving — a Double lhs leaves a real
@@ -11141,7 +11404,11 @@ func lowerBinopMsil(
           MByte
         }
         case _ -> {
-          insns.add(MRem)
+          if bmodIsUnsigned {
+            insns.add(MRemUn)
+          } else {
+            insns.add(MRem)
+          }
           MInt
         }
       }
@@ -12098,7 +12365,7 @@ func lowerAssignExprMsil(
             if not isConcreteColl {
               materializeBoxedElemMsil(cctx, insns, containerElemTy)
             }
-            emitCompoundCombineSlotMsil(cctx, fctx, insns, op, containerElemTy, rTy, rSlot)
+            emitCompoundCombineSlotMsil(cctx, fctx, insns, op, containerElemTy, rTy, rSlot, isUnsignedExprMsil(fctx, value))
             collBoxIfNeeded(cctx, insns, containerElemTy, recvTy)
             val vSlotTy = if isConcreteColl { containerElemTy } else { MObject }
             val vSlot = allocSlotMsil(fctx, "__cidx_v_" + toString(fctx.slotTicker.count), vSlotTy)
@@ -14229,7 +14496,9 @@ func lowerInterpolatedMsil(
           }
           case _ -> {
             if isValueType(eTy) {
-              boxIfNeededMsil(cctx, insns, eTy)
+              // #6913: an unsigned-flagged box target for a bare `UInt`/
+              // `ULong` interpolated segment — see `isUnsignedExprMsil`.
+              boxIfNeededUnsignedMsil(cctx, insns, eTy, isUnsignedExprMsil(fctx, e))
               insns.add(MCallvirt(methodToken = cctx.tokObjToString))
             } else {
               match eTy {
@@ -14702,9 +14971,25 @@ func lowerBuiltinOrStaticCallMsil(
   if (not hasQualifiedOverride) and funcName == "println" {
     if args.count > 0 {
       val argTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+      // #6913: a bare `UInt`/`ULong` argument needs the unsigned
+      // `Console.WriteLine` overload, not the signed one — see
+      // `isUnsignedExprMsil`.
+      val printlnIsUnsigned = isUnsignedExprMsil(fctx, callArgExpr(args[0]))
       match argTy {
-        case MInt -> insns.add(MCall(methodToken = cctx.tokWriteLineInt))
-        case MLong -> insns.add(MCall(methodToken = cctx.tokWriteLineLong))
+        case MInt -> {
+          if printlnIsUnsigned {
+            insns.add(MCall(methodToken = cctx.tokWriteLineUInt))
+          } else {
+            insns.add(MCall(methodToken = cctx.tokWriteLineInt))
+          }
+        }
+        case MLong -> {
+          if printlnIsUnsigned {
+            insns.add(MCall(methodToken = cctx.tokWriteLineULong))
+          } else {
+            insns.add(MCall(methodToken = cctx.tokWriteLineLong))
+          }
+        }
         case MDouble -> insns.add(MCall(methodToken = cctx.tokWriteLineDbl))
         case MBool -> {
           // Lowercase "true"/"false", not BCL Console.WriteLine(bool)'s
@@ -14754,8 +15039,10 @@ func lowerBuiltinOrStaticCallMsil(
           insns.add(MCall(methodToken = cctx.tokWriteStr))
         }
         case _ -> {
-          // Box value type and call ToString, then Write(string).
-          boxIfNeededMsil(cctx, insns, argTy)
+          // Box value type and call ToString, then Write(string). #6913:
+          // an unsigned-flagged box target for a bare `UInt`/`ULong`
+          // operand — see `isUnsignedExprMsil`.
+          boxIfNeededUnsignedMsil(cctx, insns, argTy, isUnsignedExprMsil(fctx, callArgExpr(args[0])))
           insns.add(MCallvirt(methodToken = cctx.tokObjToString))
           insns.add(MCall(methodToken = cctx.tokWriteStr))
         }
@@ -14837,7 +15124,9 @@ func lowerBuiltinOrStaticCallMsil(
             insns.add(MLdStr(token = cctx.usDateTimeFormatO))
             insns.add(MCall(methodToken = cctx.tokDateTimeToStringO))
           } else {
-            boxIfNeededMsil(cctx, insns, argTy)
+            // #6913: an unsigned-flagged box target for a bare `UInt`/
+            // `ULong` operand — see `isUnsignedExprMsil`.
+            boxIfNeededUnsignedMsil(cctx, insns, argTy, isUnsignedExprMsil(fctx, callArgExpr(args[0])))
             insns.add(MCallvirt(methodToken = cctx.tokObjToString))
           }
         }
@@ -15187,7 +15476,10 @@ func lowerBuiltinOrStaticCallMsil(
     if args.count >= 2 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
       val a1Ty = lowerCallArgMsil(cctx, fctx, insns, args[1])
-      boxIfNeededMsil(cctx, insns, a1Ty)
+      // #6913: `String.Format`'s `{0}` placeholder calls `.ToString()` on the
+      // boxed arg internally — an unsigned-flagged box target for a bare
+      // `UInt`/`ULong` arg — see `isUnsignedExprMsil`.
+      boxIfNeededUnsignedMsil(cctx, insns, a1Ty, isUnsignedExprMsil(fctx, callArgExpr(args[1])))
       insns.add(MCall(methodToken = cctx.tokStringFormat1))
     } else if args.count == 1 {
       val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
@@ -15200,9 +15492,9 @@ func lowerBuiltinOrStaticCallMsil(
     if args.count >= 3 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
       val a1Ty2 = lowerCallArgMsil(cctx, fctx, insns, args[1])
-      boxIfNeededMsil(cctx, insns, a1Ty2)
+      boxIfNeededUnsignedMsil(cctx, insns, a1Ty2, isUnsignedExprMsil(fctx, callArgExpr(args[1])))
       val a2Ty2 = lowerCallArgMsil(cctx, fctx, insns, args[2])
-      boxIfNeededMsil(cctx, insns, a2Ty2)
+      boxIfNeededUnsignedMsil(cctx, insns, a2Ty2, isUnsignedExprMsil(fctx, callArgExpr(args[2])))
       insns.add(MCall(methodToken = cctx.tokStringFormat2))
     } else if args.count >= 1 {
       val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
@@ -15215,11 +15507,11 @@ func lowerBuiltinOrStaticCallMsil(
     if args.count >= 4 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
       val a1Ty3 = lowerCallArgMsil(cctx, fctx, insns, args[1])
-      boxIfNeededMsil(cctx, insns, a1Ty3)
+      boxIfNeededUnsignedMsil(cctx, insns, a1Ty3, isUnsignedExprMsil(fctx, callArgExpr(args[1])))
       val a2Ty3 = lowerCallArgMsil(cctx, fctx, insns, args[2])
-      boxIfNeededMsil(cctx, insns, a2Ty3)
+      boxIfNeededUnsignedMsil(cctx, insns, a2Ty3, isUnsignedExprMsil(fctx, callArgExpr(args[2])))
       val a3Ty3 = lowerCallArgMsil(cctx, fctx, insns, args[3])
-      boxIfNeededMsil(cctx, insns, a3Ty3)
+      boxIfNeededUnsignedMsil(cctx, insns, a3Ty3, isUnsignedExprMsil(fctx, callArgExpr(args[3])))
       insns.add(MCall(methodToken = cctx.tokStringFormat3))
     } else if args.count >= 1 {
       val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
@@ -17261,8 +17553,13 @@ func lowerMethodCallMsil(
         // `callvirt Object.ToString()` requires a boxed reference on the stack.
         // Value types (Int, Long, Double, Char, Byte) must be boxed first — without
         // the `box` instruction the JIT treats the raw value bits as an object
-        // pointer, causing a NullReferenceException at runtime.
-        boxIfNeededMsil(cctx, insns, recvTy)
+        // pointer, causing a NullReferenceException at runtime. #6913: an
+        // unsigned-flagged box target for a bare `UInt`/`ULong` receiver — see
+        // `isUnsignedExprMsil`. This `.toString()` UFCS/member-call spelling
+        // is a SEPARATE codegen arm from the free `toString(x)` builtin
+        // (`lowerBuiltinOrStaticCallMsil`'s `funcName == "toString"` arm) —
+        // both need the fix independently.
+        boxIfNeededUnsignedMsil(cctx, insns, recvTy, isUnsignedExprMsil(fctx, recv))
         insns.add(MCallvirt(methodToken = cctx.tokObjToString))
       }
     }
@@ -18525,6 +18822,9 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             registerVarEnumTypeMsil(fctx, name, annoEnumName)
           }
           markByteSlotMsil(fctx, slot, isByteAnnotationMsil(tyOpt))
+          // #6913: mark this `let`-bound slot when it's declared `UInt`/
+          // `ULong` — see `FuncCtx.unsignedSlots`.
+          markUnsignedSlotMsil(fctx, slot, isUnsignedAnnotationMsil(tyOpt))
           emitByteSlotNarrowMsil(fctx, insns, slot)
           emitStoreSlot(insns, slot, fctx.paramCount)
           // Register the declared return type for function-typed locals so an
@@ -18650,6 +18950,9 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               } else {
                 val slot = allocSlotMsil(fctx, name, ty)
                 markByteSlotMsil(fctx, slot, isByteAnnotationMsil(tyOpt))
+                // #6913: mark this `var`-bound slot when it's declared
+                // `UInt`/`ULong` — see `FuncCtx.unsignedSlots`.
+                markUnsignedSlotMsil(fctx, slot, isUnsignedAnnotationMsil(tyOpt))
                 emitByteSlotNarrowMsil(fctx, insns, slot)
                 emitStoreSlot(insns, slot, fctx.paramCount)
                 fctx.mutableLocals.add(name)
@@ -18702,6 +19005,11 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               } else {
                 val slot = allocSlotMsil(fctx, name, ty)
                 fctx.mutableLocals.add(name)
+                // #6913: mark this no-initializer `var`-bound slot when
+                // it's declared `UInt`/`ULong` too (byte-slot parity gap
+                // this ticket doesn't need to repeat) — see
+                // `FuncCtx.unsignedSlots`.
+                markUnsignedSlotMsil(fctx, slot, isUnsignedAnnotationMsil(tyOpt))
                 match ty {
                   case MLong -> {
                     insns.add(MLdcI8(v = intToLong(0)))
@@ -18946,6 +19254,9 @@ func lowerLocalPatBindMsil(
         case _ -> {
           val slot = allocSlotMsil(fctx, name, ty)
           markByteSlotMsil(fctx, slot, isByteAnnotationMsil(tyOpt))
+          // #6913: mark this `val`-bound slot when it's declared `UInt`/
+          // `ULong` — see `FuncCtx.unsignedSlots`.
+          markUnsignedSlotMsil(fctx, slot, isUnsignedAnnotationMsil(tyOpt))
           emitByteSlotNarrowMsil(fctx, insns, slot)
           emitStoreSlot(insns, slot, fctx.paramCount)
           match tyOpt {
@@ -19390,6 +19701,7 @@ func makeFuncCtxMsil(
     scopeBaseMsil = 0,
     scopeUndoMsil = newList(),
     byteSlots = newMap(),
+    unsignedSlots = newMap(),
     generics = newList(),
     varEnumTypes = newMap(),
     enumHint = newList(),
@@ -19526,6 +19838,8 @@ func insnStackDelta(insn: in MInsn): Int {
     case MCeq -> -1
     case MClt -> -1
     case MCgt -> -1
+    case MClt_Un -> -1
+    case MCgt_Un -> -1
     case MConvI4 -> 0
     case MConvI8 -> 0
     case MConvR8 -> 0
@@ -26868,6 +27182,9 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
     val slot = fctx.slotTicker.count
     fctx.slots.add(p.name, slot)
     fctx.types.add(p.name, paramTy)
+    // #6913: mark this param's slot when it's declared `UInt`/`ULong` — see
+    // the matching comment in registerParamsMsil / `FuncCtx.unsignedSlots`.
+    markUnsignedSlotMsil(fctx, slot, isUnsignedTypeExprMsil(p.ty))
     if isByrefMode(p.mode) {
       fctx.byrefSlotTypes.add(slot, paramTy)
     }
@@ -27193,6 +27510,9 @@ func registerParamsMsil(
     val slot = fctx.slotTicker.count
     fctx.slots.add(p.name, slot)
     fctx.types.add(p.name, paramTy)
+    // #6913: mark this param's slot when it's declared `UInt`/`ULong` — see
+    // `FuncCtx.unsignedSlots`.
+    markUnsignedSlotMsil(fctx, slot, isUnsignedTypeExprMsil(p.ty))
     if isByrefMode(p.mode) {
       fctx.byrefSlotTypes.add(slot, paramTy)
     }

@@ -1070,8 +1070,22 @@ jobs:
           echo "$result" | grep -qx "G=abcdef" || { echo "::error::git_hash define not wrapped into BuildInfo.gitHash"; exit 1; }
           echo "BuildInfo --define runtime path OK (V=7.7.7 P=release G=abcdef)" >> "$GITHUB_STEP_SUMMARY"
 
-      # Extra barrier (BuildInfo batch): keeps the two BuildInfo steps above
-      # off the adjacent already-at-cap batches (#5933/#5967).
+      # Distinct/range-subtype static-factory self-test, dotnet leg (#1501)
+      # — this file's own header calls the dotnet leg "load-bearing," but no
+      # bare (default-target) `lyric test` invocation of it previously
+      # existed anywhere in this workflow; only the JVM leg
+      # (`--target jvm`, compiler-self-tests-jvm job) was wired. Added
+      # alongside #6913's new bare-scalar `UInt`/`ULong` section in this
+      # file, which needs a dotnet-target CI run to mean anything (the fix
+      # under test is dotnet-only; JVM already handled it via #6748/#6754).
+      - name: Range-subtype self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/range_subtype_self_test.l
+
+      # Extra barrier (BuildInfo batch): keeps the BuildInfo steps (plus the
+      # #6913 range-subtype dotnet leg added alongside them) off the
+      # adjacent already-at-cap batches (#5933/#5967).
       - name: Wait for parallel tests (BuildInfo dotnet batch)
         wait-all: true
 
@@ -1107,6 +1121,53 @@ jobs:
             fi
           done
           echo "OK: println(Bool) renders lowercase true/false on dotnet."
+
+      # `println(UInt/ULong)` unsigned-decimal parity (#6913): a bare
+      # sign-bit-set `UInt`/`ULong` value's `println` call previously pushed
+      # the raw SIGNED `int32`/`int64` bit pattern into
+      # `Console.WriteLine(int32)`/`Console.WriteLine(int64)`, rendering the
+      # negative signed interpretation (`2500000000u32` printed
+      # `-1794967296`). Mirrors the `println(Bool)` step above (a plain
+      # `lyric run --target dotnet` program, its real captured stdout
+      # asserted directly) rather than `@test_module`-based capture: a
+      # `@test_module`'s synthesised `main()` also uses `println` to emit
+      # each test's own TAP result line, so redirecting
+      # `System.Console.Out` process-globally from INSIDE a test (the only
+      # capture mechanism .NET offers) risks leaving it redirected — and
+      # every later test's TAP line silently swallowed — if that test's own
+      # assertion panics before restoring it. A plain standalone program has
+      # no such hazard. `toString`/interpolation/concatenation coverage for
+      # the same sign-bit-boundary values lives in the dual-target
+      # `range_subtype_self_test.l` (`@test_module`-safe: those don't touch
+      # `Console.Out`).
+      - name: println(UInt/ULong) unsigned decimal parity self-test (dotnet, #6913)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping println(UInt/ULong) self-test"
+            exit 1
+          fi
+          dir="$(mktemp -d)"
+          cat > "$dir/printunsigned.l" <<'LYRIC'
+          package PrintUnsigned
+          func main(): Unit {
+            val u: UInt = 3000000000u32
+            println(u)
+            val base: ULong = 9223372036854775807u64
+            val ul: ULong = base + 4u64
+            println(ul)
+          }
+          LYRIC
+          out="$("$lyric_bin" run --target dotnet "$dir/printunsigned.l" 2>&1)" || { echo "::error::println(UInt/ULong) program failed to run"; echo "$out"; exit 1; }
+          for expect in "3000000000" "9223372036854775811"; do
+            if ! grep -qx "$expect" <<< "$out"; then
+              echo "::error::expected '$expect' in println(UInt/ULong) output, got:"; echo "$out"; exit 1
+            fi
+          done
+          echo "OK: println(UInt/ULong) renders the unsigned decimal value on dotnet (#6913)."
 
       # Unsigned Byte semantics (docs/59 §4.3): division/modulo, every
       # compound-assignment path, and the >= 128 canonicalization cases

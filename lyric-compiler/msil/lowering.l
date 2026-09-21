@@ -670,8 +670,16 @@ pub union MInsn {
   case MShr
   case MShrUn
   case MCeq                        // compare equal (push 0/1)
-  case MClt                        // compare less than (push 0/1)
-  case MCgt                        // compare greater than (push 0/1)
+  case MClt                        // compare less than (push 0/1, signed)
+  case MCgt                        // compare greater than (push 0/1, signed)
+  // #6913: unsigned comparison counterparts, selected by `lowerBinopMsil`'s
+  // `BLt`/`BGt`/`BLte`/`BGte` arms when an operand is `UInt`/`ULong`-flagged
+  // (`fctx.unsignedSlots` / `isUnsignedExprMsil`). `emitClt_Un`/`emitCgt_Un`
+  // already existed for the `MDistinctType.isUnsigned` bounds-check path
+  // (#6756) but weren't wired into this general `MInsn` union until now —
+  // mirrors how `MDivUn`/`MRemUn` already sit alongside `MDiv`/`MRem`.
+  case MClt_Un                     // compare less than (push 0/1, unsigned)
+  case MCgt_Un                     // compare greater than (push 0/1, unsigned)
 
   // Conversions
   case MConvI4
@@ -2155,6 +2163,8 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MCeq -> emitCeq(mb)
     case MClt -> emitClt(mb)
     case MCgt -> emitCgt(mb)
+    case MClt_Un -> emitClt_Un(mb)
+    case MCgt_Un -> emitCgt_Un(mb)
     case MConvI4 -> emitConv_I4(mb)
     case MConvI8 -> emitConv_I8(mb)
     case MConvR8 -> emitConv_R8(mb)
