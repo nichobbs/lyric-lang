@@ -175,6 +175,17 @@ record MonoState {
   /// UNCHANGED (never reaching `noteUnspecialisableLocalCall`), leaving a
   /// dangling reference to a generic Phase 2 erases.
   unionDecls: Map[String, Bool]
+  /// Simple names of same-package `extern type` decls (#6891).
+  /// `indexExprToTypeArgMono` consults this alongside `recordDecls`/
+  /// `ifaceDecls`/`distinctDecls`/`unionDecls` to recognise an explicit
+  /// type-application call site (`f[JExternClient](x)`) whose type argument
+  /// names an extern type: without it, an extern-type argument failed the
+  /// "is this actually a type" whitelist and the call silently fell through
+  /// UNCHANGED (never reaching `noteUnspecialisableLocalCall`), leaving a
+  /// dangling reference to a generic Phase 2 erases — the exact #6774
+  /// failure mode `unionDecls` was added to close, for a different item
+  /// kind.
+  externTypeDecls: Map[String, Bool]
   /// Simple names of top-level generic functions declared in THIS file
   /// that Phase 2 will drop from the output (neither `@externTarget`-kept
   /// nor `@axiom`).  A call site still referencing one of these after the
@@ -261,6 +272,7 @@ func newMonoState(
   ifaceDecls: in Map[String, InterfaceDecl],
   distinctDecls: in Map[String, DistinctTypeDecl],
   unionDecls: in Map[String, Bool],
+  externTypeDecls: in Map[String, Bool],
   droppedLocalGenerics: in Map[String, Bool],
   ambiguousFuncOverloads: in Map[String, List[FunctionDecl]],
   ctorCandidates: in Map[String, List[FunctionDecl]],
@@ -275,6 +287,7 @@ func newMonoState(
     ifaceDecls = ifaceDecls,
     distinctDecls = distinctDecls,
     unionDecls = unionDecls,
+    externTypeDecls = externTypeDecls,
     droppedLocalGenerics = droppedLocalGenerics,
     ambiguousFuncOverloads = ambiguousFuncOverloads,
     ctorCandidates = ctorCandidates,
@@ -4736,7 +4749,7 @@ func indexExprToTypeArgMono(state: in MonoState, e: in Expr): Option[TypeArg] {
     case EPath(p) -> {
       if p.segments.count == 1 {
         val nm = p.segments[0]
-        if isPrimitiveName(nm) or state.recordDecls.containsKey(nm) or state.ifaceDecls.containsKey(nm) or state.distinctDecls.containsKey(nm) or state.unionDecls.containsKey(nm) {
+        if isPrimitiveName(nm) or state.recordDecls.containsKey(nm) or state.ifaceDecls.containsKey(nm) or state.distinctDecls.containsKey(nm) or state.unionDecls.containsKey(nm) or state.externTypeDecls.containsKey(nm) {
           Some(value = TAType(ty = TypeExpr(kind = TRef(path = p), span = e.span)))
         } else {
           None
@@ -5470,8 +5483,60 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
 
     case ETypeApp(fn, targs) -> Expr(kind = ETypeApp(fn = rewriteExpr(state, env, fn), args = targs), span = s)
 
-    // Leaves: literals, EPath, ESelf, EResult, EOld, EForall, EExists, ERange, EError
+    // #6968: `ERange`/`EForall`/`EExists` were leaves here too, same gap
+    // D-progress-887 fixed for the weaver's own `rewriteExpr` (#6833/#6863)
+    // — a generic call site inside a range bound or a `forall(...)`/
+    // `exists(...)` binder's `whereExpr`/`body` never got rewritten to its
+    // specialised name. `EOld` is included for the same reason the weaver's
+    // fix includes it (consistency with every other AST walker in this
+    // codebase), though in practice it never reaches this walker: the
+    // contract elaborator (`elaborateFile`, which runs before `monoFile` in
+    // `pipeCheckAndMono`) replaces every `EOld(inner)` node in a `requires:`/
+    // `ensures:` clause with a snapshot-local `EPath` reference before mono
+    // ever sees the body.
+    case EOld(inner) -> Expr(kind = EOld(inner = rewriteExpr(state, env, inner)), span = s)
+
+    case ERange(bound) -> Expr(kind = ERange(bound = rewriteRangeBound(state, env, bound)), span = s)
+
+    case EForall(binders, whereExpr, body) -> Expr(
+      kind = EForall(
+        binders = binders,
+        whereExpr = match whereExpr {
+          case Some(e) -> Some(value = rewriteExpr(state, env, e))
+          case None -> None
+        },
+        body = rewriteExpr(state, env, body)
+      ),
+      span = s
+    )
+
+    case EExists(binders, whereExpr, body) -> Expr(
+      kind = EExists(
+        binders = binders,
+        whereExpr = match whereExpr {
+          case Some(e) -> Some(value = rewriteExpr(state, env, e))
+          case None -> None
+        },
+        body = rewriteExpr(state, env, body)
+      ),
+      span = s
+    )
+
+    // Leaves: literals, EPath, ESelf, EResult, EError
     case _ -> expr
+  }
+}
+
+func rewriteRangeBound(state: in MonoState, env: in Map[String, TypeExpr], bound: in RangeBound): RangeBound {
+  match bound {
+    case RBClosed(lo, hi) -> RBClosed(lo = rewriteExpr(state, env, lo), hi = rewriteExpr(state, env, hi))
+    case RBHalfOpen(lo, hi, bareDotDot) -> RBHalfOpen(
+      lo = rewriteExpr(state, env, lo),
+      hi = rewriteExpr(state, env, hi),
+      bareDotDot = bareDotDot
+    )
+    case RBLowerOpen(hi) -> RBLowerOpen(hi = rewriteExpr(state, env, hi))
+    case RBUpperOpen(lo) -> RBUpperOpen(lo = rewriteExpr(state, env, lo))
   }
 }
 
@@ -6170,6 +6235,10 @@ pub func monoFileWithImportsAndTypeDecls(
   // #6774: same-package union decls, so `indexExprToTypeArgMono` recognises
   // a union name as a legitimate explicit type argument (`f[MyUnion](x)`).
   val unionDecls: Map[String, Bool] = newMap()
+  // #6891: same-package extern type decls, so `indexExprToTypeArgMono`
+  // recognises an extern type name as a legitimate explicit type argument
+  // (`f[JExternClient](x)`) — mirrors `unionDecls` for a different item kind.
+  val externTypeDecls: Map[String, Bool] = newMap()
   // Same-file generic functions that Phase 2 will erase from the output —
   // an unrewritten call site to one of these is a dangling reference and
   // must raise M0002 (docs/59 §5.2 B2).  `@externTarget`-kept generics
@@ -6241,6 +6310,11 @@ pub func monoFileWithImportsAndTypeDecls(
       case IUnion(decl) -> {
         if not unionDecls.containsKey(decl.name) {
           unionDecls.add(decl.name, true)
+        }
+      }
+      case IExternType(decl) -> {
+        if not externTypeDecls.containsKey(decl.name) {
+          externTypeDecls.add(decl.name, true)
         }
       }
       case _ -> ()
@@ -6433,6 +6507,7 @@ pub func monoFileWithImportsAndTypeDecls(
     ifaceDecls,
     distinctDecls,
     unionDecls,
+    externTypeDecls,
     droppedLocalGenerics,
     ambiguousFuncOverloads,
     ctorCandidates,
