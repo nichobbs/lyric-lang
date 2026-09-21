@@ -376,6 +376,39 @@ test "F0045: a nested async func declared inside an outer try starts its own fre
   assertFalse(propHasDiag(result.diagnostics, "F0045"), "nested function's own ? is outside its own try region")
 }
 
+// #7174: review finding on #7170's fix — the guard above fired for ANY `?`
+// scrutinee inside a try/catch/finally in an async function, not just a
+// direct call to a KNOWN async function.  A call to an ordinary (non-async)
+// function, and a bare local variable, are both already safe (`EAwait`'s
+// codegen is a no-op when the value isn't Task-shaped — see the #6920 doc
+// above `implicitAwaitScrutinee`), so F0045 must not fire for either.
+val syncValidateSrc = "func validate(n: in Int): Result[Int, String] {\n  if n < 0 {\n    Err(\"neg\")\n  } else {\n    Ok(n)\n  }\n}\n"
+
+test "F0045 (#7174): does not fire for ? on a call to a non-async function in a try body" {
+  val src = "package P\n" + syncValidateSrc +
+    "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = validate(n)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertFalse(propHasDiag(result.diagnostics, "F0045"), "a call to a non-async function is never Task-shaped")
+}
+
+test "F0045 (#7174): does not fire for ? on a bare local variable in a try body" {
+  val src = "package P\nasync func f(n: in Int): Result[Int, String] {\n  try {\n    val r: Result[Int, String] = Ok(n)\n    val x = r?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertFalse(propHasDiag(result.diagnostics, "F0045"), "a bare local variable is never Task-shaped")
+}
+
+test "F0045 (#7174): still fires for implicit-await ? on a same-file async call in a try body" {
+  // Regression guard: the narrowing must not have broken the original
+  // #7170 case it was meant to keep catching.
+  val src = "package P\n" + asyncMayFailSrc +
+    "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = mayFail(n)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertTrue(
+    propHasDiag(result.diagnostics, "F0045"),
+    "a direct call to a known same-file async function is still flagged"
+  )
+}
+
 // ── Same-file alias return types (#1814) ─────────────────────────────────────
 // `monadOfRet` unfolds same-file `alias` declarations before the Result/Option
 // classification, so a return type written through an alias no longer trips a
