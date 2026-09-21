@@ -17064,9 +17064,55 @@ func lowerMethodCallMsil(
       }
       case _ -> false
     }
+    // `xs.add(row)` on a `List[slice[Elem]]` receiver (#6945): a bare slice
+    // literal argument (`xs.add([1, 2, 3])`) is lowered by `EList`'s own
+    // no-surrounding-hint arm, which — for a NON-EMPTY homogeneous-simple
+    // literal — infers the element type from the literals themselves
+    // (`inferHomogeneousListElemTypeMsil`) and builds a genuine `Int32[]` via
+    // `newarr`.  An EMPTY literal (`[]`) has no elements to infer from, so
+    // that inference always returns `None` and the literal falls through to
+    // the legacy `List<object>` fallback — a REAL `List<object>` instance,
+    // not an array at all.  `collBoxIfNeeded` below is then a no-op for a
+    // concrete-collection receiver (it only boxes for the legacy erased
+    // path), so that `List<object>` is stored, unconverted, into the closed
+    // `List<int32[]>` via `List`1<T>::Add(!0)` — no cast, no runtime check.
+    // A later element (e.g. `xs.add([9])`, a real `int32[]`) coexists in the
+    // same CLR-typed list as the mistyped `List<object>` row, and any
+    // subsequent array-shaped access (`row.length`, `for v in row`, …)
+    // throws `ArrayTypeMismatchException: Attempted to access an element as
+    // a type incompatible with the array.` the moment it reaches the
+    // `List<object>` row.
+    //
+    // Fix by pushing the receiver's own element type onto `collExpect`
+    // before lowering a single-argument `.add()`'s argument — the same
+    // `MArray(e)`-hinted `EList` arm a normal `slice[Elem]`-parameter call
+    // site already uses (mirrors the concrete-collection-parameter fix
+    // above this function, and JVM's analogous #6546 fix in
+    // `04_calls.l`).  This makes `[]` build a genuine zero-length `Int32[]`
+    // (`newarr int32; ldc.i4 0`) instead of a `List<object>`, so every row
+    // in the list — empty or not — carries the same real array
+    // representation.  Only applies to the single-value list-add shape
+    // (`args.count == 1`); a two-arg `Dict.add(key, value)` call already has
+    // its own key/value generic-arg hint above and is left untouched.
+    val addElemTy = if args.count == 1 {
+      match recvTy {
+        case MConcreteList(e) -> Some(value = e)
+        case _ -> None
+      }
+    } else {
+      None
+    }
     var i = 0
     while i < args.count {
+      match addElemTy {
+        case Some(e) -> pushCollExpect(fctx, e)
+        case None -> ()
+      }
       val aTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+      match addElemTy {
+        case Some(_) -> popCollExpect(fctx)
+        case None -> ()
+      }
       // A concrete `List<int32>` / `Dictionary<…>` stores arguments unboxed via
       // the closed generic `!0` MemberRef; only the legacy `List<object>` boxes.
       collBoxIfNeeded(cctx, insns, aTy, recvTy)
