@@ -35211,5 +35211,5 @@ A fourth issue in the same batch, #7079, was found to already be fixed
 (under #7093, closed during PR #6863's own review cycle) and was closed as
 a stale duplicate rather than re-fixed.
 
-**Related:** `docs/decisions/D-progress-0939-middleend-ast-rewrite-leaf-gaps-and-hoist-threading.md`
+**Related:** `docs/decisions/D-progress-0942-middleend-ast-rewrite-leaf-gaps-and-hoist-threading.md`
 (full account), #6968, #6891, #6967, #7079, D-progress-887, #6774, #6702.
