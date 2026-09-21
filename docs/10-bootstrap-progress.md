@@ -35095,7 +35095,7 @@ and remains unverified here (no JVM-target regression test added) — the
 metadata-layer fix is backend-shared, but JVM's own restored-type codegen
 dispatch may or may not need an equivalent fix; not confirmed either way.
 
-**Related:** #6533 (closed by this fix), D-progress-939 (full account),
+**Related:** #6533 (closed by this fix), D-progress-942 (full account),
 `docs/45-contract-metadata-direct-resolution.md`.
 
 ## #5704 progress: ecosystem-wide F0027 audit clears; a real proto3 float encoding bug fixed
