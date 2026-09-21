@@ -163,3 +163,48 @@ test "a bare slice literal added via self.field from an instance method round-tr
   assertEqual(lines[0], "1", "one row was added via self.rows.add")
   assertEqual(lines[1], "5", "nested index acc.rows[0][1]")
 }
+
+// #7176 (review finding on this PR): a generic record's field typed as the
+// record's OWN generic type parameter (`Box[T] { items: List[T] }`) must not
+// leak the unresolved bare `T` into `JvmCaseField.genericArgs` — before the
+// fix, `Box.items`'s registered `genericArgs` was unfiltered `[T]`, which
+// `resolveConcreteTypeExpr`'s indexed-read narrowing (`b.items[0]`) would
+// then feed a `checkcast <pkg>/T` against a nonexistent class
+// (`NoClassDefFoundError` at class-load, never a compile error). Fixed by
+// threading the record's own generic params through
+// `returnTypeGenericArgsFiltered` at every `JvmCaseField` construction site.
+// `makeBox` exists only so the type checker can infer `T = Int` for
+// `Box(items = startItems)` from a DECLARED RETURN TYPE context (a bare
+// `Box[T] { items: List[T] }` — single field, no other field's argument to
+// infer `T` from directly — cannot otherwise infer `T` from `items`'s
+// argument alone, an unrelated pre-existing inference gap, not part of this
+// fix); `readFirst`'s `b: in Box[Int]` PARAMETER is where
+// `Jvm.Codegen.recordParamClassOf` (#6691) narrows `b`'s class to the real
+// `Box`, so `b.items[0]` reaches `scrutineeGenericArgs`'s `EMember` arm.
+test "a generic record field typed as the record's OWN type parameter does not leak a bogus checkcast (#7176)" {
+  val source = "package OwnTypeParamField\n" + "\n" + "import Std.String\n" + "import Std.Core\n" + "\n" +
+    "record Box[T] {\n" +
+    "  items: List[T]\n" +
+    "}\n" +
+    "\n" +
+    "func readFirst(b: in Box[Int]): Int {\n" +
+    "  b.items[0]\n" +
+    "}\n" +
+    "\n" +
+    "func makeBox(startItems: List[Int]): Box[Int] {\n" +
+    "  Box(items = startItems)\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  val startItems: List[Int] = [9]\n" +
+    "  val bx: Box[Int] = makeBox(startItems)\n" +
+    "  println(Std.String.fromInt(readFirst(bx)))\n" +
+    "}\n"
+  val result = compileAndRunSingle("own-type-param-field", "OwnTypeParamField", source)
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "run must succeed with no NoClassDefFoundError for a phantom 'T' class (stderr=" + result.stderr + ")"
+  )
+  assertEqual(Str.trim(result.stdout), "9", "b.items[0] reads the real Int element, not a bogus checkcast")
+}

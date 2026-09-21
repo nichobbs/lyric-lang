@@ -4399,10 +4399,21 @@ pub func collectFileCasesExtern(
                     ),
                     paramIdx = typeParamIndexOf(ty, tps),
                     dflt = None,
-                    genericArgs = returnTypeGenericArgs(
+                    // #7176: FILTERED against the union's own generic type
+                    // params (`tps`), never the unfiltered form — a bare
+                    // reference to the union's own type param (e.g.
+                    // `Branch(items: List[T])` inside `union Tree[T]`) is not
+                    // a resolved type, and feeding it through unfiltered
+                    // would let `EMember`'s `scrutineeGenericArgs` field-
+                    // access arm (#6957) pass a bogus `T` down to
+                    // `resolveConcreteTypeExpr`'s `checkcast <pkg>/T`
+                    // against a nonexistent class — see
+                    // `returnTypeGenericArgsFiltered`'s own doc comment.
+                    genericArgs = returnTypeGenericArgsFiltered(
                       Some(
                         value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty)
-                      )
+                      ),
+                      tps
                     )
                   )
                 )
@@ -4418,8 +4429,10 @@ pub func collectFileCasesExtern(
                     ),
                     paramIdx = typeParamIndexOf(ty, tps),
                     dflt = None,
-                    genericArgs = returnTypeGenericArgs(
-                      Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty))
+                    // #7176: see the UFNamed arm's comment above.
+                    genericArgs = returnTypeGenericArgsFiltered(
+                      Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty)),
+                      tps
                     )
                   )
                 )
@@ -4451,8 +4464,11 @@ pub func collectFileCasesExtern(
                   ),
                   paramIdx = typeParamIndexOf(f.ty, tps),
                   dflt = f.dflt,
-                  genericArgs = returnTypeGenericArgs(
-                    Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty))
+                  // #7176: see the union arms' comment above — filtered
+                  // against the record's own generic type params.
+                  genericArgs = returnTypeGenericArgsFiltered(
+                    Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty)),
+                    tps
                   )
                 )
               )
@@ -4490,8 +4506,11 @@ pub func collectFileCasesExtern(
                   ),
                   paramIdx = typeParamIndexOf(f.ty, tps),
                   dflt = f.dflt,
-                  genericArgs = returnTypeGenericArgs(
-                    Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty))
+                  // #7176: see the union arms' comment above — filtered
+                  // against the exposed record's own generic type params.
+                  genericArgs = returnTypeGenericArgsFiltered(
+                    Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty)),
+                    tps
                   )
                 )
               )
@@ -4509,6 +4528,12 @@ pub func collectFileCasesExtern(
         // otherwise `TokenBucket(...)` construction and bare field reads inside
         // entries can't resolve the field descriptors.
         val protClass = owner + "/" + decl.name
+        // #7176: same own-type-param filter as records/unions above, in case
+        // a protected type is ever declared generic (`ProtectedTypeDecl.
+        // generics`) — `ty`'s own erasure above doesn't erase a bare type
+        // param at all yet (a pre-existing gap, out of scope here), but
+        // `genericArgs` must not leak an unresolved param name regardless.
+        val protTps = genericParamNames(decl.generics)
         if not into.containsKey(protClass) {
           val flds: List[JvmCaseField] = newList()
           var mi = 0
@@ -4522,7 +4547,7 @@ pub func collectFileCasesExtern(
                       ty = typeExprToJvmExtern(ty, owner, externTypes),
                       paramIdx = -1,
                       dflt = init,
-                      genericArgs = returnTypeGenericArgs(Some(value = ty))
+                      genericArgs = returnTypeGenericArgsFiltered(Some(value = ty), protTps)
                     )
                   )
                   case PFLet(name, ty, init, _, _, _) -> flds.add(
@@ -4531,7 +4556,7 @@ pub func collectFileCasesExtern(
                       ty = typeExprToJvmExtern(ty, owner, externTypes),
                       paramIdx = -1,
                       dflt = init,
-                      genericArgs = returnTypeGenericArgs(Some(value = ty))
+                      genericArgs = returnTypeGenericArgsFiltered(Some(value = ty), protTps)
                     )
                   )
                   case PFImmutable(f) -> flds.add(
@@ -4540,7 +4565,7 @@ pub func collectFileCasesExtern(
                       ty = typeExprToJvmExtern(f.ty, owner, externTypes),
                       paramIdx = -1,
                       dflt = f.dflt,
-                      genericArgs = returnTypeGenericArgs(Some(value = f.ty))
+                      genericArgs = returnTypeGenericArgsFiltered(Some(value = f.ty), protTps)
                     )
                   )
                 }
@@ -4575,7 +4600,13 @@ pub func collectFileCasesExtern(
                     ty = typeExprToJvmErasedExtern(f.ty, owner, genericParamNames(decl.generics), externTypes),
                     paramIdx = -1,
                     dflt = f.dflt,
-                    genericArgs = returnTypeGenericArgs(Some(value = f.ty))
+                    // #7176: see the union/record arms' comment above —
+                    // filtered against the opaque type's own generic type
+                    // params.
+                    genericArgs = returnTypeGenericArgsFiltered(
+                      Some(value = f.ty),
+                      genericParamNames(decl.generics)
+                    )
                   )
                 )
                 case OMInvariant(_) -> ()
