@@ -164,7 +164,19 @@ func jsonString(s: in String): String {
   Std.Json.encodeString(s)
 }
 
-func jsonObject(fields: in List[(String, String)]): String {
+// A `(key, alreadySerializedValue)` pair for `jsonObject` below.  A plain
+// record instead of a `(String, String)` tuple in a `List` — the latter
+// pattern (list-of-tuples with inline tuple-literal `.add` + destructuring
+// `val (k, v) = ...`) is a known trigger for a self-hosted MSIL emitter
+// IL-validity bug (#3943; caught by the `ilverify-required` CI gate on this
+// exact code before this rewrite — `StackUnexpected: found 'object',
+// expected 'string'`), not something this package's own logic does wrong.
+record JsonField {
+  key: String
+  value: String
+}
+
+func jsonObject(fields: in List[JsonField]): String {
   if fields.length == 0 {
     "{}"
   } else {
@@ -174,8 +186,7 @@ func jsonObject(fields: in List[(String, String)]): String {
       if i > 0 {
         buf = buf + ","
       }
-      val (k, v) = fields[i]
-      buf = buf + jsonString(k) + ":" + v
+      buf = buf + jsonString(fields[i].key) + ":" + fields[i].value
       i = i + 1
     }
     buf + "}"
@@ -200,10 +211,10 @@ func jsonArray(items: in List[String]): String {
 }
 
 func emitArg(a: in AnnotatedArg): String {
-  val fields: List[(String, String)] = newList()
-  fields.add(("name", jsonString(a.argName)))
-  fields.add(("kind", jsonString(a.argKind)))
-  fields.add(("value", jsonString(a.argValue)))
+  val fields: List[JsonField] = newList()
+  fields.add(JsonField(key = "name", value = jsonString(a.argName)))
+  fields.add(JsonField(key = "kind", value = jsonString(a.argKind)))
+  fields.add(JsonField(key = "value", value = jsonString(a.argValue)))
   jsonObject(fields)
 }
 
@@ -216,11 +227,11 @@ func emitArgs(args: in List[AnnotatedArg]): String {
 }
 
 func emitField(f: in AnnotatedField): String {
-  val fields: List[(String, String)] = newList()
-  fields.add(("config", jsonString(f.configName)))
-  fields.add(("field", jsonString(f.fieldName)))
-  fields.add(("annotation", jsonString(f.annotationName)))
-  fields.add(("args", emitArgs(f.args)))
+  val fields: List[JsonField] = newList()
+  fields.add(JsonField(key = "config", value = jsonString(f.configName)))
+  fields.add(JsonField(key = "field", value = jsonString(f.fieldName)))
+  fields.add(JsonField(key = "annotation", value = jsonString(f.annotationName)))
+  fields.add(JsonField(key = "args", value = emitArgs(f.args)))
   jsonObject(fields)
 }
 
