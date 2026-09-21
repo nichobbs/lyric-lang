@@ -80,7 +80,7 @@ its full verification account (57/57 `msil_project_bridge_self_test.l`,
 
 **Related:** #7097 (closed by this PR, fixed by #7100), PR #7100 (the
 actual fix), #6224 (the native-backend `llvm_codegen.l` analog this fix
-mirrors), #6849/#6850/D-progress-8xx (the `bundleFuncFqnByName` /
+mirrors), #6849/#6850/D-progress-876 (the `bundleFuncFqnByName` /
 `findBundleFqnByName` bundle-wide bare-name-collision precedent for
 FUNCTIONS this fix's VAL analog follows the same shape as: register a
 qualified key alongside the guarded bare one, prefer the qualified key
