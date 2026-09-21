@@ -167,6 +167,34 @@ func stateInTry(st: in PropState): PropState {
   )
 }
 
+// #7179: re-scope `st` when descending into a lambda body — reset `inTry`
+// to `false`, mirroring `modechecker_check.l`'s `walkExprForAwaitInTry`
+// `ELambda` case (`AwaitTryCtx(fnName = ctx.fnName, inTry = false, ...)`)
+// exactly.  A lambda lowers to its own separately-compiled synthetic
+// function/closure-class method (`msil/codegen.l`'s `collectLambdasBfsExpr`,
+// ~line 10267) — it is never physically inside the enclosing function's
+// try/catch/finally protected IL region, no matter how deeply the lambda
+// literal is lexically nested inside a `try` block in the source.  A `?`
+// written directly in the lambda's own body already can't reach F0045 (it
+// classifies as `PropInLambda` and gets its own `F0020` before
+// `implicitAwaitScrutinee` is ever consulted — see `rewriteExpr`'s
+// `EPropagate` case), so this reset is currently a no-op for F0045
+// specifically; it is kept anyway so `st.inTry` stays a precise "lexically
+// inside the CURRENT function's own try region" invariant for any future
+// consumer, matching V0012's own invariant exactly rather than leaving a
+// latent mismatch between the two passes.
+func stateForLambda(st: in PropState): PropState {
+  PropState(
+    counter = st.counter,
+    diagnostics = st.diagnostics,
+    aliases = st.aliases,
+    syncFuncNames = st.syncFuncNames,
+    curFnName = st.curFnName,
+    curFnAsync = st.curFnAsync,
+    inTry = false
+  )
+}
+
 func freshSuffix(st: in PropState): String {
   val n = st.counter.count
   st.counter.add(0)
@@ -626,10 +654,11 @@ func rewriteExpr(e: in Expr, kind: in PropKind, st: in PropState): Expr {
     }
 
     // Lambdas carry their own return monad — switch to PropInLambda so a `?` inside surfaces the lambda-specific F0020 instead of the enclosing function's.
+    // #7179: also reset `inTry` (see `stateForLambda`'s doc) — a lambda body is never inside the enclosing function's own try/catch/finally protected region.
     case ELambda(lambdaParams, body) -> mkExpr(
       ELambda(
         lambdaParams = lambdaParams,
-        body = rewriteBlock(body, PropInLambda, st)
+        body = rewriteBlock(body, PropInLambda, stateForLambda(st))
       ),
       e.span
     )

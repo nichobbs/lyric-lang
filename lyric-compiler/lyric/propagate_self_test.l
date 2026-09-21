@@ -376,6 +376,30 @@ test "F0045: a nested async func declared inside an outer try starts its own fre
   assertFalse(propHasDiag(result.diagnostics, "F0045"), "nested function's own ? is outside its own try region")
 }
 
+// #7179: review finding — `rewriteExpr`'s `ELambda` case did not reset
+// `st.inTry` before descending into the lambda body, unlike `stateForFn`
+// (named functions) and V0012's own `walkExprForAwaitInTry` `ELambda` case.
+// This never actually produced a live F0045 false positive: a `?` written
+// directly in a lambda body classifies as `PropInLambda` (its own `F0020`)
+// before `implicitAwaitScrutinee`/F0045 is ever reached — verified directly
+// against the built compiler before this fix landed. `stateForLambda` (the
+// fix) closes the latent state-tracking gap anyway, matching V0012's
+// invariant exactly. This test pins both properties: no F0045 leaks out,
+// and the (correct, pre-existing) F0020 still fires for the `?` itself.
+test "F0045/F0020 (#7179): a lambda body nested in a try region gets F0020 for its own ?, never F0045" {
+  val src = "package P\n" + asyncMayFailSrc +
+    "async func f(n: in Int): Result[Int, String] {\n  try {\n    val g = \\() -> {\n      val x = mayFail(n)?\n      x\n    }\n    Ok(0)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertFalse(
+    propHasDiag(result.diagnostics, "F0045"),
+    "a lambda body is never inside the enclosing function's own try region"
+  )
+  assertTrue(
+    propHasDiag(result.diagnostics, "F0020"),
+    "? inside a lambda body still gets its own lambda-specific diagnostic"
+  )
+}
+
 // #7174: review finding on #7170's fix — the guard above fired for ANY `?`
 // scrutinee inside a try/catch/finally in an async function, not just a
 // direct call to a KNOWN async function.  A call to an ordinary (non-async)
