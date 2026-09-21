@@ -1892,10 +1892,15 @@ func isUniversalMethodName(name: in String): Bool {
 
 // The MSIL/JVM backends' `String` method intrinsic dispatch (`lowerMethodCallMsil`
 // in `lyric-compiler/msil/codegen.l`, the mirrored table in
-// `lyric-compiler/jvm/codegen/04_calls.l`) resolves these names unconditionally
-// via a hardcoded `memberName ==` cascade, independent of whether `Std.String`
-// is imported or a same-named `sigs` entry is otherwise visible (#7099). Keep
-// this list in sync with both backends' intrinsic tables.
+// `lyric-compiler/jvm/codegen/04_calls.l`) resolves these names via a
+// hardcoded `memberName ==` cascade, independent of whether `Std.String` is
+// imported or a same-named `sigs` entry is otherwise visible (#7099). Keep
+// this list in sync with both backends' intrinsic tables. One exception:
+// MSIL's `split` cascades to the pure-Lyric `Std.String.split` free function
+// rather than a direct BCL call, so it still throws at RUNTIME (not this
+// check) in the narrow case where `Std.String` never got linked into the
+// compiled bundle — a pre-existing gap (`lowerMethodCallMsil`'s `split` arm),
+// not one this allowlist can close without a codegen change.
 func isBackendIntrinsicStringMethodName(name: in String): Bool {
   name == "contains" or name == "substring" or name == "replace" or name == "isNormalized" or name == "normalize" or
     name == "trim" or
