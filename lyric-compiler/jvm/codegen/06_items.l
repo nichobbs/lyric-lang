@@ -1886,7 +1886,11 @@ func lowerImplMethod(
   // return to the real array type (#5931) — see its doc comment.
   val retTy = match fn.ret {
     case Some(te) -> {
-      if isExternIface { implTypeExprToJvm(te, pkgName, externTypes) } else { typeExprToJvmExtern(te, pkgName, externTypes) }
+      if isExternIface {
+        implTypeExprToJvm(te, pkgName, externTypes)
+      } else {
+        typeExprToJvmExtern(te, pkgName, externTypes)
+      }
     }
     case None -> JVoid
   }
@@ -4076,10 +4080,7 @@ func registerInstanceSigImplExtern(
 ): Unit {
   val filteredParams = stripLeadingSelfParam(params)
   val ps = implParamTypesToJvm(filteredParams, owner, externTypes)
-  val ret = match retOpt {
-    case Some(te) -> implTypeExprToJvm(te, owner, externTypes)
-    case None -> JVoid
-  }
+  val ret = match retOpt { case Some(te) -> implTypeExprToJvm(te, owner, externTypes); case None -> JVoid }
   val paramNames: List[String] = newList()
   val paramDefs: List[Option[Expr]] = newList()
   val modes: List[ParamMode] = newList()
@@ -4104,7 +4105,11 @@ func registerInstanceSigImplExtern(
         paramDefaults = paramDefs,
         paramModes = modes,
         isIface = false,
-        retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, noTypeParams), owner, externTypes),
+        retGenericArgs = eagerlyResolveGenericArgs(
+          returnTypeGenericArgsFiltered(retOpt, noTypeParams),
+          owner,
+          externTypes
+        ),
         closureRetTy = closureRetTypeOf(retOpt, owner, noTypeParams, externTypes),
         recordRetClass = None,
         retIsSelf = retIsSelf,
@@ -4393,7 +4398,12 @@ pub func collectFileCasesExtern(
                       localTypeNames
                     ),
                     paramIdx = typeParamIndexOf(ty, tps),
-                    dflt = None
+                    dflt = None,
+                    genericArgs = returnTypeGenericArgs(
+                      Some(
+                        value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty)
+                      )
+                    )
                   )
                 )
                 case UFPos(ty, _) -> flds.add(
@@ -4407,7 +4417,10 @@ pub func collectFileCasesExtern(
                       localTypeNames
                     ),
                     paramIdx = typeParamIndexOf(ty, tps),
-                    dflt = None
+                    dflt = None,
+                    genericArgs = returnTypeGenericArgs(
+                      Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty))
+                    )
                   )
                 )
               }
@@ -4437,7 +4450,10 @@ pub func collectFileCasesExtern(
                     localTypeNames
                   ),
                   paramIdx = typeParamIndexOf(f.ty, tps),
-                  dflt = f.dflt
+                  dflt = f.dflt,
+                  genericArgs = returnTypeGenericArgs(
+                    Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty))
+                  )
                 )
               )
               case _ -> {
@@ -4473,7 +4489,10 @@ pub func collectFileCasesExtern(
                     localTypeNames
                   ),
                   paramIdx = typeParamIndexOf(f.ty, tps),
-                  dflt = f.dflt
+                  dflt = f.dflt,
+                  genericArgs = returnTypeGenericArgs(
+                    Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty))
+                  )
                 )
               )
               case _ -> {
@@ -4502,7 +4521,8 @@ pub func collectFileCasesExtern(
                       name = name,
                       ty = typeExprToJvmExtern(ty, owner, externTypes),
                       paramIdx = -1,
-                      dflt = init
+                      dflt = init,
+                      genericArgs = returnTypeGenericArgs(Some(value = ty))
                     )
                   )
                   case PFLet(name, ty, init, _, _, _) -> flds.add(
@@ -4510,7 +4530,8 @@ pub func collectFileCasesExtern(
                       name = name,
                       ty = typeExprToJvmExtern(ty, owner, externTypes),
                       paramIdx = -1,
-                      dflt = init
+                      dflt = init,
+                      genericArgs = returnTypeGenericArgs(Some(value = ty))
                     )
                   )
                   case PFImmutable(f) -> flds.add(
@@ -4518,7 +4539,8 @@ pub func collectFileCasesExtern(
                       name = f.name,
                       ty = typeExprToJvmExtern(f.ty, owner, externTypes),
                       paramIdx = -1,
-                      dflt = f.dflt
+                      dflt = f.dflt,
+                      genericArgs = returnTypeGenericArgs(Some(value = f.ty))
                     )
                   )
                 }
@@ -4552,7 +4574,8 @@ pub func collectFileCasesExtern(
                     name = f.name,
                     ty = typeExprToJvmErasedExtern(f.ty, owner, genericParamNames(decl.generics), externTypes),
                     paramIdx = -1,
-                    dflt = f.dflt
+                    dflt = f.dflt,
+                    genericArgs = returnTypeGenericArgs(Some(value = f.ty))
                   )
                 )
                 case OMInvariant(_) -> ()
@@ -5237,7 +5260,15 @@ pub func registerProjectableViews(
             var fi = 0
             while fi < infos.count {
               if not infos[fi].hidden {
-                vflds.add(JvmCaseField(name = infos[fi].name, ty = projViewFieldType(infos[fi]), paramIdx = -1, dflt = None))
+                vflds.add(
+                  JvmCaseField(
+                    name = infos[fi].name,
+                    ty = projViewFieldType(infos[fi]),
+                    paramIdx = -1,
+                    dflt = None,
+                    genericArgs = newList()
+                  )
+                )
               }
               fi = fi + 1
             }
