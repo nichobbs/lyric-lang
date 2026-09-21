@@ -409,6 +409,49 @@ test "F0045 (#7174): still fires for implicit-await ? on a same-file async call 
   )
 }
 
+// #7178: review finding on #7174's fix — `isDirectCallToKnownAsyncFn` only
+// recognized a same-file bare-name call, so three genuinely hazardous
+// shapes silently fell through to the implicit-await wrap with NO F0045
+// diagnostic: a cross-package/qualified call, a method call, and a call to
+// a locally-nested `async func` (never collected into any same-file
+// top-level name set).  All three can be truly async, so silently treating
+// them as safe regresses exactly the invalid-IL hazard F0045 exists to
+// close.  The guard (`isRiskyTryCallScrutinee`) was rebuilt to flag
+// anything it cannot PROVE safe rather than assume safety by default.
+test "F0045 (#7178): fires for ? on a cross-package/qualified call in a try body" {
+  val src = "package P\nasync func f(n: in Int): Result[Int, String] {\n  try {\n    val x = OtherPkg.mayFail(n)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertTrue(propHasDiag(result.diagnostics, "F0045"), "a qualified call cannot be proven non-async, so it is flagged")
+}
+
+test "F0045 (#7178): fires for ? on a method-call scrutinee in a try body" {
+  val src = "package P\nrecord Box { r: Result[Int, String] }\nasync func f(box: in Box): Result[Int, String] {\n  try {\n    val x = box.fetch()?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertTrue(propHasDiag(result.diagnostics, "F0045"), "a method call cannot be proven non-async, so it is flagged")
+}
+
+test "F0045 (#7178): fires for ? on a call to a locally-nested async func in the same try body" {
+  val src = "package P\nasync func f(n: in Int): Result[Int, String] {\n  try {\n    async func helper(m: in Int): Result[Int, String] {\n      Ok(m)\n    }\n    val x = helper(n)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertTrue(
+    propHasDiag(result.diagnostics, "F0045"),
+    "a call to a locally-nested async func is never in the same-file top-level name set, so it is flagged"
+  )
+}
+
+test "F0045 (#7178): still does not fire for a bare same-file non-async call or a builtin ctor in a try body" {
+  // Regression guard: proven-safe shapes must stay unflagged after the
+  // #7178 redesign flipped the default from "assumed safe" to "assumed
+  // risky unless proven otherwise".
+  val src = "package P\n" + syncValidateSrc +
+    "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = validate(n)?\n    val y = Ok(x)?\n    Ok(y)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertFalse(
+    propHasDiag(result.diagnostics, "F0045"),
+    "a proven-non-async call and a builtin ctor call stay unflagged"
+  )
+}
+
 // ── Same-file alias return types (#1814) ─────────────────────────────────────
 // `monadOfRet` unfolds same-file `alias` declarations before the Result/Option
 // classification, so a return type written through an alias no longer trips a

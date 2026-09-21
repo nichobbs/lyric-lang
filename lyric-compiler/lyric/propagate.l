@@ -101,12 +101,16 @@ record PropState {
   // so return types written through an alias of Result/Option classify
   // correctly instead of tripping a false F0020 (#1814).
   aliases: Map[String, TypeExpr]
-  // #7174: same-file top-level `async func` names (mirrors `aliases`'
-  // same-file-declaration approach), so `implicitAwaitScrutinee` can tell a
-  // genuinely hazardous scrutinee (a direct call to a KNOWN async function)
-  // from a safe one (a bare local, or a call to an ordinary sync function)
-  // instead of treating every `?` inside a try/catch/finally as hazardous.
-  asyncFuncNames: Map[String, Bool]
+  // #7178: same-file top-level, non-async `func` names (mirrors `aliases`'
+  // same-file-declaration approach).  `implicitAwaitScrutinee` uses this as
+  // an allow-list: a bare same-file call is only PROVEN safe when its name
+  // is in this set.  Everything else that isn't provably safe (a call to a
+  // same-file `async func`, a cross-package/qualified call, a method call,
+  // or a call to a name this pass cannot resolve at all — e.g. an imported
+  // function or a locally-nested `func` statement) is treated as
+  // potentially hazardous rather than silently assumed safe — see
+  // `isRiskyTryCallScrutinee`'s doc.
+  syncFuncNames: Map[String, Bool]
   // #7170: name and `isAsync`-ness of the function currently being rewritten,
   // plus whether the rewrite point is lexically inside one of its try/
   // catch/finally regions.  See `implicitAwaitScrutinee`'s doc for why this
@@ -118,13 +122,13 @@ record PropState {
 }
 
 func newPropState(
-  diags: in List[Diagnostic], aliases: in Map[String, TypeExpr], asyncFuncNames: in Map[String, Bool]
+  diags: in List[Diagnostic], aliases: in Map[String, TypeExpr], syncFuncNames: in Map[String, Bool]
 ): PropState {
   PropState(
     counter = newList(),
     diagnostics = diags,
     aliases = aliases,
-    asyncFuncNames = asyncFuncNames,
+    syncFuncNames = syncFuncNames,
     curFnName = "",
     curFnAsync = false,
     inTry = false
@@ -132,7 +136,7 @@ func newPropState(
 }
 
 // Re-scope `st` to a newly-entered function body: fresh async/try context,
-// same threaded `counter`/`diagnostics`/`aliases`/`asyncFuncNames` (all
+// same threaded `counter`/`diagnostics`/`aliases`/`syncFuncNames` (all
 // reference types, so mutations through the clone stay visible to the
 // caller — the same idiom `st.counter`/`st.diagnostics` already rely on).
 func stateForFn(st: in PropState, name: in String, isAsync: Bool): PropState {
@@ -140,7 +144,7 @@ func stateForFn(st: in PropState, name: in String, isAsync: Bool): PropState {
     counter = st.counter,
     diagnostics = st.diagnostics,
     aliases = st.aliases,
-    asyncFuncNames = st.asyncFuncNames,
+    syncFuncNames = st.syncFuncNames,
     curFnName = name,
     curFnAsync = isAsync,
     inTry = false
@@ -156,7 +160,7 @@ func stateInTry(st: in PropState): PropState {
     counter = st.counter,
     diagnostics = st.diagnostics,
     aliases = st.aliases,
-    asyncFuncNames = st.asyncFuncNames,
+    syncFuncNames = st.syncFuncNames,
     curFnName = st.curFnName,
     curFnAsync = st.curFnAsync,
     inTry = true
@@ -260,14 +264,14 @@ func singleStmtBlock(s: in Statement, sp: in Span): Block {
 func implicitAwaitScrutinee(inner: in Expr, sp: in Span, st: in PropState): Expr {
   if isAlreadyAwaitedExpr(inner) {
     inner
-  } else if st.curFnAsync and st.inTry and isDirectCallToKnownAsyncFn(inner, st) {
+  } else if st.curFnAsync and st.inTry and isRiskyTryCallScrutinee(inner, st) {
     st.diagnostics.add(
       errorDiagnostic(
         "F0045",
-        "the `?` operator's implicit `await` of this direct async call inside a try/catch/finally in async function '" +
-          st.curFnName +
-          "' would emit invalid IL (the CLR verifier rejects a suspend/resume sequence inside a " +
-          "protected region — see V0012); await the call explicitly before or after the try block instead",
+        "the `?` operator's implicit `await` of this call inside a try/catch/finally in async function '" + st.curFnName +
+          "' cannot be proven safe here (only a direct call to a same-file, non-async function is) and, if the " +
+          "call is actually async, would emit invalid IL (the CLR verifier rejects a suspend/resume sequence " +
+          "inside a protected region — see V0012); await the call explicitly before or after the try block instead",
         sp
       )
     )
@@ -285,25 +289,57 @@ func isAlreadyAwaitedExpr(e: in Expr): Bool {
   }
 }
 
-// #7174: F0045 (above) must only fire for the one scrutinee shape that is
-// actually hazardous — a direct call to a same-file `async func`, whose
-// implicit await really does suspend/resume.  #7170's original guard fired
-// for ANY `?` scrutinee inside a try/catch/finally in an async function,
-// which false-positived on two provably-safe shapes: a call to an ordinary
-// (non-async) function, and a bare local variable — neither ever produces a
-// Task-shaped scrutinee, so `EAwait`'s no-op-when-not-Task-shaped codegen
-// (see the #6920 doc above) makes wrapping them in an implicit await free.
-// Only a same-file bare-name call (`name(args)`, not `recv.name(args)` or a
-// qualified `Pkg.name(args)`) is resolvable here without cross-package type
-// information, mirroring how `aliases` above only tracks same-file `alias`
-// declarations.
-func isDirectCallToKnownAsyncFn(inner: in Expr, st: in PropState): Bool {
+// A bare reference to one of the four builtin union constructors is always
+// synchronous no matter the surrounding context — `Ok(v)?`/`Err(e)?`/
+// `Some(v)?`/`None` never need (or benefit from) an await, so they are
+// never risky even though they aren't in `st.syncFuncNames` (they're not a
+// same-file `func` declaration at all).
+func isBuiltinMonadCtorName(name: in String): Bool {
+  name == "Ok" or name == "Err" or name == "Some" or name == "None"
+}
+
+// #7174/#7178: F0045 (above) must fire for exactly the scrutinee shapes that
+// CANNOT be proven safe, not just the one shape #7170 originally targeted
+// (a direct call to a same-file `async func`).  Two classes exist:
+//
+//   * Provably safe, never flagged: anything that isn't a call at all (a
+//     bare local variable, a field access, …), and a bare same-file call to
+//     a function this pass has proven is NOT `async` (`st.syncFuncNames`)
+//     or to a builtin monad constructor.  Neither ever produces a
+//     Task-shaped scrutinee, so `EAwait`'s no-op-when-not-Task-shaped
+//     codegen (see the #6920 doc above) makes wrapping them in an implicit
+//     await free.
+//
+//   * Everything else is treated as RISKY (flagged) rather than silently
+//     assumed safe, because this pass cannot prove it safe without
+//     cross-package/cross-scope type information it doesn't have: a call to
+//     a same-file `async func` (#7170's original case), a qualified/
+//     cross-package call or a method call (both parse as `ECall(fn =
+//     EMember(...))` — see `parsePostfixExpr`'s `Dot` case, there is no
+//     separate "qualified path call" AST shape to special-case), and a bare
+//     call whose name resolves to neither `syncFuncNames` nor a builtin
+//     constructor — which covers an imported function brought into scope
+//     unqualified, AND a locally-nested `func`/lambda-bound callable (#7178
+//     found this exact shape unflagged: a nested `async func` statement is
+//     never collected into any same-file top-level name set, so leaving it
+//     assumed-safe would silently regress it to the invalid-IL hazard this
+//     diagnostic exists to close). This mirrors the pre-#6920 baseline,
+//     where every one of these shapes already failed to compile (a safe,
+//     if confusing, `T0115`) rather than building invalid IL.
+func isRiskyTryCallScrutinee(inner: in Expr, st: in PropState): Bool {
   match inner.kind {
-    case EParen(paren) -> isDirectCallToKnownAsyncFn(paren, st)
+    case EParen(paren) -> isRiskyTryCallScrutinee(paren, st)
     case ECall(fn, _) -> {
       match fn.kind {
-        case EPath(path) -> path.segments.count == 1 and st.asyncFuncNames.containsKey(path.segments[0])
-        case _ -> false
+        case EPath(path) -> {
+          if path.segments.count == 1 {
+            val name = path.segments[0]
+            not (st.syncFuncNames.containsKey(name) or isBuiltinMonadCtorName(name))
+          } else {
+            true
+          }
+        }
+        case _ -> true
       }
     }
     case _ -> false
@@ -947,7 +983,7 @@ pub func lowerPropagateFile(file: in SourceFile): PropagateResult {
   val hoisted = hoistPropagateFile(file)
   val diags: List[Diagnostic] = newList()
   val aliases: Map[String, TypeExpr] = newMap()
-  val asyncFuncNames: Map[String, Bool] = newMap()
+  val syncFuncNames: Map[String, Bool] = newMap()
   var ai = 0
   while ai < hoisted.items.count {
     match hoisted.items[ai].kind {
@@ -957,15 +993,15 @@ pub func lowerPropagateFile(file: in SourceFile): PropagateResult {
         }
       }
       case IFunc(decl) -> {
-        if decl.isAsync and not asyncFuncNames.containsKey(decl.name) {
-          asyncFuncNames.add(decl.name, true)
+        if not decl.isAsync and not syncFuncNames.containsKey(decl.name) {
+          syncFuncNames.add(decl.name, true)
         }
       }
       case _ -> ()
     }
     ai = ai + 1
   }
-  val st = newPropState(diags, aliases, asyncFuncNames)
+  val st = newPropState(diags, aliases, syncFuncNames)
   val newItems: List[Item] = newList()
   var i = 0
   while i < hoisted.items.count {
