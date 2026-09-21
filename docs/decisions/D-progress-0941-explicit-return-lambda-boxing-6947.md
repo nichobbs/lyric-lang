@@ -1,4 +1,4 @@
-# D-progress-939 — `return` inside a lifted lambda body never coerced the returned value to the Uniform Func ABI's declared return type (#6947)
+# D-progress-941 — `return` inside a lifted lambda body never coerced the returned value to the Uniform Func ABI's declared return type (#6947)
 
 **Status:** shipped
 

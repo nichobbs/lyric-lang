@@ -32519,7 +32519,7 @@ descriptor. Both fixed by pushing the coerced default value
 already coerced correctly (`coerceValueTo`) before this fix — verified with
 an explicit `--target jvm` run of the regression suite, not assumed.
 
-**Related:** `docs/decisions/D-progress-0939-explicit-return-lambda-boxing-6947.md` (full account, incl. two out-of-scope findings filed separately as #7152 and #7166), #6947.
+**Related:** `docs/decisions/D-progress-0941-explicit-return-lambda-boxing-6947.md` (full account, incl. two out-of-scope findings filed separately as #7152 and #7166), #6947.
 
 ### MSIL: `UInt`/`ULong` gain a real representation, closing the CLR-loader crash and a downstream list-literal miscompile (#6756, #6782)
 
