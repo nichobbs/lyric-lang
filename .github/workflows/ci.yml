@@ -5740,6 +5740,18 @@ jobs:
   # (~60 CPU-min) in 2 shards, jvm is 132 files (~120 CPU-min) in 4 shards.
   numbered-backend-self-tests:
     runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
+    # Fast-fail mitigation for #7087: the self-hosted lyric-labeled runner
+    # pool has repeatedly left jobs queued for the full 24h GitHub job-
+    # duration ceiling with zero runner pickup, burning a full day per
+    # occurrence before the job is auto-cancelled and the PR learns
+    # anything. This does not fix the underlying capacity/scheduling gap
+    # (see #7087) -- only reprovisioning or right-sizing the runner pool
+    # does -- but it turns a silent 24h stall into a visible failure well
+    # before that ceiling. 60 min (not native-backend-self-tests' 45): this
+    # job's own recent green-run durations ranged ~20-36 min across its six
+    # matrix shards, so 45 min left too little margin against normal
+    # variance.
+    timeout-minutes: 60
     needs: [build]
     permissions:
       contents: read
@@ -6164,6 +6176,13 @@ jobs:
   # Stdlib and ecosystem-library builds — runs in parallel with ecosystem-tests.
   stdlib-builds:
     runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
+    # Fast-fail mitigation for #7087 (see numbered-backend-self-tests'
+    # identical comment above): does not fix the underlying self-hosted
+    # runner capacity/scheduling gap, just turns a silent 24h stall into a
+    # visible failure well before GitHub's own job-duration ceiling. This
+    # job's own recent green-run durations were ~33-34 min, so 60 min
+    # leaves comfortable margin without being anywhere near the 24h ceiling.
+    timeout-minutes: 60
     needs: [build]
     permissions:
       contents: read
