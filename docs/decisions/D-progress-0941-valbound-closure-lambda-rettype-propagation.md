@@ -1,4 +1,4 @@
-# D-progress-939 — A closure bound to a `val`/`var` first, then passed by name, now propagates its own declared `() -> T` type into the lifted lambda body (#6877)
+# D-progress-941 — A closure bound to a `val`/`var` first, then passed by name, now propagates its own declared `() -> T` type into the lifted lambda body (#6877)
 
 **Status:** shipped
 
