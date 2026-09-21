@@ -2915,6 +2915,14 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/msil_project_bridge_self_test.l
 
+      # Lyric.AnnotationMeta resource embedding self-test (#6866 PR 1,
+      # D-progress-941) — compiles a config-block fixture through both
+      # Msil.Bridge and Jvm.Bridge and reads the embedded resource back,
+      # mirroring the MSIL project bridge self-test's #6390 pattern.
+      - name: Annotation-meta bridge self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/annotation_meta_bridge_self_test.l
+
       # Enum case-name collision self-test (#5995, plus #6638/#6639/#6640
       # follow-ups and the #6650 real-stdlib-enum coverage) — compiles small
       # multi-package fixtures through BOTH `Msil.Bridge.compileProjectToMsil`

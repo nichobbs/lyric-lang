@@ -66,6 +66,29 @@ test "positional-literal annotation collected" {
   assertEqual(fields[0].args[0].argValue, "/app/db/host", "positional arg value recorded")
 }
 
+// #7186 review: the actual documented real-world shape (docs/35 §7.1) mixes
+// a positional arg with a named one in the same annotation, e.g.
+// `@secretsManager("my-service/prod", key = "dbPassword")` (extract a JSON
+// field from a structured secret).  `collectArgs` walks the arg list
+// generically per-index regardless of the AAName/ABare/ALiteral mix, but
+// that was previously untested.
+test "mixed positional and named args in one annotation collected in order" {
+  val src = "package P\n" + "config Db {\n" + "  @secretsManager(\"my-service/prod\", key = \"dbPassword\")\n" +
+    "  password: String\n" +
+    "}\n"
+  val sf = parseOk(src)
+  val fields = collectAnnotatedFields(sf)
+  assertEqualInt(fields.count, 1, "one annotated field")
+  assertEqual(fields[0].annotationName, "secretsManager", "annotation name recorded")
+  assertEqualInt(fields[0].args.count, 2, "two args")
+  assertEqual(fields[0].args[0].argName, "", "first (positional) arg has no name")
+  assertEqual(fields[0].args[0].argKind, "string", "first arg kind recorded")
+  assertEqual(fields[0].args[0].argValue, "my-service/prod", "first arg value recorded")
+  assertEqual(fields[0].args[1].argName, "key", "second (named) arg name recorded")
+  assertEqual(fields[0].args[1].argKind, "string", "second arg kind recorded")
+  assertEqual(fields[0].args[1].argValue, "dbPassword", "second arg value recorded")
+}
+
 test "multiple annotated fields across multiple config blocks, in source order" {
   val src = "package P\n" + "config A {\n" + "  @secretsManager(key = \"a\")\n" + "  x: String\n" + "  y: String\n" +
     "}\n" +
