@@ -24,6 +24,7 @@ import Lyric.TypeAliasResolve as TAR2
 import Lyric.Derives
 import Lyric.RestoredPackages
 import Lyric.ContractMeta as Meta
+import Lyric.AnnotationMetaEmit as AnnotationMeta
 import Std.Encoding as Encoding
 import Lyric.Weaver as Weaver
 import Lyric.WireExpand as WireExpand
@@ -419,6 +420,10 @@ pub func compileToMsilWithVersion(
   // included (#6363, #6364, #6365).
   val resourceVersion = if packageVersion.length == 0 { "0.0.0" } else { packageVersion }
   embedLyricContract(cctx.lctx, withGenericFuncsForContract(file0, liftedFile), "Lyric.Contract", resourceVersion)
+  // #6866, D-progress-941: embed this package's `config { }` field
+  // annotations alongside its contract, so a runtime reader (PR 2) can
+  // recover them without linking the self-hosted lexer/parser.
+  embedLyricAnnotationMeta(cctx.lctx, file0, "Lyric.AnnotationMeta")
 
   // Lower the package IR to raw PE bytes using the pre-seeded context.
   val bytes = lowerMPackageWithCtx(pkg, cctx.lctx, entryToken)
@@ -1268,6 +1273,9 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       "Lyric.Contract." + perPkgNames[li],
       bundleVer
     )
+    // #6866, D-progress-941: per-package annotation metadata, matching the
+    // per-package `Lyric.Contract.<Pkg>` embedding above.
+    embedLyricAnnotationMeta(cctx.lctx, parsedPkgs[li].file, "Lyric.AnnotationMeta." + perPkgNames[li])
     liftedFiles.add(lifted)
     li = li + 1
   }
@@ -2089,6 +2097,41 @@ func embedLyricContract(lctx: in LoweringCtx, file: in SourceFile, resourceName:
     )
   )
   // embedded
+}
+
+// Build a `Lyric.AnnotationMeta`[.`<Pkg>`] resource for `file` and seed
+// the lowering ctx + metadata tables so the assembler emits it into the
+// PE, exactly mirroring `embedLyricContract` above (#6866, D-progress-941).
+// `file`'s `config { }` field annotations are collected and serialized
+// unconditionally, even when empty, so the resource is always present —
+// a runtime reader never has to distinguish "no resource" from "no
+// annotated fields". `resourceName` follows the same convention as
+// `embedLyricContract`: `"Lyric.AnnotationMeta"` for a single-package
+// assembly, `"Lyric.AnnotationMeta.<Pkg>"` for a project-as-DLL bundle.
+func embedLyricAnnotationMeta(lctx: in LoweringCtx, file: in SourceFile, resourceName: in String): Unit {
+  val fields = AnnotationMeta.collectAnnotatedFields(file)
+  val json = AnnotationMeta.emitAnnotationMetaJson(fields)
+  val jsonBytes = Encoding.encodeUtf8(json)
+  val jsonLen = jsonBytes.length
+
+  val offset = lctx.resourceData.count
+
+  lctx.resourceData.add(jsonLen % 256)
+  lctx.resourceData.add((jsonLen / 256) % 256)
+  lctx.resourceData.add((jsonLen / 65536) % 256)
+  lctx.resourceData.add((jsonLen / 16777216) % 256)
+
+  var i = 0
+  while i < jsonLen {
+    lctx.resourceData.add(jsonBytes[i])
+    i = i + 1
+  }
+
+  val sName = internString(lctx.strings, resourceName)
+  val _row = addManifestResource(
+    lctx.tables,
+    ManifestResourceRow(offset = offset, flags = 1, name = sName, implementation = 0)
+  )
 }
 
 // Resolve the bundle-wide entry-point MethodDef token.  Returns 0
