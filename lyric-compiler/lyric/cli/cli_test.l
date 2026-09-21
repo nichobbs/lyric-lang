@@ -339,11 +339,11 @@ func generateJvmCoverageReport(
 func buildPropertyRunConfig(trialsArg: in Option[Int], seedArg: in Option[Int]): PropertyRunConfig {
   var cfg = PropertyRunConfig()
   match trialsArg {
-    case Some(n) -> cfg = cfg.copy(trials = n)
+    case Some(n) -> { cfg = cfg.copy(trials = n) }
     case None -> ()
   }
   match seedArg {
-    case Some(n) -> cfg = cfg.copy(seed = n)
+    case Some(n) -> { cfg = cfg.copy(seed = n) }
     case None -> ()
   }
   cfg
